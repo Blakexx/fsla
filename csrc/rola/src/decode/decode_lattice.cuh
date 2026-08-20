@@ -122,51 +122,66 @@ __device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const u
   }
 }
 
-//: ONE UNIT of the walk: the `(owner, r_0 .. r_{lat_p - 1})` pair a rank names -- an owner
-//: together with its OUTER run offsets. Under the mixed-radix intra-box order the
-//: remaining levels' runs are the CONTIGUOUS tail of the owner-local index, so a unit's
-//: leaves are `1 << lat_unit_bits` consecutive lattice indices at an aligned base: at the
-//: flagship spans `(8, 16)` that is exactly ONE 16-leaf atom, at full occupancy, with the
-//: innermost level's 16 digits as the unit's slots.
+//: ONE DIGIT'S MEMBERSHIP, as ONE load and a shift. `level_slice` reads two words and
+//: funnel-shifts them because an owner's SPAN can straddle a word boundary; a single digit
+//: never can, and the unit asks this question `2 * (D - 1)` times.
+__device__ __forceinline__ bool mask_bit(const DecodeParams& p, const uint32_t* mask, int l,
+                                         int bit) {
+  return ((mask[p.mask_off[l] + (bit >> 5)] >> (static_cast<uint32_t>(bit) & 31u)) & 1u) != 0u;
+}
+
+//: ONE UNIT of the walk: the `(owner, r_0 .. r_{D-2})` pair a rank names -- an owner
+//: together with EVERY run offset but the innermost. Under the mixed-radix intra-box order
+//: the innermost level's run is the CONTIGUOUS tail of the owner-local index, so a unit's
+//: leaves are `s_{D-1}` consecutive lattice indices at an aligned base: at the flagship
+//: spans `(8, 16)` that is EXACTLY ONE 16-leaf atom, at full occupancy, with the innermost
+//: level's 16 digits as the unit's slots.
 //:
-//: What the unit carries is therefore ASYMMETRIC BY CONSTRUCTION, and that is the whole
-//: saving over a walk whose unit cut every level: an OUTER level contributes ONE FIXED
-//: DIGIT (`dbase[l]`, a single amplitude and a single mask bit, hoisted clean out of the
-//: slot loop), a MID level one digit per mid index, and only the INNERMOST level a SLICE
-//: (`cr`/`cw`, one 32-bit extract) that the slot loop iterates by `__ffs`.
-//: `valid` is false where the padded rank space overshoots a level's realized count.
-//: docs/internals/decode/decode_lattice.md#the-unit
+//: What the unit carries is therefore ASYMMETRIC BY CONSTRUCTION, and that asymmetry IS
+//: the unit's point: every level but the innermost contributes ONE FIXED DIGIT, so its
+//: amplitude and its membership are resolved ONCE HERE and the slot loop below costs one
+//: innermost amplitude per leaf rather than `D` of them. Only the innermost level
+//: contributes a SLICE (`cr`/`cw`, one 32-bit extract) that the slot loop iterates by
+//: `__ffs`. `valid` is false where the padded rank space overshoots a level's realized
+//: count. docs/internals/decode/decode_lattice.md#the-unit
 template <int D>
 struct Unit {
   int owner;  // O, the owner's mixed-radix index over lat_g
-  int outer;  // the unit's index inside the owner: r_0 .. r_{lat_p - 1}, by shifts
+  int base;   // the unit's first leaf, as a LATTICE index
   bool valid;
-  bool live_r;  // every OUTER level carries read amplitude at its fixed digit
+  bool live_r;  // every level but the innermost carries read amplitude at its fixed digit
   bool live_w;
-  int dbase[D];  // level l's staging offset: its fixed digit (l < lat_p) or its run base
-  uint32_t cr;   // level D-1's whole run, as one slice, per side
+  int dlast;  // level D-1's staging offset: its run base
+  float ar;   // the fixed levels' amplitude product, per side, and the decay rate's
+  float aw;
+  float rate;
+  uint32_t cr;  // level D-1's whole run, as one slice, per side
   uint32_t cw;
 };
 
 //: THE UNIT INDEX, decomposed by shifts alone. The high bits are the OWNER RANK, one
-//: padded field per level; the low `lat_outer_bits` are the outer run offsets in the SAME
-//: mixed radix the owner-local index uses, so `outer << lat_unit_bits` is the unit's base
+//: padded field per level; the low `lat_outer_bits` are the fixed run offsets in the SAME
+//: mixed radix the owner-local index uses, so `outer << lat_inner_bits` is the unit's base
 //: inside its owner without a multiply. A level whose digit is dead on a side kills that
-//: side for the whole unit, which is the pruning the product structure buys:
+//: side for the whole unit, which is the pruning the product structure buys.
+//: `DECAY` is a template arm so the dial product is not merely multiplied by one.
 //: docs/internals/decode/decode_lattice.md#the-unit
-template <int D>
+template <int D, bool DECAY>
 __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uint32_t* mask_r,
-                                                const uint32_t* mask_w, const int32_t* list,
-                                                const int32_t* n_o, const int32_t* bits,
-                                                const int32_t* shift, int unit) {
+                                                const uint32_t* mask_w, const float* sa_r,
+                                                const float* sa_w, const float* sd,
+                                                const int32_t* list, const int32_t* n_o,
+                                                const int32_t* bits, const int32_t* shift,
+                                                int unit) {
   Unit<D> u;
   u.owner = 0;
-  u.outer = unit & ((1 << p.lat_outer_bits) - 1);
   u.valid = true;
   u.live_r = true;
   u.live_w = true;
-  u.cr = 0u;
-  u.cw = 0u;
+  u.ar = 1.0f;
+  u.aw = 1.0f;
+  u.rate = 1.0f;
+  const int outer = unit & ((1 << p.lat_outer_bits) - 1);
   const int rank = unit >> p.lat_outer_bits;
 #pragma unroll
   for (int l = 0; l < D; ++l) {
@@ -178,19 +193,21 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
     const int o = list[p.olist_off[l] + i];
     u.owner += o * p.lat_gsuf[l];
     const int run_base = o * p.lat_s[l];
-    if (l < p.lat_p) {
-      const int digit = run_base + ((u.outer >> p.lat_oshift[l]) & (p.lat_s[l] - 1));
-      u.dbase[l] = p.level_amp_offset[l] + digit;
-      u.live_r = u.live_r && level_slice(p, mask_r, l, digit, 1) != 0u;
-      u.live_w = u.live_w && level_slice(p, mask_w, l, digit, 1) != 0u;
+    if (l == D - 1) {
+      u.dlast = p.level_amp_offset[l] + run_base;
+      u.cr = level_slice(p, mask_r, l, run_base, p.lat_s[l]);
+      u.cw = level_slice(p, mask_w, l, run_base, p.lat_s[l]);
     } else {
-      u.dbase[l] = p.level_amp_offset[l] + run_base;
-      if (l == D - 1) {
-        u.cr = level_slice(p, mask_r, l, run_base, p.lat_s[l]);
-        u.cw = level_slice(p, mask_w, l, run_base, p.lat_s[l]);
-      }
+      const int digit = run_base + ((outer >> p.lat_oshift[l]) & (p.lat_s[l] - 1));
+      const int off = p.level_amp_offset[l] + digit;
+      u.live_r = u.live_r && mask_bit(p, mask_r, l, digit);
+      u.live_w = u.live_w && mask_bit(p, mask_w, l, digit);
+      u.ar *= sa_r[off];
+      u.aw *= sa_w[off];
+      if (DECAY) u.rate *= sd[off];
     }
   }
+  u.base = (u.owner << p.lat_local_bits) + (outer << p.lat_inner_bits);
   return u;
 }
 

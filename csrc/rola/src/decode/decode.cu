@@ -64,26 +64,6 @@ __global__ void decode_stamp_kernel(int64_t* out) {
 
 }  // namespace stampdet
 
-//: THE MID LEVELS' CONTRIBUTION AT ONE MID INDEX `hi`. A unit fixes the outer levels'
-//: digits and iterates the innermost level's run; between them sit the levels the unit
-//: covers whole but that are not the innermost one, and `hi` is their combined index in
-//: the SAME mixed radix. At the flagship (`lat_p == D - 1`) this loop is empty and the
-//: whole helper folds away. docs/internals/decode/decode_lattice.md#the-unit
-template <int D>
-__device__ __forceinline__ bool mid_live(const DecodeParams& p, const uint32_t* mask,
-                                         const Unit<D>& u, int hi) {
-  bool live = true;
-#pragma unroll
-  for (int l = 0; l < D - 1; ++l) {
-    if (l >= p.lat_p) {
-      const int r = (hi >> p.lat_hshift[l]) & (p.lat_s[l] - 1);
-      const int bit = u.dbase[l] - p.level_amp_offset[l] + r;
-      live = live && level_slice(p, mask, l, bit, 1) != 0u;
-    }
-  }
-  return live;
-}
-
 template <int DV, int D, bool DECAY>
 __global__ __launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY, D)) void
 decode_step_kernel(DecodeParams p) {
@@ -184,35 +164,37 @@ decode_step_kernel(DecodeParams p) {
   const int32_t* wlist = olist + kListWrite * p.olist_total;
   const int woff = kListWrite * kMaxLevels;
 
-  //: THE CANDIDATE ATOMS, enumerated from the same lattice product the walk uses: one
-  //: unit by its atoms-per-unit, which is a PARTITION of the write side's atoms with no
-  //: straddle case at all -- a unit's leaves are a CONTIGUOUS, ALIGNED run of
-  //: `1 << lat_unit_bits` lattice indices, and the host refuses a paged lattice whose
-  //: unit is thinner than an atom. Two atoms of one unit therefore share the outer digits
-  //: and differ only in the window of the unit each covers.
-  //: THE WINDOW IS THE INNERMOST LEVEL'S RUN, clipped to an atom: at the flagship spans
-  //: `(8, 16)` a unit IS an atom, `n_win` is one, the mid loop is empty and membership is
-  //: the write slice being non-zero. docs/internals/decode/decode.md#candidate-atoms
+  //: THE CANDIDATE ATOMS, enumerated from the same lattice product the walk uses, and a
+  //: PARTITION of the write side's atoms with no straddle case at all -- which is what the
+  //: pool claim's canonical ranks need. A unit's leaves are a CONTIGUOUS ALIGNED run, so an
+  //: atom and a unit nest one way or the other and the index says which: the low
+  //: `atoms_per_unit_shift` bits pick an atom INSIDE a unit, and `lat_units_per_atom_shift`
+  //: consecutive units make ONE atom. Exactly one of the two is non-zero.
+  //: THE WINDOW IS THE UNIT'S RUN, CLIPPED TO AN ATOM. At the flagship spans `(8, 16)` a
+  //: unit IS an atom: `n_units` and the atom index are both one, and membership is the
+  //: unit's write slice being non-zero. docs/internals/decode/decode.md#candidate-atoms
   const int win_bits = inner_bits < kAtomShift ? inner_bits : kAtomShift;
-  const int n_win = 1 << (kAtomShift - win_bits);
   const uint32_t win_mask = (1u << (1 << win_bits)) - 1u;
+  const int n_units = 1 << p.lat_units_per_atom_shift;
   auto candidate_atom = [&](int i) -> int {
     const int a = i & ((1 << p.atoms_per_unit_shift) - 1);
-    const Unit<D> u = resolve_unit<D>(p, mask_r, mask_w, wlist, s_n_o + woff, s_bits + woff,
-                                      s_shift + woff, i >> p.atoms_per_unit_shift);
-    if (!u.valid || !u.live_w) return -1;
-    const int off0 = a << kAtomShift;
-    bool live = false;
-    for (int q = 0; q < n_win && !live; ++q) {
-      const int off = off0 + (q << win_bits);
-      if (!mid_live<D>(p, mask_w, u, off >> inner_bits)) continue;
-      live = ((u.cw >> (off & ((1 << inner_bits) - 1))) & win_mask) != 0u;
+    const int unit0 = (i >> p.atoms_per_unit_shift) << p.lat_units_per_atom_shift;
+    int atom = -1;
+    for (int q = 0; q < n_units; ++q) {
+      const Unit<D> u =
+          resolve_unit<D, false>(p, mask_r, mask_w, sa_r, sa_w, sd, wlist, s_n_o + woff,
+                                 s_bits + woff, s_shift + woff, unit0 + q);
+      if (!u.valid) return -1;
+      if (atom < 0) atom = (u.base + (a << kAtomShift)) >> kAtomShift;
+      if (u.live_w && ((u.cw >> ((a << kAtomShift) & ((1 << inner_bits) - 1))) & win_mask) != 0u) {
+        return atom;
+      }
     }
-    if (!live) return -1;
-    return ((u.owner << p.lat_local_bits) + (u.outer << p.lat_unit_bits) + off0) >> kAtomShift;
+    return -1;
   };
 
-  const int n_candidates = s_units[kListWrite] << p.atoms_per_unit_shift;
+  const int n_candidates = (s_units[kListWrite] >> p.lat_units_per_atom_shift)
+                           << p.atoms_per_unit_shift;
 
   // ---- THE ADMISSION QUESTION, asked of the map this CTA already holds ---------
   //: Three outcomes PER BATCH-HEAD: advance, no-op, or re-read without depositing:
@@ -321,142 +303,114 @@ decode_step_kernel(DecodeParams p) {
     bool atom_present = false;
 
     // ---- THE WALK ---------------------------------------------------------------
-    //: THE UNIT IS THE (owner, outer-run) PAIR and the grid partitions its rank space, so
-    //: every touched leaf has exactly one owning CTA, warp and lane and the state needs
-    //: no atomic: docs/internals/decode/decode.md#the-unit-partition
-    //: A WARP TAKES A WHOLE OWNER, never a stride of units: an owner's leaves are one
-    //: contiguous `BC`-aligned lattice run BY DEFINITION, so the owner is the walk's
-    //: locality granule and splitting it across warps would scatter the one run the
-    //: order exists to make contiguous.
-    //: THE OUTER LEVELS ARE HOISTED OUT OF THE SLOT LOOP AND THAT IS THE UNIT'S POINT: a
-    //: unit fixes their digits, so their amplitude product is formed ONCE and every slot
-    //: below costs one innermost amplitude, not `D` of them.
-    const int outer_radix = 1 << p.lat_outer_bits;
-    const int n_hi = 1 << p.lat_hi_bits;
-    const int ranks = units >> p.lat_outer_bits;
-    for (int rank = seg + p.n_split * warp; rank < ranks; rank += p.n_split * kDecodeWarps) {
-      for (int outer = 0; outer < outer_radix; ++outer) {
-        const Unit<D> u = resolve_unit<D>(p, mask_r, mask_w, olist, s_n_o, s_bits, s_shift,
-                                          (rank << p.lat_outer_bits) | outer);
-        if (!u.valid || (!u.live_r && !u.live_w)) continue;
+    //: THE UNIT IS THE (owner, outer-run) PAIR and the grid partitions ITS OWN index
+    //: space -- not the owner's -- so every touched leaf has exactly one owning CTA, warp
+    //: and lane and the state needs no atomic:
+    //: docs/internals/decode/decode.md#the-unit-partition
+    //: A WARP TAKES A WHOLE UNIT, and a unit is the DRAM granule itself: under the
+    //: mixed-radix order a unit's leaves are the innermost level's contiguous run, which at
+    //: the flagship spans is one 16-leaf ATOM. Owner-contiguity across units buys nothing
+    //: on top of that -- the sectors are already whole -- while partitioning at owner grain
+    //: would cap the walk's parallelism at the LIVE OWNER COUNT and give each warp the
+    //: whole `BC`-leaf box to walk serially. The CTA's warps take CONSECUTIVE units, so a
+    //: CTA still covers one contiguous stretch of the plane per pass.
+    //: EVERY LEVEL BUT THE INNERMOST LEAVES THE SLOT LOOP AND THAT IS THE UNIT'S POINT:
+    //: a unit fixes their digits, so their amplitude product is formed ONCE, in
+    //: `resolve_unit`, and every slot below costs ONE innermost amplitude rather than `D`.
+    for (int unit = seg * kDecodeWarps + warp; unit < units; unit += p.n_split * kDecodeWarps) {
+      {
+        const Unit<D> u = resolve_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd, olist, s_n_o,
+                                                 s_bits, s_shift, unit);
+        const uint32_t br = (u.valid && u.live_r) ? u.cr : 0u;
+        const uint32_t bw = (u.valid && u.live_w) ? u.cw : 0u;
+        uint32_t bits = br | bw;
 
-        float o_r = 1.0f;
-        float o_w = 1.0f;
-        float o_rate = 1.0f;
-#pragma unroll
-        for (int l = 0; l < D; ++l) {
-          if (l < p.lat_p) {
-            o_r *= sa_r[u.dbase[l]];
-            o_w *= sa_w[u.dbase[l]];
-            if (DECAY) o_rate *= sd[u.dbase[l]];
-          }
-        }
-        const int unit_base = (u.owner << p.lat_local_bits) + (outer << p.lat_unit_bits);
+        //: THE SLOT LOOP IS THE INNERMOST LEVEL'S RUN, in ASCENDING lattice order -- the
+        //: unit's own contiguous run -- iterated over the UNION's set bits, so a dead
+        //: innermost digit costs one `__ffs` step and no address at all. Ascending is what
+        //: makes `cached_atom` the walk's only reuse and enough of it:
+        //: docs/internals/decode/decode.md#aligned-subranges
+        //: NO SPECULATIVE UNROLLING: the trip count is a runtime popcount, and an unrolled
+        //: body duplicates every live value of the walk's tightest scope.
+#pragma unroll 1
+        while (bits != 0u) {
+          const int t = __ffs(static_cast<int>(bits)) - 1;
+          bits &= bits - 1u;
+          const bool in_r = ((br >> t) & 1u) != 0u;
+          const bool in_w = ((bw >> t) & 1u) != 0u;
 
-        //: The unit's leaves in ASCENDING lattice order -- its own run, contiguous by the
-        //: mixed radix -- which is what makes `cached_atom` the walk's only reuse and
-        //: enough of it: docs/internals/decode/decode.md#aligned-subranges
-        for (int hi = 0; hi < n_hi; ++hi) {
-          const bool mr = u.live_r && mid_live<D>(p, mask_r, u, hi);
-          const bool mw = u.live_w && mid_live<D>(p, mask_w, u, hi);
-          uint32_t bits = (mr ? u.cr : 0u) | (mw ? u.cw : 0u);
-          if (bits == 0u) continue;
+          const int off_last = u.dlast + t;
+          const float ar = u.ar * sa_r[off_last];
+          const float aw = u.aw * sa_w[off_last];
+          const float rate = DECAY ? u.rate * sd[off_last] : 1.0f;
 
-          float m_r = o_r;
-          float m_w = o_w;
-          float m_rate = o_rate;
-#pragma unroll
-          for (int l = 0; l < D - 1; ++l) {
-            if (l >= p.lat_p) {
-              const int off = u.dbase[l] + ((hi >> p.lat_hshift[l]) & (p.lat_s[l] - 1));
-              m_r *= sa_r[off];
-              m_w *= sa_w[off];
-              if (DECAY) m_rate *= sd[off];
+          const int leaf = u.base + t;
+          const int atom = leaf >> kAtomShift;
+          if (atom != cached_atom) {
+            cached_atom = atom;
+            if (page_row != nullptr) {
+              const int slot = page_row[atom];
+              atom_present = slot >= 0;
+              atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
+            } else {
+              atom_present = true;
+              atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
             }
           }
-          const int slot_base = unit_base + (hi << inner_bits);
 
-          //: THE SLOT LOOP IS THE INNERMOST LEVEL'S RUN, iterated over the UNION's set
-          //: bits: a dead innermost digit costs one `__ffs` step and no address at all.
-          while (bits != 0u) {
-            const int t = __ffs(static_cast<int>(bits)) - 1;
-            bits &= bits - 1u;
-            const bool in_r = mr && ((u.cr >> t) & 1u) != 0u;
-            const bool in_w = mw && ((u.cw >> t) & 1u) != 0u;
-
-            const int off_last = u.dbase[D - 1] + t;
-            const float ar = m_r * sa_r[off_last];
-            const float aw = m_w * sa_w[off_last];
-            const float rate = DECAY ? m_rate * sd[off_last] : 1.0f;
-
-            const int leaf = slot_base + t;
-            const int atom = leaf >> kAtomShift;
-            if (atom != cached_atom) {
-              cached_atom = atom;
-              if (page_row != nullptr) {
-                const int slot = page_row[atom];
-                atom_present = slot >= 0;
-                atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
-              } else {
-                atom_present = true;
-                atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
-              }
-            }
-
-            //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the
-            //: plan admits the step's write set exactly, so an atom with no slot is outside
-            //: it, and a never-deposited leaf holds zeros in the dense backing too. The
-            //: self-normalizing readout then contributes exactly nothing through it.
-            //: docs/internals/decode/decode.md#absent-atom
-            float* row = atom_present ? (p.state + atom_base + (leaf & kAtomMask) * cols) : nullptr;
-            float sv[NC];
+          //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the
+          //: plan admits the step's write set exactly, so an atom with no slot is outside
+          //: it, and a never-deposited leaf holds zeros in the dense backing too. The
+          //: self-normalizing readout then contributes exactly nothing through it.
+          //: docs/internals/decode/decode.md#absent-atom
+          float* row = atom_present ? (p.state + atom_base + (leaf & kAtomMask) * cols) : nullptr;
+          float sv[NC];
 #pragma unroll
-            for (int q = 0; q < NC; ++q) sv[q] = 0.0f;
-            float smass = 0.0f;
-            if (atom_present) {
+          for (int q = 0; q < NC; ++q) sv[q] = 0.0f;
+          float smass = 0.0f;
+          if (atom_present) {
 #pragma unroll
-              for (int q = 0; q < NC; ++q) sv[q] = row[lane + 32 * q];
-              if (lane == 0) smass = row[DV];
-            }
+            for (int q = 0; q < NC; ++q) sv[q] = row[lane + 32 * q];
+            if (lane == 0) smass = row[DV];
+          }
 
-            //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS,
-            //: not an optimization: survival is INCLUSIVE at `j = t`, so the whole causal
-            //: intra Gram collapses into reading the row after it is written. A row in
-            //: `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression is
-            //: its readout too -- one path, no arm.
-            //: A DONE BATCH-HEAD TAKES THE READ AND NOT THE DEPOSIT, and reproduces its `y`
-            //: BIT FOR BIT while doing so: docs/internals/decode/decode.md#done-flags
-            //: HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
-            if (in_w && atom_present && deposit) {
-              //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT
-              //: SPLIT: at `T = 1` the tiled kernel's rule-1 half-mass shift is exactly the
-              //: identity, so ONE `expf` replaces its three. `log1pf` IS the composition
-              //: (never a rounded `1 - rate`) and there is no epsilon floor -- both of that
-              //: rule's rule 2's prohibitions: docs/internals/decode/decode.md#decay-at-read
-              float keep = 1.0f;
-              if (DECAY) {
-                //: THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is
-                //: what makes "stored != 0 => live != 0" an identity:
-                //: docs/internals/decode/decode.md#detached-clock
-                keep = expf(fminf(aw * log1pf(-rate), kDecodeMaxExponent));
-              }
-              const float wv = aw * sw;
-#pragma unroll
-              for (int q = 0; q < NC; ++q) {
-                sv[q] = keep * sv[q] + wv * v_tok[lane + 32 * q];
-                row[lane + 32 * q] = sv[q];
-              }
-              //: The mass column is the `v := 1` column of the identical recurrence.
-              if (lane == 0) {
-                smass = keep * smass + wv;
-                row[DV] = smass;
-              }
+          //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS,
+          //: not an optimization: survival is INCLUSIVE at `j = t`, so the whole causal
+          //: intra Gram collapses into reading the row after it is written. A row in
+          //: `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression is
+          //: its readout too -- one path, no arm.
+          //: A DONE BATCH-HEAD TAKES THE READ AND NOT THE DEPOSIT, and reproduces its `y`
+          //: BIT FOR BIT while doing so: docs/internals/decode/decode.md#done-flags
+          //: HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
+          if (in_w && atom_present && deposit) {
+            //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT
+            //: SPLIT: at `T = 1` the tiled kernel's rule-1 half-mass shift is exactly the
+            //: identity, so ONE `expf` replaces its three. `log1pf` IS the composition
+            //: (never a rounded `1 - rate`) and there is no epsilon floor -- both of that
+            //: rule's rule 2's prohibitions: docs/internals/decode/decode.md#decay-at-read
+            float keep = 1.0f;
+            if (DECAY) {
+              //: THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is
+              //: what makes "stored != 0 => live != 0" an identity:
+              //: docs/internals/decode/decode.md#detached-clock
+              keep = expf(fminf(aw * log1pf(-rate), kDecodeMaxExponent));
             }
-            if (in_r) {
+            const float wv = aw * sw;
 #pragma unroll
-              for (int q = 0; q < NC; ++q) acc[q] += ar * sv[q];
-              if (lane == 0) acc_m += ar * smass;
+            for (int q = 0; q < NC; ++q) {
+              sv[q] = keep * sv[q] + wv * v_tok[lane + 32 * q];
+              row[lane + 32 * q] = sv[q];
             }
+            //: The mass column is the `v := 1` column of the identical recurrence.
+            if (lane == 0) {
+              smass = keep * smass + wv;
+              row[DV] = smass;
+            }
+          }
+          if (in_r) {
+#pragma unroll
+            for (int q = 0; q < NC; ++q) acc[q] += ar * sv[q];
+            if (lane == 0) acc_m += ar * smass;
           }
         }
       }
@@ -730,26 +684,18 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
     run_shift += ilog2_exact(p.lat_s[l], "the level's owner span");
   }
 
-  //: THE UNIT'S DEPTH, `lat_p`: the DEEPEST level whose suffix run still reaches an atom,
-  //: so the unit is the SMALLEST contiguous run that is a whole number of atoms -- which
-  //: is what makes one unit's gathers fill atoms rather than straddle them, and what makes
-  //: the candidate-atom enumeration a partition. A topology whose whole owner is thinner
-  //: than an atom takes `lat_p = 0` (the owner is the unit) and is dense-only.
-  p.lat_p = 0;
-  p.lat_unit_bits = local_bits;
-  for (int l = 1; l < D; ++l) {
-    if (p.lat_run_shift[l - 1] >= kAtomShift) {
-      p.lat_p = l;
-      p.lat_unit_bits = p.lat_run_shift[l - 1];
-    }
-  }
-  p.lat_outer_bits = local_bits - p.lat_unit_bits;
+  //: THE UNIT, and the atom it is reconciled with. The unit is the innermost level's run
+  //: -- ALWAYS, at every topology -- and the two shifts below are how an atom is named in
+  //: terms of it: a run at or above `kAtomLeaves` holds whole atoms, a run below it means
+  //: an atom is that many consecutive units. Exactly one of the two is non-zero, and only
+  //: the CANDIDATE enumeration reads them; the walk is the same three loops either way.
   p.lat_inner_bits = ilog2_exact(p.lat_s[D - 1], "the innermost level's owner span");
-  p.lat_hi_bits = p.lat_unit_bits - p.lat_inner_bits;
+  p.lat_outer_bits = local_bits - p.lat_inner_bits;
   for (int l = 0; l < D; ++l) {
-    p.lat_oshift[l] = l < p.lat_p ? p.lat_run_shift[l] - p.lat_unit_bits : 0;
-    p.lat_hshift[l] = l >= p.lat_p ? p.lat_run_shift[l] - p.lat_inner_bits : 0;
+    p.lat_oshift[l] = l < D - 1 ? p.lat_run_shift[l] - p.lat_inner_bits : 0;
   }
+  p.atoms_per_unit_shift = p.lat_inner_bits > kAtomShift ? p.lat_inner_bits - kAtomShift : 0;
+  p.lat_units_per_atom_shift = p.lat_inner_bits < kAtomShift ? kAtomShift - p.lat_inner_bits : 0;
 
   int mask_total = 0;
   int olist_total = 0;
@@ -765,7 +711,6 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   }
   p.mask_total = mask_total;
   p.olist_total = olist_total;
-  p.atoms_per_unit_shift = p.lat_unit_bits >= kAtomShift ? p.lat_unit_bits - kAtomShift : 0;
 }
 
 //: The per-level geometry every decode entry validates the same way, filled into `p` and
@@ -926,7 +871,7 @@ at::Tensor rola_decode_forward(
   //: and `log2(k) | 4` are discharged by the mixed-radix order itself (`box.cuh`, K3/K4).
   //: A dense backing never asks an atom a liveness question and carries no constraint:
   //: docs/internals/decode/decode.md#candidate-atoms
-  TORCH_CHECK(page_ptr == nullptr || p.lat_unit_bits >= kAtomShift,
+  TORCH_CHECK(page_ptr == nullptr || p.lat_local_bits >= kAtomShift,
               "a paged decode needs one walk unit's leaves to hold a whole number of ", kAtomLeaves,
               "-leaf atoms, and this (k, m) gives an owner only ", (1 << p.lat_local_bits),
               " (K13: the innermost span must cover an atom)");

@@ -136,23 +136,20 @@ struct DecodeParams {
   int lat_run_shift[kMaxLevels];  // BoxPlan::run_shift(l)
   int lat_local_bits;             // BoxPlan::kLocalBits = log2 BC
 
-  //: THE WALK'S UNIT, and the whole of it: a unit is `(owner, r_0 .. r_{lat_p - 1})` --
-  //: an owner together with its OUTER run offsets -- so its leaves are the innermost
-  //: levels' whole run, `1 << lat_unit_bits` of them, CONTIGUOUS and aligned in lattice
-  //: order. `lat_p` is the outermost level whose suffix run reaches an atom, which is what
-  //: makes a unit a whole number of atoms rather than a straddle: at the flagship spans
-  //: `(8, 16)` it is `D - 1`, the unit is `(owner, r_0)` and its leaves are EXACTLY ONE
-  //: atom at full occupancy. docs/internals/decode/decode_lattice.md#the-unit
-  int lat_p;
-  int lat_unit_bits;   // log2 of a unit's leaves = lat_run_shift[lat_p - 1], or kLocalBits
-  int lat_outer_bits;  // lat_local_bits - lat_unit_bits: the unit's radix inside an owner
-  int lat_inner_bits;  // log2 s_{D-1}: the innermost level's run, read as ONE slice
-  int lat_hi_bits;     // lat_unit_bits - lat_inner_bits: the unit's mid-level radix
-  //: `r_l`'s shift inside the unit index (`l < lat_p`) and inside the unit's mid-level
-  //: index (`lat_p <= l < D - 1`). Both are `lat_run_shift[l]` re-based, so a unit and a
-  //: slot each decompose by shifts alone and no device division exists on this path.
+  //: THE WALK'S UNIT, and the whole of it: a unit is `(owner, r_0 .. r_{D-2})` -- an owner
+  //: together with every run offset but the innermost -- so its leaves are the innermost
+  //: level's whole run, `1 << lat_inner_bits` of them, CONTIGUOUS and aligned in lattice
+  //: order. At the flagship spans `(8, 16)` that run IS an atom, at full occupancy, and
+  //: the unit's 16 slots are level 1's digits.
+  //: THERE IS NO SECOND UNIT SHAPE. A topology whose innermost span is thinner than an
+  //: atom does not get a deeper walk -- it gets SEVERAL UNITS PER ATOM, which the
+  //: candidate enumeration absorbs (`lat_units_per_atom_shift`) and the walk never sees.
+  //: docs/internals/decode/decode_lattice.md#the-unit
+  int lat_inner_bits;  // log2 s_{D-1}: the unit's leaves, and ONE slice of the digit mask
+  int lat_outer_bits;  // lat_local_bits - lat_inner_bits: the unit's radix inside an owner
+  //: `r_l`'s shift inside the unit index: `lat_run_shift[l]` re-based on the innermost run,
+  //: so a unit decomposes by shifts alone and no device division exists on this path.
   int lat_oshift[kMaxLevels];
-  int lat_hshift[kMaxLevels];
   //: The digit masks' word layout: level `l` owns `mask_words[l]` words at `mask_off[l]`
   //: of a `mask_total`-word plane, one plane per side.
   int mask_off[kMaxLevels];
@@ -161,11 +158,16 @@ struct DecodeParams {
   //: The union owner-coordinate lists' layout: `lat_g[l]` entries reserved per level.
   int olist_off[kMaxLevels];
   int olist_total;
-  //: Atoms per unit as a shift, `lat_unit_bits - kAtomShift`. PAGED BACKING ONLY -- the
-  //: host refuses a page table under a lattice whose owner is thinner than an atom,
-  //: because then an atom would straddle two units and the claim's enumeration would not
-  //: be a partition: docs/internals/decode/decode.md#candidate-atoms
+  //: THE ATOM AND THE UNIT, RECONCILED, and PAGED BACKING ONLY. Exactly one of these is
+  //: non-zero: a unit holds `1 << atoms_per_unit_shift` atoms, or an atom holds
+  //: `1 << lat_units_per_atom_shift` consecutive units. The candidate enumeration is a
+  //: PARTITION of the write side's atoms either way -- which is what the pool claim's
+  //: canonical ranks need -- and the WALK is the same three loops in both cases.
+  //: The host refuses a page table under a lattice whose OWNER is thinner than an atom,
+  //: because then an atom would straddle two owners and no grouping of units recovers it:
+  //: docs/internals/decode/decode.md#candidate-atoms
   int atoms_per_unit_shift;
+  int lat_units_per_atom_shift;
 
   const float* dials;  // [H, total_rows] or nullptr
 

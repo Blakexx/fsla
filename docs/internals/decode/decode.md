@@ -65,16 +65,19 @@ At `T = 1` a leaf `s` is in the token's read support iff EVERY level's digit
 supp(R) = prod_l supp_l(R)                      (a Cartesian product)
 ```
 
-a Cartesian product at EVERY granularity the `(k, m)` lattice names: an owner,
-a sub-box, a digit. That is the one fact the walk rests on, and it prunes at
-each granularity in turn rather than at one:
+a Cartesian product at EVERY granularity the `(k, m)` box names: an owner
+coordinate, a fixed run offset, an innermost digit. That is the one fact the
+walk rests on, and it prunes at each granularity in turn rather than at one:
 
-- an owner or a sub-box with an entirely absent slice on a side is dead on
-  that side WHOLE — one register test kills every leaf it would have held
-  (`SubBox.live_r`/`.live_w`, [`decode_lattice.md#the-unit`](decode_lattice.md#the-unit));
-- what survives that is walked digit by digit, inside the sub-box, over
-  `k^D <= kDecodeMaxSubBox` leaves — a fixed, capped cost per live sub-box, not
-  a cost that grows with `N`.
+- an owner coordinate dead on a side kills every unit under it — it never
+  enters that side's owner list at all
+  ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists));
+- a UNIT whose fixed levels have an absent digit on a side is dead on that side
+  WHOLE — one register test kills every leaf it would have held
+  (`Unit.live_r`/`.live_w`, [`decode_lattice.md#the-unit`](decode_lattice.md#the-unit));
+- what survives that is walked over the SET BITS of the innermost level's
+  `s_{D-1} <= kDecodeMaxSpan`-wide slice — a fixed, capped cost per live unit,
+  not a cost that grows with `N`.
 
 **The leaf order IS the lattice, so there is no map over the leaf space to
 consult, exact or bounded.** The step's factor tables — `sum_l ceil(B_l/32)`
@@ -109,11 +112,14 @@ it is the walk's unit boundary, not a term either address expression carries.
 
 <a id="the-atom"></a>The page granule is the **atom** — `kAtomLeaves = 16`
 consecutive leaves in LATTICE leaf order, spec §4.5's
-`page_states := MMA_K_QUANTUM`. Spec §3.2 proves an atom lies inside one owner AND one
-sub-box (`16 | BC` and `16 | k^D`, both checked at [`fill_lattice`](decode_lattice.md#the-refusals))
-and, where `log2(k) | 4` also holds, inside one DIGIT RECTANGLE — a whole trailing `c`
-field per level, which is what the candidate-atom test ([§4b](#candidate-atoms)) reads a
-level's membership from with one bit rather than four. `kAtomLeaves` is geometry-owned and
+`page_states := MMA_K_QUANTUM`. Under the mixed-radix intra-box order an atom is 16
+consecutive `local` values at a multiple of 16, so it is an ALIGNED DIGIT RECTANGLE for
+every admissible span vector — the levels whose fields lie above bit 4 are fixed, the
+level straddling it keeps an aligned contiguous sub-run, and the levels below are free
+(`carry/box.cuh`, K3/K4). One condition survives, `16 | BC` (an atom lies inside one
+owner), checked at [`fill_lattice`](decode_lattice.md#the-refusals) where a page table is
+present; it is what lets the candidate-atom test ([§4b](#candidate-atoms)) read a unit's
+membership out of ONE aligned window of its innermost write slice. `kAtomLeaves` is geometry-owned and
 fixed across every config forever, which is exactly why the paged address addresses
 through the atom rather than through `BC` ([§3](#bc-absent)); it is mirrored in
 `decode.cuh` rather than included, for the same reason `kMaxLevels` is
@@ -193,19 +199,25 @@ Recomputing beat publishing when it was measured — the split CTAs' recompute o
 and the factor tables is what removed the launch — and the same argument governs here.
 
 <a id="candidate-atoms"></a>**THE CANDIDATE ATOMS ARE ENUMERATED FROM THE SAME LATTICE
-PRODUCT THE WALK USES, RESTRICTED TO THE WRITE LIST.** `candidate_atom(i)` splits `i` into a
-write-side UNIT (`i >> atoms_per_sub_shift`, resolved through `resolve_unit` over the
-`kListWrite` owner lists — [`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) and
-an ATOM-WITHIN-SUB-BOX index `a` (the low `atoms_per_sub_shift` bits). An atom is live
-where its owning sub-box is `valid && live_w` and, for every level whose `c`-field the
-atom's 4-bit window covers wholly (`lat_cshift[l] >= kAtomShift`), the level's `k`-wide
-write slice has the atom's `c` digit set. `atoms_per_sub_shift = log2(k^D / kAtomLeaves)`
-is a PAGED-ONLY quantity (`decode_lattice.md#capacities`): the host refuses a lattice whose
-sub-box is thinner than an atom, so this is well-defined whenever a page table is present.
+PRODUCT THE WALK USES, RESTRICTED TO THE WRITE LIST.** A unit's leaves are a CONTIGUOUS
+ALIGNED RUN ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)), so an atom and a
+unit nest one way or the other and the index says which: the low `atoms_per_unit_shift`
+bits of `i` pick an atom INSIDE a unit, and `lat_units_per_atom_shift` consecutive units
+make ONE atom. Exactly one of the two shifts is ever non-zero, and both are PAGED-ONLY
+quantities the host derives once (`decode_lattice.md#the-refusals`).
 
-The whole enumeration is `n_candidates = units[kListWrite] << atoms_per_sub_shift` — a
-PARTITION mapping monotonically onto ascending atom ids by construction, because unit rank
-and intra-sub-box atom index are BOTH ascending in the lattice's own leaf order. That
+`candidate_atom(i)` therefore resolves the write-side unit (or the `1 <<
+lat_units_per_atom_shift` consecutive ones) through `resolve_unit` over the `kListWrite`
+owner lists, and an atom is live where a resolved unit is `valid && live_w` and the
+ALIGNED WINDOW of its innermost write slice that the atom covers is non-zero. At the
+flagship spans `(8, 16)` a unit IS an atom, both shifts are zero, and the test is "the
+unit's 16-bit write slice is non-zero".
+
+The whole enumeration is
+`n_candidates = (units[kListWrite] >> lat_units_per_atom_shift) << atoms_per_unit_shift` —
+a PARTITION mapping monotonically onto ascending atom ids by construction, because unit
+rank and the atom index inside a unit are BOTH ascending in the lattice's own leaf order.
+That
 ordering is not a convenience: the pool claim's canonical ranks ([§4e](#the-claim)) are
 defined in ascending atom id and this enumeration is where that order comes from. The same
 enumeration serves the table test, the claim and the condensation below.
@@ -421,7 +433,7 @@ The remaining per-level integers are `level_width[l] = b_l` and
 `level_row_offset[l]`, an offset into the flattened per-head dial array. Everything a
 LEAF-order walk would need beyond that — a level's stride or span in the flattened leaf
 space — has no counterpart here: the walk never addresses a leaf as a flat integer, only
-as the `(owner, sub-box, digit)` triple the `(k, m)` lattice fields carry
+as the `(owner, fixed run offsets, innermost digit)` decomposition the `(k, m)` box's fields carry
 ([`decode_lattice.md`](decode_lattice.md), and `lat_*` fields on this same struct).
 
 ## <a id="detached-clock"></a>10. The detached clock, and why there is no sweep
@@ -459,8 +471,8 @@ write map's 16-deep condensation ([§4b](#atom-bits)), and the tables themselves
 the CTA.
 
 The walk is COUNTED, NOT SCANNED, in the same sense a leaf-space bitmap walk never was:
-`resolve_unit` decomposes a unit index by shifts into an owner rank and a sub-box index
-directly ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)), so there is no
+`resolve_unit` decomposes a unit index by shifts into an owner rank and the fixed run
+offsets directly ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)), so there is no
 prefix-sum structure over the leaf or row space left to consult here at all — the row
 count the tiled consumer's `cum`/coarse-index apparatus existed to answer is not a
 question this design asks. What replaces it is the owner-list's own realized count `n_o`
@@ -480,9 +492,10 @@ RUN-REPRODUCIBLE. Why that diverges from the tiled consumer on purpose is
 Extract `count` bits of a packed bitmap starting at BIT index `start`, returned in
 the low `count` bits (`count <= 32`). This is the shift-and-merge every lattice
 slice ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)'s
-`level_slice`) is read through — an owner's span or a sub-box's span, each one
-extract — and it is written once because it is the one place a funnel shift can
-be off by one.
+`level_slice`) is read through — an owner's span at any level, one extract — and
+it is written once because it is the one place a funnel shift can be off by one.
+A SINGLE DIGIT never straddles a word, so the unit's per-level membership tests
+go through `mask_bit` (one load, one shift) instead.
 
 <a id="shift-32-ub"></a>The `(start & 31) == 0` fork is **not** an aligned fast path bolted onto a general
 one — it is the C++ shift operator's undefined behaviour at a shift width of 32,
@@ -652,30 +665,43 @@ the product is the same product either way. What remains here is exactly the
 per-TOKEN part: the side gains. The read gain is fixed at `1` (`global` fixes
 `g_read := 1`; raw is dead, so there is no arm where it is anything else).
 
-## <a id="aligned-subranges"></a>26. The unit's leaves are walked in ascending `C`, one intra-sub-box digit index
+## <a id="aligned-subranges"></a>26. The unit's leaves are walked in ascending order, over the innermost run's set bits
 
-<a id="the-unit-partition"></a>The grid partitions the UNIT rank space directly — `for
-(unit = seg + n_split*warp; unit < units; unit += n_split*kDecodeWarps)` — so there is no
-separate row-range-to-word resolution step: a unit IS the CTA's own share, by
-construction, and `resolve_unit` ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit))
-is what turns a unit index into the `(owner, sub-box)` pair before any leaf inside it is
-touched. Every touched leaf therefore has exactly one owning CTA, warp and lane — the
-unit partition is a PARTITION over owners and sub-boxes, so no atomic ever touches
-`state` ([§16](#determinism)).
+<a id="the-unit-partition"></a>The grid partitions the UNIT INDEX SPACE directly — `for
+(unit = seg*kDecodeWarps + warp; unit < units; unit += n_split*kDecodeWarps)` — so there
+is no separate row-range-to-word resolution step: a unit IS the warp's own share, by
+construction, and `resolve_unit`
+([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) is what turns a unit index
+into its `(owner, r_0 .. r_{D-2})` pair before any leaf inside it is touched. Every
+touched leaf therefore has exactly one owning CTA, warp and lane — the unit partition is a
+PARTITION, so no atomic ever touches `state` ([§16](#determinism)).
 
-Within one resolved sub-box the walk visits `C` from `0` to `k^D - 1` — ascending, which
-is ascending LEAF order — and reads each level's `k`-wide intra-sub-box digit off the
-already-resolved `cr[l]`/`cw[l]` bitfields (`(C >> lat_cshift[l]) & (k - 1)`, no division:
-`lat_cshift[l]` is a per-level SHIFT WIDTH, not a stride to divide by). That ascending
-order is what makes `cached_atom` — the paged base translation's one piece of reuse
-([§4](#paged-address)) — correct and cheap at once: 16 consecutive `C` values share an
-atom, so the translation changes at most once per 16 iterations of a loop that is already
-bounded by `kDecodeMaxSubBox`.
+**A WARP TAKES A WHOLE UNIT, NOT A WHOLE OWNER, AND THAT IS A MEASURED CHOICE.** A unit is
+already the DRAM granule: under the mixed-radix order its leaves are the innermost level's
+contiguous run, which at the flagship spans is one 16-leaf ATOM, so owner-contiguity
+across units buys nothing on top of it — the sectors are whole either way. Partitioning at
+OWNER grain instead caps the walk's parallelism at the LIVE OWNER COUNT and hands each
+warp the entire `BC`-leaf box to walk serially; measured on the wide sparse arm that cost
+roughly a factor of two, and at `N = 256` (two live owners against eight warps) rather
+more. The CTA's warps take CONSECUTIVE units, so a CTA still covers one contiguous stretch
+of the plane per pass.
 
-The trip count per sub-box is `k^D`, capped at `kDecodeMaxSubBox = 64`
-([`decode_lattice.md#capacities`](decode_lattice.md#capacities)) — a fixed, small,
-compile-time-boundable cost per LIVE sub-box, never a cost that varies with the topology
-the way a 32-bit-word-aligned walk's trip count would have.
+Within one resolved unit the walk visits the SET BITS of the union slice `cr | cw`,
+ascending, by `__ffs` — ascending bit index is ascending LEAF order, because the unit's
+leaves ARE the innermost level's run in order. A dead innermost digit costs one `__ffs`
+step and no address at all, and the two sides' membership comes off the already-resolved
+`cr`/`cw` bitfields with no division anywhere. That ascending order is what makes
+`cached_atom` — the paged base translation's one piece of reuse ([§4](#paged-address)) —
+correct and cheap at once: at the flagship spans the whole unit is ONE atom, so the
+translation is resolved once per unit.
+
+The trip count per unit is `popcount(cr | cw) <= s_{D-1} <= kDecodeMaxSpan`
+([`decode_lattice.md#capacities`](decode_lattice.md#capacities)) — a small,
+compile-time-boundable cost per LIVE unit, never a cost that varies with `N`.
+
+EVERY LEVEL BUT THE INNERMOST LEAVES THIS LOOP. A unit fixes their digits, so their
+amplitude product (and the decay rate's) is formed ONCE in `resolve_unit` and a slot costs
+ONE innermost amplitude rather than `D` of them.
 
 A leaf outside the lattice's own partition of `N` is never visited: `owners * BC == N`
 exactly (`decode_lattice.md#the-refusals`), so the walk needs no leaf bound test and never
@@ -759,10 +785,18 @@ each by exactly one CTA:
 
 - **DECAY** carries a second per-leaf product (the decay rate) and a survival
   exponential through the same loop as the undecayed arm's amplitude product;
-- **DEEPEST** (`D == kMaxLevels == 4`) carries three more live registers per level — the
-  staging offset and both sides' intra-sub-box digit slices (`dbase[l]`, `cr[l]`, `cw[l]`
-  on `SubBox<D>`, [`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) — through the
+- **DEEPEST** (`D == kMaxLevels == 4`) resolves one more level per unit — one more owner
+  coordinate, one more fixed digit and one more amplitude factor folded into `Unit<D>`
+  ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) — held live across the
   same loop.
+
+The measured census is what settles both numbers, and it did move once in wave 2c: an
+earlier draft of the unit carried a RUNTIME loop level between the unit and its slots, and
+spilled 16–30 stores at `D = 2` and `D = 3` against the 48-register cap the `5` implies.
+Collapsing the unit to the innermost run — one shape, uniformly
+([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) — returned every arm to zero
+spill at the SAME declared residency, which is the outcome the *"ideal regime is not
+negotiable"* rule asks for: the budget was not the thing to relax.
 
 Both are compile-time functions of a template axis rather than a threshold read off a
 measurement, which is what the standing *"branch on structure, not thresholds"* rule asks

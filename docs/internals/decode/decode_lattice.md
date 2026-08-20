@@ -1,29 +1,47 @@
 # `csrc/rola/src/decode/decode_lattice.cuh` — the `(k, m)` box lattice and the T=1 factor tables
 
-The leaf order for `T = 1` decode IS the `(k, m)` box lattice derived by
-`rola.ops.lattice` (spec `K31_R0_ABI_RIPPLE_SPEC.md` sections 2.1–2.5, LATTICE-1):
-a leaf is named by its owner coordinate `o_l`, its sub-box coordinate `u_l` and
-its intra-sub-box digit `c_l` at every level `l`, and this file is the device
-object the step's walk reaches a leaf THROUGH — by composing those three
-factors — rather than by consulting a map over the leaf space. Nothing here is
-sized in `N`: one bit per DIGIT (`sum_l ceil(B_l/32)` words per side) and one
-entry per live OWNER COORDINATE (`sum_l g_l` at most, per list) is the whole
-apparatus.
+The leaf order for `T = 1` decode IS the `(k, m)` box lattice, in the ONE order
+`csrc/rola/src/carry/box.cuh` defines and the carry family writes: a leaf is
+named by its owner coordinate `o_l` at every level and by its per-level RUN
+OFFSET `r_l = d_l - o_l * s_l`, composed in MIXED RADIX most significant level
+first,
+
+```
+lambda = O * BC + sum_l r_l * prod_{l' > l} s_l'
+```
+
+and this file is the device object the step's walk reaches a leaf THROUGH — by
+composing those factors — rather than by consulting a map over the leaf space.
+Nothing here is sized in `N`: one bit per DIGIT (`sum_l ceil(B_l/32)` words per
+side) and one entry per live OWNER COORDINATE (`sum_l g_l` at most, per list) is
+the whole apparatus.
+
+THE INTERLEAVE IS DEAD. The R0 spec's LATTICE-1 §2.2 named a second intra-box
+order — the `[u_0..u_{D-1} | c_0..c_{D-1}]` interleave, in which a sub-box `k^D`
+was a contiguous run — and an earlier draft of this walk enumerated
+`(owner, sub-box)` units because of it. Mixed radix is the shipped order (the
+one-order ruling; `box.cuh`'s `run_of`), a sub-box is a scattered rectangle
+under it, and the walk's unit moved accordingly (§3). The measured reason is
+recorded in `docs/internals/DELETIONS.md`'s wave-2c rows and in the batch's
+findings: under the interleave a token's run over a level that is DENSE for its
+side straddles atoms at 25% occupancy at EITHER span vector; under mixed radix
+with `s_{D-1} >= kAtomLeaves` it FILLS them.
 
 Symbols, restated from the spec at first use here: `D` the number of routing
 levels; `B_l` level `l`'s width; `k = 2^kappa` the uniform per-level sub-box
-span; `m = prod_l m_l` the capacity multiplier, distributed across levels
-round-robin (spec §2.5); `s_l = k * m_l` an owner's span at level `l`;
-`g_l = B_l / s_l` the owner-grid extent; `BC = prod_l s_l` the leaves one owner
-holds; `k^D` the leaves one sub-box holds. `owner`/`O`, `cap`/`U` and `C` below
-are the mixed-radix numbers spec §2.2 calls `O(o)`, `U(u)` and `C(c)`.
+span; `m = prod_l m_l` the capacity multiplier, distributed innermost-first to
+the atom floor and balanced over the rest (spec §2.5 as K13 amended it);
+`s_l = k * m_l` an owner's span at level `l`; `g_l = B_l / s_l` the owner-grid
+extent; `BC = prod_l s_l` the leaves one owner holds; `atom` the 16-leaf page
+granule (`rola::carry::kAtomLeaves`).
 
-`decode.cuh` carries the `(k, m)` fields on `DecodeParams` (`lat_k`, `lat_m`,
-`lat_m_l[]`, `lat_s[]`, `lat_g[]`, `lat_gsuf[]`, `lat_ushift[]`, `lat_cshift[]`
-— the suffix products and shift widths spec §2.2–2.4 name, held rather than
-recomputed because the walk forms them once per unit) because the decode TUs
-share no other header with the fields' consumer; this doc is their authority,
-`decode.cuh` merely carries them.
+`decode.cuh` carries the box's fields on `DecodeParams` under `BoxPlan`'s own
+names (`lat_k`, `lat_s[]`, `lat_g[]`, `lat_gsuf[]`, `lat_run_shift[]`,
+`lat_local_bits`, and the unit's own `lat_inner_bits`, `lat_outer_bits`,
+`lat_oshift[]`) because decode takes `(k, m)` and the widths as DATA rather than
+as template arms — one built binary serves every topology the producer can emit,
+so `BoxPlan`'s constexpr fields become runtime scalars derived by `BoxPlan`'s own
+formulas. This doc is their authority; `decode.cuh` merely carries them.
 
 ---
 
@@ -73,70 +91,107 @@ field's width plus `lat_msb = log2(m)` low bits for the sub-box index, i.e.
 absent owner or write kills that list's enumeration outright rather than
 walking zero-width ranges.
 
-## <a id="the-unit"></a>3. `SubBox` / `resolve_unit` — one unit is an `(owner, sub-box)` pair
+## <a id="the-unit"></a>3. `Unit` / `resolve_unit` — one unit is an `(owner, r_0 .. r_{D-2})` pair
 
-A UNIT is what the grid partitions: one owner coordinate `O` and one sub-box
-coordinate `U` inside it. `resolve_unit` decomposes a unit index by shifts
-alone — the OWNER RANK occupies the high bits, one padded field per level
-(§2), and the low `lat_msb` bits are the CAPACITY RADIX, i.e. `U`'s own
-mixed-radix digits `u_l = (cap >> lat_ushift[l]) & (m_l - 1)`. Both are
-`decode.cuh`'s own fields, restated as the shift arithmetic that reads them.
+A UNIT is what the grid partitions: one owner coordinate `O` together with
+EVERY RUN OFFSET BUT THE INNERMOST. Under the mixed-radix intra-box order the
+innermost level's run is the CONTIGUOUS TAIL of the owner-local index, so a
+unit's leaves are `s_{D-1}` consecutive lattice indices at an `s_{D-1}`-aligned
+base. At the flagship spans `(8, 16)` that run IS one 16-leaf atom, at full
+occupancy, and the unit's 16 slots are level 1's digits — which is the whole
+reason the unit is this shape rather than the interleave's `(owner, sub-box)`.
 
-The result is a `SubBox<D>`: `owner`, `cap`, a `valid` flag (false where the
-padded rank space overshoots a level's realized count, §2), `live_r`/`live_w`
-(false where some level's slice is entirely absent on that side — the pruning
-the product structure `supp(R) = prod_l supp_l(R)` buys, spec §2 restated:
-one absent level's slice kills the whole sub-box for that side, in ONE
-register test rather than a per-leaf one) and, per level, the digit base
-`dbase[l]` and both sides' `k`-wide intra-sub-box slices `cr[l]`/`cw[l]`. Every
-array is indexed by a COMPILE-TIME level, which is what keeps the whole object
-in registers rather than in local memory.
+`resolve_unit` decomposes a unit index by shifts alone: the OWNER RANK occupies
+the high bits, one padded field per level (§2), and the low `lat_outer_bits`
+are the fixed run offsets in the SAME mixed radix the owner-local index uses, so
+`outer << lat_inner_bits` is the unit's base inside its owner with no multiply.
 
-`SubBox` is the object the step's walk (`decode.md#the-unit-partition`) and
-the candidate-atom enumeration (`decode.md#candidate-atoms`) both resolve a
-unit into; neither reads the mask or owner-list arrays through any other
-route.
+The result is a `Unit<D>`: `owner`, `base` (the unit's first leaf as a lattice
+index), a `valid` flag (false where the padded rank space overshoots a level's
+realized count, §2), `live_r`/`live_w` (false where some FIXED level's digit is
+absent on that side — the pruning the product structure
+`supp(R) = prod_l supp_l(R)` buys: one absent level kills the whole unit for
+that side, in ONE test rather than a per-leaf one), the innermost level's
+staging base `dlast`, both sides' `s_{D-1}`-wide slices `cr`/`cw`, and the
+FIXED LEVELS' AMPLITUDE PRODUCTS `ar`/`aw`/`rate`.
 
-## <a id="capacities"></a>4. The lattice's declared capacities
+Those products are the unit's second point. Because a unit fixes every level but
+the innermost, their amplitudes are resolved ONCE HERE and a slot below costs a
+single innermost amplitude rather than `D` of them — where the interleaved
+walk's unit cut every level and had to re-form the whole product per leaf.
 
-`kDecodeMaxSpan = 32`, `kDecodeMaxCap = 32`, `kDecodeMaxSubBox = 64`
-(`decode.cuh`). An owner's span `s_l` and the sub-box span `k^D` are each read
-as a SINGLE 32-bit slice (§1), and the intra-sub-box scan (`decode.md#update-then-read`'s
-inner loop) is a fixed cost per live sub-box bounded by `kDecodeMaxSubBox`, so
-both capacities are gates the host refuses past — never a slower fallback —
-at [`fill_lattice`](#the-refusals). `rola.ops.lattice` mirrors both
-(`_MAX_SPAN`, `_MAX_SUB_BOX`) so a topology the device would refuse is refused
-on the host, once, before a launch, rather than negotiated at one.
+THERE IS NO SECOND UNIT SHAPE. A topology whose innermost span is thinner than
+an atom does not get a deeper walk: it gets SEVERAL UNITS PER ATOM, which the
+CANDIDATE enumeration absorbs (`lat_units_per_atom_shift`,
+`decode.md#candidate-atoms`) and the walk never sees. An earlier draft made the
+unit's depth a runtime quantity so that a unit was always at least an atom; it
+was measured to SPILL the step's register budget at `D = 2` and `D = 3` — the
+extra loop level held every live value of the walk's tightest scope across a
+trip count of one at every shipped topology — and the batch's findings carry the
+census rows. This is the "no branch to dodge edge cases" rule applied: one
+strategy, uniformly, and the degenerate config pays at the candidate enumeration
+instead of in the walk.
 
-## <a id="the-refusals"></a>5. `fill_lattice` — the spec's constraints, as runtime checks
+`Unit` is the object the step's walk (`decode.md#the-unit-partition`) and the
+candidate-atom enumeration (`decode.md#candidate-atoms`) both resolve a unit
+into; neither reads the mask or owner-list arrays through any other route.
+
+## <a id="capacities"></a>4. The lattice's declared capacity
+
+`kDecodeMaxSpan = 32` (`decode.cuh`), and it is now the ONLY one. An owner's
+span `s_l` is read as a SINGLE 32-bit slice — both when a level's owner grid is
+built (§1) and when a unit's innermost run is resolved (§3) — so the span is a
+gate the host refuses past, never a slower fallback, at
+[`fill_lattice`](#the-refusals). `rola.ops.lattice` mirrors it (`_MAX_SPAN`) so
+a topology the device would refuse is refused on the host, once, before a
+launch, rather than negotiated at one; the decode build stamp carries it, so a
+host that outgrew the device's box fails a device-side check
+(`decode_api.md#build-stamp`).
+
+The interleave's other two ceilings died with it: `kDecodeMaxCap` bounded the
+capacity radix a unit's low bits carried, and `kDecodeMaxSubBox` bounded the
+intra-sub-box scan. Under mixed radix a unit is a contiguous run, there is no
+capacity radix separate from the run offsets, and there is no sub-box scan to
+bound.
+
+## <a id="the-refusals"></a>5. `fill_lattice` — the box's constraints, as runtime checks
 
 Decode takes its lattice as DATA, not as a template arm, so every constraint
-the R0 spec's LATTICE-1 states algebraically (§§2.1–2.5, 3.1–3.3) is a
-`TORCH_CHECK` in `decode.cu::fill_lattice` rather than a `static_assert`:
+`box.cuh`'s `BoxPlan` states as a `static_assert` is a `TORCH_CHECK` in
+`decode.cu::fill_lattice`:
 
-- `k` and `m` are exact powers of two (spec K1);
-- `k <= kDecodeMaxSpan`, `m <= kDecodeMaxCap`;
-- per level, `s_l = k * m_l <= kDecodeMaxSpan` and `B_l % s_l == 0` (spec K6:
-  an owner sits inside a level — `m_l` is the balanced round-robin split of
-  `log2(m)` across levels, spec §2.5, restated verbatim in `fill_lattice`'s
-  loop and in `rola.ops.lattice.box_shape`);
-- `k^D <= kDecodeMaxSubBox`;
+- `k` and `m` are exact powers of two (K1);
+- `k <= kDecodeMaxSpan`;
+- per level, `s_l = k * m_l <= kDecodeMaxSpan` and `B_l % s_l == 0` (K6: an
+  owner sits inside a level — `m_l` is spec §2.5 as K13 amended it, innermost
+  first to the atom floor and balanced over the rest, restated in
+  `fill_lattice`'s loop and in `rola.ops.lattice.box_shape`);
+- `g_l <= kDecodeThreads` — a level's owner grid is built in one block pass;
 - `owners * BC == N` — the lattice PARTITIONS the leaf space exactly, with no
   remainder leaf and no double-covered one.
 
-A PAGED backing adds two more, checked only where `page_table` is present
+K13 IS A FLOOR HERE, NOT AN ASSERTION. A topology whose widths cannot reach
+`s_{D-1} >= kAtomLeaves` (an odd level, a level narrower than an atom) still has
+a lattice and still decodes; `box_shape` takes the floor as far as `log2 m`
+allows and no further.
+
+A PAGED backing adds ONE more, checked only where `page_table` is present
 (`rola_decode_forward`, cross-referenced from `decode.md#candidate-atoms`):
-`k^D % kAtomLeaves == 0` (an atom must not straddle two sub-boxes, spec §3.2)
-and `4 % log2(k) == 0` (spec §3.2's digit-rectangle claim: the atom's low
-4 bits must be whole trailing `c_l` fields, or the candidate-atom enumeration's
-per-level bit test would cut a level's digit in half). A DENSE backing never
-asks an atom a liveness question and carries neither constraint.
+`BC >= kAtomLeaves`, i.e. an owner holds a whole number of atoms. That is what
+makes an atom and a unit nest one way or the other, which is what makes the
+candidate enumeration a PARTITION. The interleave needed two clauses here
+(`k^D % kAtomLeaves == 0` and `4 % log2(k) == 0`); mixed radix discharges both
+by the order itself — an atom is 16 consecutive `local` values at a multiple of
+16, hence an aligned digit rectangle for EVERY admissible span vector
+(`box.cuh`, K3/K4). A DENSE backing never asks an atom a liveness question and
+carries no constraint.
 
 `rola.ops.lattice.derive_lattice` and `box_shape` are the SAME arithmetic,
-host-side and static, and are what choose `(k, m)` for a topology before any
-of this runs — `fill_lattice` re-derives nothing; it validates the pair the
-host already committed to and fills the suffix products and shift widths
-`resolve_unit` reads (§3).
+host-side and static, and are what choose `(k, m)` for a topology before any of
+this runs — `fill_lattice` re-derives nothing; it validates the pair the host
+already committed to and fills the suffix products and shift widths
+`resolve_unit` reads (§3). `rola.ops.carry` reads its box from the same module,
+so the two families cannot disagree about where a leaf is.
 
 ## <a id="the-seam"></a>6. `rola.ops.lattice` — the oracle and test seam, and nowhere else
 

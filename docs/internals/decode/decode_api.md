@@ -45,7 +45,7 @@ arm and the deep arms each carry more live state through the same loop.
 
 <a id="build-stamp"></a>`rola_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right
 path cannot fake: it launches a one-thread kernel, compiled with this translation unit,
-that folds `sizeof(DecodeParams)`, `sizeof(SubBox<4>)` and `kDecodeMaxSubBox` into one
+that folds `sizeof(DecodeParams)`, `sizeof(Unit<4>)` and `kDecodeMaxSpan` into one
 `int64_t` and reads it back. A path check or a hash of the sources checks what is ON
 DISK; this checks what the LOADED BINARY actually built from, which is the fact a stale
 extension can silently disagree about (the standing "extension trap" lesson). It is bound
