@@ -322,7 +322,7 @@ struct BwdOwner {
       if constexpr (SAMP) {
 #pragma unroll
         for (int i = 0; i < PM::n_l(l); ++i)
-          samp[par * kDigitRows * C + (DP::off(l) + BP::run_of(l, slot0) + i) * C + prow] =
+          samp[(par * C + prow) * kDigitRows + DP::off(l) + BP::run_of(l, slot0) + i] =
               __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(&lv[l][i]));
       }
     });
@@ -506,6 +506,8 @@ struct BwdOwner {
     }
   }
 
+  //: THE DIGIT PLANE IS CLEARED AT THE HEAD OF THE BATCH, so the leading rendezvous
+  //: publishes it and the reduction below needs no barrier of its own.
   __device__ __forceinline__ void digit_zero() {
 #pragma unroll
     for (int i = tid; i < kDigitRows * C; i += kThreads) sdg[i] = 0.f;
@@ -513,61 +515,59 @@ struct BwdOwner {
 
   //: THE DIGIT REDUCTION.  A level's digit gradient is the tile's weighted marginal
   //: along that level's index axis, the weight being the OTHER levels' amplitude
-  //: product -- one staged amplitude at `D = 2`, and never a division.
+  //: product -- one staged amplitude at `D = 2`, and never a division.  The staging is
+  //: TOKEN-MAJOR because the drain below writes one contiguous digit run per token, and
+  //: a digit-major buffer would make every one of those stores its own sector.
   __device__ __forceinline__ void digit_reduce(const float (&tile)[kSlabM][NTOK][4], int par) {
     constexpr int off0 = DP::off(0), off1 = DP::off(1);
-    const float* const amp = samp + par * kDigitRows * C;
-#pragma unroll 1
-    for (int round = 0; round < kWarps; ++round) {
-      if (warp == round) {
-        //: inner level: one accumulator ROW is one digit, so the segment is an add --
-        //: and all four warps hold every row, which is why the rounds exist.
+    const float* const amp = samp + par * C * kDigitRows;
+    //: inner level: one accumulator ROW is one digit, so the segment is an add.  All
+    //: four warps hold every row, and the meeting place is a shared-memory RED rather
+    //: than a round of barriers -- C6 accepts RED-order nondeterminism in gradients.
 #pragma unroll
-        for (int nt = 0; nt < NTOK; ++nt)
+    for (int nt = 0; nt < NTOK; ++nt)
 #pragma unroll
-          for (int e = 0; e < 4; ++e) {
-            const int tokl = kMmaN * nt + (lane & 3) * 2 + (e & 1);
-            float s = 0.f;
-#pragma unroll
-            for (int pm = 0; pm < kSlabM; ++pm)
-              s += tile[pm][nt][e] * amp[(off0 + kSlabM * warp + pm) * C + tokl];
-            sdg[(off1 + acc_row(e)) * C + tokl] += s;
-          }
-        //: outer level: a whole m-tile is one digit and a warp owns its two
-        //: exclusively, so the segment is three lane shuffles and no cross-warp term.
+      for (int e = 0; e < 4; ++e) {
+        const int tokl = kMmaN * nt + (lane & 3) * 2 + (e & 1);
+        float s = 0.f;
 #pragma unroll
         for (int pm = 0; pm < kSlabM; ++pm)
-#pragma unroll
-          for (int nt = 0; nt < NTOK; ++nt)
-#pragma unroll
-            for (int j = 0; j < 2; ++j) {
-              float acc = 0.f;
-#pragma unroll
-              for (int h = 0; h < 2; ++h)
-                acc += tile[pm][nt][2 * h + j]
-                       * amp[(off1 + (lane >> 2) + 8 * h) * C + kMmaN * nt + (lane & 3) * 2 + j];
-#pragma unroll
-              for (int s = 4; s < 32; s <<= 1) acc += __shfl_xor_sync(0xFFFFFFFFu, acc, s);
-              if (lane < 4) sdg[(off0 + kSlabM * warp + pm) * C + kMmaN * nt + lane * 2 + j] += acc;
-            }
+          s += tile[pm][nt][e] * amp[tokl * kDigitRows + off0 + kSlabM * warp + pm];
+        fan_in_add(&sdg[tokl * kDigitRows + off1 + acc_row(e)], s);
       }
-      rendezvous();
-    }
+    //: outer level: a whole m-tile is one digit and a warp owns its two exclusively, so
+    //: the segment is three lane shuffles and no cross-warp term at all.
+#pragma unroll
+    for (int pm = 0; pm < kSlabM; ++pm)
+#pragma unroll
+      for (int nt = 0; nt < NTOK; ++nt)
+#pragma unroll
+        for (int j = 0; j < 2; ++j) {
+          float acc = 0.f;
+#pragma unroll
+          for (int h = 0; h < 2; ++h)
+            acc +=
+                tile[pm][nt][2 * h + j]
+                * amp[(kMmaN * nt + (lane & 3) * 2 + j) * kDigitRows + off1 + (lane >> 2) + 8 * h];
+#pragma unroll
+          for (int s = 4; s < 32; s <<= 1) acc += __shfl_xor_sync(0xFFFFFFFFu, acc, s);
+          if (lane < 4)
+            sdg[(kMmaN * nt + lane * 2 + j) * kDigitRows + off0 + kSlabM * warp + pm] += acc;
+        }
   }
 
   template <bool GAINED>
   __device__ __forceinline__ void digit_drain(float* plane, const uint16_t* list, int o0, int n,
                                               uint32_t winP, int par) {
-    constexpr int kTokBits = ilog2c(C);
 #pragma unroll
     for (int i = tid; i < kDigitRows * C; i += kThreads) {
-      const int tokl = i & (C - 1);
+      const int tokl = i / kDigitRows;
       if (tokl >= n) continue;
       float g = sdg[i];
       if constexpr (GAINED) g *= sgain[par * C + tokl];
       fan_in_add(reinterpret_cast<float*>(
                      gather_ptr(plane, winP + (uint32_t)list[o0 + tokl] * (uint32_t)(D * B * 4)
-                                           + (uint32_t)(sdcol[i >> kTokBits] * 4))),
+                                           + (uint32_t)(sdcol[i - tokl * kDigitRows] * 4))),
                  g);
     }
   }
@@ -646,6 +646,7 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
       float tile[kSlabM][NTOK][4];
       ow.channel_readout(lam, bd, ow.sd + vslot * OW::kSlotElems, tile);
       ow.digit_reduce(tile, par);
+      rendezvous();
       ow.template digit_drain<true>(dpwP, wlist, off, n, winA, par);
 
       //: (G5) and (G6) off ONE accumulator: the panel is UNGAINED, so the value
@@ -676,6 +677,11 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
           for (int mt = 0; mt < MTOK; ++mt) mma(ung[mt][q], a[mt], b2);
         }
       }
+      //: `k = leaf` is the carved axis, so this is the backward's one cross-warp term:
+      //: four warp partials of `[C x cols]` meeting in the output staging buffer.  The
+      //: meeting is BARRIER-SEPARATED ROUNDS rather than a shared-memory RED: every
+      //: warp writes the same cells, so a RED here is a four-way conflict on all
+      //: `cols` of every token and measures worse than the three extra barriers.
 #pragma unroll 1
       for (int round = 0; round < kWarps; ++round) {
         if (ow.warp == round) {
@@ -841,6 +847,7 @@ __global__ __launch_bounds__(kThreads, (kScanACtaTarget<D, B, K, M, W, C>)) void
       float tile[kSlabM][NTOK][4];
       ow.channel_readout(st, bd, ow.sd + (i % STAGES) * OW::kSlotElems, tile);
       ow.digit_reduce(tile, par);
+      rendezvous();
       ow.template digit_drain<false>(dprP, ow.slist, off, n, winA, par);
       rendezvous();
     }
