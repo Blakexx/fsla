@@ -32,6 +32,7 @@
 //: producers and reachable from no shipped dispatch (development/plans/
 //: K31_BOX_NATIVE_KERNEL_STUDY_2026-08-18.md section 6).
 #include "src/carry/carry_api.cuh"
+#include "src/intra/intra.cuh"
 
 namespace py = pybind11;
 
@@ -41,6 +42,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   //: write bitmap when this call has residency to plan.  `mask` is the CALL CLASS
   //: (`rola/engine/types.py`'s M1/M2), which is compiled in; `atoms` is the
   //: runtime-null output skip within the stateful class.
+  // ---- K31 R2: the standalone intra kernel -------------------------------
+  m.def("intra_forward", &rola::intra::intra_forward,
+        "K31 intra: the within-window causal term, REDuced into o/den", py::arg("pread"),
+        py::arg("pwrite"), py::arg("gwrite"), py::arg("v"), py::arg("o"), py::arg("den"),
+        py::arg("levels"), py::arg("level_modes"));
+  m.def("intra_build_stamp", &rola::intra::intra_build_stamp,
+        "K31 intra: a fact only the loaded binary can produce");
+
   m.def("chunk_facts", &rola::chunk::facts,
         "facts: the union table and the atom-grain write bitmap, one pass", py::arg("pr"),
         py::arg("pw"), py::arg("chunk"), py::arg("bc"), py::arg("widths"), py::arg("mask"),

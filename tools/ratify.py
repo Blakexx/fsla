@@ -213,7 +213,7 @@ STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu",
                   "entmax/factor.cu",
                   #: K31 R1: the carry family is shipped codegen the moment it is in
                   #: SOURCES, so it is measured like every other shipped TU.
-                  "carry/carry.cu")
+                  "carry/carry.cu", "intra/intra.cu")
 
 
 def shard_paths() -> list[Path]:
