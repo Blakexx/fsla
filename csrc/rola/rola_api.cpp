@@ -46,9 +46,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("intra_forward", &rola::intra::intra_forward,
         "K31 intra: the within-window causal term, REDuced into o/den", py::arg("pread"),
         py::arg("pwrite"), py::arg("gwrite"), py::arg("v"), py::arg("o"), py::arg("den"),
-        py::arg("levels"), py::arg("level_modes"));
+        py::arg("levels"), py::arg("level_modes"), py::arg("window"));
   m.def("intra_build_stamp", &rola::intra::intra_build_stamp,
         "K31 intra: a fact only the loaded binary can produce");
+  m.def("intra_arms", &rola::intra::intra_arms, "K31 intra: the built (levels, window) arms");
 
   m.def("chunk_facts", &rola::chunk::facts,
         "facts: the union table and the atom-grain write bitmap, one pass", py::arg("pr"),

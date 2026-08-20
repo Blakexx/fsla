@@ -26,6 +26,18 @@ from rola.ops._ext import extension
 #: workflows/k31-r1-carry/FINDINGS.md, revival = git.
 CHANNEL_SPLIT = 1
 
+#: the flagship window, and the conformance cell's -- the architecture doc's
+#: two-constraint sizing (integration rung I1(b)); `rola.ops.intra` names the
+#: SAME two, because the two kernels run one window grid.
+WINDOW = 384
+WINDOW_WIDE = 512
+WINDOW_SMALL = 64
+
+#: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
+#: moves whenever that source does, which is what makes reading it back off the
+#: DEVICE an extension-trap check rather than a path check.
+BUILD_MAGIC = 31010010
+
 MMA_K_QUANTUM = 16
 
 

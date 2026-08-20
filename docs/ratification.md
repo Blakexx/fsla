@@ -17,7 +17,12 @@ tools/manifests/sm_86.json
                                             "sass_sha256": "..." }, ... } }
 ```
 
-**396 entries per architecture**, measured on the current tree: **44 for the facts
+**404 entries per architecture**, measured on the current tree: 396 in the three
+long-standing families below, plus the K31 box-native families' 8 — 3 `carry_kernel`
+`<D, B, K, M, W, C, STATE>` arms, 3 `intra_kernel<D, W>` arms and the two device build
+stamps. (The carve axis left `carry_kernel`'s signature in the integration rung, which
+is why its mangled names moved; the intra kernel gained a window axis in the same
+commit.) The 396: **44 for the facts
 family** — 24 `chunk_facts_tables` (12 `(D, B, BC)` tables crossed with the two
 prefill call classes), 12 `block_bitmap_kernel`, 8 `atom_bitmap_kernel` — plus 32
 `decode_step_kernel` (`DV x D x DECAY x IN_SMEM`) and the entmax solves' 320. (The

@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import torch
 
-WINDOW = 256
+#: the flagship window -- `rola.ops.intra.WINDOW`, restated here for the same
+#: reason the reference derives its own leaf addresses: a reference that imported
+#: production's constant would make a wrong window agree with itself.
+WINDOW = 384
 LEVEL_WIDTH = 256
 VALUE_WIDTH = 64
 

@@ -8,7 +8,9 @@ The design it implements is `development/plans/K31_BOX_NATIVE_KERNEL_STUDY_2026-
 
 ## What it computes
 
-For a window `w` of `W = 256` tokens,
+For a window `w` of `W` tokens (`W` is an instantiation axis; the built arms are
+`W = 384`, the flagship, and `W = 64`, the conformance cell — the same two the carry
+family builds, because the two kernels share ONE global window grid),
 
     A[t, t'] = gain(t') * prod_l G_l[t, t'],   G_l = R_l · W_l^T over level l's B = 256 digits
     o[t]   += sum_{t' <= t in w} A[t, t'] · v[t']
@@ -19,8 +21,8 @@ shipped kernel's gain law: support bits are ungained. `den` is the same `A`
 summed — the mass the ones-column of the oracle's recurrence produces — so the
 kernel carries no second matrix for it.
 
-`[W x W]` is never materialized. The window's `4 x 4` tile grid of `[64 x 64]`
-output blocks is walked lower-triangular (10 tile-pairs); the diagonal blocks
+`[W x W]` is never materialized. The window's `(W/64) x (W/64)` tile grid of `[64 x 64]`
+output blocks is walked lower-triangular (21 tile-pairs at `W = 384`); the diagonal blocks
 carry the within-tile staircase. Per tile-pair the per-level Gram accumulates in
 registers over the full 256-digit axis, the levels are Hadamard-multiplied there,
 and the result becomes the A operand of the value MMA **in place** — the
@@ -78,4 +80,14 @@ at 51% of peak and the tensor pipe at 12.5%.
 
 The two levers that raise the intensity are structural, not tuning: a larger `W`
 (intensity is linear in it) and a larger output tile (`C = 128` takes the re-read
-factor from 2.5x to 1.5x for +20% issued MMA). Both are R3 decisions.
+factor from 2.5x to 1.5x for +20% issued MMA).
+
+The FIRST lever is now pulled. The integration rung made `W` an instantiation axis and
+moved the flagship to 384: ideal intensity 96 flop/byte, just over the 94 balance, which
+is the architecture doc's sizing law. The cost is register-neutral — the per-window tile
+LOOP grows 4→6 row-tiles and 10→21 tile-pairs, but the `gram[D][8][4]` accumulators are
+per-tile-PAIR and do not — measured at 154 registers (`W = 384`) against 152 at
+`W = 256`, zero spill, zero local. Shared memory grows only by the masks, one word per
+(tile, level, side, 32 digits): 46 976 B at `W = 384`. The tile-re-read factor rises with
+the grid (21 pairs over 6+6 distinct tiles = 3.5x), so the second lever — the `C = 128`
+output tile — is the named follow-up and is gated on its own register census.

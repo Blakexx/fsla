@@ -21,7 +21,13 @@ READ_SPARSE = 1
 WRITE_SPARSE = 2
 SHARED_SPARSE = 3
 
-WINDOW = 256
+#: the built windows -- the carry family's `W` arms, mirrored (integration rung
+#: I1(b)).  ``WINDOW`` names the flagship because the architecture doc's two
+#: constraints (the C* basin and the intra's ``W/4`` flop/byte intensity) settle
+#: it there; ``WINDOW_SMALL`` is the conformance cell's.
+WINDOW = 384
+WINDOW_WIDE = 512
+WINDOW_SMALL = 64
 LEVEL_WIDTH = 256
 VALUE_WIDTH = 64
 
@@ -36,12 +42,13 @@ def pack_modes(modes: tuple[int, ...]) -> int:
     return packed
 
 
-def intra_forward(pread, pwrite, gwrite, v, modes, *, o=None, den=None):
+def intra_forward(pread, pwrite, gwrite, v, modes, *, o=None, den=None, window=WINDOW):
     """RED the within-window causal intra term into ``(o, den)`` and return them.
 
     ``pread``/``pwrite`` are ``[BH, L, D*256]`` bf16 operand planes, ``gwrite`` is
     ``[BH, L]`` bf16, ``v`` is token-major ``[B, T, H, 64]`` bf16. ``modes`` is one
-    per-level support mode.
+    per-level support mode, and ``window`` names the built arm -- the SAME window
+    the carry call is given, since the two kernels share one grid.
     """
     bh, length, width = pread.shape
     levels = len(modes)
@@ -51,8 +58,14 @@ def intra_forward(pread, pwrite, gwrite, v, modes, *, o=None, den=None):
         o = torch.zeros((bh, length, VALUE_WIDTH), dtype=torch.float32, device=pread.device)
     if den is None:
         den = torch.zeros((bh, length), dtype=torch.float32, device=pread.device)
-    extension().intra_forward(pread, pwrite, gwrite, v, o, den, levels, pack_modes(modes))
+    extension().intra_forward(pread, pwrite, gwrite, v, o, den, levels, pack_modes(modes),
+                              int(window))
     return o, den
+
+
+def arms():
+    """The built ``(levels, window, smem_bytes)`` rows."""
+    return extension().intra_arms()
 
 
 def build_stamp() -> int:
@@ -64,7 +77,11 @@ __all__ = [
     "DENSE_BOTH",
     "READ_SPARSE",
     "SHARED_SPARSE",
+    "WINDOW",
+    "WINDOW_SMALL",
+    "WINDOW_WIDE",
     "WRITE_SPARSE",
+    "arms",
     "build_stamp",
     "intra_forward",
     "pack_modes",

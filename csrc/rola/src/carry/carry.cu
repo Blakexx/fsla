@@ -1,18 +1,26 @@
 // csrc/rola/src/carry/carry.cu -- K31 R1: the carry family's ONE translation unit.
 //
 // Dispatch, torch entries and the built arm list.  The arm list is small BY
-// DESIGN at this rung: R1 answers the carve question at ONE topology (the flagship
-// `(256,256)` row of the R0 solver table, plus its occupancy-leaning control), and
-// an arm nobody measured has no business in a closed-world binary.
+// DESIGN: the carve question is SETTLED (channel-split, Blake 2026-08-20), so the
+// axis is gone from the kernel and survives only as the seam's `carve` scalar,
+// which the dispatch admits at its one ruled value.
 //
-// The arms, from `development/plans/K31_R0_ABI_RIPPLE_SPEC.md` section 7.4:
-//   A  (256,256) D=2  k=4 m=8  s=(16,8)  BC=128  W=256  C=32  carve=STATE
-//   B  ... the same, carve=CHANNEL                                (the control)
-//   C  (256,256) D=2  k=4 m=4  s=(8,8)   BC=64   W=256  C=32  carve=STATE
-//      (the sensitivity row: occupancy bought by a smaller box)
-// and the same three at the `(64,64)` topology (`N = 4096`, `W = 64`), which is the
-// conformance cell: the fp64 oracle materializes `[B,T,H,N]`, so `N = 65536` bounds
-// what a reference can hold and `N = 4096` is where the whole cell is checkable.
+// The arms:
+//   flagship   (256,256) D=2  k=4 m=8  s=(16,8)  BC=128  W=384  C=32
+//   flagship+  (256,256) D=2  k=4 m=8  s=(16,8)  BC=128  W=512  C=32
+//   small      ( 64, 64) D=2  k=4 m=8  s=(16,8)  BC=128  W=64   C=32
+// The window is the architecture doc's TWO-CONSTRAINT quantity (integration rung
+// I1(b)): the C* cost basin is shallow, and the intra kernel -- which runs on the
+// SAME window grid -- has ideal arithmetic intensity `W/4` flop/byte and needs
+// `W >= ~380` to clear sm_86's compute/bandwidth balance.  The doc's admitted band
+// is 384-512 and BOTH ends are built, because a third constraint decides between
+// them: the intra refuses a window that does not divide `L`, and 384 does not
+// divide the flagship length `L = N = 65536`.  512 does, at every power-of-two
+// length, while clearing the intensity bar with room (128 flop/byte).  The
+// `(64, 64)` arm is the conformance cell: the fp64 oracle materializes
+// `[B,T,H,N]`, so `N = 4096` is where a whole cell is checkable, and its `W = 64`
+// is held to keep that cell's window count meaningful at the lengths a reference
+// can hold.
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -29,15 +37,19 @@ namespace rola::carry {
 //: THE BUILT SET, as one macro so the dispatch, the census and the arm list cannot
 //: drift apart -- the shipped family's `CHUNK_ARMS_X` discipline.
 #define CARRY_ARMS_X(X_)        \
-  X_(2, 256, 4, 8, 256, 32, 1)  \
+  X_(2, 256, 4, 8, 384, 32, 1)  \
+  X_(2, 256, 4, 8, 512, 32, 1)  \
   X_(2, 64, 4, 8, 64, 32, 1)
 
+//: `CV` is the SEAM's carve scalar, not a kernel axis: it names the one ruled
+//: carve so a caller that asks for the deleted one is refused rather than served
+//: something else.
 template <int D, int B, int K, int M, int W, int C, int CV>
 static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
                           const __nv_bfloat16* v, float* o, float* den, int BH, int L,
                           int v_row_bytes, const float* s_in, float* s_out, cudaStream_t stream) {
-  constexpr Carve kCarve = CV == 0 ? Carve::STATE : Carve::CHANNEL;
-  const auto fn = &carry_kernel<D, B, K, M, W, C, kCarve, true>;
+  static_assert(CV == 1, "channel-split is the built carve");
+  const auto fn = &carry_kernel<D, B, K, M, W, C, true>;
   constexpr size_t sm = CarryGeom<D, B, K, M, W, C>::bytes;
   static bool configured = false;
   if (!configured) {
@@ -53,9 +65,9 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
 
 template <int D, int B, int K, int M, int W, int C, int CV>
 static std::array<int64_t, 10> census() {
-  constexpr Carve kCarve = CV == 0 ? Carve::STATE : Carve::CHANNEL;
+  static_assert(CV == 1, "channel-split is the built carve");
   cudaFuncAttributes a{};
-  if (cudaFuncGetAttributes(&a, carry_kernel<D, B, K, M, W, C, kCarve, true>) != cudaSuccess)
+  if (cudaFuncGetAttributes(&a, carry_kernel<D, B, K, M, W, C, true>) != cudaSuccess)
     return {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
   return {a.numRegs,
           (int64_t)a.sharedSizeBytes,

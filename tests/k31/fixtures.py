@@ -85,10 +85,11 @@ def canonical_from_lattice(plane, widths, k, m):
 def assert_fresh_binary():
     """DEVICE-SIDE, because a path or hash check cannot catch an extension trap."""
     import rola
-    stamp = carry_ops.build_stamp((256, 256), 4, 8, 256, 32, carry_ops.CHANNEL_SPLIT)
-    assert stamp[0] == 31010009, (
-        f"stale binary: the carry kernel's device stamp is {stamp[0]}, not 31010009. "
-        f"rola is {rola.__file__}")
+    stamp = carry_ops.build_stamp((256, 256), 4, 8, carry_ops.WINDOW, 32,
+                                  carry_ops.CHANNEL_SPLIT)
+    assert stamp[0] == carry_ops.BUILD_MAGIC, (
+        f"stale binary: the carry kernel's device stamp is {stamp[0]}, not "
+        f"{carry_ops.BUILD_MAGIC}. rola is {rola.__file__}")
     return stamp
 
 

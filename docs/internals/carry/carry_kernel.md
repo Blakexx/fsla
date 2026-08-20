@@ -65,27 +65,35 @@ Per-side lists make activity airtight: a side's simplex weights are strictly pos
 its own support, so a listed entry is live for that side by construction. There is no
 union-superset padding logic anywhere in this file, by design.
 
-## The carve, as one compile-time axis of one body
+## The carve is settled, so it is not an axis
 
-`Carve::STATE` gives each warp `BC/kWarps` leaves across all `d_v` channels; its readout
-is a partial over the whole output, so the four warps meet in an intra-CTA shared-memory
-tree. `Carve::CHANNEL` gives each warp 16 of the 64 channels across all `BC` leaves; its
-readout rows are disjoint and it reduces nothing. Study §2.8 recommended the former and
-named the latter the measured control. R1's measurement is in
+Each warp owns `kMmaM` of the `d_v` channels across all `BC` leaves. Its readout rows are
+therefore DISJOINT from its siblings': nothing in the owner loop reduces across warps,
+and the kernel's only fan-in is the RED at the top. The fold-residency coupling law
+holds by construction — the warp carve of the state IS the output carve of the fold.
+
+Study §2.8 recommended the alternative (warps owning `BC/kWarps` leaves across all
+channels, meeting in an intra-CTA shared-memory tree) and named this one the measured
+control; R1 measured, and the control won on sm_80. Blake ruled the axis closed on
+2026-08-20 (commit `46a3d3e`), and the integration rung removed the template machinery
+the ruling left standing — the `Carve` enum, the `MDV` channel-tile loop, the
+`kStageUnits` atom-staging loop and the shared-memory readout tree with its
+`atomicAdd` partials. The math of the surviving arm did not change; the register census
+did not move (176 registers, zero spill, zero local, on both arms, sm_80 and sm_86).
+The losing arm's revival is `git`, not a dead branch. R1's measurement is in
 `rola-scratch/workflows/k31-r1-carry/FINDINGS.md`.
 
-The fold-residency coupling law is binding either way: the warp carve of the state IS
-the output carve of the fold, and both branches of this body obey it.
+`CV` survives on the SEAM — the dispatch's `carve` scalar — so a caller asking for the
+deleted carve is refused rather than silently served the other one.
 
 ## The atom walk's shape is a register-indexing fact
 
 A state fragment is a register array and a runtime index into one is a stack frame —
 measured, on this kernel's first build: walking `kAtoms` at runtime put the whole state
 (320 B/thread) in local memory. So the walk is inverted. The outer, fully unrolled loop
-counts the atoms THIS WARP owns, which makes its tile index a compile-time `2*a`; the
-inner loop names which warp's atom the CTA is cooperatively staging through the output
-buffer. Under the CHANNEL carve `kStageUnits == 1` and the walk collapses to the shipped
-kernel's shape exactly.
+is fully unrolled over the box's atoms, which makes each one's tile index a compile-time
+`2*a`. Every warp owns every atom, because the carve is along the channels; the CTA
+stages one atom at a time through the output buffer.
 
 ## The rings
 

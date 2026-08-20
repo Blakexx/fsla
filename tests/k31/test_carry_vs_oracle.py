@@ -12,7 +12,6 @@ Milestones, each a named test:
   M1  the lattice state I/O and the fold          `test_m1_*`
   M2  + the readout and the RED fan-in            `test_m2_*`
   M3  + random-k_tok, TWO-SIDED schedule          `test_m3_*`
-  M4  the three variants agree                    `test_m4_*`
 """
 from __future__ import annotations
 
@@ -28,10 +27,9 @@ from tests.oracle.tolerances import BF16_RTOL
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
-#: (widths, k, m, W) -- the built arms this suite drives, with the carve axis on top.
-SMALL = ((64, 64), 4, 8, 64)      # N = 4096,  BC = 128, owners = 32
-FLAG = ((256, 256), 4, 8, 256)    # N = 65536, BC = 128, owners = 512
-FLAG_C = ((256, 256), 4, 4, 256)  # N = 65536, BC = 64,  owners = 1024
+#: (widths, k, m, W) -- the two built arms this suite drives.
+SMALL = ((64, 64), 4, 8, carry_ops.WINDOW_SMALL)  # N = 4096,  BC = 128, owners = 32
+FLAG = ((256, 256), 4, 8, carry_ops.WINDOW)       # N = 65536, BC = 128, owners = 512
 
 CHANNEL = carry_ops.CHANNEL_SPLIT
 
@@ -60,7 +58,9 @@ def test_build_stamp_is_this_source():
 
 def test_arms_are_the_declared_solver_rows():
     got = {tuple(a[:7]) for a in carry_ops.arms()}
-    assert got == {(2, 256, 4, 8, 256, 32, 1), (2, 64, 4, 8, 64, 32, 1)}, got
+    assert got == {(2, 256, 4, 8, carry_ops.WINDOW, 32, 1),
+                   (2, 256, 4, 8, carry_ops.WINDOW_WIDE, 32, 1),
+                   (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1)}, got
     for arm in carry_ops.arms():
         D, B, k, m, W, C, carve, BC, owners, smem = arm
         _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)

@@ -47,7 +47,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010009;
+static constexpr int kCarryBuildMagic = 31010010;
 
 static constexpr int kDv = 64;         // d_v
 static constexpr int kCols = kDv + 1;  // the mass column rides the state
@@ -69,14 +69,14 @@ __device__ __forceinline__ void static_for(F&& f) {
   }
 }
 
-//: THE CARVE, as a compile-time axis of ONE body (study section 2.8).
-//:  STATE   -- each warp owns `BC/kWarps` leaves across ALL `d_v` channels.  Its
-//:             readout is a partial over the whole output, so the four warps meet
-//:             in an intra-CTA shared-memory tree.  This is the recommendation.
-//:  CHANNEL -- each warp owns 16 of the 64 channels across ALL `BC` leaves.  Its
-//:             readout rows are disjoint, so there is no reduction.  The shipped
-//:             kernel's carve, built here as the MEASURED CONTROL.
-enum class Carve { STATE = 0, CHANNEL = 1 };
+//: THE CARVE IS SETTLED AND IS THEREFORE NOT AN AXIS (Blake ruling 2026-08-20,
+//: commit 46a3d3e; the integration rung removes the machinery the ruling left
+//: standing).  Each warp owns `kMmaM` of the `d_v` CHANNELS across ALL `BC`
+//: leaves, so the four warps' readout rows are DISJOINT: nothing in the owner
+//: loop reduces across warps, and the kernel's only fan-in is the RED at the top.
+//: The state-split alternative -- warps owning leaf slices and meeting in an
+//: intra-CTA shared-memory tree -- was R1's measured loser on sm_80 and lives in
+//: git, not in a dead branch.
 
 template <int D, int B, int K, int M, int W, int C>
 struct CarryGeom {
@@ -163,7 +163,7 @@ constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, W, C>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int W, int C, Carve CARVE, bool STATE>
+template <int D, int B, int K, int M, int W, int C, bool STATE>
 __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void carry_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
@@ -177,20 +177,18 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
   constexpr int MTOK = C / kMmaM;  // token m-tiles of a batch
   constexpr int NTOK = C / kMmaN;  // token n-tiles of a batch
-  constexpr bool SPLIT = (CARVE == Carve::STATE);
-  constexpr int BCw = SPLIT ? BC / kWarps : BC;  // the warp's leaf slice
-  constexpr int NDV = BCw / kMmaN;               // its state n-tiles
-  constexpr int KDw = BCw / kMmaK;               // its state k-tiles
-  constexpr int MDV = SPLIT ? kDv / kMmaM : 1;   // its channel m-tiles
-  //: THE MASS CHANNEL'S CARVE.  One channel cannot be split along the channel axis,
-  //: so under the CHANNEL carve it is split along the axis the mma leaves free (the
-  //: leaves); under the STATE carve the warp's own leaf slice already carves it.
-  constexpr int kMassUnits = SPLIT ? 1 : (KDw < kWarps ? KDw : kWarps);
+  //: every warp holds the WHOLE box and a slice of the channels, so the state's
+  //: leaf tiling is the box's and is not carved.
+  constexpr int NDV = BC / kMmaN;  // the state's n-tiles (leaves)
+  constexpr int KDw = BC / kMmaK;  // its k-tiles
+  //: THE MASS CHANNEL'S CARVE.  One channel cannot be split along the channel
+  //: axis, so it is split along the axis the mma leaves free -- the leaves.
+  constexpr int kMassUnits = KDw < kWarps ? KDw : kWarps;
   constexpr int kMassKD = KDw / kMassUnits;
   constexpr int kMassTiles = 2 * kMassKD;
 
   static_assert(C % kMmaM == 0 && kThreads % C == 0, "the batch tile must divide");
-  static_assert(BCw % kMmaK == 0, "a warp's leaf slice is a whole number of k-tiles");
+  static_assert(BC % kMmaK == 0, "the box is a whole number of k-tiles");
   static_assert(BC % kAtomLeaves == 0, "K2: an owner holds whole page atoms");
   static_assert(design::smem_fits(G::bytes), "this arm does not fit the SMEM maximum");
   static_assert(PM::kRowThr * PM::SPT == BC, "the row's threads cover the box exactly");
@@ -253,18 +251,15 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
 #define ADDR_S(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2))
 #define ADDR_V(b_, R_, dv_) ((b_) + (uint32_t)(((R_) * LdV + (dv_)) * 2))
 
-  const int leaf0 = SPLIT ? warp * BCw : 0;    // the warp's leaf origin
-  const int chan0 = SPLIT ? 0 : warp * kMmaM;  // its channel origin
-  const uint32_t massOff = SPLIT ? 0u : (uint32_t)(warp * kMmaK * 2);
+  const int chan0 = warp * kMmaM;  // the warp's channel origin
+  const uint32_t massOff = (uint32_t)(warp * kMmaK * 2);
 
   // ---- the state, transposed: m = channels, n = this warp's leaves ---------
-  float st[MDV][NDV][4];
+  float st[NDV][4];
 #pragma unroll
-  for (int a1 = 0; a1 < MDV; ++a1)
+  for (int j = 0; j < NDV; ++j)
 #pragma unroll
-    for (int j = 0; j < NDV; ++j)
-#pragma unroll
-      for (int e = 0; e < 4; ++e) st[a1][j][e] = 0.f;
+    for (int e = 0; e < 4; ++e) st[j][e] = 0.f;
   float mass_st[kMassTiles][4];
 #pragma unroll
   for (int j = 0; j < kMassTiles; ++j)
@@ -308,22 +303,16 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   auto page_off = [](uint32_t atom) { return atom * (uint32_t)(kPageElems * (int)sizeof(float)); };
   //: element `k` of an accumulator tile sits at row `(lane>>2) + 8*(k>>1)` and
   //: column `(lane&3)*2 + (k&1)`; here rows are channels and columns are leaves.
-  auto page_value = [&](int p, int k, int mdv) {
-    return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + chan0 + mdv * kMmaM + (lane >> 2)
-           + 8 * (k >> 1);
+  auto page_value = [&](int p, int k) {
+    return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + chan0 + (lane >> 2) + 8 * (k >> 1);
   };
   auto page_mass = [&](int p, int k) { return (p * 8 + lane * 2 + k) * LdO + kDv; };
   //: THE ATOM WALK'S SHAPE IS A REGISTER-INDEXING FACT, NOT A CONVENIENCE.  A
   //: state fragment is a register array, and a runtime index into one is a stack
   //: frame -- measured, on this kernel's first build: `kAtoms` walked at runtime put
-  //: the WHOLE state (320 B/thread) in local memory.  So the walk is inverted: the
-  //: outer, fully unrolled loop counts the atoms THIS WARP owns (its tile index is
-  //: then a compile-time `2*a`), and the inner one names which warp's atom the CTA
-  //: is cooperatively staging.  Under the CHANNEL carve every warp owns every atom
-  //: and the inner loop collapses, which is the shipped kernel's shape exactly.
-  constexpr int kAtomsPerWarp = SPLIT ? (BCw / kAtomLeaves) : kAtoms;
-  constexpr int kStageUnits = SPLIT ? kWarps : 1;
-  static_assert(kAtomsPerWarp * kStageUnits == kAtoms, "the atom walk must cover the box once");
+  //: the WHOLE state (320 B/thread) in local memory.  So the walk is FULLY
+  //: UNROLLED over the atoms, and every warp owns every atom (its tile index is a
+  //: compile-time `2*a`) because the carve is along the channels.
 
   //: ---- THE ENTRY STATE.  The fragments are SET, never accumulated: they are
   //: provably zero here, and with no decay the recurrence is affine in the state
@@ -332,40 +321,22 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     if (s_in != nullptr) {
       const float* const plane = pin_address(s_in);
 #pragma unroll
-      for (int a = 0; a < kAtomsPerWarp; ++a) {
+      for (int a = 0; a < kAtoms; ++a) {
+        page_sweep(page_off(atomBase + (uint32_t)a), [&](int sidx, uint32_t off) {
+          so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
+        });
+        rendezvous();
 #pragma unroll
-        for (int u = 0; u < kStageUnits; ++u) {
-          constexpr int mine_ch = 0;
-          (void)mine_ch;
-          page_sweep(page_off(atomBase + (uint32_t)(SPLIT ? u * kAtomsPerWarp + a : a)),
-                     [&](int sidx, uint32_t off) {
-                       so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
-                     });
-          rendezvous();
-          if (!SPLIT || warp == u) {
+        for (int p = 0; p < 2; ++p)
 #pragma unroll
-            for (int mdv = 0; mdv < MDV; ++mdv)
+          for (int k = 0; k < 4; ++k) st[2 * a + p][k] = so[page_value(p, k)];
+        if (warp == a % kMassUnits && lane < 4) {
 #pragma unroll
-              for (int p = 0; p < 2; ++p)
+          for (int p = 0; p < 2; ++p)
 #pragma unroll
-                for (int k = 0; k < 4; ++k) st[mdv][2 * a + p][k] = so[page_value(p, k, mdv)];
-          }
-          if constexpr (SPLIT) {
-            if (warp == u && lane < 4) {
-#pragma unroll
-              for (int p = 0; p < 2; ++p)
-#pragma unroll
-                for (int k = 0; k < 2; ++k) mass_st[2 * a + p][k] = so[page_mass(p, k)];
-            }
-          } else if (warp == a % kMassUnits && lane < 4) {
-#pragma unroll
-            for (int p = 0; p < 2; ++p)
-#pragma unroll
-              for (int k = 0; k < 2; ++k)
-                mass_st[2 * (a / kMassUnits) + p][k] = so[page_mass(p, k)];
-          }
-          rendezvous();
+            for (int k = 0; k < 2; ++k) mass_st[2 * (a / kMassUnits) + p][k] = so[page_mass(p, k)];
         }
+        rendezvous();
       }
     }
   }
@@ -542,86 +513,40 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
       const int off = i * C;
       const int n = (nr - off) < C ? (nr - off) : C;
       const uint32_t brT = (i & 1) ? brT1 : brT0;
-      if constexpr (SPLIT) {
-        //: the four warps' readout partials meet in this tile, so it starts at zero.
-#pragma unroll 1
-        for (int e = tid; e < C * LdO; e += kThreads) so[e] = 0.f;
-      }
       rendezvous();
       if (i + 1 < nbr) produce_batch(pR, ((i + 1) & 1) ? sw : sr, slist, (i + 1) * C, nr, false);
 
-      if constexpr (SPLIT) {
-        //: the B operand is hoisted across the channel m-tiles: a warp's leaf slice
-        //: is short (`KDw` k-tiles), so one panel read serves all `MDV` of them.
-        //: `MDV` independent accumulator chains are then in flight per k-tile, which
-        //: is where this carve's instruction-level parallelism comes from.
-        uint32_t rb[KDw][MTOK][4];
+      float acc[NTOK][4];
+#pragma unroll
+      for (int j = 0; j < NTOK; ++j)
+#pragma unroll
+        for (int e = 0; e < 4; ++e) acc[j][e] = 0.f;
+      uint32_t sa[KDw][4];
+#pragma unroll
+      for (int kk = 0; kk < KDw; ++kk) {
+        sa[kk][0] = pack_bf16x2(st[2 * kk][0], st[2 * kk][1]);
+        sa[kk][1] = pack_bf16x2(st[2 * kk][2], st[2 * kk][3]);
+        sa[kk][2] = pack_bf16x2(st[2 * kk + 1][0], st[2 * kk + 1][1]);
+        sa[kk][3] = pack_bf16x2(st[2 * kk + 1][2], st[2 * kk + 1][3]);
+      }
+#pragma unroll
+      for (int m = 0; m < MTOK; ++m) {
+        uint32_t rb[KDw][4];
+#pragma unroll
+        for (int kk = 0; kk < KDw; ++kk) load_frag(rb[kk], ADDR_S(brT, m * 16, 2 * kk));
 #pragma unroll
         for (int kk = 0; kk < KDw; ++kk)
 #pragma unroll
-          for (int m = 0; m < MTOK; ++m)
-            load_frag(rb[kk][m], ADDR_S(brT, m * 16, leaf0 / 8 + 2 * kk));
-#pragma unroll
-        for (int mdv = 0; mdv < MDV; ++mdv) {
-          uint32_t sa[KDw][4];
-#pragma unroll
-          for (int kk = 0; kk < KDw; ++kk) {
-            sa[kk][0] = pack_bf16x2(st[mdv][2 * kk][0], st[mdv][2 * kk][1]);
-            sa[kk][1] = pack_bf16x2(st[mdv][2 * kk][2], st[mdv][2 * kk][3]);
-            sa[kk][2] = pack_bf16x2(st[mdv][2 * kk + 1][0], st[mdv][2 * kk + 1][1]);
-            sa[kk][3] = pack_bf16x2(st[mdv][2 * kk + 1][2], st[mdv][2 * kk + 1][3]);
-          }
-          float acc[NTOK][4];
-#pragma unroll
-          for (int j = 0; j < NTOK; ++j)
-#pragma unroll
-            for (int e = 0; e < 4; ++e) acc[j][e] = 0.f;
-#pragma unroll
-          for (int m = 0; m < MTOK; ++m)
-#pragma unroll
-            for (int kk = 0; kk < KDw; ++kk)
-#pragma unroll
-              for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], sa[kk], &rb[kk][m][2 * p]);
-          const int cb = mdv * kMmaM;
-#pragma unroll
-          for (int j = 0; j < NTOK; ++j)
-#pragma unroll
-            for (int k = 0; k < 4; ++k)
-              atomicAdd(&so[(j * 8 + oq + (k & 1)) * LdO + cb + om + 8 * (k >> 1)], acc[j][k]);
-        }
-      } else {
-        float acc[NTOK][4];
-#pragma unroll
-        for (int j = 0; j < NTOK; ++j)
-#pragma unroll
-          for (int e = 0; e < 4; ++e) acc[j][e] = 0.f;
-        uint32_t sa[KDw][4];
-#pragma unroll
-        for (int kk = 0; kk < KDw; ++kk) {
-          sa[kk][0] = pack_bf16x2(st[0][2 * kk][0], st[0][2 * kk][1]);
-          sa[kk][1] = pack_bf16x2(st[0][2 * kk][2], st[0][2 * kk][3]);
-          sa[kk][2] = pack_bf16x2(st[0][2 * kk + 1][0], st[0][2 * kk + 1][1]);
-          sa[kk][3] = pack_bf16x2(st[0][2 * kk + 1][2], st[0][2 * kk + 1][3]);
-        }
-#pragma unroll
-        for (int m = 0; m < MTOK; ++m) {
-          uint32_t rb[KDw][4];
-#pragma unroll
-          for (int kk = 0; kk < KDw; ++kk) load_frag(rb[kk], ADDR_S(brT, m * 16, 2 * kk));
-#pragma unroll
-          for (int kk = 0; kk < KDw; ++kk)
-#pragma unroll
-            for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], sa[kk], &rb[kk][2 * p]);
-        }
-#pragma unroll
-        for (int j = 0; j < NTOK; ++j)
-#pragma unroll
-          for (int k = 0; k < 4; ++k)
-            store_f32(&so[(j * 8 + oq + (k & 1)) * LdO + chan0 + om + 8 * (k >> 1)], acc[j][k]);
+          for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], sa[kk], &rb[kk][2 * p]);
       }
+#pragma unroll
+      for (int j = 0; j < NTOK; ++j)
+#pragma unroll
+        for (int k = 0; k < 4; ++k)
+          store_f32(&so[(j * 8 + oq + (k & 1)) * LdO + chan0 + om + 8 * (k >> 1)], acc[j][k]);
 
       // ---- the mass row of the same readout ---------------------------------
-      if (SPLIT || warp < kMassUnits) {
+      if (warp < kMassUnits) {
         uint32_t ma[kMassKD][4];
 #pragma unroll
         for (int q = 0; q < kMassKD; ++q) {
@@ -640,7 +565,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
           uint32_t mb[kMassKD][4];
 #pragma unroll
           for (int q = 0; q < kMassKD; ++q)
-            load_frag(mb[q], ADDR_S(brT, m * 16, leaf0 / 8 + 2 * q * kMassUnits) + massOff);
+            load_frag(mb[q], ADDR_S(brT, m * 16, 2 * q * kMassUnits) + massOff);
 #pragma unroll
           for (int q = 0; q < kMassKD; ++q)
 #pragma unroll
@@ -727,33 +652,22 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
 
 #pragma unroll
       for (int kk = 0; kk < MTOK; ++kk) {
-        uint32_t a[MDV][4];
-#pragma unroll
-        for (int mdv = 0; mdv < MDV; ++mdv)
-          load_frag_t(a[mdv], ADDR_V(vsl, kk * 16, chan0 + mdv * kMmaM));
+        uint32_t a[4];
+        load_frag_t(a, ADDR_V(vsl, kk * 16, chan0));
 #pragma unroll
         for (int nj = 0; nj < KDw; ++nj) {
           uint32_t b[4];
-          load_frag_t(b, ADDR_S(bwF, kk * 16, leaf0 / 8 + 2 * nj));
-#pragma unroll
-          for (int mdv = 0; mdv < MDV; ++mdv) {
-            mma(st[mdv][2 * nj], a[mdv], &b[0]);
-            mma(st[mdv][2 * nj + 1], a[mdv], &b[2]);
-          }
-          if constexpr (SPLIT) {
-            mma(mass_st[2 * nj], ones_a, &b[0]);
-            mma(mass_st[2 * nj + 1], ones_a, &b[2]);
-          }
+          load_frag_t(b, ADDR_S(bwF, kk * 16, 2 * nj));
+          mma(st[2 * nj], a, &b[0]);
+          mma(st[2 * nj + 1], a, &b[2]);
         }
-        if constexpr (!SPLIT) {
-          if (warp < kMassUnits) {
+        if (warp < kMassUnits) {
 #pragma unroll
-            for (int q = 0; q < kMassKD; ++q) {
-              uint32_t mb[4];
-              load_frag_t(mb, ADDR_S(bwF, kk * 16, 2 * q * kMassUnits) + massOff);
-              mma(mass_st[2 * q], ones_a, &mb[0]);
-              mma(mass_st[2 * q + 1], ones_a, &mb[2]);
-            }
+          for (int q = 0; q < kMassKD; ++q) {
+            uint32_t mb[4];
+            load_frag_t(mb, ADDR_S(bwF, kk * 16, 2 * q * kMassUnits) + massOff);
+            mma(mass_st[2 * q], ones_a, &mb[0]);
+            mma(mass_st[2 * q + 1], ones_a, &mb[2]);
           }
         }
       }
@@ -772,39 +686,23 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
       float* const plane = pin_address(s_out);
       rendezvous();
 #pragma unroll
-      for (int a = 0; a < kAtomsPerWarp; ++a) {
+      for (int a = 0; a < kAtoms; ++a) {
 #pragma unroll
-        for (int u = 0; u < kStageUnits; ++u) {
-          if (!SPLIT || warp == u) {
+        for (int p = 0; p < 2; ++p)
 #pragma unroll
-            for (int mdv = 0; mdv < MDV; ++mdv)
+          for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * a + p][k]);
+        if (warp == a % kMassUnits && lane < 4) {
 #pragma unroll
-              for (int p = 0; p < 2; ++p)
+          for (int p = 0; p < 2; ++p)
 #pragma unroll
-                for (int k = 0; k < 4; ++k)
-                  store_f32(&so[page_value(p, k, mdv)], st[mdv][2 * a + p][k]);
-          }
-          if constexpr (SPLIT) {
-            if (warp == u && lane < 4) {
-#pragma unroll
-              for (int p = 0; p < 2; ++p)
-#pragma unroll
-                for (int k = 0; k < 2; ++k) store_f32(&so[page_mass(p, k)], mass_st[2 * a + p][k]);
-            }
-          } else if (warp == a % kMassUnits && lane < 4) {
-#pragma unroll
-            for (int p = 0; p < 2; ++p)
-#pragma unroll
-              for (int k = 0; k < 2; ++k)
-                store_f32(&so[page_mass(p, k)], mass_st[2 * (a / kMassUnits) + p][k]);
-          }
-          rendezvous();
-          page_sweep(page_off(atomBase + (uint32_t)(SPLIT ? u * kAtomsPerWarp + a : a)),
-                     [&](int sidx, uint32_t offb) {
-                       store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
-                     });
-          rendezvous();
+            for (int k = 0; k < 2; ++k)
+              store_f32(&so[page_mass(p, k)], mass_st[2 * (a / kMassUnits) + p][k]);
         }
+        rendezvous();
+        page_sweep(page_off(atomBase + (uint32_t)a), [&](int sidx, uint32_t offb) {
+          store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
+        });
+        rendezvous();
       }
     }
   }

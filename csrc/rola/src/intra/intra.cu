@@ -19,8 +19,10 @@ namespace stampdet {
 //: reading a fact only the loaded binary can produce.
 __device__ int64_t g_stamp_probe;
 
+//: THE HEAVIEST BUILT ARM's footprint: it moves whenever any arm's shape does,
+//: which is what makes it a fact only THIS binary can produce.
 __global__ void stamp_kernel(int64_t* out) {
-  *out = (int64_t)(sizeof(detail::IntraSmem<2>)) * 1000003 + (int64_t)detail::kThreads;
+  *out = (int64_t)(sizeof(detail::IntraSmem<2, kWindowWide>)) * 1000003 + (int64_t)detail::kThreads;
   g_stamp_probe = *out;
 }
 
@@ -35,10 +37,18 @@ void check_plane(const at::Tensor& t, const char* name, int64_t bh, int64_t L, i
               " must be [BH, L, sum-of-widths]");
 }
 
-template <int D>
+//: THE BUILT SET, as one macro so the dispatch and the arm list cannot drift --
+//: the carry family's `CARRY_ARMS_X` discipline, mirrored.  `W` pairs with the
+//: carry's window template argument: the two kernels run ONE grid.
+#define INTRA_ARMS_X(X_)          \
+  X_(2, kWindowFlagship)          \
+  X_(2, kWindowWide)              \
+  X_(2, kWindowSmall)
+
+template <int D, int W>
 void launch(const detail::IntraParams& p, int64_t bh, int64_t windows, cudaStream_t stream) {
   const dim3 grid((unsigned)windows, (unsigned)bh, 1);
-  detail::intra_kernel<D><<<grid, detail::kThreads, 0, stream>>>(p);
+  detail::intra_kernel<D, W><<<grid, detail::kThreads, 0, stream>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -46,7 +56,7 @@ void launch(const detail::IntraParams& p, int64_t bh, int64_t windows, cudaStrea
 
 void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,
                    const at::Tensor& v, at::Tensor& o, at::Tensor& den, int64_t levels,
-                   int64_t level_modes) {
+                   int64_t level_modes, int64_t window) {
   TORCH_CHECK(levels == 2, "the intra kernel is built for D = 2");
   const int64_t bh = pread.size(0);
   const int64_t L = pread.size(1);
@@ -62,7 +72,8 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
   const int64_t batch = v.size(0), tokens = v.size(1), heads = v.size(2);
   TORCH_CHECK(batch * heads == bh && tokens == L,
               "v's [B, T, H] must flatten to the plane's BH, L");
-  TORCH_CHECK(L % kWindow == 0, "L must be a whole number of ", kWindow, "-token windows");
+  TORCH_CHECK(window > 0 && L % window == 0, "L must be a whole number of ", window,
+              "-token windows");
   TORCH_CHECK(o.is_cuda() && o.is_contiguous() && o.scalar_type() == at::kFloat && o.dim() == 3
                   && o.size(0) == bh && o.size(1) == L && o.size(2) == kValueWidth,
               "o must be a contiguous CUDA fp32 [BH, L, 64] tensor");
@@ -87,7 +98,21 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
       (uint32_t)level_modes,
   };
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  launch<2>(p, bh, L / kWindow, stream);
+#define INTRA_DISPATCH(D_, W_)                                  \
+  if (levels == (D_) && window == (W_)) {                       \
+    launch<D_, W_>(p, bh, L / (W_), stream);                    \
+  } else
+  INTRA_ARMS_X(INTRA_DISPATCH) { TORCH_CHECK(false, "unbuilt intra arm"); }
+#undef INTRA_DISPATCH
+}
+
+std::vector<std::vector<int64_t>> intra_arms() {
+  std::vector<std::vector<int64_t>> out;
+#define INTRA_LIST(D_, W_) \
+  out.push_back({(int64_t)(D_), (int64_t)(W_), (int64_t)sizeof(detail::IntraSmem<D_, W_>)});
+  INTRA_ARMS_X(INTRA_LIST)
+#undef INTRA_LIST
+  return out;
 }
 
 int64_t intra_build_stamp() {
