@@ -13,11 +13,22 @@ lattice index is `lambda`.
 
 ## Why nothing here divides and nothing here tabulates
 
-`pi: ell -> lambda` is a fixed BIT PERMUTATION (spec §2.4). In `ell`, level `l` occupies
-a contiguous `log2 B`-bit field and inside it `(o_l | u_l | c_l)` occupy
-`(log2 g_l | log2 m_l | log2 K)` bits, most significant first. In `lambda` the same
-fields are regrouped as `[o_0 … o_{D-1}][u_0 … u_{D-1}][c_0 … c_{D-1}]`. Every field
-keeps its width; only its position moves.
+`pi: ell -> lambda` is a fixed BIT PERMUTATION. In `ell`, level `l` occupies a
+contiguous `log2 B`-bit field and inside it `(o_l | r_l)` occupy `(log2 g_l | log2 s_l)`
+bits, most significant first — `r_l = d_l - o_l·s_l` is the digit's offset inside the
+owner's run. In `lambda` the same fields are regrouped as
+`[o_0 … o_{D-1}][r_0 … r_{D-1}]`. Every field keeps its width; only its position moves.
+
+**The intra-box order is MIXED RADIX over the runs** — `local = Σ_l r_l · Π_{l'>l} s_{l'}`,
+level `D-1` fastest — which is the K33 enabler (queue card, enabler 2) and supersedes
+the R0 spec's `[u_0 … u_{D-1}][c_0 … c_{D-1}]` interleave. Under the interleave each
+level's run was SPLIT across two fields (`u_l` high, `c_l` low) and no level owned a
+contiguous run of leaves; under mixed radix a bucket keyed on level `l`'s digit owns
+`Π_{l'>l} s_{l'}` leaves, and for the OUTERMOST level that run is contiguous and
+`BC / s_0` wide — exactly one `kMmaN` tile at the flagship `(16, 8)`, so a fold bucket
+accumulates directly into whole state tiles with no padding. `run_of(l, local)` is now a
+single field extract instead of `u_of·K + c_of`, and `u_of`/`c_of` are read back out of
+it for the sub-box arithmetic that still wants them.
 
 Three consequences the header spends its whole surface on:
 
@@ -25,7 +36,7 @@ Three consequences the header spends its whole surface on:
   extract and never a division chain;
 * an owner's leaves are `lambda ∈ [O·BC, (O+1)·BC)` — one contiguous, `BC`-aligned run
   **by construction**, where the shipped kernel proves the same property per level with
-  a `static_assert` on `LevelPlan::base_aligned`;
+  a `static_assert` on `SpanPlan::base_aligned`;
 * the atom keying expression is unchanged from `rola.ops.paging.AtomKeying`; only its
   argument is re-read as `lambda`.
 
@@ -37,9 +48,16 @@ that are properties of the type rather than of a machine:
 | assert | constraint | why |
 |---|---|---|
 | `kBC % 16 == 0` | K2 | a page atom must not straddle two owners, i.e. two CTAs |
-| `kKappa * D >= 4` | K3 | a 16-aligned 16-run must lie inside one sub-box |
-| `4 % kKappa == 0` | K4 | the atom must be a digit RECTANGLE, so `k ∈ {2, 4, 16}` |
+| `kLocalBits >= 4` | K3 | a 16-aligned 16-run must lie inside one owner |
 | powers of two | K1 | `s_l | B` must hold, and the bit-permutation theorem requires it |
+
+K4 — "the atom is a digit RECTANGLE" — is DISCHARGED BY THE ORDER and no longer needs
+an assert. Sixteen consecutive `local` values at a multiple of sixteen are exactly the
+set agreeing on every bit above bit 3, and under mixed radix that set is: the levels
+whose fields lie above are fixed, the level straddling bit 4 keeps an aligned contiguous
+sub-run, and the levels below are free. That is an aligned digit rectangle for EVERY
+admissible span vector, where the interleaved order needed `k^D >= 16` and
+`4 % kappa == 0` to get it.
 
 K6 (`s_l <= B`, an owner inside a level) is enforced where the arm is declared, because
 its failure is a bad arm rather than a bad type.

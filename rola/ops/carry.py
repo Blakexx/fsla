@@ -36,7 +36,7 @@ WINDOW_SMALL = 64
 #: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
 #: moves whenever that source does, which is what makes reading it back off the
 #: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010011
+BUILD_MAGIC = 31010012
 
 MMA_K_QUANTUM = 16
 
@@ -65,25 +65,28 @@ def lattice_of_canonical(widths, k: int, m: int, device="cuda") -> torch.Tensor:
     """``pi``: an ``[N]`` int64 tensor with ``pi[ell] = lambda`` (R0 spec section 2.3).
 
     A permutation, and only a permutation -- `pi` is a fixed BIT PERMUTATION of the
-    leaf index (spec section 2.4), so this tensor is a convenience for the host
-    seam and never a table the device consults.
+    leaf index, so this tensor is a convenience for the host seam and never a table
+    the device consults.  ``lambda = O*BC + local``, with ``O`` the owner index in
+    mixed radix over ``g_l`` and ``local`` the owner's run offsets in mixed radix
+    over ``s_l``: bits ``[o_0 | .. | o_D-1 | r_0 | .. | r_D-1]``.
     """
     D = len(widths)
-    m_l, s, g, bc, _ = box_shape(widths, k, m)
+    _, s, g, bc, _ = box_shape(widths, k, m)
     N = math.prod(widths)
     ell = torch.arange(N, device=device, dtype=torch.int64)
-    lam = torch.zeros_like(ell)
     o_term = torch.zeros_like(ell)
-    u_term = torch.zeros_like(ell)
-    c_term = torch.zeros_like(ell)
+    local = torch.zeros_like(ell)
     for l in range(D):
         stride = math.prod(widths[l + 1:])
         d = (ell // stride) % widths[l]
         o_term += (d // s[l]) * math.prod(g[l + 1:])
-        u_term += ((d % s[l]) // k) * math.prod(m_l[l + 1:])
-        c_term += (d % k) * (k ** (D - 1 - l))
-    lam = o_term * bc + u_term * (k ** D) + c_term
-    return lam
+        #: THE INTRA-BOX ORDER IS MIXED RADIX over the owner's run offsets, most
+        #: significant level first, so each level's digits are CONTIGUOUS in
+        #: ``local`` -- the K33 enabler (`box.cuh`'s `run_of`): a bucket keyed on the
+        #: outermost sparse level's digit owns one contiguous ``BC / s_0``-wide run,
+        #: which at the flagship is exactly one MMA n-tile.
+        local += (d % s[l]) * math.prod(s[l + 1:])
+    return o_term * bc + local
 
 
 def pack_side(levels) -> torch.Tensor:

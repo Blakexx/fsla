@@ -47,7 +47,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010011;
+static constexpr int kCarryBuildMagic = 31010012;
 
 static constexpr int kDv = 64;         // d_v
 static constexpr int kCols = kDv + 1;  // the mass column rides the state
@@ -126,17 +126,23 @@ struct ProduceMap {
   static constexpr int kRowThr = kThreads / C;
   static constexpr int SPT = BP::kBC / kRowThr;
   static constexpr int kJBits = ilog2c(SPT);
-  //: level `l`'s sub-box multiplicity field lies entirely inside the thread's own
-  //: slot index, or entirely above it.  Straddling would break the contiguity.
-  static constexpr bool in_j(int l) { return BP::u_shift(l) + BP::a(l) <= kJBits; }
-  static constexpr bool above_j(int l) { return BP::u_shift(l) >= kJBits; }
-  static constexpr int n_l(int l) { return in_j(l) ? BP::s(l) : K; }
+  //: HOW MANY OF LEVEL `l`'s DIGITS ONE THREAD TOUCHES.  Under the mixed-radix
+  //: order the level's run offset is the bit field at `run_shift(l)`, and the
+  //: thread's own slot index varies exactly the bottom `kJBits` bits, so the count
+  //: is `SPT >> run_shift(l)` clamped into `[1, s_l]`: the whole span when the field
+  //: is below the thread's index, one digit when it is entirely above, and an
+  //: ALIGNED contiguous sub-run when it straddles (the sub-run is aligned because
+  //: `slot0` is a multiple of `SPT`, so its bits below `kJBits` are zero).
+  static constexpr int vary(int l) { return SPT >> BP::run_shift(l); }
+  static constexpr int n_l(int l) {
+    return vary(l) < 1 ? 1 : (vary(l) > BP::s(l) ? BP::s(l) : vary(l));
+  }
   static constexpr int max_n(int l) {
     return l == D ? 1 : (n_l(l) > max_n(l + 1) ? n_l(l) : max_n(l + 1));
   }
   static constexpr int kMaxN = max_n(0);
   //: element of level `l`'s loaded run that unrolled slot `j` wants.
-  static constexpr int idx_of(int l, int j) { return BP::u_of(l, j) * K + BP::c_of(l, j); }
+  static constexpr int idx_of(int l, int j) { return (j >> BP::run_shift(l)) & (n_l(l) - 1); }
 };
 
 //: a contiguous run of `n` bf16, at the widest access that covers it.  The runs are
@@ -194,7 +200,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   static_assert(PM::kRowThr * PM::SPT == BC, "the row's threads cover the box exactly");
   static_assert(PM::SPT % 2 == 0, "a thread publishes whole bf16 pairs");
   static_assert(LdS % 8 == 0 && LdV % 8 == 0, "an ldmatrix row address must be 16-byte aligned");
-  static_assert(BP::kKappa >= 1, "the innermost level supplies the adjacent pair");
+  static_assert(BP::span_bits(D - 1) >= 1, "the innermost level supplies the adjacent pair");
   static_assert(W % kBallotLanes == 0 && kThreads % kBallotLanes == 0,
                 "a warp's tokens must be exactly one ballot word of the owner's row");
 
@@ -365,7 +371,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   int lvCol[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    lvCol[l] = runCol[l] + BP::u_of(l, slot0) * K;
+    lvCol[l] = runCol[l] + BP::run_of(l, slot0);
   });
 
   //: `gain == 0` zeroes the row -- a padding row of a partial batch has no token,
