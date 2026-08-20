@@ -10,7 +10,7 @@ made a device-side NO-OP for the batch-heads it cannot serve. This file gates th
 of that.
 
 Vocabulary, defined here and used unqualified below: **atom** = 16 consecutive leaves in
-canonical order = the page granule; **slot** = the physical page an atom maps to (`-1` =
+LATTICE order = the page granule; **slot** = the physical page an atom maps to (`-1` =
 ABSENT); **needy** = a batch-head whose write atoms it can neither address nor admit;
 **steady step** = one whose write atoms are all resident; **growth step** = one whose are
 not.
@@ -48,6 +48,7 @@ import torch
 
 from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
 from rola.ops.decode import _decode_step, _write_atom_bitmap
+from rola.ops.lattice import to_lattice
 from rola.ops.paging import MMA_K_QUANTUM
 from rola.routing.factors import RouteFactors
 from tests.integration.test_decode_paging import (
@@ -219,7 +220,8 @@ def test_gated_step_then_admit_then_replay_is_bit_identical_to_admitting_first()
 
 
 def _gathered(arena, BH):
-    """`[BH, N, cols]` from the arena's slots -- what the two backings can both hold."""
+    """`[BH, N, cols]` in LATTICE order from the arena's slots -- what the two backings
+    can both hold."""
     table = arena.page_table
     N = table.shape[1] * MMA_K_QUANTUM
     out = torch.zeros(BH, table.shape[1], MMA_K_QUANTUM, _COLS, device="cuda")
@@ -240,15 +242,19 @@ def _sequence():
 
     The prefill leg ran on `rola.rola_op` until the K31 deletion batch removed
     the arm (baseline = tag `baseline/pre-k31`). The state is now SEEDED the
-    facade's own way minus the launch: `_kernel_entry` binds the arena and
-    commits exactly the write atoms the prefill's routing realizes -- the same
-    bitmap the chunk DAG fed it -- and the fp64 oracle's `output_final_state`
-    fills the committed pages, narrowed to the kernel's fp32. What these cells
-    gate (capture, replay, growth) reads the arena's base, table and plane, and
-    none of the three cares which arm deposited the numbers.
+    facade's own way minus the launch: `_kernel_entry` binds the arena and the
+    fp64 oracle's `output_final_state` fills the committed pages, narrowed to
+    the kernel's fp32 and crossed into the lattice leaf order the arena's atoms
+    are cut from. What these cells gate (capture, replay, growth) reads the
+    arena's base, table and plane, and none of the three cares which arm
+    deposited the numbers.
+
+    RESIDENCY IS TOTAL, stated rather than derived: over 16 atoms a 128-token
+    prefill leaves nothing absent, and cell 5 MAKES its growth by dropping an
+    atom from a full plan. A partial seeding bitmap would be a second leaf-order
+    authority for these cells to disagree with.
     """
     import rola
-    from rola.engine.facts import planes
     from rola.ops.naive import naive_rola
     from rola.routing.producer import union_routing
     from tests.conftest import build_routes
@@ -261,8 +267,9 @@ def _sequence():
     v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")
     with torch.no_grad():
         routes = producer(x[:, :_T])
-        bits = planes.atom_bits(planes.pack_side(routes.write),
-                                routes.topology.widths)
+        config = _config(_WIDTHS, dict(B=_B, H=_H))
+        bits = torch.ones(_B * _H, config.N // MMA_K_QUANTUM, dtype=torch.bool,
+                          device="cuda")
         state = rola.state()
         _s_in, arena = state._kernel_entry(routes, bits, d_v=_DV, paging=True,
                                            BC=64)
@@ -271,7 +278,9 @@ def _sequence():
             v[:, :_T], routes.read_simplex(), routes.write, routes.g_read,
             routes.g_write, routes.topology, None, routes.normalization,
             output_final_state=True)
-        atoms = oracle_state.float().reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS)
+        lattice = to_lattice(oracle_state.float(), _WIDTHS, config.lattice_k,
+                             config.lattice_m)
+        atoms = lattice.reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS)
         table = arena.page_table
         present = table >= 0
         arena.state[table[present].long()] = atoms[present]
