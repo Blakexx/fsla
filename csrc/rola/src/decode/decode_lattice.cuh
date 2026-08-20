@@ -74,17 +74,6 @@ __device__ __forceinline__ int ceil_log2_dev(int n) {
   return bits;
 }
 
-//: The write side's own unit: no read slices and no staging offsets, because the
-//: candidate pass asks one question -- which atoms does this step deposit into?
-template <int D>
-struct SubBoxWrite {
-  int owner;
-  int cap;
-  bool valid;
-  bool live;
-  uint32_t cw[D];
-};
-
 //: THE OWNER LISTS: per list and level, the ascending coordinates at which that list's
 //: side has amplitude. `n_o` is the realized count, `bits` its power-of-two padding and
 //: `shift` the padded field's position in the rank, so a rank decomposes by shifts and a
@@ -96,11 +85,9 @@ template <int D>
 __device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const uint32_t* mask_r,
                                                   const uint32_t* mask_w, int32_t* olist,
                                                   int32_t* n_o, int32_t* bits, int32_t* shift,
-                                                  int32_t* units, int32_t* wulist, int32_t* nu,
-                                                  int32_t* nubits, int32_t* nushift,
+                                                  int32_t* units,
                                                   LatticeScan::TempStorage& scan_temp) {
   const int tid = threadIdx.x;
-  const uint32_t kmask = (p.lat_k >= 32) ? 0xffffffffu : ((1u << p.lat_k) - 1u);
 #pragma unroll
   for (int list = 0; list < kLists; ++list) {
 #pragma unroll
@@ -117,24 +104,6 @@ __device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const u
       LatticeScan(scan_temp).ExclusiveSum(live ? 1 : 0, excl, total);
       if (live) olist[list * p.olist_total + p.olist_off[l] + excl] = tid;
       if (tid == 0) n_o[list * kMaxLevels + l] = total;
-      //: The write list's owners carry their own live sub-boxes, compacted the same way:
-      //: a dead sub-box is a page-table probe the candidate pass must not spend.
-      if (list == kListWrite) {
-        if (tid == 0) nubits[l] = 0;
-        __syncthreads();
-        if (live) {
-          const uint32_t ws = level_slice(p, mask_w, l, tid * span, span);
-          int32_t* row = wulist + p.wulist_off[l] + excl * p.lat_m_l[l];
-          int count = 0;
-          for (int u = 0; u < p.lat_m_l[l]; ++u) {
-            if (((ws >> (u * p.lat_k)) & kmask) != 0u) row[count++] = u;
-          }
-          nu[p.olist_off[l] + excl] = count;
-          atomicMax(&nubits[l], count);
-        }
-      }
-      __syncthreads();
-      if (list == kListWrite && tid == 0) nubits[l] = ceil_log2_dev(nubits[l]);
       __syncthreads();
     }
     if (tid == 0) {
@@ -148,56 +117,10 @@ __device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const u
       bool empty = false;
 #pragma unroll
       for (int l = 0; l < D; ++l) empty = empty || n_o[list * kMaxLevels + l] == 0;
-      if (list == kListWrite) {
-        int nacc = 0;
-#pragma unroll
-        for (int l = D - 1; l >= 0; --l) {
-          nushift[l] = nacc;
-          nacc += nubits[l];
-        }
-        units[list] = empty ? 0 : (1 << (acc + nacc));
-      } else {
-        units[list] = empty ? 0 : (1 << (acc + p.lat_msb));
-      }
+      units[list] = empty ? 0 : (1 << (acc + p.lat_msb));
     }
     __syncthreads();
   }
-}
-
-//: ONE CANDIDATE ATOM'S SUB-BOX, resolved from the write side's two compacted tiers.
-//: `valid` is false where either padded field overshoots its realized count -- the price
-//: of decomposing by shifts, and cheaper than the division it replaces.
-template <int D>
-__device__ __forceinline__ SubBoxWrite<D> resolve_write_unit(
-    const DecodeParams& p, const uint32_t* mask_w, const int32_t* wlist, const int32_t* wulist,
-    const int32_t* nu, const int32_t* n_o, const int32_t* bits, const int32_t* shift,
-    const int32_t* nubits, const int32_t* nushift, int rank, int capidx) {
-  SubBoxWrite<D> sb;
-  sb.owner = 0;
-  sb.cap = 0;
-  sb.valid = true;
-  sb.live = true;
-#pragma unroll
-  for (int l = 0; l < D; ++l) {
-    const int i = (rank >> shift[l]) & ((1 << bits[l]) - 1);
-    if (i >= n_o[l]) {
-      sb.valid = false;
-      return sb;
-    }
-    const int j = (capidx >> nushift[l]) & ((1 << nubits[l]) - 1);
-    if (j >= nu[p.olist_off[l] + i]) {
-      sb.valid = false;
-      return sb;
-    }
-    const int o = wlist[p.olist_off[l] + i];
-    const int u = wulist[p.wulist_off[l] + i * p.lat_m_l[l] + j];
-    sb.owner += o * p.lat_gsuf[l];
-    sb.cap += u << p.lat_ushift[l];
-    const int lo = o * p.lat_s[l] + (u << p.lat_kshift);
-    sb.cw[l] = level_slice(p, mask_w, l, lo, p.lat_k);
-    sb.live = sb.live && sb.cw[l] != 0u;
-  }
-  return sb;
 }
 
 //: ONE UNIT of the walk: the (owner, sub-box) pair a rank names, with both sides'
