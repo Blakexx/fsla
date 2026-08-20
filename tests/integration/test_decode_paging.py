@@ -12,7 +12,7 @@ all would be an ADDRESSING difference, and addressing is exact or wrong.
 
 Vocabulary, defined here and used unqualified below: `N` = leaf count; `d_v = 64`;
 `cols = d_v + 1` (the mass column is unconditional); `BH = batch * heads`;
-**atom** = 16 consecutive leaves in canonical leaf order = the page granule
+**atom** = 16 consecutive leaves in LATTICE leaf order = the page granule
 (`rola.ops.paging.MMA_K_QUANTUM`); **slot** = the physical page an atom is mapped to,
 `-1` for an atom no plan committed; `M` = the step's touched-row count.
 
@@ -63,6 +63,7 @@ import pytest
 import torch
 
 from rola.ops.decode import _decode_step, _write_atom_bitmap, derive_decode_geometry
+from rola.ops.lattice import permutation, to_canonical
 from rola.ops.naive import naive_rola
 from rola.ops.paging import MMA_K_QUANTUM, PageArena
 
@@ -102,19 +103,29 @@ def _topology(widths):
     return _build_topology(widths)
 
 
-def _simplex(shape, generator, live=None):
-    """Rows on the simplex, optionally supported on the first `live` digits."""
+def _simplex(shape, generator, live=None, start=0):
+    """Rows on the simplex, optionally supported on the `live` digits from `start`."""
     x = torch.rand(shape, device="cuda", dtype=torch.float64, generator=generator)
     if live is not None:
-        x[..., live:] = 0.0
+        x[..., :start] = 0.0
+        x[..., start + live:] = 0.0
     return x / x.sum(-1, keepdim=True)
 
 
-def _fixture(widths, *, seed, support=1.0, B=2, H=3):
-    """One decode step's inputs: dense read support, `support`-structured write support."""
+def _fixture(widths, *, seed, support=1.0, offset=0.0, B=2, H=3):
+    """One decode step's inputs: dense read support, `support`-structured write support.
+
+    `offset` SLIDES LEVEL 0's live digit window instead of widening every level's, which
+    is what makes two steps reach different atoms: an atom is 16 consecutive LATTICE
+    leaves, so a digit window that stays inside one owner span lands in one sub-box no
+    matter how wide it is, and sliding ONE level moves the sub-box while keeping the
+    touched set small.
+    """
     g = torch.Generator(device="cuda").manual_seed(seed)
     read = tuple(_simplex((B, 1, H, w), g) for w in widths)
-    write = tuple(_simplex((B, 1, H, w), g, live=max(1, int(w * support))) for w in widths)
+    write = tuple(_simplex((B, 1, H, w), g, live=max(1, int(w * support)),
+                           start=int(w * offset) if level == 0 else 0)
+                  for level, w in enumerate(widths))
     g_write = torch.rand((B, 1, H), device="cuda", dtype=torch.float64, generator=g) + 0.5
     v = torch.randn((B, 1, H, _DV), device="cuda", dtype=torch.float64, generator=g)
     return dict(read=read, write=write, g_write=g_write, v=v, B=B, H=H)
@@ -133,11 +144,13 @@ def _config(widths, fixture):
         BH=fixture["B"] * fixture["H"], device="cuda")
 
 
-def _leaf_support(levels, widths):
-    """`[BH, N]` bool from the DEFINITION -- every level's digit exact-nonzero.
+def _leaf_support(levels, widths, config):
+    """`[BH, N]` bool from the DEFINITION, in LATTICE order -- the plane's own order.
 
     `schedule.py`'s `write_mask` at leaf granularity, in torch, so the derivation under
-    test is checked against the definition and not against a second copy of itself.
+    test is checked against the definition and not against a second copy of itself. The
+    definition is CANONICAL; `pi` is applied here because an atom is 16 consecutive
+    LATTICE leaves.
     """
     B, _T, H, _W = levels[0].shape
     N = math.prod(widths)
@@ -148,7 +161,10 @@ def _leaf_support(levels, widths):
         digit = (index // strides[level]) % width
         folded = levels[level].permute(0, 2, 1, 3).reshape(B * H, width)
         mask &= folded[:, digit] != 0
-    return mask
+    pi = permutation(widths, config.lattice_k, config.lattice_m, device=mask.device)
+    lattice = torch.empty_like(mask)
+    lattice.index_copy_(1, pi, mask)
+    return lattice
 
 
 def _arena(widths, BC, BH, pool_slack=0.0):
@@ -157,7 +173,7 @@ def _arena(widths, BC, BH, pool_slack=0.0):
 
 
 def _seed_from_dense(arena, dense):
-    """Copy a dense `[BH, N, cols]` state into the arena's committed slots."""
+    """Copy a dense `[BH, N, cols]` LATTICE-order state into the arena's committed slots."""
     arena.wait()
     BH, N, cols = dense.shape
     atoms = dense.reshape(BH * (N // MMA_K_QUANTUM), MMA_K_QUANTUM, cols)
@@ -167,7 +183,8 @@ def _seed_from_dense(arena, dense):
 
 
 def _dense_masked_to(arena, dense):
-    """`dense` with every NON-resident atom zeroed -- what the arena can represent.
+    """A LATTICE-order `dense` with every NON-resident atom zeroed -- what the arena
+    can represent.
 
     The two backings can only agree where both hold something, and an absent atom holds
     nothing. Zeroing rather than skipping the comparison is deliberate: it makes the
@@ -199,7 +216,7 @@ def test_the_step_write_atom_set_is_exact(arm, support):
     _v, _read, write, _gw = _f32(fixture)
 
     got = _write_atom_bitmap(write, config)
-    want = _leaf_support(write, widths).view(
+    want = _leaf_support(write, widths, config).view(
         -1, config.N // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)
     assert torch.equal(got, want), "the step's write-atom set is not the write support"
     if _SUPPORTS[support] < 1.0:
@@ -317,8 +334,8 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     widths, BC = arm
     config = _config(widths, _fixture(widths, seed=0))
     BH = 2 * 3
-    first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.25)
-    second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5)
+    first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
+    second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
 
     bits = [_write_atom_bitmap(_f32(step)[2], config) for step in (first, second)]
     new_atoms = int((bits[1] & ~bits[0]).sum())
@@ -365,7 +382,8 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
             step["v"], step["read"], step["write"], None, step["g_write"],
             _topology(widths), None, "global",
             initial_state=ref_state, output_final_state=True)
-    state = arena.materialize().view(2, 3, config.N, _COLS)
+    state = to_canonical(arena.materialize(), widths, config.lattice_k,
+                         config.lattice_m).view(2, 3, config.N, _COLS)
     scale_y = max(1e-30, float(y_ref.abs().max()))
     scale_s = max(1e-30, float(ref_state.abs().max()))
     err_y = float((ys[-1].double() - y_ref).abs().max()) / scale_y
@@ -388,8 +406,8 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
     widths, BC = arm
     config = _config(widths, _fixture(widths, seed=0))
     BH = 2 * 3
-    first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.25)
-    second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5)
+    first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
+    second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
     bits = [_write_atom_bitmap(_f32(step)[2], config) for step in (first, second)]
     assert int((bits[1] & ~bits[0]).sum()) > 0, "the second step grows nothing here"
 
@@ -422,7 +440,8 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
             step["v"], step["read"], step["write"], None, step["g_write"],
             _topology(widths), None, "global",
             initial_state=ref_state, output_final_state=True)
-    state = pooled.materialize().view(2, 3, config.N, _COLS)
+    state = to_canonical(pooled.materialize(), widths, config.lattice_k,
+                         config.lattice_m).view(2, 3, config.N, _COLS)
     err_y = float((ys["pool"][-1].double() - y_ref).abs().max()) / max(
         1e-30, float(y_ref.abs().max()))
     err_s = float((state.double() - ref_state).abs().max()) / max(
