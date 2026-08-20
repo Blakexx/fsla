@@ -29,10 +29,16 @@ constexpr int kThreads = 128;
 constexpr int kTiles = kWindow / kTile;
 constexpr int kSlabsPerLevel = kLevelWidth / kSlabDigits;
 constexpr int kMaskWords = kLevelWidth / 32;
+//: THE PIPELINE STAGE IS WIDER THAN THE MMA's CONTRACTION STEP.  A stage is one
+//: cp.async fill and one pair of barriers; four `kSlabDigits` steps ride it, so
+//: the barrier count per tile-pair is the stage count, not the MMA-step count.
+constexpr int kStageDigits = 64;
+constexpr int kSlabsPerStage = kStageDigits / kSlabDigits;
+constexpr int kStagesPerLevel = kLevelWidth / kStageDigits;
 //: The operand rows are padded so the eight row addresses ldmatrix reads per
 //: 8x8 tile land in eight distinct banks; the pad is in elements and keeps every
 //: row base 16-byte aligned, which cp.async requires.
-constexpr int kOperandPitch = kSlabDigits + 8;
+constexpr int kOperandPitch = kStageDigits + 8;
 constexpr int kValuePitch = kValueWidth + 8;
 
 struct IntraParams {
@@ -126,16 +132,29 @@ __device__ __forceinline__ bool slab_live(const IntraSmem<D>& sm, uint32_t modes
 
 template <int D>
 __device__ __forceinline__ void stage_slabs(IntraSmem<D>& sm, const IntraParams& p, int bh,
-                                            int wbase, int rt, int ct, int l, int slab, int buf,
+                                            int wbase, int rt, int ct, int l, int stage, int buf,
                                             int tid) {
   const int token = tid >> 1;
-  const int part = (tid & 1) * 8;
-  const int digit = l * kLevelWidth + slab * kSlabDigits + part;
+  const int part = (tid & 1) * (kStageDigits / 2);
+  const int digit = l * kLevelWidth + stage * kStageDigits + part;
   const long long row = (long long)(bh * p.L + wbase + token) * p.row_width + digit;
-  stage_tile(smem_addr(&sm.rslab[buf][token][part]),
-             p.pread + row + (long long)rt * kTile * p.row_width);
-  stage_tile(smem_addr(&sm.wslab[buf][token][part]),
-             p.pwrite + row + (long long)ct * kTile * p.row_width);
+  const __nv_bfloat16* rsrc = p.pread + row + (long long)rt * kTile * p.row_width;
+  const __nv_bfloat16* wsrc = p.pwrite + row + (long long)ct * kTile * p.row_width;
+#pragma unroll
+  for (int c = 0; c < kStageDigits / 16; ++c) {
+    stage_tile(smem_addr(&sm.rslab[buf][token][part + c * 8]), rsrc + c * 8);
+    stage_tile(smem_addr(&sm.wslab[buf][token][part + c * 8]), wsrc + c * 8);
+  }
+}
+
+template <int D>
+__device__ __forceinline__ bool stage_live(const IntraSmem<D>& sm, uint32_t modes, int rt, int ct,
+                                           int l, int stage) {
+  bool any = false;
+#pragma unroll
+  for (int sub = 0; sub < kSlabsPerStage; ++sub)
+    any = any || slab_live<D>(sm, modes, rt, ct, l, stage * kSlabsPerStage + sub);
+  return any;
 }
 
 template <int D>
@@ -182,7 +201,7 @@ __global__ __launch_bounds__(kThreads) void intra_kernel(IntraParams p) {
     for (int ct = 0; ct <= rt; ++ct) {
       __syncthreads();
       stage_values<D>(sm, p, bh, wbase, ct, tid);
-      bool live = slab_live<D>(sm, p.modes, rt, ct, 0, 0);
+      bool live = stage_live<D>(sm, p.modes, rt, ct, 0, 0);
       if (live) stage_slabs<D>(sm, p, bh, wbase, rt, ct, 0, 0, 0, tid);
       stage_commit();
 
@@ -197,13 +216,13 @@ __global__ __launch_bounds__(kThreads) void intra_kernel(IntraParams p) {
 #pragma unroll
       for (int l = 0; l < D; ++l) {
 #pragma unroll
-        for (int slab = 0; slab < kSlabsPerLevel; ++slab) {
-          const int step = l * kSlabsPerLevel + slab;
-          const int nl = (slab + 1 == kSlabsPerLevel) ? l + 1 : l;
-          const int ns = (slab + 1 == kSlabsPerLevel) ? 0 : slab + 1;
+        for (int stage = 0; stage < kStagesPerLevel; ++stage) {
+          const int step = l * kStagesPerLevel + stage;
+          const int nl = (stage + 1 == kStagesPerLevel) ? l + 1 : l;
+          const int ns = (stage + 1 == kStagesPerLevel) ? 0 : stage + 1;
           bool next_live = false;
           if (nl < D) {
-            next_live = slab_live<D>(sm, p.modes, rt, ct, nl, ns);
+            next_live = stage_live<D>(sm, p.modes, rt, ct, nl, ns);
             if (next_live) stage_slabs<D>(sm, p, bh, wbase, rt, ct, nl, ns, (step + 1) & 1, tid);
           }
           stage_commit();
@@ -211,16 +230,21 @@ __global__ __launch_bounds__(kThreads) void intra_kernel(IntraParams p) {
           __syncthreads();
           if (live) {
             const int buf = step & 1;
-            uint32_t af[4];
-            load_frag(af, smem_addr(&sm.rslab[buf][arow][acol]));
 #pragma unroll
-            for (int jn = 0; jn < 4; ++jn) {
-              uint32_t bf[4];
-              load_frag(bf, smem_addr(&sm.wslab[buf][jn * 16 + (lane & 15)][acol]));
-              const uint32_t b0[2] = {bf[0], bf[2]};
-              const uint32_t b1[2] = {bf[1], bf[3]};
-              mma(gram[l][2 * jn], af, b0);
-              mma(gram[l][2 * jn + 1], af, b1);
+            for (int sub = 0; sub < kSlabsPerStage; ++sub) {
+              if (!slab_live<D>(sm, p.modes, rt, ct, l, stage * kSlabsPerStage + sub)) continue;
+              const int k0 = sub * kSlabDigits + acol;
+              uint32_t af[4];
+              load_frag(af, smem_addr(&sm.rslab[buf][arow][k0]));
+#pragma unroll
+              for (int jn = 0; jn < 4; ++jn) {
+                uint32_t bf[4];
+                load_frag(bf, smem_addr(&sm.wslab[buf][jn * 16 + (lane & 15)][k0]));
+                const uint32_t b0[2] = {bf[0], bf[2]};
+                const uint32_t b1[2] = {bf[1], bf[3]};
+                mma(gram[l][2 * jn], af, b0);
+                mma(gram[l][2 * jn + 1], af, b1);
+              }
             }
           }
           live = next_live;
