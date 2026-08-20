@@ -384,6 +384,8 @@ SOURCES = [
     #: K31 R1 -- the box-native carry family, its own TU, no shipped dispatch
     #: reaches it.
     "csrc/rola/src/carry/carry.cu",
+    #: K31 R4 -- the reverse carry family (Scan A and Scan B), its own TU.
+    "csrc/rola/src/carry/backward.cu",
     # K31 R2: the standalone deterministic intra kernel, one TU.
     "csrc/rola/src/intra/intra.cu",
 ]

@@ -28,6 +28,21 @@ torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t
 std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t m, int64_t window,
                                  int64_t chunk, int64_t carve);
 
+//: R4's TWO REVERSE SCANS, launched concurrently: `(d_pr, d_pw, d_gw, d_v,
+//: d_state_in, replay)`.  `vt`/`dn` are the pre-packed `[BH, L, cols-padded]` bf16
+//: value and seed planes; `replay` is Scan A's slab, empty unless asked for.
+std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
+                                          torch::Tensor vt, torch::Tensor dn,
+                                          std::vector<int64_t> widths, int64_t k, int64_t m,
+                                          int64_t window, int64_t chunk,
+                                          c10::optional<torch::Tensor> s_in,
+                                          c10::optional<torch::Tensor> ds_out, bool want_replay);
+
+//: the reverse family's own device stamp plus a PER-KERNEL census: registers, local
+//: bytes, SMEM, ring depth, CTA target and the declared floor, Scan A then Scan B.
+std::vector<int64_t> backward_build_stamp(std::vector<int64_t> widths, int64_t k, int64_t m,
+                                          int64_t window, int64_t chunk);
+
 //: the built (widths, k, m, W, C, carve) tuples.
 std::vector<std::vector<int64_t>> arms();
 

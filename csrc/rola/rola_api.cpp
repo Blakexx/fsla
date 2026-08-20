@@ -74,6 +74,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("carry_owner_rows", &rola::carry::owner_rows,
         "K31 carry kernel: the owner ballot rows at the lattice's spans");
   m.def("carry_arms", &rola::carry::arms, "K31 carry kernel: the built arms");
+  // ---- K31 R4: the reverse carry family, two concurrent scans ------------
+  m.def("carry_backward_inter", &rola::carry::backward_inter,
+        "K31 R4: the cross-window reverse pass -- (d_pr, d_pw, d_gw, d_v, d_state_in, "
+        "replay), with zero state snapshots",
+        py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("vt"), py::arg("dn"),
+        py::arg("widths"), py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"),
+        py::arg("s_in") = py::none(), py::arg("ds_out") = py::none(),
+        py::arg("want_replay") = false);
+  m.def("carry_backward_stamp", &rola::carry::backward_build_stamp,
+        "K31 R4: device-side build identity + the per-kernel census", py::arg("widths"),
+        py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"));
   m.def("chunk_arms", &rola::chunk::arms,
         "facts: the built (C, BC, D, B) dispatch vocabulary with plan quantities");
 

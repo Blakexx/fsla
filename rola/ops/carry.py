@@ -37,6 +37,9 @@ WINDOW_SMALL = 64
 #: DEVICE an extension-trap check rather than a path check.
 BUILD_MAGIC = 31010013
 
+#: the reverse family's own device magic, mirrored from `backward_kernel.cuh`.
+BWD_BUILD_MAGIC = 31040001
+
 MMA_K_QUANTUM = lattice.MMA_K_QUANTUM
 
 
@@ -121,3 +124,54 @@ def build_stamp(widths, k, m, window, chunk, carve):
 
 def arms():
     return extension().carry_arms()
+
+
+#: THE REVERSE PASS'S PRE-PACKED PLANE WIDTH.  The value and seed rows are handed to
+#: the two scans `cols`-wide and zero-padded to whole MMA n-tiles, so one staging body
+#: serves both and the mass channel is an ordinary column rather than a carve.
+BWD_COLS_PAD = 72
+BWD_LD = 80
+
+
+def pack_cols(main: torch.Tensor, last) -> torch.Tensor:
+    """``[BH, L, d_v]`` plus a last column as one ``[BH, L, BWD_LD]`` bf16 plane.
+
+    ``last`` is either a ``[BH, L]`` tensor (the seed's ``d_den``) or a scalar (the
+    value's ones column). Everything past ``d_v + 1`` is zero, which is what lets the
+    kernels read the final n-tile with no partial-tile path.
+    """
+    bh, length, d_v = main.shape
+    out = torch.zeros((bh, length, BWD_LD), dtype=torch.bfloat16, device=main.device)
+    out[:, :, :d_v] = main.to(torch.bfloat16)
+    if torch.is_tensor(last):
+        out[:, :, d_v] = last.to(torch.bfloat16)
+    else:
+        out[:, :, d_v] = float(last)
+    return out
+
+
+def carry_backward(read_levels, write_levels, g_write, v, d_num, d_den, widths, *, k: int,
+                   m: int, window: int, chunk: int = 32, state_in=None, d_state_out=None,
+                   want_replay: bool = False):
+    """The CROSS-WINDOW reverse pass: ``(d_pr, d_pw, d_gw, d_v, d_state_in, replay)``.
+
+    ``d_num``/``d_den`` are the seeds the op seam forms from the division's backward,
+    shaped like the forward's ``num``/``den``. ``d_pr``/``d_pw`` are
+    ``[BH, T, sum_l width_l]`` fp32 on the packed amplitude layout, ``d_v`` is
+    ``[BH, T, d_v]``, ``d_gw`` is ``[BH, T]``, and ``d_state_in``/``replay`` are
+    ``[BH, N/16, 16, d_v+1]`` fp32 in LATTICE leaf order.
+    """
+    pr = pack_side(read_levels)
+    pw = pack_side(write_levels)
+    gw = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
+    gw = gw.reshape(gw.shape[0] * gw.shape[1], -1)
+    bn, t, h, d_v = v.shape
+    vt = pack_cols(v.permute(0, 2, 1, 3).reshape(bn * h, t, d_v), 1.0)
+    dn = pack_cols(d_num, d_den)
+    return extension().carry_backward_inter(
+        pr, pw, gw, vt, dn, list(widths), int(k), int(m), int(window), int(chunk),
+        state_in, d_state_out, bool(want_replay))
+
+
+def backward_stamp(widths, k, m, window, chunk):
+    return extension().carry_backward_stamp(list(widths), int(k), int(m), int(window), int(chunk))
