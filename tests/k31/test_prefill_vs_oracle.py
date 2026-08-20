@@ -45,6 +45,13 @@ DENSE = (intra_ops.DENSE_BOTH, intra_ops.DENSE_BOTH)
 #: sparse side ALTERNATES, so the two sides' clause sets are different level
 #: subsets -- what the two-sided schedule exists for.
 ALT = (intra_ops.WRITE_SPARSE, intra_ops.READ_SPARSE)
+#: ALL-WRITE-SPARSE: entmax on BOTH write levels, a softmax (dense) read side.
+#: The read side then has NO sparse level -- which under K33 is the trivial
+#: one-bucket readout -- and the write side is sparse at two levels at once, the
+#: multi-level distribution the exactness claim has to survive.
+WRITE_BOTH = (intra_ops.WRITE_SPARSE, intra_ops.WRITE_SPARSE)
+#: ONE-SPARSE-READ: a single entmax read level and nothing else sparse.
+READ_ONE = (intra_ops.READ_SPARSE, intra_ops.DENSE_BOTH)
 
 
 def cell(T, modes, k_tok=None, clustered=False, seed=0, d_v=64, device="cuda"):
@@ -96,6 +103,8 @@ CELLS = [
     ("alt-k16-W512", 2048, 512, ALT, 16, False),
     ("alt-k4-cohort64-W512", 2048, 512, ALT, 4, 64),
     ("alt-k16-cohort64-W384", 1920, 384, ALT, 16, 64),
+    ("write-both-k4-W512", 2048, 512, WRITE_BOTH, 4, False),
+    ("read-one-k4-W512", 2048, 512, READ_ONE, 4, False),
 ]
 
 

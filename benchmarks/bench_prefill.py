@@ -44,6 +44,11 @@ D_V = 64
 
 DENSE = (intra_ops.DENSE_BOTH, intra_ops.DENSE_BOTH)
 ALT = (intra_ops.WRITE_SPARSE, intra_ops.READ_SPARSE)
+#: entmax on BOTH write levels against a dense (softmax) read side, and a single
+#: entmax read level against everything else dense.  Both are STRUCTURES, declared
+#: per level; neither is a distribution the kernel is told about.
+WRITE_BOTH = (intra_ops.WRITE_SPARSE, intra_ops.WRITE_SPARSE)
+READ_ONE = (intra_ops.READ_SPARSE, intra_ops.DENSE_BOTH)
 
 
 def median_ms(fn, warmup=2, reps=REPS):
@@ -95,6 +100,9 @@ CELLS = [
     ("ALT k_tok=4 scattered", ALT, 4, None),
     ("ALT k_tok=16 cohort=64", ALT, 16, 64),
     ("ALT k_tok=4 cohort=64", ALT, 4, 64),
+    ("write-both k_tok=16 scat", WRITE_BOTH, 16, None),
+    ("write-both k_tok=4 scat", WRITE_BOTH, 4, None),
+    ("read-one k_tok=4 scat", READ_ONE, 4, None),
 ]
 
 
