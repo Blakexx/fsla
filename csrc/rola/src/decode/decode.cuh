@@ -60,12 +60,12 @@ constexpr int kDecodeMaxSubBox = 64;
 //: than a hope: `__launch_bounds__` turns it into a register cap the assembler must meet,
 //: and the census is what proves it met it without spilling. The walk is a latency-bound
 //: stream over state rows, so residency is the one thing it trades registers FOR. TWO
-//: TEMPLATE AXES MOVE IT, each by one CTA: the DECAY arm carries a second per-leaf
-//: product and a survival exponential through the same loop, and the DEEPEST arm carries
-//: three more live registers per level (the staging offset and both sides' intra-sub-box
-//: slices) through the same one. docs/internals/decode/decode.md#declared-residency
+//: TEMPLATE AXES MOVE IT, each by one CTA, and neither is a measured size: the DECAY arm
+//: carries a second per-leaf product and a survival exponential through the same loop,
+//: and a DEEP arm carries per-level slice registers through both the walk's unit and the
+//: candidate pass's. docs/internals/decode/decode.md#declared-residency
 __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
-  return (decay || levels >= kMaxLevels) ? 4 : 5;
+  return 5 - (decay ? 1 : 0) - (levels >= 3 ? 1 : 0);
 }
 
 //: THE PAGE GRANULE, `page_states := MMA_K_QUANTUM`, mirrored here because
@@ -138,6 +138,10 @@ struct DecodeParams {
   //: The union owner-coordinate lists' layout: `lat_g[l]` entries reserved per level.
   int olist_off[kMaxLevels];
   int olist_total;
+  //: The write side's live SUB-BOX lists, `lat_g[l] * lat_m_l[l]` entries per level. The
+  //: candidate atoms enumerate a product at BOTH lattice tiers, not just the owner one.
+  int wulist_off[kMaxLevels];
+  int wulist_total;
   //: Atoms per sub-box as a shift, `log2(lat_sub / kAtomLeaves)`. PAGED BACKING ONLY -- the host refuses a
   //: page table under a lattice whose sub-box is thinner than an atom, because then an
   //: atom would straddle two sub-boxes and the claim's enumeration would not be an
@@ -227,7 +231,7 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 // ---------------------------------------------------------------------------
 
 size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int olist_total);
+                              int olist_total, int wulist_total);
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
 
 }  // namespace decode

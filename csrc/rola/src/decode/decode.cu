@@ -100,6 +100,8 @@ decode_step_kernel(DecodeParams p) {
   uint32_t* mask_r = reinterpret_cast<uint32_t*>(fold + kDecodeWarps * (cols + 3));
   uint32_t* mask_w = mask_r + p.mask_total;
   int32_t* olist = reinterpret_cast<int32_t*>(mask_w + p.mask_total);
+  int32_t* wulist = olist + kLists * p.olist_total;
+  int32_t* s_nu = wulist + p.wulist_total;
 
   __shared__ float part[cols + 3];
   __shared__ float s_sum[kMaxLevels];
@@ -109,6 +111,8 @@ decode_step_kernel(DecodeParams p) {
   __shared__ int s_bits[kLists * kMaxLevels];
   __shared__ int s_shift[kLists * kMaxLevels];
   __shared__ int s_units[kLists];
+  __shared__ int s_nubits[kMaxLevels];
+  __shared__ int s_nushift[kMaxLevels];
   __shared__ int s_last_cta;
 
   // ---- THE FOLD: every per-token operand, widened and staged, by this CTA ------
@@ -157,7 +161,8 @@ decode_step_kernel(DecodeParams p) {
   build_digit_mask<D>(p, sa_r, mask_r);
   build_digit_mask<D>(p, sa_w, mask_w);
   __syncthreads();
-  build_owner_lists<D>(p, mask_r, mask_w, olist, s_n_o, s_bits, s_shift, s_units, scan_temp);
+  build_owner_lists<D>(p, mask_r, mask_w, olist, s_n_o, s_bits, s_shift, s_units, wulist, s_nu,
+                       s_nubits, s_nushift, scan_temp);
 
   const int units = s_units[kListUnion];
   const int k = p.lat_k;
@@ -171,11 +176,17 @@ decode_step_kernel(DecodeParams p) {
   //: refuses a paged lattice where it does not), so membership is one bit per level the
   //: atom FIXES and the levels it leaves free are already in `live_w`.
   //: docs/internals/decode/decode.md#candidate-atoms
+  int nubits_total = 0;
+#pragma unroll
+  for (int l = 0; l < D; ++l) nubits_total += s_nubits[l];
+
   auto candidate_atom = [&](int i) -> int {
     const int a = i & ((1 << p.atoms_per_sub_shift) - 1);
-    const SubBox<D> sb = resolve_unit<D>(p, mask_r, mask_w, wlist, s_n_o + woff, s_bits + woff,
-                                         s_shift + woff, i >> p.atoms_per_sub_shift);
-    bool live = sb.valid && sb.live_w;
+    const int rest = i >> p.atoms_per_sub_shift;
+    const SubBoxWrite<D> sb = resolve_write_unit<D>(
+        p, mask_w, wlist, wulist, s_nu, s_n_o + woff, s_bits + woff, s_shift + woff, s_nubits,
+        s_nushift, rest >> nubits_total, rest & ((1 << nubits_total) - 1));
+    bool live = sb.valid && sb.live;
 #pragma unroll
     for (int l = 0; l < D; ++l) {
       if (p.lat_cshift[l] >= kAtomShift) {
@@ -529,10 +540,11 @@ decode_step_kernel(DecodeParams p) {
 }  // namespace detail
 
 size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int olist_total) {
+                              int olist_total, int wulist_total) {
   const size_t amps = static_cast<size_t>(total_rows) * (decay ? 3 : 2);
   const size_t fold = static_cast<size_t>(kDecodeWarps) * (cols + 3);
-  const size_t tables = 2 * static_cast<size_t>(mask_total) + 2 * static_cast<size_t>(olist_total);
+  const size_t tables = 2 * static_cast<size_t>(mask_total) + 3 * static_cast<size_t>(olist_total)
+                        + static_cast<size_t>(wulist_total);
   return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
 }
 
@@ -542,8 +554,8 @@ void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem
   //: interesting part: docs/internals/decode/decode.md#instantiation-matrix
   TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
   const int cols = d_v + 1;
-  const size_t smem =
-      decode_step_smem_bytes(p.total_rows, d_v, cols, decay, p.mask_total, p.olist_total);
+  const size_t smem = decode_step_smem_bytes(p.total_rows, d_v, cols, decay, p.mask_total,
+                                             p.olist_total, p.wulist_total);
   TORCH_CHECK(static_cast<int64_t>(smem) <= smem_budget, "the decode step's staged operands need ",
               smem, " B of shared memory against a per-block budget of ", smem_budget,
               " B; sum_l width_l = ", p.total_rows,
@@ -675,15 +687,19 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
 
   int mask_total = 0;
   int olist_total = 0;
+  int wulist_total = 0;
   for (int l = 0; l < D; ++l) {
     p.mask_off[l] = mask_total;
     p.mask_words[l] = ceil_div_int(p.level_width[l], 32);
     mask_total += p.mask_words[l];
     p.olist_off[l] = olist_total;
     olist_total += p.lat_g[l];
+    p.wulist_off[l] = wulist_total;
+    wulist_total += p.lat_g[l] * p.lat_m_l[l];
   }
   p.mask_total = mask_total;
   p.olist_total = olist_total;
+  p.wulist_total = wulist_total;
   p.atoms_per_sub_shift =
       p.lat_sub >= kAtomLeaves ? ilog2_exact(p.lat_sub / kAtomLeaves, "atoms per sub-box") : 0;
 }
