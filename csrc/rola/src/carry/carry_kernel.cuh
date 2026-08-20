@@ -355,13 +355,23 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   using WPM = PanelMap<D, B, K, M, G::kGrp, WK>;
 
   constexpr int BC = BP::kBC;
-  constexpr int NDV = BC / kMmaN;  // the state's n-tiles (leaves)
+  constexpr int NDV = BC / kMmaN;  // the box's n-tiles (leaves)
+  //: THE OWNERSHIP GRAIN (wave 2).  A warp owns a contiguous LATTICE-LOCAL run of
+  //: `kBCW` leaves and ALL `kDv` channels -- the carve that makes a fold bucket
+  //: warp-private, since the fold keys level zero and a level-zero bucket is a
+  //: contiguous run of whole state tiles.  The slab does not grow: the carve
+  //: ROTATES it (16 channels x 128 leaves and 64 channels x 32 leaves are the same
+  //: 2048 accumulator floats), and the readout is untouched by the rotation because
+  //: its `A` operand transits the SMEM state image, not the registers.
   constexpr int kGrp = G::kGrp, kCap = G::kCap;
   constexpr int NBR = RS::kSpan, PR = RS::kWidth, PRP = G::PRP;
   constexpr int NBW = WS::kSpan, PW = WS::kWidth;
   constexpr int LdImg = G::LdImg, LdRP = G::LdRP, LdWP = G::LdWP;
   constexpr int LdV = G::LdV, LdO = G::LdO;
-  constexpr int kMassTiles = NDV / kWarps;
+  constexpr int kBCW = BC / kWarps;   // the warp's leaves
+  constexpr int NDVW = kBCW / kMmaN;  // its state n-tiles
+  constexpr int MDV = kDv / kMmaM;    // the channel m-tiles it now spans
+  constexpr int kMassTiles = NDVW;
   constexpr int kListStride = G::kListStride;
 
   //: THE FOLD KEYS THE OUTERMOST LEVEL, AND ONLY IT.  A bucket's leaves are a
@@ -372,6 +382,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   static_assert(WK < 0 || WK == 0, "the fold keys the outermost level only");
   static_assert(PW % kMmaN == 0, "a fold bucket is a whole number of state tiles");
   static_assert(BC % kMmaN == 0 && NDV % kWarps == 0, "the box tiles the mass carve");
+  static_assert(kBCW % kMmaN == 0 && kDv % kMmaM == 0, "the warp owns whole state tiles");
   static_assert(kThreads % kGrp == 0, "the drain group's threads divide");
   static_assert(BC % kAtomLeaves == 0, "K2: an owner holds whole page atoms");
   static_assert(design::smem_fits(G::bytes), "this arm does not fit the SMEM maximum");
@@ -455,14 +466,18 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   const int rA = lr + 8 * (tl & 1), cA = 8 * (tl >> 1);
   const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
-  const int chan0 = warp * kMmaM;  // the warp's channel origin
+  //: the warp's LEAF origin.  Its channel origin is zero: it holds every channel.
+  const int leaf0 = warp * kBCW;
+  const int chan0 = warp * kMmaM;  // the READOUT's channel tile (carve-independent)
 
   const uint32_t aImg = smem_addr(simg) + (uint32_t)((warp * kMmaM + rA) * LdImg + cA) * 2;
   const uint32_t aMass = smem_addr(smass) + (uint32_t)cA * 2;
   const uint32_t bRP = smem_addr(srp) + (uint32_t)(rT * LdRP + cT * 8) * 2;
   const uint32_t bWP = smem_addr(swp) + (uint32_t)(rF * LdWP + cF * 8) * 2;
   const uint32_t bWP2 = smem_addr(swp) + (uint32_t)((lane & 15) * LdWP) * 2;
-  const uint32_t aV = smem_addr(sv) + (uint32_t)(rT * LdV + cT * 8 + chan0) * 2;
+  //: the fold's `A` operand walks the CHANNEL m-tiles now, so its base carries no
+  //: channel origin and the tile's offset is added at the load.
+  const uint32_t aV = smem_addr(sv) + (uint32_t)(rT * LdV + cT * 8) * 2;
   constexpr uint32_t kRpSlot = (uint32_t)(kGrp * LdRP) * 2;
   constexpr uint32_t kWpSlot = (uint32_t)(kGrp * LdWP) * 2;
   constexpr uint32_t kVSlot = (uint32_t)(kGrp * LdV) * 2;
@@ -473,15 +488,17 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 #define ADDR_V(b_, R_) ((b_) + (uint32_t)((R_) * LdV * 2))
 
   // ---- the state, transposed: m = channels, n = this warp's leaves ---------
-  float st[NDV][4];
+  float st[MDV][NDVW][4];
 #pragma unroll
-  for (int j = 0; j < NDV; ++j)
+  for (int m = 0; m < MDV; ++m)
 #pragma unroll
-    for (int e = 0; e < 4; ++e) st[j][e] = 0.f;
-  //: THE MASS CHANNEL'S CARVE.  One channel cannot be split along the channel
-  //: axis, so it is split along the axis the mma leaves free -- the leaves, one
-  //: state TILE at a time, so a K33 fold bucket (which owns whole tiles) names its
-  //: mass owner with a compile-time expression.
+    for (int j = 0; j < NDVW; ++j)
+#pragma unroll
+      for (int e = 0; e < 4; ++e) st[m][j][e] = 0.f;
+  //: THE MASS CHANNEL RIDES THE WARP'S OWN TILES.  Under the ownership carve the
+  //: leaves are already the carved axis, so the mass -- the one channel that cannot
+  //: be split along channels -- needs no separate distribution and no predicate:
+  //: a warp accumulates the mass of exactly the tiles it owns.
   float mass_st[kMassTiles][4];
 #pragma unroll
   for (int j = 0; j < kMassTiles; ++j)
@@ -514,8 +531,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   };
   const uint32_t atomBase = (uint32_t)(bh * (int)(BP::kLeaves / kAtomLeaves) + owner * kAtoms);
   auto page_off = [](uint32_t atom) { return atom * (uint32_t)(kPageElems * (int)sizeof(float)); };
-  auto page_value = [&](int p, int k) {
-    return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + chan0 + (lane >> 2) + 8 * (k >> 1);
+  auto page_value = [&](int m, int p, int k) {
+    return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + m * kMmaM + (lane >> 2) + 8 * (k >> 1);
   };
   auto page_mass = [&](int p, int k) { return (p * 8 + lane * 2 + k) * LdO + kDv; };
 
@@ -533,11 +550,18 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         rendezvous();
 #pragma unroll
         for (int p = 0; p < 2; ++p) {
+          //: the page is swept by the whole CTA and read by the tile's OWNER.  `a`
+          //: and `p` are unrolled, so the owning warp and the LOCAL tile index are
+          //: both constant expressions -- which is what keeps `st` a register array.
+          if ((2 * a + p) / NDVW == warp) {
 #pragma unroll
-          for (int k = 0; k < 4; ++k) st[2 * a + p][k] = so[page_value(p, k)];
-          if (warp == (2 * a + p) % kWarps && lane < 4) {
+            for (int m = 0; m < MDV; ++m)
 #pragma unroll
-            for (int k = 0; k < 2; ++k) mass_st[(2 * a + p) / kWarps][k] = so[page_mass(p, k)];
+              for (int k = 0; k < 4; ++k) st[m][(2 * a + p) % NDVW][k] = so[page_value(m, p, k)];
+            if (lane < 4) {
+#pragma unroll
+              for (int k = 0; k < 2; ++k) mass_st[(2 * a + p) % NDVW][k] = so[page_mass(p, k)];
+            }
           }
         }
         rendezvous();
@@ -585,25 +609,35 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: A operand is one `ldmatrix`.  On sm_90 this image is exactly the SMEM-resident
   //: A operand `wgmma` requires, so the substitute is also the portable form.
   auto build_image = [&]() {
-    __nv_bfloat16* const iw = simg + warp * kMmaM * LdImg;
+    //: UNDER THE OWNERSHIP CARVE THE IMAGE IS WRITTEN COLUMN-WISE.  A warp holds
+    //: every channel of `kBCW` leaves, so it fills all `kDv` image ROWS at its own
+    //: `kBCW` columns -- where the channel carve filled its own 16 rows at every
+    //: column.  Same bytes, same map `img_of`, transposed writer.
     if constexpr (kLeafPair) {
 #pragma unroll
-      for (int t = 0; t < NDV; ++t) {
-        const int c0 = RS::img_of(t * kMmaN + (lane & 3) * 2);
-        *reinterpret_cast<uint32_t*>(&iw[(lane >> 2) * LdImg + c0]) =
-            pack_bf16x2(st[t][0], st[t][1]);
-        *reinterpret_cast<uint32_t*>(&iw[((lane >> 2) + 8) * LdImg + c0]) =
-            pack_bf16x2(st[t][2], st[t][3]);
-      }
-    } else {
+      for (int m = 0; m < MDV; ++m)
 #pragma unroll
-      for (int i = 0; i < NDV / 2; ++i)
-#pragma unroll
-        for (int e = 0; e < 4; ++e) {
-          const int c0 = RS::img_of(2 * i * kMmaN + (lane & 3) * 2 + (e & 1));
-          *reinterpret_cast<uint32_t*>(&iw[((lane >> 2) + 8 * (e >> 1)) * LdImg + c0]) =
-              pack_bf16x2(st[2 * i][e], st[2 * i + 1][e]);
+        for (int t = 0; t < NDVW; ++t) {
+          const int c0 = RS::img_of(leaf0 + t * kMmaN + (lane & 3) * 2);
+          *reinterpret_cast<uint32_t*>(&simg[(m * kMmaM + (lane >> 2)) * LdImg + c0]) =
+              pack_bf16x2(st[m][t][0], st[m][t][1]);
+          *reinterpret_cast<uint32_t*>(&simg[(m * kMmaM + (lane >> 2) + 8) * LdImg + c0]) =
+              pack_bf16x2(st[m][t][2], st[m][t][3]);
         }
+    } else {
+      static_assert(!kTilePair || NDVW >= 2,
+                    "the tile-pair image pack needs two of the warp's tiles");
+#pragma unroll
+      for (int m = 0; m < MDV; ++m)
+#pragma unroll
+        for (int i = 0; i < NDVW / 2; ++i)
+#pragma unroll
+          for (int e = 0; e < 4; ++e) {
+            const int c0 = RS::img_of(leaf0 + 2 * i * kMmaN + (lane & 3) * 2 + (e & 1));
+            *reinterpret_cast<uint32_t*>(
+                &simg[(m * kMmaM + (lane >> 2) + 8 * (e >> 1)) * LdImg + c0]) =
+                pack_bf16x2(st[m][2 * i][e], st[m][2 * i + 1][e]);
+          }
     }
     //: THE SLACK COLUMNS ARE ZEROED, not left as they lie: the last bucket's A
     //: operand reads a whole `k` tile past its own width, and a shared-memory word
@@ -618,12 +652,10 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     }
     if (lane < 4) {
 #pragma unroll
-      for (int q = 0; q < kMassTiles; ++q) {
-        const int j = q * kWarps + warp;
+      for (int q = 0; q < kMassTiles; ++q)
 #pragma unroll
         for (int k = 0; k < 2; ++k)
-          smass[RS::img_of(j * kMmaN + lane * 2 + k)] = __float2bfloat16(mass_st[q][k]);
-      }
+          smass[RS::img_of(leaf0 + q * kMmaN + lane * 2 + k)] = __float2bfloat16(mass_st[q][k]);
     }
   };
   bool img_valid = false;
@@ -843,11 +875,10 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         }
 #pragma unroll
         for (int kk = 0; kk < kMTok; ++kk) {
-          uint32_t a[4];
-          load_frag_t(a, ADDR_V(vsl, kk * kMmaM));
           //: R4: THE BUCKET SCALAR RIDES THE TOKEN AXIS of the A operand.  The panel
           //: stays the UNGAINED dense-run Kronecker and `w[d] * gw[t]` multiplies the
-          //: entry's V column -- four packed multiplies, not `d_v` of them.
+          //: entry's V column -- four packed multiplies per channel tile, not `d_v`
+          //: of them.
           //:
           //: A PADDING ENTRY'S SCALAR IS READ AS ZERO, and the zero PANEL row it also
           //: has is not enough: an mma sums `A[m,k] * B[k,n]` over `k`, so a NaN in
@@ -861,10 +892,20 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           auto sc = [&](int e) { return e < cnt ? (uint32_t)bv[e] : 0u; };
           const uint32_t s01 = (sc(e0 + 1) << 16) | sc(e0);
           const uint32_t s89 = (sc(e0 + 9) << 16) | sc(e0 + 8);
-          a[0] = mul_bf16x2(a[0], s01);
-          a[1] = mul_bf16x2(a[1], s01);
-          a[2] = mul_bf16x2(a[2], s89);
-          a[3] = mul_bf16x2(a[3], s89);
+          //: THE WARP HOLDS EVERY CHANNEL OF ITS OWN LEAVES, so the fold's `A` walks
+          //: the channel m-tiles.  Loaded and scaled ONCE per k-step and reused by
+          //: every leaf tile the bucket gives this warp -- which is why the extra
+          //: fragments are not extra traffic: the warp's LEAF extent fell by the same
+          //: factor its CHANNEL extent grew.
+          uint32_t av[MDV][4];
+          static_for<MDV>([&](auto Mc) {
+            constexpr int mt = decltype(Mc)::value;
+            load_frag_t(av[mt], ADDR_V(vsl, kk * kMmaM) + (uint32_t)(mt * kMmaM) * 2);
+            av[mt][0] = mul_bf16x2(av[mt][0], s01);
+            av[mt][1] = mul_bf16x2(av[mt][1], s01);
+            av[mt][2] = mul_bf16x2(av[mt][2], s89);
+            av[mt][3] = mul_bf16x2(av[mt][3], s89);
+          });
           //: THE MASS OPERAND IS THE SAME SCALAR WITHOUT THE VALUE.  The mass column
           //: is the ones column of `V`, so its A fragment is the entry scalar in row
           //: zero and nothing elsewhere -- what was a literal `1` back when the PANEL
@@ -881,23 +922,48 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           static_for<NBW>([&](auto Db) {
             constexpr int dd = decltype(Db)::value;
             if (dd != d) return;
-            if constexpr (PW == kMmaN) {
+            //: THE BUCKET'S OWNING WARP, and the ONE STATEMENT that covers both
+            //: structures.  A fold bucket is a contiguous run of `PW` leaves.  When
+            //: that run is NARROWER than a warp's `kBCW` it lies inside exactly one
+            //: warp, which folds it alone; when it is the WHOLE BOX (a side with no
+            //: key) every warp folds its own quarter of it.  Both read: *a warp folds
+            //: the leaves it owns, for every bucket that intersects them.*  No branch
+            //: on a structure, no second path -- `kOwn`, `kNT` and `kT0` are
+            //: constant expressions of the bucket map alone.
+            constexpr int kFirst = dd * PW;                       // the bucket's first leaf
+            constexpr bool kWhole = PW >= kBCW;                   // it spans every warp
+            constexpr int kOwn = kWhole ? -1 : kFirst / kBCW;     // its warp, or all of them
+            constexpr int kNT = (PW < kBCW ? PW : kBCW) / kMmaN;  // tiles THIS warp folds
+            constexpr int kT0 = kWhole ? 0 : (kFirst % kBCW) / kMmaN;
+            static_assert(kWhole || PW % kBCW == 0 || kBCW % PW == 0,
+                          "a fold bucket must nest in a warp's run or contain it whole");
+            if (kOwn >= 0 && warp != kOwn) return;
+            //: the panel column the warp's first tile reads: its own leaf origin when
+            //: the panel spans the box, zero when the panel IS the bucket.
+            const int pcol0 = kWhole ? leaf0 : 0;
+            if constexpr (kNT == 1) {
               uint32_t b2[2];
-              load_frag_pair_t(b2, ADDR_WP(wp2, kk * kMmaM, 0));
-              constexpr int t0 = WS::leaf_of(dd, 0) / kMmaN;
-              mma(st[t0], a, b2);
-              if ((t0 % kWarps) == warp) mma(mass_st[t0 / kWarps], mass_a, b2);
+              load_frag_pair_t(b2, ADDR_WP(wp2, kk * kMmaM, pcol0));
+              static_for<MDV>([&](auto Mc) {
+                constexpr int mt = decltype(Mc)::value;
+                mma(st[mt][kT0], av[mt], b2);
+              });
+              //: the mass rides the warp's own tile UNCONDITIONALLY now -- the
+              //: `t0 % kWarps == warp` predicate was the channel carve's way of
+              //: naming a mass owner, and the ownership carve has already named one.
+              mma(mass_st[kT0], mass_a, b2);
             } else {
-              static_for<PW / (2 * kMmaN)>([&](auto Qc) {
+              static_for<kNT / 2>([&](auto Qc) {
                 constexpr int q = decltype(Qc)::value;
                 uint32_t bb[4];
-                load_frag_t(bb, ADDR_WP(wp, kk * kMmaM, q * 2 * kMmaN));
-                constexpr int t0 = WS::leaf_of(dd, q * 2 * kMmaN) / kMmaN;
-                constexpr int t1 = WS::leaf_of(dd, (q * 2 + 1) * kMmaN) / kMmaN;
-                mma(st[t0], a, &bb[0]);
-                mma(st[t1], a, &bb[2]);
-                if ((t0 % kWarps) == warp) mma(mass_st[t0 / kWarps], mass_a, &bb[0]);
-                if ((t1 % kWarps) == warp) mma(mass_st[t1 / kWarps], mass_a, &bb[2]);
+                load_frag_t(bb, ADDR_WP(wp, kk * kMmaM, pcol0 + q * 2 * kMmaN));
+                static_for<MDV>([&](auto Mc) {
+                  constexpr int mt = decltype(Mc)::value;
+                  mma(st[mt][kT0 + 2 * q], av[mt], &bb[0]);
+                  mma(st[mt][kT0 + 2 * q + 1], av[mt], &bb[2]);
+                });
+                mma(mass_st[kT0 + 2 * q], mass_a, &bb[0]);
+                mma(mass_st[kT0 + 2 * q + 1], mass_a, &bb[2]);
               });
             }
           });
@@ -1101,12 +1167,17 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       for (int a = 0; a < kAtoms; ++a) {
 #pragma unroll
         for (int p = 0; p < 2; ++p) {
+          if ((2 * a + p) / NDVW == warp) {
 #pragma unroll
-          for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * a + p][k]);
-          if (warp == (2 * a + p) % kWarps && lane < 4) {
+            for (int m = 0; m < MDV; ++m)
 #pragma unroll
-            for (int k = 0; k < 2; ++k)
-              store_f32(&so[page_mass(p, k)], mass_st[(2 * a + p) / kWarps][k]);
+              for (int k = 0; k < 4; ++k)
+                store_f32(&so[page_value(m, p, k)], st[m][(2 * a + p) % NDVW][k]);
+            if (lane < 4) {
+#pragma unroll
+              for (int k = 0; k < 2; ++k)
+                store_f32(&so[page_mass(p, k)], mass_st[(2 * a + p) % NDVW][k]);
+            }
           }
         }
         rendezvous();
