@@ -145,12 +145,14 @@ struct BucketShape {
 //: expansion is `sum_l n_l` amplitude loads followed by `SPT` products of register
 //: values at CONSTANT indices -- no dynamic indexing, no spill, no materialized
 //: gate plane.
-template <int D, int B, int K, int M, int ROWS, int SKIP>
+template <int D, int B, int K, int M, int ROWS, int SKIP, int THR = kThreads>
 struct PanelMap {
   using BP = BoxPlan<D, B, K, M>;
   static constexpr int kSkipSpan = (SKIP < 0) ? 1 : BP::s(SKIP);
   static constexpr int kWidth = BP::kBC / kSkipSpan;
-  static constexpr int kRowThr = kThreads / ROWS;
+  //: `THR` is the thread population that expands the panel -- the CTA for the
+  //: fold's shared panel, ONE WARP for the readout's private one.
+  static constexpr int kRowThr = THR / ROWS;
   static constexpr int SPT = kWidth / kRowThr;
   static_assert(kRowThr * SPT == kWidth, "the row's threads cover the panel exactly");
   static constexpr int place(int l) {
@@ -207,21 +209,43 @@ struct CarryGeom {
   static constexpr int kCap = ((kChunk + kGrp - 1) + 7) / 8 * 8;
 
   static constexpr int PRP = (RS::kWidth + kMmaK - 1) / kMmaK * kMmaK;
-  //: THE STATE IMAGE'S ROW STRIDE.  Exactly the slack the LAST bucket's `A` operand
-  //: reads past the box when a bucket is narrower than one `k` tile, and none when
-  //: it is not.  Those columns meet a panel column the produce zeroed, so what they
-  //: hold never reaches an output -- they are zeroed anyway, because a shared-memory
-  //: word that happens to encode a NaN would survive the multiplication.
-  static constexpr int LdImg = BC + (PRP - RS::kWidth);
+  //: AN `ldmatrix` ROW STRIDE, and the ONE arithmetic condition that keeps it off
+  //: a bank conflict.  The fragment reads eight rows of sixteen bytes, so the eight
+  //: rows must land in eight DIFFERENT 16-byte bank groups: the stride measured in
+  //: 16-byte groups has to be ODD.  `stride16` rounds a required width up to the
+  //: nearest such stride.
+  //:
+  //: This is not a micro-optimization.  At `BC = 128` the state image's natural
+  //: row stride is 128 bf16 = 16 groups -- EVEN, so every row of the image starts
+  //: on the same banks and the operand that carries the entire readout was issuing
+  //: at THIRTY-TWO-WAY conflict (ncu, dense cell: `LDSM.16.M88.4` at n-way 32,
+  //: 473M shared-load conflicts against master's 5M).
+  static constexpr int stride16(int width) { return ((width + 15) / 16) * 16 + 8; }
+  //: THE STATE IMAGE'S ROW STRIDE.  At least the slack the LAST bucket's `A` operand
+  //: reads past the box when a bucket is narrower than one `k` tile.  Those columns
+  //: meet a panel column the produce zeroed, so what they hold never reaches an
+  //: output -- they are zeroed anyway, because a shared-memory word that happens to
+  //: encode a NaN would survive the multiplication.
+  static constexpr int LdImg = stride16(BC + (PRP - RS::kWidth));
   static constexpr int kImgBytes = kWarps * kMmaM * LdImg * (int)sizeof(__nv_bfloat16);
   static constexpr int kMassBytes = LdImg * (int)sizeof(__nv_bfloat16);
 
-  static constexpr int LdRP = PRP + kPadE;
-  static constexpr int LdWP = WS::kWidth + kPadE;
+  //: THE READOUT'S UNIT.  Its entries are the accumulator's `n` axis and a warp
+  //: now spans every CHANNEL m-tile, so the unit sizes the register cost directly:
+  //: `MDV * (kGrpR / kMmaN) * 4` floats.  Half the fold's group keeps that at 32
+  //: registers while leaving two whole n-tiles, which is what lets ONE `ldmatrix`
+  //: of the panel feed both mma of a k-step.
+  static constexpr int kGrpR = kGrp / 2;
+  static constexpr int LdRP = stride16(PRP);
+  static constexpr int LdWP = stride16(WS::kWidth);
   //: TWO PANEL SLOTS PER SIDE, and what they buy is latency, not bytes: a group's
   //: panel is expanded while the PREVIOUS group's mma block runs, so the amplitude
   //: gather sits underneath arithmetic instead of in front of it.
-  static constexpr int rp_bytes = 2 * kGrp * LdRP * (int)sizeof(__nv_bfloat16);
+  //: ONE PANEL SLOT PER WARP, not two per CTA: the ring bought latency the
+  //: shared form could not otherwise hide, and the private form does not need it
+  //: (micro-probe 3: producing one bucket ahead is neutral-to-worse once the warps
+  //: are free-running).  Same bytes, four private producers.
+  static constexpr int rp_bytes = kWarps * kGrpR * LdRP * (int)sizeof(__nv_bfloat16);
   static constexpr int wp_bytes = 2 * kGrp * LdWP * (int)sizeof(__nv_bfloat16);
   //: THE VALUE RING: two free-on-consume slots of one drain group's rows.  `V`
   //: rides the WRITE buckets and is gathered once per write entry, at its own
@@ -247,8 +271,12 @@ struct CarryGeom {
   static constexpr int phase2_bytes = v_bytes + wp_bytes + entry_bytes(WS::kSpan);
   static constexpr int phase_bytes = phase1_bytes > phase2_bytes ? phase1_bytes : phase2_bytes;
 
-  static constexpr int out_bytes = kGrp * LdO * (int)sizeof(float);
-  static constexpr int den_bytes = kWarps * kGrp * (int)sizeof(float);
+  //: THE OUTPUT STAGING IS ONE N-TILE PER WARP.  A private accumulator drains
+  //: eight entries at a time and fans them in immediately, so the buffer stays at
+  //: the shared carve's footprint.  `sden` is GONE: the mass row is the warp's own
+  //: contraction now and rides column `kDv` of its own slice.
+  static constexpr int out_bytes = kWarps * kMmaN * LdO * (int)sizeof(float);
+  static constexpr int den_bytes = 0;
   static constexpr int kListStride = ((W + 7) / 8) * 8;
   static constexpr int list_bytes = 2 * kListStride * (int)sizeof(uint16_t);
   //: 16 scan words, a live count per bucket, and a drained count per bucket -- the
@@ -351,7 +379,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   using G = CarryGeom<D, B, K, M, W, C, RK, WK>;
   using RS = typename G::RS;
   using WS = typename G::WS;
-  using RPM = PanelMap<D, B, K, M, G::kGrp, RK>;
+  using RPM = PanelMap<D, B, K, M, G::kGrpR, RK, 32>;
   using WPM = PanelMap<D, B, K, M, G::kGrp, WK>;
 
   constexpr int BC = BP::kBC;
@@ -363,7 +391,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: ROTATES it (16 channels x 128 leaves and 64 channels x 32 leaves are the same
   //: 2048 accumulator floats), and the readout is untouched by the rotation because
   //: its `A` operand transits the SMEM state image, not the registers.
-  constexpr int kGrp = G::kGrp, kCap = G::kCap;
+  constexpr int kGrp = G::kGrp, kGrpR = G::kGrpR, kCap = G::kCap;
   constexpr int NBR = RS::kSpan, PR = RS::kWidth, PRP = G::PRP;
   constexpr int NBW = WS::kSpan, PW = WS::kWidth;
   constexpr int LdImg = G::LdImg, LdRP = G::LdRP, LdWP = G::LdWP;
@@ -415,15 +443,14 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   __nv_bfloat16* const simg = reinterpret_cast<__nv_bfloat16*>(carry_smem);
   __nv_bfloat16* const smass = simg + kWarps * kMmaM * LdImg;
   __nv_bfloat16* const srp = smass + LdImg;
-  uint32_t* const btok = reinterpret_cast<uint32_t*>(srp + 2 * kGrp * LdRP);
+  uint32_t* const btok = reinterpret_cast<uint32_t*>(srp + kWarps * kGrpR * LdRP);
   __nv_bfloat16* const bval = reinterpret_cast<__nv_bfloat16*>(btok + NBR * kCap);
   __nv_bfloat16* const sv = reinterpret_cast<__nv_bfloat16*>(carry_smem);
   __nv_bfloat16* const swp = sv + G::kStages * kGrp * LdV;
   uint32_t* const wtok = reinterpret_cast<uint32_t*>(swp + 2 * kGrp * LdWP);
   __nv_bfloat16* const wval = reinterpret_cast<__nv_bfloat16*>(wtok + NBW * kCap);
   float* const so = reinterpret_cast<float*>(carry_smem + G::phase_bytes);
-  float* const sden = so + kGrp * LdO;
-  uint16_t* const slist = reinterpret_cast<uint16_t*>(sden + kWarps * kGrp);
+  uint16_t* const slist = reinterpret_cast<uint16_t*>(so + kWarps * kMmaN * LdO);
   int* const sscan = reinterpret_cast<int*>(slist + 2 * kListStride);
   int* const scnt = sscan + 16;    // [NBR] live read entries
   int* const wcnt = scnt + NBR;    // [NBW] live write entries
@@ -470,19 +497,22 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   const int leaf0 = warp * kBCW;
   const int chan0 = warp * kMmaM;  // the READOUT's channel tile (carve-independent)
 
-  const uint32_t aImg = smem_addr(simg) + (uint32_t)((warp * kMmaM + rA) * LdImg + cA) * 2;
+  //: the readout's `A` base carries NO channel origin: the warp walks every
+  //: channel m-tile of the image, and the tile's row offset is added at the load.
+  const uint32_t aImg = smem_addr(simg) + (uint32_t)(rA * LdImg + cA) * 2;
   const uint32_t aMass = smem_addr(smass) + (uint32_t)cA * 2;
-  const uint32_t bRP = smem_addr(srp) + (uint32_t)(rT * LdRP + cT * 8) * 2;
+  const uint32_t bRP =
+      smem_addr(srp) + (uint32_t)((warp * kGrpR + rT) * LdRP + cT * 8) * 2;
   const uint32_t bWP = smem_addr(swp) + (uint32_t)(rF * LdWP + cF * 8) * 2;
   const uint32_t bWP2 = smem_addr(swp) + (uint32_t)((lane & 15) * LdWP) * 2;
   //: the fold's `A` operand walks the CHANNEL m-tiles now, so its base carries no
   //: channel origin and the tile's offset is added at the load.
   const uint32_t aV = smem_addr(sv) + (uint32_t)(rT * LdV + cT * 8) * 2;
-  constexpr uint32_t kRpSlot = (uint32_t)(kGrp * LdRP) * 2;
   constexpr uint32_t kWpSlot = (uint32_t)(kGrp * LdWP) * 2;
   constexpr uint32_t kVSlot = (uint32_t)(kGrp * LdV) * 2;
-  constexpr int kMTok = kGrp / kMmaM;  // entry m-tiles of a drain group
-  constexpr int kNTok = kGrp / kMmaN;  // entry n-tiles of a drain group
+  constexpr int kMTok = kGrp / kMmaM;    // entry m-tiles of a FOLD group
+  constexpr int kNTokR = kGrpR / kMmaN;  // entry n-tiles of a READOUT unit
+  static_assert(kGrpR % kMmaM == 0, "a readout unit is a whole mma m-tile of entries");
 #define ADDR_RP(b_, R_, c_) ((b_) + (uint32_t)(((R_) * LdRP + (c_)) * 2))
 #define ADDR_WP(b_, R_, c_) ((b_) + (uint32_t)(((R_) * LdWP + (c_)) * 2))
 #define ADDR_V(b_, R_) ((b_) + (uint32_t)((R_) * LdV * 2))
@@ -514,7 +544,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   static_assert(kThreads > kCols && kThreads < 2 * kCols,
                 "the page sweep's step must cross one row boundary, so its row "
                 "cursor advances by one or two and never by a division");
-  static_assert(kGrp * LdO >= kPageElems, "the staging buffer must hold one page");
+  static_assert(kWarps * kMmaN * LdO >= kPageElems,
+                "the staging buffer must hold one page");
   auto page_sweep = [&](uint32_t pageOff, auto&& body) {
     int e = tid;
     int row = tid < kCols ? 0 : 1;
@@ -570,7 +601,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   }
 
   // ---- the two panels' per-thread maps ------------------------------------
-  const int rprow = tid / RPM::kRowThr, rslot0 = (tid % RPM::kRowThr) * RPM::SPT;
+  //: the readout panel is expanded by ONE WARP into its own slot, so its row map
+  //: is a LANE map; the fold's panel is still the CTA's.
+  const int rprow = lane / RPM::kRowThr, rslot0 = (lane % RPM::kRowThr) * RPM::SPT;
   const int wprow = tid / WPM::kRowThr, wslot0 = (tid % WPM::kRowThr) * WPM::SPT;
   int rcol[D], wcol[D];
   static_for<D>([&](auto Lc) {
@@ -580,13 +613,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   });
 
   // ---- the fan-in's own addressing ----------------------------------------
-  constexpr int kFanLanes = 32;
-  constexpr int kFanPerThr = kDv / kFanLanes;
-  constexpr int kFanRows = kThreads / kFanLanes;
-  constexpr int kFanPasses = kGrp / kFanRows;
-  static_assert(kFanPasses * kFanRows == kGrp, "the fan-in's passes cover the group exactly");
-  const int fanRow = tid / kFanLanes, fanCol = tid % kFanLanes;
-  const uint32_t fanColB = (uint32_t)(fanCol * (int)sizeof(float));
+  //: the readout's fan-in is warp-private now: thirty-two lanes are thirty-two
+  //: consecutive channels of ONE token, and the entry axis is a loop, so the CTA's
+  //: row/pass accounting has nothing left to describe.
+  static_assert(kDv == 2 * 32, "the fan-in covers d_v in two lane-wide halves");
+  const uint32_t fanColB = (uint32_t)(lane * (int)sizeof(float));
   const uint32_t below = (1u << lane) - 1u;
   constexpr uint32_t kWtotB = (uint32_t)(BP::kWtot * 2);
 
@@ -668,151 +699,150 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     }
   };
 
-  // ---- THE READOUT DRAIN: bucket-batched MMAs against the state image ------
-  //: `flush` executes a partial group; otherwise only WHOLE `kGrp` groups run and
-  //: the residual stays for the next window (the gated cross-window batching).
-  auto produce_read = [&](int b, int off, int cnt, int slot) {
+  // ---- THE READOUT DRAIN: WARP-PRIVATE (bucket, group) UNITS ---------------
+  //: THE OWNERSHIP GRAIN, on the side that owns no leaves.  The readout's `A`
+  //: operand is the SMEM state image, which is read-only and carve-independent,
+  //: so the readout is free to be carved on the axis that costs nothing: its work
+  //: list is the (bucket, entry-group) pairs and the warps take them in a stripe.
+  //: A warp then owns its unit's PANEL, its ACCUMULATOR and its OUTPUT STAGING --
+  //: the three things a shared drain has to synchronize on -- and the entire
+  //: bucket loop runs on `__syncwarp` alone.
+  //:
+  //: THE STRIPE IS ONE FORM FOR BOTH STRUCTURES.  A DENSE read side is one bucket
+  //: with many groups, so the stripe is an ENTRY split with full n-tile fill; the
+  //: ALT read side is `s_1` buckets with about one group apiece, so the same
+  //: stripe is a BUCKET split.  No branch on a structure, no second path, and the
+  //: trivial bucket needs no shared panel to degenerate well.
+  //:
+  //: Nothing waits on the stripe's balance, because nothing waits at all: a warp
+  //: that draws a light unit goes on to its next one.
+  //:
+  //: `flush` executes a partial group; otherwise only WHOLE groups run and the
+  //: residual stays for the next window (the gated cross-window batching).
+  auto produce_read = [&](int b, int off, int cnt) {
     const bool alive = rprow < cnt;
-    produce_row<RPM, D, RK>(pR, srp + slot * (kGrp * LdRP) + rprow * LdRP + rslot0, rcol,
+    produce_row<RPM, D, RK>(pR, srp + warp * (kGrpR * LdRP) + rprow * LdRP + rslot0, rcol,
                             btok[b * kCap + off + (alive ? rprow : 0)] * kWtotB,
                             alive ? kOneSplat : 0u);
     if constexpr (PRP > PR) {
-      __nv_bfloat16* const pad = srp + slot * (kGrp * LdRP);
-      for (int e = tid; e < kGrp * (PRP - PR); e += kThreads) {
+      __nv_bfloat16* const pad = srp + warp * (kGrpR * LdRP);
+      for (int e = lane; e < kGrpR * (PRP - PR); e += 32) {
         const int r = e / (PRP - PR);
         pad[r * LdRP + PR + e - r * (PRP - PR)] = __float2bfloat16(0.f);
       }
     }
   };
   auto drain_read = [&](bool flush) {
+    //: the unit counter advances on EVERY warp for every unit, drained or not --
+    //: `scnt` is shared, so the four warps agree on the numbering without talking.
+    int unit = 0;
 #pragma unroll 1
     for (int b = 0; b < NBR; ++b) {
       const int n = scnt[b];
-      const int groups = flush ? (n + kGrp - 1) / kGrp : n / kGrp;
-      if (tid == 0) sdone[b] = 0;
-      if (groups == 0) continue;
-      //: the bucket's A operand: one `ldmatrix` per `kMmaK` of its width, loaded
-      //: ONCE and reused by every group of entries the bucket holds.
-      uint32_t af[PRP / kMmaK][4];
-#pragma unroll
-      for (int kk = 0; kk < PRP / kMmaK; ++kk)
-        load_frag(af[kk], aImg + (uint32_t)(b * PR + kk * kMmaK) * 2);
-      produce_read(b, 0, n < kGrp ? n : kGrp, 0);
+      const int groups = flush ? (n + kGrpR - 1) / kGrpR : n / kGrpR;
+      if (tid == 0) sdone[b] = groups * kGrpR < n ? groups * kGrpR : n;
 #pragma unroll 1
-      for (int g = 0; g < groups; ++g) {
-        const int off = g * kGrp;
-        const int cnt = (n - off) < kGrp ? (n - off) : kGrp;
-        const uint32_t rp = bRP + (uint32_t)(g & 1) * kRpSlot;
-        rendezvous();
-        //: THE PRODUCE RUNS ONE GROUP AHEAD, into the other slot of the two-slot
-        //: ring: its global loads are issued before this group's mma block and are
-        //: consumed after the next rendezvous.
-        if (g + 1 < groups) {
-          const int noff = off + kGrp;
-          produce_read(b, noff, (n - noff) < kGrp ? (n - noff) : kGrp, (g + 1) & 1);
+      for (int g = 0; g < groups; ++g, ++unit) {
+        if ((unit & (kWarps - 1)) != warp) continue;
+        const int off = g * kGrpR;
+        const int cnt = (n - off) < kGrpR ? (n - off) : kGrpR;
+        produce_read(b, off, cnt);
+        __syncwarp();
+        //: the warp spans EVERY channel of its entries, so the accumulator walks
+        //: the image's channel m-tiles and the two sides' partials never meet:
+        //: two warps hold partials of different ENTRIES, never of one output.
+        //: That is what deletes the readout's cross-warp reduction -- the R1
+        //: objection to state-split, which priced a leaf carve, not this one.
+        float acc[MDV][kNTokR][4];
+        float macc[kNTokR][4];
+#pragma unroll
+        for (int j = 0; j < kNTokR; ++j) {
+#pragma unroll
+          for (int e = 0; e < 4; ++e) {
+            macc[j][e] = 0.f;
+#pragma unroll
+            for (int m = 0; m < MDV; ++m) acc[m][j][e] = 0.f;
+          }
         }
-        float acc[kNTok][4];
-#pragma unroll
-        for (int j = 0; j < kNTok; ++j)
-#pragma unroll
-          for (int e = 0; e < 4; ++e) acc[j][e] = 0.f;
 #pragma unroll
         for (int kk = 0; kk < PRP / kMmaK; ++kk) {
-#pragma unroll
-          for (int mt = 0; mt < kMTok; ++mt) {
-            uint32_t rb[4];
-            load_frag(rb, ADDR_RP(rp, mt * kMmaM, kk * kMmaK));
-            mma(acc[2 * mt], af[kk], &rb[0]);
-            mma(acc[2 * mt + 1], af[kk], &rb[2]);
-          }
+          uint32_t rb[4];
+          load_frag(rb, ADDR_RP(bRP, 0, kk * kMmaK));
+          static_for<MDV>([&](auto Mc) {
+            constexpr int mt = decltype(Mc)::value;
+            uint32_t af[4];
+            load_frag(af, aImg + (uint32_t)(mt * kMmaM * LdImg + b * PR + kk * kMmaK) * 2);
+            mma(acc[mt][0], af, &rb[0]);
+            mma(acc[mt][1], af, &rb[2]);
+          });
+          //: THE MASS ROW IS THE WARP'S OWN NOW.  It was carved across the warps by
+          //: k-step and met in `sden` because under the channel carve no single warp
+          //: held the whole contraction; under unit ownership one warp holds all of
+          //: it, so the rotation, the `sden` buffer and its cross-warp sum all go.
+          uint32_t mf[4];
+          load_frag(mf, aMass + (uint32_t)(b * PR + kk * kMmaK) * 2);
+          mma(macc[0], mf, &rb[0]);
+          mma(macc[1], mf, &rb[2]);
         }
         //: R4: THE BUCKET SCALAR IS APPLIED HERE AND NOT IN THE PRODUCE.  The entry
         //: axis is the accumulator's `n` axis, so `acc` literally IS the backward's
         //: unscaled `q^(d)` at this instruction; scaling it per COLUMN is what keeps
-        //: that object expressible.
-        //: the same bound as the fold's, for the same reason: the accumulator's
-        //: padding columns are zero, and `0 * NaN` is NaN.
+        //: that object expressible.  A padding column's scalar reads zero, for the
+        //: fold's reason: `0 * NaN` is NaN.
         const __nv_bfloat16* const rv = bval + b * kCap + off;
         auto rs = [&](int e) { return e < cnt ? __bfloat162float(rv[e]) : 0.f; };
+        //: THE STAGING IS ONE N-TILE DEEP.  A warp's slice of `so` holds eight
+        //: entries at a time and the fan-in follows immediately, which keeps the
+        //: staging buffer at the shared footprint the channel carve had while the
+        //: accumulator itself stays resident across the whole unit.
+        float* const sow = so + warp * kMmaN * LdO;
 #pragma unroll
-        for (int j = 0; j < kNTok; ++j) {
+        for (int j = 0; j < kNTokR; ++j) {
           const float r0 = rs(j * 8 + (lane & 3) * 2);
           const float r1 = rs(j * 8 + (lane & 3) * 2 + 1);
-          acc[j][0] *= r0;
-          acc[j][1] *= r1;
-          acc[j][2] *= r0;
-          acc[j][3] *= r1;
+          static_for<MDV>([&](auto Mc) {
+            constexpr int mt = decltype(Mc)::value;
 #pragma unroll
-          for (int k = 0; k < 4; ++k)
-            store_f32(
-                &so[(j * 8 + (lane & 3) * 2 + (k & 1)) * LdO + chan0 + (lane >> 2) + 8 * (k >> 1)],
-                acc[j][k]);
-        }
-        // ---- the mass row of the same readout ------------------------------
-        //: ITS K-STEPS ARE CARVED ACROSS THE WARPS and met in `sden`, which the
-        //: fan-in already sums over.  Giving one warp the WHOLE mass contraction
-        //: instead costs the group its slowest warp: at the dense key the mass is as
-        //: many k-steps as the value, so that warp did 64 mma issues against the
-        //: others' 32 and every barrier waited on it -- measured, and the reason this
-        //: is a carve and not a predicate.  The rotation by `(b + g)` is what spreads
-        //: a bucket narrower than `kWarps` k-steps over the groups.
-        float macc[kNTok][4];
-#pragma unroll
-        for (int j = 0; j < kNTok; ++j)
-#pragma unroll
-          for (int e = 0; e < 4; ++e) macc[j][e] = 0.f;
-#pragma unroll
-        for (int kk = 0; kk < PRP / kMmaK; ++kk) {
-          if (((kk + b + g) & (kWarps - 1)) != warp) continue;
-          uint32_t mf[4];
-          load_frag(mf, aMass + (uint32_t)(b * PR + kk * kMmaK) * 2);
-#pragma unroll
-          for (int mt = 0; mt < kMTok; ++mt) {
-            uint32_t rb[4];
-            load_frag(rb, ADDR_RP(rp, mt * kMmaM, kk * kMmaK));
-            mma(macc[2 * mt], mf, &rb[0]);
-            mma(macc[2 * mt + 1], mf, &rb[2]);
-          }
-        }
-        if (lane < 4) {
-#pragma unroll
-          for (int j = 0; j < kNTok; ++j)
+            for (int k = 0; k < 4; ++k)
+              store_f32(&sow[((lane & 3) * 2 + (k & 1)) * LdO + mt * kMmaM + (lane >> 2) +
+                             8 * (k >> 1)],
+                        acc[mt][j][k] * ((k & 1) ? r1 : r0));
+          });
+          if (lane < 4) {
 #pragma unroll
             for (int k = 0; k < 2; ++k)
-              store_f32(&sden[warp * kGrp + j * 8 + lane * 2 + k],
-                        macc[j][k] * rs(j * 8 + lane * 2 + k));
-        }
-        rendezvous();
-        // ---- the RED fan-in of the readout partials -------------------------
-#pragma unroll
-        for (int p = 0; p < kFanPasses; ++p) {
-          const int e = fanRow + p * kFanRows;
-          if (e < cnt) {
-            float* dp = reinterpret_cast<float*>(
-                gather_ptr(oPlane, btok[b * kCap + off + e] * (uint32_t)(kDv * 4) + fanColB));
-#pragma unroll
-            for (int c = 0; c < kFanPerThr; ++c)
-              fan_in_add(dp + c * kFanLanes, so[e * LdO + fanCol + c * kFanLanes]);
+              store_f32(&sow[(lane * 2 + k) * LdO + kDv], macc[j][k] * rs(j * 8 + lane * 2 + k));
           }
-        }
-        if (tid < kGrp && tid < cnt) {
-          float sum = 0.f;
+          __syncwarp();
+          //: THE RED FAN-IN, WARP-PRIVATE.  Thirty-two lanes are thirty-two
+          //: consecutive channels of one token, twice; the entry axis is the loop.
 #pragma unroll
-          for (int u = 0; u < kWarps; ++u) sum += sden[u * kGrp + tid];
-          fan_in_add(
-              reinterpret_cast<float*>(gather_ptr(denPlane, btok[b * kCap + off + tid] * 4u)), sum);
+          for (int e = 0; e < kMmaN; ++e) {
+            const int ent = j * kMmaN + e;
+            if (ent < cnt) {
+              float* dp = reinterpret_cast<float*>(gather_ptr(
+                  oPlane, btok[b * kCap + off + ent] * (uint32_t)(kDv * 4) + fanColB));
+              fan_in_add(dp, sow[e * LdO + lane]);
+              fan_in_add(dp + 32, sow[e * LdO + lane + 32]);
+            }
+          }
+          if (lane < kMmaN && j * kMmaN + lane < cnt)
+            fan_in_add(reinterpret_cast<float*>(
+                           gather_ptr(denPlane, btok[b * kCap + off + j * kMmaN + lane] * 4u)),
+                       sow[lane * LdO + kDv]);
+          __syncwarp();
         }
       }
-      if (tid == 0) sdone[b] = groups * kGrp < n ? groups * kGrp : n;
     }
     //: THE RESIDUALS COMPACT TOGETHER, behind one pair of barriers for every bucket
-    //: rather than a pair apiece.
+    //: rather than a pair apiece -- and this pair is now the ONLY rendezvous the
+    //: readout drain contains.
     rendezvous();
 #pragma unroll 1
     for (int b = 0; b < NBR; ++b) {
       const int done = sdone[b], keep = scnt[b] - done;
       if (done > 0) {
-        if (tid < kGrp && tid < keep) {
+        if (tid < kGrpR && tid < keep) {
           btok[b * kCap + tid] = btok[b * kCap + done + tid];
           bval[b * kCap + tid] = bval[b * kCap + done + tid];
         }
