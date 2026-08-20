@@ -381,6 +381,9 @@ SOURCES = [
     "csrc/rola/src/entmax/factor.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
     "csrc/rola/src/facts/facts.cu",
+    #: K31 R1 -- the box-native carry family, its own TU, no shipped dispatch
+    #: reaches it.
+    "csrc/rola/src/carry/carry.cu",
 ]
 
 

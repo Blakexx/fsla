@@ -28,6 +28,10 @@
 #include "src/entmax/factor.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/facts/facts_api.cuh"
+//: K31 R1 -- the box-native CARRY family, built ALONGSIDE the shipped facts
+//: producers and reachable from no shipped dispatch (development/plans/
+//: K31_BOX_NATIVE_KERNEL_STUDY_2026-08-18.md section 6).
+#include "src/carry/carry_api.cuh"
 
 namespace py = pybind11;
 
@@ -47,6 +51,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("chunk_block_bits", &rola::chunk::block_bits,
         "facts: the block-grain read/write/state liveness bitmap", py::arg("tbl"), py::arg("bc"),
         py::arg("widths"), py::arg("L"), py::arg("page_tbl") = py::none());
+  // ---- K31 R1: the box-native carry family (NOT on any shipped path) ------
+  m.def("carry_forward_inter", &rola::carry::forward_inter,
+        "K31 carry kernel: the INTER (carried-state) term, undivided, plus the "
+        "final state plane in lattice leaf order",
+        py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("widths"), py::arg("k"),
+        py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
+        py::arg("s_in") = py::none());
+  m.def("carry_build_stamp", &rola::carry::build_stamp,
+        "K31 carry kernel: device-side build identity + the arm's census", py::arg("widths"),
+        py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"));
+  m.def("carry_arms", &rola::carry::arms, "K31 carry kernel: the built arms");
   m.def("chunk_arms", &rola::chunk::arms,
         "facts: the built (C, BC, D, B) dispatch vocabulary with plan quantities");
 
