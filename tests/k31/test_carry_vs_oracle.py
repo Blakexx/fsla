@@ -30,11 +30,10 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda requ
 
 #: (widths, k, m, W) -- the built arms this suite drives, with the carve axis on top.
 SMALL = ((64, 64), 4, 8, 64)      # N = 4096,  BC = 128, owners = 32
-SMALL_C = ((64, 64), 4, 4, 64)    # N = 4096,  BC = 64,  owners = 64
 FLAG = ((256, 256), 4, 8, 256)    # N = 65536, BC = 128, owners = 512
 FLAG_C = ((256, 256), 4, 4, 256)  # N = 65536, BC = 64,  owners = 1024
 
-STATE, CHANNEL = carry_ops.STATE_SPLIT, carry_ops.CHANNEL_SPLIT
+CHANNEL = carry_ops.CHANNEL_SPLIT
 
 
 def run(cell, arm, carve, chunk=32, state_in=None):
@@ -61,7 +60,7 @@ def test_build_stamp_is_this_source():
 
 def test_arms_are_the_declared_solver_rows():
     got = {tuple(a[:7]) for a in carry_ops.arms()}
-    assert (2, 256, 4, 8, 256, 32, 0) in got and (2, 256, 4, 8, 256, 32, 1) in got
+    assert got == {(2, 256, 4, 8, 256, 32, 1), (2, 64, 4, 8, 64, 32, 1)}, got
     for arm in carry_ops.arms():
         D, B, k, m, W, C, carve, BC, owners, smem = arm
         _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
@@ -85,8 +84,7 @@ def test_lattice_is_a_permutation():
 
 # ------------------------------------------------------- M1: state I/O + fold
 
-@pytest.mark.parametrize("carve", [STATE, CHANNEL])
-def test_m1_state_io_and_fold_dense(carve):
+def test_m1_state_io_and_fold_dense(carve=CHANNEL):
     """The final state alone, on the tiny cell.  A leaf-order error surfaces here
     as a PERMUTATION rather than as noise, which is why the state is gated first."""
     assert_fresh_binary()
@@ -98,8 +96,7 @@ def test_m1_state_io_and_fold_dense(carve):
     assert relative(got, want) < BF16_RTOL
 
 
-@pytest.mark.parametrize("carve", [STATE, CHANNEL])
-def test_m1_entry_state_is_carried(carve):
+def test_m1_entry_state_is_carried(carve=CHANNEL):
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=128, k_tok=None, seed=2, state_in=True)
     s_lat = cell.state_in_lattice(SMALL[1], SMALL[2])
@@ -113,8 +110,7 @@ def test_m1_entry_state_is_carried(carve):
 
 # ------------------------------------------ M2: readout + fan-in, dense cells
 
-@pytest.mark.parametrize("carve", [STATE, CHANNEL])
-def test_m2_inter_dense_small(carve):
+def test_m2_inter_dense_small(carve=CHANNEL):
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=256, k_tok=None, seed=3)
     num, den, plane = run(cell, SMALL, carve)
@@ -156,8 +152,7 @@ def test_m2_decomposition_is_exact():
     assert relative(mine, y) < 1e-10
 
 
-@pytest.mark.parametrize("carve", [STATE, CHANNEL])
-def test_m2_inter_dense_flagship(carve):
+def test_m2_inter_dense_flagship(carve=CHANNEL):
     """The flagship topology at `L = 1024`.  `N = 65536` is the largest cell whose
     fp64 reference fits: `[B,T,H,N]` fp64 is 537 MB at this `L`, and the reference
     holds one window's worth at a time."""
@@ -193,9 +188,8 @@ def alt_cell(widths, T, k_tok, seed):
     return cell
 
 
-@pytest.mark.parametrize("carve", [STATE, CHANNEL])
 @pytest.mark.parametrize("k_tok", [4, 16])
-def test_m3_two_sided_alt_small(carve, k_tok):
+def test_m3_two_sided_alt_small(k_tok, carve=CHANNEL):
     assert_fresh_binary()
     cell = alt_cell(SMALL[0], T=256, k_tok=k_tok, seed=10 + k_tok)
     num, den, plane = run(cell, SMALL, carve)
@@ -211,7 +205,7 @@ def test_m3_two_sided_alt_small(carve, k_tok):
 def test_m3_two_sided_alt_flagship(k_tok):
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=20 + k_tok)
-    num, den, _ = run(cell, FLAG, STATE)
+    num, den, _ = run(cell, FLAG, CHANNEL)
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -237,32 +231,3 @@ def test_m3_lists_differ_when_the_sides_do():
             liveW &= (write[l][0, :, 0, sl] != 0).any(-1)
         diff += int((liveR != liveW).sum())
     assert diff > 0, "the ALT cell did not separate the two sides' schedules"
-
-
-# ------------------------------------------------- M4: the variants agree
-
-def test_m4_variants_agree_small():
-    assert_fresh_binary()
-    cell = alt_cell(SMALL[0], T=256, k_tok=4, seed=30)
-    n_ref, d_ref, s_ref = ref(cell, SMALL)
-    ncr, dcr, scr = ref(cell, SMALL_C)
-    runs = {"A state BC=128": run(cell, SMALL, STATE),
-            "B channel BC=128": run(cell, SMALL, CHANNEL),
-            "C state BC=64": run(cell, SMALL_C, STATE)}
-    #: the two `BC` rows are the same MATH on different boxes, so they are compared
-    #: against the same reference rather than against each other's plane layout.
-    for name, (num, den, plane) in runs.items():
-        arm = SMALL_C if "BC=64" in name else SMALL
-        rn, rd, rs = (ncr, dcr, scr) if "BC=64" in name else (n_ref, d_ref, s_ref)
-        assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
-                        rn) < BF16_RTOL, name
-        assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), rd) < BF16_RTOL, name
-        got = canonical_from_lattice(plane, arm[0], arm[1], arm[2])
-        assert relative(got, rs.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL, name
-    #: and the CROSS-VARIANT delta, reported rather than asserted bitwise: the three
-    #: sum in different orders and no bit-identity is claimed.
-    a = runs["A state BC=128"][0].double()
-    for name in ("B channel BC=128", "C state BC=64"):
-        d = float((a - runs[name][0].double()).abs().max()) / max(1e-30, float(a.abs().max()))
-        print(f"cross-variant max delta A vs {name}: {d:.3e}")
-        assert d < BF16_RTOL

@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""K31 R1 M5 -- the perf snapshot: the three carve variants beside the shipped arm.
+"""K31 R1 M5 -- the perf snapshot: the channel-split arm beside the shipped baseline.
 
 NOT A GATE.  R1's targets are context, not a bar: the shipped arms stay the
 baseline until the new family beats them cell for cell, and this script is what
@@ -122,9 +122,7 @@ def main():
         "ALT k_tok=4": ((None, 4), (4, None)),
     }
     variants = [
-        ("A  state-split  BC=128 W=256", 4, 8, 256, carry_ops.STATE_SPLIT),
         ("B  channel-split BC=128 W=256", 4, 8, 256, carry_ops.CHANNEL_SPLIT),
-        ("C  state-split  BC=64  W=256", 4, 4, 256, carry_ops.STATE_SPLIT),
     ]
     rows = []
     for cell, (kr, kw) in cells.items():

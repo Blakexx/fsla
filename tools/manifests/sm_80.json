@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "14f69c32a60a21c0cc4bd1c1b1b760c170c78b31cc2a243393c7715f9813584d",
+  "csrc_sha256": "261746a8f1bcf96c5bc6b84420a8b6579ffb4fc18860ea4bd52129e5c2bb9a4b",
   "date": "2026-08-20"
  },
  "shards": {
@@ -33,22 +33,6 @@
   }
  },
  "entries": {
-  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi4ELi256ELi32ELNS0_5CarveE0ELb1EEEvPK13__nv_bfloat16S5_S5_S5_PfS6_iiPKfS6_": {
-   "regs": 115,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "6a930424555f34170feb8b7aac4a1ee6132e05a214b63737ccfa382ecc9a7bf2"
-  },
-  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi256ELi32ELNS0_5CarveE0ELb1EEEvPK13__nv_bfloat16S5_S5_S5_PfS6_iiPKfS6_": {
-   "regs": 155,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "3a137cc550e091e761c3c2220d31b7a053eb4a487afc0cf5e68b68b7bc637617"
-  },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi256ELi32ELNS0_5CarveE1ELb1EEEvPK13__nv_bfloat16S5_S5_S5_PfS6_iiPKfS6_": {
    "regs": 165,
    "spill_stores": 0,
@@ -56,22 +40,6 @@
    "hot_locals": 0,
    "local_ops": 0,
    "sass_sha256": "55bb6a68c3db2301b962cda7957ec02f2dabc954f3543629134c0b59606fdcd1"
-  },
-  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi64ELi4ELi4ELi64ELi32ELNS0_5CarveE0ELb1EEEvPK13__nv_bfloat16S5_S5_S5_PfS6_iiPKfS6_": {
-   "regs": 116,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "1c32b128606d2e5bfa14d520a7d7c06bc565141cc9e0e2726827180b0cb0878c"
-  },
-  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi64ELi4ELi8ELi64ELi32ELNS0_5CarveE0ELb1EEEvPK13__nv_bfloat16S5_S5_S5_PfS6_iiPKfS6_": {
-   "regs": 155,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "3d2adb1470a75b906f6e47b2e2f5cbde9e5d5e45501c8375f05f10df92f0f22f"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi64ELi4ELi8ELi64ELi32ELNS0_5CarveE1ELb1EEEvPK13__nv_bfloat16S5_S5_S5_PfS6_iiPKfS6_": {
    "regs": 165,

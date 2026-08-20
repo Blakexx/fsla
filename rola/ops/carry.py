@@ -21,8 +21,9 @@ import torch
 
 from rola.ops._ext import extension
 
-#: the carve axis, as the kernel's compile-time enum (`Carve` in carry_kernel.cuh).
-STATE_SPLIT = 0
+#: the carve, ruled: channel-split is the sm_80 carve (R1 measurement,
+#: 2026-08-20); the state-split variants are deleted -- receipts in
+#: workflows/k31-r1-carry/FINDINGS.md, revival = git.
 CHANNEL_SPLIT = 1
 
 MMA_K_QUANTUM = 16
@@ -88,7 +89,7 @@ def pack_side(levels) -> torch.Tensor:
 
 
 def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
-                window: int, chunk: int = 32, carve: int = STATE_SPLIT,
+                window: int, chunk: int = 32, carve: int = CHANNEL_SPLIT,
                 state_in: torch.Tensor | None = None):
     """The INTER term, undivided: ``(num, den, state_out)``.
 

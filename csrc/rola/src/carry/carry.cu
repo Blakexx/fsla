@@ -29,12 +29,8 @@ namespace rola::carry {
 //: THE BUILT SET, as one macro so the dispatch, the census and the arm list cannot
 //: drift apart -- the shipped family's `CHUNK_ARMS_X` discipline.
 #define CARRY_ARMS_X(X_)        \
-  X_(2, 256, 4, 8, 256, 32, 0)  \
   X_(2, 256, 4, 8, 256, 32, 1)  \
-  X_(2, 256, 4, 4, 256, 32, 0)  \
-  X_(2, 64, 4, 8, 64, 32, 0)    \
-  X_(2, 64, 4, 8, 64, 32, 1)    \
-  X_(2, 64, 4, 4, 64, 32, 0)
+  X_(2, 64, 4, 8, 64, 32, 1)
 
 template <int D, int B, int K, int M, int W, int C, int CV>
 static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
