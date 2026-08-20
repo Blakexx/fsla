@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "12838f318dca0d779141bf71535c069efd7cab5fcaeb6fa6d52438a322b3f1c0",
+  "csrc_sha256": "14f69c32a60a21c0cc4bd1c1b1b760c170c78b31cc2a243393c7715f9813584d",
   "date": "2026-08-20"
  },
  "shards": {
@@ -440,6 +440,22 @@
    "hot_locals": 0,
    "local_ops": 0,
    "sass_sha256": "6a9cff7d224cc0f29aada307603a38e0291d0f639cd6d4c927da1c42a4a9183a"
+  },
+  "sm_86:_ZN4rola5intra40_GLOBAL__N__87ef5623_8_intra_cu_0305353212stamp_kernelEPl": {
+   "regs": 10,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "31182f659202760469df44e25e7186751412136d1406d643167ea19a573da57a"
+  },
+  "sm_86:_ZN4rola5intra6detail12intra_kernelILi2EEEvNS1_11IntraParamsE": {
+   "regs": 152,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "420bb262edd7654f7f7c9805f2da6e0c66bf9e22930a21e66febd9b46a9c673c"
   },
   "sm_86:_ZN4rola6decode6detail18decode_step_kernelILi32ELi1ELb0ELb0EEEvNS0_12DecodeParamsE": {
    "regs": 57,
