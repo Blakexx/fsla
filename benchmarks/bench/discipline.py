@@ -4,13 +4,13 @@ Six gates run before a number exists, in this order: the lock, the memory fracti
 extension's identity, the tree's identity, the settled clock, the tier. Each of the first
 five is a REFUSAL -- a run that cannot establish the precondition raises rather than
 measuring -- and each has a planted-violation row in
-`tests/unit/test_chunk_bench_harness.py`. The reasoning behind each gate is
+the retired harness gate (K31; baseline = tag `baseline/pre-k31`). The reasoning behind each gate is
 `docs/measurement.md`; what lives here is the enforcement.
 
 **THE LOCKING STATEMENT (`docs/testing.md` requires the successor to make one).** This
 harness does NOT take `/tmp/rola_gpu.lock` itself. It is invoked WRAPPED --
 
-    flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_forward.py
+    flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_facts.py
 
 -- and :func:`require_gpu_lock` CHECKS that it was, by finding an ancestor process that
 holds the lock path open. Running bare is a refusal. The retired `rola-probe` took the

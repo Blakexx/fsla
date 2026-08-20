@@ -1,8 +1,8 @@
 # The stats pass — the exact atom-grain write bitmap
 
 Mirror doc for `atom_bitmap_kernel` and for the atom-grain half of
-`chunk_facts_tables` (`csrc/rola/src/chunk/chunk_kernel.cuh`), their launchers
-(`chunk_launch.cuh`), the `facts` torch entry (`chunk.cu`) and its host callers
+`chunk_facts_tables` (`csrc/rola/src/facts/facts_kernel.cuh`), their launchers
+(`facts_launch.cuh`), the `facts` torch entry (`facts.cu`) and its host callers
 (`rola/engine/facts/nodes.py`'s `facts_tables` node, `rola/engine/facts/planes.py`). The page
 arena that consumes the bitmap is `paging.md`; the addressing it keys is
 `AtomKeying` in `rola/ops/paging.py`.

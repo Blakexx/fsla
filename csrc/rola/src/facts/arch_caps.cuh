@@ -29,7 +29,8 @@ struct Caps {
                            // over the accumulator's OWN m axis, which puts the
                            // accumulator on the k side, and the accumulator map
                            // and the k-side map differ by exactly this
-                           // transpose (measured, docs/internals/chunk/ops.md).
+                           // transpose (measured on the retired consumer's
+                           // catalogue; baseline = tag baseline/pre-k31).
 
   // ------------------------------------------------------------- RESIDENCY
   // Instruction facts about WHERE an accumulator lives and where an operand may

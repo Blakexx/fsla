@@ -1,5 +1,11 @@
 # Testing — the three tiers
 
+> **K31 (2026-08-20).** The prefill chunk consumer, its backward and their test tier
+> are DELETED from the master line (baseline = tag `baseline/pre-k31`;
+> `docs/internals/DELETIONS.md`). Rows below that name the chunk arm, the scans or
+> `bench_chunk.py` describe the baseline tag's tree; the fp64 oracle remains the
+> executable spec and the decode family's gates are unchanged.
+
 The suite answers **different questions**, and conflating them is how a real bug
 hides. It is three directories, and **each tier ASSUMES the tier below it** — that
 is what keeps the suites from re-proving everything everywhere.

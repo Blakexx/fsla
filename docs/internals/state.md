@@ -132,7 +132,7 @@ transient whose only job is to be swapped in buys nothing the caller can observe
 
 **What makes it safe is the CTA structure, not a convention.** The owner blocks tile the
 leaf space exactly, so each atom belongs to exactly one CTA and, inside it, to one slot
-group: `chunk_kernel.cuh`'s `atom_first()` is `blockIdx.y`, the block's BC-aligned leaf
+group: the deleted consumer's `atom_first()` was `blockIdx.y`, the block's BC-aligned leaf
 base and the group's offset, and the entry fold and the store epilogue iterate the SAME
 `kAtoms` from the SAME base. The entry fold runs ONCE, in the prologue, before the first
 super-chunk is staged; the store runs ONCE, in the epilogue, after the last drain. So no

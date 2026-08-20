@@ -1,5 +1,12 @@
 # Measurement — the instruments, the discipline, and the record
 
+> **K31 (2026-08-20).** The chunk arm and its two-scan backward are DELETED from the
+> master line (baseline = tag `baseline/pre-k31`; `docs/internals/DELETIONS.md`).
+> `bench_chunk.py`, the consumer subjects, the latency baseline and their harness
+> gates went with them; the surviving roster is `chunk_facts`, `chunk_block_bits`,
+> `decode_step` and `entmax_solve` through `bench/driver.py`. Sections below that
+> speak of the consumer harness describe the baseline tag's tree.
+
 Every performance number this repository publishes is produced by one harness, taken
 with one stopwatch, and written to one file with its provenance. This document is
 what those three sentences mean.
@@ -47,7 +54,7 @@ in the tree discharges it.
 itself. It is invoked WRAPPED —
 
 ```bash
-flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_forward.py --tier landing
+flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_facts.py --tier landing
 ```
 
 — and `bench.discipline.require_gpu_lock` CHECKS that it was, by finding the ancestor

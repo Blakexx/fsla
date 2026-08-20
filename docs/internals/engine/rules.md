@@ -25,10 +25,8 @@ set, and none could be exercised without a device.
 | `arm` | `widths`, the manifest | `Arm = (C, BC)`, or none |
 | `arm_envelope` | `widths`, `d_v`, normalization, decay, `arm` | the arm matrix's refusal, or None |
 | `envelope` | unratified activations, device | the operand-side refusal, or None |
-| `backward_envelope` | `arm_envelope`, `widths`, `arm`, the scan census | the reverse pass's refusal, or None |
 | `training_envelope` | grad, state | the stateless-training refusal, or None |
 | `run_table` | the three state ARGUMENTS' presence | the `uint32` skip table |
-| `retention` | grad | whether the call keeps a reverse-pass ctx |
 | `paging_preference` | the expert overrides | dense or paged backing |
 | `admission` | the allocator's cursor, capacity, extent, count | the run's first slot |
 
@@ -72,19 +70,17 @@ A rule is capturable by its own contract — it reads no contents, launches noth
 allocates nothing — so `rule` declares it so, and a rule on a captured recipe needs no
 further argument.
 
-Three of the folds are not in a DAG tuple, and each for a stated reason rather than
-by oversight:
+Two of the folds are not in a DAG tuple, and each for a stated reason rather than
+by oversight (`backward_envelope` and `retention` left with the K31 deletion
+batch's reverse pass; baseline = tag `baseline/pre-k31`):
 
-* `arm_envelope` / `envelope` / `backward_envelope` / `training_envelope` are composed
+* `arm_envelope` / `envelope` / `training_envelope` are composed
   by `facts/call.py`'s `envelope_refusal` and `require_envelope`, which
   `validate_context` calls BEFORE the walk's first node so that no refusal can
   arrive with the operands already consumed ([`engine.md` §7](engine.md#refusals)).
   Placing them in the tuple would move a refusal after work. The composition is an
   ADAPTER and lives with the adapters: it reads a bundle rather than folding declared
   fact values, so it carries no `rule` marker and could not live here (§2).
-* `retention` is called at the autograd boundary, which is the only moment the
-  retention decision exists: `needs_input_grad` is a property of the node's
-  invocation, not of the plan the walk built.
 * `run_table` IS in the chunk tuple, last before the terminal node, so it folds after
   `backing` has produced the three presences it reads and without stepping between two
   launches. Its `uint32` is a `ChunkPlan` field and a launch argument

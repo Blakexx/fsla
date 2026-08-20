@@ -1,5 +1,10 @@
 # benchmarks/ — the chunk arm's harness
 
+> **K31 (2026-08-20).** The consumer subjects and the `bench_chunk.py` front door are
+> DELETED (baseline = tag `baseline/pre-k31`). The surviving subjects — `chunk_facts`,
+> `chunk_block_bits`, `decode_step`, `entmax_solve` — run through their unit drivers
+> under `benchmarks/unit/`.
+
 The methodology, the instruments and the record are `docs/measurement.md`; the lock rule
 is `docs/testing.md`. This file is the map.
 

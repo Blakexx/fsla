@@ -96,7 +96,7 @@ that widen the matrix and bring the backward are in
 `rola_op` is the **single autograd boundary**, and it is a refusal rather than a
 branch: the failure it prevents — a forward-only kernel reached from a gradient
 context returns a tensor with no `grad_fn` and severs the graph silently — is
-structural, not a bug in any one call site. `ChunkConsumer`'s backward is the last
+structural, not a bug in any one call site. the deleted consumer's autograd node was the last
 line, loud if the first is ever bypassed.
 
 ### 1.2 Continuation is LAYERED

@@ -163,7 +163,7 @@ raises on any attribute read, so the property is proven per node rather than dec
 There is a third kind and it is deliberately NOT a node attribute: a PRIMITIVE whose
 answer is a function of the loaded binary rather than of any fact declares its own
 caching, at the primitive. `rola/engine/facts/manifest.py`'s two census reads are the
-whole of that class — `chunk_arms()` and `scan_arms()` are `functools.cache`d — and
+whole of that class — `chunk_arms()` is `functools.cache`d — and
 the reason it cannot be `pure_of` is structural rather than stylistic: the census node
 has no `needs` to key a memo by, and four of the five sites that read the census are
 direct calls from `facts/call.py` and `facts/planes.py` that no node memo reaches. The
@@ -218,7 +218,7 @@ and the state-out plane is both a launch argument and the call's result.
 
 A plan is also not always a walk's OUTPUT. The backward family's plan is its INPUT —
 the forward's, held by reference — because the reverse pass finds no facts of its own
-([`backward_dag.md`](backward_dag.md)).
+(the backward DAG left with the K31 deletion batch; baseline = tag `baseline/pre-k31`).
 
 ## <a id="neutrality"></a>10. The neutrality gate
 

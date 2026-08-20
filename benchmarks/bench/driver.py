@@ -11,7 +11,7 @@ measured alone, which is the BASELINE mode.
 
 Usage (this harness is invoked WRAPPED; it checks that it was):
 
-    flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_forward.py --tier landing
+    flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_facts.py --tier landing
 """
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def main(subjects, argv=None, *, description: str = "") -> int:
     args = p.parse_args(argv)
 
     rounds = args.rounds or TIER_ROUNDS[args.tier]
-    cmd = f"bench_chunk {args.ab or args.subject or 'all'} --tier {args.tier}"
+    cmd = f"bench {args.ab or args.subject or 'all'} --tier {args.tier}"
     names = GROUPS[args.cells] if args.cells in GROUPS else args.cells.split(",")
     out = []
 

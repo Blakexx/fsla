@@ -23,12 +23,12 @@ from __future__ import annotations
 #: of a NaN. Changing it changes the function everywhere, not just at zero: the
 #: readout is a ratio, so every output is scaled by ``den/(den + eps)``.
 #:
-#: The value is shared by the oracle (``rola/ops/naive.py``), the chunk consumer
-#: (``rola/ops/chunk.py``) and decode (``rola/ops/decode.py``). It is NOT on
-#: the public surface: ``rola_op`` takes no ``eps``, because a number that changes
-#: the function is not a caller's argument. The kernel holds no copy either --
-#: ``divide_pass`` and the decode config take ``eps`` as a runtime argument -- so
-#: this constant is the single origin of the value on every path.
+#: The value is shared by the oracle (``rola/ops/naive.py``) and decode
+#: (``rola/ops/decode.py``); the deleted chunk consumer read it too, and K31 R2
+#: will again. It is NOT on the public surface: ``rola_op`` takes no ``eps``,
+#: because a number that changes the function is not a caller's argument. The
+#: kernel holds no copy either -- the decode config takes ``eps`` as a runtime
+#: argument -- so this constant is the single origin of the value on every path.
 READOUT_EPS = 1e-5
 
 __all__ = ["READOUT_EPS"]

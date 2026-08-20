@@ -17,13 +17,12 @@ tools/manifests/sm_86.json
                                             "sass_sha256": "..." }, ... } }
 ```
 
-**460 entries per architecture**, measured on the current tree: **108 for the chunk
-family** — 44 `compacted_kernel` (one per built `(C, BC, D, B)` arm crossed with the
-state axis), 24 `chunk_facts_tables` (12 `(D, B, BC)` crossed with the two prefill
-call classes), 12 `block_bitmap_kernel`, 8 `atom_bitmap_kernel`, 6
-`walk_probe_kernel` and the reverse pass' 14 (6 `scan_a_kernel`, 6 `scan_b_kernel`,
-2 `seed_kernel`) — plus 32 `decode_step_kernel` (`DV x D x DECAY x IN_SMEM`) and the
-entmax solves' 320. The tiled `consumer_forward_kernel<BC, DV, D, DECAY, GT>`
+**396 entries per architecture**, measured on the current tree: **44 for the facts
+family** — 24 `chunk_facts_tables` (12 `(D, B, BC)` tables crossed with the two
+prefill call classes), 12 `block_bitmap_kernel`, 8 `atom_bitmap_kernel` — plus 32
+`decode_step_kernel` (`DV x D x DECAY x IN_SMEM`) and the entmax solves' 320. (The
+chunk consumer's 44 `compacted_kernel`, the walk probe's 6 and the reverse pass'
+14 left with the K31 deletion batch; baseline = tag `baseline/pre-k31`.) The tiled `consumer_forward_kernel<BC, DV, D, DECAY, GT>`
 product that four shards once carried retired in P67 D2
 ([`docs/internals/DELETIONS.md`](internals/DELETIONS.md)).
 `defines` is the empty tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since

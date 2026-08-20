@@ -52,8 +52,7 @@ that.
 |---|---|
 | producer union entmax solve | `entmax_union_forward`, `entmax_union_backward` |
 | producer per-side solves | `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
-| the chunk consumer (the prefill arm) | `chunk_facts`, `chunk_block_bits`, `chunk_forward_raw`, `chunk_forward`, `chunk_divide_pass`, `chunk_build_stamp`, `chunk_arms` |
-| the chunk consumer's reverse pass | `chunk_backward_seeds`, `chunk_scan_a_probe`, `chunk_scan_b_probe`, `chunk_walk_probe`, `chunk_scan_a_census`, `chunk_scan_b_census` |
+| the facts family (the chunk consumer's surviving fact producers; the consumer and its reverse pass left with K31, baseline = tag `baseline/pre-k31`) | `chunk_facts`, `chunk_block_bits`, `chunk_arms` |
 | the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_work_words`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
 | the VMM owner | `rola_vmm_probe`, `rola_vmm_create`, and the `RoLAVmmOwner` class |
 
@@ -147,8 +146,10 @@ memory? — and mirroring that rule in Python would put a drift surface in front
 out-of-bounds write. It answers `0` at every shipped topology
 ([`decode/decode_api.md` §2](decode/decode_api.md#work-words)).
 
-## The chunk consumer's entries (operator adoption)
+## The facts entries (operator adoption)
 
-The chunk group above is a PRIVATE seam: declarations in
-`src/chunk/chunk_api.cuh`, `rola/ops/chunk.py` the only intended caller, and
-`rola_op` the only public door onto it. See `docs/internals/chunk/`.
+The facts group above is a PRIVATE seam: declarations in
+`src/facts/facts_api.cuh`, `rola/engine/facts/` the only intended caller. The
+consumer's own entries and its reverse pass left with the K31 deletion batch
+(baseline = tag `baseline/pre-k31`; `docs/internals/DELETIONS.md`). See
+`docs/internals/facts/`.

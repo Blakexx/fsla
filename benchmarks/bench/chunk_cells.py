@@ -293,7 +293,8 @@ def check_manifest(names=None) -> bool:
     already published under its name, so this is a hard check and not a report."""
     if not MANIFEST.exists():
         raise SystemExit(f"no committed manifest at {MANIFEST}; record one with "
-                         f"`bench_chunk.py manifest --write`")
+                         f"`python -c \"from bench.chunk_cells import write_manifest; write_manifest()\"` "
+                         f"(the bench_chunk.py front door left with the K31 deletion batch)")
     want = json.loads(MANIFEST.read_text())
     got = build_manifest(names)
     bad = []

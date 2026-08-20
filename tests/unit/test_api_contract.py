@@ -244,10 +244,9 @@ def test_the_public_layout_is_a_view_and_not_a_materialization():
     P67 D2-b NARROWED this row, per ruling R-6. It used to also assert WHICH of the
     two layouts is the materialized one, by comparing `data_ptr()` against
     `routing_views`' folded view -- and `routing_views` is the TILED consumer's
-    packing, deleted with it. The chunk arm builds its own packed operands per call
-    (`rola/ops/chunk.py` says so, and says they are scheduled for deletion into the
-    producer epilogue), so there is no second standing layout left to be the one
-    that is materialized. What survives, and is what a caller of this surface is
+    packing, deleted with it. The engine builds its own packed operands per call
+    (`rola/engine/facts/planes.py`), so there is no second standing layout left
+    to be the one that is materialized. What survives, and is what a caller of this surface is
     owed, is that the public tensors are views.
     """
     producer = _routes(widths=(4, 6))
