@@ -23,20 +23,24 @@ namespace decode {
 //: `static_assert` cannot read a Python constant:
 //: docs/internals/decode/decode_api.md#bound-surface
 int64_t rola_decode_capacity();
-int64_t rola_decode_residency(bool decay);
 int64_t rola_decode_producer_width_mirror();
 
-//: THE EXPANSION'S GLOBAL SCRATCH, in int32 PER CTA, and `0` at every shipped topology.
-//: The host multiplies by `BH * n_split`. Asking the kernel's own sizing function is what
-//: keeps the buffer from being sized by a host-side mirror that can drift:
-//: docs/internals/decode/decode_api.md#work-words
-int64_t rola_decode_work_words(std::vector<int64_t> level_widths, int64_t d_v, bool decay,
-                               int64_t device_index);
+//: THE STEP'S DECLARED RESIDENCY in CTAs per SM, so the split policy sizes one wave from
+//: the launch bound itself rather than from a python mirror of it:
+//: docs/internals/decode/decode_api.md#residency
+int64_t rola_decode_residency(bool decay, int64_t levels);
 
-//: THE WHOLE STEP IN ONE LAUNCH -- fold, expand, walk, AND ITS OWN ADMISSION QUESTION --
+//: THE DEVICE-SIDE BUILD STAMP, a fact only the loaded binary can produce. A path check
+//: or a hash of the sources cannot catch a stale `.so` at the right path:
+//: docs/internals/decode/decode_api.md#build-stamp
+int64_t rola_decode_build_stamp();
+
+//: THE WHOLE STEP IN ONE LAUNCH -- fold, factor, walk, AND ITS OWN ADMISSION QUESTION --
 //: over the caller's RAW `[B, 1, H, *]` views. There is no operand plane between the
-//: producer and the walk, and no probe launch in front of it: the write map the walk
-//: needs is the map the residency test reads, so the test is a pass over shared memory.
+//: producer and the walk, and no probe launch in front of it: the write set the walk
+//: enumerates is the set the residency test reads, so the test is a pass over shared
+//: memory. `lattice_k`/`lattice_m` name the `(k, m)` box the state plane is written in --
+//: the leaf order travels with the plane rather than being assumed.
 //: The verdict is PER BATCH-HEAD (`growth`, `done`, and the `growth_any` reduction the
 //: host reads) beside the write-atom set it was reached from (`atom_bits`, which is what
 //: a host admission then plans from), and under a slack pool a growth step admits
@@ -44,11 +48,10 @@ int64_t rola_decode_work_words(std::vector<int64_t> level_widths, int64_t d_v, b
 at::Tensor rola_decode_forward(
     std::vector<at::Tensor> read, std::vector<at::Tensor> write, std::vector<int64_t> normalize,
     c10::optional<at::Tensor> dials, at::Tensor g_write, at::Tensor v, at::Tensor state,
-    at::Tensor work, at::Tensor ws, at::Tensor ctr, at::Tensor growth, at::Tensor growth_any,
-    at::Tensor growth_ctr, at::Tensor done, at::Tensor atom_bits, std::vector<int64_t> level_widths,
-    std::vector<int64_t> level_strides, std::vector<int64_t> level_spans,
-    std::vector<int64_t> level_row_offsets, int64_t n_split, double eps,
-    c10::optional<at::Tensor> page_table, c10::optional<at::Tensor> pool_slots,
+    at::Tensor ws, at::Tensor ctr, at::Tensor growth, at::Tensor growth_any, at::Tensor growth_ctr,
+    at::Tensor done, at::Tensor atom_bits, std::vector<int64_t> level_widths,
+    std::vector<int64_t> level_row_offsets, int64_t lattice_k, int64_t lattice_m, int64_t n_split,
+    double eps, c10::optional<at::Tensor> page_table, c10::optional<at::Tensor> pool_slots,
     c10::optional<at::Tensor> pool_cursor, c10::optional<at::Tensor> pool_map);
 
 }  // namespace decode

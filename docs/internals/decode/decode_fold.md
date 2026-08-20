@@ -67,10 +67,10 @@ The branch is taken once per SIDE, not once per element, and both arms are compl
 is a dispatch, not a fast path with a fallback. A dtype outside the pair is a REFUSAL at
 the host entry, never a silent widening.
 
-Contrast `IN_SMEM`, which IS a template axis
-([`decode_expand.md#smem-arm`](decode_expand.md#smem-arm)): it decides the ADDRESS SPACE
-the walk's hottest index lives in, and a runtime pointer there would make every bitmap
-access generic.
+Contrast `DECAY` and `D` (`decode.md#instantiation-matrix`), which ARE template axes: each
+picks a different loop shape or a different live-register count in the walk's innermost
+path, where a runtime branch would cost a register or an instruction on every iteration
+rather than a few hundred bytes once per step.
 
 ## <a id="declared-order"></a>4. The normalizing sum, and its DECLARED order
 

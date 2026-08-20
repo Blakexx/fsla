@@ -52,6 +52,7 @@ import pytest
 import torch
 
 from rola.ops.decode import _decode_step, derive_decode_geometry
+from rola.ops.lattice import permutation, to_canonical, to_lattice
 from rola.ops.naive import naive_rola
 from rola.routing.types import LeafMassDecay
 from tests.oracle.oracle_fixtures import _decay_dials, _simplex, _topology
@@ -73,24 +74,28 @@ def _chunk_tokens() -> int:
 
     return CHUNK_TOKENS
 
-#: THE TOPOLOGY AXIS, and the last three rows are the reason it is written out rather
-#: than reduced. The bitmap expansion copies an ``S_{l+1}``-bit block into each live
-#: digit's range; when ``S_{l+1}`` is a multiple of 32 that is a word copy, and
-#: otherwise it is a funnel shift across a word boundary. An off-by-one in that shift is
-#: exactly the defect these gates exist to catch, so the axis must contain a topology
-#: with ``S_{D-1} < 32`` and one with ``S_{D-1} % 32 != 0``:
+#: THE TOPOLOGY AXIS, written out rather than reduced because the lattice ``(k, m)`` each
+#: row derives is what the walk is, and the axis has to carry every shape of it:
 #:
-#:   (8, 16)     S_1 = 16   < 32
-#:   (4, 4, 4)   S_2 = 4    < 32,  S_1 = 16 < 32
-#:   (3, 5, 7)   S_2 = 7    < 32,  S_1 = 35 % 32 = 3   <- the funnel-shift case
-#:   (2, 3, 4, 4) S_3 = 4,  S_2 = 16, S_1 = 48 % 32 = 16
-#:   (7, 9)      S_1 = 9    < 32,  N = 63 (a ragged last word)
-#:   (33,)       D = 1,     N = 33 spans two words with a ragged tail
-#:   (64, 64)    the aligned case, N = 4096
-#: `kCoarseGroupWords * 32` -- the leaves one coarse group covers.
-kCOARSE_GROUP_LEAVES = 32 * 32
-
+#:   (16,)        D = 1, k = 16, m = 1   -- one sub-box per leaf run, pi the identity
+#:   (33,)        D = 1, k = 1           -- no k divides it: every leaf its own owner
+#:   (8, 16)      k = 4,  m = 4          -- unequal per-level shares, pi NOT the identity
+#:   (7, 9)       k = 1                  -- coprime widths, N = 63
+#:   (4, 4, 4)    k = 4,  m = 1          -- the sub-box IS the whole level product
+#:   (3, 5, 7)    k = 1                  -- D = 3 with no admissible span
+#:   (2, 3, 4, 4) k = 1,  m = 2          -- D = 4, capacity without a sub-box
+#:   (64, 64)     k = 4,  m = 8          -- the flagship box, N = 4096
+#:
+#: The order is positional in the parametrize ids and does not change.
 _TOPOLOGIES = [(16,), (33,), (8, 16), (7, 9), (4, 4, 4), (3, 5, 7), (2, 3, 4, 4), (64, 64)]
+
+
+def _lattice_mask(mask, config):
+    """A ``[BH, N]`` CANONICAL leaf mask, re-read in LATTICE order."""
+    pi = permutation(config.widths, config.lattice_k, config.lattice_m, device=mask.device)
+    out = torch.empty_like(mask)
+    out.index_copy_(1, pi, mask)
+    return out
 
 
 def _leaf_support(levels, widths, B, H, device):
@@ -113,18 +118,18 @@ def _leaf_support(levels, widths, B, H, device):
     return mask
 
 
-def _kernel_expansion(levels, widths, B, H, device, d_v=64):
-    """The step kernel's OWN expansion of one side's amplitudes, as ``[BH, N]`` bool.
+def _kernel_realized_support(levels, widths, B, H, device, d_v=64):
+    """The step kernel's OWN touched leaf set, as ``[BH, N]`` bool in LATTICE order.
 
-    The expansion is ONE device function and it does not know which side it is serving,
-    so the amplitudes go in through the WRITE port, where the leaf set they expand to is
-    exactly the set of state rows the step deposits into. Membership is then read off the
-    STATE DIFF -- observable at any topology, and bit for bit, which is what the fused
-    step's shared-memory bitmaps are not.
+    The walk is ONE device path and it does not know which side it is serving, so the
+    amplitudes go in through the WRITE port, where the leaf set it reaches is exactly the
+    set of state rows the step deposits into. Membership is then read off the STATE DIFF
+    -- observable at any topology, and bit for bit, which the kernel's internal factors
+    are not.
 
-    The read side is left empty so the walk's union is the expansion under test, the
-    state starts at zero and ``v`` is all ones, so a deposited row is a nonzero row and
-    the correspondence is exact rather than statistical.
+    The read side is left empty so the walk's union is the set under test, the state
+    starts at zero and ``v`` is all ones, so a deposited row is a nonzero row and the
+    correspondence is exact rather than statistical.
     """
     topology = _topology(widths)
     N = math.prod(widths)
@@ -187,8 +192,11 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     # ---- decode ---------------------------------------------------------------
     config = derive_decode_geometry(topology, d_v=d_v, decay=decay is not None, BH=B * H,
                                   device=device, n_split=n_split)
+    #: THE SEAM. The oracle's plane is canonical forever; the kernel's is lattice-ordered.
     state = (torch.zeros(B, H, N, cols, device=device, dtype=torch.float32)
-             if initial_state is None else initial_state.to(torch.float32).clone())
+             if initial_state is None
+             else to_lattice(initial_state.to(torch.float32), widths,
+                             config.lattice_k, config.lattice_m))
     workspace = None
     y_outs = []
     for s in range(steps):
@@ -198,6 +206,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
             None if g_reads[s] is None else g_reads[s].float(), g_writes[s].float(),
             config, state, decay=decay, workspace=workspace)
         y_outs.append(y)
+    state = to_canonical(state, widths, config.lattice_k, config.lattice_m)
 
     return dict(y=y_outs, state=state, y_ref=y_refs, state_ref=ref_state, config=config,
                 workspace=workspace, read_levels=read_levels, write_levels=write_levels,
@@ -222,46 +231,25 @@ def _assert_oracle(out, tol=DECODE_RTOL):
 @pytest.mark.parametrize("widths", _TOPOLOGIES)
 @pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.4, 0.3)])
 def test_g3_expansion_is_the_exact_leaf_support(widths, p_read, p_write):
-    """The expansion IS the per-level exact-nonzero support, leaf for leaf.
+    """The realized touched set IS the per-level exact-nonzero support, leaf for leaf.
 
     This is the one place the decode path's "membership is ``amp != 0``" claim is
-    checked rather than argued. It is a bit-for-bit gate on a bit-for-bit object: a
-    funnel shift that is off by one at an ``S_{l+1} % 32 != 0`` boundary moves exactly
-    one bit, and nothing downstream would necessarily notice — the leaf it wrongly
-    includes may carry a zero amplitude and contribute nothing to ``y``.
+    checked rather than argued, and the one place ``pi`` is gated end to end: the
+    canonical support is derived from the level definition, permuted into lattice order,
+    and matched bit for bit against the rows the kernel's own lattice walk moved. A leaf
+    the walk wrongly includes may carry a zero amplitude and contribute nothing to ``y``,
+    so nothing downstream would necessarily notice.
 
-    Both sides go through the SAME device function, so both are stated here.
+    Both sides go through the SAME device path, so both are stated here.
     """
     out = _case(widths, 64, 2, 3, "global", p_read, p_write, seed=17)
-    B, H, device = out["B"], out["H"], out["device"]
-    want_r = _leaf_support(out["read_levels"][0], widths, B, H, device)
-    want_w = _leaf_support(out["write_levels"][0], widths, B, H, device)
-    assert torch.equal(_kernel_expansion(out["read_levels"][0], widths, B, H, device),
-                       want_r), "the read expansion is not the exact read support"
-    assert torch.equal(_kernel_expansion(out["write_levels"][0], widths, B, H, device),
-                       want_w), "the write expansion is not the exact write support"
-
-
-def test_g3_the_coarse_index_carries_a_sparse_multi_group_topology():
-    """``pc[g]`` is the exclusive popcount prefix, gated where it is load-bearing.
-
-    The coarse index lives and dies inside the CTA that builds it, so what states it is
-    the WALK it drives: a prefix that is wrong by one skips a group that has rows in it,
-    and those rows vanish from ``y`` and from the state rather than failing loudly. The
-    cell therefore asserts the fixture actually has empty groups to skip and a row range
-    to partition, and then holds the whole step to the fp64 oracle.
-    """
-    widths = (64, 64)
-    out = _case(widths, 64, 2, 3, "global", 0.05, 0.05, seed=99)
-    config = out["config"]
-    assert config.n_groups > 1, "the fixture is one coarse group: nothing is being skipped"
-    assert config.n_split > 1, "the fixture is one CTA: no row range is being resolved"
-    union = (_leaf_support(out["read_levels"][0], widths, out["B"], out["H"], out["device"])
-             | _leaf_support(out["write_levels"][0], widths, out["B"], out["H"], out["device"]))
-    per_group = union.view(-1, config.n_groups, kCOARSE_GROUP_LEAVES).any(-1)
-    assert bool(union.any()), "the fixture touches no leaf at all"
-    assert bool((~per_group).any()), "the fixture has no empty group for the walk to skip"
-    _assert_oracle(out)
+    B, H, device, config = out["B"], out["H"], out["device"], out["config"]
+    want_r = _lattice_mask(_leaf_support(out["read_levels"][0], widths, B, H, device), config)
+    want_w = _lattice_mask(_leaf_support(out["write_levels"][0], widths, B, H, device), config)
+    assert torch.equal(_kernel_realized_support(out["read_levels"][0], widths, B, H, device),
+                       want_r), "the read walk is not the exact read support"
+    assert torch.equal(_kernel_realized_support(out["write_levels"][0], widths, B, H, device),
+                       want_w), "the write walk is not the exact write support"
 
 
 # ---------------------------------------------------------------------------
@@ -290,12 +278,12 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     against the oracle at all: there is no reference answer because there is no legal
     input. Asserting against the oracle here would have meant weakening the oracle.
 
-    It is still worth pinning, because the empty ROW RANGE it exercises is very much
+    It is still worth pinning, because the empty UNIT RANGE it exercises is very much
     reachable — the frozen ``n_split`` sizes the grid from a CEILING, so ordinary steps
-    launch CTAs with empty ranges — and the degenerate forms of the coarse-index binary
-    search, the boundary bit cuts and the split-K combine all live on that path. So the
-    assertion is against the arithmetic identity (a sum over no terms is zero, and
-    ``0 / (0 + eps)`` is zero), not against a reference.
+    launch CTAs with empty ranges — and the degenerate forms of the unit partition and
+    the split-K combine live on that path. So the assertion is against the arithmetic
+    identity (a sum over no terms is zero, and ``0 / (0 + eps)`` is zero), not against a
+    reference.
     """
     device = "cuda"
     widths, d_v, B, H = (8, 16), 64, 1, 2
@@ -329,25 +317,15 @@ def test_more_ctas_than_rows_is_inert(n_split):
     assert float((got["y"][-1] - ref["y"][-1]).abs().max()) / scale < DECODE_RTOL
 
 
-def test_the_global_residence_expansion_arm():
-    """The expansion's SECOND residence arm, which no other row reaches.
+def test_the_widest_staged_topology():
+    """``N = 262,144``: the widest topology the staged carrier reaches, on the oracle.
 
-    The arm is chosen from a topology fact (``n_words``) against a hardware fact (the
-    per-block SMEM budget): the ping-pong pair is ``2 * ceil(N/32)`` words, so below
-    roughly ``N = 196,608`` on an sm_86 device the intermediate levels live in SMEM and
-    above it they live in global memory. Every other topology in this file fits SMEM, so
-    without this row the global arm would ship having never executed — which is the
-    failure mode the two-arm design is most exposed to, since the arms differ only in
-    WHERE the intermediates live and a pointer mistake in the one that is never run
-    looks exactly like a correct program.
-
-    ``widths = (256, 256, 4)`` gives ``N = 262,144`` (``n_words = 8192``, a 64 KiB
-    ping-pong pair, over the budget) and ``S_2 = 4 < 32``, so it exercises the
-    shift-and-merge copy on the global arm rather than only the aligned one.
+    The lattice is walked from its factors, so ``N`` costs the walk nothing structurally
+    -- which is exactly why it has to be gated rather than assumed. ``(256, 256, 4)``
+    also gives an unequal capacity share (``k = 4, m = 4`` puts ``s_2 = 4`` on the narrow
+    level), so ``pi`` here is not a uniform digit rotation.
     """
     widths = (256, 256, 4)
-    n_words = (math.prod(widths) + 31) // 32
-    assert 2 * n_words * 4 > 48 * 1024, "this fixture no longer selects the global arm"
     #: `p = 0.5` rather than something thinner, and `B = 2, H = 3` rather than `1, 2`:
     #: `_simplex` refuses a vacuously dense fixture, and the width-4 level is narrow
     #: enough that a thin Bernoulli mask zeroes every entry and the empty-row repair
@@ -477,8 +455,8 @@ def _oracle_prefill(widths, d_v, B, T, H, generator, device):
 
     The PRODUCTION prefill arm ran this leg until the K31 deletion batch removed
     it (baseline = tag `baseline/pre-k31`); the seam this gate owns -- decode
-    continuing from a canonical leaf-major entry state under the frozen carrier
-    config -- survives it, because the oracle's `output_final_state` IS that
+    continuing from the oracle's own entry state, crossed into lattice order,
+    under the frozen carrier config -- survives it, because the oracle's `output_final_state` IS that
     state's definition. A hand-built bundle and not the producer: the fixture
     plants a specific density on each side, which a producer cannot be asked for.
     """
@@ -502,8 +480,8 @@ def test_g7_prefill_decode_seam(widths):
 
     This is the gate on the frozen carrier being the RIGHT config: an ``eps``
     that disagreed with the readout's, a head fold that disagreed with
-    ``h = bh % H``, or a state layout that was not leaf-major would each show up
-    here and nowhere else. The prefill leg ran on the production chunk arm until
+    ``h = bh % H``, or a leaf order that was not the config's lattice would each
+    show up here and nowhere else. The prefill leg ran on the production chunk arm until
     the K31 deletion (its charge was measured at 5.2e-3 / 6.4e-3 against the
     1e-2 band, with an oracle CONTROL to keep the blame assignable); the seam's
     entry state is now the oracle's own, narrowed to the kernel's fp32, so the
@@ -526,10 +504,14 @@ def test_g7_prefill_decode_seam(widths):
 
     config = derive_decode_geometry(pre["topology"], d_v=d_v, decay=False, BH=B * H,
                                   device=device)
+    #: THE SEAM ITSELF: the entry state is the oracle's, so it crosses into lattice order
+    #: here and its answer crosses back.
+    entry = to_lattice(pre["state"], widths, config.lattice_k, config.lattice_m)
     y_dec, state_dec, _ = _decode_step(
         step_v.float(), tuple(t.float() for t in step_read),
         tuple(t.float() for t in step_write), None, step_gw.float(),
-        config, pre["state"].clone())
+        config, entry)
+    state_dec = to_canonical(state_dec, widths, config.lattice_k, config.lattice_m)
 
     #: THE WHOLE SEQUENCE, on the oracle: prefill and step concatenated, so the
     #: reference sees exactly what the two kernel legs together saw.

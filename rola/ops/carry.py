@@ -15,10 +15,9 @@ mixed-radix index.
 """
 from __future__ import annotations
 
-import math
-
 import torch
 
+from rola.ops import lattice
 from rola.ops._ext import extension
 
 #: the carve, ruled: channel-split is the sm_80 carve (R1 measurement,
@@ -38,38 +37,23 @@ WINDOW_SMALL = 64
 #: DEVICE an extension-trap check rather than a path check.
 BUILD_MAGIC = 31010013
 
-MMA_K_QUANTUM = 16
+MMA_K_QUANTUM = lattice.MMA_K_QUANTUM
 
 
 def box_shape(widths, k: int, m: int):
-    """``(m_l, s_l, g_l, BC, owners)`` for the ``(k, m)`` box on ``widths``.
+    """``(m_l, s_l, g_l, BC, owners)`` for the ``(k, m)`` box, with K13 ASSERTED.
 
-    The distribution of ``m`` across the levels is R0 spec section 2.5 -- the
-    innermost level takes whatever K13 (``s_{D-1} >= MMA_K_QUANTUM``) requires and
-    never less than its balanced share, and the rest is spread balanced over the
-    outer levels, innermost first. Derived here rather than imported from the device
-    header for the same reason the oracle derives its own strides: two derivations
-    disagree when one is wrong.
+    The derivation is `rola.ops.lattice`'s -- the ONE host authority over the leaf
+    order, shared with the decode family, because the two families write and read one
+    plane and two derivations disagree exactly when one is wrong. What this wrapper
+    adds is the carry family's own gate: K13 is a floor for the general solver and a
+    REQUIREMENT here, since a carry arm whose innermost span is thinner than an atom
+    would fold a bucket across two of them.
     """
-    D = len(widths)
-    j = int(math.log2(m))
-    assert 2 ** j == m, "m is a power of two"
-    kappa = int(math.log2(k))
-    assert 2 ** kappa == k, "k is a power of two"
-    floor_inner = max(0, int(math.log2(MMA_K_QUANTUM)) - kappa)
-    a_inner = max(j // D + (1 if j % D else 0), floor_inner)
-    j_outer = j - a_inner
-    assert j_outer >= 0, "K13: the innermost span cannot reach an atom under this (k, m)"
-    a = [a_inner if l == D - 1 else
-         j_outer // (D - 1) + (1 if l >= (D - 1) - (j_outer % (D - 1)) else 0)
-         for l in range(D)]
-    m_l = [1 << x for x in a]
-    s = [k * x for x in m_l]
-    g = [w // t for w, t in zip(widths, s)]
-    assert all(w % t == 0 for w, t in zip(widths, s)), "K6: an owner sits inside a level"
-    assert s[-1] >= MMA_K_QUANTUM, "K13: the innermost span must cover an atom"
-    bc = math.prod(s)
-    return m_l, s, g, bc, math.prod(g)
+    out = lattice.box_shape(widths, k, m)
+    assert lattice.covers_an_atom(out[1]), (
+        "K13: the innermost span must cover an atom; this (k, m) cannot reach it")
+    return out
 
 
 def lattice_of_canonical(widths, k: int, m: int, device="cuda") -> torch.Tensor:
@@ -79,25 +63,11 @@ def lattice_of_canonical(widths, k: int, m: int, device="cuda") -> torch.Tensor:
     leaf index, so this tensor is a convenience for the host seam and never a table
     the device consults.  ``lambda = O*BC + local``, with ``O`` the owner index in
     mixed radix over ``g_l`` and ``local`` the owner's run offsets in mixed radix
-    over ``s_l``: bits ``[o_0 | .. | o_D-1 | r_0 | .. | r_D-1]``.
+    over ``s_l``.  `rola.ops.lattice.permutation` is the derivation; this entry adds
+    the carry family's K13 gate.
     """
-    D = len(widths)
-    _, s, g, bc, _ = box_shape(widths, k, m)
-    N = math.prod(widths)
-    ell = torch.arange(N, device=device, dtype=torch.int64)
-    o_term = torch.zeros_like(ell)
-    local = torch.zeros_like(ell)
-    for l in range(D):
-        stride = math.prod(widths[l + 1:])
-        d = (ell // stride) % widths[l]
-        o_term += (d // s[l]) * math.prod(g[l + 1:])
-        #: THE INTRA-BOX ORDER IS MIXED RADIX over the owner's run offsets, most
-        #: significant level first, so each level's digits are CONTIGUOUS in
-        #: ``local`` -- the K33 enabler (`box.cuh`'s `run_of`): a bucket keyed on the
-        #: outermost sparse level's digit owns one contiguous ``BC / s_0``-wide run,
-        #: which at the flagship is two MMA n-tiles.
-        local += (d % s[l]) * math.prod(s[l + 1:])
-    return o_term * bc + local
+    box_shape(widths, k, m)
+    return lattice.permutation(widths, k, m, device=device)
 
 
 def pack_side(levels) -> torch.Tensor:

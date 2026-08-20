@@ -9,6 +9,7 @@ engine exists to remove (docs/internals/engine/engine.md).
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -71,11 +72,11 @@ class DecodeGeometry:
 
     D: int
     widths: tuple[int, ...]
-    leaf_stride: tuple[int, ...]     # prod(widths[l+1:]) — the leaf mixed radix
-    level_span: tuple[int, ...]      # prod(widths[l:])   — the expansion's copy geometry
     level_row_offset: tuple[int, ...]
-    n_words: int
-    n_groups: int
+    #: The `(k, m)` BOX the state plane's leaves are ordered by — the leaf order travels
+    #: with the plane rather than being assumed (`rola.ops.lattice`).
+    lattice_k: int
+    lattice_m: int
     d_v: int
     has_decay: bool
     eps: float
@@ -83,7 +84,7 @@ class DecodeGeometry:
 
     @property
     def N(self) -> int:
-        return self.level_span[0]
+        return math.prod(self.widths)
 
     @property
     def cols(self) -> int:

@@ -19,9 +19,9 @@ also mean the two derivations disagree, and a disagreement that is harmless in o
 direction is not evidence about the other.
 
 The claim is cheap to make exactly because the two sides SHARE a definition rather than
-mirror one: the residency test reads the very map the walk walks, expanded by
-`decode_expand.cuh`'s own `expand_inner` and `SideView` from the raw write levels, and
-`_write_atom_bitmap` is the torch derivation the exact preamble plans from. So this file
+mirror one: the residency test reads the very units the walk walks, resolved from the same
+per-level factors, and `_write_atom_bitmap` is the torch derivation the exact preamble
+plans from. So this file
 checks an EQUALITY the call graph already forces, which is the only kind of agreement
 worth gating: the failure it can catch is a condensation or a residency test that drifted,
 not a second copy of the support rule.
@@ -38,7 +38,7 @@ reserves slack slots, a growing batch-head admits itself and the verdict does NO
 there is nothing for the host to do. Exhaustion degrades to exactly the pool-free path.
 
 Vocabulary, defined here and used unqualified below: `N` = leaf count; `d_v = 64`;
-`cols = d_v + 1`; `BH = batch * heads`; **atom** = 16 consecutive leaves in canonical
+`cols = d_v + 1`; `BH = batch * heads`; **atom** = 16 consecutive leaves in LATTICE
 leaf order = the page granule; **slot** = the physical page an atom is mapped to, `-1`
 for an atom no plan committed; **needy** = a batch-head whose write set it can neither
 address nor admit.
@@ -55,7 +55,7 @@ from rola.ops.decode import (
     _decode_step,
     _write_atom_bitmap,
 )
-from rola.ops.paging import PageArena
+from rola.ops.paging import MMA_K_QUANTUM, PageArena
 from tests.integration.test_decode_paging import (
     _ARMS,
     _config,
@@ -114,7 +114,7 @@ def _arena(widths, BC, BH, **kwargs):
 def _gathered(arena, BH):
     """`[BH, N, cols]` from the arena's slots -- what two backings can both hold."""
     table = arena.page_table
-    out = torch.zeros(BH, table.shape[1], 16, 65, device="cuda")
+    out = torch.zeros(BH, table.shape[1], MMA_K_QUANTUM, 65, device="cuda")
     present = table >= 0
     out[present] = arena.state[table[present].long()]
     return out.reshape(BH, -1, 65)
@@ -262,7 +262,8 @@ def test_the_published_condensation_is_what_a_growth_step_admits(arm, support):
         "the set the step published is not the set the definition derives, so a growth "
         "step would admit the wrong atoms")
     assert torch.equal(
-        reference, _leaf_support(write, widths).view(BH, config.N // 16, 16).any(-1)), (
+        reference, _leaf_support(write, widths, config).view(
+            BH, config.N // MMA_K_QUANTUM, MMA_K_QUANTUM).any(-1)), (
         "the enumerated reference and the leaf support's own definition condense "
         "differently")
 
@@ -434,7 +435,7 @@ def test_an_exhausted_pool_degrades_to_the_host_path_exactly(arm):
     y_reference, _ = _step(fixture, config, reference)
 
     #: A pool one slot short of the thinnest demand: every batch-head is needy.
-    slack = (demand - 1) / config.N * 16
+    slack = (demand - 1) / config.N * MMA_K_QUANTUM
     starved = _arena(widths, BC, BH, pool_slack=max(slack, 0.0))
     assert starved.pool_capacity < demand, "this cell needs a pool that cannot cover"
     before = starved.state.clone()

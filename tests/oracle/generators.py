@@ -118,6 +118,8 @@ class Case:
         self.initial_state = None
         if c.get("m0"):
             assert not self.paging, "an implicit dense initial state is forbidden under paging"
+            #: CANONICAL leaf order, like everything the oracle touches. A consumer
+            #: whose plane is lattice-ordered crosses at its own seam (`rola.ops.lattice`).
             m0 = 0.1 * torch.randn(self.B, self.H, self.N, self.cols, device=device,
                                    dtype=torch.float64, generator=gen)
             if self.norm == "global":
@@ -442,6 +444,8 @@ CHECKERS = {
 # -- corner-specific structure, beyond the shared regime axes ----------------
 
 def _corner_all_read_only(case):
+    #: CANONICAL leaf indices, from `_leaf_product`. Leaf 0 is the all-zero digit tuple,
+    #: which the lattice also numbers 0, so the corner reads the same either way.
     _, W = _leaf_supports(case)
     written = W.reshape(-1, W.shape[-1]).any(dim=0)
     assert bool(written[0]) and int(written.sum()) == 1, (

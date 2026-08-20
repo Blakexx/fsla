@@ -99,22 +99,21 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   //: A SIBLING of the chunk consumer, not a specialization of it: shared produce
   //: contract, own consumer, frozen config. Two of its three entries are capacity GATES
   //: rather than operations -- docs/internals/rola_api.md#registered-entries
-  //: THE WHOLE STEP: the operand fold, the support expansion, the gather-GEMV and the
+  //: THE WHOLE STEP: the operand fold, the lattice factor tables, the gather-GEMV and the
   //: step's OWN admission question in ONE launch, over the caller's raw `[B, 1, H, *]`
   //: views -- docs/internals/rola_api.md#the-step
   m.def("rola_decode_forward", &rola::decode::rola_decode_forward,
-        "RoLA T=1 decode step: operand fold + bitmap support expansion + "
-        "token-stationary gather-GEMV + the per-batch-head residency verdict, in one "
-        "kernel.",
+        "RoLA T=1 decode step: operand fold + lattice factor walk + token-stationary "
+        "gather-GEMV + the per-batch-head residency verdict, in one kernel.",
         py::arg("read"), py::arg("write"), py::arg("normalize"), py::arg("dials"),
-        py::arg("g_write"), py::arg("v"), py::arg("state"), py::arg("work"), py::arg("ws"),
-        py::arg("ctr"),
+        py::arg("g_write"), py::arg("v"), py::arg("state"), py::arg("ws"), py::arg("ctr"),
         //: The verdict's buffers: the per-batch-head answer, its reduction, the reducing
         //: CTA's arrival counter, the done flags a replay reads, and the write-atom set a
         //: host admission plans from.
         py::arg("growth"), py::arg("growth_any"), py::arg("growth_ctr"), py::arg("done"),
-        py::arg("atom_bits"), py::arg("level_widths"), py::arg("level_strides"),
-        py::arg("level_spans"), py::arg("level_row_offsets"), py::arg("n_split"), py::arg("eps"),
+        py::arg("atom_bits"), py::arg("level_widths"), py::arg("level_row_offsets"),
+        //: THE LEAF ORDER, as data: the `(k, m)` box the state plane is written in.
+        py::arg("lattice_k"), py::arg("lattice_m"), py::arg("n_split"), py::arg("eps"),
         //: `page_table` resolves each touched ATOM to its slot; `None` is the dense
         //: backing, where the slot IS the atom and the bytes are the same.
         py::arg("page_table") = c10::optional<at::Tensor>(),
@@ -124,17 +123,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("pool_slots") = c10::optional<at::Tensor>(),
         py::arg("pool_cursor") = c10::optional<at::Tensor>(),
         py::arg("pool_map") = c10::optional<at::Tensor>());
-  //: The expansion's global scratch size per CTA -- `0` wherever the bitmap fits in
-  //: shared memory, which is every shipped topology -- docs/internals/rola_api.md#work-words
-  m.def("rola_decode_work_words", &rola::decode::rola_decode_work_words,
-        "int32 the decode expansion needs in global memory PER CTA; 0 means the bitmap "
-        "never leaves shared memory.",
-        py::arg("level_widths"), py::arg("d_v"), py::arg("decay"), py::arg("device_index"));
+  //: THE DEVICE-SIDE BUILD STAMP: a fact only the loaded binary can produce, which is the
+  //: only kind of check an extension trap cannot survive --
+  //: docs/internals/rola_api.md#decode-build-stamp
+  m.def("rola_decode_residency", &rola::decode::rola_decode_residency,
+        "the decode step's declared CTAs per SM for this arm, read off the launch bound",
+        py::arg("decay"), py::arg("levels"));
+  m.def("rola_decode_build_stamp", &rola::decode::rola_decode_build_stamp,
+        "the decode step's own footprint, read back off a kernel this translation unit "
+        "compiles");
   m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
         "the decode path's maximum level width; must be >= the producer's "
         "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");
-  m.def("rola_decode_residency", &rola::decode::rola_decode_residency,
-        "the step's declared CTAs/SM off the launch bound (min over the IN_SMEM axis)");
   m.def("rola_decode_producer_width_mirror", &rola::decode::rola_decode_producer_width_mirror,
         "the C++ mirror of the producer's MAX_BRANCH_WIDTH; pinned EQUAL to the Python "
         "constant so a stale mirror cannot silently satisfy the capacity static_assert");

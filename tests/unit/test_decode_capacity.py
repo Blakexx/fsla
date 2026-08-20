@@ -54,3 +54,28 @@ def test_the_cxx_mirror_of_max_branch_width_has_not_drifted():
         "csrc/rola/src/decode/decode.cuh's kProducerMaxBranchWidth mirror has drifted from "
         f"rola/routing/topology.py's MAX_BRANCH_WIDTH={MAX_BRANCH_WIDTH}; update the "
         "mirror in the same commit that moves the producer's limit")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="reads the compiled extension")
+def test_the_binary_under_test_is_this_tree():
+    """A device-side fact, because nothing else catches a stale extension.
+
+    The stamp is computed BY A KERNEL out of the loaded fatbin's own view of
+    ``sizeof(DecodeParams)``, ``sizeof(Unit<4>)`` and ``kDecodeMaxSpan`` — sizes a path
+    check, a hash check and an import check are all blind to. The SPAN ceiling is the half
+    with teeth here: it is the same number ``rola.ops.lattice`` refuses candidate boxes
+    against, so a host that outgrew the device's box fails here.
+    """
+    from rola.ops._ext import extension
+    from rola.ops.lattice import _MAX_SPAN
+
+    stamp = extension().rola_decode_build_stamp()
+    assert stamp > 0, "the decode build stamp is not a device-side fact"
+    params_bytes, remainder = divmod(stamp, 1000003)
+    unit_bytes, max_span = divmod(remainder, 101)
+    assert max_span == _MAX_SPAN, (
+        f"the binary's kDecodeMaxSpan is {max_span} and the host solver refuses "
+        f"candidates above {_MAX_SPAN}; one of the two is stale")
+    assert 0 < params_bytes < 4096 and 0 < unit_bytes < 4096, (
+        f"the stamp does not decode to plausible struct sizes ({params_bytes}, "
+        f"{unit_bytes} bytes); the loaded binary is not this tree's")

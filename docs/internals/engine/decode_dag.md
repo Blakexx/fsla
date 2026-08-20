@@ -92,11 +92,14 @@ the declaration is TRUE of a real capture.
 ## <a id="host-carrier"></a>5. The carrier and the scratch, and why each is memoized the way it is
 
 `DecodeGeometry` (`rola/engine/plan.py`) answers "what shape is the launch?" — widths,
-mixed-radix strides, spans, row offsets, word and group counts, `d_v`, the normalization
-and decay arms, `eps`, `n_split`. None of that is a derived axis. `BC` is deliberately NOT
-a field: owner blocking is a property of how a tiled consumer amortizes a `[BC, cols]`
-block across many tokens, and with one token there is nothing to amortize, so the decode
-kernels are BC-blind by construction
+per-level dial row offsets, the `(k, m)` lattice the state plane is written in
+(`lattice_k`, `lattice_m`, [`decode_lattice.md`](../decode/decode_lattice.md)), `d_v`, the
+decay arm, `eps`, `n_split`. None of that is a derived axis. `BC` is deliberately NOT a
+field: owner-blocked AMORTIZATION is a property of how a tiled consumer shares a
+`[BC, cols]` block's cost across many tokens, and with one token there is nothing to
+amortize, so the decode kernels are BC-blind by construction in that sense — the
+lattice's OWN `BC` (the leaf count one owner holds) is a layout fact the `(k, m)` fields
+carry instead, never a launch-shape one
 ([`decode.md#bc-absent`](../decode/decode.md#bc-absent)).
 
 It is `DecodePlan`'s CONFIG HALF rather than a field of it, because the memo key is over

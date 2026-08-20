@@ -1,8 +1,8 @@
 # `csrc/rola/src/decode/decode_api.cuh` — the decode path's host-facing declarations
 
-The ONLY decode header `csrc/rola/rola_api.cpp` includes. It declares three
-symbols and carries no definitions: the two capacity accessors and
-`rola_decode_forward`. The decode path itself is documented in
+The ONLY decode header `csrc/rola/rola_api.cpp` includes. It declares four
+symbols and carries no definitions: the two capacity accessors, the build
+stamp and `rola_decode_forward`. The decode path itself is documented in
 [`decode.md`](decode.md); this file exists for a compilation reason, and the
 reason is the whole content of this doc.
 
@@ -35,22 +35,34 @@ separate claim from the capacity is [`decode.md`
 §33](decode.md#producer-width-mirror), and the capacity gate itself is
 [`decode.md` §6](decode.md#level-width-capacity).
 
+<a id="residency"></a>`rola_decode_residency(decay, levels)` returns the step's DECLARED
+CTAs per SM for that arm, read off the same `constexpr` the kernel's `__launch_bounds__`
+are built from. The host's split policy sizes ONE WAVE from it
+([`decode.md` §7](decode.md#declared-residency)), and it is bound rather than mirrored in
+Python for the reason the whole bound surface exists: a launch bound is exactly the
+constant that drifts when it is written down twice. The two arms differ because the decay
+arm and the deep arms each carry more live state through the same loop.
+
+<a id="build-stamp"></a>`rola_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right
+path cannot fake: it launches a one-thread kernel, compiled with this translation unit,
+that folds `sizeof(DecodeParams)`, `sizeof(SubBox<4>)` and `kDecodeMaxSubBox` into one
+`int64_t` and reads it back. A path check or a hash of the sources checks what is ON
+DISK; this checks what the LOADED BINARY actually built from, which is the fact a stale
+extension can silently disagree about (the standing "extension trap" lesson). It is bound
+because a Python-side recomputation of the same three quantities would just be a second
+mirror with its own drift.
+
 <a id="the-step"></a>`rola_decode_forward` is the single data-plane entry, and it launches
-ONE kernel: the fold, the support expansion, the gather-GEMV and the step's OWN
+ONE kernel: the fold, the `(k, m)` lattice's factor tables, the walk and the step's OWN
 per-batch-head residency verdict are phases of it. Its operands are the caller's RAW
 `[B, 1, H, *]` views — `read`, `write`, `g_write`, `v`, plus the per-read-level
 `normalize` flags — because the fold is inside the kernel and there is no operand plane
 to hand it ([`decode_fold.md`](decode_fold.md)). `heads` is not an argument: `v`'s own
-`[B, 1, H, d_v]` shape carries it. Its argument checks and workspace contracts are
-documented with the definition, in [`decode.md`](decode.md#flat-bits).
-
-<a id="work-words"></a>`rola_decode_work_words` reports how many int32 the expansion needs
-in GLOBAL memory PER CTA — `0` wherever the bitmap fits in shared memory, which is every
-shipped topology. The host multiplies by `BH * n_split` and allocates that. It is bound
-because the alternative is a Python mirror of the kernel's own sizing arithmetic against
-the device's real shared-memory budget, and a mirror of a sizing rule is the classic drift
-surface: an under-sized buffer is an out-of-bounds write, not a refusal
-([`decode_expand.md`](decode_expand.md#smem-arm)).
+`[B, 1, H, d_v]` shape carries it. `lattice_k`/`lattice_m` name the `(k, m)` box
+(`decode_lattice.md#the-refusals`) the caller's state plane and routing levels are
+already written in — the leaf order travels with the call rather than being assumed. Its
+argument checks and workspace contracts are documented with the definition, in
+[`decode.md`](decode.md#instantiation-matrix).
 
 ## <a id="paged-state"></a>3. `page_table` — which backing the state is
 

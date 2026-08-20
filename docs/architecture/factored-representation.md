@@ -105,9 +105,9 @@ waste or worse:
   entry.
 - Leaf-digit purity: the tiled consumer's `consumer.cuh` (`git show
   c7eaeb9:csrc/rola/src/consumer.cuh`), and `rola/ops/naive.py::_leaf_product`
-  in the tree today; bitmap Kronecker
-  structure: [`docs/internals/decode/decode.md`](../internals/decode/decode.md),
-  [`decode/decode_expand.md`](../internals/decode/decode_expand.md); reference semantics:
-  `rola/ops/naive.py::_leaf_product`.
+  in the tree today; the Cartesian-product support
+  structure: [`docs/internals/decode/decode.md`](../internals/decode/decode.md#kronecker-support),
+  [`docs/internals/decode/decode_lattice.md`](../internals/decode/decode_lattice.md); reference
+  semantics: `rola/ops/naive.py::_leaf_product`.
 - Materialization refusals and the staging decline: campaign journal,
   2026-08-04.
