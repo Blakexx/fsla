@@ -5,8 +5,9 @@
 
 Reports wall time, tile-pairs per millisecond, and the achieved fraction of the
 device's mma.sync bf16/fp32 ceiling. The issued MAC count is exact: the window's
-lower-triangular tile grid is 10 of its 16 [64x64] tiles, each contracting
-``sum_l B_l`` digits for the Gram and ``d_v`` for the value product.
+lower-triangular tile grid is ``n(n+1)/2`` of its ``n = W/64`` squared [64x64]
+tiles, each contracting ``sum_l B_l`` digits for the Gram and ``d_v`` for the
+value product.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ import torch
 from rola.ops.intra import DENSE_BOTH, READ_SPARSE, VALUE_WIDTH, WINDOW, WRITE_SPARSE, intra_forward
 
 TILE = 64
-TILES_PER_WINDOW = (WINDOW // TILE) * (WINDOW // TILE + 1) // 2
 #: sm_86 consumer parts issue 256 bf16 MACs per clock per SM with an fp32
 #: accumulator (half the fp16-accumulate rate) -- the mma.sync ceiling this
 #: kernel's fraction is quoted against.
@@ -36,10 +36,14 @@ def peak_flops(device=0):
     return 2.0 * MACS_PER_CLOCK_PER_SM * properties.multi_processor_count * clock, clock
 
 
-def macs(bh, length, levels):
-    windows = length // WINDOW
+def tile_pairs(window):
+    tiles = window // TILE
+    return tiles * (tiles + 1) // 2
+
+
+def macs(bh, length, levels, window):
     per_tile = TILE * TILE * (levels * 256 + VALUE_WIDTH)
-    return bh * windows * TILES_PER_WINDOW * per_tile
+    return bh * (length // window) * tile_pairs(window) * per_tile
 
 
 def sparse_plane(bh, length, width, k_tok, cohort, generator, device):
@@ -89,17 +93,21 @@ def main():
     parser.add_argument("--bh", type=int, default=8)
     parser.add_argument("--length", type=int, default=65536)
     parser.add_argument("--repeats", type=int, default=6)
+    parser.add_argument("--window", type=int, default=WINDOW)
     args = parser.parse_args()
 
     device = "cuda"
     levels = 2
+    window = args.window
+    if args.length % window:
+        raise SystemExit(f"L = {args.length} is not a whole number of {window}-token windows")
     flops, clock = peak_flops()
     print(f"device {torch.cuda.get_device_name()}  clock {clock / 1e9:.3f} GHz  "
           f"mma.sync ceiling {flops / 1e12:.1f} TFLOP/s")
-    print(f"cell BH={args.bh} L={args.length} D={levels} W={WINDOW}  "
-          f"{args.bh * args.length // WINDOW} windows, "
-          f"{args.bh * args.length // WINDOW * TILES_PER_WINDOW} tile-pairs")
-    work = 2.0 * macs(args.bh, args.length, levels)
+    windows = args.bh * args.length // window
+    print(f"cell BH={args.bh} L={args.length} D={levels} W={window}  "
+          f"{windows} windows, {windows * tile_pairs(window)} tile-pairs")
+    work = 2.0 * macs(args.bh, args.length, levels, window)
     print(f"{'cell':<24}{'ms':>9}{'tiles/ms':>12}{'TFLOP/s':>10}{'peak':>8}")
 
     cells = [
@@ -114,12 +122,13 @@ def main():
         o = torch.zeros((args.bh, args.length, VALUE_WIDTH), dtype=torch.float32, device=device)
         den = torch.zeros((args.bh, args.length), dtype=torch.float32, device=device)
 
-        def run(pread=pread, pwrite=pwrite, gwrite=gwrite, v=v, o=o, den=den, modes=modes):
-            intra_forward(pread, pwrite, gwrite, v, modes, o=o, den=den)
+        def run(pread=pread, pwrite=pwrite, gwrite=gwrite, v=v, o=o, den=den, modes=modes,
+                window=window):
+            intra_forward(pread, pwrite, gwrite, v, modes, o=o, den=den, window=window)
 
         run()
         ms = time_ms(run, args.repeats)
-        tiles = args.bh * args.length // WINDOW * TILES_PER_WINDOW
+        tiles = windows * tile_pairs(window)
         achieved = work / (ms * 1e-3)
         print(f"{name:<24}{ms:>9.3f}{tiles / ms:>12.0f}{achieved / 1e12:>10.2f}"
               f"{achieved / flops * 100:>7.1f}%")

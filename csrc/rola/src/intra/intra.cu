@@ -22,7 +22,8 @@ __device__ int64_t g_stamp_probe;
 //: THE HEAVIEST BUILT ARM's footprint: it moves whenever any arm's shape does,
 //: which is what makes it a fact only THIS binary can produce.
 __global__ void stamp_kernel(int64_t* out) {
-  *out = (int64_t)(sizeof(detail::IntraSmem<2, kWindowWide>)) * 1000003 + (int64_t)detail::kThreads;
+  *out = (int64_t)(sizeof(detail::IntraSmem<2, kWindowWide>)) * 1000003
+         + (int64_t)detail::threads_of(kWindowWide);
   g_stamp_probe = *out;
 }
 
@@ -45,10 +46,19 @@ void check_plane(const at::Tensor& t, const char* name, int64_t bh, int64_t L, i
   X_(2, kWindowWide)              \
   X_(2, kWindowSmall)
 
+//: The block's whole reader side is resident, which puts the footprint past the
+//: 48 KB a kernel gets without asking; the opt-in is per device, so it is renewed
+//: at every launch rather than cached behind a once-flag.
 template <int D, int W>
 void launch(const detail::IntraParams& p, int64_t bh, int64_t windows, cudaStream_t stream) {
+  constexpr int kSmem = (int)sizeof(detail::IntraSmem<D, W>);
+  const int optin = at::cuda::getCurrentDeviceProperties()->sharedMemPerBlockOptin;
+  TORCH_CHECK(kSmem <= optin, "the intra arm's ", kSmem,
+              "-byte block footprint exceeds this device's ", optin, "-byte opt-in limit");
+  C10_CUDA_CHECK(cudaFuncSetAttribute(detail::intra_kernel<D, W>,
+                                      cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
   const dim3 grid((unsigned)windows, (unsigned)bh, 1);
-  detail::intra_kernel<D, W><<<grid, detail::kThreads, 0, stream>>>(p);
+  detail::intra_kernel<D, W><<<grid, detail::threads_of(W), kSmem, stream>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
