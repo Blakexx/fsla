@@ -56,11 +56,11 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
 }
 
 template <int D, int B, int K, int M, int W, int C, int CV>
-static std::array<int64_t, 8> census() {
+static std::array<int64_t, 10> census() {
   constexpr Carve kCarve = CV == 0 ? Carve::STATE : Carve::CHANNEL;
   cudaFuncAttributes a{};
   if (cudaFuncGetAttributes(&a, carry_kernel<D, B, K, M, W, C, kCarve, true>) != cudaSuccess)
-    return {-1, -1, -1, -1, -1, -1, -1, -1};
+    return {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
   return {a.numRegs,
           (int64_t)a.sharedSizeBytes,
           a.binaryVersion,
@@ -68,7 +68,9 @@ static std::array<int64_t, 8> census() {
           (int64_t)a.maxThreadsPerBlock,
           (int64_t)a.localSizeBytes,
           (int64_t)BoxPlan<D, B, K, M>::kBC,
-          (int64_t)BoxPlan<D, B, K, M>::kOwners};
+          (int64_t)BoxPlan<D, B, K, M>::kOwners,
+          (int64_t)CarryGeom<D, B, K, M, W, C>::kStages,
+          (int64_t)CarryGeom<D, B, K, M, W, C>::cta_target};
 }
 
 static bool is_arm(const std::vector<int64_t>& widths, int D, int B) {

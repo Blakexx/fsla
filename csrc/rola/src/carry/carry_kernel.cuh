@@ -86,7 +86,11 @@ struct CarryGeom {
   static constexpr int LdS = BC + kPadE;
   static constexpr int LdO = kDv + kPadF;
 
-  static constexpr int v_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
+  //: THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA.  A window's
+  //: readouts all precede its folds, so the write panel is dead through phase 1 and
+  //: the read panel is dead through phase 2: each phase double-buffers in the
+  //: other's buffer and produces one batch AHEAD, which is what puts the produce's
+  //: global-load latency underneath the previous batch's MMA block.
   static constexpr int panel_bytes = 2 * C * LdS * (int)sizeof(__nv_bfloat16);
   static constexpr int out_bytes = C * LdO * (int)sizeof(float);
   static constexpr int den_bytes = kWarps * C * (int)sizeof(float);
@@ -95,8 +99,17 @@ struct CarryGeom {
   static constexpr int kListStride = ((W + 7) / 8) * 8;
   static constexpr int list_bytes = 2 * kListStride * (int)sizeof(uint16_t);
   static constexpr int scan_bytes = 16 * (int)sizeof(int);
-  static constexpr size_t bytes =
-      (size_t)v_bytes + panel_bytes + out_bytes + den_bytes + list_bytes + scan_bytes;
+  //: THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR,
+  //: exactly as the shipped `Geom::stages` is: the shallowest ring that reaches the
+  //: best residency this arm can reach at any depth.  `kRegFloor` is the DECLARED
+  //: floor for this family -- the measured census of the heaviest built arm,
+  //: recorded in the findings doc and re-measured at every milestone.
+  static constexpr int kRegFloor = 168;
+  static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
+  static constexpr int fixed_bytes = panel_bytes + out_bytes + den_bytes + list_bytes + scan_bytes;
+  static constexpr int kStages = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloor);
+  static constexpr size_t bytes = (size_t)fixed_bytes + (size_t)kStages * slot_bytes;
+  static constexpr int cta_target = design::cta_target((int)bytes, kThreads, kRegFloor);
 };
 
 //: THE PRODUCE'S THREAD MAP, derived.  A row's `kRowThr` threads split the box's
@@ -142,10 +155,16 @@ __device__ __forceinline__ void load_run(unsigned short (&dst)[n], const void* p
   }
 }
 
+//: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from
+//: the same geometry the ring depth is.  A ring sized for a residency the launch
+//: bound does not ask for is a ring sized for nothing.
+template <int D, int B, int K, int M, int W, int C>
+constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, W, C>::cta_target;
+
 // ---------------------------------------------------------------- the kernel
 
 template <int D, int B, int K, int M, int W, int C, Carve CARVE, bool STATE>
-__global__ __launch_bounds__(kThreads) void carry_kernel(
+__global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void carry_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     float* __restrict__ o, float* __restrict__ den, int L, int v_row_bytes,
@@ -185,8 +204,10 @@ __global__ __launch_bounds__(kThreads) void carry_kernel(
   const int bh = (int)blockIdx.y;
 
   extern __shared__ __align__(16) char carry_smem[];
+  constexpr int STAGES = G::kStages;
+  static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
   __nv_bfloat16* const sv = reinterpret_cast<__nv_bfloat16*>(carry_smem);
-  __nv_bfloat16* const sr = sv + C * LdV;
+  __nv_bfloat16* const sr = sv + STAGES * C * LdV;
   __nv_bfloat16* const sw = sr + C * LdS;
   float* const so = reinterpret_cast<float*>(sw + C * LdS);
   float* const sden = so + C * LdO;
@@ -220,9 +241,15 @@ __global__ __launch_bounds__(kThreads) void carry_kernel(
   const int lr = lane & 7, tl = lane >> 3;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
   const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
-  const uint32_t brT = smem_addr(sr) + (uint32_t)((rT * LdS + cT * 8) * 2);
-  const uint32_t bwF = smem_addr(sw) + (uint32_t)((rF * LdS + cF * 8) * 2);
+  //: THE PANEL RING'S TWO BASES, AS NAMED SCALARS.  A two-element array indexed by
+  //: the batch parity would be a runtime index into a register array, which is a
+  //: stack frame; a select is one instruction and no memory.
+  const uint32_t brT0 = smem_addr(sr) + (uint32_t)((rT * LdS + cT * 8) * 2);
+  const uint32_t brT1 = smem_addr(sw) + (uint32_t)((rT * LdS + cT * 8) * 2);
+  const uint32_t bwF0 = smem_addr(sw) + (uint32_t)((rF * LdS + cF * 8) * 2);
+  const uint32_t bwF1 = smem_addr(sr) + (uint32_t)((rF * LdS + cF * 8) * 2);
   const uint32_t svB = smem_addr(sv) + (uint32_t)((rT * LdV + cT * 8) * 2);
+  constexpr uint32_t kVSlot = (uint32_t)(C * LdV) * 2;
 #define ADDR_S(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2))
 #define ADDR_V(b_, R_, dv_) ((b_) + (uint32_t)(((R_) * LdV + (dv_)) * 2))
 
@@ -286,22 +313,17 @@ __global__ __launch_bounds__(kThreads) void carry_kernel(
            + 8 * (k >> 1);
   };
   auto page_mass = [&](int p, int k) { return (p * 8 + lane * 2 + k) * LdO + kDv; };
-  //: which state tile pair this warp holds for atom `i`, or -1.
-  auto atom_tile = [&](int i) -> int {
-    if constexpr (SPLIT) {
-      const int first = warp * (BCw / kAtomLeaves);
-      return (i >= first && i < first + (BCw / kAtomLeaves)) ? 2 * (i - first) : -1;
-    } else {
-      return 2 * i;
-    }
-  };
-  auto atom_mass_tile = [&](int i, int t0) -> int {
-    if constexpr (SPLIT) {
-      return t0;
-    } else {
-      return (warp == i % kMassUnits) ? 2 * (i / kMassUnits) : -1;
-    }
-  };
+  //: THE ATOM WALK'S SHAPE IS A REGISTER-INDEXING FACT, NOT A CONVENIENCE.  A
+  //: state fragment is a register array, and a runtime index into one is a stack
+  //: frame -- measured, on this kernel's first build: `kAtoms` walked at runtime put
+  //: the WHOLE state (320 B/thread) in local memory.  So the walk is inverted: the
+  //: outer, fully unrolled loop counts the atoms THIS WARP owns (its tile index is
+  //: then a compile-time `2*a`), and the inner one names which warp's atom the CTA
+  //: is cooperatively staging.  Under the CHANNEL carve every warp owns every atom
+  //: and the inner loop collapses, which is the shipped kernel's shape exactly.
+  constexpr int kAtomsPerWarp = SPLIT ? (BCw / kAtomLeaves) : kAtoms;
+  constexpr int kStageUnits = SPLIT ? kWarps : 1;
+  static_assert(kAtomsPerWarp * kStageUnits == kAtoms, "the atom walk must cover the box once");
 
   //: ---- THE ENTRY STATE.  The fragments are SET, never accumulated: they are
   //: provably zero here, and with no decay the recurrence is affine in the state
@@ -309,29 +331,41 @@ __global__ __launch_bounds__(kThreads) void carry_kernel(
   if constexpr (STATE) {
     if (s_in != nullptr) {
       const float* const plane = pin_address(s_in);
-#pragma unroll 1
-      for (int i = 0; i < kAtoms; ++i) {
-        page_sweep(page_off(atomBase + i), [&](int s, uint32_t off) {
-          so[s] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
-        });
-        rendezvous();
-        const int t0 = atom_tile(i);
-        if (t0 >= 0) {
 #pragma unroll
-          for (int mdv = 0; mdv < MDV; ++mdv)
+      for (int a = 0; a < kAtomsPerWarp; ++a) {
+#pragma unroll
+        for (int u = 0; u < kStageUnits; ++u) {
+          constexpr int mine_ch = 0;
+          (void)mine_ch;
+          page_sweep(page_off(atomBase + (uint32_t)(SPLIT ? u * kAtomsPerWarp + a : a)),
+                     [&](int sidx, uint32_t off) {
+                       so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
+                     });
+          rendezvous();
+          if (!SPLIT || warp == u) {
+#pragma unroll
+            for (int mdv = 0; mdv < MDV; ++mdv)
+#pragma unroll
+              for (int p = 0; p < 2; ++p)
+#pragma unroll
+                for (int k = 0; k < 4; ++k) st[mdv][2 * a + p][k] = so[page_value(p, k, mdv)];
+          }
+          if constexpr (SPLIT) {
+            if (warp == u && lane < 4) {
+#pragma unroll
+              for (int p = 0; p < 2; ++p)
+#pragma unroll
+                for (int k = 0; k < 2; ++k) mass_st[2 * a + p][k] = so[page_mass(p, k)];
+            }
+          } else if (warp == a % kMassUnits && lane < 4) {
 #pragma unroll
             for (int p = 0; p < 2; ++p)
 #pragma unroll
-              for (int k = 0; k < 4; ++k) st[mdv][t0 + p][k] = so[page_value(p, k, mdv)];
+              for (int k = 0; k < 2; ++k)
+                mass_st[2 * (a / kMassUnits) + p][k] = so[page_mass(p, k)];
+          }
+          rendezvous();
         }
-        const int mt = atom_mass_tile(i, t0);
-        if (mt >= 0 && lane < 4) {
-#pragma unroll
-          for (int p = 0; p < 2; ++p)
-#pragma unroll
-            for (int k = 0; k < 2; ++k) mass_st[mt + p][k] = so[page_mass(p, k)];
-        }
-        rendezvous();
       }
     }
   }
@@ -377,6 +411,11 @@ __global__ __launch_bounds__(kThreads) void carry_kernel(
     }
   };
 
+  //: 1.0 as a bf16 pair -- the read side's gain.  Folding it through the same
+  //: multiply keeps ONE produce body, and `rn(a*1) = a` leaves the read panel
+  //: untouched: the multiply is paid, the value is not.
+  constexpr uint32_t kOneSplat = 0x3F803F80u;
+
   // ---- V staging -----------------------------------------------------------
   constexpr int kChunkV = kDv / 8;
   constexpr int kRowsPerPass = kThreads / kChunkV;
@@ -408,6 +447,21 @@ __global__ __launch_bounds__(kThreads) void carry_kernel(
     const uint32_t winV = (uint32_t)tok0 * (uint32_t)v_row_bytes;
     const uint32_t winO = (uint32_t)tok0 * (uint32_t)(kDv * (int)sizeof(float));
     const uint32_t winD = (uint32_t)tok0 * 4u;
+    //: ONE BATCH'S PANEL, expanded from factors.  The list, the row's token and the
+    //: gain are all resolved here so the two phases call ONE body; `have` false
+    //: zeroes the leading factor, and a zero coefficient contributes exactly nothing
+    //: to either MMA (the produce's dead-row zeroing law).
+    auto produce_batch = [&](const __nv_bfloat16* base, __nv_bfloat16* dst, const uint16_t* list,
+                             int o0, int ntot, bool write_side) {
+      const int nb = (ntot - o0) < C ? (ntot - o0) : C;
+      const bool have = prow < nb;
+      const int tok = list[o0 + (have ? prow : nb - 1)];
+      uint32_t gain = kOneSplat;
+      if (write_side)
+        gain = splat_bf16x2(
+            *reinterpret_cast<const __nv_bfloat16*>(gather_ptr(gW, winG + (uint32_t)tok * 2u)));
+      produce(base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), have ? gain : 0u);
+    };
 
     // ---- the liveness pass: TWO lists, one per SIDE -----------------------
     //: THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19, study section 2.0 as
@@ -477,25 +531,30 @@ __global__ __launch_bounds__(kThreads) void carry_kernel(
     //      state.  ALL of the window's readouts precede ANY of its folds, because a
     //      within-window pair is the INTRA term's and this kernel must not carry it.
     //      The batch line is therefore the window line on both sides.
+    const int nbr = (nr + C - 1) / C;
+    //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring.
+    //: Its global loads are issued before the current batch's MMA block and consumed
+    //: after the next rendezvous, so the amplitude-gather latency sits underneath
+    //: arithmetic instead of in front of it.
+    if (nbr > 0) produce_batch(pR, sr, slist, 0, nr, false);
 #pragma unroll 1
-    for (int off = 0; off < nr; off += C) {
+    for (int i = 0; i < nbr; ++i) {
+      const int off = i * C;
       const int n = (nr - off) < C ? (nr - off) : C;
-      const bool have = prow < n;
-      const int myTok = slist[off + (have ? prow : n - 1)];
-      //: THE EAGER GATHER: the read factors are fetched while this window is
-      //: resident, by construction -- a batch never leaves its window.
-      constexpr uint32_t kOneSplat = 0x3F803F80u;  // 1.0 as a bf16 pair
-      produce(pR, sr, winP + (uint32_t)myTok * (uint32_t)(BP::kWtot * 2), have ? kOneSplat : 0u);
+      const uint32_t brT = (i & 1) ? brT1 : brT0;
       if constexpr (SPLIT) {
         //: the four warps' readout partials meet in this tile, so it starts at zero.
 #pragma unroll 1
         for (int e = tid; e < C * LdO; e += kThreads) so[e] = 0.f;
       }
       rendezvous();
+      if (i + 1 < nbr) produce_batch(pR, ((i + 1) & 1) ? sw : sr, slist, (i + 1) * C, nr, false);
 
       if constexpr (SPLIT) {
         //: the B operand is hoisted across the channel m-tiles: a warp's leaf slice
         //: is short (`KDw` k-tiles), so one panel read serves all `MDV` of them.
+        //: `MDV` independent accumulator chains are then in flight per k-tile, which
+        //: is where this carve's instruction-level parallelism comes from.
         uint32_t rb[KDw][MTOK][4];
 #pragma unroll
         for (int kk = 0; kk < KDw; ++kk)
@@ -617,46 +676,61 @@ __global__ __launch_bounds__(kThreads) void carry_kernel(
         }
       }
       if (tid < C && tid < n) {
-        float s = 0.f;
+        float sden_sum = 0.f;
 #pragma unroll
-        for (int u = 0; u < kWarps; ++u) s += sden[u * C + tid];
+        for (int u = 0; u < kWarps; ++u) sden_sum += sden[u * C + tid];
         fan_in_add(
             reinterpret_cast<float*>(gather_ptr(denPlane, (uint32_t)slist[off + tid] * 4u + winD)),
-            s);
+            sden_sum);
       }
       rendezvous();
     }
 
     // ---- PHASE 2: the FOLD of every write batch ---------------------------
     //: V IS A WRITE-SIDE QUANTITY and is gathered by the WRITE list; the read list
-    //: never touches it.
-#pragma unroll 1
-    for (int off = 0; off < nw; off += C) {
-      const int n = (nw - off) < C ? (nw - off) : C;
-      const bool have = prow < n;
-      const uint16_t* const wl = slist + kListStride + off;
-      const int myTok = wl[have ? prow : n - 1];
-      const uint32_t gsp = splat_bf16x2(
-          *reinterpret_cast<const __nv_bfloat16*>(gather_ptr(gW, winG + (uint32_t)myTok * 2u)));
-      produce(pW, sw, winP + (uint32_t)myTok * (uint32_t)(BP::kWtot * 2), have ? gsp : 0u);
+    //: never touches it.  The value ring is `STAGES` deep and asynchronous: issue
+    //: order is FIFO, one implicit group per batch, and the wait leaves `STAGES-2`
+    //: groups in flight so the gather for batch `i + STAGES - 1` is airborne while
+    //: batch `i` folds.
+    const int nbw = (nw + C - 1) / C;
+    const uint16_t* const wlist = slist + kListStride;
+    auto stage_batch = [&](int b, int slot) {
+      const int o0 = b * C;
+      const int nb = (nw - o0) < C ? (nw - o0) : C;
 #pragma unroll
       for (int p = 0; p < kPasses; ++p) {
         const int r = ldRow + p * kRowsPerPass;
-        const int t = wl[r < n ? r : n - 1];
+        const int t = wlist[o0 + (r < nb ? r : nb - 1)];
         stage_tile(
-            svL + (uint32_t)(p * kRowsPerPass * LdV * 2),
+            svL + (uint32_t)slot * kVSlot + (uint32_t)(p * kRowsPerPass * LdV * 2),
             gather_ptr(vPlane, (uint32_t)t * (uint32_t)v_row_bytes + winV + (uint32_t)(ldCol * 2)));
       }
+    };
+#pragma unroll 1
+    for (int sst = 0; sst < STAGES - 1; ++sst) {
+      if (sst < nbw) stage_batch(sst, sst % STAGES);
       stage_commit();
-      stage_wait<0>();
+    }
+    if (nbw > 0) produce_batch(pW, sw, wlist, 0, nw, true);
+#pragma unroll 1
+    for (int i = 0; i < nbw; ++i) {
+      const uint32_t bwF = (i & 1) ? bwF1 : bwF0;
+      const uint32_t vsl = svB + (uint32_t)(i % STAGES) * kVSlot;
+      stage_wait<STAGES - 2>();
       rendezvous();
+      //: the ring slot is advanced on EVERY batch, live or not, so the wait/commit
+      //: accounting never depends on the data.
+      const int f = i + STAGES - 1;
+      if (f < nbw) stage_batch(f, f % STAGES);
+      stage_commit();
+      if (i + 1 < nbw) produce_batch(pW, ((i + 1) & 1) ? sr : sw, wlist, (i + 1) * C, nw, true);
 
 #pragma unroll
       for (int kk = 0; kk < MTOK; ++kk) {
         uint32_t a[MDV][4];
 #pragma unroll
         for (int mdv = 0; mdv < MDV; ++mdv)
-          load_frag_t(a[mdv], ADDR_V(svB, kk * 16, chan0 + mdv * kMmaM));
+          load_frag_t(a[mdv], ADDR_V(vsl, kk * 16, chan0 + mdv * kMmaM));
 #pragma unroll
         for (int nj = 0; nj < KDw; ++nj) {
           uint32_t b[4];
@@ -685,36 +759,52 @@ __global__ __launch_bounds__(kThreads) void carry_kernel(
       }
       rendezvous();
     }
+    //: the ring's unconsumed groups are retired before the next window reuses the
+    //: value slots.
+    stage_wait<0>();
   }
 
   // ---- the FINAL STATE, in LATTICE leaf order ------------------------------
+  //: the mirror of the entry load, after the last fan-in has consumed the staging
+  //: buffer -- which is what the one extra rendezvous below is for.
   if constexpr (STATE) {
     if (s_out != nullptr) {
       float* const plane = pin_address(s_out);
       rendezvous();
-#pragma unroll 1
-      for (int i = 0; i < kAtoms; ++i) {
-        const int t0 = atom_tile(i);
-        if (t0 >= 0) {
 #pragma unroll
-          for (int mdv = 0; mdv < MDV; ++mdv)
+      for (int a = 0; a < kAtomsPerWarp; ++a) {
+#pragma unroll
+        for (int u = 0; u < kStageUnits; ++u) {
+          if (!SPLIT || warp == u) {
+#pragma unroll
+            for (int mdv = 0; mdv < MDV; ++mdv)
+#pragma unroll
+              for (int p = 0; p < 2; ++p)
+#pragma unroll
+                for (int k = 0; k < 4; ++k)
+                  store_f32(&so[page_value(p, k, mdv)], st[mdv][2 * a + p][k]);
+          }
+          if constexpr (SPLIT) {
+            if (warp == u && lane < 4) {
+#pragma unroll
+              for (int p = 0; p < 2; ++p)
+#pragma unroll
+                for (int k = 0; k < 2; ++k) store_f32(&so[page_mass(p, k)], mass_st[2 * a + p][k]);
+            }
+          } else if (warp == a % kMassUnits && lane < 4) {
 #pragma unroll
             for (int p = 0; p < 2; ++p)
 #pragma unroll
-              for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k, mdv)], st[mdv][t0 + p][k]);
+              for (int k = 0; k < 2; ++k)
+                store_f32(&so[page_mass(p, k)], mass_st[2 * (a / kMassUnits) + p][k]);
+          }
+          rendezvous();
+          page_sweep(page_off(atomBase + (uint32_t)(SPLIT ? u * kAtomsPerWarp + a : a)),
+                     [&](int sidx, uint32_t offb) {
+                       store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
+                     });
+          rendezvous();
         }
-        const int mt = atom_mass_tile(i, t0);
-        if (mt >= 0 && lane < 4) {
-#pragma unroll
-          for (int p = 0; p < 2; ++p)
-#pragma unroll
-            for (int k = 0; k < 2; ++k) store_f32(&so[page_mass(p, k)], mass_st[mt + p][k]);
-        }
-        rendezvous();
-        page_sweep(page_off(atomBase + i), [&](int s, uint32_t offb) {
-          store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[s]);
-        });
-        rendezvous();
       }
     }
   }
