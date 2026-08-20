@@ -88,21 +88,18 @@ def _f32(d):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("decay_on", [False, True])
-def test_the_handoff_holds_across_the_arms_from_a_chunked_prefill(decay_on):
-    """Chunk-arm prefill, then four decode steps, each graded against the
+def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
+    """fp64-oracle prefill, then four decode steps, each graded against the
     chained fp64 oracle. Sparse routing, so decode's read support lands on
     prefill-cold leaves -- asserted, since that is the corner this family owns
     natively.
 
-    P67 D2-b: the prefill leg was the TILED consumer over a RAGGED `T = 33`.
-    The chunk arm has no ragged tail -- `T` must be a multiple of
-    `rola.engine.rules.arm.CHUNK_TOKENS` or the dispatch routes the call to the fp64
-    oracle -- so the handoff-through-a-partial-tile half of this claim has no
-    kernel left to be made against and does not survive. What does survive, and
-    is what the seam is about, is that the state the PRODUCTION prefill arm
-    writes is the state the recurrent arm continues. The ragged path is still
-    walked end to end at layer level further down this file, where `T + 1` is
-    deliberately not a chunk multiple and therefore runs on the oracle.
+    K31: the prefill leg ran on the PRODUCTION chunk arm until the deletion
+    batch removed it (baseline = tag `baseline/pre-k31`). What this seam is
+    about -- the canonical leaf-major entry state is the state the recurrent
+    arm continues, cold leaves included -- survives on the oracle's
+    `output_final_state`, narrowed to the kernel's fp32 exactly as the deleted
+    arm's plane was.
     """
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9000 + int(decay_on))
@@ -128,17 +125,13 @@ def test_the_handoff_holds_across_the_arms_from_a_chunked_prefill(decay_on):
                    output_final_state=True)
         return
     assert arm_refusal(bundle, decay, d_v=_DV) is None, "the prefill fixture left the envelope"
-    from conftest import chunk_launch
-
-    _y_pre, state = chunk_launch(bundle, f["v"], want_state=True)
-
     _y_ref, ref_state = naive_rola(
         pre["v"], pre["read"], pre["write"], pre["g_read"], pre["g_write"],
         topology, decay, "global", output_final_state=True)
 
     config = derive_decode_geometry(topology, d_v=_DV, decay=decay_on, BH=_B * _H,
                                   device=device)
-    state = state.reshape(_B, _H, config.N, config.cols).clone()
+    state = ref_state.float().clone()
     workspace, cold_seen = None, False
     for s in range(steps):
         step = _draw(gen, device, 1, 0.5, 0.4, norm="global")

@@ -35,12 +35,23 @@ def _x(producer, *, B=2, T=6, dtype=torch.float64):
     return torch.randn(B, T, producer.hidden_size, dtype=dtype)
 
 
+def _validate(routes, v) -> None:
+    """One walk of the engine's fast-fail over `(routes, v)`.
+
+    K31: `rola_op` is the deletion refusal and speaks before it reads the bundle,
+    so the bundle contract is gated where it lives -- the chunk DAG's
+    `validate_context`, which R2 re-fronts with the rebuilt arm."""
+    from rola.engine.dags.chunk_dag import ChunkContext, validate_context
+
+    validate_context(ChunkContext(routes=routes, v=v))
+
+
 def _admitted(routes, v) -> None:
-    """The op's own validation ACCEPTED this call: everything about the bundle passed,
+    """The engine's validation ACCEPTED this call: everything about the bundle passed,
     and the only clause left to refuse it is the device -- these fixtures are CPU fp64,
     which is the oracle's dtype and not any kernel's."""
     with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
-        rola.rola_op(routes, v)
+        _validate(routes, v)
 
 
 def _oracle(routes, v):
@@ -122,7 +133,7 @@ def test_the_op_refuses_anything_that_is_not_a_bundle():
     factors = producer(_x(producer))
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     with pytest.raises(TypeError, match="RouteFactors"):
-        rola.rola_op(factors.read, v)
+        _validate(factors.read, v)
     #: The well-formed call is the control: the refusal above must be about the TYPE,
     #: not about this fixture being unrunnable.
     _admitted(factors, v)
@@ -139,7 +150,7 @@ def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel
     producer = _routes()
     factors = producer(_x(producer))
     with pytest.raises(ValueError, match=r"\[B, T, H\]=\(2, 6, 2\)"):
-        rola.rola_op(factors, torch.randn(2, 5, 2, 8, dtype=torch.float64))
+        _validate(factors, torch.randn(2, 5, 2, 8, dtype=torch.float64))
     #: the control: the same call at a width the bundle never declared is admitted.
     _admitted(factors, torch.randn(2, 6, 2, 9, dtype=torch.float64))
 
@@ -332,19 +343,14 @@ def test_the_expert_argument_refuses_a_lookalike():
 # ---------------------------------------------------------------------------
 
 
-def test_training_mode_alone_is_no_longer_a_refusal():
-    """OLD: training mode refused unconditionally, because reentrant checkpointing
-    runs its first pass under `no_grad()` with the module still training and there
-    was no backward for that forward to be followed by. There is one now, so the
-    module-level clause is gone and what speaks is the CONFIGURATION -- here, the
-    device, since this fixture is CPU-and-fp64.
-
-    Training mode survives as a clause on the DECODE fork alone
-    (`RoLA.validate_decode_envelope`), which is still forward-only; the dispatch
-    table in `tests/integration/test_decode_dispatch.py` is where that is asserted.
-    """
+def test_the_layer_prefill_path_speaks_the_deletion_refusal():
+    """K31: the layer's prefill dispatch lands on `rola_op`, which is the
+    deletion refusal — the ruling is named before any kernel could run, in
+    training mode and out of it. Training mode's own clause survives on the
+    DECODE fork alone (`RoLA.validate_decode_envelope`); the dispatch table in
+    `tests/integration/test_decode_dispatch.py` is where that is asserted."""
     layer = rola.RoLA(_routes()).double().train()
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="K31 R2"):
         layer(torch.randn(2, 6, 32, dtype=torch.float64))
     assert layer.last_execution_backend is None, "the refusal let a kernel run first"
 
@@ -424,7 +430,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "import rola;"
             "from rola.layer import RoLA;"
             "from rola.interface import rola_op;"
-            "from rola.ops.chunk import execute;"
+            "from rola.ops.decode import step_plane;"
             "from rola.engine.facts.call import require_envelope;"
             "from rola.engine.facts.planes import atom_bits;"
             "from rola.engine.rules.arm import CHUNK_TOKENS;"

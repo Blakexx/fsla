@@ -19,9 +19,9 @@ import torch
 #: An ARBITRARY real `rola` module -- the probe needs a filename and globals
 #: that resolve inside the package, and nothing about the claim depends on
 #: which one. P28 pointed it at `rola.ops.consumer` when `rola.routing.
-#: sequence_parallel` was deleted; P67 D2-b points it at the chunk arm for the
-#: same reason and by the same precedent.
-from rola.ops import chunk as probe_mod
+#: sequence_parallel` was deleted; P67 D2-b at the chunk arm; K31 points it at
+#: decode for the same reason and by the same precedent.
+from rola.ops import decode as probe_mod
 
 
 def test_the_nan_poison_guard_engages_in_this_tier():

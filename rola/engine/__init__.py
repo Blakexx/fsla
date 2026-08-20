@@ -17,7 +17,7 @@ the engine rather than of the fact-finder that happened to define it
 (docs/internals/engine/engine.md).
 """
 
-from rola.engine.plan import BackwardPlan, ChunkPlan, DecodeGeometry, DecodePlan
+from rola.engine.plan import ChunkPlan, DecodeGeometry, DecodePlan
 from rola.engine.runner import (
     Node,
     node,
@@ -34,7 +34,6 @@ from rola.engine.types import (
     CallClass,
     Mask,
     PlanOverrides,
-    Seeds,
 )
 
 __all__ = [
@@ -42,7 +41,6 @@ __all__ = [
     "SUPPLIABLE",
     "Arm",
     "BackwardNotImplemented",
-    "BackwardPlan",
     "CallClass",
     "ChunkPlan",
     "DecodeGeometry",
@@ -50,7 +48,6 @@ __all__ = [
     "Mask",
     "Node",
     "PlanOverrides",
-    "Seeds",
     "node",
     "rule",
     "run",

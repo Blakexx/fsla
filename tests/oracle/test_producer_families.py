@@ -38,7 +38,6 @@ import torch
 
 from tests.oracle import generators as g
 from tests.oracle.families import FAMILY_BY_NAME
-from tests.oracle.tolerances import BF16_RTOL
 
 pytestmark = [
     pytest.mark.cuda,
@@ -106,28 +105,21 @@ def _demonstrated_by_some_arm(family, views):
 
 @pytest.mark.parametrize("name", ["producer/swept-gain", "producer/swept-gain-d64",
                                   "producer/swept-gain-d2"])
-def test_the_swept_gain_family_agrees_with_the_oracle(name):
-    from rola import rola_op
-    from rola.expert import PlanOverrides
-    from rola.ops.naive import naive_rola
+def test_the_swept_gain_family_realizes_its_density_sweep(name):
+    """The producer half of the retired swept-gain kernel gate.
 
+    Until the K31 deletion batch this cell also ran each realized bundle through
+    the kernel arm of ``rola_op`` and graded it against the oracle (baseline =
+    tag `baseline/pre-k31`); what survives is the family's own claim -- the gain
+    knob sweeps the REALIZED density monotonically and the declared regime cell
+    is demonstrated -- which is a fact about the producer, not about a consumer.
+    """
     family = FAMILY_BY_NAME[name]
-    assert family.runs_on_kernel, (
-        f"{name} declares itself outside the built chunk matrix; a producer "
-        "family that cannot reach the kernel arm proves nothing about it")
     producer, x, v = _producer_and_stream(family)
     densities, views = [], []
     for gain in family.params["gains"]:
         with torch.no_grad():
             routes = producer(gain * x)
-            y_k, _ = rola_op(routes, v, expert=PlanOverrides())
-            #: the oracle is CALLED, never dispatched to: a facade that could serve
-            #: it would let this comparison become the oracle against itself.
-            y_r, _ = naive_rola(v, routes.read_simplex(), routes.write, routes.g_read,
-                                routes.g_write, routes.topology, None,
-                                routes.normalization)
-        rel_y = g.relative(y_k, y_r)
-        assert rel_y < BF16_RTOL, f"gain {gain}: y is {rel_y:.3e} from the oracle"
         densities.append(_density(routes))
         views.append(_view(family, routes))
 

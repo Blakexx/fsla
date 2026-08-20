@@ -27,94 +27,28 @@
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
 #include "src/paging/vmm_owner.cuh"
-#include "src/chunk/chunk_api.cuh"
+#include "src/facts/facts_api.cuh"
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  // ---- the chunk consumer, the adopted operator ---------------------------
+  // ---- the facts family (the chunk consumer's surviving fact producers) ---
   //: ONE PASS, BOTH ROW SETS: the membership union table always, and the atom-grain
   //: write bitmap when this call has residency to plan.  `mask` is the CALL CLASS
   //: (`rola/engine/types.py`'s M1/M2), which is compiled in; `atoms` is the
   //: runtime-null output skip within the stateful class.
   m.def("chunk_facts", &rola::chunk::facts,
-        "chunk consumer: the union table and the atom-grain write bitmap, one pass", py::arg("pr"),
+        "facts: the union table and the atom-grain write bitmap, one pass", py::arg("pr"),
         py::arg("pw"), py::arg("chunk"), py::arg("bc"), py::arg("widths"), py::arg("mask"),
         py::arg("atoms"));
-  //: the state plane is the CALLER'S, on both sides; absent on both is a fresh
-  //: sequence whose carried state nobody asked for -- what a stateless forward
-  //: passes, and the null the kernel's epilogue is skipped by.  A page table
-  //: makes that plane PAGED (`[slots, 16, d_v+1]`); without one it is the dense
-  //: `[BH, N/16, 16, d_v+1]` plane, where a slot IS its atom.
-  //: `run_table` is the CALLER'S skip table, folded on the host from the three
-  //: presences above (`rola/engine/rules/run_table.py`).  An entry that re-derived
-  //: it would be a second source for it.
-  m.def("chunk_forward_raw", &rola::chunk::forward_raw,
-        "chunk consumer: the readout's d_v+1 columns, undivided", py::arg("pr"), py::arg("pw"),
-        py::arg("gw"), py::arg("v"), py::arg("tbl"), py::arg("chunk"), py::arg("bc"),
-        py::arg("widths"), py::arg("run_table"), py::arg("s_in") = py::none(),
-        py::arg("s_out") = py::none(), py::arg("page_tbl") = py::none(),
-        py::arg("block_bits") = py::none());
-  m.def("chunk_forward", &rola::chunk::forward, "chunk consumer: table pass, kernel, divide pass",
-        py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("chunk"), py::arg("bc"),
-        py::arg("widths"), py::arg("eps"), py::arg("run_table"), py::arg("read_mass") = py::none(),
-        py::arg("out") = torch::kFloat32, py::arg("s_in") = py::none(),
-        py::arg("s_out") = py::none(), py::arg("page_tbl") = py::none(),
-        py::arg("block_bits") = py::none());
   //: the sparse grid's predicate INPUT: three liveness facts per (bh, block),
   //: reduced from the union table this call already built. The predicate OVER
   //: them is the dispatch's, because it differs by call class and by backing.
   m.def("chunk_block_bits", &rola::chunk::block_bits,
-        "chunk consumer: the block-grain read/write/state liveness bitmap", py::arg("tbl"),
-        py::arg("bc"), py::arg("widths"), py::arg("L"), py::arg("page_tbl") = py::none());
-  //: the read mass is the scale the read levels still carry; `eps * mass` is what
-  //: keeps the floor on the ratio's own scale (docs/internals/chunk/chunk.md#readout).
-  m.def("chunk_divide_pass", &rola::chunk::divide_pass,
-        "chunk consumer: the ratio, one elementwise pass, in the operand's layout", py::arg("num"),
-        py::arg("den"), py::arg("mass"), py::arg("eps"), py::arg("out") = torch::kFloat32);
-  m.def("chunk_build_stamp", &rola::chunk::build_stamp,
-        "chunk consumer: device-side build identity + the census of both state "
-        "variants, stateless first");
+        "facts: the block-grain read/write/state liveness bitmap", py::arg("tbl"), py::arg("bc"),
+        py::arg("widths"), py::arg("L"), py::arg("page_tbl") = py::none());
   m.def("chunk_arms", &rola::chunk::arms,
-        "chunk consumer: the built arms with derived plan and geometry");
-  //: SCAN B, the reverse adjoint. It is registered at its STAGE-1 scope and says
-  //: so in its name: it emits the write-side terms that read the adjoint state a
-  //: chunk ENTERS with, and not yet the intra-chunk staircase or the digit
-  //: reduction. `chunk_backward` does not exist until it does.
-  //: Four returns: `dv`, then `sum_s dW[j,s]` -- NOT `d gw`, which weights that
-  //: slot sum by the ungained level product (docs/internals/chunk/backward.md#dw-slotsum)
-  //: and is the third -- then the write side's per-level digit gradients.
-  m.def("chunk_scan_b_probe", &rola::chunk::scan_b_probe,
-        "chunk consumer, Scan B: dv, sum_s dW, d gw and d pw", py::arg("pr"), py::arg("pw"),
-        py::arg("gw"), py::arg("v"), py::arg("dnum"), py::arg("dden"), py::arg("tbl"),
-        py::arg("chunk"), py::arg("bc"), py::arg("widths"));
-  //: THE SEEDS. `dm = eps * dden` is a FIFTH output and it is not zero: the
-  //: m-carry is forward-exact but not gradient-neutral
-  //: (docs/internals/chunk/backward.md#seeds). It comes back only when the mass
-  //: does -- there is no `m` to differentiate in a declared-simplex bundle.
-  m.def("chunk_backward_seeds", &rola::chunk::backward_seeds,
-        "chunk consumer, backward: dnum, dden and (with a read mass) dm, from dy", py::arg("dy"),
-        py::arg("y"), py::arg("den"), py::arg("mass"), py::arg("eps"));
-  //: THE SCHEDULE, ALONE. Scan B walks its own descending partition, so the one
-  //: thing no arithmetic reference can reach in general is where its chunks fall;
-  //: this emits that and nothing else.
-  m.def("chunk_walk_probe", &rola::chunk::walk_probe,
-        "chunk consumer, Scan B: the descending walk's per-token chunk/position "
-        "stamps and causal thresholds, both sides",
-        py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"), py::arg("L"),
-        py::arg("BH"));
-  //: SCAN A: the forward rebuild and the READ side's digit gradient, `d pr`.
-  m.def("chunk_scan_a_probe", &rola::chunk::scan_a_probe, "chunk consumer, Scan A: d pr",
-        py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("dnum"), py::arg("dden"),
-        py::arg("tbl"), py::arg("chunk"), py::arg("bc"), py::arg("widths"));
-  m.def("chunk_scan_b_census", &rola::chunk::scan_b_census,
-        "chunk consumer, Scan B: per-arm registers, spill bytes, shared "
-        "bytes, staging depth, CTA target, the declared scan register floor, the "
-        "budget that target admits, and the level plan's table entries");
-  //: SCAN A'S OWN ROW.  The scans share a geometry, not a live set: one census for
-  //: both would be a floor claim about a kernel nobody measured.
-  m.def("chunk_scan_a_census", &rola::chunk::scan_a_census,
-        "chunk consumer, Scan A: the same eight columns, measured on Scan A's kernel");
+        "facts: the built (C, BC, D, B) dispatch vocabulary with plan quantities");
 
   // ---- the producer's union entmax solve ----------------------------------
   m.def("entmax_union_forward", &rola::entmax::union_forward,

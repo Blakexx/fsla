@@ -10,7 +10,7 @@ NONE does not run at all. That difference is what this file gates, per
 architecture: slower-not-nothing is a property of the built matrix, not of the
 rule, and the rule cannot supply what was never measured.
 
-THE FAILURE IT IS AGAINST is an edit to `tools/gen_shards.py`'s arm lists (or a
+THE FAILURE IT IS AGAINST is an edit to `tools/gen_shards.py`'s arm list (or a
 per-arch re-ratification that measures a subset) which drops the last arm of some
 topology class on ONE arch. Nothing else notices: the shard partition still
 partitions, the manifest digest still matches, the census is still internally
@@ -50,22 +50,18 @@ supported = pytest.importorskip("supported")
 Topology = tuple[int, int]
 
 
-def _arms(blob: dict) -> tuple[set[tuple], set[tuple]]:
-    """One manifest's `(C, BC, D, B)` chunk arms and scan arms."""
-    chunk, scan = set(), set()
+def _arms(blob: dict) -> set[tuple]:
+    """One manifest's facts-kernel shapes, `(kernel, D, B, BC?)`."""
+    facts = set()
     for key in blob["entries"]:
         mangled = key.split(":", 1)[1]
         shape = ratify.parse_shape(mangled)
         if shape is not None:
-            chunk.add(ratify.arm_of_shape(shape)[:4])
-            continue
-        arm = ratify.parse_scan_arm(mangled)
-        if arm is not None:
-            scan.add(arm)
-    return chunk, scan
+            facts.add((shape["kernel"], shape["D"], shape["B"], shape["BC"]))
+    return facts
 
 
-def _ratified() -> dict[str, tuple[set[tuple], set[tuple]]]:
+def _ratified() -> dict[str, set[tuple]]:
     """`sm_XX -> (chunk arms, scan arms)` for every TABULATED arch with a manifest.
 
     Tabulated is the qualifier that matters: a manifest for an arch the kernel cannot
@@ -80,7 +76,7 @@ def _ratified() -> dict[str, tuple[set[tuple], set[tuple]]]:
 
 
 def _classes(arms: set[tuple]) -> set[Topology]:
-    return {(d, b) for (_c, _bc, d, b) in arms}
+    return {(d, b) for (_kernel, d, b, _bc) in arms}
 
 
 def _covers(name: str, per_arch: dict[str, set[tuple]]) -> None:
@@ -102,34 +98,12 @@ def _covers(name: str, per_arch: dict[str, set[tuple]]) -> None:
             f"class everywhere so that no arch claims it.")
 
 
-def test_every_ratified_arch_has_a_chunk_arm_for_every_topology_class():
-    """The FORWARD's coverage: what can be inferred at, per arch."""
-    _covers("chunk", {arch: chunk for arch, (chunk, _scan) in _ratified().items()})
-
-
-def test_every_ratified_arch_has_a_scan_arm_for_every_trainable_topology_class():
-    """The BACKWARD's coverage, stated separately because the set is narrower.
-
-    The scans carry the TRAINABLE topologies only (`tools/gen_shards.py`'s
-    `SCAN_ARMS`), so their union is its own question: folding the two claims together
-    would either demand a backward for every inference topology or accept a forward
-    hole wherever the backward has none.
-    """
-    _covers("scan", {arch: scan for arch, (_chunk, scan) in _ratified().items()})
-
-
-def test_the_scan_topologies_are_a_subset_of_the_chunk_topologies():
-    """A backward whose forward is not built could not run a training step.
-
-    `gen_shards.py` asserts this over the DECLARED lists; here it is asserted over
-    what each arch actually ratified, which is the thing a per-arch re-measurement
-    can break.
-    """
-    for arch, (chunk, scan) in sorted(_ratified().items()):
-        extra = sorted(_classes(scan) - _classes(chunk))
-        assert not extra, (
-            f"{arch} ratifies scan arms for topology class(es) {extra} with no chunk "
-            "arm to run their forward")
+def test_every_ratified_arch_has_a_facts_arm_for_every_topology_class():
+    """The FACTS family's coverage: the union table, the stats reduction and the
+    liveness epilogue must be instantiable for every topology class on every
+    ratified arch. (The chunk consumer's and the scans' coverage rows retired
+    with them in the K31 deletion batch; baseline = tag `baseline/pre-k31`.)"""
+    _covers("facts", _ratified())
 
 
 def test_tabulated_arches_without_a_manifest_are_the_documented_refusal(capsys):

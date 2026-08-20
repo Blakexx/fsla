@@ -45,7 +45,7 @@ EPS_SITES = (
 
 #: P67 D2-b dropped the retired tiled consumer's row. Its replacement is NOT
 #: another row here, because the chunk arm
-#: takes no epsilon PARAMETER -- `rola/ops/chunk.py` passes the constant straight
+#: takes no epsilon PARAMETER -- the executor passes the constant straight
 #: into the launch. Rule 3 below is what covers it: a literal epsilon anywhere in
 #: the package is refused wherever it appears, parameter or not.
 

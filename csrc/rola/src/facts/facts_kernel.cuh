@@ -12,17 +12,18 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
-#include "../chunk/ops.cuh"
+#include "facts_ops.cuh"
 
 namespace rola::chunk {
 
 using namespace denseref::ops;
 
 //: THE INVARIANT QUANTUM: the leaves one page granule holds, and the rectangle
-//: the stats pass keys residency to.  It is the MMA's k-extent because the
-//: state's own tiling is (the host mirror is `rola.ops.paging.MMA_K_QUANTUM`;
+//: the stats pass keys residency to.  It is the MMA k-extent the state's own
+//: tiling was derived at (the host mirror is `rola.ops.paging.MMA_K_QUANTUM`,
+//: and decode's `kAtomLeaves` states the same 16 independently;
 //: docs/internals/paging/stats.md).
-static constexpr int kAtomLeaves = kMmaK;
+static constexpr int kAtomLeaves = 16;
 
 // --------------------------------------------------------------- block plan
 
@@ -560,5 +561,11 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
     *reinterpret_cast<uint8_t*>(gather_ptr(block_bits, outOff + (uint32_t)a)) = v;
   }
 }
+
+// --------------------------------------------------------------- host side
+
+// THE ARM SET, GENERATED: tools/gen_shards.py owns the one list, and this include
+// is the whole of the dispatch's knowledge of it.
+#include "../instantiations/facts_arms.inc"
 
 }  // namespace rola::chunk

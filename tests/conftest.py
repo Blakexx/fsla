@@ -186,19 +186,6 @@ def build_routes(*, hidden_size=64, num_heads=4, widths=(16,), routing=None,
         gain_config=gain_config)
 
 
-def chunk_launch(routes, v, *, state_in=None, want_state=False, arena=None):
-    """`(y, final state or None)` -- one chunk plan built and executed.
-
-    The kernel arm's driver for tests that are about the arm rather than about the
-    facade: `rola.rola_op` reaches the same plan through the same DAG.
-    """
-    from rola.engine.dags.chunk_dag import ChunkContext, build_chunk_plan
-    from rola.ops.chunk import execute
-
-    plan = build_chunk_plan(ChunkContext(routes=routes, v=v, state_in=state_in,
-                                         want_state=want_state, arena=arena))
-    y, _den = execute(plan)
-    return y, plan.state_out
 
 
 def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=None,

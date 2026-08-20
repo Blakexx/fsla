@@ -3,9 +3,9 @@
 """EnvelopeRule -- why the built kernel has no arm for a call, in one sentence.
 
 THE BUILT ENVELOPE IS THE WHOLE SURFACE (docs/api.md §1), so these folds hold every
-refusal TEXT the op can carry. They are four because the call sites need them at four
-different moments -- the arm matrix, the operand facts around it, the reverse pass's
-narrower matrix, and the one clause that exists only on the grad path -- and folding
+refusal TEXT the op can carry. They are three because the call sites need them at three
+different moments -- the arm matrix, the operand facts around it, and the one
+clause that exists only on the grad path -- and folding
 them into one would evaluate clauses a caller has not reached yet
 (docs/internals/engine/rules.md).
 """
@@ -52,26 +52,6 @@ def envelope(unratified: tuple[str, ...], device) -> str | None:
                 "(docs/ratification.md)")
     if device.type != "cuda":
         return f"the operands are on {device}; the arm is a CUDA kernel"
-    return None
-
-
-@rule(gives=("backward_envelope",),
-      needs=("arm_envelope", "widths", "arm", "scan_manifest"))
-def backward_envelope(arm_envelope: str | None, widths: tuple[int, ...], arm: Arm,
-                      scan_manifest: frozenset[tuple[int, int, int, int]]) -> str | None:
-    """Why a GRAD-BEARING call has no arm, or None if it trains.
-
-    The forward's arm matrix is wider than the scans': a forward that runs and a
-    backward that does not is exactly the known-broken path this refuses at the
-    boundary instead of discovering three launches later.
-    """
-    if arm_envelope is not None:
-        return arm_envelope
-    want = (arm.c, arm.bc, len(widths), widths[0])
-    if want not in scan_manifest:
-        return (f"the reverse pass is not built for arm C={want[0]} BC={want[1]} "
-                f"depth={want[2]} width={want[3]}; it carries "
-                f"{sorted(scan_manifest)} (docs/internals/chunk/backward.md)")
     return None
 
 

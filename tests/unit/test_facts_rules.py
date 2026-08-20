@@ -29,12 +29,10 @@ from rola.engine.rules import (
     admission,
     arm,
     arm_envelope,
-    backward_envelope,
     decode_mask,
     envelope,
     mask,
     paging_preference,
-    retention,
     run_table,
     training_envelope,
 )
@@ -201,18 +199,6 @@ def test_the_operand_envelope_names_the_activation_before_the_device():
         "(docs/ratification.md)")
 
 
-def test_the_backward_envelope_passes_the_forward_refusal_through():
-    census = {(32, 128, 2, 64)}
-    assert backward_envelope("d_v=48; the chunk matrix is built at d_v=64", (64, 64),
-                             Arm(32, 128), census) == (
-        "d_v=48; the chunk matrix is built at d_v=64")
-    assert backward_envelope(None, (64, 64), Arm(32, 128), census) is None
-    refusal = backward_envelope(None, (16, 16), Arm(32, 64), census)
-    assert refusal == (
-        "the reverse pass is not built for arm C=32 BC=64 depth=2 width=16; it carries "
-        "[(32, 128, 2, 64)] (docs/internals/chunk/backward.md)")
-
-
 def test_training_is_stateless_only():
     class _State:
         pass
@@ -221,15 +207,6 @@ def test_training_is_stateless_only():
     assert training_envelope(True, None) is None
     assert training_envelope(False, _State()) is None
     assert "trains STATELESS ONLY" in training_envelope(True, _State())
-
-
-# ---------------------------------------------------------------------------
-# RetentionRule
-# ---------------------------------------------------------------------------
-
-def test_only_a_grad_bearing_call_retains():
-    assert retention(True) is True
-    assert retention(False) is False
 
 
 # ---------------------------------------------------------------------------

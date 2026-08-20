@@ -55,13 +55,6 @@ def arm_refusal(routes, decay: Any = None, *, d_v: int) -> str | None:
     return rules.arm_envelope(*envelope_clauses(routes, decay, d_v=d_v))
 
 
-def backward_refusal(routes, decay: Any = None, *, d_v: int) -> str | None:
-    """Why a GRAD-BEARING call has no arm, or None if it trains."""
-    clauses = envelope_clauses(routes, decay, d_v=d_v)
-    return rules.backward_envelope(rules.arm_envelope(*clauses), clauses[0],
-                                   clauses[-1], manifest.scan_arms())
-
-
 def envelope_refusal(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -> str | None:
     """Why the built kernel arm has no arm for this call, or ``None`` if it runs.
 
@@ -97,16 +90,6 @@ def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
     stateless = rules.training_envelope(grad, state)
     if stateless is not None:
         raise BackwardNotImplemented(stateless)
-    if grad and routes.device.type == "cuda":
-        #: THE REVERSE PASS' ARM MATRIX IS NARROWER THAN THE FORWARD'S, so a call
-        #: that would run forward and fail backward is refused HERE rather than
-        #: three launches later with the operands already consumed.
-        back = backward_refusal(routes, decay, d_v=v.shape[-1])
-        if back is not None:
-            raise BackwardNotImplemented(
-                f"rola_op can run this call but cannot differentiate it: {back}. Run "
-                "it under torch.no_grad() with the operands detached, or move to an "
-                "arm the reverse pass carries.")
     reason = envelope_refusal(routes, v, decay)
     if reason is not None:
         raise NotImplementedError(

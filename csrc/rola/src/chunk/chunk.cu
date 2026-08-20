@@ -27,7 +27,7 @@ namespace rola::chunk {
 //: that the driver disagrees with.  Both halves must stay: a derivation is only
 //: as good as the facts it was closed over, and only a fact read off the DEVICE
 //: can establish that this is the device they were read for.
-//: docs/internals/chunk/arch_caps.md
+//: docs/internals/facts/arch_caps.md
 //: NOT TU-LOCAL: the adjoint's translation unit launches too, and a second
 //: copy of this refusal is a second thing that can drift from the table.
 void check_arch_table() {

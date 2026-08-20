@@ -11,11 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, NamedTuple
-
-if TYPE_CHECKING:
-    import torch
-
+from typing import Any, NamedTuple
 
 #: the MMA k-extent, and the page granule. The Python mirror of
 #: the MMA k-extent (`chunk/arch_caps.cuh`'s `kMmaK` world), which a C++
@@ -55,20 +51,6 @@ class Arm(NamedTuple):
 
     c: int
     bc: int
-
-
-class Seeds(NamedTuple):
-    """The reverse pass's SEED cotangents -- what the readout's divide hands the scans.
-
-    `dm` is the read mass's own gradient and is `None` exactly when the bundle carries
-    no mass: a runtime-null output skip, not a mask. Nothing here is RETAINED -- the
-    seeds are built from `dy` inside the backward and die with it, which is why they
-    are a fact of the walk and not a field of anything the forward keeps.
-    """
-
-    dnum: torch.Tensor
-    dden: torch.Tensor
-    dm: torch.Tensor | None
 
 
 @dataclass(frozen=True, slots=True)

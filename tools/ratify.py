@@ -210,7 +210,7 @@ COMPILE_CWD = Path(__file__).resolve().parents[1] / "build" / "temp"
 #: expands it -- and the decode/entmax keys now name the symbols that are actually in
 #: the `.so`, which `tools/fatbin_entries.py` checks rather than asserts.
 STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu",
-                  "entmax/factor.cu", "chunk/backward.cu")
+                  "entmax/factor.cu")
 
 
 def shard_paths() -> list[Path]:
@@ -332,43 +332,24 @@ SPILL = re.compile(r"(\d+) bytes spill stores, (\d+) bytes spill loads")
 REGS = re.compile(r"Used (\d+) registers")
 OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of range")
 
-#: The chunk kernel's mangled template arguments, in DECLARATION order:
-#: `compacted_kernel<int C, int D, int B, int BC, bool STATE>`. Note
-#: that this is not the arm list's tuple order (`(C, BC, D, B)`), and that is exactly
-#: why the mangled name is decoded in ONE place: the manifest key is what the
-#: assembler saw, and every consumer of it -- the census's per-key grouping, the
-#: hot-loop gate's reporting, the fatbin gate's ownership check -- goes through here.
-CHUNK_TPL = re.compile(r"compacted_kernelILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELb(\d)E")
+#: The FACTS kernels' mangled template arguments, in DECLARATION order:
+#: `chunk_facts_tables<int D, int B, int BC, int MASK>`,
+#: `atom_bitmap_kernel<int D, int B>`, `block_bitmap_kernel<int D, int B, int BC>`.
+#: Decoded in ONE place: the manifest key is what the assembler saw, and every
+#: consumer of it -- the census's per-key grouping, the hot-loop gate's reporting,
+#: the fatbin gate's ownership check -- goes through here.
+FACTS_TPL = re.compile(r"(chunk_facts_tables|atom_bitmap_kernel|block_bitmap_kernel)"
+                       r"ILi(\d+)ELi(\d+)(?:ELi(\d+))?(?:ELi(\d+))?E")
 
 
 def parse_shape(mangled: str) -> dict | None:
-    """Shape axes off a chunk instantiation's mangled name, or None."""
-    m = CHUNK_TPL.search(mangled)
+    """Shape axes off a facts instantiation's mangled name, or None."""
+    m = FACTS_TPL.search(mangled)
     if not m:
         return None
-    return dict(C=int(m.group(1)), D=int(m.group(2)), B=int(m.group(3)),
-                BC=int(m.group(4)), state=m.group(5) == "1")
-
-
-def arm_of_shape(shape: dict) -> tuple:
-    """The generator's arm tuple `(C, BC, D, B, STATE)` for a decoded shape."""
-    return (shape["C"], shape["BC"], shape["D"], shape["B"], shape["state"])
-
-
-#: The two SCANS' mangled template arguments, in their DECLARATION order:
-#: `scan_a_kernel<int C, int D, int B, int BC>`, and `scan_b_kernel`'s is the same.
-#: Decoded here beside the chunk's for the same reason: the manifest key is what the
-#: assembler saw, and one decode is what keeps the arm tuple a single spelling.
-SCAN_TPL = re.compile(r"scan_[ab]_kernelILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)E")
-
-
-def parse_scan_arm(mangled: str) -> tuple | None:
-    """The arm tuple `(C, BC, D, B)` off a scan instantiation's mangled name, or None."""
-    m = SCAN_TPL.search(mangled)
-    if not m:
-        return None
-    c, d, b, bc = (int(g) for g in m.groups())
-    return (c, bc, d, b)
+    return dict(kernel=m.group(1), D=int(m.group(2)), B=int(m.group(3)),
+                BC=int(m.group(4)) if m.group(4) else None,
+                mask=int(m.group(5)) if m.group(5) else None)
 
 
 def shard_of_key(mangled: str) -> str:
@@ -380,16 +361,11 @@ def shard_of_key(mangled: str) -> str:
     translation units and carry their file's stem, so every ratified entry answers
     the same question in the same schema.
     """
-    shape = parse_shape(mangled)
-    if shape is None:
-        for tu in STANDALONE_TUS:
-            if f"_{Path(tu).stem}_cu_" in mangled:
-                return Path(tu).stem
-        return "?"
-    want = gen_shards.chunk_canonical(arm_of_shape(shape))
-    for name, arms in gen_shards.chunk_shards().items():
-        if any(gen_shards.chunk_canonical(a) == want for a in arms):
-            return name
+    if parse_shape(mangled) is not None:
+        return next(iter(sorted(gen_shards.chunk_shards())))
+    for tu in STANDALONE_TUS:
+        if f"_{Path(tu).stem}_cu_" in mangled:
+            return Path(tu).stem
     return "?"
 
 
@@ -410,12 +386,12 @@ RATIFIED_DEFINES: tuple[str, ...] = ()
 
 def shipped_defines() -> dict[str, int]:
     """The `#define` defaults of :data:`RATIFIED_DEFINES` in the digested source."""
-    src = (SRC / "chunk" / "chunk_kernel.cuh").read_text()
+    src = (SRC / "facts" / "facts_kernel.cuh").read_text()
     out = {}
     for name in RATIFIED_DEFINES:
         m = re.search(rf"^#define {name} (\d+)$", src, re.MULTILINE)
         if m is None:
-            raise SystemExit(f"chunk_kernel.cuh no longer defines a default for "
+            raise SystemExit(f"facts_kernel.cuh no longer defines a default for "
                              f"{name}; the provenance record cannot be produced")
         out[name] = int(m.group(1))
     return out
@@ -1175,10 +1151,10 @@ def census_report(entries: dict, unhonored: list[str],
         #: which translation unit would have to be recompiled to move it, which is
         #: what turns "re-ratify only these shards" from a plan into a checkable
         #: claim: csrc/rola/src/instantiations/README.md
-        k = (arch, shard_of_key(name.split(":", 1)[1]), shape["C"],
-             shape["BC"], f"{shape['D']}x{shape['B']}")
+        k = (arch, shard_of_key(name.split(":", 1)[1]), shape["kernel"][:5],
+             shape["BC"] if shape["BC"] is not None else 0, f"{shape['D']}x{shape['B']}")
         by_key.setdefault(k, []).append((e, hot.get(name, 0)))
-    print(f"\n{'arch':6} {'shard':10} {'C':>3} {'BC':>4} "
+    print(f"\n{'arch':6} {'shard':10} {'kern':>5} {'BC':>4} "
           f"{'DxB':>7} {'n':>3} {'regs':>9} {'ctas(reg)':>9} {'st':>6} {'ld':>6} "
           f"{'#spill':>6} {'worst st':>8} {'hot':>5}")
     for k, es in sorted(by_key.items()):
@@ -1191,7 +1167,7 @@ def census_report(entries: dict, unhonored: list[str],
         nhot = sum(h for _, h in es)
         rg = f"{regs[0]}-{regs[-1]}" if regs[0] != regs[-1] else f"{regs[0]}"
         cg = f"{ctas[0]}-{ctas[-1]}" if ctas[0] != ctas[-1] else f"{ctas[0]}"
-        print(f"{k[0]:6} {k[1]:10} {k[2]:>3} {k[3]:>4} "
+        print(f"{k[0]:6} {k[1]:10} {k[2]:>5} {k[3]:>4} "
               f"{k[4]:>7} {len(es):>3} {rg:>9} {cg:>9} {st:>6} "
               f"{ld:>6} {nsp:>6} {worst:>8} {nhot:>5}")
     total_st = sum(e["spill_stores"] for e in entries.values())

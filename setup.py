@@ -103,11 +103,10 @@ ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") i
 #:
 #: This is a PACKAGING name only. ``PYBIND11_MODULE(TORCH_EXTENSION_NAME, ...)`` takes
 #: it from this constant, so nothing in ``csrc/`` names it; the C++ namespaces
-#: (``rola``, ``rola::mma``, ``rola::paging``) and every kernel symbol are untouched --
-#: which is why the per-arch manifests diff at ZERO value changes across this move.
-#: The manifests key on MANGLED INSTANTIATION NAMES of
-#: ``rola::chunk::compacted_kernel``, and the module-init symbol they do not contain
-#: is the only thing this rename can move.
+#: (``rola``, ``rola::paging``) and every kernel symbol are untouched.
+#: The manifests key on MANGLED KERNEL NAMES (``rola::chunk::chunk_facts_tables``
+#: and its siblings), and the module-init symbol they do not contain is the only
+#: thing this rename can move.
 MODULE_NAME = "rola._C"
 
 
@@ -381,8 +380,7 @@ SOURCES = [
     "csrc/rola/src/entmax/entmax.cu",
     "csrc/rola/src/entmax/factor.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
-    "csrc/rola/src/chunk/chunk.cu",
-    "csrc/rola/src/chunk/backward.cu",
+    "csrc/rola/src/facts/facts.cu",
 ]
 
 

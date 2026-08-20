@@ -8,7 +8,6 @@ terminal node folds what the walk produced into the family's PLAN, and the kerne
 read only the plan (docs/internals/engine/engine.md).
 """
 
-from rola.engine.dags.backward_dag import BACKWARD_DAG, run_backward
 from rola.engine.dags.chunk_dag import (
     CHUNK_DAG,
     ChunkContext,
@@ -26,7 +25,6 @@ from rola.engine.dags.decode_dag import (
 )
 
 __all__ = [
-    "BACKWARD_DAG",
     "CHUNK_DAG",
     "DECODE_STEP",
     "DECODE_VERDICT",
@@ -37,6 +35,5 @@ __all__ = [
     "decode_forward",
     "decode_step_gated",
     "growth_pending",
-    "run_backward",
     "validate_context",
 ]

@@ -39,7 +39,7 @@ would surface as an `ImportError` at first import instead of as a build failure 
 and, for the occupancy wrapper, which has no device code of its own, the fatbin count
 above would not see it at all. `--no-undefined` is not available as a fix, for exactly
 the reason the loader-resolved symbols exist. So the closure is checked here: NO
-undefined `launch_chunk_arm` or `query_chunk_census_arm` symbol may remain.
+undefined facts-launcher symbol may remain.
 Verified by removal -- dropping one arm from its shard leaves exactly one undefined
 symbol, naming its tuple.
 
@@ -102,7 +102,8 @@ def device_entries(so: Path) -> list[tuple[str, str, str]]:
 
 
 #: The two host entry points a shard is the only possible definer of.
-_SHARD_SYMBOLS = ("launch_chunk_arm", "query_chunk_census_arm")
+_SHARD_SYMBOLS = ("launch_chunk_facts_arm", "launch_chunk_atom_bitmap_arm",
+                  "launch_chunk_block_bitmap_arm")
 
 
 def unresolved_arms(so: Path) -> list[str]:

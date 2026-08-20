@@ -56,12 +56,31 @@ def _layer(device, *, norm="global", decay="none"):
     ).to(device, torch.float32)
 
 
-def _prime(layer, device, *, prefill=32):
-    """Run a prefill so the next call has a carried state — the decode precondition."""
-    state = rola.state()
+def _prime(layer, device, *, prefill=32, paged=True):
+    """Seed a carrying state by the facade's own binding entries.
+
+    The prefill arm primed this until the K31 deletion batch removed it
+    (baseline = tag `baseline/pre-k31`); a dispatch gate needs only a CARRYING
+    state whose keying matches the layer's routing, so the seed binds through
+    `_kernel_entry` — paged: the pages this routing writes are committed; dense:
+    a fresh zero plane is committed — and deposits nothing.
+    """
+    from rola.engine.facts import planes
+
     x = torch.randn(1, prefill, _HIDDEN, device=device)
+    state = rola.state()
     with torch.no_grad():
-        _out, (state, _rings) = layer(x, state=(state, None))
+        routes = layer.routes(x)
+        if paged:
+            bits = planes.atom_bits(planes.pack_side(routes.write),
+                                    routes.topology.widths)
+            _s, arena = state._kernel_entry(routes, bits, d_v=layer.d_v,
+                                            paging=True, BC=64)
+            arena.wait()
+        else:
+            state._kernel_entry(routes, None, d_v=layer.d_v, paging=False, BC=64)
+            state._kernel_commit(planes.state_plane(routes, d_v=layer.d_v,
+                                                    zeros=True))
     return state
 
 
@@ -85,6 +104,9 @@ _REFUSALS = {
     #: PREFILL trains, but statelessly (P65 R-D): a carried state and a gradient are
     #: mutually exclusive, and that is what a grad-bearing one-token PREFILL now hits.
     "refuses-stateless": (BackwardNotImplemented, "STATELESS ONLY"),
+    #: every PREFILL-shaped row: the arm is DELETED pending K31 R2 and the op
+    #: names the ruling before it reads the call.
+    "refuses-deleted": (NotImplementedError, "K31 R2"),
 }
 
 
@@ -98,22 +120,22 @@ _REFUSALS = {
         # that is its own row. It reaches decode only when a state is CARRIED.
         (True, True, True, 1, True, "refuses-training"),
         (True, False, True, 1, True, "refuses-training"),
-        # an UNCARRIED one-token call is a degenerate PREFILL, which trains -- but
-        # statelessly, and a state object is bound here, so R-D's clause is what
-        # speaks. A different sentence from decode's, which is the point.
-        (True, True, True, 1, False, "refuses-stateless"),
+        # an UNCARRIED one-token call is a degenerate PREFILL, and the prefill
+        # arm is deleted: the K31 sentence speaks. A different sentence from
+        # decode's, which is the point.
+        (True, True, True, 1, False, "refuses-deleted"),
         # eval, but a gradient reaches the operation: decode has no node to attach.
         (False, True, True, 1, True, "refuses-grad"),
         (False, True, False, 1, True, "refuses-grad"),
         # eval mode, no grad: the fork's own predicate decides
         (False, False, False, 1, True, "decode"),
-        # ... and the PREFILL rows it is being distinguished from. A one-token
-        # UNCARRIED call is a degenerate prefill and it RUNS: prefill takes any `T`,
-        # so what separates this row from the `decode` one above it is the carried
-        # state alone, which is exactly the distinction being drawn.
-        (False, False, False, 1, False, "cuda"),
-        (False, False, False, 32, True, "cuda"),
-        (False, False, False, 64, True, "cuda"),
+        # ... and the PREFILL rows it is being distinguished from: every one of
+        # them is the deletion refusal now, and what separates the first from
+        # the `decode` row above it is STILL the carried state alone -- the
+        # dispatch reads the predicate before either arm speaks.
+        (False, False, False, 1, False, "refuses-deleted"),
+        (False, False, False, 32, True, "refuses-deleted"),
+        (False, False, False, 64, True, "refuses-deleted"),
     ],
 )
 def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expected):
@@ -144,11 +166,13 @@ def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expec
 @pytest.mark.cuda
 @_CUDA
 def test_a_cpu_decode_shaped_call_is_refused_at_the_prefill():
-    """There is no CPU lowering to decline, so a CPU sequence cannot even be primed."""
+    """A CPU sequence cannot be primed: the prefill dispatch is the deletion
+    refusal (until K31 R2 the sentence is the same on every device)."""
     layer = _layer("cpu")
     layer.eval()
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
-        _prime(layer, "cpu")
+    x = torch.randn(1, 32, _HIDDEN)
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="K31 R2"):
+        layer(x, state=(rola.state(), None))
 
 
 @pytest.mark.cuda
@@ -199,8 +223,7 @@ def test_a_dense_pinned_layer_still_reaches_decode():
     ).to(device, torch.float32)
     layer.eval()
     with torch.no_grad():
-        cache = _prime(layer, device)
-        assert layer.last_execution_backend == "cuda", "the prime did not take prefill"
+        cache = _prime(layer, device, paged=False)
         _step(layer, cache, device, L=1, grad_enabled=False)
     assert layer.last_execution_backend == "decode", "the decode fork did not run"
 
@@ -231,12 +254,15 @@ def test_a_decay_step_runs_on_decode_which_has_the_arm():
 @pytest.mark.cuda
 @_CUDA
 @pytest.mark.parametrize("L,carried", [(1, False), (2, True), (16, True)])
-def test_every_decay_prefill_row_refuses_by_naming_decay(L, carried):
+def test_every_decay_prefill_row_refuses_with_the_deletion_sentence(L, carried):
+    """Until the K31 deletion these rows refused by naming DECAY (the decay
+    retirement); the deletion refusal now speaks first on every prefill-shaped
+    row, decay-configured or not, and it must still speak BEFORE a kernel."""
     device = "cuda"
     plain = _layer(device).eval()
     cache = _prime(plain, device) if carried else rola.state()
     layer = _layer(device, decay="leaf_mass").eval()
-    with pytest.raises(NotImplementedError, match="decay"):
+    with pytest.raises(NotImplementedError, match="K31 R2"):
         _step(layer, cache, device, L=L, grad_enabled=False)
     assert layer.last_execution_backend is None, (
         "the refusal must happen BEFORE a kernel runs; a recorded arm means some "

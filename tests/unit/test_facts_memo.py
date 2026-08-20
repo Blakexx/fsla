@@ -99,12 +99,11 @@ PER_STATE_FACTS = {"scratch": _decode_scratch_facts}
 
 
 def _shipped_per_state_nodes() -> list[Node]:
-    from rola.engine.dags.backward_dag import BACKWARD_DAG
     from rola.engine.dags.chunk_dag import CHUNK_DAG
     from rola.engine.dags.decode_dag import DECODE_STEP, DECODE_VERDICT
 
     seen: dict[int, Node] = {}
-    for dag in (CHUNK_DAG, BACKWARD_DAG, DECODE_STEP, DECODE_VERDICT):
+    for dag in (CHUNK_DAG, DECODE_STEP, DECODE_VERDICT):
         seen.update({id(step): step for step in dag if step.per_state})
     return list(seen.values())
 
@@ -226,40 +225,30 @@ def census(monkeypatch):
             reads.append("chunk")
             return [(32, 128, 2, 64, 0, 0, 0, 0, 0)]
 
-        def chunk_scan_b_census(self):
-            reads.append("scan")
-            return [(32, 128, 2, 64)]
-
     manifest.chunk_arms.cache_clear()
-    manifest.scan_arms.cache_clear()
     monkeypatch.setattr(manifest, "extension", _Ext)
     yield manifest, reads
     manifest.chunk_arms.cache_clear()
-    manifest.scan_arms.cache_clear()
 
 
 def test_the_build_census_is_read_once_however_many_folds_ask_for_it(census):
     """A PRIMITIVE declares its caching. The census is a function of the loaded
-    binary and of nothing else, and it has five call sites -- the chunk DAG's node,
-    three adapters in `facts/call.py` and the bitmap-alone helper -- so a per-site
-    memo would be five of them agreeing by hand."""
+    binary and of nothing else, and it has several call sites -- the chunk DAG's
+    node, the adapters in `facts/call.py` and the bitmap-alone helper -- so a
+    per-site memo would be all of them agreeing by hand."""
     manifest, reads = census
 
     for _ in range(4):
         assert manifest.chunk_arms() == ((32, 128, 2, 64),)
-        assert manifest.scan_arms() == frozenset({(32, 128, 2, 64)})
 
-    assert reads == ["chunk", "scan"], (
+    assert reads == ["chunk"], (
         f"the census was read {len(reads)} times for one binary: {reads}")
 
 
 def test_a_cached_census_is_immutable(census):
-    """A shared cached value a caller could mutate would not be a fact. The scan
-    census is a frozenset for exactly this reason and not for a typing preference."""
+    """A shared cached value a caller could mutate would not be a fact."""
     manifest, _ = census
 
-    with pytest.raises(AttributeError):
-        manifest.scan_arms().add((32, 64, 2, 16))
     assert isinstance(manifest.chunk_arms(), tuple)
 
 
@@ -319,12 +308,11 @@ def test_a_reference_only_node_is_refused_by_every_shipped_dag():
     set. Splicing it into a shipped DAG would make the gate compare the probe against
     itself, and `validate_dag` is where that is refused.
     """
-    from rola.engine.dags.backward_dag import BACKWARD_DAG
     from rola.engine.dags.chunk_dag import CHUNK_DAG
     from rola.engine.dags.decode_dag import DECODE_STEP, DECODE_VERDICT, write_atom_bitmap
 
     assert write_atom_bitmap.reference_only
-    for dag in (CHUNK_DAG, BACKWARD_DAG, DECODE_STEP, DECODE_VERDICT):
+    for dag in (CHUNK_DAG, DECODE_STEP, DECODE_VERDICT):
         assert not any(step.reference_only for step in dag)
     with pytest.raises(ValueError, match="second derivation"):
         validate_dag((write_atom_bitmap,), ("routes", "geometry"))

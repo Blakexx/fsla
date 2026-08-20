@@ -25,7 +25,9 @@ So the gates are: byte-equality where decode is *supposed* to be exact (G1, G2, 
 BC-blindness row in tier 2), and the ORACLE band everywhere else. Decode's byte gates
 are STRONGER than the prefill kernel's, not weaker — G1 is a gate no MMA path passes.
 
-**P67 D2-b.** The prefill arm here is ``rola.ops.chunk`` now, not the tiled consumer.
+**P67 D2-b / K31.** The prefill leg here is the fp64 ORACLE now: the tiled consumer
+left at D2, and the chunk arm left with the K31 deletion batch (baseline = tag
+``baseline/pre-k31``).
 That took one gate with it and improved another:
 
 * **G5** — decode against the TILED consumer at ``T = 1`` — RETIRES. Its subject was
@@ -51,7 +53,6 @@ import torch
 
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.naive import naive_rola
-from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
 from tests.oracle.oracle_fixtures import _decay_dials, _simplex, _topology
 from tests.oracle.tolerances import BF16_RTOL
@@ -471,80 +472,49 @@ def test_g6_sixty_four_chained_steps(widths, decay):
 # ---------------------------------------------------------------------------
 
 
-def _chunk_prefill(widths, d_v, B, T, H, generator, device):
-    """Run the PRODUCTION prefill arm over ``T`` tokens; return what decode needs.
+def _oracle_prefill(widths, d_v, B, T, H, generator, device):
+    """The prefill leg on the fp64 ORACLE; return what decode needs.
 
-    A hand-built bundle and not the producer: the fixture plants a specific density on
-    each side, which a producer cannot be asked for. The envelope is asserted rather
-    than assumed -- a fixture that drifted out of the built matrix would otherwise be
-    silently served by nothing at all.
+    The PRODUCTION prefill arm ran this leg until the K31 deletion batch removed
+    it (baseline = tag `baseline/pre-k31`); the seam this gate owns -- decode
+    continuing from a canonical leaf-major entry state under the frozen carrier
+    config -- survives it, because the oracle's `output_final_state` IS that
+    state's definition. A hand-built bundle and not the producer: the fixture
+    plants a specific density on each side, which a producer cannot be asked for.
     """
-    from rola.engine.facts.call import arm_refusal
-
     topology = _topology(widths)
     read_levels = tuple(_simplex((B, T, H, w), 0.5, generator, device) for w in widths)
     write_levels = tuple(_simplex((B, T, H, w), 0.4, generator, device) for w in widths)
     g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5
     v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=generator)
-    routes = RouteFactors(
-        topology=topology, normalization="global",
-        read=tuple(t.float() for t in read_levels),
-        write=tuple(t.float() for t in write_levels),
-        g_read=None, g_write=g_write.float())
-    refusal = arm_refusal(routes, None, d_v=d_v)
-    assert refusal is None, f"the prefill fixture left the built chunk matrix: {refusal}"
-    from conftest import chunk_launch
-
-    y, plane = chunk_launch(routes, v.float(), want_state=True)
+    y, state = naive_rola(v, read_levels, write_levels, None, g_write,
+                          topology, None, "global", output_final_state=True)
     return dict(topology=topology, read_levels=read_levels, write_levels=write_levels,
                 g_read=None, g_write=g_write, v=v, y=y,
-                state=plane.reshape(B, H, topology.N, d_v + 1))
+                state=state.float())
 
 
 @pytest.mark.parametrize("widths", [(16, 16), (16, 16, 16)],
                          ids=lambda w: "x".join(map(str, w)))
 def test_g7_prefill_decode_seam(widths):
-    """Prefill ``L`` on the chunk arm, decode token ``L + 1``, and grade the pair
-    against the fp64 oracle over the whole ``L + 1`` sequence.
+    """Prefill ``L`` on the fp64 oracle, decode token ``L + 1`` on the KERNEL,
+    and grade the pair against the fp64 oracle over the whole ``L + 1`` sequence.
 
     This is the gate on the frozen carrier being the RIGHT config: an ``eps``
-    that disagreed with the divide pass's, a head fold that disagreed with the
-    consumer's ``h = bh % H``, or a state layout that was not leaf-major would
-    each show up here and nowhere else.
-
-    The reference moved at P67 D2-b. It used to be a SECOND prefill, of ``L + 1``
-    tokens, on the same kernel; ``L`` and ``L + 1`` cannot both be multiples of
-    the chunk, so that construction is unavailable -- and the oracle is a better
-    reference for a seam than the same family of kernel run twice.
-
-    That change brings the PREFILL's own charge into the number, which the old
-    kernel-vs-kernel comparison cancelled out. So the prefill leg is graded on
-    its own first, as a CONTROL: a fixture whose prefill is already out of band
-    is telling us about the prefill (the bf16 family gate's subject and the
-    conformance battery's), and without the control this row would report it as
-    a seam defect. MEASURED at these two cells: prefill-only state charge
-    5.2e-3 and 6.4e-3 against a 1e-2 band.
+    that disagreed with the readout's, a head fold that disagreed with
+    ``h = bh % H``, or a state layout that was not leaf-major would each show up
+    here and nowhere else. The prefill leg ran on the production chunk arm until
+    the K31 deletion (its charge was measured at 5.2e-3 / 6.4e-3 against the
+    1e-2 band, with an oracle CONTROL to keep the blame assignable); the seam's
+    entry state is now the oracle's own, narrowed to the kernel's fp32, so the
+    number is decode's alone.
     """
     device = "cuda"
     d_v, B, H = 64, 2, 2
     L = 4 * _chunk_tokens()
     seed = 909
-    pre = _chunk_prefill(widths, d_v, B, L, H,
-                         torch.Generator(device=device).manual_seed(seed), device)
-
-    # CONTROL: the prefill leg alone, against the oracle over its own L tokens.
-    y_pre_ref, state_pre_ref = naive_rola(
-        pre["v"], pre["read_levels"], pre["write_levels"], None, pre["g_write"],
-        pre["topology"], None, "global", output_final_state=True)
-    e_pre_y = (float((pre["y"].double() - y_pre_ref).abs().max())
-               / max(1e-30, float(y_pre_ref.abs().max())))
-    e_pre_s = (float((pre["state"].double() - state_pre_ref).abs().max())
-               / max(1e-30, float(state_pre_ref.abs().max())))
-    assert e_pre_y < DECODE_RTOL and e_pre_s < DECODE_RTOL, (
-        f"the PREFILL leg is already out of band (y {e_pre_y:.3e}, state "
-        f"{e_pre_s:.3e}) before decode runs: this fixture is reporting on the "
-        "prefill arm, not on the seam, and the assertion below would blame the "
-        "wrong thing")
+    pre = _oracle_prefill(widths, d_v, B, L, H,
+                          torch.Generator(device=device).manual_seed(seed), device)
 
     # the step's own token: drawn from the same generator so the fixture is one
     # sequence of L + 1 tokens rather than a prefill and an unrelated step.

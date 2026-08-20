@@ -89,7 +89,7 @@ class Family:
     #: The instantiation the family runs at. Keys: widths, d_v, B, T, H,
     #: norm, decay, paging, seed -- plus generator parameters under `params`.
     #: The census derives the axis values from these, and a CUDA meta-row
-    #: asserts the DECLARED executor matches what `rola.ops.chunk` really says,
+    #: asserts the DECLARED executor matches what the engine's arm fold says,
     #: so a declaration cannot lie (`test_family_meta.py`). P26 dropped `BT`
     #: and `mma`; P67 D2-b dropped `BC` -- the chunk arm's `BC` is a slot tile
     #: inside a built arm, fixed by the manifest and not host-selectable, so it
@@ -382,7 +382,7 @@ _ADVERSARIAL: tuple[Family, ...] = (
         _cfg(seed=305, T=192, m0=True),
         params=dict(boundary_tiles=(2, 5), live_before=4, live_after=2),
         basis="the write support FLIPS exactly at chunk boundaries (tokens 64 and "
-              "160 under the operator\'s 32-token chunk, `rola.ops.chunk."
+              "160 under the operator\'s 32-token chunk, `rola.engine.rules.arm."
               "CHUNK_TOKENS`; `T = 192` so 6 chunks exist to hold both boundary "
               "chunks): the support-change-at-a-chunk-boundary corner, where an "
               "inclusive/exclusive chunk-range error moves which chunk last "

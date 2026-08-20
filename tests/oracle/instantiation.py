@@ -46,7 +46,7 @@ import gen_shards  # noqa: E402
 #: the instantiation TUs rather than transcribed.
 CHUNK_ARMS: tuple[tuple[int, int, int, int], ...] = tuple(gen_shards.CHUNK_ARMS)
 
-#: The `(D, B)` topologies the dispatch can reach. `rola.ops.chunk` pins
+#: The `(D, B)` topologies the dispatch can reach. The engine's arm fold pins
 #: `C = CHUNK_TOKENS` and picks `BC` from the manifest, so an arm at any other
 #: `C` is built but unreachable from the facade, and the census must be stated
 #: over what the DISPATCH reaches or it would claim coverage nobody can run.

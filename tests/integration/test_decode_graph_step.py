@@ -236,8 +236,20 @@ _HIDDEN, _H, _T, _B = 64, 2, 128, 2
 
 
 def _sequence():
-    """A prefilled paged state, its producer and a stream of decode tokens."""
+    """A prefilled paged state, its producer and a stream of decode tokens.
+
+    The prefill leg ran on `rola.rola_op` until the K31 deletion batch removed
+    the arm (baseline = tag `baseline/pre-k31`). The state is now SEEDED the
+    facade's own way minus the launch: `_kernel_entry` binds the arena and
+    commits exactly the write atoms the prefill's routing realizes -- the same
+    bitmap the chunk DAG fed it -- and the fp64 oracle's `output_final_state`
+    fills the committed pages, narrowed to the kernel's fp32. What these cells
+    gate (capture, replay, growth) reads the arena's base, table and plane, and
+    none of the three cares which arm deposited the numbers.
+    """
     import rola
+    from rola.engine.facts import planes
+    from rola.ops.naive import naive_rola
     from rola.routing.producer import union_routing
     from tests.conftest import build_routes
 
@@ -248,8 +260,20 @@ def _sequence():
     x = torch.randn(_B, _T + 8, _HIDDEN, device="cuda")
     v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")
     with torch.no_grad():
+        routes = producer(x[:, :_T])
+        bits = planes.atom_bits(planes.pack_side(routes.write),
+                                routes.topology.widths)
         state = rola.state()
-        _y, state = rola.rola_op(producer(x[:, :_T]), v[:, :_T], state=state)
+        _s_in, arena = state._kernel_entry(routes, bits, d_v=_DV, paging=True,
+                                           BC=64)
+        arena.wait()
+        _y_ref, oracle_state = naive_rola(
+            v[:, :_T], routes.read, routes.write, routes.g_read, routes.g_write,
+            routes.topology, None, routes.normalization, output_final_state=True)
+        atoms = oracle_state.float().reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS)
+        table = arena.page_table
+        present = table >= 0
+        arena.state[table[present].long()] = atoms[present]
     return producer, x, v, state
 
 

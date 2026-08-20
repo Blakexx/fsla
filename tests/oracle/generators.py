@@ -14,13 +14,10 @@ from __future__ import annotations
 import math
 
 import torch
-from conftest import chunk_launch
 
-from rola.engine.facts import planes
-from rola.engine.facts.call import arm_of, arm_refusal
+from rola.engine.facts.call import arm_refusal
 from rola.engine.rules.arm import CHUNK_TOKENS
 from rola.ops.naive import naive_rola
-from rola.ops.paging import MMA_K_QUANTUM, PageArena
 from rola.routing.factors import RouteFactors
 from rola.routing.types import (
     IndependentRouting,
@@ -249,34 +246,6 @@ class Case:
             self.v, self.read_levels, self.write_levels, self.g_read, self.g_write,
             self.topology, self.decay, self.norm,
             initial_state=self.initial_state, output_final_state=True)
-
-    def kernel(self):
-        """Launch at the family's declared backing; ``(y, state)`` in the
-        oracle's ``[B, H, N, cols]`` state layout.
-
-        The state plane's atom-major `[BH, N/16, 16, cols]` shape is the dense
-        `[BH, N, cols]` one byte for byte (`rola.engine.facts.planes.state_plane`), so
-        both crossings here are reshapes and neither is a repack.
-        """
-        assert self.refusal is None, (
-            f"{self.family.name}: the kernel arm refuses this family "
-            f"({self.refusal}); its contract is the refusal, not a launch")
-        s_in = (None if self.initial_state is None else
-                self.initial_state.to(torch.float32).reshape(
-                    self.B * self.H, self.N // MMA_K_QUANTUM, MMA_K_QUANTUM, self.cols))
-        arena = None
-        if self.paging:
-            arena = PageArena(widths=self.widths, BC=arm_of(self.bundle)[1],
-                              cols=self.cols, BH=self.B * self.H,
-                              device=torch.device("cuda"))
-            #: the arena is planned from the KERNEL's own exact write bitmap,
-            #: so residency is an output of the routing and not a guess about it.
-            arena.plan_exact(planes.atom_bits(planes.pack_side(self.bundle.write),
-                                              self.widths))
-        y, plane = chunk_launch(self.bundle, self._f32["v"], state_in=s_in,
-                                want_state=True, arena=arena)
-        state = arena.materialize() if arena is not None else plane
-        return y, state.reshape(self.B, self.H, self.N, self.cols)
 
 
 def build_case(family: Family) -> Case:

@@ -37,29 +37,24 @@ import pytest
 import torch
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-CHUNK_CU = REPO / "csrc" / "rola" / "src" / "chunk" / "chunk.cu"
-#: The chunk COMPONENT is two translation units -- the forward's dispatch and
-#: the adjoint's -- and an entry's definition may live in either. The gate is
-#: per ENTRY, so the search is over the component rather than over one file;
-#: `check_arch_table` itself has one definition, in `chunk.cu`, which is what
-#: stops the second TU from carrying a copy that can drift.
-CHUNK_TUS = (CHUNK_CU, REPO / "csrc" / "rola" / "src" / "chunk" / "backward.cu")
-ARCH_CAPS = REPO / "csrc" / "rola" / "src" / "chunk" / "arch_caps.cuh"
-CHUNK_API = REPO / "csrc" / "rola" / "src" / "chunk" / "chunk_api.cuh"
+CHUNK_CU = REPO / "csrc" / "rola" / "src" / "facts" / "facts.cu"
+#: The facts COMPONENT is one dispatch translation unit; the gate is per ENTRY.
+#: `check_arch_table` has one definition, in `facts.cu`.
+CHUNK_TUS = (CHUNK_CU,)
+ARCH_CAPS = REPO / "csrc" / "rola" / "src" / "facts" / "arch_caps.cuh"
+CHUNK_API = REPO / "csrc" / "rola" / "src" / "facts" / "facts_api.cuh"
 
-#: The entries of the chunk surface that issue no launch of THEIR OWN. ``arms``
-#: reads the built matrix out of compile-time constants and returns it;
-#: ``forward`` is a composition of three entries that are each gated, and
-#: :func:`test_the_composed_entry_is_only_gated_entries` is what keeps it one.
+#: The entries of the facts surface that issue no launch of THEIR OWN: ``arms``
+#: reads the built matrix out of compile-time constants and returns it.
 #: Every other declared entry reaches a kernel and must pass the gate first.
-_LAUNCHLESS_ENTRIES = {"arms", "forward"}
+_LAUNCHLESS_ENTRIES = {"arms"}
 
 
 def _entry_names() -> set[str]:
     """The host entries the pybind TU is offered, read off the declaration header."""
     decls = re.findall(r"^\s*(?:[\w:<>,\s]+?)\s(\w+)\(", CHUNK_API.read_text(), re.M)
     names = {name for name in decls if name not in {"if", "for", "while"}}
-    assert names, "cannot read the chunk entry declarations out of chunk_api.cuh"
+    assert names, "cannot read the facts entry declarations out of facts_api.cuh"
     return names
 
 
@@ -75,8 +70,6 @@ def test_the_compile_time_half_is_a_table_and_a_static_assert():
 def test_the_runtime_half_refuses_an_untabulated_architecture():
     """``check_arch_table()`` keys on ``tabulated`` and on the driver's own numbers."""
     text = CHUNK_CU.read_text()
-    #: ONE DEFINITION, in the forward's TU: the adjoint's TU declares it and calls
-    #: it, so there is exactly one copy of the refusal to check here.
     assert text.count("void check_arch_table() {") == 1, (
         "check_arch_table has more than one definition; a second copy is a second "
         "thing that can drift from the capability table it checks")
@@ -117,19 +110,6 @@ def test_every_launching_entry_passes_the_gate_first(entry: str):
         f"{entry} launches, so the closed-world arch refusal must be its FIRST "
         f"statement; found {first!r}")
 
-
-def test_the_composed_entry_is_only_gated_entries():
-    """``forward`` needs no gate of its own only for as long as it issues no launch."""
-    text = CHUNK_CU.read_text()
-    body = re.search(r"^torch::Tensor forward\(.*?\)\s*\{\n(.*?)\n^\}", text, re.M | re.S)
-    assert body, "cannot find the definition of forward in chunk.cu"
-    called = set(re.findall(r"(\w+)\(", body.group(1)))
-    assert called <= {"facts", "forward_raw", "divide_pass"}, (
-        "forward has grown a call of its own; either it launches, in which case it "
-        f"needs the gate as its first statement, or say which of {sorted(called)} is "
-        "gated")
-
-
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the live half needs the device")
 def test_this_device_is_tabulated_and_the_gate_admits_it():
@@ -147,7 +127,7 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     rows = re.search(r"constexpr bool tabulated\(int cc\) \{\s*return ([^;]+);",
                      ARCH_CAPS.read_text(), re.S).group(1)
     assert f"cc == {cc}" in rows, (
-        f"this device is compute capability {major}.{minor}, which the chunk table "
+        f"this device is compute capability {major}.{minor}, which the facts table "
         "does not carry -- the refusal below is then the correct behaviour, and this "
         "row is the one that must be added")
     arms = extension().chunk_arms()
@@ -157,35 +137,3 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     pw = torch.zeros(1, 1, tokens, d * b, dtype=torch.bfloat16, device="cuda")
     bits = extension().chunk_facts(pw, pw, c, bc, [b] * d, Mask.M2, True)[1]
     assert bits.shape[0] == bh
-
-
-def test_the_dynamic_shared_memory_OPT_IN_is_load_bearing_for_the_built_matrix():
-    """At least one built arm needs more shared memory than a CTA gets by default.
-
-    The launcher raises every arm's dynamic-shared-memory limit with
-    `cudaFuncSetAttribute(..., MaxDynamicSharedMemorySize, ...)`
-    (`csrc/rola/src/chunk/chunk_launch.cuh`). That call is the difference between a
-    working arm and `cudaErrorInvalidValue` at launch, and a matrix whose every arm
-    happened to fit under the 48 KB default would let the opt-in be deleted with
-    every gate staying green. So the NON-VACUITY is asserted: the shipped footprints
-    straddle the default limit.
-
-    P67 D2-b re-anchored this from `tests/unit/test_dispatch_table.py::
-    test_every_shipped_arm_is_admitted_by_this_device`, whose authority was
-    `rola_max_dynamic_smem_bytes` -- a tiled binding D2-c deletes. The ADMISSION
-    half moved with R-7: `check_arch_table` compares the arch row's
-    `smem_per_cta_max` against the driver's on every launching entry, which refuses
-    a device the table does not describe rather than one derived number.
-    """
-    from rola.ops._ext import extension
-
-    #: `chunk_arms()` rows are `(C, BC, D, B, ...)` with the arm's shared-memory
-    #: footprint at index 8 -- the number `chunk_launch.cuh` opts in to.
-    footprints = [row[8] for row in extension().chunk_arms()]
-    assert footprints, "the manifest reports no built arms"
-    default_limit = 48 * 1024
-    assert max(footprints) > default_limit, (
-        f"every built arm fits in the {default_limit}-byte default ({max(footprints)} "
-        "is the largest), so the launcher's opt-in could be deleted and nothing here "
-        "would notice -- the claim is vacuous and the matrix or this row must change")
-    assert min(footprints) > 0

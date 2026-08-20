@@ -1,11 +1,11 @@
 #pragma once
 
 // LAYER 1 -- THE ARCHITECTURE CAPABILITY FACTS: the only file that knows an
-// architecture exists.  Objective per-arch facts, no judgment; `design.cuh`
-// (layer 2a) derives selections from them and `ops.cuh` (layer 2b) executes.
-// The three-layer contract, the entry kinds (REQUIRED / SELECTING / RESIDENCY
-// / FACT) and the no-fallback-chain rule live in
-// docs/internals/chunk/arch_caps.md.
+// architecture exists.  Objective per-arch facts, no judgment; the consumers
+// are the facts dispatch's closed-world runtime check (facts.cu) and, when it
+// lands, the K31 kernel's own selection layers.  The entry kinds (REQUIRED /
+// SELECTING / RESIDENCY / FACT) and the no-fallback-chain rule live in
+// docs/internals/facts/arch_caps.md.
 
 #include <cuda_runtime.h>
 

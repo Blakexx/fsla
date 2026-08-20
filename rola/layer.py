@@ -15,11 +15,13 @@ SOURCE (:mod:`rola.routing.decay`), the slot that decides where the recurrence's
 forgetting rates come from. Everything else the layer used to take was either one of
 those facts spelled out flat, or a launch decision the op makes.
 
-**Execution backends: two kernels, and the choice is STRUCTURAL.** ``'cuda'`` is the
-chunk consumer through :func:`rola.rola_op`; ``'decode'`` is the ``T = 1`` sibling
-kernel, which bypasses selection architecturally (at one token there is no tile to
-choose, no split, a statistics population of one) and carries its own envelope --
-BC-blind and general in the topology, so it is never gated on the prefill matrix.
+**Execution backends: two arms, and the choice is STRUCTURAL.** ``'cuda'`` is the
+prefill arm through :func:`rola.rola_op` — DELETED pending K31 R2 (the op raises,
+naming the ruling; baseline = tag ``baseline/pre-k31``); ``'decode'`` is the
+``T = 1`` sibling kernel, which bypasses selection architecturally (at one token
+there is no tile to choose, no split, a statistics population of one) and carries
+its own envelope -- BC-blind and general in the topology, so it is never gated on
+the prefill matrix.
 
 **THE BUILT ENVELOPE IS THE WHOLE SURFACE** (docs/api.md §1). Everything outside it
 raises: training mode and any grad-bearing call (the backward arrives with the native
