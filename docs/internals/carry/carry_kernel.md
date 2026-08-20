@@ -95,37 +95,71 @@ is fully unrolled over the box's atoms, which makes each one's tile index a comp
 `2*a`. Every warp owns every atom, because the carve is along the channels; the CTA
 stages one atom at a time through the output buffer.
 
-## The rings
+## K33: the factorized bucket contraction
 
-The V ring is `STAGES` slots deep, asynchronous, FIFO, one implicit group per batch,
-`stage_wait<STAGES-2>` before the consuming rendezvous, and a group committed on every
-batch — live or not — so the wait/commit accounting never depends on the data.
-`STAGES` is DERIVED by `design::stages_for(slot, fixed, threads, kRegFloor)`, the same
-function `chunk`'s `Geom::stages` uses: the shallowest ring that reaches the best
-residency this arm can reach at any depth.
+<a id="buckets"></a>**A side's KEY LEVEL factors its contraction.** An entry's in-box
+deadness is axis-aligned — the dense spans are fully live, one sparse level is not — so
+the sparse level's digit becomes a BUCKET INDEX and leaves the contraction. Bucket `d`
+of a side keyed at level `l*` owns the `BC / s_{l*}` leaves whose level-`l*` run offset
+is `d`, and its panel is the Kronecker product of the DENSE levels alone. A side with
+no sparse level has no key: ONE bucket of `BC` leaves whose panel is the whole box,
+which is the pre-K33 kernel written in the new vocabulary — no branch, no second path.
+The key levels come from the per-level support-mode DECLARATION (law 3), resolved on
+the host at the plan seam; nothing here reads a density.
 
-The PANEL ring is two slots and costs no shared memory at all. Because all of a
-window's readouts precede all of its folds, the write panel is dead through phase 1 and
-the read panel is dead through phase 2; each phase double-buffers in the other's buffer
-and produces one batch AHEAD, which puts the amplitude gather's latency underneath the
-previous batch's MMA block. Its two operand bases are NAMED SCALARS selected by the
-batch parity — a two-element array indexed at runtime would be a stack frame.
+<a id="fold-key"></a>**The fold keys the outermost level, and only it.** A bucket's
+leaves are a contiguous run of whole state tiles exactly when no level above the key
+has a span, and the fold's accumulator IS the state — it cannot be gathered. A write
+side sparse only at an inner level therefore runs the trivial one-bucket fold with a
+partially zero panel: exact, uniform, and the saving it forgoes is a consequence of the
+leaf order the fold was given ([`box.md`](box.md)).
 
-## The produce
+<a id="state-image"></a>**The readout's operand transits SHARED MEMORY, and it has to.**
+For `mma.m16n8k16` the A operand's `k` axis and the accumulator's `n` axis occupy the
+lane's low bits IDENTICALLY, so an A fragment can be formed from accumulator registers
+with no cross-lane traffic only when its sixteen leaves are two WHOLE in-order n-tiles.
+A read bucket's slice is strided, and its values sit in the wrong LANES — no register
+pack can move them, and the shuffle form costs 16–32 shuffles and a four-way select per
+drain to set up two to four MMAs. So the state is packed `fp32 -> bf16` into a per-warp
+`[chan][bucket-major leaf]` image ONCE PER READOUT PHASE — not once per batch, which is
+what the pre-K33 kernel paid — and each bucket's A operand is one `ldmatrix`. On sm_90
+that image is exactly the shared-memory-resident A operand `wgmma` requires.
 
-Per token, `Σ_l s_l` amplitudes are loaded and everything else is computed; the gate
-plane is never materialized. A row's `kThreads/C` threads split the box's `BC`
-coefficients into `SPT` contiguous LATTICE slots each, and because the lattice index is
-a bit permutation a thread's slot run is a sub-lattice: per level the digits it touches
-are a CONTIGUOUS run of the owner's own run at a runtime base, and WHICH element of that
-run each of its slots wants is a compile-time function of the unrolled slot index. So
-the expansion is `Σ_l n_l` amplitude loads followed by `SPT` products of register values
-at constant indices — no dynamic indexing, no spill.
+<a id="late-scalar"></a>**The panel is ungained and unscaled on both sides.** The
+bucket scalar and the write gain are applied LATE, on the entry axis: the readout scales
+its ACCUMULATOR COLUMN — so the accumulator literally is the backward's unscaled
+`q^{(d)}` at the instruction before scaling (R4 §4.2) — and the fold scales its A
+operand's TOKEN axis, four packed multiplies rather than `d_v` of them, which is §4.3's
+ungained-panel rule. The mass column's A fragment carries the same scalar in row zero:
+moving the gain off the panel moves it there too, or the mass is the one channel that
+loses it.
 
-The innermost level supplies the adjacent bf16 PAIR (its `c` field owns bit 0) and every
-level above it a per-pair scalar, which is the shipped producer's multiply chain. `have`
-false makes the gain zero, and a zero coefficient contributes exactly nothing to either
-MMA — one select on the leading factor covers the whole run.
+<a id="schedule"></a>**The flush schedule, and the invariant it buys.** Reads of a
+window must see the state as of its start, so every pending FOLD lands first; pending
+READS were taken against a state those folds would advance, so they land before them.
+Each phase empties the other side's buckets before filling its own, which makes "AT MOST
+ONE SIDE IS EVER PENDING" an invariant — and cross-window batching is then exactly what
+happens across a run of windows that touch one side only. The invariant is also a
+MEMORY-SAFETY one: the read buckets and the write buckets are the phase union's two
+tenants and share bytes.
+
+## The rings and the phase union
+
+<a id="rings"></a>Two panel slots per side: a group's panel is expanded while the
+PREVIOUS group's mma block runs, so the amplitude gather sits underneath arithmetic
+instead of in front of it. The value ring is two slots on the same principle. The state
+image, the mass row, the read panel ring and the READ buckets are phase-1 tenants; the
+value ring, the write panel ring and the WRITE buckets are phase-2 tenants; they are
+disjoint in time and share bytes at a fixed offset — the architecture doc's V/staging
+alias, widened.
+
+<a id="fill"></a>**The work follows the fill, not the slot.** A drain group is `kGrp`
+entries wide and a bucket rarely fills it, so a dead panel row is WRITTEN zero rather
+than gathered and multiplied by zero, a dead V row likewise, and the mma trip counts are
+predicated on the group's live count (the accumulator index stays a constant — the loops
+are unrolled — and the predicate is on the tile). A padding entry's stored scalar is read
+as ZERO through the same bound: an mma sums `A[m,k]*B[k,n]` over `k`, so a NaN in `A`
+meets `B = 0` and poisons the accumulator rather than vanishing from it.
 
 ## Addressing
 

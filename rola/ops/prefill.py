@@ -93,14 +93,17 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     value = v.to(torch.bfloat16).contiguous()
 
     ext = extension()
+    packed = intra_ops.pack_modes(tuple(modes))
+    #: ONE DECLARATION, BOTH KERNELS.  The carry reads it as its K33 bucket keys and
+    #: the intra as its slab gate; they are the same statement about the routing's
+    #: structure, so they are packed once and handed to both.
     num, den, state_out = ext.carry_forward_inter(
         pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
-        int(chunk), carry_ops.CHANNEL_SPLIT, state_in)
+        int(chunk), carry_ops.CHANNEL_SPLIT, packed, state_in)
     #: SAME STREAM, SAME BUFFERS.  The intra REDs into `num`/`den`; the stream
     #: order is the only synchronization either kernel needs, and there is no
     #: host round trip between them.
-    ext.intra_forward(pread, pwrite, gwrite, value, num, den, D,
-                      intra_ops.pack_modes(tuple(modes)), int(window))
+    ext.intra_forward(pread, pwrite, gwrite, value, num, den, D, packed, int(window))
     return num, den, state_out
 
 

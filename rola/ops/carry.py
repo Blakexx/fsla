@@ -36,7 +36,7 @@ WINDOW_SMALL = 64
 #: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
 #: moves whenever that source does, which is what makes reading it back off the
 #: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010012
+BUILD_MAGIC = 31010013
 
 MMA_K_QUANTUM = 16
 
@@ -104,9 +104,15 @@ def pack_side(levels) -> torch.Tensor:
 
 
 def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
-                window: int, chunk: int = 32, carve: int = CHANNEL_SPLIT,
+                window: int, chunk: int = 32, carve: int = CHANNEL_SPLIT, modes: int = 0,
                 state_in: torch.Tensor | None = None):
     """The INTER term, undivided: ``(num, den, state_out)``.
+
+    ``modes`` is the packed per-level support-mode DECLARATION (two bits per level,
+    ``rola.ops.intra``'s encoding). It selects the K33 bucket keys and nothing
+    else: ``0`` (dense both sides at every level) is always CORRECT and is the
+    trivial one-bucket schedule, i.e. the pre-K33 kernel. It is a statement about
+    the routing's STRUCTURE, never about its density.
 
     ``num`` is ``[BH, T, d_v]`` fp32, ``den`` is ``[BH, T]`` fp32, and
     ``state_out`` is ``[BH, N/16, 16, d_v+1]`` fp32 in LATTICE leaf order.
@@ -118,7 +124,7 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
     gw = gw.reshape(gw.shape[0] * gw.shape[1], -1)
     return extension().carry_forward_inter(
         pr, pw, gw, v.to(torch.bfloat16).contiguous(), list(widths), int(k), int(m),
-        int(window), int(chunk), int(carve), state_in)
+        int(window), int(chunk), int(carve), int(modes), state_in)
 
 
 def owner_rows(read_levels, write_levels, widths, *, k: int, m: int):
@@ -133,9 +139,9 @@ def owner_rows(read_levels, write_levels, widths, *, k: int, m: int):
                                         list(widths), int(k), int(m))
 
 
-def build_stamp(widths, k, m, window, chunk, carve):
+def build_stamp(widths, k, m, window, chunk, carve, modes=0):
     return extension().carry_build_stamp(list(widths), int(k), int(m), int(window),
-                                         int(chunk), int(carve))
+                                         int(chunk), int(carve), int(modes))
 
 
 def arms():
