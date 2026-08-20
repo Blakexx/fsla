@@ -20,7 +20,8 @@ import math
 
 import torch
 
-__all__ = ["LATTICE_CAP_M", "box_shape", "derive_lattice", "permutation"]
+__all__ = ["LATTICE_CAP_M", "box_shape", "derive_lattice", "permutation", "to_canonical",
+           "to_lattice"]
 
 #: The capacity multiplier the flagship carry arm is solved at, and the ceiling this
 #: solver searches down from. It is the ONE number here that is a choice rather than a
@@ -122,3 +123,26 @@ def permutation(widths, k: int, m: int, device="cuda") -> torch.Tensor:
         u_term += ((d % s[l]) // k) * math.prod(m_l[l + 1:])
         c_term += (d % k) * (k ** (D - 1 - l))
     return o_term * bc + u_term * (k**D) + c_term
+
+
+def to_lattice(plane: torch.Tensor, widths, k: int, m: int) -> torch.Tensor:
+    """A ``[..., N, cols]`` plane in CANONICAL leaf order, re-read in LATTICE order.
+
+    THE ORACLE/TEST SEAM, and the only place a conversion is legal: no shipped path ever
+    converts a plane, because every kernel is born in lattice order
+    (docs/internals/decode/decode_lattice.md#the-seam).
+    """
+    n = math.prod(int(w) for w in widths)
+    pi = permutation(widths, k, m, device=plane.device)
+    flat = plane.reshape(-1, n, plane.shape[-1])
+    out = torch.empty_like(flat)
+    out.index_copy_(1, pi, flat)
+    return out.reshape(plane.shape)
+
+
+def to_canonical(plane: torch.Tensor, widths, k: int, m: int) -> torch.Tensor:
+    """The inverse of :func:`to_lattice` -- a lattice plane as the oracle's view."""
+    n = math.prod(int(w) for w in widths)
+    pi = permutation(widths, k, m, device=plane.device)
+    flat = plane.reshape(-1, n, plane.shape[-1])
+    return flat.index_select(1, pi).reshape(plane.shape)
