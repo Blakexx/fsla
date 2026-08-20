@@ -9,7 +9,11 @@
 namespace rola {
 namespace intra {
 
-namespace {
+//: NOT an anonymous namespace: nvcc mangles anonymous-namespace kernels with a
+//: hash that depends on the BUILD PATH, so a manifest ratified in one worktree
+//: certifies a name no other checkout's build produces -- the fatbin gate then
+//: refuses a byte-identical kernel. A ratifiable kernel needs a named symbol.
+namespace stampdet {
 
 //: Recompiled with the translation unit, so a test that reads it back is
 //: reading a fact only the loaded binary can produce.
@@ -19,6 +23,10 @@ __global__ void stamp_kernel(int64_t* out) {
   *out = (int64_t)(sizeof(detail::IntraSmem<2>)) * 1000003 + (int64_t)detail::kThreads;
   g_stamp_probe = *out;
 }
+
+}  // namespace stampdet
+
+namespace {
 
 void check_plane(const at::Tensor& t, const char* name, int64_t bh, int64_t L, int64_t width) {
   TORCH_CHECK(t.is_cuda() && t.is_contiguous() && t.scalar_type() == at::kBFloat16, name,
@@ -84,7 +92,7 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
 
 int64_t intra_build_stamp() {
   auto out = at::empty({1}, at::TensorOptions().dtype(at::kLong).device(at::kCUDA));
-  stamp_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(out.data_ptr<int64_t>());
+  stampdet::stamp_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(out.data_ptr<int64_t>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return out.cpu().item<int64_t>();
 }
