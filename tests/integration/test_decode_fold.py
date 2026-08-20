@@ -36,6 +36,7 @@ import torch
 
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decode import _decode_step, derive_decode_geometry, fold_levels
+from rola.ops.lattice import permutation
 from tests.oracle.oracle_fixtures import _topology
 
 pytestmark = [
@@ -63,12 +64,14 @@ def declared_row_sum(row: torch.Tensor) -> torch.Tensor:
     return lanes[:, 0]
 
 
-def _single_leaf_state(BH: int, width: int, s0: int, device, seed: int):
-    """``[BH, N, d_v + 1]`` zero everywhere but leaf ``s0``. Returns ``(state, e, m)``."""
+def _single_leaf_state(BH: int, config, s0: int, device, seed: int):
+    """``[BH, N, d_v + 1]`` zero everywhere but CANONICAL leaf ``s0``, in the plane's own
+    LATTICE order. Returns ``(state, e, m)``."""
     gen = torch.Generator(device=device).manual_seed(seed)
-    state = torch.zeros(BH, width, _DV + 1, dtype=torch.float32, device=device)
+    pi = permutation(config.widths, config.lattice_k, config.lattice_m, device=device)
+    state = torch.zeros(BH, config.N, _DV + 1, dtype=torch.float32, device=device)
     row = torch.rand(BH, _DV + 1, dtype=torch.float32, device=device, generator=gen) + 0.5
-    state[:, s0] = row
+    state[:, int(pi[s0])] = row
     return state, row[:, :_DV], row[:, _DV]
 
 
@@ -84,7 +87,7 @@ def _y_of(read, *, dtype, normalize, seed, s0=0):
     v = torch.zeros(B, 1, H, _DV, **kw)
     config = derive_decode_geometry(_topology((width,)), d_v=_DV, decay=False, BH=BH,
                                     device=device)
-    state, e, m = _single_leaf_state(BH, width, s0, device, seed + 1)
+    state, e, m = _single_leaf_state(BH, config, s0, device, seed + 1)
     y, _state, _ws = _decode_step(v, read, write, None, g_write, config,
                                   state.view(B, H, width, _DV + 1),
                                   normalize=normalize)

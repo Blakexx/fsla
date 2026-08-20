@@ -62,18 +62,22 @@ def _prime(layer, device, *, prefill=32, paged=True):
     The prefill arm primed this until the K31 deletion batch removed it
     (baseline = tag `baseline/pre-k31`); a dispatch gate needs only a CARRYING
     state whose keying matches the layer's routing, so the seed binds through
-    `_kernel_entry` — paged: the pages this routing writes are committed; dense:
-    a fresh zero plane is committed — and deposits nothing.
+    `_kernel_entry` — paged: EVERY atom is committed; dense: a fresh zero plane is
+    committed — and deposits nothing. Total residency rather than the routing's own
+    set, because a dispatch gate has no business owning a second opinion about
+    which leaf sits in which atom.
     """
     from rola.engine.facts import planes
+    from rola.ops.paging import MMA_K_QUANTUM
 
     x = torch.randn(1, prefill, _HIDDEN, device=device)
     state = rola.state()
     with torch.no_grad():
         routes = layer.routes(x)
         if paged:
-            bits = planes.atom_bits(planes.pack_side(routes.write),
-                                    routes.topology.widths)
+            bits = torch.ones(x.shape[0] * _H,
+                              routes.topology.N // MMA_K_QUANTUM,
+                              dtype=torch.bool, device=device)
             _s, arena = state._kernel_entry(routes, bits, d_v=layer.d_v,
                                             paging=True, BC=64)
             arena.wait()
