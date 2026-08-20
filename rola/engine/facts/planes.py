@@ -110,7 +110,7 @@ def atom_bits(write_plane: torch.Tensor, widths) -> torch.Tensor:
     consequence of it. Device-side: no host synchronization happens here.
 
     ASKING FOR IT ALONE BUILDS THE UNION TABLE TOO, because both row sets come out of
-    one pass over the plane (docs/internals/chunk/chunk_kernel.md#the-facts-pass); a
+    one pass over the plane (docs/internals/facts/facts_kernel.md#the-facts-pass); a
     call that wants both takes them from the chunk DAG's own node in one launch, and
     nothing on a measured path comes through here.
     """

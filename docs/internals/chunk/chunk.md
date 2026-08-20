@@ -102,7 +102,7 @@ them justified only by a quality measurement showing decay matters at scale.
 ## <a id="run-table"></a>The skip predicate is a host decision
 
 The liveness epilogue (`chunk_block_bits`, reducing the union table this call already
-built — `chunk_kernel.md#block-bitmap`) emits three FACTS per `(bh, block)`: `READ`,
+built — `../facts/facts_kernel.md#block-bitmap`) emits three FACTS per `(bh, block)`: `READ`,
 `WRITE`, `STATE`. It does not emit a verdict, because the verdict is not a property of the
 routing. What a skipped block would have cost differs by call class and by backing, and a
 call class here is the PRESENCE of the three launch arguments — the entry-state plane, the

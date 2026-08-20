@@ -19,4 +19,4 @@ The launcher asserts the state pointers and the compiled variant agree: a state 
 handed to the variant with no state code would be read by nothing, and that is
 `cudaErrorInvalidValue`. `launch_chunk_facts_arm` asserts the same agreement for its
 own compiled-out half: an atom table handed to the stateless call class would come
-back unwritten (`chunk_kernel.md#the-facts-pass`).
+back unwritten (`../facts/facts_kernel.md#the-facts-pass`).

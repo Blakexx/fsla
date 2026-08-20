@@ -10,7 +10,7 @@ arena that consumes the bitmap is `paging.md`; the addressing it keys is
 **The atom rows are not a pass of their own.** They are voted in the same launch
 that builds the owner-grain union table, out of the same amplitude row, because the
 plane is the byte cost and it grows with `T`
-(`docs/internals/chunk/chunk_kernel.md#the-facts-pass`). What is keyed to the atom
+(`docs/internals/facts/facts_kernel.md#the-facts-pass`). What is keyed to the atom
 quantum — and therefore free of the launch's `BC` — is the ROW GRAIN and the
 reduction below, not the pass.
 
@@ -93,7 +93,7 @@ combinations and OR them in: beautiful under sparsity, worst-case dense, and it
 makes the cost a routing property rather than a plan property). The row-BUILDING
 half is a different question and it did fuse: it shares the facts pass' grid, its
 lane-per-token geometry and its side of the residency dependency
-(`docs/internals/chunk/chunk_kernel.md#the-facts-pass`).
+(`docs/internals/facts/facts_kernel.md#the-facts-pass`).
 
 ## The contract
 

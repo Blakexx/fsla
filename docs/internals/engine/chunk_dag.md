@@ -59,7 +59,7 @@ Every node before that rule runs under every mask by construction.
 The union table and the atom bitmap are ONE node because they are one pass over the
 amplitude planes: the plane is `BH · T · sumW · 2` bytes, it is the pass' whole cost,
 and two nodes would read it twice
-([`chunk_kernel.md#the-facts-pass`](../chunk/chunk_kernel.md#the-facts-pass)). The
+([`facts_kernel.md#the-facts-pass`](../facts/facts_kernel.md#the-facts-pass)). The
 node's `gives` is asserted at import to carry both facts, because a DAG that split
 them again would pay those bytes back silently.
 
