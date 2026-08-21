@@ -61,6 +61,14 @@ using OwnerRows =
                           (D > 2 ? BoxPlan<D, B, K, M>::s(2) : B),
                           (D > 3 ? BoxPlan<D, B, K, M>::s(3) : B)>;
 
+//: the plan the KERNEL's rows are voted under: the same table one level finer at the
+//: carve level, so a warp reads its own group's row (`CarveRows`).
+template <int D, int B, int K, int M>
+using CarveRowPlan = rola::chunk::SpanPlan<D, B, CarveRows<D, B, K, M, kWarps>::s(0),
+                                           (D > 1 ? CarveRows<D, B, K, M, kWarps>::s(1) : B),
+                                           (D > 2 ? CarveRows<D, B, K, M, kWarps>::s(2) : B),
+                                           (D > 3 ? CarveRows<D, B, K, M, kWarps>::s(3) : B)>;
+
 //: THE BUILT SET, as one macro so the dispatch, the census and the arm list cannot
 //: drift apart -- the shipped family's `CHUNK_ARMS_X` discipline.
 #define CARRY_ARMS_X(X_)        \
@@ -124,17 +132,15 @@ static bool is_arm(const std::vector<int64_t>& widths, int D, int B) {
 //: carry's own liveness scan still exists, so the two can be compared bit for bit
 //: (`tests/k31/test_owner_rows.py`); the kernel consumes the table through the same
 //: launch once M2 wires it.
-template <int D, int B, int K, int M>
-static torch::Tensor build_owner_rows(const torch::Tensor& pr, const torch::Tensor& pw, int BH,
-                                      int L) {
-  using RP = OwnerRows<D, B, K, M>;
+template <class RP>
+static torch::Tensor build_rows(const torch::Tensor& pr, const torch::Tensor& pw, int BH, int L) {
   auto tbl = torch::empty({BH, 2, (long)RP::entries, rola::chunk::tok_words(L)},
                           pr.options().dtype(torch::kInt32));
-  C10_CUDA_CHECK(
-      (rola::chunk::launch_span_facts_arm<D, B, RP::span_at(0), RP::span_at(1), RP::span_at(2),
-                                          RP::span_at(3), rola::chunk::kPrefillStateless>(
-          (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),
-          reinterpret_cast<uint32_t*>(tbl.data_ptr()), BH, L, at::cuda::getCurrentCUDAStream())));
+  C10_CUDA_CHECK((rola::chunk::launch_span_facts_arm<RP::depth, RP::kWidth, RP::span_at(0),
+                                                     RP::span_at(1), RP::span_at(2), RP::span_at(3),
+                                                     rola::chunk::kPrefillStateless>(
+      (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),
+      reinterpret_cast<uint32_t*>(tbl.data_ptr()), BH, L, at::cuda::getCurrentCUDAStream())));
   return tbl;
 }
 
@@ -174,7 +180,7 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
 #define CARRY_DISPATCH(D_, B_, K_, M_, W_, C_, CV_)                                        \
   if (is_arm(widths, D_, B_) && k == K_ && m == M_ && window == W_ && chunk == C_           \
       && carve == CV_) {                                                                    \
-    rows = build_owner_rows<D_, B_, K_, M_>(pr, pw, BH, L);                                 \
+    rows = build_rows<CarveRowPlan<D_, B_, K_, M_>>(pr, pw, BH, L);                                 \
     err = launch<D_, B_, K_, M_, W_, C_, CV_>(                                              \
         (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),           \
         (const __nv_bfloat16*)gw.data_ptr(), (const __nv_bfloat16*)v.data_ptr(),            \
@@ -214,16 +220,17 @@ std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t
 }
 
 torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t> widths, int64_t k,
-                         int64_t m) {
+                         int64_t m, bool carve) {
   TORCH_CHECK(pr.is_cuda() && pw.is_cuda() && pr.is_contiguous() && pw.is_contiguous(),
               "contiguous cuda planes");
   TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16,
               "the operand planes are bf16");
   TORCH_CHECK(pr.sizes() == pw.sizes() && pr.dim() == 3, "expect packed amplitudes [BH, L, sumW]");
   const int BH = (int)pr.size(0), L = (int)pr.size(1);
-#define CARRY_ROWS(D_, B_, K_, M_, W_, C_, CV_)                       \
-  if (is_arm(widths, D_, B_) && k == K_ && m == M_)                   \
-    return build_owner_rows<D_, B_, K_, M_>(pr, pw, BH, L);
+#define CARRY_ROWS(D_, B_, K_, M_, W_, C_, CV_)                                   \
+  if (is_arm(widths, D_, B_) && k == K_ && m == M_)                               \
+    return carve ? build_rows<CarveRowPlan<D_, B_, K_, M_>>(pr, pw, BH, L)        \
+                 : build_rows<OwnerRows<D_, B_, K_, M_>>(pr, pw, BH, L);
   CARRY_ARMS_X(CARRY_ROWS)
 #undef CARRY_ROWS
   TORCH_CHECK(false, "unbuilt carry arm");

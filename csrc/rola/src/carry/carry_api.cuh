@@ -18,11 +18,12 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
                                          c10::optional<torch::Tensor> s_in);
 
-//: the OWNER BALLOT ROWS the carry's liveness pass consumes, as a tensor:
-//: `[BH, 2, entries, L/32]` packed bits, read rows then write rows, one row per
-//: (level, owner-group) at the lattice's spans `s_l` (K31-i-d).
+//: the BALLOT ROWS as a tensor: `[BH, 2, entries, L/32]` packed bits, read rows
+//: then write rows, one row per (level, group) -- at the lattice's owner spans
+//: `s_l`, or at the CARVE grain the kernel consumes (`carve`), which refines the
+//: innermost level into the four warps' groups.
 torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t> widths, int64_t k,
-                         int64_t m);
+                         int64_t m, bool carve);
 
 //: device-side build identity plus the built arm's register/SMEM census.
 std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t m, int64_t window,

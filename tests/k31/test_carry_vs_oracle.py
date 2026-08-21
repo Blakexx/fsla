@@ -37,7 +37,7 @@ FLAG = ((256, 256), 4, 8, carry_ops.WINDOW)       # N = 65536, BC = 128, owners 
 DEEP3 = ((16, 16, 16), 2, 16, carry_ops.WINDOW_SMALL)   # s = (2, 4, 16),   owners = 32
 DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owners = 32
 
-CHANNEL = carry_ops.CHANNEL_SPLIT
+CARVE = carry_ops.LEAF_SPLIT
 
 
 def run(cell, arm, carve, chunk=32, state_in=None):
@@ -92,7 +92,7 @@ def test_lattice_is_a_permutation():
 
 # ------------------------------------------------------- M1: state I/O + fold
 
-def test_m1_state_io_and_fold_dense(carve=CHANNEL):
+def test_m1_state_io_and_fold_dense(carve=CARVE):
     """The final state alone, on the tiny cell.  A leaf-order error surfaces here
     as a PERMUTATION rather than as noise, which is why the state is gated first."""
     assert_fresh_binary()
@@ -104,7 +104,7 @@ def test_m1_state_io_and_fold_dense(carve=CHANNEL):
     assert relative(got, want) < BF16_RTOL
 
 
-def test_m1_entry_state_is_carried(carve=CHANNEL):
+def test_m1_entry_state_is_carried(carve=CARVE):
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=128, k_tok=None, seed=2, state_in=True)
     s_lat = cell.state_in_lattice(SMALL[1], SMALL[2])
@@ -118,7 +118,7 @@ def test_m1_entry_state_is_carried(carve=CHANNEL):
 
 # ------------------------------------------ M2: readout + fan-in, dense cells
 
-def test_m2_inter_dense_small(carve=CHANNEL):
+def test_m2_inter_dense_small(carve=CARVE):
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=256, k_tok=None, seed=3)
     num, den, plane = run(cell, SMALL, carve)
@@ -160,7 +160,7 @@ def test_m2_decomposition_is_exact():
     assert relative(mine, y) < 1e-10
 
 
-def test_m2_inter_dense_flagship(carve=CHANNEL):
+def test_m2_inter_dense_flagship(carve=CARVE):
     """The flagship topology at `L = 1024`.  `N = 65536` is the largest cell whose
     fp64 reference fits: `[B,T,H,N]` fp64 is 537 MB at this `L`, and the reference
     holds one window's worth at a time."""
@@ -222,7 +222,7 @@ def alt_cell(widths, T, k_tok, seed, cohort=None):
 
 
 @pytest.mark.parametrize("k_tok", [4, 16])
-def test_m3_two_sided_alt_small(k_tok, carve=CHANNEL):
+def test_m3_two_sided_alt_small(k_tok, carve=CARVE):
     assert_fresh_binary()
     cell = alt_cell(SMALL[0], T=256, k_tok=k_tok, seed=10 + k_tok)
     num, den, plane = run(cell, SMALL, carve)
@@ -238,7 +238,7 @@ def test_m3_two_sided_alt_small(k_tok, carve=CHANNEL):
 def test_m3_two_sided_alt_flagship(k_tok):
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=20 + k_tok)
-    num, den, _ = run(cell, FLAG, CHANNEL)
+    num, den, _ = run(cell, FLAG, CARVE)
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -253,7 +253,7 @@ def test_m3_two_sided_alt_clustered(k_tok):
     exercised together, and neither is reached by the scattered cells."""
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=40 + k_tok, cohort=64)
-    num, den, _ = run(cell, FLAG, CHANNEL)
+    num, den, _ = run(cell, FLAG, CARVE)
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -284,7 +284,7 @@ def test_m3_lists_differ_when_the_sides_do():
 # ---------------------------------------------- the DEEP arms, D = 3 and D = 4
 
 @pytest.mark.parametrize("arm", [DEEP3, DEEP4], ids=["d3", "d4"])
-def test_m2_inter_dense_deep(arm, carve=CHANNEL):
+def test_m2_inter_dense_deep(arm, carve=CARVE):
     """Dense both sides at depth three and four: the state plane, the readout and
     the mass column, against the fp64 oracle in CANONICAL order -- so a deep arm's
     mixed-radix leaf order surfaces here as a permutation, not as noise."""
@@ -301,7 +301,7 @@ def test_m2_inter_dense_deep(arm, carve=CHANNEL):
 
 @pytest.mark.parametrize("arm,k_tok", [(DEEP3, 4), (DEEP3, 8), (DEEP4, 2), (DEEP4, 4)],
                          ids=["d3-k4", "d3-k8", "d4-k2", "d4-k4"])
-def test_m3_two_sided_alt_deep(arm, k_tok, carve=CHANNEL):
+def test_m3_two_sided_alt_deep(arm, k_tok, carve=CARVE):
     """The ALTERNATING declaration at depth: `D` clause levels, the two sides'
     subsets disjoint, scattered `k_tok` cells."""
     assert_fresh_binary()

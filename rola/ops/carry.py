@@ -20,10 +20,10 @@ import torch
 from rola.ops import lattice
 from rola.ops._ext import extension
 
-#: the carve, ruled: channel-split is the sm_80 carve (R1 measurement,
-#: 2026-08-20); the state-split variants are deleted -- receipts in
-#: workflows/k31-r1-carry/FINDINGS.md, revival = git.
-CHANNEL_SPLIT = 1
+#: the carve, ruled: the innermost level's LEAF SPLIT is the sm_80 carve (K33
+#: clean-sheet tier A, measured 2026-08-21) -- a warp owns one digit group of that
+#: level across every outer digit, and all `d_v + 1` channels.
+LEAF_SPLIT = 1
 
 #: the flagship window, and the conformance cell's -- the architecture doc's
 #: two-constraint sizing (integration rung I1(b)); `rola.ops.intra` names the
@@ -35,7 +35,7 @@ WINDOW_SMALL = 64
 #: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
 #: moves whenever that source does, which is what makes reading it back off the
 #: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010014
+BUILD_MAGIC = 31010015
 
 #: the reverse family's own device magic, mirrored from `backward_kernel.cuh`.
 BWD_BUILD_MAGIC = 31040001
@@ -89,7 +89,7 @@ def pack_side(levels) -> torch.Tensor:
 
 
 def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
-                window: int, chunk: int = 32, carve: int = CHANNEL_SPLIT,
+                window: int, chunk: int = 32, carve: int = LEAF_SPLIT,
                 state_in: torch.Tensor | None = None):
     """The INTER term, undivided: ``(num, den, state_out)``.
 
@@ -106,16 +106,18 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
         int(window), int(chunk), int(carve), state_in)
 
 
-def owner_rows(read_levels, write_levels, widths, *, k: int, m: int):
-    """The owner BALLOT ROWS the liveness pass consumes: ``[BH, 2, entries, L/32]``.
+def owner_rows(read_levels, write_levels, widths, *, k: int, m: int, carve: bool = False):
+    """The BALLOT ROWS the liveness pass consumes: ``[BH, 2, entries, L/32]``.
 
     Row ``(side, prefix_entries(l) + o_l)`` bit ``t`` answers "token ``t``'s
-    level-``l`` support on this side intersects the owner group ``o_l``'s digit run
-    ``[o_l*s_l, (o_l+1)*s_l)``" -- the owner rectangle test, one word per 32 tokens.
-    ``entries = sum_l B/s_l`` is SIGMA-shaped: the table does not grow with ``N``.
+    level-``l`` support on this side intersects the group ``o_l``'s digit run" -- one
+    word per 32 tokens. ``entries = sum_l B/s_l`` is SIGMA-shaped: the table does not
+    grow with ``N``. ``carve`` asks for the grain the KERNEL consumes, which splits
+    the innermost level's owner run into the four warps' groups; the owner-grain word
+    is then the OR of a group's four rows.
     """
     return extension().carry_owner_rows(pack_side(read_levels), pack_side(write_levels),
-                                        list(widths), int(k), int(m))
+                                        list(widths), int(k), int(m), bool(carve))
 
 
 def build_stamp(widths, k, m, window, chunk, carve):

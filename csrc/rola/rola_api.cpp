@@ -73,7 +73,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "K31 carry kernel: device-side build identity + the arm's census", py::arg("widths"),
         py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"));
   m.def("carry_owner_rows", &rola::carry::owner_rows,
-        "K31 carry kernel: the owner ballot rows at the lattice's spans");
+        "K31 carry kernel: the ballot rows, at the lattice's owner spans or at the "
+        "carve grain the kernel consumes",
+        py::arg("pr"), py::arg("pw"), py::arg("widths"), py::arg("k"), py::arg("m"),
+        py::arg("carve") = false);
   m.def("carry_arms", &rola::carry::arms, "K31 carry kernel: the built arms");
   // ---- K31 R4: the reverse carry family, two concurrent scans ------------
   m.def("carry_backward_inter", &rola::carry::backward_inter,
