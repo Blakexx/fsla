@@ -16,8 +16,9 @@ pays; the carry-alone and intra-alone walls are what tells you which half moved,
 and their sum is not the combined wall — the two kernels are separate launches on
 one stream, so the difference is launch and tail overlap.
 
-    python benchmarks/bench_prefill.py                 # the full table, L = 65536
-    python benchmarks/bench_prefill.py --length 8192   # a smoke
+    python benchmarks/bench_prefill.py                  # the flat table, L = N = 65536
+    python benchmarks/bench_prefill.py --topology deep4 # the depth-four table, L = N = 4096
+    python benchmarks/bench_prefill.py --length 8192    # a smoke
 
 Symbols at first use: ``N`` the leaf capacity, ``L`` the sequence length, ``W``
 the global window length in tokens, ``k_tok`` a token's nonzero digits per sparse
@@ -38,17 +39,31 @@ from rola.ops import intra as intra_ops
 from rola.ops.prefill import prefill
 
 REPS = 6
-WIDTHS = (256, 256)
-K, M = 4, 8
 D_V = 64
 
-DENSE = (intra_ops.DENSE_BOTH, intra_ops.DENSE_BOTH)
-ALT = (intra_ops.WRITE_SPARSE, intra_ops.READ_SPARSE)
-#: entmax on BOTH write levels against a dense (softmax) read side, and a single
-#: entmax read level against everything else dense.  Both are STRUCTURES, declared
-#: per level; neither is a distribution the kernel is told about.
-WRITE_BOTH = (intra_ops.WRITE_SPARSE, intra_ops.WRITE_SPARSE)
-READ_ONE = (intra_ops.READ_SPARSE, intra_ops.DENSE_BOTH)
+#: THE BUILT TOPOLOGIES, each with the `(k, m)` its box solves to and the window
+#: both families carry it at.  Every row holds `BC = 128`; they differ in how those
+#: 128 leaves cut into digits, which is the whole content of the depth axis.
+TOPOLOGIES = {
+    "flat": ((256, 256), 4, 8, carry_ops.WINDOW_WIDE),
+    "deep3": ((16, 16, 16), 2, 16, carry_ops.WINDOW_SMALL),
+    "deep4": ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL),
+}
+
+#: THE DECLARATION PATTERNS, as functions of depth.  A pattern is a STRUCTURE --
+#: which side of which level is entmax -- and never a distribution the kernel is
+#: told about, so each one is stated once and read at whatever depth is running.
+PATTERNS = {
+    "dense": lambda D: (intra_ops.DENSE_BOTH,) * D,
+    #: the alternating declaration: even levels write-sparse, odd levels read-sparse,
+    #: so the two sides' clause sets are different level subsets.
+    "ALT": lambda D: tuple(intra_ops.WRITE_SPARSE if l % 2 == 0 else intra_ops.READ_SPARSE
+                           for l in range(D)),
+    #: entmax on EVERY write level against a dense read side.
+    "write-all": lambda D: (intra_ops.WRITE_SPARSE,) * D,
+    #: a single entmax read level and nothing else sparse.
+    "read-one": lambda D: (intra_ops.READ_SPARSE,) + (intra_ops.DENSE_BOTH,) * (D - 1),
+}
 
 
 def median_ms(fn, warmup=2, reps=REPS):
@@ -94,27 +109,35 @@ def sparse_plane(T, width, k_tok, cohort, gen, device):
 #: "identical" measurements are two different cells -- which is how a 2x DRAM
 #: difference gets read as noise.  `crc32` is a function of the name and nothing
 #: else, so a row is reproducible from its label alone.
-CELLS = [
-    ("dense", DENSE, None, None),
-    ("ALT k_tok=16 scattered", ALT, 16, None),
-    ("ALT k_tok=4 scattered", ALT, 4, None),
-    ("ALT k_tok=16 cohort=64", ALT, 16, 64),
-    ("ALT k_tok=4 cohort=64", ALT, 4, 64),
-    ("write-both k_tok=16 scat", WRITE_BOTH, 16, None),
-    ("write-both k_tok=4 scat", WRITE_BOTH, 4, None),
-    ("read-one k_tok=4 scat", READ_ONE, 4, None),
-]
+def cells_for(D, B):
+    """The cell list at one topology: `(name, pattern, k_tok, cohort)`.
+
+    The two `k_tok` values are the level's own -- a token cannot have more nonzeros
+    than the level has digits, and `k_tok = B` is not sparse, so a narrow level takes
+    its own halves rather than the flagship's 16 and 4.
+    """
+    hi, lo = (16, 4) if B >= 32 else (B // 2, B // 4)
+    return [
+        ("dense", "dense", None, None),
+        (f"ALT k_tok={hi} scattered", "ALT", hi, None),
+        (f"ALT k_tok={lo} scattered", "ALT", lo, None),
+        (f"ALT k_tok={hi} cohort=64", "ALT", hi, 64),
+        (f"ALT k_tok={lo} cohort=64", "ALT", lo, 64),
+        (f"write-all k_tok={hi} scat", "write-all", hi, None),
+        (f"write-all k_tok={lo} scat", "write-all", lo, None),
+        (f"read-one k_tok={lo} scat", "read-one", lo, None),
+    ]
 
 
 def seed_of(name: str) -> int:
     return zlib.crc32(name.encode()) & 0xFFFF
 
 
-def draw(T, modes, k_tok, cohort, seed, device="cuda"):
+def draw(T, widths, modes, k_tok, cohort, seed, device="cuda"):
     gen = torch.Generator(device=device).manual_seed(seed)
     read, write = [], []
     for level, mode in enumerate(modes):
-        width = WIDTHS[level]
+        width = widths[level]
         read.append(sparse_plane(
             T, width, k_tok if mode == intra_ops.READ_SPARSE else None, cohort, gen, device))
         write.append(sparse_plane(
@@ -124,7 +147,7 @@ def draw(T, modes, k_tok, cohort, seed, device="cuda"):
     return tuple(read), tuple(write), g, v
 
 
-def split_walls(read, write, g, v, window, modes):
+def split_walls(read, write, g, v, widths, k, m, window, modes):
     """``(combined, carry_alone, intra_alone, with_packing)`` in ms.
 
     THE FIRST THREE ARE MEASURED ON PRE-PACKED PLANES, so the split and the total
@@ -144,24 +167,24 @@ def split_walls(read, write, g, v, window, modes):
     ext = extension()
 
     def carry_only():
-        ext.carry_forward_inter(pread, pwrite, gwrite, value, list(WIDTHS), K, M,
+        ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths), k, m,
                                 window, 32, carry_ops.CHANNEL_SPLIT, None)
 
     o = torch.zeros((1, pread.shape[1], D_V), dtype=torch.float32, device=pread.device)
     den = torch.zeros((1, pread.shape[1]), dtype=torch.float32, device=pread.device)
 
     def intra_only():
-        ext.intra_forward(pread, pwrite, gwrite, value, o, den, len(WIDTHS),
+        ext.intra_forward(pread, pwrite, gwrite, value, o, den, len(widths), widths[0],
                           packed_modes, window)
 
     def combined():
-        num, dn, _ = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(WIDTHS),
-                                             K, M, window, 32, carry_ops.CHANNEL_SPLIT, None)
-        ext.intra_forward(pread, pwrite, gwrite, value, num, dn, len(WIDTHS),
+        num, dn, _ = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths),
+                                             k, m, window, 32, carry_ops.CHANNEL_SPLIT, None)
+        ext.intra_forward(pread, pwrite, gwrite, value, num, dn, len(widths), widths[0],
                           packed_modes, window)
 
     def with_packing():
-        prefill(read, write, g, v, WIDTHS, k=K, m=M, window=window, modes=modes)
+        prefill(read, write, g, v, widths, k=k, m=m, window=window, modes=modes)
 
     return (median_ms(combined), median_ms(carry_only), median_ms(intra_only),
             median_ms(with_packing))
@@ -192,24 +215,32 @@ def flash_ms(seq, heads, device="cuda"):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--length", type=int, default=65536)
-    ap.add_argument("--window", type=int, default=carry_ops.WINDOW_WIDE)
+    ap.add_argument("--topology", default="flat", choices=sorted(TOPOLOGIES))
+    ap.add_argument("--length", type=int, default=None,
+                    help="default: N, the capacity-fair length for the topology")
+    ap.add_argument("--window", type=int, default=None,
+                    help="default: the window both families carry this topology at")
     a = ap.parse_args()
-    T, window = a.length, a.window
+    widths, k, m, arm_window = TOPOLOGIES[a.topology]
+    D, B = len(widths), widths[0]
+    N = math.prod(widths)
+    T = a.length if a.length is not None else N
+    window = a.window if a.window is not None else arm_window
     if T % window:
         raise SystemExit(f"L = {T} is not a whole number of {window}-token windows")
-    N = math.prod(WIDTHS)
-    print(f"# K31 integration I3 -- {torch.cuda.get_device_name()}, N = {N}, L = {T}, "
-          f"N == L: {N == T}, d_v = {D_V}, BH = 1, W = {window}, medians of {REPS}")
-    stamp = carry_ops.build_stamp(WIDTHS, K, M, window, 32, carry_ops.CHANNEL_SPLIT)
+    print(f"# K31 integration I3 -- {torch.cuda.get_device_name()}, topology {widths}, "
+          f"(k, m) = ({k}, {m}), N = {N}, L = {T}, N == L: {N == T}, d_v = {D_V}, "
+          f"BH = 1, W = {window}, medians of {REPS}")
+    stamp = carry_ops.build_stamp(widths, k, m, window, 32, carry_ops.CHANNEL_SPLIT)
     print(f"# carry stamp {stamp[0]}  regs {stamp[3]}  local {stamp[8]}  smem {stamp[6]}  "
           f"BC {stamp[9]}  owners {stamp[10]}  stages {stamp[11]}")
     print(f"# intra stamp {intra_ops.build_stamp()}  arms {intra_ops.arms()}")
 
     rows = []
-    for name, modes, k_tok, cohort in CELLS:
-        read, write, g, v = draw(T, modes, k_tok, cohort, seed=seed_of(name))
-        rows.append((name, *split_walls(read, write, g, v, window, modes)))
+    for name, pattern, k_tok, cohort in cells_for(D, B):
+        modes = PATTERNS[pattern](D)
+        read, write, g, v = draw(T, widths, modes, k_tok, cohort, seed=seed_of(name))
+        rows.append((name, *split_walls(read, write, g, v, widths, k, m, window, modes)))
         del read, write, g, v
         torch.cuda.empty_cache()
 

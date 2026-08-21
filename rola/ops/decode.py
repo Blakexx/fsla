@@ -111,9 +111,10 @@ def derive_n_split(widths, lattice_k: int, lattice_m: int, *, decay: bool, BH: i
     """
     D = len(widths)
     #: THE UNIT CEILING, from the box's spans: a walk unit's leaves are the innermost
-    #: level's run, so ``N / s_{D-1}`` is the unit count exactly wherever K13 holds and an
-    #: OVER-count where it does not -- more CTAs, never fewer, which is the direction a
-    #: split may err in (a CTA with no units exits after its prologue).
+    #: level's run, so ``N / s_{D-1}`` is the unit count exactly wherever the atom
+    #: rectangle is one level and an OVER-count where it spans more -- more CTAs, never
+    #: fewer, which is the direction a split may err in (a CTA with no units exits after
+    #: its prologue).
     _, spans, _, _, _ = box_shape(widths, lattice_k, lattice_m)
     unit_ceiling = math.prod(widths) // spans[-1]
     dev = torch.device(device)

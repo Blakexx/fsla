@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "1e9729888e1db12c9a2655dae620d5f95d1c935cb473d3a0be4b2c1c7e8f49cd",
+  "csrc_sha256": "d9870bc2d01e6ecbca63ef79fff2dc38bcf48be21f7e1b38eb83827475fc9227",
   "date": "2026-08-20"
  },
  "shards": {
@@ -522,20 +522,20 @@
    "sass_sha256": "063846d6fff9e931a961d5ab3a4589ea06bf1a41fb650ac77ba0cb48fcb859c5"
   },
   "sm_80:_ZN4rola5intra6detail12intra_kernelILi2ELi256ELi384EEEvNS1_11IntraParamsE": {
-   "regs": 186,
+   "regs": 170,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "ae2aa50fc353be9b03d716328ccf5aa9d688a3164e337ad687904f0969e2130d"
+   "sass_sha256": "6c6e3866136de1cf5ec2aeaebe6888ac5df37e8b808a89669ca53b8eb5db28f2"
   },
   "sm_80:_ZN4rola5intra6detail12intra_kernelILi2ELi256ELi512EEEvNS1_11IntraParamsE": {
-   "regs": 186,
+   "regs": 168,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "2bfbe1eb48ae75e9ef48b63e86d0e1754af7fc159c69faf929a0bddba78cb40b"
+   "sass_sha256": "6005b6624e521dc71c9ddce457aefe6ee5d42979c11a00cae94bdb3fdf4b3739"
   },
   "sm_80:_ZN4rola5intra6detail12intra_kernelILi2ELi256ELi64EEEvNS1_11IntraParamsE": {
    "regs": 96,
@@ -543,7 +543,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "229fa3a9435b0e9bd24834e48b2435b81e7de0920b78858bef36a27912bc2b17"
+   "sass_sha256": "419d610265e87eddb858edb5d2dff60405a9273c69e2e5b5860dc23df24b1726"
   },
   "sm_80:_ZN4rola5intra6detail12intra_kernelILi3ELi16ELi64EEEvNS1_11IntraParamsE": {
    "regs": 122,
@@ -551,7 +551,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "0d4acc1ad65d93aca364c4f99edbc21676b867f786e818aec5fb56eeeecdbcea"
+   "sass_sha256": "acd9d89c2641dea240eb396e8549a4a16fb765874ebeba2e4b91dbede38d5010"
   },
   "sm_80:_ZN4rola5intra6detail12intra_kernelILi4ELi8ELi64EEEvNS1_11IntraParamsE": {
    "regs": 147,
@@ -559,7 +559,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "385f31cb5560202bebaf5c59cfa3b91f4c0a2146eaf7ce293fad2db27060c092"
+   "sass_sha256": "b5f76699ffa41d4dc72f437ee432ebcbe51042c5aef2f21fd63933db15493667"
   },
   "sm_80:_ZN4rola5intra6detail21intra_backward_kernelILi2ELi256ELi384EEEvNS1_14IntraBwdParamsE": {
    "regs": 249,

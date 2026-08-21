@@ -122,29 +122,37 @@ __device__ void build_masks(IntraSmem<D, B, W>& sm, const IntraParams& p, int bh
   constexpr int kTiles = tiles_of(W);
   constexpr int kThreads = threads_of(W);
   constexpr int kWords = mask_words(B);
-  //: a group is `kTile` consecutive threads, i.e. one token per thread; a WARP's
-  //: lanes are 32 different tokens of ONE unit, which is what makes the OR
-  //: reduction below a reduction over tokens and every branch here warp-uniform.
+  //: a GROUP is `kTile` consecutive threads, one token each; a WARP's lanes are 32
+  //: different tokens of the SAME unit, which is what makes the reduction below a
+  //: reduction over tokens and every branch here warp-uniform.  The work axis is
+  //: (tile, word), so a level narrower than one word is ONE unit and a wide level is
+  //: several -- the same loop at every width.
   constexpr int kGroups = kThreads / kTile;
-  constexpr int kUnits = kTiles * D * 2 * kWords;
+  constexpr int kUnits = kTiles * kWords;
   constexpr int kPer = B < 32 ? B : 32;
   uint32_t* flat = &sm.mask[0][0][0][0];
-  for (int i = tid; i < kUnits; i += kThreads) flat[i] = 0u;
+  for (int i = tid; i < kTiles * D * 2 * kWords; i += kThreads) flat[i] = 0u;
   __syncthreads();
 
   const int token = tid & (kTile - 1);
-  for (int u = tid >> 6; u < kUnits; u += kGroups) {
-    const int w = u % kWords;
-    const int side = (u / kWords) % 2;
-    const int l = (u / (kWords * 2)) % D;
-    const int ti = u / (kWords * 2 * D);
-    const uint32_t want = (side == 0 ? kModeReadSparse : kModeWriteSparse);
-    if (((p.modes >> (2 * l)) & want) == 0u) continue;
-    const __nv_bfloat16* plane = (side == 0) ? p.pread : p.pwrite;
-    const __nv_bfloat16* row =
-        plane + (long long)(bh * p.L + wbase + ti * kTile + token) * p.row_width + l * B + w * 32;
-    const uint32_t bits = __reduce_or_sync(0xFFFFFFFFu, digit_union_word<kPer>(row));
-    if ((tid & 31) == 0) atomicOr(&sm.mask[ti][l][side][w], bits);
+  const int group = tid >> 6;
+#pragma unroll
+  for (int l = 0; l < D; ++l) {
+#pragma unroll
+    for (int side = 0; side < 2; ++side) {
+      const uint32_t want = (side == 0 ? kModeReadSparse : kModeWriteSparse);
+      if (((p.modes >> (2 * l)) & want) == 0u) continue;
+      const __nv_bfloat16* plane = (side == 0) ? p.pread : p.pwrite;
+      for (int u = group; u < kUnits; u += kGroups) {
+        const int w = u % kWords;
+        const int ti = u / kWords;
+        const __nv_bfloat16* row =
+            plane + (long long)(bh * p.L + wbase + ti * kTile + token) * p.row_width + l * B
+            + w * 32;
+        const uint32_t bits = __reduce_or_sync(0xFFFFFFFFu, digit_union_word<kPer>(row));
+        if ((tid & 31) == 0) atomicOr(&sm.mask[ti][l][side][w], bits);
+      }
+    }
   }
   __syncthreads();
 }
@@ -261,10 +269,13 @@ __global__ __launch_bounds__(threads_of(W)) void intra_kernel(IntraParams p) {
   const int bh = blockIdx.y;
   const int wbase = blockIdx.x * W;
 
-  //: THE OPERAND SLABS ARE ZEROED ONCE.  Where `B` is narrower than the MMA's
-  //: contraction step the staging never writes the tail, and a zero there is what
-  //: makes the padded contraction equal the `B`-wide one.
-  {
+  //: THE PAD IS ZEROED ONCE, AND ONLY WHERE THERE IS ONE.  A level narrower than
+  //: the MMA's contraction step leaves the slab's tail unstaged, and a zero there is
+  //: what makes the padded contraction equal the `B`-wide one.  A level that fills
+  //: its staged width has no tail, so the fill is not merely skipped at runtime --
+  //: it is not compiled, because the registers it costs are live across the whole
+  //: tile-pair loop.
+  if constexpr (level_digits(B) > B) {
     constexpr int kFill = (int)(sizeof(sm.rslab) + sizeof(sm.wslab)) / (int)sizeof(uint4);
     uint4* z = reinterpret_cast<uint4*>(&sm.rslab[0][0][0]);
     for (int i = tid; i < kFill; i += threads_of(W)) z[i] = make_uint4(0u, 0u, 0u, 0u);

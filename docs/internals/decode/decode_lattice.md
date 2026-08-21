@@ -25,12 +25,15 @@ under it, and the walk's unit moved accordingly (§3). The measured reason is
 recorded in `docs/internals/DELETIONS.md`'s wave-2c rows and in the batch's
 findings: under the interleave a token's run over a level that is DENSE for its
 side straddles atoms at 25% occupancy at EITHER span vector; under mixed radix
-with `s_{D-1} >= kAtomLeaves` it FILLS them.
+with `s_{D-1} >= kAtomLeaves` it FILLS them; where the level is narrower than
+an atom the rectangle spans two levels and the fill is partial
+(`carry/box.md`).
 
 Symbols, restated from the spec at first use here: `D` the number of routing
 levels; `B_l` level `l`'s width; `k = 2^kappa` the uniform per-level sub-box
 span; `m = prod_l m_l` the capacity multiplier, distributed innermost-first to
-the atom floor and balanced over the rest (spec §2.5 as K13 amended it);
+the atom floor, capped by the level's own width and balanced over the rest
+(spec §2.5 as the atom-rectangle law generalizes it, `carry/box.md`);
 `s_l = k * m_l` an owner's span at level `l`; `g_l = B_l / s_l` the owner-grid
 extent; `BC = prod_l s_l` the leaves one owner holds; `atom` the 16-leaf page
 granule (`rola::carry::kAtomLeaves`).
@@ -163,17 +166,20 @@ Decode takes its lattice as DATA, not as a template arm, so every constraint
 - `k` and `m` are exact powers of two (K1);
 - `k <= kDecodeMaxSpan`;
 - per level, `s_l = k * m_l <= kDecodeMaxSpan` and `B_l % s_l == 0` (K6: an
-  owner sits inside a level — `m_l` is spec §2.5 as K13 amended it, innermost
-  first to the atom floor and balanced over the rest, restated in
-  `fill_lattice`'s loop and in `rola.ops.lattice.box_shape`);
+  owner sits inside a level — `m_l` is spec §2.5 as the atom-rectangle law
+  generalizes it, innermost first to the atom floor, capped by the level's own
+  width and balanced over the rest, restated in `fill_lattice`'s loop and in
+  `rola.ops.lattice.box_shape`);
 - `g_l <= kDecodeThreads` — a level's owner grid is built in one block pass;
 - `owners * BC == N` — the lattice PARTITIONS the leaf space exactly, with no
   remainder leaf and no double-covered one.
 
-K13 IS A FLOOR HERE, NOT AN ASSERTION. A topology whose widths cannot reach
-`s_{D-1} >= kAtomLeaves` (an odd level, a level narrower than an atom) still has
-a lattice and still decodes; `box_shape` takes the floor as far as `log2 m`
-allows and no further.
+THE ATOM FLOOR IS A PREFERENCE, THE WIDTH CEILING IS THE LAW. A topology whose
+widths cannot reach `s_{D-1} >= kAtomLeaves` (an odd level, a level narrower
+than an atom) still has a lattice and still decodes: the floor is taken as far
+as `log2 m` and the level's width allow, the capacity spills outward, and the
+atom then spans more than one level. What IS refused is a capacity no span
+vector can carry — `sum_l a_l != log2 m`.
 
 A PAGED backing adds ONE more, checked only where `page_table` is present
 (`rola_decode_forward`, cross-referenced from `decode.md#candidate-atoms`):
@@ -212,8 +218,13 @@ and for a test that must compare the two: `_write_atom_bitmap`
 here exactly once, on the way into or out of the comparison, and never inside
 a measured step.
 
-`LATTICE_CAP_M = 8` is the one number in `derive_lattice` that is a CHOICE
-rather than a consequence: the capacity multiplier the flagship carry arm is
-solved at, and the ceiling the solver searches down from — chosen so the
-flagship rows agree with the carry family's built arms, restated from neither
-family's own doc because the two share no other object.
+`LATTICE_CAP_BC = 128` is the one number in `derive_lattice` that is a CHOICE
+rather than a consequence: the leaves ONE OWNER holds, which is what the carry
+family's register budget bounds, and the ceiling the solver searches down from.
+It is stated as `BC` rather than as a capacity multiplier because `BC = k^D * m`
+grows with DEPTH — a ceiling on `m` bounds the box at one `D` only, and `m = 8`
+is a box of 128 at `D = 2` and 2048 at `D = 4`. The objective is spec §7.3's in
+its order: maximize `BC` under the cap, then the SHALLOWEST atom rectangle, then
+the largest `k`. That reproduces the built arms (`(64,64)` and `(256,256)` both
+`(4, 8)`) and selects `k = 2` at `(16,16,16)`, whose one-level rectangle the
+`k = 4` box cannot reach.

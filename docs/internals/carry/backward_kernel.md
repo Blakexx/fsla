@@ -56,11 +56,11 @@ price on EVERY readout; here it is confined to one MMA on one path.
 ## The digit reduction's pass geometry
 
 Under the mixed-radix local order a level's digit field is a contiguous bit run of the
-owner's local index, and the leaf-split carve slices that index at a bit boundary. Every
-level is therefore either warp-private (its field lies entirely above the carve bit) or
-warp-replicated (entirely below it) — never straddling, because every `s_l` is a power
-of two. At the built arms, `local = (r_0 << 4) | r_1` and warp `u` owns
-`local in [32u, 32u+32)`:
+owner's local index, and the leaf-split carve slices that index at a bit boundary. This
+pass geometry needs every level to fall cleanly on one side of that boundary: either
+warp-private (its field covers the whole warp id, so its digits PARTITION across warps)
+or warp-replicated (its field lies entirely below the warp id). At the built arms,
+`local = (r_0 << 4) | r_1` and warp `u` owns `local in [32u, 32u+32)`:
 
 | level | segment | reduction | cross-warp |
 |---|---|---|---|
@@ -68,8 +68,29 @@ of two. At the built arms, `local = (r_0 << 4) | r_1` and warp `u` owns
 | `l = 1` (inner, `s_1 = 16`) | one accumulator row | one add | yes — every warp holds every row |
 
 No runtime index into a register array appears at either level, which is the constraint
-that governed the deleted design's whole pass law. `D >= 3` needs its own derivation of
-the same table and is refused by a `static_assert` rather than mis-served.
+that governed the deleted design's whole pass law.
+
+### The two conditions, and why only depth two meets them
+
+Whether a level falls cleanly is a property of the SPAN VECTOR, not of the order, so the
+refusal is stated as the two conditions rather than as a depth:
+
+* the ROW map, `s_{D-1} == kMmaM` — one accumulator row is one innermost digit;
+* the WARP map, `span_bits(0) == kLocalBits - log2 kMmaM` — the bits above the innermost
+  level's field are ONE level's, so that level's digits partition across warps and no
+  level straddles the warp-id boundary.
+
+Only depth two can meet both: the innermost level owns the four row bits and one other
+level must own everything above them. The two deep arms each fail exactly the conditions
+that name their obstruction — `s = (2,4,16)` splits the upper bits between levels 0 and
+1, so level 1's field straddles the boundary (two warps hold each of its digits, and the
+staging would need a per-warp digit base plus a second cross-warp meeting); `s =
+(2,2,4,8)` fails the row map as well, since `s_3 = 8` is half an m-tile and one
+accumulator row then carries two levels' digits.
+
+Extending either is a per-arm derivation carrying a wrong-gradient risk, so the gap is
+NAMED rather than served: `rola.ops.prefill.prefill_autograd` refuses depth by the same
+sentence, and the intra's reverse arms stop at the same place.
 
 ## What the digit gradients are, and where they are exact
 

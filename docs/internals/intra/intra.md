@@ -17,16 +17,18 @@ loses a harvest instead of an answer.
 ## The window is an instantiation axis
 
 `W` pairs with the carry family's `W` template argument, because the two kernels run ONE
-global window grid: an arm is a `(D, W)` pair on both sides. `kWindowFlagship = 384` is
+global window grid: an arm is a `(D, B, W)` triple on both sides. `kWindowFlagship = 384` is
 the architecture doc's two-constraint window — the intra's ideal arithmetic intensity is
 `W/4` flop/byte, which must clear sm_86's compute/bandwidth balance — and
 `kWindowWide = 512` is the end of the admitted band that also DIVIDES a power-of-two
 length, which is the third constraint and the reason both ends are built.
 `kWindowSmall = 64` is the conformance cell's.
 
-The other shape constants are the tile grid the causal staircase is expressed on:
-`kTile = 64` output tokens, `kWarpRows = 16` rows to a warp, `kSlabDigits = 16` digits to
-an MMA k-step, `kLevelWidth = 256` and `kValueWidth = 64` by instantiation.
+The LEVEL WIDTH is the second instantiation axis, mirroring the carry family's
+topology arms: `kWidthFlat = 256`, `kWidthDeep3 = 16` and `kWidthDeep4 = 8`. The other
+shape constants are the tile grid the causal staircase is expressed on: `kTile = 64`
+output tokens, `kWarpRows = 16` rows to a warp, `kSlabDigits = 16` digits to an MMA
+k-step, and `kValueWidth = 64`.
 
 ## It reduces into `o` and `den`
 

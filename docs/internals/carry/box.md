@@ -50,7 +50,8 @@ that are properties of the type rather than of a machine:
 | `kBC % kAtomLeaves == 0` | K2 | a page atom must not straddle two owners, i.e. two CTAs |
 | `kLocalBits >= 4` | K3 | a 16-aligned 16-run must lie inside one owner |
 | powers of two | K1 | `s_l | B` must hold, and the bit-permutation theorem requires it |
-| `s_{D-1} >= kAtomLeaves` | K13 | a token's run over a level that is dense for its side must FILL atoms |
+| `s_l <= B`, `B % s_l == 0` | K6 | an owner's run at a level is an aligned run INSIDE that level |
+| `sum_l a_l == j` | K6 | a capacity the levels cannot carry is refused, never truncated |
 
 K4 — "the atom is a digit RECTANGLE" — is DISCHARGED BY THE ORDER and no longer needs
 an assert. Sixteen consecutive `local` values at a multiple of sixteen are exactly the
@@ -60,8 +61,9 @@ sub-run, and the levels below are free. That is an aligned digit rectangle for E
 admissible span vector, where the interleaved order needed `k^D >= 16` and
 `4 % kappa == 0` to get it.
 
-K6 (`s_l <= B`, an owner inside a level) is enforced where the arm is declared, because
-its failure is a bad arm rather than a bad type.
+K13 — "the innermost span covers a whole atom" — is NOT an assert. It is a PREFERENCE
+in the capacity convention below, because it is unsatisfiable at a level narrower than
+an atom and satisfiability is not the same question as correctness.
 
 ## What the host mirrors, and why it is a second derivation
 
@@ -72,27 +74,54 @@ imported the device's map would make a wrong convention agree with itself in eve
 the repository has. `tests/k31/test_carry_vs_oracle.py::test_arms_are_the_declared_solver_rows`
 is where the two are made to agree as a tested claim.
 
-## K13 and the distribution of `m` (spec §2.5)
+## The atom rectangle, and the distribution of `m` (spec §2.5)
 
-`a_{D-1}` — the innermost level's exponent — is raised to whatever `s_{D-1} >= kAtomLeaves`
-requires and is never below its balanced share; the rest of `j = log2 M` is spread
-balanced over the outer levels, innermost first. At both built topologies (`D = 2`,
-`k = 4`, `m = 8`, so `j = 3`) the floor and the balanced share coincide at `a_1 = 2`,
-giving `a = (1, 2)`, `s = (8, 16)` and `g = (32, 16)` at `B = 256` / `(8, 4)` at `B = 64`,
-with `BC = 128` either way.
+### The atom is a rectangle at every span vector
 
-K13 is a DECODE fact stated in the carve, and it is what makes the leaf order serve both
-consumers at once. The order already puts the levels that are dense for the walking side
-fastest-varying (per-level support law: at most one side is sparse per level, so the
-sparse levels sit above the dense ones). What the order alone could not give is
-OCCUPANCY: with `s_{D-1} = 8` a token's dense-level run is half an atom, an atom
-therefore straddles two outer digits, and under a sparse outer level the walk fetches
-each atom at half occupancy whatever the order. `s_{D-1} = 16` makes the run exactly one
-atom. The fold keeps every property it had — it still keys level 0, and its bucket grows
-from one `kMmaN` tile to two.
+Let `P(t) = prod_{l >= t} s_l` and let `t*` be the smallest `t` with `P(t) <= A`, where
+`A = kAtomLeaves`. An atom holds levels `t*..D-1` WHOLE, plus an aligned contiguous
+sub-run of `A / P(t*)` digits at level `t*-1`; every level above is fixed. `kAtomBase`,
+`kAtomWhole` and `kAtomPartial` are those three quantities.
 
-A `(k, m)` whose innermost span cannot reach an atom is REFUSED at the type (there is no
-fallback span vector), which is why K13 is an assert and not a solver preference. The
-refusal binds at depth: `D = 4`, `B = 8`, `k = 2` has `s_3 = 16 > B`, so K13 and K6
-cannot both hold and that topology needs a re-solve — spec §7.4's `D = 3` and `D = 4`
-rows are open on this, and none of them is a built arm.
+This is the general form of what K13 asked for, and it is a THEOREM about the order
+rather than a constraint on `(k, m)` — it follows from K1 (powers of two) and K3 (the
+atom lies inside one owner), both already asserted.
+
+### What the rectangle costs, and where
+
+A token FILLS an atom exactly when every level of the rectangle is dense for its side.
+A ONE-LEVEL rectangle asks that of one level; a rectangle spanning two asks it of two,
+and under an alternating declaration at most one of any adjacent pair is dense per side,
+so full occupancy on both sides is then impossible. That is why the convention pushes
+capacity INNERMOST: it is buying a one-level rectangle wherever one is reachable.
+
+### The convention
+
+`a_{D-1}` is raised to whatever `s_{D-1} >= A` requires, never below its balanced share,
+and never above `beta - kappa` — K6, the level's own width. The rest of `j = log2 M` is
+spread balanced over the outer levels, innermost first. The width ceiling is what makes
+the convention TOTAL: a level narrower than an atom cannot absorb the floor, and the
+capacity spills outward rather than the plan being refused.
+
+The solved rows:
+
+| topology | `k` | `m` | `a_l` | `s_l` | `g_l` | `BC` | atom rectangle | walk unit |
+|---|---|---|---|---|---|---|---|---|
+| `(256,256)` | 4 | 8 | (1,2) | (8,16) | (32,16) | 128 | 1 level x 1 digit | 16 leaves = 1 atom |
+| `(64,64)` | 4 | 8 | (1,2) | (8,16) | (8,4) | 128 | 1 level x 1 digit | 16 leaves = 1 atom |
+| `(16,16,16)` | 2 | 16 | (0,1,3) | (2,4,16) | (8,4,1) | 128 | 1 level x 1 digit | 16 leaves = 1 atom |
+| `(8,8,8,8)` | 2 | 8 | (0,0,1,2) | (2,2,4,8) | (4,4,2,1) | 128 | 1 level x 2 digits | 32 leaves = 2 atoms |
+
+`(16,16,16)` reaches a one-level rectangle only at `k = 2`, which the INTERLEAVED order
+forbade (its K3 was `kappa*D >= 4`); the order change is what makes the depth-three arm
+satisfiable at all. `(8,8,8,8)` cannot reach one at any `(k, m)`: every span there is at
+most `B = 8`, narrower than an atom. Its touched atoms are 50-65% occupied under an
+alternating declaration — an occupancy cost, never an error, and one no span vector can
+remove. The fix if it ever matters is a wider level, not a different `(k, m)`.
+
+### The walk unit
+
+`kUnitBase` names the shallowest suffix of levels holding a whole number of atoms, and
+`kUnitLeaves`/`kUnitAtoms` its size. K2 makes `l = 0` always qualify, so the search is
+total. The decode walk enumerates `(owner, r_0 .. r_{kUnitBase-1})`, and the unit is one
+atom wherever the rectangle is one level and several atoms where it is not.

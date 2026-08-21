@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "1e9729888e1db12c9a2655dae620d5f95d1c935cb473d3a0be4b2c1c7e8f49cd",
+  "csrc_sha256": "d9870bc2d01e6ecbca63ef79fff2dc38bcf48be21f7e1b38eb83827475fc9227",
   "date": "2026-08-20"
  },
  "shards": {
@@ -522,28 +522,28 @@
    "sass_sha256": "6a9cff7d224cc0f29aada307603a38e0291d0f639cd6d4c927da1c42a4a9183a"
   },
   "sm_86:_ZN4rola5intra6detail12intra_kernelILi2ELi256ELi384EEEvNS1_11IntraParamsE": {
-   "regs": 186,
+   "regs": 170,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "127cd88cc6d9e2b2c7047110862e5a0868855154482370c517718bb6206b38aa"
+   "sass_sha256": "22ef8e651bf1337c71098d7e8a708981b00c6126c894d077f0915ebb57f08661"
   },
   "sm_86:_ZN4rola5intra6detail12intra_kernelILi2ELi256ELi512EEEvNS1_11IntraParamsE": {
-   "regs": 186,
+   "regs": 168,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "90b255b8cb955e927b1263f307703bb8649e5945eb818f339ba90876c761fd6e"
+   "sass_sha256": "afd73bad4d417022811c5b040136406f6861d184e7ec7f18656eef891d03d31b"
   },
   "sm_86:_ZN4rola5intra6detail12intra_kernelILi2ELi256ELi64EEEvNS1_11IntraParamsE": {
-   "regs": 96,
+   "regs": 86,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "100e453f5ec9907d9359af390541b3b74040b175e21929c4946b9a47ba013b55"
+   "sass_sha256": "71a42e66cf0a25c986d9d5cc8fe2e69cb7e9c3f3ba2d419cef7ec4fbf67eeb30"
   },
   "sm_86:_ZN4rola5intra6detail12intra_kernelILi3ELi16ELi64EEEvNS1_11IntraParamsE": {
    "regs": 122,
@@ -551,7 +551,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "9541f7d2e66d3fa7ca25a87d35b62129e0d082c56739103ab66d8dd412d68550"
+   "sass_sha256": "c7b6ecfa3521ec3b8d0e89caaf3214cc8bedee19dc46e9d0ae9cdf3c51d878c1"
   },
   "sm_86:_ZN4rola5intra6detail12intra_kernelILi4ELi8ELi64EEEvNS1_11IntraParamsE": {
    "regs": 147,
@@ -559,7 +559,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "0a2a3fe165cf09f16dc0dd331aaf8aaa3862146458f016b17aabbb88870ec93f"
+   "sass_sha256": "20b873ace15e7bc4bdd0d28c935b95decb7360492e9bdf32830533fbb496436e"
   },
   "sm_86:_ZN4rola5intra6detail21intra_backward_kernelILi2ELi256ELi384EEEvNS1_14IntraBwdParamsE": {
    "regs": 249,

@@ -8,12 +8,13 @@ The design it implements is `development/plans/K31_BOX_NATIVE_KERNEL_STUDY_2026-
 
 ## What it computes
 
-For a window `w` of `W` tokens (`W` is an instantiation axis; the built arms are
-`W = 384` and `W = 512` — the two ends of the architecture doc's band — and `W = 64`,
-the conformance cell. They are the same three the carry family builds, because the two
-kernels share ONE global window grid),
+For a window `w` of `W` tokens (`W` and the level width `B` are the instantiation axes;
+the built arms are `(2, 256, 384)`, `(2, 256, 512)` — the two ends of the architecture
+doc's band — `(2, 256, 64)`, the conformance cell, and the deep pair `(3, 16, 64)` and
+`(4, 8, 64)`. They pair with the carry family's arms, because the two kernels share ONE
+global window grid),
 
-    A[t, t'] = gain(t') * prod_l G_l[t, t'],   G_l = R_l · W_l^T over level l's B = 256 digits
+    A[t, t'] = gain(t') * prod_l G_l[t, t'],   G_l = R_l · W_l^T over level l's B digits
     o[t]   += sum_{t' <= t in w} A[t, t'] · v[t']
     den[t] += sum_{t' <= t in w} A[t, t']
 
@@ -25,7 +26,7 @@ kernel carries no second matrix for it.
 `[W x W]` is never materialized. The window's `(W/64) x (W/64)` tile grid of `[64 x 64]`
 output blocks is walked lower-triangular (21 tile-pairs at `W = 384`, 36 at `W = 512`);
 the diagonal blocks carry the within-tile staircase. Per tile-pair the per-level Gram
-accumulates in registers over the full 256-digit axis, the levels are
+accumulates in registers over the level's whole digit axis, the levels are
 Hadamard-multiplied there, and the result becomes the A operand of the value MMA
 **in place** — the accumulator-to-A fragment identity, no shared-memory round trip
 on sm_80.
@@ -63,22 +64,33 @@ Write-back is `fan_in_add` (a non-returning RED) into caller-owned `o`/`den`
 planes, so the kernel is composable with a concurrent carry kernel and with
 itself; the caller owns zeroing.
 
-## The pipeline stage is wider than the contraction step
+## The pipeline stage is as wide as the level allows
 
-`kStageDigits = 64` digits are staged per `cp.async` fill, and four `kSlabDigits
-= 16` MMA steps ride each fill. Barriers are per stage, not per MMA step: 16 per
-tile-pair rather than 64. Measured on sm_86, narrowing the stage to the MMA step
-cost 1.66x on the dense cell.
+A stage is one `cp.async` fill and one pair of barriers, and several `kSlabDigits = 16`
+MMA steps ride it, so barriers are per stage and not per MMA step. At `B = 256` a stage
+is `kStageCap = 64` digits and four steps ride it: 16 barriers per tile-pair rather than
+64. Measured on sm_86, narrowing the stage to the MMA step cost 1.66x on the dense cell.
+A level that fits inside one stage IS one stage, which is what the deep arms are.
 
-Operand rows are padded (`kOperandPitch`, `kValuePitch`) so that the eight row
+A LEVEL NARROWER THAN THE MMA'S CONTRACTION STEP IS CONTRACTED PADDED. There is no
+`k < 16` tensor op, so at `B = 8` a level's slab is 16 digits of which 8 are real: the
+tail is zeroed once at entry and never staged, and the Gram MMA runs at
+`kSlabDigits / B = 2x` the arithmetic it needs on that level. It costs nothing else, it
+is uniform (a no-op wherever `kSlabDigits` divides `B`), and the deep conformance cells
+are its gate — a stale byte in the pad is a wrong Gram, not a crash.
+
+Operand rows are padded (`operand_pitch(B)`, `kValuePitch`) so that the eight row
 addresses `ldmatrix` reads per 8x8 tile land in eight distinct banks, while every
 row base stays 16-byte aligned for `cp.async`.
 
 ## The slab gate
 
 The one sparsity tier the study kept. Before the tile walk, the CTA summarizes
-each `(tile, level, side)` as a 256-bit digit union over that tile's 64 tokens,
-built from the operand values themselves. A slab's MMA group issues only when the
+each `(tile, level, side)` as a `B`-bit digit union over that tile's 64 tokens, built
+from the operand values themselves. The work axis is (tile, certificate word), so a
+level narrower than one 32-digit word is ONE unit and a wide level several — the same
+loop at every width, with a warp's 32 lanes holding 32 tokens of one unit so both the
+OR reduction and every branch stay warp-uniform. A slab's MMA group issues only when the
 row side's 16-bit window AND the column side's is nonempty; the staging for a
 whole stage is skipped when all four of its slabs are dead.
 
