@@ -142,6 +142,36 @@ disappears when the mass split reaches every warp: `__launch_bounds__` does not 
 compiler prove `threadIdx.x < kThreads`, so the tautology would otherwise cut the
 readout and the fold into basic blocks.
 
+## The rendezvous the ring needs
+
+Three per read batch and two per write batch is what the naive placement gives; the
+kernel runs on TWO and ONE, and the difference is an argument about the ring, not a
+tuning choice. Phase 1's body is `[MMA(i) reads panel P(i); writes so and sden]`,
+`[produce -> P(i+1)]`, `BAR_B`, `[fan-in reads so and sden]`, `BAR_C`. Phase 2's is
+`BAR_D`, `[stage V slot f; fold(i) reads V slot i and P(i)]`, `[produce -> P(i+1)]`.
+
+Every cross-thread edge and the barrier that carries it:
+
+| edge | carried by |
+|---|---|
+| pre-loop produce -> MMA(0) | the ONE rendezvous before the phase-1 loop |
+| produce(i+1) -> MMA(i+1) | `BAR_B(i)` and `BAR_C(i)` |
+| MMA(i) writes `so`, mass(i) writes `sden` -> fan-in(i) | `BAR_B(i)` |
+| fan-in(i) reads `so`/`sden` -> MMA(i+1)/mass(i+1) rewrite them | `BAR_C(i)` |
+| MMA(i-1) reads `P(i-1)` -> produce(i+1) rewrites it (two-slot ring) | `BAR_B(i-1)`, `BAR_C(i-1)` |
+| pre-loop produce -> fold(0) | `BAR_D(0)` |
+| produce(i+1) -> fold(i+1) | `BAR_D(i+1)` |
+| the V ring's `cp.async` group -> fold(i) reads the slot | `BAR_D(i)`, after the per-thread wait |
+| fold(i-1) reads V slot -> `stage_batch` rewrites it | `BAR_D(i)` |
+| fold(i-1) reads `P(i-1)` -> produce(i+1) rewrites it | `BAR_D(i)` |
+
+So phase 1's HEAD rendezvous is load-bearing only at `i = 0`, where the pre-loop
+produce is published by nothing else, and it moves OUT of the loop; phase 2's TAIL
+rendezvous carries no edge that `BAR_D(i+1)` does not already carry, and it is gone.
+`BAR_C` survives only because `so` and `sden` are single-buffered — double-buffering
+them costs `out_bytes + den_bytes` and would put phase 1 on one rendezvous; the cost is
+recorded, the change is not made.
+
 ## The produce
 
 Per token, `Σ_l s_l` amplitudes are loaded and everything else is computed; the gate

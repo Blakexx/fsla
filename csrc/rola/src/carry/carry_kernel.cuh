@@ -586,13 +586,17 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     //: edge pins every produce instruction ahead of the HMMAs.  The trailing batch is
     //: entirely dead rows by the produce's zeroing law and lands in a panel no MMA
     //: reads.
+    //: THE PRE-LOOP PRODUCE IS THE ONLY THING THE HEAD RENDEZVOUS EVER PUBLISHED, so
+    //: it is taken OUT of the loop: for every later batch the publish is already
+    //: carried by the readout's own two rendezvous (docs/internals/carry/carry_kernel.md,
+    //: "The rendezvous the ring needs").
     if (nbr > 0) produce_batch(std::false_type{}, pR, sr, slist, 0, nr);
+    rendezvous();
 #pragma unroll 1
     for (int i = 0; i < nbr; ++i) {
       const int off = i * C;
       const int n = (nr - off) < C ? (nr - off) : C;
       const uint32_t brT = (i & 1) ? brT1 : brT0;
-      rendezvous();
 
       float acc[NTOK][4];
 #pragma unroll
@@ -750,7 +754,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
         }
       }
       produce_batch(std::true_type{}, pW, ((i + 1) & 1) ? sr : sw, wlist, (i + 1) * C, nw);
-      rendezvous();
     }
     //: the ring's unconsumed groups are retired before the next window reuses the
     //: value slots.

@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "f3e5a9232546b9800d848ac24c9efc85d9c4ef741ae8b5a132df09617c25142b",
+  "csrc_sha256": "e838884801ac0f260a2156c8c1f43d6a97ccf4411628f372bdc5b3700357178f",
   "date": "2026-08-20"
  },
  "shards": {
@@ -39,7 +39,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "e0449d422649e4ed6656775ef982f67d06f6cb5db4a566f7379259e7c86c4038"
+   "sass_sha256": "62f33e5c6cbf80b38391aa14a0ae2c6843ef3f5fd7c9f5a5ea7e8a65e4df5977"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi512ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 168,
@@ -47,7 +47,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "16a4a1fda99840410da9a2c403a54f067d80f555a81bb32d06685f0d357f7162"
+   "sass_sha256": "ee9bd6c01843524df14f666882d4d006d4248edcbb1e948305f5b18c4b71b672"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi64ELi4ELi8ELi64ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 165,
@@ -55,7 +55,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "708ad555f7690d549a871d1f7f73f13a665f66037dbafd4509615f1ea45e5c70"
+   "sass_sha256": "26c6279b8cb88867fd3e8c88dd5f6202ced4044a3f92d9432475bb0bb2366532"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi3ELi16ELi2ELi16ELi64ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 158,
@@ -63,7 +63,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "d5cc3f5718b9ff9b533f5ee090dd91b1978ab6b3734156132870df08b3a60834"
+   "sass_sha256": "f62438b69a16ef37bd4d837f635a74abd0e660e9033c543ae46f6595ad0e1119"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi4ELi8ELi2ELi8ELi64ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 156,
@@ -71,7 +71,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "3e7637d18f874fd32472880a0e6fa07395e3ba5e3cf58d883dd29e9a16978fd2"
+   "sass_sha256": "8898391df07f12bbbceb27133dbe0f14eb5323c49ae2f3918465846055828d7b"
   },
   "sm_80:_ZN4rola5carry13scan_a_kernelILi2ELi256ELi4ELi8ELi384ELi32EEEvNS0_9BwdParamsE": {
    "regs": 234,
