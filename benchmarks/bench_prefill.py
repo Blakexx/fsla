@@ -168,7 +168,7 @@ def split_walls(read, write, g, v, widths, k, m, window, modes):
 
     def carry_only():
         ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths), k, m,
-                                window, 32, carry_ops.CHANNEL_SPLIT, None)
+                                window, 32, carry_ops.CHANNEL_SPLIT, packed_modes, None)
 
     o = torch.zeros((1, pread.shape[1], D_V), dtype=torch.float32, device=pread.device)
     den = torch.zeros((1, pread.shape[1]), dtype=torch.float32, device=pread.device)
@@ -179,7 +179,8 @@ def split_walls(read, write, g, v, widths, k, m, window, modes):
 
     def combined():
         num, dn, _ = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths),
-                                             k, m, window, 32, carry_ops.CHANNEL_SPLIT, None)
+                                             k, m, window, 32, carry_ops.CHANNEL_SPLIT,
+                                             packed_modes, None)
         ext.intra_forward(pread, pwrite, gwrite, value, num, dn, len(widths), widths[0],
                           packed_modes, window)
 

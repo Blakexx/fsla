@@ -57,6 +57,11 @@ static constexpr int kWarps = 4;
 static constexpr int kThreads = kWarps * 32;
 static_assert(kAtomLeaves == kMmaK, "the page granule is one MMA k-step");
 
+//: a level index as a VALUE, so a body that is not already inside `static_for` can
+//: still hand one to a generic lambda without spelling the trait out.
+template <int N>
+inline constexpr std::integral_constant<int, N> kLev{};
+
 //: A COMPILE-TIME LOOP.  Every per-level quantity here is a template argument or a
 //: register-array index, so the level index must be a constant expression; a
 //: `for (int l = 0; l < D; ++l)` would make `load_run<n_l(l)>` ill-formed and would
@@ -114,38 +119,107 @@ struct CarryGeom {
   static constexpr int cta_target = design::cta_target((int)bytes, kThreads, kRegFloor);
 };
 
-//: THE PRODUCE'S THREAD MAP, derived.  A row's `kRowThr` threads split the box's
-//: `BC` coefficients into `SPT` contiguous LATTICE slots each.  Because the lattice
-//: index is a bit permutation (R0 spec section 2.4), a thread's slot run is a
-//: sub-lattice: per level the digits it touches are a CONTIGUOUS run of the owner's
-//: own run at a runtime base, and WHICH element of that run each of its slots wants
-//: is a compile-time function of the unrolled slot index.  So the expansion is
-//: `sum_l n_l` amplitude loads followed by `SPT` products of register values at
-//: CONSTANT indices -- no dynamic indexing, no spill, no materialized gate plane.
-template <int D, int B, int K, int M, int C>
+//: THE PRODUCE'S THREAD MAP, derived, with the thread's FINE AXIS as a parameter.
+//: A row's `kRowThr` threads split the box's `BC` coefficients into `SPT` LATTICE
+//: slots each.  Because the lattice index is a bit permutation (R0 spec section
+//: 2.4), a thread's slot set is a sub-lattice at any cut: per level the digits it
+//: touches are a CONTIGUOUS run of the owner's own run at a runtime base, and WHICH
+//: element of that run each of its slots wants is a compile-time function of the
+//: unrolled slot index.  So the expansion is `sum_l n_l` amplitude loads followed by
+//: `SPT` products of register values at CONSTANT indices -- no dynamic indexing, no
+//: spill, no materialized gate plane.
+//:
+//: `FINE` is the level the thread takes WHOLE when the span allows it, and it is the
+//: whole of the map's freedom: the levels are ordered `FINE` first then
+//: innermost-outward, their spans laid end to end, and the cut at `kJBits` separates
+//: the thread's own index from `rIn`'s.  At `FINE = D-1` the order IS
+//: innermost-outward, the cut positions coincide with `run_shift(l)`, and every
+//: quantity below reduces algebraically to the contiguous `slot0 = rIn*SPT` map.
+template <int D, int B, int K, int M, int C, int FINE = D - 1>
 struct ProduceMap {
   using BP = BoxPlan<D, B, K, M>;
   static constexpr int kRowThr = kThreads / C;
   static constexpr int SPT = BP::kBC / kRowThr;
   static constexpr int kJBits = ilog2c(SPT);
-  //: HOW MANY OF LEVEL `l`'s DIGITS ONE THREAD TOUCHES.  Under the mixed-radix
-  //: order the level's run offset is the bit field at `run_shift(l)`, and the
-  //: thread's own slot index varies exactly the bottom `kJBits` bits, so the count
-  //: is `SPT >> run_shift(l)` clamped into `[1, s_l]`: the whole span when the field
-  //: is below the thread's index, one digit when it is entirely above, and an
-  //: ALIGNED contiguous sub-run when it straddles (the sub-run is aligned because
-  //: `slot0` is a multiple of `SPT`, so its bits below `kJBits` are zero).
-  static constexpr int vary(int l) { return SPT >> BP::run_shift(l); }
-  static constexpr int n_l(int l) {
-    return vary(l) < 1 ? 1 : (vary(l) > BP::s(l) ? BP::s(l) : vary(l));
+  static_assert(FINE >= 0 && FINE < D, "the fine axis is a level");
+
+  static constexpr int order(int p) {
+    return p == 0 ? FINE : ((p - 1) < (D - 1 - FINE) ? D - p : D - 1 - p);
   }
+  static constexpr int start(int p) {
+    return p == 0 ? 0 : start(p - 1) + BP::span_bits(order(p - 1));
+  }
+  static constexpr int rank(int l, int p = 0) { return order(p) == l ? p : rank(l, p + 1); }
+  //: the bit position level `l`'s digit field occupies in the row's `kLocalBits`.
+  static constexpr int cpos(int l) { return start(rank(l)); }
+  //: how many of those bits the THREAD's own index supplies, and how many `rIn` does.
+  static constexpr int jb(int l) {
+    return kJBits - cpos(l) <= 0
+               ? 0
+               : (kJBits - cpos(l) > BP::span_bits(l) ? BP::span_bits(l) : kJBits - cpos(l));
+  }
+  static constexpr int rb(int l) { return BP::span_bits(l) - jb(l); }
+  static constexpr int rsh(int l) { return rb(l) == 0 ? 0 : cpos(l) + jb(l) - kJBits; }
+  //: HOW MANY OF LEVEL `l`'s DIGITS ONE THREAD TOUCHES.
+  static constexpr int n_l(int l) { return 1 << jb(l); }
   static constexpr int max_n(int l) {
     return l == D ? 1 : (n_l(l) > max_n(l + 1) ? n_l(l) : max_n(l + 1));
   }
   static constexpr int kMaxN = max_n(0);
   //: element of level `l`'s loaded run that unrolled slot `j` wants.
-  static constexpr int idx_of(int l, int j) { return (j >> BP::run_shift(l)) & (n_l(l) - 1); }
+  static constexpr int idx_of(int l, int j) { return (j >> cpos(l)) & (n_l(l) - 1); }
+  //: the LOCAL slot index unrolled slot `j` names, the thread's own base excluded.
+  static constexpr int slot_of(int j, int l = 0) {
+    return l == D ? 0 : (idx_of(l, j) << BP::run_shift(l)) + slot_of(j, l + 1);
+  }
+
+  //: THE COMPACTED FORM'S SPLIT, keyed on a bitmask of the levels that are SPARSE
+  //: for the side being produced.  `dense_rep(j)` names the representative slots --
+  //: those whose sparse-level digits are all zero -- and `dense_j(c)` enumerates
+  //: them, so the dense levels' product is `dense_span` values at compile-time run
+  //: indices and every live sparse digit reuses all of them.
+  static constexpr int dense_span(uint32_t mask, int l = 0) {
+    return l == D ? 1 : (((mask >> l) & 1u) ? 1 : n_l(l)) * dense_span(mask, l + 1);
+  }
+  static constexpr bool dense_rep(uint32_t mask, int j, int l = 0) {
+    return l == D ? true
+                  : ((((mask >> l) & 1u) && idx_of(l, j) != 0) ? false : dense_rep(mask, j, l + 1));
+  }
+  static constexpr int dense_j(uint32_t mask, int c, int j = 0) {
+    return dense_rep(mask, j) ? (c == 0 ? j : dense_j(mask, c - 1, j + 1))
+                              : dense_j(mask, c, j + 1);
+  }
+  //: the ONE level a mask names, and the one it leaves; the compacted form is built
+  //: for a single sparse and a single dense level and refuses anything else.
+  static constexpr int only(uint32_t mask, bool set, int l = 0) {
+    return (((mask >> l) & 1u) != 0u) == set ? l : only(mask, set, l + 1);
+  }
 };
+
+//: THE PER-LEVEL SUPPORT DECLARATION, as the seam hands it down: two bits per level,
+//: level 0 in the low pair, bit 0 the READ side and bit 1 the WRITE side -- law 3's
+//: enum, and the intra family's encoding of it.  A side's SPARSE-LEVEL MASK is what
+//: the produce specializes on; nothing here is a density and nothing is measured.
+constexpr uint32_t side_sparse(uint32_t modes, int D, int side) {
+  uint32_t m = 0;
+  for (int l = 0; l < D; ++l)
+    if ((modes >> (2 * l + side)) & 1u) m |= 1u << l;
+  return m;
+}
+constexpr int lowest_bit(uint32_t m, int l = 0) {
+  return ((m >> l) & 1u) ? l : lowest_bit(m, l + 1);
+}
+//: the level a side's produce takes WHOLE: its sparse level when it has exactly one,
+//: so the compaction's trip axis is the thread's own, and the innermost level
+//: otherwise, which is the contiguous map.
+constexpr int fine_axis(uint32_t mask, int D) {
+  return (mask != 0u && (mask & (mask - 1u)) == 0u) ? lowest_bit(mask) : D - 1;
+}
+
+//: the 32-bit words one level's support bitmap occupies.  `rola::chunk`'s
+//: `support_words` is the producing pass's statement of the same layout, and
+//: `carry.cu` asserts the two agree at every built arm.
+constexpr int support_words(int b) { return (b + 31) / 32; }
 
 //: a contiguous run of `n` bf16, at the widest access that covers it.  The runs are
 //: naturally aligned by construction (a level's column base is a multiple of `B`, an
@@ -177,15 +251,26 @@ constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, W, C>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int W, int C, bool STATE>
+template <int D, int B, int K, int M, int W, int C, uint32_t MODES, bool STATE>
 __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void carry_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
-    const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den, int L,
-    int tok_words, int v_row_bytes, const float* __restrict__ s_in, float* __restrict__ s_out) {
+    const uint32_t* __restrict__ rows, const uint32_t* __restrict__ sup, float* __restrict__ o,
+    float* __restrict__ den, int L, int tok_words, int v_row_bytes, const float* __restrict__ s_in,
+    float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
   using G = CarryGeom<D, B, K, M, W, C>;
-  using PM = ProduceMap<D, B, K, M, C>;
+  //: THE TWO SIDES CARRY THEIR OWN MAP.  A side's produce takes its declared sparse
+  //: level as the thread's fine axis, so the compaction's trip count is uniform over
+  //: the threads of a token row; a side with no declared sparse level keeps the
+  //: contiguous map, which is what makes the dense arm's arithmetic untouched.
+  constexpr uint32_t kRSparse = side_sparse(MODES, D, 0);
+  constexpr uint32_t kWSparse = side_sparse(MODES, D, 1);
+  constexpr int kFineR = fine_axis(kRSparse, D);
+  constexpr int kFineW = fine_axis(kWSparse, D);
+  using PMR = ProduceMap<D, B, K, M, C, kFineR>;
+  using PMW = ProduceMap<D, B, K, M, C, kFineW>;
+  using PM = PMR;
 
   constexpr int BC = BP::kBC;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
@@ -376,16 +461,53 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     }
   }
 
-  // ---- the produce's per-thread map ---------------------------------------
+  // ---- the produce's per-thread map, one per SIDE --------------------------
   constexpr int kRowThr = PM::kRowThr, SPT = PM::SPT;
   const int prow = tid / kRowThr;  // this thread's token row of the batch
-  const int rIn = tid % kRowThr;   // its slot run within the box
-  const int slot0 = rIn * SPT;
-  int lvCol[D];
+  const int rIn = tid % kRowThr;   // its slot set within the box
+  int lvColR[D], lvColW[D];
+  int slot0R = 0, slot0W = 0;
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    lvCol[l] = runCol[l] + BP::run_of(l, slot0);
+    const int bR = ((rIn >> PMR::rsh(l)) & ((1 << PMR::rb(l)) - 1)) << PMR::jb(l);
+    lvColR[l] = runCol[l] + bR;
+    slot0R += bR << BP::run_shift(l);
+    //: the two sides share ONE map whenever their declarations put the fine axis in
+    //: the same place, which is every dense arm; spelling the sharing out keeps the
+    //: derivation off the second side rather than trusting a common-subexpression pass.
+    if constexpr (kFineW == kFineR) {
+      lvColW[l] = lvColR[l];
+      slot0W = slot0R;
+    } else {
+      const int bW = ((rIn >> PMW::rsh(l)) & ((1 << PMW::rb(l)) - 1)) << PMW::jb(l);
+      lvColW[l] = runCol[l] + bW;
+      slot0W += bW << BP::run_shift(l);
+    }
   });
+
+  //: THE SUPPORT SLICE IS ONE ALIGNED LOAD, and that is a property of the map rather
+  //: than of the layout: a level's thread base is a multiple of `n_l` and the owner's
+  //: run base a multiple of `s_l >= n_l`, so the thread's `n_l` bits never straddle a
+  //: word.  The row displacement is the token's; everything else is fixed here.
+  constexpr int kSupW = support_words(B);
+  constexpr int kSupRow = D * kSupW;
+  const uint32_t* const supPR =
+      kRSparse != 0u ? pin_address(sup + (long)(2 * bh + 0) * L * kSupRow) : nullptr;
+  const uint32_t* const supPW =
+      kWSparse != 0u ? pin_address(sup + (long)(2 * bh + 1) * L * kSupRow) : nullptr;
+  uint32_t supDispR = 0u, supShiftR = 0u, supDispW = 0u, supShiftW = 0u;
+  if constexpr (kRSparse != 0u) {
+    constexpr int l = PMR::only(kRSparse, true);
+    const int dig = lvColR[l] - BP::col_base(l);
+    supDispR = (uint32_t)((l * kSupW + (dig >> 5)) * (int)sizeof(uint32_t));
+    supShiftR = (uint32_t)(dig & 31);
+  }
+  if constexpr (kWSparse != 0u) {
+    constexpr int l = PMW::only(kWSparse, true);
+    const int dig = lvColW[l] - BP::col_base(l);
+    supDispW = (uint32_t)((l * kSupW + (dig >> 5)) * (int)sizeof(uint32_t));
+    supShiftW = (uint32_t)(dig & 31);
+  }
 
   //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS.  A padding row of a partial
   //: batch has no token, and a zero coefficient contributes exactly nothing to either
@@ -397,43 +519,131 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   //: `mul_bf16x2(acc, 1)` was 44% of the read produce -- 32 FMUL, 32 PRMT and 16 F2FP
   //: for `rn(a*1) = a` -- so the side is a compile-time argument and the read body
   //: stores its accumulators directly.
+  //:
+  //: A SPARSE LEVEL IS SYNTHESIZED BY COMPACTION, NOT BY PREDICATION.  The side's
+  //: declared sparse level contributes only at the digits the support plane marks
+  //: live, so its factor loop is an `__ffs` walk over the thread's support slice --
+  //: the decode walk's slot loop -- and the dense levels' product, which every live
+  //: digit reuses, is formed ONCE into packed pairs beforehand.  A predicated form
+  //: was refused by the SASS audit: it saves no issue.
+  //: docs/internals/carry/carry_kernel.md#the-compacted-produce
   auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
-                     uint32_t gain, bool have) {
+                     uint32_t supOff, uint32_t gain, bool have) {
     constexpr bool WRITE = decltype(Wt)::value;
-    //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
-    //: is loaded, folded into every slot and dropped inside one `static_for` body, so
-    //: no `[D][n]` array is ever live: `SPT/2` packed pairs plus one run, against the
-    //: `sum_l n_l` shorts a per-level array would hold at once.
-    //: the innermost level supplies the ADJACENT PAIR (its run offset owns bit 0),
-    //: every level above it a per-pair scalar -- the shipped producer's chain.
-    uint32_t acc[SPT / 2];
-    {
-      unsigned short run[PM::n_l(D - 1)];
-      load_run<PM::n_l(D - 1)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[D - 1] * 2)));
-#pragma unroll
-      for (int j = 0; j < SPT; j += 2)
-        acc[j / 2] =
-            ((uint32_t)run[PM::idx_of(D - 1, j + 1)] << 16) | (uint32_t)run[PM::idx_of(D - 1, j)];
-    }
-    static_for<D - 1>([&](auto Lc) {
+    constexpr uint32_t SPARSE = WRITE ? kWSparse : kRSparse;
+    using PMx = ProduceMap<D, B, K, M, C, WRITE ? kFineW : kFineR>;
+    auto col = [&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      unsigned short run[PM::n_l(l)];
-      load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
-      if constexpr (!WRITE && l == 0) {
+      if constexpr (WRITE)
+        return lvColW[l];
+      else
+        return lvColR[l];
+    };
+    __nv_bfloat16* const row = dst + prow * LdS + (WRITE ? slot0W : slot0R);
+    if constexpr (SPARSE == 0u) {
+      //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
+      //: is loaded, folded into every slot and dropped inside one `static_for` body,
+      //: so no `[D][n]` array is ever live: `SPT/2` packed pairs plus one run, against
+      //: the `sum_l n_l` shorts a per-level array would hold at once.
+      //: the innermost level supplies the ADJACENT PAIR (its run offset owns bit 0),
+      //: every level above it a per-pair scalar -- the shipped producer's chain.
+      uint32_t acc[SPT / 2];
+      {
+        unsigned short run[PMx::n_l(D - 1)];
+        load_run<PMx::n_l(D - 1)>(run, gather_ptr(base, tokOff + (uint32_t)(col(kLev<D - 1>) * 2)));
 #pragma unroll
-        for (int i = 0; i < PM::n_l(0); ++i) run[i] = have ? run[i] : (unsigned short)0;
+        for (int j = 0; j < SPT; j += 2)
+          acc[j / 2] = ((uint32_t)run[PMx::idx_of(D - 1, j + 1)] << 16)
+                       | (uint32_t)run[PMx::idx_of(D - 1, j)];
       }
+      static_for<D - 1>([&](auto Lc) {
+        constexpr int l = decltype(Lc)::value;
+        unsigned short run[PMx::n_l(l)];
+        load_run<PMx::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(col(Lc) * 2)));
+        if constexpr (!WRITE && l == 0) {
 #pragma unroll
-      for (int j = 0; j < SPT; j += 2)
-        acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
-    });
-    __nv_bfloat16* const row = dst + prow * LdS + slot0;
-    if constexpr (WRITE) {
+          for (int i = 0; i < PMx::n_l(0); ++i) run[i] = have ? run[i] : (unsigned short)0;
+        }
 #pragma unroll
-      for (int j = 0; j < SPT; j += 2) store_bf16x2(row + j, mul_bf16x2(acc[j / 2], gain));
+        for (int j = 0; j < SPT; j += 2)
+          acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PMx::idx_of(l, j)]));
+      });
+      if constexpr (WRITE) {
+#pragma unroll
+        for (int j = 0; j < SPT; j += 2) store_bf16x2(row + j, mul_bf16x2(acc[j / 2], gain));
+      } else {
+#pragma unroll
+        for (int j = 0; j < SPT; j += 2) store_bf16x2(row + j, acc[j / 2]);
+      }
     } else {
+      static_assert((SPARSE & (SPARSE - 1u)) == 0u && D == 2,
+                    "the compacted produce is built for ONE sparse and ONE dense level "
+                    "per side; a longer factor chain must first reconcile its multiply "
+                    "order with the dense body's to keep the same rounding");
+      constexpr int SL = PMx::only(SPARSE, true);
+      constexpr int DL = PMx::only(SPARSE, false);
+      constexpr int NS = PMx::n_l(SL);
+      constexpr int ND = PMx::dense_span(SPARSE);
+      constexpr int NP = ND / 2;
+      constexpr uint32_t kSMask = NS >= 32 ? 0xFFFFFFFFu : ((1u << NS) - 1u);
+      static_assert(ND % 2 == 0 && NS >= 2 && NS <= 32,
+                    "a thread publishes whole bf16 pairs and reads ONE support word");
+
+      unsigned short drun[ND];
+      load_run<ND>(drun, gather_ptr(base, tokOff + (uint32_t)(col(kLev<DL>) * 2)));
+      if constexpr (!WRITE && DL == 0) {
 #pragma unroll
-      for (int j = 0; j < SPT; j += 2) store_bf16x2(row + j, acc[j / 2]);
+        for (int i = 0; i < ND; ++i) drun[i] = have ? drun[i] : (unsigned short)0;
+      }
+      //: `static_for`, not `#pragma unroll`: `dense_j` is a recursive constexpr walk
+      //: and the frontend folds it only against a template argument, so a runtime
+      //: induction variable here demotes `drun` to a stack frame -- measured, 12
+      //: local accesses on the first build.
+      uint32_t dp[NP];
+      static_for<NP>([&](auto Qc) {
+        constexpr int q = decltype(Qc)::value;
+        dp[q] = ((uint32_t)drun[PMx::idx_of(DL, PMx::dense_j(SPARSE, 2 * q + 1))] << 16)
+                | (uint32_t)drun[PMx::idx_of(DL, PMx::dense_j(SPARSE, 2 * q))];
+      });
+
+      //: THE DEAD-ROW ZEROING LAW IS THE ZERO FILL: every slot the walk does not
+      //: reach holds an exact zero, which contributes exactly nothing to either MMA.
+      //: The fill runs at the SAME addresses the walk writes, so the two share one
+      //: address form and the compiler merges each contiguous run into one store.
+      auto emit = [&](int i, auto Qc, uint32_t val) {
+        constexpr int q = decltype(Qc)::value;
+        constexpr int lo = PMx::slot_of(PMx::dense_j(SPARSE, 2 * q));
+        constexpr int hi = PMx::slot_of(PMx::dense_j(SPARSE, 2 * q + 1));
+        __nv_bfloat16* const p = row + (i << BP::run_shift(SL));
+        if constexpr (hi == lo + 1) {
+          store_bf16x2(p + lo, val);
+        } else {
+          store_bf16_bits(p + lo, (unsigned short)val);
+          store_bf16_bits(p + hi, (unsigned short)(val >> 16));
+        }
+      };
+#pragma unroll
+      for (int i = 0; i < NS; ++i) static_for<NP>([&](auto Qc) { emit(i, Qc, 0u); });
+
+      uint32_t bits = (*reinterpret_cast<const uint32_t*>(gather_ptr(
+                           WRITE ? supPW : supPR, supOff + (WRITE ? supDispW : supDispR)))
+                       >> (WRITE ? supShiftW : supShiftR))
+                      & kSMask;
+      //: NO SPECULATIVE UNROLLING: the trip count is a runtime popcount, and an
+      //: unrolled body duplicates every live value of the walk's tightest scope.
+#pragma unroll 1
+      while (bits != 0u) {
+        const int i = __ffs((int)bits) - 1;
+        bits &= bits - 1u;
+        const uint32_t f = splat_bf16x2_bits(*reinterpret_cast<const unsigned short*>(
+            gather_ptr(base, tokOff + (uint32_t)((col(kLev<SL>) + i) * 2))));
+        static_for<NP>([&](auto Qc) {
+          constexpr int q = decltype(Qc)::value;
+          uint32_t val = mul_bf16x2(dp[q], f);
+          if constexpr (WRITE) val = mul_bf16x2(val, gain);
+          emit(i, Qc, val);
+        });
+      }
     }
   };
 
@@ -468,6 +678,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     const uint32_t winV = (uint32_t)tok0 * (uint32_t)v_row_bytes;
     const uint32_t winO = (uint32_t)tok0 * (uint32_t)(kDv * (int)sizeof(float));
     const uint32_t winD = (uint32_t)tok0 * 4u;
+    const uint32_t winS = (uint32_t)tok0 * (uint32_t)(kSupRow * (int)sizeof(uint32_t));
     //: ONE BATCH'S PANEL, expanded from factors.  The list, the row's token and the
     //: gain are all resolved here so the two phases call ONE body; `have` false
     //: zeroes the leading factor, and a zero coefficient contributes exactly nothing
@@ -482,7 +693,8 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
         gain = have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
                           gather_ptr(gW, winG + (uint32_t)tok * 2u)))
                     : 0u;
-      produce(Wt, base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain, have);
+      produce(Wt, base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2),
+              winS + (uint32_t)tok * (uint32_t)(kSupRow * (int)sizeof(uint32_t)), gain, have);
     };
 
     // ---- the liveness pass: TWO lists, one per SIDE -----------------------

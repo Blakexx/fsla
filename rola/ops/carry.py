@@ -90,12 +90,14 @@ def pack_side(levels) -> torch.Tensor:
 
 def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
                 window: int, chunk: int = 32, carve: int = CHANNEL_SPLIT,
-                state_in: torch.Tensor | None = None):
+                level_modes: int = 0, state_in: torch.Tensor | None = None):
     """The INTER term, undivided: ``(num, den, state_out)``.
 
     ``num`` is ``[BH, T, d_v]`` fp32, ``den`` is ``[BH, T]`` fp32, and
     ``state_out`` is ``[BH, N/16, 16, d_v+1]`` fp32 in LATTICE leaf order.
-    ``state_in``, when given, is the same layout and order.
+    ``state_in``, when given, is the same layout and order.  ``level_modes`` is law
+    3's per-level support declaration packed two bits per level
+    (``rola.ops.intra.pack_modes``); ``DENSE_BOTH`` everywhere is always correct.
     """
     pr = pack_side(read_levels)
     pw = pack_side(write_levels)
@@ -103,7 +105,7 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
     gw = gw.reshape(gw.shape[0] * gw.shape[1], -1)
     return extension().carry_forward_inter(
         pr, pw, gw, v.to(torch.bfloat16).contiguous(), list(widths), int(k), int(m),
-        int(window), int(chunk), int(carve), state_in)
+        int(window), int(chunk), int(carve), int(level_modes), state_in)
 
 
 def owner_rows(read_levels, write_levels, widths, *, k: int, m: int):
@@ -118,9 +120,9 @@ def owner_rows(read_levels, write_levels, widths, *, k: int, m: int):
                                         list(widths), int(k), int(m))
 
 
-def build_stamp(widths, k, m, window, chunk, carve):
+def build_stamp(widths, k, m, window, chunk, carve, level_modes=0):
     return extension().carry_build_stamp(list(widths), int(k), int(m), int(window),
-                                         int(chunk), int(carve))
+                                         int(chunk), int(carve), int(level_modes))
 
 
 def arms():

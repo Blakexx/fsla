@@ -255,6 +255,13 @@ __device__ __forceinline__ void store_bf16x2(__nv_bfloat16* p, uint32_t v) {
 //: different rows.
 __device__ __forceinline__ void store_bf16(__nv_bfloat16* p, float v) { *p = __float2bfloat16(v); }
 
+//: One half of a packed pair, BY VALUE.  A producer whose two halves land at
+//: unrelated addresses must not reach them through `&pair[i]`: an address taken into
+//: a register pair is a stack frame, whatever the index's constness.
+__device__ __forceinline__ void store_bf16_bits(__nv_bfloat16* p, unsigned short x) {
+  *reinterpret_cast<unsigned short*>(p) = x;
+}
+
 //: One fp32 element, stored where it will later be read as a summand rather than
 //: as an mma operand.  There is no rounding here BY CONSTRUCTION: see
 //: `fan_in_add`.

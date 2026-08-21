@@ -13,10 +13,13 @@ namespace rola::carry {
 
 //: the INTER term only: `(num, den)`, undivided, plus the final state plane in
 //: LATTICE leaf order.  `carve` is 0 = state-split, 1 = channel-split.
+//: `level_modes` is law 3's per-level declaration, two bits per level (bit 0 of a
+//: level's pair = the READ side is value-sparse there, bit 1 = the WRITE side).
+//: DENSE_BOTH everywhere is always correct and only ever slower.
 std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                          torch::Tensor v, std::vector<int64_t> widths, int64_t k,
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
-                                         c10::optional<torch::Tensor> s_in);
+                                         int64_t level_modes, c10::optional<torch::Tensor> s_in);
 
 //: the OWNER BALLOT ROWS the carry's liveness pass consumes, as a tensor:
 //: `[BH, 2, entries, L/32]` packed bits, read rows then write rows, one row per
@@ -26,7 +29,7 @@ torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t
 
 //: device-side build identity plus the built arm's register/SMEM census.
 std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t m, int64_t window,
-                                 int64_t chunk, int64_t carve);
+                                 int64_t chunk, int64_t carve, int64_t level_modes);
 
 //: R4's TWO REVERSE SCANS, launched concurrently: `(d_pr, d_pw, d_gw, d_v,
 //: d_state_in, replay)`.  `vt`/`dn` are the pre-packed `[BH, L, cols-padded]` bf16
@@ -43,7 +46,7 @@ std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, to
 std::vector<int64_t> backward_build_stamp(std::vector<int64_t> widths, int64_t k, int64_t m,
                                           int64_t window, int64_t chunk);
 
-//: the built (widths, k, m, W, C, carve) tuples.
+//: the built (widths, k, m, W, C, carve, level_modes) tuples.
 std::vector<std::vector<int64_t>> arms();
 
 }  // namespace rola::carry

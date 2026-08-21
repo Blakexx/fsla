@@ -63,23 +63,29 @@ using OwnerRows =
 
 //: THE BUILT SET, as one macro so the dispatch, the census and the arm list cannot
 //: drift apart -- the shipped family's `CHUNK_ARMS_X` discipline.
-#define CARRY_ARMS_X(X_)        \
-  X_(2, 256, 4, 8, 384, 32, 1)  \
-  X_(2, 256, 4, 8, 512, 32, 1)  \
-  X_(2, 64, 4, 8, 64, 32, 1)    \
-  X_(3, 16, 2, 16, 64, 32, 1)   \
-  X_(4, 8, 2, 8, 64, 32, 1)
+#define CARRY_ARMS_X(X_)           \
+  X_(2, 256, 4, 8, 384, 32, 1, 0)  \
+  X_(2, 256, 4, 8, 384, 32, 1, 6)  \
+  X_(2, 256, 4, 8, 512, 32, 1, 0)  \
+  X_(2, 256, 4, 8, 512, 32, 1, 6)  \
+  X_(2, 64, 4, 8, 64, 32, 1, 0)    \
+  X_(2, 64, 4, 8, 64, 32, 1, 6)    \
+  X_(3, 16, 2, 16, 64, 32, 1, 0)   \
+  X_(4, 8, 2, 8, 64, 32, 1, 0)
 
 //: `CV` is the SEAM's carve scalar, not a kernel axis: it names the one ruled
 //: carve so a caller that asks for the deleted one is refused rather than served
 //: something else.
-template <int D, int B, int K, int M, int W, int C, int CV>
+template <int D, int B, int K, int M, int W, int C, int CV, uint32_t MODES>
 static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
-                          const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den,
-                          int BH, int L, int tok_words, int v_row_bytes, const float* s_in,
-                          float* s_out, cudaStream_t stream) {
+                          const __nv_bfloat16* v, const uint32_t* rows, const uint32_t* sup,
+                          float* o, float* den, int BH, int L, int tok_words, int v_row_bytes,
+                          const float* s_in, float* s_out, cudaStream_t stream) {
   static_assert(CV == 1, "channel-split is the built carve");
-  const auto fn = &carry_kernel<D, B, K, M, W, C, true>;
+  static_assert(support_words(B) == rola::chunk::support_words(B),
+                "the support plane's per-level word stride is stated by the producing pass "
+                "and by the consuming map, and the two must agree");
+  const auto fn = &carry_kernel<D, B, K, M, W, C, MODES, true>;
   constexpr size_t sm = CarryGeom<D, B, K, M, W, C>::bytes;
   static bool configured = false;
   if (!configured) {
@@ -89,16 +95,16 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
     configured = true;
   }
   const dim3 grid((unsigned)BoxPlan<D, B, K, M>::kOwners, (unsigned)BH);
-  fn<<<grid, kThreads, sm, stream>>>(pr, pw, gw, v, rows, o, den, L, tok_words, v_row_bytes, s_in,
-                                     s_out);
+  fn<<<grid, kThreads, sm, stream>>>(pr, pw, gw, v, rows, sup, o, den, L, tok_words, v_row_bytes,
+                                     s_in, s_out);
   return cudaGetLastError();
 }
 
-template <int D, int B, int K, int M, int W, int C, int CV>
+template <int D, int B, int K, int M, int W, int C, int CV, uint32_t MODES>
 static std::array<int64_t, 10> census() {
   static_assert(CV == 1, "channel-split is the built carve");
   cudaFuncAttributes a{};
-  if (cudaFuncGetAttributes(&a, carry_kernel<D, B, K, M, W, C, true>) != cudaSuccess)
+  if (cudaFuncGetAttributes(&a, carry_kernel<D, B, K, M, W, C, MODES, true>) != cudaSuccess)
     return {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
   return {a.numRegs,
           (int64_t)a.sharedSizeBytes,
@@ -138,10 +144,29 @@ static torch::Tensor build_owner_rows(const torch::Tensor& pr, const torch::Tens
   return tbl;
 }
 
+//: THE SUPPORT PLANE, `[BH, 2, L, D, SW]` packed bits: per (side, token, level) the
+//: level's EXACT digit support, from the same magnitude test the union vote applies.
+//: It is a TRANSIENT of the call and is built only for a declaration that asks for it
+//: -- a side with no sparse level never reads one.
+template <int D, int B>
+static torch::Tensor build_support(const torch::Tensor& pr, const torch::Tensor& pw, int BH, int L,
+                                   cudaStream_t stream) {
+  constexpr int SW = rola::chunk::support_words(B);
+  auto sup = torch::empty({BH, 2, (long)L, (long)(D * SW)}, pr.options().dtype(torch::kInt32));
+  constexpr int kWarps_ = rola::chunk::kSupportThreads / kBallotLanes;
+  const long units = (long)L * D * SW;
+  const dim3 grid((unsigned)((units + kWarps_ - 1) / kWarps_), (unsigned)BH, 2u);
+  rola::chunk::support_plane_kernel<D, B><<<grid, rola::chunk::kSupportThreads, 0, stream>>>(
+      (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),
+      reinterpret_cast<uint32_t*>(sup.data_ptr()), L);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return sup;
+}
+
 std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                          torch::Tensor v, std::vector<int64_t> widths, int64_t k,
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
-                                         c10::optional<torch::Tensor> s_in) {
+                                         int64_t level_modes, c10::optional<torch::Tensor> s_in) {
   TORCH_CHECK(pr.is_cuda() && pw.is_cuda() && gw.is_cuda() && v.is_cuda(), "cuda tensors only");
   TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16
                   && gw.scalar_type() == torch::kBFloat16 && v.scalar_type() == torch::kBFloat16,
@@ -169,21 +194,33 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   //: reads WORDS instead of re-reading those planes per (owner, window, token).  The
   //: table is a TRANSIENT of this call -- nothing else asks for it -- and it is held
   //: here rather than inside the dispatch so its lifetime outlives the launch.
-  torch::Tensor rows;
+  torch::Tensor rows, sup;
   const int tok_words = rola::chunk::tok_words(L);
-#define CARRY_DISPATCH(D_, B_, K_, M_, W_, C_, CV_)                                        \
+  auto run = [&](int64_t mo) {
+    bool matched = false;
+#define CARRY_DISPATCH(D_, B_, K_, M_, W_, C_, CV_, MO_)                                    \
   if (is_arm(widths, D_, B_) && k == K_ && m == M_ && window == W_ && chunk == C_           \
-      && carve == CV_) {                                                                    \
+      && carve == CV_ && mo == MO_) {                                                       \
+    matched = true;                                                                         \
     rows = build_owner_rows<D_, B_, K_, M_>(pr, pw, BH, L);                                 \
-    err = launch<D_, B_, K_, M_, W_, C_, CV_>(                                              \
+    if constexpr ((MO_) != 0) sup = build_support<D_, B_>(pr, pw, BH, L, stream);           \
+    err = launch<D_, B_, K_, M_, W_, C_, CV_, (uint32_t)(MO_)>(                             \
         (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),           \
         (const __nv_bfloat16*)gw.data_ptr(), (const __nv_bfloat16*)v.data_ptr(),            \
-        reinterpret_cast<const uint32_t*>(rows.data_ptr()), o.data_ptr<float>(),            \
-        den.data_ptr<float>(), BH, L, tok_words, v_row_bytes, sin_p,                        \
+        reinterpret_cast<const uint32_t*>(rows.data_ptr()),                                 \
+        sup.defined() ? reinterpret_cast<const uint32_t*>(sup.data_ptr()) : nullptr,        \
+        o.data_ptr<float>(), den.data_ptr<float>(), BH, L, tok_words, v_row_bytes, sin_p,   \
         s_out.data_ptr<float>(), stream);                                                   \
   } else
-  CARRY_ARMS_X(CARRY_DISPATCH) { TORCH_CHECK(false, "unbuilt carry arm"); }
+    CARRY_ARMS_X(CARRY_DISPATCH) {}
 #undef CARRY_DISPATCH
+    return matched;
+  };
+  //: THE DECLARATION IS RESOLVED AT THIS SEAM (law 3): a declaration this family has
+  //: no compacted form for is served DENSE_BOTH, which is always correct and only
+  //: ever slower.  The topology itself is never degraded -- an unbuilt (D, B, k, m,
+  //: W, C) is refused.
+  if (!run(level_modes)) TORCH_CHECK(run(0), "unbuilt carry arm");
   C10_CUDA_CHECK(err);
   return {o, den, s_out};
 }
@@ -195,16 +232,16 @@ __global__ void stamp_kernel_entry(int* out) {
 }
 
 std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t m, int64_t window,
-                                 int64_t chunk, int64_t carve) {
+                                 int64_t chunk, int64_t carve, int64_t level_modes) {
   auto t = torch::zeros({3}, torch::dtype(torch::kInt32).device(torch::kCUDA));
   stamp_kernel_entry<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(t.data_ptr<int>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   auto h = t.cpu();
   std::vector<int64_t> r{h.data_ptr<int>()[0], h.data_ptr<int>()[1], h.data_ptr<int>()[2]};
-#define CARRY_CENSUS(D_, B_, K_, M_, W_, C_, CV_)                                           \
+#define CARRY_CENSUS(D_, B_, K_, M_, W_, C_, CV_, MO_)                                      \
   if (is_arm(widths, D_, B_) && k == K_ && m == M_ && window == W_ && chunk == C_           \
-      && carve == CV_) {                                                                    \
-    for (auto x : census<D_, B_, K_, M_, W_, C_, CV_>()) r.push_back(x);                    \
+      && carve == CV_ && level_modes == MO_) {                                              \
+    for (auto x : census<D_, B_, K_, M_, W_, C_, CV_, (uint32_t)(MO_)>()) r.push_back(x);   \
     return r;                                                                               \
   }
   CARRY_ARMS_X(CARRY_CENSUS)
@@ -221,8 +258,8 @@ torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t
               "the operand planes are bf16");
   TORCH_CHECK(pr.sizes() == pw.sizes() && pr.dim() == 3, "expect packed amplitudes [BH, L, sumW]");
   const int BH = (int)pr.size(0), L = (int)pr.size(1);
-#define CARRY_ROWS(D_, B_, K_, M_, W_, C_, CV_)                       \
-  if (is_arm(widths, D_, B_) && k == K_ && m == M_)                   \
+#define CARRY_ROWS(D_, B_, K_, M_, W_, C_, CV_, MO_)                  \
+  if (is_arm(widths, D_, B_) && k == K_ && m == M_ && (MO_) == 0)     \
     return build_owner_rows<D_, B_, K_, M_>(pr, pw, BH, L);
   CARRY_ARMS_X(CARRY_ROWS)
 #undef CARRY_ROWS
@@ -231,8 +268,8 @@ torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t
 
 std::vector<std::vector<int64_t>> arms() {
   std::vector<std::vector<int64_t>> out;
-#define CARRY_LIST(D_, B_, K_, M_, W_, C_, CV_)                                             \
-  out.push_back({D_, B_, K_, M_, W_, C_, CV_, (int64_t)BoxPlan<D_, B_, K_, M_>::kBC,        \
+#define CARRY_LIST(D_, B_, K_, M_, W_, C_, CV_, MO_)                                        \
+  out.push_back({D_, B_, K_, M_, W_, C_, CV_, MO_, (int64_t)BoxPlan<D_, B_, K_, M_>::kBC,   \
                  (int64_t)BoxPlan<D_, B_, K_, M_>::kOwners,                                 \
                  (int64_t)CarryGeom<D_, B_, K_, M_, W_, C_>::bytes});
   CARRY_ARMS_X(CARRY_LIST)

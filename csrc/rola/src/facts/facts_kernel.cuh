@@ -345,6 +345,44 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
 #undef ROLA_FACTS_VOTE
 }
 
+// --------------------------------------------------------- the support plane
+//: THE SAME EXACT-NONZERO TEST THE UNION VOTE APPLIES, AT DIGIT GRAIN.  The union
+//: table answers "does this token's support meet this owner's digit RUN"; the
+//: support plane answers "which digits", which is what lets a consumer synthesize
+//: only the live coefficients.  One warp votes one 32-digit word, so the map from
+//: amplitudes to bits is a single ballot and nothing is packed afterwards.
+//: docs/internals/facts/facts_kernel.md#the-support-plane
+constexpr int kSupportThreads = 128;
+
+//: the 32-bit words one level's bitmap occupies.  A level narrower than a word
+//: still takes one, so a consumer's per-level stride is a shift at every width.
+constexpr int support_words(int B) { return (B + kTokBits - 1) / kTokBits; }
+
+//: `[BH, 2, L, D, SW]` uint32, side 0 read.  The minor axes are (level, word) so a
+//: consumer's whole slice for one (token, level) is ONE aligned load.
+template <int D, int B>
+__global__ void support_plane_kernel(const __nv_bfloat16* __restrict__ pread,
+                                     const __nv_bfloat16* __restrict__ pwrite,
+                                     uint32_t* __restrict__ sup, int L) {
+  constexpr int SW = support_words(B);
+  constexpr int kRow = D * SW;
+  constexpr int kWtot = D * B;
+  const int lane = threadIdx.x & 31;
+  const long unit = (long)blockIdx.x * (kSupportThreads / kBallotLanes) + (long)(threadIdx.x >> 5);
+  if (unit >= (long)L * kRow) return;
+  const int tok = (int)(unit / kRow);
+  const int rem = (int)(unit - (long)tok * kRow);
+  const int l = rem / SW, dig = (rem - l * SW) * kTokBits + lane;
+  const int side = (int)blockIdx.z;
+  const __nv_bfloat16* const amp =
+      (side == 0 ? pread : pwrite) + (long)blockIdx.y * L * kWtot + (long)tok * kWtot + (long)l * B;
+  const bool live =
+      dig < B
+      && ((uint32_t)*reinterpret_cast<const unsigned short*>(amp + dig) & kBf16MagnitudeMask) != 0u;
+  const uint32_t word = lane_ballot(live);
+  if (lane == 0) sup[(((long)blockIdx.y * 2 + side) * L + tok) * kRow + rem] = word;
+}
+
 // ------------------------------------------------------- the atom-grain stats
 //: THE STATS PASS' REDUCTION.  Which atoms does this call's routing WRITE?  The
 //: answer keys the state's residency, so it is taken at the invariant quantum
