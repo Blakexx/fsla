@@ -1,9 +1,9 @@
 // csrc/rola/src/carry/carry.cu -- K31 R1: the carry family's ONE translation unit.
 //
 // Dispatch, torch entries and the built arm list.  The arm list is small BY
-// DESIGN: the carve question is SETTLED (channel-split, Blake 2026-08-20), so the
-// axis is gone from the kernel and survives only as the seam's `carve` scalar,
-// which the dispatch admits at its one ruled value.
+// DESIGN: the carve question is SETTLED (the innermost level's leaf split, K33
+// clean-sheet tier A), so the axis is gone from the kernel and survives only as the
+// seam's `carve` scalar, which the dispatch admits at its one ruled value.
 //
 // The arms:
 //   flagship   (256,256)  D=2  k=4 m=8   s=(8,16)     BC=128  W=384  C=32
@@ -86,7 +86,7 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
                           const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den,
                           int BH, int L, int tok_words, int v_row_bytes, const float* s_in,
                           float* s_out, cudaStream_t stream) {
-  static_assert(CV == 1, "channel-split is the built carve");
+  static_assert(CV == 1, "the innermost level's leaf split is the built carve");
   const auto fn = &carry_kernel<D, B, K, M, W, C, true>;
   constexpr size_t sm = CarryGeom<D, B, K, M, W, C>::bytes;
   static bool configured = false;
@@ -104,7 +104,7 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
 
 template <int D, int B, int K, int M, int W, int C, int CV>
 static std::array<int64_t, 10> census() {
-  static_assert(CV == 1, "channel-split is the built carve");
+  static_assert(CV == 1, "the innermost level's leaf split is the built carve");
   cudaFuncAttributes a{};
   if (cudaFuncGetAttributes(&a, carry_kernel<D, B, K, M, W, C, true>) != cudaSuccess)
     return {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
