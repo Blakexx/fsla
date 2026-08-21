@@ -22,15 +22,19 @@ import statistics
 
 import torch
 
-from benchmarks.bench_prefill import ALT, D_V, DENSE, WIDTHS, K, M, draw, median_ms, seed_of
+from benchmarks.bench_prefill import D_V, PATTERNS, TOPOLOGIES, draw, median_ms, seed_of
 from rola.ops import carry as carry_ops
 from rola.ops import intra as intra_ops
 from rola.ops._ext import extension
 
+#: the flagship topology: D = 2 levels of B = 256 digits, (k, m) = (4, 8), W = 512.
+WIDTHS, K, M, WINDOW = TOPOLOGIES["flat"]
+
 CELLS = [
-    ("dense", DENSE, None, None),
-    ("ALT k_tok=4 scattered", ALT, 4, None),
-    ("ALT k_tok=16 scattered", ALT, 16, None),
+    ("dense", "dense", None, None),
+    ("ALT k_tok=4 scattered", "ALT", 4, None),
+    ("ALT k_tok=16 scattered", "ALT", 16, None),
+    ("ALT k_tok=16 cohort=64", "ALT", 16, 64),
 ]
 
 
@@ -54,7 +58,8 @@ def walls(read, write, g, v, window, modes):
     def forward():
         num, den, _ = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(WIDTHS), K, M,
                                               window, 32, carry_ops.CHANNEL_SPLIT, None)
-        ext.intra_forward(pread, pwrite, gwrite, value, num, den, len(WIDTHS), packed, window)
+        ext.intra_forward(pread, pwrite, gwrite, value, num, den, len(WIDTHS), WIDTHS[0],
+                          packed, window)
 
     def scans():
         ext.carry_backward_inter(pread, pwrite, gwrite, vt, dn, list(WIDTHS), K, M, window, 32,
@@ -65,13 +70,13 @@ def walls(read, write, g, v, window, modes):
 
     def intra_bwd():
         ext.intra_backward(pread, pwrite, gwrite, value, dnum_bf, d_den, planes[0], planes[1],
-                           planes[2], planes[3], len(WIDTHS), packed, window)
+                           planes[2], planes[3], len(WIDTHS), WIDTHS[0], packed, window)
 
     def backward():
         out = ext.carry_backward_inter(pread, pwrite, gwrite, vt, dn, list(WIDTHS), K, M, window,
                                        32, None, None, False)
         ext.intra_backward(pread, pwrite, gwrite, value, dnum_bf, d_den, out[0], out[1], out[2],
-                           out[3], len(WIDTHS), packed, window)
+                           out[3], len(WIDTHS), WIDTHS[0], packed, window)
 
     return (median_ms(forward), median_ms(backward), median_ms(scans), median_ms(intra_bwd))
 
@@ -79,7 +84,7 @@ def walls(read, write, g, v, window, modes):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--length", type=int, default=65536)
-    ap.add_argument("--window", type=int, default=carry_ops.WINDOW_WIDE)
+    ap.add_argument("--window", type=int, default=WINDOW)
     a = ap.parse_args()
     T, window = a.length, a.window
     if T % window:
@@ -91,8 +96,9 @@ def main():
     print(f"{'cell':26s} {'fwd ms':>9s} {'bwd ms':>9s} {'bwd/fwd':>8s} "
           f"{'scans ms':>9s} {'intra ms':>9s}")
     ratios = []
-    for name, modes, k_tok, cohort in CELLS:
-        read, write, g, v = draw(T, modes, k_tok, cohort, seed_of(name))
+    for name, pattern, k_tok, cohort in CELLS:
+        modes = PATTERNS[pattern](len(WIDTHS))
+        read, write, g, v = draw(T, WIDTHS, modes, k_tok, cohort, seed_of(name))
         fwd, bwd, sc, ib = walls(read, write, g, v, window, modes)
         ratios.append(bwd / fwd)
         print(f"{name:26s} {fwd:9.2f} {bwd:9.2f} {bwd / fwd:8.2f} {sc:9.2f} {ib:9.2f}")
