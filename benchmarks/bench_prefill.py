@@ -147,7 +147,7 @@ def draw(T, widths, modes, k_tok, cohort, seed, device="cuda"):
     return tuple(read), tuple(write), g, v
 
 
-def split_walls(read, write, g, v, widths, k, m, window, modes, chunk):
+def split_walls(read, write, g, v, widths, k, m, window, modes):
     """``(combined, carry_alone, intra_alone, with_packing)`` in ms.
 
     THE FIRST THREE ARE MEASURED ON PRE-PACKED PLANES, so the split and the total
@@ -168,7 +168,7 @@ def split_walls(read, write, g, v, widths, k, m, window, modes, chunk):
 
     def carry_only():
         ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths), k, m,
-                                window, chunk, carry_ops.CHANNEL_SPLIT, None)
+                                window, 32, carry_ops.CHANNEL_SPLIT, None)
 
     o = torch.zeros((1, pread.shape[1], D_V), dtype=torch.float32, device=pread.device)
     den = torch.zeros((1, pread.shape[1]), dtype=torch.float32, device=pread.device)
@@ -179,14 +179,12 @@ def split_walls(read, write, g, v, widths, k, m, window, modes, chunk):
 
     def combined():
         num, dn, _ = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths),
-                                             k, m, window, chunk, carry_ops.CHANNEL_SPLIT,
-                                             None)
+                                             k, m, window, 32, carry_ops.CHANNEL_SPLIT, None)
         ext.intra_forward(pread, pwrite, gwrite, value, num, dn, len(widths), widths[0],
                           packed_modes, window)
 
     def with_packing():
-        prefill(read, write, g, v, widths, k=k, m=m, window=window, modes=modes,
-                chunk=chunk)
+        prefill(read, write, g, v, widths, k=k, m=m, window=window, modes=modes)
 
     return (median_ms(combined), median_ms(carry_only), median_ms(intra_only),
             median_ms(with_packing))
@@ -222,8 +220,6 @@ def main():
                     help="default: N, the capacity-fair length for the topology")
     ap.add_argument("--window", type=int, default=None,
                     help="default: the window both families carry this topology at")
-    ap.add_argument("--chunk", type=int, default=32,
-                    help="the carry's batch height C, in tokens; a built arm's value")
     a = ap.parse_args()
     widths, k, m, arm_window = TOPOLOGIES[a.topology]
     D, B = len(widths), widths[0]
@@ -234,8 +230,8 @@ def main():
         raise SystemExit(f"L = {T} is not a whole number of {window}-token windows")
     print(f"# K31 integration I3 -- {torch.cuda.get_device_name()}, topology {widths}, "
           f"(k, m) = ({k}, {m}), N = {N}, L = {T}, N == L: {N == T}, d_v = {D_V}, "
-          f"BH = 1, W = {window}, C = {a.chunk}, medians of {REPS}")
-    stamp = carry_ops.build_stamp(widths, k, m, window, a.chunk, carry_ops.CHANNEL_SPLIT)
+          f"BH = 1, W = {window}, medians of {REPS}")
+    stamp = carry_ops.build_stamp(widths, k, m, window, 32, carry_ops.CHANNEL_SPLIT)
     print(f"# carry stamp {stamp[0]}  regs {stamp[3]}  local {stamp[8]}  smem {stamp[6]}  "
           f"BC {stamp[9]}  owners {stamp[10]}  stages {stamp[11]}")
     print(f"# intra stamp {intra_ops.build_stamp()}  arms {intra_ops.arms()}")
@@ -244,8 +240,7 @@ def main():
     for name, pattern, k_tok, cohort in cells_for(D, B):
         modes = PATTERNS[pattern](D)
         read, write, g, v = draw(T, widths, modes, k_tok, cohort, seed=seed_of(name))
-        rows.append((name, *split_walls(read, write, g, v, widths, k, m, window, modes,
-                                        a.chunk)))
+        rows.append((name, *split_walls(read, write, g, v, widths, k, m, window, modes)))
         del read, write, g, v
         torch.cuda.empty_cache()
 

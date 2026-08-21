@@ -5,15 +5,12 @@
 // axis is gone from the kernel and survives only as the seam's `carve` scalar,
 // which the dispatch admits at its one ruled value.
 //
-// The arms, each built at BOTH batch heights `C` in {32, 64}:
-//   flagship   (256,256)  D=2  k=4 m=8   s=(8,16)     BC=128  W=384
-//   flagship+  (256,256)  D=2  k=4 m=8   s=(8,16)     BC=128  W=512
-//   small      ( 64, 64)  D=2  k=4 m=8   s=(8,16)     BC=128  W=64
-//   deep-3     (16^3)     D=3  k=2 m=16  s=(2,4,16)   BC=128  W=64
-//   deep-4     ( 8^4)     D=4  k=2 m=8   s=(2,2,4,8)  BC=128  W=64
-// `C` is the batch height in tokens: it sets the produce's slots per thread
-// (`SPT = BC*C/kThreads`), the readout accumulator's n-tiles (`C/kMmaN`) and the
-// panel/staging shared memory, and through the latter the CTA residency.
+// The arms:
+//   flagship   (256,256)  D=2  k=4 m=8   s=(8,16)     BC=128  W=384  C=32
+//   flagship+  (256,256)  D=2  k=4 m=8   s=(8,16)     BC=128  W=512  C=32
+//   small      ( 64, 64)  D=2  k=4 m=8   s=(8,16)     BC=128  W=64   C=32
+//   deep-3     (16^3)     D=3  k=2 m=16  s=(2,4,16)   BC=128  W=64   C=32
+//   deep-4     ( 8^4)     D=4  k=2 m=8   s=(2,2,4,8)  BC=128  W=64   C=32
 // Every arm holds ONE box: `BC = 128` is the register budget's number and it does
 // not move with depth, so the two deep arms differ from the flat ones only in how
 // the same 128 leaves are cut into digits.  Both are conformance cells at `N =
@@ -71,12 +68,7 @@ using OwnerRows =
   X_(2, 256, 4, 8, 512, 32, 1)  \
   X_(2, 64, 4, 8, 64, 32, 1)    \
   X_(3, 16, 2, 16, 64, 32, 1)   \
-  X_(4, 8, 2, 8, 64, 32, 1)     \
-  X_(2, 256, 4, 8, 384, 64, 1)  \
-  X_(2, 256, 4, 8, 512, 64, 1)  \
-  X_(2, 64, 4, 8, 64, 64, 1)    \
-  X_(3, 16, 2, 16, 64, 64, 1)   \
-  X_(4, 8, 2, 8, 64, 64, 1)
+  X_(4, 8, 2, 8, 64, 32, 1)
 
 //: `CV` is the SEAM's carve scalar, not a kernel axis: it names the one ruled
 //: carve so a caller that asks for the deleted one is refused rather than served
