@@ -23,6 +23,16 @@ than in front of itself. The two passes' rings are one continuous chain — the 
 pass's prologue is the Gram pass's own trailing commit slot — so the wait depth is one
 group throughout and no phase drains the pipe.
 
+The reverse's stage is HALF the forward's digit width, and that is what buys the image
+below. Its block carries the forward's operands plus the seed, the relay plane and the
+image, and the operand slabs are the only term large enough to pay for the last of those;
+halving them frees more than the image costs and leaves the block inside the opt-in
+limit. The price is twice as many staging steps and barriers per pass, which is why the
+cap is the reverse's own constant and not the forward's — the forward has nothing to buy
+with it. The digit pass unrolls its stage loop by the ring's own period of two, so a
+body's buffer parity is a compile-time property of the body rather than a value it
+carries; the ring is what sets the factor, not a tuning sweep.
+
 ## Why a separate kernel and not a fused one
 
 The forward intra must remain a pure forward for inference. `dA` needs the seed, which
@@ -53,22 +63,46 @@ leave-one-out is the genuine article. It is computed as a prefix/suffix product 
 two tokens' level-`l` supports are disjoint, which under an ALT structure is the common
 case, so the division is `0/0`.
 
-## Where the transposes are
+## The image, and why the reducing phase is carved differently from the accumulating one
 
-`A` and `dG_l` are accumulated with `m = t` and `n = j`, which is the orientation
-`d_pr_l` wants: its A operand is the accumulator by an in-lane pack, exactly as the
-forward's `A·V` is. The two outputs indexed by the COLUMN token — `d_v` and `d_pw_l` —
-need `m = j`, and that is the accumulator's transpose. One `movmatrix` per 8x8 tile
-supplies it, which is cheaper than the shared-memory round trip of an object the warp
-already holds.
+The tile pair's coefficient object is `A` and the `D` cotangents `dG_l`, each a
+`[C reader tokens x 64 write tokens]` plane spread over the block's warps. It is
+accumulated ROW-carved because the Gram's `m` axis IS the reader axis — a warp owns 16
+readers and there is no choice about it. Every phase that CONSUMES it, though, contracts
+over the reader axis: `d_pw_l` and `d_v` sum over `t`, which under a row carve is the
+carved axis, so every warp holds a partial of every destination cell and the whole block
+reduces each cell eight times.
+
+So the object is PUBLISHED once per level, as a bf16 plane in shared memory, and the
+consuming phase is re-carved by DIGIT: a warp owns one `kSlabDigits` slab of the stage
+and one slice of the destination token axis, its contraction closes inside the warp, and
+every destination cell is reduced ONCE per block. The publish is arithmetically free —
+the consuming phase's A operand was already rounded to bf16 in registers before every
+MMA, so the image is that same rounding at that same point — and it costs one plane at
+the pitch the operand slabs already prove conflict-free in BOTH `ldmatrix` flavours,
+which is what lets one image serve `d_pr_l`'s `(m = t, k = j)` map through `ldmatrix` and
+`d_pw_l`'s and `d_v`'s `(m = j, k = t)` map through `ldmatrix.trans`. No in-register tile
+transpose and no per-`(slab, m-tile)` re-pack survive it.
+
+The carve is a statement about the block, not about a shape: the digit part is one slab
+of the stage and the group is the rest of the warps, so the row group is `C / groups`
+readers wide and the column group is `64 / groups` writers wide, at every built window.
+`d_pr_l` is the one gradient the row carve already left warp-disjoint, and the digit
+carve keeps it so — a digit belongs to exactly one warp.
 
 ## Why the accumulators are 16 digits wide
 
 `d_pw_l` is indexed by the column token, so its `m` axis is the whole 64-token tile: at a
-64-digit stage its accumulator would be 128 registers per thread. The digit axis is
-therefore taken one 16-digit slab at a time — the forward's own slab granularity — which
-puts both digit accumulators at 32 registers and leaves the RED volume unchanged, since
-the number of `(token, digit)` cells written does not depend on how they are staged.
+wider digit granule its accumulator would be many times 32 registers per thread. The
+digit axis is therefore taken one 16-digit slab at a time — the forward's own slab
+granularity, and the unit the digit carve hands out — which puts both digit accumulators
+at 32 registers and leaves the RED volume unchanged, since the number of `(token, digit)`
+cells written does not depend on how they are staged.
+
+`d_pw_l`'s contraction runs over the whole block of readers rather than one warp's 16, so
+it is gated per row tile: a tile the certificate left unstaged is one whose operand rows
+are all exact zeros, and a tile the causal walk excludes is one whose image rows are
+exact zeros, so both are skipped rather than read.
 
 ## The second launch bound
 
@@ -82,19 +116,18 @@ enters only the target's register ceiling.
 
 ## The fan-in, and why it relays through shared memory first
 
-`d_pr` rows are indexed by the tile pair's ROW axis, which is warp-disjoint under the
-forward's row carve, so no cross-warp reduction appears there. `d_pw` and `d_v` rows are
-indexed by the COLUMN axis, so all warps contribute to every one, and they meet in the
-destination plane's own atomics rather than in a CTA tree.
+Under the digit carve every reduced cell has exactly one owning warp, so the fan-in is
+not a cross-warp reduction at all: what remains in the destination plane's atomics is the
+meeting of the tile pairs of one column, and of the blocks and windows the carry's scans
+also write.
 
 That leaves ADDRESSING as the whole cost of the fan-in, and it is the kernel's largest
 single one. The MMA accumulator's lane map puts a `[16 x 16]` tile's row on `lane>>2` and
 its column on `(lane&3)*2`, so one reducing instruction's 32 values land on EIGHT
 destination rows — a plane pitch apart — at four scattered columns of each. That is eight
-memory sectors to carry 128 bytes, and at the flagship the reverse pass issues about 1400
-such instructions per thread per tile pair. Measured on sm_86, the resulting store-queue
-backup (LG throttle, MIO throttle and short scoreboard together) was 59 % of the kernel's
-warp cycles per executed instruction.
+memory sectors to carry 128 bytes. Measured on sm_86, the resulting store-queue backup
+(LG throttle, MIO throttle and short scoreboard together) was 59 % of the kernel's warp
+cycles per executed instruction.
 
 So every reduced tile relays through `xpose`, a warp-private `[16 x 18]` plane, before it
 reduces: the accumulator is written in the MMA's lane map (two column-adjacent values per
@@ -104,8 +137,8 @@ warp-private, so the relay costs two shared accesses per value and NO barrier.
 
 The relay is the ONE reducing path — `d_pr`, `d_pw` and `d_v` are all `[16 x 16]` tiles
 and all take it. `d_gw` does not: it is one value per column token, already reduced
-across the warp by three lane shuffles, and its four surviving lanes are 0.04 % of the
-kernel's reductions.
+across the warp by three lane shuffles, and its four surviving lanes are a rounding error
+in the kernel's reductions.
 
 Choosing the relay over the alternatives is a measurement, not a preference. Meeting the
 column-indexed partials in a CTA-wide shared plane — which would cut the reduction COUNT

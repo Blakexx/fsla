@@ -41,14 +41,26 @@ namespace rola {
 namespace intra {
 namespace detail {
 
-using denseref::ops::transpose_frag_b16;
-
 //: the reverse intra's own device stamp: a fact only THIS binary can produce.
 constexpr int64_t kIntraBwdMagic = 31040002;
 
 constexpr int kSeedPitch = kValuePitch;
 constexpr int kChanTiles = kValueWidth / kSlabDigits;
 constexpr int warps_of(int window) { return threads_of(window) / 32; }
+
+//: THE REVERSE STAGES HALF AS WIDE AS THE FORWARD.  Its block carries the forward's
+//: operands plus the seed, the relay plane and the `dG_l` image, and the image is what
+//: the digit carve is built on, so the staging ring is the term that pays for it.  The
+//: cap is the reverse's own because the forward has nothing to buy with it.
+constexpr int kBwdStageCap = 32;
+constexpr int bwd_stage_digits(int width) {
+  return level_digits(width) < kBwdStageCap ? level_digits(width) : kBwdStageCap;
+}
+constexpr int bwd_slabs_per_stage(int width) { return bwd_stage_digits(width) / kSlabDigits; }
+constexpr int bwd_stages_per_level(int width) {
+  return level_digits(width) / bwd_stage_digits(width);
+}
+constexpr int bwd_operand_pitch(int width) { return bwd_stage_digits(width) + 8; }
 
 //: THE RELAY PLANE, one `[kMmaM x kSlabDigits]` tile per warp: every cotangent this
 //: kernel reduces has that shape, and the accumulator's lane map scatters a reducing
@@ -58,19 +70,26 @@ constexpr int warps_of(int window) { return threads_of(window) / 32; }
 constexpr int kXposeRows = 16;
 constexpr int kXposePitch = kSlabDigits + 2;
 
-//: The forward's block footprint plus the ROW side's seed rows and the per-warp relay
-//: plane.  The seed is staged once per output block, not once per column tile: its rows
-//: are the block's readers.
+//: THE `dG_l` IMAGE: the tile pair's coefficient object, `[C reader tokens x kTile write
+//: tokens]`, published in bf16 so the phase that READS it can be carved differently from
+//: the phase that accumulated it.  The pitch is the one the operand slabs already prove
+//: conflict-free in both `ldmatrix` flavours.
+constexpr int kImagePitch = kTile + 8;
+
+//: The forward's block footprint plus the ROW side's seed rows, the per-warp relay
+//: plane and the image.  The seed is staged once per output block, not once per column
+//: tile: its rows are the block's readers.
 template <int D, int B, int W>
 struct alignas(16) IntraBwdSmem {
-  __nv_bfloat16 rslab[2][rows_of(W)][operand_pitch(B)];
-  __nv_bfloat16 wslab[2][kTile][operand_pitch(B)];
+  __nv_bfloat16 rslab[2][rows_of(W)][bwd_operand_pitch(B)];
+  __nv_bfloat16 wslab[2][kTile][bwd_operand_pitch(B)];
   __nv_bfloat16 vslab[kTile][kValuePitch];
   __nv_bfloat16 dslab[rows_of(W)][kSeedPitch];
   __nv_bfloat16 gain[kTile];
   float dden[rows_of(W)];
   alignas(16) float xpose[warps_of(W)][kXposeRows][kXposePitch];
   uint32_t mask[tiles_of(W)][D][2][mask_words(B)];
+  __nv_bfloat16 img[rows_of(W)][kImagePitch];
 };
 
 struct IntraBwdParams {
@@ -106,8 +125,9 @@ __device__ __forceinline__ bool side_stage_live(const IntraBwdSmem<D, B, W>& sm,
                                                 int ti, int l, int side, int stage) {
   bool any = false;
 #pragma unroll
-  for (int sub = 0; sub < slabs_per_stage(B); ++sub)
-    any = any || side_bits<D, B, W>(sm, modes, ti, l, side, stage * slabs_per_stage(B) + sub) != 0u;
+  for (int sub = 0; sub < bwd_slabs_per_stage(B); ++sub)
+    any = any
+          || side_bits<D, B, W>(sm, modes, ti, l, side, stage * bwd_slabs_per_stage(B) + sub) != 0u;
   return any;
 }
 
@@ -144,9 +164,10 @@ __device__ __forceinline__ uint32_t live_rows_pair(const IntraBwdSmem<D, B, W>& 
     if (rt0 + r < ct) continue;
     bool any = false;
 #pragma unroll
-    for (int sub = 0; sub < slabs_per_stage(B); ++sub)
+    for (int sub = 0; sub < bwd_slabs_per_stage(B); ++sub)
       any = any
-            || pair_slab_live<D, B, W>(sm, modes, rt0 + r, ct, l, stage * slabs_per_stage(B) + sub);
+            || pair_slab_live<D, B, W>(sm, modes, rt0 + r, ct, l,
+                                       stage * bwd_slabs_per_stage(B) + sub);
     if (any) bits |= 1u << r;
   }
   return bits;
@@ -197,11 +218,11 @@ __device__ __forceinline__ void stage_bwd_slabs(IntraBwdSmem<D, B, W>& sm, const
                                                 int bh, int wbase, int rt0, int ct, int l,
                                                 int stage, int buf, int tid, uint32_t rows,
                                                 bool cols) {
-  const int digit = l * B + stage * stage_digits(B);
+  const int digit = l * B + stage * bwd_stage_digits(B);
   const long long base = (long long)(bh * p.L + wbase) * p.row_width + digit;
   constexpr int kThreads = threads_of(W);
   constexpr int kColThreads = kThreads / kTile;
-  constexpr int kColDigits = stage_digits(B) / kColThreads;
+  constexpr int kColDigits = bwd_stage_digits(B) / kColThreads;
   if (cols) {
     const int ctoken = tid / kColThreads;
     const int cpart = (tid % kColThreads) * kColDigits;
@@ -213,12 +234,12 @@ __device__ __forceinline__ void stage_bwd_slabs(IntraBwdSmem<D, B, W>& sm, const
   }
   const int rtoken = (tid >> 1) & (kTile - 1);
   const int rtile = tid / (2 * kTile);
-  const int rpart = (tid & 1) * (stage_digits(B) / 2);
+  const int rpart = (tid & 1) * (bwd_stage_digits(B) / 2);
   if ((rows >> rtile) & 1u) {
     const __nv_bfloat16* rsrc =
         p.pread + base + (long long)((rt0 + rtile) * kTile + rtoken) * p.row_width + rpart;
 #pragma unroll
-    for (int c = 0; c < stage_digits(B) / 16; ++c)
+    for (int c = 0; c < bwd_stage_digits(B) / 16; ++c)
       stage_tile(smem_addr(&sm.rslab[buf][rtile * kTile + rtoken][rpart + c * 8]), rsrc + c * 8);
   }
 }
@@ -262,15 +283,21 @@ __device__ __forceinline__ void stage_bwd_seed(IntraBwdSmem<D, B, W>& sm, const 
   if (tid < kRows) sm.dden[tid] = p.dden[(long long)bh * p.L + t0 + tid];
 }
 
-//: A `[16 x 64]` accumulator's TRANSPOSE, as the four A fragments of m-tile `jm`:
-//: `m` becomes the accumulator's column axis and `k` its row axis.  This is the one
-//: place the reverse pass needs an in-register tile transpose; the alternative is an
-//: SMEM round trip of an object the warp already holds.
-__device__ __forceinline__ void transpose_acc(const float (&acc)[8][4], int jm, uint32_t (&a)[4]) {
-  a[0] = transpose_frag_b16(pack_bf16x2(acc[2 * jm][0], acc[2 * jm][1]));
-  a[1] = transpose_frag_b16(pack_bf16x2(acc[2 * jm + 1][0], acc[2 * jm + 1][1]));
-  a[2] = transpose_frag_b16(pack_bf16x2(acc[2 * jm][2], acc[2 * jm][3]));
-  a[3] = transpose_frag_b16(pack_bf16x2(acc[2 * jm + 1][2], acc[2 * jm + 1][3]));
+//: THE PUBLISH.  One row-carved `[kWarpRows x kTile]` accumulator becomes bf16 rows of
+//: the image, at the rounding pass 2's A operand carried anyway.  `row` addresses the
+//: warp's first accumulator row at the lane's column; the accumulator's second row group
+//: is eight rows below it.
+template <int D, int B, int W>
+__device__ __forceinline__ void publish_image(IntraBwdSmem<D, B, W>& sm,
+                                              const float (&acc)[kTile / 8][4], int warp,
+                                              int row_lo, int col_lo) {
+  __nv_bfloat16* lo = &sm.img[warp * kWarpRows + row_lo][col_lo];
+  __nv_bfloat16* hi = &sm.img[warp * kWarpRows + row_lo + 8][col_lo];
+#pragma unroll
+  for (int n = 0; n < kTile / 8; ++n) {
+    *reinterpret_cast<uint32_t*>(lo + n * 8) = pack_bf16x2(acc[n][0], acc[n][1]);
+    *reinterpret_cast<uint32_t*>(hi + n * 8) = pack_bf16x2(acc[n][2], acc[n][3]);
+  }
 }
 
 //: THE ONE REDUCING PATH.  `acc` is one `[kMmaM x kSlabDigits]` accumulator in the
@@ -301,13 +328,6 @@ __device__ __forceinline__ void reduce_tile(IntraBwdSmem<D, B, W>& sm, const flo
   }
 }
 
-__device__ __forceinline__ void pack_acc(const float (&acc)[8][4], int kb, uint32_t (&a)[4]) {
-  a[0] = pack_bf16x2(acc[2 * kb][0], acc[2 * kb][1]);
-  a[1] = pack_bf16x2(acc[2 * kb][2], acc[2 * kb][3]);
-  a[2] = pack_bf16x2(acc[2 * kb + 1][0], acc[2 * kb + 1][1]);
-  a[3] = pack_bf16x2(acc[2 * kb + 1][2], acc[2 * kb + 1][3]);
-}
-
 //: THE SECOND LAUNCH BOUND, from the arm's own footprint.  Without it ptxas budgets
 //: registers for the residency the THREAD COUNT suggests rather than the one this
 //: block's shared memory leaves reachable, and the narrow-window arm pays the
@@ -323,9 +343,35 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
     IntraBwdParams p) {
   constexpr int kTiles = tiles_of(W);
   constexpr int kRowTiles = row_tiles_of(W);
+  constexpr int kWarps = warps_of(W);
+  //: THE DIGIT CARVE.  A warp is a (digit part, group) pair: the part names one
+  //: `kSlabDigits` slab of the stage and the group names the slice of the destination
+  //: token axis the warp owns, so both digit gradients close their contraction inside
+  //: the warp and every destination cell is reduced ONCE per block.
+  constexpr int kParts = bwd_slabs_per_stage(B);
+  constexpr int kGroups = kWarps / kParts;
+  constexpr int kPrRows = rows_of(W) / kGroups;
+  constexpr int kPrM = kPrRows / kWarpRows;
+  constexpr int kPwCols = kTile / kGroups;
+  constexpr int kPwM = kPwCols / kWarpRows;
+  constexpr int kRowK = rows_of(W) / kWarpRows;
+  constexpr int kColK = kTile / kWarpRows;
+  //: `d_v` carves the same object by (write-token tile, channel group).
+  constexpr int kDvGroups = kWarps / kColK;
+  constexpr int kDvChans = kValueWidth / kDvGroups;
+  constexpr int kDvN = kDvChans / kSlabDigits;
   static_assert(kTiles * kTile == W, "the window is a whole number of output tiles");
   static_assert(kTiles % kRowTiles == 0, "the window is a whole number of output blocks");
   static_assert(kValueWidth % kSlabDigits == 0, "the value axis stages like the digit axis");
+  static_assert(kParts == 2, "the digit carve gives each warp ONE slab of the stage");
+  static_assert(bwd_stages_per_level(B) % 2 == 0,
+                "pass 2 unrolls the staging ring by its own period, so the ring's buffer "
+                "parity is a property of the unrolled body");
+  static_assert(kPrRows % kWarpRows == 0 && kPwCols % kWarpRows == 0,
+                "the carve cuts both destination token axes on the MMA's m step");
+  static_assert(kPrRows <= kTile, "a row group lies inside ONE output tile");
+  static_assert(kWarps % kColK == 0 && kValueWidth % kDvGroups == 0,
+                "the value axis carves over whole channel tiles");
   extern __shared__ __align__(16) char raw[];
   IntraBwdSmem<D, B, W>& sm = *reinterpret_cast<IntraBwdSmem<D, B, W>*>(raw);
   const int tid = threadIdx.x;
@@ -344,11 +390,20 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
   const int col_lo = (lane & 3) * 2;
   const int lr = lane & 7, tl = lane >> 3;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
+  //: the `.trans` lane map for an A operand read out of a `[k][m]` plane
+  const int rT = lr + (lane >> 4) * 8, cT = (tl & 1) * 8;
+  const int dp = warp % kParts;
+  const int grp = warp / kParts;
+  //: the row group's own output tile: a group is `kPrRows <= kTile` rows wide, so it
+  //: lies inside one row tile and inherits that tile's causal predicate.
+  const int grp_tile = (grp * kPrRows) / kTile;
+  const int jt = warp % kColK;
+  const int chan = (warp / kColK) * kDvChans;
 
   for (int rt0 = 0; rt0 < kTiles; rt0 += kRowTiles) {
     const int rt = rt0 + mine;
-    float* const dpr_base =
-        p.d_pr + (long long)(bh * p.L + wbase + rt * kTile + trow) * p.row_width;
+    float* const dpr_grp =
+        p.d_pr + (long long)(bh * p.L + wbase + rt0 * kTile + grp * kPrRows) * p.row_width;
     __syncthreads();
     stage_bwd_seed<D, B, W>(sm, p, bh, wbase, rt0, tid);
     stage_commit();
@@ -374,10 +429,10 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
 #pragma unroll
       for (int l = 0; l < D; ++l) {
 #pragma unroll
-        for (int stage = 0; stage < stages_per_level(B); ++stage) {
-          const int step = l * stages_per_level(B) + stage;
-          const int nl = (stage + 1 == stages_per_level(B)) ? l + 1 : l;
-          const int ns = (stage + 1 == stages_per_level(B)) ? 0 : stage + 1;
+        for (int stage = 0; stage < bwd_stages_per_level(B); ++stage) {
+          const int step = l * bwd_stages_per_level(B) + stage;
+          const int nl = (stage + 1 == bwd_stages_per_level(B)) ? l + 1 : l;
+          const int ns = (stage + 1 == bwd_stages_per_level(B)) ? 0 : stage + 1;
           uint32_t next_rows = 0u;
           if (nl < D) {
             next_rows = live_rows_pair<D, B, W>(sm, p.modes, rt0, ct, nl, ns);
@@ -391,8 +446,8 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
           if ((rows >> mine) & 1u) {
             const int buf = step & 1;
 #pragma unroll
-            for (int sub = 0; sub < slabs_per_stage(B); ++sub) {
-              const int slab = stage * slabs_per_stage(B) + sub;
+            for (int sub = 0; sub < bwd_slabs_per_stage(B); ++sub) {
+              const int slab = stage * bwd_slabs_per_stage(B) + sub;
               if (!pair_slab_live<D, B, W>(sm, p.modes, rt, ct, l, slab)) continue;
               const int k0 = sub * kSlabDigits + acol;
               uint32_t af[4];
@@ -484,41 +539,55 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
         }
       }
 
-      // ---- (I2) d_v = A^T . d_num, one 16-channel pass at a time ---------------
-      uint32_t at[4][4];
+      // ---- (I2) d_v = A^T . d_num, off the published image ---------------------
+      //: THE IMAGE IS THE RE-CARVE.  `A` and each `dG_l` are accumulated ROW-carved --
+      //: the Gram's `m` axis IS the row axis -- and published once as bf16, which is the
+      //: rounding pass 2's A operand carried in registers anyway.  Every phase that
+      //: reduces over the reader axis then reads the image back under a carve of its
+      //: own, and closes its contraction inside one warp.
+      __syncthreads();
+      publish_image<D, B, W>(sm, gd, warp, row_lo, col_lo);
+      __syncthreads();
+      {
+        float* dv_base = p.d_v
+                         + (long long)(bh * p.L + wbase + ct * kTile + jt * kWarpRows) * kValueWidth
+                         + chan;
 #pragma unroll
-      for (int jm = 0; jm < 4; ++jm) transpose_acc(gd, jm, at[jm]);
-      float* dv_base = p.d_v + (long long)(bh * p.L + wbase + ct * kTile) * kValueWidth;
-#pragma unroll
-      for (int cb = 0; cb < kChanTiles; ++cb) {
-        if (!active) break;
-        uint32_t bf[4];
-        load_frag_t(bf, smem_addr(&sm.dslab[warp * kWarpRows + rF][cb * kSlabDigits + cF * 8]));
-        const uint32_t b0[2] = {bf[0], bf[1]};
-        const uint32_t b1[2] = {bf[2], bf[3]};
-#pragma unroll
-        for (int jm = 0; jm < 4; ++jm) {
+        for (int nb = 0; nb < kDvN; ++nb) {
           float dv[2][4] = {{0.f, 0.f, 0.f, 0.f}, {0.f, 0.f, 0.f, 0.f}};
-          mma(dv[0], at[jm], b0);
-          mma(dv[1], at[jm], b1);
-          reduce_tile<D, B, W>(sm, dv,
-                               dv_base + (long long)jm * 16 * kValueWidth + cb * kSlabDigits,
-                               kValueWidth, warp, lane);
+#pragma unroll
+          for (int kt = 0; kt < kRowK; ++kt) {
+            uint32_t af[4];
+            load_frag_t(af, smem_addr(&sm.img[kt * kWarpRows + rT][jt * kWarpRows + cT]));
+            uint32_t bf[4];
+            load_frag_t(
+                bf, smem_addr(&sm.dslab[kt * kWarpRows + rF][chan + nb * kSlabDigits + cF * 8]));
+            const uint32_t b0[2] = {bf[0], bf[1]};
+            const uint32_t b1[2] = {bf[2], bf[3]};
+            mma(dv[0], af, b0);
+            mma(dv[1], af, b1);
+          }
+          reduce_tile<D, B, W>(sm, dv, dv_base + nb * kSlabDigits, kValueWidth, warp, lane);
         }
       }
 
       // ---- PASS 2: (I5) and (I6) against the re-staged slabs -------------------
       //: THE FIRST FILL IS ISSUED BEFORE THE SEED CONTRACTION ABOVE, so it lands under
       //: it; from there the ring is the forward's, in the buffers pass 1 already owns.
-      float* dpw_base = p.d_pw + (long long)(bh * p.L + wbase + ct * kTile) * p.row_width;
+      float* const dpw_base =
+          p.d_pw + (long long)(bh * p.L + wbase + ct * kTile + grp * kPwCols) * p.row_width;
+      const bool pr_active = rt0 + grp_tile >= ct;
 #pragma unroll
       for (int l = 0; l < D; ++l) {
-#pragma unroll
-        for (int stage = 0; stage < stages_per_level(B); ++stage) {
-          const int step = l * stages_per_level(B) + stage;
+        __syncthreads();
+        publish_image<D, B, W>(sm, gram[l], warp, row_lo, col_lo);
+        __syncthreads();
+#pragma unroll 2
+        for (int stage = 0; stage < bwd_stages_per_level(B); ++stage) {
+          const int step = l * bwd_stages_per_level(B) + stage;
           const int buf = step & 1;
-          const int nl = (stage + 1 == stages_per_level(B)) ? l + 1 : l;
-          const int ns = (stage + 1 == stages_per_level(B)) ? 0 : stage + 1;
+          const int nl = (stage + 1 == bwd_stages_per_level(B)) ? l + 1 : l;
+          const int ns = (stage + 1 == bwd_stages_per_level(B)) ? 0 : stage + 1;
           if (nl < D)
             stage_bwd_slabs<D, B, W>(sm, p, bh, wbase, rt0, ct, nl, ns, (step + 1) & 1, tid,
                                      live_rows_side<D, B, W>(sm, p.modes, rt0, ct, nl, ns),
@@ -526,45 +595,67 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
           stage_commit();
           stage_wait<1>();
           __syncthreads();
-          const uint32_t rrows = live_rows_side<D, B, W>(sm, p.modes, rt0, ct, l, stage);
-          const int dbase = l * B + stage * stage_digits(B);
+          const int slab = stage * bwd_slabs_per_stage(B) + dp;
+          const int k0 = dp * kSlabDigits;
+          const int gdig = l * B + stage * bwd_stage_digits(B) + k0;
+          if (pr_active && side_bits<D, B, W>(sm, p.modes, ct, l, 1, slab) != 0u) {
 #pragma unroll
-          for (int sub = 0; sub < slabs_per_stage(B); ++sub) {
-            const int slab = stage * slabs_per_stage(B) + sub;
-            const int k0 = sub * kSlabDigits;
-            const int gdig = dbase + sub * kSlabDigits;
-            if (active && side_bits<D, B, W>(sm, p.modes, ct, l, 1, slab) != 0u) {
+            for (int mt = 0; mt < kPrM; ++mt) {
               float dpr[2][4] = {{0.f, 0.f, 0.f, 0.f}, {0.f, 0.f, 0.f, 0.f}};
 #pragma unroll
-              for (int jt = 0; jt < 4; ++jt) {
-                uint32_t af[4];
-                pack_acc(gram[l], jt, af);
+              for (int kt = 0; kt < kColK; ++kt) {
                 uint32_t bf[4];
-                load_frag_t(bf, smem_addr(&sm.wslab[buf][jt * 16 + rF][k0 + cF * 8]));
+                load_frag_t(bf, smem_addr(&sm.wslab[buf][kt * kWarpRows + rF][k0 + cF * 8]));
+                uint32_t af[4];
+                load_frag(af, smem_addr(&sm.img[grp * kPrRows + mt * kWarpRows + (lane & 15)]
+                                               [kt * kWarpRows + acol]));
                 const uint32_t b0[2] = {bf[0], bf[1]};
                 const uint32_t b1[2] = {bf[2], bf[3]};
                 mma(dpr[0], af, b0);
                 mma(dpr[1], af, b1);
               }
-              reduce_tile<D, B, W>(sm, dpr, dpr_base + gdig, p.row_width, warp, lane);
+              reduce_tile<D, B, W>(sm, dpr,
+                                   dpr_grp + (long long)mt * kWarpRows * p.row_width + gdig,
+                                   p.row_width, warp, lane);
             }
-            if (active && ((rrows >> mine) & 1u)
-                && side_bits<D, B, W>(sm, p.modes, rt, l, 0, slab) != 0u) {
-              uint32_t bf[4];
-              load_frag_t(bf, smem_addr(&sm.rslab[buf][warp * kWarpRows + rF][k0 + cF * 8]));
-              const uint32_t b0[2] = {bf[0], bf[1]};
-              const uint32_t b1[2] = {bf[2], bf[3]};
+          }
+          //: (I6)'s contraction runs over the WHOLE block of readers, so it is gated
+          //: per row tile: a tile the certificate left unstaged is one whose operand
+          //: rows are all zero, and the rows of a tile the causal walk excludes are
+          //: zero in the image.
+          uint32_t rlive = 0u;
 #pragma unroll
-              for (int jm = 0; jm < 4; ++jm) {
-                uint32_t af[4];
-                transpose_acc(gram[l], jm, af);
-                float dpw[2][4] = {{0.f, 0.f, 0.f, 0.f}, {0.f, 0.f, 0.f, 0.f}};
-                mma(dpw[0], af, b0);
-                mma(dpw[1], af, b1);
-                reduce_tile<D, B, W>(sm, dpw, dpw_base + (long long)jm * 16 * p.row_width + gdig,
-                                     p.row_width, warp, lane);
+          for (int r = 0; r < kRowTiles; ++r)
+            if (rt0 + r >= ct && side_bits<D, B, W>(sm, p.modes, rt0 + r, l, 0, slab) != 0u)
+              rlive |= 1u << r;
+          if (rlive) {
+            float dpw[kPwM][2][4] = {};
+#pragma unroll
+            for (int r = 0; r < kRowTiles; ++r) {
+              if (!((rlive >> r) & 1u)) continue;
+#pragma unroll
+              for (int kk = 0; kk < kColK; ++kk) {
+                const int kt = r * kColK + kk;
+                uint32_t bf[4];
+                load_frag_t(bf, smem_addr(&sm.rslab[buf][kt * kWarpRows + rF][k0 + cF * 8]));
+                const uint32_t b0[2] = {bf[0], bf[1]};
+                const uint32_t b1[2] = {bf[2], bf[3]};
+#pragma unroll
+                for (int mt = 0; mt < kPwM; ++mt) {
+                  uint32_t af[4];
+                  load_frag_t(
+                      af,
+                      smem_addr(&sm.img[kt * kWarpRows + rT][grp * kPwCols + mt * kWarpRows + cT]));
+                  mma(dpw[mt][0], af, b0);
+                  mma(dpw[mt][1], af, b1);
+                }
               }
             }
+#pragma unroll
+            for (int mt = 0; mt < kPwM; ++mt)
+              reduce_tile<D, B, W>(sm, dpw[mt],
+                                   dpw_base + (long long)mt * kWarpRows * p.row_width + gdig,
+                                   p.row_width, warp, lane);
           }
           __syncthreads();
         }
