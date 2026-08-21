@@ -80,17 +80,34 @@ this kernel, and the choice is not the obvious one.
 |---|---|
 | a SHARED-memory atomic | **refused.** `atomicAdd` on a shared `float` has no hardware reduction on sm_80/sm_86; nvcc lowers it to `ATOMS.CAST.SPIN`, a lock-and-retry loop whose body is a five-instruction serial chain. Four warps on the same cells retried **2.08 times per site**, and the block carried **51.6 %** of Scan A's stall samples and **32.1 %** of Scan B's |
 | barrier-separated ROUNDS | correct and deterministic, but three rendezvous per batch: measured `short_scoreboard` 3.57 → 2.24 against `barrier` 0.39 → 2.66, and the wall did not move. At four warps per CTA a CTA-wide barrier idles three of them |
-| **the GLOBAL plane** | **taken on the read side.** The plane is already the OWNERS' meeting place — two owners sharing a level-1 group reduce into the same cell — so a fourth grain of partial adds no mechanism that was not there. No shared cell, no atomic, no rendezvous |
+| **the GLOBAL plane** | **taken, on BOTH sides.** The plane is already the OWNERS' meeting place — two owners sharing a level-1 group reduce into the same cell — so a fourth grain of partial adds no mechanism that was not there. No shared cell, no atomic, no rendezvous |
 
 The global meeting is at the reduction-addressing floor: for one `(nt, e)` a warp's
 thirty-two lanes cover FOUR token rows (`lane & 3`) at EIGHT CONTIGUOUS digits each
 (`lane >> 2`), so one reducing instruction touches four 32-byte sectors for 128 bytes.
-Measured `lg_throttle` stays at 0.00 with the read side's global reductions at 9.4 M.
+Measured `lg_throttle` stays at 0.00 with the two scans' global reductions at 9.4 M and
+22.0 M.
 
-It is available only where nothing multiplies the COMPLETED sum. `(R7)`'s `gw[j]` does,
-so folding it into a warp-grain partial would DISTRIBUTE it over the four warps; the
-WRITE side therefore stages its inner level through `sdg`, gains it in the drain, and
-meets in barrier-separated rounds. The read side's `(R2)` has no such factor.
+### The gain, and why it may ride the warp-grain partial
+
+`(R7)` is `d_pw_l[j, e] = gw[j] · sum_s (…)`, with the gain OUTSIDE the sum. A
+warp-grain fan-in computes `sum_over_warps (gw[j] · partial_w)` instead: the same value
+in exact arithmetic, a different rounding in this one. **This is ratified, and the reason
+it is not a new liberty is that the plane already does exactly this at the OWNER grain** —
+every owner CTA that touches token `j` reduces its own `gw[j] · partial_owner` into the
+cell, so the gain has always been distributed across the owner decomposition. The write
+side distributes it one grain finer, inside an accumulator whose summation order is
+nondeterministic by construction and whose outputs are not bit-reproducible run to run on
+any build. The read side's `(R2)` has no such factor and is unaffected either way.
+
+The OUTER level is the exception and does not need the argument: it is warp-private, its
+sum completes inside one warp under three lane shuffles, and it stages through `sdg` so
+the drain can coalesce its scattered token rows. The gain is applied there, on a
+completed sum, so `(R7)` is honoured exactly on those rows. The staged plane therefore
+carries the outer level ALONE, and the clear and the drain walk exactly those cells —
+which is why `sdg` is currently allocated for the whole digit run while only `s_0` of its
+rows are live. Reclaiming those 2 048 bytes does not change `cta_target` at any built
+arm and is left as a separate resource change.
 
 ### The two conditions, and why only depth two meets them
 
