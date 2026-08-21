@@ -97,7 +97,7 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     ext = extension()
     num, den, state_out = ext.carry_forward_inter(
         pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
-        int(chunk), carry_ops.CHANNEL_SPLIT, state_in)
+        int(chunk), carry_ops.LEAF_SPLIT, state_in)
     #: SAME STREAM, SAME BUFFERS.  The intra REDs into `num`/`den`; the stream
     #: order is the only synchronization either kernel needs, and there is no
     #: host round trip between them.
@@ -130,7 +130,7 @@ class _Prefill(torch.autograd.Function):
         ext = extension()
         num, den, state_out = ext.carry_forward_inter(
             pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
-            int(chunk), carry_ops.CHANNEL_SPLIT, state_in)
+            int(chunk), carry_ops.LEAF_SPLIT, state_in)
         ext.intra_forward(pread, pwrite, gwrite, value, num, den, D, int(widths[0]),
                           intra_ops.pack_modes(tuple(modes)), int(window))
 
