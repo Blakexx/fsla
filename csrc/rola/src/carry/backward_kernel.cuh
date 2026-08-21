@@ -149,12 +149,27 @@ struct BwdOwner {
   static constexpr int kGwRows = C / kWarps;
   static constexpr int kLeafGrp = kWarpLeaves / kMmaN;
 
-  static_assert(D == 2,
-                "R4 builds the two-level arms; a third level needs its own digit-reduction "
-                "pass geometry, which is a per-arm derivation and not a parameter");
+  //: THE DIGIT REDUCTION'S ROW MAP, stated as the two conditions it rests on rather
+  //: than as a depth.  A warp owns `kWarpLeaves` consecutive owner-local indices, so
+  //: a level's digit field reduces WITHOUT a cross-warp meeting exactly when the
+  //: field lies inside the warp's own bit range, and an accumulator ROW is one digit
+  //: exactly when the innermost span is one m-tile.  Depth two at `s = (8, 16)`
+  //: satisfies both, and only depth two can: the innermost level owns the four row
+  //: bits and ONE other level must own everything above them, including the whole
+  //: warp id, so its digits PARTITION across warps.  `s = (2, 4, 16)` splits those
+  //: upper bits between two levels and level 1's field then straddles the warp-id
+  //: boundary -- two warps hold each of its digits, so the staging acquires a
+  //: per-warp digit base and a second cross-warp meeting.  `s = (2, 2, 4, 8)` breaks
+  //: the row map as well (`s_3 = 8`, half an m-tile, so one accumulator row carries
+  //: two levels' digits).  Each is a per-arm derivation with a wrong-gradient risk,
+  //: and a named gap beats one.
   static_assert(kSlabM == 2 && BP::s(D - 1) == kMmaM,
                 "the digit reduction's row map: a warp's leaf slice is exactly two m-tiles "
                 "and the inner level's span is exactly one of them");
+  static_assert(BP::span_bits(0) == BP::kLocalBits - ilog2c(kMmaM),
+                "the digit reduction's warp map: the bits above the innermost level's field "
+                "must be ONE level's, so that level's digits partition across warps and no "
+                "level straddles the warp-id boundary");
   static_assert(kThreads == 4 * C, "the seed/value staging gives each token row four threads");
   static_assert(kThreads > kCols && kThreads < 2 * kCols,
                 "the page sweep's row cursor advances by one or two, never by a division");

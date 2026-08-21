@@ -77,17 +77,22 @@ def _chunk_tokens() -> int:
 #: THE TOPOLOGY AXIS, written out rather than reduced because the lattice ``(k, m)`` each
 #: row derives is what the walk is, and the axis has to carry every shape of it:
 #:
-#:   (16,)        D = 1, k = 16, m = 1   -- one sub-box per leaf run, pi the identity
-#:   (33,)        D = 1, k = 1           -- no k divides it: every leaf its own owner
-#:   (8, 16)      k = 4,  m = 4          -- unequal per-level shares, pi NOT the identity
-#:   (7, 9)       k = 1                  -- coprime widths, N = 63
-#:   (4, 4, 4)    k = 4,  m = 1          -- the sub-box IS the whole level product
-#:   (3, 5, 7)    k = 1                  -- D = 3 with no admissible span
-#:   (2, 3, 4, 4) k = 1,  m = 2          -- D = 4, capacity without a sub-box
-#:   (64, 64)     k = 4,  m = 8          -- the flagship box, N = 4096
+#:   (16,)         D = 1, s = (16,)          -- the whole level is one owner run
+#:   (33,)         D = 1, k = 1              -- no k divides it: every leaf its own owner
+#:   (8, 16)       s = (8, 16)               -- unequal per-level shares, pi NOT the identity
+#:   (7, 9)        k = 1                     -- coprime widths, N = 63
+#:   (4, 4, 4)     s = (4, 4, 4)             -- the sub-box IS the whole level product
+#:   (3, 5, 7)     k = 1                     -- D = 3 with no admissible span
+#:   (2, 3, 4, 4)  s = (1, 1, 2, 4)          -- D = 4, capacity without a sub-box
+#:   (64, 64)      s = (8, 16)               -- the flagship box, N = 4096
+#:   (16, 16, 16)  s = (2, 4, 16)            -- the deep-3 carry arm's box, atom = ONE level
+#:   (8, 8, 8, 8)  s = (2, 2, 4, 8)          -- the deep-4 carry arm's box, and the one
+#:                                              topology whose atom spans TWO levels, so a
+#:                                              walk unit is two atoms rather than one
 #:
 #: The order is positional in the parametrize ids and does not change.
-_TOPOLOGIES = [(16,), (33,), (8, 16), (7, 9), (4, 4, 4), (3, 5, 7), (2, 3, 4, 4), (64, 64)]
+_TOPOLOGIES = [(16,), (33,), (8, 16), (7, 9), (4, 4, 4), (3, 5, 7), (2, 3, 4, 4), (64, 64),
+               (16, 16, 16), (8, 8, 8, 8)]
 
 
 def _lattice_mask(mask, config):
