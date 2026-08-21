@@ -46,13 +46,20 @@ struct BoxPlan {
   //: over the outer levels, innermost first, so the exponents differ by at most one
   //: there.  The K6 ceiling is what makes the convention total: a level narrower
   //: than an atom cannot absorb the atom floor, and the capacity spills outward
-  //: instead of the plan being refused.
+  //: instead of the plan being refused.  THE FLOOR IS ALSO CAPPED BY `kJ` ITSELF:
+  //: a capacity smaller than an atom asks for cannot pay the floor at all, and the
+  //: uncapped form asks the outer levels for the shortfall -- a NEGATIVE `kJOuter`,
+  //: which refuses a plan `rola/ops/lattice.py` serves.  The host derivation carries
+  //: this clamp (`min(max(share, floor), ceil, j)`) and the device did not; the two
+  //: now agree at every `(D, B, k, m)`, which is the whole point of deriving the box
+  //: twice.  It is a NO-OP on every built arm (`kJ > kAInner` on all of them).
   static constexpr int kAtomBits = ilog2c(kAtomLeaves);
   static constexpr int kAFloor = kAtomBits > kKappa ? kAtomBits - kKappa : 0;
   static constexpr int kAShare = kJ / D + ((kJ % D) ? 1 : 0);
   static constexpr int kACeil = kBeta > kKappa ? kBeta - kKappa : 0;
   static constexpr int kAWant = kAShare > kAFloor ? kAShare : kAFloor;
-  static constexpr int kAInner = kAWant > kACeil ? kACeil : kAWant;
+  static constexpr int kACap = kAWant > kACeil ? kACeil : kAWant;
+  static constexpr int kAInner = kACap > kJ ? kJ : kACap;
   static constexpr int kJOuter = kJ - kAInner;
 
   static constexpr int a(int l) {

@@ -11,6 +11,13 @@
 //   small      ( 64, 64)  D=2  k=4 m=8   s=(8,16)     BC=128  W=64   C=32
 //   deep-3     (16^3)     D=3  k=2 m=16  s=(2,4,16)   BC=128  W=64   C=32
 //   deep-4     ( 8^4)     D=4  k=2 m=8   s=(2,2,4,8)  BC=128  W=64   C=32
+//   bc64  SWEEP (256,256)  D=2  k=4 m=4   s=(4,16)     BC= 64  W=512  C=32
+//   bc32  SWEEP (256,256)  D=2  k=4 m=2   s=(4, 8)     BC= 32  W=512  C=32
+// The last two are the BC SWEEP's arms and are TEMPORARY: the "BC = register-fit
+// max" law was ratified by design argument and never A/B'd, and these two give it
+// its second point.  They are deleted from the branch tip once the verdict is
+// recorded; nothing outside `tests/k31/test_carry_vs_oracle.py` and the prefill
+// bench's `--k`/`--m` knobs reaches them.
 // Every arm holds ONE box: `BC = 128` is the register budget's number and it does
 // not move with depth, so the two deep arms differ from the flat ones only in how
 // the same 128 leaves are cut into digits.  Both are conformance cells at `N =
@@ -68,7 +75,9 @@ using OwnerRows =
   X_(2, 256, 4, 8, 512, 32, 1)  \
   X_(2, 64, 4, 8, 64, 32, 1)    \
   X_(3, 16, 2, 16, 64, 32, 1)   \
-  X_(4, 8, 2, 8, 64, 32, 1)
+  X_(4, 8, 2, 8, 64, 32, 1)     \
+  X_(2, 256, 4, 4, 512, 32, 1)  \
+  X_(2, 256, 4, 2, 512, 32, 1)
 
 //: `CV` is the SEAM's carve scalar, not a kernel axis: it names the one ruled
 //: carve so a caller that asks for the deleted one is refused rather than served

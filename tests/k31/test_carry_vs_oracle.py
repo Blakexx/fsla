@@ -36,6 +36,16 @@ FLAG = ((256, 256), 4, 8, carry_ops.WINDOW)       # N = 65536, BC = 128, owners 
 #: an atom is level 3's whole span times two of level 2's digits.
 DEEP3 = ((16, 16, 16), 2, 16, carry_ops.WINDOW_SMALL)   # s = (2, 4, 16),   owners = 32
 DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owners = 32
+#: THE BC SWEEP'S ARMS (TEMPORARY; deleted with the sweep).  The flagship topology
+#: at the two smaller admissible capacities, so the ONLY thing that differs from
+#: `FLAG_WIDE` is the box: `BC = 64` keeps the one-level atom rectangle
+#: (`s_1 = 16`) and `BC = 32` is the FLAT topology's only two-level rectangle
+#: (`s = (4, 8)`, an atom = level 1 whole times two of level 0's digits), which is
+#: also the only arm whose mass split does not reach every warp.
+FLAG_WIDE = ((256, 256), 4, 8, carry_ops.WINDOW_WIDE)   # s = (8, 16), owners =  512
+BC64 = ((256, 256), 4, 4, carry_ops.WINDOW_WIDE)        # s = (4, 16), owners = 1024
+BC32 = ((256, 256), 4, 2, carry_ops.WINDOW_WIDE)        # s = (4,  8), owners = 2048
+SWEEP = [pytest.param(BC64, id="bc64"), pytest.param(BC32, id="bc32")]
 
 CHANNEL = carry_ops.CHANNEL_SPLIT
 
@@ -68,7 +78,9 @@ def test_arms_are_the_declared_solver_rows():
                    (2, 256, 4, 8, carry_ops.WINDOW_WIDE, 32, 1),
                    (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1),
                    (3, 16, 2, 16, carry_ops.WINDOW_SMALL, 32, 1),
-                   (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1)}, got
+                   (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1),
+                   (2, 256, 4, 4, carry_ops.WINDOW_WIDE, 32, 1),
+                   (2, 256, 4, 2, carry_ops.WINDOW_WIDE, 32, 1)}, got
     for arm in carry_ops.arms():
         D, B, k, m, W, C, carve, BC, owners, smem = arm
         _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
@@ -255,6 +267,50 @@ def test_m3_two_sided_alt_clustered(k_tok):
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=40 + k_tok, cohort=64)
     num, den, _ = run(cell, FLAG, CHANNEL)
     n_ref, d_ref, _ = ref(cell, FLAG)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+
+
+# ------------------------------------------------ the BC SWEEP's conformance
+#: TEMPORARY, and deleted with the sweep arms.  Each sweep arm is gated on the SAME
+#: four structures the flagship is -- dense, ALT k_tok 4 and 16 scattered, and the
+#: clustered cell -- against the same fp64 reference, so a wall-clock table across
+#: the three boxes is a table of THREE CORRECT KERNELS and not of one correct kernel
+#: and two candidates.  The reference does not see the box at all (it is the
+#: arithmetic, in canonical order), so a smaller box that is wrong anywhere fails
+#: here and never reaches the A/B.
+
+
+@pytest.mark.parametrize("arm", SWEEP)
+def test_bcsweep_inter_dense(arm):
+    assert_fresh_binary()
+    cell = Cell(FLAG[0], T=1024, k_tok=None, seed=5)
+    num, den, _ = run(cell, arm, CHANNEL)
+    n_ref, d_ref, _ = ref(cell, arm)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+
+
+@pytest.mark.parametrize("arm", SWEEP)
+@pytest.mark.parametrize("k_tok", [4, 16])
+def test_bcsweep_alt_scattered(arm, k_tok):
+    assert_fresh_binary()
+    cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=20 + k_tok)
+    num, den, _ = run(cell, arm, CHANNEL)
+    n_ref, d_ref, _ = ref(cell, arm)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+
+
+@pytest.mark.parametrize("arm", SWEEP)
+def test_bcsweep_alt_clustered(arm):
+    assert_fresh_binary()
+    cell = alt_cell(FLAG[0], T=1024, k_tok=16, seed=56, cohort=64)
+    num, den, _ = run(cell, arm, CHANNEL)
+    n_ref, d_ref, _ = ref(cell, arm)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
     assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL

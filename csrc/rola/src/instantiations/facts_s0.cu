@@ -99,6 +99,15 @@ template cudaError_t launch_span_facts_arm<3, 16, 2, 4, 16, 16, 1>(const __nv_bf
 template cudaError_t launch_span_facts_arm<4, 8, 2, 2, 4, 8, 1>(const __nv_bfloat16*,
                                                                 const __nv_bfloat16*, uint32_t*,
                                                                 int, int, cudaStream_t);
+//: the BC SWEEP's two arms (TEMPORARY -- deleted with the sweep).
+template cudaError_t launch_span_facts_arm<2, 256, 4, 16, 256, 256, 1>(const __nv_bfloat16*,
+                                                                       const __nv_bfloat16*,
+                                                                       uint32_t*, int, int,
+                                                                       cudaStream_t);
+template cudaError_t launch_span_facts_arm<2, 256, 4, 8, 256, 256, 1>(const __nv_bfloat16*,
+                                                                      const __nv_bfloat16*,
+                                                                      uint32_t*, int, int,
+                                                                      cudaStream_t);
 
 //: the LIVENESS EPILOGUE's arms -- the same (D, B, BC) key as the
 //: table it reduces.
