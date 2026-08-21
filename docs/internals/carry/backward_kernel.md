@@ -70,6 +70,28 @@ or warp-replicated (its field lies entirely below the warp id). At the built arm
 No runtime index into a register array appears at either level, which is the constraint
 that governed the deleted design's whole pass law.
 
+### Where the inner level's four warps meet
+
+The inner level is warp-REPLICATED: all four warps hold a partial of the same thirty-two
+`(token, digit)` cells, so they have to meet. Three places were built and measured on
+this kernel, and the choice is not the obvious one.
+
+| meeting place | what it costs |
+|---|---|
+| a SHARED-memory atomic | **refused.** `atomicAdd` on a shared `float` has no hardware reduction on sm_80/sm_86; nvcc lowers it to `ATOMS.CAST.SPIN`, a lock-and-retry loop whose body is a five-instruction serial chain. Four warps on the same cells retried **2.08 times per site**, and the block carried **51.6 %** of Scan A's stall samples and **32.1 %** of Scan B's |
+| barrier-separated ROUNDS | correct and deterministic, but three rendezvous per batch: measured `short_scoreboard` 3.57 → 2.24 against `barrier` 0.39 → 2.66, and the wall did not move. At four warps per CTA a CTA-wide barrier idles three of them |
+| **the GLOBAL plane** | **taken on the read side.** The plane is already the OWNERS' meeting place — two owners sharing a level-1 group reduce into the same cell — so a fourth grain of partial adds no mechanism that was not there. No shared cell, no atomic, no rendezvous |
+
+The global meeting is at the reduction-addressing floor: for one `(nt, e)` a warp's
+thirty-two lanes cover FOUR token rows (`lane & 3`) at EIGHT CONTIGUOUS digits each
+(`lane >> 2`), so one reducing instruction touches four 32-byte sectors for 128 bytes.
+Measured `lg_throttle` stays at 0.00 with the read side's global reductions at 9.4 M.
+
+It is available only where nothing multiplies the COMPLETED sum. `(R7)`'s `gw[j]` does,
+so folding it into a warp-grain partial would DISTRIBUTE it over the four warps; the
+WRITE side therefore stages its inner level through `sdg`, gains it in the drain, and
+meets in barrier-separated rounds. The read side's `(R2)` has no such factor.
+
 ### The two conditions, and why only depth two meets them
 
 Whether a level falls cleanly is a property of the SPAN VECTOR, not of the order, so the
