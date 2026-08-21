@@ -103,12 +103,12 @@ struct CarryGeom {
                 "the staging block is one token tile of the batch and holds a whole page");
   //: `kWarps` READ lists, one per digit group, then ONE write list: a read entry
   //: belongs to the groups its innermost digits fall in, a write entry to all.
+  static constexpr int kLists = kWarps + 1;
   static constexpr int kListStride = ((W + 7) / 8) * 8;
-  static constexpr int list_bytes = (kWarps + 1) * kListStride * (int)sizeof(uint16_t);
-  //: the liveness scan's per-(iteration, word) live counts: two packed pairs of
-  //: read-group counts, then the write count.
-  static constexpr int kScanIters = (W + kThreads - 1) / kThreads;
-  static constexpr int scan_bytes = 3 * kWarps * kScanIters * (int)sizeof(int);
+  static constexpr int list_bytes = kLists * kListStride * (int)sizeof(uint16_t);
+  //: THE WINDOW'S BALLOT WORDS, one per lane of the walk -- so a window may be at
+  //: most a lockstep unit's worth of words wide.
+  static constexpr int kLW = W / kBallotLanes;
   //: THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR,
   //: exactly as the shipped `Geom::stages` is: the shallowest ring that reaches the
   //: best residency this arm can reach at any depth.  `kRegFloor` is the DECLARED
@@ -118,7 +118,7 @@ struct CarryGeom {
   //: `kCols` channels per warp, and 219 registers is what that costs.
   static constexpr int kRegFloor = 220;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
-  static constexpr int fixed_bytes = panel_bytes + out_bytes + list_bytes + scan_bytes;
+  static constexpr int fixed_bytes = panel_bytes + out_bytes + list_bytes;
   static constexpr int kStages = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloor);
   static constexpr size_t bytes = (size_t)fixed_bytes + (size_t)kStages * slot_bytes;
   static constexpr int cta_target = design::cta_target((int)bytes, kThreads, kRegFloor);
@@ -227,7 +227,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   constexpr int BC = BP::kBC;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
   constexpr int MTOK = C / kMmaM;  // token m-tiles of a batch
-  constexpr int NTOK = C / kMmaN;  // token n-tiles of a batch
   //: the warp's own leaves: `NL` accumulator n-tiles, `KDw` readout k-steps.
   constexpr int kLeafW = G::kLeafW;
   constexpr int NL = kLeafW / kMmaN;
@@ -263,7 +262,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   float* const so = reinterpret_cast<float*>(sw + kWarps * C * LdS);
   constexpr int kListStride = G::kListStride;
   uint16_t* const slist = reinterpret_cast<uint16_t*>(so + C * LdO);
-  int* const sscan = reinterpret_cast<int*>(slist + (kWarps + 1) * kListStride);
 
   //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
   //: shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
@@ -565,109 +563,96 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
       produce(Wt, base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain, have);
     };
 
-    // ---- the liveness pass: `kWarps` READ lists and ONE write list --------
-    //: THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19, study section 2.0 as
-    //: rewritten).  Per level at most ONE side is sparse, so there is one stored row
-    //: set per level -- but the two sides' CLAUSE SETS are different level subsets,
-    //: and a dense side's clause is absent-means-full.  ANDing each side's OWN rows
-    //: IS that conjunction over exactly the levels where that side is sparse: a dense
-    //: level's ballot word is all ones for every token and drops out on its own, with
-    //: no structure fact carried into the kernel.
+    // ---- the liveness pass: one READ list per warp, ONE write list --------
+    //: THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19).  Per level at most ONE
+    //: side is sparse, so there is one stored row set per level -- but the two
+    //: sides' CLAUSE SETS are different level subsets, and a dense side's clause is
+    //: absent-means-full.  ANDing each side's OWN rows IS that conjunction over
+    //: exactly the levels where that side is sparse, with no structure fact carried
+    //: into the kernel.  The read side's innermost clause is the WARP'S OWN group
+    //: row; the write side wants the owner's run, which is the OR of the `kWarps`
+    //: of them and is one warp's work because every warp folds every write entry.
     //:
-    //: THE READ SIDE'S INNERMOST CLAUSE IS PER GROUP, WHICH IS THE WHOLE SCHEDULE:
-    //: one cooperative scan over the window's words emits `kWarps` ballots per word,
-    //: and warp `u`'s word contributes to every group's list.  The write side wants
-    //: the owner's own run, which is the OR of the same `kWarps` rows -- so the two
-    //: sides read one row set at one grain and neither carries a structure fact.
-    //:
-    //: THE COMPACTION IS TWO RENDEZVOUS, both load-bearing.  Every warp holds its
-    //: whole window's ballots in registers and publishes its live counts ONCE; the
-    //: first barrier publishes those counts, and after it EVERY thread re-derives the
-    //: CTA-wide exclusive prefixes from them in registers.  The second barrier
-    //: publishes the LISTS, and it doubles as the separation between this window's
-    //: count reads and the next window's count writes -- which is why it precedes the
-    //: whole-window skip rather than following it.
-    constexpr int kScanIters = G::kScanIters;
-    static_assert(W <= 0xFFFF, "a side's window count must fit the packed word's half");
-    uint32_t voteR[kScanIters][kWarps], voteW[kScanIters];
-#pragma unroll
-    for (int t = 0; t < kScanIters; ++t) {
-      const int wordTok = t * kThreads + warp * kBallotLanes;
-      //: the word is the WARP's, not the lane's: `tok0` and `t * kThreads` are both
-      //: whole numbers of words, so warp `u` owns word `(tok0 + t*kThreads)/32 + u`.
-      const int word = ((tok0 + t * kThreads) >> 5) + warp;
-      const uint32_t wordB =
-          (uint32_t)(word < tok_words ? word : tok_words - 1) * (uint32_t)sizeof(uint32_t);
-      const int room = wLen - wordTok;
-      const uint32_t valid =
-          room <= 0 ? 0u : (room >= kBallotLanes ? 0xFFFFFFFFu : ((1u << room) - 1u));
-      uint32_t mR = valid, mW = valid;
+    //: ONE BALLOT WORD PER LANE.  A warp's whole window is `LW` words, so a row is
+    //: ONE `LDG.32` and every warp can afford to hold BOTH sides' owner-grain
+    //: ballots.  That is what makes the schedule barrier-free: the lists, the
+    //: counts and the whole-window skip are all warp-private computations of
+    //: CTA-identical inputs, so the four warps agree by construction and reach the
+    //: window line without a barrier of the schedule's own.
+    constexpr int LW = G::kLW;
+    static_assert(W <= 0xFFFF, "a token's window-local index must fit the list's element");
+    static_assert(LW <= kBallotLanes,
+                  "the walk gives one ballot word to each lane, so a window is at most a "
+                  "lockstep unit's worth of words");
+    const int room = wLen - lane * kBallotLanes;
+    const bool inW = lane < LW;
+    const uint32_t valid =
+        (!inW || room <= 0) ? 0u : (room >= kBallotLanes ? 0xFFFFFFFFu : ((1u << room) - 1u));
+    //: a lane past the window's last word holds no word; it reads word zero, which
+    //: is in range, and `valid` empties its ballot.
+    const int wIdx = (tok0 >> 5) + (inW ? lane : 0);
+    const uint32_t wordB = (uint32_t)(wIdx < tok_words ? wIdx : tok_words - 1) * 4u;
+
+    //: the trip count is the window's LIVENESS, not its width: one `bit_count`
+    //: where a per-word form spends `LW`, one lane prefix where it spends `LW`
+    //: adds, and one scatter of the lane's own set bits.
+    //: `bits` is the writer's slice of each word, `below` the bits under it: a list
+    //: with several writers is built by giving each one a bit range and letting all
+    //: of them derive the same prefix from the same ballot.
+    auto walk = [&](uint32_t m, uint16_t* dst, uint32_t bits, uint32_t below) {
+      const int cnt = bit_count(m);
+      const int pfx = lane_prefix_incl<LW>(cnt);
+      int k = (pfx - cnt) + bit_count(m & below);
+      const uint16_t tb = (uint16_t)(lane * kBallotLanes);
+      uint32_t mm = m & bits;
+      while (mm) {
+        dst[k++] = tb + (uint16_t)first_set(mm);
+        mm &= mm - 1;
+      }
+      return lane_broadcast(pfx, LW - 1);
+    };
+    auto clause_of = [&](const uint32_t* rowsS) {
+      uint32_t m = valid;
       static_for<D - 1>([&](auto Lc) {
         constexpr int l = decltype(Lc)::value;
-        if constexpr (CR::row_g(l) > 0) {
-          mR &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsR, rowOff[l] + wordB));
-          mW &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsW, rowOff[l] + wordB));
-        }
+        if constexpr (CR::row_g(l) > 0)
+          m &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsS, rowOff[l] + wordB));
       });
-      uint32_t mWin = 0u;
+      return m;
+    };
+    auto group_row = [&](const uint32_t* rowsS, int g) {
+      return *reinterpret_cast<const uint32_t*>(
+          gather_ptr(rowsS, rowOff[D - 1] + (uint32_t)g * rowBytes + wordB));
+    };
+
+    const uint32_t clauseR = clause_of(rowsR), clauseW = clause_of(rowsW);
+    uint32_t orR = 0u, orW = 0u, mineR = 0u;
 #pragma unroll
-      for (int g = 0; g < kWarps; ++g) {
-        const uint32_t gOff = rowOff[D - 1] + (uint32_t)g * rowBytes + wordB;
-        voteR[t][g] = mR & *reinterpret_cast<const uint32_t*>(gather_ptr(rowsR, gOff));
-        mWin |= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsW, gOff));
-      }
-      voteW[t] = mW & mWin;
-      if (lane == 0) {
-        sscan[(t * kWarps + warp) * 3 + 0] =
-            bit_count(voteR[t][0]) | (bit_count(voteR[t][1]) << 16);
-        sscan[(t * kWarps + warp) * 3 + 1] =
-            bit_count(voteR[t][2]) | (bit_count(voteR[t][3]) << 16);
-        sscan[(t * kWarps + warp) * 3 + 2] = bit_count(voteW[t]);
-      }
+    for (int g = 0; g < kWarps; ++g) {
+      const uint32_t r = group_row(rowsR, g);
+      orR |= r;
+      mineR = (g == grp) ? r : mineR;
+      orW |= group_row(rowsW, g);
     }
-    rendezvous();
-    const uint32_t below = (1u << lane) - 1u;
-    uint32_t preA[kScanIters], preB[kScanIters];
-    int preW[kScanIters];
-    uint32_t runA = 0u, runB = 0u;
-    int runW = 0;
-#pragma unroll
-    for (int t = 0; t < kScanIters; ++t) {
-      preA[t] = 0u;
-      preB[t] = 0u;
-      preW[t] = 0;
-#pragma unroll
-      for (int u = 0; u < kWarps; ++u) {
-        const bool mine = warp == u;
-        preA[t] = mine ? runA : preA[t];
-        preB[t] = mine ? runB : preB[t];
-        preW[t] = mine ? runW : preW[t];
-        runA += (uint32_t)sscan[(t * kWarps + u) * 3 + 0];
-        runB += (uint32_t)sscan[(t * kWarps + u) * 3 + 1];
-        runW += sscan[(t * kWarps + u) * 3 + 2];
-      }
-    }
-#pragma unroll
-    for (int t = 0; t < kScanIters; ++t) {
-      const uint16_t loc = (uint16_t)(t * kThreads + warp * kBallotLanes + lane);
-#pragma unroll
-      for (int g = 0; g < kWarps; ++g) {
-        const uint32_t pre =
-            (g & 1) ? ((g < 2 ? preA[t] : preB[t]) >> 16) : ((g < 2 ? preA[t] : preB[t]) & 0xFFFFu);
-        if ((voteR[t][g] >> lane) & 1u)
-          slist[g * kListStride + pre + bit_count(voteR[t][g] & below)] = loc;
-      }
-      if ((voteW[t] >> lane) & 1u)
-        slist[kWarps * kListStride + preW[t] + bit_count(voteW[t] & below)] = loc;
-    }
-    rendezvous();
-    const uint32_t runG = grp < 2 ? runA : runB;
-    const int nr = (int)((grp & 1) ? (runG >> 16) : (runG & 0xFFFFu));
-    const int nw = runW;
-    const int nrAny = (int)((runA & 0xFFFFu) + (runA >> 16) + (runB & 0xFFFFu) + (runB >> 16));
+    const uint32_t liveW = clauseW & orW;
     //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap
-    //: mechanism's harvest, kept (study section 2.1).
-    if (nrAny == 0 && nw == 0) continue;
+    //: mechanism's harvest (study section 2.1).  It is CTA-uniform WITHOUT a
+    //: barrier: the two owner-grain ballots are the same words in every warp.
+    if (lane_ballot(((clauseR & orR) | liveW) != 0u) == 0u) continue;
+
+    uint16_t* const rlist = slist + warp * kListStride;
+    uint16_t* const wlist = slist + kWarps * kListStride;
+    const int nr = walk(clauseR & mineR, rlist, 0xFFFFFFFFu, 0u);
+    __syncwarp();
+    //: THE WRITE LIST IS ONE LIST WITH `kWarps` WRITERS.  Every warp folds every
+    //: write entry, so the list is shared -- and because every warp holds the same
+    //: ballot, each can take a fixed slice of every word's bits and derive its own
+    //: offsets.  The list is therefore built BALANCED at any distribution, with no
+    //: CTA prefix, no barrier of its own, and no warp carrying it alone.  The
+    //: window line is what publishes it.
+    constexpr uint32_t kBitsW = (uint32_t)(kBallotLanes / kWarps);
+    const int nw =
+        walk(liveW, wlist, ((1u << kBitsW) - 1u) << (warp * kBitsW), (1u << (warp * kBitsW)) - 1u);
 
     // ---- PHASE 1: the READOUT of every read batch, against the window's ENTRY
     //      state.  ALL of the window's readouts precede ANY of its folds, because a
@@ -677,7 +662,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     //: and the fan-in are the warp's own, so the four warps run to the window line
     //: without a single CTA barrier.  Its `__syncwarp` is the panel's, between a
     //: lane's `STS` and the `ldmatrix` that reads another lane's row.
-    const uint16_t* const rlist = slist + grp * kListStride;
     const int nbr = (nr + C - 1) / C;
     //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring,
     //: UNCONDITIONALLY and AFTER the batch's MMA block.  Unconditionally because a
@@ -775,7 +759,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     //: groups in flight so the gather for batch `i + STAGES - 1` is airborne while
     //: batch `i` folds.
     const int nbw = (nw + C - 1) / C;
-    const uint16_t* const wlist = slist + kWarps * kListStride;
     auto stage_batch = [&](int b, int slot) {
       const int o0 = b * C;
       const int nb = (nw - o0) < C ? (nw - o0) : C;
