@@ -305,27 +305,25 @@ __device__ __forceinline__ void publish_image(IntraBwdSmem<D, B, W>& sm,
 //: destination's row pitch.  The relay through the warp's own plane costs two shared
 //: accesses per value and buys a reducing instruction that spans two rows of
 //: contiguous digits -- two sectors for 128 bytes where the direct form takes eight.
-template <int D, int B, int W>
-__device__ __forceinline__ void reduce_tile(IntraBwdSmem<D, B, W>& sm, const float (&acc)[2][4],
-                                            float* base, long long stride, int warp, int lane) {
-  float* x = &sm.xpose[warp][0][0];
-  const int arow = lane >> 2;
-  const int acol = (lane & 3) * 2;
+//: `put` and `get` are the lane's two cursors into its own relay plane and `lane_off`
+//: its destination offset -- row half in the high byte, digit column in the low -- all
+//: three invariant over the whole kernel.  `base` addresses the tile's first
+//: destination row and `stride` its row pitch, as an `int` because the widest offset a
+//: reduced tile reaches is fifteen row pitches.
+__device__ __forceinline__ void reduce_tile(float* put, const float* get, int lane_off,
+                                            const float (&acc)[2][4], float* base, int stride) {
   __syncwarp();
 #pragma unroll
   for (int nt = 0; nt < 2; ++nt)
 #pragma unroll
     for (int h = 0; h < 2; ++h)
-      *reinterpret_cast<float2*>(&x[(arow + h * 8) * kXposePitch + nt * 8 + acol]) =
+      *reinterpret_cast<float2*>(put + h * 8 * kXposePitch + nt * 8) =
           make_float2(acc[nt][2 * h], acc[nt][2 * h + 1]);
   __syncwarp();
-  const int col = lane & (kSlabDigits - 1);
-  const int half = lane >> 4;
+  int off = (lane_off >> 8) * stride + (lane_off & 0xFF);
 #pragma unroll
-  for (int q = 0; q < kXposeRows / 2; ++q) {
-    const int row = q * 2 + half;
-    fan_in_add(base + row * stride + col, x[row * kXposePitch + col]);
-  }
+  for (int q = 0; q < kXposeRows / 2; ++q, off += 2 * stride)
+    fan_in_add(base + off, get[q * 2 * kXposePitch]);
 }
 
 //: THE SECOND LAUNCH BOUND, from the arm's own footprint.  Without it ptxas budgets
@@ -392,6 +390,9 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
   //: the `.trans` lane map for an A operand read out of a `[k][m]` plane
   const int rT = lr + (lane >> 4) * 8, cT = (tl & 1) * 8;
+  float* const relay_put = &sm.xpose[warp][lane >> 2][(lane & 3) * 2];
+  const float* const relay_get = &sm.xpose[warp][lane >> 4][lane & (kSlabDigits - 1)];
+  const int relay_off = ((lane >> 4) << 8) | (lane & (kSlabDigits - 1));
   const int dp = warp % kParts;
   const int grp = warp / kParts;
   //: the row group's own output tile: a group is `kPrRows <= kTile` rows wide, so it
@@ -399,6 +400,24 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
   const int grp_tile = (grp * kPrRows) / kTile;
   const int jt = warp % kColK;
   const int chan = (warp / kColK) * kDvChans;
+  //: THE OPERAND BASES.  In the unrolled bodies the buffer, the k-tile and the m-tile
+  //: are compile-time constants, and everything else an `ldmatrix` address carries --
+  //: the lane map, the warp's digit part, its group -- is invariant over the whole
+  //: kernel, so each address is ONE base computed here plus a constant.
+  constexpr unsigned kElem = (unsigned)sizeof(__nv_bfloat16);
+  constexpr unsigned kSlabRow = bwd_operand_pitch(B) * kElem;
+  constexpr unsigned kImgRow = kImagePitch * kElem;
+  constexpr unsigned kSeedRow = kSeedPitch * kElem;
+  constexpr unsigned kRBuf = rows_of(W) * kSlabRow;
+  constexpr unsigned kWBuf = kTile * kSlabRow;
+  const denseref::ops::SmemAddr base_pw_r =
+      smem_addr(&sm.rslab[0][rF][cF * 8]) + dp * kSlabDigits * kElem;
+  const denseref::ops::SmemAddr base_pr_w =
+      smem_addr(&sm.wslab[0][rF][cF * 8]) + dp * kSlabDigits * kElem;
+  const denseref::ops::SmemAddr base_pr_a = smem_addr(&sm.img[grp * kPrRows + (lane & 15)][acol]);
+  const denseref::ops::SmemAddr base_pw_a = smem_addr(&sm.img[rT][grp * kPwCols + cT]);
+  const denseref::ops::SmemAddr base_dv_a = smem_addr(&sm.img[rT][jt * kWarpRows + cT]);
+  const denseref::ops::SmemAddr base_dv_b = smem_addr(&sm.dslab[rF][chan + cF * 8]);
 
   for (int rt0 = 0; rt0 < kTiles; rt0 += kRowTiles) {
     const int rt = rt0 + mine;
@@ -558,16 +577,15 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
 #pragma unroll
           for (int kt = 0; kt < kRowK; ++kt) {
             uint32_t af[4];
-            load_frag_t(af, smem_addr(&sm.img[kt * kWarpRows + rT][jt * kWarpRows + cT]));
+            load_frag_t(af, base_dv_a + kt * kWarpRows * kImgRow);
             uint32_t bf[4];
-            load_frag_t(
-                bf, smem_addr(&sm.dslab[kt * kWarpRows + rF][chan + nb * kSlabDigits + cF * 8]));
+            load_frag_t(bf, base_dv_b + kt * kWarpRows * kSeedRow + nb * kSlabDigits * kElem);
             const uint32_t b0[2] = {bf[0], bf[1]};
             const uint32_t b1[2] = {bf[2], bf[3]};
             mma(dv[0], af, b0);
             mma(dv[1], af, b1);
           }
-          reduce_tile<D, B, W>(sm, dv, dv_base + nb * kSlabDigits, kValueWidth, warp, lane);
+          reduce_tile(relay_put, relay_get, relay_off, dv, dv_base + nb * kSlabDigits, kValueWidth);
         }
       }
 
@@ -596,8 +614,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
           stage_wait<1>();
           __syncthreads();
           const int slab = stage * bwd_slabs_per_stage(B) + dp;
-          const int k0 = dp * kSlabDigits;
-          const int gdig = l * B + stage * bwd_stage_digits(B) + k0;
+          const int gdig = l * B + stage * bwd_stage_digits(B) + dp * kSlabDigits;
           if (pr_active && side_bits<D, B, W>(sm, p.modes, ct, l, 1, slab) != 0u) {
 #pragma unroll
             for (int mt = 0; mt < kPrM; ++mt) {
@@ -605,18 +622,16 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
 #pragma unroll
               for (int kt = 0; kt < kColK; ++kt) {
                 uint32_t bf[4];
-                load_frag_t(bf, smem_addr(&sm.wslab[buf][kt * kWarpRows + rF][k0 + cF * 8]));
+                load_frag_t(bf, base_pr_w + buf * kWBuf + kt * kWarpRows * kSlabRow);
                 uint32_t af[4];
-                load_frag(af, smem_addr(&sm.img[grp * kPrRows + mt * kWarpRows + (lane & 15)]
-                                               [kt * kWarpRows + acol]));
+                load_frag(af, base_pr_a + mt * kWarpRows * kImgRow + kt * kWarpRows * kElem);
                 const uint32_t b0[2] = {bf[0], bf[1]};
                 const uint32_t b1[2] = {bf[2], bf[3]};
                 mma(dpr[0], af, b0);
                 mma(dpr[1], af, b1);
               }
-              reduce_tile<D, B, W>(sm, dpr,
-                                   dpr_grp + (long long)mt * kWarpRows * p.row_width + gdig,
-                                   p.row_width, warp, lane);
+              reduce_tile(relay_put, relay_get, relay_off, dpr,
+                          dpr_grp + (long long)mt * kWarpRows * p.row_width + gdig, p.row_width);
             }
           }
           //: (I6)'s contraction runs over the WHOLE block of readers, so it is gated
@@ -637,15 +652,13 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
               for (int kk = 0; kk < kColK; ++kk) {
                 const int kt = r * kColK + kk;
                 uint32_t bf[4];
-                load_frag_t(bf, smem_addr(&sm.rslab[buf][kt * kWarpRows + rF][k0 + cF * 8]));
+                load_frag_t(bf, base_pw_r + buf * kRBuf + kt * kWarpRows * kSlabRow);
                 const uint32_t b0[2] = {bf[0], bf[1]};
                 const uint32_t b1[2] = {bf[2], bf[3]};
 #pragma unroll
                 for (int mt = 0; mt < kPwM; ++mt) {
                   uint32_t af[4];
-                  load_frag_t(
-                      af,
-                      smem_addr(&sm.img[kt * kWarpRows + rT][grp * kPwCols + mt * kWarpRows + cT]));
+                  load_frag_t(af, base_pw_a + kt * kWarpRows * kImgRow + mt * kWarpRows * kElem);
                   mma(dpw[mt][0], af, b0);
                   mma(dpw[mt][1], af, b1);
                 }
@@ -653,9 +666,8 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
             }
 #pragma unroll
             for (int mt = 0; mt < kPwM; ++mt)
-              reduce_tile<D, B, W>(sm, dpw[mt],
-                                   dpw_base + (long long)mt * kWarpRows * p.row_width + gdig,
-                                   p.row_width, warp, lane);
+              reduce_tile(relay_put, relay_get, relay_off, dpw[mt],
+                          dpw_base + (long long)mt * kWarpRows * p.row_width + gdig, p.row_width);
           }
           __syncthreads();
         }
