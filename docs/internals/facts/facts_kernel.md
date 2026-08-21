@@ -57,13 +57,15 @@ permutation, not as noise.
 
 **Fragment ownership.** For `mma.m16n8k16`, accumulator element `k` sits at row
 `(lane>>2) + 8*(k>>1)` and column `(lane&3)*2 + (k&1)`. The fold's A operand is
-`V^T` and its B operand is the write panel, so `st[j][k]` is channel
-`gwarp*16 + (lane>>2) + 8*(k>>1)` at leaf `j*8 + (lane&3)*2 + (k&1)`; the mass
-tiles carry the channel only in row 0, i.e. lanes 0..3 and `k in {0,1}`, which is
-the restriction the denominator store already makes. One atom is therefore the
-`st` tile pair `(2i, 2i+1)` across all four units plus ONE unit's mass pair, at
-`gwarp = i % kMassUnits` and `q = i / kMassUnits`. The atom loop is fully
-unrolled because a runtime index into a register array is a stack frame.
+`V^T` and its B operand is the write panel, so `st[m][j][k]` is channel
+`m*16 + (lane>>2) + 8*(k>>1)` at the warp's PRIVATE leaf `j*8 + (lane&3)*2 + (k&1)`
+(`docs/internals/carry/carry_kernel.md#the-carve-one-digit-group-of-the-innermost-level-per-warp`);
+the mass tiles carry the channel only in row 0, i.e. lanes 0..3 and `k in {0,1}`,
+which is the restriction the denominator store already makes. A page therefore
+holds `kAtomLeaves/s_{D-1}` outer runs times every digit of the carve level, and
+each warp's share of it is `s_{D-1}/kWarps` of those digits — a compile-time set of
+`(tile, column)` pairs. The atom loop and the loops inside it are fully unrolled
+because a runtime index into a register array is a stack frame.
 
 **Staging.** A page is 16 rows of 65 floats and it moves through the output
 staging buffer, whose rows are `d_v + kPadF = 68` floats and which is dead at

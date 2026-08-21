@@ -12,7 +12,8 @@
 namespace rola::carry {
 
 //: the INTER term only: `(num, den)`, undivided, plus the final state plane in
-//: LATTICE leaf order.  `carve` is 0 = state-split, 1 = channel-split.
+//: LATTICE leaf order.  `carve` names the one ruled carve: 1 = the innermost
+//: level's leaf split.
 std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                          torch::Tensor v, std::vector<int64_t> widths, int64_t k,
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
