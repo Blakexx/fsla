@@ -16,6 +16,13 @@ registers. The slabs are staged twice per tile pair: once for the Grams and once
 two digit MMAs, which is why the kernel's MMA count is roughly three times the forward
 intra's and why that ratio is the number to measure it against.
 
+Both stagings ride the forward's cp.async ring, in the same pair of operand buffers: the
+digit pass's fill for step `s+1` is issued while step `s` computes, and its FIRST fill is
+issued before the seed contraction and the value cotangent so it lands under them rather
+than in front of itself. The two passes' rings are one continuous chain — the digit
+pass's prologue is the Gram pass's own trailing commit slot — so the wait depth is one
+group throughout and no phase drains the pipe.
+
 ## Why a separate kernel and not a fused one
 
 The forward intra must remain a pure forward for inference. `dA` needs the seed, which
@@ -63,10 +70,45 @@ therefore taken one 16-digit slab at a time — the forward's own slab granulari
 puts both digit accumulators at 32 registers and leaves the RED volume unchanged, since
 the number of `(token, digit)` cells written does not depend on how they are staged.
 
-## The fan-in
+## The second launch bound
+
+The kernel declares the CTA target `design::cta_target` computes from its own block
+footprint, as the carry family's three kernels do. It is not decoration: given only a
+thread count, ptxas budgets registers for the residency that thread count suggests rather
+than the one this block's shared memory leaves reachable, and the narrow-window arm —
+whose 128 threads suggest several resident blocks where its footprint permits one — spills
+without the declaration. `kBwdRegFloor` is the measured live set of the built arms and
+enters only the target's register ceiling.
+
+## The fan-in, and why it relays through shared memory first
 
 `d_pr` rows are indexed by the tile pair's ROW axis, which is warp-disjoint under the
 forward's row carve, so no cross-warp reduction appears there. `d_pw` and `d_v` rows are
-indexed by the COLUMN axis, so all warps contribute to every one; they are REDed
-directly rather than through a CTA tree, which is the simple form the rung ships and
-measures.
+indexed by the COLUMN axis, so all warps contribute to every one, and they meet in the
+destination plane's own atomics rather than in a CTA tree.
+
+That leaves ADDRESSING as the whole cost of the fan-in, and it is the kernel's largest
+single one. The MMA accumulator's lane map puts a `[16 x 16]` tile's row on `lane>>2` and
+its column on `(lane&3)*2`, so one reducing instruction's 32 values land on EIGHT
+destination rows — a plane pitch apart — at four scattered columns of each. That is eight
+memory sectors to carry 128 bytes, and at the flagship the reverse pass issues about 1400
+such instructions per thread per tile pair. Measured on sm_86, the resulting store-queue
+backup (LG throttle, MIO throttle and short scoreboard together) was 59 % of the kernel's
+warp cycles per executed instruction.
+
+So every reduced tile relays through `xpose`, a warp-private `[16 x 18]` plane, before it
+reduces: the accumulator is written in the MMA's lane map (two column-adjacent values per
+eight-byte store) and read back in the destination's, so a reducing instruction covers
+two rows of CONTIGUOUS digits. That is the sector minimum for the value count, and it is
+warp-private, so the relay costs two shared accesses per value and NO barrier.
+
+The relay is the ONE reducing path — `d_pr`, `d_pw` and `d_v` are all `[16 x 16]` tiles
+and all take it. `d_gw` does not: it is one value per column token, already reduced
+across the warp by three lane shuffles, and its four surviving lanes are 0.04 % of the
+kernel's reductions.
+
+Choosing the relay over the alternatives is a measurement, not a preference. Meeting the
+column-indexed partials in a CTA-wide shared plane — which would cut the reduction COUNT
+eightfold — measures WORSE: `atomicAdd` on shared `float` compiles to `ATOMS.CAST.SPIN`, a
+lock-and-retry emulation, and eight warps contending one cell turns the saving into a
+3.2x instruction blow-up. The count was never the problem; the sectors were.

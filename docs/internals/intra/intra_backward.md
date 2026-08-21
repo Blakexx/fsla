@@ -18,9 +18,9 @@ the scans must not.
 
 `INTRA_BWD_ARMS_X` carries the same `(levels, window)` rows the forward's
 `INTRA_ARMS_X` does, because the two kernels run one window grid. The block footprint is
-the forward's plus the ROW side's seed rows, which are staged once per output block
-rather than once per column tile: their tokens are the block's readers and do not change
-with the column tile.
+the forward's plus the ROW side's seed rows and the per-warp fan-in relay plane. The seed
+rows are staged once per output block rather than once per column tile: their tokens are
+the block's readers and do not change with the column tile.
 
 ## The stamp is a footprint
 
