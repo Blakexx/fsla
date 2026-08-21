@@ -157,9 +157,21 @@ at the widest access that fits it, `n ∈ {2, 4, 8, 16}`; at the built arms (`SP
 at level 1 (`n_1 = 16`).
 
 The innermost level supplies the adjacent bf16 PAIR (its `c` field owns bit 0) and every
-level above it a per-pair scalar, which is the shipped producer's multiply chain. `have`
-false makes the gain zero, and a zero coefficient contributes exactly nothing to either
-MMA — one select on the leading factor covers the whole run.
+level above it a per-pair scalar, which is the shipped producer's multiply chain.
+
+The SIDE is a compile-time argument to the produce, because the two sides' trailing
+scalars are not the same kind of thing. The write side ends in `mul_bf16x2(acc, gain)`
+over all `SPT/2` packed pairs; the read side's scalar is identically 1, and on sm_86 —
+where there is no `mul.rn.bf16x2` and a packed multiply is two FMUL, an F2FP pack and
+two PRMT — paying for `rn(a*1) = a` was 44% of the read produce. So the read body stores
+its accumulators directly.
+
+A dead row (a padding row of a partial batch, which has no token) is then zeroed at
+LEVEL 0's run rather than at the trailing multiply. Level 0 is the outermost level and
+therefore the narrowest run at every built arm (`n_0 ∈ {1, 2}`), so the whole slot run
+is covered by one or two selects and no arithmetic; a zero coefficient contributes
+exactly nothing to either MMA. On the write side the same zeroing rides the gain, which
+is already a select.
 
 ## Addressing
 

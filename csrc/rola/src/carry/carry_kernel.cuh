@@ -387,12 +387,19 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     lvCol[l] = runCol[l] + BP::run_of(l, slot0);
   });
 
-  //: `gain == 0` zeroes the row -- a padding row of a partial batch has no token,
-  //: and a zero coefficient contributes exactly nothing to either MMA (the produce's
-  //: dead-row zeroing law).  It is one select on the LEADING factor, so the whole
-  //: run is covered once.
-  auto produce = [&](const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
-                     uint32_t gain) {
+  //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS.  A padding row of a partial
+  //: batch has no token, and a zero coefficient contributes exactly nothing to either
+  //: MMA (the produce's dead-row zeroing law).  Level 0's run is the outermost one and
+  //: therefore the narrowest at every built arm, so zeroing it covers the whole slot
+  //: run for one or two selects and costs no arithmetic.
+  //:
+  //: THE READ SIDE HAS NO GAIN.  Its scalar is identically 1 and the trailing
+  //: `mul_bf16x2(acc, 1)` was 44% of the read produce -- 32 FMUL, 32 PRMT and 16 F2FP
+  //: for `rn(a*1) = a` -- so the side is a compile-time argument and the read body
+  //: stores its accumulators directly.
+  auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
+                     uint32_t gain, bool have) {
+    constexpr bool WRITE = decltype(Wt)::value;
     //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
     //: is loaded, folded into every slot and dropped inside one `static_for` body, so
     //: no `[D][n]` array is ever live: `SPT/2` packed pairs plus one run, against the
@@ -412,19 +419,23 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
       constexpr int l = decltype(Lc)::value;
       unsigned short run[PM::n_l(l)];
       load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
+      if constexpr (!WRITE && l == 0) {
+#pragma unroll
+        for (int i = 0; i < PM::n_l(0); ++i) run[i] = have ? run[i] : (unsigned short)0;
+      }
 #pragma unroll
       for (int j = 0; j < SPT; j += 2)
         acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
     });
     __nv_bfloat16* const row = dst + prow * LdS + slot0;
+    if constexpr (WRITE) {
 #pragma unroll
-    for (int j = 0; j < SPT; j += 2) store_bf16x2(row + j, mul_bf16x2(acc[j / 2], gain));
+      for (int j = 0; j < SPT; j += 2) store_bf16x2(row + j, mul_bf16x2(acc[j / 2], gain));
+    } else {
+#pragma unroll
+      for (int j = 0; j < SPT; j += 2) store_bf16x2(row + j, acc[j / 2]);
+    }
   };
-
-  //: 1.0 as a bf16 pair -- the read side's gain.  Folding it through the same
-  //: multiply keeps ONE produce body, and `rn(a*1) = a` leaves the read panel
-  //: untouched: the multiply is paid, the value is not.
-  constexpr uint32_t kOneSplat = 0x3F803F80u;
 
   // ---- V staging -----------------------------------------------------------
   constexpr int kChunkV = kDv / 8;
@@ -461,16 +472,17 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     //: gain are all resolved here so the two phases call ONE body; `have` false
     //: zeroes the leading factor, and a zero coefficient contributes exactly nothing
     //: to either MMA (the produce's dead-row zeroing law).
-    auto produce_batch = [&](const __nv_bfloat16* base, __nv_bfloat16* dst, const uint16_t* list,
-                             int o0, int ntot, bool write_side) {
+    auto produce_batch = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst,
+                             const uint16_t* list, int o0, int ntot) {
       const int nb = (ntot - o0) < C ? (ntot - o0) : C;
       const bool have = prow < nb;
       const int tok = list[o0 + (have ? prow : nb - 1)];
-      uint32_t gain = kOneSplat;
-      if (write_side)
-        gain = splat_bf16x2(
-            *reinterpret_cast<const __nv_bfloat16*>(gather_ptr(gW, winG + (uint32_t)tok * 2u)));
-      produce(base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), have ? gain : 0u);
+      uint32_t gain = 0u;
+      if constexpr (decltype(Wt)::value)
+        gain = have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
+                          gather_ptr(gW, winG + (uint32_t)tok * 2u)))
+                    : 0u;
+      produce(Wt, base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain, have);
     };
 
     // ---- the liveness pass: TWO lists, one per SIDE -----------------------
@@ -574,7 +586,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     //: edge pins every produce instruction ahead of the HMMAs.  The trailing batch is
     //: entirely dead rows by the produce's zeroing law and lands in a panel no MMA
     //: reads.
-    if (nbr > 0) produce_batch(pR, sr, slist, 0, nr, false);
+    if (nbr > 0) produce_batch(std::false_type{}, pR, sr, slist, 0, nr);
 #pragma unroll 1
     for (int i = 0; i < nbr; ++i) {
       const int off = i * C;
@@ -651,7 +663,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
           store_f32(&sden[warp * C + j * 8 + lane * 2 + 1], 0.f);
         }
       }
-      produce_batch(pR, ((i + 1) & 1) ? sw : sr, slist, (i + 1) * C, nr, false);
+      produce_batch(std::false_type{}, pR, ((i + 1) & 1) ? sw : sr, slist, (i + 1) * C, nr);
       rendezvous();
 
       // ---- the RED fan-in of the readout partials ---------------------------
@@ -703,7 +715,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
       if (sst < nbw) stage_batch(sst, sst % STAGES);
       stage_commit();
     }
-    if (nbw > 0) produce_batch(pW, sw, wlist, 0, nw, true);
+    if (nbw > 0) produce_batch(std::true_type{}, pW, sw, wlist, 0, nw);
 #pragma unroll 1
     for (int i = 0; i < nbw; ++i) {
       const uint32_t bwF = (i & 1) ? bwF1 : bwF0;
@@ -737,7 +749,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
           }
         }
       }
-      produce_batch(pW, ((i + 1) & 1) ? sr : sw, wlist, (i + 1) * C, nw, true);
+      produce_batch(std::true_type{}, pW, ((i + 1) & 1) ? sr : sw, wlist, (i + 1) * C, nw);
       rendezvous();
     }
     //: the ring's unconsumed groups are retired before the next window reuses the
