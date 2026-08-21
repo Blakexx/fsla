@@ -92,7 +92,7 @@ struct BwdGeom {
   //: (which cost that kernel twelve to sixteen) is not available here without giving
   //: something back first.
   static constexpr int kRegFloorA = 255;
-  static constexpr int kRegFloorB = 239;
+  static constexpr int kRegFloorB = 244;
   static constexpr int kStagesA = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloorA);
   static constexpr int kStagesB = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloorB);
   static constexpr size_t bytes_a = (size_t)fixed_bytes + (size_t)kStagesA * slot_bytes;
@@ -554,11 +554,41 @@ struct BwdOwner {
     }
   }
 
+  //: THE OUTER LEVEL'S STAGED CELLS, walked by a CARRYING cursor.  Both the clear and
+  //: the drain visit exactly these, so the walk is written once: `sdg` keeps its full
+  //: `kDigitRows` stride (`samp` and `sdcol` share the run's indexing) while only the
+  //: outer level's rows are live in it, the inner level having fanned itself in.
+  //:
+  //: The cursor advances instead of dividing.  The stride between a thread's cells is
+  //: the constant `kThreads`, so the quotient and remainder carry; one division per
+  //: walk, at the seed.  At the built arms `s_0` divides `kThreads` and the row is in
+  //: fact invariant, but the carry is written out because that is a property of the
+  //: SPAN VECTOR and not of the pass.
+  template <typename F>
+  __device__ __forceinline__ void for_outer_cells(F&& f) {
+    constexpr int NROW = BP::s(0);
+    static_assert(DP::off(0) == 0, "the outer level's digits start the run");
+    static_assert((NROW * C) % kThreads == 0, "the cells divide evenly among the threads");
+    constexpr int kCells = (NROW * C) / kThreads;
+    constexpr int kTokStep = kThreads / NROW;
+    constexpr int kRowStep = kThreads - kTokStep * NROW;
+    int tokl = tid / NROW;
+    int row = tid - tokl * NROW;
+#pragma unroll
+    for (int k = 0; k < kCells; ++k) {
+      f(tokl, row);
+      tokl += kTokStep;
+      row += kRowStep;
+      const bool wrap = row >= NROW;
+      row -= wrap ? NROW : 0;
+      tokl += wrap ? 1 : 0;
+    }
+  }
+
   //: THE DIGIT PLANE IS CLEARED AT THE HEAD OF THE BATCH, so the leading rendezvous
   //: publishes it and the reduction below needs no barrier of its own.
   __device__ __forceinline__ void digit_zero() {
-#pragma unroll
-    for (int i = tid; i < kDigitRows * C; i += kThreads) sdg[i] = 0.f;
+    for_outer_cells([&](int tokl, int row) { sdg[tokl * kDigitRows + row] = 0.f; });
   }
 
   //: THE DIGIT REDUCTION.  A level's digit gradient is the tile's weighted marginal
@@ -571,9 +601,9 @@ struct BwdOwner {
     constexpr int off0 = DP::off(0), off1 = DP::off(1);
     const float* const amp = samp + par * C * kDigitRows;
     //: outer level: a whole m-tile is one digit and a warp owns its two exclusively, so
-    //: the segment is three lane shuffles and no cross-warp term at all.  It stages into
-    //: `sdg` and the drain carries it, because the write side multiplies the COMPLETED
-    //: sum by the gain and a warp-grain fan-in would distribute it.
+    //: the segment is three lane shuffles and no cross-warp term at all.  Its sum is
+    //: therefore COMPLETE inside one warp, and it stages into `sdg` so that the drain
+    //: can coalesce its scattered token rows into one reducing instruction per run.
 #pragma unroll
     for (int pm = 0; pm < kSlabM; ++pm)
 #pragma unroll
@@ -616,10 +646,21 @@ struct BwdOwner {
   //: (`lane & 3`) at EIGHT CONTIGUOUS digits each (`lane >> 2`), so one reducing
   //: instruction touches four 32-byte sectors for 128 bytes -- the sector floor.
   //:
-  //: AVAILABLE ONLY WHERE NOTHING MULTIPLIES THE COMPLETED SUM.  `(R7)`'s `gw[j]`
-  //: multiplies `sum_s`, so folding it into a warp-grain partial would DISTRIBUTE it;
-  //: the write side therefore stages the inner level through `sdg` and gains it in the
-  //: drain, exactly as it always has.  The read side `(R2)` has no such factor.
+  //: BOTH SIDES MEET HERE, AND THE WRITE SIDE'S GAIN DISTRIBUTES OVER THE FOUR WARPS.
+  //: `(R7)` reads `d_pw_l[j, e] = gw[j] * sum_s (...)`, with the gain outside the sum;
+  //: a warp-grain fan-in computes `sum_over_warps (gw[j] * partial_w)` instead, which
+  //: is the same value in exact arithmetic and a different rounding in this one.  It is
+  //: taken deliberately, and the reason it is not a new liberty is that THE PLANE
+  //: ALREADY DOES EXACTLY THIS AT THE OWNER GRAIN: every owner CTA that touches token
+  //: `j` reduces its own `gw[j] * partial_owner` into the cell, so the gain has always
+  //: been distributed across the owner decomposition.  This distributes it one grain
+  //: finer, inside an accumulator whose summation order is nondeterministic by
+  //: construction and whose outputs are not bit-reproducible run to run on ANY build.
+  //: The read side `(R2)` has no such factor and is unaffected either way.
+  //:
+  //: Measured: Scan B 15.554 -> 13.546 ms at the flagship dense cell, `barrier`
+  //: 1.39 -> 1.53, `lg_throttle` 0.00 at 22.0 M reducing instructions.
+  template <bool GAINED>
   __device__ __forceinline__ void digit_reduce_inner_direct(const float (&tile)[kSlabM][NTOK][4],
                                                             int par, float* plane,
                                                             const uint16_t* list, int o0, int n,
@@ -637,6 +678,7 @@ struct BwdOwner {
 #pragma unroll
         for (int pm = 0; pm < kSlabM; ++pm)
           s += tile[pm][nt][e] * amp[tokl * kDigitRows + off0 + kSlabM * warp + pm];
+        if constexpr (GAINED) s *= sgain[par * C + tokl];
         fan_in_add(reinterpret_cast<float*>(
                        gather_ptr(plane, winP + (uint32_t)list[o0 + tokl] * (uint32_t)(D * B * 4)
                                              + (uint32_t)((col1 + acc_row(e)) * 4))),
@@ -644,57 +686,14 @@ struct BwdOwner {
       }
   }
 
-  //: THE INNER LEVEL, STAGED, for the side whose drain still has a factor to apply.
-  //: Barrier-separated rounds; round 0 STORES, so the inner rows need no zero-fill, and
-  //: the caller's own rendezvous publishes the last round to the drain.
-  __device__ __forceinline__ void digit_reduce_inner_staged(const float (&tile)[kSlabM][NTOK][4],
-                                                            int par) {
-    constexpr int off0 = DP::off(0), off1 = DP::off(1);
-    const float* const amp = samp + par * C * kDigitRows;
-#pragma unroll 1
-    for (int round = 0; round < kWarps; ++round) {
-      if (round != 0) rendezvous();
-      if (warp != round) continue;
-#pragma unroll
-      for (int nt = 0; nt < NTOK; ++nt)
-#pragma unroll
-        for (int e = 0; e < 4; ++e) {
-          const int tokl = kMmaN * nt + (lane & 3) * 2 + (e & 1);
-          float s = 0.f;
-#pragma unroll
-          for (int pm = 0; pm < kSlabM; ++pm)
-            s += tile[pm][nt][e] * amp[tokl * kDigitRows + off0 + kSlabM * warp + pm];
-          float* const cell = &sdg[tokl * kDigitRows + off1 + acc_row(e)];
-          if (round == 0)
-            store_f32(cell, s);
-          else
-            *cell += s;
-        }
-    }
-  }
-
-  //: THE DRAIN, over the `NROW` digit rows the staging actually carries: the whole run
-  //: on the write side, the OUTER level's rows alone where the inner level fanned itself
-  //: in.  `sdg` keeps its full `kDigitRows` stride either way, so one staging layout
-  //: serves both.
-  template <bool GAINED, int NROW>
+  //: THE DRAIN CARRIES THE OUTER LEVEL ALONE, on both sides: the inner level fans
+  //: itself in from the reduction.  The gain is applied HERE and not at the reduction,
+  //: because the outer level's sum is complete inside one warp -- there is no meeting
+  //: to distribute it over, so `(R7)` is honoured exactly on these rows.
+  template <bool GAINED>
   __device__ __forceinline__ void digit_drain(float* plane, const uint16_t* list, int o0, int n,
                                               uint32_t winP, int par) {
-    static_assert(DP::off(0) == 0, "the outer level's digits start the run");
-    static_assert(NROW == kDigitRows || NROW == BP::s(0), "the run, or the outer level's part");
-    static_assert((NROW * C) % kThreads == 0, "the drain's cells divide evenly among the threads");
-    //: THE (token, digit) CURSOR ADVANCES, it is not re-divided.  `NROW` is not a power
-    //: of two on the write side, so `i / NROW` per cell is a magic-number division
-    //: repeated for every one of them; the stride between a thread's cells is the
-    //: constant `kThreads`, so the quotient and remainder carry instead.  One division
-    //: per drain, at the cursor's seed.
-    constexpr int kCells = (NROW * C) / kThreads;
-    constexpr int kTokStep = kThreads / NROW;
-    constexpr int kRowStep = kThreads - kTokStep * NROW;
-    int tokl = tid / NROW;
-    int row = tid - tokl * NROW;
-#pragma unroll
-    for (int k = 0; k < kCells; ++k) {
+    for_outer_cells([&](int tokl, int row) {
       if (tokl < n) {
         float g = sdg[tokl * kDigitRows + row];
         if constexpr (GAINED) g *= sgain[par * C + tokl];
@@ -703,12 +702,7 @@ struct BwdOwner {
                                              + (uint32_t)(sdcol[row] * 4))),
                    g);
       }
-      tokl += kTokStep;
-      row += kRowStep;
-      const bool wrap = row >= NROW;
-      row -= wrap ? NROW : 0;
-      tokl += wrap ? 1 : 0;
-    }
+    });
   }
 };
 
@@ -785,9 +779,12 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
       float tile[kSlabM][NTOK][4];
       ow.channel_readout(lam, bd, ow.sd + vslot * OW::kSlotElems, tile);
       ow.digit_reduce_outer(tile, par);
-      ow.digit_reduce_inner_staged(tile, par);
+      //: the inner level meets in the GLOBAL plane here too, and `(G7)`'s gain rides
+      //: the warp-grain partial: RATIFIED, the plane already distributing that gain
+      //: across the owner decomposition.  See `digit_reduce_inner_direct`.
+      ow.template digit_reduce_inner_direct<true>(tile, par, dpwP, wlist, off, n, winA);
       rendezvous();
-      ow.template digit_drain<true, OW::kDigitRows>(dpwP, wlist, off, n, winA, par);
+      ow.template digit_drain<true>(dpwP, wlist, off, n, winA, par);
 
       //: (G5) and (G6) off ONE accumulator: the panel is UNGAINED, so the value
       //: columns times `gw` are `d_v` and the same accumulator dotted with the ones-
@@ -987,11 +984,11 @@ __global__ __launch_bounds__(kThreads, (kScanACtaTarget<D, B, K, M, W, C>)) void
       float tile[kSlabM][NTOK][4];
       ow.channel_readout(st, bd, ow.sd + (i % STAGES) * OW::kSlotElems, tile);
       ow.digit_reduce_outer(tile, par);
-      //: the read side has no gain on the completed sum, so its inner level meets the
-      //: other three warps in the GLOBAL plane and never touches `sdg`.
-      ow.digit_reduce_inner_direct(tile, par, dprP, ow.slist, off, n, winA);
+      //: the inner level meets the other three warps in the GLOBAL plane and never
+      //: touches `sdg`; ungained here, `(R2)` having no factor on the sum.
+      ow.template digit_reduce_inner_direct<false>(tile, par, dprP, ow.slist, off, n, winA);
       rendezvous();
-      ow.template digit_drain<false, OW::BP::s(0)>(dprP, ow.slist, off, n, winA, par);
+      ow.template digit_drain<false>(dprP, ow.slist, off, n, winA, par);
       rendezvous();
     }
     stage_wait<0>();
