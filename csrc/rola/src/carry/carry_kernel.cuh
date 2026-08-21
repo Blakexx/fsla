@@ -113,8 +113,10 @@ struct CarryGeom {
   //: exactly as the shipped `Geom::stages` is: the shallowest ring that reaches the
   //: best residency this arm can reach at any depth.  `kRegFloor` is the DECLARED
   //: floor for this family -- the measured census of the heaviest built arm,
-  //: recorded in the findings doc and re-measured at every milestone.
-  static constexpr int kRegFloor = 168;
+  //: recorded in the findings doc and re-measured at every milestone.  A CTA target
+  //: the live set cannot honour is a spill: the carve holds `BC/kWarps` leaves x all
+  //: `kCols` channels per warp, and 219 registers is what that costs.
+  static constexpr int kRegFloor = 220;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
   static constexpr int fixed_bytes = panel_bytes + out_bytes + list_bytes + scan_bytes;
   static constexpr int kStages = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloor);
@@ -339,6 +341,27 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   for (int j = 0; j < NL; ++j)
 #pragma unroll
     for (int e = 0; e < 4; ++e) mass_st[j][e] = 0.f;
+
+  //: THE READ DRAIN'S STATE SOURCE, AS ONE SEAM.  It yields the readout's A
+  //: fragments for k-step `kk` -- the `MCH` value m-tiles and the mass row -- and it
+  //: is the ONLY place the drain touches the state's residency.  Here the
+  //: accumulator IS the operand (the warp's own n-tiles, packed in place, no
+  //: `ldmatrix`); a state held elsewhere substitutes its own load here and nothing
+  //: else in the drain moves.
+  auto state_operand = [&](auto Kc, uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
+    constexpr int kk = decltype(Kc)::value;
+    static_for<MCH>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
+      sa[m][0] = pack_bf16x2(st[m][2 * kk][0], st[m][2 * kk][1]);
+      sa[m][1] = pack_bf16x2(st[m][2 * kk][2], st[m][2 * kk][3]);
+      sa[m][2] = pack_bf16x2(st[m][2 * kk + 1][0], st[m][2 * kk + 1][1]);
+      sa[m][3] = pack_bf16x2(st[m][2 * kk + 1][2], st[m][2 * kk + 1][3]);
+    });
+    ma[0] = pack_bf16x2(mass_st[2 * kk][0], mass_st[2 * kk][1]);
+    ma[1] = pack_bf16x2(mass_st[2 * kk][2], mass_st[2 * kk][3]);
+    ma[2] = pack_bf16x2(mass_st[2 * kk + 1][0], mass_st[2 * kk + 1][1]);
+    ma[3] = pack_bf16x2(mass_st[2 * kk + 1][2], mass_st[2 * kk + 1][3]);
+  };
 
   //: THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so
   //: the fold's A fragment for it is the constant whose row 0 is ones.
@@ -672,21 +695,9 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
       const int n = (nr - off) < C ? (nr - off) : C;
       const uint32_t brT = (i & 1) ? brT1 : brT0;
 
-      uint32_t sa[MCH][KDw][4], ma[KDw][4];
-#pragma unroll
-      for (int kk = 0; kk < KDw; ++kk) {
-#pragma unroll
-        for (int m = 0; m < MCH; ++m) {
-          sa[m][kk][0] = pack_bf16x2(st[m][2 * kk][0], st[m][2 * kk][1]);
-          sa[m][kk][1] = pack_bf16x2(st[m][2 * kk][2], st[m][2 * kk][3]);
-          sa[m][kk][2] = pack_bf16x2(st[m][2 * kk + 1][0], st[m][2 * kk + 1][1]);
-          sa[m][kk][3] = pack_bf16x2(st[m][2 * kk + 1][2], st[m][2 * kk + 1][3]);
-        }
-        ma[kk][0] = pack_bf16x2(mass_st[2 * kk][0], mass_st[2 * kk][1]);
-        ma[kk][1] = pack_bf16x2(mass_st[2 * kk][2], mass_st[2 * kk][3]);
-        ma[kk][2] = pack_bf16x2(mass_st[2 * kk + 1][0], mass_st[2 * kk + 1][1]);
-        ma[kk][3] = pack_bf16x2(mass_st[2 * kk + 1][2], mass_st[2 * kk + 1][3]);
-      }
+      uint32_t sa[KDw][MCH][4], ma[KDw][4];
+      static_for<KDw>(
+          [&](auto Kc) { state_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value]); });
 #pragma unroll
       for (int mb = 0; mb < MTOK; ++mb) {
         float acc[2][MCH][4], macc[2][4];
@@ -707,7 +718,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
 #pragma unroll
           for (int p = 0; p < 2; ++p) {
 #pragma unroll
-            for (int m = 0; m < MCH; ++m) mma(acc[p][m], sa[m][kk], &rb[kk][2 * p]);
+            for (int m = 0; m < MCH; ++m) mma(acc[p][m], sa[kk][m], &rb[kk][2 * p]);
             mma(macc[p], ma[kk], &rb[kk][2 * p]);
           }
         //: THE FAN-IN IS WARP-PRIVATE AND DIRECT (K33 1.4): one writer per read
