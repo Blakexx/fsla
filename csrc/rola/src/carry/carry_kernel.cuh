@@ -47,7 +47,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010013;
+static constexpr int kCarryBuildMagic = 31010014;
 
 static constexpr int kDv = 64;         // d_v
 static constexpr int kCols = kDv + 1;  // the mass column rides the state
@@ -198,6 +198,11 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   constexpr int kMassUnits = KDw < kWarps ? KDw : kWarps;
   constexpr int kMassKD = KDw / kMassUnits;
   constexpr int kMassTiles = 2 * kMassKD;
+  //: when the split reaches every warp the mass guard is a TAUTOLOGY, and it must be
+  //: spelled as one: `__launch_bounds__` does not let the compiler prove
+  //: `threadIdx.x < kThreads`, so the guard would otherwise cut the readout and the
+  //: fold into basic blocks and pin the lookahead produce out of their HMMA shadows.
+  constexpr bool kMassAllWarps = kMassUnits == kWarps;
 
   static_assert(C % kMmaM == 0 && kThreads % C == 0, "the batch tile must divide");
   static_assert(BC % kMmaK == 0, "the box is a whole number of k-tiles");
@@ -545,10 +550,14 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     //      within-window pair is the INTRA term's and this kernel must not carry it.
     //      The batch line is therefore the window line on both sides.
     const int nbr = (nr + C - 1) / C;
-    //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring.
-    //: Its global loads are issued before the current batch's MMA block and consumed
-    //: after the next rendezvous, so the amplitude-gather latency sits underneath
-    //: arithmetic instead of in front of it.
+    //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring,
+    //: UNCONDITIONALLY and AFTER the batch's MMA block.  Unconditionally because a
+    //: guard is a basic block and ptxas schedules within one; after, because the
+    //: produce ends in panel `STS` and the MMA begins in panel `LDSM`, and the two
+    //: shared ranges are not provably disjoint -- in the other order that aliasing
+    //: edge pins every produce instruction ahead of the HMMAs.  The trailing batch is
+    //: entirely dead rows by the produce's zeroing law and lands in a panel no MMA
+    //: reads.
     if (nbr > 0) produce_batch(pR, sr, slist, 0, nr, false);
 #pragma unroll 1
     for (int i = 0; i < nbr; ++i) {
@@ -556,7 +565,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
       const int n = (nr - off) < C ? (nr - off) : C;
       const uint32_t brT = (i & 1) ? brT1 : brT0;
       rendezvous();
-      if (i + 1 < nbr) produce_batch(pR, ((i + 1) & 1) ? sw : sr, slist, (i + 1) * C, nr, false);
 
       float acc[NTOK][4];
 #pragma unroll
@@ -588,7 +596,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
           store_f32(&so[(j * 8 + oq + (k & 1)) * LdO + chan0 + om + 8 * (k >> 1)], acc[j][k]);
 
       // ---- the mass row of the same readout ---------------------------------
-      if (warp < kMassUnits) {
+      if (kMassAllWarps || warp < kMassUnits) {
         uint32_t ma[kMassKD][4];
 #pragma unroll
         for (int q = 0; q < kMassKD; ++q) {
@@ -620,13 +628,14 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
             store_f32(&sden[warp * C + j * 8 + lane * 2 + 1], macc[j][1]);
           }
         }
-      } else if (lane < 4) {
+      } else if (!kMassAllWarps && lane < 4) {
 #pragma unroll
         for (int j = 0; j < NTOK; ++j) {
           store_f32(&sden[warp * C + j * 8 + lane * 2], 0.f);
           store_f32(&sden[warp * C + j * 8 + lane * 2 + 1], 0.f);
         }
       }
+      produce_batch(pR, ((i + 1) & 1) ? sw : sr, slist, (i + 1) * C, nr, false);
       rendezvous();
 
       // ---- the RED fan-in of the readout partials ---------------------------
@@ -690,7 +699,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
       const int f = i + STAGES - 1;
       if (f < nbw) stage_batch(f, f % STAGES);
       stage_commit();
-      if (i + 1 < nbw) produce_batch(pW, ((i + 1) & 1) ? sr : sw, wlist, (i + 1) * C, nw, true);
 
 #pragma unroll
       for (int kk = 0; kk < MTOK; ++kk) {
@@ -703,7 +711,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
           mma(st[2 * nj], a, &b[0]);
           mma(st[2 * nj + 1], a, &b[2]);
         }
-        if (warp < kMassUnits) {
+        if (kMassAllWarps || warp < kMassUnits) {
 #pragma unroll
           for (int q = 0; q < kMassKD; ++q) {
             uint32_t mb[4];
@@ -713,6 +721,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
           }
         }
       }
+      produce_batch(pW, ((i + 1) & 1) ? sr : sw, wlist, (i + 1) * C, nw, true);
       rendezvous();
     }
     //: the ring's unconsumed groups are retired before the next window reuses the

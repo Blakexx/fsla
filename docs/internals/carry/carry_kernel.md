@@ -107,9 +107,23 @@ residency this arm can reach at any depth.
 The PANEL ring is two slots and costs no shared memory at all. Because all of a
 window's readouts precede all of its folds, the write panel is dead through phase 1 and
 the read panel is dead through phase 2; each phase double-buffers in the other's buffer
-and produces one batch AHEAD, which puts the amplitude gather's latency underneath the
-previous batch's MMA block. Its two operand bases are NAMED SCALARS selected by the
+and produces one batch AHEAD. Its two operand bases are NAMED SCALARS selected by the
 batch parity — a two-element array indexed at runtime would be a stack frame.
+
+The lookahead produce is UNCONDITIONAL and sits AFTER its batch's MMA block, and both
+halves of that are scheduling laws rather than style. A `i + 1 < nb` guard is a basic
+block, and ptxas schedules within one, so a guarded produce cannot place a single
+instruction in an HMMA's 16-cycle tensor-pipe shadow; the trailing batch it costs
+instead is entirely dead rows under the produce's zeroing law and lands in a panel no
+MMA reads. Placement after the MMA is forced by ALIASING: the produce ends in panel
+`STS` and the MMA begins in panel `LDSM`, and ptxas cannot prove the two runtime panel
+ranges disjoint, so in the other order that memory edge pins every produce instruction
+ahead of the HMMAs even with the branch gone. In this order the produce's amplitude
+`LDG` hoist above the MMA and its expansion arithmetic fills the tensor pipe's shadows.
+For the same reason the mass row's `warp < kMassUnits` guard is written so that it
+disappears when the mass split reaches every warp: `__launch_bounds__` does not let the
+compiler prove `threadIdx.x < kThreads`, so the tautology would otherwise cut the
+readout and the fold into basic blocks.
 
 ## The produce
 
