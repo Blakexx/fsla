@@ -115,6 +115,9 @@ SPAN_FACTS_ARMS: tuple = (
     (2, 64, 8, 16, 64, 64),
     (3, 16, 2, 4, 16, 16),
     (4, 8, 2, 2, 4, 8),
+    #: the BC SWEEP's two arms (TEMPORARY -- deleted with the sweep).
+    (2, 256, 4, 16, 256, 256),
+    (2, 256, 4, 8, 256, 256),
 )
 
 #: the span arms are STATELESS only: residency is the paging layer's question and

@@ -23,16 +23,32 @@
   }
  },
  "source": {
-  "csrc_sha256": "e838884801ac0f260a2156c8c1f43d6a97ccf4411628f372bdc5b3700357178f",
+  "csrc_sha256": "e5f93a1dc12ec51a0e30838a6612b1dbdfb09f8f306469624e7bc48f2c65402b",
   "date": "2026-08-20"
  },
  "shards": {
   "facts_s0": {
-   "members_sha256": "92b3335f0848caffb6fe4aab13ee6c3d81eff3622d65abea41433d5a429c28a3",
-   "count": 48
+   "members_sha256": "c2e1eb48a280dc162a4ec36a3bf13fa9e2aa0668fe5b492ebad1e4c70e946c20",
+   "count": 50
   }
  },
  "entries": {
+  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi2ELi512ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
+   "regs": 117,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "4b0f6cb4f126dbcf903581d8b8ecfdc91074317ad6bb888de6b600e40cf12606"
+  },
+  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi4ELi512ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
+   "regs": 136,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "5b5e406e8cb2b288225c72bb908971a0209b19122d97a113857405a1fde1bdfa"
+  },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi384ELi32ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 167,
    "spill_stores": 0,
@@ -264,6 +280,22 @@
    "hot_locals": 0,
    "local_ops": 0,
    "sass_sha256": "884dd942b06694f45382c1a5d972f89286d8e71556cd5bd4e5e4e740bf96d1d0"
+  },
+  "sm_80:_ZN4rola5chunk18chunk_facts_tablesINS0_8SpanPlanILi2ELi256ELi4ELi16ELi256ELi256EEELi1EEEvPK13__nv_bfloat16S6_PjS7_i": {
+   "regs": 40,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "e3e21b173b6cd53023c30bfaa19069ca34451ce47b18e934566646e33a7c4bed"
+  },
+  "sm_80:_ZN4rola5chunk18chunk_facts_tablesINS0_8SpanPlanILi2ELi256ELi4ELi8ELi256ELi256EEELi1EEEvPK13__nv_bfloat16S6_PjS7_i": {
+   "regs": 40,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "e5c59d86f03c5df903dc30fe852cdd83b20b263598097dc991886b58b93ad8c1"
   },
   "sm_80:_ZN4rola5chunk18chunk_facts_tablesINS0_8SpanPlanILi2ELi256ELi8ELi16ELi256ELi256EEELi1EEEvPK13__nv_bfloat16S6_PjS7_i": {
    "regs": 40,
