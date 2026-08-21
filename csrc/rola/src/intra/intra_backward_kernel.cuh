@@ -50,15 +50,15 @@ constexpr int kChanTiles = kValueWidth / kSlabDigits;
 
 //: The forward's block footprint plus the ROW side's seed rows.  The seed is staged
 //: once per output block, not once per column tile: its rows are the block's readers.
-template <int D, int W>
+template <int D, int B, int W>
 struct alignas(16) IntraBwdSmem {
-  __nv_bfloat16 rslab[2][rows_of(W)][kOperandPitch];
-  __nv_bfloat16 wslab[2][kTile][kOperandPitch];
+  __nv_bfloat16 rslab[2][rows_of(W)][operand_pitch(B)];
+  __nv_bfloat16 wslab[2][kTile][operand_pitch(B)];
   __nv_bfloat16 vslab[kTile][kValuePitch];
   __nv_bfloat16 dslab[rows_of(W)][kSeedPitch];
   __nv_bfloat16 gain[kTile];
   float dden[rows_of(W)];
-  uint32_t mask[tiles_of(W)][D][2][kMaskWords];
+  uint32_t mask[tiles_of(W)][D][2][mask_words(B)];
 };
 
 struct IntraBwdParams {
@@ -81,21 +81,21 @@ struct IntraBwdParams {
 
 //: the mask helpers read one CTA-local summary, so the reverse pass's two one-sided
 //: predicates cost nothing beyond the forward's intersection one.
-template <int D, int W>
-__device__ __forceinline__ uint32_t side_bits(const IntraBwdSmem<D, W>& sm, uint32_t modes, int ti,
-                                              int l, int side, int slab) {
+template <int D, int B, int W>
+__device__ __forceinline__ uint32_t side_bits(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
+                                              int ti, int l, int side, int slab) {
   const uint32_t want = (side == 0 ? kModeReadSparse : kModeWriteSparse);
   if (((modes >> (2 * l)) & want) == 0u) return 0xFFFFu;
   return (sm.mask[ti][l][side][slab >> 1] >> ((slab & 1) * 16)) & 0xFFFFu;
 }
 
-template <int D, int W>
-__device__ __forceinline__ bool side_stage_live(const IntraBwdSmem<D, W>& sm, uint32_t modes,
+template <int D, int B, int W>
+__device__ __forceinline__ bool side_stage_live(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                 int ti, int l, int side, int stage) {
   bool any = false;
 #pragma unroll
-  for (int sub = 0; sub < kSlabsPerStage; ++sub)
-    any = any || side_bits<D, W>(sm, modes, ti, l, side, stage * kSlabsPerStage + sub) != 0u;
+  for (int sub = 0; sub < slabs_per_stage(B); ++sub)
+    any = any || side_bits<D, B, W>(sm, modes, ti, l, side, stage * slabs_per_stage(B) + sub) != 0u;
   return any;
 }
 
@@ -103,27 +103,28 @@ __device__ __forceinline__ bool side_stage_live(const IntraBwdSmem<D, W>& sm, ui
 //: level's digit gradient drops that level's own factor, so `d_pr_l[t,e]` is live
 //: wherever the WRITE side has support at `e` whatever the read side does there; gating
 //: it on the intersection would drop real terms.
-template <int D, int W>
-__device__ __forceinline__ uint32_t live_rows_side(const IntraBwdSmem<D, W>& sm, uint32_t modes,
+template <int D, int B, int W>
+__device__ __forceinline__ uint32_t live_rows_side(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                    int rt0, int ct, int l, int stage) {
   uint32_t bits = 0u;
 #pragma unroll
   for (int r = 0; r < row_tiles_of(W); ++r)
-    if (rt0 + r >= ct && side_stage_live<D, W>(sm, modes, rt0 + r, l, 0, stage)) bits |= 1u << r;
+    if (rt0 + r >= ct && side_stage_live<D, B, W>(sm, modes, rt0 + r, l, 0, stage)) bits |= 1u << r;
   return bits;
 }
 
 //: THE GRAM PASS'S OWN GATE: both sides' supports must meet in the digit slab, which is
 //: the forward's intersection certificate read off this kernel's own mask summary.
-template <int D, int W>
-__device__ __forceinline__ bool pair_slab_live(const IntraBwdSmem<D, W>& sm, uint32_t modes, int rt,
-                                               int ct, int l, int slab) {
-  return (side_bits<D, W>(sm, modes, rt, l, 0, slab) & side_bits<D, W>(sm, modes, ct, l, 1, slab))
+template <int D, int B, int W>
+__device__ __forceinline__ bool pair_slab_live(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
+                                               int rt, int ct, int l, int slab) {
+  return (side_bits<D, B, W>(sm, modes, rt, l, 0, slab)
+          & side_bits<D, B, W>(sm, modes, ct, l, 1, slab))
          != 0u;
 }
 
-template <int D, int W>
-__device__ __forceinline__ uint32_t live_rows_pair(const IntraBwdSmem<D, W>& sm, uint32_t modes,
+template <int D, int B, int W>
+__device__ __forceinline__ uint32_t live_rows_pair(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                    int rt0, int ct, int l, int stage) {
   uint32_t bits = 0u;
 #pragma unroll
@@ -131,21 +132,26 @@ __device__ __forceinline__ uint32_t live_rows_pair(const IntraBwdSmem<D, W>& sm,
     if (rt0 + r < ct) continue;
     bool any = false;
 #pragma unroll
-    for (int sub = 0; sub < kSlabsPerStage; ++sub)
-      any = any || pair_slab_live<D, W>(sm, modes, rt0 + r, ct, l, stage * kSlabsPerStage + sub);
+    for (int sub = 0; sub < slabs_per_stage(B); ++sub)
+      any = any
+            || pair_slab_live<D, B, W>(sm, modes, rt0 + r, ct, l, stage * slabs_per_stage(B) + sub);
     if (any) bits |= 1u << r;
   }
   return bits;
 }
 
-template <int D, int W>
-__device__ __forceinline__ void build_bwd_masks(IntraBwdSmem<D, W>& sm, const IntraBwdParams& p,
+template <int D, int B, int W>
+__device__ __forceinline__ void build_bwd_masks(IntraBwdSmem<D, B, W>& sm, const IntraBwdParams& p,
                                                 int bh, int wbase, int tid) {
+  //: THE HALF-SPLIT CERTIFICATE PASS needs a level at least two words wide.  A
+  //: narrower level is a REFUSAL here rather than a second pass shape, because the
+  //: reverse family is built at depth two only (`intra_backward.cu`).
+  static_assert(mask_words(B) % 2 == 0, "the reverse certificate pass splits a level in half");
   constexpr int kTiles = tiles_of(W);
   constexpr int kThreads = threads_of(W);
   constexpr int kCohorts = kThreads / (2 * kTile);
   uint32_t* flat = &sm.mask[0][0][0][0];
-  for (int i = tid; i < kTiles * D * 2 * kMaskWords; i += kThreads) flat[i] = 0u;
+  for (int i = tid; i < kTiles * D * 2 * mask_words(B); i += kThreads) flat[i] = 0u;
   __syncthreads();
 
   const int token = tid & (kTile - 1);
@@ -160,12 +166,13 @@ __device__ __forceinline__ void build_bwd_masks(IntraBwdSmem<D, W>& sm, const In
       const __nv_bfloat16* plane = (side == 0) ? p.pread : p.pwrite;
       for (int ti = cohort; ti < kTiles; ti += kCohorts) {
         const __nv_bfloat16* row =
-            plane + (long long)(bh * p.L + wbase + ti * kTile + token) * p.row_width
-            + l * kLevelWidth + half * (kLevelWidth / 2);
+            plane + (long long)(bh * p.L + wbase + ti * kTile + token) * p.row_width + l * B
+            + half * (B / 2);
 #pragma unroll
-        for (int j = 0; j < kMaskWords / 2; ++j) {
-          const uint32_t bits = __reduce_or_sync(0xFFFFFFFFu, digit_union_word(row + j * 32));
-          if ((tid & 31) == 0) atomicOr(&sm.mask[ti][l][side][half * (kMaskWords / 2) + j], bits);
+        for (int j = 0; j < mask_words(B) / 2; ++j) {
+          const uint32_t bits = __reduce_or_sync(0xFFFFFFFFu, digit_union_word<32>(row + j * 32));
+          if ((tid & 31) == 0)
+            atomicOr(&sm.mask[ti][l][side][half * (mask_words(B) / 2) + j], bits);
         }
       }
     }
@@ -173,16 +180,16 @@ __device__ __forceinline__ void build_bwd_masks(IntraBwdSmem<D, W>& sm, const In
   __syncthreads();
 }
 
-template <int D, int W>
-__device__ __forceinline__ void stage_bwd_slabs(IntraBwdSmem<D, W>& sm, const IntraBwdParams& p,
+template <int D, int B, int W>
+__device__ __forceinline__ void stage_bwd_slabs(IntraBwdSmem<D, B, W>& sm, const IntraBwdParams& p,
                                                 int bh, int wbase, int rt0, int ct, int l,
                                                 int stage, int buf, int tid, uint32_t rows,
                                                 bool cols) {
-  const int digit = l * kLevelWidth + stage * kStageDigits;
+  const int digit = l * B + stage * stage_digits(B);
   const long long base = (long long)(bh * p.L + wbase) * p.row_width + digit;
   constexpr int kThreads = threads_of(W);
   constexpr int kColThreads = kThreads / kTile;
-  constexpr int kColDigits = kStageDigits / kColThreads;
+  constexpr int kColDigits = stage_digits(B) / kColThreads;
   if (cols) {
     const int ctoken = tid / kColThreads;
     const int cpart = (tid % kColThreads) * kColDigits;
@@ -194,18 +201,18 @@ __device__ __forceinline__ void stage_bwd_slabs(IntraBwdSmem<D, W>& sm, const In
   }
   const int rtoken = (tid >> 1) & (kTile - 1);
   const int rtile = tid / (2 * kTile);
-  const int rpart = (tid & 1) * (kStageDigits / 2);
+  const int rpart = (tid & 1) * (stage_digits(B) / 2);
   if ((rows >> rtile) & 1u) {
     const __nv_bfloat16* rsrc =
         p.pread + base + (long long)((rt0 + rtile) * kTile + rtoken) * p.row_width + rpart;
 #pragma unroll
-    for (int c = 0; c < kStageDigits / 16; ++c)
+    for (int c = 0; c < stage_digits(B) / 16; ++c)
       stage_tile(smem_addr(&sm.rslab[buf][rtile * kTile + rtoken][rpart + c * 8]), rsrc + c * 8);
   }
 }
 
-template <int D, int W>
-__device__ __forceinline__ void stage_bwd_values(IntraBwdSmem<D, W>& sm, const IntraBwdParams& p,
+template <int D, int B, int W>
+__device__ __forceinline__ void stage_bwd_values(IntraBwdSmem<D, B, W>& sm, const IntraBwdParams& p,
                                                  int bh, int wbase, int ct, int tid) {
   constexpr int kThreads = threads_of(W);
   constexpr int kColThreads = kThreads / kTile;
@@ -226,8 +233,8 @@ __device__ __forceinline__ void stage_bwd_values(IntraBwdSmem<D, W>& sm, const I
 
 //: THE SEED, staged ONCE PER OUTPUT BLOCK: its rows are the block's readers, which do
 //: not change with the column tile.
-template <int D, int W>
-__device__ __forceinline__ void stage_bwd_seed(IntraBwdSmem<D, W>& sm, const IntraBwdParams& p,
+template <int D, int B, int W>
+__device__ __forceinline__ void stage_bwd_seed(IntraBwdSmem<D, B, W>& sm, const IntraBwdParams& p,
                                                int bh, int wbase, int rt0, int tid) {
   constexpr int kThreads = threads_of(W);
   constexpr int kRows = rows_of(W);
@@ -261,7 +268,7 @@ __device__ __forceinline__ void pack_acc(const float (&acc)[8][4], int kb, uint3
   a[3] = pack_bf16x2(acc[2 * kb + 1][2], acc[2 * kb + 1][3]);
 }
 
-template <int D, int W>
+template <int D, int B, int W>
 __global__ __launch_bounds__(threads_of(W)) void intra_backward_kernel(IntraBwdParams p) {
   constexpr int kTiles = tiles_of(W);
   constexpr int kRowTiles = row_tiles_of(W);
@@ -269,14 +276,14 @@ __global__ __launch_bounds__(threads_of(W)) void intra_backward_kernel(IntraBwdP
   static_assert(kTiles % kRowTiles == 0, "the window is a whole number of output blocks");
   static_assert(kValueWidth % kSlabDigits == 0, "the value axis stages like the digit axis");
   extern __shared__ __align__(16) char raw[];
-  IntraBwdSmem<D, W>& sm = *reinterpret_cast<IntraBwdSmem<D, W>*>(raw);
+  IntraBwdSmem<D, B, W>& sm = *reinterpret_cast<IntraBwdSmem<D, B, W>*>(raw);
   const int tid = threadIdx.x;
   const int warp = tid >> 5;
   const int lane = tid & 31;
   const int bh = blockIdx.y;
   const int wbase = blockIdx.x * W;
 
-  build_bwd_masks<D, W>(sm, p, bh, wbase, tid);
+  build_bwd_masks<D, B, W>(sm, p, bh, wbase, tid);
 
   const int mine = (warp / kWarpsPerTile) & (kRowTiles - 1);
   const int arow = warp * kWarpRows + (lane & 15);
@@ -290,16 +297,16 @@ __global__ __launch_bounds__(threads_of(W)) void intra_backward_kernel(IntraBwdP
   for (int rt0 = 0; rt0 < kTiles; rt0 += kRowTiles) {
     const int rt = rt0 + mine;
     __syncthreads();
-    stage_bwd_seed<D, W>(sm, p, bh, wbase, rt0, tid);
+    stage_bwd_seed<D, B, W>(sm, p, bh, wbase, rt0, tid);
     stage_commit();
     stage_wait<0>();
     __syncthreads();
 
     for (int ct = 0; ct < rt0 + kRowTiles; ++ct) {
       __syncthreads();
-      stage_bwd_values<D, W>(sm, p, bh, wbase, ct, tid);
-      uint32_t rows = live_rows_pair<D, W>(sm, p.modes, rt0, ct, 0, 0);
-      if (rows) stage_bwd_slabs<D, W>(sm, p, bh, wbase, rt0, ct, 0, 0, 0, tid, rows, true);
+      stage_bwd_values<D, B, W>(sm, p, bh, wbase, ct, tid);
+      uint32_t rows = live_rows_pair<D, B, W>(sm, p.modes, rt0, ct, 0, 0);
+      if (rows) stage_bwd_slabs<D, B, W>(sm, p, bh, wbase, rt0, ct, 0, 0, 0, tid, rows, true);
       stage_commit();
 
       float gram[D][8][4];
@@ -314,16 +321,16 @@ __global__ __launch_bounds__(threads_of(W)) void intra_backward_kernel(IntraBwdP
 #pragma unroll
       for (int l = 0; l < D; ++l) {
 #pragma unroll
-        for (int stage = 0; stage < kStagesPerLevel; ++stage) {
-          const int step = l * kStagesPerLevel + stage;
-          const int nl = (stage + 1 == kStagesPerLevel) ? l + 1 : l;
-          const int ns = (stage + 1 == kStagesPerLevel) ? 0 : stage + 1;
+        for (int stage = 0; stage < stages_per_level(B); ++stage) {
+          const int step = l * stages_per_level(B) + stage;
+          const int nl = (stage + 1 == stages_per_level(B)) ? l + 1 : l;
+          const int ns = (stage + 1 == stages_per_level(B)) ? 0 : stage + 1;
           uint32_t next_rows = 0u;
           if (nl < D) {
-            next_rows = live_rows_pair<D, W>(sm, p.modes, rt0, ct, nl, ns);
+            next_rows = live_rows_pair<D, B, W>(sm, p.modes, rt0, ct, nl, ns);
             if (next_rows)
-              stage_bwd_slabs<D, W>(sm, p, bh, wbase, rt0, ct, nl, ns, (step + 1) & 1, tid,
-                                    next_rows, true);
+              stage_bwd_slabs<D, B, W>(sm, p, bh, wbase, rt0, ct, nl, ns, (step + 1) & 1, tid,
+                                       next_rows, true);
           }
           stage_commit();
           stage_wait<1>();
@@ -331,9 +338,9 @@ __global__ __launch_bounds__(threads_of(W)) void intra_backward_kernel(IntraBwdP
           if ((rows >> mine) & 1u) {
             const int buf = step & 1;
 #pragma unroll
-            for (int sub = 0; sub < kSlabsPerStage; ++sub) {
-              const int slab = stage * kSlabsPerStage + sub;
-              if (!pair_slab_live<D, W>(sm, p.modes, rt, ct, l, slab)) continue;
+            for (int sub = 0; sub < slabs_per_stage(B); ++sub) {
+              const int slab = stage * slabs_per_stage(B) + sub;
+              if (!pair_slab_live<D, B, W>(sm, p.modes, rt, ct, l, slab)) continue;
               const int k0 = sub * kSlabDigits + acol;
               uint32_t af[4];
               load_frag(af, smem_addr(&sm.rslab[buf][arow][k0]));
@@ -452,21 +459,21 @@ __global__ __launch_bounds__(threads_of(W)) void intra_backward_kernel(IntraBwdP
 #pragma unroll
       for (int l = 0; l < D; ++l) {
 #pragma unroll
-        for (int stage = 0; stage < kStagesPerLevel; ++stage) {
+        for (int stage = 0; stage < stages_per_level(B); ++stage) {
           __syncthreads();
-          const uint32_t rrows = live_rows_side<D, W>(sm, p.modes, rt0, ct, l, stage);
-          const bool wlive = side_stage_live<D, W>(sm, p.modes, ct, l, 1, stage);
-          stage_bwd_slabs<D, W>(sm, p, bh, wbase, rt0, ct, l, stage, 0, tid, rrows, wlive);
+          const uint32_t rrows = live_rows_side<D, B, W>(sm, p.modes, rt0, ct, l, stage);
+          const bool wlive = side_stage_live<D, B, W>(sm, p.modes, ct, l, 1, stage);
+          stage_bwd_slabs<D, B, W>(sm, p, bh, wbase, rt0, ct, l, stage, 0, tid, rrows, wlive);
           stage_commit();
           stage_wait<0>();
           __syncthreads();
-          const int dbase = l * kLevelWidth + stage * kStageDigits;
+          const int dbase = l * B + stage * stage_digits(B);
 #pragma unroll
-          for (int sub = 0; sub < kSlabsPerStage; ++sub) {
-            const int slab = stage * kSlabsPerStage + sub;
+          for (int sub = 0; sub < slabs_per_stage(B); ++sub) {
+            const int slab = stage * slabs_per_stage(B) + sub;
             const int k0 = sub * kSlabDigits;
             const int gdig = dbase + sub * kSlabDigits;
-            if (active && side_bits<D, W>(sm, p.modes, ct, l, 1, slab) != 0u) {
+            if (active && side_bits<D, B, W>(sm, p.modes, ct, l, 1, slab) != 0u) {
               float dpr[2][4] = {{0.f, 0.f, 0.f, 0.f}, {0.f, 0.f, 0.f, 0.f}};
 #pragma unroll
               for (int jt = 0; jt < 4; ++jt) {
@@ -491,7 +498,7 @@ __global__ __launch_bounds__(threads_of(W)) void intra_backward_kernel(IntraBwdP
                              dpr[nt][i]);
             }
             if (active && ((rrows >> mine) & 1u)
-                && side_bits<D, W>(sm, p.modes, rt, l, 0, slab) != 0u) {
+                && side_bits<D, B, W>(sm, p.modes, rt, l, 0, slab) != 0u) {
               uint32_t bf[4];
               load_frag_t(bf, smem_addr(&sm.rslab[0][warp * kWarpRows + rF][k0 + cF * 8]));
               const uint32_t b0[2] = {bf[0], bf[1]};

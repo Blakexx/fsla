@@ -22,7 +22,7 @@ __device__ int64_t g_stamp_probe;
 //: THE HEAVIEST BUILT ARM's footprint: it moves whenever any arm's shape does,
 //: which is what makes it a fact only THIS binary can produce.
 __global__ void stamp_kernel(int64_t* out) {
-  *out = (int64_t)(sizeof(detail::IntraSmem<2, kWindowWide>)) * 1000003
+  *out = (int64_t)(sizeof(detail::IntraSmem<2, kWidthFlat, kWindowWide>)) * 1000003
          + (int64_t)detail::threads_of(kWindowWide);
   g_stamp_probe = *out;
 }
@@ -41,24 +41,26 @@ void check_plane(const at::Tensor& t, const char* name, int64_t bh, int64_t L, i
 //: THE BUILT SET, as one macro so the dispatch and the arm list cannot drift --
 //: the carry family's `CARRY_ARMS_X` discipline, mirrored.  `W` pairs with the
 //: carry's window template argument: the two kernels run ONE grid.
-#define INTRA_ARMS_X(X_)          \
-  X_(2, kWindowFlagship)          \
-  X_(2, kWindowWide)              \
-  X_(2, kWindowSmall)
+#define INTRA_ARMS_X(X_)                     \
+  X_(2, kWidthFlat, kWindowFlagship)         \
+  X_(2, kWidthFlat, kWindowWide)             \
+  X_(2, kWidthFlat, kWindowSmall)            \
+  X_(3, kWidthDeep3, kWindowSmall)           \
+  X_(4, kWidthDeep4, kWindowSmall)
 
 //: The block's whole reader side is resident, which puts the footprint past the
 //: 48 KB a kernel gets without asking; the opt-in is per device, so it is renewed
 //: at every launch rather than cached behind a once-flag.
-template <int D, int W>
+template <int D, int B, int W>
 void launch(const detail::IntraParams& p, int64_t bh, int64_t windows, cudaStream_t stream) {
-  constexpr int kSmem = (int)sizeof(detail::IntraSmem<D, W>);
+  constexpr int kSmem = (int)sizeof(detail::IntraSmem<D, B, W>);
   const int optin = at::cuda::getCurrentDeviceProperties()->sharedMemPerBlockOptin;
   TORCH_CHECK(kSmem <= optin, "the intra arm's ", kSmem,
               "-byte block footprint exceeds this device's ", optin, "-byte opt-in limit");
-  C10_CUDA_CHECK(cudaFuncSetAttribute(detail::intra_kernel<D, W>,
+  C10_CUDA_CHECK(cudaFuncSetAttribute(detail::intra_kernel<D, B, W>,
                                       cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
   const dim3 grid((unsigned)windows, (unsigned)bh, 1);
-  detail::intra_kernel<D, W><<<grid, detail::threads_of(W), kSmem, stream>>>(p);
+  detail::intra_kernel<D, B, W><<<grid, detail::threads_of(W), kSmem, stream>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -66,11 +68,10 @@ void launch(const detail::IntraParams& p, int64_t bh, int64_t windows, cudaStrea
 
 void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,
                    const at::Tensor& v, at::Tensor& o, at::Tensor& den, int64_t levels,
-                   int64_t level_modes, int64_t window) {
-  TORCH_CHECK(levels == 2, "the intra kernel is built for D = 2");
+                   int64_t level_width, int64_t level_modes, int64_t window) {
   const int64_t bh = pread.size(0);
   const int64_t L = pread.size(1);
-  const int64_t width = levels * kLevelWidth;
+  const int64_t width = levels * level_width;
   check_plane(pread, "pread", bh, L, width);
   check_plane(pwrite, "pwrite", bh, L, width);
   TORCH_CHECK(gwrite.is_cuda() && gwrite.is_contiguous() && gwrite.scalar_type() == at::kBFloat16
@@ -108,9 +109,9 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
       (uint32_t)level_modes,
   };
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-#define INTRA_DISPATCH(D_, W_)                                  \
-  if (levels == (D_) && window == (W_)) {                       \
-    launch<D_, W_>(p, bh, L / (W_), stream);                    \
+#define INTRA_DISPATCH(D_, B_, W_)                                     \
+  if (levels == (D_) && level_width == (B_) && window == (W_)) {       \
+    launch<D_, B_, W_>(p, bh, L / (W_), stream);                       \
   } else
   INTRA_ARMS_X(INTRA_DISPATCH) { TORCH_CHECK(false, "unbuilt intra arm"); }
 #undef INTRA_DISPATCH
@@ -118,8 +119,9 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
 
 std::vector<std::vector<int64_t>> intra_arms() {
   std::vector<std::vector<int64_t>> out;
-#define INTRA_LIST(D_, W_) \
-  out.push_back({(int64_t)(D_), (int64_t)(W_), (int64_t)sizeof(detail::IntraSmem<D_, W_>)});
+#define INTRA_LIST(D_, B_, W_)                                                 \
+  out.push_back({(int64_t)(D_), (int64_t)(B_), (int64_t)(W_),                  \
+                 (int64_t)sizeof(detail::IntraSmem<D_, B_, W_>)});
   INTRA_ARMS_X(INTRA_LIST)
 #undef INTRA_LIST
   return out;

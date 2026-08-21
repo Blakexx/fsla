@@ -15,7 +15,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.ops.intra import WINDOW_SMALL, WINDOW_WIDE, build_stamp, intra_forward
+from rola.ops.intra import (
+    LEVEL_WIDTH_DEEP3,
+    LEVEL_WIDTH_DEEP4,
+    WINDOW_SMALL,
+    WINDOW_WIDE,
+    build_stamp,
+    intra_forward,
+)
 from tests.k31.intra_reference import (
     DENSE_BOTH,
     READ_SPARSE,
@@ -69,6 +76,55 @@ def test_intra_matches_the_fp64_reference(name, modes, k_tok, length, clustered,
     e_o, e_den = _relative(o, o_ref), _relative(den, den_ref)
     assert e_o < BF16_RTOL, f"{name}: the output leaves the bf16 band at {e_o:.3e}"
     assert e_den < BF16_RTOL, f"{name}: the mass leaves the bf16 band at {e_den:.3e}"
+
+
+#: THE DEEP CELLS.  A `(D, B, W)` arm whose level is narrower than the MMA's
+#: contraction step contracts it PADDED, so these cells are also the gate on the
+#: pad being zero: a stale byte there shows up as a wrong Gram, not as a crash.
+DEEP_CELLS = [
+    ("d3-dense", 3, LEVEL_WIDTH_DEEP3, (DENSE_BOTH,) * 3, None, False),
+    ("d3-alt-k4", 3, LEVEL_WIDTH_DEEP3, (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE), 4, False),
+    ("d3-alt-k8-cohort-64", 3, LEVEL_WIDTH_DEEP3,
+     (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE), 8, 64),
+    ("d3-shared-k4", 3, LEVEL_WIDTH_DEEP3, (SHARED_SPARSE,) * 3, 4, False),
+    ("d4-dense", 4, LEVEL_WIDTH_DEEP4, (DENSE_BOTH,) * 4, None, False),
+    ("d4-alt-k2", 4, LEVEL_WIDTH_DEEP4,
+     (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE, READ_SPARSE), 2, False),
+    ("d4-alt-k4", 4, LEVEL_WIDTH_DEEP4,
+     (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE, READ_SPARSE), 4, False),
+    ("d4-shared-k2", 4, LEVEL_WIDTH_DEEP4, (SHARED_SPARSE,) * 4, 2, False),
+]
+
+
+@pytest.mark.parametrize("name,levels,width,modes,k_tok,clustered",
+                         DEEP_CELLS, ids=[c[0] for c in DEEP_CELLS])
+def test_deep_intra_matches_the_fp64_reference(name, levels, width, modes, k_tok, clustered):
+    length = 16 * WINDOW_SMALL
+    pread, pwrite, gwrite, v_bh = make_cell(2 * HEADS, length, levels, modes,
+                                            k_tok=k_tok or 4, seed=21, clustered=clustered,
+                                            level_width=width)
+    o, den = intra_forward(pread, pwrite, gwrite, as_token_major(v_bh, HEADS), modes,
+                           window=WINDOW_SMALL)
+    o_ref, den_ref = intra_reference(pread, pwrite, gwrite, v_bh, levels, window=WINDOW_SMALL,
+                                     level_width=width)
+    e_o, e_den = _relative(o, o_ref), _relative(den, den_ref)
+    assert e_o < BF16_RTOL, f"{name}: the output leaves the bf16 band at {e_o:.3e}"
+    assert e_den < BF16_RTOL, f"{name}: the mass leaves the bf16 band at {e_den:.3e}"
+
+
+@pytest.mark.parametrize("levels,width", [(3, LEVEL_WIDTH_DEEP3), (4, LEVEL_WIDTH_DEEP4)],
+                         ids=["d3", "d4"])
+def test_the_deep_slab_gate_does_not_change_the_answer(levels, width):
+    """The zero certificate is a certificate at every level width: the same operands
+    run under DENSE_BOTH and under the declared sparse modes and give the same bits."""
+    modes = tuple((WRITE_SPARSE if l % 2 == 0 else READ_SPARSE) for l in range(levels))
+    pread, pwrite, gwrite, v_bh = make_cell(HEADS, 8 * WINDOW_SMALL, levels, modes, k_tok=2,
+                                            seed=7, clustered=64, level_width=width)
+    v = as_token_major(v_bh, HEADS)
+    gated_o, gated_den = intra_forward(pread, pwrite, gwrite, v, modes, window=WINDOW_SMALL)
+    ungated_o, ungated_den = intra_forward(pread, pwrite, gwrite, v, (DENSE_BOTH,) * levels,
+                                           window=WINDOW_SMALL)
+    assert torch.equal(gated_o, ungated_o) and torch.equal(gated_den, ungated_den)
 
 
 def test_the_write_back_reduces_rather_than_stores():

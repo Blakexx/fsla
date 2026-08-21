@@ -46,9 +46,11 @@ from rola.ops._ext import extension
 WINDOW = carry_ops.WINDOW
 WINDOW_WIDE = carry_ops.WINDOW_WIDE
 
-#: the topology the intra kernel is instantiated at, and therefore the one the
-#: combined operator has.
+#: the level widths the intra kernel is instantiated at, and therefore the ones the
+#: combined operator has.  A topology is admitted when BOTH families carry an arm at
+#: its ``(D, B, W)``; the widths are uniform per topology, as everywhere else.
 LEVEL_WIDTH = intra_ops.LEVEL_WIDTH
+LEVEL_WIDTHS = (intra_ops.LEVEL_WIDTH, intra_ops.LEVEL_WIDTH_DEEP3, intra_ops.LEVEL_WIDTH_DEEP4)
 
 
 def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
@@ -70,12 +72,12 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     D = len(widths)
     if len(modes) != D:
         raise ValueError(f"{D} levels want {D} support modes; got {len(modes)}")
-    if any(w != LEVEL_WIDTH for w in widths):
+    if len(set(widths)) != 1 or widths[0] not in LEVEL_WIDTHS:
         raise ValueError(
-            f"the combined prefill is built at level width {LEVEL_WIDTH} only "
-            f"(the intra kernel's instantiation); got widths {tuple(widths)}. "
-            f"Narrower topologies are inter-only cells -- call "
-            f"rola.ops.carry.carry_inter directly.")
+            f"the combined prefill is built at one uniform level width out of "
+            f"{LEVEL_WIDTHS} (the intra kernel's instantiations); got widths "
+            f"{tuple(widths)}. A topology neither family carries is an inter-only "
+            f"cell -- call rola.ops.carry.carry_inter directly.")
     length = read_levels[0].shape[1]
     if length % window:
         raise ValueError(
@@ -99,12 +101,13 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     #: SAME STREAM, SAME BUFFERS.  The intra REDs into `num`/`den`; the stream
     #: order is the only synchronization either kernel needs, and there is no
     #: host round trip between them.
-    ext.intra_forward(pread, pwrite, gwrite, value, num, den, D,
+    ext.intra_forward(pread, pwrite, gwrite, value, num, den, D, int(widths[0]),
                       intra_ops.pack_modes(tuple(modes)), int(window))
     return num, den, state_out
 
 
-__all__ = ["LEVEL_WIDTH", "WINDOW", "WINDOW_WIDE", "prefill", "prefill_autograd"]
+__all__ = ["LEVEL_WIDTH", "LEVEL_WIDTHS", "WINDOW", "WINDOW_WIDE", "prefill",
+           "prefill_autograd"]
 
 
 class _Prefill(torch.autograd.Function):
@@ -128,7 +131,7 @@ class _Prefill(torch.autograd.Function):
         num, den, state_out = ext.carry_forward_inter(
             pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
             int(chunk), carry_ops.CHANNEL_SPLIT, state_in)
-        ext.intra_forward(pread, pwrite, gwrite, value, num, den, D,
+        ext.intra_forward(pread, pwrite, gwrite, value, num, den, D, int(widths[0]),
                           intra_ops.pack_modes(tuple(modes)), int(window))
 
         ctx.save_for_backward(pread, pwrite, gwrite, value, state_in)
@@ -160,7 +163,7 @@ class _Prefill(torch.autograd.Function):
         #: `num`/`den`; nothing is summed on the host.
         extension().intra_backward(
             pread, pwrite, gwrite, value, d_num.to(torch.bfloat16).contiguous(),
-            d_den.to(torch.float32).contiguous(), d_pr, d_pw, d_gw, d_v, D,
+            d_den.to(torch.float32).contiguous(), d_pr, d_pw, d_gw, d_v, D, int(widths[0]),
             intra_ops.pack_modes(tuple(modes)), int(window))
 
         def unflatten(plane, base_dtype):
@@ -192,10 +195,15 @@ def prefill_autograd(read_levels, write_levels, g_write, v, widths, *, k: int, m
     D = len(widths)
     if len(modes) != D:
         raise ValueError(f"{D} levels want {D} support modes; got {len(modes)}")
-    if any(w != LEVEL_WIDTH for w in widths):
+    #: THE REVERSE PASS IS BUILT AT DEPTH TWO, WIDTH 256 ONLY.  Both reverse
+    #: families refuse a third level -- the digit reduction's pass geometry is a
+    #: per-arm derivation -- so the differentiable entry is narrower than the
+    #: forward one by exactly that gap, and says so rather than half-serving it.
+    if any(w != LEVEL_WIDTH for w in widths) or D != 2:
         raise ValueError(
-            f"the combined prefill is built at level width {LEVEL_WIDTH} only "
-            f"(the intra kernel's instantiation); got widths {tuple(widths)}.")
+            f"the differentiable prefill is built at D = 2, level width {LEVEL_WIDTH} "
+            f"only (the reverse families' arms); got {D} levels of widths "
+            f"{tuple(widths)}. The forward-only `prefill` carries the deep arms.")
     length = read_levels[0].shape[1]
     if length % window:
         raise ValueError(

@@ -29,14 +29,15 @@ WRITE_SPARSE = 2
 SHARED_SPARSE = 3
 
 
-def intra_reference(pread, pwrite, gwrite, v_bh, levels, window=WINDOW):
+def intra_reference(pread, pwrite, gwrite, v_bh, levels, window=WINDOW,
+                    level_width=LEVEL_WIDTH):
     """``o[t] = sum_{t' <= t in w} A[t, t'] v[t']`` and ``den[t] = sum_{t'} A[t, t']``.
 
     ``A[t, t'] = gwrite[t'] * prod_l <pread_l[t], pwrite_l[t']>`` -- the gain is a
     per-COLUMN scalar applied after the level product, so the support factors are
     ungained, matching the shipped kernel's gain law.
 
-    ``pread``/``pwrite``: ``[BH, L, levels*LEVEL_WIDTH]``; ``gwrite``: ``[BH, L]``;
+    ``pread``/``pwrite``: ``[BH, L, levels*level_width]``; ``gwrite``: ``[BH, L]``;
     ``v_bh``: ``[BH, L, d_v]``. All are consumed at float64.
     """
     pread = pread.to(torch.float64)
@@ -51,7 +52,7 @@ def intra_reference(pread, pwrite, gwrite, v_bh, levels, window=WINDOW):
         cut = slice(start, start + window)
         a = torch.ones((bh, window, window), dtype=torch.float64, device=v_bh.device)
         for level in range(levels):
-            span = slice(level * LEVEL_WIDTH, (level + 1) * LEVEL_WIDTH)
+            span = slice(level * level_width, (level + 1) * level_width)
             a = a * (pread[:, cut, span] @ pwrite[:, cut, span].transpose(-1, -2))
         a = a * gwrite[:, cut].unsqueeze(1) * causal
         o[:, cut] = a @ v_bh[:, cut]
@@ -87,7 +88,8 @@ def _simplex(shape, k_tok, generator, device, clustered=False):
     return x / x.sum(-1, keepdim=True)
 
 
-def make_cell(bh, length, levels, modes, k_tok=4, seed=0, device="cuda", clustered=False):
+def make_cell(bh, length, levels, modes, k_tok=4, seed=0, device="cuda", clustered=False,
+              level_width=LEVEL_WIDTH):
     """Operand planes for one conformance cell, in the kernel's bf16 storage form.
 
     A level's mode decides which SIDE carries the sparse support; SHARED_SPARSE
@@ -98,7 +100,7 @@ def make_cell(bh, length, levels, modes, k_tok=4, seed=0, device="cuda", cluster
     read_parts, write_parts = [], []
     for level in range(levels):
         mode = modes[level]
-        shape = (bh, length, LEVEL_WIDTH)
+        shape = (bh, length, level_width)
         if mode == SHARED_SPARSE:
             support = _simplex(shape, k_tok, generator, device, clustered) > 0
             read = torch.rand(shape, dtype=torch.float64, device=device, generator=generator)
@@ -127,7 +129,8 @@ def as_token_major(v_bh, heads):
     return v_bh.view(bh // heads, heads, length, d_v).permute(0, 2, 1, 3).contiguous()
 
 
-def slab_skip_rate(pread, pwrite, modes, window=WINDOW, tile=64, slab=16):
+def slab_skip_rate(pread, pwrite, modes, window=WINDOW, tile=64, slab=16,
+                   level_width=LEVEL_WIDTH):
     """The fraction of (tile-pair, level, slab) MMA groups the zero certificate gates.
 
     A python mirror of the kernel's mask: a level's declared-sparse side is
@@ -136,16 +139,16 @@ def slab_skip_rate(pread, pwrite, modes, window=WINDOW, tile=64, slab=16):
     """
     bh, length, _ = pread.shape
     tiles = window // tile
-    slabs = LEVEL_WIDTH // slab
+    slabs = max(1, level_width // slab)
     skipped = total = 0
     for level, mode in enumerate(modes):
-        span = slice(level * LEVEL_WIDTH, (level + 1) * LEVEL_WIDTH)
+        span = slice(level * level_width, (level + 1) * level_width)
         def union(plane, declared):
             if not declared:
                 return torch.ones((bh, length // tile, slabs), dtype=torch.bool,
                                   device=plane.device)
             live = plane[:, :, span].to(torch.float32) != 0
-            live = live.view(bh, length // tile, tile, slabs, slab)
+            live = live.view(bh, length // tile, tile, slabs, level_width // slabs)
             return live.any(dim=2).any(dim=-1)
         rows = union(pread, mode in (READ_SPARSE, SHARED_SPARSE))
         cols = union(pwrite, mode in (WRITE_SPARSE, SHARED_SPARSE))

@@ -54,7 +54,8 @@ WRITE_BOTH = (intra_ops.WRITE_SPARSE, intra_ops.WRITE_SPARSE)
 READ_ONE = (intra_ops.READ_SPARSE, intra_ops.DENSE_BOTH)
 
 
-def cell(T, modes, k_tok=None, clustered=False, seed=0, d_v=64, device="cuda"):
+def cell(T, modes, k_tok=None, clustered=False, seed=0, d_v=64, device="cuda",
+         widths=WIDTHS):
     """One realized cell as ``[B=1, T, H=1, width]`` per-level tuples.
 
     ``clustered`` is the COHORT form: a run of that many consecutive tokens draws
@@ -64,13 +65,13 @@ def cell(T, modes, k_tok=None, clustered=False, seed=0, d_v=64, device="cuda"):
     gen = torch.Generator(device=device).manual_seed(seed)
     read, write = [], []
     for level, mode in enumerate(modes):
-        width = WIDTHS[level]
+        width = widths[level]
         read_k = k_tok if mode in (intra_ops.READ_SPARSE, intra_ops.SHARED_SPARSE) else None
         write_k = k_tok if mode in (intra_ops.WRITE_SPARSE, intra_ops.SHARED_SPARSE) else None
         read.append(_simplex((1, T, width), read_k, gen, device, clustered))
         write.append(_simplex((1, T, width), write_k, gen, device, clustered))
-    read = tuple(x.reshape(1, T, 1, WIDTHS[i]) for i, x in enumerate(read))
-    write = tuple(x.reshape(1, T, 1, WIDTHS[i]) for i, x in enumerate(write))
+    read = tuple(x.reshape(1, T, 1, widths[i]) for i, x in enumerate(read))
+    write = tuple(x.reshape(1, T, 1, widths[i]) for i, x in enumerate(write))
     g = torch.rand(1, T, 1, device=device, dtype=torch.float64, generator=gen) + 0.5
     v = torch.randn(1, T, 1, d_v, device=device, dtype=torch.float64, generator=gen)
     #: THE OPERAND PLANES ARE bf16 AND THE ORACLE READS THE SAME BYTES: comparing
@@ -81,10 +82,10 @@ def cell(T, modes, k_tok=None, clustered=False, seed=0, d_v=64, device="cuda"):
             g.to(torch.bfloat16), v.to(torch.bfloat16))
 
 
-def oracle(read_bf, write_bf, g_bf, v_bf, state_in=None):
+def oracle(read_bf, write_bf, g_bf, v_bf, state_in=None, widths=WIDTHS):
     routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
-    topo = Topology(levels=tuple(routing.at(w) for w in WIDTHS))
+    topo = Topology(levels=tuple(routing.at(w) for w in widths))
     return naive_rola(v_bf.double(), tuple(x.double() for x in read_bf),
                       tuple(x.double() for x in write_bf), None, g_bf.double(), topo, None,
                       "global", initial_state=state_in, output_final_state=True)
@@ -193,3 +194,47 @@ def test_the_intra_term_is_actually_present():
     assert err > 10 * BF16_RTOL, (
         f"the INTER term alone is within {err:.3e} of the whole recurrence; the "
         f"intra term this operator adds is not being tested by the cells above")
+
+
+# ------------------------------------------- the DEEP topologies, forward only
+
+#: `(widths, k, m)` -- the M1 solve.  Both hold `BC = 128` at `N = 4096`, and the
+#: window is the conformance arm's, which both families carry at these widths.
+DEEP = [((16, 16, 16), 2, 16), ((8, 8, 8, 8), 2, 8)]
+DEEP_WINDOW = 64
+
+
+@pytest.mark.parametrize("widths,k,m", DEEP, ids=["d3", "d4"])
+@pytest.mark.parametrize("sparse", [False, True], ids=["dense", "alt"])
+def test_deep_prefill_matches_the_fp64_oracle(widths, k, m, sparse):
+    """The COMBINED operator at depth three and four against the recurrence itself.
+
+    This is the gate that the two kernels' window grids are ONE grid at the deep
+    arms: each family's own conformance would pass on two different grids."""
+    assert_fresh_binary()
+    D, T = len(widths), 16 * DEEP_WINDOW
+    modes = tuple((intra_ops.WRITE_SPARSE if l % 2 == 0 else intra_ops.READ_SPARSE)
+                  for l in range(D)) if sparse else (intra_ops.DENSE_BOTH,) * D
+    k_tok = min(4, widths[0] // 2) if sparse else None
+    read, write, g, v = cell(T, modes, k_tok=k_tok, seed=zlib.crc32(str(widths).encode()) & 0xFFFF,
+                             widths=widths)
+    num, den, plane = prefill(read, write, g, v, widths, k=k, m=m, window=DEEP_WINDOW,
+                              modes=modes)
+    y_ref, s_ref = oracle(read, write, g, v, widths=widths)
+    err = relative(readout(num, den, T), y_ref)
+    assert err < BF16_RTOL, f"{widths}: the readout leaves the bf16 band at {err:.3e}"
+    got = canonical_from_lattice(plane, widths, k, m)
+    s_err = relative(got, s_ref.reshape(1, 4096, 65))
+    assert s_err < BF16_RTOL, f"{widths}: the final state leaves the band at {s_err:.3e}"
+
+
+@pytest.mark.parametrize("widths,k,m", DEEP, ids=["d3", "d4"])
+def test_the_differentiable_prefill_refuses_the_deep_arms(widths, k, m):
+    """A NAMED GAP, not a wrong gradient: both reverse families are built at depth
+    two, so the differentiable entry refuses depth rather than half-serving it."""
+    from rola.ops.prefill import prefill_autograd
+    D = len(widths)
+    modes = (intra_ops.DENSE_BOTH,) * D
+    read, write, g, v = cell(DEEP_WINDOW, modes, seed=3, widths=widths)
+    with pytest.raises(ValueError, match="built at D = 2"):
+        prefill_autograd(read, write, g, v, widths, k=k, m=m, window=DEEP_WINDOW, modes=modes)

@@ -22,7 +22,7 @@ __device__ int64_t g_bwd_stamp_probe;
 //: THE HEAVIEST BUILT ARM's footprint, so the stamp moves whenever any arm's shape
 //: does -- a fact only THIS binary can produce.
 __global__ void bwd_stamp_kernel(int64_t* out) {
-  *out = (int64_t)(sizeof(detail::IntraBwdSmem<2, kWindowWide>)) * 1000003
+  *out = (int64_t)(sizeof(detail::IntraBwdSmem<2, kWidthFlat, kWindowWide>)) * 1000003
          + (int64_t)detail::threads_of(kWindowWide) + detail::kIntraBwdMagic;
   g_bwd_stamp_probe = *out;
 }
@@ -31,21 +31,25 @@ __global__ void bwd_stamp_kernel(int64_t* out) {
 
 namespace {
 
-#define INTRA_BWD_ARMS_X(X_) \
-  X_(2, kWindowFlagship)     \
-  X_(2, kWindowWide)         \
-  X_(2, kWindowSmall)
+//: THE REVERSE PASS IS BUILT AT DEPTH TWO ONLY.  Its digit reduction's pass
+//: geometry is derived per arm from the owner's bit fields, and the carry's two
+//: scans refuse a third level for the same reason -- so a deep reverse arm here
+//: would be half a gradient.  The named gap is one, not two.
+#define INTRA_BWD_ARMS_X(X_)             \
+  X_(2, kWidthFlat, kWindowFlagship)     \
+  X_(2, kWidthFlat, kWindowWide)         \
+  X_(2, kWidthFlat, kWindowSmall)
 
-template <int D, int W>
+template <int D, int B, int W>
 void launch_bwd(const detail::IntraBwdParams& p, int64_t bh, int64_t windows, cudaStream_t stream) {
-  constexpr int kSmem = (int)sizeof(detail::IntraBwdSmem<D, W>);
+  constexpr int kSmem = (int)sizeof(detail::IntraBwdSmem<D, B, W>);
   const int optin = at::cuda::getCurrentDeviceProperties()->sharedMemPerBlockOptin;
   TORCH_CHECK(kSmem <= optin, "the intra backward arm's ", kSmem,
               "-byte block footprint exceeds this device's ", optin, "-byte opt-in limit");
-  C10_CUDA_CHECK(cudaFuncSetAttribute(detail::intra_backward_kernel<D, W>,
+  C10_CUDA_CHECK(cudaFuncSetAttribute(detail::intra_backward_kernel<D, B, W>,
                                       cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
   const dim3 grid((unsigned)windows, (unsigned)bh, 1);
-  detail::intra_backward_kernel<D, W><<<grid, detail::threads_of(W), kSmem, stream>>>(p);
+  detail::intra_backward_kernel<D, B, W><<<grid, detail::threads_of(W), kSmem, stream>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -54,7 +58,7 @@ void launch_bwd(const detail::IntraBwdParams& p, int64_t bh, int64_t windows, cu
 void intra_backward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,
                     const at::Tensor& v, const at::Tensor& dnum, const at::Tensor& dden,
                     at::Tensor& d_pr, at::Tensor& d_pw, at::Tensor& d_gw, at::Tensor& d_v,
-                    int64_t levels, int64_t level_modes, int64_t window) {
+                    int64_t levels, int64_t level_width, int64_t level_modes, int64_t window) {
   TORCH_CHECK(pread.is_cuda() && pread.is_contiguous() && pread.scalar_type() == at::kBFloat16,
               "the operand planes are contiguous CUDA bf16");
   const int64_t bh = pread.size(0);
@@ -85,24 +89,25 @@ void intra_backward(const at::Tensor& pread, const at::Tensor& pwrite, const at:
 
   auto stream = at::cuda::getCurrentCUDAStream();
   const int64_t windows = L / window;
-#define INTRA_BWD_DISPATCH(D_, W_)                          \
-  if (levels == D_ && window == W_) {                       \
-    launch_bwd<D_, W_>(p, bh, windows, stream);             \
-    return;                                                 \
+#define INTRA_BWD_DISPATCH(D_, B_, W_)                             \
+  if (levels == D_ && level_width == B_ && window == W_) {          \
+    launch_bwd<D_, B_, W_>(p, bh, windows, stream);                 \
+    return;                                                         \
   }
   INTRA_BWD_ARMS_X(INTRA_BWD_DISPATCH)
 #undef INTRA_BWD_DISPATCH
-  TORCH_CHECK(false, "unbuilt intra backward arm: levels=", levels, " window=", window);
+  TORCH_CHECK(false, "unbuilt intra backward arm: levels=", levels, " width=", level_width,
+              " window=", window);
 }
 
 std::vector<std::vector<int64_t>> intra_backward_arms() {
   std::vector<std::vector<int64_t>> out;
-#define INTRA_BWD_LIST(D_, W_)                                                        \
-  {                                                                                    \
-    cudaFuncAttributes a{};                                                            \
-    cudaFuncGetAttributes(&a, detail::intra_backward_kernel<D_, W_>);                  \
-    out.push_back({D_, W_, (int64_t)sizeof(detail::IntraBwdSmem<D_, W_>), a.numRegs,   \
-                   (int64_t)a.localSizeBytes, (int64_t)detail::threads_of(W_)});       \
+#define INTRA_BWD_LIST(D_, B_, W_)                                                     \
+  {                                                                                     \
+    cudaFuncAttributes a{};                                                             \
+    cudaFuncGetAttributes(&a, detail::intra_backward_kernel<D_, B_, W_>);                \
+    out.push_back({D_, B_, W_, (int64_t)sizeof(detail::IntraBwdSmem<D_, B_, W_>),        \
+                   a.numRegs, (int64_t)a.localSizeBytes, (int64_t)detail::threads_of(W_)}); \
   }
   INTRA_BWD_ARMS_X(INTRA_BWD_LIST)
 #undef INTRA_BWD_LIST

@@ -46,7 +46,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("intra_forward", &rola::intra::intra_forward,
         "K31 intra: the within-window causal term, REDuced into o/den", py::arg("pread"),
         py::arg("pwrite"), py::arg("gwrite"), py::arg("v"), py::arg("o"), py::arg("den"),
-        py::arg("levels"), py::arg("level_modes"), py::arg("window"));
+        py::arg("levels"), py::arg("level_width"), py::arg("level_modes"), py::arg("window"));
   m.def("intra_build_stamp", &rola::intra::intra_build_stamp,
         "K31 intra: a fact only the loaded binary can produce");
   m.def("intra_arms", &rola::intra::intra_arms, "K31 intra: the built (levels, window) arms");
@@ -87,7 +87,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "planes the carry's two scans also write",
         py::arg("pread"), py::arg("pwrite"), py::arg("gwrite"), py::arg("v"), py::arg("dnum"),
         py::arg("dden"), py::arg("d_pr"), py::arg("d_pw"), py::arg("d_gw"), py::arg("d_v"),
-        py::arg("levels"), py::arg("level_modes"), py::arg("window"));
+        py::arg("levels"), py::arg("level_width"), py::arg("level_modes"), py::arg("window"));
   m.def("intra_backward_arms", &rola::intra::intra_backward_arms,
         "K31 R4: the built reverse intra arms and their census");
   m.def("intra_backward_stamp", &rola::intra::intra_backward_stamp,

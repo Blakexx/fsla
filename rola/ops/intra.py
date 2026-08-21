@@ -28,7 +28,12 @@ SHARED_SPARSE = 3
 WINDOW = 384
 WINDOW_WIDE = 512
 WINDOW_SMALL = 64
+#: the built LEVEL WIDTHS -- an arm is a ``(D, B, W)`` triple, the carry family's
+#: topology arms mirrored.  A level narrower than the MMA's contraction step is
+#: contracted padded, which costs that level's Gram throughput and nothing else.
 LEVEL_WIDTH = 256
+LEVEL_WIDTH_DEEP3 = 16
+LEVEL_WIDTH_DEEP4 = 8
 VALUE_WIDTH = 64
 
 
@@ -45,26 +50,27 @@ def pack_modes(modes: tuple[int, ...]) -> int:
 def intra_forward(pread, pwrite, gwrite, v, modes, *, o=None, den=None, window=WINDOW):
     """RED the within-window causal intra term into ``(o, den)`` and return them.
 
-    ``pread``/``pwrite`` are ``[BH, L, D*256]`` bf16 operand planes, ``gwrite`` is
+    ``pread``/``pwrite`` are ``[BH, L, D*B]`` bf16 operand planes, ``gwrite`` is
     ``[BH, L]`` bf16, ``v`` is token-major ``[B, T, H, 64]`` bf16. ``modes`` is one
     per-level support mode, and ``window`` names the built arm -- the SAME window
     the carry call is given, since the two kernels share one grid.
     """
     bh, length, width = pread.shape
     levels = len(modes)
-    if width != levels * LEVEL_WIDTH:
-        raise ValueError(f"the plane is {width} wide; {levels} levels want {levels * LEVEL_WIDTH}")
+    if levels == 0 or width % levels:
+        raise ValueError(f"the plane is {width} wide and cannot hold {levels} uniform levels")
+    level_width = width // levels
     if o is None:
         o = torch.zeros((bh, length, VALUE_WIDTH), dtype=torch.float32, device=pread.device)
     if den is None:
         den = torch.zeros((bh, length), dtype=torch.float32, device=pread.device)
-    extension().intra_forward(pread, pwrite, gwrite, v, o, den, levels, pack_modes(modes),
-                              int(window))
+    extension().intra_forward(pread, pwrite, gwrite, v, o, den, levels, level_width,
+                              pack_modes(modes), int(window))
     return o, den
 
 
 def arms():
-    """The built ``(levels, window, smem_bytes)`` rows."""
+    """The built ``(levels, level_width, window, smem_bytes)`` rows."""
     return extension().intra_arms()
 
 
@@ -102,8 +108,9 @@ def intra_backward(pread, pwrite, gwrite, v, dnum, dden, modes, *, window=WINDOW
     """
     bh, length, width = pread.shape
     levels = len(modes)
-    if width != levels * LEVEL_WIDTH:
-        raise ValueError(f"the plane is {width} wide; {levels} levels want {levels * LEVEL_WIDTH}")
+    if levels == 0 or width % levels:
+        raise ValueError(f"the plane is {width} wide and cannot hold {levels} uniform levels")
+    level_width = width // levels
     opt = {"dtype": torch.float32, "device": pread.device}
     if d_pr is None:
         d_pr = torch.zeros((bh, length, width), **opt)
@@ -114,12 +121,12 @@ def intra_backward(pread, pwrite, gwrite, v, dnum, dden, modes, *, window=WINDOW
     if d_v is None:
         d_v = torch.zeros((bh, length, VALUE_WIDTH), **opt)
     extension().intra_backward(pread, pwrite, gwrite, v, dnum, dden, d_pr, d_pw, d_gw, d_v,
-                               levels, pack_modes(modes), int(window))
+                               levels, level_width, pack_modes(modes), int(window))
     return d_pr, d_pw, d_gw, d_v
 
 
 def backward_arms():
-    """The built reverse ``(levels, window, smem, regs, local, threads)`` rows."""
+    """The built reverse ``(levels, width, window, smem, regs, local, threads)`` rows."""
     return extension().intra_backward_arms()
 
 

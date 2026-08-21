@@ -35,14 +35,23 @@ constexpr int kWindowWide = 512;
 constexpr int kWindowSmall = 64;
 constexpr int kTile = 64;
 constexpr int kWarpRows = 16;
+//: the MMA's contraction step, and therefore the QUANTUM a level's operand slab is
+//: staged in.  A level narrower than one step is staged PADDED, its tail zeroed
+//: once: there is no `k < 16` tensor op, so the digits below the step are the only
+//: way to contract eight of them.
 constexpr int kSlabDigits = 16;
-constexpr int kLevelWidth = 256;
 constexpr int kValueWidth = 64;
+
+//: THE LEVEL WIDTH IS AN INSTANTIATION AXIS, not a constant: an arm is a
+//: `(D, B, W)` triple, matching the carry family's topology arms.
+constexpr int kWidthFlat = 256;
+constexpr int kWidthDeep3 = 16;
+constexpr int kWidthDeep4 = 8;
 
 //: `window` selects the built arm; `L % window` must be zero, refused per arm.
 void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,
                    const at::Tensor& v, at::Tensor& o, at::Tensor& den, int64_t levels,
-                   int64_t level_modes, int64_t window);
+                   int64_t width, int64_t level_modes, int64_t window);
 
 //: R4's reverse pass: it REDUCES the within-window half of the four cotangents into
 //: planes the carry's two scans also write.  ``dnum`` is ``[BH, L, d_v]`` bf16 and
@@ -50,15 +59,15 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
 void intra_backward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,
                     const at::Tensor& v, const at::Tensor& dnum, const at::Tensor& dden,
                     at::Tensor& d_pr, at::Tensor& d_pw, at::Tensor& d_gw, at::Tensor& d_v,
-                    int64_t levels, int64_t level_modes, int64_t window);
+                    int64_t levels, int64_t width, int64_t level_modes, int64_t window);
 
-//: the reverse arms: (levels, window, smem, regs, local, threads).
+//: the reverse arms: (levels, width, window, smem, regs, local, threads).
 std::vector<std::vector<int64_t>> intra_backward_arms();
 
 //: the reverse pass's own device stamp.
 int64_t intra_backward_stamp();
 
-//: the built (levels, window) arms, one row each.
+//: the built (levels, width, window) arms, one row each.
 std::vector<std::vector<int64_t>> intra_arms();
 
 //: The device-side build stamp: a fact only THIS binary can produce, read back
