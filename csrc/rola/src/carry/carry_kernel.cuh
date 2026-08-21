@@ -60,7 +60,7 @@ static_assert(kAtomLeaves == kMmaK, "the page granule is one MMA k-step");
 //: A COMPILE-TIME LOOP.  Every per-level quantity here is a template argument or a
 //: register-array index, so the level index must be a constant expression; a
 //: `for (int l = 0; l < D; ++l)` would make `load_run<n_l(l)>` ill-formed and would
-//: turn `lv[l][...]` into a dynamic index, which is a stack frame.
+//: turn every per-level array index dynamic, which is a stack frame.
 template <int N, class F>
 __device__ __forceinline__ void static_for(F&& f) {
   if constexpr (N > 0) {
@@ -146,13 +146,16 @@ struct ProduceMap {
 };
 
 //: a contiguous run of `n` bf16, at the widest access that covers it.  The runs are
-//: naturally aligned by construction (an owner's run starts at a multiple of `s_l`
-//: and a sub-box's at a multiple of `K`), so this is one, two or four accesses.
+//: naturally aligned by construction (a level's column base is a multiple of `B`, an
+//: owner's run starts at a multiple of `s_l` and a thread's sub-run at a multiple of
+//: its own width), so this is one, two or four accesses.
 template <int n>
 __device__ __forceinline__ void load_run(unsigned short (&dst)[n], const void* p) {
-  static_assert(n == 2 || n == 4 || n == 8 || n == 16,
-                "an admissible (k, m) run is 2, 4, 8 or 16 wide");
-  if constexpr (n == 2) {
+  static_assert(n == 1 || n == 2 || n == 4 || n == 8 || n == 16,
+                "an admissible (k, m) run is 1, 2, 4, 8 or 16 wide");
+  if constexpr (n == 1) {
+    dst[0] = *reinterpret_cast<const unsigned short*>(p);
+  } else if constexpr (n == 2) {
     *reinterpret_cast<unsigned int*>(dst) = *reinterpret_cast<const unsigned int*>(p);
   } else if constexpr (n == 4) {
     *reinterpret_cast<uint2*>(dst) = *reinterpret_cast<const uint2*>(p);
@@ -383,28 +386,32 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   //: run is covered once.
   auto produce = [&](const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
                      uint32_t gain) {
-    unsigned short lv[D][PM::kMaxN];
-    static_for<D>([&](auto Lc) {
+    //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
+    //: is loaded, folded into every slot and dropped inside one `static_for` body, so
+    //: no `[D][n]` array is ever live: `SPT/2` packed pairs plus one run, against the
+    //: `sum_l n_l` shorts a per-level array would hold at once.
+    //: the innermost level supplies the ADJACENT PAIR (its run offset owns bit 0),
+    //: every level above it a per-pair scalar -- the shipped producer's chain.
+    uint32_t acc[SPT / 2];
+    {
+      unsigned short run[PM::n_l(D - 1)];
+      load_run<PM::n_l(D - 1)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[D - 1] * 2)));
+#pragma unroll
+      for (int j = 0; j < SPT; j += 2)
+        acc[j / 2] =
+            ((uint32_t)run[PM::idx_of(D - 1, j + 1)] << 16) | (uint32_t)run[PM::idx_of(D - 1, j)];
+    }
+    static_for<D - 1>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
       unsigned short run[PM::n_l(l)];
       load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
 #pragma unroll
-      for (int i = 0; i < PM::n_l(l); ++i) lv[l][i] = run[i];
+      for (int j = 0; j < SPT; j += 2)
+        acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
     });
     __nv_bfloat16* const row = dst + prow * LdS + slot0;
 #pragma unroll
-    for (int j = 0; j < SPT; j += 2) {
-      //: the innermost level supplies the ADJACENT PAIR (its `c` field owns bit 0),
-      //: every level above it a per-pair scalar -- the shipped producer's chain.
-      uint32_t acc = ((uint32_t)lv[D - 1][PM::idx_of(D - 1, j + 1)] << 16)
-                     | (uint32_t)lv[D - 1][PM::idx_of(D - 1, j)];
-      static_for<D - 1>([&](auto Lc) {
-        constexpr int l = decltype(Lc)::value;
-        acc = mul_bf16x2(
-            acc, splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&lv[l][PM::idx_of(l, j)])));
-      });
-      store_bf16x2(row + j, mul_bf16x2(acc, gain));
-    }
+    for (int j = 0; j < SPT; j += 2) store_bf16x2(row + j, mul_bf16x2(acc[j / 2], gain));
   };
 
   //: 1.0 as a bf16 pair -- the read side's gain.  Folding it through the same

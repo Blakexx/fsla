@@ -27,9 +27,15 @@ from tests.oracle.tolerances import BF16_RTOL
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
-#: (widths, k, m, W) -- the two built arms this suite drives.
+#: (widths, k, m, W) -- the built arms this suite drives.
 SMALL = ((64, 64), 4, 8, carry_ops.WINDOW_SMALL)  # N = 4096,  BC = 128, owners = 32
 FLAG = ((256, 256), 4, 8, carry_ops.WINDOW)       # N = 65536, BC = 128, owners = 512
+#: THE DEEP ARMS.  Both hold `BC = 128` at `N = 4096`; they differ from the flat
+#: arms only in how those 128 leaves cut into digits, and `DEEP4` is the topology
+#: whose atom rectangle cannot be one level -- `B = 8` is narrower than an atom, so
+#: an atom is level 3's whole span times two of level 2's digits.
+DEEP3 = ((16, 16, 16), 2, 16, carry_ops.WINDOW_SMALL)   # s = (2, 4, 16),   owners = 32
+DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owners = 32
 
 CHANNEL = carry_ops.CHANNEL_SPLIT
 
@@ -60,7 +66,9 @@ def test_arms_are_the_declared_solver_rows():
     got = {tuple(a[:7]) for a in carry_ops.arms()}
     assert got == {(2, 256, 4, 8, carry_ops.WINDOW, 32, 1),
                    (2, 256, 4, 8, carry_ops.WINDOW_WIDE, 32, 1),
-                   (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1)}, got
+                   (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1),
+                   (3, 16, 2, 16, carry_ops.WINDOW_SMALL, 32, 1),
+                   (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1)}, got
     for arm in carry_ops.arms():
         D, B, k, m, W, C, carve, BC, owners, smem = arm
         _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
@@ -169,19 +177,22 @@ def test_m2_inter_dense_flagship(carve=CHANNEL):
 
 def alt_cell(widths, T, k_tok, seed):
     """THE PRIMARY SPARSE STRUCTURE (Blake ruling 2026-08-19): per level at most ONE
-    sparse side, and the sparse side ALTERNATES -- level 0 write-sparse/read-dense,
-    level 1 read-sparse/write-dense.  The two sides' clause sets are therefore
+    sparse side, and the sparse side ALTERNATES -- EVEN levels write-sparse/read-dense,
+    ODD levels read-sparse/write-dense.  The two sides' clause sets are therefore
     DIFFERENT level subsets, which is exactly what the two-sided schedule exists for
-    and what a union-routed cell would never exercise."""
+    and what a union-routed cell would never exercise.
+
+    The alternation is stated over ``D`` levels rather than over two, so a deep arm
+    exercises it at every depth; at ``D = 2`` it is the ruling verbatim."""
     from tests.k31.fixtures import simplex
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(seed)
     cell = Cell(widths, T=T, k_tok=None, seed=seed)
     shape = (cell.B, T, cell.H)
-    read = (simplex(shape + (widths[0],), None, gen, device),
-            simplex(shape + (widths[1],), k_tok, gen, device))
-    write = (simplex(shape + (widths[0],), k_tok, gen, device),
-             simplex(shape + (widths[1],), None, gen, device))
+    read = tuple(simplex(shape + (w,), k_tok if l % 2 else None, gen, device)
+                 for l, w in enumerate(widths))
+    write = tuple(simplex(shape + (w,), None if l % 2 else k_tok, gen, device)
+                  for l, w in enumerate(widths))
     cell.read, cell.write = read, write
     cell.read_bf = tuple(t.to(torch.bfloat16) for t in read)
     cell.write_bf = tuple(t.to(torch.bfloat16) for t in write)
@@ -231,3 +242,75 @@ def test_m3_lists_differ_when_the_sides_do():
             liveW &= (write[l][0, :, 0, sl] != 0).any(-1)
         diff += int((liveR != liveW).sum())
     assert diff > 0, "the ALT cell did not separate the two sides' schedules"
+
+
+# ---------------------------------------------- the DEEP arms, D = 3 and D = 4
+
+@pytest.mark.parametrize("arm", [DEEP3, DEEP4], ids=["d3", "d4"])
+def test_m2_inter_dense_deep(arm, carve=CHANNEL):
+    """Dense both sides at depth three and four: the state plane, the readout and
+    the mass column, against the fp64 oracle in CANONICAL order -- so a deep arm's
+    mixed-radix leaf order surfaces here as a permutation, not as noise."""
+    assert_fresh_binary()
+    cell = Cell(arm[0], T=256, k_tok=None, seed=6)
+    num, den, plane = run(cell, arm, carve)
+    n_ref, d_ref, s_ref = ref(cell, arm)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+    got = canonical_from_lattice(plane, arm[0], arm[1], arm[2])
+    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
+
+
+@pytest.mark.parametrize("arm,k_tok", [(DEEP3, 4), (DEEP3, 8), (DEEP4, 2), (DEEP4, 4)],
+                         ids=["d3-k4", "d3-k8", "d4-k2", "d4-k4"])
+def test_m3_two_sided_alt_deep(arm, k_tok, carve=CHANNEL):
+    """The ALTERNATING declaration at depth: `D` clause levels, the two sides'
+    subsets disjoint, scattered `k_tok` cells."""
+    assert_fresh_binary()
+    cell = alt_cell(arm[0], T=256, k_tok=k_tok, seed=30 + k_tok + len(arm[0]))
+    num, den, plane = run(cell, arm, carve)
+    n_ref, d_ref, s_ref = ref(cell, arm)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+    got = canonical_from_lattice(plane, arm[0], arm[1], arm[2])
+    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
+
+
+@pytest.mark.parametrize("arm", [DEEP3, DEEP4], ids=["d3", "d4"])
+def test_m3_deep_lists_differ_when_the_sides_do(arm):
+    """NON-VACUITY at depth, the small arm's gate restated: the deep ALT cell must
+    drive `nr != nw` somewhere, or the two-sided gate above is a dense gate."""
+    widths, k, m, W = arm
+    cell = alt_cell(widths, T=256, k_tok=2, seed=77 + len(widths))
+    _, s, g, bc, owners = carry_ops.box_shape(widths, k, m)
+    read = tuple(t.double() for t in cell.read_bf)
+    write = tuple(t.double() for t in cell.write_bf)
+    diff = 0
+    for owner in range(owners):
+        o = [(owner // math.prod(g[l + 1:])) % g[l] for l in range(len(widths))]
+        liveR = torch.ones(cell.T, dtype=torch.bool, device="cuda")
+        liveW = torch.ones(cell.T, dtype=torch.bool, device="cuda")
+        for l in range(len(widths)):
+            sl = slice(o[l] * s[l], (o[l] + 1) * s[l])
+            liveR &= (read[l][0, :, 0, sl] != 0).any(-1)
+            liveW &= (write[l][0, :, 0, sl] != 0).any(-1)
+        diff += int((liveR != liveW).sum())
+    assert diff > 0, "the deep ALT cell did not separate the two sides' schedules"
+
+
+@pytest.mark.parametrize("arm,spans,atom", [(DEEP3, (2, 4, 16), (1, 1)),
+                                            (DEEP4, (2, 2, 4, 8), (1, 2))],
+                         ids=["d3", "d4"])
+def test_deep_box_is_the_derived_one(arm, spans, atom):
+    """The M1 solve, asserted against the host derivation: the spans, and the atom
+    rectangle they induce.  `DEEP4`'s rectangle spans TWO levels and no `(k, m)` at
+    this box can make it one, because `B = 8` is narrower than an atom."""
+    from rola.ops.lattice import atom_rectangle, walk_unit
+    widths, k, m, W = arm
+    _, s, g, bc, owners = carry_ops.box_shape(widths, k, m)
+    assert tuple(s) == spans and bc == 128
+    assert atom_rectangle(s) == atom
+    base, leaves, atoms = walk_unit(s)
+    assert leaves == 16 * atoms and atoms >= 1

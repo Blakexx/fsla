@@ -641,14 +641,20 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   p.lat_k = static_cast<int>(k);
 
   const int D = p.D;
-  //: `BoxPlan`'s section 2.5 as K13 amended it: the INNERMOST level takes whatever an
-  //: atom needs and never less than its balanced share, and the rest of `j` is spread
-  //: balanced over the outer levels, innermost first. K13 is a FLOOR and not an assertion
-  //: here -- a topology whose widths cannot reach it still has a lattice, and it is the
-  //: PAGED backing alone that refuses one (see the unit's bit width below).
+  //: `BoxPlan`'s section 2.5 as the atom-rectangle law generalizes it: the INNERMOST
+  //: level takes as much capacity as it can carry -- never less than its balanced share,
+  //: never less than an atom asks, never more than its own width admits (K6) -- and the
+  //: rest of `j` is spread balanced over the outer levels, innermost first.  The atom
+  //: floor is a PREFERENCE and the width ceiling is the law: a level narrower than an
+  //: atom spills its capacity outward and the atom then spans more than one level.
   const int floor_inner = kAtomShift > kappa ? kAtomShift - kappa : 0;
+  int ceil_inner = 0;
+  while ((p.lat_k << (ceil_inner + 1)) <= p.level_width[D - 1]
+         && p.level_width[D - 1] % (p.lat_k << (ceil_inner + 1)) == 0)
+    ++ceil_inner;
   const int share = j / D + ((j % D) ? 1 : 0);
   int a_inner = share > floor_inner ? share : floor_inner;
+  if (a_inner > ceil_inner) a_inner = ceil_inner;
   if (a_inner > j) a_inner = j;
   const int j_outer = j - a_inner;
 

@@ -44,18 +44,19 @@ MMA_K_QUANTUM = lattice.MMA_K_QUANTUM
 
 
 def box_shape(widths, k: int, m: int):
-    """``(m_l, s_l, g_l, BC, owners)`` for the ``(k, m)`` box, with K13 ASSERTED.
+    """``(m_l, s_l, g_l, BC, owners)`` for the ``(k, m)`` box, with K2 ASSERTED.
 
     The derivation is `rola.ops.lattice`'s -- the ONE host authority over the leaf
     order, shared with the decode family, because the two families write and read one
     plane and two derivations disagree exactly when one is wrong. What this wrapper
-    adds is the carry family's own gate: K13 is a floor for the general solver and a
-    REQUIREMENT here, since a carry arm whose innermost span is thinner than an atom
-    would fold a bucket across two of them.
+    adds is the carry family's own gate: an owner's box is a whole number of atoms, so
+    a fold bucket never straddles two of them and the state plane's
+    ``[BH, N/16, 16, cols]`` shape is a re-blocking of the owner grid.
     """
     out = lattice.box_shape(widths, k, m)
-    assert lattice.covers_an_atom(out[1]), (
-        "K13: the innermost span must cover an atom; this (k, m) cannot reach it")
+    assert out[3] % MMA_K_QUANTUM == 0, (
+        f"K2: an owner box of {out[3]} leaves must be a whole number of "
+        f"{MMA_K_QUANTUM}-leaf atoms")
     return out
 
 
@@ -67,7 +68,7 @@ def lattice_of_canonical(widths, k: int, m: int, device="cuda") -> torch.Tensor:
     the device consults.  ``lambda = O*BC + local``, with ``O`` the owner index in
     mixed radix over ``g_l`` and ``local`` the owner's run offsets in mixed radix
     over ``s_l``.  `rola.ops.lattice.permutation` is the derivation; this entry adds
-    the carry family's K13 gate.
+    the carry family's K2 gate.
     """
     box_shape(widths, k, m)
     return lattice.permutation(widths, k, m, device=device)

@@ -208,6 +208,20 @@ __device__ __forceinline__ uint32_t splat_bf16x2(__nv_bfloat16 x) {
   return *reinterpret_cast<const uint32_t*>(&p);
 }
 
+//: the same splat over a raw bf16 BIT PATTERN.  A run of amplitudes held in a
+//: register array must never be ADDRESS-TAKEN -- one `&run[i]` puts the whole run
+//: in local memory, whatever the index's constness -- so a caller holding the bits
+//: splats them by value rather than by reinterpreting a pointer.
+__device__ __forceinline__ uint32_t splat_bf16x2_bits(unsigned short x) {
+  return ((uint32_t)x << 16) | (uint32_t)x;
+}
+
+//: one raw bf16 bit pattern as a float, by value, for the same reason.
+__device__ __forceinline__ float bf16_bits_to_float(unsigned short x) {
+  const uint32_t w = (uint32_t)x << 16;
+  return *reinterpret_cast<const float*>(&w);
+}
+
 //: THE ARCHETYPAL SELECTING ENTRY.  Both implementations satisfy one contract:
 //: the elementwise product of two packed bf16 pairs, rounded to nearest-even in
 //: bf16.  `Simd = true` is one instruction; `Simd = false` is the fp32 route

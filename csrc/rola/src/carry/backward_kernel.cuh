@@ -323,7 +323,7 @@ struct BwdOwner {
 #pragma unroll
         for (int i = 0; i < PM::n_l(l); ++i)
           samp[(par * C + prow) * kDigitRows + DP::off(l) + BP::run_of(l, slot0) + i] =
-              __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(&lv[l][i]));
+              bf16_bits_to_float(lv[l][i]);
       }
     });
     __nv_bfloat16* const row = dst + prow * LdS + slot0;
@@ -333,8 +333,7 @@ struct BwdOwner {
                      | (uint32_t)lv[D - 1][PM::idx_of(D - 1, j)];
       static_for<D - 1>([&](auto Lc) {
         constexpr int l = decltype(Lc)::value;
-        acc = mul_bf16x2(
-            acc, splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(&lv[l][PM::idx_of(l, j)])));
+        acc = mul_bf16x2(acc, splat_bf16x2_bits(lv[l][PM::idx_of(l, j)]));
       });
       store_bf16x2(row + j, mul_bf16x2(acc, gain));
     }
