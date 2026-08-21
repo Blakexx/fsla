@@ -115,6 +115,13 @@ SPAN_FACTS_ARMS: tuple = (
     (2, 64, 8, 16, 64, 64),
     (3, 16, 2, 4, 16, 16),
     (4, 8, 2, 2, 4, 8),
+    # the CARVE grain: the innermost level's owner run split over the four warps
+    # (`BoxPlan::carve_s`), which is the row set the carry's per-warp read lists
+    # are scanned from.  An owner-grain word is the OR of a group's four rows.
+    (2, 256, 8, 4, 256, 256),
+    (2, 64, 8, 4, 64, 64),
+    (3, 16, 2, 4, 4, 16),
+    (4, 8, 2, 2, 4, 2),
 )
 
 #: the span arms are STATELESS only: residency is the paging layer's question and
