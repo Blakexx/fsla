@@ -39,8 +39,13 @@ DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owne
 
 CHANNEL = carry_ops.CHANNEL_SPLIT
 
+#: THE BATCH HEIGHTS BUILT, in tokens.  `C` sets the produce's slots per thread, the
+#: readout accumulator's n-tiles and the panel/staging shared memory; every arm is
+#: built at each, so conformance is gated at each.
+CHUNKS = (32, 64)
 
-def run(cell, arm, carve, chunk=32, state_in=None):
+
+def run(cell, arm, carve, chunk, state_in=None):
     widths, k, m, W = arm
     read, write, g, v = cell.ref_levels()
     num, den, plane = carry_ops.carry_inter(
@@ -64,11 +69,13 @@ def test_build_stamp_is_this_source():
 
 def test_arms_are_the_declared_solver_rows():
     got = {tuple(a[:7]) for a in carry_ops.arms()}
-    assert got == {(2, 256, 4, 8, carry_ops.WINDOW, 32, 1),
-                   (2, 256, 4, 8, carry_ops.WINDOW_WIDE, 32, 1),
-                   (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1),
-                   (3, 16, 2, 16, carry_ops.WINDOW_SMALL, 32, 1),
-                   (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1)}, got
+    assert got == {(D, B, k, m, W, C, 1)
+                   for (D, B, k, m, W) in ((2, 256, 4, 8, carry_ops.WINDOW),
+                                           (2, 256, 4, 8, carry_ops.WINDOW_WIDE),
+                                           (2, 64, 4, 8, carry_ops.WINDOW_SMALL),
+                                           (3, 16, 2, 16, carry_ops.WINDOW_SMALL),
+                                           (4, 8, 2, 8, carry_ops.WINDOW_SMALL))
+                   for C in (32, 64)}, got
     for arm in carry_ops.arms():
         D, B, k, m, W, C, carve, BC, owners, smem = arm
         _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
@@ -92,23 +99,25 @@ def test_lattice_is_a_permutation():
 
 # ------------------------------------------------------- M1: state I/O + fold
 
-def test_m1_state_io_and_fold_dense(carve=CHANNEL):
+@pytest.mark.parametrize("chunk", CHUNKS)
+def test_m1_state_io_and_fold_dense(chunk, carve=CHANNEL):
     """The final state alone, on the tiny cell.  A leaf-order error surfaces here
     as a PERMUTATION rather than as noise, which is why the state is gated first."""
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=256, k_tok=None, seed=1)
-    _, _, plane = run(cell, SMALL, carve)
+    _, _, plane = run(cell, SMALL, carve, chunk)
     _, _, s_ref = ref(cell, SMALL)
     got = canonical_from_lattice(plane, SMALL[0], SMALL[1], SMALL[2])
     want = s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)
     assert relative(got, want) < BF16_RTOL
 
 
-def test_m1_entry_state_is_carried(carve=CHANNEL):
+@pytest.mark.parametrize("chunk", CHUNKS)
+def test_m1_entry_state_is_carried(chunk, carve=CHANNEL):
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=128, k_tok=None, seed=2, state_in=True)
     s_lat = cell.state_in_lattice(SMALL[1], SMALL[2])
-    _, _, plane = run(cell, SMALL, carve, state_in=s_lat)
+    _, _, plane = run(cell, SMALL, carve, chunk, state_in=s_lat)
     s0 = cell.state_in.reshape(cell.B, cell.H, cell.N, cell.d_v + 1)
     _, _, s_ref = ref(cell, SMALL, state_in=s0)
     got = canonical_from_lattice(plane, SMALL[0], SMALL[1], SMALL[2])
@@ -118,10 +127,11 @@ def test_m1_entry_state_is_carried(carve=CHANNEL):
 
 # ------------------------------------------ M2: readout + fan-in, dense cells
 
-def test_m2_inter_dense_small(carve=CHANNEL):
+@pytest.mark.parametrize("chunk", CHUNKS)
+def test_m2_inter_dense_small(chunk, carve=CHANNEL):
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=256, k_tok=None, seed=3)
-    num, den, plane = run(cell, SMALL, carve)
+    num, den, plane = run(cell, SMALL, carve, chunk)
     n_ref, d_ref, s_ref = ref(cell, SMALL)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -160,13 +170,14 @@ def test_m2_decomposition_is_exact():
     assert relative(mine, y) < 1e-10
 
 
-def test_m2_inter_dense_flagship(carve=CHANNEL):
+@pytest.mark.parametrize("chunk", CHUNKS)
+def test_m2_inter_dense_flagship(chunk, carve=CHANNEL):
     """The flagship topology at `L = 1024`.  `N = 65536` is the largest cell whose
     fp64 reference fits: `[B,T,H,N]` fp64 is 537 MB at this `L`, and the reference
     holds one window's worth at a time."""
     assert_fresh_binary()
     cell = Cell(FLAG[0], T=1024, k_tok=None, seed=5)
-    num, den, _ = run(cell, FLAG, carve)
+    num, den, _ = run(cell, FLAG, carve, chunk)
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -175,7 +186,23 @@ def test_m2_inter_dense_flagship(carve=CHANNEL):
 
 # ------------------------------------------------ M3: the TWO-SIDED schedule
 
-def alt_cell(widths, T, k_tok, seed):
+def clustered(shape, k_tok, cohort, gen, device):
+    """A simplex draw whose support is ONE contiguous digit window per run of
+    ``cohort`` consecutive tokens -- the structure the whole-window skip exists to
+    exploit, and the one that leaves an owner with a handful of live tokens per
+    window instead of a full batch."""
+    B, T, H, width = shape
+    x = torch.rand(shape, device=device, dtype=torch.float64, generator=gen)
+    starts = torch.randint(0, width, (B, T // cohort, 1, 1), device=device, generator=gen)
+    idx = (starts.expand(B, T // cohort, cohort, 1).reshape(B, T, 1, 1)
+           + torch.arange(k_tok, device=device).view(1, 1, 1, k_tok)) % width
+    keep = torch.zeros(shape, device=device, dtype=torch.float64)
+    keep.scatter_(-1, idx.expand(B, T, H, k_tok), 1.0)
+    x = x * keep
+    return x / x.sum(-1, keepdim=True)
+
+
+def alt_cell(widths, T, k_tok, seed, cohort=None):
     """THE PRIMARY SPARSE STRUCTURE (Blake ruling 2026-08-19): per level at most ONE
     sparse side, and the sparse side ALTERNATES -- EVEN levels write-sparse/read-dense,
     ODD levels read-sparse/write-dense.  The two sides' clause sets are therefore
@@ -189,21 +216,28 @@ def alt_cell(widths, T, k_tok, seed):
     gen = torch.Generator(device=device).manual_seed(seed)
     cell = Cell(widths, T=T, k_tok=None, seed=seed)
     shape = (cell.B, T, cell.H)
-    read = tuple(simplex(shape + (w,), k_tok if l % 2 else None, gen, device)
-                 for l, w in enumerate(widths))
-    write = tuple(simplex(shape + (w,), None if l % 2 else k_tok, gen, device)
-                  for l, w in enumerate(widths))
+
+    def draw(width, kt):
+        if kt is None or kt >= width:
+            return simplex(shape + (width,), None, gen, device)
+        if cohort is None:
+            return simplex(shape + (width,), kt, gen, device)
+        return clustered(shape + (width,), kt, cohort, gen, device)
+
+    read = tuple(draw(w, k_tok if l % 2 else None) for l, w in enumerate(widths))
+    write = tuple(draw(w, None if l % 2 else k_tok) for l, w in enumerate(widths))
     cell.read, cell.write = read, write
     cell.read_bf = tuple(t.to(torch.bfloat16) for t in read)
     cell.write_bf = tuple(t.to(torch.bfloat16) for t in write)
     return cell
 
 
+@pytest.mark.parametrize("chunk", CHUNKS)
 @pytest.mark.parametrize("k_tok", [4, 16])
-def test_m3_two_sided_alt_small(k_tok, carve=CHANNEL):
+def test_m3_two_sided_alt_small(k_tok, chunk, carve=CHANNEL):
     assert_fresh_binary()
     cell = alt_cell(SMALL[0], T=256, k_tok=k_tok, seed=10 + k_tok)
-    num, den, plane = run(cell, SMALL, carve)
+    num, den, plane = run(cell, SMALL, carve, chunk)
     n_ref, d_ref, s_ref = ref(cell, SMALL)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -212,11 +246,28 @@ def test_m3_two_sided_alt_small(k_tok, carve=CHANNEL):
     assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
 
 
+@pytest.mark.parametrize("chunk", CHUNKS)
 @pytest.mark.parametrize("k_tok", [4, 16])
-def test_m3_two_sided_alt_flagship(k_tok):
+def test_m3_two_sided_alt_flagship(k_tok, chunk):
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=20 + k_tok)
-    num, den, _ = run(cell, FLAG, CHANNEL)
+    num, den, _ = run(cell, FLAG, CHANNEL, chunk)
+    n_ref, d_ref, _ = ref(cell, FLAG)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+
+
+@pytest.mark.parametrize("chunk", CHUNKS)
+@pytest.mark.parametrize("k_tok", [4, 16])
+def test_m3_two_sided_alt_clustered(k_tok, chunk):
+    """The CLUSTERED cell: the support is one contiguous digit window per run of 64
+    consecutive tokens, so most (owner, window) pairs are side-dead and the live ones
+    carry a partial batch.  That is the path where `C` changes the batch COUNT the
+    most, and it is the cell the carry is fastest on."""
+    assert_fresh_binary()
+    cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=40 + k_tok, cohort=64)
+    num, den, _ = run(cell, FLAG, CHANNEL, chunk)
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -246,14 +297,15 @@ def test_m3_lists_differ_when_the_sides_do():
 
 # ---------------------------------------------- the DEEP arms, D = 3 and D = 4
 
+@pytest.mark.parametrize("chunk", CHUNKS)
 @pytest.mark.parametrize("arm", [DEEP3, DEEP4], ids=["d3", "d4"])
-def test_m2_inter_dense_deep(arm, carve=CHANNEL):
+def test_m2_inter_dense_deep(arm, chunk, carve=CHANNEL):
     """Dense both sides at depth three and four: the state plane, the readout and
     the mass column, against the fp64 oracle in CANONICAL order -- so a deep arm's
     mixed-radix leaf order surfaces here as a permutation, not as noise."""
     assert_fresh_binary()
     cell = Cell(arm[0], T=256, k_tok=None, seed=6)
-    num, den, plane = run(cell, arm, carve)
+    num, den, plane = run(cell, arm, carve, chunk)
     n_ref, d_ref, s_ref = ref(cell, arm)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -264,12 +316,13 @@ def test_m2_inter_dense_deep(arm, carve=CHANNEL):
 
 @pytest.mark.parametrize("arm,k_tok", [(DEEP3, 4), (DEEP3, 8), (DEEP4, 2), (DEEP4, 4)],
                          ids=["d3-k4", "d3-k8", "d4-k2", "d4-k4"])
-def test_m3_two_sided_alt_deep(arm, k_tok, carve=CHANNEL):
+@pytest.mark.parametrize("chunk", CHUNKS)
+def test_m3_two_sided_alt_deep(arm, k_tok, chunk, carve=CHANNEL):
     """The ALTERNATING declaration at depth: `D` clause levels, the two sides'
     subsets disjoint, scattered `k_tok` cells."""
     assert_fresh_binary()
     cell = alt_cell(arm[0], T=256, k_tok=k_tok, seed=30 + k_tok + len(arm[0]))
-    num, den, plane = run(cell, arm, carve)
+    num, den, plane = run(cell, arm, carve, chunk)
     n_ref, d_ref, s_ref = ref(cell, arm)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
