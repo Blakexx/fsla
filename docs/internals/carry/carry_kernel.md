@@ -65,6 +65,23 @@ Per-side lists make activity airtight: a side's simplex weights are strictly pos
 its own support, so a listed entry is live for that side by construction. There is no
 union-superset padding logic anywhere in this file, by design.
 
+The compaction that turns the votes into those lists costs TWO rendezvous per window and
+no serial section. A warp's 32 tokens are one ballot word, so each warp holds its whole
+window's ballots in registers and publishes one packed live-count word per (scan
+iteration, warp) — the read side in the low half, the write side in the high half, which
+is exact because a side's window total is at most `W`. The FIRST barrier publishes those
+counts; every thread then re-derives the CTA-wide exclusive prefix from them IN
+REGISTERS, because the running totals are CTA-uniform and a shared round trip buys
+nothing. The SECOND barrier publishes the lists themselves, which the phases read from
+their first batch onward, and it doubles as the separation between this window's count
+reads and the next window's count writes — which is why it precedes the whole-window
+skip rather than following it.
+
+The list ORDER is part of the contract, not an accident of the implementation: entries
+are ascending in token position, which is what makes a batch a contiguous token range
+and the fold's accumulation order reproducible. Conformance cannot see a reordering (the
+readout is per-row and the fan-in is a sum); the state plane can, and is the instrument.
+
 ## The carve is settled, so it is not an axis
 
 Each warp owns `kMmaM` of the `d_v` channels across all `BC` leaves. Its readout rows are

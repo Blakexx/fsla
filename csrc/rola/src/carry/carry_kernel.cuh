@@ -98,7 +98,9 @@ struct CarryGeom {
   //: schedule): `nr` read entries then `nw` write entries, `kListStride` apart.
   static constexpr int kListStride = ((W + 7) / 8) * 8;
   static constexpr int list_bytes = 2 * kListStride * (int)sizeof(uint16_t);
-  static constexpr int scan_bytes = 16 * (int)sizeof(int);
+  //: the liveness scan's per-(iteration, warp) live counts, BOTH SIDES IN ONE WORD.
+  static constexpr int kScanIters = (W + kThreads - 1) / kThreads;
+  static constexpr int scan_bytes = kWarps * kScanIters * (int)sizeof(int);
   //: THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR,
   //: exactly as the shipped `Geom::stages` is: the shallowest ring that reaches the
   //: best residency this arm can reach at any depth.  `kRegFloor` is the DECLARED
@@ -485,8 +487,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     //: Per-side lists make activity AIRTIGHT: a side's simplex weights are strictly
     //: positive on its own support, so a listed entry is live for that side by
     //: construction.  There is no union-superset padding anywhere, by design.
-    if (tid < 2) sscan[8 + tid] = 0;
-    rendezvous();
     //: THE SCAN IS A TABLE READ (K31-i-d).  A warp's thirty-two tokens are one
     //: BALLOT WORD of the owner's row, so the conjunction over levels is `D` word
     //: ANDs per side for the whole warp, and the lane reads its own bit out of the
@@ -495,14 +495,32 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     //: nothing.  A level the owner spans WHOLE emits no row: its clause is true for
     //: every token and drops out of the conjunction with no structure fact carried
     //: into the kernel, which is exactly what the amplitude form's `or_run` did.
-#pragma unroll 1
-    for (int p0 = 0; p0 < W; p0 += kThreads) {
-      const int loc = p0 + tid;
-      bool inR = loc < wLen, inW = loc < wLen;
+    //:
+    //: THE COMPACTION IS TWO RENDEZVOUS, both load-bearing.  Every warp holds its
+    //: whole window's ballots in registers and publishes its `kScanIters x 2` live
+    //: counts ONCE; the first barrier publishes those counts, and after it EVERY
+    //: thread re-derives the CTA-wide exclusive prefix from them in registers -- the
+    //: running totals are CTA-uniform and never need a shared round trip, so neither
+    //: the per-iteration barrier pair nor the `tid == 0` serial walk over the warps
+    //: exists.  The second barrier publishes the LISTS, which the phases read from the
+    //: first batch onward, and it doubles as the separation between this window's
+    //: count reads and the next window's count writes -- which is why it precedes the
+    //: whole-window skip rather than following it.
+    constexpr int kScanIters = G::kScanIters;
+    //: the two sides ride ONE count word, low half read and high half write.  A side's
+    //: window total is at most `W`, so no low-half sum ever carries into the high half
+    //: and one packed add carries both prefixes.
+    static_assert(W <= 0xFFFF, "a side's window count must fit the packed word's half");
+    uint32_t voteR[kScanIters], voteW[kScanIters];
+#pragma unroll
+    for (int t = 0; t < kScanIters; ++t) {
+      const int loc = t * kThreads + tid;
+      bool inR = false, inW = false;
       if (loc < wLen) {
-        //: the word is the WARP's, not the lane's: `tok0` and `p0` are both whole
-        //: numbers of words, so warp `u` owns word `(tok0 + p0)/32 + u`.
-        const uint32_t wordB = (uint32_t)(((tok0 + p0) >> 5) + warp) * (uint32_t)sizeof(uint32_t);
+        //: the word is the WARP's, not the lane's: `tok0` and `t * kThreads` are both
+        //: whole numbers of words, so warp `u` owns word `(tok0 + t*kThreads)/32 + u`.
+        const uint32_t wordB =
+            (uint32_t)(((tok0 + t * kThreads) >> 5) + warp) * (uint32_t)sizeof(uint32_t);
         uint32_t mR = 0xFFFFFFFFu, mW = 0xFFFFFFFFu;
         static_for<D>([&](auto Lc) {
           constexpr int l = decltype(Lc)::value;
@@ -514,33 +532,31 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
         inR = ((mR >> lane) & 1u) != 0u;
         inW = ((mW >> lane) & 1u) != 0u;
       }
-      const uint32_t voteR = lane_ballot(inR), voteW = lane_ballot(inW);
-      const uint32_t below = (1u << lane) - 1u;
-      const int mineR = bit_count(voteR & below), mineW = bit_count(voteW & below);
-      if (lane == 0) {
-        sscan[warp] = bit_count(voteR);
-        sscan[kWarps + warp] = bit_count(voteW);
-      }
-      rendezvous();
-      if (tid == 0) {
-        int runR = sscan[8], runW = sscan[9];
-#pragma unroll
-        for (int u = 0; u < kWarps; ++u) {
-          const int cr = sscan[u], cw = sscan[kWarps + u];
-          sscan[u] = runR;
-          sscan[kWarps + u] = runW;
-          runR += cr;
-          runW += cw;
-        }
-        sscan[8] = runR;
-        sscan[9] = runW;
-      }
-      rendezvous();
-      if (inR) slist[sscan[warp] + mineR] = (uint16_t)loc;
-      if (inW) slist[kListStride + sscan[kWarps + warp] + mineW] = (uint16_t)loc;
-      rendezvous();
+      voteR[t] = lane_ballot(inR);
+      voteW[t] = lane_ballot(inW);
+      if (lane == 0) sscan[t * kWarps + warp] = bit_count(voteR[t]) | (bit_count(voteW[t]) << 16);
     }
-    const int nr = sscan[8], nw = sscan[9];
+    rendezvous();
+    const uint32_t below = (1u << lane) - 1u;
+    int run = 0;
+#pragma unroll
+    for (int t = 0; t < kScanIters; ++t) {
+      int inc[kWarps];
+      inc[0] = 0;
+#pragma unroll
+      for (int u = 1; u < kWarps; ++u) inc[u] = inc[u - 1] + sscan[t * kWarps + u - 1];
+      int pre = 0;
+#pragma unroll
+      for (int u = 1; u < kWarps; ++u) pre = warp == u ? inc[u] : pre;
+      const int base = run + pre;
+      const uint16_t loc = (uint16_t)(t * kThreads + tid);
+      if ((voteR[t] >> lane) & 1u) slist[(base & 0xFFFF) + bit_count(voteR[t] & below)] = loc;
+      if ((voteW[t] >> lane) & 1u)
+        slist[kListStride + (base >> 16) + bit_count(voteW[t] & below)] = loc;
+      run += inc[kWarps - 1] + sscan[t * kWarps + kWarps - 1];
+    }
+    rendezvous();
+    const int nr = run & 0xFFFF, nw = run >> 16;
     //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap
     //: mechanism's harvest, kept (study section 2.1).
     if (nr == 0 && nw == 0) continue;
