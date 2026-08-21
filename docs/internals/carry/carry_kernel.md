@@ -203,6 +203,60 @@ is covered by one or two selects and no arithmetic; a zero coefficient contribut
 exactly nothing to either MMA. On the write side the same zeroing rides the gain, which
 is already a select.
 
+## The produce's thread map, and its fine axis
+
+`ProduceMap<D, B, K, M, C, FINE>` carries the map, and `FINE` — the level the thread
+takes WHOLE when the span allows it — is the whole of its freedom. The construction:
+order the levels `[FINE, then D-1, D-2, …, 0 with FINE removed]`, lay their `span_bits`
+end to end, and cut at `kJBits = log2 SPT`. Bit positions below the cut are supplied by
+the thread's own unrolled slot index; positions above are supplied by `rIn`, the
+thread's index within its token row. A level may straddle the cut, in which case its
+digit is the concatenation of the two halves.
+
+At `FINE = D-1` the order IS innermost-outward, the cut positions coincide with
+`run_shift(l)`, and every derived quantity reduces algebraically to the contiguous map:
+`n_l = SPT >> run_shift(l)` clamped into `[1, s_l]`, `slot_of(j) = j`, and
+`slot0 = rIn·SPT`. That is why `FINE = D-1` is the default and why the reverse family,
+which shares this type, is untouched by the parameter's existence.
+
+A side whose declaration names exactly one sparse level takes THAT level as its fine
+axis, so the compaction below walks the thread's own digits and the trip count is
+identical across the four threads of a token row. At the flagship's spans `(8, 16)` the
+read side's declared sparse level is already the fine one; the write side's is not, and
+its map becomes all eight level-0 digits by four level-1 digits — the four threads of a
+row splitting level 1 instead of level 0.
+
+## The compacted produce
+
+A level declared SPARSE for the side being produced contributes only at the digits the
+support plane marks live, so its factor loop is an `__ffs` walk over the thread's
+support slice — one aligned 32-bit load, because a level's thread base is a multiple of
+`n_l` and the owner's run base a multiple of `s_l ≥ n_l`. The dense levels' product,
+which every live digit reuses, is formed once into `ND/2` packed pairs beforehand; every
+slot the walk does not reach is zero-filled at the FOOTPRINT's granularity (the
+innermost level owns bit 0 of the slot index, so the footprint is `SPT / n_{D-1}`
+contiguous runs) rather than at the walk's.
+
+The arithmetic is the dense body's, factor for factor. The write side is
+`dp = level (D-1); dp *= splat(sparse); store rn(dp·gain)` — the dense chain verbatim.
+The read side is `dp = level 0; dp *= splat(level 1)` against the dense body's
+`acc = level 1; acc *= splat(level 0)`: two factors, and bf16 round-to-nearest multiply
+commutes. Skipped digits test EXACTLY zero and `rn(0·x) = 0`, so a skipped slot's dense
+value is the zero already written. The state plane is therefore bit-identical to the
+dense binary's on every cell, which is what the gate asserts.
+
+The live amplitude is picked out of a per-thread SHARED scratch. A runtime index into a
+register array is a stack frame; a select ladder over one costs more issue than the
+multiply chain it replaces; and a second global gather puts two serialized round trips
+on the produce's critical path. Shared memory is the only store on this machine that
+indexes at run time without any of the three.
+
+The form is built for ONE sparse and ONE dense level per side. A longer factor chain
+would have to reconcile its multiply order with the dense body's before it could claim
+the same rounding, and the refusal is a `static_assert` rather than a runtime branch.
+The declaration itself is resolved at the seam: a declaration this family has no
+compacted form for is served `DENSE_BOTH`, which is always correct.
+
 ## Addressing
 
 One pinned 64-bit base per (plane, `bh`) and a 32-bit byte displacement after it, for

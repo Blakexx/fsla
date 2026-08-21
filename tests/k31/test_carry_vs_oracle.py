@@ -21,6 +21,7 @@ import pytest
 import torch
 
 from rola.ops import carry as carry_ops
+from rola.ops import intra as intra_ops
 from tests.k31 import reference
 from tests.k31.fixtures import Cell, assert_fresh_binary, canonical_from_lattice, relative
 from tests.oracle.tolerances import BF16_RTOL
@@ -40,12 +41,13 @@ DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owne
 CHANNEL = carry_ops.CHANNEL_SPLIT
 
 
-def run(cell, arm, carve, chunk=32, state_in=None):
+def run(cell, arm, carve, chunk=32, state_in=None, level_modes=0):
     widths, k, m, W = arm
     read, write, g, v = cell.ref_levels()
     num, den, plane = carry_ops.carry_inter(
         cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths,
-        k=k, m=m, window=W, chunk=chunk, carve=carve, state_in=state_in)
+        k=k, m=m, window=W, chunk=chunk, carve=carve, level_modes=level_modes,
+        state_in=state_in)
     return num, den, plane
 
 
@@ -62,15 +64,32 @@ def test_build_stamp_is_this_source():
     assert stamp[3] > 0, "the arm census must report a register count"
 
 
+def alt_modes(widths):
+    """``alt_cell``'s structure AS A DECLARATION: even levels write-sparse, odd levels
+    read-sparse, packed two bits per level.  The kernel is handed the same statement
+    the draw realizes, which is what makes the compacted produce's conformance a test
+    of the produce rather than of a coincidence."""
+    return intra_ops.pack_modes(tuple(
+        intra_ops.WRITE_SPARSE if l % 2 == 0 else intra_ops.READ_SPARSE
+        for l in range(len(widths))))
+
+
+#: the ALT declaration at depth two -- the one non-dense produce this family builds.
+ALT2 = alt_modes((0, 0))
+
+
 def test_arms_are_the_declared_solver_rows():
-    got = {tuple(a[:7]) for a in carry_ops.arms()}
-    assert got == {(2, 256, 4, 8, carry_ops.WINDOW, 32, 1),
-                   (2, 256, 4, 8, carry_ops.WINDOW_WIDE, 32, 1),
-                   (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1),
-                   (3, 16, 2, 16, carry_ops.WINDOW_SMALL, 32, 1),
-                   (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1)}, got
+    got = {tuple(a[:8]) for a in carry_ops.arms()}
+    assert got == {(2, 256, 4, 8, carry_ops.WINDOW, 32, 1, 0),
+                   (2, 256, 4, 8, carry_ops.WINDOW, 32, 1, ALT2),
+                   (2, 256, 4, 8, carry_ops.WINDOW_WIDE, 32, 1, 0),
+                   (2, 256, 4, 8, carry_ops.WINDOW_WIDE, 32, 1, ALT2),
+                   (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1, 0),
+                   (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1, ALT2),
+                   (3, 16, 2, 16, carry_ops.WINDOW_SMALL, 32, 1, 0),
+                   (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1, 0)}, got
     for arm in carry_ops.arms():
-        D, B, k, m, W, C, carve, BC, owners, smem = arm
+        D, B, k, m, W, C, carve, modes, BC, owners, smem = arm
         _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
         assert (BC, owners) == (bc_host, owners_host), (
             "the device box and the host solver disagree about the owner's shape")
@@ -225,7 +244,7 @@ def alt_cell(widths, T, k_tok, seed, cohort=None):
 def test_m3_two_sided_alt_small(k_tok, carve=CHANNEL):
     assert_fresh_binary()
     cell = alt_cell(SMALL[0], T=256, k_tok=k_tok, seed=10 + k_tok)
-    num, den, plane = run(cell, SMALL, carve)
+    num, den, plane = run(cell, SMALL, carve, level_modes=alt_modes(SMALL[0]))
     n_ref, d_ref, s_ref = ref(cell, SMALL)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -238,7 +257,7 @@ def test_m3_two_sided_alt_small(k_tok, carve=CHANNEL):
 def test_m3_two_sided_alt_flagship(k_tok):
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=20 + k_tok)
-    num, den, _ = run(cell, FLAG, CHANNEL)
+    num, den, _ = run(cell, FLAG, CHANNEL, level_modes=alt_modes(FLAG[0]))
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -253,7 +272,7 @@ def test_m3_two_sided_alt_clustered(k_tok):
     exercised together, and neither is reached by the scattered cells."""
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=40 + k_tok, cohort=64)
-    num, den, _ = run(cell, FLAG, CHANNEL)
+    num, den, _ = run(cell, FLAG, CHANNEL, level_modes=alt_modes(FLAG[0]))
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -306,7 +325,7 @@ def test_m3_two_sided_alt_deep(arm, k_tok, carve=CHANNEL):
     subsets disjoint, scattered `k_tok` cells."""
     assert_fresh_binary()
     cell = alt_cell(arm[0], T=256, k_tok=k_tok, seed=30 + k_tok + len(arm[0]))
-    num, den, plane = run(cell, arm, carve)
+    num, den, plane = run(cell, arm, carve, level_modes=alt_modes(arm[0]))
     n_ref, d_ref, s_ref = ref(cell, arm)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL

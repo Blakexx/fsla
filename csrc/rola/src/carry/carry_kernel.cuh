@@ -106,6 +106,14 @@ struct CarryGeom {
   //: the liveness scan's per-(iteration, warp) live counts, BOTH SIDES IN ONE WORD.
   static constexpr int kScanIters = (W + kThreads - 1) / kThreads;
   static constexpr int scan_bytes = kWarps * kScanIters * (int)sizeof(int);
+  //: THE COMPACTED PRODUCE'S PICK SCRATCH, one thread's widest amplitude run.  A
+  //: runtime index into a register array is a stack frame and a select ladder over
+  //: it costs more issue than the multiply chain it replaces (measured: 46 M packed
+  //: multiplies out, 36 M integer selects in), so the run is picked out of SHARED
+  //: memory instead -- one `LDS.U16` at a computed address, which the register file
+  //: has no equivalent for.  Sized for the box's widest owner run.
+  static constexpr int kPickElems = BP::s(0) > BP::s(D - 1) ? BP::s(0) : BP::s(D - 1);
+  static constexpr int pick_bytes = kThreads * kPickElems * (int)sizeof(__nv_bfloat16);
   //: THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR,
   //: exactly as the shipped `Geom::stages` is: the shallowest ring that reaches the
   //: best residency this arm can reach at any depth.  `kRegFloor` is the DECLARED
@@ -113,7 +121,8 @@ struct CarryGeom {
   //: recorded in the findings doc and re-measured at every milestone.
   static constexpr int kRegFloor = 168;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
-  static constexpr int fixed_bytes = panel_bytes + out_bytes + den_bytes + list_bytes + scan_bytes;
+  static constexpr int fixed_bytes =
+      panel_bytes + out_bytes + den_bytes + list_bytes + scan_bytes + pick_bytes;
   static constexpr int kStages = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloor);
   static constexpr size_t bytes = (size_t)fixed_bytes + (size_t)kStages * slot_bytes;
   static constexpr int cta_target = design::cta_target((int)bytes, kThreads, kRegFloor);
@@ -318,6 +327,8 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   constexpr int kListStride = G::kListStride;
   uint16_t* const slist = reinterpret_cast<uint16_t*>(sden + kWarps * C);
   int* const sscan = reinterpret_cast<int*>(slist + 2 * kListStride);
+  __nv_bfloat16* const spick =
+      reinterpret_cast<__nv_bfloat16*>(sscan + kWarps * G::kScanIters) + tid * G::kPickElems;
 
   //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
   //: shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
@@ -589,8 +600,23 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
       static_assert(ND % 2 == 0 && NS >= 2 && NS <= 32,
                     "a thread publishes whole bf16 pairs and reads ONE support word");
 
-      unsigned short drun[ND];
+      //: THE THREE LOADS ARE ISSUED TOGETHER AND NONE DEPENDS ON ANOTHER.  The
+      //: support word, the dense level's run and the sparse level's run are all
+      //: addressed by the TOKEN alone, so the produce pays ONE memory latency, the
+      //: dense body's.  The first form gathered the live amplitude INSIDE the walk,
+      //: at an address derived from the support word: two serialized round trips on
+      //: the produce's critical path, and `long_scoreboard` per issue-active went
+      //: 1.15 -> 3.00 for a 19% instruction cut that lost 12% of the wall.
+      uint32_t bits = (*reinterpret_cast<const uint32_t*>(gather_ptr(
+                           WRITE ? supPW : supPR, supOff + (WRITE ? supDispW : supDispR)))
+                       >> (WRITE ? supShiftW : supShiftR))
+                      & kSMask;
+      unsigned short drun[ND], srun[NS];
       load_run<ND>(drun, gather_ptr(base, tokOff + (uint32_t)(col(kLev<DL>) * 2)));
+      load_run<NS>(srun, gather_ptr(base, tokOff + (uint32_t)(col(kLev<SL>) * 2)));
+#pragma unroll
+      for (int e = 0; e < NS; e += 2)
+        store_bf16x2(spick + e, ((uint32_t)srun[e + 1] << 16) | (uint32_t)srun[e]);
       if constexpr (!WRITE && DL == 0) {
 #pragma unroll
         for (int i = 0; i < ND; ++i) drun[i] = have ? drun[i] : (unsigned short)0;
@@ -606,10 +632,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
                 | (uint32_t)drun[PMx::idx_of(DL, PMx::dense_j(SPARSE, 2 * q))];
       });
 
-      //: THE DEAD-ROW ZEROING LAW IS THE ZERO FILL: every slot the walk does not
-      //: reach holds an exact zero, which contributes exactly nothing to either MMA.
-      //: The fill runs at the SAME addresses the walk writes, so the two share one
-      //: address form and the compiler merges each contiguous run into one store.
       auto emit = [&](int i, auto Qc, uint32_t val) {
         constexpr int q = decltype(Qc)::value;
         constexpr int lo = PMx::slot_of(PMx::dense_j(SPARSE, 2 * q));
@@ -622,21 +644,34 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
           store_bf16_bits(p + hi, (unsigned short)(val >> 16));
         }
       };
-#pragma unroll
-      for (int i = 0; i < NS; ++i) static_for<NP>([&](auto Qc) { emit(i, Qc, 0u); });
 
-      uint32_t bits = (*reinterpret_cast<const uint32_t*>(gather_ptr(
-                           WRITE ? supPW : supPR, supOff + (WRITE ? supDispW : supDispR)))
-                       >> (WRITE ? supShiftW : supShiftR))
-                      & kSMask;
+      //: THE DEAD-ROW ZEROING LAW IS THE ZERO FILL: every slot the walk does not
+      //: reach holds an exact zero, which contributes exactly nothing to either MMA.
+      //: IT RUNS AT THE FOOTPRINT'S OWN GRANULARITY, not at the walk's.  The innermost
+      //: level owns bit 0 of the slot index, so the thread's footprint is `kRuns`
+      //: CONTIGUOUS runs of `kRun` slots -- and writing them as runs is what lets the
+      //: assembler merge them into the dense body's `STS.128`s instead of the walk's
+      //: two-byte stores, which is a per-produce cost the sparsity never pays back.
+      constexpr int kRun = PMx::n_l(D - 1);
+      constexpr int kRuns = SPT / kRun;
+      static_for<kRuns>([&](auto Rc) {
+        constexpr int s0 = PMx::slot_of(PMx::dense_j(1u << (D - 1), decltype(Rc)::value));
+#pragma unroll
+        for (int e = 0; e < kRun; e += 2) store_bf16x2(row + s0 + e, 0u);
+      });
+
       //: NO SPECULATIVE UNROLLING: the trip count is a runtime popcount, and an
       //: unrolled body duplicates every live value of the walk's tightest scope.
 #pragma unroll 1
       while (bits != 0u) {
         const int i = __ffs((int)bits) - 1;
         bits &= bits - 1u;
-        const uint32_t f = splat_bf16x2_bits(*reinterpret_cast<const unsigned short*>(
-            gather_ptr(base, tokOff + (uint32_t)((col(kLev<SL>) + i) * 2))));
+        //: THE PICK IS ONE SHARED LOAD.  The run is already in registers and in the
+        //: scratch; the index is not a constant, and shared memory is the only store
+        //: on this machine that indexes at run time without a stack frame.  Its
+        //: latency is tens of cycles against the hundreds a second global round trip
+        //: would cost, and the address depends on nothing outside this thread.
+        const uint32_t f = splat_bf16x2_bits(*reinterpret_cast<const unsigned short*>(spick + i));
         static_for<NP>([&](auto Qc) {
           constexpr int q = decltype(Qc)::value;
           uint32_t val = mul_bf16x2(dp[q], f);

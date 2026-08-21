@@ -126,6 +126,30 @@ gated by `tests/oracle/test_atom_bitmap.py::test_the_bitmap_is_bc_free`, which r
 the same bitmap at every built `BC` of a topology.
 
 
+## The support plane
+
+The union table answers "does this token's support MEET this owner's digit run"; the
+support plane answers "WHICH digits", which is what lets a consumer synthesize only the
+live coefficients. Both come from the same exact-nonzero test on the same amplitudes,
+at different grains.
+
+The two cannot share a pass, and the reason is the lane assignment. The union vote is a
+ballot ACROSS TOKENS — a lane is a token, and thirty-two of them vote one word — while
+the support bitmap is a ballot ACROSS DIGITS, a lane being a digit of ONE token. So
+`support_plane_kernel` is its own launch: one warp per (side, token, level, 32-digit
+word), each lane reading one amplitude and the ballot BEING the word, with nothing
+packed afterwards.
+
+The layout is `[BH, 2, L, D, SW]` uint32 with side 0 the read side and
+`SW = ceil(B/32)`. The minor axes are (level, word) so a consumer's whole slice for one
+(token, level) is one aligned load, and the plane is sized by the topology alone —
+`L · D · SW` words a side, independent of any distribution.
+
+ITS COST IS A SECOND FULL PASS OVER THE AMPLITUDE PLANES, and that is the fact a
+consumer has to weigh against what the plane buys it. Movement hierarchy (architecture
+law 5) puts DRAM bytes above issue slots: a consumer that skips work at run time reads
+LESS than the whole plane, while this pass always reads all of it.
+
 ## The liveness epilogue, at the launch's block grain
 
 <a id="block-bitmap"></a>**`block_bitmap_kernel` answers, per `(bh, block)`, the three
