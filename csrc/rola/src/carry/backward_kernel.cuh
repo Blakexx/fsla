@@ -84,8 +84,15 @@ struct BwdGeom {
   //: TWO FLOORS, TWO CENSUSES.  One floor for two kernels is how a spill goes green:
   //: the build honors a bound the heavier scan cannot meet and only the census
   //: notices.  Both are DECLARED -- the measured live set of the heaviest built arm.
-  static constexpr int kRegFloorA = 232;
-  static constexpr int kRegFloorB = 250;
+  //:
+  //: SCAN A SITS AT THE ARCHITECTURE'S PER-THREAD CAP, and that is recorded rather
+  //: than smoothed over: 255 of 255 on every built arm and both arches, zero spill,
+  //: `cta_target` 2.  It has NO headroom, so the next change to that kernel starts by
+  //: measuring what it costs in registers, and a hoist of the forward's item-1 shape
+  //: (which cost that kernel twelve to sixteen) is not available here without giving
+  //: something back first.
+  static constexpr int kRegFloorA = 255;
+  static constexpr int kRegFloorB = 239;
   static constexpr int kStagesA = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloorA);
   static constexpr int kStagesB = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloorB);
   static constexpr size_t bytes_a = (size_t)fixed_bytes + (size_t)kStagesA * slot_bytes;
@@ -324,9 +331,20 @@ struct BwdOwner {
   //: ONE BATCH'S PANEL, expanded from factors.  `SAMP` also publishes the per-level
   //: amplitude RUNS: they are the digit reduction's leave-one-out weights, and they
   //: are the same values this body already holds -- never a second gather.
-  template <bool SAMP>
+  //:
+  //: ONLY THE PANEL-GAINED SIDE MULTIPLIES.  Three of the family's four produce sites
+  //: pass a gain that is exactly `1.0` -- Scan A's read phase and BOTH of Scan B's --
+  //: and `rn(a * 1) = a`, so for them the trailing packed multiply over all `SPT`
+  //: slots is deleted outright and the accumulator is stored as it stands.  What that
+  //: multiply also carried, the DEAD-ROW ZEROING, moves onto LEVEL 0's run instead:
+  //: level 0 is the outermost and therefore the narrowest at every built arm, and
+  //: every panel entry has exactly one level-0 factor, so zeroing that run zeroes the
+  //: whole row for one or two selects rather than `SPT/2` packed multiplies.  `samp`
+  //: is published BEFORE the zeroing and so still carries the raw amplitudes, exactly
+  //: as it did when the zeroing rode the panel gain.
+  template <bool SAMP, GainSite GAIN>
   __device__ __forceinline__ void produce(const __nv_bfloat16* base, __nv_bfloat16* dst,
-                                          uint32_t tokOff, uint32_t gain, int par) {
+                                          uint32_t tokOff, uint32_t gain, bool have, int par) {
     unsigned short lv[D][PM::kMaxN];
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
@@ -341,6 +359,10 @@ struct BwdOwner {
               bf16_bits_to_float(lv[l][i]);
       }
     });
+    if constexpr (GAIN != GainSite::kPanel) {
+#pragma unroll
+      for (int i = 0; i < PM::n_l(0); ++i) lv[0][i] = have ? lv[0][i] : (unsigned short)0;
+    }
     __nv_bfloat16* const row = dst + prow * LdS + slot0;
 #pragma unroll
     for (int j = 0; j < PM::SPT; j += 2) {
@@ -350,11 +372,15 @@ struct BwdOwner {
         constexpr int l = decltype(Lc)::value;
         acc = mul_bf16x2(acc, splat_bf16x2_bits(lv[l][PM::idx_of(l, j)]));
       });
-      store_bf16x2(row + j, mul_bf16x2(acc, gain));
+      if constexpr (GAIN == GainSite::kPanel)
+        store_bf16x2(row + j, mul_bf16x2(acc, gain));
+      else
+        store_bf16x2(row + j, acc);
     }
   }
 
-  //: `gain == 0` zeroes a padding row, so a short batch needs no separate path.
+  //: A padding row is zeroed -- by a zero gain where the gain is on the panel, and by
+  //: level 0's zeroed run everywhere else -- so a short batch needs no separate path.
   template <bool SAMP, GainSite GAIN>
   __device__ __forceinline__ void produce_batch(const __nv_bfloat16* base, __nv_bfloat16* dst,
                                                 const uint16_t* list, int o0, int ntot,
@@ -371,8 +397,8 @@ struct BwdOwner {
         sgain[par * C + prow] = __bfloat162float(
             *reinterpret_cast<const __nv_bfloat16*>(gather_ptr(gW, winG + (uint32_t)tok * 2u)));
     }
-    produce<SAMP>(base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), have ? gain : 0u,
-                  par);
+    produce<SAMP, GAIN>(base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2),
+                        have ? gain : 0u, have, par);
   }
 
   //: ONE `cols`-WIDE SLOT OF THE RING, gathered by the driving side's list.  The two
@@ -484,6 +510,17 @@ struct BwdOwner {
   __device__ __forceinline__ void channel_readout(const float (&slab)[kSlabM][kSlabN][4],
                                                   uint32_t bd, const __nv_bfloat16* panel,
                                                   float (&tile)[kSlabM][NTOK][4]) {
+    //: THE MASS COLUMN IS READ ONCE, NOT ONCE PER m-TILE.  Its panel entry is indexed
+    //: by the TOKEN alone, and a thread's token depends on `nt` and `e & 1` only, so
+    //: the two m-tiles want the same eight values.  Read as `[nt][e & 1]` ahead of the
+    //: `pm` loop: eight shared loads and eight converts per readout, against the
+    //: thirty-two the inner loops used to repeat.
+    float pv[NTOK][2];
+#pragma unroll
+    for (int nt = 0; nt < NTOK; ++nt)
+#pragma unroll
+      for (int h = 0; h < 2; ++h)
+        pv[nt][h] = __bfloat162float(panel[(kMmaN * nt + (lane & 3) * 2 + h) * LdD + kCols - 1]);
 #pragma unroll
     for (int pm = 0; pm < kSlabM; ++pm) {
 #pragma unroll
@@ -513,10 +550,7 @@ struct BwdOwner {
 #pragma unroll
       for (int nt = 0; nt < NTOK; ++nt)
 #pragma unroll
-        for (int e = 0; e < 4; ++e)
-          tile[pm][nt][e] +=
-              ((e >> 1) ? m1 : m0)
-              * __bfloat162float(panel[(kMmaN * nt + (lane & 3) * 2 + (e & 1)) * LdD + kCols - 1]);
+        for (int e = 0; e < 4; ++e) tile[pm][nt][e] += ((e >> 1) ? m1 : m0) * pv[nt][e & 1];
     }
   }
 
@@ -648,17 +682,32 @@ struct BwdOwner {
                                               uint32_t winP, int par) {
     static_assert(DP::off(0) == 0, "the outer level's digits start the run");
     static_assert(NROW == kDigitRows || NROW == BP::s(0), "the run, or the outer level's part");
+    static_assert((NROW * C) % kThreads == 0, "the drain's cells divide evenly among the threads");
+    //: THE (token, digit) CURSOR ADVANCES, it is not re-divided.  `NROW` is not a power
+    //: of two on the write side, so `i / NROW` per cell is a magic-number division
+    //: repeated for every one of them; the stride between a thread's cells is the
+    //: constant `kThreads`, so the quotient and remainder carry instead.  One division
+    //: per drain, at the cursor's seed.
+    constexpr int kCells = (NROW * C) / kThreads;
+    constexpr int kTokStep = kThreads / NROW;
+    constexpr int kRowStep = kThreads - kTokStep * NROW;
+    int tokl = tid / NROW;
+    int row = tid - tokl * NROW;
 #pragma unroll
-    for (int i = tid; i < NROW * C; i += kThreads) {
-      const int tokl = i / NROW;
-      if (tokl >= n) continue;
-      const int row = i - tokl * NROW;
-      float g = sdg[tokl * kDigitRows + row];
-      if constexpr (GAINED) g *= sgain[par * C + tokl];
-      fan_in_add(reinterpret_cast<float*>(
-                     gather_ptr(plane, winP + (uint32_t)list[o0 + tokl] * (uint32_t)(D * B * 4)
-                                           + (uint32_t)(sdcol[row] * 4))),
-                 g);
+    for (int k = 0; k < kCells; ++k) {
+      if (tokl < n) {
+        float g = sdg[tokl * kDigitRows + row];
+        if constexpr (GAINED) g *= sgain[par * C + tokl];
+        fan_in_add(reinterpret_cast<float*>(
+                       gather_ptr(plane, winP + (uint32_t)list[o0 + tokl] * (uint32_t)(D * B * 4)
+                                             + (uint32_t)(sdcol[row] * 4))),
+                   g);
+      }
+      tokl += kTokStep;
+      row += kRowStep;
+      const bool wrap = row >= NROW;
+      row -= wrap ? NROW : 0;
+      tokl += wrap ? 1 : 0;
     }
   }
 };
