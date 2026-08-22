@@ -217,6 +217,26 @@ __device__ __forceinline__ uint32_t pack_bf16x2(float lo, float hi) {
   return *reinterpret_cast<const uint32_t*>(&p);
 }
 
+//: THE ACCUMULATOR'S TOP HALVES, TAKEN AS A bf16 PAIR (K35).  A bf16 IS the top
+//: sixteen bits of an fp32, so a pair of accumulator registers becomes an MMA
+//: operand with ONE `prmt.b32` -- byte selector `0x7632` picks bytes 2,3 of the low
+//: source and 6,7 of the high one -- against `pack_bf16x2`'s conversion pair.
+//:
+//: THE ARITHMETIC IS NOT THE SAME AND THAT IS DECLARED, NOT INCIDENTAL.  This
+//: TRUNCATES where `pack_bf16x2` ROUNDS TO NEAREST EVEN, so the operand can differ
+//: by one bf16 ulp (relative 2^-8 rather than 2^-9) and it is biased toward zero.
+//: It is the K35 read path's declared rounding, chosen because the hi-plane hybrid
+//: publishes exactly these bytes: the strip a warp writes and the fragment it would
+//: have built on the fly are then BIT-IDENTICAL, so the hybrid is a placement change
+//: and never an arithmetic one.  The oracle mirror carries the same truncation.
+__device__ __forceinline__ uint32_t hi_bf16x2(float lo, float hi) {
+  uint32_t d;
+  asm("prmt.b32 %0, %1, %2, 0x7632;"
+      : "=r"(d)
+      : "r"(__float_as_uint(lo)), "r"(__float_as_uint(hi)));
+  return d;
+}
+
 //: One bf16 into BOTH halves of a packed pair, so that a scalar can be an
 //: operand of `mul_bf16x2`.  The ladder's coefficient production multiplies a
 //: whole run of amplitudes by a single per-digit amplitude; the packed operand
