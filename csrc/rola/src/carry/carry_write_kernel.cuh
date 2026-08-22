@@ -109,6 +109,20 @@ struct WriteGeom {
   static constexpr int kLW = W / kBallotLanes;
   static constexpr int kRegFloor = 128;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
+  //: ROUND 8 (c) AND (d) WERE BUILT ON THIS BODY AND ARE REFUTED, and the receipt
+  //: belongs here because both look free on paper.  (c) PER-WARP PANEL SLICES: each
+  //: warp expanding only its own digit's sixteen leaves turns the panel's RAW and
+  //: WAR into `__syncwarp` and leaves the CTA barrier guarding only the value ring.
+  //: It does not move the barrier -- `barStall` 1.79 -> 1.66 at ALT k16 scattered and
+  //: 2.12 -> 2.11 at k16 cohort=64 -- BECAUSE THE BARRIER WAS NEVER THE PANEL'S: the
+  //: ring's slot reuse is a 256-thread-to-256-thread edge on its own and the panel's
+  //: edges were riding along inside it for free.  What it does move is the fold's
+  //: `ldmatrix` traffic, `LDS` 1.26x, because a transposed read of a 16-wide slice at
+  //: a 24-element stride is worse than of the 128-wide panel at 136.  (d) ALIASING
+  //: the fan-in staging onto the value ring is correct and saves 1,296 B, and round
+  //: 5 already measured that slack under the two-CTA bar buys nothing.  Measured
+  //: together: 0.864 -> 0.909, 0.794 -> 0.841, 1.087 -> 1.148, 0.999 -> 1.025.
+  //:
   //: THE READ LISTS AND THE VALUE RING ARE PHASE-EXCLUSIVE and share their bytes:
   //: the lists are built at the top of the window and dead at the window line, the
   //: ring is filled after it, and the handover line the IMAGE already needs
