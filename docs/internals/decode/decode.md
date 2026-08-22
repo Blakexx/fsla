@@ -654,9 +654,40 @@ knows its own range, and knowing its range means running the prologue. So
 back off the launch bound itself
 ([`decode_api.md` §2](decode_api.md#residency)), bounded below by the UNIT SUPPLY so a
 small topology does not launch CTAs there is no work for. Both bounds are static facts —
-an occupancy fact and a geometry fact. The remaining slack is not: the wall-optimal split
-sits somewhat under one wave and its position depends on the REALIZED work, which is a
-device fact and reading it back is the one thing a decode step must not do.
+an occupancy fact and a geometry fact.
+
+<a id="retirement"></a>**THE CEILING IS WHAT THE HOST CAPTURES; THE DEVICE IS WHAT SPENDS
+IT.** `n_split` is derived from the DENSE unit ceiling because that is the only count a
+host can know — the count a step actually enumerates is a function of ITS OWN SUPPORT and
+exists only on the device, once the factor tables do
+([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)). Under the
+union-of-products enumeration the two diverge by up to 11x, and at small `BH` — where
+`n_split` is largest — the ceiling over-launches by 5x. So the split policy stays exactly
+what it was, frozen for the sequence and baked into the captured launch, and the SEGMENTS
+RETIRE:
+
+* every CTA derives `n_live = clamp(ceil(max_t units[t] / kDecodeWarps), 1, n_split)` from
+  the counts its own prologue produced — the walk's stride is `n_split * kDecodeWarps`, so
+  the segments with an iteration are exactly the PREFIX `[0, n_live)`;
+* a segment at or past it returns THERE, before the admission question — no walk, no
+  partial, no arrival, and it is not summed;
+* and it returns before the admission on purpose: the table test and the pool claim read a
+  page table the last-arriving live segment folds into ([§4e](#the-claim)), so a retired
+  segment must not be inside that window at all.
+
+**IT IS THE ARRIVAL AND THE COMBINE THAT RETIREMENT ACTUALLY BUYS, NOT THE PROLOGUE**, and
+that was measured rather than assumed. A variant that retired the walk but still wrote
+exact zeros and arrived bought NOTHING; the per-segment cost a large split carries is
+`n_split` atomics on one counter followed by `n_split` `__ldcg` loads per column on ONE
+CTA ([§30](#slot-order)). The measured effect of retiring completely, at `BH = 1` where
+`n_split = 256`, is 10-12 % off every sparse cell.
+
+**AND IT IS NOT A THRESHOLD.** `n_live` is the walk's own loop bound, asked before the
+loop. It is also why a PER-BATCH-HEAD PRE-PASS is not shipped: publishing the factor
+tables and the counts from a `BH`-CTA launch so segments could retire before folding
+anything was built, gated green and measured, and it LOST — at `BH = 1` the pre-pass is a
+single CTA whose whole latency is exposed, and it cost 3-7 us against a saving the
+in-kernel retirement already collects.
 
 ## <a id="row-scales"></a>22. `sr` and `sw` — the two per-token row scales
 
@@ -778,17 +809,27 @@ split-K store, exactly as the tiled kernel emits `sr * y` into `num` and
 `sr * den_acc` into `den`. That makes the combine below a plain sum, and keeps the
 two consumers' dividend and divisor the same objects.
 
-## <a id="slot-order"></a>30. The deterministic split-K combine
+## <a id="slot-order"></a>30. The deterministic split-K combine, over the LIVE segments
 
-SLOT ORDER, always. This is the whole determinism argument: `n_split` fp32 addends
-summed in a FIXED order give one answer per binary, where an `atomicAdd` race
-gives one answer per arrival order.
+SLOT ORDER, always. This is the whole determinism argument: the addends are summed in a
+FIXED order, which gives one answer per binary where an `atomicAdd` race gives one answer
+per arrival order.
+
+THE RANGE IS `n_live`, NOT `n_split` ([§21](#retirement)): retired segments write no
+partial and take no arrival, so both the arrival target and the summed slot range are
+`[0, n_live)`. Every CTA of the batch-head derives that bound identically from the same
+published unit counts, so nothing is communicated and nothing is ordered — and the sum is
+still ASCENDING SLOT ORDER over a range that is a function of the inputs alone, which is
+exactly what G1 asserts (`y` byte-reproducible at a FIXED `n_split`). `y` still moves
+across `n_split`, as it always did, because fp32 addition is not associative.
 
 `__ldcg` bypasses L1 so the reader sees the other CTAs' stores that the
 `__threadfence` above made visible.
 
-`n_split == 1` takes an early return before any of this — not a special case, the
-same expression with zero combine steps.
+`n_live == 1` takes an early return before any of this — not a special case, the
+same expression with zero combine steps. A batch-head whose support is empty still owes a
+`y`, which is why `n_live` is clamped up to one and segment 0 always runs: `y` is then the
+ratio `0 / (0 + eps)` it writes.
 
 The counter is reset to `0` by the last CTA, so no `memset` launch stands between
 two decode steps and the counter is safe to capture in a CUDA graph.

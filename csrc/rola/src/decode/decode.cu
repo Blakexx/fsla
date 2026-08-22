@@ -171,6 +171,40 @@ decode_step_kernel(DecodeParams p) {
   build_owner_lists<D>(p, mask_r, mask_w, olist, s_n_o, scan_temp);
   build_term_layout<D>(p, s_n_o, s_bits, s_shift, s_units);
 
+  // ---- RETIREMENT: the split's ceiling is captured, the realized work is not ----
+  //: `n_split` is FROZEN for the sequence and baked into the captured launch
+  //: ([`decode.md#the-split-policy`](#the-split-policy)), and it is sized from the DENSE
+  //: unit ceiling because that is the only count a host can know. The count this step
+  //: ACTUALLY enumerates is a property of ITS OWN SUPPORT and exists only here, once the
+  //: factor tables do. So the ceiling is what the host captures and the DEVICE is what
+  //: spends it: a segment with no unit in any term retires, and it retires COMPLETELY --
+  //: no walk, no partial, no arrival, and it is not summed.
+  //: THE LIVE SEGMENTS ARE A PREFIX. The walk's stride is `n_split * kDecodeWarps`, so
+  //: segment `seg` has an iteration exactly when `seg * kDecodeWarps < max_t units[t]`,
+  //: and `n_live` is that bound clamped into `[1, n_split]`. Every CTA of the batch-head
+  //: derives it from the same published counts, so the arrival target and the summed slot
+  //: range agree by construction and no CTA has to be told.
+  //: IT IS NOT A THRESHOLD -- it is the walk's own loop bound, asked before the loop.
+  //: AT LEAST ONE, ALWAYS: a batch-head whose support is empty still owes a `y`, and `y`
+  //: is the ratio `0 / (0 + eps)` that segment 0 writes.
+  //: IT RETIRES BEFORE THE ADMISSION, and that ordering is load-bearing rather than
+  //: incidental: the table test and the pool claim read a page table the last-arriving
+  //: LIVE segment folds into, so a retired segment must not be inside that window at all.
+  //: docs/internals/decode/decode.md#retirement
+  __shared__ int s_live;
+  if (tid == 0) {
+    int most = 0;
+#pragma unroll
+    for (int t = 0; t <= D; ++t) {
+      if (s_units[t] > most) most = s_units[t];
+    }
+    const int want = ceil_div_int(most, kDecodeWarps);
+    s_live = want < 1 ? 1 : (want > p.n_split ? p.n_split : want);
+  }
+  __syncthreads();
+  const int n_live = s_live;
+  if (seg >= n_live) return;
+
   const int inner_bits = p.lat_inner_bits;
 
   //: THE CANDIDATE ATOMS, enumerated from the same lattice product the walk uses, and a
@@ -455,13 +489,22 @@ decode_step_kernel(DecodeParams p) {
     __syncthreads();
 
     // ---- the deterministic split-K combine, and the fused divide ---------------
-    if (p.n_split > 1) {
+    //: OVER THE LIVE SEGMENTS, NOT OVER THE CEILING -- and this is where retirement is
+    //: actually paid for. The per-segment cost a large split carries is the ARRIVAL AND
+    //: THE COMBINE (`n_split` atomics on one counter, then `n_split` `__ldcg` loads per
+    //: column on ONE CTA), not the replicated prologue: a variant that retired the walk
+    //: but still wrote exact zeros and arrived was BUILT AND MEASURED AT ZERO. The order
+    //: is still a FIXED ASCENDING SLOT ORDER over a range every CTA of the batch-head
+    //: derives identically from the published counts, which is the whole of G1; `y` moves
+    //: across `n_split` exactly as it always did (fp32 addition is not associative) and is
+    //: byte-identical at a fixed one. docs/internals/decode/decode.md#slot-order
+    if (n_live > 1) {
       float* slot = p.ws + (static_cast<int64_t>(bh) * p.n_split + seg) * cols;
       if (tid < cols) slot[tid] = part[tid];
       __threadfence();
       __syncthreads();
       if (tid == 0) {
-        s_last_cta = (atomicAdd(&p.ctr[bh], 1) == p.n_split - 1) ? 1 : 0;
+        s_last_cta = (atomicAdd(&p.ctr[bh], 1) == n_live - 1) ? 1 : 0;
       }
       __syncthreads();
       if (s_last_cta == 0) return;
@@ -472,8 +515,7 @@ decode_step_kernel(DecodeParams p) {
       if (tid < cols) {
         const float* base = p.ws + static_cast<int64_t>(bh) * p.n_split * cols;
         float t = 0.0f;
-        for (int s = 0; s < p.n_split; ++s)
-          t += __ldcg(base + static_cast<int64_t>(s) * cols + tid);
+        for (int s = 0; s < n_live; ++s) t += __ldcg(base + static_cast<int64_t>(s) * cols + tid);
         part[tid] = t;
       }
       __syncthreads();
@@ -485,7 +527,7 @@ decode_step_kernel(DecodeParams p) {
       const float den = part[DV];
       p.y[static_cast<int64_t>(bh) * DV + tid] = part[tid] / (den + p.eps);
     }
-  } else if (p.n_split > 1) {
+  } else if (n_live > 1) {
     //: A needy batch-head's CTAs ARRIVE ANYWAY. The arrival is what elects one CTA to
     //: publish the verdict below, and electing it from the same counter the combine uses
     //: is what makes "no CTA of this batch-head is still reading" the SAME argument in
@@ -493,7 +535,7 @@ decode_step_kernel(DecodeParams p) {
     __threadfence();
     __syncthreads();
     if (tid == 0) {
-      s_last_cta = (atomicAdd(&p.ctr[bh], 1) == p.n_split - 1) ? 1 : 0;
+      s_last_cta = (atomicAdd(&p.ctr[bh], 1) == n_live - 1) ? 1 : 0;
     }
     __syncthreads();
     if (s_last_cta == 0) return;
