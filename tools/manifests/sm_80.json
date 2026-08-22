@@ -23,40 +23,16 @@
   }
  },
  "source": {
-  "csrc_sha256": "dc17deb193366537e56f625471e6efb7eedeab3a0dbe3afbb768e2ffce0fe6fe",
+  "csrc_sha256": "d12716b3a26f81fba3c6f9088be8d54d257fab4141af2e630d5c161e9bb8a097",
   "date": "2026-08-21"
  },
  "shards": {
   "facts_s0": {
-   "members_sha256": "0f9fad76dbe9a778d061906f221cb4e903f1927d717ff4822b1710ecc7f86bcb",
-   "count": 52
+   "members_sha256": "b895c7179eb182f5d14669b6f792be9f65dc7fcf0eac18fd16ea7ddcd3b10650",
+   "count": 54
   }
  },
  "entries": {
-  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi384ELi32ELi1ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 210,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "5630c9f4688c008049c904ba8c998f1500a4ad4a4c4c127f44b81af93bff40be"
-  },
-  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi512ELi32ELi1ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 210,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "5d67bce53173f64072406b444f9c775dcba033b3f53ed484a9a3e5d388e414cd"
-  },
-  "sm_80:_ZN4rola5carry12carry_kernelILi2ELi64ELi4ELi8ELi64ELi32ELi1ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 210,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "34cd8d1077c2ebcc9d3771c777aa763042e060949becce943d91045d14047a14"
-  },
   "sm_80:_ZN4rola5carry12carry_kernelILi4ELi8ELi2ELi8ELi64ELi32ELi3ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 210,
    "spill_stores": 0,
@@ -161,13 +137,37 @@
    "local_ops": 0,
    "sass_sha256": "8898391df07f12bbbceb27133dbe0f14eb5323c49ae2f3918465846055828d7b"
   },
+  "sm_80:_ZN4rola5carry18carry_write_kernelILi2ELi256ELi4ELi8ELi384ELi32ELi1ELi4ELb0ELb0ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
+   "regs": 128,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "74c14af01af91731caf85652b1fe4d3a8e724149fb450f4682905eaa3deabd88"
+  },
+  "sm_80:_ZN4rola5carry18carry_write_kernelILi2ELi256ELi4ELi8ELi512ELi32ELi1ELi4ELb0ELb0ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
+   "regs": 128,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "a334cedd69ac960f7c40d3bc582c6c0d9efd315e3d0d8d6ca8c3798b5227a0d0"
+  },
+  "sm_80:_ZN4rola5carry18carry_write_kernelILi2ELi64ELi4ELi8ELi64ELi32ELi1ELi4ELb0ELb0ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
+   "regs": 128,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "6658f49dc9d7e5bbc30203b88f791e76114ec0fc6dbb1665fa97282abc8ae07c"
+  },
   "sm_80:_ZN4rola5carry18stamp_kernel_entryEPi": {
    "regs": 12,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "fbedc2b6da1527293963551d102c50ad64b065cb2b314b0b542d1ccd98c0be5f"
+   "sass_sha256": "3d801d6dcca8696f16274f6952840a1a1b03c0a5b65608022fbbf6ae6bc3a3cc"
   },
   "sm_80:_ZN4rola5chunk18atom_bitmap_kernelILi1ELi256EEEvPKjPhi": {
    "regs": 32,
@@ -297,6 +297,14 @@
    "local_ops": 0,
    "sass_sha256": "884dd942b06694f45382c1a5d972f89286d8e71556cd5bd4e5e4e740bf96d1d0"
   },
+  "sm_80:_ZN4rola5chunk18chunk_facts_tablesINS0_8SpanPlanILi2ELi256ELi1ELi2ELi256ELi256EEELi1EEEvPK13__nv_bfloat16S6_PjS7_i": {
+   "regs": 168,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "aa717d4c781bc59fd4d55c304c2dc216982f0ba78536e377fb68e8a3ff35431c"
+  },
   "sm_80:_ZN4rola5chunk18chunk_facts_tablesINS0_8SpanPlanILi2ELi256ELi8ELi16ELi256ELi256EEELi1EEEvPK13__nv_bfloat16S6_PjS7_i": {
    "regs": 40,
    "spill_stores": 0,
@@ -312,6 +320,14 @@
    "hot_locals": 0,
    "local_ops": 0,
    "sass_sha256": "c316d4ab1824f3bd1da01dcf665d9fc9be77ad0d9ac644e4e8925454ecf21047"
+  },
+  "sm_80:_ZN4rola5chunk18chunk_facts_tablesINS0_8SpanPlanILi2ELi64ELi1ELi2ELi64ELi64EEELi1EEEvPK13__nv_bfloat16S6_PjS7_i": {
+   "regs": 32,
+   "spill_stores": 0,
+   "spill_loads": 0,
+   "hot_locals": 0,
+   "local_ops": 0,
+   "sass_sha256": "fba2553febd528ebfa1e56494baa7aa850779220e94982a219e4f9d0c2d483d7"
   },
   "sm_80:_ZN4rola5chunk18chunk_facts_tablesINS0_8SpanPlanILi2ELi64ELi1ELi32ELi64ELi64EEELi1EEEvPK13__nv_bfloat16S6_PjS7_i": {
    "regs": 40,

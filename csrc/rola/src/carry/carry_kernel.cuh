@@ -47,7 +47,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010016;
+static constexpr int kCarryBuildMagic = 31010017;
 
 static constexpr int kDv = 64;         // d_v
 static constexpr int kCols = kDv + 1;  // the mass column rides the state
@@ -131,10 +131,13 @@ struct CarryGeom {
 //: per level the digits it touches are a CONTIGUOUS run of the owner's own run at a
 //: runtime base, and WHICH element of that run each of its slots wants is a
 //: compile-time function of the unrolled slot index.
-template <int D, int B, int K, int M, int C>
+//: `NT` is the CTA's thread count: the channel-split body's `kThreads`, and Form
+//: B's own `kFbThreads` -- the map is a function of how many threads share a token
+//: row, and nothing else in it moves with the body.
+template <int D, int B, int K, int M, int C, int NT = kThreads>
 struct ProduceMap {
   using BP = BoxPlan<D, B, K, M>;
-  static constexpr int kRowThr = kThreads / C;
+  static constexpr int kRowThr = NT / C;
   static constexpr int SPT = BP::kBC / kRowThr;
   static constexpr int kJBits = ilog2c(SPT);
   static constexpr int vary(int l) { return SPT >> BP::run_shift(l); }

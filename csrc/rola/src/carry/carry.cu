@@ -38,6 +38,7 @@
 
 #include "carry_api.cuh"
 #include "carry_split_kernel.cuh"
+#include "carry_write_kernel.cuh"
 #include "facts/facts_kernel.cuh"
 
 //: THE OWNER BALLOT ROWS, DECLARED (K31-i-d).  The facts family owns the pass and
@@ -60,6 +61,17 @@ using OwnerRows =
     rola::chunk::SpanPlan<D, B, BoxPlan<D, B, K, M>::s(0), (D > 1 ? BoxPlan<D, B, K, M>::s(1) : B),
                           (D > 2 ? BoxPlan<D, B, K, M>::s(2) : B),
                           (D > 3 ? BoxPlan<D, B, K, M>::s(3) : B)>;
+
+//: the plan FORM B's rows are voted under: the SAME table refined at BOTH carved
+//: levels at once, because Form B carves the box twice -- level 0 by the writer's
+//: digit and level `CR` by the reader's group -- and one side ORs the other's
+//: finer rows to recover its own owner-grain clause (`TwoCarveRows`).
+template <int D, int B, int K, int M, int CR>
+using FormBRowPlan =
+    rola::chunk::SpanPlan<D, B, TwoCarveRows<D, B, K, M, kFbWarps, 0, CR>::s(0),
+                          (D > 1 ? TwoCarveRows<D, B, K, M, kFbWarps, 0, CR>::s(1) : B),
+                          (D > 2 ? TwoCarveRows<D, B, K, M, kFbWarps, 0, CR>::s(2) : B),
+                          (D > 3 ? TwoCarveRows<D, B, K, M, kFbWarps, 0, CR>::s(3) : B)>;
 
 //: the plan the CARVE body's rows are voted under: the same table one level finer
 //: at the carve level, so a warp reads its own group's row (`CarveRows`).
@@ -104,6 +116,27 @@ constexpr bool declares(uint32_t modes, int l, uint32_t side) {
 template <int D, uint32_t MO>
 constexpr int carve_level = declares(MO, D - 1, kModeReadSparse) ? D - 1 : -1;
 
+//: THE READ CARVE'S GRAIN, in level-CR digits per group.  It is NOT the warp
+//: count: dynamic slice assignment decoupled the two, and the two costs it trades
+//: pull opposite ways -- a finer group does fewer read k-TILES per entry, a
+//: coarser one is reached by fewer warps (lower MULTIPLICITY) and so pays the
+//: per-entry staging and RED fan-in fewer times.  The findings doc carries the
+//: sweep that named this value.
+static constexpr int kFbReadSpan = 4;
+
+//: FORM B'S DECLARATION, and the shape it is built for.  The writer's digits must
+//: be the OUTERMOST level -- that is where a digit owns a CONTIGUOUS `local` run
+//: and the fold's accumulator n-tiles fall out with no padding -- there must be one
+//: of them per warp, and the reader's group must be the innermost level's adjacent
+//: pair, which is what LAY 3's slot order is written on.  A declaration outside
+//: that shape is served the leaf carve or the channel split, which is always
+//: correct and only ever slower.
+template <int D, int B, int K, int M, uint32_t MO>
+static constexpr bool kFormB =
+    D == 2 && declares(MO, 0, kModeWriteSparse) && declares(MO, D - 1, kModeReadSparse)
+    && BoxPlan<D, B, K, M>::s(0) == kFbWarps && BoxPlan<D, B, K, M>::s(D - 1) % kFbReadSpan == 0
+    && BoxPlan<D, B, K, M>::kBC / BoxPlan<D, B, K, M>::s(D - 1) == 8;
+
 //: `CV` is the SEAM's carve scalar, not a kernel axis: it names the one ruled
 //: carve so a caller that asks for the deleted one is refused rather than served
 //: something else.
@@ -114,20 +147,27 @@ static constexpr bool kCarves = carve_level<D, MO> >= 0;
 //: read: only the selected one is instantiated.
 template <int D, int B, int K, int M, int W, int C, uint32_t MO, bool STATE>
 static constexpr auto arm_fn() {
-  if constexpr (kCarves<D, MO>)
+  if constexpr (kFormB<D, B, K, M, MO>)
+    return &carry_write_kernel<D, B, K, M, W, C, D - 1, kFbReadSpan,
+                               declares(MO, D - 1, kModeWriteSparse),
+                               declares(MO, 0, kModeReadSparse), STATE>;
+  else if constexpr (kCarves<D, MO>)
     return &carry_kernel<D, B, K, M, W, C, carve_level<D, MO>, STATE>;
   else
     return &carry_split_kernel<D, B, K, M, W, C, STATE>;
 }
 
 template <int D, int B, int K, int M, int W, int C, uint32_t MO>
-static constexpr std::array<int64_t, 3> arm_geom() {
-  if constexpr (kCarves<D, MO>) {
+static constexpr std::array<int64_t, 4> arm_geom() {
+  if constexpr (kFormB<D, B, K, M, MO>) {
+    using G = WriteGeom<D, B, K, M, W, C>;
+    return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)kFbThreads};
+  } else if constexpr (kCarves<D, MO>) {
     using G = CarryGeom<D, B, K, M, W, C, carve_level<D, MO>>;
-    return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target};
+    return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)kThreads};
   } else {
     using G = SplitGeom<D, B, K, M, W, C>;
-    return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target};
+    return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)kThreads};
   }
 }
 
@@ -147,7 +187,8 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
     configured = true;
   }
   const dim3 grid((unsigned)BoxPlan<D, B, K, M>::kOwners, (unsigned)BH);
-  fn<<<grid, kThreads, sm, stream>>>(pr, pw, gw, v, rows, o, den, L, tok_words, v_row_bytes, s_in,
+  constexpr int nthreads = (int)arm_geom<D, B, K, M, W, C, MO>()[3];
+  fn<<<grid, nthreads, sm, stream>>>(pr, pw, gw, v, rows, o, den, L, tok_words, v_row_bytes, s_in,
                                      s_out);
   return cudaGetLastError();
 }
@@ -200,7 +241,9 @@ static torch::Tensor build_rows(const torch::Tensor& pr, const torch::Tensor& pw
 template <int D, int B, int K, int M, uint32_t MO>
 static torch::Tensor build_arm_rows(const torch::Tensor& pr, const torch::Tensor& pw, int BH,
                                     int L) {
-  if constexpr (kCarves<D, MO>)
+  if constexpr (kFormB<D, B, K, M, MO>)
+    return build_rows<FormBRowPlan<D, B, K, M, D - 1>>(pr, pw, BH, L);
+  else if constexpr (kCarves<D, MO>)
     return build_rows<CarveRowPlan<D, B, K, M, carve_level<D, MO>>>(pr, pw, BH, L);
   else
     return build_rows<OwnerRows<D, B, K, M>>(pr, pw, BH, L);

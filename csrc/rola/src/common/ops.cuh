@@ -160,6 +160,13 @@ __device__ __forceinline__ int lane_broadcast(int x, int src) {
   return __shfl_sync(0xFFFFFFFFu, x, src);
 }
 
+//: THE UNIT'S OR, IN ONE INSTRUCTION.  `redux.sync` is an sm_80 facility and this
+//: tree targets sm_80 and sm_86, so the whole-unit disjunction the write carve's
+//: tile-skip predicate needs costs one instruction rather than a shuffle ladder.
+__device__ __forceinline__ uint32_t lane_reduce_or(uint32_t x) {
+  return __reduce_or_sync(0xFFFFFFFFu, x);
+}
+
 // ----------------------------------------------------------------- operands
 
 using Frag = uint32_t[4];
