@@ -191,18 +191,19 @@ decode_step_kernel(DecodeParams p) {
   //: incidental: the table test and the pool claim read a page table the last-arriving
   //: LIVE segment folds into, so a retired segment must not be inside that window at all.
   //: docs/internals/decode/decode.md#retirement
-  __shared__ int s_live;
-  if (tid == 0) {
-    int most = 0;
+  //: EVERY THREAD DERIVES IT, rather than one thread publishing it: `s_units` is already
+  //: uniform and already published by `build_term_layout`'s own barrier, so a redundant
+  //: `D + 1` compares costs nothing while a shared word and a second barrier are a full
+  //: block synchronisation every CTA pays whether or not anything retires -- which the
+  //: dense cell, where nothing does, measured at ~1 %.
+  int most = 0;
 #pragma unroll
-    for (int t = 0; t <= D; ++t) {
-      if (s_units[t] > most) most = s_units[t];
-    }
-    const int want = ceil_div_int(most, kDecodeWarps);
-    s_live = want < 1 ? 1 : (want > p.n_split ? p.n_split : want);
+  for (int t = 0; t <= D; ++t) {
+    const int u = s_units[t];
+    if (u > most) most = u;
   }
-  __syncthreads();
-  const int n_live = s_live;
+  const int want = ceil_div_int(most, kDecodeWarps);
+  const int n_live = want < 1 ? 1 : (want > p.n_split ? p.n_split : want);
   if (seg >= n_live) return;
 
   const int inner_bits = p.lat_inner_bits;
