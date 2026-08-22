@@ -1,23 +1,28 @@
-// THE T=1 DECODE STEP -- ONE KERNEL: fold, factor, walk. Token-stationary,
-// state-streaming, lattice-walked. Owns the step kernel, its 16-way instantiation matrix
-// and the decode path's host entry.
+// THE T=1 DECODE STEP -- TWO KERNELS, ONE PER SIDE: the deposit pass walks the WRITE
+// product, the readout pass walks the READ product. Token-stationary, state-streaming,
+// lattice-walked. Owns both step kernels, their 24-way instantiation matrix and the
+// decode path's host entry.
 //
 // The ratified shape, literally: the token's routing weights and value are RESIDENT
 // (SMEM/registers), the STATE streams past, and the grid partitions the lattice's unit
 // rank space.
 //
-// Three facts a reader must not miss:
-//   1. There is one token, so the contraction index is the LEAF and the output index is
+// Four facts a reader must not miss:
+//   1. THE TWO PASSES ARE TWO LAUNCHES ON ONE STREAM, and the launch boundary IS the
+//      ordering the semantics need: UPDATE-THEN-READ survives because every deposit of
+//      the step has landed before any readout begins, not because a leaf is visited once.
+//      docs/internals/decode/decode.md#per-side-enumeration
+//   2. There is one token, so the contraction index is the LEAF and the output index is
 //      the COLUMN. Lanes map to OUTPUT COLUMNS: no MMA, and no warp reduction either --
 //      the dot never crosses a lane.
-//   2. DETERMINISM IS A SHIPPED PROPERTY HERE and it diverges from the prefill arm
+//   3. DETERMINISM IS A SHIPPED PROPERTY HERE and it diverges from the prefill arm
 //      ON PURPOSE: `y` is combined in SLOT ORDER, never by an `atomicAdd` race, because
 //      decode's `y` picks the next token and a last-bit flip compounds
-//      autoregressively. The state needs no argument at all -- the unit partition is a
-//      PARTITION over owners and no atomic touches `state`.
-//   3. THE PROLOGUE IS PER-CTA AND THAT IS THE DESIGN. Every split-K CTA folds and
-//      factors its own batch-head, so the factor tables never leave shared memory and
-//      the split partition costs no launch:
+//      autoregressively. The state needs no argument at all -- the write-unit partition
+//      is a PARTITION over write owners and no atomic touches `state`.
+//   4. THE PROLOGUE IS PER-CTA AND THAT IS THE DESIGN, and each pass folds ONLY ITS OWN
+//      SIDE: the deposit pass never reads the read levels, the readout pass never reads
+//      the write levels, the value or the dials.
 //      docs/internals/decode/decode.md#per-cta-prologue
 //
 // The GEMV/GEMM argument, the walk's cost accounting against `N`, the measured
@@ -64,14 +69,17 @@ __global__ void decode_stamp_kernel(int64_t* out) {
 
 }  // namespace stampdet
 
+//: THE DEPOSIT PASS. It walks the WRITE product alone -- `prod_l W_l` owner ranks times
+//: the outer run radix -- so a unit whose write digits are dead at every level is never
+//: enumerated rather than resolved and discarded. Its prologue folds the write levels,
+//: the value and the dials, and NOTHING of the read side.
 template <int DV, int D, bool DECAY>
 __global__ __launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY, D)) void
-decode_step_kernel(DecodeParams p) {
+decode_deposit_kernel(DecodeParams p) {
   //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a
   //: template axis and not a runtime test: docs/internals/decode/decode.md#template-axes
   constexpr int cols = DV + 1;
-  //: Columns per lane: `NC` fully coalesced 128 B transactions, and the lane's
-  //: accumulators are its own output columns.
+  //: Columns per lane: `NC` fully coalesced 128 B transactions.
   constexpr int NC = DV / 32;
 
   extern __shared__ char smem_raw[];
@@ -85,49 +93,33 @@ decode_step_kernel(DecodeParams p) {
   const int total_rows = p.total_rows;
 
   // ---- SMEM ledger ----------------------------------------------------------
-  //   sa_r, sa_w   [total_rows] fp32   both sides' amplitude rows, UNCOMPACTED and
-  //                                    indexed by DIGIT: the digit IS the index.
-  //   sd           [total_rows] fp32   this head's decay dials; DECAY only
-  //   v_tok        [DV]         fp32   the token's value, resident
-  //   fold  [warps][cols+3]     fp32   the cross-warp partials, bank-padded
-  //   mask_r,mask_w [mask_total] u32   one bit per digit, per side
-  //   olist  [2][olist_total]   i32    the union and write owner coordinates, per level
-  float* sa_r = reinterpret_cast<float*>(smem_raw);
-  float* sa_w = sa_r + total_rows;
+  //   sa_w   [total_rows] fp32   the write amplitudes, UNCOMPACTED and indexed by DIGIT
+  //   sd     [total_rows] fp32   this head's decay dials; DECAY only
+  //   v_tok  [DV]         fp32   the token's value, resident
+  //   mask_w [mask_total] u32    one bit per write digit
+  //   olist  [olist_total] i32   the write owner coordinates, per level
+  float* sa_w = reinterpret_cast<float*>(smem_raw);
   float* sd = sa_w + total_rows;
   float* v_tok = sd + (DECAY ? total_rows : 0);
-  float* fold = v_tok + DV;
-  uint32_t* mask_r = reinterpret_cast<uint32_t*>(fold + kDecodeWarps * (cols + 3));
-  uint32_t* mask_w = mask_r + p.mask_total;
+  uint32_t* mask_w = reinterpret_cast<uint32_t*>(v_tok + DV);
   int32_t* olist = reinterpret_cast<int32_t*>(mask_w + p.mask_total);
 
-  __shared__ float part[cols + 3];
-  __shared__ float s_sum[kMaxLevels];
   __shared__ typename LatticeScan::TempStorage scan_temp;
   __shared__ int s_running;
-  __shared__ int s_n_o[kLists * kMaxLevels];
-  __shared__ int s_bits[kLists * kMaxLevels];
-  __shared__ int s_shift[kLists * kMaxLevels];
-  __shared__ int s_units[kLists];
+  __shared__ int s_n_o[kMaxLevels];
+  __shared__ int s_bits[kMaxLevels];
+  __shared__ int s_shift[kMaxLevels];
+  __shared__ int s_units;
   __shared__ int s_last_cta;
 
-  // ---- THE FOLD: every per-token operand, widened and staged, by this CTA ------
-  //: TWO BARRIERS FOR THE WHOLE PROLOGUE. The read side's row sums are the only thing
-  //: anything downstream waits on, so they take the first; everything else -- both sides'
-  //: rows, the value, the dials -- is independent and shares the second.
+  // ---- THE FOLD: this pass's per-token operands, widened and staged, by this CTA ----
+  //: ONE BARRIER FOR THE WHOLE FOLD. The write side is never normalized, so it has no row
+  //: sums and nothing here waits on anything else here.
   //: docs/internals/decode/decode_fold.md
   if (p.levels_bf16) {
-    fold_row_sums<__nv_bfloat16>(p, b, h, p.read, p.normalize, s_sum);
+    fold_rows<__nv_bfloat16>(p, b, h, p.write, nullptr, nullptr, sa_w);
   } else {
-    fold_row_sums<float>(p, b, h, p.read, p.normalize, s_sum);
-  }
-  __syncthreads();
-  if (p.levels_bf16) {
-    fold_rows<__nv_bfloat16>(p, b, h, p.read, p.normalize, s_sum, sa_r);
-    fold_rows<__nv_bfloat16>(p, b, h, p.write, nullptr, s_sum, sa_w);
-  } else {
-    fold_rows<float>(p, b, h, p.read, p.normalize, s_sum, sa_r);
-    fold_rows<float>(p, b, h, p.write, nullptr, s_sum, sa_w);
+    fold_rows<float>(p, b, h, p.write, nullptr, nullptr, sa_w);
   }
   if (p.v_bf16) {
     fold_value<__nv_bfloat16>(p, b, h, DV, v_tok);
@@ -143,28 +135,23 @@ decode_step_kernel(DecodeParams p) {
     }
   }
 
-  //: The two per-token row scales. At `T = 1` there is no owner rectangle, so what
-  //: remains here is exactly the per-TOKEN part -- the side gains; the per-LEVEL factors
-  //: the tiled kernel hoists stay in the per-LEAF product.
+  //: The write side's per-token row scale. At `T = 1` there is no owner rectangle, so what
+  //: remains is exactly the per-TOKEN part -- the side gain.
   //: docs/internals/decode/decode.md#row-scales
-  const float sr = 1.0f;  // global fixes g_read := 1 (raw is dead)
   const float sw = p.g_bf16 ? fold_gain<__nv_bfloat16>(p, b, h) : fold_gain<float>(p, b, h);
   __syncthreads();
 
-  // ---- THE FACTOR TABLES ------------------------------------------------------
-  //: `sum_l B_l` bits and at most `sum_l g_l` entries: nothing in this prologue is sized
-  //: in the leaf space: docs/internals/decode/decode_lattice.md
-  build_digit_mask<D>(p, sa_r, mask_r);
+  // ---- THE FACTOR TABLES, WRITE SIDE ------------------------------------------
+  //: `B_l` bits and at most `g_l` entries per level: nothing in this prologue is sized in
+  //: the leaf space: docs/internals/decode/decode_lattice.md
   build_digit_mask<D>(p, sa_w, mask_w);
   __syncthreads();
-  build_owner_lists<D>(p, mask_r, mask_w, olist, s_n_o, s_bits, s_shift, s_units, scan_temp);
+  build_owner_list<D>(p, mask_w, olist, s_n_o, s_bits, s_shift, &s_units, scan_temp);
 
-  const int units = s_units[kListUnion];
+  const int units = s_units;
   const int inner_bits = p.lat_inner_bits;
-  const int32_t* wlist = olist + kListWrite * p.olist_total;
-  const int woff = kListWrite * kMaxLevels;
 
-  //: THE CANDIDATE ATOMS, enumerated from the same lattice product the walk uses, and a
+  //: THE CANDIDATE ATOMS, enumerated from the SAME write product this pass walks, and a
   //: PARTITION of the write side's atoms with no straddle case at all -- which is what the
   //: pool claim's canonical ranks need. A unit's leaves are a CONTIGUOUS ALIGNED run, so an
   //: atom and a unit nest one way or the other and the index says which: the low
@@ -182,19 +169,17 @@ decode_step_kernel(DecodeParams p) {
     int atom = -1;
     for (int q = 0; q < n_units; ++q) {
       const Unit<D> u =
-          resolve_unit<D, false>(p, mask_r, mask_w, sa_r, sa_w, sd, wlist, s_n_o + woff,
-                                 s_bits + woff, s_shift + woff, unit0 + q);
+          resolve_unit<D, false>(p, mask_w, sa_w, sd, olist, s_n_o, s_bits, s_shift, unit0 + q);
       if (!u.valid) return -1;
       if (atom < 0) atom = (u.base + (a << kAtomShift)) >> kAtomShift;
-      if (u.live_w && ((u.cw >> ((a << kAtomShift) & ((1 << inner_bits) - 1))) & win_mask) != 0u) {
+      if (u.live && ((u.c >> ((a << kAtomShift) & ((1 << inner_bits) - 1))) & win_mask) != 0u) {
         return atom;
       }
     }
     return -1;
   };
 
-  const int n_candidates = (s_units[kListWrite] >> p.lat_units_per_atom_shift)
-                           << p.atoms_per_unit_shift;
+  const int n_candidates = (units >> p.lat_units_per_atom_shift) << p.atoms_per_unit_shift;
 
   // ---- THE ADMISSION QUESTION, asked of the map this CTA already holds ---------
   //: Three outcomes PER BATCH-HEAD: advance, no-op, or re-read without depositing:
@@ -236,8 +221,8 @@ decode_step_kernel(DecodeParams p) {
         //: IT BUILDS A SHADOW TABLE ROW rather than writing the page table, and both
         //: halves of that are load-bearing. Not the table, because the table is the
         //: claim's own predicate and a prologue write would move a sibling CTA's ranks.
-        //: A WHOLE ROW -- every atom, claimed or resident or absent -- because then the
-        //: walk addresses through this row INSTEAD of the table, by one pointer, and the
+        //: A WHOLE ROW -- every atom, claimed or resident or absent -- because then this
+        //: pass addresses through this row INSTEAD of the table, by one pointer, and the
         //: walk's own body knows nothing about pools.
         //: docs/internals/decode/decode.md#the-claim
         int32_t* shadow_row = p.pool_map + row_base;
@@ -275,16 +260,12 @@ decode_step_kernel(DecodeParams p) {
   }
   __syncthreads();
 
-  //: A NEEDY BATCH-HEAD RUNS NOTHING: no walk, no `y`, no state, no counter beyond its
-  //: arrival -- which is what lets the step be enqueued before the admission it needs is
-  //: known, and what makes the caller's replay THE SAME STEP rather than a second one.
+  //: A NEEDY BATCH-HEAD DEPOSITS NOTHING and a DONE ONE DEPOSITS NOTHING EITHER -- the
+  //: first because the step it belongs to has not been admitted, the second because it
+  //: already deposited this step and the readout pass will still take its `y`:
   //: docs/internals/decode/decode.md#per-bh-verdict
-  if (!needy) {
-    float acc[NC];
-#pragma unroll
-    for (int q = 0; q < NC; ++q) acc[q] = 0.0f;
-    float acc_m = 0.0f;
-
+  //: docs/internals/decode/decode.md#done-flags
+  if (!needy && deposit) {
     //: THE PAGED BASE TRANSLATION, resolved ONCE PER TOUCHED ATOM. The table row is
     //: pinned here (a plain origin, no per-atom widening multiply); the cache is keyed on
     //: the atom VALUE, so it is correct whatever order the walk reaches leaves in.
@@ -292,8 +273,10 @@ decode_step_kernel(DecodeParams p) {
     //: `bh * N + (atom << 4)` (which is why a topology whose `N` is not a whole number of
     //: atoms still addresses correctly -- the two halves recombine to `bh * N + leaf`),
     //: paged is `slot << 4`. docs/internals/decode/decode.md#paged-address
-    //: A CLAIMING STEP WALKS THE SHADOW ROW, and that is the whole of the pool inside
-    //: the walk: one pointer, chosen once: docs/internals/decode/decode.md#the-claim
+    //: A CLAIMING STEP DEPOSITS THROUGH THE SHADOW ROW, and that is the whole of the pool
+    //: inside the walk: one pointer, chosen once. The readout pass needs no such choice,
+    //: because the claim has already folded into the table by then:
+    //: docs/internals/decode/decode.md#the-claim
     const int32_t* page_row =
         !paged ? nullptr
                : (claimed ? p.pool_map : p.page_tbl) + static_cast<int64_t>(bh) * p.atoms_per_bh;
@@ -302,171 +285,95 @@ decode_step_kernel(DecodeParams p) {
     int64_t atom_base = 0;
     bool atom_present = false;
 
-    // ---- THE WALK ---------------------------------------------------------------
-    //: THE UNIT IS THE (owner, outer-run) PAIR and the grid partitions ITS OWN index
-    //: space -- not the owner's -- so every touched leaf has exactly one owning CTA, warp
-    //: and lane and the state needs no atomic:
+    // ---- THE WRITE WALK ---------------------------------------------------------
+    //: THE UNIT IS THE (owner, outer-run) PAIR over the WRITE owner list, and the grid
+    //: partitions ITS OWN index space, so every deposited leaf has exactly one owning CTA,
+    //: warp and lane and the state needs no atomic:
     //: docs/internals/decode/decode.md#the-unit-partition
     //: A WARP TAKES A WHOLE UNIT, and a unit is the DRAM granule itself: under the
     //: mixed-radix order a unit's leaves are the innermost level's contiguous run, which at
-    //: the flagship spans is one 16-leaf ATOM. Owner-contiguity across units buys nothing
-    //: on top of that -- the sectors are already whole -- while partitioning at owner grain
-    //: would cap the walk's parallelism at the LIVE OWNER COUNT and give each warp the
-    //: whole `BC`-leaf box to walk serially. The CTA's warps take CONSECUTIVE units, so a
+    //: the flagship spans is one 16-leaf ATOM. The CTA's warps take CONSECUTIVE units, so a
     //: CTA still covers one contiguous stretch of the plane per pass.
     //: EVERY LEVEL BUT THE INNERMOST LEAVES THE SLOT LOOP AND THAT IS THE UNIT'S POINT:
     //: a unit fixes their digits, so their amplitude product is formed ONCE, in
     //: `resolve_unit`, and every slot below costs ONE innermost amplitude rather than `D`.
     for (int unit = seg * kDecodeWarps + warp; unit < units; unit += p.n_split * kDecodeWarps) {
-      {
-        const Unit<D> u = resolve_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd, olist, s_n_o,
-                                                 s_bits, s_shift, unit);
-        const uint32_t br = (u.valid && u.live_r) ? u.cr : 0u;
-        const uint32_t bw = (u.valid && u.live_w) ? u.cw : 0u;
-        uint32_t bits = br | bw;
+      const Unit<D> u =
+          resolve_unit<D, DECAY>(p, mask_w, sa_w, sd, olist, s_n_o, s_bits, s_shift, unit);
+      uint32_t bits = (u.valid && u.live) ? u.c : 0u;
 
-        //: THE SLOT LOOP IS THE INNERMOST LEVEL'S RUN, in ASCENDING lattice order -- the
-        //: unit's own contiguous run -- iterated over the UNION's set bits, so a dead
-        //: innermost digit costs one `__ffs` step and no address at all. Ascending is what
-        //: makes `cached_atom` the walk's only reuse and enough of it:
-        //: docs/internals/decode/decode.md#aligned-subranges
-        //: NO SPECULATIVE UNROLLING: the trip count is a runtime popcount, and an unrolled
-        //: body duplicates every live value of the walk's tightest scope.
+      //: THE SLOT LOOP IS THE INNERMOST LEVEL'S RUN, in ASCENDING lattice order -- the
+      //: unit's own contiguous run -- iterated over the write slice's set bits, so a dead
+      //: innermost digit costs one `__ffs` step and no address at all. Ascending is what
+      //: makes `cached_atom` the walk's only reuse and enough of it:
+      //: docs/internals/decode/decode.md#aligned-subranges
+      //: NO SPECULATIVE UNROLLING: the trip count is a runtime popcount, and an unrolled
+      //: body duplicates every live value of the walk's tightest scope.
 #pragma unroll 1
-        while (bits != 0u) {
-          const int t = __ffs(static_cast<int>(bits)) - 1;
-          bits &= bits - 1u;
-          const bool in_r = ((br >> t) & 1u) != 0u;
-          const bool in_w = ((bw >> t) & 1u) != 0u;
+      while (bits != 0u) {
+        const int t = __ffs(static_cast<int>(bits)) - 1;
+        bits &= bits - 1u;
 
-          const int off_last = u.dlast + t;
-          const float ar = u.ar * sa_r[off_last];
-          const float aw = u.aw * sa_w[off_last];
-          const float rate = DECAY ? u.rate * sd[off_last] : 1.0f;
+        const int off_last = u.dlast + t;
+        const float aw = u.a * sa_w[off_last];
+        const float rate = DECAY ? u.rate * sd[off_last] : 1.0f;
 
-          const int leaf = u.base + t;
-          const int atom = leaf >> kAtomShift;
-          if (atom != cached_atom) {
-            cached_atom = atom;
-            if (page_row != nullptr) {
-              const int slot = page_row[atom];
-              atom_present = slot >= 0;
-              atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
-            } else {
-              atom_present = true;
-              atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
-            }
-          }
-
-          //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the
-          //: plan admits the step's write set exactly, so an atom with no slot is outside
-          //: it, and a never-deposited leaf holds zeros in the dense backing too. The
-          //: self-normalizing readout then contributes exactly nothing through it.
-          //: docs/internals/decode/decode.md#absent-atom
-          float* row = atom_present ? (p.state + atom_base + (leaf & kAtomMask) * cols) : nullptr;
-          float sv[NC];
-#pragma unroll
-          for (int q = 0; q < NC; ++q) sv[q] = 0.0f;
-          float smass = 0.0f;
-          if (atom_present) {
-#pragma unroll
-            for (int q = 0; q < NC; ++q) sv[q] = row[lane + 32 * q];
-            if (lane == 0) smass = row[DV];
-          }
-
-          //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS,
-          //: not an optimization: survival is INCLUSIVE at `j = t`, so the whole causal
-          //: intra Gram collapses into reading the row after it is written. A row in
-          //: `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression is
-          //: its readout too -- one path, no arm.
-          //: A DONE BATCH-HEAD TAKES THE READ AND NOT THE DEPOSIT, and reproduces its `y`
-          //: BIT FOR BIT while doing so: docs/internals/decode/decode.md#done-flags
-          //: HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
-          if (in_w && atom_present && deposit) {
-            //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT
-            //: SPLIT: at `T = 1` the tiled kernel's rule-1 half-mass shift is exactly the
-            //: identity, so ONE `expf` replaces its three. `log1pf` IS the composition
-            //: (never a rounded `1 - rate`) and there is no epsilon floor -- both of that
-            //: rule's rule 2's prohibitions: docs/internals/decode/decode.md#decay-at-read
-            float keep = 1.0f;
-            if (DECAY) {
-              //: THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is
-              //: what makes "stored != 0 => live != 0" an identity:
-              //: docs/internals/decode/decode.md#detached-clock
-              keep = expf(fminf(aw * log1pf(-rate), kDecodeMaxExponent));
-            }
-            const float wv = aw * sw;
-#pragma unroll
-            for (int q = 0; q < NC; ++q) {
-              sv[q] = keep * sv[q] + wv * v_tok[lane + 32 * q];
-              row[lane + 32 * q] = sv[q];
-            }
-            //: The mass column is the `v := 1` column of the identical recurrence.
-            if (lane == 0) {
-              smass = keep * smass + wv;
-              row[DV] = smass;
-            }
-          }
-          if (in_r) {
-#pragma unroll
-            for (int q = 0; q < NC; ++q) acc[q] += ar * sv[q];
-            if (lane == 0) acc_m += ar * smass;
+        const int leaf = u.base + t;
+        const int atom = leaf >> kAtomShift;
+        if (atom != cached_atom) {
+          cached_atom = atom;
+          if (page_row != nullptr) {
+            const int slot = page_row[atom];
+            atom_present = slot >= 0;
+            atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
+          } else {
+            atom_present = true;
+            atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
           }
         }
-      }
-    }
 
-    // ---- the 8-way cross-warp fold, in FIXED warp order ------------------------
-    //: HAZARD fold-bank-padding -- docs/internals/decode/decode.md#fold-bank-padding
-    const int fold_pitch = cols + 3;
+        //: AN ABSENT ATOM IS NOT WRITTEN. Exact, not defensive: the plan admits the step's
+        //: write set exactly, so an atom with no slot is outside it, and the readout pass
+        //: reads a never-deposited leaf as the zeros the dense backing holds there too.
+        //: docs/internals/decode/decode.md#absent-atom
+        if (!atom_present) continue;
+
+        float* row = p.state + atom_base + (leaf & kAtomMask) * cols;
+        float sv[NC];
 #pragma unroll
-    for (int q = 0; q < NC; ++q) fold[warp * fold_pitch + lane + 32 * q] = acc[q];
-    if (lane == 0) fold[warp * fold_pitch + DV] = acc_m;
-    __syncthreads();
-    if (tid < cols) {
-      float t = 0.0f;
+        for (int q = 0; q < NC; ++q) sv[q] = row[lane + 32 * q];
+
+        //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT SPLIT:
+        //: at `T = 1` the tiled kernel's rule-1 half-mass shift is exactly the identity,
+        //: so ONE `expf` replaces its three. `log1pf` IS the composition (never a rounded
+        //: `1 - rate`) and there is no epsilon floor -- both of that rule's rule 2's
+        //: prohibitions: docs/internals/decode/decode.md#decay-at-read
+        float keep = 1.0f;
+        if (DECAY) {
+          //: THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is
+          //: what makes "stored != 0 => live != 0" an identity:
+          //: docs/internals/decode/decode.md#detached-clock
+          keep = expf(fminf(aw * log1pf(-rate), kDecodeMaxExponent));
+        }
+        const float wv = aw * sw;
 #pragma unroll
-      for (int wq = 0; wq < kDecodeWarps; ++wq) t += fold[wq * fold_pitch + tid];
-      part[tid] = sr * t;  // sr == 1 under global; kept as the one scale site
-    }
-    __syncthreads();
-
-    // ---- the deterministic split-K combine, and the fused divide ---------------
-    if (p.n_split > 1) {
-      float* slot = p.ws + (static_cast<int64_t>(bh) * p.n_split + seg) * cols;
-      if (tid < cols) slot[tid] = part[tid];
-      __threadfence();
-      __syncthreads();
-      if (tid == 0) {
-        s_last_cta = (atomicAdd(&p.ctr[bh], 1) == p.n_split - 1) ? 1 : 0;
+        for (int q = 0; q < NC; ++q) {
+          sv[q] = keep * sv[q] + wv * v_tok[lane + 32 * q];
+          row[lane + 32 * q] = sv[q];
+        }
+        //: The mass column is the `v := 1` column of the identical recurrence.
+        if (lane == 0) row[DV] = keep * row[DV] + wv;
       }
-      __syncthreads();
-      if (s_last_cta == 0) return;
+    }
+  }
 
-      //: SLOT ORDER, always -- the whole determinism argument. `__ldcg` bypasses L1 so
-      //: the reader sees the stores the `__threadfence` above made visible.
-      //: HAZARD slot-order -- docs/internals/decode/decode.md#slot-order
-      if (tid < cols) {
-        const float* base = p.ws + static_cast<int64_t>(bh) * p.n_split * cols;
-        float t = 0.0f;
-        for (int s = 0; s < p.n_split; ++s)
-          t += __ldcg(base + static_cast<int64_t>(s) * cols + tid);
-        part[tid] = t;
-      }
-      __syncthreads();
-      //: Reset for the next step: no `memset` launch between two decode steps, and the
-      //: counter is safe to capture in a CUDA graph.
-      if (tid == 0) p.ctr[bh] = 0;
-    }
-    if (tid < DV) {
-      const float den = part[DV];
-      p.y[static_cast<int64_t>(bh) * DV + tid] = part[tid] / (den + p.eps);
-    }
-  } else if (p.n_split > 1) {
-    //: A needy batch-head's CTAs ARRIVE ANYWAY. The arrival is what elects one CTA to
-    //: publish the verdict below, and electing it from the same counter the combine uses
-    //: is what makes "no CTA of this batch-head is still reading" the SAME argument in
-    //: both branches: docs/internals/decode/decode.md#the-last-arriver
+  if (!paged) return;
+
+  //: EVERY CTA OF A PAGED BATCH-HEAD ARRIVES, needy or not, done or not. The arrival is
+  //: what elects one CTA to publish the verdict below, and the counter it elects from is
+  //: the readout pass's combine counter -- reset here, before that pass runs:
+  //: docs/internals/decode/decode.md#the-last-arriver
+  if (p.n_split > 1) {
     __threadfence();
     __syncthreads();
     if (tid == 0) {
@@ -477,8 +384,6 @@ decode_step_kernel(DecodeParams p) {
     if (tid == 0) p.ctr[bh] = 0;
   }
 
-  if (!paged) return;
-
   // ---- the per-batch-head publication, by its LAST-ARRIVING CTA ---------------
   //: EVERY MUTATION A SIBLING CTA COULD HAVE READ HAPPENS HERE AND NOWHERE ELSE, which
   //: is why it is safe: docs/internals/decode/decode.md#the-last-arriver
@@ -488,6 +393,8 @@ decode_step_kernel(DecodeParams p) {
     //: nor re-derived from the write-support enumeration. Both of those keep values alive
     //: through the loop the register budget is tight in, and both were measured to spill:
     //: docs/internals/decode/decode.md#declared-residency
+    //: IT ALSO MAKES THE TABLE THE READOUT PASS'S ONLY MAP: after this fold the page table
+    //: holds exactly what the shadow row held, so that pass carries no pool pointer.
     const int64_t row_base = static_cast<int64_t>(bh) * p.atoms_per_bh;
     int32_t* page_row = p.page_tbl + row_base;
     const int32_t* pool_row = p.pool_map + row_base;
@@ -533,41 +440,231 @@ decode_step_kernel(DecodeParams p) {
   }
 }
 
+//: THE READOUT PASS. It walks the READ product alone -- `prod_l R_l` owner ranks times the
+//: outer run radix -- and reads rows the deposit pass has already finished writing, which
+//: is UPDATE-THEN-READ enforced by launch order rather than by one visit per leaf. It has
+//: NO DECAY ARM: decay applies at the deposit and nowhere else, so this pass carries no
+//: dials, no clock and no exponential.
+template <int DV, int D>
+__global__ __launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(false, D)) void
+decode_readout_kernel(DecodeParams p) {
+  constexpr int cols = DV + 1;
+  constexpr int NC = DV / 32;
+
+  extern __shared__ char smem_raw[];
+  const int tid = threadIdx.x;
+  const int lane = tid & 31;
+  const int warp = tid >> 5;
+  const int seg = blockIdx.x;
+  const int bh = blockIdx.y;
+  const int b = bh / p.H;
+  const int h = bh - b * p.H;
+
+  //: A NEEDY BATCH-HEAD RUNS NOTHING: no walk, no `y`, no counter -- which is what lets
+  //: the step be enqueued before the admission it needs is known, and what makes the
+  //: caller's replay THE SAME STEP rather than a second one. The verdict is READ rather
+  //: than recomputed: the deposit pass published it and this launch is ordered after it.
+  //: docs/internals/decode/decode.md#per-bh-verdict
+  if (p.page_tbl != nullptr && p.growth[bh] != 0) return;
+
+  // ---- SMEM ledger ----------------------------------------------------------
+  //   sa_r   [total_rows] fp32    the read amplitudes, UNCOMPACTED and indexed by DIGIT
+  //   fold   [warps][cols+3] fp32 the cross-warp partials, bank-padded
+  //   mask_r [mask_total] u32     one bit per read digit
+  //   olist  [olist_total] i32    the read owner coordinates, per level
+  float* sa_r = reinterpret_cast<float*>(smem_raw);
+  float* fold = sa_r + p.total_rows;
+  uint32_t* mask_r = reinterpret_cast<uint32_t*>(fold + kDecodeWarps * (cols + 3));
+  int32_t* olist = reinterpret_cast<int32_t*>(mask_r + p.mask_total);
+
+  __shared__ float part[cols + 3];
+  __shared__ float s_sum[kMaxLevels];
+  __shared__ typename LatticeScan::TempStorage scan_temp;
+  __shared__ int s_n_o[kMaxLevels];
+  __shared__ int s_bits[kMaxLevels];
+  __shared__ int s_shift[kMaxLevels];
+  __shared__ int s_units;
+  __shared__ int s_last_cta;
+
+  // ---- THE FOLD, READ SIDE ONLY ----------------------------------------------
+  //: The row sums are the only thing the rows wait on, so they take the first barrier and
+  //: the rows the second: docs/internals/decode/decode_fold.md
+  if (p.levels_bf16) {
+    fold_row_sums<__nv_bfloat16>(p, b, h, p.read, p.normalize, s_sum);
+  } else {
+    fold_row_sums<float>(p, b, h, p.read, p.normalize, s_sum);
+  }
+  __syncthreads();
+  if (p.levels_bf16) {
+    fold_rows<__nv_bfloat16>(p, b, h, p.read, p.normalize, s_sum, sa_r);
+  } else {
+    fold_rows<float>(p, b, h, p.read, p.normalize, s_sum, sa_r);
+  }
+  //: The read side's per-token row scale. The global arm fixes `g_read := 1` (raw is
+  //: dead), so it is a constant and the one site it is applied at is the fold below:
+  //: docs/internals/decode/decode.md#row-scales
+  const float sr = 1.0f;
+  __syncthreads();
+
+  build_digit_mask<D>(p, sa_r, mask_r);
+  __syncthreads();
+  build_owner_list<D>(p, mask_r, olist, s_n_o, s_bits, s_shift, &s_units, scan_temp);
+
+  const int units = s_units;
+
+  float acc[NC];
+#pragma unroll
+  for (int q = 0; q < NC; ++q) acc[q] = 0.0f;
+  float acc_m = 0.0f;
+
+  //: THE TABLE, not a shadow row: a claiming step folded its claim into the page table
+  //: before this launch, so there is one map here and no pool pointer:
+  //: docs/internals/decode/decode.md#the-claim
+  const int32_t* page_row =
+      p.page_tbl == nullptr ? nullptr : p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
+  const int64_t dense_bh_base = static_cast<int64_t>(bh) * p.N;
+  int cached_atom = -1;
+  int64_t atom_base = 0;
+  bool atom_present = false;
+
+  // ---- THE READ WALK ----------------------------------------------------------
+  //: The unit and the grid partition are the deposit pass's, over the READ owner list:
+  //: docs/internals/decode/decode.md#the-unit-partition
+  for (int unit = seg * kDecodeWarps + warp; unit < units; unit += p.n_split * kDecodeWarps) {
+    const Unit<D> u =
+        resolve_unit<D, false>(p, mask_r, sa_r, nullptr, olist, s_n_o, s_bits, s_shift, unit);
+    uint32_t bits = (u.valid && u.live) ? u.c : 0u;
+
+#pragma unroll 1
+    while (bits != 0u) {
+      const int t = __ffs(static_cast<int>(bits)) - 1;
+      bits &= bits - 1u;
+
+      const float ar = u.a * sa_r[u.dlast + t];
+
+      const int leaf = u.base + t;
+      const int atom = leaf >> kAtomShift;
+      if (atom != cached_atom) {
+        cached_atom = atom;
+        if (page_row != nullptr) {
+          const int slot = page_row[atom];
+          atom_present = slot >= 0;
+          atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
+        } else {
+          atom_present = true;
+          atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
+        }
+      }
+
+      //: AN ABSENT ATOM READS AS ZEROS, so it is SKIPPED: the plan admits the step's write
+      //: set exactly, an atom with no slot is outside it, and the self-normalizing readout
+      //: contributes exactly nothing through it.
+      //: docs/internals/decode/decode.md#absent-atom
+      if (!atom_present) continue;
+
+      const float* row = p.state + atom_base + (leaf & kAtomMask) * cols;
+#pragma unroll
+      for (int q = 0; q < NC; ++q) acc[q] += ar * row[lane + 32 * q];
+      if (lane == 0) acc_m += ar * row[DV];
+    }
+  }
+
+  // ---- the 8-way cross-warp fold, in FIXED warp order ------------------------
+  //: HAZARD fold-bank-padding -- docs/internals/decode/decode.md#fold-bank-padding
+  const int fold_pitch = cols + 3;
+#pragma unroll
+  for (int q = 0; q < NC; ++q) fold[warp * fold_pitch + lane + 32 * q] = acc[q];
+  if (lane == 0) fold[warp * fold_pitch + DV] = acc_m;
+  __syncthreads();
+  if (tid < cols) {
+    float t = 0.0f;
+#pragma unroll
+    for (int wq = 0; wq < kDecodeWarps; ++wq) t += fold[wq * fold_pitch + tid];
+    part[tid] = sr * t;  // sr == 1 under global; kept as the one scale site
+  }
+  __syncthreads();
+
+  // ---- the deterministic split-K combine, and the fused divide ---------------
+  if (p.n_split > 1) {
+    float* slot = p.ws + (static_cast<int64_t>(bh) * p.n_split + seg) * cols;
+    if (tid < cols) slot[tid] = part[tid];
+    __threadfence();
+    __syncthreads();
+    if (tid == 0) {
+      s_last_cta = (atomicAdd(&p.ctr[bh], 1) == p.n_split - 1) ? 1 : 0;
+    }
+    __syncthreads();
+    if (s_last_cta == 0) return;
+
+    //: SLOT ORDER, always -- the whole determinism argument. `__ldcg` bypasses L1 so
+    //: the reader sees the stores the `__threadfence` above made visible.
+    //: HAZARD slot-order -- docs/internals/decode/decode.md#slot-order
+    if (tid < cols) {
+      const float* base = p.ws + static_cast<int64_t>(bh) * p.n_split * cols;
+      float t = 0.0f;
+      for (int s = 0; s < p.n_split; ++s) t += __ldcg(base + static_cast<int64_t>(s) * cols + tid);
+      part[tid] = t;
+    }
+    __syncthreads();
+    //: Reset for the next step: no `memset` launch between two decode steps, and the
+    //: counter is safe to capture in a CUDA graph.
+    if (tid == 0) p.ctr[bh] = 0;
+  }
+  if (tid < DV) {
+    const float den = part[DV];
+    p.y[static_cast<int64_t>(bh) * DV + tid] = part[tid] / (den + p.eps);
+  }
+}
+
 }  // namespace detail
 
-size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int olist_total) {
-  const size_t amps = static_cast<size_t>(total_rows) * (decay ? 3 : 2);
+size_t decode_deposit_smem_bytes(int total_rows, int d_v, bool decay, int mask_total,
+                                 int olist_total) {
+  const size_t amps = static_cast<size_t>(total_rows) * (decay ? 2 : 1);
+  const size_t tables = static_cast<size_t>(mask_total) + static_cast<size_t>(olist_total);
+  return (amps + static_cast<size_t>(d_v) + tables) * sizeof(float);
+}
+
+size_t decode_readout_smem_bytes(int total_rows, int cols, int mask_total, int olist_total) {
   const size_t fold = static_cast<size_t>(kDecodeWarps) * (cols + 3);
-  const size_t tables = 2 * static_cast<size_t>(mask_total) + 2 * static_cast<size_t>(olist_total);
-  return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
+  const size_t tables = static_cast<size_t>(mask_total) + static_cast<size_t>(olist_total);
+  return (static_cast<size_t>(total_rows) + fold + tables) * sizeof(float);
 }
 
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget) {
-  //: The instantiation matrix is `DV(2) x D(4) x DECAY(2) = 16`. What is NOT an axis --
-  //: `BT`, `BC`, the lattice's `(k, m)` and every operand's storage type -- is the
-  //: interesting part: docs/internals/decode/decode.md#instantiation-matrix
+  //: The instantiation matrix is `DV(2) x D(4) x DECAY(2)` deposits plus `DV(2) x D(4)`
+  //: readouts = 24. What is NOT an axis -- `BT`, `BC`, the lattice's `(k, m)` and every
+  //: operand's storage type -- is the interesting part:
+  //: docs/internals/decode/decode.md#instantiation-matrix
   TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
   const int cols = d_v + 1;
-  const size_t smem =
-      decode_step_smem_bytes(p.total_rows, d_v, cols, decay, p.mask_total, p.olist_total);
+  const size_t smem_w =
+      decode_deposit_smem_bytes(p.total_rows, d_v, decay, p.mask_total, p.olist_total);
+  const size_t smem_r = decode_readout_smem_bytes(p.total_rows, cols, p.mask_total, p.olist_total);
+  const size_t smem = smem_w > smem_r ? smem_w : smem_r;
   TORCH_CHECK(static_cast<int64_t>(smem) <= smem_budget, "the decode step's staged operands need ",
               smem, " B of shared memory against a per-block budget of ", smem_budget,
               " B; sum_l width_l = ", p.total_rows,
               ". This is a declared capacity, refused loudly rather than taken as a "
               "slower path.");
   auto stream = at::cuda::getCurrentCUDAStream();
-  //: THE LAUNCH IS WRITTEN ONCE. Each axis walker hands its value back as an
-  //: `integral_constant`, so the three `::value`s below are template arguments and
-  //: the `<<<...>>>` configuration cannot drift between arms:
+  //: THE TWO LAUNCHES ARE THE PASSES' ORDERING, and they go on ONE stream in this order:
+  //: every deposit of the step is visible to every readout of it, which is the whole of
+  //: UPDATE-THEN-READ once a leaf may be visited by both products:
+  //: docs/internals/decode/decode.md#per-side-enumeration
+  //: EACH LAUNCH IS WRITTEN ONCE. Each axis walker hands its value back as an
+  //: `integral_constant`, so the `::value`s below are template arguments and the
+  //: `<<<...>>>` configuration cannot drift between arms:
   //: docs/internals/dispatch_switch.md#one-launch
   int_switch<32, 64>(d_v, "decode d_v", [&](auto DV) {
-    bool_switch(decay, [&](auto DECAY) {
-      int_switch<1, 2, 3, 4>(p.D, "D", [&](auto LEVELS) {
-        detail::decode_step_kernel<decltype(DV)::value, decltype(LEVELS)::value,
-                                   decltype(DECAY)::value>
-            <<<dim3(p.n_split, p.BH), kDecodeThreads, smem, stream>>>(p);
+    int_switch<1, 2, 3, 4>(p.D, "D", [&](auto LEVELS) {
+      bool_switch(decay, [&](auto DECAY) {
+        detail::decode_deposit_kernel<decltype(DV)::value, decltype(LEVELS)::value,
+                                      decltype(DECAY)::value>
+            <<<dim3(p.n_split, p.BH), kDecodeThreads, smem_w, stream>>>(p);
       });
+      detail::decode_readout_kernel<decltype(DV)::value, decltype(LEVELS)::value>
+          <<<dim3(p.n_split, p.BH), kDecodeThreads, smem_r, stream>>>(p);
     });
   });
   C10_CUDA_KERNEL_LAUNCH_CHECK();
