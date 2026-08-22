@@ -65,38 +65,62 @@ Per-side lists make activity airtight: a side's simplex weights are strictly pos
 its own support, so a listed entry is live for that side by construction. There is no
 union-superset padding logic anywhere in this file, by design.
 
-The ROWS ARE VOTED AT THE CARVE GRAIN. The innermost level's owner run is split into
+The ROWS ARE VOTED AT THE CARVE GRAIN. The carve level's owner run is split into
 `kWarps` digit groups (`BoxPlan::carve_s`, `CarveRows`), so that level emits `kWarps`
-times the rows and an owner-grain word is the OR of a group's four. Nothing in the facts
-kernel changes: the carve rows are the same `chunk_facts_tables` pass instantiated at the
-finer spans. The READ side takes the four rows as four ballots — one per digit group, and
-therefore one per warp — and the WRITE side ORs them back into the owner's own clause,
-which is the only place either side pays for the refinement (three loads and three ORs
-per scan word). The table grows from 48 to 96 rows per side at the flagship, and the
-facts pass by 6% of itself (0.496 → 0.527 ms at `L = 65536`), against a `Σ_l B/s_l` shape
-that still does not grow with `N`.
+times the rows and an owner-grain word is the OR of a group's `kWarps`. Nothing in the
+facts kernel changes: the carve rows are the same `chunk_facts_tables` pass instantiated
+at the finer spans. The READ side takes the rows as `kWarps` ballots — one per digit
+group, and therefore one per warp — and the WRITE side ORs them back into the owner's
+own clause. The table grows from 48 to 96 rows per side at the flagship, and the facts
+pass by 6% of itself (0.496 → 0.527 ms at `L = 65536`), against a `Σ_l B/s_l` shape that
+still does not grow with `N`.
 
-The compaction that turns the votes into those lists costs TWO rendezvous per window and
-no serial section, and it emits `kWarps` READ lists plus ONE write list. A warp's 32
-tokens are one ballot word, so each warp holds its whole window's ballots — four per word
-now, one per group — in registers and publishes packed live-count words per (scan
-iteration, word): two words carrying the four read counts as 16-bit halves, and one
-carrying the write count. The FIRST barrier publishes those counts; every thread then
-re-derives the CTA-wide exclusive prefixes from them IN REGISTERS, because the running
-totals are CTA-uniform and a shared round trip buys nothing. The SECOND barrier publishes
-the lists themselves, and it doubles as the separation between this window's count reads
-and the next window's count writes — which is why it precedes the whole-window skip
-rather than following it.
+<a id="the-schedule-has-no-barrier"></a>
+### The schedule is ONE BALLOT WORD PER LANE, and it has no barrier
+
+A window is `LW = W/32` ballot words, and a lockstep unit has 32 lanes, so GIVE EACH
+LANE ONE WORD. A row then costs ONE `LDG.32` per warp, which is cheap enough that every
+warp can afford to hold BOTH SIDES' owner-grain ballots — and once it does, the whole
+schedule is a warp-private computation of CTA-IDENTICAL inputs and the warps agree by
+construction rather than by publication:
+
+* the WHOLE-WINDOW SKIP is `lane_ballot(read-live | write-live) == 0`, CTA-uniform with
+  no barrier and no shared word;
+* a warp's READ list comes from its own group row and never leaves the warp; its count
+  stays in a register;
+* the WRITE list is one list with `kWarps` WRITERS. Every warp folds every write entry,
+  so the list is shared — and because every warp holds the same ballot, each takes a
+  fixed slice of every word's BITS (`32/kWarps` of them) and derives its own offsets
+  from the same lane prefix. It is therefore built BALANCED AT ANY DISTRIBUTION, with no
+  CTA prefix, no serial section and no warp carrying it alone; the window line is what
+  publishes it, and the write count is a lane reduction of a word each warp already has.
+
+What that replaces is a per-WORD walk — `LW` popcounts, `LW` prefix adds and `LW`
+predicated stores per list — plus a CTA-wide packed-count exchange across two
+rendezvous. The trip count of the scatter is now the window's LIVENESS rather than its
+width, which is the property the design needs and the property a dead-word skip could
+not deliver.
+
+THE ROWS ARE NOT STAGED COOPERATIVELY, and the reason is the barrier and not the load.
+Staging the window's row-words through shared memory once per CTA is the obvious
+economy — it takes the per-warp load count from `2*(kOuter + kWarps)` to about one — but
+it forces a barrier between the stage and the walk, and every warp waits at it for the
+slowest global load with nothing to overlap: measured 0.53 → 1.50 barrier stall per
+issue at the scattered cell and 0.46 → 5.00 at the clustered one, against a load term
+worth 7% (`rola-scratch/prototypes/k31_listprobe/FINDINGS.md`, A1 vs A2). One `LDG.32`
+per row per warp is what makes the walk barrier-free, and that is worth more than the
+loads it duplicates.
 
 A token appears in the group lists its innermost live digits fall in — one of them at
 93.2% of read entries at the graded cell, two at the rest — and the several partials of a
-multi-group entry meet in the global RED, which is associative. The union of the four
-lists is the single list the owner-grain vote would have produced, EXACTLY, because the
-owner row is the OR of the group rows.
+multi-group entry meet in the global RED, which is associative. The union of the
+`kWarps` lists is the single list the owner-grain vote would have produced, EXACTLY,
+because the owner row is the OR of the group rows.
 
 The tail of a partial window is a WORD mask rather than a per-lane ballot, and the word
 index is clamped to the row buffer's last word: a past-the-end word is read in range and
-masked to zero, which keeps the lockstep unit converged without a branch.
+masked to zero, which keeps the lockstep unit converged without a branch. A lane past
+the window's last word reads word zero and is emptied by the same mask.
 
 The list ORDER is part of the contract, not an accident of the implementation: entries
 are ascending in token position, which is what makes a batch a contiguous token range
@@ -137,6 +161,28 @@ instructions once per kernel and nothing in any loop.
 
 `CV` survives on the SEAM — the dispatch's `carve` scalar — so a caller asking for a
 carve this kernel does not build is refused rather than silently served another one.
+
+## Two bodies, and the DECLARATION chooses between them
+
+The carry family has TWO kernels and the per-level MODE DECLARATION selects one of them
+at compile time (K33 law 3; `csrc/rola/src/carry/carry.cu`'s `carve_level`). This file
+holds the LEAF CARVE, for a declaration that marks a level read-sparse;
+[`carry_split_kernel.md`](carry_split_kernel.md) holds the CHANNEL-SPLIT body, for one
+that does not. Neither is a fallback for the other: the axis is resolved at the seam and
+never appears at run time, so a dense declaration runs a kernel with no carve in it at
+all rather than a carved kernel with the carve turned off.
+
+The CARVE LEVEL is a template parameter `CL`, threaded through `BoxPlan::carve_s`,
+`CarveRows`, `CarveMap`, `CarryGeom` and the kernel, and named by the declaration rather
+than by this file. `carve_level<D, MODES>` is the innermost level the declaration marks
+read-sparse, or `-1` for the channel-split body; `CarveMap`'s private leaf order is exact
+only while that level is the innermost one, so a declaration naming an outer level is
+served the channel-split body — correct, and stated rather than silently carved at a
+level nothing declared.
+
+The seam's rule for an unbuilt declaration is DENSE_BOTH, which is always correct and
+only ever slower. The TOPOLOGY is never degraded: an unbuilt `(D, B, k, m, W, C)` is
+refused outright.
 
 ## The state source is one seam
 
@@ -192,7 +238,11 @@ ranges disjoint, so in the other order that memory edge pins every produce instr
 ahead of the HMMAs even with the branch gone. In this order the produce's amplitude
 `LDG` hoist above the MMA and its expansion arithmetic fills the tensor pipe's shadows.
 
-## The barriers, and why the read phase has none
+## The barriers: the window line, and nothing else outside the fold
+
+THE SCHEDULE HAS NO BARRIER AT ALL (above), so the window line is the only CTA
+rendezvous outside phase 2's per-batch one, and a window the owner is dead in costs zero
+barriers.
 
 The READ PHASE SHARES NOTHING. The list, the panel region, the staging block and the
 fan-in are the warp's own, so the four warps run their own batch counts to the window
@@ -205,7 +255,13 @@ The WINDOW LINE keeps its barrier, and it is the one place run-ahead stops. It i
 required, not decorative: without it a warp that finished its reads early would begin
 staging the next window's V into ring slots another warp is still folding from, and the
 per-window barrier sequence would stop being CTA-uniform. Coherence costs latency, not
-work — the barrier is where that is paid.
+work — the barrier is where that is paid, and it is where a COHERENT window's cost
+appears: the carve gives a warp one digit group for the whole kernel, so a window whose
+live support falls in one group is drained by one warp while the others reach the line
+and wait. That is a property of REGISTER-resident state (the slice is a register set, so
+only its owner can drain it) and not of the schedule; the measurement, and what an
+addressable state costs to fix it, are in
+`rola-scratch/prototypes/k31_formb_build/FINDINGS.md`.
 
 Phase 2 is unchanged: `BAR_D`, `[stage V slot f; fold(i) reads V slot i and P(i)]`,
 `[produce → P(i+1)]`, one rendezvous per write batch.
@@ -219,7 +275,7 @@ Phase 2 is unchanged: `BAR_D`, `[stage V slot f; fold(i) reads V slot i and P(i)
 | pre-loop produce → fold(0), produce(i+1) → fold(i+1) | `BAR_D(i+1)` |
 | the V ring's `cp.async` group → fold(i) reads the slot | `BAR_D(i)`, after the per-thread wait |
 | fold(i-1) reads V slot → `stage_batch` rewrites it | `BAR_D(i)` |
-| the window's list writes → the previous window's list reads | the scan's second rendezvous |
+| the window's list writes → the previous window's list reads | the WINDOW-LINE rendezvous of the previous window |
 
 The mass channel is a channel like any other under this carve: the warp holds its own
 leaves' mass partial, stages it in its own region's mass column and REDs it to `den`
