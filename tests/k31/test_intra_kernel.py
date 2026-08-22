@@ -212,9 +212,12 @@ def test_the_certificate_the_kernel_gates_on_is_the_word_it_was_handed():
 
 def test_the_binary_under_test_is_this_tree():
     """A device-side fact: the loaded fatbin's own view of its shared-memory
-    footprint and CTA width. Path and hash checks cannot catch a stale extension.
+    footprint, CTA width and launch-ABI width. Path and hash checks cannot catch a
+    stale extension.
 
     The footprint is past the 48 KB static ceiling and the arm runs on opted-in
-    dynamic shared memory, so the band runs to sm_86's 99 KB opt-in limit."""
-    stamp = build_stamp()
-    assert stamp % 1000003 == 256 and 16384 < stamp // 1000003 <= 101376
+    dynamic shared memory, so the band runs to sm_86's 99 KB opt-in limit. The ABI
+    width moves with the kernel's operand set, which a shape-only stamp cannot see."""
+    shape, params = divmod(build_stamp(), 1009)
+    assert params == 88, f"the intra launch ABI is {params} bytes wide, not 88"
+    assert shape % 1000003 == 256 and 16384 < shape // 1000003 <= 101376

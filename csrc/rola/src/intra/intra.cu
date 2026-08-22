@@ -19,11 +19,14 @@ namespace stampdet {
 //: reading a fact only the loaded binary can produce.
 __device__ int64_t g_stamp_probe;
 
-//: THE HEAVIEST BUILT ARM's footprint: it moves whenever any arm's shape does,
-//: which is what makes it a fact only THIS binary can produce.
+//: THE HEAVIEST BUILT ARM's footprint and the launch ABI's own width: the pair
+//: moves whenever any arm's shape or the kernel's operand set does, which is what
+//: makes it a fact only THIS binary can produce.
 __global__ void stamp_kernel(int64_t* out) {
-  *out = (int64_t)(sizeof(detail::IntraSmem<2, kWidthFlat, kWindowWide>)) * 1000003
-         + (int64_t)detail::threads_of(kWindowWide);
+  *out = ((int64_t)(sizeof(detail::IntraSmem<2, kWidthFlat, kWindowWide>)) * 1000003
+          + (int64_t)detail::threads_of(kWindowWide))
+             * 1009
+         + (int64_t)sizeof(detail::IntraParams);
   g_stamp_probe = *out;
 }
 
