@@ -207,14 +207,16 @@ make ONE atom. Exactly one of the two shifts is ever non-zero, and both are PAGE
 quantities the host derives once (`decode_lattice.md#the-refusals`).
 
 `candidate_atom(i)` therefore resolves the write-side unit (or the `1 <<
-lat_units_per_atom_shift` consecutive ones) through `resolve_unit` over the `kListWrite`
-owner lists, and an atom is live where a resolved unit is `valid && live_w` and the
+lat_units_per_atom_shift` consecutive ones) through `resolve_unit` over TERM 0 — the
+write product, which is the walk's own first term
+([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)), so there is no second
+enumeration and no second list plane — and an atom is live where a resolved unit is `valid && live_w` and the
 ALIGNED WINDOW of its innermost write slice that the atom covers is non-zero. At the
 flagship spans `(8, 16)` a unit IS an atom, both shifts are zero, and the test is "the
 unit's 16-bit write slice is non-zero".
 
 The whole enumeration is
-`n_candidates = (units[kListWrite] >> lat_units_per_atom_shift) << atoms_per_unit_shift` —
+`n_candidates = (units[0] >> lat_units_per_atom_shift) << atoms_per_unit_shift` —
 a PARTITION mapping monotonically onto ascending atom ids by construction, because unit
 rank and the atom index inside a unit are BOTH ascending in the lattice's own leaf order.
 That
@@ -600,7 +602,7 @@ reason no reduction is needed on the dot ([§15](#gemv-shape)).
 | `v_tok` | `[DV]` fp32 | the token's value, resident |
 | `fold` | `[warps][cols + 3]` fp32 | the cross-warp partials |
 | `mask_r`, `mask_w` | `[mask_total]` u32 | one bit per digit, per side ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)) |
-| `olist` | `[2][olist_total]` i32 | the union and write owner-coordinate lists, per level ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)) |
+| `olist` | `[4][olist_total]` i32 | the four KINDS' owner-coordinate lists, per level ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)) |
 
 Every one of them is FILLED BY THIS CTA, from the raw operands and from nothing else: the
 step allocates no plane, reads no `[BH, b_l]` intermediate and publishes no bitmap. That is
@@ -667,8 +669,25 @@ per-TOKEN part: the side gains. The read gain is fixed at `1` (`global` fixes
 
 ## <a id="aligned-subranges"></a>26. The unit's leaves are walked in ascending order, over the innermost run's set bits
 
-<a id="the-unit-partition"></a>The grid partitions the UNIT INDEX SPACE directly — `for
-(unit = seg*kDecodeWarps + warp; unit < units; unit += n_split*kDecodeWarps)` — so there
+<a id="the-term-loop"></a>**THE WALK'S OUTER LOOP IS THE TERM**, over the `D + 1`
+products whose disjoint union is the set the step touches
+([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)), and each term's index
+space is partitioned across the grid on its own. That is a LATENCY decision, not
+bookkeeping: inside the term loop every level's KIND is loop-invariant, so the owner-list
+bases, the realized counts, the padded field widths and the membership predicates all
+hoist out of the unit loop and the per-unit dependent chain is the one the
+product-of-unions walk had. The alternative — laying the terms end to end in ONE index
+space and naming each unit's term by a scan over `D + 1` offsets — was built and measured
+at **+2.3 ns of dependent latency per unit**, which on the scattered cell cost more than
+the units the decomposition saves. The loop is not unrolled over `D`, so one copy of the
+walk body serves every term.
+
+Term 0 IS the write product, which is why the candidate-atom enumeration
+([§the-candidate-atoms](#candidate-atoms)) needs no second list: it walks
+`[0, units[0])` of the walk's own first term.
+
+<a id="the-unit-partition"></a>The grid partitions each term's UNIT INDEX SPACE directly — `for
+(unit = seg*kDecodeWarps + warp; unit < units[term]; unit += n_split*kDecodeWarps)` — so there
 is no separate row-range-to-word resolution step: a unit IS the warp's own share, by
 construction, and `resolve_unit`
 ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) is what turns a unit index
@@ -686,8 +705,9 @@ roughly a factor of two, and at `N = 256` (two live owners against eight warps) 
 more. The CTA's warps take CONSECUTIVE units, so a CTA still covers one contiguous stretch
 of the plane per pass.
 
-Within one resolved unit the walk visits the SET BITS of the union slice `cr | cw`,
-ascending, by `__ffs` — ascending bit index is ascending LEAF order, because the unit's
+Within one resolved unit the walk visits the SET BITS of THAT TERM'S slice — `cw` for the
+write product, `cr` for a read-remainder term, already conditioned by `resolve_unit`
+([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) — ascending, by `__ffs` — ascending bit index is ascending LEAF order, because the unit's
 leaves ARE the innermost level's run in order. A dead innermost digit costs one `__ffs`
 step and no address at all, and the two sides' membership comes off the already-resolved
 `cr`/`cw` bitfields with no division anywhere. That ascending order is what makes

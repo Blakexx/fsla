@@ -63,36 +63,105 @@ written once and this file is one more caller of it, not a second copy of it).
 An owner's span and a sub-box's span are each one such extract, which is what
 `kDecodeMaxSpan` is a capacity FOR.
 
-## <a id="the-owner-lists"></a>2. `build_owner_lists` — two lists, and why two
+## <a id="the-terms"></a>2. The enumeration: the UNION OF THE PRODUCTS, as a disjoint sum
 
-Per (list, level), the ascending owner coordinates at which that list's side
-has amplitude — `olist[list][level]`, `n_o` the realized count. TWO lists:
-`kListUnion` (a leaf either side reaches, live-a-side-or-the-other) drives the
-walk itself; `kListWrite` (an atom the step deposits into) drives the
-candidate-atom enumeration alone. One list would make the atom enumeration the
-union's size, and a page-table probe per entry is what that would cost on a
-batch-head whose read support is far wider than its write support.
+At `T = 1` each side's support is a product, `supp(R) = prod_l R_l` and
+`supp(W) = prod_l W_l` over per-level DIGIT sets. The set one step touches is
+therefore `(prod_l R_l) u (prod_l W_l)`. What an earlier walk ENUMERATED was
+`prod_l (R_l u W_l)` — the product of the unions — and the two are not the same
+object. Under the split-level declaration every level has a dense side, so every
+level's union is FULL and the product of unions is the DENSE product at every
+support: 4096 units at the flagship whether the token routes to 65536 leaves or
+to 512 (k31_decocc M1.1 measured exactly that).
 
-Building both is one `cub::BlockScan` exclusive-sum per (list, level) —
-`lat_g[l] <= kDecodeThreads` follows from the level-width capacity
-(`decode.md#level-width-capacity`), so one block covers a whole level's owner
-grid.
+The union of two products is not a product. It IS a DISJOINT UNION of `D + 1` of
+them, and that is what makes it walkable by the same three loops:
 
-**Each level's live count is padded to the next power of two.** `bits[level]`
-is `ceil_log2(n_o[level])`, `shift[level]` the running sum of the levels
-below it, and a unit's owner rank decomposes into per-level fields by SHIFTS
-AND MASKS alone — never a division. A rank in the padded-but-unrealized part
-of a level's field is `i >= n_o[level]`, marked `invalid` and skipped rather
-than wrapped: the padding costs some dead ranks in exchange for never issuing
-a device integer division in the walk's innermost enumeration, which — unlike
-the divisions the deleted mixed-radix decomposition paid per bitmap word — a
-lattice unit would otherwise pay once per candidate atom per CTA.
+```
+(prod_l W_l)  u  [ (prod_l R_l) \ (prod_l W_l) ]
+   = TERM 0   (+)  (+)_{l} TERM (l + 1)
 
-`units[list]` is the whole enumeration for that list: the padded owner-rank
-field's width plus `lat_msb = log2(m)` low bits for the sub-box index, i.e.
-`2^(sum_l bits[l] + log2 m)` — zero wherever any level's list is empty, so an
-absent owner or write kills that list's enumeration outright rather than
-walking zero-width ranges.
+TERM 0     = prod_l W_l
+TERM l + 1 = [prod_{l' < l} (R_l' & W_l')] x (R_l & ~W_l) x [prod_{l' > l} R_l']
+```
+
+EXHAUSTIVE: a leaf of `prod R` outside `prod W` has a SMALLEST level `l` whose
+digit is not in `W_l`; that `l` names its term. DISJOINT: term 0's level-`l`
+digit is in `W_l` and term `l + 1`'s is not, and terms `i < j` disagree at level
+`i - 1`. So every leaf either side reaches is enumerated EXACTLY ONCE — which is
+the whole reason this is a legal replacement and not merely a smaller one:
+UPDATE-THEN-READ stays a single visit per leaf (`decode.md#update-then-read`),
+the deposit stays a PARTITION over write owners because term 0 alone deposits
+(`decode.md#the-unit-partition`), and not one byte of state traffic moves.
+
+**What it buys, and where it does not.** The decomposition prunes OWNERS. A term
+is empty the moment any of its levels' digit sets is, so `R_l <= W_l` at every
+level — the dense cell — collapses every read term to nothing and leaves the walk
+exactly the write product. Measured at the flagship, `BH = 8`, units per
+batch-head against the product-of-unions' 4096:
+
+| cell | T0 | T1 | T2 | total | vs union |
+|---|---|---|---|---|---|
+| dense | 4096 | 0 | 0 | 4096 | 1.00x |
+| ALT k16 scattered | 2048 | 4096 | 0 | 6144 | **0.67x (worse)** |
+| ALT k4 scattered | 512 | 1024 | 0 | 1536 | 2.67x |
+| ALT k16 clustered | 512 | 512 | 0 | 1024 | 4.00x |
+| ALT k4 clustered | 128 | 256 | 0 | 384 | **10.67x** |
+
+`T2` is empty at every ALT cell because level 1's write side is dense, so
+`R_1 \ W_1` is empty. THE SCATTERED CELL IS THE LOSS CASE AND IT IS STRUCTURAL:
+level 0's read support there is 240 digits spread over all 32 owners, so
+`R_0 \ W_0` spans the same owners as `R_0` and the two products simply ADD. A
+support that is sparse in LEAVES but dense in OWNERS has nothing for an
+owner-granular enumeration to prune, on either enumeration.
+
+<a id="the-refused-fallback"></a>**THE FIFTH KIND WAS BUILT AND REFUSED.** Since
+both counts — the decomposition's `sum_t units[t]` and the product-of-unions'
+`units` — are EXACT WORK COUNTS this block already computes, a fifth `R_l | W_l`
+owner list plus a fallback term walking it whenever it is smaller is a policy
+with no threshold in it at all, and it targets exactly the scattered cell above.
+It was built, gated green and benchmarked, and it LOST:
+
+* its fifth list costs one more `cub::BlockScan` per level in a prologue that is
+  the step's dominant cost wherever `BH` is small (`decode.md#per-cta-prologue`),
+  which cost every cell 1 to 5 %;
+* and the unit count it selects on DOES NOT PREDICT THE WALL — at `BH = 1` the
+  scattered cell ran 21 % SLOWER on the fallback's 4096 units than on the
+  decomposition's 6144.
+
+It is recorded here rather than shipped, and `kKinds` stays four.
+
+## <a id="the-owner-lists"></a>2.1 `build_owner_lists` — four kinds, two scans per level
+
+The terms ask for four per-level digit sets — `W_l`, `R_l`, `R_l & W_l`,
+`R_l & ~W_l` — so there are four owner-list planes, `olist[kind][level]` with
+`n_o` the realized count. THE DIGIT MASKS STAY TWO: a kind's bits are a boolean
+function of the read and write bits (`kind_bits`), formed where they are read, on
+single digits and on whole owner spans alike.
+
+Each thread reads ITS OWNER'S SPAN ONCE per side (`lat_g[l] <= kDecodeThreads`
+follows from the level-width capacity, `decode.md#level-width-capacity`, so one
+block covers a whole level's owner grid) and all four kinds fall out of that one
+pair of slices. TWO `cub::BlockScan` EXCLUSIVE SUMS PER LEVEL COVER FOUR LISTS,
+because a level's live-owner count is at most `kDecodeThreads` and two counts
+therefore ride in the two halves of one `int` without carrying into one another.
+That is why four lists cost what the previous two did — the scan count, not the
+list count, is what the prologue is measured in.
+
+**Each level's live count is padded to the next power of two.** `bits[term][l]`
+is `ceil_log2(n_o[kind][l])`, `shift[term][l]` the running sum of the levels
+below it, and a unit's owner rank decomposes into per-level fields by SHIFTS AND
+MASKS alone — never a division. A rank in the padded-but-unrealized part of a
+level's field is `i >= n_o[kind][l]`, marked `invalid` and skipped rather than
+wrapped: the padding costs some dead ranks in exchange for never issuing a device
+integer division in the walk's innermost enumeration.
+
+`build_term_layout` turns those counts into each term's rank space and
+`units[term]`, ONE THREAD PER TERM because the terms are independent — `D + 1`
+threads doing at most `D` `ceil_log2`s each, rather than one thread doing twenty
+in series while 255 wait at the barrier. `units[term]` is zero wherever any of
+that term's kinds is empty, so an absent owner set kills a term outright rather
+than walking zero-width ranges.
 
 ## <a id="the-unit"></a>3. `Unit` / `resolve_unit` — one unit is an `(owner, r_0 .. r_{D-2})` pair
 
@@ -104,10 +173,29 @@ base. At the flagship spans `(8, 16)` that run IS one 16-leaf atom, at full
 occupancy, and the unit's 16 slots are level 1's digits — which is the whole
 reason the unit is this shape rather than the interleave's `(owner, sub-box)`.
 
-`resolve_unit` decomposes a unit index by shifts alone: the OWNER RANK occupies
-the high bits, one padded field per level (§2), and the low `lat_outer_bits`
-are the fixed run offsets in the SAME mixed radix the owner-local index uses, so
-`outer << lat_inner_bits` is the unit's base inside its owner with no multiply.
+`resolve_unit` decomposes a unit index by shifts alone WITHIN ITS TERM: the OWNER
+RANK occupies the high bits, one padded field per level (§2.1), and the low
+`lat_outer_bits` are the fixed run offsets in the SAME mixed radix the owner-local
+index uses, so `outer << lat_inner_bits` is the unit's base inside its owner with
+no multiply. The term is the WALK'S OUTER LOOP and is passed in
+(`decode.md#the-term-loop`), which makes every level's kind — and therefore its
+list base, its count and its field widths — loop-invariant.
+
+THE UNIT IS HANDED BACK ALREADY IN THE WALK'S VOCABULARY, and that is what keeps
+the term out of the tight loop entirely. The slot loop iterates one slice and
+tests `in_r`/`in_w` exactly as the product-of-unions walk did, because
+`resolve_unit` CONDITIONS the two slices on the way out:
+
+* TERM 0 is the write product, so `cw` IS the enumerated run, every one of its
+  leaves is in `supp(W)`, and `cr`/`live_r` answer the read question unchanged. A
+  dead write digit above the innermost level zeroes both slices — the unit dying.
+* TERM `l + 1` is disjoint from `supp(W)` and inside `supp(R)` by construction, so
+  it reports `live_w = false` (nothing of it is written), `live_r = true`, and its
+  enumerated run in `cr`.
+
+So the walk needs NO THIRD SLICE REGISTER and no term arm: `bits` is `cw` for
+term 0 and `cr` otherwise, and the register budget the tight loop is measured on
+(`decode.md#declared-residency`) is the one it always had.
 
 The result is a `Unit<D>`: `owner`, `base` (the unit's first leaf as a lattice
 index), a `valid` flag (false where the padded rank space overshoots a level's
