@@ -181,9 +181,15 @@ struct CarveMap {
   static constexpr int SPT = kLeaf / kRowThr;
   static_assert(kRowThr == 1 && kRowThr * SPT == kLeaf,
                 "a warp's panel row is ONE lane's: the batch tile is the warp width");
-  //: the level's shift inside `p`, and how many of its digits one thread touches.
+  //: THE PRIVATE ORDER IS q-MAJOR (K35 M1b): `p = outer * kGS + (r_CL - grpBase)`,
+  //: so a level-0 digit owns `kGS` ADJACENT leaves and an `mma` n-tile of eight
+  //: holds `8/kGS` whole digits.  That is what makes the write side's per-k-tile
+  //: DIGIT UNION reapable as an n-tile skip: under the previous CL-major order one
+  //: n-tile spanned ALL of the outer level's digits and there was nothing to skip.
+  //: The relabelling is a PERMUTATION of the accumulator's n axis and nothing else
+  //: -- the k order, and therefore the state plane, is bit-identical under it.
   static constexpr int shift(int l) {
-    return l == kLevel ? ilog2c(kOut) : BP::run_shift(l) - BP::span_bits(kLevel);
+    return l == kLevel ? 0 : ilog2c(kGS) + BP::run_shift(l) - BP::span_bits(kLevel);
   }
   static constexpr int span(int l) { return l == kLevel ? kGS : BP::s(l); }
   static constexpr int vary(int l) { return SPT >> shift(l); }
@@ -191,17 +197,12 @@ struct CarveMap {
     return vary(l) < 1 ? 1 : (vary(l) > span(l) ? span(l) : vary(l));
   }
   static constexpr int idx_of(int l, int j) { return (j >> shift(l)) & (n_l(l) - 1); }
-  //: the ADJACENT PAIR comes from the level lying LOWEST in `p`, which is the
-  //: innermost level the carve did not take.
-  static constexpr int kPairLevel = kLevel == D - 1 ? D - 2 : D - 1;
-  //: THE PRIVATE ORDER PUTS THE CARVE LEVEL SLOWEST, and the produce expands the
-  //: remaining levels against the LATTICE's own run shifts -- which is exact only
-  //: while the carve level is the innermost one.  A declaration naming an outer
-  //: level needs `shift()` re-derived for the levels INSIDE it (their fields move
-  //: under `p` by the carve level's span, not past it), which is a change to this
-  //: map and to nothing else in the kernel.
+  //: the ADJACENT PAIR comes from the level lying LOWEST in `p`, which under the
+  //: q-major order is the CARVE LEVEL itself: a lane's two adjacent slots are two
+  //: adjacent digits of its own group.
+  static constexpr int kPairLevel = kLevel;
   static_assert(shift(kPairLevel) == 0 && n_l(kPairLevel) >= 2,
-                "the level below the carve supplies the adjacent pair");
+                "the carve level lies lowest in the private order and supplies the pair");
 };
 
 //: a contiguous run of `n` bf16, at the widest access that covers it.  The runs are
@@ -434,7 +435,8 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       constexpr int t = decltype(Tc)::value;
       static_for<kAtomOut>([&](auto Oc) {
         constexpr int oi = decltype(Oc)::value;
-        constexpr int pp = t * kOut + a * kAtomOut + oi;
+        //: q-MAJOR: the OUTER index runs slowest inside `p`, the carve digit fastest.
+        constexpr int pp = (a * kAtomOut + oi) * kGS + t;
         constexpr int tile = pp / kMmaN, nix = pp % kMmaN;
         const int row = oi * BP::s(CL) + grpBase + t;
         if ((lane & 3) == nix / 2) {
@@ -506,27 +508,11 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: no `[D][n]` array is ever live.
     uint32_t acc[SPT / 2];
     {
-      unsigned short run[PM::n_l(PM::kPairLevel)];
-      load_run<PM::n_l(PM::kPairLevel)>(
-          run, gather_ptr(base, tokOff + (uint32_t)(lvCol[PM::kPairLevel] * 2)));
-      static_for<SPT / 2>([&](auto Jc) {
-        constexpr int j = 2 * decltype(Jc)::value;
-        acc[j / 2] = ((uint32_t)run[PM::idx_of(PM::kPairLevel, j + 1)] << 16)
-                     | (uint32_t)run[PM::idx_of(PM::kPairLevel, j)];
-      });
-    }
-    static_for<D>([&](auto Lc) {
-      constexpr int l = decltype(Lc)::value;
-      if constexpr (l != PM::kPairLevel && l != CL) {
-        unsigned short run[PM::n_l(l)];
-        load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
-        static_for<SPT / 2>([&](auto Jc) {
-          constexpr int j = 2 * decltype(Jc)::value;
-          acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
-        });
-      }
-    });
-    {
+      //: THE PAIR LEVEL IS THE CARVE LEVEL under the q-major order, so ONE run --
+      //: the warp's own group of `kGS` digits -- both supplies the adjacent pair and
+      //: carries the dead-row zeroing, which is still the narrowest factor the
+      //: private order has.
+      static_assert(PM::kPairLevel == CL, "the carve level lies lowest in the private order");
       unsigned short run[PM::n_l(CL)];
       load_run<PM::n_l(CL)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[CL] * 2)));
       if constexpr (!WRITE) {
@@ -537,9 +523,21 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       }
       static_for<SPT / 2>([&](auto Jc) {
         constexpr int j = 2 * decltype(Jc)::value;
-        acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(CL, j)]));
+        acc[j / 2] =
+            ((uint32_t)run[PM::idx_of(CL, j + 1)] << 16) | (uint32_t)run[PM::idx_of(CL, j)];
       });
     }
+    static_for<D>([&](auto Lc) {
+      constexpr int l = decltype(Lc)::value;
+      if constexpr (l != CL) {
+        unsigned short run[PM::n_l(l)];
+        load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
+        static_for<SPT / 2>([&](auto Jc) {
+          constexpr int j = 2 * decltype(Jc)::value;
+          acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
+        });
+      }
+    });
     __nv_bfloat16* const row = dst + prow * LdS;
     if constexpr (WRITE) {
       static_for<SPT / 2>([&](auto Jc) {
