@@ -57,8 +57,17 @@ __device__ int64_t g_decode_stamp_probe;
 //: it back is reading a fact only the loaded binary can produce:
 //: docs/internals/decode/decode_api.md#build-stamp
 __global__ void decode_stamp_kernel(int64_t* out) {
-  *out = static_cast<int64_t>(sizeof(DecodeParams)) * 1000003
-         + static_cast<int64_t>(sizeof(Unit<4>)) * 101 + static_cast<int64_t>(kDecodeMaxSpan);
+  //: THE ENUMERATION'S SHAPE IS PART OF THE FOOTPRINT, alongside the two struct sizes and
+  //: the span ceiling: the kind and term counts are what a walk's unit index MEANS, and a
+  //: binary that disagrees about them is a different step however its structs measure --
+  //: which the union-of-products enumeration proved, since it moved every walk in the
+  //: extension without moving one byte of either struct. IT IS THE MOST SIGNIFICANT FIELD
+  //: of the same positional scheme, so the three older fields still divide out unchanged:
+  //: docs/internals/decode/decode_api.md#build-stamp
+  *out =
+      (static_cast<int64_t>(kKinds * kMaxTerms) * 4096 + static_cast<int64_t>(sizeof(DecodeParams)))
+          * 1000003
+      + static_cast<int64_t>(sizeof(Unit<4>)) * 101 + static_cast<int64_t>(kDecodeMaxSpan);
   g_decode_stamp_probe = *out;
 }
 
@@ -91,7 +100,7 @@ decode_step_kernel(DecodeParams p) {
   //   v_tok        [DV]         fp32   the token's value, resident
   //   fold  [warps][cols+3]     fp32   the cross-warp partials, bank-padded
   //   mask_r,mask_w [mask_total] u32   one bit per digit, per side
-  //   olist  [2][olist_total]   i32    the union and write owner coordinates, per level
+  //   olist  [4][olist_total]   i32    the four kinds' owner coordinates, per level
   float* sa_r = reinterpret_cast<float*>(smem_raw);
   float* sa_w = sa_r + total_rows;
   float* sd = sa_w + total_rows;
@@ -105,10 +114,12 @@ decode_step_kernel(DecodeParams p) {
   __shared__ float s_sum[kMaxLevels];
   __shared__ typename LatticeScan::TempStorage scan_temp;
   __shared__ int s_running;
-  __shared__ int s_n_o[kLists * kMaxLevels];
-  __shared__ int s_bits[kLists * kMaxLevels];
-  __shared__ int s_shift[kLists * kMaxLevels];
-  __shared__ int s_units[kLists];
+  __shared__ int s_n_o[kKinds * kMaxLevels];
+  __shared__ int s_bits[kMaxTerms * kMaxLevels];
+  __shared__ int s_shift[kMaxTerms * kMaxLevels];
+  //: One unit count per TERM. The walk's outer loop is the term, so each term's rank space
+  //: is partitioned across the grid on its own and the counts never need summing.
+  __shared__ int s_units[kMaxTerms];
   __shared__ int s_last_cta;
 
   // ---- THE FOLD: every per-token operand, widened and staged, by this CTA ------
@@ -157,12 +168,10 @@ decode_step_kernel(DecodeParams p) {
   build_digit_mask<D>(p, sa_r, mask_r);
   build_digit_mask<D>(p, sa_w, mask_w);
   __syncthreads();
-  build_owner_lists<D>(p, mask_r, mask_w, olist, s_n_o, s_bits, s_shift, s_units, scan_temp);
+  build_owner_lists<D>(p, mask_r, mask_w, olist, s_n_o, scan_temp);
+  build_term_layout<D>(p, s_n_o, s_bits, s_shift, s_units);
 
-  const int units = s_units[kListUnion];
   const int inner_bits = p.lat_inner_bits;
-  const int32_t* wlist = olist + kListWrite * p.olist_total;
-  const int woff = kListWrite * kMaxLevels;
 
   //: THE CANDIDATE ATOMS, enumerated from the same lattice product the walk uses, and a
   //: PARTITION of the write side's atoms with no straddle case at all -- which is what the
@@ -172,7 +181,10 @@ decode_step_kernel(DecodeParams p) {
   //: consecutive units make ONE atom. Exactly one of the two is non-zero.
   //: THE WINDOW IS THE UNIT'S RUN, CLIPPED TO AN ATOM. At the flagship spans `(8, 16)` a
   //: unit IS an atom: `n_units` and the atom index are both one, and membership is the
-  //: unit's write slice being non-zero. docs/internals/decode/decode.md#candidate-atoms
+  //: unit's write slice being non-zero.
+  //: IT NEEDS NO SECOND ENUMERATION AT ALL, because TERM 0 IS THE WRITE PRODUCT: the walk's
+  //: own first term is the write side, in its own order, with `live_w`/`cw` the
+  //: conditioning that term carries. docs/internals/decode/decode.md#candidate-atoms
   const int win_bits = inner_bits < kAtomShift ? inner_bits : kAtomShift;
   const uint32_t win_mask = (1u << (1 << win_bits)) - 1u;
   const int n_units = 1 << p.lat_units_per_atom_shift;
@@ -181,9 +193,8 @@ decode_step_kernel(DecodeParams p) {
     const int unit0 = (i >> p.atoms_per_unit_shift) << p.lat_units_per_atom_shift;
     int atom = -1;
     for (int q = 0; q < n_units; ++q) {
-      const Unit<D> u =
-          resolve_unit<D, false>(p, mask_r, mask_w, sa_r, sa_w, sd, wlist, s_n_o + woff,
-                                 s_bits + woff, s_shift + woff, unit0 + q);
+      const Unit<D> u = resolve_unit<D, false>(p, mask_r, mask_w, sa_r, sa_w, sd, olist, s_n_o,
+                                               s_bits, s_shift, 0, unit0 + q);
       if (!u.valid) return -1;
       if (atom < 0) atom = (u.base + (a << kAtomShift)) >> kAtomShift;
       if (u.live_w && ((u.cw >> ((a << kAtomShift) & ((1 << inner_bits) - 1))) & win_mask) != 0u) {
@@ -193,8 +204,7 @@ decode_step_kernel(DecodeParams p) {
     return -1;
   };
 
-  const int n_candidates = (s_units[kListWrite] >> p.lat_units_per_atom_shift)
-                           << p.atoms_per_unit_shift;
+  const int n_candidates = (s_units[0] >> p.lat_units_per_atom_shift) << p.atoms_per_unit_shift;
 
   // ---- THE ADMISSION QUESTION, asked of the map this CTA already holds ---------
   //: Three outcomes PER BATCH-HEAD: advance, no-op, or re-read without depositing:
@@ -317,16 +327,29 @@ decode_step_kernel(DecodeParams p) {
     //: EVERY LEVEL BUT THE INNERMOST LEAVES THE SLOT LOOP AND THAT IS THE UNIT'S POINT:
     //: a unit fixes their digits, so their amplitude product is formed ONCE, in
     //: `resolve_unit`, and every slot below costs ONE innermost amplitude rather than `D`.
-    for (int unit = seg * kDecodeWarps + warp; unit < units; unit += p.n_split * kDecodeWarps) {
-      {
+    //: THE OUTER LOOP IS THE TERM, and it is a LATENCY decision: every level's kind is
+    //: loop-invariant inside it, so the list bases, the counts, the field widths and the
+    //: membership predicates all hoist and the per-unit dependent chain is the union walk's.
+    //: The alternative -- one index space, term named per unit -- was BUILT AND MEASURED at
+    //: `+2.3 ns` per unit, which cost the scattered cell more than the decomposition saves.
+    //: docs/internals/decode/decode.md#the-term-loop
+    for (int term = 0; term <= D; ++term) {
+      const int units = s_units[term];
+      for (int unit = seg * kDecodeWarps + warp; unit < units; unit += p.n_split * kDecodeWarps) {
         const Unit<D> u = resolve_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd, olist, s_n_o,
-                                                 s_bits, s_shift, unit);
-        const uint32_t br = (u.valid && u.live_r) ? u.cr : 0u;
-        const uint32_t bw = (u.valid && u.live_w) ? u.cw : 0u;
-        uint32_t bits = br | bw;
+                                                 s_bits, s_shift, term, unit);
+        const uint32_t br = u.live_r ? u.cr : 0u;
+        const uint32_t bw = u.live_w ? u.cw : 0u;
+        //: THE ENUMERATED RUN IS THIS TERM'S. Term 0 walks the write run; every other term
+        //: is disjoint from `supp(W)` by construction and walks the read remainder it names.
+        //: A UNION `br | bw` WOULD DOUBLE-COUNT: a write unit whose innermost read digits
+        //: leave `W` reaches leaves that the innermost split term also enumerates.
+        //: `valid` needs no test here -- `resolve_unit` has already zeroed the slices of a
+        //: unit its term does not realize. docs/internals/decode/decode_lattice.md#the-unit
+        uint32_t bits = (term == 0) ? bw : br;
 
         //: THE SLOT LOOP IS THE INNERMOST LEVEL'S RUN, in ASCENDING lattice order -- the
-        //: unit's own contiguous run -- iterated over the UNION's set bits, so a dead
+        //: unit's own contiguous run -- iterated over the TERM's set bits, so a dead
         //: innermost digit costs one `__ffs` step and no address at all. Ascending is what
         //: makes `cached_atom` the walk's only reuse and enough of it:
         //: docs/internals/decode/decode.md#aligned-subranges
@@ -539,7 +562,8 @@ size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int
                               int olist_total) {
   const size_t amps = static_cast<size_t>(total_rows) * (decay ? 3 : 2);
   const size_t fold = static_cast<size_t>(kDecodeWarps) * (cols + 3);
-  const size_t tables = 2 * static_cast<size_t>(mask_total) + 2 * static_cast<size_t>(olist_total);
+  const size_t tables =
+      2 * static_cast<size_t>(mask_total) + kKinds * static_cast<size_t>(olist_total);
   return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
 }
 

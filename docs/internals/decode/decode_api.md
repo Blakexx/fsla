@@ -45,12 +45,24 @@ arm and the deep arms each carry more live state through the same loop.
 
 <a id="build-stamp"></a>`rola_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right
 path cannot fake: it launches a one-thread kernel, compiled with this translation unit,
-that folds `sizeof(DecodeParams)`, `sizeof(Unit<4>)` and `kDecodeMaxSpan` into one
-`int64_t` and reads it back. A path check or a hash of the sources checks what is ON
-DISK; this checks what the LOADED BINARY actually built from, which is the fact a stale
-extension can silently disagree about (the standing "extension trap" lesson). It is bound
-because a Python-side recomputation of the same three quantities would just be a second
-mirror with its own drift.
+that folds four facts into one `int64_t` in a positional scheme and reads it back:
+
+    stamp = (kKinds * kMaxTerms * 4096 + sizeof(DecodeParams)) * 1000003
+          + sizeof(Unit<4>) * 101
+          + kDecodeMaxSpan
+
+A path check or a hash of the sources checks what is ON DISK; this checks what the LOADED
+BINARY actually built from, which is the fact a stale extension can silently disagree
+about (the standing "extension trap" lesson). It is bound because a Python-side
+recomputation of the same quantities would just be a second mirror with its own drift.
+
+THE ENUMERATION-SHAPE FIELD IS THE MOST SIGNIFICANT ONE, AND IT WAS ADDED FOR A MEASURED
+REASON: the union-of-products enumeration ([`decode_lattice.md`](decode_lattice.md#the-terms))
+redefined what every unit index in this path MEANS while moving neither struct's size and
+neither ceiling, so the three older fields alone would have certified the new binary as
+the old one. A stamp that cannot separate two binaries is not a stamp. The three older
+fields still divide out unchanged, which is why the inversion in
+`tests/unit/test_decode_capacity.py` only gained a term.
 
 <a id="the-step"></a>`rola_decode_forward` is the single data-plane entry, and it launches
 ONE kernel: the fold, the `(k, m)` lattice's factor tables, the walk and the step's OWN

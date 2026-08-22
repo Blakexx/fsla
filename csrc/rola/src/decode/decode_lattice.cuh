@@ -14,10 +14,30 @@
 //      A device integer division is tens of cycles and the enumeration runs once per
 //      candidate atom per CTA, which is where it would be paid.
 //
-// TWO LISTS: the walk enumerates the UNION (a leaf either side reaches), the candidate
-// atoms enumerate the WRITE side alone (an atom the step deposits into). One list would
-// make the second enumeration the first one's size, and a page-table probe per entry is
-// what that costs.
+// THE ENUMERATION IS THE UNION OF THE TWO PRODUCTS, NOT THE PRODUCT OF THE TWO UNIONS,
+// and that is this header's whole subject. `prod_l (R_l u W_l)` is the DENSE product
+// wherever every level has a dense side -- which the split-level declaration makes true
+// at EVERY level -- while `(prod_l R_l) u (prod_l W_l)` is the set the step actually
+// touches. The two are separated by a factor of up to `2^D` at the flagship.
+//
+// The union of two products is not a product, but it IS a DISJOINT UNION of `D + 1` of
+// them, which is what makes it walkable by the same three loops:
+//
+//     (prod_l W_l)  u  [ (prod_l R_l) \ (prod_l W_l) ]
+//        = TERM 0   ]+[ (+)_{l=0}^{D-1} TERM (l + 1)
+//     TERM 0     = prod_l W_l
+//     TERM l + 1 = [prod_{l' < l} (R_l' & W_l')] x (R_l & ~W_l) x [prod_{l' > l} R_l']
+//
+// EXHAUSTIVE: a leaf of `prod R` outside `prod W` has a SMALLEST level `l` whose digit is
+// not in `W_l`, and that `l` names its term. DISJOINT: term 0's level-`l` digit is in
+// `W_l` and term `l + 1`'s is not; terms `i < j` disagree at level `i - 1`. So every leaf
+// either side reaches is enumerated EXACTLY ONCE -- which is what keeps UPDATE-THEN-READ
+// a single visit and the deposit a partition over write owners.
+//
+// FOUR KINDS, ONE PER PER-LEVEL DIGIT SET the terms ask for (`W`, `R`, `R & W`,
+// `R & ~W`), each with its own owner list; the term table says which kind each level of
+// each term takes. The two DIGIT MASKS stay two -- a kind's bits are a boolean function
+// of the read and write bits, formed where they are read.
 //
 // The lattice's formulas, the capacities and the cost accounting:
 // docs/internals/decode/decode_lattice.md
@@ -31,10 +51,48 @@ namespace decode {
 
 using LatticeScan = cub::BlockScan<int, kDecodeThreads>;
 
-//: The two enumerations, as the index of one owner-list plane.
-constexpr int kListUnion = 0;
-constexpr int kListWrite = 1;
-constexpr int kLists = 2;
+//: THE FOUR PER-LEVEL DIGIT SETS the terms are built from, as the index of one owner-list
+//: plane each. `kKindW` is also TERM 0's kind at every level, so the write product -- the
+//: set the candidate atoms and the pool claim are enumerated from -- is a term of the walk
+//: and needs no second list plane.
+//: THERE IS NO FIFTH, UNION KIND, and that is a MEASURED refusal rather than an omission:
+//: a `R_l | W_l` list plus a fallback term that walks it whenever it enumerates fewer
+//: units than the decomposition was built, gated and benchmarked, and LOST on every cell
+//: (its fifth list costs a block scan per level in a prologue-bound step, and the unit
+//: count it selects on does not predict the wall -- the scattered cell at `BH = 1` was
+//: 21 % SLOWER on the enumeration with 1.5x FEWER units).
+//: docs/internals/decode/decode_lattice.md#the-refused-fallback
+constexpr int kKindW = 0;
+constexpr int kKindR = 1;
+constexpr int kKindRW = 2;   // R_l & W_l
+constexpr int kKindRmW = 3;  // R_l & ~W_l
+constexpr int kKinds = 4;
+
+//: `D + 1` terms: the write product, then one per level.
+constexpr int kMaxTerms = kMaxLevels + 1;
+
+//: THE TERM TABLE, as arithmetic rather than as a table: term `0` is the write product,
+//: and term `j >= 1` splits at level `j - 1`.
+__device__ __forceinline__ int term_kind(int term, int l) {
+  if (term == 0) return kKindW;
+  const int split = term - 1;
+  return l < split ? kKindRW : (l == split ? kKindRmW : kKindR);
+}
+
+//: A KIND'S BITS, from the two sides' bits. One expression, used on single digits and on
+//: whole owner spans alike, which is what keeps the digit masks at two planes.
+__device__ __forceinline__ uint32_t kind_bits(uint32_t r, uint32_t w, int kind) {
+  switch (kind) {
+    case kKindW:
+      return w;
+    case kKindR:
+      return r;
+    case kKindRW:
+      return r & w;
+    default:
+      return r & ~w;
+  }
+}
 
 //: One side's DIGIT MASK, one bit per digit of every level, packed level by level. One
 //: thread owns one destination word and reads the amplitudes it covers, so the pass is
@@ -73,53 +131,80 @@ __device__ __forceinline__ int ceil_log2_dev(int n) {
   return bits;
 }
 
-//: THE OWNER LISTS: per list and level, the ascending coordinates at which that list's
-//: side has amplitude. `n_o` is the realized count, `bits` its power-of-two padding and
-//: `shift` the padded field's position in the rank, so a rank decomposes by shifts and a
-//: padded-past-the-end index is skipped rather than divided around. `units` is the whole
-//: enumeration -- the rank space times the unit radix inside an owner.
-//: One block scan per (list, level); `lat_g[l] <= kDecodeThreads` follows from the
-//: level-width capacity. The caller's barrier before this must have published both masks.
+//: THE OWNER LISTS: per KIND and level, the ascending coordinates at which that kind's
+//: digit set has any digit. `n_o` is the realized count. Each thread reads ITS OWNER'S
+//: SPAN ONCE, on both sides, and all four kinds fall out of that one pair of slices;
+//: `lat_g[l] <= kDecodeThreads` follows from the level-width capacity. The caller's
+//: barrier before this must have published both masks.
+//:
+//: TWO SCANS PER LEVEL FOR FOUR LISTS, and the packing is why the prologue did not grow
+//: with the kind count: a level's live-owner count is at most `kDecodeThreads`, so two
+//: counts ride in the two halves of one `int` and cannot carry into one another. THE
+//: PROLOGUE IS THE STEP'S DOMINANT COST WHEREVER `BH` IS SMALL (`n_split` is largest
+//: there, and every CTA pays it), so a scan avoided is worth more than the arithmetic
+//: it saves: docs/internals/decode/decode.md#per-cta-prologue
 template <int D>
 __device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const uint32_t* mask_r,
                                                   const uint32_t* mask_w, int32_t* olist,
-                                                  int32_t* n_o, int32_t* bits, int32_t* shift,
-                                                  int32_t* units,
+                                                  int32_t* n_o,
                                                   LatticeScan::TempStorage& scan_temp) {
   const int tid = threadIdx.x;
 #pragma unroll
-  for (int list = 0; list < kLists; ++list) {
+  for (int l = 0; l < D; ++l) {
+    const int span = p.lat_s[l];
+    uint32_t r = 0u;
+    uint32_t w = 0u;
+    if (tid < p.lat_g[l]) {
+      const int lo = tid * span;
+      r = level_slice(p, mask_r, l, lo, span);
+      w = level_slice(p, mask_w, l, lo, span);
+    }
 #pragma unroll
-    for (int l = 0; l < D; ++l) {
-      const int span = p.lat_s[l];
-      bool live = false;
-      if (tid < p.lat_g[l]) {
-        const int lo = tid * span;
-        const bool w = level_slice(p, mask_w, l, lo, span) != 0u;
-        live = (list == kListWrite) ? w : (w || level_slice(p, mask_r, l, lo, span) != 0u);
-      }
+    for (int pair = 0; pair < kKinds / 2; ++pair) {
+      const int k_lo = 2 * pair;
+      const int k_hi = k_lo + 1;
+      const bool live_lo = tid < p.lat_g[l] && kind_bits(r, w, k_lo) != 0u;
+      const bool live_hi = tid < p.lat_g[l] && kind_bits(r, w, k_hi) != 0u;
       int excl = 0;
       int total = 0;
-      LatticeScan(scan_temp).ExclusiveSum(live ? 1 : 0, excl, total);
-      if (live) olist[list * p.olist_total + p.olist_off[l] + excl] = tid;
-      if (tid == 0) n_o[list * kMaxLevels + l] = total;
+      LatticeScan(scan_temp).ExclusiveSum((live_lo ? 1 : 0) | (live_hi ? 1 << 16 : 0), excl, total);
+      if (live_lo) olist[k_lo * p.olist_total + p.olist_off[l] + (excl & 0xffff)] = tid;
+      if (live_hi) olist[k_hi * p.olist_total + p.olist_off[l] + (excl >> 16)] = tid;
+      if (tid == 0) {
+        n_o[k_lo * kMaxLevels + l] = total & 0xffff;
+        n_o[k_hi * kMaxLevels + l] = total >> 16;
+      }
       __syncthreads();
     }
-    if (tid == 0) {
-      int acc = 0;
-#pragma unroll
-      for (int l = D - 1; l >= 0; --l) {
-        shift[list * kMaxLevels + l] = acc;
-        acc += ceil_log2_dev(n_o[list * kMaxLevels + l]);
-        bits[list * kMaxLevels + l] = acc - shift[list * kMaxLevels + l];
-      }
-      bool empty = false;
-#pragma unroll
-      for (int l = 0; l < D; ++l) empty = empty || n_o[list * kMaxLevels + l] == 0;
-      units[list] = empty ? 0 : (1 << (acc + p.lat_outer_bits));
-    }
-    __syncthreads();
   }
+}
+
+//: THE TERM LAYOUT: each term's own rank space. `bits` is a level's power-of-two padding
+//: and `shift` the padded field's position in that term's rank, so a rank decomposes by
+//: shifts and a padded-past-the-end index is skipped rather than divided around; a term
+//: whose kind is empty at any level contributes NO units at all, which is how
+//: `R_l <= W_l` at every level -- the dense cell -- collapses the whole read remainder to
+//: nothing and leaves the walk exactly the write product.
+//: ONE THREAD PER TERM, because the terms are independent: `D + 1` threads do at most
+//: `D` `ceil_log2`s each instead of one thread doing twenty in series while 255 wait.
+template <int D>
+__device__ __forceinline__ void build_term_layout(const DecodeParams& p, const int32_t* n_o,
+                                                  int32_t* bits, int32_t* shift, int32_t* units) {
+  const int t = threadIdx.x;
+  if (t <= D) {
+    int acc = 0;
+    bool empty = false;
+#pragma unroll
+    for (int l = D - 1; l >= 0; --l) {
+      const int count = n_o[term_kind(t, l) * kMaxLevels + l];
+      shift[t * kMaxLevels + l] = acc;
+      acc += ceil_log2_dev(count);
+      bits[t * kMaxLevels + l] = acc - shift[t * kMaxLevels + l];
+      empty = empty || count == 0;
+    }
+    units[t] = empty ? 0 : (1 << (acc + p.lat_outer_bits));
+  }
+  __syncthreads();
 }
 
 //: ONE DIGIT'S MEMBERSHIP, as ONE load and a shift. `level_slice` reads two words and
@@ -159,20 +244,42 @@ struct Unit {
   uint32_t cw;
 };
 
-//: THE UNIT INDEX, decomposed by shifts alone. The high bits are the OWNER RANK, one
-//: padded field per level; the low `lat_outer_bits` are the fixed run offsets in the SAME
-//: mixed radix the owner-local index uses, so `outer << lat_inner_bits` is the unit's base
-//: inside its owner without a multiply. A level whose digit is dead on a side kills that
-//: side for the whole unit, which is the pruning the product structure buys.
-//: `DECAY` is a template arm so the dial product is not merely multiplied by one.
+//: THE UNIT INDEX, decomposed by shifts alone within its TERM. THE TERM IS THE WALK'S
+//: OUTER LOOP AND THAT IS A LATENCY DECISION, not a bookkeeping one: it makes the kind of
+//: every level -- and therefore the list base, the count, the field widths and every
+//: predicate below -- LOOP-INVARIANT, so the per-unit dependent chain is the one the union
+//: walk had. Laying the terms end to end in one index space and naming the term per unit
+//: was measured at `+2.3 ns` of dependent latency per unit, which on the scattered cell
+//: cost more than the units the decomposition saves:
+//: docs/internals/decode/decode.md#the-term-loop
+//: The grid partitions EACH TERM'S index space by the modular map it always used, so the
+//: deposit -- which lives in term 0 alone -- is still one owning CTA, warp and lane per row.
+//: Within a term the high bits are the OWNER RANK, one padded field per level, and the low
+//: `lat_outer_bits` are the fixed run offsets in the SAME mixed radix the owner-local index
+//: uses, so `outer << lat_inner_bits` is the unit's base inside its owner without a
+//: multiply. A level whose digit is dead in the TERM'S OWN KIND kills the unit, which is
+//: the pruning the product structure buys.
+//:
+//: WHAT THE UNIT HANDS BACK IS ALREADY IN THE WALK'S VOCABULARY, and that is deliberate:
+//: the slot loop iterates `live_w ? cw : cr` and tests `in_r`/`in_w` exactly as a union
+//: walk does, because the two slices are CONDITIONED here so the term never reaches it.
+//:   * TERM 0 is the write product: `cw` IS the enumerated run, every one of its leaves is
+//:     in `supp(W)`, and `cr`/`live_r` answer the read question as they always did. A dead
+//:     write digit above the innermost level zeroes both slices, which is the unit dying.
+//:   * TERM `l + 1` is disjoint from `supp(W)` by construction and inside `supp(R)`, so it
+//:     reports `live_w = false` (no leaf of it is written), `live_r = true`, and its
+//:     enumerated run in `cr` (where the union walk's read slice would have been).
+//: The walk therefore has NO TERM ARM, NO EXTRA SLICE REGISTER and one expression per question -- the
+//: arithmetic the tight loop's register budget is measured on is unchanged.
 //: docs/internals/decode/decode_lattice.md#the-unit
+//: `DECAY` is a template arm so the dial product is not merely multiplied by one.
 template <int D, bool DECAY>
 __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uint32_t* mask_r,
                                                 const uint32_t* mask_w, const float* sa_r,
                                                 const float* sa_w, const float* sd,
-                                                const int32_t* list, const int32_t* n_o,
-                                                const int32_t* bits, const int32_t* shift,
-                                                int unit) {
+                                                const int32_t* olist, const int32_t* n_o,
+                                                const int32_t* bits, const int32_t* shift, int term,
+                                                int local) {
   Unit<D> u;
   u.owner = 0;
   u.valid = true;
@@ -181,31 +288,52 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
   u.ar = 1.0f;
   u.aw = 1.0f;
   u.rate = 1.0f;
-  const int outer = unit & ((1 << p.lat_outer_bits) - 1);
-  const int rank = unit >> p.lat_outer_bits;
+  bool live_kind = true;
+  uint32_t c_kind = 0u;
+  const int outer = local & ((1 << p.lat_outer_bits) - 1);
+  const int rank = local >> p.lat_outer_bits;
 #pragma unroll
   for (int l = 0; l < D; ++l) {
-    int i = (rank >> shift[l]) & ((1 << bits[l]) - 1);
-    if (i >= n_o[l]) {
+    const int kind = term_kind(term, l);
+    int i = (rank >> shift[term * kMaxLevels + l]) & ((1 << bits[term * kMaxLevels + l]) - 1);
+    if (i >= n_o[kind * kMaxLevels + l]) {
       u.valid = false;
       i = 0;
     }
-    const int o = list[p.olist_off[l] + i];
+    const int o = olist[kind * p.olist_total + p.olist_off[l] + i];
     u.owner += o * p.lat_gsuf[l];
     const int run_base = o * p.lat_s[l];
     if (l == D - 1) {
       u.dlast = p.level_amp_offset[l] + run_base;
       u.cr = level_slice(p, mask_r, l, run_base, p.lat_s[l]);
       u.cw = level_slice(p, mask_w, l, run_base, p.lat_s[l]);
+      c_kind = kind_bits(u.cr, u.cw, kind);
     } else {
       const int digit = run_base + ((outer >> p.lat_oshift[l]) & (p.lat_s[l] - 1));
       const int off = p.level_amp_offset[l] + digit;
-      u.live_r = u.live_r && mask_bit(p, mask_r, l, digit);
-      u.live_w = u.live_w && mask_bit(p, mask_w, l, digit);
+      const uint32_t rb = mask_bit(p, mask_r, l, digit) ? 1u : 0u;
+      const uint32_t wb = mask_bit(p, mask_w, l, digit) ? 1u : 0u;
+      u.live_r = u.live_r && rb != 0u;
+      u.live_w = u.live_w && wb != 0u;
+      live_kind = live_kind && kind_bits(rb, wb, kind) != 0u;
       u.ar *= sa_r[off];
       u.aw *= sa_w[off];
       if (DECAY) u.rate *= sd[off];
     }
+  }
+  //: THE CONDITIONING the walk's one expression rests on, and the whole of the term's
+  //: presence in this file's contract.
+  const bool alive = u.valid && live_kind;
+  if (term == 0) {
+    if (!alive) {
+      u.cr = 0u;
+      u.cw = 0u;
+    }
+  } else {
+    u.cr = alive ? c_kind : 0u;
+    u.cw = 0u;
+    u.live_w = false;
+    u.live_r = true;
   }
   u.base = (u.owner << p.lat_local_bits) + (outer << p.lat_inner_bits);
   return u;
