@@ -346,7 +346,12 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
 #pragma unroll
     for (int e = 0; e < 4; ++e) mass_st[j][e] = 0.f;
 
-  //: THE READ DRAIN'S STATE SOURCE, AS ONE SEAM.  It yields the readout's A
+  //: THE READ DRAIN'S STATE SOURCE, AS ONE SEAM.  K35: the fragment is the
+  //: accumulator's TOP HALVES taken by `prmt` -- one instruction per pair, and the
+  //: same bytes the hi-plane hybrid will publish, so that hybrid is a placement
+  //: change and never an arithmetic one.  It TRUNCATES where the image ROUNDED;
+  //: declared, and mirrored in the oracle.
+  //:  It yields the readout's A
   //: fragments for k-step `kk` -- the `MCH` value m-tiles and the mass row -- and it
   //: is the ONLY place the drain touches the state's residency.  Here the
   //: accumulator IS the operand (the warp's own n-tiles, packed in place, no
@@ -356,15 +361,15 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     constexpr int kk = decltype(Kc)::value;
     static_for<MCH>([&](auto Mc) {
       constexpr int m = decltype(Mc)::value;
-      sa[m][0] = pack_bf16x2(st[m][2 * kk][0], st[m][2 * kk][1]);
-      sa[m][1] = pack_bf16x2(st[m][2 * kk][2], st[m][2 * kk][3]);
-      sa[m][2] = pack_bf16x2(st[m][2 * kk + 1][0], st[m][2 * kk + 1][1]);
-      sa[m][3] = pack_bf16x2(st[m][2 * kk + 1][2], st[m][2 * kk + 1][3]);
+      sa[m][0] = hi_bf16x2(st[m][2 * kk][0], st[m][2 * kk][1]);
+      sa[m][1] = hi_bf16x2(st[m][2 * kk][2], st[m][2 * kk][3]);
+      sa[m][2] = hi_bf16x2(st[m][2 * kk + 1][0], st[m][2 * kk + 1][1]);
+      sa[m][3] = hi_bf16x2(st[m][2 * kk + 1][2], st[m][2 * kk + 1][3]);
     });
-    ma[0] = pack_bf16x2(mass_st[2 * kk][0], mass_st[2 * kk][1]);
-    ma[1] = pack_bf16x2(mass_st[2 * kk][2], mass_st[2 * kk][3]);
-    ma[2] = pack_bf16x2(mass_st[2 * kk + 1][0], mass_st[2 * kk + 1][1]);
-    ma[3] = pack_bf16x2(mass_st[2 * kk + 1][2], mass_st[2 * kk + 1][3]);
+    ma[0] = hi_bf16x2(mass_st[2 * kk][0], mass_st[2 * kk][1]);
+    ma[1] = hi_bf16x2(mass_st[2 * kk][2], mass_st[2 * kk][3]);
+    ma[2] = hi_bf16x2(mass_st[2 * kk + 1][0], mass_st[2 * kk + 1][1]);
+    ma[3] = hi_bf16x2(mass_st[2 * kk + 1][2], mass_st[2 * kk + 1][3]);
   };
 
   //: THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so
