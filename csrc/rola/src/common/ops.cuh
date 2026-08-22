@@ -141,6 +141,25 @@ __device__ __forceinline__ int first_set(uint32_t x) {
 //: lane and needs no separate case, exactly as `kBallotLanes` compares above.
 __device__ __forceinline__ int last_set(uint32_t x) { return 31 - __clz((int)x); }
 
+//: THE UNIT'S OWN RUNNING TOTAL.  `N` must be a power of two no wider than the
+//: unit; lanes at or above it contribute whatever they hold and are the caller's
+//: to mask.  Every lane executes every step, so the whole unit is converged at
+//: each `__shfl_up_sync`.
+template <int N>
+__device__ __forceinline__ int lane_prefix_incl(int x) {
+#pragma unroll
+  for (int d = 1; d < N; d <<= 1) {
+    const int up = __shfl_up_sync(0xFFFFFFFFu, x, d);
+    if ((int)(threadIdx.x & (kBallotLanes - 1)) >= d) x += up;
+  }
+  return x;
+}
+
+//: one lane's value, read by all of them.
+__device__ __forceinline__ int lane_broadcast(int x, int src) {
+  return __shfl_sync(0xFFFFFFFFu, x, src);
+}
+
 // ----------------------------------------------------------------- operands
 
 using Frag = uint32_t[4];
