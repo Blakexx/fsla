@@ -142,6 +142,12 @@ struct BoxPlan {
   }
 
   static_assert(kBC % kAtomLeaves == 0, "K2: an atom must not straddle two owners");
+  //: THE CARVE GRAIN.  `G` warps split level `CL`'s owner run, so that level's
+  //: ballot rows are voted at `s(CL)/G` and an owner-grain word is the OR of its
+  //: `G` group rows.  A level away from the carve keeps the owner span.  `CL` is
+  //: named by the per-level MODE DECLARATION at the seam, never by this file.
+  static constexpr int carve_s(int l, int G, int CL) { return l == CL ? s(l) / G : s(l); }
+
   //: K6: an owner's run at a level is an aligned run INSIDE that level.  With the
   //: capacity ceiling above it is the constraint the convention can still miss --
   //: when `j` exceeds what `D` levels of width `B` can carry, there is no span
@@ -163,6 +169,36 @@ struct BoxPlan {
   static_assert(kLocalBits >= 4, "K3: an atom must lie inside one owner");
   static_assert((1 << kKappa) == K && (1 << kBeta) == B && (1 << kJ) == M,
                 "K1: k, m and B are powers of two");
+};
+
+//: THE CARVE-GRAIN BALLOT ROWS.  `BoxPlan`'s row accounting at `carve_s`: the same
+//: sigma-shaped table one level finer, so a warp reads its own group's row and the
+//: side that wants the owner's run ORs the `G` of them.
+template <int D, int B, int K, int M, int G, int CL>
+struct CarveRows {
+  using BP = BoxPlan<D, B, K, M>;
+  static constexpr int kGroups = G;
+  static constexpr int kLevel = CL;
+  static constexpr int s(int l) { return BP::carve_s(l, G, CL); }
+  static constexpr int row_g(int l) { return s(l) < B ? B / s(l) : 0; }
+  static constexpr int row_entries(int l) { return l == D ? 0 : row_g(l) + row_entries(l + 1); }
+  static constexpr int kRows = row_entries(0);
+  static constexpr int row_prefix(int l) { return l == 0 ? 0 : row_prefix(l - 1) + row_g(l - 1); }
+  //: THE CLAUSE ROWS ABOVE THE CARVE.  A level spanned whole by the owner emits
+  //: none, so the conjunction's width is a property of the box and the schedule
+  //: stages exactly `kOuter` words per side per window word beside the `G` group
+  //: words.  `outer_slot` is that level's place in the staged block.
+  static constexpr int outer_count(int l) {
+    return l >= D ? 0 : (l != kLevel && row_g(l) > 0 ? 1 : 0) + outer_count(l + 1);
+  }
+  static constexpr int kOuter = outer_count(0);
+  static constexpr int outer_slot(int l) {
+    return l == 0 ? 0 : outer_slot(l - 1) + (l - 1 != kLevel && row_g(l - 1) > 0 ? 1 : 0);
+  }
+  static_assert(BP::s(kLevel) % G == 0 && BP::s(kLevel) / G >= 1,
+                "the carve splits the innermost level's owner run into G whole groups");
+  static_assert(row_g(kLevel) == G * BP::row_g(kLevel) || BP::row_g(kLevel) == 0,
+                "a group row set must REFINE the owner row set at the carve level");
 };
 
 }  // namespace rola::carry
