@@ -80,7 +80,7 @@ __device__ __forceinline__ void static_for(F&& f) {
 //: and its per-batch rendezvous, because a write entry is live at every one of the
 //: innermost level's digits and so belongs to all four warps.
 
-template <int D, int B, int K, int M, int W, int C>
+template <int D, int B, int K, int M, int W, int C, int CL>
 struct CarryGeom {
   using BP = BoxPlan<D, B, K, M>;
   static constexpr int BC = BP::kBC;
@@ -149,16 +149,16 @@ struct ProduceMap {
 };
 
 //: THE PRIVATE LEAF ORDER AND THE PRODUCE'S THREAD MAP.  A warp's leaves are
-//: `p = (r_{D-1} - grp*kGS) * kOut + outer`: the carve level SLOWEST, so its digit
+//: `p = (r_CL - grp*kGS) * kOut + outer`: the carve level SLOWEST, so its digit
 //: is a contiguous run of `kOut` leaves, and the outer levels in the lattice's own
 //: mixed radix beneath it.  Because `p` is a bit permutation of the levels' digit
 //: offsets exactly as `local` is, the expansion is `sum_l n_l` amplitude loads
 //: followed by products of register values at CONSTANT indices -- no dynamic
 //: indexing, no spill, no materialized gate plane.
-template <int D, int B, int K, int M, int C>
+template <int D, int B, int K, int M, int C, int CL>
 struct CarveMap {
   using BP = BoxPlan<D, B, K, M>;
-  static constexpr int kLevel = D - 1;
+  static constexpr int kLevel = CL;
   static constexpr int kGS = BP::s(kLevel) / kWarps;  // the group's digits
   static constexpr int kOut = BP::kBC / BP::s(kLevel);
   static constexpr int kLeaf = kGS * kOut;
@@ -176,9 +176,15 @@ struct CarveMap {
     return vary(l) < 1 ? 1 : (vary(l) > span(l) ? span(l) : vary(l));
   }
   static constexpr int idx_of(int l, int j) { return (j >> shift(l)) & (n_l(l) - 1); }
-  //: the ADJACENT PAIR comes from the level lying lowest in `p`, which is the
-  //: carve level's neighbour outward.
-  static constexpr int kPairLevel = D - 2;
+  //: the ADJACENT PAIR comes from the level lying LOWEST in `p`, which is the
+  //: innermost level the carve did not take.
+  static constexpr int kPairLevel = kLevel == D - 1 ? D - 2 : D - 1;
+  //: THE PRIVATE ORDER PUTS THE CARVE LEVEL SLOWEST, and the produce expands the
+  //: remaining levels against the LATTICE's own run shifts -- which is exact only
+  //: while the carve level is the innermost one.  A declaration naming an outer
+  //: level needs `shift()` re-derived for the levels INSIDE it (their fields move
+  //: under `p` by the carve level's span, not past it), which is a change to this
+  //: map and to nothing else in the kernel.
   static_assert(shift(kPairLevel) == 0 && n_l(kPairLevel) >= 2,
                 "the level below the carve supplies the adjacent pair");
 };
@@ -208,21 +214,21 @@ __device__ __forceinline__ void load_run(unsigned short (&dst)[n], const void* p
 //: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from
 //: the same geometry the ring depth is.  A ring sized for a residency the launch
 //: bound does not ask for is a ring sized for nothing.
-template <int D, int B, int K, int M, int W, int C>
-constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, W, C>::cta_target;
+template <int D, int B, int K, int M, int W, int C, int CL>
+constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, W, C, CL>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int W, int C, bool STATE>
-__global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void carry_kernel(
+template <int D, int B, int K, int M, int W, int C, int CL, bool STATE>
+__global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) void carry_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
     const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den, int L,
     int tok_words, int v_row_bytes, const float* __restrict__ s_in, float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
-  using G = CarryGeom<D, B, K, M, W, C>;
-  using PM = CarveMap<D, B, K, M, C>;
-  using CR = CarveRows<D, B, K, M, kWarps>;
+  using G = CarryGeom<D, B, K, M, W, C, CL>;
+  using PM = CarveMap<D, B, K, M, C, CL>;
+  using CR = CarveRows<D, B, K, M, kWarps, CL>;
 
   constexpr int BC = BP::kBC;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
@@ -234,9 +240,9 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   constexpr int MCH = kDv / kMmaM;  // the channel m-tiles, ALL of them per warp
   //: the carve level's group geometry, and the page's rectangle in it.
   constexpr int kGS = PM::kGS, kOut = PM::kOut;
-  constexpr int kAtomOut = kAtomLeaves / BP::s(D - 1);
-  static_assert(kAtomOut >= 1 && kAtomOut * BP::s(D - 1) == kAtomLeaves,
-                "K3: the innermost span divides the page granule, so a page is a whole "
+  constexpr int kAtomOut = kAtomLeaves / BP::s(CL);
+  static_assert(kAtomOut >= 1 && kAtomOut * BP::s(CL) == kAtomLeaves,
+                "K3: the carve level's span divides the page granule, so a page is a whole "
                 "number of outer runs times every one of that level's digits");
 
   static_assert(C % kMmaM == 0 && kThreads % C == 0, "the batch tile must divide");
@@ -244,7 +250,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   static_assert(BC % kAtomLeaves == 0, "K2: an owner holds whole page atoms");
   static_assert(design::smem_fits(G::bytes), "this arm does not fit the SMEM maximum");
   static_assert(LdS % 8 == 0 && LdV % 8 == 0, "an ldmatrix row address must be 16-byte aligned");
-  static_assert(BP::span_bits(D - 1) >= 1, "the innermost level supplies the adjacent pair");
+  static_assert(BP::span_bits(CL) >= 1, "the carve level supplies the adjacent pair");
   static_assert(W % kBallotLanes == 0 && kThreads % kBallotLanes == 0,
                 "a warp's tokens must be exactly one ballot word of the owner's row");
 
@@ -295,7 +301,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     constexpr int l = decltype(Lc)::value;
     const int o_l = (owner / BP::owner_div(l)) % BP::g(l);
     runCol[l] = BP::col_base(l) + o_l * BP::s(l);
-    rowOff[l] = (uint32_t)(CR::row_prefix(l) + o_l * (l == D - 1 ? kWarps : 1)) * rowBytes;
+    rowOff[l] = (uint32_t)(CR::row_prefix(l) + o_l * (l == CL ? kWarps : 1)) * rowBytes;
   });
   //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the side's
   //: whole row block is `kRows * tok_words * 4` bytes, which is 32-bit at every
@@ -398,7 +404,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   auto page_off = [](uint32_t atom) { return atom * (uint32_t)(kPageElems * (int)sizeof(float)); };
   //: A PAGE HOLDS `kAtomOut` OUTER RUNS x EVERY DIGIT OF THE CARVE LEVEL, so the
   //: warp owns `kGS * kAtomOut` of its leaves in each page.  `local - 16a` is
-  //: `oi*s_{D-1} + grpBase + t`, and the accumulator element carrying it -- tile,
+  //: `oi*s_CL + grpBase + t`, and the accumulator element carrying it -- tile,
   //: column and the two `k` halves -- is a compile-time function of `(a, t, oi)`.
   const int grpBase = grp * kGS;
   auto page_regs = [&](auto Ac, auto Ld) {
@@ -410,7 +416,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
         constexpr int oi = decltype(Oc)::value;
         constexpr int pp = t * kOut + a * kAtomOut + oi;
         constexpr int tile = pp / kMmaN, nix = pp % kMmaN;
-        const int row = oi * BP::s(D - 1) + grpBase + t;
+        const int row = oi * BP::s(CL) + grpBase + t;
         if ((lane & 3) == nix / 2) {
           static_for<MCH>([&](auto Mc) {
             constexpr int m = decltype(Mc)::value;
@@ -459,7 +465,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
   int lvCol[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    lvCol[l] = runCol[l] + (l == D - 1 ? grp * kGS : 0);
+    lvCol[l] = runCol[l] + (l == CL ? grp * kGS : 0);
   });
 
   //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS.  A padding row of a partial
@@ -489,27 +495,29 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
                      | (uint32_t)run[PM::idx_of(PM::kPairLevel, j)];
       });
     }
-    static_for<D - 2>([&](auto Lc) {
+    static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      unsigned short run[PM::n_l(l)];
-      load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
-      static_for<SPT / 2>([&](auto Jc) {
-        constexpr int j = 2 * decltype(Jc)::value;
-        acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
-      });
+      if constexpr (l != PM::kPairLevel && l != CL) {
+        unsigned short run[PM::n_l(l)];
+        load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
+        static_for<SPT / 2>([&](auto Jc) {
+          constexpr int j = 2 * decltype(Jc)::value;
+          acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
+        });
+      }
     });
     {
-      unsigned short run[PM::n_l(D - 1)];
-      load_run<PM::n_l(D - 1)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[D - 1] * 2)));
+      unsigned short run[PM::n_l(CL)];
+      load_run<PM::n_l(CL)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[CL] * 2)));
       if constexpr (!WRITE) {
-        static_for<PM::n_l(D - 1)>([&](auto Ic) {
+        static_for<PM::n_l(CL)>([&](auto Ic) {
           constexpr int i = decltype(Ic)::value;
           run[i] = have ? run[i] : (unsigned short)0;
         });
       }
       static_for<SPT / 2>([&](auto Jc) {
         constexpr int j = 2 * decltype(Jc)::value;
-        acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(D - 1, j)]));
+        acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(CL, j)]));
       });
     }
     __nv_bfloat16* const row = dst + prow * LdS;
@@ -613,16 +621,16 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C>)) void
     };
     auto clause_of = [&](const uint32_t* rowsS) {
       uint32_t m = valid;
-      static_for<D - 1>([&](auto Lc) {
+      static_for<D>([&](auto Lc) {
         constexpr int l = decltype(Lc)::value;
-        if constexpr (CR::row_g(l) > 0)
+        if constexpr (l != CL && CR::row_g(l) > 0)
           m &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsS, rowOff[l] + wordB));
       });
       return m;
     };
     auto group_row = [&](const uint32_t* rowsS, int g) {
       return *reinterpret_cast<const uint32_t*>(
-          gather_ptr(rowsS, rowOff[D - 1] + (uint32_t)g * rowBytes + wordB));
+          gather_ptr(rowsS, rowOff[CL] + (uint32_t)g * rowBytes + wordB));
     };
 
     const uint32_t clauseR = clause_of(rowsR), clauseW = clause_of(rowsW);

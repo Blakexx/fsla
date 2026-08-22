@@ -57,7 +57,7 @@ def walls(read, write, g, v, window, modes):
 
     def forward():
         num, den, _ = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(WIDTHS), K, M,
-                                              window, 32, carry_ops.LEAF_SPLIT, None)
+                                              window, 32, carry_ops.LEAF_SPLIT, 0, None)
         ext.intra_forward(pread, pwrite, gwrite, value, num, den, len(WIDTHS), WIDTHS[0],
                           packed, window)
 

@@ -63,17 +63,28 @@ def test_build_stamp_is_this_source():
 
 
 def test_arms_are_the_declared_solver_rows():
+    """The TOPOLOGY rows, and the declarations each is built for.
+
+    An arm is `(topology, declaration)`: the declaration chooses the BODY, so the
+    same topology appears once per declaration built for it.  DENSE_BOTH is built
+    for every topology because it is the seam's answer to any declaration this
+    family has no carved body for.
+    """
     got = {tuple(a[:7]) for a in carry_ops.arms()}
     assert got == {(2, 256, 4, 8, carry_ops.WINDOW, 32, 1),
                    (2, 256, 4, 8, carry_ops.WINDOW_WIDE, 32, 1),
                    (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1),
                    (3, 16, 2, 16, carry_ops.WINDOW_SMALL, 32, 1),
                    (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1)}, got
+    dense = {tuple(a[:7]) for a in carry_ops.arms() if a[7] == 0}
+    assert dense == got, "every topology must carry the DENSE_BOTH body"
     for arm in carry_ops.arms():
-        D, B, k, m, W, C, carve, BC, owners, smem = arm
+        D, B, k, m, W, C, carve, modes, BC, owners, smem, level = arm
         _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
         assert (BC, owners) == (bc_host, owners_host), (
             "the device box and the host solver disagree about the owner's shape")
+        #: the carve level is the declaration's, or -1 for the channel-split body.
+        assert level == (D - 1 if (modes >> (2 * (D - 1))) & 1 else -1)
 
 
 # ---------------------------------------------------------------- the lattice
