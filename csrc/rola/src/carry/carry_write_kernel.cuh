@@ -71,7 +71,7 @@ namespace rola::carry {
 static constexpr int kFbWarps = 8;
 static constexpr int kFbThreads = kFbWarps * 32;
 
-template <int D, int B, int K, int M, int W, int C>
+template <int D, int B, int K, int M, int W, int C, int CR, int RS>
 struct WriteGeom {
   using BP = BoxPlan<D, B, K, M>;
   static constexpr int BC = BP::kBC;
@@ -92,36 +92,45 @@ struct WriteGeom {
   //: 1, and the window line separates the last image read from the first panel
   //: write exactly as the ordering law already requires.
   static constexpr int face_bytes = img_bytes > panel_bytes ? img_bytes : panel_bytes;
-  //: the readout's staging block, one `kMmaN`-token region PER WARP -- and, at
-  //: entry and exit, the state plane's page.
+  //: THE READOUT'S TRANSPOSE BLOCK, one `kMmaN`-token region per warp -- and, at
+  //: entry and exit, the state plane's page.  ROUND 4 ITEM 2 TRIED TO DELETE IT and
+  //: the measurement refused: see the findings doc.  It is what turns the fan-in's
+  //: FOUR cache lines per instruction into one, and at the entry-densest cell that
+  //: is worth its 17,408 B.
   static constexpr int out_bytes = kFbWarps * kMmaN * LdO * (int)sizeof(float);
+  static_assert(out_bytes >= kAtomLeaves * LdO * (int)sizeof(float),
+                "the staging block must hold a whole state page");
   static constexpr int kListStride = ((W + 7) / 8) * 8;
   static constexpr int wlist_bytes = kListStride * (int)sizeof(uint16_t);
-  static constexpr int rlist_bytes = kFbWarps * kListStride * (int)sizeof(uint16_t);
+  //: ONE LIST PER READ GROUP, and the group count is `RS`'s, not the warp count's:
+  //: dynamic slice assignment decoupled them, so a coarser read grain allocates
+  //: fewer lists as well as reaching fewer warps.
+  static constexpr int kGR = BoxPlan<D, B, K, M>::s(CR) / RS;
+  static constexpr int rlist_bytes = kGR * kListStride * (int)sizeof(uint16_t);
   static constexpr int kLW = W / kBallotLanes;
-  //: THE READ LISTS AND THE VALUE RING ARE PHASE-EXCLUSIVE TOO, and share their
-  //: bytes for the same reason: the lists are built at the top of the window and
-  //: dead at the window line, and the ring is filled after it.  This is what puts
-  //: the arm at two CTAs on sm_86; see the SMEM ledger in the findings doc.
   static constexpr int kRegFloor = 128;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
+  //: THE READ LISTS AND THE VALUE RING ARE PHASE-EXCLUSIVE and share their bytes:
+  //: the lists are built at the top of the window and dead at the window line, the
+  //: ring is filled after it, and the handover line the IMAGE already needs
+  //: separates them.  Un-aliasing them was measured in round 4 and it LOSES -- not
+  //: on `cta_target`, which stays 2 either way, but on the sm_86 L1/SMEM carveout:
+  //: 49,424 B per CTA leaves less L1 than 45,328, and the cohort cells feel it.
   static constexpr int fixed_bytes = face_bytes + out_bytes + wlist_bytes;
   static constexpr int kStages = design::stages_for(slot_bytes, fixed_bytes, kFbThreads, kRegFloor);
   static constexpr int ring_bytes =
       kStages * slot_bytes > rlist_bytes ? kStages* slot_bytes : rlist_bytes;
   static constexpr size_t bytes = (size_t)fixed_bytes + (size_t)ring_bytes;
   static constexpr int cta_target = design::cta_target((int)bytes, kFbThreads, kRegFloor);
-  static_assert(out_bytes >= kAtomLeaves * LdO * (int)sizeof(float),
-                "the staging block must hold a whole state page");
 };
 
-template <int D, int B, int K, int M, int W, int C>
-constexpr int kWriteCtaTarget = WriteGeom<D, B, K, M, W, C>::cta_target;
+template <int D, int B, int K, int M, int W, int C, int CR, int RS>
+constexpr int kWriteCtaTarget = WriteGeom<D, B, K, M, W, C, CR, RS>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
 template <int D, int B, int K, int M, int W, int C, int CR, int RS, bool WSC, bool RS0, bool STATE>
-__global__ __launch_bounds__(kFbThreads, (kWriteCtaTarget<D, B, K, M, W, C>)) void
+__global__ __launch_bounds__(kFbThreads, (kWriteCtaTarget<D, B, K, M, W, C, CR, RS>)) void
 carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
                    const __nv_bfloat16* __restrict__ pwrite,
                    const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
@@ -129,7 +138,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
                    float* __restrict__ den, int L, int tok_words, int v_row_bytes,
                    const float* __restrict__ s_in, float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
-  using G = WriteGeom<D, B, K, M, W, C>;
+  using G = WriteGeom<D, B, K, M, W, C, CR, RS>;
   using PM = ProduceMap<D, B, K, M, C, kFbThreads>;
   using CR2 = TwoCarveRows<D, B, K, M, kFbWarps, 0, CR>;
 
@@ -186,16 +195,18 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
   //: THE MAP, IN ITS TWO ALIASED PAIRS.  `sr`/`sw` are the fold's two panel slots
   //: and `simg` is the image over the same bytes; `sv` is the value ring and
-  //: `srlist` the read lists over the same bytes.
+  //: `srlist` the read lists over the same bytes.  Both pairs are phase-exclusive
+  //: within a window and the handover line at the top of it is what separates them.
   __nv_bfloat16* const sr = reinterpret_cast<__nv_bfloat16*>(carry_smem);
   __nv_bfloat16* const sw = sr + C * LdS;
   __nv_bfloat16* const simg = sr;
-  float* const so = reinterpret_cast<float*>(carry_smem + G::face_bytes);
+  float* const spage = reinterpret_cast<float*>(carry_smem + G::face_bytes);
   __nv_bfloat16* const sv =
       reinterpret_cast<__nv_bfloat16*>(carry_smem + G::face_bytes + G::out_bytes);
   uint16_t* const srlist = reinterpret_cast<uint16_t*>(sv);
   uint16_t* const wlist =
       reinterpret_cast<uint16_t*>(carry_smem + G::face_bytes + G::out_bytes + G::ring_bytes);
+  float* const sow = spage + warp * kMmaN * LdO;
   constexpr int kListStride = G::kListStride;
 
   const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
@@ -241,8 +252,6 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   constexpr uint32_t kVSlot = (uint32_t)(C * LdV) * 2;
 #define ADDR_S(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2))
 #define ADDR_V(b_, R_, dv_) ((b_) + (uint32_t)(((R_) * LdV + (dv_)) * 2))
-
-  float* const sow = so + warp * kMmaN * LdO;
 
   // ---- the state, transposed: m = channels, n = this warp's own leaves -----
   float st[MCH][NL][4];
@@ -338,7 +347,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
           constexpr int m = decltype(Mc)::value;
           static_for<2>([&](auto Hc) {
             constexpr int k = (nix & 1) + 2 * decltype(Hc)::value;
-            float* const cell = &so[p * LdO + m * kMmaM + (lane >> 2) + 8 * (k >> 1)];
+            float* const cell = &spage[p * LdO + m * kMmaM + (lane >> 2) + 8 * (k >> 1)];
             if constexpr (LOAD)
               st[m][tile][k] = *cell;
             else
@@ -346,7 +355,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
           });
         });
         if (lane == nix / 2) {
-          float* const cell = &so[p * LdO + kDv];
+          float* const cell = &spage[p * LdO + kDv];
           if constexpr (LOAD)
             mass_st[tile][nix & 1] = *cell;
           else
@@ -362,7 +371,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
 #pragma unroll
       for (int a = 0; a < kAtoms; ++a) {
         page_sweep(page_off(atomBase + (uint32_t)a), [&](int sidx, uint32_t off) {
-          so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
+          spage[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
         });
         rendezvous();
         page_regs(a, std::true_type{});
@@ -539,9 +548,10 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     //: every warp.
     if (nbrAll == 0 && lane_ballot(liveW != 0u) == 0u) continue;
 
-    //: THE HANDOVER LINE.  It hands the panel region back to the image and the
-    //: value ring back to the read lists, both of which the previous window's FOLD
-    //: was still using; it is the price of the two aliases and it is one barrier.
+    //: THE HANDOVER LINE, and it is now the image's ALONE: the read lists and the
+    //: value ring no longer share bytes, so this separates the previous window's
+    //: FOLD (writing the panels) from this window's PUBLISH (writing the image over
+    //: them) and nothing else.
     rendezvous();
     if (dirty) {
       publish();
@@ -629,8 +639,18 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
           for (int m = 0; m < MCH; ++m) mma(acc[m], sa[m], rb);
           mma(macc, ma, rb);
         });
-        //: THE FAN-IN IS WARP-PRIVATE AND DIRECT.  The staging pass is what makes
-        //: the RED lane-per-CHANNEL and therefore one coalesced segment per issue.
+        //: THE FAN-IN IS WARP-PRIVATE, AND IT IS STAGED.  ROUND 4 ITEM 2 BUILT AND
+        //: MEASURED THE DIRECT FORM -- `red.global.add.f32` straight out of
+        //: `acc[m][e]`, no `STS`, no `LDS`, no `__syncwarp`, and the 17,408 B block
+        //: deleted -- AND IT IS REFUTED.  The sector arithmetic is right: the
+        //: accumulator already puts eight consecutive channels of one token in the
+        //: eight lanes sharing `lane & 3`, so the direct RED touches the same 64
+        //: sectors the staged one does.  But it touches them through FOUR cache
+        //: lines per instruction instead of one, and that is what binds: measured,
+        //: local/global L1 wavefronts 3.01x, MIO throttle 8.7x, l1tex 42.9% -> 63.6%,
+        //: and the ALT k16 scattered cell 0.820 -> 0.941.  The staging pass is what
+        //: makes the RED lane-per-CHANNEL and therefore one coalesced segment per
+        //: issue, and at the entry-densest cell that is worth its bytes.
 #pragma unroll
         for (int m = 0; m < MCH; ++m)
 #pragma unroll
@@ -643,6 +663,14 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
           store_f32(&sow[(lane * 2 + 1) * LdO + kDv], macc[1]);
         }
         __syncwarp();
+        //: the row loop stays FULLY UNROLLED with a per-row guard.  Two cheaper
+        //: shapes were measured in round 4 and both LOSE: rolling it to a liveness
+        //: trip count (0.845 -> 0.853 at ALT k4 scattered, because sixteen unrolled
+        //: REDs issue back to back and a rolled loop serializes them behind its own
+        //: branch), and skipping a wholly dead token tile with a warp-uniform test
+        //: before the MMA (1.248 -> 1.266 at ALT k16 cohort=64, because the branch
+        //: costs the four tiles their straight-line schedule and the cohort cells
+        //: are where dead tiles are common).
 #pragma unroll
         for (int r = 0; r < kMmaN; ++r) {
           if (j * kMmaN + r < n) {
@@ -662,9 +690,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     }
 
     //: THE WINDOW LINE, by the ordering law: no warp may fold this window's writes
-    //: while another is still reading the window's entry state -- which is also what
-    //: hands the panel region back from the image to the fold, and the read lists'
-    //: bytes back to the value ring.
+    //: while another is still reading the window's entry state.
     rendezvous();
 
     // ---- PHASE 2: the FOLD of every write batch ---------------------------
@@ -736,7 +762,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
         page_regs(a, std::false_type{});
         rendezvous();
         page_sweep(page_off(atomBase + (uint32_t)a), [&](int sidx, uint32_t offb) {
-          store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
+          store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), spage[sidx]);
         });
         rendezvous();
       }

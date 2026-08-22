@@ -160,7 +160,7 @@ static constexpr auto arm_fn() {
 template <int D, int B, int K, int M, int W, int C, uint32_t MO>
 static constexpr std::array<int64_t, 4> arm_geom() {
   if constexpr (kFormB<D, B, K, M, MO>) {
-    using G = WriteGeom<D, B, K, M, W, C>;
+    using G = WriteGeom<D, B, K, M, W, C, D - 1, kFbReadSpan>;
     return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)kFbThreads};
   } else if constexpr (kCarves<D, MO>) {
     using G = CarryGeom<D, B, K, M, W, C, carve_level<D, MO>>;
