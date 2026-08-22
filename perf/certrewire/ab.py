@@ -148,9 +148,9 @@ def run_dump(bh, T, window, path):
     print(f"wrote {path}")
 
 
-def run_ncu(bh, T, window, skip):
-    """The `k31_offsupport` Check 2 cell: warm, then `skip` more launches to profile."""
-    name, modes, k_tok, cohort = "k4-scat", CELLS[1][1], 4, None
+def run_ncu(bh, T, window, skip, cell):
+    """One cell, warmed, then `skip` more launches so ncu profiles a settled one."""
+    name, modes, k_tok, cohort = next(c for c in CELLS if c[0] == cell)
     pread, pwrite, gwrite, value, words = draw(bh, T, modes, k_tok, cohort,
                                                zlib.crc32(name.encode()) & 0xFFFF)
     packed = intra_ops.pack_modes(modes)
@@ -171,6 +171,7 @@ def main():
     ap.add_argument("--window", type=int, default=512)
     ap.add_argument("--rounds", type=int, default=15)
     ap.add_argument("--skip", type=int, default=4)
+    ap.add_argument("--cell", default="k4-scat", choices=[c[0] for c in CELLS])
     ap.add_argument("--out", default="/tmp/certrewire_dump.pt")
     a = ap.parse_args()
     torch.cuda.init()
@@ -179,7 +180,7 @@ def main():
     elif a.mode == "dump":
         run_dump(a.bh, a.length, a.window, a.out)
     else:
-        run_ncu(a.bh, a.length, a.window, a.skip)
+        run_ncu(a.bh, a.length, a.window, a.skip, a.cell)
 
 
 if __name__ == "__main__":

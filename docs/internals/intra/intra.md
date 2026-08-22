@@ -38,12 +38,15 @@ within-window term into the same buffers on the same stream. Nothing is summed o
 host, and there is no second output pair to reconcile — which is the whole reason the
 intra was built as a reducer rather than as a returner.
 
-## The stamp is a footprint
+## The stamp is a footprint and an ABI width
 
 `intra_build_stamp` returns the heaviest built arm's shared-memory footprint together
-with its thread count, so the value moves whenever any arm's shape does. A path check or
-a hash check cannot catch an extension trap; a fact only the loaded binary can produce
-can.
+with its thread count, folded against `sizeof(IntraParams)`, so the value moves whenever
+any arm's SHAPE moves or the kernel's OPERAND SET does. A shape-only stamp cannot see a
+signature change — the certificate rewire added two support-word pointers and moved no
+footprint at all — and an extension trap is exactly the case where an unchanged stamp
+would be read as an unchanged binary. A path check or a hash check cannot catch that
+trap; a fact only the loaded binary can produce can.
 
 ## The kernel names are not anonymous
 

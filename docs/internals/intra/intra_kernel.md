@@ -165,7 +165,8 @@ row tiles in one warp's registers (the four-warp form of the same block)
 assembles 255 registers with 72 spill stores and 17 in-loop local accesses at
 `W = 512`; two column tiles as well would want twice that again. The shipped
 block, sharing the row tiles across warps instead, is register-clean at 168
-registers (`W = 512`), 170 (`W = 384`), 86 (`W = 64`), zero spill, zero local.
+registers (`W = 512` and `W = 384`), 96 (`W = 64`), zero spill, zero local, on both
+ratified architectures.
 
 The CTA is register-bound to one per SM (256 threads x 168 registers), so a grid
 of 128 CTAs — `BH = 1` at `L = 65536` — runs 1.6 waves and pays a tail. Cells short
@@ -178,3 +179,21 @@ The slab gate, measured, is a CLUSTERING mechanism and not a sparsity one: at
 indistinguishable), and at cohort 64 it runs 0.53 ms with DRAM read down 2.5x.
 That is the same fact the ballot-intersection tier's `k_tok ~ 7` crossover
 records, seen from the built side, and it is why that tier is not built.
+
+READING THE CERTIFICATE INSTEAD OF REBUILDING IT is worth a fixed ~65 MB of the
+read, at `W = 512`, `BH = 1`, `L = 65536` (`ncu`, one settled launch, paired against
+the scan form on the same draws):
+
+| cell | DRAM read MB | `ncu` dur ms | free-running median ms |
+|---|---|---|---|
+| `k_tok = 4` scattered, scan | 583.6 | 1.040 | 0.820 |
+| `k_tok = 4` scattered, word | **511.1** (−72.5, −12.4%) | **0.963** (−7.4%) | **0.756** (−7.9%) |
+| `k_tok = 4` cohort 64, scan | 205.9 | 0.483 | 0.372 |
+| `k_tok = 4` cohort 64, word | **142.6** (−63.2, −30.7%) | **0.407** (−15.8%) | **0.298** (−19.8%) |
+
+The cut is an ABSOLUTE constant in the bytes, not a fraction: the scan reads a tile's
+whole amplitude rows whatever the routing puts in them, so both cells shed the same
+~65 MB and only the denominator differs. The wall follows at about 0.5–0.6 of the byte
+ratio, not 1:1 — the term is 62–65% of DRAM peak but its #1 issue stall is
+`math_pipe_throttle`, so a byte saved is not a cycle saved. The dense cell moves by
+nothing measurable, as it must: no side is declared, so no certificate is built at all.
