@@ -211,13 +211,17 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
 
   const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
   const int heads = vRowElems / kDv;
+  //: ONE PINNED GLOBAL BASE PER PLANE, and INDEX arithmetic after it.  The storage
+  //: class is a property of the base, so every access below stays `LDG`/`RED` while
+  //: ptxas keeps the right to fold a compile-time displacement into the access's own
+  //: immediate and to share one `IMAD.WIDE` between neighbouring accesses.
   const __nv_bfloat16* const vPlane =
-      pin_address(v + (long)(bh / heads) * L * vRowElems + (long)(bh % heads) * kDv);
-  const __nv_bfloat16* const pR = pin_address(pread + (long)bh * L * BP::kWtot);
-  const __nv_bfloat16* const pW = pin_address(pwrite + (long)bh * L * BP::kWtot);
-  const __nv_bfloat16* const gW = pin_address(gwrite + (long)bh * L);
-  float* const oPlane = pin_address(o + (long)bh * L * kDv);
-  float* const denPlane = pin_address(den + (long)bh * L);
+      global_base(v + (long)(bh / heads) * L * vRowElems + (long)(bh % heads) * kDv);
+  const __nv_bfloat16* const pR = global_base(pread + (long)bh * L * BP::kWtot);
+  const __nv_bfloat16* const pW = global_base(pwrite + (long)bh * L * BP::kWtot);
+  const __nv_bfloat16* const gW = global_base(gwrite + (long)bh * L);
+  float* const oPlane = global_base(o + (long)bh * L * kDv);
+  float* const denPlane = global_base(den + (long)bh * L);
 
   //: THE GROUP ROTATION (K33 1.45), on the WRITE digit: two CTAs co-resident on an
   //: SM are one grid wave apart and the wave is a multiple of the warp count, so
@@ -225,21 +229,21 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   const int grp = (warp + ((owner + (owner >> 5)) & (kFbWarps - 1))) & (kFbWarps - 1);
 
   // ---- the owner's digit runs, and the two carves' ballot rows -------------
-  int runCol[D];
-  uint32_t rowOff[D];
-  const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
+  int runCol[D], rowIdx[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
     const int o_l = (owner / BP::owner_div(l)) % BP::g(l);
     runCol[l] = BP::col_base(l) + o_l * BP::s(l);
     //: both carved levels store `kFbWarps` rows per owner run, so the owner's
-    //: block starts at `o_l * kFbWarps` in each.
-    rowOff[l] = (uint32_t)(CR2::row_prefix(l) + o_l * kFbWarps) * rowBytes;
+    //: block starts at `o_l * kFbWarps` in each.  This is a ROW INDEX, not a byte
+    //: displacement: the row stride is `tok_words` words and a group step is
+    //: therefore one `IMAD.WIDE` off a base the window forms once.
+    rowIdx[l] = CR2::row_prefix(l) + o_l * kFbWarps;
   });
   const uint32_t* const rowsR =
-      pin_address(rows + (long)(2 * bh + 0) * (long)CR2::kRows * (long)tok_words);
+      global_base(rows + (long)(2 * bh + 0) * (long)CR2::kRows * (long)tok_words);
   const uint32_t* const rowsW =
-      pin_address(rows + (long)(2 * bh + 1) * (long)CR2::kRows * (long)tok_words);
+      global_base(rows + (long)(2 * bh + 1) * (long)CR2::kRows * (long)tok_words);
 
   // ---- lane-invariant operand addressing ----------------------------------
   const int lr = lane & 7, tl = lane >> 3;
@@ -299,14 +303,14 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   //: THE READOUT'S A OPERAND: a read group's `kLeafW` slots are CONTIGUOUS under
   //: LAY 3, so it is `MCH` `ldmatrix.x4` out of the image plus two scalar reads for
   //: the mass -- which is ONE row of a sixteen-row tile.
-  auto state_operand = [&](int gslot, auto Kc, uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
+  auto state_operand = [&](uint32_t imgG, const __nv_bfloat16* mrowG, auto Kc,
+                           uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
     constexpr int kk = decltype(Kc)::value;
-    const uint32_t base = imgA + (uint32_t)((gslot + kk * kMmaK) * 2);
     static_for<MCH>([&](auto Mc) {
       constexpr int m = decltype(Mc)::value;
-      load_frag(sa[m], base + (uint32_t)(m * kMmaM * Ld * 2));
+      load_frag(sa[m], imgG + (uint32_t)((kk * kMmaK + m * kMmaM * Ld) * 2));
     });
-    const __nv_bfloat16* const mrow = simg + kDv * Ld + gslot + kk * kMmaK + (lane & 3) * 2;
+    const __nv_bfloat16* const mrow = mrowG + kk * kMmaK;
     ma[0] = (lane >> 2) == 0 ? *reinterpret_cast<const uint32_t*>(mrow) : 0u;
     ma[1] = 0u;
     ma[2] = (lane >> 2) == 0 ? *reinterpret_cast<const uint32_t*>(mrow + 8) : 0u;
@@ -395,11 +399,11 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   //: coefficient carries.  The slot accumulators are the only array this holds: a
   //: level's run is loaded, folded into every slot and dropped inside one
   //: `static_for` body.
-  auto produce = [&](__nv_bfloat16* dst, uint32_t tokOff, uint32_t gain) {
+  auto produce = [&](__nv_bfloat16* dst, const __nv_bfloat16* tokp, uint32_t gain) {
     uint32_t acc[SPT / 2];
     {
       unsigned short run[PM::n_l(D - 1)];
-      load_run<PM::n_l(D - 1)>(run, gather_ptr(pW, tokOff + (uint32_t)(lvCol[D - 1] * 2)));
+      load_run<PM::n_l(D - 1)>(run, tokp + lvCol[D - 1]);
 #pragma unroll
       for (int j = 0; j < SPT; j += 2)
         acc[j / 2] =
@@ -408,7 +412,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     static_for<D - 1>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
       unsigned short run[PM::n_l(l)];
-      load_run<PM::n_l(l)>(run, gather_ptr(pW, tokOff + (uint32_t)(lvCol[l] * 2)));
+      load_run<PM::n_l(l)>(run, tokp + lvCol[l]);
 #pragma unroll
       for (int j = 0; j < SPT; j += 2)
         acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
@@ -425,16 +429,24 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   //: differ only in the level-CR pair, so ONE 4-byte load carries both and the
   //: level-0 factor is a scalar load at a RUNTIME ADDRESS -- no panel, no `STS`, no
   //: `ldmatrix` for coefficients, and no register-array index.
-  auto read_pair = [&](int gs, uint32_t tokOff, bool have, uint32_t(&rb)[2]) {
-    const uint32_t pair = have ? *reinterpret_cast<const uint32_t*>(
-                                     gather_ptr(pR, tokOff + (uint32_t)((runCol[CR] + 2 * gs) * 2)))
-                               : 0u;
-    const int qb = (lane & 3) ^ (gs & 3);
+  //: TWO ROW BASES, THEN INDICES.  The token's amplitude row is one `IMAD.WIDE` off
+  //: the window's base, and the level-CR and level-0 column origins are folded into
+  //: it ONCE per token tile; what is left per k-step is the XOR'd level-0 digit
+  //: (`qb`, one more `IMAD.WIDE`) and, off that, COMPILE-TIME displacements that
+  //: ptxas folds into the load's own immediate.  Round 4's ledger measured the old
+  //: per-access `gather_ptr` form at three opaque 64-bit adds per k-step per token
+  //: tile, none of them foldable and none of them shared.
+  auto read_pair = [&](const __nv_bfloat16* tokp, int colC, int col0, int kk, int qb, bool have,
+                       uint32_t(&rb)[2]) {
+    //: ONE token row pointer, TWO column indices.  Carrying the two displaced
+    //: pointers instead costs two more live 64-bit registers across the k-step loop,
+    //: which is a spill on sm_80 at the 128-register bound -- measured.
+    const uint32_t pair = have ? *reinterpret_cast<const uint32_t*>(tokp + colC + 2 * kk) : 0u;
+    const __nv_bfloat16* const a0 = tokp + (col0 + qb);
 #pragma unroll
     for (int r = 0; r < 2; ++r)
       rb[r] =
-          mul_bf16x2(pair, splat_bf16x2_bits(*reinterpret_cast<const unsigned short*>(
-                               gather_ptr(pR, tokOff + (uint32_t)((runCol[0] + 4 * r + qb) * 2)))));
+          mul_bf16x2(pair, splat_bf16x2_bits(*reinterpret_cast<const unsigned short*>(a0 + 4 * r)));
   };
 
   // ---- V staging -----------------------------------------------------------
@@ -446,27 +458,43 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   const uint32_t svL = smem_addr(sv) + (uint32_t)((ldRow * LdV + ldCol) * 2);
 
   const int nWindows = (L + W - 1) / W;
+  //: THE WINDOW BASES ARE WALKED, NOT RE-DERIVED.  Forming them from the plane each
+  //: window keeps BOTH the plane base and the window base live -- ten 64-bit
+  //: registers where five will do, and at a 128-register bound a long-lived 64-bit
+  //: value is the scarcest thing there is (measured: +6 registers and a wall
+  //: regression on every ALT cell).  Advancing them in the loop's own increment
+  //: retires the plane bases after the first use and survives the whole-window
+  //: `continue`.
+  const __nv_bfloat16* pRw = pR;
+  const __nv_bfloat16* pWw = pW;
+  const __nv_bfloat16* gWw = gW;
+  float* oWin = oPlane + lane;
+  float* dWin = denPlane;
   //: the image is republished only where the fold moved the state, so a window that
   //: writes nothing costs the readout nothing.  The entry state is a write.
   bool dirty = true;
 
 #pragma unroll 1
-  for (int win = 0; win < nWindows; ++win) {
+  for (int win = 0; win < nWindows; ++win, pRw += (long)W * BP::kWtot, pWw += (long)W * BP::kWtot,
+           gWw += W, oWin += (long)W * kDv, dWin += W) {
     const int tok0 = win * W;
     const int wLen = (L - tok0) < W ? (L - tok0) : W;
-    const uint32_t winP = (uint32_t)tok0 * (uint32_t)(BP::kWtot * 2);
-    const uint32_t winG = (uint32_t)tok0 * 2u;
     const uint32_t winV = (uint32_t)tok0 * (uint32_t)v_row_bytes;
-    const uint32_t winO = (uint32_t)tok0 * (uint32_t)(kDv * (int)sizeof(float));
-    const uint32_t winD = (uint32_t)tok0 * 4u;
+    //: THE ROW TABLES KEEP THEIR BYTE-OFFSET GATHER, and that is a REGISTER ruling
+    //: rather than an instruction one.  Hoisting a base per (side, level) saves
+    //: sixteen `IMAD.WIDE` per window and costs four LIVE 64-bit registers, which is
+    //: a four-byte spill on sm_80 at the 128-register bound -- measured, and no
+    //: spill is admitted.  The row's stride is a runtime word count, so this is a
+    //: genuine byte offset and `gather_ptr` is the right primitive for it.
+    const int wIdx0 = (tok0 >> 5) + ((lane < G::kLW) ? lane : 0);
+    const uint32_t wordB = (uint32_t)(wIdx0 < tok_words ? wIdx0 : tok_words - 1) * 4u;
+    const uint32_t rowBytes = (uint32_t)tok_words * 4u;
     auto produce_batch = [&](__nv_bfloat16* dst, int o0, int ntot) {
       const int nb = (ntot - o0) < C ? (ntot - o0) : C;
       const bool have = prow < nb;
       const int tok = wlist[o0 + (have ? prow : nb - 1)];
-      const uint32_t gain = have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
-                                       gather_ptr(gW, winG + (uint32_t)tok * 2u)))
-                                 : 0u;
-      produce(dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain);
+      const uint32_t gain = have ? splat_bf16x2(gWw[tok]) : 0u;
+      produce(dst, pWw + (int)tok * BP::kWtot, gain);
     };
 
     // ---- the liveness pass ------------------------------------------------
@@ -477,9 +505,6 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     const bool inW = lane < LW;
     const uint32_t valid =
         (!inW || room <= 0) ? 0u : (room >= kBallotLanes ? 0xFFFFFFFFu : ((1u << room) - 1u));
-    const int wIdx = (tok0 >> 5) + (inW ? lane : 0);
-    const uint32_t wordB = (uint32_t)(wIdx < tok_words ? wIdx : tok_words - 1) * 4u;
-
     auto walk = [&](uint32_t m, uint16_t* dst, uint32_t bits, uint32_t below) {
       const int cnt = bit_count(m);
       const int pfx = lane_prefix_incl<LW>(cnt);
@@ -494,7 +519,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     };
     auto row_word = [&](const uint32_t* rowsS, int l, int g) {
       return *reinterpret_cast<const uint32_t*>(
-          gather_ptr(rowsS, rowOff[l] + (uint32_t)g * rowBytes + wordB));
+          gather_ptr(rowsS, (uint32_t)(rowIdx[l] + g) * rowBytes + wordB));
     };
 
     //: BOTH SIDES READ BOTH CARVES.  Each level's rows are stored at the grain ONE
@@ -606,16 +631,24 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
         nsel = mine ? nrg[g] : nsel;
         rem -= nb;
       });
-      const uint16_t* const rlist = srlist + gsel * kListStride;
+      //: THE BATCH'S INVARIANTS, HOISTED OUT OF THE TOKEN-TILE LOOP.  `osel` folds
+      //: into the list pointer, the group's image slot into the `ldmatrix` base and
+      //: the mass row, and the group's two amplitude column origins into the two
+      //: column indices the tile loop adds to its token row.
+      const uint16_t* const rlist = srlist + gsel * kListStride + osel;
       const int gslot = gsel * (kGSR * kOutHi);
+      const uint32_t imgG = imgA + (uint32_t)(gslot * 2);
+      const __nv_bfloat16* const mrowG = simg + kDv * Ld + gslot + (lane & 3) * 2;
+      const int gbase = gsel * kSub;
+      const int colC = runCol[CR] + 2 * gbase;
+      const int col0 = runCol[0];
       const int n = (nsel - osel) < C ? (nsel - osel) : C;
 
 #pragma unroll
       for (int j = 0; j < C / kMmaN; ++j) {
         const int idx = j * kMmaN + (lane >> 2);
         const bool have = idx < n;
-        const uint32_t tokOff =
-            winP + (uint32_t)rlist[osel + (have ? idx : 0)] * (uint32_t)(BP::kWtot * 2);
+        const __nv_bfloat16* const tokp = pRw + (int)rlist[have ? idx : 0] * BP::kWtot;
         float acc[MCH][4], macc[4];
 #pragma unroll
         for (int m = 0; m < MCH; ++m)
@@ -632,9 +665,10 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
         //: is a spill at the 128-register bound the occupancy target sets.  An
         //: `ldmatrix` out of SMEM is the cheap side of that trade.
         static_for<KDw>([&](auto Kc) {
+          constexpr int kk = decltype(Kc)::value;
           uint32_t sa[MCH][4], ma[4], rb[2];
-          state_operand(gslot, Kc, sa, ma);
-          read_pair(gsel * kSub + decltype(Kc)::value, tokOff, have, rb);
+          state_operand(imgG, mrowG, Kc, sa, ma);
+          read_pair(tokp, colC, col0, kk, (lane & 3) ^ ((gbase + kk) & 3), have, rb);
 #pragma unroll
           for (int m = 0; m < MCH; ++m) mma(acc[m], sa[m], rb);
           mma(macc, ma, rb);
@@ -674,17 +708,15 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
 #pragma unroll
         for (int r = 0; r < kMmaN; ++r) {
           if (j * kMmaN + r < n) {
-            float* const dp = reinterpret_cast<float*>(
-                gather_ptr(oPlane, (uint32_t)rlist[osel + j * kMmaN + r] * (uint32_t)(kDv * 4)
-                                       + winO + (uint32_t)(lane * (int)sizeof(float))));
+            //: `oWin` already carries the window's origin AND the lane's channel, so
+            //: the token is one `IMAD.WIDE` and the second RED is `+128` immediate.
+            float* const dp = oWin + (int)rlist[j * kMmaN + r] * kDv;
             fan_in_add(dp, sow[r * LdO + lane]);
             fan_in_add(dp + kBallotLanes, sow[r * LdO + lane + kBallotLanes]);
           }
         }
         if (lane < kMmaN && j * kMmaN + lane < n)
-          fan_in_add(reinterpret_cast<float*>(gather_ptr(
-                         denPlane, (uint32_t)rlist[osel + j * kMmaN + lane] * 4u + winD)),
-                     sow[lane * LdO + kDv]);
+          fan_in_add(dWin + (int)rlist[j * kMmaN + lane], sow[lane * LdO + kDv]);
         __syncwarp();
       }
     }

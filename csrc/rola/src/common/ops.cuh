@@ -79,6 +79,31 @@ __device__ __forceinline__ T* pin_address(T* p) {
   return p;
 }
 
+//: THE SAME PIN, WITH THE STORAGE CLASS ASSUMED ONCE -- WHICH IS THE POINT.
+//: `gather_ptr` asserts `__isGlobal` per ACCESS because its own arithmetic is what
+//: hid the class; but the assumption is a property of the BASE, not of the offset,
+//: so a base pinned here carries it through PLAIN pointer arithmetic and every
+//: access off it stays `LDG`/`RED` while ptxas keeps the right to fold the
+//: displacement.
+//:
+//: AND THAT IS WHY PLAIN ARITHMETIC IS THE CHEAPER FORM, against what the comment
+//: above assumes.  `base[idx]` at element type with a 32-bit `idx` lowers to ONE
+//: `IMAD.WIDE` -- a 32x32+64 multiply-add straight into an address register --
+//: where `gather_ptr(base, idx * sizeof(T))` lowers to the 32-bit scale PLUS
+//: `IADD3` + `IADD3.X`, and the opaque `asm` also blocks ptxas from folding a
+//: compile-time displacement into the load's own immediate field or from sharing
+//: the wide add between neighbouring accesses off one base.  Measured on the carry
+//: family: `gather_ptr` was 1,652 warp-instructions per (owner, window), 12.7% of
+//: the whole stream (`prototypes/k31_formb3_build/FINDINGS.md`, round 4 ledger).
+//: Use `gather_ptr` where the displacement is a genuine BYTE offset with a runtime
+//: stride the element type cannot express; use this where it is an index.
+template <class T>
+__device__ __forceinline__ T* global_base(T* p) {
+  asm("" : "+l"(p));
+  __builtin_assume(__isGlobal(p));
+  return p;
+}
+
 __device__ __forceinline__ void* gather_ptr(void* base, uint32_t off) {
   void* p;
   asm("{ .reg .u64 t; cvt.u64.u32 t, %2; add.u64 %0, %1, t; }" : "=l"(p) : "l"(base), "r"(off));
