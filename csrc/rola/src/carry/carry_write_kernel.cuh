@@ -586,67 +586,133 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     }
 
     //: ---- THE CARVE MIGRATION (round 8 base, law 12) -----------------------
-    //: ONE MASTER THAT CHANGES CARVE, streamed through the fold's panel bytes a
-    //: channel block at a time.  Chunk `c` is channels `[8c, 8c+8)`, which in the
-    //: accumulator's lane map are EXACTLY the four registers
+    //: ONE MASTER THAT CHANGES CARVE, streamed through the fold's panel bytes as a
+    //: RING OF `KR` CHANNEL-BLOCK CHUNKS.  Chunk `c` is channels `[8c, 8c+8)`,
+    //: which in the accumulator's lane map are EXACTLY the four registers
     //: `st[c>>1][j][2*(c&1)+b]` -- so the publish is the last use of those four
     //: scalars and the pull is their next def, and the peak is one master plus one
     //: chunk.  The WRITE carve's two floats per n-tile are adjacent `local` (one
-    //: `STS.64`); the READ carve's are stride `s(CR)` (two `LDS.32`).
-    auto migrate = [&](auto ToRead) {
-      constexpr bool TR = decltype(ToRead)::value;
-      const int chl = lane >> 2;
-      auto wi = [&](int j, int b) { return chl * BC + grp * kLeafW + 8 * j + 2 * (lane & 3) + b; };
-      auto ri = [&](int j, int b) {
-        const int pp = 8 * j + 2 * (lane & 3) + b;
-        return chl * BC + (pp & 7) * BP::s(CR) + 2 * grp + (pp >> 3);
-      };
-      static_for<MCH * 2>([&](auto Cc) {
-        constexpr int c = decltype(Cc)::value;
+    //: `STS.64`); the READ carve's are stride `s(CR)` (two `LDS.32`).  The mass
+    //: column is the ninth chunk and rides the four lanes holding accumulator row 0.
+    //:
+    //: THE RING IS WHAT COLLAPSES THE BARRIERS.  Publishing `KR` chunks before the
+    //: handoff costs ONE rendezvous per round instead of one per chunk: 36 CTA
+    //: barriers per window at M1/M2 become 10.
+    constexpr int NCH = MCH * 2;  // the value chunks
+    constexpr int NCM = NCH + 1;  // and the mass
+    constexpr int KR = 4;         // ring slots; a chunk is 8 * BC fp32 = 4 KB
+    static_assert(KR * 8 * BC * (int)sizeof(float) <= G::face_bytes,
+                  "the chunk ring lives in the fold's panel bytes");
+    //: the last `KR` published chunks land in `KR` DISTINCT slots (`slot = c % KR`
+    //: and publishing stops at `NCM-1`), which is what lets them be retained.
+    static_assert(NCM >= KR, "the retained tail is one ring's worth of chunks");
+    const int chl = lane >> 2;
+    auto wi = [&](int j, int b) { return chl * BC + grp * kLeafW + 8 * j + 2 * (lane & 3) + b; };
+    auto ri = [&](int j, int b) {
+      const int pp = 8 * j + 2 * (lane & 3) + b;
+      return chl * BC + (pp & 7) * BP::s(CR) + 2 * grp + (pp >> 3);
+    };
+    auto mwi = [&](int j, int b) { return grp * kLeafW + 8 * j + 2 * lane + b; };
+    auto mri = [&](int j, int b) {
+      const int pp = 8 * j + 2 * lane + b;
+      return (pp & 7) * BP::s(CR) + 2 * grp + (pp >> 3);
+    };
+    //: `FROMW` names the carve the registers currently hold.
+    auto pub = [&](auto Cc, auto Fw, int slot) {
+      constexpr int c = decltype(Cc)::value;
+      constexpr bool FROMW = decltype(Fw)::value;
+      float* const sp = schunk + slot * (8 * BC);
+      if constexpr (c < NCH) {
         constexpr int m = c >> 1, eh = c & 1;
-        rendezvous();
         static_for<NL>([&](auto Jc) {
           constexpr int j = decltype(Jc)::value;
-          const int o0 = TR ? wi(j, 0) : ri(j, 0), o1 = TR ? wi(j, 1) : ri(j, 1);
-          schunk[o0] = st[m][j][2 * eh];
-          schunk[o1] = st[m][j][2 * eh + 1];
+          sp[FROMW ? wi(j, 0) : ri(j, 0)] = st[m][j][2 * eh];
+          sp[FROMW ? wi(j, 1) : ri(j, 1)] = st[m][j][2 * eh + 1];
         });
-        rendezvous();
-        static_for<NL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          const int o0 = TR ? ri(j, 0) : wi(j, 0), o1 = TR ? ri(j, 1) : wi(j, 1);
-          st[m][j][2 * eh] = schunk[o0];
-          st[m][j][2 * eh + 1] = schunk[o1];
-        });
-      });
-      //: the mass column rides the last chunk: one channel, so it lives in the four
-      //: lanes carrying accumulator row 0.
-      rendezvous();
-      if (lane < 4) {
+      } else if (lane < 4) {
         static_for<NL>([&](auto Jc) {
           constexpr int j = decltype(Jc)::value;
           static_for<2>([&](auto Bc) {
             constexpr int b = decltype(Bc)::value;
-            const int pp = 8 * j + 2 * lane + b;
-            const int o = TR ? (grp * kLeafW + pp) : ((pp & 7) * BP::s(CR) + 2 * grp + (pp >> 3));
-            schunk[o] = mass_st[j][b];
-          });
-        });
-      }
-      rendezvous();
-      if (lane < 4) {
-        static_for<NL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          static_for<2>([&](auto Bc) {
-            constexpr int b = decltype(Bc)::value;
-            const int pp = 8 * j + 2 * lane + b;
-            const int o = TR ? ((pp & 7) * BP::s(CR) + 2 * grp + (pp >> 3)) : (grp * kLeafW + pp);
-            mass_st[j][b] = schunk[o];
+            sp[FROMW ? mwi(j, b) : mri(j, b)] = mass_st[j][b];
           });
         });
       }
     };
-    migrate(std::true_type{});
+    auto pull = [&](auto Cc, auto Tw, int slot) {
+      constexpr int c = decltype(Cc)::value;
+      constexpr bool TOW = decltype(Tw)::value;
+      const float* const sp = schunk + slot * (8 * BC);
+      if constexpr (c < NCH) {
+        constexpr int m = c >> 1, eh = c & 1;
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          st[m][j][2 * eh] = sp[TOW ? wi(j, 0) : ri(j, 0)];
+          st[m][j][2 * eh + 1] = sp[TOW ? wi(j, 1) : ri(j, 1)];
+        });
+      } else if (lane < 4) {
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          static_for<2>([&](auto Bc) {
+            constexpr int b = decltype(Bc)::value;
+            mass_st[j][b] = sp[TOW ? mwi(j, b) : mri(j, b)];
+          });
+        });
+      }
+    };
+    constexpr int NR = (NCM + KR - 1) / KR;
+    //: FORWARD, write -> read: every chunk streams.
+    auto migrate_fwd = [&]() {
+      static_for<NR>([&](auto Rc) {
+        constexpr int r = decltype(Rc)::value;
+        static_for<KR>([&](auto Sc) {
+          constexpr int sidx = decltype(Sc)::value;
+          if constexpr (r * KR + sidx < NCM)
+            pub(std::integral_constant<int, r * KR + sidx>{}, std::true_type{}, sidx);
+        });
+        rendezvous();
+        static_for<KR>([&](auto Sc) {
+          constexpr int sidx = decltype(Sc)::value;
+          if constexpr (r * KR + sidx < NCM)
+            pull(std::integral_constant<int, r * KR + sidx>{}, std::false_type{}, sidx);
+        });
+        if constexpr (r + 1 < NR) rendezvous();
+      });
+    };
+    //: REVERSE, read -> write: THE LAST `KR` CHUNKS ARE STILL IN THE RING AND
+    //: UNMODIFIED -- the readout never writes the state and never touches these
+    //: bytes -- so their writers reload them DIRECTLY, with no publish and NO
+    //: SYNC.  Only `NCM - KR` chunks stream.
+    auto migrate_rev = [&]() {
+      static_for<KR>([&](auto Sc) {
+        constexpr int sidx = decltype(Sc)::value;
+        constexpr int c = NCM - KR + sidx;
+        pull(std::integral_constant<int, c>{}, std::true_type{}, c % KR);
+      });
+      rendezvous();
+      constexpr int NRB = (NCM - KR + KR - 1) / KR;
+      static_for<NRB>([&](auto Rc) {
+        constexpr int r = decltype(Rc)::value;
+        static_for<KR>([&](auto Sc) {
+          constexpr int sidx = decltype(Sc)::value;
+          if constexpr (r * KR + sidx < NCM - KR)
+            pub(std::integral_constant<int, r * KR + sidx>{}, std::false_type{}, sidx);
+        });
+        rendezvous();
+        static_for<KR>([&](auto Sc) {
+          constexpr int sidx = decltype(Sc)::value;
+          if constexpr (r * KR + sidx < NCM - KR)
+            pull(std::integral_constant<int, r * KR + sidx>{}, std::true_type{}, sidx);
+        });
+        if constexpr (r + 1 < NRB) rendezvous();
+      });
+    };
+
+    //: THE HANDOVER LINE, and it is the migration's alone: the chunk ring lives in
+    //: the fold's panel bytes, so the previous window's fold must be done reading
+    //: them before this window's first publish overwrites them.  One barrier.
+    rendezvous();
+    migrate_fwd();
 
     // ---- PHASE 1: the READOUT, against the window's ENTRY state ------------
     //: THE WARP DRAINS ITS OWN GROUP'S TOKENS against its own read-carved slice.
@@ -703,7 +769,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     }
 
     //: back to the WRITE carve for the fold.
-    migrate(std::false_type{});
+    migrate_rev();
 
     //: THE WINDOW LINE, by the ordering law: no warp may fold this window's writes
     //: while another is still reading the window's entry state.
