@@ -12,9 +12,9 @@ lambda = O * BC + sum_l r_l * prod_{l' > l} s_l'
 
 and this file is the device object the step's walk reaches a leaf THROUGH — by
 composing those factors — rather than by consulting a map over the leaf space.
-Nothing here is sized in `N`: one bit per DIGIT (`sum_l ceil(B_l/32)` words) and
-one entry per live OWNER COORDINATE (`sum_l g_l` at most) is the whole
-apparatus, for the ONE SIDE the calling pass walks.
+Nothing here is sized in `N`: one bit per DIGIT (`sum_l ceil(B_l/32)` words per
+side) and one entry per live OWNER COORDINATE (`sum_l g_l` at most, per list) is
+the whole apparatus.
 
 THE INTERLEAVE IS DEAD. The R0 spec's LATTICE-1 §2.2 named a second intra-box
 order — the `[u_0..u_{D-1} | c_0..c_{D-1}]` interleave, in which a sub-box `k^D`
@@ -63,23 +63,17 @@ written once and this file is one more caller of it, not a second copy of it).
 An owner's span and a sub-box's span are each one such extract, which is what
 `kDecodeMaxSpan` is a capacity FOR.
 
-## <a id="the-owner-lists"></a>2. `build_owner_list` — ONE side, and why one
+## <a id="the-owner-lists"></a>2. `build_owner_lists` — two lists, and why two
 
-Per level, the ascending owner coordinates at which THIS SIDE has amplitude —
-`olist[level]`, `n_o` the realized count — built from the one digit mask the
-caller passes, with `units` its own product `prod_l |live_l|` and never a
-union's.
+Per (list, level), the ascending owner coordinates at which that list's side
+has amplitude — `olist[list][level]`, `n_o` the realized count. TWO lists:
+`kListUnion` (a leaf either side reaches, live-a-side-or-the-other) drives the
+walk itself; `kListWrite` (an atom the step deposits into) drives the
+candidate-atom enumeration alone. One list would make the atom enumeration the
+union's size, and a page-table probe per entry is what that would cost on a
+batch-head whose read support is far wider than its write support.
 
-**ONE SIDE IS THE WHOLE POINT, because a union over the sides is the DENSE
-PRODUCT.** A list holding "a leaf either side reaches" enumerates
-`prod_l (R_l u W_l)`, and under an alternating declaration (`carry/box.md`)
-every level is dense for one side, so `R_l u W_l` is that whole level and the
-product is the entire lattice — however sparse each side is on its own. Each
-side's own product prunes; their union does not. So the object here takes one
-mask and produces one list, and the step's two passes call it once each with
-their own side's (`decode.md#per-side-enumeration`).
-
-Building a list is one `cub::BlockScan` exclusive-sum per level —
+Building both is one `cub::BlockScan` exclusive-sum per (list, level) —
 `lat_g[l] <= kDecodeThreads` follows from the level-width capacity
 (`decode.md#level-width-capacity`), so one block covers a whole level's owner
 grid.
@@ -94,10 +88,10 @@ a device integer division in the walk's innermost enumeration, which — unlike
 the divisions the deleted mixed-radix decomposition paid per bitmap word — a
 lattice unit would otherwise pay once per candidate atom per CTA.
 
-`units` is the whole enumeration for that side: the padded owner-rank field's
-width plus `lat_outer_bits` low bits for the fixed run offsets, i.e.
-`2^(sum_l bits[l] + lat_outer_bits)` — zero wherever any level's list is empty,
-so an absent owner on that side kills its enumeration outright rather than
+`units[list]` is the whole enumeration for that list: the padded owner-rank
+field's width plus `lat_msb = log2(m)` low bits for the sub-box index, i.e.
+`2^(sum_l bits[l] + log2 m)` — zero wherever any level's list is empty, so an
+absent owner or write kills that list's enumeration outright rather than
 walking zero-width ranges.
 
 ## <a id="the-unit"></a>3. `Unit` / `resolve_unit` — one unit is an `(owner, r_0 .. r_{D-2})` pair
@@ -115,22 +109,14 @@ the high bits, one padded field per level (§2), and the low `lat_outer_bits`
 are the fixed run offsets in the SAME mixed radix the owner-local index uses, so
 `outer << lat_inner_bits` is the unit's base inside its owner with no multiply.
 
-**A UNIT IS ONE SIDE'S.** `resolve_unit<D, DECAY>` takes ONE digit mask, ONE
-staged amplitude row and ONE owner list — always the same side's, the side whose
-rank space the unit index runs over (§2) — so what it hands back carries that
-side's amplitude and that side's membership and has no field for the other's.
-
-The result is a `Unit<D>`: `base` (the unit's first leaf as a lattice index), a
-`valid` flag (false where the padded rank space overshoots a level's realized
-count, §2), `live` (false where some FIXED level's digit is absent on this side
-— the pruning the product structure `supp(R) = prod_l supp_l(R)` buys: one
-absent level kills the whole unit, in ONE test rather than a per-leaf one), the
-innermost level's staging base `dlast`, this side's `s_{D-1}`-wide slice `c`,
-and the FIXED LEVELS' AMPLITUDE PRODUCT `a` (with `rate`, the decay dials'
-product, on the `DECAY` arm). The owner coordinate itself is a local of the
-decomposition: `base` is what the walk addresses through, so a unit that carried
-the owner as well would hold a second name for the same place across the walk's
-tightest scope.
+The result is a `Unit<D>`: `owner`, `base` (the unit's first leaf as a lattice
+index), a `valid` flag (false where the padded rank space overshoots a level's
+realized count, §2), `live_r`/`live_w` (false where some FIXED level's digit is
+absent on that side — the pruning the product structure
+`supp(R) = prod_l supp_l(R)` buys: one absent level kills the whole unit for
+that side, in ONE test rather than a per-leaf one), the innermost level's
+staging base `dlast`, both sides' `s_{D-1}`-wide slices `cr`/`cw`, and the
+FIXED LEVELS' AMPLITUDE PRODUCTS `ar`/`aw`/`rate`.
 
 Those products are the unit's second point. Because a unit fixes every level but
 the innermost, their amplitudes are resolved ONCE HERE and a slot below costs a

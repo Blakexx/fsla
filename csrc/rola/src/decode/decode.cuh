@@ -72,11 +72,8 @@ constexpr int kDecodeMaxSpan = 32;
 //: stream over state rows, so residency is the one thing it trades registers FOR. TWO
 //: TEMPLATE AXES MOVE IT, each by one CTA: the DECAY arm carries a second per-leaf
 //: product and a survival exponential through the same loop, and the DEEPEST arm carries
-//: two more live registers per level (the staging offset and the side's intra-sub-box
-//: slice) through the same one. THE READOUT PASS TAKES THE NON-DECAY ARM AT EVERY
-//: TOPOLOGY -- decay applies at the deposit and nowhere else -- so the step's declared
-//: residency is the DEPOSIT pass's, which is the binding one.
-//: docs/internals/decode/decode.md#declared-residency
+//: three more live registers per level (the staging offset and both sides' intra-sub-box
+//: slices) through the same one. docs/internals/decode/decode.md#declared-residency
 __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
   return (decay || levels >= kMaxLevels) ? 4 : 5;
 }
@@ -158,7 +155,7 @@ struct DecodeParams {
   int mask_off[kMaxLevels];
   int mask_words[kMaxLevels];
   int mask_total;
-  //: One side's owner-coordinate list layout: `lat_g[l]` entries reserved per level.
+  //: The union owner-coordinate lists' layout: `lat_g[l]` entries reserved per level.
   int olist_off[kMaxLevels];
   int olist_total;
   //: THE ATOM AND THE UNIT, RECONCILED, and PAGED BACKING ONLY. Exactly one of these is
@@ -250,14 +247,12 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 }
 
 // ---------------------------------------------------------------------------
-// The step's entry points. `decode.cu` owns BOTH PASSES and the host entry;
-// `rola_api.cpp` binds only the host entry. The two SMEM sizings are separate because the
-// passes stage different operands: docs/internals/decode/decode.md#smem-ledger
+// The step's entry points. `decode.cu` owns the step and the host entry;
+// `rola_api.cpp` binds only the host entry.
 // ---------------------------------------------------------------------------
 
-size_t decode_deposit_smem_bytes(int total_rows, int d_v, bool decay, int mask_total,
-                                 int olist_total);
-size_t decode_readout_smem_bytes(int total_rows, int cols, int mask_total, int olist_total);
+size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
+                              int olist_total);
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
 
 }  // namespace decode

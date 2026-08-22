@@ -17,36 +17,32 @@ tools/manifests/sm_86.json
                                             "sass_sha256": "..." }, ... } }
 ```
 
-**416 entries per architecture**, measured on the current tree: 393 in the three
-long-standing families below, plus the K31 box-native families' 23 — 5 `carry_kernel`
-`<D, B, K, M, W, C, STATE>` arms, 5 `intra_kernel<D, W>` arms, R4's 3 `scan_a_kernel`
+**402 entries per architecture**, measured on the current tree: 383 in the three
+long-standing families below, plus the K31 box-native families' 19 — 3 `carry_kernel`
+`<D, B, K, M, W, C, STATE>` arms, 3 `intra_kernel<D, W>` arms, R4's 3 `scan_a_kernel`
 `<D, B, K, M, W, C>`, 3 `scan_b_kernel<D, B, K, M, W, C>` and 3
 `intra_backward_kernel<D, W>` arms, and the four device build stamps (one per family,
 forward and reverse). (The carve axis left `carry_kernel`'s signature in the integration
 rung, which is why its mangled names moved; the intra kernel gained a window axis in the
 same commit. The reverse arms mirror the forward ones because the two directions walk
 one window grid, and the two scans declare their register floors SEPARATELY, since a
-launch bound is a property of a kernel.) The 393: **48 for the facts
-family** — 28 `chunk_facts_tables<PLAN, MASK>` (lex `(D, B, BC)` plans crossed with
-the two prefill call classes, plus the GIVEN-SPAN owner-row plans the `rola::carry`
+launch bound is a property of a kernel.) The 383: **46 for the facts
+family** — 26 `chunk_facts_tables<PLAN, MASK>` (12 lex `(D, B, BC)` plans crossed with
+the two prefill call classes, plus the 2 GIVEN-SPAN owner-row plans the `rola::carry`
 family consumes, stateless only), 12 `block_bitmap_kernel`, 8 `atom_bitmap_kernel` —
-plus the decode step's **24**, which is 16
-`decode_deposit_kernel` (`DV x D x DECAY`) and 8 `decode_readout_kernel` (`DV x D`, and
-no decay axis — decay applies at the deposit and nowhere else), the decode path's own
-device build stamp, and
+plus 16
+`decode_step_kernel` (`DV x D x DECAY`), the decode path's own device build stamp, and
 the entmax solves' 320. (The K31 wave-2c lattice walk retired the `IN_SMEM` template axis
 and the 32-arm decode matrix it produced, and added the decode build stamp —
 [`internals/decode/decode.md` §31](internals/decode/decode.md#instantiation-matrix),
-[`internals/decode/decode_api.md` §build-stamp](internals/decode/decode_api.md#build-stamp); the
-per-side enumeration is what makes the step two kernels,
-[`internals/decode/decode.md` §25](internals/decode/decode.md#per-side-enumeration).) (The
+[`internals/decode/decode_api.md` §build-stamp](internals/decode/decode_api.md#build-stamp).) (The
 chunk consumer's 44 `compacted_kernel`, the walk probe's 6 and the reverse pass'
 14 left with the K31 deletion batch; baseline = tag `baseline/pre-k31`.) The tiled `consumer_forward_kernel<BC, DV, D, DECAY, GT>`
 product that four shards once carried retired in P67 D2
 ([`docs/internals/DELETIONS.md`](internals/DELETIONS.md)).
 `defines` is the empty tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since
 the closed-world codegen surface carries no `#define` this gate has to pin. Two
-ratified architectures (`sm_80`, `sm_86`) make **832 entries total**. The manifest is
+ratified architectures (`sm_80`, `sm_86`) make **804 entries total**. The manifest is
 the authority on the count and no comment restates it independently. The mangled
 name is the key because it is exact, stable, and encodes every template argument
 — an entry cannot be silently re-pointed at a different instantiation by a rename
@@ -64,11 +60,11 @@ ratchet, not a spill ban** (P25's recorded adjudication): a spill is admissible
 when it is priced, recorded here, and worse than every alternative in hand — not
 when it is absent.
 
-**On the current tree, 832 instantiations measured, 0 with an unhonored bound, and
+**On the current tree, 804 instantiations measured, 0 with an unhonored bound, and
 4 that spill at all** — all four the same entmax kernel, `union_backward_kernel`
-`<32, 8, false>` across its four value/output dtype pairings, on `sm_80` only, at 8
-stores / 8 loads and 64 registers. **Every facts and decode instantiation
-is zero-spill**, both passes of the decode step and every arm of both.
+`<32, 8, false>` in both its bf16 and fp32 forms, at 16 stores / 16 loads on
+`sm_86` and 24/24 on `sm_80`, 64 registers. **Every chunk and decode instantiation
+is zero-spill.**
 
 The tiled consumer's two priced-spill arms (`<BC=16, DV=32|64, D=1, nodecay,
 GT=16>`, carried deliberately because a 72-register budget removed the spill and

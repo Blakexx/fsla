@@ -14,11 +14,10 @@
 //      A device integer division is tens of cycles and the enumeration runs once per
 //      candidate atom per CTA, which is where it would be paid.
 //
-// ONE SIDE AT A TIME: every object here takes ONE side's digit mask and produces that
-// side's owner list, and a unit resolved against it carries that side's amplitude alone.
-// A union over the sides would enumerate `prod_l (R_l u W_l)` -- the DENSE product
-// wherever every level has a dense side, which is what the split-level declaration makes
-// true at every level.
+// TWO LISTS: the walk enumerates the UNION (a leaf either side reaches), the candidate
+// atoms enumerate the WRITE side alone (an atom the step deposits into). One list would
+// make the second enumeration the first one's size, and a page-table probe per entry is
+// what that costs.
 //
 // The lattice's formulas, the capacities and the cost accounting:
 // docs/internals/decode/decode_lattice.md
@@ -31,6 +30,11 @@ namespace rola {
 namespace decode {
 
 using LatticeScan = cub::BlockScan<int, kDecodeThreads>;
+
+//: The two enumerations, as the index of one owner-list plane.
+constexpr int kListUnion = 0;
+constexpr int kListWrite = 1;
+constexpr int kLists = 2;
 
 //: One side's DIGIT MASK, one bit per digit of every level, packed level by level. One
 //: thread owns one destination word and reads the amplitudes it covers, so the pass is
@@ -69,45 +73,53 @@ __device__ __forceinline__ int ceil_log2_dev(int n) {
   return bits;
 }
 
-//: ONE SIDE'S OWNER LIST: per level, the ascending coordinates at which that side has
-//: amplitude. `n_o` is the realized count, `bits` its power-of-two padding and `shift` the
-//: padded field's position in the rank, so a rank decomposes by shifts and a
+//: THE OWNER LISTS: per list and level, the ascending coordinates at which that list's
+//: side has amplitude. `n_o` is the realized count, `bits` its power-of-two padding and
+//: `shift` the padded field's position in the rank, so a rank decomposes by shifts and a
 //: padded-past-the-end index is skipped rather than divided around. `units` is the whole
-//: enumeration -- the rank space times the unit radix inside an owner -- and it is the
-//: SIDE'S OWN PRODUCT `prod_l |live_l|`, never a union's.
-//: One block scan per level; `lat_g[l] <= kDecodeThreads` follows from the level-width
-//: capacity. The caller's barrier before this must have published the mask.
+//: enumeration -- the rank space times the unit radix inside an owner.
+//: One block scan per (list, level); `lat_g[l] <= kDecodeThreads` follows from the
+//: level-width capacity. The caller's barrier before this must have published both masks.
 template <int D>
-__device__ __forceinline__ void build_owner_list(const DecodeParams& p, const uint32_t* mask,
-                                                 int32_t* olist, int32_t* n_o, int32_t* bits,
-                                                 int32_t* shift, int32_t* units,
-                                                 LatticeScan::TempStorage& scan_temp) {
+__device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const uint32_t* mask_r,
+                                                  const uint32_t* mask_w, int32_t* olist,
+                                                  int32_t* n_o, int32_t* bits, int32_t* shift,
+                                                  int32_t* units,
+                                                  LatticeScan::TempStorage& scan_temp) {
   const int tid = threadIdx.x;
 #pragma unroll
-  for (int l = 0; l < D; ++l) {
-    const int span = p.lat_s[l];
-    const bool live = tid < p.lat_g[l] && level_slice(p, mask, l, tid * span, span) != 0u;
-    int excl = 0;
-    int total = 0;
-    LatticeScan(scan_temp).ExclusiveSum(live ? 1 : 0, excl, total);
-    if (live) olist[p.olist_off[l] + excl] = tid;
-    if (tid == 0) n_o[l] = total;
+  for (int list = 0; list < kLists; ++list) {
+#pragma unroll
+    for (int l = 0; l < D; ++l) {
+      const int span = p.lat_s[l];
+      bool live = false;
+      if (tid < p.lat_g[l]) {
+        const int lo = tid * span;
+        const bool w = level_slice(p, mask_w, l, lo, span) != 0u;
+        live = (list == kListWrite) ? w : (w || level_slice(p, mask_r, l, lo, span) != 0u);
+      }
+      int excl = 0;
+      int total = 0;
+      LatticeScan(scan_temp).ExclusiveSum(live ? 1 : 0, excl, total);
+      if (live) olist[list * p.olist_total + p.olist_off[l] + excl] = tid;
+      if (tid == 0) n_o[list * kMaxLevels + l] = total;
+      __syncthreads();
+    }
+    if (tid == 0) {
+      int acc = 0;
+#pragma unroll
+      for (int l = D - 1; l >= 0; --l) {
+        shift[list * kMaxLevels + l] = acc;
+        acc += ceil_log2_dev(n_o[list * kMaxLevels + l]);
+        bits[list * kMaxLevels + l] = acc - shift[list * kMaxLevels + l];
+      }
+      bool empty = false;
+#pragma unroll
+      for (int l = 0; l < D; ++l) empty = empty || n_o[list * kMaxLevels + l] == 0;
+      units[list] = empty ? 0 : (1 << (acc + p.lat_outer_bits));
+    }
     __syncthreads();
   }
-  if (tid == 0) {
-    int acc = 0;
-#pragma unroll
-    for (int l = D - 1; l >= 0; --l) {
-      shift[l] = acc;
-      acc += ceil_log2_dev(n_o[l]);
-      bits[l] = acc - shift[l];
-    }
-    bool empty = false;
-#pragma unroll
-    for (int l = 0; l < D; ++l) empty = empty || n_o[l] == 0;
-    *units = empty ? 0 : (1 << (acc + p.lat_outer_bits));
-  }
-  __syncthreads();
 }
 
 //: ONE DIGIT'S MEMBERSHIP, as ONE load and a shift. `level_slice` reads two words and
@@ -129,40 +141,45 @@ __device__ __forceinline__ bool mask_bit(const DecodeParams& p, const uint32_t* 
 //: the unit's point: every level but the innermost contributes ONE FIXED DIGIT, so its
 //: amplitude and its membership are resolved ONCE HERE and the slot loop below costs one
 //: innermost amplitude per leaf rather than `D` of them. Only the innermost level
-//: contributes a SLICE (`c`, one 32-bit extract) that the slot loop iterates by `__ffs`.
-//: `valid` is false where the padded rank space overshoots a level's realized count.
-//: docs/internals/decode/decode_lattice.md#the-unit
+//: contributes a SLICE (`cr`/`cw`, one 32-bit extract) that the slot loop iterates by
+//: `__ffs`. `valid` is false where the padded rank space overshoots a level's realized
+//: count. docs/internals/decode/decode_lattice.md#the-unit
 template <int D>
 struct Unit {
-  int base;  // the unit's first leaf, as a LATTICE index
+  int owner;  // O, the owner's mixed-radix index over lat_g
+  int base;   // the unit's first leaf, as a LATTICE index
   bool valid;
-  bool live;  // every level but the innermost carries this side's amplitude at its digit
+  bool live_r;  // every level but the innermost carries read amplitude at its fixed digit
+  bool live_w;
   int dlast;  // level D-1's staging offset: its run base
-  float a;    // the fixed levels' amplitude product, and the decay rate's
+  float ar;   // the fixed levels' amplitude product, per side, and the decay rate's
+  float aw;
   float rate;
-  uint32_t c;  // level D-1's whole run, as one slice
+  uint32_t cr;  // level D-1's whole run, as one slice, per side
+  uint32_t cw;
 };
 
 //: THE UNIT INDEX, decomposed by shifts alone. The high bits are the OWNER RANK, one
 //: padded field per level; the low `lat_outer_bits` are the fixed run offsets in the SAME
 //: mixed radix the owner-local index uses, so `outer << lat_inner_bits` is the unit's base
-//: inside its owner without a multiply. A level whose digit is dead kills the whole unit,
-//: which is the pruning the product structure buys.
-//: THE MASK, THE AMPLITUDES AND THE LIST ARE ONE SIDE'S, always the same side: the rank
-//: space this index runs over is the one `build_owner_list` built from that mask.
+//: inside its owner without a multiply. A level whose digit is dead on a side kills that
+//: side for the whole unit, which is the pruning the product structure buys.
 //: `DECAY` is a template arm so the dial product is not merely multiplied by one.
 //: docs/internals/decode/decode_lattice.md#the-unit
 template <int D, bool DECAY>
-__device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uint32_t* mask,
-                                                const float* sa, const float* sd,
+__device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uint32_t* mask_r,
+                                                const uint32_t* mask_w, const float* sa_r,
+                                                const float* sa_w, const float* sd,
                                                 const int32_t* list, const int32_t* n_o,
                                                 const int32_t* bits, const int32_t* shift,
                                                 int unit) {
   Unit<D> u;
-  int owner = 0;
+  u.owner = 0;
   u.valid = true;
-  u.live = true;
-  u.a = 1.0f;
+  u.live_r = true;
+  u.live_w = true;
+  u.ar = 1.0f;
+  u.aw = 1.0f;
   u.rate = 1.0f;
   const int outer = unit & ((1 << p.lat_outer_bits) - 1);
   const int rank = unit >> p.lat_outer_bits;
@@ -174,20 +191,23 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
       i = 0;
     }
     const int o = list[p.olist_off[l] + i];
-    owner += o * p.lat_gsuf[l];
+    u.owner += o * p.lat_gsuf[l];
     const int run_base = o * p.lat_s[l];
     if (l == D - 1) {
       u.dlast = p.level_amp_offset[l] + run_base;
-      u.c = level_slice(p, mask, l, run_base, p.lat_s[l]);
+      u.cr = level_slice(p, mask_r, l, run_base, p.lat_s[l]);
+      u.cw = level_slice(p, mask_w, l, run_base, p.lat_s[l]);
     } else {
       const int digit = run_base + ((outer >> p.lat_oshift[l]) & (p.lat_s[l] - 1));
       const int off = p.level_amp_offset[l] + digit;
-      u.live = u.live && mask_bit(p, mask, l, digit);
-      u.a *= sa[off];
+      u.live_r = u.live_r && mask_bit(p, mask_r, l, digit);
+      u.live_w = u.live_w && mask_bit(p, mask_w, l, digit);
+      u.ar *= sa_r[off];
+      u.aw *= sa_w[off];
       if (DECAY) u.rate *= sd[off];
     }
   }
-  u.base = (owner << p.lat_local_bits) + (outer << p.lat_inner_bits);
+  u.base = (u.owner << p.lat_local_bits) + (outer << p.lat_inner_bits);
   return u;
 }
 

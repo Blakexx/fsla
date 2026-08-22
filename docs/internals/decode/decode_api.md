@@ -36,11 +36,8 @@ separate claim from the capacity is [`decode.md`
 [`decode.md` §6](decode.md#level-width-capacity).
 
 <a id="residency"></a>`rola_decode_residency(decay, levels)` returns the step's DECLARED
-CTAs per SM for that arm, read off the same `constexpr` both kernels' `__launch_bounds__`
-are built from. It is the DEPOSIT pass's declared residency, which is the binding one: the
-readout pass takes the `decay = false` arm at every topology, so it is never the tighter of
-the two ([`decode.md` §30b](decode.md#declared-residency)). The host's split policy sizes
-ONE WAVE from it
+CTAs per SM for that arm, read off the same `constexpr` the kernel's `__launch_bounds__`
+are built from. The host's split policy sizes ONE WAVE from it
 ([`decode.md` §7](decode.md#declared-residency)), and it is bound rather than mirrored in
 Python for the reason the whole bound surface exists: a launch bound is exactly the
 constant that drifts when it is written down twice. The two arms differ because the decay
@@ -56,11 +53,8 @@ because a Python-side recomputation of the same three quantities would just be a
 mirror with its own drift.
 
 <a id="the-step"></a>`rola_decode_forward` is the single data-plane entry, and it launches
-TWO KERNELS ON ONE STREAM — a deposit pass over the write product and a readout pass over
-the read product, in that order, which is where UPDATE-THEN-READ comes from
-([`decode.md` §25](decode.md#per-side-enumeration)). The fold, the `(k, m)` lattice's
-factor tables and the walk are phases of EACH; the step's OWN per-batch-head residency
-verdict is the deposit pass's, and the readout pass reads it. Its operands are the caller's RAW
+ONE kernel: the fold, the `(k, m)` lattice's factor tables, the walk and the step's OWN
+per-batch-head residency verdict are phases of it. Its operands are the caller's RAW
 `[B, 1, H, *]` views — `read`, `write`, `g_write`, `v`, plus the per-read-level
 `normalize` flags — because the fold is inside the kernel and there is no operand plane
 to hand it ([`decode_fold.md`](decode_fold.md)). `heads` is not an argument: `v`'s own
