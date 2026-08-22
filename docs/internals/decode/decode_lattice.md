@@ -204,7 +204,13 @@ A flat digit rank is **not monotone in atom id**: at the flagship spans
 The walk does not care. The CANDIDATE-ATOM enumeration does — the pool claim's canonical
 ranks are defined in ASCENDING ATOM ID ([`decode.md#the-claim`](decode.md#the-claim)) — so
 term slot `D + 1` holds the write product AGAIN in the old `owners x run radix` space, and
-`candidate_atom` reads that slot. It is the enumeration the claim was ratified on, byte for
+`candidate_atom` reads that slot through `resolve_candidate_unit` -- a resolver of its own,
+because the candidate enumeration asks the write mask a MEMBERSHIP question and nothing
+else. It needs neither side's amplitude product, neither decay rate and not the read slice,
+and its kind is `kKindW` at every level by definition, so the term table and the
+kind-indexed addressing collapse to constants. Resolving it through the WALK's resolver
+made it pay for all of that once per candidate rank per CTA -- sixteen ranks per thread at
+the dense cell -- and `ncu` priced that at **5.9 % of the step's whole instruction count**. It is the enumeration the claim was ratified on, byte for
 byte; nothing about the claim, the shadow row or the atom bits moved. `tests/integration/
 test_decode_paging.py` is what holds that: it exercises growth, the pool claim and the
 replay path, and it passes unedited.

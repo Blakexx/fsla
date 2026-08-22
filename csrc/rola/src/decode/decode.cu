@@ -231,8 +231,9 @@ decode_step_kernel(DecodeParams p) {
     const int unit0 = (i >> p.atoms_per_unit_shift) << p.lat_units_per_atom_shift;
     int atom = -1;
     for (int q = 0; q < n_units; ++q) {
-      const Unit<D> u = resolve_unit<D, false>(p, mask_r, mask_w, sa_r, sa_w, sd, olist, s_n_o,
-                                               s_bits, s_shift, D + 1, unit0 + q);
+      const CandidateUnit u =
+          resolve_candidate_unit<D>(p, mask_w, olist, s_n_o, s_bits + (D + 1) * kMaxLevels,
+                                    s_shift + (D + 1) * kMaxLevels, unit0 + q);
       if (!u.valid) return -1;
       if (atom < 0) atom = (u.base + (a << kAtomShift)) >> kAtomShift;
       if (u.live_w && ((u.cw >> ((a << kAtomShift) & ((1 << inner_bits) - 1))) & win_mask) != 0u) {

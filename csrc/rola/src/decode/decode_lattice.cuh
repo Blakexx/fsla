@@ -396,6 +396,55 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
   return u;
 }
 
+//: THE CANDIDATE ATOM'S UNIT, and it is deliberately NOT a `Unit<D>`. The candidate
+//: enumeration asks the write mask a MEMBERSHIP question and nothing else -- which atom
+//: does this rank touch, and does the write side reach it -- so it needs neither side's
+//: amplitude product, neither decay rate, and not the read slice. Resolving it through the
+//: walk's resolver made it pay for all five, once per candidate rank per CTA, which at the
+//: dense cell is sixteen ranks per thread: measured at 5.9 % of the step's whole
+//: instruction count. Its kind is `kKindW` at every level by definition, so the term table
+//: and the kind-indexed addressing collapse to constants here too.
+//: docs/internals/decode/decode_lattice.md#the-candidate-slot
+struct CandidateUnit {
+  int base;
+  bool valid;
+  bool live_w;
+  uint32_t cw;
+};
+
+template <int D>
+__device__ __forceinline__ CandidateUnit
+resolve_candidate_unit(const DecodeParams& p, const uint32_t* mask_w, const int32_t* olist,
+                       const int32_t* n_o, const int32_t* bits, const int32_t* shift, int unit) {
+  CandidateUnit u;
+  int owner = 0;
+  u.valid = true;
+  u.live_w = true;
+  const int outer = unit & ((1 << p.lat_outer_bits) - 1);
+  const int rank = unit >> p.lat_outer_bits;
+  const int32_t* wlist = olist + kKindW * p.olist_total;
+  const int32_t* wn_o = n_o + kKindW * kMaxLevels;
+#pragma unroll
+  for (int l = 0; l < D; ++l) {
+    int i = (rank >> shift[l]) & ((1 << bits[l]) - 1);
+    if (i >= wn_o[l]) {
+      u.valid = false;
+      i = 0;
+    }
+    const int o = wlist[p.olist_off[l] + i];
+    owner += o * p.lat_gsuf[l];
+    const int run_base = o * p.lat_s[l];
+    if (l == D - 1) {
+      u.cw = level_slice(p, mask_w, l, run_base, p.lat_s[l]);
+    } else {
+      const int digit = run_base + ((outer >> p.lat_oshift[l]) & (p.lat_s[l] - 1));
+      u.live_w = u.live_w && mask_bit(p, mask_w, l, digit);
+    }
+  }
+  u.base = (owner << p.lat_local_bits) + (outer << p.lat_inner_bits);
+  return u;
+}
+
 //: THE WRITE PRODUCT'S UNIT, resolved from LIVE DIGITS. It is `resolve_unit`'s sibling and
 //: it hands back the identical `Unit<D>`, so the walk that consumes it has no idea which
 //: one produced it -- the whole difference is the rank space
