@@ -42,7 +42,7 @@ namespace intra {
 namespace detail {
 
 //: the reverse intra's own device stamp: a fact only THIS binary can produce.
-constexpr int64_t kIntraBwdMagic = 31040002;
+constexpr int64_t kIntraBwdMagic = 31040003;
 
 constexpr int kSeedPitch = kValuePitch;
 constexpr int kChanTiles = kValueWidth / kSlabDigits;
@@ -300,18 +300,10 @@ __device__ __forceinline__ void publish_image(IntraBwdSmem<D, B, W>& sm,
   }
 }
 
-//: THE ONE REDUCING PATH.  `acc` is one `[kMmaM x kSlabDigits]` accumulator in the
-//: MMA's lane map; `base` addresses its first destination row and `stride` the
-//: destination's row pitch.  The relay through the warp's own plane costs two shared
-//: accesses per value and buys a reducing instruction that spans two rows of
-//: contiguous digits -- two sectors for 128 bytes where the direct form takes eight.
-//: `put` and `get` are the lane's two cursors into its own relay plane and `lane_off`
-//: its destination offset -- row half in the high byte, digit column in the low -- all
-//: three invariant over the whole kernel.  `base` addresses the tile's first
-//: destination row and `stride` its row pitch, as an `int` because the widest offset a
-//: reduced tile reaches is fifteen row pitches.
-__device__ __forceinline__ void reduce_tile(float* put, const float* get, int lane_off,
-                                            const float (&acc)[2][4], float* base, int stride) {
+//: THE RELAY.  `acc` is one `[kMmaM x kSlabDigits]` accumulator in the MMA's lane map
+//: and `put` the lane's cursor into its own warp-private plane; the round trip is
+//: warp-private, so it needs no barrier.
+__device__ __forceinline__ void relay_tile(float* put, const float (&acc)[2][4]) {
   __syncwarp();
 #pragma unroll
   for (int nt = 0; nt < 2; ++nt)
@@ -320,10 +312,56 @@ __device__ __forceinline__ void reduce_tile(float* put, const float* get, int la
       *reinterpret_cast<float2*>(put + h * 8 * kXposePitch + nt * 8) =
           make_float2(acc[nt][2 * h], acc[nt][2 * h + 1]);
   __syncwarp();
+}
+
+//: THE ONE REDUCING PATH.  `get` is the lane's cursor into the relayed plane and
+//: `lane_off` its destination offset -- row half in the high byte, digit column in the
+//: low; both are invariant over the whole kernel.  `base` addresses the tile's first
+//: destination row and `stride` its row pitch, as an `int` because the widest offset a
+//: reduced tile reaches is fifteen row pitches.
+//: docs/internals/intra/intra_backward_kernel.md.
+__device__ __forceinline__ void reduce_tile(float* put, const float* get, int lane_off,
+                                            const float (&acc)[2][4], float* base, int stride) {
+  relay_tile(put, acc);
   int off = (lane_off >> 8) * stride + (lane_off & 0xFF);
 #pragma unroll
   for (int q = 0; q < kXposeRows / 2; ++q, off += 2 * stride)
     fan_in_add(base + off, get[q * 2 * kXposePitch]);
+}
+
+//: THE MAGNITUDE BITS, so a signed zero is off support exactly as an unsigned one is.
+__device__ __forceinline__ unsigned support_bits(denseref::ops::SmemAddr a) {
+  unsigned x;
+  asm("ld.shared.u16 %0, [%1];" : "=r"(x) : "r"(a));
+  return x & 0x7FFFu;
+}
+
+//: A PREDICATED reducing instruction rather than a branched one: the gate is a property
+//: of the destination CELL, so eight cells of one lane carry eight independent gates and
+//: a branch per cell gives the walk eight control-flow regions to keep values live
+//: across -- measured, 96 bytes of spill against zero.
+__device__ __forceinline__ void fan_in_add_if(unsigned live, float* p, float x) {
+  asm volatile("{ .reg .pred q; setp.ne.u32 q, %2, 0; @q red.global.add.f32 [%0], %1; }" ::"l"(p),
+               "f"(x), "r"(live)
+               : "memory");
+}
+
+//: THE SAME PATH, RESTRICTED TO THE DESTINATION PLANE'S OWN SUPPORT.  `sup` walks the
+//: own-side operand at the reducing address and `sup_step` is its two-row stride;
+//: `keep_all` is 1 on a side whose duty is dense, where the whole digit axis is live and
+//: no cell may be dropped.  The walk unrolls by the relay's own period: the lane's eight
+//: cells are the two row parities of a `[16 x 16]` tile, and unrolling past that holds
+//: eight certificate loads live and spills.
+//: docs/internals/intra/intra_backward_kernel.md.
+__device__ __forceinline__ void reduce_tile_on_support(float* put, const float* get, int lane_off,
+                                                       const float (&acc)[2][4], float* base,
+                                                       int stride, denseref::ops::SmemAddr sup,
+                                                       int sup_step, unsigned keep_all) {
+  relay_tile(put, acc);
+  int off = (lane_off >> 8) * stride + (lane_off & 0xFF);
+#pragma unroll 2
+  for (int q = 0; q < kXposeRows / 2; ++q, off += 2 * stride, sup += sup_step)
+    fan_in_add_if(support_bits(sup) | keep_all, base + off, get[q * 2 * kXposePitch]);
 }
 
 //: THE SECOND LAUNCH BOUND, from the arm's own footprint.  Without it ptxas budgets
@@ -418,6 +456,12 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
   const denseref::ops::SmemAddr base_pw_a = smem_addr(&sm.img[rT][grp * kPwCols + cT]);
   const denseref::ops::SmemAddr base_dv_a = smem_addr(&sm.img[rT][jt * kWarpRows + cT]);
   const denseref::ops::SmemAddr base_dv_b = smem_addr(&sm.dslab[rF][chan + cF * 8]);
+  //: THE OWN-SIDE CERTIFICATE'S per-cell address: a lane's eight destination cells are
+  //: eight rows, two apart, of ONE digit column of its own side's staged operand.
+  const denseref::ops::SmemAddr base_sup_r =
+      smem_addr(&sm.rslab[0][grp * kPrRows + (lane >> 4)][dp * kSlabDigits + (lane & 15)]);
+  const denseref::ops::SmemAddr base_sup_w =
+      smem_addr(&sm.wslab[0][grp * kPwCols + (lane >> 4)][dp * kSlabDigits + (lane & 15)]);
 
   for (int rt0 = 0; rt0 < kTiles; rt0 += kRowTiles) {
     const int rt = rt0 + mine;
@@ -518,6 +562,9 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
 
       //: `A`, `dA` and every `dG_l` are formed IN PLACE over the Gram registers, and
       //: (I3)'s row sum is drained inside the same sweep so it never becomes an array.
+      //: ITS SIXTEEN DESTINATIONS ARE ONE POINTER AND FIFTEEN CONSTANT DISPLACEMENTS: a
+      //: reducing address written as one sum is sixteen live 64-bit addresses instead.
+      float* const dgw_base = p.d_gw + (long long)(bh * p.L + wbase + ct * kTile) + lane * 2;
 #pragma unroll
       for (int n = 0; n < 8; ++n) {
         float dgw[2] = {0.f, 0.f};
@@ -552,9 +599,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
           float acc = dgw[j];
 #pragma unroll
           for (int s = 4; s < 32; s <<= 1) acc += __shfl_xor_sync(0xFFFFFFFFu, acc, s);
-          if (active && lane < 4)
-            fan_in_add(p.d_gw + (long long)bh * p.L + wbase + ct * kTile + n * 8 + lane * 2 + j,
-                       acc);
+          if (active && lane < 4) fan_in_add(dgw_base + n * 8 + j, acc);
         }
       }
 
@@ -597,6 +642,11 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
       const bool pr_active = rt0 + grp_tile >= ct;
 #pragma unroll
       for (int l = 0; l < D; ++l) {
+        //: A SOFTMAX DUTY IS DENSE BY THEOREM, so its cotangent plane is live on the
+        //: whole digit axis and no cell of it may be dropped; only a side the mode word
+        //: declares sparse carries the producer's off-support annihilation.
+        const unsigned pr_all = ((p.modes >> (2 * l)) & kModeReadSparse) ? 0u : 1u;
+        const unsigned pw_all = ((p.modes >> (2 * l)) & kModeWriteSparse) ? 0u : 1u;
         __syncthreads();
         publish_image<D, B, W>(sm, gram[l], warp, row_lo, col_lo);
         __syncthreads();
@@ -615,7 +665,8 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
           __syncthreads();
           const int slab = stage * bwd_slabs_per_stage(B) + dp;
           const int gdig = l * B + stage * bwd_stage_digits(B) + dp * kSlabDigits;
-          if (pr_active && side_bits<D, B, W>(sm, p.modes, ct, l, 1, slab) != 0u) {
+          if (pr_active && side_bits<D, B, W>(sm, p.modes, ct, l, 1, slab) != 0u
+              && side_bits<D, B, W>(sm, p.modes, rt0 + grp_tile, l, 0, slab) != 0u) {
 #pragma unroll
             for (int mt = 0; mt < kPrM; ++mt) {
               float dpr[2][4] = {{0.f, 0.f, 0.f, 0.f}, {0.f, 0.f, 0.f, 0.f}};
@@ -630,8 +681,10 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
                 mma(dpr[0], af, b0);
                 mma(dpr[1], af, b1);
               }
-              reduce_tile(relay_put, relay_get, relay_off, dpr,
-                          dpr_grp + (long long)mt * kWarpRows * p.row_width + gdig, p.row_width);
+              reduce_tile_on_support(
+                  relay_put, relay_get, relay_off, dpr,
+                  dpr_grp + (long long)mt * kWarpRows * p.row_width + gdig, p.row_width,
+                  base_sup_r + buf * kRBuf + mt * kWarpRows * kSlabRow, 2 * kSlabRow, pr_all);
             }
           }
           //: (I6)'s contraction runs over the WHOLE block of readers, so it is gated
@@ -639,10 +692,12 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
           //: rows are all zero, and the rows of a tile the causal walk excludes are
           //: zero in the image.
           uint32_t rlive = 0u;
+          if (side_bits<D, B, W>(sm, p.modes, ct, l, 1, slab) != 0u) {
 #pragma unroll
-          for (int r = 0; r < kRowTiles; ++r)
-            if (rt0 + r >= ct && side_bits<D, B, W>(sm, p.modes, rt0 + r, l, 0, slab) != 0u)
-              rlive |= 1u << r;
+            for (int r = 0; r < kRowTiles; ++r)
+              if (rt0 + r >= ct && side_bits<D, B, W>(sm, p.modes, rt0 + r, l, 0, slab) != 0u)
+                rlive |= 1u << r;
+          }
           if (rlive) {
             float dpw[kPwM][2][4] = {};
 #pragma unroll
@@ -666,8 +721,10 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
             }
 #pragma unroll
             for (int mt = 0; mt < kPwM; ++mt)
-              reduce_tile(relay_put, relay_get, relay_off, dpw[mt],
-                          dpw_base + (long long)mt * kWarpRows * p.row_width + gdig, p.row_width);
+              reduce_tile_on_support(
+                  relay_put, relay_get, relay_off, dpw[mt],
+                  dpw_base + (long long)mt * kWarpRows * p.row_width + gdig, p.row_width,
+                  base_sup_w + buf * kWBuf + mt * kWarpRows * kSlabRow, 2 * kSlabRow, pw_all);
           }
           __syncthreads();
         }

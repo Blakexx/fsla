@@ -39,18 +39,42 @@ The forward intra must remain a pure forward for inference. `dA` needs the seed,
 exists only in training, and fusing would put a training-only operand in an inference
 kernel's signature.
 
-## Two gates, not one
+## Two gates, and they answer to different authorities
 
 The Gram pass keeps the forward's INTERSECTION certificate: a digit slab contributes to
 `G_l` only where both sides have support in it.
 
-The digit passes gate on ONE side each, and the difference is not an optimization —
-`d_pr_l[t,e] = sum_j dG_l[t,j]·pw_l[j,e]` drops level `l`'s own read factor, so it is
-live wherever the WRITE side has support at `e` whatever the read side does there.
-Gating it on the intersection would drop real terms. The masks are unions over a whole
-tile's tokens, so a skipped slab contains only exact zeros and the intra's digit
-gradients are COMPLETE — unlike the carry's, which the owner schedule restricts to each
-level's own support.
+A digit pass's OPPOSITE-side gate is algebra. `d_pr_l[t,e] = sum_j dG_l[t,j]·pw_l[j,e]`
+drops level `l`'s own read factor, so it is live wherever the WRITE side has support at
+`e` whatever the read side does there; gating it on the intersection would drop real
+terms. The masks are unions over a whole tile's tokens, so a skipped slab contains only
+exact zeros.
+
+A digit pass's OWN-side gate is the CONSUMER's, and it is the one thing in this kernel
+justified from outside the kernel's own equations. The two planes leave the operator at
+`rola/ops/prefill.py` as the returned gradients of `read_levels` and `write_levels`, and
+they have no other consumer in the tree: whatever produced the routing factors is the
+only thing that reads them. Where that producer is entmax, its VJP restricts to the
+support in BOTH of its terms — `dz_e = g_e (dp_e - q)` with `g_e` zero off support and
+`q = <g,dp>/<g,1>` — and the shipped kernel realizes that by never LOADING an
+off-support cotangent, which is stronger than multiplying it by zero. Where the producer
+is softmax there is no support: `dz_e = p_e (dp_e - <p,dp>)` needs the whole digit axis,
+and truncating it moves the logit gradient by tens of percent.
+
+So the own-side gate is applied EXACTLY where the mode word declares that side sparse,
+and `side_bits` answering `0xFFFF` for an undeclared side is what makes that a single
+expression rather than a branch: joined to the opposite-side gate it is a no-op on a
+softmax duty and the intersection certificate on an entmax one. It is applied at two
+grains, the digit slab (through the certificate) and the individual `(token, digit)`
+cell (through the own-side operand, resident at the reducing address). The test is the
+MAGNITUDE bits, so a signed zero is off support like an unsigned one.
+
+What this changes about the planes the operator returns: a cell the gate drops is no
+longer written BY THIS KERNEL. It is not thereby zero — the carry's two scans own the
+cross-window half of the same planes and do not yet restrict — so the intra's digit
+gradients are no longer COMPLETE in the sense the old dense sweep made them. They are
+complete on the union of the two declared supports, which is the set the producer reads,
+and that is the property the gradcheck gate holds them to.
 
 ## The leave-one-out survives here
 
@@ -145,3 +169,34 @@ column-indexed partials in a CTA-wide shared plane — which would cut the reduc
 eightfold — measures WORSE: `atomicAdd` on shared `float` compiles to `ATOMS.CAST.SPIN`, a
 lock-and-retry emulation, and eight warps contending one cell turns the saving into a
 3.2x instruction blow-up. The count was never the problem; the sectors were.
+
+## Why the restricted reduce is predicated and not branched
+
+The own-side cell gate is a property of the DESTINATION CELL, and the relay's lane map
+gives one lane eight destination cells: eight rows, two apart, of one digit column. So a
+`if (live) atomicAdd(...)` inside the reducing walk is eight control-flow regions, each
+of which every value crossing the walk must stay live across — measured at 96 bytes of
+spill on the two wide arms, against zero for the same arithmetic issued as a predicated
+`red.global.add.f32`.
+
+The walk then unrolls by the relay's own period, TWO, which is the number of row
+parities the lane map splits the tile into. Unrolling past that holds all eight
+certificate loads live at once and spills 80 bytes; unrolling to one buys nothing over
+two. This is the same rule pass 2's stage loop follows, and for the same reason: the
+factor a body may be replicated by is the period of the structure it walks.
+
+The certificate is one shared load at an address the reducing lane already owns. The
+own-side operand slab is resident — the pass just contracted against it — and the eight
+cells are eight rows of one of its digit columns, so the whole mechanism is a base
+formed once in the prologue plus a two-row stride. Nothing is staged for it and no new
+plane exists.
+
+## The reducing addresses are one pointer and constant displacements
+
+`d_gw`'s drain reduces sixteen values per column tile at eight-float spacing. Written as
+one sum per destination — base plus a level's worth of index arithmetic per value —
+`ptxas` materializes sixteen live 64-bit addresses, thirty-two registers, in the region
+where the Gram accumulators are also live. Written as one pointer formed before the
+sweep plus fifteen compile-time displacements it is two registers and the displacements
+fold into the reducing instruction. That difference is what the own-side certificate is
+paid for out of: it is the whole of the headroom the restricted reduce needed.

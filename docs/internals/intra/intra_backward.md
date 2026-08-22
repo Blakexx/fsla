@@ -12,7 +12,9 @@ only synchronization the pair needs — nothing is summed on the host and there 
 second output set to reconcile.
 
 A standalone conformance run therefore allocates its own zeroed planes, and a run beside
-the scans must not.
+the scans must not. Off the declared support of a sparse duty this kernel writes nothing
+at all, so in a standalone run those cells hold the zeros the allocation gave them and
+beside the scans they hold the scans' contribution alone.
 
 ## The arms mirror the forward's
 
