@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "2fb2692a3a01c9c8290909bbc034b842f4b2478c0857343959d82f68021bb701",
+  "csrc_sha256": "64334f0905f15e8827600ad18b92b434fb36f242c9894faf5e04dec12cba009c",
   "date": "2026-08-22"
  },
  "shards": {
@@ -39,7 +39,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "a758ca66a1c38095df3cef56baab56318286ab75ef61cc8f0d78c6fd91ab07e1"
+   "sass_sha256": "5ab284cddbfce4ec03037e217447bcbaab0e20702e73d2d3e847c81430658507"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi512ELi32ELi1ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 210,
@@ -47,7 +47,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "8cc2948d37d4e41477c95ba57fc15a972b4e4e9059af6f2f89255d27db4829b4"
+   "sass_sha256": "fd936a4963464a5db234f0291f0495a3d7b35764860a23493c141a4d9ded65a0"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi64ELi4ELi8ELi64ELi32ELi1ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 210,
@@ -55,7 +55,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "636101fbba4073537c847ba74dfbec7e4045d82d9623bd9b15342a1e3638e342"
+   "sass_sha256": "30ed28907ca01af20a00af69c1019092125374d8275aa674114cc242f0570d35"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi4ELi8ELi2ELi8ELi64ELi32ELi3ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
    "regs": 210,
@@ -63,7 +63,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "20018e5956a761b7632ec951ed475b77bb664830da8cd2f518e147a619724fcf"
+   "sass_sha256": "745e368baf96e84b9eb64f9f774f33134941753d3c08a9a0476742132e1212ee"
   },
   "sm_80:_ZN4rola5carry13scan_a_kernelILi2ELi256ELi4ELi8ELi384ELi32EEEvNS0_9BwdParamsE": {
    "regs": 255,
