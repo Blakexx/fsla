@@ -182,28 +182,72 @@ def test_the_off_support_digit_gradients_are_never_read(k_tok):
             off += width
 
 
+#: DOES THE FORWARD SEAM TAKE A DECLARATION AT ALL?  Probed from the seam's own
+#: signature rather than from a version, exactly as the A/B harness probes it. While
+#: `carry_inter` has no `level_modes` the carry family ships ONE body and the
+#: declaration axis does not exist for it; the moment the seam gains one, the cases
+#: below widen on their own and the new body cannot land ungated.
+def _takes_modes():
+    import inspect
+    return "level_modes" in inspect.signature(carry_ops.carry_inter).parameters
+
+
+#: THE DECLARATIONS THE TREE SHIPS A FORWARD BODY FOR.  A declaration SELECTS a body,
+#: so a gate that names only one has only ever tested one -- see the docstring below.
+def _declarations():
+    from rola.ops import intra as intra_ops
+    out = {"DENSE_BOTH": (intra_ops.DENSE_BOTH, intra_ops.DENSE_BOTH)}
+    if _takes_modes():
+        out["ALT"] = (intra_ops.WRITE_SPARSE, intra_ops.READ_SPARSE)
+    return out
+
+
 @pytest.mark.parametrize("window", [carry_ops.WINDOW, carry_ops.WINDOW_WIDE])
-def test_the_replay_is_bit_identical_at_the_flagship_arm(window):
+@pytest.mark.parametrize("declaration", sorted(_declarations()))
+def test_the_replay_is_bit_identical_at_the_flagship_arm(window, declaration):
     """THE CHEAPEST STRONG GATE IN THE RUNG, at the arm the flagship actually runs.
 
     Scan A's slab at the end of its walk is the forward's own ``state_out``: same window
     grid, same lists, same batch order, same k-loop order. A drifting replay is exactly
     the failure a loose band hides, so the claim is EQUALITY and not a band -- and it
     needs no fp64 reference, which is what lets it run at ``N = 65536``.
+
+    IT IS PARAMETRISED OVER THE DECLARATION BECAUSE THE DECLARATION SELECTS THE BODY.
+    Where the forward seam takes ``level_modes`` it defaults to ``0`` (DENSE_BOTH), so
+    a gate that passes none exercises that ONE body and never a declaration-selected
+    one -- and a declaration-selected body is where a fold order is developed. Measured
+    on the K35 branch, whose seam has the axis: a sorted-write-list forward broke this
+    contract at ALT (``torch.equal`` False, rel 2.9e-07) and PASSED the unparametrised
+    gate with every other gate in the tree green.
+
+    The reverse family has ONE body and takes no ``level_modes``, so what each case
+    asserts is that THAT declaration's forward agrees bit-for-bit with the single
+    reverse walk. On a tree whose carry seam has no declaration axis this runs the one
+    body that tree ships, which is the whole of the contract there.
+
+    The planes are drawn to MATCH the declaration -- a level declared sparse on a side
+    is drawn sparse on that side -- because a declaration the data contradicts tests a
+    schedule the kernel would never be asked for.
     """
+    from rola.ops import intra as intra_ops
     from tests.k31.intra_reference import _simplex
+    modes = _declarations()[declaration]
     widths, T = (256, 256), 4 * window
     gen = torch.Generator(device="cuda").manual_seed(19)
-    read = tuple(_simplex((1, T, w), 4, gen, "cuda", False).reshape(1, T, 1, w).to(
-        torch.bfloat16) for w in widths)
-    write = tuple(_simplex((1, T, w), None, gen, "cuda", False).reshape(1, T, 1, w).to(
-        torch.bfloat16) for w in widths)
+
+    def plane(width, sparse):
+        return _simplex((1, T, width), 4 if sparse else None, gen, "cuda",
+                        False).reshape(1, T, 1, width).to(torch.bfloat16)
+
+    read = tuple(plane(w, mode == intra_ops.READ_SPARSE) for w, mode in zip(widths, modes))
+    write = tuple(plane(w, mode == intra_ops.WRITE_SPARSE) for w, mode in zip(widths, modes))
     g = (0.5 + torch.rand(1, T, 1, device="cuda", generator=gen)).to(torch.bfloat16)
     v = torch.randn(1, T, 1, 64, device="cuda", generator=gen).to(torch.bfloat16)
     d_num = torch.randn(1, T, 64, device="cuda", generator=gen)
     d_den = torch.randn(1, T, device="cuda", generator=gen)
     replay = carry_ops.carry_backward(read, write, g.double(), v.double(), d_num, d_den,
                                       widths, k=K, m=M, window=window, want_replay=True)[5]
+    extra = {"level_modes": intra_ops.pack_modes(modes)} if _takes_modes() else {}
     state_out = carry_ops.carry_inter(read, write, g.double(), v.double(), widths, k=K, m=M,
-                                      window=window)[2]
+                                      window=window, **extra)[2]
     assert torch.equal(replay, state_out)
