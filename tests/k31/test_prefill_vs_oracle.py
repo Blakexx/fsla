@@ -119,7 +119,8 @@ def test_prefill_matches_the_fp64_oracle(name, T, window, modes, k_tok, clustere
     read, write, g, v = cell(T, modes, k_tok=k_tok, clustered=clustered,
                              seed=zlib.crc32(name.encode()) & 0xFFFF)
     num, den, plane = prefill(read, write, g, v, WIDTHS, k=K, m=M, window=window,
-                              modes=modes)
+                              modes=modes, sread=intra_ops.pack_support(read),
+                              swrite=intra_ops.pack_support(write))
     y_ref, s_ref = oracle(read, write, g, v)
     err = relative(readout(num, den, T), y_ref)
     assert err < BF16_RTOL, f"{name}: the readout leaves the bf16 band at {err:.3e}"
@@ -139,15 +140,20 @@ def test_a_chained_call_equals_one_long_call():
     assert_fresh_binary()
     T, window = 2048, 512
     read, write, g, v = cell(T, DENSE, seed=7)
+    sread, swrite = intra_ops.pack_support(read), intra_ops.pack_support(write)
     whole_num, whole_den, whole_state = prefill(read, write, g, v, WIDTHS, k=K, m=M,
-                                                window=window, modes=DENSE)
+                                                window=window, modes=DENSE, sread=sread,
+                                                swrite=swrite)
     cut = 1024  # a whole number of windows
     first = tuple(x[:, :cut] for x in read), tuple(x[:, :cut] for x in write)
     second = tuple(x[:, cut:] for x in read), tuple(x[:, cut:] for x in write)
+    words = cut // intra_ops.WORD_TOKENS
     n0, d0, s0 = prefill(first[0], first[1], g[:, :cut], v[:, :cut], WIDTHS, k=K, m=M,
-                         window=window, modes=DENSE)
+                         window=window, modes=DENSE, sread=sread[:, :words],
+                         swrite=swrite[:, :words])
     n1, d1, s1 = prefill(second[0], second[1], g[:, cut:], v[:, cut:], WIDTHS, k=K, m=M,
-                         window=window, modes=DENSE, state_in=s0)
+                         window=window, modes=DENSE, sread=sread[:, words:].contiguous(),
+                         swrite=swrite[:, words:].contiguous(), state_in=s0)
     #: THE STATE IS BIT-IDENTICAL, and it is the claim that matters: an owner
     #: writes its own leaves and nothing reduces across CTAs there, so the state
     #: plane is deterministic, and the chain's only difference is where its entry
@@ -173,13 +179,14 @@ def test_the_combined_operator_refuses_what_it_has_no_kernel_for():
     """The two refusals are STRUCTURAL, and stating them is how the gap stays a
     gap rather than becoming a host-side second code path."""
     read, write, g, v = cell(512, DENSE, seed=1)
+    words = dict(sread=intra_ops.pack_support(read), swrite=intra_ops.pack_support(write))
     #: a partial trailing window: the intra's tile grid is a compile-time count.
     with pytest.raises(ValueError, match="whole number"):
-        prefill(read, write, g, v, WIDTHS, k=K, m=M, window=384, modes=DENSE)
+        prefill(read, write, g, v, WIDTHS, k=K, m=M, window=384, modes=DENSE, **words)
     #: a narrower topology: the intra kernel's level width is 256 by
     #: instantiation, so the carry's `(64, 64)` arm is an INTER-ONLY cell.
     with pytest.raises(ValueError, match="level width"):
-        prefill(read, write, g, v, (64, 64), k=K, m=M, window=64, modes=DENSE)
+        prefill(read, write, g, v, (64, 64), k=K, m=M, window=64, modes=DENSE, **words)
 
 
 def test_the_intra_term_is_actually_present():
@@ -219,7 +226,8 @@ def test_deep_prefill_matches_the_fp64_oracle(widths, k, m, sparse):
     read, write, g, v = cell(T, modes, k_tok=k_tok, seed=zlib.crc32(str(widths).encode()) & 0xFFFF,
                              widths=widths)
     num, den, plane = prefill(read, write, g, v, widths, k=k, m=m, window=DEEP_WINDOW,
-                              modes=modes)
+                              modes=modes, sread=intra_ops.pack_support(read),
+                              swrite=intra_ops.pack_support(write))
     y_ref, s_ref = oracle(read, write, g, v, widths=widths)
     err = relative(readout(num, den, T), y_ref)
     assert err < BF16_RTOL, f"{widths}: the readout leaves the bf16 band at {err:.3e}"
@@ -237,4 +245,6 @@ def test_the_differentiable_prefill_refuses_the_deep_arms(widths, k, m):
     modes = (intra_ops.DENSE_BOTH,) * D
     read, write, g, v = cell(DEEP_WINDOW, modes, seed=3, widths=widths)
     with pytest.raises(ValueError, match="built at D = 2"):
-        prefill_autograd(read, write, g, v, widths, k=k, m=m, window=DEEP_WINDOW, modes=modes)
+        prefill_autograd(read, write, g, v, widths, k=k, m=m, window=DEEP_WINDOW, modes=modes,
+                         sread=intra_ops.pack_support(read),
+                         swrite=intra_ops.pack_support(write))

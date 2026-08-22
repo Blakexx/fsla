@@ -49,9 +49,14 @@ constexpr int kWidthDeep3 = 16;
 constexpr int kWidthDeep4 = 8;
 
 //: `window` selects the built arm; `L % window` must be zero, refused per arm.
+//: ``sread``/``swrite`` are the producer's frozen support words for the plane of the
+//: same name -- int32 ``[BH, ceil(L/32), sum-of-widths]``, one bit per (token, digit),
+//: bit ``token & 31``.  The zero certificate READS them; it does not re-derive the
+//: support from the amplitudes.
 void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,
-                   const at::Tensor& v, at::Tensor& o, at::Tensor& den, int64_t levels,
-                   int64_t width, int64_t level_modes, int64_t window);
+                   const at::Tensor& v, const at::Tensor& sread, const at::Tensor& swrite,
+                   at::Tensor& o, at::Tensor& den, int64_t levels, int64_t width,
+                   int64_t level_modes, int64_t window);
 
 //: R4's reverse pass: it REDUCES the within-window half of the four cotangents into
 //: planes the carry's two scans also write.  ``dnum`` is ``[BH, L, d_v]`` bf16 and

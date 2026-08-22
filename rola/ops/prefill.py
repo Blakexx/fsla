@@ -54,7 +54,7 @@ LEVEL_WIDTHS = (intra_ops.LEVEL_WIDTH, intra_ops.LEVEL_WIDTH_DEEP3, intra_ops.LE
 
 
 def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
-            window: int, modes, chunk: int = 32,
+            window: int, modes, sread, swrite, chunk: int = 32,
             state_in: torch.Tensor | None = None):
     """The whole forward term, undivided: ``(num, den, state_out)``.
 
@@ -68,6 +68,14 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     DECLARATION about the routing, not a switch: the intra's slab gate reads
     all-ones for an undeclared side and therefore cannot move a number, so
     ``DENSE_BOTH`` everywhere is always correct and only ever slower.
+
+    ``sread``/``swrite`` are the frozen support words of the two sides
+    (``[BH, L/32, sum(widths)]`` int32). THEY ARE AN INPUT, NOT A DERIVATION: the
+    routing producer emits exactly this word from the solve that produced the
+    amplitudes (``entmax/factor.cu:219-241``), so deriving them here would be a
+    second pass over the planes to answer a question already answered. A caller
+    that drew its planes instead of solving them has
+    :func:`rola.ops.intra.pack_support`.
     """
     D = len(widths)
     if len(modes) != D:
@@ -101,8 +109,8 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     #: SAME STREAM, SAME BUFFERS.  The intra REDs into `num`/`den`; the stream
     #: order is the only synchronization either kernel needs, and there is no
     #: host round trip between them.
-    ext.intra_forward(pread, pwrite, gwrite, value, num, den, D, int(widths[0]),
-                      intra_ops.pack_modes(tuple(modes)), int(window))
+    ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, num, den, D,
+                      int(widths[0]), intra_ops.pack_modes(tuple(modes)), int(window))
     return num, den, state_out
 
 
@@ -120,7 +128,8 @@ class _Prefill(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, D, widths, k, m, window, modes, chunk, state_in, g_write, v, *levels):
+    def forward(ctx, D, widths, k, m, window, modes, chunk, sread, swrite, state_in, g_write, v,
+                *levels):
         pread = carry_ops.pack_side(levels[:D])
         pwrite = carry_ops.pack_side(levels[D:])
         gwrite = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
@@ -131,8 +140,8 @@ class _Prefill(torch.autograd.Function):
         num, den, state_out = ext.carry_forward_inter(
             pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
             int(chunk), carry_ops.CHANNEL_SPLIT, state_in)
-        ext.intra_forward(pread, pwrite, gwrite, value, num, den, D, int(widths[0]),
-                          intra_ops.pack_modes(tuple(modes)), int(window))
+        ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, num, den, D,
+                          int(widths[0]), intra_ops.pack_modes(tuple(modes)), int(window))
 
         ctx.save_for_backward(pread, pwrite, gwrite, value, state_in)
         ctx.shape = (v.shape, g_write.shape, tuple(x.shape[-1] for x in levels))
@@ -178,19 +187,21 @@ class _Prefill(torch.autograd.Function):
         g_write_levels = unflatten(d_pw, ctx.dtypes[2 + D])
         g_gain = d_gw.reshape(Bn, H, T).permute(0, 2, 1).to(ctx.dtypes[0])
         g_value = d_v.reshape(Bn, H, T, dv).permute(0, 2, 1, 3).to(ctx.dtypes[1])
-        g_state = d_state_in if ctx.needs_input_grad[7] else None
-        return (None, None, None, None, None, None, None, g_state, g_gain, g_value,
+        g_state = d_state_in if ctx.needs_input_grad[9] else None
+        return (None, None, None, None, None, None, None, None, None, g_state, g_gain, g_value,
                 *g_read, *g_write_levels)
 
 
 def prefill_autograd(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
-                     window: int, modes, chunk: int = 32,
+                     window: int, modes, sread, swrite, chunk: int = 32,
                      state_in: torch.Tensor | None = None):
     """:func:`prefill`, differentiable -- the same three kernels with R4's reverse pass.
 
     Returns the same undivided ``(num, den, state_out)``. ``state_in`` and every
-    routing operand carry gradients; ``widths``, ``k``, ``m``, ``window`` and ``modes``
-    are configuration and carry none.
+    routing operand carry gradients; ``widths``, ``k``, ``m``, ``window``, ``modes``
+    and the two support words are configuration and carry none -- a support word is a
+    STATEMENT ABOUT where the amplitudes are zero, and the amplitudes it describes are
+    what the gradient flows through.
     """
     D = len(widths)
     if len(modes) != D:
@@ -209,5 +220,5 @@ def prefill_autograd(read_levels, write_levels, g_write, v, widths, *, k: int, m
         raise ValueError(
             f"L = {length} is not a whole number of {window}-token windows; the "
             f"intra kernel's tile grid is a compile-time count per arm.")
-    return _Prefill.apply(D, tuple(widths), k, m, window, tuple(modes), chunk, state_in,
-                          g_write, v, *read_levels, *write_levels)
+    return _Prefill.apply(D, tuple(widths), k, m, window, tuple(modes), chunk, sread, swrite,
+                          state_in, g_write, v, *read_levels, *write_levels)

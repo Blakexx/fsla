@@ -64,15 +64,21 @@ constexpr int stages_per_level(int width) { return level_digits(width) / stage_d
 constexpr int operand_pitch(int width) { return stage_digits(width) + 8; }
 constexpr int kValuePitch = kValueWidth + 8;
 
+//: `sread`/`swrite`: the producer's frozen support word for the plane of the same
+//: name, `[BH, token_words, row_width]` int32, bit `token & 31` of word
+//: `token / 32`, so a word's COLUMN is the plane's digit.
 struct IntraParams {
   const __nv_bfloat16* pread;
   const __nv_bfloat16* pwrite;
   const __nv_bfloat16* gwrite;
   const __nv_bfloat16* v;
+  const int32_t* sread;
+  const int32_t* swrite;
   float* o;
   float* den;
   int L;
   int row_width;
+  int token_words;
   int heads;
   int tokens;
   uint32_t modes;
@@ -116,41 +122,37 @@ __device__ __forceinline__ uint32_t digit_union_word(const __nv_bfloat16* row) {
 //: certificate the slab gate reads.  A side the mode word does not declare
 //: sparse is never summarized and answers all-ones, which is what makes the
 //: gate self-deactivating rather than a second code path.
+//: -- docs/internals/intra/intra_kernel.md#the-slab-gate
 template <int D, int B, int W>
 __device__ void build_masks(IntraSmem<D, B, W>& sm, const IntraParams& p, int bh, int wbase,
                             int tid) {
   constexpr int kTiles = tiles_of(W);
   constexpr int kThreads = threads_of(W);
   constexpr int kWords = mask_words(B);
-  //: a GROUP is `kTile` consecutive threads, one token each; a WARP's lanes are 32
-  //: different tokens of the SAME unit, which is what makes the reduction below a
-  //: reduction over tokens and every branch here warp-uniform.  The work axis is
-  //: (tile, word), so a level narrower than one word is ONE unit and a wide level is
-  //: several -- the same loop at every width.
-  constexpr int kGroups = kThreads / kTile;
+  constexpr int kWarps = kThreads / 32;
   constexpr int kUnits = kTiles * kWords;
-  constexpr int kPer = B < 32 ? B : 32;
-  uint32_t* flat = &sm.mask[0][0][0][0];
-  for (int i = tid; i < kTiles * D * 2 * kWords; i += kThreads) flat[i] = 0u;
-  __syncthreads();
-
-  const int token = tid & (kTile - 1);
-  const int group = tid >> 6;
+  //: no zero-fill and no leading barrier: every DECLARED (tile, level, side, word)
+  //: is written once by one lane, and `slab_bits` answers an undeclared side from
+  //: the mode word without reading the array.
+  const int lane = tid & 31;
+  const int warp = tid >> 5;
+  const int word0 = (wbase >> 5) + bh * p.token_words;
 #pragma unroll
   for (int l = 0; l < D; ++l) {
 #pragma unroll
     for (int side = 0; side < 2; ++side) {
       const uint32_t want = (side == 0 ? kModeReadSparse : kModeWriteSparse);
       if (((p.modes >> (2 * l)) & want) == 0u) continue;
-      const __nv_bfloat16* plane = (side == 0) ? p.pread : p.pwrite;
-      for (int u = group; u < kUnits; u += kGroups) {
+      const int32_t* words = (side == 0) ? p.sread : p.swrite;
+      for (int u = warp; u < kUnits; u += kWarps) {
         const int w = u % kWords;
         const int ti = u / kWords;
-        const __nv_bfloat16* row =
-            plane + (long long)(bh * p.L + wbase + ti * kTile + token) * p.row_width + l * B
-            + w * 32;
-        const uint32_t bits = __reduce_or_sync(0xFFFFFFFFu, digit_union_word<kPer>(row));
-        if ((tid & 31) == 0) atomicOr(&sm.mask[ti][l][side][w], bits);
+        const int digit = w * 32 + lane;
+        const long long base = (long long)(word0 + ti * (kTile / 32)) * p.row_width + l * B + digit;
+        const bool live =
+            digit < B && ((uint32_t)words[base] | (uint32_t)words[base + p.row_width]) != 0u;
+        const uint32_t bits = __ballot_sync(0xFFFFFFFFu, live);
+        if (lane == 0) sm.mask[ti][l][side][w] = bits;
       }
     }
   }

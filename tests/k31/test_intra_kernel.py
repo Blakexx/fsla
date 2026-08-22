@@ -22,6 +22,7 @@ from rola.ops.intra import (
     WINDOW_WIDE,
     build_stamp,
     intra_forward,
+    support_words,
 )
 from tests.k31.intra_reference import (
     DENSE_BOTH,
@@ -30,6 +31,7 @@ from tests.k31.intra_reference import (
     WINDOW,
     WRITE_SPARSE,
     as_token_major,
+    cell_support,
     intra_reference,
     make_cell,
     slab_skip_rate,
@@ -70,8 +72,9 @@ def _relative(got, want):
 def test_intra_matches_the_fp64_reference(name, modes, k_tok, length, clustered, window):
     pread, pwrite, gwrite, v_bh = make_cell(2 * HEADS, length, LEVELS, modes,
                                             k_tok=k_tok or 4, seed=11, clustered=clustered)
-    o, den = intra_forward(pread, pwrite, gwrite, as_token_major(v_bh, HEADS), modes,
-                           window=window)
+    sread, swrite = cell_support(pread, pwrite)
+    o, den = intra_forward(pread, pwrite, gwrite, as_token_major(v_bh, HEADS), sread, swrite,
+                           modes, window=window)
     o_ref, den_ref = intra_reference(pread, pwrite, gwrite, v_bh, LEVELS, window=window)
     e_o, e_den = _relative(o, o_ref), _relative(den, den_ref)
     assert e_o < BF16_RTOL, f"{name}: the output leaves the bf16 band at {e_o:.3e}"
@@ -103,8 +106,9 @@ def test_deep_intra_matches_the_fp64_reference(name, levels, width, modes, k_tok
     pread, pwrite, gwrite, v_bh = make_cell(2 * HEADS, length, levels, modes,
                                             k_tok=k_tok or 4, seed=21, clustered=clustered,
                                             level_width=width)
-    o, den = intra_forward(pread, pwrite, gwrite, as_token_major(v_bh, HEADS), modes,
-                           window=WINDOW_SMALL)
+    sread, swrite = cell_support(pread, pwrite)
+    o, den = intra_forward(pread, pwrite, gwrite, as_token_major(v_bh, HEADS), sread, swrite,
+                           modes, window=WINDOW_SMALL)
     o_ref, den_ref = intra_reference(pread, pwrite, gwrite, v_bh, levels, window=WINDOW_SMALL,
                                      level_width=width)
     e_o, e_den = _relative(o, o_ref), _relative(den, den_ref)
@@ -121,9 +125,11 @@ def test_the_deep_slab_gate_does_not_change_the_answer(levels, width):
     pread, pwrite, gwrite, v_bh = make_cell(HEADS, 8 * WINDOW_SMALL, levels, modes, k_tok=2,
                                             seed=7, clustered=64, level_width=width)
     v = as_token_major(v_bh, HEADS)
-    gated_o, gated_den = intra_forward(pread, pwrite, gwrite, v, modes, window=WINDOW_SMALL)
-    ungated_o, ungated_den = intra_forward(pread, pwrite, gwrite, v, (DENSE_BOTH,) * levels,
-                                           window=WINDOW_SMALL)
+    sread, swrite = cell_support(pread, pwrite)
+    gated_o, gated_den = intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes,
+                                       window=WINDOW_SMALL)
+    ungated_o, ungated_den = intra_forward(pread, pwrite, gwrite, v, sread, swrite,
+                                           (DENSE_BOTH,) * levels, window=WINDOW_SMALL)
     assert torch.equal(gated_o, ungated_o) and torch.equal(gated_den, ungated_den)
 
 
@@ -132,9 +138,10 @@ def test_the_write_back_reduces_rather_than_stores():
     modes = (DENSE_BOTH, DENSE_BOTH)
     pread, pwrite, gwrite, v_bh = make_cell(HEADS, WINDOW, LEVELS, modes, seed=3)
     v = as_token_major(v_bh, HEADS)
-    once_o, once_den = intra_forward(pread, pwrite, gwrite, v, modes)
-    twice_o, twice_den = intra_forward(pread, pwrite, gwrite, v, modes)
-    intra_forward(pread, pwrite, gwrite, v, modes, o=twice_o, den=twice_den)
+    sread, swrite = cell_support(pread, pwrite)
+    once_o, once_den = intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes)
+    twice_o, twice_den = intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes)
+    intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes, o=twice_o, den=twice_den)
     assert torch.equal(twice_o, once_o * 2) and torch.equal(twice_den, once_den * 2)
 
 
@@ -148,9 +155,59 @@ def test_the_slab_gate_does_not_change_the_answer():
     assert skipped > total // 2, (
         f"the cohort cell gates only {skipped}/{total} slabs; the claim is untested")
     v = as_token_major(v_bh, HEADS)
-    gated_o, gated_den = intra_forward(pread, pwrite, gwrite, v, modes)
-    ungated_o, ungated_den = intra_forward(pread, pwrite, gwrite, v, (DENSE_BOTH, DENSE_BOTH))
+    sread, swrite = cell_support(pread, pwrite)
+    gated_o, gated_den = intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes)
+    ungated_o, ungated_den = intra_forward(pread, pwrite, gwrite, v, sread, swrite,
+                                           (DENSE_BOTH, DENSE_BOTH))
     assert torch.equal(gated_o, ungated_o) and torch.equal(gated_den, ungated_den)
+
+
+#: the draws the certificate rewire is gated on: the two ALT sparsities and a
+#: clustered cohort, plus dense, which is the case where no side is summarized.
+WORD_CELLS = [
+    ("dense", (DENSE_BOTH, DENSE_BOTH), None, False),
+    ("alt-k4", (WRITE_SPARSE, READ_SPARSE), 4, False),
+    ("alt-k16", (WRITE_SPARSE, READ_SPARSE), 16, False),
+    ("alt-k4-clustered", (WRITE_SPARSE, READ_SPARSE), 4, 64),
+]
+
+
+@pytest.mark.parametrize("name,modes,k_tok,clustered", WORD_CELLS,
+                         ids=[c[0] for c in WORD_CELLS])
+def test_the_support_word_carries_the_magnitude_scans_bits(name, modes, k_tok, clustered):
+    """THE REWIRE'S IDENTITY, stated on the bits themselves.
+
+    The certificate is a per-(tile, level, side) digit union. From the producer's
+    word it is `(w0 | w1) != 0` over the tile's two 32-token words; from the
+    amplitudes it is `any(row != 0)` over the tile's 64 rows. Same bits, which is
+    why the rewire cannot move a number."""
+    pread, pwrite, gwrite, _ = make_cell(HEADS, 4 * WINDOW, LEVELS, modes,
+                                         k_tok=k_tok or 4, seed=13, clustered=clustered)
+    sread, swrite = cell_support(pread, pwrite)
+    #: the production packer against the reference's own, before either is trusted.
+    assert torch.equal(sread, support_words(pread))
+    assert torch.equal(swrite, support_words(pwrite))
+    bh, length, width = pread.shape
+    tiles = length // 64
+    for plane, words in ((pread, sread), (pwrite, swrite)):
+        scan = (plane != 0).view(bh, tiles, 64, width).any(dim=2)
+        word = (words.view(bh, tiles, 2, width) != 0).any(dim=2)
+        assert torch.equal(scan, word), f"{name}: the two certificates disagree"
+
+
+def test_the_certificate_the_kernel_gates_on_is_the_word_it_was_handed():
+    """TEETH. A cleared word claims a tile holds no live digit, so it must gate
+    everything and collapse the term. A kernel that re-derived the union from the
+    operands would be indistinguishable from the honest run here."""
+    modes = (WRITE_SPARSE, READ_SPARSE)
+    pread, pwrite, gwrite, v_bh = make_cell(HEADS, 2 * WINDOW, LEVELS, modes, k_tok=4, seed=17)
+    v = as_token_major(v_bh, HEADS)
+    sread, swrite = cell_support(pread, pwrite)
+    _, honest_den = intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes)
+    assert float(honest_den.abs().max()) > 0.0
+    dead = torch.zeros_like(sread)
+    gated_o, gated_den = intra_forward(pread, pwrite, gwrite, v, dead, dead, modes)
+    assert not gated_o.any() and not gated_den.any()
 
 
 def test_the_binary_under_test_is_this_tree():

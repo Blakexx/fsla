@@ -46,6 +46,7 @@ def walls(read, write, g, v, window, modes):
     gwrite = gwrite.reshape(gwrite.shape[0] * gwrite.shape[1], -1)
     value = v.to(torch.bfloat16).contiguous()
     packed = intra_ops.pack_modes(modes)
+    sread, swrite = intra_ops.support_words(pread), intra_ops.support_words(pwrite)
     bh, T, _ = pread.shape
     ext = extension()
 
@@ -58,8 +59,8 @@ def walls(read, write, g, v, window, modes):
     def forward():
         num, den, _ = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(WIDTHS), K, M,
                                               window, 32, carry_ops.CHANNEL_SPLIT, None)
-        ext.intra_forward(pread, pwrite, gwrite, value, num, den, len(WIDTHS), WIDTHS[0],
-                          packed, window)
+        ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, num, den, len(WIDTHS),
+                          WIDTHS[0], packed, window)
 
     def scans():
         ext.carry_backward_inter(pread, pwrite, gwrite, vt, dn, list(WIDTHS), K, M, window, 32,

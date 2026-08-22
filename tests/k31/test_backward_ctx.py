@@ -37,7 +37,9 @@ def _run(T, chained):
     leaves = [x.clone().requires_grad_(True) for x in read + write]
     out = prefill_autograd(tuple(leaves[:2]), tuple(leaves[2:]),
                            g.clone().requires_grad_(True), v.clone().requires_grad_(True),
-                           WIDTHS, k=K, m=M, window=WINDOW, modes=DENSE, state_in=s_in)
+                           WIDTHS, k=K, m=M, window=WINDOW, modes=DENSE,
+                           sread=intra_ops.pack_support(read),
+                           swrite=intra_ops.pack_support(write), state_in=s_in)
     #: the outputs are returned WITH the node, because a freed graph frees the ctx and
     #: the whole subject of this file is what the ctx holds.
     return out[0].grad_fn, out

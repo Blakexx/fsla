@@ -163,6 +163,11 @@ def split_walls(read, write, g, v, widths, k, m, window, modes):
     gwrite = gwrite.reshape(gwrite.shape[0] * gwrite.shape[1], -1)
     value = v.to(torch.bfloat16).contiguous()
     packed_modes = intra_ops.pack_modes(modes)
+    #: THE SUPPORT WORD IS A PRODUCER OUTPUT, so it is built here beside the planes
+    #: rather than inside a timed call: the routing solve emits it, and a caller who
+    #: paid a pass to re-derive it would be measuring the pass this rewire deleted.
+    sread = intra_ops.support_words(pread)
+    swrite = intra_ops.support_words(pwrite)
     from rola.ops._ext import extension
     ext = extension()
 
@@ -174,17 +179,18 @@ def split_walls(read, write, g, v, widths, k, m, window, modes):
     den = torch.zeros((1, pread.shape[1]), dtype=torch.float32, device=pread.device)
 
     def intra_only():
-        ext.intra_forward(pread, pwrite, gwrite, value, o, den, len(widths), widths[0],
-                          packed_modes, window)
+        ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, o, den, len(widths),
+                          widths[0], packed_modes, window)
 
     def combined():
         num, dn, _ = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths),
                                              k, m, window, 32, carry_ops.CHANNEL_SPLIT, None)
-        ext.intra_forward(pread, pwrite, gwrite, value, num, dn, len(widths), widths[0],
-                          packed_modes, window)
+        ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, num, dn, len(widths),
+                          widths[0], packed_modes, window)
 
     def with_packing():
-        prefill(read, write, g, v, widths, k=k, m=m, window=window, modes=modes)
+        prefill(read, write, g, v, widths, k=k, m=m, window=window, modes=modes,
+                sread=sread, swrite=swrite)
 
     return (median_ms(combined), median_ms(carry_only), median_ms(intra_only),
             median_ms(with_packing))

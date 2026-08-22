@@ -38,6 +38,16 @@ void check_plane(const at::Tensor& t, const char* name, int64_t bh, int64_t L, i
               " must be [BH, L, sum-of-widths]");
 }
 
+//: The frozen support word, in the producer's own storage: int32 bit patterns, one
+//: bit per (token, digit), 32 tokens to a word, DIGIT-MAJOR INNERMOST -- which is
+//: what makes a warp's 32 lanes read 32 consecutive digits as one line.
+void check_support(const at::Tensor& t, const char* name, int64_t bh, int64_t L, int64_t width) {
+  TORCH_CHECK(t.is_cuda() && t.is_contiguous() && t.scalar_type() == at::kInt, name,
+              " must be a contiguous CUDA int32 tensor");
+  TORCH_CHECK(t.dim() == 3 && t.size(0) == bh && t.size(1) == (L + 31) / 32 && t.size(2) == width,
+              name, " must be [BH, ceil(L/32), sum-of-widths]");
+}
+
 //: THE BUILT SET, as one macro so the dispatch and the arm list cannot drift --
 //: the carry family's `CARRY_ARMS_X` discipline, mirrored.  `W` pairs with the
 //: carry's window template argument: the two kernels run ONE grid.
@@ -67,13 +77,19 @@ void launch(const detail::IntraParams& p, int64_t bh, int64_t windows, cudaStrea
 }  // namespace
 
 void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,
-                   const at::Tensor& v, at::Tensor& o, at::Tensor& den, int64_t levels,
-                   int64_t level_width, int64_t level_modes, int64_t window) {
+                   const at::Tensor& v, const at::Tensor& sread, const at::Tensor& swrite,
+                   at::Tensor& o, at::Tensor& den, int64_t levels, int64_t level_width,
+                   int64_t level_modes, int64_t window) {
   const int64_t bh = pread.size(0);
   const int64_t L = pread.size(1);
   const int64_t width = levels * level_width;
   check_plane(pread, "pread", bh, L, width);
   check_plane(pwrite, "pwrite", bh, L, width);
+  //: THE WORD AXIS IS 32 TOKENS, the producer's block (`entmax/factor.cu:236-239`),
+  //: and a window is a whole number of 64-token tiles, so `L` is a whole number of
+  //: words wherever an arm exists.
+  check_support(sread, "sread", bh, L, width);
+  check_support(swrite, "swrite", bh, L, width);
   TORCH_CHECK(gwrite.is_cuda() && gwrite.is_contiguous() && gwrite.scalar_type() == at::kBFloat16
                   && gwrite.dim() == 2 && gwrite.size(0) == bh && gwrite.size(1) == L,
               "gwrite must be a contiguous CUDA bf16 [BH, L] tensor");
@@ -100,10 +116,13 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
       reinterpret_cast<const __nv_bfloat16*>(pwrite.data_ptr()),
       reinterpret_cast<const __nv_bfloat16*>(gwrite.data_ptr()),
       reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+      sread.data_ptr<int32_t>(),
+      swrite.data_ptr<int32_t>(),
       o.data_ptr<float>(),
       den.data_ptr<float>(),
       (int)L,
       (int)width,
+      (int)((L + 31) / 32),
       (int)heads,
       (int)tokens,
       (uint32_t)level_modes,

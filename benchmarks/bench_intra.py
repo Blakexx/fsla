@@ -18,7 +18,15 @@ import subprocess
 
 import torch
 
-from rola.ops.intra import DENSE_BOTH, READ_SPARSE, VALUE_WIDTH, WINDOW, WRITE_SPARSE, intra_forward
+from rola.ops.intra import (
+    DENSE_BOTH,
+    READ_SPARSE,
+    VALUE_WIDTH,
+    WINDOW,
+    WRITE_SPARSE,
+    intra_forward,
+    support_words,
+)
 
 TILE = 64
 #: sm_86 consumer parts issue 256 bf16 MACs per clock per SM with an fp32
@@ -119,12 +127,14 @@ def main():
     ]
     for name, modes, k_tok, cohort in cells:
         pread, pwrite, gwrite, v = build(args.bh, args.length, levels, modes, k_tok, cohort, device)
+        sread, swrite = support_words(pread), support_words(pwrite)
         o = torch.zeros((args.bh, args.length, VALUE_WIDTH), dtype=torch.float32, device=device)
         den = torch.zeros((args.bh, args.length), dtype=torch.float32, device=device)
 
-        def run(pread=pread, pwrite=pwrite, gwrite=gwrite, v=v, o=o, den=den, modes=modes,
-                window=window):
-            intra_forward(pread, pwrite, gwrite, v, modes, o=o, den=den, window=window)
+        def run(pread=pread, pwrite=pwrite, gwrite=gwrite, v=v, sread=sread, swrite=swrite,
+                o=o, den=den, modes=modes, window=window):
+            intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes, o=o, den=den,
+                          window=window)
 
         run()
         ms = time_ms(run, args.repeats)
@@ -132,7 +142,7 @@ def main():
         achieved = work / (ms * 1e-3)
         print(f"{name:<24}{ms:>9.3f}{tiles / ms:>12.0f}{achieved / 1e12:>10.2f}"
               f"{achieved / flops * 100:>7.1f}%")
-        del pread, pwrite, gwrite, v, o, den, run
+        del pread, pwrite, gwrite, v, sread, swrite, o, den, run
         torch.cuda.empty_cache()
 
 

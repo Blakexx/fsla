@@ -75,6 +75,8 @@ def test_every_cotangent_of_the_combined_operator(name, T, window, modes, k_tok,
     vv = v.clone().requires_grad_(True)
     num, den, state_out = prefill_autograd(tuple(leaves[:2]), tuple(leaves[2:]), gv, vv,
                                            WIDTHS, k=K, m=M, window=window, modes=modes,
+                                           sread=intra_ops.pack_support(read),
+                                           swrite=intra_ops.pack_support(write),
                                            state_in=state_in)
     d_num = torch.randn(num.shape, device="cuda", dtype=torch.float32, generator=gen)
     d_den = torch.randn(den.shape, device="cuda", dtype=torch.float32, generator=gen)

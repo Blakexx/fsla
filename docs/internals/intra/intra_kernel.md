@@ -86,13 +86,40 @@ row base stays 16-byte aligned for `cp.async`.
 ## The slab gate
 
 The one sparsity tier the study kept. Before the tile walk, the CTA summarizes
-each `(tile, level, side)` as a `B`-bit digit union over that tile's 64 tokens, built
-from the operand values themselves. The work axis is (tile, certificate word), so a
-level narrower than one 32-digit word is ONE unit and a wide level several — the same
-loop at every width, with a warp's 32 lanes holding 32 tokens of one unit so both the
-OR reduction and every branch stay warp-uniform. A slab's MMA group issues only when the
-row side's 16-bit window AND the column side's is nonempty; the staging for a
-whole stage is skipped when all four of its slabs are dead.
+each `(tile, level, side)` as a `B`-bit digit union over that tile's 64 tokens. A
+slab's MMA group issues only when the row side's 16-bit window AND the column
+side's is nonempty; the staging for a whole stage is skipped when all four of its
+slabs are dead.
+
+THE UNION IS READ, NEVER RE-DERIVED. The support is a producer artifact: the entmax
+solve that made the amplitudes freezes the same exact-nonzero test into a
+32-token-blocked word (`entmax/factor.cu:219-241` — one bit per `(token, digit)`, bit
+`token & 31`, digits contiguous), and `factor_backward_kernel` already unpacks that
+word rather than re-testing, which is why the producer's two directions cannot
+disagree about the support set. The intra takes the same word, one per side, in the
+plane's own digit order: `sread`/`swrite`, `[BH, ceil(L/32), D*B]` int32, so a word's
+column IS the plane's digit.
+
+That layout is a zero-transpose fit for a TILE-grain union. A 64-token tile is
+EXACTLY TWO WORDS per digit, so the union is `(w0 | w1) != 0`; the work axis is
+(tile, certificate word) and the unit is a WARP holding 32 CONSECUTIVE DIGITS, one per
+lane, which makes each of the two loads one 128-byte line and makes the `__ballot` of
+the per-lane test the certificate word itself — no atomic, no cross-lane reduction, no
+transpose. A level narrower than one 32-digit word is ONE unit and a wide level
+several, the same loop at every width; digits past `B` (a padded level's tail)
+contribute a cleared bit, as they must.
+
+The bytes are the point. Re-deriving the union scans the tile's bf16 AMPLITUDES —
+64 tokens x `B` digits x 2 B = **65.5 KB per (tile, level, declared side)** at
+`B = 256`, which at `L = 65536` measured as **67.1 MB of the intra forward's 574.2 MB
+DRAM read**, the whole previously-unattributed 12%. The word answers the identical
+question in `2 x B x 4 B` = **4 KB**, a 16x cut on that term, for a signature change
+and no new format.
+
+A producer whose solve is shared across a level's two duties hands the SAME word to
+both sides. The `RouteDescriptor` contract allows a set bit to accompany a stored
+zero, and such a bit costs one gated MMA group whose product is exactly zero — it can
+move no number, which is the same argument that makes the gate a certificate.
 
 A side the launch's mode word does not declare sparse is never summarized and
 answers all-ones, so the gate self-deactivates at dense routing rather than

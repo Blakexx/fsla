@@ -47,13 +47,61 @@ def pack_modes(modes: tuple[int, ...]) -> int:
     return packed
 
 
-def intra_forward(pread, pwrite, gwrite, v, modes, *, o=None, den=None, window=WINDOW):
+#: the producer's support word blocks 32 tokens to an ``int32`` -- ``factor.cu:236-239``,
+#: and the routing ABI's ``ROUTE_TILE_SIZE``.  It is the certificate's token grain.
+WORD_TOKENS = 32
+
+
+def support_words(plane) -> torch.Tensor:
+    """A packed ``[BH, L, D*B]`` plane's frozen support word, ``[BH, L/32, D*B]`` int32.
+
+    THE SAME QUESTION THE PRODUCER ALREADY ANSWERED, for a caller that DREW its
+    planes instead of solving them. The test is exact bf16-storage-boundary
+    nonzero -- ``rola/routing/entmax/production.py``'s ``bf16_nonzero``, and the
+    kernel's own magnitude test -- so the word this returns is the word an entmax
+    solve of the same amplitudes would have emitted, bit for bit.
+
+    A producer-emitted word may be CONSERVATIVE (a set bit is allowed to accompany
+    a stored zero -- the ``RouteDescriptor`` contract); that costs a gated MMA
+    group whose product is exactly zero and can move no number.
+    """
+    bh, length, width = plane.shape
+    if length % WORD_TOKENS:
+        raise ValueError(
+            f"the support word blocks {WORD_TOKENS} tokens; L = {length} is not a whole "
+            f"number of them")
+    live = plane.to(torch.bfloat16) != 0
+    words = torch.zeros((bh, length // WORD_TOKENS, width), dtype=torch.int32,
+                        device=plane.device)
+    for bit in range(WORD_TOKENS):
+        words |= live[:, bit::WORD_TOKENS, :].to(torch.int32) << bit
+    return words
+
+
+def pack_support(levels) -> torch.Tensor:
+    """:func:`support_words` of ``carry.pack_side(levels)``, without the plane copy.
+
+    Same digit order as the plane it certifies, level by level -- the word's column
+    IS the plane's digit, which is what lets the kernel index one from the other.
+    """
+    batch, tokens, heads, _ = levels[0].shape
+    parts = [support_words(level.permute(0, 2, 1, 3).reshape(batch * heads, tokens,
+                                                             level.shape[-1]))
+             for level in levels]
+    return torch.cat(parts, dim=-1)
+
+
+def intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes, *, o=None, den=None,
+                  window=WINDOW):
     """RED the within-window causal intra term into ``(o, den)`` and return them.
 
     ``pread``/``pwrite`` are ``[BH, L, D*B]`` bf16 operand planes, ``gwrite`` is
-    ``[BH, L]`` bf16, ``v`` is token-major ``[B, T, H, 64]`` bf16. ``modes`` is one
-    per-level support mode, and ``window`` names the built arm -- the SAME window
-    the carry call is given, since the two kernels share one grid.
+    ``[BH, L]`` bf16, ``v`` is token-major ``[B, T, H, 64]`` bf16. ``sread``/``swrite``
+    are the frozen support words of the plane of the same name (``[BH, L/32, D*B]``
+    int32, :func:`support_words`) -- the zero certificate READS the support rather
+    than re-deriving it from the amplitudes. ``modes`` is one per-level support mode,
+    and ``window`` names the built arm -- the SAME window the carry call is given,
+    since the two kernels share one grid.
     """
     bh, length, width = pread.shape
     levels = len(modes)
@@ -64,8 +112,8 @@ def intra_forward(pread, pwrite, gwrite, v, modes, *, o=None, den=None, window=W
         o = torch.zeros((bh, length, VALUE_WIDTH), dtype=torch.float32, device=pread.device)
     if den is None:
         den = torch.zeros((bh, length), dtype=torch.float32, device=pread.device)
-    extension().intra_forward(pread, pwrite, gwrite, v, o, den, levels, level_width,
-                              pack_modes(modes), int(window))
+    extension().intra_forward(pread, pwrite, gwrite, v, sread, swrite, o, den, levels,
+                              level_width, pack_modes(modes), int(window))
     return o, den
 
 
@@ -94,6 +142,8 @@ __all__ = [
     "intra_backward",
     "intra_forward",
     "pack_modes",
+    "pack_support",
+    "support_words",
 ]
 
 

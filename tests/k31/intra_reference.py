@@ -123,6 +123,27 @@ def make_cell(bh, length, levels, modes, k_tok=4, seed=0, device="cuda", cluster
     return pread, pwrite, gwrite, v_bh
 
 
+def cell_support(*planes):
+    """The frozen support word of each plane -- the reference's OWN bit-packing.
+
+    ``[BH, L/32, width]`` int32, bit ``token & 31`` of word ``token // 32`` set where
+    the plane's stored value is nonzero. Derived here rather than imported from
+    :mod:`rola.ops.intra` for the same reason this module derives its own window: a
+    kernel gated against the production packer would only prove the two agree with
+    each other. The accumulation is int64 with an explicit two's-complement fold, so
+    it shares no arithmetic with production's int32 shifts.
+    """
+    out = []
+    for plane in planes:
+        bh, length, width = plane.shape
+        live = plane.to(torch.float64) != 0
+        words = torch.zeros((bh, length // 32, width), dtype=torch.int64, device=plane.device)
+        for bit in range(32):
+            words |= live[:, bit::32, :].to(torch.int64) << bit
+        out.append(torch.where(words >= 2 ** 31, words - 2 ** 32, words).to(torch.int32))
+    return tuple(out)
+
+
 def as_token_major(v_bh, heads):
     """``[BH, L, d_v]`` seen as the kernel's token-major ``[B, T, H, d_v]`` value stream."""
     bh, length, d_v = v_bh.shape
