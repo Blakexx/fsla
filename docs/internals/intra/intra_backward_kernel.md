@@ -185,6 +185,11 @@ certificate loads live at once and spills 80 bytes; unrolling to one buys nothin
 two. This is the same rule pass 2's stage loop follows, and for the same reason: the
 factor a body may be replicated by is the period of the structure it walks.
 
+A DENSE duty takes the unrestricted walk unchanged. The declaration is uniform over the
+block, so that is one branch; leaving it as a per-cell test that a dense side can never
+fail costs the dense arm a shared load per reduced cell for nothing, and it measured as
+0.80x of baseline's wall below one wave against 0.98x with the branch.
+
 The certificate is one shared load at an address the reducing lane already owns. The
 own-side operand slab is resident — the pass just contracted against it — and the eight
 cells are eight rows of one of its digit columns, so the whole mechanism is a base
