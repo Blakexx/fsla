@@ -101,6 +101,7 @@ decode_step_kernel(DecodeParams p) {
   //   fold  [warps][cols+3]     fp32   the cross-warp partials, bank-padded
   //   mask_r,mask_w [mask_total] u32   one bit per digit, per side
   //   olist  [4][olist_total]   i32    the four kinds' owner coordinates, per level
+  //   dlist  [dlist_total]      i32    the WRITE side's live digits, OUTER levels only
   float* sa_r = reinterpret_cast<float*>(smem_raw);
   float* sa_w = sa_r + total_rows;
   float* sd = sa_w + total_rows;
@@ -109,12 +110,17 @@ decode_step_kernel(DecodeParams p) {
   uint32_t* mask_r = reinterpret_cast<uint32_t*>(fold + kDecodeWarps * (cols + 3));
   uint32_t* mask_w = mask_r + p.mask_total;
   int32_t* olist = reinterpret_cast<int32_t*>(mask_w + p.mask_total);
+  int32_t* dlist = olist + kKinds * p.olist_total;
 
   __shared__ float part[cols + 3];
   __shared__ float s_sum[kMaxLevels];
   __shared__ typename LatticeScan::TempStorage scan_temp;
   __shared__ int s_running;
   __shared__ int s_n_o[kKinds * kMaxLevels];
+  __shared__ int s_n_d[kMaxLevels];
+  //: The retirement bound, folded by `build_term_layout`'s own `atomicMax` -- which is why
+  //: it is zeroed HERE, behind the fold's barrier: docs/internals/decode/decode.md#retirement
+  __shared__ int s_umax;
   __shared__ int s_bits[kMaxTerms * kMaxLevels];
   __shared__ int s_shift[kMaxTerms * kMaxLevels];
   //: One unit count per TERM. The walk's outer loop is the term, so each term's rank space
@@ -167,9 +173,10 @@ decode_step_kernel(DecodeParams p) {
   //: in the leaf space: docs/internals/decode/decode_lattice.md
   build_digit_mask<D>(p, sa_r, mask_r);
   build_digit_mask<D>(p, sa_w, mask_w);
+  if (tid == 0) s_umax = 0;
   __syncthreads();
-  build_owner_lists<D>(p, mask_r, mask_w, olist, s_n_o, scan_temp);
-  build_term_layout<D>(p, s_n_o, s_bits, s_shift, s_units);
+  build_owner_lists<D>(p, mask_r, mask_w, olist, dlist, s_n_o, s_n_d, scan_temp);
+  build_term_layout<D>(p, s_n_o, s_n_d, s_bits, s_shift, s_units, &s_umax);
 
   // ---- RETIREMENT: the split's ceiling is captured, the realized work is not ----
   //: `n_split` is FROZEN for the sequence and baked into the captured launch
@@ -191,20 +198,16 @@ decode_step_kernel(DecodeParams p) {
   //: incidental: the table test and the pool claim read a page table the last-arriving
   //: LIVE segment folds into, so a retired segment must not be inside that window at all.
   //: docs/internals/decode/decode.md#retirement
-  //: EVERY THREAD DERIVES IT, rather than one thread publishing it: `s_units` is already
-  //: uniform and already published by `build_term_layout`'s own barrier, so a redundant
-  //: `D + 1` compares costs nothing while a shared word and a second barrier are a full
-  //: block synchronisation every CTA pays whether or not anything retires -- which the
-  //: dense cell, where nothing does, measured at ~1 %.
-  int most = 0;
-#pragma unroll
-  for (int t = 0; t <= D; ++t) {
-    const int u = s_units[t];
-    if (u > most) most = u;
-  }
-  const int want = ceil_div_int(most, kDecodeWarps);
-  const int n_live = want < 1 ? 1 : (want > p.n_split ? p.n_split : want);
-  if (seg >= n_live) return;
+  //: ONE SHARED READ AND ONE COMPARE. `build_term_layout` folds the maximum by `atomicMax`
+  //: inside its own barrier, so learning it costs neither a second block synchronisation
+  //: (which the dense cell, where nothing retires, measured at ~1 %) nor `D + 1` redundant
+  //: reads per thread. The test is written as the COMPARE rather than as `seg >= n_live`
+  //: because they are the same question -- `seg >= clamp(ceil(umax / W), 1, n_split)` is
+  //: `seg > 0 && seg * W >= umax`, since `seg < n_split` always -- and this form keeps the
+  //: division and the two clamps off the path every CTA walks, on the cell where nothing
+  //: retires. `n_live` itself is only needed by the epilogue.
+  const int umax = s_umax;
+  if (seg > 0 && seg * kDecodeWarps >= umax) return;
 
   const int inner_bits = p.lat_inner_bits;
 
@@ -229,7 +232,7 @@ decode_step_kernel(DecodeParams p) {
     int atom = -1;
     for (int q = 0; q < n_units; ++q) {
       const Unit<D> u = resolve_unit<D, false>(p, mask_r, mask_w, sa_r, sa_w, sd, olist, s_n_o,
-                                               s_bits, s_shift, 0, unit0 + q);
+                                               s_bits, s_shift, D + 1, unit0 + q);
       if (!u.valid) return -1;
       if (atom < 0) atom = (u.base + (a << kAtomShift)) >> kAtomShift;
       if (u.live_w && ((u.cw >> ((a << kAtomShift) & ((1 << inner_bits) - 1))) & win_mask) != 0u) {
@@ -239,7 +242,10 @@ decode_step_kernel(DecodeParams p) {
     return -1;
   };
 
-  const int n_candidates = (s_units[0] >> p.lat_units_per_atom_shift) << p.atoms_per_unit_shift;
+  //: FROM THE CANDIDATE SLOT, not from the walk's write term: the two enumerate the same
+  //: set and only this one is monotone in atom id, which is what the claim's canonical
+  //: ranks are defined in: docs/internals/decode/decode_lattice.md#the-write-grain
+  const int n_candidates = (s_units[D + 1] >> p.lat_units_per_atom_shift) << p.atoms_per_unit_shift;
 
   // ---- THE ADMISSION QUESTION, asked of the map this CTA already holds ---------
   //: Three outcomes PER BATCH-HEAD: advance, no-op, or re-read without depositing:
@@ -324,6 +330,11 @@ decode_step_kernel(DecodeParams p) {
   //: arrival -- which is what lets the step be enqueued before the admission it needs is
   //: known, and what makes the caller's replay THE SAME STEP rather than a second one.
   //: docs/internals/decode/decode.md#per-bh-verdict
+  //: `n_live` -- the same bound the retirement test above asked as a COMPARE, formed here
+  //: because the combine and the arrival need the NUMBER rather than the answer.
+  const int want_live = ceil_div_int(umax, kDecodeWarps);
+  const int n_live = want_live < 1 ? 1 : (want_live > p.n_split ? p.n_split : want_live);
+
   if (!needy) {
     float acc[NC];
 #pragma unroll
@@ -371,7 +382,14 @@ decode_step_kernel(DecodeParams p) {
     for (int term = 0; term <= D; ++term) {
       const int units = s_units[term];
       for (int unit = seg * kDecodeWarps + warp; unit < units; unit += p.n_split * kDecodeWarps) {
-        const Unit<D> u = resolve_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd, olist, s_n_o,
+        //: TWO RESOLVERS, ONE WALK. The write product is enumerated from live DIGITS and
+        //: every other term from live owners crossed with the run radix; both hand back the
+        //: identical `Unit<D>`, and the selector is the term loop's own invariant.
+        //: docs/internals/decode/decode_lattice.md#the-write-grain
+        const Unit<D> u =
+            (term == 0) ? resolve_write_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd, olist,
+                                                       dlist, s_n_o, s_n_d, s_bits, s_shift, unit)
+                        : resolve_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd, olist, s_n_o,
                                                  s_bits, s_shift, term, unit);
         const uint32_t br = u.live_r ? u.cr : 0u;
         const uint32_t bw = u.live_w ? u.cw : 0u;
@@ -602,11 +620,12 @@ decode_step_kernel(DecodeParams p) {
 }  // namespace detail
 
 size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int olist_total) {
+                              int olist_total, int dlist_total) {
   const size_t amps = static_cast<size_t>(total_rows) * (decay ? 3 : 2);
   const size_t fold = static_cast<size_t>(kDecodeWarps) * (cols + 3);
-  const size_t tables =
-      2 * static_cast<size_t>(mask_total) + kKinds * static_cast<size_t>(olist_total);
+  const size_t tables = 2 * static_cast<size_t>(mask_total)
+                        + kKinds * static_cast<size_t>(olist_total)
+                        + static_cast<size_t>(dlist_total);
   return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
 }
 
@@ -616,8 +635,8 @@ void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem
   //: interesting part: docs/internals/decode/decode.md#instantiation-matrix
   TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
   const int cols = d_v + 1;
-  const size_t smem =
-      decode_step_smem_bytes(p.total_rows, d_v, cols, decay, p.mask_total, p.olist_total);
+  const size_t smem = decode_step_smem_bytes(p.total_rows, d_v, cols, decay, p.mask_total,
+                                             p.olist_total, p.dlist_total);
   TORCH_CHECK(static_cast<int64_t>(smem) <= smem_budget, "the decode step's staged operands need ",
               smem, " B of shared memory against a per-block budget of ", smem_budget,
               " B; sum_l width_l = ", p.total_rows,
@@ -772,18 +791,23 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
 
   int mask_total = 0;
   int olist_total = 0;
+  int dlist_total = 0;
   for (int l = 0; l < D; ++l) {
+    p.lat_sbits[l] = ilog2_exact(p.lat_s[l], "the level's owner span");
     p.mask_off[l] = mask_total;
     p.mask_words[l] = ceil_div_int(p.level_width[l], 32);
     mask_total += p.mask_words[l];
     p.olist_off[l] = olist_total;
     olist_total += p.lat_g[l];
+    p.dlist_off[l] = dlist_total;
+    if (l < D - 1) dlist_total += p.level_width[l];
     TORCH_CHECK(p.lat_g[l] <= kDecodeThreads, "level ", l, "'s owner grid is ", p.lat_g[l],
                 " wide against the ", kDecodeThreads,
                 " threads that build its list in one block pass");
   }
   p.mask_total = mask_total;
   p.olist_total = olist_total;
+  p.dlist_total = dlist_total;
 }
 
 //: The per-level geometry every decode entry validates the same way, filled into `p` and

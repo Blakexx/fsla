@@ -131,6 +131,84 @@ It was built, gated green and benchmarked, and it LOST:
 
 It is recorded here rather than shipped, and `kKinds` stays four.
 
+## <a id="the-write-grain"></a>2.2 The write product's own grain — live DIGITS, not live owners crossed with a run radix
+
+Every rank space in §2 is `live owners x the FULL outer run radix`: the owner list prunes
+OWNERS and the run field **never prunes at all**. That is exact wherever a level's support
+is dense inside the owners it touches, and it is the union walk's own shape — which is why
+the union walk never paid for it: its level-`l` support is `R_l u W_l`, and under the
+split-level declaration one side of every level is dense.
+
+**TERM 0 IS THE ONE TERM THAT IS SPARSE INSIDE ITS OWNERS BY CONSTRUCTION.** Under ALT the
+write side is the sparse side at the outer level, and its live digits scatter across the
+owner grid. Measured at the flagship, `ALT k16 scattered`, per batch-head:
+
+| term | rank space | units | live | idle | leaves per LIVE unit |
+|---|---|---|---|---|---|
+| 0 (write product) | owners x run radix | 2048 | 256 | **87.5 %** | 16.00 |
+| 1 (read remainder) | owners x run radix | 4096 | 2640 | 35.5 % | 1.45 |
+
+87.5 % is not merely wasted `resolve_unit` calls. The dead units are INTERLEAVED with the
+live ones — one live unit in every eight — so seven of a CTA's eight warps idle while the
+eighth walks sixteen slots. That warp-level imbalance is most of the cost, which is why
+removing it bought far more than the unit count alone predicts (§the ledger in the batch
+findings: `-7.3 us` measured against `+0.4 us` predicted from `c_u` alone).
+
+**SO TERM 0 ENUMERATES LIVE DIGITS** at every level but the innermost, from a per-level
+WRITE DIGIT LIST (`dlist`, `sum_{l < D-1} B_l` entries, built by the same block scan that
+builds the owner lists — a third 10-bit field in the same packed `int`). The innermost
+level keeps its owner, because it contributes a whole run as ONE SLICE rather than a digit.
+A digit splits back into `(owner, run)` by shifts (`o = d >> lat_sbits[l]`,
+`r = d & (lat_s[l] - 1)`), so the unit's base is assembled exactly as before and a unit is
+still one CONTIGUOUS ALIGNED RUN.
+
+| cell | term 0 before | term 0 after | total before | total after | union |
+|---|---|---|---|---|---|
+| dense | 4096 | 4096 | 4096 | 4096 | 4096 |
+| ALT k16 scattered | 2048 | **256** | 6144 | **4352** | 4096 |
+| ALT k4 scattered | 512 | **64** | 1536 | **1088** | 4096 |
+| ALT k16 clustered | 512 | **256** | 1024 | **768** | 4096 |
+| ALT k4 clustered | 128 | **64** | 384 | **320** | 4096 |
+
+The dense cell is untouched — every digit is live, so live digits and
+`owners x run radix` are the same 4096 — which is the test that this is a change of GRAIN
+and not of density: there is no branch and no threshold anywhere in it.
+
+**THE REMAINING TERMS KEEP THE OWNER-AND-RUN SPACE.** The same ledger prices them: they
+idle 1.6 % to 35.5 %, never the majority that term 0 did, and a second digit list per kind
+is shared memory the `D = 4` residency cannot afford.
+
+### Two orderings, both DRAM decisions, both measured
+
+The flat digit field cannot reproduce the union walk's fully sequential sweep — ascending
+`base` needs `(o_0, o_1, r_0)` lexicographic and a flat digit bundles `(o_0, r_0)` — so the
+order was chosen by measurement:
+
+* **FIELD ORDER.** Term 0 keeps the other terms' order: innermost level LEAST significant,
+  level 0 most significant. Putting the outer digit field lowest instead sweeps one atom in
+  every `s_0` across the whole plane before returning for the next, and measured **+2.6 %
+  on the dense cell**; this order consumes one level-0 owner's whole region before moving on.
+* **<a id="the-rotation"></a>WARP ROTATION.** With the innermost owner lowest, consecutive
+  units are one owner box apart, so a CTA's eight warps reach eight atoms `BC` leaves apart.
+  The low `log2(kDecodeWarps)` bits of the loop index are therefore ROTATED into the bottom
+  of the finest outer level's digit field: a CTA's warps then take CONSECUTIVE ATOMS while
+  the CTA's stride still sweeps one region at a time. Worth a further **0.7 %** on the dense
+  cell at `BH = 1`. It is a BIT PERMUTATION of a power-of-two index space, hence a
+  bijection, so the walk still visits every unit exactly once and the deposit partition —
+  one owning CTA, warp and lane per row — is exactly the one it was.
+
+### <a id="the-candidate-slot"></a>The candidate atoms keep the old space, and that is the whole of the compatibility argument
+
+A flat digit rank is **not monotone in atom id**: at the flagship spans
+`base = 2048*o_0 + 128*o_1 + 16*r_0`, so ascending `(d_0, o_1)` runs `..., 1920, 16, ...`.
+The walk does not care. The CANDIDATE-ATOM enumeration does — the pool claim's canonical
+ranks are defined in ASCENDING ATOM ID ([`decode.md#the-claim`](decode.md#the-claim)) — so
+term slot `D + 1` holds the write product AGAIN in the old `owners x run radix` space, and
+`candidate_atom` reads that slot. It is the enumeration the claim was ratified on, byte for
+byte; nothing about the claim, the shadow row or the atom bits moved. `tests/integration/
+test_decode_paging.py` is what holds that: it exercises growth, the pool claim and the
+replay path, and it passes unedited.
+
 ## <a id="the-owner-lists"></a>2.1 `build_owner_lists` — four kinds, two scans per level
 
 The terms ask for four per-level digit sets — `W_l`, `R_l`, `R_l & W_l`,

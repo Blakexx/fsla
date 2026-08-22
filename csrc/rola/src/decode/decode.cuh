@@ -57,6 +57,11 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
 //: not free-floating: docs/internals/decode/decode.md#decode-threads
 constexpr int kDecodeThreads = 256;
 constexpr int kDecodeWarps = kDecodeThreads / 32;
+//: `log2(kDecodeWarps)`: the number of consecutive unit indices ONE CTA's warps cover, and
+//: therefore how many of the loop index's low bits the write walk rotates into its finest
+//: coordinate: docs/internals/decode/decode_lattice.md#the-write-grain
+constexpr int kDecodeWarpsBits = 3;
+static_assert(1 << kDecodeWarpsBits == kDecodeWarps, "kDecodeWarpsBits must be log2(kDecodeWarps)");
 
 //: THE LATTICE'S ONE DECLARED CAPACITY, refused loudly at the host entry: an owner's
 //: per-level span is read as a SINGLE 32-bit slice, both when a level's owner grid is
@@ -133,6 +138,7 @@ struct DecodeParams {
   int lat_s[kMaxLevels];
   int lat_g[kMaxLevels];
   int lat_gsuf[kMaxLevels];       // prod_{l' > l} lat_g[l']
+  int lat_sbits[kMaxLevels];      // log2 lat_s[l]: a digit splits into (owner, run) by shifts
   int lat_run_shift[kMaxLevels];  // BoxPlan::run_shift(l)
   int lat_local_bits;             // BoxPlan::kLocalBits = log2 BC
 
@@ -158,6 +164,13 @@ struct DecodeParams {
   //: The union owner-coordinate lists' layout: `lat_g[l]` entries reserved per level.
   int olist_off[kMaxLevels];
   int olist_total;
+  //: THE WRITE SIDE'S LIVE-DIGIT LIST, OUTER LEVELS ONLY -- `B_l` entries reserved per
+  //: level below the innermost, and nothing for the innermost (which contributes a whole
+  //: run as one slice, not a digit). It is what lets the WRITE PRODUCT enumerate live
+  //: digits where every other term enumerates live owners crossed with a full run radix:
+  //: docs/internals/decode/decode_lattice.md#the-write-grain
+  int dlist_off[kMaxLevels];
+  int dlist_total;
   //: THE ATOM AND THE UNIT, RECONCILED, and PAGED BACKING ONLY. Exactly one of these is
   //: non-zero: a unit holds `1 << atoms_per_unit_shift` atoms, or an atom holds
   //: `1 << lat_units_per_atom_shift` consecutive units. The candidate enumeration is a
@@ -252,7 +265,7 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 // ---------------------------------------------------------------------------
 
 size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int olist_total);
+                              int olist_total, int dlist_total);
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
 
 }  // namespace decode
