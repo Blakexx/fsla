@@ -756,6 +756,117 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
       }
     }
 
+    //: ---- THE CARVE MIGRATION (round 8 base, law 12), MILESTONE 1 ----------
+    //: ONE MASTER THAT CHANGES CARVE, streamed through SMEM a channel block at a
+    //: time.  Chunk `c` is channels `[8c, 8c+8)` -- and in the accumulator's lane map
+    //: those eight channels are EXACTLY the four registers `st[c>>1][j][2*(c&1)+b]`,
+    //: `j` and `b` in {0,1}, so the chunk decomposition is already latent in the
+    //: slice and every index below is COMPILE-TIME.  A warp publishes those four
+    //: registers and they are DEAD from that point; the pull refills the same four
+    //: from the OTHER carve's leaves.  Peak = one master plus one chunk in flight,
+    //: which is the ruling's model and what this milestone measures.
+    //:
+    //: THE TWO ADDRESSINGS ARE THE PERMUTATION.  The chunk holds `[8 channels][BC]`
+    //: fp32 = 4 KB per CTA.  The WRITE carve's warp owns `local = grp*16 + r1`, so
+    //: its two floats per (j) are ADJACENT `local` -- one `STS.64`, two per lane.
+    //: The READ carve's warp owns level-CR group `grp` across every level-0 digit,
+    //: `p = (r1 - 2*grp)*8 + q` in its private order, so `local = (p&7)*16 + 2*grp +
+    //: (p>>3)` -- stride 16, four `LDS.32` per lane.  The reverse is the mirror.
+    {
+      float* const sch = reinterpret_cast<float*>(simg);
+      auto wr_idx = [&](int chl, int j, int b) {  // the WRITE carve's slot
+        return chl * BC + grp * kLeafW + 8 * j + 2 * (lane & 3) + b;
+      };
+      auto rd_idx = [&](int chl, int j, int b) {  // the READ carve's slot
+        const int p = 8 * j + 2 * (lane & 3) + b;
+        return chl * BC + (p & 7) * BP::s(CR) + 2 * grp + (p >> 3);
+      };
+      static_for<MCH * 2>([&](auto Cc) {
+        constexpr int c = decltype(Cc)::value;
+        constexpr int m = c >> 1, eh = c & 1;
+        const int chl = lane >> 2;
+        rendezvous();
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          sch[wr_idx(chl, j, 0)] = st[m][j][2 * eh];
+          sch[wr_idx(chl, j, 1)] = st[m][j][2 * eh + 1];
+        });
+        rendezvous();
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          st[m][j][2 * eh] = sch[rd_idx(chl, j, 0)];
+          st[m][j][2 * eh + 1] = sch[rd_idx(chl, j, 1)];
+        });
+      });
+      //: the mass column rides the last chunk: one channel, so it lives in the four
+      //: lanes carrying accumulator row 0.
+      rendezvous();
+      if (lane < 4) {
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          sch[grp * kLeafW + 8 * j + 2 * lane] = mass_st[j][0];
+          sch[grp * kLeafW + 8 * j + 2 * lane + 1] = mass_st[j][1];
+        });
+      }
+      rendezvous();
+      if (lane < 4) {
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          static_for<2>([&](auto Bc) {
+            constexpr int b = decltype(Bc)::value;
+            const int p = 8 * j + 2 * lane + b;
+            mass_st[j][b] = sch[(p & 7) * BP::s(CR) + 2 * grp + (p >> 3)];
+          });
+        });
+      }
+      //: MILESTONE 1 RUNS THE MIGRATION AND ITS EXACT INVERSE, so the state returns
+      //: bit-identical and the readout still reads the image: this measures the
+      //: REGISTER LIVE RANGE and the permutation's addressing, and nothing else.
+      static_for<MCH * 2>([&](auto Cc) {
+        constexpr int c = decltype(Cc)::value;
+        constexpr int m = c >> 1, eh = c & 1;
+        const int chl = lane >> 2;
+        rendezvous();
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          sch[rd_idx(chl, j, 0)] = st[m][j][2 * eh];
+          sch[rd_idx(chl, j, 1)] = st[m][j][2 * eh + 1];
+        });
+        rendezvous();
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          st[m][j][2 * eh] = sch[wr_idx(chl, j, 0)];
+          st[m][j][2 * eh + 1] = sch[wr_idx(chl, j, 1)];
+        });
+      });
+      rendezvous();
+      if (lane < 4) {
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          static_for<2>([&](auto Bc) {
+            constexpr int b = decltype(Bc)::value;
+            const int p = 8 * j + 2 * lane + b;
+            sch[(p & 7) * BP::s(CR) + 2 * grp + (p >> 3)] = mass_st[j][b];
+          });
+        });
+      }
+      rendezvous();
+      if (lane < 4) {
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          mass_st[j][0] = sch[grp * kLeafW + 8 * j + 2 * lane];
+          mass_st[j][1] = sch[grp * kLeafW + 8 * j + 2 * lane + 1];
+        });
+      }
+      //: THE MIGRATION OWNS THE IMAGE'S BYTES, so the image is INVALID after it.
+      //: The readout republishes only when the state moved (`dirty`), so a window
+      //: that folds nothing would otherwise read an image this loop has overwritten
+      //: -- which is exactly what the two cohort cells caught (`o` NaN, state plane
+      //: still bit-identical, because the round trip itself is exact).  In the built
+      //: design there is no image at all and this line goes with it.
+      dirty = true;
+    }
+
     //: THE WINDOW LINE, by the ordering law: no warp may fold this window's writes
     //: while another is still reading the window's entry state.
     rendezvous();
