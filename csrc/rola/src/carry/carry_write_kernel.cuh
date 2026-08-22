@@ -102,11 +102,10 @@ struct WriteGeom {
                 "the staging block must hold a whole state page");
   static constexpr int kListStride = ((W + 7) / 8) * 8;
   static constexpr int wlist_bytes = kListStride * (int)sizeof(uint16_t);
-  //: ONE LIST PER READ GROUP, and the group count is `RS`'s, not the warp count's:
-  //: dynamic slice assignment decoupled them, so a coarser read grain allocates
-  //: fewer lists as well as reaching fewer warps.
-  static constexpr int kGR = BoxPlan<D, B, K, M>::s(CR) / RS;
-  static constexpr int rlist_bytes = kGR * kListStride * (int)sizeof(uint16_t);
+  //: ONE READ LIST.  The batch is token-carved, so the owner has a single
+  //: group-major list instead of one per read group -- 1,024 B where round 5 held
+  //: 4,096, and the multiplicity that paid for those lists is gone with them.
+  static constexpr int rlist_bytes = kListStride * (int)sizeof(uint16_t);
   static constexpr int kLW = W / kBallotLanes;
   static constexpr int kRegFloor = 128;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
@@ -148,31 +147,17 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   constexpr int kLeafW = G::kLeafW;
   constexpr int NL = kLeafW / kMmaN;  // the warp's accumulator n-tiles
   constexpr int MCH = kDv / kMmaM;    // the channel m-tiles, ALL of them per warp
-  //: AND THE GROUP CARVE IS WHAT KEEPS THE READ PHASE PARALLEL (round 6).  The
-  //: TOKEN-CARVED read batch was built and measured: one group-major list, a warp
-  //: draining a whole batch against the WHOLE image with a per-tile union skip off
-  //: the certificate, so a token is fanned in ONCE.  It hits its target exactly --
-  //: `lts__t_sectors_op_red` falls to **1.000x of the channel-split baseline**, i.e.
-  //: multiplicity one, and the readout's HMMA and staging fall with it -- AND IT
-  //: LOSES ON EVERY ALT CELL (0.815 -> 0.957, 0.849 -> 0.942, 1.252 -> 1.373,
-  //: 1.118 -> 1.194), because MULTIPLICITY IS ALSO THE READ PHASE'S PARALLELISM.
-  //: A read batch is `C` entries of ONE list; with `m` groups there are `m` times as
-  //: many batches, and the batch count is what fills the eight warps.  Measured
-  //: host-side: busy warps of eight go 4.74 -> 1.95 at ALT k16 cohort=64 and
-  //: 1.74 -> 1.22 at k4 cohort=64, and `barStall` follows, 2.95 -> 6.40.  The fan-in
-  //: the multiplicity costs and the warps it fills are THE SAME QUANTITY.
-  //:
-  //: THE READ CARVE'S GRAIN IS ITS OWN AXIS, and it is NOT the warp count.  Once
-  //: the state is addressable the warp -> slice map is dynamic, so the number of
-  //: read GROUPS and the number of WARPS are independent: `RS` names the group's
-  //: level-CR digits and `kGR` how many groups an owner run holds.  The finest
-  //: grain minimises read k-TILES and the coarsest minimises read-entry
-  //: MULTIPLICITY, and multiplicity is what the per-entry fan-in and staging cost
-  //: is proportional to -- so the grain is swept, not assumed.
-  constexpr int kGSR = RS;                // a read group's level-CR digits
-  constexpr int kGR = BP::s(CR) / kGSR;   // read groups per owner run
-  constexpr int kSub = kGSR / 2;          // its adjacent pairs, i.e. its k-steps
+  //: THE READ BATCH IS TOKEN-CARVED, NOT GROUP-CARVED (round 6).  Round 5's ledger
+  //: named the last term: a token live in `m` read groups was listed `m` times and
+  //: FANNED IN `m` times, and that fan-in plus its staging was 2,146 warp-instructions
+  //: per (owner, window) against 512 HMMA.  So a batch is now `C` of the OWNER's read
+  //: tokens -- ONE list, multiplicity ONE -- and a warp drains the whole batch against
+  //: the WHOLE image, accumulating across the token's live groups in registers and
+  //: fanning in ONCE.  The read carve's group axis goes with it: the only grain left
+  //: is the IMAGE's own k-tile, which under LAY 3 is exactly one pair-grain (sigma 2)
+  //: group of sixteen slots.
   constexpr int kOutHi = BC / BP::s(CR);  // the leaves ABOVE the read level
+  constexpr int kSigma = BC / kMmaK;      // the image's k-tiles = its sigma-2 groups
 
   //: THE SHAPE THIS BODY IS BUILT FOR, STATED RATHER THAN ASSUMED.  LAY 3's slot
   //: algebra and the write carve's contiguity are properties of a two-level box
@@ -181,9 +166,9 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   //: which is always correct and only ever slower.
   static_assert(D == 2 && CR == 1, "Form B carves level 0 by the writer and level 1 by the reader");
   static_assert(BP::s(0) == kFbWarps, "a warp owns exactly one of the writer's digits");
-  static_assert(kGSR >= 2 && kGSR % 2 == 0 && kGR >= 1 && kOutHi == kMmaN,
-                "LAY 3 places a read group's adjacent pairs beside the eight write digits, so "
-                "a group is a whole number of them");
+  static_assert(kOutHi == kMmaN && kSigma == kFbWarps,
+                "LAY 3 places a pair-grain group's eight write digits in one k-tile, and the "
+                "sorted list gives each warp one of those groups' segments");
   static_assert(kLeafW == kAtomLeaves, "a write digit's leaves are exactly one state page");
   static_assert(C % kMmaM == 0 && kFbThreads % C == 0, "the batch tile must divide");
   static_assert(kLeafW % kMmaK == 0, "the warp's leaves are a whole number of k-tiles");
@@ -196,8 +181,6 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   static_assert(W / kMmaK <= 32, "the tile-skip predicate is one word of k-tiles per window");
   static_assert(PM::kRowThr * PM::SPT == BC, "the row's threads cover the box exactly");
   static_assert(PM::SPT % 2 == 0, "a thread publishes whole bf16 pairs");
-
-  constexpr int KDw = kSub;  // the read group's `ldmatrix` k-steps
 
   const int tid = threadIdx.x;
   const int warp = tid >> 5, lane = tid & 31;
@@ -317,18 +300,24 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   //: THE READOUT'S A OPERAND: a read group's `kLeafW` slots are CONTIGUOUS under
   //: LAY 3, so it is `MCH` `ldmatrix.x4` out of the image plus two scalar reads for
   //: the mass -- which is ONE row of a sixteen-row tile.
-  auto state_operand = [&](uint32_t imgG, const __nv_bfloat16* mrowG, auto Kc,
-                           uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
-    constexpr int kk = decltype(Kc)::value;
+  //: THE A OPERAND IS LOADED AND CONSUMED ONE m-TILE AT A TIME.  Holding all `MCH`
+  //: of them is sixteen live registers on top of the permanent slice and the token
+  //: tile's accumulators, which is a spill at the 128-register bound; an `ldmatrix`
+  //: out of SMEM is the cheap side of that trade and the loads pipeline anyway.
+  auto state_mma = [&](uint32_t imgG, const __nv_bfloat16* mrow, const uint32_t(&rb)[2],
+                       float(&acc)[MCH][4], float(&macc)[4]) {
     static_for<MCH>([&](auto Mc) {
       constexpr int m = decltype(Mc)::value;
-      load_frag(sa[m], imgG + (uint32_t)((kk * kMmaK + m * kMmaM * Ld) * 2));
+      uint32_t sa[4];
+      load_frag(sa, imgG + (uint32_t)(m * kMmaM * Ld * 2));
+      mma(acc[m], sa, rb);
     });
-    const __nv_bfloat16* const mrow = mrowG + kk * kMmaK;
+    uint32_t ma[4];
     ma[0] = (lane >> 2) == 0 ? *reinterpret_cast<const uint32_t*>(mrow) : 0u;
     ma[1] = 0u;
     ma[2] = (lane >> 2) == 0 ? *reinterpret_cast<const uint32_t*>(mrow + 8) : 0u;
     ma[3] = 0u;
+    mma(macc, ma, rb);
   };
 
   constexpr uint32_t kOnesPair = 0x3F803F80u;
@@ -450,12 +439,12 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   //: ptxas folds into the load's own immediate.  Round 4's ledger measured the old
   //: per-access `gather_ptr` form at three opaque 64-bit adds per k-step per token
   //: tile, none of them foldable and none of them shared.
-  auto read_pair = [&](const __nv_bfloat16* tokp, int colC, int col0, int kk, int qb, bool have,
+  auto read_pair = [&](const __nv_bfloat16* tokp, int colC, int col0, int qb, bool have,
                        uint32_t(&rb)[2]) {
     //: ONE token row pointer, TWO column indices.  Carrying the two displaced
-    //: pointers instead costs two more live 64-bit registers across the k-step loop,
+    //: pointers instead costs two more live 64-bit registers across the group loop,
     //: which is a spill on sm_80 at the 128-register bound -- measured.
-    const uint32_t pair = have ? *reinterpret_cast<const uint32_t*>(tokp + colC + 2 * kk) : 0u;
+    const uint32_t pair = have ? *reinterpret_cast<const uint32_t*>(tokp + colC) : 0u;
     const __nv_bfloat16* const a0 = tokp + (col0 + qb);
 #pragma unroll
     for (int r = 0; r < 2; ++r)
@@ -562,30 +551,41 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
       if constexpr (WSC) orW1 |= row_word(rowsW, CR, g);
       if constexpr (RS0) orR0 |= row_word(rowsR, 0, g);
     });
-    //: a READ GROUP's word is the OR of the `kSub` pair-grain rows it spans -- the
-    //: table is stored at the FINEST grain either carve asks for, and a coarser
-    //: consumer ORs what it already holds.
-    auto read_group_row = [&](int G) {
-      uint32_t r = 0u;
-      for (int t = 0; t < kSub; ++t) r |= row_word(rowsR, CR, G * kSub + t);
-      return r;
-    };
     const uint32_t clauseW = WSC ? (valid & orW1) : valid;
     const uint32_t clauseR = RS0 ? (valid & orR0) : valid;
     const uint32_t liveW = clauseW & orW0;
-    int nrg[kGR], nbrAll = 0;
-    static_for<kGR>([&](auto Gc) {
-      constexpr int G = decltype(Gc)::value;
-      const uint32_t rg = read_group_row(G);
-      nrg[G] = lane_broadcast(lane_prefix_incl<LW>(bit_count(clauseR & rg)), LW - 1);
-      nbrAll += (nrg[G] + C - 1) / C;
+
+    //: THE READ LIST IS ONE LIST, BUILT GROUP-MAJOR, AND THAT ORDER IS WHAT KEEPS
+    //: THE TILE UNIONS TIGHT.  A token is written ONCE, into the segment of its
+    //: FIRST live pair-grain group -- `own = clause & row_G & ~seen`, a running mask
+    //: over the `kSigma` rows every warp already holds -- so consecutive list
+    //: entries share a leading group and an eight-token tile's union stays near ONE
+    //: group where the support is scattered and near the cohort's own run where it
+    //: is coherent.  It is an ORDER, not a density branch: the skip below is per
+    //: tile and reads the certificate.
+    //:
+    //: `kSigma == kFbWarps`, so warp `grp` owns segment `grp` outright: it needs
+    //: only its own `own` word and the segment's base, and the base is the running
+    //: total the same pass produces.  No `[kGR]` count array survives the pass.
+    uint32_t mineOwn = 0u, seen = 0u;
+    int nr = 0, myBase = 0;
+    static_for<kSigma>([&](auto Gc) {
+      constexpr int Gi = decltype(Gc)::value;
+      const uint32_t rg = row_word(rowsR, CR, Gi);
+      const uint32_t own = clauseR & rg & ~seen;
+      seen |= rg;
+      if (Gi == grp) {
+        mineOwn = own;
+        myBase = nr;
+      }
+      nr += lane_broadcast(lane_prefix_incl<LW>(bit_count(own)), LW - 1);
     });
+    const int nTiles = (nr + kMmaN - 1) / kMmaN;
     //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side.  The read side's
-    //: half IS `nbrAll`, which the counts already produced: a group's count is the
-    //: population of its own clause, so their sum is zero exactly when the union is.
-    //: It is CTA-uniform without a barrier -- the ballots are the same words in
-    //: every warp.
-    if (nbrAll == 0 && lane_ballot(liveW != 0u) == 0u) continue;
+    //: half IS `nr`: every live read token appears in exactly one segment, so the
+    //: running total is zero exactly when the owner reads nothing.  CTA-uniform
+    //: without a barrier -- the ballots are the same words in every warp.
+    if (nr == 0 && lane_ballot(liveW != 0u) == 0u) continue;
 
     //: THE HANDOVER LINE, and it is now the image's ALONE: the read lists and the
     //: value ring no longer share bytes, so this separates the previous window's
@@ -599,12 +599,9 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     constexpr uint32_t kBitsW = (uint32_t)(kBallotLanes / kFbWarps);
     const int nw =
         walk(liveW, wlist, ((1u << kBitsW) - 1u) << (warp * kBitsW), (1u << (warp * kBitsW)) - 1u);
-    //: the warp's OWN read group's word is recomputed here rather than carried out
-    //: of the count pass: `grp` is a runtime index, so a carried copy is a select
-    //: chain and one more live register at a bound that has none to spare, while
-    //: the row is a runtime ADDRESS and costs nothing to re-read.
-    if (nbrAll > 0 && grp < kGR)
-      walk(clauseR & read_group_row(grp), srlist + grp * kListStride, 0xFFFFFFFFu, 0u);
+    //: the warp scatters its own segment at the base the count pass gave it, so the
+    //: `kSigma` segments concatenate into ONE group-major list with no CTA prefix.
+    if (nr > 0) walk(mineOwn, srlist + myBase, 0xFFFFFFFFu, 0u);
     rendezvous();
 
     //: THE TILE-SKIP PREDICATE.  Bit `T` says the warp's own write digit is live in
@@ -628,41 +625,51 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     }
 
     // ---- PHASE 1: the READOUT, against the window's ENTRY state ------------
-    //: THE BATCH IS THE UNIT OF WORK AND THE WARP IS ONLY ITS WORKER: batch `bi`
-    //: belongs to warp `bi % kFbWarps` whatever group it is drawn from, so a window
-    //: whose live support falls in ONE group is drained by every warp.  The carve's
-    //: coherence exposure is a property of REGISTER-resident state and it does not
-    //: survive an addressable one.
+    //: THE UNIT OF ASSIGNMENT IS THE mma n-TILE, NOT THE BATCH.  The readout reads a
+    //: CTA-SHARED image, so eight tokens is a legal unit: no token is split, its
+    //: partial sums across the image's k-tiles stay in ONE warp and it is fanned in
+    //: ONCE, so multiplicity stays one and the per-tile union skip is unchanged --
+    //: and the unit count is FOUR TIMES the batch count.  That is the whole of round
+    //: 6's defect: a `C`-entry batch gave the eight warps 1.95 units of work at ALT
+    //: k16 cohort=64 and 1.22 at k4 cohort=64, so six of eight warps waited at the
+    //: window line.  At n-tile grain the same window offers 7.8 and 4.9.
 #pragma unroll 1
-    for (int bi = warp; bi < nbrAll; bi += kFbWarps) {
-      int rem = bi, gsel = 0, osel = 0, nsel = 0;
-      static_for<kGR>([&](auto Gc) {
-        constexpr int g = decltype(Gc)::value;
-        const int nb = (nrg[g] + C - 1) / C;
-        const bool mine = rem >= 0 && rem < nb;
-        gsel = mine ? g : gsel;
-        osel = mine ? rem * C : osel;
-        nsel = mine ? nrg[g] : nsel;
-        rem -= nb;
-      });
-      //: THE BATCH'S INVARIANTS, HOISTED OUT OF THE TOKEN-TILE LOOP.  `osel` folds
-      //: into the list pointer, the group's image slot into the `ldmatrix` base and
-      //: the mass row, and the group's two amplitude column origins into the two
-      //: column indices the tile loop adds to its token row.
-      const uint16_t* const rlist = srlist + gsel * kListStride + osel;
-      const int gslot = gsel * (kGSR * kOutHi);
-      const uint32_t imgG = imgA + (uint32_t)(gslot * 2);
-      const __nv_bfloat16* const mrowG = simg + kDv * Ld + gslot + (lane & 3) * 2;
-      const int gbase = gsel * kSub;
-      const int colC = runCol[CR] + 2 * gbase;
-      const int col0 = runCol[0];
-      const int n = (nsel - osel) < C ? (nsel - osel) : C;
+    for (int tile = warp; tile < nTiles; tile += kFbWarps) {
+      {
+        const int idx = tile * kMmaN + (lane >> 2);
+        const bool have = idx < nr;
+        const int tok = srlist[have ? idx : 0];
+        const __nv_bfloat16* const tokp = pRw + tok * BP::kWtot;
+        //: THE SKIP, AND IT IS THE WRITE SIDE'S MIRROR.  A token tile folds the
+        //: UNION of its eight tokens' live pair-grain groups, read from the
+        //: CERTIFICATE: a lane tests its own token's bit in each of the `kSigma`
+        //: rows and one `redux.sync.or` makes the union warp-wide.  A group in which
+        //: all eight tokens are dead contributes an exact zero at every channel, so
+        //: dropping its k-tile is an IDENTITY, not an approximation -- the same
+        //: argument the fold's tile skip rests on.  THE READOUT HAS NO REPLAY
+        //: CONTRACT (the reverse family replays the FOLD, and `o`/`den` are
+        //: global-atomic fan-ins that are not bit-reproducible against themselves),
+        //: so the identity here is a correctness statement rather than a gate --
+        //: and it is still exact.
+        //: THE UNION COSTS TWO ROW LOADS PER LANE, NOT EIGHT.  A token is served by
+        //: FOUR lanes, so lane `l` tests only pair-grain groups `2*(l&3)` and `+1` of
+        //: ITS token; the whole-unit `redux.sync.or` then combines the four lanes'
+        //: halves AND the tile's eight tokens in one instruction, because an OR does
+        //: not care which lane a bit came from.  Loading all eight rows in every lane
+        //: is the same union at four times the cost.
+        uint32_t mine = 0u;
+        {
+          const int gpair = (lane & 3) * 2;
+          const uint32_t roff =
+              (uint32_t)(rowIdx[CR] + gpair) * rowBytes + (uint32_t)((tok0 >> 5) + (tok >> 5)) * 4u;
+          const int bit = tok & 31;
+          const uint32_t r0 = *reinterpret_cast<const uint32_t*>(gather_ptr(rowsR, roff));
+          const uint32_t r1 =
+              *reinterpret_cast<const uint32_t*>(gather_ptr(rowsR, roff + rowBytes));
+          mine = have ? (((((r1 >> bit) & 1u) << 1) | ((r0 >> bit) & 1u)) << gpair) : 0u;
+        }
+        const uint32_t uni = lane_reduce_or(mine);
 
-#pragma unroll
-      for (int j = 0; j < C / kMmaN; ++j) {
-        const int idx = j * kMmaN + (lane >> 2);
-        const bool have = idx < n;
-        const __nv_bfloat16* const tokp = pRw + (int)rlist[have ? idx : 0] * BP::kWtot;
         float acc[MCH][4], macc[4];
 #pragma unroll
         for (int m = 0; m < MCH; ++m)
@@ -670,23 +677,23 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
           for (int e = 0; e < 4; ++e) acc[m][e] = 0.f;
 #pragma unroll
         for (int e = 0; e < 4; ++e) macc[e] = 0.f;
-        //: THE k-STEP IS A PAIR-GRAIN SUB-GROUP, and the XOR key is ITS index --
-        //: which is what LAY 3's slot order permutes the A operand by, absorbed
-        //: here at zero cost as a warp-constant XOR on a runtime address.
-        //: THE A OPERAND IS LOADED INSIDE THE TOKEN TILE, not hoisted across the
-        //: batch's four of them: `KDw x MCH` A fragments is `16 * KDw` live
-        //: registers on top of the permanent state slice, and past `KDw = 1` that
-        //: is a spill at the 128-register bound the occupancy target sets.  An
-        //: `ldmatrix` out of SMEM is the cheap side of that trade.
-        static_for<KDw>([&](auto Kc) {
-          constexpr int kk = decltype(Kc)::value;
-          uint32_t sa[MCH][4], ma[4], rb[2];
-          state_operand(imgG, mrowG, Kc, sa, ma);
-          read_pair(tokp, colC, col0, kk, (lane & 3) ^ ((gbase + kk) & 3), have, rb);
-#pragma unroll
-          for (int m = 0; m < MCH; ++m) mma(acc[m], sa[m], rb);
-          mma(macc, ma, rb);
-        });
+        //: THE WHOLE IMAGE, ONE k-TILE PER PAIR-GRAIN GROUP -- WALKED OVER THE
+        //: UNION'S SET BITS, not unrolled over all `kSigma` with a predicate.  The
+        //: trip count is then the tile's LIVENESS and a dead group costs nothing at
+        //: all, where eight unrolled bodies cost eight basic blocks and the live
+        //: ranges that come with them (measured: an eight-byte spill at the
+        //: 128-register bound, and no spill is admitted).  The price is four ALU
+        //: operations of runtime addressing per live group -- the image offset, the
+        //: mass row, the level-CR column and LAY 3's XOR key are all shifts of `Gi`
+        //: -- against a `gather_ptr`-free token row that is already formed.
+#pragma unroll 1
+        for (uint32_t u = uni; u != 0u; u &= u - 1u) {
+          const int Gi = first_set(u);
+          uint32_t rb[2];
+          read_pair(tokp, runCol[CR] + 2 * Gi, runCol[0], (lane & 3) ^ (Gi & 3), have, rb);
+          state_mma(imgA + (uint32_t)(Gi * (kMmaK * 2)),
+                    simg + kDv * Ld + Gi * kMmaK + (lane & 3) * 2, rb, acc, macc);
+        }
         //: THE FAN-IN IS WARP-PRIVATE, AND IT IS STAGED.  ROUND 4 ITEM 2 BUILT AND
         //: MEASURED THE DIRECT FORM -- `red.global.add.f32` straight out of
         //: `acc[m][e]`, no `STS`, no `LDS`, no `__syncwarp`, and the 17,408 B block
@@ -721,16 +728,16 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
         //: are where dead tiles are common).
 #pragma unroll
         for (int r = 0; r < kMmaN; ++r) {
-          if (j * kMmaN + r < n) {
+          if (tile * kMmaN + r < nr) {
             //: `oWin` already carries the window's origin AND the lane's channel, so
             //: the token is one `IMAD.WIDE` and the second RED is `+128` immediate.
-            float* const dp = oWin + (int)rlist[j * kMmaN + r] * kDv;
+            float* const dp = oWin + (int)srlist[tile * kMmaN + r] * kDv;
             fan_in_add(dp, sow[r * LdO + lane]);
             fan_in_add(dp + kBallotLanes, sow[r * LdO + lane + kBallotLanes]);
           }
         }
-        if (lane < kMmaN && j * kMmaN + lane < n)
-          fan_in_add(dWin + (int)rlist[j * kMmaN + lane], sow[lane * LdO + kDv]);
+        if (lane < kMmaN && tile * kMmaN + lane < nr)
+          fan_in_add(dWin + (int)srlist[tile * kMmaN + lane], sow[lane * LdO + kDv]);
         __syncwarp();
       }
     }
