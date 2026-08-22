@@ -3,17 +3,28 @@
 The mirror of `csrc/rola/src/carry/carry.cu`. One translation unit: the torch entries,
 the arm dispatch, the per-arm register/SMEM census and the built-set listing.
 
-## The arm list is small on purpose
+## An arm is a (topology, DECLARATION) pair
 
-The carve question is answered, so an arm is a `(topology, W)` pair and nothing more.
 `CARRY_ARMS_X` is the single X-macro the dispatch, the census and the listing all walk,
-so the three cannot drift apart — the shipped family's `CHUNK_ARMS_X` discipline.
+so the three cannot drift apart — the shipped family's `CHUNK_ARMS_X` discipline. Its
+last column is the per-level MODE DECLARATION, because the declaration CHOOSES THE BODY
+(`carry_kernel.md`): the same topology therefore appears once per declaration built for
+it, and DENSE_BOTH appears for every topology because it is the seam's answer to any
+declaration this family has no carved body for.
 
-| arm | topology | `k` | `m` | `s_l` | `BC` | owners | `W` | `C` | SMEM | regs |
-|---|---|---|---|---|---|---|---|---|---|---|
-| flagship | `(256,256)` | 4 | 8 | (8,16) | 128 | 512 | 384 | 32 | 37 440 B | 176 |
-| flagship+ | `(256,256)` | 4 | 8 | (8,16) | 128 | 512 | 512 | 32 | 37 952 B | 176 |
-| small | `(64,64)` | 4 | 8 | (8,16) | 128 | 32 | 64 | 32 | 36 160 B | 176 |
+`carve_level<D, MODES>` is what the seam resolves: the innermost level the declaration
+marks read-sparse, or `-1` for the channel-split body. `ALT` at depth `D` — write-sparse
+on the even levels, read-sparse on the odd — packs to 6 / 38 / 102 at `D = 2 / 3 / 4`,
+and at `D = 3` it marks the INNERMOST level write-sparse, so that arm's carve level is
+`-1` and it takes the channel-split body.
+
+| topology | `k` | `m` | `s_l` | `BC` | owners | `W` | declarations built | carve level |
+|---|---|---|---|---|---|---|---|---|
+| `(256,256)` | 4 | 8 | (8,16) | 128 | 512 | 384 | DENSE_BOTH, ALT | −1, 1 |
+| `(256,256)` | 4 | 8 | (8,16) | 128 | 512 | 512 | DENSE_BOTH, ALT | −1, 1 |
+| `(64,64)` | 4 | 8 | (8,16) | 128 | 32 | 64 | DENSE_BOTH, ALT | −1, 1 |
+| `(16,16,16)` | 2 | 16 | (2,4,16) | 128 | 32 | 64 | DENSE_BOTH, ALT | −1, −1 |
+| `(8,8,8,8)` | 2 | 8 | (2,2,4,8) | 128 | 32 | 64 | DENSE_BOTH, ALT | −1, 3 |
 
 `W` is the architecture doc's TWO-CONSTRAINT quantity. The C\* cost law
 (`sqrt(v/kappa p)`) has a shallow basin around it, so moving off the C\*-optimal 256
@@ -43,7 +54,9 @@ can. `build_stamp` launches a kernel that returns the source's magic, the carve'
 geometry and the architecture capability digest, and appends the arm's
 `cudaFuncGetAttributes` census beside them: registers, shared bytes, binary version,
 the geometry's own byte count, the launch bound, LOCAL bytes (which must be zero),
-`BC`, the owner count, the derived ring depth and the CTA target. Every gate in
+`BC`, the owner count, the derived ring depth, the CTA target and the CARVE LEVEL the
+declaration named. The stamp is per `(topology, declaration)`, so it also answers which
+body an arm resolved to. Every gate in
 `tests/k31/` asserts the magic before it asserts anything else.
 
 ## What this file deliberately does not do
