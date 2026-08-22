@@ -82,16 +82,15 @@ struct WriteGeom {
   //: produce serves all eight where the read carve needed one panel per warp.
   static constexpr int LdS = BC + kPadE;
   static constexpr int LdO = kDv + kPadF;
-  static constexpr int Ld = BC + kPadE;
 
   static constexpr int panel_bytes = 2 * C * LdS * (int)sizeof(__nv_bfloat16);
-  static constexpr int img_bytes = kCols * Ld * (int)sizeof(__nv_bfloat16);
-  //: THE IMAGE AND THE FOLD'S PANELS ARE PHASE-EXCLUSIVE WITHIN A WINDOW and share
-  //: their bytes: the readout has no panel at all (its coefficients are synthesized
-  //: straight into MMA-layout registers), so the panel region is dead through phase
-  //: 1, and the window line separates the last image read from the first panel
-  //: write exactly as the ordering law already requires.
-  static constexpr int face_bytes = img_bytes > panel_bytes ? img_bytes : panel_bytes;
+  //: THERE IS NO IMAGE (round 8 M2).  The readout reads the master itself, in the
+  //: READ carve, out of registers; the migration streams through the FOLD's panel
+  //: bytes, which are dead for the whole read phase.  One chunk is
+  //: `8 channels x BC` fp32 = 4 KB, so the panel region holds any `K <= 4`.
+  static constexpr int chunk_bytes = 8 * BC * (int)sizeof(float);
+  static constexpr int face_bytes = panel_bytes;
+  static_assert(face_bytes >= chunk_bytes, "the migration chunk lives in the panel bytes");
   //: THE READOUT'S TRANSPOSE BLOCK, one `kMmaN`-token region per warp -- and, at
   //: entry and exit, the state plane's page.  ROUND 4 ITEM 2 TRIED TO DELETE IT and
   //: the measurement refused: see the findings doc.  It is what turns the fan-in's
@@ -102,10 +101,10 @@ struct WriteGeom {
                 "the staging block must hold a whole state page");
   static constexpr int kListStride = ((W + 7) / 8) * 8;
   static constexpr int wlist_bytes = kListStride * (int)sizeof(uint16_t);
-  //: ONE READ LIST.  The batch is token-carved, so the owner has a single
-  //: group-major list instead of one per read group -- 1,024 B where round 5 held
-  //: 4,096, and the multiplicity that paid for those lists is gone with them.
-  static constexpr int rlist_bytes = kListStride * (int)sizeof(uint16_t);
+  //: ONE READ LIST PER GROUP.  A register-resident read carve gives a warp only
+  //: its own group, so the list is the warp's own and the read phase has no CTA
+  //: barrier at all -- round 1's property, recovered.
+  static constexpr int rlist_bytes = kFbWarps * kListStride * (int)sizeof(uint16_t);
   static constexpr int kLW = W / kBallotLanes;
   static constexpr int kRegFloor = 128;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
@@ -129,11 +128,16 @@ struct WriteGeom {
   //: separates them.  Un-aliasing them was measured in round 4 and it LOSES -- not
   //: on `cta_target`, which stays 2 either way, but on the sm_86 L1/SMEM carveout:
   //: 49,424 B per CTA leaves less L1 than 45,328, and the cohort cells feel it.
-  static constexpr int fixed_bytes = face_bytes + out_bytes + wlist_bytes;
-  static constexpr int kStages = design::stages_for(slot_bytes, fixed_bytes, kFbThreads, kRegFloor);
-  static constexpr int ring_bytes =
-      kStages * slot_bytes > rlist_bytes ? kStages* slot_bytes : rlist_bytes;
-  static constexpr size_t bytes = (size_t)fixed_bytes + (size_t)ring_bytes;
+  //: THE FAN-IN STAGING AND THE VALUE RING SHARE THEIR BYTES (round 8d): the
+  //: staging is a READOUT tenant, dead at the window line, and the ring is a FOLD
+  //: tenant, filled after it.  Correct and free -- and here it is what pays for the
+  //: eight per-group read lists the register read carve needs.
+  static constexpr int fixed_bytes = face_bytes + rlist_bytes + wlist_bytes;
+  static constexpr int kStages =
+      design::stages_for(slot_bytes, fixed_bytes + out_bytes, kFbThreads, kRegFloor);
+  static constexpr int mid_bytes =
+      out_bytes > kStages* slot_bytes ? out_bytes : kStages* slot_bytes;
+  static constexpr size_t bytes = (size_t)fixed_bytes + (size_t)mid_bytes;
   static constexpr int cta_target = design::cta_target((int)bytes, kFbThreads, kRegFloor);
 };
 
@@ -156,7 +160,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   using CR2 = TwoCarveRows<D, B, K, M, kFbWarps, 0, CR>;
 
   constexpr int BC = BP::kBC;
-  constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO, Ld = G::Ld;
+  constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
   constexpr int MTOK = C / kMmaM;
   constexpr int kLeafW = G::kLeafW;
   constexpr int NL = kLeafW / kMmaN;  // the warp's accumulator n-tiles
@@ -188,8 +192,7 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   static_assert(kLeafW % kMmaK == 0, "the warp's leaves are a whole number of k-tiles");
   static_assert(BC % kAtomLeaves == 0, "K2: an owner holds whole page atoms");
   static_assert(design::smem_fits(G::bytes), "this arm does not fit the SMEM maximum");
-  static_assert(LdS % 8 == 0 && LdV % 8 == 0 && Ld % 8 == 0,
-                "an ldmatrix row address must be 16-byte aligned");
+  static_assert(LdS % 8 == 0 && LdV % 8 == 0, "an ldmatrix row address must be 16-byte aligned");
   static_assert(W % kBallotLanes == 0 && kFbThreads % kBallotLanes == 0,
                 "a warp's tokens must be exactly one ballot word of the owner's row");
   static_assert(W / kMmaK <= 32, "the tile-skip predicate is one word of k-tiles per window");
@@ -204,19 +207,18 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   extern __shared__ __align__(16) char carry_smem[];
   constexpr int STAGES = G::kStages;
   static_assert(STAGES >= 2, "the wait/issue order needs at least two stages");
-  //: THE MAP, IN ITS TWO ALIASED PAIRS.  `sr`/`sw` are the fold's two panel slots
-  //: and `simg` is the image over the same bytes; `sv` is the value ring and
-  //: `srlist` the read lists over the same bytes.  Both pairs are phase-exclusive
-  //: within a window and the handover line at the top of it is what separates them.
+  //: THE MAP.  `sr`/`sw` are the fold's two panel slots and the MIGRATION CHUNK
+  //: shares their bytes (the panels are dead for the whole read phase, and the
+  //: migration's own barriers plus the window line separate them).  The fan-in
+  //: staging shares the value ring, which is the round-8(d) alias.  The lists own
+  //: their bytes: the write list is live from the schedule to the fold's end.
   __nv_bfloat16* const sr = reinterpret_cast<__nv_bfloat16*>(carry_smem);
   __nv_bfloat16* const sw = sr + C * LdS;
-  __nv_bfloat16* const simg = sr;
+  float* const schunk = reinterpret_cast<float*>(carry_smem);
   float* const spage = reinterpret_cast<float*>(carry_smem + G::face_bytes);
-  __nv_bfloat16* const sv =
-      reinterpret_cast<__nv_bfloat16*>(carry_smem + G::face_bytes + G::out_bytes);
-  uint16_t* const srlist = reinterpret_cast<uint16_t*>(sv);
-  uint16_t* const wlist =
-      reinterpret_cast<uint16_t*>(carry_smem + G::face_bytes + G::out_bytes + G::ring_bytes);
+  __nv_bfloat16* const sv = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::face_bytes);
+  uint16_t* const srlist = reinterpret_cast<uint16_t*>(carry_smem + G::face_bytes + G::mid_bytes);
+  uint16_t* const wlist = srlist + kFbWarps * G::kListStride;
   float* const sow = spage + warp * kMmaN * LdO;
   constexpr int kListStride = G::kListStride;
 
@@ -262,7 +264,6 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
   const uint32_t bwF0 = smem_addr(sw) + (uint32_t)((rF * LdS + cF * 8) * 2);
   const uint32_t bwF1 = smem_addr(sr) + (uint32_t)((rF * LdS + cF * 8) * 2);
-  const uint32_t imgA = smem_addr(simg) + (uint32_t)((rF * Ld + cF * 8) * 2);
   const uint32_t svB = smem_addr(sv) + (uint32_t)((rT * LdV + cT * 8) * 2);
   constexpr uint32_t kVSlot = (uint32_t)(C * LdV) * 2;
 #define ADDR_S(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2))
@@ -289,49 +290,23 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   //: WITHIN the access -- and `(e=2h, e=2h+1)` are `j = 0, 1`, i.e. two ADJACENT
   //: slots.  One `STS.32` per (m-tile, n-tile, half), sixteen in all, and the
   //: sixteen lanes of a phase cover banks 0-31 exactly once.
-  auto pub_slot = [&](int jt) {
-    const int g = 4 * jt + (lane & 3);
-    return g * (2 * kOutHi) + 2 * (grp ^ (g & 3));
-  };
-  auto publish = [&]() {
-    static_for<NL>([&](auto Jc) {
-      constexpr int jt = decltype(Jc)::value;
-      const int slot = pub_slot(jt);
-      static_for<MCH>([&](auto Mc) {
-        constexpr int m = decltype(Mc)::value;
-        static_for<2>([&](auto Hc) {
-          constexpr int h = decltype(Hc)::value;
-          store_bf16x2(simg + (m * kMmaM + (lane >> 2) + 8 * h) * Ld + slot,
-                       pack_bf16x2(st[m][jt][2 * h], st[m][jt][2 * h + 1]));
-        });
-      });
-      //: the mass rides channel row `kDv` and lives in accumulator row 0, lanes 0-3.
-      if (lane < 4)
-        store_bf16x2(simg + kDv * Ld + slot, pack_bf16x2(mass_st[jt][0], mass_st[jt][1]));
-    });
-  };
-
-  //: THE READOUT'S A OPERAND: a read group's `kLeafW` slots are CONTIGUOUS under
-  //: LAY 3, so it is `MCH` `ldmatrix.x4` out of the image plus two scalar reads for
-  //: the mass -- which is ONE row of a sixteen-row tile.
-  //: THE A OPERAND IS LOADED AND CONSUMED ONE m-TILE AT A TIME.  Holding all `MCH`
-  //: of them is sixteen live registers on top of the permanent slice and the token
-  //: tile's accumulators, which is a spill at the 128-register bound; an `ldmatrix`
-  //: out of SMEM is the cheap side of that trade and the loads pipeline anyway.
-  auto state_mma = [&](uint32_t imgG, const __nv_bfloat16* mrow, const uint32_t(&rb)[2],
-                       float(&acc)[MCH][4], float(&macc)[4]) {
+  //: THE READOUT'S A OPERAND IS THE ACCUMULATOR ITSELF.  After the migration the
+  //: master is in the READ carve -- warp `grp` owns level-CR group `grp` across
+  //: every level-0 digit, `p = (r1 - 2*grp)*8 + q` -- and its own `NL` n-tiles ARE
+  //: the sixteen leaves of one `mma` k-step, so the fragment is `pack_bf16x2` in
+  //: place: no image, no `ldmatrix`, no SMEM read at all on the state's side.
+  auto state_operand = [&](uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
     static_for<MCH>([&](auto Mc) {
       constexpr int m = decltype(Mc)::value;
-      uint32_t sa[4];
-      load_frag(sa, imgG + (uint32_t)(m * kMmaM * Ld * 2));
-      mma(acc[m], sa, rb);
+      sa[m][0] = pack_bf16x2(st[m][0][0], st[m][0][1]);
+      sa[m][1] = pack_bf16x2(st[m][0][2], st[m][0][3]);
+      sa[m][2] = pack_bf16x2(st[m][1][0], st[m][1][1]);
+      sa[m][3] = pack_bf16x2(st[m][1][2], st[m][1][3]);
     });
-    uint32_t ma[4];
-    ma[0] = (lane >> 2) == 0 ? *reinterpret_cast<const uint32_t*>(mrow) : 0u;
-    ma[1] = 0u;
-    ma[2] = (lane >> 2) == 0 ? *reinterpret_cast<const uint32_t*>(mrow + 8) : 0u;
-    ma[3] = 0u;
-    mma(macc, ma, rb);
+    ma[0] = pack_bf16x2(mass_st[0][0], mass_st[0][1]);
+    ma[1] = pack_bf16x2(mass_st[0][2], mass_st[0][3]);
+    ma[2] = pack_bf16x2(mass_st[1][0], mass_st[1][1]);
+    ma[3] = pack_bf16x2(mass_st[1][2], mass_st[1][3]);
   };
 
   constexpr uint32_t kOnesPair = 0x3F803F80u;
@@ -453,17 +428,19 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   //: ptxas folds into the load's own immediate.  Round 4's ledger measured the old
   //: per-access `gather_ptr` form at three opaque 64-bit adds per k-step per token
   //: tile, none of them foldable and none of them shared.
-  auto read_pair = [&](const __nv_bfloat16* tokp, int colC, int col0, int qb, bool have,
-                       uint32_t(&rb)[2]) {
-    //: ONE token row pointer, TWO column indices.  Carrying the two displaced
-    //: pointers instead costs two more live 64-bit registers across the group loop,
-    //: which is a spill on sm_80 at the 128-register bound -- measured.
-    const uint32_t pair = have ? *reinterpret_cast<const uint32_t*>(tokp + colC) : 0u;
-    const __nv_bfloat16* const a0 = tokp + (col0 + qb);
+  //: THE READOUT'S B FRAGMENT, SYNTHESIZED DIRECTLY IN MMA LAYOUT.  Under the read
+  //: carve's private order `p = (r1 - 2*grp)*8 + q`, register `r`'s two halves are
+  //: k-indices `kx = 8r + 2*(l&3) + h`, so `r1 = 2*grp + r` (compile-time per
+  //: register) and `q = 2*(l&3) + h` -- the PAIR is the LEVEL-0 run, one 4-byte load
+  //: carries both halves, and the level-CR factor is a scalar at a runtime address.
+  //: LAY 3's XOR is gone with the image that needed it.
+  auto read_pair = [&](const __nv_bfloat16* tokp, bool have, uint32_t(&rb)[2]) {
+    const uint32_t pair =
+        have ? *reinterpret_cast<const uint32_t*>(tokp + runCol[0] + 2 * (lane & 3)) : 0u;
 #pragma unroll
     for (int r = 0; r < 2; ++r)
-      rb[r] =
-          mul_bf16x2(pair, splat_bf16x2_bits(*reinterpret_cast<const unsigned short*>(a0 + 4 * r)));
+      rb[r] = mul_bf16x2(pair, splat_bf16x2_bits(*reinterpret_cast<const unsigned short*>(
+                                   tokp + runCol[CR] + 2 * grp + r)));
   };
 
   // ---- V staging -----------------------------------------------------------
@@ -487,9 +464,6 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   const __nv_bfloat16* gWw = gW;
   float* oWin = oPlane + lane;
   float* dWin = denPlane;
-  //: the image is republished only where the fold moved the state, so a window that
-  //: writes nothing costs the readout nothing.  The entry state is a write.
-  bool dirty = true;
 
 #pragma unroll 1
   for (int win = 0; win < nWindows; ++win, pRw += (long)W * BP::kWtot, pWw += (long)W * BP::kWtot,
@@ -556,12 +530,15 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     //: need -- sixteen of the thirty-two row loads per warp per window.  `WSC` and
     //: `RS0` are those two declarations, template arguments named at the seam, so
     //: the loads are absent from the body rather than predicated in it.
-    uint32_t orW0 = 0u, orW1 = 0u, orR0 = 0u, myW0 = 0u;
+    uint32_t orW0 = 0u, orW1 = 0u, orR0 = 0u, orR1 = 0u, myW0 = 0u, mineR = 0u;
     static_for<kFbWarps>([&](auto Gc) {
       constexpr int g = decltype(Gc)::value;
       const uint32_t w0 = row_word(rowsW, 0, g);
       orW0 |= w0;
       myW0 = (g == grp) ? w0 : myW0;
+      const uint32_t rC = row_word(rowsR, CR, g);
+      orR1 |= rC;
+      mineR = (g == grp) ? rC : mineR;
       if constexpr (WSC) orW1 |= row_word(rowsW, CR, g);
       if constexpr (RS0) orR0 |= row_word(rowsR, 0, g);
     });
@@ -569,61 +546,31 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
     const uint32_t clauseR = RS0 ? (valid & orR0) : valid;
     const uint32_t liveW = clauseW & orW0;
 
-    //: THE READ LIST IS ONE LIST, BUILT GROUP-MAJOR, AND THAT ORDER IS WHAT KEEPS
-    //: THE TILE UNIONS TIGHT.  A token is written ONCE, into the segment of its
-    //: FIRST live pair-grain group -- `own = clause & row_G & ~seen`, a running mask
-    //: over the `kSigma` rows every warp already holds -- so consecutive list
-    //: entries share a leading group and an eight-token tile's union stays near ONE
-    //: group where the support is scattered and near the cohort's own run where it
-    //: is coherent.  It is an ORDER, not a density branch: the skip below is per
-    //: tile and reads the certificate.
-    //:
-    //: `kSigma == kFbWarps`, so warp `grp` owns segment `grp` outright: it needs
-    //: only its own `own` word and the segment's base, and the base is the running
-    //: total the same pass produces.  No `[kGR]` count array survives the pass.
-    uint32_t mineOwn = 0u, seen = 0u;
-    int nr = 0, myBase = 0;
-    static_for<kSigma>([&](auto Gc) {
-      constexpr int Gi = decltype(Gc)::value;
-      const uint32_t rg = row_word(rowsR, CR, Gi);
-      const uint32_t own = clauseR & rg & ~seen;
-      seen |= rg;
-      if (Gi == grp) {
-        mineOwn = own;
-        myBase = nr;
-      }
-      nr += lane_broadcast(lane_prefix_incl<LW>(bit_count(own)), LW - 1);
-    });
-    const int nTiles = (nr + kMmaN - 1) / kMmaN;
-    //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side.  The read side's
-    //: half IS `nr`: every live read token appears in exactly one segment, so the
-    //: running total is zero exactly when the owner reads nothing.  CTA-uniform
-    //: without a barrier -- the ballots are the same words in every warp.
-    if (nr == 0 && lane_ballot(liveW != 0u) == 0u) continue;
+    //: THE READ LIST IS THE WARP'S OWN GROUP'S (round 8 M2).  With the master
+    //: READ-CARVED INTO REGISTERS a warp can serve only its own group, so the list,
+    //: the count, the batches and the fan-in are all warp-private and the read phase
+    //: has NO CTA BARRIER of its own -- round 1's property, recovered.  The price is
+    //: the fan-in MULTIPLICITY the carve forces: a token whose level-CR support
+    //: spans `m` groups is drained by `m` warps.  It is the design's bet against
+    //: round 7's addressable image, and the five cells decide it.
+    const int nr = lane_broadcast(lane_prefix_incl<LW>(bit_count(clauseR & mineR)), LW - 1);
+    const int nbr = (nr + C - 1) / C;
+    //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side.  CTA-uniform
+    //: without a barrier: the two owner-grain ballots are the same words in every
+    //: warp, and `orR1` is the OR the row pass already produced.
+    if (lane_ballot(((clauseR & orR1) | liveW) != 0u) == 0u) continue;
 
-    //: THE HANDOVER LINE, and it is now the image's ALONE: the read lists and the
-    //: value ring no longer share bytes, so this separates the previous window's
-    //: FOLD (writing the panels) from this window's PUBLISH (writing the image over
-    //: them) and nothing else.
-    rendezvous();
-    if (dirty) {
-      publish();
-      dirty = false;
-    }
     constexpr uint32_t kBitsW = (uint32_t)(kBallotLanes / kFbWarps);
     const int nw =
         walk(liveW, wlist, ((1u << kBitsW) - 1u) << (warp * kBitsW), (1u << (warp * kBitsW)) - 1u);
-    //: the warp scatters its own segment at the base the count pass gave it, so the
-    //: `kSigma` segments concatenate into ONE group-major list with no CTA prefix.
-    if (nr > 0) walk(mineOwn, srlist + myBase, 0xFFFFFFFFu, 0u);
-    rendezvous();
+    uint16_t* const rlist = srlist + grp * kListStride;
+    if (nbr > 0) walk(clauseR & mineR, rlist, 0xFFFFFFFFu, 0u);
+    __syncwarp();
 
     //: THE TILE-SKIP PREDICATE.  Bit `T` says the warp's own write digit is live in
     //: k-tile `T` of the owner's write list.  A token's list slot is its rank in
-    //: `liveW`, so the tile is that rank's top bits: the walk is over the digit's
-    //: OWN live bits, which is `popc` iterations of a word, and the whole-unit
-    //: disjunction is one `redux.sync`.  NOTHING about the list, its order or its
-    //: tile boundaries moves -- only which tiles this warp executes.
+    //: `liveW`, so the tile is that rank's top bits.  NOTHING about the list, its
+    //: order or its tile boundaries moves -- only which tiles this warp executes.
     uint32_t tiles;
     {
       const int cntL = bit_count(liveW);
@@ -638,52 +585,86 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
       tiles = lane_reduce_or(t);
     }
 
-    // ---- PHASE 1: the READOUT, against the window's ENTRY state ------------
-    //: THE UNIT OF ASSIGNMENT IS THE mma n-TILE, NOT THE BATCH.  The readout reads a
-    //: CTA-SHARED image, so eight tokens is a legal unit: no token is split, its
-    //: partial sums across the image's k-tiles stay in ONE warp and it is fanned in
-    //: ONCE, so multiplicity stays one and the per-tile union skip is unchanged --
-    //: and the unit count is FOUR TIMES the batch count.  That is the whole of round
-    //: 6's defect: a `C`-entry batch gave the eight warps 1.95 units of work at ALT
-    //: k16 cohort=64 and 1.22 at k4 cohort=64, so six of eight warps waited at the
-    //: window line.  At n-tile grain the same window offers 7.8 and 4.9.
-#pragma unroll 1
-    for (int tile = warp; tile < nTiles; tile += kFbWarps) {
-      {
-        const int idx = tile * kMmaN + (lane >> 2);
-        const bool have = idx < nr;
-        const int tok = srlist[have ? idx : 0];
-        const __nv_bfloat16* const tokp = pRw + tok * BP::kWtot;
-        //: THE SKIP, AND IT IS THE WRITE SIDE'S MIRROR.  A token tile folds the
-        //: UNION of its eight tokens' live pair-grain groups, read from the
-        //: CERTIFICATE: a lane tests its own token's bit in each of the `kSigma`
-        //: rows and one `redux.sync.or` makes the union warp-wide.  A group in which
-        //: all eight tokens are dead contributes an exact zero at every channel, so
-        //: dropping its k-tile is an IDENTITY, not an approximation -- the same
-        //: argument the fold's tile skip rests on.  THE READOUT HAS NO REPLAY
-        //: CONTRACT (the reverse family replays the FOLD, and `o`/`den` are
-        //: global-atomic fan-ins that are not bit-reproducible against themselves),
-        //: so the identity here is a correctness statement rather than a gate --
-        //: and it is still exact.
-        //: THE UNION COSTS TWO ROW LOADS PER LANE, NOT EIGHT.  A token is served by
-        //: FOUR lanes, so lane `l` tests only pair-grain groups `2*(l&3)` and `+1` of
-        //: ITS token; the whole-unit `redux.sync.or` then combines the four lanes'
-        //: halves AND the tile's eight tokens in one instruction, because an OR does
-        //: not care which lane a bit came from.  Loading all eight rows in every lane
-        //: is the same union at four times the cost.
-        uint32_t mine = 0u;
-        {
-          const int gpair = (lane & 3) * 2;
-          const uint32_t roff =
-              (uint32_t)(rowIdx[CR] + gpair) * rowBytes + (uint32_t)((tok0 >> 5) + (tok >> 5)) * 4u;
-          const int bit = tok & 31;
-          const uint32_t r0 = *reinterpret_cast<const uint32_t*>(gather_ptr(rowsR, roff));
-          const uint32_t r1 =
-              *reinterpret_cast<const uint32_t*>(gather_ptr(rowsR, roff + rowBytes));
-          mine = have ? (((((r1 >> bit) & 1u) << 1) | ((r0 >> bit) & 1u)) << gpair) : 0u;
-        }
-        const uint32_t uni = lane_reduce_or(mine);
+    //: ---- THE CARVE MIGRATION (round 8 base, law 12) -----------------------
+    //: ONE MASTER THAT CHANGES CARVE, streamed through the fold's panel bytes a
+    //: channel block at a time.  Chunk `c` is channels `[8c, 8c+8)`, which in the
+    //: accumulator's lane map are EXACTLY the four registers
+    //: `st[c>>1][j][2*(c&1)+b]` -- so the publish is the last use of those four
+    //: scalars and the pull is their next def, and the peak is one master plus one
+    //: chunk.  The WRITE carve's two floats per n-tile are adjacent `local` (one
+    //: `STS.64`); the READ carve's are stride `s(CR)` (two `LDS.32`).
+    auto migrate = [&](auto ToRead) {
+      constexpr bool TR = decltype(ToRead)::value;
+      const int chl = lane >> 2;
+      auto wi = [&](int j, int b) { return chl * BC + grp * kLeafW + 8 * j + 2 * (lane & 3) + b; };
+      auto ri = [&](int j, int b) {
+        const int pp = 8 * j + 2 * (lane & 3) + b;
+        return chl * BC + (pp & 7) * BP::s(CR) + 2 * grp + (pp >> 3);
+      };
+      static_for<MCH * 2>([&](auto Cc) {
+        constexpr int c = decltype(Cc)::value;
+        constexpr int m = c >> 1, eh = c & 1;
+        rendezvous();
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          const int o0 = TR ? wi(j, 0) : ri(j, 0), o1 = TR ? wi(j, 1) : ri(j, 1);
+          schunk[o0] = st[m][j][2 * eh];
+          schunk[o1] = st[m][j][2 * eh + 1];
+        });
+        rendezvous();
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          const int o0 = TR ? ri(j, 0) : wi(j, 0), o1 = TR ? ri(j, 1) : wi(j, 1);
+          st[m][j][2 * eh] = schunk[o0];
+          st[m][j][2 * eh + 1] = schunk[o1];
+        });
+      });
+      //: the mass column rides the last chunk: one channel, so it lives in the four
+      //: lanes carrying accumulator row 0.
+      rendezvous();
+      if (lane < 4) {
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          static_for<2>([&](auto Bc) {
+            constexpr int b = decltype(Bc)::value;
+            const int pp = 8 * j + 2 * lane + b;
+            const int o = TR ? (grp * kLeafW + pp) : ((pp & 7) * BP::s(CR) + 2 * grp + (pp >> 3));
+            schunk[o] = mass_st[j][b];
+          });
+        });
+      }
+      rendezvous();
+      if (lane < 4) {
+        static_for<NL>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          static_for<2>([&](auto Bc) {
+            constexpr int b = decltype(Bc)::value;
+            const int pp = 8 * j + 2 * lane + b;
+            const int o = TR ? ((pp & 7) * BP::s(CR) + 2 * grp + (pp >> 3)) : (grp * kLeafW + pp);
+            mass_st[j][b] = schunk[o];
+          });
+        });
+      }
+    };
+    migrate(std::true_type{});
 
+    // ---- PHASE 1: the READOUT, against the window's ENTRY state ------------
+    //: THE WARP DRAINS ITS OWN GROUP'S TOKENS against its own read-carved slice.
+    //: The A operand is `pack_bf16x2` of the accumulator in place -- hoisted per
+    //: BATCH, since it does not move with the token.
+#pragma unroll 1
+    for (int i = 0; i < nbr; ++i) {
+      const int off = i * C;
+      const int n = (nr - off) < C ? (nr - off) : C;
+      uint32_t sa[MCH][4], ma[4];
+      state_operand(sa, ma);
+#pragma unroll
+      for (int j = 0; j < C / kMmaN; ++j) {
+        const int idx = j * kMmaN + (lane >> 2);
+        const bool have = idx < n;
+        const __nv_bfloat16* const tokp = pRw + (int)rlist[off + (have ? idx : 0)] * BP::kWtot;
+        uint32_t rb[2];
+        read_pair(tokp, have, rb);
         float acc[MCH][4], macc[4];
 #pragma unroll
         for (int m = 0; m < MCH; ++m)
@@ -691,35 +672,10 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
           for (int e = 0; e < 4; ++e) acc[m][e] = 0.f;
 #pragma unroll
         for (int e = 0; e < 4; ++e) macc[e] = 0.f;
-        //: THE WHOLE IMAGE, ONE k-TILE PER PAIR-GRAIN GROUP -- WALKED OVER THE
-        //: UNION'S SET BITS, not unrolled over all `kSigma` with a predicate.  The
-        //: trip count is then the tile's LIVENESS and a dead group costs nothing at
-        //: all, where eight unrolled bodies cost eight basic blocks and the live
-        //: ranges that come with them (measured: an eight-byte spill at the
-        //: 128-register bound, and no spill is admitted).  The price is four ALU
-        //: operations of runtime addressing per live group -- the image offset, the
-        //: mass row, the level-CR column and LAY 3's XOR key are all shifts of `Gi`
-        //: -- against a `gather_ptr`-free token row that is already formed.
-#pragma unroll 1
-        for (uint32_t u = uni; u != 0u; u &= u - 1u) {
-          const int Gi = first_set(u);
-          uint32_t rb[2];
-          read_pair(tokp, runCol[CR] + 2 * Gi, runCol[0], (lane & 3) ^ (Gi & 3), have, rb);
-          state_mma(imgA + (uint32_t)(Gi * (kMmaK * 2)),
-                    simg + kDv * Ld + Gi * kMmaK + (lane & 3) * 2, rb, acc, macc);
-        }
-        //: THE FAN-IN IS WARP-PRIVATE, AND IT IS STAGED.  ROUND 4 ITEM 2 BUILT AND
-        //: MEASURED THE DIRECT FORM -- `red.global.add.f32` straight out of
-        //: `acc[m][e]`, no `STS`, no `LDS`, no `__syncwarp`, and the 17,408 B block
-        //: deleted -- AND IT IS REFUTED.  The sector arithmetic is right: the
-        //: accumulator already puts eight consecutive channels of one token in the
-        //: eight lanes sharing `lane & 3`, so the direct RED touches the same 64
-        //: sectors the staged one does.  But it touches them through FOUR cache
-        //: lines per instruction instead of one, and that is what binds: measured,
-        //: local/global L1 wavefronts 3.01x, MIO throttle 8.7x, l1tex 42.9% -> 63.6%,
-        //: and the ALT k16 scattered cell 0.820 -> 0.941.  The staging pass is what
-        //: makes the RED lane-per-CHANNEL and therefore one coalesced segment per
-        //: issue, and at the entry-densest cell that is worth its bytes.
+#pragma unroll
+        for (int m = 0; m < MCH; ++m) mma(acc[m], sa[m], rb);
+        mma(macc, ma, rb);
+        //: THE FAN-IN IS WARP-PRIVATE, AND IT IS STAGED (round 4 item 2's ruling).
 #pragma unroll
         for (int m = 0; m < MCH; ++m)
 #pragma unroll
@@ -732,140 +688,22 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
           store_f32(&sow[(lane * 2 + 1) * LdO + kDv], macc[1]);
         }
         __syncwarp();
-        //: the row loop stays FULLY UNROLLED with a per-row guard.  Two cheaper
-        //: shapes were measured in round 4 and both LOSE: rolling it to a liveness
-        //: trip count (0.845 -> 0.853 at ALT k4 scattered, because sixteen unrolled
-        //: REDs issue back to back and a rolled loop serializes them behind its own
-        //: branch), and skipping a wholly dead token tile with a warp-uniform test
-        //: before the MMA (1.248 -> 1.266 at ALT k16 cohort=64, because the branch
-        //: costs the four tiles their straight-line schedule and the cohort cells
-        //: are where dead tiles are common).
 #pragma unroll
         for (int r = 0; r < kMmaN; ++r) {
-          if (tile * kMmaN + r < nr) {
-            //: `oWin` already carries the window's origin AND the lane's channel, so
-            //: the token is one `IMAD.WIDE` and the second RED is `+128` immediate.
-            float* const dp = oWin + (int)srlist[tile * kMmaN + r] * kDv;
+          if (j * kMmaN + r < n) {
+            float* const dp = oWin + (int)rlist[off + j * kMmaN + r] * kDv;
             fan_in_add(dp, sow[r * LdO + lane]);
             fan_in_add(dp + kBallotLanes, sow[r * LdO + lane + kBallotLanes]);
           }
         }
-        if (lane < kMmaN && tile * kMmaN + lane < nr)
-          fan_in_add(dWin + (int)srlist[tile * kMmaN + lane], sow[lane * LdO + kDv]);
+        if (lane < kMmaN && j * kMmaN + lane < n)
+          fan_in_add(dWin + (int)rlist[off + j * kMmaN + lane], sow[lane * LdO + kDv]);
         __syncwarp();
       }
     }
 
-    //: ---- THE CARVE MIGRATION (round 8 base, law 12), MILESTONE 1 ----------
-    //: ONE MASTER THAT CHANGES CARVE, streamed through SMEM a channel block at a
-    //: time.  Chunk `c` is channels `[8c, 8c+8)` -- and in the accumulator's lane map
-    //: those eight channels are EXACTLY the four registers `st[c>>1][j][2*(c&1)+b]`,
-    //: `j` and `b` in {0,1}, so the chunk decomposition is already latent in the
-    //: slice and every index below is COMPILE-TIME.  A warp publishes those four
-    //: registers and they are DEAD from that point; the pull refills the same four
-    //: from the OTHER carve's leaves.  Peak = one master plus one chunk in flight,
-    //: which is the ruling's model and what this milestone measures.
-    //:
-    //: THE TWO ADDRESSINGS ARE THE PERMUTATION.  The chunk holds `[8 channels][BC]`
-    //: fp32 = 4 KB per CTA.  The WRITE carve's warp owns `local = grp*16 + r1`, so
-    //: its two floats per (j) are ADJACENT `local` -- one `STS.64`, two per lane.
-    //: The READ carve's warp owns level-CR group `grp` across every level-0 digit,
-    //: `p = (r1 - 2*grp)*8 + q` in its private order, so `local = (p&7)*16 + 2*grp +
-    //: (p>>3)` -- stride 16, four `LDS.32` per lane.  The reverse is the mirror.
-    {
-      float* const sch = reinterpret_cast<float*>(simg);
-      auto wr_idx = [&](int chl, int j, int b) {  // the WRITE carve's slot
-        return chl * BC + grp * kLeafW + 8 * j + 2 * (lane & 3) + b;
-      };
-      auto rd_idx = [&](int chl, int j, int b) {  // the READ carve's slot
-        const int p = 8 * j + 2 * (lane & 3) + b;
-        return chl * BC + (p & 7) * BP::s(CR) + 2 * grp + (p >> 3);
-      };
-      static_for<MCH * 2>([&](auto Cc) {
-        constexpr int c = decltype(Cc)::value;
-        constexpr int m = c >> 1, eh = c & 1;
-        const int chl = lane >> 2;
-        rendezvous();
-        static_for<NL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          sch[wr_idx(chl, j, 0)] = st[m][j][2 * eh];
-          sch[wr_idx(chl, j, 1)] = st[m][j][2 * eh + 1];
-        });
-        rendezvous();
-        static_for<NL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          st[m][j][2 * eh] = sch[rd_idx(chl, j, 0)];
-          st[m][j][2 * eh + 1] = sch[rd_idx(chl, j, 1)];
-        });
-      });
-      //: the mass column rides the last chunk: one channel, so it lives in the four
-      //: lanes carrying accumulator row 0.
-      rendezvous();
-      if (lane < 4) {
-        static_for<NL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          sch[grp * kLeafW + 8 * j + 2 * lane] = mass_st[j][0];
-          sch[grp * kLeafW + 8 * j + 2 * lane + 1] = mass_st[j][1];
-        });
-      }
-      rendezvous();
-      if (lane < 4) {
-        static_for<NL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          static_for<2>([&](auto Bc) {
-            constexpr int b = decltype(Bc)::value;
-            const int p = 8 * j + 2 * lane + b;
-            mass_st[j][b] = sch[(p & 7) * BP::s(CR) + 2 * grp + (p >> 3)];
-          });
-        });
-      }
-      //: MILESTONE 1 RUNS THE MIGRATION AND ITS EXACT INVERSE, so the state returns
-      //: bit-identical and the readout still reads the image: this measures the
-      //: REGISTER LIVE RANGE and the permutation's addressing, and nothing else.
-      static_for<MCH * 2>([&](auto Cc) {
-        constexpr int c = decltype(Cc)::value;
-        constexpr int m = c >> 1, eh = c & 1;
-        const int chl = lane >> 2;
-        rendezvous();
-        static_for<NL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          sch[rd_idx(chl, j, 0)] = st[m][j][2 * eh];
-          sch[rd_idx(chl, j, 1)] = st[m][j][2 * eh + 1];
-        });
-        rendezvous();
-        static_for<NL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          st[m][j][2 * eh] = sch[wr_idx(chl, j, 0)];
-          st[m][j][2 * eh + 1] = sch[wr_idx(chl, j, 1)];
-        });
-      });
-      rendezvous();
-      if (lane < 4) {
-        static_for<NL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          static_for<2>([&](auto Bc) {
-            constexpr int b = decltype(Bc)::value;
-            const int p = 8 * j + 2 * lane + b;
-            sch[(p & 7) * BP::s(CR) + 2 * grp + (p >> 3)] = mass_st[j][b];
-          });
-        });
-      }
-      rendezvous();
-      if (lane < 4) {
-        static_for<NL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          mass_st[j][0] = sch[grp * kLeafW + 8 * j + 2 * lane];
-          mass_st[j][1] = sch[grp * kLeafW + 8 * j + 2 * lane + 1];
-        });
-      }
-      //: THE MIGRATION OWNS THE IMAGE'S BYTES, so the image is INVALID after it.
-      //: The readout republishes only when the state moved (`dirty`), so a window
-      //: that folds nothing would otherwise read an image this loop has overwritten
-      //: -- which is exactly what the two cohort cells caught (`o` NaN, state plane
-      //: still bit-identical, because the round trip itself is exact).  In the built
-      //: design there is no image at all and this line goes with it.
-      dirty = true;
-    }
+    //: back to the WRITE carve for the fold.
+    migrate(std::false_type{});
 
     //: THE WINDOW LINE, by the ordering law: no warp may fold this window's writes
     //: while another is still reading the window's entry state.
@@ -927,7 +765,6 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
       produce_batch(((i + 1) & 1) ? sr : sw, (i + 1) * C, nw);
     }
     stage_wait<0>();
-    dirty = dirty || nbw > 0;
   }
 
   // ---- the FINAL STATE, in LATTICE leaf order ------------------------------
