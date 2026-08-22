@@ -347,21 +347,26 @@ __device__ __forceinline__ void fan_in_add_if(unsigned live, float* p, float x) 
 }
 
 //: THE SAME PATH, RESTRICTED TO THE DESTINATION PLANE'S OWN SUPPORT.  `sup` walks the
-//: own-side operand at the reducing address and `sup_step` is its two-row stride;
-//: `keep_all` is 1 on a side whose duty is dense, where the whole digit axis is live and
-//: no cell may be dropped.  The walk unrolls by the relay's own period: the lane's eight
-//: cells are the two row parities of a `[16 x 16]` tile, and unrolling past that holds
-//: eight certificate loads live and spills.
-//: docs/internals/intra/intra_backward_kernel.md.
+//: own-side operand at the reducing address and `sup_step` is its two-row stride.  A side
+//: whose duty is DENSE has no support to restrict to and takes the unrestricted path
+//: unchanged: the declaration is uniform over the block, so the choice is one branch and
+//: not a per-cell test the dense arm would pay for nothing.  The restricted walk unrolls
+//: by the relay's own period -- the lane's eight cells are the two row parities of a
+//: `[16 x 16]` tile, and unrolling past that holds eight certificate loads live and
+//: spills.  docs/internals/intra/intra_backward_kernel.md.
 __device__ __forceinline__ void reduce_tile_on_support(float* put, const float* get, int lane_off,
                                                        const float (&acc)[2][4], float* base,
                                                        int stride, denseref::ops::SmemAddr sup,
-                                                       int sup_step, unsigned keep_all) {
+                                                       int sup_step, bool restricted) {
+  if (!restricted) {
+    reduce_tile(put, get, lane_off, acc, base, stride);
+    return;
+  }
   relay_tile(put, acc);
   int off = (lane_off >> 8) * stride + (lane_off & 0xFF);
 #pragma unroll 2
   for (int q = 0; q < kXposeRows / 2; ++q, off += 2 * stride, sup += sup_step)
-    fan_in_add_if(support_bits(sup) | keep_all, base + off, get[q * 2 * kXposePitch]);
+    fan_in_add_if(support_bits(sup), base + off, get[q * 2 * kXposePitch]);
 }
 
 //: THE SECOND LAUNCH BOUND, from the arm's own footprint.  Without it ptxas budgets
@@ -645,8 +650,8 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
         //: A SOFTMAX DUTY IS DENSE BY THEOREM, so its cotangent plane is live on the
         //: whole digit axis and no cell of it may be dropped; only a side the mode word
         //: declares sparse carries the producer's off-support annihilation.
-        const unsigned pr_all = ((p.modes >> (2 * l)) & kModeReadSparse) ? 0u : 1u;
-        const unsigned pw_all = ((p.modes >> (2 * l)) & kModeWriteSparse) ? 0u : 1u;
+        const bool pr_own = ((p.modes >> (2 * l)) & kModeReadSparse) != 0u;
+        const bool pw_own = ((p.modes >> (2 * l)) & kModeWriteSparse) != 0u;
         __syncthreads();
         publish_image<D, B, W>(sm, gram[l], warp, row_lo, col_lo);
         __syncthreads();
@@ -684,7 +689,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
               reduce_tile_on_support(
                   relay_put, relay_get, relay_off, dpr,
                   dpr_grp + (long long)mt * kWarpRows * p.row_width + gdig, p.row_width,
-                  base_sup_r + buf * kRBuf + mt * kWarpRows * kSlabRow, 2 * kSlabRow, pr_all);
+                  base_sup_r + buf * kRBuf + mt * kWarpRows * kSlabRow, 2 * kSlabRow, pr_own);
             }
           }
           //: (I6)'s contraction runs over the WHOLE block of readers, so it is gated
@@ -724,7 +729,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
               reduce_tile_on_support(
                   relay_put, relay_get, relay_off, dpw[mt],
                   dpw_base + (long long)mt * kWarpRows * p.row_width + gdig, p.row_width,
-                  base_sup_w + buf * kWBuf + mt * kWarpRows * kSlabRow, 2 * kSlabRow, pw_all);
+                  base_sup_w + buf * kWBuf + mt * kWarpRows * kSlabRow, 2 * kSlabRow, pw_own);
           }
           __syncthreads();
         }
