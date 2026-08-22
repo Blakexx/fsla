@@ -148,6 +148,20 @@ carry_write_kernel(const __nv_bfloat16* __restrict__ pread,
   constexpr int kLeafW = G::kLeafW;
   constexpr int NL = kLeafW / kMmaN;  // the warp's accumulator n-tiles
   constexpr int MCH = kDv / kMmaM;    // the channel m-tiles, ALL of them per warp
+  //: AND THE GROUP CARVE IS WHAT KEEPS THE READ PHASE PARALLEL (round 6).  The
+  //: TOKEN-CARVED read batch was built and measured: one group-major list, a warp
+  //: draining a whole batch against the WHOLE image with a per-tile union skip off
+  //: the certificate, so a token is fanned in ONCE.  It hits its target exactly --
+  //: `lts__t_sectors_op_red` falls to **1.000x of the channel-split baseline**, i.e.
+  //: multiplicity one, and the readout's HMMA and staging fall with it -- AND IT
+  //: LOSES ON EVERY ALT CELL (0.815 -> 0.957, 0.849 -> 0.942, 1.252 -> 1.373,
+  //: 1.118 -> 1.194), because MULTIPLICITY IS ALSO THE READ PHASE'S PARALLELISM.
+  //: A read batch is `C` entries of ONE list; with `m` groups there are `m` times as
+  //: many batches, and the batch count is what fills the eight warps.  Measured
+  //: host-side: busy warps of eight go 4.74 -> 1.95 at ALT k16 cohort=64 and
+  //: 1.74 -> 1.22 at k4 cohort=64, and `barStall` follows, 2.95 -> 6.40.  The fan-in
+  //: the multiplicity costs and the warps it fills are THE SAME QUANTITY.
+  //:
   //: THE READ CARVE'S GRAIN IS ITS OWN AXIS, and it is NOT the warp count.  Once
   //: the state is addressable the warp -> slice map is dynamic, so the number of
   //: read GROUPS and the number of WARPS are independent: `RS` names the group's
