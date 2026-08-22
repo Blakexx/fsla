@@ -68,10 +68,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "final state plane in lattice leaf order",
         py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("widths"), py::arg("k"),
         py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
-        py::arg("s_in") = py::none());
+        py::arg("level_modes") = 0, py::arg("s_in") = py::none());
   m.def("carry_build_stamp", &rola::carry::build_stamp,
         "K31 carry kernel: device-side build identity + the arm's census", py::arg("widths"),
-        py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"));
+        py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
+        py::arg("level_modes") = 0);
   m.def("carry_owner_rows", &rola::carry::owner_rows,
         "K31 carry kernel: the ballot rows, at the lattice's owner spans or at the "
         "carve grain the kernel consumes",
