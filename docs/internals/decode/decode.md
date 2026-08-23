@@ -207,14 +207,17 @@ make ONE atom. Exactly one of the two shifts is ever non-zero, and both are PAGE
 quantities the host derives once (`decode_lattice.md#the-refusals`).
 
 `candidate_atom(i)` therefore resolves the write-side unit (or the `1 <<
-lat_units_per_atom_shift` consecutive ones) through `resolve_unit` over the `kListWrite`
-owner lists, and an atom is live where a resolved unit is `valid && live_w` and the
+lat_units_per_atom_shift` consecutive ones) through `resolve_unit` over the CANDIDATE TERM
+SLOT `D + 1` — the write product in the `live owners x run radix` space, which is the only
+one monotone in atom id and is exactly the enumeration this claim was ratified on
+([`decode_lattice.md#the-candidate-slot`](decode_lattice.md#the-candidate-slot)); it shares
+the walk's owner lists and needs no list plane of its own — and an atom is live where a resolved unit is `valid && live_w` and the
 ALIGNED WINDOW of its innermost write slice that the atom covers is non-zero. At the
 flagship spans `(8, 16)` a unit IS an atom, both shifts are zero, and the test is "the
 unit's 16-bit write slice is non-zero".
 
 The whole enumeration is
-`n_candidates = (units[kListWrite] >> lat_units_per_atom_shift) << atoms_per_unit_shift` —
+`n_candidates = (units[D + 1] >> lat_units_per_atom_shift) << atoms_per_unit_shift` —
 a PARTITION mapping monotonically onto ascending atom ids by construction, because unit
 rank and the atom index inside a unit are BOTH ascending in the lattice's own leaf order.
 That
@@ -600,7 +603,8 @@ reason no reduction is needed on the dot ([§15](#gemv-shape)).
 | `v_tok` | `[DV]` fp32 | the token's value, resident |
 | `fold` | `[warps][cols + 3]` fp32 | the cross-warp partials |
 | `mask_r`, `mask_w` | `[mask_total]` u32 | one bit per digit, per side ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)) |
-| `olist` | `[2][olist_total]` i32 | the union and write owner-coordinate lists, per level ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)) |
+| `olist` | `[4][olist_total]` i32 | the four KINDS' owner-coordinate lists, per level ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)) |
+| `dlist` | `[dlist_total]` i32 | the WRITE side's live digits, OUTER levels only — term 0's own grain ([`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)) |
 
 Every one of them is FILLED BY THIS CTA, from the raw operands and from nothing else: the
 step allocates no plane, reads no `[BH, b_l]` intermediate and publishes no bitmap. That is
@@ -652,9 +656,40 @@ knows its own range, and knowing its range means running the prologue. So
 back off the launch bound itself
 ([`decode_api.md` §2](decode_api.md#residency)), bounded below by the UNIT SUPPLY so a
 small topology does not launch CTAs there is no work for. Both bounds are static facts —
-an occupancy fact and a geometry fact. The remaining slack is not: the wall-optimal split
-sits somewhat under one wave and its position depends on the REALIZED work, which is a
-device fact and reading it back is the one thing a decode step must not do.
+an occupancy fact and a geometry fact.
+
+<a id="retirement"></a>**THE CEILING IS WHAT THE HOST CAPTURES; THE DEVICE IS WHAT SPENDS
+IT.** `n_split` is derived from the DENSE unit ceiling because that is the only count a
+host can know — the count a step actually enumerates is a function of ITS OWN SUPPORT and
+exists only on the device, once the factor tables do
+([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)). Under the
+union-of-products enumeration the two diverge by up to 11x, and at small `BH` — where
+`n_split` is largest — the ceiling over-launches by 5x. So the split policy stays exactly
+what it was, frozen for the sequence and baked into the captured launch, and the SEGMENTS
+RETIRE:
+
+* every CTA derives `n_live = clamp(ceil(max_t units[t] / kDecodeWarps), 1, n_split)` from
+  the counts its own prologue produced — the walk's stride is `n_split * kDecodeWarps`, so
+  the segments with an iteration are exactly the PREFIX `[0, n_live)`;
+* a segment at or past it returns THERE, before the admission question — no walk, no
+  partial, no arrival, and it is not summed;
+* and it returns before the admission on purpose: the table test and the pool claim read a
+  page table the last-arriving live segment folds into ([§4e](#the-claim)), so a retired
+  segment must not be inside that window at all.
+
+**IT IS THE ARRIVAL AND THE COMBINE THAT RETIREMENT ACTUALLY BUYS, NOT THE PROLOGUE**, and
+that was measured rather than assumed. A variant that retired the walk but still wrote
+exact zeros and arrived bought NOTHING; the per-segment cost a large split carries is
+`n_split` atomics on one counter followed by `n_split` `__ldcg` loads per column on ONE
+CTA ([§30](#slot-order)). The measured effect of retiring completely, at `BH = 1` where
+`n_split = 256`, is 10-12 % off every sparse cell.
+
+**AND IT IS NOT A THRESHOLD.** `n_live` is the walk's own loop bound, asked before the
+loop. It is also why a PER-BATCH-HEAD PRE-PASS is not shipped: publishing the factor
+tables and the counts from a `BH`-CTA launch so segments could retire before folding
+anything was built, gated green and measured, and it LOST — at `BH = 1` the pre-pass is a
+single CTA whose whole latency is exposed, and it cost 3-7 us against a saving the
+in-kernel retirement already collects.
 
 ## <a id="row-scales"></a>22. `sr` and `sw` — the two per-token row scales
 
@@ -667,8 +702,32 @@ per-TOKEN part: the side gains. The read gain is fixed at `1` (`global` fixes
 
 ## <a id="aligned-subranges"></a>26. The unit's leaves are walked in ascending order, over the innermost run's set bits
 
-<a id="the-unit-partition"></a>The grid partitions the UNIT INDEX SPACE directly — `for
-(unit = seg*kDecodeWarps + warp; unit < units; unit += n_split*kDecodeWarps)` — so there
+<a id="the-term-loop"></a>**THE WALK'S OUTER LOOP IS THE TERM**, over the `D + 1`
+products whose disjoint union is the set the step touches
+([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)), and each term's index
+space is partitioned across the grid on its own. That is a LATENCY decision, not
+bookkeeping: inside the term loop every level's KIND is loop-invariant, so the owner-list
+bases, the realized counts, the padded field widths and the membership predicates all
+hoist out of the unit loop and the per-unit dependent chain is the one the
+product-of-unions walk had. The alternative — laying the terms end to end in ONE index
+space and naming each unit's term by a scan over `D + 1` offsets — was built and measured
+at **+2.3 ns of dependent latency per unit**, which on the scattered cell cost more than
+the units the decomposition saves. The loop is not unrolled over `D`, so one copy of the
+walk body serves every term.
+
+Term 0 IS the write product, and it is the ONE term whose rank space is not
+`live owners x the full run radix`: under the split-level declaration its outer support is
+sparse INSIDE the owners it touches, so that space enumerated 2048 units for 256 live ones
+at the flagship's scattered cell — and the dead ones, interleaved one-in-eight, idled seven
+of every CTA's eight warps. It enumerates LIVE DIGITS instead
+([`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)). The
+CANDIDATE-ATOM enumeration ([§4d](#candidate-atoms)) does NOT follow it there: a flat digit
+rank is not monotone in atom id, and the pool claim's canonical ranks are defined in that
+order, so a term slot `D + 1` holds the write product in the old space and the candidates
+read that. Two enumerations of one set, each in the order its consumer needs.
+
+<a id="the-unit-partition"></a>The grid partitions each term's UNIT INDEX SPACE directly — `for
+(unit = seg*kDecodeWarps + warp; unit < units[term]; unit += n_split*kDecodeWarps)` — so there
 is no separate row-range-to-word resolution step: a unit IS the warp's own share, by
 construction, and `resolve_unit`
 ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) is what turns a unit index
@@ -686,8 +745,9 @@ roughly a factor of two, and at `N = 256` (two live owners against eight warps) 
 more. The CTA's warps take CONSECUTIVE units, so a CTA still covers one contiguous stretch
 of the plane per pass.
 
-Within one resolved unit the walk visits the SET BITS of the union slice `cr | cw`,
-ascending, by `__ffs` — ascending bit index is ascending LEAF order, because the unit's
+Within one resolved unit the walk visits the SET BITS of THAT TERM'S slice — `cw` for the
+write product, `cr` for a read-remainder term, already conditioned by `resolve_unit`
+([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) — ascending, by `__ffs` — ascending bit index is ascending LEAF order, because the unit's
 leaves ARE the innermost level's run in order. A dead innermost digit costs one `__ffs`
 step and no address at all, and the two sides' membership comes off the already-resolved
 `cr`/`cw` bitfields with no division anywhere. That ascending order is what makes
@@ -758,17 +818,27 @@ split-K store, exactly as the tiled kernel emits `sr * y` into `num` and
 `sr * den_acc` into `den`. That makes the combine below a plain sum, and keeps the
 two consumers' dividend and divisor the same objects.
 
-## <a id="slot-order"></a>30. The deterministic split-K combine
+## <a id="slot-order"></a>30. The deterministic split-K combine, over the LIVE segments
 
-SLOT ORDER, always. This is the whole determinism argument: `n_split` fp32 addends
-summed in a FIXED order give one answer per binary, where an `atomicAdd` race
-gives one answer per arrival order.
+SLOT ORDER, always. This is the whole determinism argument: the addends are summed in a
+FIXED order, which gives one answer per binary where an `atomicAdd` race gives one answer
+per arrival order.
+
+THE RANGE IS `n_live`, NOT `n_split` ([§21](#retirement)): retired segments write no
+partial and take no arrival, so both the arrival target and the summed slot range are
+`[0, n_live)`. Every CTA of the batch-head derives that bound identically from the same
+published unit counts, so nothing is communicated and nothing is ordered — and the sum is
+still ASCENDING SLOT ORDER over a range that is a function of the inputs alone, which is
+exactly what G1 asserts (`y` byte-reproducible at a FIXED `n_split`). `y` still moves
+across `n_split`, as it always did, because fp32 addition is not associative.
 
 `__ldcg` bypasses L1 so the reader sees the other CTAs' stores that the
 `__threadfence` above made visible.
 
-`n_split == 1` takes an early return before any of this — not a special case, the
-same expression with zero combine steps.
+`n_live == 1` takes an early return before any of this — not a special case, the
+same expression with zero combine steps. A batch-head whose support is empty still owes a
+`y`, which is why `n_live` is clamped up to one and segment 0 always runs: `y` is then the
+ratio `0 / (0 + eps)` it writes.
 
 The counter is reset to `0` by the last CTA, so no `memset` launch stands between
 two decode steps and the counter is safe to capture in a CUDA graph.
