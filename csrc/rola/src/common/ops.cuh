@@ -288,6 +288,18 @@ __device__ __forceinline__ void store_bf16x2(__nv_bfloat16* p, uint32_t v) {
   *reinterpret_cast<uint32_t*>(p) = v;
 }
 
+//: THE STATE'S LO HALVES, PACKED.  The top 16 bits of an fp32 ARE its bf16
+//: truncation, so a state word splits exactly into the `hi` the transit publishes and
+//: the `lo` its owner keeps.  Two lows ride one register; `join_hi_lo` puts a word
+//: back together bit-for-bit, so the round trip is lossless by construction.
+__device__ __forceinline__ uint32_t pack_lo(float a, float b) {
+  return (__float_as_uint(a) & 0xFFFFu) | (__float_as_uint(b) << 16);
+}
+
+__device__ __forceinline__ float join_hi_lo(uint32_t hi, uint32_t lo, int k) {
+  return __uint_as_float(k ? ((hi & 0xFFFF0000u) | (lo >> 16)) : ((hi << 16) | (lo & 0xFFFFu)));
+}
+
 //: A SEQUENTIAL SHARED STORE, ADDRESSED RATHER THAN INDEXED.  This is the store
 //: side of the hazard the gather comment above names: `dst[k++]` through a
 //: `uint16_t*` re-derives `dst + k` as a WIDENING MULTIPLY every iteration, so a

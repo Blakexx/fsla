@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "db6cdc2070a545186c00aca5d874e86e4a8d84430633866b4f508eb6a4439f23",
+  "csrc_sha256": "46cb6bdf5aa4123e273f7513816cd9aa4499317ba86f0512c032fc911b510514",
   "date": "2026-08-23"
  },
  "shards": {
@@ -34,36 +34,36 @@
  },
  "entries": {
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi384ELi32ELi1ELi0ELj6ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 241,
+   "regs": 225,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "7ae604f4679869e2fac3a46cda55309cc89ac1dd6247a1f6b9b4db2a87b43dba"
+   "sass_sha256": "502c9f3fb50b0056cb0e32848a83ef1dd2d4674410929a1a4414b71fd853fdde"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi512ELi32ELi1ELi0ELj6ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 241,
+   "regs": 225,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "4607b42724e6ec6ec5d7aa998f4da7b6d116c57b14cf4c935663e33fa4919d98"
+   "sass_sha256": "131f757f5c9e00b58cbb7c9b438c73187c89d6f0fa6b1e164f5d27949e4e3bd2"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi64ELi4ELi8ELi64ELi32ELi1ELi0ELj6ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 241,
+   "regs": 226,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "0f413ea46c505a559a603c694820124ec45fc13f4d6f8e9fb373e6935afefd55"
+   "sass_sha256": "9a3a72a7074206fafa49f1bf12176a809d6e45654f8c9b3dee9d328505eadac8"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi4ELi8ELi2ELi8ELi64ELi32ELi3ELi2ELj102ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 234,
+   "regs": 221,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "ebd40a5315dca7aad3490201a3a2ae9466edb3174cb8a4e6705a355fe9eac04a"
+   "sass_sha256": "62ce650a2d09b1de501cf19263e2eac3ad869c1b442e5cd3bb41e29945ad56d0"
   },
   "sm_80:_ZN4rola5carry13scan_a_kernelILi2ELi256ELi4ELi8ELi384ELi32EEEvNS0_9BwdParamsE": {
    "regs": 255,
