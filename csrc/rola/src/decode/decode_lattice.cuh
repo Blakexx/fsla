@@ -469,15 +469,15 @@ __device__ __forceinline__ Unit<D> resolve_write_unit(
   //: owner box apart and a CTA's eight warps reach eight atoms `BC` leaves apart. The
   //: order that fixes THAT -- outer digits lowest -- sweeps one atom in every `s_0` across
   //: the whole plane before returning, which is worse still. Both were measured.
-  //: SO THE LOW `log2(kDecodeWarps)` BITS OF THE LOOP INDEX ARE ROTATED INTO THE BOTTOM OF
-  //: THE FINEST OUTER LEVEL'S FIELD: a CTA's warps then take CONSECUTIVE ATOMS, while the
+  //: SO THE LOW `log2(kUnitBlockWarps)` BITS OF THE LOOP INDEX ARE ROTATED INTO THE BOTTOM OF
+  //: THE FINEST OUTER LEVEL'S FIELD: a block's warps then take CONSECUTIVE ATOMS, while the
   //: CTA's own stride still sweeps one owner region at a time. It is a BIT PERMUTATION of
   //: an index space whose extent is a power of two, so it is a bijection and the partition
   //: -- one owning CTA, warp and lane per deposited row -- is exactly the one it was.
   //: docs/internals/decode/decode_lattice.md#the-write-grain
   int rank = unit;
   if (D > 1) {
-    const int lo_bits = bits[D - 2] < kDecodeWarpsBits ? bits[D - 2] : kDecodeWarpsBits;
+    const int lo_bits = bits[D - 2] < kUnitBlockWarpsBits ? bits[D - 2] : kUnitBlockWarpsBits;
     const int m = shift[D - 2];
     const int lo = unit & ((1 << lo_bits) - 1);
     const int mid = (unit >> lo_bits) & ((1 << m) - 1);

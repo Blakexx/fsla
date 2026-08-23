@@ -57,8 +57,11 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
 //: setup -- the fold, the digit masks, the four owner lists, the term table, the write
 //: digit list, and the ADMISSION with its candidate-atom enumeration and page-table probes
 //: -- and those CTAs run PHASE-SYNCHRONIZED, so the duplication has no mutual coverage at
-//: all: it is issued concurrently, `n_split` times over, on the same SM. Measured on this
-//: path, that derivation is 51-87 % of the step at `BH = 1` and 18-59 % at `BH = 8`.
+//: all. THE COST IS WAVES, NOT COPIES: a derivation duplicated across CONCURRENT SMs is
+//: wall-free, and it is paid only where the live CTAs exceed the machine and the copies
+//: SERIALIZE -- 256 thin CTAs over 80 SMs is 3.2 derivations deep per SM, and that depth,
+//: not the count, is what a wider CTA removes. Measured on this path, that derivation is
+//: 51-87 % of the step at `BH = 1` and 18-59 % at `BH = 8`.
 //: WIDENING THE CTA IS WHAT SHARES IT. Intra-CTA sharing is native -- shared memory and a
 //: barrier, which the derivation is already written as -- so a 32-warp CTA derives ONCE
 //: what four 8-warp CTAs derived four times, and derives it on a chain four times shorter
@@ -71,6 +74,26 @@ constexpr int kDecodeWarps = kDecodeThreads / 32;
 //: coordinate: docs/internals/decode/decode_lattice.md#the-write-grain
 constexpr int kDecodeWarpsBits = 5;
 static_assert(1 << kDecodeWarpsBits == kDecodeWarps, "kDecodeWarpsBits must be log2(kDecodeWarps)");
+
+//: THE UNIT PARTITION'S GRANULARITY, AND IT IS NOT THE CTA'S WARP COUNT. Widening the CTA
+//: is a decision about WHERE THE DERIVATION IS SHARED; it is not a decision about how
+//: coarsely the unit space is cut, and tying the two together is what made a wider CTA
+//: retire whole SMs. The block a segment owns stays `kUnitBlockWarps` units wide at every
+//: width, so `n_live = ceil(umax / kUnitBlockWarps)` -- the live SEGMENT count, and with it
+//: the machine's coverage -- is the same number at 256 threads and at 1024.
+//: A CTA THEN SPENDS ITS EXTRA WARPS ON MORE BLOCKS, NOT ON A WIDER ONE: its
+//: `kUnitRepeats` groups of `kUnitBlockWarps` warps take `kUnitRepeats` blocks one whole
+//: period apart, so the walk covers the identical unit set in the identical order per
+//: block, every warp is spent wherever units allow, and each block is still the CONTIGUOUS
+//: run the write grain's rotation is built on.
+//: RETIRE WORK, NOT CTAs. docs/internals/decode/decode.md#retirement
+constexpr int kUnitBlockWarps = 8;
+constexpr int kUnitBlockWarpsBits = 3;
+static_assert(1 << kUnitBlockWarpsBits == kUnitBlockWarps,
+              "kUnitBlockWarpsBits must be log2(kUnitBlockWarps)");
+static_assert(kUnitBlockWarps <= kDecodeWarps && kDecodeWarps % kUnitBlockWarps == 0,
+              "a CTA's warps are a whole number of unit blocks");
+constexpr int kUnitRepeats = kDecodeWarps / kUnitBlockWarps;
 
 //: THE LATTICE'S ONE DECLARED CAPACITY, refused loudly at the host entry: an owner's
 //: per-level span is read as a SINGLE 32-bit slice, both when a level's owner grid is
@@ -91,8 +114,8 @@ constexpr int kDecodeMaxSpan = 32;
 //: arm needs, and the shallow arms gain headroom rather than losing it (they ran at a cap
 //: of 51 when five 256-thread CTAs shared the file). ONE is also what makes the derivation
 //: shared: the host's split policy sizes ONE WAVE of this number, so `n_split` becomes
-//: `SMs / BH` fat CTAs and the per-(step, batch-head) setup is derived that many times
-//: instead of 256. docs/internals/decode/decode.md#declared-residency
+//: `SMs / BH` fat CTAs and the per-(step, batch-head) setup is derived ONE WAVE DEEP
+//: instead of 3.2. docs/internals/decode/decode.md#declared-residency
 __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
   (void)decay;
   (void)levels;

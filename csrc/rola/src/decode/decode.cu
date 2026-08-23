@@ -66,9 +66,13 @@ __global__ void decode_stamp_kernel(int64_t* out) {
   //: the derivation count from 256 to 80 without moving the enumeration. IT IS THE MOST
   //: SIGNIFICANT FIELD of the same positional scheme, so the three older fields still
   //: divide out unchanged and the inversion's plausibility bound still holds
-  //: (`kKinds * kMaxTerms * kDecodeWarps` is 192 at eight warps, 768 at thirty-two):
+  //: (`kKinds * kMaxTerms * kDecodeWarps` is 192 at eight warps, 768 at thirty-two).
+  //: THE PARTITION'S GRANULARITY RIDES THE SAME FIELD, additively, because a binary that
+  //: cuts the unit space at a different block width walks a different step however its
+  //: width and its structs measure -- the round-4 lesson applied to the second of the two
+  //: knobs the launch shape now carries:
   //: docs/internals/decode/decode_api.md#build-stamp
-  *out = (static_cast<int64_t>(kKinds * kMaxTerms * kDecodeWarps) * 4096
+  *out = (static_cast<int64_t>(kKinds * kMaxTerms * kDecodeWarps + kUnitBlockWarps) * 4096
           + static_cast<int64_t>(sizeof(DecodeParams)))
              * 1000003
          + static_cast<int64_t>(sizeof(Unit<4>)) * 101 + static_cast<int64_t>(kDecodeMaxSpan);
@@ -190,8 +194,9 @@ decode_step_kernel(DecodeParams p) {
   //: factor tables do. So the ceiling is what the host captures and the DEVICE is what
   //: spends it: a segment with no unit in any term retires, and it retires COMPLETELY --
   //: no walk, no partial, no arrival, and it is not summed.
-  //: THE LIVE SEGMENTS ARE A PREFIX. The walk's stride is `n_split * kDecodeWarps`, so
-  //: segment `seg` has an iteration exactly when `seg * kDecodeWarps < max_t units[t]`,
+  //: THE LIVE SEGMENTS ARE A PREFIX. A segment owns the `kUnitBlockWarps`-wide block at
+  //: `seg * kUnitBlockWarps` of every period, so it has an iteration exactly when
+  //: `seg * kUnitBlockWarps < max_t units[t]`,
   //: and `n_live` is that bound clamped into `[1, n_split]`. Every CTA of the batch-head
   //: derives it from the same published counts, so the arrival target and the summed slot
   //: range agree by construction and no CTA has to be told.
@@ -206,12 +211,13 @@ decode_step_kernel(DecodeParams p) {
   //: inside its own barrier, so learning it costs neither a second block synchronisation
   //: (which the dense cell, where nothing retires, measured at ~1 %) nor `D + 1` redundant
   //: reads per thread. The test is written as the COMPARE rather than as `seg >= n_live`
-  //: because they are the same question -- `seg >= clamp(ceil(umax / W), 1, n_split)` is
-  //: `seg > 0 && seg * W >= umax`, since `seg < n_split` always -- and this form keeps the
+  //: because they are the same question -- `seg >= clamp(ceil(umax / U), 1, n_split)` is
+  //: `seg > 0 && seg * U >= umax` at `U = kUnitBlockWarps`, since `seg < n_split` always --
+  //: and this form keeps the
   //: division and the two clamps off the path every CTA walks, on the cell where nothing
   //: retires. `n_live` itself is only needed by the epilogue.
   const int umax = s_umax;
-  if (seg > 0 && seg * kDecodeWarps >= umax) return;
+  if (seg > 0 && seg * kUnitBlockWarps >= umax) return;
 
   const int inner_bits = p.lat_inner_bits;
 
@@ -345,7 +351,7 @@ decode_step_kernel(DecodeParams p) {
   //: docs/internals/decode/decode.md#per-bh-verdict
   //: `n_live` -- the same bound the retirement test above asked as a COMPARE, formed here
   //: because the combine and the arrival need the NUMBER rather than the answer.
-  const int want_live = ceil_div_int(umax, kDecodeWarps);
+  const int want_live = ceil_div_int(umax, kUnitBlockWarps);
   const int n_live = want_live < 1 ? 1 : (want_live > p.n_split ? p.n_split : want_live);
 
   if (!needy) {
@@ -405,7 +411,16 @@ decode_step_kernel(DecodeParams p) {
     //: docs/internals/decode/decode.md#the-term-loop
     for (int term = 0; term <= D; ++term) {
       const int units = s_units[term];
-      for (int unit = seg * kDecodeWarps + warp; unit < units; unit += p.n_split * kDecodeWarps) {
+      //: THE BLOCK, THE REPEAT AND THE PERIOD. A warp's low `kUnitBlockWarpsBits` name its
+      //: unit inside the segment's block; the rest name WHICH of the CTA's `kUnitRepeats`
+      //: blocks it serves, one period apart. `seg * kUnitBlockWarps + ub` sweeps one whole
+      //: period bijectively, so the partition is the same one-owner-per-row partition it
+      //: was, cut at a granularity the CTA's width no longer sets.
+      const int period = p.n_split * kUnitBlockWarps;
+      const int ub = warp & (kUnitBlockWarps - 1);
+      const int ur = warp >> kUnitBlockWarpsBits;
+      for (int unit = seg * kUnitBlockWarps + ub + ur * period; unit < units;
+           unit += period * kUnitRepeats) {
         //: TWO RESOLVERS, ONE WALK. The write product is enumerated from live DIGITS and
         //: every other term from live owners crossed with the run radix; both hand back the
         //: identical `Unit<D>`, and the selector is the term loop's own invariant.
