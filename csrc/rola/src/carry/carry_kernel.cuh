@@ -230,6 +230,15 @@ __device__ __forceinline__ void load_run(unsigned short (&dst)[n], const void* p
   }
 }
 
+//: THE PER-LEVEL MODE DECLARATION, as the kernel reads it (the seam's own encoding):
+//: two bits per level, level 0 in the low pair, bit 0 = the READ side is value-sparse
+//: there, bit 1 = the WRITE side.  The kernel consumes it to PRUNE its clause: a side
+//: reads a level's row only where that side is declared sparse.
+constexpr uint32_t kSideRead = 1u, kSideWrite = 2u;
+constexpr bool mode_declares(uint32_t modes, int l, uint32_t side) {
+  return ((modes >> (2 * l)) & side) != 0u;
+}
+
 //: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from
 //: the same geometry the ring depth is.  A ring sized for a residency the launch
 //: bound does not ask for is a ring sized for nothing.
@@ -238,7 +247,7 @@ constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, W, C, CL>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int W, int C, int CL, bool STATE>
+template <int D, int B, int K, int M, int W, int C, int CL, int CW, uint32_t MO, bool STATE>
 __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) void carry_kernel(
     const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
     const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
@@ -247,7 +256,13 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   using BP = BoxPlan<D, B, K, M>;
   using G = CarryGeom<D, B, K, M, W, C, CL>;
   using PM = CarveMap<D, B, K, M, C, CL>;
-  using CR = CarveRows<D, B, K, M, kWarps, CL>;
+  //: THE ROW TABLE.  A two-carve body votes its rows under `TwoCarveRows` -- the same
+  //: table refined at BOTH carved levels -- so each warp reads its OWN group's row on
+  //: either side.  A single-carve body keeps `CarveRows` and the write list stays
+  //: shared, because there every warp owns every write entry.
+  static constexpr bool kTwo = CW >= 0;
+  using CR = std::conditional_t<kTwo, TwoCarveRows<D, B, K, M, kWarps, (kTwo ? CW : 0), CL>,
+                                CarveRows<D, B, K, M, kWarps, CL>>;
 
   constexpr int BC = BP::kBC;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
@@ -323,7 +338,8 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     constexpr int l = decltype(Lc)::value;
     const int o_l = (owner / BP::owner_div(l)) % BP::g(l);
     runCol[l] = BP::col_base(l) + o_l * BP::s(l);
-    rowOff[l] = (uint32_t)(CR::row_prefix(l) + o_l * (l == CL ? kWarps : 1)) * rowBytes;
+    rowOff[l] = (uint32_t)(CR::row_prefix(l) + o_l * ((l == CL || (kTwo && l == CW)) ? kWarps : 1))
+                * rowBytes;
   });
   //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the side's
   //: whole row block is `kRows * tok_words * 4` bytes, which is 32-bit at every
@@ -702,29 +718,48 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       }
       return lane_broadcast(pfx, LW - 1);
     };
-    auto clause_of = [&](const uint32_t* rowsS) {
+    //: TIER 3, THE PER-CTA PER-LEVEL CLAUSE -- and it is PRUNED BY THE DECLARATION.
+    //: A side conjoins a level's row only where that side is declared sparse there;
+    //: a dense side's row is all-ones and ANDing it is a load for nothing.  The
+    //: side's OWN carve level is excluded because its tier-2 group row carries it.
+    //: At ALT `D = 2` that empties both clauses outright: the read side is sparse
+    //: only at `CL` and the write side only at `CW`.
+    auto clause_of = [&](const uint32_t* rowsS, auto Side) {
+      constexpr uint32_t SIDE = decltype(Side)::value;
+      constexpr int own = (SIDE == kSideRead) ? CL : (kTwo ? CW : CL);
       uint32_t m = valid;
       static_for<D>([&](auto Lc) {
         constexpr int l = decltype(Lc)::value;
-        if constexpr (l != CL && CR::row_g(l) > 0)
+        if constexpr (l != own && CR::row_g(l) > 0 && mode_declares(MO, l, SIDE))
           m &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsS, rowOff[l] + wordB));
       });
       return m;
     };
-    auto group_row = [&](const uint32_t* rowsS, int g) {
+    //: TIER 2, THE PER-CONSUMER DOWNSAMPLE: the warp's own multi-digit OR row at a
+    //: carve level, one gather.  `LV` is the side's carve level -- `CL` for reads,
+    //: `CW` for writes once the table is refined at both.
+    auto group_row = [&](const uint32_t* rowsS, int lv, int g) {
       return *reinterpret_cast<const uint32_t*>(
-          gather_ptr(rowsS, rowOff[CL] + (uint32_t)g * rowBytes + wordB));
+          gather_ptr(rowsS, rowOff[lv] + (uint32_t)g * rowBytes + wordB));
     };
 
-    const uint32_t clauseR = clause_of(rowsR), clauseW = clause_of(rowsW);
-    uint32_t orR = 0u, orW = 0u, mineR = 0u;
+    const uint32_t clauseR = clause_of(rowsR, std::integral_constant<uint32_t, kSideRead>{});
+    const uint32_t clauseW = clause_of(rowsW, std::integral_constant<uint32_t, kSideWrite>{});
+    //: the read side wants its OWN group row (tier 2) and the owner's run (the OR of
+    //: the four, for the whole-window skip).  The write side wants the owner's run
+    //: for the SHARED VALUE STREAM, and -- once the table is refined at `CW` -- its
+    //: own group row too, which is what makes an S-write list possible.
+    uint32_t orR = 0u, orW = 0u, mineR = 0u, mineW = 0u;
 #pragma unroll
     for (int g = 0; g < kWarps; ++g) {
-      const uint32_t r = group_row(rowsR, g);
+      const uint32_t r = group_row(rowsR, CL, g);
       orR |= r;
       mineR = (g == grp) ? r : mineR;
-      orW |= group_row(rowsW, g);
+      const uint32_t w = group_row(rowsW, kTwo ? CW : CL, g);
+      orW |= w;
+      mineW = (g == grp) ? w : mineW;
     }
+    if constexpr (!kTwo) mineW = orW;
     const uint32_t liveW = clauseW & orW;
     //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap
     //: mechanism's harvest (study section 2.1).  It is CTA-uniform WITHOUT a

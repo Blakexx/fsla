@@ -110,12 +110,35 @@ constexpr int carve_level = declares(MO, D - 1, kModeReadSparse) ? D - 1 : -1;
 template <int D, uint32_t MO>
 static constexpr bool kCarves = carve_level<D, MO> >= 0;
 
+//: THE WRITE CARVE LEVEL: the innermost level the declaration marks WRITE-sparse,
+//: excluding the read carve's own.  A body with both carves evacuates its state
+//: between the phases (K35-E); one with only the read carve keeps a single carve and
+//: the write list stays shared, because every warp then owns every write entry.
+constexpr int wcarve_of(uint32_t modes, int d, int cr) {
+  for (int l = d - 1; l >= 0; --l)
+    if (l != cr && declares(modes, l, kModeWriteSparse)) return l;
+  return -1;
+}
+template <int D, uint32_t MO>
+static constexpr int write_carve_level = wcarve_of(MO, D, carve_level<D, MO>);
+template <int D, uint32_t MO>
+static constexpr bool kTwoCarve = kCarves<D, MO> && (write_carve_level<D, MO> >= 0);
+
+//: the plan a TWO-CARVE body's rows are voted under: the same table refined at BOTH
+//: carved levels at once, so each warp reads its own group's row on EITHER side.
+template <int D, int B, int K, int M, int CW, int CR>
+using TwoCarveRowPlan =
+    rola::chunk::SpanPlan<D, B, TwoCarveRows<D, B, K, M, kWarps, CW, CR>::s(0),
+                          (D > 1 ? TwoCarveRows<D, B, K, M, kWarps, CW, CR>::s(1) : B),
+                          (D > 2 ? TwoCarveRows<D, B, K, M, kWarps, CW, CR>::s(2) : B),
+                          (D > 3 ? TwoCarveRows<D, B, K, M, kWarps, CW, CR>::s(3) : B)>;
+
 //: THE ARM'S BODY, as one statement the launch, the census and the SMEM ledger all
 //: read: only the selected one is instantiated.
 template <int D, int B, int K, int M, int W, int C, uint32_t MO, bool STATE>
 static constexpr auto arm_fn() {
   if constexpr (kCarves<D, MO>)
-    return &carry_kernel<D, B, K, M, W, C, carve_level<D, MO>, STATE>;
+    return &carry_kernel<D, B, K, M, W, C, carve_level<D, MO>, write_carve_level<D, MO>, MO, STATE>;
   else
     return &carry_split_kernel<D, B, K, M, W, C, STATE>;
 }
@@ -200,7 +223,10 @@ static torch::Tensor build_rows(const torch::Tensor& pr, const torch::Tensor& pw
 template <int D, int B, int K, int M, uint32_t MO>
 static torch::Tensor build_arm_rows(const torch::Tensor& pr, const torch::Tensor& pw, int BH,
                                     int L) {
-  if constexpr (kCarves<D, MO>)
+  if constexpr (kTwoCarve<D, MO>)
+    return build_rows<TwoCarveRowPlan<D, B, K, M, write_carve_level<D, MO>, carve_level<D, MO>>>(
+        pr, pw, BH, L);
+  else if constexpr (kCarves<D, MO>)
     return build_rows<CarveRowPlan<D, B, K, M, carve_level<D, MO>>>(pr, pw, BH, L);
   else
     return build_rows<OwnerRows<D, B, K, M>>(pr, pw, BH, L);

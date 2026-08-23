@@ -15,7 +15,7 @@ The facts family's launchers, instantiated once each in ONE shard:
 class), `launch_chunk_block_bitmap_arm<D, B, BC>` (the liveness epilogue, the
 same key as the table it reduces) and `launch_chunk_atom_bitmap_arm<D, B>` (the
 stats reduction, keyed to the invariant 16-leaf quantum and therefore BC-free).
-52 instantiations over 12 `(D, B, BC)` tables and 8 `(D, B)`
+55 instantiations over 12 `(D, B, BC)` tables and 8 `(D, B)`
 topologies, projected from the 22-arm `(C, BC, D, B)` vocabulary.
 
 The launcher DEFINITIONS live in `../facts/facts_launch.cuh`, which the

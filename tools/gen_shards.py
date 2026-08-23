@@ -122,6 +122,13 @@ SPAN_FACTS_ARMS: tuple = (
     (2, 64, 8, 4, 64, 64),
     (3, 16, 2, 4, 4, 16),
     (4, 8, 2, 2, 4, 2),
+    # the TWO-CARVE grain (K35-E, `TwoCarveRows`): the SAME table refined at BOTH
+    # carved levels at once -- the write carve's digit group at `CW` and the read
+    # carve's at `CR` -- so each warp reads its own group's row on either side.  A
+    # side wanting the owner's run ORs the four rows it already holds.
+    (2, 256, 2, 4, 256, 256),
+    (2, 64, 2, 4, 64, 64),
+    (4, 8, 2, 2, 1, 2),
 )
 
 #: the span arms are STATELESS only: residency is the paging layer's question and

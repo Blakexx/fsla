@@ -201,4 +201,31 @@ struct CarveRows {
                 "a group row set must REFINE the owner row set at the carve level");
 };
 
+//: THE TWO-CARVE BALLOT ROWS (K34 Form B, ported for K35-E).  The evacuated body
+//: carves the SAME box twice -- level `CW` by the WRITE digit group and level `CR` by
+//: the READ digit group -- so both refinements have to live in ONE table: the two
+//: sides ask different questions of the same window, and a side wanting the coarser
+//: grain ORs the finer rows it already holds.  `CarveRows` carves ONE level and
+//: cannot state this, which is why the write side had no row to key on.
+//:
+//: At the flagship `s = (8, 16)` with `G = 4` that is level 0 at span 2 (128 rows)
+//: and level 1 at span 4 (64 rows) = 192 rows per side, against the single carve's
+//: 96 -- inside the 4x the architecture doc's law 5 budgets.
+template <int D, int B, int K, int M, int G, int CW, int CR>
+struct TwoCarveRows {
+  using BP = BoxPlan<D, B, K, M>;
+  static constexpr int kGroups = G;
+  static constexpr int s(int l) { return (l == CW || l == CR) ? BP::s(l) / G : BP::s(l); }
+  static constexpr int row_g(int l) { return s(l) < B ? B / s(l) : 0; }
+  static constexpr int row_entries(int l) { return l == D ? 0 : row_g(l) + row_entries(l + 1); }
+  static constexpr int kRows = row_entries(0);
+  static constexpr int row_prefix(int l) { return l == 0 ? 0 : row_prefix(l - 1) + row_g(l - 1); }
+  static_assert(CW != CR, "the two carves name two different levels");
+  static_assert(BP::s(CW) % G == 0 && BP::s(CR) % G == 0,
+                "each carve splits its level's owner run into G whole groups");
+  static_assert(row_g(CW) > 0 && row_g(CR) > 0,
+                "a carved level must be narrower than its own width, or it has no rows to "
+                "refine and the carve has nothing to key on");
+};
+
 }  // namespace rola::carry
