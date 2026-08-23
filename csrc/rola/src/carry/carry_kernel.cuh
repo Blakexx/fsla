@@ -98,9 +98,10 @@ struct CarryGeom {
   static constexpr int panel_bytes = 2 * kWarps * C * LdS * (int)sizeof(__nv_bfloat16);
   //: the readout's staging block, one `kMmaN`-token region per warp -- and, at
   //: entry and exit, the state plane's page.
+  //: THE FAN-IN STAGING IS GONE (2.6): the readout's RED issues straight from the
+  //: accumulator, so this buffer's only remaining tenant is the state plane's PAGE at
+  //: entry and exit -- one atom's leaves by every channel.
   static constexpr int out_bytes = C * LdO * (int)sizeof(float);
-  static_assert(kWarps * kMmaN == C && C * LdO >= kAtomLeaves * LdO,
-                "the staging block is one token tile of the batch and holds a whole page");
   //: `kWarps` READ lists, one per digit group, then ONE write list: a read entry
   //: belongs to the groups its innermost digits fall in, a write entry to all.
   //: `kWarps` READ lists, ONE shared write list (the value stream, per the
@@ -391,7 +392,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
 #define ADDR_V(b_, R_, dv_) ((b_) + (uint32_t)(((R_) * LdV + (dv_)) * 2))
 
   //: the warp's own staging region of the readout block.
-  float* const sow = so + warp * kMmaN * LdO;
 
   // ---- the state, transposed: m = channels, n = this warp's leaves ---------
   float st[MCH][NL][4];
@@ -913,40 +913,41 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
           }
         //: THE FAN-IN IS WARP-PRIVATE AND DIRECT (K33 1.4): one writer per read
         //: entry at the sparse operating point, and RED is associative where an
-        //: entry's digits reach two groups, so no meeting is instantiated.  The
-        //: staging pass is what makes the RED lane-per-CHANNEL and therefore one
-        //: coalesced segment per issue.
+        //: entry's digits reach two groups, so no meeting is instantiated.
+        //:
+        //: THE PERMUTED OUTPUT ABI (2.6): the RED issues STRAIGHT FROM THE
+        //: ACCUMULATOR, in the fragment's own order, and the staging pass is gone.
+        //: The accumulator element `(m, e, lane)` carries
+        //:     token   = j*kMmaN + 2*(lane&3) + (e&1)
+        //:     channel = m*kMmaM + (lane>>2) + 8*(e>>1)
+        //: so one issue covers FOUR tokens x EIGHT consecutive channels -- four 32-B
+        //: segments, against the staged form's one 128-B segment.  Both move 2,048 B
+        //: per token tile in 64 sectors from 16 issues; the sector count and the issue
+        //: count are IDENTICAL, and what the staging bought was only the shape of the
+        //: segments.  Deleting it removes 32 `STS` and two `__syncwarp`s per tile and
+        //: gives the fan-in buffer's bytes back.
 #pragma unroll
         for (int p = 0; p < 2; ++p) {
           const int j = 2 * mb + p;
 #pragma unroll
-          for (int m = 0; m < MCH; ++m)
-#pragma unroll
-            for (int e = 0; e < 4; ++e)
-              store_f32(
-                  &sow[((lane & 3) * 2 + (e & 1)) * LdO + m * kMmaM + (lane >> 2) + 8 * (e >> 1)],
-                  acc[p][m][e]);
-          if (lane < 4) {
-            store_f32(&sow[(lane * 2 + 0) * LdO + kDv], macc[p][0]);
-            store_f32(&sow[(lane * 2 + 1) * LdO + kDv], macc[p][1]);
-          }
-          __syncwarp();
-#pragma unroll
-          for (int r = 0; r < kMmaN; ++r) {
-            const int idx = j * kMmaN + r;
+          for (int e = 0; e < 4; ++e) {
+            const int idx = j * kMmaN + 2 * (lane & 3) + (e & 1);
             if (idx < n) {
-              float* const dp = reinterpret_cast<float*>(
-                  gather_ptr(oPlane, (uint32_t)rlist[off + idx] * (uint32_t)(kDv * 4) + winO
-                                         + (uint32_t)(lane * (int)sizeof(float))));
-              fan_in_add(dp, sow[r * LdO + lane]);
-              fan_in_add(dp + kBallotLanes, sow[r * LdO + lane + kBallotLanes]);
+              const uint32_t rowO = (uint32_t)rlist[off + idx] * (uint32_t)(kDv * 4) + winO;
+#pragma unroll
+              for (int m = 0; m < MCH; ++m)
+                fan_in_add(
+                    reinterpret_cast<float*>(gather_ptr(
+                        oPlane, rowO + (uint32_t)((m * kMmaM + (lane >> 2) + 8 * (e >> 1)) * 4))),
+                    acc[p][m][e]);
+              //: the mass rides row 0 of its own accumulator, so only the quad at
+              //: `lane>>2 == 0` and the halves with `e>>1 == 0` carry it.
+              if ((lane >> 2) == 0 && (e >> 1) == 0)
+                fan_in_add(reinterpret_cast<float*>(
+                               gather_ptr(denPlane, (uint32_t)rlist[off + idx] * 4u + winD)),
+                           macc[p][e]);
             }
           }
-          if (lane < kMmaN && j * kMmaN + lane < n)
-            fan_in_add(reinterpret_cast<float*>(gather_ptr(
-                           denPlane, (uint32_t)rlist[off + j * kMmaN + lane] * 4u + winD)),
-                       sow[lane * LdO + kDv]);
-          __syncwarp();
         }
       }
       produce_batch(std::false_type{}, pR, ((i + 1) & 1) ? panW : panR, rlist, (i + 1) * C, nr);
