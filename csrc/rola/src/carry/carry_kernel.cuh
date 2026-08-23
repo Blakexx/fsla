@@ -133,6 +133,9 @@ struct CarryGeom {
   static constexpr int kHiSwz = 7;
   static constexpr int plane_bytes = kPlaneRows * kHiLD * (int)sizeof(__nv_bfloat16);
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
+  //: THE TRANSIT ALIASES THE PANEL.  It is live ONLY at the phase change, when the
+  //: panels are dead, so it costs no allocation of its own -- the straddling ledger.
+  static_assert(plane_bytes <= panel_bytes, "the transit must fit inside the dead panel region");
   static constexpr int fixed_bytes = panel_bytes + out_bytes + list_bytes;
   static constexpr int kStages = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloor);
   static constexpr size_t bytes = (size_t)fixed_bytes + (size_t)kStages * slot_bytes;
@@ -284,6 +287,9 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   float* const so = reinterpret_cast<float*>(sw + kWarps * C * LdS);
   constexpr int kListStride = G::kListStride;
   uint16_t* const slist = reinterpret_cast<uint16_t*>(so + C * LdO);
+  //: THE TRANSIT PLANE, `[channel][leaf]` with the derived stride and swizzle, laid
+  //: over the PANEL: it is live only at the phase change, when the panels are dead.
+  const SmemAddr hiB = smem_addr(sr);
 
   //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
   //: shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
@@ -386,6 +392,64 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     ma[1] = hi_bf16x2(mass_st[2 * kk][2], mass_st[2 * kk][3]);
     ma[2] = hi_bf16x2(mass_st[2 * kk + 1][0], mass_st[2 * kk + 1][1]);
     ma[3] = hi_bf16x2(mass_st[2 * kk + 1][2], mass_st[2 * kk + 1][3]);
+  };
+
+  //: ---- K35-E: THE TRANSIT PLANE ------------------------------------------
+  //: `leaf_of` is the LATTICE leaf of a private index `P`.  The private order's own
+  //: `shift`/`span` give each level's digit inside `P`; the lattice's `run_shift`
+  //: puts it back.  The carve level additionally carries the warp's group base.
+  //: This is the ONLY place the two orders meet, and it is a pure index map.
+  auto leaf_of = [&](int P) {
+    int lf = 0;
+    static_for<D>([&](auto Lc) {
+      constexpr int l = decltype(Lc)::value;
+      const int dig = ((P >> PM::shift(l)) & (PM::span(l) - 1)) + (l == CL ? grp * PM::kGS : 0);
+      lf += dig << BP::run_shift(l);
+    });
+    return lf;
+  };
+  //: the plane is `[channel][leaf]` -- A row-major for the readout -- at stride
+  //: `kHiLD` with the derived XOR swizzle on the two-leaf WORD index.  No linear pad
+  //: is conflict-free on both the push and the pull; this is (findings, derivation 2).
+  auto plane_w = [&](int chan, int lf) {
+    return hiB + (uint32_t)(chan * G::kHiLD * 2 + (((lf >> 1) ^ (chan & G::kHiSwz)) * 4));
+  };
+  //: THE PUBLISH.  The accumulator's `(row, col) = (channel, leaf)` map is the same
+  //: one the A fragment wants, so a `bf16x2` word is one lane's two ADJACENT leaves
+  //: at one channel -- the pair is lattice-adjacent under both carves' orders.
+  //: The mass moves as ONE row: its accumulator's rows 1..15 are identically zero by
+  //: construction of `ones_a`, so moving them would move zeros.
+  auto publish_hi = [&]() {
+    static_for<NL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      const int lf = leaf_of(j * kMmaN + 2 * (lane & 3));
+      static_for<MCH>([&](auto Mc) {
+        constexpr int m = decltype(Mc)::value;
+        const int ch = m * kMmaM + (lane >> 2);
+        store_shared_u32(plane_w(ch, lf), hi_bf16x2(st[m][j][0], st[m][j][1]));
+        store_shared_u32(plane_w(ch + 8, lf), hi_bf16x2(st[m][j][2], st[m][j][3]));
+      });
+      if ((lane >> 2) == 0)
+        store_shared_u32(plane_w(kDv, lf), hi_bf16x2(mass_st[j][0], mass_st[j][1]));
+    });
+  };
+  //: THE PULL, straight into the readout's A fragments.  `h` selects the n-tile, and
+  //: within it register `2h` is channel row `lane/4` and `2h+1` is row `lane/4 + 8`
+  //: -- exactly `state_operand`'s register order, so the drain below is unchanged.
+  auto pull_operand = [&](auto Kc, uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
+    constexpr int kk = decltype(Kc)::value;
+    static_for<2>([&](auto Hc) {
+      constexpr int h = decltype(Hc)::value;
+      const int lf = leaf_of((2 * kk + h) * kMmaN + 2 * (lane & 3));
+      static_for<MCH>([&](auto Mc) {
+        constexpr int m = decltype(Mc)::value;
+        const int ch = m * kMmaM + (lane >> 2);
+        sa[m][2 * h + 0] = load_shared_u32(plane_w(ch, lf));
+        sa[m][2 * h + 1] = load_shared_u32(plane_w(ch + 8, lf));
+      });
+      ma[2 * h + 0] = ((lane >> 2) == 0) ? load_shared_u32(plane_w(kDv, lf)) : 0u;
+      ma[2 * h + 1] = 0u;
+    });
   };
 
   //: THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so
@@ -680,6 +744,23 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     const int nw =
         walk(liveW, wlist, ((1u << kBitsW) - 1u) << (warp * kBitsW), (1u << (warp * kBitsW)) - 1u);
 
+    //: THE W->R PHASE CHANGE.  Every warp publishes its own leaves' hi halves and
+    //: then reads back the slice ITS carve wants; the fence between the two is the
+    //: readers' wait.  While the two carves are the same this is a ROUND TRIP whose
+    //: result must be bit-identical to reading the accumulator in place -- which is
+    //: what makes it checkable before the carves diverge.
+    rendezvous();
+    publish_hi();
+    rendezvous();
+    uint32_t sa[KDw][MCH][4], ma[KDw][4];
+    static_for<KDw>(
+        [&](auto Kc) { pull_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value]); });
+    //: the third edge: every warp has taken its slice, so the panel may reclaim the
+    //: transit's bytes.  The state is constant across the window's batches, so the
+    //: pull is hoisted out of the batch loop and costs one set of registers, not one
+    //: per batch.
+    rendezvous();
+
     // ---- PHASE 1: the READOUT of every read batch, against the window's ENTRY
     //      state.  ALL of the window's readouts precede ANY of its folds, because a
     //      within-window pair is the INTRA term's and this kernel must not carry it.
@@ -705,9 +786,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       const int n = (nr - off) < C ? (nr - off) : C;
       const uint32_t brT = (i & 1) ? brT1 : brT0;
 
-      uint32_t sa[KDw][MCH][4], ma[KDw][4];
-      static_for<KDw>(
-          [&](auto Kc) { state_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value]); });
 #pragma unroll
       for (int mb = 0; mb < MTOK; ++mb) {
         float acc[2][MCH][4], macc[2][4];
