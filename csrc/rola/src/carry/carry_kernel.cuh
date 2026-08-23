@@ -619,20 +619,37 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     const int wIdx = (tok0 >> 5) + (inW ? lane : 0);
     const uint32_t wordB = (uint32_t)(wIdx < tok_words ? wIdx : tok_words - 1) * 4u;
 
-    //: the trip count is the window's LIVENESS, not its width: one `bit_count`
-    //: where a per-word form spends `LW`, one lane prefix where it spends `LW`
-    //: adds, and one scatter of the lane's own set bits.
+    //: THE SCATTER STAYS PER-LANE AND DIVERGENT, AND THAT IS MEASURED.  Each lane
+    //: walks its OWN word's set bits, so the trip count is the window's LIVENESS and
+    //: a lane with no bits leaves at once.  The obvious repair for its `BRA`/`BSYNC`
+    //: -- a WORD-MAJOR form taking word `r` whole per round, warp-uniform, one
+    //: ballot rank and one predicated store, no reconvergence -- was built and is
+    //: 2.0x/3.1x WORSE (807 and 1,324 warp-instructions per (owner, window) against
+    //: 397 and 429), because its `LW` rounds are UNCONDITIONAL: the running prefix
+    //: needs `bit_count` of every word whether or not the word is live, so a sparse
+    //: window pays all sixteen rounds of `SHFL + POPC + address` to store two bits.
+    //: Divergence is the cheaper failure mode when the data is sparse.
+    //:
     //: `bits` is the writer's slice of each word, `below` the bits under it: a list
     //: with several writers is built by giving each one a bit range and letting all
     //: of them derive the same prefix from the same ballot.
     auto walk = [&](uint32_t m, uint16_t* dst, uint32_t bits, uint32_t below) {
       const int cnt = bit_count(m);
       const int pfx = lane_prefix_incl<LW>(cnt);
-      int k = (pfx - cnt) + bit_count(m & below);
+      const int k = (pfx - cnt) + bit_count(m & below);
       const uint16_t tb = (uint16_t)(lane * kBallotLanes);
+      //: THE SCATTER CARRIES ITS SHARED ADDRESS RATHER THAN AN INDEX.  `dst[k++]`
+      //: through a `uint16_t*` re-derives the address as a widening multiply every
+      //: iteration -- the loop measured `IMAD:114` and no `STS` in its top opcodes at
+      //: all.  Carrying the address costs one add an iteration instead, worth 50 and
+      //: 32 warp-instructions per (owner, window) at the two measured cells.  The
+      //: list, its order and its contents are UNCHANGED by this: an addressing
+      //: change and nothing else, so no consumer and no contract moves.
+      SmemAddr a = smem_addr(dst) + (SmemAddr)(k * (int)sizeof(uint16_t));
       uint32_t mm = m & bits;
       while (mm) {
-        dst[k++] = tb + (uint16_t)first_set(mm);
+        store_shared_u16(a, (uint16_t)(tb + (uint16_t)first_set(mm)));
+        a += (SmemAddr)sizeof(uint16_t);
         mm &= mm - 1;
       }
       return lane_broadcast(pfx, LW - 1);
@@ -674,8 +691,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: write entry, so the list is shared -- and because every warp holds the same
     //: ballot, each can take a fixed slice of every word's bits and derive its own
     //: offsets.  The list is therefore built BALANCED at any distribution, with no
-    //: CTA prefix, no barrier of its own, and no warp carrying it alone.  The
-    //: window line is what publishes it.
+    //: CTA prefix, no barrier of its own, and no warp carrying it alone.
     constexpr uint32_t kBitsW = (uint32_t)(kBallotLanes / kWarps);
     const int nw =
         walk(liveW, wlist, ((1u << kBitsW) - 1u) << (warp * kBitsW), (1u << (warp * kBitsW)) - 1u);

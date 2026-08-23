@@ -288,6 +288,18 @@ __device__ __forceinline__ void store_bf16x2(__nv_bfloat16* p, uint32_t v) {
   *reinterpret_cast<uint32_t*>(p) = v;
 }
 
+//: A SEQUENTIAL SHARED STORE, ADDRESSED RATHER THAN INDEXED.  This is the store
+//: side of the hazard the gather comment above names: `dst[k++]` through a
+//: `uint16_t*` re-derives `dst + k` as a WIDENING MULTIPLY every iteration, so a
+//: loop whose work is one `STS.U16` per live bit measures `IMAD:114, IADD3:69` and
+//: no `STS` in its top opcodes at all -- the schedule walk's scatter, 447 warp
+//: instructions per (owner, window) for about two stores a lane.  Carrying the
+//: shared address in a 32-bit register and advancing it by the element size makes
+//: the per-iteration cost one add.
+__device__ __forceinline__ void store_shared_u16(SmemAddr a, uint16_t v) {
+  asm volatile("st.shared.u16 [%0], %1;" ::"r"(a), "h"(v) : "memory");
+}
+
 //: One element, rounded to nearest-even exactly as `pack_bf16x2` rounds each of
 //: its two.  The single-element form exists because a transposed accumulator's
 //: adjacent pair is adjacent in TOKEN, and a [token][d_v] buffer puts those in
