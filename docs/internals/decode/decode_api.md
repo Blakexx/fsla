@@ -47,7 +47,7 @@ arm and the deep arms each carry more live state through the same loop.
 path cannot fake: it launches a one-thread kernel, compiled with this translation unit,
 that folds four facts into one `int64_t` in a positional scheme and reads it back:
 
-    stamp = (kKinds * kMaxTerms * 4096 + sizeof(DecodeParams)) * 1000003
+    stamp = (kKinds * kMaxTerms * kDecodeWarps * 4096 + sizeof(DecodeParams)) * 1000003
           + sizeof(Unit<4>) * 101
           + kDecodeMaxSpan
 
@@ -56,8 +56,12 @@ BINARY actually built from, which is the fact a stale extension can silently dis
 about (the standing "extension trap" lesson). It is bound because a Python-side
 recomputation of the same quantities would just be a second mirror with its own drift.
 
-THE ENUMERATION-SHAPE FIELD IS THE MOST SIGNIFICANT ONE, AND IT WAS ADDED FOR A MEASURED
-REASON: the union-of-products enumeration ([`decode_lattice.md`](decode_lattice.md#the-terms))
+THE SHAPE FIELD IS THE MOST SIGNIFICANT ONE, AND IT CARRIES THE LAUNCH WIDTH AS WELL AS
+THE ENUMERATION FOR THE SAME MEASURED REASON TWICE OVER. The fat-CTA launch shape
+([`decode.md#decode-threads`](decode.md#decode-threads)) changes how many CTAs derive a
+step -- 256 to 80 at `BH = 1` -- while moving neither struct, neither ceiling, nor the
+enumeration: without `kDecodeWarps` in this field the two binaries stamp IDENTICALLY, which
+was observed and fixed rather than reasoned about. Its earlier half: the union-of-products enumeration ([`decode_lattice.md`](decode_lattice.md#the-terms))
 redefined what every unit index in this path MEANS while moving neither struct's size and
 neither ceiling, so the three older fields alone would have certified the new binary as
 the old one. A stamp that cannot separate two binaries is not a stamp. The three older

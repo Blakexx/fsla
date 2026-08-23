@@ -57,17 +57,21 @@ __device__ int64_t g_decode_stamp_probe;
 //: it back is reading a fact only the loaded binary can produce:
 //: docs/internals/decode/decode_api.md#build-stamp
 __global__ void decode_stamp_kernel(int64_t* out) {
-  //: THE ENUMERATION'S SHAPE IS PART OF THE FOOTPRINT, alongside the two struct sizes and
-  //: the span ceiling: the kind and term counts are what a walk's unit index MEANS, and a
-  //: binary that disagrees about them is a different step however its structs measure --
-  //: which the union-of-products enumeration proved, since it moved every walk in the
-  //: extension without moving one byte of either struct. IT IS THE MOST SIGNIFICANT FIELD
-  //: of the same positional scheme, so the three older fields still divide out unchanged:
+  //: THE ENUMERATION'S SHAPE AND THE LAUNCH'S WIDTH ARE PART OF THE FOOTPRINT, alongside
+  //: the two struct sizes and the span ceiling. The kind and term counts are what a walk's
+  //: unit index MEANS, and the warp count is HOW MANY CTAs derive the step -- and a binary
+  //: that disagrees about either is a different step however its structs measure. Both
+  //: lessons were paid for: the union-of-products enumeration moved every walk in the
+  //: extension without moving one byte of either struct, and the fat-CTA launch shape moved
+  //: the derivation count from 256 to 80 without moving the enumeration. IT IS THE MOST
+  //: SIGNIFICANT FIELD of the same positional scheme, so the three older fields still
+  //: divide out unchanged and the inversion's plausibility bound still holds
+  //: (`kKinds * kMaxTerms * kDecodeWarps` is 192 at eight warps, 768 at thirty-two):
   //: docs/internals/decode/decode_api.md#build-stamp
-  *out =
-      (static_cast<int64_t>(kKinds * kMaxTerms) * 4096 + static_cast<int64_t>(sizeof(DecodeParams)))
-          * 1000003
-      + static_cast<int64_t>(sizeof(Unit<4>)) * 101 + static_cast<int64_t>(kDecodeMaxSpan);
+  *out = (static_cast<int64_t>(kKinds * kMaxTerms * kDecodeWarps) * 4096
+          + static_cast<int64_t>(sizeof(DecodeParams)))
+             * 1000003
+         + static_cast<int64_t>(sizeof(Unit<4>)) * 101 + static_cast<int64_t>(kDecodeMaxSpan);
   g_decode_stamp_probe = *out;
 }
 

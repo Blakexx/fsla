@@ -52,15 +52,24 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
               "MAX_BRANCH_WIDTH: a topology the producer can emit would over-read "
               "the staged amplitude row");
 
-//: The decode step launches 256 threads. The number is pinned by three facts at once
-//: (lane-to-column mapping, the tiled consumer's block size, sm_86 occupancy) and is
-//: not free-floating: docs/internals/decode/decode.md#decode-threads
-constexpr int kDecodeThreads = 256;
+//: THE STEP LAUNCHES ONE FAT CTA PER SM, and that is a SHARING decision before it is an
+//: occupancy one. Every CTA of a step re-derives the identical per-(step, batch-head)
+//: setup -- the fold, the digit masks, the four owner lists, the term table, the write
+//: digit list, and the ADMISSION with its candidate-atom enumeration and page-table probes
+//: -- and those CTAs run PHASE-SYNCHRONIZED, so the duplication has no mutual coverage at
+//: all: it is issued concurrently, `n_split` times over, on the same SM. Measured on this
+//: path, that derivation is 51-87 % of the step at `BH = 1` and 18-59 % at `BH = 8`.
+//: WIDENING THE CTA IS WHAT SHARES IT. Intra-CTA sharing is native -- shared memory and a
+//: barrier, which the derivation is already written as -- so a 32-warp CTA derives ONCE
+//: what four 8-warp CTAs derived four times, and derives it on a chain four times shorter
+//: because every loop in it is `for i = tid; i < n; i += blockDim`.
+//: docs/internals/decode/decode.md#decode-threads
+constexpr int kDecodeThreads = 1024;
 constexpr int kDecodeWarps = kDecodeThreads / 32;
 //: `log2(kDecodeWarps)`: the number of consecutive unit indices ONE CTA's warps cover, and
 //: therefore how many of the loop index's low bits the write walk rotates into its finest
 //: coordinate: docs/internals/decode/decode_lattice.md#the-write-grain
-constexpr int kDecodeWarpsBits = 3;
+constexpr int kDecodeWarpsBits = 5;
 static_assert(1 << kDecodeWarpsBits == kDecodeWarps, "kDecodeWarpsBits must be log2(kDecodeWarps)");
 
 //: THE LATTICE'S ONE DECLARED CAPACITY, refused loudly at the host entry: an owner's
@@ -74,13 +83,20 @@ constexpr int kDecodeMaxSpan = 32;
 //: THE DECLARED RESIDENCY of the step kernel, in CTAs per SM, and it is a BUDGET rather
 //: than a hope: `__launch_bounds__` turns it into a register cap the assembler must meet,
 //: and the census is what proves it met it without spilling. The walk is a latency-bound
-//: stream over state rows, so residency is the one thing it trades registers FOR. TWO
-//: TEMPLATE AXES MOVE IT, each by one CTA: the DECAY arm carries a second per-leaf
-//: product and a survival exponential through the same loop, and the DEEPEST arm carries
-//: three more live registers per level (the staging offset and both sides' intra-sub-box
-//: slices) through the same one. docs/internals/decode/decode.md#declared-residency
+//: stream over state rows, so residency is the one thing it trades registers FOR.
+//: IT IS ONE, AND IT NO LONGER HAS TEMPLATE AXES. At `kDecodeThreads = 1024` a CTA is the
+//: SM's whole resident thread budget that the register file admits (65536 / 1024 = 64
+//: registers per thread), so the DECAY and DEEPEST arms -- which used to buy their extra
+//: live state by giving up a CTA of residency -- keep the same 64-register cap the widest
+//: arm needs, and the shallow arms gain headroom rather than losing it (they ran at a cap
+//: of 51 when five 256-thread CTAs shared the file). ONE is also what makes the derivation
+//: shared: the host's split policy sizes ONE WAVE of this number, so `n_split` becomes
+//: `SMs / BH` fat CTAs and the per-(step, batch-head) setup is derived that many times
+//: instead of 256. docs/internals/decode/decode.md#declared-residency
 __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
-  return (decay || levels >= kMaxLevels) ? 4 : 5;
+  (void)decay;
+  (void)levels;
+  return 1;
 }
 
 //: The atom as a SHIFT and a MASK. `kAtomLeaves` itself is the box's
