@@ -117,6 +117,21 @@ struct CarryGeom {
   //: the live set cannot honour is a spill: the carve holds `BC/kWarps` leaves x all
   //: `kCols` channels per warp, and 219 registers is what that costs.
   static constexpr int kRegFloor = 220;
+  //: ---- K35-E: THE TRANSIT PLANE -------------------------------------------
+  //: The state EVACUATES registers at each phase change, because the readout and the
+  //: fold carve the same leaves along DIFFERENT lattice axes.  The plane is
+  //: `[channel][leaf]`, which is A row-major for the readout; its rows are the `kDv`
+  //: value channels plus ONE mass row -- the mass accumulator's rows 1..15 are
+  //: identically zero by construction of `ones_a`, so moving them would move zeros.
+  static constexpr int kPlaneRows = kDv + 1;
+  //: `LD` AND ITS SWIZZLE ARE A DERIVATION, NOT A GUESS (findings, derivation 2).
+  //: The push varies a lane's word index in the LOW bits and the pull varies it in
+  //: bit 3 and above, so NO linear stride is conflict-free on both legs -- searched
+  //: over `LD`, best is 2-way.  `word ^= (chan & 7)` at `LD = 144` measures max-way
+  //: ONE on both legs, over every `(m, g, w, d0l)` slice.
+  static constexpr int kHiLD = 144;
+  static constexpr int kHiSwz = 7;
+  static constexpr int plane_bytes = kPlaneRows * kHiLD * (int)sizeof(__nv_bfloat16);
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
   static constexpr int fixed_bytes = panel_bytes + out_bytes + list_bytes;
   static constexpr int kStages = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloor);
