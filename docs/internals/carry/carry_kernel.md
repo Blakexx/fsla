@@ -366,3 +366,58 @@ The base is additionally declared a GLOBAL address. An address whose storage cla
 compiler cannot infer turns the fan-in's reduction into a generic read-modify-write and
 every gathered load into a generic one, so the assumption restores what the displacement
 arithmetic hid. Both halves live in `common/ops.cuh`'s `gather_ptr` and `pin_address`.
+
+## The schedule scatter
+
+The window's live tokens are turned into a list by `walk`. Two properties of it are
+deliberate and were established by measurement rather than by argument; both are
+recorded here because the code that results looks unremarkable.
+
+### The store is addressed, not indexed
+
+`dst[k++]` through a `uint16_t*` lets the compiler re-derive `dst + k` as a widening
+multiply on every iteration — the same hazard the gather comment in `common/ops.cuh`
+names on the load side, here on the store side. The loop's instruction ledger showed
+it plainly: at ALT `k4 cohort=64` the scatter cost 447 warp-instructions per
+`(owner, window)` with top opcodes `IMAD:114, IADD3:69, BRA:49, BSYNC:34` and **no
+`STS` in the top five at all**, for a loop whose entire work is about two stores per
+lane.
+
+Carrying the shared address in a 32-bit register (`store_shared_u16`) makes the
+per-iteration cost one add:
+
+| | ALT k4 cohort=64 | ALT k4 scattered |
+|---|---|---|
+| indexed (`dst[k++]`) | 447.5 | 461.4 |
+| addressed | **397.4** | **429.1** |
+
+The list, its order and its contents are bit-identical either way — this is an
+addressing change and nothing else, which is why no consumer and no contract moves
+with it. The state-plane gate (`torch.equal` on all five cells against the mainline
+baseline) is what holds that claim.
+
+### The loop stays divergent, and the word-major repair is refused
+
+After the addressing fix the residual is reconvergence: `BRA` and `BSYNC` dominate.
+The obvious repair is to invert the loop so it is warp-uniform — round `r` takes
+ballot word `r` whole (broadcast, so every lane sees the same word), hands its bit
+`lane` to lane `lane`, and does one ballot rank plus one predicated store. That form
+has no per-lane trip count, no reconvergence, a constant trip count of `LW`, and it
+preserves rank order exactly (word ascending, then lane ascending, is token
+ascending), so it needs no re-baseline of the replay contract.
+
+It was built. It is **2.0x to 3.1x worse**:
+
+| | ALT k4 cohort=64 | ALT k4 scattered | kernel total |
+|---|---|---|---|
+| per-lane (divergent) | 397.4 | 429.1 | 3,342 / 8,257 |
+| word-major | 807.3 | 1,324.0 | 3,679 (+10%) / 9,028 (+9%) |
+
+The reason is that the `LW` rounds are **unconditional**. The running prefix needs
+`bit_count` of every word whether that word is live or not, so an empty word cannot be
+skipped without losing the prefix — a sparse window pays all sixteen rounds of
+`SHFL + POPC + address` in order to store two bits. The divergent form's trip count is
+the window's *liveness*, and a lane holding no bits leaves immediately.
+
+**Divergence is the cheaper failure mode when the data is sparse.** This kernel's
+operating point is sparse by construction, so the divergent scatter stays.
