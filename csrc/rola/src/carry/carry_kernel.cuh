@@ -701,7 +701,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       const int adjPL = ((psub * MapT::SPT) >> MapT::shift(PL)) & (MapT::span(PL) - 1);
       unsigned short run[MapT::n_l(PL)];
       load_run<MapT::n_l(PL)>(run, gather_ptr(base, tokOff + (uint32_t)((cols[PL] + adjPL) * 2)));
-      if constexpr (!WRITE) {
+      {
         static_for<MapT::n_l(PL)>([&](auto Ic) {
           constexpr int i = decltype(Ic)::value;
           run[i] = have ? run[i] : (unsigned short)0;
