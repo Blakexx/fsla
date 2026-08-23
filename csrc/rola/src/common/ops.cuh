@@ -300,19 +300,6 @@ __device__ __forceinline__ void store_shared_u16(SmemAddr a, uint16_t v) {
   asm volatile("st.shared.u16 [%0], %1;" ::"r"(a), "h"(v) : "memory");
 }
 
-//: THE TRANSIT PLANE'S WORD ACCESSES.  Addressed rather than indexed for the same
-//: reason `store_shared_u16` is: the plane's address carries an XOR swizzle, so an
-//: indexed form would re-derive a widening multiply per access.
-__device__ __forceinline__ void store_shared_u32(SmemAddr a, uint32_t v) {
-  asm volatile("st.shared.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
-}
-
-__device__ __forceinline__ uint32_t load_shared_u32(SmemAddr a) {
-  uint32_t v;
-  asm volatile("ld.shared.u32 %0, [%1];" : "=r"(v) : "r"(a) : "memory");
-  return v;
-}
-
 //: One element, rounded to nearest-even exactly as `pack_bf16x2` rounds each of
 //: its two.  The single-element form exists because a transposed accumulator's
 //: adjacent pair is adjacent in TOKEN, and a [token][d_v] buffer puts those in
