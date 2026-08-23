@@ -67,12 +67,12 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
 //: what four 8-warp CTAs derived four times, and derives it on a chain four times shorter
 //: because every loop in it is `for i = tid; i < n; i += blockDim`.
 //: docs/internals/decode/decode.md#decode-threads
-constexpr int kDecodeThreads = 1024;
+constexpr int kDecodeThreads = 512;
 constexpr int kDecodeWarps = kDecodeThreads / 32;
 //: `log2(kDecodeWarps)`: the number of consecutive unit indices ONE CTA's warps cover, and
 //: therefore how many of the loop index's low bits the write walk rotates into its finest
 //: coordinate: docs/internals/decode/decode_lattice.md#the-write-grain
-constexpr int kDecodeWarpsBits = 5;
+constexpr int kDecodeWarpsBits = 4;
 static_assert(1 << kDecodeWarpsBits == kDecodeWarps, "kDecodeWarpsBits must be log2(kDecodeWarps)");
 
 //: THE UNIT PARTITION'S GRANULARITY, AND IT IS NOT THE CTA'S WARP COUNT. Widening the CTA
@@ -116,10 +116,16 @@ constexpr int kDecodeMaxSpan = 32;
 //: shared: the host's split policy sizes ONE WAVE of this number, so `n_split` becomes
 //: `SMs / BH` fat CTAs and the per-(step, batch-head) setup is derived ONE WAVE DEEP
 //: instead of 3.2. docs/internals/decode/decode.md#declared-residency
+//: IT IS DERIVED FROM THE WIDTH, not written down twice: the register file admits 64
+//: registers per thread across 1024 resident threads, so a CTA of `kDecodeThreads` leaves
+//: room for exactly `1024 / kDecodeThreads` of itself. At 1024 that is the one fat CTA per
+//: SM; at 512 it is two, and both put the same 1024 threads and the same 64-register cap on
+//: the SM. The arm's width is then the ONLY constant a shape change touches.
+constexpr int kDecodeResidentThreads = 1024;
 __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
   (void)decay;
   (void)levels;
-  return 1;
+  return kDecodeResidentThreads / kDecodeThreads;
 }
 
 //: The atom as a SHIFT and a MASK. `kAtomLeaves` itself is the box's
