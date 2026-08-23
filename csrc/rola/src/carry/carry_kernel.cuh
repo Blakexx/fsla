@@ -103,11 +103,7 @@ struct CarryGeom {
                 "the staging block is one token tile of the batch and holds a whole page");
   //: `kWarps` READ lists, one per digit group, then ONE write list: a read entry
   //: belongs to the groups its innermost digits fall in, a write entry to all.
-  //: `kWarps` READ lists, ONE shared write list (the value stream, per the
-  //: composition law), and `kWarps` PRIVATE write lists holding POSITIONS in that
-  //: stream -- S-write.  The private list is positions and not token ids precisely
-  //: so the stream stays shared: a warp indexes into the staged batch.
-  static constexpr int kLists = 2 * kWarps + 1;
+  static constexpr int kLists = kWarps + 1;
   static constexpr int kListStride = ((W + 7) / 8) * 8;
   static constexpr int list_bytes = kLists * kListStride * (int)sizeof(uint16_t);
   //: THE WINDOW'S BALLOT WORDS, one per lane of the walk -- so a window may be at
@@ -177,13 +173,7 @@ struct ProduceMap {
 //: offsets exactly as `local` is, the expansion is `sum_l n_l` amplitude loads
 //: followed by products of register values at CONSTANT indices -- no dynamic
 //: indexing, no spill, no materialized gate plane.
-//: `QMAJOR` NAMES WHICH LEVEL LIES LOWEST IN THE PRIVATE INDEX `p`, and the two
-//: carves want opposite answers.  Under q-major the CARVE level is lowest, so a
-//: lane's two adjacent slots are two adjacent digits of its own group.  Under
-//: CL-major the carve level is HIGHEST and the lattice's innermost level is lowest,
-//: so a lane's two adjacent slots are LATTICE-ADJACENT LEAVES -- which is what the
-//: transit's `bf16x2` publish requires of the write carve.
-template <int D, int B, int K, int M, int C, int CL, bool QMAJOR = true>
+template <int D, int B, int K, int M, int C, int CL>
 struct CarveMap {
   using BP = BoxPlan<D, B, K, M>;
   static constexpr int kLevel = CL;
@@ -201,15 +191,8 @@ struct CarveMap {
   //: n-tile spanned ALL of the outer level's digits and there was nothing to skip.
   //: The relabelling is a PERMUTATION of the accumulator's n axis and nothing else
   //: -- the k order, and therefore the state plane, is bit-identical under it.
-  //: the bits of the NON-CARVE levels lying inside `l`.  `run_shift` counts every
-  //: level inside `l`, so the carve level's own span comes back out when it is one
-  //: of them -- which is what lets the carve sit at an OUTER level at all.
-  static constexpr int inner_bits(int l) {
-    return BP::run_shift(l) - (kLevel > l ? BP::span_bits(kLevel) : 0);
-  }
   static constexpr int shift(int l) {
-    return QMAJOR ? (l == kLevel ? 0 : ilog2c(kGS) + inner_bits(l))
-                  : (l == kLevel ? ilog2c(kOut) : inner_bits(l));
+    return l == kLevel ? 0 : ilog2c(kGS) + BP::run_shift(l) - BP::span_bits(kLevel);
   }
   static constexpr int span(int l) { return l == kLevel ? kGS : BP::s(l); }
   static constexpr int vary(int l) { return SPT >> shift(l); }
@@ -220,7 +203,7 @@ struct CarveMap {
   //: the ADJACENT PAIR comes from the level lying LOWEST in `p`, which under the
   //: q-major order is the CARVE LEVEL itself: a lane's two adjacent slots are two
   //: adjacent digits of its own group.
-  static constexpr int kPairLevel = QMAJOR ? kLevel : (kLevel == D - 1 ? D - 2 : D - 1);
+  static constexpr int kPairLevel = kLevel;
   static_assert(shift(kPairLevel) == 0 && n_l(kPairLevel) >= 2,
                 "the carve level lies lowest in the private order and supplies the pair");
 };
@@ -273,10 +256,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   using BP = BoxPlan<D, B, K, M>;
   using G = CarryGeom<D, B, K, M, W, C, CL>;
   using PM = CarveMap<D, B, K, M, C, CL>;
-  //: THE WRITE CARVE'S MAP.  CL-major, so a lane's two adjacent private slots are
-  //: LATTICE-ADJACENT leaves -- what the transit's `bf16x2` publish requires.  A
-  //: single-carve body reuses the read map and nothing below changes.
-  using PMW = std::conditional_t<(CW >= 0), CarveMap<D, B, K, M, C, (CW >= 0 ? CW : 0), false>, PM>;
   //: THE ROW TABLE.  A two-carve body votes its rows under `TwoCarveRows` -- the same
   //: table refined at BOTH carved levels -- so each warp reads its OWN group's row on
   //: either side.  A single-carve body keeps `CarveRows` and the write list stays
@@ -384,8 +363,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   const uint32_t bwF0 = smem_addr(panW) + (uint32_t)((rF * LdS + cF * 8) * 2);
   const uint32_t bwF1 = smem_addr(panR) + (uint32_t)((rF * LdS + cF * 8) * 2);
   const uint32_t svB = smem_addr(sv) + (uint32_t)((rT * LdV + cT * 8) * 2);
-  //: the same base with the ROW left out: S-write's fold supplies the row per lane.
-  const uint32_t svVc = smem_addr(sv) + (uint32_t)(cT * 8 * 2);
   constexpr uint32_t kVSlot = (uint32_t)(C * LdV) * 2;
 #define ADDR_S(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2))
 #define ADDR_V(b_, R_, dv_) ((b_) + (uint32_t)(((R_) * LdV + (dv_)) * 2))
@@ -450,18 +427,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   //: the plane is `[channel][leaf]` -- A row-major for the readout -- at stride
   //: `kHiLD` with the derived XOR swizzle on the two-leaf WORD index.  No linear pad
   //: is conflict-free on both the push and the pull; this is (findings, derivation 2).
-  //: the same map under the WRITE carve, which is the order the accumulator -- and
-  //: therefore the state plane and the transit's publish -- is held in.
-  auto leafW_of = [&](int P) {
-    int lf = 0;
-    static_for<D>([&](auto Lc) {
-      constexpr int l = decltype(Lc)::value;
-      const int dig =
-          ((P >> PMW::shift(l)) & (PMW::span(l) - 1)) + (l == PMW::kLevel ? grp * PMW::kGS : 0);
-      lf += dig << BP::run_shift(l);
-    });
-    return lf;
-  };
   auto plane_w = [&](int chan, int lf) {
     return hiB + (uint32_t)(chan * G::kHiLD * 2 + (((lf >> 1) ^ (chan & G::kHiSwz)) * 4));
   };
@@ -473,7 +438,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   auto publish_hi = [&]() {
     static_for<NL>([&](auto Jc) {
       constexpr int j = decltype(Jc)::value;
-      const int lf = leafW_of(j * kMmaN + 2 * (lane & 3));
+      const int lf = leaf_of(j * kMmaN + 2 * (lane & 3));
       static_for<MCH>([&](auto Mc) {
         constexpr int m = decltype(Mc)::value;
         const int ch = m * kMmaM + (lane >> 2);
@@ -546,35 +511,35 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   auto page_regs = [&](auto Ac, auto Ld) {
     constexpr int a = decltype(Ac)::value;
     constexpr bool LOAD = decltype(Ld)::value;
-    //: THE STATE PLANE IS WALKED UNDER THE WRITE CARVE, because that is the order the
-    //: accumulator is held in.  `pp` is compile-time, so the tile and the slot within
-    //: it are too; the page and the row inside it come from the leaf map and are
-    //: runtime, which is exactly the freedom an OUTER carve level needs.
-    static_for<kLeafW>([&](auto Pc) {
-      constexpr int pp = decltype(Pc)::value;
-      constexpr int tile = pp / kMmaN, nix = pp % kMmaN;
-      if ((lane & 3) != nix / 2) return;
-      const int lf = leafW_of(pp);
-      if ((lf >> ilog2c(kAtomLeaves)) != a) return;
-      const int row = lf & (kAtomLeaves - 1);
-      static_for<MCH>([&](auto Mc) {
-        constexpr int m = decltype(Mc)::value;
-        static_for<2>([&](auto Kc) {
-          constexpr int k = (nix & 1) + 2 * decltype(Kc)::value;
-          float* const cell = &so[row * LdO + m * kMmaM + (lane >> 2) + 8 * (k >> 1)];
-          if constexpr (LOAD)
-            st[m][tile][k] = *cell;
-          else
-            store_f32(cell, st[m][tile][k]);
-        });
+    static_for<kGS>([&](auto Tc) {
+      constexpr int t = decltype(Tc)::value;
+      static_for<kAtomOut>([&](auto Oc) {
+        constexpr int oi = decltype(Oc)::value;
+        //: q-MAJOR: the OUTER index runs slowest inside `p`, the carve digit fastest.
+        constexpr int pp = (a * kAtomOut + oi) * kGS + t;
+        constexpr int tile = pp / kMmaN, nix = pp % kMmaN;
+        const int row = oi * BP::s(CL) + grpBase + t;
+        if ((lane & 3) == nix / 2) {
+          static_for<MCH>([&](auto Mc) {
+            constexpr int m = decltype(Mc)::value;
+            static_for<2>([&](auto Kc) {
+              constexpr int k = (nix & 1) + 2 * decltype(Kc)::value;
+              float* const cell = &so[row * LdO + m * kMmaM + (lane >> 2) + 8 * (k >> 1)];
+              if constexpr (LOAD)
+                st[m][tile][k] = *cell;
+              else
+                store_f32(cell, st[m][tile][k]);
+            });
+          });
+          if (lane == nix / 2) {
+            float* const cell = &so[row * LdO + kDv];
+            if constexpr (LOAD)
+              mass_st[tile][nix & 1] = *cell;
+            else
+              store_f32(cell, mass_st[tile][nix & 1]);
+          }
+        }
       });
-      if (lane == nix / 2) {
-        float* const cell = &so[row * LdO + kDv];
-        if constexpr (LOAD)
-          mass_st[tile][nix & 1] = *cell;
-        else
-          store_f32(cell, mass_st[tile][nix & 1]);
-      }
     });
   };
 
@@ -599,11 +564,10 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   // ---- the produce's per-thread map ---------------------------------------
   constexpr int SPT = PM::SPT;
   const int prow = lane;  // this lane's token row of the batch
-  int lvCol[D], lvColW[D];
+  int lvCol[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
     lvCol[l] = runCol[l] + (l == CL ? grp * kGS : 0);
-    lvColW[l] = runCol[l] + (l == PMW::kLevel ? grp * PMW::kGS : 0);
   });
 
   //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS.  A padding row of a partial
@@ -619,8 +583,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
                      uint32_t gain, bool have) {
     constexpr bool WRITE = decltype(Wt)::value;
-    using MapT = std::conditional_t<WRITE, PMW, PM>;
-    const int* const cols = WRITE ? lvColW : lvCol;
     //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
     //: is loaded, folded into every slot and dropped inside one `static_for` body, so
     //: no `[D][n]` array is ever live.
@@ -630,15 +592,11 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       //: the warp's own group of `kGS` digits -- both supplies the adjacent pair and
       //: carries the dead-row zeroing, which is still the narrowest factor the
       //: private order has.
-      //: EACH SIDE EXPANDS UNDER ITS OWN CARVE MAP.  The pair comes from the level
-      //: lying LOWEST in that map's private order -- the carve level under q-major
-      //: (the read side), the innermost non-carve level under CL-major (the write
-      //: side) -- and it carries the dead-row zeroing either way.
-      constexpr int PL = MapT::kPairLevel;
-      unsigned short run[MapT::n_l(PL)];
-      load_run<MapT::n_l(PL)>(run, gather_ptr(base, tokOff + (uint32_t)(cols[PL] * 2)));
+      static_assert(PM::kPairLevel == CL, "the carve level lies lowest in the private order");
+      unsigned short run[PM::n_l(CL)];
+      load_run<PM::n_l(CL)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[CL] * 2)));
       if constexpr (!WRITE) {
-        static_for<MapT::n_l(PL)>([&](auto Ic) {
+        static_for<PM::n_l(CL)>([&](auto Ic) {
           constexpr int i = decltype(Ic)::value;
           run[i] = have ? run[i] : (unsigned short)0;
         });
@@ -646,17 +604,17 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       static_for<SPT / 2>([&](auto Jc) {
         constexpr int j = 2 * decltype(Jc)::value;
         acc[j / 2] =
-            ((uint32_t)run[MapT::idx_of(PL, j + 1)] << 16) | (uint32_t)run[MapT::idx_of(PL, j)];
+            ((uint32_t)run[PM::idx_of(CL, j + 1)] << 16) | (uint32_t)run[PM::idx_of(CL, j)];
       });
     }
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      if constexpr (l != MapT::kPairLevel) {
-        unsigned short run[MapT::n_l(l)];
-        load_run<MapT::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(cols[l] * 2)));
+      if constexpr (l != CL) {
+        unsigned short run[PM::n_l(l)];
+        load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
         static_for<SPT / 2>([&](auto Jc) {
           constexpr int j = 2 * decltype(Jc)::value;
-          acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[MapT::idx_of(l, j)]));
+          acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
         });
       }
     });
@@ -766,27 +724,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: side's OWN carve level is excluded because its tier-2 group row carries it.
     //: At ALT `D = 2` that empties both clauses outright: the read side is sparse
     //: only at `CL` and the write side only at `CW`.
-    //: THE S-WRITE WALK.  `mine` is this warp's own live write entries and `all` is
-    //: the owner's; the list it emits is each own-entry's RANK within `all` -- its
-    //: position in the shared value stream -- so the fold indexes the staged batch
-    //: rather than re-gathering V.  The list is warp-private, so there is no
-    //: cross-warp prefix and no barrier: one lane prefix over `mine` for the write
-    //: cursor and one over `all` for the rank base.
-    auto walk_pos = [&](uint32_t mine, uint32_t all, uint16_t* dst) {
-      const int cntAll = bit_count(all);
-      const int baseAll = lane_prefix_incl<LW>(cntAll) - cntAll;
-      const int cntMine = bit_count(mine);
-      const int pfxMine = lane_prefix_incl<LW>(cntMine);
-      SmemAddr a = smem_addr(dst) + (SmemAddr)((pfxMine - cntMine) * (int)sizeof(uint16_t));
-      uint32_t mm = mine;
-      while (mm) {
-        const int b = first_set(mm);
-        store_shared_u16(a, (uint16_t)(baseAll + bit_count(all & ((1u << b) - 1u))));
-        a += (SmemAddr)sizeof(uint16_t);
-        mm &= mm - 1;
-      }
-      return lane_broadcast(pfxMine, LW - 1);
-    };
     auto clause_of = [&](const uint32_t* rowsS, auto Side) {
       constexpr uint32_t SIDE = decltype(Side)::value;
       constexpr int own = (SIDE == kSideRead) ? CL : (kTwo ? CW : CL);
@@ -841,10 +778,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     constexpr uint32_t kBitsW = (uint32_t)(kBallotLanes / kWarps);
     const int nw =
         walk(liveW, wlist, ((1u << kBitsW) - 1u) << (warp * kBitsW), (1u << (warp * kBitsW)) - 1u);
-    //: S-WRITE: the warp's own entries, as positions in the shared stream above.
-    uint16_t* const plist = slist + (kWarps + 1 + warp) * kListStride;
-    const int nwm = walk_pos(clauseW & mineW, liveW, plist);
-    __syncwarp();
 
     //: THE W->R PHASE CHANGE.  Every warp publishes its own leaves' hi halves and
     //: then reads back the slice ITS carve wants; the fence between the two is the
@@ -982,36 +915,11 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       if (sst < nbw) stage_batch(sst, sst % STAGES);
       stage_commit();
     }
-    //: THE WRITE-ALIGNED COLLECTION.  The value stream is the OWNER's -- staged once,
-    //: per the composition law -- but a warp folds only ITS OWN entries out of it,
-    //: named by their positions in that stream.  `pc` walks the warp's private list
-    //: in lockstep with the owner batches, so a k-tile never straddles a ring slot.
-    //: This is what converts the dead `(warp, token)` pairs from an opportunity into
-    //: wall time: the produce mints only live tokens' coefficients, and a batch in
-    //: which the warp owns nothing costs one compare.
-    auto produce_mine = [&](__nv_bfloat16* dst, int pc, int cnt) {
-      const bool have = prow < cnt;
-      const int tok = wlist[plist[pc + (have ? prow : 0)]];
-      const uint32_t gain = have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
-                                       gather_ptr(gW, winG + (uint32_t)tok * 2u)))
-                                 : 0u;
-      produce(std::true_type{}, pW, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain,
-              have);
-    };
-    //: the warp's slice of its private list for owner batch `i`: the entries whose
-    //: position falls inside that batch.  The list is sorted, so one cursor serves.
-    auto slice_of = [&](int pc, int i) {
-      const int lim = (i + 1) * C;
-      int n = 0;
-      while (pc + n < nwm && (int)plist[pc + n] < lim) ++n;
-      return n;
-    };
-    int pc = 0;
-    int cnt0 = nbw > 0 ? slice_of(0, 0) : 0;
-    if (cnt0 > 0) produce_mine(panW, 0, cnt0);
+    if (nbw > 0) produce_batch(std::true_type{}, pW, panW, wlist, 0, nw);
 #pragma unroll 1
     for (int i = 0; i < nbw; ++i) {
       const uint32_t bwF = (i & 1) ? bwF1 : bwF0;
+      const uint32_t vsl = svB + (uint32_t)(i % STAGES) * kVSlot;
       stage_wait<STAGES - 2>();
       rendezvous();
       //: the ring slot is advanced on EVERY batch, live or not, so the wait/commit
@@ -1020,24 +928,15 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       if (f < nbw) stage_batch(f, f % STAGES);
       stage_commit();
 
-      const int cnt = cnt0;
-      const int nkt = (cnt + kMmaK - 1) / kMmaK;
-#pragma unroll 1
-      for (int kk = 0; kk < nkt; ++kk) {
-        //: A's rows are GATHERED: the lane supplies the staged row of its own token,
-        //: so `ldmatrix` reads the warp's entries out of the shared slot wherever
-        //: they landed.  A slot past the warp's count repeats the last live row and
-        //: is zeroed by the produce's dead-row law on the B side.
-        const int sidx = kk * kMmaK + rT;
-        const int vrow = (int)plist[pc + (sidx < cnt ? sidx : (cnt > 0 ? cnt - 1 : 0))] - i * C;
-        const uint32_t vg = svVc + (uint32_t)(i % STAGES) * kVSlot + (uint32_t)(vrow * LdV * 2);
+#pragma unroll
+      for (int kk = 0; kk < MTOK; ++kk) {
         uint32_t a[MCH][4];
 #pragma unroll
-        for (int m = 0; m < MCH; ++m) load_frag_t(a[m], vg + (uint32_t)(m * kMmaM * 2));
+        for (int m = 0; m < MCH; ++m) load_frag_t(a[m], ADDR_V(vsl, kk * 16, m * kMmaM));
 #pragma unroll
         for (int nj = 0; nj < NL / 2; ++nj) {
           uint32_t b[4];
-          load_frag_t(b, ADDR_S(bwF, kk * kMmaK, 2 * nj));
+          load_frag_t(b, ADDR_S(bwF, kk * 16, 2 * nj));
 #pragma unroll
           for (int m = 0; m < MCH; ++m) {
             mma(st[m][2 * nj], a[m], &b[0]);
@@ -1047,9 +946,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
           mma(mass_st[2 * nj + 1], ones_a, &b[2]);
         }
       }
-      pc += cnt;
-      cnt0 = (i + 1 < nbw) ? slice_of(pc, i + 1) : 0;
-      if (cnt0 > 0) produce_mine(((i + 1) & 1) ? panR : panW, pc, cnt0);
+      produce_batch(std::true_type{}, pW, ((i + 1) & 1) ? panR : panW, wlist, (i + 1) * C, nw);
     }
     //: the ring's unconsumed groups are retired before the next window reuses the
     //: value slots.
