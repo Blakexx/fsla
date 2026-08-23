@@ -170,7 +170,14 @@ struct ProduceMap {
 //: offsets exactly as `local` is, the expansion is `sum_l n_l` amplitude loads
 //: followed by products of register values at CONSTANT indices -- no dynamic
 //: indexing, no spill, no materialized gate plane.
-template <int D, int B, int K, int M, int C, int CL>
+//: `QMAJOR` NAMES WHICH LEVEL LIES LOWEST IN THE PRIVATE INDEX `p`, and the two
+//: carves want opposite answers.  Under q-major the CARVE level is lowest, so a
+//: lane's two adjacent slots are two adjacent digits of its own group.  Under
+//: CL-major the carve level is HIGHEST and the lattice's own inner level is lowest,
+//: so a lane's two adjacent slots are LATTICE-ADJACENT LEAVES -- which is what the
+//: transit's `bf16x2` publish requires of the write carve (findings, derivation 2:
+//: the write carve's leaves are `warp*kLeaf + p` exactly under CL-major).
+template <int D, int B, int K, int M, int C, int CL, bool QMAJOR = true>
 struct CarveMap {
   using BP = BoxPlan<D, B, K, M>;
   static constexpr int kLevel = CL;
@@ -188,8 +195,15 @@ struct CarveMap {
   //: n-tile spanned ALL of the outer level's digits and there was nothing to skip.
   //: The relabelling is a PERMUTATION of the accumulator's n axis and nothing else
   //: -- the k order, and therefore the state plane, is bit-identical under it.
+  //: the bits of the NON-CARVE levels lying inside `l`.  `run_shift` counts every
+  //: level inside `l`, so the carve level's own span comes back out when it is one
+  //: of them -- which is what lets the carve sit at an OUTER level at all.
+  static constexpr int inner_bits(int l) {
+    return BP::run_shift(l) - (kLevel > l ? BP::span_bits(kLevel) : 0);
+  }
   static constexpr int shift(int l) {
-    return l == kLevel ? 0 : ilog2c(kGS) + BP::run_shift(l) - BP::span_bits(kLevel);
+    return QMAJOR ? (l == kLevel ? 0 : ilog2c(kGS) + inner_bits(l))
+                  : (l == kLevel ? ilog2c(kOut) : inner_bits(l));
   }
   static constexpr int span(int l) { return l == kLevel ? kGS : BP::s(l); }
   static constexpr int vary(int l) { return SPT >> shift(l); }
@@ -197,10 +211,9 @@ struct CarveMap {
     return vary(l) < 1 ? 1 : (vary(l) > span(l) ? span(l) : vary(l));
   }
   static constexpr int idx_of(int l, int j) { return (j >> shift(l)) & (n_l(l) - 1); }
-  //: the ADJACENT PAIR comes from the level lying LOWEST in `p`, which under the
-  //: q-major order is the CARVE LEVEL itself: a lane's two adjacent slots are two
-  //: adjacent digits of its own group.
-  static constexpr int kPairLevel = kLevel;
+  //: the ADJACENT PAIR comes from the level lying LOWEST in `p`: the carve level
+  //: itself under q-major, and the lattice's innermost non-carve level otherwise.
+  static constexpr int kPairLevel = QMAJOR ? kLevel : (kLevel == D - 1 ? D - 2 : D - 1);
   static_assert(shift(kPairLevel) == 0 && n_l(kPairLevel) >= 2,
                 "the carve level lies lowest in the private order and supplies the pair");
 };
@@ -331,13 +344,18 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   const int lr = lane & 7, tl = lane >> 3;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
   const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
+  //: THE LANE'S CONTIGUOUS PAIR OF CARVE-LEVEL DIGITS, for the register-direct
+  //: readout B (derived at the fragment).  The pair's base is `idx_of(CL, P)` with
+  //: `P = kk*kMmaK + r*kMmaN + 2*(lane&3)`; every term but the last is a multiple of
+  //: `n_l(CL)` at every built arm, so the base is a per-LANE constant.  It must be
+  //: masked: at `D = 4` the carve group is `kGS = 2` digits, so `n_l(CL) = 2` and an
+  //: unmasked `2*((lane&3)&1)` indexes a digit the group does not have.
+  const int q1 = (2 * (lane & 3)) & (PM::n_l(CL) - 1);
   //: THE PANEL RING'S TWO BASES, AS NAMED SCALARS.  A two-element array indexed by
   //: the batch parity would be a runtime index into a register array, which is a
   //: stack frame; a select is one instruction and no memory.
   __nv_bfloat16* const panR = sr + warp * C * LdS;
   __nv_bfloat16* const panW = sw + warp * C * LdS;
-  const uint32_t brT0 = smem_addr(panR) + (uint32_t)((rT * LdS + cT * 8) * 2);
-  const uint32_t brT1 = smem_addr(panW) + (uint32_t)((rT * LdS + cT * 8) * 2);
   const uint32_t bwF0 = smem_addr(panW) + (uint32_t)((rF * LdS + cF * 8) * 2);
   const uint32_t bwF1 = smem_addr(panR) + (uint32_t)((rF * LdS + cF * 8) * 2);
   const uint32_t svB = smem_addr(sv) + (uint32_t)((rT * LdV + cT * 8) * 2);
@@ -697,13 +715,10 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: edge pins every produce instruction ahead of the HMMAs.  The trailing batch is
     //: entirely dead rows by the produce's zeroing law and lands in a panel no MMA
     //: reads.
-    if (nbr > 0) produce_batch(std::false_type{}, pR, panR, rlist, 0, nr);
-    __syncwarp();
 #pragma unroll 1
     for (int i = 0; i < nbr; ++i) {
       const int off = i * C;
       const int n = (nr - off) < C ? (nr - off) : C;
-      const uint32_t brT = (i & 1) ? brT1 : brT0;
 
       uint32_t sa[KDw][MCH][4], ma[KDw][4];
       static_for<KDw>(
@@ -720,9 +735,50 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
 #pragma unroll
           for (int e = 0; e < 4; ++e) macc[p][e] = 0.f;
         }
+        //: THE READOUT'S B FRAGMENT, SYNTHESIZED DIRECTLY IN MMA LAYOUT -- no panel,
+        //: no `STS`, no `ldmatrix`.  `ldmatrix` would deliver lane `t` the element
+        //: `(row t/4, col 2*(t%4)+h)` of each 8x8 tile, so with panel rows = tokens
+        //: and columns = the warp's private leaves, `rb[kk][2p+r]` holds
+        //:     token = mb*16 + p*8 + (t>>2)
+        //:     private leaf P = kk*16 + r*8 + 2*(t&3) + h
+        //: Under the read carve's q-major order (`P = d0*kGS + d1local`) that is
+        //:     d1local = 2*((t&3)&1) + h     -- a CONTIGUOUS PAIR of the carve level
+        //:     d0      = kk*4 + r*2 + ((t&3)>>1)   -- a scalar at a runtime address
+        //: so one 4-byte load carries both halves of the pair and one 2-byte load
+        //: carries the outer factor, exactly as the panel's produce formed them.
+        //: THE ARITHMETIC IS THE PRODUCE'S, IN THE PRODUCE'S ORDER: the carve level
+        //: supplies the pair and each outer level multiplies it by `mul_bf16x2`, so
+        //: the coefficients are bit-identical to the panel's and `o`/`den` do not move.
         uint32_t rb[KDw][4];
 #pragma unroll
-        for (int kk = 0; kk < KDw; ++kk) load_frag(rb[kk], ADDR_S(brT, mb * 16, 2 * kk));
+        for (int pp = 0; pp < 2; ++pp) {
+          const int bidx = mb * kMmaK + pp * kMmaN + (lane >> 2);
+          const bool have = bidx < n;
+          const uint32_t tokOff =
+              winP + (uint32_t)rlist[off + (have ? bidx : 0)] * (uint32_t)(BP::kWtot * 2);
+          const uint32_t pair = have ? *reinterpret_cast<const uint32_t*>(gather_ptr(
+                                           pR, tokOff + (uint32_t)((lvCol[CL] + q1) * 2)))
+                                     : 0u;
+          static_for<KDw>([&](auto Kc) {
+            constexpr int kk = decltype(Kc)::value;
+            static_for<2>([&](auto Rc) {
+              constexpr int r = decltype(Rc)::value;
+              //: the pair's private leaf base.  Both halves share every OUTER level's
+              //: digit -- they differ only in the carve level's, which is bit 0 -- so
+              //: one scalar per outer level serves the pair.
+              const int P = kk * kMmaK + r * kMmaN + 2 * (lane & 3);
+              uint32_t acc = pair;
+              static_for<D>([&](auto Lc) {
+                constexpr int l = decltype(Lc)::value;
+                if constexpr (l != CL)
+                  acc = mul_bf16x2(
+                      acc, splat_bf16x2_bits(*reinterpret_cast<const unsigned short*>(gather_ptr(
+                               pR, tokOff + (uint32_t)((lvCol[l] + PM::idx_of(l, P)) * 2)))));
+              });
+              rb[kk][2 * pp + r] = acc;
+            });
+          });
+        }
 #pragma unroll
         for (int kk = 0; kk < KDw; ++kk)
 #pragma unroll
@@ -769,8 +825,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
           __syncwarp();
         }
       }
-      produce_batch(std::false_type{}, pR, ((i + 1) & 1) ? panW : panR, rlist, (i + 1) * C, nr);
-      __syncwarp();
     }
 
     //: THE WINDOW LINE IS THE ONE BARRIER LEFT ON THE READ SIDE, and it is there by

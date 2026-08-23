@@ -23,7 +23,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "ccf986563b04f0ef2ff324abf0d953a2a17e7b72f9dd865a0722e9f3e3b270df",
+  "csrc_sha256": "2ed1dddd7c2e1acea8f15a9e190c3a56673adf7d5fb0f8c71979fe86329d61c7",
   "date": "2026-08-22"
  },
  "shards": {
@@ -34,36 +34,36 @@
  },
  "entries": {
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi384ELi32ELi1ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 210,
+   "regs": 214,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "2976d05b08503a025ba41f4fbf36c869fb513188199686f87dcdfc172db69029"
+   "sass_sha256": "4c8eeef67cfd8875a587cfdb709128f6bce557f3162048cda77ccedd3fe0648b"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi256ELi4ELi8ELi512ELi32ELi1ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 210,
+   "regs": 214,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "dd51624fa2d9f466806871a485c75a00ea56b019d43f7bfa8118bb18b98066aa"
+   "sass_sha256": "5054baf307b5b6dd8b4a29a565fadc0756ce74558eea5403e17f049f7b2db71d"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi2ELi64ELi4ELi8ELi64ELi32ELi1ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 210,
+   "regs": 214,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "4cef2b9c3f6472168480dd3ecc11abbc5e6016f8e251eb53e6427b5f87ca9f25"
+   "sass_sha256": "10d842cc8074df9378a1b24c0574af53868efd9b970a0538c1905cebfc501a79"
   },
   "sm_80:_ZN4rola5carry12carry_kernelILi4ELi8ELi2ELi8ELi64ELi32ELi3ELb1EEEvPK13__nv_bfloat16S4_S4_S4_PKjPfS7_iiiPKfS7_": {
-   "regs": 210,
+   "regs": 218,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "e3f9e59e3d80094dc1095591bbac8faac15905892f4609f78b49007798b4f106"
+   "sass_sha256": "ced147a312a21338898ea74cd9963ad40f24c19bf26bdf37de6b89cde25a24a2"
   },
   "sm_80:_ZN4rola5carry13scan_a_kernelILi2ELi256ELi4ELi8ELi384ELi32EEEvNS0_9BwdParamsE": {
    "regs": 255,
