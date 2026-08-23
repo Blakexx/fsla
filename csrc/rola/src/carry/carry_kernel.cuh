@@ -107,7 +107,9 @@ struct CarryGeom {
   //: THE FAN-IN STAGING IS GONE (2.6): the readout's RED issues straight from the
   //: accumulator, so this buffer's only remaining tenant is the state plane's PAGE at
   //: entry and exit -- one atom's leaves by every channel.
-  static constexpr int out_bytes = C * LdO * (int)sizeof(float);
+  //: the fan-in staging is deleted (2.6), so this buffer's only tenant is the state
+  //: plane's PAGE at entry and exit.
+  static constexpr int out_bytes = kAtomLeaves * LdO * (int)sizeof(float);
   //: `kWarps` READ lists, one per digit group, then ONE write list: a read entry
   //: belongs to the groups its innermost digits fall in, a write entry to all.
   //: `kWarps` READ lists and NOTHING ELSE (2.4/2.7).  The write side keeps no list at
@@ -149,7 +151,13 @@ struct CarryGeom {
   //: A single buffer suffices -- `ldmatrix` drains the tile to registers before its
   //: MMAs, so the WAR window is the drain only and the next fill is issued into it
   //: immediately after.
-  static constexpr int slot_bytes = kWarps * CP * LdV * (int)sizeof(__nv_bfloat16);
+  //: TWO slots per warp.  One is not enough: `cp.async` is asynchronous, so a fill
+  //: issued after the drain can land BEFORE the `ldmatrix` has read the buffer -- a
+  //: WAR hazard whose incidence grows with the tile count (measured: the scattered
+  //: cells failed and the cohort cells, with a quarter the tiles, passed).  The
+  //: second slot is the card's insurance and restores the fill-under-MMA overlap.
+  static constexpr int kVSlots = 2;
+  static constexpr int slot_bytes = kWarps * kVSlots * CP * LdV * (int)sizeof(__nv_bfloat16);
   //: THE TRANSIT ALIASES THE PANEL.  It is live ONLY at the phase change, when the
   //: panels are dead, so it costs no allocation of its own -- the straddling ledger.
   static_assert(plane_bytes <= panel_bytes, "the transit must fit inside the dead panel region");
@@ -291,12 +299,11 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     int tok_words, int v_row_bytes, const float* __restrict__ s_in, float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
   using G = CarryGeom<D, B, K, M, W, C, CL>;
-  using PM = CarveMap<D, B, K, M, G::CP, CL>;
+  using PM = CarveMap<D, B, K, M, C, CL>;  // DIAG: kRowThr=1
   //: THE WRITE CARVE'S MAP.  CL-major, so a lane's two adjacent private slots are
   //: LATTICE-ADJACENT leaves -- what the transit's `bf16x2` publish requires.  A
   //: single-carve body reuses the read map and nothing below changes.
-  using PMW =
-      std::conditional_t<(CW >= 0), CarveMap<D, B, K, M, G::CP, (CW >= 0 ? CW : 0), false>, PM>;
+  using PMW = std::conditional_t<(CW >= 0), CarveMap<D, B, K, M, C, (CW >= 0 ? CW : 0), false>, PM>;
   //: THE ROW TABLE.  A two-carve body votes its rows under `TwoCarveRows` -- the same
   //: table refined at BOTH carved levels -- so each warp reads its OWN group's row on
   //: either side.  A single-carve body keeps `CarveRows` and the write list stays
@@ -342,18 +349,22 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   constexpr int STAGES = G::kStages;
   static_assert(STAGES == 1, "the private stream carries one slot per warp");
   __nv_bfloat16* const sv = reinterpret_cast<__nv_bfloat16*>(carry_smem);
-  __nv_bfloat16* const sr = sv + kWarps * CP * LdV;
-  __nv_bfloat16* const sw = sr + 2 * kWarps * CP * LdS;
-  float* const so = reinterpret_cast<float*>(sw + 2 * kWarps * CP * LdS);
+  //: THE FOLD'S TENANTS COME FIRST AND ADJACENT -- the private value slots and the
+  //: write strips -- because the retained plane straddles exactly those two, and
+  //: they are the pair that is dead for the whole readout.
+  __nv_bfloat16* const sw = sv + kWarps * G::kVSlots * CP * LdV;
+  __nv_bfloat16* const sr = sw + 2 * kWarps * CP * LdS;
+  float* const so = reinterpret_cast<float*>(sr + 2 * kWarps * CP * LdS);
   constexpr int kListStride = G::kListStride;
-  uint16_t* const slist = reinterpret_cast<uint16_t*>(so + C * LdO);
+  uint16_t* const slist = reinterpret_cast<uint16_t*>(so + kAtomLeaves * LdO);
   //: THE RETAINED PLANE (2.2), straddled over the FOLD's tenants -- the write strips
   //: and the page buffer, both dead for the whole readout.  It is published once and
   //: stays valid until the fold reclaims it, which is what lets the readout steal
   //: from it and the writers reload out of it with no republish leg.
-  static_assert(G::plane_bytes <= 2 * kWarps * G::CP * LdS * 2 + G::out_bytes,
-                "the retained plane must fit the fold's dead region");
-  const SmemAddr hiB = smem_addr(sw);
+  static_assert(
+      G::plane_bytes <= kWarps * G::kVSlots * G::CP * LdV * 2 + 2 * kWarps * G::CP * LdS * 2,
+      "the retained plane must fit the fold's dead region");
+  const SmemAddr hiB = smem_addr(sv);
 
   //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
   //: shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
@@ -725,6 +736,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
         });
       }
     });
+    if (prow >= G::CP) return;  // DIAG
     __nv_bfloat16* const row = dst + prow * LdS + psub * SPT;
     if constexpr (WRITE) {
       static_for<SPT / 2>([&](auto Jc) {
@@ -871,7 +883,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: THE WRITE SIDE KEEPS NO LIST.  Its schedule is this mask -- the warp's own
     //: tier-2 downsample met with the CTA clause -- and the fold's cursor
     //: decompresses it one ballot word at a time into a small ring of ids.
-    const uint32_t mineWm = clauseW & mineW;
+    const uint32_t mineWm = clauseW & orW;  // BISECT
     uint16_t* const idring =
         reinterpret_cast<uint16_t*>(slist + G::kLists * G::kListStride) + warp * G::kIdRing;
 
@@ -879,7 +891,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: fence is the readers' wait.  `lo` stays in registers -- packed, so the state
     //: costs half its fp32 footprint across the readout -- and the plane stays valid
     //: underneath, so the fold reloads its OWN hi from it with no republish.
-    publish_hi();
+    // DIAG: publish disabled
     uint32_t lo[MCH][NL][2], mlo[NL][2];
     static_for<MCH>([&](auto Mc) {
       constexpr int m = decltype(Mc)::value;
@@ -897,7 +909,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     rendezvous();
     uint32_t sa[KDw][MCH][4], ma[KDw][4];
     static_for<KDw>(
-        [&](auto Kc) { pull_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value]); });
+        [&](auto Kc) { state_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value]); });
 
     // ---- PHASE 1: the READOUT of every read batch, against the window's ENTRY
     //      state.  ALL of the window's readouts precede ANY of its folds, because a
@@ -999,7 +1011,8 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: as its publish -- and rejoins it with the `lo` it kept, exactly.  Every warp
     //: has finished reading the plane before the window edge below, after which the
     //: fold's strips may overwrite it.
-    reload_hi(lo, mlo);
+    (void)lo;
+    (void)mlo;  // DIAG
     rendezvous();
 
     // ---- PHASE 2: the FOLD, over the warp's OWN private value stream --------
@@ -1014,7 +1027,8 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     constexpr int kPassW = CP / kRowsW;
     static_assert(kPassW * kRowsW == CP && (kIdRing & (kIdRing - 1)) == 0, "tile / ring shape");
     const int ldRowW = lane / kChunkV, ldColW = (lane % kChunkV) * 8;
-    __nv_bfloat16* const svW = sv + warp * CP * LdV;
+    constexpr uint32_t kVSlotB = (uint32_t)(CP * LdV) * 2;
+    __nv_bfloat16* const svW = sv + warp * G::kVSlots * CP * LdV;
     const uint32_t svLw = smem_addr(svW) + (uint32_t)((ldRowW * LdV + ldColW) * 2);
     const uint32_t svAw = smem_addr(svW) + (uint32_t)((rT * LdV + cT * 8) * 2);
 
@@ -1039,12 +1053,12 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       }
       __syncwarp();
     };
-    auto stage_tile_w = [&](int h, int cnt) {
+    auto stage_tile_w = [&](int h, int cnt, int slot) {
 #pragma unroll
       for (int p = 0; p < kPassW; ++p) {
         const int r = ldRowW + p * kRowsW;
         const int t = idring[(h + (r < cnt ? r : (cnt > 0 ? cnt - 1 : 0))) & (kIdRing - 1)];
-        stage_tile(svLw + (uint32_t)(p * kRowsW * LdV * 2),
+        stage_tile(svLw + (uint32_t)slot * kVSlotB + (uint32_t)(p * kRowsW * LdV * 2),
                    gather_ptr(vPlane,
                               (uint32_t)t * (uint32_t)v_row_bytes + winV + (uint32_t)(ldColW * 2)));
       }
@@ -1062,7 +1076,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     refill();
     int cnt = tail - head < CP ? tail - head : CP;
     if (cnt > 0) {
-      stage_tile_w(head, cnt);
+      stage_tile_w(head, cnt, 0);
       stage_commit();
       produce_tile(panW0, head, cnt);
       __syncwarp();
@@ -1074,12 +1088,15 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       //: the same buffer, which is the whole of the single-slot WAR window.
       uint32_t a[MCH][4];
 #pragma unroll
-      for (int m = 0; m < MCH; ++m) load_frag_t(a[m], svAw + (uint32_t)(m * kMmaM * 2));
+      for (int m = 0; m < MCH; ++m)
+        load_frag_t(a[m], svAw + (uint32_t)(t & 1) * kVSlotB + (uint32_t)(m * kMmaM * 2));
       head += cnt;
       refill();
       const int nxt = tail - head < CP ? tail - head : CP;
+      //: the next fill goes into the OTHER slot, so it cannot overtake this tile's
+      //: drain, and it flies underneath this tile's MMAs.
       if (nxt > 0) {
-        stage_tile_w(head, nxt);
+        stage_tile_w(head, nxt, (t + 1) & 1);
         stage_commit();
       }
       const uint32_t bwF = (t & 1) ? bwF1 : bwF0;
