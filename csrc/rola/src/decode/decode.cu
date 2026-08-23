@@ -285,16 +285,24 @@ decode_step_kernel(DecodeParams p) {
         //: take pool slots in ASCENDING ATOM ID from its own cursor, so every CTA of the
         //: batch-head derives the identical mapping with no atomic and no arrival.
         //:
-        //: IT BUILDS A SHADOW TABLE ROW rather than writing the page table, and both
-        //: halves of that are load-bearing. Not the table, because the table is the
-        //: claim's own predicate and a prologue write would move a sibling CTA's ranks.
-        //: A WHOLE ROW -- every atom, claimed or resident or absent -- because then the
-        //: walk addresses through this row INSTEAD of the table, by one pointer, and the
-        //: walk's own body knows nothing about pools.
-        //: docs/internals/decode/decode.md#the-claim
-        int32_t* shadow_row = p.pool_map + row_base;
+        //: IT WRITES THE CLAIMS AND NOTHING ELSE. Not the page table, because the table is
+        //: the claim's own predicate and a prologue write would move a sibling CTA's ranks;
+        //: and not a whole shadow ROW either, which is the defect this deletes.
+        //: THE ROW-COPY WAS A CROSS-CTA RACE. Every CTA of the batch-head copied the table
+        //: into this row -- writing `-1` for every atom the table does not map yet -- while
+        //: its siblings were already writing their claimed SLOTS into the same addresses,
+        //: with no ordering between CTAs at all. The barrier below orders one CTA's copy
+        //: against its own claim writes and says nothing about anyone else's: a sibling's
+        //: `-1` could land on top of a claimed slot, and a third CTA reading that address
+        //: in the window took the ABSENT path and skipped its deposit. The final value was
+        //: always right, which is what the old comment's "identical mapping" was true of;
+        //: the TRANSIENT was not, and correctness that survives only because one wave of
+        //: CTAs happens to march in step is not correctness.
+        //: SO THE ROW IS CLAIMS-ONLY, every write is the same value from every CTA, and the
+        //: walk reads TWO SOURCES instead of one (`decode.md#the-claim`). It also deletes an
+        //: `atoms_per_bh`-element bulk copy per CTA per claiming step.
+        int32_t* claim_row = p.pool_map + row_base;
         const int32_t* slots = p.pool_slots + static_cast<int64_t>(bh) * p.pool_cap;
-        for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) shadow_row[a] = page_row[a];
         if (tid == 0) s_running = 0;
         __syncthreads();
         for (int base = 0; base < n_candidates; base += kDecodeThreads) {
@@ -304,7 +312,7 @@ decode_step_kernel(DecodeParams p) {
           int rank = 0;
           int aggregate = 0;
           LatticeScan(scan_temp).ExclusiveSum(want ? 1 : 0, rank, aggregate);
-          if (want) shadow_row[a] = slots[cursor + s_running + rank];
+          if (want) claim_row[a] = slots[cursor + s_running + rank];
           __syncthreads();
           if (tid == 0) s_running += aggregate;
           __syncthreads();
@@ -349,11 +357,22 @@ decode_step_kernel(DecodeParams p) {
     //: `bh * N + (atom << 4)` (which is why a topology whose `N` is not a whole number of
     //: atoms still addresses correctly -- the two halves recombine to `bh * N + leaf`),
     //: paged is `slot << 4`. docs/internals/decode/decode.md#paged-address
-    //: A CLAIMING STEP WALKS THE SHADOW ROW, and that is the whole of the pool inside
-    //: the walk: one pointer, chosen once: docs/internals/decode/decode.md#the-claim
+    //: A CLAIMING STEP READS TWO SOURCES: the page table first, and this step's CLAIM ROW
+    //: only where the table says absent. That is the whole of the pool inside the walk, and
+    //: it is the shape the race-free claim row forces -- the row no longer carries the
+    //: table's own entries, so it cannot answer for an atom it did not claim.
+    //: THE TABLE COMES FIRST BECAUSE IT ANSWERS ALMOST EVERY ATOM: a claiming step's newly
+    //: claimed atoms are by construction the ones the table does NOT map, so the fallback is
+    //: taken only on them and every resident atom costs one load, as before.
+    //: THE TWO CAN NEVER DISAGREE. `_admit_pages` writes only atoms the table has as absent
+    //: and there is no eviction, so a slot never moves once assigned; a claim row entry from
+    //: an earlier step therefore equals the table's. The one path that could break that is
+    //: `PageArena.reset`, which clears the table and rewinds the allocator -- so it now
+    //: clears this row too (`rola/ops/paging.py`). docs/internals/decode/decode.md#the-claim
     const int32_t* page_row =
-        !paged ? nullptr
-               : (claimed ? p.pool_map : p.page_tbl) + static_cast<int64_t>(bh) * p.atoms_per_bh;
+        !paged ? nullptr : p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
+    const int32_t* claim_row =
+        (paged && claimed) ? p.pool_map + static_cast<int64_t>(bh) * p.atoms_per_bh : nullptr;
     const int64_t dense_bh_base = static_cast<int64_t>(bh) * p.N;
     int cached_atom = -1;
     int64_t atom_base = 0;
@@ -426,7 +445,8 @@ decode_step_kernel(DecodeParams p) {
           if (atom != cached_atom) {
             cached_atom = atom;
             if (page_row != nullptr) {
-              const int slot = page_row[atom];
+              int slot = page_row[atom];
+              if (slot < 0 && claim_row != nullptr) slot = claim_row[atom];
               atom_present = slot >= 0;
               atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
             } else {

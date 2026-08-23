@@ -317,17 +317,39 @@ than the batch-head's remaining pool is a needy batch-head and the host path exa
 ([§4c](#per-bh-verdict)), because a partial claim would deposit part of a step and leave
 the replay to deposit the rest twice.
 
-**IT WRITES A SHADOW ROW, NOT THE TABLE, AND THAT IS FORCED.** The claim's predicate is
+**IT WRITES A CLAIM ROW, NOT THE TABLE, AND THAT IS FORCED.** The claim's predicate is
 `page_tbl[a] < 0`. A prologue write into the table would change a sibling CTA's predicate,
 which would change its ranks, and two CTAs would then assign the same slot to different
 atoms — the ordering ambiguity that makes replicated assignment unsound. So the claim
-writes `pool_map[bh]`: a WHOLE copy of that batch-head's table row with the claim merged
-in, every atom present, claimed or resident or absent. The walk then addresses through
-THAT ROW INSTEAD of the table, by one pointer chosen once in the prologue, and the walk's
-own body knows nothing about pools — no extra test, no extra load, no register held across
-it. The batch-head's last-arriving CTA folds the row's new entries into the real table and
-advances the cursor ([§4c](#the-last-arriver)), so by the next step the claim is ordinary
-residency and the shadow row is dead.
+writes `pool_map[bh]`, and it writes THE CLAIMED SLOTS AND NOTHING ELSE. The batch-head's
+last-arriving CTA folds the row's entries into the real table and advances the cursor
+([§4c](#the-last-arriver)), so by the next step the claim is ordinary residency.
+
+<a id="the-claim-transient"></a>**IT USED TO WRITE THE WHOLE ROW, AND THAT WAS A CROSS-CTA
+RACE.** The row was a full copy of the table row with the claim merged in — every atom,
+claimed or resident or absent — so the walk could address through it by one pointer. But
+every CTA of the batch-head made that copy, writing `-1` for every atom the table did not
+map yet, while its siblings were already writing their claimed SLOTS into the same
+addresses; the `__syncthreads` in the claim loop orders one CTA against itself and says
+nothing about the others. A sibling's `-1` could land on top of a claimed slot, and a
+third CTA reading that address in the window took the ABSENT path
+([§4h](#absent-atom)) and skipped its deposit. The FINAL value was always correct — which
+is all the old "every CTA derives the identical mapping" claim ever established — but the
+transient was not, and correctness that survives only because one wave of CTAs happens to
+march in step is not correctness. Established by inspection; the guard in
+`tests/integration/test_decode_paging.py` records that it passes on the defective tree too
+and is therefore not the evidence.
+
+**SO THE WALK READS TWO SOURCES.** The page table first, and the claim row only where the
+table says absent. The table answers almost every atom — a claiming step's newly claimed
+atoms are by construction the ones the table does NOT map — so the fallback is taken only
+on them and every resident atom still costs one load. The two can never disagree:
+`_admit_pages` writes only atoms the table has as absent and nothing evicts, so a slot
+never moves once assigned, and a claim-row entry from an earlier step equals the table's.
+The one path that could break that is `PageArena.reset`, which clears the table AND rewinds
+the allocator, so it now clears the claim row with it — required, because a leftover entry
+would name a slot the allocator is free to reissue. Deleting the row-copy also deletes an
+`atoms_per_bh`-element bulk copy per CTA per claiming step.
 
 **AN ADMITTED ATOM IS AN ADMITTED ATOM.** Pool slots are ordinary arena slots, committed
 and ZEROED by the host before they are named, so an atom the device admitted is

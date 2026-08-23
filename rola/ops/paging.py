@@ -500,6 +500,18 @@ class PageArena:
         # A stream-to-stream wait, so it costs the host nothing.
         self.wait()
         self._page_table.fill_(_ABSENT_PAGE)
+        #: THE CLAIM ROW GOES WITH THE TABLE, and that is a correctness requirement rather
+        #: than tidiness. The device claim row (`pool_map`) carries the slots the DEVICE
+        #: claimed, and the walk consults it wherever the table says absent
+        #: (`decode.md#the-claim`). Every other path keeps the two in agreement for free --
+        #: `_admit_pages` writes only atoms the table has as absent, and nothing evicts, so
+        #: a slot never moves once assigned. THIS path is the exception: it makes every atom
+        #: unmapped AND rewinds the allocator, so a claim-row entry left behind would name a
+        #: slot the allocator is free to hand to a different atom, and the walk would read
+        #: it. Before the claim row was claims-only, the device overwrote the whole row from
+        #: the table on every claiming step, which hid this.
+        if self.pool_capacity:
+            self._pool_map.fill_(_ABSENT_PAGE)
         self._allocator.reset()
         self.peak_pages = 0
         self._ready = None

@@ -452,3 +452,105 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
         1e-30, float(ref_state.abs().max()))
     assert err_y < DECODE_RTOL, f"the pool-admitted y left the oracle band: {err_y:.3e}"
     assert err_s < DECODE_RTOL, f"the pool-admitted state left the oracle band: {err_s:.3e}"
+
+
+@pytest.mark.parametrize("arm", _ARMS, ids=lambda a: "x".join(map(str, a[0])))
+def test_a_pool_claim_lands_every_row_under_repeated_claiming_steps(arm):
+    """REGRESSION GUARD for the pool claim's cross-CTA transient. NOT A PROOF.
+
+    STATUS, RECORDED SO NO LATER READER MISTAKES IT: this test PASSES on `654c0e6` --
+    the tree that carries the defect -- and on the fix. **The defect is established by
+    INSPECTION, not by this test.** What the inspection says: every CTA of a claiming
+    batch-head used to copy the whole page-table row into `pool_map`, writing `-1` for
+    every atom the table did not map yet, while its siblings were already writing their
+    claimed SLOTS into those same addresses with no ordering between CTAs; the
+    `__syncthreads` in that loop orders one CTA against itself and says nothing about the
+    others. A sibling's `-1` landing on a claimed slot makes a third CTA's walk read
+    ABSENT and skip its deposit. The final value was always correct; the transient was
+    not.
+
+    So this cell cannot demonstrate the bug -- it never has -- and it is not asked to.
+    It is here to hold the SHAPE of the fix: the claim row is claims-only, the walk reads
+    the table first and the claim row only where the table says absent, and a claiming
+    step must still land every row of its write support. A future edit that reintroduces
+    a row-wide write, or gets the two-source order wrong, breaks it.
+
+    It runs the claim with the widest segment count the split policy gives (every CTA of
+    the batch-head claims concurrently) and repeats it, because a scheduling-dependent
+    window is the only kind this shape could ever catch.
+    """
+    widths, BC = arm
+    config = _config(widths, _fixture(widths, seed=0))
+    BH = 2 * 3
+    for trial in range(6):
+        step = _fixture(widths, seed=len(widths) * 91 + trial, support=0.5)
+        bits = _write_atom_bitmap(_f32(step)[2], config)
+        pooled = _arena(widths, BC, BH, pool_slack=1.0)
+        admitted = _arena(widths, BC, BH)
+        admitted.plan_exact(bits)
+        admitted.wait()
+
+        v, read, write, g_write = _f32(step)
+        ys = {}
+        for name, arena, pool in (("pool", pooled, pooled), ("host", admitted, None)):
+            y, _s, _w = _decode_step(v, read, write, None, g_write, config, arena.state,
+                                     page_table=arena.page_table, pool=pool)
+            ys[name] = y
+        assert torch.equal(pooled.page_table >= 0, bits), (
+            f"trial {trial}: the device claim admitted a different residency than the "
+            "step's write set -- a claimed slot was lost or an unclaimed atom mapped")
+        assert torch.equal(ys["pool"], ys["host"]), (
+            f"trial {trial}: a pool-admitted y differs from the host-admitted one; a "
+            "deposit was skipped or addressed through the wrong slot")
+        assert torch.equal(pooled.materialize(), admitted.materialize()), (
+            f"trial {trial}: a pool-admitted state differs from the host-admitted one")
+
+
+@pytest.mark.parametrize("arm", _ARMS, ids=lambda a: "x".join(map(str, a[0])))
+def test_a_claim_row_entry_cannot_survive_a_reset_that_rewinds_the_allocator(arm):
+    """The claim row is cleared with the page table, and this is what needs it.
+
+    THIS ONE IS A REAL GUARD ON A REAL PATH, not a scheduling probe. Once the claim row
+    carries ONLY claims, the walk consults it wherever the table says absent -- so an
+    entry left over from before a `reset` would name a slot the rewound allocator is free
+    to hand to a DIFFERENT atom, and the walk would read it. Every other path keeps the
+    two in agreement for free (`_admit_pages` writes only atoms the table has as absent,
+    and nothing evicts, so a slot never moves once assigned); `reset` is the exception,
+    because it makes every atom unmapped AND rewinds the allocator.
+
+    STATUS, RECORDED: unlike the guard above, this cell does NOT pass on `654c0e6`, and
+    that is by design. Run there it fails with 192 claim-row entries surviving the reset.
+    Those entries are HARMLESS on that tree -- the device overwrote the whole row from the
+    table on every claiming step, so nothing ever read them -- so this is not a mainline
+    defect being reported: it is a guard on an invariant that only exists once the row
+    became claims-only. Measured both ways rather than assumed.
+    """
+    widths, BC = arm
+    config = _config(widths, _fixture(widths, seed=0))
+    BH = 2 * 3
+    first = _fixture(widths, seed=len(widths) * 77 + 1, support=0.5)
+    second = _fixture(widths, seed=len(widths) * 77 + 2, support=0.5, offset=0.25)
+    bits_second = _write_atom_bitmap(_f32(second)[2], config)
+
+    v1, read1, write1, g1 = _f32(first)
+    v2, read2, write2, g2 = _f32(second)
+    pooled = _arena(widths, BC, BH, pool_slack=1.0)
+    _decode_step(v1, read1, write1, None, g1, config, pooled.state,
+                 page_table=pooled.page_table, pool=pooled)
+    assert int((pooled.pool_map >= 0).sum()) > 0, "the first step claimed nothing"
+    pooled.reset()
+    assert int((pooled.pool_map >= 0).sum()) == 0, (
+        "reset left claim-row entries behind; they name slots the rewound allocator can "
+        "reissue, and the walk consults the claim row wherever the table says absent")
+
+    admitted = _arena(widths, BC, BH)
+    admitted.plan_exact(bits_second)
+    admitted.wait()
+    y_pool, _s, _w = _decode_step(v2, read2, write2, None, g2, config, pooled.state,
+                                  page_table=pooled.page_table, pool=pooled)
+    y_host, _s, _w = _decode_step(v2, read2, write2, None, g2, config, admitted.state,
+                                  page_table=admitted.page_table, pool=None)
+    assert torch.equal(pooled.page_table >= 0, bits_second), (
+        "the post-reset claim admitted a different residency than the step's write set")
+    assert torch.equal(y_pool, y_host), (
+        "a post-reset pool-admitted y differs from the host-admitted one")
