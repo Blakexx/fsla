@@ -22,3 +22,15 @@ repos:
         additional_dependencies: ["ruff==0.14.10"]
         entry: ruff check --force-exclude
         types_or: [python]
+      # THE MANIFEST DESCRIBES THE SOURCES IT SHIPS BESIDE.  `setup.py` asks this
+      # too, but only when you BUILD -- and a comment-only last edit goes straight
+      # to a commit without one, which is how a manifest ships an edge stale (see
+      # tools/manifest_fresh.py).  Hashing the source tree is the whole cost: no
+      # compile, no toolchain, no device, so it is affordable on every commit.
+      # Scoped to the two directories that can move the answer.
+      - id: manifest-freshness
+        name: manifests describe csrc/ (no compile)
+        language: system
+        entry: python3 tools/manifest_fresh.py
+        pass_filenames: false
+        files: ^(csrc/rola/src/|tools/manifests/)

@@ -65,3 +65,7 @@ jobs:
         run: python -m pytest tests/unit/test_vendored_pin.py -q
       - name: the README's supported matrix is the derived one
         run: python tools/supported.py --check
+      - name: the manifests describe the sources they ship beside
+        run: python tools/manifest_fresh.py
+      - name: the freshness gate itself detects a stale manifest
+        run: python -m pytest tests/unit/test_manifest_freshness.py -q

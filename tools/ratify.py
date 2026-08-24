@@ -493,8 +493,13 @@ def check_defines(manifest: dict) -> bool:
     return False
 
 
-def csrc_digest() -> str:
+def csrc_digest(src: Path = SRC) -> str:
     """A digest of the kernel sources the manifest's numbers were measured against.
+
+    `src` exists so a checker can ask this question of a tree that is not this
+    checkout -- see `tools/manifest_fresh.py`. There is deliberately only ONE
+    implementation of the digest: a second one would be free to drift from the
+    manifests it is meant to police.
 
     THE FRESHNESS TRIGGER (session 9, R1). A register budget is a MEASURED
     constant; its justification EXPIRES when `csrc/` moves. Recording the source digest
@@ -503,7 +508,7 @@ def csrc_digest() -> str:
     which is a fresh measurement, never an edit.
     """
     h = hashlib.sha256()
-    for path in sorted(SRC.rglob("*")):
+    for path in sorted(src.rglob("*")):
         #: MARKDOWN IS NOT A CODEGEN INPUT. `instantiations/README.md` lives inside
         #: the digested tree because it documents the generated files beside it;
         #: hashing it would make an editorial change read as SOURCE DRIFT and demand
@@ -511,7 +516,7 @@ def csrc_digest() -> str:
         #: without reading. Paths participate as well as contents, so a `.cu`
         #: renamed to `.md` still moves the digest -- by disappearing from it.
         if path.is_file() and path.suffix != ".md":
-            h.update(str(path.relative_to(SRC)).encode())
+            h.update(str(path.relative_to(src)).encode())
             h.update(path.read_bytes())
     return h.hexdigest()
 
