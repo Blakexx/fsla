@@ -40,12 +40,56 @@ DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owne
 CHANNEL = carry_ops.CHANNEL_SPLIT
 
 
-def run(cell, arm, carve, chunk=32, state_in=None):
+#: DOES THE FORWARD SEAM TAKE A DECLARATION AT ALL?  Probed from the seam's OWN
+#: SIGNATURE rather than from a version, exactly as the replay gate probes it
+#: (`tests/k31/test_backward_vs_reference.py`).  While `carry_inter` has no
+#: `level_modes` the carry family ships ONE body and the declaration axis does not
+#: exist for it; the moment the seam gains one, the cases below widen on their own
+#: and the new body cannot land ungated.
+def _takes_modes():
+    import inspect
+    return "level_modes" in inspect.signature(carry_ops.carry_inter).parameters
+
+
+#: THE DECLARATIONS THE SEAM CAN EXPRESS, at depth `D`.  A DECLARATION SELECTS A
+#: BODY, so a suite that passes none has only ever driven the default one -- which is
+#: how these twenty-five cases came to exercise the channel-split body alone while
+#: every one of them read as a carve gate.  `ALT` is the shipped ruling stated over
+#: `D` levels: EVEN levels write-sparse/read-dense, ODD levels read-sparse/write-dense.
+def _declarations(D):
+    from rola.ops import intra as intra_ops
+    out = {"DENSE_BOTH": (intra_ops.DENSE_BOTH,) * D}
+    if _takes_modes():
+        out["ALT"] = tuple(intra_ops.READ_SPARSE if l % 2 else intra_ops.WRITE_SPARSE
+                           for l in range(D))
+    return out
+
+
+#: The ids are depth-independent (every depth expresses the same declarations), so the
+#: parametrisation is fixed at import and the mode TUPLE is resolved per arm below.
+DECLARATIONS = sorted(_declarations(2))
+
+
+def modes_for(declaration, arm):
+    return _declarations(len(arm[0]))[declaration]
+
+
+def run(cell, arm, carve, chunk=32, state_in=None, modes=None):
+    """Drive the seam under an EXPLICIT declaration.
+
+    `modes` is the declaration under test; it reaches the seam only where the seam
+    has the axis, so on a tree whose `carry_inter` takes no `level_modes` this is the
+    one body that tree ships and the call is byte-for-byte what it always was.
+    """
     widths, k, m, W = arm
     read, write, g, v = cell.ref_levels()
+    extra = {}
+    if modes is not None and _takes_modes():
+        from rola.ops import intra as intra_ops
+        extra["level_modes"] = intra_ops.pack_modes(modes)
     num, den, plane = carry_ops.carry_inter(
         cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths,
-        k=k, m=m, window=W, chunk=chunk, carve=carve, state_in=state_in)
+        k=k, m=m, window=W, chunk=chunk, carve=carve, state_in=state_in, **extra)
     return num, den, plane
 
 
@@ -76,6 +120,38 @@ def test_arms_are_the_declared_solver_rows():
             "the device box and the host solver disagree about the owner's shape")
 
 
+def test_the_declaration_axis_widens_with_the_seam(monkeypatch):
+    """THE GATE'S OWN WIDENING, DEMONSTRATED RATHER THAN ASSERTED IN PROSE.
+
+    On a tree whose `carry_inter` takes no `level_modes` this suite drives ONE
+    declaration, and that is the whole of the contract here -- which is also why NO
+    negative control over a broken carve body is constructible on this tree: there is
+    exactly one body, so a break fails the old form and the new form alike. What can
+    be shown here is the MECHANISM: give the seam the axis and the parametrisation
+    widens by itself, so a declaration-selected body cannot land ungated the way the
+    channel-split body did.
+    """
+    from rola.ops import intra as intra_ops
+    if _takes_modes():
+        pytest.skip("this tree's carry seam already has the declaration axis, so the "
+                    "widening is visible in the collected case list itself")
+    assert sorted(_declarations(2)) == ["DENSE_BOTH"]
+
+    def seam_with_modes(read_levels, write_levels, g_write, v, widths, *, k, m,
+                        window, chunk=32, carve=CHANNEL, state_in=None, level_modes=0):
+        raise AssertionError("the probe must not call the seam")
+
+    monkeypatch.setattr(carry_ops, "carry_inter", seam_with_modes)
+    assert _takes_modes()
+    assert sorted(_declarations(2)) == ["ALT", "DENSE_BOTH"]
+    #: the shipped ruling, at every depth: EVEN write-sparse, ODD read-sparse.
+    assert _declarations(2)["ALT"] == (intra_ops.WRITE_SPARSE, intra_ops.READ_SPARSE)
+    assert _declarations(4)["ALT"] == (intra_ops.WRITE_SPARSE, intra_ops.READ_SPARSE,
+                                       intra_ops.WRITE_SPARSE, intra_ops.READ_SPARSE)
+    #: and it reaches the seam as a NON-DEFAULT packed word, which is the whole point.
+    assert intra_ops.pack_modes(_declarations(2)["ALT"]) != intra_ops.DENSE_BOTH
+
+
 # ---------------------------------------------------------------- the lattice
 
 def test_lattice_is_a_permutation():
@@ -97,7 +173,7 @@ def test_m1_state_io_and_fold_dense(carve=CHANNEL):
     as a PERMUTATION rather than as noise, which is why the state is gated first."""
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=256, k_tok=None, seed=1)
-    _, _, plane = run(cell, SMALL, carve)
+    _, _, plane = run(cell, SMALL, carve, modes=modes_for("DENSE_BOTH", SMALL))
     _, _, s_ref = ref(cell, SMALL)
     got = canonical_from_lattice(plane, SMALL[0], SMALL[1], SMALL[2])
     want = s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)
@@ -108,7 +184,8 @@ def test_m1_entry_state_is_carried(carve=CHANNEL):
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=128, k_tok=None, seed=2, state_in=True)
     s_lat = cell.state_in_lattice(SMALL[1], SMALL[2])
-    _, _, plane = run(cell, SMALL, carve, state_in=s_lat)
+    _, _, plane = run(cell, SMALL, carve, state_in=s_lat,
+                      modes=modes_for("DENSE_BOTH", SMALL))
     s0 = cell.state_in.reshape(cell.B, cell.H, cell.N, cell.d_v + 1)
     _, _, s_ref = ref(cell, SMALL, state_in=s0)
     got = canonical_from_lattice(plane, SMALL[0], SMALL[1], SMALL[2])
@@ -121,7 +198,7 @@ def test_m1_entry_state_is_carried(carve=CHANNEL):
 def test_m2_inter_dense_small(carve=CHANNEL):
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=256, k_tok=None, seed=3)
-    num, den, plane = run(cell, SMALL, carve)
+    num, den, plane = run(cell, SMALL, carve, modes=modes_for("DENSE_BOTH", SMALL))
     n_ref, d_ref, s_ref = ref(cell, SMALL)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -166,7 +243,7 @@ def test_m2_inter_dense_flagship(carve=CHANNEL):
     holds one window's worth at a time."""
     assert_fresh_binary()
     cell = Cell(FLAG[0], T=1024, k_tok=None, seed=5)
-    num, den, _ = run(cell, FLAG, carve)
+    num, den, _ = run(cell, FLAG, carve, modes=modes_for("DENSE_BOTH", FLAG))
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -221,11 +298,22 @@ def alt_cell(widths, T, k_tok, seed, cohort=None):
     return cell
 
 
+@pytest.mark.parametrize("declaration", DECLARATIONS)
 @pytest.mark.parametrize("k_tok", [4, 16])
-def test_m3_two_sided_alt_small(k_tok, carve=CHANNEL):
+def test_m3_two_sided_alt_small(k_tok, declaration, carve=CHANNEL):
+    """THE DECLARATION IS PARAMETRISED BECAUSE THE DECLARATION SELECTS THE BODY.
+
+    This cell's planes are ALT-drawn, so both declarations the seam can express are
+    HONOURED BY THE DATA: `DENSE_BOTH` declares nothing and is a legal, shipped case
+    for any draw; `ALT` declares exactly the sparsity the draw has. A level declared
+    sparse on a side is drawn sparse on that side -- the replay gate's rule -- because
+    a declaration the data contradicts tests a schedule the kernel is never asked for,
+    which is why the DENSE cells above are not parametrised: `DENSE_BOTH` is the only
+    declaration their draw matches.
+    """
     assert_fresh_binary()
     cell = alt_cell(SMALL[0], T=256, k_tok=k_tok, seed=10 + k_tok)
-    num, den, plane = run(cell, SMALL, carve)
+    num, den, plane = run(cell, SMALL, carve, modes=modes_for(declaration, SMALL))
     n_ref, d_ref, s_ref = ref(cell, SMALL)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -234,26 +322,28 @@ def test_m3_two_sided_alt_small(k_tok, carve=CHANNEL):
     assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
 
 
+@pytest.mark.parametrize("declaration", DECLARATIONS)
 @pytest.mark.parametrize("k_tok", [4, 16])
-def test_m3_two_sided_alt_flagship(k_tok):
+def test_m3_two_sided_alt_flagship(k_tok, declaration):
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=20 + k_tok)
-    num, den, _ = run(cell, FLAG, CHANNEL)
+    num, den, _ = run(cell, FLAG, CHANNEL, modes=modes_for(declaration, FLAG))
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
     assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
 
 
+@pytest.mark.parametrize("declaration", DECLARATIONS)
 @pytest.mark.parametrize("k_tok", [4, 16])
-def test_m3_two_sided_alt_clustered(k_tok):
+def test_m3_two_sided_alt_clustered(k_tok, declaration):
     """The CLUSTERED cell: the support is one contiguous digit window per run of 64
     consecutive tokens, so most (owner, window) pairs are side-dead and the live ones
     carry a PARTIAL batch.  That is the whole-window skip and the dead-row zeroing law
     exercised together, and neither is reached by the scattered cells."""
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=40 + k_tok, cohort=64)
-    num, den, _ = run(cell, FLAG, CHANNEL)
+    num, den, _ = run(cell, FLAG, CHANNEL, modes=modes_for(declaration, FLAG))
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -290,7 +380,7 @@ def test_m2_inter_dense_deep(arm, carve=CHANNEL):
     mixed-radix leaf order surfaces here as a permutation, not as noise."""
     assert_fresh_binary()
     cell = Cell(arm[0], T=256, k_tok=None, seed=6)
-    num, den, plane = run(cell, arm, carve)
+    num, den, plane = run(cell, arm, carve, modes=modes_for("DENSE_BOTH", arm))
     n_ref, d_ref, s_ref = ref(cell, arm)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -299,14 +389,15 @@ def test_m2_inter_dense_deep(arm, carve=CHANNEL):
     assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
 
 
+@pytest.mark.parametrize("declaration", DECLARATIONS)
 @pytest.mark.parametrize("arm,k_tok", [(DEEP3, 4), (DEEP3, 8), (DEEP4, 2), (DEEP4, 4)],
                          ids=["d3-k4", "d3-k8", "d4-k2", "d4-k4"])
-def test_m3_two_sided_alt_deep(arm, k_tok, carve=CHANNEL):
+def test_m3_two_sided_alt_deep(arm, k_tok, declaration, carve=CHANNEL):
     """The ALTERNATING declaration at depth: `D` clause levels, the two sides'
     subsets disjoint, scattered `k_tok` cells."""
     assert_fresh_binary()
     cell = alt_cell(arm[0], T=256, k_tok=k_tok, seed=30 + k_tok + len(arm[0]))
-    num, den, plane = run(cell, arm, carve)
+    num, den, plane = run(cell, arm, carve, modes=modes_for(declaration, arm))
     n_ref, d_ref, s_ref = ref(cell, arm)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
