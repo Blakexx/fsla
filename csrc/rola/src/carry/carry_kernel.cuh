@@ -883,7 +883,12 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: THE WRITE SIDE KEEPS NO LIST.  Its schedule is this mask -- the warp's own
     //: tier-2 downsample met with the CTA clause -- and the fold's cursor
     //: decompresses it one ballot word at a time into a small ring of ids.
-    const uint32_t mineWm = clauseW & orW;  // BISECT
+    //: THE STREAM'S SCHEDULE.  `orW` is the OWNER's set: every warp streams every
+    //: entry, which keeps the fold's order identical to the reverse family's and so
+    //: keeps the replay contract unmoved.  Narrowing this to `mineW` is S-write, and
+    //: it changes the order -- that is the declared re-baseline, and it lands with
+    //: Scan A's shared order function, not before.
+    const uint32_t mineWm = clauseW & orW;
     uint16_t* const idring =
         reinterpret_cast<uint16_t*>(slist + G::kLists * G::kListStride) + warp * G::kIdRing;
 
@@ -1080,8 +1085,14 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       produce_tile(panW0, head, cnt);
       __syncwarp();
     }
+    //: THE LOOP'S STRUCTURAL BOUND.  A warp can never own more than the window's `W`
+    //: tokens, so it can never need more than `ceil(W / CP)` tiles; the cursor must
+    //: not be trusted to terminate the loop on its own.  Measured: without this the
+    //: sparsest cell (`alt-k4-W512`) inflates its state ~38x, which is spurious tiles
+    //: folding past the end of the schedule.
+    const int kTileCap = W / CP + 2;
 #pragma unroll 1
-    for (int t = 0; cnt > 0; ++t) {
+    for (int t = 0; cnt > 0 && t < kTileCap; ++t) {
       stage_wait<0>();
       //: DRAIN FIRST: the tile is in registers before the next fill is issued into
       //: the same buffer, which is the whole of the single-slot WAR window.
@@ -1117,7 +1128,14 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       }
       cnt = nxt;
     }
+    //: THE WINDOW EDGE, AND THE ORDER MATTERS.  Drain FIRST: the plane the next
+    //: window publishes lives in these very value slots, so an in-flight `cp.async`
+    //: that lands after the barrier would write into the published plane.  Then
+    //: fence, because private streams end the warps' lockstep and a warp whose
+    //: cursor ran dry early must not publish over a slower warp's strips.  These are
+    //: the window's only CTA syncs besides the phase change.
     stage_wait<0>();
+    rendezvous();
   }
 
   // ---- the FINAL STATE, in LATTICE leaf order ------------------------------
