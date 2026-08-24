@@ -299,11 +299,12 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     int tok_words, int v_row_bytes, const float* __restrict__ s_in, float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
   using G = CarryGeom<D, B, K, M, W, C, CL>;
-  using PM = CarveMap<D, B, K, M, C, CL>;  // DIAG: kRowThr=1
+  using PM = CarveMap<D, B, K, M, G::CP, CL>;
   //: THE WRITE CARVE'S MAP.  CL-major, so a lane's two adjacent private slots are
   //: LATTICE-ADJACENT leaves -- what the transit's `bf16x2` publish requires.  A
   //: single-carve body reuses the read map and nothing below changes.
-  using PMW = std::conditional_t<(CW >= 0), CarveMap<D, B, K, M, C, (CW >= 0 ? CW : 0), false>, PM>;
+  using PMW =
+      std::conditional_t<(CW >= 0), CarveMap<D, B, K, M, G::CP, (CW >= 0 ? CW : 0), false>, PM>;
   //: THE ROW TABLE.  A two-carve body votes its rows under `TwoCarveRows` -- the same
   //: table refined at BOTH carved levels -- so each warp reads its OWN group's row on
   //: either side.  A single-carve body keeps `CarveRows` and the write list stays
@@ -736,7 +737,6 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
         });
       }
     });
-    if (prow >= G::CP) return;  // DIAG
     __nv_bfloat16* const row = dst + prow * LdS + psub * SPT;
     if constexpr (WRITE) {
       static_for<SPT / 2>([&](auto Jc) {
@@ -891,7 +891,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: fence is the readers' wait.  `lo` stays in registers -- packed, so the state
     //: costs half its fp32 footprint across the readout -- and the plane stays valid
     //: underneath, so the fold reloads its OWN hi from it with no republish.
-    // DIAG: publish disabled
+    publish_hi();
     uint32_t lo[MCH][NL][2], mlo[NL][2];
     static_for<MCH>([&](auto Mc) {
       constexpr int m = decltype(Mc)::value;
@@ -909,7 +909,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     rendezvous();
     uint32_t sa[KDw][MCH][4], ma[KDw][4];
     static_for<KDw>(
-        [&](auto Kc) { state_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value]); });
+        [&](auto Kc) { pull_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value]); });
 
     // ---- PHASE 1: the READOUT of every read batch, against the window's ENTRY
     //      state.  ALL of the window's readouts precede ANY of its folds, because a
@@ -1011,8 +1011,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: as its publish -- and rejoins it with the `lo` it kept, exactly.  Every warp
     //: has finished reading the plane before the window edge below, after which the
     //: fold's strips may overwrite it.
-    (void)lo;
-    (void)mlo;  // DIAG
+    reload_hi(lo, mlo);
     rendezvous();
 
     // ---- PHASE 2: the FOLD, over the warp's OWN private value stream --------
