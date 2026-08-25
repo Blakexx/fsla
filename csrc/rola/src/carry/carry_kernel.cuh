@@ -116,7 +116,7 @@ struct CarryGeom {
   //: all: its schedule IS the tier-2 bitmap, and its ids are transient -- a per-warp
   //: cursor decompresses one ballot word at a time into a small ring, in the stage's
   //: shadow, so nothing window-sized is ever materialized on that side.
-  static constexpr int kLists = kWarps;
+  static constexpr int kLists = kWarps + 1;  // + the CTA's shared write list
   static constexpr int kIdRing = 64;
   static constexpr int id_bytes = kWarps * kIdRing * (int)sizeof(uint16_t);
   static constexpr int kListStride = ((W + 7) / 8) * 8;
@@ -880,15 +880,24 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     uint16_t* const rlist = slist + warp * kListStride;
     const int nr = walk(clauseR & mineR, rlist, 0xFFFFFFFFu, 0u);
     __syncwarp();
-    //: THE WRITE SIDE KEEPS NO LIST.  Its schedule is this mask -- the warp's own
-    //: tier-2 downsample met with the CTA clause -- and the fold's cursor
-    //: decompresses it one ballot word at a time into a small ring of ids.
-    //: THE STREAM'S SCHEDULE.  `orW` is the OWNER's set: every warp streams every
-    //: entry, which keeps the fold's order identical to the reverse family's and so
-    //: keeps the replay contract unmoved.  Narrowing this to `mineW` is S-write, and
-    //: it changes the order -- that is the declared re-baseline, and it lands with
-    //: Scan A's shared order function, not before.
-    const uint32_t mineWm = clauseW & orW;
+    //: THE OWNER'S WRITE IDS, DERIVED ONCE FOR THE CTA.  `walk` is already the cheap
+    //: form -- one lane per ballot word, `ffs` per live bit -- and its `bits`/`below`
+    //: parameters exist for exactly this: several writers deriving the SAME global
+    //: prefix and filling disjoint slices of every word, so the list comes out in the
+    //: one ascending order every consumer expects.  The CTA wall is here and nowhere
+    //: else in the fold.
+    constexpr int kSliceBits = kBallotLanes / kWarps;
+    uint16_t* const wlistS = slist + kWarps * kListStride;
+    const int nw = walk(clauseW & orW, wlistS,
+                        (uint32_t)(((1ull << kSliceBits) - 1ull) << (warp * kSliceBits)),
+                        (uint32_t)((1ull << (warp * kSliceBits)) - 1ull));
+    rendezvous();
+    //: THE WRITE SIDE'S SCHEDULE IS THE SHARED LIST built above, and each warp's own
+    //: share of it is its tier-2 digit row `mineW` -- tested per id by the pull rather
+    //: than decompressed per ballot word.  The COMPACTION (`mineW` and not `orW`) is
+    //: what makes a warp fold only the tokens that reach its leaves; it changes the
+    //: fold's k-order, so it carries the declared re-baseline and Scan A's shared
+    //: order function with it.
     uint16_t* const idring =
         reinterpret_cast<uint16_t*>(slist + G::kLists * G::kListStride) + warp * G::kIdRing;
 
@@ -1042,18 +1051,27 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: `kIdRing`, which is the pipeline's depth and not the window's length.  The
     //: earlier ballot-cursor refutation was SHARED-stream-scoped: it failed because
     //: rank-indexed consumers needed a global rank.  Here the warp's stream order IS
-    //: the cursor's order and every consumer is affine in it.
-    int head = 0, tail = 0, wi = 0;
+    //: the pull's order and every consumer is affine in it.
+    int head = 0, tail = 0, si = 0;
+    //: `below` is lane-invariant AND loop-invariant, so it is built once here rather
+    //: than rebuilt on every visit as it was.
+    const uint32_t below = (1u << lane) - 1u;
+    //: THE PULL.  A step tests 32 of the SHARED list's ids against this warp's own
+    //: digit row, so the walk is over LIVE OWNER IDS rather than over the window's
+    //: 512 token slots -- which is the whole difference at a sparse cell.  Token `t`'s
+    //: membership bit lives in lane `t >> 5`'s word of `mineW`, and `__shfl` takes a
+    //: PER-LANE source, so the gather of 32 different words is one instruction.
     auto refill = [&]() {
-      while (tail - head <= kIdRing - kBallotLanes && wi < LW) {
-        const uint32_t w = lane_broadcast(mineWm, wi);
-        const bool has = ((w >> lane) & 1u) != 0u;
+      while (tail - head <= kIdRing - kBallotLanes && si < nw) {
+        const int idx = si + lane;
+        const bool inR = idx < nw;
+        const int t = inR ? (int)wlistS[idx] : 0;
+        const uint32_t w = (uint32_t)lane_broadcast((int)mineW, t >> 5);
+        const bool has = inR && (((w >> (t & 31)) & 1u) != 0u);
         const uint32_t bal = lane_ballot(has);
-        if (has)
-          idring[(tail + bit_count(bal & ((1u << lane) - 1u))) & (kIdRing - 1)] =
-              (uint16_t)(wi * kBallotLanes + lane);
+        if (has) idring[(tail + bit_count(bal & below)) & (kIdRing - 1)] = (uint16_t)t;
         tail += bit_count(bal);
-        ++wi;
+        si += kBallotLanes;
       }
       __syncwarp();
     };
