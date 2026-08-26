@@ -120,10 +120,7 @@ struct CarryGeom {
   static constexpr int kIdRing = 64;
   static constexpr int id_bytes = kWarps * kIdRing * (int)sizeof(uint16_t);
   static constexpr int kListStride = ((W + 7) / 8) * 8;
-  //: the readout's per-slice tile cursors and their bounds (2.5): two ints per warp.
-  static constexpr int cur_bytes = 2 * kWarps * (int)sizeof(int);
-  static constexpr int list_bytes =
-      kLists * kListStride * (int)sizeof(uint16_t) + id_bytes + cur_bytes;
+  static constexpr int list_bytes = kLists * kListStride * (int)sizeof(uint16_t) + id_bytes;
   //: THE WINDOW'S BALLOT WORDS, one per lane of the walk -- so a window may be at
   //: most a lockstep unit's worth of words wide.
   static constexpr int kLW = W / kBallotLanes;
@@ -363,7 +360,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   uint16_t* const slist = reinterpret_cast<uint16_t*>(so + kAtomLeaves * LdO);
   //: THE RETAINED PLANE (2.2), straddled over the FOLD's tenants -- the write strips
   //: and the page buffer, both dead for the whole readout.  It is published once and
-  //: stays valid until the fold reclaims it, which is what lets the readout steal
+  //: stays valid until the fold reclaims it, which is what the readout's pull needs
   //: from it and the writers reload out of it with no republish leg.
   static_assert(
       G::plane_bytes <= kWarps * G::kVSlots * G::CP * LdV * 2 + 2 * kWarps * G::CP * LdS * 2,
@@ -462,20 +459,31 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   //: accumulator IS the operand (the warp's own n-tiles, packed in place, no
   //: `ldmatrix`); a state held elsewhere substitutes its own load here and nothing
   //: else in the drain moves.
+  auto state_operand = [&](auto Kc, uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
+    constexpr int kk = decltype(Kc)::value;
+    static_for<MCH>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
+      sa[m][0] = hi_bf16x2(st[m][2 * kk][0], st[m][2 * kk][1]);
+      sa[m][1] = hi_bf16x2(st[m][2 * kk][2], st[m][2 * kk][3]);
+      sa[m][2] = hi_bf16x2(st[m][2 * kk + 1][0], st[m][2 * kk + 1][1]);
+      sa[m][3] = hi_bf16x2(st[m][2 * kk + 1][2], st[m][2 * kk + 1][3]);
+    });
+    ma[0] = hi_bf16x2(mass_st[2 * kk][0], mass_st[2 * kk][1]);
+    ma[1] = hi_bf16x2(mass_st[2 * kk][2], mass_st[2 * kk][3]);
+    ma[2] = hi_bf16x2(mass_st[2 * kk + 1][0], mass_st[2 * kk + 1][1]);
+    ma[3] = hi_bf16x2(mass_st[2 * kk + 1][2], mass_st[2 * kk + 1][3]);
+  };
 
   //: ---- K35-E: THE TRANSIT PLANE ------------------------------------------
   //: `leaf_of` is the LATTICE leaf of a private index `P`.  The private order's own
   //: `shift`/`span` give each level's digit inside `P`; the lattice's `run_shift`
   //: puts it back.  The carve level additionally carries the warp's group base.
   //: This is the ONLY place the two orders meet, and it is a pure index map.
-  //: `g` is the READ GROUP whose leaves are being addressed.  A warp reading its own
-  //: slice passes its own `grp`; a STEALER passes the victim's, which is the whole of
-  //: what makes a stolen tile addressable from the retained plane (2.5).
-  auto leaf_of = [&](int P, int g) {
+  auto leaf_of = [&](int P) {
     int lf = 0;
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      const int dig = ((P >> PM::shift(l)) & (PM::span(l) - 1)) + (l == CL ? g * PM::kGS : 0);
+      const int dig = ((P >> PM::shift(l)) & (PM::span(l) - 1)) + (l == CL ? grp * PM::kGS : 0);
       lf += dig << BP::run_shift(l);
     });
     return lf;
@@ -546,13 +554,12 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
 
   //: THE PULL, straight into the readout's A fragments.  `h` selects the n-tile, and
   //: within it register `2h` is channel row `lane/4` and `2h+1` is row `lane/4 + 8`
-  //: -- the register order the readout's MMA expects, so the drain below is
-  //: unchanged.
-  auto pull_operand = [&](auto Kc, uint32_t(&sa)[MCH][4], uint32_t(&ma)[4], int g) {
+  //: -- exactly `state_operand`'s register order, so the drain below is unchanged.
+  auto pull_operand = [&](auto Kc, uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
     constexpr int kk = decltype(Kc)::value;
     static_for<2>([&](auto Hc) {
       constexpr int h = decltype(Hc)::value;
-      const int lf = leaf_of((2 * kk + h) * kMmaN + 2 * (lane & 3), g);
+      const int lf = leaf_of((2 * kk + h) * kMmaN + 2 * (lane & 3));
       static_for<MCH>([&](auto Mc) {
         constexpr int m = decltype(Mc)::value;
         const int ch = m * kMmaM + (lane >> 2);
@@ -662,15 +669,10 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   static_assert(PMW::SPT == SPT, "both carves split a row the same way");
   const int prow = lane / PM::kRowThr;  // this lane's token row of the strip
   const int psub = lane % PM::kRowThr;  // which half of that row's slots it mints
-  //: THE READ SIDE'S COLUMN BASE CARRIES THE GROUP'S DIGIT RUN at `CL`, so a panel is
-  //: only valid for the leaves of the group it was minted against.  A warp serving a
-  //: STOLEN tile needs the VICTIM's, so all `kWarps` bases are built ONCE here -- they
-  //: are owner-invariant across the window grid -- and the producer is handed the one
-  //: it needs.  Recomputing them inside the producer instead cost 15 registers and
-  //: showed up as a phase-wide instruction rise; this is the same answer for free.
-  int lvColW[D];
+  int lvCol[D], lvColW[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
+    lvCol[l] = runCol[l] + (l == CL ? grp * kGS : 0);
     lvColW[l] = runCol[l] + (l == PMW::kLevel ? grp * PMW::kGS : 0);
   });
 
@@ -684,22 +686,11 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   //: `mul_bf16x2(acc, 1)` was 44% of the read produce -- 32 FMUL, 32 PRMT and 16 F2FP
   //: for `rn(a*1) = a` -- so the side is a compile-time argument and the read body
   //: stores its accumulators directly.
-  //: `gRead` IS THE READ GROUP THE PANEL IS MINTED FOR.  The read side's column base
-  //: carries the group's digit run at `CL`, so a panel is only valid for the leaves of
-  //: the group it was minted against -- a warp serving a STOLEN tile must mint the
-  //: VICTIM's, exactly as it pulls the victim's A fragments.  The write side's columns
-  //: do not vary this way and ignore it.
-  //: `colCarve` IS THE READ SIDE'S COLUMN BASE AT `CL`, and it is the ONLY column the
-  //: read group changes -- every other level's base is the owner's run and is group-
-  //: invariant.  Passing that ONE int is what keeps a stolen tile addressable without
-  //: a per-group table: an array indexed by a runtime group lands in local memory
-  //: (measured: STACK:32, a spill), and this is the same answer in a register.
   auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
-                     uint32_t gain, bool have, int colCarve) {
+                     uint32_t gain, bool have) {
     constexpr bool WRITE = decltype(Wt)::value;
     using MapT = std::conditional_t<WRITE, PMW, PM>;
-    //: `l` is constexpr at both use sites, so this select folds away.
-    auto col_of = [&](int l) { return WRITE ? lvColW[l] : (l == CL ? colCarve : runCol[l]); };
+    const int* const cols = WRITE ? lvColW : lvCol;
     //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
     //: is loaded, folded into every slot and dropped inside one `static_for` body, so
     //: no `[D][n]` array is ever live.
@@ -721,7 +712,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       constexpr int PL = MapT::kPairLevel;
       const int adjPL = ((psub * MapT::SPT) >> MapT::shift(PL)) & (MapT::span(PL) - 1);
       unsigned short run[MapT::n_l(PL)];
-      load_run<MapT::n_l(PL)>(run, gather_ptr(base, tokOff + (uint32_t)((col_of(PL) + adjPL) * 2)));
+      load_run<MapT::n_l(PL)>(run, gather_ptr(base, tokOff + (uint32_t)((cols[PL] + adjPL) * 2)));
       {
         static_for<MapT::n_l(PL)>([&](auto Ic) {
           constexpr int i = decltype(Ic)::value;
@@ -739,7 +730,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       if constexpr (l != MapT::kPairLevel) {
         const int adj = ((psub * MapT::SPT) >> MapT::shift(l)) & (MapT::span(l) - 1);
         unsigned short run[MapT::n_l(l)];
-        load_run<MapT::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)((col_of(l) + adj) * 2)));
+        load_run<MapT::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)((cols[l] + adj) * 2)));
         static_for<SPT / 2>([&](auto Jc) {
           constexpr int j = 2 * decltype(Jc)::value;
           acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[MapT::idx_of(l, j)]));
@@ -777,7 +768,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: zeroes the leading factor, and a zero coefficient contributes exactly nothing
     //: to either MMA (the produce's dead-row zeroing law).
     auto produce_batch = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst,
-                             const uint16_t* list, int o0, int ntot, int colCarve) {
+                             const uint16_t* list, int o0, int ntot) {
       const int nb = (ntot - o0) < C ? (ntot - o0) : C;
       const bool have = prow < nb;
       const int tok = list[o0 + (have ? prow : nb - 1)];
@@ -786,8 +777,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
         gain = have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
                           gather_ptr(gW, winG + (uint32_t)tok * 2u)))
                     : 0u;
-      produce(Wt, base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain, have,
-              colCarve);
+      produce(Wt, base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain, have);
     };
 
     // ---- the liveness pass: one READ list per warp, ONE write list --------
@@ -887,14 +877,12 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: barrier: the two owner-grain ballots are the same words in every warp.
     if (lane_ballot(((clauseR & orR) | (clauseW & orW)) != 0u) == 0u) continue;
 
-    //: THE READ SIDE IS THE SAME SHAPE AS THE WRITE SIDE, and gets the same fix.
-    //: Four warps each walking the whole bitmap under their own group row is four
-    //: passes over one window; instead ONE cooperative walk derives the OWNER's read
-    //: ids (the read groups partition the leaves and a token reads leaves in several
-    //: groups, so the owner's list IS the union and a group's list is a filter of it
-    //: -- no new correctness question), and each warp PULLS its own subsequence.
-    //: This attacks the FLAT per-window term, which is what dominates at a sparse
-    //: cell, and it scales by granularity rather than being an sm_80 device.
+    //: THE READ SIDE GETS THE SAME SHAPE AS THE WRITE SIDE.  Four warps each walking
+    //: the whole bitmap under their own group row is four passes over one window;
+    //: instead ONE cooperative walk derives the OWNER's read ids and each warp PULLS
+    //: its own subsequence.  It is a per-cell TRADE, not a win -- where a token reads
+    //: leaves in several groups the owner's union is nearly the sum of the per-group
+    //: lists, so the shared walk saves nothing and the pull is added work.
     constexpr int kSliceR = kBallotLanes / kWarps;
     uint16_t* const rlistS = slist + (kWarps + 1) * kListStride;
     const int nrO =
@@ -961,17 +949,9 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       mlo[j][1] = pack_lo(mass_st[j][2], mass_st[j][3]);
     });
     rendezvous();
-    //: (2.5, STEP 1) IS NOT SATISFIABLE ON A DUAL-CARVE BODY, and this is why.  The
-    //: protocol asks every warp to cache ITS OWN READ SLICE in registers.  But the
-    //: state registers hold the warp's WRITE-carve leaves (`leafW_of`, level `CW`),
-    //: while its readout needs its READ-carve leaves (`leaf_of`, level `CL`) -- under
-    //: ALT those are different levels and therefore different leaf sets.  The plane IS
-    //: the exchange between the two carves, so the read side is served from it for
-    //: EVERY tile, its own included.  The upside is that a stolen tile then costs
-    //: exactly what an owned one costs: there is no delivery tax to confine to steals.
     uint32_t sa[KDw][MCH][4], ma[KDw][4];
     static_for<KDw>(
-        [&](auto Kc) { pull_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value], grp); });
+        [&](auto Kc) { pull_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value]); });
 
     // ---- PHASE 1: the READOUT of every read batch, against the window's ENTRY
     //      state.  ALL of the window's readouts precede ANY of its folds, because a
@@ -981,39 +961,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: and the fan-in are the warp's own, so the four warps run to the window line
     //: without a single CTA barrier.  Its `__syncwarp` is the panel's, between a
     //: lane's `STS` and the `ldmatrix` that reads another lane's row.
-    //: (2.5, STEPS 2-4) PER-SLICE ATOMIC TILE CURSORS.  A warp drains ITS OWN counter
-    //: from its cached registers; when that runs dry it ROUND-ROBINS the others and
-    //: serves the claimed tile from the RETAINED PLANE via `ldmatrix`, per tile, with
-    //: no re-caching.  Every tile passes through exactly one counter, so the work is
-    //: partitioned by construction and multiplicity one is preserved.  Scattered: the
-    //: counters drain together and the steal loop exits empty, costing one atomic per
-    //: tile.  Cohort: a loaded counter becomes a shared pile, its owner reading at
-    //: register speed and the stealers at ldmatrix speed.
-    int* const tcur = reinterpret_cast<int*>(slist + G::kLists * kListStride + kWarps * G::kIdRing);
-    int* const tnr = tcur + kWarps;
-    if (lane == 0) {
-      tcur[warp] = 0;
-      tnr[warp] = nr;
-    }
-    rendezvous();
-    int vict = warp, probes = 0;
-    auto claim = [&](int& tile) {
-      while (true) {
-        int t = -1;
-        if (lane == 0) t = atomicAdd(&tcur[vict], 1);
-        t = lane_broadcast(t, 0);
-        if (t * CP < tnr[vict]) {
-          probes = 0;
-          tile = t;
-          return vict;
-        }
-        if (++probes >= kWarps) return -1;
-        vict = (vict + 1) & (kWarps - 1);
-      }
-    };
-    //: the victim's read list and the group whose leaves it names.  `grp` is a
-    //: rotation of the warp index, so the stealer derives the victim's the same way.
-    const int rot = (grp - warp) & (kWarps - 1);
+    const int nbr = (nr + CP - 1) / CP;
     //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring,
     //: UNCONDITIONALLY and AFTER the batch's MMA block.  Unconditionally because a
     //: guard is a basic block and ptxas schedules within one; after, because the
@@ -1022,27 +970,13 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: edge pins every produce instruction ahead of the HMMAs.  The trailing batch is
     //: entirely dead rows by the produce's zeroing law and lands in a panel no MMA
     //: reads.
-    int tA = 0;
-    int oA = claim(tA);
-    if (oA >= 0)
-      produce_batch(std::false_type{}, pR, panR0, slist + oA * kListStride, tA * CP, tnr[oA],
-                    runCol[CL] + ((oA + rot) & (kWarps - 1)) * kGS);
+    if (nbr > 0) produce_batch(std::false_type{}, pR, panR0, rlist, 0, nr);
     __syncwarp();
-    int par = 0;
 #pragma unroll 1
-    while (oA >= 0) {
-      const uint16_t* const lst = slist + oA * kListStride;
-      const int off = tA * CP;
-      const int n = (tnr[oA] - off) < CP ? (tnr[oA] - off) : CP;
-      const uint32_t brT = par ? brT1 : brT0;
-      //: A STOLEN TILE IS SERVED FROM THE PLANE, per tile, for the victim's group.
-      //: The warp's own cached slice is gone after this, which costs nothing: its own
-      //: counter is dry before it ever steals, so it never needs the registers again.
-      if (oA != warp)
-        static_for<KDw>([&](auto Kc) {
-          pull_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value],
-                       (oA + rot) & (kWarps - 1));
-        });
+    for (int i = 0; i < nbr; ++i) {
+      const int off = i * CP;
+      const int n = (nr - off) < CP ? (nr - off) : CP;
+      const uint32_t brT = (i & 1) ? brT1 : brT0;
 
 #pragma unroll
       for (int mb = 0; mb < MTOK; ++mb) {
@@ -1089,7 +1023,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
           for (int e = 0; e < 4; ++e) {
             const int idx = j * kMmaN + 2 * (lane & 3) + (e & 1);
             if (idx < n) {
-              const uint32_t rowO = (uint32_t)lst[off + idx] * (uint32_t)(kDv * 4) + winO;
+              const uint32_t rowO = (uint32_t)rlist[off + idx] * (uint32_t)(kDv * 4) + winO;
 #pragma unroll
               for (int m = 0; m < MCH; ++m)
                 fan_in_add(
@@ -1100,21 +1034,14 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
               //: `lane>>2 == 0` and the halves with `e>>1 == 0` carry it.
               if ((lane >> 2) == 0 && (e >> 1) == 0)
                 fan_in_add(reinterpret_cast<float*>(
-                               gather_ptr(denPlane, (uint32_t)lst[off + idx] * 4u + winD)),
+                               gather_ptr(denPlane, (uint32_t)rlist[off + idx] * 4u + winD)),
                            macc[p][e]);
             }
           }
         }
       }
-      int tB = 0;
-      const int oB = claim(tB);
-      if (oB >= 0)
-        produce_batch(std::false_type{}, pR, par ? panR0 : panR1, slist + oB * kListStride, tB * CP,
-                      tnr[oB], runCol[CL] + ((oB + rot) & (kWarps - 1)) * kGS);
+      produce_batch(std::false_type{}, pR, ((i + 1) & 1) ? panR1 : panR0, rlist, (i + 1) * CP, nr);
       __syncwarp();
-      oA = oB;
-      tA = tB;
-      par ^= 1;
     }
 
     //: THE WINDOW LINE IS THE ONE BARRIER LEFT ON THE READ SIDE, and it is there by
@@ -1154,6 +1081,9 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: rank-indexed consumers needed a global rank.  Here the warp's stream order IS
     //: the pull's order and every consumer is affine in it.
     int head = 0, tail = 0, si = 0;
+    //: `below` is lane-invariant AND loop-invariant, so it is built once here rather
+    //: than rebuilt on every visit as it was.
+    const uint32_t below = (1u << lane) - 1u;
     //: THE PULL.  A step tests 32 of the SHARED list's ids against this warp's own
     //: digit row, so the walk is over LIVE OWNER IDS rather than over the window's
     //: 512 token slots -- which is the whole difference at a sparse cell.  Token `t`'s
@@ -1167,8 +1097,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
         const uint32_t w = (uint32_t)lane_broadcast((int)mineW, t >> 5);
         const bool has = inR && (((w >> (t & 31)) & 1u) != 0u);
         const uint32_t bal = lane_ballot(has);
-        if (has)
-          idring[(tail + bit_count(bal & ((1u << lane) - 1u))) & (kIdRing - 1)] = (uint16_t)t;
+        if (has) idring[(tail + bit_count(bal & below)) & (kIdRing - 1)] = (uint16_t)t;
         tail += bit_count(bal);
         si += kBallotLanes;
       }
@@ -1191,7 +1120,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
                                        gather_ptr(gW, winG + (uint32_t)tok * 2u)))
                                  : 0u;
       produce(std::true_type{}, pW, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain,
-              have, 0);
+              have);
     };
 
     refill();
