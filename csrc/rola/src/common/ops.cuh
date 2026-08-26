@@ -247,6 +247,14 @@ __device__ __forceinline__ uint32_t pack_bf16x2(float lo, float hi) {
 //: publishes exactly these bytes: the strip a warp writes and the fragment it would
 //: have built on the fly are then BIT-IDENTICAL, so the hybrid is a placement change
 //: and never an arithmetic one.  The oracle mirror carries the same truncation.
+//: THE SAME TRUNCATION FOR ONE FLOAT.  The exchange places each leaf's channel on its
+//: own, so a fragment element reaches shared memory as a 2-byte store rather than as
+//: half of a packed pair; the value stored is bit-for-bit what `hi_bf16x2` would have
+//: put in that half.
+__device__ __forceinline__ uint16_t hi_bf16(float v) {
+  return (uint16_t)(__float_as_uint(v) >> 16);
+}
+
 __device__ __forceinline__ uint32_t hi_bf16x2(float lo, float hi) {
   uint32_t d;
   asm("prmt.b32 %0, %1, %2, 0x7632;"
@@ -307,7 +315,7 @@ __device__ __forceinline__ void store_bf16x2(__nv_bfloat16* p, uint32_t v) {
 }
 
 //: THE STATE'S LO HALVES, PACKED.  The top 16 bits of an fp32 ARE its bf16
-//: truncation, so a state word splits exactly into the `hi` the transit publishes and
+//: truncation, so a state word splits exactly into the `hi` the exchange publishes and
 //: the `lo` its owner keeps.  Two lows ride one register; `join_hi_lo` puts a word
 //: back together bit-for-bit, so the round trip is lossless by construction.
 __device__ __forceinline__ uint32_t pack_lo(float a, float b) {
@@ -330,8 +338,8 @@ __device__ __forceinline__ void store_shared_u16(SmemAddr a, uint16_t v) {
   asm volatile("st.shared.u16 [%0], %1;" ::"r"(a), "h"(v) : "memory");
 }
 
-//: THE TRANSIT PLANE'S WORD ACCESSES.  Addressed rather than indexed for the same
-//: reason `store_shared_u16` is: the plane's address carries an XOR swizzle, so an
+//: A SHARED WORD ACCESS, ADDRESSED RATHER THAN INDEXED for the same reason
+//: `store_shared_u16` is: a swizzled address is not an affine function of an index, so
 //: indexed form would re-derive a widening multiply per access.
 __device__ __forceinline__ void store_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("st.shared.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");

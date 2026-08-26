@@ -143,7 +143,7 @@ WRITE STREAM, and the rest is derived (`CarryGeom`, all `static_assert`ed):
     col      = strm & (WPS - 1)  = its COLUMN HALF of that stream's leaves
 
 The READ carve is declared at ONE STREAM PER WARP, which is what leaves the readout, the
-transit plane's pull and the fan-in untouched by the split. At `WPS = 1` the mask is
+exchange's pull and the fan-in untouched by the split. At `WPS = 1` the mask is
 zero, `col` folds to a constant and every column term below vanishes from the generated
 code.
 
@@ -171,7 +171,7 @@ holds — so the box is an AFFINE RECTANGLE of digits and contiguity in leaf ord
 property of carving a prefix, never a requirement. The single-level carve is simply the
 vector with one non-full entry; there is no second path for it. The two sides carve the
 SAME box along DIFFERENT axes, which is why the state evacuates registers at each phase
-change (the transit plane), and each side's vector is declared per arm in
+change (the exchange), and each side's vector is declared per arm in
 `CARRY_ARMS_X` — the write side's `SW`, the read side's `SR`.
 
 Constraints, all `static_assert`ed: `s_l % S_l == 0`, every span a power of two, `WPS` a
@@ -183,7 +183,7 @@ box being exactly one read stream's box.
 
 `d_v` is a template parameter of both forward bodies. `CarryGeom` names it `kDv` and
 everything the width touches falls out of it — `kCols = d_v + 1`, `LdV = d_v + 8`,
-`LdO = d_v + 4`, `kPlaneRows = d_v + 1`, `MCH = d_v / 16` (the channel m-tiles a warp
+`LdO = d_v + 4`, `LdX = d_v + 8`, `MCH = d_v / 16` (the channel m-tiles a warp
 holds), `kChunkV = d_v / 8` (a value row's asynchronous quanta) and every byte count
 derived from those. Nothing tests the width: there is no `if (d_v == 128)` anywhere, and
 the `d_v = 64` arms are register-for-register and byte-for-byte what they were.
@@ -223,27 +223,96 @@ of four warps per SM. The 2x4 row is `(k, m) = (4, 4)` on the flagship topology:
 dependent (which it becomes the moment `d_v` is a template parameter) SEGFAULTS the
 pinned front end — cudafe++, CUDA 12.4.99 — when a lambda parameter's type is a
 reference to an array of dependent bound, at PARSE and before any instantiation. So
-`reload_hi` and `pull_operand` take their fragment stacks by DEDUCED reference
+`pull_read`, `publish_write` and `reload_hi` take their fragment stacks by DEDUCED reference
 (`auto&`) rather than as `uint32_t (&)[MCH][4]`. The caller still passes the one declared
 stack; nothing about the types is loosened. Do not spell the bound back in.
 
-### The transit plane's swizzle is `d_v`-independent, and here is why
+### The exchange, and its swizzle (K35 S4a)
 
-`kHiLD = BC + 16`, `word ^= (chan & 7)`. One access of either leg — the publish's
-`st.shared.u32` and the pull's `ld.shared.u32` — is one (m-tile, n-tile) pair: the
-lockstep unit's lane quads carry eight CONSECUTIVE channels `q = lane >> 2`, and the four
-quads carry four ADJACENT leaf pairs `p0 + (lane & 3)` (adjacent because rule 1 puts the
-lattice's innermost level lowest in both private orders). So the word is
+The two sides carve the same box along different axes, so the state is wanted in two slot
+orders per window and an accumulator holds one. EVERY PHASE CHANGE RE-LAYS IT (P76, THE
+ORDER LAW), and the form is WRITER-SIDE PLACEMENT: the publisher stores EACH LEAF'S ROW of
+channels at that leaf's slot in the CONSUMER's private order, into the consumer's own
+contiguous segment; a CTA barrier; the consumer pulls its whole segment into fragments
+with `ldmatrix.trans` and the segment is DEAD. Twice per window — `publish_read` /
+`pull_read` before the readout, `publish_write` / `reload_hi` after it — over ONE region,
+because the two changes are consecutive moments and never co-live.
 
-    (m*16 + q) * (LD/2) + ((p0 + a) ^ q),   a = lane & 3
+`XchgSegments` is `[consumer][leaf][channel]` over `BC` rows (the consumers partition the
+box on either side, `kWarps * kLeafE == BC`) at row stride `LdX = d_v + 8` — the `kCols`
+channels padded to a sixteen-byte quantum, 72 and 136 at the two widths.
 
-and `16 * (LD/2) == 0 (mod 32)` at every built `BC`, so the m-tile term drops out and the
-bank is `(q * (LD/2) + ((p0+a) ^ q)) mod 32`. `LD/2` is `8 (mod 32)` at `BC = 64`, 128 and
-256 alike, so this is `8q + ((p0+a) ^ q)`: eight four-bank blocks, each a permutation of
-its own four. MAX-WAY ONE — and the width changes only HOW MANY such accesses there are
-(`MCH` of them), never their shape. The mass row rides `chan = d_v`, whose low three bits
-are zero at every admitted width, so it takes the same map. `test_segment_layout.py`
-runs this model at both widths and at all three box sizes, beside the device round trip.
+* THE PUBLISH is `st.shared.b16` per fragment ELEMENT. The accumulator's `(row, col)` is
+  `(channel, private slot)`, so a lane's four elements of one (m-tile, n-tile) are two
+  channels eight apart at two ADJACENT slots — and adjacent slots of one order belong to
+  different consumers in the other, so nothing can be packed. The `lo` halves the warp
+  keeps are packed INSIDE the publish, n-tile by n-tile, so the fp32 accumulator dies tile
+  by tile rather than living whole beside them.
+* THE ROW MAP IS AFFINE, `XchRow`. A slot's level-`l` digit is `offset_l | field_l` (the
+  stream's offset is a multiple of the span, so it sits above the field); the consumer's
+  group and private digit are a BIT SPLIT of that digit; the group terms sum into the
+  consumer index in mixed radix and the private terms into disjoint fields of the
+  consumer's slot. Every sum is an OR, so `row(slot) = row(0) + sum over the slot's SET
+  BITS of a per-bit STEP` and every step is COMPILE-TIME — it depends on the two orders
+  and the two stream grids, never on which stream is publishing. So the publisher pays
+  the base (its digit offsets, its column half, its lane's slot pair) ONCE PER WARP before
+  the window loop, and a fragment's row is that base plus a constant while its address is
+  a per-warp pointer plus an IMMEDIATE: no per-row multiply, no per-row map.
+* THE PULL is `ldmatrix.trans` and nothing else: the consumer's rows ARE its own private
+  slots, so its address is an offset and not a map, and one instruction covers a whole
+  (k-step, channel m-tile) tile. `[leaf][channel]` is `[k][m]`, which is exactly what the
+  transposed atom wants for an A operand, in BOTH directions — the readout's A fragments
+  and the fold accumulator's hi halves have the same thread-value map.
+* THE MASS is one COLUMN (`chan = d_v`) and cannot be an `ldmatrix` tile: two
+  `ld.shared.u16` at the pair's two rows build the one fragment word whose row 0 is the
+  mass. Its accumulator's rows 1..15 are identically zero by construction of `ones_a`, so
+  moving them would move zeros.
+
+STORE INSTRUCTIONS PER LANE PER CHANGE: `4 * NL * MCH` channel halves plus `2 * NL` mass
+halves — 64 + 8 at the 32-leaf `d_v = 64` arms, 32 + 4 at the 16-leaf ones and 64 + 4 at
+`d_v = 128`; the pull is `KDw * MCH` `ldmatrix.trans` (8, 4, 8) plus `KDw * 2` mass pairs.
+Twice a window, against the retained plane's `2 * NL * MCH` `st.shared.u32` once — the
+extra instructions buy the readout's whole tenant back and remove the pair-level pin.
+
+THE SWIZZLE, DERIVED FROM BOTH PATTERNS. `LdX / 2` is `4 (mod 32)` at both widths, so
+consecutive rows sit ONE four-bank block apart and a bank is
+`(4*row + 4*granule + word) mod 32`.
+
+* THE PULL is serviced eight lanes at a time (eight lanes x 16 B is the 32 banks x 4 B the
+  memory delivers per cycle), and a phase is EIGHT CONSECUTIVE rows at ONE granule — so it
+  already walks eight distinct blocks and asks only that the swizzle be CONSTANT over an
+  aligned group of eight rows.
+* THE PUBLISH covers the lane quad's FOUR consumer rows x EIGHT CONSECUTIVE channels, and
+  two lanes sharing a 32-bit word are a BROADCAST and not a conflict — so it is four rows
+  x four words inside ONE granule, and it needs the four rows in four DIFFERENT blocks.
+  Those rows are the consumer-side images of four leaves and the carves scatter them, so
+  the ROW INDEX MUST REACH THE GRANULE: `xch_swz(row) = ((row>>3) ^ (row>>4) ^ (row>>6)) &
+  7` gives every row bit a distinct nonzero image and is constant over an aligned eight.
+* THE MASS is a single element and must spread over its pad granule's four words on its
+  own: `xch_mass` puts it at `d_v + 2 * (((row>>3) ^ (row>>5)) & 3)`.
+
+`test_segment_layout.py` models BOTH legs of BOTH changes at every carved arm and pins
+MAX-WAY ONE, and it proves the ROUND TRIP where it actually lives: the composite of the
+two row maps is the IDENTITY ON LATTICE LEAVES, so a stride, an order or a stream-grid
+term that disagreed between publisher and consumer shows up as a leaf in the wrong row.
+The device leg is the oracle at every arm — the state plane is exactly the readout->fold
+change's round trip and `num`/`den` are the fold->readout one.
+
+### The straddle: three moments, one region (K35 S4a)
+
+Allocation is the MAXIMUM OVER MOMENTS and never a sum. Below the window's INDEX — the
+lists, the published ballots, the prefix counts and the liveness mask, live in every
+moment and nobody's straddle — there are three sets of tenants and NO TWO OF THEM ARE
+EVER CO-LIVE:
+
+    FOLD     the per-stream segments, the rolling staging, the gain, the page buffer
+    CHANGE   the exchange segments          (dead the moment every consumer has pulled)
+    READOUT  the read panels                (dead through the whole fold — S3b's observation)
+
+so all three begin at the region's base and the allocation carries `straddle_bytes =
+max(...)`. What this costs is ONE extra CTA barrier per change — after the pull, before
+any warp produces a read panel into the same bytes — and what it buys is the read panels'
+6-12 KB on top of the plane's 18.7 / 37 KB leaving the READOUT moment entirely.
 
 The SEGMENT's value rows are the same story at `LdV = 136`: a 128-bit shared access is
 serviced EIGHT LANES AT A TIME (eight lanes × 16 B is the 32 banks × 4 B the memory
@@ -260,27 +329,34 @@ produce is `sum_l n_l` amplitude loads times products at CONSTANT indices. A spa
 contributes a constant and drops out of the order on its own. The order itself is fixed
 by the span vector:
 
-1. **level `D-1` is INNERMOST.** The transit plane publishes `bf16x2` words of two
-   LATTICE-ADJACENT leaves, so the level lying lowest in `p` must be the level lying
-   lowest in `local`, and its span must be at least two. This is the PAIR LEVEL: it seeds
-   the pairs and carries the dead-row zeroing. **The span-≥2 clause is a limitation of
-   the CURRENT exchange, not of the design** — it comes from the plane publishing pairs,
-   and the rebuilt exchange (writer-side placement into per-reader `[leaf][channel]`
-   segments) makes the carve vectors fully general.
-2. **the remaining levels keep the LATTICE order, except the levels this side CARVES,
-   which move OUTERMOST** keeping their lattice order among themselves.
+**the levels this side CARVES go OUTERMOST**, keeping their lattice order among
+themselves, and **the levels it spans whole go inside them in lattice order**. NO LEVEL IS
+PINNED (K35 S4a): the retained plane published `bf16x2` words of two LATTICE-ADJACENT
+leaves, which forced the lattice's innermost level to lie lowest in both private orders
+and its span to be at least two; writer-side placement stores each leaf on its own, so the
+carve vectors are fully general on both sides.
 
-A side carves where its declaration marks it sparse, so rule 2 is the PRIVATE-ORDER RULE
+The PAIR LEVEL — which seeds the packed pairs and carries the dead-row zeroing — is
+therefore simply the innermost level OF THE ORDER: a lane mints two adjacent private slots
+at once and they differ in that level's digit, so its two amplitudes are adjacent in the
+staged run and one four-byte access covers the pair. Levels of span one occupy no bits, so
+the level wanted is the lowest with a span of at least two, and a box holds at least two
+leaves, so exactly one qualifies. It is a statement about the ORDER only; the lattice is
+not consulted.
+
+A side carves where its declaration marks it sparse, so this is the PRIVATE-ORDER RULE
 in the vector's vocabulary — *dense levels innermost, sparse levels outermost*: an
 eight-slot n-tile spans dense digits, and each sparse level indexes WHOLE tiles, where a
 digit skip is exact. The order is not cosmetic: it is the readout's MMA **k-order**, so
 it fixes the fp32 summation order and therefore the bits.
 
-The rule reproduces the two single-level maps it replaces EXACTLY — the read side's
-q-major order is the lattice order (`3,2,1,0` at `D = 4`), the write side's `CL`-major
-order is `CW` moved outermost (`3,1,0,2` at `D = 4`, `1,0` at `D = 2`) — which is what
-makes the span-vector build byte-identical to the single-level one at every arm that
-existed before it.
+Dropping the pin MOVES the read order at every carved arm, and no write order at all
+(their carved level is never the lattice's innermost): at the `D = 2` ALT arms the read
+order becomes `0` innermost with the carved `1` outermost where the pin had `1` innermost,
+and at `deep4` / `carve4` it becomes `2,1,0,3` and `2,0,3,1`. That order is the readout's
+MMA **k-order**, so it changes the fp32 summation order and therefore `num`/`den` in the
+last bits; the FOLD's arithmetic is per-leaf and per-level and does not move, so the state
+plane stays bit-identical. The oracle is the gate.
 
 ### Per-level coordinates
 
@@ -394,7 +470,7 @@ argument that failed before. THE DEAD-ROW LAW: a dead row is a FINITE (stale) va
 with a ZERO coefficient row — finite operand, zero weight, contributing exactly nothing —
 and coverage is a ONCE-PER-WINDOW clear of the whole segment plus a PER-BATCH zeroing of
 the dead COEFFICIENT rows only. The window's clear is what makes every row finite (the
-published transit plane straddles these very bytes); thereafter a value row is either
+published exchange segments straddle these very bytes); thereafter a value row is either
 this batch's placement or an earlier one's, both finite, and a full batch writes nothing
 at all between the barriers.
 
@@ -422,8 +498,8 @@ levels it CARVES lie outermost, so the product splits cleanly:
 
 `memo` does not depend on the stream, so it is minted ONCE per (token, lane) and reused
 by every stream that wants the token — that is the sub-product memo, and its shape is
-the span vector's, at compile time. The level lying LOWEST in the order (level `D-1`, by
-rule 1) supplies BOTH slots of a packed pair with one four-byte access, because its two
+the span vector's, at compile time. The level lying LOWEST in the order
+(`PMW::kPairLevel`) supplies BOTH slots of a packed pair with one four-byte access, because its two
 digits are adjacent; every other level's digit is constant across the pair and is
 splatted. At the `D = 2` ALT arms that is ONE shared access and ONE `mul_bf16x2` per
 (token, stream) row per lane.

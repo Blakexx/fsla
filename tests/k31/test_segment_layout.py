@@ -211,35 +211,267 @@ def test_the_segment_access_patterns_are_derived_not_guessed(arm):
     assert worst <= 2, f"the expansion's store is {worst}-way, above the two-row floor"
 
 
-# ---------------------------------------- the TRANSIT PLANE's swizzle, both widths
+# ------------------------------------------ the EXCHANGE's segments, both changes
 
-@pytest.mark.parametrize("bc", [64, 128, 256], ids=["bc64", "bc128", "bc256"])
-@pytest.mark.parametrize("d_v", [D_V, WIDE], ids=["dv64", "dv128"])
-def test_the_transit_swizzle_is_a_bank_permutation_at_either_width(d_v, bc):
-    """``CarryGeom::kHiLD`` / ``kHiSwz``, derived rather than measured into place.
+#: THE ARM'S TWO CARVES, mirroring the `CARRY_ARM_*` rows of `csrc/rola/src/carry/carry.cu`
+#: -- the per-level digit span one STREAM owns on the write side and on the read side.
+#: The kernel derives everything below from these two vectors and nothing else, so the
+#: model needs them and nothing else either.
+CARVES = {
+    #: keyed by `(widths, k, m, d_v, declaration)` -- the arm's key less the window,
+    #: which no carve depends on.
+    ((256, 256), 4, 8, D_V, carry_ops.LEAF_SPLIT): ((2, 16), (8, 4), 1),
+    ((64, 64), 4, 8, D_V, carry_ops.LEAF_SPLIT): ((2, 16), (8, 4), 1),
+    ((8, 8, 8, 8), 2, 8, D_V, carry_ops.LEAF_SPLIT): ((2, 2, 1, 8), (2, 2, 4, 2), 1),
+    ((4, 4, 4, 4), 4, 1, D_V, carry_ops.LEAF_SPLIT): ((1, 4, 2, 4), (4, 1, 4, 2), 1),
+    ((256, 256), 4, 8, D_V, carry_ops.CONTAINER_1X8_SPLIT): ((2, 16), (8, 2), 2),
+    ((256, 256), 4, 8, D_V, carry_ops.CONTAINER_1X8_STREAMS): ((1, 16), (8, 2), 1),
+    ((256, 256), 4, 8, WIDE, carry_ops.CONTAINER_1X8_SPLIT): ((2, 16), (8, 2), 2),
+    ((256, 256), 4, 8, WIDE, carry_ops.CONTAINER_1X8_STREAMS): ((1, 16), (8, 2), 1),
+    ((256, 256), 4, carry_ops.CAP_BC64, WIDE, carry_ops.LEAF_SPLIT): ((1, 16), (4, 4), 1),
+}
 
-    The transit plane is ``[channel][leaf]`` at row stride ``kHiLD = BC + 16`` bf16 with
-    the XOR swizzle ``word ^= (chan & 7)`` on the two-leaf WORD index.  ONE access of
-    either leg -- the publish's ``st.shared.u32`` and the pull's ``ld.shared.u32`` -- is
-    one (m-tile, n-tile) pair: the lockstep unit's lane quads carry eight CONSECUTIVE
-    channels ``q = lane >> 2`` and four ADJACENT leaf pairs ``p0 + (lane & 3)``.  So the
-    word is ``(m*16 + q) * (LD/2) + ((p0 + a) ^ q)``, the m-tile term vanishes mod 32,
-    and what is left is ``8q + ((p0+a)^q)`` -- eight four-bank blocks, each a permutation
-    of its four.  MAX-WAY ONE, and INDEPENDENT OF ``d_v``: the width changes only how
-    many such accesses there are.  The mass row (``chan = d_v``) rides the same map.
+
+def _ilog2(x):
+    return x.bit_length() - 1
+
+
+class _Side:
+    """`StreamSpans`: a side's stream grid and its `SpanMap` private order."""
+
+    def __init__(self, owner_spans, spans):
+        self.s = list(spans)
+        self.g = [o // v for o, v in zip(owner_spans, spans)]
+        self.carves = [v < o for o, v in zip(owner_spans, spans)]
+        self.D = len(spans)
+        self.streams = 1
+        self.leaf = 1
+        for x in self.g:
+            self.streams *= x
+        for x in self.s:
+            self.leaf *= x
+        self.grid_div = [_prod(self.g[l + 1:]) for l in range(self.D)]
+        #: THE PRIVATE-ORDER RULE with NO LEVEL PINNED (K35 S4a): carved levels
+        #: outermost in lattice order, whole-spanned levels inside them in lattice order.
+        def before(a, b):
+            if self.carves[a] != self.carves[b]:
+                return not self.carves[a]
+            return a > b
+        self.rank = [sum(1 for i in range(self.D) if before(i, l)) for l in range(self.D)]
+        bits = [_ilog2(v) for v in self.s]
+        self.shift = [sum(bits[i] for i in range(self.D) if self.rank[i] < self.rank[l])
+                      for l in range(self.D)]
+        pair = [l for l in range(self.D) if self.shift[l] == 0 and self.s[l] >= 2]
+        assert len(pair) == 1, f"{spans}: exactly one level lies lowest with a span above one"
+        self.pair_level = pair[0]
+
+    def leaf_of(self, slot, off, run_shift):
+        """the LATTICE leaf of a private slot, given the stream's digit offsets."""
+        return sum((((slot >> self.shift[l]) & (self.s[l] - 1)) + off[l]) << run_shift[l]
+                   for l in range(self.D))
+
+    def off(self, stream):
+        return [((stream // self.grid_div[l]) % self.g[l]) * self.s[l] for l in range(self.D)]
+
+
+def _prod(xs):
+    out = 1
+    for x in xs:
+        out *= x
+    return out
+
+
+def _xch(owner_spans, sw, sr, wps):
+    """`(rows_read, rows_write, leaves_read, leaves_write)` -- the two row maps."""
+    D = len(owner_spans)
+    run_shift = [sum(_ilog2(owner_spans[i]) for i in range(l + 1, D)) for l in range(D)]
+    W, R = _Side(owner_spans, sw), _Side(owner_spans, sr)
+    warps, leaf_e, leaf_w = R.streams, R.leaf, W.leaf
+    assert W.streams * wps == warps and warps * leaf_e == _prod(owner_spans)
+
+    def rows_read(warp):
+        """a warp's `(write slot -> consumer row, lattice leaf)` under the WRITE carve."""
+        wstrm, col = warp >> _ilog2(wps), warp & (wps - 1)
+        off = W.off(wstrm)
+        out = []
+        for slot in range(leaf_e):
+            ps = slot + col * leaf_e
+            row = 0
+            for l in range(D):
+                dig = ((ps >> W.shift[l]) & (W.s[l] - 1)) + off[l]
+                row += (dig // R.s[l]) * (R.grid_div[l] * leaf_e) + ((dig % R.s[l]) << R.shift[l])
+            out.append((row, W.leaf_of(ps, off, run_shift)))
+        return out
+
+    def rows_write(warp):
+        """a warp's `(read slot -> consumer row, lattice leaf)` under the READ carve."""
+        off = R.off(warp)
+        out = []
+        for slot in range(leaf_e):
+            row = 0
+            for l in range(D):
+                dig = ((slot >> R.shift[l]) & (R.s[l] - 1)) + off[l]
+                row += (dig // W.s[l]) * (W.grid_div[l] * leaf_w) + ((dig % W.s[l]) << W.shift[l])
+            out.append((row, R.leaf_of(slot, off, run_shift)))
+        return out
+
+    return W, R, rows_read, rows_write
+
+
+def _swz(row):
+    """``xch_swz``: the row's granule swizzle word."""
+    return ((row >> 3) ^ (row >> 4) ^ (row >> 6)) & 7
+
+
+def _mass_word(row):
+    """``xch_mass``: the mass's element offset inside the row's ONE pad granule."""
+    return 2 * (((row >> 3) ^ (row >> 5)) & 3)
+
+
+def _elem(row, chan, d_v):
+    return d_v + _mass_word(row) if chan == d_v else ((chan >> 3) ^ _swz(row)) * 8 + (chan & 7)
+
+
+@pytest.mark.parametrize("arm", ARMS)
+def test_the_exchange_relays_the_state_leaf_for_leaf(arm):
+    """THE ROUND TRIP: every leaf reaches the consumer's row that holds that same leaf.
+
+    The exchange is writer-side placement: a publisher owning a slot in ITS order names
+    the CONSUMER's row directly, and the consumer then pulls rows it addresses as its OWN
+    private slots.  The two derivations meet nowhere else, so what has to be proven is
+    that the composite is the IDENTITY ON LATTICE LEAVES -- for both changes of a window,
+    write order to read order and back.  A stride, an order or a stream-grid term that
+    disagreed between the two sides would show up here as a leaf landing in the wrong row.
     """
-    ld = bc + 16
-    assert (ld // 2) % 32 == 8, "the row stride must step a quad-group one block on"
-    for m in range(d_v // 16 + 1):          # every channel m-tile, and the mass row
-        chan0 = d_v if m == d_v // 16 else m * 16
-        for p0 in range(0, bc // 2, 4):     # every n-tile's first leaf pair
-            words = []
-            for lane in range(32):
-                q = lane >> 2
-                chan = chan0 + (0 if chan0 == d_v else q)
-                if chan0 == d_v and (lane >> 2) != 0:
-                    continue                # the mass rides ONE row, one lane quad
-                words.append(chan * (ld // 2) + ((p0 + (lane & 3)) ^ (chan & 7)))
-            assert _banks(words) == 1, (
-                f"d_v={d_v} BC={bc} m-tile {m} pair {p0}: the swizzle is "
-                f"{_banks(words)}-way, not a bank permutation")
+    widths, k, m, d_v, W, declaration, modes = arm
+    _, s, _, bc, _ = carry_ops.box_shape(widths, k, m)
+    sw, sr, wps = CARVES[(tuple(widths), k, m, d_v, declaration)]
+    owner = [int(x) for x in s]
+    Wside, Rside, rows_read, rows_write = _xch(owner, sw, sr, wps)
+    warps = Rside.streams
+    for name, rows_of, consumer in (("fold->readout", rows_read, Rside),
+                                    ("readout->fold", rows_write, Wside)):
+        seen = {}
+        for warp in range(warps):
+            for row, leaf in rows_of(warp):
+                assert row not in seen, f"{name}: two publishers claim row {row}"
+                seen[row] = leaf
+        assert len(seen) == int(bc), f"{name}: the publishers cover {len(seen)} of {bc} rows"
+        #: and the consumer reads its OWN rows as its OWN private slots, so the row's
+        #: leaf must be the leaf that consumer's slot names.
+        leaf_e = consumer.leaf if consumer is Rside else Rside.leaf
+        run_shift = [sum(_ilog2(owner[i]) for i in range(l + 1, len(owner)))
+                     for l in range(len(owner))]
+        for warp in range(warps):
+            if consumer is Rside:
+                off, slots = Rside.off(warp), range(leaf_e)
+                want = [Rside.leaf_of(q, off, run_shift) for q in slots]
+            else:
+                wstrm, col = warp >> _ilog2(wps), warp & (wps - 1)
+                off = Wside.off(wstrm)
+                want = [Wside.leaf_of(p + col * leaf_e, off, run_shift) for p in range(leaf_e)]
+            for q, leaf in enumerate(want):
+                got = seen[warp * leaf_e + q]
+                assert got == leaf, (
+                    f"{name}: consumer {warp} slot {q} pulls leaf {got}, wants {leaf}")
+
+
+@pytest.mark.parametrize("arm", ARMS)
+def test_the_exchange_row_map_is_affine_in_the_slots_bits(arm):
+    """``XchRow``: the kernel pays the map ONCE per warp, so it had better be affine.
+
+    A slot's level-``l`` digit is ``offset_l | field_l`` (the stream's offset is a
+    multiple of the span, so it sits above the field); the consumer's group and private
+    digit are a BIT SPLIT of that digit; the group terms sum into the consumer index in
+    mixed radix and the private terms into disjoint fields of the consumer's slot.  Every
+    sum is an OR, so ``row(slot) = row(0) + sum over the slot's SET BITS of a per-bit
+    STEP`` and every step is compile-time.  The kernel folds the base and the lane's slot
+    pair into ONE per-warp value and adds a constant per fragment; this pins the property
+    that makes that legal, and pins that the steps do not depend on WHICH stream publishes.
+    """
+    widths, k, m, d_v, W, declaration, modes = arm
+    _, s, _, bc, _ = carry_ops.box_shape(widths, k, m)
+    sw, sr, wps = CARVES[(tuple(widths), k, m, d_v, declaration)]
+    owner = [int(x) for x in s]
+    Wside, Rside, rows_read, rows_write = _xch(owner, sw, sr, wps)
+    leaf_e = Rside.leaf
+    for name, rows_of, slots in (("fold->readout", rows_read, Wside.leaf // wps),
+                                 ("readout->fold", rows_write, Rside.leaf)):
+        assert slots == leaf_e
+        steps = None
+        for warp in range(Rside.streams):
+            table = [row for row, _ in rows_of(warp)]
+            here = [table[1 << b] - table[0] for b in range(_ilog2(leaf_e))]
+            if steps is None:
+                steps = here
+            assert here == steps, f"{name}: warp {warp}'s per-bit steps are not the arm's"
+            for slot in range(leaf_e):
+                want = table[0] + sum(steps[b] for b in range(_ilog2(leaf_e))
+                                      if (slot >> b) & 1)
+                assert table[slot] == want, (
+                    f"{name}: warp {warp} slot {slot} is {table[slot]}, not the affine {want}")
+
+
+@pytest.mark.parametrize("arm", ARMS)
+def test_the_exchange_swizzle_is_a_bank_permutation(arm):
+    """``xch_swz`` / ``xch_mass``, derived from BOTH access patterns.
+
+    `LdX / 2` is 4 (mod 32) at both widths, so consecutive rows sit ONE four-bank block
+    apart and a bank is ``(4*row + 4*granule + word) mod 32``.
+
+    THE PULL is `ldmatrix.trans`, serviced eight lanes at a time: a phase is EIGHT
+    CONSECUTIVE rows at ONE granule and already walks eight distinct blocks, so it asks
+    only that the swizzle be CONSTANT over an aligned group of eight rows -- which
+    ``(row>>3)``-only terms are.
+
+    THE PUBLISH is `st.shared.b16`: one instruction covers the lane quad's FOUR
+    consumer rows x EIGHT CONSECUTIVE channels, and two lanes sharing a 32-bit word are
+    a BROADCAST and not a conflict, so it is four rows x four words inside ONE granule
+    and it needs the four rows in four DIFFERENT blocks.  Those rows are the consumer-
+    side images of four leaves and the carves scatter them, so the row index must reach
+    the granule; every row bit gets a distinct nonzero image under ``xch_swz``.  The
+    MASS is one element and must spread over its pad granule's four words on its own.
+    """
+    widths, k, m, d_v, W, declaration, modes = arm
+    _, s, _, bc, _ = carry_ops.box_shape(widths, k, m)
+    sw, sr, wps = CARVES[(tuple(widths), k, m, d_v, declaration)]
+    owner = [int(x) for x in s]
+    Wside, Rside, rows_read, rows_write = _xch(owner, sw, sr, wps)
+    ld_x, n_g, mch = d_v + LD_PAD, d_v // 8, d_v // 16
+    leaf_e = Rside.leaf
+    assert (ld_x // 2) % 32 == 4, "a segment row must step one four-bank block"
+
+    def words(rows, chans):
+        return [(rows[lane & 3] * ld_x + _elem(rows[lane & 3], chans(lane), d_v)) // 2
+                for lane in range(32)]
+
+    #: THE PUBLISH, both changes.  The lane quad's four slots are four rows; the eight
+    #: channel lanes are one granule.  `fold->readout` publishes the accumulator's
+    #: `(channel, slot)`, `readout->fold` the A fragment's, and the two differ only in
+    #: which of the lane's two channel halves rides which register.
+    for name, rows_of in (("fold->readout", rows_read), ("readout->fold", rows_write)):
+        for warp in range(Rside.streams):
+            table = [row for row, _ in rows_of(warp)]
+            for j in range(leaf_e // 8):
+                for el in range(2):
+                    rows = [table[j * 8 + 2 * a + el] for a in range(4)]
+                    for mt in range(mch):
+                        for h in range(2):
+                            got = _banks(words(rows, lambda l, mt=mt, h=h:
+                                               mt * 16 + (l >> 2) + 8 * h))
+                            assert got == 1, f"{name}: the publish is {got}-way"
+                    got = _banks(words(rows, lambda l: d_v)[:4])
+                    assert got == 1, f"{name}: the mass publish is {got}-way"
+    #: THE PULL, both changes: eight consecutive rows of the consumer's own segment at
+    #: one granule, and the mass pair's four rows.
+    for base in range(0, int(bc), 8):
+        for g in range(n_g):
+            wl = []
+            for lr in range(8):
+                row = base + lr
+                w0 = (row * ld_x + ((g ^ _swz(row)) * 8)) // 2
+                wl += [w0 + i for i in range(4)]
+            assert _banks(wl) == 1, "the ldmatrix.trans phase must be conflict-free"
+        for hf in range(2):
+            rows = [base + 2 * a + hf for a in range(4)]
+            assert _banks(words(rows, lambda l: d_v)) == 1, "the mass pull must be conflict-free"

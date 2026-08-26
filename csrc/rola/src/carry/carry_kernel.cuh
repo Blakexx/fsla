@@ -51,7 +51,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010021;
+static constexpr int kCarryBuildMagic = 31010022;
 
 static constexpr int kPadE = 8;  // bf16 row padding, elements (16 B)
 static constexpr int kPadF = 4;  // fp32 row padding, elements (16 B)
@@ -94,7 +94,7 @@ __device__ __forceinline__ void static_for(F&& f) {
 //: to the stream: the lattice's `local` order, the state plane, decode and the facts
 //: geometry never see it, so the readout needs no state image, no `ldmatrix` for A
 //: and no CTA barrier.  The two sides carve the SAME box along different axes, which
-//: is why the state evacuates registers at each phase change (the transit plane).
+//: is why the state evacuates registers at each phase change (the exchange).
 //:
 //: THE EXECUTOR MAP (K35 S3a), under the terminology law: a STREAM owns a box, an
 //: EXECUTOR (a warp on sm_80) runs streams, and the two counts are independent dials
@@ -168,53 +168,73 @@ struct CarryGeom {
   static constexpr int stg_bytes = kStgSlots * kSegRows * BP::kStageW * (int)sizeof(__nv_bfloat16);
   static constexpr int gain_bytes = align16c(kStgSlots * kSegRows * (int)sizeof(__nv_bfloat16));
   //: the state plane's page, at entry and exit only -- dead for the whole window loop,
-  //: which is why the transit straddles it too.
+  //: which is why the exchange and the read panels straddle it too.
   static constexpr int out_bytes = kAtomLeaves * LdO * (int)sizeof(float);
 
-  //: ---- K35-E: THE TRANSIT PLANE -------------------------------------------
-  //: The state EVACUATES registers at each phase change, because the readout and the
-  //: fold carve the same leaves along DIFFERENT lattice axes.  The plane is
-  //: `[channel][leaf]`, which is A row-major for the readout; its rows are the `kDv`
-  //: value channels plus ONE mass row -- the mass accumulator's rows 1..15 are
-  //: identically zero by construction of `ones_a`, so moving them would move zeros.
-  static constexpr int kPlaneRows = kDv + 1;
-  //: `LD` AND ITS SWIZZLE ARE A DERIVATION, NOT A GUESS (findings, derivation 2).
-  //: `word ^= (chan & 7)` at `LD = BC + 16` measures max-way ONE on both legs.
+  //: ---- K35-E: THE EXCHANGE'S SEGMENTS -------------------------------------
+  //: THE STATE IS RE-LAID AT EVERY PHASE CHANGE (P76's ORDER LAW), by WRITER-SIDE
+  //: PLACEMENT: the publisher stores EACH LEAF'S ROW of channels at that leaf's slot in
+  //: the CONSUMER's private order, into the consumer's own contiguous segment; a CTA
+  //: barrier; the consumer pulls its segment straight into fragments with
+  //: `ldmatrix.trans` and the segment is DEAD.  The two changes of a window -- write
+  //: order to read order before the readout, read order back to write order after it --
+  //: are consecutive moments and never co-live, so they are ONE region.
   //:
-  //: AND THE DERIVATION IS INDEPENDENT OF `d_v`, which is why the width adds no
-  //: swizzle clause (K35 S3b).  One access of either leg is one (m-tile, n-tile) pair:
-  //: the eight lanes of a quad-group carry eight CONSECUTIVE channels `q = lane>>2`
-  //: and the four quads carry four ADJACENT leaf pairs `p0 + (lane&3)` -- adjacent
-  //: because rule 1 puts the lattice's innermost level lowest in both private orders.
-  //: The word is `chan * (LD/2) + ((p0 + a) ^ q)` with `chan = m*kMmaM + q`, and
-  //: `kMmaM * (LD/2) == 0 (mod 32)` at every `BC` here, so the m-tile drops out and the
-  //: bank is `(q * (LD/2) + ((p0 + a) ^ q)) mod 32`.  `LD/2` is `8 (mod 32)` at
-  //: `BC = 64` and at `BC = 128` alike, so that is `8q + ((p0+a)^q)`: eight blocks of
-  //: four banks, each block a permutation of its four.  MAX-WAY ONE, at every `d_v` --
-  //: the width changes only how many such accesses there are (`MCH` of them), never
-  //: their shape.  `tests/k31/test_segment_layout.py` runs the model over both widths.
-  static constexpr int kHiLD = BC + 16;
-  static constexpr int kHiSwz = 7;
-  static_assert((kMmaM * (kHiLD / 2)) % kBallotLanes == 0
-                    && (kHiLD / 2) % kBallotLanes == kBallotLanes / 4,
-                "the transit's row stride must step a quad-group by one four-bank block, "
-                "which is what makes the XOR swizzle a bank permutation at any `d_v`");
-  static constexpr int plane_bytes = kPlaneRows * kHiLD * (int)sizeof(__nv_bfloat16);
-  //: THE TRANSIT STRADDLES THE FOLD'S DEAD TENANTS AND PAYS ONLY THE SHORTFALL.  The
-  //: segments, the coefficient staging and the page buffer are dead for the whole
-  //: readout, which is exactly the plane's lifetime; where they do not cover it the
-  //: allocation carries a TAIL, and that tail is the plane's only private cost.
-  static constexpr int fold_dead_bytes =
-      seg_v_bytes + seg_c_bytes + stg_bytes + gain_bytes + out_bytes;
-  static constexpr int tail_bytes = plane_bytes > fold_dead_bytes
-                                        ? align16c(plane_bytes - fold_dead_bytes)
-                                        : 0;
+  //: THE LAYOUT, `XchgSegments`: `[consumer][leaf][channel]` over `BC` rows, because
+  //: the consumers partition the owner's box on either side (`kWarps * kLeafE == BC`).
+  //: A row is the `kCols` channels -- `kDv` value channels and the MASS -- padded to a
+  //: sixteen-byte quantum, which is the same expression `LdV` carries because `kDv` is
+  //: already a whole number of quanta: 72 and 136 at the two widths.
+  static constexpr int LdX = kDv + kPadE;
+  static constexpr int kXchG = kDv / 8;  // the row's sixteen-byte CHANNEL granules
+  static constexpr int kXchRows = kWarps * kLeafE;
+  static_assert(kXchRows == BC && LdX >= kCols && LdX % 8 == 0,
+                "the consumers partition the box and a segment row is a whole number of "
+                "sixteen-byte quanta");
+  static constexpr int xch_bytes = kXchRows * LdX * (int)sizeof(__nv_bfloat16);
+  //: THE SWIZZLE IS A DERIVATION FROM BOTH ACCESS PATTERNS, NOT A GUESS (findings,
+  //: derivation 4).  `LdX / 2` is `4 (mod 32)` at both widths, so consecutive rows sit
+  //: ONE four-bank block apart and a bank is `(4*row + 4*granule + word) mod 32`.
+  //:   THE PULL is `ldmatrix.trans`, serviced eight lanes at a time: a phase is EIGHT
+  //:   CONSECUTIVE rows at ONE granule, so it already walks eight distinct blocks and
+  //:   asks only that the swizzle be CONSTANT over an aligned group of eight rows.
+  //:   THE PUBLISH is `st.shared.b16`: one instruction covers FOUR rows (the lane's
+  //:   quad, four leaves of one fragment) x EIGHT CONSECUTIVE channels, and two lanes
+  //:   sharing a 32-bit word are a broadcast rather than a conflict -- so it is four
+  //:   rows x four words in ONE granule, and it needs the four rows to land in four
+  //:   DIFFERENT blocks.  Those four rows are the consumer-side images of four leaves
+  //:   and are scattered by the two carves, so the row's own index must reach the
+  //:   granule: `sw(row) = ((row>>3) ^ (row>>4) ^ (row>>6)) & 7` gives every row bit a
+  //:   distinct nonzero image and is constant over an aligned eight.
+  //: THE MASS rides the row's ONE PAD granule, whose four words the single mass element
+  //: must spread over on its own: `n(row) = ((row>>3) ^ (row>>5)) & 3` at element
+  //: `kDv + 2*n`.  `tests/k31/test_segment_layout.py` runs both legs of both changes
+  //: over every built arm and both widths and pins max-way ONE.
+  static_assert((LdX / 2) % kBallotLanes == kBallotLanes / 8,
+                "a segment row must step one four-bank block, which is what makes the "
+                "consumer's eight-row phase a bank permutation with no swizzle at all");
+  static_assert(kXchG >= 8 && (kXchG & (kXchG - 1)) == 0,
+                "the swizzle XORs a three-bit word into the granule index, so the CHANNEL "
+                "granules must be a power-of-two count of at least eight -- which keeps the "
+                "swizzled granule off the ONE pad granule the mass rides");
 
   // ---- THE READOUT'S TENANTS -----------------------------------------------
   //: THE READ PANELS ARE A TWO-SLOT RING.  A window's readouts all precede its folds,
   //: so the read side produces one batch AHEAD inside its own half, which is what puts
   //: the produce's global-load latency underneath the previous batch's MMA block.
   static constexpr int read_bytes = 2 * kWarps * CP * LdR * (int)sizeof(__nv_bfloat16);
+
+  //: ---- THE STRADDLE.  Three sets of tenants live in the region below the window's
+  //: index, and NO TWO OF THEM ARE EVER CO-LIVE: the FOLD's (the per-stream segments,
+  //: the rolling staging, the gain and the page buffer), the CHANGE's (the exchange
+  //: segments) and the READOUT's (the read panels, dead through the whole fold -- the
+  //: S3b observation).  So the allocation carries the MAXIMUM and every one of them
+  //: begins at the region's base; nothing is shrunk to fit another.
+  static constexpr int fold_dead_bytes =
+      seg_v_bytes + seg_c_bytes + stg_bytes + gain_bytes + out_bytes;
+  static constexpr int straddle_bytes = align16c(
+      fold_dead_bytes > xch_bytes ? (fold_dead_bytes > read_bytes ? fold_dead_bytes : read_bytes)
+                                  : (xch_bytes > read_bytes ? xch_bytes : read_bytes));
   //: ONE READ LIST PER STREAM, plus the CTA's two shared ones.  The write side keeps
   //: NO per-stream list any more: the UNION list is the whole schedule and a stream's
   //: membership is its published ballot word.
@@ -260,8 +280,12 @@ struct CarryGeom {
   static constexpr int off_stg = off_seg_c + seg_c_bytes;
   static constexpr int off_gain = off_stg + stg_bytes;
   static constexpr int off_out = off_gain + gain_bytes;
-  static constexpr int off_read = off_out + out_bytes + tail_bytes;
-  static constexpr int off_list = off_read + read_bytes;
+  //: THE THREE MOMENTS ALL BEGIN AT THE REGION'S BASE, which is what "straddled" means
+  //: here: the fold's tenants, the exchange's segments and the read panels are the same
+  //: bytes read under three different layouts at three different moments.
+  static constexpr int off_xch = 0;
+  static constexpr int off_read = 0;
+  static constexpr int off_list = straddle_bytes;
   static constexpr int off_mem = off_list + list_bytes;
   static constexpr int off_pfx = off_mem + mem_bytes;
   static constexpr int off_mask = off_pfx + pfx_bytes;
@@ -271,19 +295,18 @@ struct CarryGeom {
   //: The window's INDEX -- the lists, the published ballots, the prefix counts and the
   //: liveness mask -- is live in every moment and is nobody's straddle.  The three
   //: moments over it are the FOLD (segments, staging, gain, the page buffer), the
-  //: CHANGE (the transit alone) and the READOUT (the transit, still valid, plus the
-  //: read panels).  The CHANGE and the READOUT reach their tenants THROUGH the fold's,
-  //: which is what `tail_bytes` sizes: the allocation carries `max(fold_dead, plane)`
-  //: for that straddled region and never shrinks either tenant to fit the other.
+  //: CHANGE (the exchange segments alone) and the READOUT (the read panels alone: the
+  //: plane is gone, and with it the readout's `d_v`-proportional tenant).
   static constexpr int index_bytes = list_bytes + mem_bytes + pfx_bytes + mask_bytes;
   static constexpr int fold_bytes = fold_dead_bytes + index_bytes;
-  static constexpr int change_bytes = plane_bytes + index_bytes;
-  static constexpr int readout_bytes = plane_bytes + read_bytes + index_bytes;
+  static constexpr int change_bytes = xch_bytes + index_bytes;
+  static constexpr int readout_bytes = read_bytes + index_bytes;
   static_assert((size_t)fold_bytes <= bytes && (size_t)change_bytes <= bytes
                     && (size_t)readout_bytes <= bytes,
                 "the allocation covers every moment's tenants");
-  static_assert(plane_bytes <= fold_dead_bytes + tail_bytes,
-                "the transit must fit the fold's dead region plus its declared tail");
+  static_assert(fold_dead_bytes <= straddle_bytes && xch_bytes <= straddle_bytes
+                    && read_bytes <= straddle_bytes,
+                "the straddled region covers each moment's tenants whole");
   static_assert(design::smem_fits(bytes), "this arm does not fit the SMEM maximum");
 };
 
@@ -320,18 +343,18 @@ struct ProduceMap {
 //: materialized gate plane.  A span-1 level contributes a constant and drops out of
 //: the order on its own.
 //:
-//: THE PRIVATE-ORDER RULE, which fixes the order from the span vector alone:
-//:   1. level `D - 1` is INNERMOST.  The transit plane pairs `bf16x2` on
-//:      LATTICE-ADJACENT leaves, so the level lying lowest in `p` must be the level
-//:      lying lowest in `local`, and its span must be at least two.  THAT CLAUSE IS
-//:      THE CURRENT EXCHANGE'S LIMITATION, NOT THE DESIGN'S: it comes from the plane
-//:      publishing pairs, and the rebuilt exchange (writer-side placement into
-//:      per-reader `[leaf][channel]` segments) admits any span vector.
-//:   2. the remaining levels keep the LATTICE order, except the levels this side
-//:      CARVES, which move OUTERMOST keeping their lattice order among themselves.
-//: A side carves where it is declared sparse, so rule 2 is "sparse outermost, dense
-//: innermost": an eight-slot n-tile spans dense digits and each sparse level indexes
-//: WHOLE tiles, where the digit skip is exact.
+//: THE PRIVATE-ORDER RULE, which fixes the order from the span vector alone AND FROM
+//: NOTHING ELSE (K35 S4a): the levels this side CARVES go OUTERMOST keeping their
+//: lattice order among themselves, the levels it spans whole go inside them in lattice
+//: order, and NO LEVEL IS PINNED.  A side carves where it is declared sparse, so the
+//: rule is "sparse outermost, dense innermost": an eight-slot n-tile spans dense digits
+//: and each sparse level indexes WHOLE tiles, where the digit skip is exact.
+//:
+//: THE PIN IS GONE BECAUSE THE EXCHANGE NO LONGER PAIRS LATTICE-ADJACENT LEAVES.  The
+//: retained plane published `bf16x2` words of two adjacent leaves, which forced the
+//: lattice's innermost level to lie lowest in BOTH private orders (`span(D-1) >= 2`);
+//: writer-side placement stores each leaf on its own, so the carve vectors are fully
+//: general on both sides (P76, THE ORDER LAW).
 template <int D, int B, int K, int M, int C, class SV>
 struct SpanMap {
   using BP = BoxPlan<D, B, K, M>;
@@ -346,15 +369,15 @@ struct SpanMap {
                 "a token's panel row splits over a power-of-two lane group");
   static constexpr int span(int l) { return SV::s(l); }
   static constexpr int bits(int l) { return ilog2c(span(l)); }
-  //: rule 2 as a strict order on the levels beneath `D - 1`, and `rank` as the
-  //: position it induces -- `0` innermost.  Both are counts, so neither tabulates.
+  //: the rule as a strict order on the levels, and `rank` as the position it induces --
+  //: `0` innermost, and nothing pinned there.  Both are counts, so neither tabulates.
   static constexpr bool before(int a, int b) {
     return SV::carves(a) != SV::carves(b) ? !SV::carves(a) : a > b;
   }
   static constexpr int count_before(int l, int i) {
-    return i >= D - 1 ? 0 : (before(i, l) ? 1 : 0) + count_before(l, i + 1);
+    return i >= D ? 0 : (before(i, l) ? 1 : 0) + count_before(l, i + 1);
   }
-  static constexpr int rank(int l) { return l == D - 1 ? 0 : 1 + count_before(l, 0); }
+  static constexpr int rank(int l) { return count_before(l, 0); }
   static constexpr int shift_from(int l, int i) {
     return i >= D ? 0 : (rank(i) < rank(l) ? bits(i) : 0) + shift_from(l, i + 1);
   }
@@ -364,15 +387,71 @@ struct SpanMap {
     return vary(l) < 1 ? 1 : (vary(l) > span(l) ? span(l) : vary(l));
   }
   static constexpr int idx_of(int l, int j) { return (j >> shift(l)) & (n_l(l) - 1); }
-  //: the ADJACENT PAIR comes from the level lying LOWEST in `p`, which rule 1 makes
-  //: the lattice's innermost level: a lane's two adjacent slots are two adjacent
-  //: digits of that level, hence two adjacent leaves.
-  static constexpr int kPairLevel = D - 1;
-  static_assert(shift(kPairLevel) == 0 && n_l(kPairLevel) >= 2 && span(D - 1) >= 2,
-                "the lattice's innermost level lies lowest in the private order and supplies "
-                "the pair the transit plane publishes (rule 1: the CURRENT exchange's "
-                "requirement, which the rebuilt one lifts)");
+  //: THE PACKED PAIR IS SIMPLY THE INNERMOST LEVEL OF THE ORDER.  A lane mints two
+  //: adjacent private slots at once, and they differ in the digit of whichever level
+  //: lies lowest in `p` -- so that level's two amplitudes are adjacent in the staged
+  //: run and one four-byte access covers the pair.  Levels of span one occupy no bits
+  //: and their position is immaterial, so the level wanted is the lowest one with a
+  //: span of at least two; a box holds at least two leaves, so exactly one level
+  //: qualifies.  This is a statement about the ORDER only -- the lattice is not
+  //: consulted, and no side of the exchange asks for adjacency any more.
+  static constexpr int pair_from(int l) {
+    return l >= D ? -1 : ((shift(l) == 0 && span(l) >= 2) ? l : pair_from(l + 1));
+  }
+  static constexpr int kPairLevel = pair_from(0);
+  static_assert(kLeaf >= 2 && kPairLevel >= 0 && n_l(kPairLevel) >= 2,
+                "a box has at least two leaves, so exactly one level lies lowest in the "
+                "private order with a span of at least two and supplies the packed pair");
 };
+
+//: THE EXCHANGE'S ROW MAP, AS AN AFFINE MAP OVER THE SLOT'S BITS.  A publisher owns a
+//: slot in ITS order and must name the CONSUMER's row -- the consumer's index times its
+//: box plus the consumer's own private slot.  That map is AFFINE, and the proof is the
+//: absence of carries: a slot's level-`l` digit is `offset_l | field_l` (the stream's
+//: offset is a multiple of the span, so it occupies the bits above the field); the
+//: consumer's group and private digit are a BIT SPLIT of that digit; the group terms sum
+//: into the consumer index in mixed radix and the private terms into disjoint fields of
+//: the consumer's slot.  Every sum is therefore an OR, so
+//:     row(slot) = row(0) + sum over the slot's SET BITS of a per-bit STEP,
+//: and every step is COMPILE-TIME -- it depends on the two orders and the two stream
+//: grids and not on which stream is publishing.  The publisher pays the base ONCE per
+//: warp; a fragment's row is then the base plus a constant.
+//:
+//: `PMP`/`SVP` are the PUBLISHER's order and spans, `PMC`/`SVC` the CONSUMER's, and
+//: `LEAFC` the consumer's box, which is what its index scales by.
+template <int D, class PMP, class PMC, class SVC, int LEAFC>
+struct XchRow {
+  static constexpr int level_of(int p, int l) {
+    return l >= D ? -1
+                  : ((PMP::bits(l) > 0 && p >= PMP::shift(l) && p < PMP::shift(l) + PMP::bits(l))
+                         ? l
+                         : level_of(p, l + 1));
+  }
+  static constexpr int step_at(int p, int l) {
+    return l < 0
+               ? 0
+               : ((p - PMP::shift(l)) >= ilog2c(SVC::s(l))
+                      ? (1 << ((p - PMP::shift(l)) - ilog2c(SVC::s(l)))) * SVC::grid_div(l) * LEAFC
+                      : (1 << (PMC::shift(l) + (p - PMP::shift(l)))));
+  }
+  static constexpr int step(int p) { return step_at(p, level_of(p, 0)); }
+  //: the map of a whole constant, and of a runtime value bit by bit -- both the same sum.
+  static constexpr int kBits = 16;
+  static constexpr int steps(int v, int p) {
+    return p >= kBits ? 0 : (((v >> p) & 1) ? step(p) : 0) + steps(v, p + 1);
+  }
+  static constexpr int of(int v) { return steps(v, 0); }
+};
+
+//: THE EXCHANGE'S TWO SWIZZLE WORDS, AS CONSTEXPR FUNCTIONS -- and they are used at
+//: COMPILE TIME as often as at run time.  Both are XOR-folds of the row index, so both
+//: are GF(2)-LINEAR; and a publisher's row is `base | delta` with DISJOINT bits (that is
+//: the same no-carry fact that makes `XchRow` affine), so
+//:     swz(base | delta) == swz(base) ^ swz(delta)
+//: with `swz(delta)` a constant.  A publish therefore carries ONE swizzle word per warp
+//: and XORs a compile-time value into it per fragment: no per-row arithmetic at all.
+constexpr int xch_swz_of(int row) { return ((row >> 3) ^ (row >> 4) ^ (row >> 6)) & 7; }
+constexpr int xch_mw_of(int row) { return ((row >> 3) ^ (row >> 5)) & 3; }
 
 //: a contiguous run of `n` bf16, at the widest access that covers it.  The runs are
 //: naturally aligned by construction (a level's column base is a multiple of `B`, an
@@ -483,8 +562,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   constexpr int kStreams = G::kStreams;
   constexpr int kSegRows = G::kSegRows;
   //: THE FOLD'S TENANTS COME FIRST AND ADJACENT -- the per-stream segments, the
-  //: rolling coefficient staging and the page buffer -- because the retained plane
-  //: straddles exactly those, and they are the set that is dead for the whole readout.
+  //: rolling coefficient staging and the page buffer -- because the exchange's segments
+  //: and the read panels straddle exactly those, and they are the set that is dead for the
+  //: whole readout.
   __nv_bfloat16* const segV = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::off_seg_v);
   __nv_bfloat16* const segC = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::off_seg_c);
   __nv_bfloat16* const wstg = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::off_stg);
@@ -498,10 +578,10 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   const SmemAddr mskB = smem_addr(carry_smem + G::off_mask);
   const SmemAddr segVB = smem_addr(segV), segCB = smem_addr(segC);
   const SmemAddr stgB = smem_addr(wstg), gnB = smem_addr(gstg);
-  //: THE RETAINED PLANE (2.2), straddled over the FOLD's tenants.  It is published
-  //: once and stays valid until the fold reclaims it, which is what the readout's pull
-  //: needs from it and the writers reload out of it with no republish leg.
-  const SmemAddr hiB = smem_addr(carry_smem);
+  //: THE EXCHANGE'S SEGMENTS, straddled over the FOLD's tenants -- and over the read
+  //: panels, which are the OTHER moment's tenant at the same base.  They are a CHANGE-
+  //: moment tenant only: published, pulled into fragments, then DEAD.
+  const SmemAddr xchB = smem_addr(carry_smem + G::off_xch);
 
   //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
   //: shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
@@ -601,29 +681,16 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 #pragma unroll
     for (int e = 0; e < 4; ++e) mass_st[j][e] = 0.f;
 
-  //: ---- K35-E: THE TRANSIT PLANE ------------------------------------------
-  //: `leaf_of` is the LATTICE leaf of a private index `P`.  The private order's own
-  //: `shift`/`span` give each level's digit inside `P`; the lattice's `run_shift`
-  //: puts it back.  Every carved level additionally carries the stream's own digit
-  //: offset.  This is the ONLY place the two orders meet, and it is a pure index map.
-  auto leaf_of = [&](int P) {
-    int lf = 0;
-    static_for<D>([&](auto Lc) {
-      constexpr int l = decltype(Lc)::value;
-      const int dig = ((P >> PM::shift(l)) & (PM::span(l) - 1)) + offR[l];
-      lf += dig << BP::run_shift(l);
-    });
-    return lf;
-  };
-  //: the plane is `[channel][leaf]` -- A row-major for the readout -- at stride
-  //: `kHiLD` with the derived XOR swizzle on the two-leaf WORD index.  No linear pad
-  //: is conflict-free on both the push and the pull; this is (findings, derivation 2).
-  //: the same map under the WRITE carve, which is the order the accumulator -- and
-  //: therefore the state plane and the transit's publish -- is held in.
+  //: ---- K35-E: THE EXCHANGE ------------------------------------------------
+  //: `leafW_of` is the LATTICE leaf of an EXECUTOR-private slot `P` under the WRITE
+  //: carve, which is the order the accumulator -- and therefore the state plane's page
+  //: sweep -- is held in.  The private order's own `shift`/`span` give each level's
+  //: digit inside `P`; the lattice's `run_shift` puts it back, and every carved level
+  //: carries the stream's own digit offset.
   //: THE COLUMN HALF IS FOLDED IN HERE AND NOWHERE ELSE: `P` is the EXECUTOR's private
   //: slot in `[0, kLeafE)` and `colBase` lifts it to the STREAM's private slot in
-  //: `[0, kLeafW)`, so `page_regs`, the publish, the reclaim and the fold's own
-  //: accumulator all address the right leaves with no extra nest and no per-slot test.
+  //: `[0, kLeafW)`, so `page_regs` and the fold's own accumulator address the right
+  //: leaves with no extra nest and no per-slot test.
   auto leafW_of = [&](int P) {
     int lf = 0;
     const int Ps = P + colBase;
@@ -634,79 +701,239 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     });
     return lf;
   };
-  auto plane_w = [&](int chan, int lf) {
-    return hiB + (uint32_t)(chan * G::kHiLD * 2 + (((lf >> 1) ^ (chan & G::kHiSwz)) * 4));
-  };
-  //: THE PUBLISH.  The accumulator's `(row, col) = (channel, leaf)` map is the same
-  //: one the A fragment wants, so a `bf16x2` word is one lane's two ADJACENT leaves
-  //: at one channel -- the pair is lattice-adjacent under both carves' orders.
-  //: The mass moves as ONE row: its accumulator's rows 1..15 are identically zero by
-  //: construction of `ones_a`, so moving them would move zeros.
-  auto publish_hi = [&]() {
-    static_for<NL>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      const int lf = leafW_of(j * kMmaN + 2 * (lane & 3));
-      static_for<MCH>([&](auto Mc) {
-        constexpr int m = decltype(Mc)::value;
-        const int ch = m * kMmaM + (lane >> 2);
-        store_shared_u32(plane_w(ch, lf), hi_bf16x2(st[m][j][0], st[m][j][1]));
-        store_shared_u32(plane_w(ch + 8, lf), hi_bf16x2(st[m][j][2], st[m][j][3]));
-      });
-      if ((lane >> 2) == 0)
-        store_shared_u32(plane_w(kDv, lf), hi_bf16x2(mass_st[j][0], mass_st[j][1]));
-    });
-  };
-  //: THE RECLAIM LEG of the retained-plane cycle: the inverse of `publish_hi`, at the
-  //: same addresses, by the same warp.  Nothing else wrote them, so this needs no
-  //: fence of its own -- the plane's single fence was the readers' wait.
-  //:
-  //: THE FRAGMENT STACKS ARE TAKEN BY DEDUCED REFERENCE, NOT BY `uint32_t(&)[MCH]...`,
-  //: AND THAT IS A TOOLCHAIN FACT, NOT A STYLE ONE.  `MCH` became dependent when `d_v`
-  //: became a template parameter (K35 S3b), and the pinned front end (cudafe++, CUDA
-  //: 12.4.99) SEGFAULTS on a lambda parameter whose type is a reference to an array of
-  //: dependent bound -- at PARSE, before any instantiation.  Deducing the parameter
-  //: sidesteps the shape entirely; the caller still passes the one declared stack, so
-  //: nothing about the types is loosened.  Do not spell the bound back in.
-  auto reload_hi = [&](auto& lo, auto& mlo) {
-    static_for<NL>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      const int lf = leafW_of(j * kMmaN + 2 * (lane & 3));
-      static_for<MCH>([&](auto Mc) {
-        constexpr int m = decltype(Mc)::value;
-        const int ch = m * kMmaM + (lane >> 2);
-        const uint32_t h0 = load_shared_u32(plane_w(ch, lf));
-        const uint32_t h1 = load_shared_u32(plane_w(ch + 8, lf));
-        st[m][j][0] = join_hi_lo(h0, lo[m][j][0], 0);
-        st[m][j][1] = join_hi_lo(h0, lo[m][j][0], 1);
-        st[m][j][2] = join_hi_lo(h1, lo[m][j][1], 0);
-        st[m][j][3] = join_hi_lo(h1, lo[m][j][1], 1);
-      });
-      //: the mass rides row 0, so only the lane quad that published it reads back;
-      //: every other row is identically zero and rejoins as zero.
-      const uint32_t mh = ((lane >> 2) == 0) ? load_shared_u32(plane_w(kDv, lf)) : 0u;
-      mass_st[j][0] = join_hi_lo(mh, mlo[j][0], 0);
-      mass_st[j][1] = join_hi_lo(mh, mlo[j][0], 1);
-      mass_st[j][2] = join_hi_lo(0u, mlo[j][1], 0);
-      mass_st[j][3] = join_hi_lo(0u, mlo[j][1], 1);
-    });
-  };
 
-  //: THE PULL, straight into the readout's A fragments.  `h` selects the n-tile, and
-  //: within it register `2h` is channel row `lane/4` and `2h+1` is row `lane/4 + 8`
-  //: -- the register order the readout's drain wants.
-  auto pull_operand = [&](auto Kc, auto& sa, auto& ma) {
-    constexpr int kk = decltype(Kc)::value;
-    static_for<2>([&](auto Hc) {
-      constexpr int h = decltype(Hc)::value;
-      const int lf = leaf_of((2 * kk + h) * kMmaN + 2 * (lane & 3));
+  //: THE EXCHANGE'S ROW MAPS -- the ONLY place the two private orders meet.  A publisher
+  //: owns a slot in ITS OWN order and must name the CONSUMER's row: the consumer's index
+  //: times its box, plus the consumer's own private slot.  Both come out of the leaf's
+  //: PER-LEVEL DIGITS -- the digit's group is the consumer's coordinate at that level and
+  //: the offset inside the group is its private digit -- and `XchRow` shows that map is
+  //: AFFINE, so each direction is a per-warp BASE plus a compile-time step per slot bit.
+  //: `strm * kLeafE == wstrm * kLeafW + colBase`, which is why the WRITE side's row
+  //: needs no column term of its own: the stream's row block already contains it.
+  using XR = XchRow<D, PMW, PM, SVR, kLeafE>;  // WRITE slot -> READ consumer's row
+  using XW = XchRow<D, PM, PMW, SVW, kLeafW>;  // READ slot  -> WRITE consumer's row
+  //: THE PUBLISHER'S BASE, ONCE PER WARP.  The stream's own digit offsets and -- on the
+  //: write side -- the executor's column half are the constant part of its slot, and the
+  //: lane's slot pair `2 * (lane & 3)` is the rest; both are paid HERE, before the window
+  //: loop, so a fragment's row inside a publish is the base plus a CONSTANT and its
+  //: address is a per-warp pointer plus an IMMEDIATE.
+  constexpr int kSlotBits = ilog2c(kLeafW) + 1;
+  int rowBaseR = 0, rowBaseW = 0;
+  static_for<D>([&](auto Lc) {
+    constexpr int l = decltype(Lc)::value;
+    rowBaseR += (offW[l] >> ilog2c(SVR::s(l))) * (SVR::grid_div(l) * kLeafE)
+                + ((offW[l] & (SVR::s(l) - 1)) << PM::shift(l));
+    rowBaseW += (offR[l] >> ilog2c(SVW::s(l))) * (SVW::grid_div(l) * kLeafW)
+                + ((offR[l] & (SVW::s(l) - 1)) << PMW::shift(l));
+  });
+  {
+    const int slotR = colBase + 2 * (lane & 3), slotW = 2 * (lane & 3);
+    static_for<kSlotBits>([&](auto Pc) {
+      constexpr int p = decltype(Pc)::value;
+      rowBaseR += ((slotR >> p) & 1) ? XR::step(p) : 0;
+      rowBaseW += ((slotW >> p) & 1) ? XW::step(p) : 0;
+    });
+  }
+  //: THE SEGMENT'S ADDRESSES, at the swizzle `CarryGeom` derives: a CHANNEL granule is
+  //: XORed by the row's swizzle word, and the MASS rides the row's one PAD granule at the
+  //: four-word offset its own map gives.  A publisher's base carries the lane's channel
+  //: INSIDE the granule -- `lane >> 2` on both sides of the exchange -- so the
+  //: per-fragment term is the granule alone; the CONSUMER's rows are its own private
+  //: slots, so its base is an offset and not a map at all.
+  constexpr int LdX = G::LdX;
+  //: AND THE BASES THEMSELVES ARE FORMED AT THE PHASE CHANGE, not before the window
+  //: loop: they are a handful of shifts off `rowBaseR`/`rowBaseW`, and hoisting them
+  //: would keep eight more registers live THROUGH THE FOLD, which is the arm's peak.
+  //: Only the two row bases persist.
+  auto xch_pub_base = [&](int rowBase) {
+    return xchB + (uint32_t)((rowBase * LdX + (lane >> 2)) * 2);
+  };
+  auto xch_mass_base = [&](int rowBase) { return xchB + (uint32_t)((rowBase * LdX + kDv) * 2); };
+
+  //: THE PUBLISH, WRITE ORDER -> READ ORDER, AND THE `lo` THE WARP KEEPS -- ONE NEST,
+  //: because they consume the same fragment.  The accumulator's `(row, col)` is
+  //: `(channel, private slot)`, so a lane's four elements of one (m-tile, n-tile) are two
+  //: channels eight apart at two ADJACENT private slots -- and adjacent slots of one
+  //: order belong to different consumers in the other, so each element is its own
+  //: `st.shared.b16` at a compile-time granule off a per-slot base.  The `lo` halves are
+  //: packed as each n-tile's four elements are consumed, so the fp32 accumulator DIES
+  //: TILE BY TILE instead of living whole across the publish.  The mass moves as ONE row:
+  //: its accumulator's rows 1..15 are identically zero by construction of `ones_a`.
+  //: BODY COUNT: `NL * (2 + 2*(1 + 2*MCH) + MCH)` -- 84 at the 32-leaf `d_v = 64` arms,
+  //: 42 at the 16-leaf ones and 74 at `d_v = 128`; O(fragments) in both modes.  STORE
+  //: INSTRUCTIONS PER LANE: `4 * NL * MCH` channel halves (64, 32 and 64 at those three
+  //: shapes) plus `2 * NL` mass halves (8, 4, 4), all of them 2-byte.
+  auto publish_read = [&](auto& lo, auto& mlo) {
+    const uint32_t xpubR = xch_pub_base(rowBaseR), xmasR = xch_mass_base(rowBaseR);
+    const int swzR = xch_swz_of(rowBaseR), mwR = xch_mw_of(rowBaseR);
+    //: THE CHANNEL m-TILE IS OUTERMOST so the fp32 accumulator DIES TILE BY TILE: an
+    //: m-tile's `2 * NL` elements are published and immediately packed into `NL` `lo`
+    //: words, and the slot's row is a compile-time offset off the warp's base, so
+    //: repeating the slot loop per m-tile costs nothing.
+    static_for<MCH>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
+      static_for<NL>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        static_for<2>([&](auto Ec) {
+          constexpr int el = decltype(Ec)::value;
+          constexpr int dr = XR::of(j * kMmaN + el);
+          const uint32_t base = xpubR + (uint32_t)(dr * LdX * 2);
+          const int swz = swzR ^ xch_swz_of(dr);
+          static_for<2>([&](auto Hc) {
+            constexpr int h = decltype(Hc)::value;
+            store_shared_u16(base + ((uint32_t)((2 * m + h) ^ swz) << 4),
+                             hi_bf16(st[m][j][el + 2 * h]));
+          });
+        });
+        lo[m][j][0] = pack_lo(st[m][j][0], st[m][j][1]);
+        lo[m][j][1] = pack_lo(st[m][j][2], st[m][j][3]);
+      });
+    });
+    //: THE MASS IS ITS OWN PASS, one row of the state: its accumulator's rows 1..15 are
+    //: identically zero by construction of `ones_a`, so only the lane quad that holds row
+    //: zero carries it and only its first two elements are ever nonzero.
+    static_for<NL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      static_for<2>([&](auto Ec) {
+        constexpr int el = decltype(Ec)::value;
+        constexpr int dr = XR::of(j * kMmaN + el);
+        if ((lane >> 2) == 0)
+          store_shared_u16(
+              xmasR + (uint32_t)(dr * LdX * 2) + ((uint32_t)(mwR ^ xch_mw_of(dr)) << 2),
+              hi_bf16(mass_st[j][el]));
+      });
+      mlo[j] = pack_lo(mass_st[j][0], mass_st[j][1]);
+    });
+  };
+  //: THE PULL, straight into the readout's A fragments, out of THIS warp's own contiguous
+  //: segment: its rows ARE its private slots, so one `ldmatrix.trans` covers a whole
+  //: (k-step, channel m-tile) tile.  The mass is one COLUMN and cannot be an `ldmatrix`
+  //: tile: two `ld.shared.u16` at the pair's two rows build the one fragment word whose
+  //: row 0 is the mass.  BODY COUNT: `KDw * (MCH + 2)`.
+  //:
+  //: THE FRAGMENT STACKS ARE TAKEN BY DEDUCED REFERENCE, NOT BY `uint32_t(&)[KDw]...`,
+  //: AND THAT IS A TOOLCHAIN FACT, NOT A STYLE ONE.  `MCH` is dependent (`d_v` is a
+  //: template parameter, K35 S3b) and the pinned front end (cudafe++, CUDA 12.4.99)
+  //: SEGFAULTS at PARSE on a lambda parameter whose type is a reference to an array of
+  //: dependent bound.  Do not spell the bound back in.
+  auto pull_read = [&](auto& sa, auto& ma) {
+    const int rowT = strm * kLeafE + (lane & 7) + 8 * (lane >> 4);
+    const int rowM = strm * kLeafE + 2 * (lane & 3);
+    const uint32_t xpullT = xchB + (uint32_t)(rowT * LdX * 2);
+    const uint32_t xpullM = xchB + (uint32_t)((rowM * LdX + kDv) * 2);
+    const int swzT = xch_swz_of(rowT), mwM = xch_mw_of(rowM);
+    const int gT = (lane >> 3) & 1;
+    static_for<KDw>([&](auto Kc) {
+      constexpr int kk = decltype(Kc)::value;
+      constexpr uint32_t off = (uint32_t)(kk * kMmaK * LdX * 2);
+      constexpr int swz_d = xch_swz_of(kk * kMmaK);
+      const int swz = swzT ^ swz_d;
       static_for<MCH>([&](auto Mc) {
         constexpr int m = decltype(Mc)::value;
-        const int ch = m * kMmaM + (lane >> 2);
-        sa[m][2 * h + 0] = load_shared_u32(plane_w(ch, lf));
-        sa[m][2 * h + 1] = load_shared_u32(plane_w(ch + 8, lf));
+        load_frag_t(sa[kk][m], xpullT + off + ((uint32_t)(((2 * m) | gT) ^ swz) << 4));
       });
-      ma[2 * h + 0] = ((lane >> 2) == 0) ? load_shared_u32(plane_w(kDv, lf)) : 0u;
-      ma[2 * h + 1] = 0u;
+      static_for<2>([&](auto Vc) {
+        constexpr int v = decltype(Vc)::value;
+        constexpr int dv0 = kk * kMmaK + 8 * v;
+        const uint32_t a0 = xpullM + (uint32_t)(dv0 * LdX * 2);
+        const int mw0 = mwM ^ xch_mw_of(dv0), mw1 = mwM ^ xch_mw_of(dv0 + 1);
+        const uint32_t w =
+            (uint32_t)load_shared_u16(a0 + ((uint32_t)mw0 << 2))
+            | ((uint32_t)load_shared_u16(a0 + (uint32_t)(LdX * 2) + ((uint32_t)mw1 << 2)) << 16);
+        ma[kk][2 * v + 0] = ((lane >> 2) == 0) ? w : 0u;
+        ma[kk][2 * v + 1] = 0u;
+      });
+    });
+  };
+  //: THE PUBLISH BACK, READ ORDER -> WRITE ORDER, and it is the exact mirror: the
+  //: readout's A fragments already hold the state as packed bf16 in READ order, so a
+  //: register's two halves are two adjacent READ slots and each goes to its own writer's
+  //: row.  Same store count as the forward publish.
+  auto publish_write = [&](auto& sa, auto& ma) {
+    const uint32_t xpubW = xch_pub_base(rowBaseW), xmasW = xch_mass_base(rowBaseW);
+    const int swzW = xch_swz_of(rowBaseW), mwW = xch_mw_of(rowBaseW);
+    //: the same m-outermost order, and for the same reason: the readout's A fragments die
+    //: m-tile by m-tile instead of living whole beside the `lo` the fold still needs.
+    static_for<MCH>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
+      static_for<KDw>([&](auto Kc) {
+        constexpr int kk = decltype(Kc)::value;
+        static_for<2>([&](auto Vc) {
+          constexpr int v = decltype(Vc)::value;
+          static_for<2>([&](auto Ec) {
+            constexpr int el = decltype(Ec)::value;
+            constexpr int dw = XW::of(kk * kMmaK + 8 * v + el);
+            const uint32_t base = xpubW + (uint32_t)(dw * LdX * 2);
+            const int swz = swzW ^ xch_swz_of(dw);
+            static_for<2>([&](auto Uc) {
+              constexpr int u = decltype(Uc)::value;
+              store_shared_u16(base + ((uint32_t)((2 * m + u) ^ swz) << 4),
+                               (uint16_t)(sa[kk][m][u + 2 * v] >> (16 * el)));
+            });
+          });
+        });
+      });
+    });
+    static_for<KDw>([&](auto Kc) {
+      constexpr int kk = decltype(Kc)::value;
+      static_for<2>([&](auto Vc) {
+        constexpr int v = decltype(Vc)::value;
+        static_for<2>([&](auto Ec) {
+          constexpr int el = decltype(Ec)::value;
+          constexpr int dw = XW::of(kk * kMmaK + 8 * v + el);
+          if ((lane >> 2) == 0)
+            store_shared_u16(
+                xmasW + (uint32_t)(dw * LdX * 2) + ((uint32_t)(mwW ^ xch_mw_of(dw)) << 2),
+                (uint16_t)(ma[kk][2 * v] >> (16 * el)));
+        });
+      });
+    });
+  };
+  //: THE RECLAIM, out of this warp's OWN segment in WRITE order -- the same
+  //: `ldmatrix.trans` shape as the read pull, rejoined with the `lo` the warp kept, so
+  //: the round trip through the exchange is lossless by construction.
+  auto reload_hi = [&](auto& lo, auto& mlo) {
+    const int rowT = strm * kLeafE + (lane & 7) + 8 * (lane >> 4);
+    const int rowM = strm * kLeafE + 2 * (lane & 3);
+    const uint32_t xpullT = xchB + (uint32_t)(rowT * LdX * 2);
+    const uint32_t xpullM = xchB + (uint32_t)((rowM * LdX + kDv) * 2);
+    const int swzT = xch_swz_of(rowT), mwM = xch_mw_of(rowM);
+    const int gT = (lane >> 3) & 1;
+    static_for<KDw>([&](auto Kc) {
+      constexpr int kk = decltype(Kc)::value;
+      constexpr uint32_t off = (uint32_t)(kk * kMmaK * LdX * 2);
+      constexpr int swz_d = xch_swz_of(kk * kMmaK);
+      const int swz = swzT ^ swz_d;
+      static_for<MCH>([&](auto Mc) {
+        constexpr int m = decltype(Mc)::value;
+        uint32_t a[4];
+        load_frag_t(a, xpullT + off + ((uint32_t)(((2 * m) | gT) ^ swz) << 4));
+        static_for<4>([&](auto Rc) {
+          constexpr int r = decltype(Rc)::value;
+          constexpr int j = 2 * kk + (r >> 1);
+          st[m][j][2 * (r & 1) + 0] = join_hi_lo(a[r], lo[m][j][r & 1], 0);
+          st[m][j][2 * (r & 1) + 1] = join_hi_lo(a[r], lo[m][j][r & 1], 1);
+        });
+      });
+      //: the mass rides row 0, so only the lane quad that published it reads back; every
+      //: other row is identically zero and rejoins as zero.
+      static_for<2>([&](auto Vc) {
+        constexpr int v = decltype(Vc)::value;
+        constexpr int j = 2 * kk + v;
+        constexpr int dv0 = kk * kMmaK + 8 * v;
+        const uint32_t a0 = xpullM + (uint32_t)(dv0 * LdX * 2);
+        const int mw0 = mwM ^ xch_mw_of(dv0), mw1 = mwM ^ xch_mw_of(dv0 + 1);
+        const uint32_t mh =
+            ((lane >> 2) == 0)
+                ? ((uint32_t)load_shared_u16(a0 + ((uint32_t)mw0 << 2))
+                   | ((uint32_t)load_shared_u16(a0 + (uint32_t)(LdX * 2) + ((uint32_t)mw1 << 2))
+                      << 16))
+                : 0u;
+        mass_st[j][0] = join_hi_lo(mh, mlo[j], 0);
+        mass_st[j][1] = join_hi_lo(mh, mlo[j], 1);
+        mass_st[j][2] = 0.f;
+        mass_st[j][3] = 0.f;
+      });
     });
   };
 
@@ -812,7 +1039,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   if constexpr (STATE) {
     if (s_in != nullptr) {
       const float* const plane = pin_address(s_in);
-#pragma unroll
       static_for<kAtoms>([&](auto Ac) {
         page_sweep(page_off(atomBase + (uint32_t)decltype(Ac)::value), [&](int sidx, uint32_t off) {
           so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
@@ -1063,29 +1289,24 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         store_shared_u16(pfxB + (uint32_t)((wstrm * LW + lane) * 2), (uint16_t)pfx);
     }
 
-    //: THE PHASE CHANGE.  Every warp publishes its own write-carve hi ONCE; the one
-    //: fence is the readers' wait.  `lo` stays in registers -- packed, so the state
-    //: costs half its fp32 footprint across the readout -- and the plane stays valid
-    //: underneath, so the fold reloads its OWN hi from it with no republish.
-    publish_hi();
-    uint32_t lo[MCH][NL][2], mlo[NL][2];
-    static_for<MCH>([&](auto Mc) {
-      constexpr int m = decltype(Mc)::value;
-      static_for<NL>([&](auto Jc) {
-        constexpr int j = decltype(Jc)::value;
-        lo[m][j][0] = pack_lo(st[m][j][0], st[m][j][1]);
-        lo[m][j][1] = pack_lo(st[m][j][2], st[m][j][3]);
-      });
-    });
-    static_for<NL>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      mlo[j][0] = pack_lo(mass_st[j][0], mass_st[j][1]);
-      mlo[j][1] = pack_lo(mass_st[j][2], mass_st[j][3]);
-    });
+    //: THE PHASE CHANGE, FOLD -> READOUT.  Every warp publishes its write-view hi into
+    //: the READ consumers' segments; a barrier; every warp pulls its OWN segment into
+    //: its A fragments and the segments are DEAD.  `lo` stays in registers -- packed, so
+    //: the state costs half its fp32 footprint across the readout -- and it is packed
+    //: INSIDE the publish, n-tile by n-tile, so the fp32 accumulator never has to live
+    //: whole beside it.
+    //: `mlo` IS ONE WORD PER n-TILE, not two.  The mass accumulator's elements 2 and 3
+    //: are the C rows 8..15 of a tile whose A operand (`ones_a`) is nonzero on row 0
+    //: alone, so they are IDENTICALLY ZERO -- there is no low half of them to keep.
+    uint32_t lo[MCH][NL][2], mlo[NL];
+    publish_read(lo, mlo);
     rendezvous();
     uint32_t sa[KDw][MCH][4], ma[KDw][4];
-    static_for<KDw>(
-        [&](auto Kc) { pull_operand(Kc, sa[decltype(Kc)::value], ma[decltype(Kc)::value]); });
+    pull_read(sa, ma);
+    //: AND THE SEGMENTS ARE DEAD HERE.  The read panels are the same bytes under
+    //: another layout, so no warp may produce into them until every warp has pulled --
+    //: that is what this barrier buys, and it is the whole price of the straddle.
+    rendezvous();
 
     // ---- PHASE 1: the READOUT of every read batch, against the window's ENTRY
     //      state.  ALL of the window's readouts precede ANY of its folds, because a
@@ -1183,10 +1404,13 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: still reading the window's entry state.
     rendezvous();
 
-    //: THE RECLAIM.  Each warp reads back its OWN slice -- same warp, same addresses
-    //: as its publish -- and rejoins it with the `lo` it kept, exactly.  Every warp
-    //: has finished reading the plane before the window edge below, after which the
-    //: fold's strips may overwrite it.
+    //: THE PHASE CHANGE, READOUT -> FOLD: the mirror.  Each warp publishes its
+    //: read-view hi -- which is exactly what its A fragments hold -- into the WRITE
+    //: executors' segments; a barrier; each warp pulls its own back in WRITE order and
+    //: rejoins it with the `lo` it kept, exactly.  The last barrier is the fold's: the
+    //: segments it clears are these very bytes.
+    publish_write(sa, ma);
+    rendezvous();
     reload_hi(lo, mlo);
     rendezvous();
 
@@ -1343,14 +1567,14 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         }
       });
     };
-    //: ONE AMPLITUDE OUT OF THE STAGED ROW.  The level lying LOWEST in the private
-    //: order (level `D - 1`, by rule 1) supplies BOTH slots of a packed pair with one
-    //: four-byte access, because its two digits are adjacent; every other level's digit
-    //: is constant across the pair and is splatted.
+    //: ONE AMPLITUDE OUT OF THE STAGED ROW.  The level lying LOWEST in this side's
+    //: private order (`PMW::kPairLevel`) supplies BOTH slots of a packed pair with one
+    //: four-byte access, because its two digits are adjacent there; every other level's
+    //: digit is constant across the pair and is splatted.
     auto factor = [&](uint32_t rowB, auto Lc, int p0, int off) {
       constexpr int l = decltype(Lc)::value;
       const int d = ((p0 >> PMW::shift(l)) & (PMW::span(l) - 1)) + off;
-      if constexpr (l == D - 1)
+      if constexpr (l == PMW::kPairLevel)
         return load_shared_u32(rowB + (uint32_t)((BP::stage_off(l) + d) * 2));
       else
         return splat_bf16x2_bits(load_shared_u16(rowB + (uint32_t)((BP::stage_off(l) + d) * 2)));
@@ -1604,9 +1828,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           }
         });
       }
-      //: THE WINDOW EDGE.  Drain FIRST: the plane the next window publishes lives in
-      //: these very segments, so an in-flight `cp.async` that landed after the barrier
-      //: would write into the published plane.
+      //: THE WINDOW EDGE.  Drain FIRST: the segments the next window's exchange publishes
+      //: into are these very bytes, so an in-flight `cp.async` that landed after the
+      //: barrier would write into a published segment.
       stage_wait<0>();
     }
     rendezvous();
@@ -1619,7 +1843,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     if (s_out != nullptr) {
       float* const plane = pin_address(s_out);
       rendezvous();
-#pragma unroll
       static_for<kAtoms>([&](auto Ac) {
         page_regs(Ac, std::false_type{});
         rendezvous();
