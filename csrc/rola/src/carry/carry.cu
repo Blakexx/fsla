@@ -41,6 +41,7 @@
 #include <array>
 
 #include "carry_api.cuh"
+#include "carry_probe_kernel.cuh"
 #include "carry_split_kernel.cuh"
 #include "facts/facts_kernel.cuh"
 
@@ -187,6 +188,13 @@ struct Arm {
   }
   static constexpr int kReadCarve = read_carve(D - 1);
 
+  //: THE CARVED BODY'S GEOMETRY, named once so the segment probe and the launch read
+  //: the same one.
+  using GC = CarryGeom<D, B, K, M, W, C, R0, R1, R2, R3>;
+  static constexpr auto probe_fn() {
+    return &carry_layout_probe_kernel<D, B, K, M, W, C, W0, W1, W2, W3, R0, R1, R2, R3>;
+  }
+
   template <bool STATE>
   static constexpr auto fn() {
     if constexpr (carved)
@@ -251,6 +259,53 @@ static bool is_arm(const std::vector<int64_t>& widths, int D, int B) {
   for (auto w : widths)
     if (w != B) return false;
   return true;
+}
+
+//: THE SEGMENT LAYOUT'S ROUND TRIP, as its own entry point so the layout can be
+//: gated without running the kernel that uses it (KERNEL_STANDARDS section 3).
+template <class A>
+static std::vector<torch::Tensor> run_probe() {
+  if constexpr (A::carved) {
+    using G = typename A::GC;
+    using BPA = typename A::BP;
+    auto opt = torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA);
+    auto vv = torch::zeros({(long)G::kStreams * G::kSegRows, (long)kDv}, opt);
+    auto cc = torch::zeros({(long)G::kStreams * G::kSegRows, (long)G::kLeafW}, opt);
+    auto ss = torch::zeros({(long)G::kSegRows, (long)BPA::kStageW}, opt);
+    //: the staged leg's SOURCE plane: cell `(r, c)` names itself, so a run that lands
+    //: at the wrong offset names the column it actually came from.
+    auto pw = (torch::arange(0, (long)G::kSegRows, opt).reshape({-1, 1}) * 1024
+               + torch::arange(0, (long)BPA::kWtot, opt).reshape({1, -1}))
+                  .to(torch::kInt16)
+                  .view(torch::kBFloat16)
+                  .contiguous();
+    constexpr size_t sm = (size_t)(G::seg_v_bytes + G::seg_c_bytes
+                                   + G::kSegRows * BPA::kStageW * (int)sizeof(__nv_bfloat16));
+    const auto fn = A::probe_fn();
+    C10_CUDA_CHECK(cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm));
+    fn<<<1, (unsigned)G::kThreads, sm, at::cuda::getCurrentCUDAStream()>>>(
+        (const __nv_bfloat16*)pw.data_ptr(), vv.template data_ptr<int>(),
+        cc.template data_ptr<int>(), ss.template data_ptr<int>());
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    return {vv.reshape({(long)G::kStreams, (long)G::kSegRows, (long)kDv}),
+            cc.reshape({(long)G::kStreams, (long)G::kSegRows, (long)G::kLeafW}), ss};
+  } else {
+    TORCH_CHECK(false, "the per-stream segment belongs to the carved body");
+    return {};
+  }
+}
+
+std::vector<torch::Tensor> layout_probe(std::vector<int64_t> widths, int64_t k, int64_t m,
+                                        int64_t window, int64_t chunk, int64_t carve,
+                                        int64_t level_modes) {
+#define CARRY_PROBE(...)                                                     \
+  if (CARRY_MATCH(__VA_ARGS__) && level_modes == CARRY_MO(__VA_ARGS__)) {    \
+    return run_probe<CARRY_ARM(__VA_ARGS__)>();                              \
+  }
+  CARRY_ARMS_X(CARRY_PROBE)
+#undef CARRY_PROBE
+  TORCH_CHECK(false, "unbuilt carry arm");
+  return {};
 }
 
 //: THE TABLE, AS A TENSOR: `[BH, 2, entries, L/32]` packed bits, read rows then

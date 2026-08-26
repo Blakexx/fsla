@@ -35,7 +35,7 @@ WINDOW_SMALL = 64
 #: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
 #: moves whenever that source does, which is what makes reading it back off the
 #: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010017
+BUILD_MAGIC = 31010018
 
 #: the reverse family's own device magic, mirrored from `backward_kernel.cuh`.
 BWD_BUILD_MAGIC = 31040001
@@ -123,6 +123,18 @@ def owner_rows(read_levels, write_levels, widths, *, k: int, m: int, carve: bool
 def build_stamp(widths, k, m, window, chunk, carve, level_modes=0):
     return extension().carry_build_stamp(list(widths), int(k), int(m), int(window),
                                          int(chunk), int(carve), int(level_modes))
+
+
+def layout_probe(widths, k, m, window, chunk, carve, level_modes=0):
+    """The per-stream segment layout's ROUND TRIP: ``(values, coefficients)``.
+
+    Each is ``[stream][row][column]`` of the RAW sixteen-bit pattern the fetcher stored
+    at that cell, recovered through the consumer's ``ldmatrix.trans`` at the fold's own
+    bases -- so a stride, a base or a fragment map that disagrees between the two legs
+    cannot survive the comparison.  Carved arms only.
+    """
+    return extension().carry_layout_probe(list(widths), int(k), int(m), int(window),
+                                          int(chunk), int(carve), int(level_modes))
 
 
 def arms():

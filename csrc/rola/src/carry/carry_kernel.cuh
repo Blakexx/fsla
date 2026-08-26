@@ -47,7 +47,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010017;
+static constexpr int kCarryBuildMagic = 31010018;
 
 static constexpr int kDv = 64;         // d_v
 static constexpr int kCols = kDv + 1;  // the mass column rides the state
@@ -97,54 +97,41 @@ struct CarryGeom {
   static constexpr int BC = BP::kBC;
   //: THE EXECUTOR MAP, 1:1 at this stage: one warp runs one stream.
   static constexpr int kWarps = SV::kStreams;
+  static constexpr int kStreams = kWarps;
   static constexpr int kThreads = kWarps * 32;
   //: the stream's leaves, and the private panel row they index.
   static constexpr int kLeafW = SV::kLeaf;
   static constexpr int LdV = kDv + kPadE;
   static constexpr int LdS = kLeafW + kPadE;
   static constexpr int LdO = kDv + kPadF;
-
-  //: THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA.  A window's
-  //: readouts all precede its folds, so the write panel is dead through phase 1 and
-  //: the read panel is dead through phase 2: each phase double-buffers in the
-  //: other's buffer and produces one batch AHEAD, which is what puts the produce's
-  //: global-load latency underneath the previous batch's MMA block.
-  //: THE STRIP IS THE BATCH (2.4's two-tier panel).  Each PHASE double-buffers
-  //: between two `CP`-token strips INSIDE ITS OWN HALF, so the other half is dead for
-  //: the whole of that phase -- which is what lets the retained plane straddle it.
-  //: The byte count is unchanged: two halves x two strips x `CP` == two x `C`.
+  //: THE STRIP IS THE BATCH'S TOKEN TILE, and it is the MMA's whole `k` step: a batch
+  //: of the union walk is `CP` tokens, a stream's rank inside it is below `CP` by
+  //: construction, so ONE segment slot is exactly ONE contraction step.
   static constexpr int CP = kMmaK;
   static_assert(2 * CP == C, "a half holds exactly two strips");
-  static constexpr int panel_bytes = 2 * 2 * kWarps * CP * LdS * (int)sizeof(__nv_bfloat16);
-  //: the readout's staging block, one `kMmaN`-token region per warp -- and, at
-  //: entry and exit, the state plane's page.
-  //: THE FAN-IN STAGING IS GONE (2.6): the readout's RED issues straight from the
-  //: accumulator, so this buffer's only remaining tenant is the state plane's PAGE at
-  //: entry and exit -- one atom's leaves by every channel.
-  //: the fan-in staging is deleted (2.6), so this buffer's only tenant is the state
-  //: plane's PAGE at entry and exit.
+
+  // ---- THE FOLD'S TENANTS (K35 S2, the cooperative fetch) ------------------
+  //: THE PER-STREAM SEGMENT, SINGLE SLOT.  `SegValueRows` is `[stream][row][channel]`
+  //: at row stride `LdV`, `SegCoeffRows` is `[stream][row][slot]` at row stride `LdS`;
+  //: a ROW is one (token, stream) pair, placed by the FETCHER at the token's rank
+  //: inside the batch.  The two sub-tiles are adjacent halves of one segment and are
+  //: separate only because `ldmatrix` reads each at its own row stride.
+  static constexpr int kSegRows = CP;
+  static constexpr int seg_v_bytes = kStreams * kSegRows * LdV * (int)sizeof(__nv_bfloat16);
+  static constexpr int seg_c_bytes = kStreams * kSegRows * LdS * (int)sizeof(__nv_bfloat16);
+  //: THE WINDOW'S COEFFICIENT STAGING, as a ROLLING BLOCK: the fetcher expands from
+  //: SMEM, and what it needs at a moment is the compressed factor rows of ONE batch's
+  //: union tokens (`BP::kStageW` amplitudes each -- the owner's per-level runs, not
+  //: the topology-wide packed row).  Two blocks, so the block for batch `b + 2` is in
+  //: flight while `b + 1` is expanded: the same two-stages-in-flight law the segments
+  //: obey, at a cost that does not grow with `W`.
+  static constexpr int kStgSlots = 2;
+  static constexpr int stg_bytes = kStgSlots * kSegRows * BP::kStageW * (int)sizeof(__nv_bfloat16);
+  static constexpr int gain_bytes = align16c(kStgSlots * kSegRows * (int)sizeof(__nv_bfloat16));
+  //: the state plane's page, at entry and exit only -- dead for the whole window loop,
+  //: which is why the transit straddles it too.
   static constexpr int out_bytes = kAtomLeaves * LdO * (int)sizeof(float);
-  //: ONE READ LIST PER STREAM, plus the CTA's two shared ones.  A read entry belongs
-  //: to the streams whose boxes its digits reach; the write side keeps no list of its
-  //: own -- its schedule IS the tier-2 bitmap, and its ids are transient: a per-stream
-  //: cursor decompresses one ballot word at a time into a small ring, in the stage's
-  //: shadow, so nothing window-sized is ever materialized on that side.
-  static constexpr int kLists = kWarps + 2;  // + the CTA's shared read and write lists
-  static constexpr int kIdRing = 64;
-  static constexpr int id_bytes = kWarps * kIdRing * (int)sizeof(uint16_t);
-  static constexpr int kListStride = ((W + 7) / 8) * 8;
-  static constexpr int list_bytes = kLists * kListStride * (int)sizeof(uint16_t) + id_bytes;
-  //: THE WINDOW'S BALLOT WORDS, one per lane of the walk -- so a window may be at
-  //: most a lockstep unit's worth of words wide.
-  static constexpr int kLW = W / kBallotLanes;
-  //: THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR,
-  //: exactly as the shipped `Geom::stages` is: the shallowest ring that reaches the
-  //: best residency this arm can reach at any depth.  `kRegFloor` is the DECLARED
-  //: floor for this family -- the measured census of the heaviest built arm,
-  //: recorded in the findings doc and re-measured at every milestone.  A CTA target
-  //: the live set cannot honour is a spill: a stream holds `prod_l S_l` leaves x all
-  //: `kCols` channels, and 219 registers is what that costs at 32 leaves.
-  static constexpr int kRegFloor = 220;
+
   //: ---- K35-E: THE TRANSIT PLANE -------------------------------------------
   //: The state EVACUATES registers at each phase change, because the readout and the
   //: fold carve the same leaves along DIFFERENT lattice axes.  The plane is
@@ -153,35 +140,72 @@ struct CarryGeom {
   //: identically zero by construction of `ones_a`, so moving them would move zeros.
   static constexpr int kPlaneRows = kDv + 1;
   //: `LD` AND ITS SWIZZLE ARE A DERIVATION, NOT A GUESS (findings, derivation 2).
-  //: The push varies a lane's word index in the LOW bits and the pull varies it in
-  //: bit 3 and above, so NO linear stride is conflict-free on both legs -- searched
-  //: over `LD`, best is 2-way.  `word ^= (chan & 7)` at `LD = BC + 16` measures
-  //: max-way ONE on both legs, over every `(m, g, w, d0l)` slice: what the search
-  //: found is a row stride of `8 mod 32` u32 words, which `BC + 16` holds at every
-  //: box a page-aligned `BC` admits (144 at `BC = 128`, 272 at `BC = 256`).
+  //: `word ^= (chan & 7)` at `LD = BC + 16` measures max-way ONE on both legs.
   static constexpr int kHiLD = BC + 16;
   static constexpr int kHiSwz = 7;
   static constexpr int plane_bytes = kPlaneRows * kHiLD * (int)sizeof(__nv_bfloat16);
-  //: THE VALUE STREAM IS PER-WARP AND PRIVATE (2.4): one `CP`-token tile per warp.
-  //: A single buffer suffices -- `ldmatrix` drains the tile to registers before its
-  //: MMAs, so the WAR window is the drain only and the next fill is issued into it
-  //: immediately after.
-  //: TWO slots per warp.  One is not enough: `cp.async` is asynchronous, so a fill
-  //: issued after the drain can land BEFORE the `ldmatrix` has read the buffer -- a
-  //: WAR hazard whose incidence grows with the tile count (measured: the scattered
-  //: cells failed and the cohort cells, with a quarter the tiles, passed).  The
-  //: second slot is the card's insurance and restores the fill-under-MMA overlap.
-  static constexpr int kVSlots = 2;
-  static constexpr int slot_bytes = kWarps * kVSlots * CP * LdV * (int)sizeof(__nv_bfloat16);
-  //: THE TRANSIT ALIASES THE PANEL.  It is live ONLY at the phase change, when the
-  //: panels are dead, so it costs no allocation of its own -- the straddling ledger.
-  static_assert(plane_bytes <= panel_bytes, "the transit must fit inside the dead panel region");
-  static constexpr int fixed_bytes = panel_bytes + out_bytes + list_bytes;
-  //: ONE slot per warp, not a ring: async DEPTH is the warp's own, and the fill for
-  //: the next tile is in flight across this tile's MMAs.
+  //: THE TRANSIT STRADDLES THE FOLD'S DEAD TENANTS AND PAYS ONLY THE SHORTFALL.  The
+  //: segments, the coefficient staging and the page buffer are dead for the whole
+  //: readout, which is exactly the plane's lifetime; where they do not cover it the
+  //: allocation carries a TAIL, and that tail is the plane's only private cost.
+  static constexpr int fold_dead_bytes =
+      seg_v_bytes + seg_c_bytes + stg_bytes + gain_bytes + out_bytes;
+  static constexpr int tail_bytes = plane_bytes > fold_dead_bytes
+                                        ? align16c(plane_bytes - fold_dead_bytes)
+                                        : 0;
+
+  // ---- THE READOUT'S TENANTS -----------------------------------------------
+  //: THE READ PANELS ARE A TWO-SLOT RING.  A window's readouts all precede its folds,
+  //: so the read side produces one batch AHEAD inside its own half, which is what puts
+  //: the produce's global-load latency underneath the previous batch's MMA block.
+  static constexpr int read_bytes = 2 * kWarps * CP * LdS * (int)sizeof(__nv_bfloat16);
+  //: ONE READ LIST PER STREAM, plus the CTA's two shared ones.  The write side keeps
+  //: NO per-stream list any more: the UNION list is the whole schedule and a stream's
+  //: membership is its published ballot word.
+  static constexpr int kLists = kWarps + 2;
+  static constexpr int kListStride = ((W + 7) / 8) * 8;
+  static constexpr int list_bytes = align16c(kLists * kListStride * (int)sizeof(uint16_t));
+  //: THE WINDOW'S BALLOT WORDS, one per lane of the walk -- so a window may be at
+  //: most a lockstep unit's worth of words wide.
+  static constexpr int kLW = W / kBallotLanes;
+  //: THE PUBLISHED MEMBERSHIP AND ITS PREFIX COUNTS.  A fetcher places rows into
+  //: segments it does not consume, so it needs EVERY stream's write-side ballot and
+  //: the per-word prefix popcount that turns a token into a RANK.  Each executor
+  //: publishes its own once per window; `kStreams * kLW` words is the whole index.
+  static constexpr int mem_bytes = align16c(kStreams * kLW * (int)sizeof(uint32_t));
+  static constexpr int pfx_bytes = align16c(kStreams * kLW * (int)sizeof(uint16_t));
+  //: THE PER-TILE LIVENESS MASK, one word per stream: bit `nj` says the batch wrote a
+  //: nonzero coefficient somewhere in n-tile pair `nj`, so skipping that pair's
+  //: `ldmatrix` and MMAs is EXACT -- a tile with no live leaf contributes nothing.
+  static constexpr int mask_bytes = align16c(kStreams * (int)sizeof(uint32_t));
+
+  //: `kRegFloor` is the DECLARED register floor for this family -- the measured census
+  //: of the heaviest built arm, recorded in the findings doc.  The cooperative fetch
+  //: raised it: the consumer now holds a batch's value AND coefficient fragments across
+  //: the fetch phase (F4's second stage IS the register file), which is `MCH*4 + NL/2*4`
+  //: registers more than the produce it replaces.  The residency it derives is
+  //: unchanged at both thread counts -- 64K/(128*235) and 64K/(256*235) round to the
+  //: same CTA ceilings 220 gave -- so this is a truer statement of the same geometry.
+  static constexpr int kRegFloor = 235;
+  //: ONE slot per stream, because the SECOND STAGE IS REGISTERS (F4).
   static constexpr int kStages = 1;
-  static constexpr size_t bytes = (size_t)fixed_bytes + (size_t)slot_bytes;
+
+  // ---- the allocation, as offsets -----------------------------------------
+  static constexpr int off_seg_v = 0;
+  static constexpr int off_seg_c = off_seg_v + seg_v_bytes;
+  static constexpr int off_stg = off_seg_c + seg_c_bytes;
+  static constexpr int off_gain = off_stg + stg_bytes;
+  static constexpr int off_out = off_gain + gain_bytes;
+  static constexpr int off_read = off_out + out_bytes + tail_bytes;
+  static constexpr int off_list = off_read + read_bytes;
+  static constexpr int off_mem = off_list + list_bytes;
+  static constexpr int off_pfx = off_mem + mem_bytes;
+  static constexpr int off_mask = off_pfx + pfx_bytes;
+  static constexpr size_t bytes = (size_t)(off_mask + mask_bytes);
   static constexpr int cta_target = design::cta_target((int)bytes, kThreads, kRegFloor);
+  static_assert(plane_bytes <= fold_dead_bytes + tail_bytes,
+                "the transit must fit the fold's dead region plus its declared tail");
+  static_assert(design::smem_fits(bytes), "this arm does not fit the SMEM maximum");
 };
 
 //: THE OWNER-GRAIN PRODUCE MAP, which the reverse family's panel is expanded
@@ -361,28 +385,33 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   const int bh = (int)blockIdx.y;
 
   extern __shared__ __align__(16) char carry_smem[];
-  //: ONE slot per warp is enough because the drain precedes the issue: `ldmatrix`
-  //: lifts the tile into registers, and only then is the next fill launched into the
-  //: same buffer, so the WAR window is the drain itself (2.4).
+  //: ONE SLOT PER STREAM, and the SECOND STAGE IS REGISTERS: `ldmatrix` drains the
+  //: slot, the `__syncwarp` after it IS the drained fact, and the slot is refilled for
+  //: the next batch while this one's MMAs run out of fragments (F4, form (b)).
   constexpr int STAGES = G::kStages;
-  static_assert(STAGES == 1, "the private stream carries one slot per warp");
-  __nv_bfloat16* const sv = reinterpret_cast<__nv_bfloat16*>(carry_smem);
-  //: THE FOLD'S TENANTS COME FIRST AND ADJACENT -- the private value slots and the
-  //: write strips -- because the retained plane straddles exactly those two, and
-  //: they are the pair that is dead for the whole readout.
-  __nv_bfloat16* const sw = sv + kWarps * G::kVSlots * CP * LdV;
-  __nv_bfloat16* const sr = sw + 2 * kWarps * CP * LdS;
-  float* const so = reinterpret_cast<float*>(sr + 2 * kWarps * CP * LdS);
+  static_assert(STAGES == 1, "the cooperative fetch carries one slot per stream");
+  constexpr int kStreams = G::kStreams;
+  constexpr int kSegRows = G::kSegRows;
+  //: THE FOLD'S TENANTS COME FIRST AND ADJACENT -- the per-stream segments, the
+  //: rolling coefficient staging and the page buffer -- because the retained plane
+  //: straddles exactly those, and they are the set that is dead for the whole readout.
+  __nv_bfloat16* const segV = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::off_seg_v);
+  __nv_bfloat16* const segC = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::off_seg_c);
+  __nv_bfloat16* const wstg = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::off_stg);
+  __nv_bfloat16* const gstg = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::off_gain);
+  float* const so = reinterpret_cast<float*>(carry_smem + G::off_out);
+  __nv_bfloat16* const sr = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::off_read);
   constexpr int kListStride = G::kListStride;
-  uint16_t* const slist = reinterpret_cast<uint16_t*>(so + kAtomLeaves * LdO);
-  //: THE RETAINED PLANE (2.2), straddled over the FOLD's tenants -- the write strips
-  //: and the page buffer, both dead for the whole readout.  It is published once and
-  //: stays valid until the fold reclaims it, which is what the readout's pull needs
-  //: from it and the writers reload out of it with no republish leg.
-  static_assert(
-      G::plane_bytes <= kWarps * G::kVSlots * G::CP * LdV * 2 + 2 * kWarps * G::CP * LdS * 2,
-      "the retained plane must fit the fold's dead region");
-  const SmemAddr hiB = smem_addr(sv);
+  uint16_t* const slist = reinterpret_cast<uint16_t*>(carry_smem + G::off_list);
+  const SmemAddr memB = smem_addr(carry_smem + G::off_mem);
+  const SmemAddr pfxB = smem_addr(carry_smem + G::off_pfx);
+  const SmemAddr mskB = smem_addr(carry_smem + G::off_mask);
+  const SmemAddr segVB = smem_addr(segV), segCB = smem_addr(segC);
+  const SmemAddr stgB = smem_addr(wstg), gnB = smem_addr(gstg);
+  //: THE RETAINED PLANE (2.2), straddled over the FOLD's tenants.  It is published
+  //: once and stays valid until the fold reclaims it, which is what the readout's pull
+  //: needs from it and the writers reload out of it with no republish leg.
+  const SmemAddr hiB = smem_addr(carry_smem);
 
   //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
   //: shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
@@ -445,16 +474,15 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: `sr`, the fold inside `sw`, so neither touches the other's bytes.
   __nv_bfloat16* const panR0 = sr + warp * CP * LdS;
   __nv_bfloat16* const panR1 = sr + (kWarps + warp) * CP * LdS;
-  __nv_bfloat16* const panW0 = sw + warp * CP * LdS;
-  __nv_bfloat16* const panW1 = sw + (kWarps + warp) * CP * LdS;
   const uint32_t brT0 = smem_addr(panR0) + (uint32_t)((rT * LdS + cT * 8) * 2);
   const uint32_t brT1 = smem_addr(panR1) + (uint32_t)((rT * LdS + cT * 8) * 2);
-  const uint32_t bwF0 = smem_addr(panW0) + (uint32_t)((rF * LdS + cF * 8) * 2);
-  const uint32_t bwF1 = smem_addr(panW1) + (uint32_t)((rF * LdS + cF * 8) * 2);
-  //: the same base with the ROW left out: S-write's fold supplies the row per lane.
-  const uint32_t svVc = smem_addr(sv) + (uint32_t)(cT * 8 * 2);
+  //: THE CONSUMER'S TWO BASES INTO ITS OWN SEGMENT.  The value sub-tile is pulled
+  //: transposed (`k` = token, `m` = channel) and the coefficient sub-tile likewise
+  //: (`k` = token, `n` = slot), so both are `ldmatrix.trans` at the segment's own row
+  //: stride; nothing but the stream's own executor ever issues these.
+  const uint32_t myV = segVB + (uint32_t)(((strm * kSegRows + rT) * LdV + cT * 8) * 2);
+  const uint32_t myC = segCB + (uint32_t)(((strm * kSegRows + rF) * LdS + cF * 8) * 2);
 #define ADDR_S(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2))
-#define ADDR_V(b_, R_, dv_) ((b_) + (uint32_t)(((R_) * LdV + (dv_)) * 2))
 
   //: the warp's own staging region of the readout block.
 
@@ -471,32 +499,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   for (int j = 0; j < NL; ++j)
 #pragma unroll
     for (int e = 0; e < 4; ++e) mass_st[j][e] = 0.f;
-
-  //: THE READ DRAIN'S STATE SOURCE, AS ONE SEAM.  K35: the fragment is the
-  //: accumulator's TOP HALVES taken by `prmt` -- one instruction per pair, and the
-  //: same bytes the hi-plane hybrid will publish, so that hybrid is a placement
-  //: change and never an arithmetic one.  It TRUNCATES where the image ROUNDED;
-  //: declared, and mirrored in the oracle.
-  //:  It yields the readout's A
-  //: fragments for k-step `kk` -- the `MCH` value m-tiles and the mass row -- and it
-  //: is the ONLY place the drain touches the state's residency.  Here the
-  //: accumulator IS the operand (the warp's own n-tiles, packed in place, no
-  //: `ldmatrix`); a state held elsewhere substitutes its own load here and nothing
-  //: else in the drain moves.
-  auto state_operand = [&](auto Kc, uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
-    constexpr int kk = decltype(Kc)::value;
-    static_for<MCH>([&](auto Mc) {
-      constexpr int m = decltype(Mc)::value;
-      sa[m][0] = hi_bf16x2(st[m][2 * kk][0], st[m][2 * kk][1]);
-      sa[m][1] = hi_bf16x2(st[m][2 * kk][2], st[m][2 * kk][3]);
-      sa[m][2] = hi_bf16x2(st[m][2 * kk + 1][0], st[m][2 * kk + 1][1]);
-      sa[m][3] = hi_bf16x2(st[m][2 * kk + 1][2], st[m][2 * kk + 1][3]);
-    });
-    ma[0] = hi_bf16x2(mass_st[2 * kk][0], mass_st[2 * kk][1]);
-    ma[1] = hi_bf16x2(mass_st[2 * kk][2], mass_st[2 * kk][3]);
-    ma[2] = hi_bf16x2(mass_st[2 * kk + 1][0], mass_st[2 * kk + 1][1]);
-    ma[3] = hi_bf16x2(mass_st[2 * kk + 1][2], mass_st[2 * kk + 1][3]);
-  };
 
   //: ---- K35-E: THE TRANSIT PLANE ------------------------------------------
   //: `leaf_of` is the LATTICE leaf of a private index `P`.  The private order's own
@@ -577,7 +579,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 
   //: THE PULL, straight into the readout's A fragments.  `h` selects the n-tile, and
   //: within it register `2h` is channel row `lane/4` and `2h+1` is row `lane/4 + 8`
-  //: -- exactly `state_operand`'s register order, so the drain below is unchanged.
+  //: -- the register order the readout's drain wants.
   auto pull_operand = [&](auto Kc, uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
     constexpr int kk = decltype(Kc)::value;
     static_for<2>([&](auto Hc) {
@@ -702,87 +704,67 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 
   // ---- the produce's per-thread map ---------------------------------------
   constexpr int SPT = PM::SPT;
-  static_assert(PMW::SPT == SPT, "both carves split a row the same way");
   const int prow = lane / PM::kRowThr;  // this lane's token row of the strip
   const int psub = lane % PM::kRowThr;  // which half of that row's slots it mints
-  int lvCol[D], lvColW[D];
+  int lvCol[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
     lvCol[l] = runCol[l] + offR[l];
-    lvColW[l] = runCol[l] + offW[l];
   });
 
   //: A DEAD ROW IS ZEROED AT THE PAIR LEVEL'S FACTOR.  A padding row of a partial
-  //: batch has no token, and a zero coefficient contributes exactly nothing to either
+  //: batch has no token, and a zero coefficient contributes exactly nothing to the
   //: MMA (the produce's dead-row zeroing law).  The pair level's run is the factor
   //: every slot of the row carries, so zeroing it covers the whole row for one or two
   //: selects and costs no arithmetic.
   //:
-  //: THE READ SIDE HAS NO GAIN.  Its scalar is identically 1 and the trailing
-  //: `mul_bf16x2(acc, 1)` was 44% of the read produce -- 32 FMUL, 32 PRMT and 16 F2FP
-  //: for `rn(a*1) = a` -- so the side is a compile-time argument and the read body
-  //: stores its accumulators directly.
-  auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
-                     uint32_t gain, bool have) {
-    constexpr bool WRITE = decltype(Wt)::value;
-    using MapT = std::conditional_t<WRITE, PMW, PM>;
-    const int* const cols = WRITE ? lvColW : lvCol;
+  //: THIS IS THE READ SIDE'S PRODUCE AND ONLY THE READ SIDE'S (K35 S2).  The write
+  //: side's expansion moved to the FETCHER (`expand` below), which mints each stream's
+  //: row once into that stream's segment; what stays here is the read panel's, until
+  //: the readout takes the same treatment.  The read side HAS NO GAIN: its scalar is
+  //: identically 1 and the trailing `mul_bf16x2(acc, 1)` was 44% of the read produce.
+  auto produce = [&](const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff, bool have) {
     //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
     //: is loaded, folded into every slot and dropped inside one `static_for` body, so
     //: no `[D][n]` array is ever live.
     uint32_t acc[SPT / 2];
     {
-      //: EACH SIDE EXPANDS UNDER ITS OWN SPAN MAP, and the pair comes from the level
-      //: lying LOWEST in that map's private order -- the lattice's innermost level on
-      //: both sides, by rule 1 -- so ONE run both supplies the adjacent pair and
-      //: carries the dead-row zeroing.
       //: THE LANE'S SLOT BASE IS `psub * SPT`, and each level reads its digit out of
       //: `p` at that level's own shift -- so the base contributes a CONSTANT digit
       //: offset per level, which `idx_of` (indexing the LOCAL slot) cannot see.  Fold
-      //: it into the run's column.  At the write carve level 0 this is exactly the
-      //: lane half `psub`; without it every odd lane mints level 0's digit zero.
-      constexpr int PL = MapT::kPairLevel;
-      const int adjPL = ((psub * MapT::SPT) >> MapT::shift(PL)) & (MapT::span(PL) - 1);
-      unsigned short run[MapT::n_l(PL)];
-      load_run<MapT::n_l(PL)>(run, gather_ptr(base, tokOff + (uint32_t)((cols[PL] + adjPL) * 2)));
-      {
-        static_for<MapT::n_l(PL)>([&](auto Ic) {
-          constexpr int i = decltype(Ic)::value;
-          run[i] = have ? run[i] : (unsigned short)0;
-        });
-      }
+      //: it into the run's column.
+      constexpr int PL = PM::kPairLevel;
+      const int adjPL = ((psub * SPT) >> PM::shift(PL)) & (PM::span(PL) - 1);
+      unsigned short run[PM::n_l(PL)];
+      load_run<PM::n_l(PL)>(run, gather_ptr(base, tokOff + (uint32_t)((lvCol[PL] + adjPL) * 2)));
+      static_for<PM::n_l(PL)>([&](auto Ic) {
+        constexpr int i = decltype(Ic)::value;
+        run[i] = have ? run[i] : (unsigned short)0;
+      });
       static_for<SPT / 2>([&](auto Jc) {
         constexpr int j = 2 * decltype(Jc)::value;
         acc[j / 2] =
-            ((uint32_t)run[MapT::idx_of(PL, j + 1)] << 16) | (uint32_t)run[MapT::idx_of(PL, j)];
+            ((uint32_t)run[PM::idx_of(PL, j + 1)] << 16) | (uint32_t)run[PM::idx_of(PL, j)];
       });
     }
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      if constexpr (l != MapT::kPairLevel) {
-        const int adj = ((psub * MapT::SPT) >> MapT::shift(l)) & (MapT::span(l) - 1);
-        unsigned short run[MapT::n_l(l)];
-        load_run<MapT::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)((cols[l] + adj) * 2)));
+      if constexpr (l != PM::kPairLevel) {
+        const int adj = ((psub * SPT) >> PM::shift(l)) & (PM::span(l) - 1);
+        unsigned short run[PM::n_l(l)];
+        load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)((lvCol[l] + adj) * 2)));
         static_for<SPT / 2>([&](auto Jc) {
           constexpr int j = 2 * decltype(Jc)::value;
-          acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[MapT::idx_of(l, j)]));
+          acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
         });
       }
     });
     __nv_bfloat16* const row = dst + prow * LdS + psub * SPT;
-    if constexpr (WRITE) {
-      static_for<SPT / 2>([&](auto Jc) {
-        constexpr int j = 2 * decltype(Jc)::value;
-        store_bf16x2(row + j, mul_bf16x2(acc[j / 2], gain));
-      });
-    } else {
-      static_for<SPT / 2>([&](auto Jc) {
-        constexpr int j = 2 * decltype(Jc)::value;
-        store_bf16x2(row + j, acc[j / 2]);
-      });
-    }
+    static_for<SPT / 2>([&](auto Jc) {
+      constexpr int j = 2 * decltype(Jc)::value;
+      store_bf16x2(row + j, acc[j / 2]);
+    });
   };
-
   // ---- the GLOBAL window grid ---------------------------------------------
   const int nWindows = (L + W - 1) / W;
 
@@ -799,17 +781,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: gain are all resolved here so the two phases call ONE body; `have` false
     //: zeroes the leading factor, and a zero coefficient contributes exactly nothing
     //: to either MMA (the produce's dead-row zeroing law).
-    auto produce_batch = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst,
-                             const uint16_t* list, int o0, int ntot) {
+    auto produce_batch = [&](const __nv_bfloat16* base, __nv_bfloat16* dst, const uint16_t* list,
+                             int o0, int ntot) {
       const int nb = (ntot - o0) < C ? (ntot - o0) : C;
       const bool have = prow < nb;
       const int tok = list[o0 + (have ? prow : nb - 1)];
-      uint32_t gain = 0u;
-      if constexpr (decltype(Wt)::value)
-        gain = have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
-                          gather_ptr(gW, winG + (uint32_t)tok * 2u)))
-                    : 0u;
-      produce(Wt, base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain, have);
+      produce(base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), have);
     };
 
     // ---- the liveness pass: one READ list per warp, ONE write list --------
@@ -945,14 +922,20 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         walk(wideW, wlistS, (uint32_t)(((1ull << kSliceBits) - 1ull) << (warp * kSliceBits)),
              (uint32_t)((1ull << (warp * kSliceBits)) - 1ull));
     rendezvous();
-    //: THE WRITE SIDE'S SCHEDULE IS THE SHARED LIST built above, and each warp's own
-    //: share of it is its tier-2 digit row `mineW` -- tested per id by the pull rather
-    //: than decompressed per ballot word.  The COMPACTION (`mineW` and not `wideW`) is
-    //: what makes a warp fold only the tokens that reach its leaves; it changes the
-    //: fold's k-order, so it carries the declared re-baseline and Scan A's shared
-    //: order function with it.
-    uint16_t* const idring =
-        reinterpret_cast<uint16_t*>(slist + G::kLists * G::kListStride) + warp * G::kIdRing;
+    //: THE WRITE SIDE'S SCHEDULE IS THE SHARED UNION LIST built above, and it is the
+    //: ONLY write-side list there is: under the cooperative fetch a warp does not walk
+    //: its own tokens, it takes a fixed share of the UNION's and places rows into the
+    //: segments of whichever streams want them.  So each executor PUBLISHES its own
+    //: membership -- one ballot word per lane -- together with the per-word PREFIX
+    //: POPCOUNT, and those two turn a (token, stream) pair into the RANK the placement
+    //: addresses.  `mineW` is already `valid`-masked, so a lane past the window's last
+    //: word contributes a zero count and the prefix is exact at any `LW`.
+    if (inW) store_shared_u32(memB + (uint32_t)((strm * LW + lane) * 4), mineW);
+    {
+      const int cnt = bit_count(mineW);
+      const int pfx = lane_prefix_incl<LW>(cnt) - cnt;
+      if (inW) store_shared_u16(pfxB + (uint32_t)((strm * LW + lane) * 2), (uint16_t)pfx);
+    }
 
     //: THE PHASE CHANGE.  Every warp publishes its own write-carve hi ONCE; the one
     //: fence is the readers' wait.  `lo` stays in registers -- packed, so the state
@@ -995,7 +978,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: edge pins every produce instruction ahead of the HMMAs.  The trailing batch is
     //: entirely dead rows by the produce's zeroing law and lands in a panel no MMA
     //: reads.
-    if (nbr > 0) produce_batch(std::false_type{}, pR, panR0, rlist, 0, nr);
+    if (nbr > 0) produce_batch(pR, panR0, rlist, 0, nr);
     __syncwarp();
 #pragma unroll 1
     for (int i = 0; i < nbr; ++i) {
@@ -1065,7 +1048,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           }
         }
       }
-      produce_batch(std::false_type{}, pR, ((i + 1) & 1) ? panR1 : panR0, rlist, (i + 1) * CP, nr);
+      produce_batch(pR, ((i + 1) & 1) ? panR1 : panR0, rlist, (i + 1) * CP, nr);
       __syncwarp();
     }
 
@@ -1081,131 +1064,335 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     reload_hi(lo, mlo);
     rendezvous();
 
-    // ---- PHASE 2: the FOLD, over the warp's OWN private value stream --------
-    //: NO BATCHES, NO SHARED RING, NO RENDEZVOUS (2.4).  Each warp streams ITS OWN
-    //: tokens into its own tile buffer and folds them; the only synchronization left
-    //: in the window is the phase change above.  Ownership partitions the write
-    //: tokens at the write carve, so the duplication this costs is the declared
-    //: write-multiplicity bound (1.04-2.96 at the ALT arms), absorbed by L2.
-    constexpr int kIdRing = G::kIdRing;
-    constexpr int kChunkV = kDv / 8;  // 16-B chunks across a value row
-    constexpr int kRowsW = 32 / kChunkV;
-    constexpr int kPassW = CP / kRowsW;
-    static_assert(kPassW * kRowsW == CP && (kIdRing & (kIdRing - 1)) == 0, "tile / ring shape");
-    const int ldRowW = lane / kChunkV, ldColW = (lane % kChunkV) * 8;
-    constexpr uint32_t kVSlotB = (uint32_t)(CP * LdV) * 2;
-    __nv_bfloat16* const svW = sv + warp * G::kVSlots * CP * LdV;
-    const uint32_t svLw = smem_addr(svW) + (uint32_t)((ldRowW * LdV + ldColW) * 2);
-    const uint32_t svAw = smem_addr(svW) + (uint32_t)((rT * LdV + cT * 8) * 2);
+    // ---- PHASE 2: THE FOLD -- ONE UNION WALK, WRITER-SIDE PLACEMENT ---------
+    //: F2/F4.  A BATCH is `kSegRows` consecutive tokens of the CTA's union list, and
+    //: the CTA walks that list ONCE.  Executor `warp` takes the fixed share
+    //: `i % kWarps` of the batch's union tokens -- no dynamic assignment -- and for
+    //: each token it handles and each STREAM that wants it, it places into that
+    //: stream's segment at `rank(t, s)`:
+    //:   (a) the value row, by `cp.async`, and
+    //:   (b) the FULLY EXPANDED coefficient row for that stream's box -- `kLeafW`
+    //:       bf16 in the stream's private order, gain applied.
+    //: The consumer does NO produce: tile skip -> `ldmatrix` -> HMMA.  The sub-products
+    //: over the levels a stream does NOT carve are shared across the streams of one
+    //: token and are minted once as `memo`; the memo is INTERNAL to the fetcher and its
+    //: shape is the span vector's, at compile time.
+    //:
+    //: WHY THE RANK IS THE ADDRESS AND WHY THE BOUND IS STATIC.  The union list is
+    //: ascending in token, so a stream's compacted list is a subsequence of it and
+    //: `rank(t, s)` is the prefix popcount of that stream's ballot below `t`.  Inside a
+    //: batch of `kSegRows` union tokens a stream can hold at most `kSegRows` of them,
+    //: so the batch-local rank is below `kSegRows` BY CONSTRUCTION -- the segment needs
+    //: no truncation path and the bound is the type's, not a runtime test.
+    //:
+    //: COVERAGE IS BY CONSTRUCTION, NOT BY ACCOUNTING (the salvage's law: `0 * NaN` is
+    //: `NaN`, so a slot row the MMA reads must never be arbitrary SMEM).  Every row of
+    //: every slot is written each batch: the owning executor CLEARS its whole segment
+    //: between the drain and the barrier that releases the writers, and the live rows
+    //: are then placed over it.  A dead row is therefore a ZERO value row with a ZERO
+    //: coefficient row -- finite operand, zero weight, exactly nothing contributed --
+    //: and no row's liveness is ever computed twice.
+    constexpr int TPW = kSegRows / kWarps;  // union tokens one executor handles per batch
+    static_assert(TPW * kWarps == kSegRows,
+                  "the batch's union tokens split evenly over the executors");
+    constexpr int kStrBits = ilog2c(kStreams);
+    //: THE EXPANSION'S LANE MAP.  A coefficient row is `kWordsRow` packed pairs; the
+    //: warp covers `kRowsPass` rows at once, one per lane group, and the rows of a pass
+    //: are consecutive (token, stream) pairs -- SAME token, adjacent streams -- which
+    //: is what lets one memo serve the whole pass.
+    constexpr int kWordsRow = kLeafW / 2;
+    constexpr int kLanesRow = kWordsRow < kBallotLanes ? kWordsRow : kBallotLanes;
+    constexpr int kRowsPass = kBallotLanes / kLanesRow;
+    constexpr int kWordsLane = kWordsRow / kLanesRow;
+    constexpr int kStreamPass = kStreams / kRowsPass;
+    static_assert(kStreams % kRowsPass == 0 && kStreamPass >= 1,
+                  "a pass's rows are streams of ONE token, so the stream count carries them");
+    static_assert(kLanesRow >= kMmaN, "an n-tile pair's liveness is a byte of the row's ballot");
+    constexpr int kNJ = NL / 2;  // n-tile PAIRS: one `ldmatrix` and one skip bit each
+    static_assert(kWordsLane * (kLanesRow / kMmaN) == kNJ,
+                  "the mask carries exactly one bit per n-tile pair");
+    //: the value row's copy map: `kChunkV` sixteen-byte chunks, `kValRows` rows a pass.
+    constexpr int kChunkV = kDv / 8;
+    constexpr int kValRows = kBallotLanes / kChunkV;
+    constexpr int kValPass = kSegRows / kValRows;
+    static_assert(kValPass * kValRows == kSegRows, "the candidate pairs split evenly");
+    //: the staging's map: one thread per (union token, run chunk), the chunk group
+    //: rounded to a power of two so the split is a shift and a mask.
+    constexpr int kStgCh = ceil_pow2c(BP::kStageChunks);
+    constexpr int kStgStep = kThreads / kStgCh;
+    constexpr int kStgPass = (kSegRows + kStgStep - 1) / kStgStep;
 
-    //: THE CURSOR IS THE DECOMPRESSOR (doctrine 7).  One ballot word a step:
-    //: broadcast it, ballot the lane's own bit, rank it inside the word, append.  No
-    //: cross-warp prefix and nothing window-sized -- the ids live only in a ring of
-    //: `kIdRing`, which is the pipeline's depth and not the window's length.  The
-    //: earlier ballot-cursor refutation was SHARED-stream-scoped: it failed because
-    //: rank-indexed consumers needed a global rank.  Here the warp's stream order IS
-    //: the pull's order and every consumer is affine in it.
-    int head = 0, tail = 0, si = 0;
-    //: `below` is lane-invariant AND loop-invariant, so it is built once here rather
-    //: than rebuilt on every visit as it was.
-    const uint32_t below = (1u << lane) - 1u;
-    //: THE PULL.  A step tests 32 of the SHARED list's ids against this warp's own
-    //: digit row, so the walk is over LIVE OWNER IDS rather than over the window's
-    //: 512 token slots -- which is the whole difference at a sparse cell.  Token `t`'s
-    //: membership bit lives in lane `t >> 5`'s word of `mineW`, and `__shfl` takes a
-    //: PER-LANE source, so the gather of 32 different words is one instruction.
-    auto refill = [&]() {
-      while (tail - head <= kIdRing - kBallotLanes && si < nw) {
-        const int idx = si + lane;
-        const bool inR = idx < nw;
-        const int t = inR ? (int)wlistS[idx] : 0;
-        const uint32_t w = (uint32_t)lane_broadcast((int)mineW, t >> 5);
-        const bool has = inR && (((w >> (t & 31)) & 1u) != 0u);
-        const uint32_t bal = lane_ballot(has);
-        if (has) idring[(tail + bit_count(bal & below)) & (kIdRing - 1)] = (uint16_t)t;
-        tail += bit_count(bal);
-        si += kBallotLanes;
-      }
-      __syncwarp();
-    };
-    auto stage_tile_w = [&](int h, int cnt, int slot) {
-#pragma unroll
-      for (int p = 0; p < kPassW; ++p) {
-        const int r = ldRowW + p * kRowsW;
-        const int t = idring[(h + (r < cnt ? r : (cnt > 0 ? cnt - 1 : 0))) & (kIdRing - 1)];
-        stage_tile(svLw + (uint32_t)slot * kVSlotB + (uint32_t)(p * kRowsW * LdV * 2),
-                   gather_ptr(vPlane,
-                              (uint32_t)t * (uint32_t)v_row_bytes + winV + (uint32_t)(ldColW * 2)));
-      }
-    };
-    auto produce_tile = [&](__nv_bfloat16* dst, int h, int cnt) {
-      const bool have = prow < cnt;
-      const int tok = idring[(h + (have ? prow : 0)) & (kIdRing - 1)];
-      const uint32_t gain = have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
-                                       gather_ptr(gW, winG + (uint32_t)tok * 2u)))
-                                 : 0u;
-      produce(std::true_type{}, pW, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain,
-              have);
-    };
+    const int exH = lane >> ilog2c(kLanesRow);  // which row of the pass this lane serves
+    const int exJ = lane & (kLanesRow - 1);     // its packed pair inside that row
+    const int vlC = lane & (kChunkV - 1);       // its sixteen-byte chunk of a value row
+    const int vlR = lane >> ilog2c(kChunkV);    // which row of the value pass
 
-    refill();
-    int cnt = tail - head < CP ? tail - head : CP;
-    if (cnt > 0) {
-      stage_tile_w(head, cnt, 0);
-      stage_commit();
-      produce_tile(panW0, head, cnt);
-      __syncwarp();
-    }
-    //: THE LOOP'S STRUCTURAL BOUND.  A warp can never own more than the window's `W`
-    //: tokens, so it can never need more than `ceil(W / CP)` tiles; the cursor must
-    //: not be trusted to terminate the loop on its own.  Measured: without this the
-    //: sparsest cell (`alt-k4-W512`) inflates its state ~38x, which is spurious tiles
-    //: folding past the end of the schedule.
-    const int kTileCap = W / CP + 2;
-#pragma unroll 1
-    for (int t = 0; cnt > 0 && t < kTileCap; ++t) {
-      stage_wait<0>();
-      //: DRAIN FIRST: the tile is in registers before the next fill is issued into
-      //: the same buffer, which is the whole of the single-slot WAR window.
-      uint32_t a[MCH][4];
-#pragma unroll
-      for (int m = 0; m < MCH; ++m)
-        load_frag_t(a[m], svAw + (uint32_t)(t & 1) * kVSlotB + (uint32_t)(m * kMmaM * 2));
-      head += cnt;
-      refill();
-      const int nxt = tail - head < CP ? tail - head : CP;
-      //: the next fill goes into the OTHER slot, so it cannot overtake this tile's
-      //: drain, and it flies underneath this tile's MMAs.
-      if (nxt > 0) {
-        stage_tile_w(head, nxt, (t + 1) & 1);
-        stage_commit();
-      }
-      const uint32_t bwF = (t & 1) ? bwF1 : bwF0;
-#pragma unroll
-      for (int nj = 0; nj < NL / 2; ++nj) {
-        uint32_t b[4];
-        load_frag_t(b, ADDR_S(bwF, 0, 2 * nj));
-#pragma unroll
-        for (int m = 0; m < MCH; ++m) {
-          mma(st[m][2 * nj], a[m], &b[0]);
-          mma(st[m][2 * nj + 1], a[m], &b[2]);
+    //: `rank_live(s, t)` -- the token's position in stream `s`'s compacted list, and
+    //: whether the stream holds it at all, out of the published ballot and prefix.
+    auto rank_live = [&](int s, int t) {
+      const int w = t >> 5;
+      const uint32_t word = load_shared_u32(memB + (uint32_t)((s * LW + w) * 4));
+      const int pre = (int)load_shared_u16(pfxB + (uint32_t)((s * LW + w) * 2));
+      const uint32_t below = (1u << (t & 31)) - 1u;
+      return ((pre + bit_count(word & below)) << 1) | (int)((word >> (t & 31)) & 1u);
+    };
+    //: THE BATCH'S CANDIDATE PAIRS, RESOLVED ONCE.  Lane `q < kSegRows` owns candidate
+    //: `q = (i, s)`, computes the placement and every other lane reads it by shuffle --
+    //: so the four shared loads of a rank are paid once per pair and never per lane of
+    //: the row that pair fills.  `-1` is "this stream does not want this token".
+    auto batch_place = [&](int u0, int nb) {
+      int e = -1;
+      if (lane < kSegRows) {
+        const int i = lane >> kStrBits, s = lane & (kStreams - 1);
+        const int ii = i * kWarps + warp;
+        if (ii < nb) {
+          const int t = (int)wlistS[u0 + ii];
+          const int rl = rank_live(s, t);
+          if (rl & 1) {
+            const int t0 = (int)wlistS[u0];
+            e = (((rl >> 1) - (rank_live(s, t0) >> 1)) << 16) | t;
+          }
         }
-        mma(mass_st[2 * nj], ones_a, &b[0]);
-        mma(mass_st[2 * nj + 1], ones_a, &b[2]);
       }
-      if (nxt > 0) {
-        produce_tile((t & 1) ? panW0 : panW1, head, nxt);
+      return e;
+    };
+    //: THE VALUE LEG.  `cp.async` never touches registers, and the fetcher issues it
+    //: into a segment it does not consume -- the fan-out pipeline's first owner.
+    //: BODY COUNT: `kValPass` = `kSegRows * kChunkV / 32` = 4 at every arm (`d_v = 64`
+    //: fixes `kChunkV = 8` and `kSegRows = kMmaK`), each body one predicated issue.
+    auto fetch_values = [&](int e0) {
+      static_for<kValPass>([&](auto Pc) {
+        constexpr int pp = decltype(Pc)::value;
+        const int q = pp * kValRows + vlR;
+        const int e = lane_broadcast(e0, q);
+        if (e >= 0) {
+          const int s = q & (kStreams - 1);
+          stage_tile(segVB + (uint32_t)((((s * kSegRows + (e >> 16)) * LdV) + vlC * 8) * 2),
+                     gather_ptr(vPlane, (uint32_t)(e & 0xFFFF) * (uint32_t)v_row_bytes + winV
+                                            + (uint32_t)(vlC * 8 * 2)));
+        }
+      });
+    };
+    //: ONE AMPLITUDE OUT OF THE STAGED ROW.  The level lying LOWEST in the private
+    //: order (level `D - 1`, by rule 1) supplies BOTH slots of a packed pair with one
+    //: four-byte access, because its two digits are adjacent; every other level's digit
+    //: is constant across the pair and is splatted.
+    auto factor = [&](uint32_t rowB, auto Lc, int p0, int off) {
+      constexpr int l = decltype(Lc)::value;
+      const int d = ((p0 >> PMW::shift(l)) & (PMW::span(l) - 1)) + off;
+      if constexpr (l == D - 1)
+        return load_shared_u32(rowB + (uint32_t)((BP::stage_off(l) + d) * 2));
+      else
+        return splat_bf16x2_bits(load_shared_u16(rowB + (uint32_t)((BP::stage_off(l) + d) * 2)));
+    };
+    //: the stream's digit offset at a level, for a stream this executor does NOT run:
+    //: the stream index decomposes in mixed radix over the per-level stream grids, so
+    //: it is a shift and a mask over compile-time powers of two.
+    auto offW_of = [&](int s, auto Lc) {
+      constexpr int l = decltype(Lc)::value;
+      return ((s >> ilog2c(SVW::grid_div(l))) & (SVW::g(l) - 1)) * SVW::s(l);
+    };
+    //: THE EXPANSION.  DECLARED ARITHMETIC ORDER, per packed slot pair:
+    //:     w = gain, then x f_l for every level the side SPANS WHOLE in ascending `l`,
+    //:                then x f_l for every level the side CARVES in ascending `l`,
+    //: each product rounded to nearest even in bf16 (`mul_bf16x2`).  The prefix through
+    //: the whole-spanned levels is the MEMO -- it does not depend on the stream, so it
+    //: is minted once per (token, lane) and reused by every stream of that token.  This
+    //: order is NOT the deleted produce's (which multiplied the pair level first and
+    //: the gain last), so the fold's coefficients are not bit-identical to it; the
+    //: total multiply count is unchanged and the oracle is the gate.
+    //: BODY COUNT per call: `TPW * (1 + kWordsLane * U)` for the memo and
+    //: `TPW * kStreamPass * kWordsLane * (Cv + 2)` for the rows, with `U`/`Cv` the
+    //: whole-spanned and carved level counts -- 4*(1+1) + 4*2*1*3 = 32 at the D=2 ALT
+    //: arms, 2*(1+3) + 2*4*1*4 = 40 at the D=4 multi-level carve.
+    auto expand = [&](int slot, int e0) {
+      const uint32_t blkB = stgB + (uint32_t)(slot * kSegRows * BP::kStageW * 2);
+      const uint32_t gblkB = gnB + (uint32_t)(slot * kSegRows * 2);
+      static_for<TPW>([&](auto Ic) {
+        constexpr int ic = decltype(Ic)::value;
+        const int ii = ic * kWarps + warp;
+        const uint32_t rowB = blkB + (uint32_t)(ii * BP::kStageW * 2);
+        const uint32_t gain = splat_bf16x2_bits(load_shared_u16(gblkB + (uint32_t)(ii * 2)));
+        uint32_t memo[kWordsLane];
+        static_for<kWordsLane>([&](auto Wc) {
+          constexpr int wl = decltype(Wc)::value;
+          const int p0 = 2 * (exJ + wl * kLanesRow);
+          uint32_t a = gain;
+          static_for<D>([&](auto Lc) {
+            constexpr int l = decltype(Lc)::value;
+            if constexpr (!SVW::carves(l)) a = mul_bf16x2(a, factor(rowB, Lc, p0, 0));
+          });
+          memo[wl] = a;
+        });
+        static_for<kStreamPass>([&](auto Pc) {
+          constexpr int pp = decltype(Pc)::value;
+          const int s = pp * kRowsPass + exH;
+          const int e = lane_broadcast(e0, ic * kStreams + s);
+          const uint32_t rowW = segCB + (uint32_t)(((s * kSegRows + (e >> 16)) * LdS) * 2);
+          uint32_t msk = 0u;
+          static_for<kWordsLane>([&](auto Wc) {
+            constexpr int wl = decltype(Wc)::value;
+            const int jw = exJ + wl * kLanesRow;
+            uint32_t a = memo[wl];
+            static_for<D>([&](auto Lc) {
+              constexpr int l = decltype(Lc)::value;
+              if constexpr (SVW::carves(l))
+                a = mul_bf16x2(a, factor(rowB, Lc, 2 * jw, offW_of(s, Lc)));
+            });
+            if (e >= 0) store_shared_u32(rowW + (uint32_t)(jw * 4), a);
+            //: THE PER-ROW TILE-LIVE MASK, produced BY the expansion because only the
+            //: expansion knows which slots it wrote nonzero.  One ballot names every
+            //: live packed pair of the pass's rows; a byte of it is an n-tile pair.
+            const uint32_t bal = lane_ballot(e >= 0 && (a & kBf16MagnitudeMask) != 0u);
+            static_for<kLanesRow / kMmaN>([&](auto Gc) {
+              constexpr int g = decltype(Gc)::value;
+              if (((bal >> (exH * kLanesRow + kMmaN * g)) & 0xFFu) != 0u)
+                msk |= 1u << (wl * (kLanesRow / kMmaN) + g);
+            });
+          });
+          if (exJ == 0 && msk != 0u) or_shared_u32(mskB + (uint32_t)(s * 4), msk);
+        });
+      });
+    };
+    //: THE ROLLING COEFFICIENT STAGING.  The compressed factor rows of a batch's union
+    //: tokens, `cp.async`ed one batch AHEAD of the expansion that reads them, so the
+    //: expansion never carries a global latency and no per-token global factor load
+    //: ever appears in the fetch loop.
+    //: BODY COUNT: `kStgPass * D` = `D` at every built arm (`kThreads / kStgCh` is 32
+    //: or 64, both at least `kSegRows`), each body one predicated asynchronous run.
+    auto stage_factors = [&](int slot, int u0, int nb) {
+      const int c = tid & (kStgCh - 1);
+      const uint32_t blkB = stgB + (uint32_t)(slot * kSegRows * BP::kStageW * 2);
+      static_for<kStgPass>([&](auto Pc) {
+        const int r = (tid >> ilog2c(kStgCh)) + decltype(Pc)::value * kStgStep;
+        if (r < nb) {
+          const uint32_t tokB = winP + (uint32_t)wlistS[u0 + r] * (uint32_t)(BP::kWtot * 2);
+          static_for<D>([&](auto Lc) {
+            constexpr int l = decltype(Lc)::value;
+            if (c >= BP::stage_chunk_base(l) && c < BP::stage_chunk_base(l) + BP::stage_chunks(l)) {
+              const int sub = (c - BP::stage_chunk_base(l)) * BP::stage_el(l);
+              stage_run<BP::stage_el(l) * 2>(
+                  blkB + (uint32_t)((r * BP::kStageW + BP::stage_off(l) + sub) * 2),
+                  gather_ptr(pW, tokB + (uint32_t)((runCol[l] + sub) * 2)));
+            }
+          });
+        }
+      });
+    };
+    //: THE GAIN rides the same block.  Its load is issued at the TOP of a fetch phase
+    //: and its store at the BOTTOM, so the whole expansion covers the global latency,
+    //: and the CTA barrier at the next batch's head is what publishes it.
+    auto gain_load = [&](int u0, int nb) {
+      unsigned short g = 0;
+      if (tid < kSegRows && tid < nb)
+        g = *reinterpret_cast<const unsigned short*>(
+            gather_ptr(gW, winG + (uint32_t)wlistS[u0 + tid] * 2u));
+      return g;
+    };
+    auto gain_store = [&](int slot, unsigned short g) {
+      if (tid < kSegRows) store_shared_u16(gnB + (uint32_t)((slot * kSegRows + tid) * 2), g);
+    };
+    //: THE CLEAR, and it is the coverage law's whole implementation: between its drain
+    //: and the barrier that releases the writers, an executor zeroes its OWN segment.
+    constexpr int kClrV = kSegRows * LdV * 2 / 16, kClrC = kSegRows * LdS * 2 / 16;
+    static_assert(kClrV * 16 == kSegRows * LdV * 2 && kClrC * 16 == kSegRows * LdS * 2,
+                  "a segment is a whole number of sixteen-byte quanta");
+    //: BODY COUNT: `ceil(kSegRows*LdV*2/512) + ceil(kSegRows*LdS*2/512)` = 5 + 3 = 8 at
+    //: every built arm (`LdV = 72`, `LdS = 40`, `kSegRows = 16`).
+    auto clear_segment = [&]() {
+      const uint4 z = make_uint4(0u, 0u, 0u, 0u);
+      const uint32_t vB = segVB + (uint32_t)(strm * kSegRows * LdV * 2 + lane * 16);
+      const uint32_t cB = segCB + (uint32_t)(strm * kSegRows * LdS * 2 + lane * 16);
+      static_for<(kClrV + kBallotLanes - 1) / kBallotLanes>([&](auto Pc) {
+        constexpr int pp = decltype(Pc)::value;
+        if (pp * kBallotLanes + 32 <= kClrV || pp * kBallotLanes + lane < kClrV)
+          store_shared_vec16(vB + (uint32_t)(pp * kBallotLanes * 16), z);
+      });
+      static_for<(kClrC + kBallotLanes - 1) / kBallotLanes>([&](auto Pc) {
+        constexpr int pp = decltype(Pc)::value;
+        if (pp * kBallotLanes + 32 <= kClrC || pp * kBallotLanes + lane < kClrC)
+          store_shared_vec16(cB + (uint32_t)(pp * kBallotLanes * 16), z);
+      });
+      if (lane == 0) store_shared_u32(mskB + (uint32_t)(strm * 4), 0u);
+    };
+
+    const int nBatch = (nw + kSegRows - 1) / kSegRows;
+    auto batch_n = [&](int b) {
+      const int r = nw - b * kSegRows;
+      return r <= 0 ? 0 : (r < kSegRows ? r : kSegRows);
+    };
+    if (nBatch > 0) {
+      clear_segment();
+      stage_factors(0, 0, batch_n(0));
+      const unsigned short g0 = gain_load(0, batch_n(0));
+      stage_commit();
+      stage_wait<0>();
+      gain_store(0, g0);
+      rendezvous();
+      {
+        const int e0 = batch_place(0, batch_n(0));
+        fetch_values(e0);
+        const unsigned short g1 = gain_load(kSegRows, batch_n(1));
+        stage_factors(1, kSegRows, batch_n(1));
+        stage_commit();
+        expand(0, e0);
+        gain_store(1, g1);
+      }
+#pragma unroll 1
+      for (int b = 0; b < nBatch; ++b) {
+        //: LANDED.  Every fetcher's copies for batch `b` have arrived and the barrier
+        //: makes every stream's rows visible to the stream that consumes them.
+        stage_wait<0>();
+        rendezvous();
+        //: THE DRAIN, AND IT IS THE WHOLE OF THE CONSUMER.  BODY COUNT: `MCH + kNJ`
+        //: `ldmatrix` (4 + 2 at every built arm) and `kNJ * (2*MCH + 2)` MMAs (2 * 10),
+        //: both O(fragments) and both gated by the batch's tile-live mask.
+        const uint32_t tm = load_shared_u32(mskB + (uint32_t)(strm * 4));
+        uint32_t av[MCH][4], bc[kNJ][4];
+        if (tm != 0u) {
+          static_for<MCH>([&](auto Mc) {
+            constexpr int m = decltype(Mc)::value;
+            load_frag_t(av[m], myV + (uint32_t)(m * kMmaM * 2));
+          });
+          static_for<kNJ>([&](auto Nc) {
+            constexpr int nj = decltype(Nc)::value;
+            if (tm & (1u << nj)) load_frag_t(bc[nj], ADDR_S(myC, 0, 2 * nj));
+          });
+        }
+        clear_segment();
+        //: DRAINED.  The `ldmatrix` above has read the slot -- this is its completion
+        //: point -- and the clear has re-zeroed it, so the writers may refill.
         __syncwarp();
+        rendezvous();
+        const int n1 = batch_n(b + 1);
+        const int e1 = batch_place((b + 1) * kSegRows, n1);
+        fetch_values(e1);
+        const unsigned short gn = gain_load((b + 2) * kSegRows, batch_n(b + 2));
+        stage_factors(b & 1, (b + 2) * kSegRows, batch_n(b + 2));
+        stage_commit();
+        expand((b + 1) & 1, e1);
+        gain_store(b & 1, gn);
+        //: AND THE MMAs RUN FROM FRAGMENTS, underneath the copies just issued.  That
+        //: is where the overlap comes from in form (b): the drain-then-refill order,
+        //: with registers as the second stage.
+        static_for<kNJ>([&](auto Nc) {
+          constexpr int nj = decltype(Nc)::value;
+          if (tm & (1u << nj)) {
+            static_for<MCH>([&](auto Mc) {
+              constexpr int m = decltype(Mc)::value;
+              mma(st[m][2 * nj], av[m], &bc[nj][0]);
+              mma(st[m][2 * nj + 1], av[m], &bc[nj][2]);
+            });
+            mma(mass_st[2 * nj], ones_a, &bc[nj][0]);
+            mma(mass_st[2 * nj + 1], ones_a, &bc[nj][2]);
+          }
+        });
       }
-      cnt = nxt;
+      //: THE WINDOW EDGE.  Drain FIRST: the plane the next window publishes lives in
+      //: these very segments, so an in-flight `cp.async` that landed after the barrier
+      //: would write into the published plane.
+      stage_wait<0>();
     }
-    //: THE WINDOW EDGE, AND THE ORDER MATTERS.  Drain FIRST: the plane the next
-    //: window publishes lives in these very value slots, so an in-flight `cp.async`
-    //: that lands after the barrier would write into the published plane.  Then
-    //: fence, because private streams end the warps' lockstep and a warp whose
-    //: cursor ran dry early must not publish over a slower warp's strips.  These are
-    //: the window's only CTA syncs besides the phase change.
-    stage_wait<0>();
     rendezvous();
   }
 
@@ -1229,7 +1416,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     }
   }
 #undef ADDR_S
-#undef ADDR_V
 }
 
 }  // namespace rola::carry

@@ -246,115 +246,179 @@ one page per atom. The same measured law governs the produce's slot loops: they 
 observed at 64-67 local accesses per deep-arm body before the loops were made
 compile-time.
 
-## The rings
+## The cooperative fetch (K35 F2/F4): one union walk, writer-side placement
 
-The V ring is `STAGES` slots deep, asynchronous, FIFO, one implicit group per batch,
-`stage_wait<STAGES-2>` before the consuming rendezvous, and a group committed on every
-batch — live or not — so the wait/commit accounting never depends on the data.
-`STAGES` is DERIVED by `design::stages_for(slot, fixed, threads, kRegFloor)`, the same
-function `chunk`'s `Geom::stages` uses: the shallowest ring that reaches the best
-residency this arm can reach at any depth.
+THE FOLD'S OPERAND PATH IS NOT PER-STREAM ANY MORE. The CTA walks the UNION of its
+streams' write lists ONCE — that list is `wlistS`, which the shared derivation already
+builds — and a BATCH is `kSegRows = CP = kMmaK` consecutive tokens of it. Executor
+`warp` takes the fixed share `i % kWarps` of a batch's union tokens (no dynamic
+assignment, no cursor), and for every token it handles and every STREAM that wants that
+token it places, into that stream's segment, BOTH
 
-The PANEL ring is two slots, and each slot is carved into `kWarps` PRIVATE REGIONS of
-`C × (BC/kWarps + kPadE)` — the warp expands only its own leaves, so the CTA's total
-produce work is unchanged and only the region a lane stores into moves. A lane owns a
-whole panel ROW (the batch tile is the warp width), which publishes as four
-conflict-free `STS.128`: the wide store path is what compaction lost to
-(`rola-scratch/prototypes/k31_compactprod/FINDINGS.md`) and it is kept here by
-construction. Because all of a window's readouts precede all of its folds, the write
-panel is dead through phase 1 and the read panel is dead through phase 2; each phase
-double-buffers in the other's buffer and produces one batch AHEAD. Its two operand bases
-are NAMED SCALARS selected by the batch parity — a two-element array indexed at runtime
-would be a stack frame.
+* the value row, by `cp.async` (the copy never touches registers), and
+* the FULLY EXPANDED coefficient row for that stream's box — `kLeafW` bf16 in the
+  stream's private order, gain applied.
 
-The lookahead produce is UNCONDITIONAL and sits AFTER its batch's MMA block, and both
-halves of that are scheduling laws rather than style. A `i + 1 < nb` guard is a basic
-block, and ptxas schedules within one, so a guarded produce cannot place a single
-instruction in an HMMA's 16-cycle tensor-pipe shadow; the trailing batch it costs
-instead is entirely dead rows under the produce's zeroing law and lands in a panel no
-MMA reads. Placement after the MMA is forced by ALIASING: the produce ends in panel
-`STS` and the MMA begins in panel `LDSM`, and ptxas cannot prove the two runtime panel
-ranges disjoint, so in the other order that memory edge pins every produce instruction
-ahead of the HMMAs even with the branch gone. In this order the produce's amplitude
-`LDG` hoist above the MMA and its expansion arithmetic fills the tensor pipe's shadows.
+The consumer does NO produce: tile skip → `ldmatrix` → HMMA. Each stream's row is
+minted ONCE, so the total multiply count is unchanged; what is removed is every warp
+re-loading and re-expanding the factor runs the other warps also want.
 
-## The barriers: the window line, and nothing else outside the fold
+### The rank IS the address, and the bound is the type's
 
-THE SCHEDULE HAS NO BARRIER AT ALL (above), so the window line is the only CTA
-rendezvous outside phase 2's per-batch one, and a window the owner is dead in costs zero
-barriers.
+The union list is ascending in token and a stream's compacted list is a subsequence of
+it, so `rank(t, s)` — the token's position in stream `s`'s list — is the PREFIX POPCOUNT
+of that stream's write ballot below `t`. Each executor therefore publishes, once per
+window, its own ballot word per lane (`kStreams × kLW` words) together with the per-word
+prefix popcount; two shared loads and a `popc` turn any (token, stream) pair into its
+rank, and the fetcher needs no knowledge of a stream it does not run beyond those.
 
-The READ PHASE SHARES NOTHING. The list, the panel region, the staging block and the
-fan-in are the warp's own, so the four warps run their own batch counts to the window
-line without one CTA barrier; the only ordering the phase needs is a lane's panel `STS`
-against another lane's `ldmatrix` of the same region, which is `__syncwarp` and costs no
-instruction on provably converged lanes. Phase 1's body is `[MMA(i) reads panel P(i)]`,
-`[stage an n-tile, RED it]`, `[produce → P(i+1)]`, `__syncwarp`.
+Inside a batch of `kSegRows` union tokens a stream can hold at most `kSegRows` of them,
+so the batch-local rank is BELOW `kSegRows` by construction. The segment bound is
+therefore the type's — `kSegRows == CP`, a `static_assert` — and there is no truncation
+path and no runtime test.
 
-The WINDOW LINE keeps its barrier, and it is the one place run-ahead stops. It is
-required, not decorative: without it a warp that finished its reads early would begin
-staging the next window's V into ring slots another warp is still folding from, and the
-per-window barrier sequence would stop being CTA-uniform. Coherence costs latency, not
-work — the barrier is where that is paid, and it is where a COHERENT window's cost
-appears: the carve gives a warp one digit group for the whole kernel, so a window whose
-live support falls in one group is drained by one warp while the others reach the line
-and wait. That is a property of REGISTER-resident state (the slice is a register set, so
-only its owner can drain it) and not of the schedule; the measurement, and what an
-addressable state costs to fix it, are in
-`rola-scratch/prototypes/k31_formb_build/FINDINGS.md`.
+The four shared loads of a rank are paid ONCE PER PAIR: lane `q < kSegRows` of each warp
+owns candidate pair `q = (i, s)`, resolves it, and every lane that fills that row reads
+the result by shuffle.
 
-Phase 2 is unchanged: `BAR_D`, `[stage V slot f; fold(i) reads V slot i and P(i)]`,
-`[produce → P(i+1)]`, one rendezvous per write batch.
+### Coverage is by construction
+
+`0 × NaN = NaN`: a slot row the MMA reads must never be arbitrary shared memory, and an
+accounting argument about which rows a partial batch left dead is exactly the kind of
+argument that failed before. So the accounting is removed: between its `ldmatrix` drain
+and the barrier that releases the writers, an executor CLEARS ITS OWN SEGMENT — value
+and coefficient sub-tiles, whole, at `st.shared.v4.u32`, a constant number of stores —
+and the live rows are placed over it. A dead row is therefore a ZERO value row with a
+ZERO coefficient row: a finite operand with zero weight, contributing exactly nothing to
+either MMA. No row's liveness is computed twice and no row is ever unwritten.
+
+### The expansion, and its declared order
+
+Under the private-order rule the levels a side spans WHOLE lie lowest in `p` and the
+levels it CARVES lie outermost, so the product splits cleanly:
+
+    memo  = gain, then × f_l for every level the side SPANS WHOLE, ascending l
+    w     = memo, then × f_l for every level the side CARVES,      ascending l
+
+`memo` does not depend on the stream, so it is minted ONCE per (token, lane) and reused
+by every stream that wants the token — that is the sub-product memo, and its shape is
+the span vector's, at compile time. The level lying LOWEST in the order (level `D-1`, by
+rule 1) supplies BOTH slots of a packed pair with one four-byte access, because its two
+digits are adjacent; every other level's digit is constant across the pair and is
+splatted. At the `D = 2` ALT arms that is ONE shared access and ONE `mul_bf16x2` per
+(token, stream) row per lane.
+
+THE ORDER IS DECLARED AND IS NOT THE DELETED PRODUCE'S, which multiplied the pair level
+first and the gain last. The coefficients are therefore NOT bit-identical to the produce
+they replace; the fp64 oracle is the gate.
+
+### The rolling factor staging
+
+The fetcher expands from SHARED MEMORY: the compressed factor rows of a batch's union
+tokens are `cp.async`ed ONE BATCH AHEAD into `StagedFactorRow`, so no per-token global
+factor load ever appears in the fetch loop. A staged row is the OWNER's digit run at
+each level — `Σ_l s_l` amplitudes, not the topology-wide `kWtot` packed row — laid out
+level by level with each run aligned to its own asynchronous quantum (4, 8 or 16 bytes);
+the alignment holds by construction because a level's column base is a multiple of `B`
+and an owner's run starts at a multiple of `s_l`.
+
+IT IS A ROLLING BLOCK AND NOT THE WHOLE WINDOW. The card's ledger line stages `W × kWtot`
+at window start; at `W = 512` the owner-run form of that is 24.5 KB, which costs the
+second CTA on the RTX. Two blocks of `kSegRows` rows is 1.5 KB, is independent of `W`,
+loads strictly fewer rows (only the union's tokens, never a dead one), and keeps the
+property the staging exists for — the expansion carries no global latency. The gain
+rides the same block: its load is issued at the TOP of a fetch phase and its store at
+the BOTTOM, so the whole expansion covers it.
+
+### The per-row tile-live mask
+
+The EXPANSION knows which slots it wrote nonzero, so it emits the liveness itself: one
+ballot names every live packed pair of a pass's rows, a byte of that ballot is an n-tile
+pair, and the bits are OR-ed across the batch into one word per stream by
+`red.shared.or`. The consumer skips an n-tile pair whose batch OR-bit is zero — both its
+`ldmatrix` and its MMAs — and the skip is EXACT: a tile with no live leaf contributes
+nothing. No facts-table row is involved, and the grain is the MMA's own.
+
+## The segments, and the two facts of the fold's sync
+
+`SegValueRows` is `[stream][row][channel]` at row stride `LdV = d_v + 8`;
+`SegCoeffRows` is `[stream][row][slot]` at row stride `LdS = kLeafW + 8`. They are
+adjacent halves of one per-stream segment and separate only because `ldmatrix` reads
+each at its own row stride. ONE SLOT PER STREAM: the second stage is REGISTERS (F4) —
+`ldmatrix` drains the slot, the `__syncwarp` after it is the drained fact, the slot is
+refilled for the next batch, and the MMAs run from fragments underneath the copies just
+issued. A second SMEM slot is the declared fallback arm and is not built.
+
+BANK BEHAVIOUR, derived from both access patterns and gated in
+`tests/k31/test_segment_layout.py`:
+
+| leg | pattern | max-way |
+|---|---|---|
+| fetcher, value (`cp.async` 16 B, 8 lanes to a row) | a row's eight quanta cover all 32 banks once | 1 |
+| consumer, value (`ldmatrix.trans` at `rT/cT`) | `LdV = 72` words puts consecutive rows 4 banks apart | 1 |
+| consumer, coefficient (`ldmatrix.trans` at `rF/cF`) | `20·lr mod 32` is a permutation of the 8 bank quads | 1 |
+| fetcher, coefficient (`st.shared.u32`, two rows at once) | two 16-word rows share their banks or do not | 2 |
+
+The two-way store is the FLOOR and not a defect: a `kLeafW/2`-word row occupies
+`kLeafW/2` banks by definition, so two rows written in one instruction cannot be made
+disjoint at every placement, and the alternative — one row per instruction with half the
+lanes idle — costs the same two cycles UNCONDITIONALLY. The pair mapping is never worse.
+
+FORM (b) COSTS TWO CTA BARRIERS PER BATCH, and both are structural. "Landed" is
+all-fetchers → one consumer; "drained" is one consumer → all fetchers; with a single
+slot neither can be folded into the other, and on sm_80 there is no cheaper carrier than
+`__syncthreads`. On sm_90 both become mbarrier arrivals on the same two facts.
+
+## The barriers: the window line, the phase change, and the fold's two per batch
+
+THE SCHEDULE HAS NO BARRIER AT ALL (above), so outside the fold the CTA rendezvouses
+only at the phase change and at the window line, and a window the owner is dead in costs
+zero barriers.
+
+The READ PHASE SHARES NOTHING. The list, the panel region and the fan-in are the warp's
+own, so the executors run their own batch counts to the window line without one CTA
+barrier; the only ordering the phase needs is a lane's panel `STS` against another lane's
+`ldmatrix` of the same region, which is `__syncwarp`.
 
 | edge | carried by |
 |---|---|
-| pre-loop produce → MMA(0), and produce(i+1) → MMA(i+1) | `__syncwarp` (the panel region is warp-private) |
-| MMA(i) writes the staging region → its own fan-in | `__syncwarp` |
-| fan-in(i) reads the region → MMA(i+1) rewrites it | `__syncwarp` |
+| pre-loop read produce → MMA(0), produce(i+1) → MMA(i+1) | `__syncwarp` (the panel region is warp-private) |
 | every warp's reads → any warp's folds of the same window | the WINDOW-LINE rendezvous |
-| pre-loop produce → fold(0), produce(i+1) → fold(i+1) | `BAR_D(i+1)` |
-| the V ring's `cp.async` group → fold(i) reads the slot | `BAR_D(i)`, after the per-thread wait |
-| fold(i-1) reads V slot → `stage_batch` rewrites it | `BAR_D(i)` |
+| every fetcher's placement of batch `b` → the stream's drain of it | the LANDED rendezvous |
+| a stream's drain and clear of batch `b` → any fetcher's writes of `b+1` | the DRAINED rendezvous |
+| the staged factor block for `b+2` → the expansion that reads it at `b+1` | the LANDED rendezvous of `b+1` |
+| the published ballots and prefixes → the fetch that ranks against them | the phase change's rendezvous |
 | the window's list writes → the previous window's list reads | the WINDOW-LINE rendezvous of the previous window |
 
 The mass channel is a channel like any other under this carve: the warp holds its own
-leaves' mass partial, stages it in its own region's mass column and REDs it to `den`
-itself, so no cross-warp sum of the denominator exists.
+leaves' mass partial and REDs it to `den` itself, so no cross-warp sum of the denominator
+exists.
 
-## The produce
+## The read side's produce
 
-Per token per warp, `Σ_{l<D-1} s_l + kGS` amplitudes are loaded and everything else is
-computed; the gate plane is never materialized. A LANE owns a whole panel row — the
-batch tile is the warp width — and expands its warp's `BC/kWarps` coefficients in the
-PRIVATE order `p`. Because `p` is a bit permutation of the levels' digit offsets exactly
-as `local` is, the expansion is `Σ_l n_l` amplitude loads followed by products of
-register values at constant indices: no dynamic indexing, no spill. `load_run<n>` covers
-a level's run at the widest access that fits it, `n ∈ {1, 2, 4, 8, 16}`; at the flagship
-(`s = (8, 16)`, `kWarps = 4`) that is one 16-byte access at level 0 (`n_0 = 8`) and one
-8-byte access at the carve level (`n_1 = kGS = 4`, at the group's runtime base) — 12
-amplitudes per token per warp, against 18 for the owner-grain map.
+THIS IS THE READ SIDE'S PRODUCE AND ONLY THE READ SIDE'S. The write side's expansion
+moved to the fetcher (above) and `produce`'s `WRITE` arm, its gain, its `lvColW` columns
+and the `panW0`/`panW1` panels are DELETED; what stays here is the read panel's, until
+the readout takes the same treatment.
 
-The level lying LOWEST in `p` — the carve level's neighbour outward — supplies the
-adjacent bf16 PAIR, and every other level a per-pair scalar, which is the shipped
-producer's multiply chain read in the private order. At `D = 2` that chain is
-`rn(a_0 * a_{D-1})` where the owner-grain chain was `rn(a_{D-1} * a_0)`: multiplication
-is commutative and both round once, so **the coefficient is bit-for-bit the same number
-and the state plane is bit-identical to the owner-grain kernel's**. At `D ≥ 3` the
-association genuinely moves (the pair comes from a different level), so the deep arms'
-coefficients differ in the last bf16 bit and only the oracle grades them.
+Per token per warp, `Σ_l n_l` amplitudes are loaded and everything else is computed; the
+gate plane is never materialized. A LANE owns a whole panel row — the batch tile is the
+warp width — and expands its stream's `kLeafW` coefficients in the PRIVATE order `p`.
+Because `p` is a bit permutation of the levels' digit offsets exactly as `local` is, the
+expansion is `Σ_l n_l` amplitude loads followed by products of register values at
+constant indices: no dynamic indexing, no spill. `load_run<n>` covers a level's run at
+the widest access that fits it, `n ∈ {1, 2, 4, 8, 16}`.
 
-The SIDE is a compile-time argument to the produce, because the two sides' trailing
-scalars are not the same kind of thing. The write side ends in `mul_bf16x2(acc, gain)`
-over all `SPT/2` packed pairs; the read side's scalar is identically 1, and on sm_86 —
-where there is no `mul.rn.bf16x2` and a packed multiply is two FMUL, an F2FP pack and
-two PRMT — paying for `rn(a*1) = a` was 44% of the read produce. So the read body stores
-its accumulators directly.
+The level lying LOWEST in `p` supplies the adjacent bf16 PAIR and every other level a
+per-pair scalar. THE READ SIDE HAS NO GAIN: its scalar is identically 1, and on sm_86 —
+where there is no `mul.rn.bf16x2` and a packed multiply is two FMUL, an F2FP pack and two
+PRMT — paying for `rn(a*1) = a` was 44% of the read produce, so the body stores its
+accumulators directly.
 
-A dead row (a padding row of a partial batch, which has no token) is then zeroed at the
-CARVE LEVEL's group run rather than at the trailing multiply. That run is the narrowest
-factor the private order has (`kGS ∈ {2, 4}`), so the whole slot run is covered by one or
-two selects and no arithmetic; a zero coefficient contributes exactly nothing to either
-MMA. On the write side the same zeroing rides the gain, which is already a select.
+A dead row (a padding row of a partial batch, which has no token) is zeroed at the PAIR
+LEVEL's run rather than at a trailing multiply. That run is the factor every slot of the
+row carries, so the whole row is covered by one or two selects and no arithmetic; a zero
+coefficient contributes exactly nothing to the MMA.
 
 ## Addressing
 

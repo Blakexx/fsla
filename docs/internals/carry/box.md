@@ -155,3 +155,29 @@ box among the built arms whose owner is the whole topology (`g_l = 1`, one owner
 m = 1` is the only `(k, m)` reaching `s = (4, 4, 4, 4)`: the capacity convention's atom
 FLOOR pushes `m` innermost, so any `m > 1` at `D = 4` unbalances the vector, and at
 `B = 8` the ceiling `K6` then refuses `k = 4, m = 1` outright.
+
+## The staged factor row (K35 S2)
+
+What a fetcher needs of one token on one side is the OWNER's digit run at each level —
+`Σ_l s_l` amplitudes — and NOT the `kWtot = D·B` packed row, which is the width of the
+whole topology. `BoxPlan` therefore names that compressed row itself, because the
+alignment argument is the box's and not the kernel's:
+
+* `stage_el(l) = min(s_l, kStageAsync)` — the amplitudes one asynchronous copy moves at
+  level `l`; `kStageAsync = 8` is the sixteen-byte quantum in amplitudes.
+* `stage_off(l)` — level `l`'s run, placed after level `l-1`'s and rounded up to
+  `stage_el(l)`, so every copy's SHARED address is naturally aligned.
+* `kStageW` — the row's width, rounded to `kStageAsync` so a row base is too.
+* `stage_chunks(l)`, `stage_chunk_base(l)`, `kStageChunks` — the copy count per level and
+  the flat chunk index a thread claims.
+
+The GLOBAL address is aligned by the lattice rather than by rounding: a level's column
+base is `l·B` and an owner's run starts at a multiple of `s_l`, so `runCol(l)·2` is a
+multiple of `min(s_l, 8)·2` at every admissible box. `K ≥ 2` makes the narrowest run four
+bytes, which is the narrowest asynchronous copy there is; that is the one clause the
+layout asserts.
+
+Widths at the built arms: `s = (8,16)` → `kStageW = 24` (offsets 0, 8; three chunks);
+`s = (2,2,4,8)` → `16` (offsets 0, 2, 4, 8; four chunks); `s = (4,4,4,4)` → `16`
+(offsets 0, 4, 8, 12; four chunks). The `[BH, L, kWtot]` packed row would be 512, 32 and
+16 amplitudes for the same three.

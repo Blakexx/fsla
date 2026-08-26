@@ -92,6 +92,24 @@ __device__ __forceinline__ void stage_tile(SmemAddr dst, const void* src) {
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(dst), "l"(src));
 }
 
+//: THE SAME COPY AT A NARROWER QUANTUM.  `kStageBytes` is the widest the staging
+//: issues; a run whose whole length is shorter than that is still ONE asynchronous
+//: access, and a caller with a compile-time run length gets exactly one issue rather
+//: than a padded 16-byte one that would read a neighbour's bytes.  The four- and
+//: eight-byte forms are the cache-ALL variant because the sixteen-byte bypass has no
+//: narrower member; both src and dst are naturally aligned, which is the caller's
+//: contract and the reason no size is ever split here.
+template <int Bytes>
+__device__ __forceinline__ void stage_run(SmemAddr dst, const void* src) {
+  static_assert(Bytes == 4 || Bytes == 8 || Bytes == kStageBytes,
+                "an asynchronous run is 4, 8 or `kStageBytes` bytes");
+  if constexpr (Bytes == kStageBytes) {
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(dst), "l"(src));
+  } else {
+    asm volatile("cp.async.ca.shared.global [%0], [%1], %2;\n" ::"r"(dst), "l"(src), "n"(Bytes));
+  }
+}
+
 __device__ __forceinline__ void stage_commit() { asm volatile("cp.async.commit_group;\n"); }
 
 template <int KeepInFlight>
@@ -317,6 +335,30 @@ __device__ __forceinline__ void store_shared_u16(SmemAddr a, uint16_t v) {
 //: indexed form would re-derive a widening multiply per access.
 __device__ __forceinline__ void store_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("st.shared.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
+}
+
+//: ONE CONTRIBUTION INTO A SHARED BITSET, FIRE AND FORGET -- `fan_in_add`'s
+//: contract over the bitwise monoid.  The per-tile liveness mask has one writer per
+//: (token, stream) row and one reader per stream, so what it needs is a reduction and
+//: never a read-modify-write: nothing waits and no lane learns what anyone else set.
+__device__ __forceinline__ void or_shared_u32(SmemAddr a, uint32_t v) {
+  asm volatile("red.shared.or.b32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
+}
+
+//: the 16-byte quantum into shared memory, addressed.  The segment's dead rows are
+//: cleared at this width so a whole slot row is a constant number of stores.
+__device__ __forceinline__ void store_shared_vec16(SmemAddr a, const uint4& v) {
+  asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};" ::"r"(a), "r"(v.x), "r"(v.y), "r"(v.z),
+               "r"(v.w)
+               : "memory");
+}
+
+//: one amplitude out of a staged factor row, by ADDRESS.  Its index is a digit, so
+//: the access is dynamic and an indexed form would re-derive a widening multiply.
+__device__ __forceinline__ unsigned short load_shared_u16(SmemAddr a) {
+  unsigned short v;
+  asm volatile("ld.shared.u16 %0, [%1];" : "=h"(v) : "r"(a) : "memory");
+  return v;
 }
 
 __device__ __forceinline__ uint32_t load_shared_u32(SmemAddr a) {

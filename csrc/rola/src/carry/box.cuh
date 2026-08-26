@@ -19,6 +19,10 @@ namespace rola::carry {
 
 constexpr int ilog2c(int x) { return x <= 1 ? 0 : 1 + ilog2c(x >> 1); }
 constexpr long ipowl_c(int b, int e) { return e == 0 ? 1 : b * ipowl_c(b, e - 1); }
+//: the smallest power of two at least `x`, for a lane split whose natural count is
+//: not one (a thread group must be a power of two to be a shift and a mask).
+constexpr int ceil_pow2c(int x) { return x <= 1 ? 1 : (1 << (ilog2c(2 * x - 1))); }
+constexpr int align16c(int x) { return (x + 15) & ~15; }
 
 //: the page granule: the leaves one atom holds, and the unit every DRAM gather
 //: moves.  It is an addressing constant of the lattice, which is why the box's
@@ -134,6 +138,28 @@ struct BoxPlan {
   //: the level's column base in the packed `[BH, L, sum_l B_l]` amplitude plane.
   static constexpr int col_base(int l) { return l * B; }
   static constexpr int kWtot = D * B;
+
+  //: THE STAGED FACTOR ROW (K35 S2).  What a fetcher needs of one token on one side
+  //: is the OWNER's digit run at each level -- `sum_l s_l` amplitudes -- and NOT the
+  //: `kWtot`-wide packed row, which is the width of the whole topology.  The runs are
+  //: laid out level by level, each ALIGNED to its own asynchronous quantum, so a
+  //: level's run is one `stage_run` per `kStageAsync` amplitudes and both the global
+  //: and the shared address are naturally aligned by construction (a level's column
+  //: base is a multiple of `B` and an owner's run starts at a multiple of `s_l`).
+  static constexpr int kStageAsync = 8;  // amplitudes in the widest asynchronous run
+  static constexpr int stage_el(int l) { return s(l) < kStageAsync ? s(l) : kStageAsync; }
+  static constexpr int stage_off(int l) {
+    return l == 0 ? 0
+                  : ((stage_off(l - 1) + s(l - 1) + stage_el(l) - 1) / stage_el(l)) * stage_el(l);
+  }
+  static constexpr int kStageW =
+      ((stage_off(D - 1) + s(D - 1) + kStageAsync - 1) / kStageAsync) * kStageAsync;
+  static constexpr int stage_chunks(int l) { return s(l) / stage_el(l); }
+  static constexpr int stage_chunk_base(int l) {
+    return l == 0 ? 0 : stage_chunk_base(l - 1) + stage_chunks(l - 1);
+  }
+  static constexpr int kStageChunks = stage_chunk_base(D - 1) + stage_chunks(D - 1);
+  static_assert(kSpan * 2 >= 4, "a level's run is at least one asynchronous quantum wide");
 
   //: FORWARD, `pi: ell -> lambda`, and its inverse -- used by the host seam and by
   //: nothing on the device (the device never converts; it is born in lattice order).

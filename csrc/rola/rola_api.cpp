@@ -78,6 +78,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "carve grain the kernel consumes",
         py::arg("pr"), py::arg("pw"), py::arg("widths"), py::arg("k"), py::arg("m"),
         py::arg("carve") = false);
+  m.def("carry_layout_probe", &rola::carry::layout_probe,
+        "K31 carry kernel: the per-stream segment layout's round trip", py::arg("widths"),
+        py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
+        py::arg("level_modes") = 0);
   m.def("carry_arms", &rola::carry::arms, "K31 carry kernel: the built arms");
   // ---- K31 R4: the reverse carry family, two concurrent scans ------------
   m.def("carry_backward_inter", &rola::carry::backward_inter,
