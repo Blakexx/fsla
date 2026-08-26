@@ -26,3 +26,6 @@ The rules most often violated by newcomers, restated:
   changes go through the dual-run protocol, no exceptions.
 - Never run unscoped `pytest tests/`. GPU commands under
   `flock /tmp/rola_gpu.lock`. Builds: MAX_JOBS=4, nice.
+
+## Kernel standards (read before writing or reviewing any kernel code)
+`docs/KERNEL_STANDARDS.md` — craft rules grounded in FlashAttention/CUTLASS/ThunderKittens (fragment-grain loops, copy atoms and swizzles, pipelines, unroll and instantiation hygiene, compile budgets) plus the RoLA-specific patterns. Design authority stays with the queue card; the standards govern HOW a designed piece is realized. Every brief cites it; every review applies it line by line.
