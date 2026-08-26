@@ -434,10 +434,9 @@ the one fact of shape that differs.
 
 THE FOLD'S OPERAND PATH IS NOT PER-STREAM ANY MORE. The CTA walks the UNION of its
 streams' write lists ONCE — that list is `wlistS`, which the shared derivation already
-builds — and a BATCH is `kSegRows = CP = kMmaK` consecutive tokens of it. Executor
-`warp` takes the fixed share `i % kWarps` of a batch's union tokens (no dynamic
-assignment, no cursor), and for every token it handles and every STREAM that wants that
-token it places, into that stream's segment, BOTH
+builds. Warp `warp` takes the fixed share `i % kWarps` of the union, IN ASCENDING UNION
+ORDER (no dynamic assignment, no cursor), and for every token it handles and every STREAM
+that wants that token it places, into that stream's segment, BOTH
 
 * the value row, by `cp.async` (the copy never touches registers), and
 * the FULLY EXPANDED coefficient row for that stream's box — `kLeafW` bf16 in the
@@ -446,6 +445,13 @@ token it places, into that stream's segment, BOTH
 The consumer does NO produce: tile skip → `ldmatrix` → HMMA. Each stream's row is
 minted ONCE, so the total multiply count is unchanged; what is removed is every warp
 re-loading and re-expanding the factor runs the other warps also want.
+
+THERE IS NO BATCH AND NO BARRIER INSIDE THE WALK (K35 S2c, P76 CORRECTION-2). A stream's
+rows ACCUMULATE across the walk and the stream fires when ITS OWN segment is full, so it
+issues exactly `ceil(n_s / kSegRows)` k-steps per window instead of one per union chunk it
+appears in. The walk still advances in GROUPS of `kSegRows` union tokens, and that is a
+FETCH QUANTUM and nothing else: it is one rolling staging block and one lane map over
+`kCand` candidate pairs, it is PER WARP, and no stream's firing is tied to it.
 
 ### The rank IS the address, and the bound is the type's
 
@@ -456,14 +462,15 @@ window, its own ballot word per lane (`kStreams × kLW` words) together with the
 prefix popcount; two shared loads and a `popc` turn any (token, stream) pair into its
 rank, and the fetcher needs no knowledge of a stream it does not run beyond those.
 
-Inside a batch of `kSegRows` union tokens a stream can hold at most `kSegRows` of them,
-so the batch-local rank is BELOW `kSegRows` by construction. The segment bound is
-therefore the type's — `kSegRows == CP`, a `static_assert` — and there is no truncation
-path and no runtime test.
+THE ADDRESS IS THE RUNNING RANK: the segment row is `rank mod kSegRows` and the TILE is
+`rank >> log2 kSegRows`. The segment bound is the type's — `kSegRows == CP`, a
+`static_assert` — and there is no truncation path and no runtime test, because the rank is
+reduced modulo the segment's own height and the flow counters below are what keep a row
+from being overwritten before it is read.
 
-The four shared loads of a rank are paid ONCE PER PAIR: lane `q < kSegRows` of each warp
-owns candidate pair `q = (i, s)`, resolves it, and every lane that fills that row reads
-the result by shuffle.
+The shared loads of a rank are paid ONCE PER PAIR: lane `q < kCand` of each warp owns
+candidate pair `q = (i, s)`, resolves it, and every lane that fills that row reads the
+result by shuffle.
 
 ### Coverage is by construction
 
@@ -471,23 +478,22 @@ the result by shuffle.
 accounting argument about which rows a partial batch left dead is exactly the kind of
 argument that failed before. THE DEAD-ROW LAW: a dead row is a FINITE (stale) value row
 with a ZERO coefficient row — finite operand, zero weight, contributing exactly nothing —
-and coverage is a ONCE-PER-WINDOW clear of the whole segment plus a PER-BATCH zeroing of
-the dead COEFFICIENT rows only. The window's clear is what makes every row finite (the
-published exchange segments straddle these very bytes); thereafter a value row is either
-this batch's placement or an earlier one's, both finite, and a full batch writes nothing
-at all between the barriers.
+and coverage is a ONCE-PER-WINDOW clear of the whole segment plus ONE zeroing of the dead
+COEFFICIENT rows, at the window's LAST, PARTIAL tile. The window's clear is what makes
+every row finite (the published exchange segments straddle these very bytes); thereafter a
+value row is either this tile's placement or an earlier tile's, both finite. EVERY TILE
+BUT THE LAST IS FULL BY CONSTRUCTION — that is what "fires when full" means — so there is
+nothing dead in it and the per-batch clear of the batch form is gone with the batch.
 
 The two clears split over a stream's `WPS` warps DIFFERENTLY, and that is a correctness
 fact rather than a preference:
 
 * the WINDOW clear splits BY ROWS. It is followed by a rendezvous before any placement,
   so any partition of the rows is legal and a row split keeps both legs contiguous.
-* the PER-BATCH dead-row clear splits BY COLUMNS. It runs between a batch's `ldmatrix`
-  drain and the barrier that releases the writers, so a warp may only zero bytes IT
-  ITSELF reads — under a row split it would overwrite rows the stream's other warp is
-  still draining. A column half of a row is `kLeafE` slots, contiguous and sixteen-byte
-  aligned, so the run is the same predicated `STS.128` nest with a row stride carried
-  per quantum.
+* the LAST TILE's dead-row clear splits BY COLUMNS. A warp may only zero bytes IT ITSELF
+  reads — the stream's other executor holds the other column half and reads it. A column
+  half of a row is `kLeafE` slots, contiguous and sixteen-byte aligned, so the run is a
+  predicated `STS.128` nest with a row stride carried per quantum.
 
 No row's liveness is computed twice and no row is ever unwritten.
 
@@ -521,6 +527,12 @@ level by level with each run aligned to its own asynchronous quantum (4, 8 or 16
 the alignment holds by construction because a level's column base is a multiple of `B`
 and an owner's run starts at a multiple of `s_l`.
 
+IT IS PER WARP (K35 S2c). A warp expands exactly the rows of its own share `i % kWarps`
+of the union, so it stages exactly those, and the shares are disjoint — which is what lets
+the fold's walk run with no barrier inside it at all. The block's LAYOUT is unchanged
+(`[slot][row]`, the row being the union index inside the group), so the two sides still
+share one body and one round trip.
+
 IT IS A ROLLING BLOCK AND NOT THE WHOLE WINDOW. The card's ledger line stages `W × kWtot`
 at window start; at `W = 512` the owner-run form of that is 24.5 KB, which costs the
 second CTA on the RTX. Two blocks of `kSegRows` rows is 1.5 KB, is independent of `W`,
@@ -539,13 +551,62 @@ is EXACT: a tile with no live leaf contributes nothing. No facts-table row is in
 and the grain is the MMA's own.
 
 The mask word is per EXECUTOR, not per stream, so that A WARP RESETS ONLY WHAT IT READS:
-the reset sits between a warp's own read of the mask and the barrier that lets the
-fetchers OR into it, and a word shared with the stream's other warp would be reset out
-from under that warp's read. The `WPS` words of one stream carry the SAME bits — one
+the reset sits between a warp's own read of the mask and the `drained` bump that lets the
+fetchers OR the NEXT tile's bits into it, and a word shared with the stream's other warp
+would be reset out from under that warp's read. The `WPS` words of one stream carry the SAME bits — one
 lane per column half publishes them, which is the single predicated `or.shared` the
 one-word form issued, with more lanes live rather than more instructions — and each
 consumer tests only its own field, `[col*kNJ, (col+1)*kNJ)`, through two constants
 computed once per warp.
+
+## The flow counters: streams fire when full (K35 S2c)
+
+THE TWO FACTS ARE TWO COUNTERS AND NOT TWO BARRIERS. `landed[s]` counts the rows of write
+stream `s` that have ARRIVED in this window; `drained[e]` counts the tiles executor `e` has
+PULLED. Both are monotone within a window, both are read by warps that do not write them,
+and on sm_90+ the pair IS an mbarrier's arrive/wait — this is the portable form of the
+same two facts.
+
+    FETCHER   place rank `r` of stream `s` only while `r >> log2 kSegRows <= min_e drained[e]`
+              then, after `cp.async.wait_group` and `__threadfence_block`:
+              `red.shared.add.u32 landed[s], (rows placed)`   — one lane per stream touched
+    CONSUMER  pull tile `k = drained[e]` when `landed[s] >= (k + 1) * kSegRows`
+              `ldmatrix` → reset the mask word → `__syncwarp` → fence → publish `drained[e]`
+
+WHY A COUNT IS AS GOOD AS A PREFIX. Placements go only into tiles `<= min drained <=
+drained[e]`, so every row `landed` counts lies in tiles `[0, drained[e]]`, whose capacity
+is `(drained[e] + 1) * kSegRows` — the count reaches that bound ONLY when every one of
+those rows has arrived. That is what lets the arrival be one `red.shared.add` instead of a
+prefix structure.
+
+DEADLOCK FREEDOM, and the code is written in this order:
+
+* a warp PUBLISHES `landed` for everything it has issued BEFORE it waits on any `drained`.
+  The group's placements are therefore made in ROUNDS of what there is room for: a group
+  spans `kSegRows` union tokens and can straddle a stream's tile boundary, so an
+  all-or-nothing group would have a warp wait for a tile to be drained on rows it is
+  itself holding back. A stream's ranks inside one group span at most two tiles, so there
+  are at most two rounds and one in the ordinary case;
+* every wait SERVICES the waiting warp's own stream — it keeps draining and folding — so
+  the executor another warp waits on is never itself stuck behind that other warp;
+* a warp that has finished its share keeps servicing until the `done` count reaches
+  `kWarps`, because a warp parked at a barrier drains nothing;
+* the walk is in ascending union order, which is what makes the minimal-position argument
+  go through: every row of the tile the least-advanced blocked warp waits on lies at a
+  lower union position, so it has been issued and published by every warp, the tile is
+  complete, and its executor drains it.
+
+THE WALK IS ONE LOOP WITH THE FOLD AT ITS HEAD, and every wait in its body is a `continue`
+back to that head. That is what makes the servicing rule structural rather than a habit,
+and it is also why exactly ONE `pull_and_fold` and ONE `expand` reach the generated code:
+a second inlining of the fold costs 16 registers and spills at the two `D = 4` carved arms,
+measured.
+
+THE WINDOW'S EDGE is ONE barrier. After it `landed[s] == n_s` is final and AT MOST ONE
+TILE is left undrained — a fetcher cannot write tile `k+1` before every executor has
+drained tile `k`, so `n_s <= (drained + 1) * kSegRows` holds there. That tile is the
+window's last, its dead coefficient rows are zeroed then, and the stream has fired exactly
+`ceil(n_s / kSegRows)` times.
 
 ## The segments, and the two facts of the fold's sync
 
@@ -574,16 +635,18 @@ The two-way store is the FLOOR and not a defect: a `kLeafW/2`-word row occupies
 disjoint at every placement, and the alternative — one row per instruction with half the
 lanes idle — costs the same two cycles UNCONDITIONALLY. The pair mapping is never worse.
 
-FORM (b) COSTS TWO CTA BARRIERS PER BATCH, and both are structural. "Landed" is
-all-fetchers → one consumer; "drained" is one consumer → all fetchers; with a single
-slot neither can be folded into the other, and on sm_80 there is no cheaper carrier than
-`__syncthreads`. On sm_90 both become mbarrier arrivals on the same two facts.
+THE FOLD CARRIES THE TWO FACTS IN COUNTERS, NOT BARRIERS (K35 S2c, above): "landed" is
+all-fetchers → one consumer and "drained" is one consumer → all fetchers, and with a
+single slot neither folds into the other — but neither is CTA-wide, so neither is a
+`__syncthreads`. The readout still carries them as the batch form's two barriers.
 
-## The barriers: the window line, the phase change, and the fold's two per batch
+## The barriers: the window line, the phase change, and the fold's two per window
 
 THE SCHEDULE HAS NO BARRIER AT ALL (above), so outside the fold the CTA rendezvouses
 only at the phase change and at the window line, and a window the owner is dead in costs
-zero barriers.
+zero barriers. THE FOLD'S WALK HAS NONE EITHER (K35 S2c): it opens on one — the segment
+clear and the counters' zero — and closes on one, and between them the flow counters carry
+everything.
 
 THE READ PHASE IS FORM (b) TOO (K35 S4b). Its fetch is cooperative and its fan-in meets
 in shared memory, so it carries the fold's two barriers per batch and the same two facts —
@@ -598,15 +661,32 @@ drained, that says every contribution has landed.
 | a contributor's `red.shared` → the reclaimer that flushes that row | `publish_fence` before `arrived`, and the CAS |
 | a reclaimer's clear → every contributor to the row it claimed | `publish_fence` before the tag, and the tag load |
 | every warp's reads → any warp's folds of the same window | the WINDOW-LINE rendezvous |
-| every fetcher's placement of batch `b` → the stream's drain of it | the LANDED rendezvous |
-| a stream's drain and clear of batch `b` → any fetcher's writes of `b+1` | the DRAINED rendezvous |
-| the staged factor block for `b+2` → the expansion that reads it at `b+1` | the LANDED rendezvous of `b+1` |
+| the segment clear and the counters' zero → any fetcher's placement | the fold's OPENING rendezvous |
+| every fetcher's placement of a tile → the stream's pull of it | `cp.async.wait_group` + `publish_fence` + `landed[s]` |
+| a stream's pull of tile `k` → any fetcher's writes of tile `k+1` | `__syncwarp` + `publish_fence` + `drained[e]` |
+| every warp's last placement → the last, partial tile's pull | the `done` count, then the fold's CLOSING rendezvous |
+| the staged factor block for group `g+1` → the expansion that reads it at `g+1` | `cp.async.wait_group` in the same warp (the block is that warp's own) |
 | the published ballots and prefixes → the fetch that ranks against them | the phase change's rendezvous |
 | the window's list writes → the previous window's list reads | the WINDOW-LINE rendezvous of the previous window |
 
 The mass channel is a channel like any other under this carve: the warp holds its own
 leaves' mass partial and REDs it to `den` itself, so no cross-warp sum of the denominator
 exists.
+
+### The READOUT still carries the batch form, and the reason is the ring
+
+The same mechanism is NOT on the read side, and that is a design question rather than an
+omission. The fan-in ring below is `C = 32` rows keyed on the UNION READ RANK and never
+evicts an incomplete row — so it is correct only while the union-rank SKEW BETWEEN READERS
+stays under `C`, and the union BATCH is exactly what bounded that. Per-stream firing does
+not: a reader's sixteen own tokens span an arbitrary stretch of the union list, hundreds of
+ranks at scattered routing. Worse, the resulting spin is a DEADLOCK and not slowness —
+every warp is both a reader and a fetcher, so a warp blocked in `ring_acquire` still owes
+the placements another reader's tile needs to fill. The fold has no such cycle because its
+consumer writes only its own accumulator. The fix is a NON-BLOCKING acquire (an incomplete
+row may be evicted, the flush being an `atomicAdd`, at the price of an in-flight count and
+a direct-to-global arm for the contributor that loses its slot), which changes P76 §2.6-C's
+protocol and is Blake's call.
 
 ## The read side's cooperative fetch (K35 S4b)
 
