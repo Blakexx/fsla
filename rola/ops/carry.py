@@ -34,6 +34,21 @@ LEAF_SPLIT = 1
 CONTAINER_1X8_SPLIT = 2
 CONTAINER_1X8_STREAMS = 3
 
+#: THE VALUE WIDTH IS THE THIRD DIAL AND PART OF AN ARM'S KEY (K35 S3b).  It is a
+#: template parameter of both carry bodies, so the two built widths are two arms of
+#: one body -- the same declaration scalar at ``D_V`` and at ``D_V_WIDE``.  The card's
+#: CONTAINERS entry rules what the wide plane costs: sixteen leaves per warp is
+#: REQUIRED there, so the containers are ``CONTAINER_1X8_*`` at ``BC = 128`` and the
+#: ruled ``LEAF_SPLIT`` at ``BC = 64`` (four streams of sixteen, one warp each), which
+#: is the 2x4 container -- two CTAs of four warps per SM.
+D_V = 64
+D_V_WIDE = 128
+
+#: the ``(k, m)`` capacities that reach the two container box sizes on the flagship
+#: topology: ``BC = 128`` and, with the box halved, ``BC = 64``.
+CAP_BC128 = 8
+CAP_BC64 = 4
+
 #: the flagship window, and the conformance cell's -- the architecture doc's
 #: two-constraint sizing (integration rung I1(b)); `rola.ops.intra` names the
 #: SAME two, because the two kernels run one window grid.
@@ -44,7 +59,7 @@ WINDOW_SMALL = 64
 #: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
 #: moves whenever that source does, which is what makes reading it back off the
 #: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010020
+BUILD_MAGIC = 31010021
 
 #: the reverse family's own device magic, mirrored from `backward_kernel.cuh`.
 BWD_BUILD_MAGIC = 31040001
@@ -104,7 +119,8 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
 
     ``num`` is ``[BH, T, d_v]`` fp32, ``den`` is ``[BH, T]`` fp32, and
     ``state_out`` is ``[BH, N/16, 16, d_v+1]`` fp32 in LATTICE leaf order.
-    ``state_in``, when given, is the same layout and order.
+    ``state_in``, when given, is the same layout and order.  ``d_v`` is READ OFF ``v``
+    and is part of the arm key, so a width no arm declares is refused, not degraded.
     """
     pr = pack_side(read_levels)
     pw = pack_side(write_levels)
@@ -129,12 +145,20 @@ def owner_rows(read_levels, write_levels, widths, *, k: int, m: int, carve: bool
                                         list(widths), int(k), int(m), bool(carve))
 
 
-def build_stamp(widths, k, m, window, chunk, carve, level_modes=0):
+def build_stamp(widths, k, m, window, chunk, carve, level_modes=0, d_v=D_V):
+    """The device magic, the caps digest and the arm's census.
+
+    Fields 3.. are the census: registers, SMEM (attributes), binary version, SMEM
+    (geometry), max threads, local bytes, ``BC``, owners, ring depth, CTA target,
+    the read-carve level, the WRITE STREAM count and the arm's ``d_v`` -- so the
+    THREE dials (executors ``stamp[7] // 32``, streams ``stamp[14]``, width
+    ``stamp[15]``) are all readable off the device.
+    """
     return extension().carry_build_stamp(list(widths), int(k), int(m), int(window),
-                                         int(chunk), int(carve), int(level_modes))
+                                         int(chunk), int(carve), int(level_modes), int(d_v))
 
 
-def layout_probe(widths, k, m, window, chunk, carve, level_modes=0):
+def layout_probe(widths, k, m, window, chunk, carve, level_modes=0, d_v=D_V):
     """The per-stream segment layout's ROUND TRIP: ``(values, coefficients)``.
 
     Each is ``[stream][row][column]`` of the RAW sixteen-bit pattern the fetcher stored
@@ -143,7 +167,7 @@ def layout_probe(widths, k, m, window, chunk, carve, level_modes=0):
     cannot survive the comparison.  Carved arms only.
     """
     return extension().carry_layout_probe(list(widths), int(k), int(m), int(window),
-                                          int(chunk), int(carve), int(level_modes))
+                                          int(chunk), int(carve), int(level_modes), int(d_v))
 
 
 def arms():

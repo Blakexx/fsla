@@ -13,6 +13,8 @@
 //   deep-4     ( 8^4)     D=4  k=2 m=8   s=(2,2,4,8)  BC=128  W=64   C=32
 //   carve-4    ( 4^4)     D=4  k=4 m=1   s=(4,4,4,4)  BC=256  W=64   C=32
 //   flagship 1x8 (256,256) D=2  k=4 m=8   s=(8,16)     BC=128  W=384  C=32, twice
+//   flagship 1x8 d_v=128   the SAME two, at the wide value plane
+//   flagship 2x4 d_v=128 (256,256) D=2 k=4 m=4 s=(4,16) BC=64  W=384  C=32
 // The first five hold ONE box of `BC = 128` -- the register budget's number, which
 // does not move with depth -- so they differ only in how the same 128 leaves cut
 // into digits, and `deep-4` is the topology whose atom rectangle cannot be a single
@@ -21,6 +23,17 @@
 // streams of 32 by `SW = [1,4,2,4]` and `SR = [4,1,4,2]`, two carved levels per
 // side, one warp per stream -- so it is also the arm that runs eight executors.
 // `k = 4, m = 1` is the only capacity reaching the uniform box `(4,4,4,4)`.
+//
+// `d_v` IS THE THIRD DIAL AND A KEY OF THE ARM (K35 S3b).  It is a template parameter
+// of both bodies, so the `d_v = 128` rows are not a wider path but the same body at a
+// wider declaration, and the seam tells them apart by the width the caller's value
+// plane carries.  The card's CONTAINERS entry rules what the width costs: sixteen
+// leaves per warp is REQUIRED at 128, and eight resident warps per SM is the target, so
+// the two ways to spend them are 1x8 at `BC = 128` (rows 13/14, the two container
+// declarations at the wide plane) and 2x4 at `BC = 64` (row 15, the CTA's box halved
+// instead of its warps doubled -- four streams, one warp each, the ruled leaf split).
+// The `d_v = 64` arms are UNTOUCHED by all of it, which is the point of making the
+// width a parameter rather than a branch.
 //
 // THE EXECUTOR MAP IS THE SECOND DIAL (K35 S3a).  An arm declares `WPS`, the warps per
 // WRITE stream, so the CTA's warp count is `streams x WPS` and the READ carve is
@@ -105,27 +118,38 @@ using CarveRowPlan = rola::chunk::SpanPlan<CarveRows<SW, SR>::kLevels, CarveRows
 //: warps, `WPS_` being the row's ninth field.  A side carves where the declaration
 //: marks it sparse, which is what the private order's rule then reads off the vector
 //: (`SpanMap`).
-#define CARRY_ARM_0(X_) X_(2, 256, 4, 8, 384, 32, 1, 0, 1, 8, 16, 256, 256, 8, 16, 256, 256)
-#define CARRY_ARM_1(X_) X_(2, 256, 4, 8, 384, 32, 1, 6, 1, 2, 16, 256, 256, 8, 4, 256, 256)
-#define CARRY_ARM_2(X_) X_(2, 256, 4, 8, 512, 32, 1, 0, 1, 8, 16, 256, 256, 8, 16, 256, 256)
-#define CARRY_ARM_3(X_) X_(2, 256, 4, 8, 512, 32, 1, 6, 1, 2, 16, 256, 256, 8, 4, 256, 256)
-#define CARRY_ARM_4(X_) X_(2, 64, 4, 8, 64, 32, 1, 0, 1, 8, 16, 64, 64, 8, 16, 64, 64)
-#define CARRY_ARM_5(X_) X_(2, 64, 4, 8, 64, 32, 1, 6, 1, 2, 16, 64, 64, 8, 4, 64, 64)
-#define CARRY_ARM_6(X_) X_(3, 16, 2, 16, 64, 32, 1, 0, 1, 2, 4, 16, 16, 2, 4, 16, 16)
-#define CARRY_ARM_7(X_) X_(3, 16, 2, 16, 64, 32, 1, 38, 1, 2, 4, 16, 16, 2, 4, 16, 16)
-#define CARRY_ARM_8(X_) X_(4, 8, 2, 8, 64, 32, 1, 0, 1, 2, 2, 4, 8, 2, 2, 4, 8)
-#define CARRY_ARM_9(X_) X_(4, 8, 2, 8, 64, 32, 1, 102, 1, 2, 2, 1, 8, 2, 2, 4, 2)
-#define CARRY_ARM_10(X_) X_(4, 4, 4, 1, 64, 32, 1, 102, 1, 1, 4, 2, 4, 4, 1, 4, 2)
-#define CARRY_ARM_11(X_) X_(2, 256, 4, 8, 384, 32, 2, 6, 2, 2, 16, 256, 256, 8, 2, 256, 256)
-#define CARRY_ARM_12(X_) X_(2, 256, 4, 8, 384, 32, 3, 6, 1, 1, 16, 256, 256, 8, 2, 256, 256)
+#define CARRY_ARM_0(X_) X_(2, 256, 4, 8, 64, 384, 32, 1, 0, 1, 8, 16, 256, 256, 8, 16, 256, 256)
+#define CARRY_ARM_1(X_) X_(2, 256, 4, 8, 64, 384, 32, 1, 6, 1, 2, 16, 256, 256, 8, 4, 256, 256)
+#define CARRY_ARM_2(X_) X_(2, 256, 4, 8, 64, 512, 32, 1, 0, 1, 8, 16, 256, 256, 8, 16, 256, 256)
+#define CARRY_ARM_3(X_) X_(2, 256, 4, 8, 64, 512, 32, 1, 6, 1, 2, 16, 256, 256, 8, 4, 256, 256)
+#define CARRY_ARM_4(X_) X_(2, 64, 4, 8, 64, 64, 32, 1, 0, 1, 8, 16, 64, 64, 8, 16, 64, 64)
+#define CARRY_ARM_5(X_) X_(2, 64, 4, 8, 64, 64, 32, 1, 6, 1, 2, 16, 64, 64, 8, 4, 64, 64)
+#define CARRY_ARM_6(X_) X_(3, 16, 2, 16, 64, 64, 32, 1, 0, 1, 2, 4, 16, 16, 2, 4, 16, 16)
+#define CARRY_ARM_7(X_) X_(3, 16, 2, 16, 64, 64, 32, 1, 38, 1, 2, 4, 16, 16, 2, 4, 16, 16)
+#define CARRY_ARM_8(X_) X_(4, 8, 2, 8, 64, 64, 32, 1, 0, 1, 2, 2, 4, 8, 2, 2, 4, 8)
+#define CARRY_ARM_9(X_) X_(4, 8, 2, 8, 64, 64, 32, 1, 102, 1, 2, 2, 1, 8, 2, 2, 4, 2)
+#define CARRY_ARM_10(X_) X_(4, 4, 4, 1, 64, 64, 32, 1, 102, 1, 1, 4, 2, 4, 4, 1, 4, 2)
+#define CARRY_ARM_11(X_) X_(2, 256, 4, 8, 64, 384, 32, 2, 6, 2, 2, 16, 256, 256, 8, 2, 256, 256)
+#define CARRY_ARM_12(X_) X_(2, 256, 4, 8, 64, 384, 32, 3, 6, 1, 1, 16, 256, 256, 8, 2, 256, 256)
+//: THE `d_v = 128` ARMS (K35 S3b).  The card's CONTAINERS entry: at this width sixteen
+//: leaves per warp is REQUIRED, and eight resident warps per SM is the target, so the
+//: two containers are 1x8 at `BC = 128` -- rows 13 and 14, the SAME two declarations as
+//: rows 11 and 12 at the other width -- and 2x4 at `BC = 64`, row 15, which halves the
+//: CTA's box instead of doubling its warps and reaches sixteen leaves per warp with the
+//: ruled one-warp-per-stream map.  `BC = 64` is `(k, m) = (4, 4)` on the flagship
+//: topology: spans `[4, 16]`, 1024 owners, the same window and declaration as the
+//: flagship cell so the three containers are comparable at one cell.
+#define CARRY_ARM_13(X_) X_(2, 256, 4, 8, 128, 384, 32, 2, 6, 2, 2, 16, 256, 256, 8, 2, 256, 256)
+#define CARRY_ARM_14(X_) X_(2, 256, 4, 8, 128, 384, 32, 3, 6, 1, 1, 16, 256, 256, 8, 2, 256, 256)
+#define CARRY_ARM_15(X_) X_(2, 256, 4, 4, 128, 384, 32, 1, 6, 1, 1, 16, 256, 256, 4, 4, 256, 256)
 
 #define CARRY_ARMS_ALL(X_)                                                \
   CARRY_ARM_0(X_) CARRY_ARM_1(X_) CARRY_ARM_2(X_) CARRY_ARM_3(X_)         \
   CARRY_ARM_4(X_) CARRY_ARM_5(X_) CARRY_ARM_6(X_) CARRY_ARM_7(X_)         \
   CARRY_ARM_8(X_) CARRY_ARM_9(X_) CARRY_ARM_10(X_) CARRY_ARM_11(X_)       \
-  CARRY_ARM_12(X_)
+  CARRY_ARM_12(X_) CARRY_ARM_13(X_) CARRY_ARM_14(X_) CARRY_ARM_15(X_)
 
-//: THE ITERATION SUBSET, A BUILD KNOB AND NOTHING MORE.  Compiling thirteen arms to
+//: THE ITERATION SUBSET, A BUILD KNOB AND NOTHING MORE.  Compiling sixteen arms to
 //: test one is the difference between a minute and an hour, so a build may define
 //: `ROLA_CARRY_ARMS(X_)` as any list of the rows above and get exactly those.  The
 //: DEFAULT IS EVERY DECLARED ARM, so a plain build is the closed-world one; a subset
@@ -145,15 +169,20 @@ using ArmSpans = StreamSpans<D, B, K, M, S0, S1, S2, S3>;
 //: READING ONE ROW OF THE LIST.  The row is long -- a topology, a window shape, a
 //: declaration and two span vectors -- so the pieces a consumer wants are taken from
 //: it HERE and nowhere else, and no consumer re-spells the row's shape.
-#define CARRY_ARM(D_, B_, K_, M_, W_, C_, CV_, MO_, WPS_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, \
-                  SR2_, SR3_)                                                                  \
-  Arm<D_, B_, K_, M_, W_, C_, WPS_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, SR2_, SR3_,          \
+#define CARRY_ARM(D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, WPS_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, \
+                  SR2_, SR3_)                                                            \
+  Arm<D_, B_, K_, M_, DV_, W_, C_, WPS_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, SR2_, SR3_,       \
       (uint32_t)(MO_)>
-#define CARRY_MO(D_, B_, K_, M_, W_, C_, CV_, MO_, ...) (MO_)
-#define CARRY_ROW_HEAD(D_, B_, K_, M_, W_, C_, CV_, MO_, ...) D_, B_, K_, M_, W_, C_, CV_, MO_
-//: the seam's key, matched against the call's `(topology, k, m, W, C, carve)`.
-#define CARRY_MATCH(D_, B_, K_, M_, W_, C_, CV_, ...) \
-  (is_arm(widths, D_, B_) && k == K_ && m == M_ && window == W_ && chunk == C_ && carve == CV_)
+#define CARRY_MO(D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, ...) (MO_)
+#define CARRY_ROW_HEAD(D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, ...) \
+  D_, B_, K_, M_, DV_, W_, C_, CV_, MO_
+//: the seam's key, matched against the call's `(topology, k, m, d_v, W, C, carve)`.
+//: `d_v` IS PART OF THE KEY (K35 S3b): the two widths of one declaration are two arms,
+//: so the container rows 11/12 and 13/14 share their declaration scalar and are told
+//: apart by the width the caller's value plane actually carries.
+#define CARRY_MATCH(D_, B_, K_, M_, DV_, W_, C_, CV_, ...)                                \
+  (is_arm(widths, D_, B_) && k == K_ && m == M_ && d_v == DV_ && window == W_              \
+   && chunk == C_ && carve == CV_)
 
 //: `CV` is the SEAM's DECLARATION scalar, not a kernel axis: it names which declared
 //: (carve, executor map) an arm is, so a caller that asks for the deleted one -- or for
@@ -162,7 +191,7 @@ using ArmSpans = StreamSpans<D, B, K, M, S0, S1, S2, S3>;
 //:   2  the 1x8 container as FOUR write streams x TWO warps each (the column split);
 //:   3  the 1x8 container as EIGHT write streams x ONE warp each.
 //: Asserted once over the whole list, where the list is.
-#define CARRY_CV_GATE(D_, B_, K_, M_, W_, C_, CV_, ...)                                  \
+#define CARRY_CV_GATE(D_, B_, K_, M_, DV_, W_, C_, CV_, ...)                             \
   static_assert((CV_) >= 1 && (CV_) <= 3,                                                \
                 "the seam's declaration scalar names a built (carve, executor map)");
 CARRY_ARMS_X(CARRY_CV_GATE)
@@ -196,13 +225,16 @@ static constexpr bool kCarves = (SW::kStreams > 1) || (SR::kStreams > 1);
 //: ONE ARM, AS ONE TYPE: the topology, the window shape, the declaration and the two
 //: carves.  The body, the geometry, the row plan and the census all read it, so an
 //: arm cannot be described two ways.
-template <int D, int B, int K, int M, int W, int C, int WPS, int W0, int W1, int W2, int W3, int R0,
-          int R1, int R2, int R3, uint32_t MO>
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
+          int R0, int R1, int R2, int R3, uint32_t MO>
 struct Arm {
   using BP = BoxPlan<D, B, K, M>;
   using SW = ArmSpans<D, B, K, M, W0, W1, W2, W3>;
   using SR = ArmSpans<D, B, K, M, R0, R1, R2, R3>;
   static constexpr bool carved = kCarves<SW, SR>;
+  //: the arm's VALUE WIDTH, which both bodies take as their `DV` and the census
+  //: reports, so the width is readable off the device like the two executor dials.
+  static constexpr int kDv = DV;
   //: the READ side's innermost carved level, which the seam reports as the arm's
   //: carve level, and `-1` for a body that carves nothing.
   static constexpr int read_carve(int l) {
@@ -212,28 +244,28 @@ struct Arm {
 
   //: THE CARVED BODY'S GEOMETRY, named once so the segment probe and the launch read
   //: the same one.
-  using GC = CarryGeom<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
+  using GC = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
   static constexpr auto probe_fn() {
-    return &carry_layout_probe_kernel<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
+    return &carry_layout_probe_kernel<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
   }
 
   template <bool STATE>
   static constexpr auto fn() {
     if constexpr (carved)
-      return &carry_kernel<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, MO, STATE>;
+      return &carry_kernel<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, MO, STATE>;
     else
-      return &carry_split_kernel<D, B, K, M, W, C, STATE>;
+      return &carry_split_kernel<D, B, K, M, DV, W, C, STATE>;
   }
   //: `{smem bytes, ring depth, CTA target, THREADS, WRITE STREAMS}` -- the launch reads
   //: the fourth, and the last two ARE THE TWO DIALS: `THREADS/32` is the executor
   //: budget, `WRITE STREAMS` the in-CTA ownership grain, and their ratio is `WPS`.
   static constexpr std::array<int64_t, 5> geom() {
     if constexpr (carved) {
-      using G = CarryGeom<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
+      using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
       return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)G::kThreads,
               (int64_t)G::kStreams};
     } else {
-      using G = SplitGeom<D, B, K, M, W, C>;
+      using G = SplitGeom<D, B, K, M, DV, W, C>;
       return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)kThreads,
               (int64_t)1};
     }
@@ -261,10 +293,10 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
 }
 
 template <class A>
-static std::array<int64_t, 12> census() {
+static std::array<int64_t, 13> census() {
   cudaFuncAttributes a{};
   if (cudaFuncGetAttributes(&a, A::template fn<true>()) != cudaSuccess)
-    return {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+    return {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
   constexpr auto g = A::geom();
   return {a.numRegs,
           (int64_t)a.sharedSizeBytes,
@@ -277,7 +309,8 @@ static std::array<int64_t, 12> census() {
           g[1],
           g[2],
           (int64_t)A::kReadCarve,
-          g[4]};
+          g[4],
+          (int64_t)A::kDv};
 }
 
 static bool is_arm(const std::vector<int64_t>& widths, int D, int B) {
@@ -295,7 +328,7 @@ static std::vector<torch::Tensor> run_probe() {
     using G = typename A::GC;
     using BPA = typename A::BP;
     auto opt = torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA);
-    auto vv = torch::zeros({(long)G::kStreams * G::kSegRows, (long)kDv}, opt);
+    auto vv = torch::zeros({(long)G::kStreams * G::kSegRows, (long)G::kDv}, opt);
     auto cc = torch::zeros({(long)G::kStreams * G::kSegRows, (long)G::kLeafW}, opt);
     auto ss = torch::zeros({(long)G::kSegRows, (long)BPA::kStageW}, opt);
     //: the staged leg's SOURCE plane: cell `(r, c)` names itself, so a run that lands
@@ -313,7 +346,7 @@ static std::vector<torch::Tensor> run_probe() {
         (const __nv_bfloat16*)pw.data_ptr(), vv.template data_ptr<int>(),
         cc.template data_ptr<int>(), ss.template data_ptr<int>());
     C10_CUDA_KERNEL_LAUNCH_CHECK();
-    return {vv.reshape({(long)G::kStreams, (long)G::kSegRows, (long)kDv}),
+    return {vv.reshape({(long)G::kStreams, (long)G::kSegRows, (long)G::kDv}),
             cc.reshape({(long)G::kStreams, (long)G::kSegRows, (long)G::kLeafW}), ss};
   } else {
     TORCH_CHECK(false, "the per-stream segment belongs to the carved body");
@@ -323,7 +356,7 @@ static std::vector<torch::Tensor> run_probe() {
 
 std::vector<torch::Tensor> layout_probe(std::vector<int64_t> widths, int64_t k, int64_t m,
                                         int64_t window, int64_t chunk, int64_t carve,
-                                        int64_t level_modes) {
+                                        int64_t level_modes, int64_t d_v) {
 #define CARRY_PROBE(...)                                                     \
   if (CARRY_MATCH(__VA_ARGS__) && level_modes == CARRY_MO(__VA_ARGS__)) {    \
     return run_probe<CARRY_ARM(__VA_ARGS__)>();                              \
@@ -372,16 +405,17 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   //: `pr`/`pw` are `[BH, L, sum_l B_l]`; `v` is `[B, T, H, d_v]`; `gw` is `[BH, L]`.
   const int BH = (int)pr.size(0);
   const int L = (int)pr.size(1);
+  //: THE VALUE WIDTH IS READ OFF THE CALLER'S PLANE and is part of the arm key, so an
+  //: unbuilt width is refused by the dispatch below exactly as an unbuilt topology is.
   const int d_v = (int)v.size(-1);
-  TORCH_CHECK(d_v == kDv, "R1 builds d_v = 64 only");
   const int v_row_bytes = (int)(v.size(2) * d_v * v.element_size());
 
   int64_t N = 1;
   for (auto w : widths) N *= w;
   auto opt = torch::TensorOptions().dtype(torch::kFloat32).device(v.device());
-  auto o = torch::zeros({BH, L, (int64_t)kDv}, opt);
+  auto o = torch::zeros({BH, L, (int64_t)d_v}, opt);
   auto den = torch::zeros({BH, L}, opt);
-  auto s_out = torch::zeros({BH, N / kAtomLeaves, (int64_t)kAtomLeaves, (int64_t)kCols}, opt);
+  auto s_out = torch::zeros({BH, N / kAtomLeaves, (int64_t)kAtomLeaves, (int64_t)(d_v + 1)}, opt);
 
   const float* sin_p = s_in.has_value() ? s_in->data_ptr<float>() : nullptr;
   auto stream = at::cuda::getCurrentCUDAStream();
@@ -419,14 +453,17 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   return {o, den, s_out};
 }
 
+//: THE FILE'S OWN CONSTANTS, device-side, beside the magic: the channel-split body's
+//: executor count and the page granule.  `d_v` LEFT THIS SET at K35 S3b -- it is an arm
+//: parameter now, so it is reported by the per-arm CENSUS below and not by the stamp.
 __global__ void stamp_kernel_entry(int* out) {
   out[0] = kCarryBuildMagic;
-  out[1] = kWarps * 1000 + kDv;
+  out[1] = kWarps * 1000 + kAtomLeaves;
   out[2] = design::kCapsDigest;
 }
 
 std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t m, int64_t window,
-                                 int64_t chunk, int64_t carve, int64_t level_modes) {
+                                 int64_t chunk, int64_t carve, int64_t level_modes, int64_t d_v) {
   auto t = torch::zeros({3}, torch::dtype(torch::kInt32).device(torch::kCUDA));
   stamp_kernel_entry<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(t.data_ptr<int>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -451,7 +488,7 @@ torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t
               "the operand planes are bf16");
   TORCH_CHECK(pr.sizes() == pw.sizes() && pr.dim() == 3, "expect packed amplitudes [BH, L, sumW]");
   const int BH = (int)pr.size(0), L = (int)pr.size(1);
-#define CARRY_ROWS(D_, B_, K_, M_, W_, C_, CV_, MO_, ...)                                      \
+#define CARRY_ROWS(D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, ...)                                 \
   if constexpr ((MO_) == 0) {                                                                  \
     if (is_arm(widths, D_, B_) && k == K_ && m == M_)                                          \
       return carve ? build_rows<CarveRowPlan<OwnerSpans<D_, B_, K_, M_>,                       \

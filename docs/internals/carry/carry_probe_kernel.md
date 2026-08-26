@@ -18,6 +18,11 @@ One CTA, the arm's own thread count, three legs:
 * **the staged factor row** — `stage_factors`' arithmetic verbatim at owner zero,
   against a `[kSegRows][kWtot]` plane whose cells name their own column.
 
+The probe is instantiated PER ARM and therefore per `d_v` (K35 S3b), so the value
+sub-tile's leg runs at the arm's own `LdV` and `kChunkV` — 72 and 8 quanta at the narrow
+plane, 136 and 16 at the wide one — and the round trip is what says the fetcher's stores
+and the consumer's `ldmatrix.trans` agree at BOTH widths rather than at one.
+
 The pattern is a RAW bf16 BIT PATTERN and never a number: what is being exercised is
 movement, so the only property asked of a value is that it be distinct per cell. That is
 also why the staged leg has to be EXECUTED rather than modelled — a misaligned

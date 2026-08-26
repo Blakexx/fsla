@@ -8,9 +8,10 @@ family beats them cell for cell (`development/plans/K31_BOX_NATIVE_KERNEL_STUDY_
 
 **Symbols.** `D` levels, `B` digits per level, `K` the uniform sub-box span, `M` the
 capacity multiplier, `BC` the leaves one owner holds, `W` the global window length in
-tokens, `C` the private batch's token tile, `d_v = 64` value channels. `k_tok` (a
-token's nonzero digits per level) appears nowhere in the kernel, which is the point:
-the schedule is computed, never branched on.
+tokens, `C` the private batch's token tile, `d_v` (`DV`) the value channel count — AN
+ARM PARAMETER since K35 S3b, not a constant of the file. `k_tok` (a token's nonzero
+digits per level) appears nowhere in the kernel, which is the point: the schedule is
+computed, never branched on.
 
 ## What it computes, and what it does not
 
@@ -177,6 +178,79 @@ Constraints, all `static_assert`ed: `s_l % S_l == 0`, every span a power of two,
 power of two, and the two declarations agreeing with the executor map —
 `SVW::kStreams * WPS == SVR::kStreams == kWarps`, and a column half of the write stream's
 box being exactly one read stream's box.
+
+### `d_v` is the THIRD DIAL, and it is a parameter rather than a path (K35 S3b)
+
+`d_v` is a template parameter of both forward bodies. `CarryGeom` names it `kDv` and
+everything the width touches falls out of it — `kCols = d_v + 1`, `LdV = d_v + 8`,
+`LdO = d_v + 4`, `kPlaneRows = d_v + 1`, `MCH = d_v / 16` (the channel m-tiles a warp
+holds), `kChunkV = d_v / 8` (a value row's asynchronous quanta) and every byte count
+derived from those. Nothing tests the width: there is no `if (d_v == 128)` anywhere, and
+the `d_v = 64` arms are register-for-register and byte-for-byte what they were.
+
+The clauses on the width are STRUCTURAL, not a list: the channels tile into whole MMA
+m-tiles, a value row is a power-of-two number of sixteen-byte quanta, and a lockstep
+unit covers at least one whole row. The CHANNEL-SPLIT body carries one more, and it is
+the reason no wide arm takes that body: it gives each of a FIXED four warps exactly one
+m-tile of channels, so its width IS its executor count (`d_v == kWarps * 16`) and 128 is
+not a declaration it can express. At the wide plane the design's answer is the carved
+body at sixteen leaves per warp — a different arm, never a branch.
+
+**What the width costs, per the card's CONTAINERS entry.** Eight resident warps per SM
+is the target; at `d_v = 128` sixteen leaves per warp is REQUIRED (the state, its packed
+`lo`, the working set and one tile of output fragments are ~250 registers at that box).
+Three containers reach it and all three are built at the flagship cell (`W = 384`, ALT):
+1x8 at `BC = 128` by a column split (`WPS = 2`, four write streams), 1x8 at `BC = 128`
+by eight write streams, and 2x4 at `BC = 64` — the CTA's box halved rather than its warps
+doubled, four streams of sixteen leaves under the ruled one-warp-per-stream map, two CTAs
+of four warps per SM. The 2x4 row is `(k, m) = (4, 4)` on the flagship topology: spans
+`[4, 16]`, 1024 owners.
+
+**Two things the width reaches that the narrow arms never exercise.**
+
+* THE PAGE SWEEP AT A ROW WIDER THAN THE CTA. The state page is `kCols = 129` columns and
+  the 2x4 container runs 128 threads, so `kRowStep = kThreads / kCols` is ZERO. The sweep
+  is unchanged: its step is a carry, `kPageCarry = kThreads mod kCols` is below `kCols`
+  by construction, so the cursor crosses at most one row boundary per step whether the
+  step spans several rows or less than one. What was asserted as `kRowStep >= 1` is now
+  asserted as the carry's own bound, which is the statement that was always true.
+* THE VALUE COPY. `kValPass = kCand * kChunkV / 32` doubles, and it must: the copy moves
+  `d_v` channels. It is the one nest the width reaches; every other nest is O(fragments)
+  in `MCH` and `NL`, which is what keeps compile time and instruction count linear in the
+  data rather than in the leaves.
+
+**One toolchain fact, recorded because it looks like a style choice.** Making `MCH`
+dependent (which it becomes the moment `d_v` is a template parameter) SEGFAULTS the
+pinned front end — cudafe++, CUDA 12.4.99 — when a lambda parameter's type is a
+reference to an array of dependent bound, at PARSE and before any instantiation. So
+`reload_hi` and `pull_operand` take their fragment stacks by DEDUCED reference
+(`auto&`) rather than as `uint32_t (&)[MCH][4]`. The caller still passes the one declared
+stack; nothing about the types is loosened. Do not spell the bound back in.
+
+### The transit plane's swizzle is `d_v`-independent, and here is why
+
+`kHiLD = BC + 16`, `word ^= (chan & 7)`. One access of either leg — the publish's
+`st.shared.u32` and the pull's `ld.shared.u32` — is one (m-tile, n-tile) pair: the
+lockstep unit's lane quads carry eight CONSECUTIVE channels `q = lane >> 2`, and the four
+quads carry four ADJACENT leaf pairs `p0 + (lane & 3)` (adjacent because rule 1 puts the
+lattice's innermost level lowest in both private orders). So the word is
+
+    (m*16 + q) * (LD/2) + ((p0 + a) ^ q),   a = lane & 3
+
+and `16 * (LD/2) == 0 (mod 32)` at every built `BC`, so the m-tile term drops out and the
+bank is `(q * (LD/2) + ((p0+a) ^ q)) mod 32`. `LD/2` is `8 (mod 32)` at `BC = 64`, 128 and
+256 alike, so this is `8q + ((p0+a) ^ q)`: eight four-bank blocks, each a permutation of
+its own four. MAX-WAY ONE — and the width changes only HOW MANY such accesses there are
+(`MCH` of them), never their shape. The mass row rides `chan = d_v`, whose low three bits
+are zero at every admitted width, so it takes the same map. `test_segment_layout.py`
+runs this model at both widths and at all three box sizes, beside the device round trip.
+
+The SEGMENT's value rows are the same story at `LdV = 136`: a 128-bit shared access is
+serviced EIGHT LANES AT A TIME (eight lanes × 16 B is the 32 banks × 4 B the memory
+delivers per cycle), and a group's eight quanta cover all thirty-two banks exactly once
+whatever word the row starts at. The wide row is two such groups rather than one, which
+is access WIDTH and not a conflict; the consumer's `ldmatrix` leg is conflict-free
+because `136 * 2 / 4 = 68` is `4 (mod 32)` exactly as `72 * 2 / 4 = 36` was.
 
 ### The private order, and why it is a RULE and not a choice
 

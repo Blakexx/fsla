@@ -12,8 +12,9 @@
 namespace rola::carry {
 
 //: the INTER term only: `(num, den)`, undivided, plus the final state plane in
-//: LATTICE leaf order.  `carve` names the one ruled carve: 1 = the innermost
-//: level's leaf split.  `level_modes` is law 3's per-level declaration, two bits
+//: LATTICE leaf order.  `carve` names the built (carve, executor map): 1 = the ruled
+//: leaf split, 2/3 = the two 1x8 containers.  The arm's `d_v` is READ OFF `v` and is
+//: part of the key.  `level_modes` is law 3's per-level declaration, two bits
 //: per level (bit 0 of a level's pair = the READ side is value-sparse there, bit 1
 //: = the WRITE side), and it CHOOSES THE BODY; DENSE_BOTH is always correct.
 std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
@@ -28,10 +29,12 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
 torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t> widths, int64_t k,
                          int64_t m, bool carve);
 
-//: device-side build identity plus the built arm's register/SMEM census, and the
-//: carve level the declaration named (-1 = the channel-split body).
+//: device-side build identity plus the built arm's register/SMEM census, the carve
+//: level the declaration named (-1 = the channel-split body), the WRITE stream count
+//: and the arm's `d_v`.  `d_v` is part of the arm key (K35 S3b), so it is an argument
+//: here as well: the same declaration at the two built widths is two arms.
 std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t m, int64_t window,
-                                 int64_t chunk, int64_t carve, int64_t level_modes);
+                                 int64_t chunk, int64_t carve, int64_t level_modes, int64_t d_v);
 
 //: R4's TWO REVERSE SCANS, launched concurrently: `(d_pr, d_pw, d_gw, d_v,
 //: d_state_in, replay)`.  `vt`/`dn` are the pre-packed `[BH, L, cols-padded]` bf16
@@ -53,9 +56,9 @@ std::vector<int64_t> backward_build_stamp(std::vector<int64_t> widths, int64_t k
 //: consumer's `ldmatrix.trans` at the fold's own bases.  Carved arms only.
 std::vector<torch::Tensor> layout_probe(std::vector<int64_t> widths, int64_t k, int64_t m,
                                         int64_t window, int64_t chunk, int64_t carve,
-                                        int64_t level_modes);
+                                        int64_t level_modes, int64_t d_v);
 
-//: the built (widths, k, m, W, C, carve) tuples.
+//: the built (widths, k, m, d_v, W, C, carve, modes, BC, owners, smem, carve level) rows.
 std::vector<std::vector<int64_t>> arms();
 
 }  // namespace rola::carry

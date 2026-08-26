@@ -16,10 +16,24 @@
 
 namespace rola::carry {
 
-template <int D, int B, int K, int M, int W, int C>
+template <int D, int B, int K, int M, int DV, int W, int C>
 struct SplitGeom {
   using BP = BoxPlan<D, B, K, M>;
   static constexpr int BC = BP::kBC;
+  //: THE VALUE WIDTH IS THIS ARM'S (K35 S3b), exactly as the carved body's is.  The
+  //: channel split holds `kDv / kWarps` channels in each of a FIXED four warps, so a
+  //: width the four warps cannot tile -- or one whose state row outgrows the CTA's page
+  //: sweep -- is REFUSED by the clauses below rather than served a narrower path.  No
+  //: `d_v = 128` declaration takes this body: at that width the design's answer is the
+  //: carved 16-leaf executor, which is a different arm and not a branch inside this one.
+  static constexpr int kDv = DV;
+  static constexpr int kCols = DV + 1;
+  static_assert(kDv == kWarps * kMmaM,
+                "THE CHANNEL SPLIT'S WIDTH IS ITS WARP COUNT: each of the fixed four "
+                "warps holds exactly ONE MMA m-tile of channels, so this body's `d_v` is "
+                "determined by its executor count and is not a free dial. A wider value "
+                "plane is the CARVED body's arm (16 leaves per warp), never a branch "
+                "inside this one.");
   static constexpr int LdV = kDv + kPadE;
   static constexpr int LdS = BC + kPadE;
   static constexpr int LdO = kDv + kPadF;
@@ -55,20 +69,24 @@ struct SplitGeom {
 //: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from
 //: the same geometry the ring depth is.  A ring sized for a residency the launch
 //: bound does not ask for is a ring sized for nothing.
-template <int D, int B, int K, int M, int W, int C>
-constexpr int kSplitCtaTarget = SplitGeom<D, B, K, M, W, C>::cta_target;
+template <int D, int B, int K, int M, int DV, int W, int C>
+constexpr int kSplitCtaTarget = SplitGeom<D, B, K, M, DV, W, C>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int W, int C, bool STATE>
-__global__ __launch_bounds__(kThreads, (kSplitCtaTarget<D, B, K, M, W, C>)) void carry_split_kernel(
-    const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
-    const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
-    const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den, int L,
-    int tok_words, int v_row_bytes, const float* __restrict__ s_in, float* __restrict__ s_out) {
+template <int D, int B, int K, int M, int DV, int W, int C, bool STATE>
+__global__ __launch_bounds__(kThreads, (kSplitCtaTarget<D, B, K, M, DV, W, C>)) void
+carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
+                   const __nv_bfloat16* __restrict__ pwrite,
+                   const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
+                   const uint32_t* __restrict__ rows, float* __restrict__ o,
+                   float* __restrict__ den, int L, int tok_words, int v_row_bytes,
+                   const float* __restrict__ s_in, float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
-  using G = SplitGeom<D, B, K, M, W, C>;
+  using G = SplitGeom<D, B, K, M, DV, W, C>;
   using PM = ProduceMap<D, B, K, M, C>;
+  //: THE ARM'S VALUE WIDTH, named once so the body reads a geometry, not a constant.
+  constexpr int kDv = G::kDv, kCols = G::kCols;
 
   constexpr int BC = BP::kBC;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;

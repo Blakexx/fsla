@@ -40,6 +40,16 @@ namespace rola::carry {
 //: a KERNEL, and so is a stale binary; the forward's magic says nothing about these.
 static constexpr int kBwdBuildMagic = 31040001;
 
+//: THE REVERSE FAMILY'S OWN VALUE WIDTH, AND WHY IT IS A CONSTANT HERE (K35 S3b).
+//: `d_v` became a per-arm parameter of the FORWARD carry family; this body did NOT
+//: follow it.  The two scans are a separate design -- leaf-major slabs, a fixed
+//: `kColsPad = 72` pre-packed operand plane, its own arm list -- and they carry a
+//: standing seam gap against the forward's arms already.  Widening them is that gap's
+//: work, not this one's, so the constant stays here, named where this family uses it,
+//: and nothing in `carry_kernel.cuh` defines it any more.
+static constexpr int kDv = 64;
+static constexpr int kCols = kDv + 1;
+
 //: THE SEED AND VALUE PLANES ARE PRE-PACKED `cols`-WIDE AND PADDED TO WHOLE MMA
 //: n-tiles, so ONE staging body serves both and the mass channel is an ordinary
 //: column rather than a carve.  Columns past `kCols` are zero at the seam, which is

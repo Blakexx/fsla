@@ -41,7 +41,7 @@ DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owne
 #: `[1, 4, 2, 4]`, read spans `[4, 1, 4, 2]`, eight streams of 32 leaves either way and
 #: one warp per stream.  Under `ALT4` each side carves exactly where it is sparse.
 CARVE4 = ((4, 4, 4, 4), 4, 1, carry_ops.WINDOW_SMALL)
-CARVE4_KEY = (4, 4, 4, 1, carry_ops.WINDOW_SMALL, 32, 1)
+CARVE4_KEY = (4, 4, 4, 1, 64, carry_ops.WINDOW_SMALL, 32, 1)
 #: THE 1x8 CONTAINER ARMS (K35 S3a).  The SAME cell as `flagship ALT` -- box `[8, 16]`,
 #: `W = 384`, the ALT declaration -- reached with EIGHT executors instead of four, by
 #: the two routes the card leaves to measurement: four write streams column-split two
@@ -50,8 +50,21 @@ CARVE4_KEY = (4, 4, 4, 1, carry_ops.WINDOW_SMALL, 32, 1)
 #: declared at ONE STREAM PER WARP.
 CONT_SPLIT = carry_ops.CONTAINER_1X8_SPLIT
 CONT_STREAMS = carry_ops.CONTAINER_1X8_STREAMS
-CONT_SPLIT_KEY = (2, 256, 4, 8, carry_ops.WINDOW, 32, CONT_SPLIT)
-CONT_STREAMS_KEY = (2, 256, 4, 8, carry_ops.WINDOW, 32, CONT_STREAMS)
+D_V = carry_ops.D_V
+WIDE = carry_ops.D_V_WIDE
+CONT_SPLIT_KEY = (2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, CONT_SPLIT)
+CONT_STREAMS_KEY = (2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, CONT_STREAMS)
+#: THE `d_v = 128` ARMS (K35 S3b).  `d_v` is the third dial and part of an arm's key, so
+#: the two container declarations reappear at the wide value plane -- SAME cell, SAME
+#: box `[8, 16]`, sixteen leaves per warp either route -- and a THIRD container joins
+#: them: 2x4 at `BC = 64`, which halves the CTA's box instead of doubling its warps and
+#: reaches sixteen leaves per warp under the ruled one-warp-per-stream map.  `BC = 64`
+#: is `(k, m) = (4, 4)` on the flagship topology: spans `[4, 16]`, 1024 owners.
+WIDE_SPLIT_KEY = (2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_SPLIT)
+WIDE_STREAMS_KEY = (2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_STREAMS)
+WIDE_2X4_KEY = (2, 256, 4, 4, WIDE, carry_ops.WINDOW, 32, carry_ops.LEAF_SPLIT)
+#: (widths, k, m, W) for the `BC = 64` box, in the shape `run`/`ref` read.
+FLAG_HALF = ((256, 256), 4, carry_ops.CAP_BC64, carry_ops.WINDOW)
 #: the ALTERNATING declaration packed as the seam's word, at depth four.
 ALT4 = 102
 
@@ -83,7 +96,7 @@ def test_build_stamp_is_this_source():
 def test_arms_are_the_declared_solver_rows():
     """The TOPOLOGY rows, and the declarations each is built for.
 
-    An arm is `(topology, declaration)`: the declaration chooses the BODY, so the
+    An arm is `(topology, d_v, declaration)`: the declaration chooses the BODY, so the
     same topology appears once per declaration built for it.  DENSE_BOTH is built
     for every topology it is the seam's answer FOR -- which is every one but the
     multi-level carve arm, whose box is the whole topology and whose carve is the
@@ -91,26 +104,61 @@ def test_arms_are_the_declared_solver_rows():
     than degrading it, which is stated here because the fall-back rule is otherwise
     universal.  The DECLARATION SCALAR (`a[6]`) names the arm's (carve, executor map),
     so the two 1x8 container rows share the flagship's topology and window and differ
-    from it and from each other only there.
+    from it and from each other only there (`a[7]`).  `d_v` (`a[4]`) is part of the key too
+    (K35 S3b), so the two container declarations appear once per built width and the
+    2x4 container is a row of its own -- same topology, a different capacity.
     """
-    got = {tuple(a[:7]) for a in carry_ops.arms()}
-    assert got == {(2, 256, 4, 8, carry_ops.WINDOW, 32, 1),
-                   (2, 256, 4, 8, carry_ops.WINDOW_WIDE, 32, 1),
-                   (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1),
-                   (3, 16, 2, 16, carry_ops.WINDOW_SMALL, 32, 1),
-                   (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1),
-                   CARVE4_KEY, CONT_SPLIT_KEY, CONT_STREAMS_KEY}, got
-    dense = {tuple(a[:7]) for a in carry_ops.arms() if a[7] == 0}
-    assert dense == got - {CARVE4_KEY, CONT_SPLIT_KEY, CONT_STREAMS_KEY}, (
+    got = {tuple(a[:8]) for a in carry_ops.arms()}
+    carved_only = {CARVE4_KEY, CONT_SPLIT_KEY, CONT_STREAMS_KEY,
+                   WIDE_SPLIT_KEY, WIDE_STREAMS_KEY, WIDE_2X4_KEY}
+    assert got == {(2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, 1),
+                   (2, 256, 4, 8, D_V, carry_ops.WINDOW_WIDE, 32, 1),
+                   (2, 64, 4, 8, D_V, carry_ops.WINDOW_SMALL, 32, 1),
+                   (3, 16, 2, 16, D_V, carry_ops.WINDOW_SMALL, 32, 1),
+                   (4, 8, 2, 8, D_V, carry_ops.WINDOW_SMALL, 32, 1)} | carved_only, got
+    dense = {tuple(a[:8]) for a in carry_ops.arms() if a[8] == 0}
+    assert dense == got - carved_only, (
         "every other topology must carry the DENSE_BOTH body")
+    #: THE WIDE PLANE IS THE CARVED BODY'S ONLY, by the channel split's own arithmetic:
+    #: that body gives each of a fixed four warps exactly one MMA m-tile of channels, so
+    #: its width IS its executor count and 128 is not a declaration it can take.
+    assert all(a[4] == D_V for a in carry_ops.arms() if a[8] == 0)
     for arm in carry_ops.arms():
-        D, B, k, m, W, C, carve, modes, BC, owners, smem, level = arm
+        D, B, k, m, d_v, W, C, carve, modes, BC, owners, smem, level = arm
+        assert d_v in (D_V, WIDE)
         _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
         assert (BC, owners) == (bc_host, owners_host), (
             "the device box and the host solver disagree about the owner's shape")
         #: the carve level is the innermost level the READ side carves, which the
         #: declaration names, or -1 for the channel-split body.
         assert level == (D - 1 if (modes >> (2 * (D - 1))) & 1 else -1)
+
+
+def test_s3b_the_wide_arms_are_sixteen_leaves_per_warp():
+    """THE CARD'S CONTAINERS CLAUSE, asserted off the device rather than commented.
+
+    At ``d_v = 128`` sixteen leaves per warp is REQUIRED (P76 CONTAINERS), and the three
+    built containers are the three ways to get there: 1x8 at ``BC = 128`` by a column
+    split, 1x8 at ``BC = 128`` by eight write streams, and 2x4 at ``BC = 64`` by halving
+    the CTA's box.  ``stamp[7] // 32`` is the executor budget, ``stamp[14]`` the WRITE
+    stream count and ``stamp[15]`` the arm's ``d_v``, so all three dials are read back
+    from the binary and the leaves-per-warp claim is arithmetic on them.
+    """
+    assert_fresh_binary()
+    want = {(FLAG, CONT_SPLIT): (8, 4, 2), (FLAG, CONT_STREAMS): (8, 8, 1),
+            (FLAG_HALF, CARVE): (4, 4, 1)}
+    for (arm, declaration), (warps, streams, wps) in want.items():
+        widths, k, m, W = arm
+        _, _, _, bc, _ = carry_ops.box_shape(list(widths), k, m)
+        stamp = carry_ops.build_stamp(widths, k, m, W, 32, declaration, 6, d_v=WIDE)
+        assert stamp[15] == WIDE, f"{arm} {declaration}: the arm's d_v"
+        assert stamp[7] // 32 == warps and stamp[14] == streams
+        assert stamp[7] // 32 == stamp[14] * wps
+        assert bc // warps == 16, "the wide plane's executor holds sixteen leaves"
+    #: and the SAME cell at the narrow plane still holds thirty-two, which is what says
+    #: the width moved the box rather than the arm list gaining an unrelated row.
+    stamp = carry_ops.build_stamp(FLAG[0], FLAG[1], FLAG[2], FLAG[3], 32, CONT_SPLIT, 6)
+    assert stamp[15] == D_V and 128 // (stamp[7] // 32) == 16
 
 
 # ---------------------------------------------------------------- the lattice
@@ -228,7 +276,7 @@ def clustered(shape, k_tok, cohort, gen, device):
     return x / x.sum(-1, keepdim=True)
 
 
-def alt_cell(widths, T, k_tok, seed, cohort=None):
+def alt_cell(widths, T, k_tok, seed, cohort=None, d_v=carry_ops.D_V):
     """THE PRIMARY SPARSE STRUCTURE (Blake ruling 2026-08-19): per level at most ONE
     sparse side, and the sparse side ALTERNATES -- EVEN levels write-sparse/read-dense,
     ODD levels read-sparse/write-dense.  The two sides' clause sets are therefore
@@ -240,7 +288,7 @@ def alt_cell(widths, T, k_tok, seed, cohort=None):
     from tests.k31.fixtures import simplex
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(seed)
-    cell = Cell(widths, T=T, k_tok=None, seed=seed)
+    cell = Cell(widths, T=T, k_tok=None, seed=seed, d_v=d_v)
     shape = (cell.B, T, cell.H)
 
     def draw(width, kt):
@@ -476,8 +524,43 @@ def test_s3a_the_container_arms_reach_eight_executors_two_ways():
     _, _, _, bc, _ = carry_ops.box_shape(list(widths), k, m)
     want = {carry_ops.LEAF_SPLIT: (4, 4, 1), CONT_SPLIT: (8, 4, 2), CONT_STREAMS: (8, 8, 1)}
     for declaration, (warps, streams, wps) in want.items():
-        stamp = carry_ops.build_stamp(widths, k, m, W, 32, declaration, 6)
+        stamp = carry_ops.build_stamp(widths, k, m, W, 32, declaration, 6, d_v=D_V)
         assert stamp[7] // 32 == warps, f"declaration {declaration}: executors"
         assert stamp[14] == streams, f"declaration {declaration}: write streams"
         assert stamp[7] // 32 == stamp[14] * wps, f"declaration {declaration}: warps per stream"
         assert bc % warps == 0 and bc // warps == (bc // streams) // wps
+
+
+# ------------------------------------- the d_v = 128 CONTAINERS, D = 2 (K35 S3b)
+
+@pytest.mark.parametrize("k_tok", [None, 4], ids=["dense", "k4"])
+@pytest.mark.parametrize(
+    "arm,declaration",
+    [(FLAG, CONT_SPLIT), (FLAG, CONT_STREAMS), (FLAG_HALF, CARVE)],
+    ids=["1x8-wps2", "1x8-streams8", "2x4-bc64"])
+def test_s3b_the_wide_containers_match_the_fp64_oracle(arm, declaration, k_tok):
+    """THE WIDE VALUE PLANE, all three containers, against the fp64 oracle.
+
+    ``d_v = 128`` doubles the channel m-tiles the accumulator holds (``MCH``), the
+    value row's asynchronous quanta, the transit plane's rows and the state page's
+    columns -- and it must move NOTHING else.  So the gate is the same one the narrow
+    arms take: ``num``, ``den`` AND the state plane in CANONICAL order, where a leaf-map
+    or a channel-map error is a permutation rather than noise.  The ``BC = 64`` row is
+    the 2x4 container and reaches the same sixteen leaves per warp by halving the box,
+    so it also gates the page sweep at a state row WIDER than the CTA (129 columns
+    against 128 threads), which no narrow arm exercises.
+    """
+    assert_fresh_binary()
+    widths, k, m, W = arm
+    cell = (Cell(widths, T=768, k_tok=None, seed=5, d_v=WIDE) if k_tok is None
+            else alt_cell(widths, T=768, k_tok=k_tok, seed=21, d_v=WIDE))
+    num, den, plane = carry_ops.carry_inter(
+        cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths, k=k, m=m, window=W,
+        chunk=32, carve=declaration, level_modes=6)
+    assert num.shape[-1] == WIDE and plane.shape[-1] == WIDE + 1
+    n_ref, d_ref, s_ref = ref(cell, arm)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+    got = canonical_from_lattice(plane, widths, k, m)
+    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL

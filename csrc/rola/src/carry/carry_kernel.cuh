@@ -18,9 +18,13 @@
 //
 // SYMBOLS, each at first use: `D` levels, `B` digits per level, `K` the uniform
 // sub-box span, `M` the capacity multiplier, `BC` the leaves one owner holds,
-// `W` the window length in tokens, `C` the private batch's token tile, `d_v = 64`
-// value channels.  `k_tok` (a token's nonzero digits per level) appears NOWHERE in
-// this file, and that is the point: the schedule is computed, never branched on.
+// `W` the window length in tokens, `C` the private batch's token tile, `DV` (`d_v`)
+// the value channel count -- AN ARM PARAMETER (K35 S3b), not a constant of this file:
+// every derived quantity below (`kCols`, `LdV`, `LdO`, `kPlaneRows`, `MCH`, `kChunkV`,
+// the segment/staging/plane byte counts and the straddle) follows from it, and no
+// site anywhere tests its value.  `k_tok` (a token's nonzero digits per level) appears
+// NOWHERE in this file, and that is the point: the schedule is computed, never
+// branched on.
 //
 // THE ONE ORDERING LAW is window-grain read-before-write on the owner's own slots.
 // A batch therefore NEVER crosses a window line: a batch that did would owe the
@@ -47,16 +51,20 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010020;
+static constexpr int kCarryBuildMagic = 31010021;
 
-static constexpr int kDv = 64;         // d_v
-static constexpr int kCols = kDv + 1;  // the mass column rides the state
-static constexpr int kPadE = 8;        // bf16 row padding, elements (16 B)
-static constexpr int kPadF = 4;        // fp32 row padding, elements (16 B)
-//: THE CHANNEL-SPLIT BODY'S SHAPE, and the reverse family's.  Those bodies split the
-//: `kDv` CHANNELS over a fixed four warps and hold the whole box in each; the CARVED
-//: body's executor count is the arm's STREAM count instead (`CarryGeom::kWarps`) and
-//: is not a constant of this file.
+static constexpr int kPadE = 8;  // bf16 row padding, elements (16 B)
+static constexpr int kPadF = 4;  // fp32 row padding, elements (16 B)
+//: `d_v` IS AN ARM PARAMETER AND NOT A FILE CONSTANT (K35 S3b).  Both FORWARD bodies
+//: take it as `DV` -- `CarryGeom`/`SplitGeom` name it `kDv` and derive `kCols = DV + 1`,
+//: the mass column that rides the state -- so the two built widths are two arms of one
+//: body and no site tests the width.  THE REVERSE FAMILY IS OUT OF SCOPE and keeps its
+//: own `kDv = 64` (`backward_kernel.cuh`): that body is a separate two-scan design with
+//: a standing seam gap of its own, and widening it is not this stage's work.
+//: THE CHANNEL-SPLIT BODY'S WARP COUNT, and the reverse family's.  Those bodies split
+//: the `kDv` CHANNELS over a fixed four warps and hold the whole box in each; the
+//: CARVED body's executor count is the arm's STREAM count instead
+//: (`CarryGeom::kWarps`) and is not a constant of this file.
 static constexpr int kWarps = 4;
 static constexpr int kThreads = kWarps * 32;
 static_assert(kAtomLeaves == kMmaK, "the page granule is one MMA k-step");
@@ -96,13 +104,25 @@ __device__ __forceinline__ void static_for(F&& f) {
 //: READ carve is declared at ONE STREAM PER WARP, so the readout is untouched by the
 //: split and the accumulator's leaf count is the read box's at every arm.
 
-template <int D, int B, int K, int M, int W, int C, int WPS, int W0, int W1, int W2, int W3, int R0,
-          int R1, int R2, int R3>
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
+          int R0, int R1, int R2, int R3>
 struct CarryGeom {
   using BP = BoxPlan<D, B, K, M>;
   using SVW = StreamSpans<D, B, K, M, W0, W1, W2, W3>;
   using SVR = StreamSpans<D, B, K, M, R0, R1, R2, R3>;
   static constexpr int BC = BP::kBC;
+  //: THE VALUE WIDTH, AS A DECLARATION.  `kDv` channels plus the MASS column, which
+  //: rides the state as one more row of every plane the state touches.  The clauses
+  //: are STRUCTURAL and not a list of admitted widths: the channels tile into whole
+  //: MMA m-tiles (`MCH`), a value row is a whole number of sixteen-byte asynchronous
+  //: quanta (`kChunkV = kDv / 8`), and those quanta divide a lockstep unit so the
+  //: fetcher's value pass is a lane split rather than a predicate.
+  static constexpr int kDv = DV;
+  static constexpr int kCols = DV + 1;
+  static_assert(DV >= kMmaM && DV % kMmaM == 0, "the value channels tile into whole MMA m-tiles");
+  static_assert((DV & (DV - 1)) == 0 && DV / 8 <= kBallotLanes,
+                "a value row is a power-of-two number of sixteen-byte quanta and a "
+                "lockstep unit covers at least one whole row");
   //: THE TWO DIALS: `kStreams` is the WRITE side's ownership grain, `kWarps` the issue
   //: budget spent on it.
   static constexpr int kWPS = WPS;
@@ -160,8 +180,25 @@ struct CarryGeom {
   static constexpr int kPlaneRows = kDv + 1;
   //: `LD` AND ITS SWIZZLE ARE A DERIVATION, NOT A GUESS (findings, derivation 2).
   //: `word ^= (chan & 7)` at `LD = BC + 16` measures max-way ONE on both legs.
+  //:
+  //: AND THE DERIVATION IS INDEPENDENT OF `d_v`, which is why the width adds no
+  //: swizzle clause (K35 S3b).  One access of either leg is one (m-tile, n-tile) pair:
+  //: the eight lanes of a quad-group carry eight CONSECUTIVE channels `q = lane>>2`
+  //: and the four quads carry four ADJACENT leaf pairs `p0 + (lane&3)` -- adjacent
+  //: because rule 1 puts the lattice's innermost level lowest in both private orders.
+  //: The word is `chan * (LD/2) + ((p0 + a) ^ q)` with `chan = m*kMmaM + q`, and
+  //: `kMmaM * (LD/2) == 0 (mod 32)` at every `BC` here, so the m-tile drops out and the
+  //: bank is `(q * (LD/2) + ((p0 + a) ^ q)) mod 32`.  `LD/2` is `8 (mod 32)` at
+  //: `BC = 64` and at `BC = 128` alike, so that is `8q + ((p0+a)^q)`: eight blocks of
+  //: four banks, each block a permutation of its four.  MAX-WAY ONE, at every `d_v` --
+  //: the width changes only how many such accesses there are (`MCH` of them), never
+  //: their shape.  `tests/k31/test_segment_layout.py` runs the model over both widths.
   static constexpr int kHiLD = BC + 16;
   static constexpr int kHiSwz = 7;
+  static_assert((kMmaM * (kHiLD / 2)) % kBallotLanes == 0
+                    && (kHiLD / 2) % kBallotLanes == kBallotLanes / 4,
+                "the transit's row stride must step a quad-group by one four-bank block, "
+                "which is what makes the XOR swizzle a bank permutation at any `d_v`");
   static constexpr int plane_bytes = kPlaneRows * kHiLD * (int)sizeof(__nv_bfloat16);
   //: THE TRANSIT STRADDLES THE FOLD'S DEAD TENANTS AND PAYS ONLY THE SHORTFALL.  The
   //: segments, the coefficient staging and the page buffer are dead for the whole
@@ -207,10 +244,13 @@ struct CarryGeom {
   //: of the heaviest built arm, recorded in the findings doc.  The cooperative fetch
   //: raised it: the consumer now holds a batch's value AND coefficient fragments across
   //: the fetch phase (F4's second stage IS the register file), which is `MCH*4 + NL/2*4`
-  //: registers more than the produce it replaces.  The residency it derives is
-  //: unchanged at both thread counts -- 64K/(128*235) and 64K/(256*235) round to the
-  //: same CTA ceilings 220 gave -- so this is a truer statement of the same geometry.
-  static constexpr int kRegFloor = 235;
+  //: registers more than the produce it replaces.  THE `d_v = 128` ARMS RAISED IT AGAIN
+  //: (K35 S3b): they double `MCH`, and the heaviest measures 254 on both ratified arches
+  //: (zero spill, zero stack).  The residency it derives is unchanged at both thread
+  //: counts -- 64K/(128*254) is still 256 registers a lane at two CTAs, and 64K/(256*n)
+  //: reaches one CTA at either floor -- so this is a truer statement of the same
+  //: geometry, exactly as 220 -> 235 was.
+  static constexpr int kRegFloor = 254;
   //: ONE slot per stream, because the SECOND STAGE IS REGISTERS (F4).
   static constexpr int kStages = 1;
 
@@ -227,6 +267,21 @@ struct CarryGeom {
   static constexpr int off_mask = off_pfx + pfx_bytes;
   static constexpr size_t bytes = (size_t)(off_mask + mask_bytes);
   static constexpr int cta_target = design::cta_target((int)bytes, kThreads, kRegFloor);
+  //: ---- THE LEDGER, PER MOMENT (P76 "THE SMEM LEDGER, PER MOMENT") ----------
+  //: The window's INDEX -- the lists, the published ballots, the prefix counts and the
+  //: liveness mask -- is live in every moment and is nobody's straddle.  The three
+  //: moments over it are the FOLD (segments, staging, gain, the page buffer), the
+  //: CHANGE (the transit alone) and the READOUT (the transit, still valid, plus the
+  //: read panels).  The CHANGE and the READOUT reach their tenants THROUGH the fold's,
+  //: which is what `tail_bytes` sizes: the allocation carries `max(fold_dead, plane)`
+  //: for that straddled region and never shrinks either tenant to fit the other.
+  static constexpr int index_bytes = list_bytes + mem_bytes + pfx_bytes + mask_bytes;
+  static constexpr int fold_bytes = fold_dead_bytes + index_bytes;
+  static constexpr int change_bytes = plane_bytes + index_bytes;
+  static constexpr int readout_bytes = plane_bytes + read_bytes + index_bytes;
+  static_assert((size_t)fold_bytes <= bytes && (size_t)change_bytes <= bytes
+                    && (size_t)readout_bytes <= bytes,
+                "the allocation covers every moment's tenants");
   static_assert(plane_bytes <= fold_dead_bytes + tail_bytes,
                 "the transit must fit the fold's dead region plus its declared tail");
   static_assert(design::smem_fits(bytes), "this arm does not fit the SMEM maximum");
@@ -353,25 +408,29 @@ constexpr bool mode_declares(uint32_t modes, int l, uint32_t side) {
 //: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from
 //: the same geometry the ring depth is.  A ring sized for a residency the launch
 //: bound does not ask for is a ring sized for nothing.
-template <int D, int B, int K, int M, int W, int C, int WPS, int W0, int W1, int W2, int W3, int R0,
-          int R1, int R2, int R3>
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
+          int R0, int R1, int R2, int R3>
 constexpr int kCarryCtaTarget =
-    CarryGeom<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>::cta_target;
+    CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int W, int C, int WPS, int W0, int W1, int W2, int W3, int R0,
-          int R1, int R2, int R3, uint32_t MO, bool STATE>
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
+          int R0, int R1, int R2, int R3, uint32_t MO, bool STATE>
 __global__
-__launch_bounds__((CarryGeom<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>::kThreads),
-                  (kCarryCtaTarget<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>)) void
+__launch_bounds__((CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>::kThreads),
+                  (kCarryCtaTarget<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>)) void
 carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
              const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
              const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den,
              int L, int tok_words, int v_row_bytes, const float* __restrict__ s_in,
              float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
-  using G = CarryGeom<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
+  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
+  //: THE ARM'S VALUE WIDTH, named once so the body below reads a geometry and never a
+  //: file constant: `kDv` channels and the mass column that rides them.
+  constexpr int kDv = DV;
+  constexpr int kCols = DV + 1;
   //: THE TWO SPAN VECTORS.  The READ side's carve and the WRITE side's carve of the
   //: same box, each with its own private order under the rule above.
   using SVR = StreamSpans<D, B, K, M, R0, R1, R2, R3>;
@@ -600,7 +659,15 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: THE RECLAIM LEG of the retained-plane cycle: the inverse of `publish_hi`, at the
   //: same addresses, by the same warp.  Nothing else wrote them, so this needs no
   //: fence of its own -- the plane's single fence was the readers' wait.
-  auto reload_hi = [&](uint32_t(&lo)[MCH][NL][2], uint32_t(&mlo)[NL][2]) {
+  //:
+  //: THE FRAGMENT STACKS ARE TAKEN BY DEDUCED REFERENCE, NOT BY `uint32_t(&)[MCH]...`,
+  //: AND THAT IS A TOOLCHAIN FACT, NOT A STYLE ONE.  `MCH` became dependent when `d_v`
+  //: became a template parameter (K35 S3b), and the pinned front end (cudafe++, CUDA
+  //: 12.4.99) SEGFAULTS on a lambda parameter whose type is a reference to an array of
+  //: dependent bound -- at PARSE, before any instantiation.  Deducing the parameter
+  //: sidesteps the shape entirely; the caller still passes the one declared stack, so
+  //: nothing about the types is loosened.  Do not spell the bound back in.
+  auto reload_hi = [&](auto& lo, auto& mlo) {
     static_for<NL>([&](auto Jc) {
       constexpr int j = decltype(Jc)::value;
       const int lf = leafW_of(j * kMmaN + 2 * (lane & 3));
@@ -627,7 +694,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: THE PULL, straight into the readout's A fragments.  `h` selects the n-tile, and
   //: within it register `2h` is channel row `lane/4` and `2h+1` is row `lane/4 + 8`
   //: -- the register order the readout's drain wants.
-  auto pull_operand = [&](auto Kc, uint32_t(&sa)[MCH][4], uint32_t(&ma)[4]) {
+  auto pull_operand = [&](auto Kc, auto& sa, auto& ma) {
     constexpr int kk = decltype(Kc)::value;
     static_for<2>([&](auto Hc) {
       constexpr int h = decltype(Hc)::value;
@@ -657,10 +724,15 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   constexpr int kPageElems = kAtomLeaves * kCols;
   //: THE SWEEP'S STEP, AS A CARRY.  A step of `kThreads` elements advances the row
   //: cursor by `kRowStep` or by one more, so the walk is a compile-time count of
-  //: predicated subtractions and never a division -- at any executor count.
+  //: predicated subtractions and never a division -- at any executor count AND at any
+  //: value width.  `kRowStep` is ZERO where a row is wider than the CTA (`d_v = 128`
+  //: at four warps): the step then advances the cursor by one row or none, which the
+  //: same two statements express because the carry is below `kCols` by construction.
   constexpr int kRowStep = kThreads / kCols;
   constexpr int kPageCarry = kThreads - kRowStep * kCols;
-  static_assert(kRowStep >= 1, "a sweep step must advance the row cursor");
+  static_assert(kPageCarry >= 0 && kPageCarry < kCols,
+                "a sweep step's carry is the thread count modulo the row, so the cursor "
+                "crosses at most one row boundary per step");
   auto page_sweep = [&](uint32_t pageOff, auto&& body) {
     int e = tid;
     int row = 0, col = tid;
@@ -691,8 +763,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: n-tile, the pair's half, m-tile, the row half -- and the leaf map is folded into
   //: the ADDRESS: the private slot is a lane expression, its atom and its row inside
   //: the page come from the map, and every accumulator index is a constant.
-  //: BODY COUNT: `NL * 2 * (2*MCH + 1)` per atom = 72 at every built arm, times
-  //: `kAtoms` per call (8 at BC=128, 16 at BC=256).  The per-LEAF form this replaces
+  //: BODY COUNT: `NL * 2 * (2*MCH + 1)` per atom -- 72 at the `d_v = 64` arms (NL = 4
+  //: or 2 against MCH = 4 or 8... precisely: 36 at 16 leaves, 72 at 32), 68 at the
+  //: `d_v = 128` arms (NL = 2, MCH = 8) -- times `kAtoms` per call (4 at BC=64, 8 at
+  //: BC=128, 16 at BC=256).  It is O(fragments) in BOTH modes, which is what keeps the
+  //: width from reaching the nest.  The per-LEAF form this replaces
   //: was `kLeafW * (2*MCH + 1)` per atom with three quarters of the lanes predicated
   //: off -- 4,096 bodies at the eight-warp arm, and 50 minutes of cicc.
   auto page_regs = [&](auto Ac, auto Ld) {
@@ -1252,7 +1327,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: THE VALUE LEG.  `cp.async` never touches registers, and the fetcher issues it
     //: into a segment it does not consume -- the fan-out pipeline's first owner.
     //: BODY COUNT: `kValPass` = `kCand * kChunkV / 32` -- 4 where the executors are the
-    //: streams, 2 at the four-stream column-split arm -- each body one predicated issue.
+    //: streams, 2 at the four-stream column-split arm, DOUBLE either at `d_v = 128`
+    //: because a value row is twice the quanta -- each body one predicated issue.  This
+    //: is the one nest the width reaches, and it must: the copy moves `d_v` channels.
     auto fetch_values = [&](int e0) {
       static_for<kValPass>([&](auto Pc) {
         constexpr int pp = decltype(Pc)::value;
@@ -1401,7 +1478,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     static_assert(kClrV * 16 == kClrRows * LdV * 2 && kClrC * 16 == kClrRows * LdS * 2,
                   "a segment row block is a whole number of sixteen-byte quanta");
     //: BODY COUNT: `ceil(kClrRows*LdV*2/512) + ceil(kClrRows*LdS*2/512)` = 5 + 3 at the
-    //: uncolumned arms (`LdV = 72`, `LdS = 40`, `kSegRows = 16`), 3 + 2 at `WPS = 2`.
+    //: uncolumned `d_v = 64` arms (`LdV = 72`, `LdS = 40`, `kSegRows = 16`), 3 + 2 at
+    //: `WPS = 2`, and 5 + 2 at `d_v = 128` `WPS = 2` (`LdV = 136`, `LdS = 40`).
     auto clear_segment = [&]() {
       const uint4 z = make_uint4(0u, 0u, 0u, 0u);
       const int r0 = wstrm * kSegRows + col * kClrRows;
@@ -1478,8 +1556,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         stage_wait<0>();
         rendezvous();
         //: THE DRAIN, AND IT IS THE WHOLE OF THE CONSUMER.  BODY COUNT: `MCH + kNJ`
-        //: `ldmatrix` (4 + 2 at every built arm) and `kNJ * (2*MCH + 2)` MMAs (2 * 10),
-        //: both O(fragments) and both gated by the batch's tile-live mask.
+        //: `ldmatrix` (4 + 2 at the four-warp `d_v = 64` arms, 8 + 1 at the `d_v = 128`
+        //: arms) and `kNJ * (2*MCH + 2)` MMAs (2 * 10, against 1 * 18), both
+        //: O(fragments) and both gated by the batch's tile-live mask.
         const uint32_t tm = load_shared_u32(mskB + (uint32_t)(strm * 4));
         uint32_t av[MCH][4], bc[kNJ][4];
         if (tm & mFld) {

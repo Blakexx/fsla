@@ -6,6 +6,13 @@ per-level MODE DECLARATION chooses between them.
 
 **Symbols** are `carry_kernel.md`'s.
 
+`d_v` is a template parameter here as it is in the carved body (K35 S3b), but it is not a
+free dial: this body gives each of a FIXED four warps exactly ONE MMA m-tile of channels,
+so its width IS its executor count and `static_assert(kDv == kWarps * kMmaM)` says so.
+`d_v = 128` is therefore not a declaration this body can express, and no wide arm takes
+it — at the wide plane the design's answer is the carved body at sixteen leaves per warp,
+which is a different arm and not a branch inside this one.
+
 ## What it is for
 
 A declaration with NO sparse level on the carve axis leaves the leaf carve nothing to

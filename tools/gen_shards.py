@@ -140,6 +140,12 @@ SPAN_FACTS_ARMS: tuple = (
     # (`SR = [8,2]`), so the table's per-level minimum is [2,2] and [1,2].
     (2, 256, 2, 2, 256, 256),
     (2, 256, 1, 2, 256, 256),
+    # the 2x4 CONTAINER at `d_v = 128` (K35 S3b): the flagship topology's box HALVED to
+    # `[4, 16]` (`k = 4, m = 4`, BC = 64) and cut into four write streams of sixteen
+    # leaves (`SW = [1,16]`) against a read carve of four (`SR = [4,4]`), so the
+    # per-level minimum is [1, 4].  The two 1x8 arms at that width reuse the rows above:
+    # the value width is not a property of the ballot table.
+    (2, 256, 1, 4, 256, 256),
 )
 
 #: the span arms are STATELESS only: residency is the paging layer's question and
