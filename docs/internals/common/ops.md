@@ -128,6 +128,33 @@ the gap is ANNOUNCED rather than taken silently.
                             operation.  Stated by the ladder's capacity carve,
                             which is its first caller: the N/BC blocks of a
                             slot axis each compute a complete partial output.
+  red_shared_add_f32(a, x)  `fan_in_add`'s contract with the meeting held in
+                            SHARED memory: add one contribution into an
+                            accumulator other units of the same block also
+                            contribute to, return nothing, wait for nothing.
+                            Stated by the readout's fan-in ring, its first
+                            caller: a token's partials meet inside the CTA and
+                            ONE reduction per token then leaves it.
+  red_shared_add_u32(a, x)  the same over the counting monoid.  The ring's
+                            arrival count is incremented once per contributing
+                            warp-row and read by whoever wants to reclaim the
+                            row; the incrementer never learns the total.
+  cas_shared_u32(a, c, v)   the ONE shared word that is EXCHANGED rather than
+                            reduced: the previous value is the answer and the
+                            caller does wait for it.  Stated by the ring's
+                            reclaim, its only caller: exactly one of the warps
+                            that find a row stale may flush it, and a
+                            compare-and-swap is what "exactly one" means.
+  load_shared_f32(a)        one fp32 cell of a shared accumulator, ADDRESSED
+                            rather than indexed, for the reason every other
+                            shared access here is: a swizzled address is not an
+                            affine function of an index.
+  publish_fence()           the order between a unit's shared writes and the
+                            flag that publishes them, at BLOCK scope and not
+                            wider.  Stated by the ring: its producers and
+                            consumers are warps of one CTA talking through
+                            shared memory, so a device-scope fence would order
+                            traffic no participant can observe.
   store_f32(p, x)           one fp32, at fp32 element addressing.  The
                             counterpart of `store_bf16` for a buffer whose
                             consumer is `fan_in_add` rather than an mma

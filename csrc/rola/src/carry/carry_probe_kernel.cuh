@@ -18,11 +18,12 @@
 namespace rola::carry {
 
 template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
-          int R0, int R1, int R2, int R3>
+          int R0, int R1, int R2, int R3, int RC>
 __global__ void carry_layout_probe_kernel(const __nv_bfloat16* __restrict__ pw,
                                           int* __restrict__ outV, int* __restrict__ outC,
-                                          int* __restrict__ outS) {
-  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
+                                          int* __restrict__ outS, int* __restrict__ outR,
+                                          int* __restrict__ outG) {
+  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC>;
   //: the ARM's value width, so the probe's writer leg is the fetcher's arithmetic at
   //: THIS arm's `LdV` and `kChunkV` and never a file constant's.
   constexpr int kDv = G::kDv;
@@ -32,12 +33,22 @@ __global__ void carry_layout_probe_kernel(const __nv_bfloat16* __restrict__ pw,
   constexpr int NL = kLeafE / kMmaN, kNJ = NL / 2;
   constexpr int kChunkV = kDv / 8;
   constexpr int kWordsRow = kLeafW / 2;
+  //: THE READOUT'S TWO LAYOUTS (K35 S4b): a reader's segment row is `kLeafE` slots at
+  //: stride `LdR`, and a ring row is `kDv` output channels plus the mass in fp32 at
+  //: stride `LdRing`, both addressed through the swizzle the kernel derives.
+  constexpr int LdR = G::LdR, LdRing = G::LdRing, RCC = G::kRingC;
+  constexpr int kWarps = G::kWarps;
+  constexpr int kWordsRowR = kLeafE / 2;
 
   extern __shared__ __align__(16) char probe_smem[];
   __nv_bfloat16* const segV = reinterpret_cast<__nv_bfloat16*>(probe_smem);
   __nv_bfloat16* const segC = segV + kStreams * kSegRows * LdV;
   __nv_bfloat16* const wstg = segC + kStreams * kSegRows * LdS;
+  __nv_bfloat16* const rseg = wstg + kSegRows * G::BP::kStageW;
+  float* const ring = reinterpret_cast<float*>(reinterpret_cast<char*>(rseg)
+                                               + align16c(kWarps * kSegRows * LdR * 2));
   const uint32_t segVB = smem_addr(segV), segCB = smem_addr(segC), stgB = smem_addr(wstg);
+  const uint32_t rsegB = smem_addr(rseg), ringB = smem_addr(ring);
   const int tid = (int)threadIdx.x, warp = tid >> 5, lane = tid & 31;
   constexpr int kThreads = G::kThreads;
   using BP = typename G::BP;
@@ -136,6 +147,73 @@ __global__ void carry_layout_probe_kernel(const __nv_bfloat16* __restrict__ pw,
       });
     });
   });
+
+  //: ---- THE READER SEGMENT (K35 S4b), both legs.  WRITER: the read expansion's
+  //: `st.shared.u32`, one packed pair per lane at `[reader][row][slot]`.  READER: the
+  //: readout's `load_frag` at the consumer's own base -- and the fragment map is the
+  //: MMA's B map, `n` = TOKEN and `k` = SLOT, which is the whole reason the two legs
+  //: have to be compared: on this side the segment's ROWS are the contraction's `n`.
+#pragma unroll 1
+  for (int i = tid; i < kWarps * kSegRows * kWordsRowR; i += kThreads) {
+    const int jw = i % kWordsRowR, r = (i / kWordsRowR) % kSegRows, s = i / (kWordsRowR * kSegRows);
+    const uint32_t w = ((uint32_t)(r * 128 + 2 * jw + 1) << 16) | (uint32_t)(r * 128 + 2 * jw);
+    store_shared_u32(rsegB + (uint32_t)(((s * kSegRows + r) * LdR) * 2 + jw * 4), w);
+  }
+  //: ---- THE RING, WRITER LEG: the scatter's own cell address, a compile-time granule
+  //: `2m + h` XORed by the row's swizzle word and the lane's channel inside it.
+#pragma unroll 1
+  for (int slot = warp; slot < RCC; slot += kWarps) {
+    const int sw = (slot >> 1) & 3;
+    static_for<MCH>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
+      static_for<2>([&](auto Hc) {
+        constexpr int h = decltype(Hc)::value;
+        const int chan = m * kMmaM + 8 * h + (lane >> 2);
+        store_shared_u32(
+            ringB + (uint32_t)((slot * LdRing + ((((2 * m + h) ^ sw)) << 3) + (lane >> 2)) * 4),
+            (uint32_t)__float_as_uint((float)(slot * 1024 + chan)));
+      });
+    });
+    if ((lane >> 2) == 0)
+      store_shared_u32(ringB + (uint32_t)((slot * LdRing + kDv + (slot & 7)) * 4),
+                       (uint32_t)__float_as_uint((float)(slot * 1024 + kDv)));
+  }
+  rendezvous();
+  //: ---- THE RING, READER LEG: the FLUSH's cell address, thirty-two lanes over
+  //: thirty-two consecutive channels.  The two maps meet nowhere else, so a granule
+  //: swizzle that disagreed between them would come back as a permuted row.
+#pragma unroll 1
+  for (int slot = warp; slot < RCC; slot += kWarps) {
+    const int sw = (slot >> 1) & 3;
+    static_for<kDv / kBallotLanes>([&](auto Cc) {
+      constexpr int c = decltype(Cc)::value;
+      const int chan = c * kBallotLanes + lane;
+      outG[slot * (kDv + 1) + chan] = (int)load_shared_f32(
+          ringB
+          + (uint32_t)((slot * LdRing + (((c * 4 + (lane >> 3)) ^ sw) << 3) + (lane & 7)) * 4));
+    });
+    if (lane == 0)
+      outG[slot * (kDv + 1) + kDv] =
+          (int)load_shared_f32(ringB + (uint32_t)((slot * LdRing + kDv + (slot & 7)) * 4));
+  }
+  //: the reader segment's consumer leg, at the readout's own base and fragment map.
+  {
+    const uint32_t myR = rsegB + (uint32_t)(((warp * kSegRows + rT) * LdR + cT * 8) * 2);
+    static_for<kLeafE / kMmaK>([&](auto Kc) {
+      constexpr int kk = decltype(Kc)::value;
+      uint32_t b[4];
+      load_frag(b, myR + (uint32_t)(2 * kk * 8 * 2));
+      static_for<4>([&](auto Rc) {
+        constexpr int r = decltype(Rc)::value;
+        const int tok = (r >> 1) * 8 + (lane >> 2);
+        static_for<2>([&](auto Ec) {
+          constexpr int e = decltype(Ec)::value;
+          const int slot = kk * kMmaK + 8 * (r & 1) + 2 * (lane & 3) + e;
+          outR[(warp * kSegRows + tok) * kLeafE + slot] = (int)((b[r] >> (16 * e)) & 0xFFFFu);
+        });
+      });
+    });
+  }
 }
 
 }  // namespace rola::carry

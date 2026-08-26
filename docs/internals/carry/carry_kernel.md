@@ -307,12 +307,12 @@ EVER CO-LIVE:
 
     FOLD     the per-stream segments, the rolling staging, the gain, the page buffer
     CHANGE   the exchange segments          (dead the moment every consumer has pulled)
-    READOUT  the read panels                (dead through the whole fold — S3b's observation)
+    READOUT  the reader segments, the read staging, the batch's row index, the ring
 
 so all three begin at the region's base and the allocation carries `straddle_bytes =
 max(...)`. What this costs is ONE extra CTA barrier per change — after the pull, before
-any warp produces a read panel into the same bytes — and what it buys is the read panels'
-6-12 KB on top of the plane's 18.7 / 37 KB leaving the READOUT moment entirely.
+any warp writes the readout's tenants into the same bytes — and what it buys is the
+plane's 18.7 / 37 KB leaving the READOUT moment entirely.
 
 The SEGMENT's value rows are the same story at `LdV = 136`: a 128-bit shared access is
 serviced EIGHT LANES AT A TIME (eight lanes × 16 B is the 32 banks × 4 B the memory
@@ -325,7 +325,7 @@ because `136 * 2 / 4 = 68` is `4 (mod 32)` exactly as `72 * 2 / 4 = 36` was.
 
 A stream numbers its leaves in a MIXED RADIX over its own spans, `p = sum_l r_l <<
 shift(l)`, so `p` is a bit permutation of the digit offsets exactly as `local` is and the
-produce is `sum_l n_l` amplitude loads times products at CONSTANT indices. A span-1 level
+expansion is a handful of amplitude loads times products at CONSTANT indices. A span-1 level
 contributes a constant and drops out of the order on its own. The order itself is fixed
 by the span vector:
 
@@ -421,13 +421,16 @@ so are the two loops inside it, because the accumulator element that carries a g
 leaf of a given page is a compile-time function of `(atom, group digit, outer)`. A page
 holds `kAtomLeaves/s_{D-1}` outer runs times EVERY digit of the carve level, so each warp
 owns `kGS` × that many of its own leaves in every page and the CTA still moves exactly
-one page per atom. The same measured law governs the produce's slot loops: they are
+one page per atom. The same measured law governs every expansion's slot loops: they are
 `static_for` and not `#pragma unroll`, because with a runtime slot index the level maps
-`n_l`/`idx_of` are evaluated at RUNTIME and the amplitude run lands in local memory —
-observed at 64-67 local accesses per deep-arm body before the loops were made
-compile-time.
+are evaluated at RUNTIME and the amplitude run lands in local memory — observed at 64-67
+local accesses per deep-arm body before the loops were made compile-time.
 
 ## The cooperative fetch (K35 F2/F4): one union walk, writer-side placement
+
+BOTH SIDES DO THIS. What follows states the FOLD's, which came first (S2); the readout's
+is its mirror and is stated under "The read side's cooperative fetch" below, along with
+the one fact of shape that differs.
 
 THE FOLD'S OPERAND PATH IS NOT PER-STREAM ANY MORE. The CTA walks the UNION of its
 streams' write lists ONCE — that list is `wlistS`, which the shared derivation already
@@ -504,9 +507,9 @@ digits are adjacent; every other level's digit is constant across the pair and i
 splatted. At the `D = 2` ALT arms that is ONE shared access and ONE `mul_bf16x2` per
 (token, stream) row per lane.
 
-THE ORDER IS DECLARED AND IS NOT THE DELETED PRODUCE'S, which multiplied the pair level
-first and the gain last. The coefficients are therefore NOT bit-identical to the produce
-they replace; the fp64 oracle is the gate.
+THE ORDER IS DECLARED. It is not the order of the private per-warp expansion the
+cooperative fetch replaced (which multiplied the pair level first and the gain last), so
+the coefficients are not bit-identical to it; the fp64 oracle is the gate.
 
 ### The rolling factor staging
 
@@ -582,14 +585,18 @@ THE SCHEDULE HAS NO BARRIER AT ALL (above), so outside the fold the CTA rendezvo
 only at the phase change and at the window line, and a window the owner is dead in costs
 zero barriers.
 
-The READ PHASE SHARES NOTHING. The list, the panel region and the fan-in are the warp's
-own, so the executors run their own batch counts to the window line without one CTA
-barrier; the only ordering the phase needs is a lane's panel `STS` against another lane's
-`ldmatrix` of the same region, which is `__syncwarp`.
+THE READ PHASE IS FORM (b) TOO (K35 S4b). Its fetch is cooperative and its fan-in meets
+in shared memory, so it carries the fold's two barriers per batch and the same two facts —
+LANDED and DRAINED — plus one at the end of the window's readouts, before the ring is
+drained, that says every contribution has landed.
 
 | edge | carried by |
 |---|---|
-| pre-loop read produce → MMA(0), produce(i+1) → MMA(i+1) | `__syncwarp` (the panel region is warp-private) |
+| every fetcher's expansion of read batch `b` → the reader's drain of it | the LANDED rendezvous |
+| a reader's drain and dead-row clear of `b` → any fetcher's writes of `b+1` | the DRAINED rendezvous |
+| every warp's ring contributions → the drain of the ring's last `C` rows | the readout's closing rendezvous |
+| a contributor's `red.shared` → the reclaimer that flushes that row | `publish_fence` before `arrived`, and the CAS |
+| a reclaimer's clear → every contributor to the row it claimed | `publish_fence` before the tag, and the tag load |
 | every warp's reads → any warp's folds of the same window | the WINDOW-LINE rendezvous |
 | every fetcher's placement of batch `b` → the stream's drain of it | the LANDED rendezvous |
 | a stream's drain and clear of batch `b` → any fetcher's writes of `b+1` | the DRAINED rendezvous |
@@ -601,31 +608,122 @@ The mass channel is a channel like any other under this carve: the warp holds it
 leaves' mass partial and REDs it to `den` itself, so no cross-warp sum of the denominator
 exists.
 
-## The read side's produce
+## The read side's cooperative fetch (K35 S4b)
 
-THIS IS THE READ SIDE'S PRODUCE AND ONLY THE READ SIDE'S. The write side's expansion
-moved to the fetcher (above) and `produce`'s `WRITE` arm, its gain, its `lvColW` columns
-and the `panW0`/`panW1` panels are DELETED; what stays here is the read panel's, until
-the readout takes the same treatment.
+THE READ SIDE IS THE WRITE SIDE'S MIRROR, and the private per-warp expansion, the
+two-slot read panel and the per-warp compacted read list are DELETED with it. What differs is one fact
+of shape and everything follows from it: on the readout the B operand is
+`R~^T [leaves × tokens]`, so the LEAVES are the contraction axis and the TOKENS are `n`,
+in eights. A reader's segment is therefore coefficient rows and nothing else — the A
+operand is the state, already in registers — and the n-tile the fold skips by LEAF the
+readout skips by TOKEN.
 
-Per token per warp, `Σ_l n_l` amplitudes are loaded and everything else is computed; the
-gate plane is never materialized. A LANE owns a whole panel row — the batch tile is the
-warp width — and expands its stream's `kLeafW` coefficients in the PRIVATE order `p`.
-Because `p` is a bit permutation of the levels' digit offsets exactly as `local` is, the
-expansion is `Σ_l n_l` amplitude loads followed by products of register values at
-constant indices: no dynamic indexing, no spill. `load_run<n>` covers a level's run at
-the widest access that fits it, `n ∈ {1, 2, 4, 8, 16}`.
+A BATCH is `kSegRows` consecutive tokens of the CTA's union READ list; executor `warp`
+takes the fixed share `i % kWarps` of them, and for each READER that reads a token it
+handles it expands that reader's `R` row — `kLeafE` bf16 in the reader's private order —
+into that reader's segment at `rank(t, reader)`. Each warp IS a reader stream
+(`SVR::kStreams == kWarps`, the executor map's declaration), so a reader owns its whole
+segment and the ranks come out of the reader's own published ballot exactly as the write
+side's do. `kLists` is 2: neither side keeps a per-stream list any more.
 
-The level lying LOWEST in `p` supplies the adjacent bf16 PAIR and every other level a
-per-pair scalar. THE READ SIDE HAS NO GAIN: its scalar is identically 1, and on sm_86 —
-where there is no `mul.rn.bf16x2` and a packed multiply is two FMUL, an F2FP pack and two
-PRMT — paying for `rn(a*1) = a` was 44% of the read produce, so the body stores its
-accumulators directly.
+THE EXPANSION'S DECLARED ORDER on this side is the write side's without the gain: the
+levels the read carve spans whole ascending (the MEMO, shared by every reader of the
+token), then the levels it carves ascending. The read side's scalar is identically one,
+so THE FIRST FACTOR OF THE ORDER IS THE PRODUCT'S SEED (`first_whole_level`) and no
+multiply by one is issued — the same saving the deleted private expansion's dead trailing
+multiply had, taken structurally.
 
-A dead row (a padding row of a partial batch, which has no token) is zeroed at the PAIR
-LEVEL's run rather than at a trailing multiply. That run is the factor every slot of the
-row carries, so the whole row is covered by one or two selects and no arithmetic; a zero
-coefficient contributes exactly nothing to the MMA.
+THE STAGING IS ONE BODY FOR BOTH SIDES. `StagedFactorRow` holds the OWNER's digit run per
+level, which is what either side's expansion indexes with its own stream offsets, so the
+read side stages from `pread` into its own rolling two-block window and nothing else
+differs. `factor_at` and `stream_off` are likewise one body each, taking the side's
+`SpanMap`/`StreamSpans` as a type argument.
+
+### The readout's tile-live mask, and what it may gate
+
+The mask bit is per (reader, EIGHT-TOKEN n-tile) and the expansion sets it iff it wrote a
+nonzero coefficient in any ROW of that tile — a ballot over the row's own lanes, at bit
+`rank >> 3`. It gates the `ldmatrix` and the MMAs AND NOTHING ELSE.
+
+THE SCATTER IS GATED BY `rank < n_reader` INSTEAD, and that separation is a correctness
+requirement rather than a preference. `expected[r]` is the ballot popcount — the number of
+readers that HOLD the token — so a reader holding it must arrive at the ring even when its
+tile is dead by VALUE, and it does: its accumulator is zero and it adds zero. Gating the
+scatter on the mask would leave `arrived < expected` standing for that rank and the next
+warp to want the slot would wait forever.
+
+Dead rows are zeroed on this side too (`clear_dead_read`), under the fold's own law: a row
+the MMA reads is never arbitrary shared memory. Because a reader owns its whole segment
+the clear is a ROW split and needs none of the fold's column reasoning.
+
+## Fan-in: the CTA ring (P76 §2.6-C, K35 S4b)
+
+RED-DIRECT-FROM-THE-ACCUMULATOR IS DELETED. It issued one global reduction per (owner
+warp, token, element) — uncoalesced by construction, four 32-byte segments per issue — and
+it was the source of the run-to-run `num`/`den` nondeterminism every stage has recorded.
+
+THE RING IS KEYED ON THE UNION RANK. Rank `r` — a token's position in the CTA's union read
+walk — lives at slot `r % C`, `C = kRingC` rows deep (an arm field, 32 declared). A slot
+carries `{tag, arrived, expected}` beside `d_v` output channels and the mass in fp32.
+
+* CONTRIBUTE: a warp finishing an eight-token n-tile scatters each token's partial to
+  `slot(rank)` — one `red.shared.add.f32` per element and ONE arrival per warp-row.
+* RECLAIM: the warp that finds `tag == r - C` with `arrived == expected` CASes the tag to
+  RECLAIMING, flushes the old row to global and clears it in the same pass, sets
+  `arrived = 0` and `expected`, and publishes `tag = r`. CAS losers spin until `tag == r`.
+* SPIN: `tag == r - C` but INCOMPLETE means a laggard's contribution is still coming, and
+  the race-free form of waiting for it is to wait. No incomplete row is ever evicted.
+* DRAIN: the last `C` rows have no next writer, so each executor flushes the complete
+  slots of its share at the window's phase barrier. A claimed row short of its expected
+  arrivals is a lost contribution and traps.
+
+THE MEMORY ORDER. `tag == r` is the ONLY statement that the row belongs to rank `r`, and
+it is published LAST — after the clear, after `arrived`/`expected`, behind a block-scope
+fence — so a contributor that reads it has seen a cleared row. In the other direction a
+contributor reduces first, fences, and only then increments `arrived`, so a reclaimer that
+reads `arrived == expected` has seen every element. Block scope is the right scope and not
+a shortcut: the participants are warps of ONE CTA talking through shared memory.
+
+TAGS ADVANCE MONOTONICALLY, so the first contributor to a rank is by construction its
+reclaimer and NO ZERO PASS EXISTS — the clear rides the flush, which is reading the row
+anyway. The window's first generation is the same statement: slot `i` starts at tag
+`i - C`, which is NEGATIVE, and a reclaim of a negative generation clears without
+reducing.
+
+WHY THE SPIN IS PRESENT AND WHY IT IS NOT TAKEN HERE. The protocol is correct for any
+`C ≥ kSegRows` with no help from any barrier. Under form (b) the readout's per-batch CTA
+barrier bounds the skew at one batch, so at `C = 32 = 2·kSegRows` a slot's stale rank is
+two batches old and is always complete: the wait is the protocol's, not this schedule's,
+and `C` is what buys tolerance when the schedule stops providing it (F7's dial).
+
+THE COUNT, which is the payoff stated as a number: global reductions per (token, element)
+fall from one per OWNER WARP that reads the token to ONE PER CTA, and the surviving one is
+issued by 32 lanes over 32 consecutive channels — a 128-byte transaction. Determinism is
+unchanged in kind (the output was already order-nondeterministic fp32 RED across CTAs);
+what changes is that the in-CTA order is now the ring's arrival order.
+
+THE RING'S LAYOUT. `LdRing = d_v + 8` fp32 words, and the `8` is derived: a scatter
+instruction covers the accumulator's four lane quads = four TOKENS = four ring rows at one
+eight-channel granule, so what the row must give is eight whole banks, and
+`LdRing % 32 == 8` puts consecutive rows exactly one bank block apart. The rows of an
+issue are DATA (four union ranks), so four-way is the floor for any permutation; the
+granule swizzle `(row >> 1) & 3` makes the DENSE case — ranks `r, r+2, r+4, r+6` — a
+permutation of the four blocks at every alignment and both widths, where the unswizzled
+map is two-way always. The flush's own leg is conflict-free unconditionally. Both legs and
+the round trip are gated in `tests/k31/test_segment_layout.py`.
+
+### The measurement the ring supersedes
+
+The warp-private RED-direct fan-in the ring replaces was measured before it was deleted,
+and the numbers are kept because they say WHY the ring's payoff is structural rather than
+cell-specific. At the graded cell 93.2% of read entries had ONE writer and replacing every
+RED with a plain store moved the `k4` wall by −0.03% against a 1.78% noise floor — so the
+in-CTA MEETING was never the cost there. At the DENSE cell the same fan-in multiplied by
+exactly `kWarps` (RED instructions 4.19×, RED L2 sectors 4.00×, `l1tex` 42.5% → 55.7%) and
+the cell cost 1.38× of the owner-grain kernel's wall with IDENTICAL HMMA. The ring pays at
+BOTH ends of that spread and pays even at multiplicity one, because what it fixes there is
+the COALESCING (four 32-byte segments per issue → one 128-byte transaction), which is a
+property of the fragment's order and not of the data's density.
 
 ## Addressing
 
@@ -634,26 +732,6 @@ every plane: amplitudes, gain, V, `o`, `den`, the state plane. That is the shipp
 kernel's discipline (`docs/internals/chunk/chunk_kernel.md#state-addressing`) and it is
 what keeps `IMAD.WIDE` out of the loop bodies. The window contributes one uniform
 displacement per plane per window, formed once.
-
-## Fan-in
-
-All output accumulation is RED at the top, and under this carve it is WARP-PRIVATE and
-DIRECT — no meeting of any kind. The warp stages one `kMmaN`-token n-tile of its
-accumulators into its own region of the output block, then REDs it with **lane =
-CHANNEL**, which is what makes every issue one coalesced 128-byte segment; the mass
-column rides the same region and reaches `den` the same way. Entries past `n` are
-padding and contribute nothing rather than contributing zero to somewhere.
-
-The several partials of an entry that reaches two groups are two REDs of an associative
-reduction, which is correct at any interleaving. The accumulate-and-evict RING is NOT
-built: at the graded cell 93.2% of read entries have ONE writer, and the fan-in probe
-measured replacing every RED with a plain store at −0.03% of the k4 wall against a 1.78%
-noise floor. Where it WOULD pay is dense data, and the price is measured: at the dense
-cell the fan-in multiplies by exactly `kWarps` (RED instructions 4.19x, RED L2 sectors
-4.00x, `l1tex` 42.5% → 55.7%) and the cell costs 1.38x of the owner-grain kernel's wall
-with IDENTICAL HMMA. That is K33 §1.4's dense-declaration escape — a carve chosen at
-compile time from the per-level mode declaration — becoming a live question rather than
-a hypothetical.
 
 ## Numerics
 

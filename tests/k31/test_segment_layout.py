@@ -17,7 +17,17 @@ cooperative fetch introduces:
   ``StagedFactorRow````[row][amplitude]`` at stride ``BP::kStageW``: the owner's digit
                      run at each level, level by level, each run aligned to its own
                      asynchronous quantum.  WRITER: ``cp.async`` of 4, 8 or 16 bytes.
-                     READER: the expansion's scalar ``ld.shared.u16``/``u32``.
+                     READER: the expansion's scalar ``ld.shared.u16``/``u32``.  ONE layout
+                     serves BOTH sides -- the fold stages from ``pwrite``, the readout
+                     from ``pread`` -- so this gate covers the read staging too.
+  ``ReaderSegRows``  ``[reader][row][slot]`` at row stride ``LdR = kLeafE + 8`` (K35 S4b).
+                     WRITER: the READ expansion's ``st.shared.u32``.  READER: the
+                     readout's ``load_frag``, whose fragment map puts the segment's ROWS
+                     on the MMA's ``n`` axis, because on the readout the rows are TOKENS.
+  ``RingRows``       ``[slot][channel]`` fp32 at stride ``LdRing = d_v + 8`` (K35 S4b).
+                     WRITER: the scatter's ``red.shared.add.f32``, four ring rows at one
+                     eight-channel granule per issue.  READER: the flush, thirty-two
+                     lanes over thirty-two consecutive channels.
 
 THE DEVICE LEG proves the two address maps AGREE: the probe writes a pattern whose
 sixteen bits NAME the cell it was stored at and hands back what each fragment
@@ -83,7 +93,7 @@ def test_the_segment_round_trips_through_the_fragments(arm):
     """Everything the fetcher wrote is what the consumer's fragments recovered."""
     assert_fresh_binary()
     widths, k, m, d_v, W, declaration, modes = arm
-    v, c, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
+    v, c, _, _, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
     assert v.shape[-1] == d_v, "the value sub-tile is the arm's own width"
     for name, got in (("SegValueRows", v), ("SegCoeffRows", c)):
         streams, rows, cols = got.shape
@@ -108,7 +118,8 @@ def test_the_staged_factor_row_lands_run_by_run(arm):
     """
     assert_fresh_binary()
     widths, k, m, d_v, W, declaration, modes = arm
-    _, _, staged = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
+    _, _, staged, _, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes,
+                                                d_v=d_v)
     _, s, _, _, _ = carry_ops.box_shape(widths, k, m)
     D, B = len(widths), widths[0]
     rows, stage_w = staged.shape
@@ -475,3 +486,107 @@ def test_the_exchange_swizzle_is_a_bank_permutation(arm):
         for hf in range(2):
             rows = [base + 2 * a + hf for a in range(4)]
             assert _banks(words(rows, lambda l: d_v)) == 1, "the mass pull must be conflict-free"
+
+
+# ------------------------------- the READOUT's segment and the fan-in ring (K35 S4b)
+
+RING_C = 32     # `kRingC`: the ring's declared depth, in rows
+RING_PAD = 8    # `LdRing - d_v`, in fp32 words
+
+
+@pytest.mark.parametrize("arm", ARMS)
+def test_the_reader_segment_round_trips_through_the_readout_fragments(arm):
+    """Everything the READ expansion wrote is what the readout's fragments recovered.
+
+    The readout's B operand is ``R~^T [leaves x tokens]``, so the segment's ROWS are the
+    MMA's ``n`` axis and its columns are the contraction: the writer addresses a row by
+    the token's RANK in that reader's list and the consumer's fragment map puts the row
+    on ``n``.  The two derivations meet nowhere else.
+    """
+    assert_fresh_binary()
+    widths, k, m, d_v, W, declaration, modes = arm
+    *_, rows, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
+    readers, nrows, leaf = rows.shape
+    assert nrows == SEG_ROWS, "a reader's segment slot is one batch of the union walk"
+    want = (torch.arange(nrows, device=rows.device).reshape(1, -1, 1) * 128
+            + torch.arange(leaf, device=rows.device).reshape(1, 1, -1)).expand_as(rows)
+    bad = (rows != want).nonzero()
+    assert bad.numel() == 0, (
+        f"ReaderSegRows: {bad.shape[0]} of {rows.numel()} cells came back from a different "
+        f"(row, slot) than they were stored at; first is {bad[0].tolist()}")
+
+
+@pytest.mark.parametrize("arm", ARMS)
+def test_the_ring_round_trips_from_the_scatter_to_the_flush(arm):
+    """The scatter's cell address and the flush's are the same map.
+
+    The scatter writes four ring rows at ONE eight-channel granule per issue (the
+    accumulator's four lane quads are four tokens); the flush reads ONE row with
+    thirty-two lanes over thirty-two consecutive channels.  The granule swizzle is a
+    function of the row, so the two legs agree or the row comes back permuted.
+    """
+    assert_fresh_binary()
+    widths, k, m, d_v, W, declaration, modes = arm
+    *_, ring = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
+    slots, cols = ring.shape
+    assert slots == RING_C and cols == d_v + 1, "a ring row is the channels and the mass"
+    want = (torch.arange(slots, device=ring.device).reshape(-1, 1) * 1024
+            + torch.arange(cols, device=ring.device).reshape(1, -1)).expand_as(ring)
+    bad = (ring != want).nonzero()
+    assert bad.numel() == 0, (
+        f"RingRows: {bad.shape[0]} of {ring.numel()} cells came back from a different "
+        f"(slot, channel) than they were stored at; first is {bad[0].tolist()}")
+
+
+@pytest.mark.parametrize("d_v", [D_V, WIDE], ids=["dv64", "dv128"])
+def test_the_rings_access_patterns_are_derived_not_guessed(d_v):
+    """The ring's bank behaviour, from the same address functions the kernel uses.
+
+    THE FLUSH is conflict-free unconditionally: thirty-two lanes read four granules of
+    eight consecutive words and the granule swizzle is a permutation inside the row.
+
+    THE SCATTER is DATA-ADDRESSED and that is the whole point of modelling it: the four
+    rows of one issue are four UNION RANKS, so no compile-time pattern names them.  With
+    ``LdRing % 32 == 8`` a row's granule occupies a whole eight-bank block and the block
+    is ``(row + granule) % 4``, so two of the four rows collide exactly when their ranks
+    agree mod four -- and FOUR-WAY is the floor for ANY row permutation, four blocks
+    being all there are.  What the swizzle buys is the DENSE case, which is the common
+    one and the only one with a shape: a reader holding the whole batch scatters ranks
+    ``r, r+2, r+4, r+6``, whose blocks are ``(r + 2q + swz) % 4``: two-way ALWAYS with
+    no swizzle, and ``const + 3q`` -- a permutation of the four blocks -- under
+    ``swz(row) = (row >> 1) & 3``.  Both facts are pinned here.
+    """
+    ld_ring = d_v + RING_PAD
+    assert ld_ring % 32 == 8, "a ring row must step one eight-bank block"
+
+    def cell(slot, granule, sub):
+        return slot * ld_ring + ((granule ^ ((slot >> 1) & 3)) << 3) + sub
+
+    #: THE FLUSH, one row: lanes 0..31 over 32 consecutive channels.
+    for slot in range(RING_C):
+        for c in range(d_v // 32):
+            words = [cell(slot, c * 4 + (lane >> 3), lane & 7) for lane in range(32)]
+            assert _banks(words) == 1, "the ring's flush must be conflict-free"
+    #: THE SCATTER, the DENSE case: four ranks two apart, at every granule and every
+    #: alignment of the batch inside the ring.
+    for r0 in range(RING_C):
+        for g in range(d_v // 8):
+            words = [cell((r0 + 2 * q) % RING_C, g, sub) for q in range(4) for sub in range(8)]
+            assert _banks(words) == 1, (
+                f"the dense scatter is {_banks(words)}-way at rank {r0}, granule {g}")
+    #: THE SCATTER, the general case: four INCREASING ranks of one batch.  Four-way is
+    #: the floor and the model pins that nothing exceeds it.
+    worst = 1
+    for r0 in range(RING_C):
+        for d1 in range(1, SEG_ROWS - 2):
+            for d2 in range(d1 + 1, SEG_ROWS - 1):
+                for d3 in range(d2 + 1, SEG_ROWS):
+                    rows = [r0, r0 + d1, r0 + d2, r0 + d3]
+                    words = [cell(x % RING_C, 0, sub) for x in rows for sub in range(8)]
+                    worst = max(worst, _banks(words))
+    assert worst <= 4, f"the scatter is {worst}-way, above the four-block floor"
+    #: THE MASS rides the row's pad granule and spreads over its eight words by row.
+    for r0 in range(RING_C):
+        words = [(r0 + 2 * q) % RING_C * ld_ring + d_v + (((r0 + 2 * q) % RING_C) & 7)
+                 for q in range(4)]
+        assert _banks(words) <= 2, "the mass column must not be worse than two-way"

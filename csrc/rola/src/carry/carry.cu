@@ -110,6 +110,10 @@ using CarveRowPlan = rola::chunk::SpanPlan<CarveRows<SW, SR>::kLevels, CarveRows
 //: write-sparse on the even levels and read-sparse on the odd ones, i.e.
 //: `sum_l mode_l << 2l` = 6 / 38 / 102 at D = 2 / 3 / 4.
 //:
+//: `RC_`, the row's LAST field, is the FAN-IN RING's depth in rows (P76 section 2.6-C
+//: and F7's dial): the ring is `C` rows deep, rank `r` sits at `r % C`, and `C` is
+//: correctness-independent -- it buys tolerance for the skew between the leading and
+//: the lagging reader.  32 is the declared first value.
 //: `SW*_` and `SR*_` ARE THE ARM'S TWO CARVES, DECLARED: the per-level digit span
 //: one STREAM owns on the write side and on the read side, with a level past `D`
 //: carrying `B`.  Full spans on both sides declare NO carve and take the
@@ -118,19 +122,19 @@ using CarveRowPlan = rola::chunk::SpanPlan<CarveRows<SW, SR>::kLevels, CarveRows
 //: warps, `WPS_` being the row's ninth field.  A side carves where the declaration
 //: marks it sparse, which is what the private order's rule then reads off the vector
 //: (`SpanMap`).
-#define CARRY_ARM_0(X_) X_(2, 256, 4, 8, 64, 384, 32, 1, 0, 1, 8, 16, 256, 256, 8, 16, 256, 256)
-#define CARRY_ARM_1(X_) X_(2, 256, 4, 8, 64, 384, 32, 1, 6, 1, 2, 16, 256, 256, 8, 4, 256, 256)
-#define CARRY_ARM_2(X_) X_(2, 256, 4, 8, 64, 512, 32, 1, 0, 1, 8, 16, 256, 256, 8, 16, 256, 256)
-#define CARRY_ARM_3(X_) X_(2, 256, 4, 8, 64, 512, 32, 1, 6, 1, 2, 16, 256, 256, 8, 4, 256, 256)
-#define CARRY_ARM_4(X_) X_(2, 64, 4, 8, 64, 64, 32, 1, 0, 1, 8, 16, 64, 64, 8, 16, 64, 64)
-#define CARRY_ARM_5(X_) X_(2, 64, 4, 8, 64, 64, 32, 1, 6, 1, 2, 16, 64, 64, 8, 4, 64, 64)
-#define CARRY_ARM_6(X_) X_(3, 16, 2, 16, 64, 64, 32, 1, 0, 1, 2, 4, 16, 16, 2, 4, 16, 16)
-#define CARRY_ARM_7(X_) X_(3, 16, 2, 16, 64, 64, 32, 1, 38, 1, 2, 4, 16, 16, 2, 4, 16, 16)
-#define CARRY_ARM_8(X_) X_(4, 8, 2, 8, 64, 64, 32, 1, 0, 1, 2, 2, 4, 8, 2, 2, 4, 8)
-#define CARRY_ARM_9(X_) X_(4, 8, 2, 8, 64, 64, 32, 1, 102, 1, 2, 2, 1, 8, 2, 2, 4, 2)
-#define CARRY_ARM_10(X_) X_(4, 4, 4, 1, 64, 64, 32, 1, 102, 1, 1, 4, 2, 4, 4, 1, 4, 2)
-#define CARRY_ARM_11(X_) X_(2, 256, 4, 8, 64, 384, 32, 2, 6, 2, 2, 16, 256, 256, 8, 2, 256, 256)
-#define CARRY_ARM_12(X_) X_(2, 256, 4, 8, 64, 384, 32, 3, 6, 1, 1, 16, 256, 256, 8, 2, 256, 256)
+#define CARRY_ARM_0(X_) X_(2, 256, 4, 8, 64, 384, 32, 1, 0, 1, 8, 16, 256, 256, 8, 16, 256, 256, 32)
+#define CARRY_ARM_1(X_) X_(2, 256, 4, 8, 64, 384, 32, 1, 6, 1, 2, 16, 256, 256, 8, 4, 256, 256, 32)
+#define CARRY_ARM_2(X_) X_(2, 256, 4, 8, 64, 512, 32, 1, 0, 1, 8, 16, 256, 256, 8, 16, 256, 256, 32)
+#define CARRY_ARM_3(X_) X_(2, 256, 4, 8, 64, 512, 32, 1, 6, 1, 2, 16, 256, 256, 8, 4, 256, 256, 32)
+#define CARRY_ARM_4(X_) X_(2, 64, 4, 8, 64, 64, 32, 1, 0, 1, 8, 16, 64, 64, 8, 16, 64, 64, 32)
+#define CARRY_ARM_5(X_) X_(2, 64, 4, 8, 64, 64, 32, 1, 6, 1, 2, 16, 64, 64, 8, 4, 64, 64, 32)
+#define CARRY_ARM_6(X_) X_(3, 16, 2, 16, 64, 64, 32, 1, 0, 1, 2, 4, 16, 16, 2, 4, 16, 16, 32)
+#define CARRY_ARM_7(X_) X_(3, 16, 2, 16, 64, 64, 32, 1, 38, 1, 2, 4, 16, 16, 2, 4, 16, 16, 32)
+#define CARRY_ARM_8(X_) X_(4, 8, 2, 8, 64, 64, 32, 1, 0, 1, 2, 2, 4, 8, 2, 2, 4, 8, 32)
+#define CARRY_ARM_9(X_) X_(4, 8, 2, 8, 64, 64, 32, 1, 102, 1, 2, 2, 1, 8, 2, 2, 4, 2, 32)
+#define CARRY_ARM_10(X_) X_(4, 4, 4, 1, 64, 64, 32, 1, 102, 1, 1, 4, 2, 4, 4, 1, 4, 2, 32)
+#define CARRY_ARM_11(X_) X_(2, 256, 4, 8, 64, 384, 32, 2, 6, 2, 2, 16, 256, 256, 8, 2, 256, 256, 32)
+#define CARRY_ARM_12(X_) X_(2, 256, 4, 8, 64, 384, 32, 3, 6, 1, 1, 16, 256, 256, 8, 2, 256, 256, 32)
 //: THE `d_v = 128` ARMS (K35 S3b).  The card's CONTAINERS entry: at this width sixteen
 //: leaves per warp is REQUIRED, and eight resident warps per SM is the target, so the
 //: two containers are 1x8 at `BC = 128` -- rows 13 and 14, the SAME two declarations as
@@ -139,9 +143,9 @@ using CarveRowPlan = rola::chunk::SpanPlan<CarveRows<SW, SR>::kLevels, CarveRows
 //: ruled one-warp-per-stream map.  `BC = 64` is `(k, m) = (4, 4)` on the flagship
 //: topology: spans `[4, 16]`, 1024 owners, the same window and declaration as the
 //: flagship cell so the three containers are comparable at one cell.
-#define CARRY_ARM_13(X_) X_(2, 256, 4, 8, 128, 384, 32, 2, 6, 2, 2, 16, 256, 256, 8, 2, 256, 256)
-#define CARRY_ARM_14(X_) X_(2, 256, 4, 8, 128, 384, 32, 3, 6, 1, 1, 16, 256, 256, 8, 2, 256, 256)
-#define CARRY_ARM_15(X_) X_(2, 256, 4, 4, 128, 384, 32, 1, 6, 1, 1, 16, 256, 256, 4, 4, 256, 256)
+#define CARRY_ARM_13(X_) X_(2, 256, 4, 8, 128, 384, 32, 2, 6, 2, 2, 16, 256, 256, 8, 2, 256, 256, 32)
+#define CARRY_ARM_14(X_) X_(2, 256, 4, 8, 128, 384, 32, 3, 6, 1, 1, 16, 256, 256, 8, 2, 256, 256, 32)
+#define CARRY_ARM_15(X_) X_(2, 256, 4, 4, 128, 384, 32, 1, 6, 1, 1, 16, 256, 256, 4, 4, 256, 256, 32)
 
 #define CARRY_ARMS_ALL(X_)                                                \
   CARRY_ARM_0(X_) CARRY_ARM_1(X_) CARRY_ARM_2(X_) CARRY_ARM_3(X_)         \
@@ -170,8 +174,8 @@ using ArmSpans = StreamSpans<D, B, K, M, S0, S1, S2, S3>;
 //: declaration and two span vectors -- so the pieces a consumer wants are taken from
 //: it HERE and nowhere else, and no consumer re-spells the row's shape.
 #define CARRY_ARM(D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, WPS_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, \
-                  SR2_, SR3_)                                                            \
-  Arm<D_, B_, K_, M_, DV_, W_, C_, WPS_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, SR2_, SR3_,       \
+                  SR2_, SR3_, RC_)                                                             \
+  Arm<D_, B_, K_, M_, DV_, W_, C_, WPS_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, SR2_, SR3_, RC_,  \
       (uint32_t)(MO_)>
 #define CARRY_MO(D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, ...) (MO_)
 #define CARRY_ROW_HEAD(D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, ...) \
@@ -226,7 +230,7 @@ static constexpr bool kCarves = (SW::kStreams > 1) || (SR::kStreams > 1);
 //: carves.  The body, the geometry, the row plan and the census all read it, so an
 //: arm cannot be described two ways.
 template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
-          int R0, int R1, int R2, int R3, uint32_t MO>
+          int R0, int R1, int R2, int R3, int RC, uint32_t MO>
 struct Arm {
   using BP = BoxPlan<D, B, K, M>;
   using SW = ArmSpans<D, B, K, M, W0, W1, W2, W3>;
@@ -244,15 +248,17 @@ struct Arm {
 
   //: THE CARVED BODY'S GEOMETRY, named once so the segment probe and the launch read
   //: the same one.
-  using GC = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
+  using GC = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC>;
   static constexpr auto probe_fn() {
-    return &carry_layout_probe_kernel<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
+    return &carry_layout_probe_kernel<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3,
+                                      RC>;
   }
 
   template <bool STATE>
   static constexpr auto fn() {
     if constexpr (carved)
-      return &carry_kernel<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, MO, STATE>;
+      return &carry_kernel<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC, MO,
+                           STATE>;
     else
       return &carry_split_kernel<D, B, K, M, DV, W, C, STATE>;
   }
@@ -261,7 +267,7 @@ struct Arm {
   //: budget, `WRITE STREAMS` the in-CTA ownership grain, and their ratio is `WPS`.
   static constexpr std::array<int64_t, 5> geom() {
     if constexpr (carved) {
-      using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
+      using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC>;
       return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)G::kThreads,
               (int64_t)G::kStreams};
     } else {
@@ -331,6 +337,9 @@ static std::vector<torch::Tensor> run_probe() {
     auto vv = torch::zeros({(long)G::kStreams * G::kSegRows, (long)G::kDv}, opt);
     auto cc = torch::zeros({(long)G::kStreams * G::kSegRows, (long)G::kLeafW}, opt);
     auto ss = torch::zeros({(long)G::kSegRows, (long)BPA::kStageW}, opt);
+    //: the READOUT's two layouts (K35 S4b): a reader's segment and one ring row per slot.
+    auto rr = torch::zeros({(long)G::kWarps * G::kSegRows, (long)G::kLeafE}, opt);
+    auto gg = torch::zeros({(long)G::kRingC, (long)G::kDv + 1}, opt);
     //: the staged leg's SOURCE plane: cell `(r, c)` names itself, so a run that lands
     //: at the wrong offset names the column it actually came from.
     auto pw = (torch::arange(0, (long)G::kSegRows, opt).reshape({-1, 1}) * 1024
@@ -338,16 +347,21 @@ static std::vector<torch::Tensor> run_probe() {
                   .to(torch::kInt16)
                   .view(torch::kBFloat16)
                   .contiguous();
-    constexpr size_t sm = (size_t)(G::seg_v_bytes + G::seg_c_bytes
-                                   + G::kSegRows * BPA::kStageW * (int)sizeof(__nv_bfloat16));
+    constexpr size_t sm =
+        (size_t)(G::seg_v_bytes + G::seg_c_bytes
+                 + G::kSegRows * BPA::kStageW * (int)sizeof(__nv_bfloat16)
+                 + align16c(G::kWarps * G::kSegRows * G::LdR * (int)sizeof(__nv_bfloat16))
+                 + G::kRingC * G::LdRing * (int)sizeof(float));
     const auto fn = A::probe_fn();
     C10_CUDA_CHECK(cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm));
     fn<<<1, (unsigned)G::kThreads, sm, at::cuda::getCurrentCUDAStream()>>>(
         (const __nv_bfloat16*)pw.data_ptr(), vv.template data_ptr<int>(),
-        cc.template data_ptr<int>(), ss.template data_ptr<int>());
+        cc.template data_ptr<int>(), ss.template data_ptr<int>(), rr.template data_ptr<int>(),
+        gg.template data_ptr<int>());
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return {vv.reshape({(long)G::kStreams, (long)G::kSegRows, (long)G::kDv}),
-            cc.reshape({(long)G::kStreams, (long)G::kSegRows, (long)G::kLeafW}), ss};
+            cc.reshape({(long)G::kStreams, (long)G::kSegRows, (long)G::kLeafW}), ss,
+            rr.reshape({(long)G::kWarps, (long)G::kSegRows, (long)G::kLeafE}), gg};
   } else {
     TORCH_CHECK(false, "the per-stream segment belongs to the carved body");
     return {};

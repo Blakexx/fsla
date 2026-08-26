@@ -59,7 +59,7 @@ WINDOW_SMALL = 64
 #: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
 #: moves whenever that source does, which is what makes reading it back off the
 #: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010022
+BUILD_MAGIC = 31010023
 
 #: the reverse family's own device magic, mirrored from `backward_kernel.cuh`.
 BWD_BUILD_MAGIC = 31040001
@@ -159,12 +159,23 @@ def build_stamp(widths, k, m, window, chunk, carve, level_modes=0, d_v=D_V):
 
 
 def layout_probe(widths, k, m, window, chunk, carve, level_modes=0, d_v=D_V):
-    """The per-stream segment layout's ROUND TRIP: ``(values, coefficients)``.
+    """Every named SMEM layout's ROUND TRIP, as five tensors.
 
-    Each is ``[stream][row][column]`` of the RAW sixteen-bit pattern the fetcher stored
-    at that cell, recovered through the consumer's ``ldmatrix.trans`` at the fold's own
-    bases -- so a stride, a base or a fragment map that disagrees between the two legs
-    cannot survive the comparison.  Carved arms only.
+    ``(values, coefficients, staged, reader_rows, ring)``:
+
+    * ``values`` / ``coefficients`` -- ``[stream][row][column]`` of the RAW sixteen-bit
+      pattern the FOLD's fetcher stored at that cell, recovered through the consumer's
+      ``ldmatrix.trans`` at the fold's own bases;
+    * ``staged`` -- ``[row][amplitude]`` of the staged factor row, filled by the
+      asynchronous copies both sides share;
+    * ``reader_rows`` -- ``[reader][row][slot]`` of the READOUT's segment, stored by the
+      read expansion and recovered through the readout's ``load_frag``, whose fragment
+      map has the segment's ROWS on the MMA's ``n`` axis (they are tokens there);
+    * ``ring`` -- ``[slot][channel]`` of the fan-in ring, written at the SCATTER's cell
+      address and read back at the FLUSH's.
+
+    A stride, a base, a swizzle or a fragment map that disagrees between the two legs of
+    any of them cannot survive the comparison.  Carved arms only.
     """
     return extension().carry_layout_probe(list(widths), int(k), int(m), int(window),
                                           int(chunk), int(carve), int(level_modes), int(d_v))

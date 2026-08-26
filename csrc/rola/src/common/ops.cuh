@@ -353,6 +353,49 @@ __device__ __forceinline__ void or_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("red.shared.or.b32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
 
+//: ONE CONTRIBUTION INTO A SHARED FP32 ACCUMULATOR, FIRE AND FORGET -- `fan_in_add`'s
+//: contract with the meeting held in shared memory instead of in the output plane.
+//: The fan-in ring's whole point is that a token's partials MEET INSIDE THE CTA, so
+//: what this needs is exactly what the global form needs: a reduction that returns
+//: nothing and makes nothing wait.
+__device__ __forceinline__ void red_shared_add_f32(SmemAddr a, float v) {
+  asm volatile("red.shared.add.f32 [%0], %1;" ::"r"(a), "f"(v) : "memory");
+}
+
+//: THE SAME OVER THE COUNTING MONOID.  A ring row's arrival count is incremented once
+//: per contributing warp-row and read by whoever wants to reclaim the row; the
+//: incrementer never learns the total, so this is a reduction and not an exchange.
+__device__ __forceinline__ void red_shared_add_u32(SmemAddr a, uint32_t v) {
+  asm volatile("red.shared.add.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
+}
+
+//: THE ONE PLACE A SHARED WORD IS EXCHANGED RATHER THAN REDUCED.  Reclaiming a ring
+//: row is a CLAIM -- exactly one of the warps that find the row stale may flush it --
+//: so here the previous value IS the answer and the caller does wait for it.
+__device__ __forceinline__ uint32_t cas_shared_u32(SmemAddr a, uint32_t cmp, uint32_t val) {
+  uint32_t old;
+  asm volatile("atom.shared.cas.b32 %0, [%1], %2, %3;"
+               : "=r"(old)
+               : "r"(a), "r"(cmp), "r"(val)
+               : "memory");
+  return old;
+}
+
+//: ONE FP32 CELL OF A SHARED ACCUMULATOR, ADDRESSED.  The ring's flush reads the row
+//: it is about to hand to the output plane; the address is swizzled by the row, so an
+//: indexed form would re-derive a widening multiply per access.
+__device__ __forceinline__ float load_shared_f32(SmemAddr a) {
+  float v;
+  asm volatile("ld.shared.f32 %0, [%1];" : "=f"(v) : "r"(a) : "memory");
+  return v;
+}
+
+//: THE ORDER BETWEEN A UNIT'S SHARED WRITES AND THE FLAG THAT PUBLISHES THEM, and
+//: nothing wider: the ring's producers and consumers are warps of ONE CTA talking
+//: through shared memory, so the scope that has to be fenced is the block's.  A
+//: device-scope fence here would order traffic no participant can observe.
+__device__ __forceinline__ void publish_fence() { __threadfence_block(); }
+
 //: the 16-byte quantum into shared memory, addressed.  The segment's dead rows are
 //: cleared at this width so a whole slot row is a constant number of stores.
 __device__ __forceinline__ void store_shared_vec16(SmemAddr a, const uint4& v) {
