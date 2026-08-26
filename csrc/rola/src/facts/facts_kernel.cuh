@@ -69,8 +69,13 @@ constexpr int lex_span(int D, int B, int BC, int l) {
 template <int D, int B, int S0, int S1, int S2, int S3>
 struct SpanPlan {
   static_assert(D >= 1 && D <= 4, "the level plan is built to depth four");
-  static_assert((B & (B - 1)) == 0 && B >= 8 && B <= 256,
-                "one uniform power-of-two width per topology");
+  //: THE WIDTH FLOOR IS THE ATOM'S, not a routing preference: the atom plan
+  //: (`LevelPlan<D, B, kAtomLeaves>`, below) exists only where the topology holds a
+  //: whole page granule.  At `D = 4` that admits `B = 4`, which is the width the box
+  //: `[4, 4, 4, 4]` -- the multi-level carve's own topology -- is stated at.
+  static_assert((B & (B - 1)) == 0 && B >= 4 && B <= 256 && ipowl(B, D) >= kAtomLeaves,
+                "one uniform power-of-two width per topology, wide enough that the "
+                "topology holds a whole page atom");
   static constexpr int kWidth = B;
   static constexpr long slots = ipowl(B, D);
   static constexpr int width(int) { return B; }  // the uniform widths policy

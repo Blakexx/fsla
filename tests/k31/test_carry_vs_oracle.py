@@ -36,6 +36,14 @@ FLAG = ((256, 256), 4, 8, carry_ops.WINDOW)       # N = 65536, BC = 128, owners 
 #: an atom is level 3's whole span times two of level 2's digits.
 DEEP3 = ((16, 16, 16), 2, 16, carry_ops.WINDOW_SMALL)   # s = (2, 4, 16),   owners = 32
 DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owners = 32
+#: THE MULTI-LEVEL CARVE ARM (K35 S1).  The owner box is the WHOLE topology --
+#: `s = (4, 4, 4, 4)`, one owner -- and each SIDE carves TWO levels of it: write spans
+#: `[1, 4, 2, 4]`, read spans `[4, 1, 4, 2]`, eight streams of 32 leaves either way and
+#: one warp per stream.  Under `ALT4` each side carves exactly where it is sparse.
+CARVE4 = ((4, 4, 4, 4), 4, 1, carry_ops.WINDOW_SMALL)
+CARVE4_KEY = (4, 4, 4, 1, carry_ops.WINDOW_SMALL, 32, 1)
+#: the ALTERNATING declaration packed as the seam's word, at depth four.
+ALT4 = 102
 
 CARVE = carry_ops.LEAF_SPLIT
 
@@ -67,23 +75,28 @@ def test_arms_are_the_declared_solver_rows():
 
     An arm is `(topology, declaration)`: the declaration chooses the BODY, so the
     same topology appears once per declaration built for it.  DENSE_BOTH is built
-    for every topology because it is the seam's answer to any declaration this
-    family has no carved body for.
+    for every topology it is the seam's answer FOR -- which is every one but the
+    multi-level carve arm, whose box is the whole topology and whose carve is the
+    point of the arm.  There the seam refuses an unbuilt declaration outright rather
+    than degrading it, which is stated here because the fall-back rule is otherwise
+    universal.
     """
     got = {tuple(a[:7]) for a in carry_ops.arms()}
     assert got == {(2, 256, 4, 8, carry_ops.WINDOW, 32, 1),
                    (2, 256, 4, 8, carry_ops.WINDOW_WIDE, 32, 1),
                    (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1),
                    (3, 16, 2, 16, carry_ops.WINDOW_SMALL, 32, 1),
-                   (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1)}, got
+                   (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1),
+                   CARVE4_KEY}, got
     dense = {tuple(a[:7]) for a in carry_ops.arms() if a[7] == 0}
-    assert dense == got, "every topology must carry the DENSE_BOTH body"
+    assert dense == got - {CARVE4_KEY}, "every other topology must carry the DENSE_BOTH body"
     for arm in carry_ops.arms():
         D, B, k, m, W, C, carve, modes, BC, owners, smem, level = arm
         _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
         assert (BC, owners) == (bc_host, owners_host), (
             "the device box and the host solver disagree about the owner's shape")
-        #: the carve level is the declaration's, or -1 for the channel-split body.
+        #: the carve level is the innermost level the READ side carves, which the
+        #: declaration names, or -1 for the channel-split body.
         assert level == (D - 1 if (modes >> (2 * (D - 1))) & 1 else -1)
 
 
@@ -362,3 +375,46 @@ def test_deep_box_is_the_derived_one(arm, spans, atom):
     assert atom_rectangle(s) == atom
     base, leaves, atoms = walk_unit(s)
     assert leaves == 16 * atoms and atoms >= 1
+
+
+# ------------------------------------------- the MULTI-LEVEL carve, D = 4
+
+@pytest.mark.parametrize("k_tok", [None, 2], ids=["dense", "k2"])
+def test_m4_the_multi_level_carve_matches_the_fp64_oracle(k_tok, carve=CARVE):
+    """TWO CARVED LEVELS PER SIDE, against the fp64 oracle in CANONICAL order.
+
+    This is the arm the single-level carve could not state: the write side owns
+    `[1, 4, 2, 4]` of the box `[4, 4, 4, 4]` and the read side `[4, 1, 4, 2]`, so
+    each side's stream box is an affine RECTANGLE that is not a contiguous run of
+    leaves, and each side's private order has TWO levels moved outermost.  A leaf-map
+    or ownership error surfaces here as a permutation of the state plane, not noise.
+    """
+    assert_fresh_binary()
+    widths, k, m, W = CARVE4
+    cell = (Cell(widths, T=256, k_tok=None, seed=8) if k_tok is None
+            else alt_cell(widths, T=256, k_tok=k_tok, seed=88))
+    num, den, plane = carry_ops.carry_inter(
+        cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths, k=k, m=m, window=W,
+        chunk=32, carve=carve, level_modes=ALT4)
+    n_ref, d_ref, s_ref = ref(cell, CARVE4)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+    got = canonical_from_lattice(plane, widths, k, m)
+    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
+
+
+def test_the_multi_level_carve_arm_is_eight_streams_of_thirty_two_leaves():
+    """The declaration's arithmetic, asserted rather than commented: both sides cut
+    the same box into the SAME number of streams (this stage's 1:1 executor map) and
+    each carves two levels."""
+    widths, k, m, _ = CARVE4
+    _, spans, groups, bc, owners = carry_ops.box_shape(widths, k, m)
+    assert tuple(spans) == (4, 4, 4, 4) and bc == 256 and owners == 1
+    write, read = (1, 4, 2, 4), (4, 1, 4, 2)
+    for side in (write, read):
+        assert all(s <= w and w % s == 0 for s, w in zip(side, spans))
+        assert math.prod(w // s for s, w in zip(side, spans)) == 8
+        assert math.prod(side) == 32
+        assert sum(1 for s, w in zip(side, spans) if s < w) == 2
+        assert side[-1] >= 2, "the pair level must hold at least two adjacent leaves"

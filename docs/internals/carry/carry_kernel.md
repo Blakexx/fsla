@@ -65,15 +65,16 @@ Per-side lists make activity airtight: a side's simplex weights are strictly pos
 its own support, so a listed entry is live for that side by construction. There is no
 union-superset padding logic anywhere in this file, by design.
 
-The ROWS ARE VOTED AT THE CARVE GRAIN. The carve level's owner run is split into
-`kWarps` digit groups (`BoxPlan::carve_s`, `CarveRows`), so that level emits `kWarps`
-times the rows and an owner-grain word is the OR of a group's `kWarps`. Nothing in the
-facts kernel changes: the carve rows are the same `chunk_facts_tables` pass instantiated
-at the finer spans. The READ side takes the rows as `kWarps` ballots — one per digit
-group, and therefore one per warp — and the WRITE side ORs them back into the owner's
-own clause. The table grows from 48 to 96 rows per side at the flagship, and the facts
-pass by 6% of itself (0.496 → 0.527 ms at `L = 65536`), against a `Σ_l B/s_l` shape that
-still does not grow with `N`.
+The ROWS ARE VOTED AT THE CARVE GRAIN. Each level's owner run is split at the FINER of
+the two sides' spans there (`CarveRows`), so a level carved by either side emits
+`s_l / min(S^W_l, S^R_l)` times the rows and any coarser range is the OR of the rows it
+covers. Nothing in the facts kernel changes: the carve rows are the same
+`chunk_facts_tables` pass instantiated at the finer spans. Each side reads its OWN
+stream's range at every level it carves, and the owner-grain word — the shared walk's
+input and the whole-window skip's — is the OR over the run. The table grows from 48 to
+192 rows per side at the flagship's two-sided carve, and the facts pass by 6% of itself
+(0.496 → 0.527 ms at `L = 65536`), against a `Σ_l B/s_l` shape that still does not grow
+with `N`.
 
 <a id="the-schedule-has-no-barrier"></a>
 ### The schedule is ONE BALLOT WORD PER LANE, and it has no barrier
@@ -127,58 +128,97 @@ are ascending in token position, which is what makes a batch a contiguous token 
 and the fold's accumulation order reproducible. Conformance cannot see a reordering (the
 readout is per-row and the fan-in is a sum); the state plane can, and is the instrument.
 
-## The carve: one digit group of the innermost level, per warp
+## The carve: a per-level SPAN VECTOR, one stream box per executor
 
-A warp owns one GROUP of the innermost level's digits — `kGS = s_{D-1}/kWarps` of them —
-across every outer digit, which is `BC/kWarps` leaves and ALL `kCols` channels
-(K33 clean-sheet §1.2A, tier A; the drain microbench that decided it is
-`rola-scratch/prototypes/k31_tieraprobe/FINDINGS.md`). The warp then TILES ITS OWN
-LEAVES: its private index is `p = (r_{D-1} - grp*kGS) * kOut + outer`, the carve level
-SLOWEST, so one of its digits is a contiguous run of `kOut = BC/s_{D-1}` leaves and a
-whole number of accumulator n-tiles.
+A STREAM owns a box and walks its data into tiles; an EXECUTOR runs streams — a warp on
+sm_80 (the terminology law, P76). This stage maps ONE STREAM TO ONE WARP, so the CTA's
+warp count is the stream count and is no longer a constant of the file: it is
+`prod_l s_l / S_l`, read off the arm's own carve.
 
-That private order is observed by NOTHING outside the warp. The accumulator's n-indexing
-is a register-array indexing the kernel chooses; the lattice's `local` order, the state
-plane's page layout, the atom rectangle, decode and the facts geometry are all untouched.
-The consequence is the whole design: the readout's A operand is the warp's own
-accumulator packed in place, so there is **no state image, no `ldmatrix` for A, no leaf
-order flip and no CTA barrier in the read phase**.
+A stream's box is a per-level SPAN VECTOR `S_l` — the digits of level `l` one stream
+holds — so the box is an AFFINE RECTANGLE of digits and contiguity in leaf order is a
+property of carving a prefix, never a requirement. The single-level carve is simply the
+vector with one non-full entry; there is no second path for it. The two sides carve the
+SAME box along DIFFERENT axes, which is why the state evacuates registers at each phase
+change (the transit plane), and each side's vector is declared per arm in
+`CARRY_ARMS_X` — the write side's `SW`, the read side's `SR`.
 
-Two things follow that are not free, and both are measured
-(`rola-scratch/prototypes/k31_tiera_build/FINDINGS.md`):
-* a READ entry is drained by the warps whose groups its digits reach, so at DENSE routing
-  every entry is drained by all four and the fan-in multiplies by `kWarps` exactly;
-* a WRITE entry is live at ~1.04 of the outer level's digits and at ALL of the innermost
-  level's, so it belongs to every warp whatever the group split is. The write side is
-  therefore UNCHANGED in schedule — one union list, the shared V ring, a rendezvous per
-  batch — and only its operands re-carve with the state.
+Constraints, all `static_assert`ed: `s_l % S_l == 0`, every span a power of two, and the
+two sides' stream counts equal (this stage's 1:1 executor map; a later stage decouples
+them).
 
-The group a warp takes is ROTATED per owner, `grp = (warp + ((o + (o>>5)) & 3)) & 3`.
-The obvious `o mod kWarps` is defeated: the two CTAs co-resident on an SM are one grid
-wave apart and the wave is a multiple of `kWarps`, so both would rotate identically and
-still collide on one processing block. The wave-stride form costs three setup
-instructions once per kernel and nothing in any loop.
+### The private order, and why it is a RULE and not a choice
+
+A stream numbers its leaves in a MIXED RADIX over its own spans, `p = sum_l r_l <<
+shift(l)`, so `p` is a bit permutation of the digit offsets exactly as `local` is and the
+produce is `sum_l n_l` amplitude loads times products at CONSTANT indices. A span-1 level
+contributes a constant and drops out of the order on its own. The order itself is fixed
+by the span vector:
+
+1. **level `D-1` is INNERMOST.** The transit plane publishes `bf16x2` words of two
+   LATTICE-ADJACENT leaves, so the level lying lowest in `p` must be the level lying
+   lowest in `local`, and its span must be at least two. This is the PAIR LEVEL: it seeds
+   the pairs and carries the dead-row zeroing. **The span-≥2 clause is a limitation of
+   the CURRENT exchange, not of the design** — it comes from the plane publishing pairs,
+   and the rebuilt exchange (writer-side placement into per-reader `[leaf][channel]`
+   segments) makes the carve vectors fully general.
+2. **the remaining levels keep the LATTICE order, except the levels this side CARVES,
+   which move OUTERMOST** keeping their lattice order among themselves.
+
+A side carves where its declaration marks it sparse, so rule 2 is the PRIVATE-ORDER RULE
+in the vector's vocabulary — *dense levels innermost, sparse levels outermost*: an
+eight-slot n-tile spans dense digits, and each sparse level indexes WHOLE tiles, where a
+digit skip is exact. The order is not cosmetic: it is the readout's MMA **k-order**, so
+it fixes the fp32 summation order and therefore the bits.
+
+The rule reproduces the two single-level maps it replaces EXACTLY — the read side's
+q-major order is the lattice order (`3,2,1,0` at `D = 4`), the write side's `CL`-major
+order is `CW` moved outermost (`3,1,0,2` at `D = 4`, `1,0` at `D = 2`) — which is what
+makes the span-vector build byte-identical to the single-level one at every arm that
+existed before it.
+
+### Per-level coordinates
+
+The stream index decomposes in MIXED RADIX over the per-level stream grids, MSB-first
+exactly as the owner index does, giving `grp_l` at every level. Its digit offset
+`grp_l * S_l` is added to that level's amplitude column (`lvCol`/`lvColW`) and to that
+level's digit in the leaf map (`leaf_of`/`leafW_of`) — at EVERY carved level, each side
+under its own vector. Both grids are compile-time powers of two, so every use site is a
+shift and a mask, and the offsets are computed ONCE per warp before the window loop.
+
+The stream a warp takes is ROTATED per owner, `strm = (warp + ((o + (o>>5)) & (W-1))) &
+(W-1)`. The obvious `o mod kWarps` is defeated: the two CTAs co-resident on an SM are one
+grid wave apart and the wave is a multiple of the warp count, so both would rotate
+identically and still collide on one processing block. The wave-stride form costs three
+setup instructions once per kernel and nothing in any loop.
+
+### Liveness is ONE conjunction, and it is exact at any carve
+
+The ballot table is refined at every level EITHER side carves — the per-level MINIMUM of
+the two vectors (`CarveRows`) — and stays sigma-shaped, `sum_l B/s_l` rows, so it does
+not grow with `N`. A digit RANGE's word is the OR of the table rows it covers, and the
+levels are ANDed. That is EXACT, because a rectangle of digits holds a live leaf iff
+every level's range holds a live digit — which is the same statement that makes an
+n-tile skip exact once tile-grain rows exist.
+
+Two ranges are asked for per side: the STREAM's own (its ownership test, which compacts
+the fold onto the tokens that reach its leaves) and the OWNER's whole run (the shared
+walk's derivation and the whole-window skip). The conjunction is PRUNED BY THE
+DECLARATION: a side conjoins a level only where that side is declared sparse, because a
+dense side's row is all-ones and ANDing it is a load for nothing.
 
 `CV` survives on the SEAM — the dispatch's `carve` scalar — so a caller asking for a
 carve this kernel does not build is refused rather than silently served another one.
 
 ## Two bodies, and the DECLARATION chooses between them
 
-The carry family has TWO kernels and the per-level MODE DECLARATION selects one of them
-at compile time (K33 law 3; `csrc/rola/src/carry/carry.cu`'s `carve_level`). This file
-holds the LEAF CARVE, for a declaration that marks a level read-sparse;
-[`carry_split_kernel.md`](carry_split_kernel.md) holds the CHANNEL-SPLIT body, for one
-that does not. Neither is a fallback for the other: the axis is resolved at the seam and
-never appears at run time, so a dense declaration runs a kernel with no carve in it at
-all rather than a carved kernel with the carve turned off.
-
-The CARVE LEVEL is a template parameter `CL`, threaded through `BoxPlan::carve_s`,
-`CarveRows`, `CarveMap`, `CarryGeom` and the kernel, and named by the declaration rather
-than by this file. `carve_level<D, MODES>` is the innermost level the declaration marks
-read-sparse, or `-1` for the channel-split body; `CarveMap`'s private leaf order is exact
-only while that level is the innermost one, so a declaration naming an outer level is
-served the channel-split body — correct, and stated rather than silently carved at a
-level nothing declared.
+The carry family has TWO kernels and the arm's declared carve selects one of them at
+compile time (K33 law 3; `csrc/rola/src/carry/carry.cu`'s `kCarves`). This file holds the
+CARVED body; [`carry_split_kernel.md`](carry_split_kernel.md) holds the CHANNEL-SPLIT
+body, which holds the whole box in every warp and splits the channels instead. Neither is
+a fallback for the other: the axis is resolved at the seam and never appears at run time,
+so an arm declared with full spans on both sides runs a kernel with no carve in it at all
+rather than a carved kernel with the carve turned off.
 
 The seam's rule for an unbuilt declaration is DENSE_BOTH, which is always correct and
 only ever slower. The TOPOLOGY is never degraded: an unbuilt `(D, B, k, m, W, C)` is

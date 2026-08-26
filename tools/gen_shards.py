@@ -115,20 +115,25 @@ SPAN_FACTS_ARMS: tuple = (
     (2, 64, 8, 16, 64, 64),
     (3, 16, 2, 4, 16, 16),
     (4, 8, 2, 2, 4, 8),
-    # the CARVE grain: the innermost level's owner run split over the four warps
-    # (`BoxPlan::carve_s`), which is the row set the carry's per-warp read lists
-    # are scanned from.  An owner-grain word is the OR of a group's four rows.
+    # the CARVE grain: the innermost level's owner run split over four streams,
+    # which is the row set the seam's `owner_rows(carve=True)` diagnostic names.
+    # An owner-grain word is the OR of a group's four rows.
     (2, 256, 8, 4, 256, 256),
     (2, 64, 8, 4, 64, 64),
     (3, 16, 2, 4, 4, 16),
     (4, 8, 2, 2, 4, 2),
-    # the TWO-CARVE grain (K35-E, `TwoCarveRows`): the SAME table refined at BOTH
-    # carved levels at once -- the write carve's digit group at `CW` and the read
-    # carve's at `CR` -- so each warp reads its own group's row on either side.  A
-    # side wanting the owner's run ORs the four rows it already holds.
+    # the TWO-SIDED CARVE grain (K35, `CarveRows`): the SAME table refined at every
+    # level EITHER side carves -- the per-level MINIMUM of the two sides' spans -- so
+    # each stream reads its own range's rows on either side and a side wanting a
+    # coarser range ORs the rows it already holds.
     (2, 256, 2, 4, 256, 256),
     (2, 64, 2, 4, 64, 64),
     (4, 8, 2, 2, 1, 2),
+    # the MULTI-LEVEL carve (K35 S1): D = 4 at B = 4, write spans [1, 4, 2, 4] and
+    # read spans [4, 1, 4, 2] over the owner box [4, 4, 4, 4] -- eight streams of 32
+    # leaves on both sides, each side carving TWO levels, so the table is the
+    # per-level minimum.
+    (4, 4, 1, 1, 2, 2),
 )
 
 #: the span arms are STATELESS only: residency is the paging layer's question and

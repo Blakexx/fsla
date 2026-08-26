@@ -125,3 +125,33 @@ remove. The fix if it ever matters is a wider level, not a different `(k, m)`.
 `kUnitLeaves`/`kUnitAtoms` its size. K2 makes `l = 0` always qualify, so the search is
 total. The decode walk enumerates `(owner, r_0 .. r_{kUnitBase-1})`, and the unit is one
 atom wherever the rectangle is one level and several atoms where it is not.
+
+## The stream box: a per-level SPAN VECTOR
+
+`BoxPlan` names the OWNER's box. `StreamSpans<D, B, K, M, S_0..S_3>` names one STREAM's
+box inside it — the digits of level `l` one stream holds, `S_l | s_l`, powers of two,
+with a level past `D` carrying `B` (the plan's identity). A stream box is an AFFINE
+RECTANGLE of digits: contiguity in leaf order is a property of carving a prefix, never a
+requirement, so `[1, 4, 2, 4]` over `[4, 4, 4, 4]` is admissible and gives eight streams
+of 32 leaves. The stream grid is `g_l = s_l / S_l` per level and `prod_l g_l` streams,
+and a stream's coordinate at a level is a bit field of its index, MSB-first exactly as the
+owner grid's — so every use site is a shift and a mask and nothing tabulates.
+
+`CarveRows<SW, SR>` is the BALLOT TABLE of a two-sided carve: the owner's rows refined,
+per level, at the FINER of the two sides' spans. A side wanting a coarser range ORs the
+rows it already holds, which is exact because a rectangle of digits holds a live leaf iff
+every level's range holds a live digit. The table is sigma-shaped — `sum_l B/s_l` — so it
+does not grow with `N`.
+
+| topology | `k` | `m` | `s_l` | write spans | read spans | streams | table spans |
+|---|---|---|---|---|---|---|---|
+| `(256,256)` | 4 | 8 | (8,16) | (2,16) | (8,4) | 4 | (2,4) |
+| `(64,64)` | 4 | 8 | (8,16) | (2,16) | (8,4) | 4 | (2,4) |
+| `(8,8,8,8)` | 2 | 8 | (2,2,4,8) | (2,2,1,8) | (2,2,4,2) | 4 | (2,2,1,2) |
+| `(4,4,4,4)` | 4 | 1 | (4,4,4,4) | (1,4,2,4) | (4,1,4,2) | 8 | (1,1,2,2) |
+
+The last row is the MULTI-LEVEL carve: each side carves TWO levels, and it is the only
+box among the built arms whose owner is the whole topology (`g_l = 1`, one owner). `k = 4,
+m = 1` is the only `(k, m)` reaching `s = (4, 4, 4, 4)`: the capacity convention's atom
+FLOOR pushes `m` innermost, so any `m > 1` at `D = 4` unbalances the vector, and at
+`B = 8` the ceiling `K6` then refuses `k = 4, m = 1` outright.

@@ -142,11 +142,6 @@ struct BoxPlan {
   }
 
   static_assert(kBC % kAtomLeaves == 0, "K2: an atom must not straddle two owners");
-  //: THE CARVE GRAIN.  `G` warps split level `CL`'s owner run, so that level's
-  //: ballot rows are voted at `s(CL)/G` and an owner-grain word is the OR of its
-  //: `G` group rows.  A level away from the carve keeps the owner span.  `CL` is
-  //: named by the per-level MODE DECLARATION at the seam, never by this file.
-  static constexpr int carve_s(int l, int G, int CL) { return l == CL ? s(l) / G : s(l); }
 
   //: K6: an owner's run at a level is an aligned run INSIDE that level.  With the
   //: capacity ceiling above it is the constraint the convention can still miss --
@@ -171,61 +166,59 @@ struct BoxPlan {
                 "K1: k, m and B are powers of two");
 };
 
-//: THE CARVE-GRAIN BALLOT ROWS.  `BoxPlan`'s row accounting at `carve_s`: the same
-//: sigma-shaped table one level finer, so a warp reads its own group's row and the
-//: side that wants the owner's run ORs the `G` of them.
-template <int D, int B, int K, int M, int G, int CL>
-struct CarveRows {
+//: THE STREAM BOX, AS A PER-LEVEL SPAN VECTOR.  A STREAM owns a box and walks its
+//: data into tiles; an EXECUTOR runs streams (the terminology law).  `S_l` is the
+//: count of level `l`'s digits one stream holds, so the box is an AFFINE RECTANGLE
+//: of digits -- a product of per-level ranges -- and contiguity in leaf order is a
+//: property of carving a prefix, never a requirement.  The stream grid is
+//: `prod_l g_l` with `g_l = s_l / S_l`, and a stream's coordinate at a level is a
+//: bit field of its index, MSB-first exactly as the owner grid's is.  A level past
+//: `D` carries `B`, the plan's identity.
+template <int D, int B, int K, int M, int S0, int S1, int S2, int S3>
+struct StreamSpans {
   using BP = BoxPlan<D, B, K, M>;
-  static constexpr int kGroups = G;
-  static constexpr int kLevel = CL;
-  static constexpr int s(int l) { return BP::carve_s(l, G, CL); }
-  static constexpr int row_g(int l) { return s(l) < B ? B / s(l) : 0; }
-  static constexpr int row_entries(int l) { return l == D ? 0 : row_g(l) + row_entries(l + 1); }
-  static constexpr int kRows = row_entries(0);
-  static constexpr int row_prefix(int l) { return l == 0 ? 0 : row_prefix(l - 1) + row_g(l - 1); }
-  //: THE CLAUSE ROWS ABOVE THE CARVE.  A level spanned whole by the owner emits
-  //: none, so the conjunction's width is a property of the box and the schedule
-  //: stages exactly `kOuter` words per side per window word beside the `G` group
-  //: words.  `outer_slot` is that level's place in the staged block.
-  static constexpr int outer_count(int l) {
-    return l >= D ? 0 : (l != kLevel && row_g(l) > 0 ? 1 : 0) + outer_count(l + 1);
+  static constexpr int s(int l) { return l == 0 ? S0 : (l == 1 ? S1 : (l == 2 ? S2 : S3)); }
+  static constexpr int g(int l) { return BP::s(l) / s(l); }
+  static constexpr bool carves(int l) { return s(l) < BP::s(l); }
+  static constexpr int prod_g(int l) { return l >= D ? 1 : g(l) * prod_g(l + 1); }
+  static constexpr int prod_s(int l) { return l >= D ? 1 : s(l) * prod_s(l + 1); }
+  static constexpr int kStreams = prod_g(0);
+  static constexpr int kLeaf = prod_s(0);
+  //: `grp_l = (stream / grid_div(l)) % g_l`, and both are powers of two, so every
+  //: use site is a shift and a mask.
+  static constexpr int grid_div(int l) { return prod_g(l + 1); }
+
+  static constexpr bool spans_fit(int l) {
+    return l >= 4
+           || (l >= D ? (s(l) == B && spans_fit(l + 1))
+                      : (s(l) >= 1 && s(l) <= BP::s(l) && BP::s(l) % s(l) == 0
+                         && (s(l) & (s(l) - 1)) == 0 && spans_fit(l + 1)));
   }
-  static constexpr int kOuter = outer_count(0);
-  static constexpr int outer_slot(int l) {
-    return l == 0 ? 0 : outer_slot(l - 1) + (l - 1 != kLevel && row_g(l - 1) > 0 ? 1 : 0);
-  }
-  static_assert(BP::s(kLevel) % G == 0 && BP::s(kLevel) / G >= 1,
-                "the carve splits the innermost level's owner run into G whole groups");
-  static_assert(row_g(kLevel) == G * BP::row_g(kLevel) || BP::row_g(kLevel) == 0,
-                "a group row set must REFINE the owner row set at the carve level");
+  static_assert(spans_fit(0),
+                "a stream's span at a level divides the owner's run there and is a power of "
+                "two; a level past D carries the width");
+  static_assert(kLeaf * kStreams == BP::kBC, "the stream grid partitions the owner's box");
 };
 
-//: THE TWO-CARVE BALLOT ROWS (K34 Form B, ported for K35-E).  The evacuated body
-//: carves the SAME box twice -- level `CW` by the WRITE digit group and level `CR` by
-//: the READ digit group -- so both refinements have to live in ONE table: the two
-//: sides ask different questions of the same window, and a side wanting the coarser
-//: grain ORs the finer rows it already holds.  `CarveRows` carves ONE level and
-//: cannot state this, which is why the write side had no row to key on.
-//:
-//: At the flagship `s = (8, 16)` with `G = 4` that is level 0 at span 2 (128 rows)
-//: and level 1 at span 4 (64 rows) = 192 rows per side, against the single carve's
-//: 96 -- inside the 4x the architecture doc's law 5 budgets.
-template <int D, int B, int K, int M, int G, int CW, int CR>
-struct TwoCarveRows {
-  using BP = BoxPlan<D, B, K, M>;
-  static constexpr int kGroups = G;
-  static constexpr int s(int l) { return (l == CW || l == CR) ? BP::s(l) / G : BP::s(l); }
-  static constexpr int row_g(int l) { return s(l) < B ? B / s(l) : 0; }
-  static constexpr int row_entries(int l) { return l == D ? 0 : row_g(l) + row_entries(l + 1); }
+//: THE BALLOT ROWS OF A TWO-SIDED CARVE.  The two sides carve the SAME box along
+//: DIFFERENT axes, so both refinements live in ONE table at the FINER of the two
+//: spans per level; a side wanting a coarser grain ORs the rows it already holds,
+//: which is exact because a rectangle of digits holds a live leaf iff every level's
+//: range holds a live digit.  The table stays sigma-shaped -- `sum_l B/s_l` rows,
+//: never a product -- so it does not grow with `N`.
+template <class SW, class SR>
+struct CarveRows {
+  using BP = typename SW::BP;
+  static constexpr int kLevels = BP::kLevels, kWidth = BP::kWidth;
+  static constexpr int s(int l) { return SW::s(l) < SR::s(l) ? SW::s(l) : SR::s(l); }
+  static constexpr int row_g(int l) { return s(l) < kWidth ? kWidth / s(l) : 0; }
+  static constexpr int row_entries(int l) {
+    return l == kLevels ? 0 : row_g(l) + row_entries(l + 1);
+  }
   static constexpr int kRows = row_entries(0);
   static constexpr int row_prefix(int l) { return l == 0 ? 0 : row_prefix(l - 1) + row_g(l - 1); }
-  static_assert(CW != CR, "the two carves name two different levels");
-  static_assert(BP::s(CW) % G == 0 && BP::s(CR) % G == 0,
-                "each carve splits its level's owner run into G whole groups");
-  static_assert(row_g(CW) > 0 && row_g(CR) > 0,
-                "a carved level must be narrower than its own width, or it has no rows to "
-                "refine and the carve has nothing to key on");
+  //: how many table rows a digit run of `span` covers at level `l`.
+  static constexpr int rows_of(int span, int l) { return span / s(l); }
 };
 
 }  // namespace rola::carry

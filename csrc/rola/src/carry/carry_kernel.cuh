@@ -47,12 +47,16 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010016;
+static constexpr int kCarryBuildMagic = 31010017;
 
 static constexpr int kDv = 64;         // d_v
 static constexpr int kCols = kDv + 1;  // the mass column rides the state
 static constexpr int kPadE = 8;        // bf16 row padding, elements (16 B)
 static constexpr int kPadF = 4;        // fp32 row padding, elements (16 B)
+//: THE CHANNEL-SPLIT BODY'S SHAPE, and the reverse family's.  Those bodies split the
+//: `kDv` CHANNELS over a fixed four warps and hold the whole box in each; the CARVED
+//: body's executor count is the arm's STREAM count instead (`CarryGeom::kWarps`) and
+//: is not a constant of this file.
 static constexpr int kWarps = 4;
 static constexpr int kThreads = kWarps * 32;
 static_assert(kAtomLeaves == kMmaK, "the page granule is one MMA k-step");
@@ -61,6 +65,13 @@ static_assert(kAtomLeaves == kMmaK, "the page granule is one MMA k-step");
 //: register-array index, so the level index must be a constant expression; a
 //: `for (int l = 0; l < D; ++l)` would make `load_run<n_l(l)>` ill-formed and would
 //: turn every per-level array index dynamic, which is a stack frame.
+//: a type carried through a generic lambda's argument, which is how a body that is
+//: instantiated per SIDE names that side's span vector without a second template.
+template <class T>
+struct type_tag {
+  using type = T;
+};
+
 template <int N, class F>
 __device__ __forceinline__ void static_for(F&& f) {
   if constexpr (N > 0) {
@@ -69,23 +80,26 @@ __device__ __forceinline__ void static_for(F&& f) {
   }
 }
 
-//: THE CARVE (K33 clean-sheet 1.2A, tier A).  A warp owns one GROUP of the
-//: innermost level's digits across every outer digit -- `BC / kWarps` leaves and
-//: ALL `kCols` channels -- and tiles those leaves so that a group's digit is a
-//: whole accumulator n-tile.  That tiling is private to the warp: the lattice's
-//: `local` order, the state plane, decode and the facts geometry never see it, so
-//: the readout needs no state image, no `ldmatrix` for A and no CTA barrier.  The
-//: read phase therefore shares NOTHING (per-warp lists, per-warp panel region,
-//: warp-private staging, direct RED); the write phase keeps the shared value ring
-//: and its per-batch rendezvous, because a write entry is live at every one of the
-//: innermost level's digits and so belongs to all four warps.
+//: THE CARVE (K35 multi-level).  A STREAM owns an affine RECTANGLE of the owner's
+//: digits -- a per-level span vector, `prod_l S_l` leaves and ALL `kCols` channels
+//: -- and tiles those leaves in a private mixed-radix order.  That tiling is private
+//: to the stream: the lattice's `local` order, the state plane, decode and the facts
+//: geometry never see it, so the readout needs no state image, no `ldmatrix` for A
+//: and no CTA barrier.  The two sides carve the SAME box along different axes, which
+//: is why the state evacuates registers at each phase change (the transit plane).
+//: This stage maps one stream to one EXECUTOR -- a warp on sm_80 -- so the CTA's
+//: warp count is the stream count and never a constant of the file.
 
-template <int D, int B, int K, int M, int W, int C, int CL>
+template <int D, int B, int K, int M, int W, int C, int S0, int S1, int S2, int S3>
 struct CarryGeom {
   using BP = BoxPlan<D, B, K, M>;
+  using SV = StreamSpans<D, B, K, M, S0, S1, S2, S3>;
   static constexpr int BC = BP::kBC;
-  //: the warp's leaves, and the private panel row they index.
-  static constexpr int kLeafW = BC / kWarps;
+  //: THE EXECUTOR MAP, 1:1 at this stage: one warp runs one stream.
+  static constexpr int kWarps = SV::kStreams;
+  static constexpr int kThreads = kWarps * 32;
+  //: the stream's leaves, and the private panel row they index.
+  static constexpr int kLeafW = SV::kLeaf;
   static constexpr int LdV = kDv + kPadE;
   static constexpr int LdS = kLeafW + kPadE;
   static constexpr int LdO = kDv + kPadF;
@@ -110,10 +124,9 @@ struct CarryGeom {
   //: the fan-in staging is deleted (2.6), so this buffer's only tenant is the state
   //: plane's PAGE at entry and exit.
   static constexpr int out_bytes = kAtomLeaves * LdO * (int)sizeof(float);
-  //: `kWarps` READ lists, one per digit group, then ONE write list: a read entry
-  //: belongs to the groups its innermost digits fall in, a write entry to all.
-  //: `kWarps` READ lists and NOTHING ELSE (2.4/2.7).  The write side keeps no list at
-  //: all: its schedule IS the tier-2 bitmap, and its ids are transient -- a per-warp
+  //: ONE READ LIST PER STREAM, plus the CTA's two shared ones.  A read entry belongs
+  //: to the streams whose boxes its digits reach; the write side keeps no list of its
+  //: own -- its schedule IS the tier-2 bitmap, and its ids are transient: a per-stream
   //: cursor decompresses one ballot word at a time into a small ring, in the stage's
   //: shadow, so nothing window-sized is ever materialized on that side.
   static constexpr int kLists = kWarps + 2;  // + the CTA's shared read and write lists
@@ -129,8 +142,8 @@ struct CarryGeom {
   //: best residency this arm can reach at any depth.  `kRegFloor` is the DECLARED
   //: floor for this family -- the measured census of the heaviest built arm,
   //: recorded in the findings doc and re-measured at every milestone.  A CTA target
-  //: the live set cannot honour is a spill: the carve holds `BC/kWarps` leaves x all
-  //: `kCols` channels per warp, and 219 registers is what that costs.
+  //: the live set cannot honour is a spill: a stream holds `prod_l S_l` leaves x all
+  //: `kCols` channels, and 219 registers is what that costs at 32 leaves.
   static constexpr int kRegFloor = 220;
   //: ---- K35-E: THE TRANSIT PLANE -------------------------------------------
   //: The state EVACUATES registers at each phase change, because the readout and the
@@ -142,9 +155,11 @@ struct CarryGeom {
   //: `LD` AND ITS SWIZZLE ARE A DERIVATION, NOT A GUESS (findings, derivation 2).
   //: The push varies a lane's word index in the LOW bits and the pull varies it in
   //: bit 3 and above, so NO linear stride is conflict-free on both legs -- searched
-  //: over `LD`, best is 2-way.  `word ^= (chan & 7)` at `LD = 144` measures max-way
-  //: ONE on both legs, over every `(m, g, w, d0l)` slice.
-  static constexpr int kHiLD = 144;
+  //: over `LD`, best is 2-way.  `word ^= (chan & 7)` at `LD = BC + 16` measures
+  //: max-way ONE on both legs, over every `(m, g, w, d0l)` slice: what the search
+  //: found is a row stride of `8 mod 32` u32 words, which `BC + 16` holds at every
+  //: box a page-aligned `BC` admits (144 at `BC = 128`, 272 at `BC = 256`).
+  static constexpr int kHiLD = BC + 16;
   static constexpr int kHiSwz = 7;
   static constexpr int plane_bytes = kPlaneRows * kHiLD * (int)sizeof(__nv_bfloat16);
   //: THE VALUE STREAM IS PER-WARP AND PRIVATE (2.4): one `CP`-token tile per warp.
@@ -193,63 +208,67 @@ struct ProduceMap {
   static constexpr int idx_of(int l, int j) { return (j >> BP::run_shift(l)) & (n_l(l) - 1); }
 };
 
-//: THE PRIVATE LEAF ORDER AND THE PRODUCE'S THREAD MAP.  A warp's leaves are
-//: `p = (r_CL - grp*kGS) * kOut + outer`: the carve level SLOWEST, so its digit
-//: is a contiguous run of `kOut` leaves, and the outer levels in the lattice's own
-//: mixed radix beneath it.  Because `p` is a bit permutation of the levels' digit
-//: offsets exactly as `local` is, the expansion is `sum_l n_l` amplitude loads
-//: followed by products of register values at CONSTANT indices -- no dynamic
-//: indexing, no spill, no materialized gate plane.
-//: `QMAJOR` NAMES WHICH LEVEL LIES LOWEST IN THE PRIVATE INDEX `p`, and the two
-//: carves want opposite answers.  Under q-major the CARVE level is lowest, so a
-//: lane's two adjacent slots are two adjacent digits of its own group.  Under
-//: CL-major the carve level is HIGHEST and the lattice's innermost level is lowest,
-//: so a lane's two adjacent slots are LATTICE-ADJACENT LEAVES -- which is what the
-//: transit's `bf16x2` publish requires of the write carve.
-template <int D, int B, int K, int M, int C, int CL, bool QMAJOR = true>
-struct CarveMap {
+//: THE PRIVATE LEAF ORDER AND THE PRODUCE'S THREAD MAP.  A stream's leaves are
+//: numbered by a MIXED RADIX over its own per-level spans -- `p = sum_l r_l <<
+//: shift(l)`, with `r_l` the digit's offset inside the stream's range at level `l`
+//: -- so `p` is a bit permutation of the levels' digit offsets exactly as `local`
+//: is, and the expansion is `sum_l n_l` amplitude loads followed by products of
+//: register values at CONSTANT indices: no dynamic indexing, no spill, no
+//: materialized gate plane.  A span-1 level contributes a constant and drops out of
+//: the order on its own.
+//:
+//: THE PRIVATE-ORDER RULE, which fixes the order from the span vector alone:
+//:   1. level `D - 1` is INNERMOST.  The transit plane pairs `bf16x2` on
+//:      LATTICE-ADJACENT leaves, so the level lying lowest in `p` must be the level
+//:      lying lowest in `local`, and its span must be at least two.  THAT CLAUSE IS
+//:      THE CURRENT EXCHANGE'S LIMITATION, NOT THE DESIGN'S: it comes from the plane
+//:      publishing pairs, and the rebuilt exchange (writer-side placement into
+//:      per-reader `[leaf][channel]` segments) admits any span vector.
+//:   2. the remaining levels keep the LATTICE order, except the levels this side
+//:      CARVES, which move OUTERMOST keeping their lattice order among themselves.
+//: A side carves where it is declared sparse, so rule 2 is "sparse outermost, dense
+//: innermost": an eight-slot n-tile spans dense digits and each sparse level indexes
+//: WHOLE tiles, where the digit skip is exact.
+template <int D, int B, int K, int M, int C, class SV>
+struct SpanMap {
   using BP = BoxPlan<D, B, K, M>;
-  static constexpr int kLevel = CL;
-  static constexpr int kGS = BP::s(kLevel) / kWarps;  // the group's digits
-  static constexpr int kOut = BP::kBC / BP::s(kLevel);
-  static constexpr int kLeaf = kGS * kOut;
+  static constexpr int kLeaf = SV::kLeaf;
   static constexpr int kRowThr = 32 / C;
   static constexpr int SPT = kLeaf / kRowThr;
   //: `kRowThr` lanes share a token's panel row, each minting `SPT` contiguous private
   //: slots.  At the strip shape that is TWO (32 lanes, 16 tokens), and the produce
   //: then needs the lane's slot base folded back into each level's run column --
-  //: `colAdj` in `produce` (the 2.1 paper derivation for this shape).
+  //: `adj` in `produce` (the 2.1 paper derivation for this shape).
   static_assert(kRowThr * SPT == kLeaf && (kRowThr & (kRowThr - 1)) == 0,
                 "a token's panel row splits over a power-of-two lane group");
-  //: THE PRIVATE ORDER IS q-MAJOR (K35 M1b): `p = outer * kGS + (r_CL - grpBase)`,
-  //: so a level-0 digit owns `kGS` ADJACENT leaves and an `mma` n-tile of eight
-  //: holds `8/kGS` whole digits.  That is what makes the write side's per-k-tile
-  //: DIGIT UNION reapable as an n-tile skip: under the previous CL-major order one
-  //: n-tile spanned ALL of the outer level's digits and there was nothing to skip.
-  //: The relabelling is a PERMUTATION of the accumulator's n axis and nothing else
-  //: -- the k order, and therefore the state plane, is bit-identical under it.
-  //: the bits of the NON-CARVE levels lying inside `l`.  `run_shift` counts every
-  //: level inside `l`, so the carve level's own span comes back out when it is one
-  //: of them -- which is what lets the carve sit at an OUTER level at all.
-  static constexpr int inner_bits(int l) {
-    return BP::run_shift(l) - (kLevel > l ? BP::span_bits(kLevel) : 0);
+  static constexpr int span(int l) { return SV::s(l); }
+  static constexpr int bits(int l) { return ilog2c(span(l)); }
+  //: rule 2 as a strict order on the levels beneath `D - 1`, and `rank` as the
+  //: position it induces -- `0` innermost.  Both are counts, so neither tabulates.
+  static constexpr bool before(int a, int b) {
+    return SV::carves(a) != SV::carves(b) ? !SV::carves(a) : a > b;
   }
-  static constexpr int shift(int l) {
-    return QMAJOR ? (l == kLevel ? 0 : ilog2c(kGS) + inner_bits(l))
-                  : (l == kLevel ? ilog2c(kOut) : inner_bits(l));
+  static constexpr int count_before(int l, int i) {
+    return i >= D - 1 ? 0 : (before(i, l) ? 1 : 0) + count_before(l, i + 1);
   }
-  static constexpr int span(int l) { return l == kLevel ? kGS : BP::s(l); }
+  static constexpr int rank(int l) { return l == D - 1 ? 0 : 1 + count_before(l, 0); }
+  static constexpr int shift_from(int l, int i) {
+    return i >= D ? 0 : (rank(i) < rank(l) ? bits(i) : 0) + shift_from(l, i + 1);
+  }
+  static constexpr int shift(int l) { return shift_from(l, 0); }
   static constexpr int vary(int l) { return SPT >> shift(l); }
   static constexpr int n_l(int l) {
     return vary(l) < 1 ? 1 : (vary(l) > span(l) ? span(l) : vary(l));
   }
   static constexpr int idx_of(int l, int j) { return (j >> shift(l)) & (n_l(l) - 1); }
-  //: the ADJACENT PAIR comes from the level lying LOWEST in `p`, which under the
-  //: q-major order is the CARVE LEVEL itself: a lane's two adjacent slots are two
-  //: adjacent digits of its own group.
-  static constexpr int kPairLevel = QMAJOR ? kLevel : (kLevel == D - 1 ? D - 2 : D - 1);
-  static_assert(shift(kPairLevel) == 0 && n_l(kPairLevel) >= 2,
-                "the carve level lies lowest in the private order and supplies the pair");
+  //: the ADJACENT PAIR comes from the level lying LOWEST in `p`, which rule 1 makes
+  //: the lattice's innermost level: a lane's two adjacent slots are two adjacent
+  //: digits of that level, hence two adjacent leaves.
+  static constexpr int kPairLevel = D - 1;
+  static_assert(shift(kPairLevel) == 0 && n_l(kPairLevel) >= 2 && span(D - 1) >= 2,
+                "the lattice's innermost level lies lowest in the private order and supplies "
+                "the pair the transit plane publishes (rule 1: the CURRENT exchange's "
+                "requirement, which the rebuilt one lifts)");
 };
 
 //: a contiguous run of `n` bf16, at the widest access that covers it.  The runs are
@@ -286,32 +305,34 @@ constexpr bool mode_declares(uint32_t modes, int l, uint32_t side) {
 //: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from
 //: the same geometry the ring depth is.  A ring sized for a residency the launch
 //: bound does not ask for is a ring sized for nothing.
-template <int D, int B, int K, int M, int W, int C, int CL>
-constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, W, C, CL>::cta_target;
+template <int D, int B, int K, int M, int W, int C, int S0, int S1, int S2, int S3>
+constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, W, C, S0, S1, S2, S3>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int W, int C, int CL, int CW, uint32_t MO, bool STATE>
-__global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) void carry_kernel(
-    const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
-    const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
-    const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den, int L,
-    int tok_words, int v_row_bytes, const float* __restrict__ s_in, float* __restrict__ s_out) {
+template <int D, int B, int K, int M, int W, int C, int W0, int W1, int W2, int W3, int R0, int R1,
+          int R2, int R3, uint32_t MO, bool STATE>
+__global__ __launch_bounds__((CarryGeom<D, B, K, M, W, C, R0, R1, R2, R3>::kThreads),
+                             (kCarryCtaTarget<D, B, K, M, W, C, R0, R1, R2, R3>)) void
+carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
+             const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
+             const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den,
+             int L, int tok_words, int v_row_bytes, const float* __restrict__ s_in,
+             float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
-  using G = CarryGeom<D, B, K, M, W, C, CL>;
-  using PM = CarveMap<D, B, K, M, G::CP, CL>;
-  //: THE WRITE CARVE'S MAP.  CL-major, so a lane's two adjacent private slots are
-  //: LATTICE-ADJACENT leaves -- what the transit's `bf16x2` publish requires.  A
-  //: single-carve body reuses the read map and nothing below changes.
-  using PMW =
-      std::conditional_t<(CW >= 0), CarveMap<D, B, K, M, G::CP, (CW >= 0 ? CW : 0), false>, PM>;
-  //: THE ROW TABLE.  A two-carve body votes its rows under `TwoCarveRows` -- the same
-  //: table refined at BOTH carved levels -- so each warp reads its OWN group's row on
-  //: either side.  A single-carve body keeps `CarveRows` and the write list stays
-  //: shared, because there every warp owns every write entry.
-  static constexpr bool kTwo = CW >= 0;
-  using CR = std::conditional_t<kTwo, TwoCarveRows<D, B, K, M, kWarps, (kTwo ? CW : 0), CL>,
-                                CarveRows<D, B, K, M, kWarps, CL>>;
+  using G = CarryGeom<D, B, K, M, W, C, R0, R1, R2, R3>;
+  //: THE TWO SPAN VECTORS.  The READ side's carve and the WRITE side's carve of the
+  //: same box, each with its own private order under the rule above.
+  using SVR = StreamSpans<D, B, K, M, R0, R1, R2, R3>;
+  using SVW = StreamSpans<D, B, K, M, W0, W1, W2, W3>;
+  using PM = SpanMap<D, B, K, M, G::CP, SVR>;
+  using PMW = SpanMap<D, B, K, M, G::CP, SVW>;
+  //: THE ROW TABLE, refined at every level EITHER side carves, so each stream reads
+  //: its OWN range's rows on either side and a side wanting a coarser range ORs the
+  //: finer rows it already holds.
+  using CR = CarveRows<SVW, SVR>;
+  constexpr int kWarps = G::kWarps;
+  constexpr int kThreads = G::kThreads;
 
   constexpr int BC = BP::kBC;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
@@ -322,19 +343,15 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   constexpr int NL = kLeafW / kMmaN;
   constexpr int KDw = kLeafW / kMmaK;
   constexpr int MCH = kDv / kMmaM;  // the channel m-tiles, ALL of them per warp
-  //: the carve level's group geometry, and the page's rectangle in it.
-  constexpr int kGS = PM::kGS, kOut = PM::kOut;
-  constexpr int kAtomOut = kAtomLeaves / BP::s(CL);
-  static_assert(kAtomOut >= 1 && kAtomOut * BP::s(CL) == kAtomLeaves,
-                "K3: the carve level's span divides the page granule, so a page is a whole "
-                "number of outer runs times every one of that level's digits");
-
   static_assert(C % kMmaM == 0 && kThreads % C == 0, "the batch tile must divide");
-  static_assert(kLeafW % kMmaK == 0, "the warp's leaves are a whole number of k-tiles");
+  static_assert(kLeafW % kMmaK == 0, "a stream's leaves are a whole number of k-tiles");
   static_assert(BC % kAtomLeaves == 0, "K2: an owner holds whole page atoms");
   static_assert(design::smem_fits(G::bytes), "this arm does not fit the SMEM maximum");
   static_assert(LdS % 8 == 0 && LdV % 8 == 0, "an ldmatrix row address must be 16-byte aligned");
-  static_assert(BP::span_bits(CL) >= 1, "the carve level supplies the adjacent pair");
+  static_assert(kWarps <= kBallotLanes, "one lane of the walk slices each executor's share");
+  static_assert(SVW::kStreams == SVR::kStreams,
+                "this stage maps one stream to one executor, so the two sides' carves must "
+                "cut the box into the same number of streams");
   static_assert(W % kBallotLanes == 0 && kThreads % kBallotLanes == 0,
                 "a warp's tokens must be exactly one ballot word of the owner's row");
 
@@ -379,28 +396,35 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   float* const oPlane = pin_address(o + (long)bh * L * kDv);
   float* const denPlane = pin_address(den + (long)bh * L);
 
-  //: THE GROUP ROTATION.  Two CTAs co-resident on an SM are one grid wave apart and
+  //: THE STREAM ROTATION.  Two CTAs co-resident on an SM are one grid wave apart and
   //: the wave is a multiple of `kWarps`, so `owner % kWarps` would rotate both
   //: identically; the wave-stride form does not (K33 1.45).
-  const int grp = (warp + ((owner + (owner >> 5)) & (kWarps - 1))) & (kWarps - 1);
+  const int strm = (warp + ((owner + (owner >> 5)) & (kWarps - 1))) & (kWarps - 1);
 
   // ---- the owner's digit runs, one per level -------------------------------
   //: `o_l` is a bit-field extract of the owner index: the lattice's owner
   //: coordinates are the top `sum_l log2 g_l` bits of `lambda` (R0 spec section 2.4).
   int runCol[D];
-  //: AND THE BALLOT ROW, per level: the SAME `o_l`, addressing the row the facts
-  //: pass voted for this owner group at this level (K31-i-d) -- at the CARVE grain,
-  //: so the innermost level's row is the WARP's group and the owner's own word is
-  //: the OR of the `kWarps` of them.  The liveness pass reads these words instead of
-  //: re-reading the amplitude runs itself.
+  //: AND THE STREAM'S OWN DIGIT OFFSET INSIDE THAT RUN, per level and per side: the
+  //: stream index decomposes in MIXED RADIX over the per-level stream grids, so a
+  //: multi-level carve is `grp_l * S_l` at EVERY carved level and nothing changes at
+  //: the levels the side spans whole.  Computed ONCE per warp, before the window
+  //: loop, out of shifts and masks over compile-time powers of two.
+  int offR[D], offW[D];
+  //: AND THE BALLOT ROW BASE, per level: the SAME `o_l`, addressing the FIRST row the
+  //: facts pass voted for this owner's run at this level (K31-i-d) -- at the table's
+  //: grain, which is the finer of the two sides' spans, so a side reads its own
+  //: range's rows and the owner's word is the OR of the run's.  The liveness pass
+  //: reads these words instead of re-reading the amplitude runs itself.
   uint32_t rowOff[D];
   const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
     const int o_l = (owner / BP::owner_div(l)) % BP::g(l);
     runCol[l] = BP::col_base(l) + o_l * BP::s(l);
-    rowOff[l] = (uint32_t)(CR::row_prefix(l) + o_l * ((l == CL || (kTwo && l == CW)) ? kWarps : 1))
-                * rowBytes;
+    offR[l] = ((strm >> ilog2c(SVR::grid_div(l))) & (SVR::g(l) - 1)) * SVR::s(l);
+    offW[l] = ((strm >> ilog2c(SVW::grid_div(l))) & (SVW::g(l) - 1)) * SVW::s(l);
+    rowOff[l] = (uint32_t)(CR::row_prefix(l) + o_l * CR::rows_of(BP::s(l), l)) * rowBytes;
   });
   //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the side's
   //: whole row block is `kRows * tok_words * 4` bytes, which is 32-bit at every
@@ -477,13 +501,13 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   //: ---- K35-E: THE TRANSIT PLANE ------------------------------------------
   //: `leaf_of` is the LATTICE leaf of a private index `P`.  The private order's own
   //: `shift`/`span` give each level's digit inside `P`; the lattice's `run_shift`
-  //: puts it back.  The carve level additionally carries the warp's group base.
-  //: This is the ONLY place the two orders meet, and it is a pure index map.
+  //: puts it back.  Every carved level additionally carries the stream's own digit
+  //: offset.  This is the ONLY place the two orders meet, and it is a pure index map.
   auto leaf_of = [&](int P) {
     int lf = 0;
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      const int dig = ((P >> PM::shift(l)) & (PM::span(l) - 1)) + (l == CL ? grp * PM::kGS : 0);
+      const int dig = ((P >> PM::shift(l)) & (PM::span(l) - 1)) + offR[l];
       lf += dig << BP::run_shift(l);
     });
     return lf;
@@ -497,8 +521,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     int lf = 0;
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      const int dig =
-          ((P >> PMW::shift(l)) & (PMW::span(l) - 1)) + (l == PMW::kLevel ? grp * PMW::kGS : 0);
+      const int dig = ((P >> PMW::shift(l)) & (PMW::span(l) - 1)) + offW[l];
       lf += dig << BP::run_shift(l);
     });
     return lf;
@@ -583,21 +606,27 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   // ---- the state plane's page sweep, in LATTICE leaf order -----------------
   constexpr int kAtoms = BC / kAtomLeaves;
   constexpr int kPageElems = kAtomLeaves * kCols;
-  constexpr int kPageCarry = kThreads - kCols;
-  static_assert(kThreads > kCols && kThreads < 2 * kCols,
-                "the page sweep's step must cross one row boundary, so its row "
-                "cursor advances by one or two and never by a division");
+  //: THE SWEEP'S STEP, AS A CARRY.  A step of `kThreads` elements advances the row
+  //: cursor by `kRowStep` or by one more, so the walk is a compile-time count of
+  //: predicated subtractions and never a division -- at any executor count.
+  constexpr int kRowStep = kThreads / kCols;
+  constexpr int kPageCarry = kThreads - kRowStep * kCols;
+  static_assert(kRowStep >= 1, "a sweep step must advance the row cursor");
   auto page_sweep = [&](uint32_t pageOff, auto&& body) {
     int e = tid;
-    int row = tid < kCols ? 0 : 1;
-    int col = tid < kCols ? tid : tid - kCols;
+    int row = 0, col = tid;
+    static_for<kRowStep>([&](auto) {
+      const bool over = col >= kCols;
+      row += over ? 1 : 0;
+      col -= over ? kCols : 0;
+    });
 #pragma unroll 1
     while (e < kPageElems) {
       body(row * LdO + col, pageOff + (uint32_t)(e * (int)sizeof(float)));
       e += kThreads;
       col += kPageCarry;
       const bool wrap = col >= kCols;
-      row += wrap ? 2 : 1;
+      row += wrap ? kRowStep + 1 : kRowStep;
       col -= wrap ? kCols : 0;
     }
   };
@@ -606,43 +635,50 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   //: DEFINITION here (R0 spec section 2.6).
   const uint32_t atomBase = (uint32_t)(bh * (int)(BP::kLeaves / kAtomLeaves) + owner * kAtoms);
   auto page_off = [](uint32_t atom) { return atom * (uint32_t)(kPageElems * (int)sizeof(float)); };
-  //: A PAGE HOLDS `kAtomOut` OUTER RUNS x EVERY DIGIT OF THE CARVE LEVEL, so the
-  //: warp owns `kGS * kAtomOut` of its leaves in each page.  `local - 16a` is
-  //: `oi*s_CL + grpBase + t`, and the accumulator element carrying it -- tile,
-  //: column and the two `k` halves -- is a compile-time function of `(a, t, oi)`.
-  const int grpBase = grp * kGS;
+  //: THE PAGE'S SLICE OF A STREAM, PER FRAGMENT.  Register-resident state exists only
+  //: as fragments (KERNEL_STANDARDS section 1): the accumulator is `NL` n-tiles x
+  //: `MCH` m-tiles of the m16n8 shape, and a lane's fragment holds TWO ADJACENT
+  //: private slots at two channel rows.  So this nest iterates FRAGMENT MODES --
+  //: n-tile, the pair's half, m-tile, the row half -- and the leaf map is folded into
+  //: the ADDRESS: the private slot is a lane expression, its atom and its row inside
+  //: the page come from the map, and every accumulator index is a constant.
+  //: BODY COUNT: `NL * 2 * (2*MCH + 1)` per atom = 72 at every built arm, times
+  //: `kAtoms` per call (8 at BC=128, 16 at BC=256).  The per-LEAF form this replaces
+  //: was `kLeafW * (2*MCH + 1)` per atom with three quarters of the lanes predicated
+  //: off -- 4,096 bodies at the eight-warp arm, and 50 minutes of cicc.
   auto page_regs = [&](auto Ac, auto Ld) {
     constexpr int a = decltype(Ac)::value;
     constexpr bool LOAD = decltype(Ld)::value;
     //: THE STATE PLANE IS WALKED UNDER THE WRITE CARVE, because that is the order the
-    //: accumulator is held in.  `pp` is compile-time, so the tile and the slot within
-    //: it are too; the page and the row inside it come from the leaf map and are
-    //: runtime, which is exactly the freedom an OUTER carve level needs.
-    static_for<kLeafW>([&](auto Pc) {
-      constexpr int pp = decltype(Pc)::value;
-      constexpr int tile = pp / kMmaN, nix = pp % kMmaN;
-      if ((lane & 3) != nix / 2) return;
-      const int lf = leafW_of(pp);
-      if ((lf >> ilog2c(kAtomLeaves)) != a) return;
-      const int row = lf & (kAtomLeaves - 1);
-      static_for<MCH>([&](auto Mc) {
-        constexpr int m = decltype(Mc)::value;
-        static_for<2>([&](auto Kc) {
-          constexpr int k = (nix & 1) + 2 * decltype(Kc)::value;
-          float* const cell = &so[row * LdO + m * kMmaM + (lane >> 2) + 8 * (k >> 1)];
-          if constexpr (LOAD)
-            st[m][tile][k] = *cell;
-          else
-            store_f32(cell, st[m][tile][k]);
+    //: accumulator is held in.
+    static_for<NL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      static_for<2>([&](auto Lc) {
+        constexpr int el = decltype(Lc)::value;
+        const int lf = leafW_of(j * kMmaN + 2 * (lane & 3) + el);
+        if ((lf >> ilog2c(kAtomLeaves)) != a) return;
+        const int row = lf & (kAtomLeaves - 1);
+        static_for<MCH>([&](auto Mc) {
+          constexpr int m = decltype(Mc)::value;
+          static_for<2>([&](auto Hc) {
+            constexpr int h = decltype(Hc)::value;
+            float* const cell = &so[row * LdO + m * kMmaM + (lane >> 2) + 8 * h];
+            if constexpr (LOAD)
+              st[m][j][el + 2 * h] = *cell;
+            else
+              store_f32(cell, st[m][j][el + 2 * h]);
+          });
         });
+        //: the mass rides row 0 of its own accumulator, so only the lane quad holding
+        //: that row carries it.
+        if ((lane >> 2) == 0) {
+          float* const cell = &so[row * LdO + kDv];
+          if constexpr (LOAD)
+            mass_st[j][el] = *cell;
+          else
+            store_f32(cell, mass_st[j][el]);
+        }
       });
-      if (lane == nix / 2) {
-        float* const cell = &so[row * LdO + kDv];
-        if constexpr (LOAD)
-          mass_st[tile][nix & 1] = *cell;
-        else
-          store_f32(cell, mass_st[tile][nix & 1]);
-      }
     });
   };
 
@@ -672,15 +708,15 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
   int lvCol[D], lvColW[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    lvCol[l] = runCol[l] + (l == CL ? grp * kGS : 0);
-    lvColW[l] = runCol[l] + (l == PMW::kLevel ? grp * PMW::kGS : 0);
+    lvCol[l] = runCol[l] + offR[l];
+    lvColW[l] = runCol[l] + offW[l];
   });
 
-  //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS.  A padding row of a partial
+  //: A DEAD ROW IS ZEROED AT THE PAIR LEVEL'S FACTOR.  A padding row of a partial
   //: batch has no token, and a zero coefficient contributes exactly nothing to either
-  //: MMA (the produce's dead-row zeroing law).  The carve level's group run is the
-  //: narrowest factor the private order has, so zeroing it covers the whole row for
-  //: one or two selects and costs no arithmetic.
+  //: MMA (the produce's dead-row zeroing law).  The pair level's run is the factor
+  //: every slot of the row carries, so zeroing it covers the whole row for one or two
+  //: selects and costs no arithmetic.
   //:
   //: THE READ SIDE HAS NO GAIN.  Its scalar is identically 1 and the trailing
   //: `mul_bf16x2(acc, 1)` was 44% of the read produce -- 32 FMUL, 32 PRMT and 16 F2FP
@@ -696,14 +732,10 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: no `[D][n]` array is ever live.
     uint32_t acc[SPT / 2];
     {
-      //: THE PAIR LEVEL IS THE CARVE LEVEL under the q-major order, so ONE run --
-      //: the warp's own group of `kGS` digits -- both supplies the adjacent pair and
-      //: carries the dead-row zeroing, which is still the narrowest factor the
-      //: private order has.
-      //: EACH SIDE EXPANDS UNDER ITS OWN CARVE MAP.  The pair comes from the level
-      //: lying LOWEST in that map's private order -- the carve level under q-major
-      //: (the read side), the innermost non-carve level under CL-major (the write
-      //: side) -- and it carries the dead-row zeroing either way.
+      //: EACH SIDE EXPANDS UNDER ITS OWN SPAN MAP, and the pair comes from the level
+      //: lying LOWEST in that map's private order -- the lattice's innermost level on
+      //: both sides, by rule 1 -- so ONE run both supplies the adjacent pair and
+      //: carries the dead-row zeroing.
       //: THE LANE'S SLOT BASE IS `psub * SPT`, and each level reads its digit out of
       //: `p` at that level's own shift -- so the base contributes a CONSTANT digit
       //: offset per level, which `idx_of` (indexing the LOCAL slot) cannot see.  Fold
@@ -786,15 +818,15 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: sides' CLAUSE SETS are different level subsets, and a dense side's clause is
     //: absent-means-full.  ANDing each side's OWN rows IS that conjunction over
     //: exactly the levels where that side is sparse, with no structure fact carried
-    //: into the kernel.  The read side's innermost clause is the WARP'S OWN group
-    //: row; the write side wants the owner's run, which is the OR of the `kWarps`
-    //: of them and is one warp's work because every warp folds every write entry.
+    //: into the kernel.  At a level a side CARVES, that side's clause is its own
+    //: STREAM's range -- the OR of the table rows the range covers -- and the owner's
+    //: run is the OR over the whole run, which the shared derivations want.
     //:
     //: ONE BALLOT WORD PER LANE.  A warp's whole window is `LW` words, so a row is
     //: ONE `LDG.32` and every warp can afford to hold BOTH sides' owner-grain
     //: ballots.  That is what makes the schedule barrier-free: the lists, the
     //: counts and the whole-window skip are all warp-private computations of
-    //: CTA-identical inputs, so the four warps agree by construction and reach the
+    //: CTA-identical inputs, so the warps agree by construction and reach the
     //: window line without a barrier of the schedule's own.
     constexpr int LW = G::kLW;
     static_assert(W <= 0xFFFF, "a token's window-local index must fit the list's element");
@@ -829,65 +861,58 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
       }
       return lane_broadcast(pfx, LW - 1);
     };
-    //: TIER 3, THE PER-CTA PER-LEVEL CLAUSE -- and it is PRUNED BY THE DECLARATION.
-    //: A side conjoins a level's row only where that side is declared sparse there;
-    //: a dense side's row is all-ones and ANDing it is a load for nothing.  The
-    //: side's OWN carve level is excluded because its tier-2 group row carries it.
-    //: At ALT `D = 2` that empties both clauses outright: the read side is sparse
-    //: only at `CL` and the write side only at `CW`.
-    auto clause_of = [&](const uint32_t* rowsS, auto Side) {
+    //: THE CONJUNCTION, ONE STATEMENT FOR EVERY LEVEL -- and EXACT at any carve,
+    //: because a rectangle of digits holds a live leaf iff every level's range holds
+    //: a live digit.  A digit RANGE's word is the OR of the table rows it covers
+    //: (`RANGE`, in table rows), and the levels are ANDed.  Two ranges are asked for:
+    //: the STREAM's own (`MINE`, its ownership test) and the OWNER's whole run (the
+    //: shared derivation and the whole-window skip).  It is PRUNED BY THE
+    //: DECLARATION: a side conjoins a level only where that side is declared sparse,
+    //: because a dense side's row is all-ones and ANDing it is a load for nothing.
+    auto ballot_of = [&](const uint32_t* rowsS, auto Side, auto Vec, auto Mine, const int* off) {
       constexpr uint32_t SIDE = decltype(Side)::value;
-      constexpr int own = (SIDE == kSideRead) ? CL : (kTwo ? CW : CL);
+      using SV = typename decltype(Vec)::type;
+      constexpr bool MINE = decltype(Mine)::value;
       uint32_t m = valid;
       static_for<D>([&](auto Lc) {
         constexpr int l = decltype(Lc)::value;
-        if constexpr (l != own && CR::row_g(l) > 0 && mode_declares(MO, l, SIDE))
-          m &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsS, rowOff[l] + wordB));
+        if constexpr (CR::row_g(l) > 0 && mode_declares(MO, l, SIDE)) {
+          constexpr int RANGE = CR::rows_of(MINE ? SV::s(l) : BP::s(l), l);
+          const uint32_t base =
+              rowOff[l] + (MINE ? (uint32_t)(off[l] >> ilog2c(CR::s(l))) * rowBytes : 0u);
+          uint32_t r = 0u;
+          static_for<RANGE>([&](auto Ic) {
+            r |= *reinterpret_cast<const uint32_t*>(
+                gather_ptr(rowsS, base + (uint32_t)decltype(Ic)::value * rowBytes + wordB));
+          });
+          m &= r;
+        }
       });
       return m;
     };
-    //: TIER 2, THE PER-CONSUMER DOWNSAMPLE: the warp's own multi-digit OR row at a
-    //: carve level, one gather.  `LV` is the side's carve level -- `CL` for reads,
-    //: `CW` for writes once the table is refined at both.
-    auto group_row = [&](const uint32_t* rowsS, int lv, int g) {
-      return *reinterpret_cast<const uint32_t*>(
-          gather_ptr(rowsS, rowOff[lv] + (uint32_t)g * rowBytes + wordB));
-    };
-
-    const uint32_t clauseR = clause_of(rowsR, std::integral_constant<uint32_t, kSideRead>{});
-    const uint32_t clauseW = clause_of(rowsW, std::integral_constant<uint32_t, kSideWrite>{});
-    //: the read side wants its OWN group row (tier 2) and the owner's run (the OR of
-    //: the four, for the whole-window skip).  The write side wants the owner's run
-    //: for the SHARED VALUE STREAM, and -- once the table is refined at `CW` -- its
-    //: own group row too, which is what makes an S-write list possible.
-    uint32_t orR = 0u, orW = 0u, mineR = 0u, mineW = 0u;
-#pragma unroll
-    for (int g = 0; g < kWarps; ++g) {
-      const uint32_t r = group_row(rowsR, CL, g);
-      orR |= r;
-      mineR = (g == grp) ? r : mineR;
-      const uint32_t w = group_row(rowsW, kTwo ? CW : CL, g);
-      orW |= w;
-      mineW = (g == grp) ? w : mineW;
-    }
-    if constexpr (!kTwo) mineW = orW;
-    const uint32_t liveW = clauseW & orW;
+    constexpr std::integral_constant<uint32_t, kSideRead> kRead{};
+    constexpr std::integral_constant<uint32_t, kSideWrite> kWrite{};
+    //: the OWNER-GRAIN ballots, which the cooperative walks are derived from, and the
+    //: STREAM-GRAIN ballots, which each executor's pull tests its ids against.
+    const uint32_t wideR = ballot_of(rowsR, kRead, type_tag<SVR>{}, std::false_type{}, offR);
+    const uint32_t wideW = ballot_of(rowsW, kWrite, type_tag<SVW>{}, std::false_type{}, offW);
+    const uint32_t mineR = ballot_of(rowsR, kRead, type_tag<SVR>{}, std::true_type{}, offR);
+    const uint32_t mineW = ballot_of(rowsW, kWrite, type_tag<SVW>{}, std::true_type{}, offW);
     //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap
     //: mechanism's harvest (study section 2.1).  It is CTA-uniform WITHOUT a
     //: barrier: the two owner-grain ballots are the same words in every warp.
-    if (lane_ballot(((clauseR & orR) | (clauseW & orW)) != 0u) == 0u) continue;
+    if (lane_ballot((wideR | wideW) != 0u) == 0u) continue;
 
-    //: THE READ SIDE GETS THE SAME SHAPE AS THE WRITE SIDE.  Four warps each walking
-    //: the whole bitmap under their own group row is four passes over one window;
-    //: instead ONE cooperative walk derives the OWNER's read ids and each warp PULLS
+    //: THE READ SIDE GETS THE SAME SHAPE AS THE WRITE SIDE.  Every stream walking the
+    //: whole bitmap under its own ballot is one pass per stream over one window;
+    //: instead ONE cooperative walk derives the OWNER's read ids and each stream PULLS
     //: its own subsequence.  It is a per-cell TRADE, not a win -- where a token reads
-    //: leaves in several groups the owner's union is nearly the sum of the per-group
+    //: leaves in several boxes the owner's union is nearly the sum of the per-stream
     //: lists, so the shared walk saves nothing and the pull is added work.
     constexpr int kSliceR = kBallotLanes / kWarps;
     uint16_t* const rlistS = slist + (kWarps + 1) * kListStride;
-    const int nrO =
-        walk(clauseR & orR, rlistS, (uint32_t)(((1ull << kSliceR) - 1ull) << (warp * kSliceR)),
-             (uint32_t)((1ull << (warp * kSliceR)) - 1ull));
+    const int nrO = walk(wideR, rlistS, (uint32_t)(((1ull << kSliceR) - 1ull) << (warp * kSliceR)),
+                         (uint32_t)((1ull << (warp * kSliceR)) - 1ull));
     rendezvous();
     uint16_t* const rlist = slist + warp * kListStride;
     int nr = 0;
@@ -916,13 +941,13 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //: else in the fold.
     constexpr int kSliceBits = kBallotLanes / kWarps;
     uint16_t* const wlistS = slist + kWarps * kListStride;
-    const int nw = walk(clauseW & orW, wlistS,
-                        (uint32_t)(((1ull << kSliceBits) - 1ull) << (warp * kSliceBits)),
-                        (uint32_t)((1ull << (warp * kSliceBits)) - 1ull));
+    const int nw =
+        walk(wideW, wlistS, (uint32_t)(((1ull << kSliceBits) - 1ull) << (warp * kSliceBits)),
+             (uint32_t)((1ull << (warp * kSliceBits)) - 1ull));
     rendezvous();
     //: THE WRITE SIDE'S SCHEDULE IS THE SHARED LIST built above, and each warp's own
     //: share of it is its tier-2 digit row `mineW` -- tested per id by the pull rather
-    //: than decompressed per ballot word.  The COMPACTION (`mineW` and not `orW`) is
+    //: than decompressed per ballot word.  The COMPACTION (`mineW` and not `wideW`) is
     //: what makes a warp fold only the tokens that reach its leaves; it changes the
     //: fold's k-order, so it carries the declared re-baseline and Scan A's shared
     //: order function with it.
@@ -958,7 +983,7 @@ __global__ __launch_bounds__(kThreads, (kCarryCtaTarget<D, B, K, M, W, C, CL>)) 
     //      within-window pair is the INTRA term's and this kernel must not carry it.
     //      The batch line is therefore the window line on both sides.
     //: THE READ PHASE SHARES NOTHING: the list, the panel region, the staging block
-    //: and the fan-in are the warp's own, so the four warps run to the window line
+    //: and the fan-in are the stream's own, so the warps run to the window line
     //: without a single CTA barrier.  Its `__syncwarp` is the panel's, between a
     //: lane's `STS` and the `ldmatrix` that reads another lane's row.
     const int nbr = (nr + CP - 1) / CP;

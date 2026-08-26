@@ -93,6 +93,34 @@ import sccache_toolchain  # noqa: E402
 #: point -- the supported matrix IS the ratified set, not a wish list.
 ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") if a]
 
+#: THE ITERATION ARM SUBSET (KERNEL_STANDARDS section 7). Instantiation cost is the
+#: dominant build resource, so a developer testing ONE arm may compile one arm:
+#: ``ROLA_CARRY_ARMS=10`` (or ``9,10``) names rows of the carry family's declared arm
+#: list by index (`csrc/rola/src/carry/carry.cu`'s ``CARRY_ARM_<i>``). The DEFAULT IS
+#: EVERY DECLARED ARM, so a plain build -- and every gate build -- is the closed-world
+#: one. A subset binary is SELF-IDENTIFYING: ``rola.ops.carry.arms()`` lists exactly
+#: what was built and every entry point refuses an arm the binary does not carry.
+#: Iteration builds pair it with ``ROLA_CUDA_ARCHS=86``; docs/build.md.
+def _carry_arm_subset() -> list[str]:
+    spec = os.getenv("ROLA_CARRY_ARMS", "").replace(",", " ").split()
+    if not spec:
+        return []
+    rows = " ".join(f"CARRY_ARM_{int(i)}(X_)" for i in spec)
+    return [f"-DROLA_CARRY_ARMS(X_)={rows}"]
+
+
+def _is_iteration_build() -> bool:
+    """An ARM-SUBSET build is an ITERATION build and is NOT SHIPPABLE.
+
+    The two post-build gates prove SHIPPABILITY -- that the fatbin carries every
+    ratified instantiation, in the shard the arm list assigns it. A subset binary
+    carries fewer BY CONSTRUCTION, so those gates would fail for the one reason that
+    is not a defect. They are skipped here and nowhere else, behind a banner, and the
+    binary stays self-identifying: `rola.ops.carry.arms()` lists what was built and
+    every entry point refuses an arm it does not carry.
+    """
+    return bool(os.getenv("ROLA_CARRY_ARMS", "").strip())
+
 #: THE EXTENSION IS NAMESPACED INSIDE THE PACKAGE, not top-level. A top-level
 #: ``rola_cuda`` is the flash-attention / mamba precedent, and it has one concrete
 #: cost: an in-place (``pip install -e`` / ``build_ext --inplace``) build drops the
@@ -429,7 +457,7 @@ def build_extension():
     os.environ.setdefault("MAX_JOBS", str(build_flags.default_max_jobs(nvcc_threads)))
 
     nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
-        + list(build_flags.DEPFILE_FLAGS)
+        + list(build_flags.DEPFILE_FLAGS) + _carry_arm_subset()
     assert_no_ptx(nvcc_flags)
 
     ldflags = ["-lcuda"]
@@ -488,6 +516,17 @@ class RoLABuildExtension(BuildExtension):
         self._post_build_manifest_check()
         write_build_config(ROLA_CUDA_ARCHS, ptxas, manifest, pin, sccache)
 
+    def _iteration_banner(self) -> bool:
+        if not _is_iteration_build():
+            return False
+        print("=" * 78)
+        print("ITERATION BUILD -- NOT SHIPPABLE.  ROLA_CARRY_ARMS="
+              f"{os.environ['ROLA_CARRY_ARMS']} built a SUBSET of the carry arm list, so "
+              "the shippability gates (fatbin instantiation, manifest) are skipped. Build "
+              "with ROLA_CARRY_ARMS unset to get a gateable binary.")
+        print("=" * 78)
+        return True
+
     def _post_build_fatbin_check(self):
         """THE SHARDING ITSELF, PROVEN FROM THE BINARY.
 
@@ -501,6 +540,8 @@ class RoLABuildExtension(BuildExtension):
         `tools/fatbin_entries.py` counts them, per arch, and checks each one against
         the shard the arm list says owns it.
         """
+        if self._iteration_banner():
+            return
         so = next(Path(self.build_lib).rglob("_C*.so"), None) or \
             next((ROOT / "rola").glob("_C*.so"), None)
         if so is None:
@@ -523,6 +564,8 @@ class RoLABuildExtension(BuildExtension):
         `decode.cu` and `entmax.cu`, under the same flag list this build uses
         (`tools/build_flags.py`) -- and fails on any spill growth or unhonored
         launch bound."""
+        if _is_iteration_build():
+            return
         if os.getenv("ROLA_SKIP_POST_BUILD_RATIFY") == "1":
             print("post-build ratification SKIPPED (ROLA_SKIP_POST_BUILD_RATIFY=1)")
             return
