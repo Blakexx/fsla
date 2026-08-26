@@ -314,6 +314,47 @@ max(...)`. What this costs is ONE extra CTA barrier per change — after the pul
 any warp writes the readout's tenants into the same bytes — and what it buys is the
 plane's 18.7 / 37 KB leaving the READOUT moment entirely.
 
+### The park: `lo` in SMEM across the readout, as a declaration (K35 S5, P76 F5)
+
+`PK` is a PER-ARM DECLARATION, default 0, and at 0 nothing above changes. At 1 the
+write-view `lo` — the packed bf16 LOW halves of the fold's accumulator, `MCH*NL*2 + NL`
+words a lane — spends the readout in SHARED MEMORY instead of in registers. THE PAYOFF IS
+NOT DEPTH: it is that those registers are dead across the readout, which is the arm's
+register peak, so they become the output fragments' home and the freed budget buys LEAVES
+PER EXECUTOR — box size, the fan-in/DRAM lever (P76 "F5 REINSTATED").
+
+WHERE IT PARKS, and why the mechanism needs no sequencing. Since S4a each consumer has its
+OWN contiguous exchange segment, and that segment is DEAD the moment THAT WARP has pulled
+it — the old "park into the transit's drained slots behind a drained-arrival count" is
+obsolete with the retained plane it belonged to. So a warp stores `lo` into its own
+segment's bytes, warp-private, with no barrier and no count. THE FIT IS AN IDENTITY: a
+warp keeps `32 * 4 * NL * (2*MCH + 1)` bytes, which is `kLeafE * (d_v + 8) * 2` =
+`kLeafE * LdX * 2` — its segment exactly, at every width and box size (`static_assert`ed).
+
+ITS LAYOUT IS NOT THE SEGMENT'S, and the difference is derived rather than inherited.
+Parked `lo` is not a leaf-by-channel matrix in either private order; it is opaque
+packed-pair words whose only reader is the warp that wrote them. So it takes its own map
+over those bytes — word `w` of lane `i` at word `32*w + i` — under which one burst covers
+32 CONSECUTIVE words, i.e. bank `i` for lane `i`: MAX-WAY ONE unconditionally, with no
+swizzle to derive. The exchange's row swizzle addresses ROWS and could only scatter this
+map. `tests/k31/test_segment_layout.py` pins both facts (`ParkedLo`).
+
+WHAT IT COSTS, in full. (1) SMEM: the exchange's segments are live THROUGH the readout, so
+they can no longer be straddled by the readout's tenants — those begin at `park_bytes` and
+the READOUT moment becomes `park + reader segments + read staging + row index + ring`.
+That is the ledger's only change and it is what P76's F5 line prices as "lo plane = BC x
+(d_v+1) x 2 B in the readout moment". (2) INSTRUCTIONS: `kParkWords` `st.shared.u32` and as
+many `ld.shared.u32` per lane, ONCE PER WINDOW each, and NOTHING per token. (3) BARRIERS:
+none, on balance. The change fold→readout LOSES one (the straddle's barrier has nothing to
+protect: the readout's tenants are no longer those bytes), and the change readout→fold
+GAINS one, because the unpark must precede EVERY warp's `publish_write` — a publisher
+writes into the CONSUMER's segment, which is where that consumer's `lo` is parked.
+
+    PK = 0:  publish_read | BAR | pull_read | BAR | ....... readout .......
+    PK = 1:  publish_read | BAR | pull_read + PARK | ....... readout .......
+    PK = 0:  ....... readout ....... | publish_write | BAR | reload_hi | BAR
+    PK = 1:  ....... readout ....... | UNPARK | BAR | publish_write | BAR | reload_hi | BAR
+
 The SEGMENT's value rows are the same story at `LdV = 136`: a 128-bit shared access is
 serviced EIGHT LANES AT A TIME (eight lanes × 16 B is the 32 banks × 4 B the memory
 delivers per cycle), and a group's eight quanta cover all thirty-two banks exactly once
@@ -668,6 +709,7 @@ drained, that says every contribution has landed.
 | the staged factor block for group `g+1` → the expansion that reads it at `g+1` | `cp.async.wait_group` in the same warp (the block is that warp's own) |
 | the published ballots and prefixes → the fetch that ranks against them | the phase change's rendezvous |
 | the window's list writes → the previous window's list reads | the WINDOW-LINE rendezvous of the previous window |
+| a warp's UNPARK of its `lo` → any warp's `publish_write` into that warp's segment (`PK = 1`) | the unpark's own rendezvous, which replaces the straddle's |
 
 The mass channel is a channel like any other under this carve: the warp holds its own
 leaves' mass partial and REDs it to `den` itself, so no cross-warp sum of the denominator

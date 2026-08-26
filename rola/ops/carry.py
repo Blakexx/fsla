@@ -34,6 +34,18 @@ LEAF_SPLIT = 1
 CONTAINER_1X8_SPLIT = 2
 CONTAINER_1X8_STREAMS = 3
 
+#: THE PARK IS A BIT OF THE DECLARATION (K35 S5, P76 F5 "HI IN REGISTERS, LO IN
+#: SMEM, BOX SIZE UP").  ``+ PARKED`` names the same (carve, executor map) with the
+#: write-view ``lo`` -- the packed low halves of the fold's accumulator -- spending
+#: the readout in SMEM instead of in registers, so those registers are free across
+#: the readout and the payoff is LEAVES (box size), not depth.  It changes no
+#: arithmetic and nothing the caller can see: a parked arm and its twin return the
+#: same state plane bit for bit, and the difference is the register census.
+PARKED = 4
+LEAF_SPLIT_PARKED = LEAF_SPLIT + PARKED
+CONTAINER_1X8_SPLIT_PARKED = CONTAINER_1X8_SPLIT + PARKED
+CONTAINER_1X8_STREAMS_PARKED = CONTAINER_1X8_STREAMS + PARKED
+
 #: THE VALUE WIDTH IS THE THIRD DIAL AND PART OF AN ARM'S KEY (K35 S3b).  It is a
 #: template parameter of both carry bodies, so the two built widths are two arms of
 #: one body -- the same declaration scalar at ``D_V`` and at ``D_V_WIDE``.  The card's
@@ -59,7 +71,7 @@ WINDOW_SMALL = 64
 #: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
 #: moves whenever that source does, which is what makes reading it back off the
 #: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010024
+BUILD_MAGIC = 31010025
 
 #: the reverse family's own device magic, mirrored from `backward_kernel.cuh`.
 BWD_BUILD_MAGIC = 31040001

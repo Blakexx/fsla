@@ -18,12 +18,12 @@
 namespace rola::carry {
 
 template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
-          int R0, int R1, int R2, int R3, int RC>
+          int R0, int R1, int R2, int R3, int RC, int PK>
 __global__ void carry_layout_probe_kernel(const __nv_bfloat16* __restrict__ pw,
                                           int* __restrict__ outV, int* __restrict__ outC,
                                           int* __restrict__ outS, int* __restrict__ outR,
                                           int* __restrict__ outG) {
-  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC>;
+  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC, PK>;
   //: the ARM's value width, so the probe's writer leg is the fetcher's arithmetic at
   //: THIS arm's `LdV` and `kChunkV` and never a file constant's.
   constexpr int kDv = G::kDv;

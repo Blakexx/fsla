@@ -28,6 +28,11 @@ cooperative fetch introduces:
                      WRITER: the scatter's ``red.shared.add.f32``, four ring rows at one
                      eight-channel granule per issue.  READER: the flush, thirty-two
                      lanes over thirty-two consecutive channels.
+  ``ParkedLo``       ``[word][lane]`` over the warp's OWN exchange segment (K35 S5):
+                     ``kParkWords`` opaque packed-pair words per lane, written and read
+                     by that warp alone.  WRITER and READER are the same burst of
+                     ``st.shared.u32``/``ld.shared.u32``, 32 consecutive words each --
+                     the one layout here that is NOT the layout of the bytes it takes.
 
 THE DEVICE LEG proves the two address maps AGREE: the probe writes a pattern whose
 sixteen bits NAME the cell it was stored at and hands back what each fragment
@@ -590,3 +595,32 @@ def test_the_rings_access_patterns_are_derived_not_guessed(d_v):
         words = [(r0 + 2 * q) % RING_C * ld_ring + d_v + (((r0 + 2 * q) % RING_C) & 7)
                  for q in range(4)]
         assert _banks(words) <= 2, "the mass column must not be worse than two-way"
+
+
+@pytest.mark.parametrize("d_v", [D_V, WIDE], ids=["dv64", "dv128"])
+@pytest.mark.parametrize("leaves", [32, 16], ids=["leaf32", "leaf16"])
+def test_the_parks_layout_is_the_segments_bytes_under_its_own_map(d_v, leaves):
+    """``ParkedLo`` (K35 S5): a layout of its OWN over the exchange segment's bytes.
+
+    The park is the one tenant that is NOT laid out the way the bytes it occupies are.
+    Parked ``lo`` is not a leaf-by-channel matrix in either private order -- it is
+    ``kParkWords`` OPAQUE packed-pair words per lane, written and read by ONE warp and by
+    nothing else -- so the exchange's ``[leaf][channel]`` map and its row swizzle have no
+    meaning for it.  What is derived here is the two facts that let it take those bytes:
+
+    THE FIT IS AN IDENTITY.  A lane keeps ``2*MCH*NL + NL`` words, so a warp keeps
+    ``32 * 4 * NL * (2*MCH + 1)`` bytes -- exactly ``kLeafE * LdX * 2``, its own segment,
+    at every width and every box size.  Neither side of that has slack to hide an error.
+
+    THE MAP IS CONFLICT-FREE BY CONSTRUCTION.  Word ``w`` of lane ``i`` sits at word
+    ``32*w + i`` of the segment, so one ``st.shared.u32``/``ld.shared.u32`` covers 32
+    CONSECUTIVE words: bank ``i`` for lane ``i``, MAX-WAY ONE, with no swizzle to derive.
+    """
+    mch, nl = d_v // 16, leaves // 8
+    park_words = nl * (2 * mch + 1)
+    ld_x = d_v + LD_PAD
+    assert park_words * 32 * 4 == leaves * ld_x * 2, (
+        "a warp's parked `lo` must be exactly its own exchange segment")
+    for w in range(park_words):
+        assert _banks([32 * w + lane for lane in range(32)]) == 1, (
+            "a park burst must cover the banks exactly once")

@@ -63,6 +63,16 @@ CONT_STREAMS_KEY = (2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, CONT_STREAMS)
 WIDE_SPLIT_KEY = (2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_SPLIT)
 WIDE_STREAMS_KEY = (2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_STREAMS)
 WIDE_2X4_KEY = (2, 256, 4, 4, WIDE, carry_ops.WINDOW, 32, carry_ops.LEAF_SPLIT)
+#: THE PARK'S TWINS (K35 S5).  `PARKED` is BIT 2 of the declaration scalar, so a parked
+#: arm is the same cell, box and executor map as the row it twins -- what differs is
+#: that the write-view `lo` spends the readout in SMEM instead of in registers (P76 F5).
+#: The three wide containers are the arms the park exists for and the flagship `d_v = 64`
+#: ALT arm is the control.
+PARK = carry_ops.PARKED
+PARK_KEYS = {(2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_SPLIT + PARK),
+             (2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_STREAMS + PARK),
+             (2, 256, 4, 4, WIDE, carry_ops.WINDOW, 32, carry_ops.LEAF_SPLIT + PARK),
+             (2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, carry_ops.LEAF_SPLIT + PARK)}
 #: (widths, k, m, W) for the `BC = 64` box, in the shape `run`/`ref` read.
 FLAG_HALF = ((256, 256), 4, carry_ops.CAP_BC64, carry_ops.WINDOW)
 #: the ALTERNATING declaration packed as the seam's word, at depth four.
@@ -106,11 +116,13 @@ def test_arms_are_the_declared_solver_rows():
     so the two 1x8 container rows share the flagship's topology and window and differ
     from it and from each other only there (`a[7]`).  `d_v` (`a[4]`) is part of the key too
     (K35 S3b), so the two container declarations appear once per built width and the
-    2x4 container is a row of its own -- same topology, a different capacity.
+    2x4 container is a row of its own -- same topology, a different capacity.  BIT 2 of
+    the declaration is the PARK (K35 S5), so each parked twin is a row whose key differs
+    from its own twin's in that bit alone.
     """
     got = {tuple(a[:8]) for a in carry_ops.arms()}
     carved_only = {CARVE4_KEY, CONT_SPLIT_KEY, CONT_STREAMS_KEY,
-                   WIDE_SPLIT_KEY, WIDE_STREAMS_KEY, WIDE_2X4_KEY}
+                   WIDE_SPLIT_KEY, WIDE_STREAMS_KEY, WIDE_2X4_KEY} | PARK_KEYS
     assert got == {(2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, 1),
                    (2, 256, 4, 8, D_V, carry_ops.WINDOW_WIDE, 32, 1),
                    (2, 64, 4, 8, D_V, carry_ops.WINDOW_SMALL, 32, 1),
@@ -564,3 +576,54 @@ def test_s3b_the_wide_containers_match_the_fp64_oracle(arm, declaration, k_tok):
     assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
     got = canonical_from_lattice(plane, widths, k, m)
     assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
+
+
+# ------------------------------------------- THE PARKED `lo`, both widths (K35 S5)
+
+#: THE FOUR PARK TWINS.  `PARKED` is a BIT of the declaration scalar, so each row here
+#: names one cell twice -- once with the write-view `lo` in registers across the readout
+#: and once with it parked in the warp's own dead exchange segment (P76 F5).  The three
+#: `d_v = 128` containers are the arms the park exists for (they sit AT the register
+#: wall) and the flagship `d_v = 64` ALT arm is the CONTROL.
+PARK_TWINS = [
+    pytest.param(FLAG, WIDE, CONT_SPLIT, id="1x8-wps2-dv128"),
+    pytest.param(FLAG, WIDE, CONT_STREAMS, id="1x8-streams8-dv128"),
+    pytest.param(FLAG_HALF, WIDE, CARVE, id="2x4-bc64-dv128"),
+    pytest.param(FLAG, D_V, CARVE, id="flagship-alt-dv64"),
+]
+
+
+@pytest.mark.parametrize("k_tok", [None, 4], ids=["dense", "k4"])
+@pytest.mark.parametrize("arm,d_v,declaration", PARK_TWINS)
+def test_s5_the_park_matches_the_oracle_and_its_own_twin(arm, d_v, declaration, k_tok):
+    """THE PARK IS A REGISTER DECISION AND NOTHING ELSE, gated as two statements.
+
+    The park moves the accumulator's LOW halves out of registers and into the warp's
+    own exchange segment for the length of the readout, then takes them back before
+    any warp publishes into that segment again.  So it is BOTH: an arithmetic identity
+    -- the fp64 oracle, `num`, `den` and the state plane in canonical order -- and a
+    LOSSLESS ROUND TRIP, which is the stronger of the two and is what gates the park's
+    own SMEM layout (KERNEL_STANDARDS section 3): the parked arm's state plane must be
+    the unparked twin's BIT FOR BIT, because the two run identical arithmetic in an
+    identical order.  A dropped word, an aliased byte or a swizzle applied to the wrong
+    map cannot survive that.  (`num`/`den` are NOT compared: the readout's fan-in is
+    `red.shared` float atomics, whose summation order is arrival order.)
+    """
+    assert_fresh_binary()
+    widths, k, m, W = arm
+    cell = (Cell(widths, T=768, k_tok=None, seed=5, d_v=d_v) if k_tok is None
+            else alt_cell(widths, T=768, k_tok=k_tok, seed=21, d_v=d_v))
+    got = {}
+    for parked in (False, True):
+        got[parked] = carry_ops.carry_inter(
+            cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths, k=k, m=m, window=W,
+            chunk=32, carve=declaration + (carry_ops.PARKED if parked else 0), level_modes=6)
+    num, den, plane = got[True]
+    n_ref, d_ref, s_ref = ref(cell, arm)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+    assert relative(canonical_from_lattice(plane, widths, k, m),
+                    s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
+    assert torch.equal(plane, got[False][2]), (
+        "the park is a lossless round trip: the state plane must be its twin's, bit for bit")

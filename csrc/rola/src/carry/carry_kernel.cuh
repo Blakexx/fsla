@@ -51,7 +51,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010024;
+static constexpr int kCarryBuildMagic = 31010025;
 
 static constexpr int kPadE = 8;  // bf16 row padding, elements (16 B)
 static constexpr int kPadF = 4;  // fp32 row padding, elements (16 B)
@@ -105,7 +105,7 @@ __device__ __forceinline__ void static_for(F&& f) {
 //: split and the accumulator's leaf count is the read box's at every arm.
 
 template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
-          int R0, int R1, int R2, int R3, int RC>
+          int R0, int R1, int R2, int R3, int RC, int PK>
 struct CarryGeom {
   using BP = BoxPlan<D, B, K, M>;
   using SVW = StreamSpans<D, B, K, M, W0, W1, W2, W3>;
@@ -266,7 +266,21 @@ struct CarryGeom {
   //: rather than a struct, because the tag is the only one read on the fast path.
   static constexpr int rctl_bytes = align16c(3 * kRingC * (int)sizeof(uint32_t));
 
-  static constexpr int off_rseg = 0;
+  //: ---- THE PARKED `lo` (K35 S5), A PER-ARM DECLARATION, DEFAULT OFF ---------
+  //: `PK == 1` spends the READOUT with the write-view `lo` in the warp's OWN exchange
+  //: segment instead of in registers, so those registers are dead across the arm's
+  //: register peak and become the output fragments' home (P76 F5: the payoff is
+  //: registers -> LEAVES).  It costs the straddle: the readout's tenants sit ABOVE the
+  //: segments.  THE FIT IS AN IDENTITY -- a warp keeps `32 * 4 * NL * (2*MCH + 1)`
+  //: bytes = `kLeafE * LdX * 2` (carry_kernel.md, "The park").
+  static constexpr int kParkWords = (kLeafE / kMmaN) * (2 * (kDv / kMmaM) + 1);
+  static constexpr bool kPark = PK != 0;
+  static_assert(PK == 0 || PK == 1, "the park is a declaration and carries no third value");
+  static_assert(kParkWords * kBallotLanes * (int)sizeof(uint32_t) == kLeafE * LdX * 2,
+                "a warp's parked `lo` is exactly its own exchange segment");
+  static constexpr int park_bytes = kPark ? xch_bytes : 0;
+
+  static constexpr int off_rseg = park_bytes;
   static constexpr int off_rstg = off_rseg + rseg_bytes;
   static constexpr int off_rmap = off_rstg + rstg_bytes;
   static constexpr int off_ring = align16c(off_rmap + rmap_bytes);
@@ -281,6 +295,9 @@ struct CarryGeom {
   //: segments) and the READOUT's (the reader segments, the read staging, the row index
   //: and the fan-in ring).  So the allocation carries the MAXIMUM and every one of them
   //: begins at the region's base; nothing is shrunk to fit another.
+  //: THE PARK IS THE ONE EXCEPTION (K35 S5): at `PK == 1` the exchange's segments stay
+  //: live THROUGH the readout, so its tenants begin at `park_bytes` and `read_bytes`
+  //: carries the park -- the maximum below is unchanged in form.
   static constexpr int fold_dead_bytes =
       seg_v_bytes + seg_c_bytes + stg_bytes + gain_bytes + out_bytes;
   static constexpr int straddle_bytes = align16c(
@@ -347,7 +364,7 @@ struct CarryGeom {
   //: here: the fold's tenants, the exchange's segments and the read panels are the same
   //: bytes read under three different layouts at three different moments.
   static constexpr int off_xch = 0;
-  static constexpr int off_read = 0;
+  static constexpr int off_read = off_rseg;
   static constexpr int off_list = straddle_bytes;
   static constexpr int off_mem = off_list + list_bytes;
   static constexpr int off_pfx = off_mem + mem_bytes;
@@ -551,25 +568,25 @@ constexpr bool mode_declares(uint32_t modes, int l, uint32_t side) {
 //: the same geometry the ring depth is.  A ring sized for a residency the launch
 //: bound does not ask for is a ring sized for nothing.
 template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
-          int R0, int R1, int R2, int R3, int RC>
+          int R0, int R1, int R2, int R3, int RC, int PK>
 constexpr int kCarryCtaTarget =
-    CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC>::cta_target;
+    CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC, PK>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
 template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
-          int R0, int R1, int R2, int R3, int RC, uint32_t MO, bool STATE>
+          int R0, int R1, int R2, int R3, int RC, int PK, uint32_t MO, bool STATE>
 __global__ __launch_bounds__((CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3,
-                                        RC>::kThreads),
+                                        RC, PK>::kThreads),
                              (kCarryCtaTarget<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2,
-                                              R3, RC>)) void
+                                              R3, RC, PK>)) void
 carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
              const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
              const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den,
              int L, int tok_words, int v_row_bytes, const float* __restrict__ s_in,
              float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
-  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC>;
+  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC, PK>;
   //: THE ARM'S VALUE WIDTH, named once so the body below reads a geometry and never a
   //: file constant: `kDv` channels and the mass column that rides them.
   constexpr int kDv = DV;
@@ -1002,6 +1019,40 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         mass_st[j][3] = 0.f;
       });
     });
+  };
+
+  //: THE PARK (K35 S5, P76 F5), WARP-PRIVATE: a warp's exchange segment is dead the
+  //: moment IT has pulled, so the `lo` it must keep across the readout goes into those
+  //: very bytes -- no barrier, no arrival count, no cross-warp sequencing.  ITS LAYOUT
+  //: IS NOT THE SEGMENT'S and the difference is derived: parked `lo` is `kParkWords`
+  //: OPAQUE words per lane with one writer and one reader, so word `w` of lane `i` sits
+  //: at element `2*(32*w + i)`: a burst is bank `i` for lane `i`, max-way ONE, no
+  //: swizzle (carry_kernel.md, "The park").  BODY COUNT `kParkWords = NL*(2*MCH + 1)`:
+  //: 36 / 18 / 34 at the three shapes, O(fragments); that many `st.shared.u32` and as
+  //: many `ld.shared.u32` per lane PER WINDOW, NOTHING per token.
+  constexpr int kParkWords = G::kParkWords;
+  auto park_visit = [&](auto& lo, auto& mlo, auto move) {
+    const uint32_t p = xchB + (uint32_t)((strm * kLeafE * LdX + 2 * lane) * 2);
+    static_for<MCH>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
+      static_for<NL>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        static_for<2>([&](auto Hc) {
+          constexpr int h = decltype(Hc)::value;
+          move(p + (uint32_t)((2 * (m * NL + j) + h) * kBallotLanes * 4), lo[m][j][h]);
+        });
+      });
+    });
+    static_for<NL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      move(p + (uint32_t)((kParkWords - NL + j) * kBallotLanes * 4), mlo[j]);
+    });
+  };
+  auto park_lo = [&](auto& lo, auto& mlo) {
+    park_visit(lo, mlo, [](uint32_t a, uint32_t& x) { store_shared_u32(a, x); });
+  };
+  auto unpark_lo = [&](auto& lo, auto& mlo) {
+    park_visit(lo, mlo, [](uint32_t a, uint32_t& x) { x = load_shared_u32(a); });
   };
 
   //: THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so
@@ -1526,10 +1577,10 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 
     //: THE PHASE CHANGE, FOLD -> READOUT.  Every warp publishes its write-view hi into
     //: the READ consumers' segments; a barrier; every warp pulls its OWN segment into
-    //: its A fragments and the segments are DEAD.  `lo` stays in registers -- packed, so
-    //: the state costs half its fp32 footprint across the readout -- and it is packed
-    //: INSIDE the publish, n-tile by n-tile, so the fp32 accumulator never has to live
-    //: whole beside it.
+    //: its A fragments and the segments are DEAD.  `lo` is packed INSIDE the publish,
+    //: n-tile by n-tile, so the fp32 accumulator never has to live whole beside it, and
+    //: it spends the readout either in REGISTERS (`PK == 0`, half the fp32 footprint)
+    //: or in the warp's own dead segment (`PK == 1`, the park).
     //: `mlo` IS ONE WORD PER n-TILE, not two.  The mass accumulator's elements 2 and 3
     //: are the C rows 8..15 of a tile whose A operand (`ones_a`) is nonzero on row 0
     //: alone, so they are IDENTICALLY ZERO -- there is no low half of them to keep.
@@ -1538,10 +1589,17 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     rendezvous();
     uint32_t sa[KDw][MCH][4], ma[KDw][4];
     pull_read(sa, ma);
-    //: AND THE SEGMENTS ARE DEAD HERE.  The read panels are the same bytes under
-    //: another layout, so no warp may produce into them until every warp has pulled --
-    //: that is what this barrier buys, and it is the whole price of the straddle.
-    rendezvous();
+    //: AND THE SEGMENTS ARE DEAD HERE -- for THIS warp, the moment it has pulled.
+    //: At `PK == 0` the readout's tenants are these same bytes under another layout, so
+    //: no warp may produce into them until EVERY warp has pulled: that barrier is the
+    //: price of the straddle.  At `PK == 1` the park holds the bytes, the readout's
+    //: tenants sit above them, and the park is warp-private -- so the barrier is spent
+    //: at the far end instead.
+    if constexpr (G::kPark) {
+      park_lo(lo, mlo);
+    } else {
+      rendezvous();
+    }
 
     // ---- PHASE 1: THE READOUT of every UNION read batch, against the window's ENTRY
     //      state.  ALL of the window's readouts precede ANY of its folds, because a
@@ -1847,6 +1905,13 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: executors' segments; a barrier; each warp pulls its own back in WRITE order and
     //: rejoins it with the `lo` it kept, exactly.  The last barrier is the fold's: the
     //: segments it clears are these very bytes.
+    //: THE UNPARK PRECEDES THE PUBLISH, and that order is the whole protocol at
+    //: `PK == 1`: a publisher writes into the CONSUMER's segment, where that consumer's
+    //: `lo` is parked, so every warp takes its own back before ANY warp publishes.
+    if constexpr (G::kPark) {
+      unpark_lo(lo, mlo);
+      rendezvous();
+    }
     publish_write(sa, ma);
     rendezvous();
     reload_hi(lo, mlo);

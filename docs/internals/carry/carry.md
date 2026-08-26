@@ -6,8 +6,13 @@ the arm dispatch, the per-arm register/SMEM census and the built-set listing.
 ## An arm is a (topology, `d_v`, DECLARATION, EXECUTOR MAP) row
 
 The key the seam matches is `(widths, k, m, d_v, W, C, carve)`, and `carve` is the
-DECLARATION SCALAR naming a built (carve, executor map): `1` the ruled leaf split, `2`
-and `3` the two 1x8 containers. `d_v` JOINED THE KEY at K35 S3b and is read off the
+DECLARATION SCALAR naming a built (carve, executor map, PARK): its low two bits are
+`1` the ruled leaf split, `2` and `3` the two 1x8 containers, and BIT 2 (`+4`,
+`carry_ops.PARKED`) is the park of K35 S5 — the same declaration with the write-view
+`lo` spending the readout in SMEM (`carry_kernel.md`, "The park"). The park changes no
+arithmetic and nothing else the caller can see, which is why it is a bit of the
+declaration rather than an axis of its own; the arm row's `PK_` field must agree with
+it, and a `static_assert` over the whole list says so. `d_v` JOINED THE KEY at K35 S3b and is read off the
 caller's value plane, so a declaration at the two built widths is TWO ARMS of one body
 rather than one arm with a width switch. `arms()` lists thirteen fields per row —
 `D, B, k, m, d_v, W, C, carve, modes, BC, owners, smem, carve-level` — and the census
@@ -49,7 +54,29 @@ eight streams), the two 1x8 containers at the flagship cell (`carve = 2` and `3`
 | 2x4 halved box (`carve = 1`) | 4 | 4 | (4,16) | 64 | 1024 | 4 | 4 | 1 | 16 | 41,584 | 2 |
 
 — all three at `W = 384`, `C = 32` and the ALT declaration, so the container question the
-card leaves to measurement has its three answers built at ONE cell. Sixteen leaves per
+card leaves to measurement has its three answers built at ONE cell.
+
+### The PARK's twins (K35 S5)
+
+Four more rows, each the SAME cell, box and executor map as one above it with `PK = 1`:
+the three wide containers (which sit at or near the register wall) and the flagship
+`d_v = 64` ALT arm as a control. A twin is a MEASUREMENT, so what the table carries is
+the census on both sides of it — sm_86, zero spill and zero in-loop locals everywhere:
+
+| twin | `carve` | regs `PK=0` → `PK=1` | SMEM `PK=0` → `PK=1` | CTA target |
+|---|---|---|---|---|
+| 1x8 column split, `d_v = 128` | 2 → 6 | 255 → 225 | 37,328 → 63,056 | 1 |
+| 1x8 eight streams, `d_v = 128` | 3 → 7 | 248 → 227 | 53,808 → 63,344 | 1 |
+| 2x4 halved box, `d_v = 128` | 1 → 5 | 242 → 221 | 32,704 → 42,112 | 2 |
+| flagship ALT, `d_v = 64` (control) | 1 → 5 | 231 → 215 | 22,464 → 36,992 | 2 |
+
+The register fall is 16–30 a lane against the `MCH*NL*2 + NL` (34 wide, 36 narrow) the
+park frees, so the arms do NOT hand back the whole of it: with `lo` gone the peak moves
+off the readout and onto another moment, and what the arm keeps is the difference. The
+column-split row is the one the declaration exists for — it leaves the hardware's own
+255-register ceiling with thirty registers of headroom, which is the budget P76 F5 wants
+spent on LEAVES. The SMEM cost is the readout moment's, the exchange's segments no longer
+being straddled by it. Sixteen leaves per
 warp is the card's requirement at the wide plane, and each row reaches it a different
 way: by splitting the columns, by cutting more streams, or by halving the CTA's box.
 
