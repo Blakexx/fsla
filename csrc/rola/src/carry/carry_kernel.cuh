@@ -47,7 +47,7 @@ namespace design = denseref::design;
 //: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
 //: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
 //: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010018;
+static constexpr int kCarryBuildMagic = 31010019;
 
 static constexpr int kDv = 64;         // d_v
 static constexpr int kCols = kDv + 1;  // the mass column rides the state
@@ -1086,12 +1086,15 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: no truncation path and the bound is the type's, not a runtime test.
     //:
     //: COVERAGE IS BY CONSTRUCTION, NOT BY ACCOUNTING (the salvage's law: `0 * NaN` is
-    //: `NaN`, so a slot row the MMA reads must never be arbitrary SMEM).  Every row of
-    //: every slot is written each batch: the owning executor CLEARS its whole segment
-    //: between the drain and the barrier that releases the writers, and the live rows
-    //: are then placed over it.  A dead row is therefore a ZERO value row with a ZERO
-    //: coefficient row -- finite operand, zero weight, exactly nothing contributed --
-    //: and no row's liveness is ever computed twice.
+    //: `NaN`, so a slot row the MMA reads must never be arbitrary SMEM).  THE DEAD-ROW
+    //: LAW: a dead row is a FINITE (stale) value row with a ZERO coefficient row --
+    //: finite operand, zero weight, exactly nothing contributed -- and coverage is the
+    //: ONCE-PER-WINDOW clear plus the PER-BATCH dead-coefficient zeroing.  The window's
+    //: first clear makes every row of the segment finite (the published plane straddles
+    //: these very bytes, so the window inherits arbitrary bits and must not); thereafter
+    //: a value row is either this batch's placement or a previous batch's, both finite,
+    //: and the owning executor need only zero the coefficient rows no placement of THIS
+    //: batch covers.  A full batch writes nothing.  No row's liveness is computed twice.
     constexpr int TPW = kSegRows / kWarps;  // union tokens one executor handles per batch
     static_assert(TPW * kWarps == kSegRows,
                   "the batch's union tokens split evenly over the executors");
@@ -1155,6 +1158,21 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         }
       }
       return e;
+    };
+    //: THE BATCH'S ROW COUNT FOR THE EXECUTOR'S OWN STREAM, out of the same published
+    //: ballot the placement reads.  `rank_live` counts a stream's tokens BELOW a token,
+    //: and the union list contains every stream's tokens in ascending order, so every
+    //: token of stream `strm` between the batch's first and last union token IS in the
+    //: batch: the count is the rank at the last token (plus its own liveness) less the
+    //: rank at the first.  One lane pays the two lookups the placement already pays for
+    //: its candidates; the warp reads it by shuffle.
+    auto batch_rows = [&](int u0, int nb) {
+      int n = 0;
+      if (lane == 0 && nb > 0) {
+        const int rl = rank_live(strm, (int)wlistS[u0 + nb - 1]);
+        n = (rl >> 1) + (rl & 1) - (rank_live(strm, (int)wlistS[u0]) >> 1);
+      }
+      return lane_broadcast(n, 0);
     };
     //: THE VALUE LEG.  `cp.async` never touches registers, and the fetcher issues it
     //: into a segment it does not consume -- the fan-out pipeline's first owner.
@@ -1292,11 +1310,16 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     auto gain_store = [&](int slot, unsigned short g) {
       if (tid < kSegRows) store_shared_u16(gnB + (uint32_t)((slot * kSegRows + tid) * 2), g);
     };
-    //: THE CLEAR, and it is the coverage law's whole implementation: between its drain
-    //: and the barrier that releases the writers, an executor zeroes its OWN segment.
+    //: THE WINDOW'S CLEAR, paid ONCE before the window's first batch: it makes every row
+    //: of the executor's own segment finite, which is what lets every later batch leave
+    //: its stale value rows in place.
     constexpr int kClrV = kSegRows * LdV * 2 / 16, kClrC = kSegRows * LdS * 2 / 16;
+    constexpr int kClrRow = LdS * 2 / 16;  // sixteen-byte quanta in ONE coefficient row
     static_assert(kClrV * 16 == kSegRows * LdV * 2 && kClrC * 16 == kSegRows * LdS * 2,
                   "a segment is a whole number of sixteen-byte quanta");
+    static_assert(kClrRow * 16 == LdS * 2 && kClrRow * kSegRows == kClrC,
+                  "a coefficient ROW is a whole number of quanta, so the dead rows of a "
+                  "batch are one aligned contiguous run inside the segment");
     //: BODY COUNT: `ceil(kSegRows*LdV*2/512) + ceil(kSegRows*LdS*2/512)` = 5 + 3 = 8 at
     //: every built arm (`LdV = 72`, `LdS = 40`, `kSegRows = 16`).
     auto clear_segment = [&]() {
@@ -1311,6 +1334,25 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       static_for<(kClrC + kBallotLanes - 1) / kBallotLanes>([&](auto Pc) {
         constexpr int pp = decltype(Pc)::value;
         if (pp * kBallotLanes + 32 <= kClrC || pp * kBallotLanes + lane < kClrC)
+          store_shared_vec16(cB + (uint32_t)(pp * kBallotLanes * 16), z);
+      });
+      if (lane == 0) store_shared_u32(mskB + (uint32_t)(strm * 4), 0u);
+    };
+    //: THE BATCH'S DEAD ROWS.  The union list ascends, so a stream's own tokens inside a
+    //: batch are a PREFIX of its segment -- rows `[0, n)` for `n` placements -- and the
+    //: dead rows `[n, kSegRows)` are therefore ONE aligned contiguous run of coefficient
+    //: bytes.  That run and the mask word are the whole of the per-batch clear; the value
+    //: rows are left alone (stale, finite, and weighted by the zeros written here).
+    //: BODY COUNT: `ceil(kSegRows*LdS*2/512)` = 3 at every built arm, each one predicated
+    //: store, and the stores actually issued are `(kSegRows - n) * kClrRow` -- zero on a
+    //: full batch against the 224 the whole-segment clear issued.
+    auto clear_dead = [&](int n) {
+      const uint4 z = make_uint4(0u, 0u, 0u, 0u);
+      const int q = (kSegRows - n) * kClrRow;
+      const uint32_t cB = segCB + (uint32_t)((strm * kSegRows + n) * LdS * 2 + lane * 16);
+      static_for<(kClrC + kBallotLanes - 1) / kBallotLanes>([&](auto Pc) {
+        constexpr int pp = decltype(Pc)::value;
+        if (pp * kBallotLanes + lane < q)
           store_shared_vec16(cB + (uint32_t)(pp * kBallotLanes * 16), z);
       });
       if (lane == 0) store_shared_u32(mskB + (uint32_t)(strm * 4), 0u);
@@ -1359,13 +1401,17 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
             if (tm & (1u << nj)) load_frag_t(bc[nj], ADDR_S(myC, 0, 2 * nj));
           });
         }
-        clear_segment();
-        //: DRAINED.  The `ldmatrix` above has read the slot -- this is its completion
-        //: point -- and the clear has re-zeroed it, so the writers may refill.
-        __syncwarp();
-        rendezvous();
+        //: the next batch's placement and its own row count come out of the window's
+        //: published index, which no batch touches, so both are resolvable HERE -- and
+        //: the count is what makes the clear below cost only the dead rows.
         const int n1 = batch_n(b + 1);
         const int e1 = batch_place((b + 1) * kSegRows, n1);
+        clear_dead(batch_rows((b + 1) * kSegRows, n1));
+        //: DRAINED.  The `ldmatrix` above has read the slot -- this is its completion
+        //: point -- and the dead coefficient rows of the next batch are zero, so the
+        //: writers may refill.
+        __syncwarp();
+        rendezvous();
         fetch_values(e1);
         const unsigned short gn = gain_load((b + 2) * kSegRows, batch_n(b + 2));
         stage_factors(b & 1, (b + 2) * kSegRows, batch_n(b + 2));

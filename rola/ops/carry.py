@@ -35,7 +35,7 @@ WINDOW_SMALL = 64
 #: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
 #: moves whenever that source does, which is what makes reading it back off the
 #: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010018
+BUILD_MAGIC = 31010019
 
 #: the reverse family's own device magic, mirrored from `backward_kernel.cuh`.
 BWD_BUILD_MAGIC = 31040001
