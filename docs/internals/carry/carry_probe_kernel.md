@@ -35,4 +35,8 @@ behaviour of each leg is therefore derived from the same address functions in
 `rola::carry::layout_probe(widths, k, m, window, chunk, carve, level_modes)` →
 `(values, coefficients, staged)`, each `int32` of the recovered sixteen-bit patterns.
 CARVED arms only: the per-stream segment belongs to the carved body, and the
-channel-split body is refused rather than served something else.
+channel-split body is refused rather than served something else. `carve` is the seam's
+DECLARATION scalar, so the same cell under a different EXECUTOR MAP is a different probe:
+the consumer's leg reads the fold's own `wstrm`/`col`, so at `WPS = 2` the two warps of a
+stream recover DISJOINT halves of one coefficient row and the round trip is what says the
+column split partitions rather than overlaps.

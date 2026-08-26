@@ -143,15 +143,25 @@ rows it already holds, which is exact because a rectangle of digits holds a live
 every level's range holds a live digit. The table is sigma-shaped — `sum_l B/s_l` — so it
 does not grow with `N`.
 
-| topology | `k` | `m` | `s_l` | write spans | read spans | streams | table spans |
-|---|---|---|---|---|---|---|---|
-| `(256,256)` | 4 | 8 | (8,16) | (2,16) | (8,4) | 4 | (2,4) |
-| `(64,64)` | 4 | 8 | (8,16) | (2,16) | (8,4) | 4 | (2,4) |
-| `(8,8,8,8)` | 2 | 8 | (2,2,4,8) | (2,2,1,8) | (2,2,4,2) | 4 | (2,2,1,2) |
-| `(4,4,4,4)` | 4 | 1 | (4,4,4,4) | (1,4,2,4) | (4,1,4,2) | 8 | (1,1,2,2) |
+The EXECUTOR MAP is a second, independent declaration over the same vectors (`WPS`, the
+warps per write stream): the write spans set the ownership grain, the read spans are
+declared at one stream per WARP, and `warps = write streams x WPS = read streams`.
 
-The last row is the MULTI-LEVEL carve: each side carves TWO levels, and it is the only
-box among the built arms whose owner is the whole topology (`g_l = 1`, one owner). `k = 4,
+| topology | `k` | `m` | `s_l` | write spans | read spans | W str | WPS | warps | table spans |
+|---|---|---|---|---|---|---|---|---|---|
+| `(256,256)` | 4 | 8 | (8,16) | (2,16) | (8,4) | 4 | 1 | 4 | (2,4) |
+| `(64,64)` | 4 | 8 | (8,16) | (2,16) | (8,4) | 4 | 1 | 4 | (2,4) |
+| `(8,8,8,8)` | 2 | 8 | (2,2,4,8) | (2,2,1,8) | (2,2,4,2) | 4 | 1 | 4 | (2,2,1,2) |
+| `(4,4,4,4)` | 4 | 1 | (4,4,4,4) | (1,4,2,4) | (4,1,4,2) | 8 | 1 | 8 | (1,1,2,2) |
+| `(256,256)` | 4 | 8 | (8,16) | (2,16) | (8,2) | 4 | 2 | 8 | (2,2) |
+| `(256,256)` | 4 | 8 | (8,16) | (1,16) | (8,2) | 8 | 1 | 8 | (1,2) |
+
+The last two rows are the 1x8 CONTAINER arms (K35 S3a): the SAME flagship box reached
+with eight executors by the two available routes — four write streams column-split two
+ways, and eight write streams one warp each — so the container question the card leaves
+to measurement has both of its answers built. The `(4,4,4,4)` row is the MULTI-LEVEL
+carve: each side carves TWO levels, and it is the only box among the built arms whose
+owner is the whole topology (`g_l = 1`, one owner). `k = 4,
 m = 1` is the only `(k, m)` reaching `s = (4, 4, 4, 4)`: the capacity convention's atom
 FLOOR pushes `m` innermost, so any `m > 1` at `D = 4` unbalances the vector, and at
 `B = 8` the ceiling `K6` then refuses `k = 4, m = 1` outright.

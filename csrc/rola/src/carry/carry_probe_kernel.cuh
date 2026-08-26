@@ -17,16 +17,16 @@
 
 namespace rola::carry {
 
-template <int D, int B, int K, int M, int W, int C, int W0, int W1, int W2, int W3, int R0, int R1,
-          int R2, int R3>
+template <int D, int B, int K, int M, int W, int C, int WPS, int W0, int W1, int W2, int W3, int R0,
+          int R1, int R2, int R3>
 __global__ void carry_layout_probe_kernel(const __nv_bfloat16* __restrict__ pw,
                                           int* __restrict__ outV, int* __restrict__ outC,
                                           int* __restrict__ outS) {
-  using G = CarryGeom<D, B, K, M, W, C, R0, R1, R2, R3>;
+  using G = CarryGeom<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
   constexpr int kStreams = G::kStreams, kSegRows = G::kSegRows;
-  constexpr int LdV = G::LdV, LdS = G::LdS, kLeafW = G::kLeafW;
+  constexpr int LdV = G::LdV, LdS = G::LdS, kLeafW = G::kLeafW, kLeafE = G::kLeafE;
   constexpr int MCH = kDv / kMmaM;
-  constexpr int NL = kLeafW / kMmaN, kNJ = NL / 2;
+  constexpr int NL = kLeafE / kMmaN, kNJ = NL / 2;
   constexpr int kChunkV = kDv / 8;
   constexpr int kWordsRow = kLeafW / 2;
 
@@ -95,30 +95,37 @@ __global__ void carry_layout_probe_kernel(const __nv_bfloat16* __restrict__ pw,
   const int lr = lane & 7, tl = lane >> 3;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
   const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
-  const int s = warp;
+  //: THE EXECUTOR MAP, verbatim as the fold reads it: the warp's WRITE stream and its
+  //: COLUMN HALF of that stream's coefficient row.  The value sub-tile belongs to the
+  //: whole stream, so the half-0 warp recovers it and the other halves recover their
+  //: own slot runs -- which is exactly the partition the fold's `ldmatrix` issues.
+  const int s = warp >> ilog2c(WPS);
+  const int col = warp & (WPS - 1);
+  const int colBase = col * kLeafE;
   const uint32_t myV = segVB + (uint32_t)(((s * kSegRows + rT) * LdV + cT * 8) * 2);
-  const uint32_t myC = segCB + (uint32_t)(((s * kSegRows + rF) * LdS + cF * 8) * 2);
-  static_for<MCH>([&](auto Mc) {
-    constexpr int m = decltype(Mc)::value;
-    uint32_t a[4];
-    load_frag_t(a, myV + (uint32_t)(m * kMmaM * 2));
-    static_for<4>([&](auto Rc) {
-      constexpr int r = decltype(Rc)::value;
-      const int chan = m * kMmaM + 8 * (r & 1) + (lane >> 2);
-      static_for<2>([&](auto Ec) {
-        constexpr int e = decltype(Ec)::value;
-        const int tok = 8 * (r >> 1) + 2 * (lane & 3) + e;
-        outV[(s * kSegRows + tok) * kDv + chan] = (int)((a[r] >> (16 * e)) & 0xFFFFu);
+  const uint32_t myC = segCB + (uint32_t)(((s * kSegRows + rF) * LdS + colBase + cF * 8) * 2);
+  if (col == 0)
+    static_for<MCH>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
+      uint32_t a[4];
+      load_frag_t(a, myV + (uint32_t)(m * kMmaM * 2));
+      static_for<4>([&](auto Rc) {
+        constexpr int r = decltype(Rc)::value;
+        const int chan = m * kMmaM + 8 * (r & 1) + (lane >> 2);
+        static_for<2>([&](auto Ec) {
+          constexpr int e = decltype(Ec)::value;
+          const int tok = 8 * (r >> 1) + 2 * (lane & 3) + e;
+          outV[(s * kSegRows + tok) * kDv + chan] = (int)((a[r] >> (16 * e)) & 0xFFFFu);
+        });
       });
     });
-  });
   static_for<kNJ>([&](auto Nc) {
     constexpr int nj = decltype(Nc)::value;
     uint32_t b[4];
     load_frag_t(b, myC + (uint32_t)(2 * nj * 8 * 2));
     static_for<4>([&](auto Rc) {
       constexpr int r = decltype(Rc)::value;
-      const int slot = 16 * nj + 8 * (r >> 1) + (lane >> 2);
+      const int slot = colBase + 16 * nj + 8 * (r >> 1) + (lane >> 2);
       static_for<2>([&](auto Ec) {
         constexpr int e = decltype(Ec)::value;
         const int tok = 8 * (r & 1) + 2 * (lane & 3) + e;

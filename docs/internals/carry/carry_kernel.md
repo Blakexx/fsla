@@ -128,12 +128,42 @@ are ascending in token position, which is what makes a batch a contiguous token 
 and the fold's accumulation order reproducible. Conformance cannot see a reordering (the
 readout is per-row and the fan-in is a sum); the state plane can, and is the instrument.
 
-## The carve: a per-level SPAN VECTOR, one stream box per executor
+## The carve: a per-level SPAN VECTOR, and the EXECUTOR MAP over it
 
 A STREAM owns a box and walks its data into tiles; an EXECUTOR runs streams — a warp on
-sm_80 (the terminology law, P76). This stage maps ONE STREAM TO ONE WARP, so the CTA's
-warp count is the stream count and is no longer a constant of the file: it is
-`prod_l s_l / S_l`, read off the arm's own carve.
+sm_80 (the terminology law, P76). The two counts are INDEPENDENT DIALS: streams are the
+in-CTA sparsity dial, warps the execution budget. An arm declares `WPS`, the WARPS PER
+WRITE STREAM, and the rest is derived (`CarryGeom`, all `static_assert`ed):
+
+    kStreams = SVW::kStreams     kWarps = kStreams * WPS     SVR::kStreams == kWarps
+    kLeafW   = SVW::kLeaf        kLeafE = kLeafW / WPS       kLeafE == SVR::kLeaf
+    strm     = the rotated executor index = this warp's READ stream
+    wstrm    = strm >> log2 WPS  = its WRITE stream
+    col      = strm & (WPS - 1)  = its COLUMN HALF of that stream's leaves
+
+The READ carve is declared at ONE STREAM PER WARP, which is what leaves the readout, the
+transit plane's pull and the fan-in untouched by the split. At `WPS = 1` the mask is
+zero, `col` folds to a constant and every column term below vanishes from the generated
+code.
+
+### The COLUMN SPLIT: `WPS` warps folding one stream's rows
+
+With `WPS = 2` both warps of a write stream read the SAME segment rows and fold DISJOINT
+halves of that stream's n-tiles. The half is a STATIC choice of n-tiles, not a runtime
+test, and it enters the code in exactly three places:
+
+* the accumulator is sized to `kLeafE` (`st[MCH][kLeafE/8]`), so a warp holds half the
+  leaves and issues half the MMAs — which is the register lever the card's container
+  argument is about;
+* `leafW_of` adds `colBase = col * kLeafE` to its private slot, so the publish, the
+  reclaim, `page_regs` and the fold all address the right leaves with NO new nest;
+* the consumer's coefficient base `myC` carries `colBase`, so the two warps'
+  `ldmatrix.trans` pulls read disjoint slot runs of one row.
+
+The per-(token, stream) instruction total is therefore unchanged — warp-count invariance
+(P76 F2) — and the extra executors buy issue slots over a fixed instruction total. The
+fetch share is `i % kWarps` over ALL executors, so an executor resolves `TPW * kStreams`
+candidate `(token, stream)` pairs per batch rather than the whole batch's `kSegRows`.
 
 A stream's box is a per-level SPAN VECTOR `S_l` — the digits of level `l` one stream
 holds — so the box is an AFFINE RECTANGLE of digits and contiguity in leaf order is a
@@ -143,9 +173,10 @@ SAME box along DIFFERENT axes, which is why the state evacuates registers at eac
 change (the transit plane), and each side's vector is declared per arm in
 `CARRY_ARMS_X` — the write side's `SW`, the read side's `SR`.
 
-Constraints, all `static_assert`ed: `s_l % S_l == 0`, every span a power of two, and the
-two sides' stream counts equal (this stage's 1:1 executor map; a later stage decouples
-them).
+Constraints, all `static_assert`ed: `s_l % S_l == 0`, every span a power of two, `WPS` a
+power of two, and the two declarations agreeing with the executor map —
+`SVW::kStreams * WPS == SVR::kStreams == kWarps`, and a column half of the write stream's
+box being exactly one read stream's box.
 
 ### The private order, and why it is a RULE and not a choice
 
@@ -285,12 +316,27 @@ the result by shuffle.
 
 `0 × NaN = NaN`: a slot row the MMA reads must never be arbitrary shared memory, and an
 accounting argument about which rows a partial batch left dead is exactly the kind of
-argument that failed before. So the accounting is removed: between its `ldmatrix` drain
-and the barrier that releases the writers, an executor CLEARS ITS OWN SEGMENT — value
-and coefficient sub-tiles, whole, at `st.shared.v4.u32`, a constant number of stores —
-and the live rows are placed over it. A dead row is therefore a ZERO value row with a
-ZERO coefficient row: a finite operand with zero weight, contributing exactly nothing to
-either MMA. No row's liveness is computed twice and no row is ever unwritten.
+argument that failed before. THE DEAD-ROW LAW: a dead row is a FINITE (stale) value row
+with a ZERO coefficient row — finite operand, zero weight, contributing exactly nothing —
+and coverage is a ONCE-PER-WINDOW clear of the whole segment plus a PER-BATCH zeroing of
+the dead COEFFICIENT rows only. The window's clear is what makes every row finite (the
+published transit plane straddles these very bytes); thereafter a value row is either
+this batch's placement or an earlier one's, both finite, and a full batch writes nothing
+at all between the barriers.
+
+The two clears split over a stream's `WPS` warps DIFFERENTLY, and that is a correctness
+fact rather than a preference:
+
+* the WINDOW clear splits BY ROWS. It is followed by a rendezvous before any placement,
+  so any partition of the rows is legal and a row split keeps both legs contiguous.
+* the PER-BATCH dead-row clear splits BY COLUMNS. It runs between a batch's `ldmatrix`
+  drain and the barrier that releases the writers, so a warp may only zero bytes IT
+  ITSELF reads — under a row split it would overwrite rows the stream's other warp is
+  still draining. A column half of a row is `kLeafE` slots, contiguous and sixteen-byte
+  aligned, so the run is the same predicated `STS.128` nest with a row stride carried
+  per quantum.
+
+No row's liveness is computed twice and no row is ever unwritten.
 
 ### The expansion, and its declared order
 
@@ -334,15 +380,26 @@ the BOTTOM, so the whole expansion covers it.
 
 The EXPANSION knows which slots it wrote nonzero, so it emits the liveness itself: one
 ballot names every live packed pair of a pass's rows, a byte of that ballot is an n-tile
-pair, and the bits are OR-ed across the batch into one word per stream by
-`red.shared.or`. The consumer skips an n-tile pair whose batch OR-bit is zero — both its
-`ldmatrix` and its MMAs — and the skip is EXACT: a tile with no live leaf contributes
-nothing. No facts-table row is involved, and the grain is the MMA's own.
+pair, and the bits are OR-ed across the batch by `red.shared.or`. The consumer skips an
+n-tile pair whose batch OR-bit is zero — both its `ldmatrix` and its MMAs — and the skip
+is EXACT: a tile with no live leaf contributes nothing. No facts-table row is involved,
+and the grain is the MMA's own.
+
+The mask word is per EXECUTOR, not per stream, so that A WARP RESETS ONLY WHAT IT READS:
+the reset sits between a warp's own read of the mask and the barrier that lets the
+fetchers OR into it, and a word shared with the stream's other warp would be reset out
+from under that warp's read. The `WPS` words of one stream carry the SAME bits — one
+lane per column half publishes them, which is the single predicated `or.shared` the
+one-word form issued, with more lanes live rather than more instructions — and each
+consumer tests only its own field, `[col*kNJ, (col+1)*kNJ)`, through two constants
+computed once per warp.
 
 ## The segments, and the two facts of the fold's sync
 
 `SegValueRows` is `[stream][row][channel]` at row stride `LdV = d_v + 8`;
-`SegCoeffRows` is `[stream][row][slot]` at row stride `LdS = kLeafW + 8`. They are
+`SegCoeffRows` is `[stream][row][slot]` at row stride `LdS = kLeafW + 8` — the WRITE
+STREAM's whole row, which is what the `WPS` warps of that stream share. The readout's own
+panels are a separate tile at `LdR = kLeafE + 8`, the READ stream's width. They are
 adjacent halves of one per-stream segment and separate only because `ldmatrix` reads
 each at its own row stride. ONE SLOT PER STREAM: the second stage is REGISTERS (F4) —
 `ldmatrix` drains the slot, the `__syncwarp` after it is the drained fact, the slot is

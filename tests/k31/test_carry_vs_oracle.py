@@ -42,6 +42,16 @@ DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owne
 #: one warp per stream.  Under `ALT4` each side carves exactly where it is sparse.
 CARVE4 = ((4, 4, 4, 4), 4, 1, carry_ops.WINDOW_SMALL)
 CARVE4_KEY = (4, 4, 4, 1, carry_ops.WINDOW_SMALL, 32, 1)
+#: THE 1x8 CONTAINER ARMS (K35 S3a).  The SAME cell as `flagship ALT` -- box `[8, 16]`,
+#: `W = 384`, the ALT declaration -- reached with EIGHT executors instead of four, by
+#: the two routes the card leaves to measurement: four write streams column-split two
+#: ways (`SW = [2,16]`, WPS = 2) and eight write streams one warp each (`SW = [1,16]`,
+#: WPS = 1).  Both read-carve at eight streams (`SR = [8,2]`), because the read side is
+#: declared at ONE STREAM PER WARP.
+CONT_SPLIT = carry_ops.CONTAINER_1X8_SPLIT
+CONT_STREAMS = carry_ops.CONTAINER_1X8_STREAMS
+CONT_SPLIT_KEY = (2, 256, 4, 8, carry_ops.WINDOW, 32, CONT_SPLIT)
+CONT_STREAMS_KEY = (2, 256, 4, 8, carry_ops.WINDOW, 32, CONT_STREAMS)
 #: the ALTERNATING declaration packed as the seam's word, at depth four.
 ALT4 = 102
 
@@ -79,7 +89,9 @@ def test_arms_are_the_declared_solver_rows():
     multi-level carve arm, whose box is the whole topology and whose carve is the
     point of the arm.  There the seam refuses an unbuilt declaration outright rather
     than degrading it, which is stated here because the fall-back rule is otherwise
-    universal.
+    universal.  The DECLARATION SCALAR (`a[6]`) names the arm's (carve, executor map),
+    so the two 1x8 container rows share the flagship's topology and window and differ
+    from it and from each other only there.
     """
     got = {tuple(a[:7]) for a in carry_ops.arms()}
     assert got == {(2, 256, 4, 8, carry_ops.WINDOW, 32, 1),
@@ -87,9 +99,10 @@ def test_arms_are_the_declared_solver_rows():
                    (2, 64, 4, 8, carry_ops.WINDOW_SMALL, 32, 1),
                    (3, 16, 2, 16, carry_ops.WINDOW_SMALL, 32, 1),
                    (4, 8, 2, 8, carry_ops.WINDOW_SMALL, 32, 1),
-                   CARVE4_KEY}, got
+                   CARVE4_KEY, CONT_SPLIT_KEY, CONT_STREAMS_KEY}, got
     dense = {tuple(a[:7]) for a in carry_ops.arms() if a[7] == 0}
-    assert dense == got - {CARVE4_KEY}, "every other topology must carry the DENSE_BOTH body"
+    assert dense == got - {CARVE4_KEY, CONT_SPLIT_KEY, CONT_STREAMS_KEY}, (
+        "every other topology must carry the DENSE_BOTH body")
     for arm in carry_ops.arms():
         D, B, k, m, W, C, carve, modes, BC, owners, smem, level = arm
         _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
@@ -418,3 +431,53 @@ def test_the_multi_level_carve_arm_is_eight_streams_of_thirty_two_leaves():
         assert math.prod(side) == 32
         assert sum(1 for s, w in zip(side, spans) if s < w) == 2
         assert side[-1] >= 2, "the pair level must hold at least two adjacent leaves"
+
+
+# ------------------------------------------- the 1x8 CONTAINER, D = 2 (K35 S3a)
+
+@pytest.mark.parametrize("k_tok", [None, 4], ids=["dense", "k4"])
+@pytest.mark.parametrize("declaration", [CONT_SPLIT, CONT_STREAMS], ids=["wps2", "streams8"])
+def test_s3a_the_1x8_container_matches_the_fp64_oracle(declaration, k_tok):
+    """EIGHT EXECUTORS on the flagship cell, both ways, against the fp64 oracle.
+
+    Under the column split (``WPS = 2``) the two warps of a write stream read the SAME
+    segment rows and fold DISJOINT halves of that stream's n-tiles, so a mis-folded
+    column half, a mis-addressed mask field or a dead-row clear that crossed into the
+    other half surfaces here as a wrong state plane rather than as noise.  The plane is
+    compared in CANONICAL order, which is what makes a leaf-map error a permutation.
+    """
+    assert_fresh_binary()
+    widths, k, m, W = FLAG
+    cell = (Cell(widths, T=768, k_tok=None, seed=5) if k_tok is None
+            else alt_cell(widths, T=768, k_tok=k_tok, seed=21))
+    num, den, plane = carry_ops.carry_inter(
+        cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths, k=k, m=m, window=W,
+        chunk=32, carve=declaration, level_modes=6)
+    n_ref, d_ref, s_ref = ref(cell, FLAG)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+    got = canonical_from_lattice(plane, widths, k, m)
+    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
+
+
+def test_s3a_the_container_arms_reach_eight_executors_two_ways():
+    """THE EXECUTOR MAP, asserted off the device rather than commented.
+
+    ``threads / 32`` is the executor budget and the census's last field the WRITE
+    stream count, so their ratio IS the arm's declared ``WPS``.  Both container arms
+    spend the SAME eight executors on the same box; what differs is the ownership grain
+    under them, which is the card's two dials stated as one table.  The READ carve is
+    one stream per WARP by declaration, so a warp's accumulator holds ``BC / warps``
+    leaves whichever route reached those warps.
+    """
+    assert_fresh_binary()
+    widths, k, m, W = FLAG
+    _, _, _, bc, _ = carry_ops.box_shape(list(widths), k, m)
+    want = {carry_ops.LEAF_SPLIT: (4, 4, 1), CONT_SPLIT: (8, 4, 2), CONT_STREAMS: (8, 8, 1)}
+    for declaration, (warps, streams, wps) in want.items():
+        stamp = carry_ops.build_stamp(widths, k, m, W, 32, declaration, 6)
+        assert stamp[7] // 32 == warps, f"declaration {declaration}: executors"
+        assert stamp[14] == streams, f"declaration {declaration}: write streams"
+        assert stamp[7] // 32 == stamp[14] * wps, f"declaration {declaration}: warps per stream"
+        assert bc % warps == 0 and bc // warps == (bc // streams) // wps

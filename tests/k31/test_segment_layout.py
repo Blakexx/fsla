@@ -35,13 +35,23 @@ from tests.k31.fixtures import assert_fresh_binary
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
-#: (widths, k, m, W, modes) for every CARVED arm -- the bodies that own a segment.
+#: (widths, k, m, W, declaration, modes) for every CARVED arm -- the bodies that own a
+#: segment.  The two 1x8 container arms are the same cell as `flagship-ALT` under a
+#: different EXECUTOR MAP, and the round trip is what says the column split's two warps
+#: recover disjoint halves of one segment row.
 ARMS = [
-    pytest.param(((256, 256), 4, 8, carry_ops.WINDOW, 6), id="flagship-ALT"),
-    pytest.param(((256, 256), 4, 8, carry_ops.WINDOW_WIDE, 6), id="flagship+-ALT"),
-    pytest.param(((64, 64), 4, 8, carry_ops.WINDOW_SMALL, 6), id="small-ALT"),
-    pytest.param(((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL, 102), id="deep4-ALT"),
-    pytest.param(((4, 4, 4, 4), 4, 1, carry_ops.WINDOW_SMALL, 102), id="carve4-ALT"),
+    pytest.param(((256, 256), 4, 8, carry_ops.WINDOW, carry_ops.LEAF_SPLIT, 6), id="flagship-ALT"),
+    pytest.param(((256, 256), 4, 8, carry_ops.WINDOW_WIDE, carry_ops.LEAF_SPLIT, 6),
+                 id="flagship+-ALT"),
+    pytest.param(((64, 64), 4, 8, carry_ops.WINDOW_SMALL, carry_ops.LEAF_SPLIT, 6), id="small-ALT"),
+    pytest.param(((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL, carry_ops.LEAF_SPLIT, 102),
+                 id="deep4-ALT"),
+    pytest.param(((4, 4, 4, 4), 4, 1, carry_ops.WINDOW_SMALL, carry_ops.LEAF_SPLIT, 102),
+                 id="carve4-ALT"),
+    pytest.param(((256, 256), 4, 8, carry_ops.WINDOW, carry_ops.CONTAINER_1X8_SPLIT, 6),
+                 id="1x8-wps2"),
+    pytest.param(((256, 256), 4, 8, carry_ops.WINDOW, carry_ops.CONTAINER_1X8_STREAMS, 6),
+                 id="1x8-streams8"),
 ]
 
 LD_PAD = 8      # `kPadE`: the bf16 row padding both segment sub-tiles carry
@@ -52,8 +62,8 @@ SEG_ROWS = 16   # `kSegRows == CP == kMmaK`: the batch's union tokens
 def test_the_segment_round_trips_through_the_fragments(arm):
     """Everything the fetcher wrote is what the consumer's fragments recovered."""
     assert_fresh_binary()
-    widths, k, m, W, modes = arm
-    v, c, _ = carry_ops.layout_probe(widths, k, m, W, 32, carry_ops.LEAF_SPLIT, modes)
+    widths, k, m, W, declaration, modes = arm
+    v, c, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes)
     for name, got in (("SegValueRows", v), ("SegCoeffRows", c)):
         streams, rows, cols = got.shape
         assert rows == SEG_ROWS, f"{name}: a segment slot is one contraction step"
@@ -76,8 +86,8 @@ def test_the_staged_factor_row_lands_run_by_run(arm):
     wrong offset still says where it came from.
     """
     assert_fresh_binary()
-    widths, k, m, W, modes = arm
-    _, _, staged = carry_ops.layout_probe(widths, k, m, W, 32, carry_ops.LEAF_SPLIT, modes)
+    widths, k, m, W, declaration, modes = arm
+    _, _, staged = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes)
     _, s, _, _, _ = carry_ops.box_shape(widths, k, m)
     D, B = len(widths), widths[0]
     rows, stage_w = staged.shape
@@ -127,12 +137,14 @@ def test_the_segment_access_patterns_are_derived_not_guessed(arm):
     two cycles unconditionally.  The pair mapping is therefore never worse and usually
     better; what the model pins is that it is never WORSE than two.
     """
-    widths, k, m, W, modes = arm
+    widths, k, m, W, declaration, modes = arm
     _, s, _, bc, _ = carry_ops.box_shape(widths, k, m)
-    #: the arm's stream count and leaf count, from the census the device reports.
-    stamp = carry_ops.build_stamp(widths, k, m, W, 32, carry_ops.LEAF_SPLIT, modes)
-    threads = stamp[7]                       # maxThreadsPerBlock
-    streams = threads // 32
+    #: the arm's WRITE STREAM count and its stream's leaf count, from the census the
+    #: device reports.  The segment is per STREAM, not per executor, so this is the
+    #: census's stream field and never `threads // 32` -- under a column split the two
+    #: differ by `WPS`.
+    stamp = carry_ops.build_stamp(widths, k, m, W, 32, declaration, modes)
+    streams = stamp[14]
     leaf = int(bc) // streams
     ld_v, ld_s = 64 + LD_PAD, leaf + LD_PAD
 

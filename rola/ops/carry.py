@@ -20,10 +20,19 @@ import torch
 from rola.ops import lattice
 from rola.ops._ext import extension
 
-#: the carve, ruled: the innermost level's LEAF SPLIT is the sm_80 carve (K33
-#: clean-sheet tier A, measured 2026-08-21) -- a warp owns one digit group of that
-#: level across every outer digit, and all `d_v + 1` channels.
+#: THE SEAM'S DECLARATION SCALAR: which built (carve, EXECUTOR MAP) an arm is.  A
+#: stream owns a box, an executor (a warp) runs streams, and the two counts are
+#: independent dials, so an arm is not named by its carve alone.
+#:
+#: ``LEAF_SPLIT`` is the ruled carve (K33 clean-sheet tier A, measured 2026-08-21) --
+#: a warp owns one digit group of the innermost level across every outer digit, and
+#: all ``d_v + 1`` channels -- run at ONE warp per write stream.  The two container
+#: values are the SAME cell reached with EIGHT executors, by the two routes the K35
+#: card leaves to measurement: four write streams column-split two ways, and eight
+#: write streams one warp each.
 LEAF_SPLIT = 1
+CONTAINER_1X8_SPLIT = 2
+CONTAINER_1X8_STREAMS = 3
 
 #: the flagship window, and the conformance cell's -- the architecture doc's
 #: two-constraint sizing (integration rung I1(b)); `rola.ops.intra` names the
@@ -35,7 +44,7 @@ WINDOW_SMALL = 64
 #: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
 #: moves whenever that source does, which is what makes reading it back off the
 #: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010019
+BUILD_MAGIC = 31010020
 
 #: the reverse family's own device magic, mirrored from `backward_kernel.cuh`.
 BWD_BUILD_MAGIC = 31040001

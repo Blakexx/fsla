@@ -95,7 +95,7 @@ ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") i
 
 #: THE ITERATION ARM SUBSET (KERNEL_STANDARDS section 7). Instantiation cost is the
 #: dominant build resource, so a developer testing ONE arm may compile one arm:
-#: ``ROLA_CARRY_ARMS=10`` (or ``9,10``) names rows of the carry family's declared arm
+#: ``ROLA_CARRY_ARMS=11`` (or ``11,12``) names rows of the carry family's declared arm
 #: list by index (`csrc/rola/src/carry/carry.cu`'s ``CARRY_ARM_<i>``). The DEFAULT IS
 #: EVERY DECLARED ARM, so a plain build -- and every gate build -- is the closed-world
 #: one. A subset binary is SELF-IDENTIFYING: ``rola.ops.carry.arms()`` lists exactly

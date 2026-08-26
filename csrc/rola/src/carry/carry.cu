@@ -12,6 +12,7 @@
 //   deep-3     (16^3)     D=3  k=2 m=16  s=(2,4,16)   BC=128  W=64   C=32
 //   deep-4     ( 8^4)     D=4  k=2 m=8   s=(2,2,4,8)  BC=128  W=64   C=32
 //   carve-4    ( 4^4)     D=4  k=4 m=1   s=(4,4,4,4)  BC=256  W=64   C=32
+//   flagship 1x8 (256,256) D=2  k=4 m=8   s=(8,16)     BC=128  W=384  C=32, twice
 // The first five hold ONE box of `BC = 128` -- the register budget's number, which
 // does not move with depth -- so they differ only in how the same 128 leaves cut
 // into digits, and `deep-4` is the topology whose atom rectangle cannot be a single
@@ -20,6 +21,16 @@
 // streams of 32 by `SW = [1,4,2,4]` and `SR = [4,1,4,2]`, two carved levels per
 // side, one warp per stream -- so it is also the arm that runs eight executors.
 // `k = 4, m = 1` is the only capacity reaching the uniform box `(4,4,4,4)`.
+//
+// THE EXECUTOR MAP IS THE SECOND DIAL (K35 S3a).  An arm declares `WPS`, the warps per
+// WRITE stream, so the CTA's warp count is `streams x WPS` and the READ carve is
+// declared at one stream per warp.  The two `flagship 1x8` rows are the SAME cell as
+// `flagship ALT` reached with EIGHT executors instead of four, by the two available
+// routes -- four write streams column-split two ways (`SW = [2,16]`, `WPS = 2`) and
+// eight write streams one warp each (`SW = [1,16]`, `WPS = 1`) -- so the container
+// question the card leaves to measurement has both of its answers built.  The existing
+// four-warp `ALT` arms ARE the 2x4 container: two CTAs of four warps per SM at half the
+// SM's box each, which is the same eight resident warps, so no arm is added for it.
 // The window is the architecture doc's TWO-CONSTRAINT quantity (integration rung
 // I1(b)): the C* cost basin is shallow, and the intra kernel -- which runs on the
 // SAME window grid -- has ideal arithmetic intensity `W/4` flop/byte and needs
@@ -90,33 +101,37 @@ using CarveRowPlan = rola::chunk::SpanPlan<CarveRows<SW, SR>::kLevels, CarveRows
 //: one STREAM owns on the write side and on the read side, with a level past `D`
 //: carrying `B`.  Full spans on both sides declare NO carve and take the
 //: channel-split body; anything else is a stream grid, and the two sides' grids must
-//: agree in size because this stage maps one stream to one warp.  A side carves
-//: where the declaration marks it sparse, which is what the private order's rule
-//: then reads off the vector (`SpanMap`).
-#define CARRY_ARM_0(X_) X_(2, 256, 4, 8, 384, 32, 1, 0, 8, 16, 256, 256, 8, 16, 256, 256)
-#define CARRY_ARM_1(X_) X_(2, 256, 4, 8, 384, 32, 1, 6, 2, 16, 256, 256, 8, 4, 256, 256)
-#define CARRY_ARM_2(X_) X_(2, 256, 4, 8, 512, 32, 1, 0, 8, 16, 256, 256, 8, 16, 256, 256)
-#define CARRY_ARM_3(X_) X_(2, 256, 4, 8, 512, 32, 1, 6, 2, 16, 256, 256, 8, 4, 256, 256)
-#define CARRY_ARM_4(X_) X_(2, 64, 4, 8, 64, 32, 1, 0, 8, 16, 64, 64, 8, 16, 64, 64)
-#define CARRY_ARM_5(X_) X_(2, 64, 4, 8, 64, 32, 1, 6, 2, 16, 64, 64, 8, 4, 64, 64)
-#define CARRY_ARM_6(X_) X_(3, 16, 2, 16, 64, 32, 1, 0, 2, 4, 16, 16, 2, 4, 16, 16)
-#define CARRY_ARM_7(X_) X_(3, 16, 2, 16, 64, 32, 1, 38, 2, 4, 16, 16, 2, 4, 16, 16)
-#define CARRY_ARM_8(X_) X_(4, 8, 2, 8, 64, 32, 1, 0, 2, 2, 4, 8, 2, 2, 4, 8)
-#define CARRY_ARM_9(X_) X_(4, 8, 2, 8, 64, 32, 1, 102, 2, 2, 1, 8, 2, 2, 4, 2)
-#define CARRY_ARM_10(X_) X_(4, 4, 4, 1, 64, 32, 1, 102, 1, 4, 2, 4, 4, 1, 4, 2)
+//: agree with the executor map: `SR` has one stream per WARP and `SW` one per `WPS`
+//: warps, `WPS_` being the row's ninth field.  A side carves where the declaration
+//: marks it sparse, which is what the private order's rule then reads off the vector
+//: (`SpanMap`).
+#define CARRY_ARM_0(X_) X_(2, 256, 4, 8, 384, 32, 1, 0, 1, 8, 16, 256, 256, 8, 16, 256, 256)
+#define CARRY_ARM_1(X_) X_(2, 256, 4, 8, 384, 32, 1, 6, 1, 2, 16, 256, 256, 8, 4, 256, 256)
+#define CARRY_ARM_2(X_) X_(2, 256, 4, 8, 512, 32, 1, 0, 1, 8, 16, 256, 256, 8, 16, 256, 256)
+#define CARRY_ARM_3(X_) X_(2, 256, 4, 8, 512, 32, 1, 6, 1, 2, 16, 256, 256, 8, 4, 256, 256)
+#define CARRY_ARM_4(X_) X_(2, 64, 4, 8, 64, 32, 1, 0, 1, 8, 16, 64, 64, 8, 16, 64, 64)
+#define CARRY_ARM_5(X_) X_(2, 64, 4, 8, 64, 32, 1, 6, 1, 2, 16, 64, 64, 8, 4, 64, 64)
+#define CARRY_ARM_6(X_) X_(3, 16, 2, 16, 64, 32, 1, 0, 1, 2, 4, 16, 16, 2, 4, 16, 16)
+#define CARRY_ARM_7(X_) X_(3, 16, 2, 16, 64, 32, 1, 38, 1, 2, 4, 16, 16, 2, 4, 16, 16)
+#define CARRY_ARM_8(X_) X_(4, 8, 2, 8, 64, 32, 1, 0, 1, 2, 2, 4, 8, 2, 2, 4, 8)
+#define CARRY_ARM_9(X_) X_(4, 8, 2, 8, 64, 32, 1, 102, 1, 2, 2, 1, 8, 2, 2, 4, 2)
+#define CARRY_ARM_10(X_) X_(4, 4, 4, 1, 64, 32, 1, 102, 1, 1, 4, 2, 4, 4, 1, 4, 2)
+#define CARRY_ARM_11(X_) X_(2, 256, 4, 8, 384, 32, 2, 6, 2, 2, 16, 256, 256, 8, 2, 256, 256)
+#define CARRY_ARM_12(X_) X_(2, 256, 4, 8, 384, 32, 3, 6, 1, 1, 16, 256, 256, 8, 2, 256, 256)
 
 #define CARRY_ARMS_ALL(X_)                                                \
   CARRY_ARM_0(X_) CARRY_ARM_1(X_) CARRY_ARM_2(X_) CARRY_ARM_3(X_)         \
   CARRY_ARM_4(X_) CARRY_ARM_5(X_) CARRY_ARM_6(X_) CARRY_ARM_7(X_)         \
-  CARRY_ARM_8(X_) CARRY_ARM_9(X_) CARRY_ARM_10(X_)
+  CARRY_ARM_8(X_) CARRY_ARM_9(X_) CARRY_ARM_10(X_) CARRY_ARM_11(X_)       \
+  CARRY_ARM_12(X_)
 
-//: THE ITERATION SUBSET, A BUILD KNOB AND NOTHING MORE.  Compiling eleven arms to
+//: THE ITERATION SUBSET, A BUILD KNOB AND NOTHING MORE.  Compiling thirteen arms to
 //: test one is the difference between a minute and an hour, so a build may define
 //: `ROLA_CARRY_ARMS(X_)` as any list of the rows above and get exactly those.  The
 //: DEFAULT IS EVERY DECLARED ARM, so a plain build is the closed-world one; a subset
 //: binary is SELF-IDENTIFYING, because `arms()` lists what was built and every entry
 //: point refuses an arm it does not carry.  A gate build never sets it.
-//: `ROLA_CARRY_ARMS=10 python -m pip install -e .` (setup.py, `docs/build.md`).
+//: `ROLA_CARRY_ARMS=11 python -m pip install -e .` (setup.py, `docs/build.md`).
 #ifndef ROLA_CARRY_ARMS
 #define ROLA_CARRY_ARMS(X_) CARRY_ARMS_ALL(X_)
 #endif
@@ -130,19 +145,26 @@ using ArmSpans = StreamSpans<D, B, K, M, S0, S1, S2, S3>;
 //: READING ONE ROW OF THE LIST.  The row is long -- a topology, a window shape, a
 //: declaration and two span vectors -- so the pieces a consumer wants are taken from
 //: it HERE and nowhere else, and no consumer re-spells the row's shape.
-#define CARRY_ARM(D_, B_, K_, M_, W_, C_, CV_, MO_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, SR2_, SR3_)                                                                       \
-  Arm<D_, B_, K_, M_, W_, C_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, SR2_, SR3_, (uint32_t)(MO_)>
+#define CARRY_ARM(D_, B_, K_, M_, W_, C_, CV_, MO_, WPS_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, \
+                  SR2_, SR3_)                                                                  \
+  Arm<D_, B_, K_, M_, W_, C_, WPS_, SW0_, SW1_, SW2_, SW3_, SR0_, SR1_, SR2_, SR3_,          \
+      (uint32_t)(MO_)>
 #define CARRY_MO(D_, B_, K_, M_, W_, C_, CV_, MO_, ...) (MO_)
 #define CARRY_ROW_HEAD(D_, B_, K_, M_, W_, C_, CV_, MO_, ...) D_, B_, K_, M_, W_, C_, CV_, MO_
 //: the seam's key, matched against the call's `(topology, k, m, W, C, carve)`.
 #define CARRY_MATCH(D_, B_, K_, M_, W_, C_, CV_, ...) \
   (is_arm(widths, D_, B_) && k == K_ && m == M_ && window == W_ && chunk == C_ && carve == CV_)
 
-//: `CV` is the SEAM's carve scalar, not a kernel axis: it names the one ruled carve
-//: so a caller that asks for the deleted one is refused rather than served something
-//: else.  Asserted once over the whole list, where the list is.
-#define CARRY_CV_GATE(D_, B_, K_, M_, W_, C_, CV_, ...) \
-  static_assert((CV_) == 1, "the innermost level's leaf split is the built carve");
+//: `CV` is the SEAM's DECLARATION scalar, not a kernel axis: it names which declared
+//: (carve, executor map) an arm is, so a caller that asks for the deleted one -- or for
+//: an executor map nothing builds -- is refused rather than served something else.
+//:   1  the ruled leaf split, ONE warp per write stream (`rola.ops.carry.LEAF_SPLIT`);
+//:   2  the 1x8 container as FOUR write streams x TWO warps each (the column split);
+//:   3  the 1x8 container as EIGHT write streams x ONE warp each.
+//: Asserted once over the whole list, where the list is.
+#define CARRY_CV_GATE(D_, B_, K_, M_, W_, C_, CV_, ...)                                  \
+  static_assert((CV_) >= 1 && (CV_) <= 3,                                                \
+                "the seam's declaration scalar names a built (carve, executor map)");
 CARRY_ARMS_X(CARRY_CV_GATE)
 #undef CARRY_CV_GATE
 
@@ -174,8 +196,8 @@ static constexpr bool kCarves = (SW::kStreams > 1) || (SR::kStreams > 1);
 //: ONE ARM, AS ONE TYPE: the topology, the window shape, the declaration and the two
 //: carves.  The body, the geometry, the row plan and the census all read it, so an
 //: arm cannot be described two ways.
-template <int D, int B, int K, int M, int W, int C, int W0, int W1, int W2, int W3, int R0, int R1,
-          int R2, int R3, uint32_t MO>
+template <int D, int B, int K, int M, int W, int C, int WPS, int W0, int W1, int W2, int W3, int R0,
+          int R1, int R2, int R3, uint32_t MO>
 struct Arm {
   using BP = BoxPlan<D, B, K, M>;
   using SW = ArmSpans<D, B, K, M, W0, W1, W2, W3>;
@@ -190,27 +212,30 @@ struct Arm {
 
   //: THE CARVED BODY'S GEOMETRY, named once so the segment probe and the launch read
   //: the same one.
-  using GC = CarryGeom<D, B, K, M, W, C, R0, R1, R2, R3>;
+  using GC = CarryGeom<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
   static constexpr auto probe_fn() {
-    return &carry_layout_probe_kernel<D, B, K, M, W, C, W0, W1, W2, W3, R0, R1, R2, R3>;
+    return &carry_layout_probe_kernel<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
   }
 
   template <bool STATE>
   static constexpr auto fn() {
     if constexpr (carved)
-      return &carry_kernel<D, B, K, M, W, C, W0, W1, W2, W3, R0, R1, R2, R3, MO, STATE>;
+      return &carry_kernel<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, MO, STATE>;
     else
       return &carry_split_kernel<D, B, K, M, W, C, STATE>;
   }
-  //: `{smem bytes, ring depth, CTA target, THREADS}` -- the launch reads the last,
-  //: because the executor count is the stream count and no longer a file constant.
-  static constexpr std::array<int64_t, 4> geom() {
+  //: `{smem bytes, ring depth, CTA target, THREADS, WRITE STREAMS}` -- the launch reads
+  //: the fourth, and the last two ARE THE TWO DIALS: `THREADS/32` is the executor
+  //: budget, `WRITE STREAMS` the in-CTA ownership grain, and their ratio is `WPS`.
+  static constexpr std::array<int64_t, 5> geom() {
     if constexpr (carved) {
-      using G = CarryGeom<D, B, K, M, W, C, R0, R1, R2, R3>;
-      return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)G::kThreads};
+      using G = CarryGeom<D, B, K, M, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3>;
+      return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)G::kThreads,
+              (int64_t)G::kStreams};
     } else {
       using G = SplitGeom<D, B, K, M, W, C>;
-      return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)kThreads};
+      return {(int64_t)G::bytes, (int64_t)G::kStages, (int64_t)G::cta_target, (int64_t)kThreads,
+              (int64_t)1};
     }
   }
 };
@@ -236,10 +261,10 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
 }
 
 template <class A>
-static std::array<int64_t, 11> census() {
+static std::array<int64_t, 12> census() {
   cudaFuncAttributes a{};
   if (cudaFuncGetAttributes(&a, A::template fn<true>()) != cudaSuccess)
-    return {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+    return {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
   constexpr auto g = A::geom();
   return {a.numRegs,
           (int64_t)a.sharedSizeBytes,
@@ -251,7 +276,8 @@ static std::array<int64_t, 11> census() {
           (int64_t)A::BP::kOwners,
           g[1],
           g[2],
-          (int64_t)A::kReadCarve};
+          (int64_t)A::kReadCarve,
+          g[4]};
 }
 
 static bool is_arm(const std::vector<int64_t>& widths, int D, int B) {

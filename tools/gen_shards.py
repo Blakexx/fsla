@@ -134,6 +134,12 @@ SPAN_FACTS_ARMS: tuple = (
     # leaves on both sides, each side carving TWO levels, so the table is the
     # per-level minimum.
     (4, 4, 1, 1, 2, 2),
+    # the 1x8 CONTAINER arms (K35 S3a): the flagship box `[8, 16]` reached with eight
+    # executors two ways -- four write streams column-split (`SW = [2,16]`) and eight
+    # write streams (`SW = [1,16]`), both against a read carve of eight streams
+    # (`SR = [8,2]`), so the table's per-level minimum is [2,2] and [1,2].
+    (2, 256, 2, 2, 256, 256),
+    (2, 256, 1, 2, 256, 256),
 )
 
 #: the span arms are STATELESS only: residency is the paging layer's question and
