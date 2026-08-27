@@ -154,3 +154,7 @@ as pseudocode and the implementer rebuilds that function from it — deleting th
 editing around the previous protocol's skeleton. Scaffolding that only made sense for a superseded
 protocol (a deferral rule, a sentinel state, a counter) must not survive; the review checks the function
 against the pseudocode line by line. "Build the whole design" applies at mechanism grain.
+Addendum (S2d-3): a whole rebuild is diffed against the BUG LIST of the thing it replaces, not only against
+the pseudocode — S2d-3 reintroduced S2d-2's `part && lane_broadcast(...)` short-circuit hang while
+rewriting the acquire, three lines below its own warning. The previous pass's findings are a checklist
+the rebuild is walked against before its first build.
