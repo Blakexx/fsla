@@ -173,3 +173,14 @@ BOUNDED TIMER with early exit — `timeout 600 tail --pid=$PID -f /dev/null` (�
 the build ends) — after which the agent INSPECTS ITS OWN STATE (the marker, the build dir) and decides;
 repeat if still building. Never trust the pid or the notification alone; the marker is the fact. Name-matched polling (`pgrep -f`) stays forbidden: it self-matches, matches other tracks, and
 re-wakes stopped agents.
+
+## 15. Stage cycle budget (recorded 2026-08-27 from the ledger: S2d-3 ran 63 builds and 22 ratifies in 346 min)
+- RATIFY ONCE per stage, after the last source edit. It recompiles every TU on both arches; it is a gate,
+  never an iteration tool.
+- A stage has a budget of THREE full build+gate cycles. Iteration is single-arch, arm-subset, oracle-first.
+  When the budget is spent and a gate is still red, the stage STOPS and reports the residual — it does not
+  keep chasing green.
+- A running stage is never re-scoped by the coordinator; rulings land in the NEXT brief. (Four mid-stage
+  amendments cost S2d-3 four cycles.)
+- Every kernel family carries an arm-subset knob (the carry's ROLA_CARRY_ARMS); a family without one gets it
+  before its next build.
