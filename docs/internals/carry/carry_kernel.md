@@ -600,10 +600,10 @@ one-word form issued, with more lanes live rather than more instructions — and
 consumer tests only its own field, `[col*kNJ, (col+1)*kNJ)`, through two constants
 computed once per warp.
 
-## The flow counters: streams fire when full (K35 S2c)
+## The flow counters: streams fire when full (K35 S2c on the fold, S2d on the readout)
 
-THE TWO FACTS ARE TWO COUNTERS AND NOT TWO BARRIERS. `landed[s]` counts the rows of write
-stream `s` that have ARRIVED in this window; `drained[e]` counts the tiles executor `e` has
+THE TWO FACTS ARE TWO COUNTERS AND NOT TWO BARRIERS. `landed[s]` counts the rows of stream
+`s` that have ARRIVED in this window; `drained[e]` counts the tiles executor `e` has
 PULLED. Both are monotone within a window, both are read by warps that do not write them,
 and on sm_90+ the pair IS an mbarrier's arrive/wait — this is the portable form of the
 same two facts.
@@ -649,6 +649,43 @@ drained tile `k`, so `n_s <= (drained + 1) * kSegRows` holds there. That tile is
 window's last, its dead coefficient rows are zeroed then, and the stream has fired exactly
 `ceil(n_s / kSegRows)` times.
 
+### ONE MECHANISM, TWO SIDES (K35 S2d)
+
+The readout is on this body and not on a copy of it. `FlowSide<kNS, kNW, kNC, payload>`
+names a side by its stream count, its executors per stream and its group's candidate-pair
+count, and `rank_live`, `place_group`, `drained_min`, `publish_drained`, `publish_landed`,
+`flow_landed`, `tile_ready`, `flow_zero`, `announce_done` and `all_done` are each written
+ONCE and instantiated twice. The write side is `FlowSide<kStreams, WPS, TPW*kStreams,
+TOKEN>` and the read side `FlowSide<kWarps, 1, kSegRows, UNION INDEX>`; the only thing that
+differs is the placement's PAYLOAD, because the fold's value copy wants a token's global
+address and the readout's ring wants the token's union index. The three counter words are
+the SAME SMEM words in both phases — the phases are consecutive moments and `kWarps >=
+kStreams`, so one zero serves both and the readout costs the ledger nothing.
+
+### DEADLOCK FREEDOM ON THE READ SIDE
+
+The argument above transfers term for term, and the terms are the same code:
+
+* a reader-fetcher publishes `landed` for every row it has expanded BEFORE it waits on any
+  `drained`, in the same ROUNDS (a group of sixteen union tokens can straddle a reader's
+  tile boundary);
+* every wait is a `continue` to the loop head, where the warp pulls and reads out its OWN
+  reader if that reader's tile is full;
+* a warp that has walked its share announces `done` and keeps servicing until every warp
+  has announced;
+* the walk is in ascending union order, so the least-advanced blocked warp waits on a tile
+  every row of which lies at a lower union position — already issued and published by every
+  warp — and that tile's reader drains it.
+
+WHAT IS NEW ON THIS SIDE is that the consumer does not only write its own accumulator: it
+scatters into the CTA-wide fan-in ring, and a warp blocked THERE would still owe the
+placements another reader's tile needs. That cycle is what closed under the old
+spin-on-incomplete acquire (S2c's GAP). It cannot close under the ruled protocol: THE RING
+HAS NO WAIT AT ALL. A warp-row that fails to take a slot's lock holds nothing and retries
+in the next issue, and every lock that is taken is released by its taker after bounded work
+with no wait inside it. So no wait in the readout depends on progress another warp owes,
+and hold-and-wait never arises because no warp ever holds two locks.
+
 ## The segments, and the two facts of the fold's sync
 
 `SegValueRows` is `[stream][row][channel]` at row stride `LdV = d_v + 8`;
@@ -689,18 +726,18 @@ zero barriers. THE FOLD'S WALK HAS NONE EITHER (K35 S2c): it opens on one — th
 clear and the counters' zero — and closes on one, and between them the flow counters carry
 everything.
 
-THE READ PHASE IS FORM (b) TOO (K35 S4b). Its fetch is cooperative and its fan-in meets
-in shared memory, so it carries the fold's two barriers per batch and the same two facts —
-LANDED and DRAINED — plus one at the end of the window's readouts, before the ring is
-drained, that says every contribution has landed.
+THE READ PHASE'S WALK HAS NO BARRIER EITHER (K35 S2d). It opens on one — the ring's
+generation zero, the mask reset and the counters' zero — and closes on one, before the
+ring's last rows are flushed, and between them the same flow counters carry everything.
 
 | edge | carried by |
 |---|---|
-| every fetcher's expansion of read batch `b` → the reader's drain of it | the LANDED rendezvous |
-| a reader's drain and dead-row clear of `b` → any fetcher's writes of `b+1` | the DRAINED rendezvous |
+| every fetcher's expansion of a reader's tile → that reader's pull of it | `publish_fence` + `landed[r]` |
+| a reader's pull of tile `k` → any fetcher's writes of tile `k+1` (rows, row index, mask) | `__syncwarp` + `publish_fence` + `drained[r]` |
+| every warp's last placement → the last, partial tile's pull and dead-row clear | the `done` count, then the readout's EDGE rendezvous |
 | every warp's ring contributions → the drain of the ring's last `C` rows | the readout's closing rendezvous |
-| a contributor's `red.shared` → the reclaimer that flushes that row | `publish_fence` before `arrived`, and the CAS |
-| a reclaimer's clear → every contributor to the row it claimed | `publish_fence` before the tag, and the tag load |
+| a contributor's writes → the evictor that flushes that row | `publish_fence` + `__syncwarp` before the release, and the evictor's own `atom.shared.cas.b32` on the same lock |
+| an evictor's clear → every later toucher of the row | `__syncwarp` + `publish_fence` before the tag, then `unlock_shared`'s fence before the lock word |
 | every warp's reads → any warp's folds of the same window | the WINDOW-LINE rendezvous |
 | the segment clear and the counters' zero → any fetcher's placement | the fold's OPENING rendezvous |
 | every fetcher's placement of a tile → the stream's pull of it | `cp.async.wait_group` + `publish_fence` + `landed[s]` |
@@ -715,21 +752,6 @@ The mass channel is a channel like any other under this carve: the warp holds it
 leaves' mass partial and REDs it to `den` itself, so no cross-warp sum of the denominator
 exists.
 
-### The READOUT still carries the batch form, and the reason is the ring
-
-The same mechanism is NOT on the read side, and that is a design question rather than an
-omission. The fan-in ring below is `C = 32` rows keyed on the UNION READ RANK and never
-evicts an incomplete row — so it is correct only while the union-rank SKEW BETWEEN READERS
-stays under `C`, and the union BATCH is exactly what bounded that. Per-stream firing does
-not: a reader's sixteen own tokens span an arbitrary stretch of the union list, hundreds of
-ranks at scattered routing. Worse, the resulting spin is a DEADLOCK and not slowness —
-every warp is both a reader and a fetcher, so a warp blocked in `ring_acquire` still owes
-the placements another reader's tile needs to fill. The fold has no such cycle because its
-consumer writes only its own accumulator. The fix is a NON-BLOCKING acquire (an incomplete
-row may be evicted, the flush being an `atomicAdd`, at the price of an in-flight count and
-a direct-to-global arm for the contributor that loses its slot), which changes P76 §2.6-C's
-protocol and is Blake's call.
-
 ## The read side's cooperative fetch (K35 S4b)
 
 THE READ SIDE IS THE WRITE SIDE'S MIRROR, and the private per-warp expansion, the
@@ -740,13 +762,22 @@ in eights. A reader's segment is therefore coefficient rows and nothing else —
 operand is the state, already in registers — and the n-tile the fold skips by LEAF the
 readout skips by TOKEN.
 
-A BATCH is `kSegRows` consecutive tokens of the CTA's union READ list; executor `warp`
-takes the fixed share `i % kWarps` of them, and for each READER that reads a token it
-handles it expands that reader's `R` row — `kLeafE` bf16 in the reader's private order —
-into that reader's segment at `rank(t, reader)`. Each warp IS a reader stream
-(`SVR::kStreams == kWarps`, the executor map's declaration), so a reader owns its whole
-segment and the ranks come out of the reader's own published ballot exactly as the write
-side's do. `kLists` is 2: neither side keeps a per-stream list any more.
+Executor `warp` takes the fixed share `i % kWarps` of the CTA's union READ list in
+ascending order, and for each READER that reads a token it handles it expands that reader's
+`R` row — `kLeafE` bf16 in the reader's private order — into that reader's segment at the
+reader's RUNNING rank. Each warp IS a reader stream (`SVR::kStreams == kWarps`, the
+executor map's declaration), so a reader owns its whole segment and the ranks come out of
+the reader's own published ballot exactly as the write side's do. `kLists` is 2: neither
+side keeps a per-stream list any more.
+
+READER STREAMS FIRE WHEN FULL (K35 S2d). There is no batch, no batch-local rank and no
+barrier inside the walk: the walk advances in GROUPS of `kSegRows` union tokens, and a
+group is a FETCH QUANTUM — one staging block, one lane map — with no firing tied to it. A
+reader issues exactly `ceil(n_reader / kSegRows)` k-steps per window, and its last, partial
+tile is read out at the window's edge with the dead coefficient rows zeroed there and
+nowhere else. `rmap` therefore carries the token's WINDOW-WIDE union index rather than a
+batch-local one: a tile's sixteen rows are a reader's running ranks and span an arbitrary
+stretch of the union list.
 
 THE EXPANSION'S DECLARED ORDER on this side is the write side's without the gain: the
 levels the read carve spans whole ascending (the MEMO, shared by every reader of the
@@ -767,18 +798,17 @@ The mask bit is per (reader, EIGHT-TOKEN n-tile) and the expansion sets it iff i
 nonzero coefficient in any ROW of that tile — a ballot over the row's own lanes, at bit
 `rank >> 3`. It gates the `ldmatrix` and the MMAs AND NOTHING ELSE.
 
-THE SCATTER IS GATED BY `rank < n_reader` INSTEAD, and that separation is a correctness
-requirement rather than a preference. `expected[r]` is the ballot popcount — the number of
-readers that HOLD the token — so a reader holding it must arrive at the ring even when its
-tile is dead by VALUE, and it does: its accumulator is zero and it adds zero. Gating the
-scatter on the mask would leave `arrived < expected` standing for that rank and the next
-warp to want the slot would wait forever.
+THE SCATTER IS GATED BY `row < ns` INSTEAD — the tile's live row count, which is
+`kSegRows` for every tile but the last. A reader whose tile is dead by VALUE still holds
+the tokens and still contributes: its accumulator is zero and it adds zero, which the ring
+absorbs at the same cost either way.
 
 Dead rows are zeroed on this side too (`clear_dead_read`), under the fold's own law: a row
 the MMA reads is never arbitrary shared memory. Because a reader owns its whole segment
-the clear is a ROW split and needs none of the fold's column reasoning.
+the clear is a ROW split and needs none of the fold's column reasoning, and it runs ONCE
+PER WINDOW — every tile but the reader's last is full by construction.
 
-## Fan-in: the CTA ring (P76 §2.6-C, K35 S4b)
+## Fan-in: the CTA ring (P76 §2.6-C, K35 S4b; the WRITE-BACK CACHE, S2d; the SLOT LOCK, S2d-3)
 
 RED-DIRECT-FROM-THE-ACCUMULATOR IS DELETED. It issued one global reduction per (owner
 warp, token, element) — uncoalesced by construction, four 32-byte segments per issue — and
@@ -786,37 +816,105 @@ it was the source of the run-to-run `num`/`den` nondeterminism every stage has r
 
 THE RING IS KEYED ON THE UNION RANK. Rank `r` — a token's position in the CTA's union read
 walk — lives at slot `r % C`, `C = kRingC` rows deep (an arm field, 32 declared). A slot
-carries `{tag, arrived, expected}` beside `d_v` output channels and the mass in fp32.
+carries `{tag, lock}` beside `d_v` output channels and the mass in fp32.
 
-* CONTRIBUTE: a warp finishing an eight-token n-tile scatters each token's partial to
-  `slot(rank)` — one `red.shared.add.f32` per element and ONE arrival per warp-row.
-* RECLAIM: the warp that finds `tag == r - C` with `arrived == expected` CASes the tag to
-  RECLAIMING, flushes the old row to global and clears it in the same pass, sets
-  `arrived = 0` and `expected`, and publishes `tag = r`. CAS losers spin until `tag == r`.
-* SPIN: `tag == r - C` but INCOMPLETE means a laggard's contribution is still coming, and
-  the race-free form of waiting for it is to wait. No incomplete row is ever evicted.
-* DRAIN: the last `C` rows have no next writer, so each executor flushes the complete
-  slots of its share at the window's phase barrier. A claimed row short of its expected
-  arrivals is a lost contribution and traps.
+THE RING IS A WRITE-BACK CACHE (Blake ruling 2026-08-26). EVERY contribution lands in a
+ring row: there is no second destination and no reduction out of the accumulator into the
+output plane. Under per-stream firing a reader's sixteen rows span an arbitrary stretch of
+the union list, so two readers' scatter frontiers are hundreds of ranks apart at scattered
+routing and no `C` that fits SMEM bounds the skew — and since every warp is both a reader
+and a fetcher, a warp that WAITED for a laggard would still owe placements another
+reader's tile needs. So nothing waits on a laggard: a quad whose slot does not carry its
+rank EVICTS what the slot holds, complete or not, and then contributes. Arithmetically the
+eviction is free — the flush is an `atomicAdd`, so a partial sum is a correct partial and
+the rest of the sum arrives later, into the row the same rank takes again.
 
-THE MEMORY ORDER. `tag == r` is the ONLY statement that the row belongs to rank `r`, and
-it is published LAST — after the clear, after `arrived`/`expected`, behind a block-scope
-fence — so a contributor that reads it has seen a cleared row. In the other direction a
-contributor reduces first, fences, and only then increments `arrived`, so a reclaimer that
-reads `arrived == expected` has seen every element. Block scope is the right scope and not
-a shortcut: the participants are warps of ONE CTA talking through shared memory.
+THE EXCLUSION IS A PER-SLOT LOCK, AND IT IS ONE MECHANISM WHERE THERE WERE TWO (Blake
+ruling 2026-08-26, K35 S2d-3). The tag says WHOSE row it is; the lock says WHO MAY TOUCH
+IT. `0` is free and `1` is held, taken by ONE LANE on behalf of its warp-row with a single
+`atom.shared.cas.b32`, and held across everything that touches the row.
 
-TAGS ADVANCE MONOTONICALLY, so the first contributor to a rank is by construction its
-reclaimer and NO ZERO PASS EXISTS — the clear rides the flush, which is reading the row
-anyway. The window's first generation is the same statement: slot `i` starts at tag
-`i - C`, which is NEGATIVE, and a reclaim of a negative generation clears without
-reducing.
+ONE LOCK ACQUISITION DOES ALL OF IT (Blake ruling 2026-08-26, amendment 2). There is no
+second pass, no deferred claim and no re-check. Per issue, for each participating quad:
 
-WHY THE SPIN IS PRESENT AND WHY IT IS NOT TAKEN HERE. The protocol is correct for any
-`C ≥ kSegRows` with no help from any barrier. Under form (b) the readout's per-batch CTA
-barrier bounds the skew at one batch, so at `C = 32 = 2·kSegRows` a slot's stale rank is
-two batches old and is always complete: the wait is the protocol's, not this schedule's,
-and `C` is what buys tolerance when the schedule stops providing it (F7's dial).
+* the leader takes `lock[slot]`; a FAILED try is the protocol's ONLY deferral — the quad is
+  pending again in the next issue and every other quad of the issue proceeds;
+* under that one acquisition it reads `told = tag[slot]`. If `told != r` the quad EVICTS:
+  its eight lanes flush the old row to global attributed to `token(told)` (partial if
+  incomplete), clear it in the same pass, fence, `tag[slot] = r` — IN THIS SAME ISSUE;
+* then every lane of the quad does a plain `LDS → FADD → STS` on its own cells and the
+  leader adds the mass;
+* fence, `__syncwarp`, the leader releases.
+
+The row is the quad's from the acquire to the release, so nothing can move it under the
+contribution and the hazard that opened this stage — a contribution landing after the row
+was flushed, cleared and retagged for the next generation — has no interleaving left to
+occur in. DRAIN is unchanged: the last `C` rows have no next writer, so each executor
+flushes the slots of its share at the window's phase barrier; it runs after a barrier every
+contribution precedes, so every lock is free and every tag final and it needs no lock.
+
+THE TRY IS NON-BLOCKING, AND THAT IS THE DEADLOCK-FREEDOM ARGUMENT. A warp-row that fails
+its CAS HOLDS NOTHING: it drops out of the issue and is served by the next one, exactly as
+an aliased quad is. So there is NO WAIT IN THE PROTOCOL AT ALL, and the deadlock question
+closes without an argument about what a warp holds while it waits. A warp holds at most the
+locks of the quads in the CURRENT issue; those are distinct by construction (the aliasing
+split below), and each is released at the end of that issue. Every lock that is taken is
+released after bounded work with no wait inside it, so the retries are bounded by the
+finitely many contributions. This is what makes the readout's walk deadlock-free even
+though every warp is both a reader and a fetcher.
+
+THE FLUSH'S LANE GROUP IS A PARAMETER, AND THE EVICTION PAYS FOR THE SINGLE ACQUISITION.
+The DRAIN holds no lock and has the whole lockstep unit, so 32 lanes cover 32 CONSECUTIVE
+channels and one issue is a 128-BYTE transaction. An EVICTION happens under ONE QUAD's lock
+while the warp's other quads are inside their own rows, so only that quad's eight lanes are
+free for it and one issue is 32 CONSECUTIVE BYTES. Four quads evicting in one issue are
+four such transactions to four DIFFERENT tokens, which no wider group could have coalesced
+anyway; what is given up against S4b's derivation is the 128-byte width on the eviction
+path only, and what is bought is that eviction, contribution and release happen under one
+acquisition. One body serves both callers (`ring_flush(LPR, …)`), so the two cannot drift.
+
+THE MEMORY ORDER. A holder flushes and clears the row, fences, stores the tag, and
+releases with a second fence before the word that hands the row on; the next holder's
+acquire fences on success, so it sees all of that. Inside a quad the eight lanes address
+eight DISTINCT words per granule, so no two writers of one issue meet on a cell and the
+plain read-modify-write is safe. Block scope is the right scope and not a shortcut: the
+participants are warps of ONE CTA talking through shared memory.
+
+WHY THE COUNTER IT REPLACES WAS NOT ENOUGH, MEASURED (S2d-3). `inflight` was a
+`red.shared.add.u32` raised before the tag read and lowered after the reductions, with a
+Dekker pair against the reclaimer's CAS to `RECLAIMING`. It read correctly and its SASS
+release order was verified in the binary, and it still lost contributions. A per-rank probe
+— what each rank CONTRIBUTED into its row against what the flush later CARRIED OUT of it —
+named the hole in one run: rank 8 put in 0.685329 and had 0.569915 flushed, while rank 40,
+which shares slot 8, put in 0.718329 and had 0.833744 flushed. The difference is the same
+number both ways, so a contribution to rank 8 LANDED IN THE ROW AFTER IT HAD BEEN FLUSHED
+FOR RANK 8, CLEARED AND RETAGGED 40 — which is precisely the hazard the counter existed to
+prevent. A counter that brackets a contribution can only exclude a flush that CONSULTS it
+before touching the row; a lock excludes by holding the row itself, and needs no argument
+about what a fire-and-forget reduction has made visible to whom. With the lock the same
+probe reports ZERO mismatches on every `W = 64` cell.
+
+TAGS ADVANCE by whoever takes the row next and a slot's tags are congruent modulo `C`, so a
+slot alternates between the two generations that share it. The first contributor to a rank
+is by construction its evictor: NO ZERO PASS EXISTS — the clear rides the flush, which is
+reading the row anyway. The window's first generation is the same statement: slot `i`
+starts at tag `i - C`, which is NEGATIVE, and an eviction of a negative generation clears
+without reducing. The lock starts FREE, because every word a protocol excludes on must be
+written by the initialiser and not inherited from the previous moment's tenant (the S4b
+hang).
+
+WHAT THE EVICTION COSTS, AND THE DIAL. An eviction is one extra flush — one 128-byte
+transaction per (generation, element block) — so the price of a conflict is measured in
+EXTRA GLOBAL REDUCTIONS and nothing else; no warp is slowed by another's laggardness. `C`
+remains the only knob and is correctness-independent (F7's dial): if the eviction count is
+a material fraction of the rows at some cell, `C` goes up.
+
+WHAT THE ACCUMULATE COSTS. `red.shared.add.f32` has NO native instruction below sm_90:
+ptxas emits `ATOMS.CAST.SPIN`, a CAS retry loop, so every element of every contribution
+paid a loop whose trip count is the contention on the cell. Under the lock the accumulate
+is `LDS → FADD → STS` with the lock amortised over the whole row. `ops.cuh` keeps the form
+per-arch selectable (KERNEL_STANDARDS §8): sm_90 and up issue the native reduction through
+`ring_acc_f32`, and the lock still orders it against the flush.
 
 THE COUNT, which is the payoff stated as a number: global reductions per (token, element)
 fall from one per OWNER WARP that reads the token to ONE PER CTA, and the surviving one is

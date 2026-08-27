@@ -133,6 +133,13 @@ __device__ __forceinline__ void rendezvous_group(int id, int n) {
 //: A caller that conflates them would silently read a quarter of a vote.
 constexpr int kBallotLanes = 32;
 
+//: THE LANE QUAD'S WIDTH, which is the OTHER group a warp's work divides into and is
+//: derived from the MMA fragment rather than chosen: an accumulator's four lane quads
+//: are four TOKENS, so a quad is the lanes that share one token and its width is the
+//: unit's over four.  The ring's per-token work -- one row's lock, its eviction and its
+//: contribution -- is a QUAD's, not a unit's.
+constexpr int kQuadLanes = kBallotLanes / 4;
+
 //: ONE BIT PER LANE, IN LANE ORDER.  The unit's own agreement about a property
 //: of the data its lanes hold, reached without a memory round trip and without
 //: ordering anything.  Expressed as the intrinsic rather than as a named
@@ -357,7 +364,10 @@ __device__ __forceinline__ void or_shared_u32(SmemAddr a, uint32_t v) {
 //: contract with the meeting held in shared memory instead of in the output plane.
 //: The fan-in ring's whole point is that a token's partials MEET INSIDE THE CTA, so
 //: what this needs is exactly what the global form needs: a reduction that returns
-//: nothing and makes nothing wait.
+//: nothing and makes nothing wait.  IT IS THE sm_90+ ARM of `ring_acc_f32` below and
+//: is reached through it: below sm_90 the hardware has no such instruction and the
+//: emulation ptxas substitutes is not worth its cost against a lock the ring holds
+//: anyway.
 __device__ __forceinline__ void red_shared_add_f32(SmemAddr a, float v) {
   asm volatile("red.shared.add.f32 [%0], %1;" ::"r"(a), "f"(v) : "memory");
 }
@@ -390,11 +400,53 @@ __device__ __forceinline__ float load_shared_f32(SmemAddr a) {
   return v;
 }
 
+//: ONE FP32 CELL OF A SHARED ACCUMULATOR, STORED.  The partner of the load above: a
+//: ring cell is read, added into and written back under the slot's LOCK, so the pair is
+//: a plain read-modify-write and not an atomic one.
+__device__ __forceinline__ void store_shared_f32(SmemAddr a, float v) {
+  asm volatile("st.shared.f32 [%0], %1;" ::"r"(a), "f"(v) : "memory");
+}
+
+//: THE RING'S ACCUMULATE, AND THE ARCHITECTURE PICKS THE FORM (Blake ruling
+//: 2026-08-26; KERNEL_STANDARDS section 8).  `red.shared.add.f32` has no native
+//: instruction below sm_90: ptxas emits `ATOMS.CAST.SPIN`, a CAS RETRY LOOP, so every
+//: element of every contribution pays a loop whose trip count is the contention on the
+//: cell.  The ring already needs MUTUAL EXCLUSION on the row for its eviction, so the
+//: accumulate can ride the SLOT LOCK instead of carrying an exclusion of its own, and
+//: what it costs is then three instructions -- `LDS`, `FADD`, `STS` -- with the lock
+//: amortised over the whole row.  Where the hardware HAS the reduction (sm_90 and up),
+//: the native form is issued and the lock still orders it against the flush.
+__device__ __forceinline__ void ring_acc_f32(SmemAddr a, float v) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+  red_shared_add_f32(a, v);
+#else
+  store_shared_f32(a, load_shared_f32(a) + v);
+#endif
+}
+
 //: THE ORDER BETWEEN A UNIT'S SHARED WRITES AND THE FLAG THAT PUBLISHES THEM, and
 //: nothing wider: the ring's producers and consumers are warps of ONE CTA talking
 //: through shared memory, so the scope that has to be fenced is the block's.  A
 //: device-scope fence here would order traffic no participant can observe.
 __device__ __forceinline__ void publish_fence() { __threadfence_block(); }
+
+//: THE SLOT LOCK, ONE NATIVE `atom.shared.cas.b32` TAKEN BY ONE LANE ON BEHALF OF ITS
+//: WARP-ROW.  `0` is free and `1` is held.  Acquiring FENCES ON SUCCESS, so everything
+//: the previous holder published before releasing is visible to the new one; releasing
+//: fences FIRST, so everything this holder wrote is published before the word that
+//: hands the row on.  The try is NON-BLOCKING BY DESIGN -- a caller that fails holds
+//: nothing and steps out of the issue rather than waiting, which is what makes
+//: "no warp ever waits on a lock while holding another" a theorem instead of a rule.
+__device__ __forceinline__ bool try_lock_shared(SmemAddr a) {
+  const bool got = cas_shared_u32(a, 0u, 1u) == 0u;
+  if (got) publish_fence();
+  return got;
+}
+
+__device__ __forceinline__ void unlock_shared(SmemAddr a) {
+  publish_fence();
+  store_shared_u32(a, 0u);
+}
 
 //: the 16-byte quantum into shared memory, addressed.  The segment's dead rows are
 //: cleared at this width so a whole slot row is a constant number of stores.
