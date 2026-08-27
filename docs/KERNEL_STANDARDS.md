@@ -186,3 +186,7 @@ re-wakes stopped agents.
   shape, housekeeping) go in the NEXT brief instead.
 - Every kernel family carries an arm-subset knob (the carry's ROLA_CARRY_ARMS); a family without one gets it
   before its next build.
+§15 addendum (build parallelism, 2026-08-27): cicc peaks ~1 GB post-S1, on a 16-CPU / 24 GB machine.
+Gate builds: exclusive lock, MAX_JOBS=8, NVCC_THREADS=2. Iteration builds: one of two parallel slots
+(`rola-scratch/tools/build_slot.sh`), MAX_JOBS=4, single-arch, arm-subset. Re-derive these numbers if
+cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).
