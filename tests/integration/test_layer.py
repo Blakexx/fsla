@@ -1,12 +1,12 @@
 """The routing vocabulary's own gate.
 
 The vocabulary IS the tag vocabulary: one level config per routing level, each carrying
-its width and its two per-duty activation OBJECTS --
-``IndependentRouting(width, read, write, tied=False)`` and ``UnionRouting(width, alpha)``
-(``rola.routing.types``), with ``dense_routing``/``union_routing``/``split_routing``
-as the spellings and ``uniform`` as the way to say one of them D times. Every row here
-holds one refusal that vocabulary owes a caller: a value that is not an activation, a
-width that cannot be a width, a depth past the built bound.
+its width and its per-duty activation OBJECTS -- ``IndependentRouting(width, read,
+write)``, ``TiedRouting(width, op)`` and ``UnionRouting(width, alpha)``
+(``rola.routing.types``), with ``dense_routing``/``union_routing``/``split_routing``/
+``tied_routing`` as the spellings and ``uniform`` as the way to say one of them D times.
+Every row here holds one refusal that vocabulary owes a caller: a value that is not an
+activation, a width that cannot be a width, a depth past the built bound.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from rola.routing.types import IndependentRouting, UnionRouting, entmax, softmax
 
 def test_independent_routing_has_only_public_fields():
     assert set(inspect.signature(IndependentRouting).parameters) == {
-        'width', 'tied', 'read', 'write'}
+        'width', 'read', 'write'}
     with pytest.raises(TypeError):
         IndependentRouting(probability='softmax')
 
@@ -35,12 +35,6 @@ def test_union_routing_has_only_public_fields():
         UnionRouting(probability='softmax')
 
 
-@pytest.mark.parametrize('value', [0, 1, 'true', None])
-def test_independent_routing_requires_an_exact_boolean_tied(value):
-    with pytest.raises(TypeError):
-        IndependentRouting(width=4, tied=value, read=softmax(), write=softmax())
-
-
 @pytest.mark.parametrize('side', ['read', 'write'])
 @pytest.mark.parametrize('value', ['softmax', 'entmax', 'SPARSE', 1, None])
 def test_independent_routing_rejects_non_activation_side_values(side, value):
@@ -49,7 +43,7 @@ def test_independent_routing_rejects_non_activation_side_values(side, value):
     (`softmax()`/`entmax(alpha)`) -- a bare string, int or `None` has no `.tag` to
     look up in the registry, so the failure is `TypeError` ("not an activation"),
     not `ValueError` ("not a recognized string")."""
-    kwargs = dict(width=4, tied=False, read=softmax(), write=softmax())
+    kwargs = dict(width=4, read=softmax(), write=softmax())
     kwargs[side] = value
     with pytest.raises(TypeError):
         IndependentRouting(**kwargs)

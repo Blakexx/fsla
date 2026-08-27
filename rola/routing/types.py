@@ -250,12 +250,9 @@ class IndependentRouting:
     width: int
     read: RoutingActivation
     write: RoutingActivation
-    tied: bool = False
 
     def __post_init__(self) -> None:
         validate_level_width(self.width, owner="IndependentRouting")
-        if type(self.tied) is not bool:
-            raise TypeError(f"IndependentRouting.tied must be bool, got {self.tied!r}")
         for name, activation in (
             ("read", self.read),
             ("write", self.write),
@@ -269,14 +266,13 @@ class IndependentRouting:
         if (
             activation_properties(self.read).exact_zeros
             and activation_properties(self.write).exact_zeros
-            and not self.shares_solve
         ):
             raise ValueError(
                 "IndependentRouting only permits two exact-zero (`exact_zeros`) sides when "
-                "they share one tied solve; use UnionRouting for untied sparse/sparse "
-                "routing. Stated against the registry column rather than against a list "
-                "of activation names, so a new zero-capable variant is covered the "
-                "moment its row exists")
+                "the two duties are the SAME solve; use TiedRouting or UnionRouting for "
+                "sparse/sparse routing. Stated against the registry column rather than "
+                "against a list of activation names, so a new zero-capable variant is "
+                "covered the moment its row exists")
 
     def activation(self, duty: str):
         """This level's activation for one DUTY, `'read'` or `'write'`.
@@ -294,12 +290,7 @@ class IndependentRouting:
 
     def at(self, width: int) -> IndependentRouting:
         """This level's operator choice at another branch width."""
-        return IndependentRouting(width=width, read=self.read, write=self.write, tied=self.tied)
-
-    @property
-    def shares_solve(self) -> bool:
-        """Whether tied logits and equal activations make one solve exact."""
-        return self.tied and self.read == self.write
+        return IndependentRouting(width=width, read=self.read, write=self.write)
 
     def duty_simplex_output(self, duty: str) -> bool:
         """Whether this cell's own output already lands on the simplex.
@@ -365,11 +356,10 @@ class UnionRouting:
 class TiedRouting:
     """One routing LEVEL, ONE activation, ONE solve: the read factor IS the write factor.
 
-    Semantically ``IndependentRouting(width, read=op, write=op, tied=True)`` -- but a
-    first-class type rather than that alias, so the level-type vocabulary itself says a
-    tied level exists (``IndependentRouting | TiedRouting | UnionRouting``) instead of
-    requiring a reader to notice that an ``IndependentRouting`` instance's two
-    activations happen to collapse to one. The stored field is named ``op`` rather than
+    A first-class type in its own right: the level-type vocabulary is exactly
+    ``IndependentRouting | TiedRouting | UnionRouting``, with tying named by which type
+    a level IS rather than by a flag on ``IndependentRouting`` that happened to collapse
+    its two independent solves into one. The stored field is named ``op`` rather than
     ``activation`` because :meth:`activation` is the per-duty ACCESSOR every routing
     level answers to (``Topology.activation`` calls ``level.activation(duty)``
     generically); a field and a method cannot share one name on a ``slots=True``
@@ -401,16 +391,6 @@ class TiedRouting:
     def at(self, width: int) -> TiedRouting:
         """This level's operator choice at another branch width."""
         return TiedRouting(width=width, op=self.op)
-
-    @property
-    def tied(self) -> bool:
-        """Always tied -- there is only ever one solve to speak of."""
-        return True
-
-    @property
-    def shares_solve(self) -> bool:
-        """Always ``True``: one activation, one solve, by construction."""
-        return True
 
     def duty_simplex_output(self, duty: str) -> bool:
         """Whether this cell's own output already lands on the simplex.
@@ -469,7 +449,7 @@ class ResolvedRouting:
         return tuple(
             index
             for index, level in enumerate(self.levels)
-            if isinstance(level, UnionRouting) or not level.tied
+            if not isinstance(level, TiedRouting)
         )
 
     @property
@@ -562,7 +542,7 @@ class ResolvedRouting:
         return tuple(
             index
             for index, level in enumerate(self.levels)
-            if isinstance(level, (IndependentRouting, TiedRouting)) and level.shares_solve
+            if isinstance(level, TiedRouting)
         )
 
     @property

@@ -14,6 +14,7 @@ from rola.routing.types import (
     IndependentRouting,
     ResolvedRouting,
     SoftmaxActivation,
+    TiedRouting,
     UnionRouting,
 )
 
@@ -166,22 +167,10 @@ def _stored_descriptor_vjp(read_logits, write_logits, routing, descriptor, d_rea
             continue
 
         assert isinstance(level, IndependentRouting)
-        if level.shares_solve:
-            d_write_logits[:, :, span] = _stored_activation_vjp(
-                level.write, read_values,
-                read_gradient + write_gradient, support)
-        elif level.tied:
-            d_write_logits[:, :, span] = (
-                _stored_activation_vjp(
-                    level.read, read_values, read_gradient, support)
-                + _stored_activation_vjp(
-                    level.write, write_values, write_gradient, support)
-            )
-        else:
-            d_read_logits[:, :, span] = _stored_activation_vjp(
-                level.read, read_values, read_gradient, support)
-            d_write_logits[:, :, span] = _stored_activation_vjp(
-                level.write, write_values, write_gradient, support)
+        d_read_logits[:, :, span] = _stored_activation_vjp(
+            level.read, read_values, read_gradient, support)
+        d_write_logits[:, :, span] = _stored_activation_vjp(
+            level.write, write_values, write_gradient, support)
     return d_read_logits, d_write_logits
 
 
@@ -381,8 +370,7 @@ def test_production_independent_forward_matches_reference_and_vjp_matches_stored
 
 def test_production_tied_values_alias_only_for_a_whole_shared_plan():
     shared_routing = ResolvedRouting(
-        (IndependentRouting(width=4, read=EntmaxActivation(1.5), write=EntmaxActivation(1.5),
-                            tied=True),) * 2,
+        (TiedRouting(width=4, op=EntmaxActivation(1.5)),) * 2,
     )
     logits = _logits(shared_routing, tokens=7).requires_grad_()
     descriptor = production_routing_factors(logits, logits, shared_routing)
@@ -401,8 +389,7 @@ def test_production_tied_values_alias_only_for_a_whole_shared_plan():
 
     mixed_routing = ResolvedRouting(
         (
-            IndependentRouting(width=4, read=EntmaxActivation(1.5), write=EntmaxActivation(1.5),
-                              tied=True),
+            TiedRouting(width=4, op=EntmaxActivation(1.5)),
             IndependentRouting(width=4, read=SoftmaxActivation(), write=SoftmaxActivation()),
         ),
     )
@@ -516,8 +503,7 @@ def test_production_compact_mixed_radix_support_has_tail_and_stored_bf16_authori
         (
             IndependentRouting(width=2, read=SoftmaxActivation(), write=EntmaxActivation(2.0)),
             IndependentRouting(width=3, read=EntmaxActivation(1.5), write=SoftmaxActivation()),
-            IndependentRouting(width=5, read=EntmaxActivation(1.5), write=EntmaxActivation(1.5),
-                              tied=True),
+            TiedRouting(width=5, op=EntmaxActivation(1.5)),
             UnionRouting(width=4, alpha=2.0),
         ),
     )
@@ -540,8 +526,7 @@ def test_production_compact_mixed_radix_support_has_tail_and_stored_bf16_authori
     _assert_support_matches_stored_descriptor(descriptor)
 
     narrow_routing = ResolvedRouting(
-        (IndependentRouting(width=2, read=EntmaxActivation(1.5), write=EntmaxActivation(1.5),
-                            tied=True),),
+        (TiedRouting(width=2, op=EntmaxActivation(1.5)),),
     )
     narrow_logits = torch.tensor(
         [[[0.0, 1.99998]]], device="cuda", dtype=torch.float32)

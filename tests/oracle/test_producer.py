@@ -43,7 +43,7 @@ def _topology(mixed: bool = False, tied: bool = False) -> Topology:
     ]
     if mixed:
         levels.append(IndependentRouting(
-            width=3, read=SoftmaxActivation(), write=SoftmaxActivation(), tied=True))
+            width=3, read=SoftmaxActivation(), write=SoftmaxActivation()))
     if tied:
         levels.append(TiedRouting(width=3, op=EntmaxActivation(1.5)))
     return Topology(levels=tuple(levels))

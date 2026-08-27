@@ -26,7 +26,7 @@ from tests.k31.intra_reference import (
     make_cell,
 )
 
-_LEVEL = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
+_LEVEL = IndependentRouting(width=1, read=SoftmaxActivation(),
                             write=SoftmaxActivation())
 
 
