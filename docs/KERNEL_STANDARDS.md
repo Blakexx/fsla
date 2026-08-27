@@ -132,3 +132,18 @@ addressing (it found the decode pool race). Device `printf` flushes only on kern
 for a hang; a bounded loop + `__trap()` converts a hang into a fault but skips barriers, so prefer the
 debugger. RULE: a hang or a run-to-run-varying miscount is diagnosed with the debugger or the sanitizer
 within the first hour, never by inspection alone; the finding goes in FINDINGS with the debugger's output.
+
+## 12. Warp collectives and fences (recorded 2026-08-26 from S2d/S2d-2)
+- NEVER place a warp-collective (`__shfl_sync`, `__ballot_sync`, `ldmatrix`, `__syncwarp`) inside a
+  short-circuit or a lane-divergent predicate: `part && lane_broadcast(x)` splits the warp at an
+  instruction that needs every lane, and the split never completes (a hang that survives removing every
+  explicit wait). Hoist the collective; predicate its RESULT.
+- A fence orders only the FENCING THREAD's own accesses. In any publish/consume pair (data -> counter,
+  counter -> data), EVERY lane that issued the data accesses executes the fence before the `__syncwarp`
+  that precedes the one-lane counter update; and EVERY lane that reads the data after a one-lane
+  counter check executes a fence after the broadcast and before its loads. A leader-only fence covers
+  the leader only (S2d bug 1: seven of eight lanes unordered).
+- Debugging recipe under WSL (cuda-gdb launch mode, attach is refused by Yama): run gdb with a FIFO on
+  stdin (`mkfifo in; cuda-gdb -q --args <venv>/bin/python repro.py < in &`), `echo run > in`, wait for
+  the hang, `kill -INT <gdb pid>`, then `echo 'info cuda kernels' > in`, `info cuda threads`, `bt` —
+  it names the split warp and the PC in one shot.
