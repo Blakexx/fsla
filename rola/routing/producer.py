@@ -42,7 +42,9 @@ from rola.routing.types import (
     IndependentRouting,
     LevelRouting,
     ResolvedRouting,
+    RoutingActivation,
     SoftmaxActivation,
+    TiedRouting,
     Topology,
     UnionRouting,
     validate_normalization,
@@ -52,6 +54,7 @@ __all__ = [
     "RouteProducer",
     "dense_routing",
     "split_routing",
+    "tied_routing",
     "uniform",
     "union_routing",
 ]
@@ -65,6 +68,17 @@ def dense_routing(width: int) -> IndependentRouting:
 def union_routing(width: int, alpha: float = 1.5) -> UnionRouting:
     """One exact entmax solve determining a shared support, split across duties."""
     return UnionRouting(width=width, alpha=alpha)
+
+
+def tied_routing(width: int, activation: RoutingActivation = EntmaxActivation(1.5)) -> TiedRouting:
+    """One activation, one solve -- the read factor IS the write factor, at ``width``.
+
+    Distinct from :func:`union_routing`: union routing splits ONE shared support
+    across two roles, so the read and write factors differ (a share each) even though
+    they came from one solve. Tied routing hands both duties the SAME tensor outright --
+    there is no split to perform, because there is only one duty's worth of output.
+    """
+    return TiedRouting(width=width, op=activation)
 
 
 def split_routing(width: int, alpha: float = 1.5, *,
@@ -104,7 +118,8 @@ class RouteProducer(nn.Module):
     level, so a model pays one GEMM and one solve group for the whole topology.
 
     Args:
-        levels: one :class:`~rola.routing.types.IndependentRouting` or
+        levels: one :class:`~rola.routing.types.IndependentRouting`,
+            :class:`~rola.routing.types.TiedRouting` or
             :class:`~rola.routing.types.UnionRouting` per routing level, outermost
             first. Each carries its own ``width``; :func:`uniform` builds a uniform
             stack. The tags name activations from the closed registry
@@ -137,7 +152,7 @@ class RouteProducer(nn.Module):
         gain_config: GainConfig | None = None,
     ) -> None:
         super().__init__()
-        if isinstance(levels, (IndependentRouting, UnionRouting)):
+        if isinstance(levels, (IndependentRouting, TiedRouting, UnionRouting)):
             raise TypeError(
                 "RouteProducer takes a LIST of level configs, one per routing level, and "
                 f"got a single {type(levels).__name__}. A one-level model is `[level]`; a "
@@ -146,10 +161,10 @@ class RouteProducer(nn.Module):
         if not _levels:
             raise ValueError("RouteProducer needs at least one routing level")
         for index, level in enumerate(_levels):
-            if type(level) not in (IndependentRouting, UnionRouting):
+            if type(level) not in (IndependentRouting, TiedRouting, UnionRouting):
                 raise TypeError(
-                    f"levels[{index}] must be an IndependentRouting or UnionRouting carrying "
-                    f"its own width, got {level!r}")
+                    f"levels[{index}] must be an IndependentRouting, TiedRouting or "
+                    f"UnionRouting carrying its own width, got {level!r}")
         if type(hidden_size) is not int or hidden_size < 1:
             raise ValueError(f"hidden_size must be a positive exact int, got {hidden_size!r}")
         if type(num_heads) is not int or num_heads < 1:

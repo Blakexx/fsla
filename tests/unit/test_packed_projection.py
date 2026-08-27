@@ -2,7 +2,14 @@ import pytest
 import torch
 
 from rola.routing.projection import packed_router_logits
-from rola.routing.types import IndependentRouting, ResolvedRouting, SoftmaxActivation, UnionRouting
+from rola.routing.types import (
+    EntmaxActivation,
+    IndependentRouting,
+    ResolvedRouting,
+    SoftmaxActivation,
+    TiedRouting,
+    UnionRouting,
+)
 
 
 def _routing_for_untied(levels, untied_levels, branch):
@@ -105,6 +112,27 @@ def test_packed_router_matches_separate_projection_and_gradients(untied_levels, 
             assert actual is expected
         else:
             torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-7)
+
+
+def test_tied_routing_reads_off_the_write_projection_like_tied_independent_routing():
+    """A `TiedRouting` level has ONE packed slot (`untied_levels` excludes it, like
+    `IndependentRouting(tied=True)` today): its read logits are a VIEW of its write
+    logits, not a second projected column block."""
+    torch.manual_seed(7)
+    batch, length, hidden = 2, 5, 6
+    routing = ResolvedRouting(
+        (TiedRouting(width=4, op=EntmaxActivation(1.5)),
+         IndependentRouting(width=3, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())),
+    )
+    assert routing.untied_levels == (1,)
+    # slot widths: write-0 (tied, w=4), write-1 (w=3), read-1 (untied, w=3) -> 10 columns.
+    assert routing.packed_router_width == 10
+    h = torch.randn(batch, length, hidden, requires_grad=True)
+    route_W = torch.randn(2, hidden, routing.packed_router_width, requires_grad=True)
+    read_logits, write_logits = packed_router_logits(h, route_W, routing)
+    tied_span = routing.level_logit_slice(0)
+    torch.testing.assert_close(
+        read_logits[..., tied_span], write_logits[..., tied_span], rtol=0, atol=0)
 
 
 def test_packed_router_rejects_plan_shape_mismatches():
