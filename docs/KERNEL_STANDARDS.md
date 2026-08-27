@@ -121,3 +121,14 @@ or stop and name the gap; efficiency is correctness.
   the NEXT writer reclaims a complete slot by CAS and flushes it; spin on incomplete; drain at the phase barrier.
 - R5 LO PARK (F5): hi in registers, lo parked into the transit's drained slots, freed registers become
   leaves (box size); a per-arch/width declaration.
+
+## 11. Debugging a device hang or race (recorded 2026-08-26 after S2d burned 2.5 h reasoning blind)
+`cuda-gdb` works on this machine when the process is LAUNCHED under it; ATTACHING (`-p`) is refused by
+Yama `ptrace_scope=1` (a Linux setting, liftable with `sudo sysctl kernel.yama.ptrace_scope=0`).
+Recipe: `flock /tmp/rola_gpu.lock cuda-gdb -q --args <venv>/bin/python repro.py` → `run` → Ctrl-C on a
+hang → `info cuda kernels` / `info cuda warps` / `cuda kernel 0 block (..) thread (..)` / `bt` / `print`.
+`compute-sanitizer --tool synccheck|racecheck|memcheck` for barrier misuse, shared-memory hazards and
+addressing (it found the decode pool race). Device `printf` flushes only on kernel completion — useless
+for a hang; a bounded loop + `__trap()` converts a hang into a fault but skips barriers, so prefer the
+debugger. RULE: a hang or a run-to-run-varying miscount is diagnosed with the debugger or the sanitizer
+within the first hour, never by inspection alone; the finding goes in FINDINGS with the debugger's output.
