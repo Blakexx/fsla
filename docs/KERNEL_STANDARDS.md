@@ -180,7 +180,9 @@ re-wakes stopped agents.
 - A stage has a budget of THREE full build+gate cycles. Iteration is single-arch, arm-subset, oracle-first.
   When the budget is spent and a gate is still red, the stage STOPS and reports the residual — it does not
   keep chasing green.
-- A running stage is never re-scoped by the coordinator; rulings land in the NEXT brief. (Four mid-stage
-  amendments cost S2d-3 four cycles.)
+- MID-STAGE RE-SCOPING IS ALLOWED when it changes WHAT is built (a design or mechanism ruling) — Blake:
+  "I'd rather re-scope than build something wrong and fix it later." A re-scoped stage restarts its
+  cycle budget from the amended spec. Amendments that do not change the design (count formats, report
+  shape, housekeeping) go in the NEXT brief instead.
 - Every kernel family carries an arm-subset knob (the carry's ROLA_CARRY_ARMS); a family without one gets it
   before its next build.
