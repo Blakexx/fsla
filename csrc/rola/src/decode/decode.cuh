@@ -67,13 +67,13 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
 //: what four 8-warp CTAs derived four times, and derives it on a chain four times shorter
 //: because every loop in it is `for i = tid; i < n; i += blockDim`.
 //: docs/internals/decode/decode.md#decode-threads
-constexpr int kDecodeThreads = 512;
+//: THE WIDTH IS THE ARM, and D1 measures two of them: the PRIMARY arm is the fat CTA
+//: (1024 threads, 32 warps, one CTA per SM) and the COMPARISON arm is F512 (two CTAs per
+//: SM). With no barrier after the prologue the two differ only in the single wave's tail,
+//: which is what the ten-pair table decides between:
+//: docs/internals/decode/decode.md#decode-threads
+constexpr int kDecodeThreads = 1024;
 constexpr int kDecodeWarps = kDecodeThreads / 32;
-//: `log2(kDecodeWarps)`: the number of consecutive unit indices ONE CTA's warps cover, and
-//: therefore how many of the loop index's low bits the write walk rotates into its finest
-//: coordinate: docs/internals/decode/decode_lattice.md#the-write-grain
-constexpr int kDecodeWarpsBits = 4;
-static_assert(1 << kDecodeWarpsBits == kDecodeWarps, "kDecodeWarpsBits must be log2(kDecodeWarps)");
 
 //: THE UNIT PARTITION'S GRANULARITY, AND IT IS NOT THE CTA'S WARP COUNT. Widening the CTA
 //: is a decision about WHERE THE DERIVATION IS SHARED; it is not a decision about how
@@ -206,13 +206,27 @@ struct DecodeParams {
   int mask_off[kMaxLevels];
   int mask_words[kMaxLevels];
   int mask_total;
-  //: The union owner-coordinate lists' layout: `lat_g[l]` entries reserved per level.
+  //: THE OWNER LIVENESS BITMASK'S word layout: one bit per OWNER COORDINATE, per level,
+  //: per kind -- `omask_words[l] = ceil(lat_g[l] / 32)` words at `omask_off[l]` of an
+  //: `omask_total`-word plane, one plane per kind. It replaces the four COMPACTED owner
+  //: lists: a rank selects its owner by find-nth-set instead of by an indexed load, which
+  //: is what deletes the prologue's block scans and their barriers:
+  //: docs/internals/decode/decode_lattice.md#the-owner-lists
+  //: THE WRITE SIDE'S LIVE-DIGIT LIST NEEDS NO PLANE AT ALL: the write digit mask IS its
+  //: bitmask, so term 0's grain is the same find-nth-set over `mask_w`:
+  //: docs/internals/decode/decode_lattice.md#the-write-grain
+  int omask_off[kMaxLevels];
+  int omask_words[kMaxLevels];
+  int omask_total;
+  //: THE COMPACTED LISTS THE BITMASK PRODUCES, and they are read exactly as they were
+  //: before D1: `olist[kind][level][i]` is the i-th live owner, one indexed load. The
+  //: bitmask is the BUILDER, not the reader -- a find-nth-set at use time was measured at
+  //: +25 % of the dense step, because the admission resolves one rank per candidate atom
+  //: per CTA: docs/internals/decode/decode_lattice.md#the-owner-lists
   int olist_off[kMaxLevels];
   int olist_total;
-  //: THE WRITE SIDE'S LIVE-DIGIT LIST, OUTER LEVELS ONLY -- `B_l` entries reserved per
-  //: level below the innermost, and nothing for the innermost (which contributes a whole
-  //: run as one slice, not a digit). It is what lets the WRITE PRODUCT enumerate live
-  //: digits where every other term enumerates live owners crossed with a full run radix:
+  //: THE WRITE SIDE'S LIVE-DIGIT LIST, OUTER LEVELS ONLY -- term 0's own grain, compacted
+  //: from `mask_w` by the same prefix popcount:
   //: docs/internals/decode/decode_lattice.md#the-write-grain
   int dlist_off[kMaxLevels];
   int dlist_total;
@@ -310,7 +324,7 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 // ---------------------------------------------------------------------------
 
 size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int olist_total, int dlist_total);
+                              int omask_total, int olist_total, int dlist_total);
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
 
 }  // namespace decode
