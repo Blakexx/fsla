@@ -147,3 +147,10 @@ within the first hour, never by inspection alone; the finding goes in FINDINGS w
   stdin (`mkfifo in; cuda-gdb -q --args <venv>/bin/python repro.py < in &`), `echo run > in`, wait for
   the hang, `kill -INT <gdb pid>`, then `echo 'info cuda kernels' > in`, `info cuda threads`, `bt` —
   it names the split warp and the PC in one shot.
+
+## 13. A mechanism's brief carries the WHOLE protocol (recorded 2026-08-26 after the ring's four patches)
+When a synchronization protocol or data-path mechanism changes, the brief restates the ENTIRE mechanism
+as pseudocode and the implementer rebuilds that function from it — deleting the previous one — never
+editing around the previous protocol's skeleton. Scaffolding that only made sense for a superseded
+protocol (a deferral rule, a sentinel state, a counter) must not survive; the review checks the function
+against the pseudocode line by line. "Build the whole design" applies at mechanism grain.
