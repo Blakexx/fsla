@@ -158,3 +158,11 @@ Addendum (S2d-3): a whole rebuild is diffed against the BUG LIST of the thing it
 the pseudocode — S2d-3 reintroduced S2d-2's `part && lane_broadcast(...)` short-circuit hang while
 rewriting the acquire, three lines below its own warning. The previous pass's findings are a checklist
 the rebuild is walked against before its first build.
+
+## 14. Waiting on a build (recorded 2026-08-26 from the agent time ledger: 327 min of `until pgrep … sleep` loops)
+A long build is launched as a BACKGROUND task writing to a log file, and the agent then ENDS ITS TURN —
+the harness re-invokes it when the command exits, with the exit status. Never wait by polling: no
+`until pgrep … sleep` loops, no `pgrep -f` on a process name (it self-matches, it matches other tracks'
+builds in the same venv, and a live waiter re-wakes a stopped agent into a worktree it no longer owns).
+Never edit a source file while a build of it is in flight. One gate build per stage; iteration builds
+single-arch and arm-subset.
