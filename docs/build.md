@@ -29,6 +29,7 @@ mamba-ssm require the same thing for the same reason.
 | `ROLA_CUDA_ARCHS` | `;`-separated compute capabilities, default `80;86`. Naming one without a ratified manifest **fails before anything compiles** (rule 3). |
 | `MAX_JOBS` | Parallel compile jobs. The default is derived from **available RAM**, not core count: `MAX_JOBS=8` was OOM-killed on a 23 GB / 16-core host after 8m32. The divisor is a measured GB-per-`cicc` constant in `tools/build_flags.py`, so the same source gives 7 jobs on a 23 GB host and 4 on a 16 GB-class one. |
 | `ROLA_NVCC_THREADS` | `nvcc --threads`, default 2 = the number of `-gencode` targets. Beyond the target count it buys nothing and multiplies the resident set, since the two parallelism axes multiply. |
+| `ROLA_DECODE_ARMS` | **Iteration only.** Comma- or space-separated indices into the decode family's declared arm list (`csrc/rola/src/decode/decode.cu`'s `DECODE_ARM_<i>`, the `d_v x D x decay` matrix in that order, 16 rows). Compiles only those arms. Unset = every arm, which is what a gate build must be. See [below](#arm-subset). |
 | `ROLA_SKIP_POST_BUILD_RATIFY` | Skips the post-build gate. For iterating on non-kernel code only; a shippable binary is one that passed it. |
 | `ROLA_SCCACHE` | `auto` (default): use the pinned `sccache` if it resolves and matches; else build uncached. `1`: REQUIRE it -- a missing or mismatched wrapper is a hard failure. `0`: disable. See [below](#sccache). |
 | `ROLA_SCCACHE_BIN` | Overrides the `sccache` binary `ROLA_SCCACHE` resolves, the same way `CUDA_HOME` overrides `nvcc`/`ptxas`. |
@@ -66,6 +67,45 @@ mamba-ssm require the same thing for the same reason.
 8. **`rola/_build_config.py`.** Generated, carrying the archs, the assembler, the
    torch version and ABI flag, the manifest digest and per-arch entry counts, and
    `ptx_jit_fallback: False`.
+
+## <a id="arm-subset"></a>An iteration build may compile one decode arm
+
+Instantiation is the dominant build resource, so a developer testing ONE arm may
+compile one arm:
+
+```bash
+ROLA_DECODE_ARMS=5 ROLA_CUDA_ARCHS=86 pip install -e . --no-build-isolation
+```
+
+Three properties make this safe to have:
+
+* **The default is every declared arm.** `ROLA_DECODE_ARMS` unset expands to the whole
+  list, so a plain build and every gate build are the closed-world one. There is no
+  configuration in which a subset is the default.
+* **A subset binary is SELF-IDENTIFYING and refuses what it lacks.**
+  `rola.ops.decode.arms()` returns the `(d_v, D, decay)` rows the fatbin actually
+  carries, read off the same list the build compiled from; asking the launch for any
+  other shape is a `TORCH_CHECK` refusal naming the arm, never a mis-launch.
+* **It is NOT SHIPPABLE, and the build says so.** The two post-build gates prove the
+  fatbin carries EVERY ratified instantiation in its assigned shard; a subset carries
+  fewer by construction, so they are skipped — announced in a banner, in this one
+  place and nowhere else. Ratify at the END of a stage, from a full build.
+
+**AND THE RATIFICATION GATE MUST NOT INHERIT IT, WHICH IS THE SUBTLE HALF.**
+`tools/ratify.py` reuses the last build's `build.ninja` flags VERBATIM, because
+reconstructing them by hand was independently wrong three ways ([sccache](#sccache)). That
+makes any flag naming WHAT WAS COMPILED — rather than HOW — inheritable, and this knob is
+one. Measured the first time it was used: after `ROLA_DECODE_ARMS=5 setup.py build_ext`,
+the next `ratify.py --write` inherited the define and wrote a manifest of 393 entries
+carrying ONE decode arm, while the `.so` a full build had linked carried all sixteen — and
+it PASSED, because the gate compared its own narrowed output against the manifest it had
+just written from it. `-gencode` was excluded from inheritance for exactly this reason
+(a single-arch build narrowing the next ratification); `-DROLA_DECODE_ARMS` now is too,
+via `ratify.py`'s `_NOT_INHERITED_PREFIXES`. A gate that certifies numbers no shipped
+binary has is worse than no gate.
+
+The same rule governs `ROLA_CUDA_ARCHS=86`: iterate single-arch, gate and measure on
+the full both-arch build.
 
 ## What it costs
 

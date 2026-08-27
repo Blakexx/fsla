@@ -93,6 +93,36 @@ import sccache_toolchain  # noqa: E402
 #: point -- the supported matrix IS the ratified set, not a wish list.
 ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") if a]
 
+
+#: THE ITERATION ARM SUBSET (KERNEL_STANDARDS section 7). Instantiation cost is the
+#: dominant build resource, so a developer testing ONE arm may compile one arm:
+#: ``ROLA_DECODE_ARMS=5`` (or ``5,13``) names rows of the decode family's declared arm
+#: list by index (``csrc/rola/src/decode/decode.cu``'s ``DECODE_ARM_<i>``, the
+#: ``d_v x D x decay`` matrix in that order). The DEFAULT IS EVERY DECLARED ARM, so a
+#: plain build -- and every gate build -- is the closed-world one. A subset binary is
+#: SELF-IDENTIFYING: ``rola.ops.decode.arms()`` lists exactly what was built and the
+#: launch refuses an arm the binary does not carry. Iteration builds pair it with
+#: ``ROLA_CUDA_ARCHS=86``; docs/build.md.
+def _decode_arm_subset() -> list[str]:
+    spec = os.getenv("ROLA_DECODE_ARMS", "").replace(",", " ").split()
+    if not spec:
+        return []
+    rows = " ".join(f"DECODE_ARM_{int(i)}(X_)" for i in spec)
+    return [f"-DROLA_DECODE_ARMS(X_)={rows}"]
+
+
+def _is_iteration_build() -> bool:
+    """An ARM-SUBSET build is an ITERATION build and is NOT SHIPPABLE.
+
+    The two post-build gates prove SHIPPABILITY -- that the fatbin carries every
+    ratified instantiation, in the shard the arm list assigns it. A subset binary
+    carries fewer BY CONSTRUCTION, so those gates would fail for the one reason that
+    is not a defect. They are skipped here and nowhere else, behind a banner, and the
+    binary stays self-identifying: ``rola.ops.decode.arms()`` lists what was built and
+    the launch refuses an arm it does not carry.
+    """
+    return bool(os.getenv("ROLA_DECODE_ARMS", "").strip())
+
 #: THE EXTENSION IS NAMESPACED INSIDE THE PACKAGE, not top-level. A top-level
 #: ``rola_cuda`` is the flash-attention / mamba precedent, and it has one concrete
 #: cost: an in-place (``pip install -e`` / ``build_ext --inplace``) build drops the
@@ -429,7 +459,7 @@ def build_extension():
     os.environ.setdefault("MAX_JOBS", str(build_flags.default_max_jobs(nvcc_threads)))
 
     nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
-        + list(build_flags.DEPFILE_FLAGS)
+        + list(build_flags.DEPFILE_FLAGS) + _decode_arm_subset()
     assert_no_ptx(nvcc_flags)
 
     ldflags = ["-lcuda"]
@@ -484,8 +514,17 @@ class RoLABuildExtension(BuildExtension):
         _gate_shards()
         sccache = _gate_sccache()
         super().run()
-        self._post_build_fatbin_check()
-        self._post_build_manifest_check()
+        if _is_iteration_build():
+            #: THE ONE PLACE THE SHIPPABILITY GATES ARE SKIPPED, and it is announced.
+            print("=" * 72)
+            print("ITERATION BUILD: ROLA_DECODE_ARMS is set, so this fatbin carries a "
+                  "SUBSET of\nthe decode arms. It is NOT SHIPPABLE and the two "
+                  "post-build gates are skipped.\nrola.ops.decode.arms() lists what "
+                  "it does carry.")
+            print("=" * 72)
+        else:
+            self._post_build_fatbin_check()
+            self._post_build_manifest_check()
         write_build_config(ROLA_CUDA_ARCHS, ptxas, manifest, pin, sccache)
 
     def _post_build_fatbin_check(self):

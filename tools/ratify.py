@@ -543,9 +543,24 @@ def _ninja_cuda_template() -> tuple[str, str, str] | None:
     return nvcc, cuda_cflags, cuda_post_cflags
 
 
+#: THE FLAGS A RATIFICATION MUST NEVER INHERIT FROM THE LAST BUILD. Both name WHAT WAS
+#: COMPILED rather than HOW, so inheriting either lets an ITERATION build narrow the next
+#: ratification to its own subset and then pass, because the gate would be comparing its
+#: own narrowed output against the manifest it just wrote from it.
+#:   * `-gencode` names the TARGETS: inheriting it made `ROLA_CUDA_ARCHS=86` silently
+#:     narrow the next ratification to sm_86.
+#:   * `-DROLA_DECODE_ARMS(...)` names the ARM SUBSET, and it is the same bug found the
+#:     same way (2026-08-27): after `ROLA_DECODE_ARMS=5 setup.py build_ext`, this gate
+#:     inherited the define and wrote a manifest of 393 entries carrying ONE decode arm,
+#:     while the `.so` a full build had linked carried all sixteen. Every other property
+#:     the gate checks was green. docs/build.md#arm-subset
+_NOT_INHERITED_PREFIXES = ("-DROLA_DECODE_ARMS",)
+
+
 def _without_gencode(flags: list[str]) -> list[str]:
     """`flags` with every `-gencode` dropped, in both of nvcc's spellings
-    (`-gencode=...` and a separated `-gencode ...`)."""
+    (`-gencode=...` and a separated `-gencode ...`), and with every flag naming WHAT
+    was compiled rather than HOW (:data:`_NOT_INHERITED_PREFIXES`) dropped with it."""
     out: list[str] = []
     drop_next = False
     for f in flags:
@@ -556,6 +571,8 @@ def _without_gencode(flags: list[str]) -> list[str]:
             drop_next = True
             continue
         if f.startswith(("-gencode=", "--generate-code=")):
+            continue
+        if f.startswith(_NOT_INHERITED_PREFIXES):
             continue
         out.append(f)
     return out
