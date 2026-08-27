@@ -39,7 +39,7 @@ from rola.routing.types import (
 )
 
 _ROUTING = IndependentRouting(
-    width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())
+    width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 WIDTHS = (4, 4)
 B, T, H, D_V = 2, 5, 2, 8

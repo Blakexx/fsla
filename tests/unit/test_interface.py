@@ -58,13 +58,9 @@ def test_the_layer_and_the_op_ask_the_same_question():
 
 
 def _dense_routing():
-    from rola.routing.types import IndependentRouting
+    from rola.routing.types import TiedRouting
 
-    return IndependentRouting(
-        width=1,
-        tied=True,
-        read=rola.SoftmaxActivation(),
-        write=rola.SoftmaxActivation())
+    return TiedRouting(width=1, op=rola.SoftmaxActivation())
 
 
 def _tiny_routing(requires_grad: bool, device: str = "cpu"):

@@ -78,7 +78,7 @@ pytestmark = pytest.mark.skipif(
            "Set ROLA_FLA_CROSSCHECK=1 to run it.")
 
 _ROUTING = IndependentRouting(
-    width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())
+    width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 #: The bound, and it is float32's rather than a fitted number: FLA accumulates in
 #: float32, whose unit roundoff is 6e-8, over a sum of `N <= 64` leaves. The

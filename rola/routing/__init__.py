@@ -12,6 +12,7 @@ from rola.routing.types import (
     RouteDescriptor,
     RoutingActivation,
     SoftmaxActivation,
+    TiedRouting,
     UnionRouting,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "RouteDescriptor",
     "RoutingActivation",
     "SoftmaxActivation",
+    "TiedRouting",
     "UnionRouting",
 ]

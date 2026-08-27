@@ -228,7 +228,7 @@ def test_m2_decomposition_is_exact():
     from rola.ops.constants import READOUT_EPS
     from rola.ops.naive import naive_rola
     from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-    routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
+    routing = IndependentRouting(width=1, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
     topo = Topology(levels=tuple(routing.at(w) for w in widths))
     y, _ = naive_rola(v, read, write, None, g, topo, None, "global",

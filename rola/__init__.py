@@ -30,11 +30,11 @@ and not part of the contract.
 | Group | Names | Stability |
 |---|---|---|
 | op | `rola_op` | STABLE, semver-major to break |
-| feature map | `RouteFactors`, `RouteProducer`, `dense_routing`, `split_routing`, `union_routing`, `uniform` | STABLE |
+| feature map | `RouteFactors`, `RouteProducer`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `RoLA` | STABLE |
 | state | `state()`, `RoLAState` | STABLE |
-| configuration | `Topology`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `UnionRouting` | STABLE |
+| configuration | `Topology`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `TiedRouting`, `UnionRouting` | STABLE |
 | oracle | `naive_rola` | STABLE signature, EXACT semantics — it is the definition |
 """
 
@@ -53,6 +53,7 @@ from rola.routing.producer import (
     RouteProducer,
     dense_routing,
     split_routing,
+    tied_routing,
     uniform,
     union_routing,
 )
@@ -61,6 +62,7 @@ from rola.routing.types import (
     IndependentRouting,
     LeafMassDecay,
     SoftmaxActivation,
+    TiedRouting,
     Topology,
     UnionRouting,
     entmax,
@@ -75,6 +77,7 @@ __all__ = [
     "RouteProducer",
     "dense_routing",
     "split_routing",
+    "tied_routing",
     "uniform",
     "union_routing",
     # the decay-source slot — where the recurrence's rates come from
@@ -92,6 +95,7 @@ __all__ = [
     # configuration
     "Topology",
     "IndependentRouting",
+    "TiedRouting",
     "UnionRouting",
     "SoftmaxActivation",
     "EntmaxActivation",

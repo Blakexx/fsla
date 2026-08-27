@@ -83,7 +83,7 @@ def cell(T, modes, k_tok=None, clustered=False, seed=0, d_v=64, device="cuda",
 
 
 def oracle(read_bf, write_bf, g_bf, v_bf, state_in=None, widths=WIDTHS):
-    routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
+    routing = IndependentRouting(width=1, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
     topo = Topology(levels=tuple(routing.at(w) for w in widths))
     return naive_rola(v_bf.double(), tuple(x.double() for x in read_bf),

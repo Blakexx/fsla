@@ -250,12 +250,9 @@ class IndependentRouting:
     width: int
     read: RoutingActivation
     write: RoutingActivation
-    tied: bool = False
 
     def __post_init__(self) -> None:
         validate_level_width(self.width, owner="IndependentRouting")
-        if type(self.tied) is not bool:
-            raise TypeError(f"IndependentRouting.tied must be bool, got {self.tied!r}")
         for name, activation in (
             ("read", self.read),
             ("write", self.write),
@@ -269,14 +266,13 @@ class IndependentRouting:
         if (
             activation_properties(self.read).exact_zeros
             and activation_properties(self.write).exact_zeros
-            and not self.shares_solve
         ):
             raise ValueError(
                 "IndependentRouting only permits two exact-zero (`exact_zeros`) sides when "
-                "they share one tied solve; use UnionRouting for untied sparse/sparse "
-                "routing. Stated against the registry column rather than against a list "
-                "of activation names, so a new zero-capable variant is covered the "
-                "moment its row exists")
+                "the two duties are the SAME solve; use TiedRouting or UnionRouting for "
+                "sparse/sparse routing. Stated against the registry column rather than "
+                "against a list of activation names, so a new zero-capable variant is "
+                "covered the moment its row exists")
 
     def activation(self, duty: str):
         """This level's activation for one DUTY, `'read'` or `'write'`.
@@ -294,12 +290,7 @@ class IndependentRouting:
 
     def at(self, width: int) -> IndependentRouting:
         """This level's operator choice at another branch width."""
-        return IndependentRouting(width=width, read=self.read, write=self.write, tied=self.tied)
-
-    @property
-    def shares_solve(self) -> bool:
-        """Whether tied logits and equal activations make one solve exact."""
-        return self.tied and self.read == self.write
+        return IndependentRouting(width=width, read=self.read, write=self.write)
 
     def duty_simplex_output(self, duty: str) -> bool:
         """Whether this cell's own output already lands on the simplex.
@@ -361,7 +352,59 @@ class UnionRouting:
             raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
         return duty == "write" and self.properties.simplex_output
 
-LevelRouting: TypeAlias = IndependentRouting | UnionRouting
+@dataclass(frozen=True, slots=True)
+class TiedRouting:
+    """One routing LEVEL, ONE activation, ONE solve: the read factor IS the write factor.
+
+    A first-class type in its own right: the level-type vocabulary is exactly
+    ``IndependentRouting | TiedRouting | UnionRouting``, with tying named by which type
+    a level IS rather than by a flag on ``IndependentRouting`` that happened to collapse
+    its two independent solves into one. The stored field is named ``op`` rather than
+    ``activation`` because :meth:`activation` is the per-duty ACCESSOR every routing
+    level answers to (``Topology.activation`` calls ``level.activation(duty)``
+    generically); a field and a method cannot share one name on a ``slots=True``
+    dataclass, and the accessor is the name the rest of the tree already dispatches on.
+
+    A tied SOFTMAX level is legal and is DENSE_BOTH: validation is a registry lookup
+    (``activation_properties``), not a list of admissible activation names, so any row
+    -- entmax or softmax -- is accepted the moment it exists in
+    ``rola/routing/activations.py``.
+    """
+
+    width: int
+    op: RoutingActivation
+
+    def __post_init__(self) -> None:
+        validate_level_width(self.width, owner="TiedRouting")
+        activation_properties(self.op, owner="TiedRouting.op")
+
+    @property
+    def properties(self) -> ActivationProperties:
+        return activation_properties(self.op, owner="TiedRouting")
+
+    def activation(self, duty: str) -> RoutingActivation:
+        """Tied routing runs ONE solve, so both duties name the same activation."""
+        if duty not in ("read", "write"):
+            raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
+        return self.op
+
+    def at(self, width: int) -> TiedRouting:
+        """This level's operator choice at another branch width."""
+        return TiedRouting(width=width, op=self.op)
+
+    def duty_simplex_output(self, duty: str) -> bool:
+        """Whether this cell's own output already lands on the simplex.
+
+        Tied routing hands both duties the SAME whole solve, so the duty's answer is
+        the activation's registry column unchanged -- identical to
+        :meth:`IndependentRouting.duty_simplex_output` on a shared solve.
+        """
+        if duty not in ("read", "write"):
+            raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
+        return self.properties.simplex_output
+
+
+LevelRouting: TypeAlias = IndependentRouting | TiedRouting | UnionRouting
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,7 +418,7 @@ class ResolvedRouting:
         if not levels:
             raise ValueError("ResolvedRouting.levels must be nonempty")
         for level in levels:
-            if type(level) not in (IndependentRouting, UnionRouting):
+            if type(level) not in (IndependentRouting, TiedRouting, UnionRouting):
                 raise TypeError(f"ResolvedRouting.levels contains an invalid level: {level!r}")
         branches = tuple(level.width for level in levels)
         validate_routing_shape(branches, owner="ResolvedRouting")
@@ -406,7 +449,7 @@ class ResolvedRouting:
         return tuple(
             index
             for index, level in enumerate(self.levels)
-            if isinstance(level, UnionRouting) or not level.tied
+            if not isinstance(level, TiedRouting)
         )
 
     @property
@@ -499,24 +542,30 @@ class ResolvedRouting:
         return tuple(
             index
             for index, level in enumerate(self.levels)
-            if isinstance(level, IndependentRouting) and level.shares_solve
+            if isinstance(level, TiedRouting)
         )
 
     @property
     def read_level_can_zero(self) -> tuple[bool, ...]:
-        """Exact-zero capability for every level on the read side."""
+        """Exact-zero capability for every level on the read side.
+
+        Read generically off ``level.activation('read')`` rather than an
+        ``IndependentRouting``-only ``.read`` attribute, so ``TiedRouting`` (whose one
+        activation answers both duties through the same accessor) needs no separate
+        branch here.
+        """
         return tuple(
             True if isinstance(level, UnionRouting)
-            else activation_properties(level.read).exact_zeros
+            else activation_properties(level.activation("read")).exact_zeros
             for level in self.levels
         )
 
     @property
     def write_level_can_zero(self) -> tuple[bool, ...]:
-        """Exact-zero capability for every level on the write side."""
+        """Exact-zero capability for every level on the write side. See :attr:`read_level_can_zero`."""
         return tuple(
             True if isinstance(level, UnionRouting)
-            else activation_properties(level.write).exact_zeros
+            else activation_properties(level.activation("write")).exact_zeros
             for level in self.levels
         )
 
@@ -684,7 +733,7 @@ class OpaqueRouting:
         return activation_properties(self.activation(duty)).simplex_output
 
 
-LevelRouting: TypeAlias = IndependentRouting | UnionRouting | OpaqueRouting
+LevelRouting: TypeAlias = IndependentRouting | TiedRouting | UnionRouting | OpaqueRouting
 
 
 @dataclass(frozen=True, slots=True)
@@ -708,10 +757,10 @@ class Topology:
     def __post_init__(self) -> None:
         levels = tuple(self.levels)
         for index, level in enumerate(levels):
-            if type(level) not in (IndependentRouting, UnionRouting, OpaqueRouting):
+            if type(level) not in (IndependentRouting, TiedRouting, UnionRouting, OpaqueRouting):
                 raise TypeError(
-                    f"Topology.levels[{index}] must be an IndependentRouting, UnionRouting "
-                    f"or OpaqueRouting -- the level's whole spec, width included -- "
+                    f"Topology.levels[{index}] must be an IndependentRouting, TiedRouting, "
+                    f"UnionRouting or OpaqueRouting -- the level's whole spec, width included -- "
                     f"got {level!r}")
         validate_routing_shape(tuple(level.width for level in levels), owner="Topology")
         object.__setattr__(self, "levels", levels)

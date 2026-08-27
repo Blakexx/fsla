@@ -16,6 +16,7 @@ from rola.routing.types import (
     RouteDescriptor,
     RoutingActivation,
     SoftmaxActivation,
+    TiedRouting,
     UnionRouting,
     _validated_alpha,
 )
@@ -124,16 +125,11 @@ def routing_factor_levels(
             read_factor, write_factor, _ = _union_split_with_support(
                 read_level, write_level, alpha=level.alpha, mask=None)
         else:
-            assert isinstance(level, IndependentRouting)
-            if level.shares_solve:
+            assert isinstance(level, (IndependentRouting, TiedRouting))
+            if isinstance(level, TiedRouting):
                 write_factor, _ = _activation_factors(
-                    write_level, level.write, mask=None)
+                    write_level, level.activation("write"), mask=None)
                 read_factor = write_factor
-            elif level.tied:
-                read_factor, _ = _activation_factors(
-                    write_level, level.read, mask=None)
-                write_factor, _ = _activation_factors(
-                    write_level, level.write, mask=None)
             else:
                 read_factor, _ = _activation_factors(
                     read_level, level.read, mask=None)

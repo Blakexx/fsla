@@ -33,7 +33,7 @@ from rola.routing.types import (
 )
 
 _ROUTING = IndependentRouting(
-    width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())
+    width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 #: Every shape the two derivations must agree on: depth 1-4 (the validated range) over
 #: widths spanning 1, the powers of two, and non-powers that make a stride product
