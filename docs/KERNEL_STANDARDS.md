@@ -168,7 +168,8 @@ Never edit a source file while a build of it is in flight. One gate build per st
 single-arch and arm-subset.
 §14 addendum (Blake: background tasks have died silently before): the launch records the build's PID and
 appends an exit marker (`echo BUILD_EXIT=$? >> log`) as the command's last step; on re-invocation for ANY
-reason the agent reads the marker first, never trusts the notification alone. If an explicit wait is
-needed it is ONE bounded, pid-specific call — `timeout 1800 tail --pid=$PID -f /dev/null` — then the
-marker. Name-matched polling (`pgrep -f`) stays forbidden: it self-matches, matches other tracks, and
+reason the agent reads the marker first, never trusts the notification alone. The wait itself is a
+BOUNDED TIMER with early exit — `timeout 600 tail --pid=$PID -f /dev/null` (≤10 min, returns at once when
+the build ends) — after which the agent INSPECTS ITS OWN STATE (the marker, the build dir) and decides;
+repeat if still building. Never trust the pid or the notification alone; the marker is the fact. Name-matched polling (`pgrep -f`) stays forbidden: it self-matches, matches other tracks, and
 re-wakes stopped agents.
