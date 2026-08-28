@@ -932,6 +932,54 @@ permutation of the four blocks at every alignment and both widths, where the uns
 map is two-way always. The flush's own leg is conflict-free unconditionally. Both legs and
 the round trip are gated in `tests/k31/test_segment_layout.py`.
 
+### The scatter order rotates per warp (K35 S2e2)
+
+Every executor walks the SAME ascending union ranks at dense routing — a reader stream's
+segment rows ARE the window's ranks when every stream reads every token — so all warps
+reach one ring row at one instant and the try-lock loses. S2d-3 measured that split
+exactly: **1.75–2.85 lock losses per contribution on every dense cell, 0.04–0.36 on every
+carved one**, an order of magnitude apart with no overlap. Each loss is a retry of the
+scatter's `#pragma unroll 1` issue — the aliasing split, the try, the tag load, two
+broadcasts and the fences — so contention is paid in instructions, not just in latency.
+
+The fix is that warp `w` walks its token n-tiles starting at its own: compile-time tile
+`t` IS window tile `(t + prot) mod kNTok`, with `prot = warp & (kNTok - 1)`.
+
+**It is a permutation of the DATA, not an index into registers.** A runtime index into a
+register array is local memory, so the rotation is applied ONLY where an ADDRESS names a
+tile, and there are exactly two such places:
+
+* `myR`, the consumer's base into its own reader segment. Its row term `(tl >> 1)` is
+  what selects which pair of the `ldmatrix.x4` result registers a token octet lands in
+  (lanes 0–15 carry rows 0–7, lanes 16–31 rows 8–15), so permuting it there IS permuting
+  the n-tile order — one add and one AND on a value computed once per launch.
+* the rank map's word, read per tile into `rmv[t]`. `rmv` is indexed by the COMPILE-TIME
+  tile and stays in registers; only the shared address carries `ptok`.
+
+Everything downstream — `rb[kk][2*p]`, `acc[m][e]`, `macc[e]` — keeps a compile-time index
+and never learns the rotation happened. The tile-live mask bit and the token index follow
+the rotation arithmetically (`1u << ptok(p)`, `ptok(p) * kMmaN + ...`), which costs a shift
+and an add on values that were already runtime.
+
+**The lock is untouched.** The per-ROW lock, the tag protocol, the eviction and the whole
+`2*MCH + 1`-element payload under one acquisition are exactly what S2d-3 built; only the
+ORDER in which a warp presents its rows changed.
+
+**The rotation is `kNTok`-way and that is all the row axis has.** A scatter's four quads
+are taken in ONE issue, so there is no order among them to rotate, and the two halves `eb`
+are the accumulator's own fragment map, which no SMEM boundary names. At `kSegRows = 16`
+that is a two-way rotation — it halves the warps contending for any one row group rather
+than eliminating the contention.
+
+**Measured** (K35 S2e2, sm_86, against the same 20 oracle cells S2d-3 counted): losses per
+contribution fall on EVERY dense cell — 1.75→1.31, 1.93→1.17, 1.94→1.15, 2.64→1.82,
+2.76→1.95, 1.82→0.77, 2.78→1.89, 2.85→1.96, 1.85→0.78, 1.15→0.40 — for an overall
+2.21→1.33. The carved cells were already uncontended and stay so (0.04–0.36 → 0.05–0.27).
+On the dense flagship cell (`1x8-wps2`, `W = 384`, `L = T = 768`) that is **0.846× the
+instructions and 0.831× the time at `d_v = 64`, and 0.822× / 0.808× at `d_v = 128`** —
+the retry instructions the rotation does not issue. The census improves with it: registers
+fall on nine carry arms per arch and one of S2d's two standing `sm_86` spillers clears.
+
 ### The measurement the ring supersedes
 
 The warp-private RED-direct fan-in the ring replaces was measured before it was deleted,

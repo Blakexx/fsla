@@ -1288,7 +1288,15 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: THE CONSUMER'S BASE INTO ITS OWN READER SEGMENT.  Its rows ARE the batch's ranks in
   //: its own compacted order, so this is an offset and not a map -- the same
   //: `[row][slot]` stride the deleted read panel had, one slot instead of two.
-  const uint32_t myR = rsegB + (uint32_t)(((strm * kSegRows + rT) * LdR + cT * 8) * 2);
+  //: THE RING SCATTER ORDER ROTATES BY WARP (S2e2): compile-time tile `t` IS this warp's
+  //: window tile `(t + prot) mod kNTok`, so dense routing's executors do not all want one
+  //: ring row at one instant.  It permutes the DATA at the two ADDRESSES that name a tile
+  //: -- this base and the rank map's word -- never a register index; carry_kernel.md.
+  static_assert((kNTok & (kNTok - 1)) == 0, "the n-tile rotation is a power-of-two residue");
+  const int prot = warp & (kNTok - 1);
+  auto ptok = [&](int t) { return (t + prot) & (kNTok - 1); };
+  const uint32_t myR =
+      rsegB + (uint32_t)(((strm * kSegRows + ptok(tl >> 1) * kMmaN + lr) * LdR + cT * 8) * 2);
 
   // ---- THE FLOW COUNTERS, ONE BODY FOR BOTH SIDES (P76 CORRECTION-2; S2c, S2d) ----
   //: STREAMS FIRE WHEN FULL, ON BOTH SIDES, AND THE MECHANISM IS WRITTEN ONCE.  Three
@@ -2005,10 +2013,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         //: so the whole index a lane needs is TWO shared loads -- and taking them here
         //: is what lets the fetchers overwrite the index for the next tile while this
         //: tile's scatter is still running.
-        const uint32_t rm0 =
-            load_shared_u32(rmapB + (uint32_t)((strm * kSegRows + 2 * (lane & 3)) * 2));
-        const uint32_t rm1 =
-            load_shared_u32(rmapB + (uint32_t)((strm * kSegRows + kMmaN + 2 * (lane & 3)) * 2));
+        uint32_t rmv[kNTok];
+        static_for<kNTok>([&](auto Tc) {
+          constexpr int t = decltype(Tc)::value;
+          rmv[t] = load_shared_u32(
+              rmapB + (uint32_t)((strm * kSegRows + ptok(t) * kMmaN + 2 * (lane & 3)) * 2));
+        });
         if (lane == 0) store_shared_u32(mskB + (uint32_t)(strm * 4), 0u);
         //: THE TILE'S LIVE ROWS: every tile but the last is FULL by construction, and
         //: the last is short by exactly what the sealed arrival count says.
@@ -2028,7 +2038,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           });
 #pragma unroll
           for (int e = 0; e < 4; ++e) macc[e] = 0.f;
-          if (tm & (1u << p))
+          if (tm & (1u << ptok(p)))
             static_for<KDw>([&](auto Kc) {
               constexpr int kk = decltype(Kc)::value;
               static_for<MCH>([&](auto Mc) {
@@ -2037,11 +2047,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
               });
               mma(macc, ma[kk], &rb[kk][2 * p]);
             });
-          const uint32_t rmw = p ? rm1 : rm0;
+          const uint32_t rmw = rmv[p];
           static_for<2>([&](auto Ec) {
             constexpr int eb = decltype(Ec)::value;
             ring_scatter(acc, macc, Ec, (int)((rmw >> (16 * decltype(Ec)::value)) & 0xFFFFu),
-                         (p * kMmaN + 2 * (lane & 3) + eb) < ns, winO, winD);
+                         (ptok(p) * kMmaN + 2 * (lane & 3) + eb) < ns, winO, winD);
           });
         });
       };
