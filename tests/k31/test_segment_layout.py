@@ -24,10 +24,9 @@ cooperative fetch introduces:
                      WRITER: the READ expansion's ``st.shared.u32``.  READER: the
                      readout's ``load_frag``, whose fragment map puts the segment's ROWS
                      on the MMA's ``n`` axis, because on the readout the rows are TOKENS.
-  ``RingRows``       ``[slot][channel]`` fp32 at stride ``LdRing = d_v + 8`` (K35 S4b).
-                     WRITER: the scatter's ``red.shared.add.f32``, four ring rows at one
-                     eight-channel granule per issue.  READER: the flush, thirty-two
-                     lanes over thirty-two consecutive channels.
+                     THE FAN-IN HAS NO LAYOUT (K35 R-B): the readout issues its
+                     contribution straight from the accumulator fragment into the output
+                     plane, so it owns no shared bytes for a round trip to gate.
   ``ParkedLo``       ``[word][lane]`` over the warp's OWN exchange segment (K35 S5):
                      ``kParkWords`` opaque packed-pair words per lane, written and read
                      by that warp alone.  WRITER and READER are the same burst of
@@ -104,7 +103,7 @@ def test_the_segment_round_trips_through_the_fragments(arm):
     """Everything the fetcher wrote is what the consumer's fragments recovered."""
     assert_fresh_binary()
     widths, k, m, d_v, W, declaration, modes = arm
-    v, c, _, _, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
+    v, c, _, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
     assert v.shape[-1] == d_v, "the value sub-tile is the arm's own width"
     for name, got in (("SegValueRows", v), ("SegCoeffRows", c)):
         streams, rows, cols = got.shape
@@ -129,7 +128,7 @@ def test_the_staged_factor_row_lands_run_by_run(arm):
     """
     assert_fresh_binary()
     widths, k, m, d_v, W, declaration, modes = arm
-    _, _, staged, _, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes,
+    _, _, staged, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes,
                                                 d_v=d_v)
     _, s, _, _, _ = carry_ops.box_shape(widths, k, m)
     D, B = len(widths), widths[0]
@@ -528,11 +527,7 @@ def test_the_exchange_swizzle_is_a_bank_permutation(arm):
             assert _banks(words(rows, lambda l: d_v)) == 1, "the mass pull must be conflict-free"
 
 
-# ------------------------------- the READOUT's segment and the fan-in ring (K35 S4b)
-
-RING_C = 32     # `kRingC`: the ring's declared depth, in rows
-RING_PAD = 8    # `LdRing - d_v`, in fp32 words
-RING_WINDOW = 64  # `W` at the built arms: the span the union rank runs over
+# ------------------------------------- the READOUT's segment (K35 S4b, R-B)
 
 
 @pytest.mark.parametrize("arm", ARMS)
@@ -546,7 +541,7 @@ def test_the_reader_segment_round_trips_through_the_readout_fragments(arm):
     """
     assert_fresh_binary()
     widths, k, m, d_v, W, declaration, modes = arm
-    *_, rows, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
+    *_, rows = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
     readers, nrows, leaf = rows.shape
     assert nrows == SEG_ROWS, "a reader's segment slot is one batch of the union walk"
     want = (torch.arange(nrows, device=rows.device).reshape(1, -1, 1) * 128
@@ -555,87 +550,6 @@ def test_the_reader_segment_round_trips_through_the_readout_fragments(arm):
     assert bad.numel() == 0, (
         f"ReaderSegRows: {bad.shape[0]} of {rows.numel()} cells came back from a different "
         f"(row, slot) than they were stored at; first is {bad[0].tolist()}")
-
-
-@pytest.mark.parametrize("arm", ARMS)
-def test_the_ring_round_trips_from_the_scatter_to_the_flush(arm):
-    """The scatter's cell address and the flush's are the same map.
-
-    The scatter writes four ring rows at ONE eight-channel granule per issue (the
-    accumulator's four lane quads are four tokens); the flush reads ONE row with
-    thirty-two lanes over thirty-two consecutive channels.  The granule swizzle is a
-    function of the row, so the two legs agree or the row comes back permuted.
-    """
-    assert_fresh_binary()
-    widths, k, m, d_v, W, declaration, modes = arm
-    *_, ring = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
-    slots, cols = ring.shape
-    assert slots == RING_C and cols == d_v + 1, "a ring row is the channels and the mass"
-    want = (torch.arange(slots, device=ring.device).reshape(-1, 1) * 1024
-            + torch.arange(cols, device=ring.device).reshape(1, -1)).expand_as(ring)
-    bad = (ring != want).nonzero()
-    assert bad.numel() == 0, (
-        f"RingRows: {bad.shape[0]} of {ring.numel()} cells came back from a different "
-        f"(slot, channel) than they were stored at; first is {bad[0].tolist()}")
-
-
-@pytest.mark.parametrize("d_v", [D_V, WIDE], ids=["dv64", "dv128"])
-def test_the_rings_access_patterns_are_derived_not_guessed(d_v):
-    """The ring's bank behaviour, from the same address functions the kernel uses.
-
-    THE FLUSH is conflict-free unconditionally: thirty-two lanes read four granules of
-    eight consecutive words and the granule swizzle is a permutation inside the row.
-
-    THE SCATTER is DATA-ADDRESSED and that is the whole point of modelling it: the four
-    rows of one issue are four UNION RANKS, so no compile-time pattern names them.  With
-    ``LdRing % 32 == 8`` a row's granule occupies a whole eight-bank block and the block
-    is ``(row + granule) % 4``, so two of the four rows collide exactly when their ranks
-    agree mod four -- and FOUR-WAY is the floor for ANY row permutation, four blocks
-    being all there are.  What the swizzle buys is the DENSE case, which is the common
-    one and the only one with a shape: a reader holding the whole batch scatters ranks
-    ``r, r+2, r+4, r+6``, whose blocks are ``(r + 2q + swz) % 4``: two-way ALWAYS with
-    no swizzle, and ``const + 3q`` -- a permutation of the four blocks -- under
-    ``swz(row) = (row >> 1) & 3``.  Both facts are pinned here.
-    """
-    ld_ring = d_v + RING_PAD
-    assert ld_ring % 32 == 8, "a ring row must step one eight-bank block"
-
-    def cell(slot, granule, sub):
-        return slot * ld_ring + ((granule ^ ((slot >> 1) & 3)) << 3) + sub
-
-    #: THE FLUSH, one row: lanes 0..31 over 32 consecutive channels.
-    for slot in range(RING_C):
-        for c in range(d_v // 32):
-            words = [cell(slot, c * 4 + (lane >> 3), lane & 7) for lane in range(32)]
-            assert _banks(words) == 1, "the ring's flush must be conflict-free"
-    #: THE SCATTER, the DENSE case: four ranks two apart, at every granule and every
-    #: alignment of the batch inside the ring.
-    for r0 in range(RING_C):
-        for g in range(d_v // 8):
-            words = [cell((r0 + 2 * q) % RING_C, g, sub) for q in range(4) for sub in range(8)]
-            assert _banks(words) == 1, (
-                f"the dense scatter is {_banks(words)}-way at rank {r0}, granule {g}")
-    #: THE SCATTER, the general case: FOUR ARBITRARY WINDOW-WIDE RANKS (K35 S2d-3).  A
-    #: reader's rows are its RUNNING ranks in the window's union list, so the four ranks
-    #: of one issue are an arbitrary quadruple of ``[0, W)`` -- NOT four ranks of one
-    #: batch, which is what the ``r0 + d`` form assumed while the rank was batch-local.
-    #: The four DISTINCT SLOTS the quadruple resolves to are what the access sees (the
-    #: kernel serialises an aliasing pair into a second issue), and four-way is the floor.
-    worst = 1
-    for r0 in range(RING_C):
-        for d1 in range(1, RING_WINDOW - 2):
-            for d2 in range(d1 + 1, RING_WINDOW - 1):
-                for d3 in range(d2 + 1, RING_WINDOW):
-                    ranks = [r0, r0 + d1, r0 + d2, r0 + d3]
-                    slots = sorted({x % RING_C for x in ranks})
-                    words = [cell(x, 0, sub) for x in slots for sub in range(8)]
-                    worst = max(worst, _banks(words))
-    assert worst <= 4, f"the scatter is {worst}-way, above the four-block floor"
-    #: THE MASS rides the row's pad granule and spreads over its eight words by row.
-    for r0 in range(RING_C):
-        words = [(r0 + 2 * q) % RING_C * ld_ring + d_v + (((r0 + 2 * q) % RING_C) & 7)
-                 for q in range(4)]
-        assert _banks(words) <= 2, "the mass column must not be worse than two-way"
 
 
 @pytest.mark.parametrize("d_v", [D_V, WIDE], ids=["dv64", "dv128"])
@@ -665,101 +579,6 @@ def test_the_parks_layout_is_the_segments_bytes_under_its_own_map(d_v, leaves):
     for w in range(park_words):
         assert _banks([32 * w + lane for lane in range(32)]) == 1, (
             "a park burst must cover the banks exactly once")
-
-
-@pytest.mark.parametrize("d_v", [D_V, WIDE], ids=["dv64", "dv128"])
-def test_the_rings_slot_derived_layout_holds_for_window_wide_ranks(d_v):
-    """Every slot-derived quantity, re-derived from the WINDOW-WIDE rank (K35 S2d-3).
-
-    The ring is keyed on the rank, and under S2d a rank is the token's index in the
-    WINDOW's union list -- not a batch-local one.  ``static_assert(RC >= kSegRows)`` was
-    written when a scatter held four ranks of ONE batch, so ``RC >= kSegRows`` implied
-    four distinct slots; it does not any more, and every formula that quietly leaned on
-    it has to be re-stated against the new meaning.  What the layout must give is the
-    SEPARATION the ring's correctness rests on:
-
-    A SLOT OWNS A ROW.  ``slot = rank % C`` and a row is ``LdRing`` consecutive words at
-    ``slot * LdRing``, so DISTINCT SLOTS TOUCH DISJOINT WORDS -- for the channels, for
-    the mass, and for the two against each other.  Two ranks that alias a slot share the
-    row BY DESIGN (that is what makes the ring a cache and the eviction its protocol);
-    nothing else may.
-
-    THE SWIZZLE IS A BIJECTION INSIDE THE ROW.  ``g ^ ((slot >> 1) & 3)`` permutes the
-    row's granules, so the scatter's leg and the flush's leg address the same cell.
-
-    THE MASS RIDES THE PAD.  ``d_v + (slot & 7)`` is inside the row's pad granule at
-    every slot, so it can never land on a channel word of its own row or of another.
-
-    THE DRAIN IS A PARTITION.  ``warp * kDrainSlots + i`` covers every slot exactly once
-    over the executors, which is what makes the window's last generation whole.
-    """
-    ld_ring = d_v + RING_PAD
-    granules = d_v // 8
-
-    def cell(slot, granule, sub):
-        return slot * ld_ring + ((granule ^ ((slot >> 1) & 3)) << 3) + sub
-
-    def mass(slot):
-        return slot * ld_ring + d_v + (slot & 7)
-
-    #: THE SWIZZLE IS A BIJECTION, at every slot: the row's granules are permuted, so no
-    #: granule is dropped and none is written twice.
-    for slot in range(RING_C):
-        img = sorted(g ^ ((slot >> 1) & 3) for g in range(granules))
-        assert img == list(range(granules)), (
-            f"the granule swizzle is not a permutation at slot {slot}: {img}")
-
-    #: DISTINCT (rank mod C) -> DISTINCT ROWS AND DISTINCT MASS WORDS, over the whole
-    #: WINDOW of ranks and not one batch of them.
-    owner = {}
-    for rank in range(RING_WINDOW):
-        slot = rank % RING_C
-        words = {cell(slot, g, sub) for g in range(granules) for sub in range(8)}
-        assert len(words) == d_v, (
-            f"slot {slot} addresses {len(words)} distinct channel words, not {d_v}")
-        assert mass(slot) not in words, (
-            f"slot {slot}'s mass word {mass(slot)} lands on one of its own channels")
-        for w in words | {mass(slot)}:
-            prev = owner.setdefault(w, slot)
-            assert prev == slot, (
-                f"word {w} is addressed by slot {slot} and by slot {prev}: two slots "
-                f"alias, so ranks {rank} and its holder share a row they do not share")
-
-    #: THE ALIASING QUAD, which the old assertion said could not happen.  Ranks that are
-    #: congruent mod C DO share a slot, and the ring's protocol -- not its layout -- is
-    #: what keeps them apart, so what the model pins is that the sharing is EXACT: the
-    #: same rank residue addresses exactly the same words, cell for cell.
-    for rank in range(RING_WINDOW - RING_C):
-        a, b = rank % RING_C, (rank + RING_C) % RING_C
-        assert a == b, "two ranks C apart must land in one slot"
-        for g in range(granules):
-            for sub in range(8):
-                assert cell(a, g, sub) == cell(b, g, sub)
-        assert mass(a) == mass(b)
-
-    #: THE CONTRIBUTION'S STRENGTH-REDUCED ADDRESS IS THE SAME MAP (K35 S2d-3).  The
-    #: scatter does not call the cell map per cell -- at `d_v = 128` that is sixteen live
-    #: swizzled addresses and the widest arms spill -- it adds a compile-time granule
-    #: offset to a per-row base and XORs the shifted swizzle in.  That rests on a shift
-    #: distributing over an exclusive or, and the identity is pinned HERE so the two
-    #: forms cannot drift: whatever the kernel adds must be the cell the flush reads.
-    for slot in range(RING_C):
-        base = slot * ld_ring + 0        # `ring_row_base(slot, sub)` at `sub = 0`
-        swz32 = ((slot >> 1) & 3) << 5   # `ring_swz32(slot)`, in BYTES
-        for g in range(granules):
-            for sub in range(8):
-                fast = (base + sub) * 4 + ((g << 5) ^ swz32)
-                assert fast == cell(slot, g, sub) * 4, (
-                    f"the strength-reduced address disagrees with the cell map at "
-                    f"slot {slot}, granule {g}, sub {sub}: {fast} vs {cell(slot, g, sub) * 4}")
-
-    #: THE DRAIN'S SPLIT, for every executor count the arms declare.
-    for warps in (1, 2, 4, 8):
-        drain_slots = RING_C // warps
-        assert drain_slots * warps == RING_C, "the ring's rows split over the executors"
-        covered = sorted(w * drain_slots + i for w in range(warps) for i in range(drain_slots))
-        assert covered == list(range(RING_C)), (
-            f"the drain at {warps} executors covers {covered}, not every slot once")
 
 
 # --------------------------------- THE EXCHANGE MOVES ONLY THE DISORDER (K35 S1b)

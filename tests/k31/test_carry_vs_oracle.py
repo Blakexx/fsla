@@ -116,9 +116,9 @@ def test_arms_are_the_declared_solver_rows():
     same topology appears once per declaration built for it.  DENSE_BOTH is built
     for every topology it is the seam's answer FOR -- which is every one but the
     multi-level carve arm, whose box is the whole topology and whose carve is the
-    point of the arm.  There the seam refuses an unbuilt declaration outright rather
-    than degrading it, which is stated here because the fall-back rule is otherwise
-    universal.  The DECLARATION SCALAR (`a[6]`) names the arm's (carve, executor map),
+    point of the arm.  A declaration with no body built for it is REFUSED at every
+    topology (K35 R-B): DENSE_BOTH is served when it is DECLARED and never as a
+    substitute for something else.  The DECLARATION SCALAR (`a[6]`) names the arm's (carve, executor map),
     so the two 1x8 container rows share the flagship's topology and window and differ
     from it and from each other only there (`a[7]`).  `d_v` (`a[4]`) is part of the key too
     (K35 S3b), so the two container declarations appear once per built width and the
@@ -671,9 +671,9 @@ def test_s1c_the_carved_body_serves_a_dense_declaration(d_v, k_tok):
     never voted.  The oracle sees either as a wrong state plane in canonical order.
 
     Run at a SPARSE cell too, because `DENSE_BOTH` is the declaration that must be
-    correct at any cell -- it is the seam's fall-back for anything it has no body for --
-    so a cell whose ballots would have pruned is the case where an over-broad schedule
-    has to reduce to the same arithmetic rather than to more of it.
+    correct at any cell -- it is the one whose schedule prunes nothing anywhere -- so a
+    cell whose ballots would have pruned is the case where an over-broad schedule has to
+    reduce to the same arithmetic rather than to more of it.
     """
     assert_fresh_binary()
     widths, k, m, W = FLAG
@@ -717,3 +717,24 @@ def test_s1c_the_dense_carve_follows_the_stream_counts_and_is_not_tied(d_v):
     alt = carry_ops.build_stamp(widths, k, m, W, 32, CONT_SPLIT, 6, d_v=d_v)
     assert (stamp[7], stamp[9], stamp[14]) == (alt[7], alt[9], alt[14]), (
         "threads, box and write-stream count must match the ALT row this arm is measured against")
+
+
+def test_an_unbuilt_declaration_is_refused_and_not_served_dense(): 
+    """THE SEAM REFUSES WHAT IT HAS NO BODY FOR (K35 R-B, P76).
+
+    `carry.cu`'s law-3 retry used to re-dispatch an unbuilt declaration with `mo`
+    forced to zero AT THE SAME CARVE, so a caller asking for a declaration nothing
+    was built for silently got the DENSE_BOTH body and no diagnostic -- which is how
+    a 5x loss stayed hidden from a harness for nine stages (`## BISECT (corrected)`).
+    The flagship topology at `carve = LEAF_SPLIT` is built for DENSE_BOTH (row 0) and
+    for the ALT declaration (row 1) and for nothing else, so the depth-four ALT word
+    is a declaration with no body at this topology AND a DENSE_BOTH arm sharing its
+    carve -- exactly the pair the retry used to resolve.  It must raise, and the
+    message must name the key that was asked for, or the refusal is not readable.
+    """
+    assert_fresh_binary()
+    widths, k, m, W = FLAG
+    cell = Cell(widths, T=256, k_tok=None, seed=3)
+    with pytest.raises(RuntimeError, match="unbuilt carry arm"):
+        carry_ops.carry_inter(cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths,
+                              k=k, m=m, window=W, chunk=32, carve=CARVE, level_modes=ALT4)

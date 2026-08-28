@@ -116,8 +116,8 @@ __device__ __forceinline__ void static_for(F&& f) {
 //: READ carve is declared at ONE STREAM PER WARP, so the readout is untouched by the
 //: split and the accumulator's leaf count is the read box's at every arm.
 
-template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int RC,
-          int PK, uint32_t MO>
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int PK,
+          uint32_t MO>
 struct CarryGeom {
   using BP = BoxPlan<D, B, K, M>;
   //: THE TWO CARVES, DERIVED FROM THE DECLARATION (K35 S1b): each side's private order
@@ -259,58 +259,38 @@ struct CarryGeom {
                 "granules must be a power-of-two count of at least eight -- which keeps the "
                 "swizzled granule off the ONE pad granule the mass rides");
 
-  // ---- THE READOUT'S TENANTS (K35 S4b) -------------------------------------
-  //: THE READER SEGMENTS.  The read side's cooperative fetch is the mirror of the
-  //: write side's with ONE difference of substance: on the readout the B operand is
-  //: `R~^T [leaves x tokens]`, so TOKENS are the `n` axis and the state is the `k`-side
-  //: A operand held in registers -- there is no value row to place and a reader's
-  //: segment is coefficient rows alone.  `ReaderSegRows` is `[reader][row][slot]` at
-  //: row stride `LdR`, a ROW being one (union token, reader) pair placed at the token's
-  //: rank inside that reader's own compacted list.  Each warp IS a reader stream
-  //: (`SVR::kStreams == kWarps`, the executor map's declaration), so the segment
-  //: replaces the deleted two-slot read panel at the same stride and the same
-  //: `ldmatrix` addressing, with one slot instead of two: the second stage is
-  //: registers here exactly as it is in the fold.
+  // ---- THE READOUT'S TENANTS (K35 R-B) -------------------------------------
+  //: THE READOUT IS WARP-PRIVATE END TO END (P76 "THE RESET", R-B).  A reader is a
+  //: warp, it walks its OWN compacted list, stages and expands its OWN tokens and
+  //: issues its own fan-in: no warp writes into another's tenant here, so the read
+  //: side has no membership index, no row map, no flow counter and no ring.
+  //:
+  //: THE READER SEGMENT, `[reader][row][slot]` at row stride `LdR`.  On the readout the
+  //: B operand is `R~^T [leaves x tokens]`, so TOKENS are the `n` axis and the state is
+  //: the `k`-side A operand held in registers -- there is no value row to place and a
+  //: reader's segment is coefficient rows alone.  A ROW is one token of this reader's
+  //: own list at its position inside the group; one slot, because the second stage is
+  //: registers exactly as it is in the fold (`ldmatrix` drains the segment).
   static constexpr int rseg_bytes = kWarps * kSegRows * LdR * (int)sizeof(__nv_bfloat16);
-  //: THE READ SIDE'S FACTOR STAGING, the same rolling two-block window the fold has:
-  //: the compressed owner runs of one batch's union tokens, `cp.async`ed a batch ahead
-  //: of the expansion that reads them.  It is the SAME `StagedFactorRow` layout at the
-  //: same stride -- what differs is the plane it is filled from (`pread`) and the list
-  //: that names the tokens -- so one body serves both sides and the round trip that
-  //: gates the layout gates both.
-  static constexpr int rstg_bytes = kStgSlots * kSegRows * BP::kStageW * (int)sizeof(__nv_bfloat16);
-  //: THE ROW INDEX: for each (reader, segment row) the token's UNION INDEX in the
-  //: WINDOW, written as one halfword by the same fetcher lane that resolved the
-  //: placement.  It is what turns a reader's private row back into the CTA-wide rank
-  //: the ring is keyed on, and it is read into registers during the drain, so it has
-  //: the segment's own lifetime and needs no second slot.  IT IS THE WINDOW'S INDEX
-  //: and not a batch-local one because a reader's rows are its RUNNING ranks (K35 S2d)
-  //: and the sixteen rows of one tile span an arbitrary stretch of the union list.
-  static constexpr int rmap_bytes = align16c(kWarps * kSegRows * (int)sizeof(uint16_t));
-  //: THE FAN-IN RING (P76 section 2.6-C).  `kRingC` rows, rank `r` at slot `r % C`,
-  //: each row `kDv` output channels and the MASS in fp32.  The row stride is padded to
-  //: `kDv + 8` WORDS and that number is derived rather than chosen: a scatter
-  //: instruction covers FOUR ring rows (the accumulator's four lane quads are four
-  //: tokens) at eight consecutive channels each, so what the layout must give is eight
-  //: whole banks per row -- `LdRing % 32 == 8` puts consecutive rows exactly one
-  //: eight-bank block apart at both widths.
-  static constexpr int kRingC = RC;
-  static constexpr int LdRing = kDv + 8;
-  static_assert(RC >= kSegRows && (RC & (RC - 1)) == 0,
-                "the ring depth is a power of two of at least one batch: a scatter "
-                "instruction holds four ranks of ONE batch at once, so they must land in "
-                "four distinct slots");
-  static_assert(LdRing % 32 == 8 && kDv % 32 == 0,
-                "a ring row must step one eight-bank block, which is what makes the "
-                "four-row scatter a bank permutation");
-  static constexpr int ring_bytes = kRingC * LdRing * (int)sizeof(float);
-  //: the ring's control words -- `{tag, lock}` per slot, as two planes rather than a
-  //: struct, because the tag is the only one read on the fast path.  The LOCK is the
-  //: row's whole exclusion (Blake ruling 2026-08-26, K35 S2d-3): `0` free, `1` held,
-  //: taken by one lane on behalf of its warp-row with a single `atom.shared.cas.b32`,
-  //: and held across everything that touches the row -- the flush, the clear, the
-  //: retag and every element of every contribution.
-  static constexpr int rctl_bytes = align16c(2 * kRingC * (int)sizeof(uint32_t));
+  //: THE READ SIDE'S FACTOR STAGING, the same rolling two-block window the fold has and
+  //: the same `StagedFactorRow` layout -- but PER READER, because each warp's group is
+  //: its own tokens and no two readers want the same rows.  What differs from the fold
+  //: is the plane it is filled from (`pread`) and the list that names the tokens, so one
+  //: body still serves both sides and the round trip that gates the layout gates both.
+  static constexpr int rstg_bytes =
+      kWarps * kStgSlots * kSegRows * BP::kStageW * (int)sizeof(__nv_bfloat16);
+  //: THE FAN-IN'S PANEL (K35 R-B, M1a's `sow`): ONE token n-tile per reader, fp32, at
+  //: the OUTPUT plane's row stride.  It exists to TRANSPOSE the accumulator so the
+  //: reduction is issued LANE-PER-CHANNEL: out of the m16n8 C fragment a lane holds
+  //: four TOKENS at eight channels, so a reduction straight from the fragment is four
+  //: half-filled 32-byte sectors, and through the panel it is 32 lanes over 32
+  //: CONSECUTIVE channels of ONE token -- one aligned 128-byte transaction at the same
+  //: instruction count.  It is WARP-PRIVATE: no lock, no tag, no meeting.  The MASS
+  //: rides column `kDv`, which is what `LdO`'s pad is there for.
+  static constexpr int rout_bytes = kWarps * kMmaN * LdO * (int)sizeof(float);
+  static_assert(kDv % kBallotLanes == 0,
+                "the fan-in issues one reduction per lockstep unit over CONSECUTIVE "
+                "channels, so a value row is a whole number of them");
 
   //: ---- THE PARKED `lo` (K35 S5), A PER-ARM DECLARATION, DEFAULT OFF ---------
   //: `PK == 1` spends the READOUT with the write-view `lo` in the warp's OWN exchange
@@ -330,11 +310,9 @@ struct CarryGeom {
 
   static constexpr int off_rseg = park_bytes;
   static constexpr int off_rstg = off_rseg + rseg_bytes;
-  static constexpr int off_rmap = off_rstg + rstg_bytes;
-  static constexpr int off_ring = align16c(off_rmap + rmap_bytes);
-  static constexpr int off_rctl = off_ring + ring_bytes;
-  static constexpr int read_bytes = off_rctl + rctl_bytes;
-  static_assert(off_rstg % 16 == 0 && off_rmap % 16 == 0,
+  static constexpr int off_rout = off_rstg + rstg_bytes;
+  static constexpr int read_bytes = off_rout + rout_bytes;
+  static_assert(off_rstg % 16 == 0,
                 "an asynchronously filled block begins at a sixteen-byte boundary");
 
   //: ---- THE STRADDLE.  Three sets of tenants live in the region below the window's
@@ -351,11 +329,11 @@ struct CarryGeom {
   static constexpr int straddle_bytes = align16c(
       fold_dead_bytes > xch_bytes ? (fold_dead_bytes > read_bytes ? fold_dead_bytes : read_bytes)
                                   : (xch_bytes > read_bytes ? xch_bytes : read_bytes));
-  //: TWO LISTS, AND THEY ARE BOTH THE CTA's (K35 S4b).  Neither side keeps a
-  //: per-stream list any more: on both sides the UNION list is the whole schedule and a
-  //: stream's membership is its published ballot word, so what survives is one union
-  //: walk per side.
-  static constexpr int kLists = 2;
+  //: `kWarps` READ LISTS AND ONE WRITE LIST (K35 R-B).  The fold is cooperative -- its
+  //: schedule is the CTA's union walk and a stream's membership is its published ballot
+  //: word -- while the readout is warp-private, so each reader walks its OWN ballot into
+  //: its OWN list and nothing about it is published.
+  static constexpr int kLists = kWarps + 1;
   static constexpr int kListStride = ((W + 7) / 8) * 8;
   static constexpr int list_bytes = align16c(kLists * kListStride * (int)sizeof(uint16_t));
   //: THE WINDOW'S BALLOT WORDS, one per lane of the walk -- so a window may be at
@@ -367,12 +345,6 @@ struct CarryGeom {
   //: publishes its own once per window; `kStreams * kLW` words is the whole index.
   static constexpr int mem_bytes = align16c(kStreams * kLW * (int)sizeof(uint32_t));
   static constexpr int pfx_bytes = align16c(kStreams * kLW * (int)sizeof(uint16_t));
-  //: AND THE SAME INDEX FOR THE READ SIDE, whose streams are the EXECUTORS themselves
-  //: -- one reader per warp, so this table is `kWarps` rows where the write side's is
-  //: `kStreams`, and at `WPS == 1` the two counts coincide without the tables ever
-  //: being the same bytes.
-  static constexpr int memr_bytes = align16c(kWarps * kLW * (int)sizeof(uint32_t));
-  static constexpr int pfxr_bytes = align16c(kWarps * kLW * (int)sizeof(uint16_t));
   //: THE PER-TILE LIVENESS MASK, ONE WORD PER EXECUTOR: bit `nj` says the batch wrote a
   //: nonzero coefficient somewhere in the write stream's n-tile pair `nj`, so skipping
   //: that pair's `ldmatrix` and MMAs is EXACT -- a tile with no live leaf contributes
@@ -416,9 +388,7 @@ struct CarryGeom {
   static constexpr int off_list = straddle_bytes;
   static constexpr int off_mem = off_list + list_bytes;
   static constexpr int off_pfx = off_mem + mem_bytes;
-  static constexpr int off_memr = off_pfx + pfx_bytes;
-  static constexpr int off_pfxr = off_memr + memr_bytes;
-  static constexpr int off_mask = off_pfxr + pfxr_bytes;
+  static constexpr int off_mask = off_pfx + pfx_bytes;
   static constexpr int off_flow = off_mask + mask_bytes;
   static constexpr size_t bytes = (size_t)(off_flow + flow_bytes);
   static constexpr int cta_target = design::cta_target((int)bytes, kThreads, kRegFloor);
@@ -427,9 +397,8 @@ struct CarryGeom {
   //: liveness mask -- is live in every moment and is nobody's straddle.  The three
   //: moments over it are the FOLD (segments, staging, gain, the page buffer), the
   //: CHANGE (the exchange segments alone) and the READOUT (the reader segments, the
-  //: read staging, the batch's row index and the fan-in ring).
-  static constexpr int index_bytes =
-      list_bytes + mem_bytes + pfx_bytes + memr_bytes + pfxr_bytes + mask_bytes + flow_bytes;
+  //: per-reader factor staging and the fan-in's panel).
+  static constexpr int index_bytes = list_bytes + mem_bytes + pfx_bytes + mask_bytes + flow_bytes;
   static constexpr int fold_bytes = fold_dead_bytes + index_bytes;
   static constexpr int change_bytes = xch_bytes + index_bytes;
   static constexpr int readout_bytes = read_bytes + index_bytes;
@@ -600,28 +569,26 @@ constexpr int first_whole_level(int l = 0) {
   return l >= D ? -1 : (!SV::carves(l) ? l : first_whole_level<SV, D>(l + 1));
 }
 
-//: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from
-//: the same geometry the ring depth is.  A ring sized for a residency the launch
-//: bound does not ask for is a ring sized for nothing.
-template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int RC,
-          int PK, uint32_t MO>
-constexpr int kCarryCtaTarget =
-    CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, RC, PK, MO>::cta_target;
+//: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from the
+//: geometry that sized its tenants.  A residency the launch bound does not ask for is
+//: SMEM spent for nothing.
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int PK,
+          uint32_t MO>
+constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int RC,
-          int PK, uint32_t MO, bool STATE>
-__global__
-__launch_bounds__((CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, RC, PK, MO>::kThreads),
-                  (kCarryCtaTarget<D, B, K, M, DV, W, C, WPS, NSW, NSR, RC, PK, MO>)) void
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int PK,
+          uint32_t MO, bool STATE>
+__global__ __launch_bounds__((CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>::kThreads),
+                             (kCarryCtaTarget<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>)) void
 carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
              const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
              const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den,
              int L, int tok_words, int v_row_bytes, const float* __restrict__ s_in,
              float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
-  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, RC, PK, MO>;
+  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
   //: THE ARM'S VALUE WIDTH, named once so the body below reads a geometry and never a
   //: file constant: `kDv` channels and the mass column that rides them.
   constexpr int kDv = DV;
@@ -685,21 +652,17 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   __nv_bfloat16* const wstg = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::off_stg);
   __nv_bfloat16* const gstg = reinterpret_cast<__nv_bfloat16*>(carry_smem + G::off_gain);
   float* const so = reinterpret_cast<float*>(carry_smem + G::off_out);
-  //: THE READOUT'S TENANTS, straddling the fold's at the same base (K35 S4b): the
-  //: per-reader segments, the read side's rolling factor staging, the batch's row index
-  //: and the fan-in ring with its three control planes.
+  //: THE READOUT'S TENANTS, straddling the fold's at the same base (K35 R-B): the
+  //: per-reader segments, the per-reader rolling factor staging and the fan-in's
+  //: per-reader panel.  Every one of them is warp-private -- the readout has no shared
+  //: index and no meeting place.
   const SmemAddr rsegB = smem_addr(carry_smem + G::off_rseg);
   const SmemAddr rstgB = smem_addr(carry_smem + G::off_rstg);
-  const SmemAddr rmapB = smem_addr(carry_smem + G::off_rmap);
-  const SmemAddr ringB = smem_addr(carry_smem + G::off_ring);
-  const SmemAddr tagB = smem_addr(carry_smem + G::off_rctl);
-  const SmemAddr lockB = tagB + (uint32_t)(G::kRingC * 4);
+  float* const rout = reinterpret_cast<float*>(carry_smem + G::off_rout);
   constexpr int kListStride = G::kListStride;
   uint16_t* const slist = reinterpret_cast<uint16_t*>(carry_smem + G::off_list);
   const SmemAddr memB = smem_addr(carry_smem + G::off_mem);
   const SmemAddr pfxB = smem_addr(carry_smem + G::off_pfx);
-  const SmemAddr memrB = smem_addr(carry_smem + G::off_memr);
-  const SmemAddr pfxrB = smem_addr(carry_smem + G::off_pfxr);
   const SmemAddr mskB = smem_addr(carry_smem + G::off_mask);
   //: THE FLOW COUNTERS as ONE base with compile-time displacements, so the three planes
   //: cost the register file one address and not three.
@@ -784,7 +747,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 #define ADDR_S(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2))
 #define ADDR_R(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdR + (g_) * 8) * 2))
 
-  //: the warp's own staging region of the readout block.
+  //: THE READER'S OWN TENANTS, by warp: its segment's rows, its two staging blocks and
+  //: its list are all addressed off `strm`, and no other warp names them.
+  const uint32_t myStg = rstgB + (uint32_t)(strm * G::kStgSlots * kSegRows * BP::kStageW * 2);
+  //: the fan-in's own panel, `kMmaN` output rows of it.
+  float* const sow = rout + strm * kMmaN * LdO;
 
   // ---- the state, transposed: m = channels, n = this warp's leaves ---------
   float st[MCH][NL][4];
@@ -1271,8 +1238,10 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //      read side) --------------------------------------------------------
   //: THE TWO UNION LISTS, one per side, and they are the ONLY lists: neither side keeps
   //: a per-stream list any more.
-  uint16_t* const wlistS = slist;
-  uint16_t* const rlistS = slist + kListStride;
+  //: `kWarps` READ LISTS, ONE PER READER, then the WRITE side's union list: a reader
+  //: walks its own ballot and nobody else reads what it wrote.
+  uint16_t* const rlistW = slist + strm * kListStride;
+  uint16_t* const wlistS = slist + kWarps * kListStride;
 
   //: ONE AMPLITUDE OUT OF A STAGED ROW, FOR EITHER SIDE.  The level lying LOWEST in the
   //: asking side's private order (`kPairLevel`) supplies BOTH slots of a packed pair
@@ -1301,23 +1270,28 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: is what either side's expansion indexes with its own stream offsets -- `cp.async`ed
   //: one group AHEAD of the expansion that reads them, so no per-token global factor load
   //: ever appears in a fetch loop.
-  //: IT IS PER WARP AND NOT PER CTA (K35 S2c): a warp expands exactly the rows of its own
-  //: share `i % kWarps` of the union, so it stages exactly those, and the shares are
-  //: disjoint -- which is what lets the fold's walk run with no barrier inside it at all.
-  //: The LAYOUT is unchanged, so the two sides still share one body and one round trip.
-  //: BODY COUNT: `kStgPass * D` = `D` at every built arm.
+  //: THE SHARING GRAIN IS A COMPILE-TIME TAG, because the two sides fill a block
+  //: differently and one body serves both.  `NW == kWarps` is the FOLD's: the block is
+  //: the CTA's union group and each warp stages the rows of its own share `i % kWarps`,
+  //: the shares being disjoint, which is what lets the fold's walk run with no barrier
+  //: inside it at all.  `NW == 1` is the READOUT's (K35 R-B): the block is this reader's
+  //: own group and the warp stages every row of it.  The LAYOUT is identical either way,
+  //: so the round trip that gates it gates both.
+  //: BODY COUNT: `ceil(kSegRows / (NW * kStgRows)) * D`.
   constexpr int kStgCh = ceil_pow2c(BP::kStageChunks);
   constexpr int kStgRows = kBallotLanes / kStgCh;
-  constexpr int kStgOwn = kSegRows / kWarps;
-  constexpr int kStgPass = (kStgOwn + kStgRows - 1) / kStgRows;
   static_assert(kStgCh <= kBallotLanes, "a staged row's chunks fit one lockstep unit");
-  auto stage_factors = [&](uint32_t blk, const __nv_bfloat16* plane, const uint16_t* list,
+  auto stage_factors = [&](auto Nw, uint32_t blk, const __nv_bfloat16* plane, const uint16_t* list,
                            uint32_t winP, int slot, int u0, int nb) {
+    constexpr int NW = decltype(Nw)::value;
+    constexpr int kStgOwn = kSegRows / NW;
+    constexpr int kStgPass = (kStgOwn + kStgRows - 1) / kStgRows;
+    static_assert(kStgOwn * NW == kSegRows, "a group's rows split evenly over its fillers");
     const int c = lane & (kStgCh - 1);
     const uint32_t blkB = blk + (uint32_t)(slot * kSegRows * BP::kStageW * 2);
     static_for<kStgPass>([&](auto Pc) {
       const int ic = (lane >> ilog2c(kStgCh)) + decltype(Pc)::value * kStgRows;
-      const int r = ic * kWarps + warp;
+      const int r = NW == 1 ? ic : ic * NW + warp;
       if (ic < kStgOwn && r < nb) {
         const uint32_t tokB = winP + (uint32_t)list[u0 + r] * (uint32_t)(BP::kWtot * 2);
         static_for<D>([&](auto Lc) {
@@ -1339,14 +1313,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: axis and the TOKENS are `n`, in eights.  So a reader's segment carries coefficient
   //: rows and nothing else -- the A operand is the state, which is already in registers
   //: -- and the n-tile the fold skips by LEAF here is skipped by TOKEN.
-  //: Each warp IS a reader stream (`SVR::kStreams == kWarps`), so a batch's candidate
-  //: pairs are `TPWR` union tokens times the readers, one per lane, and `kCandR` is the
-  //: batch itself.
+  //: Each warp IS a reader stream (`SVR::kStreams == kWarps`) and OWNS its group whole
+  //: (K35 R-B), so the read side resolves no candidate pair at all: a group's rows are
+  //: this reader's own tokens, in this reader's own compacted order.
   constexpr int TPW = kSegRows / kWarps;  // union tokens one warp handles per group
   static_assert(TPW * kWarps == kSegRows, "a group's union tokens split evenly over the executors");
-  constexpr int kCandR = TPW * kWarps;
-  static_assert(kCandR == kSegRows && kCandR <= kBallotLanes,
-                "one lane resolves each (union token, reader) pair of a group");
   //: AND THE WRITE SIDE'S: its `TPW` union tokens times the WRITE streams, one per
   //: lane.  At `WPS == 1` that is the whole group; under a column split the executors
   //: are more numerous and each holds fewer.
@@ -1354,32 +1325,25 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   static_assert(kCand <= kBallotLanes, "one lane resolves each candidate pair");
   constexpr int kSegBits = ilog2c(kSegRows);
   //: THE EXPANSION'S LANE MAP, the write side's at the READ carve's row width: a row is
-  //: `kWordsRowR` packed pairs, the warp covers `kRowsPassR` rows at once and the rows of
-  //: a pass are READERS of ONE token, which is what lets one memo serve the whole pass.
+  //: `kWordsRowR` packed pairs and the warp covers `kRowsPassR` of them at once.  A
+  //: pass's rows are this reader's OWN TOKENS (K35 R-B), which is why no memo is shared
+  //: across them.
   constexpr int kWordsRowR = kLeafE / 2;
   constexpr int kLanesRowR = kWordsRowR < kBallotLanes ? kWordsRowR : kBallotLanes;
   constexpr int kRowsPassR = kBallotLanes / kLanesRowR;
   constexpr int kWordsLaneR = kWordsRowR / kLanesRowR;
-  constexpr int kReadPass = kWarps / kRowsPassR;
-  static_assert(kWarps % kRowsPassR == 0 && kReadPass >= 1,
-                "a pass's rows are readers of ONE token, so the reader count carries them");
   //: THE READOUT'S TOKEN n-TILES PER BATCH, which is what the tile-live mask indexes.
   constexpr int kNTok = kSegRows / kMmaN;
   constexpr int kSeedR = first_whole_level<SVR, D>();
   const int exHR = lane >> ilog2c(kLanesRowR);
   const int exJR = lane & (kLanesRowR - 1);
-  //: THE CONSUMER'S BASE INTO ITS OWN READER SEGMENT.  Its rows ARE the batch's ranks in
-  //: its own compacted order, so this is an offset and not a map -- the same
-  //: `[row][slot]` stride the deleted read panel had, one slot instead of two.
-  //: THE RING SCATTER ORDER ROTATES BY WARP (S2e2): compile-time tile `t` IS this warp's
-  //: window tile `(t + prot) mod kNTok`, so dense routing's executors do not all want one
-  //: ring row at one instant.  It permutes the DATA at the two ADDRESSES that name a tile
-  //: -- this base and the rank map's word -- never a register index; carry_kernel.md.
-  static_assert((kNTok & (kNTok - 1)) == 0, "the n-tile rotation is a power-of-two residue");
-  const int prot = warp & (kNTok - 1);
-  auto ptok = [&](int t) { return (t + prot) & (kNTok - 1); };
+  //: THE READER'S BASE INTO ITS OWN SEGMENT.  Its rows ARE its group's tokens in its own
+  //: compacted order, so this is an offset and not a map: ONE `ldmatrix` covers the whole
+  //: group -- `tl >> 1` selects the token n-tile and `cT` the leaf granule.
+  //: THE S2e2 ROTATION IS GONE WITH THE RING IT EXISTED FOR: no two readers ever want
+  //: one row now, so there is nothing left for a rotation to spread.
   const uint32_t myR =
-      rsegB + (uint32_t)(((strm * kSegRows + ptok(tl >> 1) * kMmaN + lr) * LdR + cT * 8) * 2);
+      rsegB + (uint32_t)(((strm * kSegRows + (tl >> 1) * kMmaN + lr) * LdR + cT * 8) * 2);
 
   // ---- THE FLOW COUNTERS, ONE BODY FOR BOTH SIDES (P76 CORRECTION-2; S2c, S2d) ----
   //: STREAMS FIRE WHEN FULL, ON BOTH SIDES, AND THE MECHANISM IS WRITTEN ONCE.  Three
@@ -1394,7 +1358,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: zero serves both.  WHY A COUNT IS AS GOOD AS A PREFIX and the deadlock-freedom
   //: argument the code's order encodes: `carry_kernel.md`, "The flow counters".
   using WriteFlow = FlowSide<kStreams, WPS, kCand, true>;
-  using ReadFlow = FlowSide<kWarps, 1, kCandR, false>;
   //: `rank_live(s, t)` -- the token's position in stream `s`'s compacted list, and
   //: whether the stream holds it at all, out of the side's published ballot and prefix.
   auto rank_live = [&](uint32_t memBase, uint32_t pfxBase, int s, int t) {
@@ -1481,263 +1444,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   };
   auto all_done = [&]() {
     return load_shared_u32(flowB + (uint32_t)(2 * kWarps * 4)) >= (uint32_t)kWarps;
-  };
-
-  //: ---- THE RING (P76 section 2.6-C), ITS ADDRESSES AND ITS PROTOCOL --------
-  //: THE RING IS KEYED ON THE UNION RANK: rank `r` -- a token's position in the CTA's
-  //: union read walk -- lives at slot `r % C`, and every reader of that token meets
-  //: there instead of meeting in the output plane.  What that buys is stated as a count:
-  //: the RED-direct form issued one global reduction per (owner warp, token, element),
-  //: uncoalesced by construction; the ring issues ONE per (token, element) per CTA, from
-  //: 32 lanes covering 32 consecutive channels, which is a 128-byte transaction.
-  //:
-  //: THE ACQUIRE IS NON-BLOCKING (P76 RULED 2026-08-26).  Under per-stream firing a
-  //: reader's sixteen rows span an arbitrary stretch of the union list, so two readers'
-  //: scatter frontiers are hundreds of ranks apart at scattered routing and no `C` that
-  //: fits SMEM bounds the skew.  The protocol therefore NEVER WAITS ON WORK ANOTHER
-  //: WARP OWES: a stale row is EVICTED whether or not every reader of its rank has
-  //: arrived (the flush is an `atomicAdd`, so a partial sum is a correct partial), and a
-  //: laggard that finds its rank's tag gone sends its contribution DIRECT TO GLOBAL.
-  //: That is what makes the readout's walk deadlock-free now that every warp is both a
-  //: reader and a fetcher -- a warp blocked in the acquire would still owe placements
-  //: another reader's tile needs, and the cycle would close.
-  //:
-  //: THE MEMORY ORDER, and it is the whole correctness argument.  A slot carries
-  //: `{tag, lock}` beside its `kCols` floats.  THE LOCK IS WHAT MAKES THE ROW ONE
-  //: WARP-ROW'S; the tag says WHOSE rank that row currently holds, and it is only ever
-  //: read or written by a holder of the lock.  A holder flushes and clears the row,
-  //: fences (`publish_fence`, block scope -- the participants are warps of one CTA
-  //: talking through shared memory and nothing wider is observable), stores the tag,
-  //: and releases with a second fence before the word that hands the row on; the next
-  //: holder's acquire fences on success, so it sees all of that.  A contribution is
-  //: taken under the same lock and re-reads the tag there, which is the only reading of
-  //: it that can still be true when the row is touched.  There is no counter, no
-  //: RECLAIMING sentinel and no Dekker pair: the row cannot be flushed under a
-  //: contribution because a flusher cannot hold the lock while a contributor does.
-  //: TAGS ADVANCE by whoever takes the row next and a slot's tags are congruent modulo
-  //: `C`, so a slot alternates between the generations that share it.  The first
-  //: contributor to a rank is by construction its evictor, so there is no separate zero
-  //: pass -- the clear rides the flush, which is reading the row anyway.
-  constexpr int RCC = G::kRingC;
-  constexpr int LdRing = G::LdRing;
-  //: THE ROW'S GRANULE SWIZZLE, AND IT IS A DERIVATION.  A scatter instruction covers
-  //: the accumulator's FOUR lane quads = four tokens = four ring rows, at ONE
-  //: eight-channel granule; with `LdRing % 32 == 8` a row's granule occupies a whole
-  //: eight-bank block and that block is `(row + granule) % 4`, so the four rows collide
-  //: exactly when two of their ranks agree mod four.  Four-way is therefore the FLOOR
-  //: for any row permutation -- there are four blocks and the rows are DATA (the union
-  //: rank is the datum, and no compile-time pattern names it).  What a swizzle can buy
-  //: is the DENSE case, which is the common one and the only one with a shape: a reader
-  //: holding the whole batch scatters ranks `r, r+2, r+4, r+6`, whose blocks are
-  //: `(r + 2q + swz)` -- two-way ALWAYS with no swizzle.  `swz(row) = (row >> 1) & 3`
-  //: makes that sum `const + 3q (mod 4)`, a permutation of the four blocks at every
-  //: alignment and both widths, and it stays a permutation INSIDE the row (it XORs the
-  //: granule's low two bits), so the flush's own leg is untouched.
-  auto ring_cell = [&](int slot, int g, int sub) {
-    return ringB + (uint32_t)((slot * LdRing + (((g ^ ((slot >> 1) & 3))) << 3) + sub) * 4);
-  };
-  //: THE SAME CELL MAP, STRENGTH-REDUCED, AND IT IS AN IDENTITY AND NOT A SECOND
-  //: DERIVATION.  A shift distributes over an exclusive or -- `(g ^ swz) << 5` is
-  //: `(g << 5) ^ (swz << 5)` -- and `g` is compile-time at every call, so a row's cells
-  //: cost one XOR and one add off two registers held for the whole scatter instead of a
-  //: data-dependent swizzle recomputed per cell.  The identity is pinned against
-  //: `ring_cell` for every `(slot, g, sub)` in `test_segment_layout.py`.
-  auto ring_row_base = [&](int slot, int sub) {
-    return ringB + (uint32_t)((slot * LdRing + sub) * 4);
-  };
-  auto ring_swz32 = [&](int slot) { return (uint32_t)(((slot >> 1) & 3) << 5); };
-  //: THE MASS rides the row's ONE PAD granule and must spread over its eight words on
-  //: its own, the granule swizzle being one word wide per row there.
-  auto ring_mass = [&](int slot) {
-    return ringB + (uint32_t)((slot * LdRing + kDv + (slot & 7)) * 4);
-  };
-  //: THE FLUSH, AND IT IS THE ONLY GLOBAL REDUCTION THE READOUT ISSUES.  It is the
-  //: whole of a row's journey out: the channels and the mass go to the output plane by
-  //: `atomicAdd`, and the row is CLEARED in the same pass -- it is already being read,
-  //: so the clear is a store on a value in a register and no zero pass exists.  It is
-  //: skipped for a generation that never held a rank (`old < 0`, the window's first `C`
-  //: slots), whose row is already zero.
-  //:
-  //: THE LANE GROUP IS A PARAMETER because the flush has TWO CALLERS with two different
-  //: groups available, and one body serves both rather than two bodies drifting apart:
-  //:   * `LPR == kBallotLanes` -- the DRAIN, which holds no lock and has the whole
-  //:     lockstep unit, so thirty-two lanes cover thirty-two CONSECUTIVE channels and
-  //:     one issue is one 128-BYTE transaction.
-  //:   * `LPR == kQuadLanes` -- the EVICTION, which happens under ONE QUAD's lock while
-  //:     the warp's other quads are under their own, so only that quad's eight lanes are
-  //:     free for it and one issue is 32 CONSECUTIVE BYTES.  Four quads evicting in one
-  //:     issue are four such transactions to four DIFFERENT tokens, which no wider group
-  //:     could have coalesced anyway.
-  //: The group's position within itself is the lane for the unit and `lane >> 2` for the
-  //: quad, and the channel is `c * LPR + pos` either way, so the granule and its
-  //: sub-word fall out of the channel and the swizzle is untouched.
-  //: BODY COUNT: `kDv / LPR + 1`.
-  auto ring_flush = [&](auto Lc, int slot, int old, uint32_t winO_, uint32_t winD_) {
-    constexpr int LPR = decltype(Lc)::value;
-    static_assert(LPR == kBallotLanes || LPR == kQuadLanes,
-                  "a flush is issued by a whole lockstep unit or by one lane quad");
-    const int pos = LPR == kBallotLanes ? lane : (lane >> 2);
-    const uint32_t tok = (uint32_t)rlistS[old >= 0 ? old : 0];
-    const uint32_t rowO = tok * (uint32_t)(kDv * 4) + winO_;
-    //: THE BODY IS ROLLED, AND THAT IS A REGISTER DECISION.  A quad's flush is SIXTEEN
-    //: steps at `d_v = 128` against the unit's four, each holding a shared address, a
-    //: value and a global address; unrolled they overlap and the widest arms spill.  The
-    //: path runs once per EVICTION -- 2897 against 69923 contributions over the oracle
-    //: battery -- so a loop counter there is the cheap side of the trade.
-#pragma unroll 1
-    for (int c = 0; c < kDv / LPR; ++c) {
-      const int ch = c * LPR + pos;
-      const uint32_t a = ring_cell(slot, ch >> 3, ch & 7);
-      const float v = load_shared_f32(a);
-      if (old >= 0)
-        fan_in_add(reinterpret_cast<float*>(gather_ptr(oPlane, rowO + (uint32_t)(ch * 4))), v);
-      store_shared_u32(a, 0u);
-    }
-    if (pos == 0) {
-      const uint32_t a = ring_mass(slot);
-      const float v = load_shared_f32(a);
-      if (old >= 0) fan_in_add(reinterpret_cast<float*>(gather_ptr(denPlane, tok * 4u + winD_)), v);
-      store_shared_u32(a, 0u);
-    }
-  };
-  //: THE SCATTER, AND IT IS THE WHOLE OF THE ACQUIRE (Blake ruling 2026-08-26, K35
-  //: S2d-3 amendment 2).  The ring is a WRITE-BACK CACHE keyed on the union rank: every
-  //: contribution lands in a ring row, there is no second destination and no reduction
-  //: out of the accumulator into the output plane, and a quad whose slot does not carry
-  //: its rank EVICTS what the slot holds -- complete or not -- and then contributes.
-  //:
-  //: ONE LOCK ACQUISITION DOES ALL OF IT.  A quad's leader takes `lock[slot]`, and under
-  //: that one acquisition the quad reads the tag, evicts if the row is not already its
-  //: own (flush, clear, retag), contributes its elements, fences and releases.  There is
-  //: no second pass, no deferred claim and no re-check: the row is the quad's from the
-  //: acquire to the release, so nothing can move it under the contribution and the
-  //: hazard the counter this replaces could not exclude -- a contribution landing after
-  //: the row was flushed, cleared and retagged for the next generation -- has no
-  //: interleaving left to occur in.
-  //:
-  //: AN EMPTY SLOT TAKES THE EVICTION BRANCH ONCE, AND THAT IS ACCEPTED (Blake ruling
-  //: 2026-08-26).  The window's first `C` ranks find `tag = i - C`, negative and so not
-  //: their own, and run a flush whose every global reduction is predicated off plus a
-  //: clear of an already-clear row -- once per slot per window, against a second test on
-  //: the hot path if it had its own branch.
-  //:
-  //: THE TAG IS READ UNDER THE LOCK AND THE FLUSH IS ATTRIBUTED TO IT.  `told` is the
-  //: OCCUPANT's rank, read after the acquire and never derived from the new rank (it is
-  //: not `r - C`: a generation every one of whose contributors arrived late is SKIPPED
-  //: entirely, so the occupant can be any earlier generation, or none at all).  It names
-  //: the token the row's mass belongs to, and it cannot move between the read and the
-  //: flush because the reader holds the row.
-  //:
-  //: THE ONLY DEFERRAL IS A LOST TRY-LOCK.  A leader whose `atom.shared.cas.b32` fails
-  //: HOLDS NOTHING and its quad is pending again in the next issue; every other quad of
-  //: the issue proceeds.  So no warp ever WAITS on a lock -- not as a discipline but
-  //: because there is no wait in the protocol at all -- and the deadlock question closes
-  //: without an argument about what a warp holds while it waits.  A warp holds at most
-  //: the locks of the quads in the CURRENT issue, they are distinct by construction (see
-  //: the aliasing split), and each is released at the end of that issue.
-  //: PROGRESS: a lost try-lock is another warp-row's held lock, and every held lock is
-  //: released after bounded work with no wait inside it (a flush is `kDv / LPR + 1`
-  //: reductions and a clear), so the retries are bounded by the finitely many
-  //: contributions.
-  //:
-  //: ALIASING WITHIN ONE WARP IS SERIALISED, and that is the other reason an issue's
-  //: locks are distinct.  A scatter's four quads are four ranks, and at scattered
-  //: routing two of them can differ by a multiple of `C` and so map to ONE slot.  A quad
-  //: that a LOWER-RANK pending quad aliases steps out of the issue, so the lower rank
-  //: evicts, contributes and releases first and the higher one takes the row after --
-  //: which is also the order that makes the flush between them attribute correctly.
-  //: Quads with distinct slots share one issue, which is what keeps the common case at
-  //: one instruction over thirty-two lanes.  The split is a warp-private computation of
-  //: values the lockstep unit already holds.
-  //:
-  //: THE ACCUMULATOR ELEMENT `(m, e, lane)` carries
-  //:     token   = p*kMmaN + 2*(lane & 3) + (e & 1)
-  //:     channel = m*kMmaM + (lane >> 2) + 8*(e >> 1) = 8*(2*m + h) + (lane >> 2)
-  //: so ONE issue covers four ring rows at eight consecutive channels, which is the
-  //: access the row stride and the granule swizzle are derived from.  A lane's rank is a
-  //: function of `lane & 3` alone, so the leaders (`lane >> 2 == 0`) are the four ranks
-  //: and the ballots are over them; the leader of quad `q` IS lane `q`, which is what
-  //: lets one lane carry its row's lock in its own program order.
-  //: BODY COUNT: one lock, at most one flush, `2 * MCH + 1` read-modify-writes and one
-  //: release per issue; the issue count is one, plus one per aliasing group the
-  //: scatter's ranks form, plus one per lock the warp failed to take.
-  auto ring_scatter = [&](auto& acc, auto& macc, auto Ec, int r, bool live, uint32_t winO_,
-                          uint32_t winD_) {
-    constexpr int eb = decltype(Ec)::value;
-    const int slot = r & (RCC - 1);
-    bool pending = live;
-#pragma unroll 1
-    for (;;) {
-      if (lane_ballot(pending && (lane >> 2) == 0) == 0u) break;
-      //: THIS ISSUE'S PARTICIPANTS: every pending quad that no LOWER-RANK pending quad
-      //: aliases.  One pass over the four ranks, entirely inside the lockstep unit.
-      bool part = pending;
-#pragma unroll
-      for (int p = 0; p < 4; ++p) {
-        const int rp = lane_broadcast(r, p);
-        const int sp = lane_broadcast(slot, p);
-        if (lane_broadcast((int)pending, p) != 0 && sp == slot && rp < r) part = false;
-      }
-      //: THE TRY, ONE THREAD'S.  `atom.shared.cas.b32` is an ordinary memory operation
-      //: and not a lockstep-unit one, so a lane that skips it splits nothing -- unlike
-      //: the broadcast below, which every lane must issue (the S2d-2 hang).
-      int lk = 0, told = 0;
-      if (part && (lane >> 2) == 0 && try_lock_shared(lockB + (uint32_t)(slot * 4))) {
-        lk = 1;
-        told = (int)load_shared_u32(tagB + (uint32_t)(slot * 4));
-      }
-      //: BOTH BROADCASTS ARE UNCONDITIONAL AND NEITHER IS INSIDE A PREDICATE.
-      //: `__shfl_sync` is a lockstep-unit instruction: a quad that skips it -- which a
-      //: short-circuited `&&` arranges -- leaves the unit split at a barrier that never
-      //: completes (the S2d-2 hang, reintroduced and re-caught in S2d-3).  The predicate
-      //: is applied to the ANSWER, never to the issue.
-      const int lq = lane_broadcast(lk, lane & 3);
-      const int toldq = lane_broadcast(told, lane & 3);
-      const bool got = part && lq != 0;
-      if (got && toldq != r) {
-        //: THE EVICTION, IN THIS SAME ISSUE AND UNDER THIS SAME LOCK: the occupant's row
-        //: goes out attributed to the rank just read, the row is cleared by the same
-        //: pass that read it, and the tag is renamed.  The quad's own eight lanes carry
-        //: it, because the warp's other quads are inside their own rows.
-        ring_flush(std::integral_constant<int, kQuadLanes>{}, slot, toldq, winO_, winD_);
-        //: the clear is published before the word that renames the row, and the fence is
-        //: taken by the SAME lane that stores the tag -- a fence orders only the fencing
-        //: thread's accesses, and the eight lanes' clears are carried by the `__syncwarp`
-        //: at the release below, which every lane of the unit reaches.
-        publish_fence();
-        if ((lane >> 2) == 0) store_shared_u32(tagB + (uint32_t)(slot * 4), (uint32_t)r);
-      }
-      if (got) {
-        //: THE ACCUMULATE IS A PLAIN READ-MODIFY-WRITE, and the lock is what licenses
-        //: it: the row is this quad's from the acquire to the release, and inside the
-        //: quad the eight lanes address eight DISTINCT words per granule
-        //: (`sub = lane >> 2`), so no two writers of this issue meet on a cell.
-        const uint32_t cellB = ring_row_base(slot, lane >> 2);
-        const uint32_t swz32 = ring_swz32(slot);
-        static_for<MCH>([&](auto Mc) {
-          constexpr int m = decltype(Mc)::value;
-          static_for<2>([&](auto Hc) {
-            constexpr int h = decltype(Hc)::value;
-            ring_acc_f32(cellB + (((uint32_t)(2 * m + h) << 5) ^ swz32), acc[m][2 * h + eb]);
-          });
-        });
-        //: the mass rides row 0 of its own accumulator, so only the quad's leader
-        //: carries it -- and that is the lane that holds the row's lock.
-        if ((lane >> 2) == 0) ring_acc_f32(ring_mass(slot), macc[eb]);
-      }
-      //: THE RELEASE CARRIES ALL EIGHT LANES' WRITES, AND IT TAKES BOTH FENCES TO DO IT.
-      //: Each lane fences its OWN cells (a fence orders only the fencing thread's
-      //: accesses); the `__syncwarp` makes those accesses happen-before what any lane of
-      //: the unit does next; and the leader's `unlock_shared` fences AGAIN so that
-      //: everything it now happens-after is ordered before the word that hands the row
-      //: on.  Drop either and the next holder can flush the row without seven lanes'
-      //: writes -- which is the failure this stage was opened on.  The `__syncwarp` is
-      //: reached by every lane of the unit, participant or not.
-      publish_fence();
-      __syncwarp();
-      if (lk != 0) unlock_shared(lockB + (uint32_t)(slot * 4));
-      pending = pending && !got;
-    }
   };
 
   // ---- the GLOBAL window grid ---------------------------------------------
@@ -1851,15 +1557,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: barrier: the two owner-grain ballots are the same words in every warp.
     if (lane_ballot((wideR | wideW) != 0u) == 0u) continue;
 
-    //: THE READ SIDE GETS THE SAME SHAPE AS THE WRITE SIDE.  Every stream walking the
-    //: whole bitmap under its own ballot is one pass per stream over one window;
-    //: instead ONE cooperative walk derives the OWNER's read ids and each stream PULLS
-    //: its own subsequence.  It is a per-cell TRADE, not a win -- where a token reads
-    //: leaves in several boxes the owner's union is nearly the sum of the per-stream
-    //: lists, so the shared walk saves nothing and the pull is added work.
-    constexpr int kSliceR = kBallotLanes / kWarps;
-    const int nrO = walk(wideR, rlistS, (uint32_t)(((1ull << kSliceR) - 1ull) << (warp * kSliceR)),
-                         (uint32_t)((1ull << (warp * kSliceR)) - 1ull));
+    //: THE READ SIDE WALKS PER READER AND NOT COOPERATIVELY (K35 R-B).  The shared walk
+    //: was a per-cell TRADE and never a win -- where a token reads leaves in several
+    //: boxes the owner's union is nearly the sum of the per-reader lists, so it saved
+    //: nothing and the pull it forced was added work.  Its walk is PHASE 1's, below,
+    //: against this warp's own `mineR`.
     //: THE OWNER'S WRITE IDS, DERIVED ONCE FOR THE CTA.  `walk` is already the cheap
     //: form -- one lane per ballot word, `ffs` per live bit -- and its `bits`/`below`
     //: parameters exist for exactly this: several writers deriving the SAME global
@@ -1882,22 +1584,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: PUBLISHED ONCE PER WRITE STREAM, by its HALF-0 warp: the `WPS` warps of a stream
     //: hold the SAME `mineW` (they differ only in which leaf columns they fold), so the
     //: other halves would restate the same words.
-    //: AND THE READ SIDE PUBLISHES THE SAME TWO WORDS (K35 S4b), per READER -- which is
-    //: per WARP, the read carve being declared at one stream per executor -- because the
-    //: readout's fetch places rows into segments the placing warp does not consume, in
-    //: exactly the write side's shape.
     if (inW && col == 0) store_shared_u32(memB + (uint32_t)((wstrm * LW + lane) * 4), mineW);
-    if (inW) store_shared_u32(memrB + (uint32_t)((strm * LW + lane) * 4), mineR);
     {
       const int cnt = bit_count(mineW);
       const int pfx = lane_prefix_incl<LW>(cnt) - cnt;
       if (inW && col == 0)
         store_shared_u16(pfxB + (uint32_t)((wstrm * LW + lane) * 2), (uint16_t)pfx);
-    }
-    {
-      const int cnt = bit_count(mineR);
-      const int pfx = lane_prefix_incl<LW>(cnt) - cnt;
-      if (inW) store_shared_u16(pfxrB + (uint32_t)((strm * LW + lane) * 2), (uint16_t)pfx);
     }
 
     //: THE PHASE CHANGE, FOLD -> READOUT.  Every warp publishes its write-view hi into
@@ -1936,314 +1628,193 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       rendezvous();
     }
 
-    // ---- PHASE 1: THE READOUT of every UNION read batch, against the window's ENTRY
-    //      state.  ALL of the window's readouts precede ANY of its folds, because a
+    // ---- PHASE 1: THE READOUT, WARP-PRIVATE, against the window's ENTRY state.
+    //      ALL of the window's readouts precede ANY of its folds, because a
     //      within-window pair is the INTRA term's and this kernel must not carry it.
-    //      The batch line is therefore the window line on both sides.
-    //: THE READ SIDE IS THE WRITE SIDE'S MIRROR AND NOW ON ITS MECHANISM TOO (K35 S2d).
-    //: Executor `warp` takes the fixed share `i % kWarps` of the CTA's union read list,
-    //: in ascending union order, and for each READER that reads a token it handles it
-    //: expands that reader's `R` row -- `kLeafE` bf16 in the reader's private order, no
-    //: gain -- into that reader's segment at the reader's RUNNING rank.  READER STREAMS
-    //: FIRE WHEN FULL: there is NO batch, NO batch-local rank and NO barrier inside the
-    //: walk, so a reader issues exactly `ceil(n_reader / kSegRows)` k-steps per window,
-    //: its last, partial tile draining at the window's edge with the dead coefficient
-    //: rows zeroed.  The consumer does NO produce: tile skip -> `ldmatrix` -> HMMA ->
-    //: ring.  The walk still advances in GROUPS of `kSegRows` union tokens, and that is
-    //: a FETCH QUANTUM -- one staging block, one lane map -- with no firing tied to it.
-    const int nbrO = (nrO + kSegRows - 1) / kSegRows;
+    //      The window line is therefore the phase line on both sides.
+    //: THE READ SIDE SHARES NOTHING (P76 "THE RESET", R-B; M1a `3dd4688` restored).  A
+    //: READER IS A WARP: it walks its OWN ballot into its OWN list, stages and expands
+    //: its OWN tokens into its OWN segment, and issues its partial `y` as a NATIVE
+    //: GLOBAL REDUCTION straight out of the accumulator fragments.  No batch line, no
+    //: rendezvous, no meeting place, and so no barrier of its own -- the only
+    //: synchronisation in the whole phase is the `__syncwarp` between a lane's `STS` and
+    //: the `ldmatrix` that reads another lane's row.
+    //: THE SUMMATION ORDER IS THE ARRIVAL ORDER at the output plane, which is what the
+    //: fan-in ring was built to control and what this design forfeits BY RULING: the
+    //: oracle band is the gate on the readout's arithmetic, not bit-replay.
+    const int nrM = walk(mineR, rlistW, 0xFFFFFFFFu, 0u);
+    __syncwarp();
+    const int nbrM = (nrM + kSegRows - 1) / kSegRows;
+    //: THE GROUP IS A FETCH QUANTUM AND NOTHING MORE -- one staging block, one lane map
+    //: -- so a reader issues exactly `ceil(n_reader / kSegRows)` k-steps per window and
+    //: only its LAST group can be short.
     auto rgroup_n = [&](int b) {
-      const int r = nrO - b * kSegRows;
+      const int r = nrM - b * kSegRows;
       return r <= 0 ? 0 : (r < kSegRows ? r : kSegRows);
     };
-    //: THE ROW INDEX, PUBLISHED WITH THE EXPANSION AND NOT BEFORE IT.  The reader's
-    //: private row keeps its token's WINDOW-WIDE UNION INDEX, so the consumer turns a
-    //: segment row back into the rank the ring is keyed on with ONE shared load.  It is
-    //: a WRITE into another warp's tenant, so it belongs beside the rows it indexes, on
-    //: the placement side of the `drained` count -- the consumer is still reading the
-    //: previous tile's index until that count moves.
-    auto rmap_publish = [&](int e) {
-      if (e >= 0)
-        store_shared_u16(
-            rmapB
-                + (uint32_t)(((lane & (kWarps - 1)) * kSegRows + ((e >> 16) & (kSegRows - 1))) * 2),
-            (uint16_t)(e & 0xFFFF));
-    };
-    //: THE READ SIDE'S EXPANSION.  DECLARED ARITHMETIC ORDER, per packed slot pair:
+    //: THE EXPANSION, WARP-PRIVATE.  DECLARED ARITHMETIC ORDER, per packed slot pair:
     //:     x f_l for every level the READ side SPANS WHOLE, ascending `l`,
     //:     then x f_l for every level it CARVES,            ascending `l`,
-    //: each product rounded to nearest even in bf16.  The prefix through the
-    //: whole-spanned levels is the MEMO: it does not depend on the reader, so it is
-    //: minted once per (token, lane) and reused by every reader of that token.  THERE IS
-    //: NO GAIN ON THIS SIDE -- its scalar is identically one -- so the first factor of
-    //: the order IS the product's seed and no multiply by one is ever issued.
-    //: BODY COUNT: `TPW * (1 + kWordsLaneR * U)` for the memo and
-    //: `TPW * kReadPass * kWordsLaneR * (Cv + 2)` for the rows, `U`/`Cv` being the
-    //: whole-spanned and carved level counts of the READ span vector.
-    auto expand_read = [&](int slot, int e0) {
-      const uint32_t blkB = rstgB + (uint32_t)(slot * kSegRows * BP::kStageW * 2);
-      static_for<TPW>([&](auto Ic) {
-        constexpr int ic = decltype(Ic)::value;
-        const int ii = ic * kWarps + warp;
-        const uint32_t rowB = blkB + (uint32_t)(ii * BP::kStageW * 2);
-        uint32_t memo[kWordsLaneR];
+    //: each product rounded to nearest even in bf16.  THERE IS NO MEMO (K35 R-B): the
+    //: memo existed because one token's rows were expanded for SEVERAL readers, and a
+    //: reader now expands only its own.  THERE IS NO GAIN on this side -- its scalar is
+    //: identically one -- so the first factor of the order IS the product's seed and no
+    //: multiply by one is ever issued.
+    //: A DEAD ROW IS ZEROED BY THE STORE THAT WRITES IT (the fold's law, S2b): the live
+    //: rows of a reader's last group are the prefix `[0, n)` and the rest store the
+    //: zero the MMA needs, so no clearing pass exists on this side at all.
+    //: BODY COUNT: `kPassR * kWordsLaneR * (D + 1)`.
+    constexpr int kPassR = kSegRows / kRowsPassR;
+    static_assert(kPassR * kRowsPassR == kSegRows,
+                  "a group's rows split evenly over the expansion's lane map");
+    auto expand_read = [&](int slot, int n) {
+      const uint32_t blkB = myStg + (uint32_t)(slot * kSegRows * BP::kStageW * 2);
+      static_for<kPassR>([&](auto Pc) {
+        const int row = decltype(Pc)::value * kRowsPassR + exHR;
+        const uint32_t rowB = blkB + (uint32_t)(row * BP::kStageW * 2);
+        const uint32_t rowR = rsegB + (uint32_t)(((strm * kSegRows + row) * LdR) * 2);
         static_for<kWordsLaneR>([&](auto Wc) {
           constexpr int wl = decltype(Wc)::value;
-          const int p0 = 2 * (exJR + wl * kLanesRowR);
+          const int jw = exJR + wl * kLanesRowR;
           uint32_t a = kOnesPair;
           static_for<D>([&](auto Lc) {
             constexpr int l = decltype(Lc)::value;
             if constexpr (!SVR::carves(l)) {
-              const uint32_t f = factor_at(type_tag<PM>{}, rowB, Lc, p0, 0);
+              const uint32_t f = factor_at(type_tag<PM>{}, rowB, Lc, 2 * jw, 0);
               if constexpr (l == kSeedR)
                 a = f;
               else
                 a = mul_bf16x2(a, f);
             }
           });
-          memo[wl] = a;
-        });
-        static_for<kReadPass>([&](auto Pc) {
-          constexpr int pp = decltype(Pc)::value;
-          const int s = pp * kRowsPassR + exHR;
-          const int e = lane_broadcast(e0, ic * kWarps + s);
-          const int row = (e >> 16) & (kSegRows - 1);
-          const uint32_t rowR = rsegB + (uint32_t)(((s * kSegRows + row) * LdR) * 2);
-          uint32_t any = 0u;
-          static_for<kWordsLaneR>([&](auto Wc) {
-            constexpr int wl = decltype(Wc)::value;
-            const int jw = exJR + wl * kLanesRowR;
-            uint32_t a = memo[wl];
-            static_for<D>([&](auto Lc) {
-              constexpr int l = decltype(Lc)::value;
-              if constexpr (SVR::carves(l))
-                a = mul_bf16x2(a, factor_at(type_tag<PM>{}, rowB, Lc, 2 * jw,
-                                            stream_off(type_tag<SVR>{}, s, Lc)));
-            });
-            if (e >= 0) store_shared_u32(rowR + (uint32_t)(jw * 4), a);
-            //: THE PER-ROW TILE-LIVE MASK, produced BY the expansion because only the
-            //: expansion knows which slots it wrote nonzero.  On the READOUT the
-            //: n-tile is EIGHT TOKENS, so the bit a row sets is `row >> 3` and the OR
-            //: over the row's own lanes is what decides it.
-            const uint32_t bal = lane_ballot(e >= 0 && (a & kBf16MagnitudeMask) != 0u);
-            any |= (bal >> (exHR * kLanesRowR)) & (uint32_t)((1ull << kLanesRowR) - 1ull);
+          static_for<D>([&](auto Lc) {
+            constexpr int l = decltype(Lc)::value;
+            if constexpr (SVR::carves(l))
+              a = mul_bf16x2(a, factor_at(type_tag<PM>{}, rowB, Lc, 2 * jw,
+                                          stream_off(type_tag<SVR>{}, strm, Lc)));
           });
-          if (exJR == 0 && any != 0u)
-            or_shared_u32(mskB + (uint32_t)(s * 4), 1u << (row >> ilog2c(kMmaN)));
+          store_shared_u32(rowR + (uint32_t)(jw * 4), row < n ? a : 0u);
         });
       });
     };
-    //: THE WINDOW'S DEAD ROWS, and there is exactly ONE set of them (the fold's law,
-    //: S2b): a row the MMA reads is never arbitrary shared memory, and every tile but a
-    //: reader's LAST is full by construction.  The reader's live rows in that last tile
-    //: are the PREFIX `[0, n_reader mod kSegRows)` and the rest are zeroed here, after
-    //: the edge barrier; a reader owns its whole segment (one stream per warp), so the
-    //: clear is a row split and needs no column reasoning.
-    //: BODY COUNT: `ceil(kSegRows * kLeafE * 2 / 512)` predicated stores, and the stores
-    //: actually issued are `(kSegRows - n) * kClrR`, once per window.
-    constexpr int kClrR = kLeafE * 2 / 16;
-    static_assert(kClrR * 16 == kLeafE * 2 && (kClrR & (kClrR - 1)) == 0,
-                  "a reader's coefficient row is a power-of-two number of quanta");
-    constexpr int kDeadR = kSegRows * kClrR;
-    auto clear_dead_read = [&](int n) {
-      const uint4 z = make_uint4(0u, 0u, 0u, 0u);
-      const int q = (kSegRows - n) * kClrR;
-      const uint32_t cB = rsegB + (uint32_t)(((strm * kSegRows + n) * LdR) * 2);
-      static_for<(kDeadR + kBallotLanes - 1) / kBallotLanes>([&](auto Pc) {
-        constexpr int pp = decltype(Pc)::value;
-        const int qi = pp * kBallotLanes + lane;
-        if (qi < q)
-          store_shared_vec16(
-              cB + (uint32_t)((qi >> ilog2c(kClrR)) * LdR * 2 + (qi & (kClrR - 1)) * 16), z);
-      });
-    };
-    //: THE RING'S GENERATION ZERO, AND BOTH WORDS OF IT.  Slot `i`'s tag starts at
-    //: `i - C`, which is exactly what the first rank to land there will find stale, and
-    //: it is NEGATIVE -- so the eviction that takes it clears the row and issues no
-    //: global reduction.  That is the whole of "no zero pass": the first generation's
-    //: flush IS the zero pass.  The LOCK starts FREE, and every word a protocol
-    //: excludes on must be written by the initialiser rather than inherited from the
-    //: previous moment's tenant (the S4b hang).
-    auto ring_init = [&]() {
-#pragma unroll 1
-      for (int i = tid; i < RCC; i += kThreads) {
-        store_shared_u32(lockB + (uint32_t)(i * 4), 0u);
-        store_shared_u32(tagB + (uint32_t)(i * 4), (uint32_t)(i - RCC));
-      }
-    };
-    //: THE DRAIN, at the window's phase barrier: the last `C` rows have no next writer,
-    //: so each executor flushes the slots of its share.  It runs after a barrier that
-    //: every contribution precedes, so every slot's lock is free and every tag is
-    //: final; the drain therefore needs no lock of its own, and a row that never held a
-    //: rank carries a negative tag and issues no reduction.
-    constexpr int kDrainSlots = RCC / kWarps;
-    static_assert(kDrainSlots * kWarps == RCC, "the ring's rows split over the executors");
-    auto ring_drain = [&](uint32_t winO_, uint32_t winD_) {
-      static_for<kDrainSlots>([&](auto Sc) {
-        const int slot = warp * kDrainSlots + decltype(Sc)::value;
-        ring_flush(std::integral_constant<int, kBallotLanes>{}, slot,
-                   (int)load_shared_u32(tagB + (uint32_t)(slot * 4)), winO_, winD_);
-      });
-    };
-
-    if (nbrO > 0) {
-      //: `drained` is this reader's own count and lives in a REGISTER: it has exactly
-      //: one writer, and the SMEM word beside it is that register PUBLISHED.
-      uint32_t drained = 0u;
-      //: THE PULL, AND IT IS THE WHOLE OF THE CONSUMER.  Read the mask, pull the tile
-      //: into fragments, take the row index, RESET the mask, publish `drained`, then run
-      //: the MMAs and the ring from fragments under whatever the fetchers issue next.
-      //: THE ORDER IS THE PROTOCOL: the count is what lets a fetcher write the NEXT tile
-      //: -- its coefficient rows, its row index AND its mask bits -- so the `ldmatrix`,
-      //: the index loads and the reset all precede it.
-      //: THE TILE-LIVE MASK GATES THE MMAs AND THE MASS, AND NOTHING ELSE: the scatter
-      //: is gated by `row < ns`, because a reader that HOLDS the token still owns a
-      //: contribution when its tile is dead by VALUE -- it adds the zero its accumulator
-      //: holds, and the ring's arithmetic is the same either way.
-      //: BODY COUNT: `KDw` `ldmatrix` and `KDw * (MCH + 1)` MMAs per token n-tile.
-      auto pull_and_readout = [&](uint32_t l) {
-        const uint32_t tm = load_shared_u32(mskB + (uint32_t)(strm * 4));
-        uint32_t rb[KDw][4];
-        if (tm != 0u)
-          static_for<KDw>([&](auto Kc) {
-            constexpr int kk = decltype(Kc)::value;
-            load_frag(rb[kk], ADDR_R(myR, 0, 2 * kk));
+    //: THE FAN-IN, AND IT IS M1a's EXACTLY (P76 R-B; R-A's ledger).  The accumulator is
+    //: TRANSPOSED THROUGH THE WARP-PRIVATE PANEL and the reduction is then issued
+    //: LANE-PER-CHANNEL, straight into the output plane: no batch, no shared ring, no
+    //: rendezvous -- `red.global.add.f32` is fire-and-forget, so a warp's contribution
+    //: leaves the SM in the instruction that produces it and no protocol survives it.
+    //: THE PANEL IS NOT A MEETING PLACE, IT IS A LAYOUT CHANGE, and R-A measured what
+    //: skipping it costs: commit `e390764` issued the reductions straight from the
+    //: m16n8 C fragment, where a lane holds four TOKENS at eight channels, so an issue
+    //: is four HALF-FILLED 32-byte sectors -- 5.8% FEWER instructions for +9.5% TIME at
+    //: k16, long-scoreboard stalls +136%.  Through the panel one issue is 32 lanes over
+    //: 32 CONSECUTIVE channels of one token: one aligned 128-byte transaction.
+    //: THE MAPS ARE THE FRAGMENT'S OWN.  Element `(m, e)` of a token n-tile carries
+    //: token `2*(lane & 3) + (e & 1)` at channel `m*kMmaM + (lane >> 2) + 8*(e >> 1)`,
+    //: which is the store's address; the load's is `[row][lane + 32c]`, and the two meet
+    //: nowhere else.  It is MCH-generic by construction -- the store nest iterates the
+    //: fragment's modes and the load nest the row's 32-channel blocks -- and no `d_v` is
+    //: tested anywhere in it.
+    //: THE MASS rides the accumulator whose A operand is nonzero on row 0 alone, so its
+    //: elements 2 and 3 are identically zero and only the lanes holding channel 0 --
+    //: `lane >> 2 == 0` -- store it; it rides the panel's pad column and goes out as one
+    //: reduction per n-tile.
+    //: BODY COUNT: `2 * (2*MCH + 1)` stores and `kMmaN * kDv / 32 + 1` reductions per
+    //: token n-tile per lane -- and the reductions ARE the contribution count, `kDv + 1`
+    //: values per (token, reader), with no other term.
+    auto fan_in = [&](auto& acc, auto& macc, int u0, auto Pc, int n) {
+      constexpr int p = decltype(Pc)::value;
+      static_for<2>([&](auto Ec) {
+        constexpr int eb = decltype(Ec)::value;
+        const int prow = ((lane & 3) * 2 + eb) * LdO;
+        static_for<MCH>([&](auto Mc) {
+          constexpr int m = decltype(Mc)::value;
+          static_for<2>([&](auto Hc) {
+            constexpr int h = decltype(Hc)::value;
+            store_f32(&sow[prow + m * kMmaM + (lane >> 2) + 8 * h], acc[m][2 * h + eb]);
           });
-        //: THE ROW INDEX INTO REGISTERS, DURING THE DRAIN.  A lane's four ranks are the
-        //: rows `p*8 + 2*(lane&3) + e` and the two halfwords of a row pair are one word,
-        //: so the whole index a lane needs is TWO shared loads -- and taking them here
-        //: is what lets the fetchers overwrite the index for the next tile while this
-        //: tile's scatter is still running.
-        uint32_t rmv[kNTok];
-        static_for<kNTok>([&](auto Tc) {
-          constexpr int t = decltype(Tc)::value;
-          rmv[t] = load_shared_u32(
-              rmapB + (uint32_t)((strm * kSegRows + ptok(t) * kMmaN + 2 * (lane & 3)) * 2));
         });
-        if (lane == 0) store_shared_u32(mskB + (uint32_t)(strm * 4), 0u);
-        //: THE TILE'S LIVE ROWS: every tile but the last is FULL by construction, and
-        //: the last is short by exactly what the sealed arrival count says.
-        const uint32_t base = drained << kSegBits;
-        const int ns = (int)(l - base) < kSegRows ? (int)(l - base) : kSegRows;
-        __syncwarp();
-        publish_fence();
-        ++drained;
-        publish_drained(drained);
-        static_for<kNTok>([&](auto Pc) {
-          constexpr int p = decltype(Pc)::value;
-          float acc[MCH][4], macc[4];
+        if ((lane >> 2) == 0) store_f32(&sow[prow + kDv], macc[eb]);
+      });
+      __syncwarp();
+      static_for<kMmaN>([&](auto Rc) {
+        constexpr int r = decltype(Rc)::value;
+        const int row = p * kMmaN + r;
+        if (row < n) {
+          float* const rowO = reinterpret_cast<float*>(gather_ptr(
+              oPlane,
+              (uint32_t)rlistW[u0 + row] * (uint32_t)(kDv * 4) + winO + (uint32_t)(lane * 4)));
+          static_for<kDv / kBallotLanes>([&](auto Cc) {
+            constexpr int c = decltype(Cc)::value;
+            fan_in_add(rowO + c * kBallotLanes, sow[r * LdO + lane + c * kBallotLanes]);
+          });
+        }
+      });
+      if (lane < kMmaN && p * kMmaN + lane < n)
+        fan_in_add(reinterpret_cast<float*>(
+                       gather_ptr(denPlane, (uint32_t)rlistW[u0 + p * kMmaN + lane] * 4u + winD)),
+                   sow[lane * LdO + kDv]);
+      __syncwarp();
+    };
+    //: ONE GROUP'S READOUT: `ldmatrix` the group's coefficient rows into B fragments --
+    //: ONE instruction covers the whole group, `tl >> 1` naming the token n-tile and
+    //: `cT` the leaf granule -- and then one MMA block per n-tile against the A
+    //: fragments the exchange left in registers, each ending in its own fan-in.
+    //: THE `__syncwarp` AFTER THE PULL IS THE SEGMENT'S RELEASE: the rows are in
+    //: registers, so the next group may expand into them (F4, the second stage in
+    //: registers).  It is also what orders this warp's `LDSM` against its own next `STS`.
+    //: BODY COUNT: `KDw` `ldmatrix` and `kNTok * KDw * (MCH + 1)` MMAs per group.
+    auto readout_group = [&](int u0, int n) {
+      uint32_t rb[KDw][4];
+      static_for<KDw>([&](auto Kc) {
+        constexpr int kk = decltype(Kc)::value;
+        load_frag(rb[kk], ADDR_R(myR, 0, 2 * kk));
+      });
+      __syncwarp();
+      static_for<kNTok>([&](auto Pc) {
+        constexpr int p = decltype(Pc)::value;
+        float acc[MCH][4], macc[4];
+        static_for<MCH>([&](auto Mc) {
+          constexpr int m = decltype(Mc)::value;
+#pragma unroll
+          for (int e = 0; e < 4; ++e) acc[m][e] = 0.f;
+        });
+#pragma unroll
+        for (int e = 0; e < 4; ++e) macc[e] = 0.f;
+        static_for<KDw>([&](auto Kc) {
+          constexpr int kk = decltype(Kc)::value;
           static_for<MCH>([&](auto Mc) {
             constexpr int m = decltype(Mc)::value;
-#pragma unroll
-            for (int e = 0; e < 4; ++e) acc[m][e] = 0.f;
+            mma(acc[m], sa[kk][m], &rb[kk][2 * p]);
           });
-#pragma unroll
-          for (int e = 0; e < 4; ++e) macc[e] = 0.f;
-          if (tm & (1u << ptok(p)))
-            static_for<KDw>([&](auto Kc) {
-              constexpr int kk = decltype(Kc)::value;
-              static_for<MCH>([&](auto Mc) {
-                constexpr int m = decltype(Mc)::value;
-                mma(acc[m], sa[kk][m], &rb[kk][2 * p]);
-              });
-              mma(macc, ma[kk], &rb[kk][2 * p]);
-            });
-          const uint32_t rmw = rmv[p];
-          static_for<2>([&](auto Ec) {
-            constexpr int eb = decltype(Ec)::value;
-            ring_scatter(acc, macc, Ec, (int)((rmw >> (16 * decltype(Ec)::value)) & 0xFFFFu),
-                         (ptok(p) * kMmaN + 2 * (lane & 3) + eb) < ns, winO, winD);
-          });
+          mma(macc, ma[kk], &rb[kk][2 * p]);
         });
-      };
-      ring_init();
-      if (lane == 0) store_shared_u32(mskB + (uint32_t)(strm * 4), 0u);
-      flow_zero();
-      stage_factors(rstgB, pR, rlistS, winP, 0, 0, rgroup_n(0));
-      stage_commit();
-      //: THE READOUT'S OPENING BARRIER; it has no other until the window's edge.  It
-      //: publishes the ring's generation zero, the mask's reset and the counters' zero.
-      rendezvous();
-      //: SEALED: the edge barrier has passed, so `landed[r]` is final and the LAST tile
-      //: -- the only one that can be short -- is read out on that fact, not on fullness.
-      bool sealed = false;
-      //: THE WALK, AS ONE LOOP WITH THE READOUT AT ITS HEAD.  Every wait in the body is
-      //: a `continue` back to that head, so a warp that waits keeps DRAINING AND READING
-      //: OUT its own reader -- which is what makes every wait deadlock-free, and is also
-      //: why exactly ONE `pull_and_readout` and ONE `expand_read` appear in the generated
-      //: code.  The state is the group cursor `g`, which doubles as the announcement flag
-      //: past `nbrO`, and the per-lane word `e`, whose `-2` says NO GROUP IS HELD.
-      int g = 0, e = -2;
+        fan_in(acc, macc, u0, Pc, n);
+      });
+    };
+    //: THE WALK, AND IT IS A STRAIGHT LOOP.  Stage the first group, then per group:
+    //: wait for its factors, expand them, ISSUE THE NEXT GROUP'S `cp.async`, and read
+    //: out.  The issue sits between the expansion and the readout so the transfer flies
+    //: under this group's `ldmatrix` and MMA block -- two stages in flight, the second
+    //: in registers, with exactly one asynchronous group outstanding at the wait.
 #pragma unroll 1
-      for (;;) {
-        const uint32_t l = flow_landed(strm);
-        if (tile_ready(l, drained, sealed)) {
-          pull_and_readout(l);
-          continue;
-        }
-        if (sealed) break;
-        if (e == -2) {
-          if (g >= nbrO) {
-            if (g == nbrO) {
-              stage_wait<0>();
-              announce_done();
-              g = nbrO + 1;
-            }
-            if (!all_done()) continue;
-            //: THE WINDOW'S EDGE ON THIS SIDE.  One barrier, reached exactly once by
-            //: every thread -- after it `landed[r] == n_reader` is final.  AT MOST ONE
-            //: TILE IS LEFT UNDRAINED and it is the reader's last, because a fetcher
-            //: cannot write tile `k+1` before its reader has drained tile `k`.  Its dead
-            //: coefficient rows are zeroed HERE and nowhere else.
-            rendezvous();
-            const int nMine = (int)flow_landed(strm);
-            const int part = nMine & (kSegRows - 1);
-            if (part != 0 && drained < (uint32_t)((nMine + kSegRows - 1) >> kSegBits))
-              clear_dead_read(part);
-            sealed = true;
-            continue;
-          }
-          //: this warp's factor rows for the group have landed (issued one group ago).
-          stage_wait<0>();
-          e = place_group(type_tag<ReadFlow>{}, memrB, pfxrB, rlistS, g << kSegBits, rgroup_n(g));
-        }
-        //: THE GROUP'S PLACEMENTS, IN ROUNDS OF WHAT THERE IS ROOM FOR.  A candidate
-        //: whose tile is full and not yet drained by its reader waits; the rest are
-        //: placed and PUBLISHED first.  The round IS the deadlock-freedom invariant: a
-        //: group can straddle a reader's tile boundary, so an all-or-nothing group would
-        //: have a warp wait on rows it is itself holding back.  At most two rounds.
-        const int er = (e >= 0
-                        && (uint32_t)(e >> (16 + kSegBits))
-                               <= drained_min(type_tag<ReadFlow>{}, lane & (kWarps - 1)))
-                           ? e
-                           : -1;
-        if (lane_ballot(er >= 0) != 0u) {
-          rmap_publish(er);
-          expand_read(g & 1, er);
-          //: LANDED.  The expansion's rows, the row index and the mask bits are stored,
-          //: and the fence orders all three before the arrival that publishes them:
-          //: NOTHING THIS WARP ISSUED IS UNPUBLISHED WHEN IT WAITS.
-          publish_fence();
-          publish_landed(type_tag<ReadFlow>{}, er);
-          if (er >= 0) e = -1;
-        }
-        if (lane_ballot(e >= 0) != 0u) continue;
-        //: the next group's factor rows, one group ahead, so the readouts at the loop's
-        //: head run under them.
-        stage_factors(rstgB, pR, rlistS, winP, (g + 1) & 1, (g + 1) << kSegBits, rgroup_n(g + 1));
+    for (int b = 0; b < nbrM; ++b) {
+      if (b == 0) {
+        stage_factors(std::integral_constant<int, 1>{}, myStg, pR, rlistW, winP, 0, 0, rgroup_n(0));
         stage_commit();
-        ++g;
-        e = -2;
       }
-      //: THE RING'S LAST ROWS.  A barrier that says every contribution has landed, and
-      //: only then the flush of what no next writer will reclaim.
-      rendezvous();
-      ring_drain(winO, winD);
+      const int n = rgroup_n(b);
+      stage_wait<0>();
+      expand_read(b & 1, n);
+      __syncwarp();
+      stage_factors(std::integral_constant<int, 1>{}, myStg, pR, rlistW, winP, (b + 1) & 1,
+                    (b + 1) * kSegRows, rgroup_n(b + 1));
+      stage_commit();
+      readout_group(b * kSegRows, n);
     }
 
     //: THE WINDOW LINE, and it is there by the ordering law: no warp may fold this
     //: window's writes while another is still reading the window's entry state -- and
-    //: the fold's segments are the ring's very bytes.
+    //: the fold's segments are the readout's very bytes.
     rendezvous();
 
     //: THE PHASE CHANGE, READOUT -> FOLD: the mirror.  Each warp publishes its
@@ -2560,7 +2131,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       bool sealed = false;
       clear_segment();
       flow_zero();
-      stage_factors(stgB, pW, wlistS, winP, 0, 0, group_n(0));
+      stage_factors(std::integral_constant<int, kWarps>{}, stgB, pW, wlistS, winP, 0, 0,
+                    group_n(0));
       stage_commit();
       gain_store(0, gain_load(0, group_n(0)));
       //: THE FOLD'S OPENING BARRIER; it has no other until the window's edge.
@@ -2635,7 +2207,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         //: loop's head run under them.
         const int n1 = group_n(g + 1);
         const unsigned short gn = gain_load((g + 1) << kSegBits, n1);
-        stage_factors(stgB, pW, wlistS, winP, (g + 1) & 1, (g + 1) << kSegBits, n1);
+        stage_factors(std::integral_constant<int, kWarps>{}, stgB, pW, wlistS, winP, (g + 1) & 1,
+                      (g + 1) << kSegBits, n1);
         stage_commit();
         gain_store((g + 1) & 1, gn);
         ++g;

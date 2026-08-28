@@ -17,13 +17,12 @@
 
 namespace rola::carry {
 
-template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int RC,
-          int PK, uint32_t MO>
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int PK,
+          uint32_t MO>
 __global__ void carry_layout_probe_kernel(const __nv_bfloat16* __restrict__ pw,
                                           int* __restrict__ outV, int* __restrict__ outC,
-                                          int* __restrict__ outS, int* __restrict__ outR,
-                                          int* __restrict__ outG) {
-  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, RC, PK, MO>;
+                                          int* __restrict__ outS, int* __restrict__ outR) {
+  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
   //: the ARM's value width, so the probe's writer leg is the fetcher's arithmetic at
   //: THIS arm's `LdV` and `kChunkV` and never a file constant's.
   constexpr int kDv = G::kDv;
@@ -33,10 +32,10 @@ __global__ void carry_layout_probe_kernel(const __nv_bfloat16* __restrict__ pw,
   constexpr int NL = kLeafE / kMmaN, kNJ = NL / 2;
   constexpr int kChunkV = kDv / 8;
   constexpr int kWordsRow = kLeafW / 2;
-  //: THE READOUT'S TWO LAYOUTS (K35 S4b): a reader's segment row is `kLeafE` slots at
-  //: stride `LdR`, and a ring row is `kDv` output channels plus the mass in fp32 at
-  //: stride `LdRing`, both addressed through the swizzle the kernel derives.
-  constexpr int LdR = G::LdR, LdRing = G::LdRing, RCC = G::kRingC;
+  //: THE READOUT'S LAYOUT (K35 R-B): a reader's segment row is `kLeafE` slots at stride
+  //: `LdR`.  The fan-in has no layout of its own any more -- it issues straight from the
+  //: accumulator into the output plane -- so this is the readout's whole SMEM contract.
+  constexpr int LdR = G::LdR;
   constexpr int kWarps = G::kWarps;
   constexpr int kWordsRowR = kLeafE / 2;
 
@@ -45,10 +44,8 @@ __global__ void carry_layout_probe_kernel(const __nv_bfloat16* __restrict__ pw,
   __nv_bfloat16* const segC = segV + kStreams * kSegRows * LdV;
   __nv_bfloat16* const wstg = segC + kStreams * kSegRows * LdS;
   __nv_bfloat16* const rseg = wstg + kSegRows * G::BP::kStageW;
-  float* const ring = reinterpret_cast<float*>(reinterpret_cast<char*>(rseg)
-                                               + align16c(kWarps * kSegRows * LdR * 2));
   const uint32_t segVB = smem_addr(segV), segCB = smem_addr(segC), stgB = smem_addr(wstg);
-  const uint32_t rsegB = smem_addr(rseg), ringB = smem_addr(ring);
+  const uint32_t rsegB = smem_addr(rseg);
   const int tid = (int)threadIdx.x, warp = tid >> 5, lane = tid & 31;
   constexpr int kThreads = G::kThreads;
   using BP = typename G::BP;
@@ -159,43 +156,10 @@ __global__ void carry_layout_probe_kernel(const __nv_bfloat16* __restrict__ pw,
     const uint32_t w = ((uint32_t)(r * 128 + 2 * jw + 1) << 16) | (uint32_t)(r * 128 + 2 * jw);
     store_shared_u32(rsegB + (uint32_t)(((s * kSegRows + r) * LdR) * 2 + jw * 4), w);
   }
-  //: ---- THE RING, WRITER LEG: the scatter's own cell address, a compile-time granule
-  //: `2m + h` XORed by the row's swizzle word and the lane's channel inside it.
-#pragma unroll 1
-  for (int slot = warp; slot < RCC; slot += kWarps) {
-    const int sw = (slot >> 1) & 3;
-    static_for<MCH>([&](auto Mc) {
-      constexpr int m = decltype(Mc)::value;
-      static_for<2>([&](auto Hc) {
-        constexpr int h = decltype(Hc)::value;
-        const int chan = m * kMmaM + 8 * h + (lane >> 2);
-        store_shared_u32(
-            ringB + (uint32_t)((slot * LdRing + ((((2 * m + h) ^ sw)) << 3) + (lane >> 2)) * 4),
-            (uint32_t)__float_as_uint((float)(slot * 1024 + chan)));
-      });
-    });
-    if ((lane >> 2) == 0)
-      store_shared_u32(ringB + (uint32_t)((slot * LdRing + kDv + (slot & 7)) * 4),
-                       (uint32_t)__float_as_uint((float)(slot * 1024 + kDv)));
-  }
+  //: THE BARRIER BETWEEN THE TWO LEGS: the writer distributes the segment's rows over
+  //: every thread, so a reader's own rows are another warp's stores and the `ldmatrix`
+  //: below must not run until all of them have landed.
   rendezvous();
-  //: ---- THE RING, READER LEG: the FLUSH's cell address, thirty-two lanes over
-  //: thirty-two consecutive channels.  The two maps meet nowhere else, so a granule
-  //: swizzle that disagreed between them would come back as a permuted row.
-#pragma unroll 1
-  for (int slot = warp; slot < RCC; slot += kWarps) {
-    const int sw = (slot >> 1) & 3;
-    static_for<kDv / kBallotLanes>([&](auto Cc) {
-      constexpr int c = decltype(Cc)::value;
-      const int chan = c * kBallotLanes + lane;
-      outG[slot * (kDv + 1) + chan] = (int)load_shared_f32(
-          ringB
-          + (uint32_t)((slot * LdRing + (((c * 4 + (lane >> 3)) ^ sw) << 3) + (lane & 7)) * 4));
-    });
-    if (lane == 0)
-      outG[slot * (kDv + 1) + kDv] =
-          (int)load_shared_f32(ringB + (uint32_t)((slot * LdRing + kDv + (slot & 7)) * 4));
-  }
   //: the reader segment's consumer leg, at the readout's own base and fragment map.
   {
     const uint32_t myR = rsegB + (uint32_t)(((warp * kSegRows + rT) * LdR + cT * 8) * 2);

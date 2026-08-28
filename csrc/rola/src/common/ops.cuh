@@ -133,13 +133,6 @@ __device__ __forceinline__ void rendezvous_group(int id, int n) {
 //: A caller that conflates them would silently read a quarter of a vote.
 constexpr int kBallotLanes = 32;
 
-//: THE LANE QUAD'S WIDTH, which is the OTHER group a warp's work divides into and is
-//: derived from the MMA fragment rather than chosen: an accumulator's four lane quads
-//: are four TOKENS, so a quad is the lanes that share one token and its width is the
-//: unit's over four.  The ring's per-token work -- one row's lock, its eviction and its
-//: contribution -- is a QUAD's, not a unit's.
-constexpr int kQuadLanes = kBallotLanes / 4;
-
 //: ONE BIT PER LANE, IN LANE ORDER.  The unit's own agreement about a property
 //: of the data its lanes hold, reached without a memory round trip and without
 //: ordering anything.  Expressed as the intrinsic rather than as a named
@@ -189,16 +182,26 @@ __device__ __forceinline__ int lane_broadcast(int x, int src) {
 
 using Frag = uint32_t[4];
 
+//: THE `memory` CLOBBER IS PART OF THE CONTRACT (K35 R-B).  `ldmatrix` READS SHARED
+//: MEMORY, so it has to be ordered against the stores that filled it: without the
+//: clobber `asm volatile` pins the instruction against other volatile asm but leaves
+//: the compiler free to move it across a `__syncthreads`/`__syncwarp`, and a warp could
+//: then pull rows another warp has not published.  Every producer/consumer pair in this
+//: family is stores -> barrier -> `ldmatrix`, so the clobber belongs here, once.  It is
+//: stated as a CONTRACT and not as a fix: adding it did not change the `## R-B` layout
+//: probe's open failure, and no miscompile has been demonstrated against it.
 __device__ __forceinline__ void load_frag(uint32_t (&r)[4], SmemAddr a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
-               : "r"(a));
+               : "r"(a)
+               : "memory");
 }
 
 __device__ __forceinline__ void load_frag_t(uint32_t (&r)[4], SmemAddr a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
-               : "r"(a));
+               : "r"(a)
+               : "memory");
 }
 
 //: AN 8x8 b16 TILE, TRANSPOSED WHERE IT ALREADY LIES.  The contract is about
@@ -360,93 +363,18 @@ __device__ __forceinline__ void or_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("red.shared.or.b32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
 
-//: ONE CONTRIBUTION INTO A SHARED FP32 ACCUMULATOR, FIRE AND FORGET -- `fan_in_add`'s
-//: contract with the meeting held in shared memory instead of in the output plane.
-//: The fan-in ring's whole point is that a token's partials MEET INSIDE THE CTA, so
-//: what this needs is exactly what the global form needs: a reduction that returns
-//: nothing and makes nothing wait.  IT IS THE sm_90+ ARM of `ring_acc_f32` below and
-//: is reached through it: below sm_90 the hardware has no such instruction and the
-//: emulation ptxas substitutes is not worth its cost against a lock the ring holds
-//: anyway.
-__device__ __forceinline__ void red_shared_add_f32(SmemAddr a, float v) {
-  asm volatile("red.shared.add.f32 [%0], %1;" ::"r"(a), "f"(v) : "memory");
-}
-
-//: THE SAME OVER THE COUNTING MONOID.  A ring row's arrival count is incremented once
-//: per contributing warp-row and read by whoever wants to reclaim the row; the
+//: THE SAME OVER THE COUNTING MONOID.  A stream's arrival count is incremented once per
+//: contributing fetcher and read by whichever executor is waiting on the segment; the
 //: incrementer never learns the total, so this is a reduction and not an exchange.
 __device__ __forceinline__ void red_shared_add_u32(SmemAddr a, uint32_t v) {
   asm volatile("red.shared.add.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
 
-//: THE ONE PLACE A SHARED WORD IS EXCHANGED RATHER THAN REDUCED.  Reclaiming a ring
-//: row is a CLAIM -- exactly one of the warps that find the row stale may flush it --
-//: so here the previous value IS the answer and the caller does wait for it.
-__device__ __forceinline__ uint32_t cas_shared_u32(SmemAddr a, uint32_t cmp, uint32_t val) {
-  uint32_t old;
-  asm volatile("atom.shared.cas.b32 %0, [%1], %2, %3;"
-               : "=r"(old)
-               : "r"(a), "r"(cmp), "r"(val)
-               : "memory");
-  return old;
-}
-
-//: ONE FP32 CELL OF A SHARED ACCUMULATOR, ADDRESSED.  The ring's flush reads the row
-//: it is about to hand to the output plane; the address is swizzled by the row, so an
-//: indexed form would re-derive a widening multiply per access.
-__device__ __forceinline__ float load_shared_f32(SmemAddr a) {
-  float v;
-  asm volatile("ld.shared.f32 %0, [%1];" : "=f"(v) : "r"(a) : "memory");
-  return v;
-}
-
-//: ONE FP32 CELL OF A SHARED ACCUMULATOR, STORED.  The partner of the load above: a
-//: ring cell is read, added into and written back under the slot's LOCK, so the pair is
-//: a plain read-modify-write and not an atomic one.
-__device__ __forceinline__ void store_shared_f32(SmemAddr a, float v) {
-  asm volatile("st.shared.f32 [%0], %1;" ::"r"(a), "f"(v) : "memory");
-}
-
-//: THE RING'S ACCUMULATE, AND THE ARCHITECTURE PICKS THE FORM (Blake ruling
-//: 2026-08-26; KERNEL_STANDARDS section 8).  `red.shared.add.f32` has no native
-//: instruction below sm_90: ptxas emits `ATOMS.CAST.SPIN`, a CAS RETRY LOOP, so every
-//: element of every contribution pays a loop whose trip count is the contention on the
-//: cell.  The ring already needs MUTUAL EXCLUSION on the row for its eviction, so the
-//: accumulate can ride the SLOT LOCK instead of carrying an exclusion of its own, and
-//: what it costs is then three instructions -- `LDS`, `FADD`, `STS` -- with the lock
-//: amortised over the whole row.  Where the hardware HAS the reduction (sm_90 and up),
-//: the native form is issued and the lock still orders it against the flush.
-__device__ __forceinline__ void ring_acc_f32(SmemAddr a, float v) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
-  red_shared_add_f32(a, v);
-#else
-  store_shared_f32(a, load_shared_f32(a) + v);
-#endif
-}
-
 //: THE ORDER BETWEEN A UNIT'S SHARED WRITES AND THE FLAG THAT PUBLISHES THEM, and
-//: nothing wider: the ring's producers and consumers are warps of ONE CTA talking
+//: nothing wider: the fold's producers and consumers are warps of ONE CTA talking
 //: through shared memory, so the scope that has to be fenced is the block's.  A
 //: device-scope fence here would order traffic no participant can observe.
 __device__ __forceinline__ void publish_fence() { __threadfence_block(); }
-
-//: THE SLOT LOCK, ONE NATIVE `atom.shared.cas.b32` TAKEN BY ONE LANE ON BEHALF OF ITS
-//: WARP-ROW.  `0` is free and `1` is held.  Acquiring FENCES ON SUCCESS, so everything
-//: the previous holder published before releasing is visible to the new one; releasing
-//: fences FIRST, so everything this holder wrote is published before the word that
-//: hands the row on.  The try is NON-BLOCKING BY DESIGN -- a caller that fails holds
-//: nothing and steps out of the issue rather than waiting, which is what makes
-//: "no warp ever waits on a lock while holding another" a theorem instead of a rule.
-__device__ __forceinline__ bool try_lock_shared(SmemAddr a) {
-  const bool got = cas_shared_u32(a, 0u, 1u) == 0u;
-  if (got) publish_fence();
-  return got;
-}
-
-__device__ __forceinline__ void unlock_shared(SmemAddr a) {
-  publish_fence();
-  store_shared_u32(a, 0u);
-}
 
 //: the 16-byte quantum into shared memory, addressed.  The segment's dead rows are
 //: cleared at this width so a whole slot row is a constant number of stores.
