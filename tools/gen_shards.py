@@ -152,6 +152,14 @@ SPAN_FACTS_ARMS: tuple = (
     # the TIED arm (row 20): BOTH-SPARSE at level zero, dense at level one, equal stream
     # counts -- so the two derived vectors are IDENTICAL and so are the two tables.
     (2, 256, 2, 16, 256, 256, 2, 16, 256, 256),
+    # the DENSE_BOTH container arms (rows 21, 22; K35 S1c): the 1x8 column split at the
+    # flagship cell declared dense at every level.  Both sides then order DENSE-innermost
+    # and carve their OUTER level, so the vectors follow the two stream counts alone --
+    # read `[1, 16]` at eight against write `[2, 16]` at four.  The rows are BUILT and the
+    # tables voted even though the body reads neither: `mode_declares` prunes the
+    # conjunction, not the table, so a dense arm's rows are a cost the facts pass pays and
+    # the carry pass ignores.  Named here because that is the one place the two lists meet.
+    (2, 256, 1, 16, 256, 256, 2, 16, 256, 256),
 )
 
 #: the span arms are STATELESS only: residency is the paging layer's question and

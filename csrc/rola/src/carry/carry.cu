@@ -161,6 +161,9 @@ using SideRowPlan =
 //: exchange's permutation is the IDENTITY and the transit is ELIDED AT COMPILE TIME.  It
 //: is row 1's cell again so that the zero is a MEASUREMENT.
 #define CARRY_ARM_20(X_) X_(2, 256, 4, 8, 64, 384, 32, 1, 3, 1, 4, 4, 32, 0)
+//: THE DENSE DECLARATIONS ON THE CARVED BODY: rows 11 and 13 at `MO = 0` (K35 S1c; carry.md).
+#define CARRY_ARM_21(X_) X_(2, 256, 4, 8, 64, 384, 32, 2, 0, 2, 4, 8, 32, 0)
+#define CARRY_ARM_22(X_) X_(2, 256, 4, 8, 128, 384, 32, 2, 0, 2, 4, 8, 32, 0)
 
 #define CARRY_ARMS_ALL(X_)                                                \
   CARRY_ARM_0(X_) CARRY_ARM_1(X_) CARRY_ARM_2(X_) CARRY_ARM_3(X_)         \
@@ -168,7 +171,7 @@ using SideRowPlan =
   CARRY_ARM_8(X_) CARRY_ARM_9(X_) CARRY_ARM_10(X_) CARRY_ARM_11(X_)       \
   CARRY_ARM_12(X_) CARRY_ARM_13(X_) CARRY_ARM_14(X_) CARRY_ARM_15(X_)     \
   CARRY_ARM_16(X_) CARRY_ARM_17(X_) CARRY_ARM_18(X_) CARRY_ARM_19(X_)     \
-  CARRY_ARM_20(X_)
+  CARRY_ARM_20(X_) CARRY_ARM_21(X_) CARRY_ARM_22(X_)
 
 //: THE ITERATION SUBSET, A BUILD KNOB AND NOTHING MORE.  Compiling sixteen arms to
 //: test one is the difference between a minute and an hour, so a build may define

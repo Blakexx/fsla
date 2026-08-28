@@ -73,6 +73,12 @@ PARK_KEYS = {(2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_SPLIT + PARK),
              (2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_STREAMS + PARK),
              (2, 256, 4, 4, WIDE, carry_ops.WINDOW, 32, carry_ops.LEAF_SPLIT + PARK),
              (2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, carry_ops.LEAF_SPLIT + PARK)}
+#: THE DENSE DECLARATIONS ON THE CARVED BODY (K35 S1c).  Rows 11 and 13 again -- the
+#: flagship cell, the 1x8 column split -- declared DENSE_BOTH instead of ALT, at both
+#: widths.  They are the only rows in the list that are dense AND carved, which is what
+#: makes the carved body measurable at a dense cell; the seam still serves a production
+#: dense declaration from the CHANNEL-SPLIT body and these rows change no dispatch.
+DENSE_CARVED_KEYS = {CONT_SPLIT_KEY, WIDE_SPLIT_KEY}
 #: (widths, k, m, W) for the `BC = 64` box, in the shape `run`/`ref` read.
 FLAG_HALF = ((256, 256), 4, carry_ops.CAP_BC64, carry_ops.WINDOW)
 #: the ALTERNATING declaration packed as the seam's word, at depth four.
@@ -129,12 +135,20 @@ def test_arms_are_the_declared_solver_rows():
                    (3, 16, 2, 16, D_V, carry_ops.WINDOW_SMALL, 32, 1),
                    (4, 8, 2, 8, D_V, carry_ops.WINDOW_SMALL, 32, 1)} | carved_only, got
     dense = {tuple(a[:8]) for a in carry_ops.arms() if a[8] == 0}
-    assert dense == got - carved_only, (
+    assert got - carved_only <= dense, (
         "every other topology must carry the DENSE_BOTH body")
-    #: THE WIDE PLANE IS THE CARVED BODY'S ONLY, by the channel split's own arithmetic:
-    #: that body gives each of a fixed four warps exactly one MMA m-tile of channels, so
-    #: its width IS its executor count and 128 is not a declaration it can take.
-    assert all(a[4] == D_V for a in carry_ops.arms() if a[8] == 0)
+    #: AND TWO CARVED KEYS ARE DENSE TOO (K35 S1c): a declaration being DENSE_BOTH no
+    #: longer implies the channel-split body.  The dense rows are now every uncarved key
+    #: PLUS exactly the two the compare exists for, named rather than counted so a third
+    #: appearing is a failure and not a silently widened set.
+    assert dense - (got - carved_only) == DENSE_CARVED_KEYS, (
+        "the only DENSE_BOTH rows on the carved body are S1c's compare arms")
+    #: THE WIDE PLANE IS THE CHANNEL-SPLIT BODY'S REFUSAL, by that body's own arithmetic:
+    #: it gives each of a fixed four warps exactly one MMA m-tile of channels, so its
+    #: width IS its executor count and 128 is not a declaration it can take.  The law is
+    #: about the BODY, so it is asked of the body -- `a[12] == -1` is the arm whose read
+    #: side carves nothing -- and not of the declaration, which no longer selects it.
+    assert all(a[4] == D_V for a in carry_ops.arms() if a[12] == -1)
     for arm in carry_ops.arms():
         D, B, k, m, d_v, W, C, carve, modes, BC, owners, smem, level = arm
         assert d_v in (D_V, WIDE)
@@ -637,3 +651,69 @@ def test_s5_the_park_matches_the_oracle_and_its_own_twin(arm, d_v, declaration, 
                     s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
     assert torch.equal(plane, got[False][2]), (
         "the park is a lossless round trip: the state plane must be its twin's, bit for bit")
+
+
+# ------------------------ THE DENSE DECLARATIONS ON THE CARVED BODY (K35 S1c)
+
+@pytest.mark.parametrize("k_tok", [None, 4], ids=["dense", "k4"])
+@pytest.mark.parametrize("d_v", [D_V, WIDE], ids=["dv64", "dv128"])
+def test_s1c_the_carved_body_serves_a_dense_declaration(d_v, k_tok):
+    """`MO = 0` ON THE CARVED BODY, against the fp64 oracle at both widths.
+
+    The declaration reaches this body at ONE place -- `ballot_of`'s per-level
+    conjunction, which a side does not enter where it is dense -- so `DENSE_BOTH`
+    leaves that conjunction with no level at all.  Its identity is `valid`, the
+    window's own in-range mask, so the ballot comes out VACUOUSLY FULL: every token of
+    the window is offered to every stream and the schedule prunes nothing.  That is the
+    degenerate case the carve had never been asked for, and the two ways it could have
+    been wrong are both caught here -- an empty conjunction reading as EMPTY would drop
+    every contribution, and a table row addressed anyway would read a row the facts pass
+    never voted.  The oracle sees either as a wrong state plane in canonical order.
+
+    Run at a SPARSE cell too, because `DENSE_BOTH` is the declaration that must be
+    correct at any cell -- it is the seam's fall-back for anything it has no body for --
+    so a cell whose ballots would have pruned is the case where an over-broad schedule
+    has to reduce to the same arithmetic rather than to more of it.
+    """
+    assert_fresh_binary()
+    widths, k, m, W = FLAG
+    cell = (Cell(widths, T=768, k_tok=None, seed=5, d_v=d_v) if k_tok is None
+            else alt_cell(widths, T=768, k_tok=k_tok, seed=21, d_v=d_v))
+    num, den, plane = carry_ops.carry_inter(
+        cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths, k=k, m=m, window=W,
+        chunk=32, carve=CONT_SPLIT, level_modes=0)
+    assert num.shape[-1] == d_v and plane.shape[-1] == d_v + 1
+    n_ref, d_ref, s_ref = ref(cell, FLAG)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+    got = canonical_from_lattice(plane, widths, k, m)
+    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
+
+
+@pytest.mark.parametrize("d_v", [D_V, WIDE], ids=["dv64", "dv128"])
+def test_s1c_the_dense_carve_follows_the_stream_counts_and_is_not_tied(d_v):
+    """THE DERIVATION AT `MO = 0`, read back off the device.
+
+    Both sides class every level DENSE, so the two private ORDERS coincide -- which is
+    the condition the tied arm (row 20) needs.  It is not sufficient, and this is the
+    row that says why: the tie also needs the two derived VECTORS to agree, and under
+    the 1x8 column split the read side has `NSR = NSW * WPS` streams to the write side's
+    `NSW`.  The walk carves the outer level of a shared order by two different counts,
+    so the vectors part (`[2, 16]` against `[1, 16]`), the leaf-to-reader permutation is
+    not the identity, and the exchange is FULL.  Asserted rather than commented because
+    `xch = 0` would otherwise be an easy thing to assume from "the orders agree".
+    """
+    assert_fresh_binary()
+    widths, k, m, W = FLAG
+    stamp = carry_ops.build_stamp(widths, k, m, W, 32, CONT_SPLIT, 0, d_v=d_v)
+    #: a level past `D` carries `B`, which is the identity the vector is padded with.
+    assert list(stamp)[16:20] == [2, 16, 256, 256], "the write side keeps two digits of level 0"
+    assert list(stamp)[20:24] == [1, 16, 256, 256], "the read side keeps one, at twice the streams"
+    assert stamp[24] > 0 and stamp[25] == 1, (
+        "the orders agree but the counts do not, so the exchange is full and not elided")
+    #: the SAME cell, box and executor map as the ALT row it is compared against, so the
+    #: only thing that differs between the two measurements is the declaration.
+    alt = carry_ops.build_stamp(widths, k, m, W, 32, CONT_SPLIT, 6, d_v=d_v)
+    assert (stamp[7], stamp[9], stamp[14]) == (alt[7], alt[9], alt[14]), (
+        "threads, box and write-stream count must match the ALT row this arm is measured against")

@@ -42,10 +42,10 @@ and at `D = 3` it marks the INNERMOST level write-sparse, so that arm's carve le
 | `(16,16,16)` | 2 | 16 | (2,4,16) | 128 | 32 | 64 | DENSE_BOTH, ALT | −1, −1 |
 | `(8,8,8,8)` | 2 | 8 | (2,2,4,8) | 128 | 32 | 64 | DENSE_BOTH, ALT | −1, 3 |
 
-Beside those sit the CARVED-ONLY rows, which exist for their executor map or their width
-and carry no DENSE_BOTH twin: the `(4,4,4,4)` multi-level carve (`k=4, m=1`, `BC=256`,
-eight streams), the two 1x8 containers at the flagship cell (`carve = 2` and `3`, both
-`d_v = 64`), and the THREE `d_v = 128` containers of K35 S3b —
+Beside those sit the CARVED rows, which exist for their executor map or their width:
+the `(4,4,4,4)` multi-level carve (`k=4, m=1`, `BC=256`, eight streams), the two 1x8
+containers at the flagship cell (`carve = 2` and `3`, both `d_v = 64`), and the THREE
+`d_v = 128` containers of K35 S3b —
 
 | container | `k` | `m` | `s_l` | `BC` | owners | warps | streams | `WPS` | leaves/warp | SMEM | CTAs |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -55,6 +55,38 @@ eight streams), the two 1x8 containers at the flagship cell (`carve = 2` and `3`
 
 — all three at `W = 384`, `C = 32` and the ALT declaration, so the container question the
 card leaves to measurement has its three answers built at ONE cell.
+
+### The DENSE declarations on the carved body (K35 S1c)
+
+Two of those carved rows DO carry a DENSE_BOTH twin, and they are the only ones that do:
+the 1x8 column split (`carve = 2`) at both widths, declared `DENSE_BOTH` at every level.
+They exist so the carved body and the channel-split body can be MEASURED at one dense
+cell — a compare this line's history had never run, the recorded DENSE_BOTH compares
+being split-vs-ancestor SASS identity rather than carved-vs-split.
+
+The declaration reaches the carved body at ONE place, `ballot_of`'s per-level
+conjunction, which a side does not enter where it is dense. At `MO = 0` no level enters
+on either side, and the conjunction's identity is `valid` — the window's own in-range
+mask — so the ballot comes out VACUOUSLY FULL rather than empty. Nothing else in the
+body reads the declaration; every other quantity it holds is derived from the CARVE.
+
+The rows the facts pass votes are NOT pruned with it. `CarveRows::row_g` keys on the
+carve, so these arms' tables are built (144 write rows, 272 read) and then never read.
+That is a cost the facts pass pays for a dense declaration on a carved body, and it is
+the one asymmetry between the two prunings: the declaration prunes the CONJUNCTION, the
+carve sizes the TABLE.
+
+Both sides class every level DENSE, so the two private ORDERS coincide — the condition
+the tied arm (`MO = 3`) needs. It is not sufficient. The tie also needs the two derived
+VECTORS to agree, and under the column split the read side carves at `NSR = NSW · WPS`
+streams against the write side's `NSW`: the walk cuts the outer level of a shared order
+by two different counts, so the vectors part (write `[2,16]`, read `[1,16]`), the
+leaf-to-reader permutation is not the identity, and the exchange is FULL. `kTied` also
+requires `WPS == 1`, which these rows are not.
+
+The seam still serves a production dense declaration from the CHANNEL-SPLIT body: these
+rows are reached only by asking for `carve = 2` with `level_modes = 0`, which nothing in
+the fall-back path does. They add measurable rows and change no dispatch.
 
 ### The PARK's twins (K35 S5)
 
