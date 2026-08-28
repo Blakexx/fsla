@@ -66,16 +66,21 @@ Per-side lists make activity airtight: a side's simplex weights are strictly pos
 its own support, so a listed entry is live for that side by construction. There is no
 union-superset padding logic anywhere in this file, by design.
 
-The ROWS ARE VOTED AT THE CARVE GRAIN. Each level's owner run is split at the FINER of
-the two sides' spans there (`CarveRows`), so a level carved by either side emits
-`s_l / min(S^W_l, S^R_l)` times the rows and any coarser range is the OR of the rows it
-covers. Nothing in the facts kernel changes: the carve rows are the same
-`chunk_facts_tables` pass instantiated at the finer spans. Each side reads its OWN
-stream's range at every level it carves, and the owner-grain word — the shared walk's
-input and the whole-window skip's — is the OR over the run. The table grows from 48 to
-192 rows per side at the flagship's two-sided carve, and the facts pass by 6% of itself
-(0.496 → 0.527 ms at `L = 65536`), against a `Σ_l B/s_l` shape that still does not grow
-with `N`.
+THE ROWS ARE VOTED AT THE CARVE GRAIN, AND THE TWO SIDES CARRY THEIR OWN PARTITION
+(K35 S1b addendum). A bitlist is per side, per level, per run of THAT SIDE's partition,
+shared by every box that owns the run and voted from that side's own factors — so the
+read block is at the read carve's runs `S^R_l` and the write block at `S^W_l`, and a
+level a side spans whole emits no rows there at all. A STREAM'S TEST THEREFORE READS
+EXACTLY ONE ROW PER TESTED LEVEL; only the OWNER's whole run is an OR, over its `g_l`
+rows, and that word is the shared walk's input and the whole-window skip's. Holding ONE
+partition for both sides — the finer, with the coarser side ORing — achieved nothing,
+because neither side's votes ever depended on the other's carve; what it cost was a table
+refined by the other side's spans. At the flagship's two-sided carve the table is 144
+write rows + 96 read rows where the coupled form voted 192 of each. Nothing in the facts
+kernel's arithmetic changes: it is the same `chunk_facts_tables` pass, now templated on
+ONE PLAN PER SIDE, and the table is `[BH, entries_read + entries_write, L/32]` — the two
+blocks consecutive, and the old `[BH, 2, E, L/32]` exactly when the two plans coincide.
+The shape is still `Σ_l B/S_l` per side and still does not grow with `N`.
 
 <a id="the-schedule-has-no-barrier"></a>
 ### The schedule is ONE BALLOT WORD PER LANE, and it has no barrier
@@ -141,6 +146,13 @@ WRITE STREAM, and the rest is derived (`CarryGeom`, all `static_assert`ed):
     strm     = the rotated executor index = this warp's READ stream
     wstrm    = strm >> log2 WPS  = its WRITE stream
     col      = strm & (WPS - 1)  = its COLUMN HALF of that stream's leaves
+
+NEITHER CARVE IS DECLARED. An arm declares its MODES and its two STREAM COUNTS, and the
+span vectors are what the ORDER-BY-MODE rule cuts out of them (`ModeOrder` /
+`StreamSpans`, docs/internals/carry/box.md): the side's levels ordered DENSE innermost,
+then SPARSE, then BOTH_SPARSE, and digits taken from the outermost level inward until the
+stream grid's product is the count. The census reports the derived vectors, because the
+declaration no longer shows them.
 
 The READ carve is declared at ONE STREAM PER WARP, which is what leaves the readout, the
 exchange's pull and the fan-in untouched by the split. At `WPS = 1` the mask is
@@ -368,14 +380,17 @@ A stream numbers its leaves in a MIXED RADIX over its own spans, `p = sum_l r_l 
 shift(l)`, so `p` is a bit permutation of the digit offsets exactly as `local` is and the
 expansion is a handful of amplitude loads times products at CONSTANT indices. A span-1 level
 contributes a constant and drops out of the order on its own. The order itself is fixed
-by the span vector:
+by the DECLARATION — no span is consulted, which is what lets the carve be derived FROM
+the order (P76, "ORDER BY MODE, THEN CARVE", ruled 2026-08-26):
 
-**the levels this side CARVES go OUTERMOST**, keeping their lattice order among
-themselves, and **the levels it spans whole go inside them in lattice order**. NO LEVEL IS
+**DENSE innermost** (not sparse on this side), then **SPARSE** (sparse on this side only),
+then **BOTH_SPARSE** (sparse on both), keeping lattice order inside a class. NO LEVEL IS
 PINNED (K35 S4a): the retained plane published `bf16x2` words of two LATTICE-ADJACENT
 leaves, which forced the lattice's innermost level to lie lowest in both private orders
 and its span to be at least two; writer-side placement stores each leaf on its own, so the
-carve vectors are fully general on both sides.
+carve vectors are fully general on both sides. This SUPERSEDES the S4a rule ("carved
+outermost, uncarved in lattice order"), which was sparsity-aware only THROUGH the carve
+and therefore let an uncarved sparse level sit innermost at `D = 4`.
 
 The PAIR LEVEL — which seeds the packed pairs and carries the dead-row zeroing — is
 therefore simply the innermost level OF THE ORDER: a lane mints two adjacent private slots
@@ -385,19 +400,46 @@ the level wanted is the lowest with a span of at least two, and a box holds at l
 leaves, so exactly one qualifies. It is a statement about the ORDER only; the lattice is
 not consulted.
 
-A side carves where its declaration marks it sparse, so this is the PRIVATE-ORDER RULE
-in the vector's vocabulary — *dense levels innermost, sparse levels outermost*: an
-eight-slot n-tile spans dense digits, and each sparse level indexes WHOLE tiles, where a
-digit skip is exact. The order is not cosmetic: it is the readout's MMA **k-order**, so
-it fixes the fp32 summation order and therefore the bits.
+Each class earns its position. DENSE innermost: an eight-slot n-tile spans dense digits
+and is full along them. SPARSE next: those levels index WHOLE tiles, where a digit skip is
+exact. BOTH_SPARSE outermost: it is the one class where the two sides' carves AGREE, so
+the exchange is block-diagonal on those digits and VANISHES when every carved level is
+shared — the order law's exemption, now structural rather than a special case.
+BOTH_SPARSE means both sides are sparse there and NOTHING MORE: each side votes its own
+bitlists from its own factors, so the exemption is IDENTICAL CARVE VECTORS and never
+identical supports. The order is not cosmetic: it is the readout's MMA **k-order**, so it
+fixes the fp32 summation order and therefore the bits.
 
-Dropping the pin MOVES the read order at every carved arm, and no write order at all
-(their carved level is never the lattice's innermost): at the `D = 2` ALT arms the read
-order becomes `0` innermost with the carved `1` outermost where the pin had `1` innermost,
-and at `deep4` / `carve4` it becomes `2,1,0,3` and `2,0,3,1`. That order is the readout's
-MMA **k-order**, so it changes the fp32 summation order and therefore `num`/`den` in the
-last bits; the FOLD's arithmetic is per-leaf and per-level and does not move, so the state
-plane stays bit-identical. The oracle is the gate.
+ORDERING BY MODE moves what S4a's rule got wrong and nothing else. At `D = 2` under `ALT`
+one level is sparse on each side, so the two rules agree and every `D = 2` arm's order and
+vector are UNCHANGED. Where they differ is `D >= 3` with a sparse level the side does not
+carve: at `deep-4` (`(8,8,8,8)`, `ALT`) the old declaration carved level 2 on the write
+side and level 3 on the read side while leaving the OUTER sparse levels 0 and 1 uncarved,
+and the derived carve takes the outermost sparse level first — write `[1,2,2,8]` where the
+declaration said `[2,2,1,8]`, read `[2,1,4,4]` where it said `[2,2,4,2]`. At `deep-3`
+(`(16,16,16)`, `ALT`) the order moves but the arm carves nothing, so it takes the
+channel-split body and nothing in it moves. Both are the readout's MMA k-order, so
+`num`/`den` move in the last bits at `deep-4`; the FOLD's arithmetic is per-leaf and
+per-level and does not move, so that arm's state plane is the only thing the change of
+partition can move, and the oracle is the gate.
+
+### The tied arm: the exchange elided at compile time
+
+When no level is sparse on exactly one side, both sides class every level the same and
+their ORDERS coincide; at equal stream counts the derivation then hands them the SAME
+VECTOR, one warp is both its write stream and its read stream over the same leaves in the
+same order, and the exchange's permutation `leaf -> (reader, slot)` is the IDENTITY
+(`CarryGeom::kTied`). There is then nothing to publish and nothing to pull: `split_hi`
+repacks the fold accumulator's top halves straight into the readout's A fragments and
+`join_hi` rejoins them afterwards, both in registers, because an `m16n8k16` `C[m][n]` and
+an `A[m][k]` place `(row, col)` on a lane identically (KERNEL_STANDARDS §2, K35 M1a). The
+transit region has NO TENANT (`xch_bytes == 0`), one publish and one pull disappear from
+the window, and the ONE barrier that survives is the STRADDLE's — the readout's tenants
+are the fold's very bytes — not the exchange's. The allocation itself moves only where the
+transit was the binding moment; where the fold binds, the tie buys instructions and a
+barrier rather than bytes. `tests/k31/test_segment_layout.py` computes the exchange volume
+from the two derived vectors at EVERY arm and asserts the kernel's transit is exactly
+that, with one tied arm built to pin the zero.
 
 ### Per-level coordinates
 

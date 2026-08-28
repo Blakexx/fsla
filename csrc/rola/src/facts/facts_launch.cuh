@@ -18,7 +18,7 @@ namespace rola::chunk {
 //: the stateless class compiles no atom-grain emission at all, and within the
 //: stateful one a call with no arena to admit into hands a null atom table -- the
 //: runtime-null OUTPUT skip, not a second arm.
-template <class PLAN, int MASK>
+template <class PLAN_R, class PLAN_W, int MASK>
 cudaError_t launch_facts_plan(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
                               uint32_t* atom_tbl, int BH, int L, cudaStream_t stream) {
   constexpr int kTblWarps = kFactsThreads / kBallotLanes;
@@ -26,7 +26,8 @@ cudaError_t launch_facts_plan(const __nv_bfloat16* pr, const __nv_bfloat16* pw, 
   //: would return it unwritten: the class and the pointers must agree.
   if (MASK == kPrefillStateless && atom_tbl != nullptr) return cudaErrorInvalidValue;
   const dim3 grid((unsigned)((tok_words(L) + kTblWarps - 1) / kTblWarps), (unsigned)BH);
-  chunk_facts_tables<PLAN, MASK><<<grid, kFactsThreads, 0, stream>>>(pr, pw, tbl, atom_tbl, L);
+  chunk_facts_tables<PLAN_R, PLAN_W, MASK>
+      <<<grid, kFactsThreads, 0, stream>>>(pr, pw, tbl, atom_tbl, L);
   return cudaGetLastError();
 }
 
@@ -37,18 +38,20 @@ cudaError_t launch_facts_plan(const __nv_bfloat16* pr, const __nv_bfloat16* pw, 
 template <int D, int B, int BC, int MASK>
 cudaError_t launch_chunk_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
                                    uint32_t* atom_tbl, int BH, int L, cudaStream_t stream) {
-  return launch_facts_plan<LevelPlan<D, B, BC>, MASK>(pr, pw, tbl, atom_tbl, BH, L, stream);
+  return launch_facts_plan<LevelPlan<D, B, BC>, LevelPlan<D, B, BC>, MASK>(pr, pw, tbl, atom_tbl,
+                                                                           BH, L, stream);
 }
 
-//: THE GIVEN-SPAN ARM -- the box lattice's owner rows.  `S0..S3` are the owner's
-//: per-level spans `s_l`; a level past `D` passes `B` (the identity).  The carry
-//: consumes these rows, and there is no atom grain here: residency is the paging
-//: layer's question and the carry family does not ask it.
-template <int D, int B, int S0, int S1, int S2, int S3, int MASK>
+//: THE GIVEN-SPAN ARM -- the box lattice's owner rows, AT ONE PARTITION PER SIDE
+//: (K35 S1b).  `R0..R3` are the READ side's per-level runs and `W0..W3` the WRITE
+//: side's; a level past `D` passes `B` (the identity), and a level a side spans whole
+//: emits no rows there.  The carry consumes these rows, and there is no atom grain
+//: here: residency is the paging layer's question and the carry family does not ask it.
+template <int D, int B, int R0, int R1, int R2, int R3, int W0, int W1, int W2, int W3, int MASK>
 cudaError_t launch_span_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
                                   int BH, int L, cudaStream_t stream) {
-  return launch_facts_plan<SpanPlan<D, B, S0, S1, S2, S3>, MASK>(pr, pw, tbl, nullptr, BH, L,
-                                                                 stream);
+  return launch_facts_plan<SpanPlan<D, B, R0, R1, R2, R3>, SpanPlan<D, B, W0, W1, W2, W3>, MASK>(
+      pr, pw, tbl, nullptr, BH, L, stream);
 }
 
 //: THE STATS PASS' REDUCTION ARM, keyed (D, B) alone: the atom rectangle is

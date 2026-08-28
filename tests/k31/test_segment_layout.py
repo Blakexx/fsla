@@ -80,6 +80,12 @@ ARMS = [
                  id="1x8-streams8-dv128"),
     pytest.param(((256, 256), 4, carry_ops.CAP_BC64, WIDE, carry_ops.WINDOW,
                   carry_ops.LEAF_SPLIT, 6), id="2x4-bc64-dv128"),
+    #: THE TIED ARM (K35 S1b): the flagship cell declared BOTH-SPARSE at level zero and
+    #: dense at level one.  Under order-by-mode both sides class both levels the same, so
+    #: the two orders coincide; at equal stream counts the derivation then gives the two
+    #: sides the SAME vector and the exchange is the identity.
+    pytest.param(((256, 256), 4, 8, D_V, carry_ops.WINDOW, carry_ops.LEAF_SPLIT, 3),
+                 id="flagship-tied"),
 ]
 
 LD_PAD = 8      # `kPadE`: the bf16 row padding both segment sub-tiles carry
@@ -229,23 +235,41 @@ def test_the_segment_access_patterns_are_derived_not_guessed(arm):
 
 # ------------------------------------------ the EXCHANGE's segments, both changes
 
-#: THE ARM'S TWO CARVES, mirroring the `CARRY_ARM_*` rows of `csrc/rola/src/carry/carry.cu`
-#: -- the per-level digit span one STREAM owns on the write side and on the read side.
-#: The kernel derives everything below from these two vectors and nothing else, so the
-#: model needs them and nothing else either.
-CARVES = {
-    #: keyed by `(widths, k, m, d_v, declaration)` -- the arm's key less the window,
-    #: which no carve depends on.
-    ((256, 256), 4, 8, D_V, carry_ops.LEAF_SPLIT): ((2, 16), (8, 4), 1),
-    ((64, 64), 4, 8, D_V, carry_ops.LEAF_SPLIT): ((2, 16), (8, 4), 1),
-    ((8, 8, 8, 8), 2, 8, D_V, carry_ops.LEAF_SPLIT): ((2, 2, 1, 8), (2, 2, 4, 2), 1),
-    ((4, 4, 4, 4), 4, 1, D_V, carry_ops.LEAF_SPLIT): ((1, 4, 2, 4), (4, 1, 4, 2), 1),
-    ((256, 256), 4, 8, D_V, carry_ops.CONTAINER_1X8_SPLIT): ((2, 16), (8, 2), 2),
-    ((256, 256), 4, 8, D_V, carry_ops.CONTAINER_1X8_STREAMS): ((1, 16), (8, 2), 1),
-    ((256, 256), 4, 8, WIDE, carry_ops.CONTAINER_1X8_SPLIT): ((2, 16), (8, 2), 2),
-    ((256, 256), 4, 8, WIDE, carry_ops.CONTAINER_1X8_STREAMS): ((1, 16), (8, 2), 1),
-    ((256, 256), 4, carry_ops.CAP_BC64, WIDE, carry_ops.LEAF_SPLIT): ((1, 16), (4, 4), 1),
+#: THE ARM'S DECLARATION, mirroring the `CARRY_ARM_*` rows of
+#: `csrc/rola/src/carry/carry.cu`: MODES (carried on the arm itself) and the two STREAM
+#: COUNTS.  THE CARVES ARE NOT DECLARED ANY MORE (K35 S1b, P76 "ORDER BY MODE, THEN
+#: CARVE"): a side's private order comes from the modes alone and its span vector from
+#: that order and its stream count, so this model derives both exactly as the kernel's
+#: `ModeOrder` / `StreamSpans` do -- and a drift between the two derivations is what the
+#: round trips below would report.
+STREAMS = {
+    #: keyed by `(widths, k, m, d_v, declaration)` -- the arm's key less the window and
+    #: the modes, neither of which the stream counts depend on.  `(write, read)`; the
+    #: read count IS the warp count and `read == write * WPS`.
+    ((256, 256), 4, 8, D_V, carry_ops.LEAF_SPLIT): (4, 4),
+    ((64, 64), 4, 8, D_V, carry_ops.LEAF_SPLIT): (4, 4),
+    ((8, 8, 8, 8), 2, 8, D_V, carry_ops.LEAF_SPLIT): (4, 4),
+    ((4, 4, 4, 4), 4, 1, D_V, carry_ops.LEAF_SPLIT): (8, 8),
+    ((256, 256), 4, 8, D_V, carry_ops.CONTAINER_1X8_SPLIT): (4, 8),
+    ((256, 256), 4, 8, D_V, carry_ops.CONTAINER_1X8_STREAMS): (8, 8),
+    ((256, 256), 4, 8, WIDE, carry_ops.CONTAINER_1X8_SPLIT): (4, 8),
+    ((256, 256), 4, 8, WIDE, carry_ops.CONTAINER_1X8_STREAMS): (8, 8),
+    ((256, 256), 4, carry_ops.CAP_BC64, WIDE, carry_ops.LEAF_SPLIT): (4, 4),
 }
+
+SIDE_READ, SIDE_WRITE = 1, 2
+
+#: `CarryGeom::kXchState`, the exchange's state as the census reports it:
+#: elided, full, or full ONLY because case (c)'s register reorder is unbuilt.
+XCH_ZERO, XCH_FULL, XCH_FULL_REORDER = 0, 1, 2
+
+
+def _declaration(arm):
+    """the arm's `(owner spans, modes, write streams, read streams, WPS)`."""
+    widths, k, m, d_v, _W, declaration, modes = arm
+    _, s, _, bc, _ = carry_ops.box_shape(widths, k, m)
+    nsw, nsr = STREAMS[(tuple(widths), k, m, d_v, declaration)]
+    return [int(x) for x in s], modes, nsw, nsr, nsr // nsw, int(bc)
 
 
 def _ilog2(x):
@@ -253,32 +277,48 @@ def _ilog2(x):
 
 
 class _Side:
-    """`StreamSpans`: a side's stream grid and its `SpanMap` private order."""
+    """`ModeOrder` + `StreamSpans`: a side's private order, derived, and the carve it cuts.
 
-    def __init__(self, owner_spans, spans):
-        self.s = list(spans)
-        self.g = [o // v for o, v in zip(owner_spans, spans)]
-        self.carves = [v < o for o, v in zip(owner_spans, spans)]
-        self.D = len(spans)
-        self.streams = 1
-        self.leaf = 1
-        for x in self.g:
-            self.streams *= x
-        for x in self.s:
-            self.leaf *= x
+    THE ORDER IS THE MODES' AND NOTHING ELSE (P76, ruled 2026-08-26): each level is DENSE
+    (not sparse on this side), SPARSE (sparse on this side only) or BOTH_SPARSE (sparse on
+    both), and they order DENSE innermost, then SPARSE, then BOTH_SPARSE, in lattice order
+    inside a class.  THE CARVE FOLLOWS: the walk takes digits from the OUTERMOST level
+    inward, whole and then halving, until the stream grid's product is the side's stream
+    count.  Nothing here is declared, which is the stage's whole claim.
+    """
+
+    def __init__(self, owner_spans, modes, side, nstreams):
+        self.D = len(owner_spans)
+
+        def group(l):
+            read = (modes >> (2 * l)) & SIDE_READ
+            write = (modes >> (2 * l)) & SIDE_WRITE
+            if read and write:
+                return 2
+            return 1 if ((modes >> (2 * l)) & side) else 0
+
+        order = sorted(range(self.D), key=lambda l: (group(l), -l))   # innermost first
+        self.rank = [order.index(l) for l in range(self.D)]
+        self.s = list(owner_spans)
+        need = nstreams
+        for l in reversed(order):                                     # outermost first
+            if need == 1:
+                break
+            take = min(owner_spans[l], need)
+            self.s[l] = owner_spans[l] // take
+            need //= take
+        assert need == 1, f"{nstreams} streams are not reachable in {owner_spans}"
+        self.g = [o // v for o, v in zip(owner_spans, self.s)]
+        self.carves = [v < o for o, v in zip(owner_spans, self.s)]
+        self.streams = _prod(self.g)
+        self.leaf = _prod(self.s)
+        assert self.streams == nstreams
         self.grid_div = [_prod(self.g[l + 1:]) for l in range(self.D)]
-        #: THE PRIVATE-ORDER RULE with NO LEVEL PINNED (K35 S4a): carved levels
-        #: outermost in lattice order, whole-spanned levels inside them in lattice order.
-        def before(a, b):
-            if self.carves[a] != self.carves[b]:
-                return not self.carves[a]
-            return a > b
-        self.rank = [sum(1 for i in range(self.D) if before(i, l)) for l in range(self.D)]
         bits = [_ilog2(v) for v in self.s]
         self.shift = [sum(bits[i] for i in range(self.D) if self.rank[i] < self.rank[l])
                       for l in range(self.D)]
         pair = [l for l in range(self.D) if self.shift[l] == 0 and self.s[l] >= 2]
-        assert len(pair) == 1, f"{spans}: exactly one level lies lowest with a span above one"
+        assert len(pair) == 1, f"{self.s}: exactly one level lies lowest with a span above one"
         self.pair_level = pair[0]
 
     def leaf_of(self, slot, off, run_shift):
@@ -297,11 +337,12 @@ def _prod(xs):
     return out
 
 
-def _xch(owner_spans, sw, sr, wps):
-    """`(rows_read, rows_write, leaves_read, leaves_write)` -- the two row maps."""
+def _xch(owner_spans, modes, nsw, nsr, wps):
+    """`(W, R, rows_read, rows_write)` -- the two derived sides and the two row maps."""
     D = len(owner_spans)
     run_shift = [sum(_ilog2(owner_spans[i]) for i in range(l + 1, D)) for l in range(D)]
-    W, R = _Side(owner_spans, sw), _Side(owner_spans, sr)
+    W = _Side(owner_spans, modes, SIDE_WRITE, nsw)
+    R = _Side(owner_spans, modes, SIDE_READ, nsr)
     warps, leaf_e, leaf_w = R.streams, R.leaf, W.leaf
     assert W.streams * wps == warps and warps * leaf_e == _prod(owner_spans)
 
@@ -360,10 +401,8 @@ def test_the_exchange_relays_the_state_leaf_for_leaf(arm):
     disagreed between the two sides would show up here as a leaf landing in the wrong row.
     """
     widths, k, m, d_v, W, declaration, modes = arm
-    _, s, _, bc, _ = carry_ops.box_shape(widths, k, m)
-    sw, sr, wps = CARVES[(tuple(widths), k, m, d_v, declaration)]
-    owner = [int(x) for x in s]
-    Wside, Rside, rows_read, rows_write = _xch(owner, sw, sr, wps)
+    owner, modes, nsw, nsr, wps, bc = _declaration(arm)
+    Wside, Rside, rows_read, rows_write = _xch(owner, modes, nsw, nsr, wps)
     warps = Rside.streams
     for name, rows_of, consumer in (("fold->readout", rows_read, Rside),
                                     ("readout->fold", rows_write, Wside)):
@@ -406,10 +445,8 @@ def test_the_exchange_row_map_is_affine_in_the_slots_bits(arm):
     that makes that legal, and pins that the steps do not depend on WHICH stream publishes.
     """
     widths, k, m, d_v, W, declaration, modes = arm
-    _, s, _, bc, _ = carry_ops.box_shape(widths, k, m)
-    sw, sr, wps = CARVES[(tuple(widths), k, m, d_v, declaration)]
-    owner = [int(x) for x in s]
-    Wside, Rside, rows_read, rows_write = _xch(owner, sw, sr, wps)
+    owner, modes, nsw, nsr, wps, bc = _declaration(arm)
+    Wside, Rside, rows_read, rows_write = _xch(owner, modes, nsw, nsr, wps)
     leaf_e = Rside.leaf
     for name, rows_of, slots in (("fold->readout", rows_read, Wside.leaf // wps),
                                  ("readout->fold", rows_write, Rside.leaf)):
@@ -449,10 +486,8 @@ def test_the_exchange_swizzle_is_a_bank_permutation(arm):
     MASS is one element and must spread over its pad granule's four words on its own.
     """
     widths, k, m, d_v, W, declaration, modes = arm
-    _, s, _, bc, _ = carry_ops.box_shape(widths, k, m)
-    sw, sr, wps = CARVES[(tuple(widths), k, m, d_v, declaration)]
-    owner = [int(x) for x in s]
-    Wside, Rside, rows_read, rows_write = _xch(owner, sw, sr, wps)
+    owner, modes, nsw, nsr, wps, bc = _declaration(arm)
+    Wside, Rside, rows_read, rows_write = _xch(owner, modes, nsw, nsr, wps)
     ld_x, n_g, mch = d_v + LD_PAD, d_v // 8, d_v // 16
     leaf_e = Rside.leaf
     assert (ld_x // 2) % 32 == 4, "a segment row must step one four-bank block"
@@ -725,3 +760,88 @@ def test_the_rings_slot_derived_layout_holds_for_window_wide_ranks(d_v):
         covered = sorted(w * drain_slots + i for w in range(warps) for i in range(drain_slots))
         assert covered == list(range(RING_C)), (
             f"the drain at {warps} executors covers {covered}, not every slot once")
+
+
+# --------------------------------- THE EXCHANGE MOVES ONLY THE DISORDER (K35 S1b)
+
+@pytest.mark.parametrize("arm", ARMS)
+def test_the_exchange_transit_is_sized_by_the_disorder_between_the_two_carves(arm):
+    """P76, "THE EXCHANGE MOVES ONLY THE DISORDER": the kernel allocates what MOVES.
+
+    The exchange is the compile-time permutation ``leaf -> (reader, slot)`` from the write
+    order to the read order.  Levels on which the two carves AGREE move no leaf between
+    warps, and when they agree EVERYWHERE the permutation is the IDENTITY: every publisher
+    is its own consumer at its own slot, nothing crosses shared memory, ``hi`` stays in
+    the register file and the transit has NO TENANT.  This computes that permutation from
+    the two DERIVED vectors alone and asserts the kernel's transit is exactly what it
+    says -- zero on the tied arm, one whole ``[consumer][leaf][channel]`` region on every
+    arm where a leaf does change warp.
+    """
+    widths, k, m, d_v, W, declaration, modes = arm
+    owner, modes_, nsw, nsr, wps, bc = _declaration(arm)
+    Wside, Rside, rows_read, rows_write = _xch(owner, modes_, nsw, nsr, wps)
+    leaf_e = Rside.leaf
+    #: THE DISORDER, COUNTED: the (publisher, slot) pairs whose consumer row is not the
+    #: publisher's own row at its own slot.  Both changes are the same permutation read in
+    #: the two directions, so a leaf that stays put stays put in both.
+    moved = 0
+    for name, rows_of in (("fold->readout", rows_read), ("readout->fold", rows_write)):
+        for warp in range(Rside.streams):
+            for slot, (row, _leaf) in enumerate(rows_of(warp)):
+                moved += int(row != warp * leaf_e + slot)
+    ld_x = d_v + LD_PAD
+    want = 0 if moved == 0 else bc * ld_x * 2
+    #: and the kernel's own number, read OFF THE DEVICE: the census' last field.
+    stamp = carry_ops.build_stamp(widths, k, m, W, 32, declaration, modes, d_v)
+    got, state = int(stamp[24]), int(stamp[25])
+    assert got == want, (
+        f"the arm's carves move {moved} slots, so the transit is {want} bytes; "
+        f"the built kernel allocates {got}")
+    #: AND THE STATE IS NAMED, not inferred from the size (Blake, 2026-08-27): an arm that
+    #: OVERPAYS must be visible, so S6 can table it and the parked reorder can find it.
+    same_spans, same_order = Wside.s == Rside.s, Wside.rank == Rside.rank
+    if same_spans and same_order and wps == 1:
+        assert moved == 0 and got == 0 and state == XCH_ZERO, (
+            "identical carves and identical orders are the IDENTITY permutation: the "
+            f"publish and the pull must be elided, but the kernel holds {got} bytes")
+    elif same_spans and wps == 1:
+        #: case (c), PARKED: no leaf crosses a warp, so the TRUE transit is zero, but the
+        #: cross-lane reorder is not built -- the arm takes the full exchange and SAYS SO.
+        assert moved > 0 and got == bc * ld_x * 2 and state == XCH_FULL_REORDER, (
+            f"a (c)-shaped arm pays the full transit and reports it: got {got} bytes, "
+            f"state {state}")
+    else:
+        assert state == XCH_FULL, (
+            f"a disordered carve is state {XCH_FULL}, got {state}")
+
+
+def test_one_built_arm_is_tied_so_the_zero_transit_is_proved():
+    """The tied case is a CLAIM about the kernel, so an arm has to exercise it."""
+    tied = []
+    for param in ARMS:
+        arm = param.values[0]
+        owner, modes, nsw, nsr, wps, _bc = _declaration(arm)
+        Wside, Rside, _rr, _rw = _xch(owner, modes, nsw, nsr, wps)
+        if Wside.s == Rside.s and Wside.rank == Rside.rank and wps == 1:
+            tied.append(param.id)
+    assert tied, "no built arm has identical carves, so the elided exchange is untested"
+
+
+def test_the_c_shape_is_recognized_even_though_no_arm_is_built_for_it():
+    """Case (c) -- identical PARTITIONS, different ORDERS -- is PARKED, not refused.
+
+    `D = 3` on `(16,16,16)` at `MO = 27` (level 0 BOTH_SPARSE, level 1 write-sparse, level
+    2 read-sparse) with two streams a side: both sides carve level 0 only, so the derived
+    vectors are IDENTICAL, while the orders differ -- write ranks `[2,1,0]`, read
+    `[2,0,1]`, levels 1 and 2 swapped.  No leaf crosses a warp, so the TRUE transit is
+    zero and the true mechanism is a cross-lane bit permutation; that network is not
+    built, so such an arm takes the FULL exchange and reports `XCH_FULL_REORDER` so it can
+    be found again.  Pinned from the MODEL alone -- building an arm for it would move
+    device code for a shape nothing ships.
+    """
+    owner = [2, 4, 16]
+    Wside = _Side(owner, 27, SIDE_WRITE, 2)
+    Rside = _Side(owner, 27, SIDE_READ, 2)
+    assert Wside.s == Rside.s == [1, 4, 16], (Wside.s, Rside.s)
+    assert Wside.rank == [2, 1, 0] and Rside.rank == [2, 0, 1], (Wside.rank, Rside.rank)
+    assert Wside.rank != Rside.rank, "the (c) shape is identical spans with unequal orders"

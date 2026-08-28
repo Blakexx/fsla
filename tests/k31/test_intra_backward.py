@@ -33,7 +33,7 @@ WIDTHS = (intra_ops.LEVEL_WIDTH, intra_ops.LEVEL_WIDTH)
 KAPPA = 8.0
 
 DENSE = (intra_ops.DENSE_BOTH, intra_ops.DENSE_BOTH)
-SHARED = (intra_ops.SHARED_SPARSE, intra_ops.SHARED_SPARSE)
+SHARED = (intra_ops.BOTH_SPARSE, intra_ops.BOTH_SPARSE)
 #: THE GRADED DECLARATION, one entmax duty per level and on the OTHER side each time: it
 #: is the production structure, and it is the only cell in which one plane of a level is
 #: restricted while the other must stay whole.

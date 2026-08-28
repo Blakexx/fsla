@@ -116,12 +116,14 @@ __device__ __forceinline__ void static_for(F&& f) {
 //: READ carve is declared at ONE STREAM PER WARP, so the readout is untouched by the
 //: split and the accumulator's leaf count is the read box's at every arm.
 
-template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
-          int R0, int R1, int R2, int R3, int RC, int PK>
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int RC,
+          int PK, uint32_t MO>
 struct CarryGeom {
   using BP = BoxPlan<D, B, K, M>;
-  using SVW = StreamSpans<D, B, K, M, W0, W1, W2, W3>;
-  using SVR = StreamSpans<D, B, K, M, R0, R1, R2, R3>;
+  //: THE TWO CARVES, DERIVED FROM THE DECLARATION (K35 S1b): each side's private order
+  //: comes from `MO` alone and its span vector from that order and its stream count.
+  using SVW = StreamSpans<D, B, K, M, MO, kSideWrite, NSW>;
+  using SVR = StreamSpans<D, B, K, M, MO, kSideRead, NSR>;
   static constexpr int BC = BP::kBC;
   //: THE VALUE WIDTH, AS A DECLARATION.  `kDv` channels plus the MASS column, which
   //: rides the state as one more row of every plane the state touches.  The clauses
@@ -203,7 +205,34 @@ struct CarryGeom {
   static_assert(kXchRows == BC && LdX >= kCols && LdX % 8 == 0,
                 "the consumers partition the box and a segment row is a whole number of "
                 "sixteen-byte quanta");
-  static constexpr int xch_bytes = kXchRows * LdX * (int)sizeof(__nv_bfloat16);
+  static constexpr int seg_xch_bytes = kXchRows * LdX * (int)sizeof(__nv_bfloat16);
+  //: THE TIED ARM: THE EXCHANGE IS THE IDENTITY AND THE TRANSIT IS NOT ALLOCATED (P76,
+  //: "THE EXCHANGE MOVES ONLY THE DISORDER", K35 S1b addendum 3).  Both sides class a
+  //: level alike unless it is sparse on exactly one, so with no single-side-sparse level
+  //: the ORDERS coincide, at equal stream counts the derivation yields the same VECTORS,
+  //: and the leaf -> (reader, slot) permutation is the identity: nothing to publish,
+  //: nothing to pull, `hi` stays in registers and this region has NO TENANT.  An arm is
+  //: tied by its DECLARATION and never by a flag (docs/internals/carry/carry_kernel.md).
+  static constexpr bool spans_agree(int l) {
+    return l >= D || (SVW::s(l) == SVR::s(l) && spans_agree(l + 1));
+  }
+  static constexpr bool orders_agree(int l) {
+    return l >= D || (SVW::Ord::rank(l) == SVR::Ord::rank(l) && orders_agree(l + 1));
+  }
+  static constexpr bool kTied = WPS == 1 && spans_agree(0) && orders_agree(0);
+  //: THE EXCHANGE'S STATE, NAMED AND VISIBLE (Blake, 2026-08-27).  A shape the design
+  //: has not yet optimized must still COMPILE and be CORRECT -- refusing it would trade a
+  //: working arm for a missing one -- so the third shape takes the ordinary full transit
+  //: and says so rather than paying it silently.  `kXchFullReorder` is addendum 3's case
+  //: (c), PARKED: identical PARTITIONS with different ORDERS moves no leaf between warps,
+  //: so its true cost is a cross-lane bit-permutation shuffle and its true transit is
+  //: ZERO, but the shuffle network is not built and the full exchange is correct for it.
+  //: The census reports this, which is how S6's table can show which rows OVERPAY and how
+  //: the parked item finds its customers.
+  static constexpr int kXchZero = 0, kXchFull = 1, kXchFullReorder = 2;
+  static constexpr int kXchState =
+      kTied ? kXchZero : ((WPS == 1 && spans_agree(0)) ? kXchFullReorder : kXchFull);
+  static constexpr int xch_bytes = kTied ? 0 : seg_xch_bytes;
   //: THE SWIZZLE IS A DERIVATION FROM BOTH ACCESS PATTERNS, NOT A GUESS (findings,
   //: derivation 4).  `LdX / 2` is `4 (mod 32)` at both widths, so consecutive rows sit
   //: ONE four-bank block apart and a bank is `(4*row + 4*granule + word) mod 32`.
@@ -295,7 +324,9 @@ struct CarryGeom {
   static_assert(PK == 0 || PK == 1, "the park is a declaration and carries no third value");
   static_assert(kParkWords * kBallotLanes * (int)sizeof(uint32_t) == kLeafE * LdX * 2,
                 "a warp's parked `lo` is exactly its own exchange segment");
-  static constexpr int park_bytes = kPark ? xch_bytes : 0;
+  //: the park's bytes are the SEGMENT's, not the transit's: a tied arm allocates no
+  //: transit and can still park, because what a warp parks is its own `lo`.
+  static constexpr int park_bytes = kPark ? seg_xch_bytes : 0;
 
   static constexpr int off_rseg = park_bytes;
   static constexpr int off_rstg = off_rseg + rseg_bytes;
@@ -444,12 +475,15 @@ struct ProduceMap {
 //: materialized gate plane.  A span-1 level contributes a constant and drops out of
 //: the order on its own.
 //:
-//: THE PRIVATE-ORDER RULE, which fixes the order from the span vector alone AND FROM
-//: NOTHING ELSE (K35 S4a): the levels this side CARVES go OUTERMOST keeping their
-//: lattice order among themselves, the levels it spans whole go inside them in lattice
-//: order, and NO LEVEL IS PINNED.  A side carves where it is declared sparse, so the
-//: rule is "sparse outermost, dense innermost": an eight-slot n-tile spans dense digits
-//: and each sparse level indexes WHOLE tiles, where the digit skip is exact.
+//: THE PRIVATE-ORDER RULE IS THE ORDER BY MODE (P76, ruled 2026-08-26; K35 S1b), and it
+//: is fixed by the DECLARATION alone -- no span is consulted: DENSE innermost, then
+//: SPARSE (sparse on this side only), then BOTH_SPARSE (sparse on both), lattice order
+//: inside a class, and NO LEVEL IS PINNED.  Dense innermost makes an eight-slot n-tile
+//: full; sparse next lets those levels index WHOLE tiles, where the digit skip is exact;
+//: both-sparse outermost is where the two sides' carves agree, so the exchange is
+//: block-diagonal there and vanishes when they agree everywhere.  `ModeOrder` (box.cuh)
+//: states the rule; the CARVE is derived from it, which is why nothing here can drift
+//: from what `StreamSpans` cut.
 //:
 //: THE PIN IS GONE BECAUSE THE EXCHANGE NO LONGER PAIRS LATTICE-ADJACENT LEAVES.  The
 //: retained plane published `bf16x2` words of two adjacent leaves, which forced the
@@ -464,13 +498,7 @@ struct SpanMap {
   static constexpr int bits(int l) { return ilog2c(span(l)); }
   //: the rule as a strict order on the levels, and `rank` as the position it induces --
   //: `0` innermost, and nothing pinned there.  Both are counts, so neither tabulates.
-  static constexpr bool before(int a, int b) {
-    return SV::carves(a) != SV::carves(b) ? !SV::carves(a) : a > b;
-  }
-  static constexpr int count_before(int l, int i) {
-    return i >= D ? 0 : (before(i, l) ? 1 : 0) + count_before(l, i + 1);
-  }
-  static constexpr int rank(int l) { return count_before(l, 0); }
+  static constexpr int rank(int l) { return SV::Ord::rank(l); }
   static constexpr int shift_from(int l, int i) {
     return i >= D ? 0 : (rank(i) < rank(l) ? bits(i) : 0) + shift_from(l, i + 1);
   }
@@ -563,10 +591,6 @@ __device__ __forceinline__ void load_run(unsigned short (&dst)[n], const void* p
   }
 }
 
-//: THE PER-LEVEL MODE DECLARATION, as the kernel reads it (the seam's own encoding):
-//: two bits per level, level 0 in the low pair, bit 0 = the READ side is value-sparse
-//: there, bit 1 = the WRITE side.  The kernel consumes it to PRUNE its clause: a side
-//: reads a level's row only where that side is declared sparse.
 //: THE FIRST LEVEL A SIDE SPANS WHOLE, which is where a GAINLESS expansion's product
 //: begins: the read side has no gain, so seeding at this level is what keeps a multiply
 //: by one out of the readout's coefficient rows.  `-1` where a side carves every level,
@@ -576,48 +600,43 @@ constexpr int first_whole_level(int l = 0) {
   return l >= D ? -1 : (!SV::carves(l) ? l : first_whole_level<SV, D>(l + 1));
 }
 
-constexpr uint32_t kSideRead = 1u, kSideWrite = 2u;
-constexpr bool mode_declares(uint32_t modes, int l, uint32_t side) {
-  return ((modes >> (2 * l)) & side) != 0u;
-}
-
 //: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from
 //: the same geometry the ring depth is.  A ring sized for a residency the launch
 //: bound does not ask for is a ring sized for nothing.
-template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
-          int R0, int R1, int R2, int R3, int RC, int PK>
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int RC,
+          int PK, uint32_t MO>
 constexpr int kCarryCtaTarget =
-    CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC, PK>::cta_target;
+    CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, RC, PK, MO>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int W0, int W1, int W2, int W3,
-          int R0, int R1, int R2, int R3, int RC, int PK, uint32_t MO, bool STATE>
-__global__ __launch_bounds__((CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3,
-                                        RC, PK>::kThreads),
-                             (kCarryCtaTarget<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2,
-                                              R3, RC, PK>)) void
+template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int RC,
+          int PK, uint32_t MO, bool STATE>
+__global__
+__launch_bounds__((CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, RC, PK, MO>::kThreads),
+                  (kCarryCtaTarget<D, B, K, M, DV, W, C, WPS, NSW, NSR, RC, PK, MO>)) void
 carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
              const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
              const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den,
              int L, int tok_words, int v_row_bytes, const float* __restrict__ s_in,
              float* __restrict__ s_out) {
   using BP = BoxPlan<D, B, K, M>;
-  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, W0, W1, W2, W3, R0, R1, R2, R3, RC, PK>;
+  using G = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, RC, PK, MO>;
   //: THE ARM'S VALUE WIDTH, named once so the body below reads a geometry and never a
   //: file constant: `kDv` channels and the mass column that rides them.
   constexpr int kDv = DV;
   constexpr int kCols = DV + 1;
   //: THE TWO SPAN VECTORS.  The READ side's carve and the WRITE side's carve of the
   //: same box, each with its own private order under the rule above.
-  using SVR = StreamSpans<D, B, K, M, R0, R1, R2, R3>;
-  using SVW = StreamSpans<D, B, K, M, W0, W1, W2, W3>;
+  using SVR = typename G::SVR;
+  using SVW = typename G::SVW;
   using PM = SpanMap<D, B, K, M, SVR>;
   using PMW = SpanMap<D, B, K, M, SVW>;
-  //: THE ROW TABLE, refined at every level EITHER side carves, so each stream reads
-  //: its OWN range's rows on either side and a side wanting a coarser range ORs the
-  //: finer rows it already holds.
-  using CR = CarveRows<SVW, SVR>;
+  //: THE ROW TABLES, ONE PER SIDE at that side's own partition (K35 S1b addendum): a
+  //: bitlist is voted from ONE side's factors, so a stream's test reads exactly one row
+  //: per tested level and only the OWNER's whole-run OR spans several.
+  using CRR = CarveRows<SVR>;
+  using CRW = CarveRows<SVW>;
   constexpr int kWarps = G::kWarps;
   constexpr int kThreads = G::kThreads;
 
@@ -728,12 +747,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: the levels the side spans whole.  Computed ONCE per warp, before the window
   //: loop, out of shifts and masks over compile-time powers of two.
   int offR[D], offW[D];
-  //: AND THE BALLOT ROW BASE, per level: the SAME `o_l`, addressing the FIRST row the
-  //: facts pass voted for this owner's run at this level (K31-i-d) -- at the table's
-  //: grain, which is the finer of the two sides' spans, so a side reads its own
-  //: range's rows and the owner's word is the OR of the run's.  The liveness pass
-  //: reads these words instead of re-reading the amplitude runs itself.
-  uint32_t rowOff[D];
+  //: AND THE BALLOT ROW BASE, per level PER SIDE: the SAME `o_l`, addressing the FIRST
+  //: row the facts pass voted for this owner's run at this level (K31-i-d), at THAT
+  //: SIDE's own grain -- so the stream's own range is ONE row and the owner's word is the
+  //: OR of its run's.
+  uint32_t rowOffR[D], rowOffW[D];
   const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
@@ -741,15 +759,16 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     runCol[l] = BP::col_base(l) + o_l * BP::s(l);
     offR[l] = ((strm >> ilog2c(SVR::grid_div(l))) & (SVR::g(l) - 1)) * SVR::s(l);
     offW[l] = ((wstrm >> ilog2c(SVW::grid_div(l))) & (SVW::g(l) - 1)) * SVW::s(l);
-    rowOff[l] = (uint32_t)(CR::row_prefix(l) + o_l * CR::rows_of(BP::s(l), l)) * rowBytes;
+    rowOffR[l] = (uint32_t)(CRR::row_prefix(l) + o_l * CRR::rows_of(BP::s(l), l)) * rowBytes;
+    rowOffW[l] = (uint32_t)(CRW::row_prefix(l) + o_l * CRW::rows_of(BP::s(l), l)) * rowBytes;
   });
-  //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the side's
-  //: whole row block is `kRows * tok_words * 4` bytes, which is 32-bit at every
-  //: admitted length.
+  //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the READ block
+  //: and then the WRITE block, each `kRows * tok_words * 4` bytes, which is 32-bit at
+  //: every admitted length.
   const uint32_t* const rowsR =
-      pin_address(rows + (long)(2 * bh + 0) * (long)CR::kRows * (long)tok_words);
-  const uint32_t* const rowsW =
-      pin_address(rows + (long)(2 * bh + 1) * (long)CR::kRows * (long)tok_words);
+      pin_address(rows + (long)bh * (long)(CRR::kRows + CRW::kRows) * (long)tok_words);
+  const uint32_t* const rowsW = pin_address(
+      rows + ((long)bh * (long)(CRR::kRows + CRW::kRows) + (long)CRR::kRows) * (long)tok_words);
 
   // ---- lane-invariant operand addressing (the shipped idiom) ---------------
   const int lr = lane & 7, tl = lane >> 3;
@@ -817,16 +836,17 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: lane's slot pair `2 * (lane & 3)` is the rest; both are paid HERE, before the window
   //: loop, so a fragment's row inside a publish is the base plus a CONSTANT and its
   //: address is a per-warp pointer plus an IMMEDIATE.
+  //: A TIED ARM PAYS NONE OF THIS: no consumer to name, no base through the window loop.
   constexpr int kSlotBits = ilog2c(kLeafW) + 1;
   int rowBaseR = 0, rowBaseW = 0;
-  static_for<D>([&](auto Lc) {
-    constexpr int l = decltype(Lc)::value;
-    rowBaseR += (offW[l] >> ilog2c(SVR::s(l))) * (SVR::grid_div(l) * kLeafE)
-                + ((offW[l] & (SVR::s(l) - 1)) << PM::shift(l));
-    rowBaseW += (offR[l] >> ilog2c(SVW::s(l))) * (SVW::grid_div(l) * kLeafW)
-                + ((offR[l] & (SVW::s(l) - 1)) << PMW::shift(l));
-  });
-  {
+  if constexpr (!G::kTied) {
+    static_for<D>([&](auto Lc) {
+      constexpr int l = decltype(Lc)::value;
+      rowBaseR += (offW[l] >> ilog2c(SVR::s(l))) * (SVR::grid_div(l) * kLeafE)
+                  + ((offW[l] & (SVR::s(l) - 1)) << PM::shift(l));
+      rowBaseW += (offR[l] >> ilog2c(SVW::s(l))) * (SVW::grid_div(l) * kLeafW)
+                  + ((offR[l] & (SVW::s(l) - 1)) << PMW::shift(l));
+    });
     const int slotR = colBase + 2 * (lane & 3), slotW = 2 * (lane & 3);
     static_for<kSlotBits>([&](auto Pc) {
       constexpr int p = decltype(Pc)::value;
@@ -903,6 +923,44 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
               hi_bf16(mass_st[j][el]));
       });
       mlo[j] = pack_lo(mass_st[j][0], mass_st[j][1]);
+    });
+  };
+  //: THE TIED CHANGE, FOLD -> READOUT, IN REGISTERS (K35 S1b addendum 3): what the
+  //: publish and the pull COMPOSE TO under the identity permutation.  The readout's A
+  //: fragments ARE the fold accumulator's top halves (KERNEL_STANDARDS section 2, K35
+  //: M1a) and `lo` the bottom halves, at the SAME thread-value map -- an m16n8k16
+  //: `C[m][n]` and an `A[m][k]` place `(row, col)` on a lane identically -- so a k-step's
+  //: register `r` is the n-tile `2*kk + (r>>1)`'s element pair `2*(r&1)`.  Nothing is
+  //: stored.  BODY COUNT: `MCH * (4*KDw + 2*NL) + 3*KDw`.
+  auto split_hi = [&](auto& lo, auto& mlo, auto& sa, auto& ma) {
+    static_for<MCH>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
+      static_for<KDw>([&](auto Kc) {
+        constexpr int kk = decltype(Kc)::value;
+        static_for<4>([&](auto Rc) {
+          constexpr int r = decltype(Rc)::value;
+          constexpr int j = 2 * kk + (r >> 1), e = 2 * (r & 1);
+          sa[kk][m][r] = hi_bf16x2(st[m][j][e], st[m][j][e + 1]);
+        });
+      });
+      static_for<NL>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        lo[m][j][0] = pack_lo(st[m][j][0], st[m][j][1]);
+        lo[m][j][1] = pack_lo(st[m][j][2], st[m][j][3]);
+      });
+    });
+    //: the mass rides row zero, so only the lane quad holding it carries a hi word; the
+    //: other quads' rows are identically zero by construction of `ones_a`.
+    static_for<KDw>([&](auto Kc) {
+      constexpr int kk = decltype(Kc)::value;
+      static_for<2>([&](auto Vc) {
+        constexpr int v = decltype(Vc)::value;
+        constexpr int j = 2 * kk + v;
+        const uint32_t w = hi_bf16x2(mass_st[j][0], mass_st[j][1]);
+        ma[kk][2 * v + 0] = ((lane >> 2) == 0) ? w : 0u;
+        ma[kk][2 * v + 1] = 0u;
+        mlo[j] = pack_lo(mass_st[j][0], mass_st[j][1]);
+      });
     });
   };
   //: THE PULL, straight into the readout's A fragments, out of THIS warp's own contiguous
@@ -1031,6 +1089,31 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
                 : 0u;
         mass_st[j][0] = join_hi_lo(mh, mlo[j], 0);
         mass_st[j][1] = join_hi_lo(mh, mlo[j], 1);
+        mass_st[j][2] = 0.f;
+        mass_st[j][3] = 0.f;
+      });
+    });
+  };
+
+  //: THE TIED CHANGE BACK, READOUT -> FOLD: `reload_hi`'s rejoin, with the A fragments
+  //: read from registers rather than a segment.  BODY COUNT: `KDw * (8*MCH + 8)`.
+  auto join_hi = [&](auto& sa, auto& ma, auto& lo, auto& mlo) {
+    static_for<KDw>([&](auto Kc) {
+      constexpr int kk = decltype(Kc)::value;
+      static_for<MCH>([&](auto Mc) {
+        constexpr int m = decltype(Mc)::value;
+        static_for<4>([&](auto Rc) {
+          constexpr int r = decltype(Rc)::value;
+          constexpr int j = 2 * kk + (r >> 1);
+          st[m][j][2 * (r & 1) + 0] = join_hi_lo(sa[kk][m][r], lo[m][j][r & 1], 0);
+          st[m][j][2 * (r & 1) + 1] = join_hi_lo(sa[kk][m][r], lo[m][j][r & 1], 1);
+        });
+      });
+      static_for<2>([&](auto Vc) {
+        constexpr int v = decltype(Vc)::value;
+        constexpr int j = 2 * kk + v;
+        mass_st[j][0] = join_hi_lo(ma[kk][2 * v], mlo[j], 0);
+        mass_st[j][1] = join_hi_lo(ma[kk][2 * v], mlo[j], 1);
         mass_st[j][2] = 0.f;
         mass_st[j][3] = 0.f;
       });
@@ -1726,17 +1809,21 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: shared derivation and the whole-window skip).  It is PRUNED BY THE
     //: DECLARATION: a side conjoins a level only where that side is declared sparse,
     //: because a dense side's row is all-ones and ANDing it is a load for nothing.
-    auto ballot_of = [&](const uint32_t* rowsS, auto Side, auto Vec, auto Mine, const int* off) {
+    auto ballot_of = [&](const uint32_t* rowsS, auto Side, auto Vec, auto Mine, const int* off,
+                         const uint32_t* rowOff) {
       constexpr uint32_t SIDE = decltype(Side)::value;
       using SV = typename decltype(Vec)::type;
+      using CRS = CarveRows<SV>;
       constexpr bool MINE = decltype(Mine)::value;
       uint32_t m = valid;
       static_for<D>([&](auto Lc) {
         constexpr int l = decltype(Lc)::value;
-        if constexpr (CR::row_g(l) > 0 && mode_declares(MO, l, SIDE)) {
-          constexpr int RANGE = CR::rows_of(MINE ? SV::s(l) : BP::s(l), l);
+        if constexpr (CRS::row_g(l) > 0 && mode_declares(MO, l, SIDE)) {
+          //: THE STREAM'S OWN RANGE IS EXACTLY ONE ROW, because the table is at this
+          //: side's own grain; only the OWNER's whole run is an OR, over `g_l` rows.
+          constexpr int RANGE = MINE ? 1 : SV::g(l);
           const uint32_t base =
-              rowOff[l] + (MINE ? (uint32_t)(off[l] >> ilog2c(CR::s(l))) * rowBytes : 0u);
+              rowOff[l] + (MINE ? (uint32_t)(off[l] >> ilog2c(CRS::s(l))) * rowBytes : 0u);
           uint32_t r = 0u;
           static_for<RANGE>([&](auto Ic) {
             r |= *reinterpret_cast<const uint32_t*>(
@@ -1751,10 +1838,14 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     constexpr std::integral_constant<uint32_t, kSideWrite> kWrite{};
     //: the OWNER-GRAIN ballots, which the cooperative walks are derived from, and the
     //: STREAM-GRAIN ballots, which each executor's pull tests its ids against.
-    const uint32_t wideR = ballot_of(rowsR, kRead, type_tag<SVR>{}, std::false_type{}, offR);
-    const uint32_t wideW = ballot_of(rowsW, kWrite, type_tag<SVW>{}, std::false_type{}, offW);
-    const uint32_t mineR = ballot_of(rowsR, kRead, type_tag<SVR>{}, std::true_type{}, offR);
-    const uint32_t mineW = ballot_of(rowsW, kWrite, type_tag<SVW>{}, std::true_type{}, offW);
+    const uint32_t wideR =
+        ballot_of(rowsR, kRead, type_tag<SVR>{}, std::false_type{}, offR, rowOffR);
+    const uint32_t wideW =
+        ballot_of(rowsW, kWrite, type_tag<SVW>{}, std::false_type{}, offW, rowOffW);
+    const uint32_t mineR =
+        ballot_of(rowsR, kRead, type_tag<SVR>{}, std::true_type{}, offR, rowOffR);
+    const uint32_t mineW =
+        ballot_of(rowsW, kWrite, type_tag<SVW>{}, std::true_type{}, offW, rowOffW);
     //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap
     //: mechanism's harvest (study section 2.1).  It is CTA-uniform WITHOUT a
     //: barrier: the two owner-grain ballots are the same words in every warp.
@@ -1819,17 +1910,27 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: are the C rows 8..15 of a tile whose A operand (`ones_a`) is nonzero on row 0
     //: alone, so they are IDENTICALLY ZERO -- there is no low half of them to keep.
     uint32_t lo[MCH][NL][2], mlo[NL];
-    publish_read(lo, mlo);
-    rendezvous();
     uint32_t sa[KDw][MCH][4], ma[KDw][4];
-    pull_read(sa, ma);
+    if constexpr (G::kTied) {
+      split_hi(lo, mlo, sa, ma);
+    } else {
+      publish_read(lo, mlo);
+      rendezvous();
+      pull_read(sa, ma);
+    }
     //: AND THE SEGMENTS ARE DEAD HERE -- for THIS warp, the moment it has pulled.
     //: At `PK == 0` the readout's tenants are these same bytes under another layout, so
     //: no warp may produce into them until EVERY warp has pulled: that barrier is the
     //: price of the straddle.  At `PK == 1` the park holds the bytes, the readout's
     //: tenants sit above them, and the park is warp-private -- so the barrier is spent
     //: at the far end instead.
-    if constexpr (G::kPark) {
+    //: A TIED ARM STILL PAYS ONE BARRIER HERE, the STRADDLE's and not the exchange's:
+    //: the readout's tenants are the fold's very bytes.  At `PK == 1` the untied path
+    //: spends that barrier inside the publish/pull pair instead.
+    if constexpr (G::kTied) {
+      rendezvous();
+      if constexpr (G::kPark) park_lo(lo, mlo);
+    } else if constexpr (G::kPark) {
       park_lo(lo, mlo);
     } else {
       rendezvous();
@@ -2153,13 +2254,18 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: THE UNPARK PRECEDES THE PUBLISH, and that order is the whole protocol at
     //: `PK == 1`: a publisher writes into the CONSUMER's segment, where that consumer's
     //: `lo` is parked, so every warp takes its own back before ANY warp publishes.
-    if constexpr (G::kPark) {
-      unpark_lo(lo, mlo);
+    if constexpr (G::kTied) {
+      if constexpr (G::kPark) unpark_lo(lo, mlo);
+      join_hi(sa, ma, lo, mlo);
+    } else {
+      if constexpr (G::kPark) {
+        unpark_lo(lo, mlo);
+        rendezvous();
+      }
+      publish_write(sa, ma);
       rendezvous();
+      reload_hi(lo, mlo);
     }
-    publish_write(sa, ma);
-    rendezvous();
-    reload_hi(lo, mlo);
     rendezvous();
 
     // ---- PHASE 2: THE FOLD -- ONE UNION WALK, WRITER-SIDE PLACEMENT ---------

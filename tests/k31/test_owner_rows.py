@@ -10,7 +10,10 @@ property of the DRAW and of nothing in the kernel), ``T`` the sequence length.
 
 WHAT IS UNDER TEST.  The facts pass is templated on the PLAN TYPE since K31-i-d,
 so a plan whose spans are GIVEN -- the lattice's ``(8, 16)`` -- votes the
-same rows the lex plan votes for its own spans.  The claim is bit-level: row
+same rows the lex plan votes for its own spans, and it is templated on ONE PLAN PER
+SIDE since K35 S1b, so the table is the read plan's rows followed by the write plan's.
+This diagnostic asks for the same grain on both sides, so the two blocks are the same
+size and the table reads as ``[BH, 2, entries, L/32]``.  The claim is bit-level: row
 ``(side, prefix_entries(l) + o_l)``'s word ``w`` bit ``i`` is exactly "token
 ``32w + i``'s level-``l`` support on that side has a nonzero in the owner group
 ``o_l``'s digit run".  A reference that recomputed the kernel's packing would only
@@ -66,7 +69,10 @@ def test_the_lattice_spans_vote_the_rows_the_claim_names(widths, T, k_tok):
     cell = Cell(widths, T, k_tok=k_tok, seed=11)
 
     got = carry_ops.owner_rows(cell.read_bf, cell.write_bf, widths, k=k, m=m)
-    assert got.shape == (1, 2, sum(groups), (T + 31) // 32), got.shape
+    #: the two sides' blocks are consecutive, each `entries` rows: this diagnostic's two
+    #: plans coincide, so the concatenation reshapes back to the per-side view.
+    assert got.shape == (1, 2 * sum(groups), (T + 31) // 32), got.shape
+    got = got.reshape(1, 2, sum(groups), (T + 31) // 32)
 
     for side, levels in ((0, cell.read_bf), (1, cell.write_bf)):
         want = reference_rows(carry_ops.pack_side(levels), widths, spans)

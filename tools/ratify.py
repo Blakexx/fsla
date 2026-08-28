@@ -350,8 +350,15 @@ OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of ra
 #: check -- goes through here.
 FACTS_TPL = re.compile(r"(atom_bitmap_kernel|block_bitmap_kernel)"
                        r"ILi(\d+)ELi(\d+)(?:ELi(\d+))?E")
-PLAN_TPL = re.compile(r"(chunk_facts_tables)I[A-Za-z0-9_]*?8SpanPlan"
-                      r"ILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)EEELi(\d+)E")
+#: A FACTS INSTANTIATION NAMES TWO PLANS (K35 S1b): the READ side's partition and the
+#: WRITE side's, because each side's bitlists are voted from its own factors.  When the
+#: two coincide -- every lex caller, and every arm whose derived carves agree -- the
+#: Itanium mangler SUBSTITUTES the repeat (`S3_`) instead of spelling it again, so both
+#: forms have to be read here or symmetric arms collapse onto one another.
+PLAN_SIX = r"ILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)E"
+PLAN_TPL = re.compile(r"(chunk_facts_tables)I[A-Za-z0-9_]*?8SpanPlan" + PLAN_SIX + r"EE"
+                      r"(?:[A-Za-z0-9_]*?" + PLAN_SIX + r"EE|S\d*_)"
+                      r"Li(\d+)E")
 
 
 def parse_shape(mangled: str) -> dict | None:
@@ -359,16 +366,20 @@ def parse_shape(mangled: str) -> dict | None:
     m = PLAN_TPL.search(mangled)
     if m:
         D, B = int(m.group(2)), int(m.group(3))
-        spans = tuple(int(m.group(4 + i)) for i in range(4))
+        read = tuple(int(m.group(4 + i)) for i in range(4))
+        #: the substitution branch means the write plan IS the read plan.
+        write = tuple(int(m.group(10 + i)) for i in range(4)) if m.group(8) else read
         bc = 1
         for l in range(D):
-            bc *= spans[l]
-        return dict(kernel=m.group(1), D=D, B=B, spans=spans, mask=int(m.group(8)), BC=bc)
+            bc *= read[l]
+        return dict(kernel=m.group(1), D=D, B=B, spans=read + write, spans_r=read,
+                    spans_w=write, mask=int(m.group(14)), BC=bc)
     m = FACTS_TPL.search(mangled)
     if not m:
         return None
     return dict(kernel=m.group(1), D=int(m.group(2)), B=int(m.group(3)),
-                BC=int(m.group(4)) if m.group(4) else None, spans=None, mask=None)
+                BC=int(m.group(4)) if m.group(4) else None, spans=None, spans_r=None,
+                spans_w=None, mask=None)
 
 
 def shard_of_key(mangled: str) -> str:
@@ -540,6 +551,21 @@ def _ninja_cuda_template() -> tuple[str, str, str] | None:
     nvcc, cuda_cflags, cuda_post_cflags = var("nvcc"), var("cuda_cflags"), var("cuda_post_cflags")
     if nvcc is None or cuda_cflags is None or cuda_post_cflags is None:
         return None
+    #: AN ITERATION BUILD'S ARGV MUST NEVER BECOME A MANIFEST (K35 S1b, 2026-08-27).
+    #: Reusing `build.ninja` VERBATIM is a cache-key fidelity win and also a trap: an
+    #: arm-subset build (`ROLA_CARRY_ARMS`) writes its `-D` into those very flags, and a
+    #: later `ratify --write` -- run in a clean environment, with `_is_iteration_build()`
+    #: reading an env var that is no longer set -- inherits the SUBSET and certifies a
+    #: manifest for arms nobody built. It happened: a manifest carrying 3 of the carry
+    #: family's arms was written and reported success, and only the post-build
+    #: instantiation-set gate caught it ("54 new entries not in the manifest"). The env
+    #: cannot answer this question later; the ARGV can, so it is asked here.
+    if "ROLA_CARRY_ARMS" in cuda_cflags or "ROLA_CARRY_ARMS" in cuda_post_cflags:
+        raise SystemExit(
+            "REFUSING to ratify off an ITERATION BUILD's argv: build/temp/build.ninja "
+            "carries -DROLA_CARRY_ARMS, so its objects hold an ARM SUBSET and any "
+            "manifest written from them would certify arms that were never built. Run a "
+            "full build (ROLA_CARRY_ARMS unset) first, then ratify.")
     return nvcc, cuda_cflags, cuda_post_cflags
 
 
@@ -1172,8 +1198,14 @@ def census_report(entries: dict, unhonored: list[str],
         #: claim: csrc/rola/src/instantiations/README.md
         #: the SPANS name a plan; `BC` alone no longer does (two plans of one
         #: depth can share a `BC` and differ in how it is partitioned).
-        span = ("x".join(str(x) for x in shape["spans"][:shape["D"]])
-                if shape["spans"] else str(shape["BC"] or 0))
+        #: `read/write` where the two sides partition differently, the single vector
+        #: where they agree -- the census has to show which carve a row was measured at.
+        if shape["spans"]:
+            span = "x".join(str(x) for x in shape["spans_r"][:shape["D"]])
+            if shape["spans_w"] != shape["spans_r"]:
+                span += "/" + "x".join(str(x) for x in shape["spans_w"][:shape["D"]])
+        else:
+            span = str(shape["BC"] or 0)
         k = (arch, shard_of_key(name.split(":", 1)[1]), shape["kernel"][:5],
              span, f"{shape['D']}x{shape['B']}")
         by_key.setdefault(k, []).append((e, hot.get(name, 0)))

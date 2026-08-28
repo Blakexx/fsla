@@ -124,7 +124,7 @@ move no number, which is the same argument that makes the gate a certificate.
 A side the launch's mode word does not declare sparse is never summarized and
 answers all-ones, so the gate self-deactivates at dense routing rather than
 becoming a second code path. The modes are a LAUNCH ARGUMENT, not a compile-time
-pattern axis: `DENSE_BOTH`, `READ_SPARSE`, `WRITE_SPARSE`, `SHARED_SPARSE` (union
+pattern axis: `DENSE_BOTH`, `READ_SPARSE`, `WRITE_SPARSE`, `BOTH_SPARSE` (union
 routing, which runs on exactly this machinery).
 
 The gate is an exact zero certificate, so it cannot move a number — the battery

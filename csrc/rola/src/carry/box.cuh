@@ -192,51 +192,93 @@ struct BoxPlan {
                 "K1: k, m and B are powers of two");
 };
 
-//: THE STREAM BOX, AS A PER-LEVEL SPAN VECTOR.  A STREAM owns a box and walks its
-//: data into tiles; an EXECUTOR runs streams (the terminology law).  `S_l` is the
-//: count of level `l`'s digits one stream holds, so the box is an AFFINE RECTANGLE
-//: of digits -- a product of per-level ranges -- and contiguity in leaf order is a
-//: property of carving a prefix, never a requirement.  The stream grid is
-//: `prod_l g_l` with `g_l = s_l / S_l`, and a stream's coordinate at a level is a
-//: bit field of its index, MSB-first exactly as the owner grid's is.  A level past
-//: `D` carries `B`, the plan's identity.
-template <int D, int B, int K, int M, int S0, int S1, int S2, int S3>
+//: THE PER-LEVEL MODE DECLARATION (the seam's own encoding): two bits per level, level 0
+//: in the low pair, bit 0 = the READ side is value-sparse there, bit 1 = the WRITE side.
+//: It PRUNES the liveness clause and the order and carve below are derived from it, so it
+//: lives beside the lattice and not at a consumer.
+constexpr uint32_t kSideRead = 1u, kSideWrite = 2u;
+constexpr bool mode_declares(uint32_t modes, int l, uint32_t side) {
+  return ((modes >> (2 * l)) & side) != 0u;
+}
+
+//: THE PRIVATE ORDER, BY MODE (P76, "ORDER BY MODE, THEN CARVE", ruled 2026-08-26):
+//: DENSE innermost, then SPARSE (sparse on this side only), then BOTH_SPARSE (sparse on
+//: both), lattice order inside a class.  It is a function of `(D, MO, SIDE)` ALONE -- no
+//: span is consulted -- which is why the carve is derived from it rather than declared
+//: beside it.  What each class buys: docs/internals/carry/box.md.
+template <int D, uint32_t MO, uint32_t SIDE>
+struct ModeOrder {
+  static constexpr int kDense = 0, kSparse = 1, kBothSparse = 2;
+  static constexpr int group(int l) {
+    return (mode_declares(MO, l, kSideRead) && mode_declares(MO, l, kSideWrite))
+               ? kBothSparse
+               : (mode_declares(MO, l, SIDE) ? kSparse : kDense);
+  }
+  //: the rule as a strict order, and `rank` as the position it induces -- `0` innermost.
+  //: Both are counts, so neither tabulates.
+  static constexpr bool before(int a, int b) {
+    return group(a) != group(b) ? group(a) < group(b) : a > b;
+  }
+  static constexpr int count_before(int l, int i) {
+    return i >= D ? 0 : (before(i, l) ? 1 : 0) + count_before(l, i + 1);
+  }
+  static constexpr int rank(int l) { return count_before(l, 0); }
+  //: the level at OUTER position `p`, which is the order the carve walks.
+  static constexpr int at_rank(int r, int l) {
+    return l >= D ? -1 : (rank(l) == r ? l : at_rank(r, l + 1));
+  }
+  static constexpr int outer(int p) { return at_rank(D - 1 - p, 0); }
+};
+
+//: THE STREAM BOX, DERIVED FROM THE ORDER AND A STREAM COUNT.  A STREAM owns a box and
+//: walks its data into tiles; an EXECUTOR runs streams (the terminology law).  The walk
+//: takes digits from the OUTERMOST level of that order inward, carving each level whole
+//: and then partially, until the stream grid's product IS the count -- so `S_l` is what
+//: one stream keeps of level `l` and the box is an AFFINE RECTANGLE of digits, contiguity
+//: in leaf order being a property of carving a prefix and never a requirement.  The grid
+//: is `prod_l g_l` with `g_l = s_l / S_l`, a stream's coordinate at a level is a bit
+//: field of its index MSB-first as the owner grid's is, and everything is a power of two,
+//: so every use site is a shift and a mask.  A level past `D` carries `B`.
+template <int D, int B, int K, int M, uint32_t MO, uint32_t SIDE, int NS>
 struct StreamSpans {
   using BP = BoxPlan<D, B, K, M>;
-  static constexpr int s(int l) { return l == 0 ? S0 : (l == 1 ? S1 : (l == 2 ? S2 : S3)); }
+  using Ord = ModeOrder<D, MO, SIDE>;
+  //: the walk, as two mutually recursive counts over OUTER POSITIONS: what the count
+  //: still asks for when position `p` is reached, and what that position hands back.
+  static constexpr int g_at(int p);
+  static constexpr int need_at(int p) { return p <= 0 ? NS : need_at(p - 1) / g_at(p - 1); }
+  static constexpr int s(int l) { return l >= D ? B : BP::s(l) / g_at(D - 1 - Ord::rank(l)); }
   static constexpr int g(int l) { return BP::s(l) / s(l); }
   static constexpr bool carves(int l) { return s(l) < BP::s(l); }
   static constexpr int prod_g(int l) { return l >= D ? 1 : g(l) * prod_g(l + 1); }
   static constexpr int prod_s(int l) { return l >= D ? 1 : s(l) * prod_s(l + 1); }
   static constexpr int kStreams = prod_g(0);
   static constexpr int kLeaf = prod_s(0);
-  //: `grp_l = (stream / grid_div(l)) % g_l`, and both are powers of two, so every
-  //: use site is a shift and a mask.
   static constexpr int grid_div(int l) { return prod_g(l + 1); }
 
-  static constexpr bool spans_fit(int l) {
-    return l >= 4
-           || (l >= D ? (s(l) == B && spans_fit(l + 1))
-                      : (s(l) >= 1 && s(l) <= BP::s(l) && BP::s(l) % s(l) == 0
-                         && (s(l) & (s(l) - 1)) == 0 && spans_fit(l + 1)));
-  }
-  static_assert(spans_fit(0),
-                "a stream's span at a level divides the owner's run there and is a power of "
-                "two; a level past D carries the width");
+  static_assert(NS >= 1 && (NS & (NS - 1)) == 0, "a side's stream count is a power of two");
+  static_assert(kStreams == NS,
+                "the stream count must be reachable by carving this side's levels: it "
+                "exceeds the leaves one owner holds");
   static_assert(kLeaf * kStreams == BP::kBC, "the stream grid partitions the owner's box");
 };
 
-//: THE BALLOT ROWS OF A TWO-SIDED CARVE.  The two sides carve the SAME box along
-//: DIFFERENT axes, so both refinements live in ONE table at the FINER of the two
-//: spans per level; a side wanting a coarser grain ORs the rows it already holds,
-//: which is exact because a rectangle of digits holds a live leaf iff every level's
-//: range holds a live digit.  The table stays sigma-shaped -- `sum_l B/s_l` rows,
-//: never a product -- so it does not grow with `N`.
-template <class SW, class SR>
+template <int D, int B, int K, int M, uint32_t MO, uint32_t SIDE, int NS>
+constexpr int StreamSpans<D, B, K, M, MO, SIDE, NS>::g_at(int p) {
+  return BP::s(Ord::outer(p)) < need_at(p) ? BP::s(Ord::outer(p)) : need_at(p);
+}
+
+//: ONE SIDE'S BALLOT ROWS.  A box's schedule is the AND over levels of its runs'
+//: bitlists, per side, per level, per run of THAT SIDE's partition; each side votes from
+//: its own factors, so nothing was gained by holding one partition for both and a
+//: stream's test reads EXACTLY ONE row per tested level (only the owner's whole-run OR
+//: spans several).  A level the side spans WHOLE emits no rows -- its clause is true for
+//: every token.  Sigma-shaped, `sum_l B/S_l`, so it does not grow with `N`.
+template <class SV>
 struct CarveRows {
-  using BP = typename SW::BP;
+  using BP = typename SV::BP;
   static constexpr int kLevels = BP::kLevels, kWidth = BP::kWidth;
-  static constexpr int s(int l) { return SW::s(l) < SR::s(l) ? SW::s(l) : SR::s(l); }
+  static constexpr int s(int l) { return SV::s(l); }
   static constexpr int row_g(int l) { return s(l) < kWidth ? kWidth / s(l) : 0; }
   static constexpr int row_entries(int l) {
     return l == kLevels ? 0 : row_g(l) + row_entries(l + 1);

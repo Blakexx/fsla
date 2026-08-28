@@ -26,7 +26,7 @@ VALUE_WIDTH = 64
 DENSE_BOTH = 0
 READ_SPARSE = 1
 WRITE_SPARSE = 2
-SHARED_SPARSE = 3
+BOTH_SPARSE = 3
 
 
 def intra_reference(pread, pwrite, gwrite, v_bh, levels, window=WINDOW,
@@ -92,7 +92,7 @@ def make_cell(bh, length, levels, modes, k_tok=4, seed=0, device="cuda", cluster
               level_width=LEVEL_WIDTH):
     """Operand planes for one conformance cell, in the kernel's bf16 storage form.
 
-    A level's mode decides which SIDE carries the sparse support; SHARED_SPARSE
+    A level's mode decides which SIDE carries the sparse support; BOTH_SPARSE
     draws ONE support and gives both sides that same support, which is the law's
     union-routing case and must run on the same machinery.
     """
@@ -101,7 +101,7 @@ def make_cell(bh, length, levels, modes, k_tok=4, seed=0, device="cuda", cluster
     for level in range(levels):
         mode = modes[level]
         shape = (bh, length, level_width)
-        if mode == SHARED_SPARSE:
+        if mode == BOTH_SPARSE:
             support = _simplex(shape, k_tok, generator, device, clustered) > 0
             read = torch.rand(shape, dtype=torch.float64, device=device, generator=generator)
             read = read * support
@@ -171,8 +171,8 @@ def slab_skip_rate(pread, pwrite, modes, window=WINDOW, tile=64, slab=16,
             live = plane[:, :, span].to(torch.float32) != 0
             live = live.view(bh, length // tile, tile, slabs, level_width // slabs)
             return live.any(dim=2).any(dim=-1)
-        rows = union(pread, mode in (READ_SPARSE, SHARED_SPARSE))
-        cols = union(pwrite, mode in (WRITE_SPARSE, SHARED_SPARSE))
+        rows = union(pread, mode in (READ_SPARSE, BOTH_SPARSE))
+        cols = union(pwrite, mode in (WRITE_SPARSE, BOTH_SPARSE))
         for start in range(0, length, window):
             w = start // window
             for rt in range(tiles):

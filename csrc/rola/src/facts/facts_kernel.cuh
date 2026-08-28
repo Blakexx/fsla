@@ -97,17 +97,17 @@ struct SpanPlan {
     return l >= D ? 0 : (entries_at(l) > 0 ? 1 : 0) + count_clauses(l + 1);
   }
   static constexpr int clauses = count_clauses(0);
-  //: THE CLAUSE LEVELS ARE A PREFIX, and the two bitmap reductions require it:
-  //: they address the innermost clause row as `prefix_entries(clauses - 1)` and
-  //: carve their grid on `suffix_groups`.  Under the lex policy it holds by
-  //: construction (whole levels are the trailing ones); under a GIVEN-span plan it
-  //: is a clause of the law, checked rather than assumed.
+  //: THE CLAUSE LEVELS ARE A PREFIX -- a property of the TWO BITMAP REDUCTIONS and
+  //: not of the table, so it is asserted where it is used (`atom_bitmap_kernel`,
+  //: `block_bitmap_kernel`): they address the innermost clause row as
+  //: `prefix_entries(clauses - 1)` and carve their grid on `suffix_groups`.  It holds
+  //: by construction under the lex policy, which is the only policy those two are
+  //: instantiated at; a GIVEN-span plan states an arbitrary per-side partition (K35
+  //: S1b: the write carve `[1, 4, 2, 4]` tests levels 0 and 2 and spans 1 and 3 whole)
+  //: and neither reduction is built for it.
   static constexpr bool clauses_prefix(int l) {
     return l >= D || (((entries_at(l) > 0) == (l < clauses)) && clauses_prefix(l + 1));
   }
-  static_assert(clauses_prefix(0),
-                "BLOCK GEOMETRY: the levels carrying table rows must be a PREFIX of "
-                "the levels; a whole level above a tested one has no clause index");
   //: all-INT arithmetic: the suffix products are bounded by the block count,
   //: and int-by-constexpr-pow2 is shifts -- the long form dragged 64-bit ops
   //: into two knife-edge register floors and spilled them.
@@ -222,6 +222,14 @@ enum ChunkMask : int { kPrefillStateless = 1, kPrefillStateful = 2 };
 //: per entry; the vote IS the word, so nothing is packed afterwards and nothing is
 //: zeroed first.
 //:
+//: THE TWO SIDES CARRY THEIR OWN PARTITION (K35 S1b addendum).  A bitlist is per side,
+//: per level, per run of THAT SIDE's partition, voted from that side's own factors, so
+//: the two plans are independent and the table is the read plan's rows followed by the
+//: write plan's -- `[BH, entries_read + entries_write, tok_words]`.  Holding ONE
+//: partition for both (the finer, with the coarser side ORing) achieved nothing and
+//: cost every side a table refined by the other's carve.  The two plans coincide for
+//: every caller that wants one grain, and the layout is then the old `[BH, 2, E, .]`.
+//:
 //: The two grains are one partition refining another -- the atom rectangle is
 //: `kAtomLeaves` leaves and the owner rectangle is `BC` of them -- so the write
 //: side is voted at the ATOM grain and each owner row is the OR of the atom rows
@@ -229,16 +237,23 @@ enum ChunkMask : int { kPrefillStateless = 1, kPrefillStateful = 2 };
 //: Its cost does not depend on `BC`: a lane reads its token's amplitude row once
 //: per level that has entries, whatever the spans partition it into.
 //: docs/internals/facts/facts_kernel.md#the-facts-pass
-template <class PLAN, int MASK>
+template <class PLAN_R, class PLAN_W, int MASK>
 __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
                                    const __nv_bfloat16* __restrict__ pwrite,
                                    uint32_t* __restrict__ tbl, uint32_t* __restrict__ atom_tbl,
                                    int L) {
-  using LP = PLAN;
+  using LPR = PLAN_R;
+  using LPW = PLAN_W;
+  static_assert(LPR::depth == LPW::depth && LPR::kWidth == LPW::kWidth,
+                "the two sides partition the SAME topology; only their runs differ");
+  using LP = PLAN_W;
   constexpr int D = LP::depth;
   constexpr int B = LP::kWidth;
   using AP = LevelPlan<D, B, kAtomLeaves>;
   constexpr int kWtot = LP::col_base(LP::depth);
+  //: the side's row block base, in ENTRIES: the read plan's rows and then the write
+  //: plan's, one `bh` after another.
+  constexpr long kSideEntries = (long)LPR::entries + (long)LPW::entries;
   static_assert(kWtot == AP::col_base(AP::depth),
                 "both grains read the SAME amplitude row: the packed column layout is "
                 "the widths policy's and carries no block geometry");
@@ -314,11 +329,11 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
   }
 
   {
-    uint32_t* out = tbl + ((long)(2 * blockIdx.y + 0) * LP::entries) * entryStride + w;
-    ROLA_FACTS_LEVEL(LP, ampRead, out, 0)
-    ROLA_FACTS_LEVEL(LP, ampRead, out, 1)
-    ROLA_FACTS_LEVEL(LP, ampRead, out, 2)
-    ROLA_FACTS_LEVEL(LP, ampRead, out, 3)
+    uint32_t* out = tbl + ((long)blockIdx.y * kSideEntries) * entryStride + w;
+    ROLA_FACTS_LEVEL(LPR, ampRead, out, 0)
+    ROLA_FACTS_LEVEL(LPR, ampRead, out, 1)
+    ROLA_FACTS_LEVEL(LPR, ampRead, out, 2)
+    ROLA_FACTS_LEVEL(LPR, ampRead, out, 3)
   }
 
   //: THE ATOM ROWS ARE THE WRITE SIDE'S: which atoms this routing writes is what
@@ -329,7 +344,8 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
   //: finer rows.
   if constexpr (MASK == kPrefillStateful) {
     if (atom_tbl != nullptr) {
-      uint32_t* out = tbl + ((long)(2 * blockIdx.y + 1) * LP::entries) * entryStride + w;
+      uint32_t* out =
+          tbl + ((long)blockIdx.y * kSideEntries + (long)LPR::entries) * entryStride + w;
       uint32_t* aout = atom_tbl + ((long)blockIdx.y * AP::entries) * entryStride + w;
       ROLA_FACTS_LEVEL_BOTH(0)
       ROLA_FACTS_LEVEL_BOTH(1)
@@ -339,11 +355,11 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
     }
   }
   {
-    uint32_t* out = tbl + ((long)(2 * blockIdx.y + 1) * LP::entries) * entryStride + w;
-    ROLA_FACTS_LEVEL(LP, ampWrite, out, 0)
-    ROLA_FACTS_LEVEL(LP, ampWrite, out, 1)
-    ROLA_FACTS_LEVEL(LP, ampWrite, out, 2)
-    ROLA_FACTS_LEVEL(LP, ampWrite, out, 3)
+    uint32_t* out = tbl + ((long)blockIdx.y * kSideEntries + (long)LPR::entries) * entryStride + w;
+    ROLA_FACTS_LEVEL(LPW, ampWrite, out, 0)
+    ROLA_FACTS_LEVEL(LPW, ampWrite, out, 1)
+    ROLA_FACTS_LEVEL(LPW, ampWrite, out, 2)
+    ROLA_FACTS_LEVEL(LPW, ampWrite, out, 3)
   }
 #undef ROLA_FACTS_LEVEL_BOTH
 #undef ROLA_FACTS_LEVEL
@@ -375,6 +391,9 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
   static_assert(LP::base_aligned(0),
                 "BLOCK GEOMETRY: a block's first leaf is not BC-aligned, so its leaves "
                 "are not one aligned run and the state's atom addressing does not hold");
+  static_assert(LP::clauses_prefix(0),
+                "BLOCK GEOMETRY: this reduction addresses the innermost clause row as a "
+                "prefix count, so the levels carrying rows must be a PREFIX of the levels");
   constexpr int kClauses = LP::clauses;
   constexpr int kAtoms = (int)LP::blocks;
   //: the innermost clause level's group count: the atoms of one prefix, and by
@@ -496,6 +515,9 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   static_assert(LP::base_aligned(0),
                 "BLOCK GEOMETRY: a block's first leaf is not BC-aligned, so its leaves "
                 "are not one aligned run and the state's atom addressing does not hold");
+  static_assert(LP::clauses_prefix(0),
+                "BLOCK GEOMETRY: this reduction addresses the innermost clause row as a "
+                "prefix count, so the levels carrying rows must be a PREFIX of the levels");
   constexpr int kClauses = LP::clauses;
   constexpr int kBlocks = (int)LP::blocks;
   constexpr int kInner = kClauses > 0 ? LP::groups_at(kClauses - 1) : 1;

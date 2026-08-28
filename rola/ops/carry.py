@@ -144,14 +144,17 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
 
 
 def owner_rows(read_levels, write_levels, widths, *, k: int, m: int, carve: bool = False):
-    """The BALLOT ROWS the liveness pass consumes: ``[BH, 2, entries, L/32]``.
+    """The BALLOT ROWS the liveness pass consumes: ``[BH, entries_read + entries_write, L/32]``.
 
-    Row ``(side, prefix_entries(l) + o_l)`` bit ``t`` answers "token ``t``'s
+    Row ``prefix_entries(l) + o_l`` of a side's block, bit ``t``, answers "token ``t``'s
     level-``l`` support on this side intersects the group ``o_l``'s digit run" -- one
     word per 32 tokens. ``entries = sum_l B/s_l`` is SIGMA-shaped: the table does not
-    grow with ``N``. ``carve`` asks for the grain the KERNEL consumes, which splits
-    the innermost level's owner run into the four warps' groups; the owner-grain word
-    is then the OR of a group's four rows.
+    grow with ``N``. THE TWO SIDES CARRY THEIR OWN PARTITION (K35 S1b): a bitlist is
+    voted from one side's own factors, so the read block is at the read carve's runs and
+    the write block at the write carve's, and a level a side spans whole emits no rows.
+    This diagnostic asks for ONE grain on both sides, so its two blocks coincide:
+    ``carve`` picks the split of the innermost level's owner run into four groups, whose
+    owner-grain word is then the OR of a group's four rows.
     """
     return extension().carry_owner_rows(pack_side(read_levels), pack_side(write_levels),
                                         list(widths), int(k), int(m), bool(carve))
@@ -165,6 +168,16 @@ def build_stamp(widths, k, m, window, chunk, carve, level_modes=0, d_v=D_V):
     the read-carve level, the WRITE STREAM count and the arm's ``d_v`` -- so the
     THREE dials (executors ``stamp[7] // 32``, streams ``stamp[14]``, width
     ``stamp[15]``) are all readable off the device.
+
+    Fields 16..25 are THE DERIVATION READ BACK (K35 S1b): the four write spans
+    ``stamp[16:20]``, the four read spans ``stamp[20:24]``, the exchange's TRANSIT in
+    bytes ``stamp[24]``, and the exchange's STATE ``stamp[25]`` -- ``0`` elided, ``1``
+    full, ``2`` full only because case (c)'s register reorder is not built (so the row
+    OVERPAYS and can be tabled), ``-1`` an arm with no exchange at all.  The spans are no longer declared -- they are what the
+    order-by-mode rule cut out of ``(level_modes, stream count)`` -- so reading them off
+    the device is the only way to see what an arm actually holds.  The transit is ZERO on
+    an arm whose two carves came out identical: the permutation is then the identity and
+    the exchange is elided at compile time.
     """
     return extension().carry_build_stamp(list(widths), int(k), int(m), int(window),
                                          int(chunk), int(carve), int(level_modes), int(d_v))

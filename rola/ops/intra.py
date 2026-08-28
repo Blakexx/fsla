@@ -16,10 +16,17 @@ import torch
 
 from rola.ops._ext import extension
 
+#: THE PER-LEVEL MODE, two bits per level: bit 0 the READ side is value-sparse there,
+#: bit 1 the WRITE side.  ``BOTH_SPARSE`` says BOTH SIDES ARE SPARSE AT THAT LEVEL AND
+#: NOTHING MORE (P76 clarification, 2026-08-26): each side votes its own bitlists from
+#: its own factors, so the two supports never have to coincide.  Drawing ONE support for
+#: both is a modeling choice with a locality bonus, never a kernel requirement.  The
+#: class is what the carry's order-by-mode rule puts OUTERMOST, because it is where the
+#: two sides' carves agree and the exchange therefore does not move a leaf.
 DENSE_BOTH = 0
 READ_SPARSE = 1
 WRITE_SPARSE = 2
-SHARED_SPARSE = 3
+BOTH_SPARSE = 3
 
 #: the built windows -- the carry family's `W` arms, mirrored (integration rung
 #: I1(b)).  ``WINDOW`` names the flagship because the architecture doc's two
@@ -41,7 +48,7 @@ def pack_modes(modes: tuple[int, ...]) -> int:
     """Two bits per level, level 0 in the low pair."""
     packed = 0
     for level, mode in enumerate(modes):
-        if mode not in (DENSE_BOTH, READ_SPARSE, WRITE_SPARSE, SHARED_SPARSE):
+        if mode not in (DENSE_BOTH, READ_SPARSE, WRITE_SPARSE, BOTH_SPARSE):
             raise ValueError(f"level {level}: unknown support mode {mode!r}")
         packed |= mode << (2 * level)
     return packed
@@ -128,9 +135,9 @@ def build_stamp() -> int:
 
 
 __all__ = [
+    "BOTH_SPARSE",
     "DENSE_BOTH",
     "READ_SPARSE",
-    "SHARED_SPARSE",
     "WINDOW",
     "WINDOW_SMALL",
     "WINDOW_WIDE",

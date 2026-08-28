@@ -126,45 +126,89 @@ remove. The fix if it ever matters is a wider level, not a different `(k, m)`.
 total. The decode walk enumerates `(owner, r_0 .. r_{kUnitBase-1})`, and the unit is one
 atom wherever the rectangle is one level and several atoms where it is not.
 
-## The stream box: a per-level SPAN VECTOR
+## The stream box: ORDER BY MODE, THEN CARVE
 
-`BoxPlan` names the OWNER's box. `StreamSpans<D, B, K, M, S_0..S_3>` names one STREAM's
-box inside it — the digits of level `l` one stream holds, `S_l | s_l`, powers of two,
-with a level past `D` carrying `B` (the plan's identity). A stream box is an AFFINE
-RECTANGLE of digits: contiguity in leaf order is a property of carving a prefix, never a
-requirement, so `[1, 4, 2, 4]` over `[4, 4, 4, 4]` is admissible and gives eight streams
-of 32 leaves. The stream grid is `g_l = s_l / S_l` per level and `prod_l g_l` streams,
-and a stream's coordinate at a level is a bit field of its index, MSB-first exactly as the
-owner grid's — so every use site is a shift and a mask and nothing tabulates.
+`BoxPlan` names the OWNER's box. One STREAM's box inside it is a per-level span vector
+`S_l | s_l` — the digits of level `l` one stream holds — with a level past `D` carrying
+`B` (the plan's identity). A stream box is an AFFINE RECTANGLE of digits: contiguity in
+leaf order is a property of carving a prefix, never a requirement, so `[1, 4, 2, 4]` over
+`[4, 4, 4, 4]` is admissible and gives eight streams of 32 leaves. The stream grid is
+`g_l = s_l / S_l` per level and `Π_l g_l` streams, and a stream's coordinate at a level is
+a bit field of its index, MSB-first exactly as the owner grid's — so every use site is a
+shift and a mask and nothing tabulates.
 
-`CarveRows<SW, SR>` is the BALLOT TABLE of a two-sided carve: the owner's rows refined,
-per level, at the FINER of the two sides' spans. A side wanting a coarser range ORs the
-rows it already holds, which is exact because a rectangle of digits holds a live leaf iff
-every level's range holds a live digit. The table is sigma-shaped — `sum_l B/s_l` — so it
-does not grow with `N`.
+**THE VECTOR IS NOT DECLARED. It is derived from the MODES and a STREAM COUNT** (P76,
+ruled 2026-08-26; K35 S1b). `ModeOrder<D, MO, SIDE>` classes each level from the
+declaration alone:
 
-The EXECUTOR MAP is a second, independent declaration over the same vectors (`WPS`, the
-warps per write stream): the write spans set the ownership grain, the read spans are
-declared at one stream per WARP, and `warps = write streams x WPS = read streams`.
+| class | meaning on this side | position |
+|---|---|---|
+| `DENSE` | not sparse on this side | innermost |
+| `SPARSE` | sparse on this side only | middle |
+| `BOTH_SPARSE` | sparse on BOTH sides | outermost |
 
-| topology | `k` | `m` | `s_l` | write spans | read spans | W str | WPS | warps | table spans |
+with lattice order inside a class and nothing pinned. Dense innermost makes an eight-slot
+n-tile full along the dense digits; sparse next lets those levels index WHOLE tiles, where
+the digit skip is exact; BOTH_SPARSE outermost is where the two sides' carves AGREE, so
+the exchange is block-diagonal on those digits and vanishes when they agree everywhere.
+`BOTH_SPARSE` says both sides are sparse there and NOTHING MORE — each side votes its own
+bitlists from its own factors and the two supports never have to coincide.
+
+`StreamSpans<D, B, K, M, MO, SIDE, NS>` then walks that order from the OUTERMOST level
+inward, carving each level whole (`S_l = 1`) and then partially (halving) until the stream
+grid's product is `NS`; a `static_assert` refuses a count the box cannot reach. The write
+side's count is `kStreams`, the read side's is `kWarps` — one reader per warp — and the
+EXECUTOR MAP is the second, independent declaration over the same counts (`WPS`, the warps
+per write stream): `warps = write streams x WPS = read streams`.
+
+`CarveRows<SV>` is ONE SIDE's ballot table, at THAT SIDE's own partition (K35 S1b
+addendum). A bitlist is per side, per level, per run of that side's partition, voted from
+that side's own factors, so nothing is gained by holding the finer of the two partitions
+for both — the coupling only refined each side's table by the other's carve. A level a
+side spans whole emits no rows: its clause is true for every token and drops out of the
+conjunction on its own. A stream's own test therefore reads EXACTLY ONE row per tested
+level, and only the OWNER's whole-run OR spans several (`g_l` of them). The table stays
+sigma-shaped — `Σ_l B/S_l` — so it does not grow with `N`.
+
+Neither side's tested levels need be a PREFIX of the levels: the write carve `[1,4,2,4]`
+tests levels 0 and 2 and spans 1 and 3 whole. The prefix law is a property of the two
+BITMAP REDUCTIONS (`atom_bitmap_kernel`, `block_bitmap_kernel`), which are instantiated at
+the lex policy only, and it is asserted there rather than on the table.
+
+THE BUILT ARMS' DERIVED VECTORS. `MO` is the per-level declaration (`ALT` at depth `D` is
+write-sparse on the even levels and read-sparse on the odd, i.e. 6 / 38 / 102 at
+`D = 2/3/4`); `3` is BOTH-SPARSE at level zero and dense at level one.
+
+| topology | `k` | `m` | `s_l` | `MO` | W str | R str | WPS | write spans | read spans |
 |---|---|---|---|---|---|---|---|---|---|
-| `(256,256)` | 4 | 8 | (8,16) | (2,16) | (8,4) | 4 | 1 | 4 | (2,4) |
-| `(64,64)` | 4 | 8 | (8,16) | (2,16) | (8,4) | 4 | 1 | 4 | (2,4) |
-| `(8,8,8,8)` | 2 | 8 | (2,2,4,8) | (2,2,1,8) | (2,2,4,2) | 4 | 1 | 4 | (2,2,1,2) |
-| `(4,4,4,4)` | 4 | 1 | (4,4,4,4) | (1,4,2,4) | (4,1,4,2) | 8 | 1 | 8 | (1,1,2,2) |
-| `(256,256)` | 4 | 8 | (8,16) | (2,16) | (8,2) | 4 | 2 | 8 | (2,2) |
-| `(256,256)` | 4 | 8 | (8,16) | (1,16) | (8,2) | 8 | 1 | 8 | (1,2) |
+| `(256,256)` | 4 | 8 | (8,16) | 0 | 1 | 1 | 1 | (8,16) | (8,16) |
+| `(256,256)` | 4 | 8 | (8,16) | 6 | 4 | 4 | 1 | (2,16) | (8,4) |
+| `(64,64)` | 4 | 8 | (8,16) | 6 | 4 | 4 | 1 | (2,16) | (8,4) |
+| `(16,16,16)` | 2 | 16 | (2,4,16) | 38 | 1 | 1 | 1 | (2,4,16) | (2,4,16) |
+| `(8,8,8,8)` | 2 | 8 | (2,2,4,8) | 102 | 4 | 4 | 1 | (1,2,2,8) | (2,1,4,4) |
+| `(4,4,4,4)` | 4 | 1 | (4,4,4,4) | 102 | 8 | 8 | 1 | (1,4,2,4) | (4,1,4,2) |
+| `(256,256)` | 4 | 8 | (8,16) | 6 | 4 | 8 | 2 | (2,16) | (8,2) |
+| `(256,256)` | 4 | 8 | (8,16) | 6 | 8 | 8 | 1 | (1,16) | (8,2) |
+| `(256,256)` | 4 | 4 | (4,16) | 6 | 4 | 4 | 1 | (1,16) | (4,4) |
+| `(256,256)` | 4 | 8 | (8,16) | 3 | 4 | 4 | 1 | (2,16) | (2,16) |
 
-The last two rows are the 1x8 CONTAINER arms (K35 S3a): the SAME flagship box reached
-with eight executors by the two available routes — four write streams column-split two
-ways, and eight write streams one warp each — so the container question the card leaves
-to measurement has both of its answers built. The `(4,4,4,4)` row is the MULTI-LEVEL
-carve: each side carves TWO levels, and it is the only box among the built arms whose
-owner is the whole topology (`g_l = 1`, one owner). `k = 4,
-m = 1` is the only `(k, m)` reaching `s = (4, 4, 4, 4)`: the capacity convention's atom
-FLOOR pushes `m` innermost, so any `m > 1` at `D = 4` unbalances the vector, and at
-`B = 8` the ceiling `K6` then refuses `k = 4, m = 1` outright.
+The two 1x8 rows are the CONTAINER arms (K35 S3a): the SAME flagship box reached with
+eight executors by the two available routes — four write streams column-split two ways,
+and eight write streams one warp each — so the container question the card leaves to
+measurement has both of its answers built. The `(4,4,4,4)` row is the MULTI-LEVEL carve:
+each side carves TWO levels, and it is the only box among the built arms whose owner is
+the whole topology (`g_l = 1`, one owner). `k = 4, m = 1` is the only `(k, m)` reaching
+`s = (4, 4, 4, 4)`: the capacity convention's atom FLOOR pushes `m` innermost, so any
+`m > 1` at `D = 4` unbalances the vector, and at `B = 8` the ceiling `K6` then refuses
+`k = 4, m = 1` outright.
+
+THE LAST ROW IS THE TIED ARM. Every level is BOTH_SPARSE or dense on both sides, so the
+two orders coincide; at equal stream counts the derivation then hands the two sides the
+SAME vector, the exchange's permutation `leaf -> (reader, slot)` is the IDENTITY, and the
+publish and the pull are elided at compile time — `hi` never leaves the register file and
+the transit owns no shared memory at all (`CarryGeom::kTied`, P76 "THE EXCHANGE MOVES ONLY
+THE DISORDER"). `tests/k31/test_segment_layout.py` computes the exchange volume from the
+two derived vectors at every arm and asserts the kernel's transit is exactly that.
 
 ## The staged factor row (K35 S2)
 

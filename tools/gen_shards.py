@@ -105,47 +105,53 @@ FACTS_ARMS: tuple = (
     (32, 128, 2, 256),
 )
 
-#: THE GIVEN-SPAN FACTS ARMS -- the box lattice's owner rows (K31-i-d).  A row is
-#: `(D, B, s_0, s_1, s_2, s_3)`: the owner's per-level SPAN, given rather than
-#: derived, with a level past `D` carrying `B` (the identity).  These are the
-#: `rola::carry` family's ballot rows, so the list mirrors the carry's built arms
-#: -- `tests/unit/test_shard_partition.py` is where the two are held together.
+#: THE GIVEN-SPAN FACTS ARMS -- the box lattice's ballot rows (K31-i-d), AT ONE
+#: PARTITION PER SIDE (K35 S1b).  A row is `(D, B, r_0..r_3, w_0..w_3)`: the READ
+#: side's per-level run and then the WRITE side's, given rather than derived, with a
+#: level past `D` carrying `B` (the identity) and a level a side spans whole emitting
+#: no rows.  A bitlist is voted from ONE side's factors, so the two sides' tables are
+#: independent and holding the finer partition for both bought nothing.  These are the
+#: `rola::carry` family's rows, so the list mirrors the carry's built arms -- the two
+#: vectors are what the ORDER-BY-MODE rule derives from that arm's `(MO, streams)`, and
+#: `tests/unit/test_shard_partition.py` is where the two lists are held together.
 SPAN_FACTS_ARMS: tuple = (
-    (2, 256, 8, 16, 256, 256),
-    (2, 64, 8, 16, 64, 64),
-    (3, 16, 2, 4, 16, 16),
-    (4, 8, 2, 2, 4, 8),
-    # the CARVE grain: the innermost level's owner run split over four streams,
-    # which is the row set the seam's `owner_rows(carve=True)` diagnostic names.
-    # An owner-grain word is the OR of a group's four rows.
-    (2, 256, 8, 4, 256, 256),
-    (2, 64, 8, 4, 64, 64),
-    (3, 16, 2, 4, 4, 16),
-    (4, 8, 2, 2, 4, 2),
-    # the TWO-SIDED CARVE grain (K35, `CarveRows`): the SAME table refined at every
-    # level EITHER side carves -- the per-level MINIMUM of the two sides' spans -- so
-    # each stream reads its own range's rows on either side and a side wanting a
-    # coarser range ORs the rows it already holds.
-    (2, 256, 2, 4, 256, 256),
-    (2, 64, 2, 4, 64, 64),
-    (4, 8, 2, 2, 1, 2),
-    # the MULTI-LEVEL carve (K35 S1): D = 4 at B = 4, write spans [1, 4, 2, 4] and
-    # read spans [4, 1, 4, 2] over the owner box [4, 4, 4, 4] -- eight streams of 32
-    # leaves on both sides, each side carving TWO levels, so the table is the
-    # per-level minimum.
-    (4, 4, 1, 1, 2, 2),
-    # the 1x8 CONTAINER arms (K35 S3a): the flagship box `[8, 16]` reached with eight
-    # executors two ways -- four write streams column-split (`SW = [2,16]`) and eight
-    # write streams (`SW = [1,16]`), both against a read carve of eight streams
-    # (`SR = [8,2]`), so the table's per-level minimum is [2,2] and [1,2].
-    (2, 256, 2, 2, 256, 256),
-    (2, 256, 1, 2, 256, 256),
-    # the 2x4 CONTAINER at `d_v = 128` (K35 S3b): the flagship topology's box HALVED to
-    # `[4, 16]` (`k = 4, m = 4`, BC = 64) and cut into four write streams of sixteen
-    # leaves (`SW = [1,16]`) against a read carve of four (`SR = [4,4]`), so the
-    # per-level minimum is [1, 4].  The two 1x8 arms at that width reuse the rows above:
-    # the value width is not a property of the ballot table.
-    (2, 256, 1, 4, 256, 256),
+    # the UNCARVED arms: both sides span the owner's box, so both tables are the
+    # owner's own rows (rows 0, 2, 4, 6, 7, 8).
+    (2, 256, 8, 16, 256, 256, 8, 16, 256, 256),
+    (2, 64, 8, 16, 64, 64, 8, 16, 64, 64),
+    (3, 16, 2, 4, 16, 16, 2, 4, 16, 16),
+    (4, 8, 2, 2, 4, 8, 2, 2, 4, 8),
+    # the SEAM's `owner_rows(carve=True)` diagnostic grain: the innermost level's owner
+    # run split over four streams, the same vector on both sides.
+    (2, 256, 8, 4, 256, 256, 8, 4, 256, 256),
+    (2, 64, 8, 4, 64, 64, 8, 4, 64, 64),
+    (3, 16, 2, 4, 4, 16, 2, 4, 4, 16),
+    (4, 8, 2, 2, 4, 2, 2, 2, 4, 2),
+    # the FLAGSHIP ALT carve at four streams a side (rows 1, 3, 5, 19): read `[8, 4]`
+    # against write `[2, 16]` -- the read side carves the DENSE-innermost order's outer
+    # level and the write side its own.
+    (2, 256, 8, 4, 256, 256, 2, 16, 256, 256),
+    (2, 64, 8, 4, 64, 64, 2, 16, 64, 64),
+    # the DEEP-4 ALT carve (row 9), derived: write `[1, 2, 2, 8]` takes the two levels
+    # it is sparse on from the outside in, read `[2, 1, 4, 4]` likewise.
+    (4, 8, 2, 1, 4, 4, 1, 2, 2, 8),
+    # the MULTI-LEVEL carve (row 10): D = 4 at B = 4 over the owner box `[4,4,4,4]`,
+    # eight streams of 32 leaves a side, each side carving TWO levels.  Neither side's
+    # tested levels are a PREFIX here, which is exactly why the prefix law belongs to
+    # the two bitmap reductions and not to the table (facts_kernel.cuh).
+    (4, 4, 4, 1, 4, 2, 1, 4, 2, 4),
+    # the 1x8 CONTAINER arms (rows 11-14, 16, 17): the flagship box `[8, 16]` reached
+    # with eight executors two ways -- four write streams column-split (`[2, 16]`) and
+    # eight write streams (`[1, 16]`), both against a read carve of eight (`[8, 2]`).
+    (2, 256, 8, 2, 256, 256, 2, 16, 256, 256),
+    (2, 256, 8, 2, 256, 256, 1, 16, 256, 256),
+    # the 2x4 CONTAINER at `d_v = 128` (rows 15, 18): the flagship topology's box HALVED
+    # to `[4, 16]` (`k = 4, m = 4`) and cut four ways, read `[4, 4]` against write
+    # `[1, 16]`.
+    (2, 256, 4, 4, 256, 256, 1, 16, 256, 256),
+    # the TIED arm (row 20): BOTH-SPARSE at level zero, dense at level one, equal stream
+    # counts -- so the two derived vectors are IDENTICAL and so are the two tables.
+    (2, 256, 2, 16, 256, 256, 2, 16, 256, 256),
 )
 
 #: the span arms are STATELESS only: residency is the paging layer's question and
@@ -206,22 +212,9 @@ def facts_atom_arms() -> tuple:
     return tuple(sorted({(a[2], a[3]) for a in FACTS_ARMS}))
 
 
-def facts_plans() -> tuple:
-    """Every PLAN the union-table pass is instantiated on, as `(D, B, s_0..s_3)`.
-
-    The kernel is templated on the PLAN TYPE, so its mangled name -- the
-    manifest's key -- carries the spans and not the `BC` a lex arm was named by.
-    The lex arms project onto their spans here; the given-span arms are already
-    spans. Two lex arms that happen to share a plan (a `BC` repeated across chunk
-    lengths cannot, but a topology could) resolve to ONE instantiation.
-    """
-    lex = {(d, b) + lex_spans(d, b, bc) for (d, b, bc) in facts_tables()}
-    return tuple(sorted(lex | set(SPAN_FACTS_ARMS)))
-
-
 def chunk_rows() -> tuple:
     """Every built facts instantiation, as canonical-hashable tuples."""
-    rows = [("FACTS",) + plan + (m,) for plan in sorted(
+    rows = [("FACTS",) + plan + plan[2:] + (m,) for plan in sorted(
         {(d, b) + lex_spans(d, b, bc) for (d, b, bc) in facts_tables()}) for m in FACTS_MASKS]
     rows += [("FACTS",) + plan + (m,) for plan in SPAN_FACTS_ARMS for m in SPAN_FACTS_MASKS]
     rows += [("BLOCK", d, b, bc) for (d, b, bc) in facts_tables()]
@@ -290,10 +283,10 @@ def facts_shard_source(name: str, rows: list) -> str:
                         "    int, int, cudaStream_t);\n")
     body.append("\n//: the GIVEN-SPAN arms -- the box lattice's owner ballot rows,\n"
                 "//: consumed by the rola::carry family (K31-i-d).\n")
-    for (d, b, s0, s1, s2, s3) in SPAN_FACTS_ARMS:
+    for (d, b, r0, r1, r2, r3, w0, w1, w2, w3) in SPAN_FACTS_ARMS:
         for mask in SPAN_FACTS_MASKS:
-            body.append(f"template cudaError_t launch_span_facts_arm<{d}, {b}, {s0}, {s1}, "
-                        f"{s2}, {s3}, {mask}>(\n"
+            body.append(f"template cudaError_t launch_span_facts_arm<{d}, {b}, {r0}, {r1}, "
+                        f"{r2}, {r3}, {w0}, {w1}, {w2}, {w3}, {mask}>(\n"
                         "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, int, int,\n"
                         "    cudaStream_t);\n")
     body.append("\n//: the LIVENESS EPILOGUE's arms -- the same (D, B, BC) key as the\n"

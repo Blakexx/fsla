@@ -6,7 +6,7 @@
 The reference is `tests/k31/intra_reference.py`, itself gated against the oracle
 by `test_intra_reference.py`. The cells walk the per-level support law: dense on
 both sides, ALT (one entmax side and one softmax side, alternating across
-levels), and the union-routing SHARED_SPARSE case, which must pass on the same
+levels), and the union-routing BOTH_SPARSE case, which must pass on the same
 machinery with no second code path.
 """
 
@@ -25,9 +25,9 @@ from rola.ops.intra import (
     support_words,
 )
 from tests.k31.intra_reference import (
+    BOTH_SPARSE,
     DENSE_BOTH,
     READ_SPARSE,
-    SHARED_SPARSE,
     WINDOW,
     WRITE_SPARSE,
     as_token_major,
@@ -51,11 +51,11 @@ CELLS = [
     ("alt-k16", (WRITE_SPARSE, READ_SPARSE), 16, 8 * WINDOW, False, WINDOW),
     ("alt-k4-cohort-1", (WRITE_SPARSE, READ_SPARSE), 4, 8 * WINDOW, True, WINDOW),
     ("alt-k4-cohort-64", (WRITE_SPARSE, READ_SPARSE), 4, 8 * WINDOW, 64, WINDOW),
-    ("shared-k16", (SHARED_SPARSE, SHARED_SPARSE), 16, 2 * WINDOW, False, WINDOW),
-    ("shared-k4-cohort-64", (SHARED_SPARSE, SHARED_SPARSE), 4, 2 * WINDOW, 64, WINDOW),
+    ("shared-k16", (BOTH_SPARSE, BOTH_SPARSE), 16, 2 * WINDOW, False, WINDOW),
+    ("shared-k4-cohort-64", (BOTH_SPARSE, BOTH_SPARSE), 4, 2 * WINDOW, 64, WINDOW),
     ("dense-W512", (DENSE_BOTH, DENSE_BOTH), None, 4 * WINDOW_WIDE, False, WINDOW_WIDE),
     ("alt-k4-W512", (WRITE_SPARSE, READ_SPARSE), 4, 4 * WINDOW_WIDE, False, WINDOW_WIDE),
-    ("shared-k16-W512", (SHARED_SPARSE, SHARED_SPARSE), 16, 2 * WINDOW_WIDE, False,
+    ("shared-k16-W512", (BOTH_SPARSE, BOTH_SPARSE), 16, 2 * WINDOW_WIDE, False,
      WINDOW_WIDE),
     ("dense-W64", (DENSE_BOTH, DENSE_BOTH), None, 16 * WINDOW_SMALL, False, WINDOW_SMALL),
     ("alt-k4-W64", (WRITE_SPARSE, READ_SPARSE), 4, 16 * WINDOW_SMALL, False, WINDOW_SMALL),
@@ -89,13 +89,13 @@ DEEP_CELLS = [
     ("d3-alt-k4", 3, LEVEL_WIDTH_DEEP3, (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE), 4, False),
     ("d3-alt-k8-cohort-64", 3, LEVEL_WIDTH_DEEP3,
      (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE), 8, 64),
-    ("d3-shared-k4", 3, LEVEL_WIDTH_DEEP3, (SHARED_SPARSE,) * 3, 4, False),
+    ("d3-shared-k4", 3, LEVEL_WIDTH_DEEP3, (BOTH_SPARSE,) * 3, 4, False),
     ("d4-dense", 4, LEVEL_WIDTH_DEEP4, (DENSE_BOTH,) * 4, None, False),
     ("d4-alt-k2", 4, LEVEL_WIDTH_DEEP4,
      (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE, READ_SPARSE), 2, False),
     ("d4-alt-k4", 4, LEVEL_WIDTH_DEEP4,
      (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE, READ_SPARSE), 4, False),
-    ("d4-shared-k2", 4, LEVEL_WIDTH_DEEP4, (SHARED_SPARSE,) * 4, 2, False),
+    ("d4-shared-k2", 4, LEVEL_WIDTH_DEEP4, (BOTH_SPARSE,) * 4, 2, False),
 ]
 
 

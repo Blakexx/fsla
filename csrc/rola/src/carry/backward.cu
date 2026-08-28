@@ -25,7 +25,7 @@
 #include "facts/facts_kernel.cuh"
 
 namespace rola::chunk {
-template <int D, int B, int S0, int S1, int S2, int S3, int MASK>
+template <int D, int B, int R0, int R1, int R2, int R3, int W0, int W1, int W2, int W3, int MASK>
 cudaError_t launch_span_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
                                   int BH, int L, cudaStream_t stream);
 }  // namespace rola::chunk
@@ -109,8 +109,9 @@ static torch::Tensor bwd_owner_rows(const torch::Tensor& pr, const torch::Tensor
   auto tbl = torch::empty({BH, 2, (long)RP::entries, rola::chunk::tok_words(L)},
                           pr.options().dtype(torch::kInt32));
   C10_CUDA_CHECK(
-      (rola::chunk::launch_span_facts_arm<D, B, RP::span_at(0), RP::span_at(1), RP::span_at(2),
-                                          RP::span_at(3), rola::chunk::kPrefillStateless>(
+      (rola::chunk::launch_span_facts_arm<
+          D, B, RP::span_at(0), RP::span_at(1), RP::span_at(2), RP::span_at(3), RP::span_at(0),
+          RP::span_at(1), RP::span_at(2), RP::span_at(3), rola::chunk::kPrefillStateless>(
           (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),
           reinterpret_cast<uint32_t*>(tbl.data_ptr()), BH, L, at::cuda::getCurrentCUDAStream())));
   return tbl;

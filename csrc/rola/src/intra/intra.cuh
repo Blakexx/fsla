@@ -11,7 +11,8 @@ namespace intra {
 
 //: Per-level sparse-side declaration, two bits per level, level 0 in the low
 //: pair.  Bit 0: the READ side's rows are value-sparse.  Bit 1: the WRITE
-//: side's.  Neither bit set is DENSE_BOTH; both set is SHARED_SPARSE.  The
+//: side's.  Neither bit set is DENSE_BOTH; both set is BOTH_SPARSE, which says both
+//: sides are sparse there and nothing more -- each votes its own support.  The
 //: kernel is pattern-generic: the slab mask machinery reads all-ones for an
 //: undeclared side and therefore never gates.
 constexpr uint32_t kModeReadSparse = 1u;

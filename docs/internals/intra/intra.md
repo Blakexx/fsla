@@ -8,7 +8,7 @@ device build stamp.
 
 Two bits per level, level 0 in the low pair: bit 0 says the READ side's rows are
 value-sparse, bit 1 the WRITE side's. Neither bit is `DENSE_BOTH`, both is
-`SHARED_SPARSE`. The kernel is pattern-generic — the slab mask machinery answers
+`BOTH_SPARSE`. The kernel is pattern-generic — the slab mask machinery answers
 all-ones for an undeclared side and therefore cannot gate — so `DENSE_BOTH` everywhere
 is always CORRECT and only ever slower. That is what makes the mode word a statement
 about the routing rather than a code path, and it is why a caller who declares wrongly

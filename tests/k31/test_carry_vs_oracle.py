@@ -138,12 +138,22 @@ def test_arms_are_the_declared_solver_rows():
     for arm in carry_ops.arms():
         D, B, k, m, d_v, W, C, carve, modes, BC, owners, smem, level = arm
         assert d_v in (D_V, WIDE)
-        _, _, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
+        _, spans_host, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
         assert (BC, owners) == (bc_host, owners_host), (
             "the device box and the host solver disagree about the owner's shape")
-        #: the carve level is the innermost level the READ side carves, which the
-        #: declaration names, or -1 for the channel-split body.
-        assert level == (D - 1 if (modes >> (2 * (D - 1))) & 1 else -1)
+        #: the carve level is the innermost level the READ side carves, or -1 for the
+        #: channel-split body.  IT IS READ OFF THE DERIVED VECTOR (K35 S1b) and no longer
+        #: assumed to be the innermost level the read side is SPARSE at: under ORDER BY
+        #: MODE the read side carves the OUTERMOST levels of its own order, which is a
+        #: different level whenever a BOTH_SPARSE level sits outside a dense one -- the
+        #: tied arm carves level 0 while being dense at level D-1.  Comparing the seam's
+        #: reported level against the census's reported vector also makes this a
+        #: cross-check of two derivations rather than a restatement of one.
+        sr = list(carry_ops.build_stamp([B] * D, k, m, W, C, carve, modes, d_v))[20:24]
+        carved = [l for l in range(D) if sr[l] < int(spans_host[l])]
+        assert level == (max(carved) if carved else -1), (
+            f"the seam reports carve level {level}, but the derived read vector "
+            f"{sr[:D]} against the owner box {list(spans_host)} carves {carved}")
 
 
 def test_s3b_the_wide_arms_are_sixteen_leaves_per_warp():

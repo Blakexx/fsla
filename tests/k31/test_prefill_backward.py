@@ -44,8 +44,8 @@ def _cell(T, modes, k_tok, seed):
     read, write = [], []
     for level, mode in enumerate(modes):
         width = WIDTHS[level]
-        read_k = k_tok if mode in (intra_ops.READ_SPARSE, intra_ops.SHARED_SPARSE) else None
-        write_k = k_tok if mode in (intra_ops.WRITE_SPARSE, intra_ops.SHARED_SPARSE) else None
+        read_k = k_tok if mode in (intra_ops.READ_SPARSE, intra_ops.BOTH_SPARSE) else None
+        write_k = k_tok if mode in (intra_ops.WRITE_SPARSE, intra_ops.BOTH_SPARSE) else None
         read.append(_simplex((1, T, width), read_k, gen, "cuda", False))
         write.append(_simplex((1, T, width), write_k, gen, "cuda", False))
     read = tuple(x.reshape(1, T, 1, WIDTHS[i]).to(torch.bfloat16).double()
