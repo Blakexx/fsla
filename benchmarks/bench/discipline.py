@@ -72,7 +72,9 @@ def _extension_in_this_checkout() -> str:
             f"this checkout ({ROOT}). The row would stamp this tree's sha and csrc digest "
             f"onto another tree's binary. Put this checkout ahead of the editable "
             f"install: PYTHONPATH={ROOT}") from None
-    return str(pkg)
+    #: §17: a committed record carries repo-relative locations, never an ad-hoc
+    #: absolute checkout path -- the relative_to(ROOT) above already proves this is safe.
+    return str(pkg.relative_to(ROOT))
 
 
 def _device_side_stamp() -> dict:

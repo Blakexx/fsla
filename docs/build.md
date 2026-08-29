@@ -453,6 +453,13 @@ hooks and `.github/workflows/lint.yml` exactly like clang-format/ruff above:
    `language: system` hooks inherit from the invoking shell).
    Every finding prints its section, `file:line`, and the incident; the
    script documents its own heuristic misses in its module docstring.
+   K40 added `check_repo_portability` (§17: "the repository is
+   SELF-CONTAINED") — every git-tracked file, scanned for an absolute
+   home-directory path, a citation of the coordinator's out-of-repo
+   campaign journal by path, a real worktree checkout path, or a session's
+   scratch-directory path; no allowlist. The four patterns necessarily
+   spell what they catch, so the check excludes its own source file from
+   the scan (named explicitly in the module, not by a general allowlist).
 3. **`tools/lint/run_clang_tidy.sh`** — a conservative `bugprone-*` +
    `readability-*` set (`.clang-tidy`) on this codebase's host-only TUs
    (details and scope below).

@@ -979,8 +979,75 @@ def check_vendored_pin() -> list[str]:
     return findings
 
 
+#: K40 (KERNEL_STANDARDS.md §17: "the repository is SELF-CONTAINED"). A tracked file
+#: pointing at an ad-hoc place -- another user's home directory, the coordinator's
+#: out-of-repo campaign journal, a specific worktree checkout, a session's scratch
+#: directory -- cannot be resolved by anyone who clones this repo. NO ALLOWLIST: found
+#: 3,927 such paths in the perf ledger alone plus a dozen doc/skill/tool citations,
+#: none of them exempt. The four patterns below necessarily SPELL what they catch, so
+#: this module's OWN source is excluded from the scan (`_PORTABILITY_LINT_SELF`) --
+#: every other tracked file, this one included in spirit, is held to the same text a
+#: reader sees when the check fires on someone else's line.
+_PORTABILITY_LINT_SELF = Path(__file__).resolve()
+HOME_PATH_RE = re.compile("/" + "home/" + r"[\w.\-]+(?:/[\w.\-]+)*")
+OUT_OF_REPO_JOURNAL_RE = re.compile("rola" + "-scratch")
+#: `/path/to/...` is this repo's OWN documented placeholder convention (docs/setup.md)
+#: for "substitute your own location" -- it names nothing ad hoc, so that prefix
+#: exempts what follows; a real absolute path under a home directory is already
+#: caught by HOME_PATH_RE above.
+WORKTREE_PATH_RE = re.compile(r"(?<!/path/to)/" + "worktrees/")
+#: A real scratch-directory PATH has a slash touching the word on at least one side;
+#: a bracketed placeholder token or plain prose mention has no adjacent slash and is
+#: not a finding.
+SCRATCH_DIR_PATH_RE = re.compile(r"(?:/scratch" + r"pad(?=/|\b)|\bscratch" + r"pad(?=/))")
+
+#: Third-party/vendored trees and build outputs are not this repo's own tracked
+#: authorship; a lockfile's machine-local ephemeral temp path is not an ad-hoc
+#: AUTHORED location either, so both are out of this check's scope entirely
+#: (scope = git-tracked files, via `git ls-files`, which already excludes both).
+def _tracked_files() -> list[Path]:
+    import subprocess
+
+    out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"],
+                        capture_output=True, check=True, text=True)
+    return [ROOT / p for p in out.stdout.split("\0") if p]
+
+
+def check_repo_portability() -> list[str]:
+    """§17 lint: no tracked file points at a home-directory path, the coordinator's
+    out-of-repo journal, a real worktree path, or a session's scratch-directory path.
+    Every tracked file is read as text (the .jsonl ledgers included, UTF-8, same as
+    every source file); one that fails to decode is skipped, not flagged."""
+    findings = []
+    for path in _tracked_files():
+        if path.is_symlink() or not path.is_file() or path == _PORTABILITY_LINT_SELF:
+            continue
+        rel = path.relative_to(ROOT).as_posix()
+        if rel.startswith("csrc/third_party/"):
+            continue  # vendored, not this repo's own authorship (checked by check_vendored_pin)
+        try:
+            text = path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if HOME_PATH_RE.search(line):
+                findings.append(f"§17 portability: {rel}:{lineno}: absolute home-"
+                                f"directory path -- {line.strip()[:120]!r}")
+            if OUT_OF_REPO_JOURNAL_RE.search(line):
+                findings.append(f"§17 portability: {rel}:{lineno}: cites the "
+                                f"coordinator's out-of-repo journal by path -- cite it "
+                                f"BY ROLE instead -- {line.strip()[:120]!r}")
+            if WORKTREE_PATH_RE.search(line):
+                findings.append(f"§17 portability: {rel}:{lineno}: a real worktree path "
+                                f"-- {line.strip()[:120]!r}")
+            if SCRATCH_DIR_PATH_RE.search(line):
+                findings.append(f"§17 portability: {rel}:{lineno}: a session scratch-"
+                                f"directory path -- {line.strip()[:120]!r}")
+    return findings
+
+
 def main() -> int:
-    #: THESE TWELVE are wired as a BLOCKING pre-commit/CI gate
+    #: THESE THIRTEEN are wired as a BLOCKING pre-commit/CI gate
     #: (.pre-commit-config.yaml, .github/workflows/lint.yml) -- a nonzero exit
     #: here fails every commit and every CI run, repo-wide. `check_entmax_pin`
     #: is NOT here (S5c ITEM 0): it executes real code (`pin.gate()`,
@@ -1008,6 +1075,7 @@ def main() -> int:
     gating_findings += check_vendored_pin()
     gating_findings += check_comment_density()
     gating_findings += check_no_long_comment_blocks()
+    gating_findings += check_repo_portability()
 
     if not gating_findings:
         print("lint_standards: no gating findings")

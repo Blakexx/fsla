@@ -27,8 +27,8 @@ SCOPE. This document is about CRAFT: how a designed piece is realized at the har
 about design. Design authority is `development/queue/P76_*.md` and Blake's rulings; nothing cited here is
 an argument for or against a design choice. Where RoLA has patterns with no analogue in the reference
 kernels (routed ownership, the two carves, the exchange, the fan-in ring, the cooperative expansion), §R
-gives the RoLA rule directly. References are the local copies under `/home/blake/rola_references/`
-(`flash-attention`, `cutlass`, `ThunderKittens`); citations are `path:line`.
+gives the RoLA rule directly. References are the local copies under a named sibling checkout,
+`rola_references/` (`flash-attention`, `cutlass`, `ThunderKittens`); citations are `path:line`.
 
 Every brief points here. Every review applies it line by line. A check in `ratify` (§9) is the backstop
 and should catch nothing.
@@ -211,7 +211,7 @@ re-wakes stopped agents.
   before its next build.
 §15 addendum (build parallelism, 2026-08-27): cicc peaks ~1 GB post-S1, on a 16-CPU / 24 GB machine.
 Gate builds: exclusive lock, MAX_JOBS=8, NVCC_THREADS=2. Iteration builds: one of two parallel slots
-(`rola-scratch/tools/build_slot.sh`), MAX_JOBS=4, single-arch, arm-subset. Re-derive these numbers if
+(`tools/build/build_lock.sh`), MAX_JOBS=4, single-arch, arm-subset. Re-derive these numbers if
 cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).
 
 ## §16 — Ratify at milestones, not stages (Blake, 2026-08-28)
@@ -320,9 +320,9 @@ Three tooling agents each ran a full rebuild concurrently (MAX_JOBS=4 each -> 12
 pegged the host at 100% CPU for 10+ minutes. The compile budget is MACHINE-WIDE and TOOL-ENFORCED, not
 brief-enforced: setup.py (via the one build-lock discipline, K39) takes a machine-wide slot before
 compiling and REFUSES/waits when the slots are full — a brief cannot forget it. Until that lands: at
-most TWO agents that build at once; every build goes through tools/build/build_slot.sh; an agent checks
+most TWO agents that build at once; every build goes through tools/build/build_lock.sh; an agent checks
 `pgrep -c cicc` before launching and never wraps a full build in hyperfine (bounded `--runs 3`, on the
-LINK step only). Coordinator error recorded: the K41/K42 briefs omitted build_slot.sh.
+LINK step only). Coordinator error recorded: the K41/K42 briefs omitted the build lock.
 
 ## §18 addendum (law, 2026-08-29): `--no-verify` is never a precedent
 A commit bypasses the hooks only with an explicit, per-commit coordinator authorization naming the

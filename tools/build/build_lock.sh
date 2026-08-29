@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # K39 (Blake ruling, 2026-08-28): ONE build-lock discipline. This replaces both
-# of the previous two mechanisms -- rola-scratch/tools/build_slot.sh's N
+# of the previous two mechanisms -- an out-of-repo build-slot script's N
 # parallel iteration slots, and the separate EXCLUSIVE `/tmp/rola_ram.lock`
 # gate build lock (KERNEL_STANDARDS §15 addendum) -- which used to be able to
 # run at the same time as each other because they were two unrelated lock
@@ -24,7 +24,7 @@
 #   tools/build/build_lock.sh [--gate] -- <command...>
 #
 # `docs/build.md#compile-ledger` and the `rola-build` skill point here now;
-# `rola-scratch/tools/build_slot.sh` is superseded (§17: a tool the repo
+# the old out-of-repo build-slot script is superseded (§17: a tool the repo
 # depends on lives in the repo, not in a scratch sibling).
 set -euo pipefail
 

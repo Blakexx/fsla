@@ -8,27 +8,21 @@ iteration builds, only milestones ratify).
 
 ## Iteration vs gate
 - **ONE lock mechanism for both** (K39, Blake ruling 2026-08-28 — supersedes the old two-mechanism
-  split of `rola-scratch/tools/build_slot.sh`'s parallel slots and a separate exclusive
-  `/tmp/rola_ram.lock`): `tools/build/build_lock.sh [--gate] -- <cmd>`, now IN the repo (§17). An
-  iteration build takes ONE free slot; a gate build takes EVERY slot (`--gate`) before running, so
-  the two can never overlap and OOM the host — read the script's own header for the exact mechanism.
+  split of a build-slot script's parallel slots and a separate exclusive `/tmp/rola_ram.lock`):
+  `tools/build/build_lock.sh [--gate] -- <cmd>`, IN the repo (§17). An iteration build takes ONE
+  free slot; a gate build takes EVERY slot (`--gate`) before running, so the two can never overlap
+  and OOM the host — read the script's own header for the exact mechanism.
 - **Iteration build**: single-arch, arm-subset. `ROLA_CUDA_ARCHS=<arch> ROLA_CARRY_ARMS=<csv|all>
-  pip install -e . --no-build-isolation`. Runs in one of two parallel slots via
-  `bash /home/blake/rola-scratch/tools/build_slot.sh <cmd>` — read that script's own header table
-  for the current `MAX_JOBS`/`ROLA_NVCC_THREADS` it uses, don't hand-restate them here.
-- **Gate build**: both arches, default (shipped) arm set, no `ROLA_CARRY_ARMS` override, under the
-  EXCLUSIVE `/tmp/rola_ram.lock` (KERNEL_STANDARDS §15 addendum). One gate build per stage; ratify
-  only at milestones (§16). A stage's own gate build does NOT set `ROLA_STRICT_MANIFEST` — the
-  committed manifest is expected to be stale between milestones (K43), so the post-build check
-  REPORTS, not fails. The build that immediately precedes `ratify.py --write` at a milestone DOES
-  set `ROLA_STRICT_MANIFEST=1` (docs/build.md) — that is the one build that must fail loudly if the
-  tree is not actually shippable yet.
   pip install -e . --no-build-isolation`, run through `tools/build/build_lock.sh -- <cmd>` (no
   `--gate`) — read the script's own header table for the current `MAX_JOBS`/`ROLA_NVCC_THREADS` it
   uses, don't hand-restate them here.
 - **Gate build**: both arches, default (shipped) arm set, no `ROLA_CARRY_ARMS` override, run through
   `tools/build/build_lock.sh --gate -- <cmd>`. One gate build per stage; ratify only at milestones
-  (§16).
+  (§16). A stage's own gate build does NOT set `ROLA_STRICT_MANIFEST` — the committed manifest is
+  expected to be stale between milestones (K43), so the post-build check REPORTS, not fails. The
+  build that immediately precedes `ratify.py --write` at a milestone DOES set
+  `ROLA_STRICT_MANIFEST=1` (docs/build.md) — that is the one build that must fail loudly if the
+  tree is not actually shippable yet.
 - `ROLA_CARRY_ARMS=all` builds every row (SHIPPED + TEST) — needed for the battery/oracle across
   arms outside the default shipped set (`gen_shards.CARRY_TEST_ARMS`).
 - Don't hand-restate `MAX_JOBS`: `tools/build_flags.py:default_max_jobs` derives it from free RAM /

@@ -6,9 +6,9 @@ description: Template and rules for writing a RoLA kernel stage brief — worktr
 > never delegating to another agent and never writing a brief for one. (Coordinator-only skills —
 > rola-dispatch/review/queue/card/recall — do not apply to you.)
 
-Exemplar: `/home/blake/rola-scratch/prototypes/k35_final_build/BRIEF_M1P_port.md`. A brief is short
-and every clause below maps to a line in it — read it to see the shape, don't quote its specific
-numbers or names as if they generalize to every brief.
+Exemplar: `BRIEF_M1P_port.md` (ask the coordinator for the current campaign journal's copy). A brief
+is short and every clause below maps to a line in it — read it to see the shape, don't quote its
+specific numbers or names as if they generalize to every brief.
 
 ## The template, in order
 1. **Title line**: `BRIEF <ID> — <one-line what>; GATE = <the acceptance rule>` with who ruled it
@@ -71,6 +71,6 @@ that into the skill the same day (process/pointers only — never facts).
 - NO NESTED AGENTS: the stage agent does the work itself; it never spawns a sub-agent to do the stage and never monitors/polls one (subagent-token-discipline). Waiting on a build = end the turn and resume on its notification.
 
 
-- FINDINGS.md is the campaign journal at /home/blake/rola-scratch/prototypes/k35_final_build/FINDINGS.md — NEVER a file inside the repo/worktree (§17). A tool that REFUSES an action is a stop-and-report signal; never route around a refusal with another tool.
+- FINDINGS.md is the campaign journal the coordinator maintains OUTSIDE this repo (its path is stage-specific — the brief that dispatched you names it) — NEVER a file inside the repo/worktree (§17). A tool that REFUSES an action is a stop-and-report signal; never route around a refusal with another tool.
 
 - `--no-verify` NEVER without an explicit per-commit authorization from the coordinator naming the hook failure; a red hook = STOP and report which (§18 addendum).

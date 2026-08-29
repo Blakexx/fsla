@@ -1,7 +1,7 @@
 # rola-standalone — session rules
 
-The operating contract for all agent work in this repo lives at
-`~/rola-scratch/development/queue/CLAUDE.md` — read it first; every
+The operating contract for all agent work in this repo lives in the coordinator's
+development queue (its own `CLAUDE.md`, outside this repo) — read it first; every
 discipline block there is binding here.
 
 The rules most often violated by newcomers, restated:

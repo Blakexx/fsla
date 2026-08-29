@@ -52,8 +52,8 @@ grid); the benefit is that either body can be read end to end.
 
 It is `perf/pipeline` 7825d31's carry kernel, and the gate is that it still IS: the SASS
 of every arm is byte-identical to that commit's, which is what makes "a dense
-declaration costs nothing" a measurement rather than a claim. See
-`rola-scratch/prototypes/k31_formb_build/FINDINGS.md`.
+declaration costs nothing" a measurement rather than a claim. See the coordinator's
+K31 form-B build stage record.
 
 ## Comments moved from source (S5b)
 

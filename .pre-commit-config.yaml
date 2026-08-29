@@ -41,15 +41,16 @@ repos:
         pass_filenames: false
         files: ^csrc/.*\.(cu|cuh|cpp|h|hpp)$
       - id: lint-standards
-        name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue, docs mirror, no bare-flock GPU lock)
+        name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue, docs mirror, no bare-flock GPU lock, repo portability)
         language: system
         entry: python3 tools/lint/lint_standards.py
         pass_filenames: false
-        # K46 widened this from csrc/docs-internals-only: check_no_bare_flock_on_gpu_lock
-        # scans docs/, .claude/skills/, benchmarks/, tools/, CLAUDE.md, README.md too, so
-        # a commit touching any of those must trigger the (whole-repo, pass_filenames:
-        # false) scan, not just a csrc/docs-internals touch.
-        files: ^(csrc/rola/.*\.(cu|cuh)|docs/.*\.md|\.claude/skills/.*\.md|benchmarks/.*\.(py|md)|tools/.*\.(py|sh)|CLAUDE\.md|README\.md)$
+        # K40: check_repo_portability scans EVERY tracked file (`git ls-files`) for an
+        # ad-hoc absolute path (someone's home directory, the coordinator's out-of-repo
+        # journal, a real worktree checkout, a session's scratch directory), so this
+        # hook must fire on every commit regardless of which file changed, not just a
+        # csrc/docs/tools touch -- always_run, no `files` filter.
+        always_run: true
       - id: clang-tidy-host
         name: clang-tidy (host-only TUs; SKIPS if no build/temp exists yet)
         language: system

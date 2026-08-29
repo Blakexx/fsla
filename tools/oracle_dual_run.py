@@ -78,8 +78,9 @@ def bind_library(root: Path, label: str) -> Path:
     from a worktree, `sys.path[0]` is the script's own directory (`tools/`), the
     worktree's root is on no path at all, and both sides of the protocol quietly
     import the same canonical tree. Every comparison then passes, having compared
-    nothing. Measured: from `/home/blake/rola-wt-p07b3`, `python tools/...py`
-    imported `/home/blake/rola-standalone/rola/__init__.py`.
+    nothing. Measured: from a sibling worktree (`/path/to/worktrees/<name>`),
+    `python tools/...py` imported the CANONICAL checkout's `rola/__init__.py`
+    instead of its own.
 
     The library each side must use is therefore named explicitly and CHECKED after
     the import, not merely arranged for. A path insertion that fails to take effect

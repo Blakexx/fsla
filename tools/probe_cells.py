@@ -3,9 +3,8 @@
 """tools/probe_cells.py -- THE CANONICAL K35 CARRY-FAMILY MEASUREMENT HARNESS.
 
 One script, one measurement definition, checked in, so every stage/bisect/ruling
-number comes from the same code.  Built per `BRIEF_PROBE_harness.md`
-(`rola-scratch/prototypes/k35_final_build/`) to close two recorded harness
-discrepancies:
+number comes from the same code.  Built per the coordinator's K35-campaign probe-harness
+brief to close two recorded harness discrepancies:
 
   * R-B vs K36's own harness: ~12% apart on an UNMOVED control.  Root cause
     (`## K36`, section "the reschedule costs nothing"): run-to-run drift on this
@@ -703,10 +702,22 @@ def main():
             for entry in entries:
                 if "error" in entry:
                     continue
+                #: §17: the committed record never carries this box's absolute worktree/
+                #: venv/extension paths -- `entry` keeps them (useful for a local --out
+                #: dump) but `extra_json` gets only the worktree BASENAME (`build_run`
+                #: already stamps that as `worktree_name`) and the extension path relative
+                #: to its own worktree root.
+                extra = dict(entry)
+                extra["worktree"] = Path(entry["worktree"]).name
+                extra["venv"] = Path(entry["venv"]).name
+                if extra.get("rola_file"):
+                    extra["rola_file"] = str(
+                        Path(entry["rola_file"]).resolve().relative_to(
+                            Path(entry["worktree"]).resolve()))
                 rows.append(store.build_result(
                     run, kind="probe", cell=entry["cell"], arm=entry.get("resolved_carve"),
                     metric="duration_median_ms", value=entry["median_of_round_medians_ms"],
-                    unit="ms", extra=entry))
+                    unit="ms", extra=extra))
             out_path = store.write_run(run, rows)
             print(f"K38 record: {b['label']} -> {out_path} ({len(rows)} result row(s))")
 

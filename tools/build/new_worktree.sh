@@ -45,8 +45,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # `--show-toplevel` from INSIDE A LINKED WORKTREE returns that worktree's own
-# root, not the main repo's -- e.g. /home/blake/worktrees/k31-formb3, which
-# already sits directly inside the one shared worktrees folder
+# root, not the main repo's -- e.g. /path/to/worktrees/<name>, which already
+# sits directly inside the one shared worktrees folder
 # (`worktrees-live-in-one-folder`). The default below is that folder itself,
 # not a "/worktrees" appended a second time.
 TOPLEVEL="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"

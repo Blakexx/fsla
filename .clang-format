@@ -2,8 +2,7 @@
 # (P03, 2026-08-04). Base is Google because the measured tree already IS
 # Google's core: 2-space indent, attached braces, left pointer alignment.
 # Every override below codifies a MEASURED dominant habit of csrc/rola, not
-# taste; the survey evidence is in
-# rola-scratch/workflows/refactor/p03_format.md.
+# taste; the survey evidence is in the coordinator's P03 stage record.
 #
 # Scope: csrc/rola only. csrc/third_party is vendored and never formatted;
 # the pre-commit hook and CI scope their file lists to csrc/rola.

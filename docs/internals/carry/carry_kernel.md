@@ -114,7 +114,7 @@ economy — it takes the per-warp load count from `2*(kOuter + kWarps)` to about
 it forces a barrier between the stage and the walk, and every warp waits at it for the
 slowest global load with nothing to overlap: measured 0.53 → 1.50 barrier stall per
 issue at the scattered cell and 0.46 → 5.00 at the clustered one, against a load term
-worth 7% (`rola-scratch/prototypes/k31_listprobe/FINDINGS.md`, A1 vs A2). One `LDG.32`
+worth 7% (the coordinator's K31 listprobe stage record, A1 vs A2). One `LDG.32`
 per row per warp is what makes the walk barrier-free, and that is worth more than the
 loads it duplicates.
 
