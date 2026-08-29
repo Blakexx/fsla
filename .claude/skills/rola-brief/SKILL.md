@@ -61,3 +61,10 @@ numbers or names as if they generalize to every brief.
 Every brief's Report section ends with a `SKILLS FEEDBACK` line: which skills the agent loaded, what
 was wrong, stale, or missing in each, and what it had to discover the hard way. The coordinator folds
 that into the skill the same day (process/pointers only — never facts).
+
+## Briefing a new arch-conditional primitive (K42)
+A brief introducing a new `arch::Caps`-gated primitive must instruct the implementer to read the
+PTX ISA instruction-availability table for every target arch first and cite the exact row (ISA
+version + section) in the primitive's own decl-block comment before writing it — `ops.cuh`'s
+`mul_bf16x2` and FINDINGS `## K42`'s audit table are the worked examples, and
+`tools/lint/primitives_census.py` is the gate a new SELECTING primitive should add a row to.
