@@ -189,7 +189,28 @@ def _is_iteration_build() -> bool:
     the shipped set; a binary carrying arms it does not ratify is not the thing that
     ships, whichever direction it differs in.
     """
-    return set(_carry_arms()) != set(gen_shards.CARRY_SHIPPED_ARMS)
+    return set(_carry_arms()) != set(gen_shards.CARRY_SHIPPED_ARMS) or _decode_arm_subset_active()
+
+
+#: THE ITERATION ARM SUBSET FOR DECODE (KERNEL_STANDARDS section 7, D1b). Same
+#: mechanism as ``_carry_arms``, one family over: ``ROLA_DECODE_ARMS=5`` (or
+#: ``5,13``) names rows of the decode family's declared arm list by index
+#: (``csrc/rola/src/decode/decode.cu``'s ``DECODE_ARM_<i>``, the ``d_v x D x decay``
+#: matrix in that order). The DEFAULT IS EVERY DECLARED ARM, so a plain build -- and
+#: every gate build -- is the closed-world one. A subset binary is SELF-IDENTIFYING:
+#: ``rola.ops.decode.arms()`` lists exactly what was built and the launch refuses an
+#: arm the binary does not carry. Iteration builds pair it with
+#: ``ROLA_CUDA_ARCHS=86``; docs/build.md.
+def _decode_arm_subset_active() -> bool:
+    return bool(os.getenv("ROLA_DECODE_ARMS", "").strip())
+
+
+def _decode_arm_subset() -> list[str]:
+    spec = os.getenv("ROLA_DECODE_ARMS", "").replace(",", " ").split()
+    if not spec:
+        return []
+    rows = " ".join(f"DECODE_ARM_{int(i)}(X_)" for i in spec)
+    return [f"-DROLA_DECODE_ARMS(X_)={rows}"]
 
 #: THE EXTENSION IS NAMESPACED INSIDE THE PACKAGE, not top-level. A top-level
 #: ``rola_cuda`` is the flash-attention / mamba precedent, and it has one concrete
@@ -527,7 +548,7 @@ def build_extension():
     os.environ.setdefault("MAX_JOBS", str(build_flags.default_max_jobs(nvcc_threads)))
 
     nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
-        + list(build_flags.DEPFILE_FLAGS)
+        + list(build_flags.DEPFILE_FLAGS) + _decode_arm_subset()
     assert_no_ptx(nvcc_flags)
 
     ldflags = ["-lcuda"]
@@ -602,6 +623,8 @@ class RoLABuildExtension(BuildExtension):
         #: convention. A gate build (the shipped arm set) takes the WHOLE
         #: budget; an iteration build takes whatever share is free right now
         #: and MAX_JOBS is clamped to that share, never to what was asked.
+        #: `_is_iteration_build` covers BOTH families (ROLA_CARRY_ARMS,
+        #: ROLA_DECODE_ARMS) -- one mechanism, not two (§18).
         desired_jobs = int(os.environ.get(
             "MAX_JOBS", str(build_flags.default_max_jobs(
                 int(os.environ.get("ROLA_NVCC_THREADS", "2"))))))
@@ -617,11 +640,18 @@ class RoLABuildExtension(BuildExtension):
         if not _is_iteration_build():
             return False
         print("=" * 78)
-        print("ITERATION BUILD -- NOT SHIPPABLE.  This build carries carry arms "
-              f"{_carry_arms()}, which is not the SHIPPED set "
-              f"{list(gen_shards.CARRY_SHIPPED_ARMS)}, so the shippability gates "
-              "(fatbin instantiation, manifest) are skipped. Build with "
-              "ROLA_CARRY_ARMS unset to get a gateable binary.")
+        if set(_carry_arms()) != set(gen_shards.CARRY_SHIPPED_ARMS):
+            print("ITERATION BUILD -- NOT SHIPPABLE.  This build carries carry arms "
+                  f"{_carry_arms()}, which is not the SHIPPED set "
+                  f"{list(gen_shards.CARRY_SHIPPED_ARMS)}, so the shippability gates "
+                  "(fatbin instantiation, manifest) are skipped. Build with "
+                  "ROLA_CARRY_ARMS unset to get a gateable binary.")
+        if _decode_arm_subset_active():
+            print("ITERATION BUILD -- NOT SHIPPABLE.  ROLA_DECODE_ARMS is set, so this "
+                  "fatbin carries a SUBSET of the decode arms, so the shippability "
+                  "gates (fatbin instantiation, manifest) are skipped. "
+                  "rola.ops.decode.arms() lists what it does carry. Build with "
+                  "ROLA_DECODE_ARMS unset to get a gateable binary.")
         print("=" * 78)
         return True
 

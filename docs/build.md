@@ -30,6 +30,7 @@ mamba-ssm require the same thing for the same reason.
 | `MAX_JOBS` | Parallel compile jobs. The default is derived from **available RAM**, not core count: `MAX_JOBS=8` was OOM-killed on a 23 GB / 16-core host after 8m32. The divisor is a measured GB-per-`cicc` constant in `tools/build_flags.py`, so the same source gives 7 jobs on a 23 GB host and 4 on a 16 GB-class one. |
 | `ROLA_NVCC_THREADS` | `nvcc --threads`, default 2 = the number of `-gencode` targets. Beyond the target count it buys nothing and multiplies the resident set, since the two parallelism axes multiply. |
 | `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset** (K36): each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `-DROLA_CARRY_BUILD_<i>`, so an arm outside the set is not compiled at all. **The default is the SHIPPED rows** — see [the arm lists](#carry-arm-lists). `all` is the battery's set (shipped + test). A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86` for iteration. |
+| `ROLA_DECODE_ARMS` | **Iteration only.** Comma- or space-separated indices into the decode family's declared arm list (`csrc/rola/src/decode/decode.cu`'s `DECODE_ARM_<i>`, the `d_v x D x decay` matrix in that order, 16 rows). Compiles only those arms. Unset = every arm, which is what a gate build must be. Same NOT-SHIPPABLE banner/skip mechanism as `ROLA_CARRY_ARMS` (one `_is_iteration_build` covers both families). See [below](#arm-subset). |
 | `ROLA_SKIP_POST_BUILD_RATIFY` | Skips the post-build gate. For iterating on non-kernel code only; a shippable binary is one that passed it. |
 | `ROLA_STRICT_MANIFEST` | (K43) `0`/unset (default): the two post-build gates (the fatbin's manifest-describes-binary sub-check, `tools/ratify.py`'s own re-run) REPORT a mismatch against the committed `tools/manifests/sm_XX.json` and the install still succeeds — KERNEL_STANDARDS.md §16 makes that manifest stale between milestones by design, so failing the install on it would fail every ordinary stage build. `1`: restores the pre-K43 hard failure. **The milestone/CI gate build sets it** — it is the build that immediately precedes `tools/ratify.py --write`, so it is the one build that must fail loudly if the tree it is about to ratify is not actually shippable yet. Structural checks (the shard partition actually matching the arm list, the dispatch's link closure) are never affected by this variable — those are properties of the build's own source/binary pair, not of the ratified snapshot, and stay fatal unconditionally. |
 | `ROLA_SCCACHE` | `auto` (default): use the pinned `sccache` if it resolves and matches; else build uncached. `1`: REQUIRE it -- a missing or mismatched wrapper is a hard failure. `0`: disable. See [below](#sccache). |
@@ -115,6 +116,44 @@ invoked directly are unaffected) and never softens step 6's *structural* sub-che
 shard partition actually matching the arm list, the dispatch's link closure) — those are
 properties of the build's own source/binary pair, not of the ratified snapshot, and a
 failure there is a real defect regardless of any manifest.
+## <a id="arm-subset"></a>An iteration build may compile one decode arm
+
+Instantiation is the dominant build resource, so a developer testing ONE arm may
+compile one arm:
+
+```bash
+ROLA_DECODE_ARMS=5 ROLA_CUDA_ARCHS=86 pip install -e . --no-build-isolation
+```
+
+Three properties make this safe to have:
+
+* **The default is every declared arm.** `ROLA_DECODE_ARMS` unset expands to the whole
+  list, so a plain build and every gate build are the closed-world one. There is no
+  configuration in which a subset is the default.
+* **A subset binary is SELF-IDENTIFYING and refuses what it lacks.**
+  `rola.ops.decode.arms()` returns the `(d_v, D, decay)` rows the fatbin actually
+  carries, read off the same list the build compiled from; asking the launch for any
+  other shape is a `TORCH_CHECK` refusal naming the arm, never a mis-launch.
+* **It is NOT SHIPPABLE, and the build says so.** The two post-build gates prove the
+  fatbin carries EVERY ratified instantiation in its assigned shard; a subset carries
+  fewer by construction, so they are skipped — announced in a banner, in this one
+  place and nowhere else. Ratify at the END of a stage, from a full build.
+
+**AND THE RATIFICATION GATE MUST NOT INHERIT IT, WHICH IS THE SUBTLE HALF.**
+`tools/ratify.py` reuses the last build's `build.ninja` flags VERBATIM, because
+reconstructing them by hand was independently wrong three ways ([sccache](#sccache)). That
+makes any flag naming WHAT WAS COMPILED — rather than HOW — inheritable, and this knob is
+one. Measured the first time it was used: after `ROLA_DECODE_ARMS=5 setup.py build_ext`,
+the next `ratify.py --write` inherited the define and wrote a manifest of 393 entries
+carrying ONE decode arm, while the `.so` a full build had linked carried all sixteen — and
+it PASSED, because the gate compared its own narrowed output against the manifest it had
+just written from it. `-gencode` was excluded from inheritance for exactly this reason
+(a single-arch build narrowing the next ratification); `-DROLA_DECODE_ARMS` now is too,
+via `ratify.py`'s `_NOT_INHERITED_PREFIXES`. A gate that certifies numbers no shipped
+binary has is worse than no gate.
+
+The same rule governs `ROLA_CUDA_ARCHS=86`: iterate single-arch, gate and measure on
+the full both-arch build.
 
 ## What it costs
 

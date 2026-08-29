@@ -755,6 +755,53 @@ size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int
   return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
 }
 
+//: THE DECLARED ARM LIST, AS DATA. The decode family's instantiation matrix is the
+//: product `d_v(2) x D(4) x decay(2)`, and it is written out one row per arm so a
+//: BUILD can name a subset of it by index -- `ROLA_DECODE_ARMS=5` compiles arm 5 alone
+//: and nothing else. That is an ITERATION knob and only that: the default below is
+//: every declared arm, so a plain build and every gate build are the closed-world one,
+//: and a subset binary is refused a shape it does not carry rather than mis-launching
+//: it. docs/build.md, docs/internals/decode/decode_api.md#arm-subset
+//: THE LAUNCH IS STILL WRITTEN ONCE. `dispatch_switch.cuh` refuses the MACRO LADDER --
+//: a `#define` per axis whose BODY restates the `<<<...>>>` -- and this is not one: the
+//: macro carries the arm's three CONSTANTS and its comparison, the launch itself is the
+//: single generic lambda below, and no `<<<...>>>` is spelled twice.
+#define DECODE_ARM_0(X_) X_(32, 1, 0)
+#define DECODE_ARM_1(X_) X_(32, 1, 1)
+#define DECODE_ARM_2(X_) X_(32, 2, 0)
+#define DECODE_ARM_3(X_) X_(32, 2, 1)
+#define DECODE_ARM_4(X_) X_(32, 3, 0)
+#define DECODE_ARM_5(X_) X_(32, 3, 1)
+#define DECODE_ARM_6(X_) X_(32, 4, 0)
+#define DECODE_ARM_7(X_) X_(32, 4, 1)
+#define DECODE_ARM_8(X_) X_(64, 1, 0)
+#define DECODE_ARM_9(X_) X_(64, 1, 1)
+#define DECODE_ARM_10(X_) X_(64, 2, 0)
+#define DECODE_ARM_11(X_) X_(64, 2, 1)
+#define DECODE_ARM_12(X_) X_(64, 3, 0)
+#define DECODE_ARM_13(X_) X_(64, 3, 1)
+#define DECODE_ARM_14(X_) X_(64, 4, 0)
+#define DECODE_ARM_15(X_) X_(64, 4, 1)
+
+#ifndef ROLA_DECODE_ARMS
+#define ROLA_DECODE_ARMS(X_) \
+  DECODE_ARM_0(X_) DECODE_ARM_1(X_) DECODE_ARM_2(X_) DECODE_ARM_3(X_)  \
+  DECODE_ARM_4(X_) DECODE_ARM_5(X_) DECODE_ARM_6(X_) DECODE_ARM_7(X_)  \
+  DECODE_ARM_8(X_) DECODE_ARM_9(X_) DECODE_ARM_10(X_) DECODE_ARM_11(X_)  \
+  DECODE_ARM_12(X_) DECODE_ARM_13(X_) DECODE_ARM_14(X_) DECODE_ARM_15(X_)
+#endif
+
+//: THE BUILT SET, READ BACK OFF THE SAME LIST: `[d_v, D, decay]` per arm, in the order
+//: the binary carries them, so a subset build is SELF-IDENTIFYING rather than merely
+//: smaller: docs/internals/decode/decode_api.md#arm-subset
+std::vector<std::vector<int64_t>> rola_decode_arms() {
+  std::vector<std::vector<int64_t>> out;
+#define ROLA_DECODE_ROW(DV_, D_, DECAY_) out.push_back({DV_, D_, DECAY_});
+  ROLA_DECODE_ARMS(ROLA_DECODE_ROW)
+#undef ROLA_DECODE_ROW
+  return out;
+}
+
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget) {
   //: The instantiation matrix is `DV(2) x D(4) x DECAY(2) = 16`. What is NOT an axis --
   //: `BT`, `BC`, the lattice's `(k, m)` and every operand's storage type -- is the
@@ -769,19 +816,27 @@ void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem
               ". This is a declared capacity, refused loudly rather than taken as a "
               "slower path.");
   auto stream = at::cuda::getCurrentCUDAStream();
-  //: THE LAUNCH IS WRITTEN ONCE. Each axis walker hands its value back as an
-  //: `integral_constant`, so the three `::value`s below are template arguments and
-  //: the `<<<...>>>` configuration cannot drift between arms:
-  //: docs/internals/dispatch_switch.md#one-launch
-  int_switch<32, 64>(d_v, "decode d_v", [&](auto DV) {
-    bool_switch(decay, [&](auto DECAY) {
-      int_switch<1, 2, 3, 4>(p.D, "D", [&](auto LEVELS) {
-        detail::decode_step_kernel<decltype(DV)::value, decltype(LEVELS)::value,
-                                   decltype(DECAY)::value>
-            <<<dim3(p.n_split, p.BH), kDecodeThreads, smem, stream>>>(p);
-      });
-    });
-  });
+  //: ONE LAUNCH SITE. Each axis arrives as an `integral_constant`, so the three
+  //: `::value`s are template arguments and the `<<<...>>>` configuration cannot drift
+  //: between arms: docs/internals/dispatch_switch.md#one-launch
+  auto launch = [&](auto DV, auto LEVELS, auto DECAY) {
+    detail::decode_step_kernel<decltype(DV)::value, decltype(LEVELS)::value, decltype(DECAY)::value>
+        <<<dim3(p.n_split, p.BH), kDecodeThreads, smem, stream>>>(p);
+  };
+  bool matched = false;
+#define ROLA_DECODE_TRY(DV_, D_, DECAY_)                                                  \
+  if (!matched && d_v == (DV_) && p.D == (D_) && decay == ((DECAY_) != 0)) {               \
+    matched = true;                                                                        \
+    launch(std::integral_constant<int, (DV_)>{}, std::integral_constant<int, (D_)>{},      \
+           std::integral_constant<bool, (DECAY_) != 0>{});                                 \
+  }
+  ROLA_DECODE_ARMS(ROLA_DECODE_TRY)
+#undef ROLA_DECODE_TRY
+  TORCH_CHECK(matched, "this binary does not carry the decode arm (d_v = ", d_v, ", D = ", p.D,
+              ", decay = ", decay,
+              "). A full build carries every declared arm; an ITERATION build "
+              "(ROLA_DECODE_ARMS) carries a subset and is not shippable -- "
+              "rola.ops.decode.arms() lists what this one has.");
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

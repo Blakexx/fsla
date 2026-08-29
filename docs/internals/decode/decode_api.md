@@ -43,11 +43,39 @@ Python for the reason the whole bound surface exists: a launch bound is exactly 
 constant that drifts when it is written down twice. The two arms differ because the decay
 arm and the deep arms each carry more live state through the same loop.
 
+<a id="arm-subset"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
+The decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, and
+`decode.cu` writes it out one row per arm (`DECODE_ARM_<i>`) so a BUILD can name a subset
+by index: `ROLA_DECODE_ARMS=5` compiles arm 5 and nothing else
+([`build.md#arm-subset`](../../build.md#arm-subset)). Instantiation is the dominant build
+resource, so this is what makes iterating on one arm cost one arm.
+
+**THE LAUNCH IS STILL WRITTEN ONCE.** [`dispatch_switch.md`](../dispatch_switch.md) refuses
+the MACRO LADDER — a `#define` per axis whose BODY restates the `<<<...>>>`, so an
+`N`-axis dispatch spells the launch `2^N` times inside an expansion the compiler cannot
+type-check. This is not one: the macro carries an arm's three CONSTANTS and its
+comparison, the launch itself is a single generic lambda taking three `integral_constant`s,
+and no `<<<...>>>` is spelled twice. What replaces the nested `int_switch`/`bool_switch` is
+only the SOURCE of the candidate set — a list the build can cut, instead of three sets
+written into the call — and `matched` is `int_switch`'s own refusal mechanism, kept.
+
+**THE BUILT SET IS READ BACK OFF THE SAME LIST.** `rola_decode_arms()` expands
+`ROLA_DECODE_ARMS` a second time to push `[d_v, D, decay]` rows into a vector, so
+`rola.ops.decode.arms()` cannot disagree with what was compiled — there is one list and
+both readings expand it. An arm the binary does not carry is a `TORCH_CHECK` refusal
+naming the shape, never a silent miss.
+
+**A SUBSET BINARY IS NOT SHIPPABLE** and the build announces it: the fatbin and manifest
+gates prove EVERY ratified instantiation is present, which a subset contradicts by
+construction, so `setup.py` skips exactly those two gates behind a banner when
+`ROLA_DECODE_ARMS` is set — and nowhere else.
+
 <a id="build-stamp"></a>`rola_decode_build_stamp()` is a DEVICE-SIDE FACT a stale `.so` at the right
 path cannot fake: it launches a one-thread kernel, compiled with this translation unit,
 that folds four facts into one `int64_t` in a positional scheme and reads it back:
 
-    stamp = (kKinds * kMaxTerms * 4096 + sizeof(DecodeParams)) * 1000003
+    stamp = ((kKinds * kMaxTerms * kDecodeWarps + kUnitBlockWarps + kFieldWidthMax) * 4096
+             + sizeof(DecodeParams)) * 1000003
           + sizeof(Unit<4>) * 101
           + kDecodeMaxSpan
 

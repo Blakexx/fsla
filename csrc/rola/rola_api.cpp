@@ -159,6 +159,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rola_decode_build_stamp", &rola::decode::rola_decode_build_stamp,
         "the decode step's own footprint, read back off a kernel this translation unit "
         "compiles");
+  m.def("rola_decode_arms", &rola::decode::rola_decode_arms,
+        "the decode arms this binary carries, [d_v, D, decay] per row; a subset means "
+        "an iteration build (ROLA_DECODE_ARMS), which is not shippable");
   m.def("rola_decode_capacity", &rola::decode::rola_decode_capacity,
         "the decode path's maximum level width; must be >= the producer's "
         "MAX_BRANCH_WIDTH (tests/unit/test_decode_capacity.py pins the pair)");

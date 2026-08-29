@@ -45,12 +45,24 @@ from rola.routing.types import Topology
 __all__ = [
     "C_DECODE_UNITS_PER_CTA",
     "DecodeScratch",
+    "arms",
     "derive_decode_geometry",
     "derive_n_split",
     "leaf_rate_dials_for",
     "step",
     "step_plane",
 ]
+
+
+def arms() -> tuple[tuple[int, int, bool], ...]:
+    """The decode arms THIS BINARY carries, as ``(d_v, D, decay)`` rows.
+
+    A full build carries the whole declared matrix (``d_v x D x decay`` = 16 rows). An
+    ITERATION build names a subset with ``ROLA_DECODE_ARMS`` and is NOT SHIPPABLE; this
+    is how such a binary identifies itself, and the launch refuses any arm not listed
+    here rather than mis-launching it (``docs/build.md``).
+    """
+    return tuple((int(dv), int(d), bool(decay)) for dv, d, decay in extension().rola_decode_arms())
 
 
 #: THE SMALLEST UNIT SHARE worth a CTA's prologue. A CTA pays the fold and the factor
