@@ -446,8 +446,10 @@ decode_step_kernel(DecodeParams p) {
 
   // ---- THE COMBINE: one deposit, one arrival, one summing warp ----------------
   //: ZERO `__syncthreads` BELOW THE PROLOGUE, and this is the mechanism that
-  //: removes the last of them.
+  //: removes the last of them. The arrival MUST keep USING its return value: a
+  //: `red` forms no acquire pattern, and the rendezvous stops being proven (K47).
   // see docs/internals/decode/decode.md#fold-pitch
+  // see docs/internals/decode/decode.md#the-warp-arrival
   const int fold_pitch = cols + 3;
   float* my_row = fold + warp * fold_pitch;
 #pragma unroll
