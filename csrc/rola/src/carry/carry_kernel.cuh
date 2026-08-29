@@ -141,11 +141,13 @@ struct CarryGeom {
   static constexpr int cta_target = design::cta_target((int)bytes, kThreads, kRegFloor);
   static_assert(design::smem_fits(bytes), "this arm does not fit the SMEM maximum");
   //: THE TRANSIT COSTS NO ALLOCATION: it STRADDLES the tenants that are dead at the -- see docs/internals/carry/carry_kernel.md#straddle-bytes
-  static constexpr int straddle_bytes = kStages * slot_bytes + panel_bytes + out_bytes;
+  static constexpr int straddle_bytes = panel_bytes / 2 + out_bytes;
   static_assert(kXchBytes <= straddle_bytes,
-                "the exchange region straddles the V ring, the two panels and the readout "
-                "staging block, every one of which is dead at the window head; an arm whose "
-                "transit outgrows them would have to allocate, and none does");
+                "the transit's region is the SECOND panel and the readout staging block: the "
+                "two tenants dead at BOTH of its moments, and disjoint from the V ring and "
+                "the first panel, which is what leaves the work that covers each leg free to "
+                "run against it; an arm whose transit outgrew them would have to allocate, "
+                "and none does");
 };
 
 //: THE OWNER-GRAIN PRODUCE MAP, which the channel-split body and the reverse -- see docs/internals/carry/carry_kernel.md#producemap
@@ -371,6 +373,35 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 
   //: the warp's own staging region of the readout block.
   float* const sow = so + warp * kMmaN * LdO;
+
+  //: THE TRANSIT'S ADDRESSING IS LOOP-INVARIANT, so it is derived ONCE. -- see docs/internals/carry/carry_kernel.md#transit
+  __nv_bfloat16* const xch = sw;
+  int xchR = 0, xchQ = 0;
+  static_for<D>([&](auto Lc) {
+    constexpr int l = decltype(Lc)::value;
+    xchR += (offW[l] / SVR::s(l)) * SVR::grid_div(l);
+    xchQ += (offW[l] % SVR::s(l)) << PMR::shift(l);
+  });
+  const int xchBase = xchR * kLeafR + xchQ;
+  const int xchLaneRow =
+      xchBase ^ ((lane & 1) ? XM::delta(2) : 0) ^ ((lane & 2) ? XM::delta(4) : 0);
+  const int swzLane = XM::swz(xchLaneRow), mswLane = XM::msw(xchLaneRow);
+  const uint32_t pubC = smem_addr(xch) + (uint32_t)(xchLaneRow * LdX * 2 + (lane >> 2) * 2);
+  const uint32_t pubM = smem_addr(xch) + (uint32_t)(xchLaneRow * LdX * 2 + kDv * 2);
+  //: THE RETURN LEG'S ROW IS THE PUBLISH'S, SUPPLIED BY A DIFFERENT LANE. -- see docs/internals/carry/carry_kernel.md#return-leg
+  const int retQ = lane & 7;
+  const int retRow = xchBase ^ ((retQ & 1) ? XM::delta(1) : 0) ^ ((retQ & 2) ? XM::delta(2) : 0)
+                     ^ ((retQ & 4) ? XM::delta(4) : 0);
+  const uint32_t retC = smem_addr(xch) + (uint32_t)(retRow * LdX * 2);
+  const int swzRet = XM::swz(retRow), retG = lane >> 3;
+  //: the READER's segment addresses the same rows for the pull and the store-back.
+  const int pullRow = strm * kLeafR + rT;
+  const int swzPull = XM::swz(pullRow);
+  const uint32_t pullC = smem_addr(xch) + (uint32_t)(pullRow * LdX * 2);
+  const int massRow = strm * kLeafR + 2 * (lane & 3);
+  const int mswPull = XM::msw(massRow), swzSB = XM::swz(strm * kLeafR);
+  const uint32_t pullM = smem_addr(xch) + (uint32_t)(massRow * LdX * 2 + kDv * 2);
+  const uint32_t sbC = smem_addr(xch) + (uint32_t)(massRow * LdX * 2 + (lane >> 2) * 2);
 
   // ---- the state, transposed: m = channels, n = this warp's leaves ---------
   float st[MCH][kNL][4];
@@ -684,9 +715,25 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     const int nw =
         walk(liveW, wlist, ((1u << kBitsW) - 1u) << (warp * kBitsW), (1u << (warp * kBitsW)) - 1u);
 
-    //: THE EXCHANGE.  The two carves want the state in two slot orders and the -- see docs/internals/carry/carry_kernel.md#the-exchange
+    //: THE TRANSIT MOVES THE HI PLANE, IT DOES NOT COPY IT (K35 F1b). -- see docs/internals/carry/carry_kernel.md#the-exchange
     uint32_t sa[kDw][MCH][4], ma[kDw][4];
+    uint32_t st_lo[MCH][kNL][2], mass_lo[kNL];
+    //: THE READ PHASE SHARES NOTHING: the list, the panel region, the staging block -- see docs/internals/carry/carry_kernel.md#nbr
+    const int nbr = (nr + C - 1) / C;
+    static_for<MCH>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
+      static_for<kNL>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        st_lo[m][j][0] = pack_lo(st[m][j][0], st[m][j][1]);
+        st_lo[m][j][1] = pack_lo(st[m][j][2], st[m][j][3]);
+      });
+    });
+    static_for<kNL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      mass_lo[j] = pack_lo(mass_st[j][0], mass_st[j][1]);
+    });
     if constexpr (G::kTied) {
+      //: THE TIE MOVES THE HI PLANE BY RENAMING IT, and pays no region, no barrier -- see docs/internals/carry/carry_kernel.md#tied-hybrid
       static_for<kDw>([&](auto Kc) {
         constexpr int kk = decltype(Kc)::value;
         static_for<MCH>([&](auto Mc) {
@@ -701,23 +748,14 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         ma[kk][2] = hi_bf16x2(mass_st[2 * kk + 1][0], mass_st[2 * kk + 1][1]);
         ma[kk][3] = hi_bf16x2(mass_st[2 * kk + 1][2], mass_st[2 * kk + 1][3]);
       });
+      //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring, -- see docs/internals/carry/carry_kernel.md#syncwarp
+      if (nbr > 0) produce_batch(std::false_type{}, pR, panR, rlist, 0, nr);
+      __syncwarp();
     } else {
-      //: THE TRANSIT STRADDLES the V ring, the panels and the readout block, all of -- see docs/internals/carry/carry_kernel.md#xch
-      __nv_bfloat16* const xch = reinterpret_cast<__nv_bfloat16*>(carry_smem);
-      int xchR = 0, xchQ = 0;
-      static_for<D>([&](auto Lc) {
-        constexpr int l = decltype(Lc)::value;
-        xchR += (offW[l] / SVR::s(l)) * SVR::grid_div(l);
-        xchQ += (offW[l] % SVR::s(l)) << PMR::shift(l);
-      });
-      const int xchLaneRow = (xchR * kLeafR + xchQ) ^ ((lane & 1) ? XM::delta(2) : 0)
-                             ^ ((lane & 2) ? XM::delta(4) : 0);
-      const int swzLane = XM::swz(xchLaneRow), mswLane = XM::msw(xchLaneRow);
-      const uint32_t pubC = smem_addr(xch) + (uint32_t)(xchLaneRow * LdX * 2 + (lane >> 2) * 2);
-      const uint32_t pubM = smem_addr(xch) + (uint32_t)(xchLaneRow * LdX * 2 + kDv * 2);
-
       //: THE WAR EDGE against the PREVIOUS window's fold, which still reads the bytes -- see docs/internals/carry/carry_kernel.md#war
       rendezvous();
+      //: THE OUT LEG'S COVER: read batch zero's factor gathers touch neither `st` nor -- see docs/internals/carry/carry_kernel.md#cover
+      if (nbr > 0) produce_batch(std::false_type{}, pR, panR, rlist, 0, nr);
       static_for<kNL>([&](auto Jc) {
         constexpr int j = decltype(Jc)::value;
         static_for<4>([&](auto Ec) {
@@ -742,20 +780,14 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       });
       rendezvous();
 
-      const int pullRow = strm * kLeafR + rT;
-      const int swzPull = XM::swz(pullRow);
-      const uint32_t pullC = smem_addr(xch) + (uint32_t)(pullRow * LdX * 2);
-      const int massRow = strm * kLeafR + 2 * (lane & 3);
-      const int mswPull = XM::msw(massRow);
-      const uint32_t pullM = smem_addr(xch) + (uint32_t)(massRow * LdX * 2 + kDv * 2);
       static_for<kDw>([&](auto Kc) {
         constexpr int kk = decltype(Kc)::value;
         constexpr int rk = kk * kMmaK;
-        const int sw = swzPull ^ XM::swz(rk);
+        const int swzK = swzPull ^ XM::swz(rk);
         static_for<MCH>([&](auto Mc) {
           constexpr int m = decltype(Mc)::value;
           load_frag_t(sa[kk][m],
-                      pullC + (uint32_t)(rk * LdX * 2) + (uint32_t)((((2 * m) | cT) ^ sw) * 16));
+                      pullC + (uint32_t)(rk * LdX * 2) + (uint32_t)((((2 * m) | cT) ^ swzK) * 16));
         });
         //: the mass's two pairs.  `msw` ignores the row's low three bits, so a pair's -- see docs/internals/carry/carry_kernel.md#msw
         ma[kk][0] = 0u;
@@ -781,11 +813,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //      within-window pair is the INTRA term's and this kernel must not carry it.
     //      The batch line is therefore the window line on both sides.
 
-    //: THE READ PHASE SHARES NOTHING: the list, the panel region, the staging block -- see docs/internals/carry/carry_kernel.md#nbr
-    const int nbr = (nr + C - 1) / C;
-    //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring, -- see docs/internals/carry/carry_kernel.md#syncwarp
-    if (nbr > 0) produce_batch(std::false_type{}, pR, panR, rlist, 0, nr);
-    __syncwarp();
 #pragma unroll 1
     for (int i = 0; i < nbr; ++i) {
       const int off_ = i * C;
@@ -878,10 +905,101 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       if (sst < nbw) stage_batch(sst, sst % STAGES);
       stage_commit();
     }
-    if (nbw > 0) produce_batch(std::true_type{}, pW, panW, wlist, 0, nw);
+    if (nbw > 0) produce_batch(std::true_type{}, pW, panR, wlist, 0, nw);
+
+    //: THE RETURN LEG.  The readout never modified the state, so the hi plane comes -- see docs/internals/carry/carry_kernel.md#return-leg
+    uint32_t hi[kNL][2 * MCH], mhi[kNL];
+    static_assert(MCH % 2 == 0 && (2 * MCH) % 4 == 0,
+                  "the writer pulls its hi plane four granules at a time, so the channel "
+                  "m-tiles must pair into whole `ldmatrix.x4` groups");
+    if constexpr (G::kTied) {
+      static_for<kNL>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        static_for<MCH>([&](auto Mc) {
+          constexpr int m = decltype(Mc)::value;
+          hi[j][2 * m] = sa[j / 2][m][2 * (j & 1)];
+          hi[j][2 * m + 1] = sa[j / 2][m][2 * (j & 1) + 1];
+        });
+        mhi[j] = ma[j / 2][2 * (j & 1)];
+      });
+    } else {
+      //: THE STORE-BACK IS THE PULL RUN BACKWARDS: the reader writes each A fragment -- see docs/internals/carry/carry_kernel.md#store-back
+      static_for<kDw>([&](auto Kc) {
+        constexpr int kk = decltype(Kc)::value;
+        static_for<4>([&](auto Ic) {
+          constexpr int i = decltype(Ic)::value;
+          constexpr int rr = kk * kMmaK + (i >> 1) * 8;
+          const uint32_t a0 = sbC + (uint32_t)(rr * LdX * 2);
+          static_for<MCH>([&](auto Mc) {
+            constexpr int m = decltype(Mc)::value;
+            constexpr int gr = (2 * m + (i & 1)) ^ XM::swz(rr);
+            const uint32_t a = a0 + (uint32_t)((gr ^ swzSB) * 16);
+            store_shared_u16(a, (uint16_t)(sa[kk][m][i] & 0xFFFFu));
+            store_shared_u16(a + (uint32_t)(LdX * 2), (uint16_t)(sa[kk][m][i] >> 16));
+          });
+        });
+        if ((lane >> 2) == 0) {
+          constexpr int rk = kk * kMmaK;
+          const uint32_t bLo =
+              pullM + (uint32_t)(rk * LdX * 2) + (uint32_t)((XM::msw(rk) ^ mswPull) * 4);
+          const uint32_t bHi =
+              pullM + (uint32_t)((rk + 8) * LdX * 2) + (uint32_t)((XM::msw(rk + 8) ^ mswPull) * 4);
+          store_shared_u16(bLo, (uint16_t)(ma[kk][0] & 0xFFFFu));
+          store_shared_u16(bLo + (uint32_t)(LdX * 2), (uint16_t)(ma[kk][0] >> 16));
+          store_shared_u16(bHi, (uint16_t)(ma[kk][2] & 0xFFFFu));
+          store_shared_u16(bHi + (uint32_t)(LdX * 2), (uint16_t)(ma[kk][2] >> 16));
+        }
+      });
+      rendezvous();
+      //: THE WRITER PULLS IN ITS OWN LAYOUT.  Its eight slots of one n-tile are eight -- see docs/internals/carry/carry_kernel.md#writer-pull
+      static_for<kNL>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        constexpr int dj = XM::delta(j * kMmaN);
+        const uint32_t a0 = retC + (uint32_t)(dj * LdX * 2);
+        static_for<MCH / 2>([&](auto Tc) {
+          constexpr int t = decltype(Tc)::value;
+          uint32_t r4[4];
+          load_frag_t(r4, a0 + (uint32_t)((((4 * t + retG) ^ swzRet ^ XM::swz(dj)) * 16)));
+          static_for<4>([&](auto Rc) {
+            constexpr int r = decltype(Rc)::value;
+            hi[j][4 * t + r] = r4[r];
+          });
+        });
+        mhi[j] = 0u;
+        if ((lane >> 2) == 0) {
+          constexpr int dl0 = XM::delta(j * kMmaN), dl1 = XM::delta(j * kMmaN + 1);
+          const uint32_t m0 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl0 * LdX * 2)
+                                                        + (uint32_t)((XM::msw(dl0) ^ mswLane) * 4));
+          const uint32_t m1 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl1 * LdX * 2)
+                                                        + (uint32_t)((XM::msw(dl1) ^ mswLane) * 4));
+          mhi[j] = m0 | (m1 << 16);
+        }
+      });
+    }
+    //: THE REJOIN IS EXACT AND IT IS NOT ARITHMETIC. -- see docs/internals/carry/carry_kernel.md#rejoin
+    static_for<MCH>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
+      static_for<kNL>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        static_for<2>([&](auto Hc) {
+          constexpr int h = decltype(Hc)::value;
+          st[m][j][2 * h] = join_hi_lo(hi[j][2 * m + h], st_lo[m][j][h], 0);
+          st[m][j][2 * h + 1] = join_hi_lo(hi[j][2 * m + h], st_lo[m][j][h], 1);
+        });
+      });
+    });
+    //: THE MASS RIDES ROW ZERO of its own accumulator, so its other rows are DEAD -- see docs/internals/carry/carry_kernel.md#rejoin-mass
+    static_for<kNL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      const bool row0 = (lane >> 2) == 0;
+      mass_st[j][0] = row0 ? join_hi_lo(mhi[j], mass_lo[j], 0) : 0.f;
+      mass_st[j][1] = row0 ? join_hi_lo(mhi[j], mass_lo[j], 1) : 0.f;
+      mass_st[j][2] = 0.f;
+      mass_st[j][3] = 0.f;
+    });
 #pragma unroll 1
     for (int i = 0; i < nbw; ++i) {
-      const uint32_t bwF = (i & 1) ? bwF1 : bwF0;
+      const uint32_t bwF = (i & 1) ? bwF0 : bwF1;
       const uint32_t vsl = svB + (uint32_t)(i % STAGES) * kVSlot;
       stage_wait<STAGES - 2>();
       rendezvous();
@@ -910,7 +1028,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           mma(mass_st[2 * nj + 1], ones_a, &b[2]);
         }
       }
-      produce_batch(std::true_type{}, pW, ((i + 1) & 1) ? panR : panW, wlist, (i + 1) * C, nw);
+      produce_batch(std::true_type{}, pW, ((i + 1) & 1) ? panW : panR, wlist, (i + 1) * C, nw);
     }
     //: the ring's unconsumed groups are retired before the next window reuses the -- see docs/internals/carry/carry_kernel.md#near-line-843
     stage_wait<0>();

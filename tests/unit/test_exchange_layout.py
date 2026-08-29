@@ -259,3 +259,179 @@ def test_the_shipped_swizzles_are_the_search_result_and_not_a_guess():
     forms = [c for n in (1, 2, 3) for c in itertools.combinations(range(3, 8), n) if ok(c)]
     assert CHAN_SHIFTS in forms, f"the shipped channel swizzle fails; passing forms: {forms}"
     assert not ok(()), "an unswizzled layout must CONFLICT, or the swizzle is unnecessary"
+
+
+# ---------------------------------------------------------------- the hybrid's two legs
+#
+# F1b: the hi plane MOVES.  The writers publish it and drop it; the readers pull it as
+# their A operand; after the readout the readers store those same bits BACK and the
+# writers pull them in their OWN layout and rejoin them with the lo plane they kept.
+# What has to be proved is that the round trip returns each publisher's OWN element to
+# the register the rejoin expects -- so this models all four accesses at BYTE addresses,
+# with the kernel's own arithmetic, and runs the whole transit as a simulation.
+
+K_MMA_M_CH = 8  #: channels per 16-byte granule
+
+
+def _addr_chan(row, col, ldx, n_gran):
+    """the region's byte address of one channel element, swizzle included."""
+    gran, within = divmod(col, K_MMA_M_CH)
+    return row * ldx * 2 + ((gran ^ _swz(row, CHAN_SHIFTS, n_gran - 1)) * 16) + within * 2
+
+
+def _addr_mass(row, ldx, dv):
+    return row * ldx * 2 + dv * 2 + _swz(row, MASS_SHIFTS, 3) * 4
+
+
+def _delta(w, r, slot):
+    return _row_of(w, r, 0, slot) ^ _row_of(w, r, 0, 0)
+
+
+def _ldm_trans(addr_of_lane, mem):
+    """`ldmatrix.m8n8.x4.trans`: lane L supplies row (L & 7) of matrix (L >> 3); lane L's
+    register i is matrix i's column (L >> 2) at rows 2*(L & 3) and 2*(L & 3) + 1."""
+    a = [addr_of_lane(L) for L in range(32)]
+    out = []
+    for L in range(32):
+        regs = []
+        for i in range(4):
+            lo = mem[a[8 * i + 2 * (L & 3)] + 2 * (L >> 2)]
+            hi = mem[a[8 * i + 2 * (L & 3) + 1] + 2 * (L >> 2)]
+            regs.append((lo, hi))
+        out.append(regs)
+    return out
+
+
+@pytest.mark.parametrize("idx,row", UNTIED, ids=[f"arm{i}" for i, _ in UNTIED])
+def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx, row):
+    """THE WHOLE TRANSIT, SIMULATED AT BYTE ADDRESSES.  Publish -> pull -> store back ->
+    pull in write layout, with the kernel's own address arithmetic at every step; the
+    assertion is that the writer's rejoin register holds the hi halves of ITS OWN two
+    accumulator elements, and that the store-back leg is the identity on the region."""
+    w, r, dv = _sides(row)
+    ldx, n_gran, leaf = dv + K_PAD_E, dv // K_MMA_M_CH, w.leaf
+    mch, knl, kdw = dv // K_MMA_M, leaf // K_MMA_N, leaf // K_MMA_K
+    d1, d2, d4 = (_delta(w, r, 1), _delta(w, r, 2), _delta(w, r, 4))
+
+    mem, published = {}, {}
+    for stream in range(w.ns):
+        base = _row_of(w, r, stream, 0)
+        for lane in range(32):
+            lane_row = base ^ (d2 if lane & 1 else 0) ^ (d4 if lane & 2 else 0)
+            swz_lane = _swz(lane_row, CHAN_SHIFTS, n_gran - 1)
+            msw_lane = _swz(lane_row, MASS_SHIFTS, 3)
+            for j in range(knl):
+                for e in range(4):
+                    dl = _delta(w, r, j * K_MMA_N + (e & 1))
+                    for m in range(mch):
+                        gr = (2 * m + (e >> 1)) ^ _swz(dl, CHAN_SHIFTS, n_gran - 1)
+                        a = (lane_row * ldx * 2 + (lane >> 2) * 2
+                             + dl * ldx * 2 + ((gr ^ swz_lane) * 16))
+                        slot = j * K_MMA_N + 2 * (lane & 3) + (e & 1)
+                        col = m * K_MMA_M + (lane >> 2) + 8 * (e >> 1)
+                        assert a == _addr_chan(_row_of(w, r, stream, slot), col, ldx, n_gran), (
+                            f"arm {idx}: the publish's address arithmetic is not the region's map")
+                        assert a not in mem, f"arm {idx}: two publishers claim byte {a}"
+                        mem[a] = (stream, lane, j, m, e)
+                        published[(stream, lane, j, m, e)] = a
+                if (lane >> 2) == 0:
+                    for e in range(2):
+                        dl = _delta(w, r, j * K_MMA_N + e)
+                        a = (lane_row * ldx * 2 + dv * 2 + dl * ldx * 2
+                             + ((_swz(dl, MASS_SHIFTS, 3) ^ msw_lane) * 4))
+                        assert a == _addr_mass(_row_of(w, r, stream, j * K_MMA_N
+                                                       + 2 * (lane & 3) + e), ldx, dv)
+                        mem[a] = ("mass", stream, lane, j, e)
+
+    before = dict(mem)
+
+    #: THE PULL, and the STORE-BACK that must be its exact inverse.
+    frags = {}
+    for rs in range(r.ns):
+        for kk in range(kdw):
+            for m in range(mch):
+                def addr_of(L, rs=rs, kk=kk, m=m):
+                    row_i = rs * leaf + ((L >> 3) >> 1) * 8 + (L & 7)
+                    swz_k = _swz(row_i + kk * K_MMA_K, CHAN_SHIFTS, n_gran - 1)
+                    return ((row_i + kk * K_MMA_K) * ldx * 2
+                            + (((2 * m) | ((L >> 3) & 1)) ^ swz_k) * 16)
+                out = _ldm_trans(addr_of, mem)
+                for L in range(32):
+                    frags[(rs, L, kk, m)] = out[L]
+                # the store-back: the kernel's own address, and it must land the same bits
+                swz_sb = _swz(rs * leaf, CHAN_SHIFTS, n_gran - 1)
+                for L in range(32):
+                    sb_c = (rs * leaf + 2 * (L & 3)) * ldx * 2 + (L >> 2) * 2
+                    for i in range(4):
+                        rr = kk * K_MMA_K + (i >> 1) * 8
+                        gr = (2 * m + (i & 1)) ^ _swz(rr, CHAN_SHIFTS, n_gran - 1)
+                        a = sb_c + rr * ldx * 2 + ((gr ^ swz_sb) * 16)
+                        assert mem[a] == out[L][i][0], (
+                            f"arm {idx}: the store-back's low half misses its own address")
+                        assert mem[a + ldx * 2] == out[L][i][1], (
+                            f"arm {idx}: the store-back's high half misses its own address")
+                        mem[a], mem[a + ldx * 2] = out[L][i]
+    assert mem == before, f"arm {idx}: the two legs are not the identity on the region"
+
+    #: THE WRITER'S PULL, in the WRITE layout, and the rejoin's register map.
+    for ws in range(w.ns):
+        base = _row_of(w, r, ws, 0)
+        for j in range(knl):
+            dj = _delta(w, r, j * K_MMA_N)
+            for t in range(mch // 2):
+                def addr_of(L, base=base, dj=dj, t=t):
+                    ret_row = (base ^ (d1 if L & 1 else 0) ^ (d2 if L & 2 else 0)
+                               ^ (d4 if L & 4 else 0))
+                    swz_ret = _swz(ret_row, CHAN_SHIFTS, n_gran - 1)
+                    return (ret_row + dj) * ldx * 2 + (
+                        ((4 * t + (L >> 3)) ^ swz_ret
+                         ^ _swz(dj, CHAN_SHIFTS, n_gran - 1)) * 16)
+                out = _ldm_trans(addr_of, mem)
+                for L in range(32):
+                    for i in range(4):
+                        g = 4 * t + i
+                        m, h = g >> 1, g & 1
+                        want = (mem[published[(ws, L, j, m, 2 * h)]],
+                                mem[published[(ws, L, j, m, 2 * h + 1)]])
+                        assert out[L][i] == want, (
+                            f"arm {idx}: writer {ws} lane {L} n-tile {j} granule {g} did not "
+                            f"get back its own (m={m}, e={2 * h}, {2 * h + 1})")
+
+
+@pytest.mark.parametrize("idx,row", UNTIED, ids=[f"arm{i}" for i, _ in UNTIED])
+def test_the_return_legs_two_accesses_are_max_way_one(idx, row):
+    """The two NEW accesses, in banks.  The store-back covers four rows two apart inside
+    an aligned eight (one swizzle) at eight consecutive channels; the writer's pull hands
+    `ldmatrix` EIGHT SCATTERED rows at one granule, and it is the swizzle that has to put
+    them in eight different four-bank blocks."""
+    w, r, dv = _sides(row)
+    n_gran, leaf, words = dv // K_MMA_M_CH, w.leaf, (dv + K_PAD_E) // 2
+    mch, knl, kdw = dv // K_MMA_M, leaf // K_MMA_N, leaf // K_MMA_K
+
+    for rs in range(r.ns):
+        for kk in range(kdw):
+            for i in range(4):
+                rows = [rs * leaf + kk * K_MMA_K + (i >> 1) * 8 + 2 * q for q in range(4)]
+                for m in range(mch):
+                    banks = set()
+                    for row_i in rows:
+                        gp = (2 * m + (i & 1)) ^ _swz(row_i, CHAN_SHIFTS, n_gran - 1)
+                        for word in range(4):
+                            b = (words * row_i + 4 * gp + word) % 32
+                            assert b not in banks, (
+                                f"arm {idx}: the store-back conflicts in bank {b}")
+                            banks.add(b)
+
+    for ws in range(w.ns):
+        for j in range(knl):
+            rows = [_row_of(w, r, ws, j * K_MMA_N + q) for q in range(8)]
+            for g in range(n_gran):
+                banks = set()
+                for row_i in rows:
+                    gp = g ^ _swz(row_i, CHAN_SHIFTS, n_gran - 1)
+                    for word in range(4):
+                        b = (words * row_i + 4 * gp + word) % 32
+                        assert b not in banks, (
+                            f"arm {idx}: the writer's return pull conflicts in bank {b} "
+                            f"over rows {rows}")
+                        banks.add(b)

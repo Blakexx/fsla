@@ -544,6 +544,29 @@ def test_f1_tied_carve_elides_the_exchange(k_tok):
     assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
 
 
+@pytest.mark.parametrize("k_tok", [4, 16])
+def test_f1b_the_rejoin_survives_the_window_lines_at_the_flagship(k_tok):
+    """THE HYBRID'S OWN CELL (K35 F1b).  The transit no longer COPIES the hi plane: the
+    writers drop it for the whole readout and rebuild `st` after it from the halves that
+    came back plus the lo plane they kept.  That rejoin happens ONCE PER WINDOW, so what
+    has to be exercised is a run of window lines -- and the STATE PLANE, which the
+    flagship cell above never checked, is the only output that carries a rejoin error
+    that the readout of the SAME window would hide.  `T` is chosen to be four windows
+    with the last one PARTIAL, so a short window's rejoin is in the gate too."""
+    assert_fresh_binary()
+    widths, k, m, W = FLAG
+    T = 3 * W + W // 2
+    assert (T + W - 1) // W >= 3, "the cell must cross at least three window lines"
+    cell = alt_cell(FLAG[0], T=T, k_tok=k_tok, seed=110 + k_tok)
+    num, den, plane = run(cell, FLAG, CARVE, modes=ALT2, body="carved")
+    n_ref, d_ref, s_ref = ref(cell, FLAG)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+    got = canonical_from_plane(plane)
+    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
+
+
 def test_f1_the_census_reports_the_exchange_off_the_device():
     """`kXchBytes`/`kXchState`, read back off the built binary rather than modelled.
 

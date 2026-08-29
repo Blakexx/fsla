@@ -1676,14 +1676,60 @@ write carve that level's span is the full 16, so the write produce's packed-pair
 is the write carve's own order, not an inefficiency in it.
 
 <a id="the-exchange"></a>
-### The transit runs ONCE per window, not twice
+<a id="transit"></a>
+### The hi plane MOVES: one region, two legs, and the accumulator is never doubled
 
-S4a's body paid two changes per window. Under the phase order this body has — PHASE 1 reads
-out against the window's ENTRY state, PHASE 2 folds — the accumulator lives in the WRITE
-order for its whole life: the entry page load fills it there, the fold accumulates there,
-the exit page store drains it there. Only the readout's A fragments want the READ order, so
-the state is re-laid ONCE, at the window head, and never back. The pull's result is held in
-registers across the whole window, which also deletes M1P's per-BATCH `hi_bf16x2` repack.
+Under this body's phase order — PHASE 1 reads out against the window's ENTRY state, PHASE 2
+folds — the accumulator lives in the WRITE order for its whole life: the entry page load
+fills it there, the fold accumulates there, the exit page store drains it there. Only the
+readout's A fragments want the READ order. F1 re-laid the state ONCE per window on that
+argument and KEPT `st` whole beside the readers' bf16 stack, which is 1.5x the state in
+registers through the readout. That is not the ratified design and it is not what this body
+does.
+
+The transit MOVES the plane the readout needs and leaves the writer holding the rest:
+
+* the top 16 bits of an fp32 ARE its bf16 truncation, so the accumulator splits into a HI
+  plane (what the MMA consumes) and a LO plane (what only the fold needs). `hi_bf16` is a
+  shift, not a rounding: `(hi << 16) | lo` is the original word, bit for bit.
+* at the window head the writers publish the hi plane into the region and DROP it. Through
+  PHASE 1 they hold `st_lo` — two elements per register, HALF of `st`'s registers — and
+  nothing else of the state.
+* the readers pull the hi plane in read layout and it IS `sa`/`ma`. No second bf16 copy of
+  the state exists anywhere in the body.
+* after the readout the readers store those same bits BACK (the readout never modified
+  them) and the writers pull them in WRITE layout and rejoin. The rejoin is `join_hi_lo`:
+  an OR of two halves, not arithmetic, so the state plane is bit-identical to the one a
+  body that never moved it would hold.
+
+The trade is stated where it is paid: one more region-sized round trip and one more CTA
+barrier per window, against the readers' operand stack REPLACING the writers' hi plane
+instead of adding to it.
+
+<a id="cover"></a>
+### Each leg is covered by work that needs neither `st` nor the region
+
+A transit at floor on every byte and instruction can still cost time if nothing overlaps it
+— that is F1's own finding. So each leg is issued against work the window already owes:
+
+* THE OUT LEG rides read batch ZERO's `produce_batch`. Its factor gathers are DRAM loads
+  that touch neither `st` nor the region, and they are issued BEFORE the publish so the
+  publish's shared stores and the barrier skew sit under their latency.
+* THE RETURN LEG rides the V ring's `cp.async` prologue and write batch ZERO's
+  `produce_batch`. Both are window-line work that does not need `st` — the fold cannot
+  start without it, but the staging can.
+
+This is why the region MOVED (see below): it has to be disjoint from the panels and the
+ring those two covers write into.
+
+<a id="tied-hybrid"></a>
+### The tie takes the same win with no region at all
+
+At a tied arm `sa`/`ma` are `st`'s hi halves by register rename, so the tied form IS the
+hybrid with the transit elided: pack the lo plane, let `st` die, run the readout out of
+`sa`/`ma`, and rejoin from `sa`/`ma` + `st_lo` at the phase change. `kXchZero` still means
+zero bytes and zero barriers — but no longer a body that keeps two copies of the state
+live, which is what made the tied arm the most expensive one in registers under F1.
 
 <a id="xchmap"></a>
 ### The row map is affine, and that is what makes the address an immediate
@@ -1729,23 +1775,72 @@ cannot become unnecessary without the test saying so.
 <a id="ldx"></a>
 <a id="xch"></a>
 <a id="straddle-bytes"></a>
-### The transit costs no allocation, and that is what costs the third barrier
+### The region is the SECOND panel and the readout block, at both moments
 
 `LdX = kDv + kPadE` and the region is `BC * LdX * 2` — 18,432 B at the flagship. It is not
-allocated: it STRADDLES the V ring, the two panels and the readout staging block (38,912 B
-together), every one of which is dead at the window head, so the arm's SMEM total is
-unchanged and the CTA target stays 2.
+allocated: it STRADDLES `sw` (the second panel, 10,240 B) and `so` (the readout staging
+block, 8,704 B), and the arm's SMEM total and CTA target are unchanged.
+
+Those two tenants, and not F1's `sv + sr`, because the straddle now has to hold at BOTH of
+the transit's moments AND leave each leg's cover free to run:
+
+| moment | the region's bytes are | what runs against it |
+|---|---|---|
+| window head | `sw` = the PREVIOUS window's fold panel (dead behind the WAR edge); `so` = dead until PHASE 1's first fan-in | read batch 0's produce, into `sr` |
+| phase change | `sw`, `so` dead from the window line | the V ring's prologue into `sv`; write batch 0's produce, into `sr` |
+
+Both legs use ONE base, so the region is written twice with IDENTICAL bits and the round
+trip is the identity — which is what `test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it`
+asserts, at byte addresses, with the kernel's own arithmetic. The fold's panel ring
+therefore starts on `sr` rather than `sw`; its second batch lands in `sw` only after the
+fold loop's own barrier, which is already there.
 
 <a id="war"></a>
-### The WAR edge the straddle buys
+<a id="return-leg"></a>
+<a id="store-back"></a>
+<a id="writer-pull"></a>
+<a id="rejoin"></a>
+<a id="rejoin-mass"></a>
+### The barrier ledger, both legs, each one named
 
-Because the region straddles the FOLD's own tenants, the publish cannot begin until the
-PREVIOUS window's fold has finished reading them — and the fold's last MMAs are followed by
-no barrier. So the transit costs THREE `__syncthreads` per window, not the two its floor
-counted: the WAR edge, then publish→pull, then pull→region-reuse. Allocating the region
-instead of straddling it would remove the first, at 18,432 B that takes the flagship arm
-from two CTAs per SM to one. The count is a consequence of the straddle, not of the
-permutation.
+| # | edge | orders |
+|---|---|---|
+| 1 | WAR | the PREVIOUS window's fold reads of `sw` (its panel) before the publish writes them; the fold's last MMAs are followed by no barrier of their own |
+| 2 | publish → pull | every writer's hi halves are in the region before any reader pulls |
+| 3 | pull → reuse | every reader has pulled before PHASE 1 writes `sw` (batch 1's panel) and `so` (the fan-in staging) |
+| 4 | the window line | PHASE 1 is finished — and, now, that `sw`/`so` are free for the return leg. It was already there |
+| 5 | store-back → pull | every reader's fragments are back in the region before any writer pulls them |
+
+Five edges, of which FOUR existed under F1 (1, 2, 3 and the window line). The return leg
+costs exactly ONE new `__syncthreads` per window, and it costs no more than one because
+PHASE 2's own first tenants (`sv`, `sr`) are disjoint from the region by construction.
+Allocating the region instead of straddling it would remove edge 1, at 18,432 B that takes
+the flagship arm from two CTAs per SM to one — still open, still Blake's to rule.
+
+THE RETURN LEG'S TWO ACCESSES, since neither is the mirror image of its out-leg partner:
+
+* THE STORE-BACK is the pull run backwards, by hand, because Ampere has no `stmatrix`. The
+  reader knows where each A-fragment register came from — register `i` of `sa[kk][m]` is
+  the region's rows `kk*16 + (i>>1)*8 + 2*(lane&3)` and `+1` at logical granule `2m +
+  (i&1)` — so it writes the two halves back at exactly those two addresses. Four rows two
+  apart inside an aligned eight share one swizzle, so the four rows land in four different
+  four-bank blocks at eight consecutive channels: max-way one, no swizzle work.
+* THE WRITER'S PULL is `ldmatrix.trans` in the WRITE layout, and it is transposed for the
+  same reason the reader's is: a writer's accumulator pair `(e = 2h, 2h+1)` is two
+  CONSECUTIVE SLOTS at ONE channel, which is a column of the region, and `.trans` is the
+  form that hands a lane a column. `ldmatrix` takes an arbitrary row address PER LANE, so
+  the publisher's XOR-scattered rows are no obstacle: lane `q` of an eight supplies
+  `base ^ delta(j*8 + q)`, and the instruction hands rows `2*(L&3)` and `2*(L&3)+1` of that
+  set to lane `L` — which is that lane's own slot pair, in the order `join_hi_lo` expects.
+  Eight scattered rows at one granule is the access the swizzle has to spread, and it does:
+  `test_the_return_legs_two_accesses_are_max_way_one` proves both.
+
+THE REJOIN itself is `(hi << 16) | lo` per element and nothing else. The MASS is the one
+stated deviation: it rides row 0 of its own accumulator (`ones_a` zeroes the rest), so
+`mass_st[j][2..3]`, and every lane outside the first quad, are DEAD accumulators that no
+readout, fan-in or page store ever reads. They are re-seeded to zero at the rejoin instead
+of being transported, which makes the state deterministic where it used to carry
+accumulated garbage.
 
 <a id="kxchstate"></a>
 ### `kXchState`: three states, because two sizes cannot distinguish them
