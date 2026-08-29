@@ -40,11 +40,14 @@ build populated. That is the mechanism behind the goal this card names: the seco
 compile of the same ten translation units becomes a cache hit, not a second
 7-minute compile.
 
-**DEFAULT BEHAVIOUR.** `ROLA_SCCACHE` defaults to `"auto"`: use the pinned wrapper
-if it resolves and matches, otherwise build uncached and say so. `"0"` disables it
-outright. `"1"` REQUIRES it -- a missing or mismatched wrapper is a hard failure,
-for measurement runs and CI where a silent 0%-hit "pass" would be vacuous
-(`per-phase-gate-protocol`: a gate that cannot fail is not a gate).
+**DEFAULT BEHAVIOUR (K39, Blake ruling 2026-08-28: "a tool that can run one of two
+ways must REFUSE, not choose").** `ROLA_SCCACHE` defaults to `"auto"`, which is
+the SAME gate `"1"` used to be: the pinned wrapper must resolve and match, or the
+build REFUSES -- there is no silent uncached fallback left, so a build no longer
+differs in whether it was cached by nothing more than which binaries happened to
+be on a host's PATH. `"0"` is the one remaining non-refusing outcome: an EXPLICIT
+opt-out that builds uncached deliberately. `"1"` is kept as a synonym of the
+(now-identical) default, so an existing `ROLA_SCCACHE=1` invocation is unaffected.
 """
 from __future__ import annotations
 
@@ -92,6 +95,16 @@ def gate() -> dict | None:
     Runs BEFORE the wrapper is ever put in `PYTORCH_NVCC` or `ROLA_REAL_NVCC`'s
     caller path, for the same reason rules 1/3/5 run before the compile: refusing a
     mismatch after objects have already been produced under it helps nobody.
+
+    K39 (Blake ruling, 2026-08-28): "a tool that can run one of two ways must
+    REFUSE, not choose." A pin miss under the default mode used to print a
+    warning and silently continue uncached -- two builds of the identical source
+    could then differ in whether they were cached by nothing more than which
+    binaries happened to be on a given host's PATH that day, exactly the
+    reproducibility hazard closed-world rule 1 exists to close for `ptxas`. There
+    is now exactly one non-refusing outcome: `ROLA_SCCACHE=0`, an EXPLICIT,
+    deliberate opt-out (a caller's choice, not the gate's). Every other path --
+    not found, version mismatch, hash mismatch -- raises.
     """
     mode = os.environ.get("ROLA_SCCACHE", "auto")
     if mode == "0":
@@ -101,33 +114,28 @@ def gate() -> dict | None:
     p = pin()
     path = resolve_sccache()
     if path is None:
-        msg = (f"sccache: not found on PATH (or ROLA_SCCACHE_BIN). Pinned build is "
-               f"{p['version_string']} ({p['release_asset']}, {p['release_url']}).")
-        if mode == "1":
-            raise RuntimeError(
-                f"CLOSED-WORLD RULE 1 (sccache wrapper pin): ROLA_SCCACHE=1 requires "
-                f"the pinned cache and none was found.\n{msg}")
-        print(f"{msg} Building without a compiler cache (set ROLA_SCCACHE=1 to "
-              f"require it once installed).")
-        return None
+        raise RuntimeError(
+            f"CLOSED-WORLD RULE 1 (sccache wrapper pin): no `sccache` found on PATH "
+            f"(or $ROLA_SCCACHE_BIN). Pinned build is {p['version_string']} "
+            f"({p['release_asset']}, {p['release_url']}). Install the pinned build, "
+            f"or set ROLA_SCCACHE=0 to build uncached DELIBERATELY -- a build must "
+            f"not silently differ by whether a compiler cache happened to be "
+            f"installed.")
 
     version = sccache_version(path)
     digest = binary_sha256(path)
     if version != p["version_string"] or digest != p["binary_sha256"]:
-        msg = (
+        raise RuntimeError(
             "CLOSED-WORLD RULE 1 (sccache wrapper pin): the resolved `sccache` does "
             f"not match tools/sccache_pin.json.\n"
             f"  pinned  : {p['version_string']}  sha256 {p['binary_sha256'][:16]}...\n"
             f"  resolved: {version}  sha256 {digest[:16]}...  ({path})\n"
             "A cache under an unpinned wrapper can serve an object nobody measured "
-            "this ratification against. Install the pinned build, or move the pin "
+            "this ratification against. Install the pinned build, move the pin "
             "DELIBERATELY (tools/sccache_pin.json) after re-verifying the bit-"
-            "identity gate (docs/build.md#sccache) under the new one."
+            "identity gate (docs/build.md#sccache) under the new one, or set "
+            "ROLA_SCCACHE=0 to build uncached DELIBERATELY."
         )
-        if mode == "1":
-            raise RuntimeError(msg)
-        print(f"sccache PIN MISMATCH -- building without a compiler cache.\n{msg}")
-        return None
 
     print(f"sccache OK  {version}  sha256 {digest[:16]}...  ({path})")
     return {"version": version, "sha256": digest, "path": path}

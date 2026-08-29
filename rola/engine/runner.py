@@ -28,6 +28,30 @@ from rola.engine.types import Mask
 _STREAMS = ("host", "main", "side")
 
 
+def _nvtx_push(name: str) -> None:
+    """Open an NVTX range named for the DAG node about to execute.
+
+    Instrumented ONCE here, in the walk every DAG (`chunk_dag`, `decode_dag`,
+    any future family) goes through, rather than per node function — a new
+    node needs no opt-in to appear in `nsys`. Guarded so a CPU-only import (no
+    CUDA context) never raises: NVTX ranges are a profiling aid, never a
+    correctness dependency, and their absence must never change behavior
+    (K39 card, docs/measurement.md "the sanitizer gap"-adjacent instrument for
+    "what is the span" arguments).
+    """
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.nvtx.range_push(name)
+
+
+def _nvtx_pop() -> None:
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.nvtx.range_pop()
+
+
 @dataclass(frozen=True, slots=True)
 class Node:
     """One declared unit of the walk: its facts, its edges and its discipline."""
@@ -198,7 +222,11 @@ def run(dag: tuple[Node, ...], facts: dict) -> dict:
         if table is not None and key in table:
             produced = table[key]
         else:
-            produced = step(facts)
+            _nvtx_push(step.name)
+            try:
+                produced = step(facts)
+            finally:
+                _nvtx_pop()
             if table is not None:
                 table[key] = produced
         if len(step.gives) == 1:

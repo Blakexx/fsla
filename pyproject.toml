@@ -106,6 +106,27 @@ markers = [
   # A LATENCY gate, not a correctness gate: it belongs to the nightly `bench` job
   # and is deselected everywhere else, so a noisy machine can never fail a merge.
   "bench: per-(cell, arm) latency against the committed baseline",
+  # K39: a hypothesis-drawn (widths, k_tok, seed, cohort, d_v) sweep over the
+  # oracle's `Cell` space, with shrinking. A SUPPLEMENT to the fixed named
+  # cells (`rola-oracle-tests`: "never invent a new one ad hoc"), not a
+  # replacement -- opt-in for the same reason `bench` is: an unbounded search
+  # has no place in the default battery's runtime budget.
+  "hypothesis_cells: hypothesis-drawn oracle cell sweep (opt-in, deselected by default)",
 ]
-#: `bench` is opt-in. Selecting it is an explicit `-m bench`.
-addopts = "-m 'not bench'"
+#: `bench` and `hypothesis_cells` are both opt-in; select either with `-m bench`
+#: / `-m hypothesis_cells`.
+addopts = "-m 'not bench and not hypothesis_cells'"
+#: K39: a per-test wall so a hung kernel (a divergent `__syncwarp`, an
+#: unreleased `flock`) becomes a NAMED failure instead of a stuck CI runner or
+#: a live GPU held forever behind `/tmp/rola_gpu.lock` for every other agent
+#: (KERNEL_STANDARDS §14, "a hang here blocks the whole flock queue"). 120s is
+#: a conservative floor above every gated test's observed wall (the slowest
+#: class on record, `test_oracle_gradcheck.py`'s double-precision backward
+#: sweeps, runs in low tens of seconds) -- re-derive downward once per-test
+#: timings are collected, never loosen it to chase a single slow test without
+#: re-deriving. `timeout_method = "thread"`: the signal-based default cannot
+#: interrupt a blocked CUDA call (the driver call is outside the interpreter's
+#: signal-check points), so a real device hang would ignore SIGALRM and never
+#: fire the timeout at all.
+timeout = 120
+timeout_method = "thread"

@@ -149,9 +149,34 @@ exactly); set to a host path, Docker bind-mounts that path and creates it if
 missing. No path is hard-coded to a home directory either way
 (KERNEL_STANDARDS.md §17).
 
+## 3b. Building on the bare host (no container) needs `mold`
+
+K39 (Blake ruling, 2026-08-28): `mold` is THE extension's linker unconditionally
+-- `setup.py` refuses to build without it, no fallback to `ld.bfd`/`ld.gold`
+(`tools/mold_toolchain.py`, `tools/mold_pin.json`). Inside the container it is
+already installed (the `Dockerfile`'s pinned release, below); on a bare host
+with no root and no apt package for it (measured on this repo's own dev box:
+`apt-cache policy mold` has no candidate on Ubuntu 22.04, and there is no
+passwordless sudo to install one even if there were), vendor the SAME pinned
+release USER-LOCALLY -- no install step, no root:
+
+```bash
+curl -sSL -o mold.tar.gz \
+  https://github.com/rui314/mold/releases/download/v2.42.0/mold-2.42.0-x86_64-linux.tar.gz
+echo "f5ed2f6e31d1ada4f07fe766fe0de7a73104d1c5cdc59086fcecc16a43720b6d  mold.tar.gz" | sha256sum -c -
+tar xzf mold.tar.gz -C /some/persistent/dir
+export MOLD_PATH=/some/persistent/dir/mold-2.42.0-x86_64-linux/bin/mold
+```
+
+`MOLD_PATH` (or a `mold` already resolvable on `PATH`) is what
+`tools/mold_toolchain.py:link_flags()` checks before every build; the sha256
+above is the exact pin `tools/mold_pin.json` and the `Dockerfile`'s
+`MOLD_SHA256` ARG both carry, so the host and the container link with the
+byte-identical binary.
+
 ## 4. First build of the SHIPPED set
 
-Inside the container:
+Inside the container (or on the bare host with `mold` vendored per 3b above):
 
 ```bash
 pip install -e . --no-build-isolation

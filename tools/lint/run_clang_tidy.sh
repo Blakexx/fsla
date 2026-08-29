@@ -23,15 +23,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CC_JSON="${1:-$ROOT/compile_commands.json}"
 
 if [[ ! -f "$CC_JSON" ]]; then
-  # Try to generate one from an already-built tree; SKIP (exit 0) rather than
-  # fail a commit/CI run that has no build yet -- this check needs an
-  # artifact the other lints don't, and requiring a ~7-minute AOT build
-  # before every commit would violate "local small" (this is a lint
-  # convenience, not a correctness gate the way ratify is).
+  # K39 (Blake ruling, 2026-08-28): "pre-commit can never be green by
+  # absence." Try to generate one from an already-built tree
+  # (`docs/build.md`'s documented, fixed `build/temp` dir); if there is
+  # nothing to generate it FROM, FAIL with the exact command to run, never
+  # exit 0 on a check this script did not actually perform.
   if ! "$ROOT/tools/lint/compdb.sh" "$CC_JSON" >/dev/null 2>&1; then
-    echo "run_clang_tidy.sh: SKIPPED -- no build/temp to read a compile database from."
-    echo "  Build first (pip install -e . --no-build-isolation) to exercise this check."
-    exit 0
+    echo "run_clang_tidy.sh: FAILED -- no build/temp to read a compile database from." >&2
+    echo "  Run this first, then re-run this script:" >&2
+    echo "    pip install -e . --no-build-isolation" >&2
+    exit 1
   fi
 fi
 

@@ -60,3 +60,10 @@ Per KERNEL_STANDARDS §16 addenda 1-2: an instruction ledger is NECESSARY, NOT S
 ledger table carries wall/cycles, IPC, and the top `smsp__warp_issue_stalled_*` reasons beside
 instruction counts. A stage whose instructions FALL while its TIME RISES is RED — report it as a
 regression, never rationalize it as "fewer instructions, so it must be fine" (§16 addendum 2).
+
+## The compile ledger's visual form (K39)
+`tools/build/ninjatracing.py` turns a `build/temp/.ninja_log` into a Chrome/Perfetto trace
+(`chrome://tracing` or ui.perfetto.dev) — one row per compiled TU, tracks assigned by greedy
+interval scheduling onto the fewest parallel slots the log implies. Run it after any build whose
+`build/temp/.ninja_log` you want to SEE rather than just total; it does not replace the numeric
+per-TU ledger (KERNEL_STANDARDS §16 addendum 3), it is the same facts laid out on a timeline.

@@ -61,3 +61,18 @@ kernel's SEAM output against the CENSUS (`rola.ops.carry.arms()`) — a seam tha
 from the census row it claims to serve is the shared-router-bug shape (`matching-the-naive
 antipattern`): validating a variant only against itself, never against the one canonical ground
 truth (the fp64 reference in `tests/k31/reference.py`).
+
+## The compute-sanitizer named gate (K39)
+`tools/sanitize_oracle.py` runs `racecheck`/`synccheck`/`initcheck` (memcheck already ran, ad hoc,
+on paging — `docs/testing.md`'s "sanitizer lane") against one named cell per family (carry, intra,
+decode), each its own `compute-sanitizer`-wrapped pytest process under `flock /tmp/rola_gpu.lock`.
+Run it — it is a SCHEDULED lane, not a PR gate (the tools cost one to two orders of magnitude) —
+whenever a change touches shared-memory publish/consume protocols or barrier placement (the S2d
+ring's bug class), not on every commit.
+
+## The hypothesis `cells` strategy (K39)
+`tests/k31/test_carry_hypothesis_cells.py` draws (widths, k_tok, seed, cohort, d_v) over the
+DECLARED arm/`d_v` space via a `st.composite` strategy, opt-in under the `hypothesis_cells` marker
+(deselected by default alongside `bench` — `pyproject.toml`'s `addopts`). A SUPPLEMENT to the fixed
+named cells above, never a replacement — run it with `-m hypothesis_cells` when you want shrinking
+to find a minimal failing cell automatically, not as part of the default battery.

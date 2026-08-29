@@ -33,7 +33,30 @@ mamba-ssm require the same thing for the same reason.
 | `ROLA_SKIP_POST_BUILD_RATIFY` | Skips the post-build gate. For iterating on non-kernel code only; a shippable binary is one that passed it. |
 | `ROLA_STRICT_MANIFEST` | (K43) `0`/unset (default): the two post-build gates (the fatbin's manifest-describes-binary sub-check, `tools/ratify.py`'s own re-run) REPORT a mismatch against the committed `tools/manifests/sm_XX.json` and the install still succeeds — KERNEL_STANDARDS.md §16 makes that manifest stale between milestones by design, so failing the install on it would fail every ordinary stage build. `1`: restores the pre-K43 hard failure. **The milestone/CI gate build sets it** — it is the build that immediately precedes `tools/ratify.py --write`, so it is the one build that must fail loudly if the tree it is about to ratify is not actually shippable yet. Structural checks (the shard partition actually matching the arm list, the dispatch's link closure) are never affected by this variable — those are properties of the build's own source/binary pair, not of the ratified snapshot, and stay fatal unconditionally. |
 | `ROLA_SCCACHE` | `auto` (default): use the pinned `sccache` if it resolves and matches; else build uncached. `1`: REQUIRE it -- a missing or mismatched wrapper is a hard failure. `0`: disable. See [below](#sccache). |
+| `ROLA_SCCACHE` | `auto` (default, K39): REQUIRE the pinned `sccache` -- a missing or mismatched wrapper is a hard failure, no uncached fallback. `1`: a synonym of the default, kept for existing invocations. `0`: an EXPLICIT, deliberate opt-out that builds uncached. See [below](#sccache). |
 | `ROLA_SCCACHE_BIN` | Overrides the `sccache` binary `ROLA_SCCACHE` resolves, the same way `CUDA_HOME` overrides `nvcc`/`ptxas`. |
+
+### Running a build under the shared lock (`tools/build/build_lock.sh`)
+
+An **iteration build** (single-arch, `ROLA_CARRY_ARMS` subset) and a **gate build**
+(both arches, the shipped set) both compete for the same host RAM `MAX_JOBS` is
+sized against; running one of each at once can OOM the host (K37's own §14
+addendum finding, one level up: concurrent GPU-lock work already did this once
+for a different resource). K39 (Blake ruling, 2026-08-28) unifies what used to
+be two separate mechanisms -- `N` parallel iteration slots and a wholly
+separate exclusive lock file -- into `tools/build/build_lock.sh [--gate] --
+<cmd>`: an iteration build takes ONE of `ROLA_BUILD_SLOTS` (default 2) slot
+locks; a gate build (`--gate`) takes EVERY slot before running, so the two
+disciplines share one set of lock files and cannot overlap.
+
+```bash
+# iteration: single-arch, arm-subset
+tools/build/build_lock.sh -- env ROLA_CUDA_ARCHS=86 ROLA_CARRY_ARMS=all \
+  pip install -e . --no-build-isolation
+
+# gate: both arches, the shipped set
+tools/build/build_lock.sh --gate -- pip install -e . --no-build-isolation
+```
 
 ## What the build does, in order
 
@@ -175,8 +198,10 @@ instead of a second cold compile. `tools/sccache_pin.json` pins an exact
 [sccache](https://github.com/mozilla/sccache) build (version, release asset,
 tarball and binary sha256, verified against upstream's published `.sha256`);
 `tools/sccache_toolchain.py` resolves and gates it (closed-world rule 1's
-extension -- an unpinned or mismatched cache is refused, falling back to an
-uncached build, never used silently) before wiring `tools/sccache_nvcc.py` in
+extension -- an unpinned or mismatched cache is REFUSED, full stop; K39, Blake
+ruling 2026-08-28, "a tool that can run one of two ways must REFUSE, not
+choose": the only non-refusing outcome is `ROLA_SCCACHE=0`, an explicit
+opt-out, never a silent uncached fallback) before wiring `tools/sccache_nvcc.py` in
 as `PYTORCH_NVCC` (`setup.py`) and as the compiler `tools/ratify.py`'s
 post-build recompile uses. The wrapper is a pure pass-through -- it never
 resolves `nvcc` itself, only `exec`s the exact already-`ptxas`-gated path its

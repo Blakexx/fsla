@@ -262,18 +262,144 @@ def check_no_sync_after_decode_prologue() -> list[str]:
     return findings
 
 
-def main() -> int:
-    all_findings: list[str] = []
-    all_findings += check_unroll_discipline()
-    all_findings += check_no_torch_in_arm_tus()
-    all_findings += check_no_sync_after_decode_prologue()
+#: K39 (Blake, 2026-08-28): the 2026-08-04 comments-to-docs mandate names "well
+#: under 15%" as the line -- a named constant, not a number buried in an f-string,
+#: so a future re-derivation of the threshold has exactly one place to change it.
+COMMENT_DENSITY_THRESHOLD = 0.15
 
-    if not all_findings:
-        print("lint_standards: no findings")
+#: The mandate's own grain: FILE-HEADER and DECL-BLOCK comments are what stays;
+#: granular prose belongs in docs/internals/ mirroring csrc/. A comment RUN this
+#: long, found OUTSIDE the file's opening header block, is the shape the mandate
+#: calls an antipattern -- a decl-block comment names what a declaration IS, it
+#: does not walk a reader through a derivation.
+MAX_COMMENT_BLOCK_LINES = 6
+
+_CSRC = ROOT / "csrc"
+_SOURCE_SUFFIXES = (".cu", ".cuh", ".cpp", ".h")
+
+
+def _source_files():
+    for suf in _SOURCE_SUFFIXES:
+        for p in _CSRC.rglob(f"*{suf}"):
+            if "third_party" in p.parts:
+                continue
+            yield p
+
+
+def _comment_density(lines: list[str]) -> tuple[int, int]:
+    """`(comment_lines, total_lines)`, counting `//` line comments and `/* */`
+    block comments (a comment line inside an unterminated block still counts,
+    even with no leading `//` of its own)."""
+    comment = 0
+    in_block = False
+    for line in lines:
+        s = line.strip()
+        if in_block:
+            comment += 1
+            if "*/" in s:
+                in_block = False
+            continue
+        if s.startswith("//"):
+            comment += 1
+        elif s.startswith("/*"):
+            comment += 1
+            if "*/" not in s:
+                in_block = True
+    return comment, len(lines)
+
+
+def check_comment_density() -> list[str]:
+    """Per-file comment-line fraction under `csrc/`, KERNEL_STANDARDS' 2026-08-04
+    comments-to-docs mandate. REPORTED, not gated to zero: these are findings for
+    Blake to rule on (S5b moves the prose to `docs/internals/`), never silently
+    fixed or silenced by this script -- same treatment every other check here
+    gets (module docstring)."""
+    findings = []
+    for p in _source_files():
+        lines = p.read_text().splitlines()
+        if not lines:
+            continue
+        comment, total = _comment_density(lines)
+        density = comment / total
+        if density > COMMENT_DENSITY_THRESHOLD:
+            findings.append(
+                f"comment density (2026-08-04 comments-to-docs mandate, 'well "
+                f"under {COMMENT_DENSITY_THRESHOLD:.0%}'): {p.relative_to(ROOT)}: "
+                f"{comment}/{total} lines = {density:.0%} comment -- move the "
+                f"prose to docs/internals/, decl-block/file-header comments only"
+            )
+    return findings
+
+
+def check_no_long_comment_blocks() -> list[str]:
+    """A `//`-comment run longer than `MAX_COMMENT_BLOCK_LINES`, found OUTSIDE
+    the file's own opening header block (the copyright/module-docstring run
+    starting at line 1), is a NEW prose block the comments-to-docs mandate
+    exists to keep out -- reported the same way `check_comment_density` is,
+    never auto-fixed."""
+    findings = []
+    for p in _source_files():
+        lines = p.read_text().splitlines()
+        n = len(lines)
+        header_end = 0
+        while header_end < n and (lines[header_end].strip().startswith("//")
+                                   or lines[header_end].strip() == ""):
+            header_end += 1
+        i = header_end
+        while i < n:
+            if lines[i].strip().startswith("//"):
+                start = i
+                while i < n and lines[i].strip().startswith("//"):
+                    i += 1
+                block_len = i - start
+                if block_len > MAX_COMMENT_BLOCK_LINES:
+                    findings.append(
+                        f"comment block (2026-08-04 comments-to-docs mandate, "
+                        f"decl-block grain <= {MAX_COMMENT_BLOCK_LINES} lines): "
+                        f"{p.relative_to(ROOT)}:{start + 1}-{i}: a {block_len}-line "
+                        f"comment run outside the file header -- prose this long "
+                        f"belongs in docs/internals/, not a new `//:` block here"
+                    )
+            else:
+                i += 1
+    return findings
+
+
+def main() -> int:
+    #: THESE THREE are wired as a BLOCKING pre-commit/CI gate
+    #: (.pre-commit-config.yaml, .github/workflows/lint.yml) -- a nonzero exit
+    #: here fails every commit and every CI run, repo-wide.
+    gating_findings: list[str] = []
+    gating_findings += check_unroll_discipline()
+    gating_findings += check_no_torch_in_arm_tus()
+    gating_findings += check_no_sync_after_decode_prologue()
+
+    #: K39 (Blake, 2026-08-28): comment density and long-comment-block findings
+    #: are ADVISORY, NOT gating, deliberately. `csrc/` is ~40 files over the
+    #: mandate's 15% line TODAY (S5b is the stage that moves the prose to
+    #: docs/internals/ -- "these are findings, not to be fixed by you" is the
+    #: instruction this branch received). Wiring them into the SAME exit code
+    #: as the three checks above would fail every future commit on PRE-EXISTING
+    #: debt this stage did not create, for every contributor, until S5b lands --
+    #: a gate that goes red on touching an unrelated line is a gate nobody can
+    #: satisfy. They are reported here, every run, so the debt stays visible and
+    #: S5b has a checkable before/after, without blocking anything today.
+    advisory_findings: list[str] = []
+    advisory_findings += check_comment_density()
+    advisory_findings += check_no_long_comment_blocks()
+
+    if advisory_findings:
+        print(f"lint_standards: {len(advisory_findings)} ADVISORY finding(s) "
+              f"(not gating -- comments-to-docs mandate debt, pending S5b)")
+        for f in advisory_findings:
+            print(f"  {f}")
+
+    if not gating_findings:
+        print("lint_standards: no gating findings")
         return 0
 
-    print(f"lint_standards: {len(all_findings)} finding(s)")
-    for f in all_findings:
+    print(f"lint_standards: {len(gating_findings)} gating finding(s)")
+    for f in gating_findings:
         print(f"  {f}")
     return 1
 
