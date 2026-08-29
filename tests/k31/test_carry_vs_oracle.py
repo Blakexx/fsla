@@ -48,51 +48,7 @@ FLAG = ((256, 256), 4, 8, carry_ops.WINDOW)       # N = 65536, BC = 128, owners 
 #: an atom is level 3's whole span times two of level 2's digits.
 DEEP3 = ((16, 16, 16), 2, 16, carry_ops.WINDOW_SMALL)   # s = (2, 4, 16),   owners = 32
 DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owners = 32
-#: THE MULTI-LEVEL CARVE ARM (K35 S1).  The owner box is the WHOLE topology --
-#: `s = (4, 4, 4, 4)`, one owner -- and each SIDE carves TWO levels of it: write spans
-#: `[1, 4, 2, 4]`, read spans `[4, 1, 4, 2]`, eight streams of 32 leaves either way and
-#: one warp per stream.  Under `ALT4` each side carves exactly where it is sparse.
-CARVE4 = ((4, 4, 4, 4), 4, 1, carry_ops.WINDOW_SMALL)
-CARVE4_KEY = (4, 4, 4, 1, 64, carry_ops.WINDOW_SMALL, 32, 1)
-#: THE 1x8 CONTAINER ARMS (K35 S3a).  The SAME cell as `flagship ALT` -- box `[8, 16]`,
-#: `W = 384`, the ALT declaration -- reached with EIGHT executors instead of four, by
-#: the two routes the card leaves to measurement: four write streams column-split two
-#: ways (`SW = [2,16]`, WPS = 2) and eight write streams one warp each (`SW = [1,16]`,
-#: WPS = 1).  Both read-carve at eight streams (`SR = [8,2]`), because the read side is
-#: declared at ONE STREAM PER WARP.
-CONT_SPLIT = carry_ops.CONTAINER_1X8_SPLIT
-CONT_STREAMS = carry_ops.CONTAINER_1X8_STREAMS
 D_V = carry_ops.D_V
-WIDE = carry_ops.D_V_WIDE
-CONT_SPLIT_KEY = (2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, CONT_SPLIT)
-CONT_STREAMS_KEY = (2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, CONT_STREAMS)
-#: THE `d_v = 128` ARMS (K35 S3b).  `d_v` is the third dial and part of an arm's key, so
-#: the two container declarations reappear at the wide value plane -- SAME cell, SAME
-#: box `[8, 16]`, sixteen leaves per warp either route -- and a THIRD container joins
-#: them: 2x4 at `BC = 64`, which halves the CTA's box instead of doubling its warps and
-#: reaches sixteen leaves per warp under the ruled one-warp-per-stream map.  `BC = 64`
-#: is `(k, m) = (4, 4)` on the flagship topology: spans `[4, 16]`, 1024 owners.
-WIDE_SPLIT_KEY = (2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_SPLIT)
-WIDE_STREAMS_KEY = (2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_STREAMS)
-WIDE_2X4_KEY = (2, 256, 4, 4, WIDE, carry_ops.WINDOW, 32, carry_ops.LEAF_SPLIT)
-#: THE PARK'S TWINS (K35 S5).  `PARKED` is BIT 2 of the declaration scalar, so a parked
-#: arm is the same cell, box and executor map as the row it twins -- what differs is
-#: that the write-view `lo` spends the readout in SMEM instead of in registers (P76 F5).
-#: The three wide containers are the arms the park exists for and the flagship `d_v = 64`
-#: ALT arm is the control.
-PARK = carry_ops.PARKED
-PARK_KEYS = {(2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_SPLIT + PARK),
-             (2, 256, 4, 8, WIDE, carry_ops.WINDOW, 32, CONT_STREAMS + PARK),
-             (2, 256, 4, 4, WIDE, carry_ops.WINDOW, 32, carry_ops.LEAF_SPLIT + PARK),
-             (2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, carry_ops.LEAF_SPLIT + PARK)}
-#: THE DENSE DECLARATIONS ON THE CARVED BODY (K35 S1c).  Rows 11 and 13 again -- the
-#: flagship cell, the 1x8 column split -- declared DENSE_BOTH instead of ALT, at both
-#: widths.  They are the only rows in the list that are dense AND carved, which is what
-#: makes the carved body measurable at a dense cell; the seam still serves a production
-#: dense declaration from the CHANNEL-SPLIT body and these rows change no dispatch.
-DENSE_CARVED_KEYS = {CONT_SPLIT_KEY, WIDE_SPLIT_KEY}
-#: (widths, k, m, W) for the `BC = 64` box, in the shape `run`/`ref` read.
-FLAG_HALF = ((256, 256), 4, carry_ops.CAP_BC64, carry_ops.WINDOW)
 #: the ALTERNATING declaration packed as the seam's word, at depth four.
 ALT4 = 102
 
@@ -130,18 +86,17 @@ def test_arms_are_the_declared_solver_rows():
     the table's own properties are asked of `gen_shards.CARRY_ARMS`.
 
     An arm is `(topology, d_v, declaration)`: the declaration chooses the BODY, so the
-    same topology appears once per declaration built for it.  DENSE_BOTH is built
-    for every topology it is the seam's answer FOR -- which is every one but the
-    multi-level carve arm, whose box is the whole topology and whose carve is the
-    point of the arm.  A declaration with no body built for it is REFUSED at every
-    topology (K35 R-B): DENSE_BOTH is served when it is DECLARED and never as a
-    substitute for something else.  The DECLARATION SCALAR (`a[6]`) names the arm's (carve, executor map),
-    so the two 1x8 container rows share the flagship's topology and window and differ
-    from it and from each other only there (`a[7]`).  `d_v` (`a[4]`) is part of the key too
-    (K35 S3b), so the two container declarations appear once per built width and the
-    2x4 container is a row of its own -- same topology, a different capacity.  BIT 2 of
-    the declaration is the PARK (K35 S5), so each parked twin is a row whose key differs
-    from its own twin's in that bit alone.
+    same topology appears once per declaration built for it.  A declaration with no
+    body built for it is REFUSED at every topology (K35 R-B): DENSE_BOTH is served when
+    it is DECLARED and never as a substitute for something else.
+
+    SINCE M1P THE LIST IS ONE SHAPE.  The transplanted M1a body is four warps, ONE warp
+    per stream, one order and `d_v = 64`, so every carved row carries that executor map
+    and every row carries that width; the containers, the wide plane, the park, the
+    tied arm and the dense declarations on the carved body left with the mechanisms
+    that served them, and each returns with the stage that rebuilds one.  What survives
+    as a property of the table is therefore stronger than before: EVERY topology
+    carries the DENSE_BOTH body, with no carved exception at all.
     """
     declared = [tuple(row[:9]) for row in gen_shards.CARRY_ARMS]
     reported = [tuple(a[:9]) for a in carry_ops.arms()]
@@ -150,73 +105,42 @@ def test_arms_are_the_declared_solver_rows():
     assert reported == [row for row in declared if row in set(reported)], (
         "the built rows must be the declared rows, in the declared order")
     #: THE PROPERTIES BELOW ARE THE TABLE'S, so they are asked of the DECLARED rows and
-    #: not of the subset a build carries: a default build compiles the SHIPPED rows only
-    #: (K36), and "every other topology carries the DENSE_BOTH body" is a statement about
-    #: the list rather than about which of its arms a given `.so` was asked for.
+    #: not of the subset a build carries.
     keys = {row[:8] for row in declared}
-    carved_only = {CARVE4_KEY, CONT_SPLIT_KEY, CONT_STREAMS_KEY,
-                   WIDE_SPLIT_KEY, WIDE_STREAMS_KEY, WIDE_2X4_KEY} | PARK_KEYS
     dense = {row[:8] for row in declared if row[8] == 0}
-    assert keys - carved_only <= dense, (
-        "every other topology must carry the DENSE_BOTH body")
-    #: AND TWO CARVED KEYS ARE DENSE TOO (K35 S1c): a declaration being DENSE_BOTH no
-    #: longer implies the channel-split body.  The dense rows are now every uncarved key
-    #: PLUS exactly the two the compare exists for, named rather than counted so a third
-    #: appearing is a failure and not a silently widened set.
-    assert dense - (keys - carved_only) == DENSE_CARVED_KEYS, (
-        "the only DENSE_BOTH rows on the carved body are S1c's compare arms")
-    #: THE WIDE PLANE IS THE CHANNEL-SPLIT BODY'S REFUSAL, by that body's own arithmetic:
-    #: it gives each of a fixed four warps exactly one MMA m-tile of channels, so its
-    #: width IS its executor count and 128 is not a declaration it can take.  The law is
-    #: about the BODY, so it is asked of the body -- `a[12] == -1` is the arm whose read
-    #: side carves nothing -- and not of the declaration, which no longer selects it.
-    assert all(a[4] == D_V for a in carry_ops.arms() if a[12] == -1)
+    assert keys == dense, "every topology must carry the DENSE_BOTH body"
+    #: ONE EXECUTOR MAP AND ONE WIDTH (K35 M1P), read off the declared row: `WPS` is the
+    #: row's tenth field, the two stream counts its eleventh and twelfth, and the park
+    #: its last.  A row that breaks any of these has no body in this tree.
+    for row in gen_shards.CARRY_ARMS:
+        D, B, k, m, d_v, W, C, CV, MO, WPS, NSW, NSR, PK = row
+        assert d_v == D_V, f"{row}: M1P builds one value width"
+        assert (WPS, PK, CV) == (1, 0, carry_ops.LEAF_SPLIT), (
+            f"{row}: one warp per stream, no park, the ruled carve")
+        assert NSW == NSR, f"{row}: M1P carves the box once, in the read side's order"
     for arm in carry_ops.arms():
         D, B, k, m, d_v, W, C, carve, modes, BC, owners, smem, level = arm
-        assert d_v in (D_V, WIDE)
+        assert d_v == D_V
         _, spans_host, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
         assert (BC, owners) == (bc_host, owners_host), (
             "the device box and the host solver disagree about the owner's shape")
         #: the carve level is the innermost level the READ side carves, or -1 for the
         #: channel-split body.  IT IS READ OFF THE DERIVED VECTOR (K35 S1b) and no longer
         #: assumed to be the innermost level the read side is SPARSE at: under ORDER BY
-        #: MODE the read side carves the OUTERMOST levels of its own order, which is a
-        #: different level whenever a BOTH_SPARSE level sits outside a dense one -- the
-        #: tied arm carves level 0 while being dense at level D-1.  Comparing the seam's
-        #: reported level against the census's reported vector also makes this a
+        #: MODE the read side carves the OUTERMOST levels of its own order.  Comparing
+        #: the seam's reported level against the census's reported vector makes this a
         #: cross-check of two derivations rather than a restatement of one.
         sr = list(carry_ops.build_stamp([B] * D, k, m, W, C, carve, modes, d_v))[20:24]
         carved = [l for l in range(D) if sr[l] < int(spans_host[l])]
         assert level == (max(carved) if carved else -1), (
             f"the seam reports carve level {level}, but the derived read vector "
             f"{sr[:D]} against the owner box {list(spans_host)} carves {carved}")
-
-
-def test_s3b_the_wide_arms_are_sixteen_leaves_per_warp():
-    """THE CARD'S CONTAINERS CLAUSE, asserted off the device rather than commented.
-
-    At ``d_v = 128`` sixteen leaves per warp is REQUIRED (P76 CONTAINERS), and the three
-    built containers are the three ways to get there: 1x8 at ``BC = 128`` by a column
-    split, 1x8 at ``BC = 128`` by eight write streams, and 2x4 at ``BC = 64`` by halving
-    the CTA's box.  ``stamp[7] // 32`` is the executor budget, ``stamp[14]`` the WRITE
-    stream count and ``stamp[15]`` the arm's ``d_v``, so all three dials are read back
-    from the binary and the leaves-per-warp claim is arithmetic on them.
-    """
-    assert_fresh_binary()
-    want = {(FLAG, CONT_SPLIT): (8, 4, 2), (FLAG, CONT_STREAMS): (8, 8, 1),
-            (FLAG_HALF, CARVE): (4, 4, 1)}
-    for (arm, declaration), (warps, streams, wps) in want.items():
-        widths, k, m, W = arm
-        _, _, _, bc, _ = carry_ops.box_shape(list(widths), k, m)
-        stamp = carry_ops.build_stamp(widths, k, m, W, 32, declaration, 6, d_v=WIDE)
-        assert stamp[15] == WIDE, f"{arm} {declaration}: the arm's d_v"
-        assert stamp[7] // 32 == warps and stamp[14] == streams
-        assert stamp[7] // 32 == stamp[14] * wps
-        assert bc // warps == 16, "the wide plane's executor holds sixteen leaves"
-    #: and the SAME cell at the narrow plane still holds thirty-two, which is what says
-    #: the width moved the box rather than the arm list gaining an unrelated row.
-    stamp = carry_ops.build_stamp(FLAG[0], FLAG[1], FLAG[2], FLAG[3], 32, CONT_SPLIT, 6)
-    assert stamp[15] == D_V and 128 // (stamp[7] // 32) == 16
+        #: AND THE TWO SIDES' VECTORS AGREE, because M1P carves once: the census reports
+        #: the write spans at [16:20] and the read spans at [20:24], and the exchange's
+        #: transit and state (the last two fields) are ZERO because there is none.
+        st = list(carry_ops.build_stamp([B] * D, k, m, W, C, carve, modes, d_v))
+        assert st[16:20] == st[20:24], "M1P walks ONE span vector on both sides"
+        assert st[24] == 0 and st[25] == 0, "M1P has no exchange to size or to state"
 
 
 # ---------------------------------------------------------------- the lattice
@@ -496,251 +420,7 @@ def test_deep_box_is_the_derived_one(arm, spans, atom):
     assert leaves == 16 * atoms and atoms >= 1
 
 
-# ------------------------------------------- the MULTI-LEVEL carve, D = 4
-
-@pytest.mark.parametrize("k_tok", [None, 2], ids=["dense", "k2"])
-def test_m4_the_multi_level_carve_matches_the_fp64_oracle(k_tok, carve=CARVE):
-    """TWO CARVED LEVELS PER SIDE, against the fp64 oracle in CANONICAL order.
-
-    This is the arm the single-level carve could not state: the write side owns
-    `[1, 4, 2, 4]` of the box `[4, 4, 4, 4]` and the read side `[4, 1, 4, 2]`, so
-    each side's stream box is an affine RECTANGLE that is not a contiguous run of
-    leaves, and each side's private order has TWO levels moved outermost.  A leaf-map
-    or ownership error surfaces here as a permutation of the state plane, not noise.
-    """
-    assert_fresh_binary()
-    widths, k, m, W = CARVE4
-    require_arm(widths, k, m, W, 32, carve, ALT4)
-    cell = (Cell(widths, T=256, k_tok=None, seed=8) if k_tok is None
-            else alt_cell(widths, T=256, k_tok=k_tok, seed=88))
-    num, den, plane = carry_ops.carry_inter(
-        cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths, k=k, m=m, window=W,
-        chunk=32, carve=carve, level_modes=ALT4)
-    n_ref, d_ref, s_ref = ref(cell, CARVE4)
-    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
-                    n_ref) < BF16_RTOL
-    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
-    got = canonical_from_lattice(plane, widths, k, m)
-    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
-
-
-def test_the_multi_level_carve_arm_is_eight_streams_of_thirty_two_leaves():
-    """The declaration's arithmetic, asserted rather than commented: both sides cut
-    the same box into the SAME number of streams (this stage's 1:1 executor map) and
-    each carves two levels."""
-    widths, k, m, _ = CARVE4
-    _, spans, groups, bc, owners = carry_ops.box_shape(widths, k, m)
-    assert tuple(spans) == (4, 4, 4, 4) and bc == 256 and owners == 1
-    write, read = (1, 4, 2, 4), (4, 1, 4, 2)
-    for side in (write, read):
-        assert all(s <= w and w % s == 0 for s, w in zip(side, spans))
-        assert math.prod(w // s for s, w in zip(side, spans)) == 8
-        assert math.prod(side) == 32
-        assert sum(1 for s, w in zip(side, spans) if s < w) == 2
-        assert side[-1] >= 2, "the pair level must hold at least two adjacent leaves"
-
-
-# ------------------------------------------- the 1x8 CONTAINER, D = 2 (K35 S3a)
-
-@pytest.mark.parametrize("k_tok", [None, 4], ids=["dense", "k4"])
-@pytest.mark.parametrize("declaration", [CONT_SPLIT, CONT_STREAMS], ids=["wps2", "streams8"])
-def test_s3a_the_1x8_container_matches_the_fp64_oracle(declaration, k_tok):
-    """EIGHT EXECUTORS on the flagship cell, both ways, against the fp64 oracle.
-
-    Under the column split (``WPS = 2``) the two warps of a write stream read the SAME
-    segment rows and fold DISJOINT halves of that stream's n-tiles, so a mis-folded
-    column half, a mis-addressed mask field or a dead-row clear that crossed into the
-    other half surfaces here as a wrong state plane rather than as noise.  The plane is
-    compared in CANONICAL order, which is what makes a leaf-map error a permutation.
-    """
-    assert_fresh_binary()
-    widths, k, m, W = FLAG
-    cell = (Cell(widths, T=768, k_tok=None, seed=5) if k_tok is None
-            else alt_cell(widths, T=768, k_tok=k_tok, seed=21))
-    num, den, plane = carry_ops.carry_inter(
-        cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths, k=k, m=m, window=W,
-        chunk=32, carve=declaration, level_modes=6)
-    n_ref, d_ref, s_ref = ref(cell, FLAG)
-    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
-                    n_ref) < BF16_RTOL
-    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
-    got = canonical_from_lattice(plane, widths, k, m)
-    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
-
-
-def test_s3a_the_container_arms_reach_eight_executors_two_ways():
-    """THE EXECUTOR MAP, asserted off the device rather than commented.
-
-    ``threads / 32`` is the executor budget and the census's last field the WRITE
-    stream count, so their ratio IS the arm's declared ``WPS``.  Both container arms
-    spend the SAME eight executors on the same box; what differs is the ownership grain
-    under them, which is the card's two dials stated as one table.  The READ carve is
-    one stream per WARP by declaration, so a warp's accumulator holds ``BC / warps``
-    leaves whichever route reached those warps.
-    """
-    assert_fresh_binary()
-    widths, k, m, W = FLAG
-    _, _, _, bc, _ = carry_ops.box_shape(list(widths), k, m)
-    want = {carry_ops.LEAF_SPLIT: (4, 4, 1), CONT_SPLIT: (8, 4, 2), CONT_STREAMS: (8, 8, 1)}
-    for declaration, (warps, streams, wps) in want.items():
-        stamp = carry_ops.build_stamp(widths, k, m, W, 32, declaration, 6, d_v=D_V)
-        assert stamp[7] // 32 == warps, f"declaration {declaration}: executors"
-        assert stamp[14] == streams, f"declaration {declaration}: write streams"
-        assert stamp[7] // 32 == stamp[14] * wps, f"declaration {declaration}: warps per stream"
-        assert bc % warps == 0 and bc // warps == (bc // streams) // wps
-
-
-# ------------------------------------- the d_v = 128 CONTAINERS, D = 2 (K35 S3b)
-
-@pytest.mark.parametrize("k_tok", [None, 4], ids=["dense", "k4"])
-@pytest.mark.parametrize(
-    "arm,declaration",
-    [(FLAG, CONT_SPLIT), (FLAG, CONT_STREAMS), (FLAG_HALF, CARVE)],
-    ids=["1x8-wps2", "1x8-streams8", "2x4-bc64"])
-def test_s3b_the_wide_containers_match_the_fp64_oracle(arm, declaration, k_tok):
-    """THE WIDE VALUE PLANE, all three containers, against the fp64 oracle.
-
-    ``d_v = 128`` doubles the channel m-tiles the accumulator holds (``MCH``), the
-    value row's asynchronous quanta, the transit plane's rows and the state page's
-    columns -- and it must move NOTHING else.  So the gate is the same one the narrow
-    arms take: ``num``, ``den`` AND the state plane in CANONICAL order, where a leaf-map
-    or a channel-map error is a permutation rather than noise.  The ``BC = 64`` row is
-    the 2x4 container and reaches the same sixteen leaves per warp by halving the box,
-    so it also gates the page sweep at a state row WIDER than the CTA (129 columns
-    against 128 threads), which no narrow arm exercises.
-    """
-    assert_fresh_binary()
-    widths, k, m, W = arm
-    cell = (Cell(widths, T=768, k_tok=None, seed=5, d_v=WIDE) if k_tok is None
-            else alt_cell(widths, T=768, k_tok=k_tok, seed=21, d_v=WIDE))
-    num, den, plane = carry_ops.carry_inter(
-        cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths, k=k, m=m, window=W,
-        chunk=32, carve=declaration, level_modes=6)
-    assert num.shape[-1] == WIDE and plane.shape[-1] == WIDE + 1
-    n_ref, d_ref, s_ref = ref(cell, arm)
-    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
-                    n_ref) < BF16_RTOL
-    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
-    got = canonical_from_lattice(plane, widths, k, m)
-    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
-
-
-# ------------------------------------------- THE PARKED `lo`, both widths (K35 S5)
-
-#: THE FOUR PARK TWINS.  `PARKED` is a BIT of the declaration scalar, so each row here
-#: names one cell twice -- once with the write-view `lo` in registers across the readout
-#: and once with it parked in the warp's own dead exchange segment (P76 F5).  The three
-#: `d_v = 128` containers are the arms the park exists for (they sit AT the register
-#: wall) and the flagship `d_v = 64` ALT arm is the CONTROL.
-PARK_TWINS = [
-    pytest.param(FLAG, WIDE, CONT_SPLIT, id="1x8-wps2-dv128"),
-    pytest.param(FLAG, WIDE, CONT_STREAMS, id="1x8-streams8-dv128"),
-    pytest.param(FLAG_HALF, WIDE, CARVE, id="2x4-bc64-dv128"),
-    pytest.param(FLAG, D_V, CARVE, id="flagship-alt-dv64"),
-]
-
-
-@pytest.mark.parametrize("k_tok", [None, 4], ids=["dense", "k4"])
-@pytest.mark.parametrize("arm,d_v,declaration", PARK_TWINS)
-def test_s5_the_park_matches_the_oracle_and_its_own_twin(arm, d_v, declaration, k_tok):
-    """THE PARK IS A REGISTER DECISION AND NOTHING ELSE, gated as two statements.
-
-    The park moves the accumulator's LOW halves out of registers and into the warp's
-    own exchange segment for the length of the readout, then takes them back before
-    any warp publishes into that segment again.  So it is BOTH: an arithmetic identity
-    -- the fp64 oracle, `num`, `den` and the state plane in canonical order -- and a
-    LOSSLESS ROUND TRIP, which is the stronger of the two and is what gates the park's
-    own SMEM layout (KERNEL_STANDARDS section 3): the parked arm's state plane must be
-    the unparked twin's BIT FOR BIT, because the two run identical arithmetic in an
-    identical order.  A dropped word, an aliased byte or a swizzle applied to the wrong
-    map cannot survive that.  (`num`/`den` are NOT compared: the readout's fan-in is
-    `red.shared` float atomics, whose summation order is arrival order.)
-    """
-    assert_fresh_binary()
-    widths, k, m, W = arm
-    cell = (Cell(widths, T=768, k_tok=None, seed=5, d_v=d_v) if k_tok is None
-            else alt_cell(widths, T=768, k_tok=k_tok, seed=21, d_v=d_v))
-    got = {}
-    for parked in (False, True):
-        got[parked] = carry_ops.carry_inter(
-            cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths, k=k, m=m, window=W,
-            chunk=32, carve=declaration + (carry_ops.PARKED if parked else 0), level_modes=6)
-    num, den, plane = got[True]
-    n_ref, d_ref, s_ref = ref(cell, arm)
-    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
-                    n_ref) < BF16_RTOL
-    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
-    assert relative(canonical_from_lattice(plane, widths, k, m),
-                    s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
-    assert torch.equal(plane, got[False][2]), (
-        "the park is a lossless round trip: the state plane must be its twin's, bit for bit")
-
-
-# ------------------------ THE DENSE DECLARATIONS ON THE CARVED BODY (K35 S1c)
-
-@pytest.mark.parametrize("k_tok", [None, 4], ids=["dense", "k4"])
-@pytest.mark.parametrize("d_v", [D_V, WIDE], ids=["dv64", "dv128"])
-def test_s1c_the_carved_body_serves_a_dense_declaration(d_v, k_tok):
-    """`MO = 0` ON THE CARVED BODY, against the fp64 oracle at both widths.
-
-    The declaration reaches this body at ONE place -- `ballot_of`'s per-level
-    conjunction, which a side does not enter where it is dense -- so `DENSE_BOTH`
-    leaves that conjunction with no level at all.  Its identity is `valid`, the
-    window's own in-range mask, so the ballot comes out VACUOUSLY FULL: every token of
-    the window is offered to every stream and the schedule prunes nothing.  That is the
-    degenerate case the carve had never been asked for, and the two ways it could have
-    been wrong are both caught here -- an empty conjunction reading as EMPTY would drop
-    every contribution, and a table row addressed anyway would read a row the facts pass
-    never voted.  The oracle sees either as a wrong state plane in canonical order.
-
-    Run at a SPARSE cell too, because `DENSE_BOTH` is the declaration that must be
-    correct at any cell -- it is the one whose schedule prunes nothing anywhere -- so a
-    cell whose ballots would have pruned is the case where an over-broad schedule has to
-    reduce to the same arithmetic rather than to more of it.
-    """
-    assert_fresh_binary()
-    widths, k, m, W = FLAG
-    cell = (Cell(widths, T=768, k_tok=None, seed=5, d_v=d_v) if k_tok is None
-            else alt_cell(widths, T=768, k_tok=k_tok, seed=21, d_v=d_v))
-    num, den, plane = carry_ops.carry_inter(
-        cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths, k=k, m=m, window=W,
-        chunk=32, carve=CONT_SPLIT, level_modes=0)
-    assert num.shape[-1] == d_v and plane.shape[-1] == d_v + 1
-    n_ref, d_ref, s_ref = ref(cell, FLAG)
-    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
-                    n_ref) < BF16_RTOL
-    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
-    got = canonical_from_lattice(plane, widths, k, m)
-    assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
-
-
-@pytest.mark.parametrize("d_v", [D_V, WIDE], ids=["dv64", "dv128"])
-def test_s1c_the_dense_carve_follows_the_stream_counts_and_is_not_tied(d_v):
-    """THE DERIVATION AT `MO = 0`, read back off the device.
-
-    Both sides class every level DENSE, so the two private ORDERS coincide -- which is
-    the condition the tied arm (row 20) needs.  It is not sufficient, and this is the
-    row that says why: the tie also needs the two derived VECTORS to agree, and under
-    the 1x8 column split the read side has `NSR = NSW * WPS` streams to the write side's
-    `NSW`.  The walk carves the outer level of a shared order by two different counts,
-    so the vectors part (`[2, 16]` against `[1, 16]`), the leaf-to-reader permutation is
-    not the identity, and the exchange is FULL.  Asserted rather than commented because
-    `xch = 0` would otherwise be an easy thing to assume from "the orders agree".
-    """
-    assert_fresh_binary()
-    widths, k, m, W = FLAG
-    stamp = carry_ops.build_stamp(widths, k, m, W, 32, CONT_SPLIT, 0, d_v=d_v)
-    #: a level past `D` carries `B`, which is the identity the vector is padded with.
-    assert list(stamp)[16:20] == [2, 16, 256, 256], "the write side keeps two digits of level 0"
-    assert list(stamp)[20:24] == [1, 16, 256, 256], "the read side keeps one, at twice the streams"
-    assert stamp[24] > 0 and stamp[25] == 1, (
-        "the orders agree but the counts do not, so the exchange is full and not elided")
-    #: the SAME cell, box and executor map as the ALT row it is compared against, so the
-    #: only thing that differs between the two measurements is the declaration.
-    alt = carry_ops.build_stamp(widths, k, m, W, 32, CONT_SPLIT, 6, d_v=d_v)
-    assert (stamp[7], stamp[9], stamp[14]) == (alt[7], alt[9], alt[14]), (
-        "threads, box and write-stream count must match the ALT row this arm is measured against")
-
+# ------------------------------------------------------------------ the refusal
 
 def test_an_unbuilt_declaration_is_refused_and_not_served_dense(): 
     """THE SEAM REFUSES WHAT IT HAS NO BODY FOR (K35 R-B, P76).

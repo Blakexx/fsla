@@ -13,7 +13,6 @@
 #include <array>
 
 #include "carry_arm_abi.cuh"
-#include "carry_probe_kernel.cuh"
 #include "carry_rows.cuh"
 #include "carry_split_kernel.cuh"
 
@@ -26,10 +25,16 @@ template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, in
           uint32_t MO>
 struct Arm {
   using BP = BoxPlan<D, B, K, M>;
-  //: THE TWO CARVES, DERIVED (K35 S1b): the side's order comes from `MO` and its span
+  //: THE CARVE, DERIVED (K35 S1b): the side's order comes from `MO` and its span
   //: vector from that order and its stream count.  A carve is never declared.
-  using SW = StreamSpans<D, B, K, M, MO, kSideWrite, NSW>;
+  //: ONE ORDER, THE READ SIDE'S (K35 M1P): the body carves the box ONCE and both phases
+  //: walk that carve, so the WRITE side IS the read side's vector -- the leaf ->
+  //: (stream, slot) map is one map, the two sides' ballot rows are voted at one
+  //: partition, and there is no exchange between the phases to size.  The two-sided
+  //: carve and its transit return as their own stage; `NSW` must equal `NSR` until then,
+  //: which the geometry asserts.
   using SR = StreamSpans<D, B, K, M, MO, kSideRead, NSR>;
+  using SW = SR;
   //: A CARVED ARM is one whose streams are finer than the owner's box on either side;
   //: an arm that carves nothing takes the channel-split body, which holds the whole box
   //: in every warp and splits the CHANNELS instead.
@@ -47,32 +52,13 @@ struct Arm {
   //: THE CARVED BODY'S GEOMETRY, named once so the segment probe and the launch read
   //: the same one.
   using GC = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
-  static constexpr auto probe_fn() {
-    return &carry_layout_probe_kernel<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
-  }
-  //: the exchange's transit in bytes -- ZERO where the two carves are identical, which
-  //: the geometry recognizes at compile time (K35 S1b addendum 3), and zero again on an
-  //: arm that carves nothing and therefore has no exchange to size.  `if constexpr` and
-  //: not a ternary: naming `GC::xch_bytes` in a discarded ARM of a conditional still
-  //: COMPLETES `CarryGeom`, and an uncarved arm's geometry is not a thing this family
-  //: asks to be instantiated (it takes the channel-split body).
-  static constexpr int64_t xch_bytes_of() {
-    if constexpr (carved)
-      return (int64_t)GC::xch_bytes;
-    else
-      return 0;
-  }
-  static constexpr int64_t kXchBytes = xch_bytes_of();
-  //: the exchange's STATE beside its size: `0` elided, `1` full, `2` full but only
-  //: because case (c)'s register reorder is not built (K35 S1b, PARKED), `-1` on an arm
-  //: that carves nothing and has no exchange at all.
-  static constexpr int64_t xch_state_of() {
-    if constexpr (carved)
-      return (int64_t)GC::kXchState;
-    else
-      return -1;
-  }
-  static constexpr int64_t kXchState = xch_state_of();
+  //: THE EXCHANGE IS NOT BUILT (K35 M1P), so the census's two exchange fields are the
+  //: statement of that: ZERO transit bytes and state `0` (elided).  One order means the
+  //: leaf -> (stream, slot) permutation is the identity at every phase change, which is
+  //: the same zero the tied arm earned by declaration -- here it is a property of the
+  //: BODY.  The fields stay in the row so the schema does not move under the seam.
+  static constexpr int64_t kXchBytes = 0;
+  static constexpr int64_t kXchState = 0;
 
   template <bool STATE>
   static constexpr auto fn() {
@@ -153,59 +139,6 @@ static std::array<int64_t, 23> census() {
           A::kXchState};
 }
 
-//: THE SEGMENT LAYOUT'S ROUND TRIP, as its own entry point so the layout can be
-//: gated without running the kernel that uses it (KERNEL_STANDARDS section 3).  The
-//: four planes are the DISPATCH's allocation (`carry_arm_abi.cuh`); this states their
-//: shapes and this launches into them.
-template <class A>
-static constexpr size_t probe_smem() {
-  using G = typename A::GC;
-  using BPA = typename A::BP;
-  return (size_t)(G::seg_v_bytes + G::seg_c_bytes
-                  + G::kSegRows * BPA::kStageW * (int)sizeof(__nv_bfloat16)
-                  + align16c(G::kWarps * G::kSegRows * G::LdR * (int)sizeof(__nv_bfloat16)));
-}
-
-template <class A>
-static CarryProbeShape probe_shape() {
-  if constexpr (A::carved) {
-    using G = typename A::GC;
-    using BPA = typename A::BP;
-    return {1,
-            G::kStreams,
-            G::kWarps,
-            G::kSegRows,
-            G::kDv,
-            G::kLeafW,
-            G::kLeafE,
-            BPA::kStageW,
-            BPA::kWtot,
-            G::kThreads,
-            (int64_t)probe_smem<A>()};
-  } else {
-    return {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  }
-}
-
-template <class A>
-static cudaError_t run_probe(const __nv_bfloat16* pw, int* vv, int* cc, int* ss, int* rr,
-                             cudaStream_t stream) {
-  if constexpr (A::carved) {
-    using G = typename A::GC;
-    constexpr size_t sm = probe_smem<A>();
-    const auto fn = A::probe_fn();
-    const cudaError_t e =
-        cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sm);
-    if (e != cudaSuccess) return e;
-    fn<<<1, (unsigned)G::kThreads, sm, stream>>>(pw, vv, cc, ss, rr);
-    return cudaGetLastError();
-  } else {
-    //: the per-stream segment belongs to the carved body; the dispatch refuses this
-    //: before it gets here, on the shape's `carved` flag.
-    return cudaErrorInvalidValue;
-  }
-}
-
 //: the ROW PLANS the arm's body consumes -- one per side, at that side's own derived
 //: partition.  An uncarved arm's tables ARE the owner's, because the derived vectors are
 //: then the owner's spans; one statement, not two paths.
@@ -239,11 +172,6 @@ using ArmRowsW = SideRowPlan<typename A::SW>;
   }                                                                                              \
   int carry_arm_rows_entries_##I_() {                                                            \
     return rows_entries<ArmRowsR<CarryArm##I_>, ArmRowsW<CarryArm##I_>>();                       \
-  }                                                                                              \
-  CarryProbeShape carry_arm_probe_shape_##I_() { return probe_shape<CarryArm##I_>(); }           \
-  cudaError_t carry_arm_probe_##I_(const __nv_bfloat16* pw, int* vv, int* cc, int* ss, int* rr,  \
-                                   cudaStream_t stream) {                                        \
-    return run_probe<CarryArm##I_>(pw, vv, cc, ss, rr, stream);                                   \
   }                                                                                              \
   void carry_arm_census_##I_(int64_t* out) {                                                     \
     const auto c = census<CarryArm##I_>();                                                        \

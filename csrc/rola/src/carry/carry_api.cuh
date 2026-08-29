@@ -51,13 +51,6 @@ std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, to
 std::vector<int64_t> backward_build_stamp(std::vector<int64_t> widths, int64_t k, int64_t m,
                                           int64_t window, int64_t chunk);
 
-//: THE SEGMENT LAYOUT'S ROUND TRIP: `(values, coefficients)` as `[stream][row][col]`
-//: RAW bf16 bit patterns, written at the fetcher's addresses and recovered through the
-//: consumer's `ldmatrix.trans` at the fold's own bases.  Carved arms only.
-std::vector<torch::Tensor> layout_probe(std::vector<int64_t> widths, int64_t k, int64_t m,
-                                        int64_t window, int64_t chunk, int64_t carve,
-                                        int64_t level_modes, int64_t d_v);
-
 //: the built (widths, k, m, d_v, W, C, carve, modes, BC, owners, smem, carve level) rows.
 std::vector<std::vector<int64_t>> arms();
 

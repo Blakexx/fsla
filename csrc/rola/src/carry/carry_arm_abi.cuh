@@ -11,8 +11,8 @@
 // TU is 0.9 s and 0.19 GB).  With one TU per arm that fixed cost is paid 22 times and
 // it also sets the per-TU resident set, which is what caps `MAX_JOBS`.  So EVERY
 // ALLOCATION IS THE DISPATCH'S: `carry.cu` sizes the ballot table from
-// `carry_arm_rows_entries_<i>` and the probe's planes from `CarryProbeShape`, and the
-// arm TU only launches into memory it was handed.
+// `carry_arm_rows_entries_<i>`, and the arm TU only launches into memory it was
+// handed.
 // docs/internals/carry/carry_arm.md.
 #pragma once
 
@@ -23,27 +23,16 @@
 
 namespace rola::carry {
 
-//: THE SEGMENT PROBE'S SHAPES, so the dispatch can allocate the round trip's four
-//: planes without naming the arm's geometry.  `carved` is zero on an arm that carves
-//: nothing: the per-stream segment belongs to the carved body, and the channel-split
-//: body has no layout to gate.
-struct CarryProbeShape {
-  int carved;
-  int streams, warps, seg_rows;
-  int d_v, leaf_w, leaf_e, stage_w, w_tot;
-  int threads;
-  int64_t smem;
-};
-
 //: the census's width, so the dispatch's buffer and the arm's writer agree by name.
 static constexpr int kCarryCensusFields = 23;
 //: the `arms()` row's width: the nine declaration fields plus BC, owners, smem and the
 //: read side's carve level.
 static constexpr int kCarryRowFields = 13;
 
-//: WHAT ONE ARM'S TRANSLATION UNIT EXPORTS.  Seven entry points: launch the body,
-//: launch and size its ballot table, describe and run its layout probe, and state its
-//: census and its row.  `CARRY_ARM_DEFINE` (`carry_arm.cuh`) defines exactly these.
+//: WHAT ONE ARM'S TRANSLATION UNIT EXPORTS.  Five entry points: launch the body,
+//: launch and size its ballot table, and state its census and its row.
+//: `CARRY_ARM_DEFINE` (`carry_arm.cuh`) defines exactly these.  The SEGMENT LAYOUT
+//: PROBE left with the per-stream segments and the exchange it gated (K35 M1P).
 #define CARRY_ARM_DECLARE(I_, ...)                                                            \
   cudaError_t carry_arm_forward_##I_(                                                          \
       const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,               \
@@ -52,9 +41,6 @@ static constexpr int kCarryRowFields = 13;
   cudaError_t carry_arm_rows_##I_(const __nv_bfloat16* pr, const __nv_bfloat16* pw,            \
                                   uint32_t* tbl, int BH, int L, cudaStream_t stream);          \
   int carry_arm_rows_entries_##I_();                                                           \
-  CarryProbeShape carry_arm_probe_shape_##I_();                                                \
-  cudaError_t carry_arm_probe_##I_(const __nv_bfloat16* pw, int* vv, int* cc, int* ss,         \
-                                   int* rr, cudaStream_t stream);                              \
   void carry_arm_census_##I_(int64_t* out);                                                    \
   void carry_arm_row_##I_(int64_t* out);
 

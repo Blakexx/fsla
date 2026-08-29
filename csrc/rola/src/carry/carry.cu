@@ -115,33 +115,6 @@ static torch::Tensor build_rows(const torch::Tensor& pr, const torch::Tensor& pw
   return tbl;
 }
 
-//: THE SEGMENT PROBE'S FOUR PLANES, allocated from the arm's declared shapes and
-//: handed to it.  The arm TU owns the launch and the layout; this owns the memory.
-static std::vector<torch::Tensor> probe_planes(const CarryProbeShape& s,
-                                               cudaError_t (*run)(const __nv_bfloat16*, int*, int*,
-                                                                  int*, int*, cudaStream_t)) {
-  TORCH_CHECK(s.carved, "the per-stream segment belongs to the carved body");
-  auto opt = torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA);
-  auto vv = torch::zeros({(long)s.streams * s.seg_rows, (long)s.d_v}, opt);
-  auto cc = torch::zeros({(long)s.streams * s.seg_rows, (long)s.leaf_w}, opt);
-  auto ss = torch::zeros({(long)s.seg_rows, (long)s.stage_w}, opt);
-  //: the READOUT's layout (K35 R-B): a reader's segment, and nothing else -- the
-  //: fan-in issues from the accumulator and owns no shared bytes to gate.
-  auto rr = torch::zeros({(long)s.warps * s.seg_rows, (long)s.leaf_e}, opt);
-  //: the staged leg's SOURCE plane: cell `(r, c)` names itself, so a run that lands at
-  //: the wrong offset names the column it actually came from.
-  auto pw = (torch::arange(0, (long)s.seg_rows, opt).reshape({-1, 1}) * 1024
-             + torch::arange(0, (long)s.w_tot, opt).reshape({1, -1}))
-                .to(torch::kInt16)
-                .view(torch::kBFloat16)
-                .contiguous();
-  C10_CUDA_CHECK(run((const __nv_bfloat16*)pw.data_ptr(), vv.data_ptr<int>(), cc.data_ptr<int>(),
-                     ss.data_ptr<int>(), rr.data_ptr<int>(), at::cuda::getCurrentCUDAStream()));
-  return {vv.reshape({(long)s.streams, (long)s.seg_rows, (long)s.d_v}),
-          cc.reshape({(long)s.streams, (long)s.seg_rows, (long)s.leaf_w}), ss,
-          rr.reshape({(long)s.warps, (long)s.seg_rows, (long)s.leaf_e})};
-}
-
 //: READING ONE ROW OF THE LIST.  A row arrives with its INDEX first -- the index is
 //: what names the arm's translation unit and its four entry points -- and the pieces a
 //: consumer wants are taken from it HERE and nowhere else.  `CARRY_ARM_TYPE`, the arm
@@ -184,19 +157,6 @@ static bool is_arm(const std::vector<int64_t>& widths, int D, int B) {
   for (auto w : widths)
     if (w != B) return false;
   return true;
-}
-
-std::vector<torch::Tensor> layout_probe(std::vector<int64_t> widths, int64_t k, int64_t m,
-                                        int64_t window, int64_t chunk, int64_t carve,
-                                        int64_t level_modes, int64_t d_v) {
-#define CARRY_PROBE(I_, ...)                                                 \
-  if (CARRY_MATCH(__VA_ARGS__) && level_modes == CARRY_MO(__VA_ARGS__)) {    \
-    return probe_planes(carry_arm_probe_shape_##I_(), &carry_arm_probe_##I_); \
-  }
-  CARRY_ARMS_X(CARRY_PROBE)
-#undef CARRY_PROBE
-  TORCH_CHECK(false, "unbuilt carry arm");
-  return {};
 }
 
 std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,

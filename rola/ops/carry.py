@@ -25,41 +25,21 @@ from rola.ops._ext import extension
 #: independent dials, so an arm is not named by its carve alone.
 #:
 #: ``LEAF_SPLIT`` is the ruled carve (K33 clean-sheet tier A, measured 2026-08-21) --
-#: a warp owns one digit group of the innermost level across every outer digit, and
-#: all ``d_v + 1`` channels -- run at ONE warp per write stream.  The two container
-#: values are the SAME cell reached with EIGHT executors, by the two routes the K35
-#: card leaves to measurement: four write streams column-split two ways, and eight
-#: write streams one warp each.
+#: a stream owns an affine rectangle of the owner's digits and all ``d_v + 1``
+#: channels -- run at ONE warp per stream, which is the ONE executor map the
+#: transplanted M1a body builds (K35 M1P).  The two CONTAINER values, the PARK bit and
+#: the wide value plane named arms whose bodies M1P deleted; each returns as its own
+#: stage, with its constant restored beside its arm row.  A caller asking for one now
+#: reaches the seam's refusal, which names the whole key.
 LEAF_SPLIT = 1
-CONTAINER_1X8_SPLIT = 2
-CONTAINER_1X8_STREAMS = 3
 
-#: THE PARK IS A BIT OF THE DECLARATION (K35 S5, P76 F5 "HI IN REGISTERS, LO IN
-#: SMEM, BOX SIZE UP").  ``+ PARKED`` names the same (carve, executor map) with the
-#: write-view ``lo`` -- the packed low halves of the fold's accumulator -- spending
-#: the readout in SMEM instead of in registers, so those registers are free across
-#: the readout and the payoff is LEAVES (box size), not depth.  It changes no
-#: arithmetic and nothing the caller can see: a parked arm and its twin return the
-#: same state plane bit for bit, and the difference is the register census.
-PARKED = 4
-LEAF_SPLIT_PARKED = LEAF_SPLIT + PARKED
-CONTAINER_1X8_SPLIT_PARKED = CONTAINER_1X8_SPLIT + PARKED
-CONTAINER_1X8_STREAMS_PARKED = CONTAINER_1X8_STREAMS + PARKED
-
-#: THE VALUE WIDTH IS THE THIRD DIAL AND PART OF AN ARM'S KEY (K35 S3b).  It is a
-#: template parameter of both carry bodies, so the two built widths are two arms of
-#: one body -- the same declaration scalar at ``D_V`` and at ``D_V_WIDE``.  The card's
-#: CONTAINERS entry rules what the wide plane costs: sixteen leaves per warp is
-#: REQUIRED there, so the containers are ``CONTAINER_1X8_*`` at ``BC = 128`` and the
-#: ruled ``LEAF_SPLIT`` at ``BC = 64`` (four streams of sixteen, one warp each), which
-#: is the 2x4 container -- two CTAs of four warps per SM.
+#: THE VALUE WIDTH IS PART OF AN ARM'S KEY (K35 S3b) and is a template parameter of
+#: both carry bodies.  M1P builds ONE width: the ``d_v`` dial returns as its own stage.
 D_V = 64
-D_V_WIDE = 128
 
-#: the ``(k, m)`` capacities that reach the two container box sizes on the flagship
-#: topology: ``BC = 128`` and, with the box halved, ``BC = 64``.
+#: the ``(k, m)`` capacity that reaches the built box size on the flagship topology,
+#: ``BC = 128``.
 CAP_BC128 = 8
-CAP_BC64 = 4
 
 #: the flagship window, and the conformance cell's -- the architecture doc's
 #: two-constraint sizing (integration rung I1(b)); `rola.ops.intra` names the
@@ -181,29 +161,6 @@ def build_stamp(widths, k, m, window, chunk, carve, level_modes=0, d_v=D_V):
     """
     return extension().carry_build_stamp(list(widths), int(k), int(m), int(window),
                                          int(chunk), int(carve), int(level_modes), int(d_v))
-
-
-def layout_probe(widths, k, m, window, chunk, carve, level_modes=0, d_v=D_V):
-    """Every named SMEM layout's ROUND TRIP, as five tensors.
-
-    ``(values, coefficients, staged, reader_rows, ring)``:
-
-    * ``values`` / ``coefficients`` -- ``[stream][row][column]`` of the RAW sixteen-bit
-      pattern the FOLD's fetcher stored at that cell, recovered through the consumer's
-      ``ldmatrix.trans`` at the fold's own bases;
-    * ``staged`` -- ``[row][amplitude]`` of the staged factor row, filled by the
-      asynchronous copies both sides share;
-    * ``reader_rows`` -- ``[reader][row][slot]`` of the READOUT's segment, stored by the
-      read expansion and recovered through the readout's ``load_frag``, whose fragment
-      map has the segment's ROWS on the MMA's ``n`` axis (they are tokens there);
-    * ``ring`` -- ``[slot][channel]`` of the fan-in ring, written at the SCATTER's cell
-      address and read back at the FLUSH's.
-
-    A stride, a base, a swizzle or a fragment map that disagrees between the two legs of
-    any of them cannot survive the comparison.  Carved arms only.
-    """
-    return extension().carry_layout_probe(list(widths), int(k), int(m), int(window),
-                                          int(chunk), int(carve), int(level_modes), int(d_v))
 
 
 def arms():

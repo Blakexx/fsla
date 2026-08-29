@@ -158,45 +158,30 @@ SPAN_FACTS_ARMS: tuple = (
     (3, 16, 2, 4, 16, 16, 2, 4, 16, 16),
     (4, 8, 2, 2, 4, 8, 2, 2, 4, 8),
     # the SEAM's `owner_rows(carve=True)` diagnostic grain: the innermost level's owner
-    # run split over four streams, the same vector on both sides.
+    # run split over four streams, the same vector on both sides.  SINCE M1P THESE ARE
+    # ALSO THE CARVED ARMS' OWN TABLES at D = 2: the body carves ONCE, in the read
+    # side's order, and both sides vote their bitlists at that one partition, so the
+    # flagship ALT rows (1, 3) and the small ALT row (5) ask for the first two of these
+    # rather than for a read-vector/write-vector pair of their own.
     (2, 256, 8, 4, 256, 256, 8, 4, 256, 256),
     (2, 64, 8, 4, 64, 64, 8, 4, 64, 64),
     (3, 16, 2, 4, 4, 16, 2, 4, 4, 16),
     (4, 8, 2, 2, 4, 2, 2, 2, 4, 2),
-    # the FLAGSHIP ALT carve at four streams a side (rows 1, 3, 5, 19): read `[8, 4]`
-    # against write `[2, 16]` -- the read side carves the DENSE-innermost order's outer
-    # level and the write side its own.
-    (2, 256, 8, 4, 256, 256, 2, 16, 256, 256),
-    (2, 64, 8, 4, 64, 64, 2, 16, 64, 64),
-    # the DEEP-4 ALT carve (row 9), derived: write `[1, 2, 2, 8]` takes the two levels
-    # it is sparse on from the outside in, read `[2, 1, 4, 4]` likewise.
-    (4, 8, 2, 1, 4, 4, 1, 2, 2, 8),
-    # the MULTI-LEVEL carve (row 10): D = 4 at B = 4 over the owner box `[4,4,4,4]`,
-    # eight streams of 32 leaves a side, each side carving TWO levels.  Neither side's
-    # tested levels are a PREFIX here, which is exactly why the prefix law belongs to
-    # the two bitmap reductions and not to the table (facts_kernel.cuh).
-    (4, 4, 4, 1, 4, 2, 1, 4, 2, 4),
-    # the 1x8 CONTAINER arms (rows 11-14, 16, 17): the flagship box `[8, 16]` reached
-    # with eight executors two ways -- four write streams column-split (`[2, 16]`) and
-    # eight write streams (`[1, 16]`), both against a read carve of eight (`[8, 2]`).
-    (2, 256, 8, 2, 256, 256, 2, 16, 256, 256),
-    (2, 256, 8, 2, 256, 256, 1, 16, 256, 256),
-    # the 2x4 CONTAINER at `d_v = 128` (rows 15, 18): the flagship topology's box HALVED
-    # to `[4, 16]` (`k = 4, m = 4`) and cut four ways, read `[4, 4]` against write
-    # `[1, 16]`.
-    (2, 256, 4, 4, 256, 256, 1, 16, 256, 256),
-    # the TIED arm (row 20): BOTH-SPARSE at level zero, dense at level one, equal stream
-    # counts -- so the two derived vectors are IDENTICAL and so are the two tables.
-    (2, 256, 2, 16, 256, 256, 2, 16, 256, 256),
-    # the DENSE_BOTH container arms (rows 21, 22; K35 S1c): the 1x8 column split at the
-    # flagship cell declared dense at every level.  Both sides then order DENSE-innermost
-    # and carve their OUTER level, so the vectors follow the two stream counts alone --
-    # read `[1, 16]` at eight against write `[2, 16]` at four.  The rows are BUILT and the
-    # tables voted even though the body reads neither: `mode_declares` prunes the
-    # conjunction, not the table, so a dense arm's rows are a cost the facts pass pays and
-    # the carry pass ignores.  Named here because that is the one place the two lists meet.
-    (2, 256, 1, 16, 256, 256, 2, 16, 256, 256),
+    # the DEEP-4 ALT carve (row 9), derived: the read order carves TWO levels of the
+    # owner box `[2, 2, 4, 8]` down to `[2, 1, 4, 4]`, four streams of 32 leaves, and
+    # the write side walks that same vector.  Neither side's tested levels are a PREFIX
+    # here, which is exactly why the prefix law belongs to the two bitmap reductions and
+    # not to the table (facts_kernel.cuh).
+    (4, 8, 2, 1, 4, 4, 2, 1, 4, 4),
 )
+
+#: THIS LIST IS A SECOND ENUMERATION OF `CARRY_ARMS`' ROW PLANS AND IS NOT DERIVED FROM
+#: IT -- the drift shape this file's own header warns about, and it bit M1P: changing the
+#: carry rows' partition left a carved arm asking for a `launch_span_facts_arm`
+#: instantiation nothing emitted, which links clean and fails at IMPORT with an undefined
+#: symbol rather than at compile.  Deriving it wants `StreamSpans`/`ModeOrder` on the host;
+#: until that exists, a change to `CARRY_ARMS` re-derives these rows BY HAND and the
+#: device import is what checks the work.
 
 # ---------------------------------------------------------------------------
 # THE CARRY ARM LIST -- one row per built arm, and THE list.  It moved out of
@@ -221,31 +206,16 @@ CARRY_ARMS: tuple = (
     (3, 16, 2, 16, 64, 64, 32, 1, 38, 1, 1, 1, 0),      # 7
     (4, 8, 2, 8, 64, 64, 32, 1, 0, 1, 1, 1, 0),         # 8
     (4, 8, 2, 8, 64, 64, 32, 1, 102, 1, 4, 4, 0),       # 9
-    (4, 4, 4, 1, 64, 64, 32, 1, 102, 1, 8, 8, 0),       # 10
-    (2, 256, 4, 8, 64, 384, 32, 2, 6, 2, 4, 8, 0),      # 11
-    (2, 256, 4, 8, 64, 384, 32, 3, 6, 1, 8, 8, 0),      # 12
-    (2, 256, 4, 8, 128, 384, 32, 2, 6, 2, 4, 8, 0),     # 13
-    (2, 256, 4, 8, 128, 384, 32, 3, 6, 1, 8, 8, 0),     # 14
-    (2, 256, 4, 4, 128, 384, 32, 1, 6, 1, 4, 4, 0),     # 15
-    (2, 256, 4, 8, 128, 384, 32, 6, 6, 2, 4, 8, 1),     # 16
-    (2, 256, 4, 8, 128, 384, 32, 7, 6, 1, 8, 8, 1),     # 17
-    (2, 256, 4, 4, 128, 384, 32, 5, 6, 1, 4, 4, 1),     # 18
-    (2, 256, 4, 8, 64, 384, 32, 5, 6, 1, 4, 4, 1),      # 19
-    (2, 256, 4, 8, 64, 384, 32, 1, 3, 1, 4, 4, 0),      # 20
-    (2, 256, 4, 8, 64, 384, 32, 2, 0, 2, 4, 8, 0),      # 21
-    (2, 256, 4, 8, 128, 384, 32, 2, 0, 2, 4, 8, 0),     # 22
 )
 
 #: THE SHIPPED / TEST SPLIT (K36).  A default build compiles the SHIPPED rows only.
-#: SHIPPED is the FLAGSHIP TOPOLOGY at the lengths the flagship runs: the three
-#: containers at both value widths, their park twins, the tied arm, the dense
-#: declarations on the carved body, and flat ALT at both admitted windows.
+#: SHIPPED is the FLAGSHIP TOPOLOGY at the lengths the flagship runs -- flat ALT at
+#: both admitted windows, which is what M1P's transplanted shape serves.
 #: TEST is every row whose window is 64 or whose topology is N = 4096 -- the
-#: conformance cells the fp64 oracle can hold (SMALL, DEEP-3, DEEP-4, CARVE-4) --
-#: plus the two UNCARVED DENSE_BOTH controls at the flagship cell.  A test that
-#: needs one asks for it by index and skips, with the arm named, when the binary
-#: does not carry it.
-CARRY_TEST_ARMS: tuple = (0, 2, 4, 5, 6, 7, 8, 9, 10)
+#: conformance cells the fp64 oracle can hold (SMALL, DEEP-3, DEEP-4) -- plus the
+#: UNCARVED DENSE_BOTH controls at the flagship cells.  A test that needs one asks for
+#: it by index and skips, with the arm named, when the binary does not carry it.
+CARRY_TEST_ARMS: tuple = (0, 2, 4, 5, 6, 7, 8, 9)
 CARRY_SHIPPED_ARMS: tuple = tuple(i for i in range(len(CARRY_ARMS))
                                   if i not in CARRY_TEST_ARMS)
 
@@ -253,8 +223,7 @@ CARRY_SHIPPED_ARMS: tuple = tuple(i for i in range(len(CARRY_ARMS))
 def carry_kernel_key(row) -> tuple:
     """THE INSTANTIATION an arm's body IS -- and therefore what a TU may hold once.
 
-    A carved arm takes `carry_kernel` (and `carry_layout_probe_kernel`, keyed the
-    same); an arm that carves nothing takes `carry_split_kernel`, whose parameter
+    A carved arm takes `carry_kernel`; an arm that carves nothing takes `carry_split_kernel`, whose parameter
     list has no `MO` and no stream counts.  Two rows can therefore be different
     ARMS and one kernel: rows 6 and 7 are the deep-3 topology declared DENSE_BOTH
     and ALT, and the channel-split body ignores the declaration.  Emitting that
@@ -451,25 +420,13 @@ CARRY_BANNER_DOC = '''
 #: `docs/internals/carry/carry.md`.
 '''
 
-CARRY_ROW_DOC = {
-    13: """THE `d_v = 128` ARMS (K35 S3b).  The card's CONTAINERS entry: at this width sixteen
-leaves per warp is REQUIRED, and eight resident warps per SM is the target, so the
-two containers are 1x8 at `BC = 128` -- rows 13 and 14, the SAME two declarations as
-rows 11 and 12 at the other width -- and 2x4 at `BC = 64`, row 15, which halves the
-CTA's box instead of doubling its warps and reaches sixteen leaves per warp with the
-ruled one-warp-per-stream map.  `BC = 64` is `(k, m) = (4, 4)` on the flagship
-topology: spans `[4, 16]`, 1024 owners, the same window and declaration as the
-flagship cell so the three containers are comparable at one cell.""",
-    16: """THE PARK'S TWINS.  `PK_`, the row's LAST field, is the PARK (K35 S5, P76 F5): the
-readout spends with `lo` in SMEM, not registers.  Each row here is the row above it
-at `PK_ = 1`, so the pair IS a MEASUREMENT.""",
-    20: """THE TIED ARM (K35 S1b, addendum 3).  The flagship cell declared BOTH-SPARSE at level
-zero, at equal stream counts: both sides then order and carve identically, the
-exchange's permutation is the IDENTITY and the transit is ELIDED AT COMPILE TIME.  It
-is row 1's cell again so that the zero is a MEASUREMENT.""",
-    21: """THE DENSE DECLARATIONS ON THE CARVED BODY: rows 11 and 13 at `MO = 0` (K35 S1c;
-carry.md).""",
-}
+CARRY_ROW_DOC: dict = {}
+#: NO ROW DOC AT M1P.  The container, `d_v = 128`, park, tied and carved-dense rows
+#: -- and the doc blocks that explained them -- left the list with the bodies that
+#: served them (K35 M1P): the transplanted M1a shape is four warps, one warp per
+#: stream, one order and `d_v = 64`, and a declaration outside it is refused by the
+#: dispatch with the whole key named.  Each row returns with the stage that rebuilds
+#: its mechanism, restored from git history rather than kept here commented out.
 
 
 def carry_members_sha256() -> str:
