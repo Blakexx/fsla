@@ -1,19 +1,28 @@
 ---
 name: rola-build
-description: Iteration vs gate CUDA builds for rola-standalone — arm subsets, build_slot.sh, background builds with an exit marker, the compile ledger
+description: Iteration vs gate CUDA builds for rola-standalone — arm subsets, tools/build/build_lock.sh, background builds with an exit marker, the compile ledger
 ---
 Read `docs/build.md` and KERNEL_STANDARDS §7, §14, §15, §16 addendum 3 first. This skill is the
 mechanics of running a build, not deciding whether one is owed (that's §16: stage gates are
 iteration builds, only milestones ratify).
 
 ## Iteration vs gate
+- **ONE lock mechanism for both** (K39, Blake ruling 2026-08-28 — supersedes the old two-mechanism
+  split of a build-slot script's parallel slots and a separate exclusive `/tmp/rola_ram.lock`):
+  `tools/build/build_lock.sh [--gate] -- <cmd>`, IN the repo (§17). An iteration build takes ONE
+  free slot; a gate build takes EVERY slot (`--gate`) before running, so the two can never overlap
+  and OOM the host — read the script's own header for the exact mechanism.
 - **Iteration build**: single-arch, arm-subset. `ROLA_CUDA_ARCHS=<arch> ROLA_CARRY_ARMS=<csv|all>
-  pip install -e . --no-build-isolation`. Runs in one of two parallel slots via
-  `bash /home/blake/rola-scratch/tools/build_slot.sh <cmd>` — read that script's own header table
-  for the current `MAX_JOBS`/`ROLA_NVCC_THREADS` it uses, don't hand-restate them here.
-- **Gate build**: both arches, default (shipped) arm set, no `ROLA_CARRY_ARMS` override, under the
-  EXCLUSIVE `/tmp/rola_ram.lock` (KERNEL_STANDARDS §15 addendum). One gate build per stage; ratify
-  only at milestones (§16).
+  pip install -e . --no-build-isolation`, run through `tools/build/build_lock.sh -- <cmd>` (no
+  `--gate`) — read the script's own header table for the current `MAX_JOBS`/`ROLA_NVCC_THREADS` it
+  uses, don't hand-restate them here.
+- **Gate build**: both arches, default (shipped) arm set, no `ROLA_CARRY_ARMS` override, run through
+  `tools/build/build_lock.sh --gate -- <cmd>`. One gate build per stage; ratify only at milestones
+  (§16). A stage's own gate build does NOT set `ROLA_STRICT_MANIFEST` — the committed manifest is
+  expected to be stale between milestones (K43), so the post-build check REPORTS, not fails. The
+  build that immediately precedes `ratify.py --write` at a milestone DOES set
+  `ROLA_STRICT_MANIFEST=1` (docs/build.md) — that is the one build that must fail loudly if the
+  tree is not actually shippable yet.
 - `ROLA_CARRY_ARMS=all` builds every row (SHIPPED + TEST) — needed for the battery/oracle across
   arms outside the default shipped set (`gen_shards.CARRY_TEST_ARMS`).
 - Don't hand-restate `MAX_JOBS`: `tools/build_flags.py:default_max_jobs` derives it from free RAM /
@@ -68,3 +77,17 @@ add-on next to the census, filed in the stage's FINDINGS entry).
 Arm TUs never include torch headers — if a compile ledger row for a `carry_arm_<i>.cu` shows a
 wall time near the torch-header floor above, that's a broken ABI seam (a torch-typed function crept
 into `carry_arm_abi.cuh`), not noise.
+
+## Standards lint (LINT, 2026-08-28)
+Before committing, run the standards lint: the ast-grep rule pack under tools/lint/rules (sgconfig.yml at the repo root) and tools/lint/lint_standards.py; clang-tidy on host TUs via tools/lint/run_clang_tidy.sh (skips cleanly without a build). Each finding names its standards section and the incident behind it. Wired into pre-commit; docs/build.md "Standards lint" has the invocations.
+
+## Addenda (F1b skills feedback, 2026-08-29)
+- ARCH FORM: `ROLA_CUDA_ARCHS` takes the bare number (`86`), never `sm_86` (the failure reads `sm_sm_86`).
+- THE THING YOU BACKGROUND IS THE BUILD: never wrap the build in a second backgrounding layer; if a launcher
+  exits first, the exit MARKER is the fact, not the harness notification.
+- SINGLE-TU COMPILE = THE REGISTER CENSUS: compile one arm's instantiation TU alone (`nvcc -c` of
+  `csrc/rola/src/instantiations/carry_arm_<i>.cu` with the include dirs `csrc/rola/src` + the generated
+  header dir, `-std=c++17 -arch=sm_<N> --expt-relaxed-constexpr -DROLA_CARRY_BUILD_<i>`; without
+  `--expt-relaxed-constexpr` it fails with unrelated-looking `constexpr __host__` errors) and read
+  `cuobjdump -res-usage` on the `.o`: it reproduces the full build's numbers exactly (verified F1b, ten
+  kernels, two trees). ~4 s per arm. A register-gated stage answers its gate here, before any full build.

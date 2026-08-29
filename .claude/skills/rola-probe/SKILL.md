@@ -10,18 +10,29 @@ un-interleaved A/B, timing the python wrapper's own repacking). See FINDINGS `##
 ## The fixed cells (never invent a new one ad hoc)
 Read `DEFAULT_CELLS` (and the off-by-default extras) at the top of `tools/probe_cells.py` for the
 current cell list and which ones run by default. Don't hand-roll a draw — the cell specs are the
-frozen RNG-stream mirror of `tests/k31/fixtures.py`'s `Cell`/`alt_cell`, kept as a SEPARATE copy on
+frozen RNG-stream mirror of `tests/oracle/fixtures.py`'s `Cell`/`alt_cell`, kept as a SEPARATE copy on
 purpose so cross-tip comparisons don't drift with whichever fixtures version a worktree happens to
 carry. When you need to know what a cell means (topology, k_tok, window, level_modes), read its
 definition in the file — don't rely on a remembered description.
 
-## Running it
+## Running it — NEVER wrap it in an external `flock`
 ```bash
 python tools/probe_cells.py \
   --binary worktree:<path>,venv:<path>,label:<name> \
   --binary worktree:<path>,venv:<path>,label:<name> \
   --cells <comma-list> --reps <n> --warmup <n> --rounds <n> --out <path>
 ```
+Invoke it BARE. `tools/probe_cells.py` takes the GPU lock ITSELF, via `tools/gpu_lock.py`'s
+`gpu_lock()` in `run_worker`/`run_ncu_cell` — the ONE lock primitive every GPU entry point in this
+tree now uses (K46: `tests/conftest.py`, `tools/sanitize_oracle.py`, `bench.discipline.disciplined`
+all take it the same way; the two-family split this section used to describe — some tools
+self-locking, pytest/bench requiring an external wrap — is retired). An outer
+`flock` wrapping this command on the same lock path still blocks the tool's own internal
+acquisition forever (a real incident, K38: 17 CPU-idle minutes on a live GPU before the coordinator
+killed it) — `gpu_lock()`'s reentrancy only protects a self-locking tool calling ANOTHER
+self-locking tool, never an external `flock` on the same path, which stays banned everywhere (a
+lint rule in `tools/lint/lint_standards.py` finds it in a committed doc/script).
+
 Add `--ncu` for one oneshot kernel-name + metrics capture per (binary, cell) — read the script's
 `--ncu` handling for the current metric list rather than assuming it's fixed.
 
@@ -50,6 +61,16 @@ by re-running it casually; the tool prints `git_sha` and device stamp on every r
 new number can be told apart from an old one. A stage's §16 perf-probe gate cites the PREVIOUS
 stage's recorded number, not a fresh re-measurement of it.
 
+## The measurements record (K38) — every run is ALSO written, not just printed
+As of K38, a probe run (unless `--no-record`) writes each binary's rows through
+`benchmarks/bench/store.py` into `benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` — the
+committed record — and `python tools/rola_db.py rebuild` indexes it into the gitignored
+`.rola/measurements.sqlite`. Pass `--stage <name>` so a later `rola-db baseline --stage <name>` can
+find these rows; `rola-db last`/`history`/`compare` are how an agent finds a prior number by SQL
+instead of grepping FINDINGS. Read `docs/measurement.md`'s "The measurements record (JSONL) and its
+derived index" section for the schema before writing a NEW tool that measures anything — the writer
+epilogue is one shared call site on purpose.
+
 ## Instruction counts alone are never a verdict
 `--ncu`'s IPC and stall-reason columns are not decoration. §16 addendum 2: an instruction count that
 FALLS while wall time RISES is RED, not a win — see FINDINGS for a worked example (e.g. the
@@ -59,3 +80,7 @@ KERNEL_STANDARDS §16 sets, on either a dense or a sparse probe cell vs. the pre
 report it, Blake rules, don't tune around it.
 
 - NEVER wrap tools/probe_cells.py in an external `flock /tmp/rola_gpu.lock`: it takes the GPU lock ITSELF (check the source — grep rola_gpu.lock); an outer flock on the same file self-deadlocks silently (K41 and K38 both hit it). Same rule for any tool that documents taking the lock.
+
+## Addendum (F1b, 2026-08-29)
+- THE `sha` COLUMN IS THE WORKTREE HEAD, NOT THE BINARY: commit before the probe you intend to record, or
+  the K38 rows name the wrong commit (an uncommitted tree stamps its base).
