@@ -61,9 +61,16 @@ are all GONE from here, each to the level that owns it ([§5b](#decode-seam),
 exists to leave nowhere to land.
 
 **The predicate is `state is not None`**, at the op and at the layer alike. There is
-no second flag, because the kernel's store epilogue is skipped by a NULL POINTER: a
-stateless call runs a variant with no state I/O compiled into it at all and pays
-nothing for the feature.
+no second flag, because the kernel's store epilogue is skipped by a NULL POINTER: one
+compiled body serves every call, and a stateless call's entry/exit sweeps are gated
+at RUNTIME by a CTA-uniform `!= nullptr` check on the plane pointers (K41 -- an
+earlier `STATE` template-bool axis compiled a second, state-free body per arm; that
+axis is deleted, and the runtime check is what "pays nothing for the feature" now
+means: the skipped branch, not a separate instantiation). AN INSTANTIATED STATE IS
+ALWAYS read at entry and updated at exit. An instantiated-but-EMPTY paged state is
+NOT null: it is engaged, and its absent atoms skip individually at the per-atom
+`slot < 0` grain (orthogonal to this predicate); its planned atoms are written. NULL
+means no state object at that end -- nothing is read, written, or allocated there.
 
 ## <a id="binding"></a>2. Binding is SHAPE ACQUISITION, and there is no interview
 

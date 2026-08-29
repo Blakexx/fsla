@@ -364,24 +364,29 @@ struct BwdOwner {
     unsigned short lv[D][PM::kMaxN];
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      unsigned short run[PM::n_l(l)];
-      load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
+      //: §6: PM::n_l(l) is compile-time (l is the static_for's constexpr index) but the
+      //: heuristic can't see through the qualified call, so name it.
+      constexpr int kNL = PM::n_l(l);
+      unsigned short run[kNL];
+      load_run<kNL>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
 #pragma unroll
-      for (int i = 0; i < PM::n_l(l); ++i) lv[l][i] = run[i];
+      for (int i = 0; i < kNL; ++i) lv[l][i] = run[i];
       if constexpr (SAMP) {
 #pragma unroll
-        for (int i = 0; i < PM::n_l(l); ++i)
+        for (int i = 0; i < kNL; ++i)
           samp[(par * C + prow) * kDigitRows + DP::off(l) + BP::run_of(l, slot0) + i] =
               bf16_bits_to_float(lv[l][i]);
       }
     });
     if constexpr (GAIN != GainSite::kPanel) {
+      constexpr int kNL0 = PM::n_l(0);
 #pragma unroll
-      for (int i = 0; i < PM::n_l(0); ++i) lv[0][i] = have ? lv[0][i] : (unsigned short)0;
+      for (int i = 0; i < kNL0; ++i) lv[0][i] = have ? lv[0][i] : (unsigned short)0;
     }
     __nv_bfloat16* const row = dst + prow * LdS + slot0;
+    constexpr int kSPT = PM::SPT;
 #pragma unroll
-    for (int j = 0; j < PM::SPT; j += 2) {
+    for (int j = 0; j < kSPT; j += 2) {
       uint32_t acc = ((uint32_t)lv[D - 1][PM::idx_of(D - 1, j + 1)] << 16)
                      | (uint32_t)lv[D - 1][PM::idx_of(D - 1, j)];
       static_for<D - 1>([&](auto Lc) {
@@ -869,8 +874,13 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
         rendezvous();
       }
       const int fanRow = ow.tid / kBallotLanes, fanCol = ow.tid % kBallotLanes;
+      //: §6: OW::k* are compile-time constexpr static members but the heuristic can't
+      //: see through the qualified name, so alias them locally.
+      constexpr int kFanPasses = OW::kFanPasses;
+      constexpr int kFanPerThr = OW::kFanPerThr;
+      constexpr int kGwRows = OW::kGwRows;
 #pragma unroll
-      for (int pp = 0; pp < OW::kFanPasses; ++pp) {
+      for (int pp = 0; pp < kFanPasses; ++pp) {
         const int row = fanRow + pp * OW::kFanRows;
         if (row < n) {
           float* const dp = reinterpret_cast<float*>(gather_ptr(
@@ -878,12 +888,12 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
               winV + (uint32_t)wlist[off + row] * (uint32_t)(kDv * 4) + (uint32_t)(fanCol * 4)));
           const float g = ow.sgain[par * C + row];
 #pragma unroll
-          for (int e = 0; e < OW::kFanPerThr; ++e)
+          for (int e = 0; e < kFanPerThr; ++e)
             fan_in_add(dp + e * kBallotLanes, g * ow.so[row * LdO + fanCol + e * kBallotLanes]);
         }
       }
 #pragma unroll
-      for (int r = 0; r < OW::kGwRows; ++r) {
+      for (int r = 0; r < kGwRows; ++r) {
         const int row = ow.warp * OW::kGwRows + r;
         const __nv_bfloat16* const vrow = ow.sd + vslot * OW::kSlotElems + row * LdD;
         float s = 0.f;
@@ -931,8 +941,11 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
           uint32_t a[4];
           load_frag_t(
               a, bp + (uint32_t)((kt * kMmaM * LdS + (OW::kLeafGrp * ow.warp + 2 * pm) * 8) * 2));
+          //: §6: (kSlabN+1)/2 is compile-time (kSlabN is a file-level constexpr) but the
+          //: heuristic only reads a bare identifier, so name it.
+          constexpr int kQBHalf = (kSlabN + 1) / 2;
 #pragma unroll
-          for (int qb = 0; qb < (kSlabN + 1) / 2; ++qb) {
+          for (int qb = 0; qb < kQBHalf; ++qb) {
             uint32_t b[4];
             load_frag_t(b, bd + (uint32_t)((kt * kMmaM * LdD + qb * 16) * 2));
             mma(lam[pm][2 * qb], a, &b[0]);
@@ -1052,8 +1065,11 @@ __global__ __launch_bounds__(kThreads, (kScanACtaTarget<D, B, K, M, W, C>)) void
           uint32_t a[4];
           load_frag_t(
               a, bp + (uint32_t)((kt * kMmaM * LdS + (OW::kLeafGrp * ow.warp + 2 * pm) * 8) * 2));
+          //: §6: (kSlabN+1)/2 is compile-time (kSlabN is a file-level constexpr) but the
+          //: heuristic only reads a bare identifier, so name it.
+          constexpr int kQBHalf = (kSlabN + 1) / 2;
 #pragma unroll
-          for (int qb = 0; qb < (kSlabN + 1) / 2; ++qb) {
+          for (int qb = 0; qb < kQBHalf; ++qb) {
             uint32_t b[4];
             load_frag_t(b, bd + (uint32_t)((kt * kMmaM * LdD + qb * 16) * 2));
             mma(st[pm][2 * qb], a, &b[0]);

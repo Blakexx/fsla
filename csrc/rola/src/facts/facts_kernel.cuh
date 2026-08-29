@@ -447,8 +447,10 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
     if (tid == 0) sAllLive = 0;
     rendezvous();
 
+#pragma unroll 1
     for (int w0 = 0; w0 < tokWords; w0 += kAtomTileWords) {
       const int n = min(kAtomTileWords, tokWords - w0);
+#pragma unroll 1
       for (int i = tid; i < n; i += kAtomThreads) {
         const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
         uint32_t m = 0xFFFFFFFFu;
@@ -465,6 +467,7 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
         if (sLive[a]) continue;
         const uint32_t rowOff = offInner + (uint32_t)a * rowBytes;
         bool hit = false;
+#pragma unroll 1
         for (int i = lane; i < n; i += kBallotLanes) {
           const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
           hit |=
@@ -526,6 +529,11 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   static_assert(kInner % kGroup == 0, "a row group must divide the prefix's inner run");
   constexpr int kAtomsPer = BC / kAtomLeaves;
   static_assert(BC % kAtomLeaves == 0, "a block is a whole number of page atoms");
+  //: §6 unroll discipline: the heuristic reads only a bare identifier/literal as
+  //: compile-time, so these arithmetic bounds (genuinely compile-time -- kGroup,
+  //: kAtomsPer are both constexpr locals above) get named aliases.
+  constexpr int kSLive = 2 * kGroup;
+  constexpr int kGroupAtoms = kGroup * kAtomsPer;
   const int tid = threadIdx.x;
   const int lane = tid & 31;
   const int blkBase = blockIdx.x * kGroup;
@@ -538,7 +546,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   __shared__ uint8_t sLive[2 * kGroup];
   __shared__ uint8_t sState[kGroup];
   __shared__ int sAllLive;
-  for (int e = tid; e < 2 * kGroup; e += kAtomThreads) sLive[e] = 0;
+  for (int e = tid; e < kSLive; e += kAtomThreads) sLive[e] = 0;
   for (int a = tid; a < kGroup; a += kAtomThreads) sState[a] = 0;
   if (tid == 0) sAllLive = 0;
   rendezvous();
@@ -549,7 +557,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   if (page_tbl != nullptr) {
     const int32_t* const pt = pin_address(page_tbl);
     const uint32_t bhAtoms = (uint32_t)blockIdx.y * (uint32_t)(LP::slots / kAtomLeaves);
-    for (int e = tid; e < kGroup * kAtomsPer; e += kAtomThreads) {
+    for (int e = tid; e < kGroupAtoms; e += kAtomThreads) {
       const int a = e / kAtomsPer;
       const uint32_t atom = bhAtoms + (uint32_t)(LP::block_base(blkBase + a) / kAtomLeaves)
                             + (uint32_t)(e - a * kAtomsPer);
@@ -561,7 +569,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   //: NO CLAUSE AT ALL is the whole slot space in one block: live on both sides
   //: whenever the sequence has a token, which the caller's topology guarantees.
   if constexpr (kClauses == 0) {
-    for (int e = tid; e < 2 * kGroup; e += kAtomThreads) sLive[e] = 1;
+    for (int e = tid; e < kSLive; e += kAtomThreads) sLive[e] = 1;
   } else {
     const int tokWords = tok_words(L);
     //: ADDRESSING DISCIPLINE, THE FORM'S: one 64-bit base per (bh, side), every
@@ -588,8 +596,10 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
 #undef ROLA_BLOCK_UPPER
     const uint32_t offInner = (uint32_t)LP::prefix_entries(kClauses - 1) * rowBytes;
 
+#pragma unroll 1
     for (int w0 = 0; w0 < tokWords; w0 += kAtomTileWords) {
       const int n = min(kAtomTileWords, tokWords - w0);
+#pragma unroll 1
       for (int i = tid; i < n; i += kAtomThreads) {
         const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
         uint32_t mr = 0xFFFFFFFFu, mw = 0xFFFFFFFFu;
@@ -606,12 +616,13 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
         sUp[1][i] = mw;
       }
       rendezvous();
-      for (int e = tid >> 5; e < 2 * kGroup; e += kWarps) {
+      for (int e = tid >> 5; e < kSLive; e += kWarps) {
         if (sLive[e]) continue;
         const int s = e / kGroup;
         const uint32_t* const base = s == 0 ? baseR : baseW;
         const uint32_t rowOff = offInner + (uint32_t)(innerBase + e - s * kGroup) * rowBytes;
         bool hit = false;
+#pragma unroll 1
         for (int i = lane; i < n; i += kBallotLanes) {
           const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
           hit |= (sUp[s][i] & *reinterpret_cast<const uint32_t*>(gather_ptr(base, rowOff + off)))
@@ -626,7 +637,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
       //: and publishes a single answer, so no lane leaves a `rendezvous` alone.
       if (tid < kBallotLanes) {
         bool all = true;
-        for (int e = tid; e < 2 * kGroup; e += kBallotLanes) all &= sLive[e] != 0;
+        for (int e = tid; e < kSLive; e += kBallotLanes) all &= sLive[e] != 0;
         const uint32_t every = lane_ballot(all);
         if (tid == 0 && every == 0xFFFFFFFFu) sAllLive = 1;
       }

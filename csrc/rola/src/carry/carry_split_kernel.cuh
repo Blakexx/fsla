@@ -74,7 +74,7 @@ constexpr int kSplitCtaTarget = SplitGeom<D, B, K, M, DV, W, C>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int DV, int W, int C, bool STATE>
+template <int D, int B, int K, int M, int DV, int W, int C>
 __global__ __launch_bounds__(kThreads, (kSplitCtaTarget<D, B, K, M, DV, W, C>)) void
 carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
                    const __nv_bfloat16* __restrict__ pwrite,
@@ -96,11 +96,11 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   //: every warp holds the WHOLE box and a slice of the channels, so the state's
   //: leaf tiling is the box's and is not carved.
   constexpr int NDV = BC / kMmaN;  // the state's n-tiles (leaves)
-  constexpr int KDw = BC / kMmaK;  // its k-tiles
+  constexpr int kDw = BC / kMmaK;  // its k-tiles
   //: THE MASS CHANNEL'S CARVE.  One channel cannot be split along the channel
   //: axis, so it is split along the axis the mma leaves free -- the leaves.
-  constexpr int kMassUnits = KDw < kWarps ? KDw : kWarps;
-  constexpr int kMassKD = KDw / kMassUnits;
+  constexpr int kMassUnits = kDw < kWarps ? kDw : kWarps;
+  constexpr int kMassKD = kDw / kMassUnits;
   constexpr int kMassTiles = 2 * kMassKD;
   //: when the split reaches every warp the mass guard is a TAUTOLOGY, and it must be
   //: spelled as one: `__launch_bounds__` does not let the compiler prove
@@ -257,32 +257,36 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   //: ---- THE ENTRY STATE.  The fragments are SET, never accumulated: they are
   //: provably zero here, and with no decay the recurrence is affine in the state
   //: with an inclusive-after-write readout, so this IS the oracle's seeding.
-  if constexpr (STATE) {
-    if (s_in != nullptr) {
-      const float* const plane = pin_address(s_in);
+  //: NULL = NO STATE OBJECT AT THIS END: nothing is read, allocated, or touched
+  //: (docs/internals/state.md section 1). An instantiated-but-empty paged state is
+  //: NOT null -- it is engaged, and its absent atoms skip below at the per-atom
+  //: `slot < 0` grain, orthogonal to this check. This predicate is CTA-uniform:
+  //: `s_in` is a launch argument, identical for every thread, so the branch cannot
+  //: diverge within or across warps -- one compiled body, no STATE template axis.
+  if (s_in != nullptr) {
+    const float* const plane = pin_address(s_in);
 #pragma unroll
-      for (int a = 0; a < kAtoms; ++a) {
-        //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
-        //: nothing here, the fragments keep the zero the prologue set, and reading a
-        //: never-written state is inert under the self-normalizing readout.
-        const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
-        if (slot < 0) continue;
-        page_sweep(page_base(slot), [&](int sidx, uint32_t off) {
-          so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
-        });
-        rendezvous();
+    for (int a = 0; a < kAtoms; ++a) {
+      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
+      //: nothing here, the fragments keep the zero the prologue set, and reading a
+      //: never-written state is inert under the self-normalizing readout.
+      const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
+      if (slot < 0) continue;
+      page_sweep(page_base(slot), [&](int sidx, uint32_t off) {
+        so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
+      });
+      rendezvous();
+#pragma unroll
+      for (int p = 0; p < 2; ++p)
+#pragma unroll
+        for (int k = 0; k < 4; ++k) st[2 * a + p][k] = so[page_value(p, k)];
+      if (warp == a % kMassUnits && lane < 4) {
 #pragma unroll
         for (int p = 0; p < 2; ++p)
 #pragma unroll
-          for (int k = 0; k < 4; ++k) st[2 * a + p][k] = so[page_value(p, k)];
-        if (warp == a % kMassUnits && lane < 4) {
-#pragma unroll
-          for (int p = 0; p < 2; ++p)
-#pragma unroll
-            for (int k = 0; k < 2; ++k) mass_st[2 * (a / kMassUnits) + p][k] = so[page_mass(p, k)];
-        }
-        rendezvous();
+          for (int k = 0; k < 2; ++k) mass_st[2 * (a / kMassUnits) + p][k] = so[page_mass(p, k)];
       }
+      rendezvous();
     }
   }
 
@@ -330,8 +334,12 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
       unsigned short run[PM::n_l(l)];
       load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
       if constexpr (!WRITE && l == 0) {
+        //: §6: PM::n_l(0) is compile-time (a constexpr static member function of a
+        //: template class called with a literal) but the heuristic can't see through
+        //: the qualified call, so name it.
+        constexpr int kNL0 = PM::n_l(0);
 #pragma unroll
-        for (int i = 0; i < PM::n_l(0); ++i) run[i] = have ? run[i] : (unsigned short)0;
+        for (int i = 0; i < kNL0; ++i) run[i] = have ? run[i] : (unsigned short)0;
       }
 #pragma unroll
       for (int j = 0; j < SPT; j += 2)
@@ -513,9 +521,9 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
       for (int j = 0; j < NTOK; ++j)
 #pragma unroll
         for (int e = 0; e < 4; ++e) acc[j][e] = 0.f;
-      uint32_t sa[KDw][4];
+      uint32_t sa[kDw][4];
 #pragma unroll
-      for (int kk = 0; kk < KDw; ++kk) {
+      for (int kk = 0; kk < kDw; ++kk) {
         sa[kk][0] = pack_bf16x2(st[2 * kk][0], st[2 * kk][1]);
         sa[kk][1] = pack_bf16x2(st[2 * kk][2], st[2 * kk][3]);
         sa[kk][2] = pack_bf16x2(st[2 * kk + 1][0], st[2 * kk + 1][1]);
@@ -523,11 +531,11 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
       }
 #pragma unroll
       for (int m = 0; m < MTOK; ++m) {
-        uint32_t rb[KDw][4];
+        uint32_t rb[kDw][4];
 #pragma unroll
-        for (int kk = 0; kk < KDw; ++kk) load_frag(rb[kk], ADDR_S(brT, m * 16, 2 * kk));
+        for (int kk = 0; kk < kDw; ++kk) load_frag(rb[kk], ADDR_S(brT, m * 16, 2 * kk));
 #pragma unroll
-        for (int kk = 0; kk < KDw; ++kk)
+        for (int kk = 0; kk < kDw; ++kk)
 #pragma unroll
           for (int p = 0; p < 2; ++p) mma(acc[2 * m + p], sa[kk], &rb[kk][2 * p]);
       }
@@ -647,7 +655,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
         uint32_t a[4];
         load_frag_t(a, ADDR_V(vsl, kk * 16, chan0));
 #pragma unroll
-        for (int nj = 0; nj < KDw; ++nj) {
+        for (int nj = 0; nj < kDw; ++nj) {
           uint32_t b[4];
           load_frag_t(b, ADDR_S(bwF, kk * 16, 2 * nj));
           mma(st[2 * nj], a, &b[0]);
@@ -673,33 +681,33 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   // ---- the FINAL STATE, at CANONICAL atom ids ------------------------------
   //: the mirror of the entry load, after the last fan-in has consumed the staging
   //: buffer -- which is what the one extra rendezvous below is for.
-  if constexpr (STATE) {
-    if (s_out != nullptr) {
-      float* const plane = pin_address(s_out);
-      rendezvous();
+  //: NULL = NO STATE OBJECT AT THIS END: nothing is written (state.md section 1),
+  //: symmetric with the entry check above.
+  if (s_out != nullptr) {
+    float* const plane = pin_address(s_out);
+    rendezvous();
 #pragma unroll
-      for (int a = 0; a < kAtoms; ++a) {
-        //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
-        //: which is what leaves a skipped slot carrying exactly what it held.
-        const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
-        if (slot < 0) continue;
+    for (int a = 0; a < kAtoms; ++a) {
+      //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
+      //: which is what leaves a skipped slot carrying exactly what it held.
+      const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
+      if (slot < 0) continue;
+#pragma unroll
+      for (int p = 0; p < 2; ++p)
+#pragma unroll
+        for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * a + p][k]);
+      if (warp == a % kMassUnits && lane < 4) {
 #pragma unroll
         for (int p = 0; p < 2; ++p)
 #pragma unroll
-          for (int k = 0; k < 4; ++k) store_f32(&so[page_value(p, k)], st[2 * a + p][k]);
-        if (warp == a % kMassUnits && lane < 4) {
-#pragma unroll
-          for (int p = 0; p < 2; ++p)
-#pragma unroll
-            for (int k = 0; k < 2; ++k)
-              store_f32(&so[page_mass(p, k)], mass_st[2 * (a / kMassUnits) + p][k]);
-        }
-        rendezvous();
-        page_sweep(page_base(slot), [&](int sidx, uint32_t offb) {
-          store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
-        });
-        rendezvous();
+          for (int k = 0; k < 2; ++k)
+            store_f32(&so[page_mass(p, k)], mass_st[2 * (a / kMassUnits) + p][k]);
       }
+      rendezvous();
+      page_sweep(page_base(slot), [&](int sidx, uint32_t offb) {
+        store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
+      });
+      rendezvous();
     }
   }
 #undef ADDR_S

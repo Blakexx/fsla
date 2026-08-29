@@ -124,10 +124,13 @@ template <int D, int B, int W>
 __device__ __forceinline__ bool side_stage_live(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                 int ti, int l, int side, int stage) {
   bool any = false;
+  //: §6: bwd_slabs_per_stage(B) is compile-time (B is this function's template
+  //: parameter) but the heuristic can't see through the function call, so name it.
+  constexpr int kSlabsPerStage = bwd_slabs_per_stage(B);
 #pragma unroll
-  for (int sub = 0; sub < bwd_slabs_per_stage(B); ++sub)
+  for (int sub = 0; sub < kSlabsPerStage; ++sub)
     any = any
-          || side_bits<D, B, W>(sm, modes, ti, l, side, stage * bwd_slabs_per_stage(B) + sub) != 0u;
+          || side_bits<D, B, W>(sm, modes, ti, l, side, stage * kSlabsPerStage + sub) != 0u;
   return any;
 }
 
@@ -139,8 +142,11 @@ template <int D, int B, int W>
 __device__ __forceinline__ uint32_t live_rows_side(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                    int rt0, int ct, int l, int stage) {
   uint32_t bits = 0u;
+  //: §6: row_tiles_of(W) is compile-time (W is this function's template parameter)
+  //: but the heuristic can't see through the function call, so name it.
+  constexpr int kRowTiles = row_tiles_of(W);
 #pragma unroll
-  for (int r = 0; r < row_tiles_of(W); ++r)
+  for (int r = 0; r < kRowTiles; ++r)
     if (rt0 + r >= ct && side_stage_live<D, B, W>(sm, modes, rt0 + r, l, 0, stage)) bits |= 1u << r;
   return bits;
 }
@@ -159,15 +165,20 @@ template <int D, int B, int W>
 __device__ __forceinline__ uint32_t live_rows_pair(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                    int rt0, int ct, int l, int stage) {
   uint32_t bits = 0u;
+  //: §6: row_tiles_of(W)/bwd_slabs_per_stage(B) are compile-time (D, B, W are this
+  //: function's template parameters) but the heuristic can't see through the
+  //: function calls, so name them.
+  constexpr int kRowTiles = row_tiles_of(W);
+  constexpr int kSlabsPerStage = bwd_slabs_per_stage(B);
 #pragma unroll
-  for (int r = 0; r < row_tiles_of(W); ++r) {
+  for (int r = 0; r < kRowTiles; ++r) {
     if (rt0 + r < ct) continue;
     bool any = false;
 #pragma unroll
-    for (int sub = 0; sub < bwd_slabs_per_stage(B); ++sub)
+    for (int sub = 0; sub < kSlabsPerStage; ++sub)
       any = any
             || pair_slab_live<D, B, W>(sm, modes, rt0 + r, ct, l,
-                                       stage * bwd_slabs_per_stage(B) + sub);
+                                       stage * kSlabsPerStage + sub);
     if (any) bits |= 1u << r;
   }
   return bits;
@@ -184,7 +195,11 @@ __device__ __forceinline__ void build_bwd_masks(IntraBwdSmem<D, B, W>& sm, const
   constexpr int kThreads = threads_of(W);
   constexpr int kCohorts = kThreads / (2 * kTile);
   uint32_t* flat = &sm.mask[0][0][0][0];
-  for (int i = tid; i < kTiles * D * 2 * mask_words(B); i += kThreads) flat[i] = 0u;
+  //: §6: both bounds are compile-time (kTiles/D are locals/template params, mask_words(B)
+  //: a constexpr function of the template param B) but the heuristic can't see through
+  //: the arithmetic/function-call form, so name them.
+  constexpr int kFlatWords = kTiles * D * 2 * mask_words(B);
+  for (int i = tid; i < kFlatWords; i += kThreads) flat[i] = 0u;
   __syncthreads();
 
   const int token = tid & (kTile - 1);
@@ -197,15 +212,18 @@ __device__ __forceinline__ void build_bwd_masks(IntraBwdSmem<D, B, W>& sm, const
       const uint32_t want = (side == 0 ? kModeReadSparse : kModeWriteSparse);
       if (((p.modes >> (2 * l)) & want) == 0u) continue;
       const __nv_bfloat16* plane = (side == 0) ? p.pread : p.pwrite;
+      //: §6: mask_words(B)/2 is compile-time (B is this function's template parameter)
+      //: but the heuristic can't see through the function call/arithmetic, so name it.
+      constexpr int kMaskWordsHalf = mask_words(B) / 2;
       for (int ti = cohort; ti < kTiles; ti += kCohorts) {
         const __nv_bfloat16* row =
             plane + (long long)(bh * p.L + wbase + ti * kTile + token) * p.row_width + l * B
             + half * (B / 2);
 #pragma unroll
-        for (int j = 0; j < mask_words(B) / 2; ++j) {
+        for (int j = 0; j < kMaskWordsHalf; ++j) {
           const uint32_t bits = __reduce_or_sync(0xFFFFFFFFu, digit_union_word<32>(row + j * 32));
           if ((tid & 31) == 0)
-            atomicOr(&sm.mask[ti][l][side][half * (mask_words(B) / 2) + j], bits);
+            atomicOr(&sm.mask[ti][l][side][half * kMaskWordsHalf + j], bits);
         }
       }
     }
@@ -223,13 +241,17 @@ __device__ __forceinline__ void stage_bwd_slabs(IntraBwdSmem<D, B, W>& sm, const
   constexpr int kThreads = threads_of(W);
   constexpr int kColThreads = kThreads / kTile;
   constexpr int kColDigits = bwd_stage_digits(B) / kColThreads;
+  //: §6: these are all compile-time (B, W are this function's template parameters)
+  //: but the heuristic can't see through the function call/arithmetic, so name them.
+  constexpr int kColDigitOctets = kColDigits / 8;
+  constexpr int kStageDigitsHex = bwd_stage_digits(B) / 16;
   if (cols) {
     const int ctoken = tid / kColThreads;
     const int cpart = (tid % kColThreads) * kColDigits;
     const __nv_bfloat16* wsrc =
         p.pwrite + base + (long long)(ct * kTile + ctoken) * p.row_width + cpart;
 #pragma unroll
-    for (int c = 0; c < kColDigits / 8; ++c)
+    for (int c = 0; c < kColDigitOctets; ++c)
       stage_tile(smem_addr(&sm.wslab[buf][ctoken][cpart + c * 8]), wsrc + c * 8);
   }
   const int rtoken = (tid >> 1) & (kTile - 1);
@@ -239,7 +261,7 @@ __device__ __forceinline__ void stage_bwd_slabs(IntraBwdSmem<D, B, W>& sm, const
     const __nv_bfloat16* rsrc =
         p.pread + base + (long long)((rt0 + rtile) * kTile + rtoken) * p.row_width + rpart;
 #pragma unroll
-    for (int c = 0; c < bwd_stage_digits(B) / 16; ++c)
+    for (int c = 0; c < kStageDigitsHex; ++c)
       stage_tile(smem_addr(&sm.rslab[buf][rtile * kTile + rtoken][rpart + c * 8]), rsrc + c * 8);
   }
 }
@@ -250,6 +272,9 @@ __device__ __forceinline__ void stage_bwd_values(IntraBwdSmem<D, B, W>& sm, cons
   constexpr int kThreads = threads_of(W);
   constexpr int kColThreads = kThreads / kTile;
   constexpr int kColChannels = kValueWidth / kColThreads;
+  //: §6: kColChannels/8 is compile-time but the heuristic only reads a bare
+  //: identifier, so name it.
+  constexpr int kColChannelOctets = kColChannels / 8;
   const int b = bh / p.heads;
   const int h = bh - b * p.heads;
   const int t0 = wbase + ct * kTile;
@@ -258,7 +283,7 @@ __device__ __forceinline__ void stage_bwd_values(IntraBwdSmem<D, B, W>& sm, cons
   const __nv_bfloat16* src =
       p.v + ((long long)(b * p.tokens + t0 + token) * p.heads + h) * kValueWidth + part;
 #pragma unroll
-  for (int c = 0; c < kColChannels / 8; ++c)
+  for (int c = 0; c < kColChannelOctets; ++c)
     stage_tile(smem_addr(&sm.vslab[token][part + c * 8]), src + c * 8);
   if (tid < kTile / 8)
     stage_tile(smem_addr(&sm.gain[tid * 8]), p.gwrite + (long long)bh * p.L + t0 + tid * 8);
@@ -273,12 +298,15 @@ __device__ __forceinline__ void stage_bwd_seed(IntraBwdSmem<D, B, W>& sm, const 
   constexpr int kRows = rows_of(W);
   constexpr int kRowThreads = kThreads / kRows;
   constexpr int kRowChannels = kValueWidth / kRowThreads;
+  //: §6: kRowChannels/8 is compile-time but the heuristic only reads a bare
+  //: identifier, so name it.
+  constexpr int kRowChannelOctets = kRowChannels / 8;
   const int t0 = wbase + rt0 * kTile;
   const int token = tid / kRowThreads;
   const int part = (tid % kRowThreads) * kRowChannels;
   const __nv_bfloat16* src = p.dnum + (long long)(bh * p.L + t0 + token) * kValueWidth + part;
 #pragma unroll
-  for (int c = 0; c < kRowChannels / 8; ++c)
+  for (int c = 0; c < kRowChannelOctets; ++c)
     stage_tile(smem_addr(&sm.dslab[token][part + c * 8]), src + c * 8);
   if (tid < kRows) sm.dden[tid] = p.dden[(long long)bh * p.L + t0 + tid];
 }
@@ -293,8 +321,11 @@ __device__ __forceinline__ void publish_image(IntraBwdSmem<D, B, W>& sm,
                                               int row_lo, int col_lo) {
   __nv_bfloat16* lo = &sm.img[warp * kWarpRows + row_lo][col_lo];
   __nv_bfloat16* hi = &sm.img[warp * kWarpRows + row_lo + 8][col_lo];
+  //: §6: kTile/8 is compile-time (kTile is a file-level constexpr) but the
+  //: heuristic only reads a bare identifier, so name it.
+  constexpr int kTileOctets = kTile / 8;
 #pragma unroll
-  for (int n = 0; n < kTile / 8; ++n) {
+  for (int n = 0; n < kTileOctets; ++n) {
     *reinterpret_cast<uint32_t*>(lo + n * 8) = pack_bf16x2(acc[n][0], acc[n][1]);
     *reinterpret_cast<uint32_t*>(hi + n * 8) = pack_bf16x2(acc[n][2], acc[n][3]);
   }
@@ -324,8 +355,11 @@ __device__ __forceinline__ void reduce_tile(float* put, const float* get, int la
                                             const float (&acc)[2][4], float* base, int stride) {
   relay_tile(put, acc);
   int off = (lane_off >> 8) * stride + (lane_off & 0xFF);
+  //: §6: kXposeRows/2 is compile-time (kXposeRows is a file-level constexpr) but the
+  //: heuristic only reads a bare identifier, so name it.
+  constexpr int kXposeRowsHalf = kXposeRows / 2;
 #pragma unroll
-  for (int q = 0; q < kXposeRows / 2; ++q, off += 2 * stride)
+  for (int q = 0; q < kXposeRowsHalf; ++q, off += 2 * stride)
     fan_in_add(base + off, get[q * 2 * kXposePitch]);
 }
 
@@ -364,8 +398,11 @@ __device__ __forceinline__ void reduce_tile_on_support(float* put, const float* 
   }
   relay_tile(put, acc);
   int off = (lane_off >> 8) * stride + (lane_off & 0xFF);
+  //: §6: kXposeRows/2 is compile-time (kXposeRows is a file-level constexpr) but the
+  //: heuristic only reads a bare identifier, so name it.
+  constexpr int kXposeRowsHalf = kXposeRows / 2;
 #pragma unroll 2
-  for (int q = 0; q < kXposeRows / 2; ++q, off += 2 * stride, sup += sup_step)
+  for (int q = 0; q < kXposeRowsHalf; ++q, off += 2 * stride, sup += sup_step)
     fan_in_add_if(support_bits(sup), base + off, get[q * 2 * kXposePitch]);
 }
 
@@ -478,6 +515,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
     stage_wait<0>();
     __syncthreads();
 
+    #pragma unroll 1
     for (int ct = 0; ct < rt0 + kRowTiles; ++ct) {
       __syncthreads();
       stage_bwd_values<D, B, W>(sm, p, bh, wbase, ct, tid);
@@ -493,14 +531,20 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
 #pragma unroll
           for (int i = 0; i < 4; ++i) gram[l][n][i] = 0.f;
 
+      //: §6: bwd_stages_per_level(B)/bwd_slabs_per_stage(B) are compile-time (B is
+      //: this function's template parameter) but the heuristic can't see through the
+      //: function calls, so name them once for this loop nest.
+      constexpr int kStagesPerLevel = bwd_stages_per_level(B);
+      constexpr int kSlabsPerStage = bwd_slabs_per_stage(B);
+
       // ---- PASS 1: the Grams, recomputed under the forward's own gate ----------
 #pragma unroll
       for (int l = 0; l < D; ++l) {
 #pragma unroll
-        for (int stage = 0; stage < bwd_stages_per_level(B); ++stage) {
-          const int step = l * bwd_stages_per_level(B) + stage;
-          const int nl = (stage + 1 == bwd_stages_per_level(B)) ? l + 1 : l;
-          const int ns = (stage + 1 == bwd_stages_per_level(B)) ? 0 : stage + 1;
+        for (int stage = 0; stage < kStagesPerLevel; ++stage) {
+          const int step = l * kStagesPerLevel + stage;
+          const int nl = (stage + 1 == kStagesPerLevel) ? l + 1 : l;
+          const int ns = (stage + 1 == kStagesPerLevel) ? 0 : stage + 1;
           uint32_t next_rows = 0u;
           if (nl < D) {
             next_rows = live_rows_pair<D, B, W>(sm, p.modes, rt0, ct, nl, ns);
@@ -514,8 +558,8 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
           if ((rows >> mine) & 1u) {
             const int buf = step & 1;
 #pragma unroll
-            for (int sub = 0; sub < bwd_slabs_per_stage(B); ++sub) {
-              const int slab = stage * bwd_slabs_per_stage(B) + sub;
+            for (int sub = 0; sub < kSlabsPerStage; ++sub) {
+              const int slab = stage * kSlabsPerStage + sub;
               if (!pair_slab_live<D, B, W>(sm, p.modes, rt, ct, l, slab)) continue;
               const int k0 = sub * kSlabDigits + acol;
               uint32_t af[4];
@@ -655,12 +699,14 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
         __syncthreads();
         publish_image<D, B, W>(sm, gram[l], warp, row_lo, col_lo);
         __syncthreads();
+        //: §6: kStagesPerLevel is the same compile-time quantity aliased above
+        //: (bwd_stages_per_level(B)), reused here -- same enclosing ct-loop scope.
 #pragma unroll 2
-        for (int stage = 0; stage < bwd_stages_per_level(B); ++stage) {
-          const int step = l * bwd_stages_per_level(B) + stage;
+        for (int stage = 0; stage < kStagesPerLevel; ++stage) {
+          const int step = l * kStagesPerLevel + stage;
           const int buf = step & 1;
-          const int nl = (stage + 1 == bwd_stages_per_level(B)) ? l + 1 : l;
-          const int ns = (stage + 1 == bwd_stages_per_level(B)) ? 0 : stage + 1;
+          const int nl = (stage + 1 == kStagesPerLevel) ? l + 1 : l;
+          const int ns = (stage + 1 == kStagesPerLevel) ? 0 : stage + 1;
           if (nl < D)
             stage_bwd_slabs<D, B, W>(sm, p, bh, wbase, rt0, ct, nl, ns, (step + 1) & 1, tid,
                                      live_rows_side<D, B, W>(sm, p.modes, rt0, ct, nl, ns),

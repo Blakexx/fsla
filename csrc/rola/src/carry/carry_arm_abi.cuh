@@ -33,7 +33,8 @@ static constexpr int kCarryRowFields = 13;
 //: (docs/internals/state.md section 4): a continuation hands the SAME plane as `s_in` and
 //: `s_out` and advances it in place, and `page_tbl` null is the dense backing -- the slot
 //: is then the atom.  BOTH PLANES NULL IS THE NULL-STATE CALL and reaches an arm variant
-//: with no state I/O compiled into it at all (state.md section 1).
+//: nothing is read, written, or allocated at either end (state.md section 1) -- a
+//: RUNTIME null check inside the one compiled body (K41; no STATE template axis).
 //:
 //: WHAT ONE ARM'S TRANSLATION UNIT EXPORTS.  Five entry points: launch the body,
 //: launch and size its ballot table, and state its census and its row.

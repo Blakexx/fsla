@@ -156,6 +156,7 @@ decode_step_kernel(DecodeParams p) {
       const int width = p.level_width[l];
       const int off = p.level_amp_offset[l];
       const float* rd = p.dials + static_cast<int64_t>(h) * total_rows + p.level_row_offset[l];
+      #pragma unroll 1
       for (int g = tid; g < width; g += kDecodeThreads) sd[off + g] = rd[g];
     }
   }
@@ -230,6 +231,7 @@ decode_step_kernel(DecodeParams p) {
     const int a = i & ((1 << p.atoms_per_unit_shift) - 1);
     const int unit0 = (i >> p.atoms_per_unit_shift) << p.lat_units_per_atom_shift;
     int atom = -1;
+    #pragma unroll 1
     for (int q = 0; q < n_units; ++q) {
       const CandidateUnit u =
           resolve_candidate_unit<D>(p, mask_w, olist, s_n_o, s_bits + (D + 1) * kMaxLevels,
@@ -268,6 +270,7 @@ decode_step_kernel(DecodeParams p) {
     //: every CTA of that batch-head has arrived -- so the answer is a RECOMPUTE and never
     //: a communication. docs/internals/decode/decode.md#the-table-test
     int found = 0;
+    #pragma unroll 1
     for (int i = tid; i < n_candidates; i += kDecodeThreads) {
       const int a = candidate_atom(i);
       if (a >= 0 && page_row[a] < 0) ++found;
@@ -294,9 +297,11 @@ decode_step_kernel(DecodeParams p) {
         //: docs/internals/decode/decode.md#the-claim
         int32_t* shadow_row = p.pool_map + row_base;
         const int32_t* slots = p.pool_slots + static_cast<int64_t>(bh) * p.pool_cap;
+        #pragma unroll 1
         for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) shadow_row[a] = page_row[a];
         if (tid == 0) s_running = 0;
         __syncthreads();
+        #pragma unroll 1
         for (int base = 0; base < n_candidates; base += kDecodeThreads) {
           const int i = base + tid;
           const int a = (i < n_candidates) ? candidate_atom(i) : -1;
@@ -318,8 +323,10 @@ decode_step_kernel(DecodeParams p) {
   //: the others -- which is the set a host admission then plans from.
   if (paged && seg == 0) {
     bool* atom_row = p.atom_bits + static_cast<int64_t>(bh) * p.atoms_per_bh;
+    #pragma unroll 1
     for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) atom_row[a] = false;
     __syncthreads();
+    #pragma unroll 1
     for (int i = tid; i < n_candidates; i += kDecodeThreads) {
       const int a = candidate_atom(i);
       if (a >= 0) atom_row[a] = true;
@@ -382,6 +389,7 @@ decode_step_kernel(DecodeParams p) {
     //: docs/internals/decode/decode.md#the-term-loop
     for (int term = 0; term <= D; ++term) {
       const int units = s_units[term];
+      #pragma unroll 1
       for (int unit = seg * kDecodeWarps + warp; unit < units; unit += p.n_split * kDecodeWarps) {
         //: TWO RESOLVERS, ONE WALK. The write product is enumerated from live DIGITS and
         //: every other term from live owners crossed with the run radix; both hand back the
@@ -535,6 +543,7 @@ decode_step_kernel(DecodeParams p) {
       if (tid < cols) {
         const float* base = p.ws + static_cast<int64_t>(bh) * p.n_split * cols;
         float t = 0.0f;
+        #pragma unroll 1
         for (int s = 0; s < n_live; ++s) t += __ldcg(base + static_cast<int64_t>(s) * cols + tid);
         part[tid] = t;
       }
@@ -577,6 +586,7 @@ decode_step_kernel(DecodeParams p) {
     int32_t* page_row = p.page_tbl + row_base;
     const int32_t* pool_row = p.pool_map + row_base;
     int folded = 0;
+    #pragma unroll 1
     for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) {
       const int slot = pool_row[a];
       if (slot >= 0 && page_row[a] < 0) {
@@ -606,10 +616,12 @@ decode_step_kernel(DecodeParams p) {
   if (tid == 0) s_any = 0;
   __syncthreads();
   int seen = 0;
+  #pragma unroll 1
   for (int i = tid; i < p.BH; i += kDecodeThreads) seen |= __ldcg(p.growth + i);
   if (seen) s_any = 1;
   __syncthreads();
   if (s_any == 0) {
+    #pragma unroll 1
     for (int i = tid; i < p.BH; i += kDecodeThreads) p.done[i] = 0;
   }
   if (tid == 0) {

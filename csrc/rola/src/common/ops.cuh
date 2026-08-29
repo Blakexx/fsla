@@ -489,22 +489,26 @@ constexpr uint32_t kBf16MagnitudeMask = 0x7FFF7FFFu;
 //: amplitudes are one access each and longer runs are a whole number of 16-byte
 //: accesses.  The reduction is bitwise because the CALLER's question is whether
 //: anything in the run is nonzero, which needs no arithmetic and no ordering.
-template <int n>
+template <int N>
 __device__ __forceinline__ uint32_t or_run(const __nv_bfloat16* p) {
-  static_assert(n == 1 || n == 2 || n == 4 || (n >= 8 && n % 8 == 0),
+  static_assert(N == 1 || N == 2 || N == 4 || (N >= 8 && N % 8 == 0),
                 "a run is one access of 2, 4, 8 or 16 bytes, or a whole number "
                 "of 16-byte accesses");
-  if constexpr (n == 1) {
+  if constexpr (N == 1) {
     return (uint32_t)*reinterpret_cast<const unsigned short*>(p);
-  } else if constexpr (n == 2) {
+  } else if constexpr (N == 2) {
     return *reinterpret_cast<const uint32_t*>(p);
-  } else if constexpr (n == 4) {
+  } else if constexpr (N == 4) {
     const uint2 x = *reinterpret_cast<const uint2*>(p);
     return x.x | x.y;
   } else {
     uint32_t acc = 0;
+    //: §6: `N` is this function's template parameter (renamed from lowercase `n`
+    //: so the unroll-discipline lint reads it as compile-time); `N / 8` is still an
+    //: arithmetic expression the heuristic can't parse, so name it too.
+    constexpr int kOctets = N / 8;
 #pragma unroll
-    for (int i = 0; i < n / 8; ++i) {
+    for (int i = 0; i < kOctets; ++i) {
       const uint4 x = *reinterpret_cast<const uint4*>(p + i * 8);
       acc |= x.x | x.y | x.z | x.w;
     }

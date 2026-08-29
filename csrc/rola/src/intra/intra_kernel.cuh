@@ -103,12 +103,16 @@ __device__ __forceinline__ uint32_t nonzero_pair(uint32_t w) {
   return ((m & 0xFFFFu) != 0u ? 1u : 0u) | ((m & 0xFFFF0000u) != 0u ? 2u : 0u);
 }
 
-template <int n>
+template <int N>
 __device__ __forceinline__ uint32_t digit_union_word(const __nv_bfloat16* row) {
-  static_assert(n % 8 == 0 && n <= 32, "a certificate word covers 8, 16 or 32 digits");
+  static_assert(N % 8 == 0 && N <= 32, "a certificate word covers 8, 16 or 32 digits");
   uint32_t bits = 0;
+  //: §6: `N` is this function's template parameter (renamed from lowercase `n`
+  //: so the unroll-discipline lint reads it as compile-time); `N / 8` is still an
+  //: arithmetic expression the heuristic can't parse, so name it too.
+  constexpr int kOctets = N / 8;
 #pragma unroll
-  for (int q = 0; q < n / 8; ++q) {
+  for (int q = 0; q < kOctets; ++q) {
     const uint4 x = *reinterpret_cast<const uint4*>(row + q * 8);
     bits |= nonzero_pair(x.x) << (q * 8 + 0);
     bits |= nonzero_pair(x.y) << (q * 8 + 2);
@@ -190,8 +194,11 @@ template <int D, int B, int W>
 __device__ __forceinline__ uint32_t live_rows(const IntraSmem<D, B, W>& sm, uint32_t modes, int rt0,
                                               int ct, int l, int stage) {
   uint32_t bits = 0u;
+  //: §6: row_tiles_of(W) is compile-time (W is this function's template parameter)
+  //: but the heuristic can't see through the function call, so name it.
+  constexpr int kRowTiles = row_tiles_of(W);
 #pragma unroll
-  for (int r = 0; r < row_tiles_of(W); ++r)
+  for (int r = 0; r < kRowTiles; ++r)
     if (rt0 + r >= ct && stage_live<D, B, W>(sm, modes, rt0 + r, ct, l, stage)) bits |= 1u << r;
   return bits;
 }
@@ -208,6 +215,10 @@ __device__ __forceinline__ void stage_slabs(IntraSmem<D, B, W>& sm, const IntraP
   constexpr int kColThreads = kThreads / kTile;
   constexpr int kColDigits = kStage / kColThreads;
   static_assert(kColDigits >= 8, "a staging thread's share of a stage is one cp.async granule");
+  //: §6: kColDigits/8 and kStage/16 are compile-time but the heuristic only reads a
+  //: bare identifier, so name them.
+  constexpr int kColDigitOctets = kColDigits / 8;
+  constexpr int kStageHexadecs = kStage / 16;
   const int ctoken = tid / kColThreads;
   const int cpart = (tid % kColThreads) * kColDigits;
   //: a level's REAL digits only.  Where `B` is narrower than the MMA's contraction
@@ -217,7 +228,7 @@ __device__ __forceinline__ void stage_slabs(IntraSmem<D, B, W>& sm, const IntraP
     const __nv_bfloat16* wsrc =
         p.pwrite + base + (long long)(ct * kTile + ctoken) * p.row_width + cpart;
 #pragma unroll
-    for (int c = 0; c < kColDigits / 8; ++c)
+    for (int c = 0; c < kColDigitOctets; ++c)
       stage_tile(smem_addr(&sm.wslab[buf][ctoken][cpart + c * 8]), wsrc + c * 8);
   }
 
@@ -228,7 +239,7 @@ __device__ __forceinline__ void stage_slabs(IntraSmem<D, B, W>& sm, const IntraP
     const __nv_bfloat16* rsrc =
         p.pread + base + (long long)((rt0 + rtile) * kTile + rtoken) * p.row_width + rpart;
 #pragma unroll
-    for (int c = 0; c < kStage / 16; ++c)
+    for (int c = 0; c < kStageHexadecs; ++c)
       stage_tile(smem_addr(&sm.rslab[buf][rtile * kTile + rtoken][rpart + c * 8]), rsrc + c * 8);
   }
 }
@@ -239,6 +250,9 @@ __device__ __forceinline__ void stage_values(IntraSmem<D, B, W>& sm, const Intra
   constexpr int kThreads = threads_of(W);
   constexpr int kColThreads = kThreads / kTile;
   constexpr int kColChannels = kValueWidth / kColThreads;
+  //: §6: kColChannels/8 is compile-time but the heuristic only reads a bare
+  //: identifier, so name it.
+  constexpr int kColChannelOctets = kColChannels / 8;
   const int b = bh / p.heads;
   const int h = bh - b * p.heads;
   const int t0 = wbase + ct * kTile;
@@ -247,7 +261,7 @@ __device__ __forceinline__ void stage_values(IntraSmem<D, B, W>& sm, const Intra
   const __nv_bfloat16* src =
       p.v + ((long long)(b * p.tokens + t0 + token) * p.heads + h) * kValueWidth + part;
 #pragma unroll
-  for (int c = 0; c < kColChannels / 8; ++c)
+  for (int c = 0; c < kColChannelOctets; ++c)
     stage_tile(smem_addr(&sm.vslab[token][part + c * 8]), src + c * 8);
   if (tid < kTile / 8) {
     stage_tile(smem_addr(&sm.gain[tid * 8]), p.gwrite + (long long)bh * p.L + t0 + tid * 8);
@@ -301,6 +315,7 @@ __global__ __launch_bounds__(threads_of(W)) void intra_kernel(IntraParams p) {
       for (int i = 0; i < 4; ++i) oacc[n][i] = 0.f;
     float dacc[2] = {0.f, 0.f};
 
+    #pragma unroll 1
     for (int ct = 0; ct < rt0 + kRowTiles; ++ct) {
       __syncthreads();
       stage_values<D, B, W>(sm, p, bh, wbase, ct, tid);
