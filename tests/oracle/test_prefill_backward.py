@@ -19,10 +19,10 @@ import torch
 from rola.ops import intra as intra_ops
 from rola.ops._ext import is_available
 from rola.ops.prefill import prefill_autograd
-from tests.k31.backward_reference import carry_backward_reference, intra_backward_reference
-from tests.k31.fixtures import assert_fresh_binary, canonical_from_plane
-from tests.k31.intra_reference import _simplex
-from tests.k31.test_prefill_vs_oracle import ALT, DENSE, READ_ONE, WIDTHS, K, M, require_carry_arm
+from tests.oracle.backward_reference import carry_backward_reference, intra_backward_reference
+from tests.oracle.fixtures import assert_fresh_binary, canonical_from_plane
+from tests.oracle.intra_reference import _simplex
+from tests.oracle.test_prefill_vs_oracle import ALT, DENSE, READ_ONE, WIDTHS, K, M, require_carry_arm
 
 pytestmark = pytest.mark.skipif(not is_available() or not torch.cuda.is_available(),
                                 reason="the reverse pass is a CUDA kernel")

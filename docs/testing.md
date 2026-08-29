@@ -16,6 +16,16 @@ is what keeps the suites from re-proving everything everywhere.
 | **`tests/integration`** | Does the COMPOSITION work, GIVEN that the kernels are trustworthy? | the layer against the op, a dispatch fork against what it dispatched to, and — the two-branches-agree class — the kernel against **itself** at every geometry the BUILT MATRIX carries and under both state backings |
 | **`tests/unit`** | Does each file honour its own public contract? | one file's surface, under assumptions about how the others behave |
 
+**There is no fourth tier.** Every test answers one of the three questions above, so
+every test lives in one of these three directories — never a fourth bucket alongside
+them, however narrow or however temporary that bucket's own scope feels at the time.
+`tests/k31/` was exactly that: a fourth directory, named after the campaign that
+built it, gating a kernel as if it were a separate product (K44, `git mv`'d into the
+tier each of its tests actually answered — the reference/fixture modules it carried
+became `tests/oracle`'s shared fixtures). **A campaign name never appears in a test
+path** — `tools/lint/lint_standards.py` enforces both of these mechanically: no
+directory under `tests/` other than `unit/`, `integration/` or `oracle/`.
+
 The oracle tier alone is insufficient because a per-geometry tolerance can absorb a
 geometry bug. The two-branches-agree class alone is insufficient because two
 branches can agree with each other and both be wrong — this project has a bug that

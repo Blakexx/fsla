@@ -69,6 +69,13 @@ ROOT = Path(__file__).resolve().parents[2]
 CSRC_ROLA = ROOT / "csrc" / "rola"
 INSTANTIATIONS = CSRC_ROLA / "src" / "instantiations"
 DECODE_CU = CSRC_ROLA / "src" / "decode" / "decode.cu"
+TESTS_ROOT = ROOT / "tests"
+
+#: docs/testing.md: "there is no fourth tier". A test answers one of exactly three
+#: questions (oracle/integration/unit), so it lives in exactly one of these three
+#: directories -- never a fourth bucket, campaign-named or otherwise (K44: `tests/k31/`
+#: was exactly that, folded into the tier each of its tests actually answered).
+TESTS_ALLOWED_TIERS = {"unit", "integration", "oracle"}
 
 DEVICE_SUFFIXES = (".cu", ".cuh")
 
@@ -365,14 +372,39 @@ def check_no_long_comment_blocks() -> list[str]:
     return findings
 
 
+def check_tests_tier_directories() -> list[str]:
+    """docs/testing.md "there is no fourth tier": no directory directly under
+    `tests/` other than `unit/`, `integration/` or `oracle/` (a campaign name --
+    `tests/k31/` was one -- is exactly the shape of the violation this catches).
+    Hidden directories (e.g. `__pycache__`, `.pytest_cache`) are not test tiers
+    and are exempt."""
+    findings = []
+    if not TESTS_ROOT.is_dir():
+        return findings
+    for child in sorted(TESTS_ROOT.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if child.name == "__pycache__":
+            continue
+        if child.name not in TESTS_ALLOWED_TIERS:
+            findings.append(
+                f"docs/testing.md 'there is no fourth tier': tests/{child.name}/ is a "
+                f"directory under tests/ that is none of {sorted(TESTS_ALLOWED_TIERS)} -- "
+                f"fold its tests into the tier each one answers, by question, not by "
+                f"campaign name."
+            )
+    return findings
+
+
 def main() -> int:
-    #: THESE THREE are wired as a BLOCKING pre-commit/CI gate
+    #: THESE FOUR are wired as a BLOCKING pre-commit/CI gate
     #: (.pre-commit-config.yaml, .github/workflows/lint.yml) -- a nonzero exit
     #: here fails every commit and every CI run, repo-wide.
     gating_findings: list[str] = []
     gating_findings += check_unroll_discipline()
     gating_findings += check_no_torch_in_arm_tus()
     gating_findings += check_no_sync_after_decode_prologue()
+    gating_findings += check_tests_tier_directories()
 
     #: K39 (Blake, 2026-08-28): comment density and long-comment-block findings
     #: are ADVISORY, NOT gating, deliberately. `csrc/` is ~40 files over the

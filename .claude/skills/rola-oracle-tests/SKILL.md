@@ -3,11 +3,11 @@ name: rola-oracle-tests
 description: Adding or running an fp64-oracle cell for the carry kernel — Cell/alt_cell fixtures, GPU-locked pytest, standing failures, re-deriving expectations from the law
 ---
 The fp64 oracle is the truth (KERNEL_STANDARDS §10, "Oracle + conformance diff are the crown
-jewels"). Read `tests/k31/test_carry_vs_oracle.py`'s own module docstring — it states the gate is
+jewels"). Read `tests/oracle/test_carry_vs_oracle.py`'s own module docstring — it states the gate is
 the fp64 oracle, not the shipped kernel, because there is no bit-identity target across a redesign,
 only the arithmetic.
 
-## Adding a cell (`tests/k31/fixtures.py`)
+## Adding a cell (`tests/oracle/fixtures.py`)
 Read `Cell`'s signature and `ref_levels()` directly for the current parameter set and what it draws.
 The key design points to preserve when adding a new cell:
 - `ref_levels()` must return the fp64 doubles of the ROUNDED (bf16-cast) operands, never the raw
@@ -60,7 +60,7 @@ value from the LAW (the fold/decay/routing math) each time a mechanism changes, 
 kernel's SEAM output against the CENSUS (`rola.ops.carry.arms()`) — a seam that silently drifted
 from the census row it claims to serve is the shared-router-bug shape (`matching-the-naive
 antipattern`): validating a variant only against itself, never against the one canonical ground
-truth (the fp64 reference in `tests/k31/reference.py`).
+truth (the fp64 reference in `tests/oracle/reference.py`).
 
 ## The compute-sanitizer named gate (K39)
 `tools/sanitize_oracle.py` runs `racecheck`/`synccheck`/`initcheck` (memcheck already ran, ad hoc,
@@ -71,7 +71,7 @@ whenever a change touches shared-memory publish/consume protocols or barrier pla
 ring's bug class), not on every commit.
 
 ## The hypothesis `cells` strategy (K39)
-`tests/k31/test_carry_hypothesis_cells.py` draws (widths, k_tok, seed, cohort, d_v) over the
+`tests/oracle/test_carry_hypothesis_cells.py` draws (widths, k_tok, seed, cohort, d_v) over the
 DECLARED arm/`d_v` space via a `st.composite` strategy, opt-in under the `hypothesis_cells` marker
 (deselected by default alongside `bench` — `pyproject.toml`'s `addopts`). A SUPPLEMENT to the fixed
 named cells above, never a replacement — run it with `-m hypothesis_cells` when you want shrinking

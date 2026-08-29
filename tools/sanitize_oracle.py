@@ -41,8 +41,8 @@ ROOT = Path(__file__).resolve().parents[1]
 #: exactly one parametrization so each (family, tool) pair is one launch, not a
 #: whole file's worth serialized under the heaviest instrumentation this repo has.
 _FAMILY_TESTS = {
-    "carry": "tests/k31/test_carry_vs_oracle.py::test_m3_two_sided_alt_small",
-    "intra": "tests/k31/test_prefill_vs_oracle.py::test_the_intra_term_is_actually_present",
+    "carry": "tests/oracle/test_carry_vs_oracle.py::test_m3_two_sided_alt_small",
+    "intra": "tests/oracle/test_prefill_vs_oracle.py::test_the_intra_term_is_actually_present",
     "decode": "tests/oracle/test_decode_vs_oracle.py::test_g1_is_byte_reproducible_against_itself",
 }
 

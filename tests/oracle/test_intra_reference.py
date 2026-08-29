@@ -16,7 +16,7 @@ import torch
 from rola.ops.constants import READOUT_EPS
 from rola.ops.naive import naive_rola
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-from tests.k31.intra_reference import (
+from tests.oracle.intra_reference import (
     DENSE_BOTH,
     LEVEL_WIDTH,
     READ_SPARSE,

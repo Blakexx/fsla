@@ -226,7 +226,7 @@ they exist to be compared against, not to be shipped.
 The split has exactly three effects and no others: a test row is out of the
 default and gate builds, out of the ratification manifest, and built at one
 architecture for the oracle battery. A test that needs one asks for it
-(`tests/k31/fixtures.py`'s `require_arm`) and **skips with the arm named** when
+(`tests/oracle/fixtures.py`'s `require_arm`) and **skips with the arm named** when
 the binary does not carry it, rather than failing inside the dispatch.
 
 ## <a id="sccache"></a>The nvcc invocations are cached (sccache)

@@ -146,7 +146,8 @@ declaration named, the WRITE STREAM count and the arm's `d_v`. The stamp is per
 kernel-entry half of it carries the FILE's constants only — the channel-split body's
 warp count and the page granule; `d_v` left that set when it became an arm parameter and
 is reported by the census instead. Every gate in
-`tests/k31/` asserts the magic before it asserts anything else.
+`tests/oracle/` and `tests/integration/`'s carry families asserts the magic before it
+asserts anything else.
 
 ## What this file deliberately does not do
 

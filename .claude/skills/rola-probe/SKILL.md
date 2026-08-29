@@ -10,7 +10,7 @@ un-interleaved A/B, timing the python wrapper's own repacking). See FINDINGS `##
 ## The fixed cells (never invent a new one ad hoc)
 Read `DEFAULT_CELLS` (and the off-by-default extras) at the top of `tools/probe_cells.py` for the
 current cell list and which ones run by default. Don't hand-roll a draw — the cell specs are the
-frozen RNG-stream mirror of `tests/k31/fixtures.py`'s `Cell`/`alt_cell`, kept as a SEPARATE copy on
+frozen RNG-stream mirror of `tests/oracle/fixtures.py`'s `Cell`/`alt_cell`, kept as a SEPARATE copy on
 purpose so cross-tip comparisons don't drift with whichever fixtures version a worktree happens to
 carry. When you need to know what a cell means (topology, k_tok, window, level_modes), read its
 definition in the file — don't rely on a remembered description.

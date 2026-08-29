@@ -7,7 +7,7 @@ window grid is GLOBAL and FIXED, identical for both: the carry computes every
 pair whose write fell in a STRICTLY EARLIER window than its read, and the intra
 computes every pair INSIDE one window. Together they are the whole recurrence,
 with no pair counted twice and none dropped — the study's exactness clause, which
-`tests/k31/test_carry_vs_oracle.py::test_m2_decomposition_is_exact` states
+`tests/oracle/test_carry_vs_oracle.py::test_m2_decomposition_is_exact` states
 independently in fp64.
 
 Symbols, each at first use: ``widths`` the per-level digit counts, ``D`` levels,

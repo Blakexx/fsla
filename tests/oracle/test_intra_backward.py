@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """R4's intra reverse pass against the fp64 WITHIN-WINDOW reference.
 
-The reference is `tests/k31/backward_reference.py`'s intra half, which
-`test_backward_reference.py` has already pinned to ``torch.autograd`` through the whole
+The reference is `tests/oracle/backward_reference.py`'s intra half, which
+`test_prefill_backward_reference.py` has already pinned to ``torch.autograd`` through the whole
 operator. The digit gradients carry the same support contract the carry's do -- a
 level's own factor is dropped, so ``d_pr_l`` is live wherever the WRITE side has support
 at that digit and the exact-entmax Jacobian is what makes the rest unreadable.
@@ -23,8 +23,8 @@ import torch
 from rola.ops import carry as carry_ops
 from rola.ops import intra as intra_ops
 from rola.ops._ext import is_available
-from tests.k31.backward_reference import intra_backward_reference
-from tests.k31.fixtures import simplex
+from tests.oracle.backward_reference import intra_backward_reference
+from tests.oracle.fixtures import simplex
 
 pytestmark = pytest.mark.skipif(not is_available() or not torch.cuda.is_available(),
                                 reason="the reverse pass is a CUDA kernel")

@@ -71,7 +71,7 @@ an atom and satisfiability is not the same question as correctness.
 and the same permutation in python, independently. That duplication is deliberate and
 is the oracle's own rule (`rola/ops/naive.py`'s `_radix_strides`): a host seam that
 imported the device's map would make a wrong convention agree with itself in every gate
-the repository has. `tests/k31/test_carry_vs_oracle.py::test_arms_are_the_declared_solver_rows`
+the repository has. `tests/oracle/test_carry_vs_oracle.py::test_arms_are_the_declared_solver_rows`
 is where the two are made to agree as a tested claim.
 
 ## The atom rectangle, and the distribution of `m` (spec §2.5)

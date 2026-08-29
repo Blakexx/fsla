@@ -3,7 +3,7 @@
 
 """K31 R2 conformance: the intra kernel against the fp64 intra reference.
 
-The reference is `tests/k31/intra_reference.py`, itself gated against the oracle
+The reference is `tests/oracle/intra_reference.py`, itself gated against the oracle
 by `test_intra_reference.py`. The cells walk the per-level support law: dense on
 both sides, ALT (one entmax side and one softmax side, alternating across
 levels), and the union-routing BOTH_SPARSE case, which must pass on the same
@@ -24,7 +24,7 @@ from rola.ops.intra import (
     intra_forward,
     support_words,
 )
-from tests.k31.intra_reference import (
+from tests.oracle.intra_reference import (
     BOTH_SPARSE,
     DENSE_BOTH,
     READ_SPARSE,
