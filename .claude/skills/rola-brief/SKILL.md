@@ -61,3 +61,5 @@ numbers or names as if they generalize to every brief.
 Every brief's Report section ends with a `SKILLS FEEDBACK` line: which skills the agent loaded, what
 was wrong, stale, or missing in each, and what it had to discover the hard way. The coordinator folds
 that into the skill the same day (process/pointers only — never facts).
+
+- COMMENTS: the stage adds NO `//:` prose blocks to source; decl blocks only, derivations go to the mirrored docs/internals page; the report states the per-file comment ratio before/after (must not rise) — constitution: self-documenting code.

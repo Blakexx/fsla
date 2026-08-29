@@ -1,3 +1,22 @@
+# KERNEL_STANDARDS — two tiers (Blake, 2026-08-28)
+
+**CONSTITUTION** = Blake's standing rulings. Stable; changed only by Blake; they guide every law below.
+They are: §10's correctness instruments (oracle = truth; bit-identity = refactor instrument); efficiency is
+correctness; closed world (only measured binaries run); one form per mechanism, no fallbacks, no dead code;
+build the whole design or stop and name the gap; the ancestral-code standard; §17 portability; SELF-DOCUMENTING
+CODE (Blake, 2026-08-04: code is legible without comments; comments are sparse — a file header and 1-3-line decl
+blocks naming purpose and the one invariant; derivations, histories and why-not-the-other-form prose live in
+`docs/internals/` mirroring `csrc/`); and §R8-R10
+(all architectures; no fuzzy-threshold branching — the kernel handles any distribution; design and probe
+for ALL regimes at once — dense is the worst case and a test of the kernel, never a regime to concede).
+
+**LAWS** = the coordinator's procedural and incident-derived rules (§1-§9 craft, §11-§16 and their addenda,
+§R2-R7). Dated, adaptive, revisable by the coordinator; each carries the incident that made it and is
+repealed when the situation changes. A law never contradicts the constitution; where a law is an inference
+from one moment of development it is marked as such and re-examined at the next milestone.
+§R1 ("price overheads against the sparse cell") is STRUCK 2026-08-28 — subsumed by §R10 and wrong in
+direction: overhead concentrating at sparse may be the design paying off; dense remains the worst case.
+
 # ROLA KERNEL STANDARDS — how we write CUDA here (draft for Blake's read, 2026-08-26)
 
 SCOPE. This document is about CRAFT: how a designed piece is realized at the hardware's grain. It is not
@@ -221,8 +240,8 @@ stage's; >1.2x on any arm is RED (report, do not rationalize; diagnose against �
 include torch headers (the ~34 s header floor lives in the dispatch TU only). Arms are added as reviewed
 rows in the one arm list (TEST-tagged unless shipped). Ratify stays incremental per arm.
 
-## §R addenda (DRAFT for Blake's review, 2026-08-28 — design-level rules from the K35 ledgers)
-R1. PRICE OVERHEADS AGAINST THE SPARSE CELL. A fixed per-window / per-contribution cost that is "cheap"
+## §R addenda — LAWS (coordinator, 2026-08-28; incident-derived, revisable; R1 struck)
+R1. [STRUCK 2026-08-28 — subsumed by §R10; see the preamble.] PRICE OVERHEADS AGAINST THE SPARSE CELL. A fixed per-window / per-contribution cost that is "cheap"
     next to a dense window's MMA becomes the kernel once sparsity removes that MMA (the ring: 230 M
     instructions at dense AND at k16; the replicated schedule; the per-lane gate). The design's payoff and
     its overheads scale with different variables; state both per mechanism.
@@ -241,3 +260,53 @@ R6. A KERNEL'S SASS DEPENDS ON ITS TU NEIGHBORS: byte-identity is a claim about 
     per-arm TUs make each body canonical (K36: 7 movers, proven inert and free).
 R7. STAGED-vs-STRAIGHT IS DECIDED BY LATENCY, NOT COUNTS: "identical sectors and issues" lost 9.5% on
     long-scoreboard (e390764). Time, IPC and stall reasons decide; counts describe.
+
+## §17 — Portability: what the repo points at (Blake, 2026-08-28)
+The repository is SELF-CONTAINED: anything it DEPENDS ON — a tool it runs, a doc it cites, a record it
+reads, a baseline it compares against — lives in the repo or in a NAMED sibling repository with a stable
+layout (the bench/results repo), never in an ad-hoc place (a scratch directory, a home path, a session
+scratchpad, a campaign journal, a worktree path). Ad-hoc material never enters the repo either — no
+script blowup: briefs, transcripts, per-session scripts and campaign journals stay outside and are
+cited FROM the queue, not from repo files. Absolute paths under a home directory are a lint finding.
+Committed records carry repo-relative or host-keyed locations. Skills that ship with the repo point at
+repo docs and the measurements record, never at a journal.
+
+## §R — CONSTITUTION (Blake, 2026-08-28)
+R8. DESIGN MECHANISMS THAT EXPAND TO ALL ARCHITECTURES. Every mechanism states its sm_80 / sm_90 /
+    sm_100 form at design time (wgmma/tcgen05 SMEM- and TMEM-sourced operands, TMA box loads, clusters
+    and DSM, vector RED); a mechanism that only exists on one arch is a workaround, not a design.
+R9. NEVER BRANCH ON A FUZZY THRESHOLD. No dispatch, launch policy or in-kernel path keys on a measured
+    statistic (sparsity fraction, density, live count, "small L"). Branch on STRUCTURE the declaration
+    fixes (tile counts, modes, arm axes). The kernel itself handles any data distribution.
+R10. DESIGN AND CODE FOR ALL REGIMES AT ONCE — dense, sparse, mixed, clustered, small and large L, small
+    and large N. Never overfit a mechanism, a measurement or a verdict to one cell: every design states
+    its cost in each regime, every stage is probed at both ends of the distribution, and a mechanism
+    that wins one regime by losing another is a finding to rule on, not a win.
+
+## CONSTITUTION addendum (Blake, 2026-08-28): NO FALLBACKS AT THE ATOM
+A primitive may select DIFFERENT NATIVE INSTRUCTIONS per architecture; it may never select a wider-type
+emulation on any target architecture. An operation an architecture genuinely lacks is a declared design
+fact with its cost on the card, never an `#if` branch. (Origin: mul_bf16x2's fp32 emulation on sm_80
+lived for months behind a passing oracle; fma.rn.bf16x2 was native all along — K42.)
+
+## §14 addendum (law, 2026-08-28, from K37): CONTAINERS AND THE GPU LOCK
+`flock /tmp/rola_gpu.lock` is per-filesystem: a lock taken inside a container serializes nothing on the
+host or in another container. Every container that touches the GPU bind-mounts the host's lock
+directory so one flock governs all. One gate container at a time: stop the previous run before
+launching the next (three concurrent in-container probes turned a minutes-long gate into an hour).
+
+## §18 — Tools refuse, they do not choose (law, 2026-08-28, from Blake's "why keep two linkers")
+A tool or build step that could run one of two ways — a linker present or not, a cache pinned or not,
+a lint with or without its compdb, a lock taken or a slot — REFUSES with the command that fixes it; it
+never silently takes the other path. Legitimate MODES (the §16 strict-manifest tiering; a comparison
+arm kept as a yardstick) are keyed on an explicit declared variable and carry their exit condition on
+a card. Applied: mold as the only linker; sccache pin miss refuses; run_clang_tidy never skips; one
+build-lock discipline (slots as the parameter).
+
+## §10 addendum (law, 2026-08-28): THE COMMENT-DENSITY GATE
+The constitution's self-documenting-code clause is gated mechanically: `tools/lint/lint_standards.py`
+measures comment lines / total lines per file under csrc/ and is RED above the mandate's threshold
+(named constant; decl-block level, well under 15%). A `//:` prose block outside a file header is a
+finding. A stage never raises a file's ratio; S5b moves existing prose to the mirrored docs
+(byte-identical SASS gate). Measured 2026-08-28 before S5b: carry.cu 48%, ops.cuh 43%, box.cuh 41%,
+carry_kernel.cuh 35%, decode.cu 32%, facts_kernel.cuh 32%.
