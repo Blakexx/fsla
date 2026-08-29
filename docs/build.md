@@ -31,8 +31,30 @@ mamba-ssm require the same thing for the same reason.
 | `ROLA_NVCC_THREADS` | `nvcc --threads`, default 2 = the number of `-gencode` targets. Beyond the target count it buys nothing and multiplies the resident set, since the two parallelism axes multiply. |
 | `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset** (K36): each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `-DROLA_CARRY_BUILD_<i>`, so an arm outside the set is not compiled at all. **The default is the SHIPPED rows** — see [the arm lists](#carry-arm-lists). `all` is the battery's set (shipped + test). A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86` for iteration. |
 | `ROLA_SKIP_POST_BUILD_RATIFY` | Skips the post-build gate. For iterating on non-kernel code only; a shippable binary is one that passed it. |
-| `ROLA_SCCACHE` | `auto` (default): use the pinned `sccache` if it resolves and matches; else build uncached. `1`: REQUIRE it -- a missing or mismatched wrapper is a hard failure. `0`: disable. See [below](#sccache). |
+| `ROLA_SCCACHE` | `auto` (default, K39): REQUIRE the pinned `sccache` -- a missing or mismatched wrapper is a hard failure, no uncached fallback. `1`: a synonym of the default, kept for existing invocations. `0`: an EXPLICIT, deliberate opt-out that builds uncached. See [below](#sccache). |
 | `ROLA_SCCACHE_BIN` | Overrides the `sccache` binary `ROLA_SCCACHE` resolves, the same way `CUDA_HOME` overrides `nvcc`/`ptxas`. |
+
+### Running a build under the shared lock (`tools/build/build_lock.sh`)
+
+An **iteration build** (single-arch, `ROLA_CARRY_ARMS` subset) and a **gate build**
+(both arches, the shipped set) both compete for the same host RAM `MAX_JOBS` is
+sized against; running one of each at once can OOM the host (K37's own §14
+addendum finding, one level up: concurrent GPU-lock work already did this once
+for a different resource). K39 (Blake ruling, 2026-08-28) unifies what used to
+be two separate mechanisms -- `N` parallel iteration slots and a wholly
+separate exclusive lock file -- into `tools/build/build_lock.sh [--gate] --
+<cmd>`: an iteration build takes ONE of `ROLA_BUILD_SLOTS` (default 2) slot
+locks; a gate build (`--gate`) takes EVERY slot before running, so the two
+disciplines share one set of lock files and cannot overlap.
+
+```bash
+# iteration: single-arch, arm-subset
+tools/build/build_lock.sh -- env ROLA_CUDA_ARCHS=86 ROLA_CARRY_ARMS=all \
+  pip install -e . --no-build-isolation
+
+# gate: both arches, the shipped set
+tools/build/build_lock.sh --gate -- pip install -e . --no-build-isolation
+```
 
 ## What the build does, in order
 
@@ -150,8 +172,10 @@ instead of a second cold compile. `tools/sccache_pin.json` pins an exact
 [sccache](https://github.com/mozilla/sccache) build (version, release asset,
 tarball and binary sha256, verified against upstream's published `.sha256`);
 `tools/sccache_toolchain.py` resolves and gates it (closed-world rule 1's
-extension -- an unpinned or mismatched cache is refused, falling back to an
-uncached build, never used silently) before wiring `tools/sccache_nvcc.py` in
+extension -- an unpinned or mismatched cache is REFUSED, full stop; K39, Blake
+ruling 2026-08-28, "a tool that can run one of two ways must REFUSE, not
+choose": the only non-refusing outcome is `ROLA_SCCACHE=0`, an explicit
+opt-out, never a silent uncached fallback) before wiring `tools/sccache_nvcc.py` in
 as `PYTORCH_NVCC` (`setup.py`) and as the compiler `tools/ratify.py`'s
 post-build recompile uses. The wrapper is a pure pass-through -- it never
 resolves `nvcc` itself, only `exec`s the exact already-`ptxas`-gated path its

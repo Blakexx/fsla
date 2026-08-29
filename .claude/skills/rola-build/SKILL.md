@@ -1,19 +1,24 @@
 ---
 name: rola-build
-description: Iteration vs gate CUDA builds for rola-standalone — arm subsets, build_slot.sh, background builds with an exit marker, the compile ledger
+description: Iteration vs gate CUDA builds for rola-standalone — arm subsets, tools/build/build_lock.sh, background builds with an exit marker, the compile ledger
 ---
 Read `docs/build.md` and KERNEL_STANDARDS §7, §14, §15, §16 addendum 3 first. This skill is the
 mechanics of running a build, not deciding whether one is owed (that's §16: stage gates are
 iteration builds, only milestones ratify).
 
 ## Iteration vs gate
+- **ONE lock mechanism for both** (K39, Blake ruling 2026-08-28 — supersedes the old two-mechanism
+  split of `rola-scratch/tools/build_slot.sh`'s parallel slots and a separate exclusive
+  `/tmp/rola_ram.lock`): `tools/build/build_lock.sh [--gate] -- <cmd>`, now IN the repo (§17). An
+  iteration build takes ONE free slot; a gate build takes EVERY slot (`--gate`) before running, so
+  the two can never overlap and OOM the host — read the script's own header for the exact mechanism.
 - **Iteration build**: single-arch, arm-subset. `ROLA_CUDA_ARCHS=<arch> ROLA_CARRY_ARMS=<csv|all>
-  pip install -e . --no-build-isolation`. Runs in one of two parallel slots via
-  `bash /home/blake/rola-scratch/tools/build_slot.sh <cmd>` — read that script's own header table
-  for the current `MAX_JOBS`/`ROLA_NVCC_THREADS` it uses, don't hand-restate them here.
-- **Gate build**: both arches, default (shipped) arm set, no `ROLA_CARRY_ARMS` override, under the
-  EXCLUSIVE `/tmp/rola_ram.lock` (KERNEL_STANDARDS §15 addendum). One gate build per stage; ratify
-  only at milestones (§16).
+  pip install -e . --no-build-isolation`, run through `tools/build/build_lock.sh -- <cmd>` (no
+  `--gate`) — read the script's own header table for the current `MAX_JOBS`/`ROLA_NVCC_THREADS` it
+  uses, don't hand-restate them here.
+- **Gate build**: both arches, default (shipped) arm set, no `ROLA_CARRY_ARMS` override, run through
+  `tools/build/build_lock.sh --gate -- <cmd>`. One gate build per stage; ratify only at milestones
+  (§16).
 - `ROLA_CARRY_ARMS=all` builds every row (SHIPPED + TEST) — needed for the battery/oracle across
   arms outside the default shipped set (`gen_shards.CARRY_TEST_ARMS`).
 - Don't hand-restate `MAX_JOBS`: `tools/build_flags.py:default_max_jobs` derives it from free RAM /

@@ -45,13 +45,24 @@ jobs:
       - name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue)
         run: python3 tools/lint/lint_standards.py
       - name: clang-tidy (host-only TUs)
-        # This job builds nothing (see the file header: no GPU, no CUDA
-        # toolchain, no build) so there is no build/temp for compdb.sh to
-        # read from -- tools/lint/run_clang_tidy.sh SKIPS explicitly (prints
-        # why, exits 0) rather than failing or silently doing nothing. It
-        # exercises for real wherever a build already exists (a dev machine
-        # after `pip install -e .`, or a future GPU-arm job that builds).
-        run: tools/lint/run_clang_tidy.sh
+        # K39 (Blake ruling, 2026-08-28): "pre-commit can never be green by
+        # absence" -- tools/lint/run_clang_tidy.sh no longer skips; with no
+        # compile database to generate one from, it FAILS loudly. THIS job's
+        # runner has no CUDA toolchain at all (see the file header), so it
+        # cannot produce one structurally -- that is a decision about what
+        # THIS WORKFLOW asks for, made HERE, visibly, rather than a skip
+        # hidden inside the script. It exercises for real on a dev machine
+        # after `pip install -e .`, or a future job whose runner carries the
+        # CUDA toolchain.
+        run: |
+          if ! command -v nvcc >/dev/null 2>&1; then
+            echo "clang-tidy (host-only TUs): NOT RUN -- this runner has no CUDA"
+            echo "toolchain, so it cannot produce the compile database this check"
+            echo "reads (tools/lint/run_clang_tidy.sh itself now fails rather than"
+            echo "skips when a database is missing; this job never asks it to try)."
+            exit 0
+          fi
+          tools/lint/run_clang_tidy.sh
 
   cpu-gates:
     # THE GPU-FREE GATES. Each answers a question about the REPOSITORY — is the

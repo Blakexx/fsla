@@ -84,7 +84,9 @@ CUTLASS_DIR = ROOT / "csrc" / "third_party" / "cutlass"
 #: flag list or two copies of the instantiation matrix. Both are imported from there.
 sys.path.insert(0, str(ROOT / "tools"))
 import build_flags  # noqa: E402
+import build_lock  # noqa: E402
 import gen_shards  # noqa: E402
+import mold_toolchain  # noqa: E402
 import ratify  # noqa: E402
 import sccache_toolchain  # noqa: E402
 
@@ -518,6 +520,10 @@ def build_extension():
     wsl = Path("/usr/lib/wsl/lib")
     if (wsl / "libcuda.so").exists():
         ldflags.insert(0, f"-L{wsl}")
+    #: mold is THE linker, unconditionally (Blake ruling, 2026-08-28): raises if
+    #: the pin (tools/mold_pin.json) is not satisfied -- no fallback to
+    #: ld.bfd/ld.gold. See tools/mold_toolchain.py's module docstring.
+    ldflags += mold_toolchain.link_flags()
 
     #: The generated selection header's directory (K36b). A FIXED path, added to
     #: every build regardless of arm selection -- it does not itself vary per-arm-set
@@ -573,7 +579,20 @@ class RoLABuildExtension(BuildExtension):
         _gate_shards()
         _write_carry_selection()
         sccache = _gate_sccache()
-        super().run()
+        #: THE MACHINE-WIDE CICC BUDGET (KERNEL_STANDARDS §14 addendum 2, Blake
+        #: ruling 2026-08-28-night): TOOL-ENFORCED here so no brief, no
+        #: worktree and no agent can forget it -- see tools/build_lock.py's
+        #: module docstring for why this cannot stay a documentation-only
+        #: convention. A gate build (the shipped arm set) takes the WHOLE
+        #: budget; an iteration build takes whatever share is free right now
+        #: and MAX_JOBS is clamped to that share, never to what was asked.
+        desired_jobs = int(os.environ.get(
+            "MAX_JOBS", str(build_flags.default_max_jobs(
+                int(os.environ.get("ROLA_NVCC_THREADS", "2"))))))
+        with build_lock.acquire(gate=not _is_iteration_build(),
+                                 desired=desired_jobs) as held_slots:
+            os.environ["MAX_JOBS"] = str(held_slots)
+            super().run()
         self._post_build_fatbin_check()
         self._post_build_manifest_check()
         write_build_config(ROLA_CUDA_ARCHS, ptxas, manifest, pin, sccache)

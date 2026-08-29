@@ -142,6 +142,7 @@ def cuda_bin(tool: str) -> str:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_flags  # noqa: E402
 import gen_shards  # noqa: E402
+import mold_toolchain  # noqa: E402
 import sccache_toolchain  # noqa: E402
 
 #: Set once by `gate_sccache()`, read by `_nvcc_command`. `None` means "compile
@@ -175,6 +176,25 @@ def gate_sccache() -> dict | None:
         print(f"sccache: wired for ratify.py's compile ({wrapper} -> {real_nvcc})")
     _SCCACHE_INFO = info
     return info
+
+
+def mold_provenance() -> dict | None:
+    """`{"version", "sha256"}` of the pin-checked `mold` -- PROVENANCE ONLY.
+
+    `ratify.py` never links anything (it recompiles TUs to object files to read
+    `ptxas`'s spill/register report, `setup.py`'s module docstring), so mold's
+    build-time gate (`mold_toolchain.link_flags()`, which RAISES on a pin miss)
+    has nothing to run against here. This records which linker built the
+    shipped `.so` for the manifest's `toolchain.mold` block, the same
+    "recorded, not ratchet-gated" treatment `sccache` gets -- a linker version
+    cannot move a SASS body. Best-effort: `None` if `mold` cannot be resolved at
+    all, so a ratify-only invocation (no extension build in this process) never
+    fails on a gate it does not need.
+    """
+    try:
+        return mold_toolchain.provenance()
+    except Exception:
+        return None
 
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
@@ -1389,6 +1409,7 @@ def main() -> int:
     sources = tu_paths(tuple(a.shard) if a.shard else None, arms)
 
     sccache_info = gate_sccache()
+    mold_info = mold_provenance()
     version = ptxas_version()
     import tempfile
     with tempfile.TemporaryDirectory(prefix="rola_ratify_") as tmp:
@@ -1451,7 +1472,22 @@ def main() -> int:
                                 #: drift gets.
                                 "sccache": {"version": sccache_info["version"],
                                             "sha256": sccache_info["sha256"]}
-                                           if sccache_info else None},
+                                           if sccache_info else None,
+                                #: THE LINKER, per the constitution's NO
+                                #: FALLBACKS rule extended to the toolchain
+                                #: (Blake ruling 2026-08-28, K39): setup.py
+                                #: links with mold unconditionally, gated hard
+                                #: at build time by tools/mold_toolchain.py.
+                                #: Recorded here for PROVENANCE, same
+                                #: treatment as sccache above -- a linker does
+                                #: not touch codegen, so its version is
+                                #: reported, never ratchet-gated against a
+                                #: SASS body. `None` only when this ratify-only
+                                #: process (no extension link in this run)
+                                #: could not resolve `mold` to ask its version.
+                                "mold": {"version": mold_info["version"],
+                                         "sha256": mold_info["sha256"]}
+                                        if mold_info else None},
                  "source": {"csrc_sha256": csrc_digest(),
                             "date": time.strftime("%Y-%m-%d"),
                             #: K37 -- reproducibility as a checkable statement. The
