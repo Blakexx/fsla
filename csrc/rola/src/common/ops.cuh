@@ -297,24 +297,57 @@ __device__ __forceinline__ float bf16_bits_to_float(unsigned short x) {
   return *reinterpret_cast<const float*>(&w);
 }
 
-//: THE ARCHETYPAL SELECTING ENTRY.  Both implementations satisfy one contract:
+//: THE ARCHETYPAL SELECTING ENTRY.  Every implementation satisfies ONE contract:
 //: the elementwise product of two packed bf16 pairs, rounded to nearest-even in
-//: bf16.  `Simd = true` is one instruction; `Simd = false` is the fp32 route
-//: that consumer Ampere is left with, at 1 FMUL + 1/2 pack per element.
-template <bool Simd = arch::kCaps.bf16_simd_arith>
+//: bf16.  There are THREE routes and the architecture row picks one at the
+//: primitive's definition (KERNEL_STANDARDS section 8), never at a call site.
+//:
+//: THE PTX ISA GATES THE MULTIPLY AND THE FMA DIFFERENTLY, and that is the whole
+//: reason this entry has three arms rather than two (K35 R-C): `mul.rn.bf16x2`
+//: requires `.target sm_90`, but `fma.rn.bf16x2` is available from sm_80.  So on
+//: Ampere the product is still ONE instruction -- an HFMA2 with a ZERO ADDEND --
+//: and the fp32 route below is needed by no built architecture at all.
+//:
+//: THE ADDEND IS `-0.0` AND ITS SIGN IS LOAD-BEARING.  `fma.rn` rounds the exact
+//: product plus the addend ONCE, so `a*b + (-0.0)` is bit-identical to
+//: `mul.rn(a, b)` INCLUDING the signed zeros: `(-0) + (-0) = -0` and
+//: `(+0) + (-0) = +0` under round-to-nearest-even, whereas a `+0.0` addend would
+//: turn every `-0` product into `+0`.  Nothing downstream reads a zero's sign, but
+//: an arithmetic identity that holds only for the values we happen to feed it is
+//: not an identity, and the oracle mirror is written against the exact product.
+//:
+//: THERE IS NO fp32 FALLBACK, because after the row above there is no
+//: architecture that would take one: `tabulated()` is closed-world and every row
+//: in it carries `bf16_simd_fma`.  An untabulated architecture fails the build,
+//: which is the refusal this family wants -- not a slower path nobody measured.
+//: WHAT THE DELETED fp32 ROUTE COST, MEASURED (K35 STAGE-LEDGER S2): the fetcher-side
+//: expansion ran at 3.9x its instruction floor, and the two named lines were
+//: `cuda_bf16.hpp:660` (`PRMT`, 1.27 M) and this function's `FMUL` pairs
+//: (1.32 M) -- about four instructions per pair where one HFMA2 does.
+template <bool Simd = arch::kCaps.bf16_simd_arith, bool Fma = arch::kCaps.bf16_simd_fma>
 __device__ __forceinline__ uint32_t mul_bf16x2(uint32_t a, uint32_t b) {
   static_assert(Simd <= arch::kCaps.bf16_simd_arith,
                 "mul.rn.bf16x2 requires .target sm_90 or higher; this "
+                "architecture's row says so and ptxas agrees");
+  static_assert(Fma <= arch::kCaps.bf16_simd_fma,
+                "fma.rn.bf16x2 requires .target sm_80 or higher; this "
                 "architecture's row says so and ptxas agrees");
   if constexpr (Simd) {
     uint32_t d;
     asm volatile("mul.rn.bf16x2 %0, %1, %2;\n" : "=r"(d) : "r"(a), "r"(b));
     return d;
+  } else if constexpr (Fma) {
+    //: the packed pair of bf16 NEGATIVE ZEROS, which is the sign-preserving
+    //: identity element of `fma.rn`'s addend.
+    constexpr uint32_t kNegZeroPair = 0x80008000u;
+    uint32_t d;
+    asm volatile("fma.rn.bf16x2 %0, %1, %2, %3;\n" : "=r"(d) : "r"(a), "r"(b), "r"(kNegZeroPair));
+    return d;
   } else {
-    const __nv_bfloat162 x = *reinterpret_cast<const __nv_bfloat162*>(&a);
-    const __nv_bfloat162 y = *reinterpret_cast<const __nv_bfloat162*>(&b);
-    return pack_bf16x2(__bfloat162float(x.x) * __bfloat162float(y.x),
-                       __bfloat162float(x.y) * __bfloat162float(y.y));
+    static_assert(Simd || Fma,
+                  "a packed bf16 product needs mul.rn.bf16x2 (sm_90) or "
+                  "fma.rn.bf16x2 (sm_80); every tabulated row carries one");
+    return 0u;
   }
 }
 

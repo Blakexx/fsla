@@ -67,6 +67,18 @@ struct Caps {
                          // element there against ~1/2 instruction on sm_90.
                          // Same baseline operation, different implementation,
                          // no structural change: the archetypal flag.
+  bool bf16_simd_fma;    // FUSED elementwise bf16 arithmetic on a packed pair
+                         // (`fma.rn.bf16x2`).  MEASURED 2026-08-28 (K35 R-C):
+                         // this one IS available at sm_80, unlike the plain
+                         // `mul.rn.bf16x2` above -- the PTX ISA gates the two
+                         // differently -- so a PRODUCT is one instruction here
+                         // via a `-0.0` addend, which is bit-identical to
+                         // `mul.rn.bf16x2` (a single rounding of the exact
+                         // product; the addend's SIGN is what preserves a
+                         // signed zero, `+0.0` would flip `-0`).  Ampere thus
+                         // has no bf16 SIMD MULTIPLY but does have bf16 SIMD
+                         // FMA, which is the cheaper route to the same
+                         // baseline operation.
   bool async_bulk_copy;  // TMA.  Would implement `stage_tile`'s contract with
                          // one descriptor issue instead of one per 16 B.
   bool warpgroup_mma;    // `wgmma`.  Present on sm_90 and the reason
@@ -115,22 +127,22 @@ constexpr bool tabulated(int cc) {
 //                   reg_transpose_b16
 //      | RESIDENCY: mma_a_from_regs, mma_b_from_regs, accum_in_tmem,
 //                   mma_a_from_tmem
-//      | SELECTING: bf16_simd_arith, async_bulk_copy, warpgroup_mma,
-//                   dyn_reg_realloc
+//      | SELECTING: bf16_simd_arith, bf16_simd_fma, async_bulk_copy,
+//                   warpgroup_mma, dyn_reg_realloc
 //      |      FACT: mma_unit_threads, smem_per_sm, smem_per_cta_max,
 //                   smem_granularity, regs_per_sm, regs_per_lane_max,
 //                   reg_alloc_unit, max_threads_per_sm, max_ctas_per_sm,
 //                   driver_smem_reserve, tensor_f32_accum_pct
 constexpr Caps caps_of(int cc) {
-  return cc == 800   ? Caps{800,   true,  true,  true,  true,  true, true,   true,   false,
-                          false, false, false, false, false, 32,   167936, 166912, 128,
-                          65536, 255,   256,   2048,  32,    1024, 100}
-         : cc == 870 ? Caps{870,   true,  true,  true,  true,  true, true,   true,   false,
-                            false, false, false, false, false, 32,   167936, 166912, 128,
-                            65536, 255,   256,   1536,  16,    1024, 50}
-         : cc == 890 ? Caps{890,   true,  true,  true,  true,  true, true,   true,   false,
-                            false, false, false, false, false, 32,   102400, 101376, 128,
-                            65536, 255,   256,   1536,  24,    1024, 50}
+  return cc == 800   ? Caps{800,   true,  true, true,  true,  true,  true, true,   false,
+                          false, false, true, false, false, false, 32,   167936, 166912,
+                          128,   65536, 255,  256,   2048,  32,    1024, 100}
+         : cc == 870 ? Caps{870,   true,  true, true,  true,  true,  true, true,   false,
+                            false, false, true, false, false, false, 32,   167936, 166912,
+                            128,   65536, 255,  256,   1536,  16,    1024, 50}
+         : cc == 890 ? Caps{890,   true,  true, true,  true,  true,  true, true,   false,
+                            false, false, true, false, false, false, 32,   102400, 101376,
+                            128,   65536, 255,  256,   1536,  24,    1024, 50}
          : cc == 900
              // sm_90 is TABULATED AND NOT BUILT.  Every REQUIRED clause holds and
              // the residency derivation succeeds -- `wgmma` keeps a
@@ -139,13 +151,13 @@ constexpr Caps caps_of(int cc) {
              // missing is an IMPLEMENTATION: the built `mma`, `load_frag` and
              // carve are written for a 32-thread unit and a warpgroup unit is
              // 128.  A capability GAP, not a structural refusal.
-             ? Caps{900,   true, true, true, true, true, true,   false,  false,
-                    false, true, true, true, true, 128,  233472, 232448, 128,
-                    65536, 255,  256,  2048, 32,   1024, 100}
+             ? Caps{900,   true,  true, true, true, true, true, false,  false,
+                    false, true,  true, true, true, true, 128,  233472, 232448,
+                    128,   65536, 255,  256,  2048, 32,   1024, 100}
              // sm_86: the local development part (GA102).
-             : Caps{860,   true,  true,  true,  true,  true, true,   true,   false,
-                    false, false, false, false, false, 32,   102400, 101376, 128,
-                    65536, 255,   256,   1536,  16,    1024, 50};
+             : Caps{860,   true,  true, true,  true,  true,  true, true,   false,
+                    false, false, true, false, false, false, 32,   102400, 101376,
+                    128,   65536, 255,  256,   1536,  16,    1024, 50};
 }
 
 //: The conjunction of the REQUIRED clauses.  There is no partial support.
@@ -234,7 +246,7 @@ constexpr int caps_digest(const Caps& c) {
          + (int)c.mma_b_from_regs * 8 + (int)c.bf16_cvt_packed * 16 + (int)c.bf16_simd_arith * 32
          + (int)c.async_bulk_copy * 64 + (int)c.warpgroup_mma * 128 + (int)c.mma_a_from_regs * 256
          + (int)c.accum_in_tmem * 512 + (int)c.mma_a_from_tmem * 1024
-         + (int)c.reg_transpose_b16 * 2048 + c.mma_unit_threads * 2;
+         + (int)c.reg_transpose_b16 * 2048 + (int)c.bf16_simd_fma * 4096 + c.mma_unit_threads * 2;
 }
 
 }  // namespace arch
