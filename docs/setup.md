@@ -81,43 +81,55 @@ rather than ship unmeasured codegen.
 
 **THE CLONE IS THE WORKSPACE; WORKTREES ARE OPTIONAL.** A plain `git clone` of
 this repo, opened with nothing else exported, must start the container —
-verified 2026-08-29 with a real fresh clone in a temp directory and
-`ROLA_WORKTREES_DIR` unset (`npx @devcontainers/cli up`). `ROLA_WORKTREES_DIR`
-exists for a contributor who ALREADY keeps sibling git worktrees next to this
-repo (`rola-branch-structure`) and wants them reachable from inside the
-container; nobody else needs to set it, or even know it exists.
+verified 2026-08-29 with a real fresh clone in a temp directory,
+`ROLA_WORKTREES_DIR` unset, and the actual `@devcontainers/cli up` (0.88.0),
+not a reasoned-about approximation.
 
 **VS Code / Claude Code, via the devcontainer:**
 
 ```bash
 code .   # "Reopen in Container" — reads .devcontainer/devcontainer.json;
-         # works with NOTHING exported. `/workspace/worktrees` lands on an
-         # auto-created, empty named Docker volume (`rola-worktrees`) in that
-         # case -- there to write into from inside the container, not to read
-         # host worktrees from.
-
-# OPTIONAL, only if you keep sibling worktrees you want visible inside the
-# container (docs on ../worktrees's layout: rola-branch-structure):
-export ROLA_WORKTREES_DIR=/path/to/your/worktrees
-export ROLA_IMAGE_DIGEST="$(sha256sum Dockerfile | cut -d' ' -f1)"
-code .
+         # works with NOTHING exported.
 ```
 
-`.devcontainer/devcontainer.json`'s worktrees mount is ONE line,
-`"${localEnv:ROLA_WORKTREES_DIR:rola-worktrees}:/workspace/worktrees"` —
-Docker's own `-v SOURCE:TARGET` shorthand (not the object `type=bind` form)
-decides bind-vs-volume from the shape of `SOURCE` at container-start time:
-unset resolves to the bare name `rola-worktrees` (a named volume, Docker
-auto-creates it, no host path required to exist — the zero-config case); set
-to a host path, Docker bind-mounts THAT path and creates it if missing. No
-path is hard-coded to a home directory either way (KERNEL_STANDARDS.md §17).
-**This replaces an earlier version of this mount that used the object
-`type=bind` form with a `${localWorkspaceFolder}/../worktrees` path default —
-that form's pre-flight validation refused to start a fresh clone with
-`ROLA_WORKTREES_DIR` unset, since nothing has a `../worktrees` sibling
-directory yet (found from a question about exactly this, 2026-08-29).**
+`/workspace/worktrees` is a statically-declared, auto-created, empty named
+Docker volume (`rola-worktrees`) — there to write into from inside the
+container, not to read host worktrees from. **Two real bugs were found and
+fixed here by actually running the CLI, not by reasoning about Docker
+semantics in the abstract (2026-08-29):**
+* The original mount nested a `${localWorkspaceFolder}` reference inside a
+  `${localEnv:VAR:default}` default value
+  (`"source=${localEnv:ROLA_WORKTREES_DIR:${localWorkspaceFolder}/../worktrees},...,type=bind,..."`).
+  `@devcontainers/cli`'s substitution pass does not recursively expand a
+  variable reference sitting inside another variable's default, so it handed
+  Docker the literal, unexpanded text `${localWorkspaceFolder/../worktrees}`
+  as a mount source, and Docker refused it outright ("is not an absolute
+  path") — unconditionally, whether or not `ROLA_WORKTREES_DIR` was set.
+* The first fix attempt replaced that with a plain `-v`-shorthand string
+  (`"NAME:/workspace/worktrees"`), reasoning that Docker's classic `-v`
+  auto-detects bind-vs-volume from the shape of `SOURCE` (true, and used
+  below for the plain `docker run` form) — but `@devcontainers/cli` does NOT
+  pass a string mount through as `-v`: it always emits `--mount`, and does
+  not reformat a colon-shorthand string into `--mount`'s required
+  `key=value,key=value` syntax, so Docker refused THAT too ("must be a
+  key=value pair").
 
-**Plain `docker run`, the equivalent without an editor integration:**
+The mount that actually works is `.devcontainer/devcontainer.json`'s current
+`"type=volume,source=rola-worktrees,target=/workspace/worktrees"` — a STATIC
+named volume, unconditionally, because `type=volume` mounts auto-create an
+empty volume with no host resource required to pre-exist, so there is no
+missing-source question left for the CLI to mishandle. This means the
+devcontainer path has NO env-var switch to a host bind mount — a single
+static `--mount`-syntax line cannot conditionally pick `type=bind` vs
+`type=volume`. A contributor who keeps sibling git worktrees
+(`rola-branch-structure`) and wants them reachable from inside the
+devcontainer has two options: use the plain `docker run` form below (which
+DOES support the env-var switch), or edit that one `mounts` line in their own
+local, uncommitted checkout to
+`"type=bind,source=/path/to/your/worktrees,target=/workspace/worktrees"`.
+
+**Plain `docker run`, the equivalent without an editor integration, WITH the
+env-var worktrees switch:**
 
 ```bash
 docker run --rm -it \
@@ -129,9 +141,13 @@ docker run --rm -it \
   rola-dev:latest
 ```
 
-Same shape as the devcontainer's mount line, in bash's own `${VAR:-default}`:
-`ROLA_WORKTREES_DIR` unset falls back to the bare name `rola-worktrees` (a
-named volume); set, it bind-mounts that host path.
+Here the raw docker CLI's `-v SOURCE:TARGET` shorthand really does
+auto-detect from the shape of `SOURCE` (verified directly, not just for
+`@devcontainers/cli`): `ROLA_WORKTREES_DIR` unset falls back to the bare name
+`rola-worktrees` (a named volume, matching the devcontainer's default
+exactly); set to a host path, Docker bind-mounts that path and creates it if
+missing. No path is hard-coded to a home directory either way
+(KERNEL_STANDARDS.md §17).
 
 ## 4. First build of the SHIPPED set
 
