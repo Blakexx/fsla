@@ -98,10 +98,15 @@ lane-per-token geometry and its side of the residency dependency
 ## The contract
 
 `facts(pr, pw, chunk, bc, widths, mask, atoms) -> (tbl, bits | None)`, with
-`bits` the `[BH, N/16]` uint8 write-side bitmap — write side only, because reads
-of never-written atoms are inert. Two launches on the current stream, no host
-synchronization, and the atom-grain table is a transient allocated and freed
-inside the entry.
+`bits` the `[BH, N/16]` uint8 ACTIVITY byte per atom — bit 0 WRITTEN, bit 1 READ
+(P80b). RESIDENCY STILL TAKES THE WRITE BIT ALONE (`planes.written_atoms`),
+because reads of never-written atoms are inert; the read bit is beside it for the
+KERNEL, whose load predicate is `resident and (read or written)` and whose store
+predicate is `written` (`../common/ops.md#atom-activity`). The two bits are never
+pre-ORed: a planner that took the byte whole would admit read-only atoms and turn
+exact commitment into a superset. Two launches on the current stream, no host
+synchronization, and the atom-grain table (now one row set per side) is a
+transient allocated and freed inside the entry.
 
 The BITMAP carries no `BC` although the entry does: its reduction's arm list is
 `(D, B)` alone, derived from the consumer's arm list by projection
@@ -115,7 +120,8 @@ table; the shipped path asks for both at once, which is the point of the pass.
 a slot for each of its atoms, and the chunk consumer then resolves every atom
 through the resulting table (`docs/internals/chunk/chunk_kernel.md`). An atom the
 bitmap omits gets no slot, and the kernel SKIPS it at both ends of the state I/O
-— which is sound precisely because this bitmap is the write set exactly: an
+— which is sound precisely because this bitmap's WRITE bit is the write set
+exactly: an
 omitted atom was never deposited into, so its fragment is zero, and storing zero
 or storing nothing are the same state. The safe direction is the SUPERSET one: a
 bitmap that overshoots costs footprint and nothing else, which

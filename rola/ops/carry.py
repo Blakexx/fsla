@@ -125,7 +125,8 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
                 window: int, chunk: int = 32, carve: int = LEAF_SPLIT,
                 level_modes: int = 0, state_in: torch.Tensor | None = None,
                 state_out: torch.Tensor | None = None,
-                page_table: torch.Tensor | None = None):
+                page_table: torch.Tensor | None = None,
+                atom_bits: torch.Tensor | None = None):
     """The INTER term, undivided: ``(num, den, state_out)``.
 
     ``num`` is ``[BH, T, d_v]`` fp32 and ``den`` is ``[BH, T]`` fp32. ``d_v`` is READ
@@ -140,6 +141,13 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
     slot IS the atom, so the two backings are one kernel, one ABI and one accumulation
     order. Passing NEITHER plane is the NULL-STATE call: it reaches an arm variant with
     no state I/O compiled into it and returns ``state_out`` as ``None``.
+
+    ``atom_bits`` is the facts pass' ``[BH, N/16]`` uint8 ACTIVITY bitmap -- bit 0
+    WRITTEN, bit 1 READ, one byte per atom (`rola.engine.facts.planes.atom_bits`). The
+    kernel loads an atom iff it is resident AND (read or written) and stores it iff
+    written, identically under both backings: residency says WHERE an atom is, activity
+    says WHETHER this call touches it. ``None`` asserts nothing and every resident atom
+    is swept, which is the pre-P80b behaviour and what a caller with no facts pass gets.
     """
     pr = pack_side(read_levels)
     pw = pack_side(write_levels)
@@ -148,7 +156,7 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
     num, den = extension().carry_forward_inter(
         pr, pw, gw, v.to(torch.bfloat16).contiguous(), list(widths), int(k), int(m),
         int(window), int(chunk), int(carve), int(level_modes), state_in, state_out,
-        page_table)
+        page_table, atom_bits)
     return num, den, state_out
 
 

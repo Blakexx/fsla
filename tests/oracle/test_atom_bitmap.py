@@ -106,7 +106,7 @@ def _kernel_bitmap(write, widths):
     assert torch.equal(flat != 0, flat.to(torch.bfloat16) != 0), (
         "fixture amplitudes flushed to zero in bf16; the comparison would be "
         "about the cast, not about the bitmap")
-    return planes.atom_bits(packed, widths).bool()
+    return planes.written_atoms(planes.atom_bits(packed, widths))
 
 
 def _oracle_bitmap(write, widths):
@@ -242,4 +242,4 @@ def test_stats_through_the_host_seam():
     routes = producer(x)
     bits = planes.atom_bits(planes.pack_side(routes.write), routes.topology.widths)
     assert bits.dtype == torch.uint8 and bits.device.type == "cuda"
-    assert torch.equal(bits.bool(), _oracle_bitmap(routes.write, (16, 16)))
+    assert torch.equal(planes.written_atoms(bits), _oracle_bitmap(routes.write, (16, 16)))

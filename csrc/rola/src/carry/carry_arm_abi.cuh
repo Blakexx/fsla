@@ -19,8 +19,8 @@ static constexpr int kCarryRowFields =
   cudaError_t carry_arm_forward_##I_(                                                          \
       const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,               \
       const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den, int BH, int L,       \
-      int tok_words, int v_row_bytes, const float* s_in, float* s_out, const int32_t* page_tbl, \
-      cudaStream_t stream);                                                                     \
+      int tok_words, int v_row_bytes, const float* s_in, float* s_out, \
+      const int32_t* page_tbl, const uint8_t* atom_bits, cudaStream_t stream); \
   cudaError_t carry_arm_rows_##I_(const __nv_bfloat16* pr, const __nv_bfloat16* pw,            \
                                   uint32_t* tbl, int BH, int L, cudaStream_t stream);          \
   int carry_arm_rows_entries_##I_();                                                           \

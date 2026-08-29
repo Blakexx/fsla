@@ -51,6 +51,10 @@ class ChunkPlan:
     union_table: torch.Tensor
     block_bits: torch.Tensor
     page_table: torch.Tensor | None
+    #: the facts pass' `[BH, N/16]` uint8 ACTIVITY byte per atom -- bit 0 WRITTEN,
+    #: bit 1 READ. The launch gates its state sweeps on it identically under both
+    #: backings; `None` on a stateless call, which has no sweep to gate.
+    atom_bits: torch.Tensor | None
     state_in: torch.Tensor | None
     state_out: torch.Tensor | None
 

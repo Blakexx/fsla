@@ -274,6 +274,30 @@ cannot infer, and the difference is not cosmetic: a generic pointer turns the
 fan-in's reduction into an atomic read-modify-write and every gathered load
 into a generic one.  The assumption restores what the arithmetic hid.
 
+<a id="atom-activity"></a>
+### `atom_activity`
+
+THE FACTS PASS' TWO ORTHOGONAL PER-ATOM BITS (P80b), and the one activity
+predicate every body with state sweeps derives from them.  `kAtomWritten` says
+this call's routing WRITES the atom; `kAtomRead` says it READS it.  They are
+never pre-ORed into a single "active" flag by the producer: the read-only
+distinction is what the touched-atom census and the continuation accounting are
+about, and ORing saves nothing -- one byte per atom is read either way.
+
+THE TWO PREDICATES, identical under the dense and the paged backing:
+LOAD an atom iff it is RESIDENT (`page_slot >= 0`; dense = null table = all
+resident) AND `(read | written)`; STORE it iff `written`.  Residency is the
+arena's fact and says only WHERE an atom is; activity is the facts pass' fact
+and says WHETHER it is touched.  So the two backings touch the identical atom
+set, which is what makes `tests/integration/test_chunk_paging_equivalence.py`'s
+`torch.equal` a certificate of the skip logic and not merely of the addressing.
+
+A NULL `atom_bits` IS THE UNIVERSAL FACT, the same convention a null page table
+keeps: a caller that supplies no activity fact asserts nothing about it, and
+every resident atom is read and written.  That is the pre-P80b behaviour, and it
+is what the reverse family's adjoint planes require -- an adjoint's activity is
+the DOWNSTREAM call's fact, never this call's (docs/internals/carry/backward_kernel.md).
+
 <a id="page-slot"></a>
 ### `page_slot`
 

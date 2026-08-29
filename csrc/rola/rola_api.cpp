@@ -45,12 +45,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("widths"), py::arg("L"), py::arg("page_tbl") = py::none());
   // ---- K31 R1: the box-native carry family (NOT on any shipped path) ------
   m.def("carry_forward_inter", &rola::carry::forward_inter,
-        "K31 carry kernel: the INTER (carried-state) term, undivided; the state planes "
-        "and the page table are the caller's, and both planes null is the null-state call",
+        "K31 carry kernel: the INTER (carried-state) term, undivided; the state planes, "
+        "the page table and the facts pass' per-atom activity bitmap are the caller's, and "
+        "both planes null is the null-state call",
         py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("widths"), py::arg("k"),
         py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
         py::arg("level_modes") = 0, py::arg("s_in") = py::none(), py::arg("s_out") = py::none(),
-        py::arg("page_tbl") = py::none());
+        py::arg("page_tbl") = py::none(), py::arg("atom_bits") = py::none());
   m.def("carry_build_stamp", &rola::carry::build_stamp,
         "K31 carry kernel: device-side build identity + the arm's census", py::arg("widths"),
         py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),

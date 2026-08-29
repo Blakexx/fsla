@@ -141,7 +141,7 @@ exit-state plane and the page table — never the engagement bits the facade cla
 | continued state-out, paged | present | present | present | `(R && (W \| S)) \| W` |
 | fresh state-out, paged | absent | present | present | `W` |
 | continued state-out, dense | present | present | absent | `R \| W` |
-| fresh state-out, dense | absent | present | absent | always run |
+| fresh state-out, dense | absent | present | absent | `W` |
 
 `rola/engine/rules/run_table.py`'s `run_table(state_in, state_out, page_table)` derives a
 `uint32` TRUTH TABLE over the byte's three bits by evaluating that rule for each of the
@@ -186,11 +186,15 @@ no `S` to read — so the `y` term must assume the block carries and degrades to
 store term is `W`; together, `R | W`. That is the paged continued row with `S` forced true,
 which is precisely what having no residency map means.
 
-**The dense FRESH row is the one that cannot skip at all.** A fresh bind has no entry plane,
-and its `s_out` is allocated uninitialised precisely because it is written WHOLE — the owner
-blocks tile the leaf space exactly, so every atom is stored by exactly one CTA. Skipping a
-block there would leave that block's atoms as garbage in the returned state. The paged
-backing never has that problem: an unmapped atom is already a no-op in the epilogue, and a
+**The dense FRESH row USED to be the one that cannot skip at all, and P80b closed it.**
+The old rule was `always run`, for one reason: a fresh bind's `s_out` was allocated
+uninitialised precisely because it was written WHOLE, so skipping a block left garbage in
+the returned state. Since P80b the exit sweep stores the atoms this call WRITES and no
+others — in EITHER backing — so "written whole" is no longer true of any call, and the
+fresh dense plane is ZEROED at bind instead (`rola/engine/facts/nodes.py`'s backing node,
+one fill per SEQUENCE). An unwritten atom then reads back the same zero an unmapped paged
+atom does, which is what lets this row collapse to `W` like its paged twin. The paged
+backing never had the problem: an unmapped atom is already a no-op in the epilogue, and a
 mapped slot either was zero-initialised on admission or is carried from a previous call,
 which a skipped block must leave UNCHANGED — which is what skipping does.
 

@@ -226,6 +226,21 @@ nothing is read, written, or allocated there.  `page_tbl` null is the dense
 backing -- the slot is then the atom -- so the two backings are one kernel, one
 ABI and one accumulation order.
 
+<a id="atom-bits"></a>
+### the activity bitmap at the seam
+
+THE ACTIVITY FACT IS THE FACTS PASS' (P80b), and it is OPTIONAL at this seam for the
+same reason the page table is: null asserts nothing, and the kernel then touches every
+resident atom -- the pre-P80b sweep (`../common/ops.md#atom-activity`).  Supplied, it
+is `[BH, N/16]` uint8 with bit 0 WRITTEN and bit 1 READ, and the kernel loads an atom
+iff it is resident and (read or written) and stores it iff written.
+
+THE ONE REFUSAL IT ADDS is the in-place law: an atom the exit sweep skips must already
+hold what it carried in, so a call that supplies an activity bitmap AND two distinct
+state planes is refused by name rather than served with every unwritten atom silently
+dropped (`../state.md#the-dense-continuation`).  Passing the same plane as both -- what
+every continuation in either backing does -- is the shipped form.
+
 <a id="tok-words"></a>
 ### `tok_words`
 

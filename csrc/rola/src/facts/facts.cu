@@ -91,9 +91,9 @@ static std::pair<torch::Tensor, c10::optional<torch::Tensor>> build_facts(const 
   constexpr int E = LevelPlan<D, B, BC>::entries;
   const auto stream = at::cuda::getCurrentCUDAStream();
   auto tbl = torch::empty({BH, 2, E, tok_words(L)}, pr.options().dtype(torch::kInt32));
-  auto atom_tbl =
-      atoms ? torch::empty({BH, (long)AP::entries, tok_words(L)}, pr.options().dtype(torch::kInt32))
-            : torch::Tensor();
+  auto atom_tbl = atoms ? torch::empty({BH, 2, (long)AP::entries, tok_words(L)},
+                                       pr.options().dtype(torch::kInt32))
+                        : torch::Tensor();
   int_switch<kPrefillStateless, kPrefillStateful>(
       mask, "the chunk facts pass' call class", [&](auto MASK) {
         C10_CUDA_CHECK((launch_chunk_facts_arm<D, B, BC, decltype(MASK)::value>(
@@ -141,7 +141,7 @@ std::pair<torch::Tensor, c10::optional<torch::Tensor>> facts(torch::Tensor pr, t
   check_arch_table();
   check_planes(pr, pw, widths);
   TORCH_CHECK(!atoms || mask == kPrefillStateful,
-              "the atom-grain write bitmap is a stateful call's fact: it was asked for "
+              "the atom-grain activity bitmap is a stateful call's fact: it was asked for "
               "under call class ",
               mask);
   const int BH = (int)(pr.size(0) * pr.size(1)), L = (int)pr.size(2);

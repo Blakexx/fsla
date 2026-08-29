@@ -67,6 +67,16 @@ __device__ __forceinline__ int32_t page_slot(const int32_t* page_tbl, uint32_t a
   return *reinterpret_cast<const int32_t*>(gather_ptr(page_tbl, atom * (uint32_t)sizeof(int32_t)));
 }
 
+//: THE FACTS PASS' TWO ORTHOGONAL PER-ATOM BITS (P80b), and the one activity -- see docs/internals/common/ops.md#atom-activity
+constexpr uint8_t kAtomWritten = 1u;
+constexpr uint8_t kAtomRead = 2u;
+constexpr uint8_t kAtomActive = kAtomWritten | kAtomRead;
+
+__device__ __forceinline__ uint8_t atom_activity(const uint8_t* atom_bits, uint32_t atom) {
+  if (atom_bits == nullptr) return kAtomActive;
+  return *reinterpret_cast<const uint8_t*>(gather_ptr(atom_bits, atom));
+}
+
 // ------------------------------------------------------------------ staging
 
 __device__ __forceinline__ void stage_tile(SmemAddr dst, const void* src) {

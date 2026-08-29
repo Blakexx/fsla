@@ -101,8 +101,42 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
     return build(shape, device=routes.device, dtype=torch.float32)
 
 
-def atom_bits(write_plane: torch.Tensor, widths) -> torch.Tensor:
-    """`[BH, N/16]` uint8: the atoms this routing's WRITE side touches, exactly.
+#: THE TWO ORTHOGONAL BITS the facts pass publishes per atom (P80b); the mirror of
+#: `csrc/rola/src/common/ops.cuh`'s `kAtomWritten`/`kAtomRead`, which is what the
+#: kernel derives `load iff resident and (read or written)` / `store iff written` from.
+ATOM_WRITTEN = 1
+ATOM_READ = 2
+
+
+def written_atoms(bits: torch.Tensor) -> torch.Tensor:
+    """The WRITE set as a bool tensor: the page plan's input, and only ever that.
+
+    Residency is keyed on the atoms a call WRITES -- reads of never-written state are
+    inert by the self-normalizing readout -- so a planner that took the whole activity
+    byte would admit read-only atoms and turn exact commitment into a superset.
+    """
+    return (bits & ATOM_WRITTEN).bool()
+
+
+def read_atoms(bits: torch.Tensor) -> torch.Tensor:
+    """The READ set as a bool tensor: the half of the activity fact residency ignores."""
+    return (bits & ATOM_READ).bool()
+
+
+def atom_bits(write_plane: torch.Tensor, widths,
+              read_plane: torch.Tensor | None = None) -> torch.Tensor:
+    """`[BH, N/16]` uint8: the per-atom ACTIVITY byte, `WRITTEN | READ` (P80b).
+
+    Bit 0 is set for an atom this routing WRITES, bit 1 for one it READS; the two are
+    orthogonal and are never pre-ORed, because the read-only distinction is what the
+    touched-atom census and the continuation accounting are about. THE PAGE PLAN TAKES
+    THE WRITE SET ALONE -- :func:`written_atoms` -- and the kernel takes the byte.
+
+    A CONVENIENCE ENTRY: with no ``read_plane`` the write plane stands in for both
+    sides, which answers the write bits exactly and makes the read bits their mirror --
+    all a caller that only wants residency needs. A caller that gates a state sweep
+    passes BOTH planes, or takes the byte from the chunk DAG's own facts node, which
+    votes them in the one launch it already runs.
 
     The page plan's input (docs/internals/paging/stats.md). It is keyed to the 16-leaf
     quantum and not to `BC`, so the bitmap this returns is the same tensor at every
@@ -119,5 +153,5 @@ def atom_bits(write_plane: torch.Tensor, widths) -> torch.Tensor:
 
     widths = tuple(widths)
     arm = arm_rule(widths, census.chunk_arms())
-    return extension().chunk_facts(write_plane, write_plane, *arm, list(widths),
-                                   int(Mask.M2), True)[1]
+    return extension().chunk_facts(read_plane if read_plane is not None else write_plane,
+                                   write_plane, *arm, list(widths), int(Mask.M2), True)[1]

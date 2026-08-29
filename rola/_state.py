@@ -224,8 +224,13 @@ class RoLAState:
             self._shape = (routes.batch, routes.heads, routes.topology.N, d_v + 1)
             self._device = routes.device
             self._paging = bool(paging)
-        bitmap = (None if atom_bits is None else
-                  atom_bits.reshape(self._keying.BH, self._keying.atoms_per_bh).bool())
+        from rola.engine.facts import planes
+
+        #: RESIDENCY IS KEYED ON THE WRITE SET (P80b): the byte carries the READ bit
+        #: beside it, and admitting a read-only atom would make exact commitment a
+        #: superset (`rola.engine.facts.planes.written_atoms`).
+        bitmap = (None if atom_bits is None else planes.written_atoms(
+            atom_bits.reshape(self._keying.BH, self._keying.atoms_per_bh)))
 
         if self._arena is not None:
             #: a continuation: residency becomes the UNION, which is what continuing

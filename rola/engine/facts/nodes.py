@@ -58,7 +58,7 @@ def pack_planes(f):
 
 
 @node(gives=("union_table", "atom_bits"),
-      needs=("read_plane", "write_plane", "arm", "widths", "mask", "state", "paging"),
+      needs=("read_plane", "write_plane", "arm", "widths", "mask"),
       stream="main")
 def facts_tables(f):
     """BOTH ROW SETS IN ONE PASS over the amplitude planes, which is why the atom
@@ -67,9 +67,14 @@ def facts_tables(f):
     The published bitmap stays keyed to the 16-leaf quantum whatever arm this pass
     carries -- its reduction is instantiated `(D, B)` alone -- so residency is still
     an OUTPUT of the plan rather than a consequence of it.
+
+    IT IS ASKED FOR BY EVERY STATEFUL CALL, not only a paged one (P80b): the byte is
+    the ACTIVITY fact both backings gate their state sweeps on, and only its WRITE
+    half is residency's input. A dense-backed call that skipped it would touch a
+    different atom set from the paged one, and the equality gate would be certifying
+    two different predicates.
     """
-    state = f["state"]
-    atoms = state is not None and state._wants_pages(f["paging"])
+    atoms = int(f["mask"]) == int(Mask.M2)
     return extension().chunk_facts(f["read_plane"], f["write_plane"], *f["arm"],
                                    list(f["widths"]), int(f["mask"]), atoms)
 
@@ -109,6 +114,11 @@ def join(f):
 def backing(f):
     """The two state planes a launch is given -- and for a CONTINUATION they are ONE.
 
+    A FRESH DENSE PLANE IS ZEROED (P80b), and that is the price of the store
+    predicate: the exit sweep writes the atoms this call WRITES and no others, so the
+    atoms it skips must already hold the zero an absent paged atom reads as. It is one
+    fill per SEQUENCE on the expert-override backing, never per call.
+
     A continued sequence advances its state IN PLACE, in either backing: the arena has
     always handed the same plane in and out, and the dense one does now
     (docs/internals/state.md#the-dense-continuation). Only a FRESH dense bind allocates,
@@ -120,8 +130,8 @@ def backing(f):
     if not want_state:
         return None, None
     state_in = f["state_in"]
-    return None, (planes.state_plane(f["routes"], d_v=f["d_v"]) if state_in is None
-                  else state_in)
+    return None, (planes.state_plane(f["routes"], d_v=f["d_v"], zeros=True)
+                  if state_in is None else state_in)
 
 
 @node(gives=("block_bits",),
