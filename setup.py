@@ -98,8 +98,12 @@ ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") i
 #: whose TRANSLATION UNIT is not in the build at all -- not a macro that still costs a
 #: parse. ``ROLA_CARRY_ARMS=11`` (or ``11,12``, or ``all``) names rows of the carry
 #: family's arm list by index (`tools/gen_shards.py`'s ``CARRY_ARMS``); each selected
-#: row contributes its generated ``carry_arm_<i>.cu`` and a ``-DROLA_CARRY_BUILD_<i>``,
-#: and the dispatch's ``CARRY_ARMS_X`` expands to exactly that set.
+#: row contributes its generated ``carry_arm_<i>.cu``, and the SELECTION -- which of
+#: those rows the dispatch's ``CARRY_ARMS_X`` expands to -- is a GENERATED HEADER
+#: (K36b, ``_write_carry_selection``), not a compiler flag: it used to be a
+#: ``-DROLA_CARRY_BUILD_<i>`` that ``CUDAExtension`` applied to EVERY source's argv,
+#: which is why an arm-set change forced ninja to rebuild every translation unit even
+#: though only the per-arm TUs and the carry dispatch TU read those macros.
 #:
 #: THE DEFAULT IS THE SHIPPED ROWS. A row tagged TEST in the arm list is a conformance
 #: cell -- the fp64 oracle materializes ``[B,T,H,N]``, so ``N = 4096`` is where a whole
@@ -129,8 +133,18 @@ def _carry_arms() -> list[int]:
     return sorted(set(out))
 
 
-def _carry_defines() -> list[str]:
-    return ["-DROLA_CARRY_BUILT=1"] + [f"-DROLA_CARRY_BUILD_{i}=1" for i in _carry_arms()]
+def _write_carry_selection() -> None:
+    """Write `build/generated/carry_selection.inc` for THIS build's arm scope (K36b).
+
+    Runs BEFORE the compile, next to `_gate_shards()` -- cheap, pre-compile,
+    source-of-truth-for-what-gets-built. Only the per-arm TUs and the carry
+    dispatch TU (via `carry_arms.inc`) ever include the generated header, so
+    writing it here (rather than passing `-D` on `nvcc_flags`) is what keeps an
+    arm-set change from perturbing every other translation unit's argv.
+    """
+    gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    text = gen_shards.carry_selection_header(_carry_arms())
+    (gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC).write_text(text)
 
 
 def _carry_sources() -> list[str]:
@@ -495,7 +509,7 @@ def build_extension():
     os.environ.setdefault("MAX_JOBS", str(build_flags.default_max_jobs(nvcc_threads)))
 
     nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
-        + list(build_flags.DEPFILE_FLAGS) + _carry_defines()
+        + list(build_flags.DEPFILE_FLAGS)
     assert_no_ptx(nvcc_flags)
 
     ldflags = ["-lcuda"]
@@ -505,12 +519,21 @@ def build_extension():
     if (wsl / "libcuda.so").exists():
         ldflags.insert(0, f"-L{wsl}")
 
+    #: The generated selection header's directory (K36b). A FIXED path, added to
+    #: every build regardless of arm selection -- it does not itself vary per-arm-set
+    #: and so does not perturb other TUs' argv/cache-key any more than the CUTLASS
+    #: include dir already does. Must exist before `CUDAExtension(...)` is
+    #: constructed: nvcc/gcc get handed `-I<dir>` at configure time even on a
+    #: completely fresh checkout, before `_write_carry_selection` ever runs.
+    generated_dir = ROOT / "build" / "generated"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+
     return CUDAExtension(
         name=MODULE_NAME,
         sources=SOURCES + shard_sources() + _carry_sources(),
         #: The vendored CuTe/CUTLASS headers come LAST, so a repository header always
         #: wins a name collision and the vendored tree can never shadow ours.
-        include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include")],
+        include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include"), str(generated_dir)],
         extra_compile_args={"cxx": ["-O3", "-std=c++17"], "nvcc": nvcc_flags},
         extra_link_args=ldflags,
     )
@@ -548,6 +571,7 @@ class RoLABuildExtension(BuildExtension):
         ptxas = _gate_toolchain(manifest)
         pin = _gate_vendored()
         _gate_shards()
+        _write_carry_selection()
         sccache = _gate_sccache()
         super().run()
         self._post_build_fatbin_check()

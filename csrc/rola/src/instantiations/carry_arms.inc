@@ -4,8 +4,9 @@
 // A row is (index, D, B, k, m, d_v, W, chunk, carve, level_modes, WPS,
 // write streams, read streams, park) -- tools/gen_shards.py owns it.
 // clang-format off
+#include "carry_selection.inc"
 #ifndef ROLA_CARRY_BUILT
-#error "the build must declare which carry arms it carries: setup.py defines ROLA_CARRY_BUILT and one ROLA_CARRY_BUILD_<i> per compiled arm TU"
+#error "the build must have generated build/generated/carry_selection.inc (setup.py or tools/ratify.py, before this TU compiles) and it must be reachable on the include path -- a missing/stale header, not a missing -D, is now the failure this guards"
 #endif
 
 #define CARRY_ARM_0(X_) X_(0, 2, 256, 4, 8, 64, 384, 32, 1, 0, 1, 1, 1, 0)  // TEST

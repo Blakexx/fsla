@@ -240,13 +240,6 @@ def carry_arm_paths(arms=None) -> list[Path]:
             for name in sorted({files[i] for i in want})]
 
 
-def carry_defines(arms=None) -> list[str]:
-    """`-D` for exactly the arms being measured, so the TU's content is the gate's
-    scope stated twice -- in the file list and in the macro that expands inside it."""
-    want = sorted(set(gen_shards.CARRY_SHIPPED_ARMS if arms is None else arms))
-    return ["-DROLA_CARRY_BUILT=1"] + [f"-DROLA_CARRY_BUILD_{i}=1" for i in want]
-
-
 def tu_paths(shards: tuple[str, ...] | None = None, arms=None) -> list[Path]:
     """The translation units to compile. `shards` scopes to a subset by stem.
 
@@ -581,19 +574,13 @@ def _ninja_cuda_template() -> tuple[str, str, str] | None:
     #: a manifest carrying 3 of the carry family's arms was written and reported success,
     #: and only the post-build instantiation-set gate caught it.
     #:
-    #: K36 removes the trap rather than detecting it.  The arm selection is now a set of
-    #: `-DROLA_CARRY_BUILD_<i>` naming the per-arm translation units in the build, and
-    #: this gate STRIPS them and substitutes its OWN -- exactly the treatment `-gencode`
-    #: gets, for exactly the same reason: they name a SCOPE, and the scope is this run's
-    #: (`carry_defines`), never the last build's.  A shipped build passes the same set,
-    #: so the substitution is a no-op for the cache key it was introduced to protect.
-    return nvcc, _without_carry_arms(cuda_cflags), _without_carry_arms(cuda_post_cflags)
-
-
-def _without_carry_arms(flags: str) -> str:
-    """`flags` with every carry arm-selection define dropped."""
-    return " ".join(f for f in shlex.split(flags)
-                    if not f.startswith(("-DROLA_CARRY_BUILD", "-DROLA_CARRY_BUILT")))
+    #: K36b removes the trap rather than detecting it.  The arm selection is no longer a
+    #: `-D` on any TU's argv at all -- it is a generated header (`_write_carry_selection`
+    #: below), unconditionally overwritten for THIS run's scope before anything that
+    #: includes it compiles.  So the reused `build.ninja` argv has nothing arm-set-
+    #: specific left in it to strip; the stripping-and-resubstituting dance
+    #: (`_without_carry_arms`) is dead code and deleted with it.
+    return nvcc, cuda_cflags, cuda_post_cflags
 
 
 def _without_gencode(flags: list[str]) -> list[str]:
@@ -614,7 +601,7 @@ def _without_gencode(flags: list[str]) -> list[str]:
     return out
 
 
-def _nvcc_command(arches, source: Path, obj_path: str, arms=None) -> list[str]:
+def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
     """The extension's own compile flags, IMPORTED rather than restated.
 
     This gate compiles the same translation units the build does, so a flag list
@@ -666,11 +653,16 @@ def _nvcc_command(arches, source: Path, obj_path: str, arms=None) -> list[str]:
         cmd += _without_gencode(shlex.split(cuda_cflags))
         cmd += ["-c", str(source), "-o", obj_path]
         cmd += _without_gencode(shlex.split(cuda_post_cflags))
-        return cmd + build_flags.gencodes(arches) + carry_defines(arms)
+        return cmd + build_flags.gencodes(arches)
 
     import torch.utils.cpp_extension as ext
 
-    cmd = [_NVCC_BIN or cuda_bin("nvcc"), "-c", str(source), f"-I{SRC}", f"-I{CUTLASS_INC}"]
+    #: `build/generated` alongside `SRC`/`CUTLASS_INC` -- mirrors `setup.py`'s
+    #: `include_dirs` exactly (K36b), since this gate's whole premise is compiling
+    #: under the same flags the extension does, and the generated selection header
+    #: now lives there instead of behind a `-D`.
+    cmd = [_NVCC_BIN or cuda_bin("nvcc"), "-c", str(source),
+           f"-I{SRC}", f"-I{CUTLASS_INC}", f"-I{gen_shards.GENERATED_DIR}"]
     for inc in ext.include_paths(device_type="cuda"):
         cmd += ["-I", inc]
     cmd += ["-I", sysconfig.get_paths()["include"]]
@@ -682,7 +674,7 @@ def _nvcc_command(arches, source: Path, obj_path: str, arms=None) -> list[str]:
     #: are inert in every TU this gate compiles, so they must never gate a ratchet
     #: or trigger a re-ratification on their own.
     cmd += build_flags.torch_extension_cache_key_flags()
-    return cmd + carry_defines(arms) + ["-o", obj_path]
+    return cmd + ["-o", obj_path]
 
 
 def ptxas_version() -> str:
@@ -878,6 +870,21 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     identical compile, and the thing that decides identity is the same content hash the
     freshness trigger uses, applied per unit instead of per tree.
     """
+    #: WRITE THIS RUN'S SELECTION HEADER, UNCONDITIONALLY, BEFORE COMPILING ANYTHING
+    #: (K36b). This replaces the old `-D`-substitution dance
+    #: (`_ninja_cuda_template`'s `_without_carry_arms`, now gone) with the header
+    #: equivalent, and it is not optional: FINDINGS ## K36 records the exact trap
+    #: this prevents -- "an arm-subset build wrote its -D into those very flags, and
+    #: a later --write ... inherited the SUBSET and certified a manifest for arms
+    #: nobody built." The old fix was argv-substitution; the header gets the same
+    #: unconditional-overwrite treatment for the same reason: `arms=None` here means
+    #: the shipped set (`carry_arm_paths`'s own default), never "whatever the last
+    #: build left behind".
+    gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    want_arms = sorted(set(gen_shards.CARRY_SHIPPED_ARMS if arms is None else arms))
+    (gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC).write_text(
+        gen_shards.carry_selection_header(want_arms))
+
     jobs = jobs or build_flags.default_max_jobs(2)
     entries: dict[str, dict] = {}
     unhonored: set[str] = set()
@@ -889,7 +896,7 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
 
     def one(source: Path):
         obj = str(Path(objdir) / f"{source.stem}.o")
-        cmd = _nvcc_command(arches, source, obj, arms)
+        cmd = _nvcc_command(arches, source, obj)
         rec = _cache_read(source, cmd)
         if rec is not None:
             return source, rec, True
