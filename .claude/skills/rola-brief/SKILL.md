@@ -63,3 +63,9 @@ was wrong, stale, or missing in each, and what it had to discover the hard way. 
 that into the skill the same day (process/pointers only — never facts).
 
 - COMMENTS: the stage adds NO `//:` prose blocks to source; decl blocks only, derivations go to the mirrored docs/internals page; the report states the per-file comment ratio before/after (must not rise) — constitution: self-documenting code.
+
+- NO NESTED AGENTS: the stage agent does the work itself; it never spawns a sub-agent to do the stage and never monitors/polls one (subagent-token-discipline). Waiting on a build = end the turn and resume on its notification.
+> YOU ARE THE WORKER when a brief is handed to you: the coordinator wrote it; you execute it yourself,
+> never delegating to another agent and never writing a brief for one. (Coordinator-only skills —
+> rola-dispatch/review/queue/card/recall — do not apply to you.)
+
