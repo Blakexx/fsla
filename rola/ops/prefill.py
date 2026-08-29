@@ -55,14 +55,24 @@ LEVEL_WIDTHS = (intra_ops.LEVEL_WIDTH, intra_ops.LEVEL_WIDTH_DEEP3, intra_ops.LE
 
 def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
             window: int, modes, sread, swrite, chunk: int = 32,
-            state_in: torch.Tensor | None = None):
+            state_in: torch.Tensor | None = None,
+            state_out: torch.Tensor | None = None,
+            page_table: torch.Tensor | None = None):
     """The whole forward term, undivided: ``(num, den, state_out)``.
 
     ``num`` is ``[BH, T, d_v]`` fp32, ``den`` is ``[BH, T]`` fp32 and
-    ``state_out`` is ``[BH, N/16, 16, d_v+1]`` fp32 in LATTICE leaf order.
+    ``state_out`` is ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order.
     The readout a caller wants is ``num / (den + READOUT_EPS)``; this operator
     does not divide, because the state and the mass are what a chained call
     needs and a ratio is not.
+
+    THE STATE PLANES ARE THE CALLER'S (`docs/internals/state.md` section 4).
+    ``state_out`` is the plane this call advances -- pass the SAME tensor as
+    ``state_in`` to continue a sequence in place, or the arena's plane together with
+    its ``page_table`` to run the paged backing; a call that passes none is binding a
+    fresh dense backing and gets a plane of its own. ``page_table`` is the
+    ``[BH, N/16]`` int32 slot table, and ``None`` is the dense backing, where the slot
+    IS the atom.
 
     ``modes`` is one :mod:`rola.ops.intra` support mode per level. It is a
     DECLARATION about the routing, not a switch: the intra's slab gate reads
@@ -103,9 +113,17 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     value = v.to(torch.bfloat16).contiguous()
 
     ext = extension()
-    num, den, state_out = ext.carry_forward_inter(
+    #: THE STATE PLANE IS THE CALLER'S WHEN THE CALLER HAS ONE (state.md section 4): a
+    #: continuation hands its own plane -- the arena's, or the one it is advancing --
+    #: and it is written in place, so a stateful chain allocates ONE plane for the
+    #: SEQUENCE. A call that supplies none is binding a fresh dense backing and gets it.
+    if state_out is None:
+        state_out = carry_ops.state_plane(widths, pread.shape[0], value.shape[-1],
+                                          device=pread.device)
+    num, den = ext.carry_forward_inter(
         pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
-        int(chunk), carry_ops.LEAF_SPLIT, intra_ops.pack_modes(tuple(modes)), state_in)
+        int(chunk), carry_ops.LEAF_SPLIT, intra_ops.pack_modes(tuple(modes)), state_in,
+        state_out, page_table)
     #: SAME STREAM, SAME BUFFERS.  The intra REDs into `num`/`den`; the stream
     #: order is the only synchronization either kernel needs, and there is no
     #: host round trip between them.
@@ -137,9 +155,12 @@ class _Prefill(torch.autograd.Function):
         value = v.to(torch.bfloat16).contiguous()
 
         ext = extension()
-        num, den, state_out = ext.carry_forward_inter(
+        state_out = carry_ops.state_plane(widths, pread.shape[0], value.shape[-1],
+                                          device=pread.device)
+        num, den = ext.carry_forward_inter(
             pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
-            int(chunk), carry_ops.LEAF_SPLIT, intra_ops.pack_modes(tuple(modes)), state_in)
+            int(chunk), carry_ops.LEAF_SPLIT, intra_ops.pack_modes(tuple(modes)), state_in,
+            state_out, None)
         ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, num, den, D,
                           int(widths[0]), intra_ops.pack_modes(tuple(modes)), int(window))
 
@@ -166,7 +187,7 @@ class _Prefill(torch.autograd.Function):
         dn = carry_ops.pack_cols(d_num, d_den)
         d_pr, d_pw, d_gw, d_v, d_state_in, _ = extension().carry_backward_inter(
             pread, pwrite, gwrite, vt, dn, list(widths), int(k), int(m), int(window),
-            int(chunk), state_in, d_state_out, False)
+            int(chunk), state_in, d_state_out, None, False)
         #: SAME STREAM, SAME PLANES.  The intra REDs its within-window half into the
         #: buffers the two scans just wrote, exactly as the forward intra REDs into
         #: `num`/`den`; nothing is summed on the host.

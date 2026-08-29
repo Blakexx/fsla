@@ -122,7 +122,8 @@ std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, to
                                           std::vector<int64_t> widths, int64_t k, int64_t m,
                                           int64_t window, int64_t chunk,
                                           c10::optional<torch::Tensor> s_in,
-                                          c10::optional<torch::Tensor> ds_out, bool want_replay) {
+                                          c10::optional<torch::Tensor> ds_out,
+                                          c10::optional<torch::Tensor> page_tbl, bool want_replay) {
   TORCH_CHECK(pr.is_cuda() && pw.is_cuda() && gw.is_cuda() && vt.is_cuda() && dn.is_cuda(),
               "cuda tensors only");
   TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16
@@ -188,12 +189,30 @@ std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, to
   if (s_in.has_value())
     c10::cuda::CUDACachingAllocator::recordStream(s_in->storage().data_ptr(), side);
 
+  //: THE TABLE ADDRESSES THE CALLER'S ENTRY SLABS, and the two EXIT slabs are the
+  //: dispatch's own dense allocations, so their table is null and their slot IS their
+  //: atom -- one body, two tables, no second path.  A paged `d_state_in` and a paged
+  //: replay want a plan of their own (a gradient's residency is its state's), which is
+  //: the reverse family's stage and is NOT built here.
+  if (page_tbl.has_value()) {
+    TORCH_CHECK(page_tbl->is_cuda() && page_tbl->is_contiguous()
+                    && page_tbl->scalar_type() == torch::kInt32,
+                "the page table is a contiguous int32 cuda tensor");
+    TORCH_CHECK(s_in.has_value() || ds_out.has_value(),
+                "a page table addresses a state plane, and this call carries neither");
+  }
+  const int32_t* ptbl_p =
+      page_tbl.has_value() ? reinterpret_cast<const int32_t*>(page_tbl->data_ptr()) : nullptr;
   BwdParams pa = p;
   pa.slab_in = s_in.has_value() ? s_in->data_ptr<float>() : nullptr;
   pa.slab_out = want_replay ? replay.data_ptr<float>() : nullptr;
+  pa.tbl_in = ptbl_p;
+  pa.tbl_out = nullptr;
   BwdParams pb = p;
   pb.slab_in = ds_out.has_value() ? ds_out->data_ptr<float>() : nullptr;
   pb.slab_out = d_state_in.data_ptr<float>();
+  pb.tbl_in = ptbl_p;
+  pb.tbl_out = nullptr;
 
 #define BWD_DISPATCH(D_, B_, K_, M_, W_, C_)                                            \
   if (is_bwd_arm(widths, D_, B_) && k == K_ && m == M_ && window == W_ && chunk == C_)   \

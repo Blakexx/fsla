@@ -132,6 +132,12 @@ struct BwdParams {
   float* d_v;
   const float* slab_in;
   float* slab_out;
+  //: THE SLOT TABLES OF THE TWO SLABS (`ops.cuh`'s `page_slot`,
+  //: docs/internals/paging/paging.md).  Null is the dense backing -- the slot IS the
+  //: atom -- so a paged ENTRY plane and a dispatch-allocated dense EXIT plane are the
+  //: same body with two tables, not two paths.
+  const int32_t* tbl_in;
+  const int32_t* tbl_out;
   int L;
   int tok_words;
 };
@@ -216,7 +222,7 @@ struct BwdOwner {
   //: batch parity is a runtime index into a register array, which is a stack frame;
   //: a select is one instruction and no memory.
   uint32_t bpT0, bpT1, bpF0, bpF1, bdT, bdF;
-  uint32_t atomBase;
+  uint32_t atomBH;
   int prow, rIn, slot0;
   int nr, nw;
 
@@ -271,7 +277,7 @@ struct BwdOwner {
       constexpr int l = decltype(Lc)::value;
       lvCol[l] = runCol[l] + BP::run_of(l, slot0);
     });
-    atomBase = (uint32_t)(bh * (int)(BP::kLeaves / kAtomLeaves) + owner * kAtoms);
+    atomBH = (uint32_t)bh * (uint32_t)(BP::kLeaves / kAtomLeaves);
 
     if (tid < kDigitRows) {
       int col = 0;
@@ -426,8 +432,9 @@ struct BwdOwner {
           gather_ptr(plane, (uint32_t)tok * (uint32_t)(LdD * 2) + winOff + (uint32_t)(c * 16)));
   }
 
-  static __device__ __forceinline__ uint32_t page_off(uint32_t atom) {
-    return atom * (uint32_t)(kPageElems * (int)sizeof(float));
+  //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE.
+  static __device__ __forceinline__ uint32_t page_off(int32_t slot) {
+    return (uint32_t)slot * (uint32_t)(kPageElems * (int)sizeof(float));
   }
 
   __device__ __forceinline__ int slab_col(int q, int e) const {
@@ -444,15 +451,21 @@ struct BwdOwner {
         for (int e = 0; e < 4; ++e) slab[pm][q][e] = 0.f;
   }
 
-  //: THE LATTICE PAGE SWEEP, in the leaf-major orientation: atom `a` is warp `a>>1`'s
+  //: THE PAGE SWEEP, in the leaf-major orientation, at CANONICAL atom ids (P80):
+  //: atom `a` is warp `a>>1`'s
   //: m-tile `a&1`, because the carve slices the local index at a bit boundary.
-  __device__ __forceinline__ void slab_load(float (&slab)[kSlabM][kSlabN][4], const float* src) {
+  __device__ __forceinline__ void slab_load(float (&slab)[kSlabM][kSlabN][4], const float* src,
+                                            const int32_t* tbl) {
     slab_zero(slab);
     if (src == nullptr) return;
     const float* const plane = pin_address(src);
 #pragma unroll
     for (int a = 0; a < kAtoms; ++a) {
-      const uint32_t base = page_off(atomBase + (uint32_t)a);
+      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the slab keeps the
+      //: zero `slab_zero` set, which is what a never-written state contributes.
+      const int32_t slot = page_slot(tbl, atomBH + BP::canon_atom(owner, a));
+      if (slot < 0) continue;
+      const uint32_t base = page_off(slot);
       int e = tid;
       int row = tid < kCols ? 0 : 1;
       int col = tid < kCols ? tid : tid - kCols;
@@ -481,10 +494,15 @@ struct BwdOwner {
     }
   }
 
-  __device__ __forceinline__ void slab_store(const float (&slab)[kSlabM][kSlabN][4], float* dst) {
+  __device__ __forceinline__ void slab_store(const float (&slab)[kSlabM][kSlabN][4], float* dst,
+                                             const int32_t* tbl) {
     float* const plane = pin_address(dst);
 #pragma unroll
     for (int a = 0; a < kAtoms; ++a) {
+      //: THE EXIT STORES ONLY PLANNED ATOMS, which is what leaves a skipped slot
+      //: carrying exactly what it held.
+      const int32_t slot = page_slot(tbl, atomBH + BP::canon_atom(owner, a));
+      if (slot < 0) continue;
       rendezvous();
       if (warp == (a >> 1)) {
         const int pm = a & 1;
@@ -497,7 +515,7 @@ struct BwdOwner {
           }
       }
       rendezvous();
-      const uint32_t base = page_off(atomBase + (uint32_t)a);
+      const uint32_t base = page_off(slot);
       int e = tid;
       int row = tid < kCols ? 0 : 1;
       int col = tid < kCols ? tid : tid - kCols;
@@ -735,7 +753,7 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
   OW ow(p, bwd_smem);
 
   float lam[kSlabM][kSlabN][4];
-  ow.slab_load(lam, p.slab_in);
+  ow.slab_load(lam, p.slab_in, p.tbl_in);
   rendezvous();
 
   float* const dpwP = pin_address(p.d_pw + (long)ow.bh * p.L * (D * B));
@@ -927,7 +945,7 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
   }
 
   //: (G8): the slab at the end of the descending walk IS `d_state_in`.
-  if (p.slab_out != nullptr) ow.slab_store(lam, p.slab_out);
+  if (p.slab_out != nullptr) ow.slab_store(lam, p.slab_out, p.tbl_out);
 }
 
 // ------------------------------------------------------------------ Scan A
@@ -949,7 +967,7 @@ __global__ __launch_bounds__(kThreads, (kScanACtaTarget<D, B, K, M, W, C>)) void
   OW ow(p, bwd_smem);
 
   float st[kSlabM][kSlabN][4];
-  ow.slab_load(st, p.slab_in);
+  ow.slab_load(st, p.slab_in, p.tbl_in);
   rendezvous();
 
   float* const dprP = pin_address(p.d_pr + (long)ow.bh * p.L * (D * B));
@@ -1048,7 +1066,7 @@ __global__ __launch_bounds__(kThreads, (kScanACtaTarget<D, B, K, M, W, C>)) void
   }
 
   //: THE REPLAY GATE'S OUTPUT: the same state the forward's own walk ends with.
-  if (p.slab_out != nullptr) ow.slab_store(st, p.slab_out);
+  if (p.slab_out != nullptr) ow.slab_store(st, p.slab_out, p.tbl_out);
 }
 
 }  // namespace rola::carry

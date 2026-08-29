@@ -255,16 +255,49 @@ def resolve_arm(carry_ops, widths, k, m, d_v, window, chunk, level_modes):
 # once (mainline's `carry_forward_inter` has no such parameter at all -- it
 # predates per-level declarations, confirmed by inspecting all three
 # reference binaries' signatures).
-def make_call(ext, pr, pw, gw, v_bf, widths, k, m, window, chunk, carve, level_modes):
+def make_call(ext, pr, pw, gw, v_bf, widths, k, m, window, chunk, carve, level_modes,
+              s_out=None, page_tbl=None):
+    """The timed closure, plus the two arity probes this harness has to make.
+
+    `level_modes` is the older one (mainline predates per-level declarations). The
+    SECOND is P80's: the state planes and the page table became THE CALLER'S, so a
+    post-P80 binary takes `(s_in, s_out, page_tbl)` where an earlier one took `s_in`
+    alone and allocated the exit plane itself. Both are probed rather than assumed,
+    because this harness's whole job is comparing binaries across that seam -- and the
+    comparison is only like-for-like if the pre-P80 arm's implicit state store is
+    matched by a state plane on the post-P80 side, which is why `s_out` defaults to a
+    plane the caller allocates rather than to `None` (which would measure the NULL-STATE
+    variant against a stateful baseline).
+    """
     args9 = (pr, pw, gw, v_bf, list(widths), int(k), int(m), int(window), int(chunk), int(carve))
-    try:
-        ext.carry_forward_inter(*args9, level_modes, None)
-        takes_modes = True
-    except TypeError:
-        takes_modes = False
-    if takes_modes:
-        return (lambda: ext.carry_forward_inter(*args9, level_modes, None)), True
-    return (lambda: ext.carry_forward_inter(*args9, None)), False
+
+    #: EVERY PROBE THAT SUCCEEDS MUST LAUNCH THE CONFIGURATION THE TIMED CALL LAUNCHES.
+    #: An arity probe is a real kernel launch, and since P80 the seam carries TWO
+    #: variants (`STATE` is a template parameter), so a probe made with both planes null
+    #: runs the NULL-STATE body -- and `ncu -c 1`, which captures the FIRST matching
+    #: launch, then reports that body's metrics for a measurement of the stateful one.
+    #: Caught exactly that way at P80. A signature that does not exist raises `TypeError`
+    #: out of pybind's overload resolution BEFORE any launch, so an unsuccessful probe
+    #: costs nothing and only the successful one -- the richest signature the binary
+    #: takes, at this call's own state arm -- ever reaches the device.
+    def accepts(*a):
+        try:
+            ext.carry_forward_inter(*a)
+            return True
+        except TypeError:
+            return False
+
+    for takes_modes, takes_planes in ((True, True), (False, True), (True, False),
+                                      (False, False)):
+        tail = (level_modes,) if takes_modes else ()
+        args = (*args9, *tail, None) + ((s_out, page_tbl) if takes_planes else ())
+        if not takes_planes and page_tbl is not None:
+            continue
+        if accepts(*args):
+            return (lambda a=args: ext.carry_forward_inter(*a)), takes_modes, takes_planes
+    raise RuntimeError(
+        "REFUSED: no accepted carry_forward_inter signature for this binary at state "
+        f"arm page_tbl={'set' if page_tbl is not None else 'null'}.")
 
 
 def pack_operands(carry_ops, read_bf, write_bf, g_bf, v_bf):
@@ -309,9 +342,23 @@ def worker_main(args):
                 spec["window"], CHUNK, spec["level_modes"])
             read_bf, write_bf, g_bf, v_bf = draw_cell(spec)
             pr, pw, gw, v = pack_operands(carry_ops, read_bf, write_bf, g_bf, v_bf)
-            call, took_modes = make_call(ext, pr, pw, gw, v, spec["widths"], spec["k"],
-                                          spec["m"], spec["window"], CHUNK, carve,
-                                          spec["level_modes"])
+            #: THE STATE ARM (P80). `dense` is the pre-P80 measurement reproduced -- one
+            #: dense exit plane, stored -- and is the DEFAULT so a cross-tip A/B stays
+            #: like-for-like. `paged` runs the same call at FULL COVERAGE (every atom
+            #: resident), which is the arm that prices the slot resolution itself; the
+            #: identity table is the WORST case for it, since a permuted one would only
+            #: add locality noise on top of the same eight loads. `none` is the
+            #: NULL-STATE variant and is comparable only against itself.
+            s_out, page_tbl = None, None
+            if args.state != "none":
+                s_out = carry_ops.state_plane(spec["widths"], pr.shape[0], spec["d_v"])
+                if args.state == "paged":
+                    n_atoms = s_out.shape[1]
+                    page_tbl = torch.arange(pr.shape[0] * n_atoms, device="cuda",
+                                            dtype=torch.int32).view(pr.shape[0], n_atoms)
+            call, took_modes, took_planes = make_call(
+                ext, pr, pw, gw, v, spec["widths"], spec["k"], spec["m"], spec["window"],
+                CHUNK, carve, spec["level_modes"], s_out, page_tbl)
             for _ in range(args.warmup):
                 call()
             torch.cuda.synchronize()
@@ -319,7 +366,8 @@ def worker_main(args):
                 call()
                 torch.cuda.synchronize()
                 rows[name] = {"oneshot": True, "resolved_carve": carve, "arm_index": arm_index,
-                              "arm_row": list(arm_row), "level_modes_applied": took_modes}
+                              "arm_row": list(arm_row), "level_modes_applied": took_modes,
+                              "state_arm": args.state, "caller_owned_planes": took_planes}
                 continue
             ts = []
             for _ in range(args.reps):
@@ -335,8 +383,9 @@ def worker_main(args):
                 "warmup": args.warmup,
                 "resolved_carve": carve, "arm_index": arm_index, "arm_row": list(arm_row),
                 "level_modes_applied": took_modes,
+                "state_arm": args.state, "caller_owned_planes": took_planes,
             }
-            del read_bf, write_bf, g_bf, v_bf, pr, pw, gw, v
+            del read_bf, write_bf, g_bf, v_bf, pr, pw, gw, v, s_out, page_tbl
             torch.cuda.empty_cache()
         except Exception as ex:  # noqa: BLE001 -- reported per-cell, never swallowed
             rows[name] = {"error": f"{type(ex).__name__}: {ex}"}
@@ -377,10 +426,10 @@ def venv_python(venv_path: str) -> str:
 
 
 def run_worker(binary: dict, cells: list[str], reps: int, warmup: int, lock_path: str,
-                oneshot: bool = False, timeout: int = 600) -> dict:
+                oneshot: bool = False, timeout: int = 600, state: str = "dense") -> dict:
     py = venv_python(binary["venv"])
     cmd = [py, str(THIS_FILE), "--worker", "--cells", ",".join(cells),
-           "--reps", str(reps), "--warmup", str(warmup)]
+           "--reps", str(reps), "--warmup", str(warmup), "--state", state]
     if oneshot:
         cmd.append("--oneshot")
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
@@ -404,7 +453,7 @@ def run_worker(binary: dict, cells: list[str], reps: int, warmup: int, lock_path
 
 
 def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
-                  timeout: int = 900) -> dict:
+                  timeout: int = 900, state: str = "dense") -> dict:
     """One `ncu` oneshot launch: kernel name + metrics for ``cell`` on ``binary``.
 
     Mirrors the session scratchpad's `ledger/run_ledger.sh` pattern -- one
@@ -425,7 +474,7 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
     out_csv = f"{out_csv_prefix}_{binary['label']}_{cell}.csv"
     cmd = [NCU_BIN, "--target-processes", "all", "-k", "regex:carry.*kernel", "-c", "1",
            "--print-kernel-base", "mangled", "--metrics", metrics, "--csv",
-           py, str(THIS_FILE), "--worker", "--cells", cell, "--oneshot"]
+           py, str(THIS_FILE), "--worker", "--cells", cell, "--oneshot", "--state", state]
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
@@ -460,7 +509,7 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
 
 
 def interleaved_rounds(binaries: list[dict], cells: list[str], reps: int, warmup: int,
-                        lock_path: str, rounds: int) -> dict:
+                        lock_path: str, rounds: int, state: str = "dense") -> dict:
     """A,B,A,B,A,B (never "all of A then all of B") -- the K36 lesson
     (`## K36`, "the reschedule costs nothing" section: separated runs read a
     1.12-1.37x false regression on this host; only interleaved same-cell A/B
@@ -468,7 +517,7 @@ def interleaved_rounds(binaries: list[dict], cells: list[str], reps: int, warmup
     per_binary_round_rows = {b["label"]: [] for b in binaries}
     for r in range(rounds):
         for b in binaries:
-            payload = run_worker(b, cells, reps, warmup, lock_path)
+            payload = run_worker(b, cells, reps, warmup, lock_path, state=state)
             per_binary_round_rows[b["label"]].append({"round": r, **payload})
     return per_binary_round_rows
 
@@ -497,6 +546,11 @@ def main():
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--lock", default=GPU_LOCK_DEFAULT)
     ap.add_argument("--ncu", action="store_true")
+    #: THE STATE ARM (P80). `dense` reproduces the pre-P80 measurement (one dense exit
+    #: plane, stored) and is the default, so a cross-tip A/B is like-for-like; `paged`
+    #: resolves every atom through a FULL-COVERAGE table, which is the arm that prices
+    #: the slot resolution; `none` is the null-state variant, comparable only to itself.
+    ap.add_argument("--state", choices=("dense", "paged", "none"), default="dense")
     ap.add_argument("--out", default=None, help="path for one JSON row per (binary, cell)")
     # worker-mode-only flags (invoked as a subprocess of itself):
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
@@ -520,8 +574,9 @@ def main():
         print(f"BINARY {b['label']}: worktree={b['worktree']} venv={b['venv']} "
               f"sha={b['git_sha']}")
 
+    print(f"STATE ARM: {args.state}")
     round_rows = interleaved_rounds(args.binary, cells, args.reps, args.warmup,
-                                     args.lock, args.rounds)
+                                     args.lock, args.rounds, args.state)
 
     results = []
     print()
@@ -541,6 +596,8 @@ def main():
                 "resolved_carve": row0.get("resolved_carve"),
                 "arm_index": row0.get("arm_index"), "arm_row": row0.get("arm_row"),
                 "level_modes_applied": row0.get("level_modes_applied"),
+                "state_arm": args.state,
+                "caller_owned_planes": row0.get("caller_owned_planes"),
                 "reps": args.reps, "warmup": args.warmup, "n_rounds": args.rounds,
             }
             if summ:
@@ -558,7 +615,7 @@ def main():
         out_prefix = args.out.rsplit(".", 1)[0] if args.out else "/tmp/probe_cells_ncu"
         for b in args.binary:
             for cell in cells:
-                ncu_row = run_ncu_cell(b, cell, args.lock, out_prefix)
+                ncu_row = run_ncu_cell(b, cell, args.lock, out_prefix, state=args.state)
                 for r in results:
                     if r["binary"] == b["label"] and r["cell"] == cell:
                         r["ncu"] = ncu_row

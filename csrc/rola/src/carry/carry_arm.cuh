@@ -83,12 +83,17 @@ struct Arm {
   }
 };
 
-template <class A>
-static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
-                          const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den,
-                          int BH, int L, int tok_words, int v_row_bytes, const float* s_in,
-                          float* s_out, cudaStream_t stream) {
-  const auto fn = A::template fn<true>();
+//: ONE VARIANT'S LAUNCH.  `STATE` is a TEMPLATE parameter of the body, so the
+//: stateless variant carries no state I/O in its instruction stream at all rather than
+//: branching around it -- state.md section 1's "pays nothing for the feature", made
+//: mechanical.  The SMEM attribute is per variant, which is why the memo is local here.
+template <class A, bool STATE>
+static cudaError_t launch_at(const __nv_bfloat16* pr, const __nv_bfloat16* pw,
+                             const __nv_bfloat16* gw, const __nv_bfloat16* v, const uint32_t* rows,
+                             float* o, float* den, int BH, int L, int tok_words, int v_row_bytes,
+                             const float* s_in, float* s_out, const int32_t* page_tbl,
+                             cudaStream_t stream) {
+  const auto fn = A::template fn<STATE>();
   constexpr size_t sm = (size_t)A::geom()[0];
   static bool configured = false;
   if (!configured) {
@@ -99,8 +104,23 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
   }
   const dim3 grid((unsigned)A::BP::kOwners, (unsigned)BH);
   fn<<<grid, (unsigned)A::geom()[3], sm, stream>>>(pr, pw, gw, v, rows, o, den, L, tok_words,
-                                                   v_row_bytes, s_in, s_out);
+                                                   v_row_bytes, s_in, s_out, page_tbl);
   return cudaGetLastError();
+}
+
+//: THE VARIANT IS CHOSEN BY THE CALL'S STRUCTURE, never by a measured statistic: the
+//: predicate is `state is not None` at this seam too (state.md section 1), and a call
+//: that hands neither plane has no state to read and none to write.
+template <class A>
+static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
+                          const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den,
+                          int BH, int L, int tok_words, int v_row_bytes, const float* s_in,
+                          float* s_out, const int32_t* page_tbl, cudaStream_t stream) {
+  if (s_in == nullptr && s_out == nullptr)
+    return launch_at<A, false>(pr, pw, gw, v, rows, o, den, BH, L, tok_words, v_row_bytes, s_in,
+                               s_out, page_tbl, stream);
+  return launch_at<A, true>(pr, pw, gw, v, rows, o, den, BH, L, tok_words, v_row_bytes, s_in, s_out,
+                            page_tbl, stream);
 }
 
 //: THE CENSUS, whose last ten fields are THE DERIVATION READ BACK OFF THE DEVICE (K35
@@ -161,9 +181,10 @@ using ArmRowsW = SideRowPlan<typename A::SW>;
   cudaError_t carry_arm_forward_##I_(                                                            \
       const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,                 \
       const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den, int BH, int L,         \
-      int tok_words, int v_row_bytes, const float* s_in, float* s_out, cudaStream_t stream) {    \
+      int tok_words, int v_row_bytes, const float* s_in, float* s_out, const int32_t* page_tbl,  \
+      cudaStream_t stream) {                                                                     \
     return launch<CarryArm##I_>(pr, pw, gw, v, rows, o, den, BH, L, tok_words, v_row_bytes,      \
-                                s_in, s_out, stream);                                            \
+                                s_in, s_out, page_tbl, stream);                                  \
   }                                                                                              \
   cudaError_t carry_arm_rows_##I_(const __nv_bfloat16* pr, const __nv_bfloat16* pw,              \
                                   uint32_t* tbl, int BH, int L, cudaStream_t stream) {           \

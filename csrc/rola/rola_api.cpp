@@ -64,11 +64,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("widths"), py::arg("L"), py::arg("page_tbl") = py::none());
   // ---- K31 R1: the box-native carry family (NOT on any shipped path) ------
   m.def("carry_forward_inter", &rola::carry::forward_inter,
-        "K31 carry kernel: the INTER (carried-state) term, undivided, plus the "
-        "final state plane in lattice leaf order",
+        "K31 carry kernel: the INTER (carried-state) term, undivided; the state planes "
+        "and the page table are the caller's, and both planes null is the null-state call",
         py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("widths"), py::arg("k"),
         py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
-        py::arg("level_modes") = 0, py::arg("s_in") = py::none());
+        py::arg("level_modes") = 0, py::arg("s_in") = py::none(), py::arg("s_out") = py::none(),
+        py::arg("page_tbl") = py::none());
   m.def("carry_build_stamp", &rola::carry::build_stamp,
         "K31 carry kernel: device-side build identity + the arm's census", py::arg("widths"),
         py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
@@ -86,7 +87,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("vt"), py::arg("dn"),
         py::arg("widths"), py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"),
         py::arg("s_in") = py::none(), py::arg("ds_out") = py::none(),
-        py::arg("want_replay") = false);
+        py::arg("page_tbl") = py::none(), py::arg("want_replay") = false);
   m.def("intra_backward", &rola::intra::intra_backward,
         "K31 R4: the within-window half of the four cotangents, REDUCED into the "
         "planes the carry's two scans also write",

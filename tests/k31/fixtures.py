@@ -59,27 +59,29 @@ class Cell:
                 tuple(t.double() for t in self.write_bf),
                 self.g_bf.double(), self.v_bf.double())
 
-    def state_in_lattice(self, k, m):
-        """``state_in`` re-viewed in LATTICE leaf order, as the kernel's plane."""
+    def state_in_plane(self):
+        """``state_in`` as the kernel's state plane, ``[BH, N/16, 16, cols]``.
+
+        A RE-BLOCKING AND NOTHING ELSE since P80: the consumer addresses its state by
+        CANONICAL atom id in both backings, so the plane is the atom-major view of
+        ``[BH, N, cols]`` that `docs/internals/state.md` section 3 defines, and the leaf
+        permutation this method used to apply is gone with the lattice keying.
+        """
         if self.state_in is None:
             return None
-        pi = carry_ops.lattice_of_canonical(self.widths, k, m, device=self.state_in.device)
-        out = torch.zeros_like(self.state_in)
-        out.index_copy_(1, pi, self.state_in)
-        return out.to(torch.float32).reshape(
+        return self.state_in.to(torch.float32).reshape(
             self.B * self.H, self.N // 16, 16, self.d_v + 1).contiguous()
 
 
-def canonical_from_lattice(plane, widths, k, m):
-    """A ``[BH, N/16, 16, cols]`` LATTICE plane as ``[BH, N, cols]`` CANONICAL.
+def canonical_from_plane(plane):
+    """A ``[BH, N/16, 16, cols]`` state plane as ``[BH, N, cols]`` CANONICAL.
 
-    A leaf-order error surfaces HERE as a permutation rather than as noise -- the
-    shipped family's final-state gate property, kept.
+    The kernel's plane IS the atom-major view of the canonical one (P80), so this is a
+    reshape. It stays a NAMED step because the assertion it feeds is the family's
+    final-state gate, and a leaf-order error must surface at a named seam rather than as
+    noise inside a comparison.
     """
-    N = math.prod(widths)
-    pi = carry_ops.lattice_of_canonical(widths, k, m, device=plane.device)
-    flat = plane.reshape(plane.shape[0], N, -1)
-    return flat.index_select(1, pi)
+    return plane.reshape(plane.shape[0], -1, plane.shape[-1])
 
 
 #: THE DECLARATION THE FLAGSHIP SHIPS UNDER: write-sparse on the even levels and

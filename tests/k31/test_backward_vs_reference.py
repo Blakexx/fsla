@@ -24,7 +24,7 @@ import torch
 from rola.ops import carry as carry_ops
 from rola.ops._ext import is_available
 from tests.k31.backward_reference import carry_backward_reference
-from tests.k31.fixtures import Cell, canonical_from_lattice, require_arm
+from tests.k31.fixtures import Cell, canonical_from_plane, require_arm
 
 pytestmark = pytest.mark.skipif(not is_available() or not torch.cuda.is_available(),
                                 reason="the reverse pass is a CUDA kernel")
@@ -76,17 +76,16 @@ def _run(cell, seed, chained):
                         generator=gen)
     ds_out = (0.05 * torch.randn(cell.B * cell.H, cell.N, cell.d_v + 1, device="cuda",
                                  dtype=torch.float64, generator=gen)) if chained else None
-    ds_lat = None
+    #: THE SEED IS THE STATE'S OWN PLANE, so it is the same atom-major view of
+    #: `[BH, N, cols]` the forward writes -- a RE-BLOCKING since P80, not a permutation.
+    ds_plane = None
     if ds_out is not None:
-        pi = carry_ops.lattice_of_canonical(cell.widths, K, M, device="cuda")
-        tmp = torch.zeros_like(ds_out)
-        tmp.index_copy_(1, pi, ds_out)
-        ds_lat = tmp.to(torch.float32).reshape(cell.B * cell.H, cell.N // 16, 16,
-                                               cell.d_v + 1).contiguous()
+        ds_plane = ds_out.to(torch.float32).reshape(cell.B * cell.H, cell.N // 16, 16,
+                                                    cell.d_v + 1).contiguous()
     got = carry_ops.carry_backward(
         cell.read_bf, cell.write_bf, cell.g_bf.double(), cell.v_bf.double(), d_num, d_den,
-        cell.widths, k=K, m=M, window=WINDOW, state_in=cell.state_in_lattice(K, M),
-        d_state_out=ds_lat, want_replay=True)
+        cell.widths, k=K, m=M, window=WINDOW, state_in=cell.state_in_plane(),
+        d_state_out=ds_plane, want_replay=True)
     return got, d_num, d_den, ds_out
 
 
@@ -126,7 +125,7 @@ def test_every_cotangent_matches_the_reference(T, k_tok, gain, seed, chained):
                  floor[2].permute(0, 2, 1).reshape(cell.B * cell.H, T), None),
         "d_v": (d_v, want[3].permute(0, 2, 1, 3).reshape(cell.B * cell.H, T, cell.d_v),
                 floor[3].permute(0, 2, 1, 3).reshape(cell.B * cell.H, T, cell.d_v), None),
-        "d_state_in": (canonical_from_lattice(d_sin, cell.widths, K, M),
+        "d_state_in": (canonical_from_plane(d_sin),
                        want[4].reshape(cell.B * cell.H, cell.N, cell.d_v + 1),
                        floor[4].reshape(cell.B * cell.H, cell.N, cell.d_v + 1), None),
     }
@@ -141,7 +140,10 @@ def test_every_cotangent_matches_the_reference(T, k_tok, gain, seed, chained):
     #: of its walk is the forward's own final state, same grid and same batch order.
     fwd = carry_ops.carry_inter(cell.read_bf, cell.write_bf, cell.g_bf.double(),
                                 cell.v_bf.double(), cell.widths, k=K, m=M, window=WINDOW,
-                                state_in=cell.state_in_lattice(K, M))
+                                state_in=cell.state_in_plane(),
+                                state_out=carry_ops.state_plane(
+                                    cell.widths, cell.v_bf.shape[0] * cell.v_bf.shape[2],
+                                    cell.v_bf.shape[-1]))
     assert torch.equal(replay, fwd[2]), (
         "the replay is not bit-identical to the forward's state_out: rel "
         f"{float((replay - fwd[2]).abs().max()) / max(1e-30, float(fwd[2].abs().max())):.3e}")
@@ -253,6 +255,10 @@ def test_the_replay_is_bit_identical_at_the_flagship_arm(window, declaration):
     replay = carry_ops.carry_backward(read, write, g.double(), v.double(), d_num, d_den,
                                       widths, k=K, m=M, window=window, want_replay=True)[5]
     extra = {"level_modes": packed} if _takes_modes() else {}
+    #: THE STATE PLANE IS THE CALLER'S (P80): a call handing neither plane is the
+    #: NULL-STATE call and produces no state at all, which is not what this cell asks.
     state_out = carry_ops.carry_inter(read, write, g.double(), v.double(), widths, k=K, m=M,
-                                      window=window, **extra)[2]
+                                      window=window,
+                                      state_out=carry_ops.state_plane(widths, 1, 64),
+                                      **extra)[2]
     assert torch.equal(replay, state_out)

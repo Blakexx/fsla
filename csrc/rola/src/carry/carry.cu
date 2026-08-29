@@ -162,7 +162,9 @@ static bool is_arm(const std::vector<int64_t>& widths, int D, int B) {
 std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                          torch::Tensor v, std::vector<int64_t> widths, int64_t k,
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
-                                         int64_t level_modes, c10::optional<torch::Tensor> s_in) {
+                                         int64_t level_modes, c10::optional<torch::Tensor> s_in,
+                                         c10::optional<torch::Tensor> s_out,
+                                         c10::optional<torch::Tensor> page_tbl) {
   TORCH_CHECK(pr.is_cuda() && pw.is_cuda() && gw.is_cuda() && v.is_cuda(), "cuda tensors only");
   TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16
                   && gw.scalar_type() == torch::kBFloat16 && v.scalar_type() == torch::kBFloat16,
@@ -176,14 +178,30 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   const int d_v = (int)v.size(-1);
   const int v_row_bytes = (int)(v.size(2) * d_v * v.element_size());
 
-  int64_t N = 1;
-  for (auto w : widths) N *= w;
   auto opt = torch::TensorOptions().dtype(torch::kFloat32).device(v.device());
   auto o = torch::zeros({BH, L, (int64_t)d_v}, opt);
   auto den = torch::zeros({BH, L}, opt);
-  auto s_out = torch::zeros({BH, N / kAtomLeaves, (int64_t)kAtomLeaves, (int64_t)(d_v + 1)}, opt);
 
+  //: THE STATE PLANES ARE THE CALLER'S (docs/internals/state.md section 4).  A
+  //: continuation hands the SAME tensor as both, and advances it in place; a call that
+  //: hands NEITHER is the NULL-STATE call and reaches a variant with no state I/O
+  //: compiled in.  `page_tbl` null is the dense backing -- the slot is then the atom --
+  //: so the two backings are one kernel, one ABI and one accumulation order.
+  for (const auto& t : {s_in, s_out})
+    if (t.has_value())
+      TORCH_CHECK(t->is_cuda() && t->is_contiguous() && t->scalar_type() == torch::kFloat32,
+                  "a state plane is a contiguous fp32 cuda tensor");
+  if (page_tbl.has_value()) {
+    TORCH_CHECK(page_tbl->is_cuda() && page_tbl->is_contiguous()
+                    && page_tbl->scalar_type() == torch::kInt32,
+                "the page table is a contiguous int32 cuda tensor");
+    TORCH_CHECK(s_in.has_value() || s_out.has_value(),
+                "a page table addresses a state plane, and this call carries neither");
+  }
   const float* sin_p = s_in.has_value() ? s_in->data_ptr<float>() : nullptr;
+  float* sout_p = s_out.has_value() ? s_out->data_ptr<float>() : nullptr;
+  const int32_t* ptbl_p =
+      page_tbl.has_value() ? reinterpret_cast<const int32_t*>(page_tbl->data_ptr()) : nullptr;
   auto stream = at::cuda::getCurrentCUDAStream();
   cudaError_t err = cudaErrorInvalidValue;
   //: THE BALLOT ROWS COME FIRST, ON THE SAME STREAM (K31-i-d).  One pass over the
@@ -208,8 +226,8 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
           (const __nv_bfloat16*)pr.data_ptr(), (const __nv_bfloat16*)pw.data_ptr(),          \
           (const __nv_bfloat16*)gw.data_ptr(), (const __nv_bfloat16*)v.data_ptr(),           \
           reinterpret_cast<const uint32_t*>(rows.data_ptr()), o.data_ptr<float>(),           \
-          den.data_ptr<float>(), BH, L, tok_words, v_row_bytes, sin_p,                       \
-          s_out.data_ptr<float>(), stream);                                                  \
+          den.data_ptr<float>(), BH, L, tok_words, v_row_bytes, sin_p, sout_p, ptbl_p,      \
+          stream);                                                                           \
   } else
     CARRY_ARMS_X(CARRY_DISPATCH) {}
 #undef CARRY_DISPATCH
@@ -225,7 +243,7 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
               " d_v=", d_v, " window=", window, " chunk=", chunk, " carve=", carve,
               " level_modes=", level_modes);
   C10_CUDA_CHECK(err);
-  return {o, den, s_out};
+  return {o, den};
 }
 
 //: THE FILE'S OWN CONSTANTS, device-side, beside the magic: the channel-split body's

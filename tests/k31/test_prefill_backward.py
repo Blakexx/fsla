@@ -20,7 +20,7 @@ from rola.ops import intra as intra_ops
 from rola.ops._ext import is_available
 from rola.ops.prefill import prefill_autograd
 from tests.k31.backward_reference import carry_backward_reference, intra_backward_reference
-from tests.k31.fixtures import assert_fresh_binary, canonical_from_lattice
+from tests.k31.fixtures import assert_fresh_binary, canonical_from_plane
 from tests.k31.intra_reference import _simplex
 from tests.k31.test_prefill_vs_oracle import ALT, DENSE, READ_ONE, WIDTHS, K, M, require_carry_arm
 
@@ -88,9 +88,9 @@ def test_every_cotangent_of_the_combined_operator(name, T, window, modes, k_tok,
 
     dn_bth = d_num.double().reshape(1, 1, T, 64).permute(0, 2, 1, 3)
     dd_bth = d_den.double().reshape(1, 1, T).permute(0, 2, 1)
-    sin64 = (canonical_from_lattice(state_in.double(), WIDTHS, K, M).reshape(1, 1, N, 65)
+    sin64 = (canonical_from_plane(state_in.double()).reshape(1, 1, N, 65)
              if chained else None)
-    dso64 = canonical_from_lattice(d_state.double(), WIDTHS, K, M).reshape(1, 1, N, 65)
+    dso64 = canonical_from_plane(d_state.double()).reshape(1, 1, N, 65)
     c_read, c_write, c_gw, c_v, _ = carry_backward_reference(
         read, write, g, v, WIDTHS, window, dn_bth, dd_bth, sin64, dso64)
     torch.cuda.empty_cache()

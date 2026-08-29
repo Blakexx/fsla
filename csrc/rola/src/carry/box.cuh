@@ -177,9 +177,33 @@ struct BoxPlan {
   static_assert(kSpan * 2 >= 4, "a level's run is at least one asynchronous quantum wide");
 
   //: FORWARD, `pi: ell -> lambda`, and its inverse -- used by the host seam and by
-  //: nothing on the device (the device never converts; it is born in lattice order).
+  //: nothing on the device.  THE DEVICE NEVER CONVERTS DATA: it is born in lattice
+  //: order, and within an atom the two orders agree row for row.  Atom IDS are
+  //: re-keyed to canonical at the prologue (`canon_atom` below) because K2/K3 make the
+  //: two orders partition the leaves into the SAME atoms and differ only in how those
+  //: atoms are numbered (P80).
   static constexpr int digit_of(int l, long ell) {
     return (int)((ell / ipowl_c(B, D - 1 - l)) % B);
+  }
+
+  //: THE ATOM RE-KEY (P80).  The page plan is keyed CANONICALLY -- one representation
+  //: shared by the arena, `AtomKeying`, `materialize` and the decode step -- so a
+  //: consumer born in lattice order re-keys its own `BC/16` atom ids here and addresses
+  //: the state plane by the canonical id in BOTH backings, which is what keeps dense
+  //: and paged one base translation.  It is `D` shifts and one mad per atom, at the
+  //: prologue, on ids alone.
+  template <int L>
+  static __host__ __device__ __forceinline__ uint32_t canon_leaf_acc(int O, int local) {
+    if constexpr (L >= D) {
+      return 0u;
+    } else {
+      const int d = ((O / owner_div(L)) % g(L)) * s(L) + ((local >> run_shift(L)) & (s(L) - 1));
+      return (uint32_t)d * (uint32_t)ipowl_c(B, D - 1 - L) + canon_leaf_acc<L + 1>(O, local);
+    }
+  }
+  //: owner `O`'s atom `a`, as a CANONICAL atom id inside its own `bh`.
+  static __host__ __device__ __forceinline__ uint32_t canon_atom(int O, int a) {
+    return canon_leaf_acc<0>(O, a * kAtomLeaves) >> kAtomBits;
   }
 
   static_assert(kBC % kAtomLeaves == 0, "K2: an atom must not straddle two owners");

@@ -170,10 +170,15 @@ def split_walls(read, write, g, v, widths, k, m, window, modes):
     swrite = intra_ops.support_words(pwrite)
     from rola.ops._ext import extension
     ext = extension()
+    #: THE STATE PLANE IS THE CALLER'S, so the bench allocates ONE and every timed call
+    #: advances it in place -- which is what the measured path does, and what keeps the
+    #: allocation out of the timing.
+    bench_state = carry_ops.state_plane(widths, pread.shape[0], D_V, device=pread.device)
 
     def carry_only():
         ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths), k, m,
-                                window, 32, carry_ops.LEAF_SPLIT, packed_modes, None)
+                                window, 32, carry_ops.LEAF_SPLIT, packed_modes, None,
+                                bench_state, None)
 
     o = torch.zeros((1, pread.shape[1], D_V), dtype=torch.float32, device=pread.device)
     den = torch.zeros((1, pread.shape[1]), dtype=torch.float32, device=pread.device)
@@ -183,9 +188,9 @@ def split_walls(read, write, g, v, widths, k, m, window, modes):
                           widths[0], packed_modes, window)
 
     def combined():
-        num, dn, _ = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths),
-                                             k, m, window, 32, carry_ops.LEAF_SPLIT,
-                                             packed_modes, None)
+        num, dn = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths),
+                                          k, m, window, 32, carry_ops.LEAF_SPLIT,
+                                          packed_modes, None, bench_state, None)
         ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, num, dn, len(widths),
                           widths[0], packed_modes, window)
 

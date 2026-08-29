@@ -27,7 +27,7 @@ from rola.ops.constants import READOUT_EPS
 from rola.ops.naive import naive_rola
 from rola.ops.prefill import prefill
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-from tests.k31.fixtures import assert_fresh_binary, canonical_from_lattice, relative, require_arm
+from tests.k31.fixtures import assert_fresh_binary, canonical_from_plane, relative, require_arm
 from tests.k31.intra_reference import _simplex
 from tests.oracle.tolerances import BF16_RTOL
 
@@ -135,7 +135,7 @@ def test_prefill_matches_the_fp64_oracle(name, T, window, modes, k_tok, clustere
     y_ref, s_ref = oracle(read, write, g, v)
     err = relative(readout(num, den, T), y_ref)
     assert err < BF16_RTOL, f"{name}: the readout leaves the bf16 band at {err:.3e}"
-    got = canonical_from_lattice(plane, WIDTHS, K, M)
+    got = canonical_from_plane(plane)
     s_err = relative(got, s_ref.reshape(1, 65536, 65))
     assert s_err < BF16_RTOL, f"{name}: the final state leaves the band at {s_err:.3e}"
     del num, den, plane, y_ref, s_ref, got
@@ -245,7 +245,7 @@ def test_deep_prefill_matches_the_fp64_oracle(widths, k, m, sparse):
     y_ref, s_ref = oracle(read, write, g, v, widths=widths)
     err = relative(readout(num, den, T), y_ref)
     assert err < BF16_RTOL, f"{widths}: the readout leaves the bf16 band at {err:.3e}"
-    got = canonical_from_lattice(plane, widths, k, m)
+    got = canonical_from_plane(plane)
     s_err = relative(got, s_ref.reshape(1, 4096, 65))
     assert s_err < BF16_RTOL, f"{widths}: the final state leaves the band at {s_err:.3e}"
 

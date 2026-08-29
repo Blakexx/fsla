@@ -104,23 +104,52 @@ def pack_side(levels) -> torch.Tensor:
     return out.reshape(Bn * H, T, -1)
 
 
+def state_plane(widths, BH: int, d_v: int = D_V, device="cuda") -> torch.Tensor:
+    """A DENSE state plane, ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order.
+
+    The dense BACKING, byte for byte the atom-major view of ``[BH, N, cols]``
+    (`docs/internals/state.md` section 3). It is the caller's to allocate because the
+    planes are the caller's: a continuation hands the SAME tensor in and out and
+    advances it in place, which is what keeps a stateful chain to ONE plane per
+    sequence. A PAGED call passes the arena's plane and its table instead, and the
+    kernel is the same kernel -- one base translation, not a second path.
+    """
+    n = 1
+    for w in widths:
+        n *= int(w)
+    return torch.zeros((BH, n // MMA_K_QUANTUM, MMA_K_QUANTUM, d_v + 1),
+                       dtype=torch.float32, device=device)
+
+
 def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
                 window: int, chunk: int = 32, carve: int = LEAF_SPLIT,
-                level_modes: int = 0, state_in: torch.Tensor | None = None):
+                level_modes: int = 0, state_in: torch.Tensor | None = None,
+                state_out: torch.Tensor | None = None,
+                page_table: torch.Tensor | None = None):
     """The INTER term, undivided: ``(num, den, state_out)``.
 
-    ``num`` is ``[BH, T, d_v]`` fp32, ``den`` is ``[BH, T]`` fp32, and
-    ``state_out`` is ``[BH, N/16, 16, d_v+1]`` fp32 in LATTICE leaf order.
-    ``state_in``, when given, is the same layout and order.  ``d_v`` is READ OFF ``v``
-    and is part of the arm key, so a width no arm declares is refused, not degraded.
+    ``num`` is ``[BH, T, d_v]`` fp32 and ``den`` is ``[BH, T]`` fp32. ``d_v`` is READ
+    OFF ``v`` and is part of the arm key, so a width no arm declares is refused, not
+    degraded.
+
+    THE STATE PLANES ARE THE CALLER'S (`docs/internals/state.md` section 4).
+    ``state_in``/``state_out`` are ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order
+    -- `state_plane` builds a dense one, an arena hands over ``arena.state`` -- and a
+    CONTINUATION passes the SAME tensor as both, advancing it in place. ``page_table``
+    is the ``[BH, N/16]`` int32 slot table; ``None`` is the dense backing, where the
+    slot IS the atom, so the two backings are one kernel, one ABI and one accumulation
+    order. Passing NEITHER plane is the NULL-STATE call: it reaches an arm variant with
+    no state I/O compiled into it and returns ``state_out`` as ``None``.
     """
     pr = pack_side(read_levels)
     pw = pack_side(write_levels)
     gw = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
     gw = gw.reshape(gw.shape[0] * gw.shape[1], -1)
-    return extension().carry_forward_inter(
+    num, den = extension().carry_forward_inter(
         pr, pw, gw, v.to(torch.bfloat16).contiguous(), list(widths), int(k), int(m),
-        int(window), int(chunk), int(carve), int(level_modes), state_in)
+        int(window), int(chunk), int(carve), int(level_modes), state_in, state_out,
+        page_table)
+    return num, den, state_out
 
 
 def owner_rows(read_levels, write_levels, widths, *, k: int, m: int, carve: bool = False):
@@ -193,14 +222,20 @@ def pack_cols(main: torch.Tensor, last) -> torch.Tensor:
 
 def carry_backward(read_levels, write_levels, g_write, v, d_num, d_den, widths, *, k: int,
                    m: int, window: int, chunk: int = 32, state_in=None, d_state_out=None,
-                   want_replay: bool = False):
+                   page_table=None, want_replay: bool = False):
     """The CROSS-WINDOW reverse pass: ``(d_pr, d_pw, d_gw, d_v, d_state_in, replay)``.
 
     ``d_num``/``d_den`` are the seeds the op seam forms from the division's backward,
     shaped like the forward's ``num``/``den``. ``d_pr``/``d_pw`` are
     ``[BH, T, sum_l width_l]`` fp32 on the packed amplitude layout, ``d_v`` is
     ``[BH, T, d_v]``, ``d_gw`` is ``[BH, T]``, and ``d_state_in``/``replay`` are
-    ``[BH, N/16, 16, d_v+1]`` fp32 in LATTICE leaf order.
+    ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order.
+
+    ``page_table`` resolves the two ENTRY slabs the caller owns (``state_in`` and
+    ``d_state_out``) through the same slot table the forward uses. The two EXIT slabs
+    -- ``d_state_in`` and ``replay`` -- are this dispatch's own dense allocations and
+    are addressed densely; paging a gradient plane needs a plan of its own and is the
+    reverse family's stage, not this one's.
     """
     pr = pack_side(read_levels)
     pw = pack_side(write_levels)
@@ -211,7 +246,7 @@ def carry_backward(read_levels, write_levels, g_write, v, d_num, d_den, widths, 
     dn = pack_cols(d_num, d_den)
     return extension().carry_backward_inter(
         pr, pw, gw, vt, dn, list(widths), int(k), int(m), int(window), int(chunk),
-        state_in, d_state_out, bool(want_replay))
+        state_in, d_state_out, page_table, bool(want_replay))
 
 
 def backward_stamp(widths, k, m, window, chunk):

@@ -270,7 +270,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
              const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
              const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den,
              int L, int tok_words, int v_row_bytes, const float* __restrict__ s_in,
-             float* __restrict__ s_out) {
+             float* __restrict__ s_out, const int32_t* __restrict__ page_tbl) {
   using BP = BoxPlan<D, B, K, M>;
   using G = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
   constexpr int kDv = DV;
@@ -424,7 +424,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     return lf;
   };
 
-  // ---- the state plane's page sweep, in LATTICE leaf order -----------------
+  // ---- the state plane's page sweep, at CANONICAL atom ids -----------------
   constexpr int kAtoms = BC / kAtomLeaves;
   constexpr int kPageElems = kAtomLeaves * kCols;
   //: THE SWEEP'S STEP, AS A CARRY.  A step of `kThreads` elements advances the row
@@ -453,11 +453,17 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       col -= wrap ? kCols : 0;
     }
   };
-  //: `lambda = owner*BC + local` (LATTICE-1), so the owner's atoms are
-  //: `owner*(BC/16) + i`.  What the shipped kernel proves with `base_aligned` is a
-  //: DEFINITION here (R0 spec section 2.6).
-  const uint32_t atomBase = (uint32_t)(bh * (int)(BP::kLeaves / kAtomLeaves) + owner * kAtoms);
-  auto page_off = [](uint32_t atom) { return atom * (uint32_t)(kPageElems * (int)sizeof(float)); };
+  //: THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80).  `atomBH` is this `bh`'s base
+  //: and `BP::canon_atom` re-keys the owner's own `kAtoms` lattice atoms to the
+  //: canonical numbering the page plan uses -- ids only, at the prologue; the row
+  //: INSIDE an atom is the same in both orders, so no data is permuted.
+  const uint32_t atomBH = (uint32_t)bh * (uint32_t)(BP::kLeaves / kAtomLeaves);
+  //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`,
+  //: docs/internals/paging/paging.md).  The atom id is the logical name and the slot is
+  //: the physical page the plan committed for it; a null table makes the two the same
+  //: number, which is the dense backing as this same kernel rather than a second path.
+  constexpr uint32_t kPageBytes = (uint32_t)(kPageElems * (int)sizeof(float));
+  auto page_base = [](int32_t slot) { return (uint32_t)slot * kPageBytes; };
   //: THE PAGE'S SLICE OF A STREAM, PER FRAGMENT.  Register-resident state exists only as
   //: fragments (KERNEL_STANDARDS section 1): the accumulator is `NL` n-tiles x `MCH`
   //: m-tiles of the m16n8 shape, and a lane's fragment holds TWO ADJACENT private slots
@@ -506,10 +512,15 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     if (s_in != nullptr) {
       const float* const plane = pin_address(s_in);
       static_for<kAtoms>([&](auto Ac) {
-        page_sweep(page_off(atomBase + (uint32_t)decltype(Ac)::value),
-                   [&](int sidx, uint32_t off_) {
-                     so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off_));
-                   });
+        //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
+        //: nothing here, the fragments keep the zero the prologue set, and reading a
+        //: never-written state is inert under the self-normalizing readout.
+        const int32_t slot =
+            page_slot(page_tbl, atomBH + BP::canon_atom(owner, decltype(Ac)::value));
+        if (slot < 0) return;
+        page_sweep(page_base(slot), [&](int sidx, uint32_t off_) {
+          so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off_));
+        });
         rendezvous();
         page_regs(Ac, std::true_type{});
         rendezvous();
@@ -925,7 +936,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     stage_wait<0>();
   }
 
-  // ---- the FINAL STATE, in LATTICE leaf order ------------------------------
+  // ---- the FINAL STATE, at CANONICAL atom ids ------------------------------
   //: the mirror of the entry load, after the last fan-in has consumed the staging
   //: buffer -- which is what the one extra rendezvous below is for.
   if constexpr (STATE) {
@@ -933,12 +944,16 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       float* const plane = pin_address(s_out);
       rendezvous();
       static_for<kAtoms>([&](auto Ac) {
+        //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
+        //: which is what leaves a skipped slot carrying exactly what it held.
+        const int32_t slot =
+            page_slot(page_tbl, atomBH + BP::canon_atom(owner, decltype(Ac)::value));
+        if (slot < 0) return;
         page_regs(Ac, std::false_type{});
         rendezvous();
-        page_sweep(page_off(atomBase + (uint32_t)decltype(Ac)::value),
-                   [&](int sidx, uint32_t offb) {
-                     store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
-                   });
+        page_sweep(page_base(slot), [&](int sidx, uint32_t offb) {
+          store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
+        });
         rendezvous();
       });
     }

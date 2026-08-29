@@ -49,6 +49,8 @@ def walls(read, write, g, v, window, modes):
     sread, swrite = intra_ops.support_words(pread), intra_ops.support_words(pwrite)
     bh, T, _ = pread.shape
     ext = extension()
+    #: THE STATE PLANE IS THE CALLER'S: one plane, advanced in place by every timed call.
+    bench_state = carry_ops.state_plane(WIDTHS, bh, D_V, device=pread.device)
 
     d_num = torch.randn((bh, T, D_V), device=pread.device, dtype=torch.float32)
     d_den = torch.randn((bh, T), device=pread.device, dtype=torch.float32)
@@ -57,17 +59,18 @@ def walls(read, write, g, v, window, modes):
     dnum_bf = d_num.to(torch.bfloat16).contiguous()
 
     def forward():
-        num, den, _ = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(WIDTHS), K, M,
-                                              window, 32, carry_ops.LEAF_SPLIT, 0, None)
+        num, den = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(WIDTHS), K, M,
+                                           window, 32, carry_ops.LEAF_SPLIT, 0, None,
+                                           bench_state, None)
         ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, num, den, len(WIDTHS),
                           WIDTHS[0], packed, window)
 
     def scans():
         ext.carry_backward_inter(pread, pwrite, gwrite, vt, dn, list(WIDTHS), K, M, window, 32,
-                                 None, None, False)
+                                 None, None, None, False)
 
     planes = ext.carry_backward_inter(pread, pwrite, gwrite, vt, dn, list(WIDTHS), K, M, window,
-                                      32, None, None, False)
+                                      32, None, None, None, False)
 
     def intra_bwd():
         ext.intra_backward(pread, pwrite, gwrite, value, dnum_bf, d_den, planes[0], planes[1],
@@ -75,7 +78,7 @@ def walls(read, write, g, v, window, modes):
 
     def backward():
         out = ext.carry_backward_inter(pread, pwrite, gwrite, vt, dn, list(WIDTHS), K, M, window,
-                                       32, None, None, False)
+                                       32, None, None, None, False)
         ext.intra_backward(pread, pwrite, gwrite, value, dnum_bf, d_den, out[0], out[1], out[2],
                            out[3], len(WIDTHS), WIDTHS[0], packed, window)
 

@@ -29,6 +29,12 @@ static constexpr int kCarryCensusFields = 23;
 //: read side's carve level.
 static constexpr int kCarryRowFields = 13;
 
+//: THE STATE PLANES AND THE TABLE ARE THE CALLER'S, which is the shipped contract
+//: (docs/internals/state.md section 4): a continuation hands the SAME plane as `s_in` and
+//: `s_out` and advances it in place, and `page_tbl` null is the dense backing -- the slot
+//: is then the atom.  BOTH PLANES NULL IS THE NULL-STATE CALL and reaches an arm variant
+//: with no state I/O compiled into it at all (state.md section 1).
+//:
 //: WHAT ONE ARM'S TRANSLATION UNIT EXPORTS.  Five entry points: launch the body,
 //: launch and size its ballot table, and state its census and its row.
 //: `CARRY_ARM_DEFINE` (`carry_arm.cuh`) defines exactly these.  The SEGMENT LAYOUT
@@ -37,7 +43,8 @@ static constexpr int kCarryRowFields = 13;
   cudaError_t carry_arm_forward_##I_(                                                          \
       const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,               \
       const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den, int BH, int L,       \
-      int tok_words, int v_row_bytes, const float* s_in, float* s_out, cudaStream_t stream);   \
+      int tok_words, int v_row_bytes, const float* s_in, float* s_out, const int32_t* page_tbl, \
+      cudaStream_t stream);                                                                     \
   cudaError_t carry_arm_rows_##I_(const __nv_bfloat16* pr, const __nv_bfloat16* pw,            \
                                   uint32_t* tbl, int BH, int L, cudaStream_t stream);          \
   int carry_arm_rows_entries_##I_();                                                           \

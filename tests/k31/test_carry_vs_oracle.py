@@ -24,7 +24,7 @@ import torch
 
 from rola.ops import carry as carry_ops
 from tests.k31 import reference
-from tests.k31.fixtures import Cell, assert_fresh_binary, canonical_from_lattice, relative, require_arm
+from tests.k31.fixtures import Cell, assert_fresh_binary, canonical_from_plane, relative, require_arm
 from tests.oracle.tolerances import BF16_RTOL
 
 #: THE DECLARED ARM TABLE, IMPORTED AND NEVER RESTATED (K36).  The rows live in
@@ -59,9 +59,14 @@ def run(cell, arm, carve, chunk=32, state_in=None):
     widths, k, m, W = arm
     require_arm(widths, k, m, W, chunk, carve, 0, d_v=cell.d_v)
     read, write, g, v = cell.ref_levels()
+    #: THE STATE PLANE IS THE CALLER'S (state.md section 4). This cell binds a FRESH
+    #: dense backing, so it allocates one; the paged and continued forms are
+    #: `tests/integration/test_chunk_paging_equivalence.py`'s.
+    plane = carry_ops.state_plane(widths, cell.v_bf.shape[0] * cell.v_bf.shape[2],
+                                  cell.v_bf.shape[-1])
     num, den, plane = carry_ops.carry_inter(
         cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths,
-        k=k, m=m, window=W, chunk=chunk, carve=carve, state_in=state_in)
+        k=k, m=m, window=W, chunk=chunk, carve=carve, state_in=state_in, state_out=plane)
     return num, den, plane
 
 
@@ -166,7 +171,7 @@ def test_m1_state_io_and_fold_dense(carve=CARVE):
     cell = Cell(SMALL[0], T=256, k_tok=None, seed=1)
     _, _, plane = run(cell, SMALL, carve)
     _, _, s_ref = ref(cell, SMALL)
-    got = canonical_from_lattice(plane, SMALL[0], SMALL[1], SMALL[2])
+    got = canonical_from_plane(plane)
     want = s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)
     assert relative(got, want) < BF16_RTOL
 
@@ -174,11 +179,11 @@ def test_m1_state_io_and_fold_dense(carve=CARVE):
 def test_m1_entry_state_is_carried(carve=CARVE):
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=128, k_tok=None, seed=2, state_in=True)
-    s_lat = cell.state_in_lattice(SMALL[1], SMALL[2])
-    _, _, plane = run(cell, SMALL, carve, state_in=s_lat)
+    s_in = cell.state_in_plane()
+    _, _, plane = run(cell, SMALL, carve, state_in=s_in)
     s0 = cell.state_in.reshape(cell.B, cell.H, cell.N, cell.d_v + 1)
     _, _, s_ref = ref(cell, SMALL, state_in=s0)
-    got = canonical_from_lattice(plane, SMALL[0], SMALL[1], SMALL[2])
+    got = canonical_from_plane(plane)
     want = s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)
     assert relative(got, want) < BF16_RTOL
 
@@ -193,7 +198,7 @@ def test_m2_inter_dense_small(carve=CARVE):
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
     assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
-    got = canonical_from_lattice(plane, SMALL[0], SMALL[1], SMALL[2])
+    got = canonical_from_plane(plane)
     assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
 
 
@@ -297,7 +302,7 @@ def test_m3_two_sided_alt_small(k_tok, carve=CARVE):
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
     assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
-    got = canonical_from_lattice(plane, SMALL[0], SMALL[1], SMALL[2])
+    got = canonical_from_plane(plane)
     assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
 
 
@@ -362,7 +367,7 @@ def test_m2_inter_dense_deep(arm, carve=CARVE):
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
     assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
-    got = canonical_from_lattice(plane, arm[0], arm[1], arm[2])
+    got = canonical_from_plane(plane)
     assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
 
 
@@ -378,7 +383,7 @@ def test_m3_two_sided_alt_deep(arm, k_tok, carve=CARVE):
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
     assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
-    got = canonical_from_lattice(plane, arm[0], arm[1], arm[2])
+    got = canonical_from_plane(plane)
     assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
 
 

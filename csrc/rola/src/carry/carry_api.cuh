@@ -11,8 +11,14 @@
 
 namespace rola::carry {
 
-//: the INTER term only: `(num, den)`, undivided, plus the final state plane in
-//: LATTICE leaf order.  `carve` names the built (carve, executor map): 1 = the ruled
+//: the INTER term only: `(num, den)`, undivided.  THE STATE PLANES ARE THE CALLER'S,
+//: which is the shipped contract (docs/internals/state.md section 4): `s_in` and `s_out`
+//: are `[BH, N/16, 16, d_v+1]` fp32 in CANONICAL leaf order (the atom-major view of
+//: `[BH, N, cols]`), a continuation hands the SAME
+//: tensor as both and it advances in place, `page_tbl` is the `[BH, N/16]` int32 slot
+//: table (null = the dense backing, where the slot IS the atom), and BOTH PLANES NULL is
+//: the null-state call, which reaches a variant with no state I/O compiled in.
+//: `carve` names the built (carve, executor map): 1 = the ruled
 //: leaf split, 2/3 = the two 1x8 containers.  The arm's `d_v` is READ OFF `v` and is
 //: part of the key.  `level_modes` is law 3's per-level declaration, two bits
 //: per level (bit 0 of a level's pair = the READ side is value-sparse there, bit 1
@@ -20,7 +26,9 @@ namespace rola::carry {
 std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                          torch::Tensor v, std::vector<int64_t> widths, int64_t k,
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
-                                         int64_t level_modes, c10::optional<torch::Tensor> s_in);
+                                         int64_t level_modes, c10::optional<torch::Tensor> s_in,
+                                         c10::optional<torch::Tensor> s_out,
+                                         c10::optional<torch::Tensor> page_tbl);
 
 //: the BALLOT ROWS as a tensor: `[BH, 2, entries, L/32]` packed bits, read rows
 //: then write rows, one row per (level, group) -- at the lattice's owner spans
@@ -44,7 +52,8 @@ std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, to
                                           std::vector<int64_t> widths, int64_t k, int64_t m,
                                           int64_t window, int64_t chunk,
                                           c10::optional<torch::Tensor> s_in,
-                                          c10::optional<torch::Tensor> ds_out, bool want_replay);
+                                          c10::optional<torch::Tensor> ds_out,
+                                          c10::optional<torch::Tensor> page_tbl, bool want_replay);
 
 //: the reverse family's own device stamp plus a PER-KERNEL census: registers, local
 //: bytes, SMEM, ring depth, CTA target and the declared floor, Scan A then Scan B.

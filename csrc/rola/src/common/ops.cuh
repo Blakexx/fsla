@@ -86,6 +86,21 @@ __device__ __forceinline__ void* gather_ptr(void* base, uint32_t off) {
   return p;
 }
 
+//: THE STATE PLANE'S ONE BASE TRANSLATION (docs/internals/paging/paging.md).
+//: `slot = page_tbl ? page_tbl[atom] : atom`, which makes the DENSE plane THIS SAME
+//: kernel with a null table -- the slot IS the atom -- so paging is one base
+//: translation and never a second path.  A NEGATIVE slot is an atom the plan
+//: committed nothing for and is skipped at BOTH ends of the state I/O, exactly and
+//: not defensively, because the plan's bitmap is the write set exactly.
+//:
+//: THE PREDICATE IS CTA-UNIFORM, and that is what licenses skipping the barriers
+//: inside the sweep along with the traffic: an atom belongs to exactly one owner
+//: block, and the atom id every consumer forms is derived from `blockIdx` alone.
+__device__ __forceinline__ int32_t page_slot(const int32_t* page_tbl, uint32_t atom) {
+  if (page_tbl == nullptr) return (int32_t)atom;
+  return *reinterpret_cast<const int32_t*>(gather_ptr(page_tbl, atom * (uint32_t)sizeof(int32_t)));
+}
+
 // ------------------------------------------------------------------ staging
 
 __device__ __forceinline__ void stage_tile(SmemAddr dst, const void* src) {
