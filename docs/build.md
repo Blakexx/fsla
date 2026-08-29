@@ -320,3 +320,57 @@ side effect; it is rule 2, checked.
 `torch` and `einops`. Not `transformers` (the HF model classes stay in the fork),
 not `fla`, not `triton` — the kernels are CUDA. Optional interop lives behind
 extras (`[transformers]`, `[fla]`) and `rola` itself imports neither.
+
+## Standards lint
+
+`KERNEL_STANDARDS.md` is enforced two ways, mirrored between the pre-commit
+hooks and `.github/workflows/lint.yml` exactly like clang-format/ruff above:
+
+1. **`ast-grep` rules** (`sgconfig.yml` + `tools/lint/rules/*.yml`, one file
+   per rule) — shapes a parser can see: a warp collective inside a
+   short-circuit or ternary (§12), a `__global__` in an anonymous namespace
+   (anon-namespace-kernels-unratifiable), a width-shaped `if (kDv == ...)`
+   test in device code, a `#include <torch/...>` in a per-arm instantiation
+   TU (K36), a fence gated behind a single-lane predicate (§12). Each rule's
+   `message` names the standards section and the incident it comes from.
+   Each has a fixture under `tools/lint/fixtures/` that the rule must fire
+   on — its test.
+2. **`tools/lint/lint_standards.py`** — the textual/preprocessor checks
+   ast-grep cannot express: unroll discipline (§6: a dynamic-bound loop in
+   device code carries `#pragma unroll 1`, scoped to `__global__`/`__device__`
+   function bodies by brace-counting so host launcher loops are out of
+   scope), the torch-include check again as a text belt to the ast-grep
+   rule, and `__syncthreads`/`__syncwarp` occurring after decode.cu's
+   `---- THE WALK` marker (P79's law: barriers confined to the prologue).
+   Every finding prints its section, `file:line`, and the incident; the
+   script documents its own heuristic misses in its module docstring.
+
+Run both:
+
+```bash
+ast-grep scan --config sgconfig.yml csrc/
+python3 tools/lint/lint_standards.py
+```
+
+`pre-commit install` wires both in (`.pre-commit-config.yaml`), scoped to
+`csrc/`. Neither is a gate on its own claim of correctness — a hit is a
+finding for a human to rule on, same as `ratify`'s backstop philosophy (§9):
+these checks should ordinarily catch nothing.
+
+### compile_commands.json (for clangd / clang-query / clang-tidy)
+
+`tools/lint/compdb.sh` reads an ALREADY-BUILT tree's `build/temp/build.ninja`
+(the fixed, repo-relative build directory this doc names above) and writes a
+compile database:
+
+```bash
+pip install -e . --no-build-isolation      # if not already built
+tools/lint/compdb.sh                        # writes ./compile_commands.json
+```
+
+`.clang-tidy` at the repo root is a conservative `bugprone-*` + small
+`readability-*` set, scoped to HOST TUs — clang 14's stock CUDA front end
+does not parse this codebase's device dialect cleanly, so `.cu`/`.cuh` are
+out of scope; see the lint stage's own FINDINGS for what was actually run
+(one host TU, `csrc/rola/rola_api.cpp`) and what clang-tidy binary
+availability looked like in the environment that built this.
