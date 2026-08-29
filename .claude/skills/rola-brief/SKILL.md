@@ -6,9 +6,9 @@ description: Template and rules for writing a RoLA kernel stage brief — worktr
 > never delegating to another agent and never writing a brief for one. (Coordinator-only skills —
 > rola-dispatch/review/queue/card/recall — do not apply to you.)
 
-Exemplar: `BRIEF_M1P_port.md` (ask the coordinator for the current campaign journal's copy). A brief
-is short and every clause below maps to a line in it — read it to see the shape, don't quote its
-specific numbers or names as if they generalize to every brief.
+Exemplar: the M1P port brief (BRIEF_M1P_port.md in the campaign brief directory the dispatch prompt names). A brief is short
+and every clause below maps to a line in it — read it to see the shape, don't quote its specific
+numbers or names as if they generalize to every brief.
 
 ## The template, in order
 1. **Title line**: `BRIEF <ID> — <one-line what>; GATE = <the acceptance rule>` with who ruled it
@@ -34,7 +34,7 @@ specific numbers or names as if they generalize to every brief.
    (per the exemplar's own step on removed vs. kept rows: a row kept "as a commented row" is NOT
    allowed — delete). If something is deferred to a later stage, say which stage, don't half-build
    it now.
-8. **Gates**, named exactly (§16 SMALL): the oracle test file(s) + the bare GPU-locked command
+8. **Gates**, named exactly (§16 SMALL): the oracle test file(s) + GPU-flock command
    (`rola-oracle-tests`), the perf probe cells and its pass bar (`rola-probe`), what SASS comparison
    IS and ISN'T expected (state it explicitly per-brief — never assume identical-to-parent unless
    the mechanism is unchanged), the exact commit message, and the compile ledger (`rola-build`).
@@ -71,6 +71,8 @@ that into the skill the same day (process/pointers only — never facts).
 - NO NESTED AGENTS: the stage agent does the work itself; it never spawns a sub-agent to do the stage and never monitors/polls one (subagent-token-discipline). Waiting on a build = end the turn and resume on its notification.
 
 
-- FINDINGS.md is the campaign journal the coordinator maintains OUTSIDE this repo (its path is stage-specific — the brief that dispatched you names it) — NEVER a file inside the repo/worktree (§17). A tool that REFUSES an action is a stop-and-report signal; never route around a refusal with another tool.
+- FINDINGS.md is the campaign journal (the out-of-repo file the dispatch prompt names) — NEVER a file inside the repo/worktree (§17). A tool that REFUSES an action is a stop-and-report signal; never route around a refusal with another tool.
 
 - `--no-verify` NEVER without an explicit per-commit authorization from the coordinator naming the hook failure; a red hook = STOP and report which (§18 addendum).
+
+- THE FLOOR HAS A COVERAGE TERM (F1, 2026-08-29): a mechanism's floor states bytes, instructions, conflicts AND what covers its latency (which in-flight work overlaps each serial step; a CTA-wide round trip with nothing under it is a cost even at zero bytes). A floor without a coverage line cannot grade a stage.
