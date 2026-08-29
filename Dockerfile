@@ -6,16 +6,31 @@
 # compile the kernels under the SAME toolchain the ratified manifests were measured
 # under, plus the reading/searching/profiling tools the queue's briefs assume.
 #
-# BASE: nvidia/cuda:12.4.1-devel-ubuntu22.04. The tag's minor (`.1`) is the CUDA
-# *meta-package* revision, not the compiler build -- what the closed-world gate
-# actually checks (`setup.py:_gate_toolchain`, `docs/build.md` rule 1) is `ptxas
-# --version`'s WHOLE string, byte for byte, against `tools/manifests/sm_XX.json`.
-# This base image ships `V12.4.99, Build cuda_12.4.r12.4/compiler.33961263_0` --
-# THE SAME BUILD the box this Dockerfile was authored on reports (verified: see
-# `docs/setup.md`'s "verify the toolchain" step, which is exactly `_gate_toolchain`
-# run by hand). There is no second, separately-downloaded ptxas pin here: the
-# repo's OWN gate (`setup.py`, `tools/ratify.py`) is the authority, and this image
-# exists to make its host string match, not to invent a competing mechanism.
+# BASE: nvidia/cuda:12.4.1-devel-ubuntu22.04, ubuntu22.04 for the apt package
+# surface the rest of this file needs (deadsnakes, clangd-14, ...).
+#
+# THE BASE IMAGE'S OWN nvcc/ptxas DO NOT MATCH THE RATIFIED MANIFEST, AND THIS
+# WAS MEASURED, NOT ASSUMED. `docs/build.md` rule 1 / `setup.py:_gate_toolchain`
+# check `ptxas --version`'s WHOLE string, byte for byte, against
+# `tools/manifests/sm_XX.json`; the manifests were ratified under
+# `V12.4.99, Build cuda_12.4.r12.4/compiler.33961263_0` (Built
+# Tue_Feb_27_16:15:50_PST_2024). BOTH `nvidia/cuda:12.4.0-devel-ubuntu22.04` AND
+# `12.4.1-devel-ubuntu22.04` were pulled and checked (2026-08-29) and both report
+# `V12.4.131, Build cuda_12.4.r12.4/compiler.34097967_0` (Built
+# Thu_Mar_28_02:14:54_PDT_2024) instead -- a LATER CUDA 12.4 toolkit package
+# revision than what the host (and the manifests) were measured under, even
+# though every current Docker Hub tag under "12.4" ships it. So the RUN block
+# below does not trust the base image's toolchain: it explicitly downgrades
+# `cuda-nvcc-12-4`/`cuda-nvvm-12-4`/`cuda-crt-12-4` to the exact `12.4.99-1`
+# package version via NVIDIA's own apt repo (already configured by this base
+# image), which the same 2026-08-29 check confirmed reproduces the manifest's
+# pinned string BYTE FOR BYTE. `12.4.99-1` was still present in NVIDIA's repo
+# at check time; if a future NVIDIA repo prune ever removes it, this build
+# fails at that RUN step with an explicit apt "unable to locate package"
+# error, not a silent toolchain swap -- `setup.py`'s rule-1 gate is the
+# second, independent line of defense that would catch it even if this one
+# did not (a build under the wrong `ptxas` refuses at the FIRST `pip install`,
+# never producing an unmeasured binary).
 #
 # Everything else pinned in this file (sccache, mold, hyperfine, difftastic) is
 # pinned the SAME way the repo pins its own vendored inputs (`tools/sccache_pin.json`,
@@ -48,7 +63,9 @@ ENV ROLA_IMAGE_DIGEST=${ROLA_IMAGE_DIGEST}
 # APT PACKAGES -- everything with a real Ubuntu-22.04 (jammy) package. Left
 # out on purpose: `docker.io`/nvidia-container-toolkit (host-side,
 # docs/setup.md), `hyperfine`/`mold`/`difftastic` (not in 22.04's repos --
-# pinned release binaries below), CUDA/ptxas (already in the base image).
+# pinned release binaries below). CUDA/ptxas is a SEPARATE, later RUN block
+# (below): the base image's own nvcc/ptxas do not match the pin, see the
+# FROM-line comment at the top of this file.
 #
 # PYTHON 3.11 IS NOT IN JAMMY'S DEFAULT REPOS (jammy ships 3.10). The
 # deadsnakes PPA is the standard, widely-used source for it; added here
@@ -87,10 +104,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------------------------------
+# THE EXACT ASSEMBLER -- downgrade nvcc/ptxas AWAY from whatever this base
+# image tag currently ships (measured 12.4.131, see the FROM-line comment
+# above) to the exact `12.4.99-1` package build the ratified manifests pin.
+# `cuda-nvvm-12-4`/`cuda-crt-12-4` are `cuda-nvcc-12-4`'s own versioned
+# dependencies and must be pinned in the SAME command or apt refuses the
+# downgrade with an unmet-dependency error (measured). `--allow-downgrades`
+# is required because the base image ships a NEWER package than this pin.
+RUN apt-get update && apt-get install -y --allow-downgrades \
+        cuda-nvcc-12-4=12.4.99-1 \
+        cuda-nvvm-12-4=12.4.99-1 \
+        cuda-crt-12-4=12.4.99-1 \
+    && rm -rf /var/lib/apt/lists/*
+#: FAILS THE BUILD, LOUDLY, IF THE DOWNGRADE DID NOT TAKE: `docs/setup.md`'s
+#: own "verify the toolchain" step is this same string comparison run by
+#: hand; asserting it here means a future apt-repo change that silently
+#: reintroduces a newer `ptxas` (e.g. a version bump inside a mirrored cache)
+#: is caught at BUILD time, not discovered later at `pip install -e .`'s own
+#: rule-1 gate -- which would still catch it, but a build that appears to
+#: succeed while carrying the wrong assembler is exactly the silent-drift
+#: shape the whole closed-world design refuses.
+RUN ptxas --version | grep -q "V12.4.99" || \
+    (echo "FATAL: ptxas is not V12.4.99 after the pinned downgrade:" && ptxas --version && exit 1)
+
+# --------------------------------------------------------------------------
 # uv -- the Python resolver/installer this repo's ONE lock file
-# (`requirements.lock`, generated by `uv lock` + `uv export`, see
-# `docs/setup.md`) is built with. Pinned release, sha256-verified against
-# upstream's own published `.sha256` (same recipe as `tools/sccache_pin.json`).
+# (`requirements.lock`, generated by `uv pip compile`, see `requirements.in`'s
+# header and `docs/setup.md`) is built with. Pinned release, sha256-verified
+# against upstream's own published `.sha256` (same recipe as
+# `tools/sccache_pin.json`).
 ARG UV_VERSION=0.12.7
 ARG UV_SHA256=788f18abea7c5f55d6216e4f5613fd89d4d59b631efeec117b2b07fe72f1da21
 RUN curl -sSL -o /tmp/uv.tar.gz \
@@ -108,32 +150,9 @@ RUN curl -sSL -o /tmp/uv.tar.gz \
 # already check (`tools/sccache_toolchain.py`) -- a Dockerfile hand-copy of
 # those bytes would be a second place the version could go stale.
 COPY tools/sccache_pin.json /tmp/sccache_pin.json
-RUN python3 - <<'PY'
-import hashlib, json, subprocess, sys, tarfile, urllib.request
-pin = json.load(open("/tmp/sccache_pin.json"))
-url = pin["release_url"]
-tar_path = "/tmp/sccache.tar.gz"
-urllib.request.urlretrieve(url, tar_path)
-got = hashlib.sha256(open(tar_path, "rb").read()).hexdigest()
-want = pin["tarball_sha256"]
-if got != want:
-    sys.exit(f"sccache tarball sha256 mismatch: pinned {want}, got {got}")
-with tarfile.open(tar_path) as tf:
-    member = next(m for m in tf.getmembers() if m.name.endswith("/sccache"))
-    tf.extract(member, "/tmp/sccache_extract")
-    src = f"/tmp/sccache_extract/{member.name}"
-body = open(src, "rb").read()
-bin_got = hashlib.sha256(body).hexdigest()
-bin_want = pin["binary_sha256"]
-if bin_got != bin_want:
-    sys.exit(f"sccache binary sha256 mismatch: pinned {bin_want}, got {bin_got}")
-import shutil
-shutil.copy(src, "/usr/local/bin/sccache")
-import os
-os.chmod("/usr/local/bin/sccache", 0o755)
-print(f"sccache OK: {pin['version_string']}  sha256 {bin_got[:16]}...")
-PY
-RUN rm -rf /tmp/sccache.tar.gz /tmp/sccache_extract /tmp/sccache_pin.json
+COPY docker/verify_sccache.py /tmp/verify_sccache.py
+RUN python3 /tmp/verify_sccache.py \
+    && rm -rf /tmp/sccache.tar.gz /tmp/sccache_extract /tmp/sccache_pin.json /tmp/verify_sccache.py
 
 # --------------------------------------------------------------------------
 # mold -- pinned release, sha256-verified (not in 22.04's apt repos).
@@ -191,7 +210,7 @@ RUN pipx install ast-grep-cli \
 # a CPU-only torch and build the extension against the wrong ABI.
 WORKDIR /workspace
 COPY requirements.lock /tmp/requirements.lock
-RUN uv venv /opt/venv --python 3.11 \
+RUN uv venv /opt/venv --python 3.11 --seed \
     && . /opt/venv/bin/activate \
     && uv pip install -r /tmp/requirements.lock \
         --extra-index-url https://download.pytorch.org/whl/cu124 \
