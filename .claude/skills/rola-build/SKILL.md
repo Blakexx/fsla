@@ -68,3 +68,6 @@ add-on next to the census, filed in the stage's FINDINGS entry).
 Arm TUs never include torch headers — if a compile ledger row for a `carry_arm_<i>.cu` shows a
 wall time near the torch-header floor above, that's a broken ABI seam (a torch-typed function crept
 into `carry_arm_abi.cuh`), not noise.
+
+## Standards lint (LINT, 2026-08-28)
+Before committing, run the standards lint: the ast-grep rule pack under tools/lint/rules (sgconfig.yml at the repo root) and tools/lint/lint_standards.py; clang-tidy on host TUs via tools/lint/run_clang_tidy.sh (skips cleanly without a build). Each finding names its standards section and the incident behind it. Wired into pre-commit; docs/build.md "Standards lint" has the invocations.
