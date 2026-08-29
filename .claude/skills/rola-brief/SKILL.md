@@ -70,9 +70,5 @@ that into the skill the same day (process/pointers only — never facts).
 
 - NO NESTED AGENTS: the stage agent does the work itself; it never spawns a sub-agent to do the stage and never monitors/polls one (subagent-token-discipline). Waiting on a build = end the turn and resume on its notification.
 
-## Briefing a new arch-conditional primitive (K42)
-A brief introducing a new `arch::Caps`-gated primitive must instruct the implementer to read the
-PTX ISA instruction-availability table for every target arch first and cite the exact row (ISA
-version + section) in the primitive's own decl-block comment before writing it — `ops.cuh`'s
-`mul_bf16x2` and FINDINGS `## K42`'s audit table are the worked examples, and
-`tools/lint/primitives_census.py` is the gate a new SELECTING primitive should add a row to.
+
+- FINDINGS.md is the campaign journal at /home/blake/rola-scratch/prototypes/k35_final_build/FINDINGS.md — NEVER a file inside the repo/worktree (§17). A tool that REFUSES an action is a stop-and-report signal; never route around a refusal with another tool.
