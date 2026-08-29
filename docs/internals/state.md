@@ -55,10 +55,9 @@ the pool changes at THIS seam is [§5b](#decode-seam).
 tensor know this?** A tensor knows its layout and its contiguity, so `strategy` stays.
 A tensor does not know which routing widths produced it, whether a convolution ran
 before it, or what launch scratch some kernel wants — so the widths/normalization
-fingerprint, the short-convolution rings, the decode carrier and the decode workspace
-are all GONE from here, each to the level that owns it ([§5b](#decode-seam),
-[§7](#conv-rings)). Accretion onto a carried state is the failure mode this rule
-exists to leave nowhere to land.
+fingerprint, the decode carrier and the decode workspace are all GONE from here, each
+to the level that owns it ([§5b](#decode-seam), [§7](#conv-rings)). Accretion onto a
+carried state is the failure mode this rule exists to leave nowhere to land.
 
 **The predicate is `state is not None`**, at the op and at the layer alike. There is
 no second flag, because the kernel's store epilogue is skipped by a NULL POINTER: a
@@ -223,24 +222,28 @@ crossing strategies crosses a clone, and the cost is visible at the point it is 
 
 ## <a id="conv-rings"></a>7. CONTINUATION IS LAYERED
 
-The op's state is the paged tensor. The LAYER returns its own thin bundle:
+The op's state is the paged tensor. The LAYER returns its own thin container,
+`LayerContinuation`:
 
 ```python
-y, (state, conv_rings) = layer(x, state=(state, conv_rings))   # always the pair
+y, continuation = layer(x, continuation=continuation)   # always the container
 ```
 
-`conv_rings` is `None` when no convolution is configured. The rings are genuinely part
-of the recurrence — a continuation that dropped them would restart the causal
-convolution from zeros and compute a different function for the first `conv_size - 1`
-tokens of every step — but they are the LAYER's recurrence, introduced by the layer.
+`LayerContinuation.state` is the op's paged tensor (or `None` for a fresh sequence) and,
+today, the container's only field. `value_conv`/`route_conv` and the short-convolution
+rings they carried across a continuation were DELETED at K45 (docs/internals/DELETIONS.md)
+— never reviewed as a mechanism, not paper-1 scope — so there is no second field to
+describe here now. The container is not deleted with them: a future layer-level
+recurrence is a field ON `LayerContinuation`, never on the op's state.
 
 **The membership test, one level up: an object holds exactly the recurrences ITS OWN
-level introduced.** Op: the routed state. Layer: the conv rings. Model: the per-layer
-bundles. This is not the old pooled state object recreated — that defect was layer
-luggage INSIDE the op's object, and this keeps each object pure while giving accretion
-nowhere to land. The pair is the contract in BOTH directions, so a bare `RoLAState`
-handed to `forward` is refused by name rather than adopted: accepting the op's half
-would make the rings silently optional to carry.
+level introduced.** Op: the routed state. Layer: `LayerContinuation`. Model: the
+per-layer bundles. This is not the old pooled state object recreated — that defect was
+layer luggage INSIDE the op's object, and this keeps each object pure while giving
+accretion nowhere to land. The container is the contract in BOTH directions, so a bare
+`RoLAState` or the retired `(state, conv_rings)` tuple handed to `forward` is refused by
+name rather than adopted: accepting a lookalike would make the layer's own fields
+silently optional to carry.
 
 ## <a id="not-a-kv-cache"></a>8. What is deliberately absent
 

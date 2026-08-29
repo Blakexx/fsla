@@ -84,7 +84,7 @@ import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from bench.regression import settle_clocks
-from rola import RoLA, RouteProducer, union_routing
+from rola import LayerContinuation, RoLA, RouteProducer, union_routing
 from rola import state as rola_state
 
 #: Carried verbatim from `benchmark_rola_v3_layer.py`: a ~6x first-cell inflation was
@@ -331,7 +331,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         if paging:
             with torch.no_grad():
                 carried = rola_state()
-                layer(x, state=(carried, None))
+                layer(x, continuation=LayerContinuation(state=carried))
             assert carried.paged, (
                 f"cell L={L}: this topology has no built chunk arm, so its state is "
                 "dense-backed and there is no residency to report")

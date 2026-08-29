@@ -15,6 +15,14 @@ SOURCE (:mod:`rola.routing.decay`), the slot that decides where the recurrence's
 forgetting rates come from. Everything else the layer used to take was either one of
 those facts spelled out flat, or a launch decision the op makes.
 
+**Continuation is a container the layer owns** (:class:`LayerContinuation`). K45 drops
+``value_conv``/``route_conv`` and the conv-ring half of the old ``(state, conv_rings)``
+pair (docs/internals/DELETIONS.md) -- they were never reviewed as a mechanism and are
+not paper-1 scope. What is left of the pair is one field, ``state``, and the container
+exists anyway rather than collapsing back to a bare :class:`~rola._state.RoLAState`:
+future layer-level recurrences become fields on this container, never on the op's, and
+the membership rule (docs/internals/state.md §7) needs a place to land them.
+
 **Execution backends: two arms, and the choice is STRUCTURAL.** ``'cuda'`` is the
 prefill arm through :func:`rola.rola_op` — DELETED pending K31 R2 (the op raises,
 naming the ruling; baseline = tag ``baseline/pre-k31``); ``'decode'`` is the
@@ -33,6 +41,7 @@ too rather than produce a forward no backward can follow.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -52,25 +61,43 @@ from rola.routing.decay import validate_decay_source
 if TYPE_CHECKING:
     from rola._state import RoLAState
 
-__all__ = ["RoLA"]
+__all__ = ["LayerContinuation", "RoLA"]
 
 
-def _unpack_continuation(state):
-    """``(op state, conv rings)`` from the pair a forward returns, or ``(None, None)``.
+@dataclass(frozen=True)
+class LayerContinuation:
+    """The LAYER's own recurrence bundle -- everything ``RoLA.forward`` needs handed
+    back to continue a sequence, and nothing the op already owns.
 
-    A bare :class:`~rola.RoLAState` is refused rather than adopted: the pair is the
-    contract in both directions, and accepting the half that happens to be the op's
-    would make the rings silently optional to carry.
+    ``state`` is the op's paged tensor (:class:`~rola._state.RoLAState`) or ``None``
+    for a fresh sequence. It is the only field today; a future layer-level recurrence
+    is a field on THIS container, never on the op's state, per the membership rule
+    (docs/internals/state.md §7): an object holds exactly the recurrences its own
+    level introduced.
     """
-    if state is None:
-        return None, None
-    if type(state) is not tuple or len(state) != 2:
+
+    state: RoLAState | None = None
+
+
+def _unpack_continuation(continuation):
+    """The op's state out of the pair a forward returns, or ``None``.
+
+    A bare :class:`~rola.RoLAState` and the retired ``(state, conv_rings)`` tuple are
+    both refused by name rather than adopted: :class:`LayerContinuation` is the
+    contract in both directions, so accepting a lookalike would make it silently
+    optional to carry.
+    """
+    if continuation is None:
+        return None
+    if not isinstance(continuation, LayerContinuation):
         raise TypeError(
-            "RoLA.forward's `state` is the (state, conv_rings) pair a forward returns, "
-            f"got {type(state).__name__}. A bare rola.state() is the OP's half: pass "
-            "(state, None) for a fresh sequence, and hand back what forward returned "
-            "for a continuation.")
-    return state
+            "RoLA.forward's `continuation` is a LayerContinuation -- the container a "
+            f"previous forward returned -- got {type(continuation).__name__}. A bare "
+            "rola.state() is the OP's half: pass LayerContinuation(state=rola.state()) "
+            "for a fresh sequence, and hand back what forward returned for a "
+            "continuation. The old (state, conv_rings) tuple is retired "
+            "(docs/internals/DELETIONS.md).")
+    return continuation.state
 
 
 class RoLA(nn.Module):
@@ -89,10 +116,6 @@ class RoLA(nn.Module):
             the width the chunk matrix is built at.
         decay: a decay source (:mod:`rola.routing.decay`), or ``None`` for a
             non-decaying recurrence. Validated against the topology at construction.
-        value_conv: an optional causal short convolution over the value stream, e.g.
-            ``fla.modules.ShortConvolution``. A module, not three scalars: the layer
-            does not need to know how it is configured, only where it goes.
-        route_conv: the same, over the routing source stream.
         layer_idx: index into the recurrent cache.
         expert: :class:`rola.expert.PlanOverrides`. Everything it pins is an axis the
             op decides; it is quarantined because a caller pinning one is not
@@ -105,8 +128,6 @@ class RoLA(nn.Module):
         *,
         d_v: int = 64,
         decay=None,
-        value_conv: nn.Module | None = None,
-        route_conv: nn.Module | None = None,
         layer_idx: int | None = None,
         expert=None,
     ) -> None:
@@ -138,8 +159,6 @@ class RoLA(nn.Module):
         self.d_v = d_v
         self.routes = routes
         self.decay = decay
-        self.value_conv = value_conv
-        self.route_conv = route_conv
         self.layer_idx = layer_idx
         self.expert = overrides
 
@@ -195,16 +214,15 @@ class RoLA(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        state: tuple[RoLAState | None, tuple | None] | None = None,
+        continuation: LayerContinuation | None = None,
         **kwargs,
-    ) -> tuple[torch.Tensor, tuple[RoLAState | None, tuple | None]]:
-        """``(y, (state, conv_rings))`` -- ALWAYS the pair. CONTINUATION IS LAYERED.
+    ) -> tuple[torch.Tensor, LayerContinuation]:
+        """``(y, LayerContinuation)`` -- ALWAYS the container. CONTINUATION IS LAYERED.
 
-        ``state`` is ``None`` (a stateless call) or the pair a previous forward
-        returned. The op's paged tensor is the op's; the short-convolution rings are
-        the LAYER's, because the layer is what introduced that recurrence, and they
-        are ``None`` when no convolution is configured. Each level of the stack holds
-        exactly the recurrences its own level introduced (docs/api.md §1.2).
+        ``continuation`` is ``None`` (a stateless call) or the container a previous
+        forward returned. The op's paged tensor lives on it as ``.state``; a bare
+        :class:`~rola.RoLAState` or the retired ``(state, conv_rings)`` tuple is
+        refused by name (docs/api.md §1.2).
         """
         if attention_mask is not None and attention_mask.dim() != 2:
             raise ValueError(
@@ -219,31 +237,17 @@ class RoLA(nn.Module):
                 "(`cu_seqlens`) and attention-probability outputs are not implemented; RoLA "
                 "has no attention matrix to return.")
 
-        state, conv_rings = _unpack_continuation(state)
+        state = _unpack_continuation(continuation)
         x = hidden_states
         B, L, _ = x.shape
         H = self.num_heads
 
-        #: `v` FLOWS bf16 into the op; a configured `value_conv` is the one case where it
-        #: returns to the module dtype first (docs/api.md §4.1).
+        #: `v` FLOWS bf16 into the op unconditionally (docs/api.md §4.1).
         v = nn.functional.linear(x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16))
-        if self.value_conv is not None:
-            v = v.to(x.dtype)
-        #: The rings ARE part of the recurrence: a continuation that dropped them would
-        #: restart the causal conv from zeros and compute a different function for the
-        #: first `conv_size - 1` tokens of every step.
         stateful = state is not None
-        conv_states = [None, None] if conv_rings is None else list(conv_rings)
-        if self.value_conv is not None:
-            v, conv_states[0] = self.value_conv(
-                v, cache=conv_states[0], output_final_state=stateful)
-        source = x
-        if self.route_conv is not None:
-            source, conv_states[1] = self.route_conv(
-                x, cache=conv_states[1], output_final_state=stateful)
 
         v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
-        routes = self.routes(source)
+        routes = self.routes(x)
         decay = None if self.decay is None else self.decay()
         #: a state that carries CONTENTS, which is what makes a step a continuation.
         #: A bound-but-empty state is a fresh sequence, and takes the prefill arm.
@@ -262,13 +266,10 @@ class RoLA(nn.Module):
             backend = "cuda"
 
         self.last_execution_backend = backend
-        conv_rings = (tuple(conv_states)
-                      if self.value_conv is not None or self.route_conv is not None
-                      else None)
         out = out.reshape(B, L, H * self.head_v_dim)
         projected = nn.functional.linear(
             out.to(torch.bfloat16), self.o_proj.weight.to(torch.bfloat16)).to(x.dtype)
-        return projected, (state, conv_rings)
+        return projected, LayerContinuation(state=state)
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 
