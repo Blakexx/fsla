@@ -293,6 +293,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   }
   __syncthreads();
   if (warp == 0) {
+    #pragma unroll 1
     for (int col = lane; col < width; col += LW) {
       uint32_t acc = 0u;
 #pragma unroll

@@ -17,7 +17,9 @@ namespace rola::carry {
 //: `[BH, N, cols]`), a continuation hands the SAME
 //: tensor as both and it advances in place, `page_tbl` is the `[BH, N/16]` int32 slot
 //: table (null = the dense backing, where the slot IS the atom), and BOTH PLANES NULL is
-//: the null-state call, which reaches a variant with no state I/O compiled in.
+//: the null-state call: a runtime null check inside the one compiled body (K41; no
+//: STATE template axis) skips the sweep at each null end, so nothing is read,
+//: written, or allocated there.
 //: `carve` names the built (carve, executor map): 1 = the ruled
 //: leaf split, 2/3 = the two 1x8 containers.  The arm's `d_v` is READ OFF `v` and is
 //: part of the key.  `level_modes` is law 3's per-level declaration, two bits

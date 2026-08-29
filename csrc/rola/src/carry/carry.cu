@@ -184,9 +184,11 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
 
   //: THE STATE PLANES ARE THE CALLER'S (docs/internals/state.md section 4).  A
   //: continuation hands the SAME tensor as both, and advances it in place; a call that
-  //: hands NEITHER is the NULL-STATE call and reaches a variant with no state I/O
-  //: compiled in.  `page_tbl` null is the dense backing -- the slot is then the atom --
-  //: so the two backings are one kernel, one ABI and one accumulation order.
+  //: hands NEITHER is the NULL-STATE call: a runtime null check inside the one
+  //: compiled body (K41; no STATE template axis) skips the sweep at that end, so
+  //: nothing is read, written, or allocated there.  `page_tbl` null is the dense
+  //: backing -- the slot is then the atom -- so the two backings are one kernel, one
+  //: ABI and one accumulation order.
   for (const auto& t : {s_in, s_out})
     if (t.has_value())
       TORCH_CHECK(t->is_cuda() && t->is_contiguous() && t->scalar_type() == torch::kFloat32,

@@ -235,19 +235,23 @@ struct SpanMap {
 //: naturally aligned by construction (a level's column base is a multiple of `B`, an
 //: owner's run starts at a multiple of `s_l` and a stream's sub-run at a multiple of
 //: its own width), so this is one, two or four accesses.
-template <int n>
-__device__ __forceinline__ void load_run(unsigned short (&dst)[n], const void* p) {
-  static_assert(n == 1 || n == 2 || n == 4 || n == 8 || n == 16,
+template <int N>
+__device__ __forceinline__ void load_run(unsigned short (&dst)[N], const void* p) {
+  static_assert(N == 1 || N == 2 || N == 4 || N == 8 || N == 16,
                 "an admissible (k, m) run is 1, 2, 4, 8 or 16 wide");
-  if constexpr (n == 1) {
+  if constexpr (N == 1) {
     dst[0] = *reinterpret_cast<const unsigned short*>(p);
-  } else if constexpr (n == 2) {
+  } else if constexpr (N == 2) {
     *reinterpret_cast<unsigned int*>(dst) = *reinterpret_cast<const unsigned int*>(p);
-  } else if constexpr (n == 4) {
+  } else if constexpr (N == 4) {
     *reinterpret_cast<uint2*>(dst) = *reinterpret_cast<const uint2*>(p);
   } else {
+    //: §6: `N` is this function's template parameter (ALL_CAPS per project convention,
+    //: renamed from lowercase `n` so the unroll-discipline lint reads it as compile-time);
+    //: `N / 8` is still an arithmetic expression the heuristic can't parse, so name it too.
+    constexpr int kOctets = N / 8;
 #pragma unroll
-    for (int i = 0; i < n / 8; ++i)
+    for (int i = 0; i < kOctets; ++i)
       *reinterpret_cast<uint4*>(dst + i * 8) =
           load_vec16(reinterpret_cast<const char*>(p) + i * 16);
   }
@@ -263,7 +267,7 @@ constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, P
 // ---------------------------------------------------------------- the kernel
 
 template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int PK,
-          uint32_t MO, bool STATE>
+          uint32_t MO>
 __global__ __launch_bounds__((CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>::kThreads),
                              (kCarryCtaTarget<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>)) void
 carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
@@ -286,10 +290,10 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   constexpr int BC = BP::kBC;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
   constexpr int MTOK = C / kMmaM;  // token m-tiles of a batch
-  //: the stream's own leaves: `NL` accumulator n-tiles, `KDw` readout k-steps.
+  //: the stream's own leaves: `kNL` accumulator n-tiles, `kDw` readout k-steps.
   constexpr int kLeafW = G::kLeafW;
-  constexpr int NL = kLeafW / kMmaN;
-  constexpr int KDw = kLeafW / kMmaK;
+  constexpr int kNL = kLeafW / kMmaN;
+  constexpr int kDw = kLeafW / kMmaK;
   constexpr int MCH = kDv / kMmaM;  // the channel m-tiles, ALL of them per warp
 
   static_assert(C % kMmaM == 0 && kThreads % C == 0, "the batch tile must divide");
@@ -388,16 +392,16 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   float* const sow = so + warp * kMmaN * LdO;
 
   // ---- the state, transposed: m = channels, n = this warp's leaves ---------
-  float st[MCH][NL][4];
+  float st[MCH][kNL][4];
 #pragma unroll
   for (int m = 0; m < MCH; ++m)
 #pragma unroll
-    for (int j = 0; j < NL; ++j)
+    for (int j = 0; j < kNL; ++j)
 #pragma unroll
       for (int e = 0; e < 4; ++e) st[m][j][e] = 0.f;
-  float mass_st[NL][4];
+  float mass_st[kNL][4];
 #pragma unroll
-  for (int j = 0; j < NL; ++j)
+  for (int j = 0; j < kNL; ++j)
 #pragma unroll
     for (int e = 0; e < 4; ++e) mass_st[j][e] = 0.f;
 
@@ -465,16 +469,16 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   constexpr uint32_t kPageBytes = (uint32_t)(kPageElems * (int)sizeof(float));
   auto page_base = [](int32_t slot) { return (uint32_t)slot * kPageBytes; };
   //: THE PAGE'S SLICE OF A STREAM, PER FRAGMENT.  Register-resident state exists only as
-  //: fragments (KERNEL_STANDARDS section 1): the accumulator is `NL` n-tiles x `MCH`
+  //: fragments (KERNEL_STANDARDS section 1): the accumulator is `kNL` n-tiles x `MCH`
   //: m-tiles of the m16n8 shape, and a lane's fragment holds TWO ADJACENT private slots
   //: at two channel rows.  So this nest iterates FRAGMENT MODES -- n-tile, the pair's
   //: half, m-tile, the row half -- and the leaf map is folded into the ADDRESS.
-  //: BODY COUNT: `NL * 2 * (2*MCH + 1)` per atom (72 at the 32-leaf `d_v = 64` arms),
+  //: BODY COUNT: `kNL * 2 * (2*MCH + 1)` per atom (72 at the 32-leaf `d_v = 64` arms),
   //: times `kAtoms` per call.  It is O(fragments) in both modes.
   auto page_regs = [&](auto Ac, auto Ld) {
     constexpr int a = decltype(Ac)::value;
     constexpr bool LOAD = decltype(Ld)::value;
-    static_for<NL>([&](auto Jc) {
+    static_for<kNL>([&](auto Jc) {
       constexpr int j = decltype(Jc)::value;
       static_for<2>([&](auto Lc) {
         constexpr int el = decltype(Lc)::value;
@@ -508,24 +512,28 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: ---- THE ENTRY STATE.  The fragments are SET, never accumulated: they are
   //: provably zero here, and with no decay the recurrence is affine in the state
   //: with an inclusive-after-write readout, so this IS the oracle's seeding.
-  if constexpr (STATE) {
-    if (s_in != nullptr) {
-      const float* const plane = pin_address(s_in);
-      static_for<kAtoms>([&](auto Ac) {
-        //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
-        //: nothing here, the fragments keep the zero the prologue set, and reading a
-        //: never-written state is inert under the self-normalizing readout.
-        const int32_t slot =
-            page_slot(page_tbl, atomBH + BP::canon_atom(owner, decltype(Ac)::value));
-        if (slot < 0) return;
-        page_sweep(page_base(slot), [&](int sidx, uint32_t off_) {
-          so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off_));
-        });
-        rendezvous();
-        page_regs(Ac, std::true_type{});
-        rendezvous();
+  //: NULL = NO STATE OBJECT AT THIS END: nothing is read, allocated, or touched
+  //: (docs/internals/state.md section 1). An instantiated-but-empty paged state is
+  //: NOT null -- it is engaged, and its absent atoms skip below at the per-atom
+  //: `slot < 0` grain, orthogonal to this check. This predicate is CTA-uniform:
+  //: `s_in` is a launch argument, identical for every thread, so the branch cannot
+  //: diverge within or across warps -- one compiled body, no STATE template axis.
+  if (s_in != nullptr) {
+    const float* const plane = pin_address(s_in);
+    static_for<kAtoms>([&](auto Ac) {
+      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
+      //: nothing here, the fragments keep the zero the prologue set, and reading a
+      //: never-written state is inert under the self-normalizing readout.
+      const int32_t slot =
+          page_slot(page_tbl, atomBH + BP::canon_atom(owner, decltype(Ac)::value));
+      if (slot < 0) return;
+      page_sweep(page_base(slot), [&](int sidx, uint32_t off_) {
+        so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off_));
       });
-    }
+      rendezvous();
+      page_regs(Ac, std::true_type{});
+      rendezvous();
+    });
   }
 
   // ---- the produce's per-thread map ---------------------------------------
@@ -785,9 +793,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       //: rather than behind a lambda: a generic lambda taking an array reference whose
       //: bound is a template-dependent constant (`MCH`, from the `DV` axis) crashes the
       //: front end, and the fragment stack has exactly one consumer anyway.
-      //: BODY COUNT: `KDw * (MCH + 1)` -- O(fragments) in the arm.
-      uint32_t sa[KDw][MCH][4], ma[KDw][4];
-      static_for<KDw>([&](auto Kc) {
+      //: BODY COUNT: `kDw * (MCH + 1)` -- O(fragments) in the arm.
+      uint32_t sa[kDw][MCH][4], ma[kDw][4];
+      static_for<kDw>([&](auto Kc) {
         constexpr int kk = decltype(Kc)::value;
         static_for<MCH>([&](auto Mc) {
           constexpr int m = decltype(Mc)::value;
@@ -813,11 +821,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 #pragma unroll
           for (int e = 0; e < 4; ++e) macc[p][e] = 0.f;
         }
-        uint32_t rb[KDw][4];
+        uint32_t rb[kDw][4];
 #pragma unroll
-        for (int kk = 0; kk < KDw; ++kk) load_frag(rb[kk], ADDR_S(brT, mb * 16, 2 * kk));
+        for (int kk = 0; kk < kDw; ++kk) load_frag(rb[kk], ADDR_S(brT, mb * 16, 2 * kk));
 #pragma unroll
-        for (int kk = 0; kk < KDw; ++kk)
+        for (int kk = 0; kk < kDw; ++kk)
 #pragma unroll
           for (int p = 0; p < 2; ++p) {
 #pragma unroll
@@ -911,13 +919,16 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       if (f < nbw) stage_batch(f, f % STAGES);
       stage_commit();
 
+//: §6: kNL/2 is compile-time (kNL is a constexpr local above) but the heuristic
+      //: only reads a bare identifier, so name the halved count.
+      constexpr int kNLHalf = kNL / 2;
 #pragma unroll
       for (int kk = 0; kk < MTOK; ++kk) {
         uint32_t a[MCH][4];
 #pragma unroll
         for (int m = 0; m < MCH; ++m) load_frag_t(a[m], ADDR_V(vsl, kk * 16, m * kMmaM));
 #pragma unroll
-        for (int nj = 0; nj < NL / 2; ++nj) {
+        for (int nj = 0; nj < kNLHalf; ++nj) {
           uint32_t b[4];
           load_frag_t(b, ADDR_S(bwF, kk * 16, 2 * nj));
 #pragma unroll
@@ -939,24 +950,24 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   // ---- the FINAL STATE, at CANONICAL atom ids ------------------------------
   //: the mirror of the entry load, after the last fan-in has consumed the staging
   //: buffer -- which is what the one extra rendezvous below is for.
-  if constexpr (STATE) {
-    if (s_out != nullptr) {
-      float* const plane = pin_address(s_out);
+  //: NULL = NO STATE OBJECT AT THIS END: nothing is written (state.md section 1),
+  //: symmetric with the entry check above.
+  if (s_out != nullptr) {
+    float* const plane = pin_address(s_out);
+    rendezvous();
+    static_for<kAtoms>([&](auto Ac) {
+      //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
+      //: which is what leaves a skipped slot carrying exactly what it held.
+      const int32_t slot =
+          page_slot(page_tbl, atomBH + BP::canon_atom(owner, decltype(Ac)::value));
+      if (slot < 0) return;
+      page_regs(Ac, std::false_type{});
       rendezvous();
-      static_for<kAtoms>([&](auto Ac) {
-        //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
-        //: which is what leaves a skipped slot carrying exactly what it held.
-        const int32_t slot =
-            page_slot(page_tbl, atomBH + BP::canon_atom(owner, decltype(Ac)::value));
-        if (slot < 0) return;
-        page_regs(Ac, std::false_type{});
-        rendezvous();
-        page_sweep(page_base(slot), [&](int sidx, uint32_t offb) {
-          store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
-        });
-        rendezvous();
+      page_sweep(page_base(slot), [&](int sidx, uint32_t offb) {
+        store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
       });
-    }
+      rendezvous();
+    });
   }
 #undef ADDR_S
 #undef ADDR_V

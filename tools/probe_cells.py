@@ -272,11 +272,15 @@ def make_call(ext, pr, pw, gw, v_bf, widths, k, m, window, chunk, carve, level_m
     args9 = (pr, pw, gw, v_bf, list(widths), int(k), int(m), int(window), int(chunk), int(carve))
 
     #: EVERY PROBE THAT SUCCEEDS MUST LAUNCH THE CONFIGURATION THE TIMED CALL LAUNCHES.
-    #: An arity probe is a real kernel launch, and since P80 the seam carries TWO
-    #: variants (`STATE` is a template parameter), so a probe made with both planes null
-    #: runs the NULL-STATE body -- and `ncu -c 1`, which captures the FIRST matching
-    #: launch, then reports that body's metrics for a measurement of the stateful one.
-    #: Caught exactly that way at P80. A signature that does not exist raises `TypeError`
+    #: An arity probe is a real kernel launch, and since P80 the seam carries a single
+    #: body whose entry/exit sweeps take a RUNTIME branch on the plane pointers (K41
+    #: deleted the earlier `STATE` template-bool axis that made this two SEPARATE
+    #: instantiations) -- so a probe made with both planes null runs the SAME kernel
+    #: symbol down the null-state branch, and `ncu -c 1`, which captures the FIRST
+    #: matching launch, reports that (shorter) branch's metrics for a measurement meant
+    #: to be the stateful one. Caught exactly that way at P80, and still a live hazard
+    #: post-K41 even though it is no longer a different symbol. A signature that does
+    #: not exist raises `TypeError`
     #: out of pybind's overload resolution BEFORE any launch, so an unsuccessful probe
     #: costs nothing and only the successful one -- the richest signature the binary
     #: takes, at this call's own state arm -- ever reaches the device.

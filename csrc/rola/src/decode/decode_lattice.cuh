@@ -103,6 +103,7 @@ __device__ __forceinline__ uint32_t kind_bits(uint32_t r, uint32_t w, int kind) 
 template <int D>
 __device__ __forceinline__ void build_digit_mask(const DecodeParams& p, const float* amp,
                                                  uint32_t* mask) {
+#pragma unroll 1
   for (int idx = threadIdx.x; idx < p.mask_total; idx += kDecodeThreads) {
     int l = 0;
 #pragma unroll
@@ -114,6 +115,7 @@ __device__ __forceinline__ void build_digit_mask(const DecodeParams& p, const fl
     const float* row = amp + p.level_amp_offset[l];
     uint32_t v = 0u;
     const int take = (width - base) < 32 ? (width - base) : 32;
+#pragma unroll 1
     for (int b = 0; b < take; ++b) {
       if (row[base + b] != 0.0f) v |= 1u << b;
     }
@@ -176,8 +178,11 @@ __device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const u
     }
     const bool outer = l < D - 1;
     const bool digit_live = outer && tid < p.level_width[l] && mask_bit(p, mask_w, l, tid);
+    //: §6: kKinds/2 is compile-time (kKinds is a file-level constexpr) but the
+    //: heuristic only reads a bare identifier, so name the halved count.
+    constexpr int kKindPairs = kKinds / 2;
 #pragma unroll
-    for (int pair = 0; pair < kKinds / 2; ++pair) {
+    for (int pair = 0; pair < kKindPairs; ++pair) {
       const int k_lo = 2 * pair;
       const int k_hi = k_lo + 1;
       const bool live_lo = tid < p.lat_g[l] && kind_bits(r, w, k_lo) != 0u;
@@ -494,8 +499,11 @@ __device__ __forceinline__ Unit<D> resolve_write_unit(
   u.aw = 1.0f;
   u.rate = 1.0f;
   int runs = 0;
+  //: §6: `D` is this function's template parameter, so `D - 1` is compile-time;
+  //: name it so the heuristic reads it as such.
+  constexpr int kDm1 = D - 1;
 #pragma unroll
-  for (int l = 0; l < D - 1; ++l) {
+  for (int l = 0; l < kDm1; ++l) {
     int i = (rank >> shift[l]) & ((1 << bits[l]) - 1);
     if (i >= n_d[l]) {
       u.valid = false;

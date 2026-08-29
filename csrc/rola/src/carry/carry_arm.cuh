@@ -60,12 +60,11 @@ struct Arm {
   static constexpr int64_t kXchBytes = 0;
   static constexpr int64_t kXchState = 0;
 
-  template <bool STATE>
   static constexpr auto fn() {
     if constexpr (carved)
-      return &carry_kernel<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO, STATE>;
+      return &carry_kernel<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
     else
-      return &carry_split_kernel<D, B, K, M, DV, W, C, STATE>;
+      return &carry_split_kernel<D, B, K, M, DV, W, C>;
   }
   //: `{smem bytes, ring depth, CTA target, THREADS, WRITE STREAMS}` -- the launch reads
   //: the fourth, and the last two ARE THE TWO DIALS: `THREADS/32` is the executor
@@ -83,17 +82,17 @@ struct Arm {
   }
 };
 
-//: ONE VARIANT'S LAUNCH.  `STATE` is a TEMPLATE parameter of the body, so the
-//: stateless variant carries no state I/O in its instruction stream at all rather than
-//: branching around it -- state.md section 1's "pays nothing for the feature", made
-//: mechanical.  The SMEM attribute is per variant, which is why the memo is local here.
-template <class A, bool STATE>
-static cudaError_t launch_at(const __nv_bfloat16* pr, const __nv_bfloat16* pw,
-                             const __nv_bfloat16* gw, const __nv_bfloat16* v, const uint32_t* rows,
-                             float* o, float* den, int BH, int L, int tok_words, int v_row_bytes,
-                             const float* s_in, float* s_out, const int32_t* page_tbl,
-                             cudaStream_t stream) {
-  const auto fn = A::template fn<STATE>();
+//: ONE VARIANT'S LAUNCH.  There is no `STATE` template axis (deleted, K41): the body
+//: takes the caller's `s_in`/`s_out` pointers and gates its entry/exit sweeps at
+//: RUNTIME on `!= nullptr`, a CTA-uniform branch (state.md section 1) -- one compiled
+//: body serves both the stateful and the null-state call. The SMEM attribute is per
+//: arm, which is why the memo is local here.
+template <class A>
+static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
+                          const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den,
+                          int BH, int L, int tok_words, int v_row_bytes, const float* s_in,
+                          float* s_out, const int32_t* page_tbl, cudaStream_t stream) {
+  const auto fn = A::fn();
   constexpr size_t sm = (size_t)A::geom()[0];
   static bool configured = false;
   if (!configured) {
@@ -108,21 +107,6 @@ static cudaError_t launch_at(const __nv_bfloat16* pr, const __nv_bfloat16* pw,
   return cudaGetLastError();
 }
 
-//: THE VARIANT IS CHOSEN BY THE CALL'S STRUCTURE, never by a measured statistic: the
-//: predicate is `state is not None` at this seam too (state.md section 1), and a call
-//: that hands neither plane has no state to read and none to write.
-template <class A>
-static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
-                          const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den,
-                          int BH, int L, int tok_words, int v_row_bytes, const float* s_in,
-                          float* s_out, const int32_t* page_tbl, cudaStream_t stream) {
-  if (s_in == nullptr && s_out == nullptr)
-    return launch_at<A, false>(pr, pw, gw, v, rows, o, den, BH, L, tok_words, v_row_bytes, s_in,
-                               s_out, page_tbl, stream);
-  return launch_at<A, true>(pr, pw, gw, v, rows, o, den, BH, L, tok_words, v_row_bytes, s_in, s_out,
-                            page_tbl, stream);
-}
-
 //: THE CENSUS, whose last ten fields are THE DERIVATION READ BACK OFF THE DEVICE (K35
 //: S1b): the two span vectors the order-by-mode rule produced, the exchange's transit in
 //: bytes -- zero where the two carves came out identical -- and the exchange's STATE, so
@@ -130,7 +114,7 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
 template <class A>
 static std::array<int64_t, 23> census() {
   cudaFuncAttributes a{};
-  if (cudaFuncGetAttributes(&a, A::template fn<true>()) != cudaSuccess)
+  if (cudaFuncGetAttributes(&a, A::fn()) != cudaSuccess)
     return {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
             -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
   constexpr auto g = A::geom();

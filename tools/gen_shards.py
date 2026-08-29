@@ -143,45 +143,174 @@ FACTS_ARMS: tuple = (
 
 #: THE GIVEN-SPAN FACTS ARMS -- the box lattice's ballot rows (K31-i-d), AT ONE
 #: PARTITION PER SIDE (K35 S1b).  A row is `(D, B, r_0..r_3, w_0..w_3)`: the READ
-#: side's per-level run and then the WRITE side's, given rather than derived, with a
-#: level past `D` carrying `B` (the identity) and a level a side spans whole emitting
-#: no rows.  A bitlist is voted from ONE side's factors, so the two sides' tables are
-#: independent and holding the finer partition for both bought nothing.  These are the
-#: `rola::carry` family's rows, so the list mirrors the carry's built arms -- the two
-#: vectors are what the ORDER-BY-MODE rule derives from that arm's `(MO, streams)`, and
-#: `tests/unit/test_shard_partition.py` is where the two lists are held together.
-SPAN_FACTS_ARMS: tuple = (
-    # the UNCARVED arms: both sides span the owner's box, so both tables are the
-    # owner's own rows (rows 0, 2, 4, 6, 7, 8).
-    (2, 256, 8, 16, 256, 256, 8, 16, 256, 256),
-    (2, 64, 8, 16, 64, 64, 8, 16, 64, 64),
-    (3, 16, 2, 4, 16, 16, 2, 4, 16, 16),
-    (4, 8, 2, 2, 4, 8, 2, 2, 4, 8),
-    # the SEAM's `owner_rows(carve=True)` diagnostic grain: the innermost level's owner
-    # run split over four streams, the same vector on both sides.  SINCE M1P THESE ARE
-    # ALSO THE CARVED ARMS' OWN TABLES at D = 2: the body carves ONCE, in the read
-    # side's order, and both sides vote their bitlists at that one partition, so the
-    # flagship ALT rows (1, 3) and the small ALT row (5) ask for the first two of these
-    # rather than for a read-vector/write-vector pair of their own.
-    (2, 256, 8, 4, 256, 256, 8, 4, 256, 256),
-    (2, 64, 8, 4, 64, 64, 8, 4, 64, 64),
-    (3, 16, 2, 4, 4, 16, 2, 4, 4, 16),
-    (4, 8, 2, 2, 4, 2, 2, 2, 4, 2),
-    # the DEEP-4 ALT carve (row 9), derived: the read order carves TWO levels of the
-    # owner box `[2, 2, 4, 8]` down to `[2, 1, 4, 4]`, four streams of 32 leaves, and
-    # the write side walks that same vector.  Neither side's tested levels are a PREFIX
-    # here, which is exactly why the prefix law belongs to the two bitmap reductions and
-    # not to the table (facts_kernel.cuh).
-    (4, 8, 2, 1, 4, 4, 2, 1, 4, 4),
-)
+#: side's per-level run and then the WRITE side's, with a level past `D` carrying `B`
+#: (the identity) and a level a side spans whole emitting no rows.  A bitlist is voted
+#: from ONE side's factors, so the two sides' tables are independent and holding the
+#: finer partition for both bought nothing.  These are the `rola::carry` family's rows,
+#: so the list mirrors the carry's built arms; `tests/unit/test_shard_partition.py` is
+#: where the two lists are held together.
+#:
+#: DERIVED FROM `CARRY_ARMS` (K41) -- NOT A SECOND HAND ENUMERATION.  Until K41 this was
+#: a hand-written tuple, the exact drift shape this file's own header warns about: it bit
+#: M1P (changing the carry rows' partition left a carved arm asking for a
+#: `launch_span_facts_arm` instantiation nothing emitted, which links clean and fails at
+#: IMPORT with an undefined symbol rather than at compile).  The functions below are a
+#: PYTHON MIRROR of `csrc/rola/src/carry/box.cuh`'s `BoxPlan`/`ModeOrder`/`StreamSpans`
+#: (the same "mirror, not an import" shape `lex_whole`/`lex_span`/`lex_spans` below use
+#: for the facts header's lex policy, and for the same reason: two derivations disagree
+#: exactly when one of them is wrong, and this side has no way to `#include` the device
+#: header) -- read `box.cuh` directly for what each constexpr means, this only restates
+#: the arithmetic in Python.
+def _ilog2c(x: int) -> int:
+    return 0 if x <= 1 else 1 + _ilog2c(x >> 1)
 
-#: THIS LIST IS A SECOND ENUMERATION OF `CARRY_ARMS`' ROW PLANS AND IS NOT DERIVED FROM
-#: IT -- the drift shape this file's own header warns about, and it bit M1P: changing the
-#: carry rows' partition left a carved arm asking for a `launch_span_facts_arm`
-#: instantiation nothing emitted, which links clean and fails at IMPORT with an undefined
-#: symbol rather than at compile.  Deriving it wants `StreamSpans`/`ModeOrder` on the host;
-#: until that exists, a change to `CARRY_ARMS` re-derives these rows BY HAND and the
-#: device import is what checks the work.
+
+class _BoxPlan:
+    """Mirrors `box.cuh`'s `BoxPlan<D, B, K, M>`: the owner's per-level span `s(l)`."""
+
+    def __init__(self, D: int, B: int, K: int, M: int):
+        self.D, self.B, self.K = D, B, K
+        kAtomLeaves = 16
+        self.kKappa = _ilog2c(K)
+        kBeta = _ilog2c(B)
+        kJ = _ilog2c(M)
+        kAtomBits = _ilog2c(kAtomLeaves)
+        kAFloor = kAtomBits - self.kKappa if kAtomBits > self.kKappa else 0
+        kAShare = kJ // D + (1 if kJ % D else 0)
+        kACeil = kBeta - self.kKappa if kBeta > self.kKappa else 0
+        kAWant = max(kAShare, kAFloor)
+        self.kAInner = min(kAWant, kACeil)
+        self.kJOuter = kJ - self.kAInner
+
+    def a(self, l: int) -> int:
+        D, kJOuter = self.D, self.kJOuter
+        if l == D - 1 or D == 1:
+            return self.kAInner
+        return kJOuter // (D - 1) + (1 if l >= (D - 1) - (kJOuter % (D - 1)) else 0)
+
+    def s(self, l: int) -> int:
+        return self.K * (1 << self.a(l))
+
+
+#: mirrors `box.cuh`'s `kSideRead`/`kSideWrite` and `mode_declares`.
+_K_SIDE_READ, _K_SIDE_WRITE = 1, 2
+
+
+def _mode_declares(modes: int, l: int, side: int) -> bool:
+    return ((modes >> (2 * l)) & side) != 0
+
+
+class _ModeOrder:
+    """Mirrors `box.cuh`'s `ModeOrder<D, MO, SIDE>`: the order-by-mode rule."""
+
+    _DENSE, _SPARSE, _BOTH = 0, 1, 2
+
+    def __init__(self, D: int, MO: int, SIDE: int):
+        self.D, self.MO, self.SIDE = D, MO, SIDE
+
+    def _group(self, l: int) -> int:
+        if _mode_declares(self.MO, l, _K_SIDE_READ) and _mode_declares(self.MO, l, _K_SIDE_WRITE):
+            return self._BOTH
+        return self._SPARSE if _mode_declares(self.MO, l, self.SIDE) else self._DENSE
+
+    def _before(self, a: int, b: int) -> bool:
+        ga, gb = self._group(a), self._group(b)
+        return ga < gb if ga != gb else a > b
+
+    def rank(self, l: int) -> int:
+        return sum(1 for i in range(self.D) if self._before(i, l))
+
+    def outer(self, p: int) -> int:
+        for l in range(self.D):
+            if self.rank(l) == self.D - 1 - p:
+                return l
+        raise ValueError("no level at this outer position")  # unreachable: rank is a bijection
+
+
+class _StreamSpans:
+    """Mirrors `box.cuh`'s `StreamSpans<D, B, K, M, MO, SIDE, NS>`: one side's carved
+    span vector, `s(l)` for `l < D` (and `B` past `D`, handled by the caller)."""
+
+    def __init__(self, D: int, B: int, K: int, M: int, MO: int, SIDE: int, NS: int):
+        self.D = D
+        self._bp = _BoxPlan(D, B, K, M)
+        ord_ = _ModeOrder(D, MO, SIDE)
+        need = NS
+        self._g_at = []
+        for p in range(D):
+            gp = min(self._bp.s(ord_.outer(p)), need)
+            self._g_at.append(gp)
+            need = need // gp
+        self._rank = [ord_.rank(l) for l in range(D)]
+
+    def s(self, l: int) -> int:
+        return self._bp.s(l) // self._g_at[self.D - 1 - self._rank[l]]
+
+
+def _owner_rows_vec(D: int, B: int, K: int, M: int) -> tuple:
+    """The UNCARVED table: both sides span the owner's own box (`BoxPlan::s`)."""
+    bp = _BoxPlan(D, B, K, M)
+    return tuple(bp.s(l) if l < D else B for l in range(4))
+
+
+#: the seam's `owner_rows(carve=True)` diagnostic grain (`carry_rows.cuh`'s
+#: `SeamSplitPlan`/`kSeamCarveStreams`): the innermost level's owner run split over
+#: four streams.  A DIAGNOSTIC's declared grain, spelled here from nothing, exactly as
+#: `carry_rows.cuh` spells it from nothing on the device side.
+_K_SEAM_CARVE_STREAMS = 4
+
+
+def _seam_split_vec(D: int, B: int, K: int, M: int) -> tuple:
+    bp = _BoxPlan(D, B, K, M)
+
+    def owner_span(l):
+        return bp.s(l) if l < D else B
+
+    return tuple(
+        (owner_span(l) // _K_SEAM_CARVE_STREAMS if l == D - 1 else owner_span(l))
+        for l in range(4))
+
+
+def _stream_vec(D: int, B: int, K: int, M: int, MO: int, NS: int) -> tuple:
+    """A CARVED arm's actual table: `Arm<>::SW = SR` (M1P, one carve in the read
+    side's order), so both sides reuse the READ side's `StreamSpans`."""
+    sv = _StreamSpans(D, B, K, M, MO, _K_SIDE_READ, NS)
+    return tuple(sv.s(l) if l < D else B for l in range(4))
+
+
+def _derive_span_facts_arms() -> tuple:
+    """`CARRY_ARMS` -> `SPAN_FACTS_ARMS`, ONE derivation instead of two enumerations.
+
+    Two passes over the topologies an UNCARVED (`MO == 0`) `CARRY_ARMS` row declares,
+    in first-seen row order -- every OWNER-ROWS vector, then every SEAM-SPLIT vector --
+    reproduce the family's DIAGNOSTIC tables (`owner_rows(carve=False)` and
+    `owner_rows(carve=True)`), and a third pass over the CARVED rows (`NSW > 1 or
+    NSR > 1`) emits each one's actual dispatch table (`_stream_vec`).  A carved row's
+    vector at `D = 2` happens to equal its topology's seam-split vector (M1P: the body
+    carves once, and the flagship's ALT declaration lands on the same innermost-level
+    split the diagnostic's fixed four-way split names) -- `dict.fromkeys` dedupes it
+    against pass two's row rather than emitting it twice, which is what keeps this at
+    nine rows, matching the tree's pre-K41 hand-written count exactly.
+    """
+    topologies: list = []
+    for row in CARRY_ARMS:
+        D, B, K, M, _DV, _W, _C, _CV, MO, _WPS, _NSW, _NSR, _PK = row
+        if MO == 0 and (D, B, K, M) not in topologies:
+            topologies.append((D, B, K, M))
+
+    rows: dict = {}
+    for D, B, K, M in topologies:
+        v = _owner_rows_vec(D, B, K, M)
+        rows[(D, B) + v + v] = None
+    for D, B, K, M in topologies:
+        v = _seam_split_vec(D, B, K, M)
+        rows[(D, B) + v + v] = None
+    for row in CARRY_ARMS:
+        D, B, K, M, _DV, _W, _C, _CV, MO, _WPS, NSW, NSR, _PK = row
+        if NSW > 1 or NSR > 1:
+            v = _stream_vec(D, B, K, M, MO, NSR)
+            rows[(D, B) + v + v] = None
+    return tuple(rows.keys())
 
 # ---------------------------------------------------------------------------
 # THE CARRY ARM LIST -- one row per built arm, and THE list.  It moved out of
@@ -206,6 +335,18 @@ CARRY_ARMS: tuple = (
     (3, 16, 2, 16, 64, 64, 32, 1, 38, 1, 1, 1, 0),      # 7
     (4, 8, 2, 8, 64, 64, 32, 1, 0, 1, 1, 1, 0),         # 8
     (4, 8, 2, 8, 64, 64, 32, 1, 102, 1, 4, 4, 0),       # 9
+    #: K41: the flagship topology's two remaining single-level declarations, FLAT
+    #: (uncarved, NSW=NSR=1 -- "the flat 4-warp executor", `carry::kWarps == 4`), at
+    #: the one window `test_prefill_vs_oracle`'s READ_ONE/WRITE_BOTH cells need (W=512;
+    #: no W=384 twin is exercised by any cell, so none is added).  `carry_kernel_key()`
+    #: keys an uncarved row on `("split", D,B,K,M,DV,W,C)` alone -- MO/WPS/NSW/NSR/PK do
+    #: not enter the key -- so both rows land in row 2's existing TU/group: the
+    #: channel-split body ignores the declaration (it is exact for any support pattern,
+    #: the general slow path), so this adds two dispatch/table rows and ZERO new kernel
+    #: bodies.  MO=1: level 0 read-sparse only, level 1 dense (READ_ONE).  MO=10: both
+    #: levels write-sparse (WRITE_BOTH).
+    (2, 256, 4, 8, 64, 512, 32, 1, 1, 1, 1, 1, 0),      # 10
+    (2, 256, 4, 8, 64, 512, 32, 1, 10, 1, 1, 1, 0),     # 11
 )
 
 #: THE SHIPPED / TEST SPLIT (K36).  A default build compiles the SHIPPED rows only.
@@ -215,9 +356,11 @@ CARRY_ARMS: tuple = (
 #: conformance cells the fp64 oracle can hold (SMALL, DEEP-3, DEEP-4) -- plus the
 #: UNCARVED DENSE_BOTH controls at the flagship cells.  A test that needs one asks for
 #: it by index and skips, with the arm named, when the binary does not carry it.
-CARRY_TEST_ARMS: tuple = (0, 2, 4, 5, 6, 7, 8, 9)
+CARRY_TEST_ARMS: tuple = (0, 2, 4, 5, 6, 7, 8, 9, 10, 11)
 CARRY_SHIPPED_ARMS: tuple = tuple(i for i in range(len(CARRY_ARMS))
                                   if i not in CARRY_TEST_ARMS)
+
+SPAN_FACTS_ARMS: tuple = _derive_span_facts_arms()
 
 
 def carry_kernel_key(row) -> tuple:

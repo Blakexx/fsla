@@ -40,6 +40,7 @@ __device__ __forceinline__ const T* row_of(const Span& s, int b, int h) {
 template <typename T>
 __device__ __forceinline__ float row_sum(const T* row, int64_t sw, int width, int lane) {
   float acc = 0.0f;
+  #pragma unroll 1
   for (int k = lane; k < width; k += 32) acc += widen(row[k * sw]);
 #pragma unroll
   for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
@@ -71,6 +72,7 @@ template <typename T>
 __device__ __forceinline__ void fold_rows(const DecodeParams& p, int b, int h, const Span* spans,
                                           const int* normalize, const float* s_sum, float* out) {
   const int tid = threadIdx.x;
+  #pragma unroll 1
   for (int l = 0; l < p.D; ++l) {
     const int width = p.level_width[l];
     const T* in = row_of<T>(spans[l], b, h);
@@ -78,8 +80,10 @@ __device__ __forceinline__ void fold_rows(const DecodeParams& p, int b, int h, c
     float* dst = out + p.level_amp_offset[l];
     if (normalize != nullptr && normalize[l] != 0) {
       const float total = s_sum[l];
+      #pragma unroll 1
       for (int g = tid; g < width; g += kDecodeThreads) dst[g] = widen(in[g * sw]) / total;
     } else {
+      #pragma unroll 1
       for (int g = tid; g < width; g += kDecodeThreads) dst[g] = widen(in[g * sw]);
     }
   }
@@ -91,6 +95,7 @@ __device__ __forceinline__ void fold_value(const DecodeParams& p, int b, int h, 
                                            float* out) {
   const T* in = row_of<T>(p.v, b, h);
   const int64_t sw = p.v.sw;
+  #pragma unroll 1
   for (int c = threadIdx.x; c < d_v; c += kDecodeThreads) out[c] = widen(in[c * sw]);
 }
 
