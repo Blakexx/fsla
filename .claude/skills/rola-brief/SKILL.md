@@ -76,3 +76,7 @@ that into the skill the same day (process/pointers only — never facts).
 - `--no-verify` NEVER without an explicit per-commit authorization from the coordinator naming the hook failure; a red hook = STOP and report which (§18 addendum).
 
 - THE FLOOR HAS A COVERAGE TERM (F1, 2026-08-29): a mechanism's floor states bytes, instructions, conflicts AND what covers its latency (which in-flight work overlaps each serial step; a CTA-wide round trip with nothing under it is a cost even at zero bytes). A floor without a coverage line cannot grade a stage.
+- THE COVERAGE TERM HAS A SECOND HALF (F1b, 2026-08-29): state what covers each serial step AND how that
+  cover SCALES in the regime where the mechanism is most expensive. A cover that scales with the window's
+  live work under a cost that does not (a per-window fixed transit) is uncovered exactly where it matters
+  (many short windows); size priming depth from the ledger (exposed cycles vs cover cycles), never guess.

@@ -80,3 +80,7 @@ KERNEL_STANDARDS §16 sets, on either a dense or a sparse probe cell vs. the pre
 report it, Blake rules, don't tune around it.
 
 - NEVER wrap tools/probe_cells.py in an external `flock /tmp/rola_gpu.lock`: it takes the GPU lock ITSELF (check the source — grep rola_gpu.lock); an outer flock on the same file self-deadlocks silently (K41 and K38 both hit it). Same rule for any tool that documents taking the lock.
+
+## Addendum (F1b, 2026-08-29)
+- THE `sha` COLUMN IS THE WORKTREE HEAD, NOT THE BINARY: commit before the probe you intend to record, or
+  the K38 rows name the wrong commit (an uncommitted tree stamps its base).

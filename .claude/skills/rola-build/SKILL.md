@@ -80,3 +80,14 @@ into `carry_arm_abi.cuh`), not noise.
 
 ## Standards lint (LINT, 2026-08-28)
 Before committing, run the standards lint: the ast-grep rule pack under tools/lint/rules (sgconfig.yml at the repo root) and tools/lint/lint_standards.py; clang-tidy on host TUs via tools/lint/run_clang_tidy.sh (skips cleanly without a build). Each finding names its standards section and the incident behind it. Wired into pre-commit; docs/build.md "Standards lint" has the invocations.
+
+## Addenda (F1b skills feedback, 2026-08-29)
+- ARCH FORM: `ROLA_CUDA_ARCHS` takes the bare number (`86`), never `sm_86` (the failure reads `sm_sm_86`).
+- THE THING YOU BACKGROUND IS THE BUILD: never wrap the build in a second backgrounding layer; if a launcher
+  exits first, the exit MARKER is the fact, not the harness notification.
+- SINGLE-TU COMPILE = THE REGISTER CENSUS: compile one arm's instantiation TU alone (`nvcc -c` of
+  `csrc/rola/src/instantiations/carry_arm_<i>.cu` with the include dirs `csrc/rola/src` + the generated
+  header dir, `-std=c++17 -arch=sm_<N> --expt-relaxed-constexpr -DROLA_CARRY_BUILD_<i>`; without
+  `--expt-relaxed-constexpr` it fails with unrelated-looking `constexpr __host__` errors) and read
+  `cuobjdump -res-usage` on the `.o`: it reproduces the full build's numbers exactly (verified F1b, ten
+  kernels, two trees). ~4 s per arm. A register-gated stage answers its gate here, before any full build.
