@@ -744,6 +744,21 @@ exists for the chunk arm yet** — that is a gap, not a carry-over.
   `__syncthreads()` — exactly the barrier class `racecheck` orders shared memory
   by — so no edge was left that a counter protocol published instead. An empty
   skip-list is the standard the successor lane inherits.
+* **AND THE SUCCESSOR LANE FOUND THE EDGE THAT SENTENCE ANTICIPATED (K47, 2026-08-29).**
+  `tools/sanitize_oracle.py`'s decode cell publishes exactly what the bullet above says
+  a barrier saved the tiled consumer from: the decode step's CTA combine (P79) has NO
+  barrier below its prologue and publishes its shared rows with a fence plus an arrival
+  counter, so `racecheck` reports 48 RAW hazards on it. The SKIP-LIST IS STILL EMPTY and
+  stays that way: the pair is adjudicated, not skipped. `ASSERTED` declares the one idiom
+  — the two writing expressions, the two reading expressions, the kernel, `RAW` only, both
+  located in the source at gate time rather than pinned to line numbers — and the run
+  passes ONLY if every record the tool emits is that idiom. A hazard anywhere else, of any
+  other type, in any other kernel, or on lines the declared expressions no longer occupy,
+  still FAILS the lane. The declaration carries the PTX-memory-model proof and the
+  80,000-launch perturbed-schedule measurement behind it, plus the exit condition that
+  deletes it (`KERNEL_STANDARDS.md` §18: a declared exception, never a blanket skip). If
+  the tool ever goes clean here on its own, the lane says so and asks for the declaration
+  to be removed.
 * `--leak-check full` is **not** used: torch's caching allocator retains its pools by
   design, so the flag reports 3 "leaks" on a clean run — a lane whose clean state is
   three errors is a lane whose findings nobody reads.

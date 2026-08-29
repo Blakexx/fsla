@@ -850,6 +850,23 @@ grain is unchanged and still returns before the admission ([§22](#retirement)).
 the fencing thread, so a leader-only fence before a one-lane atomic would cover one lane
 of thirty-two (`KERNEL_STANDARDS.md` §12).
 
+**AND THE PAIRING IS PROVEN IN THE PTX MEMORY MODEL, WHICH IS NOT WHAT THE SANITIZER
+CHECKS.** The emitted PTX is `membar.cta` / `bar.warp.sync` / `atom.shared.add.u32` /
+`membar.cta`. A fence followed in program order by a strong write on the counter is a
+RELEASE PATTERN on it, and a strong read of the counter followed by a fence is an
+ACQUIRE PATTERN (PTX ISA §8.8, whose own examples are `fence.release; atom.relaxed [M];`
+and `atom.relaxed [M]; fence.acquire;`). Every warp's arrival precedes the last
+arriver's in OBSERVATION ORDER through the counter's atomic RMW chain (§8.9.2), which is
+what makes release synchronize with acquire (§8.9.4); the lanes that are not lane 0 reach
+the release through `bar.warp.sync`'s own memory ordering (§9.7.14.2). Two consequences
+are load-bearing and easy to lose: the arrival MUST keep using its return value, because
+a fire-and-forget `red` forms no acquire pattern at all (§8.11.1), and the fences must
+stay on EVERY lane. `compute-sanitizer racecheck` reports 48 RAW hazards here regardless
+— it models barriers, `__syncwarp`, `cuda::barrier`, cluster barriers and async-copy
+waits, and a fence plus an atomic is none of those. That is adjudicated, with its proof
+and its exit condition, by `tools/sanitize_oracle.py`'s `ASSERTED`; the measurements
+behind it are in FINDINGS `## K47`.
+
 `sr` is applied by the summing warp, before the split-K store, exactly as the tiled
 kernel emits `sr * y` into `num` and `sr * den_acc` into `den`. That makes the combine
 below a plain sum, and keeps the two consumers' dividend and divisor the same objects.
