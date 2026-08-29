@@ -70,6 +70,12 @@ THIS_FILE = Path(__file__).resolve()
 GPU_LOCK_DEFAULT = "/tmp/rola_gpu.lock"
 NCU_BIN = "/usr/local/cuda/bin/ncu"
 
+#: K38: the writer epilogue (`benchmarks/bench/store.py`) is this harness's own
+#: identity as data -- `import bench.store` needs `benchmarks/` on `sys.path`, which
+#: `benchmarks/*.py`'s own drivers do the same way (`pyproject.toml`'s per-file
+#: `E402` exemption for exactly this pattern).
+sys.path.insert(0, str(THIS_FILE.parents[1] / "benchmarks"))
+
 # ---------------------------------------------------------------------------
 # THE FIXED CELL SET (brief step 2(1)).
 #
@@ -331,10 +337,25 @@ def worker_main(args):
         device_uuid = str(torch.cuda.get_device_properties(0).uuid)
     except Exception:
         device_uuid = None
+    props = torch.cuda.get_device_properties(0)
+    #: K38: the record's provenance fields, read device-side (`BUILD_CONFIG`) rather
+    #: than off a path -- a stale `.so` at the right path is the extension trap a
+    #: path check cannot catch (`extension-trap-device-side-check`).
+    try:
+        from rola._build_config import BUILD_CONFIG
+        manifest_sha256 = BUILD_CONFIG["manifest_sha256"]
+        ptxas = BUILD_CONFIG["ptxas"]
+    except Exception:
+        manifest_sha256, ptxas = None, None
     stamp = {
         "rola_file": rola.__file__,
         "device_name": device_name,
         "device_uuid": device_uuid,
+        "manifest_sha256": manifest_sha256,
+        "sm": f"sm_{props.major}{props.minor}",
+        "driver_cuda": torch.version.cuda,
+        "torch": torch.__version__,
+        "ptxas": ptxas,
     }
     rows = {}
     cell_names = args.cells.split(",")
@@ -418,6 +439,25 @@ def git_sha(worktree: str) -> str:
         return subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"],
                                capture_output=True, text=True, check=True
                                ).stdout.strip()
+    except Exception as ex:  # noqa: BLE001
+        return f"UNKNOWN ({ex})"
+
+
+def git_dirty(worktree: str) -> bool:
+    """K38: whether the MEASURED binary's own tree was clean. A dirty tree does not
+    block the measurement but stamps the row advisory, mirroring `bench.ledger`."""
+    try:
+        out = subprocess.run(["git", "-C", worktree, "status", "--porcelain"],
+                             capture_output=True, text=True, check=True).stdout
+        return bool(out.strip())
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def git_branch(worktree: str) -> str:
+    try:
+        return subprocess.run(["git", "-C", worktree, "rev-parse", "--abbrev-ref", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
     except Exception as ex:  # noqa: BLE001
         return f"UNKNOWN ({ex})"
 
@@ -556,6 +596,14 @@ def main():
     #: the slot resolution; `none` is the null-state variant, comparable only to itself.
     ap.add_argument("--state", choices=("dense", "paged", "none"), default="dense")
     ap.add_argument("--out", default=None, help="path for one JSON row per (binary, cell)")
+    #: K38: the writer epilogue. Recording is ON by default -- a probe run IS a
+    #: measurement, and the record's whole point is that nothing measured is lost
+    #: to a terminal scrollback; `--no-record` is for a genuine scratch/dry run.
+    ap.add_argument("--no-record", action="store_true",
+                     help="do not write benchmarks/results/ rows (a scratch run, not a record)")
+    ap.add_argument("--stage", default=None, help="the queue stage this probe belongs to")
+    ap.add_argument("--agent", default=None, help="who ran it (a name, not an identity)")
+    ap.add_argument("--purpose", default=None, help="free-text: what this probe was for")
     # worker-mode-only flags (invoked as a subprocess of itself):
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--oneshot", action="store_true", help=argparse.SUPPRESS)
@@ -597,6 +645,9 @@ def main():
                 "git_sha": b["git_sha"], "cell": cell,
                 "device_name": stamp.get("device_name"), "device_uuid": stamp.get("device_uuid"),
                 "rola_file": stamp.get("rola_file"),
+                "manifest_sha256": stamp.get("manifest_sha256"), "sm": stamp.get("sm"),
+                "driver_cuda": stamp.get("driver_cuda"), "torch": stamp.get("torch"),
+                "ptxas": stamp.get("ptxas"),
                 "resolved_carve": row0.get("resolved_carve"),
                 "arm_index": row0.get("arm_index"), "arm_row": row0.get("arm_row"),
                 "level_modes_applied": row0.get("level_modes_applied"),
@@ -630,6 +681,42 @@ def main():
             for r in results:
                 f.write(json.dumps(r) + "\n")
         print(f"\nwrote {len(results)} rows to {args.out}")
+
+    if not args.no_record:
+        from bench import store  # noqa: PLC0415 -- deferred, see the sys.path insert above
+
+        for b in args.binary:
+            entries = [r for r in results if r["binary"] == b["label"]]
+            if not entries:
+                continue
+            stamp0 = entries[0]
+            env = {
+                "gpu": stamp0.get("device_name") or "unknown",
+                "sm": stamp0.get("sm") or "sm_unknown",
+                "driver_cuda": stamp0.get("driver_cuda"),
+                "torch": stamp0.get("torch"),
+                "ptxas": stamp0.get("ptxas"),
+            }
+            try:
+                run = store.build_run(
+                    harness_paths=[THIS_FILE], stage=args.stage, agent=args.agent,
+                    purpose=args.purpose, env=env, git_sha=b["git_sha"],
+                    dirty=git_dirty(b["worktree"]), branch=git_branch(b["worktree"]),
+                    worktree_name=Path(b["worktree"]).name,
+                    stamp_magic=stamp0.get("manifest_sha256"))
+            except ValueError as ex:
+                print(f"K38 record REFUSED for {b['label']}: {ex}", file=sys.stderr)
+                continue
+            rows = []
+            for entry in entries:
+                if "error" in entry:
+                    continue
+                rows.append(store.build_result(
+                    run, kind="probe", cell=entry["cell"], arm=entry.get("resolved_carve"),
+                    metric="duration_median_ms", value=entry["median_of_round_medians_ms"],
+                    unit="ms", extra=entry))
+            out_path = store.write_run(run, rows)
+            print(f"K38 record: {b['label']} -> {out_path} ({len(rows)} result row(s))")
 
 
 if __name__ == "__main__":

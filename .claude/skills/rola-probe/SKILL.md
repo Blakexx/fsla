@@ -15,13 +15,23 @@ purpose so cross-tip comparisons don't drift with whichever fixtures version a w
 carry. When you need to know what a cell means (topology, k_tok, window, level_modes), read its
 definition in the file — don't rely on a remembered description.
 
-## Running it
+## Running it — NEVER wrap it in an external `flock`
 ```bash
 python tools/probe_cells.py \
   --binary worktree:<path>,venv:<path>,label:<name> \
   --binary worktree:<path>,venv:<path>,label:<name> \
   --cells <comma-list> --reps <n> --warmup <n> --rounds <n> --out <path>
 ```
+Invoke it BARE. `tools/probe_cells.py` takes `/tmp/rola_gpu.lock` ITSELF, internally, via
+`fcntl.flock` in `run_worker`/`run_ncu_cell` (`GPU_LOCK_DEFAULT`) — the same self-locking design
+`docs/measurement.md` documents for the OTHER harness family (`bench.discipline.require_gpu_lock`,
+which REFUSES a bare invocation because it expects to be wrapped). This tool is the opposite: an
+outer `flock /tmp/rola_gpu.lock python tools/probe_cells.py ...` blocks the tool's own internal
+acquisition forever (a real incident, K38: 17 CPU-idle minutes on a live GPU before the coordinator
+killed it). If you are unsure which family a new script belongs to, grep it for `fcntl.flock` /
+`require_gpu_lock` before choosing whether to wrap it — never guess from a neighboring script's
+convention.
+
 Add `--ncu` for one oneshot kernel-name + metrics capture per (binary, cell) — read the script's
 `--ncu` handling for the current metric list rather than assuming it's fixed.
 
@@ -49,6 +59,16 @@ stage-probe table, `## STAGE-LEDGER`), keyed by git SHA and cell — never re-de
 by re-running it casually; the tool prints `git_sha` and device stamp on every run specifically so a
 new number can be told apart from an old one. A stage's §16 perf-probe gate cites the PREVIOUS
 stage's recorded number, not a fresh re-measurement of it.
+
+## The measurements record (K38) — every run is ALSO written, not just printed
+As of K38, a probe run (unless `--no-record`) writes each binary's rows through
+`benchmarks/bench/store.py` into `benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` — the
+committed record — and `python tools/rola_db.py rebuild` indexes it into the gitignored
+`.rola/measurements.sqlite`. Pass `--stage <name>` so a later `rola-db baseline --stage <name>` can
+find these rows; `rola-db last`/`history`/`compare` are how an agent finds a prior number by SQL
+instead of grepping FINDINGS. Read `docs/measurement.md`'s "The measurements record (JSONL) and its
+derived index" section for the schema before writing a NEW tool that measures anything — the writer
+epilogue is one shared call site on purpose.
 
 ## Instruction counts alone are never a verdict
 `--ncu`'s IPC and stall-reason columns are not decoration. §16 addendum 2: an instruction count that

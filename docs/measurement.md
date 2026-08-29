@@ -313,7 +313,99 @@ can force a bound is a tool that can ratify one.
 * **Clock locking.** `nvidia-smi -lgc` has no effect from inside WSL2; the plateau
   protocol is the correct design on this box, not a workaround for it.
 * **A committed SQLite database.** A binary blob has no diff and cannot be reviewed in
-  a landing. Any query artifact is derived and ignored.
+  a landing. Any query artifact is derived and ignored — see the record below, which
+  is exactly this design.
 * **A flat percentage threshold.** The IQR-derived line is better than every rule in
   the surveyed field; replacing it would reintroduce the invented number the
   derivation exists to avoid.
+
+## The measurements record (JSONL) and its derived index (K38, 2026-08-28)
+
+The chunk arm's `perf/ledger.jsonl` above is ONE harness's own record. K38 adds the
+record every OTHER measuring tool shares — the probe, the unit/integration drivers,
+and (as each grows a writer) the ncu sections, the census, the compile ledger,
+ratify, and the oracle — because a query that needs to cross those instruments
+cannot if each keeps its own private file with its own shape.
+
+**THE RECORD IS COMMITTED JSONL. THE DATABASE IS A DERIVED, DISPOSABLE CACHE.**
+Exactly the design the "what is deliberately not here" list above ruled out for a
+single committed binary blob, applied the other way around: the TEXT is committed
+(`benchmarks/results/`, one small file per run, mergeable per run rather than per
+repo), and the query surface (`.rola/measurements.sqlite`) is rebuilt from it on
+demand and never itself checked in.
+
+```
+benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl
+```
+
+`<hw-profile>` is `bench.hw_profile.hw_profile(gpu_name, sm)` — the GPU model plus
+its SM architecture, e.g. `rtx3080ti-sm86`, `a100-sm80` — **never a hostname,
+username, or machine id** (RULED, 2026-08-28: "nothing identifiable is checked
+in"). A memory/interconnect suffix (`SXM4-80GB`, `PCIE-40GB`) is stripped because it
+does not change which SASS body applies. Two boxes that share a profile and are
+ever told apart use `machine_tag`, an opaque salted hash (`ROLA_MACHINE_SALT`), not
+the hostname itself — unset by default, which is the common case.
+
+**ONE FILE PER RUN, SELF-CONTAINED.** The file's first line is the `runs` record
+(the identity: `run_id`, `ts`, `git_sha`, `branch`, `dirty`, the device stamp
+`stamp_magic`, `harness_sha` — the identity of the MEASURING CODE, distinct from the
+kernel it measures — `stage`, `agent`, `purpose`); every following line is one
+`results` record referencing that `run_id` (`kind` in `probe|ncu|census|compile|
+oracle|ratify`, `cell`, `arm`, `metric`, `value`, `unit`, `extra_json` for anything
+kind-specific, e.g. a probe's raw per-rep `values`). Because each run owns its own
+file, two branches that both measured never collide on one line the way a single
+shared ledger file does — no `merge=union` needed, because nothing ever shares a
+path.
+
+**A ROW WITHOUT PROVENANCE IS REFUSED.** `git_sha`, the device stamp, and
+`harness_sha` are required on every run record (`bench.store.REQUIRED_RUN_FIELDS`);
+the writer raises before anything is written rather than producing a row a later
+reader would have to distrust.
+
+**THE SCHEMA, ONCE INDEXED (`.rola/measurements.sqlite`):**
+
+```
+runs(run_id, ts, hw_profile, machine_tag, gpu, driver, cuda, image_digest, git_sha,
+     branch, worktree, dirty, stamp_magic, arm_census_hash, harness_sha, stage,
+     agent, purpose, env_json, source_file)
+results(id, run_id, kind, cell, arm, metric, value, unit, extra_json)
+```
+
+plus a `measurements` view joining the two, and indexes on `runs(git_sha)`,
+`runs(branch, ts)`, `results(run_id)`, `results(cell, metric)`, `results(arm, kind)`
+— the composite keys a normalized `runs`+`results` split serves with one index per
+table side rather than one index spanning a join.
+
+**THE WRITER EPILOGUE IS ONE SHARED CALL SITE.** `benchmarks/bench/store.py`
+(`build_run`, `build_result`, `write_run`) is used by `tools/probe_cells.py` (the
+FIRST writer — one run per binary in an A/B, since a cross-tip comparison measures
+two different trees' own identities) and by `benchmarks/bench/driver.py` (the SECOND
+writer — every `benchmarks/unit/`/`benchmarks/integration/` driver inherits it,
+alongside — not instead of — the existing `perf/ledger.jsonl` append). Both take
+`--no-record` to skip it for a genuine scratch run, the same shape as
+`--no-ledger`.
+
+**THE CLI: `python tools/rola_db.py <subcommand>`** (not a console script — this
+repo's other developer tools are all invoked as `python tools/<name>.py`, because
+the installed wheel ships `rola/`, not `tools/`):
+
+```
+python tools/rola_db.py rebuild                                   # (re)build the sqlite index
+python tools/rola_db.py last --cell k16_w384 --sha <sha>
+python tools/rola_db.py history --cell k16_w384 --branch <branch>
+python tools/rola_db.py compare <sha_a> <sha_b> --cells k16_w384,dense
+python tools/rola_db.py baseline --stage <stage-name> --cell k16_w384
+python tools/rola_db.py regressions --cell k16_w384 --metric duration_median_ms \
+    --baseline-stage <stage-name> --threshold 1.10   # the §16 gate
+python tools/rola_db.py sql "select cell, count(*) from results group by cell"
+```
+
+`rebuild` is the only writer of the database and the ONLY thing a fresh clone needs
+to run to reproduce it — `.rola/` is gitignored. `baseline` is how a stage gate
+reads "the previous stage's rows" (KERNEL_STANDARDS §16 addendum): the brief names
+the prior stage's string, not a git-history heuristic.
+
+Paths: `ROLA_RESULTS_DIR` (default `<repo>/benchmarks/results`), `ROLA_DB` (default
+`<repo>/.rola/measurements.sqlite`) — both repo-relative by default, so a container,
+a rented A100 box, and a laptop clone all resolve the same layout with nothing
+exported (§17: no home paths, no ad-hoc locations).
