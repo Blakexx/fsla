@@ -215,37 +215,77 @@ byte; nothing about the claim, the shadow row or the atom bits moved. `tests/int
 test_decode_paging.py` is what holds that: it exercises growth, the pool claim and the
 replay path, and it passes unedited.
 
-## <a id="the-owner-lists"></a>2.1 `build_owner_lists` — four kinds, two scans per level
+## <a id="the-owner-lists"></a>2.1 `build_owner_mask` — four kinds, one ballot per kind per level
 
 The terms ask for four per-level digit sets — `W_l`, `R_l`, `R_l & W_l`,
-`R_l & ~W_l` — so there are four owner-list planes, `olist[kind][level]` with
-`n_o` the realized count. THE DIGIT MASKS STAY TWO: a kind's bits are a boolean
-function of the read and write bits (`kind_bits`), formed where they are read, on
-single digits and on whole owner spans alike.
+`R_l & ~W_l` — so there are four OWNER LIVENESS BITMASKS, `omask[kind][level]`,
+one bit per owner coordinate, with `n_o` the realized count. THE DIGIT MASKS STAY
+TWO: a kind's bits are a boolean function of the read and write bits
+(`kind_bits`), formed where they are read, on single digits and on whole owner
+spans alike.
 
 Each thread reads ITS OWNER'S SPAN ONCE per side (`lat_g[l] <= kDecodeThreads`
 follows from the level-width capacity, `decode.md#level-width-capacity`, so one
 block covers a whole level's owner grid) and all four kinds fall out of that one
-pair of slices. TWO `cub::BlockScan` EXCLUSIVE SUMS PER LEVEL COVER FOUR LISTS,
-because a level's live-owner count is at most `kDecodeThreads` and two counts
-therefore ride in the two halves of one `int` without carrying into one another.
-That is why four lists cost what the previous two did — the scan count, not the
-list count, is what the prologue is measured in.
+pair of slices — exactly as they did when this function compacted them.
 
-**Each level's live count is padded to the next power of two.** `bits[term][l]`
-is `ceil_log2(n_o[kind][l])`, `shift[term][l]` the running sum of the levels
+**THE BALLOT IS WHAT REPLACED THE BLOCK SCAN.** A warp's 32 lanes already hold 32
+consecutive owners' answers, so one `__ballot_sync` per kind IS that level's
+32-owner word and its lane 0 stores it; the realized count rides the same word as
+a `__popc` folded by one shared atomic. The four `cub::BlockScan` exclusive sums
+that used to compact those bits into lists — and the TWO BARRIERS PER LEVEL they
+carried — are gone, and with them the only reason the prologue's cost grew with
+the live owner count rather than with the owner grid.
+
+**THE BALLOT WORDS COMPACT THEMSELVES.** `compact_owner_lists` runs on the other
+side of one barrier: an owner the ballot found live writes ITSELF into
+`olist[kind][level][rank]`, where `rank` is the popcount of its kind's bits below
+it — at most `kDecodeMaxLevelWidth / 32 = 8` `POPC`s, and exactly one at every
+topology whose level is 32 owners or narrower, which the flagship's two levels
+both are. The WRITE DIGIT LIST is compacted the same way straight off `mask_w`,
+its count being that mask's popcount ([2.2](#the-write-grain)).
+
+**WHY THE LIST SURVIVES AND ONLY THE SCAN DIES — MEASURED.** Reading the bitmask
+directly at USE time (`select(i-th set bit)` by `__fns`, no list plane at all) was
+built and benchmarked, and it LOST BADLY: `__fns` is not one instruction on sm_86
+but roughly 56 SASS with reconvergence-stack ops, and the ADMISSION resolves one
+owner rank per LEVEL per CANDIDATE ATOM per CTA per step — 4096 candidates at the
+flagship — so the select cost **+2.42 M instructions on the dense `BH = 1` step,
++25 % of the whole step**, against a prologue saving roughly a tenth of that. The
+per-CTA replication is what makes a use-time cost so much more expensive than a
+build-time one, and it is the same fact [`decode.md#per-cta-prologue`] states about
+the derivation generally.
+
+<a id="ballot-uniformity"></a>**HAZARD — ballot uniformity.** `build_owner_mask`'s
+`__ballot_sync(0xffffffff, ...)` runs with the WHOLE CTA present: the level loop is
+unrolled over the template `D` and no thread branches around it. An owner beyond
+`lat_g[l]` contributes zero slices and therefore a zero bit, and the store is
+predicated AFTER the ballot on `lane == 0 && word < omask_words[l]` — never before
+it. Predicating the collective instead would split the warp at an instruction that
+needs every lane (`KERNEL_STANDARDS.md` §12).
+
+**Each level's live count is padded to the next power of two.** A level's field
+width is `ceil_log2(n_o[kind][l])`, its position the running sum of the levels
 below it, and a unit's owner rank decomposes into per-level fields by SHIFTS AND
 MASKS alone — never a division. A rank in the padded-but-unrealized part of a
 level's field is `i >= n_o[kind][l]`, marked `invalid` and skipped rather than
 wrapped: the padding costs some dead ranks in exchange for never issuing a device
 integer division in the walk's innermost enumeration.
 
-`build_term_layout` turns those counts into each term's rank space and
-`units[term]`, ONE THREAD PER TERM because the terms are independent — `D + 1`
-threads doing at most `D` `ceil_log2`s each, rather than one thread doing twenty
-in series while 255 wait at the barrier. `units[term]` is zero wherever any of
-that term's kinds is empty, so an absent owner set kills a term outright rather
-than walking zero-width ranges.
+`term_layout` turns those counts into each term's rank space and its unit count,
+and `publish_term_layout` calls it ONE THREAD PER TERM because the terms are
+independent — `D + 2` threads doing at most `D` `ceil_log2`s each, rather than one
+thread doing twenty-four in series while the rest wait at the barrier. The unit
+count is zero wherever any of that term's kinds is empty, so an absent owner set
+kills a term outright rather than walking zero-width ranges.
+
+**THE THREE FIELDS RIDE ONE PACKED WORD.** `s_fld[term][level]` carries the field's
+position (5 bits), its width (5 bits) and the level's realized count (the rest), so
+the resolver's per-unit read is ONE shared load where the separate `bits`, `shift`
+and `n_o` arrays were three. The table stays a per-CTA prologue object rather than
+a per-warp register set, and that is a MEASURED register-budget fact: holding `D`
+field words live across the walk spilled 48 words at the `D = 4` arm against the
+64-register cap that 1024 resident threads impose.
 
 ## <a id="the-unit"></a>3. `Unit` / `resolve_unit` — one unit is an `(owner, r_0 .. r_{D-2})` pair
 

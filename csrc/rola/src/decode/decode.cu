@@ -15,10 +15,13 @@
 //      decode's `y` picks the next token and a last-bit flip compounds
 //      autoregressively. The state needs no argument at all -- the unit partition is a
 //      PARTITION over owners and no atomic touches `state`.
-//   3. THE PROLOGUE IS PER-CTA AND THAT IS THE DESIGN. Every split-K CTA folds and
-//      factors its own batch-head, so the factor tables never leave shared memory and
-//      the split partition costs no launch:
-//      docs/internals/decode/decode.md#per-cta-prologue
+//   3. THE PROLOGUE IS PER-CTA AND THAT IS THE DESIGN, AND IT IS ALSO THE ONLY PLACE A
+//      BARRIER LIVES. Every split-K CTA folds and factors its own batch-head, so the
+//      factor tables never leave shared memory and the split partition costs no launch;
+//      below the prologue's last `__syncthreads` there is not one -- the walk never needed
+//      one and the combine is an ARRIVAL COUNT:
+//      docs/internals/decode/decode.md#per-cta-prologue,
+//      docs/internals/decode/decode.md#the-warp-arrival
 //
 // The GEMV/GEMM argument, the walk's cost accounting against `N`, the measured
 // reproducibility divergence, the barrier ledger, and the derivation that collapses the
@@ -57,17 +60,26 @@ __device__ int64_t g_decode_stamp_probe;
 //: it back is reading a fact only the loaded binary can produce:
 //: docs/internals/decode/decode_api.md#build-stamp
 __global__ void decode_stamp_kernel(int64_t* out) {
-  //: THE ENUMERATION'S SHAPE IS PART OF THE FOOTPRINT, alongside the two struct sizes and
-  //: the span ceiling: the kind and term counts are what a walk's unit index MEANS, and a
-  //: binary that disagrees about them is a different step however its structs measure --
-  //: which the union-of-products enumeration proved, since it moved every walk in the
-  //: extension without moving one byte of either struct. IT IS THE MOST SIGNIFICANT FIELD
-  //: of the same positional scheme, so the three older fields still divide out unchanged:
+  //: THE ENUMERATION'S SHAPE AND THE LAUNCH'S WIDTH ARE PART OF THE FOOTPRINT, alongside
+  //: the two struct sizes and the span ceiling. The kind and term counts are what a walk's
+  //: unit index MEANS, and the warp count is HOW MANY CTAs derive the step -- and a binary
+  //: that disagrees about either is a different step however its structs measure. Both
+  //: lessons were paid for: the union-of-products enumeration moved every walk in the
+  //: extension without moving one byte of either struct, and the fat-CTA launch shape moved
+  //: the derivation count from 256 to 80 without moving the enumeration. IT IS THE MOST
+  //: SIGNIFICANT FIELD of the same positional scheme, so the three older fields still
+  //: divide out unchanged and the inversion's plausibility bound still holds
+  //: (`kKinds * kMaxTerms * kDecodeWarps` is 192 at eight warps, 768 at thirty-two).
+  //: THE PARTITION'S GRANULARITY RIDES THE SAME FIELD, additively, because a binary that
+  //: cuts the unit space at a different block width walks a different step however its
+  //: width and its structs measure -- the round-4 lesson applied to the second of the two
+  //: knobs the launch shape now carries:
   //: docs/internals/decode/decode_api.md#build-stamp
-  *out =
-      (static_cast<int64_t>(kKinds * kMaxTerms) * 4096 + static_cast<int64_t>(sizeof(DecodeParams)))
-          * 1000003
-      + static_cast<int64_t>(sizeof(Unit<4>)) * 101 + static_cast<int64_t>(kDecodeMaxSpan);
+  *out = (static_cast<int64_t>(kKinds * kMaxTerms * kDecodeWarps + kUnitBlockWarps + kFieldWidthMax)
+              * 4096
+          + static_cast<int64_t>(sizeof(DecodeParams)))
+             * 1000003
+         + static_cast<int64_t>(sizeof(Unit<4>)) * 101 + static_cast<int64_t>(kDecodeMaxSpan);
   g_decode_stamp_probe = *out;
 }
 
@@ -100,7 +112,8 @@ decode_step_kernel(DecodeParams p) {
   //   v_tok        [DV]         fp32   the token's value, resident
   //   fold  [warps][cols+3]     fp32   the cross-warp partials, bank-padded
   //   mask_r,mask_w [mask_total] u32   one bit per digit, per side
-  //   olist  [4][olist_total]   i32    the four kinds' owner coordinates, per level
+  //   omask  [4][omask_total]   u32    the four kinds' owner LIVENESS BITS, per level
+  //   olist  [4][olist_total]   i32    those bits COMPACTED: the i-th live owner
   //   dlist  [dlist_total]      i32    the WRITE side's live digits, OUTER levels only
   float* sa_r = reinterpret_cast<float*>(smem_raw);
   float* sa_w = sa_r + total_rows;
@@ -109,24 +122,30 @@ decode_step_kernel(DecodeParams p) {
   float* fold = v_tok + DV;
   uint32_t* mask_r = reinterpret_cast<uint32_t*>(fold + kDecodeWarps * (cols + 3));
   uint32_t* mask_w = mask_r + p.mask_total;
-  int32_t* olist = reinterpret_cast<int32_t*>(mask_w + p.mask_total);
+  uint32_t* omask = mask_w + p.mask_total;
+  int32_t* olist = reinterpret_cast<int32_t*>(omask + kKinds * p.omask_total);
   int32_t* dlist = olist + kKinds * p.olist_total;
 
-  __shared__ float part[cols + 3];
   __shared__ float s_sum[kMaxLevels];
   __shared__ typename LatticeScan::TempStorage scan_temp;
   __shared__ int s_running;
   __shared__ int s_n_o[kKinds * kMaxLevels];
   __shared__ int s_n_d[kMaxLevels];
-  //: The retirement bound, folded by `build_term_layout`'s own `atomicMax` -- which is why
+  //: The retirement bound, folded by `publish_term_layout`'s own `atomicMax` -- which is why
   //: it is zeroed HERE, behind the fold's barrier: docs/internals/decode/decode.md#retirement
   __shared__ int s_umax;
-  __shared__ int s_bits[kMaxTerms * kMaxLevels];
-  __shared__ int s_shift[kMaxTerms * kMaxLevels];
+  //: THE TERM TABLE, ONE PACKED WORD PER (term, level): the field's position, its width and
+  //: the level's realized count in one read where three arrays used to be read separately.
+  //: `D + 2` rows -- the walk's `D + 1` terms and the admission's candidate slot:
+  //: docs/internals/decode/decode_lattice.md#the-terms
+  __shared__ int s_fld[kMaxTerms * kMaxLevels];
   //: One unit count per TERM. The walk's outer loop is the term, so each term's rank space
   //: is partitioned across the grid on its own and the counts never need summing.
   __shared__ int s_units[kMaxTerms];
-  __shared__ int s_last_cta;
+  //: THE CTA'S WARP ARRIVAL COUNT, and the whole of the combine's synchronisation. It is
+  //: zeroed in the PROLOGUE, behind the prologue's own last barrier, which is what lets the
+  //: combine below need no barrier at all: docs/internals/decode/decode.md#the-warp-arrival
+  __shared__ int s_arrive;
 
   // ---- THE FOLD: every per-token operand, widened and staged, by this CTA ------
   //: TWO BARRIERS FOR THE WHOLE PROLOGUE. The read side's row sums are the only thing
@@ -174,10 +193,15 @@ decode_step_kernel(DecodeParams p) {
   //: in the leaf space: docs/internals/decode/decode_lattice.md
   build_digit_mask<D>(p, sa_r, mask_r);
   build_digit_mask<D>(p, sa_w, mask_w);
+  if (tid < kKinds * kMaxLevels) s_n_o[tid] = 0;
+  if (tid < kMaxLevels) s_n_d[tid] = 0;
   if (tid == 0) s_umax = 0;
   __syncthreads();
-  build_owner_lists<D>(p, mask_r, mask_w, olist, dlist, s_n_o, s_n_d, scan_temp);
-  build_term_layout<D>(p, s_n_o, s_n_d, s_bits, s_shift, s_units, &s_umax);
+  build_owner_mask<D>(p, mask_r, mask_w, omask, s_n_o, s_n_d);
+  __syncthreads();
+  compact_owner_lists<D>(p, omask, mask_w, olist, dlist);
+  __syncthreads();
+  publish_term_layout<D>(p, s_n_o, s_n_d, s_fld, s_units, &s_umax);
 
   // ---- RETIREMENT: the split's ceiling is captured, the realized work is not ----
   //: `n_split` is FROZEN for the sequence and baked into the captured launch
@@ -187,8 +211,9 @@ decode_step_kernel(DecodeParams p) {
   //: factor tables do. So the ceiling is what the host captures and the DEVICE is what
   //: spends it: a segment with no unit in any term retires, and it retires COMPLETELY --
   //: no walk, no partial, no arrival, and it is not summed.
-  //: THE LIVE SEGMENTS ARE A PREFIX. The walk's stride is `n_split * kDecodeWarps`, so
-  //: segment `seg` has an iteration exactly when `seg * kDecodeWarps < max_t units[t]`,
+  //: THE LIVE SEGMENTS ARE A PREFIX. A segment owns the `kUnitBlockWarps`-wide block at
+  //: `seg * kUnitBlockWarps` of every period, so it has an iteration exactly when
+  //: `seg * kUnitBlockWarps < max_t units[t]`,
   //: and `n_live` is that bound clamped into `[1, n_split]`. Every CTA of the batch-head
   //: derives it from the same published counts, so the arrival target and the summed slot
   //: range agree by construction and no CTA has to be told.
@@ -203,12 +228,13 @@ decode_step_kernel(DecodeParams p) {
   //: inside its own barrier, so learning it costs neither a second block synchronisation
   //: (which the dense cell, where nothing retires, measured at ~1 %) nor `D + 1` redundant
   //: reads per thread. The test is written as the COMPARE rather than as `seg >= n_live`
-  //: because they are the same question -- `seg >= clamp(ceil(umax / W), 1, n_split)` is
-  //: `seg > 0 && seg * W >= umax`, since `seg < n_split` always -- and this form keeps the
+  //: because they are the same question -- `seg >= clamp(ceil(umax / U), 1, n_split)` is
+  //: `seg > 0 && seg * U >= umax` at `U = kUnitBlockWarps`, since `seg < n_split` always --
+  //: and this form keeps the
   //: division and the two clamps off the path every CTA walks, on the cell where nothing
   //: retires. `n_live` itself is only needed by the epilogue.
   const int umax = s_umax;
-  if (seg > 0 && seg * kDecodeWarps >= umax) return;
+  if (seg > 0 && seg * kUnitBlockWarps >= umax) return;
 
   const int inner_bits = p.lat_inner_bits;
 
@@ -227,15 +253,17 @@ decode_step_kernel(DecodeParams p) {
   const int win_bits = inner_bits < kAtomShift ? inner_bits : kAtomShift;
   const uint32_t win_mask = (1u << (1 << win_bits)) - 1u;
   const int n_units = 1 << p.lat_units_per_atom_shift;
+  //: THE CANDIDATE SLOT'S ROW of the same packed term table -- the ADMISSION's rank space,
+  //: which is the write product in the OLD owner-and-run order because only that order is
+  //: monotone in atom id: docs/internals/decode/decode_lattice.md#the-candidate-slot
+  const int32_t* cand_fld = s_fld + (D + 1) * kMaxLevels;
   auto candidate_atom = [&](int i) -> int {
     const int a = i & ((1 << p.atoms_per_unit_shift) - 1);
     const int unit0 = (i >> p.atoms_per_unit_shift) << p.lat_units_per_atom_shift;
     int atom = -1;
     #pragma unroll 1
     for (int q = 0; q < n_units; ++q) {
-      const CandidateUnit u =
-          resolve_candidate_unit<D>(p, mask_w, olist, s_n_o, s_bits + (D + 1) * kMaxLevels,
-                                    s_shift + (D + 1) * kMaxLevels, unit0 + q);
+      const CandidateUnit u = resolve_candidate_unit<D>(p, mask_w, olist, cand_fld, unit0 + q);
       if (!u.valid) return -1;
       if (atom < 0) atom = (u.base + (a << kAtomShift)) >> kAtomShift;
       if (u.live_w && ((u.cw >> ((a << kAtomShift) & ((1 << inner_bits) - 1))) & win_mask) != 0u) {
@@ -288,17 +316,24 @@ decode_step_kernel(DecodeParams p) {
         //: take pool slots in ASCENDING ATOM ID from its own cursor, so every CTA of the
         //: batch-head derives the identical mapping with no atomic and no arrival.
         //:
-        //: IT BUILDS A SHADOW TABLE ROW rather than writing the page table, and both
-        //: halves of that are load-bearing. Not the table, because the table is the
-        //: claim's own predicate and a prologue write would move a sibling CTA's ranks.
-        //: A WHOLE ROW -- every atom, claimed or resident or absent -- because then the
-        //: walk addresses through this row INSTEAD of the table, by one pointer, and the
-        //: walk's own body knows nothing about pools.
-        //: docs/internals/decode/decode.md#the-claim
-        int32_t* shadow_row = p.pool_map + row_base;
+        //: IT WRITES THE CLAIMS AND NOTHING ELSE. Not the page table, because the table is
+        //: the claim's own predicate and a prologue write would move a sibling CTA's ranks;
+        //: and not a whole shadow ROW either, which is the defect this deletes.
+        //: THE ROW-COPY WAS A CROSS-CTA RACE. Every CTA of the batch-head copied the table
+        //: into this row -- writing `-1` for every atom the table does not map yet -- while
+        //: its siblings were already writing their claimed SLOTS into the same addresses,
+        //: with no ordering between CTAs at all. The barrier below orders one CTA's copy
+        //: against its own claim writes and says nothing about anyone else's: a sibling's
+        //: `-1` could land on top of a claimed slot, and a third CTA reading that address
+        //: in the window took the ABSENT path and skipped its deposit. The final value was
+        //: always right, which is what the old comment's "identical mapping" was true of;
+        //: the TRANSIENT was not, and correctness that survives only because one wave of
+        //: CTAs happens to march in step is not correctness.
+        //: SO THE ROW IS CLAIMS-ONLY, every write is the same value from every CTA, and the
+        //: walk reads TWO SOURCES instead of one (`decode.md#the-claim`). It also deletes an
+        //: `atoms_per_bh`-element bulk copy per CTA per claiming step.
+        int32_t* claim_row = p.pool_map + row_base;
         const int32_t* slots = p.pool_slots + static_cast<int64_t>(bh) * p.pool_cap;
-        #pragma unroll 1
-        for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) shadow_row[a] = page_row[a];
         if (tid == 0) s_running = 0;
         __syncthreads();
         #pragma unroll 1
@@ -309,7 +344,7 @@ decode_step_kernel(DecodeParams p) {
           int rank = 0;
           int aggregate = 0;
           LatticeScan(scan_temp).ExclusiveSum(want ? 1 : 0, rank, aggregate);
-          if (want) shadow_row[a] = slots[cursor + s_running + rank];
+          if (want) claim_row[a] = slots[cursor + s_running + rank];
           __syncthreads();
           if (tid == 0) s_running += aggregate;
           __syncthreads();
@@ -332,6 +367,11 @@ decode_step_kernel(DecodeParams p) {
       if (a >= 0) atom_row[a] = true;
     }
   }
+  //: THE PROLOGUE ENDS ON THIS BARRIER AND THERE IS NO OTHER BELOW IT. It publishes the
+  //: claim row to the walk and the zeroed warp arrival count to the combine -- shared memory
+  //: is not zeroed at CTA start, and this is the one place a zero can be published for free.
+  //: docs/internals/decode/decode.md#no-barrier
+  if (tid == 0) s_arrive = 0;
   __syncthreads();
 
   //: A NEEDY BATCH-HEAD RUNS NOTHING: no walk, no `y`, no state, no counter beyond its
@@ -340,15 +380,20 @@ decode_step_kernel(DecodeParams p) {
   //: docs/internals/decode/decode.md#per-bh-verdict
   //: `n_live` -- the same bound the retirement test above asked as a COMPARE, formed here
   //: because the combine and the arrival need the NUMBER rather than the answer.
-  const int want_live = ceil_div_int(umax, kDecodeWarps);
+  const int want_live = ceil_div_int(umax, kUnitBlockWarps);
   const int n_live = want_live < 1 ? 1 : (want_live > p.n_split ? p.n_split : want_live);
 
-  if (!needy) {
-    float acc[NC];
+  //: THE WARP'S OWN PARTIAL, and it exists whether or not the warp walks anything: the
+  //: combine is an ARRIVAL COUNT, so every warp of a live CTA deposits and arrives, and a
+  //: warp whose units are all beyond this term's count deposits exact zeros. Retirement at
+  //: warp grain is therefore the walk it does not run, never an early `return`:
+  //: docs/internals/decode/decode.md#the-warp-arrival
+  float acc[NC];
 #pragma unroll
-    for (int q = 0; q < NC; ++q) acc[q] = 0.0f;
-    float acc_m = 0.0f;
+  for (int q = 0; q < NC; ++q) acc[q] = 0.0f;
+  float acc_m = 0.0f;
 
+  if (!needy) {
     //: THE PAGED BASE TRANSLATION, resolved ONCE PER TOUCHED ATOM. The table row is
     //: pinned here (a plain origin, no per-atom widening multiply); the cache is keyed on
     //: the atom VALUE, so it is correct whatever order the walk reaches leaves in.
@@ -356,11 +401,22 @@ decode_step_kernel(DecodeParams p) {
     //: `bh * N + (atom << 4)` (which is why a topology whose `N` is not a whole number of
     //: atoms still addresses correctly -- the two halves recombine to `bh * N + leaf`),
     //: paged is `slot << 4`. docs/internals/decode/decode.md#paged-address
-    //: A CLAIMING STEP WALKS THE SHADOW ROW, and that is the whole of the pool inside
-    //: the walk: one pointer, chosen once: docs/internals/decode/decode.md#the-claim
+    //: A CLAIMING STEP READS TWO SOURCES: the page table first, and this step's CLAIM ROW
+    //: only where the table says absent. That is the whole of the pool inside the walk, and
+    //: it is the shape the race-free claim row forces -- the row no longer carries the
+    //: table's own entries, so it cannot answer for an atom it did not claim.
+    //: THE TABLE COMES FIRST BECAUSE IT ANSWERS ALMOST EVERY ATOM: a claiming step's newly
+    //: claimed atoms are by construction the ones the table does NOT map, so the fallback is
+    //: taken only on them and every resident atom costs one load, as before.
+    //: THE TWO CAN NEVER DISAGREE. `_admit_pages` writes only atoms the table has as absent
+    //: and there is no eviction, so a slot never moves once assigned; a claim row entry from
+    //: an earlier step therefore equals the table's. The one path that could break that is
+    //: `PageArena.reset`, which clears the table and rewinds the allocator -- so it now
+    //: clears this row too (`rola/ops/paging.py`). docs/internals/decode/decode.md#the-claim
     const int32_t* page_row =
-        !paged ? nullptr
-               : (claimed ? p.pool_map : p.page_tbl) + static_cast<int64_t>(bh) * p.atoms_per_bh;
+        !paged ? nullptr : p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
+    const int32_t* claim_row =
+        (paged && claimed) ? p.pool_map + static_cast<int64_t>(bh) * p.atoms_per_bh : nullptr;
     const int64_t dense_bh_base = static_cast<int64_t>(bh) * p.N;
     int cached_atom = -1;
     int64_t atom_base = 0;
@@ -388,18 +444,31 @@ decode_step_kernel(DecodeParams p) {
     //: `+2.3 ns` per unit, which cost the scattered cell more than the decomposition saves.
     //: docs/internals/decode/decode.md#the-term-loop
     for (int term = 0; term <= D; ++term) {
+      //: THE TERM'S ROW OF THE PACKED TABLE, hoisted once per term: every level's kind,
+      //: field width, field position and realized count is loop-invariant inside the term,
+      //: so the resolver below reads ONE word per level instead of three:
+      //: docs/internals/decode/decode_lattice.md#the-terms
       const int units = s_units[term];
+      const int32_t* fld = s_fld + term * kMaxLevels;
+      //: THE BLOCK, THE REPEAT AND THE PERIOD. A warp's low `kUnitBlockWarpsBits` name its
+      //: unit inside the segment's block; the rest name WHICH of the CTA's `kUnitRepeats`
+      //: blocks it serves, one period apart. `seg * kUnitBlockWarps + ub` sweeps one whole
+      //: period bijectively, so the partition is the same one-owner-per-row partition it
+      //: was, cut at a granularity the CTA's width no longer sets.
+      const int period = p.n_split * kUnitBlockWarps;
+      const int ub = warp & (kUnitBlockWarps - 1);
+      const int ur = warp >> kUnitBlockWarpsBits;
       #pragma unroll 1
-      for (int unit = seg * kDecodeWarps + warp; unit < units; unit += p.n_split * kDecodeWarps) {
+      for (int unit = seg * kUnitBlockWarps + ub + ur * period; unit < units;
+           unit += period * kUnitRepeats) {
         //: TWO RESOLVERS, ONE WALK. The write product is enumerated from live DIGITS and
         //: every other term from live owners crossed with the run radix; both hand back the
         //: identical `Unit<D>`, and the selector is the term loop's own invariant.
         //: docs/internals/decode/decode_lattice.md#the-write-grain
-        const Unit<D> u =
-            (term == 0) ? resolve_write_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd, olist,
-                                                       dlist, s_n_o, s_n_d, s_bits, s_shift, unit)
-                        : resolve_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd, olist, s_n_o,
-                                                 s_bits, s_shift, term, unit);
+        const Unit<D> u = (term == 0) ? resolve_write_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w,
+                                                                     sd, olist, dlist, fld, unit)
+                                      : resolve_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd,
+                                                               olist, fld, term, unit);
         const uint32_t br = u.live_r ? u.cr : 0u;
         const uint32_t bw = u.live_w ? u.cw : 0u;
         //: THE ENUMERATED RUN IS THIS TERM'S. Term 0 walks the write run; every other term
@@ -434,7 +503,8 @@ decode_step_kernel(DecodeParams p) {
           if (atom != cached_atom) {
             cached_atom = atom;
             if (page_row != nullptr) {
-              const int slot = page_row[atom];
+              int slot = page_row[atom];
+              if (slot < 0 && claim_row != nullptr) slot = claim_row[atom];
               atom_present = slot >= 0;
               atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
             } else {
@@ -500,82 +570,128 @@ decode_step_kernel(DecodeParams p) {
         }
       }
     }
+  }
 
-    // ---- the 8-way cross-warp fold, in FIXED warp order ------------------------
-    //: HAZARD fold-bank-padding -- docs/internals/decode/decode.md#fold-bank-padding
-    const int fold_pitch = cols + 3;
+  // ---- THE COMBINE: one deposit, one arrival, one summing warp ----------------
+  //: ZERO `__syncthreads` BELOW THE PROLOGUE, and this is the mechanism that removes the
+  //: last of them. Each warp deposits its `cols` partials into ITS OWN shared row, fences,
+  //: and bumps the CTA's arrival count with one atomic; the LAST ARRIVER -- and no barrier
+  //: -- is what makes "every row is written" true, and it alone sums them.
+  //: DETERMINISM SURVIVES BECAUSE THE ORDER IS FIXED, not because the arrivals are: the sum
+  //: runs over warps `0 .. kDecodeWarps - 1` per column, exactly the order the barrier-stepped
+  //: tree it replaces used, so `y` is byte-reproducible at a fixed `n_split` as before.
+  //: EVERY LANE FENCES ITS OWN STORES before the one-lane arrival, and every lane fences
+  //: again after the broadcast before it reads a sibling's row (KERNEL_STANDARDS 12: a fence
+  //: orders only the fencing thread).
+  //: HAZARD fold-bank-padding -- docs/internals/decode/decode.md#fold-bank-padding
+  const int fold_pitch = cols + 3;
+  float* my_row = fold + warp * fold_pitch;
 #pragma unroll
-    for (int q = 0; q < NC; ++q) fold[warp * fold_pitch + lane + 32 * q] = acc[q];
-    if (lane == 0) fold[warp * fold_pitch + DV] = acc_m;
-    __syncthreads();
-    if (tid < cols) {
-      float t = 0.0f;
-#pragma unroll
-      for (int wq = 0; wq < kDecodeWarps; ++wq) t += fold[wq * fold_pitch + tid];
-      part[tid] = sr * t;  // sr == 1 under global; kept as the one scale site
-    }
-    __syncthreads();
+  for (int q = 0; q < NC; ++q) my_row[lane + 32 * q] = acc[q];
+  if (lane == 0) my_row[DV] = acc_m;
+  __threadfence_block();
+  __syncwarp();
+  int arrived = 0;
+  if (lane == 0) arrived = atomicAdd(&s_arrive, 1);
+  arrived = __shfl_sync(0xffffffffu, arrived, 0);
+  if (arrived != kDecodeWarps - 1) return;
+  __threadfence_block();
 
-    // ---- the deterministic split-K combine, and the fused divide ---------------
-    //: OVER THE LIVE SEGMENTS, NOT OVER THE CEILING -- and this is where retirement is
-    //: actually paid for. The per-segment cost a large split carries is the ARRIVAL AND
-    //: THE COMBINE (`n_split` atomics on one counter, then `n_split` `__ldcg` loads per
-    //: column on ONE CTA), not the replicated prologue: a variant that retired the walk
-    //: but still wrote exact zeros and arrived was BUILT AND MEASURED AT ZERO. The order
-    //: is still a FIXED ASCENDING SLOT ORDER over a range every CTA of the batch-head
-    //: derives identically from the published counts, which is the whole of G1; `y` moves
-    //: across `n_split` exactly as it always did (fp32 addition is not associative) and is
-    //: byte-identical at a fixed one. docs/internals/decode/decode.md#slot-order
-    if (n_live > 1) {
+  //: THE MASS COLUMN IS READ BY EVERY LANE, not by lane 0 alone: the value is the same
+  //: broadcast load for all of them and it is the denominator every lane divides by, so
+  //: carrying it in all 32 registers costs one load and saves the shuffle.
+  float part[NC];
+#pragma unroll
+  for (int q = 0; q < NC; ++q) part[q] = 0.0f;
+  float part_m = 0.0f;
+#pragma unroll
+  for (int wq = 0; wq < kDecodeWarps; ++wq) {
+    const float* row = fold + wq * fold_pitch;
+#pragma unroll
+    for (int q = 0; q < NC; ++q) part[q] += row[lane + 32 * q];
+    part_m += row[DV];
+  }
+#pragma unroll
+  for (int q = 0; q < NC; ++q) part[q] *= sr;  // sr == 1 under global; the one scale site
+  part_m *= sr;
+
+  // ---- the deterministic split-K combine, and the fused divide ---------------
+  //: OVER THE LIVE SEGMENTS, NOT OVER THE CEILING -- and this is where retirement is
+  //: actually paid for. The per-segment cost a large split carries is the ARRIVAL AND
+  //: THE COMBINE (`n_split` atomics on one counter, then `n_split` `__ldcg` loads per
+  //: column on ONE warp), not the replicated prologue: a variant that retired the walk
+  //: but still wrote exact zeros and arrived was BUILT AND MEASURED AT ZERO. The order
+  //: is still a FIXED ASCENDING SLOT ORDER over a range every CTA of the batch-head
+  //: derives identically from the published counts, which is the whole of G1; `y` moves
+  //: across `n_split` exactly as it always did (fp32 addition is not associative) and is
+  //: byte-identical at a fixed one. docs/internals/decode/decode.md#slot-order
+  //: A NEEDY BATCH-HEAD'S CTAs ARRIVE ANYWAY and deposit nothing. The arrival is what
+  //: elects one CTA to publish the verdict below, and electing it from the same counter the
+  //: combine uses is what makes "no CTA of this batch-head is still reading" the SAME
+  //: argument in both cases: docs/internals/decode/decode.md#the-last-arriver
+  if (n_live > 1) {
+    if (!needy) {
       float* slot = p.ws + (static_cast<int64_t>(bh) * p.n_split + seg) * cols;
-      if (tid < cols) slot[tid] = part[tid];
-      __threadfence();
-      __syncthreads();
-      if (tid == 0) {
-        s_last_cta = (atomicAdd(&p.ctr[bh], 1) == n_live - 1) ? 1 : 0;
-      }
-      __syncthreads();
-      if (s_last_cta == 0) return;
-
-      //: SLOT ORDER, always -- the whole determinism argument. `__ldcg` bypasses L1 so
-      //: the reader sees the stores the `__threadfence` above made visible.
-      //: HAZARD slot-order -- docs/internals/decode/decode.md#slot-order
-      if (tid < cols) {
-        const float* base = p.ws + static_cast<int64_t>(bh) * p.n_split * cols;
-        float t = 0.0f;
-        #pragma unroll 1
-        for (int s = 0; s < n_live; ++s) t += __ldcg(base + static_cast<int64_t>(s) * cols + tid);
-        part[tid] = t;
-      }
-      __syncthreads();
-      //: Reset for the next step: no `memset` launch between two decode steps, and the
-      //: counter is safe to capture in a CUDA graph.
-      if (tid == 0) p.ctr[bh] = 0;
+#pragma unroll
+      for (int q = 0; q < NC; ++q) slot[lane + 32 * q] = part[q];
+      if (lane == 0) slot[DV] = part_m;
     }
-    if (tid < DV) {
-      const float den = part[DV];
-      p.y[static_cast<int64_t>(bh) * DV + tid] = part[tid] / (den + p.eps);
-    }
-  } else if (n_live > 1) {
-    //: A needy batch-head's CTAs ARRIVE ANYWAY. The arrival is what elects one CTA to
-    //: publish the verdict below, and electing it from the same counter the combine uses
-    //: is what makes "no CTA of this batch-head is still reading" the SAME argument in
-    //: both branches: docs/internals/decode/decode.md#the-last-arriver
     __threadfence();
-    __syncthreads();
-    if (tid == 0) {
-      s_last_cta = (atomicAdd(&p.ctr[bh], 1) == n_live - 1) ? 1 : 0;
+    __syncwarp();
+    int last_cta = 0;
+    if (lane == 0) last_cta = (atomicAdd(&p.ctr[bh], 1) == n_live - 1) ? 1 : 0;
+    last_cta = __shfl_sync(0xffffffffu, last_cta, 0);
+    if (last_cta == 0) return;
+    __threadfence();
+
+    //: SLOT ORDER, always -- the whole determinism argument. `__ldcg` bypasses L1 so
+    //: the reader sees the stores the `__threadfence` above made visible.
+    //: HAZARD slot-order -- docs/internals/decode/decode.md#slot-order
+    if (!needy) {
+      const float* base = p.ws + static_cast<int64_t>(bh) * p.n_split * cols;
+#pragma unroll
+      for (int q = 0; q < NC; ++q) part[q] = 0.0f;
+      part_m = 0.0f;
+      //: UNROLLED FOR MEMORY-LEVEL PARALLELISM, and the factor is a MEASURED one. The trip
+      //: count is dynamic, so KERNEL_STANDARDS 6 asks for the pragma to be explicit -- and
+      //: at `1` it is a correctness defect on this loop, not a style choice: the `n_live`
+      //: loads are INDEPENDENT (only the adds chain), and forbidding the unroll leaves one
+      //: load in flight, which measured 26.6 us of a 93 us dense step on ONE warp of ONE CTA
+      //: while 79 SMs idled -- 50 % of the scattered step.
+      //: docs/internals/decode/decode.md#slot-order
+#pragma unroll 8
+      for (int sl = 0; sl < n_live; ++sl) {
+        const float* row = base + static_cast<int64_t>(sl) * cols;
+#pragma unroll
+        for (int q = 0; q < NC; ++q) part[q] += __ldcg(row + lane + 32 * q);
+        //: THE MASS COLUMN IS ONE LANE'S HERE, not every lane's -- the opposite of the
+        //: CTA fold above, and for the opposite reason: this loop's length IS the step's
+        //: tail, so a broadcast load every lane repeats is a third of the only critical
+        //: path left in the kernel. It is broadcast once, at the divide.
+        if (lane == 0) part_m += __ldcg(row + DV);
+      }
     }
-    __syncthreads();
-    if (s_last_cta == 0) return;
-    if (tid == 0) p.ctr[bh] = 0;
+    //: Reset for the next step: no `memset` launch between two decode steps, and the
+    //: counter is safe to capture in a CUDA graph.
+    if (lane == 0) p.ctr[bh] = 0;
+  }
+  if (!needy) {
+    const float den = __shfl_sync(0xffffffffu, part_m, 0) + p.eps;
+#pragma unroll
+    for (int q = 0; q < NC; ++q) {
+      p.y[static_cast<int64_t>(bh) * DV + lane + 32 * q] = part[q] / den;
+    }
   }
 
   if (!paged) return;
 
-  // ---- the per-batch-head publication, by its LAST-ARRIVING CTA ---------------
+  // ---- the per-batch-head publication, by its LAST-ARRIVING WARP --------------
   //: EVERY MUTATION A SIBLING CTA COULD HAVE READ HAPPENS HERE AND NOWHERE ELSE, which
   //: is why it is safe: docs/internals/decode/decode.md#the-last-arriver
+  //: IT IS ONE WARP'S WORK NOW, not the CTA's, and that is the barrier deletion's price
+  //: paid where it is cheapest: the CTA's other warps have already retired at the arrival
+  //: count, so the fold is lane-strided over the page table row and its size is folded by a
+  //: warp shuffle instead of a block scan. It runs only on a CLAIMING step.
   if (claimed) {
     //: THE CLAIM'S SIZE FALLS OUT OF THE FOLD ITSELF -- an atom the shadow row maps and
     //: the table does not IS a claimed atom -- so it is neither carried across the walk
@@ -583,49 +699,46 @@ decode_step_kernel(DecodeParams p) {
     //: through the loop the register budget is tight in, and both were measured to spill:
     //: docs/internals/decode/decode.md#declared-residency
     const int64_t row_base = static_cast<int64_t>(bh) * p.atoms_per_bh;
-    int32_t* page_row = p.page_tbl + row_base;
+    int32_t* table_row = p.page_tbl + row_base;
     const int32_t* pool_row = p.pool_map + row_base;
     int folded = 0;
     #pragma unroll 1
-    for (int a = tid; a < p.atoms_per_bh; a += kDecodeThreads) {
+    for (int a = lane; a < p.atoms_per_bh; a += 32) {
       const int slot = pool_row[a];
-      if (slot >= 0 && page_row[a] < 0) {
-        page_row[a] = slot;
+      if (slot >= 0 && table_row[a] < 0) {
+        table_row[a] = slot;
         ++folded;
       }
     }
-    int excl = 0;
-    int taken = 0;
-    LatticeScan(scan_temp).ExclusiveSum(folded, excl, taken);
-    if (tid == 0) p.pool_cursor[bh] += taken;
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) folded += __shfl_down_sync(0xffffffffu, folded, off);
+    if (lane == 0) p.pool_cursor[bh] += folded;
   }
-  if (tid == 0) {
+  if (lane == 0) {
     p.growth[bh] = needy ? 1 : 0;
     if (!needy) p.done[bh] = 1;
   }
   __threadfence();
-  __syncthreads();
-  if (tid == 0) s_last_cta = (atomicAdd(p.growth_ctr, 1) == p.BH - 1) ? 1 : 0;
-  __syncthreads();
-  if (s_last_cta == 0) return;
+  __syncwarp();
+  int last_bh = 0;
+  if (lane == 0) last_bh = (atomicAdd(p.growth_ctr, 1) == p.BH - 1) ? 1 : 0;
+  last_bh = __shfl_sync(0xffffffffu, last_bh, 0);
+  if (last_bh == 0) return;
+  __threadfence();
 
   //: THE REDUCTION THE HOST READS, and the done flags' self-reset. Nothing needy means
   //: every batch-head is done, so the two answers are ONE test and no launch stands
   //: between two steps: docs/internals/decode/decode.md#growth-reduction
-  __shared__ int s_any;
-  if (tid == 0) s_any = 0;
-  __syncthreads();
   int seen = 0;
   #pragma unroll 1
-  for (int i = tid; i < p.BH; i += kDecodeThreads) seen |= __ldcg(p.growth + i);
-  if (seen) s_any = 1;
-  __syncthreads();
-  if (s_any == 0) {
+  for (int i = lane; i < p.BH; i += 32) seen |= __ldcg(p.growth + i);
+  const bool any_needy = __any_sync(0xffffffffu, seen != 0);
+  if (!any_needy) {
     #pragma unroll 1
-    for (int i = tid; i < p.BH; i += kDecodeThreads) p.done[i] = 0;
+    for (int i = lane; i < p.BH; i += 32) p.done[i] = 0;
   }
-  if (tid == 0) {
-    *p.growth_any = s_any;
+  if (lane == 0) {
+    *p.growth_any = any_needy ? 1 : 0;
     *p.growth_ctr = 0;
   }
 }
@@ -633,12 +746,12 @@ decode_step_kernel(DecodeParams p) {
 }  // namespace detail
 
 size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int olist_total, int dlist_total) {
+                              int omask_total, int olist_total, int dlist_total) {
   const size_t amps = static_cast<size_t>(total_rows) * (decay ? 3 : 2);
   const size_t fold = static_cast<size_t>(kDecodeWarps) * (cols + 3);
-  const size_t tables = 2 * static_cast<size_t>(mask_total)
-                        + kKinds * static_cast<size_t>(olist_total)
-                        + static_cast<size_t>(dlist_total);
+  const size_t tables =
+      2 * static_cast<size_t>(mask_total) + kKinds * static_cast<size_t>(omask_total)
+      + kKinds * static_cast<size_t>(olist_total) + static_cast<size_t>(dlist_total);
   return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
 }
 
@@ -649,7 +762,7 @@ void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem
   TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
   const int cols = d_v + 1;
   const size_t smem = decode_step_smem_bytes(p.total_rows, d_v, cols, decay, p.mask_total,
-                                             p.olist_total, p.dlist_total);
+                                             p.omask_total, p.olist_total, p.dlist_total);
   TORCH_CHECK(static_cast<int64_t>(smem) <= smem_budget, "the decode step's staged operands need ",
               smem, " B of shared memory against a per-block budget of ", smem_budget,
               " B; sum_l width_l = ", p.total_rows,
@@ -803,6 +916,7 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   p.lat_units_per_atom_shift = p.lat_inner_bits < kAtomShift ? kAtomShift - p.lat_inner_bits : 0;
 
   int mask_total = 0;
+  int omask_total = 0;
   int olist_total = 0;
   int dlist_total = 0;
   for (int l = 0; l < D; ++l) {
@@ -810,15 +924,19 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
     p.mask_off[l] = mask_total;
     p.mask_words[l] = ceil_div_int(p.level_width[l], 32);
     mask_total += p.mask_words[l];
+    p.omask_off[l] = omask_total;
+    p.omask_words[l] = ceil_div_int(p.lat_g[l], 32);
+    omask_total += p.omask_words[l];
     p.olist_off[l] = olist_total;
     olist_total += p.lat_g[l];
     p.dlist_off[l] = dlist_total;
     if (l < D - 1) dlist_total += p.level_width[l];
     TORCH_CHECK(p.lat_g[l] <= kDecodeThreads, "level ", l, "'s owner grid is ", p.lat_g[l],
                 " wide against the ", kDecodeThreads,
-                " threads that build its list in one block pass");
+                " threads that ballot its liveness in one block pass");
   }
   p.mask_total = mask_total;
+  p.omask_total = omask_total;
   p.olist_total = olist_total;
   p.dlist_total = dlist_total;
 }

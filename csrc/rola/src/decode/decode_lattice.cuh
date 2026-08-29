@@ -35,9 +35,10 @@
 // a single visit and the deposit a partition over write owners.
 //
 // FOUR KINDS, ONE PER PER-LEVEL DIGIT SET the terms ask for (`W`, `R`, `R & W`,
-// `R & ~W`), each with its own owner list; the term table says which kind each level of
-// each term takes. The two DIGIT MASKS stay two -- a kind's bits are a boolean function
-// of the read and write bits, formed where they are read.
+// `R & ~W`), each with its own OWNER LIVENESS BITMASK -- one bit per owner coordinate, not
+// a compacted list; the term layout says which kind each level of each term takes. The two
+// DIGIT MASKS stay two -- a kind's bits are a boolean function of the read and write bits,
+// formed where they are read.
 //
 // The lattice's formulas, the capacities and the cost accounting:
 // docs/internals/decode/decode_lattice.md
@@ -103,7 +104,7 @@ __device__ __forceinline__ uint32_t kind_bits(uint32_t r, uint32_t w, int kind) 
 template <int D>
 __device__ __forceinline__ void build_digit_mask(const DecodeParams& p, const float* amp,
                                                  uint32_t* mask) {
-#pragma unroll 1
+  #pragma unroll 1
   for (int idx = threadIdx.x; idx < p.mask_total; idx += kDecodeThreads) {
     int l = 0;
 #pragma unroll
@@ -115,7 +116,7 @@ __device__ __forceinline__ void build_digit_mask(const DecodeParams& p, const fl
     const float* row = amp + p.level_amp_offset[l];
     uint32_t v = 0u;
     const int take = (width - base) < 32 ? (width - base) : 32;
-#pragma unroll 1
+    #pragma unroll 1
     for (int b = 0; b < take; ++b) {
       if (row[base + b] != 0.0f) v |= 1u << b;
     }
@@ -144,28 +145,32 @@ __device__ __forceinline__ bool mask_bit(const DecodeParams& p, const uint32_t* 
   return ((mask[p.mask_off[l] + (bit >> 5)] >> (static_cast<uint32_t>(bit) & 31u)) & 1u) != 0u;
 }
 
-//: THE OWNER LISTS: per KIND and level, the ascending coordinates at which that kind's
-//: digit set has any digit. `n_o` is the realized count. Each thread reads ITS OWNER'S
-//: SPAN ONCE, on both sides, and all four kinds fall out of that one pair of slices;
-//: `lat_g[l] <= kDecodeThreads` follows from the level-width capacity. The caller's
-//: barrier before this must have published both masks.
+//: THE OWNER LIVENESS BITMASK: per KIND and level, ONE BIT PER OWNER COORDINATE, set
+//: where that kind's digit set has any digit inside the owner's span. Thread `tid` owns
+//: owner `tid` on both sides, reads its span ONCE, and all four kinds fall out of that one
+//: pair of slices exactly as they did; `lat_g[l] <= kDecodeThreads` follows from the
+//: level-width capacity, so one pass covers every owner. The caller's barrier before this
+//: must have published both digit masks and zeroed the two count rows.
 //:
-//: TWO SCANS PER LEVEL FOR FOUR OWNER LISTS AND ONE DIGIT LIST, and the packing is why the
-//: prologue did not grow with either count: a level's live-owner count and its live-DIGIT
-//: count are both at most `kDecodeThreads`, so THREE counts ride in three 10-bit fields of
-//: one `int` and cannot carry into one another. THE PROLOGUE IS THE STEP'S DOMINANT COST
-//: WHEREVER `BH` IS SMALL (`n_split` is largest there, and every CTA pays it), so a scan
-//: avoided is worth more than the arithmetic it saves:
-//: docs/internals/decode/decode.md#per-cta-prologue
-//: THE DIGIT LIST IS THE WRITE SIDE'S AND THE OUTER LEVELS' ONLY. Thread `tid` owns owner
-//: `tid` for the owner lists and DIGIT `tid` for the digit list -- two index domains of at
-//: most `kDecodeThreads` each, scanned together.
+//: THE BALLOT IS WHAT REPLACES THE BLOCK SCAN, and that is this function's whole subject.
+//: The compacted lists this supersedes cost FOUR `cub::BlockScan`s and TWO BARRIERS PER
+//: LEVEL to build a table whose only use is `list[i] -> owner`; a warp's 32 lanes already
+//: hold 32 consecutive owners' answers, so ONE `__ballot_sync` per kind IS that level's
+//: word, written by its lane 0, and `list[i]` becomes a find-nth-set over the same word
+//: ([`select_owner`](decode_lattice.md#the-owner-lists)). The realized counts ride the same
+//: word as a popcount, so the level's `n_o` needs no second pass either.
+//: THE COUNTS ARE FOLDED BY ATOMIC, NOT SCANNED: a count is the popcount SUM over a level's
+//: at most eight words, and the eight lane-zeros that hold them are in different warps.
+//: THE DIGIT LIST HAS NO PLANE. Term 0's outer levels enumerate live WRITE DIGITS, and the
+//: write digit mask already IS one bit per digit -- so the list is `mask_w` itself, its
+//: count is `mask_w`'s popcount, and the digit list's scan field disappears with it.
 template <int D>
-__device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const uint32_t* mask_r,
-                                                  const uint32_t* mask_w, int32_t* olist,
-                                                  int32_t* dlist, int32_t* n_o, int32_t* n_d,
-                                                  LatticeScan::TempStorage& scan_temp) {
+__device__ __forceinline__ void build_owner_mask(const DecodeParams& p, const uint32_t* mask_r,
+                                                 const uint32_t* mask_w, uint32_t* omask,
+                                                 int32_t* n_o, int32_t* n_d) {
   const int tid = threadIdx.x;
+  const int lane = tid & 31;
+  const int word = tid >> 5;
 #pragma unroll
   for (int l = 0; l < D; ++l) {
     const int span = p.lat_s[l];
@@ -176,42 +181,105 @@ __device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const u
       r = level_slice(p, mask_r, l, lo, span);
       w = level_slice(p, mask_w, l, lo, span);
     }
-    const bool outer = l < D - 1;
-    const bool digit_live = outer && tid < p.level_width[l] && mask_bit(p, mask_w, l, tid);
-    //: §6: kKinds/2 is compile-time (kKinds is a file-level constexpr) but the
-    //: heuristic only reads a bare identifier, so name the halved count.
-    constexpr int kKindPairs = kKinds / 2;
+    //: HAZARD ballot-uniformity -- docs/internals/decode/decode_lattice.md#ballot-uniformity
+    const bool keep = lane == 0 && word < p.omask_words[l];
 #pragma unroll
-    for (int pair = 0; pair < kKindPairs; ++pair) {
-      const int k_lo = 2 * pair;
-      const int k_hi = k_lo + 1;
-      const bool live_lo = tid < p.lat_g[l] && kind_bits(r, w, k_lo) != 0u;
-      const bool live_hi = tid < p.lat_g[l] && kind_bits(r, w, k_hi) != 0u;
-      //: The digit list rides the FIRST pair's scan; the second pair leaves that field zero.
-      const bool ride = (pair == 0) && digit_live;
-      int excl = 0;
-      int total = 0;
-      LatticeScan(scan_temp).ExclusiveSum(
-          (live_lo ? 1 : 0) | (live_hi ? 1 << 10 : 0) | (ride ? 1 << 20 : 0), excl, total);
-      if (live_lo) olist[k_lo * p.olist_total + p.olist_off[l] + (excl & 0x3ff)] = tid;
-      if (live_hi) olist[k_hi * p.olist_total + p.olist_off[l] + ((excl >> 10) & 0x3ff)] = tid;
-      if (ride) dlist[p.dlist_off[l] + (excl >> 20)] = tid;
-      if (tid == 0) {
-        n_o[k_lo * kMaxLevels + l] = total & 0x3ff;
-        n_o[k_hi * kMaxLevels + l] = (total >> 10) & 0x3ff;
-        if (pair == 0) n_d[l] = outer ? (total >> 20) : 0;
+    for (int k = 0; k < kKinds; ++k) {
+      const uint32_t bits = __ballot_sync(0xffffffffu, kind_bits(r, w, k) != 0u);
+      if (keep) {
+        omask[k * p.omask_total + p.omask_off[l] + word] = bits;
+        atomicAdd(&n_o[k * kMaxLevels + l], __popc(bits));
       }
-      __syncthreads();
+    }
+    if (l < D - 1 && tid < p.mask_words[l]) {
+      atomicAdd(&n_d[l], __popc(mask_w[p.mask_off[l] + tid]));
     }
   }
 }
 
-//: THE TERM LAYOUT: each term's own rank space. `bits` is a level's power-of-two padding
-//: and `shift` the padded field's position in that term's rank, so a rank decomposes by
-//: shifts and a padded-past-the-end index is skipped rather than divided around; a term
-//: whose kind is empty at any level contributes NO units at all, which is how
-//: `R_l <= W_l` at every level -- the dense cell -- collapses the whole read remainder to
-//: nothing and leaves the walk exactly the write product.
+//: THE COMPACTION, AND IT COSTS ONE `POPC` PER WORD. An owner that the ballot found live
+//: writes ITSELF into its rank slot: its rank is the popcount of its kind's bits below it,
+//: which is at most `kDecodeMaxLevelWidth / 32 = 8` popcounts and, at every topology whose
+//: level is 32 owners or narrower, exactly one. The caller's barrier before this must have
+//: published `omask`.
+//:
+//: WHY NOT SELECT AT USE TIME. Reading the bitmask directly -- `select(i-th set bit)` by
+//: `__fns` -- deletes these planes entirely, and was BUILT AND MEASURED: `__fns` is not one
+//: instruction on sm_86 but ~56 SASS with reconvergence-stack ops, and the ADMISSION
+//: resolves one owner rank per LEVEL per CANDIDATE ATOM per CTA per step (4096 candidates
+//: at the flagship), so the select cost +2.3M instructions on the dense step -- +25 % of the
+//: whole step, against a prologue saving of a tenth of that. THE SCAN IS STILL GONE: what
+//: this replaces is `cub::BlockScan`, four of them per level with two barriers, not the
+//: list. docs/internals/decode/decode_lattice.md#the-owner-lists
+template <int D>
+__device__ __forceinline__ void compact_owner_lists(const DecodeParams& p, const uint32_t* omask,
+                                                    const uint32_t* mask_w, int32_t* olist,
+                                                    int32_t* dlist) {
+  const int tid = threadIdx.x;
+  const int w_hi = tid >> 5;
+  const uint32_t below = (1u << (tid & 31)) - 1u;
+#pragma unroll
+  for (int l = 0; l < D; ++l) {
+    if (tid < p.lat_g[l]) {
+#pragma unroll
+      for (int k = 0; k < kKinds; ++k) {
+        const uint32_t* wds = omask + k * p.omask_total + p.omask_off[l];
+        if (((wds[w_hi] >> (tid & 31)) & 1u) != 0u) {
+          int rank = __popc(wds[w_hi] & below);
+#pragma unroll 1
+          for (int w = 0; w < w_hi; ++w) rank += __popc(wds[w]);
+          olist[k * p.olist_total + p.olist_off[l] + rank] = tid;
+        }
+      }
+    }
+    if (l < D - 1 && tid < p.level_width[l] && mask_bit(p, mask_w, l, tid)) {
+      const uint32_t* wds = mask_w + p.mask_off[l];
+      int rank = __popc(wds[w_hi] & below);
+#pragma unroll 1
+      for (int w = 0; w < w_hi; ++w) rank += __popc(wds[w]);
+      dlist[p.dlist_off[l] + rank] = tid;
+    }
+  }
+}
+
+//: A LEVEL'S RANK FIELD, PACKED INTO ONE REGISTER, and the packing is a REGISTER BUDGET
+//: decision measured on the deepest arm: three parallel `int[D]` arrays cost twelve live
+//: registers at `D = 4` and spilled the `d_v = 64` walk against its 64-register cap, while
+//: one packed word per level costs four and unpacks in two ALU ops. The three fields are
+//: the padded field's POSITION in the term's rank (5 bits -- at most `D` levels of at most
+//: `kFieldWidthMax` bits each), its WIDTH (5 bits) and the level's REALIZED COUNT (the rest),
+//: which a padded-past-the-end index is refused against.
+constexpr int kFieldWidthMax = 10;
+static_assert(kDecodeMaxLevelWidth <= (1 << kFieldWidthMax),
+              "a level's realized owner or digit count must fit the packed field's width");
+static_assert(5 + 5 + kFieldWidthMax <= 32,
+              "the packed field's three sub-fields must fit one 32-bit word");
+
+__device__ __forceinline__ int field_pack(int shift, int width, int count) {
+  return shift | (width << 5) | (count << 10);
+}
+__device__ __forceinline__ int field_shift(int f) { return f & 31; }
+__device__ __forceinline__ int field_width(int f) { return (f >> 5) & 31; }
+__device__ __forceinline__ int field_count(int f) { return f >> 10; }
+//: THE LEVEL'S INDEX OUT OF A TERM'S RANK: the padded field, extracted by shifts alone.
+__device__ __forceinline__ int field_index(int f, int rank) {
+  return (rank >> field_shift(f)) & ((1 << field_width(f)) - 1);
+}
+
+//: THE TERM LAYOUT: each term's own rank space, DERIVED INTO REGISTERS BY WHOEVER NEEDS
+//: IT. `fld[l]` packs level `l`'s field position, its power-of-two padding and its realized
+//: count, so a rank decomposes by shifts and nothing is divided around; the
+//: return is the term's unit count, and a term whose kind is empty at any level contributes
+//: NO units at all -- which is how `R_l <= W_l` at every level (the dense cell) collapses
+//: the whole read remainder to nothing and leaves the walk exactly the write product.
+//:
+//: ONE PACKED WORD PER LEVEL IS WHAT THE WALK READS, and it replaces THREE reads -- the
+//: field width, the field position and the level's realized count were three separate
+//: shared-memory arrays. The table stays a PER-CTA PROLOGUE OBJECT rather than a per-warp
+//: register set, and that is a REGISTER BUDGET fact, measured: holding `D` field words live
+//: across the walk spilled 48 words at the `D = 4` arm against the 64-register cap that
+//: 1024 resident threads impose, while the packed table costs no register at all and one
+//: third of the loads. docs/internals/decode/decode_lattice.md#the-owner-lists
 //:
 //: THREE LAYOUTS, NOT ONE, and the difference between them is this file's subject.
 //:   * TERM 0, THE WRITE PRODUCT, enumerates LIVE DIGITS at every level but the innermost
@@ -230,47 +298,45 @@ __device__ __forceinline__ void build_owner_lists(const DecodeParams& p, const u
 //:     ([`decode.md#candidate-atoms`]). The walk needs no such order and does not pay for
 //:     one; the claim keeps exactly the enumeration it was ratified on.
 //:
-//: ONE THREAD PER TERM, because the terms are independent: `D + 2` threads do at most
-//: `D` `ceil_log2`s each instead of one thread doing twenty-four in series while 255 wait.
-//: `umax` -- the largest count the WALK's terms reach, which is the retirement bound --
-//: is folded here by `atomicMax` inside this function's OWN barrier, so no CTA pays a
-//: second block synchronisation to learn it: docs/internals/decode/decode.md#retirement
+//: THE FIELD ORDER IS INNERMOST-LEAST-SIGNIFICANT at every term, and it is a DRAM decision:
+//: putting term 0's outer DIGIT field lowest instead sweeps one atom out of every `s_0`
+//: across the whole plane before returning for the next, which measured +2.6 % on the dense
+//: cell; this order consumes one level-0 owner's whole region before moving on.
 template <int D>
-__device__ __forceinline__ void build_term_layout(const DecodeParams& p, const int32_t* n_o,
-                                                  const int32_t* n_d, int32_t* bits, int32_t* shift,
-                                                  int32_t* units, int32_t* umax) {
+__device__ __forceinline__ int term_layout(const DecodeParams& p, const int32_t* n_o,
+                                           const int32_t* n_d, int term, int32_t* fld) {
+  int acc = 0;
+  bool empty = false;
+#pragma unroll
+  for (int l = D - 1; l >= 0; --l) {
+    const int count = (term >= 1 && term <= D)   ? n_o[term_kind(term, l, D) * kMaxLevels + l]
+                      : (term == 0 && l < D - 1) ? n_d[l]
+                                                 : n_o[kKindW * kMaxLevels + l];
+    const int width = ceil_log2_dev(count);
+    fld[l] = field_pack(acc, width, count);
+    acc += width;
+    empty = empty || count == 0;
+  }
+  if (empty) return 0;
+  return (term == 0) ? (1 << acc) : (1 << (acc + p.lat_outer_bits));
+}
+
+//: THE WHOLE TABLE AND THE RETIREMENT BOUND, published once per CTA. ONE THREAD PER TERM,
+//: because the terms are independent: `D + 2` threads do at most `D` `ceil_log2`s each
+//: instead of one thread doing twenty-four in series while the rest wait. `umax` -- the
+//: largest count the WALK's terms reach, which is the retirement bound -- is folded by
+//: `atomicMax` inside this function's OWN barrier, so no CTA pays a second block
+//: synchronisation to learn it: docs/internals/decode/decode.md#retirement
+//: The candidate slot is not the walk's, so it is not in the retirement bound.
+template <int D>
+__device__ __forceinline__ void publish_term_layout(const DecodeParams& p, const int32_t* n_o,
+                                                    const int32_t* n_d, int32_t* fld,
+                                                    int32_t* units, int32_t* umax) {
   const int t = threadIdx.x;
   if (t <= D + 1) {
-    int acc = 0;
-    bool empty = false;
-    if (t == 0) {
-      //: THE FIELD ORDER IS THE OTHER TERMS' -- innermost level least significant, level 0
-      //: most significant -- and it is a DRAM decision, not a bookkeeping one. Putting the
-      //: outer DIGIT field lowest instead sweeps one atom out of every `s_0` across the
-      //: whole plane before returning for the next, which measured +2.6 % on the dense
-      //: cell; this order consumes one level-0 owner's whole region before moving on.
-#pragma unroll
-      for (int l = D - 1; l >= 0; --l) {
-        const int count = (l == D - 1) ? n_o[kKindW * kMaxLevels + l] : n_d[l];
-        shift[l] = acc;
-        acc += ceil_log2_dev(count);
-        bits[l] = acc - shift[l];
-        empty = empty || count == 0;
-      }
-      units[0] = empty ? 0 : (1 << acc);
-    } else {
-#pragma unroll
-      for (int l = D - 1; l >= 0; --l) {
-        const int count = n_o[term_kind(t, l, D) * kMaxLevels + l];
-        shift[t * kMaxLevels + l] = acc;
-        acc += ceil_log2_dev(count);
-        bits[t * kMaxLevels + l] = acc - shift[t * kMaxLevels + l];
-        empty = empty || count == 0;
-      }
-      units[t] = empty ? 0 : (1 << (acc + p.lat_outer_bits));
-    }
-    //: The candidate slot is not the walk's, so it is not in the retirement bound.
-    if (t <= D) atomicMax(umax, units[t]);
+    const int u = term_layout<D>(p, n_o, n_d, t, fld + t * kMaxLevels);
+    units[t] = u;
+    if (t <= D) atomicMax(umax, u);
   }
   __syncthreads();
 }
@@ -339,8 +405,7 @@ template <int D, bool DECAY>
 __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uint32_t* mask_r,
                                                 const uint32_t* mask_w, const float* sa_r,
                                                 const float* sa_w, const float* sd,
-                                                const int32_t* olist, const int32_t* n_o,
-                                                const int32_t* bits, const int32_t* shift, int term,
+                                                const int32_t* olist, const int32_t* fld, int term,
                                                 int local) {
   Unit<D> u;
   int owner = 0;
@@ -357,8 +422,8 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
 #pragma unroll
   for (int l = 0; l < D; ++l) {
     const int kind = term_kind(term, l, D);
-    int i = (rank >> shift[term * kMaxLevels + l]) & ((1 << bits[term * kMaxLevels + l]) - 1);
-    if (i >= n_o[kind * kMaxLevels + l]) {
+    int i = field_index(fld[l], rank);
+    if (i >= field_count(fld[l])) {
       u.valid = false;
       i = 0;
     }
@@ -418,25 +483,24 @@ struct CandidateUnit {
 };
 
 template <int D>
-__device__ __forceinline__ CandidateUnit
-resolve_candidate_unit(const DecodeParams& p, const uint32_t* mask_w, const int32_t* olist,
-                       const int32_t* n_o, const int32_t* bits, const int32_t* shift, int unit) {
+__device__ __forceinline__ CandidateUnit resolve_candidate_unit(const DecodeParams& p,
+                                                                const uint32_t* mask_w,
+                                                                const int32_t* olist,
+                                                                const int32_t* fld, int unit) {
   CandidateUnit u;
   int owner = 0;
   u.valid = true;
   u.live_w = true;
   const int outer = unit & ((1 << p.lat_outer_bits) - 1);
   const int rank = unit >> p.lat_outer_bits;
-  const int32_t* wlist = olist + kKindW * p.olist_total;
-  const int32_t* wn_o = n_o + kKindW * kMaxLevels;
 #pragma unroll
   for (int l = 0; l < D; ++l) {
-    int i = (rank >> shift[l]) & ((1 << bits[l]) - 1);
-    if (i >= wn_o[l]) {
+    int i = field_index(fld[l], rank);
+    if (i >= field_count(fld[l])) {
       u.valid = false;
       i = 0;
     }
-    const int o = wlist[p.olist_off[l] + i];
+    const int o = olist[kKindW * p.olist_total + p.olist_off[l] + i];
     owner += o * p.lat_gsuf[l];
     const int run_base = o * p.lat_s[l];
     if (l == D - 1) {
@@ -465,25 +529,30 @@ resolve_candidate_unit(const DecodeParams& p, const uint32_t* mask_w, const int3
 //: membership test the owner-and-run space has to make per level does not exist here. The
 //: read side still answers for itself, digit by digit.
 template <int D, bool DECAY>
-__device__ __forceinline__ Unit<D> resolve_write_unit(
-    const DecodeParams& p, const uint32_t* mask_r, const uint32_t* mask_w, const float* sa_r,
-    const float* sa_w, const float* sd, const int32_t* olist, const int32_t* dlist,
-    const int32_t* n_o, const int32_t* n_d, const int32_t* bits, const int32_t* shift, int unit) {
+__device__ __forceinline__ Unit<D> resolve_write_unit(const DecodeParams& p, const uint32_t* mask_r,
+                                                      const uint32_t* mask_w, const float* sa_r,
+                                                      const float* sa_w, const float* sd,
+                                                      const int32_t* olist, const int32_t* dlist,
+                                                      const int32_t* fld, int unit) {
   //: THE WARP-LOCALITY ROTATION, and it is the second DRAM decision in this resolver.
   //: The field order above puts the innermost OWNER lowest, so consecutive units are one
   //: owner box apart and a CTA's eight warps reach eight atoms `BC` leaves apart. The
   //: order that fixes THAT -- outer digits lowest -- sweeps one atom in every `s_0` across
   //: the whole plane before returning, which is worse still. Both were measured.
-  //: SO THE LOW `log2(kDecodeWarps)` BITS OF THE LOOP INDEX ARE ROTATED INTO THE BOTTOM OF
-  //: THE FINEST OUTER LEVEL'S FIELD: a CTA's warps then take CONSECUTIVE ATOMS, while the
+  //: SO THE LOW `log2(kUnitBlockWarps)` BITS OF THE LOOP INDEX ARE ROTATED INTO THE BOTTOM OF
+  //: THE FINEST OUTER LEVEL'S FIELD: a block's warps then take CONSECUTIVE ATOMS, while the
   //: CTA's own stride still sweeps one owner region at a time. It is a BIT PERMUTATION of
   //: an index space whose extent is a power of two, so it is a bijection and the partition
   //: -- one owning CTA, warp and lane per deposited row -- is exactly the one it was.
   //: docs/internals/decode/decode_lattice.md#the-write-grain
+  //: The index is CLAMPED, not guarded: at `D == 1` there is no outer level to rotate into
+  //: and the block below does not run, but the subscript is still compiled.
+  constexpr int kRotLevel = (D > 1) ? D - 2 : 0;
   int rank = unit;
   if (D > 1) {
-    const int lo_bits = bits[D - 2] < kDecodeWarpsBits ? bits[D - 2] : kDecodeWarpsBits;
-    const int m = shift[D - 2];
+    const int w = field_width(fld[kRotLevel]);
+    const int lo_bits = w < kUnitBlockWarpsBits ? w : kUnitBlockWarpsBits;
+    const int m = field_shift(fld[kRotLevel]);
     const int lo = unit & ((1 << lo_bits) - 1);
     const int mid = (unit >> lo_bits) & ((1 << m) - 1);
     const int rest = unit >> (lo_bits + m);
@@ -504,8 +573,8 @@ __device__ __forceinline__ Unit<D> resolve_write_unit(
   constexpr int kDm1 = D - 1;
 #pragma unroll
   for (int l = 0; l < kDm1; ++l) {
-    int i = (rank >> shift[l]) & ((1 << bits[l]) - 1);
-    if (i >= n_d[l]) {
+    int i = field_index(fld[l], rank);
+    if (i >= field_count(fld[l])) {
       u.valid = false;
       i = 0;
     }
@@ -520,8 +589,8 @@ __device__ __forceinline__ Unit<D> resolve_write_unit(
   }
   {
     constexpr int l = D - 1;
-    int i = (rank >> shift[l]) & ((1 << bits[l]) - 1);
-    if (i >= n_o[kKindW * kMaxLevels + l]) {
+    int i = field_index(fld[l], rank);
+    if (i >= field_count(fld[l])) {
       u.valid = false;
       i = 0;
     }

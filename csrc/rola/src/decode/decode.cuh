@@ -52,16 +52,48 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
               "MAX_BRANCH_WIDTH: a topology the producer can emit would over-read "
               "the staged amplitude row");
 
-//: The decode step launches 256 threads. The number is pinned by three facts at once
-//: (lane-to-column mapping, the tiled consumer's block size, sm_86 occupancy) and is
-//: not free-floating: docs/internals/decode/decode.md#decode-threads
-constexpr int kDecodeThreads = 256;
+//: THE STEP LAUNCHES ONE FAT CTA PER SM, and that is a SHARING decision before it is an
+//: occupancy one. Every CTA of a step re-derives the identical per-(step, batch-head)
+//: setup -- the fold, the digit masks, the four owner lists, the term table, the write
+//: digit list, and the ADMISSION with its candidate-atom enumeration and page-table probes
+//: -- and those CTAs run PHASE-SYNCHRONIZED, so the duplication has no mutual coverage at
+//: all. THE COST IS WAVES, NOT COPIES: a derivation duplicated across CONCURRENT SMs is
+//: wall-free, and it is paid only where the live CTAs exceed the machine and the copies
+//: SERIALIZE -- 256 thin CTAs over 80 SMs is 3.2 derivations deep per SM, and that depth,
+//: not the count, is what a wider CTA removes. Measured on this path, that derivation is
+//: 51-87 % of the step at `BH = 1` and 18-59 % at `BH = 8`.
+//: WIDENING THE CTA IS WHAT SHARES IT. Intra-CTA sharing is native -- shared memory and a
+//: barrier, which the derivation is already written as -- so a 32-warp CTA derives ONCE
+//: what four 8-warp CTAs derived four times, and derives it on a chain four times shorter
+//: because every loop in it is `for i = tid; i < n; i += blockDim`.
+//: docs/internals/decode/decode.md#decode-threads
+//: THE WIDTH IS THE ARM, and D1 measures two of them: the PRIMARY arm is the fat CTA
+//: (1024 threads, 32 warps, one CTA per SM) and the COMPARISON arm is F512 (two CTAs per
+//: SM). With no barrier after the prologue the two differ only in the single wave's tail,
+//: which is what the ten-pair table decides between:
+//: docs/internals/decode/decode.md#decode-threads
+constexpr int kDecodeThreads = 1024;
 constexpr int kDecodeWarps = kDecodeThreads / 32;
-//: `log2(kDecodeWarps)`: the number of consecutive unit indices ONE CTA's warps cover, and
-//: therefore how many of the loop index's low bits the write walk rotates into its finest
-//: coordinate: docs/internals/decode/decode_lattice.md#the-write-grain
-constexpr int kDecodeWarpsBits = 3;
-static_assert(1 << kDecodeWarpsBits == kDecodeWarps, "kDecodeWarpsBits must be log2(kDecodeWarps)");
+
+//: THE UNIT PARTITION'S GRANULARITY, AND IT IS NOT THE CTA'S WARP COUNT. Widening the CTA
+//: is a decision about WHERE THE DERIVATION IS SHARED; it is not a decision about how
+//: coarsely the unit space is cut, and tying the two together is what made a wider CTA
+//: retire whole SMs. The block a segment owns stays `kUnitBlockWarps` units wide at every
+//: width, so `n_live = ceil(umax / kUnitBlockWarps)` -- the live SEGMENT count, and with it
+//: the machine's coverage -- is the same number at 256 threads and at 1024.
+//: A CTA THEN SPENDS ITS EXTRA WARPS ON MORE BLOCKS, NOT ON A WIDER ONE: its
+//: `kUnitRepeats` groups of `kUnitBlockWarps` warps take `kUnitRepeats` blocks one whole
+//: period apart, so the walk covers the identical unit set in the identical order per
+//: block, every warp is spent wherever units allow, and each block is still the CONTIGUOUS
+//: run the write grain's rotation is built on.
+//: RETIRE WORK, NOT CTAs. docs/internals/decode/decode.md#retirement
+constexpr int kUnitBlockWarps = 8;
+constexpr int kUnitBlockWarpsBits = 3;
+static_assert(1 << kUnitBlockWarpsBits == kUnitBlockWarps,
+              "kUnitBlockWarpsBits must be log2(kUnitBlockWarps)");
+static_assert(kUnitBlockWarps <= kDecodeWarps && kDecodeWarps % kUnitBlockWarps == 0,
+              "a CTA's warps are a whole number of unit blocks");
+constexpr int kUnitRepeats = kDecodeWarps / kUnitBlockWarps;
 
 //: THE LATTICE'S ONE DECLARED CAPACITY, refused loudly at the host entry: an owner's
 //: per-level span is read as a SINGLE 32-bit slice, both when a level's owner grid is
@@ -74,13 +106,26 @@ constexpr int kDecodeMaxSpan = 32;
 //: THE DECLARED RESIDENCY of the step kernel, in CTAs per SM, and it is a BUDGET rather
 //: than a hope: `__launch_bounds__` turns it into a register cap the assembler must meet,
 //: and the census is what proves it met it without spilling. The walk is a latency-bound
-//: stream over state rows, so residency is the one thing it trades registers FOR. TWO
-//: TEMPLATE AXES MOVE IT, each by one CTA: the DECAY arm carries a second per-leaf
-//: product and a survival exponential through the same loop, and the DEEPEST arm carries
-//: three more live registers per level (the staging offset and both sides' intra-sub-box
-//: slices) through the same one. docs/internals/decode/decode.md#declared-residency
+//: stream over state rows, so residency is the one thing it trades registers FOR.
+//: IT IS ONE, AND IT NO LONGER HAS TEMPLATE AXES. At `kDecodeThreads = 1024` a CTA is the
+//: SM's whole resident thread budget that the register file admits (65536 / 1024 = 64
+//: registers per thread), so the DECAY and DEEPEST arms -- which used to buy their extra
+//: live state by giving up a CTA of residency -- keep the same 64-register cap the widest
+//: arm needs, and the shallow arms gain headroom rather than losing it (they ran at a cap
+//: of 51 when five 256-thread CTAs shared the file). ONE is also what makes the derivation
+//: shared: the host's split policy sizes ONE WAVE of this number, so `n_split` becomes
+//: `SMs / BH` fat CTAs and the per-(step, batch-head) setup is derived ONE WAVE DEEP
+//: instead of 3.2. docs/internals/decode/decode.md#declared-residency
+//: IT IS DERIVED FROM THE WIDTH, not written down twice: the register file admits 64
+//: registers per thread across 1024 resident threads, so a CTA of `kDecodeThreads` leaves
+//: room for exactly `1024 / kDecodeThreads` of itself. At 1024 that is the one fat CTA per
+//: SM; at 512 it is two, and both put the same 1024 threads and the same 64-register cap on
+//: the SM. The arm's width is then the ONLY constant a shape change touches.
+constexpr int kDecodeResidentThreads = 1024;
 __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
-  return (decay || levels >= kMaxLevels) ? 4 : 5;
+  (void)decay;
+  (void)levels;
+  return kDecodeResidentThreads / kDecodeThreads;
 }
 
 //: The atom as a SHIFT and a MASK. `kAtomLeaves` itself is the box's
@@ -161,13 +206,27 @@ struct DecodeParams {
   int mask_off[kMaxLevels];
   int mask_words[kMaxLevels];
   int mask_total;
-  //: The union owner-coordinate lists' layout: `lat_g[l]` entries reserved per level.
+  //: THE OWNER LIVENESS BITMASK'S word layout: one bit per OWNER COORDINATE, per level,
+  //: per kind -- `omask_words[l] = ceil(lat_g[l] / 32)` words at `omask_off[l]` of an
+  //: `omask_total`-word plane, one plane per kind. It replaces the four COMPACTED owner
+  //: lists: a rank selects its owner by find-nth-set instead of by an indexed load, which
+  //: is what deletes the prologue's block scans and their barriers:
+  //: docs/internals/decode/decode_lattice.md#the-owner-lists
+  //: THE WRITE SIDE'S LIVE-DIGIT LIST NEEDS NO PLANE AT ALL: the write digit mask IS its
+  //: bitmask, so term 0's grain is the same find-nth-set over `mask_w`:
+  //: docs/internals/decode/decode_lattice.md#the-write-grain
+  int omask_off[kMaxLevels];
+  int omask_words[kMaxLevels];
+  int omask_total;
+  //: THE COMPACTED LISTS THE BITMASK PRODUCES, and they are read exactly as they were
+  //: before D1: `olist[kind][level][i]` is the i-th live owner, one indexed load. The
+  //: bitmask is the BUILDER, not the reader -- a find-nth-set at use time was measured at
+  //: +25 % of the dense step, because the admission resolves one rank per candidate atom
+  //: per CTA: docs/internals/decode/decode_lattice.md#the-owner-lists
   int olist_off[kMaxLevels];
   int olist_total;
-  //: THE WRITE SIDE'S LIVE-DIGIT LIST, OUTER LEVELS ONLY -- `B_l` entries reserved per
-  //: level below the innermost, and nothing for the innermost (which contributes a whole
-  //: run as one slice, not a digit). It is what lets the WRITE PRODUCT enumerate live
-  //: digits where every other term enumerates live owners crossed with a full run radix:
+  //: THE WRITE SIDE'S LIVE-DIGIT LIST, OUTER LEVELS ONLY -- term 0's own grain, compacted
+  //: from `mask_w` by the same prefix popcount:
   //: docs/internals/decode/decode_lattice.md#the-write-grain
   int dlist_off[kMaxLevels];
   int dlist_total;
@@ -265,7 +324,7 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 // ---------------------------------------------------------------------------
 
 size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int olist_total, int dlist_total);
+                              int omask_total, int olist_total, int dlist_total);
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
 
 }  // namespace decode

@@ -290,7 +290,11 @@ the pool cursor are all read by the PROLOGUE of every CTA of a batch-head, and a
 by that batch-head's LAST-ARRIVING CTA — elected from `ctr[bh]`, the split-K counter that
 already existed, which the needy path increments too so that the election is the same
 statement in both branches. A CTA arrives only after it has finished reading, so no CTA of
-a launch can observe a value its own launch wrote. Without that, a done flag set early
+a launch can observe a value its own launch wrote. **IT IS ONE WARP THAT DOES THE
+WRITING**, not the CTA: the elected CTA's other warps have already retired at the arrival
+count ([§29](#the-warp-arrival)), so the page table's fold is lane-strided over the row and
+its size folds by a warp shuffle where a block scan used to be — the barrier deletion's
+price, paid on the claiming step alone. Without that, a done flag set early
 would make a sibling CTA skip its own share of the SAME step, and two CTAs' claims would
 disagree about which atoms are free.
 
@@ -404,16 +408,22 @@ checkable rather than merely written down — and see
 [§33](#producer-width-mirror) for why the mirror is exposed separately from the
 capacity.
 
-## <a id="decode-threads"></a>7. `kDecodeThreads = 256`
+## <a id="decode-threads"></a>7. `kDecodeThreads` — the width IS the arm
 
-Both decode kernels launch 256 threads. The number is not free-floating; three
-things pin it:
+The step launches ONE WAVE, SM-aligned: the host takes the declared residency off the
+kernel's own launch bound and sizes `n_split` from it ([§23](#the-split-policy)), so the
+width is the only constant a shape change touches and `n_split` follows.
 
-1. at `d_v = 64` it is exactly two columns per lane, with 128 B coalesced row
-   loads;
-2. it matched the tiled consumer's `kConsumerThreads`, so the prefill and decode
-   arms of that era agreed on a block size;
-3. 6 CTAs of 256 fill sm_86's 1536-thread limit exactly.
+* **PRIMARY ARM, `kDecodeThreads = 1024`** — 32 warps, ONE CTA per SM. The per-CTA
+  prologue and the ADMISSION are then derived once per SM instead of once per thin CTA,
+  split 32 ways.
+* **COMPARISON ARM, `kDecodeThreads = 512`** — 16 warps, two CTAs per SM. The same 1024
+  resident threads and the same 64-register cap; the two differ only in the single wave's
+  tail, because with no barrier below the prologue there is nothing left for a second
+  resident CTA to interleave WITH.
+
+At `d_v = 64` a warp is exactly two output columns per lane either way, with 128 B
+coalesced row loads — the lane→column map is a property of the warp, not of the CTA.
 
 ## <a id="params-amps"></a>9. `DecodeParams` — the operands, as addresses
 
@@ -551,17 +561,22 @@ and lane, and no atomic touches `state` at all.
 
 ## <a id="no-barrier"></a>17. No barrier per LEAF, and that is the axis that matters
 
-The fold and factor-table prologue costs `O(D)` barriers — two fixed ones (row
-sums, then both sides' rows/value/dials) plus one per (list, level) pair inside
-[`build_owner_lists`](decode_lattice.md#the-owner-lists), because each level's
-owner-grid block scan needs its own barrier before the next level's can reuse
-the same `TempStorage` (at most `2 * kMaxLevels = 8`, `D <= 4`, plus three more
-where `n_split > 1`). That is a function of `D` and never of `N` or of a
-leaf-space bitmap's word count, which is the axis the tiled consumer's
-per-candidate-tile barriers scaled on. Once the tables are built the WALK
-itself needs none: a lane's read contribution and its write-back are one
-statement in program order, and the ordering is UPDATE-THEN-READ because §2's
-survival is inclusive at `j = t` ([§27](#update-then-read)).
+The fold and factor-table prologue costs a FIXED number of barriers and the rest of
+the step costs NONE. Four are unconditional — the read side's row sums, both sides'
+rows/value/dials, the digit masks and the zeroed counts, the owner liveness bitmasks —
+then one closing [`publish_term_layout`](decode_lattice.md#the-owner-lists); the
+admission adds its own where it claims, and the last of them publishes the claim row
+and the zeroed warp arrival count to everything below. The per-(list, level) barriers
+the compacted owner lists needed are gone with the block scans
+([2.1](decode_lattice.md#the-owner-lists)), so the count no longer grows with `D` at
+all — and it never grew with `N` or with a leaf-space bitmap's word count, which is
+the axis the tiled consumer's per-candidate-tile barriers scaled on.
+
+**BELOW THE PROLOGUE THERE IS NOT ONE.** The WALK never needed one: a lane's read
+contribution and its write-back are one statement in program order, and the ordering
+is UPDATE-THEN-READ because §2's survival is inclusive at `j = t`
+([§27](#update-then-read)). The cross-warp fold and the split-K hand-off used to need
+five between them; they are now an ARRIVAL COUNT ([§29](#the-warp-arrival)).
 
 ## <a id="decode-max-exponent"></a>18. `kDecodeMaxExponent` — the same convention, structurally inert here
 
@@ -603,7 +618,8 @@ reason no reduction is needed on the dot ([§15](#gemv-shape)).
 | `v_tok` | `[DV]` fp32 | the token's value, resident |
 | `fold` | `[warps][cols + 3]` fp32 | the cross-warp partials |
 | `mask_r`, `mask_w` | `[mask_total]` u32 | one bit per digit, per side ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)) |
-| `olist` | `[4][olist_total]` i32 | the four KINDS' owner-coordinate lists, per level ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)) |
+| `omask` | `[4][omask_total]` u32 | the four KINDS' owner LIVENESS BITS, one per owner coordinate, per level — the BUILDER of the two lists below ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)) |
+| `olist` | `[4][olist_total]` i32 | those bits compacted: the i-th live owner, one indexed load |
 | `dlist` | `[dlist_total]` i32 | the WRITE side's live digits, OUTER levels only — term 0's own grain ([`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)) |
 
 Every one of them is FILLED BY THIS CTA, from the raw operands and from nothing else: the
@@ -811,12 +827,32 @@ is no epsilon floor: both of §12 rule 2's prohibitions, inherited verbatim.
 The mass column is the `v := 1` column of the identical recurrence, unconditional
 on every arm — one lane-0 statement, never a second path.
 
-## <a id="fold-and-sr"></a>29. The 8-way fold, and where `sr` is applied
+## <a id="fold-and-sr"></a>29. <a id="the-warp-arrival"></a>The cross-warp fold is an ARRIVAL COUNT, and where `sr` is applied
 
-The cross-warp fold runs in FIXED warp order. `sr` is applied THERE, before the
-split-K store, exactly as the tiled kernel emits `sr * y` into `num` and
-`sr * den_acc` into `den`. That makes the combine below a plain sum, and keeps the
-two consumers' dividend and divisor the same objects.
+Every warp of a live CTA deposits its `cols` partials into its OWN row of `fold`,
+fences its own stores, and bumps a shared arrival count with one atomic; the warp that
+reads back `kDecodeWarps - 1` is the last arriver, and it alone sums the rows. No
+barrier is involved and none is available: the count itself is the proof that every row
+is written. Its zero is published by the PROLOGUE's last barrier — shared memory is not
+zeroed at CTA start, and that is the one place a zero costs nothing.
+
+**DETERMINISM SURVIVES BECAUSE THE ORDER IS FIXED, NOT BECAUSE THE ARRIVALS ARE.** The
+sum runs over warps `0 .. kDecodeWarps - 1` per column, which is exactly the order the
+barrier-stepped tree it replaces used, so `y` is byte-reproducible at a fixed `n_split`
+as before ([§30](#slot-order)).
+
+**A WARP THAT WALKS NOTHING STILL DEPOSITS AND ARRIVES.** Retirement at warp grain is
+the walk a warp does not run — its accumulators are exact zeros and adding them changes
+no bit — never an early `return`, which would leave the count short. Retirement at CTA
+grain is unchanged and still returns before the admission ([§22](#retirement)).
+
+**EVERY LANE FENCES ITS OWN ACCESSES**, on both sides of the count: a fence orders only
+the fencing thread, so a leader-only fence before a one-lane atomic would cover one lane
+of thirty-two (`KERNEL_STANDARDS.md` §12).
+
+`sr` is applied by the summing warp, before the split-K store, exactly as the tiled
+kernel emits `sr * y` into `num` and `sr * den_acc` into `den`. That makes the combine
+below a plain sum, and keeps the two consumers' dividend and divisor the same objects.
 
 ## <a id="slot-order"></a>30. The deterministic split-K combine, over the LIVE segments
 
@@ -919,8 +955,10 @@ rather than as a plausible zero is what a gate wants.
 The host entry queries `cudaDevAttrMaxSharedMemoryPerBlock` and `TORCH_CHECK`s
 `decode_step_smem_bytes(...)` against it, naming `sum_l width_l` in the message. That
 function's total is the staged amplitude rows, the dial row, the token value, the
-cross-warp fold buffer and BOTH factor-table blocks (the digit masks and the owner-list
-planes — `2 * mask_total + 2 * olist_total` words, [`decode_lattice.md`](decode_lattice.md)):
+cross-warp fold buffer and BOTH factor-table blocks (the digit masks, the owner liveness
+bitmasks and the two lists they compact into —
+`2 * mask_total + 4 * omask_total + 4 * olist_total + dlist_total` words,
+[`decode_lattice.md`](decode_lattice.md)):
 everything a step's prologue puts in shared memory, all of it. It is **refused loudly
 rather than taken as a slower path** — there is no spill-to-global arm for any of it, and
 there is no second address space for the factor tables to fall back to either.
