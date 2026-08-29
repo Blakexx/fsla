@@ -597,7 +597,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
                              const uint16_t* list, int o0, int ntot) {
       const int nb = (ntot - o0) < C ? (ntot - o0) : C;
       const bool have = prow < nb;
-      const int tok = list[o0 + (have ? prow : nb - 1)];
+      const int tok = have ? list[o0 + prow] : 0;
       uint32_t gain = 0u;
       if constexpr (decltype(Wt)::value)
         gain = have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(

@@ -60,9 +60,18 @@ ROOT = Path(__file__).resolve().parents[1]
 #: no exchange, no panel ring, no shared write list and no carved barriers.  The carved
 #: body is where every shared-memory publish/consume protocol in this family lives, so
 #: it gets its own family row rather than replacing the split one: both bodies run.
+#:
+#: THE FACTS PASS' TWO BITMAP KERNELS GET THEIR OWN ROWS (K48).  Their shared liveness
+#: flag is written by one lane and read by all of them, which is a shared-memory
+#: publish/consume protocol like any other; it reached the lane only incidentally, as a
+#: record inside the carry cell's report, because the carry op launches the facts pass.
+#: A kernel whose hazards are only ever seen through another family's cell has no gate.
 _FAMILY_TESTS = {
     "carry": "tests/oracle/test_carry_vs_oracle.py::test_m3_two_sided_alt_small",
     "carry_carved": "tests/oracle/test_carry_vs_oracle.py::test_f1_carved_alt_small",
+    "facts_atom": "tests/oracle/test_atom_bitmap.py::test_atom_bitmap_is_exact[d2b16-mixed]",
+    "facts_block":
+        "tests/oracle/test_block_bitmap.py::test_read_and_write_bits_are_exact[d2b16bc64-mixed]",
     "intra": "tests/oracle/test_prefill_vs_oracle.py::test_the_intra_term_is_actually_present",
     "decode": "tests/oracle/test_decode_vs_oracle.py::test_g1_is_byte_reproducible_against_itself",
 }
@@ -232,6 +241,14 @@ def run_one(python: str, family: str, tool: str, timeout: int) -> tuple[bool, st
         return False, f"TIMEOUT after {timeout}s -- a hang under {tool}, not a correctness verdict"
     out = proc.stdout + proc.stderr
     ok = proc.returncode == 0
+    #: A SKIPPED CELL EXITS ZERO AND READS AS CLEAN (K48: the carved family reported
+    #: CLEAN on a binary that did not carry its TEST arm, so the kernel never ran).
+    #: The tool refuses the vacuous pass rather than reporting coverage it does not have.
+    if ok and not re.search(r"\b[1-9]\d* passed", out):
+        return False, ("VACUOUS: the wrapped pytest exited 0 without passing a test (a skip "
+                       "or an empty selection). The kernel never ran, so this pair measures "
+                       "nothing -- build the cell's arm (ROLA_CARRY_ARMS=all) and re-run.\n"
+                       + "\n".join(out.splitlines()[-20:]))
     #: THE DECLARED EXCEPTION IS ADJUDICATED, NOT ASSUMED. The tool ran, the whole
     #: report is read, and a pair with a declaration passes ONLY if every record in it
     #: is the declared idiom -- so a real new hazard in the same kernel still fails.

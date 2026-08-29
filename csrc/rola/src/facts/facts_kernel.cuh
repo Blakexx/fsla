@@ -380,6 +380,7 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
         }
         //: the vote is the WHOLE unit's -- every lane issues it, lane 0 files it.
         const uint32_t any = lane_ballot(hit);
+        __syncwarp();
         if (lane == 0 && any != 0u) sLive[e] = 1;
       }
       rendezvous();
@@ -517,6 +518,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
         }
         //: the vote is the WHOLE unit's -- every lane issues it, lane 0 files it.
         const uint32_t any = lane_ballot(hit);
+        __syncwarp();
         if (lane == 0 && any != 0u) sLive[e] = 1;
       }
       rendezvous();
