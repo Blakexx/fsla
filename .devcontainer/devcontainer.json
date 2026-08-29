@@ -1,0 +1,61 @@
+{
+  "name": "rola-dev",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": "..",
+    "args": {
+      // Stamped into `tools/ratify.py`'s `source.image_digest` (K37) by every
+      // ratification run inside this container. `${localEnv:...}` so it is
+      // supplied by whoever builds the image (a CI runner, a developer's own
+      // `docker build`), never hard-coded here -- see docs/setup.md for how to
+      // compute it (`sha256sum Dockerfile`).
+      "ROLA_IMAGE_DIGEST": "${localEnv:ROLA_IMAGE_DIGEST}"
+    }
+  },
+  // GPU passthrough. `--gpus all` is the WSL2/nvidia-container-toolkit path
+  // docs/setup.md walks through; `hostRequirements.gpu` is the portable
+  // (non-Docker-Desktop-specific) declaration some devcontainer front ends
+  // read instead of `runArgs`.
+  "runArgs": [
+    "--gpus=all",
+    "--ipc=host"
+  ],
+  "hostRequirements": {
+    "gpu": true
+  },
+  // WORKTREES MOUNT -- path is HOST-CONFIGURABLE, never a home path baked in
+  // here (KERNEL_STANDARDS.md §17). `ROLA_WORKTREES_DIR` is a host environment
+  // variable the developer sets before opening the devcontainer (or an
+  // argument to the equivalent `docker run -v`, docs/setup.md); the default
+  // after the second `:` is repo-relative, not under any user's home.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/rola,type=bind,consistency=cached",
+  "workspaceFolder": "/workspace/rola",
+  "mounts": [
+    "source=${localEnv:ROLA_WORKTREES_DIR:${localWorkspaceFolder}/../worktrees},target=/workspace/worktrees,type=bind,consistency=cached"
+  ],
+  "remoteEnv": {
+    "ROLA_IMAGE_DIGEST": "${localEnv:ROLA_IMAGE_DIGEST}"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "llvm-vs-code-extensions.vscode-clangd",
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "nvidia.nsight-vscode-edition"
+      ],
+      "settings": {
+        "clangd.path": "/usr/local/bin/clangd",
+        "python.defaultInterpreterPath": "/opt/venv/bin/python3"
+      }
+    }
+  },
+  // The image already carries the venv (`/opt/venv`, built from
+  // `requirements.lock`) and every apt/pinned-release tool; nothing further
+  // to install post-create. The FIRST build of the SHIPPED set and the
+  // battery are run by hand once (docs/setup.md), not on every container
+  // start, because they are multi-minute and the compile cache
+  // (`/workspace/rola/build/temp`) already persists across restarts via the
+  // bind mount above.
+  "postCreateCommand": "python3 --version && nvcc --version && ptxas --version"
+}

@@ -84,7 +84,7 @@ cannot fail is not a gate (`rewrite.md`'s vacuity discipline, applied to itself)
 
 MANIFEST FORMAT: `tools/manifests/sm_XX.json`, ONE FILE PER ARCH, each
 `{"toolchain": {ptxas, defines, nvcc_flags, sass_hash_version, sccache}, "source":
-{...}, "shards": {...},
+{csrc_sha256, date, image_digest}, "shards": {...},
 "entries": {<mangled name>:
 {...}}}`. The metadata blocks are siblings of the entries rather than reserved keys
 inside them, so an instantiation can never be confused for metadata by a name that
@@ -1453,7 +1453,21 @@ def main() -> int:
                                             "sha256": sccache_info["sha256"]}
                                            if sccache_info else None},
                  "source": {"csrc_sha256": csrc_digest(),
-                            "date": time.strftime("%Y-%m-%d")},
+                            "date": time.strftime("%Y-%m-%d"),
+                            #: K37 -- reproducibility as a checkable statement. The
+                            #: dev container stamps this into the ratifying
+                            #: process's environment (docs/setup.md); a host
+                            #: ratification (this variable unset) records the empty
+                            #: string, which is itself the honest answer to "was
+                            #: this measured inside the pinned image?". Lives beside
+                            #: `csrc_sha256`, not inside `toolchain`, because it
+                            #: identifies WHERE the measurement ran, not WHAT was
+                            #: measured -- `manifest_digest()` hashes
+                            #: `{toolchain, entries, shards}` only, so this field
+                            #: can never move a ratified register/spill number the
+                            #: way a `ptxas` swap can, and its presence here is
+                            #: recorded, never ratchet-gated.
+                            "image_digest": os.environ.get("ROLA_IMAGE_DIGEST", "")},
                  #: WHICH INSTANTIATIONS THIS RATIFICATION COVERS, by membership
                  #: hash rather than by file list. It enters the digest, so a
                  #: re-partition is a visible re-ratification and a scoped
