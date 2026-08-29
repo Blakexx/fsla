@@ -11,20 +11,8 @@
 
 namespace rola::carry {
 
-//: the INTER term only: `(num, den)`, undivided.  THE STATE PLANES ARE THE CALLER'S,
-//: which is the shipped contract (docs/internals/state.md section 4): `s_in` and `s_out`
-//: are `[BH, N/16, 16, d_v+1]` fp32 in CANONICAL leaf order (the atom-major view of
-//: `[BH, N, cols]`), a continuation hands the SAME
-//: tensor as both and it advances in place, `page_tbl` is the `[BH, N/16]` int32 slot
-//: table (null = the dense backing, where the slot IS the atom), and BOTH PLANES NULL is
-//: the null-state call: a runtime null check inside the one compiled body (K41; no
-//: STATE template axis) skips the sweep at each null end, so nothing is read,
-//: written, or allocated there.
-//: `carve` names the built (carve, executor map): 1 = the ruled
-//: leaf split, 2/3 = the two 1x8 containers.  The arm's `d_v` is READ OFF `v` and is
-//: part of the key.  `level_modes` is law 3's per-level declaration, two bits
-//: per level (bit 0 of a level's pair = the READ side is value-sparse there, bit 1
-//: = the WRITE side), and it CHOOSES THE BODY; DENSE_BOTH is always correct.
+//: the INTER term only: `(num, den)`, undivided.
+// see docs/internals/carry/carry_api.md#note-l14
 std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, torch::Tensor gw,
                                          torch::Tensor v, std::vector<int64_t> widths, int64_t k,
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
@@ -33,16 +21,15 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
                                          c10::optional<torch::Tensor> page_tbl);
 
 //: the BALLOT ROWS as a tensor: `[BH, 2, entries, L/32]` packed bits, read rows
-//: then write rows, one row per (level, group) -- at the lattice's owner spans
-//: `s_l`, or at the CARVE grain the kernel consumes (`carve`), which refines the
-//: innermost level into the four warps' groups.
+//: then write rows, one row per (level, group) ...
+// see docs/internals/carry/carry_api.md#note-l35
 torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t> widths, int64_t k,
                          int64_t m, bool carve);
 
-//: device-side build identity plus the built arm's register/SMEM census, the carve
-//: level the declaration named (-1 = the channel-split body), the WRITE stream count
-//: and the arm's `d_v`.  `d_v` is part of the arm key (K35 S3b), so it is an argument
-//: here as well: the same declaration at the two built widths is two arms.
+//: device-side build identity plus the built arm's register/SMEM census, the
+//: carve level the declaration named (-1 = the channel-split body), the WRITE
+//: stream count and the arm's `d_v`.
+// see docs/internals/carry/carry_api.md#note-l42
 std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t k, int64_t m, int64_t window,
                                  int64_t chunk, int64_t carve, int64_t level_modes, int64_t d_v);
 

@@ -163,3 +163,170 @@ out. The dense backing carries no residency map, and the bit is then ZERO everyw
 rather than guessed — the host's dense predicate is weakened to compensate, which is a
 recorded weakening rather than a hidden one.
 
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/facts/facts_kernel.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="katomleaves"></a>
+### `kAtomLeaves`
+
+THE INVARIANT QUANTUM: the leaves one page granule holds, and the rectangle
+the stats pass keys residency to.  It is the MMA k-extent the state's own
+tiling was derived at (the host mirror is `rola.ops.paging.MMA_K_QUANTUM`,
+and decode's `kAtomLeaves` states the same 16 independently;
+docs/internals/paging/stats.md).
+
+<a id="note-l30"></a>
+### near line 30
+
+THE GEOMETRY LAW over D levels of one uniform power-of-two width B, stated on
+the quantity it is actually about: THE PER-LEVEL SPANS `s_l`.  Every clause
+below is the law's, and a (widths, spans) tuple breaking one does not compile.
+Widths are read through `width(l)` so a jagged policy can answer from a table
+without touching a loop nest -- docs/internals/facts/facts_kernel.md#geometry-law
+
+THE SPANS ARE GIVEN, NOT DERIVED (K31-i-d).  The lex policy below -- `singles`
+levels at one digit, at most one partial run, whole levels beneath -- is ONE way
+of choosing them, and it admits at most one span that is neither `1` nor `B`.
+The box lattice's owner runs are `D` spans (the flagship's `(8, 16)`),
+which that shape forbids arithmetically rather than accidentally.  So the plan
+TAKES the spans and the lex policy becomes `LevelPlan`, an alias that computes
+them: one plan type, two ways of arriving at it, and every consumer below reads
+`span_at` / `entries_at` / `col_base` exactly as it did.
+
+<a id="static-assert"></a>
+### `static_assert`
+
+THE WIDTH FLOOR IS THE ATOM'S, not a routing preference: the atom plan
+(`LevelPlan<D, B, kAtomLeaves>`, below) exists only where the topology holds a
+whole page granule.  At `D = 4` that admits `B = 4`, which is the width the box
+`[4, 4, 4, 4]` -- the multi-level carve's own topology -- is stated at.
+
+<a id="clauses-prefix"></a>
+### `clauses_prefix`
+
+THE CLAUSE LEVELS ARE A PREFIX -- a property of the TWO BITMAP REDUCTIONS and
+not of the table, so it is asserted where it is used (`atom_bitmap_kernel`,
+`block_bitmap_kernel`): they address the innermost clause row as
+`prefix_entries(clauses - 1)` and carve their grid on `suffix_groups`.  It holds
+by construction under the lex policy, which is the only policy those two are
+instantiated at; a GIVEN-span plan states an arbitrary per-side partition (K35
+S1b: the write carve `[1, 4, 2, 4]` tests levels 0 and 2 and spans 1 and 3 whole)
+and neither reduction is built for it.
+
+<a id="base-term"></a>
+### `base_term`
+
+A block's leaves are a CONTIGUOUS, BC-ALIGNED run in canonical leaf order, so
+the block is named by its first leaf -- docs/internals/facts/facts_kernel.md#leaf-order-law
+THE LEVEL IS A TEMPLATE PARAMETER, not an argument: `off_at`'s recursive
+constexpr divisor does not fold otherwise -- docs/internals/facts/facts_kernel.md#template-level
+
+<a id="levelplan"></a>
+### `LevelPlan`
+
+THE LEX PLAN, an ALIAS.  `LevelPlan<D, B, BC>` is the span plan whose spans the
+lex policy derives from `BC`, so every existing consumer keeps its spelling and
+every existing instantiation keeps its geometry -- what moved is that the spans
+are now the plan's input rather than its private derivation.
+
+<a id="ktokbits"></a>
+### `kTokBits`
+
+(G4) The D = 2 compatibility view -- BlockPlan -- is RETIRED.  Its geometry
+law and its union-table entry accounting live in LevelPlan above, where
+they are stated once for every depth; nothing below this line speaks
+lead/tail.
+
+<a id="ktokbits-2"></a>
+### `kTokBits`
+
+THE UNION TABLE'S ONE STRUCTURAL CONSTANT.  Tokens are the table's minor axis
+and they are packed thirty-two to a word, which is the lockstep unit's width,
+so the cook reads one word per unit per side and needs no re-packing step.  A
+sequence that does not fill its last word leaves the tail bits ZERO.
+
+<a id="chunk-facts-tables"></a>
+### `chunk_facts_tables`
+
+THE TABLES ARE BUILT ONCE FOR THE WHOLE GRID, BOTH ROW SETS IN ONE PASS.  A
+lockstep unit takes thirty-two consecutive tokens, one per lane, and votes once
+per entry; the vote IS the word, so nothing is packed afterwards and nothing is
+zeroed first.
+
+THE TWO SIDES CARRY THEIR OWN PARTITION (K35 S1b addendum).  A bitlist is per side,
+per level, per run of THAT SIDE's partition, voted from that side's own factors, so
+the two plans are independent and the table is the read plan's rows followed by the
+write plan's -- `[BH, entries_read + entries_write, tok_words]`.  Holding ONE
+partition for both (the finer, with the coarser side ORing) achieved nothing and
+cost every side a table refined by the other's carve.  The two plans coincide for
+every caller that wants one grain, and the layout is then the old `[BH, 2, E, .]`.
+
+The two grains are one partition refining another -- the atom rectangle is
+`kAtomLeaves` leaves and the owner rectangle is `BC` of them -- so the write
+side is voted at the ATOM grain and each owner row is the OR of the atom rows
+inside it.  The digits are read once and voted once; nothing is evaluated twice.
+Its cost does not depend on `BC`: a lane reads its token's amplitude row once
+per level that has entries, whatever the spans partition it into.
+docs/internals/facts/facts_kernel.md#the-facts-pass
+
+<a id="note-l339"></a>
+### near line 339
+
+THE ATOM ROWS ARE THE WRITE SIDE'S: which atoms this routing writes is what
+keys residency, and reads of never-written atoms are inert.  A stateless call
+compiles none of this, so it pays a stateless call's price; a stateful call
+with no arena to admit into is the runtime-null OUTPUT skip, and takes the
+owner-grain emission alone -- which is the cheaper one when nothing needs the
+finer rows.
+
+<a id="katomthreads"></a>
+### `kAtomThreads`
+
+THE STATS PASS' REDUCTION.  Which atoms does this call's routing WRITE?  The
+answer keys the state's residency, so it is taken at the invariant quantum
+(`kAtomLeaves`) and never at `BC` -- the derivation, the exactness argument and
+the rejected coarser reductions are in docs/internals/paging/stats.md.
+
+how many threads and how much of the token axis one CTA of the reduction
+holds resident.  The tile is a RESIDENCY quantity, not an axis: it bounds the
+shared word stream so the CTA's footprint is independent of `L`.
+
+<a id="atom-bitmap-kernel"></a>
+### `atom_bitmap_kernel`
+
+THE REDUCTION, one CTA per (bh, upper prefix).  A prefix's atoms share every
+clause row but the innermost, so the shared rows are ANDed into a word stream
+ONCE and each innermost row is then ANDed against that stream and OR-reduced
+over the token axis.  An atom is live as soon as one word survives, so the CTA
+leaves the moment all of its atoms are live -- which makes the DENSE case the
+cheap one.
+
+<a id="pin-address"></a>
+### `pin_address`
+
+ADDRESSING DISCIPLINE, THE FORM'S: ONE 64-bit address per (bh), formed
+here and never re-derived; every row and every word after it is a 32-bit
+BYTE displacement that zero-extends, so no `pointer + int` widening
+multiply reaches a loop body.  The displacement's bound is one `bh`'s
+slice of the table, `entries * tok_words(L) * 4` bytes.
+
+<a id="block-bitmap-kernel"></a>
+### `block_bitmap_kernel`
+
+THE REDUCTION'S ROW GROUP: at most one innermost row per warp per side.  The
+prefix carve amortizes the UPPER-clause stream, so a block with no upper
+clause has nothing to amortize and one CTA per prefix would be one CTA for
+the whole reduction; re-reading the upper stream per group buys the grid
+back (docs/internals/facts/facts_kernel.md#block-bitmap).
+
+<a id="block-bitmap-kernel-2"></a>
+### `block_bitmap_kernel`
+
+THE LIVENESS EPILOGUE, at the LAUNCH's block grain: `atom_bitmap_kernel`'s
+reduction re-instantiated at `BC`, over BOTH sides, with the page table's
+residency condensed beside them.  The three facts are emitted SEPARATELY --
+one byte per (bh, block), bits {READ, WRITE, STATE} -- because what a skipped
+block would have contributed differs by call class and by backing, so the
+predicate over them is the host's (docs/internals/facts/facts_kernel.md#block-bitmap).

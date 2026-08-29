@@ -205,3 +205,127 @@ where the Gram accumulators are also live. Written as one pointer formed before 
 sweep plus fifteen compile-time displacements it is two registers and the displacements
 fold into the reducing instruction. That difference is what the own-side certificate is
 paid for out of: it is the whole of the headroom the restricted reduce needed.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra_backward_kernel.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="kbwdstagecap"></a>
+### `kBwdStageCap`
+
+THE REVERSE STAGES HALF AS WIDE AS THE FORWARD.  Its block carries the forward's
+operands plus the seed, the relay plane and the `dG_l` image, and the image is what
+the digit carve is built on, so the staging ring is the term that pays for it.  The
+cap is the reverse's own because the forward has nothing to buy with it.
+
+<a id="kxposerows"></a>
+### `kXposeRows`
+
+THE RELAY PLANE, one `[kMmaM x kSlabDigits]` tile per warp: every cotangent this
+kernel reduces has that shape, and the accumulator's lane map scatters a reducing
+instruction's 32 values over eight destination rows a plane pitch apart.  The pitch
+is EVEN because the accumulator's two column-adjacent values relay as one eight-byte
+store.  See docs/internals/intra/intra_backward_kernel.md.
+
+<a id="kimagepitch"></a>
+### `kImagePitch`
+
+THE `dG_l` IMAGE: the tile pair's coefficient object, `[C reader tokens x kTile write
+tokens]`, published in bf16 so the phase that READS it can be carved differently from
+the phase that accumulated it.  The pitch is the one the operand slabs already prove
+conflict-free in both `ldmatrix` flavours.
+
+<a id="live-rows-side"></a>
+### `live_rows_side`
+
+THE GRAM PASS'S GATE IS THE INTERSECTION and the digit passes' is ONE SIDE.  A
+level's digit gradient drops that level's own factor, so `d_pr_l[t,e]` is live
+wherever the WRITE side has support at `e` whatever the read side does there; gating
+it on the intersection would drop real terms.
+
+<a id="publish-image"></a>
+### `publish_image`
+
+THE PUBLISH.  One row-carved `[kWarpRows x kTile]` accumulator becomes bf16 rows of
+the image, at the rounding pass 2's A operand carried anyway.  `row` addresses the
+warp's first accumulator row at the lane's column; the accumulator's second row group
+is eight rows below it.
+
+<a id="reduce-tile"></a>
+### `reduce_tile`
+
+THE ONE REDUCING PATH.  `get` is the lane's cursor into the relayed plane and
+`lane_off` its destination offset -- row half in the high byte, digit column in the
+low; both are invariant over the whole kernel.  `base` addresses the tile's first
+destination row and `stride` its row pitch, as an `int` because the widest offset a
+reduced tile reaches is fifteen row pitches.
+docs/internals/intra/intra_backward_kernel.md.
+
+<a id="fan-in-add-if"></a>
+### `fan_in_add_if`
+
+A PREDICATED reducing instruction rather than a branched one: the gate is a property
+of the destination CELL, so eight cells of one lane carry eight independent gates and
+a branch per cell gives the walk eight control-flow regions to keep values live
+across -- measured, 96 bytes of spill against zero.
+
+<a id="reduce-tile-on-support"></a>
+### `reduce_tile_on_support`
+
+THE SAME PATH, RESTRICTED TO THE DESTINATION PLANE'S OWN SUPPORT.  `sup` walks the
+own-side operand at the reducing address and `sup_step` is its two-row stride.  A side
+whose duty is DENSE has no support to restrict to and takes the unrestricted path
+unchanged: the declaration is uniform over the block, so the choice is one branch and
+not a per-cell test the dense arm would pay for nothing.  The restricted walk unrolls
+by the relay's own period -- the lane's eight cells are the two row parities of a
+`[16 x 16]` tile, and unrolling past that holds eight certificate loads live and
+spills.  docs/internals/intra/intra_backward_kernel.md.
+
+<a id="kbwdregfloor"></a>
+### `kBwdRegFloor`
+
+THE SECOND LAUNCH BOUND, from the arm's own footprint.  Without it ptxas budgets
+registers for the residency the THREAD COUNT suggests rather than the one this
+block's shared memory leaves reachable, and the narrow-window arm pays the
+difference in spill.  `kBwdRegFloor` is the measured live set of the built arms.
+
+<a id="kparts"></a>
+### `kParts`
+
+THE DIGIT CARVE.  A warp is a (digit part, group) pair: the part names one
+`kSlabDigits` slab of the stage and the group names the slice of the destination
+token axis the warp owns, so both digit gradients close their contraction inside
+the warp and every destination cell is reduced ONCE per block.
+
+<a id="kelem"></a>
+### `kElem`
+
+THE OPERAND BASES.  In the unrolled bodies the buffer, the k-tile and the m-tile
+are compile-time constants, and everything else an `ldmatrix` address carries --
+the lane map, the warp's digit part, its group -- is invariant over the whole
+kernel, so each address is ONE base computed here plus a constant.
+
+<a id="note-l612"></a>
+### near line 612
+
+`A`, `dA` and every `dG_l` are formed IN PLACE over the Gram registers, and
+(I3)'s row sum is drained inside the same sweep so it never becomes an array.
+ITS SIXTEEN DESTINATIONS ARE ONE POINTER AND FIFTEEN CONSTANT DISPLACEMENTS: a
+reducing address written as one sum is sixteen live 64-bit addresses instead.
+
+<a id="syncthreads"></a>
+### `__syncthreads`
+
+THE IMAGE IS THE RE-CARVE.  `A` and each `dG_l` are accumulated ROW-carved --
+the Gram's `m` axis IS the row axis -- and published once as bf16, which is the
+rounding pass 2's A operand carried in registers anyway.  Every phase that
+reduces over the reader axis then reads the image back under a carve of its
+own, and closes its contraction inside one warp.
+
+<a id="note-l741"></a>
+### near line 741
+
+(I6)'s contraction runs over the WHOLE block of readers, so it is gated
+per row tile: a tile the certificate left unstaged is one whose operand
+rows are all zero, and the rows of a tile the causal walk excludes are
+zero in the image.

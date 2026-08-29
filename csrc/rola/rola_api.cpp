@@ -38,10 +38,9 @@ namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // ---- the facts family (the chunk consumer's surviving fact producers) ---
-  //: ONE PASS, BOTH ROW SETS: the membership union table always, and the atom-grain
-  //: write bitmap when this call has residency to plan.  `mask` is the CALL CLASS
-  //: (`rola/engine/types.py`'s M1/M2), which is compiled in; `atoms` is the
-  //: runtime-null output skip within the stateful class.
+  //: ONE PASS, BOTH ROW SETS: the membership union table always, and the atom-
+  //: grain write bitmap when this call has residency to plan.
+  // see docs/internals/rola_api.md#pybind11-module-note-l41
   // ---- K31 R2: the standalone intra kernel -------------------------------
   m.def("intra_forward", &rola::intra::intra_forward,
         "K31 intra: the within-window causal term, REDuced into o/den", py::arg("pread"),
@@ -124,11 +123,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
   // ---- the T=1 decode path -------------------------------------------------
   //: A SIBLING of the chunk consumer, not a specialization of it: shared produce
-  //: contract, own consumer, frozen config. Two of its three entries are capacity GATES
-  //: rather than operations -- docs/internals/rola_api.md#registered-entries
-  //: THE WHOLE STEP: the operand fold, the lattice factor tables, the gather-GEMV and the
-  //: step's OWN admission question in ONE launch, over the caller's raw `[B, 1, H, *]`
-  //: views -- docs/internals/rola_api.md#the-step
+  //: contract, own consumer, frozen config.
+  // see docs/internals/rola_api.md#pybind11-module-note-l126
   m.def("rola_decode_forward", &rola::decode::rola_decode_forward,
         "RoLA T=1 decode step: operand fold + lattice factor walk + token-stationary "
         "gather-GEMV + the per-batch-head residency verdict, in one kernel.",
@@ -201,9 +197,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def_property_readonly("backing_kind", &rola::paging::VmmOwner::backing_kind);
 
   //: The page geometry is the ARENA's -- `page_rows x page_cols` fp32, which is
-  //: `MMA_K_QUANTUM x (d_v + 1)` with the mass column fused. The owner takes it as two
-  //: extents rather than naming them, because it owns no meaning for either:
-  //: docs/internals/rola_api.md#vmm-binding
+  //: `MMA_K_QUANTUM x (d_v + 1)` with the mass column fused.
+  // see docs/internals/rola_api.md#pybind11-module-note-l203
   m.def("rola_vmm_create", &rola::paging::create_vmm_owner, py::arg("device"),
         py::arg("dense_limit_pages"), py::arg("page_rows"), py::arg("page_cols"),
         py::arg("target_chunk_bytes") = 64ll * 1024ll * 1024ll);

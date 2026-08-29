@@ -29,17 +29,10 @@ static constexpr int kCarryCensusFields = 23;
 //: read side's carve level.
 static constexpr int kCarryRowFields = 13;
 
-//: THE STATE PLANES AND THE TABLE ARE THE CALLER'S, which is the shipped contract
-//: (docs/internals/state.md section 4): a continuation hands the SAME plane as `s_in` and
-//: `s_out` and advances it in place, and `page_tbl` null is the dense backing -- the slot
-//: is then the atom.  BOTH PLANES NULL IS THE NULL-STATE CALL and reaches an arm variant
-//: nothing is read, written, or allocated at either end (state.md section 1) -- a
-//: RUNTIME null check inside the one compiled body (K41; no STATE template axis).
-//:
-//: WHAT ONE ARM'S TRANSLATION UNIT EXPORTS.  Five entry points: launch the body,
-//: launch and size its ballot table, and state its census and its row.
-//: `CARRY_ARM_DEFINE` (`carry_arm.cuh`) defines exactly these.  The SEGMENT LAYOUT
-//: PROBE left with the per-stream segments and the exchange it gated (K35 M1P).
+//: THE STATE PLANES AND THE TABLE ARE THE CALLER'S, which is the shipped
+//: contract (docs/internals/state.md section 4): a continuation hands the SAME
+//: plane as `s_in` and `s_out` and advances it in place ...
+// see docs/internals/carry/carry_arm_abi.md#carry-arm-declare
 #define CARRY_ARM_DECLARE(I_, ...)                                                            \
   cudaError_t carry_arm_forward_##I_(                                                          \
       const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,               \

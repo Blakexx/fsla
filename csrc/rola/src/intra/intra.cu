@@ -11,8 +11,8 @@ namespace intra {
 
 //: NOT an anonymous namespace: nvcc mangles anonymous-namespace kernels with a
 //: hash that depends on the BUILD PATH, so a manifest ratified in one worktree
-//: certifies a name no other checkout's build produces -- the fatbin gate then
-//: refuses a byte-identical kernel. A ratifiable kernel needs a named symbol.
+//: certifies a name no other checkout's build produces ...
+// see docs/internals/intra/intra.md#note-l12
 namespace stampdet {
 
 //: Recompiled with the translation unit, so a test that reads it back is

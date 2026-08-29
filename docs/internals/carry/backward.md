@@ -42,3 +42,16 @@ capability digest, then twelve numbers: registers, LOCAL bytes, SMEM, ring depth
 target and the DECLARED floor, for Scan A and then for Scan B. LOCAL bytes must be zero
 for both; the pair of numbers a review reads is the measured register count beside the
 floor the build declared.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/carry/backward.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="torch-check"></a>
+### `TORCH_CHECK`
+
+THE TABLE ADDRESSES THE CALLER'S ENTRY SLABS, and the two EXIT slabs are the
+dispatch's own dense allocations, so their table is null and their slot IS their
+atom -- one body, two tables, no second path.  A paged `d_state_in` and a paged
+replay want a plan of their own (a gradient's residency is its state's), which is
+the reverse family's stage and is NOT built here.

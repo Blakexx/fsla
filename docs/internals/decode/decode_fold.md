@@ -121,3 +121,49 @@ value on the host, and a captured graph replays it with no buffer identity to pr
 `dials` is the one operand the fold does not touch, and the boundary is principled: it is a
 per-HEAD constant of the decay arm rather than a per-token operand, and its fp32 cast
 carries a refusal (`rola.ops.decay.leaf_rate_dials`) that the host has to raise.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_fold.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="row-sum"></a>
+### `row_sum`
+
+THE DECLARED SUM. Lane `j` accumulates `row[j], row[j + 32], ...` in ascending index
+order into an fp32 register, then the five `__shfl_down_sync` steps fold lane `j`
+into lane `j - off`. Lanes past the row's width contribute an exact `0.0f`.
+docs/internals/decode/decode_fold.md#declared-order
+
+<a id="fold-row-sums"></a>
+### `fold_row_sums`
+
+THE ROW SUMS, for a side that carries its own mass. Warp `l < D` owns level `l`'s sum,
+which is why `D <= kMaxLevels <= kDecodeWarps` is the condition that makes ONE barrier
+after this enough. `s_sum` is `[kMaxLevels]` of the caller's shared memory.
+NO BARRIER IS TAKEN HERE -- the caller places it, because a device function that
+synchronizes on entry and exit costs a barrier at every seam between two of them.
+
+## More comments moved from source (S5b pass 2)
+
+Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode_fold.cuh` condensed at their call site into a short pointer.
+
+<a id="note-l3"></a>
+### near line 3
+
+THE DECODE FOLD -- every per-token operand widened, normalized and staged in SHARED
+MEMORY by the CTA that is about to consume it.
+
+Three facts a reader must not miss:
+  1. THE FOLD IS A GATHER, NOT A COPY PASS. Its inputs are whatever VIEW the producer
+     handed out -- a level is ordinarily a slice of one packed plane -- so the fold
+     indexes by stride and the `[B, 1, H, W] -> [B * H, W]` fold is the address it
+     computes, never a materialized intermediate.
+  2. THE SUM'S ORDER IS DECLARED, not incidental: lane-strided ascending partials
+     folded by a 5-step `__shfl_down_sync` tree. A reduction whose order is a
+     property of whatever the library did that release is a reduction no gate can
+     hold to bit-identity.
+  3. IT IS A HEADER, NOT A KERNEL. The step folds its own operands and the growth
+     probe folds its own write side; between them there is no launch and no plane.
+
+The declared order, the dtype arms and the cast argument:
+docs/internals/decode/decode_fold.md

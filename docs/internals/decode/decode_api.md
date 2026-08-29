@@ -146,3 +146,46 @@ are present together or none are — the pool is not a mode a caller can half-co
 that a pool requires `page_table` (a dense state has no table to admit into). The design and
 the device-side claim are [`paging/paging.md`
 §the-slack-pool](../paging/paging.md#the-slack-pool).
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_api.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="rola-decode-capacity"></a>
+### `rola_decode_capacity`
+
+THE BOUND SURFACE. The two accessors exist so a Python test can assert the C++
+level-width capacity against `rola.routing.topology.MAX_BRANCH_WIDTH` -- a
+`static_assert` cannot read a Python constant:
+docs/internals/decode/decode_api.md#bound-surface
+
+<a id="note-l43"></a>
+### near line 43
+
+THE WHOLE STEP IN ONE LAUNCH -- fold, factor, walk, AND ITS OWN ADMISSION QUESTION --
+over the caller's RAW `[B, 1, H, *]` views. There is no operand plane between the
+producer and the walk, and no probe launch in front of it: the write set the walk
+enumerates is the set the residency test reads, so the test is a pass over shared
+memory. `lattice_k`/`lattice_m` name the `(k, m)` box the state plane is written in --
+the leaf order travels with the plane rather than being assumed.
+The verdict is PER BATCH-HEAD (`growth`, `done`, and the `growth_any` reduction the
+host reads) beside the write-atom set it was reached from (`atom_bits`, which is what
+a host admission then plans from), and under a slack pool a growth step admits
+ITSELF: docs/internals/decode/decode_api.md#the-step
+
+## More comments moved from source (S5b pass 2)
+
+Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode_api.cuh` condensed at their call site into a short pointer.
+
+<a id="note-l3"></a>
+### near line 3
+
+THE DECODE PATH'S HOST-FACING DECLARATIONS, and the ONLY decode header
+`csrc/rola/rola_api.cpp` includes.
+
+The split from `decode.cuh` is mechanical and looks gratuitous until you hit it:
+`rola_api.cpp` is HOST-ONLY, and `decode.cuh` carries `__device__` helpers the host
+compiler cannot parse. ONE HEADER PER AUDIENCE, rather than an `#ifdef __CUDACC__`
+that would make one header mean two things to two compilers.
+
+The full argument, and what each bound symbol claims: docs/internals/decode/decode_api.md

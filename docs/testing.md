@@ -26,6 +26,14 @@ became `tests/oracle`'s shared fixtures). **A campaign name never appears in a t
 path** — `tools/lint/lint_standards.py` enforces both of these mechanically: no
 directory under `tests/` other than `unit/`, `integration/` or `oracle/`.
 
+**A check that does not execute the code under test is a lint, not a test — it
+lives in `tools/lint`.** (RULED 2026-08-29.) `tests/unit/test_docs_mirror.py`
+was grep-level from the start — it read files, never imported or ran the code
+they document — so it moved into `tools/lint/lint_standards.py`'s
+`check_docs_mirror` rather than staying in the unit tier under a borrowed
+name. The same distinction is what will carry `test_generated_docs` and
+`test_shard_partition` (K46).
+
 The oracle tier alone is insufficient because a per-geometry tolerance can absorb a
 geometry bug. The two-branches-agree class alone is insufficient because two
 branches can agree with each other and both be wrong — this project has a bug that

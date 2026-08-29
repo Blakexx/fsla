@@ -235,3 +235,174 @@ Widths at the built arms: `s = (8,16)` → `kStageW = 24` (offsets 0, 8; three c
 `s = (2,2,4,8)` → `16` (offsets 0, 2, 4, 8; four chunks); `s = (4,4,4,4)` → `16`
 (offsets 0, 4, 8, 12; four chunks). The `[BH, L, kWtot]` packed row would be 512, 32 and
 16 amplitudes for the same three.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/carry/box.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="kcarrybuildmagic"></a>
+### `kCarryBuildMagic`
+
+THE FAMILY'S ARM-INDEPENDENT CONSTANTS (moved here at K36).  They live in this
+header, not in `carry_kernel.cuh`, because the DISPATCH TU needs them for the
+build stamp and must not parse the kernel header to get them -- including it cost
+the dispatch 36 s and 2.9 GB of `cicc` for three integers, and, worse, gave the
+file that must not instantiate an arm every tool it would need to.
+THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
+this project's recurring failure; a stamp read OFF THE DEVICE is the only check
+that catches it, so every gate in `tests/k31/` asserts this first.
+
+<a id="boxplan"></a>
+### `BoxPlan`
+
+THE OWNER'S SHAPE, DERIVED.  Nothing in this struct is a table: every field is
+a product or a bit width, so an owner's addressing is shifts and masks at every
+use site.  The distribution of `M` across the levels is spec section 2.5 as the
+atom-rectangle law generalizes it -- innermost first, capped by K6, and balanced
+over what remains: docs/internals/carry/box.md.
+
+<a id="katombits"></a>
+### `kAtomBits`
+
+spec section 2.5.  The innermost level takes as much capacity as it can carry
+-- never less than its balanced share, never less than an atom asks, and never
+more than its own width admits (K6) -- and the rest of `j` is spread balanced
+over the outer levels, innermost first, so the exponents differ by at most one
+there.  The K6 ceiling is what makes the convention total: a level narrower
+than an atom cannot absorb the atom floor, and the capacity spills outward
+instead of the plan being refused.
+
+<a id="atom-base"></a>
+### `atom_base`
+
+THE ATOM'S DIGIT RECTANGLE.  An atom is `kAtomLeaves` consecutive `local`
+values at a multiple of `kAtomLeaves`, so under the mixed-radix order it is
+the TRAILING levels whose spans multiply into it, taken whole, times an
+aligned sub-run of the next level out.  `kAtomBase` names the outermost level
+lying wholly inside; `kAtomPartial` is how many of level `kAtomBase - 1`'s
+digits the atom takes.  A token fills an atom exactly when every level of the
+rectangle is DENSE for its side, which is why the convention pushes capacity
+innermost: a one-level rectangle asks that of one level only.
+
+<a id="unit-from"></a>
+### `unit_from`
+
+THE WALK UNIT, reconciled with the atom.  The decode walk enumerates
+`(owner, r_0 .. r_{kUnitBase-1})` and the unit's leaves are the trailing spans
+from `kUnitBase` inward -- the SHALLOWEST such suffix that holds a whole number
+of atoms, so the candidate enumeration is a partition at every admissible span
+vector.  K2 makes `l = 0` always qualify, so the search terminates.
+
+<a id="span-bits"></a>
+### `span_bits`
+
+THE LOCAL INDEX'S BIT FIELDS: `local = lambda - O*BC` is the owner's run
+offsets in MIXED RADIX, most significant level first --
+`local = sum_l r_l * prod_{l' > l} s_l'`, with `r_l = d_l - o_l*s_l` in
+`[0, s_l)` -- so each level's DIGITS ARE CONTIGUOUS IN LOCAL, level `D-1`
+fastest.  This is the K33 enabler (queue card, enabler 2): a bucket keyed on
+level `l`'s digit owns a run of `prod_{l' > l} s_l'` leaves at stride
+`s_l`-independent places, and for the OUTERMOST level that run is contiguous
+and `BC / s_0` wide, which at the flagship is two `kMmaN` tiles -- so a fold
+bucket accumulates DIRECTLY into whole state tiles with zero padding.  `pi`
+is a fixed BIT PERMUTATION of the canonical index: a level's whole field is
+one contiguous bit run.
+
+<a id="row-g"></a>
+### `row_g`
+
+THE OWNER'S BALLOT ROWS in the facts table (`SpanPlan<D, B, s_0..s_D-1>`'s
+entry accounting, mirrored here for the same reason the seam derives its own
+strides: two derivations disagree exactly when one is wrong).  A level spanned
+WHOLE by the owner emits no rows -- its clause is true for every token and
+drops out of the conjunction on its own.
+
+<a id="kstageasync"></a>
+### `kStageAsync`
+
+THE STAGED FACTOR ROW (K35 S2).  What a fetcher needs of one token on one side
+is the OWNER's digit run at each level -- `sum_l s_l` amplitudes -- and NOT the
+`kWtot`-wide packed row, which is the width of the whole topology.  The runs are
+laid out level by level, each ALIGNED to its own asynchronous quantum, so a
+level's run is one `stage_run` per `kStageAsync` amplitudes and both the global
+and the shared address are naturally aligned by construction (a level's column
+base is a multiple of `B` and an owner's run starts at a multiple of `s_l`).
+
+<a id="digit-of"></a>
+### `digit_of`
+
+FORWARD, `pi: ell -> lambda`, and its inverse -- used by the host seam and by
+nothing on the device.  THE DEVICE NEVER CONVERTS DATA: it is born in lattice
+order, and within an atom the two orders agree row for row.  Atom IDS are
+re-keyed to canonical at the prologue (`canon_atom` below) because K2/K3 make the
+two orders partition the leaves into the SAME atoms and differ only in how those
+atoms are numbered (P80).
+
+<a id="canon-leaf-acc"></a>
+### `canon_leaf_acc`
+
+THE ATOM RE-KEY (P80).  The page plan is keyed CANONICALLY -- one representation
+shared by the arena, `AtomKeying`, `materialize` and the decode step -- so a
+consumer born in lattice order re-keys its own `BC/16` atom ids here and addresses
+the state plane by the canonical id in BOTH backings, which is what keeps dense
+and paged one base translation.  It is `D` shifts and one mad per atom, at the
+prologue, on ids alone.
+
+<a id="spans-fit"></a>
+### `spans_fit`
+
+K6: an owner's run at a level is an aligned run INSIDE that level.  With the
+capacity ceiling above it is the constraint the convention can still miss --
+when `j` exceeds what `D` levels of width `B` can carry, there is no span
+vector and the arm is refused rather than served a narrower box.
+
+<a id="static-assert"></a>
+### `static_assert`
+
+K3/K4: an atom is 16 consecutive `local` values at a multiple of 16, so under
+the mixed-radix order it is the set that agrees on every bit above bit 3 --
+the levels whose fields lie above are FIXED, the level straddling bit 4 keeps
+an aligned contiguous sub-run, and the levels below are free.  That is an
+aligned digit rectangle for EVERY admissible span vector, so the two clauses
+the interleaved order needed (`k^D >= 16` and `4 % kappa == 0`) are discharged
+by the order itself and only the owner's size survives as a condition.
+
+<a id="ksideread"></a>
+### `kSideRead`
+
+THE PER-LEVEL MODE DECLARATION (the seam's own encoding): two bits per level, level 0
+in the low pair, bit 0 = the READ side is value-sparse there, bit 1 = the WRITE side.
+It PRUNES the liveness clause and the order and carve below are derived from it, so it
+lives beside the lattice and not at a consumer.
+
+<a id="modeorder"></a>
+### `ModeOrder`
+
+THE PRIVATE ORDER, BY MODE (P76, "ORDER BY MODE, THEN CARVE", ruled 2026-08-26):
+DENSE innermost, then SPARSE (sparse on this side only), then BOTH_SPARSE (sparse on
+both), lattice order inside a class.  It is a function of `(D, MO, SIDE)` ALONE -- no
+span is consulted -- which is why the carve is derived from it rather than declared
+beside it.  What each class buys: docs/internals/carry/box.md.
+
+<a id="streamspans"></a>
+### `StreamSpans`
+
+THE STREAM BOX, DERIVED FROM THE ORDER AND A STREAM COUNT.  A STREAM owns a box and
+walks its data into tiles; an EXECUTOR runs streams (the terminology law).  The walk
+takes digits from the OUTERMOST level of that order inward, carving each level whole
+and then partially, until the stream grid's product IS the count -- so `S_l` is what
+one stream keeps of level `l` and the box is an AFFINE RECTANGLE of digits, contiguity
+in leaf order being a property of carving a prefix and never a requirement.  The grid
+is `prod_l g_l` with `g_l = s_l / S_l`, a stream's coordinate at a level is a bit
+field of its index MSB-first as the owner grid's is, and everything is a power of two,
+so every use site is a shift and a mask.  A level past `D` carries `B`.
+
+<a id="carverows"></a>
+### `CarveRows`
+
+ONE SIDE'S BALLOT ROWS.  A box's schedule is the AND over levels of its runs'
+bitlists, per side, per level, per run of THAT SIDE's partition; each side votes from
+its own factors, so nothing was gained by holding one partition for both and a
+stream's test reads EXACTLY ONE row per tested level (only the owner's whole-run OR
+spans several).  A level the side spans WHOLE emits no rows -- its clause is true for
+every token.  Sigma-shaped, `sum_l B/S_l`, so it does not grow with `N`.

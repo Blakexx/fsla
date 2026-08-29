@@ -48,10 +48,10 @@ constexpr int kSeedPitch = kValuePitch;
 constexpr int kChanTiles = kValueWidth / kSlabDigits;
 constexpr int warps_of(int window) { return threads_of(window) / 32; }
 
-//: THE REVERSE STAGES HALF AS WIDE AS THE FORWARD.  Its block carries the forward's
-//: operands plus the seed, the relay plane and the `dG_l` image, and the image is what
-//: the digit carve is built on, so the staging ring is the term that pays for it.  The
-//: cap is the reverse's own because the forward has nothing to buy with it.
+//: THE REVERSE STAGES HALF AS WIDE AS THE FORWARD. Its block carries the
+//: forward's operands plus the seed, the relay plane and the `dG_l` image, and
+//: the image is what the digit carve is built on ...
+// see docs/internals/intra/intra_backward_kernel.md#kbwdstagecap
 constexpr int kBwdStageCap = 32;
 constexpr int bwd_stage_digits(int width) {
   return level_digits(width) < kBwdStageCap ? level_digits(width) : kBwdStageCap;
@@ -62,18 +62,16 @@ constexpr int bwd_stages_per_level(int width) {
 }
 constexpr int bwd_operand_pitch(int width) { return bwd_stage_digits(width) + 8; }
 
-//: THE RELAY PLANE, one `[kMmaM x kSlabDigits]` tile per warp: every cotangent this
-//: kernel reduces has that shape, and the accumulator's lane map scatters a reducing
-//: instruction's 32 values over eight destination rows a plane pitch apart.  The pitch
-//: is EVEN because the accumulator's two column-adjacent values relay as one eight-byte
-//: store.  See docs/internals/intra/intra_backward_kernel.md.
+//: THE RELAY PLANE, one `[kMmaM x kSlabDigits]` tile per warp: every cotangent
+//: this kernel reduces has that shape ...
+// see docs/internals/intra/intra_backward_kernel.md#kxposerows
 constexpr int kXposeRows = 16;
 constexpr int kXposePitch = kSlabDigits + 2;
 
-//: THE `dG_l` IMAGE: the tile pair's coefficient object, `[C reader tokens x kTile write
-//: tokens]`, published in bf16 so the phase that READS it can be carved differently from
-//: the phase that accumulated it.  The pitch is the one the operand slabs already prove
-//: conflict-free in both `ldmatrix` flavours.
+//: THE `dG_l` IMAGE: the tile pair's coefficient object, `[C reader tokens x
+//: kTile write tokens]`, published in bf16 so the phase that READS it can be
+//: carved differently from the phase that accumulated it.
+// see docs/internals/intra/intra_backward_kernel.md#kimagepitch
 constexpr int kImagePitch = kTile + 8;
 
 //: The forward's block footprint plus the ROW side's seed rows, the per-warp relay
@@ -129,15 +127,12 @@ __device__ __forceinline__ bool side_stage_live(const IntraBwdSmem<D, B, W>& sm,
   constexpr int kSlabsPerStage = bwd_slabs_per_stage(B);
 #pragma unroll
   for (int sub = 0; sub < kSlabsPerStage; ++sub)
-    any = any
-          || side_bits<D, B, W>(sm, modes, ti, l, side, stage * kSlabsPerStage + sub) != 0u;
+    any = any || side_bits<D, B, W>(sm, modes, ti, l, side, stage * kSlabsPerStage + sub) != 0u;
   return any;
 }
 
-//: THE GRAM PASS'S GATE IS THE INTERSECTION and the digit passes' is ONE SIDE.  A
-//: level's digit gradient drops that level's own factor, so `d_pr_l[t,e]` is live
-//: wherever the WRITE side has support at `e` whatever the read side does there; gating
-//: it on the intersection would drop real terms.
+//: THE GRAM PASS'S GATE IS THE INTERSECTION and the digit passes' is ONE SIDE.
+// see docs/internals/intra/intra_backward_kernel.md#live-rows-side
 template <int D, int B, int W>
 __device__ __forceinline__ uint32_t live_rows_side(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                    int rt0, int ct, int l, int stage) {
@@ -176,9 +171,7 @@ __device__ __forceinline__ uint32_t live_rows_pair(const IntraBwdSmem<D, B, W>& 
     bool any = false;
 #pragma unroll
     for (int sub = 0; sub < kSlabsPerStage; ++sub)
-      any = any
-            || pair_slab_live<D, B, W>(sm, modes, rt0 + r, ct, l,
-                                       stage * kSlabsPerStage + sub);
+      any = any || pair_slab_live<D, B, W>(sm, modes, rt0 + r, ct, l, stage * kSlabsPerStage + sub);
     if (any) bits |= 1u << r;
   }
   return bits;
@@ -222,8 +215,7 @@ __device__ __forceinline__ void build_bwd_masks(IntraBwdSmem<D, B, W>& sm, const
 #pragma unroll
         for (int j = 0; j < kMaskWordsHalf; ++j) {
           const uint32_t bits = __reduce_or_sync(0xFFFFFFFFu, digit_union_word<32>(row + j * 32));
-          if ((tid & 31) == 0)
-            atomicOr(&sm.mask[ti][l][side][half * kMaskWordsHalf + j], bits);
+          if ((tid & 31) == 0) atomicOr(&sm.mask[ti][l][side][half * kMaskWordsHalf + j], bits);
         }
       }
     }
@@ -311,10 +303,9 @@ __device__ __forceinline__ void stage_bwd_seed(IntraBwdSmem<D, B, W>& sm, const 
   if (tid < kRows) sm.dden[tid] = p.dden[(long long)bh * p.L + t0 + tid];
 }
 
-//: THE PUBLISH.  One row-carved `[kWarpRows x kTile]` accumulator becomes bf16 rows of
-//: the image, at the rounding pass 2's A operand carried anyway.  `row` addresses the
-//: warp's first accumulator row at the lane's column; the accumulator's second row group
-//: is eight rows below it.
+//: THE PUBLISH. One row-carved `[kWarpRows x kTile]` accumulator becomes bf16
+//: rows of the image, at the rounding pass 2's A operand carried anyway.
+// see docs/internals/intra/intra_backward_kernel.md#publish-image
 template <int D, int B, int W>
 __device__ __forceinline__ void publish_image(IntraBwdSmem<D, B, W>& sm,
                                               const float (&acc)[kTile / 8][4], int warp,
@@ -345,12 +336,10 @@ __device__ __forceinline__ void relay_tile(float* put, const float (&acc)[2][4])
   __syncwarp();
 }
 
-//: THE ONE REDUCING PATH.  `get` is the lane's cursor into the relayed plane and
-//: `lane_off` its destination offset -- row half in the high byte, digit column in the
-//: low; both are invariant over the whole kernel.  `base` addresses the tile's first
-//: destination row and `stride` its row pitch, as an `int` because the widest offset a
-//: reduced tile reaches is fifteen row pitches.
-//: docs/internals/intra/intra_backward_kernel.md.
+//: THE ONE REDUCING PATH. `get` is the lane's cursor into the relayed plane and
+//: `lane_off` its destination offset -- row half in the high byte, digit column
+//: in the low; both are invariant over the whole kernel.
+// see docs/internals/intra/intra_backward_kernel.md#reduce-tile
 __device__ __forceinline__ void reduce_tile(float* put, const float* get, int lane_off,
                                             const float (&acc)[2][4], float* base, int stride) {
   relay_tile(put, acc);
@@ -370,24 +359,17 @@ __device__ __forceinline__ unsigned support_bits(denseref::ops::SmemAddr a) {
   return x & 0x7FFFu;
 }
 
-//: A PREDICATED reducing instruction rather than a branched one: the gate is a property
-//: of the destination CELL, so eight cells of one lane carry eight independent gates and
-//: a branch per cell gives the walk eight control-flow regions to keep values live
-//: across -- measured, 96 bytes of spill against zero.
+//: A PREDICATED reducing instruction rather than a branched one: the gate is a
+//: property of the destination CELL ...
+// see docs/internals/intra/intra_backward_kernel.md#fan-in-add-if
 __device__ __forceinline__ void fan_in_add_if(unsigned live, float* p, float x) {
   asm volatile("{ .reg .pred q; setp.ne.u32 q, %2, 0; @q red.global.add.f32 [%0], %1; }" ::"l"(p),
                "f"(x), "r"(live)
                : "memory");
 }
 
-//: THE SAME PATH, RESTRICTED TO THE DESTINATION PLANE'S OWN SUPPORT.  `sup` walks the
-//: own-side operand at the reducing address and `sup_step` is its two-row stride.  A side
-//: whose duty is DENSE has no support to restrict to and takes the unrestricted path
-//: unchanged: the declaration is uniform over the block, so the choice is one branch and
-//: not a per-cell test the dense arm would pay for nothing.  The restricted walk unrolls
-//: by the relay's own period -- the lane's eight cells are the two row parities of a
-//: `[16 x 16]` tile, and unrolling past that holds eight certificate loads live and
-//: spills.  docs/internals/intra/intra_backward_kernel.md.
+//: THE SAME PATH, RESTRICTED TO THE DESTINATION PLANE'S OWN SUPPORT.
+// see docs/internals/intra/intra_backward_kernel.md#reduce-tile-on-support
 __device__ __forceinline__ void reduce_tile_on_support(float* put, const float* get, int lane_off,
                                                        const float (&acc)[2][4], float* base,
                                                        int stride, denseref::ops::SmemAddr sup,
@@ -406,10 +388,10 @@ __device__ __forceinline__ void reduce_tile_on_support(float* put, const float* 
     fan_in_add_if(support_bits(sup), base + off, get[q * 2 * kXposePitch]);
 }
 
-//: THE SECOND LAUNCH BOUND, from the arm's own footprint.  Without it ptxas budgets
-//: registers for the residency the THREAD COUNT suggests rather than the one this
-//: block's shared memory leaves reachable, and the narrow-window arm pays the
-//: difference in spill.  `kBwdRegFloor` is the measured live set of the built arms.
+//: THE SECOND LAUNCH BOUND, from the arm's own footprint. Without it ptxas
+//: budgets registers for the residency the THREAD COUNT suggests rather than
+//: the one this block's shared memory leaves reachable ...
+// see docs/internals/intra/intra_backward_kernel.md#kbwdregfloor
 constexpr int kBwdRegFloor = 232;
 
 template <int D, int B, int W>
@@ -422,10 +404,8 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
   constexpr int kTiles = tiles_of(W);
   constexpr int kRowTiles = row_tiles_of(W);
   constexpr int kWarps = warps_of(W);
-  //: THE DIGIT CARVE.  A warp is a (digit part, group) pair: the part names one
-  //: `kSlabDigits` slab of the stage and the group names the slice of the destination
-  //: token axis the warp owns, so both digit gradients close their contraction inside
-  //: the warp and every destination cell is reduced ONCE per block.
+  //: THE DIGIT CARVE.
+  // see docs/internals/intra/intra_backward_kernel.md#kparts
   constexpr int kParts = bwd_slabs_per_stage(B);
   constexpr int kGroups = kWarps / kParts;
   constexpr int kPrRows = rows_of(W) / kGroups;
@@ -480,10 +460,8 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
   const int grp_tile = (grp * kPrRows) / kTile;
   const int jt = warp % kColK;
   const int chan = (warp / kColK) * kDvChans;
-  //: THE OPERAND BASES.  In the unrolled bodies the buffer, the k-tile and the m-tile
-  //: are compile-time constants, and everything else an `ldmatrix` address carries --
-  //: the lane map, the warp's digit part, its group -- is invariant over the whole
-  //: kernel, so each address is ONE base computed here plus a constant.
+  //: THE OPERAND BASES.
+  // see docs/internals/intra/intra_backward_kernel.md#kelem
   constexpr unsigned kElem = (unsigned)sizeof(__nv_bfloat16);
   constexpr unsigned kSlabRow = bwd_operand_pitch(B) * kElem;
   constexpr unsigned kImgRow = kImagePitch * kElem;
@@ -515,7 +493,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
     stage_wait<0>();
     __syncthreads();
 
-    #pragma unroll 1
+#pragma unroll 1
     for (int ct = 0; ct < rt0 + kRowTiles; ++ct) {
       __syncthreads();
       stage_bwd_values<D, B, W>(sm, p, bh, wbase, ct, tid);
@@ -610,9 +588,9 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
       }
 
       //: `A`, `dA` and every `dG_l` are formed IN PLACE over the Gram registers, and
-      //: (I3)'s row sum is drained inside the same sweep so it never becomes an array.
-      //: ITS SIXTEEN DESTINATIONS ARE ONE POINTER AND FIFTEEN CONSTANT DISPLACEMENTS: a
-      //: reducing address written as one sum is sixteen live 64-bit addresses instead.
+      //: (I3)'s row sum is drained inside the same sweep so it never becomes an
+      //: array.
+      // see docs/internals/intra/intra_backward_kernel.md#note-l612
       float* const dgw_base = p.d_gw + (long long)(bh * p.L + wbase + ct * kTile) + lane * 2;
 #pragma unroll
       for (int n = 0; n < 8; ++n) {
@@ -653,11 +631,10 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
       }
 
       // ---- (I2) d_v = A^T . d_num, off the published image ---------------------
-      //: THE IMAGE IS THE RE-CARVE.  `A` and each `dG_l` are accumulated ROW-carved --
-      //: the Gram's `m` axis IS the row axis -- and published once as bf16, which is the
-      //: rounding pass 2's A operand carried in registers anyway.  Every phase that
-      //: reduces over the reader axis then reads the image back under a carve of its
-      //: own, and closes its contraction inside one warp.
+      //: THE IMAGE IS THE RE-CARVE. `A` and each `dG_l` are accumulated ROW-carved --
+      //: the Gram's `m` axis IS the row axis -- and published once as bf16, which is
+      //: the rounding pass 2's A operand carried in registers anyway.
+      // see docs/internals/intra/intra_backward_kernel.md#syncthreads
       __syncthreads();
       publish_image<D, B, W>(sm, gd, warp, row_lo, col_lo);
       __syncthreads();
@@ -738,10 +715,10 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
                   base_sup_r + buf * kRBuf + mt * kWarpRows * kSlabRow, 2 * kSlabRow, pr_own);
             }
           }
-          //: (I6)'s contraction runs over the WHOLE block of readers, so it is gated
-          //: per row tile: a tile the certificate left unstaged is one whose operand
-          //: rows are all zero, and the rows of a tile the causal walk excludes are
-          //: zero in the image.
+          //: (I6)'s contraction runs over the WHOLE block of readers, so it is gated per
+          //: row tile: a tile the certificate left unstaged is one whose operand rows are
+          //: all zero ...
+          // see docs/internals/intra/intra_backward_kernel.md#note-l741
           uint32_t rlive = 0u;
           if (side_bits<D, B, W>(sm, p.modes, ct, l, 1, slab) != 0u) {
 #pragma unroll

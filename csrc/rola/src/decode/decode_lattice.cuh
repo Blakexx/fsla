@@ -1,47 +1,8 @@
 #pragma once
 
-// THE T=1 FACTOR TABLES -- the per-level objects the step's lattice walk is enumerated
-// from, and nothing else.
-//
-// Three facts a reader must not miss:
-//   1. NOTHING HERE IS SIZED IN `N`. One bit per DIGIT (`sum_l B_l` bits per side) and
-//      one entry per live OWNER COORDINATE (`sum_l g_l` at most) is the whole apparatus;
-//      the leaf space is never represented.
-//   2. Membership is the EXACT-NONZERO test on the amplitude, never a threshold -- the
-//      same defining expression the schedule's support bitmap uses.
-//   3. THE RANK SPACE IS A BIT FIELD, not a mixed radix over the realized counts: each
-//      level's live count is padded up to a power of two so a unit decomposes by shifts.
-//      A device integer division is tens of cycles and the enumeration runs once per
-//      candidate atom per CTA, which is where it would be paid.
-//
-// THE ENUMERATION IS THE UNION OF THE TWO PRODUCTS, NOT THE PRODUCT OF THE TWO UNIONS,
-// and that is this header's whole subject. `prod_l (R_l u W_l)` is the DENSE product
-// wherever every level has a dense side -- which the split-level declaration makes true
-// at EVERY level -- while `(prod_l R_l) u (prod_l W_l)` is the set the step actually
-// touches. The two are separated by a factor of up to `2^D` at the flagship.
-//
-// The union of two products is not a product, but it IS a DISJOINT UNION of `D + 1` of
-// them, which is what makes it walkable by the same three loops:
-//
-//     (prod_l W_l)  u  [ (prod_l R_l) \ (prod_l W_l) ]
-//        = TERM 0   ]+[ (+)_{l=0}^{D-1} TERM (l + 1)
-//     TERM 0     = prod_l W_l
-//     TERM l + 1 = [prod_{l' < l} (R_l' & W_l')] x (R_l & ~W_l) x [prod_{l' > l} R_l']
-//
-// EXHAUSTIVE: a leaf of `prod R` outside `prod W` has a SMALLEST level `l` whose digit is
-// not in `W_l`, and that `l` names its term. DISJOINT: term 0's level-`l` digit is in
-// `W_l` and term `l + 1`'s is not; terms `i < j` disagree at level `i - 1`. So every leaf
-// either side reaches is enumerated EXACTLY ONCE -- which is what keeps UPDATE-THEN-READ
-// a single visit and the deposit a partition over write owners.
-//
-// FOUR KINDS, ONE PER PER-LEVEL DIGIT SET the terms ask for (`W`, `R`, `R & W`,
-// `R & ~W`), each with its own OWNER LIVENESS BITMASK -- one bit per owner coordinate, not
-// a compacted list; the term layout says which kind each level of each term takes. The two
-// DIGIT MASKS stay two -- a kind's bits are a boolean function of the read and write bits,
-// formed where they are read.
-//
-// The lattice's formulas, the capacities and the cost accounting:
-// docs/internals/decode/decode_lattice.md
+// THE T=1 FACTOR TABLES -- the per-level objects the step's lattice walk is
+// enumerated from, and nothing else.
+// see docs/internals/decode/decode_lattice.md#note-l3
 
 #include <cub/block/block_scan.cuh>
 
@@ -52,27 +13,18 @@ namespace decode {
 
 using LatticeScan = cub::BlockScan<int, kDecodeThreads>;
 
-//: THE FOUR PER-LEVEL DIGIT SETS the terms are built from, as the index of one owner-list
-//: plane each. `kKindW` is also TERM 0's kind at every level, so the write product -- the
-//: set the candidate atoms and the pool claim are enumerated from -- is a term of the walk
-//: and needs no second list plane.
-//: THERE IS NO FIFTH, UNION KIND, and that is a MEASURED refusal rather than an omission:
-//: a `R_l | W_l` list plus a fallback term that walks it whenever it enumerates fewer
-//: units than the decomposition was built, gated and benchmarked, and LOST on every cell
-//: (its fifth list costs a block scan per level in a prologue-bound step, and the unit
-//: count it selects on does not predict the wall -- the scattered cell at `BH = 1` was
-//: 21 % SLOWER on the enumeration with 1.5x FEWER units).
-//: docs/internals/decode/decode_lattice.md#the-refused-fallback
+//: THE FOUR PER-LEVEL DIGIT SETS the terms are built from, as the index of one
+//: owner-list plane each.
+// see docs/internals/decode/decode_lattice.md#kkindw
 constexpr int kKindW = 0;
 constexpr int kKindR = 1;
 constexpr int kKindRW = 2;   // R_l & W_l
 constexpr int kKindRmW = 3;  // R_l & ~W_l
 constexpr int kKinds = 4;
 
-//: `D + 2` term slots: the write product, one per level, and -- LAST -- the CANDIDATE
-//: LAYOUT. The candidate slot is the write product again, enumerated the way it always
-//: was (live owners crossed with the FULL run radix), and it exists because the walk's
-//: own write term no longer is: docs/internals/decode/decode_lattice.md#the-write-grain
+//: `D + 2` term slots: the write product, one per level, and -- LAST -- the
+//: CANDIDATE LAYOUT.
+// see docs/internals/decode/decode_lattice.md#kmaxterms
 constexpr int kMaxTerms = kMaxLevels + 2;
 
 //: THE TERM TABLE, as arithmetic rather than as a table: term `0` is the write product,
@@ -104,7 +56,7 @@ __device__ __forceinline__ uint32_t kind_bits(uint32_t r, uint32_t w, int kind) 
 template <int D>
 __device__ __forceinline__ void build_digit_mask(const DecodeParams& p, const float* amp,
                                                  uint32_t* mask) {
-  #pragma unroll 1
+#pragma unroll 1
   for (int idx = threadIdx.x; idx < p.mask_total; idx += kDecodeThreads) {
     int l = 0;
 #pragma unroll
@@ -116,7 +68,7 @@ __device__ __forceinline__ void build_digit_mask(const DecodeParams& p, const fl
     const float* row = amp + p.level_amp_offset[l];
     uint32_t v = 0u;
     const int take = (width - base) < 32 ? (width - base) : 32;
-    #pragma unroll 1
+#pragma unroll 1
     for (int b = 0; b < take; ++b) {
       if (row[base + b] != 0.0f) v |= 1u << b;
     }
@@ -145,25 +97,10 @@ __device__ __forceinline__ bool mask_bit(const DecodeParams& p, const uint32_t* 
   return ((mask[p.mask_off[l] + (bit >> 5)] >> (static_cast<uint32_t>(bit) & 31u)) & 1u) != 0u;
 }
 
-//: THE OWNER LIVENESS BITMASK: per KIND and level, ONE BIT PER OWNER COORDINATE, set
-//: where that kind's digit set has any digit inside the owner's span. Thread `tid` owns
-//: owner `tid` on both sides, reads its span ONCE, and all four kinds fall out of that one
-//: pair of slices exactly as they did; `lat_g[l] <= kDecodeThreads` follows from the
-//: level-width capacity, so one pass covers every owner. The caller's barrier before this
-//: must have published both digit masks and zeroed the two count rows.
-//:
-//: THE BALLOT IS WHAT REPLACES THE BLOCK SCAN, and that is this function's whole subject.
-//: The compacted lists this supersedes cost FOUR `cub::BlockScan`s and TWO BARRIERS PER
-//: LEVEL to build a table whose only use is `list[i] -> owner`; a warp's 32 lanes already
-//: hold 32 consecutive owners' answers, so ONE `__ballot_sync` per kind IS that level's
-//: word, written by its lane 0, and `list[i]` becomes a find-nth-set over the same word
-//: ([`select_owner`](decode_lattice.md#the-owner-lists)). The realized counts ride the same
-//: word as a popcount, so the level's `n_o` needs no second pass either.
-//: THE COUNTS ARE FOLDED BY ATOMIC, NOT SCANNED: a count is the popcount SUM over a level's
-//: at most eight words, and the eight lane-zeros that hold them are in different warps.
-//: THE DIGIT LIST HAS NO PLANE. Term 0's outer levels enumerate live WRITE DIGITS, and the
-//: write digit mask already IS one bit per digit -- so the list is `mask_w` itself, its
-//: count is `mask_w`'s popcount, and the digit list's scan field disappears with it.
+//: THE OWNER LIVENESS BITMASK: per KIND and level, ONE BIT PER OWNER
+//: COORDINATE, set where that kind's digit set has any digit inside the owner's
+//: span.
+// see docs/internals/decode/decode_lattice.md#build-owner-mask
 template <int D>
 __device__ __forceinline__ void build_owner_mask(const DecodeParams& p, const uint32_t* mask_r,
                                                  const uint32_t* mask_w, uint32_t* omask,
@@ -197,20 +134,8 @@ __device__ __forceinline__ void build_owner_mask(const DecodeParams& p, const ui
   }
 }
 
-//: THE COMPACTION, AND IT COSTS ONE `POPC` PER WORD. An owner that the ballot found live
-//: writes ITSELF into its rank slot: its rank is the popcount of its kind's bits below it,
-//: which is at most `kDecodeMaxLevelWidth / 32 = 8` popcounts and, at every topology whose
-//: level is 32 owners or narrower, exactly one. The caller's barrier before this must have
-//: published `omask`.
-//:
-//: WHY NOT SELECT AT USE TIME. Reading the bitmask directly -- `select(i-th set bit)` by
-//: `__fns` -- deletes these planes entirely, and was BUILT AND MEASURED: `__fns` is not one
-//: instruction on sm_86 but ~56 SASS with reconvergence-stack ops, and the ADMISSION
-//: resolves one owner rank per LEVEL per CANDIDATE ATOM per CTA per step (4096 candidates
-//: at the flagship), so the select cost +2.3M instructions on the dense step -- +25 % of the
-//: whole step, against a prologue saving of a tenth of that. THE SCAN IS STILL GONE: what
-//: this replaces is `cub::BlockScan`, four of them per level with two barriers, not the
-//: list. docs/internals/decode/decode_lattice.md#the-owner-lists
+//: THE COMPACTION, AND IT COSTS ONE `POPC` PER WORD.
+// see docs/internals/decode/decode_lattice.md#compact-owner-lists
 template <int D>
 __device__ __forceinline__ void compact_owner_lists(const DecodeParams& p, const uint32_t* omask,
                                                     const uint32_t* mask_w, int32_t* olist,
@@ -242,13 +167,10 @@ __device__ __forceinline__ void compact_owner_lists(const DecodeParams& p, const
   }
 }
 
-//: A LEVEL'S RANK FIELD, PACKED INTO ONE REGISTER, and the packing is a REGISTER BUDGET
-//: decision measured on the deepest arm: three parallel `int[D]` arrays cost twelve live
-//: registers at `D = 4` and spilled the `d_v = 64` walk against its 64-register cap, while
-//: one packed word per level costs four and unpacks in two ALU ops. The three fields are
-//: the padded field's POSITION in the term's rank (5 bits -- at most `D` levels of at most
-//: `kFieldWidthMax` bits each), its WIDTH (5 bits) and the level's REALIZED COUNT (the rest),
-//: which a padded-past-the-end index is refused against.
+//: A LEVEL'S RANK FIELD, PACKED INTO ONE REGISTER, and the packing is a
+//: REGISTER BUDGET decision measured on the deepest arm: three parallel
+//: `int[D]` arrays cost twelve live registers at `D = 4` and spilled the `d_v = ...
+// see docs/internals/decode/decode_lattice.md#kfieldwidthmax
 constexpr int kFieldWidthMax = 10;
 static_assert(kDecodeMaxLevelWidth <= (1 << kFieldWidthMax),
               "a level's realized owner or digit count must fit the packed field's width");
@@ -266,42 +188,9 @@ __device__ __forceinline__ int field_index(int f, int rank) {
   return (rank >> field_shift(f)) & ((1 << field_width(f)) - 1);
 }
 
-//: THE TERM LAYOUT: each term's own rank space, DERIVED INTO REGISTERS BY WHOEVER NEEDS
-//: IT. `fld[l]` packs level `l`'s field position, its power-of-two padding and its realized
-//: count, so a rank decomposes by shifts and nothing is divided around; the
-//: return is the term's unit count, and a term whose kind is empty at any level contributes
-//: NO units at all -- which is how `R_l <= W_l` at every level (the dense cell) collapses
-//: the whole read remainder to nothing and leaves the walk exactly the write product.
-//:
-//: ONE PACKED WORD PER LEVEL IS WHAT THE WALK READS, and it replaces THREE reads -- the
-//: field width, the field position and the level's realized count were three separate
-//: shared-memory arrays. The table stays a PER-CTA PROLOGUE OBJECT rather than a per-warp
-//: register set, and that is a REGISTER BUDGET fact, measured: holding `D` field words live
-//: across the walk spilled 48 words at the `D = 4` arm against the 64-register cap that
-//: 1024 resident threads impose, while the packed table costs no register at all and one
-//: third of the loads. docs/internals/decode/decode_lattice.md#the-owner-lists
-//:
-//: THREE LAYOUTS, NOT ONE, and the difference between them is this file's subject.
-//:   * TERM 0, THE WRITE PRODUCT, enumerates LIVE DIGITS at every level but the innermost
-//:     and live OWNERS at the innermost. Its outer fields are the LOW ones so consecutive
-//:     units still walk consecutive atoms. Why: every other rank space is
-//:     `live owners x the FULL run radix`, and the run radix NEVER PRUNES -- a write side
-//:     that is sparse in digits WITHIN its owners (which is what the split-level
-//:     declaration makes it, by construction) then enumerates `span` units for every live
-//:     one. Measured at the flagship: 2048 units for 256 live ones.
-//:     docs/internals/decode/decode_lattice.md#the-write-grain
-//:   * TERMS `1..D`, the read remainders, keep the owner-and-run rank space. The ledger
-//:     says they idle 1.6-35.5 %, never the >50 % that would pay for a second grain.
-//:   * THE CANDIDATE SLOT `D + 1` is the write product AGAIN, in the OLD owner-and-run
-//:     space, because the candidate-atom enumeration and the pool claim's canonical ranks
-//:     are defined in ASCENDING ATOM ID and only that space is monotone in it
-//:     ([`decode.md#candidate-atoms`]). The walk needs no such order and does not pay for
-//:     one; the claim keeps exactly the enumeration it was ratified on.
-//:
-//: THE FIELD ORDER IS INNERMOST-LEAST-SIGNIFICANT at every term, and it is a DRAM decision:
-//: putting term 0's outer DIGIT field lowest instead sweeps one atom out of every `s_0`
-//: across the whole plane before returning for the next, which measured +2.6 % on the dense
-//: cell; this order consumes one level-0 owner's whole region before moving on.
+//: THE TERM LAYOUT: each term's own rank space, DERIVED INTO REGISTERS BY
+//: WHOEVER NEEDS IT.
+// see docs/internals/decode/decode_lattice.md#term-layout
 template <int D>
 __device__ __forceinline__ int term_layout(const DecodeParams& p, const int32_t* n_o,
                                            const int32_t* n_d, int term, int32_t* fld) {
@@ -321,13 +210,8 @@ __device__ __forceinline__ int term_layout(const DecodeParams& p, const int32_t*
   return (term == 0) ? (1 << acc) : (1 << (acc + p.lat_outer_bits));
 }
 
-//: THE WHOLE TABLE AND THE RETIREMENT BOUND, published once per CTA. ONE THREAD PER TERM,
-//: because the terms are independent: `D + 2` threads do at most `D` `ceil_log2`s each
-//: instead of one thread doing twenty-four in series while the rest wait. `umax` -- the
-//: largest count the WALK's terms reach, which is the retirement bound -- is folded by
-//: `atomicMax` inside this function's OWN barrier, so no CTA pays a second block
-//: synchronisation to learn it: docs/internals/decode/decode.md#retirement
-//: The candidate slot is not the walk's, so it is not in the retirement bound.
+//: THE WHOLE TABLE AND THE RETIREMENT BOUND, published once per CTA.
+// see docs/internals/decode/decode_lattice.md#publish-term-layout
 template <int D>
 __device__ __forceinline__ void publish_term_layout(const DecodeParams& p, const int32_t* n_o,
                                                     const int32_t* n_d, int32_t* fld,
@@ -341,20 +225,9 @@ __device__ __forceinline__ void publish_term_layout(const DecodeParams& p, const
   __syncthreads();
 }
 
-//: ONE UNIT of the walk: the `(owner, r_0 .. r_{D-2})` pair a rank names -- an owner
-//: together with EVERY run offset but the innermost. Under the mixed-radix intra-box order
-//: the innermost level's run is the CONTIGUOUS tail of the owner-local index, so a unit's
-//: leaves are `s_{D-1}` consecutive lattice indices at an aligned base: at the flagship
-//: spans `(8, 16)` that is EXACTLY ONE 16-leaf atom, at full occupancy, with the innermost
-//: level's 16 digits as the unit's slots.
-//:
-//: What the unit carries is therefore ASYMMETRIC BY CONSTRUCTION, and that asymmetry IS
-//: the unit's point: every level but the innermost contributes ONE FIXED DIGIT, so its
-//: amplitude and its membership are resolved ONCE HERE and the slot loop below costs one
-//: innermost amplitude per leaf rather than `D` of them. Only the innermost level
-//: contributes a SLICE (`cr`/`cw`, one 32-bit extract) that the slot loop iterates by
-//: `__ffs`. `valid` is false where the padded rank space overshoots a level's realized
-//: count. docs/internals/decode/decode_lattice.md#the-unit
+//: ONE UNIT of the walk: the `(owner, r_0 .. r_{D-2})` pair a rank names -- an
+//: owner together with EVERY run offset but the innermost.
+// see docs/internals/decode/decode_lattice.md#unit
 template <int D>
 struct Unit {
   //: NO `owner` FIELD. The owner's mixed-radix index is a resolver LOCAL that dies into
@@ -372,35 +245,8 @@ struct Unit {
   uint32_t cw;
 };
 
-//: THE UNIT INDEX, decomposed by shifts alone within its TERM. THE TERM IS THE WALK'S
-//: OUTER LOOP AND THAT IS A LATENCY DECISION, not a bookkeeping one: it makes the kind of
-//: every level -- and therefore the list base, the count, the field widths and every
-//: predicate below -- LOOP-INVARIANT, so the per-unit dependent chain is the one the union
-//: walk had. Laying the terms end to end in one index space and naming the term per unit
-//: was measured at `+2.3 ns` of dependent latency per unit, which on the scattered cell
-//: cost more than the units the decomposition saves:
-//: docs/internals/decode/decode.md#the-term-loop
-//: The grid partitions EACH TERM'S index space by the modular map it always used, so the
-//: deposit -- which lives in term 0 alone -- is still one owning CTA, warp and lane per row.
-//: Within a term the high bits are the OWNER RANK, one padded field per level, and the low
-//: `lat_outer_bits` are the fixed run offsets in the SAME mixed radix the owner-local index
-//: uses, so `outer << lat_inner_bits` is the unit's base inside its owner without a
-//: multiply. A level whose digit is dead in the TERM'S OWN KIND kills the unit, which is
-//: the pruning the product structure buys.
-//:
-//: WHAT THE UNIT HANDS BACK IS ALREADY IN THE WALK'S VOCABULARY, and that is deliberate:
-//: the slot loop iterates `live_w ? cw : cr` and tests `in_r`/`in_w` exactly as a union
-//: walk does, because the two slices are CONDITIONED here so the term never reaches it.
-//:   * TERM 0 is the write product: `cw` IS the enumerated run, every one of its leaves is
-//:     in `supp(W)`, and `cr`/`live_r` answer the read question as they always did. A dead
-//:     write digit above the innermost level zeroes both slices, which is the unit dying.
-//:   * TERM `l + 1` is disjoint from `supp(W)` by construction and inside `supp(R)`, so it
-//:     reports `live_w = false` (no leaf of it is written), `live_r = true`, and its
-//:     enumerated run in `cr` (where the union walk's read slice would have been).
-//: The walk therefore has NO TERM ARM, NO EXTRA SLICE REGISTER and one expression per question -- the
-//: arithmetic the tight loop's register budget is measured on is unchanged.
-//: docs/internals/decode/decode_lattice.md#the-unit
-//: `DECAY` is a template arm so the dial product is not merely multiplied by one.
+//: THE UNIT INDEX, decomposed by shifts alone within its TERM.
+// see docs/internals/decode/decode_lattice.md#resolve-unit
 template <int D, bool DECAY>
 __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uint32_t* mask_r,
                                                 const uint32_t* mask_w, const float* sa_r,
@@ -466,15 +312,8 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
   return u;
 }
 
-//: THE CANDIDATE ATOM'S UNIT, and it is deliberately NOT a `Unit<D>`. The candidate
-//: enumeration asks the write mask a MEMBERSHIP question and nothing else -- which atom
-//: does this rank touch, and does the write side reach it -- so it needs neither side's
-//: amplitude product, neither decay rate, and not the read slice. Resolving it through the
-//: walk's resolver made it pay for all five, once per candidate rank per CTA, which at the
-//: dense cell is sixteen ranks per thread: measured at 5.9 % of the step's whole
-//: instruction count. Its kind is `kKindW` at every level by definition, so the term table
-//: and the kind-indexed addressing collapse to constants here too.
-//: docs/internals/decode/decode_lattice.md#the-candidate-slot
+//: THE CANDIDATE ATOM'S UNIT, and it is deliberately NOT a `Unit<D>`.
+// see docs/internals/decode/decode_lattice.md#candidateunit
 struct CandidateUnit {
   int base;
   bool valid;
@@ -514,39 +353,17 @@ __device__ __forceinline__ CandidateUnit resolve_candidate_unit(const DecodePara
   return u;
 }
 
-//: THE WRITE PRODUCT'S UNIT, resolved from LIVE DIGITS. It is `resolve_unit`'s sibling and
-//: it hands back the identical `Unit<D>`, so the walk that consumes it has no idea which
-//: one produced it -- the whole difference is the rank space
-//: ([`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)).
-//:
-//: Every level but the innermost takes its digit from that level's WRITE DIGIT LIST rather
-//: than from an owner list crossed with a full run radix, and the digit splits back into
-//: `(owner, run)` by shifts because a span is a power of two: `o = d >> lat_sbits[l]`,
-//: `r = d & (lat_s[l] - 1)`. So the unit's base is assembled exactly as before -- the owner
-//: in mixed radix over `lat_g`, the runs at `lat_run_shift` -- and a unit is still ONE
-//: CONTIGUOUS ALIGNED RUN of the innermost level.
-//: `live_w` IS TRUE BY CONSTRUCTION: this enumeration visits write digits only, so the
-//: membership test the owner-and-run space has to make per level does not exist here. The
-//: read side still answers for itself, digit by digit.
+//: THE WRITE PRODUCT'S UNIT, resolved from LIVE DIGITS.
+// see docs/internals/decode/decode_lattice.md#resolve-write-unit
 template <int D, bool DECAY>
 __device__ __forceinline__ Unit<D> resolve_write_unit(const DecodeParams& p, const uint32_t* mask_r,
                                                       const uint32_t* mask_w, const float* sa_r,
                                                       const float* sa_w, const float* sd,
                                                       const int32_t* olist, const int32_t* dlist,
                                                       const int32_t* fld, int unit) {
-  //: THE WARP-LOCALITY ROTATION, and it is the second DRAM decision in this resolver.
-  //: The field order above puts the innermost OWNER lowest, so consecutive units are one
-  //: owner box apart and a CTA's eight warps reach eight atoms `BC` leaves apart. The
-  //: order that fixes THAT -- outer digits lowest -- sweeps one atom in every `s_0` across
-  //: the whole plane before returning, which is worse still. Both were measured.
-  //: SO THE LOW `log2(kUnitBlockWarps)` BITS OF THE LOOP INDEX ARE ROTATED INTO THE BOTTOM OF
-  //: THE FINEST OUTER LEVEL'S FIELD: a block's warps then take CONSECUTIVE ATOMS, while the
-  //: CTA's own stride still sweeps one owner region at a time. It is a BIT PERMUTATION of
-  //: an index space whose extent is a power of two, so it is a bijection and the partition
-  //: -- one owning CTA, warp and lane per deposited row -- is exactly the one it was.
-  //: docs/internals/decode/decode_lattice.md#the-write-grain
-  //: The index is CLAMPED, not guarded: at `D == 1` there is no outer level to rotate into
-  //: and the block below does not run, but the subscript is still compiled.
+  //: THE WARP-LOCALITY ROTATION, and it is the second DRAM decision in this
+  //: resolver.
+  // see docs/internals/decode/decode_lattice.md#krotlevel
   constexpr int kRotLevel = (D > 1) ? D - 2 : 0;
   int rank = unit;
   if (D > 1) {

@@ -54,3 +54,175 @@ It is `perf/pipeline` 7825d31's carry kernel, and the gate is that it still IS: 
 of every arm is byte-identical to that commit's, which is what makes "a dense
 declaration costs nothing" a measurement rather than a claim. See
 `rola-scratch/prototypes/k31_formb_build/FINDINGS.md`.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/carry/carry_split_kernel.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="kdv"></a>
+### `kDv`
+
+THE VALUE WIDTH IS THIS ARM'S (K35 S3b), exactly as the carved body's is.  The
+channel split holds `kDv / kWarps` channels in each of a FIXED four warps, so a
+width the four warps cannot tile -- or one whose state row outgrows the CTA's page
+sweep -- is REFUSED by the clauses below rather than served a narrower path.  No
+`d_v = 128` declaration takes this body: at that width the design's answer is the
+carved 16-leaf executor, which is a different arm and not a branch inside this one.
+
+<a id="panel-bytes"></a>
+### `panel_bytes`
+
+THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA.  A window's
+readouts all precede its folds, so the write panel is dead through phase 1 and
+the read panel is dead through phase 2: each phase double-buffers in the
+other's buffer and produces one batch AHEAD, which is what puts the produce's
+global-load latency underneath the previous batch's MMA block.
+
+<a id="kregfloor"></a>
+### `kRegFloor`
+
+THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR,
+exactly as the shipped `Geom::stages` is: the shallowest ring that reaches the
+best residency this arm can reach at any depth.  `kRegFloor` is the DECLARED
+floor for this family -- the measured census of the heaviest built arm,
+recorded in the findings doc and re-measured at every milestone.
+
+<a id="kmassallwarps"></a>
+### `kMassAllWarps`
+
+when the split reaches every warp the mass guard is a TAUTOLOGY, and it must be
+spelled as one: `__launch_bounds__` does not let the compiler prove
+`threadIdx.x < kThreads`, so the guard would otherwise cut the readout and the
+fold into basic blocks and pin the lookahead produce out of their HMMA shadows.
+
+<a id="rowbytes"></a>
+### `rowBytes`
+
+AND THE OWNER'S BALLOT ROW, per level: the SAME `o_l`, addressing the row the
+facts pass voted for this owner group at this level (K31-i-d).  The liveness
+pass reads these words instead of re-reading the amplitude runs itself -- once
+per (owner, window, level, side) 32 tokens, against `2*D*s_l` bf16 per TOKEN.
+
+<a id="note-l250"></a>
+### near line 250
+
+THE ATOM WALK'S SHAPE IS A REGISTER-INDEXING FACT, NOT A CONVENIENCE.  A
+state fragment is a register array, and a runtime index into one is a stack
+frame -- measured, on this kernel's first build: `kAtoms` walked at runtime put
+the WHOLE state (320 B/thread) in local memory.  So the walk is FULLY
+UNROLLED over the atoms, and every warp owns every atom (its tile index is a
+compile-time `2*a`) because the carve is along the channels.
+
+<a id="note-l257"></a>
+### near line 257
+
+---- THE ENTRY STATE.  The fragments are SET, never accumulated: they are
+provably zero here, and with no decay the recurrence is affine in the state
+with an inclusive-after-write readout, so this IS the oracle's seeding.
+NULL = NO STATE OBJECT AT THIS END: nothing is read, allocated, or touched
+(docs/internals/state.md section 1). An instantiated-but-empty paged state is
+NOT null -- it is engaged, and its absent atoms skip below at the per-atom
+`slot < 0` grain, orthogonal to this check. This predicate is CTA-uniform:
+`s_in` is a launch argument, identical for every thread, so the branch cannot
+diverge within or across warps -- one compiled body, no STATE template axis.
+
+<a id="write"></a>
+### `WRITE`
+
+A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS.  A padding row of a partial
+batch has no token, and a zero coefficient contributes exactly nothing to either
+MMA (the produce's dead-row zeroing law).  Level 0's run is the outermost one and
+therefore the narrowest at every built arm, so zeroing it covers the whole slot
+run for one or two selects and costs no arithmetic.
+
+THE READ SIDE HAS NO GAIN.  Its scalar is identically 1 and the trailing
+`mul_bf16x2(acc, 1)` was 44% of the read produce -- 32 FMUL, 32 PRMT and 16 F2FP
+for `rn(a*1) = a` -- so the side is a compile-time argument and the read body
+stores its accumulators directly.
+
+<a id="note-l317"></a>
+### near line 317
+
+THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
+is loaded, folded into every slot and dropped inside one `static_for` body, so
+no `[D][n]` array is ever live: `SPT/2` packed pairs plus one run, against the
+`sum_l n_l` shorts a per-level array would hold at once.
+the innermost level supplies the ADJACENT PAIR (its run offset owns bit 0),
+every level above it a per-pair scalar -- the shipped producer's chain.
+
+<a id="nb"></a>
+### `nb`
+
+ONE BATCH'S PANEL, expanded from factors.  The list, the row's token and the
+gain are all resolved here so the two phases call ONE body; `have` false
+zeroes the leading factor, and a zero coefficient contributes exactly nothing
+to either MMA (the produce's dead-row zeroing law).
+
+<a id="kscaniters"></a>
+### `kScanIters`
+
+THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19, study section 2.0 as
+rewritten).  Per level at most ONE side is sparse, so there is one stored row
+set per level -- but the two sides' CLAUSE SETS are different level subsets,
+and a dense side's clause is absent-means-full.  ANDing each side's OWN rows
+IS that conjunction over exactly the levels where that side is sparse: a dense
+level's ballot word is all ones for every token and drops out on its own, with
+no structure fact carried into the kernel.  Union routing (one support serving
+both sides) is then the special case where the two row sets coincide, and it
+needs no separate code.
+
+Per-side lists make activity AIRTIGHT: a side's simplex weights are strictly
+positive on its own support, so a listed entry is live for that side by
+construction.  There is no union-superset padding anywhere, by design.
+THE SCAN IS A TABLE READ (K31-i-d).  A warp's thirty-two tokens are one
+BALLOT WORD of the owner's row, so the conjunction over levels is `D` word
+ANDs per side for the whole warp, and the lane reads its own bit out of the
+result -- where the amplitude scan it replaces re-read `2 * sum_l s_l`
+bf16 PER TOKEN, per owner, at owner-specific columns that coalesced with
+nothing.  A level the owner spans WHOLE emits no row: its clause is true for
+every token and drops out of the conjunction with no structure fact carried
+into the kernel, which is exactly what the amplitude form's `or_run` did.
+
+THE COMPACTION IS TWO RENDEZVOUS, both load-bearing.  Every warp holds its
+whole window's ballots in registers and publishes its `kScanIters x 2` live
+counts ONCE; the first barrier publishes those counts, and after it EVERY
+thread re-derives the CTA-wide exclusive prefix from them in registers -- the
+running totals are CTA-uniform and never need a shared round trip, so neither
+the per-iteration barrier pair nor the `tid == 0` serial walk over the warps
+exists.  The second barrier publishes the LISTS, which the phases read from the
+first batch onward, and it doubles as the separation between this window's
+count reads and the next window's count writes -- which is why it precedes the
+whole-window skip rather than following it.
+
+<a id="rendezvous"></a>
+### `rendezvous`
+
+THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring,
+UNCONDITIONALLY and AFTER the batch's MMA block.  Unconditionally because a
+guard is a basic block and ptxas schedules within one; after, because the
+produce ends in panel `STS` and the MMA begins in panel `LDSM`, and the two
+shared ranges are not provably disjoint -- in the other order that aliasing
+edge pins every produce instruction ahead of the HMMAs.  The trailing batch is
+entirely dead rows by the produce's zeroing law and lands in a panel no MMA
+reads.
+THE PRE-LOOP PRODUCE IS THE ONLY THING THE HEAD RENDEZVOUS EVER PUBLISHED, so
+it is taken OUT of the loop: for every later batch the publish is already
+carried by the readout's own two rendezvous (docs/internals/carry/carry_kernel.md,
+"The rendezvous the ring needs").
+
+<a id="nbw"></a>
+### `nbw`
+
+V IS A WRITE-SIDE QUANTITY and is gathered by the WRITE list; the read list
+never touches it.  The value ring is `STAGES` deep and asynchronous: issue
+order is FIFO, one implicit group per batch, and the wait leaves `STAGES-2`
+groups in flight so the gather for batch `i + STAGES - 1` is airborne while
+batch `i` folds.
+
+<a id="rendezvous-2"></a>
+### `rendezvous`
+
+the mirror of the entry load, after the last fan-in has consumed the staging
+buffer -- which is what the one extra rendezvous below is for.
+NULL = NO STATE OBJECT AT THIS END: nothing is written (state.md section 1),
+symmetric with the entry check above.

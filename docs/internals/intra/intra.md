@@ -54,3 +54,60 @@ trap; a fact only the loaded binary can produce can.
 so a manifest ratified in one worktree certifies a name no other checkout's build
 produces and the fatbin gate then refuses a byte-identical kernel. A ratifiable kernel
 needs a named symbol, which is why the stamp lives in a named `stampdet` namespace.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="note-l12"></a>
+### near line 12
+
+NOT an anonymous namespace: nvcc mangles anonymous-namespace kernels with a
+hash that depends on the BUILD PATH, so a manifest ratified in one worktree
+certifies a name no other checkout's build produces -- the fatbin gate then
+refuses a byte-identical kernel. A ratifiable kernel needs a named symbol.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="kmodereadsparse"></a>
+### `kModeReadSparse`
+
+Per-level sparse-side declaration, two bits per level, level 0 in the low
+pair.  Bit 0: the READ side's rows are value-sparse.  Bit 1: the WRITE
+side's.  Neither bit set is DENSE_BOTH; both set is BOTH_SPARSE, which says both
+sides are sparse there and nothing more -- each votes its own support.  The
+kernel is pattern-generic: the slab mask machinery reads all-ones for an
+undeclared side and therefore never gates.
+
+<a id="kwindowflagship"></a>
+### `kWindowFlagship`
+
+The window is the intra term's unit and the CTA's whole subject; the tile is
+the [C x C] output block the causal staircase is expressed on; a warp owns
+kWarpRows of a tile's rows and reduces nothing with its siblings.
+
+THE WINDOW IS AN INSTANTIATION AXIS, mirroring the carry's `W` template
+argument (integration rung I1(b)): the two kernels share ONE global window
+grid, so an arm is a (D, W) pair on both sides.  `kWindowFlagship` is the
+architecture doc's two-constraint window -- the intra's ideal arithmetic
+intensity is `W/4` flop/byte, which must clear sm_86's compute/bandwidth
+balance (~380) -- and `kWindowSmall` is the conformance cell's.
+
+<a id="kslabdigits"></a>
+### `kSlabDigits`
+
+the MMA's contraction step, and therefore the QUANTUM a level's operand slab is
+staged in.  A level narrower than one step is staged PADDED, its tail zeroed
+once: there is no `k < 16` tensor op, so the digits below the step are the only
+way to contract eight of them.
+
+<a id="intra-forward"></a>
+### `intra_forward`
+
+`window` selects the built arm; `L % window` must be zero, refused per arm.
+``sread``/``swrite`` are the producer's frozen support words for the plane of the
+same name -- int32 ``[BH, ceil(L/32), sum-of-widths]``, one bit per (token, digit),
+bit ``token & 31``.  The zero certificate READS them; it does not re-derive the
+support from the amplitudes.

@@ -244,3 +244,300 @@ The shared-memory layout (pad-8 against an XOR swizzle) is legal on every
 tabulated architecture and is chosen by MEASUREMENT, not by the table.  A
 layout knob in the capability table would make every future measurement
 unfalsifiable.  It is a free axis, and `design.cuh` says why it stays one.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/common/ops.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="kmmaunitthreads"></a>
+### `kMmaUnitThreads`
+
+THE BUILT `mma`'s UNIT: the threads that jointly issue one MMA and jointly
+own its accumulator.  This is a property of the IMPLEMENTATION below, not of
+any architecture -- the capability row states what the architecture's unit
+is, and the consistency section at the foot of this file is where the two
+have to agree.
+
+<a id="gather-ptr"></a>
+### `gather_ptr`
+
+A GATHERED ROW'S ADDRESS: a base formed once, displaced by a 32-bit BYTE
+offset that is zero-extended rather than multiplied out.  The extension is
+written here explicitly because the arithmetic is the contract: at element
+type the compiler is entitled to re-derive `base + index` as a widening
+multiply per access, and it does -- measured at 30 `IMAD.WIDE` in a loop that
+the form below emits none for.  The caller owns the 32-bit bound.
+
+THE BASE IS A GLOBAL ADDRESS, AND SAYING SO IS PART OF THE OPERATION.  An
+address the compiler cannot see through is an address whose storage class it
+cannot infer, and the difference is not cosmetic: a generic pointer turns the
+fan-in's reduction into an atomic read-modify-write and every gathered load
+into a generic one.  The assumption restores what the arithmetic hid.
+
+<a id="page-slot"></a>
+### `page_slot`
+
+THE STATE PLANE'S ONE BASE TRANSLATION (docs/internals/paging/paging.md).
+`slot = page_tbl ? page_tbl[atom] : atom`, which makes the DENSE plane THIS SAME
+kernel with a null table -- the slot IS the atom -- so paging is one base
+translation and never a second path.  A NEGATIVE slot is an atom the plan
+committed nothing for and is skipped at BOTH ends of the state I/O, exactly and
+not defensively, because the plan's bitmap is the write set exactly.
+
+THE PREDICATE IS CTA-UNIFORM, and that is what licenses skipping the barriers
+inside the sweep along with the traffic: an atom belongs to exactly one owner
+block, and the atom id every consumer forms is derived from `blockIdx` alone.
+
+<a id="stage-run"></a>
+### `stage_run`
+
+THE SAME COPY AT A NARROWER QUANTUM.  `kStageBytes` is the widest the staging
+issues; a run whose whole length is shorter than that is still ONE asynchronous
+access, and a caller with a compile-time run length gets exactly one issue rather
+than a padded 16-byte one that would read a neighbour's bytes.  The four- and
+eight-byte forms are the cache-ALL variant because the sixteen-byte bypass has no
+narrower member; both src and dst are naturally aligned, which is the caller's
+contract and the reason no size is ever split here.
+
+<a id="rendezvous-group"></a>
+### `rendezvous_group`
+
+`rendezvous_group(id, n)` -- a barrier over `n` threads that arrive at the
+SAME named barrier `id`, leaving the other warps of the CTA unwaited.  The
+contract is rendezvous()'s restricted to a warp-aligned subset; id 0 is the
+CTA barrier's and is not offered here.  sm_80/86/90 all provide sixteen.
+
+<a id="kballotlanes"></a>
+### `kBallotLanes`
+
+THE LOCKSTEP UNIT'S WIDTH, and it is deliberately not `kMmaUnitThreads`.  The
+two coincide on the architecture built here and do not in general: a
+warpgroup issues ONE MMA across 128 threads and still votes in lanes of 32.
+A caller that conflates them would silently read a quarter of a vote.
+
+<a id="lane-ballot"></a>
+### `lane_ballot`
+
+ONE BIT PER LANE, IN LANE ORDER.  The unit's own agreement about a property
+of the data its lanes hold, reached without a memory round trip and without
+ordering anything.  Expressed as the intrinsic rather than as a named
+instruction: what the operation promises is the bit vector, not the vote.
+
+<a id="bit-count"></a>
+### `bit_count`
+
+THE TWO READINGS OF A VOTE.  A bit vector answers "how many" and "where
+first"; together they turn a lockstep unit's agreement into POSITIONS, which
+is what a caller needs when the lanes are producing a compacted list rather
+than a single yes or no.
+
+<a id="lane-prefix-incl"></a>
+### `lane_prefix_incl`
+
+THE UNIT'S OWN RUNNING TOTAL.  `N` must be a power of two no wider than the
+unit; lanes at or above it contribute whatever they hold and are the caller's
+to mask.  Every lane executes every step, so the whole unit is converged at
+each `__shfl_up_sync`.
+
+<a id="load-frag"></a>
+### `load_frag`
+
+THE `memory` CLOBBER IS PART OF THE CONTRACT (K35 R-B).  `ldmatrix` READS SHARED
+MEMORY, so it has to be ordered against the stores that filled it: without the
+clobber `asm volatile` pins the instruction against other volatile asm but leaves
+the compiler free to move it across a `__syncthreads`/`__syncwarp`, and a warp could
+then pull rows another warp has not published.  Every producer/consumer pair in this
+family is stores -> barrier -> `ldmatrix`, so the clobber belongs here, once.  It is
+stated as a CONTRACT and not as a fix: adding it did not change the `## R-B` layout
+probe's open failure, and no miscompile has been demonstrated against it.
+
+<a id="transpose-frag-b16"></a>
+### `transpose_frag_b16`
+
+AN 8x8 b16 TILE, TRANSPOSED WHERE IT ALREADY LIES.  The contract is about
+MAPS and not about data: an accumulator spreads its two axes over the unit's
+lanes one way and a `k`-side operand spreads its two the other way, so a
+contraction over an accumulator's OWN m axis cannot read it without this.
+MEASURED, not read off the ISA -- the probe and the refuted alternative are
+in docs/internals/common/ops.md.
+
+<a id="mma"></a>
+### `mma`
+
+THE ATOM IS CHOSEN BY SHAPE FAMILY, NOT BY NAME.  `kMmaM/N/K` is the shape
+the carve and every fragment index are written in; an architecture whose
+register-source family is shaped differently (Hopper's `_RS` atoms are
+64 x {8..256} x 16 with a K-major register A) substitutes its own member of
+the family, and the constraints that keeps -- M a multiple of 64, A K-major
+-- are properties of the family rather than of a hand-picked instruction.
+
+<a id="hi-bf16"></a>
+### `hi_bf16`
+
+THE ACCUMULATOR'S TOP HALVES, TAKEN AS A bf16 PAIR (K35).  A bf16 IS the top
+sixteen bits of an fp32, so a pair of accumulator registers becomes an MMA
+operand with ONE `prmt.b32` -- byte selector `0x7632` picks bytes 2,3 of the low
+source and 6,7 of the high one -- against `pack_bf16x2`'s conversion pair.
+
+THE ARITHMETIC IS NOT THE SAME AND THAT IS DECLARED, NOT INCIDENTAL.  This
+TRUNCATES where `pack_bf16x2` ROUNDS TO NEAREST EVEN, so the operand can differ
+by one bf16 ulp (relative 2^-8 rather than 2^-9) and it is biased toward zero.
+It is the K35 read path's declared rounding, chosen because the hi-plane hybrid
+publishes exactly these bytes: the strip a warp writes and the fragment it would
+have built on the fly are then BIT-IDENTICAL, so the hybrid is a placement change
+and never an arithmetic one.  The oracle mirror carries the same truncation.
+THE SAME TRUNCATION FOR ONE FLOAT.  The exchange places each leaf's channel on its
+own, so a fragment element reaches shared memory as a 2-byte store rather than as
+half of a packed pair; the value stored is bit-for-bit what `hi_bf16x2` would have
+put in that half.
+
+<a id="splat-bf16x2"></a>
+### `splat_bf16x2`
+
+One bf16 into BOTH halves of a packed pair, so that a scalar can be an
+operand of `mul_bf16x2`.  The ladder's coefficient production multiplies a
+whole run of amplitudes by a single per-digit amplitude; the packed operand
+is what makes that one operation rather than a scalar special case, on every
+architecture including the one where `mul_bf16x2` is a single instruction.
+
+<a id="splat-bf16x2-bits"></a>
+### `splat_bf16x2_bits`
+
+the same splat over a raw bf16 BIT PATTERN.  A run of amplitudes held in a
+register array must never be ADDRESS-TAKEN -- one `&run[i]` puts the whole run
+in local memory, whatever the index's constness -- so a caller holding the bits
+splats them by value rather than by reinterpreting a pointer.
+
+<a id="mul-bf16x2"></a>
+### `mul_bf16x2`
+
+THE ARCHETYPAL SELECTING ENTRY.  Every implementation satisfies ONE contract:
+the elementwise product of two packed bf16 pairs, rounded to nearest-even in
+bf16.  There are THREE routes and the architecture row picks one at the
+primitive's definition (KERNEL_STANDARDS section 8), never at a call site.
+
+THE PTX ISA GATES THE MULTIPLY AND THE FMA DIFFERENTLY, and that is the whole
+reason this entry has three arms rather than two (K35 R-C): `mul.rn.bf16x2`
+requires `.target sm_90`, but `fma.rn.bf16x2` is available from sm_80.  So on
+Ampere the product is still ONE instruction -- an HFMA2 with a ZERO ADDEND --
+and the fp32 route below is needed by no built architecture at all.
+
+THE ADDEND IS `-0.0` AND ITS SIGN IS LOAD-BEARING.  `fma.rn` rounds the exact
+product plus the addend ONCE, so `a*b + (-0.0)` is bit-identical to
+`mul.rn(a, b)` INCLUDING the signed zeros: `(-0) + (-0) = -0` and
+`(+0) + (-0) = +0` under round-to-nearest-even, whereas a `+0.0` addend would
+turn every `-0` product into `+0`.  Nothing downstream reads a zero's sign, but
+an arithmetic identity that holds only for the values we happen to feed it is
+not an identity, and the oracle mirror is written against the exact product.
+
+THERE IS NO fp32 FALLBACK, because after the row above there is no
+architecture that would take one: `tabulated()` is closed-world and every row
+in it carries `bf16_simd_fma`.  An untabulated architecture fails the build,
+which is the refusal this family wants -- not a slower path nobody measured.
+WHAT THE DELETED fp32 ROUTE COST, MEASURED (K35 STAGE-LEDGER S2): the fetcher-side
+expansion ran at 3.9x its instruction floor, and the two named lines were
+`cuda_bf16.hpp:660` (`PRMT`, 1.27 M) and this function's `FMUL` pairs
+(1.32 M) -- about four instructions per pair where one HFMA2 does.
+
+<a id="pack-lo"></a>
+### `pack_lo`
+
+THE STATE'S LO HALVES, PACKED.  The top 16 bits of an fp32 ARE its bf16
+truncation, so a state word splits exactly into the `hi` the exchange publishes and
+the `lo` its owner keeps.  Two lows ride one register; `join_hi_lo` puts a word
+back together bit-for-bit, so the round trip is lossless by construction.
+
+<a id="store-shared-u16"></a>
+### `store_shared_u16`
+
+A SEQUENTIAL SHARED STORE, ADDRESSED RATHER THAN INDEXED.  This is the store
+side of the hazard the gather comment above names: `dst[k++]` through a
+`uint16_t*` re-derives `dst + k` as a WIDENING MULTIPLY every iteration, so a
+loop whose work is one `STS.U16` per live bit measures `IMAD:114, IADD3:69` and
+no `STS` in its top opcodes at all -- the schedule walk's scatter, 447 warp
+instructions per (owner, window) for about two stores a lane.  Carrying the
+shared address in a 32-bit register and advancing it by the element size makes
+the per-iteration cost one add.
+
+<a id="or-shared-u32"></a>
+### `or_shared_u32`
+
+ONE CONTRIBUTION INTO A SHARED BITSET, FIRE AND FORGET -- `fan_in_add`'s
+contract over the bitwise monoid.  The per-tile liveness mask has one writer per
+(token, stream) row and one reader per stream, so what it needs is a reduction and
+never a read-modify-write: nothing waits and no lane learns what anyone else set.
+
+<a id="publish-fence"></a>
+### `publish_fence`
+
+THE ORDER BETWEEN A UNIT'S SHARED WRITES AND THE FLAG THAT PUBLISHES THEM, and
+nothing wider: the fold's producers and consumers are warps of ONE CTA talking
+through shared memory, so the scope that has to be fenced is the block's.  A
+device-scope fence here would order traffic no participant can observe.
+
+<a id="store-bf16"></a>
+### `store_bf16`
+
+One element, rounded to nearest-even exactly as `pack_bf16x2` rounds each of
+its two.  The single-element form exists because a transposed accumulator's
+adjacent pair is adjacent in TOKEN, and a [token][d_v] buffer puts those in
+different rows.
+
+<a id="fan-in-add"></a>
+### `fan_in_add`
+
+ONE CONTRIBUTION INTO A SHARED ACCUMULATOR, FIRE AND FORGET.  The result is
+not returned, and that is the operation's substance rather than a convenience
+-- an implementation that hands back the previous value has to keep the
+issuing thread waiting for it, and the whole point of a reduction is that
+nothing waits.  Expressed as the intrinsic rather than as a named instruction
+so that an architecture whose best reduction is wider, or is performed by a
+different unit, is served by its own compiler; the SASS gate for this kernel
+checks that what was emitted is in fact the non-returning form.
+
+<a id="load-vec16"></a>
+### `load_vec16`
+
+The 16-byte quantum, synchronously.  `kStageBytes` is the width of every
+asynchronous access this baseline issues, and these move the same width for
+data the kernel PRODUCED rather than staged, so one bank analysis covers a
+buffer whichever way its rows got there.
+
+<a id="or-run"></a>
+### `or_run`
+
+THE OR OF A CONTIGUOUS RUN, AT THE WIDEST ACCESS THAT COVERS IT.  `n` is a
+compile-time run length and the run is naturally aligned, so 1, 2, 4 and 8
+amplitudes are one access each and longer runs are a whole number of 16-byte
+accesses.  The reduction is bitwise because the CALLER's question is whether
+anything in the run is nonzero, which needs no arithmetic and no ordering.
+
+<a id="static-assert"></a>
+### `static_assert`
+
+`design.cuh` claims REGISTERS is a residency this baseline builds.  It is
+built by an `mma` that reads an operand out of the issuing unit's own
+registers, and by `pack_bf16x2`, which is the accumulator-to-operand
+conversion that keeps the state out of shared memory.  If either went away
+the claim would be false, and this is where that would be caught.
+
+<a id="static-assert-2"></a>
+### `static_assert`
+
+THE CARVE'S UNIT.  Not a capability and not an architecture clause: `mma`,
+`load_frag` and the d_v carve above are written for a 32-thread unit owning
+a 16-row slice of the state, and a 128-thread warpgroup unit owns 64 and
+issues a differently shaped atom.  So this is a consistency clause between
+the design's carve and the operations that execute it, and its failure means
+NOT BUILT rather than UNSUPPORTED.
+
+<a id="note-l562"></a>
+### near line 562
+
+THE ANNOUNCEMENT SITES.  Each is a case where the capability row records a
+better implementation of a baseline operation than the one built here.  None
+of them is an error: the built path is correct everywhere it compiles.  What
+is forbidden is taking the slower path SILENTLY.
+
+`stage_tile` on a part with bulk asynchronous copy: TMA satisfies the same
+contract with one descriptor issue instead of one per 16 bytes.

@@ -44,9 +44,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
   using WarpRedU = cub::WarpReduce<unsigned long long, LW>;
 
   //: HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias
-  //: One per-physical-warp slot serves the row sort's scratch and then the support-word
-  //: staging. `RowSort::kSlotBytes` is ZERO for the register network, so at `IPT <= 4` the
-  //: slot is the staging alone -- docs/internals/entmax/entmax.md#row-sort
+  //: One per-physical-warp slot serves the row sort's scratch and then the
+  //: support-word staging.
+  // see docs/internals/entmax/factor.md#sort-bytes
   constexpr int SORT_BYTES = RowSort<LW, IPT>::kSlotBytes;
   constexpr int STAGE_BYTES = W_PAD * (int)sizeof(uint32_t);
   constexpr int RAW_SLOT = SORT_BYTES > STAGE_BYTES ? SORT_BYTES : STAGE_BYTES;
@@ -69,17 +69,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
 
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
-  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
-  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
-  //: and it spilled the family. `heads == 0` means no split at all.
-  //: -- docs/internals/entmax/entmax.md#stream-split
-  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
-  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
-  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
-  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
-  //: cheap to rematerialize. 4 spilling instantiations became 56.
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
+  //: solve's stream, and a token-major operand needs it as `(b, h)`.
+  // see docs/internals/entmax/factor.md#stream32
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -230,7 +222,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
   }
   __syncthreads();
   if (warp == 0) {
-    #pragma unroll 1
+#pragma unroll 1
     for (int col = lane; col < width; col += LW) {
       uint32_t acc = 0u;
 #pragma unroll
@@ -244,16 +236,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
 
 // ---------------------------------------------------------------------------
 // BACKWARD -- the alpha-entmax rank-1 Jacobian action.
-//
-// No sort and no scan: ONE fused (numerator, denominator) reduction over a support that
-// is an INPUT, unpacked from the same frozen word the forward emitted, so the two
-// directions cannot disagree about the support set by construction. Off support every
-// output term is an exact zero by multiplication.
-//
-// It RE-READS `values` and the cotangents in the second pass rather than staging them:
-// the union backward's measured spill trade, and the same `IPT`-sized arrays would apply
-// here -- docs/internals/entmax/factor.md#backward
-// ---------------------------------------------------------------------------
+// see docs/internals/entmax/factor.md#launch-bounds
 template <int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backward_kernel(
     const OutT* __restrict__ values, const int32_t* __restrict__ support_words,
@@ -272,17 +255,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backw
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
-  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
-  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
-  //: and it spilled the family. `heads == 0` means no split at all.
-  //: -- docs/internals/entmax/entmax.md#stream-split
-  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
-  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
-  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
-  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
-  //: cheap to rematerialize. 4 spilling instantiations became 56.
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
+  //: solve's stream, and a token-major operand needs it as `(b, h)`.
+  // see docs/internals/entmax/factor.md#stream32-2
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -366,17 +341,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forw
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
-  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
-  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
-  //: and it spilled the family. `heads == 0` means no split at all.
-  //: -- docs/internals/entmax/entmax.md#stream-split
-  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
-  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
-  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
-  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
-  //: cheap to rematerialize. 4 spilling instantiations became 56.
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
+  //: solve's stream, and a token-major operand needs it as `(b, h)`.
+  // see docs/internals/entmax/factor.md#stream32-3
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -439,17 +406,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_back
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
-  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
-  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
-  //: and it spilled the family. `heads == 0` means no split at all.
-  //: -- docs/internals/entmax/entmax.md#stream-split
-  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
-  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
-  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
-  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
-  //: cheap to rematerialize. 4 spilling instantiations became 56.
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
+  //: solve's stream, and a token-major operand needs it as `(b, h)`.
+  // see docs/internals/entmax/factor.md#stream32-4
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;

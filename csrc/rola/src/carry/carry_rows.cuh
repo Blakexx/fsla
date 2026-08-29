@@ -21,11 +21,10 @@
 #include "box.cuh"
 #include "facts/facts_kernel.cuh"
 
-//: THE OWNER BALLOT ROWS, DECLARED (K31-i-d).  The facts family owns the pass and
-//: its instantiation shard owns the arms; this TU sees a DECLARATION, exactly as the
-//: facts dispatch TU does, so nothing here can satisfy an arm locally.  The SPANS the
-//: carry asks for are `BoxPlan::s(l)` -- the lattice's balanced owner runs, which is
-//: the vocabulary the lex plan could not state.
+//: THE OWNER BALLOT ROWS, DECLARED (K31-i-d). The facts family owns the pass
+//: and its instantiation shard owns the arms; this TU sees a DECLARATION,
+//: exactly as the facts dispatch TU does, so nothing here can satisfy an arm ...
+// see docs/internals/carry/carry_rows.md#note-l24
 namespace rola::chunk {
 template <int D, int B, int R0, int R1, int R2, int R3, int W0, int W1, int W2, int W3, int MASK>
 cudaError_t launch_span_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
@@ -43,19 +42,18 @@ using OwnerRows =
                           (D > 3 ? BoxPlan<D, B, K, M>::s(3) : B)>;
 
 //: the plan ONE SIDE's rows are voted under (K35 S1b addendum): that side's own
-//: partition, at its own run size, with a level it spans whole emitting nothing.  The
-//: two sides are independent -- each votes its bitlists from its own factors -- so a
-//: stream's test reads exactly one row per tested level and only the owner's whole-run
-//: OR spans several (`CarveRows`).
+//: partition, at its own run size, with a level it spans whole emitting
+//: nothing.
+// see docs/internals/carry/carry_rows.md#siderowplan
 template <class SV>
 using SideRowPlan =
     rola::chunk::SpanPlan<CarveRows<SV>::kLevels, CarveRows<SV>::kWidth, CarveRows<SV>::s(0),
                           CarveRows<SV>::s(1), CarveRows<SV>::s(2), CarveRows<SV>::s(3)>;
 
-//: THE SINGLE-LEVEL LEAF SPLIT the seam's `owner_rows(carve=True)` diagnostic names --
-//: the innermost level's owner run over `kSeamCarveStreams` streams, which is the grain
-//: that entry point documents.  It is a DIAGNOSTIC's declared grain and not an arm's
-//: carve, so it is spelled as a span vector here and derived from nothing.
+//: THE SINGLE-LEVEL LEAF SPLIT the seam's `owner_rows(carve=True)` diagnostic
+//: names -- the innermost level's owner run over `kSeamCarveStreams` streams,
+//: which is the grain that entry point documents.
+// see docs/internals/carry/carry_rows.md#kseamcarvestreams
 static constexpr int kSeamCarveStreams = 4;
 template <int D, int B, int K, int M>
 constexpr int owner_span(int l) {
@@ -70,16 +68,10 @@ using SeamSplitPlan =
     rola::chunk::SpanPlan<D, B, split_span<D, B, K, M>(0), split_span<D, B, K, M>(1),
                           split_span<D, B, K, M>(2), split_span<D, B, K, M>(3)>;
 
-//: THE TABLE: `[BH, entries_read + entries_write, L/32]` packed bits, the READ plan's
-//: rows and then the WRITE plan's, one row per (level, run of THAT side's partition).
-//: The two plans are independent (K35 S1b addendum): a side's bitlists are voted from
-//: its own factors, so nothing is gained by refining one side's table by the other's
-//: carve.  Where the two plans coincide the block IS the old `[BH, 2, E, L/32]`.
-//: Also a SEPARATE ENTRY POINT, so the grain the kernel consumes and the grain the
-//: seam names can be compared bit for bit (`tests/k31/test_owner_rows.py`).
-//:
-//: THE ALLOCATION IS THE CALLER'S (K36): this launches into a table the caller sized
-//: with `rows_entries` and owns.
+//: THE TABLE: `[BH, entries_read + entries_write, L/32]` packed bits, the READ
+//: plan's rows and then the WRITE plan's, one row per (level, run of THAT
+//: side's partition).
+// see docs/internals/carry/carry_rows.md#rows-entries
 template <class RPR, class RPW>
 static constexpr int rows_entries() {
   return (int)RPR::entries + (int)RPW::entries;

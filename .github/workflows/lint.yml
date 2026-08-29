@@ -86,8 +86,11 @@ jobs:
         run: python tools/gen_shards.py --check
       - name: the shard partition is a structure, not a file listing
         run: python -m pytest tests/unit/test_shard_partition.py -q
-      - name: the docs mirror is complete and its anchors resolve
-        run: python -m pytest tests/unit/test_docs_mirror.py tests/unit/test_generated_docs.py -q
+      - name: the README's generated tables have not drifted
+        # the docs mirror itself moved to the `lint` job's lint_standards.py
+        # (`check_docs_mirror`, RULED 2026-08-29: a check that does not execute
+        # the code under test is a lint, not a test -- docs/testing.md).
+        run: python -m pytest tests/unit/test_generated_docs.py -q
       - name: the vendored codegen input matches its pin
         run: python -m pytest tests/unit/test_vendored_pin.py -q
       - name: the README's supported matrix is the derived one

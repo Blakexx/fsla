@@ -27,10 +27,8 @@ constexpr int kStageBytes = 16;
 constexpr int kMmaM = 16, kMmaN = 8, kMmaK = 16;
 
 //: THE BUILT `mma`'s UNIT: the threads that jointly issue one MMA and jointly
-//: own its accumulator.  This is a property of the IMPLEMENTATION below, not of
-//: any architecture -- the capability row states what the architecture's unit
-//: is, and the consistency section at the foot of this file is where the two
-//: have to agree.
+//: own its accumulator.
+// see docs/internals/common/ops.md#kmmaunitthreads
 constexpr int kMmaUnitThreads = 32;
 
 //: The operand sources the built `mma` accepts.  A kernel whose accumulator
@@ -52,17 +50,8 @@ __device__ __forceinline__ SmemAddr smem_addr(const void* p) {
 }
 
 //: A GATHERED ROW'S ADDRESS: a base formed once, displaced by a 32-bit BYTE
-//: offset that is zero-extended rather than multiplied out.  The extension is
-//: written here explicitly because the arithmetic is the contract: at element
-//: type the compiler is entitled to re-derive `base + index` as a widening
-//: multiply per access, and it does -- measured at 30 `IMAD.WIDE` in a loop that
-//: the form below emits none for.  The caller owns the 32-bit bound.
-//:
-//: THE BASE IS A GLOBAL ADDRESS, AND SAYING SO IS PART OF THE OPERATION.  An
-//: address the compiler cannot see through is an address whose storage class it
-//: cannot infer, and the difference is not cosmetic: a generic pointer turns the
-//: fan-in's reduction into an atomic read-modify-write and every gathered load
-//: into a generic one.  The assumption restores what the arithmetic hid.
+//: offset that is zero-extended rather than multiplied out.
+// see docs/internals/common/ops.md#gather-ptr
 __device__ __forceinline__ const void* gather_ptr(const void* base, uint32_t off) {
   const void* p;
   asm("{ .reg .u64 t; cvt.u64.u32 t, %2; add.u64 %0, %1, t; }" : "=l"(p) : "l"(base), "r"(off));
@@ -87,15 +76,7 @@ __device__ __forceinline__ void* gather_ptr(void* base, uint32_t off) {
 }
 
 //: THE STATE PLANE'S ONE BASE TRANSLATION (docs/internals/paging/paging.md).
-//: `slot = page_tbl ? page_tbl[atom] : atom`, which makes the DENSE plane THIS SAME
-//: kernel with a null table -- the slot IS the atom -- so paging is one base
-//: translation and never a second path.  A NEGATIVE slot is an atom the plan
-//: committed nothing for and is skipped at BOTH ends of the state I/O, exactly and
-//: not defensively, because the plan's bitmap is the write set exactly.
-//:
-//: THE PREDICATE IS CTA-UNIFORM, and that is what licenses skipping the barriers
-//: inside the sweep along with the traffic: an atom belongs to exactly one owner
-//: block, and the atom id every consumer forms is derived from `blockIdx` alone.
+// see docs/internals/common/ops.md#page-slot
 __device__ __forceinline__ int32_t page_slot(const int32_t* page_tbl, uint32_t atom) {
   if (page_tbl == nullptr) return (int32_t)atom;
   return *reinterpret_cast<const int32_t*>(gather_ptr(page_tbl, atom * (uint32_t)sizeof(int32_t)));
@@ -107,13 +88,8 @@ __device__ __forceinline__ void stage_tile(SmemAddr dst, const void* src) {
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(dst), "l"(src));
 }
 
-//: THE SAME COPY AT A NARROWER QUANTUM.  `kStageBytes` is the widest the staging
-//: issues; a run whose whole length is shorter than that is still ONE asynchronous
-//: access, and a caller with a compile-time run length gets exactly one issue rather
-//: than a padded 16-byte one that would read a neighbour's bytes.  The four- and
-//: eight-byte forms are the cache-ALL variant because the sixteen-byte bypass has no
-//: narrower member; both src and dst are naturally aligned, which is the caller's
-//: contract and the reason no size is ever split here.
+//: THE SAME COPY AT A NARROWER QUANTUM.
+// see docs/internals/common/ops.md#stage-run
 template <int Bytes>
 __device__ __forceinline__ void stage_run(SmemAddr dst, const void* src) {
   static_assert(Bytes == 4 || Bytes == 8 || Bytes == kStageBytes,
@@ -135,31 +111,27 @@ __device__ __forceinline__ void stage_wait() {
 __device__ __forceinline__ void rendezvous() { __syncthreads(); }
 
 //: `rendezvous_group(id, n)` -- a barrier over `n` threads that arrive at the
-//: SAME named barrier `id`, leaving the other warps of the CTA unwaited.  The
-//: contract is rendezvous()'s restricted to a warp-aligned subset; id 0 is the
-//: CTA barrier's and is not offered here.  sm_80/86/90 all provide sixteen.
+//: SAME named barrier `id`, leaving the other warps of the CTA unwaited.
+// see docs/internals/common/ops.md#rendezvous-group
 __device__ __forceinline__ void rendezvous_group(int id, int n) {
   asm volatile("bar.sync %0, %1;\n" ::"r"(id), "r"(n));
 }
 
-//: THE LOCKSTEP UNIT'S WIDTH, and it is deliberately not `kMmaUnitThreads`.  The
-//: two coincide on the architecture built here and do not in general: a
-//: warpgroup issues ONE MMA across 128 threads and still votes in lanes of 32.
-//: A caller that conflates them would silently read a quarter of a vote.
+//: THE LOCKSTEP UNIT'S WIDTH, and it is deliberately not `kMmaUnitThreads`.
+// see docs/internals/common/ops.md#kballotlanes
 constexpr int kBallotLanes = 32;
 
-//: ONE BIT PER LANE, IN LANE ORDER.  The unit's own agreement about a property
+//: ONE BIT PER LANE, IN LANE ORDER. The unit's own agreement about a property
 //: of the data its lanes hold, reached without a memory round trip and without
-//: ordering anything.  Expressed as the intrinsic rather than as a named
-//: instruction: what the operation promises is the bit vector, not the vote.
+//: ordering anything.
+// see docs/internals/common/ops.md#lane-ballot
 __device__ __forceinline__ uint32_t lane_ballot(bool pred) {
   return __ballot_sync(0xFFFFFFFFu, pred);
 }
 
-//: THE TWO READINGS OF A VOTE.  A bit vector answers "how many" and "where
-//: first"; together they turn a lockstep unit's agreement into POSITIONS, which
-//: is what a caller needs when the lanes are producing a compacted list rather
-//: than a single yes or no.
+//: THE TWO READINGS OF A VOTE. A bit vector answers "how many" and "where
+//: first"; together they turn a lockstep unit's agreement into POSITIONS ...
+// see docs/internals/common/ops.md#bit-count
 __device__ __forceinline__ int bit_count(uint32_t x) { return __popc(x); }
 
 //: `kBallotLanes` for an empty vector, so "nowhere" compares greater than every
@@ -174,10 +146,10 @@ __device__ __forceinline__ int first_set(uint32_t x) {
 //: lane and needs no separate case, exactly as `kBallotLanes` compares above.
 __device__ __forceinline__ int last_set(uint32_t x) { return 31 - __clz((int)x); }
 
-//: THE UNIT'S OWN RUNNING TOTAL.  `N` must be a power of two no wider than the
-//: unit; lanes at or above it contribute whatever they hold and are the caller's
-//: to mask.  Every lane executes every step, so the whole unit is converged at
-//: each `__shfl_up_sync`.
+//: THE UNIT'S OWN RUNNING TOTAL. `N` must be a power of two no wider than the
+//: unit; lanes at or above it contribute whatever they hold and are the
+//: caller's to mask.
+// see docs/internals/common/ops.md#lane-prefix-incl
 template <int N>
 __device__ __forceinline__ int lane_prefix_incl(int x) {
 #pragma unroll
@@ -197,14 +169,8 @@ __device__ __forceinline__ int lane_broadcast(int x, int src) {
 
 using Frag = uint32_t[4];
 
-//: THE `memory` CLOBBER IS PART OF THE CONTRACT (K35 R-B).  `ldmatrix` READS SHARED
-//: MEMORY, so it has to be ordered against the stores that filled it: without the
-//: clobber `asm volatile` pins the instruction against other volatile asm but leaves
-//: the compiler free to move it across a `__syncthreads`/`__syncwarp`, and a warp could
-//: then pull rows another warp has not published.  Every producer/consumer pair in this
-//: family is stores -> barrier -> `ldmatrix`, so the clobber belongs here, once.  It is
-//: stated as a CONTRACT and not as a fix: adding it did not change the `## R-B` layout
-//: probe's open failure, and no miscompile has been demonstrated against it.
+//: THE `memory` CLOBBER IS PART OF THE CONTRACT (K35 R-B).
+// see docs/internals/common/ops.md#load-frag
 __device__ __forceinline__ void load_frag(uint32_t (&r)[4], SmemAddr a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
@@ -219,12 +185,8 @@ __device__ __forceinline__ void load_frag_t(uint32_t (&r)[4], SmemAddr a) {
                : "memory");
 }
 
-//: AN 8x8 b16 TILE, TRANSPOSED WHERE IT ALREADY LIES.  The contract is about
-//: MAPS and not about data: an accumulator spreads its two axes over the unit's
-//: lanes one way and a `k`-side operand spreads its two the other way, so a
-//: contraction over an accumulator's OWN m axis cannot read it without this.
-//: MEASURED, not read off the ISA -- the probe and the refuted alternative are
-//: in docs/internals/common/ops.md.
+//: AN 8x8 b16 TILE, TRANSPOSED WHERE IT ALREADY LIES.
+// see docs/internals/common/ops.md#transpose-frag-b16
 __device__ __forceinline__ uint32_t transpose_frag_b16(uint32_t x) {
   static_assert(arch::kCaps.reg_transpose_b16,
                 "UNSUPPORTED ARCHITECTURE: without an in-register b16 tile "
@@ -236,12 +198,8 @@ __device__ __forceinline__ uint32_t transpose_frag_b16(uint32_t x) {
   return d;
 }
 
-//: THE ATOM IS CHOSEN BY SHAPE FAMILY, NOT BY NAME.  `kMmaM/N/K` is the shape
-//: the carve and every fragment index are written in; an architecture whose
-//: register-source family is shaped differently (Hopper's `_RS` atoms are
-//: 64 x {8..256} x 16 with a K-major register A) substitutes its own member of
-//: the family, and the constraints that keeps -- M a multiple of 64, A K-major
-//: -- are properties of the family rather than of a hand-picked instruction.
+//: THE ATOM IS CHOSEN BY SHAPE FAMILY, NOT BY NAME.
+// see docs/internals/common/ops.md#mma
 __device__ __forceinline__ void mma(float (&d)[4], const uint32_t (&a)[4], const uint32_t* b) {
   asm volatile(
       "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
@@ -260,22 +218,8 @@ __device__ __forceinline__ uint32_t pack_bf16x2(float lo, float hi) {
   return *reinterpret_cast<const uint32_t*>(&p);
 }
 
-//: THE ACCUMULATOR'S TOP HALVES, TAKEN AS A bf16 PAIR (K35).  A bf16 IS the top
-//: sixteen bits of an fp32, so a pair of accumulator registers becomes an MMA
-//: operand with ONE `prmt.b32` -- byte selector `0x7632` picks bytes 2,3 of the low
-//: source and 6,7 of the high one -- against `pack_bf16x2`'s conversion pair.
-//:
-//: THE ARITHMETIC IS NOT THE SAME AND THAT IS DECLARED, NOT INCIDENTAL.  This
-//: TRUNCATES where `pack_bf16x2` ROUNDS TO NEAREST EVEN, so the operand can differ
-//: by one bf16 ulp (relative 2^-8 rather than 2^-9) and it is biased toward zero.
-//: It is the K35 read path's declared rounding, chosen because the hi-plane hybrid
-//: publishes exactly these bytes: the strip a warp writes and the fragment it would
-//: have built on the fly are then BIT-IDENTICAL, so the hybrid is a placement change
-//: and never an arithmetic one.  The oracle mirror carries the same truncation.
-//: THE SAME TRUNCATION FOR ONE FLOAT.  The exchange places each leaf's channel on its
-//: own, so a fragment element reaches shared memory as a 2-byte store rather than as
-//: half of a packed pair; the value stored is bit-for-bit what `hi_bf16x2` would have
-//: put in that half.
+//: THE ACCUMULATOR'S TOP HALVES, TAKEN AS A bf16 PAIR (K35).
+// see docs/internals/common/ops.md#hi-bf16
 __device__ __forceinline__ uint16_t hi_bf16(float v) {
   return (uint16_t)(__float_as_uint(v) >> 16);
 }
@@ -289,19 +233,15 @@ __device__ __forceinline__ uint32_t hi_bf16x2(float lo, float hi) {
 }
 
 //: One bf16 into BOTH halves of a packed pair, so that a scalar can be an
-//: operand of `mul_bf16x2`.  The ladder's coefficient production multiplies a
-//: whole run of amplitudes by a single per-digit amplitude; the packed operand
-//: is what makes that one operation rather than a scalar special case, on every
-//: architecture including the one where `mul_bf16x2` is a single instruction.
+//: operand of `mul_bf16x2`.
+// see docs/internals/common/ops.md#splat-bf16x2
 __device__ __forceinline__ uint32_t splat_bf16x2(__nv_bfloat16 x) {
   const __nv_bfloat162 p = __bfloat162bfloat162(x);
   return *reinterpret_cast<const uint32_t*>(&p);
 }
 
-//: the same splat over a raw bf16 BIT PATTERN.  A run of amplitudes held in a
-//: register array must never be ADDRESS-TAKEN -- one `&run[i]` puts the whole run
-//: in local memory, whatever the index's constness -- so a caller holding the bits
-//: splats them by value rather than by reinterpreting a pointer.
+//: the same splat over a raw bf16 BIT PATTERN.
+// see docs/internals/common/ops.md#splat-bf16x2-bits
 __device__ __forceinline__ uint32_t splat_bf16x2_bits(unsigned short x) {
   return ((uint32_t)x << 16) | (uint32_t)x;
 }
@@ -312,33 +252,10 @@ __device__ __forceinline__ float bf16_bits_to_float(unsigned short x) {
   return *reinterpret_cast<const float*>(&w);
 }
 
-//: THE ARCHETYPAL SELECTING ENTRY.  Every implementation satisfies ONE contract:
+//: THE ARCHETYPAL SELECTING ENTRY. Every implementation satisfies ONE contract:
 //: the elementwise product of two packed bf16 pairs, rounded to nearest-even in
-//: bf16.  There are THREE routes and the architecture row picks one at the
-//: primitive's definition (KERNEL_STANDARDS section 8), never at a call site.
-//:
-//: THE PTX ISA GATES THE MULTIPLY AND THE FMA DIFFERENTLY, and that is the whole
-//: reason this entry has three arms rather than two (K35 R-C): `mul.rn.bf16x2`
-//: requires `.target sm_90`, but `fma.rn.bf16x2` is available from sm_80.  So on
-//: Ampere the product is still ONE instruction -- an HFMA2 with a ZERO ADDEND --
-//: and the fp32 route below is needed by no built architecture at all.
-//:
-//: THE ADDEND IS `-0.0` AND ITS SIGN IS LOAD-BEARING.  `fma.rn` rounds the exact
-//: product plus the addend ONCE, so `a*b + (-0.0)` is bit-identical to
-//: `mul.rn(a, b)` INCLUDING the signed zeros: `(-0) + (-0) = -0` and
-//: `(+0) + (-0) = +0` under round-to-nearest-even, whereas a `+0.0` addend would
-//: turn every `-0` product into `+0`.  Nothing downstream reads a zero's sign, but
-//: an arithmetic identity that holds only for the values we happen to feed it is
-//: not an identity, and the oracle mirror is written against the exact product.
-//:
-//: THERE IS NO fp32 FALLBACK, because after the row above there is no
-//: architecture that would take one: `tabulated()` is closed-world and every row
-//: in it carries `bf16_simd_fma`.  An untabulated architecture fails the build,
-//: which is the refusal this family wants -- not a slower path nobody measured.
-//: WHAT THE DELETED fp32 ROUTE COST, MEASURED (K35 STAGE-LEDGER S2): the fetcher-side
-//: expansion ran at 3.9x its instruction floor, and the two named lines were
-//: `cuda_bf16.hpp:660` (`PRMT`, 1.27 M) and this function's `FMUL` pairs
-//: (1.32 M) -- about four instructions per pair where one HFMA2 does.
+//: bf16.
+// see docs/internals/common/ops.md#mul-bf16x2
 template <bool Simd = arch::kCaps.bf16_simd_arith, bool Fma = arch::kCaps.bf16_simd_fma>
 __device__ __forceinline__ uint32_t mul_bf16x2(uint32_t a, uint32_t b) {
   static_assert(Simd <= arch::kCaps.bf16_simd_arith,
@@ -372,10 +289,10 @@ __device__ __forceinline__ void store_bf16x2(__nv_bfloat16* p, uint32_t v) {
   *reinterpret_cast<uint32_t*>(p) = v;
 }
 
-//: THE STATE'S LO HALVES, PACKED.  The top 16 bits of an fp32 ARE its bf16
-//: truncation, so a state word splits exactly into the `hi` the exchange publishes and
-//: the `lo` its owner keeps.  Two lows ride one register; `join_hi_lo` puts a word
-//: back together bit-for-bit, so the round trip is lossless by construction.
+//: THE STATE'S LO HALVES, PACKED. The top 16 bits of an fp32 ARE its bf16
+//: truncation, so a state word splits exactly into the `hi` the exchange
+//: publishes and the `lo` its owner keeps.
+// see docs/internals/common/ops.md#pack-lo
 __device__ __forceinline__ uint32_t pack_lo(float a, float b) {
   return (__float_as_uint(a) & 0xFFFFu) | (__float_as_uint(b) << 16);
 }
@@ -384,14 +301,8 @@ __device__ __forceinline__ float join_hi_lo(uint32_t hi, uint32_t lo, int k) {
   return __uint_as_float(k ? ((hi & 0xFFFF0000u) | (lo >> 16)) : ((hi << 16) | (lo & 0xFFFFu)));
 }
 
-//: A SEQUENTIAL SHARED STORE, ADDRESSED RATHER THAN INDEXED.  This is the store
-//: side of the hazard the gather comment above names: `dst[k++]` through a
-//: `uint16_t*` re-derives `dst + k` as a WIDENING MULTIPLY every iteration, so a
-//: loop whose work is one `STS.U16` per live bit measures `IMAD:114, IADD3:69` and
-//: no `STS` in its top opcodes at all -- the schedule walk's scatter, 447 warp
-//: instructions per (owner, window) for about two stores a lane.  Carrying the
-//: shared address in a 32-bit register and advancing it by the element size makes
-//: the per-iteration cost one add.
+//: A SEQUENTIAL SHARED STORE, ADDRESSED RATHER THAN INDEXED.
+// see docs/internals/common/ops.md#store-shared-u16
 __device__ __forceinline__ void store_shared_u16(SmemAddr a, uint16_t v) {
   asm volatile("st.shared.u16 [%0], %1;" ::"r"(a), "h"(v) : "memory");
 }
@@ -404,9 +315,8 @@ __device__ __forceinline__ void store_shared_u32(SmemAddr a, uint32_t v) {
 }
 
 //: ONE CONTRIBUTION INTO A SHARED BITSET, FIRE AND FORGET -- `fan_in_add`'s
-//: contract over the bitwise monoid.  The per-tile liveness mask has one writer per
-//: (token, stream) row and one reader per stream, so what it needs is a reduction and
-//: never a read-modify-write: nothing waits and no lane learns what anyone else set.
+//: contract over the bitwise monoid.
+// see docs/internals/common/ops.md#or-shared-u32
 __device__ __forceinline__ void or_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("red.shared.or.b32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
@@ -418,10 +328,10 @@ __device__ __forceinline__ void red_shared_add_u32(SmemAddr a, uint32_t v) {
   asm volatile("red.shared.add.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
 
-//: THE ORDER BETWEEN A UNIT'S SHARED WRITES AND THE FLAG THAT PUBLISHES THEM, and
-//: nothing wider: the fold's producers and consumers are warps of ONE CTA talking
-//: through shared memory, so the scope that has to be fenced is the block's.  A
-//: device-scope fence here would order traffic no participant can observe.
+//: THE ORDER BETWEEN A UNIT'S SHARED WRITES AND THE FLAG THAT PUBLISHES THEM,
+//: and nothing wider: the fold's producers and consumers are warps of ONE CTA
+//: talking through shared memory ...
+// see docs/internals/common/ops.md#publish-fence
 __device__ __forceinline__ void publish_fence() { __threadfence_block(); }
 
 //: the 16-byte quantum into shared memory, addressed.  The segment's dead rows are
@@ -447,9 +357,8 @@ __device__ __forceinline__ uint32_t load_shared_u32(SmemAddr a) {
 }
 
 //: One element, rounded to nearest-even exactly as `pack_bf16x2` rounds each of
-//: its two.  The single-element form exists because a transposed accumulator's
-//: adjacent pair is adjacent in TOKEN, and a [token][d_v] buffer puts those in
-//: different rows.
+//: its two.
+// see docs/internals/common/ops.md#store-bf16
 __device__ __forceinline__ void store_bf16(__nv_bfloat16* p, float v) { *p = __float2bfloat16(v); }
 
 //: One fp32 element, stored where it will later be read as a summand rather than
@@ -457,20 +366,12 @@ __device__ __forceinline__ void store_bf16(__nv_bfloat16* p, float v) { *p = __f
 //: `fan_in_add`.
 __device__ __forceinline__ void store_f32(float* p, float v) { *p = v; }
 
-//: ONE CONTRIBUTION INTO A SHARED ACCUMULATOR, FIRE AND FORGET.  The result is
-//: not returned, and that is the operation's substance rather than a convenience
-//: -- an implementation that hands back the previous value has to keep the
-//: issuing thread waiting for it, and the whole point of a reduction is that
-//: nothing waits.  Expressed as the intrinsic rather than as a named instruction
-//: so that an architecture whose best reduction is wider, or is performed by a
-//: different unit, is served by its own compiler; the SASS gate for this kernel
-//: checks that what was emitted is in fact the non-returning form.
+//: ONE CONTRIBUTION INTO A SHARED ACCUMULATOR, FIRE AND FORGET.
+// see docs/internals/common/ops.md#fan-in-add
 __device__ __forceinline__ void fan_in_add(float* p, float x) { atomicAdd(p, x); }
 
-//: The 16-byte quantum, synchronously.  `kStageBytes` is the width of every
-//: asynchronous access this baseline issues, and these move the same width for
-//: data the kernel PRODUCED rather than staged, so one bank analysis covers a
-//: buffer whichever way its rows got there.
+//: The 16-byte quantum, synchronously.
+// see docs/internals/common/ops.md#load-vec16
 __device__ __forceinline__ uint4 load_vec16(const void* p) {
   return *reinterpret_cast<const uint4*>(p);
 }
@@ -484,11 +385,8 @@ __device__ __forceinline__ void store_vec16(void* p, const uint4& v) {
 //: only zeros bf16 has are +0 and -0 and OR cannot clear a set bit.
 constexpr uint32_t kBf16MagnitudeMask = 0x7FFF7FFFu;
 
-//: THE OR OF A CONTIGUOUS RUN, AT THE WIDEST ACCESS THAT COVERS IT.  `n` is a
-//: compile-time run length and the run is naturally aligned, so 1, 2, 4 and 8
-//: amplitudes are one access each and longer runs are a whole number of 16-byte
-//: accesses.  The reduction is bitwise because the CALLER's question is whether
-//: anything in the run is nonzero, which needs no arithmetic and no ordering.
+//: THE OR OF A CONTIGUOUS RUN, AT THE WIDEST ACCESS THAT COVERS IT.
+// see docs/internals/common/ops.md#or-run
 template <int N>
 __device__ __forceinline__ uint32_t or_run(const __nv_bfloat16* p) {
   static_assert(N == 1 || N == 2 || N == 4 || (N >= 8 && N % 8 == 0),
@@ -526,11 +424,8 @@ __device__ __forceinline__ void copy_shared_to_global_16b(void* dst, const void*
 // instruction X": the selection is the thing being checked, the operation set
 // is what it is checked against, and an architecture number appears in neither.
 
-//: `design.cuh` claims REGISTERS is a residency this baseline builds.  It is
-//: built by an `mma` that reads an operand out of the issuing unit's own
-//: registers, and by `pack_bf16x2`, which is the accumulator-to-operand
-//: conversion that keeps the state out of shared memory.  If either went away
-//: the claim would be false, and this is where that would be caught.
+//: `design.cuh` claims REGISTERS is a residency this baseline builds.
+// see docs/internals/common/ops.md#static-assert
 static_assert(!(design::kBuiltResidencies
                 & design::residency_bit(design::StateResidency::REGISTERS))
                   || (kMmaAcceptsRegisterA && arch::kCaps.bf16_cvt_packed),
@@ -545,12 +440,10 @@ static_assert(!(design::kBuiltResidencies & design::residency_bit(design::StateR
               "is claimed as built, but no built `mma` sources an operand from tensor "
               "memory.");
 
-//: THE CARVE'S UNIT.  Not a capability and not an architecture clause: `mma`,
+//: THE CARVE'S UNIT. Not a capability and not an architecture clause: `mma`,
 //: `load_frag` and the d_v carve above are written for a 32-thread unit owning
-//: a 16-row slice of the state, and a 128-thread warpgroup unit owns 64 and
-//: issues a differently shaped atom.  So this is a consistency clause between
-//: the design's carve and the operations that execute it, and its failure means
-//: NOT BUILT rather than UNSUPPORTED.
+//: a 16-row slice of the state ...
+// see docs/internals/common/ops.md#static-assert-2
 static_assert(arch::kCaps.mma_unit_threads == kMmaUnitThreads,
               "NOT BUILT FOR THIS ARCHITECTURE: no built implementation of "
               "`mma` and `load_frag` serves this architecture's MMA unit. The "
@@ -559,13 +452,9 @@ static_assert(arch::kCaps.mma_unit_threads == kMmaUnitThreads,
               "structural clause holds -- this is an unwritten implementation, "
               "not a refused structure.");
 
-//: THE ANNOUNCEMENT SITES.  Each is a case where the capability row records a
-//: better implementation of a baseline operation than the one built here.  None
-//: of them is an error: the built path is correct everywhere it compiles.  What
-//: is forbidden is taking the slower path SILENTLY.
-//:
-//: `stage_tile` on a part with bulk asynchronous copy: TMA satisfies the same
-//: contract with one descriptor issue instead of one per 16 bytes.
+//: THE ANNOUNCEMENT SITES. Each is a case where the capability row records a
+//: better implementation of a baseline operation than the one built here.
+// see docs/internals/common/ops.md#note-l562
 inline constexpr design::Announce<arch::kCaps.async_bulk_copy && !kStagingIsBulk>
     kStagingAnnouncement{};
 

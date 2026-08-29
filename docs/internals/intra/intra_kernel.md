@@ -197,3 +197,68 @@ whole amplitude rows whatever the routing puts in them, so both cells shed the s
 ratio, not 1:1 — the term is 62–65% of DRAM peak but its #1 issue stall is
 `math_pipe_throttle`, so a byte saved is not a cycle saved. The dense cell moves by
 nothing measurable, as it must: no side is declared, so no certificate is built at all.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra_kernel.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="note-l31"></a>
+### near line 31
+
+THE OUTPUT BLOCK IS C = `kTile * row_tiles_of(W)` READER TOKENS.  The column
+operands staged for one column tile serve every row tile of the block, which
+is what takes the tile-pair grid's operand re-read down; a window with a
+single tile has no pair to share with, so the block collapses onto it.
+
+<a id="kwarpspertile"></a>
+### `kWarpsPerTile`
+
+ONE WARP PER `kWarpRows` OF THE BLOCK: a warp holds the Gram of ONE tile pair,
+so the block's accumulator budget per thread does not grow with C -- the row
+tiles are shared across warps, not stacked in one warp's registers.  The CTA
+width is therefore a function of the arm, like every other tile count here.
+
+<a id="kstagecap"></a>
+### `kStageCap`
+
+A LEVEL'S STAGED WIDTH is its digit count rounded up to the MMA's contraction
+step: a level narrower than one step is contracted PADDED, because there is no
+`k < 16` tensor op.  The pad is zeroed once and never staged, so it costs MMA
+throughput on that level and nothing else -- exactly `kSlabDigits / B` when
+`B < kSlabDigits`, and nothing at all otherwise.
+
+<a id="kstagecap-2"></a>
+### `kStageCap`
+
+THE PIPELINE STAGE IS AT MOST AS WIDE AS THE LEVEL.  A stage is one cp.async
+fill and one pair of barriers, and several `kSlabDigits` steps ride it, so the
+barrier count per tile-pair is the stage count and not the MMA-step count.  A
+level that fits inside one stage IS one stage.
+
+<a id="alignas"></a>
+### `alignas`
+
+THE OPERAND SLABS ARE PER-TILE-PAIR AND DO NOT GROW WITH THE WINDOW: only the
+zero-certificate masks do, at one word per (tile, level, side, 32 digits).
+The block's whole reader side is resident, which puts the footprint past the
+48 KB a kernel gets unasked, so the arm launches on opted-in dynamic shared
+memory.
+
+<a id="build-masks"></a>
+### `build_masks`
+
+One bit per digit, unioned over a tile's 64 tokens -- the exact zero
+certificate the slab gate reads.  A side the mode word does not declare
+sparse is never summarized and answers all-ones, which is what makes the
+gate self-deactivating rather than a second code path.
+-- docs/internals/intra/intra_kernel.md#the-slab-gate
+
+<a id="kfill"></a>
+### `kFill`
+
+THE PAD IS ZEROED ONCE, AND ONLY WHERE THERE IS ONE.  A level narrower than
+the MMA's contraction step leaves the slab's tail unstaged, and a zero there is
+what makes the padded contraction equal the `B`-wide one.  A level that fills
+its staged width has no tail, so the fill is not merely skipped at runtime --
+it is not compiled, because the registers it costs are live across the whole
+tile-pair loop.

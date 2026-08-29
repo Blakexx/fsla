@@ -37,3 +37,47 @@ that hole (`tools/gen_shards.py --check`, `tools/fatbin_entries.py --check`).
 Nothing in this header instantiates a carry kernel, so it costs the dispatch a
 parse and no codegen. That is the property the split depends on and the reason the
 row plans are here rather than in `carry_arm.cuh`.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/carry/carry_rows.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="note-l24"></a>
+### near line 24
+
+THE OWNER BALLOT ROWS, DECLARED (K31-i-d).  The facts family owns the pass and
+its instantiation shard owns the arms; this TU sees a DECLARATION, exactly as the
+facts dispatch TU does, so nothing here can satisfy an arm locally.  The SPANS the
+carry asks for are `BoxPlan::s(l)` -- the lattice's balanced owner runs, which is
+the vocabulary the lex plan could not state.
+
+<a id="siderowplan"></a>
+### `SideRowPlan`
+
+the plan ONE SIDE's rows are voted under (K35 S1b addendum): that side's own
+partition, at its own run size, with a level it spans whole emitting nothing.  The
+two sides are independent -- each votes its bitlists from its own factors -- so a
+stream's test reads exactly one row per tested level and only the owner's whole-run
+OR spans several (`CarveRows`).
+
+<a id="kseamcarvestreams"></a>
+### `kSeamCarveStreams`
+
+THE SINGLE-LEVEL LEAF SPLIT the seam's `owner_rows(carve=True)` diagnostic names --
+the innermost level's owner run over `kSeamCarveStreams` streams, which is the grain
+that entry point documents.  It is a DIAGNOSTIC's declared grain and not an arm's
+carve, so it is spelled as a span vector here and derived from nothing.
+
+<a id="rows-entries"></a>
+### `rows_entries`
+
+THE TABLE: `[BH, entries_read + entries_write, L/32]` packed bits, the READ plan's
+rows and then the WRITE plan's, one row per (level, run of THAT side's partition).
+The two plans are independent (K35 S1b addendum): a side's bitlists are voted from
+its own factors, so nothing is gained by refining one side's table by the other's
+carve.  Where the two plans coincide the block IS the old `[BH, 2, E, L/32]`.
+Also a SEPARATE ENTRY POINT, so the grain the kernel consumes and the grain the
+seam names can be compared bit for bit (`tests/k31/test_owner_rows.py`).
+
+THE ALLOCATION IS THE CALLER'S (K36): this launches into a table the caller sized
+with `rows_entries` and owns.

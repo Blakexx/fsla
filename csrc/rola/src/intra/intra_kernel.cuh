@@ -28,30 +28,27 @@ using denseref::ops::stage_wait;
 //: THE WINDOW IS AN ARM, so the tile counts it induces are functions of it and
 //: never file-scope constants -- the carry's `W` template argument, mirrored.
 constexpr int tiles_of(int window) { return window / kTile; }
-//: THE OUTPUT BLOCK IS C = `kTile * row_tiles_of(W)` READER TOKENS.  The column
-//: operands staged for one column tile serve every row tile of the block, which
-//: is what takes the tile-pair grid's operand re-read down; a window with a
-//: single tile has no pair to share with, so the block collapses onto it.
+//: THE OUTPUT BLOCK IS C = `kTile * row_tiles_of(W)` READER TOKENS.
+// see docs/internals/intra/intra_kernel.md#note-l31
 constexpr int row_tiles_of(int window) { return tiles_of(window) >= 2 ? 2 : 1; }
 constexpr int rows_of(int window) { return row_tiles_of(window) * kTile; }
-//: ONE WARP PER `kWarpRows` OF THE BLOCK: a warp holds the Gram of ONE tile pair,
-//: so the block's accumulator budget per thread does not grow with C -- the row
-//: tiles are shared across warps, not stacked in one warp's registers.  The CTA
-//: width is therefore a function of the arm, like every other tile count here.
+//: ONE WARP PER `kWarpRows` OF THE BLOCK: a warp holds the Gram of ONE tile
+//: pair, so the block's accumulator budget per thread does not grow with C --
+//: the row tiles are shared across warps, not stacked in one warp's registers.
+// see docs/internals/intra/intra_kernel.md#kwarpspertile
 constexpr int threads_of(int window) { return 32 * (rows_of(window) / kWarpRows); }
 constexpr int kWarpsPerTile = kTile / kWarpRows;
-//: A LEVEL'S STAGED WIDTH is its digit count rounded up to the MMA's contraction
-//: step: a level narrower than one step is contracted PADDED, because there is no
-//: `k < 16` tensor op.  The pad is zeroed once and never staged, so it costs MMA
-//: throughput on that level and nothing else -- exactly `kSlabDigits / B` when
-//: `B < kSlabDigits`, and nothing at all otherwise.
+//: A LEVEL'S STAGED WIDTH is its digit count rounded up to the MMA's
+//: contraction step: a level narrower than one step is contracted PADDED,
+//: because there is no `k < 16` tensor op.
+// see docs/internals/intra/intra_kernel.md#kstagecap
 constexpr int level_digits(int width) { return width < kSlabDigits ? kSlabDigits : width; }
 constexpr int slabs_per_level(int width) { return level_digits(width) / kSlabDigits; }
 constexpr int mask_words(int width) { return (level_digits(width) + 31) / 32; }
-//: THE PIPELINE STAGE IS AT MOST AS WIDE AS THE LEVEL.  A stage is one cp.async
-//: fill and one pair of barriers, and several `kSlabDigits` steps ride it, so the
-//: barrier count per tile-pair is the stage count and not the MMA-step count.  A
-//: level that fits inside one stage IS one stage.
+//: THE PIPELINE STAGE IS AT MOST AS WIDE AS THE LEVEL. A stage is one cp.async
+//: fill and one pair of barriers, and several `kSlabDigits` steps ride it, so
+//: the barrier count per tile-pair is the stage count and not the MMA-step ...
+// see docs/internals/intra/intra_kernel.md#kstagecap-2
 constexpr int kStageCap = 64;
 constexpr int stage_digits(int width) {
   return level_digits(width) < kStageCap ? level_digits(width) : kStageCap;
@@ -84,11 +81,10 @@ struct IntraParams {
   uint32_t modes;
 };
 
-//: THE OPERAND SLABS ARE PER-TILE-PAIR AND DO NOT GROW WITH THE WINDOW: only the
-//: zero-certificate masks do, at one word per (tile, level, side, 32 digits).
-//: The block's whole reader side is resident, which puts the footprint past the
-//: 48 KB a kernel gets unasked, so the arm launches on opted-in dynamic shared
-//: memory.
+//: THE OPERAND SLABS ARE PER-TILE-PAIR AND DO NOT GROW WITH THE WINDOW: only
+//: the zero-certificate masks do, at one word per (tile, level, side, 32
+//: digits).
+// see docs/internals/intra/intra_kernel.md#alignas
 template <int D, int B, int W>
 struct alignas(16) IntraSmem {
   __nv_bfloat16 rslab[2][rows_of(W)][operand_pitch(B)];
@@ -123,10 +119,8 @@ __device__ __forceinline__ uint32_t digit_union_word(const __nv_bfloat16* row) {
 }
 
 //: One bit per digit, unioned over a tile's 64 tokens -- the exact zero
-//: certificate the slab gate reads.  A side the mode word does not declare
-//: sparse is never summarized and answers all-ones, which is what makes the
-//: gate self-deactivating rather than a second code path.
-//: -- docs/internals/intra/intra_kernel.md#the-slab-gate
+//: certificate the slab gate reads.
+// see docs/internals/intra/intra_kernel.md#build-masks
 template <int D, int B, int W>
 __device__ void build_masks(IntraSmem<D, B, W>& sm, const IntraParams& p, int bh, int wbase,
                             int tid) {
@@ -285,12 +279,10 @@ __global__ __launch_bounds__(threads_of(W)) void intra_kernel(IntraParams p) {
   const int bh = blockIdx.y;
   const int wbase = blockIdx.x * W;
 
-  //: THE PAD IS ZEROED ONCE, AND ONLY WHERE THERE IS ONE.  A level narrower than
-  //: the MMA's contraction step leaves the slab's tail unstaged, and a zero there is
-  //: what makes the padded contraction equal the `B`-wide one.  A level that fills
-  //: its staged width has no tail, so the fill is not merely skipped at runtime --
-  //: it is not compiled, because the registers it costs are live across the whole
-  //: tile-pair loop.
+  //: THE PAD IS ZEROED ONCE, AND ONLY WHERE THERE IS ONE. A level narrower than
+  //: the MMA's contraction step leaves the slab's tail unstaged, and a zero there
+  //: is what makes the padded contraction equal the `B`-wide one.
+  // see docs/internals/intra/intra_kernel.md#kfill
   if constexpr (level_digits(B) > B) {
     constexpr int kFill = (int)(sizeof(sm.rslab) + sizeof(sm.wslab)) / (int)sizeof(uint4);
     uint4* z = reinterpret_cast<uint4*>(&sm.rslab[0][0][0]);
@@ -315,7 +307,7 @@ __global__ __launch_bounds__(threads_of(W)) void intra_kernel(IntraParams p) {
       for (int i = 0; i < 4; ++i) oacc[n][i] = 0.f;
     float dacc[2] = {0.f, 0.f};
 
-    #pragma unroll 1
+#pragma unroll 1
     for (int ct = 0; ct < rt0 + kRowTiles; ++ct) {
       __syncthreads();
       stage_values<D, B, W>(sm, p, bh, wbase, ct, tid);

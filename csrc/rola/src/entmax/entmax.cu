@@ -26,10 +26,10 @@ namespace rola {
 namespace entmax {
 namespace detail {
 
-//: The overflow-free read-write difference: two opposite-sign finite extrema overflow a
-//: raw subtraction while their midpoint stays representable, so the MAGNITUDE is clamped
-//: instead. `*saturated` marks where that clamp fired; the backward zeroes `d_delta`
-//: there -- docs/internals/entmax/entmax.md#overflow-free-delta
+//: The overflow-free read-write difference: two opposite-sign finite extrema
+//: overflow a raw subtraction while their midpoint stays representable, so the
+//: MAGNITUDE is clamped instead.
+// see docs/internals/entmax/entmax.md#overflow-free-delta-2
 __device__ __forceinline__ float overflow_free_delta(float r, float w, bool* saturated) {
   const float kMax = 3.4028234663852886e38f;
   const float kHalfMax = 1.7014117331926443e38f;
@@ -71,18 +71,18 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   using WarpRedU = cub::WarpReduce<unsigned long long, LW>;
 
   //: HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias
-  //: One per-physical-warp slot serves the row sort's scratch and then the support-word
-  //: staging. `RowSort::kSlotBytes` is ZERO for the register network, so at `IPT <= 4` the
-  //: slot is the staging alone -- docs/internals/entmax/entmax.md#row-sort
+  //: One per-physical-warp slot serves the row sort's scratch and then the
+  //: support-word staging.
+  // see docs/internals/entmax/entmax.md#sort-bytes
   constexpr int SORT_BYTES = RowSort<LW, IPT>::kSlotBytes;
   constexpr int STAGE_BYTES = W_PAD * (int)sizeof(uint32_t);
   constexpr int RAW_SLOT = SORT_BYTES > STAGE_BYTES ? SORT_BYTES : STAGE_BYTES;
   constexpr int SLOT = (RAW_SLOT + 15) & ~15;
   __shared__ __align__(16) char smem[BLOCK_WARPS * SLOT];
-  //: These three TempStorages are per-thread rather than __shared__, which is legal only
-  //: because CUB resolves all of them to pure-shfl specializations here. MEASURED at
-  //: 1 byte each; these static_asserts turn a future CUB that changes its mind into a
-  //: compile error rather than a race -- docs/internals/entmax/entmax.md#one-row-per-warp
+  //: These three TempStorages are per-thread rather than __shared__, which is
+  //: legal only because CUB resolves all of them to pure-shfl specializations
+  //: here.
+  // see docs/internals/entmax/entmax.md#static-assert
   static_assert(sizeof(typename WarpScanP::TempStorage) <= 4, "WarpScan must be shfl-only");
   static_assert(sizeof(typename WarpRedF::TempStorage) <= 4, "WarpReduce must be shfl-only");
   static_assert(sizeof(typename WarpRedU::TempStorage) <= 4, "WarpReduce must be shfl-only");
@@ -98,17 +98,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
-  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
-  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
-  //: and it spilled the family. `heads == 0` means no split at all.
-  //: -- docs/internals/entmax/entmax.md#stream-split
-  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
-  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
-  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
-  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
-  //: cheap to rematerialize. 4 spilling instantiations became 56.
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
+  //: solve's stream, and a token-major operand needs it as `(b, h)`.
+  // see docs/internals/entmax/entmax.md#stream32
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -293,7 +285,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   }
   __syncthreads();
   if (warp == 0) {
-    #pragma unroll 1
+#pragma unroll 1
     for (int col = lane; col < width; col += LW) {
       uint32_t acc = 0u;
 #pragma unroll
@@ -307,19 +299,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 
 // ---------------------------------------------------------------------------
 // BACKWARD -- the alpha-entmax Jacobian action through the union split.
-//
-// No sort and no scan: a THREE-REDUCTION elementwise pass. It shares the forward's
-// block/warp decomposition, width classes, striped access, stride expression and launch
-// bounds, and it RECOMPUTES `delta` rather than reloading a saved tensor.
-//
-// SUPPORT IS AN INPUT here -- unpacked from the same frozen `support_words` the forward
-// emitted -- so the two directions cannot disagree about the support set by
-// construction. Off support every output term is an EXACT zero by multiplication, and
-// the gate asserts that FORM at rtol=0 rather than a magnitude.
-//
-// The Jacobian derivation, the exact-zero argument, and the two MEASURED spill trades
-// that made this kernel re-read rather than stage: docs/internals/entmax/entmax.md#backward
-// ---------------------------------------------------------------------------
+// see docs/internals/entmax/entmax.md#launch-bounds
 template <int LW, int IPT, bool ALPHA15, typename LogitT, typename OutT>
 __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backward_kernel(
     const LogitT* __restrict__ read_logits, const LogitT* __restrict__ write_logits,
@@ -343,17 +323,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
-  //: stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
-  //: a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
-  //: and it spilled the family. `heads == 0` means no split at all.
-  //: -- docs/internals/entmax/entmax.md#stream-split
-  //: THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
-  //: one head, for which this is `sb = stream, sh = 0` -- because guarding it with
-  //: `heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
-  //: in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
-  //: cheap to rematerialize. 4 spilling instantiations became 56.
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
+  //: solve's stream, and a token-major operand needs it as `(b, h)`.
+  // see docs/internals/entmax/entmax.md#stream32-2
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -473,9 +445,8 @@ void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Ten
   const bool a15 = alpha == 1.5;
 
   //: THE LAUNCH IS WRITTEN ONCE, and the `(lane width, items per thread)` pair is
-  //: DERIVED from the padded width rather than tabulated per case -- which is what makes
-  //: it impossible for one arm's argument list to drift from another's:
-  //: docs/internals/dispatch_switch.md#one-launch
+  //: DERIVED from the padded width rather than tabulated per case ...
+  // see docs/internals/entmax/entmax.md#kwpad
   int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
       w_pad, "union entmax padded width (MAX_BRANCH_WIDTH = 256)", [&](auto WPAD) {
         constexpr int kWPad = decltype(WPAD)::value;

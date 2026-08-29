@@ -190,3 +190,99 @@ over four stress fixtures x four routing shapes x two alphas.
 `stored_dtype=torch.float32` exists for one purpose: a FIDELITY gate that wants the
 solve's own arithmetic without the storage quantization on top of it. It is a test-side
 argument; no runtime path passes it.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/entmax/factor.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="sort-bytes"></a>
+### `SORT_BYTES`
+
+HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias
+One per-physical-warp slot serves the row sort's scratch and then the support-word
+staging. `RowSort::kSlotBytes` is ZERO for the register network, so at `IPT <= 4` the
+slot is the staging alone -- docs/internals/entmax/entmax.md#row-sort
+
+<a id="stream32"></a>
+### `stream32`
+
+ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+and it spilled the family. `heads == 0` means no split at all.
+-- docs/internals/entmax/entmax.md#stream-split
+THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+`heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+cheap to rematerialize. 4 spilling instantiations became 56.
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="stream32-2"></a>
+### `stream32`
+
+ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+and it spilled the family. `heads == 0` means no split at all.
+-- docs/internals/entmax/entmax.md#stream-split
+THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+`heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+cheap to rematerialize. 4 spilling instantiations became 56.
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="stream32-3"></a>
+### `stream32`
+
+ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+and it spilled the family. `heads == 0` means no split at all.
+-- docs/internals/entmax/entmax.md#stream-split
+THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+`heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+cheap to rematerialize. 4 spilling instantiations became 56.
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="stream32-4"></a>
+### `stream32`
+
+ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+and it spilled the family. `heads == 0` means no split at all.
+-- docs/internals/entmax/entmax.md#stream-split
+THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+`heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+cheap to rematerialize. 4 spilling instantiations became 56.
+-- docs/internals/entmax/entmax.md#stream-split
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/entmax/factor.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+## More comments moved from source (S5b pass 2)
+
+Verbatim trailing/banner `//` comments from `csrc/rola/src/entmax/factor.cu` condensed at their call site into a short pointer.
+
+<a id="launch-bounds"></a>
+### `__launch_bounds__`
+
+---------------------------------------------------------------------------
+BACKWARD -- the alpha-entmax rank-1 Jacobian action.
+
+No sort and no scan: ONE fused (numerator, denominator) reduction over a support that
+is an INPUT, unpacked from the same frozen word the forward emitted, so the two
+directions cannot disagree about the support set by construction. Off support every
+output term is an exact zero by multiplication.
+
+It RE-READS `values` and the cotangents in the second pass rather than staging them:
+the union backward's measured spill trade, and the same `IPT`-sized arrays would apply
+here -- docs/internals/entmax/factor.md#backward
+---------------------------------------------------------------------------

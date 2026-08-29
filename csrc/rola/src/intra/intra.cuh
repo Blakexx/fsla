@@ -10,24 +10,15 @@ namespace rola {
 namespace intra {
 
 //: Per-level sparse-side declaration, two bits per level, level 0 in the low
-//: pair.  Bit 0: the READ side's rows are value-sparse.  Bit 1: the WRITE
-//: side's.  Neither bit set is DENSE_BOTH; both set is BOTH_SPARSE, which says both
-//: sides are sparse there and nothing more -- each votes its own support.  The
-//: kernel is pattern-generic: the slab mask machinery reads all-ones for an
-//: undeclared side and therefore never gates.
+//: pair.
+// see docs/internals/intra/intra.md#kmodereadsparse
 constexpr uint32_t kModeReadSparse = 1u;
 constexpr uint32_t kModeWriteSparse = 2u;
 
 //: The window is the intra term's unit and the CTA's whole subject; the tile is
 //: the [C x C] output block the causal staircase is expressed on; a warp owns
 //: kWarpRows of a tile's rows and reduces nothing with its siblings.
-//:
-//: THE WINDOW IS AN INSTANTIATION AXIS, mirroring the carry's `W` template
-//: argument (integration rung I1(b)): the two kernels share ONE global window
-//: grid, so an arm is a (D, W) pair on both sides.  `kWindowFlagship` is the
-//: architecture doc's two-constraint window -- the intra's ideal arithmetic
-//: intensity is `W/4` flop/byte, which must clear sm_86's compute/bandwidth
-//: balance (~380) -- and `kWindowSmall` is the conformance cell's.
+// see docs/internals/intra/intra.md#kwindowflagship
 constexpr int kWindowFlagship = 384;
 //: the doc's band runs to 512, and a THIRD constraint picks it out: a window must
 //: DIVIDE `L`, and 384 does not divide the flagship length 65536 while 512 divides
@@ -36,10 +27,9 @@ constexpr int kWindowWide = 512;
 constexpr int kWindowSmall = 64;
 constexpr int kTile = 64;
 constexpr int kWarpRows = 16;
-//: the MMA's contraction step, and therefore the QUANTUM a level's operand slab is
-//: staged in.  A level narrower than one step is staged PADDED, its tail zeroed
-//: once: there is no `k < 16` tensor op, so the digits below the step are the only
-//: way to contract eight of them.
+//: the MMA's contraction step, and therefore the QUANTUM a level's operand slab
+//: is staged in.
+// see docs/internals/intra/intra.md#kslabdigits
 constexpr int kSlabDigits = 16;
 constexpr int kValueWidth = 64;
 
@@ -50,10 +40,7 @@ constexpr int kWidthDeep3 = 16;
 constexpr int kWidthDeep4 = 8;
 
 //: `window` selects the built arm; `L % window` must be zero, refused per arm.
-//: ``sread``/``swrite`` are the producer's frozen support words for the plane of the
-//: same name -- int32 ``[BH, ceil(L/32), sum-of-widths]``, one bit per (token, digit),
-//: bit ``token & 31``.  The zero certificate READS them; it does not re-derive the
-//: support from the amplitudes.
+// see docs/internals/intra/intra.md#intra-forward
 void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,
                    const at::Tensor& v, const at::Tensor& sread, const at::Tensor& swrite,
                    at::Tensor& o, at::Tensor& den, int64_t levels, int64_t width,

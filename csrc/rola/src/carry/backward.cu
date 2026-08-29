@@ -190,10 +190,9 @@ std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, to
     c10::cuda::CUDACachingAllocator::recordStream(s_in->storage().data_ptr(), side);
 
   //: THE TABLE ADDRESSES THE CALLER'S ENTRY SLABS, and the two EXIT slabs are the
-  //: dispatch's own dense allocations, so their table is null and their slot IS their
-  //: atom -- one body, two tables, no second path.  A paged `d_state_in` and a paged
-  //: replay want a plan of their own (a gradient's residency is its state's), which is
-  //: the reverse family's stage and is NOT built here.
+  //: dispatch's own dense allocations, so their table is null and their slot IS
+  //: their atom -- one body, two tables, no second path.
+  // see docs/internals/carry/backward.md#torch-check
   if (page_tbl.has_value()) {
     TORCH_CHECK(page_tbl->is_cuda() && page_tbl->is_contiguous()
                     && page_tbl->scalar_type() == torch::kInt32,

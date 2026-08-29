@@ -67,3 +67,180 @@ PER-SM FACTS LIVE HERE; PER-DEVICE FACTS DO NOT.  SM count is not an
 architectural constant -- GA102 ships at 80 and 82 SMs, GA100 at 108 -- so it
 is a runtime `cudaDeviceProp` query, never a table row.  Everything in
 `Caps` is a property of the compute capability itself.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/facts/arch_caps.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="note-l163"></a>
+### near line 163
+
+The conjunction of the REQUIRED clauses.  There is no partial support.
+`mma_a_from_regs` is NOT among them and must not be: whether the state can be
+an operand without a memory round trip is a RESIDENCY question, answered by
+`design.cuh` from the residency facts, and an architecture that answers it a
+different way is a derivation rather than a refusal.
+
+<a id="note-l203"></a>
+### near line 203
+
+THE PER-ARCH REGISTER BUDGET.  The largest per-lane register count that
+still admits `target_ctas` CTAs of `threads` threads, honouring the
+allocation quantum.  This is the number that must NEVER be a global
+literal: at 256 threads and 3 CTAs it is 80 on every part with 65536
+registers per SM, and the arithmetic that produced it is the table's, not a
+measurement session's.
+
+## More comments moved from source (S5b pass 2)
+
+Verbatim trailing/banner `//` comments from `csrc/rola/src/facts/arch_caps.cuh` condensed at their call site into a short pointer.
+
+<a id="reg-transpose-b16"></a>
+### `reg_transpose_b16`
+
+an 8x8 b16 tile spread across the MMA unit's own
+registers is transposed IN PLACE.  A clause of the
+baseline because the adjoint's contraction runs
+over the accumulator's OWN m axis, which puts the
+accumulator on the k side, and the accumulator map
+and the k-side map differ by exactly this
+transpose (measured on the retired consumer's
+catalogue; baseline = tag baseline/pre-k31).
+
+<a id="mma-a-from-regs"></a>
+### `mma_a_from_regs`
+
+the A operand may be supplied from the issuing
+unit's OWN registers.  Warpgroup MMAs keep a
+register-source A (the `_RS` atom family), so this
+holds on every tabulated architecture.
+
+<a id="mma-b-from-regs"></a>
+### `mma_b_from_regs`
+
+the same for B.  A warpgroup MMA sources B ONLY
+from a shared-memory descriptor.  Which SIDE a
+given kernel's accumulator lands on is a clause of
+THAT kernel, asserted against the built operation
+at its own site.
+
+<a id="accum-in-tmem"></a>
+### `accum_in_tmem`
+
+the MMA's accumulator lives in a dedicated tensor
+memory rather than in the unit's register file
+(`tcgen05`).  False on every row below; a Blackwell
+row would set it, and the residency DERIVATION --
+not a new refusal -- is what would then have to
+hold.
+
+<a id="mma-a-from-tmem"></a>
+### `mma_a_from_tmem`
+
+the A operand may be sourced from that same tensor
+memory, which is what lets the invariant survive
+with no register-resident state at all.
+
+<a id="bf16-simd-arith"></a>
+### `bf16_simd_arith`
+
+elementwise bf16 arithmetic on a packed pair
+(`mul.rn.bf16x2`).  MEASURED 2026-08-09: ptxas
+rejects it below sm_90 -- "requires .target sm_90
+or higher".  Ampere has native bf16 CONVERSION and
+native bf16 MMA but no bf16 SIMD ARITHMETIC, so
+the same product costs 1 FMUL + 1/2 pack per
+element there against ~1/2 instruction on sm_90.
+Same baseline operation, different implementation,
+no structural change: the archetypal flag.
+
+<a id="bf16-simd-fma"></a>
+### `bf16_simd_fma`
+
+FUSED elementwise bf16 arithmetic on a packed pair
+(`fma.rn.bf16x2`).  MEASURED 2026-08-28 (K35 R-C):
+this one IS available at sm_80, unlike the plain
+`mul.rn.bf16x2` above -- the PTX ISA gates the two
+differently -- so a PRODUCT is one instruction here
+via a `-0.0` addend, which is bit-identical to
+`mul.rn.bf16x2` (a single rounding of the exact
+product; the addend's SIGN is what preserves a
+signed zero, `+0.0` would flip `-0`).  Ampere thus
+has no bf16 SIMD MULTIPLY but does have bf16 SIMD
+FMA, which is the cheaper route to the same
+baseline operation.
+
+<a id="async-bulk-copy"></a>
+### `async_bulk_copy`
+
+TMA.  Would implement `stage_tile`'s contract with
+one descriptor issue instead of one per 16 B.
+
+<a id="warpgroup-mma"></a>
+### `warpgroup_mma`
+
+`wgmma`.  Present on sm_90 and the reason
+`mma_b_from_regs` is false there.
+
+<a id="dyn-reg-realloc"></a>
+### `dyn_reg_realloc`
+
+`setmaxnreg`: a warpgroup may GIVE UP or CLAIM
+registers at run time, so two groups of the same
+CTA can hold different per-lane allocations.
+Without it, allocation is uniform per thread across
+the whole kernel and sized by the MAXIMUM live set
+over the paths a thread takes -- which is why a
+thread that produces and then consumes pays
+`max(producer, consumer)` and reuses the registers,
+and why DEDICATING a unit to production cannot be
+paid for by shrinking it.
+
+<a id="mma-unit-threads"></a>
+### `mma_unit_threads`
+
+threads that jointly issue one MMA and jointly own
+its accumulator.  32 (warp) or 128 (warpgroup).
+The carve is expressed in THESE units, not warps.
+
+<a id="driver-smem-reserve"></a>
+### `driver_smem_reserve`
+
+per-CTA reserve the driver takes off the top; the
+residency condition is on smem_per_cta + this
+
+<a id="tensor-f32-accum-pct"></a>
+### `tensor_f32_accum_pct`
+
+fp32-accumulate tensor rate as a percentage of
+the fp16-accumulate rate.  50 on consumer
+Ampere/Ada, 100 on GA100.  Not a branch: it is
+why a tensor-bound baseline (FA) is flattered by
+a consumer part and ratios must be quoted from
+the target.
+
+<a id="note-l125"></a>
+### near line 125
+
+Field order, for every row below:
+  cc |  REQUIRED: async_copy, tile_load, mma_bf16_f32, bf16_cvt_packed,
+                  reg_transpose_b16
+     | RESIDENCY: mma_a_from_regs, mma_b_from_regs, accum_in_tmem,
+                  mma_a_from_tmem
+     | SELECTING: bf16_simd_arith, bf16_simd_fma, async_bulk_copy,
+                  warpgroup_mma, dyn_reg_realloc
+     |      FACT: mma_unit_threads, smem_per_sm, smem_per_cta_max,
+                  smem_granularity, regs_per_sm, regs_per_lane_max,
+                  reg_alloc_unit, max_threads_per_sm, max_ctas_per_sm,
+                  driver_smem_reserve, tensor_f32_accum_pct
+
+<a id="caps-of-note-l147"></a>
+### in `caps_of`, near line 147
+
+sm_90 is TABULATED AND NOT BUILT.  Every REQUIRED clause holds and
+the residency derivation succeeds -- `wgmma` keeps a
+register-source A operand (the `_RS` atom family), so the state
+can be an operand without a round trip there too.  What is
+missing is an IMPLEMENTATION: the built `mma`, `load_frag` and
+carve are written for a 32-thread unit and a warpgroup unit is
+128.  A capability GAP, not a structural refusal.

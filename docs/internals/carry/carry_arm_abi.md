@@ -49,3 +49,22 @@ An arm the build did not compile has no declaration, because `CARRY_ARMS_X`
 expands only over `ROLA_CARRY_BUILD_<i>`. That is what makes the seam's "unbuilt
 carry arm" refusal the only thing a caller asking for it can reach — a link error
 is not a diagnostic.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/carry/carry_arm_abi.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="carry-arm-declare"></a>
+### `CARRY_ARM_DECLARE`
+
+THE STATE PLANES AND THE TABLE ARE THE CALLER'S, which is the shipped contract
+(docs/internals/state.md section 4): a continuation hands the SAME plane as `s_in` and
+`s_out` and advances it in place, and `page_tbl` null is the dense backing -- the slot
+is then the atom.  BOTH PLANES NULL IS THE NULL-STATE CALL and reaches an arm variant
+nothing is read, written, or allocated at either end (state.md section 1) -- a
+RUNTIME null check inside the one compiled body (K41; no STATE template axis).
+
+WHAT ONE ARM'S TRANSLATION UNIT EXPORTS.  Five entry points: launch the body,
+launch and size its ballot table, and state its census and its row.
+`CARRY_ARM_DEFINE` (`carry_arm.cuh`) defines exactly these.  The SEGMENT LAYOUT
+PROBE left with the per-stream segments and the exchange it gated (K35 M1P).

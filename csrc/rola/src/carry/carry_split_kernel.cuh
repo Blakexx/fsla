@@ -20,12 +20,8 @@ template <int D, int B, int K, int M, int DV, int W, int C>
 struct SplitGeom {
   using BP = BoxPlan<D, B, K, M>;
   static constexpr int BC = BP::kBC;
-  //: THE VALUE WIDTH IS THIS ARM'S (K35 S3b), exactly as the carved body's is.  The
-  //: channel split holds `kDv / kWarps` channels in each of a FIXED four warps, so a
-  //: width the four warps cannot tile -- or one whose state row outgrows the CTA's page
-  //: sweep -- is REFUSED by the clauses below rather than served a narrower path.  No
-  //: `d_v = 128` declaration takes this body: at that width the design's answer is the
-  //: carved 16-leaf executor, which is a different arm and not a branch inside this one.
+  //: THE VALUE WIDTH IS THIS ARM'S (K35 S3b), exactly as the carved body's is.
+  // see docs/internals/carry/carry_split_kernel.md#kdv
   static constexpr int kDv = DV;
   static constexpr int kCols = DV + 1;
   static_assert(kDv == kWarps * kMmaM,
@@ -38,11 +34,8 @@ struct SplitGeom {
   static constexpr int LdS = BC + kPadE;
   static constexpr int LdO = kDv + kPadF;
 
-  //: THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA.  A window's
-  //: readouts all precede its folds, so the write panel is dead through phase 1 and
-  //: the read panel is dead through phase 2: each phase double-buffers in the
-  //: other's buffer and produces one batch AHEAD, which is what puts the produce's
-  //: global-load latency underneath the previous batch's MMA block.
+  //: THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA.
+  // see docs/internals/carry/carry_split_kernel.md#panel-bytes
   static constexpr int panel_bytes = 2 * C * LdS * (int)sizeof(__nv_bfloat16);
   static constexpr int out_bytes = C * LdO * (int)sizeof(float);
   static constexpr int den_bytes = kWarps * C * (int)sizeof(float);
@@ -54,10 +47,9 @@ struct SplitGeom {
   static constexpr int kScanIters = (W + kThreads - 1) / kThreads;
   static constexpr int scan_bytes = kWarps * kScanIters * (int)sizeof(int);
   //: THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR,
-  //: exactly as the shipped `Geom::stages` is: the shallowest ring that reaches the
-  //: best residency this arm can reach at any depth.  `kRegFloor` is the DECLARED
-  //: floor for this family -- the measured census of the heaviest built arm,
-  //: recorded in the findings doc and re-measured at every milestone.
+  //: exactly as the shipped `Geom::stages` is: the shallowest ring that reaches
+  //: the best residency this arm can reach at any depth.
+  // see docs/internals/carry/carry_split_kernel.md#kregfloor
   static constexpr int kRegFloor = 168;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
   static constexpr int fixed_bytes = panel_bytes + out_bytes + den_bytes + list_bytes + scan_bytes;
@@ -102,10 +94,10 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   constexpr int kMassUnits = kDw < kWarps ? kDw : kWarps;
   constexpr int kMassKD = kDw / kMassUnits;
   constexpr int kMassTiles = 2 * kMassKD;
-  //: when the split reaches every warp the mass guard is a TAUTOLOGY, and it must be
-  //: spelled as one: `__launch_bounds__` does not let the compiler prove
-  //: `threadIdx.x < kThreads`, so the guard would otherwise cut the readout and the
-  //: fold into basic blocks and pin the lookahead produce out of their HMMA shadows.
+  //: when the split reaches every warp the mass guard is a TAUTOLOGY, and it must
+  //: be spelled as one: `__launch_bounds__` does not let the compiler prove
+  //: `threadIdx.x < kThreads` ...
+  // see docs/internals/carry/carry_split_kernel.md#kmassallwarps
   constexpr bool kMassAllWarps = kMassUnits == kWarps;
 
   static_assert(C % kMmaM == 0 && kThreads % C == 0, "the batch tile must divide");
@@ -152,10 +144,9 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   //: `o_l` is a bit-field extract of the owner index: the lattice's owner
   //: coordinates are the top `sum_l log2 g_l` bits of `lambda` (R0 spec section 2.4).
   int runCol[D];
-  //: AND THE OWNER'S BALLOT ROW, per level: the SAME `o_l`, addressing the row the
-  //: facts pass voted for this owner group at this level (K31-i-d).  The liveness
-  //: pass reads these words instead of re-reading the amplitude runs itself -- once
-  //: per (owner, window, level, side) 32 tokens, against `2*D*s_l` bf16 per TOKEN.
+  //: AND THE OWNER'S BALLOT ROW, per level: the SAME `o_l`, addressing the row
+  //: the facts pass voted for this owner group at this level (K31-i-d).
+  // see docs/internals/carry/carry_split_kernel.md#rowbytes
   uint32_t rowOff[D];
   const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
   static_for<D>([&](auto Lc) {
@@ -247,22 +238,13 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + chan0 + (lane >> 2) + 8 * (k >> 1);
   };
   auto page_mass = [&](int p, int k) { return (p * 8 + lane * 2 + k) * LdO + kDv; };
-  //: THE ATOM WALK'S SHAPE IS A REGISTER-INDEXING FACT, NOT A CONVENIENCE.  A
-  //: state fragment is a register array, and a runtime index into one is a stack
-  //: frame -- measured, on this kernel's first build: `kAtoms` walked at runtime put
-  //: the WHOLE state (320 B/thread) in local memory.  So the walk is FULLY
-  //: UNROLLED over the atoms, and every warp owns every atom (its tile index is a
-  //: compile-time `2*a`) because the carve is along the channels.
+  //: THE ATOM WALK'S SHAPE IS A REGISTER-INDEXING FACT, NOT A CONVENIENCE.
+  // see docs/internals/carry/carry_split_kernel.md#note-l250
 
-  //: ---- THE ENTRY STATE.  The fragments are SET, never accumulated: they are
+  //: ---- THE ENTRY STATE. The fragments are SET, never accumulated: they are
   //: provably zero here, and with no decay the recurrence is affine in the state
   //: with an inclusive-after-write readout, so this IS the oracle's seeding.
-  //: NULL = NO STATE OBJECT AT THIS END: nothing is read, allocated, or touched
-  //: (docs/internals/state.md section 1). An instantiated-but-empty paged state is
-  //: NOT null -- it is engaged, and its absent atoms skip below at the per-atom
-  //: `slot < 0` grain, orthogonal to this check. This predicate is CTA-uniform:
-  //: `s_in` is a launch argument, identical for every thread, so the branch cannot
-  //: diverge within or across warps -- one compiled body, no STATE template axis.
+  // see docs/internals/carry/carry_split_kernel.md#note-l257
   if (s_in != nullptr) {
     const float* const plane = pin_address(s_in);
 #pragma unroll
@@ -301,25 +283,15 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     lvCol[l] = runCol[l] + BP::run_of(l, slot0);
   });
 
-  //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS.  A padding row of a partial
-  //: batch has no token, and a zero coefficient contributes exactly nothing to either
-  //: MMA (the produce's dead-row zeroing law).  Level 0's run is the outermost one and
-  //: therefore the narrowest at every built arm, so zeroing it covers the whole slot
-  //: run for one or two selects and costs no arithmetic.
-  //:
-  //: THE READ SIDE HAS NO GAIN.  Its scalar is identically 1 and the trailing
-  //: `mul_bf16x2(acc, 1)` was 44% of the read produce -- 32 FMUL, 32 PRMT and 16 F2FP
-  //: for `rn(a*1) = a` -- so the side is a compile-time argument and the read body
-  //: stores its accumulators directly.
+  //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS. A padding row of a
+  //: partial batch has no token, and a zero coefficient contributes exactly
+  //: nothing to either MMA (the produce's dead-row zeroing law).
+  // see docs/internals/carry/carry_split_kernel.md#write
   auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
                      uint32_t gain, bool have) {
     constexpr bool WRITE = decltype(Wt)::value;
-    //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
-    //: is loaded, folded into every slot and dropped inside one `static_for` body, so
-    //: no `[D][n]` array is ever live: `SPT/2` packed pairs plus one run, against the
-    //: `sum_l n_l` shorts a per-level array would hold at once.
-    //: the innermost level supplies the ADJACENT PAIR (its run offset owns bit 0),
-    //: every level above it a per-pair scalar -- the shipped producer's chain.
+    //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.
+    // see docs/internals/carry/carry_split_kernel.md#note-l317
     uint32_t acc[SPT / 2];
     {
       unsigned short run[PM::n_l(D - 1)];
@@ -386,10 +358,8 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     const uint32_t winV = (uint32_t)tok0 * (uint32_t)v_row_bytes;
     const uint32_t winO = (uint32_t)tok0 * (uint32_t)(kDv * (int)sizeof(float));
     const uint32_t winD = (uint32_t)tok0 * 4u;
-    //: ONE BATCH'S PANEL, expanded from factors.  The list, the row's token and the
-    //: gain are all resolved here so the two phases call ONE body; `have` false
-    //: zeroes the leading factor, and a zero coefficient contributes exactly nothing
-    //: to either MMA (the produce's dead-row zeroing law).
+    //: ONE BATCH'S PANEL, expanded from factors.
+    // see docs/internals/carry/carry_split_kernel.md#nb
     auto produce_batch = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst,
                              const uint16_t* list, int o0, int ntot) {
       const int nb = (ntot - o0) < C ? (ntot - o0) : C;
@@ -405,37 +375,8 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
 
     // ---- the liveness pass: TWO lists, one per SIDE -----------------------
     //: THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19, study section 2.0 as
-    //: rewritten).  Per level at most ONE side is sparse, so there is one stored row
-    //: set per level -- but the two sides' CLAUSE SETS are different level subsets,
-    //: and a dense side's clause is absent-means-full.  ANDing each side's OWN rows
-    //: IS that conjunction over exactly the levels where that side is sparse: a dense
-    //: level's ballot word is all ones for every token and drops out on its own, with
-    //: no structure fact carried into the kernel.  Union routing (one support serving
-    //: both sides) is then the special case where the two row sets coincide, and it
-    //: needs no separate code.
-    //:
-    //: Per-side lists make activity AIRTIGHT: a side's simplex weights are strictly
-    //: positive on its own support, so a listed entry is live for that side by
-    //: construction.  There is no union-superset padding anywhere, by design.
-    //: THE SCAN IS A TABLE READ (K31-i-d).  A warp's thirty-two tokens are one
-    //: BALLOT WORD of the owner's row, so the conjunction over levels is `D` word
-    //: ANDs per side for the whole warp, and the lane reads its own bit out of the
-    //: result -- where the amplitude scan it replaces re-read `2 * sum_l s_l`
-    //: bf16 PER TOKEN, per owner, at owner-specific columns that coalesced with
-    //: nothing.  A level the owner spans WHOLE emits no row: its clause is true for
-    //: every token and drops out of the conjunction with no structure fact carried
-    //: into the kernel, which is exactly what the amplitude form's `or_run` did.
-    //:
-    //: THE COMPACTION IS TWO RENDEZVOUS, both load-bearing.  Every warp holds its
-    //: whole window's ballots in registers and publishes its `kScanIters x 2` live
-    //: counts ONCE; the first barrier publishes those counts, and after it EVERY
-    //: thread re-derives the CTA-wide exclusive prefix from them in registers -- the
-    //: running totals are CTA-uniform and never need a shared round trip, so neither
-    //: the per-iteration barrier pair nor the `tid == 0` serial walk over the warps
-    //: exists.  The second barrier publishes the LISTS, which the phases read from the
-    //: first batch onward, and it doubles as the separation between this window's
-    //: count reads and the next window's count writes -- which is why it precedes the
-    //: whole-window skip rather than following it.
+    //: rewritten).
+    // see docs/internals/carry/carry_split_kernel.md#kscaniters
     constexpr int kScanIters = G::kScanIters;
     //: the two sides ride ONE count word, low half read and high half write.  A side's
     //: window total is at most `W`, so no low-half sum ever carries into the high half
@@ -497,17 +438,8 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     //      The batch line is therefore the window line on both sides.
     const int nbr = (nr + C - 1) / C;
     //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring,
-    //: UNCONDITIONALLY and AFTER the batch's MMA block.  Unconditionally because a
-    //: guard is a basic block and ptxas schedules within one; after, because the
-    //: produce ends in panel `STS` and the MMA begins in panel `LDSM`, and the two
-    //: shared ranges are not provably disjoint -- in the other order that aliasing
-    //: edge pins every produce instruction ahead of the HMMAs.  The trailing batch is
-    //: entirely dead rows by the produce's zeroing law and lands in a panel no MMA
-    //: reads.
-    //: THE PRE-LOOP PRODUCE IS THE ONLY THING THE HEAD RENDEZVOUS EVER PUBLISHED, so
-    //: it is taken OUT of the loop: for every later batch the publish is already
-    //: carried by the readout's own two rendezvous (docs/internals/carry/carry_kernel.md,
-    //: "The rendezvous the ring needs").
+    //: UNCONDITIONALLY and AFTER the batch's MMA block.
+    // see docs/internals/carry/carry_split_kernel.md#rendezvous
     if (nbr > 0) produce_batch(std::false_type{}, pR, sr, slist, 0, nr);
     rendezvous();
 #pragma unroll 1
@@ -614,10 +546,8 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
 
     // ---- PHASE 2: the FOLD of every write batch ---------------------------
     //: V IS A WRITE-SIDE QUANTITY and is gathered by the WRITE list; the read list
-    //: never touches it.  The value ring is `STAGES` deep and asynchronous: issue
-    //: order is FIFO, one implicit group per batch, and the wait leaves `STAGES-2`
-    //: groups in flight so the gather for batch `i + STAGES - 1` is airborne while
-    //: batch `i` folds.
+    //: never touches it.
+    // see docs/internals/carry/carry_split_kernel.md#nbw
     const int nbw = (nw + C - 1) / C;
     const uint16_t* const wlist = slist + kListStride;
     auto stage_batch = [&](int b, int slot) {
@@ -681,8 +611,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   // ---- the FINAL STATE, at CANONICAL atom ids ------------------------------
   //: the mirror of the entry load, after the last fan-in has consumed the staging
   //: buffer -- which is what the one extra rendezvous below is for.
-  //: NULL = NO STATE OBJECT AT THIS END: nothing is written (state.md section 1),
-  //: symmetric with the entry check above.
+  // see docs/internals/carry/carry_split_kernel.md#rendezvous-2
   if (s_out != nullptr) {
     float* const plane = pin_address(s_out);
     rendezvous();

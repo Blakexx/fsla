@@ -49,3 +49,45 @@ the deep-3 topology declared DENSE_BOTH and ALT, and the channel-split body igno
 the declaration. Emitting one instantiation from two objects is the state
 `tools/ratify.py` refuses by name, so those two rows share a file and each keeps
 its own `ROLA_CARRY_BUILD_<i>` guard.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/carry/carry_arm.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="sr"></a>
+### `SR`
+
+THE CARVE, DERIVED (K35 S1b): the side's order comes from `MO` and its span
+vector from that order and its stream count.  A carve is never declared.
+ONE ORDER, THE READ SIDE'S (K35 M1P): the body carves the box ONCE and both phases
+walk that carve, so the WRITE side IS the read side's vector -- the leaf ->
+(stream, slot) map is one map, the two sides' ballot rows are voted at one
+partition, and there is no exchange between the phases to size.  The two-sided
+carve and its transit return as their own stage; `NSW` must equal `NSR` until then,
+which the geometry asserts.
+
+<a id="kxchbytes"></a>
+### `kXchBytes`
+
+THE EXCHANGE IS NOT BUILT (K35 M1P), so the census's two exchange fields are the
+statement of that: ZERO transit bytes and state `0` (elided).  One order means the
+leaf -> (stream, slot) permutation is the identity at every phase change, which is
+the same zero the tied arm earned by declaration -- here it is a property of the
+BODY.  The fields stay in the row so the schema does not move under the seam.
+
+<a id="launch"></a>
+### `launch`
+
+ONE VARIANT'S LAUNCH.  There is no `STATE` template axis (deleted, K41): the body
+takes the caller's `s_in`/`s_out` pointers and gates its entry/exit sweeps at
+RUNTIME on `!= nullptr`, a CTA-uniform branch (state.md section 1) -- one compiled
+body serves both the stateful and the null-state call. The SMEM attribute is per
+arm, which is why the memo is local here.
+
+<a id="census"></a>
+### `census`
+
+THE CENSUS, whose last ten fields are THE DERIVATION READ BACK OFF THE DEVICE (K35
+S1b): the two span vectors the order-by-mode rule produced, the exchange's transit in
+bytes -- zero where the two carves came out identical -- and the exchange's STATE, so
+an arm that OVERPAYS is visible rather than silent.

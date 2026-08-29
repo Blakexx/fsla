@@ -174,3 +174,191 @@ which is the forward's private-quantum freedom iterated downward.
 spill goes green: the build honors a bound the heavier scan cannot meet and only the
 census notices. `BwdGeom` declares `kRegFloorA` and `kRegFloorB` separately, and each
 scan's ring depth and CTA target are derived from its own.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/carry/backward_kernel.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="kdv"></a>
+### `kDv`
+
+THE REVERSE FAMILY'S OWN VALUE WIDTH, AND WHY IT IS A CONSTANT HERE (K35 S3b).
+`d_v` became a per-arm parameter of the FORWARD carry family; this body did NOT
+follow it.  The two scans are a separate design -- leaf-major slabs, a fixed
+`kColsPad = 72` pre-packed operand plane, its own arm list -- and they carry a
+standing seam gap against the forward's arms already.  Widening them is that gap's
+work, not this one's, so the constant stays here, named where this family uses it,
+and nothing in `carry_kernel.cuh` defines it any more.
+
+<a id="kcolspad"></a>
+### `kColsPad`
+
+THE SEED AND VALUE PLANES ARE PRE-PACKED `cols`-WIDE AND PADDED TO WHOLE MMA
+n-tiles, so ONE staging body serves both and the mass channel is an ordinary
+column rather than a carve.  Columns past `kCols` are zero at the seam, which is
+what lets the last n-tile be read with no partial-tile path.
+
+<a id="kregfloora"></a>
+### `kRegFloorA`
+
+TWO FLOORS, TWO CENSUSES.  One floor for two kernels is how a spill goes green:
+the build honors a bound the heavier scan cannot meet and only the census
+notices.  Both are DECLARED -- the measured live set of the heaviest built arm.
+
+SCAN A SITS AT THE ARCHITECTURE'S PER-THREAD CAP, and that is recorded rather
+than smoothed over: 255 of 255 on every built arm and both arches, zero spill,
+`cta_target` 2.  It has NO headroom, so the next change to that kernel starts by
+measuring what it costs in registers, and a hoist of the forward's item-1 shape
+(which cost that kernel twelve to sixteen) is not available here without giving
+something back first.
+
+<a id="bwdparams-note-l135"></a>
+### in `BwdParams`, near line 135
+
+THE SLOT TABLES OF THE TWO SLABS (`ops.cuh`'s `page_slot`,
+docs/internals/paging/paging.md).  Null is the dense backing -- the slot IS the
+atom -- so a paged ENTRY plane and a dispatch-allocated dense EXIT plane are the
+same body with two tables, not two paths.
+
+<a id="static-assert"></a>
+### `static_assert`
+
+THE DIGIT REDUCTION'S ROW MAP, stated as the two conditions it rests on rather
+than as a depth.  A warp owns `kWarpLeaves` consecutive owner-local indices, so
+a level's digit field reduces WITHOUT a cross-warp meeting exactly when the
+field lies inside the warp's own bit range, and an accumulator ROW is one digit
+exactly when the innermost span is one m-tile.  Depth two at `s = (8, 16)`
+satisfies both, and only depth two can: the innermost level owns the four row
+bits and ONE other level must own everything above them, including the whole
+warp id, so its digits PARTITION across warps.  `s = (2, 4, 16)` splits those
+upper bits between two levels and level 1's field then straddles the warp-id
+boundary -- two warps hold each of its digits, so the staging acquires a
+per-warp digit base and a second cross-warp meeting.  `s = (2, 2, 4, 8)` breaks
+the row map as well (`s_3 = 8`, half an m-tile, so one accumulator row carries
+two levels' digits).  Each is a per-arm derivation with a wrong-gradient risk,
+and a named gap beats one.
+
+<a id="produce"></a>
+### `produce`
+
+ONE BATCH'S PANEL, expanded from factors.  `SAMP` also publishes the per-level
+amplitude RUNS: they are the digit reduction's leave-one-out weights, and they
+are the same values this body already holds -- never a second gather.
+
+ONLY THE PANEL-GAINED SIDE MULTIPLIES.  Three of the family's four produce sites
+pass a gain that is exactly `1.0` -- Scan A's read phase and BOTH of Scan B's --
+and `rn(a * 1) = a`, so for them the trailing packed multiply over all `SPT`
+slots is deleted outright and the accumulator is stored as it stands.  What that
+multiply also carried, the DEAD-ROW ZEROING, moves onto LEVEL 0's run instead:
+level 0 is the outermost and therefore the narrowest at every built arm, and
+every panel entry has exactly one level-0 factor, so zeroing that run zeroes the
+whole row for one or two selects rather than `SPT/2` packed multiplies.  `samp`
+is published BEFORE the zeroing and so still carries the raw amplitudes, exactly
+as it did when the zeroing rode the panel gain.
+
+<a id="bwdowner-note-l546"></a>
+### in `BwdOwner`, near line 546
+
+THE MASS COLUMN IS READ ONCE, NOT ONCE PER m-TILE.  Its panel entry is indexed
+by the TOKEN alone, and a thread's token depends on `nt` and `e & 1` only, so
+the two m-tiles want the same eight values.  Read as `[nt][e & 1]` ahead of the
+`pm` loop: eight shared loads and eight converts per readout, against the
+thirty-two the inner loops used to repeat.
+
+<a id="for-outer-cells"></a>
+### `for_outer_cells`
+
+THE OUTER LEVEL'S STAGED CELLS, walked by a CARRYING cursor.  Both the clear and
+the drain visit exactly these, so the walk is written once: `sdg` keeps its full
+`kDigitRows` stride (`samp` and `sdcol` share the run's indexing) while only the
+outer level's rows are live in it, the inner level having fanned itself in.
+
+The cursor advances instead of dividing.  The stride between a thread's cells is
+the constant `kThreads`, so the quotient and remainder carry; one division per
+walk, at the seed.  At the built arms `s_0` divides `kThreads` and the row is in
+fact invariant, but the carry is written out because that is a property of the
+SPAN VECTOR and not of the pass.
+
+<a id="digit-reduce-outer"></a>
+### `digit_reduce_outer`
+
+THE DIGIT REDUCTION.  A level's digit gradient is the tile's weighted marginal
+along that level's index axis, the weight being the OTHER levels' amplitude
+product -- one staged amplitude at `D = 2`, and never a division.  The staging is
+TOKEN-MAJOR because the drain below writes one contiguous digit run per token, and
+a digit-major buffer would make every one of those stores its own sector.
+
+<a id="bwdowner-note-l636"></a>
+### in `BwdOwner`, near line 636
+
+outer level: a whole m-tile is one digit and a warp owns its two exclusively, so
+the segment is three lane shuffles and no cross-warp term at all.  Its sum is
+therefore COMPLETE inside one warp, and it stages into `sdg` so that the drain
+can coalesce its scattered token rows into one reducing instruction per run.
+
+<a id="digit-reduce-inner-direct"></a>
+### `digit_reduce_inner_direct`
+
+THE INNER LEVEL'S FOUR WARP PARTIALS MEET IN THE GLOBAL PLANE.  One accumulator
+ROW is one digit, so a warp's segment is an add -- but every warp holds every row,
+over the SAME thirty-two cells, so the four have to meet somewhere.  They meet
+where the OWNERS already meet: the plane is a fan-in point by construction (two
+owners sharing a level-1 group write the same cell), so adding a fourth grain of
+partial to it introduces no mechanism that was not already there.
+
+WHY NOT IN SHARED MEMORY, both ways measured on this kernel:
+  * `atomicAdd` on a shared `float` has NO hardware reduction on this
+    architecture.  nvcc lowers it to `ATOMS.CAST.SPIN`, a lock-and-retry loop
+    whose body is a five-instruction serial chain; with four warps contending the
+    same cells it retried 2.08 times per site and carried a THIRD of each scan's
+    stall.  (The intra reverse pass reached the identical verdict from the other
+    side when it measured a CTA-wide shared atomic plane at 1.65x its wall.)
+  * barrier-separated rounds, the mechanism the `ung` meeting below uses, cost
+    three rendezvous per batch and traded the whole saving back: measured
+    `short_scoreboard` 3.57 -> 2.24 against `barrier` 0.39 -> 2.66, wall unmoved.
+    At four warps per CTA a CTA-wide barrier idles three of them.
+
+ADDRESSING: for one `(nt, e)` the warp's thirty-two lanes cover FOUR token rows
+(`lane & 3`) at EIGHT CONTIGUOUS digits each (`lane >> 2`), so one reducing
+instruction touches four 32-byte sectors for 128 bytes -- the sector floor.
+
+BOTH SIDES MEET HERE, AND THE WRITE SIDE'S GAIN DISTRIBUTES OVER THE FOUR WARPS.
+`(R7)` reads `d_pw_l[j, e] = gw[j] * sum_s (...)`, with the gain outside the sum;
+a warp-grain fan-in computes `sum_over_warps (gw[j] * partial_w)` instead, which
+is the same value in exact arithmetic and a different rounding in this one.  It is
+taken deliberately, and the reason it is not a new liberty is that THE PLANE
+ALREADY DOES EXACTLY THIS AT THE OWNER GRAIN: every owner CTA that touches token
+`j` reduces its own `gw[j] * partial_owner` into the cell, so the gain has always
+been distributed across the owner decomposition.  This distributes it one grain
+finer, inside an accumulator whose summation order is nondeterministic by
+construction and whose outputs are not bit-reproducible run to run on ANY build.
+The read side `(R2)` has no such factor and is unaffected either way.
+
+Measured: Scan B 15.554 -> 13.546 ms at the flagship dense cell, `barrier`
+1.39 -> 1.53, `lg_throttle` 0.00 at 22.0 M reducing instructions.
+
+<a id="digit-drain"></a>
+### `digit_drain`
+
+THE DRAIN CARRIES THE OUTER LEVEL ALONE, on both sides: the inner level fans
+itself in from the reduction.  The gain is applied HERE and not at the reduction,
+because the outer level's sum is complete inside one warp -- there is no meeting
+to distribute it over, so `(R7)` is honoured exactly on these rows.
+
+<a id="note-l822"></a>
+### near line 822
+
+(G5) and (G6) off ONE accumulator: the panel is UNGAINED, so the value
+columns times `gw` are `d_v` and the same accumulator dotted with the ones-
+column-bearing value row is `d_gw`.  `sum_s dW` is not `d_gw` and is never
+formed.  `k = leaf` is the carved axis, so this is the backward's one
+cross-warp term -- four rounds through the output staging buffer.
+
+<a id="note-l850"></a>
+### near line 850
+
+`k = leaf` is the carved axis, so this is the backward's one cross-warp term:
+four warp partials of `[C x cols]` meeting in the output staging buffer.  The
+meeting is BARRIER-SEPARATED ROUNDS rather than a shared-memory RED: every
+warp writes the same cells, so a RED here is a four-way conflict on all
+`cols` of every token and measures worse than the three extra barriers.

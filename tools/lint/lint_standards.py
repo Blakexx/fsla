@@ -396,8 +396,160 @@ def check_tests_tier_directories() -> list[str]:
     return findings
 
 
+#: The `docs/internals/` mirror (2026-08-04 comments-to-docs mandate), ported
+#: from `tests/unit/test_docs_mirror.py` (RULED 2026-08-29: a check that does
+#: not execute the code under test is a lint, not a test -- docs/testing.md).
+#: Deliberately grep-level, no markdown parser: a check a contributor cannot
+#: read is a check they will route around.
+_DOCS_SRC = ROOT / "csrc" / "rola"
+_DOCS_MIRROR = ROOT / "docs" / "internals"
+_DOCS_SOURCE_SUFFIXES = (".cu", ".cuh", ".cpp", ".h", ".hpp")
+
+#: A doc reference as it appears in a source comment, e.g.
+#: ``docs/internals/chunk/chunk_kernel.md#state-epilogue``. The anchor is optional: a
+#: file-header block may point at a whole doc.
+_DOCS_REF = re.compile(r"docs/internals/([A-Za-z0-9_/]+\.md)(?:#([A-Za-z0-9_-]+))?")
+
+#: A hazard stub: ``//: HAZARD <slug> -- docs/internals/<doc>.md#<slug>``.
+_DOCS_STUB = re.compile(r"//:\s*HAZARD\s+([A-Za-z0-9_-]+)\b")
+
+#: An anchor definition in a mirror doc.
+_DOCS_ANCHOR = re.compile(r'<a id="([A-Za-z0-9_-]+)"')
+
+#: GENERATED SOURCES ARE DOCUMENTED BY THEIR GENERATOR, not one doc each -- see
+#: `csrc/rola/src/instantiations/README.md`.
+_DOCS_GENERATED_DIRS = ("instantiations",)
+
+
+def _docs_sources() -> list[Path]:
+    return sorted(
+        p
+        for p in _DOCS_SRC.rglob("*")
+        if p.suffix in _DOCS_SOURCE_SUFFIXES
+        and "third_party" not in p.parts
+        and not set(p.parts) & set(_DOCS_GENERATED_DIRS)
+    )
+
+
+def _docs_mirror_for(source: Path) -> Path:
+    """``csrc/rola/src/decode/decode.cuh`` -> ``docs/internals/decode/decode.md``.
+
+    The mirror does not repeat the ``src/`` component: the sources it mirrors
+    are all under it, so carrying it would be one directory of pure ceremony.
+    """
+    relative = source.relative_to(_DOCS_SRC)
+    if relative.parts[0] == "src":
+        relative = Path(*relative.parts[1:])
+    return _DOCS_MIRROR / relative.with_suffix(".md")
+
+
+def _docs_anchors(doc: Path) -> list[str]:
+    return _DOCS_ANCHOR.findall(doc.read_text())
+
+
+def check_generated_directories_are_documented_by_their_readme() -> list[str]:
+    """Rule 5. The exemption from rule 1 costs a stricter check, not a weaker one."""
+    import subprocess
+
+    findings = []
+    for name in _DOCS_GENERATED_DIRS:
+        directory = _DOCS_SRC / "src" / name
+        if not (directory / "README.md").is_file():
+            findings.append(
+                f"{directory.relative_to(ROOT)} is exempt from the per-file mirror rule "
+                f"because it is generated; that exemption requires its README.md")
+            continue
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "gen_shards.py"), "--check"],
+            cwd=str(ROOT), capture_output=True, text=True)
+        if proc.returncode != 0:
+            findings.append(
+                f"{directory.relative_to(ROOT)} contains something its generator does "
+                f"not produce:\n{proc.stdout}{proc.stderr}")
+    return findings
+
+
+def check_every_source_file_has_a_mirror_doc() -> list[str]:
+    """Rule 1. A `.cu` and its `.cuh` share one doc, since they are one component."""
+    findings = []
+    for source in _docs_sources():
+        doc = _docs_mirror_for(source)
+        if not doc.is_file():
+            findings.append(
+                f"{source.relative_to(ROOT)} has no mirror doc.\n"
+                f"Expected {doc.relative_to(ROOT)}.\n"
+                "Every source file carries its reasons in docs/internals/ at the same "
+                "relative path; a .cu and its .cuh share one doc. See "
+                "docs/internals/README.md."
+            )
+    return findings
+
+
+def check_every_doc_reference_resolves() -> list[str]:
+    """Rule 2. Every ``docs/internals/....md#anchor`` in the sources resolves to
+    an ``<a id="anchor">`` the named doc actually defines."""
+    broken = []
+    for source in _docs_sources():
+        text = source.read_text()
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for doc_name, anchor in _DOCS_REF.findall(line):
+                doc = _DOCS_MIRROR / doc_name
+                where = f"{source.relative_to(ROOT)}:{lineno}"
+                if not doc.is_file():
+                    broken.append(f"{where} -> {doc_name} (no such doc)")
+                elif anchor and anchor not in _docs_anchors(doc):
+                    broken.append(f"{where} -> {doc_name}#{anchor} (no such anchor)")
+    return [f"unresolved doc reference: {b}" for b in broken]
+
+
+def check_hazard_stubs_cite_their_own_slug() -> list[str]:
+    """Rule 3. A stub's slug IS its anchor id, so the two cannot drift apart."""
+    bad = []
+    for source in _docs_sources():
+        for lineno, line in enumerate(source.read_text().splitlines(), 1):
+            stub = _DOCS_STUB.search(line)
+            if stub is None:
+                continue
+            slug = stub.group(1)
+            refs = _DOCS_REF.findall(line)
+            where = f"{source.relative_to(ROOT)}:{lineno}"
+            if not refs:
+                bad.append(f"{where}: HAZARD {slug} cites no docs/internals anchor")
+                continue
+            anchors = [anchor for _, anchor in refs if anchor]
+            if slug not in anchors:
+                bad.append(f"{where}: HAZARD {slug} cites {anchors or refs} instead")
+    return [f"hazard stub does not cite its own slug: {b}" for b in bad]
+
+
+def check_no_doc_defines_an_anchor_twice() -> list[str]:
+    """Rule 4. A citation to a duplicated anchor is ambiguous."""
+    findings = []
+    for doc in sorted(_DOCS_MIRROR.rglob("*.md")):
+        anchors = _docs_anchors(doc)
+        duplicates = sorted({a for a in anchors if anchors.count(a) > 1})
+        if duplicates:
+            findings.append(
+                f"{doc.relative_to(ROOT)} defines these anchors more than once: "
+                f"{duplicates}. A citation to a duplicated anchor is ambiguous."
+            )
+    return findings
+
+
+def check_docs_mirror() -> list[str]:
+    """The whole `docs/internals/` mirror contract, ported from
+    `tests/unit/test_docs_mirror.py` (deleted; RULED 2026-08-29)."""
+    findings = []
+    findings += check_generated_directories_are_documented_by_their_readme()
+    findings += check_every_source_file_has_a_mirror_doc()
+    findings += check_every_doc_reference_resolves()
+    findings += check_hazard_stubs_cite_their_own_slug()
+    findings += check_no_doc_defines_an_anchor_twice()
+    return findings
+
+
 def main() -> int:
-    #: THESE FOUR are wired as a BLOCKING pre-commit/CI gate
+    #: THESE FIVE are wired as a BLOCKING pre-commit/CI gate
     #: (.pre-commit-config.yaml, .github/workflows/lint.yml) -- a nonzero exit
     #: here fails every commit and every CI run, repo-wide.
     gating_findings: list[str] = []
@@ -405,6 +557,7 @@ def main() -> int:
     gating_findings += check_no_torch_in_arm_tus()
     gating_findings += check_no_sync_after_decode_prologue()
     gating_findings += check_tests_tier_directories()
+    gating_findings += check_docs_mirror()
 
     #: K39 (Blake, 2026-08-28): comment density and long-comment-block findings
     #: are ADVISORY, NOT gating, deliberately. `csrc/` is ~40 files over the

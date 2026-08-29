@@ -40,20 +40,16 @@ namespace rola::carry {
 //: a KERNEL, and so is a stale binary; the forward's magic says nothing about these.
 static constexpr int kBwdBuildMagic = 31040001;
 
-//: THE REVERSE FAMILY'S OWN VALUE WIDTH, AND WHY IT IS A CONSTANT HERE (K35 S3b).
-//: `d_v` became a per-arm parameter of the FORWARD carry family; this body did NOT
-//: follow it.  The two scans are a separate design -- leaf-major slabs, a fixed
-//: `kColsPad = 72` pre-packed operand plane, its own arm list -- and they carry a
-//: standing seam gap against the forward's arms already.  Widening them is that gap's
-//: work, not this one's, so the constant stays here, named where this family uses it,
-//: and nothing in `carry_kernel.cuh` defines it any more.
+//: THE REVERSE FAMILY'S OWN VALUE WIDTH, AND WHY IT IS A CONSTANT HERE (K35
+//: S3b).
+// see docs/internals/carry/backward_kernel.md#kdv
 static constexpr int kDv = 64;
 static constexpr int kCols = kDv + 1;
 
 //: THE SEED AND VALUE PLANES ARE PRE-PACKED `cols`-WIDE AND PADDED TO WHOLE MMA
 //: n-tiles, so ONE staging body serves both and the mass channel is an ordinary
-//: column rather than a carve.  Columns past `kCols` are zero at the seam, which is
-//: what lets the last n-tile be read with no partial-tile path.
+//: column rather than a carve.
+// see docs/internals/carry/backward_kernel.md#kcolspad
 static constexpr int kColsPad = 72;
 static constexpr int kSlabN = kColsPad / kMmaN;
 static constexpr int kColKTiles = kDv / kMmaK;
@@ -91,16 +87,10 @@ struct BwdGeom {
   static constexpr int fixed_bytes =
       panel_bytes + out_bytes + digit_bytes + gain_bytes + col_bytes + list_bytes + scan_bytes;
 
-  //: TWO FLOORS, TWO CENSUSES.  One floor for two kernels is how a spill goes green:
-  //: the build honors a bound the heavier scan cannot meet and only the census
-  //: notices.  Both are DECLARED -- the measured live set of the heaviest built arm.
-  //:
-  //: SCAN A SITS AT THE ARCHITECTURE'S PER-THREAD CAP, and that is recorded rather
-  //: than smoothed over: 255 of 255 on every built arm and both arches, zero spill,
-  //: `cta_target` 2.  It has NO headroom, so the next change to that kernel starts by
-  //: measuring what it costs in registers, and a hoist of the forward's item-1 shape
-  //: (which cost that kernel twelve to sixteen) is not available here without giving
-  //: something back first.
+  //: TWO FLOORS, TWO CENSUSES. One floor for two kernels is how a spill goes
+  //: green: the build honors a bound the heavier scan cannot meet and only the
+  //: census notices.
+  // see docs/internals/carry/backward_kernel.md#kregfloora
   static constexpr int kRegFloorA = 255;
   static constexpr int kRegFloorB = 244;
   static constexpr int kStagesA = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloorA);
@@ -133,9 +123,8 @@ struct BwdParams {
   const float* slab_in;
   float* slab_out;
   //: THE SLOT TABLES OF THE TWO SLABS (`ops.cuh`'s `page_slot`,
-  //: docs/internals/paging/paging.md).  Null is the dense backing -- the slot IS the
-  //: atom -- so a paged ENTRY plane and a dispatch-allocated dense EXIT plane are the
-  //: same body with two tables, not two paths.
+  //: docs/internals/paging/paging.md).
+  // see docs/internals/carry/backward_kernel.md#bwdparams-note-l135
   const int32_t* tbl_in;
   const int32_t* tbl_out;
   int L;
@@ -172,20 +161,9 @@ struct BwdOwner {
   static constexpr int kGwRows = C / kWarps;
   static constexpr int kLeafGrp = kWarpLeaves / kMmaN;
 
-  //: THE DIGIT REDUCTION'S ROW MAP, stated as the two conditions it rests on rather
-  //: than as a depth.  A warp owns `kWarpLeaves` consecutive owner-local indices, so
-  //: a level's digit field reduces WITHOUT a cross-warp meeting exactly when the
-  //: field lies inside the warp's own bit range, and an accumulator ROW is one digit
-  //: exactly when the innermost span is one m-tile.  Depth two at `s = (8, 16)`
-  //: satisfies both, and only depth two can: the innermost level owns the four row
-  //: bits and ONE other level must own everything above them, including the whole
-  //: warp id, so its digits PARTITION across warps.  `s = (2, 4, 16)` splits those
-  //: upper bits between two levels and level 1's field then straddles the warp-id
-  //: boundary -- two warps hold each of its digits, so the staging acquires a
-  //: per-warp digit base and a second cross-warp meeting.  `s = (2, 2, 4, 8)` breaks
-  //: the row map as well (`s_3 = 8`, half an m-tile, so one accumulator row carries
-  //: two levels' digits).  Each is a per-arm derivation with a wrong-gradient risk,
-  //: and a named gap beats one.
+  //: THE DIGIT REDUCTION'S ROW MAP, stated as the two conditions it rests on
+  //: rather than as a depth.
+  // see docs/internals/carry/backward_kernel.md#static-assert
   static_assert(kSlabM == 2 && BP::s(D - 1) == kMmaM,
                 "the digit reduction's row map: a warp's leaf slice is exactly two m-tiles "
                 "and the inner level's span is exactly one of them");
@@ -344,20 +322,10 @@ struct BwdOwner {
     nw = sscan[9];
   }
 
-  //: ONE BATCH'S PANEL, expanded from factors.  `SAMP` also publishes the per-level
-  //: amplitude RUNS: they are the digit reduction's leave-one-out weights, and they
-  //: are the same values this body already holds -- never a second gather.
-  //:
-  //: ONLY THE PANEL-GAINED SIDE MULTIPLIES.  Three of the family's four produce sites
-  //: pass a gain that is exactly `1.0` -- Scan A's read phase and BOTH of Scan B's --
-  //: and `rn(a * 1) = a`, so for them the trailing packed multiply over all `SPT`
-  //: slots is deleted outright and the accumulator is stored as it stands.  What that
-  //: multiply also carried, the DEAD-ROW ZEROING, moves onto LEVEL 0's run instead:
-  //: level 0 is the outermost and therefore the narrowest at every built arm, and
-  //: every panel entry has exactly one level-0 factor, so zeroing that run zeroes the
-  //: whole row for one or two selects rather than `SPT/2` packed multiplies.  `samp`
-  //: is published BEFORE the zeroing and so still carries the raw amplitudes, exactly
-  //: as it did when the zeroing rode the panel gain.
+  //: ONE BATCH'S PANEL, expanded from factors. `SAMP` also publishes the per-
+  //: level amplitude RUNS: they are the digit reduction's leave-one-out weights,
+  //: and they are the same values this body already holds -- never a second ...
+  // see docs/internals/carry/backward_kernel.md#produce
   template <bool SAMP, GainSite GAIN>
   __device__ __forceinline__ void produce(const __nv_bfloat16* base, __nv_bfloat16* dst,
                                           uint32_t tokOff, uint32_t gain, bool have, int par) {
@@ -543,11 +511,10 @@ struct BwdOwner {
   __device__ __forceinline__ void channel_readout(const float (&slab)[kSlabM][kSlabN][4],
                                                   uint32_t bd, const __nv_bfloat16* panel,
                                                   float (&tile)[kSlabM][NTOK][4]) {
-    //: THE MASS COLUMN IS READ ONCE, NOT ONCE PER m-TILE.  Its panel entry is indexed
-    //: by the TOKEN alone, and a thread's token depends on `nt` and `e & 1` only, so
-    //: the two m-tiles want the same eight values.  Read as `[nt][e & 1]` ahead of the
-    //: `pm` loop: eight shared loads and eight converts per readout, against the
-    //: thirty-two the inner loops used to repeat.
+    //: THE MASS COLUMN IS READ ONCE, NOT ONCE PER m-TILE. Its panel entry is
+    //: indexed by the TOKEN alone, and a thread's token depends on `nt` and `e & 1`
+    //: only, so the two m-tiles want the same eight values.
+    // see docs/internals/carry/backward_kernel.md#bwdowner-note-l546
     float pv[NTOK][2];
 #pragma unroll
     for (int nt = 0; nt < NTOK; ++nt)
@@ -587,16 +554,8 @@ struct BwdOwner {
     }
   }
 
-  //: THE OUTER LEVEL'S STAGED CELLS, walked by a CARRYING cursor.  Both the clear and
-  //: the drain visit exactly these, so the walk is written once: `sdg` keeps its full
-  //: `kDigitRows` stride (`samp` and `sdcol` share the run's indexing) while only the
-  //: outer level's rows are live in it, the inner level having fanned itself in.
-  //:
-  //: The cursor advances instead of dividing.  The stride between a thread's cells is
-  //: the constant `kThreads`, so the quotient and remainder carry; one division per
-  //: walk, at the seed.  At the built arms `s_0` divides `kThreads` and the row is in
-  //: fact invariant, but the carry is written out because that is a property of the
-  //: SPAN VECTOR and not of the pass.
+  //: THE OUTER LEVEL'S STAGED CELLS, walked by a CARRYING cursor.
+  // see docs/internals/carry/backward_kernel.md#for-outer-cells
   template <typename F>
   __device__ __forceinline__ void for_outer_cells(F&& f) {
     constexpr int NROW = BP::s(0);
@@ -624,19 +583,18 @@ struct BwdOwner {
     for_outer_cells([&](int tokl, int row) { sdg[tokl * kDigitRows + row] = 0.f; });
   }
 
-  //: THE DIGIT REDUCTION.  A level's digit gradient is the tile's weighted marginal
-  //: along that level's index axis, the weight being the OTHER levels' amplitude
-  //: product -- one staged amplitude at `D = 2`, and never a division.  The staging is
-  //: TOKEN-MAJOR because the drain below writes one contiguous digit run per token, and
-  //: a digit-major buffer would make every one of those stores its own sector.
+  //: THE DIGIT REDUCTION. A level's digit gradient is the tile's weighted
+  //: marginal along that level's index axis, the weight being the OTHER levels'
+  //: amplitude product -- one staged amplitude at `D = 2`, and never a division.
+  // see docs/internals/carry/backward_kernel.md#digit-reduce-outer
   __device__ __forceinline__ void digit_reduce_outer(const float (&tile)[kSlabM][NTOK][4],
                                                      int par) {
     constexpr int off0 = DP::off(0), off1 = DP::off(1);
     const float* const amp = samp + par * C * kDigitRows;
-    //: outer level: a whole m-tile is one digit and a warp owns its two exclusively, so
-    //: the segment is three lane shuffles and no cross-warp term at all.  Its sum is
-    //: therefore COMPLETE inside one warp, and it stages into `sdg` so that the drain
-    //: can coalesce its scattered token rows into one reducing instruction per run.
+    //: outer level: a whole m-tile is one digit and a warp owns its two
+    //: exclusively, so the segment is three lane shuffles and no cross-warp term at
+    //: all.
+    // see docs/internals/carry/backward_kernel.md#bwdowner-note-l636
 #pragma unroll
     for (int pm = 0; pm < kSlabM; ++pm)
 #pragma unroll
@@ -656,43 +614,8 @@ struct BwdOwner {
         }
   }
 
-  //: THE INNER LEVEL'S FOUR WARP PARTIALS MEET IN THE GLOBAL PLANE.  One accumulator
-  //: ROW is one digit, so a warp's segment is an add -- but every warp holds every row,
-  //: over the SAME thirty-two cells, so the four have to meet somewhere.  They meet
-  //: where the OWNERS already meet: the plane is a fan-in point by construction (two
-  //: owners sharing a level-1 group write the same cell), so adding a fourth grain of
-  //: partial to it introduces no mechanism that was not already there.
-  //:
-  //: WHY NOT IN SHARED MEMORY, both ways measured on this kernel:
-  //:   * `atomicAdd` on a shared `float` has NO hardware reduction on this
-  //:     architecture.  nvcc lowers it to `ATOMS.CAST.SPIN`, a lock-and-retry loop
-  //:     whose body is a five-instruction serial chain; with four warps contending the
-  //:     same cells it retried 2.08 times per site and carried a THIRD of each scan's
-  //:     stall.  (The intra reverse pass reached the identical verdict from the other
-  //:     side when it measured a CTA-wide shared atomic plane at 1.65x its wall.)
-  //:   * barrier-separated rounds, the mechanism the `ung` meeting below uses, cost
-  //:     three rendezvous per batch and traded the whole saving back: measured
-  //:     `short_scoreboard` 3.57 -> 2.24 against `barrier` 0.39 -> 2.66, wall unmoved.
-  //:     At four warps per CTA a CTA-wide barrier idles three of them.
-  //:
-  //: ADDRESSING: for one `(nt, e)` the warp's thirty-two lanes cover FOUR token rows
-  //: (`lane & 3`) at EIGHT CONTIGUOUS digits each (`lane >> 2`), so one reducing
-  //: instruction touches four 32-byte sectors for 128 bytes -- the sector floor.
-  //:
-  //: BOTH SIDES MEET HERE, AND THE WRITE SIDE'S GAIN DISTRIBUTES OVER THE FOUR WARPS.
-  //: `(R7)` reads `d_pw_l[j, e] = gw[j] * sum_s (...)`, with the gain outside the sum;
-  //: a warp-grain fan-in computes `sum_over_warps (gw[j] * partial_w)` instead, which
-  //: is the same value in exact arithmetic and a different rounding in this one.  It is
-  //: taken deliberately, and the reason it is not a new liberty is that THE PLANE
-  //: ALREADY DOES EXACTLY THIS AT THE OWNER GRAIN: every owner CTA that touches token
-  //: `j` reduces its own `gw[j] * partial_owner` into the cell, so the gain has always
-  //: been distributed across the owner decomposition.  This distributes it one grain
-  //: finer, inside an accumulator whose summation order is nondeterministic by
-  //: construction and whose outputs are not bit-reproducible run to run on ANY build.
-  //: The read side `(R2)` has no such factor and is unaffected either way.
-  //:
-  //: Measured: Scan B 15.554 -> 13.546 ms at the flagship dense cell, `barrier`
-  //: 1.39 -> 1.53, `lg_throttle` 0.00 at 22.0 M reducing instructions.
+  //: THE INNER LEVEL'S FOUR WARP PARTIALS MEET IN THE GLOBAL PLANE.
+  // see docs/internals/carry/backward_kernel.md#digit-reduce-inner-direct
   template <bool GAINED>
   __device__ __forceinline__ void digit_reduce_inner_direct(const float (&tile)[kSlabM][NTOK][4],
                                                             int par, float* plane,
@@ -720,9 +643,8 @@ struct BwdOwner {
   }
 
   //: THE DRAIN CARRIES THE OUTER LEVEL ALONE, on both sides: the inner level fans
-  //: itself in from the reduction.  The gain is applied HERE and not at the reduction,
-  //: because the outer level's sum is complete inside one warp -- there is no meeting
-  //: to distribute it over, so `(R7)` is honoured exactly on these rows.
+  //: itself in from the reduction.
+  // see docs/internals/carry/backward_kernel.md#digit-drain
   template <bool GAINED>
   __device__ __forceinline__ void digit_drain(float* plane, const uint16_t* list, int o0, int n,
                                               uint32_t winP, int par) {
@@ -821,9 +743,8 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
 
       //: (G5) and (G6) off ONE accumulator: the panel is UNGAINED, so the value
       //: columns times `gw` are `d_v` and the same accumulator dotted with the ones-
-      //: column-bearing value row is `d_gw`.  `sum_s dW` is not `d_gw` and is never
-      //: formed.  `k = leaf` is the carved axis, so this is the backward's one
-      //: cross-warp term -- four rounds through the output staging buffer.
+      //: column-bearing value row is `d_gw`.
+      // see docs/internals/carry/backward_kernel.md#note-l822
       float ung[MTOK][kSlabN][4];
 #pragma unroll
       for (int mt = 0; mt < MTOK; ++mt)
@@ -847,11 +768,10 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
           for (int mt = 0; mt < MTOK; ++mt) mma(ung[mt][q], a[mt], b2);
         }
       }
-      //: `k = leaf` is the carved axis, so this is the backward's one cross-warp term:
-      //: four warp partials of `[C x cols]` meeting in the output staging buffer.  The
-      //: meeting is BARRIER-SEPARATED ROUNDS rather than a shared-memory RED: every
-      //: warp writes the same cells, so a RED here is a four-way conflict on all
-      //: `cols` of every token and measures worse than the three extra barriers.
+      //: `k = leaf` is the carved axis, so this is the backward's one cross-warp
+      //: term: four warp partials of `[C x cols]` meeting in the output staging
+      //: buffer.
+      // see docs/internals/carry/backward_kernel.md#note-l850
 #pragma unroll 1
       for (int round = 0; round < kWarps; ++round) {
         if (ow.warp == round) {

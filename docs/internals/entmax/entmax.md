@@ -464,3 +464,190 @@ Re-reading is the cheaper trade on a kernel whose DRAM throughput is only ~30%. 
 (`local_dot` and the support mask), and `s` is recomputed from a re-read
 `midpoint_values` in the final pass; one extra load per element buys the spill back
 to zero.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/entmax/entmax.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="overflow-free-delta-2"></a>
+### `overflow_free_delta`
+
+The overflow-free read-write difference: two opposite-sign finite extrema overflow a
+raw subtraction while their midpoint stays representable, so the MAGNITUDE is clamped
+instead. `*saturated` marks where that clamp fired; the backward zeroes `d_delta`
+there -- docs/internals/entmax/entmax.md#overflow-free-delta
+
+<a id="sort-bytes"></a>
+### `SORT_BYTES`
+
+HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias
+One per-physical-warp slot serves the row sort's scratch and then the support-word
+staging. `RowSort::kSlotBytes` is ZERO for the register network, so at `IPT <= 4` the
+slot is the staging alone -- docs/internals/entmax/entmax.md#row-sort
+
+<a id="static-assert"></a>
+### `static_assert`
+
+These three TempStorages are per-thread rather than __shared__, which is legal only
+because CUB resolves all of them to pure-shfl specializations here. MEASURED at
+1 byte each; these static_asserts turn a future CUB that changes its mind into a
+compile error rather than a race -- docs/internals/entmax/entmax.md#one-row-per-warp
+
+<a id="stream32"></a>
+### `stream32`
+
+ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+and it spilled the family. `heads == 0` means no split at all.
+-- docs/internals/entmax/entmax.md#stream-split
+THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+`heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+cheap to rematerialize. 4 spilling instantiations became 56.
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="stream32-2"></a>
+### `stream32`
+
+ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the solve's
+stream, and a token-major operand needs it as `(b, h)`. The width is load-bearing --
+a 64-bit div/mod here is a register-hungry sequence live across the whole kernel,
+and it spilled the family. `heads == 0` means no split at all.
+-- docs/internals/entmax/entmax.md#stream-split
+THE STREAM SPLIT, and it is UNCONDITIONAL on purpose. `heads >= 1` always -- 1 is
+one head, for which this is `sb = stream, sh = 0` -- because guarding it with
+`heads ? ... : stream` MEASURED as a family-wide spill: the ternary pins `sb`/`sh`
+in registers, where `blockIdx.y` is free to re-read and a plain quotient of it is
+cheap to rematerialize. 4 spilling instantiations became 56.
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="kwpad"></a>
+### `kWPad`
+
+THE LAUNCH IS WRITTEN ONCE, and the `(lane width, items per thread)` pair is
+DERIVED from the padded width rather than tabulated per case -- which is what makes
+it impossible for one arm's argument list to drift from another's:
+docs/internals/dispatch_switch.md#one-launch
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/entmax/entmax.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="strides-2"></a>
+### `Strides`
+
+`(stream, stream2, token, col, tile, lane)` -- ONE address expression serves every
+operand layout in this family because the caller zeroes the members its layout does
+not use, which is why layout is data here -- docs/internals/entmax/entmax.md#strides
+
+THE STREAM AXIS IS TWO STRIDES because a token-major logit plane needs two: `b` and
+`h` are separate axes of `[B, T, H, C]` and the solve's stream is `b*H + h`. The
+caller splits `blockIdx.y` ONCE per block -- docs/internals/entmax/entmax.md#stream-split
+
+<a id="addr-split"></a>
+### `addr_split`
+
+THE SPLIT ADDRESS, for the LOGIT plane alone. `b` and `h` are separate axes of a
+token-major `[B, T, H, C]`, so its stream term is two products rather than one.
+
+This is a SECOND expression and not a widening of `addr` because the widening was
+MEASURED: making every operand's stream term two products cost the family its
+64-register bound -- 4 spilling instantiations became 56, with 180-244 byte spills at
+`IPT = 8`. Confining it to the one operand that needs it keeps every other address
+rematerializable from a single register, which is what it always was.
+
+<a id="rowsort"></a>
+### `RowSort`
+
+THE ROW SORT. Phase B needs one token's row in descending order; `RowSort` is the ONE
+entry point, and which network it lowers to is decided by the WIDTH CLASS at compile
+time -- the same axis `int_switch` already derives `(LW, IPT)` from.
+
+EXACTNESS IS INDEPENDENT OF THE CHOICE. A sort is a PERMUTATION, and the phases
+downstream read the sorted sequence only through its prefix sums and its rank-k value.
+Both are invariant to how EQUAL keys are ordered, so `tau` is bit-identical across the
+two networks and against the merge sort that preceded them, on every non-NaN row
+-- docs/internals/entmax/entmax.md#row-sort
+
+THE SPLIT IS A COMPLEXITY-CLASS FACT, not a tuning knob and not a register wall: a
+bitonic network is Theta(N log^2 N) -- 204 compare-exchanges per lane at `W_PAD = 256`
+against the merge sort's ~64 -- and the crossover between the two classes sits at
+`W_PAD = 128`. Below it the shuffle-only network wins 14-19%; at `IPT = 8` it LOSES
+10-14% at EVERY register budget (64 to 174, zero spills throughout; probed 2026-08-17).
+-- docs/internals/entmax/entmax.md#row-sort
+
+<a id="sort"></a>
+### `sort`
+
+The element's rank is the BLOCKED index `lane*IPT + i`, which is the layout the prefix
+walk and its `WarpScan` association require. Partner distances below `IPT` are
+intra-register; at or above it the whole `IPT` block moves as one, because the
+network's direction bit then lies above every item bit and is uniform across the lane.
+
+<a id="max-batched-levels"></a>
+### `MAX_BATCHED_LEVELS`
+
+THE PER-LAUNCH LEVEL TABLE. It travels in the kernel's PARAMETER space (448 B at
+this bound, against a 4 KB floor), so batching a plan's levels into one launch costs
+no device table, no H2D copy and no indirection. Offsets are COLUMN indices into the
+base tensor, which is what `addr` adds them to -- docs/internals/entmax/factor.md#batched-levels
+
+<a id="five"></a>
+### `five`
+
+The tuple a tensor's own RANK implies: rank-4 is the tile-major arena (no token
+stride of its own), rank-3 the dense plane (no tile/lane stride). Deriving it keeps
+one launch site per kernel instead of one per layout.
+
+
+<a id="five-logits"></a>
+### `five_logits`
+
+THE LOGIT PLANE, in whichever of its two layouts the caller holds it: token-major
+`[B, T, H, C]` (the packed router GEMM's own output, so taking it here is what
+deletes the transpose that used to follow), or the flat `[BH, T, C]` whose head
+stride is simply 0 -- docs/internals/entmax/entmax.md#stream-split
+
+<a id="check-logits"></a>
+### `check_logits`
+
+TWO DTYPE AXES, ONE CALL: the LOGIT plane's and the route values'. Both are bf16 on
+the shipped path -- the router GEMM emits bf16 operands' bf16 output and the consumer
+reads bf16 -- and fp32 on the gates that want the solve's arithmetic without either
+storage quantization -- docs/internals/entmax/factor.md#logit-dtype
+
+<a id="union-forward"></a>
+### `union_forward`
+
+ONE LAUNCH, MANY LEVELS: the entries take BASE tensors plus per-level COLUMN
+offsets, so every union level of one width class and one alpha runs in one launch
+doing exactly what the per-level loop did -- docs/internals/entmax/entmax.md#launch-shape
+
+`read_values`/`write_values` accept BOTH route-value layouts (rank-3 dense,
+rank-4 tile-major) through ONE stride 5-tuple, so layout is data here and never a
+codegen axis -- docs/internals/entmax/entmax.md#strides
+
+## More comments moved from source (S5b pass 2)
+
+Verbatim trailing/banner `//` comments from `csrc/rola/src/entmax/entmax.cu` condensed at their call site into a short pointer.
+
+<a id="launch-bounds"></a>
+### `__launch_bounds__`
+
+---------------------------------------------------------------------------
+BACKWARD -- the alpha-entmax Jacobian action through the union split.
+
+No sort and no scan: a THREE-REDUCTION elementwise pass. It shares the forward's
+block/warp decomposition, width classes, striped access, stride expression and launch
+bounds, and it RECOMPUTES `delta` rather than reloading a saved tensor.
+
+SUPPORT IS AN INPUT here -- unpacked from the same frozen `support_words` the forward
+emitted -- so the two directions cannot disagree about the support set by
+construction. Off support every output term is an EXACT zero by multiplication, and
+the gate asserts that FORM at rtol=0 rather than a magnitude.
+
+The Jacobian derivation, the exact-zero argument, and the two MEASURED spill trades
+that made this kernel re-read rather than stage: docs/internals/entmax/entmax.md#backward
+---------------------------------------------------------------------------

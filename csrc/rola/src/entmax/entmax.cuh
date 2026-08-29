@@ -46,13 +46,10 @@ constexpr int BLOCK_THREADS = BLOCK_WARPS * WARP_SIZE;
 //: of a silent spill, which `tools/ratify.py` then fails the BUILD on.
 constexpr int MIN_BLOCKS_PER_SM = 8;
 
-//: `(stream, stream2, token, col, tile, lane)` -- ONE address expression serves every
-//: operand layout in this family because the caller zeroes the members its layout does
-//: not use, which is why layout is data here -- docs/internals/entmax/entmax.md#strides
-//:
-//: THE STREAM AXIS IS TWO STRIDES because a token-major logit plane needs two: `b` and
-//: `h` are separate axes of `[B, T, H, C]` and the solve's stream is `b*H + h`. The
-//: caller splits `blockIdx.y` ONCE per block -- docs/internals/entmax/entmax.md#stream-split
+//: `(stream, stream2, token, col, tile, lane)` -- ONE address expression serves
+//: every operand layout in this family because the caller zeroes the members
+//: its layout does not use, which is why layout is data here ...
+// see docs/internals/entmax/entmax.md#strides-2
 struct Strides {
   int64_t stream, stream2, token, col, tile, lane;
 };
@@ -66,14 +63,10 @@ __device__ __forceinline__ int64_t addr(const Strides& s, int64_t stream, int64_
          + (tok & 31) * s.lane;
 }
 
-//: THE SPLIT ADDRESS, for the LOGIT plane alone. `b` and `h` are separate axes of a
-//: token-major `[B, T, H, C]`, so its stream term is two products rather than one.
-//:
-//: This is a SECOND expression and not a widening of `addr` because the widening was
-//: MEASURED: making every operand's stream term two products cost the family its
-//: 64-register bound -- 4 spilling instantiations became 56, with 180-244 byte spills at
-//: `IPT = 8`. Confining it to the one operand that needs it keeps every other address
-//: rematerializable from a single register, which is what it always was.
+//: THE SPLIT ADDRESS, for the LOGIT plane alone. `b` and `h` are separate axes
+//: of a token-major `[B, T, H, C]`, so its stream term is two products rather
+//: than one.
+// see docs/internals/entmax/entmax.md#addr-split
 __device__ __forceinline__ int64_t addr_split(const Strides& s, int64_t sb, int64_t sh, int64_t tok,
                                               int64_t col) {
   return sb * s.stream + sh * s.stream2 + tok * s.token + col * s.col;
@@ -118,22 +111,10 @@ struct Descending {
   __device__ __forceinline__ bool operator()(float a, float b) const { return a > b; }
 };
 
-//: THE ROW SORT. Phase B needs one token's row in descending order; `RowSort` is the ONE
-//: entry point, and which network it lowers to is decided by the WIDTH CLASS at compile
-//: time -- the same axis `int_switch` already derives `(LW, IPT)` from.
-//:
-//: EXACTNESS IS INDEPENDENT OF THE CHOICE. A sort is a PERMUTATION, and the phases
-//: downstream read the sorted sequence only through its prefix sums and its rank-k value.
-//: Both are invariant to how EQUAL keys are ordered, so `tau` is bit-identical across the
-//: two networks and against the merge sort that preceded them, on every non-NaN row
-//: -- docs/internals/entmax/entmax.md#row-sort
-//:
-//: THE SPLIT IS A COMPLEXITY-CLASS FACT, not a tuning knob and not a register wall: a
-//: bitonic network is Theta(N log^2 N) -- 204 compare-exchanges per lane at `W_PAD = 256`
-//: against the merge sort's ~64 -- and the crossover between the two classes sits at
-//: `W_PAD = 128`. Below it the shuffle-only network wins 14-19%; at `IPT = 8` it LOSES
-//: 10-14% at EVERY register budget (64 to 174, zero spills throughout; probed 2026-08-17).
-//: -- docs/internals/entmax/entmax.md#row-sort
+//: THE ROW SORT. Phase B needs one token's row in descending order; `RowSort`
+//: is the ONE entry point, and which network it lowers to is decided by the
+//: WIDTH CLASS at compile time ...
+// see docs/internals/entmax/entmax.md#rowsort
 template <int LW, int IPT>
 struct RowSort {
   using Merge = cub::WarpMergeSort<float, IPT, LW>;
@@ -143,10 +124,9 @@ struct RowSort {
   static constexpr int kSlotBytes =
       kInRegisters ? 0 : (WARP_SIZE / LW) * (int)sizeof(typename Merge::TempStorage);
 
-  //: The element's rank is the BLOCKED index `lane*IPT + i`, which is the layout the prefix
-  //: walk and its `WarpScan` association require. Partner distances below `IPT` are
-  //: intra-register; at or above it the whole `IPT` block moves as one, because the
-  //: network's direction bit then lies above every item bit and is uniform across the lane.
+  //: The element's rank is the BLOCKED index `lane*IPT + i`, which is the layout
+  //: the prefix walk and its `WarpScan` association require.
+  // see docs/internals/entmax/entmax.md#sort
   __device__ __forceinline__ static void sort(float (&keys)[IPT], int lane, unsigned lmask,
                                               char* slot, int logical_in_warp) {
     if constexpr (!kInRegisters) {
@@ -209,10 +189,10 @@ __device__ __forceinline__ unsigned logical_warp_mask() {
                            : (((1u << LW) - 1u) << (((threadIdx.x % WARP_SIZE) / LW) * LW));
 }
 
-//: THE PER-LAUNCH LEVEL TABLE. It travels in the kernel's PARAMETER space (448 B at
-//: this bound, against a 4 KB floor), so batching a plan's levels into one launch costs
-//: no device table, no H2D copy and no indirection. Offsets are COLUMN indices into the
-//: base tensor, which is what `addr` adds them to -- docs/internals/entmax/factor.md#batched-levels
+//: THE PER-LAUNCH LEVEL TABLE. It travels in the kernel's PARAMETER space (448
+//: B at this bound, against a 4 KB floor), so batching a plan's levels into one
+//: launch costs no device table, no H2D copy and no indirection.
+// see docs/internals/entmax/entmax.md#max-batched-levels
 constexpr int MAX_BATCHED_LEVELS = 16;
 
 struct LevelTable {
@@ -225,19 +205,18 @@ struct LevelTable {
   int width[MAX_BATCHED_LEVELS];
 };
 
-//: The tuple a tensor's own RANK implies: rank-4 is the tile-major arena (no token
-//: stride of its own), rank-3 the dense plane (no tile/lane stride). Deriving it keeps
-//: one launch site per kernel instead of one per layout.
-//:
+//: The tuple a tensor's own RANK implies: rank-4 is the tile-major arena (no
+//: token stride of its own), rank-3 the dense plane (no tile/lane stride).
+// see docs/internals/entmax/entmax.md#five
 inline Strides five(const torch::Tensor& t) {
   if (t.dim() == 4) return {t.stride(0), 0, 0, t.stride(2), t.stride(1), t.stride(3)};
   return {t.stride(0), 0, t.stride(1), t.stride(2), 0, 0};
 }
 
-//: THE LOGIT PLANE, in whichever of its two layouts the caller holds it: token-major
-//: `[B, T, H, C]` (the packed router GEMM's own output, so taking it here is what
-//: deletes the transpose that used to follow), or the flat `[BH, T, C]` whose head
-//: stride is simply 0 -- docs/internals/entmax/entmax.md#stream-split
+//: THE LOGIT PLANE, in whichever of its two layouts the caller holds it: token-
+//: major `[B, T, H, C]` (the packed router GEMM's own output, so taking it here
+//: is what deletes the transpose that used to follow), or the flat `[BH, T ...
+// see docs/internals/entmax/entmax.md#five-logits
 inline Strides five_logits(const torch::Tensor& t, int heads) {
   TORCH_CHECK(heads >= 1, "the stream split needs heads >= 1; 1 is one head");
   if (t.dim() == 4) {
@@ -297,10 +276,8 @@ inline LevelTable build_table(const std::vector<int64_t>& logit_off,
 }  // namespace detail
 #endif  // __CUDACC__
 
-//: TWO DTYPE AXES, ONE CALL: the LOGIT plane's and the route values'. Both are bf16 on
-//: the shipped path -- the router GEMM emits bf16 operands' bf16 output and the consumer
-//: reads bf16 -- and fp32 on the gates that want the solve's arithmetic without either
-//: storage quantization -- docs/internals/entmax/factor.md#logit-dtype
+//: TWO DTYPE AXES, ONE CALL: the LOGIT plane's and the route values'.
+// see docs/internals/entmax/entmax.md#check-logits
 #ifdef __CUDACC__
 namespace detail {
 //: THE LOGIT PLANE IS bf16 ON THE SHIPPED PATH -- the router GEMM runs bf16 operands on
@@ -334,12 +311,9 @@ inline void logit_value_switch(at::ScalarType logit, at::ScalarType value, Body&
 #endif  // __CUDACC__
 
 //: ONE LAUNCH, MANY LEVELS: the entries take BASE tensors plus per-level COLUMN
-//: offsets, so every union level of one width class and one alpha runs in one launch
-//: doing exactly what the per-level loop did -- docs/internals/entmax/entmax.md#launch-shape
-//:
-//: `read_values`/`write_values` accept BOTH route-value layouts (rank-3 dense,
-//: rank-4 tile-major) through ONE stride 5-tuple, so layout is data here and never a
-//: codegen axis -- docs/internals/entmax/entmax.md#strides
+//: offsets, so every union level of one width class and one alpha runs in one
+//: launch doing exactly what the per-level loop did ...
+// see docs/internals/entmax/entmax.md#union-forward
 void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_logits,
                    torch::Tensor& midpoint_values, torch::Tensor& support_words,
                    torch::Tensor& read_values, torch::Tensor& write_values,

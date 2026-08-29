@@ -1120,3 +1120,310 @@ the window's *liveness*, and a lane holding no bits leaves immediately.
 
 **Divergence is the cheaper failure mode when the data is sparse.** This kernel's
 operating point is sparse by construction, so the divergent scatter stays.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/carry/carry_kernel.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="static-assert"></a>
+### `static_assert`
+
+`d_v` IS AN ARM PARAMETER AND NOT A FILE CONSTANT (K35 S3b).  Both FORWARD bodies
+take it as `DV` -- `CarryGeom`/`SplitGeom` name it `kDv` and derive `kCols = DV + 1`,
+the mass column that rides the state.  THE REVERSE FAMILY IS OUT OF SCOPE and keeps
+its own `kDv = 64` (`backward_kernel.cuh`).  The CHANNEL-SPLIT body's warp count and
+the family's build stamp live in `box.cuh` with the rest of the arm-independent
+geometry (K36), so the DISPATCH TU can read them without parsing this header.
+
+<a id="static-for"></a>
+### `static_for`
+
+A COMPILE-TIME LOOP.  Every per-level quantity here is a template argument or a
+register-array index, so the level index must be a constant expression; a
+`for (int l = 0; l < D; ++l)` would make `load_run<n_l(l)>` ill-formed and would
+turn every per-level array index dynamic, which is a stack frame.
+
+<a id="carrygeom"></a>
+### `CarryGeom`
+
+THE CARVE.  A STREAM owns an affine RECTANGLE of the owner's digits -- a per-level
+span vector, `prod_l S_l` leaves and ALL `kCols` channels -- and tiles those leaves
+in a private mixed-radix order.  That tiling is private to the stream: the lattice's
+`local` order, the state plane, decode and the facts geometry never see it, so the
+readout needs no state image, no `ldmatrix` for A and no CTA barrier.
+
+ONE ORDER, THE READ SIDE'S (K35 M1P).  M1a's body carves the box ONCE and both
+phases walk that carve, so `SVW` IS `SVR` here: the write side inherits the read
+side's vector, the leaf -> (stream, slot) map is the same map in both phases, and
+there is nothing to publish between them.  The two-sided carve, its transit and its
+exchange are a later stage's addition; an arm that declares a second stream count or
+a column split is REFUSED at compile time below rather than served this shape.
+ONE WARP PER STREAM: the executor map's `WPS` dial returns with the containers.
+
+<a id="panel-bytes"></a>
+### `panel_bytes`
+
+THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA.  A window's
+readouts all precede its folds, so the write panel is dead through phase 1 and
+the read panel is dead through phase 2: each phase double-buffers in the
+other's buffer and produces one batch AHEAD, which is what puts the produce's
+global-load latency underneath the previous batch's MMA block.
+
+<a id="kregfloor"></a>
+### `kRegFloor`
+
+THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR: the
+shallowest ring that reaches the best residency this arm can reach at any depth.
+`kRegFloor` is the DECLARED floor for this family -- the measured census of the
+heaviest built arm, re-measured at every milestone.  A CTA target the live set
+cannot honour is a spill: the carve holds `kLeafW` leaves x all `kCols` channels
+per warp, and this is what that costs.
+
+<a id="producemap"></a>
+### `ProduceMap`
+
+THE OWNER-GRAIN PRODUCE MAP, which the channel-split body and the reverse family's
+panel are expanded against (`carry_split_kernel.cuh`, `backward_kernel.cuh`): a row's
+`kRowThr` threads split the box's `BC` coefficients into `SPT` contiguous LATTICE
+slots each.  Because the lattice index is a bit permutation (R0 spec section 2.4), a
+thread's slot run is a sub-lattice: per level the digits it touches are a CONTIGUOUS
+run of the owner's own run at a runtime base, and WHICH element of that run each of
+its slots wants is a compile-time function of the unrolled slot index.
+
+<a id="spanmap"></a>
+### `SpanMap`
+
+THE PRIVATE LEAF ORDER.  A stream's leaves are numbered by a MIXED RADIX over its
+own per-level spans -- `p = sum_l r_l << shift(l)`, with `r_l` the digit's offset
+inside the stream's range at level `l` -- so `p` is a bit permutation of the levels'
+digit offsets exactly as `local` is, and the expansion is `sum_l S_l` amplitude loads
+followed by products of register values at CONSTANT indices: no dynamic indexing, no
+spill, no materialized gate plane.  A span-1 level contributes a constant and drops
+out of the order on its own.
+
+THE PRIVATE-ORDER RULE IS THE ORDER BY MODE (P76, ruled 2026-08-26; K35 S1b), fixed
+by the DECLARATION alone -- no span is consulted: DENSE innermost, then SPARSE, then
+BOTH_SPARSE, lattice order inside a class, and NO LEVEL IS PINNED.  `ModeOrder`
+(box.cuh) states the rule and `StreamSpans` derives the carve from it, which is why
+nothing here can drift from what was cut.
+
+<a id="pair-from"></a>
+### `pair_from`
+
+THE PACKED PAIR IS SIMPLY THE INNERMOST LEVEL OF THE ORDER.  A lane mints two
+adjacent private slots at once, and they differ in the digit of whichever level
+lies lowest in `p` -- so that level's two amplitudes are adjacent in the run and
+one four-byte access covers the pair.  Levels of span one occupy no bits and their
+position is immaterial, so the level wanted is the lowest one with a span of at
+least two; a box holds at least two leaves, so exactly one level qualifies.
+
+<a id="narrow-from"></a>
+### `narrow_from`
+
+THE DEAD ROW'S LEVEL.  A padding row of a partial batch has no token, and a zero
+coefficient contributes exactly nothing to either MMA (the produce's dead-row
+zeroing law) -- so zeroing ONE level's run zeroes the whole row, because every
+private slot multiplies exactly one element of every level's run.  The narrowest
+run is the cheapest place to do it, and it is never the pair level, whose run is
+consumed by the packed seed before any mask could apply.
+
+<a id="load-run"></a>
+### `load_run`
+
+a contiguous run of `n` bf16, at the widest access that covers it.  The runs are
+naturally aligned by construction (a level's column base is a multiple of `B`, an
+owner's run starts at a multiple of `s_l` and a stream's sub-run at a multiple of
+its own width), so this is one, two or four accesses.
+
+<a id="note-l344"></a>
+### near line 344
+
+AND THE STREAM'S OWN DIGIT OFFSET INSIDE THAT RUN, per level: the stream index
+decomposes in MIXED RADIX over the per-level stream grids, so a multi-level carve
+is `grp_l * S_l` at EVERY carved level and nothing changes at the levels the carve
+spans whole.  Computed ONCE per warp, out of shifts and masks over compile-time
+powers of two.
+
+<a id="rowbytes"></a>
+### `rowBytes`
+
+AND THE BALLOT ROW BASE, per level: the SAME `o_l`, addressing the FIRST row the
+facts pass voted for this owner's run at this level (K31-i-d) at the CARVE's grain,
+so a stream's own range is ONE row per carved level and the owner's word is the OR
+over the streams.  The liveness pass reads these words instead of re-reading the
+amplitude runs itself.
+
+<a id="pin-address"></a>
+### `pin_address`
+
+ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the READ block
+and then the WRITE block, each `kRows * tok_words * 4` bytes, which is 32-bit at
+every admitted length.  Both sides are voted at the SAME partition here, because
+the body carves once (`SVW` is `SVR`).
+
+<a id="l"></a>
+### `l`
+
+THE LATTICE LEAF OF A PRIVATE SLOT.  The private order's own `shift`/`span` give
+each level's digit inside `P`; the lattice's `run_shift` puts it back, and every
+carved level carries the stream's own digit offset.  It is the ONE place the two
+orders meet, and the state plane's page sweep is what asks.
+
+<a id="atombh"></a>
+### `atomBH`
+
+THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80).  `atomBH` is this `bh`'s base
+and `BP::canon_atom` re-keys the owner's own `kAtoms` lattice atoms to the
+canonical numbering the page plan uses -- ids only, at the prologue; the row
+INSIDE an atom is the same in both orders, so no data is permuted.
+
+<a id="kpagebytes"></a>
+### `kPageBytes`
+
+THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`,
+docs/internals/paging/paging.md).  The atom id is the logical name and the slot is
+the physical page the plan committed for it; a null table makes the two the same
+number, which is the dense backing as this same kernel rather than a second path.
+
+<a id="a"></a>
+### `a`
+
+THE PAGE'S SLICE OF A STREAM, PER FRAGMENT.  Register-resident state exists only as
+fragments (KERNEL_STANDARDS section 1): the accumulator is `kNL` n-tiles x `MCH`
+m-tiles of the m16n8 shape, and a lane's fragment holds TWO ADJACENT private slots
+at two channel rows.  So this nest iterates FRAGMENT MODES -- n-tile, the pair's
+half, m-tile, the row half -- and the leaf map is folded into the ADDRESS.
+BODY COUNT: `kNL * 2 * (2*MCH + 1)` per atom (72 at the 32-leaf `d_v = 64` arms),
+times `kAtoms` per call.  It is O(fragments) in both modes.
+
+<a id="slot"></a>
+### `slot`
+
+---- THE ENTRY STATE.  The fragments are SET, never accumulated: they are
+provably zero here, and with no decay the recurrence is affine in the state
+with an inclusive-after-write readout, so this IS the oracle's seeding.
+NULL = NO STATE OBJECT AT THIS END: nothing is read, allocated, or touched
+(docs/internals/state.md section 1). An instantiated-but-empty paged state is
+NOT null -- it is engaged, and its absent atoms skip below at the per-atom
+`slot < 0` grain, orthogonal to this check. This predicate is CTA-uniform:
+`s_in` is a launch argument, identical for every thread, so the branch cannot
+diverge within or across warps -- one compiled body, no STATE template axis.
+
+<a id="write"></a>
+### `WRITE`
+
+A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS (`PM::kZeroLevel`).
+
+THE READ SIDE HAS NO GAIN.  Its scalar is identically 1 and a trailing
+`mul_bf16x2(acc, 1)` was 44% of the read produce -- so the side is a compile-time
+argument and the read body stores its accumulators directly.  The WRITE side's
+dead row is zeroed by its GAIN instead, which is zero where the row has no token.
+
+<a id="nb"></a>
+### `nb`
+
+ONE BATCH'S PANEL, expanded from factors.  The list, the row's token and the
+gain are all resolved here so the two phases call ONE body; `have` false
+zeroes the narrowest factor, and a zero coefficient contributes exactly nothing
+to either MMA (the produce's dead-row zeroing law).
+
+<a id="lw"></a>
+### `LW`
+
+THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19).  Per level at most ONE
+side is sparse, so there is one stored row set per level -- but the two
+sides' CLAUSE SETS are different level subsets, and a dense side's clause is
+absent-means-full.  ANDing each side's OWN rows IS that conjunction over
+exactly the levels where that side is sparse, with no structure fact carried
+into the kernel.  The read side's carved clause is the STREAM'S OWN rows; the
+write side wants the owner's run, which is the OR over the streams and is one
+warp's work because every warp folds every write entry.
+
+ONE BALLOT WORD PER LANE.  A warp's whole window is `LW` words, so a row is
+ONE `LDG.32` and every warp can afford to hold BOTH sides' owner-grain
+ballots.  That is what makes the schedule barrier-free: the lists, the
+counts and the whole-window skip are all warp-private computations of
+CTA-identical inputs, so the warps agree by construction and reach the
+window line without a barrier of the schedule's own.
+
+<a id="cnt"></a>
+### `cnt`
+
+the trip count is the window's LIVENESS, not its width: one `bit_count`
+where a per-word form spends `LW`, one lane prefix where it spends `LW`
+adds, and one scatter of the lane's own set bits.
+`bits` is the writer's slice of each word, `below` the bits under it: a list
+with several writers is built by giving each one a bit range and letting all
+of them derive the same prefix from the same ballot.
+
+<a id="kbitsw"></a>
+### `kBitsW`
+
+THE WRITE LIST IS ONE LIST WITH `kWarps` WRITERS.  Every warp folds every
+write entry, so the list is shared -- and because every warp holds the same
+ballot, each can take a fixed slice of every word's bits and derive its own
+offsets.  The list is therefore built BALANCED at any distribution, with no
+CTA prefix, no barrier of its own, and no warp carrying it alone.  The
+window line is what publishes it.
+
+<a id="nbr"></a>
+### `nbr`
+
+THE READ PHASE SHARES NOTHING: the list, the panel region, the staging block
+and the fan-in are the warp's own, so the warps run to the window line
+without a single CTA barrier.  Its `__syncwarp` is the panel's, between a
+lane's `STS` and the `ldmatrix` that reads another lane's row.
+
+<a id="syncwarp"></a>
+### `__syncwarp`
+
+THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring,
+UNCONDITIONALLY and AFTER the batch's MMA block.  Unconditionally because a
+guard is a basic block and ptxas schedules within one; after, because the
+produce ends in panel `STS` and the MMA begins in panel `LDSM`, and the two
+shared ranges are not provably disjoint -- in the other order that aliasing
+edge pins every produce instruction ahead of the HMMAs.  The trailing batch is
+entirely dead rows by the produce's zeroing law and lands in a panel no MMA
+reads.
+
+<a id="kk"></a>
+### `kk`
+
+THE READ DRAIN'S STATE SOURCE, AND ITS ONE PLACE.  K35: the fragment is the
+accumulator's TOP HALVES taken by `prmt` -- one instruction per pair, and the
+same bytes a hi-plane hybrid would publish, so that hybrid is a placement
+change and never an arithmetic one.  It TRUNCATES where an image would have
+ROUNDED; declared, and mirrored in the oracle.  Here the accumulator IS the
+operand (the warp's own n-tiles, packed in place, no `ldmatrix`), so the drain
+is the ONLY thing that touches the state's residency and it is written HERE
+rather than behind a lambda: a generic lambda taking an array reference whose
+bound is a template-dependent constant (`MCH`, from the `DV` axis) crashes the
+front end, and the fragment stack has exactly one consumer anyway.
+BODY COUNT: `kDw * (MCH + 1)` -- O(fragments) in the arm.
+
+<a id="j"></a>
+### `j`
+
+THE FAN-IN IS WARP-PRIVATE AND DIRECT (K33 1.4): one writer per read
+entry at the sparse operating point, and RED is associative where an
+entry's digits reach two streams, so no meeting is instantiated.  The
+staging pass is what makes the RED lane-per-CHANNEL and therefore one
+coalesced segment per issue -- the form R-A and R-B both measured against
+the register-sourced ones and found ahead.
+
+<a id="nbw"></a>
+### `nbw`
+
+V IS A WRITE-SIDE QUANTITY and is gathered by the WRITE list; the read list
+never touches it.  The value ring is `STAGES` deep and asynchronous: issue
+order is FIFO, one implicit group per batch, and the wait leaves `STAGES-2`
+groups in flight so the gather for batch `i + STAGES - 1` is airborne while
+batch `i` folds.
+
+<a id="rendezvous"></a>
+### `rendezvous`
+
+the mirror of the entry load, after the last fan-in has consumed the staging
+buffer -- which is what the one extra rendezvous below is for.
+NULL = NO STATE OBJECT AT THIS END: nothing is written (state.md section 1),
+symmetric with the entry check above.

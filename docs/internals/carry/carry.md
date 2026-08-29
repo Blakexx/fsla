@@ -155,3 +155,92 @@ It does not reach `rola::chunk` and `rola::chunk` does not reach it. It is regis
 `rola_api.cpp` as its own entries and is absent from every DAG, plan and rule in
 `rola/engine/`. The seam is `rola/ops/carry.py`, which is a bring-up surface and not a
 shipped path.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/carry/carry.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="note-l92"></a>
+### near line 92
+
+THE PER-LEVEL MODE DECLARATION (K33 law 3) is two bits per level with level 0 in
+the low pair: bit 0 = the READ side is value-sparse there, bit 1 = the WRITE side.
+`DENSE_BOTH` everywhere is always correct and only ever slower.  The encoding, the
+private order it induces and the carve derived from that order are all in `box.cuh`
+(`mode_declares`, `ModeOrder`, `StreamSpans`); this TU only passes the word through.
+
+<a id="build-rows"></a>
+### `build_rows`
+
+THE BUILT SET, GENERATED (K36): the rows, and which of them this build carries.
+`tools/gen_shards.py` owns the list and emits one translation unit per arm
+beside this include; `setup.py` selects the subset by compiling those files and
+defining `ROLA_CARRY_BUILD_<i>` for each, so `CARRY_ARMS_X` expands to exactly
+the arms the binary carries.  docs/build.md.
+
+<a id="carry-mo"></a>
+### `CARRY_MO`
+
+READING ONE ROW OF THE LIST.  A row arrives with its INDEX first -- the index is
+what names the arm's translation unit and its four entry points -- and the pieces a
+consumer wants are taken from it HERE and nowhere else.  `CARRY_ARM_TYPE`, the arm
+AS A TYPE, is not here: it needs the geometry, so it lives with the bodies in
+`carry_arm.cuh` and this TU never names it.
+
+<a id="carry-match"></a>
+### `CARRY_MATCH`
+
+the seam's key, matched against the call's `(topology, k, m, d_v, W, C, carve)`.
+`d_v` IS PART OF THE KEY (K35 S3b): the two widths of one declaration are two arms,
+so the container rows 11/12 and 13/14 share their declaration scalar and are told
+apart by the width the caller's value plane actually carries.
+
+<a id="carry-cv-gate"></a>
+### `CARRY_CV_GATE`
+
+`CV` is the SEAM's DECLARATION scalar, not a kernel axis: it names which declared
+(carve, executor map, PARK) an arm is, so a caller that asks for the deleted one --
+or for an executor map nothing builds -- is refused rather than served something
+else.  Its low two bits are the (carve, executor map): `1` the ruled leaf split, ONE
+warp per write stream (`rola.ops.carry.LEAF_SPLIT`); `2` the 1x8 container as FOUR
+write streams x TWO warps each (the column split); `3` as EIGHT streams x ONE warp;
+and BIT 2 IS THE PARK (`+4`, `PARKED`), which changes nothing the caller can see;
+the row's `PK_` must agree with it, asserted over the arms THIS BUILD carries.
+
+<a id="carry-arms-x"></a>
+### `CARRY_ARMS_X`
+
+WHAT EACH BUILT ARM'S TRANSLATION UNIT EXPORTS.  Declared over `CARRY_ARMS_X` and
+therefore over exactly the arms this build compiled: an arm outside the subset has
+no declaration, no call site and no entry in `arms()`, so the seam's refusal below
+is the only thing a caller asking for it can reach.
+
+<a id="torch-check"></a>
+### `TORCH_CHECK`
+
+THE STATE PLANES ARE THE CALLER'S (docs/internals/state.md section 4).  A
+continuation hands the SAME tensor as both, and advances it in place; a call that
+hands NEITHER is the NULL-STATE call: a runtime null check inside the one
+compiled body (K41; no STATE template axis) skips the sweep at that end, so
+nothing is read, written, or allocated there.  `page_tbl` null is the dense
+backing -- the slot is then the atom -- so the two backings are one kernel, one
+ABI and one accumulation order.
+
+<a id="tok-words"></a>
+### `tok_words`
+
+THE BALLOT ROWS COME FIRST, ON THE SAME STREAM (K31-i-d).  One pass over the
+amplitude planes votes every owner's rectangle test once; the kernel below then
+reads WORDS instead of re-reading those planes per (owner, window, token).  The
+table is a TRANSIENT of this call -- nothing else asks for it -- and it is held
+here rather than inside the dispatch so its lifetime outlives the launch.
+
+<a id="torch-check-2"></a>
+### `TORCH_CHECK`
+
+THE DECLARATION IS RESOLVED AT THIS SEAM, AND AN UNBUILT ONE IS REFUSED (P76 R-B,
+overruling law 3).  The retry that forced `mo` to zero served the DENSE_BOTH body
+at the requested carve with no diagnostic -- a no-fallbacks violation that hid a
+5x loss from a harness for nine stages (`## BISECT (corrected)`).  DENSE_BOTH is
+served when it is DECLARED and never as a substitute for something else, so the
+refusal names the whole key the caller asked for.

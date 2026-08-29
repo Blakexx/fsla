@@ -151,3 +151,33 @@ The facts group above is a PRIVATE seam: declarations in
 consumer's own entries and its reverse pass left with the K31 deletion batch
 (baseline = tag `baseline/pre-k31`; `docs/internals/DELETIONS.md`). See
 `docs/internals/facts/`.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/rola_api.cpp`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="pybind11-module-note-l41"></a>
+### in `PYBIND11_MODULE`, near line 41
+
+ONE PASS, BOTH ROW SETS: the membership union table always, and the atom-grain
+write bitmap when this call has residency to plan.  `mask` is the CALL CLASS
+(`rola/engine/types.py`'s M1/M2), which is compiled in; `atoms` is the
+runtime-null output skip within the stateful class.
+
+<a id="pybind11-module-note-l126"></a>
+### in `PYBIND11_MODULE`, near line 126
+
+A SIBLING of the chunk consumer, not a specialization of it: shared produce
+contract, own consumer, frozen config. Two of its three entries are capacity GATES
+rather than operations -- docs/internals/rola_api.md#registered-entries
+THE WHOLE STEP: the operand fold, the lattice factor tables, the gather-GEMV and the
+step's OWN admission question in ONE launch, over the caller's raw `[B, 1, H, *]`
+views -- docs/internals/rola_api.md#the-step
+
+<a id="pybind11-module-note-l203"></a>
+### in `PYBIND11_MODULE`, near line 203
+
+The page geometry is the ARENA's -- `page_rows x page_cols` fp32, which is
+`MMA_K_QUANTUM x (d_v + 1)` with the mass column fused. The owner takes it as two
+extents rather than naming them, because it owns no meaning for either:
+docs/internals/rola_api.md#vmm-binding

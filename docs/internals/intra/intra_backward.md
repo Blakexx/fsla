@@ -33,3 +33,15 @@ do not change with the column tile.
 thread count and the family's magic, so the value moves whenever any arm's shape does —
 a fact only the loaded binary can produce, which is what makes reading it back an
 extension-trap check rather than a path check.
+
+## Comments moved from source (S5b)
+
+Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra_backward.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+
+<a id="intra-bwd-arms-x"></a>
+### `INTRA_BWD_ARMS_X`
+
+THE REVERSE PASS IS BUILT AT DEPTH TWO ONLY.  Its digit reduction's pass
+geometry is derived per arm from the owner's bit fields, and the carry's two
+scans refuse a third level for the same reason -- so a deep reverse arm here
+would be half a gradient.  The named gap is one, not two.

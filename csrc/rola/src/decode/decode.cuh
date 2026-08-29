@@ -1,25 +1,8 @@
 #pragma once
 
-// THE T=1 DECODE PATH -- the parameter block and the objects both decode TUs share.
-//
-// T = 1 HAS NO STAGE 2: every stage-2 decision is degenerate, so this path bypasses
-// selection ARCHITECTURALLY and its config freezes at the prefill->decode boundary.
-// What is left per step is data plane only, in the ratified shape: a
-// TOKEN-STATIONARY, STATE-STREAMING gather-GEMV.
-//
-// Three facts a reader must not miss:
-//   1. THE LEAF ORDER IS THE LATTICE, in the ONE order `carry/box.cuh` defines: a leaf is
-//      named by its owner and by its per-level RUN OFFSETS in mixed radix, and the step
-//      reaches it by WALKING those factors -- there is no leaf map, no bitmap over the
-//      leaf space, and no term in `N` in the step's fixed cost.
-//   2. supp(R) = prod_l supp_l(R) at T = 1, so the touched set is a PRODUCT at every
-//      lattice granularity and the walk prunes at each one.
-//   3. PAGED AND DENSE ARE ONE WALK. The page granule is the ATOM (16 leaves), which is
-//      what keeps the address BC-free; a null page table means the slot IS the atom and
-//      the bytes are the dense path's, exactly.
-//
-// The lattice, the walk's cost accounting and the paged base translation:
-// docs/internals/decode/decode.md
+// THE T=1 DECODE PATH -- the parameter block and the objects both decode TUs
+// share.
+// see docs/internals/decode/decode.md#note-l3
 
 #include <cstdint>
 
@@ -28,12 +11,10 @@
 namespace rola {
 namespace decode {
 
-//: THE PAGE GRANULE AND THE OWNER'S SHAPE COME FROM THE BOX, not from a mirror of it:
-//: `carry/box.cuh` is where the lattice's addressing constants and its constexpr
-//: `BoxPlan` arithmetic live, and the two families write and read ONE plane in ONE order.
-//: What this path adds is the RUNTIME carrier below -- decode takes `(k, m)` and the
-//: per-level widths as data rather than as template arms, so it holds `BoxPlan`'s fields
-//: as scalars under `BoxPlan`'s own names and derives them by `BoxPlan`'s own formulas.
+//: THE PAGE GRANULE AND THE OWNER'S SHAPE COME FROM THE BOX, not from a mirror
+//: of it: `carry/box.cuh` is where the lattice's addressing constants and its
+//: constexpr `BoxPlan` arithmetic live ...
+// see docs/internals/decode/decode.md#kmaxlevels
 using rola::carry::kAtomLeaves;
 
 //: `1 <= D <= 4`. The same bound the consumer's `kMaxLevels` states, restated
@@ -43,8 +24,8 @@ constexpr int kMaxLevels = 4;
 
 //: THE LEVEL-WIDTH CAPACITY, a GATE and not a convenience: below the producer's
 //: `MAX_BRANCH_WIDTH` it would accept a topology the producer can emit and then
-//: over-read a staged row. Compile-time half here, runtime half in a bound accessor:
-//: docs/internals/decode/decode.md#level-width-capacity
+//: over-read a staged row.
+// see docs/internals/decode/decode.md#kproducermaxbranchwidth
 constexpr int kProducerMaxBranchWidth = 256;
 constexpr int kDecodeMaxLevelWidth = 256;
 static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
@@ -52,41 +33,14 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
               "MAX_BRANCH_WIDTH: a topology the producer can emit would over-read "
               "the staged amplitude row");
 
-//: THE STEP LAUNCHES ONE FAT CTA PER SM, and that is a SHARING decision before it is an
-//: occupancy one. Every CTA of a step re-derives the identical per-(step, batch-head)
-//: setup -- the fold, the digit masks, the four owner lists, the term table, the write
-//: digit list, and the ADMISSION with its candidate-atom enumeration and page-table probes
-//: -- and those CTAs run PHASE-SYNCHRONIZED, so the duplication has no mutual coverage at
-//: all. THE COST IS WAVES, NOT COPIES: a derivation duplicated across CONCURRENT SMs is
-//: wall-free, and it is paid only where the live CTAs exceed the machine and the copies
-//: SERIALIZE -- 256 thin CTAs over 80 SMs is 3.2 derivations deep per SM, and that depth,
-//: not the count, is what a wider CTA removes. Measured on this path, that derivation is
-//: 51-87 % of the step at `BH = 1` and 18-59 % at `BH = 8`.
-//: WIDENING THE CTA IS WHAT SHARES IT. Intra-CTA sharing is native -- shared memory and a
-//: barrier, which the derivation is already written as -- so a 32-warp CTA derives ONCE
-//: what four 8-warp CTAs derived four times, and derives it on a chain four times shorter
-//: because every loop in it is `for i = tid; i < n; i += blockDim`.
-//: docs/internals/decode/decode.md#decode-threads
-//: THE WIDTH IS THE ARM, and D1 measures two of them: the PRIMARY arm is the fat CTA
-//: (1024 threads, 32 warps, one CTA per SM) and the COMPARISON arm is F512 (two CTAs per
-//: SM). With no barrier after the prologue the two differ only in the single wave's tail,
-//: which is what the ten-pair table decides between:
-//: docs/internals/decode/decode.md#decode-threads
+//: THE STEP LAUNCHES ONE FAT CTA PER SM, and that is a SHARING decision before
+//: it is an occupancy one.
+// see docs/internals/decode/decode.md#kdecodethreads
 constexpr int kDecodeThreads = 1024;
 constexpr int kDecodeWarps = kDecodeThreads / 32;
 
-//: THE UNIT PARTITION'S GRANULARITY, AND IT IS NOT THE CTA'S WARP COUNT. Widening the CTA
-//: is a decision about WHERE THE DERIVATION IS SHARED; it is not a decision about how
-//: coarsely the unit space is cut, and tying the two together is what made a wider CTA
-//: retire whole SMs. The block a segment owns stays `kUnitBlockWarps` units wide at every
-//: width, so `n_live = ceil(umax / kUnitBlockWarps)` -- the live SEGMENT count, and with it
-//: the machine's coverage -- is the same number at 256 threads and at 1024.
-//: A CTA THEN SPENDS ITS EXTRA WARPS ON MORE BLOCKS, NOT ON A WIDER ONE: its
-//: `kUnitRepeats` groups of `kUnitBlockWarps` warps take `kUnitRepeats` blocks one whole
-//: period apart, so the walk covers the identical unit set in the identical order per
-//: block, every warp is spent wherever units allow, and each block is still the CONTIGUOUS
-//: run the write grain's rotation is built on.
-//: RETIRE WORK, NOT CTAs. docs/internals/decode/decode.md#retirement
+//: THE UNIT PARTITION'S GRANULARITY, AND IT IS NOT THE CTA'S WARP COUNT.
+// see docs/internals/decode/decode.md#kunitblockwarps
 constexpr int kUnitBlockWarps = 8;
 constexpr int kUnitBlockWarpsBits = 3;
 static_assert(1 << kUnitBlockWarpsBits == kUnitBlockWarps,
@@ -95,32 +49,16 @@ static_assert(kUnitBlockWarps <= kDecodeWarps && kDecodeWarps % kUnitBlockWarps 
               "a CTA's warps are a whole number of unit blocks");
 constexpr int kUnitRepeats = kDecodeWarps / kUnitBlockWarps;
 
-//: THE LATTICE'S ONE DECLARED CAPACITY, refused loudly at the host entry: an owner's
-//: per-level span is read as a SINGLE 32-bit slice, both when a level's owner grid is
-//: built and when a unit's innermost run is resolved. The interleaved order's second and
-//: third ceilings (a sub-box's leaves, the capacity multiplier) died with it -- under
-//: mixed radix a unit is a contiguous run and there is no sub-box scan to bound.
-//: docs/internals/decode/decode_lattice.md#capacities
+//: THE LATTICE'S ONE DECLARED CAPACITY, refused loudly at the host entry: an
+//: owner's per-level span is read as a SINGLE 32-bit slice, both when a level's
+//: owner grid is built and when a unit's innermost run is resolved.
+// see docs/internals/decode/decode.md#kdecodemaxspan
 constexpr int kDecodeMaxSpan = 32;
 
-//: THE DECLARED RESIDENCY of the step kernel, in CTAs per SM, and it is a BUDGET rather
-//: than a hope: `__launch_bounds__` turns it into a register cap the assembler must meet,
-//: and the census is what proves it met it without spilling. The walk is a latency-bound
-//: stream over state rows, so residency is the one thing it trades registers FOR.
-//: IT IS ONE, AND IT NO LONGER HAS TEMPLATE AXES. At `kDecodeThreads = 1024` a CTA is the
-//: SM's whole resident thread budget that the register file admits (65536 / 1024 = 64
-//: registers per thread), so the DECAY and DEEPEST arms -- which used to buy their extra
-//: live state by giving up a CTA of residency -- keep the same 64-register cap the widest
-//: arm needs, and the shallow arms gain headroom rather than losing it (they ran at a cap
-//: of 51 when five 256-thread CTAs shared the file). ONE is also what makes the derivation
-//: shared: the host's split policy sizes ONE WAVE of this number, so `n_split` becomes
-//: `SMs / BH` fat CTAs and the per-(step, batch-head) setup is derived ONE WAVE DEEP
-//: instead of 3.2. docs/internals/decode/decode.md#declared-residency
-//: IT IS DERIVED FROM THE WIDTH, not written down twice: the register file admits 64
-//: registers per thread across 1024 resident threads, so a CTA of `kDecodeThreads` leaves
-//: room for exactly `1024 / kDecodeThreads` of itself. At 1024 that is the one fat CTA per
-//: SM; at 512 it is two, and both put the same 1024 threads and the same 64-register cap on
-//: the SM. The arm's width is then the ONLY constant a shape change touches.
+//: THE DECLARED RESIDENCY of the step kernel, in CTAs per SM, and it is a
+//: BUDGET rather than a hope: `__launch_bounds__` turns it into a register cap
+//: the assembler must meet, and the census is what proves it met it without ...
+// see docs/internals/decode/decode.md#kdecoderesidentthreads
 constexpr int kDecodeResidentThreads = 1024;
 __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
   (void)decay;
@@ -129,9 +67,9 @@ __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int leve
 }
 
 //: The atom as a SHIFT and a MASK. `kAtomLeaves` itself is the box's
-//: (`rola::carry::kAtomLeaves`, imported above): it is geometry-owned and fixed across
-//: every config forever, which is what makes the paged address BC-free.
-//: docs/internals/decode/decode.md#the-atom
+//: (`rola::carry::kAtomLeaves`, imported above): it is geometry-owned and fixed
+//: across every config forever ...
+// see docs/internals/decode/decode.md#katomshift
 constexpr int kAtomShift = rola::carry::ilog2c(kAtomLeaves);
 constexpr int kAtomMask = kAtomLeaves - 1;
 static_assert(1 << kAtomShift == kAtomLeaves, "kAtomShift must be log2(kAtomLeaves)");
@@ -149,10 +87,10 @@ struct Span {
 //: EVERY POINTER AND EXTENT ONE DECODE STEP NEEDS, and nothing the kernel could cheaply
 //: recompute. Field by field: docs/internals/decode/decode.md#params-amps
 struct DecodeParams {
-  //: THE RAW PER-TOKEN OPERANDS, ADDRESSED RATHER THAN COPIED: both sides' routing
-  //: levels, the write gain and the token's value, each as the caller's own view. There
-  //: is no `[BH, b_l]` plane between the producer and the walk -- the step folds these
-  //: into shared memory itself: docs/internals/decode/decode_fold.md
+  //: THE RAW PER-TOKEN OPERANDS, ADDRESSED RATHER THAN COPIED: both sides'
+  //: routing levels, the write gain and the token's value, each as the caller's
+  //: own view.
+  // see docs/internals/decode/decode.md#decodeparams-note-l152
   Span read[kMaxLevels];
   Span write[kMaxLevels];
   Span g_write;
@@ -171,14 +109,10 @@ struct DecodeParams {
   int level_amp_offset[kMaxLevels];  // into the flat [sum_l b_l] SMEM staging
   int level_row_offset[kMaxLevels];  // into the flattened per-head dial array
 
-  //: THE (k, m) BOX, `BoxPlan`'s fields as runtime scalars under `BoxPlan`'s names:
-  //: `lat_s[l] = k * m_l` is an owner's span at level `l`, `lat_g[l] = B_l / lat_s[l]`
-  //: its owner-grid extent, and a leaf's lattice index is
-  //: `lambda = O * BC + sum_l r_l << lat_run_shift[l]` -- the owner in mixed radix over
-  //: `lat_g`, the OWNER-LOCAL index in mixed radix over the runs `lat_s`, most
-  //: significant level first. `lat_run_shift[l] = log2 prod_{l' > l} s_l'` is
-  //: `BoxPlan::run_shift`, and every suffix product is a SHIFT because every span is a
-  //: power of two. docs/internals/decode/decode_lattice.md
+  //: THE (k, m) BOX, `BoxPlan`'s fields as runtime scalars under `BoxPlan`'s
+  //: names: `lat_s[l] = k * m_l` is an owner's span at level `l`, `lat_g[l] = B_l
+  //: / lat_s[l]` its owner-grid extent ...
+  // see docs/internals/decode/decode.md#decodeparams-note-l174
   int lat_k;
   int lat_s[kMaxLevels];
   int lat_g[kMaxLevels];
@@ -187,15 +121,9 @@ struct DecodeParams {
   int lat_run_shift[kMaxLevels];  // BoxPlan::run_shift(l)
   int lat_local_bits;             // BoxPlan::kLocalBits = log2 BC
 
-  //: THE WALK'S UNIT, and the whole of it: a unit is `(owner, r_0 .. r_{D-2})` -- an owner
-  //: together with every run offset but the innermost -- so its leaves are the innermost
-  //: level's whole run, `1 << lat_inner_bits` of them, CONTIGUOUS and aligned in lattice
-  //: order. At the flagship spans `(8, 16)` that run IS an atom, at full occupancy, and
-  //: the unit's 16 slots are level 1's digits.
-  //: THERE IS NO SECOND UNIT SHAPE. A topology whose innermost span is thinner than an
-  //: atom does not get a deeper walk -- it gets SEVERAL UNITS PER ATOM, which the
-  //: candidate enumeration absorbs (`lat_units_per_atom_shift`) and the walk never sees.
-  //: docs/internals/decode/decode_lattice.md#the-unit
+  //: THE WALK'S UNIT, and the whole of it: a unit is `(owner, r_0 .. r_{D-2})` --
+  //: an owner together with every run offset but the innermost ...
+  // see docs/internals/decode/decode.md#decodeparams-note-l190
   int lat_inner_bits;  // log2 s_{D-1}: the unit's leaves, and ONE slice of the digit mask
   int lat_outer_bits;  // lat_local_bits - lat_inner_bits: the unit's radix inside an owner
   //: `r_l`'s shift inside the unit index: `lat_run_shift[l]` re-based on the innermost run,
@@ -206,23 +134,17 @@ struct DecodeParams {
   int mask_off[kMaxLevels];
   int mask_words[kMaxLevels];
   int mask_total;
-  //: THE OWNER LIVENESS BITMASK'S word layout: one bit per OWNER COORDINATE, per level,
-  //: per kind -- `omask_words[l] = ceil(lat_g[l] / 32)` words at `omask_off[l]` of an
-  //: `omask_total`-word plane, one plane per kind. It replaces the four COMPACTED owner
-  //: lists: a rank selects its owner by find-nth-set instead of by an indexed load, which
-  //: is what deletes the prologue's block scans and their barriers:
-  //: docs/internals/decode/decode_lattice.md#the-owner-lists
-  //: THE WRITE SIDE'S LIVE-DIGIT LIST NEEDS NO PLANE AT ALL: the write digit mask IS its
-  //: bitmask, so term 0's grain is the same find-nth-set over `mask_w`:
-  //: docs/internals/decode/decode_lattice.md#the-write-grain
+  //: THE OWNER LIVENESS BITMASK'S word layout: one bit per OWNER COORDINATE, per
+  //: level, per kind -- `omask_words[l] = ceil(lat_g[l] / 32)` words at
+  //: `omask_off[l]` of an `omask_total`-word plane, one plane per kind.
+  // see docs/internals/decode/decode.md#decodeparams-note-l209
   int omask_off[kMaxLevels];
   int omask_words[kMaxLevels];
   int omask_total;
-  //: THE COMPACTED LISTS THE BITMASK PRODUCES, and they are read exactly as they were
-  //: before D1: `olist[kind][level][i]` is the i-th live owner, one indexed load. The
-  //: bitmask is the BUILDER, not the reader -- a find-nth-set at use time was measured at
-  //: +25 % of the dense step, because the admission resolves one rank per candidate atom
-  //: per CTA: docs/internals/decode/decode_lattice.md#the-owner-lists
+  //: THE COMPACTED LISTS THE BITMASK PRODUCES, and they are read exactly as they
+  //: were before D1: `olist[kind][level][i]` is the i-th live owner, one indexed
+  //: load.
+  // see docs/internals/decode/decode.md#decodeparams-note-l221
   int olist_off[kMaxLevels];
   int olist_total;
   //: THE WRITE SIDE'S LIVE-DIGIT LIST, OUTER LEVELS ONLY -- term 0's own grain, compacted
@@ -230,14 +152,10 @@ struct DecodeParams {
   //: docs/internals/decode/decode_lattice.md#the-write-grain
   int dlist_off[kMaxLevels];
   int dlist_total;
-  //: THE ATOM AND THE UNIT, RECONCILED, and PAGED BACKING ONLY. Exactly one of these is
-  //: non-zero: a unit holds `1 << atoms_per_unit_shift` atoms, or an atom holds
-  //: `1 << lat_units_per_atom_shift` consecutive units. The candidate enumeration is a
-  //: PARTITION of the write side's atoms either way -- which is what the pool claim's
-  //: canonical ranks need -- and the WALK is the same three loops in both cases.
-  //: The host refuses a page table under a lattice whose OWNER is thinner than an atom,
-  //: because then an atom would straddle two owners and no grouping of units recovers it:
-  //: docs/internals/decode/decode.md#candidate-atoms
+  //: THE ATOM AND THE UNIT, RECONCILED, and PAGED BACKING ONLY. Exactly one of
+  //: these is non-zero: a unit holds `1 << atoms_per_unit_shift` atoms, or an
+  //: atom holds `1 << lat_units_per_atom_shift` consecutive units.
+  // see docs/internals/decode/decode.md#decodeparams-note-l233
   int atoms_per_unit_shift;
   int lat_units_per_atom_shift;
 
@@ -247,11 +165,9 @@ struct DecodeParams {
   //: Read AND written in place by the SAME lane in program order:
   //: docs/internals/decode/decode.md#state-in-place
   float* state;
-  //: `[BH, atoms_per_bh]` int32, `-1` = ABSENT; `nullptr` = the dense backing, where the
-  //: slot IS the atom. ONE base translation for both:
-  //: docs/internals/decode/decode.md#paged-address
-  //: MUTABLE because a pool claim folds into it, and only ever at the point where the
-  //: batch-head's last CTA has arrived: docs/internals/decode/decode.md#the-claim
+  //: `[BH, atoms_per_bh]` int32, `-1` = ABSENT; `nullptr` = the dense backing,
+  //: where the slot IS the atom.
+  // see docs/internals/decode/decode.md#decodeparams-note-l250
   int32_t* page_tbl;
   //: `[BH]` int32, THE PER-BATCH-HEAD VERDICT: `1` where this step writes an atom no
   //: table entry and no pool slot can address, `0` where it advanced. Written by the
@@ -262,22 +178,18 @@ struct DecodeParams {
   //: docs/internals/decode/decode.md#growth-reduction
   int32_t* growth_any;
   int32_t* growth_ctr;
-  //: `[BH]` int32, THE DONE FLAGS -- `1` where a batch-head has already deposited this
-  //: step. A replay re-walks a done batch-head for its `y` and deposits NOTHING, which
-  //: is what makes "exactly once per sequence" hold across the admission the replay
-  //: exists for: docs/internals/decode/decode.md#done-flags
+  //: `[BH]` int32, THE DONE FLAGS -- `1` where a batch-head has already deposited
+  //: this step.
+  // see docs/internals/decode/decode.md#decodeparams-note-l265
   int32_t* done;
   //: `[BH, atoms_per_bh]` bool, this step's own write set condensed to atoms. It is what
   //: a growth step's `plan_exact` admits from, so the host never re-derives the set the
   //: step has already expanded: docs/internals/decode/decode.md#atom-bits
   bool* atom_bits;
 
-  //: THE SLACK POOL -- physical slots pre-committed and pre-zeroed by the host, from
-  //: which a growth step admits ITSELF. `pool_slots` is `[BH, pool_cap]` slot ids,
-  //: `pool_cursor` `[BH]` how many of each batch-head's are spent, `pool_map`
-  //: `[BH, atoms_per_bh]` the claim the walk addresses through before the fold.
-  //: `pool_cap = 0` (and three null pointers) is EXACT-COMMIT: every growth step goes to
-  //: the host, which is the shipped default: docs/internals/decode/decode.md#the-claim
+  //: THE SLACK POOL -- physical slots pre-committed and pre-zeroed by the host,
+  //: from which a growth step admits ITSELF.
+  // see docs/internals/decode/decode.md#decodeparams-note-l275
   const int32_t* pool_slots;
   int32_t* pool_cursor;
   int32_t* pool_map;
@@ -303,10 +215,9 @@ struct DecodeParams {
 //: `ceil(n / d)` for non-negative ints, used on host and device.
 __host__ __device__ __forceinline__ int ceil_div_int(int n, int d) { return (n + d - 1) / d; }
 
-//: EXTRACT `count` bits of a packed bitmap starting at BIT index `start`, returned in
-//: the low `count` bits (`count <= 32`) -- the shift-and-merge every lattice slice is
-//: read through, written once because it is the one place a funnel shift can be off by
-//: one. docs/internals/decode/decode.md#extract-bits
+//: EXTRACT `count` bits of a packed bitmap starting at BIT index `start`,
+//: returned in the low `count` bits (`count <= 32`) ...
+// see docs/internals/decode/decode.md#extract-bits-2
 __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_words, int start,
                                                  int count) {
   const int w = start >> 5;
