@@ -31,6 +31,7 @@ mamba-ssm require the same thing for the same reason.
 | `ROLA_NVCC_THREADS` | `nvcc --threads`, default 2 = the number of `-gencode` targets. Beyond the target count it buys nothing and multiplies the resident set, since the two parallelism axes multiply. |
 | `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset** (K36): each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `-DROLA_CARRY_BUILD_<i>`, so an arm outside the set is not compiled at all. **The default is the SHIPPED rows** — see [the arm lists](#carry-arm-lists). `all` is the battery's set (shipped + test). A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86` for iteration. |
 | `ROLA_SKIP_POST_BUILD_RATIFY` | Skips the post-build gate. For iterating on non-kernel code only; a shippable binary is one that passed it. |
+| `ROLA_STRICT_MANIFEST` | (K43) `0`/unset (default): the two post-build gates (the fatbin's manifest-describes-binary sub-check, `tools/ratify.py`'s own re-run) REPORT a mismatch against the committed `tools/manifests/sm_XX.json` and the install still succeeds — KERNEL_STANDARDS.md §16 makes that manifest stale between milestones by design, so failing the install on it would fail every ordinary stage build. `1`: restores the pre-K43 hard failure. **The milestone/CI gate build sets it** — it is the build that immediately precedes `tools/ratify.py --write`, so it is the one build that must fail loudly if the tree it is about to ratify is not actually shippable yet. Structural checks (the shard partition actually matching the arm list, the dispatch's link closure) are never affected by this variable — those are properties of the build's own source/binary pair, not of the ratified snapshot, and stay fatal unconditionally. |
 | `ROLA_SCCACHE` | `auto` (default): use the pinned `sccache` if it resolves and matches; else build uncached. `1`: REQUIRE it -- a missing or mismatched wrapper is a hard failure. `0`: disable. See [below](#sccache). |
 | `ROLA_SCCACHE_BIN` | Overrides the `sccache` binary `ROLA_SCCACHE` resolves, the same way `CUDA_HOME` overrides `nvcc`/`ptxas`. |
 
@@ -61,12 +62,36 @@ mamba-ssm require the same thing for the same reason.
    only gate that can see a *failed* split: duplicated device code leaves the build
    green, the manifest byte-identical and `nm` reporting one symbol per arm,
    because a `__global__` template's host stub is weak and the linker keeps one.
+   Only its "every ratified name present" sub-check is a comparison against the
+   committed manifest; the split/duplication check above it is not, and stays a
+   hard failure regardless of `ROLA_STRICT_MANIFEST` (K43, below).
 7. **Post-build ratification.** `tools/ratify.py --arch …` for exactly the archs
    just built — the pre-build gates prove the *inputs* were ratified; this proves
    the codegen still matches what was measured.
 8. **`rola/_build_config.py`.** Generated, carrying the archs, the assembler, the
    torch version and ABI flag, the manifest digest and per-arch entry counts, and
    `ptx_jit_fallback: False`.
+
+**K43 — steps 6 and 7 REPORT between milestones, and are strict at ratify.**
+KERNEL_STANDARDS.md §16 rules that the
+committed manifest goes stale between milestones by design — a stage lands new
+instantiations, moves SASS bodies, and does not re-ratify. Failing an ordinary
+`pip install -e .` on that routine drift would make every stage build unusable, which is
+what K37 actually hit (`FINDINGS.md` `## K37`): a fresh `pip install -e .` of the SHIPPED
+set, on a tip already carrying stage work past the last ratification, hard-failed with
+counts like "35 manifest entries absent from the build, 29 new entries not in the
+manifest" and "8 of 444 ratified bodies moved" — a true finding about staleness, not a
+regression. So: by default (`ROLA_STRICT_MANIFEST` unset or `0`), a manifest mismatch in
+either step 6's "every ratified name present" sub-check or step 7's `ratify.py` re-run
+prints a `WARNING` banner with the counts and the install **succeeds**; the binary is not
+certified shippable, and says so. `ROLA_STRICT_MANIFEST=1` restores the pre-K43 hard
+failure — **the milestone/CI gate build sets it**, since that is the one build that
+immediately precedes `tools/ratify.py --write` and must fail loudly if the tree is not
+actually shippable. This never weakens `tools/ratify.py` itself (`--write`/`--check`
+invoked directly are unaffected) and never softens step 6's *structural* sub-checks (the
+shard partition actually matching the arm list, the dispatch's link closure) — those are
+properties of the build's own source/binary pair, not of the ratified snapshot, and a
+failure there is a real defect regardless of any manifest.
 
 ## What it costs
 

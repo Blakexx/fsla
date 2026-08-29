@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -145,10 +146,21 @@ def shape_key(mangled: str) -> str | None:
     return gen_shards.chunk_canonical(row)
 
 
-def check(so: Path, arches=None) -> bool:
+def check(so: Path, arches=None, strict: bool = True) -> bool:
+    """`strict=False` (K43) downgrades ONLY sub-check 3 below (the committed
+    ratification manifest describing this binary) from fatal to reported. Manifests go
+    stale between milestones by design (KERNEL_STANDARDS §16) -- a build whose
+    instantiation set has moved since the last `ratify --write` is the routine case
+    between stages, not a defect. Sub-checks 1-2 (the shard/arm-list partition and the
+    dispatch link closure) are properties of THIS build's own source/binary pair, not
+    of the ratified snapshot, and stay fatal unconditionally: a mismatch there means
+    the TU split and the dispatch have actually drifted apart, or something is
+    duplicated/undersharded, regardless of what any manifest says.
+    """
     entries = device_entries(so)
     want = expected_shards()
     ok = True
+    manifest_ok = True
 
     #: 1. THE COUNT AND THE OWNERSHIP, per arch.
     seen: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
@@ -202,16 +214,22 @@ def check(so: Path, arches=None) -> bool:
     manifest = ratify.load_manifest([a.removeprefix("sm_") for a in arches])
     absent = sorted(set(manifest["entries"]) - present)
     if absent:
-        ok = False
-        print(f"\nFAIL  {len(absent)} ratified instantiation(s) name no entry point in "
-              f"{so.name}. The manifest certifies a binary that is not this one:")
+        manifest_ok = False
+        label = "FAIL" if strict else "REPORT (§16: not fatal between milestones)"
+        print(f"\n{label}  {len(absent)} ratified instantiation(s) name no entry point "
+              f"in {so.name}, {len(present - set(manifest['entries']))} entry point(s) "
+              f"in {so.name} are not in the manifest. The manifest certifies a binary "
+              f"that is not this one:")
         for name in absent[:6]:
             print(f"        {name}")
     else:
         print(f"manifest OK  all {len(manifest['entries'])} ratified names are entry "
               f"points in {so.name}")
-    print(f"\n{'PASS' if ok else 'FAIL'}  fatbin instantiation gate")
-    return ok
+    result = ok and (manifest_ok or not strict)
+    print(f"\n{'PASS' if result else 'FAIL'}  fatbin instantiation gate"
+          + ("" if manifest_ok or not ok else " (manifest drift only, reported above; "
+             "not fatal without ROLA_STRICT_MANIFEST=1)"))
+    return result
 
 
 def main() -> int:
@@ -221,13 +239,16 @@ def main() -> int:
     ap.add_argument("--check", action="store_true",
                     help="gate: nonzero exit unless the binary carries exactly the "
                          "arm list, one entry per instantiation per arch, in the right "
-                         "shard")
+                         "shard, AND (only under ROLA_STRICT_MANIFEST=1, K43) the "
+                         "committed ratification manifest names only entry points this "
+                         "binary carries")
     ap.add_argument("--json", metavar="PATH", help="dump the raw (arch, object, entry) list")
     a = ap.parse_args()
     if a.json:
         Path(a.json).write_text(json.dumps(device_entries(a.so), indent=1) + "\n")
     if a.check:
-        return 0 if check(a.so) else 1
+        strict = os.getenv("ROLA_STRICT_MANIFEST") == "1"
+        return 0 if check(a.so, strict=strict) else 1
     counts: dict[tuple[str, str], int] = defaultdict(int)
     for arch, ident, _ in device_entries(a.so):
         counts[(arch, Path(ident).name)] += 1

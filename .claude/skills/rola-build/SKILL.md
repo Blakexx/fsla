@@ -13,7 +13,11 @@ iteration builds, only milestones ratify).
   for the current `MAX_JOBS`/`ROLA_NVCC_THREADS` it uses, don't hand-restate them here.
 - **Gate build**: both arches, default (shipped) arm set, no `ROLA_CARRY_ARMS` override, under the
   EXCLUSIVE `/tmp/rola_ram.lock` (KERNEL_STANDARDS §15 addendum). One gate build per stage; ratify
-  only at milestones (§16).
+  only at milestones (§16). A stage's own gate build does NOT set `ROLA_STRICT_MANIFEST` — the
+  committed manifest is expected to be stale between milestones (K43), so the post-build check
+  REPORTS, not fails. The build that immediately precedes `ratify.py --write` at a milestone DOES
+  set `ROLA_STRICT_MANIFEST=1` (docs/build.md) — that is the one build that must fail loudly if the
+  tree is not actually shippable yet.
 - `ROLA_CARRY_ARMS=all` builds every row (SHIPPED + TEST) — needed for the battery/oracle across
   arms outside the default shipped set (`gen_shards.CARRY_TEST_ARMS`).
 - Don't hand-restate `MAX_JOBS`: `tools/build_flags.py:default_max_jobs` derives it from free RAM /

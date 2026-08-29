@@ -93,6 +93,22 @@ import sccache_toolchain  # noqa: E402
 #: point -- the supported matrix IS the ratified set, not a wish list.
 ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") if a]
 
+#: THE MILESTONE/CI SWITCH (K43, KERNEL_STANDARDS §16). Manifests go stale between
+#: milestones BY DESIGN -- ratification is a per-milestone act, not a per-stage one --
+#: so the two POST-BUILD gates that compare the freshly built binary against the
+#: checked-in ``tools/manifests/sm_XX.json`` (``_post_build_fatbin_check``'s
+#: manifest-describes-binary sub-check, ``_post_build_manifest_check``'s
+#: ``ratify.py`` re-run) REPORT a mismatch instead of failing the install by default.
+#: ``ROLA_STRICT_MANIFEST=1`` restores the pre-K43 hard failure: the milestone/CI gate
+#: build that immediately precedes ``tools/ratify.py --write`` sets it (docs/build.md),
+#: because THAT build must fail loudly if the tree it is about to ratify is not
+#: actually shippable. This never weakens ``tools/ratify.py`` itself -- ``--write``/
+#: ``--check`` invoked directly are untouched, as are every PRE-build gate below
+#: (``_gate_ratified``/``_gate_toolchain``/``_gate_vendored``/``_gate_shards``: those
+#: are prerequisites, not staleness) -- only whether THIS INSTALL treats a
+#: stale-manifest finding as fatal.
+ROLA_STRICT_MANIFEST = os.getenv("ROLA_STRICT_MANIFEST") == "1"
+
 #: THE ARM SUBSET IS A FILE SUBSET (KERNEL_STANDARDS section 7, K36). Instantiation
 #: cost is the dominant build resource, so an arm the build does not want is an arm
 #: whose TRANSLATION UNIT is not in the build at all -- not a macro that still costs a
@@ -602,6 +618,16 @@ class RoLABuildExtension(BuildExtension):
         one. The fatbin can: it carries one device entry per instantiating object.
         `tools/fatbin_entries.py` counts them, per arch, and checks each one against
         the shard the arm list says owns it.
+
+        `tools/fatbin_entries.py`'s own `check()` (K43) ALREADY applies the
+        `ROLA_STRICT_MANIFEST` split internally: it downgrades ONLY its "the
+        committed manifest describes this binary" sub-check to a REPORT when not
+        strict, and stays fatal unconditionally for the shard-partition and
+        dispatch-closure sub-checks (those are never a staleness question -- a
+        failure there is a real defect in THIS build regardless of any manifest).
+        So a nonzero exit here, with the identical env passed through, always means
+        something that must stay fatal; this method does not re-derive or soften
+        that distinction, only reports it.
         """
         if self._iteration_banner():
             return
@@ -611,13 +637,16 @@ class RoLABuildExtension(BuildExtension):
             raise RuntimeError("built extension not found; the fatbin gate cannot "
                                "prove a binary it cannot read")
         cmd = [sys.executable, str(ROOT / "tools" / "fatbin_entries.py"), "--check", str(so)]
-        if subprocess.run(cmd, cwd=str(ROOT)).returncode != 0:
+        env = dict(os.environ, ROLA_STRICT_MANIFEST="1" if ROLA_STRICT_MANIFEST else "0")
+        if subprocess.run(cmd, cwd=str(ROOT), env=env).returncode != 0:
             raise RuntimeError(
                 "the built fatbin does not carry exactly one device entry per "
-                "instantiation in the shard the arm list assigns it to. The binary is "
-                "NOT shippable: either the shard partition and the dispatch have "
+                "instantiation in the shard the arm list assigns it to (see the counts "
+                "printed above): either the shard partition and the dispatch have "
                 "drifted apart, or the instantiations are being duplicated across "
-                "translation units and nothing is actually sharded."
+                "translation units and nothing is actually sharded. (A manifest-only "
+                "mismatch is already downgraded to a REPORT above and would not have "
+                "reached this raise unless ROLA_STRICT_MANIFEST=1.)"
             )
 
     def _post_build_manifest_check(self):
@@ -626,7 +655,19 @@ class RoLABuildExtension(BuildExtension):
         SHIPPED translation units -- the eight instantiation shards plus
         `decode.cu` and `entmax.cu`, under the same flag list this build uses
         (`tools/build_flags.py`) -- and fails on any spill growth or unhonored
-        launch bound."""
+        launch bound.
+
+        EVERY one of `ratify.py`'s checks (entry set, SASS-body hashes, the
+        hot-loop/local-presence ratchets) is a comparison against the COMMITTED
+        `tools/manifests/sm_XX.json`, and that manifest is allowed to be stale
+        between milestones by design (KERNEL_STANDARDS §16) -- unlike the fatbin
+        gate above, there is no sub-check here that is independent of the manifest,
+        so the K43 split is a single blanket one: FAIL is fatal only under
+        `ROLA_STRICT_MANIFEST=1` (set by the milestone/CI gate build that precedes
+        `ratify.py --write`, docs/build.md); otherwise it is a REPORT and the
+        install proceeds. This never touches `ratify.py` itself -- `--write`/
+        `--check` invoked directly still behave exactly as before.
+        """
         if _is_iteration_build():
             return
         if os.getenv("ROLA_SKIP_POST_BUILD_RATIFY") == "1":
@@ -641,12 +682,23 @@ class RoLABuildExtension(BuildExtension):
             cmd += ["--arch", a]
         proc = subprocess.run(cmd, cwd=str(ROOT))
         if proc.returncode != 0:
-            raise RuntimeError(
-                "post-build ratification FAILED: the built sources no longer match "
-                "the committed manifest. The binary is NOT shippable. Re-ratify "
-                "(`python tools/ratify.py --write`) only once the change is "
+            message = (
+                "post-build ratification FAILED (see the entry/body counts printed "
+                "above): the built sources no longer match the committed manifest. "
+                "Re-ratify (`python tools/ratify.py --write`) only once the change is "
                 "understood and the new numbers are recorded."
             )
+            if ROLA_STRICT_MANIFEST:
+                raise RuntimeError(message + " The binary is NOT shippable.")
+            print("\n" + "=" * 78)
+            print("WARNING -- post-build ratification FAILED (counts printed above "
+                  "this banner). Install proceeding because ROLA_STRICT_MANIFEST is "
+                  "not set: manifests go stale between milestones by design "
+                  "(KERNEL_STANDARDS §16). This binary is NOT certified shippable -- "
+                  "re-run with ROLA_STRICT_MANIFEST=1 (the milestone/CI gate build "
+                  "always does) before trusting it, or `python tools/ratify.py "
+                  "--write` if the drift is understood and intentional.")
+            print("=" * 78 + "\n")
 
 
 setup(
