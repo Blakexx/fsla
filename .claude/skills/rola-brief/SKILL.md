@@ -40,10 +40,7 @@ numbers or names as if they generalize to every brief.
    the mechanism is unchanged), the exact commit message, and the compile ledger (`rola-build`).
 9. **Cited baselines, never re-measured cold**: point at the FINDINGS row/table a number comes from
    (`rola-ledger`/`rola-probe` skills cover HOW those were taken) — a brief re-deriving a baseline
-   from scratch wastes the stage's build budget on a number that already exists. As of K38, a
-   citable baseline can also be a run_id / `rola-db baseline --stage <name>` query against
-   `benchmarks/results/` (`docs/measurement.md`'s "The measurements record" section) rather than
-   only a FINDINGS table row — cite whichever the number actually came from.
+   from scratch wastes the stage's build budget on a number that already exists.
 10. **Standing rules folded in by reference**: the build-cycle budget (§15), background builds + exit
     marker (§14, `rola-build`), "no polling" — cite the sections, don't restate their text.
 11. **Report format**: a hard line cap, and the exact fields expected (SHA; what was ported/adapted;
@@ -75,3 +72,5 @@ that into the skill the same day (process/pointers only — never facts).
 
 
 - FINDINGS.md is the campaign journal at /home/blake/rola-scratch/prototypes/k35_final_build/FINDINGS.md — NEVER a file inside the repo/worktree (§17). A tool that REFUSES an action is a stop-and-report signal; never route around a refusal with another tool.
+
+- `--no-verify` NEVER without an explicit per-commit authorization from the coordinator naming the hook failure; a red hook = STOP and report which (§18 addendum).
