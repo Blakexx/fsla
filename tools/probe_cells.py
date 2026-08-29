@@ -113,6 +113,16 @@ CELL_SPECS = {
     "struct25_w384": dict(widths=(256, 256), k=4, m=8, d_v=64, window=384, T=768,
                             k_tok=None, cohort=None, seed=25, level_modes=6,
                             support=0.25),
+    #: THE CARVED BODY ON DENSE DATA (K35 F1), off by default.  The ALT DECLARATION --
+    #: so the dispatch resolves the CARVED arm and its two-sided carve and transit run
+    #: -- over a FULLY DENSE draw (`k_tok=None`), so nothing is skipped and every
+    #: per-window fixed cost is paid at its maximum against the largest possible MMA
+    #: bill.  KERNEL_STANDARDS section R10 names this the worst case and the test:
+    #: dense is not a regime to concede, and `## R-A` measured exactly this shape at
+    #: +56% when the transit last landed above its floor.  `seed=26` follows the
+    #: existing cells so every one of them keeps its byte-identical draw.
+    "alt_dense_w384": dict(widths=(256, 256), k=4, m=8, d_v=64, window=384, T=768,
+                             k_tok=None, cohort=None, seed=26, level_modes=6),
 }
 DEFAULT_CELLS = ["dense", "k16_w384", "k16_w512_record", "k4_w512_record"]
 
@@ -565,6 +575,16 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
         "smsp__warp_issue_stalled_barrier_per_warp_active.pct",
         "dram__bytes.sum",
         "lts__t_bytes.sum",
+        #: THE SHARED-MEMORY LEG (K35 F1).  The carry's on-chip mechanisms -- the panel
+        #: ring, the V staging and the exchange's publish/pull -- are all SMEM traffic,
+        #: and a layout above its floor shows up as bank conflicts and as MIO pressure
+        #: long before it shows up in an instruction count (`## R-A`: the transit that
+        #: cost 21% carried +131% bank conflicts on -5.6% instructions).  A stage that
+        #: claims max-way-one has to be able to SHOW it on the built binary.
+        "l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum",
+        "smsp__inst_executed_op_shared_ld.sum",
+        "smsp__inst_executed_op_shared_st.sum",
+        "smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct",
     ])
     out_csv = f"{out_csv_prefix}_{binary['label']}_{cell}.csv"
     cmd = [NCU_BIN, "--target-processes", "all", "-k", "regex:carry.*kernel", "-c", "1",

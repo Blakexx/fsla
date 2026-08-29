@@ -25,7 +25,7 @@ struct Arm {
   using BP = BoxPlan<D, B, K, M>;
   //: THE CARVE, DERIVED (K35 S1b): the side's order comes from `MO` and its span -- see docs/internals/carry/carry_arm.md#sr
   using SR = StreamSpans<D, B, K, M, MO, kSideRead, NSR>;
-  using SW = SR;
+  using SW = StreamSpans<D, B, K, M, MO, kSideWrite, NSW>;
   //: A CARVED ARM is one whose streams are finer than the owner's box on either side; -- see docs/internals/carry/carry_arm.md#carved
   static constexpr bool carved = (NSW > 1) || (NSR > 1);
   //: the arm's VALUE WIDTH, which both bodies take as their `DV` and the census -- see docs/internals/carry/carry_arm.md#kdv
@@ -38,9 +38,23 @@ struct Arm {
 
   //: THE CARVED BODY'S GEOMETRY, named once so the segment probe and the launch read -- see docs/internals/carry/carry_arm.md#gc
   using GC = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
-  //: THE EXCHANGE IS NOT BUILT (K35 M1P), so the census's two exchange fields are -- see docs/internals/carry/carry_arm.md#kxchbytes
-  static constexpr int64_t kXchBytes = 0;
-  static constexpr int64_t kXchState = 0;
+  //: THE EXCHANGE, READ BACK OFF THE DEVICE (K35 F1): its bytes, and WHICH OF THE -- see docs/internals/carry/carry_arm.md#kxchbytes
+  //: `if constexpr`, not a conditional expression: naming `GC::` in an initializer
+  //: INSTANTIATES the carved geometry, whose asserts an uncarved arm cannot satisfy.
+  static constexpr int64_t xch_bytes_of() {
+    if constexpr (carved)
+      return (int64_t)GC::kXchBytes;
+    else
+      return 0;
+  }
+  static constexpr int64_t xch_state_of() {
+    if constexpr (carved)
+      return (int64_t)GC::kXchState;
+    else
+      return -1;
+  }
+  static constexpr int64_t kXchBytes = xch_bytes_of();
+  static constexpr int64_t kXchState = xch_state_of();
 
   static constexpr auto fn() {
     if constexpr (carved)

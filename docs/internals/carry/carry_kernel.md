@@ -1632,3 +1632,128 @@ a continuation's exit plane must BE its entry plane (`state.md#the-dense-
 continuation`), because an atom the sweep skips has to already hold what it
 carried in.  The seam refuses two distinct planes when an activity bitmap is
 supplied, and a fresh dense plane is zeroed at bind rather than written whole.
+
+## The two-sided carve and its transit (K35 F1)
+
+M1P walked ONE order — the read side's, with `SVW := SVR` — because the transplanted M1a
+body carved the box once. F1 restores the design's two-sided carve: each side derives its
+own level order and span vector, and the exchange moves the state between them.
+
+<a id="svr"></a>
+### `SVR` and `SVW`: two derivations, not one vector used twice
+
+`ModeOrder<D, MO, SIDE>` classes each level from the DECLARATION alone and orders them
+DENSE innermost, then SPARSE, then BOTH_SPARSE; `StreamSpans` then carves that order from
+the outermost level inward until the stream grid's product is the side's stream count. Run
+per side these give genuinely different boxes — at the flagship ALT arm the write side
+derives `[2, 16]` and the read side `[8, 4]` over the same 128-leaf box — and the census
+reports both (fields `[16:20]` write, `[20:24]` read) so the pair is readable off the
+binary rather than inferred.
+
+<a id="kleafw"></a>
+### One stream count per side, so one panel stride
+
+`kLeafW` and `kLeafR` are `BC / NSW` and `BC / NSR`. The body asserts they are equal: a
+warp is BOTH a read stream and a write stream, so the two carves cut the same box into
+equally many boxes and one panel stride serves both phases. Unequal stream counts are a
+later stage's mechanism (the write side's own schedule), not a shape this body admits.
+
+<a id="knl"></a>
+### `kNL` is the fold's, `kDw` is the readout's
+
+The fp32 accumulator's n-tiles are the WRITE carve's leaves (`kNL = kLeafW / kMmaN`); the
+readout's k-steps are the READ carve's (`kDw = kLeafR / kMmaK`). Before F1 both came from
+one vector, which is precisely what made the exchange unnecessary and the carve one-sided.
+
+<a id="pm"></a>
+### Each phase mints in its own order
+
+`produce` is already templated on the side, so the side selects the `SpanMap` (`PMW` or
+`PMR`) and the digit-offset array. A consequence worth stating because it costs
+instructions: the order-by-mode rule puts the DENSE level innermost, and at the flagship's
+write carve that level's span is the full 16, so the write produce's packed-pair run is
+`load_run<16>` where M1P — borrowing the read side's `[8, 4]` — issued `load_run<8>`. That
+is the write carve's own order, not an inefficiency in it.
+
+<a id="the-exchange"></a>
+### The transit runs ONCE per window, not twice
+
+S4a's body paid two changes per window. Under the phase order this body has — PHASE 1 reads
+out against the window's ENTRY state, PHASE 2 folds — the accumulator lives in the WRITE
+order for its whole life: the entry page load fills it there, the fold accumulates there,
+the exit page store drains it there. Only the readout's A fragments want the READ order, so
+the state is re-laid ONCE, at the window head, and never back. The pull's result is held in
+registers across the whole window, which also deletes M1P's per-BATCH `hi_bf16x2` repack.
+
+<a id="xchmap"></a>
+### The row map is affine, and that is what makes the address an immediate
+
+Publisher `w`'s write slot `P` has level-`l` digit `((P >> shiftW(l)) & (spanW(l)-1)) +
+offW_l(w)`, and the stream's offset is a multiple of its span, so the offset and the slot's
+field occupy DISJOINT bits of that digit. Splitting the digit at `log2(SR::s(l))` sends its
+low bits to the reader's own slot and its high bits to the reader index, both disjoint
+fields of `row = r * kLeafR + Q`. So `row(w, P) = row(w, 0) ^ delta(P)` with every per-bit
+step a compile-time constant independent of the publisher — and because the bits are
+disjoint the XOR is also an ADD, which is what lets a fragment's address be a per-warp
+pointer plus an immediate rather than a per-row multiply.
+
+That disjointness is proved for every built arm by
+`tests/unit/test_exchange_layout.py::test_the_exchange_row_map_is_affine_in_the_slots_bits`
+and NOT by a `static_assert` in the header: both the recursive and the loop form of the
+check exceed nvcc's constexpr call budget at the `D = 4` arm, because `StreamSpans`'
+mutually recursive `g_at`/`need_at` is re-evaluated per digit, and the recursive form
+segfaults cicc outright.
+
+<a id="swz"></a>
+<a id="msw"></a>
+### The two swizzles, re-derived by search against THIS body's accesses
+
+`LdX / 2` is `4 (mod 32)`, so consecutive rows sit one four-bank block apart and a bank is
+`(4*row + 4*granule + word) mod 32`. One publish instruction covers the lane quad's FOUR
+consumer rows at EIGHT consecutive channels (two lanes sharing a 32-bit word is a
+broadcast, not a conflict), and those four rows are `{r, r+16, r+32, r+48}` at the flagship
+— identical mod 8, i.e. FOUR-WAY with no swizzle. So the row index must reach the granule:
+`swz(row) = ((row>>3) ^ (row>>4) ^ (row>>6)) & 7` gives every row bit a distinct nonzero
+three-bit image and is constant over an aligned eight, which is all the `ldmatrix.trans`
+pull asks. The MASS is one element in the row's single PAD granule and spreads over that
+granule's four words on its own: `msw(row) = ((row>>3) ^ (row>>5)) & 3`. Both are XOR of
+shifts, hence GF(2)-linear in the row, so `swz(base ^ delta)` splits into a per-lane word
+and a compile-time one.
+
+Both forms were found by SEARCH over shift-XOR forms against the built arms' real row sets
+— S4a's search, re-run against F1's own publish and pull patterns rather than assumed to
+carry over — and `test_the_shipped_swizzles_are_the_search_result_and_not_a_guess` re-runs
+that search in the gate, with an unswizzled control asserted to CONFLICT so the swizzle
+cannot become unnecessary without the test saying so.
+
+<a id="ldx"></a>
+<a id="xch"></a>
+<a id="straddle-bytes"></a>
+### The transit costs no allocation, and that is what costs the third barrier
+
+`LdX = kDv + kPadE` and the region is `BC * LdX * 2` — 18,432 B at the flagship. It is not
+allocated: it STRADDLES the V ring, the two panels and the readout staging block (38,912 B
+together), every one of which is dead at the window head, so the arm's SMEM total is
+unchanged and the CTA target stays 2.
+
+<a id="war"></a>
+### The WAR edge the straddle buys
+
+Because the region straddles the FOLD's own tenants, the publish cannot begin until the
+PREVIOUS window's fold has finished reading them — and the fold's last MMAs are followed by
+no barrier. So the transit costs THREE `__syncthreads` per window, not the two its floor
+counted: the WAR edge, then publish→pull, then pull→region-reuse. Allocating the region
+instead of straddling it would remove the first, at 18,432 B that takes the flagship arm
+from two CTAs per SM to one. The count is a consequence of the straddle, not of the
+permutation.
+
+<a id="kxchstate"></a>
+### `kXchState`: three states, because two sizes cannot distinguish them
+
+`0` (`kXchZero`) the tie — identical vectors AND identical orders, so the permutation is
+the identity and publish and pull are elided at compile time; `1` (`kXchFull`) a real
+transit; `2` (`kXchFullReorder`) same vectors, different intra-warp orders, which pays the
+full transit only because the register reorder is not built and therefore OVERPAYS and
+knows it. The census reports `-1` for the channel-split body, which has no exchange at all.
+A size alone could not say this: `kXchFull` and `kXchFullReorder` allocate the same bytes
+for opposite reasons.

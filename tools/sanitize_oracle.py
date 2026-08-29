@@ -53,8 +53,16 @@ ROOT = Path(__file__).resolve().parents[1]
 #: adds no new cell, it reruns an existing one under the sanitizer. `-k` narrows to
 #: exactly one parametrization so each (family, tool) pair is one launch, not a
 #: whole file's worth serialized under the heaviest instrumentation this repo has.
+#:
+#: THE CARRY SHIPS TWO BODIES AND THE LANE WAS COVERING ONE (K35 F1).  Every cell in
+#: the carry's oracle file declared `level_modes = 0` until F1, which dispatches the
+#: CHANNEL-SPLIT body -- so "carry racecheck CLEAN" was a statement about the body with
+#: no exchange, no panel ring, no shared write list and no carved barriers.  The carved
+#: body is where every shared-memory publish/consume protocol in this family lives, so
+#: it gets its own family row rather than replacing the split one: both bodies run.
 _FAMILY_TESTS = {
     "carry": "tests/oracle/test_carry_vs_oracle.py::test_m3_two_sided_alt_small",
+    "carry_carved": "tests/oracle/test_carry_vs_oracle.py::test_f1_carved_alt_small",
     "intra": "tests/oracle/test_prefill_vs_oracle.py::test_the_intra_term_is_actually_present",
     "decode": "tests/oracle/test_decode_vs_oracle.py::test_g1_is_byte_reproducible_against_itself",
 }

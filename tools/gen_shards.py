@@ -271,10 +271,11 @@ def _seam_split_vec(D: int, B: int, K: int, M: int) -> tuple:
         for l in range(4))
 
 
-def _stream_vec(D: int, B: int, K: int, M: int, MO: int, NS: int) -> tuple:
-    """A CARVED arm's actual table: `Arm<>::SW = SR` (M1P, one carve in the read
-    side's order), so both sides reuse the READ side's `StreamSpans`."""
-    sv = _StreamSpans(D, B, K, M, MO, _K_SIDE_READ, NS)
+def _stream_vec(D: int, B: int, K: int, M: int, MO: int, SIDE: int, NS: int) -> tuple:
+    """ONE SIDE of a CARVED arm's actual table (K35 F1): `Arm<>::SR` and `Arm<>::SW`
+    are now derived independently, each from its own `ModeOrder`, so a row carries the
+    read side's vector and then the write side's rather than one vector twice."""
+    sv = _StreamSpans(D, B, K, M, MO, SIDE, NS)
     return tuple(sv.s(l) if l < D else B for l in range(4))
 
 
@@ -308,8 +309,9 @@ def _derive_span_facts_arms() -> tuple:
     for row in CARRY_ARMS:
         D, B, K, M, _DV, _W, _C, _CV, MO, _WPS, NSW, NSR, _PK = row
         if NSW > 1 or NSR > 1:
-            v = _stream_vec(D, B, K, M, MO, NSR)
-            rows[(D, B) + v + v] = None
+            r = _stream_vec(D, B, K, M, MO, _K_SIDE_READ, NSR)
+            w = _stream_vec(D, B, K, M, MO, _K_SIDE_WRITE, NSW)
+            rows[(D, B) + r + w] = None
     return tuple(rows.keys())
 
 # ---------------------------------------------------------------------------
@@ -347,6 +349,14 @@ CARRY_ARMS: tuple = (
     #: levels write-sparse (WRITE_BOTH).
     (2, 256, 4, 8, 64, 512, 32, 1, 1, 1, 1, 1, 0),      # 10
     (2, 256, 4, 8, 64, 512, 32, 1, 10, 1, 1, 1, 0),     # 11
+    #: K35 F1: THE TIED ARM.  `MO = 3` makes level 0 sparse on BOTH sides and level 1
+    #: dense on both, so `ModeOrder` classes the two levels identically for the two
+    #: sides, the two orders coincide, and at equal stream counts `StreamSpans` hands
+    #: both sides the SAME vector `[2, 16]`.  The permutation leaf -> (reader, slot) is
+    #: then the identity, `CarryGeom::kTied` recognizes it at compile time, and the
+    #: publish and the pull are elided: `kXchBytes = 0`, `kXchState = kXchZero`.  It is
+    #: carried so the zero is PROVED by a built arm rather than argued from the model.
+    (2, 256, 4, 8, 64, 384, 32, 1, 3, 1, 4, 4, 0),      # 12
 )
 
 #: THE SHIPPED / TEST SPLIT (K36).  A default build compiles the SHIPPED rows only.
@@ -356,7 +366,7 @@ CARRY_ARMS: tuple = (
 #: conformance cells the fp64 oracle can hold (SMALL, DEEP-3, DEEP-4) -- plus the
 #: UNCARVED DENSE_BOTH controls at the flagship cells.  A test that needs one asks for
 #: it by index and skips, with the arm named, when the binary does not carry it.
-CARRY_TEST_ARMS: tuple = (0, 2, 4, 5, 6, 7, 8, 9, 10, 11)
+CARRY_TEST_ARMS: tuple = (0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 CARRY_SHIPPED_ARMS: tuple = tuple(i for i in range(len(CARRY_ARMS))
                                   if i not in CARRY_TEST_ARMS)
 

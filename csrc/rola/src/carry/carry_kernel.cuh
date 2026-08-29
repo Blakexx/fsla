@@ -71,15 +71,19 @@ template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, in
           uint32_t MO>
 struct CarryGeom {
   using BP = BoxPlan<D, B, K, M>;
+  //: THE TWO CARVES, DERIVED INDEPENDENTLY (K35 F1): each side's level ORDER comes -- see docs/internals/carry/carry_kernel.md#svr
   using SVR = StreamSpans<D, B, K, M, MO, kSideRead, NSR>;
-  using SVW = SVR;
+  using SVW = StreamSpans<D, B, K, M, MO, kSideWrite, NSW>;
   static_assert(WPS == 1,
                 "M1P builds ONE warp per stream; the column split (`WPS > 1`) returns with "
                 "the containers, as its own stage");
   static_assert(NSW == NSR,
-                "M1P carves the box ONCE, in the read side's order, and the write side walks "
-                "that carve; a second stream count has no body here");
-  static_assert(PK == 0, "the parked `lo` is a tenant of the exchange, which this body has not");
+                "one warp is BOTH a read stream and a write stream, so the two sides carve "
+                "the box into equally many boxes; unequal counts arrive with the write "
+                "side's own schedule");
+  static_assert(PK == 0,
+                "the parked `lo` is a tenant of the exchange's drained slots, and "
+                "the lo park is a later stage's mechanism");
   static constexpr int BC = BP::kBC;
   //: THE VALUE WIDTH, AS A DECLARATION.  `kDv` channels plus the MASS column, which -- see docs/internals/carry/carry_kernel.md#kdv
   static constexpr int kDv = DV;
@@ -92,11 +96,29 @@ struct CarryGeom {
   static constexpr int kStreams = SVR::kStreams;
   static constexpr int kWarps = kStreams;
   static constexpr int kThreads = kWarps * 32;
-  //: the stream's leaves, and the private panel row that indexes them.
-  static constexpr int kLeafW = SVR::kLeaf;
+  //: the stream's leaves, and the private panel row that indexes them.  The two -- see docs/internals/carry/carry_kernel.md#kleafw
+  static constexpr int kLeafW = SVW::kLeaf;
+  static constexpr int kLeafR = SVR::kLeaf;
+  static_assert(kLeafW == kLeafR,
+                "at one stream count per side both carves partition the same box into the "
+                "same number of leaves, so one panel stride serves both phases");
   static constexpr int LdV = kDv + kPadE;
   static constexpr int LdS = kLeafW + kPadE;
   static constexpr int LdO = kDv + kPadF;
+  //: THE EXCHANGE'S ROW: one leaf's channels and its MASS, padded to the sixteen-byte -- see docs/internals/carry/carry_kernel.md#ldx
+  static constexpr int LdX = kDv + kPadE;
+
+  //: THE TIE, AND THE THREE STATES OF THE EXCHANGE (K35 S1b's `kXchState`). -- see docs/internals/carry/carry_kernel.md#kxchstate
+  static constexpr bool same_vec(int l) {
+    return l >= D || (SVW::s(l) == SVR::s(l) && same_vec(l + 1));
+  }
+  static constexpr bool same_ord(int l) {
+    return l >= D || (SVW::Ord::rank(l) == SVR::Ord::rank(l) && same_ord(l + 1));
+  }
+  static constexpr bool kTied = same_vec(0) && same_ord(0);
+  static constexpr int kXchZero = 0, kXchFull = 1, kXchFullReorder = 2;
+  static constexpr int kXchState = kTied ? kXchZero : (same_vec(0) ? kXchFullReorder : kXchFull);
+  static constexpr int kXchBytes = kTied ? 0 : BC * LdX * (int)sizeof(__nv_bfloat16);
 
   //: THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA. -- see docs/internals/carry/carry_kernel.md#panel-bytes
   static constexpr int panel_bytes = 2 * kWarps * C * LdS * (int)sizeof(__nv_bfloat16);
@@ -118,6 +140,12 @@ struct CarryGeom {
   static constexpr size_t bytes = (size_t)fixed_bytes + (size_t)kStages * slot_bytes;
   static constexpr int cta_target = design::cta_target((int)bytes, kThreads, kRegFloor);
   static_assert(design::smem_fits(bytes), "this arm does not fit the SMEM maximum");
+  //: THE TRANSIT COSTS NO ALLOCATION: it STRADDLES the tenants that are dead at the -- see docs/internals/carry/carry_kernel.md#straddle-bytes
+  static constexpr int straddle_bytes = kStages * slot_bytes + panel_bytes + out_bytes;
+  static_assert(kXchBytes <= straddle_bytes,
+                "the exchange region straddles the V ring, the two panels and the readout "
+                "staging block, every one of which is dead at the window head; an arm whose "
+                "transit outgrows them would have to allocate, and none does");
 };
 
 //: THE OWNER-GRAIN PRODUCE MAP, which the channel-split body and the reverse -- see docs/internals/carry/carry_kernel.md#producemap
@@ -170,6 +198,34 @@ struct SpanMap {
                 "is a level count of at least two");
 };
 
+//: THE EXCHANGE'S ROW MAP (K35 F1).  The publisher's write slot `P` names the -- see docs/internals/carry/carry_kernel.md#xchmap
+template <int D, int NSW, class SVW, class SVR, class PMW, class PMR>
+struct XchMap {
+  static constexpr int kLeafR = SVR::kLeaf;
+  static constexpr int kBitsP = ilog2c(SVW::kLeaf);
+  static constexpr int digit(int l, int w, int P) {
+    return ((P >> PMW::shift(l)) & (SVW::s(l) - 1))
+           + ((w >> ilog2c(SVW::grid_div(l))) & (SVW::g(l) - 1)) * SVW::s(l);
+  }
+  static constexpr int reader(int l, int w, int P) {
+    return l >= D ? 0 : (digit(l, w, P) / SVR::s(l)) * SVR::grid_div(l) + reader(l + 1, w, P);
+  }
+  static constexpr int slot(int l, int w, int P) {
+    return l >= D ? 0 : ((digit(l, w, P) % SVR::s(l)) << PMR::shift(l)) + slot(l + 1, w, P);
+  }
+  static constexpr int row(int w, int P) { return reader(0, w, P) * kLeafR + slot(0, w, P); }
+  //: the per-bit STEP.  `row(0, 0)` is zero (stream zero's offsets are), so the step
+  //: IS the row, and the derivation makes it independent of the publisher.
+  static constexpr int delta(int P) { return row(0, P); }
+
+  //: the two swizzles, GF(2)-LINEAR in the row so `swz(base ^ delta)` splits into a -- see docs/internals/carry/carry_kernel.md#swz
+  static constexpr int swz(int r) { return ((r >> 3) ^ (r >> 4) ^ (r >> 6)) & 7; }
+  static constexpr int msw(int r) { return ((r >> 3) ^ (r >> 5)) & 3; }
+
+  //: THE DISJOINTNESS THE ADDRESS ARITHMETIC RESTS ON is proved by the model test, not -- see docs/internals/carry/carry_kernel.md#xchmap
+  //: by a `static_assert`: the check exceeds nvcc's constexpr budget at `D = 4`.
+};
+
 //: a contiguous run of `n` bf16, at the widest access that covers it. -- see docs/internals/carry/carry_kernel.md#load-run
 template <int N>
 __device__ __forceinline__ void load_run(unsigned short (&dst)[N], const void* p) {
@@ -212,10 +268,14 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   using G = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
   constexpr int kDv = DV;
   constexpr int kCols = DV + 1;
-  //: THE ONE SPAN VECTOR, and the private order and the ballot rows it induces.  Both -- see docs/internals/carry/carry_kernel.md#sv
-  using SV = typename G::SVR;
-  using PM = SpanMap<D, B, K, M, SV>;
-  using CR = CarveRows<SV>;
+  //: THE TWO SPAN VECTORS, each with the private order and the ballot rows it -- see docs/internals/carry/carry_kernel.md#sv
+  using SVR = typename G::SVR;
+  using SVW = typename G::SVW;
+  using PMR = SpanMap<D, B, K, M, SVR>;
+  using PMW = SpanMap<D, B, K, M, SVW>;
+  using CRR = CarveRows<SVR>;
+  using CRW = CarveRows<SVW>;
+  using XM = XchMap<D, NSW, SVW, SVR, PMW, PMR>;
   constexpr int kWarps = G::kWarps;
   constexpr int kThreads = G::kThreads;
 
@@ -224,12 +284,16 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   constexpr int MTOK = C / kMmaM;  // token m-tiles of a batch
   //: the stream's own leaves: `kNL` accumulator n-tiles, `kDw` readout k-steps.
   constexpr int kLeafW = G::kLeafW;
+  constexpr int kLeafR = G::kLeafR;
+  constexpr int LdX = G::LdX;
+  //: the FOLD accumulator's n-tiles are the WRITE carve's leaves; the READOUT's -- see docs/internals/carry/carry_kernel.md#knl
   constexpr int kNL = kLeafW / kMmaN;
-  constexpr int kDw = kLeafW / kMmaK;
+  constexpr int kDw = kLeafR / kMmaK;
   constexpr int MCH = kDv / kMmaM;  // the channel m-tiles, ALL of them per warp
 
   static_assert(C % kMmaM == 0 && kThreads % C == 0, "the batch tile must divide");
-  static_assert(kLeafW % kMmaK == 0, "a stream's leaves are a whole number of k-tiles");
+  static_assert(kLeafW % kMmaN == 0 && kLeafR % kMmaK == 0,
+                "each side's leaves are a whole number of that phase's tiles");
   static_assert(BC % kAtomLeaves == 0, "K2: an owner holds whole page atoms");
   static_assert(LdS % 8 == 0 && LdV % 8 == 0, "an ldmatrix row address must be 16-byte aligned");
   static_assert(kBallotLanes % kWarps == 0,
@@ -269,23 +333,25 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   // ---- the owner's digit runs, one per level -------------------------------
   //: `o_l` is a bit-field extract of the owner index: the lattice's owner -- see docs/internals/carry/carry_kernel.md#near-line-296
   int runCol[D];
-  //: AND THE STREAM'S OWN DIGIT OFFSET INSIDE THAT RUN, per level: the stream -- see docs/internals/carry/carry_kernel.md#note-l344
-  int off[D];
-  //: AND THE BALLOT ROW BASE, per level: the SAME `o_l`, addressing the FIRST row -- see docs/internals/carry/carry_kernel.md#rowbytes
-  uint32_t rowOff[D];
+  //: AND THE STREAM'S OWN DIGIT OFFSET INSIDE THAT RUN, per level AND PER SIDE: the -- see docs/internals/carry/carry_kernel.md#note-l344
+  int offR[D], offW[D];
+  //: AND THE BALLOT ROW BASE, per level and per side: the SAME `o_l`, addressing the -- see docs/internals/carry/carry_kernel.md#rowbytes
+  uint32_t rowOffR[D], rowOffW[D];
   const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
     const int o_l = (owner / BP::owner_div(l)) % BP::g(l);
     runCol[l] = BP::col_base(l) + o_l * BP::s(l);
-    off[l] = ((strm >> ilog2c(SV::grid_div(l))) & (SV::g(l) - 1)) * SV::s(l);
-    rowOff[l] = (uint32_t)(CR::row_prefix(l) + o_l * CR::rows_of(BP::s(l), l)) * rowBytes;
+    offR[l] = ((strm >> ilog2c(SVR::grid_div(l))) & (SVR::g(l) - 1)) * SVR::s(l);
+    offW[l] = ((strm >> ilog2c(SVW::grid_div(l))) & (SVW::g(l) - 1)) * SVW::s(l);
+    rowOffR[l] = (uint32_t)(CRR::row_prefix(l) + o_l * CRR::rows_of(BP::s(l), l)) * rowBytes;
+    rowOffW[l] = (uint32_t)(CRW::row_prefix(l) + o_l * CRW::rows_of(BP::s(l), l)) * rowBytes;
   });
   //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the READ -- see docs/internals/carry/carry_kernel.md#pin-address
-  const uint32_t* const rowsR =
-      pin_address(rows + (long)bh * (long)(2 * CR::kRows) * (long)tok_words);
+  constexpr int kRowsBoth = CRR::kRows + CRW::kRows;
+  const uint32_t* const rowsR = pin_address(rows + (long)bh * (long)kRowsBoth * (long)tok_words);
   const uint32_t* const rowsW =
-      pin_address(rows + ((long)bh * (long)(2 * CR::kRows) + (long)CR::kRows) * (long)tok_words);
+      pin_address(rows + ((long)bh * (long)kRowsBoth + (long)CRR::kRows) * (long)tok_words);
 
   // ---- lane-invariant operand addressing (the shipped idiom) ---------------
   const int lr = lane & 7, tl = lane >> 3;
@@ -333,7 +399,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     int lf = 0;
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      const int dig = ((P >> PM::shift(l)) & (PM::span(l) - 1)) + off[l];
+      const int dig = ((P >> PMW::shift(l)) & (PMW::span(l) - 1)) + offW[l];
       lf += dig << BP::run_shift(l);
     });
     return lf;
@@ -438,16 +504,20 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
                 "a warp's panel row is ONE lane's: the batch tile is the warp width, so a "
                 "thread's slot run is the stream's whole box");
   const int prow = lane;  // this lane's token row of the batch
-  int lvCol[D];
+  int lvColR[D], lvColW[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    lvCol[l] = runCol[l] + off[l];
+    lvColR[l] = runCol[l] + offR[l];
+    lvColW[l] = runCol[l] + offW[l];
   });
 
   //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS (`PM::kZeroLevel`). -- see docs/internals/carry/carry_kernel.md#write
   auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
                      uint32_t gain, bool have) {
     constexpr bool WRITE = decltype(Wt)::value;
+    //: EACH PHASE MINTS IN ITS OWN CARVE'S ORDER, from its own digit offsets: the -- see docs/internals/carry/carry_kernel.md#pm
+    using PM = std::conditional_t<WRITE, PMW, PMR>;
+    const int* const lvCol = WRITE ? lvColW : lvColR;
     //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run -- see docs/internals/carry/carry_kernel.md#near-line-497
     uint32_t acc[SPT / 2];
     {
@@ -565,37 +635,41 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       return lane_broadcast(pfx, LW - 1);
     };
     //: THE CLAUSE ABOVE THE CARVE: the levels the stream spans WHOLE, whose row is the -- see docs/internals/carry/carry_kernel.md#clauseof
-    auto clause_of = [&](const uint32_t* rowsS) {
+    auto clause_of = [&](auto Wt, const uint32_t* rowsS, const uint32_t* rowOffS) {
+      using SVS = std::conditional_t<decltype(Wt)::value, SVW, SVR>;
+      using CRS = std::conditional_t<decltype(Wt)::value, CRW, CRR>;
       uint32_t m = valid;
       static_for<D>([&](auto Lc) {
         constexpr int l = decltype(Lc)::value;
-        if constexpr (!SV::carves(l) && CR::row_g(l) > 0)
-          m &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsS, rowOff[l] + wordB));
+        if constexpr (!SVS::carves(l) && CRS::row_g(l) > 0)
+          m &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsS, rowOffS[l] + wordB));
       });
       return m;
     };
-    //: AND THE CARVED CLAUSE OF ONE STREAM: the AND over the carved levels of that -- see docs/internals/carry/carry_kernel.md#streamrow
-    auto stream_row = [&](const uint32_t* rowsS, int s) {
+    //: AND THE CARVED CLAUSE OF ONE STREAM, on that side's OWN carve: the AND over -- see docs/internals/carry/carry_kernel.md#streamrow
+    auto stream_row = [&](auto Wt, const uint32_t* rowsS, const uint32_t* rowOffS, int s) {
+      using SVS = std::conditional_t<decltype(Wt)::value, SVW, SVR>;
       uint32_t m = 0xFFFFFFFFu;
       static_for<D>([&](auto Lc) {
         constexpr int l = decltype(Lc)::value;
-        if constexpr (SV::carves(l)) {
-          const uint32_t c = (uint32_t)((s >> ilog2c(SV::grid_div(l))) & (SV::g(l) - 1));
+        if constexpr (SVS::carves(l)) {
+          const uint32_t c = (uint32_t)((s >> ilog2c(SVS::grid_div(l))) & (SVS::g(l) - 1));
           m &= *reinterpret_cast<const uint32_t*>(
-              gather_ptr(rowsS, rowOff[l] + c * rowBytes + wordB));
+              gather_ptr(rowsS, rowOffS[l] + c * rowBytes + wordB));
         }
       });
       return m;
     };
 
-    const uint32_t clauseR = clause_of(rowsR), clauseW = clause_of(rowsW);
+    const uint32_t clauseR = clause_of(std::false_type{}, rowsR, rowOffR);
+    const uint32_t clauseW = clause_of(std::true_type{}, rowsW, rowOffW);
     uint32_t orR = 0u, orW = 0u, mineR = 0u;
 #pragma unroll
     for (int s = 0; s < kWarps; ++s) {
-      const uint32_t r = stream_row(rowsR, s);
+      const uint32_t r = stream_row(std::false_type{}, rowsR, rowOffR, s);
       orR |= r;
       mineR = (s == strm) ? r : mineR;
-      orW |= stream_row(rowsW, s);
+      orW |= stream_row(std::true_type{}, rowsW, rowOffW, s);
     }
     const uint32_t liveW = clauseW & orW;
     //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap -- see docs/internals/carry/carry_kernel.md#continue
@@ -609,6 +683,98 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     constexpr uint32_t kBitsW = (uint32_t)(kBallotLanes / kWarps);
     const int nw =
         walk(liveW, wlist, ((1u << kBitsW) - 1u) << (warp * kBitsW), (1u << (warp * kBitsW)) - 1u);
+
+    //: THE EXCHANGE.  The two carves want the state in two slot orders and the -- see docs/internals/carry/carry_kernel.md#the-exchange
+    uint32_t sa[kDw][MCH][4], ma[kDw][4];
+    if constexpr (G::kTied) {
+      static_for<kDw>([&](auto Kc) {
+        constexpr int kk = decltype(Kc)::value;
+        static_for<MCH>([&](auto Mc) {
+          constexpr int m = decltype(Mc)::value;
+          sa[kk][m][0] = hi_bf16x2(st[m][2 * kk][0], st[m][2 * kk][1]);
+          sa[kk][m][1] = hi_bf16x2(st[m][2 * kk][2], st[m][2 * kk][3]);
+          sa[kk][m][2] = hi_bf16x2(st[m][2 * kk + 1][0], st[m][2 * kk + 1][1]);
+          sa[kk][m][3] = hi_bf16x2(st[m][2 * kk + 1][2], st[m][2 * kk + 1][3]);
+        });
+        ma[kk][0] = hi_bf16x2(mass_st[2 * kk][0], mass_st[2 * kk][1]);
+        ma[kk][1] = hi_bf16x2(mass_st[2 * kk][2], mass_st[2 * kk][3]);
+        ma[kk][2] = hi_bf16x2(mass_st[2 * kk + 1][0], mass_st[2 * kk + 1][1]);
+        ma[kk][3] = hi_bf16x2(mass_st[2 * kk + 1][2], mass_st[2 * kk + 1][3]);
+      });
+    } else {
+      //: THE TRANSIT STRADDLES the V ring, the panels and the readout block, all of -- see docs/internals/carry/carry_kernel.md#xch
+      __nv_bfloat16* const xch = reinterpret_cast<__nv_bfloat16*>(carry_smem);
+      int xchR = 0, xchQ = 0;
+      static_for<D>([&](auto Lc) {
+        constexpr int l = decltype(Lc)::value;
+        xchR += (offW[l] / SVR::s(l)) * SVR::grid_div(l);
+        xchQ += (offW[l] % SVR::s(l)) << PMR::shift(l);
+      });
+      const int xchLaneRow = (xchR * kLeafR + xchQ) ^ ((lane & 1) ? XM::delta(2) : 0)
+                             ^ ((lane & 2) ? XM::delta(4) : 0);
+      const int swzLane = XM::swz(xchLaneRow), mswLane = XM::msw(xchLaneRow);
+      const uint32_t pubC = smem_addr(xch) + (uint32_t)(xchLaneRow * LdX * 2 + (lane >> 2) * 2);
+      const uint32_t pubM = smem_addr(xch) + (uint32_t)(xchLaneRow * LdX * 2 + kDv * 2);
+
+      //: THE WAR EDGE against the PREVIOUS window's fold, which still reads the bytes -- see docs/internals/carry/carry_kernel.md#war
+      rendezvous();
+      static_for<kNL>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        static_for<4>([&](auto Ec) {
+          constexpr int e = decltype(Ec)::value;
+          constexpr int dl = XM::delta(j * kMmaN + (e & 1));
+          static_for<MCH>([&](auto Mc) {
+            constexpr int m = decltype(Mc)::value;
+            constexpr int gr = (2 * m + (e >> 1)) ^ XM::swz(dl);
+            store_shared_u16(pubC + (uint32_t)(dl * LdX * 2) + (uint32_t)((gr ^ swzLane) * 16),
+                             hi_bf16(st[m][j][e]));
+          });
+        });
+        if ((lane >> 2) == 0) {
+          static_for<2>([&](auto Ec) {
+            constexpr int e = decltype(Ec)::value;
+            constexpr int dl = XM::delta(j * kMmaN + e);
+            store_shared_u16(
+                pubM + (uint32_t)(dl * LdX * 2) + (uint32_t)((XM::msw(dl) ^ mswLane) * 4),
+                hi_bf16(mass_st[j][e]));
+          });
+        }
+      });
+      rendezvous();
+
+      const int pullRow = strm * kLeafR + rT;
+      const int swzPull = XM::swz(pullRow);
+      const uint32_t pullC = smem_addr(xch) + (uint32_t)(pullRow * LdX * 2);
+      const int massRow = strm * kLeafR + 2 * (lane & 3);
+      const int mswPull = XM::msw(massRow);
+      const uint32_t pullM = smem_addr(xch) + (uint32_t)(massRow * LdX * 2 + kDv * 2);
+      static_for<kDw>([&](auto Kc) {
+        constexpr int kk = decltype(Kc)::value;
+        constexpr int rk = kk * kMmaK;
+        const int sw = swzPull ^ XM::swz(rk);
+        static_for<MCH>([&](auto Mc) {
+          constexpr int m = decltype(Mc)::value;
+          load_frag_t(sa[kk][m],
+                      pullC + (uint32_t)(rk * LdX * 2) + (uint32_t)((((2 * m) | cT) ^ sw) * 16));
+        });
+        //: the mass's two pairs.  `msw` ignores the row's low three bits, so a pair's -- see docs/internals/carry/carry_kernel.md#msw
+        ma[kk][0] = 0u;
+        ma[kk][1] = 0u;
+        ma[kk][2] = 0u;
+        ma[kk][3] = 0u;
+        if ((lane >> 2) == 0) {
+          const uint32_t bLo =
+              pullM + (uint32_t)(rk * LdX * 2) + (uint32_t)((XM::msw(rk) ^ mswPull) * 4);
+          const uint32_t bHi =
+              pullM + (uint32_t)((rk + 8) * LdX * 2) + (uint32_t)((XM::msw(rk + 8) ^ mswPull) * 4);
+          ma[kk][0] = (uint32_t)load_shared_u16(bLo)
+                      | ((uint32_t)load_shared_u16(bLo + (uint32_t)(LdX * 2)) << 16);
+          ma[kk][2] = (uint32_t)load_shared_u16(bHi)
+                      | ((uint32_t)load_shared_u16(bHi + (uint32_t)(LdX * 2)) << 16);
+        }
+      });
+      rendezvous();
+    }
 
     // ---- PHASE 1: the READOUT of every read batch, against the window's ENTRY
     //      state.  ALL of the window's readouts precede ANY of its folds, because a
@@ -626,22 +792,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       const int n = (nr - off_) < C ? (nr - off_) : C;
       const uint32_t brT = (i & 1) ? brT1 : brT0;
 
-      //: THE READ DRAIN'S STATE SOURCE, AND ITS ONE PLACE. -- see docs/internals/carry/carry_kernel.md#kk
-      uint32_t sa[kDw][MCH][4], ma[kDw][4];
-      static_for<kDw>([&](auto Kc) {
-        constexpr int kk = decltype(Kc)::value;
-        static_for<MCH>([&](auto Mc) {
-          constexpr int m = decltype(Mc)::value;
-          sa[kk][m][0] = hi_bf16x2(st[m][2 * kk][0], st[m][2 * kk][1]);
-          sa[kk][m][1] = hi_bf16x2(st[m][2 * kk][2], st[m][2 * kk][3]);
-          sa[kk][m][2] = hi_bf16x2(st[m][2 * kk + 1][0], st[m][2 * kk + 1][1]);
-          sa[kk][m][3] = hi_bf16x2(st[m][2 * kk + 1][2], st[m][2 * kk + 1][3]);
-        });
-        ma[kk][0] = hi_bf16x2(mass_st[2 * kk][0], mass_st[2 * kk][1]);
-        ma[kk][1] = hi_bf16x2(mass_st[2 * kk][2], mass_st[2 * kk][3]);
-        ma[kk][2] = hi_bf16x2(mass_st[2 * kk + 1][0], mass_st[2 * kk + 1][1]);
-        ma[kk][3] = hi_bf16x2(mass_st[2 * kk + 1][2], mass_st[2 * kk + 1][3]);
-      });
 #pragma unroll
       for (int mb = 0; mb < MTOK; ++mb) {
         float acc[2][MCH][4], macc[2][4];
