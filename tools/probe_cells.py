@@ -43,11 +43,14 @@ Design points forced by that history:
     C++, so this harness's own pre-flight arm resolution is the only thing
     standing between a mismatched request and a wrong-body measurement on
     those binaries.
-  * GPU work is serialized under `flock` and measurement code is IDENTICAL
-    across git tips: this file is invoked by each worktree's OWN venv python
-    (which resolves `import rola` to that worktree's editable install), so the
-    only thing that differs between a "mainline" run and a "k31-formb3" run of
-    this same file is which compiled extension answers `rola.ops.carry`.
+  * GPU work is serialized by `tools/gpu_lock.py`'s `gpu_lock()` (K46 --
+    this file used to open `/tmp/rola_gpu.lock` with its own ad hoc
+    `fcntl.flock`; it now shares the ONE primitive every GPU entry point
+    takes) and measurement code is IDENTICAL across git tips: this file is
+    invoked by each worktree's OWN venv python (which resolves `import
+    rola` to that worktree's editable install), so the only thing that
+    differs between a "mainline" run and a "k31-formb3" run of this same
+    file is which compiled extension answers `rola.ops.carry`.
 
 See `docs/KERNEL_STANDARDS.md` SS16 (perf probe every stage gate) and its three
 addenda (instructions are necessary but not sufficient -- carry IPC and stall
@@ -57,17 +60,16 @@ from __future__ import annotations
 
 import argparse
 import csv
-import fcntl
 import io
 import json
-import os
 import statistics
 import subprocess
 import sys
 from pathlib import Path
 
+from gpu_lock import GPU_LOCK_DEFAULT, gpu_lock
+
 THIS_FILE = Path(__file__).resolve()
-GPU_LOCK_DEFAULT = "/tmp/rola_gpu.lock"
 NCU_BIN = "/usr/local/cuda/bin/ncu"
 
 #: K38: the writer epilogue (`benchmarks/bench/store.py`) is this harness's own
@@ -476,14 +478,9 @@ def run_worker(binary: dict, cells: list[str], reps: int, warmup: int, lock_path
            "--reps", str(reps), "--warmup", str(warmup), "--state", state]
     if oneshot:
         cmd.append("--oneshot")
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    with gpu_lock(lock_path):
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
                                timeout=timeout)
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
     if proc.returncode not in (0, 1):  # 1 = a cell REFUSED, still emits partial JSON
         raise RuntimeError(f"worker for {binary['label']} crashed (rc={proc.returncode}):\n"
                             f"stdout={proc.stdout}\nstderr={proc.stderr}")
@@ -502,7 +499,7 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
 
     Mirrors the session scratchpad's `ledger/run_ledger.sh` pattern -- one
     `-c 1` capture on a regex-matched `carry.*kernel`, CSV out, under the
-    SAME flock every wall-clock run uses.
+    SAME `gpu_lock()` every wall-clock run uses.
     """
     py = venv_python(binary["venv"])
     metrics = ",".join([
@@ -519,14 +516,9 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
     cmd = [NCU_BIN, "--target-processes", "all", "-k", "regex:carry.*kernel", "-c", "1",
            "--print-kernel-base", "mangled", "--metrics", metrics, "--csv",
            py, str(THIS_FILE), "--worker", "--cells", cell, "--oneshot", "--state", state]
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    with gpu_lock(lock_path):
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
                                timeout=timeout)
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
     Path(out_csv).write_text(proc.stdout)
     row = {"csv": out_csv, "rc": proc.returncode}
     # ncu's stdout interleaves "==PROF==" progress lines and this worker's own

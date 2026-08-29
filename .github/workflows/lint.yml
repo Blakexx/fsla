@@ -36,12 +36,18 @@ jobs:
             | xargs clang-format --style=file --dry-run --Werror
       - name: ruff check
         run: ruff check --force-exclude .
-      - name: ast-grep standards rules (KERNEL_STANDARDS.md)
+      - name: ast-grep standards rules (KERNEL_STANDARDS.md, csrc/ only)
         # Pinned to the version validated locally (ast-grep 0.45.2) -- same
         # discipline as clang-format/ruff above: one tool version, everywhere.
+        # `tools/lint/ast_grep_gate.py` (K46 item 5) scopes the scan to csrc/
+        # so the rules' own must-fire fixtures under tools/lint/fixtures/
+        # never reach this gate.
         run: |
           npm install -g @ast-grep/cli@0.45.2
-          ast-grep scan --config sgconfig.yml
+          pip install pyyaml
+          python3 tools/lint/ast_grep_gate.py
+      - name: ast-grep fixture self-test (every rule fires on its own fixture)
+        run: python3 tools/lint/ast_grep_gate.py --test-fixtures
       - name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue)
         run: python3 tools/lint/lint_standards.py
       - name: clang-tidy (host-only TUs)
@@ -84,14 +90,11 @@ jobs:
       - run: pip install pytest clang-format==19.1.7
       - name: the instantiation shards are the ones the matrix definition produces
         run: python tools/gen_shards.py --check
-      - name: the shard partition is a structure, not a file listing
-        run: python -m pytest tests/unit/test_shard_partition.py -q
-      - name: the README's generated tables have not drifted
-        # the docs mirror itself moved to the `lint` job's lint_standards.py
-        # (`check_docs_mirror`, RULED 2026-08-29: a check that does not execute
-        # the code under test is a lint, not a test -- docs/testing.md).
-        run: python -m pytest tests/unit/test_generated_docs.py -q
-      - name: the vendored codegen input matches its pin
-        run: python -m pytest tests/unit/test_vendored_pin.py -q
       - name: the README's supported matrix is the derived one
         run: python tools/supported.py --check
+      # The shard partition, the README's generated tables and the vendored pin
+      # moved to the `lint` job's lint_standards.py (K46 item 2, RULED 2026-08-29:
+      # "a check that does not execute the code under test is a lint, not a test" --
+      # docs/testing.md): check_shard_partition, check_supported_table,
+      # check_vendored_pin. That job already runs unconditionally on every push/PR
+      # (not file-scoped), so nothing here duplicates a check that stopped running.

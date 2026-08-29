@@ -21,20 +21,27 @@ addressing-entropy columns the architecture makes normative for any
 cross-architecture cell. A single V3/V2 ratio is not a quality ratio and is not a
 matched-capacity ratio; it is a cost ratio at matched shape.
 
-Usage (GPU work belongs under `flock /tmp/rola_gpu.lock`):
+Usage (invoked BARE -- `main()` takes `gpu_lock()` itself, K46):
 
-    PYTHONPATH=<worktree> python benchmarks/ops/benchmark_rola_v3_layer.py --json out.json
+    PYTHONPATH=<worktree> python benchmarks/bench_layer.py --json out.json
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import sys
 import time
+from pathlib import Path
 
 import torch
 
 from rola import RoLA, RouteProducer, dense_routing, union_routing
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT / "tools") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "tools"))
+from gpu_lock import gpu_lock  # noqa: E402 -- path insert must precede this import
 
 #: Extra warmup iterations paid before ANY cell of the process is timed. MEASURED,
 #: carried over from `benchmark_rola_v3_consumer.py`: a first-cell inflation of ~6x
@@ -282,12 +289,13 @@ def main() -> None:
                          "at::kFloat), so this axis exists to be stated, not swept")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
-    if not torch.cuda.is_available():
-        raise SystemExit("this benchmark requires CUDA")
-    branches = [int(s) for s in args.branches.split(",")]
-    rows = run(reps=args.reps, warmup=args.warmup, L=args.seq_len, B=args.batch,
-               H=args.heads, d_v=args.head_v_dim, branches=branches, router=args.router,
-               logit_gain=args.logit_gain, dtype=getattr(torch, args.dtype))
+    with gpu_lock():
+        if not torch.cuda.is_available():
+            raise SystemExit("this benchmark requires CUDA")
+        branches = [int(s) for s in args.branches.split(",")]
+        rows = run(reps=args.reps, warmup=args.warmup, L=args.seq_len, B=args.batch,
+                   H=args.heads, d_v=args.head_v_dim, branches=branches, router=args.router,
+                   logit_gain=args.logit_gain, dtype=getattr(torch, args.dtype))
 
     print(f"\n=== V3 whole layer, per plane (ms, synchronized wall-clock median of "
           f"{args.reps}) — router={args.router} logit_gain={args.logit_gain} ===")

@@ -1,8 +1,8 @@
 """UNIT BENCH: the entmax solves — the producer's batched multi-level solve.
 
-Invoked WRAPPED (this harness checks that it was):
+Invoked BARE (K46: `bench.discipline.disciplined` takes `gpu_lock()` itself):
 
-    flock /tmp/rola_gpu.lock python benchmarks/unit/bench_entmax.py --tier landing
+    python benchmarks/unit/bench_entmax.py --tier landing
 """
 from __future__ import annotations
 

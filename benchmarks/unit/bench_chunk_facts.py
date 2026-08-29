@@ -1,8 +1,8 @@
 """UNIT BENCH: the facts pass — the union table and the atom-grain write bitmap.
 
-Invoked WRAPPED (this harness checks that it was):
+Invoked BARE (K46: `bench.discipline.disciplined` takes `gpu_lock()` itself):
 
-    flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_facts.py --tier landing
+    python benchmarks/unit/bench_chunk_facts.py --tier landing
 """
 from __future__ import annotations
 

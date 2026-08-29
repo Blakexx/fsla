@@ -47,21 +47,27 @@ in the tree discharges it.
 | their planted-violation tests | **DELIVERED** | `tests/unit/test_chunk_bench_harness.py` — one planted violation per gate, with positive controls |
 | per-cell latency baselines for the chunk arm | **DELIVERED** | `benchmarks/cells/chunk_latency_baseline.json`, recorded whole across seven sessions by `bench_chunk.py baseline --write`; the gate is `tests/unit/test_chunk_latency_regression.py`, which reads and never writes |
 | the frozen cells the baselines are keyed to | **DELIVERED** | `benchmarks/bench/chunk_cells.py` + `benchmarks/cells/chunk_manifest.json` |
-| its own LOCKING STATEMENT | **DELIVERED** | below, and enforced by `require_gpu_lock` |
+| its own LOCKING STATEMENT | **DELIVERED** | below, and enforced by `bench.discipline.disciplined` |
 | a sanitizer measurement for the chunk arm | **STILL OWED** | never existed; see [the sanitizer gap](#the-sanitizer-gap) |
 
-**THE LOCKING STATEMENT.** The chunk-arm harness does **not** take `/tmp/rola_gpu.lock`
-itself. It is invoked WRAPPED —
+**THE LOCKING STATEMENT (K46 -- self-locking, superseding the WRAPPED design this
+paragraph used to describe).** The chunk-arm harness takes `/tmp/rola_gpu.lock` ITSELF
+now, through `tools/gpu_lock.py`'s `gpu_lock()` -- the primitive every GPU entry point
+in this tree uses (`tests/conftest.py`, `tools/probe_cells.py`,
+`tools/sanitize_oracle.py`, `bench.discipline.disciplined`). It is invoked BARE —
 
 ```bash
-flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_facts.py --tier landing
+python benchmarks/unit/bench_chunk_facts.py --tier landing
 ```
 
-— and `bench.discipline.require_gpu_lock` CHECKS that it was, by finding the ancestor
-process holding the lock path open. A bare invocation is a refusal, not a warning. This
-puts the successor on the side of the rule that has no exception left: the `rola-probe`
-self-lock exception retired with `rola-probe`, and nothing in the tree needs it back.
-`bench_chunk.py list` is the one subcommand that reaches no device and needs no lock.
+Before K46 this harness was invoked WRAPPED and `bench.discipline.require_gpu_lock`
+CHECKED that it was, by finding the ancestor process holding the lock path open,
+reasoning that the `rola-probe` self-lock exception retired with `rola-probe` and the
+rule then had no exception left. K46 reverses that call: a caller having to remember
+"under flock" by hand is exactly the rule a tool should enforce itself
+(KERNEL_STANDARDS §18), and `gpu_lock()`'s reentrancy (`ROLA_GPU_LOCK_HELD`) means a
+self-locking tool can safely call another self-locking tool without the K38 deadlock
+that made the WRAPPED design seem necessary in the first place.
 
 **The sanitizer gap.** No sanitizer measurement has ever been taken of the chunk arm, and
 this harness does not add one: `compute-sanitizer` runs a kernel under conditions no timing
@@ -114,7 +120,7 @@ documented.
 
 | step | what happens |
 |---|---|
-| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively; if held, the harness says it is waiting and waits. A harness that takes the lock ITSELF must be invoked BARE — `flock` locks are held per open file description, so wrapping it in the lock it is about to take blocks it forever with no output. That was `rola-probe`'s standing exception to the flock rule; with the harness retired the exception is retired too (`docs/testing.md`), **SUCCESSOR: the other side of it.** The chunk-arm harness is WRAPPED and `bench.discipline.require_gpu_lock` refuses a bare invocation, so nothing in the tree takes this lock itself and the rule has no exception. `ROLA_GPU_LOCK` still MOVES the lock for a caller composing with a genuinely DIFFERENT outer lock. |
+| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively via `tools/gpu_lock.py`'s `gpu_lock()` (K46); if held, the harness waits. The harness is invoked BARE — never wrapped in an external `flock` on the same path, which self-deadlocks (per-open-file-description semantics; the K38 incident). `gpu_lock()` is REENTRANT (`ROLA_GPU_LOCK_HELD`), so a self-locking caller invoking another self-locking tool as a subprocess cannot deadlock either. `ROLA_GPU_LOCK` still MOVES the lock path for a caller composing with a genuinely DIFFERENT outer lock. |
 | memory fraction | `set_per_process_memory_fraction(0.65)`, inside the lock and before the fixture is built — the value the two device-heavy test modules already pin after two whole-machine VRAM freezes |
 | clock settling | `settle_clocks()` — moved to `bench/regression.py` when `bench/instruments.py` went, because `bench_scaling.py` still needs it; **`settled: False` aborts the run.** Clocks cannot be locked from inside WSL2 at all, so targeting the plateau is the only available protocol, not a convenience |
 | tree identity | `git rev-parse` + `git status --porcelain` + `ratify.csrc_digest()`; a dirty tree does not block the run, it stamps `dirty: true`, and dirty rows are excluded from baselines |

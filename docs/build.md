@@ -429,8 +429,28 @@ hooks and `.github/workflows/lint.yml` exactly like clang-format/ruff above:
    device code carries `#pragma unroll 1`, scoped to `__global__`/`__device__`
    function bodies by brace-counting so host launcher loops are out of
    scope), the torch-include check again as a text belt to the ast-grep
-   rule, and `__syncthreads`/`__syncwarp` occurring after decode.cu's
-   `---- THE WALK` marker (P79's law: barriers confined to the prologue).
+   rule, a CTA/grid barrier (`__syncthreads`/`bar.sync`) occurring after
+   decode.cu's `---- THE WALK` marker (P79's law: barriers confined to the
+   prologue; `__syncwarp` is intra-warp and excluded — §12 requires it
+   around warp collectives, it is not the barrier P79's law forbids), and a
+   committed doc/skill/script wrapping a command in an external `flock` on
+   the GPU lock path (K46: every GPU entry point takes `gpu_lock()` itself
+   now, so that spelling never belongs on a command line again — scoped to
+   `docs/`, `.claude/skills/`, `benchmarks/`, `tools/`, `CLAUDE.md`,
+   `README.md`; `docs/KERNEL_STANDARDS.md` is exempted by name for its ad
+   hoc `cuda-gdb` recipe and its general statement of `flock`'s
+   per-filesystem semantics, neither of which is a repo tool this rule
+   governs). K46 item 2 also ported five retired STATIC tests here (RULED
+   2026-08-29: "a check that does not execute the code under test is a
+   lint, not a test" — docs/testing.md): `check_supported_table`,
+   `check_shard_partition` (build-scoped to `BUILD_CONFIG["archs"]`, not a
+   `tools/manifests/` directory glob, so a single-arch iteration build
+   cannot false-fail it), `check_arch_coverage`, `check_vendored_pin`,
+   `check_entmax_pin` — these import `rola`/`entmax`, so run this script
+   with the worktree's own venv on `PATH` (the devcontainer's `python3`
+   already has them; on a bare host, activate the worktree's venv first —
+   `docs/setup.md` "pointer venv" — the same requirement `pre-commit`'s
+   `language: system` hooks inherit from the invoking shell).
    Every finding prints its section, `file:line`, and the incident; the
    script documents its own heuristic misses in its module docstring.
 3. **`tools/lint/run_clang_tidy.sh`** — a conservative `bugprone-*` +
@@ -440,10 +460,20 @@ hooks and `.github/workflows/lint.yml` exactly like clang-format/ruff above:
 Run all three:
 
 ```bash
-ast-grep scan --config sgconfig.yml csrc/
+python3 tools/lint/ast_grep_gate.py       # ast-grep scan --config sgconfig.yml csrc
 python3 tools/lint/lint_standards.py
 tools/lint/run_clang_tidy.sh
 ```
+
+`tools/lint/ast_grep_gate.py` (K46 item 5) is the wrapper: a bare `ast-grep
+scan --config sgconfig.yml` defaults to scanning the whole repo, which
+re-fires every rule's must-fire fixture under `tools/lint/fixtures/` as a
+gating error — the drift that made every stage since K41 bypass the commit
+hook. The wrapper's default mode scopes the scan to `csrc/`;
+`python3 tools/lint/ast_grep_gate.py --test-fixtures` is the separate
+self-test asserting each rule still fires on its own fixture (run it by hand
+after touching `tools/lint/rules/` or `tools/lint/fixtures/`, not on every
+commit).
 
 `pre-commit install` wires all three in (`.pre-commit-config.yaml`), scoped to
 `csrc/`. None is a gate on its own claim of correctness — a hit is a

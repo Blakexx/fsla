@@ -19,12 +19,18 @@ ran, ad hoc, on paging -- K39 card) against ONE named oracle cell per family
 cannot block another, under the GPU lock every campaign shares.
 
 Usage:
-    flock /tmp/rola_gpu.lock python tools/sanitize_oracle.py [--tool TOOL ...]
-        [--family FAMILY ...] [--timeout SECONDS]
+    python tools/sanitize_oracle.py [--tool TOOL ...] [--family FAMILY ...]
+        [--timeout SECONDS]
+
+Invoked BARE (K46): this script takes `gpu_lock()` itself, once, for the whole
+run, exactly the way `tools/probe_cells.py` already did before K46 and every
+other GPU entry point does now -- never wrap it in an external `flock` on the
+same lock path, which self-deadlocks (see `tools/gpu_lock.py`'s module
+docstring for the K38 incident this rule exists to prevent).
 
 Exit code is 0 iff every (family, tool) pair CLEAN. A per-pair timeout (default
 600s) turns a hang into a NAMED failure rather than a stuck lane holding the GPU
-lock forever (KERNEL_STANDARDS §14: "a hang here blocks the whole flock queue for
+lock forever (KERNEL_STANDARDS §14: "a hang here blocks the whole lock queue for
 every other agent").
 """
 from __future__ import annotations
@@ -33,6 +39,8 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+
+from gpu_lock import gpu_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,19 +93,20 @@ def main() -> int:
     families = args.family or list(_FAMILY_TESTS)
 
     failures = []
-    for family in families:
-        for tool in tools:
-            reason = SKIP.get((family, tool))
-            if reason is not None:
-                print(f"SKIP {family}/{tool}: {reason}")
-                continue
-            print(f"RUN  {family}/{tool} ({_FAMILY_TESTS[family]}) ...", flush=True)
-            ok, tail = run_one(args.python, family, tool, args.timeout)
-            status = "CLEAN" if ok else "FAIL"
-            print(f"{status} {family}/{tool}")
-            if not ok:
-                print(tail)
-                failures.append((family, tool))
+    with gpu_lock():
+        for family in families:
+            for tool in tools:
+                reason = SKIP.get((family, tool))
+                if reason is not None:
+                    print(f"SKIP {family}/{tool}: {reason}")
+                    continue
+                print(f"RUN  {family}/{tool} ({_FAMILY_TESTS[family]}) ...", flush=True)
+                ok, tail = run_one(args.python, family, tool, args.timeout)
+                status = "CLEAN" if ok else "FAIL"
+                print(f"{status} {family}/{tool}")
+                if not ok:
+                    print(tail)
+                    failures.append((family, tool))
 
     if failures:
         print(f"\n{len(failures)} sanitizer failure(s): {failures}")

@@ -26,18 +26,30 @@ repos:
       # cannot express -- see docs/build.md's "Standards lint" section and
       # tools/lint/rules/*.yml's messages for the KERNEL_STANDARDS.md section
       # and incident each one guards).
+      #
+      # K46 item 5: `tools/lint/ast_grep_gate.py` scopes the scan to `csrc/`
+      # (its module docstring has the incident -- a bare `ast-grep scan
+      # --config sgconfig.yml` re-fires every rule's must-fire fixture under
+      # tools/lint/fixtures/ as a gating error on every commit).
+      # `python3 tools/lint/ast_grep_gate.py --test-fixtures` is the separate
+      # self-test asserting each fixture still fires; run it by hand or add
+      # it to CI, never as this hook's entry.
       - id: ast-grep-standards
-        name: ast-grep (KERNEL_STANDARDS.md rules)
+        name: ast-grep (KERNEL_STANDARDS.md rules, csrc/ only)
         language: system
-        entry: ast-grep scan --config sgconfig.yml
+        entry: python3 tools/lint/ast_grep_gate.py
         pass_filenames: false
         files: ^csrc/.*\.(cu|cuh|cpp|h|hpp)$
       - id: lint-standards
-        name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue, docs mirror)
+        name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue, docs mirror, no bare-flock GPU lock)
         language: system
         entry: python3 tools/lint/lint_standards.py
         pass_filenames: false
-        files: ^(csrc/rola/.*\.(cu|cuh)|docs/internals/.*\.md)$
+        # K46 widened this from csrc/docs-internals-only: check_no_bare_flock_on_gpu_lock
+        # scans docs/, .claude/skills/, benchmarks/, tools/, CLAUDE.md, README.md too, so
+        # a commit touching any of those must trigger the (whole-repo, pass_filenames:
+        # false) scan, not just a csrc/docs-internals touch.
+        files: ^(csrc/rola/.*\.(cu|cuh)|docs/.*\.md|\.claude/skills/.*\.md|benchmarks/.*\.(py|md)|tools/.*\.(py|sh)|CLAUDE\.md|README\.md)$
       - id: clang-tidy-host
         name: clang-tidy (host-only TUs; SKIPS if no build/temp exists yet)
         language: system

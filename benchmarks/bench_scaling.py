@@ -65,9 +65,9 @@ separately rather than conflated with either.
 the stage that failed, and the sweep continues at the next arm. Nothing is silently
 shrunk.
 
-Usage (GPU work belongs under `flock /tmp/rola_gpu.lock`):
+Usage (invoked BARE -- `main()` takes `gpu_lock()` itself, K46):
 
-    PYTHONPATH=<worktree> python benchmarks/ops/benchmark_rola_v3_scaling.py \
+    PYTHONPATH=<worktree> python benchmarks/bench_scaling.py \
         --seq-lens 512,1024,2048,4096,8192 --json out.json
 """
 from __future__ import annotations
@@ -78,6 +78,7 @@ import json
 import math
 import sys
 import time
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -86,6 +87,11 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from bench.regression import settle_clocks
 from rola import LayerContinuation, RoLA, RouteProducer, union_routing
 from rola import state as rola_state
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT / "tools") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "tools"))
+from gpu_lock import gpu_lock  # noqa: E402 -- path insert must precede this import
 
 #: Carried verbatim from `benchmark_rola_v3_layer.py`: a ~6x first-cell inflation was
 #: MEASURED there (10.8 ms first vs 1.74 ms for the same cell measured second), from
@@ -440,62 +446,63 @@ def main() -> None:
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
-    if not torch.cuda.is_available():
-        raise SystemExit("this benchmark requires CUDA")
-    # Item 0b's protocol, for the reason that item states: this box idles at ~220 MHz
-    # of a ~2100 MHz rating, so the FIRST cell of a sweep is timed on a ramping clock
-    # and the smallest `L` -- the end the honesty rules forbid cherry-picking -- is
-    # exactly the one that inflates. Reported on stderr so the `--json` stdout of a
-    # piped run stays what it was.
-    clock_info = settle_clocks()
-    print(f"clock-settle: {clock_info}", file=sys.stderr)
-    if not clock_info["settled"]:
-        # Gate-1 remediation finding 3: an unsettled clock must not be a silent
-        # precondition failure. Every row this run produces is stamped
-        # `clock_settled: False` below so a reader of the JSON (not just the stderr
-        # log) can see the run's timings are not comparable to a settled baseline.
-        print(f"WARNING: clock did not settle before this sweep: {clock_info}",
-              file=sys.stderr)
+    with gpu_lock():
+        if not torch.cuda.is_available():
+            raise SystemExit("this benchmark requires CUDA")
+        # Item 0b's protocol, for the reason that item states: this box idles at ~220 MHz
+        # of a ~2100 MHz rating, so the FIRST cell of a sweep is timed on a ramping clock
+        # and the smallest `L` -- the end the honesty rules forbid cherry-picking -- is
+        # exactly the one that inflates. Reported on stderr so the `--json` stdout of a
+        # piped run stays what it was.
+        clock_info = settle_clocks()
+        print(f"clock-settle: {clock_info}", file=sys.stderr)
+        if not clock_info["settled"]:
+            # Gate-1 remediation finding 3: an unsettled clock must not be a silent
+            # precondition failure. Every row this run produces is stamped
+            # `clock_settled: False` below so a reader of the JSON (not just the stderr
+            # log) can see the run's timings are not comparable to a settled baseline.
+            print(f"WARNING: clock did not settle before this sweep: {clock_info}",
+                  file=sys.stderr)
 
-    branches = [int(s) for s in args.branches.split(",")]
-    seq_lens = [int(s) for s in args.seq_lens.split(",")]
-    arms = args.arms.split(",")
-    H, d_v, B = args.heads, args.head_v_dim, args.batch
-    hidden = H * d_v
-    rows: list[dict] = []
+        branches = [int(s) for s in args.branches.split(",")]
+        seq_lens = [int(s) for s in args.seq_lens.split(",")]
+        arms = args.arms.split(",")
+        H, d_v, B = args.heads, args.head_v_dim, args.batch
+        hidden = H * d_v
+        rows: list[dict] = []
 
-    for L in seq_lens:
-        for arm in arms:
-            if arm == "v3":
-                row = run_v3_cell(L=L, B=B, H=H, d_v=d_v, branches=branches, hidden=hidden,
-                                  read_router=args.read_router, write_router=args.write_router,
-                                  logit_gain=args.logit_gain,
-                                  paging=args.paging, planes=args.planes,
-                                  reps=args.reps, warmup=args.warmup,
-                                  arm="v3", cell_role="parity (read-dense/write-sparse, "
-                                  "the freeze-defining arm)")
-            elif arm == "v3_sparse_both":
-                row = run_v3_cell(L=L, B=B, H=H, d_v=d_v, branches=branches, hidden=hidden,
-                                  read_router="entmax", write_router="entmax",
-                                  logit_gain=args.logit_gain,
-                                  paging=args.paging, planes=args.planes,
-                                  reps=args.reps, warmup=args.warmup,
-                                  arm="v3_sparse_both",
-                                  cell_role="DIAGNOSTIC: sparse-both (item 0's original "
-                                  "cell; the easy regime, not the freeze arm)")
-            elif arm.startswith("fa_"):
-                backend = arm[3:]
-                dtype = torch.bfloat16 if backend == "flash" else torch.float32
-                row = run_fa_cell(L=L, B=B, H=H, d_head=d_v, hidden=hidden, dtype=dtype,
-                                  backend=backend, reps=args.reps, warmup=args.warmup)
-            else:
-                raise SystemExit(f"unknown arm {arm!r}")
-            row["clock_settled"] = clock_info["settled"]
-            rows.append(row)
-            print(json.dumps(row), flush=True)
-            if args.json:  # write incrementally: an OOM later must not lose earlier rows
-                with open(args.json, "w") as handle:
-                    json.dump(rows, handle, indent=2)
+        for L in seq_lens:
+            for arm in arms:
+                if arm == "v3":
+                    row = run_v3_cell(L=L, B=B, H=H, d_v=d_v, branches=branches, hidden=hidden,
+                                      read_router=args.read_router, write_router=args.write_router,
+                                      logit_gain=args.logit_gain,
+                                      paging=args.paging, planes=args.planes,
+                                      reps=args.reps, warmup=args.warmup,
+                                      arm="v3", cell_role="parity (read-dense/write-sparse, "
+                                      "the freeze-defining arm)")
+                elif arm == "v3_sparse_both":
+                    row = run_v3_cell(L=L, B=B, H=H, d_v=d_v, branches=branches, hidden=hidden,
+                                      read_router="entmax", write_router="entmax",
+                                      logit_gain=args.logit_gain,
+                                      paging=args.paging, planes=args.planes,
+                                      reps=args.reps, warmup=args.warmup,
+                                      arm="v3_sparse_both",
+                                      cell_role="DIAGNOSTIC: sparse-both (item 0's original "
+                                      "cell; the easy regime, not the freeze arm)")
+                elif arm.startswith("fa_"):
+                    backend = arm[3:]
+                    dtype = torch.bfloat16 if backend == "flash" else torch.float32
+                    row = run_fa_cell(L=L, B=B, H=H, d_head=d_v, hidden=hidden, dtype=dtype,
+                                      backend=backend, reps=args.reps, warmup=args.warmup)
+                else:
+                    raise SystemExit(f"unknown arm {arm!r}")
+                row["clock_settled"] = clock_info["settled"]
+                rows.append(row)
+                print(json.dumps(row), flush=True)
+                if args.json:  # write incrementally: an OOM later must not lose earlier rows
+                    with open(args.json, "w") as handle:
+                        json.dump(rows, handle, indent=2)
 
     print("\n=== latency vs L (synchronized wall-clock median) ===")
     for r in rows:

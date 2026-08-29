@@ -34,7 +34,7 @@ numbers or names as if they generalize to every brief.
    (per the exemplar's own step on removed vs. kept rows: a row kept "as a commented row" is NOT
    allowed — delete). If something is deferred to a later stage, say which stage, don't half-build
    it now.
-8. **Gates**, named exactly (§16 SMALL): the oracle test file(s) + GPU-flock command
+8. **Gates**, named exactly (§16 SMALL): the oracle test file(s) + the bare GPU-locked command
    (`rola-oracle-tests`), the perf probe cells and its pass bar (`rola-probe`), what SASS comparison
    IS and ISN'T expected (state it explicitly per-brief — never assume identical-to-parent unless
    the mechanism is unchanged), the exact commit message, and the compile ledger (`rola-build`).

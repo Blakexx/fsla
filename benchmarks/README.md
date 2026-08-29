@@ -32,15 +32,17 @@ whether a difference is real; `ledger.py` is where the number lives afterwards;
 rows are medians and IQRs over SEVEN SESSION MEDIANS, because the gate's comparison crosses
 two processes and a within-session block IQR does not bound that gap (`docs/measurement.md`).
 
-**THE LOCK: this harness is invoked WRAPPED, and it checks that it was.**
+**THE LOCK: this harness takes it itself (K46), and every driver is invoked BARE.**
+`bench.discipline.disciplined` holds `tools/gpu_lock.py`'s `gpu_lock()` for its whole
+body; never wrap a driver in an external `flock` on the same path (self-deadlocks).
+(`bench_chunk.py`, the front door these example lines used to name, was deleted in K31
+per the callout box above — the roster now runs through the per-kernel drivers below.)
 
 ```bash
-python benchmarks/bench_chunk.py list                                    # no device, no lock
-flock /tmp/rola_gpu.lock python benchmarks/bench_chunk.py manifest
-flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_forward.py --tier landing
-flock /tmp/rola_gpu.lock python benchmarks/bench_chunk.py run --ab chunk_forward@chunk-p73-pinned:chunk_forward@chunk-sparse-gain8
-flock /tmp/rola_gpu.lock python benchmarks/bench_chunk.py baseline --write   # 7 child sessions
-flock /tmp/rola_gpu.lock python benchmarks/bench_chunk.py gate               # reads, never writes
+python benchmarks/unit/bench_chunk_facts.py --tier landing
+python benchmarks/unit/bench_block_bits.py --tier landing
+python benchmarks/unit/bench_entmax.py --tier landing
+python benchmarks/unit/bench_decode_step.py --tier landing
 ```
 
 `benchmarks/bench_layer.py`, `bench_scaling.py` and `bench_paging.py` predate this harness

@@ -9,9 +9,9 @@ line is citable and a row's `arm` field reads the same way. `--ab A:B` runs the 
 interleaved rep by rep through `bench.pairing.interleaved_ab`; without it each spec is
 measured alone, which is the BASELINE mode.
 
-Usage (this harness is invoked WRAPPED; it checks that it was):
+Usage (invoked BARE -- `bench.discipline.disciplined` takes `gpu_lock()` itself, K46):
 
-    flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_facts.py --tier landing
+    python benchmarks/unit/bench_chunk_facts.py --tier landing
 """
 from __future__ import annotations
 

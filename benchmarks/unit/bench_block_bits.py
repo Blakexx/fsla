@@ -1,8 +1,8 @@
 """UNIT BENCH: the block bits — the block-grain liveness reduction the sparse grid launches over.
 
-Invoked WRAPPED (this harness checks that it was):
+Invoked BARE (K46: `bench.discipline.disciplined` takes `gpu_lock()` itself):
 
-    flock /tmp/rola_gpu.lock python benchmarks/unit/bench_block_bits.py --tier landing
+    python benchmarks/unit/bench_block_bits.py --tier landing
 """
 from __future__ import annotations
 

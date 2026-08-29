@@ -7,20 +7,25 @@ measuring -- and each has a planted-violation row in
 the retired harness gate (K31; baseline = tag `baseline/pre-k31`). The reasoning behind each gate is
 `docs/measurement.md`; what lives here is the enforcement.
 
-**THE LOCKING STATEMENT (`docs/testing.md` requires the successor to make one).** This
-harness does NOT take `/tmp/rola_gpu.lock` itself. It is invoked WRAPPED --
+**THE LOCKING STATEMENT (K46, superseding the WRAPPED design `docs/testing.md` used
+to require).** This harness takes `gpu_lock()` ITSELF now, the same primitive every
+other GPU entry point uses (`tools/gpu_lock.py`, `tests/conftest.py`,
+`tools/probe_cells.py`, `tools/sanitize_oracle.py`) -- it is invoked BARE:
 
-    flock /tmp/rola_gpu.lock python benchmarks/unit/bench_chunk_facts.py
+    python benchmarks/unit/bench_chunk_facts.py
 
--- and :func:`require_gpu_lock` CHECKS that it was, by finding an ancestor process that
-holds the lock path open. Running bare is a refusal. The retired `rola-probe` took the
-lock itself and therefore needed the standing rule's one exception; that exception is
-retired with it, so this harness puts itself on the side of the rule that has no
-exception left.
+Before K46 this harness was invoked WRAPPED (an external `flock` on the GPU lock
+path around the whole command) and `require_gpu_lock` REFUSED a bare invocation by
+checking that an ancestor process
+held the lock path open. That design was the deliberate OPPOSITE of `tools/probe_cells.py`'s
+self-locking one, reasoned as "the rule has no exception left" -- but it meant every
+brief had to restate "under flock" correctly by hand, which is exactly the kind of rule
+a tool should enforce rather than a caller remember (KERNEL_STANDARDS §18: "tools
+refuse, they do not choose"). `disciplined()` below now holds `gpu_lock()` for its
+whole body.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import time
@@ -34,10 +39,9 @@ from bench.regression import provenance, settle_clocks
 
 ROOT = Path(__file__).resolve().parents[2]
 
-#: THE IN-TREE LOCK. One path, one spelling: `flock` is advisory and keyed on a name, so
-#: a second spelling excludes nobody. `ROLA_GPU_LOCK` MOVES the lock for a caller
-#: composing with a genuinely different outer lock; it cannot disable the check.
-LOCK_PATH = os.environ.get("ROLA_GPU_LOCK", "/tmp/rola_gpu.lock")
+if str(ROOT / "tools") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tools"))
+from gpu_lock import gpu_lock  # noqa: E402 -- path insert must precede this import
 
 #: The fraction the device-heavy test modules already pin, after two whole-machine VRAM
 #: freezes. Applied before the first fixture allocates.
@@ -46,47 +50,6 @@ MEMORY_FRACTION = 0.65
 #: `light` is the quick answer during a batch; `landing` collects enough rounds for the
 #: paired test to be able to reach its alpha (`bench.stats.MIN_ROUNDS`).
 TIERS = ("light", "landing")
-
-
-def _ancestor_holding(path: str) -> int | None:
-    """The pid of an ancestor process that has `path` open, if any.
-
-    `flock` locks are held per open file description, so the wrapper's descriptor is
-    inherited-visible in `/proc/<pid>/fd` for exactly the ancestors that took it.
-    """
-    target = os.path.realpath(path)
-    pid = os.getppid()
-    while pid > 1:
-        try:
-            for entry in os.scandir(f"/proc/{pid}/fd"):
-                try:
-                    if os.path.realpath(entry.path) == target:
-                        return pid
-                except OSError:
-                    continue
-            with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
-                pid = next(int(line.split()[1]) for line in fh if line.startswith("PPid:"))
-        except (OSError, StopIteration):
-            return None
-    return None
-
-
-def require_gpu_lock(path: str = LOCK_PATH) -> int:
-    """REFUSE to measure on a device this process was not given exclusively.
-
-    The wrapper is the lock; this is the proof that the wrapper is there. A shared device
-    does not fail the run, it inflates it -- silently, and only sometimes, which is the
-    shape of a measurement that cannot be reproduced or defended.
-    """
-    holder = _ancestor_holding(path)
-    if holder is None:
-        raise SystemExit(
-            f"REFUSING TO MEASURE: no ancestor of this process holds {path}. This harness "
-            f"is invoked WRAPPED, never bare:\n"
-            f"    flock {path} <this command>\n"
-            f"(docs/testing.md, 'the lock'). ROLA_GPU_LOCK moves the path for a caller "
-            f"composing with a different outer lock; it cannot switch the check off.")
-    return holder
 
 
 def _extension_in_this_checkout() -> str:
@@ -197,14 +160,14 @@ def _git_state():
 
 @contextmanager
 def disciplined(*, tier: str, cmd: str):
-    """Lock proof, memory fraction, stamped identity, settled clock -- in that order.
+    """The lock, memory fraction, stamped identity, settled clock -- in that order.
 
-    The memory fraction is applied under the proven lock and before any fixture is built,
-    because it bounds this process's share of a device another process may still be
-    releasing.
+    `gpu_lock()` is held for this whole context (K46): the memory fraction is applied
+    under it and before any fixture is built, because it bounds this process's share of
+    a device another process may still be releasing.
     """
-    require_gpu_lock()
-    if not torch.cuda.is_available():
-        raise SystemExit("no CUDA device; this harness measures a CUDA kernel")
-    torch.cuda.set_per_process_memory_fraction(MEMORY_FRACTION)
-    yield Run(tier=tier, cmd=cmd)
+    with gpu_lock():
+        if not torch.cuda.is_available():
+            raise SystemExit("no CUDA device; this harness measures a CUDA kernel")
+        torch.cuda.set_per_process_memory_fraction(MEMORY_FRACTION)
+        yield Run(tier=tier, cmd=cmd)

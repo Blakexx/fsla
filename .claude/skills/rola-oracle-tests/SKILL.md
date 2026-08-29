@@ -24,17 +24,20 @@ The key design points to preserve when adding a new cell:
   assume a parity rule without checking it, since it's a design choice recorded there, not a law.
 
 ## Running under the GPU lock
-GPU work is serialized under `flock /tmp/rola_gpu.lock` — every campaign, not just this suite (see
-`development/operations/OPERATIONS.md`). Run a NAMED file, never the bare directory:
+GPU work is serialized by the shared `gpu_lock()` primitive (`tools/gpu_lock.py`, K46) — every
+campaign, not just this suite (see `development/operations/OPERATIONS.md`). pytest takes it itself
+via a session-scoped fixture in `tests/conftest.py`; invoke BARE, never wrap the command in an
+external `flock` on the same lock path (self-deadlocks — K38). Run a NAMED file, never the bare
+directory:
 ```bash
-flock /tmp/rola_gpu.lock env TMP=/tmp TEMP=/tmp TMPDIR=/tmp CUDA_HOME=/usr/local/cuda \
+env TMP=/tmp TEMP=/tmp TMPDIR=/tmp CUDA_HOME=/usr/local/cuda \
   PYTHONPATH=. TORCH_EXTENSIONS_DIR=/tmp/<task>-ext <venv>/bin/python -m pytest \
   <exact test file(s)> -x -q
 ```
 `tests/test-gate-mechanical-rules`: the global hook DENIES an unscoped `pytest tests/` — VRAM
 freezes have come from exactly that. Briefs must name the exact file(s); never widen a gate command
 past what the stage touched. Add a `--timeout` (pytest-timeout or a shell `timeout N`) around any
-GPU run you don't already trust — a hang here blocks the whole flock queue for every other agent.
+GPU run you don't already trust — a hang here blocks the whole lock queue for every other agent.
 
 ## Requesting an arm — `require_arm`, never a bare dispatch call
 Read `require_arm`'s docstring/signature for its current parameters. It SKIPS (and names the exact
@@ -65,8 +68,10 @@ truth (the fp64 reference in `tests/oracle/reference.py`).
 ## The compute-sanitizer named gate (K39)
 `tools/sanitize_oracle.py` runs `racecheck`/`synccheck`/`initcheck` (memcheck already ran, ad hoc,
 on paging — `docs/testing.md`'s "sanitizer lane") against one named cell per family (carry, intra,
-decode), each its own `compute-sanitizer`-wrapped pytest process under `flock /tmp/rola_gpu.lock`.
-Run it — it is a SCHEDULED lane, not a PR gate (the tools cost one to two orders of magnitude) —
+decode), each its own `compute-sanitizer`-wrapped pytest process. Invoke `sanitize_oracle.py` BARE
+(K46): it takes `gpu_lock()` itself, once, for the whole run, and the reentrant marker lets the
+wrapped pytest subprocess's own conftest fixture see the lock already held rather than deadlock on
+it. Run it — it is a SCHEDULED lane, not a PR gate (the tools cost one to two orders of magnitude) —
 whenever a change touches shared-memory publish/consume protocols or barrier placement (the S2d
 ring's bug class), not on every commit.
 

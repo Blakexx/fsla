@@ -26,7 +26,7 @@ list, the macro and the shard all come from `FACTS_ARMS`.
 
 The files are CHECKED IN, not built: what is reviewed is what compiles
 (closed-world codegen policy). `--check` regenerates into memory and diffs,
-which is what CI and `tests/unit/test_shard_partition.py` run.
+which is what CI and `tools/lint/lint_standards.py::check_shard_partition` run.
 
 Usage:
 
@@ -147,8 +147,8 @@ FACTS_ARMS: tuple = (
 #: (the identity) and a level a side spans whole emitting no rows.  A bitlist is voted
 #: from ONE side's factors, so the two sides' tables are independent and holding the
 #: finer partition for both bought nothing.  These are the `rola::carry` family's rows,
-#: so the list mirrors the carry's built arms; `tests/unit/test_shard_partition.py` is
-#: where the two lists are held together.
+#: so the list mirrors the carry's built arms; `tools/lint/lint_standards.py::
+#: check_shard_partition` is where the two lists are held together.
 #:
 #: DERIVED FROM `CARRY_ARMS` (K41) -- NOT A SECOND HAND ENUMERATION.  Until K41 this was
 #: a hand-written tuple, the exact drift shape this file's own header warns about: it bit

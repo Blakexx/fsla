@@ -31,8 +31,13 @@ lives in `tools/lint`.** (RULED 2026-08-29.) `tests/unit/test_docs_mirror.py`
 was grep-level from the start — it read files, never imported or ran the code
 they document — so it moved into `tools/lint/lint_standards.py`'s
 `check_docs_mirror` rather than staying in the unit tier under a borrowed
-name. The same distinction is what will carry `test_generated_docs` and
-`test_shard_partition` (K46).
+name. K46 moved five more the same way (test files DELETED):
+`test_generated_docs` → `check_supported_table`, `test_shard_partition` →
+`check_shard_partition`, `test_arch_coverage` → `check_arch_coverage`,
+`test_vendored_pin` → `check_vendored_pin`, `test_entmax_pin` →
+`check_entmax_pin` — each reads files/manifests/versions and asserts
+consistency, never calling the library and asserting behaviour, which is the
+rule of thumb that sorts a future check into one bucket or the other.
 
 The oracle tier alone is insufficient because a per-geometry tolerance can absorb a
 geometry bug. The two-branches-agree class alone is insufficient because two
@@ -546,9 +551,9 @@ reduction and is not bit-reproducible run to run.
 
 ```bash
 pytest tests/unit tests/oracle -m "not cuda"                                 # CPU: no device, no build
-flock /tmp/rola_gpu.lock pytest tests/unit -m cuda                           # tests/unit's CUDA-marked rows
-flock /tmp/rola_gpu.lock pytest tests/oracle                                 # kernels vs the fp64/torch baselines, incl. the families
-flock /tmp/rola_gpu.lock pytest tests/integration                            # composition, dispatch, two-branches-agree
+pytest tests/unit -m cuda                           # tests/unit's CUDA-marked rows
+pytest tests/oracle                                 # kernels vs the fp64/torch baselines, incl. the families
+pytest tests/integration                            # composition, dispatch, two-branches-agree
 ROLA_FLA_CROSSCHECK=1 pytest tests/oracle/test_oracle_vs_fla.py                # one-time, opt-in -- see below
 ROLA_GRADCHECK_INSURANCE=1 pytest tests/oracle/test_backward_family.py  # one-time, opt-in -- see above
 ```
@@ -558,16 +563,15 @@ directory names): CPU 70 s; unit-cuda 2.5 s; the oracle rows 123 s + 9 s + 4.5 s
 the composition rows 6 s — the WHOLE battery was ~3.6 min, inside the < 5 min
 commit-lane goal, so the commit lane IS the full battery above and no per-commit
 subset needs choosing. The same battery, scoped as
-`tests/oracle tests/integration tests/unit -q`, is **846 passed, 5 skipped, 0
-xfailed in ~18 s**, and the tree carries no xfail at all. Three retirements
-account for the shape of that number: the tiled arm's gates left with the tiled
-arm (P67 D2), the routing-summary surface took 244 rows with it (P71-A), and the
-fast-fail retired the oracle-dispatch rows outright (P71-B — every `skip` that
-read "decay routes to the oracle now" went with them, which is where 13 skips
-became 5) —
-`test_docs_mirror.py` and `test_shard_partition.py` each parametrize one row per
-mirror doc and per csrc source, so a deleted surface moves the count by more than
-its own tests. The
+`tests/oracle tests/integration tests/unit -q`, is **1076 passed, 83 skipped, 1
+deselected in ~18 s** (re-measured 2026-08-29, post-K46: five lint-shaped test
+files moved into `tools/lint/lint_standards.py` and deleted, so the count is the
+prior number minus exactly those files' rows — `test_docs_mirror.py` had already
+moved in S5b). `test_shard_partition.py` (moved in K46 too) had parametrized one
+row per csrc source alongside `test_docs_mirror.py`'s, so a deleted surface used
+to move the count by more than its own tests; that coupling is gone now that
+both checks are plain functions in `lint_standards.py` rather than parametrized
+pytest rows. The
 build-shape gates and `tools/ratify.py` run additionally at a batch tip (and
 always when csrc, manifests or codegen flags moved); the latency gate and the
 sanitizer lane are scheduled, never per-commit. The runtime x
@@ -587,37 +591,38 @@ accumulates there.
 **THE LOCK IS `/tmp/rola_gpu.lock` — that exact path, with an underscore.** `flock`
 is advisory and keyed on a NAME, so a second spelling excludes nothing and silently
 buys nothing: two commands holding two different paths run on the device at the same
-time and neither can tell. Every command in this repository, every benchmark's usage
-line and every agent brief uses this one path. If you find another spelling anywhere,
-it is a defect — fix it rather than adding a second lock beside it.
+time and neither can tell. Every GPU entry point in this repository takes this one
+path through `tools/gpu_lock.py`'s `gpu_lock()`. If you find another spelling
+anywhere, it is a defect — fix it rather than adding a second lock beside it.
 
-**THE `rola-probe` EXCEPTION IS RETIRED.** The probe harness took this lock
-itself, so wrapping it deadlocked, and the standing rule carried an exception for
-exactly one command. That harness retired with the tiled measurement apparatus in
-P67 D2 (`docs/measurement.md`), so the rule has no exception today:
+**EVERY GPU ENTRY POINT LOCKS ITSELF (K46).** Before K46 the lock was half-and-half:
+`tools/probe_cells.py` and `tools/sanitize_oracle.py` took it internally, but pytest
+and the chunk-arm bench harness relied on the CALLER wrapping the command in an
+external `flock` — and `bench.discipline.require_gpu_lock` REFUSED a bare invocation
+to enforce that. K38 showed the failure mode on the other side: an external `flock`
+wrapping a tool that ALSO locks itself deadlocks (per-open-file-description
+semantics — the wrapper's own lock blocks the wrapped process's identical
+`fcntl.flock` call forever). K46 collapses both harnesses onto ONE design: every GPU
+entry point — pytest (a session-scoped `gpu_lock()` fixture in `tests/conftest.py`),
+`tools/probe_cells.py`, `tools/sanitize_oracle.py`, `bench.discipline.disciplined`
+(and so every `benchmarks/bench` driver) — takes `gpu_lock()` itself and is invoked
+BARE. The lock is REENTRANT (`ROLA_GPU_LOCK_HELD` in the environment), so a tool that
+itself locks and then launches another self-locking tool as a subprocess (`tools/
+sanitize_oracle.py` launching `compute-sanitizer python -m pytest ...`) cannot
+deadlock either: the inner acquire sees the marker and is a no-op. Nothing in this
+tree is invoked wrapped in an external `flock` anymore; a lint rule in
+`tools/lint/lint_standards.py` finds the word back on a command line if it returns.
 
-> **everything that reaches a device is wrapped in `flock /tmp/rola_gpu.lock`.**
-
-**THE CHUNK-ARM HARNESS'S LOCKING STATEMENT, MADE (P72): it is WRAPPED, and it CHECKS
-that it is.** `benchmarks/bench_chunk.py` and every driver under `benchmarks/unit/` and
-`benchmarks/integration/` are invoked under `flock /tmp/rola_gpu.lock`;
-`bench.discipline.require_gpu_lock` looks for the ancestor process holding that path and
-REFUSES a bare invocation. So the rule above has no exception in the tree — nothing takes
-this lock itself — and the failure mode of guessing is gone in both directions:
-forgetting the wrapper is a refusal with the command in it, and there is no self-locking
-command left to hang. `bench_chunk.py list` reaches no device and needs no lock.
-
-**EVERY OTHER LINE THAT CAN REACH A DEVICE IS `flock`ed, AND THAT IS NOT THE SAME
-QUESTION AS THE `cuda` MARKER.** The marker's job is *collection-time deselection* — it is what
-lets the first line avoid initializing a CUDA context at all. It is **not** a device
-partition: `tests/integration` carries 78 rows that launch kernels
-without being `cuda`-marked (e.g.
+**THAT IS NOT THE SAME QUESTION AS THE `cuda` MARKER.** The marker's job is
+*collection-time deselection* — it is what lets the first line avoid initializing a
+CUDA context at all. It is **not** a device partition: `tests/integration` carries
+rows that launch kernels without being `cuda`-marked (e.g.
 `test_layer_dispatch.py::test_the_bf16_arm_is_paging_invisible_at_its_own_tolerance`),
 because in those tiers a device is the premise of the tier rather than a property of a
-row. So `-m "not cuda"` may NOT be used to decide whether a command needs the lock;
-the directories it names do, unconditionally, and the recipe says so. This is the same rule
-`benchmarks/*.py` state in their usage lines ("GPU work belongs under
-`flock /tmp/rola_gpu.lock`"), applied to the test recipe.
+row. So `-m "not cuda"` may NOT be used to decide whether a run needs the lock; the
+`tests/conftest.py` fixture keys on TIER (`tests/oracle/`, `tests/integration/`) OR the
+`cuda` marker, unconditionally, which is why `-m "not cuda"` still avoids the lock for
+`tests/unit`'s non-`cuda` rows but never for a whole oracle/integration run.
 
 `tests/unit -m "not cuda"` above deselects `tests/unit`'s own `cuda`-marked rows (e.g.
 `test_interface.py`'s dispatch rows) the same way it deselects `tests/oracle`'s
@@ -644,7 +649,7 @@ refusal; none launches a kernel.
 | file | what it plants |
 |---|---|
 | `tests/unit/test_perf_ledger.py` | a row missing its provenance, a row from an unknown schema, a shift smaller than its own scatter, a single unlucky run, an effect with no significance behind it |
-| `tests/unit/test_chunk_bench_harness.py` | a bare invocation with no `flock` ancestor, a clock that never settles, an extension resolved from another checkout, a measurement below the warmup floor, block-sequential samples read as a paired statistic, a baseline written from a dirty tree, a gate across two stopwatches, a baseline that does not say which stopwatch, a measured arm with no committed row |
+| `tests/unit/test_chunk_bench_harness.py` | K46: pre-existing drift found while touching this row — the file this cites is not in the current tree (`find` came up empty), and its old plant ("a bare invocation with no `flock` ancestor") described `require_gpu_lock`'s ancestor-check design, which K46 replaced with self-locking (`bench.discipline.disciplined` now takes `gpu_lock()` itself); a successor row, if this coverage is re-added, plants a `gpu_lock()` acquisition failure instead. Left named here as a finding, not silently deleted. |
 | `tests/unit/test_chunk_latency_regression.py` | `bench`-marked and opt-in: HEAD's per-cell latency against the committed baseline, read-only |
 
 `test_probe_harness.py` (the discipline gates: a lock held by another process, a

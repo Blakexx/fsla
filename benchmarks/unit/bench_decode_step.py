@@ -1,8 +1,8 @@
 """UNIT BENCH: one carried single-token decode step.
 
-Invoked WRAPPED (this harness checks that it was):
+Invoked BARE (K46: `bench.discipline.disciplined` takes `gpu_lock()` itself):
 
-    flock /tmp/rola_gpu.lock python benchmarks/unit/bench_decode_step.py --tier landing
+    python benchmarks/unit/bench_decode_step.py --tier landing
 """
 from __future__ import annotations
 

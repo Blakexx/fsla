@@ -22,12 +22,14 @@ Checks:
      macro-guarded or unusually-formatted include cannot hide from either
      check.
   3. NO __syncthreads AFTER THE DECODE PROLOGUE (P79's law, ledger
-     2026-08-27: "11 barriers, all in the prologue ... 0 after it"). The
-     marker is decode.cu's own section comment `// ---- THE WALK`; every
-     `__syncthreads`/`__syncwarp` after that line is a finding for Blake to
-     rule on (some may be the fold/combine barriers the walk's cross-warp
-     reduction legitimately needs -- this script does not adjudicate that,
-     it only locates them against the law's own stated marker).
+     2026-08-27: "11 barriers, all in the prologue ... 0 after it"; scope
+     fixed 2026-08-29 K46 item 3 -- P79's law is about CTA/grid barriers,
+     never about `__syncwarp`, which is intra-warp and which §12 REQUIRES
+     around a warp collective). The marker is decode.cu's own section
+     comment `// ---- THE WALK`; every `__syncthreads`/`bar.sync` (and any
+     cluster/grid barrier) after that line is a finding for Blake to rule on
+     -- `__syncwarp` after the marker is NOT a finding, it is §12's fence
+     doing its job.
 
 HEURISTIC LIMITS (check 1):
   - "Device code" is found by brace-counting from each `__global__`/`__device__`
@@ -45,9 +47,12 @@ HEURISTIC LIMITS (check 1):
     positive the script cannot avoid without a real preprocessor+compiler
     front end); a `#define BOUND 64` used as `i < BOUND` reads as constexpr
     correctly only because BOUND matches the ALL_CAPS heuristic.
-  - Only the closing `#pragma unroll[ 1]` is checked, and only on the lines
-    immediately above the loop (comments in between are skipped, anything
-    else breaks the search). A pragma placed elsewhere (e.g. hoisted above an
+  - Only an explicit `#pragma unroll <N>` (any measured integer factor, not
+    just `1`) directly above the loop counts -- a BARE `#pragma unroll` (no
+    factor: full unroll, left to the compiler) does not, and neither does no
+    pragma at all. Checked only on the lines immediately above the loop
+    (comments in between are skipped, anything else breaks the search). A
+    pragma placed elsewhere (e.g. hoisted above an
     unrelated statement) is invisible to this check.
   - Loop headers spanning multiple lines are matched as best-effort: the
     stop-expression regex runs on the concatenation of up to 3 lines from the
@@ -92,12 +97,24 @@ FOR_STOP_RE = re.compile(r"for\s*\([^;]*;\s*([^;]*);")
 WHILE_COND_RE = re.compile(r"while\s*\((.*)\)\s*\{?\s*$")
 REL_BOUND_RE = re.compile(r"[<>]=?\s*(.+?)\s*$")
 
-PRAGMA_UNROLL_RE = re.compile(r"^\s*#pragma\s+unroll(\s+1)?\s*$")
+#: `unroll 1` (no unrolling) is the common case, but §6's actual requirement is an
+#: EXPLICIT pragma on a dynamic-bound loop, not that specific factor -- a bare
+#: `#pragma unroll <N>` for any measured N also satisfies it (decode.cu's
+#: `n_live` loop, docs/internals/decode/decode.md#decode-step-kernel-note-l655:
+#: "at 1 it is a correctness [performance] defect on this loop, not a style
+#: choice" -- unroll 8 there is measured, not a default left to the compiler).
+PRAGMA_UNROLL_RE = re.compile(r"^\s*#pragma\s+unroll(\s+\d+)?\s*$")
 COMMENT_LINE_RE = re.compile(r"^\s*//")
 
 TORCH_INCLUDE_RE = re.compile(r'#include\s*<\s*torch/')
 
-SYNC_RE = re.compile(r"__syncthreads\s*\(|__syncwarp\s*\(")
+#: P79's law is about CTA/grid barriers only (`__syncthreads`, PTX `bar.sync`,
+#: and a cluster/grid barrier such as `cluster.sync()`/`grid.sync()`);
+#: `__syncwarp` is intra-warp and is §12's REQUIRED fence around a warp
+#: collective, never this rule's concern (K46 item 3 -- the rule's one
+#: remaining finding after MERGE-D1 was decode.cu:722's `__syncwarp`).
+SYNC_RE = re.compile(
+    r"__syncthreads\s*\(|\bbar\.sync\b|(?:cluster|grid)\s*\.\s*sync\s*\(")
 WALK_MARKER_RE = re.compile(r"----\s*THE WALK")
 
 
@@ -548,8 +565,502 @@ def check_docs_mirror() -> list[str]:
     return findings
 
 
+#: K46: "the word `flock` leaves the process" -- every GPU entry point now takes
+#: `tools/gpu_lock.py`'s `gpu_lock()` ITSELF, so no committed doc/skill/script should
+#: ever again tell a reader to wrap a command in an external `flock` on the GPU lock
+#: path (that is exactly the K38 self-deadlock shape). A COMMAND LINE is what this
+#: catches -- a line that, once backticks/leading whitespace are stripped, STARTS
+#: with the literal token `flock` naming the GPU lock path; a PROSE mention (a
+#: warning against doing this, or a general statement about `flock`'s per-filesystem
+#: semantics) is not on a line whose own first token is the command, so it is not a
+#: false positive here in practice -- see the exemptions below for the two places
+#: that would still trip a purely first-token check.
+FLOCK_GPU_LOCK_RE = re.compile(r"^\s*`{0,3}\s*flock\s+\S*rola_gpu")
+
+#: docs/KERNEL_STANDARDS.md carries two legitimate mentions this check would
+#: otherwise flag: an ad hoc `cuda-gdb` debugging recipe (a human wrapping an
+#: interactive THIRD-PARTY binary that has no `gpu_lock()` of its own to call --
+#: outside "every GPU entry point" this rule is about) and a general statement of
+#: `flock`'s per-filesystem semantics (still true, unrelated to who calls it). It
+#: is the constitution, edited only by ruling, so it is exempted by name rather than
+#: taught a narrower regex.
+FLOCK_CHECK_EXEMPT_FILES = {ROOT / "docs" / "KERNEL_STANDARDS.md"}
+
+#: "docs, skills, scripts" (the K46 card's own words): committed prose and recipes an
+#: agent or contributor reads and might copy-paste, not generated/vendored trees.
+FLOCK_CHECK_ROOTS = (
+    ROOT / "docs",
+    ROOT / ".claude" / "skills",
+    ROOT / "benchmarks",
+    ROOT / "tools",
+    ROOT / "CLAUDE.md",
+    ROOT / "README.md",
+)
+FLOCK_CHECK_SUFFIXES = (".md", ".py", ".sh")
+
+
+def _flock_check_files():
+    for root in FLOCK_CHECK_ROOTS:
+        if root.is_file():
+            yield root
+            continue
+        if not root.is_dir():
+            continue
+        for suf in FLOCK_CHECK_SUFFIXES:
+            for p in root.rglob(f"*{suf}"):
+                if "third_party" in p.parts or "docs/internals" in str(p.relative_to(ROOT)):
+                    continue
+                yield p
+
+
+def check_no_bare_flock_on_gpu_lock() -> list[str]:
+    findings = []
+    for path in _flock_check_files():
+        if path in FLOCK_CHECK_EXEMPT_FILES:
+            continue
+        for idx, line in enumerate(path.read_text().splitlines(), start=1):
+            if FLOCK_GPU_LOCK_RE.match(line):
+                findings.append(
+                    f"K46 'the word flock leaves the process': {path.relative_to(ROOT)}:{idx}: "
+                    f"a command line wraps the GPU lock in an external `flock` -- every GPU "
+                    f"entry point takes `gpu_lock()` itself now (tools/gpu_lock.py); invoke "
+                    f"BARE -- {line.strip()!r}"
+                )
+    return findings
+
+
+#: K46 item 2 (Blake, 2026-08-29 "lints in test clothing"): a check that reads
+#: files/manifests/versions and asserts consistency is a LINT, not a test -- moved
+#: here, test file DELETED, from: test_generated_docs.py, test_shard_partition.py,
+#: test_arch_coverage.py, test_vendored_pin.py, test_entmax_pin.py
+#: (test_docs_mirror.py already moved, S5b -- `check_docs_mirror` above).
+_TOOLS_DIR = ROOT / "tools"
+
+
+def check_supported_table() -> list[str]:
+    """Ported from tests/unit/test_generated_docs.py (deleted). `tools/supported.py`
+    derives README's support table from `arch_caps.cuh` (tabulated) and
+    `tools/manifests/` (ratified); this checks the committed table matches what the
+    generator produces NOW, that every tabulated arch is listed and correctly marked
+    ratified/unratified, and (non-vacuity, folded in rather than a separate opt-in
+    self-test) that the drift check is not vacuous: it fails on a hand-tampered copy."""
+    import subprocess
+    import tempfile
+
+    findings = []
+    proc = subprocess.run([sys.executable, str(_TOOLS_DIR / "supported.py"), "--check"],
+                          capture_output=True, text=True, cwd=str(ROOT))
+    if proc.returncode != 0:
+        findings.append(
+            f"README support table drifted from tools/supported.py's generator "
+            f"(regenerate with `python tools/supported.py --write`):\n"
+            f"{proc.stdout}{proc.stderr}")
+
+    if str(_TOOLS_DIR) not in sys.path:
+        sys.path.insert(0, str(_TOOLS_DIR))
+    import supported
+
+    table = supported.table()
+    ratified = supported.ratified()
+    for arch in supported.tabulated_archs():
+        marker = f"`{arch}`"
+        if marker not in table:
+            findings.append(f"{arch} is tabulated in the kernel but absent from the "
+                            f"README support table")
+            continue
+        row = next(line for line in table.splitlines() if marker in line)
+        if arch in ratified:
+            if "ratified |" not in row or "not ratified" in row:
+                findings.append(f"{arch} is ratified but the README row does not say "
+                                f"so: {row}")
+        elif "**not ratified — will refuse to load**" not in row:
+            findings.append(f"{arch} has no manifest but the README row does not say "
+                            f"so: {row}")
+
+    with tempfile.TemporaryDirectory() as td:
+        tampered = Path(td) / "README.md"
+        text = supported.README.read_text().replace(
+            "**not ratified — will refuse to load**", "ratified", 1)
+        if text == supported.README.read_text():
+            findings.append("check_supported_table non-vacuity probe found nothing "
+                            "to tamper -- the README carries no 'not ratified' row to "
+                            "flip, so the drift check below was not exercised")
+        else:
+            tampered.write_text(text)
+            saved_readme, saved_argv = supported.README, sys.argv
+            try:
+                supported.README = tampered
+                sys.argv = ["supported.py", "--check"]
+                if supported.main() != 1:
+                    findings.append("check_supported_table non-vacuity FAILED: "
+                                    "tools/supported.py --check did not fail on a "
+                                    "hand-tampered README -- the drift check is vacuous")
+            finally:
+                supported.README = saved_readme
+                sys.argv = saved_argv
+    return findings
+
+
+def check_shard_partition() -> list[str]:
+    """Ported from tests/unit/test_shard_partition.py (deleted). The facts family's
+    kernel instantiations live in ONE checked-in TU `tools/gen_shards.py` generates;
+    membership is a function of the arm list alone, the committed shard matches the
+    generator, the dispatch TU cannot satisfy an arm locally, and the manifest on
+    disk is the ratification the CURRENTLY BUILT binary was gated against.
+
+    THE FALSE-FAIL THIS FIXES (K46 item 2): the retired test recomputed the manifest
+    digest over EVERY `tools/manifests/sm_*.json` file found on disk, but
+    `BUILD_CONFIG["manifest_sha256"]` is the digest of whatever arch SUBSET this
+    build actually compiled (`ROLA_CUDA_ARCHS`) -- a single-arch iteration build
+    would then compare a one-arch digest against an all-arches recomputation and
+    fail on a build that did nothing wrong. Scoped here to
+    `BUILD_CONFIG["archs"]` -- what the build declares -- instead of a directory
+    glob.
+    """
+    import hashlib
+    import subprocess
+
+    findings = []
+    if str(_TOOLS_DIR) not in sys.path:
+        sys.path.insert(0, str(_TOOLS_DIR))
+    try:
+        import gen_shards
+    except ImportError as ex:
+        return [f"check_shard_partition: could not import tools/gen_shards.py: {ex}"]
+
+    shard_dir = ROOT / "csrc" / "rola" / "src" / "instantiations"
+    facts_re = re.compile(r"template cudaError_t launch_chunk_facts_arm<(\d+), (\d+), (\d+), (\d+)>")
+    span_re = re.compile(r"template cudaError_t launch_span_facts_arm<(\d+), (\d+), (\d+), (\d+), "
+                         r"(\d+), (\d+), (\d+), (\d+), (\d+), (\d+), (\d+)>")
+    block_re = re.compile(r"template cudaError_t launch_chunk_block_bitmap_arm<(\d+), (\d+), (\d+)>")
+    atom_re = re.compile(r"template cudaError_t launch_chunk_atom_bitmap_arm<(\d+), (\d+)>")
+
+    facts_s0 = shard_dir / "facts_s0.cu"
+    if not facts_s0.is_file():
+        return [f"check_shard_partition: {facts_s0.relative_to(ROOT)} does not exist"]
+    text = facts_s0.read_text()
+    committed = ([("FACTS", int(d), int(b)) + gen_shards.lex_spans(int(d), int(b), int(bc)) * 2
+                 + (int(m),) for d, b, bc, m in facts_re.findall(text)]
+                + [("FACTS",) + tuple(int(x) for x in r) for r in span_re.findall(text)]
+                + [("BLOCK", int(d), int(b), int(bc)) for d, b, bc in block_re.findall(text)]
+                + [("ATOM", int(d), int(b)) for d, b in atom_re.findall(text)])
+    if not committed:
+        findings.append(f"{facts_s0.relative_to(ROOT)} instantiates nothing")
+    elif sorted(map(str, committed)) != sorted(map(str, gen_shards.chunk_rows())):
+        findings.append("the committed shard and tools/gen_shards.py's arm list cover "
+                        "different instantiation sets -- membership is not a function "
+                        "of the arm list alone")
+
+    for name, rows in sorted(gen_shards.chunk_shards().items()):
+        shard_text = (shard_dir / f"{name}.cu").read_text()
+        stated = re.search(r"^// members-sha256: ([0-9a-f]{64})$", shard_text, re.M)
+        if not stated:
+            findings.append(f"{name}.cu states no membership hash")
+            continue
+        blob = "\n".join(sorted(gen_shards.chunk_canonical(r) for r in rows)).encode()
+        if stated.group(1) != hashlib.sha256(blob).hexdigest():
+            findings.append(f"{name}.cu's membership hash does not match its own "
+                            f"generator-derived row set")
+
+    proc = subprocess.run([sys.executable, str(_TOOLS_DIR / "gen_shards.py"), "--check"],
+                          cwd=str(ROOT), capture_output=True, text=True)
+    if proc.returncode != 0:
+        findings.append(f"tools/gen_shards.py --check failed:\n{proc.stdout}{proc.stderr}")
+
+    facts_cu = (ROOT / "csrc" / "rola" / "src" / "facts" / "facts.cu")
+    facts_text = facts_cu.read_text()
+    if ('#include "facts_launch.cuh"' in facts_text
+            or '#include "../facts/facts_launch.cuh"' in facts_text):
+        findings.append(f"{facts_cu.relative_to(ROOT)} includes the launcher's own "
+                        f"definition -- the dispatch TU could then satisfy an arm "
+                        f"locally, which is the exact silent non-shard the partition "
+                        f"exists to prevent")
+
+    try:
+        from rola._build_config import BUILD_CONFIG
+    except ImportError:
+        pass  # not built yet -- nothing to check the manifest against
+    else:
+        built_archs = BUILD_CONFIG.get("archs")
+        if not built_archs:
+            findings.append("BUILD_CONFIG carries no 'archs' list; cannot scope the "
+                            "manifest digest check to what this build declares")
+        else:
+            arches = sorted(a.removeprefix("sm_") for a in built_archs)
+            try:
+                import ratify
+                got = ratify.manifest_digest(ratify.load_manifest(arches))
+            except Exception as ex:  # noqa: BLE001
+                findings.append(f"could not recompute the manifest digest for the "
+                                f"built arch subset {arches}: {ex}")
+            else:
+                if got != BUILD_CONFIG["manifest_sha256"]:
+                    findings.append(
+                        f"tools/manifests/ for {arches} (this build's own declared "
+                        f"arch subset) digests to {got}, which is NOT the "
+                        f"ratification the shipped binary was gated against "
+                        f"({BUILD_CONFIG['manifest_sha256']}) -- every reader of "
+                        f"tools/manifests/ then describes a product that was never "
+                        f"built.")
+    return findings
+
+
+def check_arch_coverage() -> list[str]:
+    """Ported from tests/unit/test_arch_coverage.py (deleted). Every RATIFIED arch's
+    manifest must carry a facts arm for every topology class ANY ratified arch
+    carries one for -- a hole on one arch is invisible to every other gate, which
+    all run on whichever arch the developer's own card happens to be. Device-free:
+    reads `tools/manifests/` only."""
+    import json
+
+    if str(_TOOLS_DIR) not in sys.path:
+        sys.path.insert(0, str(_TOOLS_DIR))
+    try:
+        import ratify
+        import supported
+    except ImportError as ex:
+        return [f"check_arch_coverage: could not import tools/ratify.py or "
+                f"tools/supported.py: {ex}"]
+
+    manifest_dir = _TOOLS_DIR / "manifests"
+
+    def arms(blob: dict) -> set[tuple]:
+        out = set()
+        for key in blob["entries"]:
+            mangled = key.split(":", 1)[1]
+            shape = ratify.parse_shape(mangled)
+            if shape is not None:
+                out.add((shape["kernel"], shape["D"], shape["B"], shape["BC"]))
+        return out
+
+    per_arch = {}
+    for arch in supported.tabulated_archs():
+        path = manifest_dir / f"{arch}.json"
+        if path.is_file():
+            per_arch[arch] = arms(json.loads(path.read_text()))
+
+    findings = []
+    if not per_arch:
+        return ["no tabulated arch has a ratified manifest; nothing was measured"]
+
+    def classes(a: set[tuple]) -> set[tuple]:
+        return {(d, b) for (_kernel, d, b, _bc) in a}
+
+    union = set().union(*(classes(a) for a in per_arch.values()))
+    if len(union) <= 1:
+        findings.append(f"the facts arms name {len(union)} topology class(es), so "
+                        f"'every arch covers every class' is not a claim about "
+                        f"anything -- either the arm list collapsed or this check is "
+                        f"reading the wrong field")
+    for arch, a in sorted(per_arch.items()):
+        missing = sorted(union - classes(a))
+        if missing:
+            findings.append(
+                f"{arch}'s manifest carries NO facts arm for topology class(es) "
+                f"{missing}, which other ratified arches do carry -- a hole, not a "
+                f"slower path (ArmRule falls back to another BC, never another "
+                f"(D, B)). Restore an arm for {missing} in tools/gen_shards.py and "
+                f"re-ratify {arch}, or drop the class everywhere.")
+
+    unratified = sorted(set(supported.tabulated_archs()) - set(per_arch))
+    table = supported.table()
+    for arch in unratified:
+        marker = f"| `{arch}` |"
+        if marker not in table:
+            findings.append(f"{arch} is tabulated with no manifest but has no row "
+                            f"in the README support table at all")
+            continue
+        tail = table.split(marker, 1)[1].split("\n", 1)[0]
+        if "will refuse to load" not in tail:
+            findings.append(f"{arch} is tabulated with no manifest, which is the "
+                            f"'will refuse to load' row; the generated support table "
+                            f"does not say so")
+    return findings
+
+
+def check_vendored_pin() -> list[str]:
+    """Ported from tests/unit/test_vendored_pin.py (deleted). Closed-world rule 5:
+    the vendored CUTLASS subtree matches `PIN.json`'s digest, the BSD-3-Clause
+    redistribution obligations are discharged in-tree, and the extension and the
+    ratification probe compile against the vendored headers with the SAME include
+    path (a probe compiled against a different include set measures a different
+    kernel than the one shipped)."""
+    import hashlib
+    import json
+
+    cutlass_dir = ROOT / "csrc" / "third_party" / "cutlass"
+    pin_path = cutlass_dir / "PIN.json"
+    if not pin_path.is_file():
+        return []  # nothing vendored to check in this checkout state
+    pin = json.loads(pin_path.read_text())
+
+    findings = []
+    for key in ("upstream", "tag", "commit", "license", "tree_sha256", "file_count",
+               "modifications"):
+        if not pin.get(key):
+            findings.append(f"{pin_path.relative_to(ROOT)} is missing `{key}`")
+    if len(pin.get("commit", "")) != 40:
+        findings.append("the pin must be a full commit sha, not a tag alone")
+    if not str(pin.get("modifications", "")).startswith("none"):
+        findings.append("a MODIFIED vendored subtree cannot be checked against the "
+                        "upstream tag, which is the only thing that makes the digest "
+                        "more than self-referential")
+
+    def tree_sha256(root: Path) -> tuple[str, int]:
+        digest = hashlib.sha256()
+        files = sorted(p for p in root.rglob("*") if p.is_file() and p.name != "PIN.json")
+        for path in files:
+            digest.update(path.relative_to(root).as_posix().encode())
+            digest.update(b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+        return digest.hexdigest(), len(files)
+
+    here, count = tree_sha256(cutlass_dir)
+    if count != pin.get("file_count"):
+        findings.append(f"vendored file count moved: {count} on disk, "
+                        f"{pin.get('file_count')} pinned")
+    if here != pin.get("tree_sha256"):
+        findings.append("the vendored CUTLASS subtree does not match its pin -- a "
+                        "vendored header is code ptxas assembles, so this is a "
+                        "codegen change and not a packaging one")
+
+    if "license_file" in pin:
+        license_path = cutlass_dir / pin["license_file"]
+        if license_path.is_file():
+            license_text = license_path.read_text()
+            if "Redistribution and use in source and binary forms" not in license_text:
+                findings.append(f"{license_path.relative_to(ROOT)} does not carry the "
+                                f"BSD-3-Clause redistribution text")
+            if "NVIDIA CORPORATION" not in license_text:
+                findings.append(f"{license_path.relative_to(ROOT)} does not name "
+                                f"NVIDIA CORPORATION")
+    notice = ROOT / "NOTICE"
+    if notice.is_file():
+        notice_text = notice.read_text()
+        if pin.get("commit") and pin["commit"] not in notice_text:
+            findings.append("NOTICE must name the exact vendored commit")
+        if "BSD-3-Clause" not in notice_text:
+            findings.append("NOTICE does not name BSD-3-Clause")
+
+    setup_text = (ROOT / "setup.py").read_text()
+    ratify_text = (ROOT / "tools" / "ratify.py").read_text()
+    needle = '"csrc" / "third_party" / "cutlass"'
+    if needle not in setup_text:
+        findings.append("setup.py no longer passes the vendored include path")
+    if needle not in ratify_text:
+        findings.append("tools/ratify.py no longer passes the vendored include path; "
+                        "the manifest would then be ratified against a compile the "
+                        "extension does not perform")
+    if "_gate_vendored" not in setup_text:
+        findings.append("closed-world rule 5 gate (_gate_vendored) is gone from setup.py")
+
+    try:
+        from rola._build_config import BUILD_CONFIG
+    except ImportError:
+        pass  # not built yet
+    else:
+        vendored = BUILD_CONFIG.get("vendored")
+        if vendored is None:
+            findings.append("this .so was built by a setup.py that did not stamp its "
+                            "vendored codegen inputs; rebuild it")
+        elif vendored.get("cutlass", {}).get("tree_sha256") != pin.get("tree_sha256"):
+            findings.append("the built binary's stamped vendored CUTLASS digest does "
+                            "not match the current PIN.json")
+    return findings
+
+
+def check_entmax_pin() -> list[str]:
+    """Ported from tests/unit/test_entmax_pin.py (deleted). `rola.routing.entmax.pin`
+    refuses an installed `entmax` whose version or on-disk bytes drift from its
+    PIN.json -- checked here: the pin's own fields are complete, the installed
+    package matches it (the green path `gate()` already runs at every import of
+    `rola.routing.entmax.reference`), and the three refusal shapes (version drift,
+    digest drift under the same version, a missing pin file) actually raise."""
+    try:
+        from rola.routing.entmax import pin
+    except ImportError as ex:
+        return [f"check_entmax_pin: could not import rola.routing.entmax.pin: {ex}"]
+
+    findings = []
+    recorded = pin.load_pin()
+    pin_name = (pin.PIN_PATH.relative_to(ROOT) if pin.PIN_PATH.is_relative_to(ROOT)
+               else pin.PIN_PATH)
+    for key in ("name", "upstream", "version", "package_sha256", "file_count"):
+        if not recorded.get(key):
+            findings.append(f"{pin_name}: missing `{key}`")
+    if recorded.get("distribution") != "PyPI":
+        findings.append("entmax PIN.json's `distribution` is not 'PyPI'")
+
+    root = pin.installed_package_root()
+    here, count = pin.package_sha256(root)
+    if count != recorded.get("file_count"):
+        findings.append(f"installed entmax file count moved: {count} on disk, "
+                        f"{recorded.get('file_count')} pinned")
+    if here != recorded.get("package_sha256"):
+        findings.append("the installed entmax package does not match its pin -- "
+                        "gate() would refuse this install")
+    else:
+        try:
+            pin.gate()
+        except Exception as ex:  # noqa: BLE001
+            findings.append(f"pin.gate() raised on the currently-installed entmax, "
+                            f"which matches its pin -- the green path should not "
+                            f"raise: {ex}")
+
+    # Behavioural refusal shapes, via manual attribute swap/restore (no pytest).
+    saved_version_fn = pin.metadata.version
+    try:
+        pin.metadata.version = lambda name: "9.9.9"  # noqa: ARG005
+        try:
+            pin.gate()
+            findings.append("pin.gate() did NOT raise on a version drift (9.9.9 vs "
+                            f"pinned {recorded.get('version')})")
+        except RuntimeError as ex:
+            if "installed entmax==9.9.9" not in str(ex):
+                findings.append(f"pin.gate()'s version-drift refusal does not name "
+                                f"the drifted version: {ex}")
+            if str(recorded.get("version")) not in str(ex):
+                findings.append("pin.gate()'s version-drift refusal names the "
+                                "drifted version but not the ratified one -- a "
+                                "reader would have to open PIN.json to know what to "
+                                "roll back to")
+    finally:
+        pin.metadata.version = saved_version_fn
+
+    import tempfile
+    saved_root_fn = pin.installed_package_root
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            fake_root = Path(td) / "entmax"
+            fake_root.mkdir()
+            (fake_root / "__init__.py").write_text("# not the ratified entmax\n")
+            pin.installed_package_root = lambda: fake_root
+            try:
+                pin.gate()
+                findings.append("pin.gate() did NOT raise on a digest drift under "
+                                "the same version (same version string, fake bytes)")
+            except RuntimeError as ex:
+                if "does not match its pinned digest" not in str(ex):
+                    findings.append(f"pin.gate()'s digest-drift refusal message "
+                                    f"changed shape: {ex}")
+    finally:
+        pin.installed_package_root = saved_root_fn
+
+    saved_pin_path = pin.PIN_PATH
+    try:
+        pin.PIN_PATH = Path("/does/not/exist/PIN.json")
+        try:
+            pin.gate()
+            findings.append("pin.gate() did NOT raise on a missing PIN.json")
+        except FileNotFoundError:
+            pass
+    finally:
+        pin.PIN_PATH = saved_pin_path
+    return findings
+
+
 def main() -> int:
-    #: THESE FIVE are wired as a BLOCKING pre-commit/CI gate
+    #: THESE ELEVEN are wired as a BLOCKING pre-commit/CI gate
     #: (.pre-commit-config.yaml, .github/workflows/lint.yml) -- a nonzero exit
     #: here fails every commit and every CI run, repo-wide.
     gating_findings: list[str] = []
@@ -558,6 +1069,12 @@ def main() -> int:
     gating_findings += check_no_sync_after_decode_prologue()
     gating_findings += check_tests_tier_directories()
     gating_findings += check_docs_mirror()
+    gating_findings += check_no_bare_flock_on_gpu_lock()
+    gating_findings += check_supported_table()
+    gating_findings += check_shard_partition()
+    gating_findings += check_arch_coverage()
+    gating_findings += check_vendored_pin()
+    gating_findings += check_entmax_pin()
 
     #: K39 (Blake, 2026-08-28): comment density and long-comment-block findings
     #: are ADVISORY, NOT gating, deliberately. `csrc/` is ~40 files over the

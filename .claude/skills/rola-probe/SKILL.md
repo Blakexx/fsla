@@ -22,15 +22,16 @@ python tools/probe_cells.py \
   --binary worktree:<path>,venv:<path>,label:<name> \
   --cells <comma-list> --reps <n> --warmup <n> --rounds <n> --out <path>
 ```
-Invoke it BARE. `tools/probe_cells.py` takes `/tmp/rola_gpu.lock` ITSELF, internally, via
-`fcntl.flock` in `run_worker`/`run_ncu_cell` (`GPU_LOCK_DEFAULT`) — the same self-locking design
-`docs/measurement.md` documents for the OTHER harness family (`bench.discipline.require_gpu_lock`,
-which REFUSES a bare invocation because it expects to be wrapped). This tool is the opposite: an
-outer `flock /tmp/rola_gpu.lock python tools/probe_cells.py ...` blocks the tool's own internal
+Invoke it BARE. `tools/probe_cells.py` takes the GPU lock ITSELF, via `tools/gpu_lock.py`'s
+`gpu_lock()` in `run_worker`/`run_ncu_cell` — the ONE lock primitive every GPU entry point in this
+tree now uses (K46: `tests/conftest.py`, `tools/sanitize_oracle.py`, `bench.discipline.disciplined`
+all take it the same way; the two-family split this section used to describe — some tools
+self-locking, pytest/bench requiring an external wrap — is retired). An outer
+`flock` wrapping this command on the same lock path still blocks the tool's own internal
 acquisition forever (a real incident, K38: 17 CPU-idle minutes on a live GPU before the coordinator
-killed it). If you are unsure which family a new script belongs to, grep it for `fcntl.flock` /
-`require_gpu_lock` before choosing whether to wrap it — never guess from a neighboring script's
-convention.
+killed it) — `gpu_lock()`'s reentrancy only protects a self-locking tool calling ANOTHER
+self-locking tool, never an external `flock` on the same path, which stays banned everywhere (a
+lint rule in `tools/lint/lint_standards.py` finds it in a committed doc/script).
 
 Add `--ncu` for one oneshot kernel-name + metrics capture per (binary, cell) — read the script's
 `--ncu` handling for the current metric list rather than assuming it's fixed.

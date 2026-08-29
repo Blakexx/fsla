@@ -174,6 +174,104 @@ above is the exact pin `tools/mold_pin.json` and the `Dockerfile`'s
 `MOLD_SHA256` ARG both carry, so the host and the container link with the
 byte-identical binary.
 
+## 3c. The pointer venv, the fast path (many worktrees on one bare host)
+
+K46 (2026-08-29, "agents stop reverse-engineering it from sibling venvs" --
+recurring SKILLS FEEDBACK from K42 and K45). Sections 3b/4 are the FIRST build
+of a single checkout. This is the DIFFERENT question a bare host with many
+concurrent git worktrees (`worktrees-live-in-one-folder`) actually has: each
+worktree needs its OWN `rola` editable install (its own compiled `.so`,
+matching its own SHA and its own arm subset), but reinstalling `torch` +
+`einops` + `entmax` + the rest of `requirements.lock` from scratch for every
+worktree is minutes of wasted work repeated dozens of times for bytes that are
+identical across all of them. The POINTER VENV is a small venv per worktree
+that BORROWS a shared base venv's already-installed packages and adds only
+what is actually per-worktree: this checkout's own root, and this checkout's
+own editable-installed extension.
+
+`tools/build/new_worktree.sh <name> <sha>` does the whole sequence below in one
+call; read it before doing this by hand a second time.
+
+**1. The shared base venv, built ONCE:**
+
+```bash
+uv venv --python 3.11 --seed /path/to/shared/base-venv
+/path/to/shared/base-venv/bin/python -m pip install -r requirements.lock
+```
+
+This is a normal, complete venv — nothing pointer-shaped about it yet. It is
+the thing every worktree's pointer venv borrows from, so building it well once
+(the full `requirements.lock`, the right CUDA-enabled `torch`) is what makes
+every later worktree venv cheap.
+
+**2. Per worktree, a new SEEDED venv:**
+
+```bash
+uv venv --python 3.11 --seed /path/to/worktrees/venv-<name>
+```
+
+**FOOTGUN 1 — a seedless venv silently falls through to a system python.**
+Omitting `--seed` leaves no `pip` binary inside the new venv at all. A later
+bare `pip install ...` (as opposed to `<venv>/bin/python -m pip install ...`)
+then resolves to whatever `pip` happens to be first on `PATH` OUTSIDE the
+venv — installing into a completely different python's site-packages with no
+error, no warning, and an import that "worked" moments ago now resolving to
+the wrong build. This is the same trap family as the device-side-stamp
+extension trap (`extension-trap-device-side-check`): nothing about the venv's
+existence proves what actually received the install. `--seed` (or always
+spelling the install as `python -m pip install`) is not optional.
+
+**3. Two `.pth` files in the new venv's `site-packages`, pointing OUT:**
+
+```bash
+SITE=/path/to/worktrees/venv-<name>/lib/python3.11/site-packages
+echo /path/to/worktrees/<name>                              > "$SITE/aa_rola_<name>.pth"
+echo /path/to/shared/base-venv/lib/python3.11/site-packages  > "$SITE/zz_rola_base.pth"
+```
+
+`site.py` processes `.pth` files in the sorted order of their filenames, so the
+`aa_`/`zz_` prefixes are load-bearing, not decoration: this worktree's own root
+(`aa_...pth`) and its own editable install (`__editable__...pth`, added by step
+4 below, which alphabetically sorts after both) resolve BEFORE the shared base
+venv's copy of anything with the same name. A worktree's own compiled `rola`
+extension is what gets imported, never the base venv's.
+
+**4. The in-tree editable build, `--no-deps`, through the build lock:**
+
+```bash
+cd /path/to/worktrees/<name>
+./tools/build/build_lock.sh -- \
+  /path/to/worktrees/venv-<name>/bin/python -m pip install -e . --no-deps --no-build-isolation
+```
+
+**FOOTGUN 2 — `pip install -e .` without `--no-deps` pulls a fresh,
+incompatible torch and yields an ABI-mismatched `.so`.** `pyproject.toml`
+declares `torch` as a dependency; without `--no-deps`, `pip`/`uv pip` resolves
+and installs its OWN copy of `torch` into the pointer venv — not necessarily
+the same build (CPU-only, a different CUDA minor version, a different ABI) as
+the one the shared base venv already carries and the extension is about to
+compile its C++/CUDA ABI against via `torch.utils.cpp_extension`. The result
+imports without error and then crashes or misbehaves at the first real call,
+because the compiled `.so` and the `torch` actually resolved at import time
+were built against two different ABIs. The shared base venv's `torch` (reached
+through the `zz_rola_base.pth` file in step 3) IS the dependency resolution
+here; `--no-deps` is not optional either. `./tools/build/build_lock.sh` is
+the SAME iteration/gate build-slot discipline every other build in this repo
+goes through (`docs/build.md`, `rola-build` skill) — a pointer-venv build is
+still a build, and still shares the machine-wide compile budget.
+
+Verify with `python -c "import rola; from rola._build_config import
+BUILD_CONFIG; print(BUILD_CONFIG['archs'])"` against the new venv's python —
+the device-side stamp, never a path check (`extension-trap-device-side-check`)
+-- but run it FROM the new worktree's own directory. **FOOTGUN 3, found
+writing `tools/build/new_worktree.sh` (K46): `python -c` puts `''` (the
+process's OWN current directory) first in `sys.path`.** A verification launched
+from inside a DIFFERENT rola worktree (which also carries a `rola/` package)
+resolves `import rola` to THAT worktree instead of the new one — `''` beats
+every `.pth`-added path because it is `sys.path[0]`, checked before any of
+them. `tools/build/new_worktree.sh` `cd`s into the new worktree before its own
+verification step for exactly this reason; do the same by hand.
+
 ## 4. First build of the SHIPPED set
 
 Inside the container (or on the bare host with `mold` vendored per 3b above):
@@ -206,20 +304,21 @@ their SASS) needs only the toolchain, not a matching physical GPU — see
 
 ```bash
 pytest tests/unit tests/oracle -m "not cuda"                       # CPU-only, no device, no build
-flock /tmp/rola_gpu.lock pytest tests/unit -m cuda                 # tests/unit's CUDA-marked rows
-flock /tmp/rola_gpu.lock pytest tests/oracle                       # kernels vs the fp64/torch baselines
-flock /tmp/rola_gpu.lock pytest tests/integration                  # composition, dispatch, two-branches-agree
+pytest tests/unit -m cuda                 # tests/unit's CUDA-marked rows
+pytest tests/oracle                       # kernels vs the fp64/torch baselines
+pytest tests/integration                  # composition, dispatch, two-branches-agree
 ```
 
-This is the same battery `docs/testing.md` "Running it" names; the `flock`
-serializes GPU-touching runs the way it does on the bare host — the container
-adds no scheduling of its own. Expect ~3.6 min total on hardware comparable to
-this repo's dev box (`docs/testing.md`, measured 2026-08-06).
+This is the same battery `docs/testing.md` "Running it" names; the session-scoped
+`gpu_lock()` fixture in `tests/conftest.py` (K46) serializes GPU-touching runs the
+way it does on the bare host — the container adds no scheduling of its own. Expect
+~3.6 min total on hardware comparable to this repo's dev box (`docs/testing.md`,
+measured 2026-08-06).
 
 ## 6. Run the probe
 
 ```bash
-flock /tmp/rola_gpu.lock python tools/probe_cells.py \
+python tools/probe_cells.py \
   --binary "worktree:$(pwd)" --out /tmp/probe.jsonl
 ```
 
