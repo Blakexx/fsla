@@ -20,21 +20,15 @@
 
 namespace rola::chunk {
 
-//: THE BOUND ON L, retained from the consumer era: the widest gathered row the
-//: family ever addressed was the fp32 output at d_v * 4 bytes, and the facts
-//: tables were built for exactly the launches that bound admitted.
-// see docs/internals/facts/facts.md#kd
+//: THE BOUND ON L, retained from the consumer era: the widest gathered row the -- see docs/internals/facts/facts.md#kd
 static constexpr int kD = 64;
 static constexpr long kMaxGatherL = (1L << 32) / (kD * (long)sizeof(float));
 
-//: THE RUNTIME HALF OF THE CLOSED-WORLD ARCH RULE (setup.py's R4).
-// see docs/internals/facts/facts.md#check-arch-table
+//: THE RUNTIME HALF OF THE CLOSED-WORLD ARCH RULE (setup.py's R4). -- see docs/internals/facts/facts.md#check-arch-table
 void check_arch_table() {
   int dev = 0;
   C10_CUDA_CHECK(cudaGetDevice(&dev));
-  //: ONCE PER PROCESS PER DEVICE, on the first launch rather than at import: a
-  //: CUDA context as a side effect of `import` costs more than the check.
-  // see docs/internals/facts/facts.md#check-arch-table-note-l41
+  //: ONCE PER PROCESS PER DEVICE, on the first launch rather than at import: a -- see docs/internals/facts/facts.md#check-arch-table-note-l41
   static std::mutex mu;
   static std::set<int> admitted;
   {
@@ -76,8 +70,7 @@ void check_arch_table() {
   admitted.insert(dev);
 }
 
-//: the arm surface, DECLARED only -- definitions live in the instantiation
-//: shard (facts_s0.cu).  facts.cu must never define one locally.
+//: the arm surface, DECLARED only -- definitions live in the instantiation -- see docs/internals/facts/facts.md#near-line-79
 template <int D, int B, int BC, int MASK>
 cudaError_t launch_chunk_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
                                    uint32_t* atom_tbl, int BH, int L, cudaStream_t stream);
@@ -88,10 +81,7 @@ template <int D, int B, int BC>
 cudaError_t launch_chunk_block_bitmap_arm(const uint32_t* tbl, const int32_t* page_tbl,
                                           uint8_t* block_bits, int BH, int L, cudaStream_t stream);
 
-//: THE FACTS, AS TENSORS: the union table `[B*H, 2, entries, L/32]` of packed
-//: bits, sides apart because the cook wants them apart, and -- when this call
-//: has residency to plan ...
-// see docs/internals/facts/facts.md#build-facts
+//: THE FACTS, AS TENSORS: the union table `[B*H, 2, entries, L/32]` of packed -- see docs/internals/facts/facts.md#build-facts
 template <int D, int B, int BC>
 static std::pair<torch::Tensor, c10::optional<torch::Tensor>> build_facts(const torch::Tensor& pr,
                                                                           const torch::Tensor& pw,
@@ -120,9 +110,7 @@ static std::pair<torch::Tensor, c10::optional<torch::Tensor>> build_facts(const 
   return {tbl, bits};
 }
 
-//: THE ARGUMENT CHECKS OF A LAUNCH, SHARED BY THE TABLE AND THE KERNEL so that
-//: the two can never be asked for different problems.
-// see docs/internals/facts/facts.md#is-arm
+//: THE ARGUMENT CHECKS OF A LAUNCH, SHARED BY THE TABLE AND THE KERNEL so that -- see docs/internals/facts/facts.md#is-arm
 static bool is_arm(const std::vector<int64_t>& widths, int64_t D, int64_t B) {
   if ((int64_t)widths.size() != D) return false;
   for (auto w : widths)
@@ -130,9 +118,7 @@ static bool is_arm(const std::vector<int64_t>& widths, int64_t D, int64_t B) {
   return true;
 }
 
-//: THE AMPLITUDE HALF, which the facts pass needs and the consumer needs too: the
-//: planes carry the problem's `[B, H, L]` addressing, so nothing about the token
-//: schedule has to be read off the value stream.
+//: THE AMPLITUDE HALF, which the facts pass needs and the consumer needs too: the -- see docs/internals/facts/facts.md#checkplanes
 static void check_planes(const torch::Tensor& pr, const torch::Tensor& pw,
                          const std::vector<int64_t>& widths) {
   TORCH_CHECK(pr.is_cuda() && pr.is_contiguous() && pw.is_contiguous());
@@ -167,8 +153,7 @@ std::pair<torch::Tensor, c10::optional<torch::Tensor>> facts(torch::Tensor pr, t
   TORCH_CHECK(false, "unbuilt arm: chunk=", chunk, " BC=", bc, " depth=", widths.size());
 }
 
-//: THE ATOM -> SLOT MAP, `[BH, N/16]` int32, `-1` where the atom has no page.
-// see docs/internals/facts/facts.md#page-table
+//: THE ATOM -> SLOT MAP, `[BH, N/16]` int32, `-1` where the atom has no page. -- see docs/internals/facts/facts.md#page-table
 static const int32_t* page_table(const c10::optional<torch::Tensor>& t, int BH, long N) {
   if (!t.has_value()) return nullptr;
   TORCH_CHECK(t->is_cuda() && t->is_contiguous() && t->scalar_type() == torch::kInt32,
@@ -178,9 +163,7 @@ static const int32_t* page_table(const c10::optional<torch::Tensor>& t, int BH, 
   return t->data_ptr<int32_t>();
 }
 
-//: THE LIVENESS EPILOGUE: `[BH, N/BC]` uint8, bits {READ, WRITE, STATE},
-//: reduced from the union table THIS launch already built.
-// see docs/internals/facts/facts.md#build-block-bits
+//: THE LIVENESS EPILOGUE: `[BH, N/BC]` uint8, bits {READ, WRITE, STATE}, -- see docs/internals/facts/facts.md#build-block-bits
 template <int D, int B, int BC>
 static torch::Tensor build_block_bits(const torch::Tensor& tbl, const int32_t* pageTbl, int BH,
                                       int L) {
@@ -203,9 +186,7 @@ torch::Tensor block_bits(torch::Tensor tbl, int64_t bc, std::vector<int64_t> wid
   long N = 1;
   for (auto w : widths) N *= w;
   const int32_t* const pageTbl = page_table(page_tbl, BH, N);
-  //: NO `C` AXIS: the table this reduces is the (D, B, BC) one, so the arm walk
-  //: matches on the block grain alone and an arm list repeating a grain at
-  //: several chunk lengths resolves to the one instantiation.
+  //: NO `C` AXIS: the table this reduces is the (D, B, BC) one, so the arm walk -- see docs/internals/facts/facts.md#chunkblockbitsx
 #define CHUNK_BLOCK_BITS_X(C_, BC_, D_, B_)                                \
   if (bc == BC_ && is_arm(widths, D_, B_)) {                               \
     const long want = (long)LevelPlan<D_, B_, BC_>::entries;               \
@@ -218,9 +199,7 @@ torch::Tensor block_bits(torch::Tensor tbl, int64_t bc, std::vector<int64_t> wid
   TORCH_CHECK(false, "unbuilt arm: BC=", bc, " depth=", widths.size());
 }
 
-//: The built set with the plan quantities of an arm reported beside it: the
-//: block count, the block's inner/outer axes and the table's entry count.  The
-//: consumer's launch geometry (staging depth, CTA target) died with it.
+//: The built set with the plan quantities of an arm reported beside it: the -- see docs/internals/facts/facts.md#arms
 std::vector<std::vector<int64_t>> arms() {
   std::vector<std::vector<int64_t>> out;
 #define FACTS_LIST_X(C_, BC_, D_, B_)                                       \

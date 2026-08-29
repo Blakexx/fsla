@@ -18,38 +18,27 @@
 
 namespace rola::carry {
 
-//: ONE ARM, AS ONE TYPE: the topology, the window shape, the declaration and the two
-//: carves.  The body, the geometry, the row plan and the census all read it, so an
-//: arm cannot be described two ways.
+//: ONE ARM, AS ONE TYPE: the topology, the window shape, the declaration and the two -- see docs/internals/carry/carry_arm.md#near-line-21
 template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int PK,
           uint32_t MO>
 struct Arm {
   using BP = BoxPlan<D, B, K, M>;
-  //: THE CARVE, DERIVED (K35 S1b): the side's order comes from `MO` and its span
-  //: vector from that order and its stream count.
-  // see docs/internals/carry/carry_arm.md#sr
+  //: THE CARVE, DERIVED (K35 S1b): the side's order comes from `MO` and its span -- see docs/internals/carry/carry_arm.md#sr
   using SR = StreamSpans<D, B, K, M, MO, kSideRead, NSR>;
   using SW = SR;
-  //: A CARVED ARM is one whose streams are finer than the owner's box on either side;
-  //: an arm that carves nothing takes the channel-split body, which holds the whole box
-  //: in every warp and splits the CHANNELS instead.
+  //: A CARVED ARM is one whose streams are finer than the owner's box on either side; -- see docs/internals/carry/carry_arm.md#carved
   static constexpr bool carved = (NSW > 1) || (NSR > 1);
-  //: the arm's VALUE WIDTH, which both bodies take as their `DV` and the census
-  //: reports, so the width is readable off the device like the two executor dials.
+  //: the arm's VALUE WIDTH, which both bodies take as their `DV` and the census -- see docs/internals/carry/carry_arm.md#kdv
   static constexpr int kDv = DV;
-  //: the READ side's innermost carved level, which the seam reports as the arm's
-  //: carve level, and `-1` for a body that carves nothing.
+  //: the READ side's innermost carved level, which the seam reports as the arm's -- see docs/internals/carry/carry_arm.md#readcarve
   static constexpr int read_carve(int l) {
     return l < 0 ? -1 : (SR::carves(l) ? l : read_carve(l - 1));
   }
   static constexpr int kReadCarve = read_carve(D - 1);
 
-  //: THE CARVED BODY'S GEOMETRY, named once so the segment probe and the launch read
-  //: the same one.
+  //: THE CARVED BODY'S GEOMETRY, named once so the segment probe and the launch read -- see docs/internals/carry/carry_arm.md#gc
   using GC = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
-  //: THE EXCHANGE IS NOT BUILT (K35 M1P), so the census's two exchange fields are
-  //: the statement of that: ZERO transit bytes and state `0` (elided).
-  // see docs/internals/carry/carry_arm.md#kxchbytes
+  //: THE EXCHANGE IS NOT BUILT (K35 M1P), so the census's two exchange fields are -- see docs/internals/carry/carry_arm.md#kxchbytes
   static constexpr int64_t kXchBytes = 0;
   static constexpr int64_t kXchState = 0;
 
@@ -59,9 +48,7 @@ struct Arm {
     else
       return &carry_split_kernel<D, B, K, M, DV, W, C>;
   }
-  //: `{smem bytes, ring depth, CTA target, THREADS, WRITE STREAMS}` -- the launch reads
-  //: the fourth, and the last two ARE THE TWO DIALS: `THREADS/32` is the executor
-  //: budget, `WRITE STREAMS` the in-CTA ownership grain, and their ratio is `WPS`.
+  //: `{smem bytes, ring depth, CTA target, THREADS, WRITE STREAMS}` -- the launch reads -- see docs/internals/carry/carry_arm.md#geom
   static constexpr std::array<int64_t, 5> geom() {
     if constexpr (carved) {
       using G = GC;
@@ -75,8 +62,7 @@ struct Arm {
   }
 };
 
-//: ONE VARIANT'S LAUNCH.
-// see docs/internals/carry/carry_arm.md#launch
+//: ONE VARIANT'S LAUNCH. -- see docs/internals/carry/carry_arm.md#launch
 template <class A>
 static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
                           const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den,
@@ -97,10 +83,7 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
   return cudaGetLastError();
 }
 
-//: THE CENSUS, whose last ten fields are THE DERIVATION READ BACK OFF THE
-//: DEVICE (K35 S1b): the two span vectors the order-by-mode rule produced, the
-//: exchange's transit in bytes -- zero where the two carves came out identical ...
-// see docs/internals/carry/carry_arm.md#census
+//: THE CENSUS, whose last ten fields are THE DERIVATION READ BACK OFF THE -- see docs/internals/carry/carry_arm.md#census
 template <class A>
 static std::array<int64_t, 23> census() {
   cudaFuncAttributes a{};
@@ -133,22 +116,17 @@ static std::array<int64_t, 23> census() {
           A::kXchState};
 }
 
-//: the ROW PLANS the arm's body consumes -- one per side, at that side's own derived
-//: partition.  An uncarved arm's tables ARE the owner's, because the derived vectors are
-//: then the owner's spans; one statement, not two paths.
+//: the ROW PLANS the arm's body consumes -- one per side, at that side's own derived -- see docs/internals/carry/carry_arm.md#a
 template <class A>
 using ArmRowsR = SideRowPlan<typename A::SR>;
 template <class A>
 using ArmRowsW = SideRowPlan<typename A::SW>;
 
-//: ONE ROW OF THE LIST, AS THE ARM TYPE.  The row's field order is spelled HERE and
-//: in `tools/gen_shards.py`'s emitter and nowhere else.
+//: ONE ROW OF THE LIST, AS THE ARM TYPE.  The row's field order is spelled HERE and -- see docs/internals/carry/carry_arm.md#carryarmtype
 #define CARRY_ARM_TYPE(I_, D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, WPS_, NSW_, NSR_, PK_) \
   Arm<D_, B_, K_, M_, DV_, W_, C_, WPS_, NSW_, NSR_, PK_, (uint32_t)(MO_)>
 
-//: THE PER-ARM TRANSLATION UNIT'S ENTIRE CONTENT.  One expansion instantiates this
-//: arm's kernel (the carved body or the channel-split one, whichever the arm takes)
-//: and the probe kernel keyed to it, and nothing else in the build does.
+//: THE PER-ARM TRANSLATION UNIT'S ENTIRE CONTENT.  One expansion instantiates this -- see docs/internals/carry/carry_arm.md#carryarmdefine
 #define CARRY_ARM_DEFINE(I_, D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, WPS_, NSW_, NSR_, PK_)      \
   using CarryArm##I_ = CARRY_ARM_TYPE(I_, D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, WPS_, NSW_,    \
                                       NSR_, PK_);                                               \

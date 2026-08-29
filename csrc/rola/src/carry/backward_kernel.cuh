@@ -36,27 +36,19 @@
 
 namespace rola::carry {
 
-//: THE BACKWARD FAMILY'S OWN DEVICE STAMP.  `cudaFuncGetAttributes` is a property of
-//: a KERNEL, and so is a stale binary; the forward's magic says nothing about these.
+//: THE BACKWARD FAMILY'S OWN DEVICE STAMP.  `cudaFuncGetAttributes` is a property of -- see docs/internals/carry/backward_kernel.md#kbwdbuildmagic
 static constexpr int kBwdBuildMagic = 31040001;
 
-//: THE REVERSE FAMILY'S OWN VALUE WIDTH, AND WHY IT IS A CONSTANT HERE (K35
-//: S3b).
-// see docs/internals/carry/backward_kernel.md#kdv
+//: THE REVERSE FAMILY'S OWN VALUE WIDTH, AND WHY IT IS A CONSTANT HERE (K35 -- see docs/internals/carry/backward_kernel.md#kdv
 static constexpr int kDv = 64;
 static constexpr int kCols = kDv + 1;
 
-//: THE SEED AND VALUE PLANES ARE PRE-PACKED `cols`-WIDE AND PADDED TO WHOLE MMA
-//: n-tiles, so ONE staging body serves both and the mass channel is an ordinary
-//: column rather than a carve.
-// see docs/internals/carry/backward_kernel.md#kcolspad
+//: THE SEED AND VALUE PLANES ARE PRE-PACKED `cols`-WIDE AND PADDED TO WHOLE MMA -- see docs/internals/carry/backward_kernel.md#kcolspad
 static constexpr int kColsPad = 72;
 static constexpr int kSlabN = kColsPad / kMmaN;
 static constexpr int kColKTiles = kDv / kMmaK;
 
-//: the gain's place in a produce: nowhere, folded into the panel (the forward's own
-//: form, which Scan A replays), or staged for the accumulator's TOKEN axis -- which
-//: is what (G6) needs, since `sum_s dW` is not `d_gw` unless the panel is ungained.
+//: the gain's place in a produce: nowhere, folded into the panel (the forward's own -- see docs/internals/carry/backward_kernel.md#gainsite
 enum class GainSite { kNone, kPanel, kTokenAxis };
 
 //: level `l`'s `s_l` digit-gradient rows start at `off(l)`.
@@ -87,10 +79,7 @@ struct BwdGeom {
   static constexpr int fixed_bytes =
       panel_bytes + out_bytes + digit_bytes + gain_bytes + col_bytes + list_bytes + scan_bytes;
 
-  //: TWO FLOORS, TWO CENSUSES. One floor for two kernels is how a spill goes
-  //: green: the build honors a bound the heavier scan cannot meet and only the
-  //: census notices.
-  // see docs/internals/carry/backward_kernel.md#kregfloora
+  //: TWO FLOORS, TWO CENSUSES. One floor for two kernels is how a spill goes -- see docs/internals/carry/backward_kernel.md#kregfloora
   static constexpr int kRegFloorA = 255;
   static constexpr int kRegFloorB = 244;
   static constexpr int kStagesA = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloorA);
@@ -106,9 +95,7 @@ constexpr int kScanACtaTarget = BwdGeom<D, B, K, M, W, C>::cta_target_a;
 template <int D, int B, int K, int M, int W, int C>
 constexpr int kScanBCtaTarget = BwdGeom<D, B, K, M, W, C>::cta_target_b;
 
-//: THE OPERAND PACK IS SHARED so the two scans cannot drift on what a plane means;
-//: each ignores the outputs it does not own.  `vt` and `dn` are `[BH, L, LdD]` bf16,
-//: `(v, 1, 0...)` and `(d_num, d_den, 0...)`.
+//: THE OPERAND PACK IS SHARED so the two scans cannot drift on what a plane means; -- see docs/internals/carry/backward_kernel.md#bwdparams
 struct BwdParams {
   const __nv_bfloat16* pread;
   const __nv_bfloat16* pwrite;
@@ -122,18 +109,14 @@ struct BwdParams {
   float* d_v;
   const float* slab_in;
   float* slab_out;
-  //: THE SLOT TABLES OF THE TWO SLABS (`ops.cuh`'s `page_slot`,
-  //: docs/internals/paging/paging.md).
-  // see docs/internals/carry/backward_kernel.md#bwdparams-note-l135
+  //: THE SLOT TABLES OF THE TWO SLABS (`ops.cuh`'s `page_slot`, -- see docs/internals/carry/backward_kernel.md#bwdparams-note-l135
   const int32_t* tbl_in;
   const int32_t* tbl_out;
   int L;
   int tok_words;
 };
 
-//: ONE OWNER'S ADDRESSING AND THE BODIES BOTH SCANS SHARE.  What differs -- the walk
-//: direction, which list drives which phase, which slab is held -- lives in the
-//: kernels below and nowhere else.
+//: ONE OWNER'S ADDRESSING AND THE BODIES BOTH SCANS SHARE.  What differs -- the walk -- see docs/internals/carry/backward_kernel.md#near-line-134
 template <int D, int B, int K, int M, int W, int C, int STAGES>
 struct BwdOwner {
   using BP = BoxPlan<D, B, K, M>;
@@ -161,9 +144,7 @@ struct BwdOwner {
   static constexpr int kGwRows = C / kWarps;
   static constexpr int kLeafGrp = kWarpLeaves / kMmaN;
 
-  //: THE DIGIT REDUCTION'S ROW MAP, stated as the two conditions it rests on
-  //: rather than as a depth.
-  // see docs/internals/carry/backward_kernel.md#static-assert
+  //: THE DIGIT REDUCTION'S ROW MAP, stated as the two conditions it rests on -- see docs/internals/carry/backward_kernel.md#static-assert
   static_assert(kSlabM == 2 && BP::s(D - 1) == kMmaM,
                 "the digit reduction's row map: a warp's leaf slice is exactly two m-tiles "
                 "and the inner level's span is exactly one of them");
@@ -196,9 +177,7 @@ struct BwdOwner {
   const uint32_t *rowsR, *rowsW;
   uint32_t rowOff[D];
   int runCol[D], lvCol[D];
-  //: THE PANEL RING'S BASES, AS NAMED SCALARS.  A two-element array indexed by the
-  //: batch parity is a runtime index into a register array, which is a stack frame;
-  //: a select is one instruction and no memory.
+  //: THE PANEL RING'S BASES, AS NAMED SCALARS.  A two-element array indexed by the -- see docs/internals/carry/backward_kernel.md#bdf
   uint32_t bpT0, bpT1, bpF0, bpF1, bdT, bdF;
   uint32_t atomBH;
   int prow, rIn, slot0;
@@ -269,9 +248,7 @@ struct BwdOwner {
     nw = 0;
   }
 
-  //: THE LIVENESS PASS, RECOMPUTED rather than saved -- the R4 constraint applied to
-  //: the SCHEDULE as well as to the state.  Both scans rebuild the SAME two packed
-  //: lists from the same table in the same order, so no list crosses the boundary.
+  //: THE LIVENESS PASS, RECOMPUTED rather than saved -- the R4 constraint applied to -- see docs/internals/carry/backward_kernel.md#liveness
   __device__ __forceinline__ void liveness(int tok0, int wlen) {
     if (tid < 2) sscan[8 + tid] = 0;
     rendezvous();
@@ -322,18 +299,14 @@ struct BwdOwner {
     nw = sscan[9];
   }
 
-  //: ONE BATCH'S PANEL, expanded from factors. `SAMP` also publishes the per-
-  //: level amplitude RUNS: they are the digit reduction's leave-one-out weights,
-  //: and they are the same values this body already holds -- never a second ...
-  // see docs/internals/carry/backward_kernel.md#produce
+  //: ONE BATCH'S PANEL, expanded from factors. `SAMP` also publishes the per- -- see docs/internals/carry/backward_kernel.md#produce
   template <bool SAMP, GainSite GAIN>
   __device__ __forceinline__ void produce(const __nv_bfloat16* base, __nv_bfloat16* dst,
                                           uint32_t tokOff, uint32_t gain, bool have, int par) {
     unsigned short lv[D][PM::kMaxN];
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      //: §6: PM::n_l(l) is compile-time (l is the static_for's constexpr index) but the
-      //: heuristic can't see through the qualified call, so name it.
+      //: §6: PM::n_l(l) is compile-time (l is the static_for's constexpr index) but the -- see docs/internals/carry/backward_kernel.md#knl
       constexpr int kNL = PM::n_l(l);
       unsigned short run[kNL];
       load_run<kNL>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
@@ -368,8 +341,7 @@ struct BwdOwner {
     }
   }
 
-  //: A padding row is zeroed -- by a zero gain where the gain is on the panel, and by
-  //: level 0's zeroed run everywhere else -- so a short batch needs no separate path.
+  //: A padding row is zeroed -- by a zero gain where the gain is on the panel, and by -- see docs/internals/carry/backward_kernel.md#near-line-371
   template <bool SAMP, GainSite GAIN>
   __device__ __forceinline__ void produce_batch(const __nv_bfloat16* base, __nv_bfloat16* dst,
                                                 const uint16_t* list, int o0, int ntot,
@@ -390,8 +362,7 @@ struct BwdOwner {
                         have ? gain : 0u, have, par);
   }
 
-  //: ONE `cols`-WIDE SLOT OF THE RING, gathered by the driving side's list.  The two
-  //: planes have one layout, so one body stages either.
+  //: ONE `cols`-WIDE SLOT OF THE RING, gathered by the driving side's list.  The two -- see docs/internals/carry/backward_kernel.md#stageslot
   __device__ __forceinline__ void stage_slot(const __nv_bfloat16* plane, const uint16_t* list,
                                              int b, int ntot, int slot, uint32_t winOff) {
     const int o0 = b * C;
@@ -424,9 +395,7 @@ struct BwdOwner {
         for (int e = 0; e < 4; ++e) slab[pm][q][e] = 0.f;
   }
 
-  //: THE PAGE SWEEP, in the leaf-major orientation, at CANONICAL atom ids (P80):
-  //: atom `a` is warp `a>>1`'s
-  //: m-tile `a&1`, because the carve slices the local index at a bit boundary.
+  //: THE PAGE SWEEP, in the leaf-major orientation, at CANONICAL atom ids (P80): -- see docs/internals/carry/backward_kernel.md#slabload
   __device__ __forceinline__ void slab_load(float (&slab)[kSlabM][kSlabN][4], const float* src,
                                             const int32_t* tbl) {
     slab_zero(slab);
@@ -434,8 +403,7 @@ struct BwdOwner {
     const float* const plane = pin_address(src);
 #pragma unroll
     for (int a = 0; a < kAtoms; ++a) {
-      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the slab keeps the
-      //: zero `slab_zero` set, which is what a never-written state contributes.
+      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the slab keeps the -- see docs/internals/carry/backward_kernel.md#slot
       const int32_t slot = page_slot(tbl, atomBH + BP::canon_atom(owner, a));
       if (slot < 0) continue;
       const uint32_t base = page_off(slot);
@@ -472,8 +440,7 @@ struct BwdOwner {
     float* const plane = pin_address(dst);
 #pragma unroll
     for (int a = 0; a < kAtoms; ++a) {
-      //: THE EXIT STORES ONLY PLANNED ATOMS, which is what leaves a skipped slot
-      //: carrying exactly what it held.
+      //: THE EXIT STORES ONLY PLANNED ATOMS, which is what leaves a skipped slot -- see docs/internals/carry/backward_kernel.md#slot-2
       const int32_t slot = page_slot(tbl, atomBH + BP::canon_atom(owner, a));
       if (slot < 0) continue;
       rendezvous();
@@ -506,15 +473,11 @@ struct BwdOwner {
     }
   }
 
-  //: THE GRADIENT TILE: the slab against the batch's `cols`-wide panel, contracted
-  //: over CHANNELS -- `dR` in Scan A, `dW` in Scan B, one body.  `[leaf x token]`.
+  //: THE GRADIENT TILE: the slab against the batch's `cols`-wide panel, contracted -- see docs/internals/carry/backward_kernel.md#channelreadout
   __device__ __forceinline__ void channel_readout(const float (&slab)[kSlabM][kSlabN][4],
                                                   uint32_t bd, const __nv_bfloat16* panel,
                                                   float (&tile)[kSlabM][NTOK][4]) {
-    //: THE MASS COLUMN IS READ ONCE, NOT ONCE PER m-TILE. Its panel entry is
-    //: indexed by the TOKEN alone, and a thread's token depends on `nt` and `e & 1`
-    //: only, so the two m-tiles want the same eight values.
-    // see docs/internals/carry/backward_kernel.md#bwdowner-note-l546
+    //: THE MASS COLUMN IS READ ONCE, NOT ONCE PER m-TILE. Its panel entry is -- see docs/internals/carry/backward_kernel.md#bwdowner-note-l546
     float pv[NTOK][2];
 #pragma unroll
     for (int nt = 0; nt < NTOK; ++nt)
@@ -542,9 +505,7 @@ struct BwdOwner {
           for (int pp = 0; pp < 2; ++pp) mma(tile[pm][2 * mt + pp], a, &b[2 * pp]);
         }
       }
-      //: THE MASS CHANNEL RIDES THE SAME READOUT, and its PANEL entry is not 1: it is
-      //: `d_den` on the seed side and 1 on the value side.  `cols` is not a whole number
-      //: of k-tiles, so the term is a broadcast product rather than a fifth k-step.
+      //: THE MASS CHANNEL RIDES THE SAME READOUT, and its PANEL entry is not 1: it is -- see docs/internals/carry/backward_kernel.md#m0
       const float m0 = __shfl_sync(0xFFFFFFFFu, slab[pm][kSlabN - 1][0], lane & ~3);
       const float m1 = __shfl_sync(0xFFFFFFFFu, slab[pm][kSlabN - 1][2], lane & ~3);
 #pragma unroll
@@ -554,8 +515,7 @@ struct BwdOwner {
     }
   }
 
-  //: THE OUTER LEVEL'S STAGED CELLS, walked by a CARRYING cursor.
-  // see docs/internals/carry/backward_kernel.md#for-outer-cells
+  //: THE OUTER LEVEL'S STAGED CELLS, walked by a CARRYING cursor. -- see docs/internals/carry/backward_kernel.md#for-outer-cells
   template <typename F>
   __device__ __forceinline__ void for_outer_cells(F&& f) {
     constexpr int NROW = BP::s(0);
@@ -577,24 +537,17 @@ struct BwdOwner {
     }
   }
 
-  //: THE DIGIT PLANE IS CLEARED AT THE HEAD OF THE BATCH, so the leading rendezvous
-  //: publishes it and the reduction below needs no barrier of its own.
+  //: THE DIGIT PLANE IS CLEARED AT THE HEAD OF THE BATCH, so the leading rendezvous -- see docs/internals/carry/backward_kernel.md#digitzero
   __device__ __forceinline__ void digit_zero() {
     for_outer_cells([&](int tokl, int row) { sdg[tokl * kDigitRows + row] = 0.f; });
   }
 
-  //: THE DIGIT REDUCTION. A level's digit gradient is the tile's weighted
-  //: marginal along that level's index axis, the weight being the OTHER levels'
-  //: amplitude product -- one staged amplitude at `D = 2`, and never a division.
-  // see docs/internals/carry/backward_kernel.md#digit-reduce-outer
+  //: THE DIGIT REDUCTION. A level's digit gradient is the tile's weighted -- see docs/internals/carry/backward_kernel.md#digit-reduce-outer
   __device__ __forceinline__ void digit_reduce_outer(const float (&tile)[kSlabM][NTOK][4],
                                                      int par) {
     constexpr int off0 = DP::off(0), off1 = DP::off(1);
     const float* const amp = samp + par * C * kDigitRows;
-    //: outer level: a whole m-tile is one digit and a warp owns its two
-    //: exclusively, so the segment is three lane shuffles and no cross-warp term at
-    //: all.
-    // see docs/internals/carry/backward_kernel.md#bwdowner-note-l636
+    //: outer level: a whole m-tile is one digit and a warp owns its two -- see docs/internals/carry/backward_kernel.md#bwdowner-note-l636
 #pragma unroll
     for (int pm = 0; pm < kSlabM; ++pm)
 #pragma unroll
@@ -614,8 +567,7 @@ struct BwdOwner {
         }
   }
 
-  //: THE INNER LEVEL'S FOUR WARP PARTIALS MEET IN THE GLOBAL PLANE.
-  // see docs/internals/carry/backward_kernel.md#digit-reduce-inner-direct
+  //: THE INNER LEVEL'S FOUR WARP PARTIALS MEET IN THE GLOBAL PLANE. -- see docs/internals/carry/backward_kernel.md#digit-reduce-inner-direct
   template <bool GAINED>
   __device__ __forceinline__ void digit_reduce_inner_direct(const float (&tile)[kSlabM][NTOK][4],
                                                             int par, float* plane,
@@ -642,9 +594,7 @@ struct BwdOwner {
       }
   }
 
-  //: THE DRAIN CARRIES THE OUTER LEVEL ALONE, on both sides: the inner level fans
-  //: itself in from the reduction.
-  // see docs/internals/carry/backward_kernel.md#digit-drain
+  //: THE DRAIN CARRIES THE OUTER LEVEL ALONE, on both sides: the inner level fans -- see docs/internals/carry/backward_kernel.md#digit-drain
   template <bool GAINED>
   __device__ __forceinline__ void digit_drain(float* plane, const uint16_t* list, int o0, int n,
                                               uint32_t winP, int par) {
@@ -663,9 +613,7 @@ struct BwdOwner {
 
 // ------------------------------------------------------------------ Scan B
 
-//: THE DESCENDING ADJOINT.  Per window: the WRITE side against the adjoint at window
-//: EXIT, then the fold of that window's own reads.  The reverse ordering law is the
-//: mirror of the forward's, and it is what keeps the within-window pairs out.
+//: THE DESCENDING ADJOINT.  Per window: the WRITE side against the adjoint at window -- see docs/internals/carry/backward_kernel.md#near-line-666
 template <int D, int B, int K, int M, int W, int C>
 __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void scan_b_kernel(
     BwdParams p) {
@@ -734,17 +682,12 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
       float tile[kSlabM][NTOK][4];
       ow.channel_readout(lam, bd, ow.sd + vslot * OW::kSlotElems, tile);
       ow.digit_reduce_outer(tile, par);
-      //: the inner level meets in the GLOBAL plane here too, and `(G7)`'s gain rides
-      //: the warp-grain partial: RATIFIED, the plane already distributing that gain
-      //: across the owner decomposition.  See `digit_reduce_inner_direct`.
+      //: the inner level meets in the GLOBAL plane here too, and `(G7)`'s gain rides -- see docs/internals/carry/backward_kernel.md#near-line-737
       ow.template digit_reduce_inner_direct<true>(tile, par, dpwP, wlist, off, n, winA);
       rendezvous();
       ow.template digit_drain<true>(dpwP, wlist, off, n, winA, par);
 
-      //: (G5) and (G6) off ONE accumulator: the panel is UNGAINED, so the value
-      //: columns times `gw` are `d_v` and the same accumulator dotted with the ones-
-      //: column-bearing value row is `d_gw`.
-      // see docs/internals/carry/backward_kernel.md#note-l822
+      //: (G5) and (G6) off ONE accumulator: the panel is UNGAINED, so the value -- see docs/internals/carry/backward_kernel.md#note-l822
       float ung[MTOK][kSlabN][4];
 #pragma unroll
       for (int mt = 0; mt < MTOK; ++mt)
@@ -768,10 +711,7 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
           for (int mt = 0; mt < MTOK; ++mt) mma(ung[mt][q], a[mt], b2);
         }
       }
-      //: `k = leaf` is the carved axis, so this is the backward's one cross-warp
-      //: term: four warp partials of `[C x cols]` meeting in the output staging
-      //: buffer.
-      // see docs/internals/carry/backward_kernel.md#note-l850
+      //: `k = leaf` is the carved axis, so this is the backward's one cross-warp -- see docs/internals/carry/backward_kernel.md#note-l850
 #pragma unroll 1
       for (int round = 0; round < kWarps; ++round) {
         if (ow.warp == round) {
@@ -794,8 +734,7 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
         rendezvous();
       }
       const int fanRow = ow.tid / kBallotLanes, fanCol = ow.tid % kBallotLanes;
-      //: §6: OW::k* are compile-time constexpr static members but the heuristic can't
-      //: see through the qualified name, so alias them locally.
+      //: §6: OW::k* are compile-time constexpr static members but the heuristic can't -- see docs/internals/carry/backward_kernel.md#kfanpasses
       constexpr int kFanPasses = OW::kFanPasses;
       constexpr int kFanPerThr = OW::kFanPerThr;
       constexpr int kGwRows = OW::kGwRows;
@@ -861,8 +800,7 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
           uint32_t a[4];
           load_frag_t(
               a, bp + (uint32_t)((kt * kMmaM * LdS + (OW::kLeafGrp * ow.warp + 2 * pm) * 8) * 2));
-          //: §6: (kSlabN+1)/2 is compile-time (kSlabN is a file-level constexpr) but the
-          //: heuristic only reads a bare identifier, so name it.
+          //: §6: (kSlabN+1)/2 is compile-time (kSlabN is a file-level constexpr) but the -- see docs/internals/carry/backward_kernel.md#kqbhalf
           constexpr int kQBHalf = (kSlabN + 1) / 2;
 #pragma unroll
           for (int qb = 0; qb < kQBHalf; ++qb) {
@@ -883,9 +821,7 @@ __global__ __launch_bounds__(kThreads, (kScanBCtaTarget<D, B, K, M, W, C>)) void
 
 // ------------------------------------------------------------------ Scan A
 
-//: THE ASCENDING REPLAY.  Per window: the read side against the window's ENTRY state,
-//: then the forward's own fold of that window's writes -- so the slab at the end of
-//: the walk is the forward's `state_out`, which is the rung's cheapest strong gate.
+//: THE ASCENDING REPLAY.  Per window: the read side against the window's ENTRY state, -- see docs/internals/carry/backward_kernel.md#near-line-886
 template <int D, int B, int K, int M, int W, int C>
 __global__ __launch_bounds__(kThreads, (kScanACtaTarget<D, B, K, M, W, C>)) void scan_a_kernel(
     BwdParams p) {
@@ -945,8 +881,7 @@ __global__ __launch_bounds__(kThreads, (kScanACtaTarget<D, B, K, M, W, C>)) void
       float tile[kSlabM][NTOK][4];
       ow.channel_readout(st, bd, ow.sd + (i % STAGES) * OW::kSlotElems, tile);
       ow.digit_reduce_outer(tile, par);
-      //: the inner level meets the other three warps in the GLOBAL plane and never
-      //: touches `sdg`; ungained here, `(R2)` having no factor on the sum.
+      //: the inner level meets the other three warps in the GLOBAL plane and never -- see docs/internals/carry/backward_kernel.md#near-line-948
       ow.template digit_reduce_inner_direct<false>(tile, par, dprP, ow.slist, off, n, winA);
       rendezvous();
       ow.template digit_drain<false>(dprP, ow.slist, off, n, winA, par);
@@ -985,8 +920,7 @@ __global__ __launch_bounds__(kThreads, (kScanACtaTarget<D, B, K, M, W, C>)) void
           uint32_t a[4];
           load_frag_t(
               a, bp + (uint32_t)((kt * kMmaM * LdS + (OW::kLeafGrp * ow.warp + 2 * pm) * 8) * 2));
-          //: §6: (kSlabN+1)/2 is compile-time (kSlabN is a file-level constexpr) but the
-          //: heuristic only reads a bare identifier, so name it.
+          //: §6: (kSlabN+1)/2 is compile-time (kSlabN is a file-level constexpr) but the -- see docs/internals/carry/backward_kernel.md#kqbhalf-2
           constexpr int kQBHalf = (kSlabN + 1) / 2;
 #pragma unroll
           for (int qb = 0; qb < kQBHalf; ++qb) {

@@ -13,30 +13,24 @@ namespace decode {
 
 using LatticeScan = cub::BlockScan<int, kDecodeThreads>;
 
-//: THE FOUR PER-LEVEL DIGIT SETS the terms are built from, as the index of one
-//: owner-list plane each.
-// see docs/internals/decode/decode_lattice.md#kkindw
+//: THE FOUR PER-LEVEL DIGIT SETS the terms are built from, as the index of one -- see docs/internals/decode/decode_lattice.md#kkindw
 constexpr int kKindW = 0;
 constexpr int kKindR = 1;
 constexpr int kKindRW = 2;   // R_l & W_l
 constexpr int kKindRmW = 3;  // R_l & ~W_l
 constexpr int kKinds = 4;
 
-//: `D + 2` term slots: the write product, one per level, and -- LAST -- the
-//: CANDIDATE LAYOUT.
-// see docs/internals/decode/decode_lattice.md#kmaxterms
+//: `D + 2` term slots: the write product, one per level, and -- LAST -- the -- see docs/internals/decode/decode_lattice.md#kmaxterms
 constexpr int kMaxTerms = kMaxLevels + 2;
 
-//: THE TERM TABLE, as arithmetic rather than as a table: term `0` is the write product,
-//: and term `j >= 1` splits at level `j - 1`.
+//: THE TERM TABLE, as arithmetic rather than as a table: term `0` is the write product, -- see docs/internals/decode/decode_lattice.md#termkind
 __device__ __forceinline__ int term_kind(int term, int l, int D) {
   if (term == 0 || term > D) return kKindW;  // term 0 and the candidate slot are `prod W`
   const int split = term - 1;
   return l < split ? kKindRW : (l == split ? kKindRmW : kKindR);
 }
 
-//: A KIND'S BITS, from the two sides' bits. One expression, used on single digits and on
-//: whole owner spans alike, which is what keeps the digit masks at two planes.
+//: A KIND'S BITS, from the two sides' bits. One expression, used on single digits and on -- see docs/internals/decode/decode_lattice.md#kindbits
 __device__ __forceinline__ uint32_t kind_bits(uint32_t r, uint32_t w, int kind) {
   switch (kind) {
     case kKindW:
@@ -50,9 +44,7 @@ __device__ __forceinline__ uint32_t kind_bits(uint32_t r, uint32_t w, int kind) 
   }
 }
 
-//: One side's DIGIT MASK, one bit per digit of every level, packed level by level. One
-//: thread owns one destination word and reads the amplitudes it covers, so the pass is
-//: race-free without atomics and costs `sum_l ceil(B_l / 32)` words.
+//: One side's DIGIT MASK, one bit per digit of every level, packed level by level. One -- see docs/internals/decode/decode_lattice.md#near-line-53
 template <int D>
 __device__ __forceinline__ void build_digit_mask(const DecodeParams& p, const float* amp,
                                                  uint32_t* mask) {
@@ -76,8 +68,7 @@ __device__ __forceinline__ void build_digit_mask(const DecodeParams& p, const fl
   }
 }
 
-//: Level `l`'s digits `[lo, lo + count)` as one word. `count <= kDecodeMaxSpan` is the
-//: host's declared capacity, which is what makes an owner's whole span a single extract.
+//: Level `l`'s digits `[lo, lo + count)` as one word. `count <= kDecodeMaxSpan` is the -- see docs/internals/decode/decode_lattice.md#levelslice
 __device__ __forceinline__ uint32_t level_slice(const DecodeParams& p, const uint32_t* mask, int l,
                                                 int lo, int count) {
   return extract_bits(mask + p.mask_off[l], p.mask_words[l], lo, count);
@@ -89,18 +80,13 @@ __device__ __forceinline__ int ceil_log2_dev(int n) {
   return bits;
 }
 
-//: ONE DIGIT'S MEMBERSHIP, as ONE load and a shift. `level_slice` reads two words and
-//: funnel-shifts them because an owner's SPAN can straddle a word boundary; a single digit
-//: never can, and the unit asks this question `2 * (D - 1)` times.
+//: ONE DIGIT'S MEMBERSHIP, as ONE load and a shift. `level_slice` reads two words and -- see docs/internals/decode/decode_lattice.md#maskbit
 __device__ __forceinline__ bool mask_bit(const DecodeParams& p, const uint32_t* mask, int l,
                                          int bit) {
   return ((mask[p.mask_off[l] + (bit >> 5)] >> (static_cast<uint32_t>(bit) & 31u)) & 1u) != 0u;
 }
 
-//: THE OWNER LIVENESS BITMASK: per KIND and level, ONE BIT PER OWNER
-//: COORDINATE, set where that kind's digit set has any digit inside the owner's
-//: span.
-// see docs/internals/decode/decode_lattice.md#build-owner-mask
+//: THE OWNER LIVENESS BITMASK: per KIND and level, ONE BIT PER OWNER -- see docs/internals/decode/decode_lattice.md#build-owner-mask
 template <int D>
 __device__ __forceinline__ void build_owner_mask(const DecodeParams& p, const uint32_t* mask_r,
                                                  const uint32_t* mask_w, uint32_t* omask,
@@ -134,8 +120,7 @@ __device__ __forceinline__ void build_owner_mask(const DecodeParams& p, const ui
   }
 }
 
-//: THE COMPACTION, AND IT COSTS ONE `POPC` PER WORD.
-// see docs/internals/decode/decode_lattice.md#compact-owner-lists
+//: THE COMPACTION, AND IT COSTS ONE `POPC` PER WORD. -- see docs/internals/decode/decode_lattice.md#compact-owner-lists
 template <int D>
 __device__ __forceinline__ void compact_owner_lists(const DecodeParams& p, const uint32_t* omask,
                                                     const uint32_t* mask_w, int32_t* olist,
@@ -167,10 +152,7 @@ __device__ __forceinline__ void compact_owner_lists(const DecodeParams& p, const
   }
 }
 
-//: A LEVEL'S RANK FIELD, PACKED INTO ONE REGISTER, and the packing is a
-//: REGISTER BUDGET decision measured on the deepest arm: three parallel
-//: `int[D]` arrays cost twelve live registers at `D = 4` and spilled the `d_v = ...
-// see docs/internals/decode/decode_lattice.md#kfieldwidthmax
+//: A LEVEL'S RANK FIELD, PACKED INTO ONE REGISTER, and the packing is a -- see docs/internals/decode/decode_lattice.md#kfieldwidthmax
 constexpr int kFieldWidthMax = 10;
 static_assert(kDecodeMaxLevelWidth <= (1 << kFieldWidthMax),
               "a level's realized owner or digit count must fit the packed field's width");
@@ -188,9 +170,7 @@ __device__ __forceinline__ int field_index(int f, int rank) {
   return (rank >> field_shift(f)) & ((1 << field_width(f)) - 1);
 }
 
-//: THE TERM LAYOUT: each term's own rank space, DERIVED INTO REGISTERS BY
-//: WHOEVER NEEDS IT.
-// see docs/internals/decode/decode_lattice.md#term-layout
+//: THE TERM LAYOUT: each term's own rank space, DERIVED INTO REGISTERS BY -- see docs/internals/decode/decode_lattice.md#term-layout
 template <int D>
 __device__ __forceinline__ int term_layout(const DecodeParams& p, const int32_t* n_o,
                                            const int32_t* n_d, int term, int32_t* fld) {
@@ -210,8 +190,7 @@ __device__ __forceinline__ int term_layout(const DecodeParams& p, const int32_t*
   return (term == 0) ? (1 << acc) : (1 << (acc + p.lat_outer_bits));
 }
 
-//: THE WHOLE TABLE AND THE RETIREMENT BOUND, published once per CTA.
-// see docs/internals/decode/decode_lattice.md#publish-term-layout
+//: THE WHOLE TABLE AND THE RETIREMENT BOUND, published once per CTA. -- see docs/internals/decode/decode_lattice.md#publish-term-layout
 template <int D>
 __device__ __forceinline__ void publish_term_layout(const DecodeParams& p, const int32_t* n_o,
                                                     const int32_t* n_d, int32_t* fld,
@@ -225,14 +204,10 @@ __device__ __forceinline__ void publish_term_layout(const DecodeParams& p, const
   __syncthreads();
 }
 
-//: ONE UNIT of the walk: the `(owner, r_0 .. r_{D-2})` pair a rank names -- an
-//: owner together with EVERY run offset but the innermost.
-// see docs/internals/decode/decode_lattice.md#unit
+//: ONE UNIT of the walk: the `(owner, r_0 .. r_{D-2})` pair a rank names -- an -- see docs/internals/decode/decode_lattice.md#unit
 template <int D>
 struct Unit {
-  //: NO `owner` FIELD. The owner's mixed-radix index is a resolver LOCAL that dies into
-  //: `base`; carrying it in the struct kept a register live across the walk's tightest
-  //: scope for nothing, and with two resolvers in one kernel that cost two.
+  //: NO `owner` FIELD. The owner's mixed-radix index is a resolver LOCAL that dies into -- see docs/internals/decode/decode_lattice.md#base
   int base;  // the unit's first leaf, as a LATTICE index
   bool valid;
   bool live_r;  // every level but the innermost carries read amplitude at its fixed digit
@@ -245,8 +220,7 @@ struct Unit {
   uint32_t cw;
 };
 
-//: THE UNIT INDEX, decomposed by shifts alone within its TERM.
-// see docs/internals/decode/decode_lattice.md#resolve-unit
+//: THE UNIT INDEX, decomposed by shifts alone within its TERM. -- see docs/internals/decode/decode_lattice.md#resolve-unit
 template <int D, bool DECAY>
 __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uint32_t* mask_r,
                                                 const uint32_t* mask_w, const float* sa_r,
@@ -294,8 +268,7 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
       if (DECAY) u.rate *= sd[off];
     }
   }
-  //: THE CONDITIONING the walk's one expression rests on, and the whole of the term's
-  //: presence in this file's contract.
+  //: THE CONDITIONING the walk's one expression rests on, and the whole of the term's -- see docs/internals/decode/decode_lattice.md#alive
   const bool alive = u.valid && live_kind;
   if (term == 0 || term > D) {
     if (!alive) {
@@ -312,8 +285,7 @@ __device__ __forceinline__ Unit<D> resolve_unit(const DecodeParams& p, const uin
   return u;
 }
 
-//: THE CANDIDATE ATOM'S UNIT, and it is deliberately NOT a `Unit<D>`.
-// see docs/internals/decode/decode_lattice.md#candidateunit
+//: THE CANDIDATE ATOM'S UNIT, and it is deliberately NOT a `Unit<D>`. -- see docs/internals/decode/decode_lattice.md#candidateunit
 struct CandidateUnit {
   int base;
   bool valid;
@@ -353,17 +325,14 @@ __device__ __forceinline__ CandidateUnit resolve_candidate_unit(const DecodePara
   return u;
 }
 
-//: THE WRITE PRODUCT'S UNIT, resolved from LIVE DIGITS.
-// see docs/internals/decode/decode_lattice.md#resolve-write-unit
+//: THE WRITE PRODUCT'S UNIT, resolved from LIVE DIGITS. -- see docs/internals/decode/decode_lattice.md#resolve-write-unit
 template <int D, bool DECAY>
 __device__ __forceinline__ Unit<D> resolve_write_unit(const DecodeParams& p, const uint32_t* mask_r,
                                                       const uint32_t* mask_w, const float* sa_r,
                                                       const float* sa_w, const float* sd,
                                                       const int32_t* olist, const int32_t* dlist,
                                                       const int32_t* fld, int unit) {
-  //: THE WARP-LOCALITY ROTATION, and it is the second DRAM decision in this
-  //: resolver.
-  // see docs/internals/decode/decode_lattice.md#krotlevel
+  //: THE WARP-LOCALITY ROTATION, and it is the second DRAM decision in this -- see docs/internals/decode/decode_lattice.md#krotlevel
   constexpr int kRotLevel = (D > 1) ? D - 2 : 0;
   int rank = unit;
   if (D > 1) {
@@ -385,8 +354,7 @@ __device__ __forceinline__ Unit<D> resolve_write_unit(const DecodeParams& p, con
   u.aw = 1.0f;
   u.rate = 1.0f;
   int runs = 0;
-  //: §6: `D` is this function's template parameter, so `D - 1` is compile-time;
-  //: name it so the heuristic reads it as such.
+  //: §6: `D` is this function's template parameter, so `D - 1` is compile-time; -- see docs/internals/decode/decode_lattice.md#kdm1
   constexpr int kDm1 = D - 1;
 #pragma unroll
   for (int l = 0; l < kDm1; ++l) {
@@ -418,8 +386,7 @@ __device__ __forceinline__ Unit<D> resolve_write_unit(const DecodeParams& p, con
     u.cr = level_slice(p, mask_r, l, run_base, p.lat_s[l]);
     u.cw = level_slice(p, mask_w, l, run_base, p.lat_s[l]);
   }
-  //: THE SAME CONDITIONING `resolve_unit` applies to the write term, for the same reason:
-  //: the walk iterates one slice and asks `in_r`/`in_w` with one expression each.
+  //: THE SAME CONDITIONING `resolve_unit` applies to the write term, for the same reason: -- see docs/internals/decode/decode_lattice.md#near-line-421
   if (!u.valid) {
     u.cr = 0u;
     u.cw = 0u;

@@ -87,3 +87,30 @@ THE LIVENESS EPILOGUE: `[BH, N/BC]` uint8, bits {READ, WRITE, STATE}, reduced
 from the union table THIS launch already built.  A SEPARATE ENTRY POINT, on
 the union table's own rule: a per-call reduction that the sparse grid pays
 for must be reported on its own line and never folded into a kernel delta.
+
+<a id="near-line-79"></a>
+### near line 79
+
+the arm surface, DECLARED only -- definitions live in the instantiation
+shard (facts_s0.cu).  facts.cu must never define one locally.
+
+<a id="checkplanes"></a>
+### `check_planes`
+
+THE AMPLITUDE HALF, which the facts pass needs and the consumer needs too: the
+planes carry the problem's `[B, H, L]` addressing, so nothing about the token
+schedule has to be read off the value stream.
+
+<a id="chunkblockbitsx"></a>
+### `CHUNK_BLOCK_BITS_X`
+
+NO `C` AXIS: the table this reduces is the (D, B, BC) one, so the arm walk
+matches on the block grain alone and an arm list repeating a grain at
+several chunk lengths resolves to the one instantiation.
+
+<a id="arms"></a>
+### `arms`
+
+The built set with the plan quantities of an arm reported beside it: the
+block count, the block's inner/outer axes and the table's entry count.  The
+consumer's launch geometry (staging depth, CTA target) died with it.

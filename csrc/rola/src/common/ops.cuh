@@ -1,11 +1,9 @@
 #pragma once
 
 // LAYER 2b -- THE BASELINE OPERATIONS: how each of layer 2a's (`design.cuh`)
-// steps is EXECUTED, as operations with contracts.  Every entry is defined by
-// WHAT THE ALGORITHM NEEDS, never by what an instruction does; the kernel
-// above this header names no architecture and issues no inline PTX.  The
-// per-operation contract catalogue, the deliberate omissions, and the 2a/2b
-// consistency rules live in docs/internals/common/ops.md.
+// steps is EXECUTED, as operations with contracts, defined by WHAT THE
+// ALGORITHM NEEDS -- no architecture named, no inline PTX above this header.
+// See docs/internals/common/ops.md
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -18,29 +16,21 @@
 namespace denseref {
 namespace ops {
 
-//: Bytes moved by one `stage_tile`.  A FACT OF THE OPERATION, not of the
-//: kernel: it is the widest single asynchronous copy the staging implementation
-//: issues, and the staging loop's shape is derived from it.
+//: Bytes moved by one `stage_tile`.  A FACT OF THE OPERATION, not of the -- see docs/internals/common/ops.md#kstagebytes
 constexpr int kStageBytes = 16;
 
 //: The MMA's shape, in the units the carve is expressed in.
 constexpr int kMmaM = 16, kMmaN = 8, kMmaK = 16;
 
-//: THE BUILT `mma`'s UNIT: the threads that jointly issue one MMA and jointly
-//: own its accumulator.
-// see docs/internals/common/ops.md#kmmaunitthreads
+//: THE BUILT `mma`'s UNIT: the threads that jointly issue one MMA and jointly -- see docs/internals/common/ops.md#kmmaunitthreads
 constexpr int kMmaUnitThreads = 32;
 
-//: The operand sources the built `mma` accepts.  A kernel whose accumulator
-//: must land on a particular side asserts against THESE, at its own site: which
-//: side is a property of that kernel and not of the baseline.
+//: The operand sources the built `mma` accepts.  A kernel whose accumulator -- see docs/internals/common/ops.md#kmmaacceptsregistera
 constexpr bool kMmaAcceptsRegisterA = true;
 constexpr bool kMmaAcceptsRegisterB = true;
 constexpr bool kMmaAcceptsTmemA = false;
 
-//: The built `stage_tile` moves `kStageBytes` per issue.  A bulk (TMA) form
-//: would satisfy the same contract with one descriptor issue for a whole tile;
-//: it is not built.  See the announcement in the consistency section.
+//: The built `stage_tile` moves `kStageBytes` per issue.  A bulk (TMA) form -- see docs/internals/common/ops.md#kstagingisbulk
 constexpr bool kStagingIsBulk = false;
 
 using SmemAddr = uint32_t;
@@ -49,9 +39,7 @@ __device__ __forceinline__ SmemAddr smem_addr(const void* p) {
   return static_cast<SmemAddr>(__cvta_generic_to_shared(p));
 }
 
-//: A GATHERED ROW'S ADDRESS: a base formed once, displaced by a 32-bit BYTE
-//: offset that is zero-extended rather than multiplied out.
-// see docs/internals/common/ops.md#gather-ptr
+//: A GATHERED ROW'S ADDRESS: a base formed once, displaced by a 32-bit BYTE -- see docs/internals/common/ops.md#gather-ptr
 __device__ __forceinline__ const void* gather_ptr(const void* base, uint32_t off) {
   const void* p;
   asm("{ .reg .u64 t; cvt.u64.u32 t, %2; add.u64 %0, %1, t; }" : "=l"(p) : "l"(base), "r"(off));
@@ -59,9 +47,7 @@ __device__ __forceinline__ const void* gather_ptr(const void* base, uint32_t off
   return p;
 }
 
-//: A BASE THE COMPILER MUST KEEP RATHER THAN RE-DERIVE.  The value is unchanged;
-//: what changes is that it becomes the result of an operation ptxas cannot see
-//: through, so rematerialising it is not available and the base stays live.
+//: A BASE THE COMPILER MUST KEEP RATHER THAN RE-DERIVE.  The value is unchanged; -- see docs/internals/common/ops.md#t
 template <class T>
 __device__ __forceinline__ T* pin_address(T* p) {
   asm("" : "+l"(p));
@@ -75,8 +61,7 @@ __device__ __forceinline__ void* gather_ptr(void* base, uint32_t off) {
   return p;
 }
 
-//: THE STATE PLANE'S ONE BASE TRANSLATION (docs/internals/paging/paging.md).
-// see docs/internals/common/ops.md#page-slot
+//: THE STATE PLANE'S ONE BASE TRANSLATION (docs/internals/paging/paging.md). -- see docs/internals/common/ops.md#page-slot
 __device__ __forceinline__ int32_t page_slot(const int32_t* page_tbl, uint32_t atom) {
   if (page_tbl == nullptr) return (int32_t)atom;
   return *reinterpret_cast<const int32_t*>(gather_ptr(page_tbl, atom * (uint32_t)sizeof(int32_t)));
@@ -88,8 +73,7 @@ __device__ __forceinline__ void stage_tile(SmemAddr dst, const void* src) {
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(dst), "l"(src));
 }
 
-//: THE SAME COPY AT A NARROWER QUANTUM.
-// see docs/internals/common/ops.md#stage-run
+//: THE SAME COPY AT A NARROWER QUANTUM. -- see docs/internals/common/ops.md#stage-run
 template <int Bytes>
 __device__ __forceinline__ void stage_run(SmemAddr dst, const void* src) {
   static_assert(Bytes == 4 || Bytes == 8 || Bytes == kStageBytes,
@@ -110,46 +94,32 @@ __device__ __forceinline__ void stage_wait() {
 
 __device__ __forceinline__ void rendezvous() { __syncthreads(); }
 
-//: `rendezvous_group(id, n)` -- a barrier over `n` threads that arrive at the
-//: SAME named barrier `id`, leaving the other warps of the CTA unwaited.
-// see docs/internals/common/ops.md#rendezvous-group
+//: `rendezvous_group(id, n)` -- a barrier over `n` threads that arrive at the -- see docs/internals/common/ops.md#rendezvous-group
 __device__ __forceinline__ void rendezvous_group(int id, int n) {
   asm volatile("bar.sync %0, %1;\n" ::"r"(id), "r"(n));
 }
 
-//: THE LOCKSTEP UNIT'S WIDTH, and it is deliberately not `kMmaUnitThreads`.
-// see docs/internals/common/ops.md#kballotlanes
+//: THE LOCKSTEP UNIT'S WIDTH, and it is deliberately not `kMmaUnitThreads`. -- see docs/internals/common/ops.md#kballotlanes
 constexpr int kBallotLanes = 32;
 
-//: ONE BIT PER LANE, IN LANE ORDER. The unit's own agreement about a property
-//: of the data its lanes hold, reached without a memory round trip and without
-//: ordering anything.
-// see docs/internals/common/ops.md#lane-ballot
+//: ONE BIT PER LANE, IN LANE ORDER. The unit's own agreement about a property -- see docs/internals/common/ops.md#lane-ballot
 __device__ __forceinline__ uint32_t lane_ballot(bool pred) {
   return __ballot_sync(0xFFFFFFFFu, pred);
 }
 
-//: THE TWO READINGS OF A VOTE. A bit vector answers "how many" and "where
-//: first"; together they turn a lockstep unit's agreement into POSITIONS ...
-// see docs/internals/common/ops.md#bit-count
+//: THE TWO READINGS OF A VOTE. A bit vector answers "how many" and "where -- see docs/internals/common/ops.md#bit-count
 __device__ __forceinline__ int bit_count(uint32_t x) { return __popc(x); }
 
-//: `kBallotLanes` for an empty vector, so "nowhere" compares greater than every
-//: lane and needs no separate case at the call site.
+//: `kBallotLanes` for an empty vector, so "nowhere" compares greater than every -- see docs/internals/common/ops.md#firstset
 __device__ __forceinline__ int first_set(uint32_t x) {
   const int f = __ffs((int)x);
   return f ? f - 1 : kBallotLanes;
 }
 
-//: THE OTHER END OF THE SAME VOTE, for a caller that consumes its lanes from
-//: the high side.  `-1` for an empty vector, so "nowhere" compares BELOW every
-//: lane and needs no separate case, exactly as `kBallotLanes` compares above.
+//: THE OTHER END OF THE SAME VOTE, for a caller that consumes its lanes from -- see docs/internals/common/ops.md#lastset
 __device__ __forceinline__ int last_set(uint32_t x) { return 31 - __clz((int)x); }
 
-//: THE UNIT'S OWN RUNNING TOTAL. `N` must be a power of two no wider than the
-//: unit; lanes at or above it contribute whatever they hold and are the
-//: caller's to mask.
-// see docs/internals/common/ops.md#lane-prefix-incl
+//: THE UNIT'S OWN RUNNING TOTAL. `N` must be a power of two no wider than the -- see docs/internals/common/ops.md#lane-prefix-incl
 template <int N>
 __device__ __forceinline__ int lane_prefix_incl(int x) {
 #pragma unroll
@@ -169,8 +139,7 @@ __device__ __forceinline__ int lane_broadcast(int x, int src) {
 
 using Frag = uint32_t[4];
 
-//: THE `memory` CLOBBER IS PART OF THE CONTRACT (K35 R-B).
-// see docs/internals/common/ops.md#load-frag
+//: THE `memory` CLOBBER IS PART OF THE CONTRACT (K35 R-B). -- see docs/internals/common/ops.md#load-frag
 __device__ __forceinline__ void load_frag(uint32_t (&r)[4], SmemAddr a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
@@ -185,8 +154,7 @@ __device__ __forceinline__ void load_frag_t(uint32_t (&r)[4], SmemAddr a) {
                : "memory");
 }
 
-//: AN 8x8 b16 TILE, TRANSPOSED WHERE IT ALREADY LIES.
-// see docs/internals/common/ops.md#transpose-frag-b16
+//: AN 8x8 b16 TILE, TRANSPOSED WHERE IT ALREADY LIES. -- see docs/internals/common/ops.md#transpose-frag-b16
 __device__ __forceinline__ uint32_t transpose_frag_b16(uint32_t x) {
   static_assert(arch::kCaps.reg_transpose_b16,
                 "UNSUPPORTED ARCHITECTURE: without an in-register b16 tile "
@@ -198,8 +166,7 @@ __device__ __forceinline__ uint32_t transpose_frag_b16(uint32_t x) {
   return d;
 }
 
-//: THE ATOM IS CHOSEN BY SHAPE FAMILY, NOT BY NAME.
-// see docs/internals/common/ops.md#mma
+//: THE ATOM IS CHOSEN BY SHAPE FAMILY, NOT BY NAME. -- see docs/internals/common/ops.md#mma
 __device__ __forceinline__ void mma(float (&d)[4], const uint32_t (&a)[4], const uint32_t* b) {
   asm volatile(
       "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
@@ -218,8 +185,7 @@ __device__ __forceinline__ uint32_t pack_bf16x2(float lo, float hi) {
   return *reinterpret_cast<const uint32_t*>(&p);
 }
 
-//: THE ACCUMULATOR'S TOP HALVES, TAKEN AS A bf16 PAIR (K35).
-// see docs/internals/common/ops.md#hi-bf16
+//: THE ACCUMULATOR'S TOP HALVES, TAKEN AS A bf16 PAIR (K35). -- see docs/internals/common/ops.md#hi-bf16
 __device__ __forceinline__ uint16_t hi_bf16(float v) {
   return (uint16_t)(__float_as_uint(v) >> 16);
 }
@@ -232,16 +198,13 @@ __device__ __forceinline__ uint32_t hi_bf16x2(float lo, float hi) {
   return d;
 }
 
-//: One bf16 into BOTH halves of a packed pair, so that a scalar can be an
-//: operand of `mul_bf16x2`.
-// see docs/internals/common/ops.md#splat-bf16x2
+//: One bf16 into BOTH halves of a packed pair, so that a scalar can be an -- see docs/internals/common/ops.md#splat-bf16x2
 __device__ __forceinline__ uint32_t splat_bf16x2(__nv_bfloat16 x) {
   const __nv_bfloat162 p = __bfloat162bfloat162(x);
   return *reinterpret_cast<const uint32_t*>(&p);
 }
 
-//: the same splat over a raw bf16 BIT PATTERN.
-// see docs/internals/common/ops.md#splat-bf16x2-bits
+//: the same splat over a raw bf16 BIT PATTERN. -- see docs/internals/common/ops.md#splat-bf16x2-bits
 __device__ __forceinline__ uint32_t splat_bf16x2_bits(unsigned short x) {
   return ((uint32_t)x << 16) | (uint32_t)x;
 }
@@ -252,10 +215,7 @@ __device__ __forceinline__ float bf16_bits_to_float(unsigned short x) {
   return *reinterpret_cast<const float*>(&w);
 }
 
-//: THE ARCHETYPAL SELECTING ENTRY. Every implementation satisfies ONE contract:
-//: the elementwise product of two packed bf16 pairs, rounded to nearest-even in
-//: bf16.
-// see docs/internals/common/ops.md#mul-bf16x2
+//: THE ARCHETYPAL SELECTING ENTRY. Every implementation satisfies ONE contract: -- see docs/internals/common/ops.md#mul-bf16x2
 template <bool Simd = arch::kCaps.bf16_simd_arith, bool Fma = arch::kCaps.bf16_simd_fma>
 __device__ __forceinline__ uint32_t mul_bf16x2(uint32_t a, uint32_t b) {
   static_assert(Simd <= arch::kCaps.bf16_simd_arith,
@@ -269,8 +229,7 @@ __device__ __forceinline__ uint32_t mul_bf16x2(uint32_t a, uint32_t b) {
     asm volatile("mul.rn.bf16x2 %0, %1, %2;\n" : "=r"(d) : "r"(a), "r"(b));
     return d;
   } else if constexpr (Fma) {
-    //: the packed pair of bf16 NEGATIVE ZEROS, which is the sign-preserving
-    //: identity element of `fma.rn`'s addend.
+    //: the packed pair of bf16 NEGATIVE ZEROS, which is the sign-preserving -- see docs/internals/common/ops.md#knegzeropair
     constexpr uint32_t kNegZeroPair = 0x80008000u;
     uint32_t d;
     asm volatile("fma.rn.bf16x2 %0, %1, %2, %3;\n" : "=r"(d) : "r"(a), "r"(b), "r"(kNegZeroPair));
@@ -289,10 +248,7 @@ __device__ __forceinline__ void store_bf16x2(__nv_bfloat16* p, uint32_t v) {
   *reinterpret_cast<uint32_t*>(p) = v;
 }
 
-//: THE STATE'S LO HALVES, PACKED. The top 16 bits of an fp32 ARE its bf16
-//: truncation, so a state word splits exactly into the `hi` the exchange
-//: publishes and the `lo` its owner keeps.
-// see docs/internals/common/ops.md#pack-lo
+//: THE STATE'S LO HALVES, PACKED. The top 16 bits of an fp32 ARE its bf16 -- see docs/internals/common/ops.md#pack-lo
 __device__ __forceinline__ uint32_t pack_lo(float a, float b) {
   return (__float_as_uint(a) & 0xFFFFu) | (__float_as_uint(b) << 16);
 }
@@ -301,49 +257,37 @@ __device__ __forceinline__ float join_hi_lo(uint32_t hi, uint32_t lo, int k) {
   return __uint_as_float(k ? ((hi & 0xFFFF0000u) | (lo >> 16)) : ((hi << 16) | (lo & 0xFFFFu)));
 }
 
-//: A SEQUENTIAL SHARED STORE, ADDRESSED RATHER THAN INDEXED.
-// see docs/internals/common/ops.md#store-shared-u16
+//: A SEQUENTIAL SHARED STORE, ADDRESSED RATHER THAN INDEXED. -- see docs/internals/common/ops.md#store-shared-u16
 __device__ __forceinline__ void store_shared_u16(SmemAddr a, uint16_t v) {
   asm volatile("st.shared.u16 [%0], %1;" ::"r"(a), "h"(v) : "memory");
 }
 
-//: A SHARED WORD ACCESS, ADDRESSED RATHER THAN INDEXED for the same reason
-//: `store_shared_u16` is: a swizzled address is not an affine function of an index, so
-//: indexed form would re-derive a widening multiply per access.
+//: A SHARED WORD ACCESS, ADDRESSED RATHER THAN INDEXED for the same reason -- see docs/internals/common/ops.md#storesharedu32
 __device__ __forceinline__ void store_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("st.shared.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
 
-//: ONE CONTRIBUTION INTO A SHARED BITSET, FIRE AND FORGET -- `fan_in_add`'s
-//: contract over the bitwise monoid.
-// see docs/internals/common/ops.md#or-shared-u32
+//: ONE CONTRIBUTION INTO A SHARED BITSET, FIRE AND FORGET -- `fan_in_add`'s -- see docs/internals/common/ops.md#or-shared-u32
 __device__ __forceinline__ void or_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("red.shared.or.b32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
 
-//: THE SAME OVER THE COUNTING MONOID.  A stream's arrival count is incremented once per
-//: contributing fetcher and read by whichever executor is waiting on the segment; the
-//: incrementer never learns the total, so this is a reduction and not an exchange.
+//: THE SAME OVER THE COUNTING MONOID.  A stream's arrival count is incremented once per -- see docs/internals/common/ops.md#redsharedaddu32
 __device__ __forceinline__ void red_shared_add_u32(SmemAddr a, uint32_t v) {
   asm volatile("red.shared.add.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
 
-//: THE ORDER BETWEEN A UNIT'S SHARED WRITES AND THE FLAG THAT PUBLISHES THEM,
-//: and nothing wider: the fold's producers and consumers are warps of ONE CTA
-//: talking through shared memory ...
-// see docs/internals/common/ops.md#publish-fence
+//: THE ORDER BETWEEN A UNIT'S SHARED WRITES AND THE FLAG THAT PUBLISHES THEM, -- see docs/internals/common/ops.md#publish-fence
 __device__ __forceinline__ void publish_fence() { __threadfence_block(); }
 
-//: the 16-byte quantum into shared memory, addressed.  The segment's dead rows are
-//: cleared at this width so a whole slot row is a constant number of stores.
+//: the 16-byte quantum into shared memory, addressed.  The segment's dead rows are -- see docs/internals/common/ops.md#storesharedvec16
 __device__ __forceinline__ void store_shared_vec16(SmemAddr a, const uint4& v) {
   asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};" ::"r"(a), "r"(v.x), "r"(v.y), "r"(v.z),
                "r"(v.w)
                : "memory");
 }
 
-//: one amplitude out of a staged factor row, by ADDRESS.  Its index is a digit, so
-//: the access is dynamic and an indexed form would re-derive a widening multiply.
+//: one amplitude out of a staged factor row, by ADDRESS.  Its index is a digit, so -- see docs/internals/common/ops.md#loadsharedu16
 __device__ __forceinline__ unsigned short load_shared_u16(SmemAddr a) {
   unsigned short v;
   asm volatile("ld.shared.u16 %0, [%1];" : "=h"(v) : "r"(a) : "memory");
@@ -356,22 +300,16 @@ __device__ __forceinline__ uint32_t load_shared_u32(SmemAddr a) {
   return v;
 }
 
-//: One element, rounded to nearest-even exactly as `pack_bf16x2` rounds each of
-//: its two.
-// see docs/internals/common/ops.md#store-bf16
+//: One element, rounded to nearest-even exactly as `pack_bf16x2` rounds each of -- see docs/internals/common/ops.md#store-bf16
 __device__ __forceinline__ void store_bf16(__nv_bfloat16* p, float v) { *p = __float2bfloat16(v); }
 
-//: One fp32 element, stored where it will later be read as a summand rather than
-//: as an mma operand.  There is no rounding here BY CONSTRUCTION: see
-//: `fan_in_add`.
+//: One fp32 element, stored where it will later be read as a summand rather than -- see docs/internals/common/ops.md#storef32
 __device__ __forceinline__ void store_f32(float* p, float v) { *p = v; }
 
-//: ONE CONTRIBUTION INTO A SHARED ACCUMULATOR, FIRE AND FORGET.
-// see docs/internals/common/ops.md#fan-in-add
+//: ONE CONTRIBUTION INTO A SHARED ACCUMULATOR, FIRE AND FORGET. -- see docs/internals/common/ops.md#fan-in-add
 __device__ __forceinline__ void fan_in_add(float* p, float x) { atomicAdd(p, x); }
 
-//: The 16-byte quantum, synchronously.
-// see docs/internals/common/ops.md#load-vec16
+//: The 16-byte quantum, synchronously. -- see docs/internals/common/ops.md#load-vec16
 __device__ __forceinline__ uint4 load_vec16(const void* p) {
   return *reinterpret_cast<const uint4*>(p);
 }
@@ -380,13 +318,10 @@ __device__ __forceinline__ void store_vec16(void* p, const uint4& v) {
   *reinterpret_cast<uint4*>(p) = v;
 }
 
-//: The magnitude bits of a packed bf16 pair.  A run of bf16 is entirely zero
-//: exactly when the OR of its storage words has no magnitude bit set, since the
-//: only zeros bf16 has are +0 and -0 and OR cannot clear a set bit.
+//: The magnitude bits of a packed bf16 pair.  A run of bf16 is entirely zero -- see docs/internals/common/ops.md#kbf16magnitudemask
 constexpr uint32_t kBf16MagnitudeMask = 0x7FFF7FFFu;
 
-//: THE OR OF A CONTIGUOUS RUN, AT THE WIDEST ACCESS THAT COVERS IT.
-// see docs/internals/common/ops.md#or-run
+//: THE OR OF A CONTIGUOUS RUN, AT THE WIDEST ACCESS THAT COVERS IT. -- see docs/internals/common/ops.md#or-run
 template <int N>
 __device__ __forceinline__ uint32_t or_run(const __nv_bfloat16* p) {
   static_assert(N == 1 || N == 2 || N == 4 || (N >= 8 && N % 8 == 0),
@@ -401,9 +336,7 @@ __device__ __forceinline__ uint32_t or_run(const __nv_bfloat16* p) {
     return x.x | x.y;
   } else {
     uint32_t acc = 0;
-    //: §6: `N` is this function's template parameter (renamed from lowercase `n`
-    //: so the unroll-discipline lint reads it as compile-time); `N / 8` is still an
-    //: arithmetic expression the heuristic can't parse, so name it too.
+    //: §6: `N` is this function's template parameter (renamed from lowercase `n` -- see docs/internals/common/ops.md#koctets
     constexpr int kOctets = N / 8;
 #pragma unroll
     for (int i = 0; i < kOctets; ++i) {
@@ -418,14 +351,10 @@ __device__ __forceinline__ void copy_shared_to_global_16b(void* dst, const void*
   store_vec16(dst, load_vec16(src));
 }
 
-// ------------------------------------------------- 2a / 2b CONSISTENCY
-// A SELECTION IS INVALID IF NO AVAILABLE OPERATION CAN SERVE IT.  That is what
-// each clause below says, and it is deliberately not "this architecture lacks
-// instruction X": the selection is the thing being checked, the operation set
-// is what it is checked against, and an architecture number appears in neither.
+// 2a/2b CONSISTENCY: A SELECTION IS INVALID IF NO AVAILABLE OPERATION CAN SERVE IT
+// (checked against the operation set, never "this architecture lacks instruction X").
 
-//: `design.cuh` claims REGISTERS is a residency this baseline builds.
-// see docs/internals/common/ops.md#static-assert
+//: `design.cuh` claims REGISTERS is a residency this baseline builds. -- see docs/internals/common/ops.md#static-assert
 static_assert(!(design::kBuiltResidencies
                 & design::residency_bit(design::StateResidency::REGISTERS))
                   || (kMmaAcceptsRegisterA && arch::kCaps.bf16_cvt_packed),
@@ -442,8 +371,7 @@ static_assert(!(design::kBuiltResidencies & design::residency_bit(design::StateR
 
 //: THE CARVE'S UNIT. Not a capability and not an architecture clause: `mma`,
 //: `load_frag` and the d_v carve above are written for a 32-thread unit owning
-//: a 16-row slice of the state ...
-// see docs/internals/common/ops.md#static-assert-2
+//: a 16-row slice of the state ... -- see docs/internals/common/ops.md#static-assert-2
 static_assert(arch::kCaps.mma_unit_threads == kMmaUnitThreads,
               "NOT BUILT FOR THIS ARCHITECTURE: no built implementation of "
               "`mma` and `load_frag` serves this architecture's MMA unit. The "
@@ -452,9 +380,7 @@ static_assert(arch::kCaps.mma_unit_threads == kMmaUnitThreads,
               "structural clause holds -- this is an unwritten implementation, "
               "not a refused structure.");
 
-//: THE ANNOUNCEMENT SITES. Each is a case where the capability row records a
-//: better implementation of a baseline operation than the one built here.
-// see docs/internals/common/ops.md#note-l562
+//: THE ANNOUNCEMENT SITES. Each is a case where the capability row records a -- see docs/internals/common/ops.md#note-l562
 inline constexpr design::Announce<arch::kCaps.async_bulk_copy && !kStagingIsBulk>
     kStagingAnnouncement{};
 

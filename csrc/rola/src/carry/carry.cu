@@ -1,72 +1,8 @@
-// csrc/rola/src/carry/carry.cu -- the carry family's DISPATCH translation unit.
-//
-// Dispatch and torch entries.  THE ARM LIST LEFT THIS FILE AT K36: it lives in
-// `tools/gen_shards.py`, which emits `../instantiations/carry_arms.inc` (the rows,
-// and which of them this build carries) and ONE TRANSLATION UNIT PER ARM beside it
-// (KERNEL_STANDARDS section 7).  This file therefore instantiates no kernel: it
-// matches a call against the rows and calls the arm's four entry points, which is
-// what makes an arm-subset build a FILE subset instead of a macro that still costs
-// a parse of every row.  Each arm DECLARES its two carves
-// -- the per-level span vector one STREAM owns on the write side and on the read
-// side -- so the carve is a property of the arm and never a constant of a kernel,
-// and the seam's `carve` scalar survives only to refuse a carve nothing builds.
-//
-// The arms (`s` = the owner box, `SW`/`SR` = the two stream boxes):
-//   flagship   (256,256)  D=2  k=4 m=8   s=(8,16)     BC=128  W=384  C=32
-//   flagship+  (256,256)  D=2  k=4 m=8   s=(8,16)     BC=128  W=512  C=32
-//   small      ( 64, 64)  D=2  k=4 m=8   s=(8,16)     BC=128  W=64   C=32
-//   deep-3     (16^3)     D=3  k=2 m=16  s=(2,4,16)   BC=128  W=64   C=32
-//   deep-4     ( 8^4)     D=4  k=2 m=8   s=(2,2,4,8)  BC=128  W=64   C=32
-//   carve-4    ( 4^4)     D=4  k=4 m=1   s=(4,4,4,4)  BC=256  W=64   C=32
-//   flagship 1x8 (256,256) D=2  k=4 m=8   s=(8,16)     BC=128  W=384  C=32, twice
-//   flagship 1x8 d_v=128   the SAME two, at the wide value plane
-//   flagship 2x4 d_v=128 (256,256) D=2 k=4 m=4 s=(4,16) BC=64  W=384  C=32
-//   + the PARK's twins (K35 S5): those three and the flagship d_v=64 ALT row again
-//   flagship tied (256,256) D=2 k=4 m=8   s=(8,16)     BC=128  W=384  C=32, MO=3
-// The first five hold ONE box of `BC = 128` -- the register budget's number, which
-// does not move with depth -- so they differ only in how the same 128 leaves cut
-// into digits, and `deep-4` is the topology whose atom rectangle cannot be a single
-// level (`B = 8` is narrower than an atom).  `carve-4` is the MULTI-LEVEL CARVE arm
-// and the one whose owner is the whole topology: its 256 leaves are cut into EIGHT
-// streams of 32 by `SW = [1,4,2,4]` and `SR = [4,1,4,2]`, two carved levels per
-// side, one warp per stream -- so it is also the arm that runs eight executors.
-// `k = 4, m = 1` is the only capacity reaching the uniform box `(4,4,4,4)`.
-// The LAST row is the TIED arm: the flagship cell declared BOTH-SPARSE at level zero,
-// where the order-by-mode rule gives the two sides the SAME order and the derivation the
-// SAME vector, so the exchange is the identity and is elided at compile time.
-//
-// `d_v` IS THE THIRD DIAL AND A KEY OF THE ARM (K35 S3b).  It is a template parameter
-// of both bodies, so the `d_v = 128` rows are not a wider path but the same body at a
-// wider declaration, and the seam tells them apart by the width the caller's value
-// plane carries.  The card's CONTAINERS entry rules what the width costs: sixteen
-// leaves per warp is REQUIRED at 128, and eight resident warps per SM is the target, so
-// the two ways to spend them are 1x8 at `BC = 128` (rows 13/14, the two container
-// declarations at the wide plane) and 2x4 at `BC = 64` (row 15, the CTA's box halved
-// instead of its warps doubled -- four streams, one warp each, the ruled leaf split).
-// The `d_v = 64` arms are UNTOUCHED by all of it, which is the point of making the
-// width a parameter rather than a branch.
-//
-// THE EXECUTOR MAP IS THE SECOND DIAL (K35 S3a).  An arm declares `WPS`, the warps per
-// WRITE stream, so the CTA's warp count is `streams x WPS` and the READ carve is
-// declared at one stream per warp.  The two `flagship 1x8` rows are the SAME cell as
-// `flagship ALT` reached with EIGHT executors instead of four, by the two available
-// routes -- four write streams column-split two ways (`SW = [2,16]`, `WPS = 2`) and
-// eight write streams one warp each (`SW = [1,16]`, `WPS = 1`) -- so the container
-// question the card leaves to measurement has both of its answers built.  The existing
-// four-warp `ALT` arms ARE the 2x4 container: two CTAs of four warps per SM at half the
-// SM's box each, which is the same eight resident warps, so no arm is added for it.
-// The window is the architecture doc's TWO-CONSTRAINT quantity (integration rung
-// I1(b)): the C* cost basin is shallow, and the intra kernel -- which runs on the
-// SAME window grid -- has ideal arithmetic intensity `W/4` flop/byte and needs
-// `W >= ~380` to clear sm_86's compute/bandwidth balance.  The doc's admitted band
-// is 384-512 and BOTH ends are built, because a third constraint decides between
-// them: the intra refuses a window that does not divide `L`, and 384 does not
-// divide the flagship length `L = N = 65536`.  512 does, at every power-of-two
-// length, while clearing the intensity bar with room (128 flop/byte).  The
-// `(64, 64)` arm is the conformance cell: the fp64 oracle materializes
-// `[B,T,H,N]`, so `N = 4096` is where a whole cell is checkable, and its `W = 64`
-// is held to keep that cell's window count meaningful at the lengths a reference
-// can hold.
+// csrc/rola/src/carry/carry.cu -- the carry family's DISPATCH translation unit:
+// dispatch and torch entries. THE ARM LIST LEFT THIS FILE AT K36 (tools/gen_shards.py
+// + one TU per arm, KERNEL_STANDARDS section 7); this file instantiates no kernel,
+// it matches a call against the generated rows. Full arm catalogue (12 arms, their
+// (D,k,m,s,BC,W,C) and why each exists): see docs/internals/carry/carry.md#file-header-arms
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -78,30 +14,20 @@
 #include "carry_api.cuh"
 #include "carry_arm_abi.cuh"
 #include "carry_rows.cuh"
-//: FOR THE BUILD STAMP ONLY -- the caps digest.  The kernel header is DELIBERATELY
-//: absent: this TU instantiates no arm, and the two constants the stamp needs beside
-//: the digest are in `box.cuh` with the family's other arm-independent geometry.
+//: FOR THE BUILD STAMP ONLY -- the caps digest.  The kernel header is DELIBERATELY -- see docs/internals/carry/carry.md#near-line-81
 #include "common/design.cuh"
 
 namespace rola::carry {
 
-//: the caps digest's namespace, aliased as the kernel header aliases it, so the
-//: stamp names the same constant by the same name it always did.
+//: the caps digest's namespace, aliased as the kernel header aliases it, so the -- see docs/internals/carry/carry.md#design
 namespace design = denseref::design;
 
-//: THE PER-LEVEL MODE DECLARATION (K33 law 3) is two bits per level with level
-//: 0 in the low pair: bit 0 = the READ side is value-sparse there, bit 1 = the
-//: WRITE side.
-// see docs/internals/carry/carry.md#note-l92
+//: THE PER-LEVEL MODE DECLARATION (K33 law 3) is two bits per level with level -- see docs/internals/carry/carry.md#note-l92
 
-//: THE BUILT SET, GENERATED (K36): the rows, and which of them this build
-//: carries.
-// see docs/internals/carry/carry.md#build-rows
+//: THE BUILT SET, GENERATED (K36): the rows, and which of them this build -- see docs/internals/carry/carry.md#build-rows
 #include "../instantiations/carry_arms.inc"
 
-//: THE TABLE, AS A TENSOR.  `carry_rows.cuh` speaks pointers so that an arm TU never
-//: parses the tensor library (K36); the allocation it leaves to the caller is done
-//: here, in the one TU that already pays for torch.
+//: THE TABLE, AS A TENSOR.  `carry_rows.cuh` speaks pointers so that an arm TU never -- see docs/internals/carry/carry.md#rpr
 template <class RPR, class RPW>
 static torch::Tensor build_rows(const torch::Tensor& pr, const torch::Tensor& pw, int BH, int L) {
   auto tbl = torch::empty({BH, (long)rows_entries<RPR, RPW>(), rola::chunk::tok_words(L)},
@@ -112,22 +38,14 @@ static torch::Tensor build_rows(const torch::Tensor& pr, const torch::Tensor& pw
   return tbl;
 }
 
-//: READING ONE ROW OF THE LIST. A row arrives with its INDEX first -- the index
-//: is what names the arm's translation unit and its four entry points -- and
-//: the pieces a consumer wants are taken from it HERE and nowhere else.
-// see docs/internals/carry/carry.md#carry-mo
+//: READING ONE ROW OF THE LIST. A row arrives with its INDEX first -- the index -- see docs/internals/carry/carry.md#carry-mo
 #define CARRY_MO(D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, ...) (MO_)
-//: the seam's key, matched against the call's `(topology, k, m, d_v, W, C,
-//: carve)`.
-// see docs/internals/carry/carry.md#carry-match
+//: the seam's key, matched against the call's `(topology, k, m, d_v, W, C, -- see docs/internals/carry/carry.md#carry-match
 #define CARRY_MATCH(D_, B_, K_, M_, DV_, W_, C_, CV_, ...)                                \
   (is_arm(widths, D_, B_) && k == K_ && m == M_ && d_v == DV_ && window == W_              \
    && chunk == C_ && carve == CV_)
 
-//: `CV` is the SEAM's DECLARATION scalar, not a kernel axis: it names which
-//: declared (carve, executor map, PARK) an arm is, so a caller that asks for
-//: the deleted one -- or for an executor map nothing builds ...
-// see docs/internals/carry/carry.md#carry-cv-gate
+//: `CV` is the SEAM's DECLARATION scalar, not a kernel axis: it names which -- see docs/internals/carry/carry.md#carry-cv-gate
 #define CARRY_CV_GATE(I_, D_, B_, K_, M_, DV_, W_, C_, CV_, MO_, WPS_, NSW_, NSR_, PK_) \
   static_assert(((CV_) & 3) >= 1 && ((CV_) & 3) <= 3 && ((CV_) & ~7) == 0                    \
                     && (((CV_) >> 2) & 1) == (PK_) && (NSR_) == (NSW_) * (WPS_),             \
@@ -137,8 +55,7 @@ static torch::Tensor build_rows(const torch::Tensor& pr, const torch::Tensor& pw
 CARRY_ARMS_X(CARRY_CV_GATE)
 #undef CARRY_CV_GATE
 
-//: WHAT EACH BUILT ARM'S TRANSLATION UNIT EXPORTS.
-// see docs/internals/carry/carry.md#carry-arms-x
+//: WHAT EACH BUILT ARM'S TRANSLATION UNIT EXPORTS. -- see docs/internals/carry/carry.md#carry-arms-x
 CARRY_ARMS_X(CARRY_ARM_DECLARE)
 
 static bool is_arm(const std::vector<int64_t>& widths, int D, int B) {
@@ -162,8 +79,7 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   //: `pr`/`pw` are `[BH, L, sum_l B_l]`; `v` is `[B, T, H, d_v]`; `gw` is `[BH, L]`.
   const int BH = (int)pr.size(0);
   const int L = (int)pr.size(1);
-  //: THE VALUE WIDTH IS READ OFF THE CALLER'S PLANE and is part of the arm key, so an
-  //: unbuilt width is refused by the dispatch exactly as an unbuilt topology is.
+  //: THE VALUE WIDTH IS READ OFF THE CALLER'S PLANE and is part of the arm key, so an -- see docs/internals/carry/carry.md#dv
   const int d_v = (int)v.size(-1);
   const int v_row_bytes = (int)(v.size(2) * d_v * v.element_size());
 
@@ -171,8 +87,7 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   auto o = torch::zeros({BH, L, (int64_t)d_v}, opt);
   auto den = torch::zeros({BH, L}, opt);
 
-  //: THE STATE PLANES ARE THE CALLER'S (docs/internals/state.md section 4).
-  // see docs/internals/carry/carry.md#torch-check
+  //: THE STATE PLANES ARE THE CALLER'S (docs/internals/state.md section 4). -- see docs/internals/carry/carry.md#torch-check
   for (const auto& t : {s_in, s_out})
     if (t.has_value())
       TORCH_CHECK(t->is_cuda() && t->is_contiguous() && t->scalar_type() == torch::kFloat32,
@@ -190,10 +105,7 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
       page_tbl.has_value() ? reinterpret_cast<const int32_t*>(page_tbl->data_ptr()) : nullptr;
   auto stream = at::cuda::getCurrentCUDAStream();
   cudaError_t err = cudaErrorInvalidValue;
-  //: THE BALLOT ROWS COME FIRST, ON THE SAME STREAM (K31-i-d). One pass over the
-  //: amplitude planes votes every owner's rectangle test once; the kernel below
-  //: then reads WORDS instead of re-reading those planes per (owner, window, ...
-  // see docs/internals/carry/carry.md#tok-words
+  //: THE BALLOT ROWS COME FIRST, ON THE SAME STREAM (K31-i-d). One pass over the -- see docs/internals/carry/carry.md#tok-words
   torch::Tensor rows;
   const int tok_words = rola::chunk::tok_words(L);
   auto run = [&](int64_t mo) {
@@ -218,9 +130,7 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
 #undef CARRY_DISPATCH
     return matched;
   };
-  //: THE DECLARATION IS RESOLVED AT THIS SEAM, AND AN UNBUILT ONE IS REFUSED (P76
-  //: R-B, overruling law 3).
-  // see docs/internals/carry/carry.md#torch-check-2
+  //: THE DECLARATION IS RESOLVED AT THIS SEAM, AND AN UNBUILT ONE IS REFUSED (P76 -- see docs/internals/carry/carry.md#torch-check-2
   TORCH_CHECK(run(level_modes), "unbuilt carry arm: widths=", widths, " k=", k, " m=", m,
               " d_v=", d_v, " window=", window, " chunk=", chunk, " carve=", carve,
               " level_modes=", level_modes);
@@ -228,9 +138,7 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   return {o, den};
 }
 
-//: THE FILE'S OWN CONSTANTS, device-side, beside the magic: the channel-split body's
-//: executor count and the page granule.  `d_v` LEFT THIS SET at K35 S3b -- it is an arm
-//: parameter now, so it is reported by the per-arm CENSUS below and not by the stamp.
+//: THE FILE'S OWN CONSTANTS, device-side, beside the magic: the channel-split body's -- see docs/internals/carry/carry.md#stampkernelentry
 __global__ void stamp_kernel_entry(int* out) {
   out[0] = kCarryBuildMagic;
   out[1] = kWarps * 1000 + kAtomLeaves;

@@ -19,8 +19,7 @@ namespace bwdstamp {
 
 __device__ int64_t g_bwd_stamp_probe;
 
-//: THE HEAVIEST BUILT ARM's footprint, so the stamp moves whenever any arm's shape
-//: does -- a fact only THIS binary can produce.
+//: THE HEAVIEST BUILT ARM's footprint, so the stamp moves whenever any arm's shape -- see docs/internals/intra/intra_backward.md#bwdstampkernel
 __global__ void bwd_stamp_kernel(int64_t* out) {
   *out = (int64_t)(sizeof(detail::IntraBwdSmem<2, kWidthFlat, kWindowWide>)) * 1000003
          + (int64_t)detail::threads_of(kWindowWide) + detail::kIntraBwdMagic;
@@ -31,10 +30,7 @@ __global__ void bwd_stamp_kernel(int64_t* out) {
 
 namespace {
 
-//: THE REVERSE PASS IS BUILT AT DEPTH TWO ONLY. Its digit reduction's pass
-//: geometry is derived per arm from the owner's bit fields, and the carry's two
-//: scans refuse a third level for the same reason ...
-// see docs/internals/intra/intra_backward.md#intra-bwd-arms-x
+//: THE REVERSE PASS IS BUILT AT DEPTH TWO ONLY. Its digit reduction's pass -- see docs/internals/intra/intra_backward.md#intra-bwd-arms-x
 #define INTRA_BWD_ARMS_X(X_)             \
   X_(2, kWidthFlat, kWindowFlagship)     \
   X_(2, kWidthFlat, kWindowWide)         \

@@ -42,3 +42,23 @@ THE GIVEN-SPAN ARM -- the box lattice's owner rows, AT ONE PARTITION PER SIDE
 side's; a level past `D` passes `B` (the identity), and a level a side spans whole
 emits no rows there.  The carry consumes these rows, and there is no atom grain
 here: residency is the paging layer's question and the carry family does not ask it.
+
+<a id="mask"></a>
+### `MASK`
+
+the variant with no atom-grain emission compiled in, handed an atom table,
+would return it unwritten: the class and the pointers must agree.
+
+<a id="near-line-52"></a>
+### near line 52
+
+THE STATS PASS' REDUCTION ARM, keyed (D, B) alone: the atom rectangle is
+`kAtomLeaves` by construction, so residency is BC-free and this arm list is
+smaller than the consumer's (docs/internals/paging/stats.md).
+
+<a id="near-line-65"></a>
+### near line 65
+
+THE LIVENESS EPILOGUE'S LAUNCH, keyed to (D, B, BC) like the union table it
+reduces -- the block grain is the LAUNCH's, so unlike the stats pass this one
+does carry a `BC` axis.

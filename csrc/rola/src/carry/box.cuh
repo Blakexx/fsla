@@ -1,16 +1,10 @@
 // csrc/rola/src/carry/box.cuh -- THE (k, m) BOX LATTICE, as constexpr arithmetic.
 //
-// This is the R0 spec's LATTICE-1 linearization made executable
-// (development/plans/K31_R0_ABI_RIPPLE_SPEC.md sections 2.1-2.5).  Symbols, each
-// defined where it is introduced below: `D` levels, `B` digits per level,
-// `K` = the uniform sub-box span per level, `M` = the capacity multiplier
-// (`M = prod_l m_l`), `s_l = K * m_l` = an owner's span at level `l`,
-// `g_l = B / s_l` = the owner-grid extent at level `l`, `BC = prod_l s_l` = the
-// leaves one owner holds, `N = B^D`.
-//
-// A leaf's canonical (MSB-first mixed-radix) index is `ell`; its lattice index is
-// `lambda`, and the map between them is a fixed BIT PERMUTATION -- which is why
-// nothing here divides and nothing here tabulates.
+// The R0 spec's LATTICE-1 linearization (development/plans/K31_R0_ABI_RIPPLE_SPEC.md
+// sections 2.1-2.5) made executable: a leaf's canonical index `ell` and its
+// lattice index `lambda` relate by a fixed BIT PERMUTATION, so nothing here
+// divides and nothing here tabulates. Full symbol table and derivation:
+// see docs/internals/carry/box.md
 #pragma once
 
 #include <cstdint>
@@ -19,29 +13,21 @@ namespace rola::carry {
 
 constexpr int ilog2c(int x) { return x <= 1 ? 0 : 1 + ilog2c(x >> 1); }
 constexpr long ipowl_c(int b, int e) { return e == 0 ? 1 : b * ipowl_c(b, e - 1); }
-//: the smallest power of two at least `x`, for a lane split whose natural count is
-//: not one (a thread group must be a power of two to be a shift and a mask).
+//: the smallest power of two at least `x`, for a lane split whose natural count is -- see docs/internals/carry/box.md#ceilpow2c
 constexpr int ceil_pow2c(int x) { return x <= 1 ? 1 : (1 << (ilog2c(2 * x - 1))); }
 constexpr int align16c(int x) { return (x + 15) & ~15; }
 
-//: the page granule: the leaves one atom holds, and the unit every DRAM gather
-//: moves.  It is an addressing constant of the lattice, which is why the box's
-//: constraints (K2, K3, K6) are stated against it here rather than at a consumer.
+//: the page granule: the leaves one atom holds, and the unit every DRAM gather -- see docs/internals/carry/box.md#katomleaves-3
 static constexpr int kAtomLeaves = 16;
 
-//: THE FAMILY'S ARM-INDEPENDENT CONSTANTS (moved here at K36).
-// see docs/internals/carry/box.md#kcarrybuildmagic
+//: THE FAMILY'S ARM-INDEPENDENT CONSTANTS (moved here at K36). -- see docs/internals/carry/box.md#kcarrybuildmagic
 static constexpr int kCarryBuildMagic = 31010026;
 
-//: THE CHANNEL-SPLIT BODY'S EXECUTOR COUNT.  A CARVED arm's is its STREAM count
-//: (`CarryGeom::kWarps`) and is not a constant.
+//: THE CHANNEL-SPLIT BODY'S EXECUTOR COUNT.  A CARVED arm's is its STREAM count -- see docs/internals/carry/box.md#kwarps-2
 static constexpr int kWarps = 4;
 static constexpr int kThreads = kWarps * 32;
 
-//: THE OWNER'S SHAPE, DERIVED. Nothing in this struct is a table: every field
-//: is a product or a bit width, so an owner's addressing is shifts and masks at
-//: every use site.
-// see docs/internals/carry/box.md#boxplan
+//: THE OWNER'S SHAPE, DERIVED. Nothing in this struct is a table: every field -- see docs/internals/carry/box.md#boxplan
 template <int D, int B, int K, int M>
 struct BoxPlan {
   static constexpr int kLevels = D;
@@ -52,8 +38,7 @@ struct BoxPlan {
   static constexpr int kBeta = ilog2c(B);
   static constexpr int kJ = ilog2c(M);
 
-  //: spec section 2.5.
-  // see docs/internals/carry/box.md#katombits
+  //: spec section 2.5. -- see docs/internals/carry/box.md#katombits
   static constexpr int kAtomBits = ilog2c(kAtomLeaves);
   static constexpr int kAFloor = kAtomBits > kKappa ? kAtomBits - kKappa : 0;
   static constexpr int kAShare = kJ / D + ((kJ % D) ? 1 : 0);
@@ -77,18 +62,14 @@ struct BoxPlan {
   static constexpr int kOwners = prod_g(0);
   static constexpr long kLeaves = ipowl_c(B, D);
 
-  //: THE ATOM'S DIGIT RECTANGLE. An atom is `kAtomLeaves` consecutive `local`
-  //: values at a multiple of `kAtomLeaves`, so under the mixed-radix order it is
-  //: the TRAILING levels whose spans multiply into it, taken whole ...
-  // see docs/internals/carry/box.md#atom-base
+  //: THE ATOM'S DIGIT RECTANGLE. An atom is `kAtomLeaves` consecutive `local` -- see docs/internals/carry/box.md#atom-base
   static constexpr int atom_base(int l) { return prod_s(l) <= kAtomLeaves ? l : atom_base(l + 1); }
   static constexpr int kAtomBase = atom_base(0);
   static constexpr int kAtomWhole = D - kAtomBase;
   static constexpr int kAtomPartial = kAtomLeaves / prod_s(kAtomBase);
   static constexpr int kAtomLevels = kAtomWhole + (kAtomPartial > 1 ? 1 : 0);
 
-  //: THE WALK UNIT, reconciled with the atom.
-  // see docs/internals/carry/box.md#unit-from
+  //: THE WALK UNIT, reconciled with the atom. -- see docs/internals/carry/box.md#unit-from
   static constexpr int unit_from(int l) {
     return prod_s(l) % kAtomLeaves == 0 ? l : unit_from(l - 1);
   }
@@ -96,14 +77,10 @@ struct BoxPlan {
   static constexpr int kUnitLeaves = prod_s(kUnitBase);
   static constexpr int kUnitAtoms = kUnitLeaves / kAtomLeaves;
 
-  //: the divisor that extracts owner coordinate `o_l` from the owner index `O`:
-  //: `o_l = (O / owner_div(l)) % g_l`, MSB-first exactly as the canonical order is.
+  //: the divisor that extracts owner coordinate `o_l` from the owner index `O`: -- see docs/internals/carry/box.md#ownerdiv
   static constexpr int owner_div(int l) { return prod_g(l + 1); }
 
-  //: THE LOCAL INDEX'S BIT FIELDS: `local = lambda - O*BC` is the owner's run
-  //: offsets in MIXED RADIX, most significant level first -- `local = sum_l r_l *
-  //: prod_{l' > l} s_l'`, with `r_l = d_l - o_l*s_l` in `[0, s_l)` ...
-  // see docs/internals/carry/box.md#span-bits
+  //: THE LOCAL INDEX'S BIT FIELDS: `local = lambda - O*BC` is the owner's run -- see docs/internals/carry/box.md#span-bits
   static constexpr int span_bits(int l) { return kKappa + a(l); }  // log2 s_l
   static constexpr int sum_span(int l) { return l >= D ? 0 : span_bits(l) + sum_span(l + 1); }
   static constexpr int run_shift(int l) { return sum_span(l + 1); }
@@ -114,10 +91,7 @@ struct BoxPlan {
   static constexpr int u_of(int l, int local) { return run_of(l, local) >> kKappa; }
   static constexpr int c_of(int l, int local) { return run_of(l, local) & (K - 1); }
 
-  //: THE OWNER'S BALLOT ROWS in the facts table (`SpanPlan<D, B, s_0..s_D-1>`'s
-  //: entry accounting, mirrored here for the same reason the seam derives its own
-  //: strides: two derivations disagree exactly when one is wrong).
-  // see docs/internals/carry/box.md#row-g
+  //: THE OWNER'S BALLOT ROWS in the facts table (`SpanPlan<D, B, s_0..s_D-1>`'s -- see docs/internals/carry/box.md#row-g
   static constexpr int row_g(int l) { return s(l) < B ? g(l) : 0; }
   static constexpr int row_entries(int l) { return l == D ? 0 : row_g(l) + row_entries(l + 1); }
   static constexpr int kRows = row_entries(0);
@@ -127,10 +101,7 @@ struct BoxPlan {
   static constexpr int col_base(int l) { return l * B; }
   static constexpr int kWtot = D * B;
 
-  //: THE STAGED FACTOR ROW (K35 S2). What a fetcher needs of one token on one
-  //: side is the OWNER's digit run at each level -- `sum_l s_l` amplitudes -- and
-  //: NOT the `kWtot`-wide packed row, which is the width of the whole topology.
-  // see docs/internals/carry/box.md#kstageasync
+  //: THE STAGED FACTOR ROW (K35 S2). What a fetcher needs of one token on one -- see docs/internals/carry/box.md#kstageasync
   static constexpr int kStageAsync = 8;  // amplitudes in the widest asynchronous run
   static constexpr int stage_el(int l) { return s(l) < kStageAsync ? s(l) : kStageAsync; }
   static constexpr int stage_off(int l) {
@@ -146,15 +117,12 @@ struct BoxPlan {
   static constexpr int kStageChunks = stage_chunk_base(D - 1) + stage_chunks(D - 1);
   static_assert(kSpan * 2 >= 4, "a level's run is at least one asynchronous quantum wide");
 
-  //: FORWARD, `pi: ell -> lambda`, and its inverse -- used by the host seam and
-  //: by nothing on the device.
-  // see docs/internals/carry/box.md#digit-of
+  //: FORWARD, `pi: ell -> lambda`, and its inverse -- used by the host seam and -- see docs/internals/carry/box.md#digit-of
   static constexpr int digit_of(int l, long ell) {
     return (int)((ell / ipowl_c(B, D - 1 - l)) % B);
   }
 
-  //: THE ATOM RE-KEY (P80).
-  // see docs/internals/carry/box.md#canon-leaf-acc
+  //: THE ATOM RE-KEY (P80). -- see docs/internals/carry/box.md#canon-leaf-acc
   template <int L>
   static __host__ __device__ __forceinline__ uint32_t canon_leaf_acc(int O, int local) {
     if constexpr (L >= D) {
@@ -171,8 +139,7 @@ struct BoxPlan {
 
   static_assert(kBC % kAtomLeaves == 0, "K2: an atom must not straddle two owners");
 
-  //: K6: an owner's run at a level is an aligned run INSIDE that level.
-  // see docs/internals/carry/box.md#spans-fit
+  //: K6: an owner's run at a level is an aligned run INSIDE that level. -- see docs/internals/carry/box.md#spans-fit
   static constexpr bool spans_fit(int l) {
     return l >= D || (s(l) <= B && B % s(l) == 0 && spans_fit(l + 1));
   }
@@ -180,28 +147,19 @@ struct BoxPlan {
   static_assert(kJOuter >= 0 && sum_a(0) == kJ && spans_fit(0),
                 "K6: every owner span must be an aligned run inside its level; this (k, m) "
                 "asks for more capacity than the topology can carry");
-  //: K3/K4: an atom is 16 consecutive `local` values at a multiple of 16, so
-  //: under the mixed-radix order it is the set that agrees on every bit above bit
-  //: 3 ...
-  // see docs/internals/carry/box.md#static-assert
+  //: K3/K4: an atom is 16 consecutive `local` values at a multiple of 16, so -- see docs/internals/carry/box.md#static-assert
   static_assert(kLocalBits >= 4, "K3: an atom must lie inside one owner");
   static_assert((1 << kKappa) == K && (1 << kBeta) == B && (1 << kJ) == M,
                 "K1: k, m and B are powers of two");
 };
 
-//: THE PER-LEVEL MODE DECLARATION (the seam's own encoding): two bits per
-//: level, level 0 in the low pair, bit 0 = the READ side is value-sparse there,
-//: bit 1 = the WRITE side.
-// see docs/internals/carry/box.md#ksideread
+//: THE PER-LEVEL MODE DECLARATION (the seam's own encoding): two bits per -- see docs/internals/carry/box.md#ksideread
 constexpr uint32_t kSideRead = 1u, kSideWrite = 2u;
 constexpr bool mode_declares(uint32_t modes, int l, uint32_t side) {
   return ((modes >> (2 * l)) & side) != 0u;
 }
 
-//: THE PRIVATE ORDER, BY MODE (P76, "ORDER BY MODE, THEN CARVE", ruled
-//: 2026-08-26): DENSE innermost, then SPARSE (sparse on this side only), then
-//: BOTH_SPARSE (sparse on both), lattice order inside a class.
-// see docs/internals/carry/box.md#modeorder
+//: THE PRIVATE ORDER, BY MODE (P76, "ORDER BY MODE, THEN CARVE", ruled -- see docs/internals/carry/box.md#modeorder
 template <int D, uint32_t MO, uint32_t SIDE>
 struct ModeOrder {
   static constexpr int kDense = 0, kSparse = 1, kBothSparse = 2;
@@ -210,8 +168,7 @@ struct ModeOrder {
                ? kBothSparse
                : (mode_declares(MO, l, SIDE) ? kSparse : kDense);
   }
-  //: the rule as a strict order, and `rank` as the position it induces -- `0` innermost.
-  //: Both are counts, so neither tabulates.
+  //: the rule as a strict order, and `rank` as the position it induces -- `0` innermost. -- see docs/internals/carry/box.md#before-2
   static constexpr bool before(int a, int b) {
     return group(a) != group(b) ? group(a) < group(b) : a > b;
   }
@@ -226,16 +183,12 @@ struct ModeOrder {
   static constexpr int outer(int p) { return at_rank(D - 1 - p, 0); }
 };
 
-//: THE STREAM BOX, DERIVED FROM THE ORDER AND A STREAM COUNT. A STREAM owns a
-//: box and walks its data into tiles; an EXECUTOR runs streams (the terminology
-//: law).
-// see docs/internals/carry/box.md#streamspans
+//: THE STREAM BOX, DERIVED FROM THE ORDER AND A STREAM COUNT. A STREAM owns a -- see docs/internals/carry/box.md#streamspans
 template <int D, int B, int K, int M, uint32_t MO, uint32_t SIDE, int NS>
 struct StreamSpans {
   using BP = BoxPlan<D, B, K, M>;
   using Ord = ModeOrder<D, MO, SIDE>;
-  //: the walk, as two mutually recursive counts over OUTER POSITIONS: what the count
-  //: still asks for when position `p` is reached, and what that position hands back.
+  //: the walk, as two mutually recursive counts over OUTER POSITIONS: what the count -- see docs/internals/carry/box.md#gat
   static constexpr int g_at(int p);
   static constexpr int need_at(int p) { return p <= 0 ? NS : need_at(p - 1) / g_at(p - 1); }
   static constexpr int s(int l) { return l >= D ? B : BP::s(l) / g_at(D - 1 - Ord::rank(l)); }
@@ -259,8 +212,7 @@ constexpr int StreamSpans<D, B, K, M, MO, SIDE, NS>::g_at(int p) {
   return BP::s(Ord::outer(p)) < need_at(p) ? BP::s(Ord::outer(p)) : need_at(p);
 }
 
-//: ONE SIDE'S BALLOT ROWS.
-// see docs/internals/carry/box.md#carverows
+//: ONE SIDE'S BALLOT ROWS. -- see docs/internals/carry/box.md#carverows
 template <class SV>
 struct CarveRows {
   using BP = typename SV::BP;

@@ -362,3 +362,145 @@ four warp partials of `[C x cols]` meeting in the output staging buffer.  The
 meeting is BARRIER-SEPARATED ROUNDS rather than a shared-memory RED: every
 warp writes the same cells, so a RED here is a four-way conflict on all
 `cols` of every token and measures worse than the three extra barriers.
+
+<a id="kbwdbuildmagic"></a>
+### `kBwdBuildMagic`
+
+THE BACKWARD FAMILY'S OWN DEVICE STAMP.  `cudaFuncGetAttributes` is a property of
+a KERNEL, and so is a stale binary; the forward's magic says nothing about these.
+
+<a id="gainsite"></a>
+### `GainSite`
+
+the gain's place in a produce: nowhere, folded into the panel (the forward's own
+form, which Scan A replays), or staged for the accumulator's TOKEN axis -- which
+is what (G6) needs, since `sum_s dW` is not `d_gw` unless the panel is ungained.
+
+<a id="bwdparams"></a>
+### `BwdParams`
+
+THE OPERAND PACK IS SHARED so the two scans cannot drift on what a plane means;
+each ignores the outputs it does not own.  `vt` and `dn` are `[BH, L, LdD]` bf16,
+`(v, 1, 0...)` and `(d_num, d_den, 0...)`.
+
+<a id="near-line-134"></a>
+### near line 134
+
+ONE OWNER'S ADDRESSING AND THE BODIES BOTH SCANS SHARE.  What differs -- the walk
+direction, which list drives which phase, which slab is held -- lives in the
+kernels below and nowhere else.
+
+<a id="bdf"></a>
+### `bdF`
+
+THE PANEL RING'S BASES, AS NAMED SCALARS.  A two-element array indexed by the
+batch parity is a runtime index into a register array, which is a stack frame;
+a select is one instruction and no memory.
+
+<a id="liveness"></a>
+### `liveness`
+
+THE LIVENESS PASS, RECOMPUTED rather than saved -- the R4 constraint applied to
+the SCHEDULE as well as to the state.  Both scans rebuild the SAME two packed
+lists from the same table in the same order, so no list crosses the boundary.
+
+<a id="knl"></a>
+### `kNL`
+
+§6: PM::n_l(l) is compile-time (l is the static_for's constexpr index) but the
+heuristic can't see through the qualified call, so name it.
+
+<a id="near-line-371"></a>
+### near line 371
+
+A padding row is zeroed -- by a zero gain where the gain is on the panel, and by
+level 0's zeroed run everywhere else -- so a short batch needs no separate path.
+
+<a id="stageslot"></a>
+### `stage_slot`
+
+ONE `cols`-WIDE SLOT OF THE RING, gathered by the driving side's list.  The two
+planes have one layout, so one body stages either.
+
+<a id="slabload"></a>
+### `slab_load`
+
+THE PAGE SWEEP, in the leaf-major orientation, at CANONICAL atom ids (P80):
+atom `a` is warp `a>>1`'s
+m-tile `a&1`, because the carve slices the local index at a bit boundary.
+
+<a id="slot"></a>
+### `slot`
+
+AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the slab keeps the
+zero `slab_zero` set, which is what a never-written state contributes.
+
+<a id="slot-2"></a>
+### `slot`
+
+THE EXIT STORES ONLY PLANNED ATOMS, which is what leaves a skipped slot
+carrying exactly what it held.
+
+<a id="channelreadout"></a>
+### `channel_readout`
+
+THE GRADIENT TILE: the slab against the batch's `cols`-wide panel, contracted
+over CHANNELS -- `dR` in Scan A, `dW` in Scan B, one body.  `[leaf x token]`.
+
+<a id="m0"></a>
+### `m0`
+
+THE MASS CHANNEL RIDES THE SAME READOUT, and its PANEL entry is not 1: it is
+`d_den` on the seed side and 1 on the value side.  `cols` is not a whole number
+of k-tiles, so the term is a broadcast product rather than a fifth k-step.
+
+<a id="digitzero"></a>
+### `digit_zero`
+
+THE DIGIT PLANE IS CLEARED AT THE HEAD OF THE BATCH, so the leading rendezvous
+publishes it and the reduction below needs no barrier of its own.
+
+<a id="near-line-666"></a>
+### near line 666
+
+THE DESCENDING ADJOINT.  Per window: the WRITE side against the adjoint at window
+EXIT, then the fold of that window's own reads.  The reverse ordering law is the
+mirror of the forward's, and it is what keeps the within-window pairs out.
+
+<a id="near-line-737"></a>
+### near line 737
+
+the inner level meets in the GLOBAL plane here too, and `(G7)`'s gain rides
+the warp-grain partial: RATIFIED, the plane already distributing that gain
+across the owner decomposition.  See `digit_reduce_inner_direct`.
+
+<a id="kfanpasses"></a>
+### `kFanPasses`
+
+§6: OW::k* are compile-time constexpr static members but the heuristic can't
+see through the qualified name, so alias them locally.
+
+<a id="kqbhalf"></a>
+### `kQBHalf`
+
+§6: (kSlabN+1)/2 is compile-time (kSlabN is a file-level constexpr) but the
+heuristic only reads a bare identifier, so name it.
+
+<a id="near-line-886"></a>
+### near line 886
+
+THE ASCENDING REPLAY.  Per window: the read side against the window's ENTRY state,
+then the forward's own fold of that window's writes -- so the slab at the end of
+the walk is the forward's `state_out`, which is the rung's cheapest strong gate.
+
+<a id="near-line-948"></a>
+### near line 948
+
+the inner level meets the other three warps in the GLOBAL plane and never
+touches `sdg`; ungained here, `(R2)` having no factor on the sum.
+
+<a id="kqbhalf-2"></a>
+### `kQBHalf`
+
+§6: (kSlabN+1)/2 is compile-time (kSlabN is a file-level constexpr) but the
+heuristic only reads a bare identifier, so name it.

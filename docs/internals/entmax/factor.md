@@ -286,3 +286,81 @@ It RE-READS `values` and the cotangents in the second pass rather than staging t
 the union backward's measured spill trade, and the same `IPT`-sized arrays would apply
 here -- docs/internals/entmax/factor.md#backward
 ---------------------------------------------------------------------------
+
+<a id="validcount"></a>
+### `valid_count`
+
+A masked row can be EMPTY, so the member count is a per-row reduction and not
+`width`; `production_factor`'s empty-row autograd contract is exactly this case.
+
+<a id="sentinel"></a>
+### `sentinel`
+
+A finite row-relative sentinel keeps padded lanes strictly below every real
+value without an infinity in the scan. `row_min` is pre-shift, so shift it too.
+
+<a id="packedkey"></a>
+### `packed_key`
+
+ONE reduction selects the greatest valid k AND carries its tau: the column in the
+high 32 bits makes integer Max pick it, and `best_col = -1` maps to key 0 so an
+all-empty row yields tau = 0 -- docs/internals/entmax/entmax.md#forward-phases
+
+<a id="near-line-200"></a>
+### near line 200
+
+The second output is the SAME solve, never a second one: a `shares_solve` level
+hands read and write one set of amplitudes.
+
+<a id="near-line-204"></a>
+### near line 204
+
+HAZARD bf16-support-boundary -- docs/internals/entmax/entmax.md#bf16-support-boundary
+Support is defined at the native bf16 storage boundary, never at the
+pre-quantization solve, whatever dtype this level's values are stored in.
+
+<a id="near-line-212"></a>
+### near line 212
+
+The butterfly runs over exactly the bits at or above LW, which is what separates
+lanes holding the same column: docs/internals/entmax/entmax.md#epilogue-butterfly
+
+<a id="nstreams"></a>
+### `n_streams`
+
+A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+a flat plane declares `heads == 1` and the same product is `size(0)`
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="nstreams-2"></a>
+### `n_streams`
+
+A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+a flat plane declares `heads == 1` and the same product is `size(0)`
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="nstreams-3"></a>
+### `n_streams`
+
+A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+a flat plane declares `heads == 1` and the same product is `size(0)`
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="nstreams-4"></a>
+### `n_streams`
+
+A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+a flat plane declares `heads == 1` and the same product is `size(0)`
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="factorforward"></a>
+### `factor_forward`
+
+`mask` is a detached boolean candidate mask laid out like `logits`; absent means every
+element is a candidate. `values_second` absent means the level stores one side.
+
+<a id="factorbackward"></a>
+### `factor_backward`
+
+`accumulate` adds into `d_logits` instead of storing -- what a TIED level's second
+side needs, and the reason it is a parameter rather than a fact about the tensor.

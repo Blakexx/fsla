@@ -55,3 +55,23 @@ dispatch's own dense allocations, so their table is null and their slot IS their
 atom -- one body, two tables, no second path.  A paged `d_state_in` and a paged
 replay want a plan of their own (a gradient's residency is its state's), which is
 the reverse family's stage and is NOT built here.
+
+<a id="bwdarmsx"></a>
+### `BWD_ARMS_X`
+
+THE BUILT SET, one macro so the dispatch, the census and the arm list cannot drift
+apart.  The rows are `carry.cu`'s without the carve scalar: the backward's carve is
+LEAF-split by derivation (the readouts contract over channels), not by argument.
+
+<a id="dpr"></a>
+### `d_pr`
+
+EVERY GRADIENT PLANE IS AT THE IDENTITY BEFORE THE FIRST CONTRIBUTION -- there is
+no output any owner writes WHOLE, so they are slices of one zeroed arena.
+
+<a id="side"></a>
+### `side`
+
+SCAN A TAKES A STREAM FROM THE POOL and Scan B keeps the caller's, so the two
+slabs are resident at once; every tensor Scan A touches is recorded against the
+side stream so the caching allocator cannot reuse it under the launch.

@@ -32,9 +32,7 @@ cudaError_t launch_span_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* 
 
 namespace rola::carry {
 
-//: THE BUILT SET, one macro so the dispatch, the census and the arm list cannot drift
-//: apart.  The rows are `carry.cu`'s without the carve scalar: the backward's carve is
-//: LEAF-split by derivation (the readouts contract over channels), not by argument.
+//: THE BUILT SET, one macro so the dispatch, the census and the arm list cannot drift -- see docs/internals/carry/backward.md#bwdarmsx
 #define BWD_ARMS_X(X_)       \
   X_(2, 256, 4, 8, 384, 32)  \
   X_(2, 256, 4, 8, 512, 32)  \
@@ -142,8 +140,7 @@ std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, to
   for (auto w : widths) N *= w;
   auto opt = torch::TensorOptions().dtype(torch::kFloat32).device(pr.device());
   const int64_t wtot = (int64_t)widths.size() * (int64_t)widths[0];
-  //: EVERY GRADIENT PLANE IS AT THE IDENTITY BEFORE THE FIRST CONTRIBUTION -- there is
-  //: no output any owner writes WHOLE, so they are slices of one zeroed arena.
+  //: EVERY GRADIENT PLANE IS AT THE IDENTITY BEFORE THE FIRST CONTRIBUTION -- there is -- see docs/internals/carry/backward.md#dpr
   auto d_pr = torch::zeros({BH, L, wtot}, opt);
   auto d_pw = torch::zeros({BH, L, wtot}, opt);
   auto d_gw = torch::zeros({BH, L}, opt);
@@ -177,9 +174,7 @@ std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, to
 #undef BWD_ROWS
   p.rows = reinterpret_cast<const uint32_t*>(rows.data_ptr());
 
-  //: SCAN A TAKES A STREAM FROM THE POOL and Scan B keeps the caller's, so the two
-  //: slabs are resident at once; every tensor Scan A touches is recorded against the
-  //: side stream so the caching allocator cannot reuse it under the launch.
+  //: SCAN A TAKES A STREAM FROM THE POOL and Scan B keeps the caller's, so the two -- see docs/internals/carry/backward.md#side
   auto side = at::cuda::getStreamFromPool();
   at::cuda::CUDAEvent fork, join;
   fork.record(main);
@@ -189,10 +184,7 @@ std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, to
   if (s_in.has_value())
     c10::cuda::CUDACachingAllocator::recordStream(s_in->storage().data_ptr(), side);
 
-  //: THE TABLE ADDRESSES THE CALLER'S ENTRY SLABS, and the two EXIT slabs are the
-  //: dispatch's own dense allocations, so their table is null and their slot IS
-  //: their atom -- one body, two tables, no second path.
-  // see docs/internals/carry/backward.md#torch-check
+  //: THE TABLE ADDRESSES THE CALLER'S ENTRY SLABS, and the two EXIT slabs are the -- see docs/internals/carry/backward.md#torch-check
   if (page_tbl.has_value()) {
     TORCH_CHECK(page_tbl->is_cuda() && page_tbl->is_contiguous()
                     && page_tbl->scalar_type() == torch::kInt32,

@@ -71,3 +71,16 @@ device-side build identity plus the built arm's register/SMEM census, the carve
 level the declaration named (-1 = the channel-split body), the WRITE stream count
 and the arm's `d_v`.  `d_v` is part of the arm key (K35 S3b), so it is an argument
 here as well: the same declaration at the two built widths is two arms.
+
+<a id="backwardinter"></a>
+### `backward_inter`
+
+R4's TWO REVERSE SCANS, launched concurrently: `(d_pr, d_pw, d_gw, d_v,
+d_state_in, replay)`.  `vt`/`dn` are the pre-packed `[BH, L, cols-padded]` bf16
+value and seed planes; `replay` is Scan A's slab, empty unless asked for.
+
+<a id="backwardbuildstamp"></a>
+### `backward_build_stamp`
+
+the reverse family's own device stamp plus a PER-KERNEL census: registers, local
+bytes, SMEM, ring depth, CTA target and the declared floor, Scan A then Scan B.

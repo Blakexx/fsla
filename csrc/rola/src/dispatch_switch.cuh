@@ -1,8 +1,6 @@
 #pragma once
 
-// HOST-SIDE COMPILE-TIME DISPATCH, AS FUNCTION TEMPLATES TAKING A GENERIC
-// LAMBDA.
-// see docs/internals/dispatch_switch.md#note-l3
+// HOST-SIDE COMPILE-TIME DISPATCH, as function templates taking a generic lambda -- see docs/internals/dispatch_switch.md#note-l3
 
 #include <type_traits>
 #include <utility>
@@ -11,8 +9,7 @@
 
 namespace rola {
 
-//: ONE BOOLEAN AXIS. `body` is called with `std::true_type` or `std::false_type`, so
-//: `decltype(FLAG)::value` is a template argument at the call site.
+//: ONE BOOLEAN AXIS. `body` is called with `std::true_type` or `std::false_type`, so -- see docs/internals/dispatch_switch.md#near-line-14
 template <typename Body>
 inline void bool_switch(bool value, Body&& body) {
   if (value) {
@@ -22,15 +19,11 @@ inline void bool_switch(bool value, Body&& body) {
   }
 }
 
-//: ONE INTEGER AXIS OVER A CLOSED SET. The candidate values are template arguments,
-//: so the set is part of the call and an unmatched runtime value is a REFUSAL rather
-//: than a silently missing arm -- `what` names the axis in the message.
+//: ONE INTEGER AXIS OVER A CLOSED SET. The candidate values are template arguments, -- see docs/internals/dispatch_switch.md#near-line-25
 template <int... VALUES, typename Body>
 inline void int_switch(int value, const char* what, Body&& body) {
   bool matched = false;
-  //: An expansion over the candidate set, evaluated left to right: exactly one arm
-  //: runs. The sets in this engine are two to six values wide, so the chain is not a
-  //: jump table and does not need to be.
+  //: An expansion over the candidate set, evaluated left to right: exactly one arm -- see docs/internals/dispatch_switch.md#near-line-31
   (void)std::initializer_list<int>{
       (value == VALUES ? (body(std::integral_constant<int, VALUES>{}), matched = true, 0) : 0)...};
   TORCH_CHECK(matched, what, " is outside the instantiated set, got ", value);

@@ -91,3 +91,62 @@ THE CENSUS, whose last ten fields are THE DERIVATION READ BACK OFF THE DEVICE (K
 S1b): the two span vectors the order-by-mode rule produced, the exchange's transit in
 bytes -- zero where the two carves came out identical -- and the exchange's STATE, so
 an arm that OVERPAYS is visible rather than silent.
+
+<a id="near-line-21"></a>
+### near line 21
+
+ONE ARM, AS ONE TYPE: the topology, the window shape, the declaration and the two
+carves.  The body, the geometry, the row plan and the census all read it, so an
+arm cannot be described two ways.
+
+<a id="carved"></a>
+### `carved`
+
+A CARVED ARM is one whose streams are finer than the owner's box on either side;
+an arm that carves nothing takes the channel-split body, which holds the whole box
+in every warp and splits the CHANNELS instead.
+
+<a id="kdv"></a>
+### `kDv`
+
+the arm's VALUE WIDTH, which both bodies take as their `DV` and the census
+reports, so the width is readable off the device like the two executor dials.
+
+<a id="readcarve"></a>
+### `read_carve`
+
+the READ side's innermost carved level, which the seam reports as the arm's
+carve level, and `-1` for a body that carves nothing.
+
+<a id="gc"></a>
+### `GC`
+
+THE CARVED BODY'S GEOMETRY, named once so the segment probe and the launch read
+the same one.
+
+<a id="geom"></a>
+### `geom`
+
+`{smem bytes, ring depth, CTA target, THREADS, WRITE STREAMS}` -- the launch reads
+the fourth, and the last two ARE THE TWO DIALS: `THREADS/32` is the executor
+budget, `WRITE STREAMS` the in-CTA ownership grain, and their ratio is `WPS`.
+
+<a id="a"></a>
+### `A`
+
+the ROW PLANS the arm's body consumes -- one per side, at that side's own derived
+partition.  An uncarved arm's tables ARE the owner's, because the derived vectors are
+then the owner's spans; one statement, not two paths.
+
+<a id="carryarmtype"></a>
+### `CARRY_ARM_TYPE`
+
+ONE ROW OF THE LIST, AS THE ARM TYPE.  The row's field order is spelled HERE and
+in `tools/gen_shards.py`'s emitter and nowhere else.
+
+<a id="carryarmdefine"></a>
+### `CARRY_ARM_DEFINE`
+
+THE PER-ARM TRANSLATION UNIT'S ENTIRE CONTENT.  One expansion instantiates this
+arm's kernel (the carved body or the channel-split one, whichever the arm takes)
+and the probe kernel keyed to it, and nothing else in the build does.

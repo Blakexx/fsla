@@ -406,3 +406,60 @@ its own factors, so nothing was gained by holding one partition for both and a
 stream's test reads EXACTLY ONE row per tested level (only the owner's whole-run OR
 spans several).  A level the side spans WHOLE emits no rows -- its clause is true for
 every token.  Sigma-shaped, `sum_l B/S_l`, so it does not grow with `N`.
+
+<a id="katomleaves"></a>
+### `kAtomLeaves`
+
+the smallest power of two at least `x`, for a lane split whose natural count is not one (a thread group must be a power of two to be a shift and a mask).
+
+<a id="katomleaves-2"></a>
+### `kAtomLeaves`
+
+the page granule: the leaves one atom holds, and the unit every DRAM gather moves.  It is an addressing constant of the lattice, which is why the box's constraints (K2, K3, K6) are stated against it here rather than at a consumer.
+
+<a id="kwarps"></a>
+### `kWarps`
+
+THE CHANNEL-SPLIT BODY'S EXECUTOR COUNT.  A CARVED arm's is its STREAM count (`CarryGeom::kWarps`) and is not a constant.
+
+<a id="before"></a>
+### `before`
+
+the rule as a strict order, and `rank` as the position it induces -- `0` innermost. Both are counts, so neither tabulates.
+
+<a id="ceilpow2c"></a>
+### `ceil_pow2c`
+
+the smallest power of two at least `x`, for a lane split whose natural count is
+not one (a thread group must be a power of two to be a shift and a mask).
+
+<a id="katomleaves-3"></a>
+### `kAtomLeaves`
+
+the page granule: the leaves one atom holds, and the unit every DRAM gather
+moves.  It is an addressing constant of the lattice, which is why the box's
+constraints (K2, K3, K6) are stated against it here rather than at a consumer.
+
+<a id="kwarps-2"></a>
+### `kWarps`
+
+THE CHANNEL-SPLIT BODY'S EXECUTOR COUNT.  A CARVED arm's is its STREAM count
+(`CarryGeom::kWarps`) and is not a constant.
+
+<a id="ownerdiv"></a>
+### `owner_div`
+
+the divisor that extracts owner coordinate `o_l` from the owner index `O`:
+`o_l = (O / owner_div(l)) % g_l`, MSB-first exactly as the canonical order is.
+
+<a id="before-2"></a>
+### `before`
+
+the rule as a strict order, and `rank` as the position it induces -- `0` innermost.
+Both are counts, so neither tabulates.
+
+<a id="gat"></a>
+### `g_at`
+
+the walk, as two mutually recursive counts over OUTER POSITIONS: what the count
+still asks for when position `p` is reached, and what that position hands back.

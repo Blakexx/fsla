@@ -262,3 +262,68 @@ what makes the padded contraction equal the `B`-wide one.  A level that fills
 its staged width has no tail, so the fill is not merely skipped at runtime --
 it is not compiled, because the registers it costs are live across the whole
 tile-pair loop.
+
+<a id="tilesof"></a>
+### `tiles_of`
+
+THE WINDOW IS AN ARM, so the tile counts it induces are functions of it and
+never file-scope constants -- the carry's `W` template argument, mirrored.
+
+<a id="operandpitch"></a>
+### `operand_pitch`
+
+The operand rows are padded so the eight row addresses ldmatrix reads per
+8x8 tile land in eight distinct banks; the pad is in elements and keeps every
+row base 16-byte aligned, which cp.async requires.
+
+<a id="intraparams"></a>
+### `IntraParams`
+
+`sread`/`swrite`: the producer's frozen support word for the plane of the same
+name, `[BH, token_words, row_width]` int32, bit `token & 31` of word
+`token / 32`, so a word's COLUMN is the plane's digit.
+
+<a id="koctets"></a>
+### `kOctets`
+
+§6: `N` is this function's template parameter (renamed from lowercase `n`
+so the unroll-discipline lint reads it as compile-time); `N / 8` is still an
+arithmetic expression the heuristic can't parse, so name it too.
+
+<a id="lane"></a>
+### `lane`
+
+no zero-fill and no leading barrier: every DECLARED (tile, level, side, word)
+is written once by one lane, and `slab_bits` answers an undeclared side from
+the mode word without reading the array.
+
+<a id="near-line-185"></a>
+### near line 185
+
+One bit per row tile of the block: the pairs of this stage with work in them.
+A strictly-upper pair is never set, which is how the causal grid is walked.
+
+<a id="krowtiles"></a>
+### `kRowTiles`
+
+§6: row_tiles_of(W) is compile-time (W is this function's template parameter)
+but the heuristic can't see through the function call, so name it.
+
+<a id="kcoldigitoctets"></a>
+### `kColDigitOctets`
+
+§6: kColDigits/8 and kStage/16 are compile-time but the heuristic only reads a
+bare identifier, so name them.
+
+<a id="near-line-218"></a>
+### near line 218
+
+a level's REAL digits only.  Where `B` is narrower than the MMA's contraction
+step the slab's tail was zeroed at entry and is never refilled, which is what
+makes the padded contraction exact.
+
+<a id="kcolchanneloctets"></a>
+### `kColChannelOctets`
+
+§6: kColChannels/8 is compile-time but the heuristic only reads a bare
+identifier, so name it.

@@ -244,3 +244,28 @@ can be an operand without a round trip there too.  What is
 missing is an IMPLEMENTATION: the built `mma`, `load_frag` and
 carve are written for a 32-thread unit and a warpgroup unit is
 128.  A capability GAP, not a structural refusal.
+
+<a id="tabulated"></a>
+### `tabulated`
+
+The RATIFIED SET.  A compute capability that is not a row here fails the
+build; it is never approximated by a neighbouring row.
+
+<a id="regspercta"></a>
+### `regs_per_cta`
+
+Registers a CTA actually reserves.  Allocation is per warp in `reg_alloc_unit`
+quanta, so a lane asking for 129 costs the same as one asking for 136.
+
+<a id="min4"></a>
+### `min4`
+
+Resident CTAs per SM: the binding constraint among shared memory, registers,
+threads and the hard CTA cap.
+
+<a id="capsdigest"></a>
+### `caps_digest`
+
+A digest of the whole active row, written by a kernel and checked on the
+host.  A binary compiled against a different table cannot masquerade as this
+one -- no path or file hash can establish that, only a device-side fact.

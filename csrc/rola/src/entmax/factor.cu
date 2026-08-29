@@ -43,10 +43,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
   using WarpRedI = cub::WarpReduce<int, LW>;
   using WarpRedU = cub::WarpReduce<unsigned long long, LW>;
 
-  //: HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias
-  //: One per-physical-warp slot serves the row sort's scratch and then the
-  //: support-word staging.
-  // see docs/internals/entmax/factor.md#sort-bytes
+  //: HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias -- see docs/internals/entmax/factor.md#sort-bytes
   constexpr int SORT_BYTES = RowSort<LW, IPT>::kSlotBytes;
   constexpr int STAGE_BYTES = W_PAD * (int)sizeof(uint32_t);
   constexpr int RAW_SLOT = SORT_BYTES > STAGE_BYTES ? SORT_BYTES : STAGE_BYTES;
@@ -69,9 +66,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
 
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
-  //: solve's stream, and a token-major operand needs it as `(b, h)`.
-  // see docs/internals/entmax/factor.md#stream32
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the -- see docs/internals/entmax/factor.md#stream32
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -106,8 +101,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
       }
       z[i] = valid ? load_value(logits, addr_split(sz, sb, sh, token, logit_base + col)) : 0.0f;
     }
-    //: A masked row can be EMPTY, so the member count is a per-row reduction and not
-    //: `width`; `production_factor`'s empty-row autograd contract is exactly this case.
+    //: A masked row can be EMPTY, so the member count is a per-row reduction and not -- see docs/internals/entmax/factor.md#validcount
     int valid_count = width;
     if (mask != nullptr) {
       valid_count = WarpRedI(redi_store).Reduce(local_valid, cub::Sum());
@@ -130,8 +124,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
     float row_min = WarpRedF(red_store).Reduce(local_min, cub::Min());
     row_min = __shfl_sync(lmask, row_min, 0, LW);
 
-    //: A finite row-relative sentinel keeps padded lanes strictly below every real
-    //: value without an infinity in the scan. `row_min` is pre-shift, so shift it too.
+    //: A finite row-relative sentinel keeps padded lanes strictly below every real -- see docs/internals/entmax/factor.md#sentinel
     const float sentinel = has_valid ? (row_min - row_max) - 1.0f : -1.0f;
     float keys[IPT];
 #pragma unroll
@@ -176,9 +169,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
         best_tau = tau_c;
       }
     }
-    //: ONE reduction selects the greatest valid k AND carries its tau: the column in the
-    //: high 32 bits makes integer Max pick it, and `best_col = -1` maps to key 0 so an
-    //: all-empty row yields tau = 0 -- docs/internals/entmax/entmax.md#forward-phases
+    //: ONE reduction selects the greatest valid k AND carries its tau: the column in the -- see docs/internals/entmax/factor.md#packedkey
     unsigned long long packed_key = ((unsigned long long)(uint32_t)(best_col + 1) << 32)
                                     | (unsigned long long)__float_as_uint(best_tau);
     packed_key = WarpRedU(redu_store).Reduce(packed_key, cub::Max());
@@ -197,20 +188,16 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
       const float p = ALPHA15 ? base * base : base;
       const int64_t off = addr(sv, stream, token, value_base + col);
       store_value(values, off, p);
-      //: The second output is the SAME solve, never a second one: a `shares_solve` level
-      //: hands read and write one set of amplitudes.
+      //: The second output is the SAME solve, never a second one: a `shares_solve` level -- see docs/internals/entmax/factor.md#near-line-200
       if (values_second != nullptr)
         store_value(values_second, addr(sv2, stream, token, value_base + col), p);
-      //: HAZARD bf16-support-boundary -- docs/internals/entmax/entmax.md#bf16-support-boundary
-      //: Support is defined at the native bf16 storage boundary, never at the
-      //: pre-quantization solve, whatever dtype this level's values are stored in.
+      //: HAZARD bf16-support-boundary -- docs/internals/entmax/entmax.md#bf16-support-boundary -- see docs/internals/entmax/factor.md#near-line-204
       if (sup && bf16_nonzero(p)) part[i] |= (1u << (token & 31));
     }
   }
 
   // ---- EPILOGUE: pack the 32-token support word. ONE barrier. ----
-  //: The butterfly runs over exactly the bits at or above LW, which is what separates
-  //: lanes holding the same column: docs/internals/entmax/entmax.md#epilogue-butterfly
+  //: The butterfly runs over exactly the bits at or above LW, which is what separates -- see docs/internals/entmax/factor.md#near-line-212
 #pragma unroll
   for (int i = 0; i < IPT; ++i) {
     for (int d = LW; d < WARP_SIZE; d <<= 1) part[i] |= __shfl_xor_sync(0xffffffffu, part[i], d);
@@ -255,9 +242,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_backw
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
-  //: solve's stream, and a token-major operand needs it as `(b, h)`.
-  // see docs/internals/entmax/factor.md#stream32-2
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the -- see docs/internals/entmax/factor.md#stream32-2
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -341,9 +326,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forw
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
-  //: solve's stream, and a token-major operand needs it as `(b, h)`.
-  // see docs/internals/entmax/factor.md#stream32-3
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the -- see docs/internals/entmax/factor.md#stream32-3
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -406,9 +389,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_back
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
-  //: solve's stream, and a token-major operand needs it as `(b, h)`.
-  // see docs/internals/entmax/factor.md#stream32-4
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the -- see docs/internals/entmax/factor.md#stream32-4
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -464,9 +445,7 @@ void launch_factor_forward(const torch::Tensor& logits, const c10::optional<torc
                            torch::Tensor& values, const c10::optional<torch::Tensor>& values_second,
                            torch::Tensor& support, const LevelTable& table, int levels, int klass,
                            int heads, double alpha) {
-  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
-  //: a flat plane declares `heads == 1` and the same product is `size(0)`
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams
   const int n_streams = logits.size(0) * heads, tokens = logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();
@@ -493,9 +472,7 @@ void launch_factor_backward(const torch::Tensor& values, const torch::Tensor& su
                             const c10::optional<torch::Tensor>& d_values_second,
                             torch::Tensor& d_logits, const LevelTable& table, int levels, int klass,
                             int heads, bool accumulate, double alpha) {
-  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
-  //: a flat plane declares `heads == 1` and the same product is `size(0)`
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams-2
   const int n_streams = d_logits.size(0) * heads, tokens = d_logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();
@@ -521,9 +498,7 @@ template <typename LogitT, typename OutT>
 void launch_softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
                             const c10::optional<torch::Tensor>& values_second,
                             const LevelTable& table, int levels, int klass, int heads) {
-  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
-  //: a flat plane declares `heads == 1` and the same product is `size(0)`
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams-3
   const int n_streams = logits.size(0) * heads, tokens = logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();
@@ -546,9 +521,7 @@ void launch_softmax_backward(const torch::Tensor& values, const torch::Tensor& d
                              const c10::optional<torch::Tensor>& d_values_second,
                              torch::Tensor& d_logits, const LevelTable& table, int levels,
                              int klass, int heads, bool accumulate) {
-  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
-  //: a flat plane declares `heads == 1` and the same product is `size(0)`
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/factor.md#nstreams-4
   const int n_streams = d_logits.size(0) * heads, tokens = d_logits.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();

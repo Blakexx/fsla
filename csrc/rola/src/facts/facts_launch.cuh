@@ -1,9 +1,6 @@
-// csrc/rola/src/facts/facts_launch.cuh -- the facts kernels' ARM SURFACE:
-// the union-table pass, the stats reduction and the liveness epilogue, one
-// launcher template each.  Included only by the instantiation shards, on the
-// consumer family's rule (a dispatch TU satisfying an arm locally would leave
-// the build green and nothing sharded).  TORCH-FREE: every CUDA error is
-// RETURNED and the dispatch TU raises through C10.
+// csrc/rola/src/facts/facts_launch.cuh -- the facts kernels' ARM SURFACE: one
+// launcher template each for the union-table pass, the stats reduction and the
+// liveness epilogue. Included only by the instantiation shards; TORCH-FREE.
 #pragma once
 
 #include <cuda_runtime.h>
@@ -14,14 +11,12 @@
 
 namespace rola::chunk {
 
-//: ONE PASS, BOTH ROW SETS.
-// see docs/internals/facts/facts_launch.md#ktblwarps
+//: ONE PASS, BOTH ROW SETS. -- see docs/internals/facts/facts_launch.md#ktblwarps
 template <class PLAN_R, class PLAN_W, int MASK>
 cudaError_t launch_facts_plan(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
                               uint32_t* atom_tbl, int BH, int L, cudaStream_t stream) {
   constexpr int kTblWarps = kFactsThreads / kBallotLanes;
-  //: the variant with no atom-grain emission compiled in, handed an atom table,
-  //: would return it unwritten: the class and the pointers must agree.
+  //: the variant with no atom-grain emission compiled in, handed an atom table, -- see docs/internals/facts/facts_launch.md#mask
   if (MASK == kPrefillStateless && atom_tbl != nullptr) return cudaErrorInvalidValue;
   const dim3 grid((unsigned)((tok_words(L) + kTblWarps - 1) / kTblWarps), (unsigned)BH);
   chunk_facts_tables<PLAN_R, PLAN_W, MASK>
@@ -29,9 +24,7 @@ cudaError_t launch_facts_plan(const __nv_bfloat16* pr, const __nv_bfloat16* pw, 
   return cudaGetLastError();
 }
 
-//: THE LEX ARM, unchanged as a SURFACE: the dispatch vocabulary is still `(D,
-//: B, BC)` x call class, and the plan it names is the lex policy's.
-// see docs/internals/facts/facts_launch.md#note-l34
+//: THE LEX ARM, unchanged as a SURFACE: the dispatch vocabulary is still `(D, -- see docs/internals/facts/facts_launch.md#note-l34
 template <int D, int B, int BC, int MASK>
 cudaError_t launch_chunk_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
                                    uint32_t* atom_tbl, int BH, int L, cudaStream_t stream) {
@@ -39,9 +32,7 @@ cudaError_t launch_chunk_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16*
                                                                            BH, L, stream);
 }
 
-//: THE GIVEN-SPAN ARM -- the box lattice's owner rows, AT ONE PARTITION PER
-//: SIDE (K35 S1b).
-// see docs/internals/facts/facts_launch.md#note-l45
+//: THE GIVEN-SPAN ARM -- the box lattice's owner rows, AT ONE PARTITION PER -- see docs/internals/facts/facts_launch.md#note-l45
 template <int D, int B, int R0, int R1, int R2, int R3, int W0, int W1, int W2, int W3, int MASK>
 cudaError_t launch_span_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* pw, uint32_t* tbl,
                                   int BH, int L, cudaStream_t stream) {
@@ -49,9 +40,7 @@ cudaError_t launch_span_facts_arm(const __nv_bfloat16* pr, const __nv_bfloat16* 
       pr, pw, tbl, nullptr, BH, L, stream);
 }
 
-//: THE STATS PASS' REDUCTION ARM, keyed (D, B) alone: the atom rectangle is
-//: `kAtomLeaves` by construction, so residency is BC-free and this arm list is
-//: smaller than the consumer's (docs/internals/paging/stats.md).
+//: THE STATS PASS' REDUCTION ARM, keyed (D, B) alone: the atom rectangle is -- see docs/internals/facts/facts_launch.md#near-line-52
 template <int D, int B>
 cudaError_t launch_chunk_atom_bitmap_arm(const uint32_t* tbl, uint8_t* atom_bits, int BH, int L,
                                          cudaStream_t stream) {
@@ -62,9 +51,7 @@ cudaError_t launch_chunk_atom_bitmap_arm(const uint32_t* tbl, uint8_t* atom_bits
   return cudaGetLastError();
 }
 
-//: THE LIVENESS EPILOGUE'S LAUNCH, keyed to (D, B, BC) like the union table it
-//: reduces -- the block grain is the LAUNCH's, so unlike the stats pass this one
-//: does carry a `BC` axis.
+//: THE LIVENESS EPILOGUE'S LAUNCH, keyed to (D, B, BC) like the union table it -- see docs/internals/facts/facts_launch.md#near-line-65
 template <int D, int B, int BC>
 cudaError_t launch_chunk_block_bitmap_arm(const uint32_t* tbl, const int32_t* page_tbl,
                                           uint8_t* block_bits, int BH, int L, cudaStream_t stream) {

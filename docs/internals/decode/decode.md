@@ -1747,3 +1747,256 @@ Three facts a reader must not miss:
 
 The lattice, the walk's cost accounting and the paged base translation:
 docs/internals/decode/decode.md
+
+<a id="near-line-51"></a>
+### near line 51
+
+NOT an anonymous namespace: nvcc mangles anonymous-namespace kernels with a hash that
+depends on the BUILD PATH, so a manifest ratified in one worktree certifies a name no
+other checkout's build produces. A ratifiable kernel needs a named symbol.
+
+<a id="decodestampkernel"></a>
+### `decode_stamp_kernel`
+
+THE STEP'S OWN FOOTPRINT, recompiled with this translation unit, so a test that reads
+it back is reading a fact only the loaded binary can produce:
+docs/internals/decode/decode_api.md#build-stamp
+
+<a id="cols"></a>
+### `cols`
+
+The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a
+template axis and not a runtime test: docs/internals/decode/decode.md#template-axes
+
+<a id="nc"></a>
+### `NC`
+
+Columns per lane: `NC` fully coalesced 128 B transactions, and the lane's
+accumulators are its own output columns.
+
+<a id="sumax"></a>
+### `s_umax`
+
+The retirement bound, folded by `publish_term_layout`'s own `atomicMax` -- which is why
+it is zeroed HERE, behind the fold's barrier: docs/internals/decode/decode.md#retirement
+
+<a id="near-line-122"></a>
+### near line 122
+
+One unit count per TERM. The walk's outer loop is the term, so each term's rank space
+is partitioned across the grid on its own and the counts never need summing.
+
+<a id="sarrive"></a>
+### `s_arrive`
+
+THE CTA'S WARP ARRIVAL COUNT, and the whole of the combine's synchronisation. It is
+zeroed in the PROLOGUE, behind the prologue's own last barrier, which is what lets the
+combine below need no barrier at all: docs/internals/decode/decode.md#the-warp-arrival
+
+<a id="near-line-169"></a>
+### near line 169
+
+`sum_l B_l` bits and at most `sum_l g_l` entries: nothing in this prologue is sized
+in the leaf space: docs/internals/decode/decode_lattice.md
+
+<a id="candfld"></a>
+### `cand_fld`
+
+THE CANDIDATE SLOT'S ROW of the same packed term table -- the ADMISSION's rank space,
+which is the write product in the OLD owner-and-run order because only that order is
+monotone in atom id: docs/internals/decode/decode_lattice.md#the-candidate-slot
+
+<a id="ncandidates"></a>
+### `n_candidates`
+
+FROM THE CANDIDATE SLOT, not from the walk's write term: the two enumerate the same
+set and only this one is monotone in atom id, which is what the claim's canonical
+ranks are defined in: docs/internals/decode/decode_lattice.md#the-write-grain
+
+<a id="log1pf"></a>
+### `log1pf`
+
+THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is
+what makes "stored != 0 => live != 0" an identity:
+docs/internals/decode/decode.md#detached-clock
+
+<a id="near-line-466"></a>
+### near line 466
+
+THE MASS COLUMN IS READ BY EVERY LANE, not by lane 0 alone: the value is the same
+broadcast load for all of them and it is the denominator every lane divides by, so
+carrying it in all 32 registers costs one load and saves the shuffle.
+
+<a id="near-line-503"></a>
+### near line 503
+
+SLOT ORDER, always -- the whole determinism argument. `__ldcg` bypasses L1 so
+the reader sees the stores the `__threadfence` above made visible.
+HAZARD slot-order -- docs/internals/decode/decode.md#slot-order
+
+<a id="lane"></a>
+### `lane`
+
+Reset for the next step: no `memset` launch between two decode steps, and the
+counter is safe to capture in a CUDA graph.
+
+<a id="seen"></a>
+### `seen`
+
+THE REDUCTION THE HOST READS, and the done flags' self-reset. Nothing needy means
+every batch-head is done, so the two answers are ONE test and no launch stands
+between two steps: docs/internals/decode/decode.md#growth-reduction
+
+<a id="roladecodearms"></a>
+### `rola_decode_arms`
+
+THE BUILT SET, READ BACK OFF THE SAME LIST: `[d_v, D, decay]` per arm, in the order
+the binary carries them, so a subset build is SELF-IDENTIFYING rather than merely
+smaller: docs/internals/decode/decode_api.md#arm-subset
+
+<a id="torchcheck"></a>
+### `TORCH_CHECK`
+
+The instantiation matrix is `DV(2) x D(4) x DECAY(2) = 16`. What is NOT an axis --
+`BT`, `BC`, the lattice's `(k, m)` and every operand's storage type -- is the
+interesting part: docs/internals/decode/decode.md#instantiation-matrix
+
+<a id="launch"></a>
+### `launch`
+
+ONE LAUNCH SITE. Each axis arrives as an `integral_constant`, so the three
+`::value`s are template arguments and the `<<<...>>>` configuration cannot drift
+between arms: docs/internals/dispatch_switch.md#one-launch
+
+<a id="isbf16"></a>
+### `is_bf16`
+
+ONE FLOATING AXIS OVER THE CLOSED SET THE PRODUCER AND THE VALUE PROJECTION EMIT: an
+unmatched dtype is a REFUSAL rather than a silent widening on the host.
+docs/internals/decode/decode_fold.md#the-dtype-arms
+
+<a id="spanof"></a>
+### `span_of`
+
+The `[B, 1, H, W] -> [B * H, W]` fold as an ADDRESS. `T != 1` is refused -- the fold
+is defined on one token and a second one would be silently dropped:
+docs/internals/decode/decode_fold.md#the-identity
+
+<a id="gsuf"></a>
+### `gsuf`
+
+`BoxPlan::run_shift`: level `l`'s run offset sits at `log2 prod_{l\' > l} s_l\'` in the
+owner-local index, so the whole mixed radix is shifts and masks.
+
+<a id="filllevels"></a>
+### `fill_levels`
+
+The per-level geometry every decode entry validates the same way, filled into `p` and
+reported back as `total_rows`.
+
+<a id="roladecodebuildstamp"></a>
+### `rola_decode_build_stamp`
+
+THE BUILD STAMP: a path or hash check cannot catch a stale `.so` at the right path,
+and only a device-side fact can: docs/internals/decode/decode_api.md#build-stamp
+
+<a id="y"></a>
+### `y`
+
+`empty`, not `zeros`: every element is written, so a zero-fill is a launch the
+launch-latency-bound small-batch regime pays for nothing:
+docs/internals/decode/decode.md#empty-not-zeros
+
+<a id="pooled"></a>
+### `pooled`
+
+THE SLACK POOL, present or absent as ONE decision -- three buffers and a capacity,
+or four zeros and exact-commit. There is no half-configured pool:
+docs/internals/paging/paging.md#the-slack-pool
+
+<a id="kmaxlevels-2"></a>
+### `kMaxLevels`
+
+`1 <= D <= 4`. The same bound the consumer's `kMaxLevels` states, restated
+rather than included -- the decode TUs share no other object with the tiled
+consumer. docs/internals/decode/decode.md#max-levels
+
+<a id="span"></a>
+### `Span`
+
+ONE OPERAND'S ADDRESS, as the producer left it: the base and the three strides the
+fold walks over a `[B, 1, H, W]` view. `sw` is `0` for the per-token scalars, which
+have no last axis. docs/internals/decode/decode_fold.md#the-identity
+
+<a id="decodeparams"></a>
+### `DecodeParams`
+
+EVERY POINTER AND EXTENT ONE DECODE STEP NEEDS, and nothing the kernel could cheaply
+recompute. Field by field: docs/internals/decode/decode.md#params-amps
+
+<a id="near-line-98"></a>
+### near line 98
+
+Per READ level: does it still carry its own mass, so the fold divides it by its row
+sum? The write side is never normalized.
+
+<a id="levelsbf16"></a>
+### `levels_bf16`
+
+The storage type of each operand family, `1` = bfloat16 and `0` = float. Branching
+on STORAGE selects a typed gather loop once per side, never a test per element:
+docs/internals/decode/decode_fold.md#the-dtype-arms
+
+<a id="near-line-129"></a>
+### near line 129
+
+`r_l`'s shift inside the unit index: `lat_run_shift[l]` re-based on the innermost run,
+so a unit decomposes by shifts alone and no device division exists on this path.
+
+<a id="near-line-132"></a>
+### near line 132
+
+The digit masks' word layout: level `l` owns `mask_words[l]` words at `mask_off[l]`
+of a `mask_total`-word plane, one plane per side.
+
+<a id="near-line-150"></a>
+### near line 150
+
+THE WRITE SIDE'S LIVE-DIGIT LIST, OUTER LEVELS ONLY -- term 0's own grain, compacted
+from `mask_w` by the same prefix popcount:
+docs/internals/decode/decode_lattice.md#the-write-grain
+
+<a id="state"></a>
+### `state`
+
+DENSE `[BH, N, cols]` or PAGED `[slots, kAtomLeaves, cols]`, `cols = d_v + 1`.
+Read AND written in place by the SAME lane in program order:
+docs/internals/decode/decode.md#state-in-place
+
+<a id="growth-2"></a>
+### `growth`
+
+`[BH]` int32, THE PER-BATCH-HEAD VERDICT: `1` where this step writes an atom no
+table entry and no pool slot can address, `0` where it advanced. Written by the
+batch-head's last-arriving CTA: docs/internals/decode/decode.md#per-bh-verdict
+
+<a id="growthany"></a>
+### `growth_any`
+
+`[1]` int32, the OR of `growth` over batch-heads, and the `[1]` int32
+self-resetting arrival counter of the CTA that reduces it:
+docs/internals/decode/decode.md#growth-reduction
+
+<a id="atombits"></a>
+### `atom_bits`
+
+`[BH, atoms_per_bh]` bool, this step's own write set condensed to atoms. It is what
+a growth step's `plan_exact` admits from, so the host never re-derives the set the
+step has already expanded: docs/internals/decode/decode.md#atom-bits
+
+<a id="ws"></a>
+### `ws`
+
+Split-K workspace. Slot-ordered and summed by the last-arriving CTA, which is what
+makes decode's `y` RUN-REPRODUCIBLE -- and that diverges from the tiled consumer
+on purpose: docs/internals/decode/decode.md#determinism

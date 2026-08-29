@@ -1427,3 +1427,178 @@ the mirror of the entry load, after the last fan-in has consumed the staging
 buffer -- which is what the one extra rendezvous below is for.
 NULL = NO STATE OBJECT AT THIS END: nothing is written (state.md section 1),
 symmetric with the entry check above.
+
+<a id="kdv"></a>
+### `kDv`
+
+THE VALUE WIDTH, AS A DECLARATION.  `kDv` channels plus the MASS column, which
+rides the state as one more row of every plane the state touches.
+
+<a id="kstreams"></a>
+### `kStreams`
+
+THE EXECUTOR MAP: one warp per stream, and the batch tile IS the executor count
+times an accumulator n-tile -- which is what makes the readout's staging block one
+token tile of the batch AND a whole state page.
+
+<a id="outbytes"></a>
+### `out_bytes`
+
+the readout's staging block, one `kMmaN`-token region per warp -- and, at
+entry and exit, the state plane's page.
+
+<a id="klists"></a>
+### `kLists`
+
+`kWarps` READ lists, one per stream, then ONE write list: a read entry belongs to
+the streams its carved digits fall in, a write entry to all of them.
+
+<a id="klw"></a>
+### `kLW`
+
+THE WINDOW'S BALLOT WORDS, one per lane of the walk -- so a window may be at
+most a lockstep unit's worth of words wide.
+
+<a id="koctets"></a>
+### `kOctets`
+
+§6: `N` is this function's template parameter (ALL_CAPS per project convention,
+renamed from lowercase `n` so the unroll-discipline lint reads it as compile-time);
+`N / 8` is still an arithmetic expression the heuristic can't parse, so name it too.
+
+<a id="near-line-215"></a>
+### near line 215
+
+THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from the
+same geometry the ring depth is.  A ring sized for a residency the launch bound does
+not ask for is a ring sized for nothing.
+
+<a id="sv"></a>
+### `SV`
+
+THE ONE SPAN VECTOR, and the private order and the ballot rows it induces.  Both
+phases read these: the carve is the read side's and the write side walks it.
+
+<a id="vrowelems"></a>
+### `vRowElems`
+
+ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
+shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
+
+<a id="strm"></a>
+### `strm`
+
+THE STREAM ROTATION.  Two CTAs co-resident on an SM are one grid wave apart and
+the wave is a multiple of `kWarps`, so `owner % kWarps` would rotate both
+identically; the wave-stride form does not (K33 1.45).
+
+<a id="near-line-296"></a>
+### near line 296
+
+`o_l` is a bit-field extract of the owner index: the lattice's owner
+coordinates are the top `sum_l log2 g_l` bits of `lambda` (R0 spec section 2.4).
+
+<a id="panr"></a>
+### `panR`
+
+THE PANEL RING'S TWO BASES, AS NAMED SCALARS.  A two-element array indexed by
+the batch parity would be a runtime index into a register array, which is a
+stack frame; a select is one instruction and no memory.
+
+<a id="konespair"></a>
+### `kOnesPair`
+
+THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so
+the fold's A fragment for it is the constant whose row 0 is ones.
+
+<a id="krowstep"></a>
+### `kRowStep`
+
+THE SWEEP'S STEP, AS A CARRY.  A step of `kThreads` elements advances the row
+cursor by `kRowStep` or by one more, so the walk is a compile-time count of
+predicated subtractions and never a division.
+
+<a id="near-line-443"></a>
+### near line 443
+
+the mass rides row 0 of its own accumulator, so only the lane quad holding
+that row carries it.
+
+<a id="decltype"></a>
+### `decltype`
+
+AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
+nothing here, the fragments keep the zero the prologue set, and reading a
+never-written state is inert under the self-normalizing readout.
+
+<a id="spt"></a>
+### `SPT`
+
+ONE LANE MINTS ONE TOKEN'S WHOLE ROW: the batch tile is the warp width, so a
+thread's slot run is the stream's entire box and the expansion is `sum_l S_l`
+amplitude loads folded into `kLeafW / 2` packed accumulators.
+
+<a id="near-line-497"></a>
+### near line 497
+
+THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
+is loaded, folded into every slot and dropped inside one `static_for` body, so
+no `[D][n]` array is ever live.
+
+<a id="widx"></a>
+### `wIdx`
+
+a lane past the window's last word holds no word; it reads word zero, which
+is in range, and `valid` empties its ballot.
+
+<a id="clauseof"></a>
+### `clause_of`
+
+THE CLAUSE ABOVE THE CARVE: the levels the stream spans WHOLE, whose row is the
+owner's own and is therefore shared by every stream.  A level the owner spans
+whole emits no row at all and drops out of the conjunction on its own.
+
+<a id="streamrow"></a>
+### `stream_row`
+
+AND THE CARVED CLAUSE OF ONE STREAM: the AND over the carved levels of that
+stream's own row.  A single-level carve is one load; a multi-level carve is one
+per carved level, which is the exact conjunction the box asks for.
+
+<a id="continue"></a>
+### `continue`
+
+THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap
+mechanism's harvest (study section 2.1).  It is CTA-uniform WITHOUT a
+barrier: the two owner-grain ballots are the same words in every warp.
+
+<a id="rendezvous-2"></a>
+### `rendezvous`
+
+THE WINDOW LINE IS THE ONE BARRIER LEFT ON THE READ SIDE, and it is there by
+the ordering law: no warp may fold this window's writes while another is
+still reading the window's entry state.
+
+<a id="f"></a>
+### `f`
+
+the ring slot is advanced on EVERY batch, live or not, so the wait/commit
+accounting never depends on the data.
+
+<a id="knlhalf"></a>
+### `kNLHalf`
+
+§6: kNL/2 is compile-time (kNL is a constexpr local above) but the heuristic
+only reads a bare identifier, so name the halved count.
+
+<a id="near-line-843"></a>
+### near line 843
+
+the ring's unconsumed groups are retired before the next window reuses the
+value slots.
+
+<a id="decltype-2"></a>
+### `decltype`
+
+THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
+which is what leaves a skipped slot carrying exactly what it held.

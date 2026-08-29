@@ -25,45 +25,30 @@ using denseref::ops::stage_commit;
 using denseref::ops::stage_tile;
 using denseref::ops::stage_wait;
 
-//: THE WINDOW IS AN ARM, so the tile counts it induces are functions of it and
-//: never file-scope constants -- the carry's `W` template argument, mirrored.
+//: THE WINDOW IS AN ARM, so the tile counts it induces are functions of it and -- see docs/internals/intra/intra_kernel.md#tilesof
 constexpr int tiles_of(int window) { return window / kTile; }
-//: THE OUTPUT BLOCK IS C = `kTile * row_tiles_of(W)` READER TOKENS.
-// see docs/internals/intra/intra_kernel.md#note-l31
+//: THE OUTPUT BLOCK IS C = `kTile * row_tiles_of(W)` READER TOKENS. -- see docs/internals/intra/intra_kernel.md#note-l31
 constexpr int row_tiles_of(int window) { return tiles_of(window) >= 2 ? 2 : 1; }
 constexpr int rows_of(int window) { return row_tiles_of(window) * kTile; }
-//: ONE WARP PER `kWarpRows` OF THE BLOCK: a warp holds the Gram of ONE tile
-//: pair, so the block's accumulator budget per thread does not grow with C --
-//: the row tiles are shared across warps, not stacked in one warp's registers.
-// see docs/internals/intra/intra_kernel.md#kwarpspertile
+//: ONE WARP PER `kWarpRows` OF THE BLOCK: a warp holds the Gram of ONE tile -- see docs/internals/intra/intra_kernel.md#kwarpspertile
 constexpr int threads_of(int window) { return 32 * (rows_of(window) / kWarpRows); }
 constexpr int kWarpsPerTile = kTile / kWarpRows;
-//: A LEVEL'S STAGED WIDTH is its digit count rounded up to the MMA's
-//: contraction step: a level narrower than one step is contracted PADDED,
-//: because there is no `k < 16` tensor op.
-// see docs/internals/intra/intra_kernel.md#kstagecap
+//: A LEVEL'S STAGED WIDTH is its digit count rounded up to the MMA's -- see docs/internals/intra/intra_kernel.md#kstagecap
 constexpr int level_digits(int width) { return width < kSlabDigits ? kSlabDigits : width; }
 constexpr int slabs_per_level(int width) { return level_digits(width) / kSlabDigits; }
 constexpr int mask_words(int width) { return (level_digits(width) + 31) / 32; }
-//: THE PIPELINE STAGE IS AT MOST AS WIDE AS THE LEVEL. A stage is one cp.async
-//: fill and one pair of barriers, and several `kSlabDigits` steps ride it, so
-//: the barrier count per tile-pair is the stage count and not the MMA-step ...
-// see docs/internals/intra/intra_kernel.md#kstagecap-2
+//: THE PIPELINE STAGE IS AT MOST AS WIDE AS THE LEVEL. A stage is one cp.async -- see docs/internals/intra/intra_kernel.md#kstagecap-2
 constexpr int kStageCap = 64;
 constexpr int stage_digits(int width) {
   return level_digits(width) < kStageCap ? level_digits(width) : kStageCap;
 }
 constexpr int slabs_per_stage(int width) { return stage_digits(width) / kSlabDigits; }
 constexpr int stages_per_level(int width) { return level_digits(width) / stage_digits(width); }
-//: The operand rows are padded so the eight row addresses ldmatrix reads per
-//: 8x8 tile land in eight distinct banks; the pad is in elements and keeps every
-//: row base 16-byte aligned, which cp.async requires.
+//: The operand rows are padded so the eight row addresses ldmatrix reads per -- see docs/internals/intra/intra_kernel.md#operandpitch
 constexpr int operand_pitch(int width) { return stage_digits(width) + 8; }
 constexpr int kValuePitch = kValueWidth + 8;
 
-//: `sread`/`swrite`: the producer's frozen support word for the plane of the same
-//: name, `[BH, token_words, row_width]` int32, bit `token & 31` of word
-//: `token / 32`, so a word's COLUMN is the plane's digit.
+//: `sread`/`swrite`: the producer's frozen support word for the plane of the same -- see docs/internals/intra/intra_kernel.md#intraparams
 struct IntraParams {
   const __nv_bfloat16* pread;
   const __nv_bfloat16* pwrite;
@@ -81,10 +66,7 @@ struct IntraParams {
   uint32_t modes;
 };
 
-//: THE OPERAND SLABS ARE PER-TILE-PAIR AND DO NOT GROW WITH THE WINDOW: only
-//: the zero-certificate masks do, at one word per (tile, level, side, 32
-//: digits).
-// see docs/internals/intra/intra_kernel.md#alignas
+//: THE OPERAND SLABS ARE PER-TILE-PAIR AND DO NOT GROW WITH THE WINDOW: only -- see docs/internals/intra/intra_kernel.md#alignas
 template <int D, int B, int W>
 struct alignas(16) IntraSmem {
   __nv_bfloat16 rslab[2][rows_of(W)][operand_pitch(B)];
@@ -103,9 +85,7 @@ template <int N>
 __device__ __forceinline__ uint32_t digit_union_word(const __nv_bfloat16* row) {
   static_assert(N % 8 == 0 && N <= 32, "a certificate word covers 8, 16 or 32 digits");
   uint32_t bits = 0;
-  //: §6: `N` is this function's template parameter (renamed from lowercase `n`
-  //: so the unroll-discipline lint reads it as compile-time); `N / 8` is still an
-  //: arithmetic expression the heuristic can't parse, so name it too.
+  //: §6: `N` is this function's template parameter (renamed from lowercase `n` -- see docs/internals/intra/intra_kernel.md#koctets
   constexpr int kOctets = N / 8;
 #pragma unroll
   for (int q = 0; q < kOctets; ++q) {
@@ -118,9 +98,7 @@ __device__ __forceinline__ uint32_t digit_union_word(const __nv_bfloat16* row) {
   return bits;
 }
 
-//: One bit per digit, unioned over a tile's 64 tokens -- the exact zero
-//: certificate the slab gate reads.
-// see docs/internals/intra/intra_kernel.md#build-masks
+//: One bit per digit, unioned over a tile's 64 tokens -- the exact zero -- see docs/internals/intra/intra_kernel.md#build-masks
 template <int D, int B, int W>
 __device__ void build_masks(IntraSmem<D, B, W>& sm, const IntraParams& p, int bh, int wbase,
                             int tid) {
@@ -129,9 +107,7 @@ __device__ void build_masks(IntraSmem<D, B, W>& sm, const IntraParams& p, int bh
   constexpr int kWords = mask_words(B);
   constexpr int kWarps = kThreads / 32;
   constexpr int kUnits = kTiles * kWords;
-  //: no zero-fill and no leading barrier: every DECLARED (tile, level, side, word)
-  //: is written once by one lane, and `slab_bits` answers an undeclared side from
-  //: the mode word without reading the array.
+  //: no zero-fill and no leading barrier: every DECLARED (tile, level, side, word) -- see docs/internals/intra/intra_kernel.md#lane
   const int lane = tid & 31;
   const int warp = tid >> 5;
   const int word0 = (wbase >> 5) + bh * p.token_words;
@@ -182,14 +158,12 @@ __device__ __forceinline__ bool stage_live(const IntraSmem<D, B, W>& sm, uint32_
   return any;
 }
 
-//: One bit per row tile of the block: the pairs of this stage with work in them.
-//: A strictly-upper pair is never set, which is how the causal grid is walked.
+//: One bit per row tile of the block: the pairs of this stage with work in them. -- see docs/internals/intra/intra_kernel.md#near-line-185
 template <int D, int B, int W>
 __device__ __forceinline__ uint32_t live_rows(const IntraSmem<D, B, W>& sm, uint32_t modes, int rt0,
                                               int ct, int l, int stage) {
   uint32_t bits = 0u;
-  //: §6: row_tiles_of(W) is compile-time (W is this function's template parameter)
-  //: but the heuristic can't see through the function call, so name it.
+  //: §6: row_tiles_of(W) is compile-time (W is this function's template parameter) -- see docs/internals/intra/intra_kernel.md#krowtiles
   constexpr int kRowTiles = row_tiles_of(W);
 #pragma unroll
   for (int r = 0; r < kRowTiles; ++r)
@@ -209,15 +183,12 @@ __device__ __forceinline__ void stage_slabs(IntraSmem<D, B, W>& sm, const IntraP
   constexpr int kColThreads = kThreads / kTile;
   constexpr int kColDigits = kStage / kColThreads;
   static_assert(kColDigits >= 8, "a staging thread's share of a stage is one cp.async granule");
-  //: §6: kColDigits/8 and kStage/16 are compile-time but the heuristic only reads a
-  //: bare identifier, so name them.
+  //: §6: kColDigits/8 and kStage/16 are compile-time but the heuristic only reads a -- see docs/internals/intra/intra_kernel.md#kcoldigitoctets
   constexpr int kColDigitOctets = kColDigits / 8;
   constexpr int kStageHexadecs = kStage / 16;
   const int ctoken = tid / kColThreads;
   const int cpart = (tid % kColThreads) * kColDigits;
-  //: a level's REAL digits only.  Where `B` is narrower than the MMA's contraction
-  //: step the slab's tail was zeroed at entry and is never refilled, which is what
-  //: makes the padded contraction exact.
+  //: a level's REAL digits only.  Where `B` is narrower than the MMA's contraction -- see docs/internals/intra/intra_kernel.md#near-line-218
   if (cpart < B) {
     const __nv_bfloat16* wsrc =
         p.pwrite + base + (long long)(ct * kTile + ctoken) * p.row_width + cpart;
@@ -244,8 +215,7 @@ __device__ __forceinline__ void stage_values(IntraSmem<D, B, W>& sm, const Intra
   constexpr int kThreads = threads_of(W);
   constexpr int kColThreads = kThreads / kTile;
   constexpr int kColChannels = kValueWidth / kColThreads;
-  //: §6: kColChannels/8 is compile-time but the heuristic only reads a bare
-  //: identifier, so name it.
+  //: §6: kColChannels/8 is compile-time but the heuristic only reads a bare -- see docs/internals/intra/intra_kernel.md#kcolchanneloctets
   constexpr int kColChannelOctets = kColChannels / 8;
   const int b = bh / p.heads;
   const int h = bh - b * p.heads;
@@ -279,10 +249,7 @@ __global__ __launch_bounds__(threads_of(W)) void intra_kernel(IntraParams p) {
   const int bh = blockIdx.y;
   const int wbase = blockIdx.x * W;
 
-  //: THE PAD IS ZEROED ONCE, AND ONLY WHERE THERE IS ONE. A level narrower than
-  //: the MMA's contraction step leaves the slab's tail unstaged, and a zero there
-  //: is what makes the padded contraction equal the `B`-wide one.
-  // see docs/internals/intra/intra_kernel.md#kfill
+  //: THE PAD IS ZEROED ONCE, AND ONLY WHERE THERE IS ONE. A level narrower than -- see docs/internals/intra/intra_kernel.md#kfill
   if constexpr (level_digits(B) > B) {
     constexpr int kFill = (int)(sizeof(sm.rslab) + sizeof(sm.wslab)) / (int)sizeof(uint4);
     uint4* z = reinterpret_cast<uint4*>(&sm.rslab[0][0][0]);

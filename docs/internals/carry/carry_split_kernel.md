@@ -226,3 +226,130 @@ the mirror of the entry load, after the last fan-in has consumed the staging
 buffer -- which is what the one extra rendezvous below is for.
 NULL = NO STATE OBJECT AT THIS END: nothing is written (state.md section 1),
 symmetric with the entry check above.
+
+<a id="kliststride"></a>
+### `kListStride`
+
+TWO packed lists per window, one per SIDE (study section 2.0, two-sided
+schedule): `nr` read entries then `nw` write entries, `kListStride` apart.
+
+<a id="near-line-61"></a>
+### near line 61
+
+THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from
+the same geometry the ring depth is.  A ring sized for a residency the launch
+bound does not ask for is a ring sized for nothing.
+
+<a id="ndv"></a>
+### `NDV`
+
+every warp holds the WHOLE box and a slice of the channels, so the state's
+leaf tiling is the box's and is not carved.
+
+<a id="kmassunits"></a>
+### `kMassUnits`
+
+THE MASS CHANNEL'S CARVE.  One channel cannot be split along the channel
+axis, so it is split along the axis the mma leaves free -- the leaves.
+
+<a id="vrowelems"></a>
+### `vRowElems`
+
+ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
+shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
+
+<a id="near-line-144"></a>
+### near line 144
+
+`o_l` is a bit-field extract of the owner index: the lattice's owner
+coordinates are the top `sum_l log2 g_l` bits of `lambda` (R0 spec section 2.4).
+
+<a id="rowsr"></a>
+### `rowsR`
+
+ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the side's
+whole row block is `kRows * tok_words * 4` bytes, which is 32-bit at every
+admitted length.
+
+<a id="brt0"></a>
+### `brT0`
+
+THE PANEL RING'S TWO BASES, AS NAMED SCALARS.  A two-element array indexed by
+the batch parity would be a runtime index into a register array, which is a
+stack frame; a select is one instruction and no memory.
+
+<a id="konespair"></a>
+### `kOnesPair`
+
+THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so
+the fold's A fragment for it is the constant whose row 0 is ones.
+
+<a id="atombh"></a>
+### `atomBH`
+
+THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80) -- the same re-key the carved
+body makes, so the two bodies stay one ABI and one base translation.
+
+<a id="kpagebytes"></a>
+### `kPageBytes`
+
+THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`,
+docs/internals/paging/paging.md) -- the same one translation the carved body
+makes, so the two bodies remain one ABI and one accumulation order.
+
+<a id="pagevalue"></a>
+### `page_value`
+
+element `k` of an accumulator tile sits at row `(lane>>2) + 8*(k>>1)` and
+column `(lane&3)*2 + (k&1)`; here rows are channels and columns are leaves.
+
+<a id="slot"></a>
+### `slot`
+
+AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
+nothing here, the fragments keep the zero the prologue set, and reading a
+never-written state is inert under the self-normalizing readout.
+
+<a id="knl0"></a>
+### `kNL0`
+
+§6: PM::n_l(0) is compile-time (a constexpr static member function of a
+template class called with a literal) but the heuristic can't see through
+the qualified call, so name it.
+
+<a id="near-line-381"></a>
+### near line 381
+
+the two sides ride ONE count word, low half read and high half write.  A side's
+window total is at most `W`, so no low-half sum ever carries into the high half
+and one packed add carries both prefixes.
+
+<a id="wordb"></a>
+### `wordB`
+
+the word is the WARP's, not the lane's: `tok0` and `t * kThreads` are both
+whole numbers of words, so warp `u` owns word `(tok0 + t*kThreads)/32 + u`.
+
+<a id="nr"></a>
+### `nr`
+
+THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap
+mechanism's harvest, kept (study section 2.1).
+
+<a id="f"></a>
+### `f`
+
+the ring slot is advanced on EVERY batch, live or not, so the wait/commit
+accounting never depends on the data.
+
+<a id="near-line-606"></a>
+### near line 606
+
+the ring's unconsumed groups are retired before the next window reuses the
+value slots.
+
+<a id="slot-2"></a>
+### `slot`
+
+THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
+which is what leaves a skipped slot carrying exactly what it held.

@@ -48,10 +48,7 @@ constexpr int kSeedPitch = kValuePitch;
 constexpr int kChanTiles = kValueWidth / kSlabDigits;
 constexpr int warps_of(int window) { return threads_of(window) / 32; }
 
-//: THE REVERSE STAGES HALF AS WIDE AS THE FORWARD. Its block carries the
-//: forward's operands plus the seed, the relay plane and the `dG_l` image, and
-//: the image is what the digit carve is built on ...
-// see docs/internals/intra/intra_backward_kernel.md#kbwdstagecap
+//: THE REVERSE STAGES HALF AS WIDE AS THE FORWARD. Its block carries the -- see docs/internals/intra/intra_backward_kernel.md#kbwdstagecap
 constexpr int kBwdStageCap = 32;
 constexpr int bwd_stage_digits(int width) {
   return level_digits(width) < kBwdStageCap ? level_digits(width) : kBwdStageCap;
@@ -62,21 +59,14 @@ constexpr int bwd_stages_per_level(int width) {
 }
 constexpr int bwd_operand_pitch(int width) { return bwd_stage_digits(width) + 8; }
 
-//: THE RELAY PLANE, one `[kMmaM x kSlabDigits]` tile per warp: every cotangent
-//: this kernel reduces has that shape ...
-// see docs/internals/intra/intra_backward_kernel.md#kxposerows
+//: THE RELAY PLANE, one `[kMmaM x kSlabDigits]` tile per warp: every cotangent -- see docs/internals/intra/intra_backward_kernel.md#kxposerows
 constexpr int kXposeRows = 16;
 constexpr int kXposePitch = kSlabDigits + 2;
 
-//: THE `dG_l` IMAGE: the tile pair's coefficient object, `[C reader tokens x
-//: kTile write tokens]`, published in bf16 so the phase that READS it can be
-//: carved differently from the phase that accumulated it.
-// see docs/internals/intra/intra_backward_kernel.md#kimagepitch
+//: THE `dG_l` IMAGE: the tile pair's coefficient object, `[C reader tokens x -- see docs/internals/intra/intra_backward_kernel.md#kimagepitch
 constexpr int kImagePitch = kTile + 8;
 
-//: The forward's block footprint plus the ROW side's seed rows, the per-warp relay
-//: plane and the image.  The seed is staged once per output block, not once per column
-//: tile: its rows are the block's readers.
+//: The forward's block footprint plus the ROW side's seed rows, the per-warp relay -- see docs/internals/intra/intra_backward_kernel.md#near-line-77
 template <int D, int B, int W>
 struct alignas(16) IntraBwdSmem {
   __nv_bfloat16 rslab[2][rows_of(W)][bwd_operand_pitch(B)];
@@ -108,8 +98,7 @@ struct IntraBwdParams {
   uint32_t modes;
 };
 
-//: the mask helpers read one CTA-local summary, so the reverse pass's two one-sided
-//: predicates cost nothing beyond the forward's intersection one.
+//: the mask helpers read one CTA-local summary, so the reverse pass's two one-sided -- see docs/internals/intra/intra_backward_kernel.md#near-line-111
 template <int D, int B, int W>
 __device__ __forceinline__ uint32_t side_bits(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                               int ti, int l, int side, int slab) {
@@ -122,8 +111,7 @@ template <int D, int B, int W>
 __device__ __forceinline__ bool side_stage_live(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                 int ti, int l, int side, int stage) {
   bool any = false;
-  //: §6: bwd_slabs_per_stage(B) is compile-time (B is this function's template
-  //: parameter) but the heuristic can't see through the function call, so name it.
+  //: §6: bwd_slabs_per_stage(B) is compile-time (B is this function's template -- see docs/internals/intra/intra_backward_kernel.md#kslabsperstage
   constexpr int kSlabsPerStage = bwd_slabs_per_stage(B);
 #pragma unroll
   for (int sub = 0; sub < kSlabsPerStage; ++sub)
@@ -131,14 +119,12 @@ __device__ __forceinline__ bool side_stage_live(const IntraBwdSmem<D, B, W>& sm,
   return any;
 }
 
-//: THE GRAM PASS'S GATE IS THE INTERSECTION and the digit passes' is ONE SIDE.
-// see docs/internals/intra/intra_backward_kernel.md#live-rows-side
+//: THE GRAM PASS'S GATE IS THE INTERSECTION and the digit passes' is ONE SIDE. -- see docs/internals/intra/intra_backward_kernel.md#live-rows-side
 template <int D, int B, int W>
 __device__ __forceinline__ uint32_t live_rows_side(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                    int rt0, int ct, int l, int stage) {
   uint32_t bits = 0u;
-  //: §6: row_tiles_of(W) is compile-time (W is this function's template parameter)
-  //: but the heuristic can't see through the function call, so name it.
+  //: §6: row_tiles_of(W) is compile-time (W is this function's template parameter) -- see docs/internals/intra/intra_backward_kernel.md#krowtiles
   constexpr int kRowTiles = row_tiles_of(W);
 #pragma unroll
   for (int r = 0; r < kRowTiles; ++r)
@@ -146,8 +132,7 @@ __device__ __forceinline__ uint32_t live_rows_side(const IntraBwdSmem<D, B, W>& 
   return bits;
 }
 
-//: THE GRAM PASS'S OWN GATE: both sides' supports must meet in the digit slab, which is
-//: the forward's intersection certificate read off this kernel's own mask summary.
+//: THE GRAM PASS'S OWN GATE: both sides' supports must meet in the digit slab, which is -- see docs/internals/intra/intra_backward_kernel.md#near-line-149
 template <int D, int B, int W>
 __device__ __forceinline__ bool pair_slab_live(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                int rt, int ct, int l, int slab) {
@@ -160,9 +145,7 @@ template <int D, int B, int W>
 __device__ __forceinline__ uint32_t live_rows_pair(const IntraBwdSmem<D, B, W>& sm, uint32_t modes,
                                                    int rt0, int ct, int l, int stage) {
   uint32_t bits = 0u;
-  //: §6: row_tiles_of(W)/bwd_slabs_per_stage(B) are compile-time (D, B, W are this
-  //: function's template parameters) but the heuristic can't see through the
-  //: function calls, so name them.
+  //: §6: row_tiles_of(W)/bwd_slabs_per_stage(B) are compile-time (D, B, W are this -- see docs/internals/intra/intra_backward_kernel.md#krowtiles-2
   constexpr int kRowTiles = row_tiles_of(W);
   constexpr int kSlabsPerStage = bwd_slabs_per_stage(B);
 #pragma unroll
@@ -180,17 +163,13 @@ __device__ __forceinline__ uint32_t live_rows_pair(const IntraBwdSmem<D, B, W>& 
 template <int D, int B, int W>
 __device__ __forceinline__ void build_bwd_masks(IntraBwdSmem<D, B, W>& sm, const IntraBwdParams& p,
                                                 int bh, int wbase, int tid) {
-  //: THE HALF-SPLIT CERTIFICATE PASS needs a level at least two words wide.  A
-  //: narrower level is a REFUSAL here rather than a second pass shape, because the
-  //: reverse family is built at depth two only (`intra_backward.cu`).
+  //: THE HALF-SPLIT CERTIFICATE PASS needs a level at least two words wide.  A -- see docs/internals/intra/intra_backward_kernel.md#near-line-183
   static_assert(mask_words(B) % 2 == 0, "the reverse certificate pass splits a level in half");
   constexpr int kTiles = tiles_of(W);
   constexpr int kThreads = threads_of(W);
   constexpr int kCohorts = kThreads / (2 * kTile);
   uint32_t* flat = &sm.mask[0][0][0][0];
-  //: §6: both bounds are compile-time (kTiles/D are locals/template params, mask_words(B)
-  //: a constexpr function of the template param B) but the heuristic can't see through
-  //: the arithmetic/function-call form, so name them.
+  //: §6: both bounds are compile-time (kTiles/D are locals/template params, mask_words(B) -- see docs/internals/intra/intra_backward_kernel.md#maskwords
   constexpr int kFlatWords = kTiles * D * 2 * mask_words(B);
   for (int i = tid; i < kFlatWords; i += kThreads) flat[i] = 0u;
   __syncthreads();
@@ -205,8 +184,7 @@ __device__ __forceinline__ void build_bwd_masks(IntraBwdSmem<D, B, W>& sm, const
       const uint32_t want = (side == 0 ? kModeReadSparse : kModeWriteSparse);
       if (((p.modes >> (2 * l)) & want) == 0u) continue;
       const __nv_bfloat16* plane = (side == 0) ? p.pread : p.pwrite;
-      //: §6: mask_words(B)/2 is compile-time (B is this function's template parameter)
-      //: but the heuristic can't see through the function call/arithmetic, so name it.
+      //: §6: mask_words(B)/2 is compile-time (B is this function's template parameter) -- see docs/internals/intra/intra_backward_kernel.md#kmaskwordshalf
       constexpr int kMaskWordsHalf = mask_words(B) / 2;
       for (int ti = cohort; ti < kTiles; ti += kCohorts) {
         const __nv_bfloat16* row =
@@ -233,8 +211,7 @@ __device__ __forceinline__ void stage_bwd_slabs(IntraBwdSmem<D, B, W>& sm, const
   constexpr int kThreads = threads_of(W);
   constexpr int kColThreads = kThreads / kTile;
   constexpr int kColDigits = bwd_stage_digits(B) / kColThreads;
-  //: §6: these are all compile-time (B, W are this function's template parameters)
-  //: but the heuristic can't see through the function call/arithmetic, so name them.
+  //: §6: these are all compile-time (B, W are this function's template parameters) -- see docs/internals/intra/intra_backward_kernel.md#kcoldigitoctets
   constexpr int kColDigitOctets = kColDigits / 8;
   constexpr int kStageDigitsHex = bwd_stage_digits(B) / 16;
   if (cols) {
@@ -264,8 +241,7 @@ __device__ __forceinline__ void stage_bwd_values(IntraBwdSmem<D, B, W>& sm, cons
   constexpr int kThreads = threads_of(W);
   constexpr int kColThreads = kThreads / kTile;
   constexpr int kColChannels = kValueWidth / kColThreads;
-  //: §6: kColChannels/8 is compile-time but the heuristic only reads a bare
-  //: identifier, so name it.
+  //: §6: kColChannels/8 is compile-time but the heuristic only reads a bare -- see docs/internals/intra/intra_backward_kernel.md#kcolchanneloctets
   constexpr int kColChannelOctets = kColChannels / 8;
   const int b = bh / p.heads;
   const int h = bh - b * p.heads;
@@ -281,8 +257,7 @@ __device__ __forceinline__ void stage_bwd_values(IntraBwdSmem<D, B, W>& sm, cons
     stage_tile(smem_addr(&sm.gain[tid * 8]), p.gwrite + (long long)bh * p.L + t0 + tid * 8);
 }
 
-//: THE SEED, staged ONCE PER OUTPUT BLOCK: its rows are the block's readers, which do
-//: not change with the column tile.
+//: THE SEED, staged ONCE PER OUTPUT BLOCK: its rows are the block's readers, which do -- see docs/internals/intra/intra_backward_kernel.md#near-line-284
 template <int D, int B, int W>
 __device__ __forceinline__ void stage_bwd_seed(IntraBwdSmem<D, B, W>& sm, const IntraBwdParams& p,
                                                int bh, int wbase, int rt0, int tid) {
@@ -290,8 +265,7 @@ __device__ __forceinline__ void stage_bwd_seed(IntraBwdSmem<D, B, W>& sm, const 
   constexpr int kRows = rows_of(W);
   constexpr int kRowThreads = kThreads / kRows;
   constexpr int kRowChannels = kValueWidth / kRowThreads;
-  //: §6: kRowChannels/8 is compile-time but the heuristic only reads a bare
-  //: identifier, so name it.
+  //: §6: kRowChannels/8 is compile-time but the heuristic only reads a bare -- see docs/internals/intra/intra_backward_kernel.md#krowchanneloctets
   constexpr int kRowChannelOctets = kRowChannels / 8;
   const int t0 = wbase + rt0 * kTile;
   const int token = tid / kRowThreads;
@@ -304,16 +278,14 @@ __device__ __forceinline__ void stage_bwd_seed(IntraBwdSmem<D, B, W>& sm, const 
 }
 
 //: THE PUBLISH. One row-carved `[kWarpRows x kTile]` accumulator becomes bf16
-//: rows of the image, at the rounding pass 2's A operand carried anyway.
-// see docs/internals/intra/intra_backward_kernel.md#publish-image
+//: rows of the image, at the rounding pass 2's A operand carried anyway. -- see docs/internals/intra/intra_backward_kernel.md#publish-image
 template <int D, int B, int W>
 __device__ __forceinline__ void publish_image(IntraBwdSmem<D, B, W>& sm,
                                               const float (&acc)[kTile / 8][4], int warp,
                                               int row_lo, int col_lo) {
   __nv_bfloat16* lo = &sm.img[warp * kWarpRows + row_lo][col_lo];
   __nv_bfloat16* hi = &sm.img[warp * kWarpRows + row_lo + 8][col_lo];
-  //: §6: kTile/8 is compile-time (kTile is a file-level constexpr) but the
-  //: heuristic only reads a bare identifier, so name it.
+  //: §6: kTile/8 is compile-time (kTile is a file-level constexpr) but the -- see docs/internals/intra/intra_backward_kernel.md#ktileoctets
   constexpr int kTileOctets = kTile / 8;
 #pragma unroll
   for (int n = 0; n < kTileOctets; ++n) {
@@ -322,9 +294,7 @@ __device__ __forceinline__ void publish_image(IntraBwdSmem<D, B, W>& sm,
   }
 }
 
-//: THE RELAY.  `acc` is one `[kMmaM x kSlabDigits]` accumulator in the MMA's lane map
-//: and `put` the lane's cursor into its own warp-private plane; the round trip is
-//: warp-private, so it needs no barrier.
+//: THE RELAY.  `acc` is one `[kMmaM x kSlabDigits]` accumulator in the MMA's lane map -- see docs/internals/intra/intra_backward_kernel.md#relaytile
 __device__ __forceinline__ void relay_tile(float* put, const float (&acc)[2][4]) {
   __syncwarp();
 #pragma unroll
@@ -336,16 +306,12 @@ __device__ __forceinline__ void relay_tile(float* put, const float (&acc)[2][4])
   __syncwarp();
 }
 
-//: THE ONE REDUCING PATH. `get` is the lane's cursor into the relayed plane and
-//: `lane_off` its destination offset -- row half in the high byte, digit column
-//: in the low; both are invariant over the whole kernel.
-// see docs/internals/intra/intra_backward_kernel.md#reduce-tile
+//: THE ONE REDUCING PATH. `get` is the lane's cursor into the relayed plane and -- see docs/internals/intra/intra_backward_kernel.md#reduce-tile
 __device__ __forceinline__ void reduce_tile(float* put, const float* get, int lane_off,
                                             const float (&acc)[2][4], float* base, int stride) {
   relay_tile(put, acc);
   int off = (lane_off >> 8) * stride + (lane_off & 0xFF);
-  //: §6: kXposeRows/2 is compile-time (kXposeRows is a file-level constexpr) but the
-  //: heuristic only reads a bare identifier, so name it.
+  //: §6: kXposeRows/2 is compile-time (kXposeRows is a file-level constexpr) but the -- see docs/internals/intra/intra_backward_kernel.md#kxposerowshalf
   constexpr int kXposeRowsHalf = kXposeRows / 2;
 #pragma unroll
   for (int q = 0; q < kXposeRowsHalf; ++q, off += 2 * stride)
@@ -359,17 +325,14 @@ __device__ __forceinline__ unsigned support_bits(denseref::ops::SmemAddr a) {
   return x & 0x7FFFu;
 }
 
-//: A PREDICATED reducing instruction rather than a branched one: the gate is a
-//: property of the destination CELL ...
-// see docs/internals/intra/intra_backward_kernel.md#fan-in-add-if
+//: A PREDICATED reducing instruction rather than a branched one: the gate is a -- see docs/internals/intra/intra_backward_kernel.md#fan-in-add-if
 __device__ __forceinline__ void fan_in_add_if(unsigned live, float* p, float x) {
   asm volatile("{ .reg .pred q; setp.ne.u32 q, %2, 0; @q red.global.add.f32 [%0], %1; }" ::"l"(p),
                "f"(x), "r"(live)
                : "memory");
 }
 
-//: THE SAME PATH, RESTRICTED TO THE DESTINATION PLANE'S OWN SUPPORT.
-// see docs/internals/intra/intra_backward_kernel.md#reduce-tile-on-support
+//: THE SAME PATH, RESTRICTED TO THE DESTINATION PLANE'S OWN SUPPORT. -- see docs/internals/intra/intra_backward_kernel.md#reduce-tile-on-support
 __device__ __forceinline__ void reduce_tile_on_support(float* put, const float* get, int lane_off,
                                                        const float (&acc)[2][4], float* base,
                                                        int stride, denseref::ops::SmemAddr sup,
@@ -380,18 +343,14 @@ __device__ __forceinline__ void reduce_tile_on_support(float* put, const float* 
   }
   relay_tile(put, acc);
   int off = (lane_off >> 8) * stride + (lane_off & 0xFF);
-  //: §6: kXposeRows/2 is compile-time (kXposeRows is a file-level constexpr) but the
-  //: heuristic only reads a bare identifier, so name it.
+  //: §6: kXposeRows/2 is compile-time (kXposeRows is a file-level constexpr) but the -- see docs/internals/intra/intra_backward_kernel.md#kxposerowshalf-2
   constexpr int kXposeRowsHalf = kXposeRows / 2;
 #pragma unroll 2
   for (int q = 0; q < kXposeRowsHalf; ++q, off += 2 * stride, sup += sup_step)
     fan_in_add_if(support_bits(sup), base + off, get[q * 2 * kXposePitch]);
 }
 
-//: THE SECOND LAUNCH BOUND, from the arm's own footprint. Without it ptxas
-//: budgets registers for the residency the THREAD COUNT suggests rather than
-//: the one this block's shared memory leaves reachable ...
-// see docs/internals/intra/intra_backward_kernel.md#kbwdregfloor
+//: THE SECOND LAUNCH BOUND, from the arm's own footprint. Without it ptxas -- see docs/internals/intra/intra_backward_kernel.md#kbwdregfloor
 constexpr int kBwdRegFloor = 232;
 
 template <int D, int B, int W>
@@ -404,8 +363,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
   constexpr int kTiles = tiles_of(W);
   constexpr int kRowTiles = row_tiles_of(W);
   constexpr int kWarps = warps_of(W);
-  //: THE DIGIT CARVE.
-  // see docs/internals/intra/intra_backward_kernel.md#kparts
+  //: THE DIGIT CARVE. -- see docs/internals/intra/intra_backward_kernel.md#kparts
   constexpr int kParts = bwd_slabs_per_stage(B);
   constexpr int kGroups = kWarps / kParts;
   constexpr int kPrRows = rows_of(W) / kGroups;
@@ -455,13 +413,11 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
   const int relay_off = ((lane >> 4) << 8) | (lane & (kSlabDigits - 1));
   const int dp = warp % kParts;
   const int grp = warp / kParts;
-  //: the row group's own output tile: a group is `kPrRows <= kTile` rows wide, so it
-  //: lies inside one row tile and inherits that tile's causal predicate.
+  //: the row group's own output tile: a group is `kPrRows <= kTile` rows wide, so it -- see docs/internals/intra/intra_backward_kernel.md#grptile
   const int grp_tile = (grp * kPrRows) / kTile;
   const int jt = warp % kColK;
   const int chan = (warp / kColK) * kDvChans;
-  //: THE OPERAND BASES.
-  // see docs/internals/intra/intra_backward_kernel.md#kelem
+  //: THE OPERAND BASES. -- see docs/internals/intra/intra_backward_kernel.md#kelem
   constexpr unsigned kElem = (unsigned)sizeof(__nv_bfloat16);
   constexpr unsigned kSlabRow = bwd_operand_pitch(B) * kElem;
   constexpr unsigned kImgRow = kImagePitch * kElem;
@@ -476,8 +432,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
   const denseref::ops::SmemAddr base_pw_a = smem_addr(&sm.img[rT][grp * kPwCols + cT]);
   const denseref::ops::SmemAddr base_dv_a = smem_addr(&sm.img[rT][jt * kWarpRows + cT]);
   const denseref::ops::SmemAddr base_dv_b = smem_addr(&sm.dslab[rF][chan + cF * 8]);
-  //: THE OWN-SIDE CERTIFICATE'S per-cell address: a lane's eight destination cells are
-  //: eight rows, two apart, of ONE digit column of its own side's staged operand.
+  //: THE OWN-SIDE CERTIFICATE'S per-cell address: a lane's eight destination cells are -- see docs/internals/intra/intra_backward_kernel.md#basesupr
   const denseref::ops::SmemAddr base_sup_r =
       smem_addr(&sm.rslab[0][grp * kPrRows + (lane >> 4)][dp * kSlabDigits + (lane & 15)]);
   const denseref::ops::SmemAddr base_sup_w =
@@ -509,9 +464,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
 #pragma unroll
           for (int i = 0; i < 4; ++i) gram[l][n][i] = 0.f;
 
-      //: §6: bwd_stages_per_level(B)/bwd_slabs_per_stage(B) are compile-time (B is
-      //: this function's template parameter) but the heuristic can't see through the
-      //: function calls, so name them once for this loop nest.
+      //: §6: bwd_stages_per_level(B)/bwd_slabs_per_stage(B) are compile-time (B is -- see docs/internals/intra/intra_backward_kernel.md#kstagesperlevel
       constexpr int kStagesPerLevel = bwd_stages_per_level(B);
       constexpr int kSlabsPerStage = bwd_slabs_per_stage(B);
 
@@ -587,10 +540,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
         }
       }
 
-      //: `A`, `dA` and every `dG_l` are formed IN PLACE over the Gram registers, and
-      //: (I3)'s row sum is drained inside the same sweep so it never becomes an
-      //: array.
-      // see docs/internals/intra/intra_backward_kernel.md#note-l612
+      //: `A`, `dA` and every `dG_l` are formed IN PLACE over the Gram registers, and -- see docs/internals/intra/intra_backward_kernel.md#note-l612
       float* const dgw_base = p.d_gw + (long long)(bh * p.L + wbase + ct * kTile) + lane * 2;
 #pragma unroll
       for (int n = 0; n < 8; ++n) {
@@ -601,8 +551,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
           const int rl = trow + row_lo + (i >> 1) * 8;
           const float g = __bfloat162float(sm.gain[cl]);
           const bool live = !(rt == ct && cl > rl);
-          //: the leave-one-out over LEVELS, as a prefix/suffix product and never as
-          //: `A / G_l`: `G_l` is exactly zero on disjoint supports.
+          //: the leave-one-out over LEVELS, as a prefix/suffix product and never as -- see docs/internals/intra/intra_backward_kernel.md#pre
           float loo[D], pre = 1.f;
 #pragma unroll
           for (int l = 0; l < D; ++l) {
@@ -631,10 +580,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
       }
 
       // ---- (I2) d_v = A^T . d_num, off the published image ---------------------
-      //: THE IMAGE IS THE RE-CARVE. `A` and each `dG_l` are accumulated ROW-carved --
-      //: the Gram's `m` axis IS the row axis -- and published once as bf16, which is
-      //: the rounding pass 2's A operand carried in registers anyway.
-      // see docs/internals/intra/intra_backward_kernel.md#syncthreads
+      //: THE IMAGE IS THE RE-CARVE. `A` and each `dG_l` are accumulated ROW-carved -- -- see docs/internals/intra/intra_backward_kernel.md#syncthreads
       __syncthreads();
       publish_image<D, B, W>(sm, gd, warp, row_lo, col_lo);
       __syncthreads();
@@ -661,23 +607,19 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
       }
 
       // ---- PASS 2: (I5) and (I6) against the re-staged slabs -------------------
-      //: THE FIRST FILL IS ISSUED BEFORE THE SEED CONTRACTION ABOVE, so it lands under
-      //: it; from there the ring is the forward's, in the buffers pass 1 already owns.
+      //: THE FIRST FILL IS ISSUED BEFORE THE SEED CONTRACTION ABOVE, so it lands under -- see docs/internals/intra/intra_backward_kernel.md#dpwbase
       float* const dpw_base =
           p.d_pw + (long long)(bh * p.L + wbase + ct * kTile + grp * kPwCols) * p.row_width;
       const bool pr_active = rt0 + grp_tile >= ct;
 #pragma unroll
       for (int l = 0; l < D; ++l) {
-        //: A SOFTMAX DUTY IS DENSE BY THEOREM, so its cotangent plane is live on the
-        //: whole digit axis and no cell of it may be dropped; only a side the mode word
-        //: declares sparse carries the producer's off-support annihilation.
+        //: A SOFTMAX DUTY IS DENSE BY THEOREM, so its cotangent plane is live on the -- see docs/internals/intra/intra_backward_kernel.md#prown
         const bool pr_own = ((p.modes >> (2 * l)) & kModeReadSparse) != 0u;
         const bool pw_own = ((p.modes >> (2 * l)) & kModeWriteSparse) != 0u;
         __syncthreads();
         publish_image<D, B, W>(sm, gram[l], warp, row_lo, col_lo);
         __syncthreads();
-        //: §6: kStagesPerLevel is the same compile-time quantity aliased above
-        //: (bwd_stages_per_level(B)), reused here -- same enclosing ct-loop scope.
+        //: §6: kStagesPerLevel is the same compile-time quantity aliased above -- see docs/internals/intra/intra_backward_kernel.md#near-line-679
 #pragma unroll 2
         for (int stage = 0; stage < kStagesPerLevel; ++stage) {
           const int step = l * kStagesPerLevel + stage;
@@ -715,10 +657,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
                   base_sup_r + buf * kRBuf + mt * kWarpRows * kSlabRow, 2 * kSlabRow, pr_own);
             }
           }
-          //: (I6)'s contraction runs over the WHOLE block of readers, so it is gated per
-          //: row tile: a tile the certificate left unstaged is one whose operand rows are
-          //: all zero ...
-          // see docs/internals/intra/intra_backward_kernel.md#note-l741
+          //: (I6)'s contraction runs over the WHOLE block of readers, so it is gated per -- see docs/internals/intra/intra_backward_kernel.md#note-l741
           uint32_t rlive = 0u;
           if (side_bits<D, B, W>(sm, p.modes, ct, l, 1, slab) != 0u) {
 #pragma unroll

@@ -651,3 +651,146 @@ the gate asserts that FORM at rtol=0 rather than a magnitude.
 The Jacobian derivation, the exact-zero argument, and the two MEASURED spill trades
 that made this kernel re-read rather than stage: docs/internals/entmax/entmax.md#backward
 ---------------------------------------------------------------------------
+
+<a id="logwritegate"></a>
+### `log_write_gate`
+
+log(sigmoid(-delta)) == -softplus(delta), finite for every finite input. `log1pf`
+rather than `logf(1+x)` because the governing gate is the fp64 oracle's
+`logsigmoid` -- docs/internals/entmax/entmax.md#overflow-free-delta
+
+<a id="continue"></a>
+### `continue`
+
+Skipping a row past the end is EXACTLY equivalent, not merely close:
+docs/internals/entmax/entmax.md#forward-phases
+
+<a id="near-line-161"></a>
+### near line 161
+
+A finite row-relative sentinel keeps padded lanes strictly below every real
+value without an infinity in the scan. `row_min` is pre-shift, so shift it too.
+
+<a id="near-line-165"></a>
+### near line 165
+
+A sort is a PERMUTATION, so striped input is fine and the blocked output is what
+the prefix walk wants -- docs/internals/entmax/entmax.md#forward-phases
+
+<a id="packedkey"></a>
+### `packed_key`
+
+ONE reduction selects the greatest valid k AND carries its tau: the column in the
+high 32 bits makes integer Max pick it, and `best_col = -1` maps to key 0 so an
+all-empty row yields tau = 0 -- docs/internals/entmax/entmax.md#forward-phases
+
+<a id="near-line-267"></a>
+### near line 267
+
+HAZARD bf16-support-boundary -- docs/internals/entmax/entmax.md#bf16-support-boundary
+Support is the union of POST-CAST nonzeros, never the pre-quantization solve.
+
+<a id="near-line-275"></a>
+### near line 275
+
+The butterfly runs over exactly the bits at or above LW, which is what separates
+lanes holding the same column: docs/internals/entmax/entmax.md#epilogue-butterfly
+
+<a id="localdot"></a>
+### `local_dot`
+
+This pass carries NOTHING into the next one but two scalars (`local_dot` and the
+support mask); staging its loads instead is a measured spill
+-- docs/internals/entmax/entmax.md#backward
+
+<a id="near-line-368"></a>
+### near line 368
+
+`s` is NOT kept: it is recomputed from a re-read `midpoint_values` in the final
+pass, for the same measured reason -- docs/internals/entmax/entmax.md#backward
+
+<a id="safe"></a>
+### `safe`
+
+the VJP divides by the amplitude, which is exactly 0 at a TIE: substitute 1 and
+let the support mask zero the term -- docs/internals/entmax/entmax.md#backward
+
+<a id="nstreams"></a>
+### `n_streams`
+
+A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+a flat plane declares `heads == 1` and the same product is `size(0)`
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="nstreams-2"></a>
+### `n_streams`
+
+A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
+a flat plane declares `heads == 1` and the same product is `size(0)`
+-- docs/internals/entmax/entmax.md#stream-split
+
+<a id="near-line-33"></a>
+### near line 33
+
+`rola_api.cpp` includes this header and is compiled by the HOST compiler, so every
+device declaration here is behind `__CUDACC__` -- docs/internals/entmax/entmax.md#warp-row
+
+<a id="wordtokens"></a>
+### `WORD_TOKENS`
+
+FROZEN (nine downstream consumers): one CTA owns exactly the 32 tokens of one
+support word, so `1 << (token % 32)` needs no global atomic and no zero-init pass
+-- docs/internals/entmax/entmax.md#frozen-support-word
+
+<a id="minblockspersm"></a>
+### `MIN_BLOCKS_PER_SM`
+
+With `BLOCK_THREADS`, this is `__launch_bounds__(128, 8)`: a 64-register target
+stated to ptxas so a regression becomes a compile-time allocation decision instead
+of a silent spill, which `tools/ratify.py` then fails the BUILD on.
+
+<a id="addr"></a>
+### `addr`
+
+THE FLAT ADDRESS, unchanged: ONE stream register, and every term after it
+rematerializes from constant memory. Keeping it that way is a REGISTER decision --
+see `addr_split` -- docs/internals/entmax/entmax.md#stream-split
+
+<a id="near-line-86"></a>
+### near line 86
+
+The ACCUMULATING store, for the tied backward's second contribution. bf16 device
+atomics are sm_80+, which the closed-world arch set already is.
+
+<a id="kslotbytes"></a>
+### `kSlotBytes`
+
+Shared bytes per PHYSICAL warp. Zero for the register network, which is the whole
+point of it: at `IPT <= 4` the solve's only shared memory is the epilogue's staging.
+
+<a id="near-line-183"></a>
+### near line 183
+
+HAZARD logical-warp-mask -- docs/internals/entmax/entmax.md#logical-warp-mask
+The member mask for every hand `__shfl_sync` in this family. It names exactly ONE
+logical warp; a full `0xffffffff` deadlocks on a ragged support word at `LW < 32`.
+
+<a id="near-line-202"></a>
+### near line 202
+
+The union solve's midpoint plane is packed over the UNION levels alone, so it does
+not share `value_off`; every other operand does.
+
+<a id="paddedwidth"></a>
+### `padded_width`
+
+The padded width is what selects the `(lane width, items per thread)` pair, and every
+level in one table must share it -- otherwise the sort and the prefix scan would
+associate differently per level and the batch would not be the loop it replaces.
+
+<a id="checklogits"></a>
+### `check_logits`
+
+THE LOGIT PLANE IS bf16 ON THE SHIPPED PATH -- the router GEMM runs bf16 operands on
+the tensor cores and its output is bf16, so widening it would be the pass the
+`LogitT` template exists to delete -- docs/internals/entmax/factor.md#logit-dtype

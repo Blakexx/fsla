@@ -167,3 +167,10 @@ Three facts a reader must not miss:
 
 The declared order, the dtype arms and the cast argument:
 docs/internals/decode/decode_fold.md
+
+<a id="near-line-53"></a>
+### near line 53
+
+ONE SIDE'S `D` LEVELS into the flat `[sum_l b_l]` shared staging the walk indexes by
+digit. `normalize` is `nullptr` for a side that never carries its own mass (the write
+side, always); otherwise `s_sum` must already hold `fold_row_sums`' answer.

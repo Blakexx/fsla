@@ -20,8 +20,7 @@ template <int D, int B, int K, int M, int DV, int W, int C>
 struct SplitGeom {
   using BP = BoxPlan<D, B, K, M>;
   static constexpr int BC = BP::kBC;
-  //: THE VALUE WIDTH IS THIS ARM'S (K35 S3b), exactly as the carved body's is.
-  // see docs/internals/carry/carry_split_kernel.md#kdv
+  //: THE VALUE WIDTH IS THIS ARM'S (K35 S3b), exactly as the carved body's is. -- see docs/internals/carry/carry_split_kernel.md#kdv
   static constexpr int kDv = DV;
   static constexpr int kCols = DV + 1;
   static_assert(kDv == kWarps * kMmaM,
@@ -34,22 +33,17 @@ struct SplitGeom {
   static constexpr int LdS = BC + kPadE;
   static constexpr int LdO = kDv + kPadF;
 
-  //: THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA.
-  // see docs/internals/carry/carry_split_kernel.md#panel-bytes
+  //: THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA. -- see docs/internals/carry/carry_split_kernel.md#panel-bytes
   static constexpr int panel_bytes = 2 * C * LdS * (int)sizeof(__nv_bfloat16);
   static constexpr int out_bytes = C * LdO * (int)sizeof(float);
   static constexpr int den_bytes = kWarps * C * (int)sizeof(float);
-  //: TWO packed lists per window, one per SIDE (study section 2.0, two-sided
-  //: schedule): `nr` read entries then `nw` write entries, `kListStride` apart.
+  //: TWO packed lists per window, one per SIDE (study section 2.0, two-sided -- see docs/internals/carry/carry_split_kernel.md#kliststride
   static constexpr int kListStride = ((W + 7) / 8) * 8;
   static constexpr int list_bytes = 2 * kListStride * (int)sizeof(uint16_t);
   //: the liveness scan's per-(iteration, warp) live counts, BOTH SIDES IN ONE WORD.
   static constexpr int kScanIters = (W + kThreads - 1) / kThreads;
   static constexpr int scan_bytes = kWarps * kScanIters * (int)sizeof(int);
-  //: THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR,
-  //: exactly as the shipped `Geom::stages` is: the shallowest ring that reaches
-  //: the best residency this arm can reach at any depth.
-  // see docs/internals/carry/carry_split_kernel.md#kregfloor
+  //: THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR, -- see docs/internals/carry/carry_split_kernel.md#kregfloor
   static constexpr int kRegFloor = 168;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
   static constexpr int fixed_bytes = panel_bytes + out_bytes + den_bytes + list_bytes + scan_bytes;
@@ -58,9 +52,7 @@ struct SplitGeom {
   static constexpr int cta_target = design::cta_target((int)bytes, kThreads, kRegFloor);
 };
 
-//: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from
-//: the same geometry the ring depth is.  A ring sized for a residency the launch
-//: bound does not ask for is a ring sized for nothing.
+//: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from -- see docs/internals/carry/carry_split_kernel.md#near-line-61
 template <int D, int B, int K, int M, int DV, int W, int C>
 constexpr int kSplitCtaTarget = SplitGeom<D, B, K, M, DV, W, C>::cta_target;
 
@@ -85,19 +77,14 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
   constexpr int MTOK = C / kMmaM;  // token m-tiles of a batch
   constexpr int NTOK = C / kMmaN;  // token n-tiles of a batch
-  //: every warp holds the WHOLE box and a slice of the channels, so the state's
-  //: leaf tiling is the box's and is not carved.
+  //: every warp holds the WHOLE box and a slice of the channels, so the state's -- see docs/internals/carry/carry_split_kernel.md#ndv
   constexpr int NDV = BC / kMmaN;  // the state's n-tiles (leaves)
   constexpr int kDw = BC / kMmaK;  // its k-tiles
-  //: THE MASS CHANNEL'S CARVE.  One channel cannot be split along the channel
-  //: axis, so it is split along the axis the mma leaves free -- the leaves.
+  //: THE MASS CHANNEL'S CARVE.  One channel cannot be split along the channel -- see docs/internals/carry/carry_split_kernel.md#kmassunits
   constexpr int kMassUnits = kDw < kWarps ? kDw : kWarps;
   constexpr int kMassKD = kDw / kMassUnits;
   constexpr int kMassTiles = 2 * kMassKD;
-  //: when the split reaches every warp the mass guard is a TAUTOLOGY, and it must
-  //: be spelled as one: `__launch_bounds__` does not let the compiler prove
-  //: `threadIdx.x < kThreads` ...
-  // see docs/internals/carry/carry_split_kernel.md#kmassallwarps
+  //: when the split reaches every warp the mass guard is a TAUTOLOGY, and it must -- see docs/internals/carry/carry_split_kernel.md#kmassallwarps
   constexpr bool kMassAllWarps = kMassUnits == kWarps;
 
   static_assert(C % kMmaM == 0 && kThreads % C == 0, "the batch tile must divide");
@@ -128,8 +115,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   uint16_t* const slist = reinterpret_cast<uint16_t*>(sden + kWarps * C);
   int* const sscan = reinterpret_cast<int*>(slist + 2 * kListStride);
 
-  //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
-  //: shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
+  //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the -- see docs/internals/carry/carry_split_kernel.md#vrowelems
   const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
   const int heads = vRowElems / kDv;
   const __nv_bfloat16* const vPlane =
@@ -141,12 +127,9 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   float* const denPlane = pin_address(den + (long)bh * L);
 
   // ---- the owner's digit runs, one per level -------------------------------
-  //: `o_l` is a bit-field extract of the owner index: the lattice's owner
-  //: coordinates are the top `sum_l log2 g_l` bits of `lambda` (R0 spec section 2.4).
+  //: `o_l` is a bit-field extract of the owner index: the lattice's owner -- see docs/internals/carry/carry_split_kernel.md#near-line-144
   int runCol[D];
-  //: AND THE OWNER'S BALLOT ROW, per level: the SAME `o_l`, addressing the row
-  //: the facts pass voted for this owner group at this level (K31-i-d).
-  // see docs/internals/carry/carry_split_kernel.md#rowbytes
+  //: AND THE OWNER'S BALLOT ROW, per level: the SAME `o_l`, addressing the row -- see docs/internals/carry/carry_split_kernel.md#rowbytes
   uint32_t rowOff[D];
   const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
   static_for<D>([&](auto Lc) {
@@ -155,9 +138,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     runCol[l] = BP::col_base(l) + o_l * BP::s(l);
     rowOff[l] = (uint32_t)(BP::row_prefix(l) + o_l) * rowBytes;
   });
-  //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the side's
-  //: whole row block is `kRows * tok_words * 4` bytes, which is 32-bit at every
-  //: admitted length.
+  //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the side's -- see docs/internals/carry/carry_split_kernel.md#rowsr
   const uint32_t* const rowsR =
       pin_address(rows + (long)(2 * bh + 0) * (long)BP::kRows * (long)tok_words);
   const uint32_t* const rowsW =
@@ -167,9 +148,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   const int lr = lane & 7, tl = lane >> 3;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
   const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
-  //: THE PANEL RING'S TWO BASES, AS NAMED SCALARS.  A two-element array indexed by
-  //: the batch parity would be a runtime index into a register array, which is a
-  //: stack frame; a select is one instruction and no memory.
+  //: THE PANEL RING'S TWO BASES, AS NAMED SCALARS.  A two-element array indexed by -- see docs/internals/carry/carry_split_kernel.md#brt0
   const uint32_t brT0 = smem_addr(sr) + (uint32_t)((rT * LdS + cT * 8) * 2);
   const uint32_t brT1 = smem_addr(sw) + (uint32_t)((rT * LdS + cT * 8) * 2);
   const uint32_t bwF0 = smem_addr(sw) + (uint32_t)((rF * LdS + cF * 8) * 2);
@@ -194,8 +173,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
 #pragma unroll
     for (int e = 0; e < 4; ++e) mass_st[j][e] = 0.f;
 
-  //: THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so
-  //: the fold's A fragment for it is the constant whose row 0 is ones.
+  //: THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so -- see docs/internals/carry/carry_split_kernel.md#konespair
   constexpr uint32_t kOnesPair = 0x3F803F80u;
   uint32_t ones_a[4];
   ones_a[0] = (lane >> 2) == 0 ? kOnesPair : 0u;
@@ -224,34 +202,24 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
       col -= wrap ? kCols : 0;
     }
   };
-  //: THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80) -- the same re-key the carved
-  //: body makes, so the two bodies stay one ABI and one base translation.
+  //: THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80) -- the same re-key the carved -- see docs/internals/carry/carry_split_kernel.md#atombh
   const uint32_t atomBH = (uint32_t)bh * (uint32_t)(BP::kLeaves / kAtomLeaves);
-  //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`,
-  //: docs/internals/paging/paging.md) -- the same one translation the carved body
-  //: makes, so the two bodies remain one ABI and one accumulation order.
+  //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`, -- see docs/internals/carry/carry_split_kernel.md#kpagebytes
   constexpr uint32_t kPageBytes = (uint32_t)(kPageElems * (int)sizeof(float));
   auto page_base = [](int32_t slot) { return (uint32_t)slot * kPageBytes; };
-  //: element `k` of an accumulator tile sits at row `(lane>>2) + 8*(k>>1)` and
-  //: column `(lane&3)*2 + (k&1)`; here rows are channels and columns are leaves.
+  //: element `k` of an accumulator tile sits at row `(lane>>2) + 8*(k>>1)` and -- see docs/internals/carry/carry_split_kernel.md#pagevalue
   auto page_value = [&](int p, int k) {
     return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + chan0 + (lane >> 2) + 8 * (k >> 1);
   };
   auto page_mass = [&](int p, int k) { return (p * 8 + lane * 2 + k) * LdO + kDv; };
-  //: THE ATOM WALK'S SHAPE IS A REGISTER-INDEXING FACT, NOT A CONVENIENCE.
-  // see docs/internals/carry/carry_split_kernel.md#note-l250
+  //: THE ATOM WALK'S SHAPE IS A REGISTER-INDEXING FACT, NOT A CONVENIENCE. -- see docs/internals/carry/carry_split_kernel.md#note-l250
 
-  //: ---- THE ENTRY STATE. The fragments are SET, never accumulated: they are
-  //: provably zero here, and with no decay the recurrence is affine in the state
-  //: with an inclusive-after-write readout, so this IS the oracle's seeding.
-  // see docs/internals/carry/carry_split_kernel.md#note-l257
+  //: ---- THE ENTRY STATE. The fragments are SET, never accumulated: they are -- see docs/internals/carry/carry_split_kernel.md#note-l257
   if (s_in != nullptr) {
     const float* const plane = pin_address(s_in);
 #pragma unroll
     for (int a = 0; a < kAtoms; ++a) {
-      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
-      //: nothing here, the fragments keep the zero the prologue set, and reading a
-      //: never-written state is inert under the self-normalizing readout.
+      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed -- see docs/internals/carry/carry_split_kernel.md#slot
       const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
       if (slot < 0) continue;
       page_sweep(page_base(slot), [&](int sidx, uint32_t off) {
@@ -283,15 +251,11 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     lvCol[l] = runCol[l] + BP::run_of(l, slot0);
   });
 
-  //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS. A padding row of a
-  //: partial batch has no token, and a zero coefficient contributes exactly
-  //: nothing to either MMA (the produce's dead-row zeroing law).
-  // see docs/internals/carry/carry_split_kernel.md#write
+  //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS. A padding row of a -- see docs/internals/carry/carry_split_kernel.md#write
   auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
                      uint32_t gain, bool have) {
     constexpr bool WRITE = decltype(Wt)::value;
-    //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.
-    // see docs/internals/carry/carry_split_kernel.md#note-l317
+    //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES. -- see docs/internals/carry/carry_split_kernel.md#note-l317
     uint32_t acc[SPT / 2];
     {
       unsigned short run[PM::n_l(D - 1)];
@@ -306,9 +270,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
       unsigned short run[PM::n_l(l)];
       load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
       if constexpr (!WRITE && l == 0) {
-        //: §6: PM::n_l(0) is compile-time (a constexpr static member function of a
-        //: template class called with a literal) but the heuristic can't see through
-        //: the qualified call, so name it.
+        //: §6: PM::n_l(0) is compile-time (a constexpr static member function of a -- see docs/internals/carry/carry_split_kernel.md#knl0
         constexpr int kNL0 = PM::n_l(0);
 #pragma unroll
         for (int i = 0; i < kNL0; ++i) run[i] = have ? run[i] : (unsigned short)0;
@@ -358,8 +320,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     const uint32_t winV = (uint32_t)tok0 * (uint32_t)v_row_bytes;
     const uint32_t winO = (uint32_t)tok0 * (uint32_t)(kDv * (int)sizeof(float));
     const uint32_t winD = (uint32_t)tok0 * 4u;
-    //: ONE BATCH'S PANEL, expanded from factors.
-    // see docs/internals/carry/carry_split_kernel.md#nb
+    //: ONE BATCH'S PANEL, expanded from factors. -- see docs/internals/carry/carry_split_kernel.md#nb
     auto produce_batch = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst,
                              const uint16_t* list, int o0, int ntot) {
       const int nb = (ntot - o0) < C ? (ntot - o0) : C;
@@ -374,13 +335,9 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     };
 
     // ---- the liveness pass: TWO lists, one per SIDE -----------------------
-    //: THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19, study section 2.0 as
-    //: rewritten).
-    // see docs/internals/carry/carry_split_kernel.md#kscaniters
+    //: THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19, study section 2.0 as -- see docs/internals/carry/carry_split_kernel.md#kscaniters
     constexpr int kScanIters = G::kScanIters;
-    //: the two sides ride ONE count word, low half read and high half write.  A side's
-    //: window total is at most `W`, so no low-half sum ever carries into the high half
-    //: and one packed add carries both prefixes.
+    //: the two sides ride ONE count word, low half read and high half write.  A side's -- see docs/internals/carry/carry_split_kernel.md#near-line-381
     static_assert(W <= 0xFFFF, "a side's window count must fit the packed word's half");
     uint32_t voteR[kScanIters], voteW[kScanIters];
 #pragma unroll
@@ -388,8 +345,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
       const int loc = t * kThreads + tid;
       bool inR = false, inW = false;
       if (loc < wLen) {
-        //: the word is the WARP's, not the lane's: `tok0` and `t * kThreads` are both
-        //: whole numbers of words, so warp `u` owns word `(tok0 + t*kThreads)/32 + u`.
+        //: the word is the WARP's, not the lane's: `tok0` and `t * kThreads` are both -- see docs/internals/carry/carry_split_kernel.md#wordb
         const uint32_t wordB =
             (uint32_t)(((tok0 + t * kThreads) >> 5) + warp) * (uint32_t)sizeof(uint32_t);
         uint32_t mR = 0xFFFFFFFFu, mW = 0xFFFFFFFFu;
@@ -428,8 +384,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     }
     rendezvous();
     const int nr = run & 0xFFFF, nw = run >> 16;
-    //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap
-    //: mechanism's harvest, kept (study section 2.1).
+    //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap -- see docs/internals/carry/carry_split_kernel.md#nr
     if (nr == 0 && nw == 0) continue;
 
     // ---- PHASE 1: the READOUT of every read batch, against the window's ENTRY
@@ -437,9 +392,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     //      within-window pair is the INTRA term's and this kernel must not carry it.
     //      The batch line is therefore the window line on both sides.
     const int nbr = (nr + C - 1) / C;
-    //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring,
-    //: UNCONDITIONALLY and AFTER the batch's MMA block.
-    // see docs/internals/carry/carry_split_kernel.md#rendezvous
+    //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring, -- see docs/internals/carry/carry_split_kernel.md#rendezvous
     if (nbr > 0) produce_batch(std::false_type{}, pR, sr, slist, 0, nr);
     rendezvous();
 #pragma unroll 1
@@ -545,9 +498,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     }
 
     // ---- PHASE 2: the FOLD of every write batch ---------------------------
-    //: V IS A WRITE-SIDE QUANTITY and is gathered by the WRITE list; the read list
-    //: never touches it.
-    // see docs/internals/carry/carry_split_kernel.md#nbw
+    //: V IS A WRITE-SIDE QUANTITY and is gathered by the WRITE list; the read list -- see docs/internals/carry/carry_split_kernel.md#nbw
     const int nbw = (nw + C - 1) / C;
     const uint16_t* const wlist = slist + kListStride;
     auto stage_batch = [&](int b, int slot) {
@@ -574,8 +525,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
       const uint32_t vsl = svB + (uint32_t)(i % STAGES) * kVSlot;
       stage_wait<STAGES - 2>();
       rendezvous();
-      //: the ring slot is advanced on EVERY batch, live or not, so the wait/commit
-      //: accounting never depends on the data.
+      //: the ring slot is advanced on EVERY batch, live or not, so the wait/commit -- see docs/internals/carry/carry_split_kernel.md#f
       const int f = i + STAGES - 1;
       if (f < nbw) stage_batch(f, f % STAGES);
       stage_commit();
@@ -603,22 +553,18 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
       }
       produce_batch(std::true_type{}, pW, ((i + 1) & 1) ? sr : sw, wlist, (i + 1) * C, nw);
     }
-    //: the ring's unconsumed groups are retired before the next window reuses the
-    //: value slots.
+    //: the ring's unconsumed groups are retired before the next window reuses the -- see docs/internals/carry/carry_split_kernel.md#near-line-606
     stage_wait<0>();
   }
 
   // ---- the FINAL STATE, at CANONICAL atom ids ------------------------------
-  //: the mirror of the entry load, after the last fan-in has consumed the staging
-  //: buffer -- which is what the one extra rendezvous below is for.
-  // see docs/internals/carry/carry_split_kernel.md#rendezvous-2
+  //: the mirror of the entry load, after the last fan-in has consumed the staging -- see docs/internals/carry/carry_split_kernel.md#rendezvous-2
   if (s_out != nullptr) {
     float* const plane = pin_address(s_out);
     rendezvous();
 #pragma unroll
     for (int a = 0; a < kAtoms; ++a) {
-      //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
-      //: which is what leaves a skipped slot carrying exactly what it held.
+      //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all, -- see docs/internals/carry/carry_split_kernel.md#slot-2
       const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
       if (slot < 0) continue;
 #pragma unroll

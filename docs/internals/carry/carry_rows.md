@@ -81,3 +81,9 @@ seam names can be compared bit for bit (`tests/k31/test_owner_rows.py`).
 
 THE ALLOCATION IS THE CALLER'S (K36): this launches into a table the caller sized
 with `rows_entries` and owns.
+
+<a id="near-line-36"></a>
+### near line 36
+
+the plan the carry's rows are voted under, named ONCE: a `BoxPlan`'s spans as a
+`SpanPlan`.  `D` is at most four and a level past `D` carries `B`.

@@ -637,38 +637,59 @@ def check_no_bare_flock_on_gpu_lock() -> list[str]:
 _TOOLS_DIR = ROOT / "tools"
 
 
+def _read_generated_block(text: str, marker: str) -> str | None:
+    begin, end = f"<!-- BEGIN GENERATED: {marker} -->", f"<!-- END GENERATED: {marker} -->"
+    if begin not in text or end not in text:
+        return None
+    return text.split(begin, 1)[1].split(end, 1)[0].strip("\n")
+
+
 def check_supported_table() -> list[str]:
     """Ported from tests/unit/test_generated_docs.py (deleted). `tools/supported.py`
-    derives README's support table from `arch_caps.cuh` (tabulated) and
-    `tools/manifests/` (ratified); this checks the committed table matches what the
-    generator produces NOW, that every tabulated arch is listed and correctly marked
-    ratified/unratified, and (non-vacuity, folded in rather than a separate opt-in
-    self-test) that the drift check is not vacuous: it fails on a hand-tampered copy."""
-    import subprocess
-    import tempfile
+    derives README's `tools/supported.py` block from `arch_caps.cuh` (tabulated) and
+    `tools/manifests/` (ratified) -- FILES ONLY, no import of `rola` -- so this checks
+    that ONE block matches the generator, that every tabulated arch is listed and
+    correctly marked ratified/unratified, and (non-vacuity) that the comparison is
+    not vacuous: it fires on a hand-tampered copy.
 
-    findings = []
-    proc = subprocess.run([sys.executable, str(_TOOLS_DIR / "supported.py"), "--check"],
-                          capture_output=True, text=True, cwd=str(ROOT))
-    if proc.returncode != 0:
-        findings.append(
-            f"README support table drifted from tools/supported.py's generator "
-            f"(regenerate with `python tools/supported.py --write`):\n"
-            f"{proc.stdout}{proc.stderr}")
-
+    A LINT reads files; it never imports the library under test (ITEM 0, 2026-08-29
+    -- `tools/supported.py`'s SECOND block, `rola.routing.activations.capability_table`,
+    executes real registry code to produce its content, so ITS drift check is a TEST
+    (`tests/unit/test_capability_table_docs.py`), not this lint -- a check that
+    executes the code under test is a test, not a lint (docs/testing.md). Importing
+    `rola` here crashed this hook under pre-commit's isolated environment, which has
+    no `rola` installed; this check must be a function of `tools/supported.py`, the
+    README, `arch_caps.cuh` and `tools/manifests/` alone."""
     if str(_TOOLS_DIR) not in sys.path:
         sys.path.insert(0, str(_TOOLS_DIR))
     import supported
 
+    marker = "tools/supported.py"
+    findings = []
+
+    def _drift(readme_text: str) -> str | None:
+        committed = _read_generated_block(readme_text, marker)
+        if committed is None:
+            return f"README.md has no generated block for {marker}"
+        if committed != supported.table():
+            return (f"README.md's {marker} block drifted from tools/supported.py's "
+                    f"generator (regenerate with `python tools/supported.py --write`)")
+        return None
+
+    readme_text = supported.README.read_text()
+    drift = _drift(readme_text)
+    if drift is not None:
+        findings.append(drift)
+
     table = supported.table()
     ratified = supported.ratified()
     for arch in supported.tabulated_archs():
-        marker = f"`{arch}`"
-        if marker not in table:
+        arch_marker = f"`{arch}`"
+        if arch_marker not in table:
             findings.append(f"{arch} is tabulated in the kernel but absent from the "
                             f"README support table")
             continue
-        row = next(line for line in table.splitlines() if marker in line)
+        row = next(line for line in table.splitlines() if arch_marker in line)
         if arch in ratified:
             if "ratified |" not in row or "not ratified" in row:
                 findings.append(f"{arch} is ratified but the README row does not say "
@@ -677,27 +698,16 @@ def check_supported_table() -> list[str]:
             findings.append(f"{arch} has no manifest but the README row does not say "
                             f"so: {row}")
 
-    with tempfile.TemporaryDirectory() as td:
-        tampered = Path(td) / "README.md"
-        text = supported.README.read_text().replace(
-            "**not ratified — will refuse to load**", "ratified", 1)
-        if text == supported.README.read_text():
-            findings.append("check_supported_table non-vacuity probe found nothing "
-                            "to tamper -- the README carries no 'not ratified' row to "
-                            "flip, so the drift check below was not exercised")
-        else:
-            tampered.write_text(text)
-            saved_readme, saved_argv = supported.README, sys.argv
-            try:
-                supported.README = tampered
-                sys.argv = ["supported.py", "--check"]
-                if supported.main() != 1:
-                    findings.append("check_supported_table non-vacuity FAILED: "
-                                    "tools/supported.py --check did not fail on a "
-                                    "hand-tampered README -- the drift check is vacuous")
-            finally:
-                supported.README = saved_readme
-                sys.argv = saved_argv
+    tampered = readme_text.replace(
+        "**not ratified — will refuse to load**", "ratified", 1)
+    if tampered == readme_text:
+        findings.append("check_supported_table non-vacuity probe found nothing "
+                        "to tamper -- the README carries no 'not ratified' row to "
+                        "flip, so the drift check above was not exercised")
+    elif _drift(tampered) is None:
+        findings.append("check_supported_table non-vacuity FAILED: a hand-tampered "
+                        "README (a 'not ratified' row flipped to 'ratified') did not "
+                        "register as drift -- the comparison is vacuous")
     return findings
 
 
@@ -969,100 +979,22 @@ def check_vendored_pin() -> list[str]:
     return findings
 
 
-def check_entmax_pin() -> list[str]:
-    """Ported from tests/unit/test_entmax_pin.py (deleted). `rola.routing.entmax.pin`
-    refuses an installed `entmax` whose version or on-disk bytes drift from its
-    PIN.json -- checked here: the pin's own fields are complete, the installed
-    package matches it (the green path `gate()` already runs at every import of
-    `rola.routing.entmax.reference`), and the three refusal shapes (version drift,
-    digest drift under the same version, a missing pin file) actually raise."""
-    try:
-        from rola.routing.entmax import pin
-    except ImportError as ex:
-        return [f"check_entmax_pin: could not import rola.routing.entmax.pin: {ex}"]
-
-    findings = []
-    recorded = pin.load_pin()
-    pin_name = (pin.PIN_PATH.relative_to(ROOT) if pin.PIN_PATH.is_relative_to(ROOT)
-               else pin.PIN_PATH)
-    for key in ("name", "upstream", "version", "package_sha256", "file_count"):
-        if not recorded.get(key):
-            findings.append(f"{pin_name}: missing `{key}`")
-    if recorded.get("distribution") != "PyPI":
-        findings.append("entmax PIN.json's `distribution` is not 'PyPI'")
-
-    root = pin.installed_package_root()
-    here, count = pin.package_sha256(root)
-    if count != recorded.get("file_count"):
-        findings.append(f"installed entmax file count moved: {count} on disk, "
-                        f"{recorded.get('file_count')} pinned")
-    if here != recorded.get("package_sha256"):
-        findings.append("the installed entmax package does not match its pin -- "
-                        "gate() would refuse this install")
-    else:
-        try:
-            pin.gate()
-        except Exception as ex:  # noqa: BLE001
-            findings.append(f"pin.gate() raised on the currently-installed entmax, "
-                            f"which matches its pin -- the green path should not "
-                            f"raise: {ex}")
-
-    # Behavioural refusal shapes, via manual attribute swap/restore (no pytest).
-    saved_version_fn = pin.metadata.version
-    try:
-        pin.metadata.version = lambda name: "9.9.9"  # noqa: ARG005
-        try:
-            pin.gate()
-            findings.append("pin.gate() did NOT raise on a version drift (9.9.9 vs "
-                            f"pinned {recorded.get('version')})")
-        except RuntimeError as ex:
-            if "installed entmax==9.9.9" not in str(ex):
-                findings.append(f"pin.gate()'s version-drift refusal does not name "
-                                f"the drifted version: {ex}")
-            if str(recorded.get("version")) not in str(ex):
-                findings.append("pin.gate()'s version-drift refusal names the "
-                                "drifted version but not the ratified one -- a "
-                                "reader would have to open PIN.json to know what to "
-                                "roll back to")
-    finally:
-        pin.metadata.version = saved_version_fn
-
-    import tempfile
-    saved_root_fn = pin.installed_package_root
-    try:
-        with tempfile.TemporaryDirectory() as td:
-            fake_root = Path(td) / "entmax"
-            fake_root.mkdir()
-            (fake_root / "__init__.py").write_text("# not the ratified entmax\n")
-            pin.installed_package_root = lambda: fake_root
-            try:
-                pin.gate()
-                findings.append("pin.gate() did NOT raise on a digest drift under "
-                                "the same version (same version string, fake bytes)")
-            except RuntimeError as ex:
-                if "does not match its pinned digest" not in str(ex):
-                    findings.append(f"pin.gate()'s digest-drift refusal message "
-                                    f"changed shape: {ex}")
-    finally:
-        pin.installed_package_root = saved_root_fn
-
-    saved_pin_path = pin.PIN_PATH
-    try:
-        pin.PIN_PATH = Path("/does/not/exist/PIN.json")
-        try:
-            pin.gate()
-            findings.append("pin.gate() did NOT raise on a missing PIN.json")
-        except FileNotFoundError:
-            pass
-    finally:
-        pin.PIN_PATH = saved_pin_path
-    return findings
-
-
 def main() -> int:
-    #: THESE ELEVEN are wired as a BLOCKING pre-commit/CI gate
+    #: THESE TWELVE are wired as a BLOCKING pre-commit/CI gate
     #: (.pre-commit-config.yaml, .github/workflows/lint.yml) -- a nonzero exit
-    #: here fails every commit and every CI run, repo-wide.
+    #: here fails every commit and every CI run, repo-wide. `check_entmax_pin`
+    #: is NOT here (S5c ITEM 0): it executes real code (`pin.gate()`,
+    #: monkeypatched refusal shapes) rather than reading files, so it is
+    #: restored to tests/unit/test_entmax_pin.py -- a lint reads files; it
+    #: never imports the library under test.
+    #:
+    #: S5c (2026-08-29): `check_comment_density`/`check_no_long_comment_blocks`
+    #: MOVE FROM ADVISORY TO GATING here. K39's reason for parking them advisory
+    #: (csrc/ ~40 files over the mandate's 15% line, "not to be fixed by you")
+    #: is resolved: S5b + S5c moved every remaining `//:` block and file header
+    #: to docs/internals/, and every csrc file is under the threshold as of this
+    #: commit -- a gate that is green on the tip it lands on is a gate a future
+    #: contributor can actually satisfy, not a standing debt notice.
     gating_findings: list[str] = []
     gating_findings += check_unroll_discipline()
     gating_findings += check_no_torch_in_arm_tus()
@@ -1074,27 +1006,8 @@ def main() -> int:
     gating_findings += check_shard_partition()
     gating_findings += check_arch_coverage()
     gating_findings += check_vendored_pin()
-    gating_findings += check_entmax_pin()
-
-    #: K39 (Blake, 2026-08-28): comment density and long-comment-block findings
-    #: are ADVISORY, NOT gating, deliberately. `csrc/` is ~40 files over the
-    #: mandate's 15% line TODAY (S5b is the stage that moves the prose to
-    #: docs/internals/ -- "these are findings, not to be fixed by you" is the
-    #: instruction this branch received). Wiring them into the SAME exit code
-    #: as the three checks above would fail every future commit on PRE-EXISTING
-    #: debt this stage did not create, for every contributor, until S5b lands --
-    #: a gate that goes red on touching an unrelated line is a gate nobody can
-    #: satisfy. They are reported here, every run, so the debt stays visible and
-    #: S5b has a checkable before/after, without blocking anything today.
-    advisory_findings: list[str] = []
-    advisory_findings += check_comment_density()
-    advisory_findings += check_no_long_comment_blocks()
-
-    if advisory_findings:
-        print(f"lint_standards: {len(advisory_findings)} ADVISORY finding(s) "
-              f"(not gating -- comments-to-docs mandate debt, pending S5b)")
-        for f in advisory_findings:
-            print(f"  {f}")
+    gating_findings += check_comment_density()
+    gating_findings += check_no_long_comment_blocks()
 
     if not gating_findings:
         print("lint_standards: no gating findings")

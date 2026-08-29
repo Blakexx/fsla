@@ -9,19 +9,13 @@
 namespace rola {
 namespace intra {
 
-//: NOT an anonymous namespace: nvcc mangles anonymous-namespace kernels with a
-//: hash that depends on the BUILD PATH, so a manifest ratified in one worktree
-//: certifies a name no other checkout's build produces ...
-// see docs/internals/intra/intra.md#note-l12
+//: NOT an anonymous namespace: nvcc mangles anonymous-namespace kernels with a -- see docs/internals/intra/intra.md#note-l12
 namespace stampdet {
 
-//: Recompiled with the translation unit, so a test that reads it back is
-//: reading a fact only the loaded binary can produce.
+//: Recompiled with the translation unit, so a test that reads it back is -- see docs/internals/intra/intra.md#gstampprobe
 __device__ int64_t g_stamp_probe;
 
-//: THE HEAVIEST BUILT ARM's footprint and the launch ABI's own width: the pair
-//: moves whenever any arm's shape or the kernel's operand set does, which is what
-//: makes it a fact only THIS binary can produce.
+//: THE HEAVIEST BUILT ARM's footprint and the launch ABI's own width: the pair -- see docs/internals/intra/intra.md#stampkernel
 __global__ void stamp_kernel(int64_t* out) {
   *out = ((int64_t)(sizeof(detail::IntraSmem<2, kWidthFlat, kWindowWide>)) * 1000003
           + (int64_t)detail::threads_of(kWindowWide))
@@ -41,9 +35,7 @@ void check_plane(const at::Tensor& t, const char* name, int64_t bh, int64_t L, i
               " must be [BH, L, sum-of-widths]");
 }
 
-//: The frozen support word, in the producer's own storage: int32 bit patterns, one
-//: bit per (token, digit), 32 tokens to a word, DIGIT-MAJOR INNERMOST -- which is
-//: what makes a warp's 32 lanes read 32 consecutive digits as one line.
+//: The frozen support word, in the producer's own storage: int32 bit patterns, one -- see docs/internals/intra/intra.md#checksupport
 void check_support(const at::Tensor& t, const char* name, int64_t bh, int64_t L, int64_t width) {
   TORCH_CHECK(t.is_cuda() && t.is_contiguous() && t.scalar_type() == at::kInt, name,
               " must be a contiguous CUDA int32 tensor");
@@ -51,9 +43,7 @@ void check_support(const at::Tensor& t, const char* name, int64_t bh, int64_t L,
               name, " must be [BH, ceil(L/32), sum-of-widths]");
 }
 
-//: THE BUILT SET, as one macro so the dispatch and the arm list cannot drift --
-//: the carry family's `CARRY_ARMS_X` discipline, mirrored.  `W` pairs with the
-//: carry's window template argument: the two kernels run ONE grid.
+//: THE BUILT SET, as one macro so the dispatch and the arm list cannot drift -- -- see docs/internals/intra/intra.md#intraarmsx
 #define INTRA_ARMS_X(X_)                     \
   X_(2, kWidthFlat, kWindowFlagship)         \
   X_(2, kWidthFlat, kWindowWide)             \
@@ -61,9 +51,7 @@ void check_support(const at::Tensor& t, const char* name, int64_t bh, int64_t L,
   X_(3, kWidthDeep3, kWindowSmall)           \
   X_(4, kWidthDeep4, kWindowSmall)
 
-//: The block's whole reader side is resident, which puts the footprint past the
-//: 48 KB a kernel gets without asking; the opt-in is per device, so it is renewed
-//: at every launch rather than cached behind a once-flag.
+//: The block's whole reader side is resident, which puts the footprint past the -- see docs/internals/intra/intra.md#near-line-64
 template <int D, int B, int W>
 void launch(const detail::IntraParams& p, int64_t bh, int64_t windows, cudaStream_t stream) {
   constexpr int kSmem = (int)sizeof(detail::IntraSmem<D, B, W>);
@@ -88,9 +76,7 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
   const int64_t width = levels * level_width;
   check_plane(pread, "pread", bh, L, width);
   check_plane(pwrite, "pwrite", bh, L, width);
-  //: THE WORD AXIS IS 32 TOKENS, the producer's block (`entmax/factor.cu:236-239`),
-  //: and a window is a whole number of 64-token tiles, so `L` is a whole number of
-  //: words wherever an arm exists.
+  //: THE WORD AXIS IS 32 TOKENS, the producer's block (`entmax/factor.cu:236-239`), -- see docs/internals/intra/intra.md#checksupport-2
   check_support(sread, "sread", bh, L, width);
   check_support(swrite, "swrite", bh, L, width);
   TORCH_CHECK(gwrite.is_cuda() && gwrite.is_contiguous() && gwrite.scalar_type() == at::kBFloat16

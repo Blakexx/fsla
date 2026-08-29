@@ -541,3 +541,97 @@ is forbidden is taking the slower path SILENTLY.
 
 `stage_tile` on a part with bulk asynchronous copy: TMA satisfies the same
 contract with one descriptor issue instead of one per 16 bytes.
+
+<a id="kstagebytes"></a>
+### `kStageBytes`
+
+Bytes moved by one `stage_tile`.  A FACT OF THE OPERATION, not of the
+kernel: it is the widest single asynchronous copy the staging implementation
+issues, and the staging loop's shape is derived from it.
+
+<a id="kmmaacceptsregistera"></a>
+### `kMmaAcceptsRegisterA`
+
+The operand sources the built `mma` accepts.  A kernel whose accumulator
+must land on a particular side asserts against THESE, at its own site: which
+side is a property of that kernel and not of the baseline.
+
+<a id="kstagingisbulk"></a>
+### `kStagingIsBulk`
+
+The built `stage_tile` moves `kStageBytes` per issue.  A bulk (TMA) form
+would satisfy the same contract with one descriptor issue for a whole tile;
+it is not built.  See the announcement in the consistency section.
+
+<a id="t"></a>
+### `T`
+
+A BASE THE COMPILER MUST KEEP RATHER THAN RE-DERIVE.  The value is unchanged;
+what changes is that it becomes the result of an operation ptxas cannot see
+through, so rematerialising it is not available and the base stays live.
+
+<a id="firstset"></a>
+### `first_set`
+
+`kBallotLanes` for an empty vector, so "nowhere" compares greater than every
+lane and needs no separate case at the call site.
+
+<a id="lastset"></a>
+### `last_set`
+
+THE OTHER END OF THE SAME VOTE, for a caller that consumes its lanes from
+the high side.  `-1` for an empty vector, so "nowhere" compares BELOW every
+lane and needs no separate case, exactly as `kBallotLanes` compares above.
+
+<a id="knegzeropair"></a>
+### `kNegZeroPair`
+
+the packed pair of bf16 NEGATIVE ZEROS, which is the sign-preserving
+identity element of `fma.rn`'s addend.
+
+<a id="storesharedu32"></a>
+### `store_shared_u32`
+
+A SHARED WORD ACCESS, ADDRESSED RATHER THAN INDEXED for the same reason
+`store_shared_u16` is: a swizzled address is not an affine function of an index, so
+indexed form would re-derive a widening multiply per access.
+
+<a id="redsharedaddu32"></a>
+### `red_shared_add_u32`
+
+THE SAME OVER THE COUNTING MONOID.  A stream's arrival count is incremented once per
+contributing fetcher and read by whichever executor is waiting on the segment; the
+incrementer never learns the total, so this is a reduction and not an exchange.
+
+<a id="storesharedvec16"></a>
+### `store_shared_vec16`
+
+the 16-byte quantum into shared memory, addressed.  The segment's dead rows are
+cleared at this width so a whole slot row is a constant number of stores.
+
+<a id="loadsharedu16"></a>
+### `load_shared_u16`
+
+one amplitude out of a staged factor row, by ADDRESS.  Its index is a digit, so
+the access is dynamic and an indexed form would re-derive a widening multiply.
+
+<a id="storef32"></a>
+### `store_f32`
+
+One fp32 element, stored where it will later be read as a summand rather than
+as an mma operand.  There is no rounding here BY CONSTRUCTION: see
+`fan_in_add`.
+
+<a id="kbf16magnitudemask"></a>
+### `kBf16MagnitudeMask`
+
+The magnitude bits of a packed bf16 pair.  A run of bf16 is entirely zero
+exactly when the OR of its storage words has no magnitude bit set, since the
+only zeros bf16 has are +0 and -0 and OR cannot clear a set bit.
+
+<a id="koctets"></a>
+### `kOctets`
+
+§6: `N` is this function's template parameter (renamed from lowercase `n`
+so the unroll-discipline lint reads it as compile-time); `N / 8` is still an
+arithmetic expression the heuristic can't parse, so name it too.

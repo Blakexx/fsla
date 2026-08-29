@@ -111,3 +111,71 @@ way to contract eight of them.
 same name -- int32 ``[BH, ceil(L/32), sum-of-widths]``, one bit per (token, digit),
 bit ``token & 31``.  The zero certificate READS them; it does not re-derive the
 support from the amplitudes.
+
+<a id="gstampprobe"></a>
+### `g_stamp_probe`
+
+Recompiled with the translation unit, so a test that reads it back is
+reading a fact only the loaded binary can produce.
+
+<a id="stampkernel"></a>
+### `stamp_kernel`
+
+THE HEAVIEST BUILT ARM's footprint and the launch ABI's own width: the pair
+moves whenever any arm's shape or the kernel's operand set does, which is what
+makes it a fact only THIS binary can produce.
+
+<a id="checksupport"></a>
+### `check_support`
+
+The frozen support word, in the producer's own storage: int32 bit patterns, one
+bit per (token, digit), 32 tokens to a word, DIGIT-MAJOR INNERMOST -- which is
+what makes a warp's 32 lanes read 32 consecutive digits as one line.
+
+<a id="intraarmsx"></a>
+### `INTRA_ARMS_X`
+
+THE BUILT SET, as one macro so the dispatch and the arm list cannot drift --
+the carry family's `CARRY_ARMS_X` discipline, mirrored.  `W` pairs with the
+carry's window template argument: the two kernels run ONE grid.
+
+<a id="near-line-64"></a>
+### near line 64
+
+The block's whole reader side is resident, which puts the footprint past the
+48 KB a kernel gets without asking; the opt-in is per device, so it is renewed
+at every launch rather than cached behind a once-flag.
+
+<a id="checksupport-2"></a>
+### `check_support`
+
+THE WORD AXIS IS 32 TOKENS, the producer's block (`entmax/factor.cu:236-239`),
+and a window is a whole number of 64-token tiles, so `L` is a whole number of
+words wherever an arm exists.
+
+<a id="kwindowwide"></a>
+### `kWindowWide`
+
+the doc's band runs to 512, and a THIRD constraint picks it out: a window must
+DIVIDE `L`, and 384 does not divide the flagship length 65536 while 512 divides
+every power-of-two length.  Both ends are built and measured.
+
+<a id="kwidthflat"></a>
+### `kWidthFlat`
+
+THE LEVEL WIDTH IS AN INSTANTIATION AXIS, not a constant: an arm is a
+`(D, B, W)` triple, matching the carry family's topology arms.
+
+<a id="intrabackward"></a>
+### `intra_backward`
+
+R4's reverse pass: it REDUCES the within-window half of the four cotangents into
+planes the carry's two scans also write.  ``dnum`` is ``[BH, L, d_v]`` bf16 and
+``dden`` is ``[BH, L]`` fp32 -- the seeds the op seam forms from the division.
+
+<a id="intrabuildstamp"></a>
+### `intra_build_stamp`
+
+The device-side build stamp: a fact only THIS binary can produce, read back
+by the test battery so that a green run against a stale extension is
+impossible to mistake for a green run against the tree.

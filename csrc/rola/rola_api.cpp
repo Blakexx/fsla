@@ -1,20 +1,8 @@
-// THE EXTENSION'S PYTHON BINDING -- and the only translation unit that knows
-// pybind exists.
-//
-// Binding code is host-only, so it lives in a `.cpp`: inside a `.cu` it would be
-// recompiled once per `-gencode` target for no benefit. `flash_api.cpp` is the
-// convention this follows.
-//
-// ONE MODULE, NOT TWO. The chunk consumer, the decode sibling and the paging
-// arena all register here, because they share one contract and a split would put a
-// cross-module ABI through the middle of it.
-//
-// The module name is supplied by the build (`TORCH_EXTENSION_NAME`). NOTHING in this
-// file or under `src/` spells it, so the packaging layout can move without touching a
-// kernel symbol.
-//
-// The full entry inventory and the summary pass's no-allocation contract:
-// docs/internals/rola_api.md
+// THE EXTENSION'S PYTHON BINDING -- the only TU that knows pybind exists (host-only,
+// so a `.cpp` rather than recompiled per `-gencode` in a `.cu`). ONE MODULE, NOT TWO:
+// the chunk consumer, decode sibling and paging arena all register here, one contract.
+// Full entry inventory and the summary pass's no-allocation contract:
+// see docs/internals/rola_api.md
 
 #include <torch/extension.h>
 
@@ -28,9 +16,7 @@
 #include "src/entmax/factor.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/facts/facts_api.cuh"
-//: K31 R1 -- the box-native CARRY family, built ALONGSIDE the shipped facts
-//: producers and reachable from no shipped dispatch (development/plans/
-//: K31_BOX_NATIVE_KERNEL_STUDY_2026-08-18.md section 6).
+//: K31 R1 -- the box-native CARRY family, built ALONGSIDE the shipped facts -- see docs/internals/rola_api.md#near-line-31
 #include "src/carry/carry_api.cuh"
 #include "src/intra/intra.cuh"
 
@@ -38,9 +24,7 @@ namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // ---- the facts family (the chunk consumer's surviving fact producers) ---
-  //: ONE PASS, BOTH ROW SETS: the membership union table always, and the atom-
-  //: grain write bitmap when this call has residency to plan.
-  // see docs/internals/rola_api.md#pybind11-module-note-l41
+  //: ONE PASS, BOTH ROW SETS: the membership union table always, and the atom- -- see docs/internals/rola_api.md#pybind11-module-note-l41
   // ---- K31 R2: the standalone intra kernel -------------------------------
   m.def("intra_forward", &rola::intra::intra_forward,
         "K31 intra: the within-window causal term, REDuced into o/den", py::arg("pread"),
@@ -55,9 +39,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "facts: the union table and the atom-grain write bitmap, one pass", py::arg("pr"),
         py::arg("pw"), py::arg("chunk"), py::arg("bc"), py::arg("widths"), py::arg("mask"),
         py::arg("atoms"));
-  //: the sparse grid's predicate INPUT: three liveness facts per (bh, block),
-  //: reduced from the union table this call already built. The predicate OVER
-  //: them is the dispatch's, because it differs by call class and by backing.
+  //: the sparse grid's predicate INPUT: three liveness facts per (bh, block), -- see docs/internals/rola_api.md#near-line-58
   m.def("chunk_block_bits", &rola::chunk::block_bits,
         "facts: the block-grain read/write/state liveness bitmap", py::arg("tbl"), py::arg("bc"),
         py::arg("widths"), py::arg("L"), py::arg("page_tbl") = py::none());
@@ -110,8 +92,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "union entmax VJP into read/write logits");
 
   // ---- the producer's independent (per-side) solves ------------------------
-  //: One entry per direction per family, each covering as many LEVELS as the caller
-  //: groups into one width class -- docs/internals/entmax/factor.md#batched-levels
+  //: One entry per direction per family, each covering as many LEVELS as the caller -- see docs/internals/rola_api.md#near-line-113
   m.def("entmax_factor_forward", &rola::entmax::factor_forward,
         "independent entmax forward over one or more levels: routes and packed support");
   m.def("entmax_factor_backward", &rola::entmax::factor_backward,
@@ -122,33 +103,25 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "softmax routing VJP into the packed logits");
 
   // ---- the T=1 decode path -------------------------------------------------
-  //: A SIBLING of the chunk consumer, not a specialization of it: shared produce
-  //: contract, own consumer, frozen config.
-  // see docs/internals/rola_api.md#pybind11-module-note-l126
-  m.def("rola_decode_forward", &rola::decode::rola_decode_forward,
-        "RoLA T=1 decode step: operand fold + lattice factor walk + token-stationary "
-        "gather-GEMV + the per-batch-head residency verdict, in one kernel.",
-        py::arg("read"), py::arg("write"), py::arg("normalize"), py::arg("dials"),
-        py::arg("g_write"), py::arg("v"), py::arg("state"), py::arg("ws"), py::arg("ctr"),
-        //: The verdict's buffers: the per-batch-head answer, its reduction, the reducing
-        //: CTA's arrival counter, the done flags a replay reads, and the write-atom set a
-        //: host admission plans from.
-        py::arg("growth"), py::arg("growth_any"), py::arg("growth_ctr"), py::arg("done"),
-        py::arg("atom_bits"), py::arg("level_widths"), py::arg("level_row_offsets"),
-        //: THE LEAF ORDER, as data: the `(k, m)` box the state plane is written in.
-        py::arg("lattice_k"), py::arg("lattice_m"), py::arg("n_split"), py::arg("eps"),
-        //: `page_table` resolves each touched ATOM to its slot; `None` is the dense
-        //: backing, where the slot IS the atom and the bytes are the same.
-        py::arg("page_table") = c10::optional<at::Tensor>(),
-        //: THE SLACK POOL, all three or none: the slots the host pre-committed and
-        //: pre-zeroed, how many of each batch-head's are spent, and the claim the walk
-        //: addresses through until the table is folded.
-        py::arg("pool_slots") = c10::optional<at::Tensor>(),
-        py::arg("pool_cursor") = c10::optional<at::Tensor>(),
-        py::arg("pool_map") = c10::optional<at::Tensor>());
-  //: THE DEVICE-SIDE BUILD STAMP: a fact only the loaded binary can produce, which is the
-  //: only kind of check an extension trap cannot survive --
-  //: docs/internals/rola_api.md#decode-build-stamp
+  //: A SIBLING of the chunk consumer, not a specialization of it: shared produce -- see docs/internals/rola_api.md#pybind11-module-note-l126
+  m.def(
+      "rola_decode_forward", &rola::decode::rola_decode_forward,
+      "RoLA T=1 decode step: operand fold + lattice factor walk + token-stationary "
+      "gather-GEMV + the per-batch-head residency verdict, in one kernel.",
+      py::arg("read"), py::arg("write"), py::arg("normalize"), py::arg("dials"), py::arg("g_write"),
+      py::arg("v"), py::arg("state"), py::arg("ws"), py::arg("ctr"),
+      //: The verdict's buffers: the per-batch-head answer, its reduction, the reducing -- see docs/internals/rola_api.md#near-line-133
+      py::arg("growth"), py::arg("growth_any"), py::arg("growth_ctr"), py::arg("done"),
+      py::arg("atom_bits"), py::arg("level_widths"), py::arg("level_row_offsets"),
+      //: THE LEAF ORDER, as data: the `(k, m)` box the state plane is written in.
+      py::arg("lattice_k"), py::arg("lattice_m"), py::arg("n_split"), py::arg("eps"),
+      //: `page_table` resolves each touched ATOM to its slot; `None` is the dense -- see docs/internals/rola_api.md#near-line-140
+      py::arg("page_table") = c10::optional<at::Tensor>(),
+      //: THE SLACK POOL, all three or none: the slots the host pre-committed and -- see docs/internals/rola_api.md#near-line-143
+      py::arg("pool_slots") = c10::optional<at::Tensor>(),
+      py::arg("pool_cursor") = c10::optional<at::Tensor>(),
+      py::arg("pool_map") = c10::optional<at::Tensor>());
+  //: THE DEVICE-SIDE BUILD STAMP: a fact only the loaded binary can produce, which is the -- see docs/internals/rola_api.md#near-line-149
   m.def("rola_decode_residency", &rola::decode::rola_decode_residency,
         "the decode step's declared CTAs per SM for this arm, read off the launch bound",
         py::arg("decay"), py::arg("levels"));
@@ -196,9 +169,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def_property_readonly("chunk_pages", &rola::paging::VmmOwner::chunk_pages)
       .def_property_readonly("backing_kind", &rola::paging::VmmOwner::backing_kind);
 
-  //: The page geometry is the ARENA's -- `page_rows x page_cols` fp32, which is
-  //: `MMA_K_QUANTUM x (d_v + 1)` with the mass column fused.
-  // see docs/internals/rola_api.md#pybind11-module-note-l203
+  //: The page geometry is the ARENA's -- `page_rows x page_cols` fp32, which is -- see docs/internals/rola_api.md#pybind11-module-note-l203
   m.def("rola_vmm_create", &rola::paging::create_vmm_owner, py::arg("device"),
         py::arg("dense_limit_pages"), py::arg("page_rows"), py::arg("page_cols"),
         py::arg("target_chunk_bytes") = 64ll * 1024ll * 1024ll);

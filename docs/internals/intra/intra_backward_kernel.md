@@ -329,3 +329,154 @@ own, and closes its contraction inside one warp.
 per row tile: a tile the certificate left unstaged is one whose operand
 rows are all zero, and the rows of a tile the causal walk excludes are
 zero in the image.
+
+<a id="near-line-77"></a>
+### near line 77
+
+The forward's block footprint plus the ROW side's seed rows, the per-warp relay
+plane and the image.  The seed is staged once per output block, not once per column
+tile: its rows are the block's readers.
+
+<a id="near-line-111"></a>
+### near line 111
+
+the mask helpers read one CTA-local summary, so the reverse pass's two one-sided
+predicates cost nothing beyond the forward's intersection one.
+
+<a id="kslabsperstage"></a>
+### `kSlabsPerStage`
+
+§6: bwd_slabs_per_stage(B) is compile-time (B is this function's template
+parameter) but the heuristic can't see through the function call, so name it.
+
+<a id="krowtiles"></a>
+### `kRowTiles`
+
+§6: row_tiles_of(W) is compile-time (W is this function's template parameter)
+but the heuristic can't see through the function call, so name it.
+
+<a id="near-line-149"></a>
+### near line 149
+
+THE GRAM PASS'S OWN GATE: both sides' supports must meet in the digit slab, which is
+the forward's intersection certificate read off this kernel's own mask summary.
+
+<a id="krowtiles-2"></a>
+### `kRowTiles`
+
+§6: row_tiles_of(W)/bwd_slabs_per_stage(B) are compile-time (D, B, W are this
+function's template parameters) but the heuristic can't see through the
+function calls, so name them.
+
+<a id="near-line-183"></a>
+### near line 183
+
+THE HALF-SPLIT CERTIFICATE PASS needs a level at least two words wide.  A
+narrower level is a REFUSAL here rather than a second pass shape, because the
+reverse family is built at depth two only (`intra_backward.cu`).
+
+<a id="maskwords"></a>
+### `mask_words`
+
+§6: both bounds are compile-time (kTiles/D are locals/template params, mask_words(B)
+a constexpr function of the template param B) but the heuristic can't see through
+the arithmetic/function-call form, so name them.
+
+<a id="kmaskwordshalf"></a>
+### `kMaskWordsHalf`
+
+§6: mask_words(B)/2 is compile-time (B is this function's template parameter)
+but the heuristic can't see through the function call/arithmetic, so name it.
+
+<a id="kcoldigitoctets"></a>
+### `kColDigitOctets`
+
+§6: these are all compile-time (B, W are this function's template parameters)
+but the heuristic can't see through the function call/arithmetic, so name them.
+
+<a id="kcolchanneloctets"></a>
+### `kColChannelOctets`
+
+§6: kColChannels/8 is compile-time but the heuristic only reads a bare
+identifier, so name it.
+
+<a id="near-line-284"></a>
+### near line 284
+
+THE SEED, staged ONCE PER OUTPUT BLOCK: its rows are the block's readers, which do
+not change with the column tile.
+
+<a id="krowchanneloctets"></a>
+### `kRowChannelOctets`
+
+§6: kRowChannels/8 is compile-time but the heuristic only reads a bare
+identifier, so name it.
+
+<a id="ktileoctets"></a>
+### `kTileOctets`
+
+§6: kTile/8 is compile-time (kTile is a file-level constexpr) but the
+heuristic only reads a bare identifier, so name it.
+
+<a id="relaytile"></a>
+### `relay_tile`
+
+THE RELAY.  `acc` is one `[kMmaM x kSlabDigits]` accumulator in the MMA's lane map
+and `put` the lane's cursor into its own warp-private plane; the round trip is
+warp-private, so it needs no barrier.
+
+<a id="kxposerowshalf"></a>
+### `kXposeRowsHalf`
+
+§6: kXposeRows/2 is compile-time (kXposeRows is a file-level constexpr) but the
+heuristic only reads a bare identifier, so name it.
+
+<a id="kxposerowshalf-2"></a>
+### `kXposeRowsHalf`
+
+§6: kXposeRows/2 is compile-time (kXposeRows is a file-level constexpr) but the
+heuristic only reads a bare identifier, so name it.
+
+<a id="grptile"></a>
+### `grp_tile`
+
+the row group's own output tile: a group is `kPrRows <= kTile` rows wide, so it
+lies inside one row tile and inherits that tile's causal predicate.
+
+<a id="basesupr"></a>
+### `base_sup_r`
+
+THE OWN-SIDE CERTIFICATE'S per-cell address: a lane's eight destination cells are
+eight rows, two apart, of ONE digit column of its own side's staged operand.
+
+<a id="kstagesperlevel"></a>
+### `kStagesPerLevel`
+
+§6: bwd_stages_per_level(B)/bwd_slabs_per_stage(B) are compile-time (B is
+this function's template parameter) but the heuristic can't see through the
+function calls, so name them once for this loop nest.
+
+<a id="pre"></a>
+### `pre`
+
+the leave-one-out over LEVELS, as a prefix/suffix product and never as
+`A / G_l`: `G_l` is exactly zero on disjoint supports.
+
+<a id="dpwbase"></a>
+### `dpw_base`
+
+THE FIRST FILL IS ISSUED BEFORE THE SEED CONTRACTION ABOVE, so it lands under
+it; from there the ring is the forward's, in the buffers pass 1 already owns.
+
+<a id="prown"></a>
+### `pr_own`
+
+A SOFTMAX DUTY IS DENSE BY THEOREM, so its cotangent plane is live on the
+whole digit axis and no cell of it may be dropped; only a side the mode word
+declares sparse carries the producer's off-support annihilation.
+
+<a id="near-line-679"></a>
+### near line 679
+
+§6: kStagesPerLevel is the same compile-time quantity aliased above
+(bwd_stages_per_level(B)), reused here -- same enclosing ct-loop scope.

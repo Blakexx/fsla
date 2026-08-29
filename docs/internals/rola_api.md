@@ -181,3 +181,50 @@ The page geometry is the ARENA's -- `page_rows x page_cols` fp32, which is
 `MMA_K_QUANTUM x (d_v + 1)` with the mass column fused. The owner takes it as two
 extents rather than naming them, because it owns no meaning for either:
 docs/internals/rola_api.md#vmm-binding
+
+<a id="near-line-31"></a>
+### near line 31
+
+K31 R1 -- the box-native CARRY family, built ALONGSIDE the shipped facts
+producers and reachable from no shipped dispatch (development/plans/
+K31_BOX_NATIVE_KERNEL_STUDY_2026-08-18.md section 6).
+
+<a id="near-line-58"></a>
+### near line 58
+
+the sparse grid's predicate INPUT: three liveness facts per (bh, block),
+reduced from the union table this call already built. The predicate OVER
+them is the dispatch's, because it differs by call class and by backing.
+
+<a id="near-line-113"></a>
+### near line 113
+
+One entry per direction per family, each covering as many LEVELS as the caller
+groups into one width class -- docs/internals/entmax/factor.md#batched-levels
+
+<a id="near-line-133"></a>
+### near line 133
+
+The verdict's buffers: the per-batch-head answer, its reduction, the reducing
+CTA's arrival counter, the done flags a replay reads, and the write-atom set a
+host admission plans from.
+
+<a id="near-line-140"></a>
+### near line 140
+
+`page_table` resolves each touched ATOM to its slot; `None` is the dense
+backing, where the slot IS the atom and the bytes are the same.
+
+<a id="near-line-143"></a>
+### near line 143
+
+THE SLACK POOL, all three or none: the slots the host pre-committed and
+pre-zeroed, how many of each batch-head's are spent, and the claim the walk
+addresses through until the table is folded.
+
+<a id="near-line-149"></a>
+### near line 149
+
+THE DEVICE-SIDE BUILD STAMP: a fact only the loaded binary can produce, which is the
+only kind of check an extension trap cannot survive --
+docs/internals/rola_api.md#decode-build-stamp

@@ -158,3 +158,78 @@ The residency reachable at ANY depth.  The ring can only shrink it, so this
 is the shallowest LEGAL ring's residency; an arm whose shallowest ring does
 not fit at all is refused by `smem_fits` at its own site rather than silently
 deepened here.
+
+<a id="satisfiableresidencies"></a>
+### `satisfiable_residencies`
+
+The residencies that MEET THE REQUIREMENT on this architecture, as a mask.
+SHARED never appears: a state that has to go through shared memory HAS taken
+the round trip, which is a different algorithm.
+
+<a id="near-line-51"></a>
+### near line 51
+
+PREFERENCE ORDER, most preferred first.  TMEM is preferred where it exists
+because the accumulator is already there and the register file stays free.
+
+<a id="selectresidency"></a>
+### `select_residency`
+
+The best residency that BOTH meets the requirement and has an implementation.
+Returns SHARED to mean "none", which is the value that can never be selected.
+
+<a id="residencysuboptimal"></a>
+### `residency_suboptimal`
+
+True when a residency BETTER than the selected one meets the requirement on
+this part and simply is not built.  This is the announcement's condition and
+not an error: the built path is correct, it is merely not the best available.
+
+<a id="kresidencysuboptimal"></a>
+### `kResidencySuboptimal`
+
+Announced, not refused: the built path is correct on such a part, it is
+merely not the best available there.
+
+<a id="ctasbyregfloor"></a>
+### `ctas_by_reg_floor`
+
+The largest per-lane register count is a table quantity; this is its inverse
+-- the most CTAs whose budget still holds a live set of `reg_floor`.
+
+<a id="ceilingwithoutsmem"></a>
+### `ceiling_without_smem`
+
+The residency ceiling that is NOT a function of this arm's shared memory:
+registers, threads and the hard CTA cap.
+
+<a id="ctatarget"></a>
+### `cta_target`
+
+THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach.  Shared
+memory, registers, threads and the CTA cap, whichever binds first.
+
+<a id="stagesbyresidency"></a>
+### `stages_by_residency`
+
+The SHALLOWEST ring that reaches `want` CTAs, searched upward from the
+minimum: the point past which shared memory buys nothing and still costs L1.
+
+<a id="stagesfor"></a>
+### `stages_for`
+
+The compiling target's answers, so a kernel writes a geometry and never a
+capability row.
+
+<a id="smemfits"></a>
+### `smem_fits`
+
+THE ONE HARD RESOURCE REFUSAL, from the table rather than from a literal: an
+arm either fits this architecture's per-CTA shared-memory maximum or it is
+refused.  No arm is silently shrunk to fit.
+
+<a id="kcapsdigest"></a>
+### `kCapsDigest`
+
+The digest of the capability row THE DEVICE CODE WAS COMPILED AGAINST,
+carried here so a kernel's build stamp names no layer-1 symbol.

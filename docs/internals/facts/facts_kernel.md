@@ -330,3 +330,186 @@ residency condensed beside them.  The three facts are emitted SEPARATELY --
 one byte per (bh, block), bits {READ, WRITE, STATE} -- because what a skipped
 block would have contributed differs by call class and by backing, so the
 predicate over them is the host's (docs/internals/facts/facts_kernel.md#block-bitmap).
+
+<a id="lexwhole"></a>
+### `lex_whole`
+
+THE LEX POLICY, as free functions so `LevelPlan` can be an alias template.  A
+level past `D` answers `B`, which is the identity for every quantity derived
+from a span (`entries_at` 0, `groups_at` 1, `prod_span` unaffected).
+
+<a id="kbc"></a>
+### `kBC`
+
+`BC` is a CONSEQUENCE of the spans rather than the input they were derived
+from, which makes "BC is a rectangle in digit space" true by construction.
+
+<a id="suffixgroups"></a>
+### `suffix_groups`
+
+all-INT arithmetic: the suffix products are bounded by the block count,
+and int-by-constexpr-pow2 is shifts -- the long form dragged 64-bit ops
+into two knife-edge register floors and spilled them.
+
+<a id="entryat"></a>
+### `entry_at`
+
+the block's run index at level l, and its table row -- compile-time
+divisors throughout (pow2 groups), so the map is shifts and masks.
+
+<a id="colbase"></a>
+### `col_base`
+
+a level's first amplitude column in the packed [W0+..+W_{D-1}] token row --
+the widths policy summed over the preceding levels.
+
+<a id="offat"></a>
+### `off_at`
+
+the block's first digit at level l: entry_at's map scaled to digits.  A
+whole level has one group, so its offset is zero without a branch.
+
+<a id="outerplace"></a>
+### `outer_place`
+
+THE COMPOSITE OUTER INDEX'S RADIX. A block's slot splits into an innermost
+digit and a composite outer index whose place values are the outer spans,
+level D-2 fastest -- docs/internals/facts/facts_kernel.md#outer-radix
+
+<a id="near-line-124"></a>
+### near line 124
+
+THE LEVEL IS A TEMPLATE PARAMETER for the same reason `base_term`'s is: a
+runtime divisor does not fold.  A single-digit level has one digit and the
+MOST significant outer level cannot wrap, so neither pays the residue.
+
+<a id="sumentries"></a>
+### `sum_entries`
+
+table entries per side: a level's group count when it is tested, NOTHING
+when it is spanned whole -- a SUM over levels, never a product, which is why
+the table does not grow with N.
+
+<a id="basealigned"></a>
+### `base_aligned`
+
+the law's STATIC piece, per level: a contributing level's offsets step by
+`span_at(l)` digits at place value `B^(D-1-l)`, and every such step must be
+a whole number of blocks.  A whole level contributes nothing (one group).
+
+<a id="kprefillstateless"></a>
+### `kPrefillStateless`
+
+THE CALL CLASSES THIS PASS IS SPECIALIZED OVER -- the prefill half of the four
+(`rola/engine/types.py`'s `Mask`).  Decode's two never reach this kernel and are
+not instantiated for it, so an unmatched value is the int_switch's refusal.
+
+<a id="ksideentries"></a>
+### `kSideEntries`
+
+the side's row block base, in ENTRIES: the read plan's rows and then the write
+plan's, one `bh` after another.
+
+<a id="t"></a>
+### `t`
+
+A TOKEN PAST THE END READS TOKEN ZERO AND VOTES DEAD.  Its bit has no
+consumer and reading in range is what keeps the lockstep unit converged.
+
+<a id="entrystride"></a>
+### `entryStride`
+
+ADDRESSING DISCIPLINE, THE SAME ONE THE CHUNK KERNEL KEEPS.  Every 64-bit
+address is formed ONCE and afterwards only advanced, by a stride that is
+itself 64-bit -- so no `pointer + int` widening multiply reaches a body.
+
+<a id="rolafactslevel"></a>
+### `ROLA_FACTS_LEVEL`
+
+one stanza per level, spans from the plan -- a whole level emits nothing,
+exactly as its clause is not evaluated.  Amp row layout is
+[level 0 | level 1 | ...], each `width(l)` wide.
+
+<a id="rolafactslevelboth"></a>
+### `ROLA_FACTS_LEVEL_BOTH`
+
+the write side at BOTH grains.  An owner entry's digit run is a whole number
+of atom runs, so its ballot is the OR of theirs -- bit for bit, because the
+magnitude test distributes over the run's OR.
+
+<a id="kinner"></a>
+### `kInner`
+
+the innermost clause level's group count: the atoms of one prefix, and by
+the plan's radix the LEAST significant part of the block index.
+
+<a id="outoff"></a>
+### `outOff`
+
+THE BITMAP IS ONE BYTE PER ATOM, so `BH * atoms` is a 32-bit displacement
+wherever the state those atoms address exists at all (that state is 4160
+bytes an atom).  One pinned base, byte offsets after it.
+
+<a id="constexpr"></a>
+### `constexpr`
+
+NO CLAUSE AT ALL is the whole slot space in one atom: written whenever the
+sequence has a token, which the caller's own topology guarantees.
+
+<a id="offua"></a>
+### `offUa`
+
+NAMED SCALARS, never an array -- the consumer's rule, for the same
+reason: a runtime-indexed offset array is demoted to a stack frame.
+Unused upper clauses read row zero and are never consulted.
+
+<a id="near-line-428"></a>
+### near line 428
+
+THE EXIT IS CTA-UNIFORM: one warp reads every flag behind the barrier
+and publishes a single answer, so no lane leaves a `rendezvous` alone.
+
+<a id="kslive"></a>
+### `kSLive`
+
+§6 unroll discipline: the heuristic reads only a bare identifier/literal as
+compile-time, so these arithmetic bounds (genuinely compile-time -- kGroup,
+kAtomsPer are both constexpr locals above) get named aliases.
+
+<a id="near-line-485"></a>
+### near line 485
+
+the two sides share one token tile, so the read row's stream and the write
+row's are formed together and the tile is read once.
+
+<a id="near-line-496"></a>
+### near line 496
+
+AN UNMAPPED ATOM'S ENTRY STATE IS PROVABLY ZERO, so residency is the exact
+witness for "this block may carry state in"; the dense backing has no such
+map and the host degrades the predicate rather than guessing one.
+
+<a id="constexpr-2"></a>
+### `constexpr`
+
+NO CLAUSE AT ALL is the whole slot space in one block: live on both sides
+whenever the sequence has a token, which the caller's topology guarantees.
+
+<a id="baser"></a>
+### `baseR`
+
+ADDRESSING DISCIPLINE, THE FORM'S: one 64-bit base per (bh, side), every
+row and word after it a 32-bit byte displacement that zero-extends.
+
+<a id="offua-2"></a>
+### `offUa`
+
+NAMED SCALARS, never an array -- a runtime-indexed offset array is
+demoted to a stack frame.  The entry rows are the block's, so the two
+sides share every displacement and differ only in their base.
+
+<a id="near-line-578"></a>
+### near line 578
+
+THE EXIT IS CTA-UNIFORM: one warp reads every flag behind the barrier
+and publishes a single answer, so no lane leaves a `rendezvous` alone.

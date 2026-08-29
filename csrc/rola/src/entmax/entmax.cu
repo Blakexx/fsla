@@ -26,10 +26,7 @@ namespace rola {
 namespace entmax {
 namespace detail {
 
-//: The overflow-free read-write difference: two opposite-sign finite extrema
-//: overflow a raw subtraction while their midpoint stays representable, so the
-//: MAGNITUDE is clamped instead.
-// see docs/internals/entmax/entmax.md#overflow-free-delta-2
+//: The overflow-free read-write difference: two opposite-sign finite extrema -- see docs/internals/entmax/entmax.md#overflow-free-delta-2
 __device__ __forceinline__ float overflow_free_delta(float r, float w, bool* saturated) {
   const float kMax = 3.4028234663852886e38f;
   const float kHalfMax = 1.7014117331926443e38f;
@@ -45,9 +42,7 @@ __device__ __forceinline__ float overflow_free_delta(float r, float w, bool* sat
   return opposite ? opp : same;
 }
 
-//: log(sigmoid(-delta)) == -softplus(delta), finite for every finite input. `log1pf`
-//: rather than `logf(1+x)` because the governing gate is the fp64 oracle's
-//: `logsigmoid` -- docs/internals/entmax/entmax.md#overflow-free-delta
+//: log(sigmoid(-delta)) == -softplus(delta), finite for every finite input. `log1pf` -- see docs/internals/entmax/entmax.md#logwritegate
 __device__ __forceinline__ float log_write_gate(float delta) {
   return -(fmaxf(delta, 0.0f) + log1pf(expf(-fabsf(delta))));
 }
@@ -70,19 +65,13 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   using WarpRedF = cub::WarpReduce<float, LW>;
   using WarpRedU = cub::WarpReduce<unsigned long long, LW>;
 
-  //: HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias
-  //: One per-physical-warp slot serves the row sort's scratch and then the
-  //: support-word staging.
-  // see docs/internals/entmax/entmax.md#sort-bytes
+  //: HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias -- see docs/internals/entmax/entmax.md#sort-bytes
   constexpr int SORT_BYTES = RowSort<LW, IPT>::kSlotBytes;
   constexpr int STAGE_BYTES = W_PAD * (int)sizeof(uint32_t);
   constexpr int RAW_SLOT = SORT_BYTES > STAGE_BYTES ? SORT_BYTES : STAGE_BYTES;
   constexpr int SLOT = (RAW_SLOT + 15) & ~15;
   __shared__ __align__(16) char smem[BLOCK_WARPS * SLOT];
-  //: These three TempStorages are per-thread rather than __shared__, which is
-  //: legal only because CUB resolves all of them to pure-shfl specializations
-  //: here.
-  // see docs/internals/entmax/entmax.md#static-assert
+  //: These three TempStorages are per-thread rather than __shared__, which is -- see docs/internals/entmax/entmax.md#static-assert
   static_assert(sizeof(typename WarpScanP::TempStorage) <= 4, "WarpScan must be shfl-only");
   static_assert(sizeof(typename WarpRedF::TempStorage) <= 4, "WarpReduce must be shfl-only");
   static_assert(sizeof(typename WarpRedU::TempStorage) <= 4, "WarpReduce must be shfl-only");
@@ -98,9 +87,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
 
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
-  //: solve's stream, and a token-major operand needs it as `(b, h)`.
-  // see docs/internals/entmax/entmax.md#stream32
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the -- see docs/internals/entmax/entmax.md#stream32
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -118,8 +105,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   for (int it = 0; it < ITERS; ++it) {
     const int local = it * LOGICAL_PER_BLOCK + logical;
     const int token = word * WORD_TOKENS + local;
-    //: Skipping a row past the end is EXACTLY equivalent, not merely close:
-    //: docs/internals/entmax/entmax.md#forward-phases
+    //: Skipping a row past the end is EXACTLY equivalent, not merely close: -- see docs/internals/entmax/entmax.md#continue
     if (local >= WORD_TOKENS || token >= tokens) continue;
 
     // ---- PHASE A: load striped (coalesced), fold, RETIRE both logit tiles ----
@@ -158,12 +144,10 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
     for (int i = 0; i < IPT; ++i) {
       const bool valid = lane + i * LW < width;
       midpoint[i] = valid ? midpoint[i] - row_max : 0.0f;
-      //: A finite row-relative sentinel keeps padded lanes strictly below every real
-      //: value without an infinity in the scan. `row_min` is pre-shift, so shift it too.
+      //: A finite row-relative sentinel keeps padded lanes strictly below every real -- see docs/internals/entmax/entmax.md#near-line-161
       keys[i] = valid ? midpoint[i] : (row_min - row_max) - 1.0f;
     }
-    //: A sort is a PERMUTATION, so striped input is fine and the blocked output is what
-    //: the prefix walk wants -- docs/internals/entmax/entmax.md#forward-phases
+    //: A sort is a PERMUTATION, so striped input is fine and the blocked output is what -- see docs/internals/entmax/entmax.md#near-line-165
     RowSort<LW, IPT>::sort(keys, lane, lmask, smem + warp * SLOT, logical_in_warp);
 
     // ---- PHASE C: tau. prefix/prefix_sq/tau_candidates/candidate/chosen_col all
@@ -201,9 +185,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
         best_tau = tau_c;
       }
     }
-    //: ONE reduction selects the greatest valid k AND carries its tau: the column in the
-    //: high 32 bits makes integer Max pick it, and `best_col = -1` maps to key 0 so an
-    //: all-empty row yields tau = 0 -- docs/internals/entmax/entmax.md#forward-phases
+    //: ONE reduction selects the greatest valid k AND carries its tau: the column in the -- see docs/internals/entmax/entmax.md#packedkey
     unsigned long long packed_key = ((unsigned long long)(uint32_t)(best_col + 1) << 32)
                                     | (unsigned long long)__float_as_uint(best_tau);
     packed_key = WarpRedU(redu_store).Reduce(packed_key, cub::Max());
@@ -264,16 +246,14 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
       const bool sup = (support_mask >> i) & 1u;
       const float write = (sup && has_weight) ? scaled[i] / safe_den : 0.0f;
       store_value(write_values, addr(swrite, stream, token, value_base + col), write);
-      //: HAZARD bf16-support-boundary -- docs/internals/entmax/entmax.md#bf16-support-boundary
-      //: Support is the union of POST-CAST nonzeros, never the pre-quantization solve.
+      //: HAZARD bf16-support-boundary -- docs/internals/entmax/entmax.md#bf16-support-boundary -- see docs/internals/entmax/entmax.md#near-line-267
       if (sup && (((read_live_mask >> i) & 1u) || bf16_nonzero(write)))
         part[i] |= (1u << (token & 31));
     }
   }
 
   // ---- EPILOGUE: pack the 32-token support word. ONE barrier. ----
-  //: The butterfly runs over exactly the bits at or above LW, which is what separates
-  //: lanes holding the same column: docs/internals/entmax/entmax.md#epilogue-butterfly
+  //: The butterfly runs over exactly the bits at or above LW, which is what separates -- see docs/internals/entmax/entmax.md#near-line-275
 #pragma unroll
   for (int i = 0; i < IPT; ++i) {
     for (int d = LW; d < WARP_SIZE; d <<= 1) part[i] |= __shfl_xor_sync(0xffffffffu, part[i], d);
@@ -323,9 +303,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
   const unsigned lmask = logical_warp_mask<LW>();
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
-  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the
-  //: solve's stream, and a token-major operand needs it as `(b, h)`.
-  // see docs/internals/entmax/entmax.md#stream32-2
+  //: ONE 32-BIT division per BLOCK on a uniform value: `blockIdx.y` is the -- see docs/internals/entmax/entmax.md#stream32-2
   const int stream32 = (int)blockIdx.y;
   const int64_t sb = stream32 / heads;
   const int64_t sh = stream32 - (int)sb * heads;
@@ -343,9 +321,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
 
     uint32_t support_mask = 0u, saturated_mask = 0u;
     // ---- the write-side rank-1: sum(d_write * write_values) ----
-    //: This pass carries NOTHING into the next one but two scalars (`local_dot` and the
-    //: support mask); staging its loads instead is a measured spill
-    //: -- docs/internals/entmax/entmax.md#backward
+    //: This pass carries NOTHING into the next one but two scalars (`local_dot` and the -- see docs/internals/entmax/entmax.md#localdot
     float local_dot = 0.0f;
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
@@ -365,8 +341,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
     float dot = WarpRedF(red_store).Reduce(local_dot, cub::Sum());
     dot = __shfl_sync(lmask, dot, 0, LW);
 
-    //: `s` is NOT kept: it is recomputed from a re-read `midpoint_values` in the final
-    //: pass, for the same measured reason -- docs/internals/entmax/entmax.md#backward
+    //: `s` is NOT kept: it is recomputed from a re-read `midpoint_values` in the final -- see docs/internals/entmax/entmax.md#near-line-368
     float d_delta[IPT], d_mid[IPT];
     Pair partial{0.0f, 0.0f};
 #pragma unroll
@@ -394,8 +369,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
           valid ? load_value(d_read, addr(sdr, stream, token, value_base + col)) : 0.0f;
       const float rv =
           valid ? load_value(read_values, addr(srv, stream, token, value_base + col)) : 0.0f;
-      //: the VJP divides by the amplitude, which is exactly 0 at a TIE: substitute 1 and
-      //: let the support mask zero the term -- docs/internals/entmax/entmax.md#backward
+      //: the VJP divides by the amplitude, which is exactly 0 at a TIE: substitute 1 and -- see docs/internals/entmax/entmax.md#safe
       const float safe = (sup && mid != 0.0f) ? mid : 1.0f;
       d_mid[i] = dr * read_gate + (sup ? dlw / safe : 0.0f);
       d_delta[i] = (dr * rv * write_gate - dlw * read_gate) * (sat ? 0.0f : 1.0f);
@@ -436,17 +410,13 @@ template <typename LogitT, typename OutT>
 void launch_forward(const torch::Tensor& rl, const torch::Tensor& wl, torch::Tensor& mid,
                     torch::Tensor& sup, torch::Tensor& rv, torch::Tensor& wv,
                     const LevelTable& table, int levels, int w_pad, int heads, double alpha) {
-  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
-  //: a flat plane declares `heads == 1` and the same product is `size(0)`
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/entmax.md#nstreams
   const int n_streams = rl.size(0) * heads, tokens = rl.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();
   const bool a15 = alpha == 1.5;
 
-  //: THE LAUNCH IS WRITTEN ONCE, and the `(lane width, items per thread)` pair is
-  //: DERIVED from the padded width rather than tabulated per case ...
-  // see docs/internals/entmax/entmax.md#kwpad
+  //: THE LAUNCH IS WRITTEN ONCE, and the `(lane width, items per thread)` pair is -- see docs/internals/entmax/entmax.md#kwpad
   int_switch<2, 4, 8, 16, 32, 64, 128, 256>(
       w_pad, "union entmax padded width (MAX_BRANCH_WIDTH = 256)", [&](auto WPAD) {
         constexpr int kWPad = decltype(WPAD)::value;
@@ -470,9 +440,7 @@ void launch_backward(const torch::Tensor& rl, const torch::Tensor& wl, const tor
                      const torch::Tensor& dr, const torch::Tensor& dw, torch::Tensor& drl,
                      torch::Tensor& dwl, const LevelTable& table, int levels, int w_pad, int heads,
                      double alpha) {
-  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`;
-  //: a flat plane declares `heads == 1` and the same product is `size(0)`
-  //: -- docs/internals/entmax/entmax.md#stream-split
+  //: A token-major plane's stream is TWO axes, so the grid's stream extent is `B * H`; -- see docs/internals/entmax/entmax.md#nstreams-2
   const int n_streams = drl.size(0) * heads, tokens = drl.size(1);
   dim3 grid((tokens + WORD_TOKENS - 1) / WORD_TOKENS, n_streams, levels);
   auto stream = at::cuda::getCurrentCUDAStream();

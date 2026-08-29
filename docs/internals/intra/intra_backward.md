@@ -45,3 +45,9 @@ THE REVERSE PASS IS BUILT AT DEPTH TWO ONLY.  Its digit reduction's pass
 geometry is derived per arm from the owner's bit fields, and the carry's two
 scans refuse a third level for the same reason -- so a deep reverse arm here
 would be half a gradient.  The named gap is one, not two.
+
+<a id="bwdstampkernel"></a>
+### `bwd_stamp_kernel`
+
+THE HEAVIEST BUILT ARM's footprint, so the stamp moves whenever any arm's shape
+does -- a fact only THIS binary can produce.

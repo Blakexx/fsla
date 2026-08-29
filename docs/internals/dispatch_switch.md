@@ -133,3 +133,23 @@ rather than a `switch` statement), it is not device code, and no SASS comparison
 speak for it; what covers it is the CUDA suites, which exercise every arm.
 
 The idiom, what it replaced, and the axis-order rule: docs/internals/dispatch_switch.md
+
+<a id="near-line-14"></a>
+### near line 14
+
+ONE BOOLEAN AXIS. `body` is called with `std::true_type` or `std::false_type`, so
+`decltype(FLAG)::value` is a template argument at the call site.
+
+<a id="near-line-25"></a>
+### near line 25
+
+ONE INTEGER AXIS OVER A CLOSED SET. The candidate values are template arguments,
+so the set is part of the call and an unmatched runtime value is a REFUSAL rather
+than a silently missing arm -- `what` names the axis in the message.
+
+<a id="near-line-31"></a>
+### near line 31
+
+An expansion over the candidate set, evaluated left to right: exactly one arm
+runs. The sets in this engine are two to six values wide, so the chain is not a
+jump table and does not need to be.

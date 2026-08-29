@@ -189,3 +189,24 @@ compiler cannot parse. ONE HEADER PER AUDIENCE, rather than an `#ifdef __CUDACC_
 that would make one header mean two things to two compilers.
 
 The full argument, and what each bound symbol claims: docs/internals/decode/decode_api.md
+
+<a id="roladecoderesidency"></a>
+### `rola_decode_residency`
+
+THE STEP'S DECLARED RESIDENCY in CTAs per SM, so the split policy sizes one wave from
+the launch bound itself rather than from a python mirror of it:
+docs/internals/decode/decode_api.md#residency
+
+<a id="roladecodebuildstamp"></a>
+### `rola_decode_build_stamp`
+
+THE DEVICE-SIDE BUILD STAMP, a fact only the loaded binary can produce. A path check
+or a hash of the sources cannot catch a stale `.so` at the right path:
+docs/internals/decode/decode_api.md#build-stamp
+
+<a id="roladecodearms"></a>
+### `rola_decode_arms`
+
+THE ARMS THIS BINARY CARRIES, `[d_v, D, decay]` per row. A full build lists the whole
+declared matrix; an ITERATION build (`ROLA_DECODE_ARMS`) lists its subset and is not
+shippable: docs/internals/decode/decode_api.md#arm-subset

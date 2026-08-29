@@ -51,12 +51,10 @@ namespace design = denseref::design;
 
 static constexpr int kPadE = 8;  // bf16 row padding, elements (16 B)
 static constexpr int kPadF = 4;  // fp32 row padding, elements (16 B)
-//: `d_v` IS AN ARM PARAMETER AND NOT A FILE CONSTANT (K35 S3b).
-// see docs/internals/carry/carry_kernel.md#static-assert
+//: `d_v` IS AN ARM PARAMETER AND NOT A FILE CONSTANT (K35 S3b). -- see docs/internals/carry/carry_kernel.md#static-assert
 static_assert(kAtomLeaves == kMmaK, "the page granule is one MMA k-step");
 
-//: A COMPILE-TIME LOOP.
-// see docs/internals/carry/carry_kernel.md#static-for
+//: A COMPILE-TIME LOOP. -- see docs/internals/carry/carry_kernel.md#static-for
 template <int N, class F>
 __device__ __forceinline__ void static_for(F&& f) {
   if constexpr (N > 0) {
@@ -67,8 +65,7 @@ __device__ __forceinline__ void static_for(F&& f) {
 
 //: THE CARVE. A STREAM owns an affine RECTANGLE of the owner's digits -- a per-
 //: level span vector, `prod_l S_l` leaves and ALL `kCols` channels -- and tiles
-//: those leaves in a private mixed-radix order.
-// see docs/internals/carry/carry_kernel.md#carrygeom
+//: those leaves in a private mixed-radix order. -- see docs/internals/carry/carry_kernel.md#carrygeom
 
 template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int PK,
           uint32_t MO>
@@ -84,17 +81,14 @@ struct CarryGeom {
                 "that carve; a second stream count has no body here");
   static_assert(PK == 0, "the parked `lo` is a tenant of the exchange, which this body has not");
   static constexpr int BC = BP::kBC;
-  //: THE VALUE WIDTH, AS A DECLARATION.  `kDv` channels plus the MASS column, which
-  //: rides the state as one more row of every plane the state touches.
+  //: THE VALUE WIDTH, AS A DECLARATION.  `kDv` channels plus the MASS column, which -- see docs/internals/carry/carry_kernel.md#kdv
   static constexpr int kDv = DV;
   static constexpr int kCols = DV + 1;
   static_assert(DV == 64,
                 "M1a's readout stages exactly `kDv` channels into the batch's `C` panel rows; "
                 "the `d_v` dial returns as its own stage and is never a runtime test");
 
-  //: THE EXECUTOR MAP: one warp per stream, and the batch tile IS the executor count
-  //: times an accumulator n-tile -- which is what makes the readout's staging block one
-  //: token tile of the batch AND a whole state page.
+  //: THE EXECUTOR MAP: one warp per stream, and the batch tile IS the executor count -- see docs/internals/carry/carry_kernel.md#kstreams
   static constexpr int kStreams = SVR::kStreams;
   static constexpr int kWarps = kStreams;
   static constexpr int kThreads = kWarps * 32;
@@ -104,26 +98,19 @@ struct CarryGeom {
   static constexpr int LdS = kLeafW + kPadE;
   static constexpr int LdO = kDv + kPadF;
 
-  //: THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA.
-  // see docs/internals/carry/carry_kernel.md#panel-bytes
+  //: THE TWO PANELS ARE A TWO-SLOT RING, AND THEY COST NOTHING EXTRA. -- see docs/internals/carry/carry_kernel.md#panel-bytes
   static constexpr int panel_bytes = 2 * kWarps * C * LdS * (int)sizeof(__nv_bfloat16);
-  //: the readout's staging block, one `kMmaN`-token region per warp -- and, at
-  //: entry and exit, the state plane's page.
+  //: the readout's staging block, one `kMmaN`-token region per warp -- and, at -- see docs/internals/carry/carry_kernel.md#outbytes
   static constexpr int out_bytes = C * LdO * (int)sizeof(float);
   static_assert(kWarps * kMmaN == C && C * LdO >= kAtomLeaves * LdO,
                 "the staging block is one token tile of the batch and holds a whole page");
-  //: `kWarps` READ lists, one per stream, then ONE write list: a read entry belongs to
-  //: the streams its carved digits fall in, a write entry to all of them.
+  //: `kWarps` READ lists, one per stream, then ONE write list: a read entry belongs to -- see docs/internals/carry/carry_kernel.md#klists
   static constexpr int kLists = kWarps + 1;
   static constexpr int kListStride = ((W + 7) / 8) * 8;
   static constexpr int list_bytes = kLists * kListStride * (int)sizeof(uint16_t);
-  //: THE WINDOW'S BALLOT WORDS, one per lane of the walk -- so a window may be at
-  //: most a lockstep unit's worth of words wide.
+  //: THE WINDOW'S BALLOT WORDS, one per lane of the walk -- so a window may be at -- see docs/internals/carry/carry_kernel.md#klw
   static constexpr int kLW = W / kBallotLanes;
-  //: THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR:
-  //: the shallowest ring that reaches the best residency this arm can reach at
-  //: any depth.
-  // see docs/internals/carry/carry_kernel.md#kregfloor
+  //: THE V RING'S DEPTH IS DERIVED FROM THE SMEM BUDGET AND THE REGISTER FLOOR: -- see docs/internals/carry/carry_kernel.md#kregfloor
   static constexpr int kRegFloor = 220;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
   static constexpr int fixed_bytes = panel_bytes + out_bytes + list_bytes;
@@ -133,9 +120,7 @@ struct CarryGeom {
   static_assert(design::smem_fits(bytes), "this arm does not fit the SMEM maximum");
 };
 
-//: THE OWNER-GRAIN PRODUCE MAP, which the channel-split body and the reverse
-//: family's panel are expanded against (`carry_split_kernel.cuh` ...
-// see docs/internals/carry/carry_kernel.md#producemap
+//: THE OWNER-GRAIN PRODUCE MAP, which the channel-split body and the reverse -- see docs/internals/carry/carry_kernel.md#producemap
 template <int D, int B, int K, int M, int C>
 struct ProduceMap {
   using BP = BoxPlan<D, B, K, M>;
@@ -153,8 +138,7 @@ struct ProduceMap {
   static constexpr int idx_of(int l, int j) { return (j >> BP::run_shift(l)) & (n_l(l) - 1); }
 };
 
-//: THE PRIVATE LEAF ORDER.
-// see docs/internals/carry/carry_kernel.md#spanmap
+//: THE PRIVATE LEAF ORDER. -- see docs/internals/carry/carry_kernel.md#spanmap
 template <int D, int B, int K, int M, class SV>
 struct SpanMap {
   using BP = BoxPlan<D, B, K, M>;
@@ -166,14 +150,12 @@ struct SpanMap {
     return i >= D ? 0 : (rank(i) < rank(l) ? bits(i) : 0) + shift_from(l, i + 1);
   }
   static constexpr int shift(int l) { return shift_from(l, 0); }
-  //: THE PACKED PAIR IS SIMPLY THE INNERMOST LEVEL OF THE ORDER.
-  // see docs/internals/carry/carry_kernel.md#pair-from
+  //: THE PACKED PAIR IS SIMPLY THE INNERMOST LEVEL OF THE ORDER. -- see docs/internals/carry/carry_kernel.md#pair-from
   static constexpr int pair_from(int l) {
     return l >= D ? -1 : ((shift(l) == 0 && span(l) >= 2) ? l : pair_from(l + 1));
   }
   static constexpr int kPairLevel = pair_from(0);
-  //: THE DEAD ROW'S LEVEL.
-  // see docs/internals/carry/carry_kernel.md#narrow-from
+  //: THE DEAD ROW'S LEVEL. -- see docs/internals/carry/carry_kernel.md#narrow-from
   static constexpr int narrow_from(int l, int best) {
     return l >= D ? best
                   : narrow_from(l + 1,
@@ -188,8 +170,7 @@ struct SpanMap {
                 "is a level count of at least two");
 };
 
-//: a contiguous run of `n` bf16, at the widest access that covers it.
-// see docs/internals/carry/carry_kernel.md#load-run
+//: a contiguous run of `n` bf16, at the widest access that covers it. -- see docs/internals/carry/carry_kernel.md#load-run
 template <int N>
 __device__ __forceinline__ void load_run(unsigned short (&dst)[N], const void* p) {
   static_assert(N == 1 || N == 2 || N == 4 || N == 8 || N == 16,
@@ -201,9 +182,7 @@ __device__ __forceinline__ void load_run(unsigned short (&dst)[N], const void* p
   } else if constexpr (N == 4) {
     *reinterpret_cast<uint2*>(dst) = *reinterpret_cast<const uint2*>(p);
   } else {
-    //: §6: `N` is this function's template parameter (ALL_CAPS per project convention,
-    //: renamed from lowercase `n` so the unroll-discipline lint reads it as compile-time);
-    //: `N / 8` is still an arithmetic expression the heuristic can't parse, so name it too.
+    //: §6: `N` is this function's template parameter (ALL_CAPS per project convention, -- see docs/internals/carry/carry_kernel.md#koctets
     constexpr int kOctets = N / 8;
 #pragma unroll
     for (int i = 0; i < kOctets; ++i)
@@ -212,9 +191,7 @@ __device__ __forceinline__ void load_run(unsigned short (&dst)[N], const void* p
   }
 }
 
-//: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from the
-//: same geometry the ring depth is.  A ring sized for a residency the launch bound does
-//: not ask for is a ring sized for nothing.
+//: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from the -- see docs/internals/carry/carry_kernel.md#near-line-215
 template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, int NSR, int PK,
           uint32_t MO>
 constexpr int kCarryCtaTarget = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>::cta_target;
@@ -234,8 +211,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   using G = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
   constexpr int kDv = DV;
   constexpr int kCols = DV + 1;
-  //: THE ONE SPAN VECTOR, and the private order and the ballot rows it induces.  Both
-  //: phases read these: the carve is the read side's and the write side walks it.
+  //: THE ONE SPAN VECTOR, and the private order and the ballot rows it induces.  Both -- see docs/internals/carry/carry_kernel.md#sv
   using SV = typename G::SVR;
   using PM = SpanMap<D, B, K, M, SV>;
   using CR = CarveRows<SV>;
@@ -275,8 +251,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   constexpr int kListStride = G::kListStride;
   uint16_t* const slist = reinterpret_cast<uint16_t*>(so + C * LdO);
 
-  //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the
-  //: shipped addressing discipline (docs/internals/carry/carry_kernel.md#state-addressing).
+  //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the -- see docs/internals/carry/carry_kernel.md#vrowelems
   const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
   const int heads = vRowElems / kDv;
   const __nv_bfloat16* const vPlane =
@@ -287,23 +262,15 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   float* const oPlane = pin_address(o + (long)bh * L * kDv);
   float* const denPlane = pin_address(den + (long)bh * L);
 
-  //: THE STREAM ROTATION.  Two CTAs co-resident on an SM are one grid wave apart and
-  //: the wave is a multiple of `kWarps`, so `owner % kWarps` would rotate both
-  //: identically; the wave-stride form does not (K33 1.45).
+  //: THE STREAM ROTATION.  Two CTAs co-resident on an SM are one grid wave apart and -- see docs/internals/carry/carry_kernel.md#strm
   const int strm = (warp + ((owner + (owner >> 5)) & (kWarps - 1))) & (kWarps - 1);
 
   // ---- the owner's digit runs, one per level -------------------------------
-  //: `o_l` is a bit-field extract of the owner index: the lattice's owner
-  //: coordinates are the top `sum_l log2 g_l` bits of `lambda` (R0 spec section 2.4).
+  //: `o_l` is a bit-field extract of the owner index: the lattice's owner -- see docs/internals/carry/carry_kernel.md#near-line-296
   int runCol[D];
-  //: AND THE STREAM'S OWN DIGIT OFFSET INSIDE THAT RUN, per level: the stream
-  //: index decomposes in MIXED RADIX over the per-level stream grids ...
-  // see docs/internals/carry/carry_kernel.md#note-l344
+  //: AND THE STREAM'S OWN DIGIT OFFSET INSIDE THAT RUN, per level: the stream -- see docs/internals/carry/carry_kernel.md#note-l344
   int off[D];
-  //: AND THE BALLOT ROW BASE, per level: the SAME `o_l`, addressing the FIRST row
-  //: the facts pass voted for this owner's run at this level (K31-i-d) at the
-  //: CARVE's grain ...
-  // see docs/internals/carry/carry_kernel.md#rowbytes
+  //: AND THE BALLOT ROW BASE, per level: the SAME `o_l`, addressing the FIRST row -- see docs/internals/carry/carry_kernel.md#rowbytes
   uint32_t rowOff[D];
   const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
   static_for<D>([&](auto Lc) {
@@ -313,10 +280,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     off[l] = ((strm >> ilog2c(SV::grid_div(l))) & (SV::g(l) - 1)) * SV::s(l);
     rowOff[l] = (uint32_t)(CR::row_prefix(l) + o_l * CR::rows_of(BP::s(l), l)) * rowBytes;
   });
-  //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the READ
-  //: block and then the WRITE block, each `kRows * tok_words * 4` bytes, which is
-  //: 32-bit at every admitted length.
-  // see docs/internals/carry/carry_kernel.md#pin-address
+  //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the READ -- see docs/internals/carry/carry_kernel.md#pin-address
   const uint32_t* const rowsR =
       pin_address(rows + (long)bh * (long)(2 * CR::kRows) * (long)tok_words);
   const uint32_t* const rowsW =
@@ -326,9 +290,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   const int lr = lane & 7, tl = lane >> 3;
   const int rF = (tl & 1) * 8 + lr, cF = tl >> 1;
   const int rT = (tl >> 1) * 8 + lr, cT = tl & 1;
-  //: THE PANEL RING'S TWO BASES, AS NAMED SCALARS.  A two-element array indexed by
-  //: the batch parity would be a runtime index into a register array, which is a
-  //: stack frame; a select is one instruction and no memory.
+  //: THE PANEL RING'S TWO BASES, AS NAMED SCALARS.  A two-element array indexed by -- see docs/internals/carry/carry_kernel.md#panr
   __nv_bfloat16* const panR = sr + warp * C * LdS;
   __nv_bfloat16* const panW = sw + warp * C * LdS;
   const uint32_t brT0 = smem_addr(panR) + (uint32_t)((rT * LdS + cT * 8) * 2);
@@ -357,8 +319,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 #pragma unroll
     for (int e = 0; e < 4; ++e) mass_st[j][e] = 0.f;
 
-  //: THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so
-  //: the fold's A fragment for it is the constant whose row 0 is ones.
+  //: THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so -- see docs/internals/carry/carry_kernel.md#konespair
   constexpr uint32_t kOnesPair = 0x3F803F80u;
   uint32_t ones_a[4];
   ones_a[0] = (lane >> 2) == 0 ? kOnesPair : 0u;
@@ -366,10 +327,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   ones_a[2] = ones_a[0];
   ones_a[3] = 0u;
 
-  //: THE LATTICE LEAF OF A PRIVATE SLOT. The private order's own `shift`/`span`
-  //: give each level's digit inside `P`; the lattice's `run_shift` puts it back,
-  //: and every carved level carries the stream's own digit offset.
-  // see docs/internals/carry/carry_kernel.md#l
+  //: THE LATTICE LEAF OF A PRIVATE SLOT. The private order's own `shift`/`span` -- see docs/internals/carry/carry_kernel.md#l
   auto leaf_of = [&](int P) {
     int lf = 0;
     static_for<D>([&](auto Lc) {
@@ -383,9 +341,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   // ---- the state plane's page sweep, at CANONICAL atom ids -----------------
   constexpr int kAtoms = BC / kAtomLeaves;
   constexpr int kPageElems = kAtomLeaves * kCols;
-  //: THE SWEEP'S STEP, AS A CARRY.  A step of `kThreads` elements advances the row
-  //: cursor by `kRowStep` or by one more, so the walk is a compile-time count of
-  //: predicated subtractions and never a division.
+  //: THE SWEEP'S STEP, AS A CARRY.  A step of `kThreads` elements advances the row -- see docs/internals/carry/carry_kernel.md#krowstep
   constexpr int kRowStep = kThreads / kCols;
   constexpr int kPageCarry = kThreads - kRowStep * kCols;
   static_assert(kPageCarry >= 0 && kPageCarry < kCols,
@@ -409,16 +365,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       col -= wrap ? kCols : 0;
     }
   };
-  //: THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80).
-  // see docs/internals/carry/carry_kernel.md#atombh
+  //: THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80). -- see docs/internals/carry/carry_kernel.md#atombh
   const uint32_t atomBH = (uint32_t)bh * (uint32_t)(BP::kLeaves / kAtomLeaves);
-  //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`,
-  //: docs/internals/paging/paging.md).
-  // see docs/internals/carry/carry_kernel.md#kpagebytes
+  //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`, -- see docs/internals/carry/carry_kernel.md#kpagebytes
   constexpr uint32_t kPageBytes = (uint32_t)(kPageElems * (int)sizeof(float));
   auto page_base = [](int32_t slot) { return (uint32_t)slot * kPageBytes; };
-  //: THE PAGE'S SLICE OF A STREAM, PER FRAGMENT.
-  // see docs/internals/carry/carry_kernel.md#a
+  //: THE PAGE'S SLICE OF A STREAM, PER FRAGMENT. -- see docs/internals/carry/carry_kernel.md#a
   auto page_regs = [&](auto Ac, auto Ld) {
     constexpr int a = decltype(Ac)::value;
     constexpr bool LOAD = decltype(Ld)::value;
@@ -440,8 +392,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
               store_f32(cell, st[m][j][el + 2 * h]);
           });
         });
-        //: the mass rides row 0 of its own accumulator, so only the lane quad holding
-        //: that row carries it.
+        //: the mass rides row 0 of its own accumulator, so only the lane quad holding -- see docs/internals/carry/carry_kernel.md#near-line-443
         if ((lane >> 2) == 0) {
           float* const cell = &so[row * LdO + kDv];
           if constexpr (LOAD)
@@ -453,16 +404,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     });
   };
 
-  //: ---- THE ENTRY STATE. The fragments are SET, never accumulated: they are
-  //: provably zero here, and with no decay the recurrence is affine in the state
-  //: with an inclusive-after-write readout, so this IS the oracle's seeding.
-  // see docs/internals/carry/carry_kernel.md#slot
+  //: ---- THE ENTRY STATE. The fragments are SET, never accumulated: they are -- see docs/internals/carry/carry_kernel.md#slot
   if (s_in != nullptr) {
     const float* const plane = pin_address(s_in);
     static_for<kAtoms>([&](auto Ac) {
-      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
-      //: nothing here, the fragments keep the zero the prologue set, and reading a
-      //: never-written state is inert under the self-normalizing readout.
+      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed -- see docs/internals/carry/carry_kernel.md#decltype
       const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, decltype(Ac)::value));
       if (slot < 0) return;
       page_sweep(page_base(slot), [&](int sidx, uint32_t off_) {
@@ -475,9 +421,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   }
 
   // ---- the produce's per-thread map ---------------------------------------
-  //: ONE LANE MINTS ONE TOKEN'S WHOLE ROW: the batch tile is the warp width, so a
-  //: thread's slot run is the stream's entire box and the expansion is `sum_l S_l`
-  //: amplitude loads folded into `kLeafW / 2` packed accumulators.
+  //: ONE LANE MINTS ONE TOKEN'S WHOLE ROW: the batch tile is the warp width, so a -- see docs/internals/carry/carry_kernel.md#spt
   constexpr int SPT = kLeafW;
   static_assert(C == kBallotLanes,
                 "a warp's panel row is ONE lane's: the batch tile is the warp width, so a "
@@ -489,14 +433,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     lvCol[l] = runCol[l] + off[l];
   });
 
-  //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS (`PM::kZeroLevel`).
-  // see docs/internals/carry/carry_kernel.md#write
+  //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS (`PM::kZeroLevel`). -- see docs/internals/carry/carry_kernel.md#write
   auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
                      uint32_t gain, bool have) {
     constexpr bool WRITE = decltype(Wt)::value;
-    //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run
-    //: is loaded, folded into every slot and dropped inside one `static_for` body, so
-    //: no `[D][n]` array is ever live.
+    //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES.  A level's run -- see docs/internals/carry/carry_kernel.md#near-line-497
     uint32_t acc[SPT / 2];
     {
       unsigned short run[PM::span(PM::kPairLevel)];
@@ -570,8 +511,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     const uint32_t winV = (uint32_t)tok0 * (uint32_t)v_row_bytes;
     const uint32_t winO = (uint32_t)tok0 * (uint32_t)(kDv * (int)sizeof(float));
     const uint32_t winD = (uint32_t)tok0 * 4u;
-    //: ONE BATCH'S PANEL, expanded from factors.
-    // see docs/internals/carry/carry_kernel.md#nb
+    //: ONE BATCH'S PANEL, expanded from factors. -- see docs/internals/carry/carry_kernel.md#nb
     auto produce_batch = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst,
                              const uint16_t* list, int o0, int ntot) {
       const int nb = (ntot - o0) < C ? (ntot - o0) : C;
@@ -586,9 +526,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     };
 
     // ---- the liveness pass: one READ list per warp, ONE write list --------
-    //: THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19). Per level at most ONE
-    //: side is sparse, so there is one stored row set per level ...
-    // see docs/internals/carry/carry_kernel.md#lw
+    //: THE SCHEDULE IS TWO-SIDED (Blake ruling 2026-08-19). Per level at most ONE -- see docs/internals/carry/carry_kernel.md#lw
     constexpr int LW = G::kLW;
     static_assert(W <= 0xFFFF, "a token's window-local index must fit the list's element");
     static_assert(LW <= kBallotLanes,
@@ -598,15 +536,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     const bool inW = lane < LW;
     const uint32_t valid =
         (!inW || room <= 0) ? 0u : (room >= kBallotLanes ? 0xFFFFFFFFu : ((1u << room) - 1u));
-    //: a lane past the window's last word holds no word; it reads word zero, which
-    //: is in range, and `valid` empties its ballot.
+    //: a lane past the window's last word holds no word; it reads word zero, which -- see docs/internals/carry/carry_kernel.md#widx
     const int wIdx = (tok0 >> 5) + (inW ? lane : 0);
     const uint32_t wordB = (uint32_t)(wIdx < tok_words ? wIdx : tok_words - 1) * 4u;
 
-    //: the trip count is the window's LIVENESS, not its width: one `bit_count`
-    //: where a per-word form spends `LW`, one lane prefix where it spends `LW`
-    //: adds, and one scatter of the lane's own set bits.
-    // see docs/internals/carry/carry_kernel.md#cnt
+    //: the trip count is the window's LIVENESS, not its width: one `bit_count` -- see docs/internals/carry/carry_kernel.md#cnt
     auto walk = [&](uint32_t m, uint16_t* dst, uint32_t bits, uint32_t below) {
       const int cnt = bit_count(m);
       const int pfx = lane_prefix_incl<LW>(cnt);
@@ -619,9 +553,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       }
       return lane_broadcast(pfx, LW - 1);
     };
-    //: THE CLAUSE ABOVE THE CARVE: the levels the stream spans WHOLE, whose row is the
-    //: owner's own and is therefore shared by every stream.  A level the owner spans
-    //: whole emits no row at all and drops out of the conjunction on its own.
+    //: THE CLAUSE ABOVE THE CARVE: the levels the stream spans WHOLE, whose row is the -- see docs/internals/carry/carry_kernel.md#clauseof
     auto clause_of = [&](const uint32_t* rowsS) {
       uint32_t m = valid;
       static_for<D>([&](auto Lc) {
@@ -631,9 +563,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       });
       return m;
     };
-    //: AND THE CARVED CLAUSE OF ONE STREAM: the AND over the carved levels of that
-    //: stream's own row.  A single-level carve is one load; a multi-level carve is one
-    //: per carved level, which is the exact conjunction the box asks for.
+    //: AND THE CARVED CLAUSE OF ONE STREAM: the AND over the carved levels of that -- see docs/internals/carry/carry_kernel.md#streamrow
     auto stream_row = [&](const uint32_t* rowsS, int s) {
       uint32_t m = 0xFFFFFFFFu;
       static_for<D>([&](auto Lc) {
@@ -657,18 +587,14 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       orW |= stream_row(rowsW, s);
     }
     const uint32_t liveW = clauseW & orW;
-    //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap
-    //: mechanism's harvest (study section 2.1).  It is CTA-uniform WITHOUT a
-    //: barrier: the two owner-grain ballots are the same words in every warp.
+    //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap -- see docs/internals/carry/carry_kernel.md#continue
     if (lane_ballot(((clauseR & orR) | liveW) != 0u) == 0u) continue;
 
     uint16_t* const rlist = slist + warp * kListStride;
     uint16_t* const wlist = slist + kWarps * kListStride;
     const int nr = walk(clauseR & mineR, rlist, 0xFFFFFFFFu, 0u);
     __syncwarp();
-    //: THE WRITE LIST IS ONE LIST WITH `kWarps` WRITERS. Every warp folds every
-    //: write entry, so the list is shared ...
-    // see docs/internals/carry/carry_kernel.md#kbitsw
+    //: THE WRITE LIST IS ONE LIST WITH `kWarps` WRITERS. Every warp folds every -- see docs/internals/carry/carry_kernel.md#kbitsw
     constexpr uint32_t kBitsW = (uint32_t)(kBallotLanes / kWarps);
     const int nw =
         walk(liveW, wlist, ((1u << kBitsW) - 1u) << (warp * kBitsW), (1u << (warp * kBitsW)) - 1u);
@@ -678,14 +604,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //      within-window pair is the INTRA term's and this kernel must not carry it.
     //      The batch line is therefore the window line on both sides.
 
-    //: THE READ PHASE SHARES NOTHING: the list, the panel region, the staging block
-    //: and the fan-in are the warp's own, so the warps run to the window line
-    //: without a single CTA barrier.
-    // see docs/internals/carry/carry_kernel.md#nbr
+    //: THE READ PHASE SHARES NOTHING: the list, the panel region, the staging block -- see docs/internals/carry/carry_kernel.md#nbr
     const int nbr = (nr + C - 1) / C;
-    //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring,
-    //: UNCONDITIONALLY and AFTER the batch's MMA block.
-    // see docs/internals/carry/carry_kernel.md#syncwarp
+    //: THE PRODUCE RUNS ONE BATCH AHEAD, into the other panel of the two-slot ring, -- see docs/internals/carry/carry_kernel.md#syncwarp
     if (nbr > 0) produce_batch(std::false_type{}, pR, panR, rlist, 0, nr);
     __syncwarp();
 #pragma unroll 1
@@ -694,8 +615,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       const int n = (nr - off_) < C ? (nr - off_) : C;
       const uint32_t brT = (i & 1) ? brT1 : brT0;
 
-      //: THE READ DRAIN'S STATE SOURCE, AND ITS ONE PLACE.
-      // see docs/internals/carry/carry_kernel.md#kk
+      //: THE READ DRAIN'S STATE SOURCE, AND ITS ONE PLACE. -- see docs/internals/carry/carry_kernel.md#kk
       uint32_t sa[kDw][MCH][4], ma[kDw][4];
       static_for<kDw>([&](auto Kc) {
         constexpr int kk = decltype(Kc)::value;
@@ -734,10 +654,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
             for (int m = 0; m < MCH; ++m) mma(acc[p][m], sa[kk][m], &rb[kk][2 * p]);
             mma(macc[p], ma[kk], &rb[kk][2 * p]);
           }
-        //: THE FAN-IN IS WARP-PRIVATE AND DIRECT (K33 1.4): one writer per read entry
-        //: at the sparse operating point, and RED is associative where an entry's
-        //: digits reach two streams, so no meeting is instantiated.
-        // see docs/internals/carry/carry_kernel.md#j
+        //: THE FAN-IN IS WARP-PRIVATE AND DIRECT (K33 1.4): one writer per read entry -- see docs/internals/carry/carry_kernel.md#j
 #pragma unroll
         for (int p = 0; p < 2; ++p) {
           const int j = 2 * mb + p;
@@ -777,15 +694,11 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       __syncwarp();
     }
 
-    //: THE WINDOW LINE IS THE ONE BARRIER LEFT ON THE READ SIDE, and it is there by
-    //: the ordering law: no warp may fold this window's writes while another is
-    //: still reading the window's entry state.
+    //: THE WINDOW LINE IS THE ONE BARRIER LEFT ON THE READ SIDE, and it is there by -- see docs/internals/carry/carry_kernel.md#rendezvous-2
     rendezvous();
 
     // ---- PHASE 2: the FOLD of every write batch ---------------------------
-    //: V IS A WRITE-SIDE QUANTITY and is gathered by the WRITE list; the read list
-    //: never touches it.
-    // see docs/internals/carry/carry_kernel.md#nbw
+    //: V IS A WRITE-SIDE QUANTITY and is gathered by the WRITE list; the read list -- see docs/internals/carry/carry_kernel.md#nbw
     const int nbw = (nw + C - 1) / C;
     auto stage_batch = [&](int b, int slot) {
       const int o0 = b * C;
@@ -811,14 +724,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       const uint32_t vsl = svB + (uint32_t)(i % STAGES) * kVSlot;
       stage_wait<STAGES - 2>();
       rendezvous();
-      //: the ring slot is advanced on EVERY batch, live or not, so the wait/commit
-      //: accounting never depends on the data.
+      //: the ring slot is advanced on EVERY batch, live or not, so the wait/commit -- see docs/internals/carry/carry_kernel.md#f
       const int f = i + STAGES - 1;
       if (f < nbw) stage_batch(f, f % STAGES);
       stage_commit();
 
-      //: §6: kNL/2 is compile-time (kNL is a constexpr local above) but the heuristic
-      //: only reads a bare identifier, so name the halved count.
+      //: §6: kNL/2 is compile-time (kNL is a constexpr local above) but the heuristic -- see docs/internals/carry/carry_kernel.md#knlhalf
       constexpr int kNLHalf = kNL / 2;
 #pragma unroll
       for (int kk = 0; kk < MTOK; ++kk) {
@@ -840,21 +751,17 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       }
       produce_batch(std::true_type{}, pW, ((i + 1) & 1) ? panR : panW, wlist, (i + 1) * C, nw);
     }
-    //: the ring's unconsumed groups are retired before the next window reuses the
-    //: value slots.
+    //: the ring's unconsumed groups are retired before the next window reuses the -- see docs/internals/carry/carry_kernel.md#near-line-843
     stage_wait<0>();
   }
 
   // ---- the FINAL STATE, at CANONICAL atom ids ------------------------------
-  //: the mirror of the entry load, after the last fan-in has consumed the staging
-  //: buffer -- which is what the one extra rendezvous below is for.
-  // see docs/internals/carry/carry_kernel.md#rendezvous
+  //: the mirror of the entry load, after the last fan-in has consumed the staging -- see docs/internals/carry/carry_kernel.md#rendezvous
   if (s_out != nullptr) {
     float* const plane = pin_address(s_out);
     rendezvous();
     static_for<kAtoms>([&](auto Ac) {
-      //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
-      //: which is what leaves a skipped slot carrying exactly what it held.
+      //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all, -- see docs/internals/carry/carry_kernel.md#decltype-2
       const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, decltype(Ac)::value));
       if (slot < 0) return;
       page_regs(Ac, std::false_type{});

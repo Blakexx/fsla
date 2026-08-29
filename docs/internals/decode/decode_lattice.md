@@ -719,3 +719,60 @@ formed where they are read.
 
 The lattice's formulas, the capacities and the cost accounting:
 docs/internals/decode/decode_lattice.md
+
+<a id="termkind"></a>
+### `term_kind`
+
+THE TERM TABLE, as arithmetic rather than as a table: term `0` is the write product,
+and term `j >= 1` splits at level `j - 1`.
+
+<a id="kindbits"></a>
+### `kind_bits`
+
+A KIND'S BITS, from the two sides' bits. One expression, used on single digits and on
+whole owner spans alike, which is what keeps the digit masks at two planes.
+
+<a id="near-line-53"></a>
+### near line 53
+
+One side's DIGIT MASK, one bit per digit of every level, packed level by level. One
+thread owns one destination word and reads the amplitudes it covers, so the pass is
+race-free without atomics and costs `sum_l ceil(B_l / 32)` words.
+
+<a id="levelslice"></a>
+### `level_slice`
+
+Level `l`'s digits `[lo, lo + count)` as one word. `count <= kDecodeMaxSpan` is the
+host's declared capacity, which is what makes an owner's whole span a single extract.
+
+<a id="maskbit"></a>
+### `mask_bit`
+
+ONE DIGIT'S MEMBERSHIP, as ONE load and a shift. `level_slice` reads two words and
+funnel-shifts them because an owner's SPAN can straddle a word boundary; a single digit
+never can, and the unit asks this question `2 * (D - 1)` times.
+
+<a id="base"></a>
+### `base`
+
+NO `owner` FIELD. The owner's mixed-radix index is a resolver LOCAL that dies into
+`base`; carrying it in the struct kept a register live across the walk's tightest
+scope for nothing, and with two resolvers in one kernel that cost two.
+
+<a id="alive"></a>
+### `alive`
+
+THE CONDITIONING the walk's one expression rests on, and the whole of the term's
+presence in this file's contract.
+
+<a id="kdm1"></a>
+### `kDm1`
+
+§6: `D` is this function's template parameter, so `D - 1` is compile-time;
+name it so the heuristic reads it as such.
+
+<a id="near-line-421"></a>
+### near line 421
+
+THE SAME CONDITIONING `resolve_unit` applies to the write term, for the same reason:
+the walk iterates one slice and asks `in_r`/`in_w` with one expression each.

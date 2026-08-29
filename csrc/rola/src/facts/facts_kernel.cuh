@@ -18,21 +18,15 @@ namespace rola::chunk {
 
 using namespace denseref::ops;
 
-//: THE INVARIANT QUANTUM: the leaves one page granule holds, and the rectangle
-//: the stats pass keys residency to.
-// see docs/internals/facts/facts_kernel.md#katomleaves
+//: THE INVARIANT QUANTUM: the leaves one page granule holds, and the rectangle -- see docs/internals/facts/facts_kernel.md#katomleaves
 static constexpr int kAtomLeaves = 16;
 
 // --------------------------------------------------------------- block plan
 
-//: THE GEOMETRY LAW over D levels of one uniform power-of-two width B, stated
-//: on the quantity it is actually about: THE PER-LEVEL SPANS `s_l`.
-// see docs/internals/facts/facts_kernel.md#note-l30
+//: THE GEOMETRY LAW over D levels of one uniform power-of-two width B, stated -- see docs/internals/facts/facts_kernel.md#note-l30
 constexpr long ipowl(int b, int e) { return e == 0 ? 1 : b * ipowl(b, e - 1); }
 
-//: THE LEX POLICY, as free functions so `LevelPlan` can be an alias template.  A
-//: level past `D` answers `B`, which is the identity for every quantity derived
-//: from a span (`entries_at` 0, `groups_at` 1, `prod_span` unaffected).
+//: THE LEX POLICY, as free functions so `LevelPlan` can be an alias template.  A -- see docs/internals/facts/facts_kernel.md#lexwhole
 constexpr int lex_whole(int D, int B, int BC) {
   return (long)BC >= ipowl(B, D)   ? D
          : (long)BC >= ipowl(B, 3) ? 3
@@ -56,10 +50,7 @@ constexpr int lex_span(int D, int B, int BC, int l) {
 template <int D, int B, int S0, int S1, int S2, int S3>
 struct SpanPlan {
   static_assert(D >= 1 && D <= 4, "the level plan is built to depth four");
-  //: THE WIDTH FLOOR IS THE ATOM'S, not a routing preference: the atom plan
-  //: (`LevelPlan<D, B, kAtomLeaves>`, below) exists only where the topology holds
-  //: a whole page granule.
-  // see docs/internals/facts/facts_kernel.md#static-assert
+  //: THE WIDTH FLOOR IS THE ATOM'S, not a routing preference: the atom plan -- see docs/internals/facts/facts_kernel.md#static-assert
   static_assert((B & (B - 1)) == 0 && B >= 4 && B <= 256 && ipowl(B, D) >= kAtomLeaves,
                 "one uniform power-of-two width per topology, wide enough that the "
                 "topology holds a whole page atom");
@@ -72,8 +63,7 @@ struct SpanPlan {
                     && S2 <= B && B % S2 == 0 && S3 >= 1 && S3 <= B && B % S3 == 0,
                 "BLOCK GEOMETRY: every span is an aligned run that divides its level");
   static constexpr int prod_span(int l) { return l >= D ? 1 : span_at(l) * prod_span(l + 1); }
-  //: `BC` is a CONSEQUENCE of the spans rather than the input they were derived
-  //: from, which makes "BC is a rectangle in digit space" true by construction.
+  //: `BC` is a CONSEQUENCE of the spans rather than the input they were derived -- see docs/internals/facts/facts_kernel.md#kbc
   static constexpr int kBC = prod_span(0);
   static constexpr long blocks = slots / kBC;
   //: a level's table-entry count: its group count when tested, zero when whole
@@ -84,16 +74,11 @@ struct SpanPlan {
     return l >= D ? 0 : (entries_at(l) > 0 ? 1 : 0) + count_clauses(l + 1);
   }
   static constexpr int clauses = count_clauses(0);
-  //: THE CLAUSE LEVELS ARE A PREFIX -- a property of the TWO BITMAP REDUCTIONS
-  //: and not of the table, so it is asserted where it is used
-  //: (`atom_bitmap_kernel` ...
-  // see docs/internals/facts/facts_kernel.md#clauses-prefix
+  //: THE CLAUSE LEVELS ARE A PREFIX -- a property of the TWO BITMAP REDUCTIONS -- see docs/internals/facts/facts_kernel.md#clauses-prefix
   static constexpr bool clauses_prefix(int l) {
     return l >= D || (((entries_at(l) > 0) == (l < clauses)) && clauses_prefix(l + 1));
   }
-  //: all-INT arithmetic: the suffix products are bounded by the block count,
-  //: and int-by-constexpr-pow2 is shifts -- the long form dragged 64-bit ops
-  //: into two knife-edge register floors and spilled them.
+  //: all-INT arithmetic: the suffix products are bounded by the block count, -- see docs/internals/facts/facts_kernel.md#suffixgroups
   static constexpr int suffix_groups(int l) {
     return l >= D ? 1 : groups_at(l) * suffix_groups(l + 1);
   }
@@ -101,29 +86,22 @@ struct SpanPlan {
   static constexpr int prefix_entries(int l) {
     return l == 0 ? 0 : prefix_entries(l - 1) + entries_at(l - 1);
   }
-  //: the block's run index at level l, and its table row -- compile-time
-  //: divisors throughout (pow2 groups), so the map is shifts and masks.
+  //: the block's run index at level l, and its table row -- compile-time -- see docs/internals/facts/facts_kernel.md#entryat
   static __device__ __forceinline__ int entry_at(int l, int blk) {
     return prefix_entries(l) + (blk / suffix_groups(l + 1)) % groups_at(l);
   }
   static constexpr int depth = D;
-  //: a level's first amplitude column in the packed [W0+..+W_{D-1}] token row --
-  //: the widths policy summed over the preceding levels.
+  //: a level's first amplitude column in the packed [W0+..+W_{D-1}] token row -- -- see docs/internals/facts/facts_kernel.md#colbase
   static constexpr int col_base(int l) { return l == 0 ? 0 : col_base(l - 1) + width(l - 1); }
-  //: the block's first digit at level l: entry_at's map scaled to digits.  A
-  //: whole level has one group, so its offset is zero without a branch.
+  //: the block's first digit at level l: entry_at's map scaled to digits.  A -- see docs/internals/facts/facts_kernel.md#offat
   static __device__ __forceinline__ int off_at(int l, int blk) {
     return ((blk / suffix_groups(l + 1)) % groups_at(l)) * span_at(l);
   }
-  //: THE COMPOSITE OUTER INDEX'S RADIX. A block's slot splits into an innermost
-  //: digit and a composite outer index whose place values are the outer spans,
-  //: level D-2 fastest -- docs/internals/facts/facts_kernel.md#outer-radix
+  //: THE COMPOSITE OUTER INDEX'S RADIX. A block's slot splits into an innermost -- see docs/internals/facts/facts_kernel.md#outerplace
   static constexpr int outer_place(int l) {
     return l >= D - 2 ? 1 : span_at(l + 1) * outer_place(l + 1);
   }
-  //: THE LEVEL IS A TEMPLATE PARAMETER for the same reason `base_term`'s is: a
-  //: runtime divisor does not fold.  A single-digit level has one digit and the
-  //: MOST significant outer level cannot wrap, so neither pays the residue.
+  //: THE LEVEL IS A TEMPLATE PARAMETER for the same reason `base_term`'s is: a -- see docs/internals/facts/facts_kernel.md#near-line-124
   template <int Lv>
   static __device__ __forceinline__ int outer_digit(int o) {
     constexpr int kPlace = outer_place(Lv);
@@ -135,16 +113,12 @@ struct SpanPlan {
     else
       return (o / kPlace) % kSpan;
   }
-  //: table entries per side: a level's group count when it is tested, NOTHING
-  //: when it is spanned whole -- a SUM over levels, never a product, which is why
-  //: the table does not grow with N.
+  //: table entries per side: a level's group count when it is tested, NOTHING -- see docs/internals/facts/facts_kernel.md#sumentries
   static constexpr int sum_entries(int l) {
     return l >= D ? 0 : entries_at(l) + sum_entries(l + 1);
   }
   static constexpr int entries = sum_entries(0);
-  //: A block's leaves are a CONTIGUOUS, BC-ALIGNED run in canonical leaf order,
-  //: so the block is named by its first leaf ...
-  // see docs/internals/facts/facts_kernel.md#base-term
+  //: A block's leaves are a CONTIGUOUS, BC-ALIGNED run in canonical leaf order, -- see docs/internals/facts/facts_kernel.md#base-term
   template <int Lv>
   static __device__ __forceinline__ int base_term(int blk) {
     constexpr int kDiv = suffix_groups(Lv + 1);
@@ -160,9 +134,7 @@ struct SpanPlan {
     if constexpr (3 < D) s += base_term<3>(blk);
     return s;
   }
-  //: the law's STATIC piece, per level: a contributing level's offsets step by
-  //: `span_at(l)` digits at place value `B^(D-1-l)`, and every such step must be
-  //: a whole number of blocks.  A whole level contributes nothing (one group).
+  //: the law's STATIC piece, per level: a contributing level's offsets step by -- see docs/internals/facts/facts_kernel.md#basealigned
   static constexpr bool base_aligned(int l) {
     return l >= D
            || ((groups_at(l) == 1 || (ipowl(B, D - 1 - l) * span_at(l)) % kBC == 0)
@@ -170,19 +142,14 @@ struct SpanPlan {
   }
 };
 
-//: THE LEX PLAN, an ALIAS.
-// see docs/internals/facts/facts_kernel.md#levelplan
+//: THE LEX PLAN, an ALIAS. -- see docs/internals/facts/facts_kernel.md#levelplan
 template <int D, int B, int BC>
 using LevelPlan = SpanPlan<D, B, lex_span(D, B, BC, 0), lex_span(D, B, BC, 1),
                            lex_span(D, B, BC, 2), lex_span(D, B, BC, 3)>;
 
-//: (G4) The D = 2 compatibility view -- BlockPlan -- is RETIRED.
-// see docs/internals/facts/facts_kernel.md#ktokbits
+//: (G4) The D = 2 compatibility view -- BlockPlan -- is RETIRED. -- see docs/internals/facts/facts_kernel.md#ktokbits
 
-//: THE UNION TABLE'S ONE STRUCTURAL CONSTANT. Tokens are the table's minor axis
-//: and they are packed thirty-two to a word, which is the lockstep unit's
-//: width, so the cook reads one word per unit per side and needs no re-packing ...
-// see docs/internals/facts/facts_kernel.md#ktokbits-2
+//: THE UNION TABLE'S ONE STRUCTURAL CONSTANT. Tokens are the table's minor axis -- see docs/internals/facts/facts_kernel.md#ktokbits-2
 constexpr int kTokBits = 32;
 __host__ __device__ constexpr int tok_words(int L) { return (L + kTokBits - 1) / kTokBits; }
 
@@ -190,13 +157,10 @@ __host__ __device__ constexpr int tok_words(int L) { return (L + kTokBits - 1) /
 //: one warp per token word, four warps per CTA.
 constexpr int kFactsThreads = 128;
 
-//: THE CALL CLASSES THIS PASS IS SPECIALIZED OVER -- the prefill half of the four
-//: (`rola/engine/types.py`'s `Mask`).  Decode's two never reach this kernel and are
-//: not instantiated for it, so an unmatched value is the int_switch's refusal.
+//: THE CALL CLASSES THIS PASS IS SPECIALIZED OVER -- the prefill half of the four -- see docs/internals/facts/facts_kernel.md#kprefillstateless
 enum ChunkMask : int { kPrefillStateless = 1, kPrefillStateful = 2 };
 
-//: THE TABLES ARE BUILT ONCE FOR THE WHOLE GRID, BOTH ROW SETS IN ONE PASS.
-// see docs/internals/facts/facts_kernel.md#chunk-facts-tables
+//: THE TABLES ARE BUILT ONCE FOR THE WHOLE GRID, BOTH ROW SETS IN ONE PASS. -- see docs/internals/facts/facts_kernel.md#chunk-facts-tables
 template <class PLAN_R, class PLAN_W, int MASK>
 __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
                                    const __nv_bfloat16* __restrict__ pwrite,
@@ -211,8 +175,7 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
   constexpr int B = LP::kWidth;
   using AP = LevelPlan<D, B, kAtomLeaves>;
   constexpr int kWtot = LP::col_base(LP::depth);
-  //: the side's row block base, in ENTRIES: the read plan's rows and then the write
-  //: plan's, one `bh` after another.
+  //: the side's row block base, in ENTRIES: the read plan's rows and then the write -- see docs/internals/facts/facts_kernel.md#ksideentries
   constexpr long kSideEntries = (long)LPR::entries + (long)LPW::entries;
   static_assert(kWtot == AP::col_base(AP::depth),
                 "both grains read the SAME amplitude row: the packed column layout is "
@@ -221,15 +184,12 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
   const int w = blockIdx.x * (blockDim.x / kBallotLanes) + (threadIdx.x >> 5);
   const int lane = threadIdx.x & 31;
   if (w >= tokWords) return;  // a whole lockstep unit leaves together
-  //: A TOKEN PAST THE END READS TOKEN ZERO AND VOTES DEAD.  Its bit has no
-  //: consumer and reading in range is what keeps the lockstep unit converged.
+  //: A TOKEN PAST THE END READS TOKEN ZERO AND VOTES DEAD.  Its bit has no -- see docs/internals/facts/facts_kernel.md#t
   const int t = w * kTokBits + lane;
   const bool real = t < L;
   const long off = (long)blockIdx.y * L * kWtot + (long)(real ? t : 0) * kWtot;
 
-  //: ADDRESSING DISCIPLINE, THE SAME ONE THE CHUNK KERNEL KEEPS.  Every 64-bit
-  //: address is formed ONCE and afterwards only advanced, by a stride that is
-  //: itself 64-bit -- so no `pointer + int` widening multiply reaches a body.
+  //: ADDRESSING DISCIPLINE, THE SAME ONE THE CHUNK KERNEL KEEPS.  Every 64-bit -- see docs/internals/facts/facts_kernel.md#entrystride
   const long entryStride = tokWords;
   const __nv_bfloat16* const ampRead = pread + off;
   const __nv_bfloat16* const ampWrite = pwrite + off;
@@ -237,9 +197,7 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
 #define ROLA_FACTS_VOTE(P_, SPAN_) \
   lane_ballot(real && (or_run<SPAN_>(P_) & kBf16MagnitudeMask) != 0u)
 
-  //: one stanza per level, spans from the plan -- a whole level emits nothing,
-  //: exactly as its clause is not evaluated.  Amp row layout is
-  //: [level 0 | level 1 | ...], each `width(l)` wide.
+  //: one stanza per level, spans from the plan -- a whole level emits nothing, -- see docs/internals/facts/facts_kernel.md#rolafactslevel
 #define ROLA_FACTS_LEVEL(PLAN_, BASE_, OUT_, L_)                                \
   if constexpr (L_ < D && PLAN_::entries_at(L_) > 0) {                          \
     const __nv_bfloat16* p = (BASE_) + PLAN_::col_base(L_);                     \
@@ -252,9 +210,7 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
     }                                                                           \
   }
 
-  //: the write side at BOTH grains.  An owner entry's digit run is a whole number
-  //: of atom runs, so its ballot is the OR of theirs -- bit for bit, because the
-  //: magnitude test distributes over the run's OR.
+  //: the write side at BOTH grains.  An owner entry's digit run is a whole number -- see docs/internals/facts/facts_kernel.md#rolafactslevelboth
 #define ROLA_FACTS_LEVEL_BOTH(L_)                                               \
   if constexpr (L_ < D && AP::entries_at(L_) > 0) {                             \
     constexpr int kSpanA = AP::span_at(L_);                                     \
@@ -296,9 +252,7 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
     ROLA_FACTS_LEVEL(LPR, ampRead, out, 3)
   }
 
-  //: THE ATOM ROWS ARE THE WRITE SIDE'S: which atoms this routing writes is what
-  //: keys residency, and reads of never-written atoms are inert.
-  // see docs/internals/facts/facts_kernel.md#note-l339
+  //: THE ATOM ROWS ARE THE WRITE SIDE'S: which atoms this routing writes is what -- see docs/internals/facts/facts_kernel.md#note-l339
   if constexpr (MASK == kPrefillStateful) {
     if (atom_tbl != nullptr) {
       uint32_t* out =
@@ -324,14 +278,11 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
 }
 
 // ------------------------------------------------------- the atom-grain stats
-//: THE STATS PASS' REDUCTION.
-// see docs/internals/facts/facts_kernel.md#katomthreads
+//: THE STATS PASS' REDUCTION. -- see docs/internals/facts/facts_kernel.md#katomthreads
 constexpr int kAtomThreads = 128;
 constexpr int kAtomTileWords = 256;
 
-//: THE REDUCTION, one CTA per (bh, upper prefix). A prefix's atoms share every
-//: clause row but the innermost ...
-// see docs/internals/facts/facts_kernel.md#atom-bitmap-kernel
+//: THE REDUCTION, one CTA per (bh, upper prefix). A prefix's atoms share every -- see docs/internals/facts/facts_kernel.md#atom-bitmap-kernel
 template <int D, int B>
 __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
                                    uint8_t* __restrict__ atom_bits, int L) {
@@ -344,34 +295,25 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
                 "prefix count, so the levels carrying rows must be a PREFIX of the levels");
   constexpr int kClauses = LP::clauses;
   constexpr int kAtoms = (int)LP::blocks;
-  //: the innermost clause level's group count: the atoms of one prefix, and by
-  //: the plan's radix the LEAST significant part of the block index.
+  //: the innermost clause level's group count: the atoms of one prefix, and by -- see docs/internals/facts/facts_kernel.md#kinner
   constexpr int kInner = kClauses > 0 ? LP::groups_at(kClauses - 1) : 1;
   const int tid = threadIdx.x;
   const int lane = tid & 31;
   const int blkBase = blockIdx.x * kInner;
-  //: THE BITMAP IS ONE BYTE PER ATOM, so `BH * atoms` is a 32-bit displacement
-  //: wherever the state those atoms address exists at all (that state is 4160
-  //: bytes an atom).  One pinned base, byte offsets after it.
+  //: THE BITMAP IS ONE BYTE PER ATOM, so `BH * atoms` is a 32-bit displacement -- see docs/internals/facts/facts_kernel.md#outoff
   const uint32_t outOff = (uint32_t)blockIdx.y * (uint32_t)kAtoms + (uint32_t)blkBase;
 
-  //: NO CLAUSE AT ALL is the whole slot space in one atom: written whenever the
-  //: sequence has a token, which the caller's own topology guarantees.
+  //: NO CLAUSE AT ALL is the whole slot space in one atom: written whenever the -- see docs/internals/facts/facts_kernel.md#constexpr
   if constexpr (kClauses == 0) {
     if (tid == 0) *reinterpret_cast<uint8_t*>(gather_ptr(atom_bits, outOff)) = 1;
     return;
   } else {
     const int tokWords = tok_words(L);
-    //: ADDRESSING DISCIPLINE, THE FORM'S: ONE 64-bit address per (bh), formed here
-    //: and never re-derived; every row and every word after it is a 32-bit BYTE
-    //: displacement that zero-extends ...
-    // see docs/internals/facts/facts_kernel.md#pin-address
+    //: ADDRESSING DISCIPLINE, THE FORM'S: ONE 64-bit address per (bh), formed here -- see docs/internals/facts/facts_kernel.md#pin-address
     const uint32_t* const base =
         pin_address(tbl + (long)blockIdx.y * ((long)LP::entries * (long)tokWords));
     const uint32_t rowBytes = (uint32_t)tokWords * (uint32_t)sizeof(uint32_t);
-    //: NAMED SCALARS, never an array -- the consumer's rule, for the same
-    //: reason: a runtime-indexed offset array is demoted to a stack frame.
-    //: Unused upper clauses read row zero and are never consulted.
+    //: NAMED SCALARS, never an array -- the consumer's rule, for the same -- see docs/internals/facts/facts_kernel.md#offua
     uint32_t offUa = 0u, offUb = 0u, offUc = 0u;
 #define ROLA_ATOM_UPPER(CL_, O_)                                               \
   if constexpr ((CL_) + 1 < kClauses) {                                        \
@@ -425,8 +367,7 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
         if (lane == 0 && any != 0u) sLive[a] = 1;
       }
       rendezvous();
-      //: THE EXIT IS CTA-UNIFORM: one warp reads every flag behind the barrier
-      //: and publishes a single answer, so no lane leaves a `rendezvous` alone.
+      //: THE EXIT IS CTA-UNIFORM: one warp reads every flag behind the barrier -- see docs/internals/facts/facts_kernel.md#near-line-428
       if (tid < kBallotLanes) {
         bool all = true;
         for (int a = tid; a < kInner; a += kBallotLanes) all &= sLive[a] != 0;
@@ -442,16 +383,12 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
 }
 
 // ------------------------------------------------------ the block-grain liveness
-//: THE REDUCTION'S ROW GROUP: at most one innermost row per warp per side.
-// see docs/internals/facts/facts_kernel.md#block-bitmap-kernel
+//: THE REDUCTION'S ROW GROUP: at most one innermost row per warp per side. -- see docs/internals/facts/facts_kernel.md#block-bitmap-kernel
 constexpr int block_bitmap_group(int inner) {
   return inner < (kAtomThreads / kBallotLanes) / 2 ? inner : (kAtomThreads / kBallotLanes) / 2;
 }
 
-//: THE LIVENESS EPILOGUE, at the LAUNCH's block grain: `atom_bitmap_kernel`'s
-//: reduction re-instantiated at `BC`, over BOTH sides, with the page table's
-//: residency condensed beside them.
-// see docs/internals/facts/facts_kernel.md#block-bitmap-kernel-2
+//: THE LIVENESS EPILOGUE, at the LAUNCH's block grain: `atom_bitmap_kernel`'s -- see docs/internals/facts/facts_kernel.md#block-bitmap-kernel-2
 template <int D, int B, int BC>
 __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
                                     const int32_t* __restrict__ page_tbl,
@@ -471,9 +408,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   static_assert(kInner % kGroup == 0, "a row group must divide the prefix's inner run");
   constexpr int kAtomsPer = BC / kAtomLeaves;
   static_assert(BC % kAtomLeaves == 0, "a block is a whole number of page atoms");
-  //: §6 unroll discipline: the heuristic reads only a bare identifier/literal as
-  //: compile-time, so these arithmetic bounds (genuinely compile-time -- kGroup,
-  //: kAtomsPer are both constexpr locals above) get named aliases.
+  //: §6 unroll discipline: the heuristic reads only a bare identifier/literal as -- see docs/internals/facts/facts_kernel.md#kslive
   constexpr int kSLive = 2 * kGroup;
   constexpr int kGroupAtoms = kGroup * kAtomsPer;
   const int tid = threadIdx.x;
@@ -482,8 +417,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   const int innerBase = blkBase % kInner;
   const uint32_t outOff = (uint32_t)blockIdx.y * (uint32_t)kBlocks + (uint32_t)blkBase;
 
-  //: the two sides share one token tile, so the read row's stream and the write
-  //: row's are formed together and the tile is read once.
+  //: the two sides share one token tile, so the read row's stream and the write -- see docs/internals/facts/facts_kernel.md#near-line-485
   __shared__ uint32_t sUp[2][kAtomTileWords];
   __shared__ uint8_t sLive[2 * kGroup];
   __shared__ uint8_t sState[kGroup];
@@ -493,9 +427,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
   if (tid == 0) sAllLive = 0;
   rendezvous();
 
-  //: AN UNMAPPED ATOM'S ENTRY STATE IS PROVABLY ZERO, so residency is the exact
-  //: witness for "this block may carry state in"; the dense backing has no such
-  //: map and the host degrades the predicate rather than guessing one.
+  //: AN UNMAPPED ATOM'S ENTRY STATE IS PROVABLY ZERO, so residency is the exact -- see docs/internals/facts/facts_kernel.md#near-line-496
   if (page_tbl != nullptr) {
     const int32_t* const pt = pin_address(page_tbl);
     const uint32_t bhAtoms = (uint32_t)blockIdx.y * (uint32_t)(LP::slots / kAtomLeaves);
@@ -508,22 +440,18 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
     }
   }
 
-  //: NO CLAUSE AT ALL is the whole slot space in one block: live on both sides
-  //: whenever the sequence has a token, which the caller's topology guarantees.
+  //: NO CLAUSE AT ALL is the whole slot space in one block: live on both sides -- see docs/internals/facts/facts_kernel.md#constexpr-2
   if constexpr (kClauses == 0) {
     for (int e = tid; e < kSLive; e += kAtomThreads) sLive[e] = 1;
   } else {
     const int tokWords = tok_words(L);
-    //: ADDRESSING DISCIPLINE, THE FORM'S: one 64-bit base per (bh, side), every
-    //: row and word after it a 32-bit byte displacement that zero-extends.
+    //: ADDRESSING DISCIPLINE, THE FORM'S: one 64-bit base per (bh, side), every -- see docs/internals/facts/facts_kernel.md#baser
     const uint32_t* const baseR =
         pin_address(tbl + ((long)(2 * blockIdx.y + 0) * (long)LP::entries) * (long)tokWords);
     const uint32_t* const baseW =
         pin_address(tbl + ((long)(2 * blockIdx.y + 1) * (long)LP::entries) * (long)tokWords);
     const uint32_t rowBytes = (uint32_t)tokWords * (uint32_t)sizeof(uint32_t);
-    //: NAMED SCALARS, never an array -- a runtime-indexed offset array is
-    //: demoted to a stack frame.  The entry rows are the block's, so the two
-    //: sides share every displacement and differ only in their base.
+    //: NAMED SCALARS, never an array -- a runtime-indexed offset array is -- see docs/internals/facts/facts_kernel.md#offua-2
     uint32_t offUa = 0u, offUb = 0u, offUc = 0u;
 #define ROLA_BLOCK_UPPER(CL_, O_)                              \
   if constexpr ((CL_) + 1 < kClauses) {                        \
@@ -575,8 +503,7 @@ __global__ void block_bitmap_kernel(const uint32_t* __restrict__ tbl,
         if (lane == 0 && any != 0u) sLive[e] = 1;
       }
       rendezvous();
-      //: THE EXIT IS CTA-UNIFORM: one warp reads every flag behind the barrier
-      //: and publishes a single answer, so no lane leaves a `rendezvous` alone.
+      //: THE EXIT IS CTA-UNIFORM: one warp reads every flag behind the barrier -- see docs/internals/facts/facts_kernel.md#near-line-578
       if (tid < kBallotLanes) {
         bool all = true;
         for (int e = tid; e < kSLive; e += kBallotLanes) all &= sLive[e] != 0;

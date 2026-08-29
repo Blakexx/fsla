@@ -68,3 +68,9 @@ WHAT ONE ARM'S TRANSLATION UNIT EXPORTS.  Five entry points: launch the body,
 launch and size its ballot table, and state its census and its row.
 `CARRY_ARM_DEFINE` (`carry_arm.cuh`) defines exactly these.  The SEGMENT LAYOUT
 PROBE left with the per-stream segments and the exchange it gated (K35 M1P).
+
+<a id="kcarryrowfields"></a>
+### `kCarryRowFields`
+
+the `arms()` row's width: the nine declaration fields plus BC, owners, smem and the
+read side's carve level.

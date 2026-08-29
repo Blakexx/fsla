@@ -19,10 +19,7 @@ __device__ __forceinline__ const T* row_of(const Span& s, int b, int h) {
   return static_cast<const T*>(s.base) + b * s.sb + h * s.sh;
 }
 
-//: THE DECLARED SUM. Lane `j` accumulates `row[j], row[j + 32], ...` in
-//: ascending index order into an fp32 register, then the five
-//: `__shfl_down_sync` steps fold lane `j` into lane `j - off`.
-// see docs/internals/decode/decode_fold.md#row-sum
+//: THE DECLARED SUM. Lane `j` accumulates `row[j], row[j + 32], ...` in -- see docs/internals/decode/decode_fold.md#row-sum
 template <typename T>
 __device__ __forceinline__ float row_sum(const T* row, int64_t sw, int width, int lane) {
   float acc = 0.0f;
@@ -33,10 +30,7 @@ __device__ __forceinline__ float row_sum(const T* row, int64_t sw, int width, in
   return acc;
 }
 
-//: THE ROW SUMS, for a side that carries its own mass. Warp `l < D` owns level
-//: `l`'s sum, which is why `D <= kMaxLevels <= kDecodeWarps` is the condition
-//: that makes ONE barrier after this enough.
-// see docs/internals/decode/decode_fold.md#fold-row-sums
+//: THE ROW SUMS, for a side that carries its own mass. Warp `l < D` owns level -- see docs/internals/decode/decode_fold.md#fold-row-sums
 template <typename T>
 __device__ __forceinline__ void fold_row_sums(const DecodeParams& p, int b, int h,
                                               const Span* spans, const int* normalize,
@@ -50,9 +44,7 @@ __device__ __forceinline__ void fold_row_sums(const DecodeParams& p, int b, int 
   }
 }
 
-//: ONE SIDE'S `D` LEVELS into the flat `[sum_l b_l]` shared staging the walk indexes by
-//: digit. `normalize` is `nullptr` for a side that never carries its own mass (the write
-//: side, always); otherwise `s_sum` must already hold `fold_row_sums`' answer.
+//: ONE SIDE'S `D` LEVELS into the flat `[sum_l b_l]` shared staging the walk indexes by -- see docs/internals/decode/decode_fold.md#near-line-53
 template <typename T>
 __device__ __forceinline__ void fold_rows(const DecodeParams& p, int b, int h, const Span* spans,
                                           const int* normalize, const float* s_sum, float* out) {
