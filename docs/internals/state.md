@@ -99,13 +99,34 @@ place and returns THE SAME OBJECT.
 The backing is chosen at BIND time and is not a per-call flag:
 
 * **paged** (the default for every stateful call) — a `PageArena`. The call's exact
-  atom bitmap (`rola.engine.facts.planes.atom_bits`, the kernel's own write set) is planned into
+  atom bitmap (`rola.engine.facts.planes.written_atoms` of the activity byte, the
+  kernel's own write set) is planned into
   slots, and the kernel resolves one slot per atom through the page table. Resident
   state scales with the atoms the routing REALIZES, not with the `N` the topology
   provisions.
 * **dense** — one `[BH, N/16, 16, cols]` plane, byte for byte the atom-major view of
   `[BH, N, cols]`. Selected by `expert=PlanOverrides(paging=False)`, and it is what
-  the bit-identity gate compares the paged backing against.
+  the bit-identity gate compares the paged backing against. A FRESH dense bind is
+  ZEROED (P80b): the exit sweep stores the atoms a call WRITES and no others, so the
+  atoms it skips must already hold the zero an absent paged atom reads as.
+
+<a id="activity"></a>**RESIDENCY IS THE ARENA'S FACT; ACTIVITY IS THE FACTS PASS'
+(P80b), and only the second one decides what a call TOUCHES.** The facts pass emits
+two orthogonal bits per atom — READ and WRITTEN, never pre-ORed — beside the table,
+and every body with state sweeps derives the same two predicates from them, under
+either backing: LOAD an atom iff it is RESIDENT and (read or written); STORE it iff
+WRITTEN. The table says only WHERE an atom is. Three things follow. Dense and paged
+touch the IDENTICAL atom set, so the bit-identity gate certifies the skip logic and
+not merely the addressing. A resident-but-IDLE atom — one a continuation committed
+earlier and this call neither reads nor writes — costs no state I/O at all, so a
+call's state traffic is proportional to what IT touches rather than to what the
+sequence has ever touched. And an instantiated-but-empty state touches nothing,
+which is the same sentence as [§1](#one-object)'s, now true atom by atom.
+
+THE PRICE IS THE IN-PLACE LAW, and it is the law this design already had: an atom
+the exit sweep skips must already hold what it carried in, so a gated continuation's
+exit plane must BE its entry plane. The op seam REFUSES two distinct planes when an
+activity bitmap is supplied, rather than silently dropping every unwritten atom.
 
 `paging=True` is REFUSED: paging is on by default, so there is nothing to turn on, and
 the expert overrides the MAPPING only. Dense and paged are ONE kernel, one ABI, one

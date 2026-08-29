@@ -145,7 +145,7 @@ def test_write_bit_agrees_with_the_atom_bitmap(grain):
     widths = (B,) * D
     read, write = _fixture(widths, 0.3, seed=D * 77 + B + bc)
     bits = _bits(read, write, widths, bc)
-    atoms = planes.atom_bits(_pack(write), widths).bool()
+    atoms = planes.written_atoms(planes.atom_bits(_pack(write), widths))
     condensed = atoms.view(_B * _H, prod(widths) // bc, bc // MMA_K_QUANTUM).any(dim=-1)
     assert torch.equal((bits & WRITE).bool(), condensed), (
         "the block-grain WRITE bit and the atom-grain bitmap disagree; two "

@@ -57,7 +57,8 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
             window: int, modes, sread, swrite, chunk: int = 32,
             state_in: torch.Tensor | None = None,
             state_out: torch.Tensor | None = None,
-            page_table: torch.Tensor | None = None):
+            page_table: torch.Tensor | None = None,
+            atom_bits: torch.Tensor | None = None):
     """The whole forward term, undivided: ``(num, den, state_out)``.
 
     ``num`` is ``[BH, T, d_v]`` fp32, ``den`` is ``[BH, T]`` fp32 and
@@ -72,7 +73,9 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     its ``page_table`` to run the paged backing; a call that passes none is binding a
     fresh dense backing and gets a plane of its own. ``page_table`` is the
     ``[BH, N/16]`` int32 slot table, and ``None`` is the dense backing, where the slot
-    IS the atom.
+    IS the atom. ``atom_bits`` is the facts pass' per-atom ACTIVITY byte (bit 0 WRITTEN,
+    bit 1 READ), the one truth both backings gate their state sweeps on
+    (:func:`rola.ops.carry.carry_inter`).
 
     ``modes`` is one :mod:`rola.ops.intra` support mode per level. It is a
     DECLARATION about the routing, not a switch: the intra's slab gate reads
@@ -123,7 +126,7 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     num, den = ext.carry_forward_inter(
         pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
         int(chunk), carry_ops.LEAF_SPLIT, intra_ops.pack_modes(tuple(modes)), state_in,
-        state_out, page_table)
+        state_out, page_table, atom_bits)
     #: SAME STREAM, SAME BUFFERS.  The intra REDs into `num`/`den`; the stream
     #: order is the only synchronization either kernel needs, and there is no
     #: host round trip between them.

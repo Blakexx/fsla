@@ -206,7 +206,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
              const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
              const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den,
              int L, int tok_words, int v_row_bytes, const float* __restrict__ s_in,
-             float* __restrict__ s_out, const int32_t* __restrict__ page_tbl) {
+             float* __restrict__ s_out, const int32_t* __restrict__ page_tbl,
+             const uint8_t* __restrict__ atom_bits) {
   using BP = BoxPlan<D, B, K, M>;
   using G = CarryGeom<D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO>;
   constexpr int kDv = DV;
@@ -367,6 +368,15 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   };
   //: THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80). -- see docs/internals/carry/carry_kernel.md#atombh
   const uint32_t atomBH = (uint32_t)bh * (uint32_t)(BP::kLeaves / kAtomLeaves);
+  //: THE ACTIVITY OF THIS OWNER'S ATOMS, READ ONCE AT THE PROLOGUE (P80b): one -- see docs/internals/carry/carry_kernel.md#activity
+  static_assert(kAtoms <= 32, "one bit per atom per mask: an owner holds at most 32 atoms");
+  uint32_t actRead = 0u, actWrite = 0u;
+  static_for<kAtoms>([&](auto Ac) {
+    constexpr int a = decltype(Ac)::value;
+    const uint8_t bits = atom_activity(atom_bits, atomBH + BP::canon_atom(owner, a));
+    actRead |= (uint32_t)((bits & kAtomRead) != 0u) << a;
+    actWrite |= (uint32_t)((bits & kAtomWritten) != 0u) << a;
+  });
   //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`, -- see docs/internals/carry/carry_kernel.md#kpagebytes
   constexpr uint32_t kPageBytes = (uint32_t)(kPageElems * (int)sizeof(float));
   auto page_base = [](int32_t slot) { return (uint32_t)slot * kPageBytes; };
@@ -408,9 +418,10 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   if (s_in != nullptr) {
     const float* const plane = pin_address(s_in);
     static_for<kAtoms>([&](auto Ac) {
-      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed -- see docs/internals/carry/carry_kernel.md#decltype
-      const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, decltype(Ac)::value));
-      if (slot < 0) return;
+      //: AN ABSENT OR IDLE ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the load -- see docs/internals/carry/carry_kernel.md#decltype
+      constexpr int a = decltype(Ac)::value;
+      const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
+      if (slot < 0 || (((actRead | actWrite) >> a) & 1u) == 0u) return;
       page_sweep(page_base(slot), [&](int sidx, uint32_t off_) {
         so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off_));
       });
@@ -761,9 +772,10 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     float* const plane = pin_address(s_out);
     rendezvous();
     static_for<kAtoms>([&](auto Ac) {
-      //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all, -- see docs/internals/carry/carry_kernel.md#decltype-2
-      const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, decltype(Ac)::value));
-      if (slot < 0) return;
+      //: THE EXIT STORES ONLY WRITTEN, PLANNED ATOMS.  An atom this call does not -- see docs/internals/carry/carry_kernel.md#decltype-2
+      constexpr int a = decltype(Ac)::value;
+      const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
+      if (slot < 0 || ((actWrite >> a) & 1u) == 0u) return;
       page_regs(Ac, std::false_type{});
       rendezvous();
       page_sweep(page_base(slot), [&](int sidx, uint32_t offb) {

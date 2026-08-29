@@ -274,12 +274,25 @@ docs/internals/facts/facts_kernel.md#the-facts-pass
 <a id="note-l339"></a>
 ### near line 339
 
-THE ATOM ROWS ARE THE WRITE SIDE'S: which atoms this routing writes is what
-keys residency, and reads of never-written atoms are inert.  A stateless call
-compiles none of this, so it pays a stateless call's price; a stateful call
-with no arena to admit into is the runtime-null OUTPUT skip, and takes the
-owner-grain emission alone -- which is the cheaper one when nothing needs the
-finer rows.
+THE ATOM ROWS ARE BOTH SIDES' (P80b): the write side's say which atoms this
+routing WRITES -- the set that keys residency and that the exit sweep stores --
+and the read side's say which it READS.  The two are orthogonal facts and are
+never pre-ORed here: the kernel derives `load iff resident and (read or
+written)` and `store iff written` from them, the touched-atom census reads them
+apart, and a resident-but-idle atom (neither bit) costs a continuation no state
+I/O at all.  The atom table is therefore the read plan's atom rows followed by
+the write plan's, `[BH, 2, entries, tok_words]`, the same side-major layout the
+union table keeps.
+
+THE WRITE SIDE'S ATOM ROWS ARE STILL FUSED with the owner rows it refines (the
+owner row is the OR of its atom rows); the READ side's owner rows are emitted at
+its own partition's spans, so its atom rows are a separate emission at the atom
+rectangle rather than a fusion -- the two sides carry their own partition, and
+only the write side's happens to be a refinement of what the table wants.
+
+A stateless call compiles none of this, so it pays a stateless call's price; a
+stateful call whose caller asks for no atom table takes the owner-grain emission
+alone.
 
 <a id="katomthreads"></a>
 ### `kAtomThreads`
@@ -296,12 +309,18 @@ shared word stream so the CTA's footprint is independent of `L`.
 <a id="atom-bitmap-kernel"></a>
 ### `atom_bitmap_kernel`
 
-THE REDUCTION, one CTA per (bh, upper prefix).  A prefix's atoms share every
-clause row but the innermost, so the shared rows are ANDed into a word stream
-ONCE and each innermost row is then ANDed against that stream and OR-reduced
-over the token axis.  An atom is live as soon as one word survives, so the CTA
-leaves the moment all of its atoms are live -- which makes the DENSE case the
-cheap one.
+THE REDUCTION, one CTA per (bh, upper prefix), OVER BOTH SIDES (P80b).  A
+prefix's atoms share every clause row but the innermost, so the shared rows are
+ANDed into a word stream ONCE -- one stream per side -- and each innermost row
+is then ANDed against its side's stream and OR-reduced over the token axis.  An
+atom is live as soon as one word survives, so the CTA leaves the moment all of
+its atoms are live on both sides -- which makes the DENSE case the cheap one.
+
+The two sides ride ONE CTA rather than two launches for the reason the union
+table's do: the token tile is shared, so the second side costs a second word
+stream and no second pass over the token axis.  The published byte is
+`kAtomWritten | kAtomRead` (`common/ops.cuh`), which is what the consumer's one
+byte-per-atom load resolves both predicates from.
 
 <a id="pin-address"></a>
 ### `pin_address`
@@ -437,6 +456,14 @@ the write side at BOTH grains.  An owner entry's digit run is a whole number
 of atom runs, so its ballot is the OR of theirs -- bit for bit, because the
 magnitude test distributes over the run's OR.
 
+<a id="kslive-atom"></a>
+### `kSLive` (the atom reduction's)
+
+Section 6 unroll discipline: a bare `k`-prefixed bound, so the two-sided runs
+read as compile-time to the standards lint's heuristic as well as to the
+compiler.  It is `2 * kInner` -- the prefix's atoms once per side, read then
+written, in the same side-major order the atom table is written in.
+
 <a id="kinner"></a>
 ### `kInner`
 
@@ -453,8 +480,9 @@ bytes an atom).  One pinned base, byte offsets after it.
 <a id="constexpr"></a>
 ### `constexpr`
 
-NO CLAUSE AT ALL is the whole slot space in one atom: written whenever the
-sequence has a token, which the caller's own topology guarantees.
+NO CLAUSE AT ALL is the whole slot space in one atom: read and written whenever
+the sequence has a token, which the caller's own topology guarantees -- so the
+byte is `kAtomActive` and neither predicate ever skips it.
 
 <a id="offua"></a>
 ### `offUa`

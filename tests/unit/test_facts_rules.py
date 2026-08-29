@@ -279,9 +279,9 @@ _DOC_ROWS = (
     ("| continued state-out, dense | present | present | absent | `R \\| W` |",
      [(_PRESENT, _PRESENT, None)],
      lambda R, W, S: R or W),
-    ("| fresh state-out, dense | absent | present | absent | always run |",
+    ("| fresh state-out, dense | absent | present | absent | `W` |",
      [(None, _PRESENT, None)],
-     lambda R, W, S: True),
+     lambda R, W, S: W),
 )
 
 

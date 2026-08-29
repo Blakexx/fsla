@@ -290,6 +290,14 @@ the fold's A fragment for it is the constant whose row 0 is ones.
 THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80) -- the same re-key the carved
 body makes, so the two bodies stay one ABI and one base translation.
 
+<a id="activity"></a>
+### the activity masks
+
+THE ACTIVITY OF THIS OWNER'S ATOMS, READ ONCE AT THE PROLOGUE (P80b): the carved
+body's two `uint32` masks, folded here over the same `kAtoms` and consulted by the
+same two sweeps (`carry_kernel.md#activity`).  One byte per atom per CTA is the
+whole cost, and the window loop never sees it.
+
 <a id="kpagebytes"></a>
 ### `kPageBytes`
 
@@ -306,9 +314,11 @@ column `(lane&3)*2 + (k&1)`; here rows are channels and columns are leaves.
 <a id="slot"></a>
 ### `slot`
 
-AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
-nothing here, the fragments keep the zero the prologue set, and reading a
-never-written state is inert under the self-normalizing readout.
+AN ABSENT OR IDLE ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the load
+predicate is RESIDENT AND (read or written), the carved body's exactly
+(`carry_kernel.md#decltype`, `common/ops.md#atom-activity`).  The two bodies keep
+one predicate for the same reason they keep one base translation: a declaration
+must not be able to change which atoms a call touches.
 
 <a id="knl0"></a>
 ### `kNL0`
@@ -351,5 +361,7 @@ value slots.
 <a id="slot-2"></a>
 ### `slot`
 
-THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
-which is what leaves a skipped slot carrying exactly what it held.
+THE EXIT STORES ONLY WRITTEN, PLANNED ATOMS (P80b), the carved body's predicate
+exactly (`carry_kernel.md#decltype-2`).  An atom this call does not write is not
+stored and an unplanned one is not addressed at all, which is what leaves a skipped
+slot carrying exactly what it held.

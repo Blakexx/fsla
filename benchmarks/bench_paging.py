@@ -141,8 +141,8 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
     #: Same launch the DAG's own node issues, on the same packed write plane.
     with torch.no_grad():
         routes = layer.routes(x)
-        bitmap = planes.atom_bits(planes.pack_side(routes.write),
-                                  widths_of(routes)).bool()
+        bitmap = planes.written_atoms(
+            planes.atom_bits(planes.pack_side(routes.write), widths_of(routes)))
 
     # COLD is what the FIRST call of a sequence pays (full reset, replan, republish);
     # WARM is what every continuation pays (`fresh=False`, so a repeat of the same

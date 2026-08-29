@@ -67,7 +67,8 @@ template <class A>
 static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,
                           const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den,
                           int BH, int L, int tok_words, int v_row_bytes, const float* s_in,
-                          float* s_out, const int32_t* page_tbl, cudaStream_t stream) {
+                          float* s_out, const int32_t* page_tbl, const uint8_t* atom_bits,
+                          cudaStream_t stream) {
   const auto fn = A::fn();
   constexpr size_t sm = (size_t)A::geom()[0];
   static bool configured = false;
@@ -79,7 +80,7 @@ static cudaError_t launch(const __nv_bfloat16* pr, const __nv_bfloat16* pw, cons
   }
   const dim3 grid((unsigned)A::BP::kOwners, (unsigned)BH);
   fn<<<grid, (unsigned)A::geom()[3], sm, stream>>>(pr, pw, gw, v, rows, o, den, L, tok_words,
-                                                   v_row_bytes, s_in, s_out, page_tbl);
+                                                   v_row_bytes, s_in, s_out, page_tbl, atom_bits);
   return cudaGetLastError();
 }
 
@@ -133,10 +134,10 @@ using ArmRowsW = SideRowPlan<typename A::SW>;
   cudaError_t carry_arm_forward_##I_(                                                            \
       const __nv_bfloat16* pr, const __nv_bfloat16* pw, const __nv_bfloat16* gw,                 \
       const __nv_bfloat16* v, const uint32_t* rows, float* o, float* den, int BH, int L,         \
-      int tok_words, int v_row_bytes, const float* s_in, float* s_out, const int32_t* page_tbl,  \
-      cudaStream_t stream) {                                                                     \
+      int tok_words, int v_row_bytes, const float* s_in, float* s_out, \
+      const int32_t* page_tbl, const uint8_t* atom_bits, cudaStream_t stream) { \
     return launch<CarryArm##I_>(pr, pw, gw, v, rows, o, den, BH, L, tok_words, v_row_bytes,      \
-                                s_in, s_out, page_tbl, stream);                                  \
+                                s_in, s_out, page_tbl, atom_bits, stream); \
   }                                                                                              \
   cudaError_t carry_arm_rows_##I_(const __nv_bfloat16* pr, const __nv_bfloat16* pw,              \
                                   uint32_t* tbl, int BH, int L, cudaStream_t stream) {           \

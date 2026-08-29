@@ -70,7 +70,8 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
                                          int64_t level_modes, c10::optional<torch::Tensor> s_in,
                                          c10::optional<torch::Tensor> s_out,
-                                         c10::optional<torch::Tensor> page_tbl) {
+                                         c10::optional<torch::Tensor> page_tbl,
+                                         c10::optional<torch::Tensor> atom_bits) {
   TORCH_CHECK(pr.is_cuda() && pw.is_cuda() && gw.is_cuda() && v.is_cuda(), "cuda tensors only");
   TORCH_CHECK(pr.scalar_type() == torch::kBFloat16 && pw.scalar_type() == torch::kBFloat16
                   && gw.scalar_type() == torch::kBFloat16 && v.scalar_type() == torch::kBFloat16,
@@ -103,6 +104,27 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   float* sout_p = s_out.has_value() ? s_out->data_ptr<float>() : nullptr;
   const int32_t* ptbl_p =
       page_tbl.has_value() ? reinterpret_cast<const int32_t*>(page_tbl->data_ptr()) : nullptr;
+  //: THE ACTIVITY FACT IS THE FACTS PASS' (P80b), and it is OPTIONAL at this seam -- see docs/internals/carry/carry.md#atom-bits
+  if (atom_bits.has_value()) {
+    long N = 1;
+    for (auto w : widths) N *= w;
+    TORCH_CHECK(atom_bits->is_cuda() && atom_bits->is_contiguous()
+                    && atom_bits->scalar_type() == torch::kUInt8,
+                "the atom activity bitmap is a contiguous uint8 cuda tensor");
+    TORCH_CHECK(atom_bits->numel() == (long)BH * (N / kAtomLeaves),
+                "the activity bitmap holds one byte per atom: BH * N / ", kAtomLeaves,
+                " entries, got ", atom_bits->numel());
+    TORCH_CHECK(s_in.has_value() || s_out.has_value(),
+                "an activity bitmap gates a state sweep, and this call carries neither plane");
+    TORCH_CHECK(!(s_in.has_value() && s_out.has_value()) || s_in->data_ptr() == s_out->data_ptr(),
+                "a gated continuation ADVANCES IN PLACE (docs/internals/state.md): "
+                "the exit sweep stores the atoms this call writes and no "
+                "others, so an atom it skips must already hold what it carried in. Two "
+                "distinct planes would silently drop every unwritten atom. Pass the same "
+                "plane as both, or pass no activity bitmap.");
+  }
+  const uint8_t* abits_p =
+      atom_bits.has_value() ? reinterpret_cast<const uint8_t*>(atom_bits->data_ptr()) : nullptr;
   auto stream = at::cuda::getCurrentCUDAStream();
   cudaError_t err = cudaErrorInvalidValue;
   //: THE BALLOT ROWS COME FIRST, ON THE SAME STREAM (K31-i-d). One pass over the -- see docs/internals/carry/carry.md#tok-words
@@ -124,6 +146,7 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
           (const __nv_bfloat16*)gw.data_ptr(), (const __nv_bfloat16*)v.data_ptr(),           \
           reinterpret_cast<const uint32_t*>(rows.data_ptr()), o.data_ptr<float>(),           \
           den.data_ptr<float>(), BH, L, tok_words, v_row_bytes, sin_p, sout_p, ptbl_p,      \
+          abits_p,                                                                           \
           stream);                                                                           \
   } else
     CARRY_ARMS_X(CARRY_DISPATCH) {}

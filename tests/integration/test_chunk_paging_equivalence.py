@@ -52,6 +52,9 @@ _DV = carry_ops.D_V
 _COLS = _DV + 1
 _POISON = -1234.5
 
+#: `_launch`'s "the caller said nothing", which is not the same as an explicit `None`.
+_UNSET = object()
+
 #: `(widths, k, m, window, level_modes)` -- one arm per depth the carry's list carries,
 #: covering BOTH bodies: `level_modes = 0` is DENSE_BOTH and takes the channel-split
 #: body, a nonzero declaration takes the carved one. Row 9's `(8,)*4` is the MULTI-LEVEL
@@ -89,10 +92,16 @@ def _simplex(shape, generator, live=None):
     return (x / x.sum(-1, keepdim=True)).to(torch.bfloat16)
 
 
-def _fixture(widths, *, T, support=1.0, seed=0, B=1, H=1):
-    """Dense read support, `support`-structured write support."""
+def _fixture(widths, *, T, support=1.0, read_support=1.0, seed=0, B=1, H=1):
+    """`read_support`-structured read support, `support`-structured write support.
+
+    Both truncations keep a level's FIRST digits, so a smaller support is a SUBSET of a
+    larger one at every level and therefore over the atoms too -- which is what lets a
+    continuation's second call touch a strict subset of its first call's atoms.
+    """
     g = torch.Generator(device="cuda").manual_seed(seed)
-    read = tuple(_simplex((B, T, H, w), g) for w in widths)
+    read = tuple(_simplex((B, T, H, w), g, live=max(1, int(w * read_support)))
+                 for w in widths)
     write = tuple(_simplex((B, T, H, w), g, live=max(1, int(w * support))) for w in widths)
     g_write = torch.rand((B, T, H), device="cuda", generator=g).to(torch.bfloat16)
     v = torch.randn((B, T, H, _DV), device="cuda", generator=g).to(torch.bfloat16)
@@ -103,12 +112,15 @@ def _BH(fixture):
     return fixture[3].shape[0] * fixture[3].shape[2]
 
 
-def _launch(fixture, arm, *, s_in=None, s_out=None, page_tbl=None):
+def _launch(fixture, arm, *, s_in=None, s_out=None, page_tbl=None, bits=_UNSET):
     widths, k, m, window, modes = arm
     read, write, g_write, v = fixture
+    if bits is _UNSET:
+        bits = None if (s_in is None and s_out is None) else _bitmap(fixture, arm)
     return carry_ops.carry_inter(read, write, g_write, v, widths, k=k, m=m, window=window,
                                  chunk=32, carve=carry_ops.LEAF_SPLIT, level_modes=modes,
-                                 state_in=s_in, state_out=s_out, page_table=page_tbl)
+                                 state_in=s_in, state_out=s_out, page_table=page_tbl,
+                                 atom_bits=bits)
 
 
 def _dense(fixture, arm, *, s_in=None, plane=None):
@@ -119,18 +131,28 @@ def _dense(fixture, arm, *, s_in=None, plane=None):
     return y, den, out.view(_BH(fixture), prod(widths), _COLS)
 
 
-def _bitmap(fixture, arm):
-    """The kernel's own EXACT atom-grain write bitmap, as the shipped plan publishes it.
+def _side(fixture, which):
+    """One side as the `[B, H, L, sum_l w_l]` packed plane the facts pass reads -- the
+    producer's own layout, not the kernel seam's `[BH, L, sum]` one."""
+    return torch.cat(fixture[which], -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
 
-    No re-keying: since P80 the consumer addresses its state by the CANONICAL atom id
-    this bitmap is indexed by, so the plan the engine would build is the plan this file
-    hands the arena.
+
+def _bitmap(fixture, arm):
+    """The kernel's own EXACT atom-grain ACTIVITY byte, as the shipped pass publishes it.
+
+    Bit 0 WRITTEN, bit 1 READ, over BOTH sides' packed planes (P80b). No re-keying:
+    since P80 the consumer addresses its state by the CANONICAL atom id this bitmap is
+    indexed by, so the plan the engine would build is the plan this file hands the arena
+    and the byte the engine would pass is the byte this file hands the kernel.
     """
     widths = arm[0]
-    #: `atom_bits` takes the `[B, H, L, sum_l w_l]` packed WRITE plane -- the producer's
-    #: own layout, not the kernel seam's `[BH, L, sum]` one.
-    pw = torch.cat(fixture[1], -1).permute(0, 2, 1, 3).to(torch.bfloat16).contiguous()
-    return planes.atom_bits(pw, widths).reshape(_BH(fixture), -1).bool()
+    bits = planes.atom_bits(_side(fixture, 1), widths, read_plane=_side(fixture, 0))
+    return bits.reshape(_BH(fixture), -1)
+
+
+def _plan(fixture, arm):
+    """The WRITE half alone: residency is keyed on the atoms a call writes."""
+    return planes.written_atoms(_bitmap(fixture, arm))
 
 
 def _arena(arm, BH, pool_slack=0.0):
@@ -187,7 +209,7 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
     y_dense, _, dense = _dense(fixture, arm)
     y_control, _, _ = _dense(fixture, arm)
     arena = _arena(arm, BH)
-    result = arena.plan_exact(_bitmap(fixture, arm))
+    result = arena.plan_exact(_plan(fixture, arm))
     y_paged, _, paged = _paged(fixture, arm, arena)
 
     assert result.allocated_pages > 0 and (paged != 0).any(), (
@@ -219,7 +241,7 @@ def test_a_zero_page_is_inert(arm):
     _need(arm)
     fixture = _fixture(arm[0], T=2 * arm[3], support=0.25, seed=len(arm[0]) * 11 + arm[3])
     BH = _BH(fixture)
-    exact = _bitmap(fixture, arm)
+    exact = _plan(fixture, arm)
     if bool(exact.all()):
         pytest.skip("this arm's routing already reaches every atom; there is no zero page")
 
@@ -259,7 +281,7 @@ def test_an_absent_atom_is_skipped_and_never_written(arm):
     _need(arm)
     fixture = _fixture(arm[0], T=2 * arm[3], support=0.25, seed=len(arm[0]) * 13 + arm[3])
     BH = _BH(fixture)
-    bitmap = _bitmap(fixture, arm)
+    bitmap = _plan(fixture, arm)
     if bool(bitmap.all()):
         pytest.skip("this arm's routing reaches every atom; no atom is absent to skip")
 
@@ -307,7 +329,7 @@ def test_a_reserved_slack_pool_is_bitwise_invisible(arm):
     _need(arm)
     fixture = _fixture(arm[0], T=2 * arm[3], support=0.5, seed=len(arm[0]) * 31 + arm[3])
     BH = _BH(fixture)
-    bitmap = _bitmap(fixture, arm)
+    bitmap = _plan(fixture, arm)
 
     y_dense, _, dense = _dense(fixture, arm)
     y_control, _, _ = _dense(fixture, arm)
@@ -363,11 +385,11 @@ def test_a_continuation_is_bit_identical_across_the_two_backings(arm):
     y1_control, _, _ = _dense(first, arm)
 
     arena = _arena(arm, BH)
-    arena.plan_exact(_bitmap(first, arm))
+    arena.plan_exact(_plan(first, arm))
     y1_paged, _, p1 = _paged(first, arm, arena)
     assert torch.equal(s1, p1), "the first half's state differs across the backings"
 
-    arena.plan_exact(_bitmap(second, arm), fresh=False)
+    arena.plan_exact(_plan(second, arm), fresh=False)
     y2_paged, _, p2 = _paged(second, arm, arena, s_in=arena.state)
     assert torch.equal(s2, p2), (
         f"the continued state differs across the backings by "
@@ -396,3 +418,76 @@ def test_a_stateless_call_carries_no_state(arm):
     assert none is None, "a stateless call handed back a state plane"
     _assert_y(y_state, y_none, y_state, arm, "the stateless variant's y differs from the "
               "stateful one's over a zero entry state")
+
+
+# ---------------------------------------------------------------------------
+# 7. a RESIDENT BUT IDLE atom costs a continuation nothing (P80b)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("arm", _ARMS, ids=_arm_id)
+def test_a_resident_but_idle_atom_is_neither_loaded_nor_stored(arm):
+    """The second call's routing touches a STRICT SUBSET of the first call's atoms.
+
+    Residency is the arena's fact and activity is the facts pass' (P80b): the union
+    residency a continuation plans keeps the first call's atoms mapped, and the second
+    call must touch none of the ones it neither reads nor writes. The claim is made
+    twice, because the two halves of the predicate fail differently:
+
+    * THE STORE SKIP is observable, and is checked against a poison fill of exactly the
+      idle-resident slots -- they must come back holding it.
+    * THE LOAD SKIP is not observable by construction: an idle atom is not read, so its
+      contents cannot reach `y` whether the sweep loads them or not. That is the whole
+      point (skipping is exact, not an approximation), and what it saves is DRAM traffic
+      -- measured by the probe's ncu pass, never by an assertion here.
+
+    Correctness is the same `torch.equal` the rest of this file makes: the continued
+    state and `y` are identical to the dense continuation's, which runs the identical
+    predicate over a null table.
+    """
+    assert_fresh_binary()
+    _need(arm)
+    widths, k, m, window, _ = arm
+    BH = 1
+    first = _fixture(widths, T=2 * window, support=0.5, read_support=0.5, seed=61)
+    second = _fixture(widths, T=2 * window, support=0.25, read_support=0.25, seed=62)
+
+    resident = _plan(first, arm)
+    active = _bitmap(second, arm) != 0
+    idle = resident & ~active
+    if not bool(idle.any()):
+        pytest.skip("this arm's second call reaches every atom the first one committed")
+    assert bool((_plan(second, arm) & ~resident).sum() == 0), (
+        "the second call writes an atom the first did not: this cell is about the union "
+        "residency the first call already committed")
+
+    plane = carry_ops.state_plane(widths, BH, _DV)
+    _dense(first, arm, plane=plane)
+    y2_dense, _, s2 = _dense(second, arm, s_in=plane, plane=plane)
+    s2 = s2.clone()
+
+    arena = _arena(arm, BH)
+    arena.plan_exact(resident)
+    _paged(first, arm, arena)
+    arena.plan_exact(_plan(second, arm), fresh=False)
+    y2_paged, _, p2 = _paged(second, arm, arena, s_in=arena.state)
+    assert torch.equal(s2, p2), (
+        f"the continued state differs across the backings by "
+        f"{(s2 - p2).abs().max().item():.3e}; the two backings ran different predicates")
+
+    #: THE STORE SKIP, on a second arena carrying the same first half: poison exactly
+    #: the idle-resident slots and they must survive the second call untouched.
+    poisoned = _arena(arm, BH)
+    poisoned.plan_exact(resident)
+    _paged(first, arm, poisoned)
+    poisoned.plan_exact(_plan(second, arm), fresh=False)
+    poisoned.wait()
+    slots = poisoned.page_table[idle].long()
+    assert int(slots.numel()) > 0, "no idle-resident slot to poison"
+    poisoned.state[slots] = _POISON
+    y2_poison, _, _ = _paged(second, arm, poisoned, s_in=poisoned.state)
+    assert bool((poisoned.state[slots] == _POISON).all()), (
+        "an idle-resident atom was written: the exit sweep is storing atoms this call "
+        "does not write")
+    _assert_y(y2_paged, y2_poison, y2_dense, arm,
+              "poisoning an idle-resident atom moved y: the entry sweep is reading an "
+              "atom this call does not read")

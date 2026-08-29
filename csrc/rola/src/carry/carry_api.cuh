@@ -15,7 +15,8 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
                                          int64_t m, int64_t window, int64_t chunk, int64_t carve,
                                          int64_t level_modes, c10::optional<torch::Tensor> s_in,
                                          c10::optional<torch::Tensor> s_out,
-                                         c10::optional<torch::Tensor> page_tbl);
+                                         c10::optional<torch::Tensor> page_tbl,
+                                         c10::optional<torch::Tensor> atom_bits);
 // the INTER term only, undivided -- see docs/internals/carry/carry_api.md#note-l14
 
 torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t> widths, int64_t k,

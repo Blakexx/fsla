@@ -1277,6 +1277,21 @@ and `BP::canon_atom` re-keys the owner's own `kAtoms` lattice atoms to the
 canonical numbering the page plan uses -- ids only, at the prologue; the row
 INSIDE an atom is the same in both orders, so no data is permuted.
 
+<a id="activity"></a>
+### the activity masks
+
+THE ACTIVITY OF THIS OWNER'S ATOMS, READ ONCE AT THE PROLOGUE (P80b): one byte per
+atom, at most `kAtoms` of them, folded into two `uint32` bitmasks that live in
+registers for the whole launch and are consulted by both sweeps.  THE FLOOR IS ONE
+WORD PER ATOM PER CTA: nothing here is per leaf, per token or per window, and the
+window loop is untouched.  The masks are CTA-uniform for the same reason the slot
+is -- an atom belongs to exactly one owner block, and the atom id is derived from
+`blockIdx` alone -- so the skips take the barriers with them.
+
+A null `atom_bits` reads as every atom active (`common/ops.md#atom-activity`), so
+a caller with no facts pass gets the pre-P80b sweep and the two predicates collapse
+to residency alone.
+
 <a id="kpagebytes"></a>
 ### `kPageBytes`
 
@@ -1527,9 +1542,16 @@ that row carries it.
 <a id="decltype"></a>
 ### `decltype`
 
-AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed
-nothing here, the fragments keep the zero the prologue set, and reading a
-never-written state is inert under the self-normalizing readout.
+AN ABSENT OR IDLE ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the load
+predicate is RESIDENT AND (read or written) (P80b, `common/ops.md#atom-activity`).
+Absent means the plan committed nothing here, and the fragments keep the zero the
+prologue set -- reading a never-written state is inert under the self-normalizing
+readout.  IDLE means this call's routing neither reads nor writes the atom: its
+fragments are multiplied by zero amplitudes on both sides, so what the sweep would
+have loaded could not reach `y` and could not change what the exit stores.  The
+resident-but-idle case is the one a CONTINUATION actually meets, and skipping it is
+what makes a second call's state traffic proportional to what it touches rather
+than to what the sequence has ever touched.
 
 <a id="spt"></a>
 ### `SPT`
@@ -1600,5 +1622,13 @@ value slots.
 <a id="decltype-2"></a>
 ### `decltype`
 
-THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all,
-which is what leaves a skipped slot carrying exactly what it held.
+THE EXIT STORES ONLY WRITTEN, PLANNED ATOMS (P80b).  An atom this call does not
+write is not stored, and an unplanned one is not addressed at all -- which is what
+leaves a skipped slot carrying exactly what it held.  The two skips have the same
+consequence and different reasons: an unwritten atom's accumulator holds exactly
+what the entry sweep loaded (every write-side contribution to it was a `+0.0`), so
+storing it would rewrite the same bytes.  THE PRICE OF THIS IS THE IN-PLACE LAW:
+a continuation's exit plane must BE its entry plane (`state.md#the-dense-
+continuation`), because an atom the sweep skips has to already hold what it
+carried in.  The seam refuses two distinct planes when an activity bitmap is
+supplied, and a fresh dense plane is zeroed at bind rather than written whole.

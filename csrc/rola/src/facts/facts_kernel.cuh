@@ -252,12 +252,17 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
     ROLA_FACTS_LEVEL(LPR, ampRead, out, 3)
   }
 
-  //: THE ATOM ROWS ARE THE WRITE SIDE'S: which atoms this routing writes is what -- see docs/internals/facts/facts_kernel.md#note-l339
+  //: THE ATOM ROWS ARE BOTH SIDES' (P80b): the write side's say which atoms this -- see docs/internals/facts/facts_kernel.md#note-l339
   if constexpr (MASK == kPrefillStateful) {
     if (atom_tbl != nullptr) {
       uint32_t* out =
           tbl + ((long)blockIdx.y * kSideEntries + (long)LPR::entries) * entryStride + w;
-      uint32_t* aout = atom_tbl + ((long)blockIdx.y * AP::entries) * entryStride + w;
+      uint32_t* aoutR = atom_tbl + ((long)(2 * blockIdx.y) * AP::entries) * entryStride + w;
+      uint32_t* aout = atom_tbl + ((long)(2 * blockIdx.y + 1) * AP::entries) * entryStride + w;
+      ROLA_FACTS_LEVEL(AP, ampRead, aoutR, 0)
+      ROLA_FACTS_LEVEL(AP, ampRead, aoutR, 1)
+      ROLA_FACTS_LEVEL(AP, ampRead, aoutR, 2)
+      ROLA_FACTS_LEVEL(AP, ampRead, aoutR, 3)
       ROLA_FACTS_LEVEL_BOTH(0)
       ROLA_FACTS_LEVEL_BOTH(1)
       ROLA_FACTS_LEVEL_BOTH(2)
@@ -282,7 +287,7 @@ __global__ void chunk_facts_tables(const __nv_bfloat16* __restrict__ pread,
 constexpr int kAtomThreads = 128;
 constexpr int kAtomTileWords = 256;
 
-//: THE REDUCTION, one CTA per (bh, upper prefix). A prefix's atoms share every -- see docs/internals/facts/facts_kernel.md#atom-bitmap-kernel
+//: THE REDUCTION, one CTA per (bh, upper prefix), OVER BOTH SIDES (P80b). A -- see docs/internals/facts/facts_kernel.md#atom-bitmap-kernel
 template <int D, int B>
 __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
                                    uint8_t* __restrict__ atom_bits, int L) {
@@ -297,21 +302,26 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
   constexpr int kAtoms = (int)LP::blocks;
   //: the innermost clause level's group count: the atoms of one prefix, and by -- see docs/internals/facts/facts_kernel.md#kinner
   constexpr int kInner = kClauses > 0 ? LP::groups_at(kClauses - 1) : 1;
+  //: §6 unroll discipline: a bare `k`-prefixed bound, so the two-sided runs read -- see docs/internals/facts/facts_kernel.md#kslive-atom
+  constexpr int kSLive = 2 * kInner;
+  constexpr int kWarps = kAtomThreads / kBallotLanes;
   const int tid = threadIdx.x;
   const int lane = tid & 31;
   const int blkBase = blockIdx.x * kInner;
   //: THE BITMAP IS ONE BYTE PER ATOM, so `BH * atoms` is a 32-bit displacement -- see docs/internals/facts/facts_kernel.md#outoff
   const uint32_t outOff = (uint32_t)blockIdx.y * (uint32_t)kAtoms + (uint32_t)blkBase;
 
-  //: NO CLAUSE AT ALL is the whole slot space in one atom: written whenever the -- see docs/internals/facts/facts_kernel.md#constexpr
+  //: NO CLAUSE AT ALL is the whole slot space in one atom: read and written -- see docs/internals/facts/facts_kernel.md#constexpr
   if constexpr (kClauses == 0) {
-    if (tid == 0) *reinterpret_cast<uint8_t*>(gather_ptr(atom_bits, outOff)) = 1;
+    if (tid == 0) *reinterpret_cast<uint8_t*>(gather_ptr(atom_bits, outOff)) = kAtomActive;
     return;
   } else {
     const int tokWords = tok_words(L);
-    //: ADDRESSING DISCIPLINE, THE FORM'S: ONE 64-bit address per (bh), formed here -- see docs/internals/facts/facts_kernel.md#pin-address
-    const uint32_t* const base =
-        pin_address(tbl + (long)blockIdx.y * ((long)LP::entries * (long)tokWords));
+    //: ADDRESSING DISCIPLINE, THE FORM'S: ONE 64-bit address per (bh, side), formed -- see docs/internals/facts/facts_kernel.md#pin-address
+    const uint32_t* const baseR =
+        pin_address(tbl + ((long)(2 * blockIdx.y + 0) * (long)LP::entries) * (long)tokWords);
+    const uint32_t* const baseW =
+        pin_address(tbl + ((long)(2 * blockIdx.y + 1) * (long)LP::entries) * (long)tokWords);
     const uint32_t rowBytes = (uint32_t)tokWords * (uint32_t)sizeof(uint32_t);
     //: NAMED SCALARS, never an array -- the consumer's rule, for the same -- see docs/internals/facts/facts_kernel.md#offua
     uint32_t offUa = 0u, offUb = 0u, offUc = 0u;
@@ -329,10 +339,10 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
     //: the innermost rows are the CONTIGUOUS entry run at the prefix's level.
     const uint32_t offInner = (uint32_t)LP::prefix_entries(kClauses - 1) * rowBytes;
 
-    __shared__ uint32_t sUp[kAtomTileWords];
-    __shared__ uint8_t sLive[kInner];
+    __shared__ uint32_t sUp[2][kAtomTileWords];
+    __shared__ uint8_t sLive[kSLive];
     __shared__ int sAllLive;
-    for (int a = tid; a < kInner; a += kAtomThreads) sLive[a] = 0;
+    for (int e = tid; e < kSLive; e += kAtomThreads) sLive[e] = 0;
     if (tid == 0) sAllLive = 0;
     rendezvous();
 
@@ -342,35 +352,41 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
 #pragma unroll 1
       for (int i = tid; i < n; i += kAtomThreads) {
         const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
-        uint32_t m = 0xFFFFFFFFu;
-        if constexpr (1 < kClauses)
-          m &= *reinterpret_cast<const uint32_t*>(gather_ptr(base, offUa + off));
-        if constexpr (2 < kClauses)
-          m &= *reinterpret_cast<const uint32_t*>(gather_ptr(base, offUb + off));
-        if constexpr (3 < kClauses)
-          m &= *reinterpret_cast<const uint32_t*>(gather_ptr(base, offUc + off));
-        sUp[i] = m;
+        uint32_t mr = 0xFFFFFFFFu, mw = 0xFFFFFFFFu;
+#define ROLA_ATOM_AND(CL_, O_)                                               \
+  if constexpr ((CL_) < kClauses) {                                          \
+    mr &= *reinterpret_cast<const uint32_t*>(gather_ptr(baseR, (O_) + off)); \
+    mw &= *reinterpret_cast<const uint32_t*>(gather_ptr(baseW, (O_) + off)); \
+  }
+        ROLA_ATOM_AND(1, offUa)
+        ROLA_ATOM_AND(2, offUb)
+        ROLA_ATOM_AND(3, offUc)
+#undef ROLA_ATOM_AND
+        sUp[0][i] = mr;
+        sUp[1][i] = mw;
       }
       rendezvous();
-      for (int a = tid >> 5; a < kInner; a += kAtomThreads / kBallotLanes) {
-        if (sLive[a]) continue;
-        const uint32_t rowOff = offInner + (uint32_t)a * rowBytes;
+      for (int e = tid >> 5; e < kSLive; e += kWarps) {
+        if (sLive[e]) continue;
+        const int s = e / kInner;
+        const uint32_t* const base = s == 0 ? baseR : baseW;
+        const uint32_t rowOff = offInner + (uint32_t)(e - s * kInner) * rowBytes;
         bool hit = false;
 #pragma unroll 1
         for (int i = lane; i < n; i += kBallotLanes) {
           const uint32_t off = (uint32_t)(w0 + i) * (uint32_t)sizeof(uint32_t);
-          hit |=
-              (sUp[i] & *reinterpret_cast<const uint32_t*>(gather_ptr(base, rowOff + off))) != 0u;
+          hit |= (sUp[s][i] & *reinterpret_cast<const uint32_t*>(gather_ptr(base, rowOff + off)))
+                 != 0u;
         }
         //: the vote is the WHOLE unit's -- every lane issues it, lane 0 files it.
         const uint32_t any = lane_ballot(hit);
-        if (lane == 0 && any != 0u) sLive[a] = 1;
+        if (lane == 0 && any != 0u) sLive[e] = 1;
       }
       rendezvous();
       //: THE EXIT IS CTA-UNIFORM: one warp reads every flag behind the barrier -- see docs/internals/facts/facts_kernel.md#near-line-428
       if (tid < kBallotLanes) {
         bool all = true;
-        for (int a = tid; a < kInner; a += kBallotLanes) all &= sLive[a] != 0;
+        for (int e = tid; e < kSLive; e += kBallotLanes) all &= sLive[e] != 0;
         const uint32_t every = lane_ballot(all);
         if (tid == 0 && every == 0xFFFFFFFFu) sAllLive = 1;
       }
@@ -378,7 +394,8 @@ __global__ void atom_bitmap_kernel(const uint32_t* __restrict__ tbl,
       if (sAllLive) break;
     }
     for (int a = tid; a < kInner; a += kAtomThreads)
-      *reinterpret_cast<uint8_t*>(gather_ptr(atom_bits, outOff + (uint32_t)a)) = sLive[a];
+      *reinterpret_cast<uint8_t*>(gather_ptr(atom_bits, outOff + (uint32_t)a)) =
+          (uint8_t)((sLive[kInner + a] ? kAtomWritten : 0u) | (sLive[a] ? kAtomRead : 0u));
   }
 }
 

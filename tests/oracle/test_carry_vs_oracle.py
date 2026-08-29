@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from rola.engine.facts import planes
 from rola.ops import carry as carry_ops
 from tests.oracle import reference
 from tests.oracle.fixtures import Cell, assert_fresh_binary, canonical_from_plane, relative, require_arm
@@ -55,18 +56,36 @@ ALT4 = 102
 CARVE = carry_ops.LEAF_SPLIT
 
 
+def _facts_plane(cell, levels):
+    """One side as the facts pass' `[B, H, L, sum_l w_l]` plane.
+
+    `pack_side` already lays the bytes out this way for the kernel seam, which names
+    the leading axes `[BH, L, sum]`; the facts entry names them apart because its own
+    grid is per `(bh)`. Same bytes, one view.
+    """
+    return carry_ops.pack_side(levels).view(cell.B, cell.H, cell.T, -1)
+
+
 def run(cell, arm, carve, chunk=32, state_in=None):
     widths, k, m, W = arm
     require_arm(widths, k, m, W, chunk, carve, 0, d_v=cell.d_v)
     read, write, g, v = cell.ref_levels()
-    #: THE STATE PLANE IS THE CALLER'S (state.md section 4). This cell binds a FRESH
-    #: dense backing, so it allocates one; the paged and continued forms are
+    #: THE STATE PLANE IS THE CALLER'S (state.md section 4). A fresh cell binds a
+    #: dense backing and allocates one; a carried cell ADVANCES ITS OWN PLANE IN PLACE,
+    #: which is what the activity gate requires of every continuation (P80b) and what
+    #: the facade's dense backing does. The paged forms are
     #: `tests/integration/test_chunk_paging_equivalence.py`'s.
-    plane = carry_ops.state_plane(widths, cell.v_bf.shape[0] * cell.v_bf.shape[2],
-                                  cell.v_bf.shape[-1])
+    plane = state_in if state_in is not None else carry_ops.state_plane(
+        widths, cell.v_bf.shape[0] * cell.v_bf.shape[2], cell.v_bf.shape[-1])
+    #: THE SHIPPED PREDICATE IS GATED HERE TOO: every oracle cell runs with the facts
+    #: pass' own activity byte, so the fp64 comparison certifies the arithmetic the
+    #: kernel does with its sweeps SKIPPED, not a fuller one no shipped call makes.
+    bits = planes.atom_bits(_facts_plane(cell, cell.write_bf), widths,
+                            read_plane=_facts_plane(cell, cell.read_bf))
     num, den, plane = carry_ops.carry_inter(
         cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths,
-        k=k, m=m, window=W, chunk=chunk, carve=carve, state_in=state_in, state_out=plane)
+        k=k, m=m, window=W, chunk=chunk, carve=carve, state_in=state_in, state_out=plane,
+        atom_bits=bits)
     return num, den, plane
 
 
@@ -186,6 +205,54 @@ def test_m1_entry_state_is_carried(carve=CARVE):
     got = canonical_from_plane(plane)
     want = s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)
     assert relative(got, want) < BF16_RTOL
+
+
+def test_m1_a_continuation_that_touches_a_strict_subset(carve=CARVE):
+    """THE IDLE-RESIDENT CELL (P80b): call two's routing is call one's, truncated.
+
+    Two structured-support cells over one plane, advanced IN PLACE. Every atom call one
+    reaches is committed; call two reaches a STRICT SUBSET of them, so the rest are
+    resident and IDLE -- and the kernel must neither load nor store them. The fp64
+    reference chains the same two calls and knows nothing about any of it, which is what
+    makes this a statement about the arithmetic rather than about the skip.
+
+    THE CENSUS IS ASSERTED HERE, not inferred: an idle atom's bytes must be BIT-identical
+    across call two (nothing stored), and perturbing one must not move `y` (nothing
+    read). Equality on the written half is the fp64 comparison itself.
+    """
+    assert_fresh_binary()
+    first = Cell(SMALL[0], T=256, k_tok=None, seed=71, support=0.5)
+    second = Cell(SMALL[0], T=256, k_tok=None, seed=72, support=0.25)
+
+    _, _, plane = run(first, SMALL, carve)
+    _, _, s1_ref = ref(first, SMALL)
+
+    bits = planes.atom_bits(_facts_plane(second, second.write_bf), SMALL[0],
+                            read_plane=_facts_plane(second, second.read_bf))
+    written = planes.written_atoms(
+        planes.atom_bits(_facts_plane(first, first.write_bf), SMALL[0],
+                         read_plane=_facts_plane(first, first.read_bf)))
+    idle = written & (bits == 0)
+    assert bool(idle.any()), "the truncated cell reaches every atom the first one did"
+
+    before = plane.clone()
+    num, den, plane = run(second, SMALL, carve, state_in=plane)
+    _, _, s2_ref = ref(second, SMALL, state_in=s1_ref)
+    got = canonical_from_plane(plane)
+    assert relative(got, s2_ref.reshape(second.B * second.H, second.N,
+                                        second.d_v + 1)) < BF16_RTOL
+    assert torch.equal(plane[idle], before[idle]), (
+        "an idle-resident atom moved: the exit sweep stored an atom this call does "
+        "not write")
+
+    #: THE READ HALF OF THE CENSUS: the same call over a plane whose idle atoms hold
+    #: something else entirely must produce the same `y`, because nothing reads them.
+    perturbed = before.clone()
+    perturbed[idle] = -1234.5
+    num2, den2, _ = run(second, SMALL, carve, state_in=perturbed)
+    assert torch.equal(num, num2) and torch.equal(den, den2), (
+        "perturbing an idle-resident atom moved the readout: the entry sweep is "
+        "reading an atom this call does not read")
 
 
 # ------------------------------------------ M2: readout + fan-in, dense cells

@@ -103,6 +103,17 @@ CELL_SPECS = {
     # Off by default (brief step 2(1)): pass explicitly via --cells to include it.
     "k16_cohort64": dict(widths=(256, 256), k=4, m=8, d_v=64, window=384, T=768,
                            k_tok=16, cohort=64, seed=24, level_modes=6),
+    #: P80b's IDLE-RESIDENT cell, off by default. STRUCTURED support (each level
+    #: truncated to its first `support` fraction of digits) rather than `k_tok`'s
+    #: unstructured one, because unstructured sparsity at long `T` still reaches
+    #: EVERY atom -- measured: `k16_w384` and `k4_w512_record` both come out
+    #: 4096/4096 atoms read AND written, so they have nothing for the activity gate
+    #: to skip and price only its overhead. A truncation to a quarter of each
+    #: level's digits touches a 1/16 corner of the leaf space, so at full residency
+    #: fifteen atoms in sixteen are RESIDENT AND IDLE -- the continuation case.
+    "struct25_w384": dict(widths=(256, 256), k=4, m=8, d_v=64, window=384, T=768,
+                            k_tok=None, cohort=None, seed=25, level_modes=6,
+                            support=0.25),
 }
 DEFAULT_CELLS = ["dense", "k16_w384", "k16_w512_record", "k4_w512_record"]
 
@@ -164,6 +175,7 @@ def draw_cell(spec, device="cuda"):
     """
     widths, T, d_v = spec["widths"], spec["T"], spec["d_v"]
     seed, k_tok, cohort = spec["seed"], spec["k_tok"], spec["cohort"]
+    support = spec.get("support")
     shape = (1, T, 1)
     gen = torch.Generator(device=device).manual_seed(seed)
     read0 = tuple(simplex(shape + (w,), None, gen, device) for w in widths)
@@ -184,6 +196,18 @@ def draw_cell(spec, device="cuda"):
 
         read = tuple(draw_side(w, l % 2 == 1) for l, w in enumerate(widths))
         write = tuple(draw_side(w, l % 2 == 0) for l, w in enumerate(widths))
+    if support is not None:
+        #: STRUCTURED support, applied to the drawn rows and renormalized -- the
+        #: `live=` truncation `tests/oracle/fixtures.py` draws with, mirrored here in
+        #: the same after-the-draw position so a cell WITHOUT it keeps its exact
+        #: frozen RNG stream (this file's cross-tip contract).
+        def truncate(t):
+            live = max(1, int(t.shape[-1] * support))
+            t = t.clone()
+            t[..., live:] = 0.0
+            return t / t.sum(-1, keepdim=True)
+        read = tuple(truncate(t) for t in read)
+        write = tuple(truncate(t) for t in write)
     return (tuple(t.to(torch.bfloat16) for t in read),
             tuple(t.to(torch.bfloat16) for t in write),
             g.to(torch.bfloat16), v.to(torch.bfloat16))
@@ -264,7 +288,7 @@ def resolve_arm(carry_ops, widths, k, m, d_v, window, chunk, level_modes):
 # predates per-level declarations, confirmed by inspecting all three
 # reference binaries' signatures).
 def make_call(ext, pr, pw, gw, v_bf, widths, k, m, window, chunk, carve, level_modes,
-              s_out=None, page_tbl=None):
+              s_out=None, page_tbl=None, atom_bits=None):
     """The timed closure, plus the two arity probes this harness has to make.
 
     `level_modes` is the older one (mainline predates per-level declarations). The
@@ -299,14 +323,29 @@ def make_call(ext, pr, pw, gw, v_bf, widths, k, m, window, chunk, carve, level_m
         except TypeError:
             return False
 
-    for takes_modes, takes_planes in ((True, True), (False, True), (True, False),
-                                      (False, False)):
+    #: THE THIRD ARITY IS P80b's: the facts pass' per-atom ACTIVITY byte joined the
+    #: seam, and a binary that takes it gates its state sweeps on it. It is probed
+    #: like the other two and never assumed, so this harness still drives every
+    #: earlier binary; an arm that REQUIRES it (`paged_idle`) refuses a binary that
+    #: does not take it, rather than measuring an ungated sweep under that name.
+    for takes_bits, takes_modes, takes_planes in (
+            (True, True, True), (False, True, True), (False, False, True),
+            (False, True, False), (False, False, False)):
         tail = (level_modes,) if takes_modes else ()
         args = (*args9, *tail, None) + ((s_out, page_tbl) if takes_planes else ())
+        args = args + ((atom_bits,) if takes_bits else ())
         if not takes_planes and page_tbl is not None:
             continue
+        if takes_bits and atom_bits is None:
+            continue
         if accepts(*args):
-            return (lambda a=args: ext.carry_forward_inter(*a)), takes_modes, takes_planes
+            return ((lambda a=args: ext.carry_forward_inter(*a)), takes_modes,
+                    takes_planes, takes_bits)
+    if atom_bits is not None:
+        raise RuntimeError(
+            "REFUSED: this binary's carry_forward_inter takes no activity bitmap, so "
+            "the requested state arm would measure an UNGATED sweep under a gated "
+            "arm's name.")
     raise RuntimeError(
         "REFUSED: no accepted carry_forward_inter signature for this binary at state "
         f"arm page_tbl={'set' if page_tbl is not None else 'null'}.")
@@ -376,16 +415,30 @@ def worker_main(args):
             #: identity table is the WORST case for it, since a permuted one would only
             #: add locality noise on top of the same eight loads. `none` is the
             #: NULL-STATE variant and is comparable only against itself.
-            s_out, page_tbl = None, None
+            #: `paged_idle` is P80b's arm: the SAME full residency `paged` runs, plus
+            #: the facts pass' own activity byte, so every atom this cell's routing
+            #: neither reads nor writes is RESIDENT AND IDLE -- the continuation case,
+            #: priced against `paged` (identical launch, identical table) so the
+            #: difference is the skipped state traffic and nothing else.
+            s_out, page_tbl, atom_bits = None, None, None
             if args.state != "none":
                 s_out = carry_ops.state_plane(spec["widths"], pr.shape[0], spec["d_v"])
-                if args.state == "paged":
+                if args.state in ("paged", "paged_idle"):
                     n_atoms = s_out.shape[1]
                     page_tbl = torch.arange(pr.shape[0] * n_atoms, device="cuda",
                                             dtype=torch.int32).view(pr.shape[0], n_atoms)
-            call, took_modes, took_planes = make_call(
+                if args.state == "paged_idle":
+                    from rola.engine.facts import planes
+                    #: the facts entry names the leading axes `[B, H, L, sum]` because
+                    #: its grid is per `(bh)`; `pack_side` lays the same bytes out as
+                    #: `[BH, L, sum]` for the kernel seam. Every cell here draws `B = 1`
+                    #: (`draw_cell`'s `shape`), so the view is `[1, BH, L, sum]`.
+                    atom_bits = planes.atom_bits(pw.reshape(1, *pw.shape),
+                                                 spec["widths"],
+                                                 read_plane=pr.reshape(1, *pr.shape))
+            call, took_modes, took_planes, took_bits = make_call(
                 ext, pr, pw, gw, v, spec["widths"], spec["k"], spec["m"], spec["window"],
-                CHUNK, carve, spec["level_modes"], s_out, page_tbl)
+                CHUNK, carve, spec["level_modes"], s_out, page_tbl, atom_bits)
             for _ in range(args.warmup):
                 call()
             torch.cuda.synchronize()
@@ -394,7 +447,8 @@ def worker_main(args):
                 torch.cuda.synchronize()
                 rows[name] = {"oneshot": True, "resolved_carve": carve, "arm_index": arm_index,
                               "arm_row": list(arm_row), "level_modes_applied": took_modes,
-                              "state_arm": args.state, "caller_owned_planes": took_planes}
+                              "state_arm": args.state, "caller_owned_planes": took_planes,
+                              "activity_gated": took_bits}
                 continue
             ts = []
             for _ in range(args.reps):
@@ -411,8 +465,9 @@ def worker_main(args):
                 "resolved_carve": carve, "arm_index": arm_index, "arm_row": list(arm_row),
                 "level_modes_applied": took_modes,
                 "state_arm": args.state, "caller_owned_planes": took_planes,
+                "activity_gated": took_bits,
             }
-            del read_bf, write_bf, g_bf, v_bf, pr, pw, gw, v, s_out, page_tbl
+            del read_bf, write_bf, g_bf, v_bf, pr, pw, gw, v, s_out, page_tbl, atom_bits
             torch.cuda.empty_cache()
         except Exception as ex:  # noqa: BLE001 -- reported per-cell, never swallowed
             rows[name] = {"error": f"{type(ex).__name__}: {ex}"}
@@ -585,8 +640,12 @@ def main():
     #: THE STATE ARM (P80). `dense` reproduces the pre-P80 measurement (one dense exit
     #: plane, stored) and is the default, so a cross-tip A/B is like-for-like; `paged`
     #: resolves every atom through a FULL-COVERAGE table, which is the arm that prices
-    #: the slot resolution; `none` is the null-state variant, comparable only to itself.
-    ap.add_argument("--state", choices=("dense", "paged", "none"), default="dense")
+    #: the slot resolution; `paged_idle` is that same table plus P80b's activity byte,
+    #: so every atom the routing does not touch is resident and IDLE and its state I/O
+    #: is skipped -- the continuation case, priced against `paged`; `none` is the
+    #: null-state variant, comparable only to itself.
+    ap.add_argument("--state", choices=("dense", "paged", "paged_idle", "none"),
+                    default="dense")
     ap.add_argument("--out", default=None, help="path for one JSON row per (binary, cell)")
     #: K38: the writer epilogue. Recording is ON by default -- a probe run IS a
     #: measurement, and the record's whole point is that nothing measured is lost

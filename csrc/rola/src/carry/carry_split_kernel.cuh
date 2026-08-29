@@ -66,7 +66,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
                    const uint32_t* __restrict__ rows, float* __restrict__ o,
                    float* __restrict__ den, int L, int tok_words, int v_row_bytes,
                    const float* __restrict__ s_in, float* __restrict__ s_out,
-                   const int32_t* __restrict__ page_tbl) {
+                   const int32_t* __restrict__ page_tbl, const uint8_t* __restrict__ atom_bits) {
   using BP = BoxPlan<D, B, K, M>;
   using G = SplitGeom<D, B, K, M, DV, W, C>;
   using PM = ProduceMap<D, B, K, M, C>;
@@ -204,6 +204,15 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   };
   //: THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80) -- the same re-key the carved -- see docs/internals/carry/carry_split_kernel.md#atombh
   const uint32_t atomBH = (uint32_t)bh * (uint32_t)(BP::kLeaves / kAtomLeaves);
+  //: THE ACTIVITY OF THIS OWNER'S ATOMS, READ ONCE AT THE PROLOGUE (P80b): the -- see docs/internals/carry/carry_split_kernel.md#activity
+  static_assert(kAtoms <= 32, "one bit per atom per mask: an owner holds at most 32 atoms");
+  uint32_t actRead = 0u, actWrite = 0u;
+#pragma unroll
+  for (int a = 0; a < kAtoms; ++a) {
+    const uint8_t bits = atom_activity(atom_bits, atomBH + BP::canon_atom(owner, a));
+    actRead |= (uint32_t)((bits & kAtomRead) != 0u) << a;
+    actWrite |= (uint32_t)((bits & kAtomWritten) != 0u) << a;
+  }
   //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`, -- see docs/internals/carry/carry_split_kernel.md#kpagebytes
   constexpr uint32_t kPageBytes = (uint32_t)(kPageElems * (int)sizeof(float));
   auto page_base = [](int32_t slot) { return (uint32_t)slot * kPageBytes; };
@@ -219,9 +228,9 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     const float* const plane = pin_address(s_in);
 #pragma unroll
     for (int a = 0; a < kAtoms; ++a) {
-      //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the plan committed -- see docs/internals/carry/carry_split_kernel.md#slot
+      //: AN ABSENT OR IDLE ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the load -- see docs/internals/carry/carry_split_kernel.md#slot
       const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
-      if (slot < 0) continue;
+      if (slot < 0 || (((actRead | actWrite) >> a) & 1u) == 0u) continue;
       page_sweep(page_base(slot), [&](int sidx, uint32_t off) {
         so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
       });
@@ -564,9 +573,9 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     rendezvous();
 #pragma unroll
     for (int a = 0; a < kAtoms; ++a) {
-      //: THE EXIT STORES ONLY PLANNED ATOMS.  An unplanned one is not written at all, -- see docs/internals/carry/carry_split_kernel.md#slot-2
+      //: THE EXIT STORES ONLY WRITTEN, PLANNED ATOMS.  An atom this call does not -- see docs/internals/carry/carry_split_kernel.md#slot-2
       const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
-      if (slot < 0) continue;
+      if (slot < 0 || ((actWrite >> a) & 1u) == 0u) continue;
 #pragma unroll
       for (int p = 0; p < 2; ++p)
 #pragma unroll

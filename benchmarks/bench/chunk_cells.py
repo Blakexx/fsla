@@ -259,7 +259,7 @@ def realized(cell: Cell, fx: dict | None = None) -> dict:
     #: The bitmap is taken from the PRIMITIVE, not off the plan: these cells bind no
     #: state, so the facts pass ran with the atom-grain emission skipped and `plan`
     #: carries no bitmap to read. This is the same reduction over the same plane.
-    live = planes.atom_bits(plan.write_plane, plan.widths).bool()
+    live = planes.written_atoms(planes.atom_bits(plan.write_plane, plan.widths))
     return {
         "N": cell.N,
         "BH": cell.B * cell.H,
