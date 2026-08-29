@@ -76,3 +76,12 @@ register-reallocation instruction. When reading a new mechanism here, ask "what 
 sm_90 (mbarrier, wgmma/tcgen05 SMEM-sourced operands, TMA box loads) and sm_100 (clusters/DSM)" even
 though only the Ampere arches are built today — a design that only makes sense as an Ampere register
 trick is flagged, not shipped quietly.
+
+## Before landing a new arch-conditional primitive (K42)
+Read the PTX ISA instruction-availability table for EVERY target arch (sm_80/86/90/100) before
+writing an `arch::Caps`-gated primitive, and cite the exact row (ISA version + section, e.g. "PTX
+ISA 8.5 §9.7.13.3, `mul.rn.bf16x2`, `.target sm_90`") in the primitive's own decl-block comment —
+`ops.cuh`'s `mul_bf16x2` and FINDINGS `## K42`'s audit table are the worked examples. A primitive
+that could be met by one native instruction on an arch but instead falls back to a wider-type
+emulation is exactly the defect `tools/lint/primitives_census.py` gates; a new SELECTING primitive
+should get its own row there.
