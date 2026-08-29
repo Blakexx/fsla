@@ -1168,6 +1168,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           mma(mass_st[2 * nj + 1], ones_a, &b[2]);
         }
       }
+      //: THE MAP IS AN INTRA-WARP HAND-OFF, so it takes a WARP-SCOPE EDGE (K48's -- see docs/internals/carry/carry_kernel.md#srm
+      __syncwarp();
       nCur = write_batch(((i + 1) & 1) ? panW : panR, i + 1);
     }
     //: the ring's unconsumed groups are retired before the next window reuses the -- see docs/internals/carry/carry_kernel.md#near-line-843

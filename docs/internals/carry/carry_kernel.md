@@ -1967,6 +1967,17 @@ segments be private WITHOUT a private copy of the value rows: the literal
 per-stream value segment costs 57,344 B of segments at the flagship and takes the
 arm to ONE CTA per SM, where this form holds two.
 
+THE MAP IS AN INTRA-WARP HAND-OFF, SO IT TAKES A WARP-SCOPE EDGE.  Lane `l` writes
+the slot its own token landed in and every lane reads back the slot IT needs for
+the `ldmatrix` row -- so the write and the read are different lanes of one warp,
+which is K48's `sLive` shape exactly: a ballot reconverges the lanes but carries
+no memory-ordering clause (PTX attaches that only to `bar.warp.sync`), and the
+CTA edge at the top of the next batch orders the NEXT batch's writes, not this
+batch's reads against them.  One `__syncwarp()` between the fold's reads and the
+next batch's writes is exactly sufficient and a CTA barrier would be wrong to
+add; racecheck reports the hazard without it (measured: 3 warnings, 5,520
+hazards) and CLEAN with it.
+
 <a id="staged-run"></a>
 ### `staged_run`
 
