@@ -70,8 +70,10 @@ wall time near the torch-header floor above, that's a broken ABI seam (a torch-t
 into `carry_arm_abi.cuh`), not noise.
 
 ## Standards lint (process pointer only)
-Before a build, or when reviewing a stage's diff: `ast-grep scan --config sgconfig.yml csrc/` and
-`python3 tools/lint/lint_standards.py` are the mechanical KERNEL_STANDARDS.md checks (docs/build.md's
-"Standards lint" section has the full list and the compdb.sh recipe for clangd/clang-query). Neither
-gates the build itself; both run in pre-commit and CI. A hit is a finding, ruled on like any other --
-this skill doesn't restate what the rules check, only that they exist and where.
+Before a build, or when reviewing a stage's diff: `ast-grep scan --config sgconfig.yml csrc/`,
+`python3 tools/lint/lint_standards.py`, and `tools/lint/run_clang_tidy.sh` are the mechanical
+KERNEL_STANDARDS.md checks (docs/build.md's "Standards lint" section has the full list, the
+compdb.sh recipe for clangd/clang-query, and clang-tidy's host-TU-only scope). None gates the
+build itself; all three run in pre-commit and CI (clang-tidy SKIPS in a job/checkout with no
+build/temp yet). A hit is a finding, ruled on like any other -- this skill doesn't restate what the
+rules check, only that they exist and where.

@@ -44,6 +44,14 @@ jobs:
           ast-grep scan --config sgconfig.yml
       - name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue)
         run: python3 tools/lint/lint_standards.py
+      - name: clang-tidy (host-only TUs)
+        # This job builds nothing (see the file header: no GPU, no CUDA
+        # toolchain, no build) so there is no build/temp for compdb.sh to
+        # read from -- tools/lint/run_clang_tidy.sh SKIPS explicitly (prints
+        # why, exits 0) rather than failing or silently doing nothing. It
+        # exercises for real wherever a build already exists (a dev machine
+        # after `pip install -e .`, or a future GPU-arm job that builds).
+        run: tools/lint/run_clang_tidy.sh
 
   cpu-gates:
     # THE GPU-FREE GATES. Each answers a question about the REPOSITORY — is the
