@@ -62,7 +62,7 @@ import time
 
 import torch
 
-from rola import RoLA, RouteProducer, dense_routing, union_routing
+from rola import LayerContinuation, RoLA, RouteProducer, dense_routing, union_routing
 from rola import state as rola_state
 from rola.engine.facts import planes
 from rola.engine.facts.call import arm_of, widths_of
@@ -118,7 +118,7 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
         # on and the only one there is.
         def run():
             with torch.no_grad():
-                module(x, state=(carried, None))
+                module(x, continuation=LayerContinuation(state=carried))
         return run
 
     paged_state = rola_state()

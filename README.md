@@ -159,12 +159,12 @@ from the routing it was actually given.
 ### The layer
 
 ```python
-from rola import RoLA, LearnedDecay
+from rola import LayerContinuation, LearnedDecay, RoLA
 
 layer = RoLA(routes, d_v=64,
              decay=LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8),
              layer_idx=0).cuda()
-y, (state, conv_rings) = layer(x, state=(rola.state(), None))
+y, continuation = layer(x, continuation=LayerContinuation(state=rola.state()))
 ```
 
 One positional argument, because everything else was either a fact about the feature
@@ -178,9 +178,10 @@ launch decision (which the op makes). `d_v` is the layer's: it sizes
 not a KV cache**: a PAGED TENSOR — storage, page table, `[B, H, N, cols]`, device,
 dtype, strategy — and nothing else, paged by default so what stays resident scales
 with the leaves the routing REALIZES. Continuation is LAYERED: the layer returns
-`(y, (state, conv_rings))`, because the short-convolution rings are the recurrence the
-LAYER introduced. Every `transformers` cache abstraction is built for the GROWING
-case, which this is not, so RoLA owns its object outright (docs/internals/state.md).
+`(y, LayerContinuation)`, a frozen container the layer owns (`.state` is the op's paged
+tensor, its only field today). Every `transformers` cache abstraction is built for the
+GROWING case, which this is not, so RoLA owns its object outright
+(docs/internals/state.md).
 
 ### The launch geometry
 

@@ -315,8 +315,8 @@ def test_the_layer_takes_the_slot_and_not_the_slot_spelled_out():
     signature = inspect.signature(rola.RoLA.__init__)
     assert list(signature.parameters) == [
         "self", "routes",
-        "d_v", "decay", "value_conv", "route_conv", "layer_idx", "expert"]
-    for name in ("d_v", "decay", "value_conv", "route_conv", "layer_idx", "expert"):
+        "d_v", "decay", "layer_idx", "expert"]
+    for name in ("d_v", "decay", "layer_idx", "expert"):
         assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 

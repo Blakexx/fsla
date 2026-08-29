@@ -33,6 +33,7 @@ import torch
 from conftest import build_layer
 
 import rola
+from rola import LayerContinuation
 from rola.expert import PlanOverrides
 from rola.interface import BackwardNotImplemented
 
@@ -91,7 +92,7 @@ def _prime(layer, device, *, prefill=32, paged=True):
 def _step(layer, state, device, *, L=1, requires_grad=False, grad_enabled=True):
     x = torch.randn(1, L, _HIDDEN, device=device, requires_grad=requires_grad)
     with torch.set_grad_enabled(grad_enabled):
-        out, _continuation = layer(x, state=(state, None))
+        out, _continuation = layer(x, continuation=LayerContinuation(state=state))
     return x, out
 
 
@@ -169,6 +170,39 @@ def test_dispatch_table(training, grad_enabled, requires_grad, L, carried, expec
 
 @pytest.mark.cuda
 @_CUDA
+def test_a_continuation_round_trips_across_two_decode_steps():
+    """K45: `LayerContinuation` is the container both directions of a chained call
+    take -- what a forward RETURNS is exactly what the next forward ACCEPTS, and a
+    lookalike (a bare `RoLAState`, the retired `(state, conv_rings)` tuple) is
+    refused by name rather than adopted."""
+    device = "cuda"
+    layer = _layer(device)
+    layer.eval()
+    cache = _prime(layer, device)
+
+    x1 = torch.randn(1, 1, _HIDDEN, device=device)
+    with torch.no_grad():
+        y1, continuation = layer(x1, continuation=LayerContinuation(state=cache))
+    assert isinstance(continuation, LayerContinuation)
+    assert layer.last_execution_backend == "decode"
+
+    #: the SAME container, handed straight back, drives a second step -- the round
+    #: trip this test is named for.
+    x2 = torch.randn(1, 1, _HIDDEN, device=device)
+    with torch.no_grad():
+        y2, continuation2 = layer(x2, continuation=continuation)
+    assert isinstance(continuation2, LayerContinuation)
+    assert layer.last_execution_backend == "decode"
+    assert y1.shape == y2.shape == (1, 1, _HIDDEN)
+
+    with pytest.raises(TypeError, match="LayerContinuation"):
+        layer(x2, continuation=continuation2.state)
+    with pytest.raises(TypeError, match="LayerContinuation"):
+        layer(x2, continuation=(continuation2.state, None))
+
+
+@pytest.mark.cuda
+@_CUDA
 def test_a_cpu_decode_shaped_call_is_refused_at_the_prefill():
     """A CPU sequence cannot be primed: the prefill dispatch is the deletion
     refusal (until K31 R2 the sentence is the same on every device)."""
@@ -176,7 +210,7 @@ def test_a_cpu_decode_shaped_call_is_refused_at_the_prefill():
     layer.eval()
     x = torch.randn(1, 32, _HIDDEN)
     with torch.no_grad(), pytest.raises(NotImplementedError, match="K31 R2"):
-        layer(x, state=(rola.state(), None))
+        layer(x, continuation=LayerContinuation(state=rola.state()))
 
 
 @pytest.mark.cuda

@@ -106,13 +106,14 @@ The op's state is the paged tensor and nothing else
 OWN thin bundle, and the rule is a membership test:
 
 > **An object holds exactly the recurrences ITS level introduced.**
-> Op: the routed state. Layer: the short-convolution rings. Model: the per-layer
-> bundles.
+> Op: the routed state. Layer: `LayerContinuation`. Model: the per-layer bundles.
 
-So `RoLA.forward` returns `(y, (state, conv_rings))` — always the pair, `conv_rings`
-`None` when no convolution is configured — and takes that same pair back. The pair is
-the contract in both directions: a bare `RoLAState` is refused by name, because
-accepting the op's half would make the layer's half silently optional to carry.
+So `RoLA.forward` returns `(y, LayerContinuation)` — always the container — and takes
+one back. `LayerContinuation.state` is the op's paged tensor; it is the container's
+only field today, and any future layer-level recurrence is a field ON IT, never on the
+op's state. The container is the contract in both directions: a bare `RoLAState` or the
+retired `(state, conv_rings)` tuple is refused by name, because accepting a lookalike
+would make the layer's own fields silently optional to carry.
 
 This is not the old pooled state object recreated. That object's defect was LAYER
 LUGGAGE INSIDE THE OP's state; keeping each level's object pure is what leaves
@@ -337,25 +338,26 @@ rest on that property.
 ## 4. The layer
 
 ```python
-RoLA(routes, *, d_v=64, decay=None,
-     value_conv=None, route_conv=None, layer_idx=None, expert=None)
+RoLA(routes, *, d_v=64, decay=None, layer_idx=None, expert=None)
 
-y, (state, conv_rings) = layer(hidden_states, state=(rola.state(), None))
-y, (state, conv_rings) = layer(next_tokens, state=(state, conv_rings))
-y, _ = layer(hidden_states)                            # stateless -> (y, (None, None))
+y, continuation = layer(hidden_states, continuation=LayerContinuation(state=rola.state()))
+y, continuation = layer(next_tokens, continuation=continuation)
+y, _ = layer(hidden_states)                            # stateless -> (y, LayerContinuation(state=None))
 ```
 
-`forward(x, attention_mask=None, state=None) -> (y, (state, conv_rings))` — ALWAYS the
-pair, `conv_rings` `None` when no convolution is configured. See §1.2; a bare
-`RoLAState` is refused rather than adopted.
+`forward(x, attention_mask=None, continuation=None) -> (y, LayerContinuation)` — ALWAYS
+the container. See §1.2; a bare `RoLAState` or the retired `(state, conv_rings)` tuple
+is refused by name rather than adopted.
 
 `routes` is the only positional argument, and it is the only declaration of
 `hidden_size`/`num_heads`: the layer reads both off the producer rather than taking a
 second copy to check against. `d_v` is the per-head value width — the layer's, because
-it sizes `v_proj`/`o_proj`; the default is the width the chunk matrix is built at. `value_conv` / `route_conv`
-take a MODULE
-(e.g. `fla.modules.ShortConvolution`) rather than three scalars describing one: the layer
-does not need to know how a convolution is configured, only where it goes.
+it sizes `v_proj`/`o_proj`; the default is the width the chunk matrix is built at.
+
+`value_conv`/`route_conv` (a causal short convolution over the value/routing-source
+stream) were DELETED at K45 (docs/internals/DELETIONS.md): they were never reviewed as
+a mechanism and are not paper-1 scope. Re-adding a convolution hook is a field on
+`LayerContinuation`, not a return to the old ad hoc ring tuple.
 
 The layer adds exactly one clause the op cannot know: `self.training` REFUSES,
 independently of gradient reachability, because reentrant gradient checkpointing runs
@@ -382,10 +384,10 @@ fp32 compute type (the accumulate-in-fp32 ruling); the global
 reduced-precision-reduction knob is deliberately left alone, so this is the same
 environment the FlashAttention comparison arm runs in.
 
-A configured `value_conv` is the one structural exception: it runs in the module dtype,
-so `v` returns to `x.dtype` before it and the op re-narrows at its own boundary —
-exactly, the values being bf16-rounded already. `o_proj`'s operand cast is exact for the
-same reason: `y` leaves the kernel already bf16-rounded.
+There is no dtype exception left on this arm: `value_conv` — the one case that used to
+round-trip `v` back to the module dtype ahead of a convolution — was DELETED at K45
+(docs/internals/DELETIONS.md). `o_proj`'s operand cast is exact regardless: `y` leaves
+the kernel already bf16-rounded.
 
 ## 5. The expert surface
 

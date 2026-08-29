@@ -32,7 +32,7 @@ and not part of the contract.
 | op | `rola_op` | STABLE, semver-major to break |
 | feature map | `RouteFactors`, `RouteProducer`, `dense_routing`, `split_routing`, `union_routing`, `uniform` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
-| layer | `RoLA` | STABLE |
+| layer | `RoLA`, `LayerContinuation` | STABLE |
 | state | `state()`, `RoLAState` | STABLE |
 | configuration | `Topology`, `softmax()`, `entmax(alpha)`, `IndependentRouting`, `UnionRouting` | STABLE |
 | oracle | `naive_rola` | STABLE signature, EXACT semantics — it is the definition |
@@ -45,7 +45,7 @@ __version__ = "0.1.0.dev0"
 #: name the function was shadowing): docs/internals/state.md
 from rola._state import RoLAState, state
 from rola.interface import rola_op
-from rola.layer import RoLA
+from rola.layer import LayerContinuation, RoLA
 from rola.ops.naive import naive_rola
 from rola.routing.decay import ConstantDecay, DecaySource, LearnedDecay
 from rola.routing.factors import RouteFactors
@@ -84,6 +84,7 @@ __all__ = [
     "LeafMassDecay",
     # layer
     "RoLA",
+    "LayerContinuation",
     # the stateful surface — a fixed-size recurrent state, NOT a KV cache
     "state",
     "RoLAState",
