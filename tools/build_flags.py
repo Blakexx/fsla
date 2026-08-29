@@ -136,40 +136,49 @@ def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
 
 #: GIGABYTES OF RESIDENT SET PER ``cicc``, MEASURED -- the constant that turns free
 #: RAM into a job count, and the reason this is a formula and not a hardcoded
-#: ``MAX_JOBS``: the same source gives 7 jobs on this 23 GB host and 4 on a 16 GB-class
-#: one, with nobody editing anything.
+#: ``MAX_JOBS``.
 #:
-#: The measurement (``/usr/bin/time -v`` around one compile, peak RSS of the largest
-#: single ``cicc``; the two axes MULTIPLY, ``MAX_JOBS`` x ``--threads`` of these at
-#: once):
+#: RE-DERIVED AT K36, AND THE OLD VALUE WAS WRONG BY 2x. At 1.5 GB the formula
+#: returned ``MAX_JOBS=7`` on this 23 GB host and a cold-cache build was OOM-KILLED --
+#: three translation units died with ``rc=255`` and the ninja build reported
+#: ``Killed``, twice, before the number was re-measured. The old table was taken when
+#: the heavy units were the instantiation shards; it did not survive the carry family
+#: joining ``SOURCES``.
 #:
-#: ===================================== ==========
-#: translation unit                       peak/cicc
-#: ===================================== ==========
-#: consumer.cu, pre-shard (512 arms)        4.4 GB
-#: one instantiation shard (64 arms)        0.61 GB
-#: entmax.cu                                1.54 GB
-#: decode.cu                                2.89 GB
-#: chunk/backward.cu (1 arm)                2.75 GB
-#: ===================================== ==========
+#: WHAT SETS IT NOW IS THE TENSOR LIBRARY'S HEADER, not any kernel. Measured per
+#: ``cicc`` (sm_86, ``--threads=1``), K36:
 #:
-#: 1.5 is not the largest of those and is not meant to be: three translation units in
-#: the graph exceed it, so the worst concurrent footprint the formula admits here is
-#: 2x2.89 + 2x2.75 + 2x1.54 + 4x2x0.61 = 19.3 GB against 21 GB free. Sizing on
-#: ``decode.cu`` instead would cost three compile waves for the eight shards to
-#: protect a case that cannot happen more than three times. RE-MEASURE THIS whenever
-#: the shard size changes or a translation unit joins ``setup.py::SOURCES`` --
-#: ``chunk/backward.cu`` is the reason that clause is not decoration, and it is the
-#: SCAN'S OWN size rather than its arm count: at one arm it is already decode-class,
-#: so growing it to the forward's arm cross is a re-measurement and not a free axis.
-GB_PER_NVCC_THREAD = 1.5
+#: ===================================== ========== ==========
+#: translation unit                        wall      peak/cicc
+#: ===================================== ========== ==========
+#: a bare CUDA TU (one trivial kernel)      0.9 s      0.19 GB
+#: the same, plus ``torch/extension.h``    33.7 s      2.86 GB
+#: one carry arm (torch-free ABI)           4.7 s      0.33 GB
+#: carry/carry.cu (dispatch only)          36.2 s      2.88 GB
+#: ===================================== ========== ==========
+#:
+#: and per ``cicc`` over a full both-arch build (sampled): ``factor.cu`` 2.92 GB,
+#: ``entmax.cu`` 2.89, ``decode.cu`` 2.81, ``carry/carry.cu`` 2.75 -- every unit that
+#: parses the extension header lands in one narrow band, and the 22 generated carry arm
+#: translation units do not appear in the top twelve at all. Before K36 the carry
+#: family's single TU peaked at **6.14 GB** and was the binding term by more than 2x.
+#:
+#: So the constant is the HEADER's footprint, and it stops being a function of the arm
+#: count -- which is the property that makes it stable as arms are added. RE-MEASURE it
+#: when a translation unit joins ``setup.py::SOURCES``, or when torch's headers move.
+GB_PER_NVCC_THREAD = 2.9
 
 
 def default_max_jobs(nvcc_threads: int) -> int:
     """RAM, not cores, is the binding resource here, and that is a measurement:
-    ``MAX_JOBS=8`` was OOM-KILLED on this 23 GB / 16-core host after 8m32 (``ninja``
-    reported ``Killed``; ``sys`` time 28m47 -- the machine was thrashing, not
-    compiling). So the memory term participates rather than the core count alone.
+    ``MAX_JOBS=8`` was OOM-KILLED on this 23 GB / 16-core host, twice -- once after
+    8m32 while the constant said 1.5 GB, and again at K36 with a cold compiler cache,
+    which is what forced the re-measurement above. So the memory term participates
+    rather than the core count alone.
+
+    At the K36 value this returns 3 for a both-arch build (``--threads=2``) and 7 for a
+    single-arch iteration build on a 22 GB-free host, which are the settings the
+    measured builds used.
 
     The two parallelism axes MULTIPLY -- ``MAX_JOBS`` concurrent ``nvcc`` processes,
     each running ``--threads`` concurrent ``cicc`` processes -- so the divisor is

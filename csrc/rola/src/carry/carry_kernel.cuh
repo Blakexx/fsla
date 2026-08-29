@@ -48,11 +48,6 @@ namespace rola::carry {
 using namespace denseref::ops;
 namespace design = denseref::design;
 
-//: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
-//: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
-//: that catches it, so every gate in `tests/k31/` asserts this first.
-static constexpr int kCarryBuildMagic = 31010026;
-
 static constexpr int kPadE = 8;  // bf16 row padding, elements (16 B)
 static constexpr int kPadF = 4;  // fp32 row padding, elements (16 B)
 //: `d_v` IS AN ARM PARAMETER AND NOT A FILE CONSTANT (K35 S3b).  Both FORWARD bodies
@@ -64,9 +59,10 @@ static constexpr int kPadF = 4;  // fp32 row padding, elements (16 B)
 //: THE CHANNEL-SPLIT BODY'S WARP COUNT, and the reverse family's.  Those bodies split
 //: the `kDv` CHANNELS over a fixed four warps and hold the whole box in each; the
 //: CARVED body's executor count is the arm's STREAM count instead
-//: (`CarryGeom::kWarps`) and is not a constant of this file.
-static constexpr int kWarps = 4;
-static constexpr int kThreads = kWarps * 32;
+//: (`CarryGeom::kWarps`) and is not a constant of this file; the channel-split
+//: body's `kWarps`/`kThreads` are in `box.cuh` with the rest of the family's
+//: arm-independent geometry (K36), so the DISPATCH TU can read them without
+//: parsing this header.
 static_assert(kAtomLeaves == kMmaK, "the page granule is one MMA k-step");
 
 //: A COMPILE-TIME LOOP.  Every per-level quantity here is a template argument or a

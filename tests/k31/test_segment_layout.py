@@ -45,7 +45,7 @@ import pytest
 import torch
 
 from rola.ops import carry as carry_ops
-from tests.k31.fixtures import assert_fresh_binary
+from tests.k31.fixtures import assert_fresh_binary, require_arm
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
@@ -87,6 +87,17 @@ ARMS = [
                  id="flagship-tied"),
 ]
 
+
+def _require(arm):
+    """SKIP unless this binary carries the arm (K36's SHIPPED/TEST split).
+
+    The host-side model legs below run at every declared arm; only the legs that ASK
+    THE DEVICE for a layout or a census need the arm to have been compiled.
+    """
+    widths, k, m, d_v, W, declaration, modes = arm
+    require_arm(widths, k, m, W, 32, declaration, modes, d_v=d_v)
+
+
 LD_PAD = 8      # `kPadE`: the bf16 row padding both segment sub-tiles carry
 SEG_ROWS = 16   # `kSegRows == CP == kMmaK`: the batch's union tokens
 #: THE LSU'S GROUP FOR A SIXTEEN-BYTE ACCESS.  A 128-bit access is serviced eight lanes
@@ -102,6 +113,7 @@ WIDE_LANES = 8
 def test_the_segment_round_trips_through_the_fragments(arm):
     """Everything the fetcher wrote is what the consumer's fragments recovered."""
     assert_fresh_binary()
+    _require(arm)
     widths, k, m, d_v, W, declaration, modes = arm
     v, c, _, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
     assert v.shape[-1] == d_v, "the value sub-tile is the arm's own width"
@@ -127,6 +139,7 @@ def test_the_staged_factor_row_lands_run_by_run(arm):
     wrong offset still says where it came from.
     """
     assert_fresh_binary()
+    _require(arm)
     widths, k, m, d_v, W, declaration, modes = arm
     _, _, staged, _ = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes,
                                                 d_v=d_v)
@@ -179,6 +192,7 @@ def test_the_segment_access_patterns_are_derived_not_guessed(arm):
     two cycles unconditionally.  The pair mapping is therefore never worse and usually
     better; what the model pins is that it is never WORSE than two.
     """
+    _require(arm)
     widths, k, m, d_v, W, declaration, modes = arm
     _, s, _, bc, _ = carry_ops.box_shape(widths, k, m)
     #: the arm's WRITE STREAM count and its stream's leaf count, from the census the
@@ -540,6 +554,7 @@ def test_the_reader_segment_round_trips_through_the_readout_fragments(arm):
     on ``n``.  The two derivations meet nowhere else.
     """
     assert_fresh_binary()
+    _require(arm)
     widths, k, m, d_v, W, declaration, modes = arm
     *_, rows = carry_ops.layout_probe(widths, k, m, W, 32, declaration, modes, d_v=d_v)
     readers, nrows, leaf = rows.shape
@@ -596,6 +611,7 @@ def test_the_exchange_transit_is_sized_by_the_disorder_between_the_two_carves(ar
     says -- zero on the tied arm, one whole ``[consumer][leaf][channel]`` region on every
     arm where a leaf does change warp.
     """
+    _require(arm)
     widths, k, m, d_v, W, declaration, modes = arm
     owner, modes_, nsw, nsr, wps, bc = _declaration(arm)
     Wside, Rside, rows_read, rows_write = _xch(owner, modes_, nsw, nsr, wps)

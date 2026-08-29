@@ -24,7 +24,7 @@ import torch
 from rola.ops import carry as carry_ops
 from rola.ops._ext import is_available
 from tests.k31.backward_reference import carry_backward_reference
-from tests.k31.fixtures import Cell, canonical_from_lattice
+from tests.k31.fixtures import Cell, canonical_from_lattice, require_arm
 
 pytestmark = pytest.mark.skipif(not is_available() or not torch.cuda.is_available(),
                                 reason="the reverse pass is a CUDA kernel")
@@ -106,6 +106,9 @@ def _reference(cell, d_num, d_den, ds_out, rounded):
 @pytest.mark.parametrize("chained", [False, True])
 def test_every_cotangent_matches_the_reference(T, k_tok, gain, seed, chained):
     assert_fresh_backward_binary()
+    #: the replay gate at the end of this test runs the FORWARD arm, which a default
+    #: build does not carry at the conformance cell.
+    require_arm(WIDTHS, K, M, WINDOW, 32, carry_ops.LEAF_SPLIT, 0)
     cell = Cell(WIDTHS, T, k_tok=k_tok, seed=seed, state_in=chained)
     if gain is not None:
         cell.g_write = torch.full_like(cell.g_write, gain)
@@ -233,6 +236,8 @@ def test_the_replay_is_bit_identical_at_the_flagship_arm(window, declaration):
     from tests.k31.intra_reference import _simplex
     modes = _declarations()[declaration]
     widths, T = (256, 256), 4 * window
+    packed = intra_ops.pack_modes(modes) if _takes_modes() else 0
+    require_arm(widths, K, M, window, 32, carry_ops.LEAF_SPLIT, packed)
     gen = torch.Generator(device="cuda").manual_seed(19)
 
     def plane(width, sparse):
@@ -247,7 +252,7 @@ def test_the_replay_is_bit_identical_at_the_flagship_arm(window, declaration):
     d_den = torch.randn(1, T, device="cuda", generator=gen)
     replay = carry_ops.carry_backward(read, write, g.double(), v.double(), d_num, d_den,
                                       widths, k=K, m=M, window=window, want_replay=True)[5]
-    extra = {"level_modes": intra_ops.pack_modes(modes)} if _takes_modes() else {}
+    extra = {"level_modes": packed} if _takes_modes() else {}
     state_out = carry_ops.carry_inter(read, write, g.double(), v.double(), widths, k=K, m=M,
                                       window=window, **extra)[2]
     assert torch.equal(replay, state_out)

@@ -27,7 +27,7 @@ from rola.ops.constants import READOUT_EPS
 from rola.ops.naive import naive_rola
 from rola.ops.prefill import prefill
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-from tests.k31.fixtures import assert_fresh_binary, canonical_from_lattice, relative
+from tests.k31.fixtures import assert_fresh_binary, canonical_from_lattice, relative, require_arm
 from tests.k31.intra_reference import _simplex
 from tests.oracle.tolerances import BF16_RTOL
 
@@ -52,6 +52,16 @@ ALT = (intra_ops.WRITE_SPARSE, intra_ops.READ_SPARSE)
 WRITE_BOTH = (intra_ops.WRITE_SPARSE, intra_ops.WRITE_SPARSE)
 #: ONE-SPARSE-READ: a single entmax read level and nothing else sparse.
 READ_ONE = (intra_ops.READ_SPARSE, intra_ops.DENSE_BOTH)
+
+
+def require_carry_arm(window, modes, widths=WIDTHS, k=K, m=M):
+    """SKIP unless this binary carries the CARRY arm this call resolves to.
+
+    `prefill` runs the carry seam at the ruled carve with the cell's own packed modes,
+    so a prefill cell names an arm exactly as a direct `carry_inter` call does.
+    """
+    require_arm(widths, k, m, window, 32, carry_ops.LEAF_SPLIT,
+                intra_ops.pack_modes(tuple(modes)))
 
 
 def cell(T, modes, k_tok=None, clustered=False, seed=0, d_v=64, device="cuda",
@@ -113,6 +123,7 @@ CELLS = [
                          ids=[c[0] for c in CELLS])
 def test_prefill_matches_the_fp64_oracle(name, T, window, modes, k_tok, clustered):
     assert_fresh_binary()
+    require_carry_arm(window, modes)
     #: A SEED THAT IS A PROPERTY OF THE CELL: `hash(str)` is salted per process,
     #: so a cell seeded from it is a different draw on every run and a failure
     #: cannot be reproduced from its own name.
@@ -139,6 +150,7 @@ def test_a_chained_call_equals_one_long_call():
     would ask the second call to carry pairs neither term owns."""
     assert_fresh_binary()
     T, window = 2048, 512
+    require_carry_arm(window, DENSE)
     read, write, g, v = cell(T, DENSE, seed=7)
     sread, swrite = intra_ops.pack_support(read), intra_ops.pack_support(write)
     whole_num, whole_den, whole_state = prefill(read, write, g, v, WIDTHS, k=K, m=M,
@@ -193,6 +205,7 @@ def test_the_intra_term_is_actually_present():
     """NON-VACUITY. The carry alone must NOT pass the oracle gate: if it did,
     every cell above would be testing the carry and calling it the operator."""
     T, window = 1024, 512
+    require_carry_arm(window, DENSE)
     read, write, g, v = cell(T, DENSE, seed=3)
     inter_num, inter_den, _ = carry_ops.carry_inter(read, write, g, v, WIDTHS, k=K, m=M,
                                                     window=window)
@@ -223,6 +236,7 @@ def test_deep_prefill_matches_the_fp64_oracle(widths, k, m, sparse):
     modes = tuple((intra_ops.WRITE_SPARSE if l % 2 == 0 else intra_ops.READ_SPARSE)
                   for l in range(D)) if sparse else (intra_ops.DENSE_BOTH,) * D
     k_tok = min(4, widths[0] // 2) if sparse else None
+    require_carry_arm(DEEP_WINDOW, modes, widths=widths, k=k, m=m)
     read, write, g, v = cell(T, modes, k_tok=k_tok, seed=zlib.crc32(str(widths).encode()) & 0xFFFF,
                              widths=widths)
     num, den, plane = prefill(read, write, g, v, widths, k=k, m=m, window=DEEP_WINDOW,

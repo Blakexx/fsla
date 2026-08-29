@@ -22,7 +22,7 @@ from rola.ops.prefill import prefill_autograd
 from tests.k31.backward_reference import carry_backward_reference, intra_backward_reference
 from tests.k31.fixtures import assert_fresh_binary, canonical_from_lattice
 from tests.k31.intra_reference import _simplex
-from tests.k31.test_prefill_vs_oracle import ALT, DENSE, READ_ONE, WIDTHS, K, M
+from tests.k31.test_prefill_vs_oracle import ALT, DENSE, READ_ONE, WIDTHS, K, M, require_carry_arm
 
 pytestmark = pytest.mark.skipif(not is_available() or not torch.cuda.is_available(),
                                 reason="the reverse pass is a CUDA kernel")
@@ -65,6 +65,7 @@ def test_every_cotangent_of_the_combined_operator(name, T, window, modes, k_tok,
     if free < 10 * 2 ** 30:
         pytest.skip(f"N={N}, T={T}: the fp64 reverse reference exceeds this card; rental-tier")
     assert_fresh_binary()
+    require_carry_arm(window, modes)
     seed = zlib.crc32(name.encode()) & 0xFFFF
     read, write, g, v, gen = _cell(T, modes, k_tok, seed)
     state_in = (0.02 * torch.randn(1, N // 16, 16, 65, device="cuda", dtype=torch.float32,

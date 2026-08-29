@@ -93,33 +93,71 @@ import sccache_toolchain  # noqa: E402
 #: point -- the supported matrix IS the ratified set, not a wish list.
 ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") if a]
 
-#: THE ITERATION ARM SUBSET (KERNEL_STANDARDS section 7). Instantiation cost is the
-#: dominant build resource, so a developer testing ONE arm may compile one arm:
-#: ``ROLA_CARRY_ARMS=11`` (or ``11,12``) names rows of the carry family's declared arm
-#: list by index (`csrc/rola/src/carry/carry.cu`'s ``CARRY_ARM_<i>``). The DEFAULT IS
-#: EVERY DECLARED ARM, so a plain build -- and every gate build -- is the closed-world
-#: one. A subset binary is SELF-IDENTIFYING: ``rola.ops.carry.arms()`` lists exactly
-#: what was built and every entry point refuses an arm the binary does not carry.
-#: Iteration builds pair it with ``ROLA_CUDA_ARCHS=86``; docs/build.md.
-def _carry_arm_subset() -> list[str]:
+#: THE ARM SUBSET IS A FILE SUBSET (KERNEL_STANDARDS section 7, K36). Instantiation
+#: cost is the dominant build resource, so an arm the build does not want is an arm
+#: whose TRANSLATION UNIT is not in the build at all -- not a macro that still costs a
+#: parse. ``ROLA_CARRY_ARMS=11`` (or ``11,12``, or ``all``) names rows of the carry
+#: family's arm list by index (`tools/gen_shards.py`'s ``CARRY_ARMS``); each selected
+#: row contributes its generated ``carry_arm_<i>.cu`` and a ``-DROLA_CARRY_BUILD_<i>``,
+#: and the dispatch's ``CARRY_ARMS_X`` expands to exactly that set.
+#:
+#: THE DEFAULT IS THE SHIPPED ROWS. A row tagged TEST in the arm list is a conformance
+#: cell -- the fp64 oracle materializes ``[B,T,H,N]``, so ``N = 4096`` is where a whole
+#: cell is checkable, and the ``W = 64`` arms exist so that it is -- and it is built
+#: for the battery (``ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86``) and never shipped. A
+#: binary is SELF-IDENTIFYING either way: ``rola.ops.carry.arms()`` lists exactly what
+#: was built and every entry point refuses an arm the binary does not carry.
+#: docs/build.md.
+def _carry_arms() -> list[int]:
     spec = os.getenv("ROLA_CARRY_ARMS", "").replace(",", " ").split()
     if not spec:
-        return []
-    rows = " ".join(f"CARRY_ARM_{int(i)}(X_)" for i in spec)
-    return [f"-DROLA_CARRY_ARMS(X_)={rows}"]
+        return list(gen_shards.CARRY_SHIPPED_ARMS)
+    n = len(gen_shards.CARRY_ARMS)
+    out: list[int] = []
+    for tok in spec:
+        if tok == "all":
+            out += list(range(n))
+            continue
+        try:
+            i = int(tok)
+        except ValueError:
+            raise SystemExit(f"ROLA_CARRY_ARMS: {tok!r} is not an arm index or 'all'")
+        if not 0 <= i < n:
+            raise SystemExit(f"ROLA_CARRY_ARMS: no such carry arm {i}; the list has "
+                             f"{n} rows (0..{n - 1})")
+        out.append(i)
+    return sorted(set(out))
+
+
+def _carry_defines() -> list[str]:
+    return ["-DROLA_CARRY_BUILT=1"] + [f"-DROLA_CARRY_BUILD_{i}=1" for i in _carry_arms()]
+
+
+def _carry_sources() -> list[str]:
+    """The per-arm translation units this build compiles, TAKEN FROM THE GENERATOR.
+
+    Two rows that are ONE kernel share a file (the generator's `carry_kernel_key`), so
+    this is a set and not a list comprehension over the indices.
+    """
+    files = gen_shards.carry_sources()
+    return sorted({f"csrc/rola/src/instantiations/{files[i]}" for i in _carry_arms()})
 
 
 def _is_iteration_build() -> bool:
-    """An ARM-SUBSET build is an ITERATION build and is NOT SHIPPABLE.
+    """A build whose arm set is not the SHIPPED set is an ITERATION build.
 
     The two post-build gates prove SHIPPABILITY -- that the fatbin carries every
-    ratified instantiation, in the shard the arm list assigns it. A subset binary
-    carries fewer BY CONSTRUCTION, so those gates would fail for the one reason that
-    is not a defect. They are skipped here and nowhere else, behind a banner, and the
-    binary stays self-identifying: `rola.ops.carry.arms()` lists what was built and
-    every entry point refuses an arm it does not carry.
+    ratified instantiation, in the file the arm list assigns it. A binary built with a
+    different arm set carries a different set BY CONSTRUCTION, so those gates would
+    fail for the one reason that is not a defect. They are skipped here and nowhere
+    else, behind a banner, and the binary stays self-identifying.
+
+    NOTE the asymmetry, and that it is deliberate: a build carrying MORE than the
+    shipped rows (the battery's `all`) is an iteration build too. The manifest ratifies
+    the shipped set; a binary carrying arms it does not ratify is not the thing that
+    ships, whichever direction it differs in.
     """
-    return bool(os.getenv("ROLA_CARRY_ARMS", "").strip())
+    return set(_carry_arms()) != set(gen_shards.CARRY_SHIPPED_ARMS)
 
 #: THE EXTENSION IS NAMESPACED INSIDE THE PACKAGE, not top-level. A top-level
 #: ``rola_cuda`` is the flash-attention / mamba precedent, and it has one concrete
@@ -457,7 +495,7 @@ def build_extension():
     os.environ.setdefault("MAX_JOBS", str(build_flags.default_max_jobs(nvcc_threads)))
 
     nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
-        + list(build_flags.DEPFILE_FLAGS) + _carry_arm_subset()
+        + list(build_flags.DEPFILE_FLAGS) + _carry_defines()
     assert_no_ptx(nvcc_flags)
 
     ldflags = ["-lcuda"]
@@ -469,7 +507,7 @@ def build_extension():
 
     return CUDAExtension(
         name=MODULE_NAME,
-        sources=SOURCES + shard_sources(),
+        sources=SOURCES + shard_sources() + _carry_sources(),
         #: The vendored CuTe/CUTLASS headers come LAST, so a repository header always
         #: wins a name collision and the vendored tree can never shadow ours.
         include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include")],
@@ -520,10 +558,11 @@ class RoLABuildExtension(BuildExtension):
         if not _is_iteration_build():
             return False
         print("=" * 78)
-        print("ITERATION BUILD -- NOT SHIPPABLE.  ROLA_CARRY_ARMS="
-              f"{os.environ['ROLA_CARRY_ARMS']} built a SUBSET of the carry arm list, so "
-              "the shippability gates (fatbin instantiation, manifest) are skipped. Build "
-              "with ROLA_CARRY_ARMS unset to get a gateable binary.")
+        print("ITERATION BUILD -- NOT SHIPPABLE.  This build carries carry arms "
+              f"{_carry_arms()}, which is not the SHIPPED set "
+              f"{list(gen_shards.CARRY_SHIPPED_ARMS)}, so the shippability gates "
+              "(fatbin instantiation, manifest) are skipped. Build with "
+              "ROLA_CARRY_ARMS unset to get a gateable binary.")
         print("=" * 78)
         return True
 

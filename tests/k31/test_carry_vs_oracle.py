@@ -16,14 +16,26 @@ Milestones, each a named test:
 from __future__ import annotations
 
 import math
+import sys
+from pathlib import Path
 
 import pytest
 import torch
 
 from rola.ops import carry as carry_ops
 from tests.k31 import reference
-from tests.k31.fixtures import Cell, assert_fresh_binary, canonical_from_lattice, relative
+from tests.k31.fixtures import Cell, assert_fresh_binary, canonical_from_lattice, relative, require_arm
 from tests.oracle.tolerances import BF16_RTOL
+
+#: THE DECLARED ARM TABLE, IMPORTED AND NEVER RESTATED (K36).  The rows live in
+#: `tools/gen_shards.py`, which generates both the dispatch's X-macro and the per-arm
+#: translation units; `tools/` is not a package, so it goes on the path the way
+#: `tests/oracle/instantiation.py` puts it there.
+_TOOLS = Path(__file__).resolve().parents[2] / "tools"
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+
+import gen_shards  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
@@ -89,6 +101,7 @@ CARVE = carry_ops.LEAF_SPLIT
 
 def run(cell, arm, carve, chunk=32, state_in=None):
     widths, k, m, W = arm
+    require_arm(widths, k, m, W, chunk, carve, 0, d_v=cell.d_v)
     read, write, g, v = cell.ref_levels()
     num, den, plane = carry_ops.carry_inter(
         cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths,
@@ -112,6 +125,10 @@ def test_build_stamp_is_this_source():
 def test_arms_are_the_declared_solver_rows():
     """The TOPOLOGY rows, and the declarations each is built for.
 
+    WHAT THE BINARY REPORTS IS A SUBSET (K36): a default build compiles the SHIPPED
+    rows only, so `arms()` is asserted to be declared rows in the declared order, and
+    the table's own properties are asked of `gen_shards.CARRY_ARMS`.
+
     An arm is `(topology, d_v, declaration)`: the declaration chooses the BODY, so the
     same topology appears once per declaration built for it.  DENSE_BOTH is built
     for every topology it is the seam's answer FOR -- which is every one but the
@@ -126,22 +143,27 @@ def test_arms_are_the_declared_solver_rows():
     the declaration is the PARK (K35 S5), so each parked twin is a row whose key differs
     from its own twin's in that bit alone.
     """
-    got = {tuple(a[:8]) for a in carry_ops.arms()}
+    declared = [tuple(row[:9]) for row in gen_shards.CARRY_ARMS]
+    reported = [tuple(a[:9]) for a in carry_ops.arms()]
+    unknown = [row for row in reported if row not in declared]
+    assert not unknown, f"the binary reports rows that are not declared: {unknown}"
+    assert reported == [row for row in declared if row in set(reported)], (
+        "the built rows must be the declared rows, in the declared order")
+    #: THE PROPERTIES BELOW ARE THE TABLE'S, so they are asked of the DECLARED rows and
+    #: not of the subset a build carries: a default build compiles the SHIPPED rows only
+    #: (K36), and "every other topology carries the DENSE_BOTH body" is a statement about
+    #: the list rather than about which of its arms a given `.so` was asked for.
+    keys = {row[:8] for row in declared}
     carved_only = {CARVE4_KEY, CONT_SPLIT_KEY, CONT_STREAMS_KEY,
                    WIDE_SPLIT_KEY, WIDE_STREAMS_KEY, WIDE_2X4_KEY} | PARK_KEYS
-    assert got == {(2, 256, 4, 8, D_V, carry_ops.WINDOW, 32, 1),
-                   (2, 256, 4, 8, D_V, carry_ops.WINDOW_WIDE, 32, 1),
-                   (2, 64, 4, 8, D_V, carry_ops.WINDOW_SMALL, 32, 1),
-                   (3, 16, 2, 16, D_V, carry_ops.WINDOW_SMALL, 32, 1),
-                   (4, 8, 2, 8, D_V, carry_ops.WINDOW_SMALL, 32, 1)} | carved_only, got
-    dense = {tuple(a[:8]) for a in carry_ops.arms() if a[8] == 0}
-    assert got - carved_only <= dense, (
+    dense = {row[:8] for row in declared if row[8] == 0}
+    assert keys - carved_only <= dense, (
         "every other topology must carry the DENSE_BOTH body")
     #: AND TWO CARVED KEYS ARE DENSE TOO (K35 S1c): a declaration being DENSE_BOTH no
     #: longer implies the channel-split body.  The dense rows are now every uncarved key
     #: PLUS exactly the two the compare exists for, named rather than counted so a third
     #: appearing is a failure and not a silently widened set.
-    assert dense - (got - carved_only) == DENSE_CARVED_KEYS, (
+    assert dense - (keys - carved_only) == DENSE_CARVED_KEYS, (
         "the only DENSE_BOTH rows on the carved body are S1c's compare arms")
     #: THE WIDE PLANE IS THE CHANNEL-SPLIT BODY'S REFUSAL, by that body's own arithmetic:
     #: it gives each of a fixed four warps exactly one MMA m-tile of channels, so its
@@ -488,6 +510,7 @@ def test_m4_the_multi_level_carve_matches_the_fp64_oracle(k_tok, carve=CARVE):
     """
     assert_fresh_binary()
     widths, k, m, W = CARVE4
+    require_arm(widths, k, m, W, 32, carve, ALT4)
     cell = (Cell(widths, T=256, k_tok=None, seed=8) if k_tok is None
             else alt_cell(widths, T=256, k_tok=k_tok, seed=88))
     num, den, plane = carry_ops.carry_inter(

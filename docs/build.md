@@ -29,7 +29,7 @@ mamba-ssm require the same thing for the same reason.
 | `ROLA_CUDA_ARCHS` | `;`-separated compute capabilities, default `80;86`. Naming one without a ratified manifest **fails before anything compiles** (rule 3). |
 | `MAX_JOBS` | Parallel compile jobs. The default is derived from **available RAM**, not core count: `MAX_JOBS=8` was OOM-killed on a 23 GB / 16-core host after 8m32. The divisor is a measured GB-per-`cicc` constant in `tools/build_flags.py`, so the same source gives 7 jobs on a 23 GB host and 4 on a 16 GB-class one. |
 | `ROLA_NVCC_THREADS` | `nvcc --threads`, default 2 = the number of `-gencode` targets. Beyond the target count it buys nothing and multiplies the resident set, since the two parallelism axes multiply. |
-| `ROLA_CARRY_ARMS` | **Iteration only.** A `,`/space list of INDICES into the carry family's declared arm list (`csrc/rola/src/carry/carry.cu`'s `CARRY_ARM_<i>`), e.g. `ROLA_CARRY_ARMS=11`. Only those arms are instantiated; unset (the default, and every gate build) means every declared arm. Instantiation cost is the dominant build resource, so compiling one arm to test one arm is the difference between a minute and an hour. A subset binary is **NOT SHIPPABLE** -- the build prints a banner and skips the two shippability gates, because a fatbin carrying fewer instantiations than the manifest ratifies is exactly what a subset IS -- and it is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86`. |
+| `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset** (K36): each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `-DROLA_CARRY_BUILD_<i>`, so an arm outside the set is not compiled at all. **The default is the SHIPPED rows** — see [the arm lists](#carry-arm-lists). `all` is the battery's set (shipped + test). A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86` for iteration. |
 | `ROLA_SKIP_POST_BUILD_RATIFY` | Skips the post-build gate. For iterating on non-kernel code only; a shippable binary is one that passed it. |
 | `ROLA_SCCACHE` | `auto` (default): use the pinned `sccache` if it resolves and matches; else build uncached. `1`: REQUIRE it -- a missing or mismatched wrapper is a hard failure. `0`: disable. See [below](#sccache). |
 | `ROLA_SCCACHE_BIN` | Overrides the `sccache` binary `ROLA_SCCACHE` resolves, the same way `CUDA_HOME` overrides `nvcc`/`ptxas`. |
@@ -51,10 +51,10 @@ mamba-ssm require the same thing for the same reason.
    `tools/gen_shards.py` produces. Generated sources are committed so that what is
    reviewed is what compiles; a stale one fails here rather than shipping a matrix
    nobody wrote.
-5. **Compile.** `ninja`. The chunk consumer's 74 kernel instantiations are spread
-   over three generated translation units (`csrc/rola/src/instantiations/`, 5
-   generated files in all), so the matrix parallelizes across `MAX_JOBS` processes
-   instead of serializing inside one `cicc`.
+5. **Compile.** `ninja`. Both instantiation matrices are generated translation
+   units under `csrc/rola/src/instantiations/`: the facts family in one shard, and
+   **one translation unit per carry arm** (K36), so the arms parallelize across
+   `MAX_JOBS` processes instead of serializing inside one `cicc`.
 6. **The fatbin gate.** `tools/fatbin_entries.py --check` reads the built `.so` and
    requires exactly one device entry per instantiation per architecture, each in
    the shard the matrix assigns it, and every ratified name present. This is the
@@ -80,14 +80,67 @@ MEASURED on a 16-core / 23 GB host, clean build directory, both architectures,
 | no source change — gates, ratification, `_build_config.py` | **3m47s** |
 | one shard, one `nvcc`, both architectures | **43 s** |
 
-The dominant term a single translation unit imposes is measured: one `nvcc` process
-holding the whole matrix at 512 arms took 411 s of wall and 4.4 GB of resident set,
-with no way to spend a second core on it. A shard is 43 s and 0.61 GB. The remaining floor is the ratification: it compiles
-the same translation units the build does, which a content-addressed compiler cache
-turns into hits.
+## <a id="compile-ledger"></a>The per-TU compile ledger (K36)
+
+**Instantiation cost is the dominant build resource, and after K36 it is not the
+kernels that dominate — it is the tensor library's header.** Measured per `cicc`,
+sm_86, one `nvcc --threads=1`, cold:
+
+| translation unit | wall | peak RSS |
+|---|---|---|
+| a bare CUDA TU (`cuda_runtime` + `cuda_bf16`, one trivial kernel) | 0.86 s | 0.19 GB |
+| the same, plus `#include <torch/extension.h>` | **33.7 s** | **2.86 GB** |
+| one carry arm, on the torch-free ABI | **4.7 s** | **0.33 GB** |
+| `carry_arm_6.cu` (the two-row shared TU, channel-split body) | 1.2 s | 0.21 GB |
+| `carry/carry.cu` (dispatch only) | 36.2 s | 2.88 GB |
+
+An arm's own codegen is about 6 s; the header is about 34 s. That measurement is why
+`csrc/rola/src/carry/carry_arm_abi.cuh` speaks POINTERS and not tensors — with one TU
+per arm a tensor-typed seam would re-pay the header 22 times (~12 minutes of redundant
+parsing) and pin every arm TU's resident set at 2.9 GB, which is the term `MAX_JOBS` is
+derived from. The reasoning is in
+[`docs/internals/carry/carry_arm_abi.md`](internals/carry/carry_arm_abi.md#pointers-not-tensors).
+
+**Whole-build walls**, both architectures unless stated, sccache OFF, `MAX_JOBS=3`:
+
+| | before K36 | after K36 |
+|---|---|---|
+| full build, all 23 carry arms | **15m02s** | **4m01s** |
+| the SHIPPED gate build (14 arms) | — (no shipped set) | **3m48s** |
+| all 23 arms, sm_86 only, `MAX_JOBS=7` | — | **3m12s** |
+| `ratify`, both arches, cold | **935 s** | **62 s** |
+| `ratify`, no source change | 935 s (no incrementality) | **28 s** |
+| `ratify`, one arm touched | 935 s | **25 s** |
+| worst single-TU peak `cicc` RSS | **6.14 GB** (`carry.cu`, 23 arms) | **2.92 GB** (`factor.cu`) |
+
+Before K36 the carry family was one translation unit holding every arm: one `cicc`
+compiled them serially at 6.14 GB, with no way to spend a second core on it. `ratify`
+recompiled that same TU on every run, which is what made it a 15-minute act and
+therefore a milestone act rather than a stage one; it is now per-TU incremental, keyed
+on the argv and the content of every input the compiler reported reading.
 
 The two clean rebuilds are byte-identical in every entry point's SASS
 (`tools/sass_bodies.py`), so those numbers are the same binary twice.
+
+## <a id="carry-arm-lists"></a>The carry arm lists: shipped and test
+
+`tools/gen_shards.py` owns the carry arm list and tags each row. A row tagged
+`TEST` in the generated `carry_arms.inc` is a **conformance cell**: the fp64
+oracle materializes `[B,T,H,N]`, so `N = 4096` is where a whole cell is
+checkable, and the `W = 64` arms exist so that it is. The two uncarved
+`DENSE_BOTH` controls at the flagship cell are test rows for the same reason —
+they exist to be compared against, not to be shipped.
+
+| | rows | built by |
+|---|---|---|
+| **SHIPPED** | the flagship topology: the three containers at both value widths, their park twins, the tied arm, the dense declarations on the carved body, flat ALT at both admitted windows | a default build; the gate build; the ratification manifest |
+| **TEST** | every row at `W = 64` or `N = 4096`, plus the two `DENSE_BOTH` controls | `ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86` — the battery's build |
+
+The split has exactly three effects and no others: a test row is out of the
+default and gate builds, out of the ratification manifest, and built at one
+architecture for the oracle battery. A test that needs one asks for it
+(`tests/k31/fixtures.py`'s `require_arm`) and **skips with the arm named** when
+the binary does not carry it, rather than failing inside the dispatch.
 
 ## <a id="sccache"></a>The nvcc invocations are cached (sccache)
 

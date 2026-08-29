@@ -26,12 +26,29 @@ import pytest
 import torch
 
 from rola.ops import carry as carry_ops
-from tests.k31.fixtures import Cell, assert_fresh_binary
+from tests.k31.fixtures import Cell, assert_fresh_binary, built_arms
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
 #: the bf16 magnitude bits; the only zeros bf16 has are +0 and -0.
 MAGNITUDE = 0x7FFF
+
+
+def require_topology(widths, k, m):
+    """SKIP unless a built DENSE_BOTH row carries this ``(D, B, k, m)``.
+
+    ``owner_rows`` is a diagnostic over the PLAN alone, so the seam dispatches it on the
+    topology and the box over the rows declared DENSE_BOTH -- the window, the value width
+    and the declaration are not part of its key.  Since K36 a default build compiles the
+    SHIPPED rows only, and the conformance topologies are TEST rows.
+    """
+    D, B = len(widths), widths[0]
+    if not any(row[:4] == (D, B, k, m) and row[8] == 0 for row in built_arms()):
+        pytest.skip(
+            f"this binary carries no DENSE_BOTH carry arm at (D={D}, B={B}, k={k}, m={m}), "
+            f"which is what `owner_rows` dispatches on. It is a TEST row; build the "
+            f"battery's set: ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86 pip install -e . "
+            f"--no-build-isolation")
 
 
 def reference_rows(plane: torch.Tensor, widths, spans) -> torch.Tensor:
@@ -64,6 +81,7 @@ def reference_rows(plane: torch.Tensor, widths, spans) -> torch.Tensor:
 def test_the_lattice_spans_vote_the_rows_the_claim_names(widths, T, k_tok):
     assert_fresh_binary()
     k, m = 4, 8
+    require_topology(widths, k, m)
     _, spans, groups, bc, _ = carry_ops.box_shape(widths, k, m)
     assert spans == [8, 16], f"the lattice's spans are (8, 16); got {spans}"
     cell = Cell(widths, T, k_tok=k_tok, seed=11)

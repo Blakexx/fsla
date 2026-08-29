@@ -225,7 +225,29 @@ def shard_paths() -> list[Path]:
     return [SRC / "instantiations" / f"{name}.cu" for name in names]
 
 
-def tu_paths(shards: tuple[str, ...] | None = None) -> list[Path]:
+def carry_arm_paths(arms=None) -> list[Path]:
+    """The carry family's per-arm translation units, for the arms this gate measures.
+
+    THE RATIFIED SET IS THE SHIPPED ROWS (K36).  A row tagged TEST is a conformance
+    cell -- the fp64 oracle can hold `N = 4096`, and the `W = 64` arms exist so that
+    it can -- and it is built for the battery at one arch and never shipped, so
+    ratifying it would file measurements for codegen no binary carries.  `arms`
+    scopes further, and like `--shard` it is a MEASUREMENT scope only.
+    """
+    want = sorted(set(gen_shards.CARRY_SHIPPED_ARMS if arms is None else arms))
+    files = gen_shards.carry_sources()
+    return [SRC / "instantiations" / name
+            for name in sorted({files[i] for i in want})]
+
+
+def carry_defines(arms=None) -> list[str]:
+    """`-D` for exactly the arms being measured, so the TU's content is the gate's
+    scope stated twice -- in the file list and in the macro that expands inside it."""
+    want = sorted(set(gen_shards.CARRY_SHIPPED_ARMS if arms is None else arms))
+    return ["-DROLA_CARRY_BUILT=1"] + [f"-DROLA_CARRY_BUILD_{i}=1" for i in want]
+
+
+def tu_paths(shards: tuple[str, ...] | None = None, arms=None) -> list[Path]:
     """The translation units to compile. `shards` scopes to a subset by stem.
 
     Scoping is a MEASUREMENT scope, never a ratification scope: `--write` still
@@ -241,7 +263,7 @@ def tu_paths(shards: tuple[str, ...] | None = None) -> list[Path]:
                              f"    known: {', '.join(sorted(by_stem))}")
         paths = [by_stem[s] for s in sorted(shards)]
         return paths
-    return paths + [SRC / name for name in STANDALONE_TUS]
+    return paths + carry_arm_paths(arms) + [SRC / name for name in STANDALONE_TUS]
 #: The vendored CuTe/CUTLASS headers, in the SAME order `setup.py` passes them
 #: (repository headers first). This gate's whole premise is that it compiles the
 #: shipped translation units under the shipped kernel's flags; an include path the
@@ -551,22 +573,27 @@ def _ninja_cuda_template() -> tuple[str, str, str] | None:
     nvcc, cuda_cflags, cuda_post_cflags = var("nvcc"), var("cuda_cflags"), var("cuda_post_cflags")
     if nvcc is None or cuda_cflags is None or cuda_post_cflags is None:
         return None
-    #: AN ITERATION BUILD'S ARGV MUST NEVER BECOME A MANIFEST (K35 S1b, 2026-08-27).
-    #: Reusing `build.ninja` VERBATIM is a cache-key fidelity win and also a trap: an
-    #: arm-subset build (`ROLA_CARRY_ARMS`) writes its `-D` into those very flags, and a
-    #: later `ratify --write` -- run in a clean environment, with `_is_iteration_build()`
-    #: reading an env var that is no longer set -- inherits the SUBSET and certifies a
-    #: manifest for arms nobody built. It happened: a manifest carrying 3 of the carry
-    #: family's arms was written and reported success, and only the post-build
-    #: instantiation-set gate caught it ("54 new entries not in the manifest"). The env
-    #: cannot answer this question later; the ARGV can, so it is asked here.
-    if "ROLA_CARRY_ARMS" in cuda_cflags or "ROLA_CARRY_ARMS" in cuda_post_cflags:
-        raise SystemExit(
-            "REFUSING to ratify off an ITERATION BUILD's argv: build/temp/build.ninja "
-            "carries -DROLA_CARRY_ARMS, so its objects hold an ARM SUBSET and any "
-            "manifest written from them would certify arms that were never built. Run a "
-            "full build (ROLA_CARRY_ARMS unset) first, then ratify.")
-    return nvcc, cuda_cflags, cuda_post_cflags
+    #: AN ITERATION BUILD'S ARGV MUST NEVER BECOME A MANIFEST (K35 S1b, 2026-08-27;
+    #: reshaped at K36).  Reusing `build.ninja` VERBATIM is a cache-key fidelity win and
+    #: was also a trap: an arm-subset build wrote its `-D` into those very flags, and a
+    #: later `--write` -- run in a clean environment, with the env var no longer set --
+    #: inherited the SUBSET and certified a manifest for arms nobody built.  It happened:
+    #: a manifest carrying 3 of the carry family's arms was written and reported success,
+    #: and only the post-build instantiation-set gate caught it.
+    #:
+    #: K36 removes the trap rather than detecting it.  The arm selection is now a set of
+    #: `-DROLA_CARRY_BUILD_<i>` naming the per-arm translation units in the build, and
+    #: this gate STRIPS them and substitutes its OWN -- exactly the treatment `-gencode`
+    #: gets, for exactly the same reason: they name a SCOPE, and the scope is this run's
+    #: (`carry_defines`), never the last build's.  A shipped build passes the same set,
+    #: so the substitution is a no-op for the cache key it was introduced to protect.
+    return nvcc, _without_carry_arms(cuda_cflags), _without_carry_arms(cuda_post_cflags)
+
+
+def _without_carry_arms(flags: str) -> str:
+    """`flags` with every carry arm-selection define dropped."""
+    return " ".join(f for f in shlex.split(flags)
+                    if not f.startswith(("-DROLA_CARRY_BUILD", "-DROLA_CARRY_BUILT")))
 
 
 def _without_gencode(flags: list[str]) -> list[str]:
@@ -587,7 +614,7 @@ def _without_gencode(flags: list[str]) -> list[str]:
     return out
 
 
-def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
+def _nvcc_command(arches, source: Path, obj_path: str, arms=None) -> list[str]:
     """The extension's own compile flags, IMPORTED rather than restated.
 
     This gate compiles the same translation units the build does, so a flag list
@@ -639,7 +666,7 @@ def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
         cmd += _without_gencode(shlex.split(cuda_cflags))
         cmd += ["-c", str(source), "-o", obj_path]
         cmd += _without_gencode(shlex.split(cuda_post_cflags))
-        return cmd + build_flags.gencodes(arches)
+        return cmd + build_flags.gencodes(arches) + carry_defines(arms)
 
     import torch.utils.cpp_extension as ext
 
@@ -655,7 +682,7 @@ def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
     #: are inert in every TU this gate compiles, so they must never gate a ratchet
     #: or trigger a re-ratification on their own.
     cmd += build_flags.torch_extension_cache_key_flags()
-    return cmd + ["-o", obj_path]
+    return cmd + carry_defines(arms) + ["-o", obj_path]
 
 
 def ptxas_version() -> str:
@@ -748,59 +775,164 @@ def _parse_report(stderr: str) -> tuple[dict, list[str]]:
     return entries, unhonored
 
 
-def compile_and_parse(arches, objdir: str, sources: list[Path],
-                      jobs: int | None = None) -> tuple[dict, list[str], dict[str, str]]:
-    """Compile the shipped translation units and read `ptxas`'s report.
+#: WHERE A MEASURED TRANSLATION UNIT IS REMEMBERED (K36).  Beside the build's own
+#: `build.ninja`, in the fixed directory `setup.py` pins, because the record is a
+#: property of that build tree and must die with it.
+RATIFY_CACHE = COMPILE_CWD / "ratify_cache"
 
-    Returns (entries, unhonored, objects) where `objects` maps each entry key to the
-    object file it came from -- the hot-loop gate disassembles the SASS out of the
-    SAME compile the register numbers came from, so the two can never describe
-    different binaries, and with more than one translation unit that association has
-    to be carried rather than assumed.
+_FILE_SHA: dict[str, str] = {}
 
-    The translation units are compiled CONCURRENTLY, at the same memory-derived job
-    count the build uses: this gate compiles the same matrix the build does, and
-    running it serially would put the second full-matrix compile back into every
-    build cycle, which is the cost the shard exists to remove.
+
+def _file_sha(path: str) -> str:
+    """Content hash of one dependency, memoised: the arm TUs share nearly every
+    header, so the closure is hashed once per FILE and not once per unit."""
+    if path not in _FILE_SHA:
+        try:
+            _FILE_SHA[path] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except OSError:
+            _FILE_SHA[path] = "ABSENT"
+    return _FILE_SHA[path]
+
+
+def _depfile_inputs(depfile: Path) -> list[str]:
+    """Every file `nvcc` reported this translation unit reading, from the depfile the
+    compile already writes (`--generate-dependencies-with-compile`)."""
+    text = depfile.read_text().replace("\\\n", " ")
+    _, _, rhs = text.partition(":")
+    return sorted({tok for tok in rhs.split() if tok and not tok.endswith(":")})
+
+
+def _tu_fingerprint(cmd: list[str], deps: list[str]) -> str:
+    """WHAT MAKES A MEASUREMENT REUSABLE: the exact argv (less the object and depfile
+    paths, which are a scratch directory's business) and the CONTENT of every input
+    the compiler reported reading.  A header edit moves it; a new `#include` moves it
+    too, because adding one edits a file already in the closure."""
+    h = hashlib.sha256()
+    h.update(f"v1|{SASS_HASH_VERSION}|".encode())
+    skip = False
+    for tok in cmd:
+        if skip:
+            skip = False
+            continue
+        if tok in ("-o", "--dependency-output"):
+            skip = True
+            continue
+        h.update(tok.encode())
+        h.update(b"\0")
+    for dep in deps:
+        h.update(dep.encode())
+        h.update(_file_sha(dep).encode())
+    return h.hexdigest()
+
+
+def _cache_read(source: Path, cmd: list[str]) -> dict | None:
+    """The stored measurement for this unit, or `None` if it does not describe it.
+
+    The stored DEPENDENCY LIST is what the fingerprint is recomputed over -- the
+    record has to say what it depended on, or "unchanged" is a claim about nothing.
+    """
+    rec_path = RATIFY_CACHE / f"{source.stem}.json"
+    if not rec_path.exists():
+        return None
+    try:
+        rec = json.loads(rec_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if rec.get("fingerprint") != _tu_fingerprint(cmd, rec.get("deps", [])):
+        return None
+    return rec
+
+
+def _cache_write(source: Path, cmd: list[str], deps: list[str], entries: dict,
+                 unhonored: list[str], scan: dict) -> None:
+    RATIFY_CACHE.mkdir(parents=True, exist_ok=True)
+    (RATIFY_CACHE / f"{source.stem}.json").write_text(json.dumps(
+        {"fingerprint": _tu_fingerprint(cmd, deps), "deps": deps, "entries": entries,
+         "unhonored": unhonored, "scan": scan}, indent=1, sort_keys=True) + "\n")
+
+
+def _scan_object(obj: str, wanted: set) -> dict:
+    proc = subprocess.Popen([cuda_bin("cuobjdump"), "-sass", obj],
+                            stdout=subprocess.PIPE, text=True)
+    got = sass_scan(proc.stdout, wanted)
+    rc = proc.wait()
+    if rc != 0:
+        raise SystemExit(f"cuobjdump -sass FAILED (rc={rc}) on {obj}; the SASS gates "
+                         f"cannot pass a binary they cannot read")
+    return got
+
+
+def measure_units(arches, objdir: str, sources: list[Path], arms=None,
+                  jobs: int | None = None) -> tuple[dict, list[str], dict]:
+    """COMPILE AND DISASSEMBLE EACH TRANSLATION UNIT, OR REUSE ITS RECORD (K36).
+
+    The gate used to recompile the whole matrix on every run, which is what made it a
+    40-minute act and therefore a milestone act (KERNEL_STANDARDS section 16). With one
+    arm per translation unit the matrix is 30-odd independent units, and a unit whose
+    input closure has not moved has nothing left to measure: its registers, its spills
+    and its SASS body are the same numbers by the same argument the source digest makes
+    globally. So the unit is the cache grain, keyed on the argv and the CONTENT of every
+    input the compiler itself reported reading -- never on a timestamp.
+
+    The reuse is not a weakening of the gate: what is replayed is a MEASUREMENT of an
+    identical compile, and the thing that decides identity is the same content hash the
+    freshness trigger uses, applied per unit instead of per tree.
     """
     jobs = jobs or build_flags.default_max_jobs(2)
     entries: dict[str, dict] = {}
     unhonored: set[str] = set()
-    objects: dict[str, str] = {}
+    scan: dict[str, dict] = {}
+    owner: dict[str, str] = {}
+    hits: list[str] = []
     t0 = time.perf_counter()
-
     COMPILE_CWD.mkdir(parents=True, exist_ok=True)
 
-    def run(source: Path) -> tuple[Path, str, str]:
+    def one(source: Path):
         obj = str(Path(objdir) / f"{source.stem}.o")
-        cmd = _nvcc_command(arches, source, obj)
+        cmd = _nvcc_command(arches, source, obj, arms)
+        rec = _cache_read(source, cmd)
+        if rec is not None:
+            return source, rec, True
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(COMPILE_CWD))
         if proc.returncode != 0:
             sys.stderr.write(proc.stderr)
             raise SystemExit(f"{source.name} FAILED to compile (rc={proc.returncode})")
-        return source, obj, proc.stderr
+        got, bad = _parse_report(proc.stderr)
+        got_scan = _scan_object(obj, set(got))
+        dep = Path(f"{obj}.d")
+        deps = _depfile_inputs(dep) if dep.exists() else []
+        rec = {"entries": got, "unhonored": bad, "scan": got_scan, "deps": deps}
+        if deps:
+            _cache_write(source, cmd, deps, got, bad, got_scan)
+        return source, rec, False
 
     with ThreadPoolExecutor(max_workers=min(jobs, len(sources))) as pool:
-        for source, obj, stderr in pool.map(run, sources):
-            got, bad = _parse_report(stderr)
-            for key, value in got.items():
+        for source, rec, hit in pool.map(one, sources):
+            if hit:
+                hits.append(source.stem)
+            for key, value in rec["entries"].items():
                 if key in entries:
                     #: TWO TRANSLATION UNITS EMITTING ONE INSTANTIATION is the exact
-                    #: state the shard exists to prevent, and merging their reports
+                    #: state the split exists to prevent, and merging their reports
                     #: would hide it behind numbers that look fine.
                     raise SystemExit(
                         f"{key} was compiled by more than one translation unit "
-                        f"({source.name} is the second). Nothing is sharded; run "
-                        f"tools/gen_shards.py --check and tools/fatbin_entries.py")
+                        f"({source.name} is the second, after {owner[key]}). Nothing is "
+                        f"sharded; run tools/gen_shards.py --check and "
+                        f"tools/fatbin_entries.py")
                 entries[key] = value
-                objects[key] = obj
-            unhonored |= set(bad)
+                owner[key] = source.name
+            unhonored |= set(rec["unhonored"])
+            scan.update(rec["scan"])
 
     wall = time.perf_counter() - t0
-    print(f"{len(sources)} translation unit(s) compiled in {wall:.1f} s at "
+    print(f"{len(sources)} translation unit(s) measured in {wall:.1f} s at "
           f"{min(jobs, len(sources))} jobs over {len(arches)} targets "
-          f"({', '.join('sm_' + a for a in arches)})")
-    return entries, sorted(unhonored), objects
+          f"({', '.join('sm_' + a for a in arches)}); {len(hits)} reused an unchanged "
+          f"unit's record, {len(sources) - len(hits)} recompiled")
+    scan = {name: scan.get(name, {"body_sha256": None, "hot_locals": [], "local_ops": 0})
+            for name in entries}
+    return entries, sorted(unhonored), scan
 
 
 def check(entries: dict, unhonored: list[str], want: dict) -> bool:
@@ -1021,38 +1153,6 @@ def sass_scan(sass_lines, wanted: set | None = None) -> dict:
     return report
 
 
-def measure_sass(objects: dict[str, str], entries: dict) -> dict[str, dict]:
-    """Disassemble the SAME objects the register numbers came from.
-
-    One `cuobjdump` pass per object serves all three SASS-derived facts, so arming
-    the body hash and the local-presence ratchet costs no additional disassembly.
-    """
-    def one(obj: str) -> dict[str, dict]:
-        wanted = {k for k, v in objects.items() if v == obj}
-        proc = subprocess.Popen([cuda_bin("cuobjdump"), "-sass", obj],
-                                stdout=subprocess.PIPE, text=True)
-        got = sass_scan(proc.stdout, wanted)
-        rc = proc.wait()
-        if rc != 0:
-            raise SystemExit(f"cuobjdump -sass FAILED (rc={rc}) on {obj}; the "
-                             f"SASS gates cannot pass a binary they cannot read")
-        return got
-
-    #: DISASSEMBLED IN PARALLEL, for the same reason the compiles are: this runs on
-    #: every build, and a serial pass over ten objects is the shard win being handed
-    #: back at the far end of the gate. The objects are disjoint by construction --
-    #: each instantiation is emitted by exactly one of them -- so there is nothing to
-    #: reconcile between the workers.
-    report: dict[str, dict] = {}
-    objs = sorted(set(objects.values()))
-    with ThreadPoolExecutor(max_workers=min(len(objs), (os.cpu_count() or 1))) as pool:
-        for got in pool.map(one, objs):
-            report.update(got)
-    return {name: report.get(name, {"body_sha256": None, "hot_locals": [],
-                                    "local_ops": 0})
-            for name in entries}
-
-
 def check_hot_loop(hot: dict[str, int], want: dict) -> bool:
     """The gate proper: any instantiation whose in-loop local-access count GREW
     past its ratified count is a build failure (the ratchet)."""
@@ -1259,21 +1359,33 @@ def main() -> int:
                     help="MEASUREMENT SCOPE: compile only these instantiation shards "
                          "(repeatable). A ratchet refusal is investigated one shard "
                          "at a time; --write still refuses a partial matrix.")
+    ap.add_argument("--arm", action="append", type=int, metavar="N",
+                    help="MEASUREMENT SCOPE: measure only these carry arms by index "
+                         "(repeatable). Same rule as --shard: --write refuses it, "
+                         "because a manifest written from a subset of the arms would "
+                         "silently drop every one it did not compile.")
     a = ap.parse_args()
 
     arches = tuple(a.arch) if a.arch else DEFAULT_ARCHES
-    if a.shard and a.write:
-        raise SystemExit("--shard is a MEASUREMENT scope, not a ratification scope: "
-                         "a manifest written from a subset of the translation units "
-                         "would silently drop every instantiation it did not compile")
-    sources = tu_paths(tuple(a.shard) if a.shard else None)
+    if (a.shard or a.arm) and a.write:
+        raise SystemExit("--shard/--arm are MEASUREMENT scopes, not ratification "
+                         "scopes: a manifest written from a subset of the translation "
+                         "units would silently drop every instantiation it did not "
+                         "compile")
+    arms = sorted(set(a.arm)) if a.arm else None
+    if arms is not None:
+        unknown = [i for i in arms if not 0 <= i < len(gen_shards.CARRY_ARMS)]
+        if unknown:
+            raise SystemExit(f"no such carry arm: {unknown}; the list has "
+                             f"{len(gen_shards.CARRY_ARMS)} rows (0.."
+                             f"{len(gen_shards.CARRY_ARMS) - 1})")
+    sources = tu_paths(tuple(a.shard) if a.shard else None, arms)
 
     sccache_info = gate_sccache()
     version = ptxas_version()
     import tempfile
     with tempfile.TemporaryDirectory(prefix="rola_ratify_") as tmp:
-        entries, unhonored, objects = compile_and_parse(arches, tmp, sources)
-        scan = measure_sass(objects, entries)
+        entries, unhonored, scan = measure_units(arches, tmp, sources, arms)
         hot = {name: len(s["hot_locals"]) for name, s in scan.items()}
         bodies = {name: s["body_sha256"] for name, s in scan.items()}
         local_ops = {name: s["local_ops"] for name, s in scan.items()}

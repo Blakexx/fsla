@@ -29,6 +29,21 @@ constexpr int align16c(int x) { return (x + 15) & ~15; }
 //: constraints (K2, K3, K6) are stated against it here rather than at a consumer.
 static constexpr int kAtomLeaves = 16;
 
+//: THE FAMILY'S ARM-INDEPENDENT CONSTANTS (moved here at K36).  They live in this
+//: header, not in `carry_kernel.cuh`, because the DISPATCH TU needs them for the
+//: build stamp and must not parse the kernel header to get them -- including it cost
+//: the dispatch 36 s and 2.9 GB of `cicc` for three integers, and, worse, gave the
+//: file that must not instantiate an arm every tool it would need to.
+//: THE BUILD'S IDENTITY, device-side.  A green battery against a stale binary is
+//: this project's recurring failure; a stamp read OFF THE DEVICE is the only check
+//: that catches it, so every gate in `tests/k31/` asserts this first.
+static constexpr int kCarryBuildMagic = 31010026;
+
+//: THE CHANNEL-SPLIT BODY'S EXECUTOR COUNT.  A CARVED arm's is its STREAM count
+//: (`CarryGeom::kWarps`) and is not a constant.
+static constexpr int kWarps = 4;
+static constexpr int kThreads = kWarps * 32;
+
 //: THE OWNER'S SHAPE, DERIVED.  Nothing in this struct is a table: every field is
 //: a product or a bit width, so an owner's addressing is shifts and masks at every
 //: use site.  The distribution of `M` across the levels is spec section 2.5 as the
