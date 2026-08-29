@@ -60,30 +60,62 @@ lookup. Passing the flag is optional — an unset `ROLA_IMAGE_DIGEST` records th
 empty string, same as a bare-host build.
 
 The build pins its own toolchain the same way the repo's build/ratify gates do
-(`docs/build.md` rule 1): the base image `nvidia/cuda:12.4.1-devel-ubuntu22.04`
-ships `ptxas` build `V12.4.99, cuda_12.4.r12.4/compiler.33961263_0`, the exact
-string `tools/manifests/sm_86.json` and `sm_80.json` were ratified under. If a
-future base-image revision ever ships a different `ptxas` build under the same
-CUDA minor version, the FIRST build inside the container will fail loudly at
-`setup.py`'s rule-1 gate (see step 4) rather than silently shipping unmeasured
-codegen — that failure is the intended behavior, not a bug in this Dockerfile.
+(`docs/build.md` rule 1) — and this took an extra step, measured, not assumed:
+the base image `nvidia/cuda:12.4.1-devel-ubuntu22.04` does **not** ship the
+`ptxas` build the manifests were ratified under. Both that tag and
+`12.4.0-devel-ubuntu22.04` were checked (2026-08-29) and both report
+`V12.4.131, cuda_12.4.r12.4/compiler.34097967_0` — a later CUDA 12.4 package
+revision than `tools/manifests/sm_86.json`/`sm_80.json`'s pinned
+`V12.4.99, cuda_12.4.r12.4/compiler.33961263_0`. The Dockerfile does not use
+the base image's toolchain as-is: it downgrades `cuda-nvcc-12-4`,
+`cuda-nvvm-12-4` and `cuda-crt-12-4` to the exact `12.4.99-1` package version
+from NVIDIA's own apt repo (still available at check time) and asserts the
+resulting `ptxas --version` string right there in the same build step — a
+build whose apt mirror ever stops carrying `12.4.99-1` fails loudly at THAT
+step, not silently later. `setup.py`'s own rule-1 gate is the second,
+independent check: even if the image-build assertion above were ever removed,
+the first `pip install -e .` inside a mismatched container would still refuse
+rather than ship unmeasured codegen.
 
 ## 3. Open the devcontainer, or run the image directly
+
+**THE CLONE IS THE WORKSPACE; WORKTREES ARE OPTIONAL.** A plain `git clone` of
+this repo, opened with nothing else exported, must start the container —
+verified 2026-08-29 with a real fresh clone in a temp directory and
+`ROLA_WORKTREES_DIR` unset (`npx @devcontainers/cli up`). `ROLA_WORKTREES_DIR`
+exists for a contributor who ALREADY keeps sibling git worktrees next to this
+repo (`rola-branch-structure`) and wants them reachable from inside the
+container; nobody else needs to set it, or even know it exists.
 
 **VS Code / Claude Code, via the devcontainer:**
 
 ```bash
-export ROLA_WORKTREES_DIR=/path/to/your/worktrees   # optional; defaults to
-                                                     # ../worktrees next to the
-                                                     # repo if unset
+code .   # "Reopen in Container" — reads .devcontainer/devcontainer.json;
+         # works with NOTHING exported. `/workspace/worktrees` lands on an
+         # auto-created, empty named Docker volume (`rola-worktrees`) in that
+         # case -- there to write into from inside the container, not to read
+         # host worktrees from.
+
+# OPTIONAL, only if you keep sibling worktrees you want visible inside the
+# container (docs on ../worktrees's layout: rola-branch-structure):
+export ROLA_WORKTREES_DIR=/path/to/your/worktrees
 export ROLA_IMAGE_DIGEST="$(sha256sum Dockerfile | cut -d' ' -f1)"
-code .   # "Reopen in Container" — reads .devcontainer/devcontainer.json
+code .
 ```
 
-`.devcontainer/devcontainer.json` mounts the repo at `/workspace/rola` and the
-worktrees directory at `/workspace/worktrees`; neither path is hard-coded to a
-home directory (KERNEL_STANDARDS.md §17) — `ROLA_WORKTREES_DIR` is a host
-environment variable you set, with a repo-relative fallback if you don't.
+`.devcontainer/devcontainer.json`'s worktrees mount is ONE line,
+`"${localEnv:ROLA_WORKTREES_DIR:rola-worktrees}:/workspace/worktrees"` —
+Docker's own `-v SOURCE:TARGET` shorthand (not the object `type=bind` form)
+decides bind-vs-volume from the shape of `SOURCE` at container-start time:
+unset resolves to the bare name `rola-worktrees` (a named volume, Docker
+auto-creates it, no host path required to exist — the zero-config case); set
+to a host path, Docker bind-mounts THAT path and creates it if missing. No
+path is hard-coded to a home directory either way (KERNEL_STANDARDS.md §17).
+**This replaces an earlier version of this mount that used the object
+`type=bind` form with a `${localWorkspaceFolder}/../worktrees` path default —
+that form's pre-flight validation refused to start a fresh clone with
+`ROLA_WORKTREES_DIR` unset, since nothing has a `../worktrees` sibling
+directory yet (found from a question about exactly this, 2026-08-29).**
 
 **Plain `docker run`, the equivalent without an editor integration:**
 
@@ -91,11 +123,15 @@ environment variable you set, with a repo-relative fallback if you don't.
 docker run --rm -it \
   --gpus all --ipc=host \
   -v "$(pwd)":/workspace/rola \
-  -v "${ROLA_WORKTREES_DIR:-$(pwd)/../worktrees}":/workspace/worktrees \
+  -v "${ROLA_WORKTREES_DIR:-rola-worktrees}":/workspace/worktrees \
   -e ROLA_IMAGE_DIGEST="$(sha256sum Dockerfile | cut -d' ' -f1)" \
   -w /workspace/rola \
   rola-dev:latest
 ```
+
+Same shape as the devcontainer's mount line, in bash's own `${VAR:-default}`:
+`ROLA_WORKTREES_DIR` unset falls back to the bare name `rola-worktrees` (a
+named volume); set, it bind-mounts that host path.
 
 ## 4. First build of the SHIPPED set
 
