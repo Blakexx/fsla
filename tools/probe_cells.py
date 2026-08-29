@@ -498,7 +498,13 @@ def worker_main(args):
 # ---------------------------------------------------------------------------
 # ORCHESTRATOR: cross-tip subprocess launch, GPU flock, interleaved A/B.
 def parse_binary_spec(spec: str) -> dict:
-    """``worktree:/path,venv:/path[,label:NAME]`` -> dict."""
+    """``worktree:/path,venv:/path[,label:NAME][,carve:N]`` -> dict.
+
+    `carve` (K35 F3) pins THIS binary's declaration scalar, which is how two rows
+    of ONE declaration -- the ends of the stream-count axis, `WPS = 1` and
+    `WPS = kWarps` -- are measured against each other INTERLEAVED on a single
+    build, rather than as two separated runs this host's drift would swamp.
+    """
     out = {}
     for part in spec.split(","):
         k, _, v = part.partition(":")
@@ -550,8 +556,9 @@ def run_worker(binary: dict, cells: list[str], reps: int, warmup: int, lock_path
     py = venv_python(binary["venv"])
     cmd = [py, str(THIS_FILE), "--worker", "--cells", ",".join(cells),
            "--reps", str(reps), "--warmup", str(warmup), "--state", state]
-    if CARVE_OVERRIDE:
-        cmd += ["--carve", str(CARVE_OVERRIDE[0])]
+    _carve = binary.get("carve") or (CARVE_OVERRIDE[0] if CARVE_OVERRIDE else None)
+    if _carve is not None:
+        cmd += ["--carve", str(_carve)]
     if oneshot:
         cmd.append("--oneshot")
     with gpu_lock(lock_path):
@@ -602,8 +609,9 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
     cmd = [NCU_BIN, "--target-processes", "all", "-k", "regex:carry.*kernel", "-c", "1",
            "--print-kernel-base", "mangled", "--metrics", metrics, "--csv",
            py, str(THIS_FILE), "--worker", "--cells", cell, "--oneshot", "--state", state]
-    if CARVE_OVERRIDE:
-        cmd += ["--carve", str(CARVE_OVERRIDE[0])]
+    _carve = binary.get("carve") or (CARVE_OVERRIDE[0] if CARVE_OVERRIDE else None)
+    if _carve is not None:
+        cmd += ["--carve", str(_carve)]
     with gpu_lock(lock_path):
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
                                timeout=timeout)
