@@ -10,3 +10,4 @@ rola/_build_config.py
 
 # K38: the derived measurements index -- rebuilt from benchmarks/results/, never committed.
 .rola/
+compile_commands.json
