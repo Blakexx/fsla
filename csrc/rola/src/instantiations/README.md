@@ -36,9 +36,9 @@ shard cannot enumerate different sets.
 (KERNEL_STANDARDS section 7). The file is an include, a guard and one expansion
 of `CARRY_ARM_DEFINE` (`../carry/carry_arm.cuh`), so the arm's kernel — the
 carved body or the channel-split one — is emitted by exactly one object and the
-13 arms compile in parallel instead of serially inside one `cicc`.
+17 arms compile in parallel instead of serially inside one `cicc`.
 
-Every arm has its own file except rows 2, 10, 11, which are ONE kernel (the channel-split body takes no per-level declaration) and therefore one file; rows 6, 7, which are ONE kernel (the channel-split body takes no per-level declaration) and therefore one file.
+Every arm has its own file except rows 0, 15, which are ONE kernel (the channel-split body takes no per-level declaration) and therefore one file; rows 2, 10, 11, 16, which are ONE kernel (the channel-split body takes no per-level declaration) and therefore one file; rows 6, 7, which are ONE kernel (the channel-split body takes no per-level declaration) and therefore one file.
 
 `carry_arms.inc` carries the rows themselves and the
 `#if defined(ROLA_CARRY_BUILD_<i>)` selection: `setup.py` puts an arm's file in

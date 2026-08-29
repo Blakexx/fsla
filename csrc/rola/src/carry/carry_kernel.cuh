@@ -72,15 +72,15 @@ template <int D, int B, int K, int M, int DV, int W, int C, int WPS, int NSW, in
 struct CarryGeom {
   using BP = BoxPlan<D, B, K, M>;
   //: THE TWO CARVES, DERIVED INDEPENDENTLY (K35 F1): each side's level ORDER comes -- see docs/internals/carry/carry_kernel.md#svr
+  //: THE WARP CARVE IS NOT THE STREAM COUNT (K35 F3, Blake 2026-08-29). -- see docs/internals/carry/carry_kernel.md#wps
   using SVR = StreamSpans<D, B, K, M, MO, kSideRead, NSR>;
-  using SVW = StreamSpans<D, B, K, M, MO, kSideWrite, NSW>;
-  static_assert(WPS == 1,
-                "M1P builds ONE warp per stream; the column split (`WPS > 1`) returns with "
-                "the containers, as its own stage");
-  static_assert(NSW == NSR,
-                "one warp is BOTH a read stream and a write stream, so the two sides carve "
-                "the box into equally many boxes; unequal counts arrive with the write "
-                "side's own schedule");
+  using SVW = StreamSpans<D, B, K, M, MO, kSideWrite, NSR>;
+  static_assert(NSR == NSW * WPS,
+                "`WPS` is WARPS PER WRITE STREAM: the `NSR` warps of a CTA group into "
+                "`NSW = NSR / WPS` write streams, each stream's box the span of its warps' "
+                "own boxes and its list the union of their bits");
+  static constexpr int kWPS = WPS;
+  static constexpr int kStreamsW = NSW;
   static_assert(PK == 0,
                 "the parked `lo` is a tenant of the exchange's drained slots, and "
                 "the lo park is a later stage's mechanism");
@@ -136,11 +136,21 @@ struct CarryGeom {
   static constexpr int kRegFloor = 220;
   static constexpr int slot_bytes = C * LdV * (int)sizeof(__nv_bfloat16);
   //: THE SHARED FACTOR STAGING (K35 F3): ONE copy of a batch's UN-EXPANDED factor -- see docs/internals/carry/carry_kernel.md#ldf
-  static constexpr int LdF = BP::kStageW;
-  static constexpr int stage_factor_bytes = 2 * C * LdF * (int)sizeof(__nv_bfloat16);
-  static_assert(LdF % 8 == 0,
-                "a staged factor row is a whole number of asynchronous quanta, so every "
-                "level's run inside it lands sixteen-byte aligned");
+  static constexpr int LdF = (BP::kStageW % 16 == 8) ? BP::kStageW : BP::kStageW + 8;
+  //: A CARVED LEVEL'S RUN IS STAGED TRANSPOSED AND WORD-WIDE. -- see docs/internals/carry/carry_kernel.md#snarrow
+  static constexpr bool narrow(int l) { return SVW::s(l) < 8; }
+  static constexpr int narrow_n(int l) { return narrow(l) ? BP::s(l) : 0; }
+  static constexpr int narrow_base(int l) {
+    return l <= 0 ? 0 : narrow_base(l - 1) + narrow_n(l - 1);
+  }
+  static constexpr int kNarrowEl = narrow_base(D - 1) + narrow_n(D - 1);
+  static constexpr int map_bytes = align16c(NSR * C);
+  static constexpr int stage_factor_bytes = 2 * C * LdF * (int)sizeof(__nv_bfloat16)
+                                            + 2 * C * kNarrowEl * (int)sizeof(uint32_t) + map_bytes;
+  static_assert(LdF % 16 == 8,
+                "a staged factor row is an ODD number of sixteen-byte granules, so eight "
+                "consecutive lanes reading one granule each land in eight distinct bank "
+                "groups; an even granule stride is the four-way conflict K35 F3 measured");
   static constexpr int fixed_bytes = panel_bytes + out_bytes + list_bytes + stage_factor_bytes;
   static constexpr int kStages = design::stages_for(slot_bytes, fixed_bytes, kThreads, kRegFloor);
   static constexpr size_t bytes = (size_t)fixed_bytes + (size_t)kStages * slot_bytes;
@@ -325,6 +335,10 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   uint16_t* const slist = reinterpret_cast<uint16_t*>(so + C * LdO);
   __nv_bfloat16* const sf = reinterpret_cast<__nv_bfloat16*>(slist + G::kLists * kListStride);
   constexpr int LdF = G::LdF;
+  constexpr int kNarrowEl = G::kNarrowEl;
+  uint32_t* const snf = reinterpret_cast<uint32_t*>(sf + 2 * C * LdF);
+  //: THE SLOT -> BATCH ROW MAP (K35 F3): a stream's segment is COMPACT, so the -- see docs/internals/carry/carry_kernel.md#srm
+  uint8_t* const srm = reinterpret_cast<uint8_t*>(snf + 2 * C * kNarrowEl);
 
   //: ONE 64-BIT BASE PER PLANE, and a 32-BIT BYTE DISPLACEMENT after it -- the -- see docs/internals/carry/carry_kernel.md#vrowelems
   const int vRowElems = v_row_bytes / (int)sizeof(__nv_bfloat16);
@@ -374,10 +388,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   const uint32_t brT1 = smem_addr(panW) + (uint32_t)((rT * LdS + cT * 8) * 2);
   const uint32_t bwF0 = smem_addr(panW) + (uint32_t)((rF * LdS + cF * 8) * 2);
   const uint32_t bwF1 = smem_addr(panR) + (uint32_t)((rF * LdS + cF * 8) * 2);
-  const uint32_t svB = smem_addr(sv) + (uint32_t)((rT * LdV + cT * 8) * 2);
+  const uint32_t svB = smem_addr(sv) + (uint32_t)(cT * 8 * 2);
   constexpr uint32_t kVSlot = (uint32_t)(C * LdV) * 2;
 #define ADDR_S(b_, R_, g_) ((b_) + (uint32_t)(((R_) * LdS + (g_) * 8) * 2))
-#define ADDR_V(b_, R_, dv_) ((b_) + (uint32_t)(((R_) * LdV + (dv_)) * 2))
 
   //: the warp's own staging region of the readout block.
   float* const sow = so + warp * kMmaN * LdO;
@@ -598,14 +611,27 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     });
   };
 
+  //: ONE LEVEL'S RUN OUT OF THE STAGING, from whichever of its two regions holds it. -- see docs/internals/carry/carry_kernel.md#staged-run
+  auto staged_run = [&](auto Lc, auto& run, const __nv_bfloat16* srow, const uint32_t* snfRow) {
+    constexpr int l = decltype(Lc)::value;
+    if constexpr (G::narrow(l)) {
+      static_for<PMW::span(l)>([&](auto Ic) {
+        constexpr int i = decltype(Ic)::value;
+        run[i] = (unsigned short)snfRow[(G::narrow_base(l) + offW[l] + i) * C];
+      });
+    } else {
+      load_run<PMW::span(l)>(run, srow + BP::stage_off(l) + offW[l]);
+    }
+  };
   //: THE WRITE SIDE EXPANDS FROM THE SHARED STAGING (K35 F3), never from global. -- see docs/internals/carry/carry_kernel.md#expand-write
-  auto expand_write = [&](__nv_bfloat16* dst, const __nv_bfloat16* srow, uint32_t gain) {
+  auto expand_write = [&](__nv_bfloat16* dst, int row_, const __nv_bfloat16* srow,
+                          const uint32_t* snfRow, uint32_t gain) {
     using PM = PMW;
     uint32_t acc[SPT / 2];
     {
       constexpr int p = PM::kPairLevel;
       unsigned short run[PM::span(p)];
-      load_run<PM::span(p)>(run, srow + BP::stage_off(p) + offW[p]);
+      staged_run(std::integral_constant<int, p>{}, run, srow, snfRow);
       static_for<SPT / 2>([&](auto Jc) {
         constexpr int j = 2 * decltype(Jc)::value;
         acc[j / 2] = ((uint32_t)run[(j + 1) & (PM::span(p) - 1)] << 16)
@@ -616,7 +642,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       constexpr int l = decltype(Lc)::value;
       if constexpr (l != PM::kPairLevel) {
         unsigned short run[PM::span(l)];
-        load_run<PM::span(l)>(run, srow + BP::stage_off(l) + offW[l]);
+        staged_run(Lc, run, srow, snfRow);
         static_for<SPT / 2>([&](auto Jc) {
           constexpr int j = 2 * decltype(Jc)::value;
           acc[j / 2] = mul_bf16x2(acc[j / 2],
@@ -624,7 +650,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         });
       }
     });
-    __nv_bfloat16* const row = dst + prow * LdS;
+    __nv_bfloat16* const row = dst + row_ * LdS;
     static_for<SPT / 2>([&](auto Jc) {
       constexpr int j = 2 * decltype(Jc)::value;
       store_bf16x2(row + j, mul_bf16x2(acc[j / 2], gain));
@@ -716,14 +742,19 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 
     const uint32_t clauseR = clause_of(std::false_type{}, rowsR, rowOffR);
     const uint32_t clauseW = clause_of(std::true_type{}, rowsW, rowOffW);
-    uint32_t orR = 0u, orW = 0u, mineR = 0u;
+    //: A STREAM'S BITS ARE THE UNION OF ITS OWN WARPS' BOXES (K35 F3). -- see docs/internals/carry/carry_kernel.md#minew
+    constexpr int kRPS = kWarps / NSR;
+    uint32_t orR = 0u, orW = 0u, mineR = 0u, mineW = 0u;
 #pragma unroll
     for (int s = 0; s < kWarps; ++s) {
       const uint32_t r = stream_row(std::false_type{}, rowsR, rowOffR, s);
       orR |= r;
-      mineR = (s == strm) ? r : mineR;
-      orW |= stream_row(std::true_type{}, rowsW, rowOffW, s);
+      mineR |= (s / kRPS == strm / kRPS) ? r : 0u;
+      const uint32_t w = stream_row(std::true_type{}, rowsW, rowOffW, s);
+      orW |= w;
+      mineW |= (s / G::kWPS == strm / G::kWPS) ? w : 0u;
     }
+    mineW &= clauseW;
     const uint32_t liveW = clauseW & orW;
     //: THE WHOLE-WINDOW SKIP, at (owner, window) grain, per side -- the block-bitmap -- see docs/internals/carry/carry_kernel.md#continue
     if (lane_ballot(((clauseR & orR) | liveW) != 0u) == 0u) continue;
@@ -937,11 +968,30 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
             winP + (uint32_t)wlist[o0 + (r < nb ? r : nb - 1)] * (uint32_t)(BP::kWtot * 2);
         static_for<D>([&](auto Lc) {
           constexpr int l = decltype(Lc)::value;
-          constexpr int c0 = BP::stage_chunk_base(l), el = BP::stage_el(l);
-          if (ck < c0 || ck >= c0 + BP::stage_chunks(l)) return;
-          const int sub = ck - c0;
-          stage_run<el * 2>(smem_addr(dst0 + r * LdF + BP::stage_off(l) + sub * el),
-                            gather_ptr(pW, base + (uint32_t)((runCol[l] + sub * el) * 2)));
+          if constexpr (!G::narrow(l)) {
+            constexpr int c0 = BP::stage_chunk_base(l), el = BP::stage_el(l);
+            if (ck < c0 || ck >= c0 + BP::stage_chunks(l)) return;
+            const int sub = ck - c0;
+            stage_run<el * 2>(smem_addr(dst0 + r * LdF + BP::stage_off(l) + sub * el),
+                              gather_ptr(pW, base + (uint32_t)((runCol[l] + sub * el) * 2)));
+          }
+        });
+      }
+      //: the carved levels' half of the same fetch, into the TRANSPOSED region: one -- see docs/internals/carry/carry_kernel.md#snarrow
+      uint32_t* const ndst = snf + (b & 1) * C * kNarrowEl;
+#pragma unroll 1
+      for (int it = tid; it < C * kNarrowEl; it += kThreads) {
+        const int e = it / C, r = it - e * C;
+        const uint32_t base =
+            winP + (uint32_t)wlist[o0 + (r < nb ? r : nb - 1)] * (uint32_t)(BP::kWtot * 2);
+        static_for<D>([&](auto Lc) {
+          constexpr int l = decltype(Lc)::value;
+          if constexpr (G::narrow(l)) {
+            constexpr int e0 = G::narrow_base(l);
+            if (e < e0 || e >= e0 + BP::s(l)) return;
+            ndst[e * C + r] = (uint32_t)*reinterpret_cast<const unsigned short*>(
+                gather_ptr(pW, base + (uint32_t)((runCol[l] + e - e0) * 2)));
+          }
         });
       }
     };
@@ -951,10 +1001,30 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       const int nb = (nw - o0) < C ? (nw - o0) : C;
       const bool have = prow < nb;
       const int tok = have ? wlist[o0 + prow] : 0;
-      const uint32_t gain = have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
-                                       gather_ptr(gW, winG + (uint32_t)tok * 2u)))
-                                 : 0u;
-      expand_write(dst, sf + (b & 1) * C * LdF + prow * LdF, gain);
+      //: THE STREAM'S OWN BALLOT NAMES THE ROW (K35 F3): the union list is the FETCH -- see docs/internals/carry/carry_kernel.md#write-batch
+      const uint32_t word = lane_shuffle(mineW, tok >> 5);
+      const bool live = have && ((word >> (tok & (kBallotLanes - 1))) & 1u) != 0u;
+      const uint32_t mask = lane_ballot(live);
+      const int slot = bit_count(mask & ((1u << lane) - 1u));
+      const int n = bit_count(mask);
+      if (live) {
+        const uint32_t gain = splat_bf16x2(
+            *reinterpret_cast<const __nv_bfloat16*>(gather_ptr(gW, winG + (uint32_t)tok * 2u)));
+        expand_write(dst, slot, sf + (b & 1) * C * LdF + prow * LdF,
+                     snf + (b & 1) * C * kNarrowEl + prow, gain);
+        srm[warp * C + slot] = (uint8_t)prow;
+      }
+      //: THE TAIL OF THE LAST m-TILE IS ZEROED, NOT SKIPPED: `n` is not a multiple -- see docs/internals/carry/carry_kernel.md#write-batch
+      const int pad = ((n + kMmaM - 1) / kMmaM) * kMmaM;
+      if (lane >= n && lane < pad) {
+        __nv_bfloat16* const row = dst + lane * LdS;
+        static_for<SPT / 2>([&](auto Jc) {
+          constexpr int j = 2 * decltype(Jc)::value;
+          store_bf16x2(row + j, 0u);
+        });
+        srm[warp * C + lane] = 0;
+      }
+      return n;
     };
 
     //: THE RETURN LEG.  The readout never modified the state, so the hi plane comes -- see docs/internals/carry/carry_kernel.md#return-leg
@@ -1060,11 +1130,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       mass_st[j][2] = 0.f;
       mass_st[j][3] = 0.f;
     });
-    if (nbw > 0) write_batch(panR, 0);
+    int nCur = (nbw > 0) ? write_batch(panR, 0) : 0;
 #pragma unroll 1
     for (int i = 0; i < nbw; ++i) {
       const uint32_t bwF = (i & 1) ? bwF0 : bwF1;
       const uint32_t vsl = svB + (uint32_t)(i % STAGES) * kVSlot;
+      static_assert(C <= 256, "the slot -> batch row map is one byte per slot");
       stage_wait<STAGES - 2>();
       rendezvous();
       //: the ring slot is advanced on EVERY batch, live or not, so the wait/commit -- see docs/internals/carry/carry_kernel.md#f
@@ -1077,9 +1148,13 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       constexpr int kNLHalf = kNL / 2;
 #pragma unroll
       for (int kk = 0; kk < MTOK; ++kk) {
+        //: THE STREAM FOLDS ITS OWN ROWS AND NO OTHERS -- THE PAIR'S PAYOFF. -- see docs/internals/carry/carry_kernel.md#ntiles
+        if (kk * kMmaM >= nCur) continue;
         uint32_t a[MCH][4];
+        const uint32_t vrow = (uint32_t)srm[warp * C + kk * kMmaM + rT];
+        const uint32_t va = vsl + (uint32_t)(vrow * LdV * 2);
 #pragma unroll
-        for (int m = 0; m < MCH; ++m) load_frag_t(a[m], ADDR_V(vsl, kk * 16, m * kMmaM));
+        for (int m = 0; m < MCH; ++m) load_frag_t(a[m], va + (uint32_t)(m * kMmaM * 2));
 #pragma unroll
         for (int nj = 0; nj < kNLHalf; ++nj) {
           uint32_t b[4];
@@ -1093,7 +1168,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
           mma(mass_st[2 * nj + 1], ones_a, &b[2]);
         }
       }
-      write_batch(((i + 1) & 1) ? panW : panR, i + 1);
+      nCur = write_batch(((i + 1) & 1) ? panW : panR, i + 1);
     }
     //: the ring's unconsumed groups are retired before the next window reuses the -- see docs/internals/carry/carry_kernel.md#near-line-843
     stage_wait<0>();
@@ -1118,7 +1193,6 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     });
   }
 #undef ADDR_S
-#undef ADDR_V
 }
 
 }  // namespace rola::carry

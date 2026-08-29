@@ -659,3 +659,12 @@ only zeros bf16 has are +0 and -0 and OR cannot clear a set bit.
 §6: `N` is this function's template parameter (renamed from lowercase `n`
 so the unroll-discipline lint reads it as compile-time); `N / 8` is still an
 arithmetic expression the heuristic can't parse, so name it too.
+
+<a id="lane-shuffle"></a>
+### `lane_shuffle`
+
+THE SAME READ AT A PER-LANE SOURCE INDEX.  `lane_broadcast`'s source lane is
+uniform across the warp; this one's is not, which is what lets a lane holding an
+arbitrary token reach the ballot word that token's bit lives in (the word for
+token `t` is held by lane `t >> 5`).  One `shfl.sync.idx` either way -- the
+distinction is in what the caller may pass, not in the instruction.

@@ -163,9 +163,23 @@ def test_arms_are_the_declared_solver_rows():
     for row in gen_shards.CARRY_ARMS:
         D, B, k, m, d_v, W, C, CV, MO, WPS, NSW, NSR, PK = row
         assert d_v == D_V, f"{row}: M1P builds one value width"
-        assert (WPS, PK, CV) == (1, 0, carry_ops.LEAF_SPLIT), (
-            f"{row}: one warp per stream, no park, the ruled carve")
-        assert NSW == NSR, f"{row}: M1P carves the box once, in the read side's order"
+        #: K35 F3 (Blake, 2026-08-29) RETIRES "one warp per stream" as a law of the
+        #: table: `WPS` is WARPS PER WRITE STREAM and the table carries BOTH ENDS of
+        #: that axis.  What stays a law is that the grouping DIVIDES the warp carve,
+        #: that no row parks, and that a row's declaration scalar is admissible and
+        #: carries its own park bit -- the same three the seam's own `CARRY_CV_GATE`
+        #: asserts at compile time, restated here against the declared table.
+        assert PK == 0, f"{row}: no row parks in this tree"
+        assert 1 <= (CV & 3) <= 3 and (CV & ~7) == 0 and ((CV >> 2) & 1) == PK, (
+            f"{row}: the declaration scalar is admissible and carries its park bit")
+        assert WPS >= 1 and NSR % WPS == 0, (
+            f"{row}: the write streams are a GROUPING of the CTA's warps")
+        assert CV == carry_ops.LEAF_SPLIT or NSW != NSR or MO == 0, (
+            f"{row}: a second declaration scalar at one topology exists only to name a "
+            f"different stream grouping (or the channel-split body)")
+        assert NSR == NSW * WPS, (
+            f"{row}: `WPS` is WARPS PER WRITE STREAM, so a CTA's `NSR` warps group "
+            f"into `NSW = NSR / WPS` write streams (K35 F3)")
     for arm in carry_ops.arms():
         D, B, k, m, d_v, W, C, carve, modes, BC, owners, smem, level = arm
         assert d_v == D_V
@@ -510,6 +524,57 @@ def test_f1_carved_alt_flagship(k_tok):
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
     assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+
+
+#: K35 F3: THE STREAM COUNT IS A GROUPING, AND ARITHMETIC CANNOT SEE IT.  `WPS` is
+#: WARPS PER WRITE STREAM: at `WPS = 1` each warp is its own write stream and folds
+#: only the tokens live in its own box; at `WPS = kWarps` there is ONE stream whose
+#: list IS the union and every warp folds all of it (the pre-F3 body).  The two are
+#: the SAME SUM in a different order, so both must reproduce the fp64 truth -- and
+#: the CV = 3 rows are how a cell names the second grouping.
+F3_UNION = 3  # the declaration scalar of the WPS = kWarps (one-stream) rows
+
+
+@pytest.mark.parametrize("k_tok", [4, 16])
+def test_f3_one_stream_grouping_at_the_flagship(k_tok):
+    """`WPS = kWarps`: one write stream, its list the union, every warp folding it."""
+    assert_fresh_binary()
+    cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=70 + k_tok)
+    num, den, _ = run(cell, FLAG, F3_UNION, modes=ALT2, body="carved")
+    n_ref, d_ref, _ = ref(cell, FLAG)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+
+
+def test_f3_a_token_live_in_every_write_stream():
+    """THE MEMOIZED SEND PATH: `k_tok` at the owner's whole run makes a token live in
+    EVERY write stream at once, so one staged token is expanded into all four
+    segments in one batch -- the path a sparse draw never exercises."""
+    assert_fresh_binary()
+    cell = alt_cell(SMALL[0], T=256, k_tok=64, seed=311)
+    num, den, plane = run(cell, SMALL, CARVE, modes=ALT2, body="carved")
+    n_ref, d_ref, s_ref = ref(cell, SMALL)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+    assert relative(canonical_from_plane(plane),
+                    s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
+
+
+def test_f3_an_empty_stream_is_not_a_null_stream():
+    """EMPTY != NULL (the no-fallback contract): at `k_tok = 1` a window leaves whole
+    write streams with `n_s = 0`, which must fold NOTHING and still carry the state
+    forward exactly -- not take some other stream's rows, and not skip the window."""
+    assert_fresh_binary()
+    cell = alt_cell(SMALL[0], T=256, k_tok=1, seed=312)
+    num, den, plane = run(cell, SMALL, CARVE, modes=ALT2, body="carved")
+    n_ref, d_ref, s_ref = ref(cell, SMALL)
+    assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
+                    n_ref) < BF16_RTOL
+    assert relative(den.reshape(cell.B, cell.H, cell.T).permute(0, 2, 1), d_ref) < BF16_RTOL
+    assert relative(canonical_from_plane(plane),
+                    s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
 
 
 @pytest.mark.parametrize("k_tok", [4, 16])

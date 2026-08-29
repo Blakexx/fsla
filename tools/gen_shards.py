@@ -309,8 +309,12 @@ def _derive_span_facts_arms() -> tuple:
     for row in CARRY_ARMS:
         D, B, K, M, _DV, _W, _C, _CV, MO, _WPS, NSW, NSR, _PK = row
         if NSW > 1 or NSR > 1:
+            #: BOTH SIDES CARVE AT THE WARP COUNT (`NSR`), K35 F3.  `NSW` is the
+            #: STREAM (segment) count `NSR / WPS`, a grouping of those warps' boxes
+            #: and not a carve of its own -- so the ballot rows a stream ANDs are
+            #: still its warps' rows, and a row's `NSW` never enters this table.
             r = _stream_vec(D, B, K, M, MO, _K_SIDE_READ, NSR)
-            w = _stream_vec(D, B, K, M, MO, _K_SIDE_WRITE, NSW)
+            w = _stream_vec(D, B, K, M, MO, _K_SIDE_WRITE, NSR)
             rows[(D, B) + r + w] = None
     return tuple(rows.keys())
 
@@ -357,6 +361,32 @@ CARRY_ARMS: tuple = (
     #: publish and the pull are elided: `kXchBytes = 0`, `kXchState = kXchZero`.  It is
     #: carried so the zero is PROVED by a built arm rather than argued from the model.
     (2, 256, 4, 8, 64, 384, 32, 1, 3, 1, 4, 4, 0),      # 12
+    #: K35 F3: THE STREAM-COUNT AXIS, AT BOTH ENDS (Blake, 2026-08-29).  `WPS` is
+    #: WARPS PER WRITE STREAM, so a CTA's `NSR` warps group into `NSW = NSR / WPS`
+    #: write streams: each stream keeps a segment, its box is the span of its warps'
+    #: own boxes and its list is the union of their bits.  The WARP carve is
+    #: unchanged at every `WPS` (each warp still owns its own leaf sub-box and its
+    #: own `st` slice), so these rows add no geometry -- only a grouping.  `WPS = 4`
+    #: (`NSW = 1`) is ONE stream over the whole CTA box whose list IS the union:
+    #: exactly the pre-F3 body, and the CONTROL the reap is measured against on one
+    #: binary.  `WPS = 1` (rows 1/3) is one stream per warp, the reaped end.  The
+    #: declaration scalar `CV` is what selects between two rows of one declaration,
+    #: which is why these are `CV = 3` and not a second `CV = 1`.
+    #: A DIVISOR STRICTLY BETWEEN THE ENDS (`WPS = 2`) IS NOT CARRIED, and the reason
+    #: is the declaration scalar, not the schedule: `CV`'s admissible values are
+    #: {1, 2, 3} (its bit 2 IS the park declaration), `CV = 1` is the carved row every
+    #: cell names and `CV = 2` is `tools/probe_cells.py`'s PREFERRED container -- so a
+    #: third grouping at any measured declaration would silently re-target existing
+    #: cells onto it.  The axis is built at BOTH ENDS, which is what the reap is
+    #: measured between; the middle would add a preference hazard and no measurement.
+    (2, 256, 4, 8, 64, 384, 32, 3, 6, 4, 1, 4, 0),      # 13
+    (2, 256, 4, 8, 64, 512, 32, 3, 6, 4, 1, 4, 0),      # 14
+    #: their DENSE_BOTH twins: every (topology, declaration scalar) carries the
+    #: channel-split body, which is the table's own law (`test_arms_are_the_declared_
+    #: solver_rows`) -- an uncarved row keys into the split body's existing TU, so
+    #: these two add dispatch rows and ZERO new kernels.
+    (2, 256, 4, 8, 64, 384, 32, 3, 0, 1, 1, 1, 0),      # 15
+    (2, 256, 4, 8, 64, 512, 32, 3, 0, 1, 1, 1, 0),      # 16
 )
 
 #: THE SHIPPED / TEST SPLIT (K36).  A default build compiles the SHIPPED rows only.
@@ -366,7 +396,7 @@ CARRY_ARMS: tuple = (
 #: conformance cells the fp64 oracle can hold (SMALL, DEEP-3, DEEP-4) -- plus the
 #: UNCARVED DENSE_BOTH controls at the flagship cells.  A test that needs one asks for
 #: it by index and skips, with the arm named, when the binary does not carry it.
-CARRY_TEST_ARMS: tuple = (0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+CARRY_TEST_ARMS: tuple = (0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
 CARRY_SHIPPED_ARMS: tuple = tuple(i for i in range(len(CARRY_ARMS))
                                   if i not in CARRY_TEST_ARMS)
 

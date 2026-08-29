@@ -25,7 +25,10 @@ struct Arm {
   using BP = BoxPlan<D, B, K, M>;
   //: THE CARVE, DERIVED (K35 S1b): the side's order comes from `MO` and its span -- see docs/internals/carry/carry_arm.md#sr
   using SR = StreamSpans<D, B, K, M, MO, kSideRead, NSR>;
-  using SW = StreamSpans<D, B, K, M, MO, kSideWrite, NSW>;
+  //: BOTH SIDES CARVE AT THE WARP COUNT (K35 F3): `NSW` is the STREAM (segment)
+  //: count `NSR / WPS`, a GROUPING of those warps' boxes, so the ballot rows this
+  //: arm votes -- and the table the seam packs for it -- follow `NSR` on both sides.
+  using SW = StreamSpans<D, B, K, M, MO, kSideWrite, NSR>;
   //: A CARVED ARM is one whose streams are finer than the owner's box on either side; -- see docs/internals/carry/carry_arm.md#carved
   static constexpr bool carved = (NSW > 1) || (NSR > 1);
   //: the arm's VALUE WIDTH, which both bodies take as their `DV` and the census -- see docs/internals/carry/carry_arm.md#kdv

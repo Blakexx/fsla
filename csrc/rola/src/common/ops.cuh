@@ -145,6 +145,11 @@ __device__ __forceinline__ int lane_broadcast(int x, int src) {
   return __shfl_sync(0xFFFFFFFFu, x, src);
 }
 
+//: THE SAME READ AT A PER-LANE SOURCE INDEX.  `lane_broadcast`'s `src` is uniform; -- see docs/internals/common/ops.md#lane-shuffle
+__device__ __forceinline__ uint32_t lane_shuffle(uint32_t x, int src) {
+  return (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)x, src);
+}
+
 // ----------------------------------------------------------------- operands
 
 using Frag = uint32_t[4];

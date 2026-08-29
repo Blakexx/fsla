@@ -1924,3 +1924,74 @@ The primitive that does give a true split-phase edge for this shape is
 `mbarrier.arrive` / `mbarrier.try_wait` (sm_80+, one 8-byte shared object per
 edge, and it maps to the same instruction family on sm_90 and sm_100); it is
 named here as the next lever and deliberately not built in this stage.
+
+<a id="wps"></a>
+### `WPS` -- warps per write stream
+
+THE WARP CARVE IS NOT THE STREAM COUNT (Blake, 2026-08-29).  A CTA's `NSR` warps
+each own a leaf sub-box on both sides -- that is the accumulator slice, and it is
+the same at every `WPS`.  What `WPS` names is how those warps GROUP into write
+STREAMS: `NSW = NSR / WPS` of them, each with a segment, a box that is the span of
+its warps' own boxes, and a list that is the union of their bits.  `WPS = 1` gives
+one stream per warp (each folds only its own tokens); `WPS = NSR` gives one stream
+whose list IS the CTA's union and whose warps all fold it -- the pre-F3 body,
+reached with no geometry change, which is why it is the control the reap is
+measured against rather than a separate kernel.  Channel-carving a box ACROSS
+warps is a different mechanism entirely (the split body's form) and is not this.
+
+<a id="snarrow"></a>
+### the transposed staging of a carved level
+
+A CARVED LEVEL'S RUN IS STAGED TRANSPOSED AND WORD-WIDE.  The wide staging is
+token-major (lane = token, one row per token) which is right for a run a stream
+reads eight or more amplitudes of: eight consecutive lanes then read one
+sixteen-byte granule each, and an ODD granule stride puts them in eight distinct
+bank groups.  A CARVED level is exactly the case where the stream's own span is
+narrower than that -- at the flagship it is two amplitudes, a single four-byte
+read -- and a four-byte read of a token-major row is a FOUR-WAY BANK CONFLICT
+(measured: `l1tex` conflicts +30.7% at `k16_w384`, +16.4% at `alt_dense_w384`,
+which is most of what F3a cost).  Those levels are therefore staged
+`[amplitude][token]` as whole words, where consecutive lanes read consecutive
+words and no two collide.  The two regions together are still ONE fetch per
+(token, window): each level is staged in exactly one of them.
+
+<a id="srm"></a>
+### `srm` -- the slot to batch row map
+
+A stream's segment is COMPACT (its rows are its own live tokens, in union order),
+but the V tile the fold multiplies against is the UNION batch's, staged once and
+shared.  So the fold's A operand needs, per slot, the batch row that slot's token
+occupies -- one byte per slot, written by the owning warp as it sends and read
+back by its own `ldmatrix` as a per-lane row address.  This is what lets the
+segments be private WITHOUT a private copy of the value rows: the literal
+per-stream value segment costs 57,344 B of segments at the flagship and takes the
+arm to ONE CTA per SM, where this form holds two.
+
+<a id="staged-run"></a>
+### `staged_run`
+
+ONE LEVEL'S RUN OUT OF THE STAGING, from whichever of the two regions holds it.
+The choice is a compile-time property of the arm (`CarryGeom::narrow`), never a
+runtime test, and the caller's code is identical either way.
+
+<a id="minew"></a>
+### `mineW` -- a stream's own bits
+
+A STREAM'S BITS ARE THE UNION OF ITS OWN WARPS' BOXES, and nothing wider.  Every
+warp already derives all `NSR` per-box rows to form the CTA union (which the
+barrier-free whole-window skip needs before any barrier exists to publish
+anything through), so a stream's own OR costs no extra load: it is the same rows,
+selected.  `clauseW` -- the levels no side carves -- ANDs into it once.
+
+<a id="ntiles"></a>
+### the fold's m-tile count
+
+THE STREAM FOLDS ITS OWN ROWS AND NO OTHERS -- THE PAIR'S PAYOFF.  The union fold
+ran `MTOK` m-tiles per warp per batch whatever the distribution, because every
+warp folded every live token of the window and contributed exact zeros for the
+tokens outside its own box.  A private stream runs `ceil(n_s(b) / kMmaM)`, so a
+batch in which a stream holds five tokens costs it one m-tile and not two, and a
+batch in which it holds none costs it nothing at all.  The rows between `n_s` and
+the last m-tile's end are ZEROED rather than skipped, which is what keeps `empty`
+distinct from `null`: a short tail folds zeros, it does not fold garbage and it
+does not silently take another stream's rows.

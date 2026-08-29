@@ -255,6 +255,16 @@ def _arm_schema(row):
     return rd, rb, rk, rm, rdv, rw, rc, rcv, rmo
 
 
+#: K35 F3: AN EXPLICIT CARVE, OFF BY DEFAULT.  Two rows of ONE declaration differ
+#: only in their declaration scalar `CV` -- the stream-count axis (`WPS`) is carried
+#: that way -- so measuring the two ends of that axis on ONE binary needs a way to
+#: NAME the row, not just prefer one.  `--carve` restricts the preference order to a
+#: single value and REFUSES (never silently falls back) if the declaration does not
+#: carry it; unset, the preference order and every existing cell's arm are
+#: byte-for-byte what they were.
+CARVE_OVERRIDE: list = []
+
+
 def resolve_arm(carry_ops, widths, k, m, d_v, window, chunk, level_modes):
     """The declaration's EXACT built arm, or a refusal.
 
@@ -281,7 +291,7 @@ def resolve_arm(carry_ops, widths, k, m, d_v, window, chunk, level_modes):
         if rmo is not None and rmo != level_modes:
             continue
         by_carve[rcv] = (i, row)
-    for cv in CARVE_PREFS:
+    for cv in (CARVE_OVERRIDE or CARVE_PREFS):
         if cv in by_carve:
             i, row = by_carve[cv]
             return cv, i, row
@@ -540,6 +550,8 @@ def run_worker(binary: dict, cells: list[str], reps: int, warmup: int, lock_path
     py = venv_python(binary["venv"])
     cmd = [py, str(THIS_FILE), "--worker", "--cells", ",".join(cells),
            "--reps", str(reps), "--warmup", str(warmup), "--state", state]
+    if CARVE_OVERRIDE:
+        cmd += ["--carve", str(CARVE_OVERRIDE[0])]
     if oneshot:
         cmd.append("--oneshot")
     with gpu_lock(lock_path):
@@ -590,6 +602,8 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
     cmd = [NCU_BIN, "--target-processes", "all", "-k", "regex:carry.*kernel", "-c", "1",
            "--print-kernel-base", "mangled", "--metrics", metrics, "--csv",
            py, str(THIS_FILE), "--worker", "--cells", cell, "--oneshot", "--state", state]
+    if CARVE_OVERRIDE:
+        cmd += ["--carve", str(CARVE_OVERRIDE[0])]
     with gpu_lock(lock_path):
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
                                timeout=timeout)
@@ -656,6 +670,9 @@ def main():
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--lock", default=GPU_LOCK_DEFAULT)
     ap.add_argument("--ncu", action="store_true")
+    ap.add_argument("--carve", type=int, default=None,
+                    help="measure this declaration scalar exactly (refuses if unbuilt); "
+                         "unset keeps CARVE_PREFS and every existing cell's arm")
     #: THE STATE ARM (P80). `dense` reproduces the pre-P80 measurement (one dense exit
     #: plane, stored) and is the default, so a cross-tip A/B is like-for-like; `paged`
     #: resolves every atom through a FULL-COVERAGE table, which is the arm that prices
@@ -679,6 +696,8 @@ def main():
     ap.add_argument("--oneshot", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
+    if args.carve is not None:
+        CARVE_OVERRIDE.append(args.carve)
     if args.worker:
         worker_main(args)
         return

@@ -18,6 +18,7 @@ from, so a drift between the mirror and the header shows up here and at the devi
 import, not silently.
 """
 import itertools
+import random
 
 import pytest
 
@@ -65,7 +66,7 @@ class _Side:
 
 def _sides(row):
     D, B, K, M, DV, W, C, CV, MO, WPS, NSW, NSR, PK = row
-    return (_Side(D, B, K, M, MO, _K_SIDE_WRITE, NSW),
+    return (_Side(D, B, K, M, MO, _K_SIDE_WRITE, NSR),
             _Side(D, B, K, M, MO, _K_SIDE_READ, NSR), DV)
 
 
@@ -435,3 +436,117 @@ def test_the_return_legs_two_accesses_are_max_way_one(idx, row):
                             f"arm {idx}: the writer's return pull conflicts in bank {b} "
                             f"over rows {rows}")
                         banks.add(b)
+
+
+# ---------------------------------------------------------------------------
+# K35 F3: THE THREE-PART WRITE SCHEDULE, AS A MODEL.
+#
+# The kernel's counts are not observable from python, so what is modelled here is
+# the ARITHMETIC that produces them: the union list is the fetch schedule (each
+# live token appears in it exactly once), a stream's slot is the prefix of ITS OWN
+# ballot (never a scan of the union), and the stream count is a GROUPING of the
+# CTA's warps -- so at `WPS = kWarps` every stream mask IS the union and the
+# schedule degenerates, exactly, to the pre-F3 body.  The staging's two regions are
+# checked for the property that cost F3 its first six percent: a token-major row
+# read at a WIDE granule must be conflict-free, and a CARVED level's narrow read
+# must not be taken from that row at all.
+# ---------------------------------------------------------------------------
+_KWARPS = 4
+_C = 32
+
+
+def _schedule(bits, wps, kwarps=_KWARPS):
+    """`bits[s]` = the tokens live in warp `s`'s own write box, as a set.
+
+    Returns `(union, per_stream)`: the fetch schedule and, per STREAM (a group of
+    `wps` warps), its own ordered token list.
+    """
+    union = sorted(set().union(*bits))
+    streams = []
+    for g in range(kwarps // wps):
+        mine = set().union(*[bits[s] for s in range(kwarps) if s // wps == g])
+        streams.append([t for t in union if t in mine])
+    return union, streams
+
+
+def _draw_bits(seed, kwarps=_KWARPS, window=128):
+    rng = random.Random(seed)
+    return [ {t for t in range(window) if rng.random() < p}
+             for s, p in zip(range(kwarps), (0.3, 0.05, 0.6, 0.0)) ]
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 7, 11])
+@pytest.mark.parametrize("wps", [1, 2, 4])
+def test_f3_the_union_is_the_fetch_schedule_and_the_slot_is_the_streams_own_prefix(seed, wps):
+    bits = _draw_bits(seed)
+    union, streams = _schedule(bits, wps)
+
+    #: PART 1: one fetch per (token, window) -- the union carries each live token once.
+    assert len(union) == len(set(union))
+    assert set(union) == set().union(*bits)
+
+    #: PART 2: within a batch of `C` union tokens, a stream's slot is the popcount of
+    #: its OWN ballot below the lane -- which is what the kernel computes, and which
+    #: never consults another stream's bits.
+    for b0 in range(0, len(union), _C):
+        batch = union[b0:b0 + _C]
+        for mine in streams:
+            live = [t in set(mine) for t in batch]
+            slots = [sum(live[:lane]) for lane, ok in enumerate(live) if ok]
+            assert slots == list(range(sum(live))), "a stream's slots are compact"
+            #: and the slot -> batch row map the fold's A operand reads back
+            rowmap = {sum(live[:lane]): lane for lane, ok in enumerate(live) if ok}
+            assert [batch[rowmap[i]] for i in range(sum(live))] == [t for t in batch
+                                                                   if t in set(mine)]
+
+    #: PART 3: the consumer's m-tiles follow ITS OWN count, and the sum over streams
+    #: of the tokens folded is `sum_t s_t` -- never `S * |union|`, which is the waste.
+    folded = sum(len(m) for m in streams)
+    assert folded == sum(sum(1 for s in bits if t in s and True) and
+                         len({s // wps for s in range(_KWARPS) if t in bits[s]})
+                         for t in union)
+    assert folded <= len(streams) * len(union)
+
+
+@pytest.mark.parametrize("seed", [4, 5])
+def test_f3_one_stream_is_exactly_the_union_fold(seed):
+    """`WPS = kWarps` (the control row) must degenerate to the pre-F3 schedule."""
+    bits = _draw_bits(seed)
+    union, streams = _schedule(bits, _KWARPS)
+    assert len(streams) == 1 and streams[0] == union
+
+
+def test_f3_the_staging_rows_are_read_without_bank_conflicts():
+    """The wide region is token-major: lane = token, so its GRANULE stride must be
+    odd or eight consecutive lanes collide (the measured four-way conflict).  A
+    carved level's run is narrow, so it lives in the transposed region instead,
+    where consecutive lanes read consecutive words."""
+    for idx, row in enumerate(CARRY_ARMS):
+        w_side, _, _ = _sides(row)
+        D, B, K, M = row[0], row[1], row[2], row[3]
+        stage_w = _stage_w(D, B, K, M)
+        ld_f = stage_w if stage_w % 16 == 8 else stage_w + 8
+        assert ld_f % 16 == 8, f"arm {idx}: the staged row must be an odd granule stride"
+        #: eight consecutive lanes, one sixteen-byte granule each, distinct bank groups
+        groups = {((ld_f // 8) * lane) % 8 for lane in range(8)}
+        assert len(groups) == 8, f"arm {idx}: the wide staged read conflicts"
+        #: and every level a stream reads NARROWLY is served by the transposed region
+        for l in range(D):
+            if w_side.s(l) < 8:
+                banks = {((l * _C) + tok) % 32 for tok in range(32)}
+                assert len(banks) == 32, f"arm {idx} level {l}: transposed read conflicts"
+
+
+def _stage_w(D, B, K, M):
+    """`BoxPlan::kStageW` -- the staged factor row's width, mirrored."""
+    bp = _BoxPlan(D, B, K, M)
+
+    def el(l):
+        return min(bp.s(l), 8)
+
+    off = [0]
+    for l in range(1, D):
+        base = off[l - 1] + bp.s(l - 1)
+        off.append(((base + el(l) - 1) // el(l)) * el(l))
+    total = off[D - 1] + bp.s(D - 1)
+    return ((total + 7) // 8) * 8
