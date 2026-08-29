@@ -190,3 +190,54 @@ re-wakes stopped agents.
 Gate builds: exclusive lock, MAX_JOBS=8, NVCC_THREADS=2. Iteration builds: one of two parallel slots
 (`rola-scratch/tools/build_slot.sh`), MAX_JOBS=4, single-arch, arm-subset. Re-derive these numbers if
 cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).
+
+## §16 — Ratify at milestones, not stages (Blake, 2026-08-28)
+
+A stage's gate is SMALL: an iteration build (single arch, arm subset), the fp64 oracle on the arms
+it touched, the census on those arms, and the model tests. A stage does NOT run the both-arch
+all-arm gate build and does NOT ratify. Manifests go stale between milestones by design; a stage
+commit says "unratified" in its title. RATIFICATION — the full closed-world measurement — runs
+ONCE per cohesive product: at the milestone that merges (the receipt stage), and after the last
+edit of any kind. Rationale: a 40-minute ratify (plus a 20-35 minute gate build) after every
+small piece was 1-2 hours of waiting per stage; the closed-world guarantee is a property of what
+SHIPS, and nothing ships between milestones. The stage-level guarantee is the oracle.
+Corollary: a stage that needs the SASS-body/instantiation gates for its OWN claim (a byte-identity
+refactor) runs `ratify --check` against the LAST milestone's manifest on its subset only.
+§16 addendum (Blake, 2026-08-28) — EVERY STAGE GATE INCLUDES A PERF PROBE. Since the stage compiles
+anyway, its gate runs the fixed two-cell probe (dense flagship k_tok=None + k16 scattered; L=768;
+the stage's touched arm; ncu carry `gpu__time_duration` 3 warm + the step wall) and records it in
+FINDINGS as a running per-stage ledger next to the previous stage's numbers and the mainline
+reference. A >1.10x regression on either cell vs the previous stage is a RED like a spill: the stage
+reports it, does not rationalize it, and Blake rules. This is the instrument that would have caught
+the 3-9x loss PROBE-K35 found after nine stages.
+§16 addendum 2 (2026-08-28, from R-A): AN INSTRUCTION LEDGER IS NECESSARY, NOT SUFFICIENT. The M1a ->
+S1-parent span cut instructions 5.6% and cost 22% of time (IPC -27%, long-scoreboard x3.6, bank
+conflicts x2.6). The stage probe is TIME; every ledger table carries IPC and the top stall reasons
+(ncu `smsp__warp_issue_stalled_*`) beside instruction counts, and a stage whose instructions fall while
+its time rises is RED, not a win.
+§16 addendum 3 (Blake, 2026-08-28) — THE COMPILE LEDGER. Build time is a gated number like the census.
+Every stage gate records, per built arm TU, the compile wall and cicc peak RSS beside the previous
+stage's; >1.2x on any arm is RED (report, do not rationalize; diagnose against §7 first). Arm TUs never
+include torch headers (the ~34 s header floor lives in the dispatch TU only). Arms are added as reviewed
+rows in the one arm list (TEST-tagged unless shipped). Ratify stays incremental per arm.
+
+## §R addenda (DRAFT for Blake's review, 2026-08-28 — design-level rules from the K35 ledgers)
+R1. PRICE OVERHEADS AGAINST THE SPARSE CELL. A fixed per-window / per-contribution cost that is "cheap"
+    next to a dense window's MMA becomes the kernel once sparsity removes that MMA (the ring: 230 M
+    instructions at dense AND at k16; the replicated schedule; the per-lane gate). The design's payoff and
+    its overheads scale with different variables; state both per mechanism.
+R2. THE FAN-IN'S FIGURE OF MERIT IS 128 B SEGMENTS PER RED INSTRUCTION, not sector fullness and not
+    instruction count: one token's 32 contiguous channels per issue (M1a's panel layout) = 1 segment;
+    4 rows x 8 channels = 4 segments at identical RED count = +93%; fragment-direct = 8 half sectors.
+R3. FAN-IN ON AMPERE IS NATIVE GLOBAL RED FROM AN ALIGNED LAYOUT. Shared-memory fp32 atomics are a CAS
+    loop; a locked SMEM ring paid 18x its floor to halve DRAM. The DRAM question belongs to the A100
+    parity-curve receipt, not to the local cell.
+R4. NO PER-WARP WORK THAT ANOTHER WARP ALSO DOES (F2): CTA-identical derivations (union lists, owner
+    ballots) are derived once and published behind a barrier the kernel already pays, or split by
+    executor share — never recomputed per warp to avoid a barrier.
+R5. THE SCHEDULE HAS THREE PARTS (fetch over TOKENS once; per-stream SENDS from each stream's own ballot;
+    seal-and-consume). A union over (token, stream) pairs collapses the first two and re-fetches k times.
+R6. A KERNEL'S SASS DEPENDS ON ITS TU NEIGHBORS: byte-identity is a claim about a partition, not a body;
+    per-arm TUs make each body canonical (K36: 7 movers, proven inert and free).
+R7. STAGED-vs-STRAIGHT IS DECIDED BY LATENCY, NOT COUNTS: "identical sectors and issues" lost 9.5% on
+    long-scoreboard (e390764). Time, IPC and stall reasons decide; counts describe.
