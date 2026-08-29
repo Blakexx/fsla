@@ -70,3 +70,9 @@ that into the skill the same day (process/pointers only — never facts).
 
 - NO NESTED AGENTS: the stage agent does the work itself; it never spawns a sub-agent to do the stage and never monitors/polls one (subagent-token-discipline). Waiting on a build = end the turn and resume on its notification.
 
+
+- FINDINGS.md is the campaign journal at /home/blake/rola-scratch/prototypes/k35_final_build/FINDINGS.md — NEVER a file inside the repo/worktree (§17). A tool that REFUSES an action is a stop-and-report signal; never route around a refusal with another tool.
+
+- `--no-verify` NEVER without an explicit per-commit authorization from the coordinator naming the hook failure; a red hook = STOP and report which (§18 addendum).
+
+- THE FLOOR HAS A COVERAGE TERM (F1, 2026-08-29): a mechanism's floor states bytes, instructions, conflicts AND what covers its latency (which in-flight work overlaps each serial step; a CTA-wide round trip with nothing under it is a cost even at zero bytes). A floor without a coverage line cannot grade a stage.
