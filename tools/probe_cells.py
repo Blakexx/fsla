@@ -78,7 +78,7 @@ NCU_BIN = "/usr/local/cuda/bin/ncu"
 # `L`).  `level_modes` is the packed per-level declaration word
 # (`rola.ops.intra.pack_modes`; DENSE_BOTH=0 on every level for "dense", the
 # alternating WRITE_SPARSE/READ_SPARSE word (=6 at D=2) for every ALT cell --
-# see `alt_cell` in `tests/k31/test_carry_vs_oracle.py`, mirrored below).
+# see `alt_cell` in `tests/oracle/test_carry_vs_oracle.py`, mirrored below).
 # Seeds match the R-C/R-B probes' own cell table (`rc/probe.py` in the session
 # scratchpad) so this harness's draws are byte-identical to theirs where the
 # same k_tok/cohort/seed triple was already in use.
@@ -109,7 +109,7 @@ CARVE_PREFS = (2, 1)
 
 
 # ---------------------------------------------------------------------------
-# THE DRAW.  Inlined rather than imported from `tests/k31/fixtures.py` /
+# THE DRAW.  Inlined rather than imported from `tests/oracle/fixtures.py` /
 # `test_carry_vs_oracle.py` ON PURPOSE (cross-tip comparison item (5) of the
 # brief): those test modules can and do drift per git tip, and importing
 # whichever version a given worktree happens to carry would silently break

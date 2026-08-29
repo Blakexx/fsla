@@ -148,7 +148,7 @@ visits an owner only where EVERY level's support meets that owner's run, while
 `d_p_l` drops level `l`'s own factor — so at a digit outside level `l`'s support the
 kernel holds the sum over the live owners rather than over all of them. Nothing reads
 it: the exact-entmax Jacobian is zero off the support in both indices, and a softmax
-level has no off-support entry at all. `tests/k31/test_backward_vs_reference.py` states
+level has no off-support entry at all. `tests/oracle/test_carry_backward_vs_reference.py` states
 that as an algebraic gate, not as a comment.
 
 ## The mass channel

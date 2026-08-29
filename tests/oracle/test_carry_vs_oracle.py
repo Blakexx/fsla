@@ -23,8 +23,8 @@ import pytest
 import torch
 
 from rola.ops import carry as carry_ops
-from tests.k31 import reference
-from tests.k31.fixtures import Cell, assert_fresh_binary, canonical_from_plane, relative, require_arm
+from tests.oracle import reference
+from tests.oracle.fixtures import Cell, assert_fresh_binary, canonical_from_plane, relative, require_arm
 from tests.oracle.tolerances import BF16_RTOL
 
 #: THE DECLARED ARM TABLE, IMPORTED AND NEVER RESTATED (K36).  The rows live in
@@ -272,7 +272,7 @@ def alt_cell(widths, T, k_tok, seed, cohort=None, d_v=carry_ops.D_V):
 
     The alternation is stated over ``D`` levels rather than over two, so a deep arm
     exercises it at every depth; at ``D = 2`` it is the ruling verbatim."""
-    from tests.k31.fixtures import simplex
+    from tests.oracle.fixtures import simplex
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(seed)
     cell = Cell(widths, T=T, k_tok=None, seed=seed, d_v=d_v)

@@ -26,7 +26,7 @@ import pytest
 import torch
 
 from rola.ops import carry as carry_ops
-from tests.k31.fixtures import Cell, assert_fresh_binary, built_arms
+from tests.oracle.fixtures import Cell, assert_fresh_binary, built_arms
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 

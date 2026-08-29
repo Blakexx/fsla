@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """R4's two reverse scans against the fp64 CROSS-WINDOW reference, cell by cell.
 
-The reference is `tests/k31/backward_reference.py`'s carry half, which
-`test_backward_reference.py` has already pinned to ``torch.autograd`` through the whole
+The reference is `tests/oracle/backward_reference.py`'s carry half, which
+`test_prefill_backward_reference.py` has already pinned to ``torch.autograd`` through the whole
 operator. So a disagreement here is the KERNEL's -- and the floor it is measured
 against is the ROUNDED REFERENCE, the same gradient taken with the operands rounded the
 way the kernels hold them, so what the ratio isolates is the algorithmic error.
@@ -23,8 +23,8 @@ import torch
 
 from rola.ops import carry as carry_ops
 from rola.ops._ext import is_available
-from tests.k31.backward_reference import carry_backward_reference
-from tests.k31.fixtures import Cell, canonical_from_plane, require_arm
+from tests.oracle.backward_reference import carry_backward_reference
+from tests.oracle.fixtures import Cell, canonical_from_plane, require_arm
 
 pytestmark = pytest.mark.skipif(not is_available() or not torch.cuda.is_available(),
                                 reason="the reverse pass is a CUDA kernel")
@@ -235,7 +235,7 @@ def test_the_replay_is_bit_identical_at_the_flagship_arm(window, declaration):
     schedule the kernel would never be asked for.
     """
     from rola.ops import intra as intra_ops
-    from tests.k31.intra_reference import _simplex
+    from tests.oracle.intra_reference import _simplex
     modes = _declarations()[declaration]
     widths, T = (256, 256), 4 * window
     packed = intra_ops.pack_modes(modes) if _takes_modes() else 0

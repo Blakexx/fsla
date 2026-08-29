@@ -6,7 +6,7 @@ Two routes to one number, as ``reference.py`` has for the forward: the CARRY rou
 (:func:`carry_backward_reference`, the cross-window pairs, which is what the two
 scans compute) plus the INTRA route (:func:`intra_backward_reference`, the
 within-window pairs) equals ``torch.autograd`` through the whole operator. The
-gate that states this is `test_backward_reference.py`.
+gate that states this is `test_prefill_backward_reference.py`.
 
 Symbols at first use: ``widths`` per-level digit counts, ``N = prod widths``,
 ``d_v`` value channels, ``W`` the global window length in tokens, ``cols = d_v+1``,
@@ -19,7 +19,7 @@ import math
 
 import torch
 
-from tests.k31.reference import deposit_value, leaf_product, radix_strides
+from tests.oracle.reference import deposit_value, leaf_product, radix_strides
 
 
 def readout_seeds(num, den, dy, eps):

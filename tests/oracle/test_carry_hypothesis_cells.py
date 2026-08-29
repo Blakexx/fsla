@@ -13,7 +13,7 @@ default battery's runtime budget.
 
 The strategy draws only over axes the ARM LIST actually declares (`widths`,
 `d_v`) or that are properties of the DRAW and never told to the kernel
-(`k_tok`, `seed`, `cohort` -- `tests/k31/fixtures.py`'s own module docstring).
+(`k_tok`, `seed`, `cohort` -- `tests/oracle/fixtures.py`'s own module docstring).
 Drawing an undeclared topology would only ever exercise `require_arm`'s own
 refusal, which is `test_arms_are_the_declared_solver_rows`'s claim, not this
 one's.
@@ -28,8 +28,8 @@ import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from tests.k31.fixtures import assert_fresh_binary, relative
-from tests.k31.test_carry_vs_oracle import CARVE, FLAG, SMALL, alt_cell, ref, run
+from tests.oracle.fixtures import assert_fresh_binary, relative
+from tests.oracle.test_carry_vs_oracle import CARVE, FLAG, SMALL, alt_cell, ref, run
 from tests.oracle.tolerances import BF16_RTOL
 
 _TOOLS = Path(__file__).resolve().parents[2] / "tools"

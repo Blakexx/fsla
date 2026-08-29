@@ -27,8 +27,8 @@ from rola.ops.constants import READOUT_EPS
 from rola.ops.naive import naive_rola
 from rola.ops.prefill import prefill
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-from tests.k31.fixtures import assert_fresh_binary, canonical_from_plane, relative, require_arm
-from tests.k31.intra_reference import _simplex
+from tests.oracle.fixtures import assert_fresh_binary, canonical_from_plane, relative, require_arm
+from tests.oracle.intra_reference import _simplex
 from tests.oracle.tolerances import BF16_RTOL
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")

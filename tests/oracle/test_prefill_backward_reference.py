@@ -14,13 +14,13 @@ import pytest
 import torch
 
 from rola.ops.constants import READOUT_EPS
-from tests.k31.backward_reference import (
+from tests.oracle.backward_reference import (
     carry_backward_reference,
     intra_backward_reference,
     readout_seeds,
 )
-from tests.k31.fixtures import simplex
-from tests.k31.reference import inter_reference, intra_reference
+from tests.oracle.fixtures import simplex
+from tests.oracle.reference import inter_reference, intra_reference
 
 #: `L % W == 0` is the combined operator's own refusal, so the cells honor it.
 CELLS = [

@@ -25,7 +25,7 @@ Per window, per owner:
 so there is one recurrence and one readout). The within-window (INTRA) pairs are NOT
 computed here — rung R2 builds that kernel, and R1's conformance adds the contribution
 on the host from the fp64 oracle. `inter(W) + intra(W)` is `W`-invariant and equals the
-canonical oracle; `tests/k31/test_carry_vs_oracle.py::test_m2_decomposition_is_exact`
+canonical oracle; `tests/oracle/test_carry_vs_oracle.py::test_m2_decomposition_is_exact`
 is the gate that licenses grading a half-kernel at all.
 
 <a id="the-batch-line"></a>

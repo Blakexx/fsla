@@ -41,7 +41,7 @@ import torch
 from rola.engine.facts import planes
 from rola.ops import carry as carry_ops
 from rola.ops.paging import MMA_K_QUANTUM, PageArena
-from tests.k31.fixtures import assert_fresh_binary, require_arm
+from tests.oracle.fixtures import assert_fresh_binary, require_arm
 
 pytestmark = [
     pytest.mark.cuda,
