@@ -28,37 +28,53 @@
   // never heard of "worktrees" must be able to clone, open, and have it
   // just work, with no directory to create first.
   //
-  // WHAT WAS WRONG: the previous form used the OBJECT mount syntax
-  // (`source=...,type=bind`) with a REPO-RELATIVE PATH default
-  // (`${localWorkspaceFolder}/../worktrees`). Reproduced with the real
-  // `@devcontainers/cli up` (0.88.0) against a genuine fresh clone with
-  // `ROLA_WORKTREES_DIR` unset: the object-form bind mount's default resolved
-  // to a `../worktrees` path that does not exist next to a fresh clone, and
-  // the devcontainer tooling's own pre-flight handling of that entry is what
-  // this repo's contributor hit -- not necessarily raw `dockerd`, whose exact
-  // missing-bind-source behavior varies by version/backend and was NOT the
-  // thing gated on here.
+  // TWO REAL BUGS FOUND HERE BY ACTUALLY RUNNING `@devcontainers/cli up`
+  // 0.88.0 (not by reasoning about Docker/devcontainer semantics in the
+  // abstract), 2026-08-29:
   //
-  // THE FIX avoids the question entirely rather than depending on which
-  // layer would have refused: it exploits Docker's OWN two mount syntaxes.
-  // The classic `-v SOURCE:TARGET` shorthand (a plain string here, which the
-  // devcontainer spec passes through as-is, unlike the object `type=bind`
-  // form) decides bind-vs-volume from the SHAPE of `SOURCE`: a bare name
-  // with no path separators is a NAMED VOLUME, which Docker auto-creates
-  // empty with no pre-existing host resource required (verified: `docker run
-  // --rm -v rola-worktrees-test:/x busybox true` succeeds with no prior
-  // `docker volume create`) -- so there is no missing-source question to
-  // answer for the zero-config case at all, on any backend.
-  // `${localEnv:ROLA_WORKTREES_DIR:rola-worktrees}` resolves to the bare name
-  // `rola-worktrees` (a named volume, zero-config) when the variable is
-  // UNSET, and to whatever host PATH a developer exports (bind-mounted) when
-  // it IS set -- ONE declarative line, no conditional the JSON format could
-  // not express, exactly mirrored in `docs/setup.md`'s plain `docker run`
-  // line via bash's own `${VAR:-default}`.
+  // BUG 1 (the original form): `"source=${localEnv:ROLA_WORKTREES_DIR:
+  // ${localWorkspaceFolder}/../worktrees},...,type=bind,..."` nested a
+  // `${localWorkspaceFolder}` reference INSIDE a `${localEnv:VAR:default}`
+  // default value. The CLI's substitution pass does not recursively expand a
+  // variable reference sitting inside another variable's default -- it left
+  // the inner `${localWorkspaceFolder}` completely UNEXPANDED and handed
+  // Docker the literal text `--mount source=${localWorkspaceFolder/../worktrees},...`,
+  // which Docker refused outright ("is not an absolute path"),
+  // UNCONDITIONALLY -- whether or not `ROLA_WORKTREES_DIR` was set.
+  //
+  // BUG 2 (the first fix attempt): replacing the object form with a plain
+  // `-v`-shorthand STRING (`"NAME:/workspace/worktrees"`), reasoning that
+  // Docker's classic `-v` auto-detects bind-vs-volume from the shape of
+  // `SOURCE`. That auto-detection is real for a raw `docker run -v` (used
+  // below, verified) -- but `@devcontainers/cli` does NOT pass a plain
+  // string mount through as `-v`: it always emits `--mount`, and does not
+  // reformat a colon-shorthand string into `--mount`'s required
+  // `key=value,key=value` syntax. It forwarded `--mount
+  // rola-worktrees:/workspace/worktrees` verbatim, and Docker refused THAT
+  // too ("must be a key=value pair"). So `mounts` entries here must always
+  // be `--mount`-syntax key=value strings; the bind-vs-volume auto-detect
+  // trick only exists for `docker run -v`.
+  //
+  // THE ACTUAL FIX, verified end-to-end with a real fresh clone + unset
+  // `ROLA_WORKTREES_DIR` + `@devcontainers/cli up`: a STATIC named-volume
+  // mount, unconditionally. `type=volume` mounts auto-create an empty named
+  // volume with NO host resource required to pre-exist (verified: `docker
+  // run --rm --mount type=volume,source=rola-worktrees-test,target=/x
+  // busybox true` succeeds with no prior `docker volume create`) -- so there
+  // is no missing-source question for `@devcontainers/cli` to mishandle at
+  // all. A single static line cannot ALSO switch to a host bind mount when
+  // `ROLA_WORKTREES_DIR` is set (the CLI's `--mount`-only translation gives
+  // no way to make one JSON line pick `type=bind` vs `type=volume`
+  // conditionally) -- a contributor who keeps sibling worktrees
+  // (`rola-branch-structure`) and wants them visible in the devcontainer
+  // gets that from the plain `docker run` form below instead, or by editing
+  // this one line in their own local (uncommitted) checkout to
+  // `type=bind,source=$ROLA_WORKTREES_DIR,target=/workspace/worktrees`. See
+  // `docs/setup.md` for both paths spelled out.
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/rola,type=bind,consistency=cached",
   "workspaceFolder": "/workspace/rola",
   "mounts": [
-    "${localEnv:ROLA_WORKTREES_DIR:rola-worktrees}:/workspace/worktrees"
+    "type=volume,source=rola-worktrees,target=/workspace/worktrees"
   ],
   "remoteEnv": {
     "ROLA_IMAGE_DIGEST": "${localEnv:ROLA_IMAGE_DIGEST}"
