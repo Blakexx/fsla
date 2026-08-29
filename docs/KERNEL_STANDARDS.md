@@ -3,7 +3,11 @@
 **CONSTITUTION** = Blake's standing rulings. Stable; changed only by Blake; they guide every law below.
 They are: §10's correctness instruments (oracle = truth; bit-identity = refactor instrument); efficiency is
 correctness; closed world (only measured binaries run); one form per mechanism, no fallbacks, no dead code;
-build the whole design or stop and name the gap; the ancestral-code standard; §17 portability; SELF-DOCUMENTING
+build the whole design or stop and name the gap; the ancestral-code standard; §17 portability; ONE ATOMIC PRODUCT
+(Blake, 2026-08-28: the repository in published form is ONE self-contained kernel product — never several kernels
+being separately gated; every test lives in exactly one of the three tiers, `tests/unit`, `tests/integration`,
+`tests/oracle` (docs/testing.md), plus `benchmarks/`; the whole tree is gated holistically at its current state;
+no per-campaign test directories, and no campaign names in the tree — names are roles); SELF-DOCUMENTING
 CODE (Blake, 2026-08-04: code is legible without comments; comments are sparse — a file header and 1-3-line decl
 blocks naming purpose and the one invariant; derivations, histories and why-not-the-other-form prose live in
 `docs/internals/` mirroring `csrc/`); and §R8-R10
