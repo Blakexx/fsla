@@ -1852,3 +1852,75 @@ full transit only because the register reorder is not built and therefore OVERPA
 knows it. The census reports `-1` for the channel-split body, which has no exchange at all.
 A size alone could not say this: `kXchFull` and `kXchFullReorder` allocate the same bytes
 for opposite reasons.
+
+<a id="ldf"></a>
+### `LdF`
+
+THE SHARED FACTOR STAGING (K35 F3).  The write side's fetch schedule runs over
+TOKENS, not over (token, stream) pairs: a batch's un-expanded factor rows are
+copied into shared memory ONCE, by executor share over the batch's tokens, and
+every stream expands its own panel out of that one copy.  The row is the
+owner's whole run at every level (`BoxPlan::kStageW` wide, `stage_off(l)` the
+level's offset inside it), so a stream reads its own digits at
+`stage_off(l) + offW[l]` and no stream needs a copy of its own.  Two rows of
+`C` tokens are held, because the schedule stages two batches ahead of the batch
+it expands: the expansion of batch `b+1` at the tail of iteration `b` reads a
+buffer whose copy completed at iteration `b`'s own `stage_wait`, and writes
+nothing, so one CTA edge per batch -- the one the V ring already owns -- seals
+both the staging and the panel.
+
+<a id="expand-write"></a>
+### `expand_write`
+
+THE WRITE SIDE EXPANDS FROM THE SHARED STAGING, never from global.  This is
+`produce`'s write half with its loads moved: the level runs come from the
+staged row at this lane's token, so a token live in several write streams is
+fetched once for the whole CTA instead of once per stream.  The gain still
+comes from global, because it is one `bf16` per token and carries the dead-row
+contract: a row past the batch's live count multiplies by a gain of exactly
+zero, which is what makes a short batch's tail contribute nothing to the MMA.
+
+<a id="stage-factors"></a>
+### `stage_factors`
+
+PART 1 OF THE THREE-PART SCHEDULE: one fetch per (token, window).  The batch's
+`C * BoxPlan::kStageChunks` asynchronous quanta are shared out over the whole
+CTA, so no two warps fetch one token's factors.  Each quantum is a `cp.async`
+of one level's run (`stage_el(l)` amplitudes), riding the V ring's own commit
+groups, so the staging adds no barrier: `cp.async.wait_group` plus the ring's
+existing per-batch edge is exactly the visibility this needs.  Rows past the
+batch's live count restage the last live token rather than being left
+undefined -- a defined finite value multiplied by a zero gain, never an
+uninitialised read.
+
+<a id="write-batch"></a>
+### `write_batch`
+
+PART 2: one expansion per (token, stream) out of the one staged copy, into that
+stream's own panel row.
+
+<a id="return-cover"></a>
+### the return leg's cover
+
+THE RETURN LEG'S COVER IS THIS SCHEDULE'S OWN FIRST BATCH (K35 F3, correcting
+F1b).  F1b issued its covers BEFORE each leg's stores, so the store -> barrier
+-> pull chain still ran with nothing under it and the round trip was exposed;
+the cover now sits INSIDE the chain, between the store-back's stores and the
+edge that releases the pull.  What runs there is the V ring's `cp.async`
+prologue and this schedule's staging of write batches 0 and 1 -- and, just
+above the window line, the write walk itself.  The walk and the union
+derivation are FIXED per window (they do not scale with `k_tok`), which is the
+half of the coverage question F1b's cover could not answer: at `k_tok = 4`,
+`W = 512` a window's live work is one short batch, so a cover made only of
+live work shrinks with the distribution while the leg it covers does not.
+
+THE EDGE IS A FULL BARRIER, NOT A SPLIT-PHASE ARRIVE/WAIT, AND THAT IS A PTX
+FACT, NOT A CHOICE.  A named barrier's `bar.arrive` and `bar.sync` executed by
+the SAME threads on the SAME id are two arrivals in two phases (PTX ISA 8.5
+section 9.7.14.1): every warp here is both a producer (it publishes its own
+accumulator) and a consumer (it pulls), so an arrive-then-sync pair costs one
+extra barrier phase rather than turning the wait into a non-blocking arrive.
+The primitive that does give a true split-phase edge for this shape is
+`mbarrier.arrive` / `mbarrier.try_wait` (sm_80+, one 8-byte shared object per
+edge, and it maps to the same instruction family on sm_90 and sm_100); it is
+named here as the next lever and deliberately not built in this stage.
