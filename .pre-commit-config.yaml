@@ -38,3 +38,9 @@ repos:
         entry: python3 tools/lint/lint_standards.py
         pass_filenames: false
         files: ^csrc/rola/.*\.(cu|cuh)$
+      - id: clang-tidy-host
+        name: clang-tidy (host-only TUs; SKIPS if no build/temp exists yet)
+        language: system
+        entry: tools/lint/run_clang_tidy.sh
+        pass_filenames: false
+        files: ^(csrc/rola/rola_api\.cpp|\.clang-tidy)$

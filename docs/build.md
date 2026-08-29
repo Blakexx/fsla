@@ -344,16 +344,20 @@ hooks and `.github/workflows/lint.yml` exactly like clang-format/ruff above:
    `---- THE WALK` marker (P79's law: barriers confined to the prologue).
    Every finding prints its section, `file:line`, and the incident; the
    script documents its own heuristic misses in its module docstring.
+3. **`tools/lint/run_clang_tidy.sh`** — a conservative `bugprone-*` +
+   `readability-*` set (`.clang-tidy`) on this codebase's host-only TUs
+   (details and scope below).
 
-Run both:
+Run all three:
 
 ```bash
 ast-grep scan --config sgconfig.yml csrc/
 python3 tools/lint/lint_standards.py
+tools/lint/run_clang_tidy.sh
 ```
 
-`pre-commit install` wires both in (`.pre-commit-config.yaml`), scoped to
-`csrc/`. Neither is a gate on its own claim of correctness — a hit is a
+`pre-commit install` wires all three in (`.pre-commit-config.yaml`), scoped to
+`csrc/`. None is a gate on its own claim of correctness — a hit is a
 finding for a human to rule on, same as `ratify`'s backstop philosophy (§9):
 these checks should ordinarily catch nothing.
 
@@ -369,8 +373,32 @@ tools/lint/compdb.sh                        # writes ./compile_commands.json
 ```
 
 `.clang-tidy` at the repo root is a conservative `bugprone-*` + small
-`readability-*` set, scoped to HOST TUs — clang 14's stock CUDA front end
-does not parse this codebase's device dialect cleanly, so `.cu`/`.cuh` are
-out of scope; see the lint stage's own FINDINGS for what was actually run
-(one host TU, `csrc/rola/rola_api.cpp`) and what clang-tidy binary
-availability looked like in the environment that built this.
+`readability-*` set. Run it with `tools/lint/run_clang_tidy.sh` (reads
+`compile_commands.json`, generating it via `compdb.sh` if missing; SKIPS —
+prints why, exits 0 — if no `build/temp` exists yet rather than forcing a
+~7-minute AOT build before every commit):
+
+```bash
+tools/lint/run_clang_tidy.sh
+```
+
+**Scope: HOST TUs only.** The script finds every `.cpp` entry in the compile
+database (currently exactly one, `csrc/rola/rola_api.cpp`) and lints it with
+the on-disk source, rewriting the compdb's build-tree path to whatever repo
+it's run from. `.cu`/`.cuh` device TUs are NOT part of this gate: clang 14's
+CUDA front end, run `--cuda-host-only`, DOES reach and diagnose this
+codebase's own kernel code (confirmed against `decode.cu` — real
+`bugprone-narrowing-conversions` / `bugprone-implicit-widening-of-
+multiplication-result` hits on its own lines) but cannot complete a clean
+parse: clang 14's bundled CUDA wrapper headers are incompatible with this
+host's CUDA toolkit's libcu++ (`<cuda/std/...>`, reached transitively through
+torch/c10 — "CUDA device code does not support variadic functions", "no
+template named 'texture'", ~99 such hits, all inside toolkit headers), plus a
+few genuine device-only-intrinsic gaps (`__ldcg` has no host-mode overload
+under `--cuda-host-only`). `tools/lint/try_clang_tidy_device_tu.sh`
+reproduces this attempt; it is deliberately NOT wired into pre-commit or CI.
+
+`rola_api.cpp` itself passes with **zero findings** under the current check
+set (validated live: the same command flags a deliberately broken scratch
+file, so the clean pass is the tool actually running, not a silently inert
+config).
