@@ -142,3 +142,7 @@ that into the skill the same day (process/pointers only — never facts).
 - THE ORPHAN-FILE RULE (C1c, 2026-08-30): when N sibling stages share a branch, a file no sibling owns
   that blocks a gate is edited by whoever hits it — the MINIMUM edit, reported — never a STOP over a
   two-line import; a brief hands out ownership AND names this rule.
+- NO PAST STATES IN SOURCE COMMENTS (Blake, 2026-08-30; constitution addendum): comments describe the
+  code as it is — never "replaced X", "the old …", a stage/campaign name, or a comparison; history goes
+  to docs/DELETIONS.md / ARCHITECTURE status marks / the journal. Every brief says so; every review
+  greps the diff's comments for it.

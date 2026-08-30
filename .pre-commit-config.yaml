@@ -69,7 +69,7 @@ repos:
         language: system
         entry: tools/lint/run_clang_tidy_device.sh
         pass_filenames: false
-        always_run: true
+        files: ^csrc/.*\.(cu|cuh)$
       - id: host-warnings-report
         name: "[report-only] host -Wall -Wextra -Wunused dry compile"
         language: system

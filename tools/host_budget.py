@@ -55,14 +55,16 @@ from pathlib import Path
 
 
 def _default_slots() -> int:
-    """cores - 2 for headroom, capped by host memory: a cicc peaks near 2 GB (3 GB with headroom), so the budget
+    """cores - 2 for headroom, capped by host memory: a cicc peaks near 2.3 GB on the templated TUs (3 GB with headroom) and the host also runs the
+    coordinating pythons (torch imports ~1-2 GB each), so 8 GB is reserved before the budget
     never admits more compilers than the machine can hold without swapping (the 2026-08-29
     freeze was 13 cicc on a 23 GB host)."""
     cores = max(1, (os.cpu_count() or 4) - 2)
     try:
         with open("/proc/meminfo") as f:
             total_kb = int(next(l for l in f if l.startswith("MemTotal:")).split()[1])
-        by_memory = max(1, int(total_kb / 1024 / 1024 / 3.0))
+        gb = total_kb / 1024 / 1024
+        by_memory = max(1, int((gb - 8.0) / 3.0))  # 8 GB reserved for the agents' pythons + the shell
     except (OSError, StopIteration, ValueError):
         by_memory = 4
     return max(1, min(cores, by_memory))
