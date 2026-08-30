@@ -411,7 +411,11 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void carry_kern
   if ((act_read | act_write) == 0u) return;
 
   //: THE THREE EDGES, and the box's page slots -- the only page-table reads in the launch.
-  if (tid < BP::kEdges) ops::edge_init(sm.edge((Edge)tid), BP::kThreads);
+  //: ONE thread initialises every edge: a barrier initialised inside a divergent region
+  //: by the thread whose index names it is a hazard the sanitizer refuses by name.
+  if (tid == 0)
+    rola::static_for<BP::kEdges>(
+        [&](auto Ec) { ops::edge_init(sm.edge((Edge) decltype(Ec)::value), BP::kThreads); });
   if (tid < BP::kAtoms) {
     const uint32_t canon =
         (uint32_t)(geom_canon_leaf_t<D, BC>(p.g, owner, tid * kAtomLeaves)) >> kAtomLeavesBits;

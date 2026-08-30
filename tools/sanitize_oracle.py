@@ -66,14 +66,12 @@ class Family:
 #: exactly one parametrization so each (family, tool) pair is one launch, not a
 #: whole file's worth serialized under the heaviest instrumentation this repo has.
 #:
-#: THE CARRY SHIPS TWO BODIES AND THE LANE WAS COVERING ONE.  Every cell in
-#: the carry's oracle file declared `level_modes = 0`, which dispatches the
 #: THE FAMILIES, RE-KEYED TO WHAT THIS LINE CARRIES. Each row names one already-gated
 #: cell -- this script adds no cell of its own, it reruns an existing one under the
 #: sanitizer -- and states whether the family's kernel EXISTS.
 #:
-#: AN ABSENT FAMILY IS REPORTED, NEVER RUN AND NEVER CLEAN. The carry family's kernels
-#: are absent and a later stage builds the body: a
+#: AN ABSENT FAMILY IS REPORTED, NEVER RUN AND NEVER CLEAN. The carry reverse pass has
+#: no body on this line: a
 #: sanitizer pair over a cell that refuses at the extension boundary launches nothing,
 #: and a tool that reports no hazards over no launch is the vacuous pass this script
 #: exists to refuse (its own rule, learned when a CLEAN came back from a binary that
@@ -109,12 +107,16 @@ _FAMILIES = {
         test="tests/oracle/test_entmax_cuda_gates.py::"
              "test_teeth_B_values_reject_beyond_tolerance[1.5]",
         kernel="rola::entmax::union_forward", present=True),
-    #: ABSENT: the carry forward and its reverse pass. The cells exist and are red at
-    #: the extension boundary; the coverage is owed by the stages that build the bodies.
+    #: THE CARRY FORWARD's frame and fold, on the cell that pins every map they compose:
+    #: the state slice's two sweeps, the window loop's three edges, the segment ring's
+    #: asynchronous staging and one deposit's MMA, in one launch small enough to run under
+    #: the heaviest instrumentation this repository has.
     "carry": Family(
         test="tests/oracle/test_carry_vs_oracle.py::"
-             "test_the_inter_term_is_the_fp64_reference[flagship-alt-k4]",
-        kernel="rola::carry::carry_forward", present=False),
+             "test_one_token_writing_one_leaf_is_the_oracles_single_deposit",
+        kernel="rola::carry::carry_forward", present=True),
+    #: ABSENT: the carry reverse pass. Its cells are red at the extension boundary; the
+    #: coverage is owed by the stage that builds the body.
     "carry_backward": Family(
         test="tests/oracle/test_carry_backward_vs_reference.py::test_every_cotangent_matches_the_reference",
         kernel="rola::carry::carry_backward", present=False),
