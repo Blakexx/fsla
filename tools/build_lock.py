@@ -31,12 +31,33 @@ after being handed fewer slots than that.
 """
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import os
+import shutil
+import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 
 GLOBAL_CICC_SLOTS = int(os.environ.get("ROLA_GLOBAL_CICC_SLOTS", "4"))
+
+#: docs/internals/tools/build_lock.md -- the NICE stage (Blake, 2026-08-29).
+_NO_NICE_ENV = "ROLA_NO_NICE"
+
+
+def _lower_own_priority() -> None:
+    if os.environ.get(_NO_NICE_ENV) == "1":
+        return
+    with contextlib.suppress(OSError):
+        os.nice(10)
+    ionice = shutil.which("ionice")
+    if ionice is None:
+        print("[build_lock] ionice not on PATH; CPU niceness only", flush=True)
+        return
+    subprocess.run(
+        [ionice, "-c", "3", "-p", str(os.getpid())],
+        check=False, capture_output=True,
+    )
 
 
 def _slot_path(i: int) -> Path:
@@ -112,6 +133,7 @@ def acquire(*, gate: bool, desired: int):
             print(f"[build_lock] iteration build: holding {len(held)}/"
                   f"{GLOBAL_CICC_SLOTS} slot(s) of the machine-wide cicc "
                   f"budget (wanted {desired})", flush=True)
+        _lower_own_priority()
         yield len(held)
     finally:
         for fd in held:

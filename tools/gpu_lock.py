@@ -45,8 +45,29 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
+import shutil
+import subprocess
 
 GPU_LOCK_DEFAULT = "/tmp/rola_gpu.lock"
+
+#: docs/internals/tools/gpu_lock.md -- the NICE stage (Blake, 2026-08-29).
+_NO_NICE_ENV = "ROLA_NO_NICE"
+
+
+def _lower_own_priority() -> None:
+    if os.environ.get(_NO_NICE_ENV) == "1":
+        return
+    with contextlib.suppress(OSError):
+        os.nice(10)
+    ionice = shutil.which("ionice")
+    if ionice is None:
+        print("[gpu_lock] ionice not on PATH; CPU niceness only", flush=True)
+        return
+    subprocess.run(
+        [ionice, "-c", "3", "-p", str(os.getpid())],
+        check=False, capture_output=True,
+    )
+
 
 #: Set to this process's pid on acquire, cleared on release. Presence alone (not an
 #: exact pid match) is what a nested acquire checks -- a marker inherited from an
@@ -71,6 +92,7 @@ def gpu_lock(path: str | None = None):
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         os.environ[_HELD_MARKER] = str(os.getpid())
+        _lower_own_priority()
         try:
             yield
         finally:
