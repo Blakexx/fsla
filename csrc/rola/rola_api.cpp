@@ -16,6 +16,7 @@
 #include "src/entmax/factor.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/common/geom_api.cuh"
+#include "src/facts/liveness_api.cuh"
 #include "src/intra/intra.cuh"
 
 namespace py = pybind11;
@@ -50,6 +51,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "K31 R4: the built reverse intra arms and their census");
   m.def("intra_backward_stamp", &rola::intra::intra_backward_stamp,
         "K31 R4: the reverse intra's device build stamp");
+
+  // ---- the ONE liveness pass, a foundation feature ------------------------
+  m.def("liveness_words", &rola::facts::liveness_words,
+        "the ONE geometry-independent liveness pass -- the class-1 words, one bit per "
+        "(side, token, level, digit); every consumer's grain is a host fold over these",
+        py::arg("read_plane"), py::arg("write_plane"), py::arg("widths"), py::arg("dense_read"),
+        py::arg("mask_read"), py::arg("dense_write"), py::arg("mask_write"));
 
   // ---- the producer's union entmax solve ----------------------------------
   m.def("entmax_union_forward", &rola::entmax::union_forward,

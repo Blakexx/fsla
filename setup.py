@@ -504,6 +504,7 @@ SOURCES = [
     #: G -- the addressing block's host seam (derivation + refusals). Its own TU so
     #: that the foundation lands without recompiling the dispatch; it holds no kernel.
     "csrc/rola/src/common/geom.cu",
+    "csrc/rola/src/facts/liveness.cu",
     # K31 R2: the standalone deterministic intra kernel, one TU.
     "csrc/rola/src/intra/intra.cu",
     # K31 R4: the intra term's reverse pass, its own TU.
