@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """THE SWEEP OVER THE DECLARED SETS -- R9's fourth enforcement layer, as a tool.
 
-A structure switch's cases are GENERATED (`csrc/rola/src/carry/geom.cuh`'s `sub_boxes`)
+A structure switch's cases are GENERATED (`csrc/rola/src/common/geom.cuh`'s `sub_boxes`)
 and its miss path is a `__trap()` (`csrc/rola/src/common/structure_switch.cuh`). Between
 those two facts sits a question neither of them answers: WHICH members can a real
 declaration actually select, and does every member of the generated set have one? A
@@ -19,7 +19,7 @@ derivation (`rola.ops.carry.geometry`, never a mirror), and reports:
   and a gap look identical from a coverage count alone.
 
 It is a DERIVATION sweep and launches no kernel: on this branch no kernel consumes the
-runtime block (`docs/internals/carry/geom.md#on-the-tip`). When the pipelined body does,
+runtime block (`docs/internals/common/geom.md#on-the-tip`). When the pipelined body does,
 the launch is one line -- and until then a gap here is still a gap.
 
     python tools/field_coverage.py            # sweep every declared shape

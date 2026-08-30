@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "../dispatch_switch.cuh"
-#include "arch_caps.cuh"
+#include "common/arch_caps.cuh"
 #include "facts_kernel.cuh"
 
 namespace rola::chunk {

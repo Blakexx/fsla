@@ -1,9 +1,9 @@
 """THE ONE DERIVATION, against the PARENT KERNEL'S OWN COMPILE-TIME CENSUS.
 
-`csrc/rola/src/carry/geom.cuh` computes at runtime what the shipped carry bodies compute
+`csrc/rola/src/common/geom.cuh` computes at runtime what the shipped carry bodies compute
 in their templates (`box.cuh`'s `BoxPlan`/`ModeOrder`/`StreamSpans`). No kernel on this
 branch consumes the runtime block -- the pipelined body is what will
-(`docs/internals/carry/geom.md#on-the-tip`) -- so THIS FILE IS THE PROOF that the block is
+(`docs/internals/common/geom.md#on-the-tip`) -- so THIS FILE IS THE PROOF that the block is
 the same law: for every arm the parent builds, the derivation's own output is checked
 against the census the parent binary reports off the device.
 
@@ -66,7 +66,7 @@ UNLAWFUL_UNDER_THE_FLOOR = (8, 9)
 
 #: THE ARCH CONSTANTS, mirrored from `geom.cuh` -- three scalars, and the only thing in
 #: this file that is a mirror rather than a call. The SET they feed is the shipped
-#: generator's, read through `carry_ops.sub_boxes`. -- docs/internals/carry/geom.md#arch-constants
+#: generator's, read through `carry_ops.sub_boxes`. -- docs/internals/common/geom.md#arch-constants
 WARPS_PER_SM = 8
 
 

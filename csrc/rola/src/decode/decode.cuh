@@ -5,12 +5,12 @@
 
 #include <cstdint>
 
-#include "../carry/box.cuh"
+#include "common/geom.cuh"
 
 namespace rola {
 namespace decode {
 
-using rola::carry::kAtomLeaves;  // page granule from the box; see decode.md#kmaxlevels
+using rola::carry::kAtomLeaves;  // page granule from the addressing block; see decode.md#kmaxlevels
 
 constexpr int kMaxLevels = 4;  // 1 <= D <= 4; see decode.md#kmaxlevels-2
 
@@ -41,7 +41,8 @@ __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int leve
   return kDecodeResidentThreads / kDecodeThreads;
 }
 
-constexpr int kAtomShift = rola::carry::ilog2c(kAtomLeaves);  // shift+mask; decode.md#katomshift
+constexpr int kAtomShift =
+    rola::carry::geom_ilog2(kAtomLeaves);  // shift+mask; decode.md#katomshift
 constexpr int kAtomMask = kAtomLeaves - 1;
 static_assert(1 << kAtomShift == kAtomLeaves, "kAtomShift must be log2(kAtomLeaves)");
 

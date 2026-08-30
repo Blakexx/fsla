@@ -10,7 +10,7 @@
 
 #include <cstdint>
 
-#include "facts/arch_caps.cuh"
+#include "common/arch_caps.cuh"
 #include "design.cuh"
 
 namespace denseref {

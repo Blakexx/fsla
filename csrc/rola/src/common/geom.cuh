@@ -1,11 +1,11 @@
-// csrc/rola/src/carry/geom.cuh -- THE ADDRESSING BLOCK: one derivation, computed
+// csrc/rola/src/common/geom.cuh -- THE ADDRESSING BLOCK: one derivation, computed
 // once per launch on the host, consumed by every kernel of the family.
 //
 // K50's axis law as G2b corrects it: the REGISTER SHAPE -- leaves per warp, `DV`, and
 // the warp sub-box's spans and slot layout -- is compile-time `f(D, DV)`; the widths
 // `B_l`, the per-side orders and the carve OFFSETS they fix are runtime and CTA-uniform.
 // Symbols, the two span laws, the refusal set and the transit's row map:
-// see docs/internals/carry/geom.md
+// see docs/internals/common/geom.md
 #pragma once
 
 #include <cstdint>
@@ -26,7 +26,7 @@ constexpr int geom_ilog2(int x) {
   return (1 << b) == x ? b : -1;
 }
 
-//: THE ARCH'S PRIMARY CONSTANTS, IN DERIVATION ORDER. -- see docs/internals/carry/geom.md#arch-constants
+//: THE ARCH'S PRIMARY CONSTANTS, IN DERIVATION ORDER. -- see docs/internals/common/geom.md#arch-constants
 constexpr int leaves_per_sm(int dv) { return 16384 / dv; }
 constexpr int warps_per_sm = 8;
 constexpr int leaves_per_warp(int dv) { return leaves_per_sm(dv) / warps_per_sm; }
@@ -36,7 +36,7 @@ constexpr int balanced_bits(int bits, int D, int l) {
   return bits / D + (l >= D - bits % D ? 1 : 0);
 }
 
-//: THE OWNER BOX: `log2 BC` balanced, the ATOM held WHOLE innermost. -- see docs/internals/carry/geom.md#span-rule
+//: THE OWNER BOX: `log2 BC` balanced, the ATOM held WHOLE innermost. -- see docs/internals/common/geom.md#span-rule
 constexpr int owner_span_bits(int D, int bc, int l) {
   const int total = geom_ilog2(bc), floor_in = geom_ilog2(kAtomLeaves);
   int b[kGeomMaxLevels] = {0, 0, 0, 0}, sum = 0;
@@ -69,7 +69,7 @@ constexpr int owner_run_shift(int D, int bc, int l) {
 //: THE CARVE IS TOP-DOWN (Blake, 2026-08-29): the owner box's spans are divided level
 //: by level IN THE SIDE'S OWN ORDER, outermost first, until the box count reaches the
 //: side's stream count; what remains is that side's WARP SUB-BOX.
-//: -- see docs/internals/carry/geom.md#warp-box
+//: -- see docs/internals/common/geom.md#warp-box
 constexpr void carve_sub_bits(int D, int bc, int ns, const int* outer_order, int* bits) {
   for (int l = 0; l < D; ++l) bits[l] = owner_span_bits(D, bc, l);
   int want = geom_ilog2(ns);
@@ -87,7 +87,7 @@ constexpr int kGeomMaxSubBoxes = 12;
 //: THE COMPILE-TIME SET OF WARP SUB-BOX SHAPES, GENERATED from the owner spans and the
 //: stream count by running the carve over EVERY level order and de-duplicating. A side
 //: selects one member at launch from its own order; nothing here is hand-written.
-//: -- see docs/internals/carry/geom.md#warp-box-set
+//: -- see docs/internals/common/geom.md#warp-box-set
 struct SubBoxSet {
   int count;
   int bits[kGeomMaxSubBoxes][kGeomMaxLevels];
@@ -137,7 +137,7 @@ constexpr int sb_shift(const SubBoxSet& set, int D, int a, int l) {
 
 //: THE SET BY VALUE, for device code: a static constexpr member of a class is ODR-USED
 //: when a device body names it, so every compile-time consumer below re-derives the set
-//: from the same three numbers instead. -- see docs/internals/carry/geom.md#warp-box-set
+//: from the same three numbers instead. -- see docs/internals/common/geom.md#warp-box-set
 constexpr int sb_span_bits(int D, int bc, int ns, int a, int l) {
   const SubBoxSet set = sub_boxes(D, bc, ns);
   return set.bits[a][l];
@@ -152,7 +152,7 @@ constexpr int sb_shift_of(int D, int bc, int ns, int a, int l) {
 //: A SLOT'S REGION ROW under one member: each level's slot digit placed at that level's
 //: own bit offset in the owner-local canonical index. GF(2)-LINEAR in the slot's bits, so
 //: a lane-dependent part and a compile-time part compose by OR -- which is what keeps
-//: every transit displacement an immediate. -- see docs/internals/carry/geom.md#row-map
+//: every transit displacement an immediate. -- see docs/internals/common/geom.md#row-map
 constexpr int sb_scatter_of(int D, int bc, int ns, int a, int P) {
   const SubBoxSet set = sub_boxes(D, bc, ns);
   int row = 0;
@@ -167,7 +167,7 @@ constexpr int sb_scatter_of(int D, int bc, int ns, int a, int P) {
 //: the level's owner run is wider than the sub-box and leaves a gap; 15 of the 55
 //: reachable member pairs conflict unswizzled. This is GF(2)-LINEAR, so it distributes
 //: over the `base ^ scatter(P)` split and every displacement stays an immediate, and it
-//: is a bijection of `[0, BC)`. -- see docs/internals/carry/geom.md#row-swizzle
+//: is a bijection of `[0, BC)`. -- see docs/internals/common/geom.md#row-swizzle
 constexpr int kSwzShift = 2, kSwzMask = 7;
 __host__ __device__ constexpr int sb_swizzle(int row) {
   return row ^ ((row >> kSwzShift) & kSwzMask);
@@ -201,7 +201,7 @@ struct SideGeom {
   //: bit counts, never values: no consumer of this block emits an integer divide.
   int grid_div_bits[kGeomMaxLevels];
   //: THIS SIDE'S WARP SUB-BOX: which member of the generated set its order selects,
-  //: and that member's spans and slot layout. -- see docs/internals/carry/geom.md#warp-box-set
+  //: and that member's spans and slot layout. -- see docs/internals/common/geom.md#warp-box-set
   int assign;
   int sub_bits[kGeomMaxLevels];   //: level -> log2 sv(l)
   int sub_shift[kGeomMaxLevels];  //: level -> the slot index's bit offset
@@ -226,7 +226,7 @@ struct CarryGeomRT {
   int min_width;                  //: min_l B_l -- a CENSUS FACT, never a refusal
   SideGeom r;
   SideGeom w;
-  //: the former `kTied`, now a REPORTED FACT -- see docs/internals/carry/geom.md#row-map
+  //: the former `kTied`, now a REPORTED FACT -- see docs/internals/common/geom.md#row-map
   int identity_map;
   int span_bits[kGeomMaxLevels];       //: log2 s(l)
   int grid_bits[kGeomMaxLevels];       //: log2 g(l)
@@ -255,7 +255,7 @@ inline bool mode_before(uint32_t MO, uint32_t side, int a, int b) {
 
 }  // namespace geom_detail
 
-//: ONE SIDE'S CARVE; `NS == 1` is the S = 1 point of it. -- see docs/internals/carry/geom.md#carve
+//: ONE SIDE'S CARVE; `NS == 1` is the S = 1 point of it. -- see docs/internals/common/geom.md#carve
 inline const char* derive_side(int D, const int* width, const int* span, int bc, uint32_t MO,
                                uint32_t side, int NS, SideGeom& g) {
   if (NS < 1 || (NS & (NS - 1)) != 0) return "a side's stream count is a power of two";
@@ -327,7 +327,7 @@ inline const char* derive_side(int D, const int* width, const int* span, int bc,
   return nullptr;
 }
 
-//: THE ONE DERIVATION; returns nullptr or the REFUSAL's own words. -- see docs/internals/carry/geom.md#refusals
+//: THE ONE DERIVATION; returns nullptr or the REFUSAL's own words. -- see docs/internals/common/geom.md#refusals
 inline const char* derive_carry_geom(int D, const int* width, int bc, int dv, uint32_t MO, int NSR,
                                      int NSW, CarryGeomRT& g) {
   if (D < 1 || D > kGeomMaxLevels) return "the addressing block is built to depth four";
@@ -398,7 +398,7 @@ inline const char* derive_carry_geom(int D, const int* width, int bc, int dv, ui
 
 //: THE TRANSIT'S ROW MAP: the region is indexed by the OWNER-LOCAL CANONICAL INDEX, so
 //: each side reaches a leaf through its OWN base word and its own member's fixed shifts.
-//: -- see docs/internals/carry/geom.md#row-map
+//: -- see docs/internals/common/geom.md#row-map
 __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom& s, int strm,
                                             int P) {
   int row = 0;
@@ -415,7 +415,7 @@ __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom
 //: THE SAME MAP WITH THE DEPTH AND THE OWNER LAW COMPILE-TIME (R12: no runtime trip
 //: count in a register-shaped loop). The kernel knows `D` and `BC` as template
 //: arguments, so the spans and the run shifts are IMMEDIATES here and only the
-//: width-derived terms stay runtime. -- see docs/internals/carry/geom.md#canon-leaf
+//: width-derived terms stay runtime. -- see docs/internals/common/geom.md#canon-leaf
 template <int D, int BC, int L>
 __host__ __device__ inline int geom_canon_acc(const CarryGeomRT& g, int O, int local) {
   if constexpr (L >= D) {

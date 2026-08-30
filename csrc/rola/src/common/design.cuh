@@ -5,7 +5,7 @@
 // kernel reads this layer for its design and calls `ops.cuh` to execute it.
 // See docs/internals/common/design.md
 
-#include "facts/arch_caps.cuh"
+#include "common/arch_caps.cuh"
 
 namespace denseref {
 namespace design {

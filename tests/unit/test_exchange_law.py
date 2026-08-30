@@ -7,14 +7,14 @@ that the COMPOSITE IS THE IDENTITY ON LATTICE LEAVES -- and, separately, that ne
 of the traffic conflicts in the banks.
 
 THE MODEL CONSUMES THE SHIPPED DERIVATION and composes it itself.  It reads the addressing
-block through `rola.ops.carry.geometry` (`csrc/rola/src/carry/geom.cuh`, the ONE
+block through `rola.ops.carry.geometry` (`csrc/rola/src/common/geom.cuh`, the ONE
 derivation) and builds the row map, the four accesses and the whole hybrid transit from
 it; a wrong derivation shows up as a broken permutation here rather than as noise on a
 device.  Pure arithmetic: no CUDA kernel is launched.
 
 WHICH FILE IS WHICH.  `tests/unit/test_exchange_layout.py` proves the layout of the
 PARENT BODY on this branch, whose carve is compile-time; this file proves the LAW on the
-runtime block the pipelined body will consume (`docs/internals/carry/geom.md#row-map`).
+runtime block the pipelined body will consume (`docs/internals/common/geom.md#row-map`).
 They are two derivations of the same law and both are kept until one body remains.
 
 Symbols: `D` levels; `B_l` level `l`'s width; `BC` the leaves one CTA's box holds; `DV`

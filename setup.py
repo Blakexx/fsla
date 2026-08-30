@@ -505,7 +505,7 @@ SOURCES = [
     "csrc/rola/src/carry/carry.cu",
     #: G -- the addressing block's host seam (derivation + refusals). Its own TU so
     #: that the foundation lands without recompiling the dispatch; it holds no kernel.
-    "csrc/rola/src/carry/geom.cu",
+    "csrc/rola/src/common/geom.cu",
     #: K31 R4 -- the reverse carry family (Scan A and Scan B), its own TU.
     "csrc/rola/src/carry/backward.cu",
     # K31 R2: the standalone deterministic intra kernel, one TU.

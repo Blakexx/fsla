@@ -41,7 +41,7 @@ refusal at first launch on a device that table has no row for, or has a row
 that the driver disagrees with.  Both halves must stay: a derivation is only
 as good as the facts it was closed over, and only a fact read off the DEVICE
 can establish that this is the device they were read for.
-docs/internals/facts/arch_caps.md
+docs/internals/common/arch_caps.md
 
 <a id="check-arch-table-note-l41"></a>
 ### in `check_arch_table`, near line 41

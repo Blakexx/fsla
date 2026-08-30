@@ -633,7 +633,7 @@ wider-type emulation.
 | the window body: schedule, carve, transit, fetch, fan-in | `docs/internals/carry/carry_kernel.md` |
 | the carry family's arms and their ABI | `docs/internals/carry/carry_arm.md`, `docs/internals/carry/carry_arm_abi.md` |
 | the facts pass and its tables | `docs/internals/facts/facts.md`, `docs/internals/facts/facts_kernel.md` |
-| the architecture capability table and the closed-world refusal | `docs/internals/facts/arch_caps.md` |
+| the architecture capability table and the closed-world refusal | `docs/internals/common/arch_caps.md` |
 | decode: the step, the walk, growth, capture | `docs/internals/decode/decode.md` |
 | decode's lattice and factor tables | `docs/internals/decode/decode_lattice.md` |
 | the within-window term | `docs/internals/intra/intra.md`, `docs/internals/intra/intra_kernel.md` |

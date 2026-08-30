@@ -204,8 +204,8 @@ def arms():
     return extension().carry_arms()
 
 
-#: THE ADDRESSING BLOCK'S FIELD ORDER, mirrored from `csrc/rola/src/carry/geom.cu`'s
-#: `geometry` (`docs/internals/carry/geom_api.md#geometry`) -- the ONE reader of that
+#: THE ADDRESSING BLOCK'S FIELD ORDER, mirrored from `csrc/rola/src/common/geom.cu`'s
+#: `geometry` (`docs/internals/common/geom_api.md#geometry`) -- the ONE reader of that
 #: positional vector. `_GEOM_LEVEL` are the per-level arrays, each `kGeomMaxLevels` long;
 #: `_GEOM_SCALAR` the scalars that follow them; `_SIDE_LEVEL`/`_SIDE_SCALAR` the same for
 #: one side's carve, read twice (read side, then write side).
@@ -229,7 +229,7 @@ def geometry(widths, level_modes=0, bc=128, nsr=1, nsw=1, d_v=D_V):
     The kernel bodies on this tip do NOT consume this block (they are the MO/B-templated
     parent bodies, whose geometry is compile-time); it is the foundation the pipelined
     body is built on, and the model tests are what hold the two derivations together
-    until then. See ``docs/internals/carry/geom.md``.
+    until then. See ``docs/internals/common/geom.md``.
     """
     flat = list(extension().carry_geometry(list(widths), int(level_modes), int(bc), int(nsr),
                                            int(nsw), int(d_v)))

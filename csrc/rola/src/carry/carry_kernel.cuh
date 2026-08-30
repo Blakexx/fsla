@@ -40,7 +40,7 @@
 #include <type_traits>
 
 #include "box.cuh"
-#include "facts/arch_caps.cuh"
+#include "common/arch_caps.cuh"
 #include "common/design.cuh"
 #include "common/ops.cuh"
 #include "common/state_page.cuh"

@@ -70,7 +70,7 @@ is a runtime `cudaDeviceProp` query, never a table row.  Everything in
 
 ## Comments moved from source (S5b)
 
-Verbatim `//:` prose blocks from `csrc/rola/src/facts/arch_caps.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
+Verbatim `//:` prose blocks from `csrc/rola/src/common/arch_caps.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
 <a id="note-l163"></a>
 ### near line 163
@@ -93,7 +93,7 @@ measurement session's.
 
 ## More comments moved from source (S5b pass 2)
 
-Verbatim trailing/banner `//` comments from `csrc/rola/src/facts/arch_caps.cuh` condensed at their call site into a short pointer.
+Verbatim trailing/banner `//` comments from `csrc/rola/src/common/arch_caps.cuh` condensed at their call site into a short pointer.
 
 <a id="reg-transpose-b16"></a>
 ### `reg_transpose_b16`

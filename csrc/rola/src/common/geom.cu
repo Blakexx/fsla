@@ -1,18 +1,18 @@
-// csrc/rola/src/carry/geom.cu -- the addressing block's host TU: the ONE derivation's
+// csrc/rola/src/common/geom.cu -- the addressing block's host TU: the ONE derivation's
 // seam refusals, and the two entries that make the shipped block readable from Python.
 // No kernel is instantiated here and none is launched.
-// See docs/internals/carry/geom_api.md
+// See docs/internals/common/geom_api.md
 
 #include <torch/extension.h>
 
-#include "geom.cuh"
-#include "geom_api.cuh"
+#include "common/geom.cuh"
+#include "common/geom_api.cuh"
 
 namespace rola::carry {
 
 //: THE ADDRESSING BLOCK, DERIVED AND REFUSED AT THE SEAM. Every launch-time law K50
 //: names lives here; `min_l B_l < 16` is a CENSUS FACT and not one of them.
-//: -- see docs/internals/carry/geom_api.md#derive-block
+//: -- see docs/internals/common/geom_api.md#derive-block
 static CarryGeomRT derive_block(const std::vector<int64_t>& widths, int64_t level_modes, int bc,
                                 int dv, int nsr, int nsw) {
   int w[kGeomMaxLevels] = {1, 1, 1, 1};

@@ -1,6 +1,6 @@
 # `geom.cu` / `geom_api.cuh` — the addressing block's host seam
 
-Mirrors `csrc/rola/src/carry/geom.cu` and `csrc/rola/src/carry/geom_api.cuh`. The block's
+Mirrors `csrc/rola/src/common/geom.cu` and `csrc/rola/src/common/geom_api.cuh`. The block's
 arithmetic is header-only and lives in `geom.cuh` (`geom.md` is its page); this TU is the
 part that has to exist somewhere ONCE — the launch-time refusals, and the two entries that
 let a test read the SHIPPED derivation rather than a Python mirror of it.

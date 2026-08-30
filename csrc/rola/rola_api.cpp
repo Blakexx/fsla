@@ -18,7 +18,7 @@
 #include "src/facts/facts_api.cuh"
 //: K31 R1 -- the box-native CARRY family, built ALONGSIDE the shipped facts -- see docs/internals/rola_api.md#near-line-31
 #include "src/carry/carry_api.cuh"
-#include "src/carry/geom_api.cuh"
+#include "src/common/geom_api.cuh"
 #include "src/intra/intra.cuh"
 
 namespace py = pybind11;

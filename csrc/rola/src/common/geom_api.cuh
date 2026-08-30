@@ -1,5 +1,5 @@
-// csrc/rola/src/carry/geom_api.cuh -- the addressing block's HOST entries for the
-// pybind TU. See docs/internals/carry/geom_api.md
+// csrc/rola/src/common/geom_api.cuh -- the addressing block's HOST entries for the
+// pybind TU. See docs/internals/common/geom_api.md
 #pragma once
 
 #include <torch/extension.h>

@@ -1,6 +1,6 @@
 # `geom.cuh` — the addressing block
 
-The mirror of `csrc/rola/src/carry/geom.cuh`. One derivation, computed once per launch
+The mirror of `csrc/rola/src/common/geom.cuh`. One derivation, computed once per launch
 on the host, consumed by every kernel of the family.
 
 **Symbols.** `D` levels; `B_l` level `l`'s digit width; `BC` the leaves one owner (one
