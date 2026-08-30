@@ -99,3 +99,7 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
   2026-08-29): the tip's .so stayed pre-merge while the Python moved on; assert_fresh_binary did not
   fire. Python-only stages: the worktree still needs the built .so (copy the tip's, then
   assert_fresh_binary); a pointer venv without it = rola._C ImportError = CPU-only battery = not a gate.
+- EVERY COMPILE RUNS UNDER THE SLOT BUDGET (incident 2026-08-29: an agent pegged the CPU for 10 min and
+  the host had to be restarted): single-TU census compiles, clang-tidy device runs and iteration builds
+  take tools/build/build_lock.py's slots exactly like setup.py's gate build; never `xargs -P`/`&` a fan-out
+  of nvcc/clang/cicc; never more than the budget's slots in flight from one agent.
