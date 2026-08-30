@@ -22,7 +22,7 @@ Usage:
     python tools/sanitize_oracle.py [--tool TOOL ...] [--family FAMILY ...]
         [--timeout SECONDS]
 
-Invoked BARE (K46): this script takes `gpu_lock()` itself, once, for the whole
+Invoked BARE: this script takes `gpu_lock()` itself, once, for the whole
 run, exactly the way `tools/probe_cells.py` already did before K46 and every
 other GPU entry point does now -- never wrap it in an external `flock` on the
 same lock path, which self-deadlocks (see `tools/gpu_lock.py`'s module
@@ -65,14 +65,14 @@ class Family:
 #: exactly one parametrization so each (family, tool) pair is one launch, not a
 #: whole file's worth serialized under the heaviest instrumentation this repo has.
 #:
-#: THE CARRY SHIPS TWO BODIES AND THE LANE WAS COVERING ONE (K35 F1).  Every cell in
-#: the carry's oracle file declared `level_modes = 0` until F1, which dispatches the
+#: THE CARRY SHIPS TWO BODIES AND THE LANE WAS COVERING ONE.  Every cell in
+#: the carry's oracle file declared `level_modes = 0`, which dispatches the
 #: THE FAMILIES, RE-KEYED TO WHAT THIS LINE CARRIES. Each row names one already-gated
 #: cell -- this script adds no cell of its own, it reruns an existing one under the
 #: sanitizer -- and states whether the family's kernel EXISTS.
 #:
 #: AN ABSENT FAMILY IS REPORTED, NEVER RUN AND NEVER CLEAN. The carry family's kernels
-#: were cleared at C0 (`development/queue/C_CLEAN_SLATE.md`) and C3 builds the body: a
+#: are absent and a later stage builds the body: a
 #: sanitizer pair over a cell that refuses at the extension boundary launches nothing,
 #: and a tool that reports no hazards over no launch is the vacuous pass this script
 #: exists to refuse (its own rule, learned when a CLEAN came back from a binary that
@@ -175,8 +175,8 @@ class AssertedRaces:
         return found
 
 
-#: THE ONE DECLARED EXCEPTION (K47, 2026-08-29). The decode step's CTA combine ends
-#: the kernel's barriers with its prologue (P79): each warp deposits its partial into
+#: THE ONE DECLARED EXCEPTION. The decode step's CTA combine ends
+#: the kernel's barriers with its prologue: each warp deposits its partial into
 #: its own shared row, fences, and bumps an arrival count with one atomic; the LAST
 #: ARRIVER fences and sums the rows in fixed warp order. racecheck reports 48 RAW
 #: races between the deposit and that sum, because the synchronization it models is
@@ -286,7 +286,7 @@ def run_one(python: str, family: str, tool: str, timeout: int) -> tuple[bool, st
         return False, f"TIMEOUT after {timeout}s -- a hang under {tool}, not a correctness verdict"
     out = proc.stdout + proc.stderr
     ok = proc.returncode == 0
-    #: A SKIPPED CELL EXITS ZERO AND READS AS CLEAN (K48: the carved family reported
+    #: A SKIPPED CELL EXITS ZERO AND READS AS CLEAN (the carved family once reported
     #: CLEAN on a binary that did not carry its TEST arm, so the kernel never ran).
     #: The tool refuses the vacuous pass rather than reporting coverage it does not have.
     if ok and not re.search(r"\b[1-9]\d* passed", out):
@@ -300,9 +300,9 @@ def run_one(python: str, family: str, tool: str, timeout: int) -> tuple[bool, st
     decl = ASSERTED.get((family, tool))
     if decl is not None:
         passed, note = adjudicate(decl, out)
-        return passed, ("DECLARED EXCEPTION (K47) -- " + note + "\n  proof: " + decl.proof
+        return passed, ("DECLARED EXCEPTION -- " + note + "\n  proof: " + decl.proof
                         + "\n  exit:  " + decl.exit_condition) if passed else (
-                        "DECLARED EXCEPTION (K47) DOES NOT COVER THIS RUN -- " + note)
+                        "DECLARED EXCEPTION DOES NOT COVER THIS RUN -- " + note)
     tail = "\n".join(proc.stdout.splitlines()[-30:] + proc.stderr.splitlines()[-30:])
     return ok, tail
 

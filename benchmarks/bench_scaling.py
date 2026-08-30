@@ -296,9 +296,9 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
            "hidden": hidden, "branches": list(branches),
            "read_router": read_router, "write_router": write_router,
            "logit_gain": logit_gain,
-           #: TWO DEAD AXES RETIRED (P67 S5). Raw normalization used to be refused
+           #: TWO DEAD AXES RETIRED. Raw normalization used to be refused
            #: outright (the mass column is unconditional; the host axis itself is now
-           #: deleted, G4) -- and a decay-configured layer is refused by the chunk arm.
+           #: deleted) -- and a decay-configured layer is refused by the chunk arm.
            #: Both raised on their first cell. The columns stay in the row, as the
            #: CONSTANTS they are, so a reader of an old JSON beside a new one is
            #: comparing the same arm.
@@ -329,7 +329,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         assert layer.last_execution_backend == "cuda", (
             f"cell L={L} took the {layer.last_execution_backend!r} backend, so this row "
             "measures the wrong kernel")
-        # REPOINTED (P67 S3b): paging is the STATE's backing, not a layer flag, and it
+        # REPOINTED: paging is the STATE's backing, not a layer flag, and it
         # engages only on a call that carries a state. The TIMED call above stays
         # stateless -- that is the row this benchmark reports -- and residency is read
         # off one extra stateful call on the same routing, which commits exactly the

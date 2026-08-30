@@ -465,7 +465,7 @@ Re-reading is the cheaper trade on a kernel whose DRAM throughput is only ~30%. 
 `midpoint_values` in the final pass; one extra load per element buys the spill back
 to zero.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/entmax/entmax.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -531,7 +531,7 @@ DERIVED from the padded width rather than tabulated per case -- which is what ma
 it impossible for one arm's argument list to drift from another's:
 docs/internals/dispatch_switch.md#one-launch
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/entmax/entmax.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 

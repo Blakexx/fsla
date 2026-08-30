@@ -377,7 +377,7 @@ Decode takes its lattice as DATA, not as a template arm, so every constraint
 `box.cuh`'s `BoxPlan` states as a `static_assert` is a `TORCH_CHECK` in
 `decode.cu::fill_lattice`:
 
-- `k` and `m` are exact powers of two (K1);
+- `k` and `m` are exact powers of two;
 - `k <= kDecodeMaxSpan`;
 - per level, `s_l = k * m_l <= kDecodeMaxSpan` and `B_l % s_l == 0` (K6: an
   owner sits inside a level — `m_l` is spec §2.5 as the atom-rectangle law
@@ -443,7 +443,7 @@ the largest `k`. That reproduces the built arms (`(64,64)` and `(256,256)` both
 `(4, 8)`) and selects `k = 2` at `(16,16,16)`, whose one-level rectangle the
 `k = 4` box cannot reach.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_lattice.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 

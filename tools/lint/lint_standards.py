@@ -780,14 +780,18 @@ _NOT_A_WORK_CODE = re.compile(
     r"F16|F32|F64|S8|S16|S32|S64|U8|U16|U32|U64|BF16|TF32|FP8|FP16|FP32|FP64|INT4|INT8"
     r"|SM\d+|CC\d+"                     # an architecture
     r"|L1|L2|L1TEX"                      # a cache level
-    r"|A100|H100|V100|A10|A40|T4|RTX\d+|WSL2|CUDA\d+|PTX\d+"   # a machine or a toolkit
+    r"|A100|A30|A40|A16|A10|A2|H100|H200|V100|L4|L40|T4|RTX\d+|WSL2|CUDA\d+|PTX\d+"   # a machine or a toolkit
     r"|[A-Z]{1,4}\d{3,4}"                # a linter's own code: E402, BLE001, PLC0415
+    r"|R\d{1,3}|UR\d{1,2}|P\d"           # a SASS register or predicate
+    r"|BC\d+|BT\d+|DV\d+|BH\d+"       # a shape, written into a cell id
     r")$")
 
-#: THE BLIND SPOT, STATED: a hyphen-digit form (`R-6`, `D-1`) is not policed, because
-#: `D-1` is arithmetic and `R-6` is a ruling number and no rule can tell them apart. The
-#: sweep that flipped this check on removed the ruling-number references it found; a new
-#: one is caught by review, not here.
+#: TWO BLIND SPOTS, STATED. A hyphen-digit form (`R-6`, `D-1`) is not policed, because
+#: `D-1` is arithmetic and `R-6` is a ruling number and no rule can tell them apart. And
+#: `R<n>` is a SASS REGISTER -- the ratification tool quotes disassembly by the line --
+#: so a bare rung number spelled that way escapes; the standards form is `§R<n>` and is
+#: unambiguous. The sweep that turned this check on removed both classes where it found
+#: them; a new one is caught by review, not here.
 _WORK_CODE_ROOTS = ("csrc", "rola", "docs", "tests", "benchmarks", "tools")
 _WORK_CODE_SUFFIXES = (".py", ".cu", ".cuh", ".cpp", ".h", ".hpp", ".md", ".json",
                        ".yaml", ".yml", ".sh", ".toml")
@@ -818,6 +822,20 @@ def _citable_text(path: Path, line: str) -> str:
     return " ".join(g or "" for m in _COMMENT_OR_STRING.finditer(line) for g in m.groups())
 
 
+def _code_text(path: Path, text: str) -> str:
+    """The file's CODE, with comments and string literals removed.
+
+    A LABEL THE FILE ITSELF DEFINES IS NOT A CITATION. A test file whose gates are named
+    `test_teeth_A1_...` writes `GATE A1` in its own assertion messages, and a reader has
+    the definition in front of them; the same two characters in a comment that points at
+    a campaign stage have nothing behind them. The difference is whether the name exists
+    in this file's code, so that is what is checked.
+    """
+    if path.suffix in (".md", ".json", ".yaml", ".yml", ".toml"):
+        return ""
+    return "\n".join(_COMMENT_OR_STRING.sub("", line) for line in text.splitlines())
+
+
 def check_no_campaign_work_codes() -> list[str]:
     """No file in this tree names a campaign or stage identifier.
 
@@ -837,10 +855,13 @@ def check_no_campaign_work_codes() -> list[str]:
             text = path.read_text()
         except UnicodeDecodeError:
             continue
+        code_text = _code_text(path, text)
         for lineno, line in enumerate(text.splitlines(), 1):
             for match in _WORK_CODE_RE.finditer(_citable_text(path, line)):
                 code = match.group(1)
                 if _NOT_A_WORK_CODE.match(code):
+                    continue
+                if re.search(re.escape(code), code_text, re.IGNORECASE):
                     continue
                 findings.append(
                     f"{path.relative_to(ROOT)}:{lineno}: names the work code {code!r}. "
@@ -981,7 +1002,7 @@ def check_shard_partition() -> list[str]:
     still runs and still refuses a directory that disagrees with the arm list -- which
     at zero rows means a directory that is not empty.
 
-    THE FALSE-FAIL THIS FIXES (K46 item 2): the retired test recomputed the manifest
+    THE FALSE-FAIL THIS FIXES: the retired test recomputed the manifest
     digest over EVERY `tools/manifests/sm_*.json` file found on disk, but
     `BUILD_CONFIG["manifest_sha256"]` is the digest of whatever arch SUBSET this
     build actually compiled (`ROLA_CUDA_ARCHS`) -- a single-arch iteration build

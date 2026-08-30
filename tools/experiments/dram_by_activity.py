@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """tools/experiments/dram_by_activity.py -- DRAM/L2/L1 COUNTERS WITH THE ACTIVITY BYTE CONTROLLED.
 
-The committed form of the ad hoc "plane-count instrument" journal `## G1` reported
+The committed form of the ad hoc "plane-count instrument" whose first run reported
 its read-only/written DRAM columns from (`0.657x` on read-only atoms at `k16_w384`;
 `+9.6%` on written atoms at `k4_w512_record`).  That instrument had no committed
-invocation, so its written column could not be reproduced -- `## G1b-pad`'s SKILLS
+invocation, so its written column could not be reproduced -- the SKILLS
 FEEDBACK made exactly that point, and this file is the answer to it: one script, one
 definition of the experiment, run by BOTH binaries' own venv python out of ONE source
 file, so a cross-tip delta is a fact about the extension and not about the harness.
@@ -22,9 +22,9 @@ the arm, the page table, the launch -- identical:
   * ``written`` -- every TOUCHED atom forced WRITTEN|READ: both planes both ways.
   * ``none``    -- `--state none`, the NULL-STATE control: no state I/O at all, so the
                    two binaries' numbers must agree, and their difference IS this
-                   host's DRAM noise floor (`## G1b-pad` measured ~0.6%).
+                   host's DRAM noise floor (measured at ~0.6%).
 
-Every frozen cell has read-set == write-set == every atom (`## G1`), so on those cells
+Every frozen cell has read-set == write-set == every atom, so on those cells
 ``asis`` and ``written`` request the same work: they are a second noise control, and
 any spread between them is measurement, not mechanism.
 
@@ -35,7 +35,7 @@ the min/max kept beside it.  Binaries are interleaved per variant (A,B,A,B -- th
 lesson), never "all of A then all of B".  Counters are asked in READ and WRITE halves
 because the mechanism under suspicion (a partially-covered sector on the store side)
 moves one half and not the other, and in REQUESTS as well as SECTORS because
-sectors-per-request is the coalescing/alignment question `## G1b-pad` could not ask.
+sectors-per-request is the coalescing/alignment question the wall-clock run could not ask.
 
 `--source` additionally runs one SourceCounters capture per (binary, cell) and
 aggregates it by source line, which is how the three blocks of a split page (hi values,
@@ -255,7 +255,7 @@ def run_variant(binary, cell, variant, warmup, launches, lock_path, out_dir,
         row["error"] = f"no ncu CSV (rc={proc.returncode}): {tail or proc.stderr[-1500:]}"
         return row
     for name, vals in per_metric.items():
-        #: EVERY profiled launch's value is kept, not just the median: `## G1c-dram`
+        #: EVERY profiled launch's value is kept, not just the median: the diagnosis
         #: found this cell's DRAM READ term BIMODAL launch to launch, and a summary
         #: that reports only a median hides the mode a delta was actually read from.
         row[name] = {"median": statistics.median(vals), "min": min(vals), "max": max(vals),
@@ -334,7 +334,7 @@ def main():
     for cell in cells:
         for variant in variants:
             for _ in range(args.rounds):
-                for b in args.binary:  # INTERLEAVED per variant (K36)
+                for b in args.binary:  # INTERLEAVED per variant
                     r = run_variant(b, cell, variant, args.warmup, args.launches,
                                     args.lock, out_dir, args.continuation)
                     rows.append(r)

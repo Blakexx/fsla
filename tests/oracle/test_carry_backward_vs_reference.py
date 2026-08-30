@@ -78,7 +78,7 @@ def _run(cell, seed, chained):
     ds_out = (0.05 * torch.randn(cell.B * cell.H, cell.N, cell.d_v + 1, device="cuda",
                                  dtype=torch.float64, generator=gen)) if chained else None
     #: THE SEED IS THE STATE'S OWN PLANE, so it is the same atom-major view of
-    #: `[BH, N, cols]` the forward writes -- a re-blocking since P80 and, since K50, the
+    #: `[BH, N, cols]` the forward writes -- a re-blocking, and since the split planes the
     #: SPLIT-PLANE pack: the state's gradients are stored in the state's own format.
     ds_plane = None
     if ds_out is not None:
@@ -191,11 +191,11 @@ def test_the_off_support_digit_gradients_are_never_read(k_tok):
 
 #: DOES THE FORWARD SEAM TAKE A DECLARATION AT ALL?  Probed from the seam's own
 #: signature rather than from a version, exactly as the A/B harness probes it. The
-#: declaration axis left the launch surface at K50 (the mode word is runtime data the
+#: declaration axis left the launch surface (the mode word is runtime data the
 #: liveness pass carries), so this reads FALSE on the clean line and the cases below
 #: name the one declaration; if a future seam gains one back, they widen on their own.
-#: THIS FILE IS THE REVERSE PASS'S ORACLE AND C4 REBUILDS IT AGAINST THE FINAL SURFACE
-#: (card C_CLEAN_SLATE.md); what C1c changed here is only what kept it from COLLECTING.
+#: THIS FILE IS THE REVERSE PASS'S ORACLE AND IT IS WRITTEN AGAINST THE FINAL SURFACE;
+#: it stays red until the reverse pass is built (docs/ARCHITECTURE.md).
 def _takes_modes():
     import inspect
     return "level_modes" in inspect.signature(carry_ops.carry_forward).parameters
@@ -259,7 +259,7 @@ def test_the_replay_is_bit_identical_at_the_flagship_arm(window, declaration):
     replay = carry_ops.carry_backward(read, write, g.double(), v.double(), d_num, d_den,
                                       widths, k=K, m=M, window=window, want_replay=True)[5]
     extra = {"level_modes": packed} if _takes_modes() else {}
-    #: THE STATE PLANE IS THE CALLER'S (P80): a call handing neither plane is the
+    #: THE STATE PLANE IS THE CALLER'S: a call handing neither plane is the
     #: NULL-STATE call and produces no state at all, which is not what this cell asks.
     state_out = carry_ops.carry_inter(read, write, g.double(), v.double(), widths, k=K, m=M,
                                       window=window,

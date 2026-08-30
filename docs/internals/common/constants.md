@@ -23,7 +23,7 @@ K50's axis law: `W` is a kernel-internal CONSTANT, never an argument. The inter/
 decomposition (`docs/ARCHITECTURE.md` §6) is defined on this grid, so the fp64
 reference has to mirror the same number or the two terms are not one recurrence. A
 sequence shorter than a window runs a partial window inside the kernel; a caller never
-selects a different `W`. `rola/ops/carry.py`'s own `WINDOW` constant (C1c) is this same
+selects a different `W`. `rola/ops/carry.py`'s own `WINDOW` constant is this same
 value; a follow-on consolidation stage (`C_CLEAN_SLATE.md`'s C2e) is where that site
 is repointed to import this module rather than restate the literal.
 
@@ -51,7 +51,7 @@ ownership unit, carved per side among its own warps, so the member set the carve
 generates is `f(D, leaves_per_warp, warps_per_cta)` — `warps_per_cta` is therefore
 part of the compile-time arm key `(D, DV, warps_per_cta)`, never a runtime argument
 (`rola/ops/carry.py`'s `LaunchShape`, C1c). 8 is the SHIPPED shape (one CTA per SM,
-the register file filled exactly, KERNEL_STANDARDS §R15); 4 is the two-CTA latency
+the register file filled exactly, KERNEL_STANDARDS §§R15); 4 is the two-CTA latency
 diagnostic named in `docs/ARCHITECTURE.md` §7 — it never ships, it exists only to
 measure how far the one-CTA body is from hiding its own latency.
 
@@ -75,7 +75,7 @@ launches at.
 
 | `cc` | `ctas_per_sm` | `warps_per_cta` | why |
 |---|---|---|---|
-| 800 | 1 | 8 | the one-CTA shape (KERNEL_STANDARDS §R15) |
+| 800 | 1 | 8 | the one-CTA shape (KERNEL_STANDARDS §§R15) |
 | 860 | 2 | 4 | the local dev part; two CTAs of four warps UNTIL the panel law admits one CTA of eight here (`docs/ARCHITECTURE.md` §7: "every measurement the repository has was taken at two blocks of four warps") |
 | 870 | 1 | 8 | |
 | 890 | 1 | 8 | |
@@ -123,7 +123,7 @@ onward is what will (`development/queue/C_CLEAN_SLATE.md`). This stage's job is
 naming the ONE PLACE these values live so no kernel stage re-derives or re-states
 them: `csrc/rola/src/common/constants.cuh` for device code, `rola.engine.constants`
 for the host, `tests/unit/test_carry_constants.py` the agreement gate between them.
-`rola/ops/carry.py`'s pre-existing `WINDOW`/`WARPS_PER_CTA`/`leaves_per_warp` (C1c)
+`rola/ops/carry.py`'s pre-existing `WINDOW`/`WARPS_PER_CTA`/`leaves_per_warp`
 and `common/geom.cuh`'s `warps_per_sm`/`leaves_per_warp` are read here, not
 duplicated; repointing those call sites at this module is `C_CLEAN_SLATE.md`'s C2e
 consolidation stage, not this one.

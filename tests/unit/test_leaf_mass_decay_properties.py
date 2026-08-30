@@ -2,7 +2,7 @@
 
 The migration-equivalence suite (``test_rola_v3_migration_equivalence.py``) only
 exercises ``decay=None`` positively; its sole ``LeafMassDecay`` test is negative
-(records that V3's clock cannot reproduce V2's matrix-level decay law -- spec
+(records that this clock cannot reproduce the earlier matrix-level decay law -- spec
 ). As of that suite, the decay path has **no positive validation** at all.
 
 This file closes that gap by testing the recurrence's invariants directly against
@@ -29,7 +29,7 @@ Covered:
     - affine composability: splitting a sequence and continuing
       the recurrence from the boundary state reproduces the unsplit result,
       exactly, across several split points -- this is the practical form of
-      ``(A1,B1) o (A2,B2) = (A2*A1, A2*B1 + B2)`` since the oracle's own
+      `` o = (A2*A1, A2*B1 + B2)`` since the oracle's own
       state-continuation *is* that composition (the recurrence is affine in
       ``M``, the "no delta correction" consequence);
     - the same ``0 <= delta < 1`` invariant re-checked in the dtype the KERNEL
@@ -372,7 +372,7 @@ def test_split_then_continue_reproduces_unsplit_result_exactly(split_point):
 
 
 def test_affine_composition_algebra_matches_direct_recurrence():
-    """Pure-arithmetic check of ``(A1,B1) o (A2,B2) = (A2*A1, A2*B1+B2)``
+    """Pure-arithmetic check of `` o = (A2*A1, A2*B1+B2)``
     for a single scalar leaf, independent of the oracle: builds a
     known ``keep``/``W*v`` sequence, computes the direct recurrence, then
     computes it via per-chunk ``(A,B)`` summaries composed with the stated

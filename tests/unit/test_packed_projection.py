@@ -215,7 +215,7 @@ def test_the_two_projection_layouts_are_one_gemm_and_agree_at_the_bit(
     #: with no slicing afterwards, so "token-major is the GEMM's own output" means
     #: exactly contiguity there. The untied plans hand back HALF-SLICES of one GEMM,
     #: which are non-contiguous by construction and were already established as free to
-    #: read (P73 S4): the solve takes them through its stride tuple.
+    #: read: the solve takes them through its stride tuple.
     if not untied_levels:
         for side, major_side in enumerate(major):
             assert major_side.is_contiguous(), (

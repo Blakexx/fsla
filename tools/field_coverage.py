@@ -42,10 +42,10 @@ import gen_shards  # noqa: E402 -- the path insert must precede it
 #: `leaves_per_warp(DV)` leaves per warp.
 WARPS_PER_SM = 8
 
-#: K50's 2x4 ruling (KERNEL_STANDARDS R15): `warps_per_cta` is a compile-time axis with
+#: K50's 2x4 ruling (KERNEL_STANDARDS §R15): `warps_per_cta` is a compile-time axis with
 #: exactly this two-value set -- `(1, 8)` the shipped, one-CTA-per-SM shape, `(2, 4)` the
 #: latency-diagnostic test arm. No row in `gen_shards.CARRY_ARMS` carries a `warps_per_cta`
-#: field yet (the list is `()` pending G4's refill under the final `(D, DV, warps_per_cta)`
+#: field yet (the list is `()` until the shipped set names rows under `(D, DV, warps_per_cta)`
 #: key; today's 13-field schema's `WPS` is "warps per write stream", a DIFFERENT, older
 #: field), so until then this tool sweeps the ARCH axis uniformly across every declared
 #: shape rather than reading a per-row value that does not exist -- the member set is

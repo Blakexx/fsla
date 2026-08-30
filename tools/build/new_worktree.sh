@@ -2,10 +2,10 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 #
-# docs/setup.md "pointer venv, the fast path" (K46 item 4), scripted: a new git
+# docs/setup.md "pointer venv, the fast path", scripted: a new git
 # worktree, its POINTER venv (shared base site-packages + this worktree's own
 # in-tree editable build), in one call -- agents kept reverse-engineering this
-# by hand from a sibling worktree's venv (K42, K45 SKILLS FEEDBACK).
+# by hand from a sibling worktree's venv.
 #
 # Usage:
 #   ROLA_BASE_VENV=/path/to/shared/venv tools/build/new_worktree.sh <name> <sha>
@@ -83,7 +83,7 @@ done
 echo "[new_worktree] git worktree add $WORKTREE $SHA"
 git -C "$MAIN_CHECKOUT" worktree add "$WORKTREE" "$SHA"
 
-# THE COMMIT GATE, WIRED BEFORE ANYTHING IS BUILT (card C, C1b's tooling defect).
+# THE COMMIT GATE, WIRED BEFORE ANYTHING IS BUILT.
 # A linked worktree inherits the repository's hooks directory, which is invisible from
 # inside the worktree -- so an agent that could not see a hook fire reached for
 # `git -c core.hooksPath=<some path> commit`, and the commit was silently UNGATED.
@@ -174,7 +174,7 @@ if ! grep -qF "'rola': '$WORKTREE/rola'" "$FINDER"; then
 fi
 
 # THE LIVE IMPORT, run FROM the worktree, not from wherever this script's own
-# CALLER happened to be sitting. ROOT CAUSE (K46, found across four throwaway
+# CALLER happened to be sitting. ROOT CAUSE (found across four throwaway
 # runs): `python -c` puts `''` -- meaning THE PROCESS's OWN CWD -- first in
 # `sys.path`. The editable build's subshell above already `cd`s into
 # `$WORKTREE`, so it was never affected; this verification step, running in

@@ -147,7 +147,7 @@ that a pool requires `page_table` (a dense state has no table to admit into). Th
 the device-side claim are [`paging/paging.md`
 §the-slack-pool](../paging/paging.md#the-slack-pool).
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_api.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 

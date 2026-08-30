@@ -4,7 +4,7 @@
 any level width and any value width is served by host-side padding, with no kernel
 change and no oracle arithmetic change.
 
-**TWO CONTRACTS, KEPT SEPARATE (KERNEL_STANDARDS R13).** The API accepts any shape and
+**TWO CONTRACTS, KEPT SEPARATE (KERNEL_STANDARDS §R13).** The API accepts any shape and
 pads; the kernel accepts only its own descriptor's strict shape and refuses the rest.
 `test_the_api_boundary_pads_and_the_kernel_boundary_refuses` is both halves, side by
 side: the API is `rola.ops.prefill`'s `_descriptor`/`_pack_operands` operand-packing
@@ -78,7 +78,7 @@ def _padded_case(widths, d_v, *, B=2, T=5, H=2, seed=0):
 
 
 @pytest.mark.parametrize("widths", [(31, 45), (17, 16, 33)],
-                        ids=["D2-nonpow2", "D3-nonpow2"])
+                        ids=["depth2-nonpow2", "depth3-nonpow2"])
 def test_prefill_padded_widths_are_bit_identical_to_the_unpadded_model(widths):
     """Item 5(a): widths (31, 45) at D=2 and (17, 16, 33) at D=3 -- ``y`` bit for bit
     against the same model run at the unpadded, logical widths (the extra padded
@@ -110,7 +110,7 @@ def test_prefill_padding_is_the_ruled_mechanism_not_an_approximation_of_it():
 
 
 # ---------------------------------------------------------------------------
-# TWO CONTRACTS: the API pads, the kernel refuses (KERNEL_STANDARDS R13)
+# TWO CONTRACTS: the API pads, the kernel refuses (KERNEL_STANDARDS §R13)
 # ---------------------------------------------------------------------------
 
 
@@ -118,7 +118,7 @@ def test_prefill_padding_is_the_ruled_mechanism_not_an_approximation_of_it():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the launch surface is the extension's boundary")
 def test_the_api_boundary_pads_and_the_kernel_boundary_refuses():
     """(i) API: `rola.ops.prefill`'s `_descriptor`/`_pack_operands` -- the operand-
-    packing seam onto the carry launch surface (C1c) -- take a genuinely unpadded
+    packing seam onto the carry launch surface -- take a genuinely unpadded
     shape ((31, 45), d_v=8) without ever raising a SHAPE error: they pad, and the only
     failure `carry_forward` can reach past them is the HONEST ABSENCE of the carry
     kernel body (`C_CLEAN_SLATE`: carry is not built on this line). (ii) KERNEL: the

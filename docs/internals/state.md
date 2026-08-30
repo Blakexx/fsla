@@ -78,7 +78,7 @@ A fresh state has a strategy and nothing else. The FIRST call that receives it t
 `d_v`, which is NOT on the routing — the value width is the value stream's own fact —
 so `rola_op` sources it from `v.shape[-1]`.
 
-<a id="format"></a>**THE STATE OWNS ITS FORMAT** (K50, 2026-08-29). What binds at that
+<a id="format"></a>**THE STATE OWNS ITS FORMAT**. What binds at that
 first call is a FORMAT DESCRIPTOR (`state.format`, a frozen `StateFormat`), and it is
 what every kernel derives its addressing from:
 
@@ -147,11 +147,10 @@ The backing is chosen at BIND time and is not a per-call flag:
   provisions.
 * **dense** — one `[BH, N/16, 16, cols]` plane: the SAME page sequence with every page
   resident. Selected by `expert=PlanOverrides(paging=False)`, and it is what the
-  bit-identity gate compares the paged backing against. A FRESH dense bind is ZEROED
-  (P80b): the exit sweep stores the atoms a call WRITES and no others, so the atoms it
+  bit-identity gate compares the paged backing against. A FRESH dense bind is ZEROED: the exit sweep stores the atoms a call WRITES and no others, so the atoms it
   skips must already hold the zero an absent paged atom reads as.
 
-<a id="split-planes"></a>**THE PAGE STORES SPLIT bf16 PLANES** (K50, 2026-08-29), in
+<a id="split-planes"></a>**THE PAGE STORES SPLIT bf16 PLANES**, in
 BOTH backings. A page — one atom, 16 leaves — holds
 
     [16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]
@@ -185,8 +184,7 @@ halves — so a byte claim about pages is asserted on the integer view
 and would call a byte-identical pair unequal the moment a word happened to read as
 NaN. `materialize()` is the hi||lo GATHER back to the logical `[B, H, N, cols]`.
 
-<a id="activity"></a>**RESIDENCY IS THE ARENA'S FACT; ACTIVITY IS THE FACTS PASS'
-(P80b), and only the second one decides what a call TOUCHES.** Activity now decides one
+<a id="activity"></a>**RESIDENCY IS THE ARENA'S FACT; ACTIVITY IS THE FACTS PASS', and only the second one decides what a call TOUCHES.** Activity now decides one
 thing more: which PLANES an atom moves (read-only → hi; written → both), which is why
 the byte saving and the skip are the same mechanism. The facts pass emits
 two orthogonal bits per atom — READ and WRITTEN, never pre-ORed — beside the table,

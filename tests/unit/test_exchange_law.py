@@ -72,7 +72,7 @@ class _Side:
         return self.blk[f"{self._p}_rank"][l]
 
     def shift(self, l):
-        """THIS SIDE'S OWN SLOT LAYOUT (G2c): the member's spans packed innermost-lowest.
+        """THIS SIDE'S OWN SLOT LAYOUT: the member's spans packed innermost-lowest.
         The two sides select DIFFERENT members from the mode word, so this is read off the
         block per side rather than shared -- which is the claim this file now checks."""
         return self.blk[f"{self._p}_sub_shift"][l]
@@ -92,7 +92,7 @@ class _Side:
 
 
 #: THE DECLARATIONS THE TRANSIT IS PROVED OVER.  They are no longer arms -- one binary
-#: serves every one of them (K50) -- so the parametrization names the geometry directly,
+#: serves every one of them -- so the parametrization names the geometry directly,
 #: and it is a SUPERSET of what the former arm list covered: the flagship's ALTERNATING
 #: word and its TIED word, the small window, both deep topologies, and the three flat
 #: declarations the conformance cells drive.
@@ -116,7 +116,7 @@ def _sides(case):
 
 
 def _swz(row):
-    """THE REGION'S SWIZZLE (G2d), mirroring `geom.cuh`'s `sb_swizzle`: GF(2)-linear, so
+    """THE REGION'S SWIZZLE, mirroring `geom.cuh`'s `sb_swizzle`: GF(2)-linear, so
     it distributes over `base ^ scatter(P)` and every fragment term stays an immediate."""
     return row ^ ((row >> 2) & 7)
 
@@ -228,14 +228,14 @@ def test_the_exchange_row_map_is_affine_in_the_slots_bits(idx, row):
                     if slot >> b & 1:
                         acc ^= ref_step[b]
                 assert acc == _row(side, stream, slot)
-        #: THE KERNEL XORS EXPLICITLY (G2d): under the swizzle a slot bit CAN share a row
+        #: THE KERNEL XORS EXPLICITLY: under the swizzle a slot bit CAN share a row
         #: bit with the base, so the address arithmetic composes with `^` and never with
         #: `+`; the exactness assertion above is what stands in for the old disjointness.
 
 
 @pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
 def test_each_sides_map_is_its_own_members_scatter_and_the_two_agree_on_the_region(idx, row):
-    """THE PER-SIDE SHAPE CLAIM (G2c), on the shipped derivation.
+    """THE PER-SIDE SHAPE CLAIM, on the shipped derivation.
 
     Each side selects a member of the GENERATED set from its own order, so the two sides
     no longer share a slot layout: a leaf keeps neither its slot nor its warp across the
@@ -383,7 +383,7 @@ def test_the_transit_is_sized_by_the_disorder_between_the_two_carves(idx, row):
 
 # ---------------------------------------------------------------- the hybrid's two legs
 #
-# F1b: the hi plane MOVES.  The writers publish it and drop it; the readers pull it as
+# THE HI PLANE MOVES.  The writers publish it and drop it; the readers pull it as
 # their A operand; after the readout the readers store those same bits BACK and the
 # writers pull them in their OWN layout and rejoin them with the lo plane they kept.
 # What has to be proved is that the round trip returns each publisher's OWN element to

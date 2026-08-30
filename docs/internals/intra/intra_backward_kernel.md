@@ -206,7 +206,7 @@ sweep plus fifteen compile-time displacements it is two registers and the displa
 fold into the reducing instruction. That difference is what the own-side certificate is
 paid for out of: it is the whole of the headroom the restricted reduce needed.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra_backward_kernel.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -308,8 +308,7 @@ kernel, so each address is ONE base computed here plus a constant.
 <a id="note-l612"></a>
 ### near line 612
 
-`A`, `dA` and every `dG_l` are formed IN PLACE over the Gram registers, and
-(I3)'s row sum is drained inside the same sweep so it never becomes an array.
+`A`, `dA` and every `dG_l` are formed IN PLACE over the Gram registers, and's row sum is drained inside the same sweep so it never becomes an array.
 ITS SIXTEEN DESTINATIONS ARE ONE POINTER AND FIFTEEN CONSTANT DISPLACEMENTS: a
 reducing address written as one sum is sixteen live 64-bit addresses instead.
 

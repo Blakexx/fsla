@@ -51,7 +51,7 @@ or a reordering.
 The carry family's arms are a **declaration**, not a literal in a code module:
 `tools/manifests/shipped_set.json` names the rows, keyed
 `(D, DV, warps_per_cta)` — the routing depth, the value width and the CTA's warp
-count, and nothing else (KERNEL_STANDARDS R11: the mode word, the stream counts and
+count, and nothing else (KERNEL_STANDARDS §R11: the mode word, the stream counts and
 the park bit are runtime; the window and the chunk are the descriptor's).
 
 `tools/gen_shards.py` owns the *enumeration* — what a row means, which translation

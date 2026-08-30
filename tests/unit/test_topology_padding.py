@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""PAD (K50 "PADDING AT THE PRODUCER"): the descriptor's logical-vs-padded split.
+"""PADDING AT THE PRODUCER: the descriptor's logical-vs-padded split.
 
 No CUDA/GPU anywhere in this file: `rola.routing.topology.padded_level_width` and
 `Topology.padded_widths`/`.padded()` are pure Python/dataclass derivations, and

@@ -10,8 +10,7 @@ form at both alphas this file tests (`entmax15` at 1.5, `sparsemax` at 2.0 -- th
 party's own exact forms, inverted algebraically for `tau`) -- there is no bisection
 anywhere in this file's ground truth.
 
-**THE DEVICE LOWERING IS NOT ONE KERNEL**, and it is no longer any part Triton
-(P73 S5). The UNION solve is a hand-CUDA + CUB kernel (`csrc/rola/src/entmax/entmax.cu`);
+**THE DEVICE LOWERING IS NOT ONE KERNEL**, and it is no longer any part Triton. The UNION solve is a hand-CUDA + CUB kernel (`csrc/rola/src/entmax/entmax.cu`);
 the independent per-side solves and the softmax pair are `csrc/rola/src/entmax/factor.cu`,
 ported off Triton for the closed-world AOT policy and for P65, which trains through
 them. Everything below that says "the two lowerings" still means exactly what it

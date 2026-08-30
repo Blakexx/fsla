@@ -63,7 +63,7 @@ an admit mask that annihilated the denied atoms' writes) was DELETED before it: 
 computed a DIFFERENT function from the one the caller asked for, and the closed-world
 standard is that a demand the binary cannot serve is refused at the host rather than
 silently degraded. The ``max_physical_pages`` parameter that survived it is deleted
-with the paged-state-I/O integration (P67 S3b).
+with the paged-state-I/O integration.
 
 The consequence downstream is that admission is TOTAL: every atom the routing realizes
 is resident, so ``admit bit set``, ``resident`` and ``page_table[atom] >= 0`` are one

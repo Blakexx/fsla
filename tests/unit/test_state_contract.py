@@ -1,4 +1,4 @@
-"""THE STATE OWNS ITS FORMAT (K50): the descriptor's field list, pinned without a kernel.
+"""THE STATE OWNS ITS FORMAT: the descriptor's field list, pinned without a kernel.
 
 `rola/_state.py::StateFormat` is what every kernel derives its addressing from and what a
 later call is checked against (`docs/internals/state.md#format`). This file pins that
@@ -108,7 +108,7 @@ def test_dv_is_even_for_the_split_planes_paired_access():
 
 
 def test_n_is_a_whole_number_of_pages_by_construction_not_by_padding():
-    """RAGGED N IS REFUSED, NEVER PADDED (K50): under the width floor every lawful `B`
+    """RAGGED N IS REFUSED, NEVER PADDED: under the width floor every lawful `B`
     already makes `N` a multiple of the page, so the refusal is a standing invariant of
     the OTHER fields' laws, not a fourth, independent thing to satisfy."""
     fmt = _format(D=3, B=(16, 16, 16), ids=8 * ((16 ** 3) >> PAGE_RECTANGLE_BITS))

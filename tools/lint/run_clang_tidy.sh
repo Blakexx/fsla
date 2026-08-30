@@ -23,7 +23,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CC_JSON="${1:-$ROOT/compile_commands.json}"
 
 if [[ ! -f "$CC_JSON" ]]; then
-  # K39 (Blake ruling, 2026-08-28): "pre-commit can never be green by
+  # Blake ruling, 2026-08-28: "pre-commit can never be green by
   # absence." Try to generate one from an already-built tree
   # (`docs/build.md`'s documented, fixed `build/temp` dir); if there is
   # nothing to generate it FROM, FAIL with the exact command to run, never

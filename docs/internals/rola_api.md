@@ -161,7 +161,7 @@ Its kernels and its declarations left with C0 (`docs/internals/DELETIONS.md`); C
 rebuilds the pass as the liveness pass, a foundation feature, and C1 adjusts the
 Python seam where its outputs replace the atom and block bitmaps.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/rola_api.cpp`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 

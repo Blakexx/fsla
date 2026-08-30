@@ -73,7 +73,7 @@ def main() -> bool:
     print(f"{'entry':<58s}{'insns':>7s}{'body':>7s}{'ANY':>5s}{'body viol':>10s}")
     for name, lines in entries(text).items():
         #: The gated families, matched against the mangled entry name: the
-        #: facts kernels keep namespace `rola::chunk`, the K31 families are
+        #: facts kernels keep namespace `rola::chunk`, the current families are
         #: `rola::carry` / `rola::intra`, and the decode GEMV is `rola::decode`.
         if not any(fam in name for fam in ("chunk", "carry", "intra", "decode")):
             continue

@@ -180,7 +180,7 @@ def _seed_from_dense(arena, dense):
     """Copy a dense `[BH, N, cols]` LATTICE-order state into the arena's committed slots."""
     arena.wait()
     BH, N, cols = dense.shape
-    #: THE ARENA HOLDS THE STORED FORM (K50's split planes); `dense` is the logical one.
+    #: THE ARENA HOLDS THE STORED FORM (the split planes); `dense` is the logical one.
     atoms = to_split_planes(dense.reshape(BH * (N // MMA_K_QUANTUM), MMA_K_QUANTUM, cols))
     table = arena.page_table.reshape(-1)
     present = table >= 0

@@ -29,10 +29,10 @@ mamba-ssm require the same thing for the same reason.
 | `ROLA_CUDA_ARCHS` | `;`-separated compute capabilities, default `80;86`. Naming one without a ratified manifest **fails before anything compiles** (rule 3). |
 | `MAX_JOBS` | Parallel compile jobs. The default is derived from **available RAM**, not core count: `MAX_JOBS=8` was OOM-killed on a 23 GB / 16-core host after 8m32. The divisor is a measured GB-per-`cicc` constant in `tools/build_flags.py`, so the same source gives 7 jobs on a 23 GB host and 4 on a 16 GB-class one. |
 | `ROLA_NVCC_THREADS` | `nvcc --threads`, default 2 = the number of `-gencode` targets. Beyond the target count it buys nothing and multiplies the resident set, since the two parallelism axes multiply. |
-| `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset** (K36): each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `-DROLA_CARRY_BUILD_<i>`, so an arm outside the set is not compiled at all. **The default is the SHIPPED rows** — see [the arm lists](#carry-arm-lists). `all` is the battery's set (shipped + test). A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86` for iteration. |
+| `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset**: each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `-DROLA_CARRY_BUILD_<i>`, so an arm outside the set is not compiled at all. **The default is the SHIPPED rows** — see [the arm lists](#carry-arm-lists). `all` is the battery's set (shipped + test). A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86` for iteration. |
 | `ROLA_DECODE_ARMS` | **Iteration only.** Comma- or space-separated indices into the decode family's declared arm list (`csrc/rola/src/decode/decode.cu`'s `DECODE_ARM_<i>`, the `d_v x D x decay` matrix in that order, 16 rows). Compiles only those arms. Unset = every arm, which is what a gate build must be. Same NOT-SHIPPABLE banner/skip mechanism as `ROLA_CARRY_ARMS` (one `_is_iteration_build` covers both families). See [below](#arm-subset). |
 | `ROLA_SKIP_POST_BUILD_RATIFY` | Skips the post-build gate. For iterating on non-kernel code only; a shippable binary is one that passed it. |
-| `ROLA_STRICT_MANIFEST` | (K43) `0`/unset (default): the two post-build gates (the fatbin's manifest-describes-binary sub-check, `tools/ratify.py`'s own re-run) REPORT a mismatch against the committed `tools/manifests/sm_XX.json` and the install still succeeds — KERNEL_STANDARDS.md §16 makes that manifest stale between milestones by design, so failing the install on it would fail every ordinary stage build. `1`: restores the pre-K43 hard failure. **The milestone/CI gate build sets it** — it is the build that immediately precedes `tools/ratify.py --write`, so it is the one build that must fail loudly if the tree it is about to ratify is not actually shippable yet. Structural checks (the shard partition actually matching the arm list, the dispatch's link closure) are never affected by this variable — those are properties of the build's own source/binary pair, not of the ratified snapshot, and stay fatal unconditionally. |
+| `ROLA_STRICT_MANIFEST` | `0`/unset (default): the two post-build gates (the fatbin's manifest-describes-binary sub-check, `tools/ratify.py`'s own re-run) REPORT a mismatch against the committed `tools/manifests/sm_XX.json` and the install still succeeds — KERNEL_STANDARDS.md §16 makes that manifest stale between milestones by design, so failing the install on it would fail every ordinary stage build. `1`: restores the pre-K43 hard failure. **The milestone/CI gate build sets it** — it is the build that immediately precedes `tools/ratify.py --write`, so it is the one build that must fail loudly if the tree it is about to ratify is not actually shippable yet. Structural checks (the shard partition actually matching the arm list, the dispatch's link closure) are never affected by this variable — those are properties of the build's own source/binary pair, not of the ratified snapshot, and stay fatal unconditionally. |
 | `ROLA_SCCACHE` | `auto` (default): use the pinned `sccache` if it resolves and matches; else build uncached. `1`: REQUIRE it -- a missing or mismatched wrapper is a hard failure. `0`: disable. See [below](#sccache). |
 | `ROLA_SCCACHE` | `auto` (default, K39): REQUIRE the pinned `sccache` -- a missing or mismatched wrapper is a hard failure, no uncached fallback. `1`: a synonym of the default, kept for existing invocations. `0`: an EXPLICIT, deliberate opt-out that builds uncached. See [below](#sccache). |
 | `ROLA_SCCACHE_BIN` | Overrides the `sccache` binary `ROLA_SCCACHE` resolves, the same way `CUDA_HOME` overrides `nvcc`/`ptxas`. |
@@ -79,7 +79,7 @@ tools/build/build_lock.sh --gate -- pip install -e . --no-build-isolation
    nobody wrote.
 5. **Compile.** `ninja`. The carry family's instantiation matrix is generated
    translation units under `csrc/rola/src/instantiations/` — **one translation unit
-   per carry arm** (K36), so the arms parallelize across `MAX_JOBS` processes instead
+   per carry arm**, so the arms parallelize across `MAX_JOBS` processes instead
    of serializing inside one `cicc`. C0 emptied the arm list (card C), so on this line
    there is no generated unit and the directory does not exist; G4 refills it.
 6. **Post-build ratification.** `tools/ratify.py --arch …` for exactly the archs
@@ -160,7 +160,7 @@ MEASURED on a 16-core / 23 GB host, clean build directory, both architectures,
 | no source change — gates, ratification, `_build_config.py` | **3m47s** |
 | one shard, one `nvcc`, both architectures | **43 s** |
 
-## <a id="compile-ledger"></a>The per-TU compile ledger (K36)
+## <a id="compile-ledger"></a>The per-TU compile ledger
 
 **Instantiation cost is the dominant build resource, and after K36 it is not the
 kernels that dominate — it is the tensor library's header.** Measured per `cicc`,
@@ -412,7 +412,7 @@ hooks and `.github/workflows/lint.yml` exactly like clang-format/ruff above:
    short-circuit or ternary (§12), a `__global__` in an anonymous namespace
    (anon-namespace-kernels-unratifiable), a width-shaped `if (kDv == ...)`
    test in device code, a `#include <torch/...>` in a per-arm instantiation
-   TU (K36), a fence gated behind a single-lane predicate (§12). Each rule's
+   TU, a fence gated behind a single-lane predicate (§12). Each rule's
    `message` names the standards section and the incident it comes from.
    Each has a fixture under `tools/lint/fixtures/` that the rule must fire
    on — its test.
@@ -464,7 +464,7 @@ python3 tools/lint/lint_standards.py
 tools/lint/run_clang_tidy.sh
 ```
 
-`tools/lint/ast_grep_gate.py` (K46 item 5) is the wrapper: a bare `ast-grep
+`tools/lint/ast_grep_gate.py` is the wrapper: a bare `ast-grep
 scan --config sgconfig.yml` defaults to scanning the whole repo, which
 re-fires every rule's must-fire fixture under `tools/lint/fixtures/` as a
 gating error — the drift that made every stage since K41 bypass the commit

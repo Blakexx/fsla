@@ -55,7 +55,7 @@ so a manifest ratified in one worktree certifies a name no other checkout's buil
 produces and the fatbin gate then refuses a byte-identical kernel. A ratifiable kernel
 needs a named symbol, which is why the stamp lives in a named `stampdet` namespace.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -67,7 +67,7 @@ hash that depends on the BUILD PATH, so a manifest ratified in one worktree
 certifies a name no other checkout's build produces -- the fatbin gate then
 refuses a byte-identical kernel. A ratifiable kernel needs a named symbol.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 

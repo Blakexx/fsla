@@ -90,7 +90,7 @@ class Family:
     #: norm, decay, paging, seed -- plus generator parameters under `params`.
     #: The census derives the axis values from these, and a CUDA meta-row
     #: asserts the DECLARED executor matches what the engine's arm fold says,
-    #: so a declaration cannot lie (`test_family_meta.py`). P26 dropped `BT`
+    #: so a declaration cannot lie (`test_family_meta.py`). The endgame executor dropped `BT`
     #: and `mma`; P67 D2-b dropped `BC` -- the chunk arm's `BC` is a slot tile
     #: inside a built arm, fixed by the manifest and not host-selectable, so it
     #: is not a coordinate a family can pick.
@@ -244,7 +244,7 @@ _STRATIFIED: tuple[Family, ...] = (
     #: ARM VARIANTS. The named cells above run at one decay arm each; these
     #: close the near-default census holes — each variant exists because the
     #: join listed its (DECAY x regime) pair as empty and the pair is CHEAP to
-    #: cover, which the design prefers to expecting it empty. P26: `norm` is no
+    #: cover, which the design prefers to expecting it empty. `norm` is no
     #: longer a second axis here -- `"raw"` is dead and every family runs
     #: `"global"` -- so these variants now cover DECAY alone (their names keep
     #: the historical "-raw-"/"-global-" tokens for stability; they no longer
@@ -387,7 +387,7 @@ _ADVERSARIAL: tuple[Family, ...] = (
               "chunks): the support-change-at-a-chunk-boundary corner, where an "
               "inclusive/exclusive chunk-range error moves which chunk last "
               "touches a leaf -- a support that changes mid-chunk tests a "
-              "different (weaker) thing. P67 D2-b took the DECAY off this "
+              "different (weaker) thing. The tiled consumer's retirement took the DECAY off this "
               "corner: decay is retired from the operator, so a decayed corner "
               "could only ever assert the refusal and the boundary claim -- the "
               "bug class the corner is frozen for -- would never reach a kernel.",

@@ -38,7 +38,7 @@ README = ROOT / "README.md"
 
 #: The README's generated regions: `marker -> producer`. TWO of them, because two
 #: different artifacts decide two different tables and neither may be hand-edited.
-#: `capability_table()` is the activation registry's own generator (W8) -- this
+#: `capability_table()` is the activation registry's own generator -- this
 #: script only places it, so there is still exactly one table in the codebase.
 BLOCKS = {
     "tools/supported.py": lambda: table(),

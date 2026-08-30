@@ -58,7 +58,7 @@ There is no environment variable that disables any of them.
 
 ## 3. The JIT fork is rejected
 
-FlashAttention's active line compiles by **runtime JIT rather than AOT** (FA4).
+FlashAttention's active line compiles by **runtime JIT rather than AOT**.
 That is a considered position by strong engineers, and the pressures behind it
 are real: an AOT matrix over `(tile shape × dtype × head dim × architecture …)`
 grows multiplicatively, compile times grow with it, and a JIT path compiles
@@ -98,7 +98,7 @@ central claims are numeric buys the second with the first.
 ## 4. Consequences a contributor should expect
 
 - **A new architecture is a ratification event**, not a `-gencode` line. Adding
-  `sm_XX` without its manifest fails the build before anything compiles (R3).
+  `sm_XX` without its manifest fails the build before anything compiles.
 - **A toolchain bump invalidates every manifest**, in both directions. The
   numbers are a property of the assembler as much as of the source, so they say
   nothing about a different assembler even if they got *better*. Re-ratify.

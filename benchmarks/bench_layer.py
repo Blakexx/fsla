@@ -192,10 +192,10 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
     side = "sparse" if router == "entmax" else "dense"
     rows: list[dict] = []
 
-    #: TWO DEAD AXES RETIRED, the same pair P67 S5 retired from `bench_scaling.py`
+    #: TWO DEAD AXES RETIRED, the same pair `bench_scaling.py` retired
     #: and this file was never swept for. Raw normalization used to be refused
     #: outright (the mass column is unconditional; the host axis itself is now
-    #: deleted, G4) -- and a decay-configured layer is refused by the chunk arm
+    #: deleted) -- and a decay-configured layer is refused by the chunk arm
     #: (`arm_envelope`), so it dispatches to the reference and the
     #: `last_execution_backend` assert below then fails. Both raised on their first
     #: cell. The columns stay in the row, as the CONSTANTS they are, so a reader of

@@ -2,7 +2,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 #
-# K39 -- one kernel's control-flow graph, from SASS to a viewable SVG.
+# One kernel's control-flow graph, from SASS to a viewable SVG.
 #
 # `nvdisasm -cfg` emits Graphviz DOT directly; this script is the one-line
 # wrapper (`nvdisasm -cfg <cubin> | dot -Tsvg -o <out>.svg`) plus the argument
@@ -25,7 +25,7 @@ OUT="$3"
 command -v nvdisasm >/dev/null || { echo "nvdisasm not on PATH (CUDA toolkit bin/)" >&2; exit 1; }
 command -v dot >/dev/null || {
   echo "dot (graphviz) not on PATH. This host's own tooling has no apt-installable" >&2
-  echo "graphviz package (no root, not in the base image) -- see FINDINGS ## K39 for" >&2
+  echo "graphviz package (no root, not in the base image) -- see docs/build.md for" >&2
   echo "the user-local vendoring recipe (apt-get download + dpkg -x, no install)." >&2
   exit 1
 }

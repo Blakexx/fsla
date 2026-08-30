@@ -137,7 +137,7 @@ Three axes this cross-product used to carry are gone (P26, `52a67d8`; see
 is no longer an axis: `raw` is dead, `global` (the mass column and the `num`/`den`
 divide, unconditional) is the only value the kernel arm accepts — anything else
 is a named refusal. `BC` is likewise no longer a host axis:
-it belongs to the built arm (P67 D2), so what varies across cells is the ARM. MMA precision is no
+it belongs to the built arm, so what varies across cells is the ARM. MMA precision is no
 longer an axis: `tf32x3` is dead, bf16 storage with fp32 accumulation is the only
 arm the kernel has, and the fp64 oracle stands in as the exactness reference a
 `tf32x3` family delta used to provide. `BT` is no longer an axis: the work unit is
@@ -178,7 +178,7 @@ forward, state and both gradients.
    `tests/oracle/test_chunk_ragged_tail.py` (the length axis off the chunk) plus
    the conformance tier's kernel families. The CPU-only fp64 transcription that
    used to sit beside it (`test_algorithm_vs_oracle.py`) transcribed the TILED
-   kernel's control structure and retired with that kernel (P67 D2); the
+   kernel's control structure and retired with that kernel; the
    separation it bought — "the algorithm is wrong" against "fp32 accumulated
    differently" — is carried by the oracle comparison itself, which is fp64 on
    one side, and by `tests/unit/test_oracle_contract.py` on the reference's own
@@ -595,7 +595,7 @@ time and neither can tell. Every GPU entry point in this repository takes this o
 path through `tools/gpu_lock.py`'s `gpu_lock()`. If you find another spelling
 anywhere, it is a defect — fix it rather than adding a second lock beside it.
 
-**EVERY GPU ENTRY POINT LOCKS ITSELF (K46).** Before K46 the lock was half-and-half:
+**EVERY GPU ENTRY POINT LOCKS ITSELF.** Before K46 the lock was half-and-half:
 `tools/probe_cells.py` and `tools/sanitize_oracle.py` took it internally, but pytest
 and the chunk-arm bench harness relied on the CALLER wrapping the command in an
 external `flock` — and `bench.discipline.require_gpu_lock` REFUSED a bare invocation
@@ -744,9 +744,9 @@ exists for the chunk arm yet** — that is a gap, not a carry-over.
   `__syncthreads()` — exactly the barrier class `racecheck` orders shared memory
   by — so no edge was left that a counter protocol published instead. An empty
   skip-list is the standard the successor lane inherits.
-* **AND THE SUCCESSOR LANE FOUND THE EDGE THAT SENTENCE ANTICIPATED (K47, 2026-08-29).**
+* **AND THE SUCCESSOR LANE FOUND THE EDGE THAT SENTENCE ANTICIPATED.**
   `tools/sanitize_oracle.py`'s decode cell publishes exactly what the bullet above says
-  a barrier saved the tiled consumer from: the decode step's CTA combine (P79) has NO
+  a barrier saved the tiled consumer from: the decode step's CTA combine has NO
   barrier below its prologue and publishes its shared rows with a fence plus an arrival
   counter, so `racecheck` reports 48 RAW hazards on it. The SKIP-LIST IS STILL EMPTY and
   stays that way: the pair is adjudicated, not skipped. `ASSERTED` declares the one idiom

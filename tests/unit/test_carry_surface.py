@@ -5,7 +5,7 @@
 C1c of card `development/queue/C_CLEAN_SLATE.md`: the interface before the body. Two
 things are asserted here and nothing else.
 
-1. THE KERNEL-BOUNDARY REFUSALS (KERNEL_STANDARDS R13 addendum, "TWO CONTRACTS, ONE
+1. THE KERNEL-BOUNDARY REFUSALS (KERNEL_STANDARDS §R13 addendum, "TWO CONTRACTS, ONE
    TRANSLATOR"): an unpadded shape, a non-bf16 operand and a descriptor mismatch are
    each refused BY THE SURFACE, by name, before any launch. The API above translates by
    padding; this boundary never does.
@@ -111,14 +111,14 @@ def test_the_launch_shape_is_the_two_built_ones():
         assert carry_ops.LaunchShape(warps).threads == warps * 32
     assert carry_ops.SHIPPED_WARPS_PER_CTA == 8, (
         "one CTA per SM with the warps the register file admits is the shipped shape "
-        "(KERNEL_STANDARDS R15)")
+        "(KERNEL_STANDARDS §R15)")
     with pytest.raises(carry_ops.CarryRefusal, match="not a launch shape"):
         carry_ops.LaunchShape(16)
 
 
 def test_the_box_is_derived_and_halves_with_the_value_width():
     """``BC = leaves_per_warp * warps_per_cta``, and ``leaves_per_warp`` is the register
-    file's share divided by DV -- 32 leaves at DV = 64, half that at DV = 128 (K50)."""
+    file's share divided by DV -- 32 leaves at DV = 64, half that at DV = 128."""
     assert carry_ops.leaves_per_warp(64) == 32
     assert carry_ops.leaves_per_warp(128) == 16
     assert carry_ops.box_leaves(64, 8) == 256
@@ -203,7 +203,7 @@ def test_a_state_plane_is_page_blocked():
 
 @pytest.mark.parametrize("field", ["read", "write", "gain", "v"])
 def test_a_non_bf16_operand_is_refused(field):
-    """BF16 EVERYTHING (R17): one form, the float operand paths deleted. A cast belongs
+    """BF16 EVERYTHING: one form, the float operand paths deleted. A cast belongs
     above this boundary, where it is visible."""
     desc = descriptor()
     routes, v, liveness, activity = operands(desc)
@@ -233,7 +233,7 @@ def test_the_reverse_seeds_are_fp32():
 
 def test_a_geometry_block_from_another_descriptor_is_refused():
     """The kernel derives the SAME block at its prologue from the descriptor it is
-    handed (K50), so a block derived elsewhere would address somebody else's leaves."""
+    handed, so a block derived elsewhere would address somebody else's leaves."""
     desc = descriptor()
     other = carry_ops.geometry_block(descriptor((32, 32)), carry_ops.LaunchShape())
     with pytest.raises(carry_ops.CarryRefusal, match="geometry block was derived for"):

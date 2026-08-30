@@ -22,7 +22,7 @@ document says so and names the measurement that would settle it.
 | [factored-representation.md](factored-representation.md) | Store the factors; expand transiently where they are consumed. Never materialize the expansion. |
 | [fp32-accumulators.md](fp32-accumulators.md) | Accumulation precision is closed at fp32. Storage precision is a live axis. |
 | [closed-world-codegen.md](closed-world-codegen.md) | Only measured binaries run: pinned assembler, AOT-only, ratified per-arch manifest, runtime refusal. Why JIT compilation is rejected. |
-| [planner.md](planner.md) | Derive launch-static geometry from launch-static facts; never score candidates, never read a routing statistic to fix a layout. The planner MECHANISM is retired (P67 D2); the page carries the rule and what decides a launch in its place. |
+| [planner.md](planner.md) | Derive launch-static geometry from launch-static facts; never score candidates, never read a routing statistic to fix a layout. The planner MECHANISM is retired; the page carries the rule and what decides a launch in its place. |
 | [guarantees-choices-preferences.md](guarantees-choices-preferences.md) | The taxonomy every proposed change is sorted into, populated with real entries, and what each category demands of a contributor. |
 
 ## Reading order

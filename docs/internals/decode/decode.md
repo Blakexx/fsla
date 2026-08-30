@@ -1037,7 +1037,7 @@ exact-nonzero indicators and the atom set is that product ORed 16-deep. It is th
 object `rola.engine.facts.planes.atom_bits` derives from the facts pass and the same one
 the step condenses, reached by neither's route.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -1441,7 +1441,7 @@ docs/internals/decode/decode_lattice.md#the-refusals
 
 `BoxPlan`'s section 2.5 as the atom-rectangle law generalizes it: the INNERMOST
 level takes as much capacity as it can carry -- never less than its balanced share,
-never less than an atom asks, never more than its own width admits (K6) -- and the
+never less than an atom asks, never more than its own width admits -- and the
 rest of `j` is spread balanced over the outer levels, innermost first.  The atom
 floor is a PREFERENCE and the width ceiling is the law: a level narrower than an
 atom spills its capacity outward and the atom then spans more than one level.
@@ -1499,7 +1499,7 @@ and `log2(k) | 4` are discharged by the mixed-radix order itself (`box.cuh`, K3/
 A dense backing never asks an atom a liveness question and carries no constraint:
 docs/internals/decode/decode.md#candidate-atoms
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -2005,7 +2005,7 @@ on purpose: docs/internals/decode/decode.md#determinism
 <a id="split-planes"></a>
 ### the split bf16 planes, and the unit that reads one
 
-THE STATE'S PAGE HOLDS SPLIT bf16 PLANES (K50, 2026-08-29) --
+THE STATE'S PAGE HOLDS SPLIT bf16 PLANES --
 `[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`, the geometry
 `common/state_page.md` defines and the carry addresses with the same blocks. The
 walk's per-leaf row is therefore two 16-bit runs rather than one fp32 run, and the

@@ -24,7 +24,7 @@ _BENCHMARKS = pathlib.Path(__file__).resolve().parents[1] / "benchmarks"
 if _BENCHMARKS.is_dir() and str(_BENCHMARKS) not in sys.path:
     sys.path.insert(0, str(_BENCHMARKS))
 
-# `tools/gpu_lock.py` (K46) -- the one self-locking primitive every CUDA entry
+# `tools/gpu_lock.py` -- the one self-locking primitive every CUDA entry
 # point takes itself; conftest is a caller like any other, not a package.
 _TOOLS = pathlib.Path(__file__).resolve().parents[1] / "tools"
 if _TOOLS.is_dir() and str(_TOOLS) not in sys.path:
@@ -167,7 +167,7 @@ def poison_torch_memory(request):
 
 
 # -----------------------------------------------------------------------------
-# THE GPU LOCK (K46) -- the battery takes it itself; a caller never wraps
+# THE GPU LOCK -- the battery takes it itself; a caller never wraps
 # `pytest` in an external `flock` again (docs/setup.md, docs/testing.md).
 # -----------------------------------------------------------------------------
 #
@@ -184,7 +184,7 @@ def poison_torch_memory(request):
 # The lock itself is SESSION-scoped and lazily acquired: the first GPU test in
 # a run pulls `_gpu_lock_held` into existence, which opens `gpu_lock()` once
 # and holds it for the rest of the pytest process -- so two concurrent
-# batteries on this box serialize against each other (the K46 gate), and every
+# batteries on this box serialize against each other (the shared gate), and every
 # GPU test after the first in ONE battery pays no repeated lock/unlock cost.
 def _touches_gpu(request) -> bool:
     path = str(request.node.fspath)

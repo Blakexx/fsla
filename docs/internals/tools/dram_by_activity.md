@@ -47,7 +47,7 @@ two columns is measurement, not mechanism.
 
 One `ncu` process per (binary, variant, cell) profiles `--launches` steady-state launches
 after `--warmup` skipped ones (`--launch-skip`), under `gpu_lock()` — never an external
-`flock`, which self-deadlocks against the tool's own acquisition (K38/K41). The reported
+`flock`, which self-deadlocks against the tool's own acquisition. The reported
 figure per metric is the MEDIAN across profiled launches, with min/max kept beside it.
 Binaries are interleaved per variant (A, B, A, B — the K36 lesson), never all of A then
 all of B.

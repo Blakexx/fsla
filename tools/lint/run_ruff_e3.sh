@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # RUFF E30x REPORT-ONLY PASS (LINT2 item 4, G_FOUNDATION G5, readability):
-# pycodestyle's blank-line-spacing family (E301-E306), preview-gated in ruff
+# pycodestyle's blank-line-spacing family, preview-gated in ruff
 # 0.16.5 (see pyproject.toml's `[tool.rola_lint.report_only]` comment for the
 # measurement). Reads the code list from THAT table rather than hardcoding
 # "E3" a second time, so the two stay in one place.

@@ -245,7 +245,7 @@ tabulated architecture and is chosen by MEASUREMENT, not by the table.  A
 layout knob in the capability table would make every future measurement
 unfalsifiable.  It is a free axis, and `design.cuh` says why it stays one.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/common/ops.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -277,7 +277,7 @@ into a generic one.  The assumption restores what the arithmetic hid.
 <a id="atom-activity"></a>
 ### `atom_activity`
 
-THE FACTS PASS' TWO ORTHOGONAL PER-ATOM BITS (P80b), and the one activity
+THE FACTS PASS' TWO ORTHOGONAL PER-ATOM BITS, and the one activity
 predicate every body with state sweeps derives from them.  `kAtomWritten` says
 this call's routing WRITES the atom; `kAtomRead` says it READS it.  They are
 never pre-ORed into a single "active" flag by the producer: the read-only
@@ -398,7 +398,7 @@ the family, and the constraints that keeps -- M a multiple of 64, A K-major
 <a id="hi-bf16"></a>
 ### `hi_bf16`
 
-THE ACCUMULATOR'S TOP HALVES, TAKEN AS A bf16 PAIR (K35).  A bf16 IS the top
+THE ACCUMULATOR'S TOP HALVES, TAKEN AS A bf16 PAIR.  A bf16 IS the top
 sixteen bits of an fp32, so a pair of accumulator registers becomes an MMA
 operand with ONE `prmt.b32` -- byte selector `0x7632` picks bytes 2,3 of the low
 source and 6,7 of the high one -- against `pack_bf16x2`'s conversion pair.

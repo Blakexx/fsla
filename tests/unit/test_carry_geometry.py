@@ -7,8 +7,8 @@ branch consumes the runtime block -- the pipelined body is what will
 the same law: for every arm the parent builds, the derivation's own output is checked
 against the census the parent binary reports off the device.
 
-**WHY A GOLDEN TABLE, NOT A LIVE READ (C1a).** The golden table below is the parent's
-census, transcribed, so the assertion survives the parent's deletion (`## G1` SKILLS
+**WHY A GOLDEN TABLE, NOT A LIVE READ.** The golden table below is the parent's
+census, transcribed, so the assertion survives the parent's deletion (the SKILLS
 FEEDBACK 3: the A-side of any parity claim is a pinned tip that will not always exist) --
 and C0 IS that deletion: `carry_build_stamp`/`carry_arms` are gone from the extension
 entirely (not merely some arms unbuilt), and `gen_shards.CARRY_ARMS` is `()` pending G4's
@@ -26,7 +26,7 @@ that cannot exist on this branch.
 13 arms. The other two are the `D = 4, B = 8` rows, which K50's RESTORED WIDTH FLOOR
 (`B_l >= 16`, power of two) makes unlawful: a level narrower than the owner box's span
 there is REFUSED BY NAME, and the deep-4 conformance topology moves to the lawful
-`(16, 16, 16, 16)` at the same state size (`## G2b`, "THE ONE SCOPE ITEM"). The test names
+`(16, 16, 16, 16)` at the same state size. The test names
 that ruling in its own message so a reader meets the citation, not a surprise.
 
 Symbols, each at first use: `D` routing levels; `B_l` level `l`'s digit width; `BC` the
@@ -46,7 +46,7 @@ from rola.ops import carry as carry_ops
 #: 13-field schema `(D, B, K, M, DV, W, C, CV, MO, WPS, NSW, NSR, PK)`. C0 deleted
 #: `CARRY_ARMS` to `()` on this line and G4 refills it under a DIFFERENT (three-field) key,
 #: so this table -- not the live list -- is what `_arm()` reads: the parity claim's A-side
-#: is a pinned tip, not a moving target (`## G1` SKILLS FEEDBACK 3).
+#: is a pinned tip, not a moving target.
 ARM_PARAMS = {
     0: (2, 256, 4, 8, 64, 384, 32, 1, 0, 1, 1, 1, 0),
     1: (2, 256, 4, 8, 64, 384, 32, 1, 6, 1, 4, 4, 0),
@@ -93,7 +93,7 @@ UNLAWFUL_UNDER_THE_FLOOR = (8, 9)
 #: generator's, read through `carry_ops.sub_boxes`. -- docs/internals/common/geom.md#arch-constants
 WARPS_PER_SM = 8
 
-#: K50's 2x4 ruling (`## K50`, KERNEL_STANDARDS R15): `warps_per_cta` is a compile-time
+#: K50's 2x4 ruling (`## K50`, KERNEL_STANDARDS §R15): `warps_per_cta` is a compile-time
 #: axis with exactly this two-value set -- `(1, 8)` the shipped, one-CTA-per-SM shape,
 #: `(2, 4)` the latency-diagnostic test arm. The per-side member set is
 #: `f(D, leaves_per_warp, warps_per_cta)`, so the generated-and-deduplicated set is
@@ -145,12 +145,12 @@ def test_the_derivation_reproduces_the_parents_census(arm):
 
 @pytest.mark.parametrize("arm", UNLAWFUL_UNDER_THE_FLOOR)
 def test_the_deep_four_rows_are_refused_by_the_restored_width_floor(arm):
-    """RULED, not a regression: K50's restored floor makes `B_l = 8` unlawful.
+    """RULED, not a regression: the restored width floor makes `B_l = 8` unlawful.
 
     The parent builds these two rows and carves them; the shape this block owns has no
     narrower slot layout to fall back to, so it REFUSES rather than rounding, and the
-    deep-4 conformance topology is the lawful `(16, 16, 16, 16)` at the same state size
-    (`## G2b`, "THE ONE SCOPE ITEM I HAD TO SETTLE")."""
+    deep-4 conformance topology is the lawful `(16, 16, 16, 16)` at the same state size.
+    """
     with pytest.raises(RuntimeError, match="narrower than the owner box's span"):
         _block(arm)
 
@@ -282,13 +282,13 @@ def test_the_shape_set_is_the_arch_law_at_one_cta_per_sm():
         "SM-grain set (G2c: `[16,2]` does not fit a box eight wide at level 0)")
 
 
-#: RETIRED AT C1a (was `test_the_golden_table_is_the_binarys_own`): that test re-read the
+#: RETIRED (was `test_the_golden_table_is_the_binarys_own`): that test re-read the
 #: golden rows off `carry_ops.build_stamp`/`carry_ops.arms`, i.e. `extension().
 #: carry_build_stamp`/`carry_arms`. C0 removed BOTH bindings from `rola._C` entirely --
 #: not "some arms unbuilt", the entry points themselves are gone (`## C0`'s own
 #: `carry_geometry 36F/9P` finding is this file failing on exactly that call) -- so there
 #: is no live parent binary left on this branch to re-derive against, and there will not
 #: be one again (the parent tip is never edited or retrofitted). `ARM_PARAMS` above is the
-#: transcription that was supposed to let the claim survive that deletion (`## G1` SKILLS
+#: transcription that was supposed to let the claim survive that deletion (the SKILLS
 #: FEEDBACK 3); `PARENT_CENSUS`'s numbers are what the parity tests below check, is the
 #: whole of what remains, and it is intentionally NOT re-derived from a binary anymore.

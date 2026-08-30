@@ -33,7 +33,7 @@
    "dtype": "bf16",
    "seed": 0,
    "decode_steps": 0,
-   "note": "THE pinned cell: P73's inventory constructor, unchanged"
+   "note": "THE pinned cell: the inventory constructor every published step number was taken on, unchanged"
   },
   {
    "name": "chunk-sparse-gain8",

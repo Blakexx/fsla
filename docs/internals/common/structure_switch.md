@@ -53,8 +53,7 @@ rather than left to habit.
 
 ## Users
 
-- none in the shipped kernel bodies yet. The primitive lands as a foundation piece
-  (G2-EXTRACT) with the measured record of its first use in the campaign journal's `G2c`
-  / `G2d` entries; the pipelined body (F-P) is what consumes it.
+- none in the shipped kernel bodies yet. The primitive lands as a foundation piece, with
+  its first measured use recorded beside the body that consumes it.
 - `tests/unit/test_structure_switch.py` compiles a toy `__global__` against it and runs
   every layer, the `__trap()` included, in its own process.

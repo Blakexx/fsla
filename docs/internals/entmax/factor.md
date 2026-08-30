@@ -192,7 +192,7 @@ over four stress fixtures x four routing shapes x two alphas.
 solve's own arithmetic without the storage quantization on top of it. It is a test-side
 argument; no runtime path passes it.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/entmax/factor.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -264,7 +264,7 @@ in registers, where `blockIdx.y` is free to re-read and a plain quotient of it i
 cheap to rematerialize. 4 spilling instantiations became 56.
 -- docs/internals/entmax/entmax.md#stream-split
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/entmax/factor.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 

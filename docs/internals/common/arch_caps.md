@@ -68,7 +68,7 @@ architectural constant -- GA102 ships at 80 and 82 SMs, GA100 at 108 -- so it
 is a runtime `cudaDeviceProp` query, never a table row.  Everything in
 `Caps` is a property of the compute capability itself.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/common/arch_caps.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 

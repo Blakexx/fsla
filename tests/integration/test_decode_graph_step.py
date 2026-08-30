@@ -107,7 +107,7 @@ def _absent_one_atom_per_bh(fixture, config, arena):
 def _atom_rows(arena, row, column):
     """The `[16, cols]` page an atom maps to, LOGICAL. The caller must know it is resident.
 
-    The stored page is split bf16 planes (K50), so "this atom is zero" is a claim about
+    The stored page is split bf16 planes, so "this atom is zero" is a claim about
     the values it rejoins to and is read through the gather, not off the raw bytes.
     """
     slot = int(arena.page_table[row, column])
@@ -284,7 +284,7 @@ def _sequence():
             output_final_state=True)
         lattice = to_lattice(oracle_state.float(), _WIDTHS, config.lattice_k,
                              config.lattice_m)
-        #: THE ARENA HOLDS THE STORED FORM (K50's split planes).
+        #: THE ARENA HOLDS THE STORED FORM (the split planes).
         atoms = to_split_planes(lattice.reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS))
         table = arena.page_table
         present = table >= 0

@@ -297,7 +297,7 @@ def test_the_decode_step_is_declared_capturable_end_to_end():
     assert not any(step.host_sync for step in DECODE_STEP)
     assert [step for step in DECODE_VERDICT if step.host_sync] == [read_verdict]
     #: and the verdict read is the LAST node: it is enqueued behind the launches it
-    #: reads the answer of, which is the whole of P67-a's host order.
+    #: reads the answer of, which is the whole of the host order.
     assert DECODE_VERDICT[-1] is read_verdict
 
 

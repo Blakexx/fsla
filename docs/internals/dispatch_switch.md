@@ -100,7 +100,7 @@ between them: it cannot tell a correct selection from one that reaches the wrong
 instantiated arm. Only the suites can, which is why a dispatch is not verified without
 running them.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/dispatch_switch.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 

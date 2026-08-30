@@ -7,7 +7,7 @@ rulings ("PADDING AT THE PRODUCER", "d_v PADDING IS ALSO HOST-SIDE") name the
 mechanism; this page states where it actually lives on the `k31/carry-clean` line and
 why it moved there.
 
-## Two contracts, kept separate (KERNEL_STANDARDS R13)
+## Two contracts, kept separate (KERNEL_STANDARDS §R13)
 
 **API CONTRACT.** `rola.routing.producer.RouteProducer`'s bundle
 (`RouteFactors`) and `rola.layer.RoLA` stay at the caller's own, unpadded widths --

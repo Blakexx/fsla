@@ -234,7 +234,7 @@ STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu",
                   #: like every other shipped translation unit.
                   "common/build_stamp.cu",
                   "intra/intra.cu",
-                  #: K31 R4: the reverse pass on the same footing -- a kernel's launch
+                  #: the reverse pass on the same footing -- a kernel's launch
                   #: bound is a property of the kernel, and each declares its own
                   #: register floor.
                   "intra/intra_backward.cu")
@@ -243,7 +243,7 @@ STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu",
 def carry_arm_paths(arms=None) -> list[Path]:
     """The carry family's per-arm translation units, for the arms this gate measures.
 
-    THE RATIFIED SET IS THE SHIPPED ROWS (K36).  A row tagged TEST is a conformance
+    THE RATIFIED SET IS THE SHIPPED ROWS.  A row tagged TEST is a conformance
     cell -- the fp64 oracle can hold `N = 4096`, and the `W = 64` arms exist so that
     it can -- and it is built for the battery at one arch and never shipped, so
     ratifying it would file measurements for codegen no binary carries.  `arms`
@@ -370,7 +370,7 @@ REGS = re.compile(r"Used (\d+) registers")
 OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of range")
 
 #: The FACTS kernels' mangled template arguments, in DECLARATION order.  The
-#: union-table pass is templated on the PLAN TYPE since K31-i-d, so its key
+#: union-table pass is templated on the PLAN TYPE, so its key
 #: carries the plan's `(D, B, s_0..s_3)` -- the SPANS, which is what the pass is
 #: actually parameterized by -- rather than the `BC` a lex arm is named by;
 #: `atom_bitmap_kernel<int D, int B>` and `block_bitmap_kernel<int D, int B, int BC>`
@@ -891,15 +891,14 @@ def _ninja_cuda_template() -> tuple[str, str, str] | None:
     nvcc, cuda_cflags, cuda_post_cflags = var("nvcc"), var("cuda_cflags"), var("cuda_post_cflags")
     if nvcc is None or cuda_cflags is None or cuda_post_cflags is None:
         return None
-    #: AN ITERATION BUILD'S ARGV MUST NEVER BECOME A MANIFEST (K35 S1b, 2026-08-27;
-    #: reshaped at K36).  Reusing `build.ninja` VERBATIM is a cache-key fidelity win and
+    #: AN ITERATION BUILD'S ARGV MUST NEVER BECOME A MANIFEST.  Reusing `build.ninja` VERBATIM is a cache-key fidelity win and
     #: was also a trap: an arm-subset build wrote its `-D` into those very flags, and a
     #: later `--write` -- run in a clean environment, with the env var no longer set --
     #: inherited the SUBSET and certified a manifest for arms nobody built.  It happened:
     #: a manifest carrying 3 of the carry family's arms was written and reported success,
     #: and only the post-build instantiation-set gate caught it.
     #:
-    #: K36b removes the trap rather than detecting it.  The arm selection is no longer a
+    #: The generated selection header removes the trap rather than detecting it.  The arm selection is no longer a
     #: `-D` on any TU's argv at all -- it is a generated header (`_write_carry_selection`
     #: below), unconditionally overwritten for THIS run's scope before anything that
     #: includes it compiles.  So the reused `build.ninja` argv has nothing arm-set-
@@ -1000,7 +999,7 @@ def _nvcc_command(arches, source: Path, obj_path: str) -> list[str]:
     import torch.utils.cpp_extension as ext
 
     #: `build/generated` alongside `SRC`/`CUTLASS_INC` -- mirrors `setup.py`'s
-    #: `include_dirs` exactly (K36b), since this gate's whole premise is compiling
+    #: `include_dirs` exactly, since this gate's whole premise is compiling
     #: under the same flags the extension does, and the generated selection header
     #: now lives there instead of behind a `-D`.
     cmd = [_NVCC_BIN or cuda_bin("nvcc"), "-c", str(source),
@@ -1109,7 +1108,7 @@ def _parse_report(stderr: str) -> tuple[dict, list[str]]:
     return entries, unhonored
 
 
-#: WHERE A MEASURED TRANSLATION UNIT IS REMEMBERED (K36).  Beside the build's own
+#: WHERE A MEASURED TRANSLATION UNIT IS REMEMBERED.  Beside the build's own
 #: `build.ninja`, in the fixed directory `setup.py` pins, because the record is a
 #: property of that build tree and must die with it.
 RATIFY_CACHE = COMPILE_CWD / "ratify_cache"
@@ -1198,7 +1197,7 @@ def _scan_object(obj: str, wanted: set) -> dict:
 
 def measure_units(arches, objdir: str, sources: list[Path], arms=None,
                   jobs: int | None = None) -> tuple[dict, list[str], dict]:
-    """COMPILE AND DISASSEMBLE EACH TRANSLATION UNIT, OR REUSE ITS RECORD (K36).
+    """COMPILE AND DISASSEMBLE EACH TRANSLATION UNIT, OR REUSE ITS RECORD.
 
     The gate used to recompile the whole matrix on every run, which is what made it a
     40-minute act and therefore a milestone act (KERNEL_STANDARDS section 16). With one
@@ -1213,9 +1212,9 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     freshness trigger uses, applied per unit instead of per tree.
     """
     #: WRITE THIS RUN'S SELECTION HEADER, UNCONDITIONALLY, BEFORE COMPILING ANYTHING
-    #: (K36b). This replaces the old `-D`-substitution dance
+    #:. This replaces the old `-D`-substitution dance
     #: (`_ninja_cuda_template`'s `_without_carry_arms`, now gone) with the header
-    #: equivalent, and it is not optional: FINDINGS ## K36 records the exact trap
+    #: equivalent, and it is not optional: docs/build.md records the exact trap
     #: this prevents -- "an arm-subset build wrote its -D into those very flags, and
     #: a later --write ... inherited the SUBSET and certified a manifest for arms
     #: nobody built." The old fix was argv-substitution; the header gets the same
@@ -1799,7 +1798,7 @@ def main() -> int:
                                                if sccache_info else None,
                                     #: THE LINKER, per the constitution's NO
                                     #: FALLBACKS rule extended to the toolchain
-                                    #: (Blake ruling 2026-08-28, K39): setup.py
+                                    #:: setup.py
                                     #: links with mold unconditionally, gated hard
                                     #: at build time by tools/mold_toolchain.py.
                                     #: Recorded here for PROVENANCE, same
@@ -1814,7 +1813,7 @@ def main() -> int:
                                             if mold_info else None},
                      "source": {"csrc_sha256": csrc_digest(),
                                 "date": time.strftime("%Y-%m-%d"),
-                                #: K37 -- reproducibility as a checkable statement. The
+                                #: reproducibility as a checkable statement. The
                                 #: dev container stamps this into the ratifying
                                 #: process's environment (docs/setup.md); a host
                                 #: ratification (this variable unset) records the empty
@@ -2095,7 +2094,7 @@ def main() -> int:
         print("SELF-TEST PASSED: an unarmed body ratchet fails rather than passes")
 
         #: ... and a body hash produced by a DIFFERENT scanner version is refused
-        #: whatever it says. This is P06's map-stamp argument applied to the
+        #: whatever it says. This is the map-stamp argument applied to the
         #: manifest: two versions hash different text, so an unstamped or
         #: differently-stamped ratification disagrees on every entry while
         #: describing identical code.

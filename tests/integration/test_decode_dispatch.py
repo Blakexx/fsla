@@ -106,7 +106,7 @@ _REFUSALS = {
     #: forward-only and has no autograd node, while prefill trains.
     "refuses-training": (BackwardNotImplemented, "TRAINING mode"),
     "refuses-grad": (BackwardNotImplemented, "DECODE step carrying a gradient"),
-    #: PREFILL trains, but statelessly (P65 R-D): a carried state and a gradient are
+    #: PREFILL trains, but statelessly: a carried state and a gradient are
     #: mutually exclusive, and that is what a grad-bearing one-token PREFILL now hits.
     "refuses-stateless": (BackwardNotImplemented, "STATELESS ONLY"),
     #: every PREFILL-shaped row: the prefill arm is DELETED and the op
@@ -242,7 +242,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
 @pytest.mark.cuda
 @_CUDA
 def test_a_dense_pinned_layer_still_reaches_decode():
-    """REPOINTED (P67 S3b): paging is not a layer configuration any more.
+    """REPOINTED: paging is not a layer configuration any more.
 
     This cell used to assert that a PAGED layer kept the tiled path at ``T = 1``,
     because decode had no page table and would have dropped the layer's cap. There is
@@ -267,7 +267,7 @@ def test_a_dense_pinned_layer_still_reaches_decode():
 
 
 # ---------------------------------------------------------------------------
-# H9 (coverage-closure): the table's rows swept over the decay axis the layer
+# COVERAGE CLOSURE: the table's rows swept over the decay axis the layer
 # default never leaves. THE TWO ENVELOPES SEPARATE HERE: decode implements decay
 # (at one token the rule-1 half-mass shift is the identity, so it forms one
 # exponential and has no admissibility precondition), while the chunk arm does not

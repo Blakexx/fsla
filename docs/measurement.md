@@ -11,7 +11,7 @@ Every performance number this repository publishes is produced by one harness, t
 with one stopwatch, and written to one file with its provenance. This document is
 what those three sentences mean.
 
-**THE SUCCESSOR HAS LANDED (P72).** The chunk arm's harness is `benchmarks/bench_chunk.py`
+**THE SUCCESSOR HAS LANDED.** The chunk arm's harness is `benchmarks/bench_chunk.py`
 over `benchmarks/{unit,integration}/`, and the owed list below is DELIVERED — item by item,
 with the file that discharges it, in [the owed list](#what-the-chunk-arm-harness-owed-and-where-it-landed).
 The table and the sections that follow describe the RETIRED tiled apparatus and remain the
@@ -21,7 +21,7 @@ predecessor's record; where a row says RETIRED, its successor is named beside it
 SPECIFICATION AND ITS PREDECESSOR'S RECORD.** Every fixture, every methodology
 object and the driver itself named the tiled consumer — `probe/registry.py`'s
 entries each named `consumer_forward_kernel` and a `bench.cells` cell — so when
-that kernel was deleted (P67 D2) the harness had no subject and could not even
+that kernel was deleted the harness had no subject and could not even
 import. It was deleted as ONE capability rather than left broken
 ([`internals/DELETIONS.md`](internals/DELETIONS.md); revival `git show
 c7eaeb9:<path>`).
@@ -120,7 +120,7 @@ documented.
 
 | step | what happens |
 |---|---|
-| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively via `tools/gpu_lock.py`'s `gpu_lock()` (K46); if held, the harness waits. The harness is invoked BARE — never wrapped in an external `flock` on the same path, which self-deadlocks (per-open-file-description semantics; the K38 incident). `gpu_lock()` is REENTRANT (`ROLA_GPU_LOCK_HELD`), so a self-locking caller invoking another self-locking tool as a subprocess cannot deadlock either. `ROLA_GPU_LOCK` still MOVES the lock path for a caller composing with a genuinely DIFFERENT outer lock. |
+| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively via `tools/gpu_lock.py`'s `gpu_lock()`; if held, the harness waits. The harness is invoked BARE — never wrapped in an external `flock` on the same path, which self-deadlocks (per-open-file-description semantics; the K38 incident). `gpu_lock()` is REENTRANT (`ROLA_GPU_LOCK_HELD`), so a self-locking caller invoking another self-locking tool as a subprocess cannot deadlock either. `ROLA_GPU_LOCK` still MOVES the lock path for a caller composing with a genuinely DIFFERENT outer lock. |
 | memory fraction | `set_per_process_memory_fraction(0.65)`, inside the lock and before the fixture is built — the value the two device-heavy test modules already pin after two whole-machine VRAM freezes |
 | clock settling | `settle_clocks()` — moved to `bench/regression.py` when `bench/instruments.py` went, because `bench_scaling.py` still needs it; **`settled: False` aborts the run.** Clocks cannot be locked from inside WSL2 at all, so targeting the plateau is the only available protocol, not a convenience |
 | tree identity | `git rev-parse` + `git status --porcelain` + `ratify.csrc_digest()`; a dirty tree does not block the run, it stamps `dirty: true`, and dirty rows are excluded from baselines |
@@ -311,7 +311,7 @@ which `--compare` checks and refuses on mismatch.
 scratch-tree edit — copy the tree, change the `__launch_bounds__` CTA argument at
 the instantiation, run `python tools/ratify.py --census` there, read the spill
 column — and never a flag on the shipped tool. `--force-ctas` was that flag; it
-was deleted (P65 S2) once nothing in `csrc/` read its macro, because a tool that
+was deleted once nothing in `csrc/` read its macro, because a tool that
 can force a bound is a tool that can ratify one.
 
 ## What is deliberately not here
@@ -325,7 +325,7 @@ can force a bound is a tool that can ratify one.
   the surveyed field; replacing it would reintroduce the invented number the
   derivation exists to avoid.
 
-## The measurements record (JSONL) and its derived index (K38, 2026-08-28)
+## The measurements record (JSONL) and its derived index
 
 The chunk arm's `perf/ledger.jsonl` above is ONE harness's own record. K38 adds the
 record every OTHER measuring tool shares — the probe, the unit/integration drivers,

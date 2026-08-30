@@ -46,7 +46,7 @@ addresses it by fragment modes — never by element, never by leaf.
 RULE: a `static_for`/`#pragma unroll` nest over register-resident state iterates fragments (m-tiles × n-tiles ×
 k-steps) with any finer index (leaf → slot, channel → row) folded into constexpr address math. The nest's
 BODY COUNT must be stated as a function of the arm in the code's decl block and must be O(fragments).
-COUNTER-EXAMPLE (S1, 2026-08-26): `page_regs` unrolled per LEAF × atom × channel-group → 4,096 bodies at the
+COUNTER-EXAMPLE: `page_regs` unrolled per LEAF × atom × channel-group → 4,096 bodies at the
 D=4 8-warp arm; compile 5 → 50 min/arch; cicc at 6 GB segfaulting. Per-leaf iteration below the fragment
 grain is a defect, not a style choice.
 
@@ -55,7 +55,7 @@ The fp32 accumulator of one GEMM becomes the A operand of the next by reinterpre
 and narrowing the type — no store, no shuffle.
 - FA2: `flash_fwd_kernel.h:378-380` (`make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMma>(rP.layout()))` → `gemm_rs`); the layout math `utils.h:199-211`.
 - FA3: `hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp:1156-1160` (same, plus an explicit register permute for fp8, and a documented fallback through SMEM when the register-sourced GMMA is unavailable, `:1161-1162`).
-RoLA: the readout's A fragments ARE the fold accumulator's top halves (K35 M1a). Any phase change that
+RoLA: the readout's A fragments ARE the fold accumulator's top halves. Any phase change that
 moves state must be the exchange the design names (§R3), never an ad-hoc copy.
 
 ## 3. Shared memory: copy atoms, swizzles by composition, transposition as a layout operation
@@ -86,7 +86,7 @@ sm_90 by mbarrier. No pipeline state is implicit in loop parity without a commen
   (`hopper/flash_fwd_kernel_sm90.h:82-83, 308-309, 360-361`), with the budgets `constexpr` per configuration.
 RULE: on sm_80 there is no register redistribution, so a fetcher warp burns a full slice and folds nothing —
 form (b) (role-alternating) everywhere; specialization is the sm_90+ mapping and only where the
-accumulator binds (F4).
+accumulator binds.
 
 ## 6. Unroll discipline
 - CuTe pairs `CUTE_UNROLL` with `CUTE_NO_UNROLL` (`cutlass/include/cute/config.hpp:51-55`): saying "do not
@@ -133,7 +133,7 @@ or stop and name the gap; efficiency is correctness.
 - R1 OWNERSHIP CARVES: a stream owns an affine rectangle of digits per level (per-side span vectors);
   the private slot order puts carved (sparse) levels outermost; liveness is the exact AND over levels.
   Executors ≠ streams (an executor folds the union of its streams' boxes).
-- R2 COOPERATIVE FETCH + EXPANSION (F2/F4): one union walk per batch; writer-side placement into per-stream
+- R2 COOPERATIVE FETCH + EXPANSION: one union walk per batch; writer-side placement into per-stream
   segments of value rows AND fully expanded coefficient rows; memo internal to the fetcher; consumers are
   pure MMA. The per-tile liveness mask is produced by the expansion (it knows which slots it wrote nonzero).
 - R3 THE EXCHANGE (order law): every phase change re-lays the state into the other side's order on every
@@ -142,7 +142,7 @@ or stop and name the gap; efficiency is correctness.
   and ejects. No pair-level or run-alignment constraint on carves.
 - R4 THE FAN-IN RING (§2.6-C): union rank keys a C-row SMEM ring; first writer stores, others `red.shared`;
   the NEXT writer reclaims a complete slot by CAS and flushes it; spin on incomplete; drain at the phase barrier.
-- R5 LO PARK (F5): hi in registers, lo parked into the transit's drained slots, freed registers become
+- R5 LO PARK: hi in registers, lo parked into the transit's drained slots, freed registers become
   leaves (box size); a per-arch/width declaration.
 
 ## 11. Debugging a device hang or race (recorded 2026-08-26 after S2d burned 2.5 h reasoning blind)
@@ -255,7 +255,7 @@ R2. THE FAN-IN'S FIGURE OF MERIT IS 128 B SEGMENTS PER RED INSTRUCTION, not sect
 R3. FAN-IN ON AMPERE IS NATIVE GLOBAL RED FROM AN ALIGNED LAYOUT. Shared-memory fp32 atomics are a CAS
     loop; a locked SMEM ring paid 18x its floor to halve DRAM. The DRAM question belongs to the A100
     parity-curve receipt, not to the local cell.
-R4. NO PER-WARP WORK THAT ANOTHER WARP ALSO DOES (F2): CTA-identical derivations (union lists, owner
+R4. NO PER-WARP WORK THAT ANOTHER WARP ALSO DOES: CTA-identical derivations (union lists, owner
     ballots) are derived once and published behind a barrier the kernel already pays, or split by
     executor share — never recomputed per warp to avoid a barrier.
 R5. THE SCHEDULE HAS THREE PARTS (fetch over TOKENS once; per-stream SENDS from each stream's own ballot;
@@ -390,7 +390,7 @@ launch shape, the schedule — is stated in these terms, and a design that coupl
 or to the accumulator's home is misfiled.
 
 ## CONSTITUTION amendment (Blake, 2026-08-29): R20 — THE OWNERSHIP UNIT IS THE CTA's BOX
-R20 read "the SM owns the state; CTAs group warps". Corrected by the arithmetic (G2c): a CTA loads and
+R20 read "the SM owns the state; CTAs group warps". Corrected by the arithmetic: a CTA loads and
 stores its box at entry and exit, so its read-side warps' union and its write-side warps' union must be
 the SAME leaves; carving the SM's box first and handing a CTA half the segments gives the two sides
 different halves at two CTAs per SM. Therefore the ownership unit is the CTA's box — carved per side

@@ -34,7 +34,7 @@ thread count and the family's magic, so the value moves whenever any arm's shape
 a fact only the loaded binary can produce, which is what makes reading it back an
 extension-trap check rather than a path check.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra_backward.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
