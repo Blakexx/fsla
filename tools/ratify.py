@@ -1367,7 +1367,7 @@ def check(entries: dict, unhonored: list[str], want: dict) -> bool:
 #: `[R1+imm]`), so the gate pins the MEASURED per-instantiation in-loop count in
 #: the manifest and fails on GROWTH: a budget change that pushes pressure spill
 #: into a loop adds in-loop `LDL`/`STL` and is refused; the structural array
-#: traffic is ratified as what it is. (R1's own key changes are held to the
+#: traffic is ratified as what it is. (the own key changes are held to the
 #: stricter reading -- no increase at all on a changed key -- by the same number.)
 #:
 #: Loop membership is computed from the SASS itself: an instruction is "in a loop"

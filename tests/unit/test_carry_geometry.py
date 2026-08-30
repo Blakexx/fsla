@@ -11,8 +11,7 @@ against the census the parent binary reports off the device.
 census, transcribed, so the assertion survives the parent's deletion (the SKILLS
 FEEDBACK 3: the A-side of any parity claim is a pinned tip that will not always exist) --
 and C0 IS that deletion: `carry_build_stamp`/`carry_arms` are gone from the extension
-entirely (not merely some arms unbuilt), and `gen_shards.CARRY_ARMS` is `()` pending G4's
-refill under the FINAL `(D, DV, warps_per_cta)` key, a different schema than the 13-field
+entirely (not merely some arms unbuilt), and `gen_shards.CARRY_ARMS` is `()` pending the refill under the FINAL `(D, DV, warps_per_cta)` key, a different schema than the 13-field
 row this table's provenance names. There is therefore no live binary left to re-read
 against, on this line, ever again (the parent tip is never edited or retrofitted). `## C0`
 found this file 36F/9P for exactly this reason (parameterized over the now-empty
@@ -23,7 +22,7 @@ the same 335c2b9 arm rows the parent built `PARENT_CENSUS` from, so `_arm()` no 
 that cannot exist on this branch.
 
 **WHAT IS ASSERTED AS THE LAW, NOT AS THE TABLE.** The parity rows are 11 of the parent's
-13 arms. The other two are the `D = 4, B = 8` rows, which K50's RESTORED WIDTH FLOOR
+13 arms. The other two are the `D = 4, B = 8` rows, which the RESTORED WIDTH FLOOR
 (`B_l >= 16`, power of two) makes unlawful: a level narrower than the owner box's span
 there is REFUSED BY NAME, and the deep-4 conformance topology moves to the lawful
 `(16, 16, 16, 16)` at the same state size. The test names
@@ -84,7 +83,7 @@ PARENT_CENSUS = {
     12: (128, 512, [2, 16], [2, 16], 0),
 }
 
-#: the rows K50's restored floor removes: `B = 8` is narrower than the owner box's
+#: the rows the restored floor removes: `B = 8` is narrower than the owner box's
 #: innermost span (16, the page atom held whole), so the shape refuses them by name.
 UNLAWFUL_UNDER_THE_FLOOR = (8, 9)
 
@@ -93,7 +92,7 @@ UNLAWFUL_UNDER_THE_FLOOR = (8, 9)
 #: generator's, read through `carry_ops.sub_boxes`. -- docs/internals/common/geom.md#arch-constants
 WARPS_PER_SM = 8
 
-#: K50's 2x4 ruling (`## K50`, KERNEL_STANDARDS §R15): `warps_per_cta` is a compile-time
+#: the 2x4 ruling: `warps_per_cta` is a compile-time
 #: axis with exactly this two-value set -- `(1, 8)` the shipped, one-CTA-per-SM shape,
 #: `(2, 4)` the latency-diagnostic test arm. The per-side member set is
 #: `f(D, leaves_per_warp, warps_per_cta)`, so the generated-and-deduplicated set is
@@ -231,11 +230,10 @@ def test_a_stream_count_that_is_not_a_power_of_two_is_refused():
         carry_ops.geometry([256, 256], level_modes=6, bc=128, nsr=3, nsw=4, d_v=64)
 
 
-#: THE GENERATED SET -- R9's layer 1. `sub_boxes(D, box_leaves, workers)` runs the
+#: THE GENERATED SET -- the layer 1. `sub_boxes(D, box_leaves, workers)` runs the
 #: top-down carve over EVERY level order and de-duplicates; these are the counts the
 #: switch's `NA` is, and they are asked of the generator, never of a written list.
-#: `f(D, leaves_per_warp, warps_per_cta)`: the member set is enumerated at BOTH of K50's
-#: two-value `warps_per_cta` set (`## K50`'s 2x4 ruling; `WARPS_PER_CTA` above) -- the
+#: `f(D, leaves_per_warp, warps_per_cta)`: the member set is enumerated at BOTH of the #: two-value `warps_per_cta` set -- the
 #: shipped `(1, 8)` shape and the `(2, 4)` test/diagnostic arm -- not only the one these
 #: arms happen to compile.
 _SUB_BOX_COUNTS = {
@@ -262,11 +260,11 @@ def test_the_sub_box_set_is_generated_and_deduplicated(D, warps_per_cta):
 
 
 def test_the_shape_set_is_the_arch_law_at_one_cta_per_sm():
-    """`sb_matches_arch_law`, asserted where it is EVALUABLE (G2c's own design point).
+    """`sb_matches_arch_law`, asserted where it is EVALUABLE (the own design point).
 
     The set is a property of `(D, leaves_per_warp, warps_per_cta)` with THE CTA'S BOX as
     the unit, and it equals the SM-grain set exactly when the CTA owns the SM
-    (`warps_per_cta == warps_per_sm`, R15's one CTA per SM). At the `kWarps = 4` these
+    (`warps_per_cta == warps_per_sm`, the one CTA per SM). At the `kWarps = 4` these
     arms compile it is the same law run on HALF the SM box, which is a different set --
     asserted here too, so the two grains cannot be confused for each other."""
     dv = 64
@@ -285,8 +283,7 @@ def test_the_shape_set_is_the_arch_law_at_one_cta_per_sm():
 #: RETIRED (was `test_the_golden_table_is_the_binarys_own`): that test re-read the
 #: golden rows off `carry_ops.build_stamp`/`carry_ops.arms`, i.e. `extension().
 #: carry_build_stamp`/`carry_arms`. C0 removed BOTH bindings from `rola._C` entirely --
-#: not "some arms unbuilt", the entry points themselves are gone (`## C0`'s own
-#: `carry_geometry 36F/9P` finding is this file failing on exactly that call) -- so there
+#: not "some arms unbuilt", the entry points themselves are gone -- so there
 #: is no live parent binary left on this branch to re-derive against, and there will not
 #: be one again (the parent tip is never edited or retrofitted). `ARM_PARAMS` above is the
 #: transcription that was supposed to let the claim survive that deletion (the SKILLS

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The chunk family's DAG, read top to bottom, and the context it runs over.
 
-M1 (prefill-stateless) and M2 (prefill-stateful) are ONE tuple: M1 is M2 with the
+The stateless and stateful prefill bands are ONE tuple: the stateless is the stateful with the
 residency band masked out, which is what makes the two readable against each other
 (docs/internals/engine/chunk_dag.md).
 """

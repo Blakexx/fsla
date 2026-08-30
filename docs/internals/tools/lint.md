@@ -2,7 +2,7 @@
 
 Mirrors `tools/lint/` file-for-file. `docs/build.md`'s "Standards lint" section
 covers the FIRST generation of these checks (ast-grep rules, `lint_standards.py`,
-`run_clang_tidy.sh`) — this page adds the LINT2 batch (G_FOUNDATION G5's "dead-code
+`run_clang_tidy.sh`) — this page adds the LINT2 batch (G_FOUNDATION the "dead-code
 and readability lints", ratified 2026-08-29, Blake) and states, per lint, whether it
 gates a commit today or only reports.
 
@@ -79,7 +79,7 @@ config's other settings (clang-format style files do not chain/include one
 another) plus the two new ones, invoked only by
 `run_clang_format_readability.sh`'s own report-only pre-commit stage — the root
 `.clang-format` and the `clang-format-check` hook are UNTOUCHED by this stage.
-G5's flip is: fix the 153 diffs (one dedicated, byte-identity/SASS-checked reformat
+the flip is: fix the 153 diffs (one dedicated, byte-identity/SASS-checked reformat
 commit, the comments-to-docs mandate's own precedent for this shape of change),
 merge the two lines into the root file, and delete this one.
 
@@ -116,7 +116,6 @@ python3 tools/lint/r9_enforcement.py
 tools/lint/run_clang_format_readability.sh
 ```
 
-Every one of these exits 0 unconditionally (report-only, per G_FOUNDATION G5's
-"GATE = ... wired REPORT-ONLY (no hook fails on them yet)") and is wired into
+Every one of these exits 0 unconditionally (report-only, per G_FOUNDATION the "GATE = ... wired REPORT-ONLY (no hook fails on them yet)") and is wired into
 `.pre-commit-config.yaml` as a non-blocking stage; a hit is a finding for a human
 to rule on, the same backstop philosophy KERNEL_STANDARDS §9 states for `ratify`.

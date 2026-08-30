@@ -17,7 +17,7 @@ than "the kernel is not built" is wrong.
 THE CELLS ARE DATA (`benchmarks/cells/carry_cells.json`), read through
 `benchmarks.cells`, so the oracle tier, the probe and the benches name one set of cells
 and one draw. What a record declares is a SHAPE and a DRAW -- never an arm, never a
-window, never a ``(k, m)`` box, because K50's axis law left the kernel nothing else to
+window, never a ``(k, m)`` box, because the axis law left the kernel nothing else to
 be told.
 
 Symbols, each at first use: ``D`` = routing depth, ``B_l`` = level ``l``'s padded digit
@@ -124,7 +124,7 @@ def test_a_carried_state_is_advanced_in_place():
 
 
 def test_an_idle_resident_page_is_neither_loaded_nor_stored():
-    """P80b's cell: a call reaching a STRICT SUBSET of the pages a previous one wrote
+    """the cell: a call reaching a STRICT SUBSET of the pages a previous one wrote
     must neither load nor store the rest.
 
     The census is ASSERTED, not inferred: an idle page's bytes must be BIT-identical

@@ -15,7 +15,7 @@ SOURCE (:mod:`rola.routing.decay`), the slot that decides where the recurrence's
 forgetting rates come from. Everything else the layer used to take was either one of
 those facts spelled out flat, or a launch decision the op makes.
 
-**Continuation is a container the layer owns** (:class:`LayerContinuation`). K45 drops
+**Continuation is a container the layer owns** (:class:`LayerContinuation`). It drops
 ``value_conv``/``route_conv`` and the conv-ring half of the old ``(state, conv_rings)``
 pair (docs/internals/DELETIONS.md) -- they were never reviewed as a mechanism and are
 not paper-1 scope. What is left of the pair is one field, ``state``, and the container
@@ -24,7 +24,7 @@ future layer-level recurrences become fields on this container, never on the op'
 the membership rule (docs/internals/state.md §7) needs a place to land them.
 
 **Execution backends: two arms, and the choice is STRUCTURAL.** ``'cuda'`` is the
-prefill arm through :func:`rola.rola_op` — DELETED pending K31 R2 (the op raises,
+prefill arm through :func:`rola.rola_op` — DELETED pending the rebuild (the op raises,
 naming the ruling; baseline = tag ``baseline/pre-k31``); ``'decode'`` is the
 ``T = 1`` sibling kernel, which bypasses selection architecturally (at one token
 there is no tile to choose, no split, a statistics population of one) and carries

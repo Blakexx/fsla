@@ -3,7 +3,7 @@
 
 """TIER 2 — the decode path is BC-BLIND, stated as "no dependence", not "no literal".
 
-Spec I1's stated enforcement for the tiled path is to parameterize over every
+Spec the stated enforcement for the tiled path is to parameterize over every
 instantiated ``BC`` plus one hypothetical ``BC``, so a hardcoded quanta-shaped literal
 fails the fake-``BC`` row. The decode path admits a stronger form of the same gate,
 because ``BC`` is not an input to it at all: run the same fixture while the surrounding

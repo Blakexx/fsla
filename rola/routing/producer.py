@@ -247,7 +247,7 @@ class RouteProducer(nn.Module):
 
         fp64 in, fp64 out (the oracle-equivalence gate runs the whole layer there). On
         CUDA the projection is **bf16 operands, fp32 accumulate, bf16 out** -- the
-        industry-standard class, ruled in P74 -- which is a tensor-core GEMM rather than
+        industry-standard class -- which is a tensor-core GEMM rather than
         the fp32 SIMT one, measured 2.76x faster at the pinned cell. The solve widens
         each logit in-register, so nothing in the tree ever narrows a solved value to buy
         it. Off CUDA there are no tensor cores to reach, so the torch lowering keeps

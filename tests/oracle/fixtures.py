@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""K31 R1's cells: the routing draws, the plane crossings, and the build stamp gate.
+"""K31 the cells: the routing draws, the plane crossings, and the build stamp gate.
 
 ``k_tok`` (a token's nonzero digits per level, the routing sparsity) is a property
 of the DRAW here and of nothing in the kernel -- which is the design's whole claim,
@@ -22,7 +22,7 @@ def simplex(shape, k_tok, gen, device, live=None):
     ``live`` truncates the row to its FIRST ``live`` digits -- STRUCTURED support, as
     against ``k_tok``'s unstructured one. The two are different questions: unstructured
     sparsity at long ``T`` still reaches every atom, so only a truncation can produce an
-    atom the routing never touches (P80b's idle-resident cell). It is applied after both
+    atom the routing never touches (the idle-resident cell). It is applied after both
     draws so a cell's RNG stream does not depend on it.
     """
     x = torch.rand(shape, device=device, dtype=torch.float64, generator=gen)
@@ -90,8 +90,8 @@ class Cell:
 def canonical_from_plane(plane):
     """A ``[BH, N/16, 16, cols]`` state plane as ``[BH, N, cols]`` CANONICAL.
 
-    The kernel's plane IS the atom-major view of the canonical one (P80) in the STORED
-    split-plane form (K50), so this is the hi||lo gather and a reshape. It stays a NAMED step because the assertion it feeds is the family's
+    The kernel's plane IS the atom-major view of the canonical one in the STORED
+    split-plane form, so this is the hi||lo gather and a reshape. It stays a NAMED step because the assertion it feeds is the family's
     final-state gate, and a leaf-order error must surface at a named seam rather than as
     noise inside a comparison.
     """

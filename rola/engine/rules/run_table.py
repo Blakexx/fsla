@@ -8,7 +8,7 @@ over all eight bit values; the kernel's whole predicate is then one shift and on
 `uint32` is a launch argument: the table a call PLANS is the table it RUNS, which a
 second derivation behind the extension boundary could not promise.
 
-SINCE P80b THE TABLE IS BACKING-INVISIBLE at the store clause: the exit sweep stores
+THE TABLE IS BACKING-INVISIBLE at the store clause: the exit sweep stores
 the atoms this call WRITES in either backing, so a block with no write has nothing to
 store in either, and the fresh-dense "written whole" exception is gone with the zeroed
 fresh plane (`rola/engine/facts/nodes.py`'s backing node).

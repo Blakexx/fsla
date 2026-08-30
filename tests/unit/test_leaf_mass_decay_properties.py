@@ -44,6 +44,7 @@ import torch
 
 from rola.ops.decay import leaf_rate_dials
 from rola.ops.naive import _leaf_product, naive_rola
+from rola.ops.paging import bytes_equal
 from rola.routing.types import (
     IndependentRouting,
     LeafMassDecay,
@@ -131,12 +132,12 @@ def test_write_conditioned_quiescence_state_bit_identical_across_write_free_inte
     # bit-for-bit -- not merely close.
     state_after_t0 = states[0]
     for t in (1, 2, 3):
-        assert torch.equal(states[t], state_after_t0), (
+        assert bytes_equal(states[t], state_after_t0), (
             f"leaf 0's state changed at write-free token {t}: "
             f"{states[t]} != {state_after_t0} (quiescence violated)"
         )
     # And it must actually change again once genuinely re-written at token 4.
-    assert not torch.equal(states[4], state_after_t0)
+    assert not bytes_equal(states[4], state_after_t0)
 
 
 def test_write_conditioned_quiescence_keep_equals_one_exactly_via_leaf_product():
@@ -365,7 +366,7 @@ def test_split_then_continue_reproduces_unsplit_result_exactly(split_point):
         f"chunked output diverges from unsplit at split_point={split_point}: "
         f"max abs diff {(y_full - y_chunked).abs().max().item()}"
     )
-    assert torch.equal(state_full, state2), (
+    assert bytes_equal(state_full, state2), (
         f"chunked final state diverges from unsplit at split_point={split_point}: "
         f"max abs diff {(state_full - state2).abs().max().item()}"
     )

@@ -26,7 +26,7 @@ write map the walk was going to build anyway.
 **WHAT THE VERDICT BUYS (cells 2-3).** A needy batch-head touches nothing -- no `y`, no
 state, no counter -- so the step can be ENQUEUED before its verdict is host-visible and,
 if the verdict says grow, replayed after the admission. The result is bit-identical to
-S4b's admit-then-step order, which cell 3 states as `torch.equal` against the enumerated
+the admit-then-step order, which cell 3 states as `torch.equal` against the enumerated
 reference's own admission.
 
 THE VERDICT IS PER BATCH-HEAD, so "touches nothing" is a claim about the NEEDY
@@ -191,7 +191,7 @@ def test_a_step_no_batch_head_can_address_touches_nothing():
 # ---------------------------------------------------------------------------
 
 def test_gated_step_then_admit_then_replay_is_bit_identical_to_admitting_first():
-    """P67-a's host order against S4b's, `torch.equal` on `y` and on the plane.
+    """the host order against S4b's, `torch.equal` on `y` and on the plane.
 
     The reference admits from `_write_atom_bitmap` -- the enumerated reference, whose
     only callers are gates -- so the two orders are compared through two independent

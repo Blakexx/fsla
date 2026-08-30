@@ -6,7 +6,7 @@ A number in this file changes what RoLA computes. That is the entry criterion:
 a tolerance, a tile size or a launch heuristic belongs to the thing that chose
 it, but a constant that appears inside the mathematical statement has exactly
 one home, because two homes that merely happen to agree is a defect the
-one-API rule exists to forbid (audit finding F6).
+one-API rule exists to forbid.
 """
 
 from __future__ import annotations

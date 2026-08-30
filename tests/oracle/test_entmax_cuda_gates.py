@@ -12,7 +12,7 @@ FOUR GATES, split at the seam the fold-vs-solve measurement identified:
   overflow-free `delta`, vs a plain fp32 torch expression, at ``rtol=0``. These are pure
   elementwise ops; no reduction and therefore no reassociation is possible, so
   bit-identity is structural rather than lucky.
-* **A2 (the solve)** -- the SUPPORT SET vs the fp64 oracle *consuming A1's fp32
+* **A2 (the solve)** -- the SUPPORT SET vs the fp64 oracle *consuming the fp32
   midpoint*, at ``rtol=0``. Splitting here is not a convenience: measured on 528 hostile
   cells, an fp64-folded oracle disagrees on exactly ONE element, and that element was
   attributed to the fold's 6-ulp fp32 rounding, NOT to the solve. Given

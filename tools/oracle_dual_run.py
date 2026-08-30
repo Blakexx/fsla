@@ -99,7 +99,7 @@ def bind_library(root: Path, label: str) -> Path:
     print(f"{label} library: {actual.parent}")
     return actual.parent
 
-#: P4's thresholds, from the measured agreement with one decade of headroom
+#: the thresholds, from the measured agreement with one decade of headroom
 #: (workflows/refactor/p07_audit.md section 3.2: worst 1.42e-14 forward, 6.66e-16 VJP).
 #: The SUPPORT-SET claim carries no tolerance at all, by construction.
 PRODUCER_ATOL = 1e-13
@@ -263,7 +263,7 @@ def emit_producer() -> dict:
     return out
 
 
-#: P3's marker for "this input received NO gradient". An empty tensor rather than a
+#: the marker for "this input received NO gradient". An empty tensor rather than a
 #: zero one, because the whole point of the backward half is that `None` and `0.0`
 #: are DIFFERENT answers: `.detach()` at the clock is the oracle's literal spec, and
 #: a manufactured graph edge that turns the refusal into a zero is exactly the defect
@@ -434,7 +434,7 @@ def apply_mutant(kind: str) -> None:
         #: THE DETACHMENT AT THE CLOCK, removed. `c = stop_gradient(prod_l
         #: p_write_stored)` is the spec's own wording, so a gradient reaching the
         #: stored levels is a semantic change that the FORWARD cannot see at all --
-        #: this is the mutant that says whether P3's backward half has teeth.
+        #: this is the mutant that says whether the backward half has teeth.
         #:
         #: Source-level, because the detachment is an expression inside the
         #: recurrence rather than a name that can be rebound. The module is

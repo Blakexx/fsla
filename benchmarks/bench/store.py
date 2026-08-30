@@ -45,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = 1
 
 #: The kinds `tools/probe_cells.py` and the unit/integration drivers can write. The
-#: sketch in K38's card names the full roster this table is meant to grow into
+#: sketch in the card names the full roster this table is meant to grow into
 #: (ncu sections, the census, the compile ledger, ratify, oracle) even though only
 #: `probe` has a live writer as of this stage.
 KINDS = ("probe", "ncu", "census", "compile", "oracle", "ratify")
@@ -67,7 +67,7 @@ def results_dir() -> Path:
 def git_state() -> tuple[str, bool]:
     """`(sha, dirty)` of the tree being measured. Shared with `bench.ledger` by
     re-deriving the same two `git` calls rather than importing across the two
-    record modules, which would otherwise couple K38's schema to the retired one."""
+    record modules, which would otherwise couple the schema to the retired one."""
     sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
                          capture_output=True, text=True, check=True).stdout.strip()
     porcelain = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain"],

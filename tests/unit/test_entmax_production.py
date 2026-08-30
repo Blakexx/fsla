@@ -629,7 +629,7 @@ def test_every_solve_writes_every_element_of_a_dense_level(width):
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 @pytest.mark.parametrize("kind", ["union", "entmax", "softmax"])
 def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
-    """P73 S5's STOP CLAUSE, as a gate: batching may change the launch SHAPE and nothing
+    """P73 the STOP CLAUSE, as a gate: batching may change the launch SHAPE and nothing
     else.
 
     One launch over four levels of one width class, against four launches of one level

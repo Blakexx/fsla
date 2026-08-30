@@ -693,7 +693,7 @@ class Topology:
     """The routing topology, and ONLY routing.
 
     ``D = len(levels)`` is validated in ``[1, 4]`` and every level's width in
-    ``[1, 256]`` by ``validate_routing_shape`` -- the same validator ``V2``'s
+    ``[1, 256]`` by ``validate_routing_shape`` -- the same validator the earlier form's
     ``ResolvedRouting`` uses, so the two structural invariants are not
     reimplemented here.
 
@@ -726,7 +726,7 @@ class Topology:
         """The LOGICAL, caller-authored per-level widths (``b_l``) -- unchanged by
         padding. A model built with ``IndependentRouting(width=31, ...)`` reads
         ``31`` here forever; see :attr:`padded_widths` and :meth:`padded` for the
-        kernel-facing, padded ones (``B_l``, K50 "PADDING AT THE PRODUCER")."""
+        kernel-facing, padded ones (``B_l``, padded at the producer)."""
         return tuple(level.width for level in self.levels)
 
     @property
@@ -746,7 +746,7 @@ class Topology:
 
         ``widths == padded_widths`` for an ideal (power-of-two >= 16, every level)
         model: :meth:`padded` still returns an equivalent ``Topology`` in that case,
-        so a caller may always call it uniformly (KERNEL_STANDARDS R9: a structure
+        so a caller may always call it uniformly (KERNEL_STANDARDS §R9: a structure
         branch is a derived fact, never a data-dependent shortcut) -- this property
         exists for callers that want to skip a genuinely zero-cost pad.
         """
@@ -836,7 +836,7 @@ class LeafMassDecay:
     ``rate_leaf[s] = prod_l delta_l[d_l(s)] < 1`` for every leaf ``s``, so
     ``keep = (1 - rate_leaf) ** c = 0`` is unreachable by construction.
 
-    **This check is necessary but NOT sufficient (review B1).** It runs in
+    **This check is necessary but NOT sufficient.** It runs in
     ``dial``'s own dtype, which may be fp64; the kernel only ever reads an fp32
     cast of these dials, and an fp64 value within ~3e-8 of 1 is strictly ``< 1``
     here yet rounds to exactly ``1.0f`` on cast, which NaNs the kernel

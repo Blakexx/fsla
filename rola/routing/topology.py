@@ -17,14 +17,14 @@ PADDED_LEVEL_FLOOR = 16
 def padded_level_width(width: int, *, floor: int = PADDED_LEVEL_FLOOR) -> int:
     """The next power of two at or above ``floor`` that admits ``width`` real digits.
 
-    K50 "PADDING AT THE PRODUCER": a caller's level width ``b_l`` (any int >= 1, the
+    PADDING AT THE PRODUCER: a caller's level width ``b_l`` (any int >= 1, the
     API contract) is served by the SHIPPED, KERNEL-FACING width ``B_l`` this function
     derives -- never a second input a caller supplies, so a call can never present a
     ``B_l`` that disagrees with its own ``b_l``. ``b_l <= floor`` still pads to
-    ``floor`` (K50: "dissolves the D=1/N<32 corner -- a toy state pads to one warp
+    ``floor`` ("dissolves the D=1/N<32 corner -- a toy state pads to one warp
     with dead slots"); a ``b_l`` already a power of two at or above ``floor`` is its
     own answer, so an already-ideal model pays nothing through this function (though
-    the producer still calls it, uniformly -- KERNEL_STANDARDS R9: a structure branch
+    the producer still calls it, uniformly -- KERNEL_STANDARDS §R9: a structure branch
     is a derived fact, never a data-dependent shortcut).
     """
     if type(width) is not int or width < 1:

@@ -29,7 +29,7 @@ same lock path, which self-deadlocks (see `tools/gpu_lock.py`'s module
 docstring for the K38 incident this rule exists to prevent).
 
 Exit code is 0 iff every (family, tool) pair is CLEAN or DECLARED. DECLARED is
-K47's one adjudicated exception, not a skip: the pair still runs and its whole
+the one adjudicated exception, not a skip: the pair still runs and its whole
 report is still read, and it passes only if EVERY record in it is the one
 declared idiom (see `ASSERTED`). A per-pair timeout (default
 600s) turns a hang into a NAMED failure rather than a stuck lane holding the GPU

@@ -85,7 +85,7 @@ def call(desc: StateFormat, launch=None, **overrides):
 # ------------------------------------------------------- the surface's shape
 
 def test_the_forward_signature_carries_no_deleted_axis():
-    """K50's axis law, read off the signature: the window, the token tile, the stream
+    """the axis law, read off the signature: the window, the token tile, the stream
     count and the ``(k, m)`` box are NOT arguments.
 
     `W` is a kernel constant, `C` a file constant, `S` derived and `BC` a launch
@@ -100,7 +100,7 @@ def test_the_forward_signature_carries_no_deleted_axis():
                         "d_v", "bc", "nsr", "nsw", "streams", "W", "C"}
         assert not gone, (
             f"{entry.__name__} still names {sorted(gone)}: every shape a kernel entry "
-            f"reads comes from the descriptor and the launch shape (K50's axis law).")
+            f"reads comes from the descriptor and the launch shape (the axis law).")
         assert {"descriptor", "geometry", "liveness", "activity", "launch"} <= names, (
             f"{entry.__name__} must take the descriptor, the geometry block, the "
             f"liveness words, the activity bits and the launch shape.")

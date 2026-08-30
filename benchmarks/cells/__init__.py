@@ -16,7 +16,7 @@ of names.
 
 A record DECLARES A DRAW AND A SHAPE and never an arm: the arm key is
 ``(D, DV, warps_per_cta)`` and `rola.ops.carry` derives it. Nothing in a record names
-a window, a token tile, a stream count or a ``(k, m)`` box -- K50's axis law made those
+a window, a token tile, a stream count or a ``(k, m)`` box -- the axis law made those
 kernel-internal, derived or constant, so a cell that could name one would be declaring
 something the kernel does not read.
 
@@ -138,7 +138,7 @@ def simplex(shape, k_tok, gen, device, live=None):
     ``live`` truncates a row to its FIRST ``live`` digits -- STRUCTURED support, as
     against ``k_tok``'s unstructured one. The two are different questions: unstructured
     sparsity at long ``L`` still reaches every page, so only a truncation can produce a
-    page the routing never touches (P80b's idle-resident cell). It is applied after both
+    page the routing never touches (the idle-resident cell). It is applied after both
     draws so a cell's RNG stream does not depend on it.
     """
     import torch
@@ -199,7 +199,7 @@ def realize(spec: CellSpec, B: int = 1, H: int = 1, device: str = "cuda") -> Rea
     read-sparse / write-dense -- so the two sides' clause sets are DIFFERENT level
     subsets, which is what the two-sided schedule exists for. ``both`` is sparse on both
     sides at level zero and dense above it; the two sides are drawn INDEPENDENTLY there
-    on purpose, because the kernel never assumes they agree (P76).
+    on purpose, because the kernel never assumes they agree.
     """
     import torch
 
@@ -282,7 +282,7 @@ def conservative_activity(descriptor, BH: int = 1, device: str = "cuda"):
     """Every page READ and WRITTEN -- the truth a caller with no facts pass may state.
 
     It asserts nothing about the draw and therefore skips nothing, which is exactly the
-    pre-facts behaviour (P80b). A cell tightens to the pass's own bits when C2a lands;
+    pre-facts behaviour. A cell tightens to the pass's own bits when C2a lands;
     until then this is the honest conservative statement rather than an invented one.
     """
     import torch

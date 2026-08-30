@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 
-"""The K31 intra kernel's call surface — a side kernel, outside the shipped dispatch.
+"""The intra kernel's call surface — a side kernel, outside the shipped dispatch.
 
 The kernel REDUCES into ``o`` and ``den`` (``fan_in_add`` semantics) rather than
 returning them, so the caller owns their allocation and their initial contents;
@@ -146,7 +146,7 @@ def intra_forward_padded(read_levels, write_levels, gwrite, v, modes, *, window=
                          o=None, den=None):
     """:func:`intra_forward`, taking the caller's LOGICAL per-level tensors and ``v``.
 
-    HOST-SIDE PADDING (K50 "PADDING AT THE PRODUCER" / "d_v PADDING IS ALSO
+    HOST-SIDE PADDING ("padding at the producer" / "d_v padding is also
     HOST-SIDE"): every level here is padded to the ONE uniform width this arm ships
     (:func:`_shipped_level_width` -- intra's own kernel takes a single ``level_width``
     for every level, a stricter uniformity than carry's per-level one), ``v`` to

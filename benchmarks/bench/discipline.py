@@ -164,7 +164,7 @@ def _git_state():
 def disciplined(*, tier: str, cmd: str):
     """The lock, memory fraction, stamped identity, settled clock -- in that order.
 
-    `gpu_lock()` is held for this whole context (K46): the memory fraction is applied
+    `gpu_lock()` is held for this whole context: the memory fraction is applied
     under it and before any fixture is built, because it bounds this process's share of
     a device another process may still be releasing. EXCLUSIVE mode (LOCKS brief,
     2026-08-29, item 2): a bench number is MEASURED work, so it excludes every other

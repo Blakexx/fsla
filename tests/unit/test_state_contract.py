@@ -3,7 +3,7 @@
 `rola/_state.py::StateFormat` is what every kernel derives its addressing from and what a
 later call is checked against (`docs/internals/state.md#format`). This file pins that
 contract at the Python object -- no CUDA extension, no kernel body, no GPU required -- so
-C3's pipelined body inherits a descriptor whose shape cannot silently drift underneath it.
+the pipelined body inherits a descriptor whose shape cannot silently drift underneath it.
 
 Symbols, each at first use: `D` routing levels; `B_l` level `l`'s digit width (the
 descriptor's `B` tuple); `DV` the value width; `cols = DV + 1` the page's logical width
@@ -83,7 +83,7 @@ def test_b_must_agree_with_d_in_length():
 
 @pytest.mark.parametrize("width", [15, 24, 17, 0, -16])
 def test_every_level_width_is_a_power_of_two_at_or_above_the_floor(width):
-    """K50's restored floor: B_l >= 16 (= K_max), power of two -- no narrower level exists."""
+    """the restored floor: B_l >= 16 (= K_max), power of two -- no narrower level exists."""
     with pytest.raises(ValueError, match=f"level 0 is {width}"):
         _format(D=2, B=(width, 256))
 

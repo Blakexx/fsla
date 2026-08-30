@@ -45,8 +45,11 @@ GEOMETRY_BLOCK = ("common/geom.cuh", "common/geom.cu", "common/geom_api.cuh")
 
 #: THE DERIVATION'S OWN NAMES. Instantiating one of these outside the geometry block
 #: is a second derivation site whatever it is called.
-DERIVATION_NAMES = ("derive_carry_geom", "sub_boxes", "ModeOrder", "StreamSpans",
-                    "fill_lattice", "decode_lattice")
+#: THE KEY GOVERNS THE FAMILY THAT DECLARES IT, here as in `arm_axes`. These are the
+#: CARRY addressing derivation's names; decode's own lattice fill is decode's, derived
+#: from its own geometry, and folding the two into one site is an open question in
+#: `docs/open-work.md` rather than a finding here.
+DERIVATION_NAMES = ("derive_carry_geom", "sub_boxes", "ModeOrder", "StreamSpans")
 
 
 def arm_key() -> tuple[str, ...]:
@@ -170,15 +173,20 @@ def rule_bytes_equal(files=None) -> list[str]:
     #: THE ARGUMENTS, not the line: a message that happens to say "backing" does not
     #: make an output comparison a storage claim.
     call = re.compile(r"torch\.equal\(([^)]*)\)")
-    subject = re.compile(r"\b\w*(state|page|plane|storage|backing|arena|dense|paged)"
-                         r"\w*\b", re.IGNORECASE)
+    subject = re.compile(r"\b\w*(state|plane|storage|backing|arena)\w*\b", re.IGNORECASE)
+    #: AN INTEGER IS ALREADY ITS OWN BYTES. `torch.equal` is exact on an integer dtype --
+    #: there is no signed zero and no NaN payload for it to call equal -- so a page table,
+    #: a bitmap, a word array or an id list compared with it IS a byte comparison. The rule
+    #: is about a FLOAT view of storage, which is the one place the two differ.
+    integral = re.compile(r"\b\w*(bits|table|mask|words|rows|ids|count|index|slots|atoms)\w*\b",
+                          re.IGNORECASE)
     findings = []
     for path in (python_files() if files is None else files):
         for i, line in enumerate(path.read_text().splitlines()):
             if line.lstrip().startswith("#"):
                 continue
             for args in call.findall(line):
-                if subject.search(args):
+                if subject.search(args) and not integral.search(args):
                     findings.append(f"{_rel(path)}:{i + 1}: a storage identity claim "
                                     f"made with torch.equal: {line.strip()[:90]}")
                     break
@@ -367,16 +375,17 @@ def rule_host_dispatch_is_arm_switch(files=None) -> list[str]:
 #: THE WORDS A COMMENT USES WHEN IT IS DESCRIBING A PAST STATE rather than the code.
 _HISTORY_WORDS = re.compile(
     r"\b(used to|previously|no longer|formerly|superseded|replaced by|the old |"
-    r"old form|before the|it was |we used|deprecated|legacy|now gone|"
+    r"old form|it was |we used|deprecated|legacy|now gone|"
     r"had been|instead of the)\b", re.IGNORECASE)
 
-#: A CAMPAIGN OR STAGE IDENTIFIER: a letter or two and digits, standing alone.
-_WORK_CODE = re.compile(r"\b([A-Z]{1,3}\d{1,3}[a-z]?)\b")
-
-#: The identifiers that are NOT work codes: architectures, types, dimensions.
-_NOT_WORK_CODES = re.compile(
-    r"^(SM\d+|CC\d+|FP\d+|BF\d+|INT\d+|U?INT\d+|TF\d+|X\d+|D\d+|B\d+|N\d+|L\d+|"
-    r"K\d+|M\d+|R\d+|C\d+|W\d+|S\d+|V\d+|A\d+|H\d+|E\d+|T\d+)$")
+#: A CAMPAIGN OR STAGE IDENTIFIER: ONE DEFINITION, the standards lint's, imported rather
+#: than restated. Two regexes for one law is the drift this file exists to catch, one
+#: level up: the rule that refuses work codes tree-wide and the rule that refuses them in
+#: a comment are the same rule read at two grains, and they cannot be allowed to disagree
+#: about what a work code is.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lint_standards import _NOT_A_WORK_CODE as _NOT_WORK_CODES  # noqa: E402
+from lint_standards import _WORK_CODE_RE as _WORK_CODE  # noqa: E402
 
 
 def rule_comments_describe_the_present(files=None) -> list[str]:
@@ -410,7 +419,7 @@ def rule_comments_describe_the_present(files=None) -> list[str]:
                 findings.append(f"{_rel(path)}:{i + 1}: a comment describing a past "
                                 f"state ({m.group(1).strip()!r}): {stripped[:80]}")
                 continue
-            for code in _WORK_CODE.findall(comment):
+            for code in (m.group(1) for m in _WORK_CODE.finditer(comment)):
                 if _NOT_WORK_CODES.match(code):
                     continue
                 findings.append(f"{_rel(path)}:{i + 1}: a comment naming the work code "

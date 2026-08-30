@@ -330,7 +330,7 @@ def _conflicts(w, r, dv):
 def test_every_member_pair_the_mode_words_can_reach_is_conflict_free():
     """THE PAIR SWEEP: every `(read member, write member)` a mode word can select, at
     every topology in the case list, with all four accesses under the region's swizzle.
-    Fifteen of these pairs conflict without it (G2c's search), so this sweep is what says
+    Fifteen of these pairs conflict without it (the search), so this sweep is what says
     the one-line linear re-indexing actually clears every one of them."""
     pairs, bad = {}, []
     for _name, widths, _m in CASES:

@@ -120,7 +120,7 @@ _CONTENT_ADDRESSING_ATTRS = (
 
 
 def _content_addressing_width(layer) -> int:
-    """Derive V3's `content_addressing_width` from the layer instead of hardcoding
+    """Derive the `content_addressing_width` from the layer instead of hardcoding
     it. There is no `Q`, no `K` and no dot-product feature map, so
     today this is always 0 -- but it is computed by asserting NONE of the
     content-addressing attribute names are present, so a future content-addressed
@@ -161,7 +161,7 @@ def _addressing(layer, branches, d_v, H, read_levels, write_levels) -> dict:
     * `content_addressing_width` -- `d_qk` for a Q/K architecture, and 0 for V3,
       which has no Q, no K and no feature map; derived by `_content_addressing_width`
       rather than hardcoded. THIS ONE IS NOT MATCHED between V2 and V3 and the
-      mismatch is in V2's favour: V2 carries data-located content addressing on top
+      mismatch is in V2's favour: it carries data-located content addressing on top
       of the identical grid-located routing.
     """
     N = math.prod(branches)
@@ -316,7 +316,7 @@ def main() -> None:
           "state size) and the routing topology, i.e. OPERATIONAL COST AT MATCHED SHAPE.\n"
           "The addressing-entropy columns are reported so the cell is\n"
           "admissible at all: address_space_bits and routing_addressing_width are IDENTICAL\n"
-          "on both sides, content_addressing_width is 0 here against V2's d_qk=16, so the\n"
+          "on both sides, content_addressing_width is 0 here against the d_qk=16, so the\n"
           "cells are NOT addressing-entropy matched and the mismatch favours V2.")
     if args.json:
         with open(args.json, "w") as handle:

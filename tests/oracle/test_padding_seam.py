@@ -38,7 +38,7 @@ from rola.ops.intra import DENSE_BOTH, WINDOW_SMALL, intra_forward_padded
 from rola.ops.lattice import to_canonical, to_lattice
 from rola.ops.naive import naive_rola
 from rola.ops.padding import pad_routes, pad_v
-from rola.ops.paging import from_split_planes, to_split_planes
+from rola.ops.paging import bytes_equal, from_split_planes, to_split_planes
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
 from tests.oracle.oracle_fixtures import _simplex
 from tests.oracle.tolerances import BF16_RTOL
@@ -235,9 +235,9 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail_bit_for_bit()
 
     assert torch.equal(y_padded, y_explicit[..., :d_v_logical]), (
         "a d_v=48 decode step must equal the DV=64 step's first 48 output columns, bit for bit")
-    assert torch.equal(state_padded[..., :d_v_logical], state_explicit[..., :d_v_logical]), (
+    assert bytes_equal(state_padded[..., :d_v_logical], state_explicit[..., :d_v_logical]), (
         "the stored state's real d_v columns must agree bit for bit")
-    assert torch.equal(state_padded[..., d_v_logical:DV], state_explicit[..., d_v_logical:DV]), (
+    assert bytes_equal(state_padded[..., d_v_logical:DV], state_explicit[..., d_v_logical:DV]), (
         "the padded state columns are dead in BOTH calls (nothing ever wrote a nonzero v there)"
     )
 

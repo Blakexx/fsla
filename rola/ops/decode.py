@@ -101,7 +101,7 @@ def derive_decode_geometry(
 ) -> DecodeGeometry:
     """Build the carrier once, at the boundary.
 
-    HOST-SIDE PADDING (K50 "d_v PADDING IS ALSO HOST-SIDE"): ``d_v`` is the caller's
+    HOST-SIDE PADDING ("d_v padding is also host-side"): ``d_v`` is the caller's
     LOGICAL value width, and this is the SEAM -- the geometry this returns carries
     the padded ``DV`` (:func:`_shipped_decode_dv`), which is what the scratch sizing
     and the launch address. Decode's arm key is ``(DV, D, decay)`` ONLY (:func:`arms`):

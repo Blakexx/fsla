@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""R4's two reverse scans against the fp64 CROSS-WINDOW reference, cell by cell.
+"""the two reverse scans against the fp64 CROSS-WINDOW reference, cell by cell.
 
 The reference is `tests/oracle/backward_reference.py`'s carry half, which
 `test_prefill_backward_reference.py` has already pinned to ``torch.autograd`` through the whole

@@ -21,6 +21,7 @@ from rola.ops.paging import (
     AtomKeying,
     ExtentAllocator,
     PageArena,
+    bytes_equal,
     to_split_planes,
 )
 
@@ -120,7 +121,7 @@ def test_two_sequences_at_alternating_BC_produce_bit_identical_residency():
 
     (table_a, state_a, res_a), (table_b, state_b, res_b) = results
     assert torch.equal(table_a, table_b), "the page table moved with BC"
-    assert torch.equal(state_a, state_b), "the addressed bytes moved with BC"
+    assert bytes_equal(state_a, state_b), "the addressed bytes moved with BC"
     assert res_a.allocated_pages == res_b.allocated_pages == int(atoms.sum())
 
 
@@ -278,7 +279,7 @@ def test_a_fully_resident_arena_materializes_the_canonical_leaf_order(BC):
     arena.state.index_copy_(
         0, arena.page_table.reshape(-1).long(),
         to_split_planes(dense.reshape(BH * N // MMA_K_QUANTUM, MMA_K_QUANTUM, cols)))
-    assert torch.equal(arena.materialize(), dense)
+    assert bytes_equal(arena.materialize(), dense)
     assert arena.allocated_pages == arena.logical_pages
 
 

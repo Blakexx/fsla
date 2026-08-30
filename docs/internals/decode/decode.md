@@ -19,7 +19,7 @@ unconditional; raw normalization is dead — there is no `GLOBAL` axis anywhere 
 this repository, decode included); `n_split` the split-K degree; `k`, `m`,
 `s_l`, `g_l`, `BC` the `(k, m)` lattice's own symbols
 ([`decode_lattice.md`](decode_lattice.md), spec `K31_R0_ABI_RIPPLE_SPEC.md`
-§§2.1–2.5); `BT` is the tiled consumer's token tile, which appears here only to
+§2.1–2.5); `BT` is the tiled consumer's token tile, which appears here only to
 be ruled out.
 
 **The tiled consumer, in this document, is a RETIRED arm.** It was the prefill

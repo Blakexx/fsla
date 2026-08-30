@@ -29,7 +29,7 @@ rather than one winning the whole budget or all of them deadlocking.
 `acquire(n, exclusive=True)` instead waits for and holds EVERY slot (a "gate"
 draw), mirroring `build_lock.py`'s own gate/iteration split.
 
-**REENTRANT BY CONSTRUCTION** (K46's `gpu_lock()` shape, extended here): an
+**REENTRANT BY CONSTRUCTION** (the `gpu_lock()` shape, extended here): an
 acquire sets `ROLA_HOST_BUDGET_HELD` in the process environment; a NESTED
 acquire that finds the marker already set is a no-op, so an outer tool that
 already holds slots and calls an inner tool that also acquires cannot

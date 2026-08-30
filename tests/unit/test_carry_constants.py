@@ -1,4 +1,4 @@
-"""K50's axis law's CONSTANT and DERIVED classes: the ONE-PLACE gate for
+"""the axis law's CONSTANT and DERIVED classes: the ONE-PLACE gate for
 ``csrc/rola/src/common/constants.cuh`` and its Python mirror, ``rola.engine.constants``.
 
 Two claims, same shape as ``test_definition_constants.py``'s readout-epsilon gate:

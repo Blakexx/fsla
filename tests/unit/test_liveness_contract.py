@@ -1,4 +1,4 @@
-"""Gate for the LIVENESS CONTRACT (C1b): the class-1 words and the class-2 folds.
+"""Gate for the LIVENESS CONTRACT: the class-1 words and the class-2 folds.
 
 The subject is a CONTRACT and its executable spec, both of which are pure Python over
 torch tensors, so the whole file gates without the built extension and without a GPU.

@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE CARRY LAUNCH SURFACE -- the contract, written before the body exists.
 
-Card `development/queue/C_CLEAN_SLATE.md` (C1): the interfaces are written and tested
+Card `development/queue/C_CLEAN_SLATE.md`: the interfaces are written and tested
 against a refusing binding, and they state the FINAL form of the line, not a bring-up
 form to be widened later. Nothing here dispatches: `csrc/rola/src/carry/` was cleared
-at C0 and C3-K0 builds the body, so every entry below reaches the extension's refusing
+and the body is not built yet, so every entry below reaches the extension's refusing
 stub and says so by name.
 
-THE TWO CONTRACTS (KERNEL_STANDARDS R13 addendum, "TWO CONTRACTS, ONE TRANSLATOR").
+THE TWO CONTRACTS (KERNEL_STANDARDS §R13 addendum, "TWO CONTRACTS, ONE TRANSLATOR").
 The API above this module accepts any shape -- any logical level width ``b_l >= 2``,
 any logical value width ``d_v``, any length ``L`` -- and serves it by PADDING at the
 routing producer and at the value projection. This module is the KERNEL boundary: it
@@ -20,11 +20,11 @@ count of level ``l`` (a power of two at or above 16; the descriptor's ``B``).
 ``N = prod_l B_l`` = leaf capacity. ``DV`` = the padded value width (a shipped one).
 ``BH`` = batch times heads. ``L`` = tokens. ``cols = DV + 1``, the mass column riding
 beside the value columns. ``warps_per_cta`` = the launch shape's one free field, the
-warps one CTA runs (K50: ``{8, 4}``, 8 shipped and 4 the latency diagnostic).
+warps one CTA runs (``{8, 4}``, 8 shipped and 4 the latency diagnostic).
 ``leaves_per_warp`` = the warp sub-box's leaf count -- register shape, and therefore a
 consequence of ``DV`` rather than a dial. ``BC`` = ``leaves_per_warp * warps_per_cta``,
 the CTA box, derived at launch and never an axis. The window ``W``, the private token
-tile ``C`` and the stream count ``S`` are NOT on this surface: K50's axis law makes
+tile ``C`` and the stream count ``S`` are NOT on this surface: the axis law makes
 ``W`` a kernel constant, ``C`` a file constant and ``S`` derived, so a caller cannot
 name them and a short sequence runs a partial window inside the kernel.
 """
@@ -95,7 +95,7 @@ def box_leaves(DV: int, warps_per_cta: int) -> int:
 class LaunchShape:
     """The launch's one free field, and what the arm key reads off it.
 
-    ``warps_per_cta`` is COMPILE-TIME (K50's 2x4 ruling): the CTA's box is the
+    ``warps_per_cta`` is COMPILE-TIME (the 2x4 ruling): the CTA's box is the
     ownership unit and is carved per side among ITS warps, so the member set is
     ``f(D, leaves_per_warp, warps_per_cta)`` and the value is part of the arm key
     ``(D, DV, warps_per_cta)``, not a runtime argument.
@@ -153,7 +153,7 @@ class GeometryBlock:
     """The addressing block, derived once from ``(descriptor, launch)`` and CHECKED.
 
     The kernel derives its own copy at the prologue from the descriptor it is handed
-    (K50: "each kernel derives its addressing from (descriptor, its own shape) at the
+    ("each kernel derives its addressing from (descriptor, its own shape) at the
     prologue and REFUSES on mismatch"), so this object is not an operand -- it is the
     HOST's independent derivation of the same law, and handing it to the surface is
     what makes a disagreement a refusal here instead of mis-addressed bytes inside a
@@ -341,7 +341,7 @@ def carry_forward(routes: RoutePlanes, v: torch.Tensor, *, descriptor: StateForm
     state plane is the NULL-STATE call.
 
     THERE IS NO IMPLEMENTATION ON THIS LINE. The refusals below are the contract and run
-    first; the extension's entry then refuses by name (C3-K0 builds the body).
+    first; the extension's entry then refuses by name until the body is built.
     """
     _refuse_descriptor(descriptor)
     _refuse_launch(launch)
@@ -377,7 +377,7 @@ def carry_backward(routes: RoutePlanes, v: torch.Tensor, d_num: torch.Tensor,
     Same descriptor, same geometry block, same liveness words and same activity bits as
     the forward it reverses -- a reverse pass that re-derived any of them would be a
     second derivation of the schedule, which is the drift shape this family has already
-    paid for once. THERE IS NO IMPLEMENTATION ON THIS LINE (C4 builds it, after C3).
+    paid for once. THERE IS NO IMPLEMENTATION ON THIS LINE.
     """
     _refuse_descriptor(descriptor)
     _refuse_launch(launch)
@@ -403,8 +403,8 @@ def arms():
     """``[(D, DV, warps_per_cta)]`` -- the arms THIS binary carries.
 
     The binary's own answer, never the source tree's: an empty list is the honest report
-    of a line whose kernel is not built (C0 cleared the family; G4 refills the table and
-    C3 builds the bodies).
+    of a line whose kernel is not built (the family is cleared; a declared shipped set
+    refills the table and the bodies are built back).
     """
     return [tuple(row) for row in extension().carry_arms()]
 
@@ -459,7 +459,7 @@ def state_plane(descriptor: StateFormat, BH: int, device="cuda") -> torch.Tensor
 
 
 def box_shape(widths, k: int, m: int):
-    """``(m_l, s_l, g_l, BC, owners)`` for the ``(k, m)`` box, with K2 ASSERTED.
+    """``(m_l, s_l, g_l, BC, owners)`` for the ``(k, m)`` box, with the atom law ASSERTED.
 
     The derivation is `rola.ops.lattice`'s -- the ONE host authority over the leaf
     order, shared with the decode family, because the two families write and read one

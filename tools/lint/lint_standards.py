@@ -817,10 +817,35 @@ def _work_code_files():
 _COMMENT_OR_STRING = re.compile(r"//(.*)$|/\*(.*?)\*/|#(.*)$|\"([^\"\n]*)\"|'([^'\n]*)'")
 
 
-def _citable_text(path: Path, line: str) -> str:
-    if path.suffix in (".md", ".json", ".yaml", ".yml", ".toml"):
+def _citable_text(path: Path, line: str, in_docstring: bool = False) -> str:
+    if path.suffix in (".md", ".json", ".yaml", ".yml", ".toml") or in_docstring:
         return line
     return " ".join(g or "" for m in _COMMENT_OR_STRING.finditer(line) for g in m.groups())
+
+
+TRIPLE = ('"' * 3, "'" * 3)
+
+
+def _docstring_lines(path: Path, text: str) -> set[int]:
+    """The line numbers inside a triple-quoted string.
+
+    A DOCSTRING IS THIS LANGUAGE'S COMMENT, and it is where the module headers, the
+    reasons and therefore the citations actually live. A line-oriented reader that only
+    knew `#` and a single-line literal would miss every one of them, which is a gap in
+    the medium and not a distinction anybody meant.
+    """
+    if path.suffix != ".py":
+        return set()
+    inside = False
+    lines: set[int] = set()
+    for number, line in enumerate(text.splitlines(), 1):
+        marks = sum(line.count(q) for q in TRIPLE)
+        if inside:
+            lines.add(number)
+        if marks % 2:
+            inside = not inside
+            lines.add(number)
+    return lines
 
 
 def _defined_labels(path: Path, text: str) -> set[str]:
@@ -838,7 +863,7 @@ def _defined_labels(path: Path, text: str) -> set[str]:
     return set(labels)
 
 
-def _code_text(path: Path, text: str) -> str:
+def _code_text(path: Path, text: str, docstrings: set[int] | None = None) -> str:
     """The file's CODE, with comments and string literals removed.
 
     A LABEL THE FILE ITSELF DEFINES IS NOT A CITATION. A test file whose gates are named
@@ -849,7 +874,9 @@ def _code_text(path: Path, text: str) -> str:
     """
     if path.suffix in (".md", ".json", ".yaml", ".yml", ".toml"):
         return ""
-    return "\n".join(_COMMENT_OR_STRING.sub("", line) for line in text.splitlines())
+    docstrings = docstrings or set()
+    return "\n".join("" if number in docstrings else _COMMENT_OR_STRING.sub("", line)
+                     for number, line in enumerate(text.splitlines(), 1))
 
 
 def check_no_campaign_work_codes() -> list[str]:
@@ -871,10 +898,12 @@ def check_no_campaign_work_codes() -> list[str]:
             text = path.read_text()
         except UnicodeDecodeError:
             continue
-        code_text = _code_text(path, text)
+        docstrings = _docstring_lines(path, text)
+        code_text = _code_text(path, text, docstrings)
         defined = _defined_labels(path, text)
         for lineno, line in enumerate(text.splitlines(), 1):
-            for match in _WORK_CODE_RE.finditer(_citable_text(path, line)):
+            for match in _WORK_CODE_RE.finditer(
+                    _citable_text(path, line, lineno in docstrings)):
                 code = match.group(1)
                 if _NOT_A_WORK_CODE.match(code):
                     continue

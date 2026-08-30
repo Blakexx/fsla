@@ -1,4 +1,4 @@
-"""Gates for the dense per-level production routing solve (V3's producer path).
+"""Gates for the dense per-level production routing solve (the producer path).
 
 `rola.routing.entmax.production.production_routing_factor_levels` is
 what `rola/routing/producer.py` calls. It has two lowerings of one semantics -- a DEVICE
@@ -870,7 +870,7 @@ def test_production_imports_nothing_from_the_reference_package():
 
 
 def test_the_package_imports_no_triton_and_declares_none():
-    """P73 S5's RECEIPT, as a static fact about the tree rather than a claim in a doc.
+    """P73 the RECEIPT, as a static fact about the tree rather than a claim in a doc.
 
     `docs/build.md` says the dependencies are "`torch` and `einops`. Not
     `transformers`, not `fla`, not `triton` -- the kernels are CUDA." That sentence

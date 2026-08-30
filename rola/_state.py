@@ -55,7 +55,7 @@ MIN_LEVEL_WIDTH = 16
 
 @dataclass(frozen=True, slots=True)
 class StateFormat:
-    """THE STATE OWNS ITS FORMAT (K50, 2026-08-29): how a kernel reads these bytes.
+    """THE STATE OWNS ITS FORMAT: how a kernel reads these bytes.
 
     Bound from the FIRST call that receives the state and CHECKED against every later
     one, which is what replaces the old "later calls are NOT checked" clause: a state
@@ -147,11 +147,13 @@ def _format_of(routes, d_v: int, BH: int) -> StateFormat:
                        page_bits=PAGE_RECTANGLE_BITS, DV=int(d_v), dtype=SPLIT_PLANE_DTYPE,
                        ids=BH * (n >> PAGE_RECTANGLE_BITS))
 
-#: The paging strategies this version BUILDS. `"cow"` is named in the design as the
-#: next one and is refused by name rather than by a generic message, so a caller who
-#: asks for it learns it is scheduled rather than misspelled.
-_BUILT_STRATEGIES = ("mutable",)
-_NAMED_UNBUILT_STRATEGIES = ("cow",)
+#: THE ONE PAGING STRATEGY THIS VERSION BUILDS. It is a CONSTANT and not a list: one
+#: value is not an axis, and a list of one is a list that reads as a choice nobody has.
+_BUILT_STRATEGY = "mutable"
+
+#: The next one, named in the design and refused BY NAME rather than by a generic
+#: message, so a caller who asks for it learns it is scheduled rather than misspelled.
+_DESIGNED_STRATEGY = "cow"
 
 
 def state(strategy: str = "mutable", pool_slack: float = 0.0) -> RoLAState:
@@ -192,14 +194,15 @@ class RoLAState:
                  "_plane", "_format", "__weakref__")
 
     def __init__(self, *, strategy: str = "mutable", pool_slack: float = 0.0) -> None:
-        if strategy in _NAMED_UNBUILT_STRATEGIES:
+        if strategy == _DESIGNED_STRATEGY:
             raise NotImplementedError(
                 f"strategy={strategy!r} is designed and NOT BUILT: copy-on-write state "
                 "branching is named future work (s0_design.md), and its slot refcounts "
-                "and per-branch tables do not exist yet. The built strategy is 'mutable'.")
-        if strategy not in _BUILT_STRATEGIES:
+                f"and per-branch tables do not exist yet. The built strategy is "
+                f"{_BUILT_STRATEGY!r}.")
+        if strategy != _BUILT_STRATEGY:
             raise ValueError(
-                f"strategy must be one of {_BUILT_STRATEGIES}, got {strategy!r}")
+                f"strategy must be {_BUILT_STRATEGY!r}, got {strategy!r}")
         self.strategy = strategy
         self.pool_slack = float(pool_slack)
         self._shape: tuple[int, int, int, int] | None = None

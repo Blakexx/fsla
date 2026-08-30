@@ -52,7 +52,7 @@ never inferred.
 
 **Memory is reported on the same rows as latency**, because the curve's second axis
 is the point: `kv_cache_bytes` for attention (analytic, `2 * B * H * L * d_head *
-itemsize`, the bytes a decoder would have to keep), against V3's `committed_bytes`
+itemsize`, the bytes a decoder would have to keep), against the `committed_bytes`
 (measured, the state's own `PagingResult` -- the bytes the CUDA driver MAPPED, which is
 the only quantity that states a saving; `allocated_bytes` beside it is what the arena
 handed out) and `dense_state_bytes` (analytic, the provisioned `N`). A pool smaller than
