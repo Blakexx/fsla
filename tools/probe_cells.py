@@ -562,8 +562,14 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
     """One `ncu` oneshot launch: kernel name + metrics for ``cell`` on ``binary``.
 
     Mirrors the session scratchpad's `ledger/run_ledger.sh` pattern -- one
-    `-c 1` capture on a regex-matched `carry.*kernel`, CSV out, under the
-    SAME `gpu_lock()` every wall-clock run uses.
+    `-c 1` capture, CSV out, under the SAME `gpu_lock()` every wall-clock run uses.
+
+    THE FILTER NAMES THE BODY, NOT A PREFIX (G2b/G2c, 2026-08-29). `regex:carry.*kernel`
+    captures whichever carry-family kernel launches FIRST, and that is not the same
+    kernel on two tips: a tip whose family launches a ballot-rows pass ahead of the body
+    matches the ROWS kernel while the parent matches the body, so the built-in comparison
+    reads rows-against-carry and every ratio taken from it is meaningless. Naming the two
+    bodies explicitly makes the two tips capture the same kernel or capture nothing.
     """
     py = venv_python(binary["venv"])
     metrics = ",".join([
@@ -587,7 +593,8 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
         "smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct",
     ])
     out_csv = f"{out_csv_prefix}_{binary['label']}_{cell}.csv"
-    cmd = [NCU_BIN, "--target-processes", "all", "-k", "regex:carry.*kernel", "-c", "1",
+    cmd = [NCU_BIN, "--target-processes", "all", "-k",
+           "regex:^carry_(kernel|split_kernel)", "-c", "1",
            "--print-kernel-base", "mangled", "--metrics", metrics, "--csv",
            py, str(THIS_FILE), "--worker", "--cells", cell, "--oneshot", "--state", state]
     with gpu_lock(lock_path, mode="exclusive"):  # measured work (LOCKS brief item 2)

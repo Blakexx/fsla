@@ -204,6 +204,70 @@ def arms():
     return extension().carry_arms()
 
 
+#: THE ADDRESSING BLOCK'S FIELD ORDER, mirrored from `csrc/rola/src/carry/geom.cu`'s
+#: `geometry` (`docs/internals/carry/geom_api.md#geometry`) -- the ONE reader of that
+#: positional vector. `_GEOM_LEVEL` are the per-level arrays, each `kGeomMaxLevels` long;
+#: `_GEOM_SCALAR` the scalars that follow them; `_SIDE_LEVEL`/`_SIDE_SCALAR` the same for
+#: one side's carve, read twice (read side, then write side).
+_GEOM_MAX_LEVELS = 4
+_GEOM_HEAD = ("D", "bc")
+_GEOM_LEVEL = ("width", "span", "grid", "col_base", "run_shift", "owner_div", "weight")
+_GEOM_SCALAR = ("wtot", "owners", "leaves", "local_bits", "min_width", "identity_map")
+_SIDE_LEVEL = ("level_at", "rank", "row_span", "grid", "grid_div", "row_g", "row_prefix",
+               "sub_bits", "sub_shift")
+_SIDE_SCALAR = ("carves", "rows", "leaf", "streams", "assign")
+
+
+def geometry(widths, level_modes=0, bc=128, nsr=1, nsw=1, d_v=D_V):
+    """THE SHIPPED DERIVATION, read back as a dict of dicts.
+
+    ``{scalars..., "r": {side fields}, "w": {...}, "xch": {"w": [...], "r": [...]}}`` --
+    every per-level field is a list of length ``D``, the padding levels the block carries
+    past ``D`` dropped here because they are a C-array convenience and not part of the
+    law. ``xch`` is each side's transit row map over the whole region, ``[stream][slot]``.
+
+    The kernel bodies on this tip do NOT consume this block (they are the MO/B-templated
+    parent bodies, whose geometry is compile-time); it is the foundation the pipelined
+    body is built on, and the model tests are what hold the two derivations together
+    until then. See ``docs/internals/carry/geom.md``.
+    """
+    flat = list(extension().carry_geometry(list(widths), int(level_modes), int(bc), int(nsr),
+                                           int(nsw), int(d_v)))
+    it = iter(range(len(flat)))
+
+    def take(n):
+        return [flat[next(it)] for _ in range(n)]
+
+    out = {}
+    for name in _GEOM_HEAD:
+        out[name] = take(1)[0]
+    D = out["D"]
+    for name in _GEOM_LEVEL:
+        out[name] = take(_GEOM_MAX_LEVELS)[:D]
+    for name in _GEOM_SCALAR:
+        out[name] = take(1)[0]
+    for side in ("r", "w"):
+        block = {}
+        for name in _SIDE_LEVEL:
+            block[name] = take(_GEOM_MAX_LEVELS)[:D]
+        for name in _SIDE_SCALAR:
+            block[name] = take(1)[0]
+        out[side] = block
+    xch = {}
+    for side in ("w", "r"):
+        rows = out[side]["streams"], out[side]["leaf"]
+        xch[side] = [take(rows[1]) for _ in range(rows[0])]
+    out["xch"] = xch
+    assert len(list(it)) == 0, "the addressing block's flattened field order drifted"
+    return out
+
+
+def sub_boxes(depth, box_leaves, workers):
+    """The GENERATED set of warp sub-box shapes, as spans -- `geom_api.md#sub-box-set`."""
+    return [tuple(row) for row in
+            extension().carry_sub_boxes(int(depth), int(box_leaves), int(workers))]
+
+
 #: THE REVERSE PASS'S PRE-PACKED PLANE WIDTH.  The value and seed rows are handed to
 #: the two scans `cols`-wide and zero-padded to whole MMA n-tiles, so one staging body
 #: serves both and the mass channel is an ordinary column rather than a carve.
