@@ -151,7 +151,7 @@ def _kernel_realized_support(levels, widths, B, H, device, d_v=64):
     g_write = torch.ones(B, 1, H, **f32)
     v = torch.ones(B, 1, H, d_v, **f32)
     state = to_split_planes(torch.zeros(B, H, N, config.cols, **f32))
-    _y, state, _ws = _decode_step(v, empty_read, write, None, g_write, config, state)
+    _y, state, _ws = _decode_step(v, empty_read, write, g_write, config, state)
     return (from_split_planes(state).reshape(BH, N, config.cols) != 0).any(-1)
 
 
@@ -306,7 +306,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     m0 = to_split_planes(0.1 * torch.randn(B, H, config.N, config.cols, device=device,
                                       dtype=torch.float32))
     state = m0.clone()
-    y, state, _workspace = _decode_step(v, zeros, zeros, None, g_write, config, state)
+    y, state, _workspace = _decode_step(v, zeros, zeros, g_write, config, state)
     assert not _leaf_support(zeros, widths, B, H, device).any(), (
         "the fixture did not produce M = 0")
     assert torch.equal(y, torch.zeros_like(y))
@@ -522,7 +522,7 @@ def test_g7_prefill_decode_seam(widths):
     entry = to_split_planes(to_lattice(pre["state"], widths, config.lattice_k, config.lattice_m))
     y_dec, state_dec, _ = _decode_step(
         step_v.float(), tuple(t.float() for t in step_read),
-        tuple(t.float() for t in step_write), None, step_gw.float(),
+        tuple(t.float() for t in step_write), step_gw.float(),
         config, entry)
     state_dec = to_canonical(from_split_planes(state_dec), widths, config.lattice_k,
                              config.lattice_m)
