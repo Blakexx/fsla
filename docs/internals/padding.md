@@ -49,10 +49,12 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
 
 ## Per-op scope: not every op pads every axis
 
-* **carry** (`rola.ops.carry.carry_inter`, `state_plane`) pads BOTH axes: every level
-  to `rola.routing.topology.padded_level_width` (next power of two >= 16 -- the
-  box/warp-sub-box register-shape floor), and `v` to the single shipped `D_V` this
-  bring-up surface builds. There is no kernel body on this line (`C_CLEAN_SLATE`), so
+* **carry** (`rola.ops.prefill`'s `_descriptor`/`_pack_operands`, the operand-packing
+  seam onto `rola.ops.carry`'s C1c launch surface) pads BOTH axes: every level to
+  `rola.routing.topology.padded_level_width` (next power of two >= 16 -- the
+  box/warp-sub-box register-shape floor), and `v` to the smallest of
+  `rola.ops.carry.SHIPPED_DV` that admits it. There is no kernel body on this line
+  (`C_CLEAN_SLATE`), so
   every call past the pad reaches the honest absence of the deleted extension symbol --
   the expected failure for a LAWFUL padded call, distinct from a shape refusal.
 * **decode** (`rola.ops.decode.derive_decode_geometry`, `_decode_step`) pads ONLY
