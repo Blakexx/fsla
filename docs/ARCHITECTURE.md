@@ -284,6 +284,14 @@ descriptor and the architecture's shared-memory size — the premise being that 
 costs close to nothing, which the private-stream measurement is the standing test of;
 never a density, never a runtime input.)*
 
+**The grains are the same on both sides.** Stream box, accumulator tile, warp segment
+and multiprocessor box are one vocabulary for the fold (the write side) and the readout
+(the read side); each side derives its own carve of the same box, and the grains nest the
+same way. The sides differ only in implementation: the readout has one stream per
+accumulator tile, always — a reader's stream is its own tile's token list, nothing to
+share — while a fold stream may be shared by the warps whose tiles consume it, because
+the fold stages value rows into a stream's segment.
+
 **The stream box is sized to its consumers' accumulator tile.** A stream's segment —
 its expanded coefficient rows and value rows — covers exactly one accumulator tile's
 leaves, the multiply its consumers issue. Where a warp's segment is one tile the stream
