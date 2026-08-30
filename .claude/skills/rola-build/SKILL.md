@@ -95,3 +95,7 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
   "resume on its notification" is a dead stop — only harness-tracked tasks wake you. Wait on the exit
   marker yourself (Monitor with an until-loop on the marker file, or `until [ -f marker ]; do sleep 30;
   done` with a long timeout) and continue in the same turn. Never end a turn on an untracked build.
+- A MERGE THAT TOUCHES csrc/ IS FOLLOWED BY A TIP REBUILD BEFORE ANY GATE IS QUOTED (13th trap form,
+  2026-08-29): the tip's .so stayed pre-merge while the Python moved on; assert_fresh_binary did not
+  fire. Python-only stages: the worktree still needs the built .so (copy the tip's, then
+  assert_fresh_binary); a pointer venv without it = rola._C ImportError = CPU-only battery = not a gate.
