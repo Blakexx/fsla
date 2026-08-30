@@ -81,7 +81,7 @@ for p in "$WORKTREE" "$VENV"; do
 done
 
 echo "[new_worktree] git worktree add $WORKTREE $SHA"
-git -C "$TOPLEVEL" worktree add "$WORKTREE" "$SHA"
+git -C "$MAIN_CHECKOUT" worktree add "$WORKTREE" "$SHA"
 
 echo "[new_worktree] uv venv --python 3.11 --seed $VENV"
 # FOOTGUN 1: a SEEDLESS venv (no --seed) carries no `pip` binary at all -- a later
