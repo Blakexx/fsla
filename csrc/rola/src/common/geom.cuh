@@ -10,6 +10,9 @@
 
 #include <cstdint>
 
+#include "common/arch_caps.cuh"
+#include "common/static_for.cuh"
+
 namespace rola::carry {
 
 //: the deepest topology the block is built for: every per-level field's array bound.
@@ -17,6 +20,11 @@ constexpr int kGeomMaxLevels = 4;
 
 //: THE PAGE GRANULE, here because the owner span law is CONSTRAINED by it.
 static constexpr int kAtomLeaves = 16;
+
+//: the page rectangle's bit width: the trailing canonical bits one page holds.
+constexpr int kAtomLeavesBits = 4;
+static_assert((1 << kAtomLeavesBits) == kAtomLeaves,
+              "the page rectangle's bit width and its leaf count are one fact");
 
 //: THE BIT COUNT OF A POWER OF TWO, and -1 otherwise -- a REFUSAL, never a rounding.
 constexpr int geom_ilog2(int x) {
@@ -27,9 +35,22 @@ constexpr int geom_ilog2(int x) {
 }
 
 //: THE ARCH'S PRIMARY CONSTANTS, IN DERIVATION ORDER. -- see docs/internals/common/geom.md#arch-constants
-constexpr int leaves_per_sm(int dv) { return 16384 / dv; }
+
+//: THE STATE'S SHARE of the SM's register file. -- see docs/internals/common/geom.md#state-fraction
+constexpr int kStateFileNumerator = 1, kStateFileDenominator = 4;
+
+//: fp32 state elements one SM's register file holds under that share.
+constexpr int state_elems_per_sm(const denseref::arch::Caps& c) {
+  return c.regs_per_sm * kStateFileNumerator / kStateFileDenominator;
+}
+
+constexpr int leaves_per_sm(int dv) { return state_elems_per_sm(denseref::arch::kCaps) / dv; }
 
 constexpr int warps_per_sm = 8;
+
+//: THE CLUSTER LEVEL: CTAs of one cluster partition the cluster's box, and every cluster
+//: term folds away at one. -- see docs/internals/common/geom.md#cluster
+constexpr int kClusterCtas = 1;
 
 constexpr int leaves_per_warp(int dv) { return leaves_per_sm(dv) / warps_per_sm; }
 
@@ -407,6 +428,20 @@ inline const char* derive_carry_geom(int D, const int* width, int bc, int dv, ui
 //: THE TRANSIT'S ROW MAP: the region is indexed by the OWNER-LOCAL CANONICAL INDEX, so
 //: each side reaches a leaf through its OWN base word and its own member's fixed shifts.
 //: -- see docs/internals/common/geom.md#row-map
+//: A SIDE'S SLOT AS THE OWNER-LOCAL CANONICAL INDEX -- one law, three readers.
+//: -- see docs/internals/common/geom.md#local-row
+template <int D, int BC>
+__host__ __device__ inline int geom_local_row(const SideGeom& s, int strm, int P) {
+  int row = 0;
+  rola::static_for<D>([&](auto Lc) {
+    constexpr int l = decltype(Lc)::value;
+    const int off = ((strm >> s.grid_div_bits[l]) & (s.grid[l] - 1)) << s.sub_bits[l];
+    const int dig = (P >> s.sub_shift[l]) & ((1 << s.sub_bits[l]) - 1);
+    row += (off + dig) << owner_run_shift(D, BC, l);
+  });
+  return row;
+}
+
 __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom& s, int strm,
                                             int P) {
   int row = 0;
@@ -417,6 +452,14 @@ __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom
     row += (off + dig) << g.run_shift[l];
   }
   return sb_swizzle(row);
+}
+
+//: THE ABSOLUTE DIGIT of level `l` for owner `O`'s local slot.
+//: -- see docs/internals/common/geom.md#digit
+template <int D, int BC>
+__host__ __device__ inline int geom_digit(const CarryGeomRT& g, int O, int local, int l) {
+  return (((O >> g.owner_div_bits[l]) & (g.grid[l] - 1)) << owner_span_bits(D, BC, l))
+         + ((local >> owner_run_shift(D, BC, l)) & (owner_span(D, BC, l) - 1));
 }
 
 //: THE CANONICAL LEAF of owner `O`'s local slot, and the atom that holds it.

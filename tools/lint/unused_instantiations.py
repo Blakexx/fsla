@@ -55,9 +55,18 @@ not match its own textual declaration; none exist in this codebase today.
 common English/C substring of an unrelated symbol (none observed: kernel names
 here are long and specific, e.g. `carry_kernel`, `chunk_facts_tables`).
 (c) manifests are committed at the LAST ratify, not this instant -- a kernel
-added since the last milestone and not yet ratified reads as unused; that is
-exactly the "G5 deletes it" backstop working as designed on stale state, and
-is reported as such rather than silently trusted.
+added since the last milestone and not yet ratified reads as unused. That state
+is REAL and is reported, but it is not the state this check gates on, because
+ratification is a per-milestone act and not a per-stage one (KERNEL_STANDARDS
+section 7): a stage that adds a kernel would otherwise have to write a
+milestone manifest to commit at all. The two states are told apart by the
+DECLARATION, which is data and is current: a kernel whose family declares at
+least one arm is one the shipped set says gets instantiated, so its absence
+from the manifests is a ratification the milestone owes and is printed as
+`pending ratification`; a kernel no declaration would instantiate is the
+closed world leaking, and that is the gating finding. The manifest-versus-
+binary half of the same question is `setup.py`'s post-build check and
+`tools/ratify.py --check`, both of which run against a real build.
 """
 from __future__ import annotations
 
@@ -164,6 +173,31 @@ def self_test() -> int:
     return 0
 
 
+#: THE FAMILIES WHOSE MEMBERSHIP IS DECLARED AS DATA, and the file that declares each.
+#: A `csrc/rola/src/<family>/` directory whose declaration names at least one arm HAS a
+#: shipped instantiation by construction, whatever the manifests currently record.
+DECLARATIONS = {"carry": MANIFEST_DIR / "shipped_set.json"}
+
+
+def declared_families() -> dict:
+    """`{family: arm count}` for every family whose declaration names at least one arm."""
+    out = {}
+    for family, path in DECLARATIONS.items():
+        if not path.is_file():
+            continue
+        blob = json.loads(path.read_text())
+        rows = len(blob.get("shipped", [])) + len(blob.get("test", []))
+        if rows:
+            out[family] = rows
+    return out
+
+
+def family_of(path: Path) -> str:
+    """The `csrc/rola/src/<family>/` directory a source sits in, or the empty string."""
+    parts = path.relative_to(CSRC).parts
+    return parts[1] if len(parts) > 2 and parts[0] == "src" else ""
+
+
 def manifest_demangled_from_entries(entries: dict) -> list[str]:
     mangled = [key.split(":", 1)[1] for key in entries]
     proc = subprocess.run(["c++filt"], input="\n".join(mangled), capture_output=True, text=True)
@@ -182,19 +216,33 @@ def main() -> int:
     templates = declared_global_templates(CSRC)
     demangled = manifest_demangled(MANIFEST_DIR)
 
-    findings = []
+    declared = declared_families()
+    findings, pending = [], []
     for path, lineno, name in templates:
-        if not name_present(name, demangled):
-            findings.append(f"{path.relative_to(ROOT)}:{lineno}: template kernel "
-                             f"'{name}' not found (mangled) in any manifest under "
-                             f"tools/manifests/ -- G5 deletes it if this holds at "
-                             f"the next ratify")
+        if name_present(name, demangled):
+            continue
+        where = f"{path.relative_to(ROOT)}:{lineno}: template kernel '{name}'"
+        family = family_of(path)
+        if family in declared:
+            pending.append(f"{where} is not in any manifest yet, and the `{family}` "
+                            f"declaration names {declared[family]} arm(s) for it: the "
+                            f"manifests predate this kernel and the next MILESTONE "
+                            f"ratification is what closes the world over it "
+                            f"(tools/ratify.py --write). Reported, not gating.")
+            continue
+        findings.append(f"{where} not found (mangled) in any manifest under "
+                        f"tools/manifests/, and no declaration names an arm that would "
+                        f"instantiate it -- G5 deletes it if this holds at the next "
+                        f"ratify")
 
     print(f"unused_instantiations: {len(templates)} template __global__ function(s) "
           f"checked against {len(demangled)} manifest symbol(s)")
     for f in findings:
         print(f"  {f}")
-    print(f"unused_instantiations: {len(findings)} finding(s)")
+    for f in pending:
+        print(f"  [pending ratification] {f}")
+    print(f"unused_instantiations: {len(findings)} finding(s), "
+          f"{len(pending)} pending ratification")
 
     device_templates = declared_device_templates(CSRC)
     print(f"unused_instantiations: {len(device_templates)} template __device__ "

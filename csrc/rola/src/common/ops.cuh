@@ -83,6 +83,13 @@ __device__ __forceinline__ void stage_tile(SmemAddr dst, const void* src) {
   asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(dst), "l"(src));
 }
 
+//: THE SAME COPY WITH ITS SOURCE RUN PREDICATED: a dead quantum zero-fills and reads
+//: nothing. -- see docs/internals/common/ops.md#stage-tile-if
+__device__ __forceinline__ void stage_tile_if(SmemAddr dst, const void* src, bool live) {
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(dst), "l"(src),
+               "r"(live ? kStageBytes : 0));
+}
+
 //: THE SAME COPY AT A NARROWER QUANTUM. -- see docs/internals/common/ops.md#stage-run
 template <int Bytes>
 __device__ __forceinline__ void stage_run(SmemAddr dst, const void* src) {
@@ -103,6 +110,32 @@ __device__ __forceinline__ void stage_wait() {
 }
 
 __device__ __forceinline__ void rendezvous() { __syncthreads(); }
+
+// ------------------------------------------------------------------- edges
+
+//: A SPLIT EDGE'S OBJECT: one `mbarrier` word, arrived at and waited on separately so a
+//: cover slot fits between. -- see docs/internals/common/ops.md#edge
+using EdgeState = uint64_t;
+
+__device__ __forceinline__ void edge_init(SmemAddr a, int arrivals) {
+  asm volatile("mbarrier.init.shared.b64 [%0], %1;" ::"r"(a), "r"(arrivals) : "memory");
+}
+
+__device__ __forceinline__ void edge_arrive(SmemAddr a) {
+  asm volatile("{ .reg .b64 s; mbarrier.arrive.shared.b64 s, [%0]; }" ::"r"(a) : "memory");
+}
+
+//: `phase` alternates 0/1 per completion of this edge; the caller carries its own count.
+__device__ __forceinline__ void edge_wait(SmemAddr a, uint32_t phase) {
+  asm volatile(
+      "{ .reg .pred P;\n"
+      "  SPIN%=: mbarrier.test_wait.parity.shared.b64 P, [%0], %1;\n"
+      "  @P bra DONE%=;\n"
+      "  bra SPIN%=;\n"
+      "  DONE%=: }" ::"r"(a),
+      "r"(phase)
+      : "memory");
+}
 
 //: `rendezvous_group(id, n)` -- a barrier over `n` threads that arrive at the -- see docs/internals/common/ops.md#rendezvous-group
 __device__ __forceinline__ void rendezvous_group(int id, int n) {

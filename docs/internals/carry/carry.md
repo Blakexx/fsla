@@ -1,0 +1,68 @@
+# `carry/carry.cu` — the carry family's host seam
+
+Mirrors `csrc/rola/src/carry/carry.cu`, `carry/carry_arm.cuh` and
+`carry/carry_arm_abi.cuh`. The body has its own page, `carry_kernel.md`.
+
+<a id="refusals"></a>
+## The kernel boundary refuses; it never translates
+
+KERNEL_STANDARDS' two-contracts addendum: the API above accepts any shape and serves it by
+padding, and this boundary accepts only the descriptor's strict shape. `refuse_shape` and
+`refuse_operand` are the whole of it — the page rectangle, the depth, every level width a
+power of two at or above the page granule, a value width that is a power of two at or above
+sixteen, a launch shape the family builds, and then every operand's dtype, contiguity and
+exact extent. A carried state is refused unless its two planes are the SAME pointer, because
+the exit sweep stores only the pages this call writes and two planes would silently drop the
+rest.
+
+The closed-world arch refusal is the first statement of every entry, ahead of any of this: a
+device that was never measured outranks a shape that was never built.
+
+The addressing block is derived here, once, by the same `derive_carry_geom` the host mirror
+`carry_geometry` calls, and its refusal string is passed through verbatim.
+
+**The carve order is a runtime input the surface cannot yet name.** The stream schedule makes
+the per-side level order a launch input, and the mode word is what expresses it; the launch
+surface carries no such field, so this entry derives with every level declared dense on both
+sides. That is a lawful point of the derivation — the two sides then share one order — and
+it is a shape question, not an arithmetic one: the carve decides which leaves a warp owns,
+never what the fold computes.
+
+<a id="launch"></a>
+## The launch
+
+One CTA per `(box, batch-head)`: `grid = (owners, BH)`, `block = warps_per_cta * 32`,
+dynamic shared memory from the box plan's ledger. The opt-in above 48 KB is done once per
+arm behind a function-local flag. The launch bound is `(threads, 1)` — one CTA per SM is the
+design point on every architecture, not a measured outcome, and the launch table says the
+same thing in the same words.
+
+The parameter block reaches the kernel as a GRID CONSTANT. The body reads its fields through
+a reference from every inlined stage, and without that qualifier a reference to a by-value
+kernel parameter forces a per-thread local copy of the whole block — 816 bytes of stack
+frame and two hundred local accesses, in the measurement that found it.
+
+<a id="census"></a>
+## The build stamp and the census
+
+`carry_build_stamp` returns the device's own answer first — the page granule and the warps
+per SM, the capability digest the device code compiled against, the state's share of the
+register file, and the cluster size — read back off a kernel THIS binary compiled. A path or
+a content hash could be produced by a stale extension; this could not.
+
+After the head come the per-arm census rows: the register count, the local size, the shared
+bytes, the maximum threads and the binary version from `cudaFuncGetAttributes`, then the box
+plan's own derived numbers — the threads, the box's leaves, its pages, the accumulator's
+register count, the state elements a warp holds, the state registers per lane, the segment
+slot count and the generated member count. The first group is what the compiler did; the
+second is what the design says it should have done, and having both in one vector is what
+makes a disagreement visible.
+
+## One arm, one translation unit
+
+`tools/gen_shards.py` emits one `.cu` per arm group from the declared shipped set; each
+defines its arms only when this build's generated selection header names them, so an
+arm-subset build is a FILE subset and the arms compile in parallel rather than serially
+inside one front end. The dispatch translation unit here holds no arm body — it declares
+the ABI and calls it — which is what keeps a subset build from instantiating an arm locally
+and leaving the shards doing nothing.

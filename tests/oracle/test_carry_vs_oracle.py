@@ -6,13 +6,13 @@ THE GATE IS THE fp64 ORACLE, NOT A SHIPPED KERNEL. There is no bit-identity targ
 across a redesign; the only defensible reference is the arithmetic itself, and the band
 is the repository's one bf16 family bound.
 
-THESE CELLS ARE RED BY DESIGN AND STAY RED (card `development/queue/C_CLEAN_SLATE.md`,
-"TEST-DRIVEN"). The carry kernel has no implementation on this line, so every cell below
-fails at the extension's boundary for that ONE reason -- not a skip, not an xfail, not a
-collection error, and not a designed refusal.
-`test_every_carry_cell_fails_for_the_one_reason` asserts exactly that, and it is the
-file's own honesty gate: the day a cell fails for a different reason, something other
-than "the kernel is not built" is wrong.
+THE READOUT IS NOT BUILT ON THIS LINE. The kernel carries the frame, the state slice and
+the fold; PHASE 1's four slots and the two transit legs are named empty stages, so ``num``
+and ``den`` come back as the zeros the seam allocated. Every cell that asserts a readout is
+therefore RED and stays red until the readout lands (card
+`development/queue/C_CLEAN_SLATE.md`, "TEST-DRIVEN": no skips, no xfails). The cells whose
+readout is zero BY THE ARITHMETIC -- a single window over an entry state nothing reads --
+are green now and are the executable spec of everything the frame does own.
 
 THE CELLS ARE DATA (`benchmarks/cells/carry_cells.json`), read through
 `benchmarks.cells`, so the oracle tier, the probe and the benches name one set of cells
@@ -28,12 +28,10 @@ window, which the reference mirrors because the inter/intra split is defined on 
 """
 from __future__ import annotations
 
-import re
-
 import pytest
 import torch
 
-from benchmarks.cells import carry_call, carry_cells, realize
+from benchmarks.cells import by_name, carry_call, carry_cells, realize
 from rola.ops import carry as carry_ops
 from rola.ops.paging import bytes_equal
 from tests.oracle import reference
@@ -42,16 +40,15 @@ from tests.oracle.tolerances import BF16_RTOL
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
-#: THE ONE REASON, as `csrc/rola/rola_api.cpp`'s `kCarryUnimplemented` spells it.
-NO_IMPLEMENTATION = re.compile(r"no implementation on this line")
-
 ORACLE_CELLS = carry_cells("oracle")
 IDS = [cell.name for cell in ORACLE_CELLS]
 
 
-def run(spec, state_in=None, state_out=None, page_table=None, bh=1):
+def run(spec, state_in=None, state_out=None, page_table=None, bh=1, activity=None):
     drawn, call = carry_call(spec, bh=bh)
     routes, v = call.pop("routes"), call.pop("v")
+    if activity is not None:
+        call["activity"] = activity
     if state_out is None:
         state_out = carry_ops.state_plane(call["descriptor"], bh)
     num, den = carry_ops.carry_forward(routes, v, state_in=state_in, state_out=state_out,
@@ -74,19 +71,7 @@ def check(spec, num, den, plane, want, bh=1):
                     s_ref.reshape(bh, spec.N, spec.dv + 1)) < BF16_RTOL
 
 
-# ------------------------------------------------------------- the one reason
-
-@pytest.mark.parametrize("spec", ORACLE_CELLS, ids=IDS)
-def test_every_carry_cell_fails_for_the_one_reason(spec):
-    """THE FILE'S HONESTY GATE. Every cell in this file drives a LAWFUL call, so the only
-    thing that may refuse it is the absent implementation.
-
-    A cell that failed for a SHAPE reason would mean the registry declares something the
-    kernel boundary does not admit -- a contract error, not a missing body -- and a cell
-    that PASSED would mean it never reached the kernel at all."""
-    with pytest.raises(RuntimeError, match=NO_IMPLEMENTATION):
-        run(spec)
-
+# ------------------------------------------------------------- the registry itself
 
 def test_the_registry_declares_only_lawful_shapes():
     """NON-VACUITY for the gate above: every cell's descriptor, launch shape and
@@ -218,3 +203,88 @@ def test_the_decomposition_is_exact():
     y, _ = naive_rola(v, read, write, gain, topo, None, output_final_state=False)
     mine = tot[0] / (tot[1][..., None] + READOUT_EPS)
     assert relative(mine, y) < 1e-10
+
+
+# ------------------------------------------- what the frame owns, against the oracle
+
+def _honest_activity(drawn, descriptor, bh=1):
+    """The activity bits a facts pass would emit for this draw: a page is READ when some
+    token's read amplitudes reach one of its leaves, WRITTEN likewise.
+
+    The registry's default is the conservative "every page, both bits", which is the truth
+    a caller with no facts pass may state; this is the tight one, and the two must give
+    the same answer -- the bits are permission to skip, never a change of arithmetic."""
+    from rola.ops.carry import ACTIVITY_READ, ACTIVITY_WRITTEN, PAGE_LEAVES
+
+    read, write, _, _ = drawn.doubles()
+    live = torch.zeros(descriptor.N // PAGE_LEAVES, dtype=torch.uint8, device="cuda")
+    for side, bit in ((read, ACTIVITY_READ), (write, ACTIVITY_WRITTEN)):
+        pages = reference.leaf_product(side, descriptor.B).reshape(-1, descriptor.N)
+        touched = (pages != 0).any(0).reshape(-1, PAGE_LEAVES).any(-1)
+        live |= touched.to(torch.uint8) * bit
+    return live.expand(bh, -1).contiguous()
+
+
+def _occupied_plane(spec, bh=1):
+    """A state plane carrying an arbitrary LAWFUL state: a random fp32 accumulator put
+    into the stored split-plane form, so every page holds a state some sequence could
+    have written rather than bit patterns no fp32 accumulator ever produces."""
+    from rola.ops.paging import to_split_planes
+
+    desc = spec.descriptor()
+    gen = torch.Generator(device="cuda").manual_seed(spec.seed)
+    logical = torch.randn((bh, desc.N // carry_ops.PAGE_LEAVES, carry_ops.PAGE_LEAVES, desc.cols),
+                          device="cuda", generator=gen)
+    return to_split_planes(logical).reshape(logical.shape).contiguous()
+
+
+@pytest.mark.parametrize("name", ["identity-passthrough-dense", "identity-passthrough-paged"])
+def test_a_window_with_nothing_live_passes_the_state_through_bit_for_bit(name):
+    """THE RECURRENCE'S IDENTITY. No token reads and no token writes, so the state is the
+    state: not close to it, THE SAME BYTES.
+
+    Both ends of the entry sweep are covered. Under the tight activity bits the box is
+    idle and the prologue dies before it touches shared memory; under the conservative
+    bits the box loads its pages, folds nothing and stores them back, and the split-plane
+    round trip has to be exact for the bytes to survive. A kernel that rounded anywhere in
+    its state path fails the second case while passing the first."""
+    spec = by_name(name)
+    desc = spec.descriptor()
+    drawn = realize(spec)
+    pages = desc.N // carry_ops.PAGE_LEAVES
+    table = None
+    if spec.backing == "paged":
+        gen = torch.Generator(device="cuda").manual_seed(spec.seed)
+        slots = torch.argsort(torch.rand(pages, device="cuda", generator=gen))
+        table = slots.to(torch.int32).reshape(1, pages)
+
+    for activity in (_honest_activity(drawn, desc), None):
+        plane = _occupied_plane(spec)
+        before = plane.clone()
+        _, num, den, _ = run(spec, state_in=plane, state_out=plane, page_table=table,
+                             activity=activity)
+        assert bytes_equal(plane, before), (
+            f"the state moved through a window with nothing live (activity="
+            f"{'tight' if activity is not None else 'conservative'})")
+        assert not num.any() and not den.any(), "a dead read side read something"
+
+
+def test_one_token_writing_one_leaf_is_the_oracles_single_deposit():
+    """THE FOLD'S SINGLE-TILE POINT, against the fp64 recurrence.
+
+    One token, one-hot on digit zero of every write level, so the whole window's deposit is
+    one leaf receiving ``gain * [v, 1]``. It is the smallest cell that pins every map the
+    fold composes at once: the token's position inside its segment (the k step), the value
+    channels (the accumulator's m), the leaf (its n) and the mass column -- a permutation
+    of any one of them sends the deposit somewhere else or zeroes it.
+
+    The readout is asserted too, and its expected value is ZERO by the arithmetic and not
+    by omission: a single window reads the state it ENTERED with, and this cell enters with
+    nothing."""
+    spec = by_name("single-deposit")
+    drawn, num, den, plane = run(spec)
+    check(spec, num, den, plane, ref(drawn))
+    assert not num.any() and not den.any()
+    canon = canonical_from_plane(plane)[0]
+    assert canon[0].any(), "the single deposit did not land"
+    assert not canon[1:].any(), "the single deposit landed on more than one leaf"
