@@ -3,11 +3,11 @@ name: rola-oracle-tests
 description: Adding or running an fp64-oracle cell for the carry kernel — Cell/alt_cell fixtures, GPU-locked pytest, standing failures, re-deriving expectations from the law
 ---
 The fp64 oracle is the truth (KERNEL_STANDARDS §10, "Oracle + conformance diff are the crown
-jewels"). Read `tests/k31/test_carry_vs_oracle.py`'s own module docstring — it states the gate is
+jewels"). Read `tests/oracle/test_carry_vs_oracle.py`'s own module docstring — it states the gate is
 the fp64 oracle, not the shipped kernel, because there is no bit-identity target across a redesign,
 only the arithmetic.
 
-## Adding a cell (`tests/k31/fixtures.py`)
+## Adding a cell (`tests/oracle/fixtures.py`)
 Read `Cell`'s signature and `ref_levels()` directly for the current parameter set and what it draws.
 The key design points to preserve when adding a new cell:
 - `ref_levels()` must return the fp64 doubles of the ROUNDED (bf16-cast) operands, never the raw
@@ -24,17 +24,20 @@ The key design points to preserve when adding a new cell:
   assume a parity rule without checking it, since it's a design choice recorded there, not a law.
 
 ## Running under the GPU lock
-GPU work is serialized under `flock /tmp/rola_gpu.lock` — every campaign, not just this suite (see
-`development/operations/OPERATIONS.md`). Run a NAMED file, never the bare directory:
+GPU work is serialized by the shared `gpu_lock()` primitive (`tools/gpu_lock.py`, K46) — every
+campaign, not just this suite (see `development/operations/OPERATIONS.md`). pytest takes it itself
+via a session-scoped fixture in `tests/conftest.py`; invoke BARE, never wrap the command in an
+external `flock` on the same lock path (self-deadlocks — K38). Run a NAMED file, never the bare
+directory:
 ```bash
-flock /tmp/rola_gpu.lock env TMP=/tmp TEMP=/tmp TMPDIR=/tmp CUDA_HOME=/usr/local/cuda \
+env TMP=/tmp TEMP=/tmp TMPDIR=/tmp CUDA_HOME=/usr/local/cuda \
   PYTHONPATH=. TORCH_EXTENSIONS_DIR=/tmp/<task>-ext <venv>/bin/python -m pytest \
   <exact test file(s)> -x -q
 ```
 `tests/test-gate-mechanical-rules`: the global hook DENIES an unscoped `pytest tests/` — VRAM
 freezes have come from exactly that. Briefs must name the exact file(s); never widen a gate command
 past what the stage touched. Add a `--timeout` (pytest-timeout or a shell `timeout N`) around any
-GPU run you don't already trust — a hang here blocks the whole flock queue for every other agent.
+GPU run you don't already trust — a hang here blocks the whole lock queue for every other agent.
 
 ## Requesting an arm — `require_arm`, never a bare dispatch call
 Read `require_arm`'s docstring/signature for its current parameters. It SKIPS (and names the exact
@@ -60,4 +63,25 @@ value from the LAW (the fold/decay/routing math) each time a mechanism changes, 
 kernel's SEAM output against the CENSUS (`rola.ops.carry.arms()`) — a seam that silently drifted
 from the census row it claims to serve is the shared-router-bug shape (`matching-the-naive
 antipattern`): validating a variant only against itself, never against the one canonical ground
-truth (the fp64 reference in `tests/k31/reference.py`).
+truth (the fp64 reference in `tests/oracle/reference.py`).
+
+## The compute-sanitizer named gate (K39)
+`tools/sanitize_oracle.py` runs `racecheck`/`synccheck`/`initcheck` (memcheck already ran, ad hoc,
+on paging — `docs/testing.md`'s "sanitizer lane") against one named cell per family (carry, intra,
+decode), each its own `compute-sanitizer`-wrapped pytest process. Invoke `sanitize_oracle.py` BARE
+(K46): it takes `gpu_lock()` itself, once, for the whole run, and the reentrant marker lets the
+wrapped pytest subprocess's own conftest fixture see the lock already held rather than deadlock on
+it. Run it — it is a SCHEDULED lane, not a PR gate (the tools cost one to two orders of magnitude) —
+whenever a change touches shared-memory publish/consume protocols or barrier placement (the S2d
+ring's bug class), not on every commit.
+
+## The hypothesis `cells` strategy (K39)
+`tests/oracle/test_carry_hypothesis_cells.py` draws (widths, k_tok, seed, cohort, d_v) over the
+DECLARED arm/`d_v` space via a `st.composite` strategy, opt-in under the `hypothesis_cells` marker
+(deselected by default alongside `bench` — `pyproject.toml`'s `addopts`). A SUPPLEMENT to the fixed
+named cells above, never a replacement — run it with `-m hypothesis_cells` when you want shrinking
+to find a minimal failing cell automatically, not as part of the default battery.
+
+- THE RUN RECIPE IS: plain `pytest <file>` from the worktree venv — the conftest takes the GPU lock itself
+  (K46); wrapping it in `flock` SELF-DEADLOCKS (G2c lost 120 s to it). Any `flock … pytest` line in an
+  older section of this skill is stale.
