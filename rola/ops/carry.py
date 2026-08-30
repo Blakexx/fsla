@@ -1,98 +1,428 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""K31 R1 -- the box-native CARRY family's python seam.
+"""THE CARRY LAUNCH SURFACE -- the contract, written before the body exists.
 
-A BRING-UP SURFACE, not a shipped path. Nothing in ``rola.engine`` or
-``rola.layer`` reaches this module; the shipped chunk consumer stays the baseline
-until this family beats it cell for cell (the study's rung law, section 6).
+Card `development/queue/C_CLEAN_SLATE.md` (C1): the interfaces are written and tested
+against a refusing binding, and they state the FINAL form of the line, not a bring-up
+form to be widened later. Nothing here dispatches: `csrc/rola/src/carry/` was cleared
+at C0 and C3-K0 builds the body, so every entry below reaches the extension's refusing
+stub and says so by name.
 
-Symbols, each at first use: ``widths`` = the per-level digit counts (``B`` each),
-``k`` = the uniform sub-box span per level, ``m`` = the capacity multiplier,
-``W`` = the global window length in tokens, ``C`` = the private batch's token
-tile, ``BC = prod_l k*m_l`` = the leaves one owner holds, ``lambda`` = a leaf's
-LATTICE index (the R0 spec's LATTICE-1), ``ell`` = its canonical MSB-first
-mixed-radix index.
+THE TWO CONTRACTS (KERNEL_STANDARDS R13 addendum, "TWO CONTRACTS, ONE TRANSLATOR").
+The API above this module accepts any shape -- any logical level width ``b_l >= 2``,
+any logical value width ``d_v``, any length ``L`` -- and serves it by PADDING at the
+routing producer and at the value projection. This module is the KERNEL boundary: it
+accepts only the descriptor's strict shape and REFUSES everything else. It never pads,
+never masks and never widens a call to fit an arm.
+
+Symbols, each at first use. ``D`` = routing depth (levels). ``B_l`` = the PADDED digit
+count of level ``l`` (a power of two at or above 16; the descriptor's ``B``).
+``N = prod_l B_l`` = leaf capacity. ``DV`` = the padded value width (a shipped one).
+``BH`` = batch times heads. ``L`` = tokens. ``cols = DV + 1``, the mass column riding
+beside the value columns. ``warps_per_cta`` = the launch shape's one free field, the
+warps one CTA runs (K50: ``{8, 4}``, 8 shipped and 4 the latency diagnostic).
+``leaves_per_warp`` = the warp sub-box's leaf count -- register shape, and therefore a
+consequence of ``DV`` rather than a dial. ``BC`` = ``leaves_per_warp * warps_per_cta``,
+the CTA box, derived at launch and never an axis. The window ``W``, the private token
+tile ``C`` and the stream count ``S`` are NOT on this surface: K50's axis law makes
+``W`` a kernel constant, ``C`` a file constant and ``S`` derived, so a caller cannot
+name them and a short sequence runs a partial window inside the kernel.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
+from rola._state import MIN_LEVEL_WIDTH, SPLIT_PLANE_DTYPE, StateFormat
 from rola.ops import lattice
 from rola.ops._ext import extension
 
-#: THE SEAM'S DECLARATION SCALAR: which built (carve, EXECUTOR MAP) an arm is.  A
-#: stream owns a box, an executor (a warp) runs streams, and the two counts are
-#: independent dials, so an arm is not named by its carve alone.
-#:
-#: ``LEAF_SPLIT`` is the ruled carve (K33 clean-sheet tier A, measured 2026-08-21) --
-#: a stream owns an affine rectangle of the owner's digits and all ``d_v + 1``
-#: channels -- run at ONE warp per stream, which is the ONE executor map the
-#: transplanted M1a body builds (K35 M1P).  The two CONTAINER values, the PARK bit and
-#: the wide value plane named arms whose bodies M1P deleted; each returns as its own
-#: stage, with its constant restored beside its arm row.  A caller asking for one now
-#: reaches the seam's refusal, which names the whole key.
-LEAF_SPLIT = 1
+#: The value widths a shipped binary carries (K50: ``DV`` is a FREE AXIS because it is
+#: the register shape). A logical ``d_v`` outside the set is served by padding at the
+#: value projection, above this boundary -- never by a kernel that masks.
+SHIPPED_DV: tuple[int, ...] = (32, 64, 128)
 
-#: THE VALUE WIDTH IS PART OF AN ARM'S KEY (K35 S3b) and is a template parameter of
-#: both carry bodies.  M1P builds ONE width: the ``d_v`` dial returns as its own stage.
-D_V = 64
+#: The launch shapes the arm key admits (K50: ``warps_per_sm`` splits into
+#: ``ctas_per_sm x warps_per_cta``). 8 is the shipped shape -- one CTA per SM, the
+#: register file filled exactly; 4 is the two-CTA latency diagnostic and ships nowhere.
+WARPS_PER_CTA: tuple[int, ...] = (8, 4)
+SHIPPED_WARPS_PER_CTA = 8
 
-#: the ``(k, m)`` capacity that reaches the built box size on the flagship topology,
-#: ``BC = 128``.
-CAP_BC128 = 8
+#: The state a warp holds is the register file's share of it, so the leaf count per
+#: warp is the budget divided by the value width: 32 leaves at ``DV = 64`` (two m-tiles,
+#: the ldmatrix granule) and half that at ``DV = 128`` (K50's four open items, item 1).
+_LEAVES_PER_WARP_BUDGET = 32 * 64
 
-#: the flagship window, and the conformance cell's -- the architecture doc's
-#: two-constraint sizing (integration rung I1(b)); `rola.ops.intra` names the
-#: SAME two, because the two kernels run one window grid.
-WINDOW = 384
-WINDOW_WIDE = 512
-WINDOW_SMALL = 64
+#: THE KERNEL'S WINDOW, in tokens (K50's axis law: ``W`` is CONSTANT and kernel
+#: internal; a short sequence runs a partial window). It is readable, and never an
+#: argument: the inter/intra decomposition is DEFINED on this grid, so the fp64
+#: reference has to mirror the same number or the two terms would not be one recurrence.
+WINDOW = 512
 
-#: the carry kernel's device build magic, mirrored from `carry_kernel.cuh`. It
-#: moves whenever that source does, which is what makes reading it back off the
-#: DEVICE an extension-trap check rather than a path check.
-BUILD_MAGIC = 31010026
+#: One page is the trailing ``log2(16)`` canonical leaf bits, so a page is 16 leaf rows
+#: and every lawful ``N`` is a whole number of them.
+PAGE_LEAVES = lattice.MMA_K_QUANTUM
 
-#: the reverse family's own device magic, mirrored from `backward_kernel.cuh`.
-BWD_BUILD_MAGIC = 31040001
-
-MMA_K_QUANTUM = lattice.MMA_K_QUANTUM
+#: The activity byte's two bits, per page, as the facts pass emits them and the kernel
+#: reads them (P80b): a page is loaded iff resident and (READ or WRITTEN), stored iff
+#: WRITTEN.
+ACTIVITY_WRITTEN = 1
+ACTIVITY_READ = 2
 
 
-def box_shape(widths, k: int, m: int):
-    """``(m_l, s_l, g_l, BC, owners)`` for the ``(k, m)`` box, with K2 ASSERTED.
+class CarryRefusal(ValueError):
+    """A KERNEL-BOUNDARY refusal: this call names a shape the kernel does not address.
 
-    The derivation is `rola.ops.lattice`'s -- the ONE host authority over the leaf
-    order, shared with the decode family, because the two families write and read one
-    plane and two derivations disagree exactly when one is wrong. What this wrapper
-    adds is the carry family's own gate: an owner's box is a whole number of atoms, so
-    a fold bucket never straddles two of them and the state plane's
-    ``[BH, N/16, 16, cols]`` shape is a re-blocking of the owner grid.
+    Distinct from the API's own envelope refusal, which is where a servable-by-padding
+    shape is translated. Reaching this class means the translator did not run, or
+    produced something the descriptor does not describe.
     """
-    out = lattice.box_shape(widths, k, m)
-    assert out[3] % MMA_K_QUANTUM == 0, (
-        f"K2: an owner box of {out[3]} leaves must be a whole number of "
-        f"{MMA_K_QUANTUM}-leaf atoms")
-    return out
 
 
-def lattice_of_canonical(widths, k: int, m: int, device="cuda") -> torch.Tensor:
-    """``pi``: an ``[N]`` int64 tensor with ``pi[ell] = lambda`` (R0 spec section 2.3).
+def leaves_per_warp(DV: int) -> int:
+    """The warp sub-box's leaf count at this value width -- register shape, derived."""
+    return _LEAVES_PER_WARP_BUDGET // int(DV)
 
-    A permutation, and only a permutation -- `pi` is a fixed BIT PERMUTATION of the
-    leaf index, so this tensor is a convenience for the host seam and never a table
-    the device consults.  ``lambda = O*BC + local``, with ``O`` the owner index in
-    mixed radix over ``g_l`` and ``local`` the owner's run offsets in mixed radix
-    over ``s_l``.  `rola.ops.lattice.permutation` is the derivation; this entry adds
-    the carry family's K2 gate.
+
+def box_leaves(DV: int, warps_per_cta: int) -> int:
+    """``BC``: the CTA's box, ``leaves_per_warp * warps_per_cta``. Never an axis."""
+    return leaves_per_warp(DV) * int(warps_per_cta)
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchShape:
+    """The launch's one free field, and what the arm key reads off it.
+
+    ``warps_per_cta`` is COMPILE-TIME (K50's 2x4 ruling): the CTA's box is the
+    ownership unit and is carved per side among ITS warps, so the member set is
+    ``f(D, leaves_per_warp, warps_per_cta)`` and the value is part of the arm key
+    ``(D, DV, warps_per_cta)``, not a runtime argument.
     """
-    box_shape(widths, k, m)
-    return lattice.permutation(widths, k, m, device=device)
+
+    warps_per_cta: int = SHIPPED_WARPS_PER_CTA
+
+    def __post_init__(self) -> None:
+        if self.warps_per_cta not in WARPS_PER_CTA:
+            raise CarryRefusal(
+                f"warps_per_cta={self.warps_per_cta} is not a launch shape this family "
+                f"builds; the set is {WARPS_PER_CTA} (K50: 8 = one CTA per SM, the "
+                f"shipped shape; 4 = the two-CTA latency diagnostic).")
+
+    @property
+    def threads(self) -> int:
+        return self.warps_per_cta * 32
+
+
+@dataclass(frozen=True, slots=True)
+class RoutePlanes:
+    """The routing operands as the kernel reads them: two packed planes and the gain.
+
+    ``read``/``write`` are ``[BH, L, sum_l B_l]`` bf16 -- the levels concatenated in
+    canonical order, which is the layout `pack_side` produces and both kernel families
+    consume. ``gain`` is ``[BH, L]`` bf16, the write side's per-token scale.
+    """
+
+    read: torch.Tensor
+    write: torch.Tensor
+    gain: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
+class LivenessWords:
+    """The class-1 liveness words, one block per side (C1b owns their derivation).
+
+    Per side, per token, per level, ONE BIT PER DIGIT in canonical order: a side's
+    block is ``[BH, L, sum_l B_l / 8]`` uint8, so a block is ``BH * L * sum_l B_l / 8``
+    bytes exactly. Sparse levels carry the amplitudes' support; a dense level carries
+    its static width mask; a PAD digit is dead by construction, because the producer
+    pads its logits with -inf and the amplitude is then exactly zero.
+    """
+
+    read: torch.Tensor
+    write: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
+class GeometryBlock:
+    """The addressing block, derived once from ``(descriptor, launch)`` and CHECKED.
+
+    The kernel derives its own copy at the prologue from the descriptor it is handed
+    (K50: "each kernel derives its addressing from (descriptor, its own shape) at the
+    prologue and REFUSES on mismatch"), so this object is not an operand -- it is the
+    HOST's independent derivation of the same law, and handing it to the surface is
+    what makes a disagreement a refusal here instead of mis-addressed bytes inside a
+    launch. `geometry_block` derives it; ``fields`` is the shipped C++ derivation read
+    back, so the two legs that must agree are both present in one object.
+    """
+
+    D: int
+    B: tuple[int, ...]
+    DV: int
+    warps_per_cta: int
+    BC: int
+    fields: dict
+
+    @property
+    def leaves(self) -> int:
+        n = 1
+        for width in self.B:
+            n *= width
+        return n
+
+
+def geometry_block(descriptor: StateFormat, launch: LaunchShape) -> GeometryBlock:
+    """The host's derivation of the addressing block for this ``(descriptor, launch)``.
+
+    The block itself comes from the ONE shipped derivation in
+    ``csrc/rola/src/common/geom.cu``; what this adds is the binding of its inputs to
+    the descriptor's fields and the launch's shape, so a block a caller hands
+    `carry_forward` cannot have been derived from a different state.
+    """
+    _refuse_descriptor(descriptor)
+    _refuse_launch(launch)
+    BC = box_leaves(descriptor.DV, launch.warps_per_cta)
+    fields = geometry(descriptor.B, bc=BC, d_v=descriptor.DV)
+    return GeometryBlock(D=descriptor.D, B=tuple(descriptor.B), DV=descriptor.DV,
+                         warps_per_cta=launch.warps_per_cta, BC=BC, fields=fields)
+
+
+def _refuse_descriptor(descriptor) -> None:
+    if not isinstance(descriptor, StateFormat):
+        raise CarryRefusal(
+            f"the carry surface is driven by the STATE's format descriptor "
+            f"(rola._state.StateFormat), got {type(descriptor).__name__}. The state owns "
+            f"its format (KERNEL_STANDARDS R13) and the kernel derives its addressing "
+            f"from it; there is no second place to name a shape.")
+    for level, width in enumerate(descriptor.B):
+        if width & (width - 1) or width < MIN_LEVEL_WIDTH:
+            raise CarryRefusal(
+                f"level {level} is {width} digits wide. THE KERNEL DOES NOT PAD: B_l is a "
+                f"power of two at or above {MIN_LEVEL_WIDTH}, and a logical width outside "
+                f"that is served by padding the producer's logits with -inf above this "
+                f"boundary (KERNEL_STANDARDS R13 addendum, the two contracts).")
+    if descriptor.DV not in SHIPPED_DV:
+        raise CarryRefusal(
+            f"DV={descriptor.DV} is not a shipped value width; the set is {SHIPPED_DV}. "
+            f"An irregular d_v is zero-padded to the next shipped DV at the value "
+            f"projection and y is sliced back at the seam -- the kernel never sees a "
+            f"width other than its own.")
+    if descriptor.N % PAGE_LEAVES:
+        raise CarryRefusal(
+            f"N={descriptor.N} is not a whole number of {PAGE_LEAVES}-leaf pages. THERE "
+            f"IS NO RAGGED STATE (K50): a lawful state is prod_l B_l with every B_l a "
+            f"power of two at or above {MIN_LEVEL_WIDTH}, hence page aligned by "
+            f"construction; a ragged one is refused, never padded.")
+    if descriptor.dtype != SPLIT_PLANE_DTYPE:
+        raise CarryRefusal(
+            f"the state's dtype is {descriptor.dtype!r}; the carry family reads and "
+            f"writes {SPLIT_PLANE_DTYPE!r} pages ([16 x DV hi][16 x DV lo][mass]).")
+
+
+def _refuse_bf16(name: str, tensor: torch.Tensor) -> None:
+    if tensor.dtype is not torch.bfloat16:
+        raise CarryRefusal(
+            f"{name} is {tensor.dtype}; the carry family's operands are bf16 and only "
+            f"bf16 (KERNEL_STANDARDS R17, one form -- the float operand paths are "
+            f"deleted). Cast above this boundary, where the cast is visible.")
+
+
+def _refuse_launch(launch) -> None:
+    if not isinstance(launch, LaunchShape):
+        raise CarryRefusal(
+            f"the launch shape is a rola.ops.carry.LaunchShape, got "
+            f"{type(launch).__name__}. The window, the token tile and the stream count "
+            f"are not on this surface (K50's axis law): W is a kernel constant, C a file "
+            f"constant and S derived.")
+
+
+def _refuse_geometry(block, descriptor: StateFormat, launch: LaunchShape) -> None:
+    if not isinstance(block, GeometryBlock):
+        raise CarryRefusal(
+            f"the geometry block is a rola.ops.carry.GeometryBlock derived from this "
+            f"call's descriptor (geometry_block(descriptor, launch)), got "
+            f"{type(block).__name__}.")
+    presented = (block.D, tuple(block.B), block.DV, block.warps_per_cta, block.BC)
+    bound = (descriptor.D, tuple(descriptor.B), descriptor.DV, launch.warps_per_cta,
+             box_leaves(descriptor.DV, launch.warps_per_cta))
+    if presented != bound:
+        raise CarryRefusal(
+            f"the geometry block was derived for {presented} and this call presents "
+            f"{bound}. The kernel derives the SAME block at its prologue from the "
+            f"descriptor it is handed, so a block from another shape would address "
+            f"somebody else's leaves (K50: refuse on mismatch).")
+
+
+def _refuse_operands(routes, v, descriptor: StateFormat, liveness, activity):
+    if not isinstance(routes, RoutePlanes):
+        raise CarryRefusal(
+            f"the routing operands reach this surface as a rola.ops.carry.RoutePlanes "
+            f"bundle (two packed [BH, L, sum_l B_l] bf16 planes and the [BH, L] gain), "
+            f"got {type(routes).__name__}.")
+    for name, plane in (("routes.read", routes.read), ("routes.write", routes.write),
+                        ("routes.gain", routes.gain), ("v", v)):
+        _refuse_bf16(name, plane)
+    wtot = sum(descriptor.B)
+    for name, plane in (("routes.read", routes.read), ("routes.write", routes.write)):
+        if plane.ndim != 3 or plane.shape[2] != wtot:
+            raise CarryRefusal(
+                f"{name} is {tuple(plane.shape)}; the packed routing plane is "
+                f"[BH, L, {wtot}] -- the descriptor's levels {tuple(descriptor.B)} "
+                f"concatenated in canonical order. A plane of a different total width is "
+                f"a different topology, not a servable one.")
+    bh, length = int(routes.read.shape[0]), int(routes.read.shape[1])
+    if tuple(routes.write.shape) != (bh, length, wtot):
+        raise CarryRefusal(
+            f"the two sides disagree: read is {tuple(routes.read.shape)} and write is "
+            f"{tuple(routes.write.shape)}. One call is one token addressing.")
+    if tuple(routes.gain.shape) != (bh, length):
+        raise CarryRefusal(
+            f"routes.gain is {tuple(routes.gain.shape)}; the write side's per-token "
+            f"scale is [BH, L] = {(bh, length)}.")
+    if v.ndim != 3 or tuple(v.shape) != (bh, length, descriptor.DV):
+        raise CarryRefusal(
+            f"v is {tuple(v.shape)}; the kernel reads [BH, L, DV] = "
+            f"{(bh, length, descriptor.DV)} at the descriptor's PADDED width. A logical "
+            f"d_v is padded at the projection, which is a zero-copy write of the first "
+            f"d_v columns -- the kernel never sees a partial tile.")
+    if not isinstance(liveness, LivenessWords):
+        raise CarryRefusal(
+            f"the liveness words reach this surface as a rola.ops.carry.LivenessWords "
+            f"pair, got {type(liveness).__name__}.")
+    want = (bh, length, wtot // 8)
+    for name, block in (("liveness.read", liveness.read),
+                        ("liveness.write", liveness.write)):
+        if block.dtype is not torch.uint8 or tuple(block.shape) != want:
+            raise CarryRefusal(
+                f"{name} is {tuple(block.shape)} {block.dtype}; a side's class-1 block is "
+                f"[BH, L, sum_l B_l / 8] = {want} uint8 -- one bit per digit per token in "
+                f"canonical order.")
+    pages = descriptor.N // PAGE_LEAVES
+    if activity.dtype is not torch.uint8 or tuple(activity.shape) != (bh, pages):
+        raise CarryRefusal(
+            f"the activity bits are {tuple(activity.shape)} {activity.dtype}; the "
+            f"per-page byte is [BH, N / {PAGE_LEAVES}] = {(bh, pages)} uint8 (bit 0 "
+            f"WRITTEN, bit 1 READ). Residency says WHERE a page is, activity says "
+            f"WHETHER this call touches it.")
+    return bh, length
+
+
+def _refuse_state(name: str, plane, descriptor: StateFormat, bh: int) -> None:
+    if plane is None:
+        return
+    want = (bh, descriptor.N // PAGE_LEAVES, PAGE_LEAVES, descriptor.cols)
+    if tuple(plane.shape) != want:
+        raise CarryRefusal(
+            f"{name} is {tuple(plane.shape)}; a state plane is "
+            f"[BH, N / {PAGE_LEAVES}, {PAGE_LEAVES}, DV + 1] = {want} in CANONICAL leaf "
+            f"order, stored as split bf16 planes.")
+
+
+def carry_forward(routes: RoutePlanes, v: torch.Tensor, *, descriptor: StateFormat,
+                  geometry: GeometryBlock, liveness: LivenessWords,
+                  activity: torch.Tensor, launch: LaunchShape,
+                  state_in: torch.Tensor | None = None,
+                  state_out: torch.Tensor | None = None,
+                  page_table: torch.Tensor | None = None):
+    """THE INTER TERM, undivided: ``(num, den)``, with ``state_out`` advanced in place.
+
+    ``num`` is ``[BH, L, DV]`` fp32 and ``den`` is ``[BH, L]`` fp32; the readout a
+    caller wants is ``num / (den + READOUT_EPS)``, and this surface does not divide
+    because a chained call needs the mass and a ratio is not it.
+
+    Every shape argument is the DESCRIPTOR's. ``page_table`` is the ``[BH, N / 16]``
+    int32 slot table; ``None`` is the dense backing, where the slot IS the page, so the
+    two backings are one kernel, one ABI and one accumulation order. Passing neither
+    state plane is the NULL-STATE call.
+
+    THERE IS NO IMPLEMENTATION ON THIS LINE. The refusals below are the contract and run
+    first; the extension's entry then refuses by name (C3-K0 builds the body).
+    """
+    _refuse_descriptor(descriptor)
+    _refuse_launch(launch)
+    _refuse_geometry(geometry, descriptor, launch)
+    bh, length = _refuse_operands(routes, v, descriptor, liveness, activity)
+    _refuse_state("state_in", state_in, descriptor, bh)
+    _refuse_state("state_out", state_out, descriptor, bh)
+
+    num = torch.empty((bh, length, descriptor.DV), dtype=torch.float32, device=v.device)
+    den = torch.empty((bh, length), dtype=torch.float32, device=v.device)
+    extension().carry_forward(
+        routes.read, routes.write, routes.gain, v, num, den,
+        list(descriptor.B), int(descriptor.DV), int(descriptor.page_bits),
+        int(launch.warps_per_cta), liveness.read, liveness.write, activity,
+        state_in, state_out, page_table)
+    return num, den
+
+
+def carry_backward(routes: RoutePlanes, v: torch.Tensor, d_num: torch.Tensor,
+                   d_den: torch.Tensor, *, descriptor: StateFormat,
+                   geometry: GeometryBlock, liveness: LivenessWords,
+                   activity: torch.Tensor, launch: LaunchShape,
+                   state_in: torch.Tensor | None = None,
+                   d_state_out: torch.Tensor | None = None,
+                   page_table: torch.Tensor | None = None):
+    """THE CROSS-WINDOW REVERSE PASS: ``(d_read, d_write, d_gain, d_v, d_state_in)``.
+
+    ``d_num``/``d_den`` are the seeds the op seam forms from the division's backward,
+    shaped like the forward's ``num``/``den`` and fp32. ``d_read``/``d_write`` are
+    ``[BH, L, sum_l B_l]`` fp32 on the packed amplitude layout, ``d_gain`` is
+    ``[BH, L]``, ``d_v`` is ``[BH, L, DV]`` and ``d_state_in`` is a state plane.
+
+    Same descriptor, same geometry block, same liveness words and same activity bits as
+    the forward it reverses -- a reverse pass that re-derived any of them would be a
+    second derivation of the schedule, which is the drift shape this family has already
+    paid for once. THERE IS NO IMPLEMENTATION ON THIS LINE (C4 builds it, after C3).
+    """
+    _refuse_descriptor(descriptor)
+    _refuse_launch(launch)
+    _refuse_geometry(geometry, descriptor, launch)
+    bh, length = _refuse_operands(routes, v, descriptor, liveness, activity)
+    for name, seed, want in (("d_num", d_num, (bh, length, descriptor.DV)),
+                             ("d_den", d_den, (bh, length))):
+        if seed.dtype is not torch.float32 or tuple(seed.shape) != want:
+            raise CarryRefusal(
+                f"{name} is {tuple(seed.shape)} {seed.dtype}; the reverse seeds are the "
+                f"forward's outputs, {want} fp32.")
+    _refuse_state("state_in", state_in, descriptor, bh)
+    _refuse_state("d_state_out", d_state_out, descriptor, bh)
+
+    return extension().carry_backward(
+        routes.read, routes.write, routes.gain, v, d_num, d_den,
+        list(descriptor.B), int(descriptor.DV), int(descriptor.page_bits),
+        int(launch.warps_per_cta), liveness.read, liveness.write, activity,
+        state_in, d_state_out, page_table)
+
+
+def arms():
+    """``[(D, DV, warps_per_cta)]`` -- the arms THIS binary carries.
+
+    The binary's own answer, never the source tree's: an empty list is the honest report
+    of a line whose kernel is not built (C0 cleared the family; G4 refills the table and
+    C3 builds the bodies).
+    """
+    return [tuple(row) for row in extension().carry_arms()]
+
+
+def build_stamp():
+    """The carry family's DEVICE build stamp -- a fact only a BUILT kernel can produce.
+
+    There is no such fact on this line: the family has no device code, so this reaches
+    the extension's refusal rather than returning a stale or invented census. That is
+    the honest form of the extension-trap check here (`extension-trap-device-side-
+    check`): a binary that cannot produce the fact must say so, not substitute a path
+    or a hash for it.
+    """
+    return extension().carry_build_stamp()
 
 
 def pack_side(levels) -> torch.Tensor:
-    """The per-level ``[B,T,H,width_l]`` tuple as one ``[BH, T, sum_l width_l]``
-    bf16 plane -- the layout both kernel families read."""
+    """The per-level ``[B, L, H, B_l]`` tuple as one ``[BH, L, sum_l B_l]`` bf16 plane.
+
+    The layout both kernel families read. It is a REPACK, not a translation: the levels
+    arrive already padded to their ``B_l`` by the producer, so nothing here widens
+    anything.
+    """
     Bn, T, H, _ = levels[0].shape
     out = torch.empty((Bn, H, T, sum(x.shape[-1] for x in levels)),
                       dtype=torch.bfloat16, device=levels[0].device)
@@ -104,111 +434,54 @@ def pack_side(levels) -> torch.Tensor:
     return out.reshape(Bn * H, T, -1)
 
 
-def state_plane(widths, BH: int, d_v: int = D_V, device="cuda") -> torch.Tensor:
-    """A DENSE state plane, ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order.
+def route_planes(read_levels, write_levels, g_write) -> RoutePlanes:
+    """The three routing operands packed into the bundle the surface takes."""
+    gain = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
+    return RoutePlanes(read=pack_side(read_levels), write=pack_side(write_levels),
+                       gain=gain.reshape(gain.shape[0] * gain.shape[1], -1))
 
-    The dense BACKING, byte for byte the atom-major view of ``[BH, N, cols]``
-    (`docs/internals/state.md` section 3). It is the caller's to allocate because the
-    planes are the caller's: a continuation hands the SAME tensor in and out and
-    advances it in place, which is what keeps a stateful chain to ONE plane per
-    sequence. A PAGED call passes the arena's plane and its table instead, and the
-    kernel is the same kernel -- one base translation, not a second path.
+
+def state_plane(descriptor: StateFormat, BH: int, device="cuda") -> torch.Tensor:
+    """A DENSE state plane for this descriptor: ``[BH, N / 16, 16, DV + 1]``.
+
+    The dense BACKING, page for page the atom-major view of ``[BH, N, cols]``
+    (`docs/internals/state.md`). It is the caller's to allocate because the planes are
+    the caller's: a continuation hands the SAME tensor in and out and advances it in
+    place, which is what keeps a stateful chain to ONE plane per sequence.
     """
-    n = 1
-    for w in widths:
-        n *= int(w)
-    return torch.zeros((BH, n // MMA_K_QUANTUM, MMA_K_QUANTUM, d_v + 1),
+    return torch.zeros((BH, descriptor.N // PAGE_LEAVES, PAGE_LEAVES, descriptor.cols),
                        dtype=torch.float32, device=device)
 
 
-def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
-                window: int, chunk: int = 32, carve: int = LEAF_SPLIT,
-                level_modes: int = 0, state_in: torch.Tensor | None = None,
-                state_out: torch.Tensor | None = None,
-                page_table: torch.Tensor | None = None,
-                atom_bits: torch.Tensor | None = None):
-    """The INTER term, undivided: ``(num, den, state_out)``.
+def box_shape(widths, k: int, m: int):
+    """``(m_l, s_l, g_l, BC, owners)`` for the ``(k, m)`` box, with K2 ASSERTED.
 
-    ``num`` is ``[BH, T, d_v]`` fp32 and ``den`` is ``[BH, T]`` fp32. ``d_v`` is READ
-    OFF ``v`` and is part of the arm key, so a width no arm declares is refused, not
-    degraded.
-
-    THE STATE PLANES ARE THE CALLER'S (`docs/internals/state.md` section 4).
-    ``state_in``/``state_out`` are ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order
-    -- `state_plane` builds a dense one, an arena hands over ``arena.state`` -- and a
-    CONTINUATION passes the SAME tensor as both, advancing it in place. ``page_table``
-    is the ``[BH, N/16]`` int32 slot table; ``None`` is the dense backing, where the
-    slot IS the atom, so the two backings are one kernel, one ABI and one accumulation
-    order. Passing NEITHER plane is the NULL-STATE call: it reaches an arm variant with
-    no state I/O compiled into it and returns ``state_out`` as ``None``.
-
-    ``atom_bits`` is the facts pass' ``[BH, N/16]`` uint8 ACTIVITY bitmap -- bit 0
-    WRITTEN, bit 1 READ, one byte per atom (`rola.engine.facts.planes.atom_bits`). The
-    kernel loads an atom iff it is resident AND (read or written) and stores it iff
-    written, identically under both backings: residency says WHERE an atom is, activity
-    says WHETHER this call touches it. ``None`` asserts nothing and every resident atom
-    is swept, which is the pre-P80b behaviour and what a caller with no facts pass gets.
+    The derivation is `rola.ops.lattice`'s -- the ONE host authority over the leaf
+    order, shared with the decode family, because the two families write and read one
+    plane and two derivations disagree exactly when one is wrong. What this wrapper adds
+    is the carry family's own gate: an owner's box is a whole number of pages, so a fold
+    bucket never straddles two of them.
     """
-    pr = pack_side(read_levels)
-    pw = pack_side(write_levels)
-    gw = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
-    gw = gw.reshape(gw.shape[0] * gw.shape[1], -1)
-    num, den = extension().carry_forward_inter(
-        pr, pw, gw, v.to(torch.bfloat16).contiguous(), list(widths), int(k), int(m),
-        int(window), int(chunk), int(carve), int(level_modes), state_in, state_out,
-        page_table, atom_bits)
-    return num, den, state_out
+    out = lattice.box_shape(widths, k, m)
+    assert out[3] % PAGE_LEAVES == 0, (
+        f"K2: an owner box of {out[3]} leaves must be a whole number of "
+        f"{PAGE_LEAVES}-leaf pages")
+    return out
 
 
-def owner_rows(read_levels, write_levels, widths, *, k: int, m: int, carve: bool = False):
-    """The BALLOT ROWS the liveness pass consumes: ``[BH, entries_read + entries_write, L/32]``.
+def lattice_of_canonical(widths, k: int, m: int, device="cuda") -> torch.Tensor:
+    """``pi``: an ``[N]`` int64 tensor with ``pi[ell] = lambda`` (R0 spec section 2.3).
 
-    Row ``prefix_entries(l) + o_l`` of a side's block, bit ``t``, answers "token ``t``'s
-    level-``l`` support on this side intersects the group ``o_l``'s digit run" -- one
-    word per 32 tokens. ``entries = sum_l B/s_l`` is SIGMA-shaped: the table does not
-    grow with ``N``. THE TWO SIDES CARRY THEIR OWN PARTITION (K35 S1b): a bitlist is
-    voted from one side's own factors, so the read block is at the read carve's runs and
-    the write block at the write carve's, and a level a side spans whole emits no rows.
-    This diagnostic asks for ONE grain on both sides, so its two blocks coincide:
-    ``carve`` picks the split of the innermost level's owner run into four groups, whose
-    owner-grain word is then the OR of a group's four rows.
+    A permutation, and only a permutation -- a fixed BIT PERMUTATION of the leaf index,
+    so this tensor is a convenience for the host seam and never a table the device
+    consults.
     """
-    return extension().carry_owner_rows(pack_side(read_levels), pack_side(write_levels),
-                                        list(widths), int(k), int(m), bool(carve))
-
-
-def build_stamp(widths, k, m, window, chunk, carve, level_modes=0, d_v=D_V):
-    """The device magic, the caps digest and the arm's census.
-
-    Fields 3.. are the census: registers, SMEM (attributes), binary version, SMEM
-    (geometry), max threads, local bytes, ``BC``, owners, ring depth, CTA target,
-    the read-carve level, the WRITE STREAM count and the arm's ``d_v`` -- so the
-    THREE dials (executors ``stamp[7] // 32``, streams ``stamp[14]``, width
-    ``stamp[15]``) are all readable off the device.
-
-    Fields 16..25 are THE DERIVATION READ BACK (K35 S1b): the four write spans
-    ``stamp[16:20]``, the four read spans ``stamp[20:24]``, the exchange's TRANSIT in
-    bytes ``stamp[24]``, and the exchange's STATE ``stamp[25]`` -- ``0`` elided, ``1``
-    full, ``2`` full only because case (c)'s register reorder is not built (so the row
-    OVERPAYS and can be tabled), ``-1`` an arm with no exchange at all.  The spans are no longer declared -- they are what the
-    order-by-mode rule cut out of ``(level_modes, stream count)`` -- so reading them off
-    the device is the only way to see what an arm actually holds.  The transit is ZERO on
-    an arm whose two carves came out identical: the permutation is then the identity and
-    the exchange is elided at compile time.
-    """
-    return extension().carry_build_stamp(list(widths), int(k), int(m), int(window),
-                                         int(chunk), int(carve), int(level_modes), int(d_v))
-
-
-def arms():
-    return extension().carry_arms()
+    box_shape(widths, k, m)
+    return lattice.permutation(widths, k, m, device=device)
 
 
 #: THE ADDRESSING BLOCK'S FIELD ORDER, mirrored from `csrc/rola/src/common/geom.cu`'s
-#: `geometry` (`docs/internals/common/geom_api.md#geometry`) -- the ONE reader of that
-#: positional vector. `_GEOM_LEVEL` are the per-level arrays, each `kGeomMaxLevels` long;
-#: `_GEOM_SCALAR` the scalars that follow them; `_SIDE_LEVEL`/`_SIDE_SCALAR` the same for
-#: one side's carve, read twice (read side, then write side).
+#: `geometry` -- the ONE reader of that positional vector.
 _GEOM_MAX_LEVELS = 4
 _GEOM_HEAD = ("D", "bc")
 _GEOM_LEVEL = ("width", "span", "grid", "col_base", "run_shift", "owner_div", "weight")
@@ -218,18 +491,14 @@ _SIDE_LEVEL = ("level_at", "rank", "row_span", "grid", "grid_div", "row_g", "row
 _SIDE_SCALAR = ("carves", "rows", "leaf", "streams", "assign")
 
 
-def geometry(widths, level_modes=0, bc=128, nsr=1, nsw=1, d_v=D_V):
+def geometry(widths, level_modes=0, bc=128, nsr=1, nsw=1, d_v=64):
     """THE SHIPPED DERIVATION, read back as a dict of dicts.
 
     ``{scalars..., "r": {side fields}, "w": {...}, "xch": {"w": [...], "r": [...]}}`` --
     every per-level field is a list of length ``D``, the padding levels the block carries
     past ``D`` dropped here because they are a C-array convenience and not part of the
     law. ``xch`` is each side's transit row map over the whole region, ``[stream][slot]``.
-
-    The kernel bodies on this tip do NOT consume this block (they are the MO/B-templated
-    parent bodies, whose geometry is compile-time); it is the foundation the pipelined
-    body is built on, and the model tests are what hold the two derivations together
-    until then. See ``docs/internals/common/geom.md``.
+    See ``docs/internals/common/geom.md``.
     """
     flat = list(extension().carry_geometry(list(widths), int(level_modes), int(bc), int(nsr),
                                            int(nsw), int(d_v)))
@@ -262,64 +531,37 @@ def geometry(widths, level_modes=0, bc=128, nsr=1, nsw=1, d_v=D_V):
     return out
 
 
-def sub_boxes(depth, box_leaves, workers):
+def sub_boxes(depth, box_leaves_, workers):
     """The GENERATED set of warp sub-box shapes, as spans -- `geom_api.md#sub-box-set`."""
     return [tuple(row) for row in
-            extension().carry_sub_boxes(int(depth), int(box_leaves), int(workers))]
+            extension().carry_sub_boxes(int(depth), int(box_leaves_), int(workers))]
 
 
-#: THE REVERSE PASS'S PRE-PACKED PLANE WIDTH.  The value and seed rows are handed to
-#: the two scans `cols`-wide and zero-padded to whole MMA n-tiles, so one staging body
-#: serves both and the mass channel is an ordinary column rather than a carve.
-BWD_COLS_PAD = 72
-BWD_LD = 80
-
-
-def pack_cols(main: torch.Tensor, last) -> torch.Tensor:
-    """``[BH, L, d_v]`` plus a last column as one ``[BH, L, BWD_LD]`` bf16 plane.
-
-    ``last`` is either a ``[BH, L]`` tensor (the seed's ``d_den``) or a scalar (the
-    value's ones column). Everything past ``d_v + 1`` is zero, which is what lets the
-    kernels read the final n-tile with no partial-tile path.
-    """
-    bh, length, d_v = main.shape
-    out = torch.zeros((bh, length, BWD_LD), dtype=torch.bfloat16, device=main.device)
-    out[:, :, :d_v] = main.to(torch.bfloat16)
-    if torch.is_tensor(last):
-        out[:, :, d_v] = last.to(torch.bfloat16)
-    else:
-        out[:, :, d_v] = float(last)
-    return out
-
-
-def carry_backward(read_levels, write_levels, g_write, v, d_num, d_den, widths, *, k: int,
-                   m: int, window: int, chunk: int = 32, state_in=None, d_state_out=None,
-                   page_table=None, want_replay: bool = False):
-    """The CROSS-WINDOW reverse pass: ``(d_pr, d_pw, d_gw, d_v, d_state_in, replay)``.
-
-    ``d_num``/``d_den`` are the seeds the op seam forms from the division's backward,
-    shaped like the forward's ``num``/``den``. ``d_pr``/``d_pw`` are
-    ``[BH, T, sum_l width_l]`` fp32 on the packed amplitude layout, ``d_v`` is
-    ``[BH, T, d_v]``, ``d_gw`` is ``[BH, T]``, and ``d_state_in``/``replay`` are
-    ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order.
-
-    ``page_table`` resolves the two ENTRY slabs the caller owns (``state_in`` and
-    ``d_state_out``) through the same slot table the forward uses. The two EXIT slabs
-    -- ``d_state_in`` and ``replay`` -- are this dispatch's own dense allocations and
-    are addressed densely; paging a gradient plane needs a plan of its own and is the
-    reverse family's stage, not this one's.
-    """
-    pr = pack_side(read_levels)
-    pw = pack_side(write_levels)
-    gw = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
-    gw = gw.reshape(gw.shape[0] * gw.shape[1], -1)
-    bn, t, h, d_v = v.shape
-    vt = pack_cols(v.permute(0, 2, 1, 3).reshape(bn * h, t, d_v), 1.0)
-    dn = pack_cols(d_num, d_den)
-    return extension().carry_backward_inter(
-        pr, pw, gw, vt, dn, list(widths), int(k), int(m), int(window), int(chunk),
-        state_in, d_state_out, page_table, bool(want_replay))
-
-
-def backward_stamp(widths, k, m, window, chunk):
-    return extension().carry_backward_stamp(list(widths), int(k), int(m), int(window), int(chunk))
+__all__ = [
+    "ACTIVITY_READ",
+    "ACTIVITY_WRITTEN",
+    "PAGE_LEAVES",
+    "SHIPPED_DV",
+    "SHIPPED_WARPS_PER_CTA",
+    "WARPS_PER_CTA",
+    "WINDOW",
+    "CarryRefusal",
+    "GeometryBlock",
+    "LaunchShape",
+    "LivenessWords",
+    "RoutePlanes",
+    "arms",
+    "box_leaves",
+    "box_shape",
+    "build_stamp",
+    "carry_backward",
+    "carry_forward",
+    "geometry",
+    "geometry_block",
+    "lattice_of_canonical",
+    "leaves_per_warp",
+    "pack_side",
+    "route_planes",
+    "state_plane",
+    "sub_boxes",
+]

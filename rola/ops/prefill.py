@@ -42,9 +42,10 @@ from rola.ops import carry as carry_ops
 from rola.ops import intra as intra_ops
 from rola.ops._ext import extension
 
-#: the built windows, restated from the two families so a caller has one import.
+#: THE WINDOW, restated so a caller has one import. It is the CARRY KERNEL's constant
+#: (K50's axis law), and the intra family must carry an arm at the same number, because
+#: the two kernels run ONE window grid.
 WINDOW = carry_ops.WINDOW
-WINDOW_WIDE = carry_ops.WINDOW_WIDE
 
 #: the level widths the intra kernel is instantiated at, and therefore the ones the
 #: combined operator has.  A topology is admitted when BOTH families carry an arm at
@@ -135,7 +136,7 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     return num, den, state_out
 
 
-__all__ = ["LEVEL_WIDTH", "LEVEL_WIDTHS", "WINDOW", "WINDOW_WIDE", "prefill",
+__all__ = ["LEVEL_WIDTH", "LEVEL_WIDTHS", "WINDOW", "prefill",
            "prefill_autograd"]
 
 

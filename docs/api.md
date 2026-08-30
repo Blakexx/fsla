@@ -118,6 +118,47 @@ This is not the old pooled state object recreated. That object's defect was LAYE
 LUGGAGE INSIDE THE OP's state; keeping each level's object pure is what leaves
 accretion nowhere to land.
 
+### 1.3 TWO CONTRACTS, ONE TRANSLATOR
+
+There are two boundaries in this library and they accept different things. Confusing
+them is what produces a kernel that quietly pads, masks or half-serves a shape, so they
+are stated apart.
+
+| | what it accepts | what it does with the rest |
+|---|---|---|
+| **the API** (this page: `rola_op`, `RoLA`, `rola.state()`) | any level width `b_l >= 2`, any `d_v`, any length `L` | **pads** — level logits to the next power of two at or above 16 with `-inf`, `v` to the next shipped `DV` with zero columns |
+| **the kernel** (`rola.ops.carry`, `rola.ops.decode`) | only the state descriptor's strict shape: `B_l` a power of two at or above 16, a shipped `DV`, `N` a multiple of 16, bf16 operands | **refuses**, by name — it never pads and never masks |
+
+**The seam is the only translator.** A padded digit gets amplitude *exactly* zero
+(`-inf` before the entmax or softmax solve), so it is never live, never read, never
+written, never marks a box and never causes a page to be allocated: the kernel sees a
+dead digit like any other and no kernel code knows padding happened. `d_v` padding is
+the same mechanism on the value side — the projection writes the first `d_v` columns of
+a `DV`-wide buffer and `y` comes back as a view of the first `d_v` — so a kernel never
+sees a width other than its own.
+
+**Both boundaries are tested.** API tests prove a padded run is bit-identical to the
+same shape declared natively; kernel-boundary tests call the launch surface directly
+with unpadded shapes and assert the refusal
+(`tests/unit/test_carry_surface.py`). A logical-width field in a kernel entry
+signature is a lint finding, because a kernel that could read one could pad.
+
+**What the descriptor fixes.** A state binds its format at its first call — `D`, the
+per-level `B_l`, the canonical leaf order, the page rectangle, `DV`, and the stored form
+(split bf16 planes) — and every later call is *checked* against it rather than assumed
+to fit. A call that disagrees is refused at the seam, naming the field, instead of
+addressing somebody else's bytes inside a kernel. Re-laying out a state is an explicit
+op, never a side effect of a call. See
+[`internals/state.md`](internals/state.md#format).
+
+**Status.** The kernel half of this contract is live: the carry launch surface and its
+three refusals are built and tested. The *body* behind it is not — the carry family is
+being rebuilt from the ground up (card `development/queue/C_CLEAN_SLATE.md`), so a carry
+call today reaches the surface, passes its refusals and then fails with one honest
+reason: there is no implementation on this line. The envelope table in
+[1.1](#11-the-built-envelope-is-the-surface) is what is *built*; this section is the law
+it is built against.
+
 ## 2. The feature map
 
 ### 2.1 The bundle IS the contract
