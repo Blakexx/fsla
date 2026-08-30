@@ -15,6 +15,8 @@ from __future__ import annotations
 import torch
 
 from rola.ops._ext import extension
+from rola.ops.carry import pack_side
+from rola.ops.padding import pad_routes, pad_v, slice_y
 
 #: THE PER-LEVEL MODE, two bits per level: bit 0 the READ side is value-sparse there,
 #: bit 1 the WRITE side.  ``BOTH_SPARSE`` says BOTH SIDES ARE SPARSE AT THAT LEVEL AND
@@ -124,6 +126,48 @@ def intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes, *, o=None, den
     return o, den
 
 
+def _shipped_level_width(D: int, window: int) -> int:
+    """The uniform, kernel-facing per-level width this binary ships at ``(D, window)``.
+
+    Read off :func:`arms` (the device's own declared matrix), never a literal
+    ``{LEVEL_WIDTH, LEVEL_WIDTH_DEEP3, LEVEL_WIDTH_DEEP4}`` lookup: those constants
+    name today's declared arms, and the arm table -- not a mirror of it -- is what a
+    call is padded against.
+    """
+    widths_here = sorted({lw for levels, lw, w, _smem in arms() if levels == D and w == window})
+    if not widths_here:
+        raise ValueError(
+            f"no shipped intra arm at D={D}, window={window} -- there is no uniform "
+            "level width this call could be padded to")
+    return widths_here[0]
+
+
+def intra_forward_padded(read_levels, write_levels, gwrite, v, modes, *, window=WINDOW,
+                         o=None, den=None):
+    """:func:`intra_forward`, taking the caller's LOGICAL per-level tensors and ``v``.
+
+    HOST-SIDE PADDING (K50 "PADDING AT THE PRODUCER" / "d_v PADDING IS ALSO
+    HOST-SIDE"): every level here is padded to the ONE uniform width this arm ships
+    (:func:`_shipped_level_width` -- intra's own kernel takes a single ``level_width``
+    for every level, a stricter uniformity than carry's per-level one), ``v`` to
+    ``VALUE_WIDTH``, and the returned ``o`` is sliced back to the caller's ``d_v``
+    before it leaves. The kernel never sees a width other than its own.
+    """
+    D = len(read_levels)
+    level_width = _shipped_level_width(D, window)
+    read_levels = pad_routes(read_levels, (level_width,) * D)
+    write_levels = pad_routes(write_levels, (level_width,) * D)
+    d_v = v.shape[-1]
+    v = pad_v(v, VALUE_WIDTH)
+    pread = pack_side(read_levels)
+    pwrite = pack_side(write_levels)
+    sread = pack_support(read_levels)
+    swrite = pack_support(write_levels)
+    o, den = intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes,
+                           o=o, den=den, window=window)
+    return slice_y(o, d_v), den
+
+
 def arms():
     """The built ``(levels, level_width, window, smem_bytes)`` rows."""
     return extension().intra_arms()
@@ -148,6 +192,7 @@ __all__ = [
     "build_stamp",
     "intra_backward",
     "intra_forward",
+    "intra_forward_padded",
     "pack_modes",
     "pack_support",
     "support_words",

@@ -20,6 +20,7 @@ from rola.routing.activations import (
     validate_alpha,
 )
 from rola.routing.topology import (
+    padded_level_width,
     validate_level_width,
     validate_routing_shape,
 )
@@ -722,7 +723,52 @@ class Topology:
 
     @property
     def widths(self) -> tuple[int, ...]:
+        """The LOGICAL, caller-authored per-level widths (``b_l``) -- unchanged by
+        padding. A model built with ``IndependentRouting(width=31, ...)`` reads
+        ``31`` here forever; see :attr:`padded_widths` and :meth:`padded` for the
+        kernel-facing, padded ones (``B_l``, K50 "PADDING AT THE PRODUCER")."""
         return tuple(level.width for level in self.levels)
+
+    @property
+    def padded_widths(self) -> tuple[int, ...]:
+        """Per-level ``B_l``: the next power of two at or above 16 that admits ``b_l``.
+
+        The KERNEL-FACING widths (``StateFormat.B``'s law): every ``B_l`` this
+        property names is already a legal ``rola._state.StateFormat`` level width.
+        Derived from :attr:`widths` alone -- never a second input a caller supplies,
+        so a padded width can never disagree with the logical one it pads.
+        """
+        return tuple(padded_level_width(width) for width in self.widths)
+
+    @property
+    def is_padded(self) -> bool:
+        """Whether every level is ALREADY at its padded width -- the dense fast path.
+
+        ``widths == padded_widths`` for an ideal (power-of-two >= 16, every level)
+        model: :meth:`padded` still returns an equivalent ``Topology`` in that case,
+        so a caller may always call it uniformly (KERNEL_STANDARDS R9: a structure
+        branch is a derived fact, never a data-dependent shortcut) -- this property
+        exists for callers that want to skip a genuinely zero-cost pad.
+        """
+        return self.widths == self.padded_widths
+
+    def padded(self) -> Topology:
+        """A new ``Topology``, one level's ``.at(padded_width)`` per level.
+
+        The SAME model described at its kernel-facing widths: same per-level
+        operator and activation choice (``IndependentRouting``, ``UnionRouting`` and
+        ``OpaqueRouting`` all carry an ``.at(width)`` that keeps everything but the
+        width), so the levels this returns describe "the b real digits plus dead pad
+        digits", never a different model. A convenience for a caller building the
+        padded-shape SIDE of an equivalence directly (``tests/oracle/
+        test_padding_seam.py``'s fp64 prefill proof); the op call surfaces that
+        actually pad a live call (``rola.ops.carry``/``decode``/``intra``) derive
+        their own padded widths per call instead, via ``rola.ops.padding.PaddedShape``
+        -- they need the value width alongside the levels, which a ``Topology`` alone
+        does not carry.
+        """
+        return Topology(levels=tuple(
+            level.at(padded_level_width(level.width)) for level in self.levels))
 
     @property
     def N(self) -> int:

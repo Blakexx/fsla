@@ -39,6 +39,7 @@ from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decay import leaf_rate_dials
 from rola.ops.lattice import box_shape, derive_lattice, permutation
+from rola.ops.padding import pad_v, padded_value_width, slice_y
 from rola.ops.paging import MMA_K_QUANTUM
 from rola.routing.types import Topology
 
@@ -72,6 +73,22 @@ def arms() -> tuple[tuple[int, int, bool], ...]:
 C_DECODE_UNITS_PER_CTA = 16
 
 
+def _shipped_decode_dv(D: int, decay: bool, device) -> tuple[int, ...]:
+    """The ``DV`` values this binary's decode arms ship at this ``(D, decay)``.
+
+    Read off :func:`arms` (the device's own declared matrix) rather than a literal
+    set: decode's shipped ``d_v`` axis is wider than carry's single ``D_V`` (a full
+    build carries ``d_v x D x decay``), and a literal tuple here would drift from
+    whatever the binary actually carries the moment either side changed.
+    """
+    dv_at_shape = tuple(sorted({dv for dv, d, dec in arms() if d == D and dec == decay}))
+    if not dv_at_shape:
+        raise ValueError(
+            f"no shipped decode arm at D={D}, decay={decay} -- there is no DV this "
+            "call could be padded to")
+    return dv_at_shape
+
+
 def derive_decode_geometry(
     topology: Topology,
     *,
@@ -84,11 +101,20 @@ def derive_decode_geometry(
 ) -> DecodeGeometry:
     """Build the carrier once, at the boundary.
 
+    HOST-SIDE PADDING (K50 "d_v PADDING IS ALSO HOST-SIDE"): ``d_v`` is the caller's
+    LOGICAL value width, and this is the SEAM -- the geometry this returns carries
+    the padded ``DV`` (:func:`_shipped_decode_dv`), which is what the scratch sizing
+    and the launch address. Decode's arm key is ``(DV, D, decay)`` ONLY (:func:`arms`):
+    per-level widths are runtime addressing with no floor of their own (unlike
+    carry's box/warp-sub-box register shape), so ``topology.widths`` travels
+    unpadded -- any width this build already runs at continues to.
+
     ``n_split`` is FROZEN here and never selected per step: re-deriving it would
     reintroduce exactly the per-step selection the design dissolves
     (:func:`derive_n_split`).
     """
     widths = tuple(topology.widths)
+    d_v = padded_value_width(d_v, shipped=_shipped_decode_dv(len(widths), decay, device))
     D = len(widths)
     k, m = derive_lattice(widths)
     row_offset = []
@@ -374,9 +400,18 @@ def _decode_step(
     instead.
 
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]``.
+
+    ``config`` ALREADY CARRIES THE PADDED ``DV`` (:func:`derive_decode_geometry`),
+    which is what makes this the SEAM for decode's value width: ``v`` here is still
+    the caller's own logical ``d_v``, padded to ``config.d_v``, and the returned
+    ``y`` is sliced back to it (``rola.ops.padding``). Per-level widths are NOT
+    padded -- decode's arm key carries no width floor, so ``read_levels``/
+    ``write_levels`` reach the kernel exactly as the caller holds them.
     """
     guard_no_grad((v, g_write, *read_levels, *write_levels,
                    *(decay.dials if decay is not None else ())))
+    logical_d_v = v.shape[-1]
+    v = pad_v(v, config.d_v)
     plane = step_plane(v, config, decay, state, page_table)
     BH = v.shape[0] * v.shape[2]
     if workspace is None:
@@ -387,4 +422,4 @@ def _decode_step(
         dials=leaf_rate_dials_for(decay, config, v.device),
         g_write=g_write, v=v, state_plane=plane, page_table=page_table,
         scratch=workspace, pool=pool))
-    return y, state, workspace
+    return slice_y(y, logical_d_v), state, workspace

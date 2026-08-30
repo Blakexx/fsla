@@ -60,6 +60,14 @@ are not model facts — they are how the op RUNS, and the op decides how it runs
 call, from the routing it was actually given. They live behind
 [`rola.expert`](#6-the-expert-surface).
 
+**Any level width, any `d_v`.** A `RouteProducer` level's width and a layer's `d_v` are
+never required to be a power of two or a shipped value — host-side padding at the op's
+own call surface serves the rest, with no kernel change
+([`docs/internals/padding.md`](internals/padding.md)). `rola.rola_op`'s CUDA arm is
+currently deleted pending K31 R2, so this is not yet reachable end to end through the
+layer; the padding seam is built and tested at `rola.ops.carry`/`rola.ops.decode`/
+`rola.ops.intra` ahead of the pipelined kernel body that will consume it.
+
 ### 1.1 The built envelope IS the surface
 
 The arm is the chunk consumer, and the chunk consumer is a BUILT MATRIX. **Everything
