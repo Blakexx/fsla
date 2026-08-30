@@ -136,3 +136,6 @@ that into the skill the same day (process/pointers only — never facts).
   G2c→G2d chain ran one agent through four stages' worth of context; the monolithic C1 covered seven
   contracts and was split). Sibling stages run in parallel on DISJOINT files on the same branch; each
   commits detached at the named SHA and the coordinator merges them.
+- "NEVER MERGE/PUSH/RATIFY" DOES NOT MEAN "NEVER COMMIT" (C1a, 2026-08-30): every stage COMMITS its work
+  on its worktree with hooks on; the coordinator merges. And new_worktree.sh's output must not be piped
+  through tail (it masks the exit code) — check `import rola._C` after it, not the log.
