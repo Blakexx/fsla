@@ -53,12 +53,28 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+
+def _default_slots() -> int:
+    """cores - 2 for headroom, capped by host memory: a cicc peaks near 2 GB (3 GB with headroom), so the budget
+    never admits more compilers than the machine can hold without swapping (the 2026-08-29
+    freeze was 13 cicc on a 23 GB host)."""
+    cores = max(1, (os.cpu_count() or 4) - 2)
+    try:
+        with open("/proc/meminfo") as f:
+            total_kb = int(next(l for l in f if l.startswith("MemTotal:")).split()[1])
+        by_memory = max(1, int(total_kb / 1024 / 1024 / 3.0))
+    except (OSError, StopIteration, ValueError):
+        by_memory = 4
+    return max(1, min(cores, by_memory))
+
+
 #: `os.cpu_count() - 2` leaves headroom for the interactive shell and whatever
 #: agent process is driving the tool itself -- the same reasoning `nproc`-based
 #: defaults elsewhere in this tree (`build_flags.default_max_jobs`) already use,
 #: just applied to the WHOLE host-compute pool rather than one build's jobs.
 HOST_BUDGET_SLOTS = int(os.environ.get(
-    "ROLA_HOST_BUDGET_SLOTS", str(max(1, (os.cpu_count() or 4) - 2))))
+    "ROLA_HOST_BUDGET_SLOTS", str(_default_slots())))
+
 
 #: Overridable so a test battery (or a container with its own private /tmp)
 #: does not contend with another agent's real locks on this host.
