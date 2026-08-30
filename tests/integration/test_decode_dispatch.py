@@ -236,7 +236,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     v = torch.randn(1, 1, 1, d_v, device=device)
     state = torch.zeros(1, 1, config.N, config.cols, device=device)
     with pytest.raises(RuntimeError, match="forward-only"):
-        _decode_step(v, levels, levels, None, g_write, config, state)
+        _decode_step(v, levels, levels, g_write, config, state)
 
 
 @pytest.mark.cuda

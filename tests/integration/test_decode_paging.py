@@ -253,10 +253,10 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
     _seed_from_dense(arena, dense)
 
     y_dense, dense_out, _ = _decode_step(
-        v, read, write, None, g_write, config,
+        v, read, write, g_write, config,
         to_split_planes(dense.clone().view(fixture["B"], fixture["H"], config.N, _COLS)))
     y_paged, _, _ = _decode_step(
-        v, read, write, None, g_write, config, arena.state,
+        v, read, write, g_write, config, arena.state,
         page_table=arena.page_table)
 
     assert torch.equal(y_dense, y_paged), "the two backings disagree on y"
@@ -309,10 +309,10 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
     table_before = arena.page_table.clone()
 
     y_dense, _, _ = _decode_step(
-        v, read, write, None, g_write, config,
+        v, read, write, g_write, config,
         to_split_planes(dense.clone().view(fixture["B"], fixture["H"], config.N, _COLS)))
     y_paged, _, _ = _decode_step(
-        v, read, write, None, g_write, config, arena.state,
+        v, read, write, g_write, config, arena.state,
         page_table=arena.page_table)
 
     assert bytes_equal(arena.state[resident:],
@@ -361,7 +361,7 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
         arena.plan_exact(bitmap, fresh=False)
         arena.wait()
         v, read, write, g_write = _f32(step)
-        y, _, _ = _decode_step(v, read, write, None, g_write, config, arena.state,
+        y, _, _ = _decode_step(v, read, write, g_write, config, arena.state,
                                page_table=arena.page_table)
         ys.append(y)
 
@@ -426,7 +426,7 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
                 arena.plan_exact(bitmap, fresh=False)
                 arena.wait()
             v, read, write, g_write = _f32(step)
-            y, _, _ = _decode_step(v, read, write, None, g_write, config, arena.state,
+            y, _, _ = _decode_step(v, read, write, g_write, config, arena.state,
                                    page_table=arena.page_table, pool=pool)
             out.append(y)
         ys[name] = out
