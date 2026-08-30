@@ -15,7 +15,7 @@ The facts family's launchers, instantiated once each in ONE shard:
 class), `launch_chunk_block_bitmap_arm<D, B, BC>` (the liveness epilogue, the
 same key as the table it reduces) and `launch_chunk_atom_bitmap_arm<D, B>` (the
 stats reduction, keyed to the invariant 16-leaf quantum and therefore BC-free).
-56 instantiations over 12 `(D, B, BC)` tables and 8 `(D, B)`
+44 instantiations over 12 `(D, B, BC)` tables and 8 `(D, B)`
 topologies, projected from the 22-arm `(C, BC, D, B)` vocabulary.
 
 The launcher DEFINITIONS live in `../facts/facts_launch.cuh`, which the
@@ -30,27 +30,14 @@ refuses a built binary carrying an unresolved launcher after the link.
 the dispatch, out of the same arm list as the shard, so the dispatch and the
 shard cannot enumerate different sets.
 
-## The carry family: ONE TRANSLATION UNIT PER ARM (K36)
+## The carry family: NO TRANSLATION UNIT ON THIS LINE
 
-`carry_arm_<i>.cu` is one carry arm, instantiated there and nowhere else
-(KERNEL_STANDARDS section 7). The file is an include, a guard and one expansion
-of `CARRY_ARM_DEFINE` (`../carry/carry_arm.cuh`), so the arm's kernel — the
-carved body or the channel-split one — is emitted by exactly one object and the
-13 arms compile in parallel instead of serially inside one `cicc`.
-
-Every arm has its own file except rows 2, 10, 11, which are ONE kernel (the channel-split body takes no per-level declaration) and therefore one file; rows 6, 7, which are ONE kernel (the channel-split body takes no per-level declaration) and therefore one file.
-
-`carry_arms.inc` carries the rows themselves and the
-`#if defined(ROLA_CARRY_BUILD_<i>)` selection: `setup.py` puts an arm's file in
-the build and defines its macro together, so an arm outside the subset has no
-translation unit, no declaration, no dispatch arm and no row in
-`rola.ops.carry.arms()` — and the seam's "unbuilt carry arm" refusal is the only
-thing a caller asking for it can reach.
-
-A row tagged `// TEST` is a conformance cell (the fp64 oracle can hold
-`N = 4096`; the `W = 64` arms exist so that it can). It is built for the battery
-(`ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86`), it is not in a default build, and it
-is not in the ratification manifest.
+C0 deleted the carry family's kernels (card C). `tools/gen_shards.py`'s carry arm
+list is EMPTY, so no `carry_arm_<i>.cu` and no row macro is generated here; the
+build-scope selection header (`build/generated/carry_selection.inc`, never checked
+in) is still written on every build and ratify run and names no arm. G4 fills the
+arm list on the final `(D, DV, warps_per_cta)` key and the per-arm units return
+with it.
 
 ## The membership hash
 

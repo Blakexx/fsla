@@ -16,8 +16,6 @@
 #include "src/entmax/factor.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/facts/facts_api.cuh"
-//: K31 R1 -- the box-native CARRY family, built ALONGSIDE the shipped facts -- see docs/internals/rola_api.md#near-line-31
-#include "src/carry/carry_api.cuh"
 #include "src/common/geom_api.cuh"
 #include "src/intra/intra.cuh"
 
@@ -44,25 +42,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("chunk_block_bits", &rola::chunk::block_bits,
         "facts: the block-grain read/write/state liveness bitmap", py::arg("tbl"), py::arg("bc"),
         py::arg("widths"), py::arg("L"), py::arg("page_tbl") = py::none());
-  // ---- K31 R1: the box-native carry family (NOT on any shipped path) ------
-  m.def("carry_forward_inter", &rola::carry::forward_inter,
-        "K31 carry kernel: the INTER (carried-state) term, undivided; the state planes, "
-        "the page table and the facts pass' per-atom activity bitmap are the caller's, and "
-        "both planes null is the null-state call",
-        py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("widths"), py::arg("k"),
-        py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
-        py::arg("level_modes") = 0, py::arg("s_in") = py::none(), py::arg("s_out") = py::none(),
-        py::arg("page_tbl") = py::none(), py::arg("atom_bits") = py::none());
-  m.def("carry_build_stamp", &rola::carry::build_stamp,
-        "K31 carry kernel: device-side build identity + the arm's census", py::arg("widths"),
-        py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
-        py::arg("level_modes") = 0, py::arg("d_v") = 64);
-  m.def("carry_owner_rows", &rola::carry::owner_rows,
-        "K31 carry kernel: the ballot rows, at the lattice's owner spans or at the "
-        "carve grain the kernel consumes",
-        py::arg("pr"), py::arg("pw"), py::arg("widths"), py::arg("k"), py::arg("m"),
-        py::arg("carve") = false);
-  m.def("carry_arms", &rola::carry::arms, "K31 carry kernel: the built arms");
+  // ---- the addressing block (G2-EXTRACT), a foundation feature ------------
   m.def("carry_geometry", &rola::carry::geometry,
         "G: the addressing block, derived once and flattened -- the SHIPPED derivation, "
         "which is what a model test must measure",
@@ -71,14 +51,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("carry_sub_boxes", &rola::carry::sub_box_set,
         "G: the GENERATED set of warp sub-box shapes a side selects its member from",
         py::arg("depth"), py::arg("box_leaves"), py::arg("workers"));
-  // ---- K31 R4: the reverse carry family, two concurrent scans ------------
-  m.def("carry_backward_inter", &rola::carry::backward_inter,
-        "K31 R4: the cross-window reverse pass -- (d_pr, d_pw, d_gw, d_v, d_state_in, "
-        "replay), with zero state snapshots",
-        py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("vt"), py::arg("dn"),
-        py::arg("widths"), py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"),
-        py::arg("s_in") = py::none(), py::arg("ds_out") = py::none(),
-        py::arg("page_tbl") = py::none(), py::arg("want_replay") = false);
   m.def("intra_backward", &rola::intra::intra_backward,
         "K31 R4: the within-window half of the four cotangents, REDUCED into the "
         "planes the carry's two scans also write",
@@ -89,9 +61,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "K31 R4: the built reverse intra arms and their census");
   m.def("intra_backward_stamp", &rola::intra::intra_backward_stamp,
         "K31 R4: the reverse intra's device build stamp");
-  m.def("carry_backward_stamp", &rola::carry::backward_build_stamp,
-        "K31 R4: device-side build identity + the per-kernel census", py::arg("widths"),
-        py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"));
   m.def("chunk_arms", &rola::chunk::arms,
         "facts: the built (C, BC, D, B) dispatch vocabulary with plan quantities");
 

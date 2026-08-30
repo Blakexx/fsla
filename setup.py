@@ -129,6 +129,10 @@ ROLA_STRICT_MANIFEST = os.getenv("ROLA_STRICT_MANIFEST") == "1"
 #: for the battery (``ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86``) and never shipped. A
 #: binary is SELF-IDENTIFYING either way: ``rola.ops.carry.arms()`` lists exactly what
 #: was built and every entry point refuses an arm the binary does not carry.
+#:
+#: THE LIST IS EMPTY ON THIS LINE (C0, card C): the carry family's kernels are deleted,
+#: so every scope resolves to no arm and no per-arm TU joins the build. The mechanism
+#: stays because it is the BUILD's contract; G4 refills the list on the final key.
 #: docs/build.md.
 def _carry_arms() -> list[int]:
     spec = os.getenv("ROLA_CARRY_ARMS", "").replace(",", " ").split()
@@ -156,7 +160,7 @@ def _write_carry_selection() -> None:
 
     Runs BEFORE the compile, next to `_gate_shards()` -- cheap, pre-compile,
     source-of-truth-for-what-gets-built. Only the per-arm TUs and the carry
-    dispatch TU (via `carry_arms.inc`) ever include the generated header, so
+    dispatch TU ever include the generated header, so
     writing it here (rather than passing `-D` on `nvcc_flags`) is what keeps an
     arm-set change from perturbing every other translation unit's argv.
     """
@@ -500,14 +504,9 @@ SOURCES = [
     "csrc/rola/src/entmax/factor.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
     "csrc/rola/src/facts/facts.cu",
-    #: K31 R1 -- the box-native carry family, its own TU, no shipped dispatch
-    #: reaches it.
-    "csrc/rola/src/carry/carry.cu",
     #: G -- the addressing block's host seam (derivation + refusals). Its own TU so
     #: that the foundation lands without recompiling the dispatch; it holds no kernel.
     "csrc/rola/src/common/geom.cu",
-    #: K31 R4 -- the reverse carry family (Scan A and Scan B), its own TU.
-    "csrc/rola/src/carry/backward.cu",
     # K31 R2: the standalone deterministic intra kernel, one TU.
     "csrc/rola/src/intra/intra.cu",
     # K31 R4: the intra term's reverse pass, its own TU.

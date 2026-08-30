@@ -8,11 +8,10 @@ and everything that enumerates either is GENERATED from that definition:
   carrying every explicit instantiation of the three facts launchers;
 * `csrc/rola/src/instantiations/facts_arms.inc` -- the X-macro the facts
   dispatch (`csrc/rola/src/facts/facts.cu`) walks;
-* `csrc/rola/src/instantiations/carry_arm_<i>.cu` -- ONE TRANSLATION UNIT PER CARRY
-  ARM (KERNEL_STANDARDS section 7), which is what makes an arm-subset build a FILE
-  subset and lets the arms compile in parallel instead of serially inside one `cicc`;
-* `csrc/rola/src/instantiations/carry_arms.inc` -- the carry rows and the
-  `ROLA_CARRY_BUILD_<i>` selection the dispatch (`csrc/rola/src/carry/carry.cu`) walks;
+* `build/generated/carry_selection.inc` -- the never-checked-in, per-run CARRY ARM
+  SELECTION, which is what makes an arm-subset build a FILE subset (K36b).  The arm
+  list is EMPTY on this line (C0 deleted the carry family; card C), so no per-arm
+  translation unit is generated and the header names no arm;
 * `csrc/rola/src/instantiations/README.md` -- the layout, regenerated with them.
 
 The K31 deletion batch removed the chunk consumer and the two scans (baseline =
@@ -94,27 +93,14 @@ refuses a built binary carrying an unresolved launcher after the link.
 the dispatch, out of the same arm list as the shard, so the dispatch and the
 shard cannot enumerate different sets.
 
-## The carry family: ONE TRANSLATION UNIT PER ARM (K36)
+## The carry family: NO TRANSLATION UNIT ON THIS LINE
 
-`carry_arm_<i>.cu` is one carry arm, instantiated there and nowhere else
-(KERNEL_STANDARDS section 7). The file is an include, a guard and one expansion
-of `CARRY_ARM_DEFINE` (`../carry/carry_arm.cuh`), so the arm's kernel — the
-carved body or the channel-split one — is emitted by exactly one object and the
-{ncarry} arms compile in parallel instead of serially inside one `cicc`.
-
-{grouped}
-
-`carry_arms.inc` carries the rows themselves and the
-`#if defined(ROLA_CARRY_BUILD_<i>)` selection: `setup.py` puts an arm's file in
-the build and defines its macro together, so an arm outside the subset has no
-translation unit, no declaration, no dispatch arm and no row in
-`rola.ops.carry.arms()` — and the seam's "unbuilt carry arm" refusal is the only
-thing a caller asking for it can reach.
-
-A row tagged `// TEST` is a conformance cell (the fp64 oracle can hold
-`N = 4096`; the `W = 64` arms exist so that it can). It is built for the battery
-(`ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86`), it is not in a default build, and it
-is not in the ratification manifest.
+C0 deleted the carry family's kernels (card C). `tools/gen_shards.py`'s carry arm
+list is EMPTY, so no `carry_arm_<i>.cu` and no row macro is generated here; the
+build-scope selection header (`build/generated/carry_selection.inc`, never checked
+in) is still written on every build and ratify run and names no arm. G4 fills the
+arm list on the final `(D, DV, warps_per_cta)` key and the per-arm units return
+with it.
 
 ## The membership hash
 
@@ -144,253 +130,37 @@ FACTS_ARMS: tuple = (
     (32, 128, 2, 256),
 )
 
-#: THE GIVEN-SPAN FACTS ARMS -- the box lattice's ballot rows (K31-i-d), AT ONE
-#: PARTITION PER SIDE (K35 S1b).  A row is `(D, B, r_0..r_3, w_0..w_3)`: the READ
-#: side's per-level run and then the WRITE side's, with a level past `D` carrying `B`
-#: (the identity) and a level a side spans whole emitting no rows.  A bitlist is voted
-#: from ONE side's factors, so the two sides' tables are independent and holding the
-#: finer partition for both bought nothing.  These are the `rola::carry` family's rows,
-#: so the list mirrors the carry's built arms; `tools/lint/lint_standards.py::
-#: check_shard_partition` is where the two lists are held together.
-#:
-#: DERIVED FROM `CARRY_ARMS` (K41) -- NOT A SECOND HAND ENUMERATION.  Until K41 this was
-#: a hand-written tuple, the exact drift shape this file's own header warns about: it bit
-#: M1P (changing the carry rows' partition left a carved arm asking for a
-#: `launch_span_facts_arm` instantiation nothing emitted, which links clean and fails at
-#: IMPORT with an undefined symbol rather than at compile).  The functions below are a
-#: PYTHON MIRROR of `csrc/rola/src/carry/box.cuh`'s `BoxPlan`/`ModeOrder`/`StreamSpans`
-#: (the same "mirror, not an import" shape `lex_whole`/`lex_span`/`lex_spans` below use
-#: for the facts header's lex policy, and for the same reason: two derivations disagree
-#: exactly when one of them is wrong, and this side has no way to `#include` the device
-#: header) -- read `box.cuh` directly for what each constexpr means, this only restates
-#: the arithmetic in Python.
-def _ilog2c(x: int) -> int:
-    return 0 if x <= 1 else 1 + _ilog2c(x >> 1)
-
-
-class _BoxPlan:
-    """Mirrors `box.cuh`'s `BoxPlan<D, B, K, M>`: the owner's per-level span `s(l)`."""
-
-    def __init__(self, D: int, B: int, K: int, M: int):
-        self.D, self.B, self.K = D, B, K
-        kAtomLeaves = 16
-        self.kKappa = _ilog2c(K)
-        kBeta = _ilog2c(B)
-        kJ = _ilog2c(M)
-        kAtomBits = _ilog2c(kAtomLeaves)
-        kAFloor = kAtomBits - self.kKappa if kAtomBits > self.kKappa else 0
-        kAShare = kJ // D + (1 if kJ % D else 0)
-        kACeil = kBeta - self.kKappa if kBeta > self.kKappa else 0
-        kAWant = max(kAShare, kAFloor)
-        self.kAInner = min(kAWant, kACeil)
-        self.kJOuter = kJ - self.kAInner
-
-    def a(self, l: int) -> int:
-        D, kJOuter = self.D, self.kJOuter
-        if l == D - 1 or D == 1:
-            return self.kAInner
-        return kJOuter // (D - 1) + (1 if l >= (D - 1) - (kJOuter % (D - 1)) else 0)
-
-    def s(self, l: int) -> int:
-        return self.K * (1 << self.a(l))
-
-
-#: mirrors `box.cuh`'s `kSideRead`/`kSideWrite` and `mode_declares`.
-_K_SIDE_READ, _K_SIDE_WRITE = 1, 2
-
-
-def _mode_declares(modes: int, l: int, side: int) -> bool:
-    return ((modes >> (2 * l)) & side) != 0
-
-
-class _ModeOrder:
-    """Mirrors `box.cuh`'s `ModeOrder<D, MO, SIDE>`: the order-by-mode rule."""
-
-    _DENSE, _SPARSE, _BOTH = 0, 1, 2
-
-    def __init__(self, D: int, MO: int, SIDE: int):
-        self.D, self.MO, self.SIDE = D, MO, SIDE
-
-    def _group(self, l: int) -> int:
-        if _mode_declares(self.MO, l, _K_SIDE_READ) and _mode_declares(self.MO, l, _K_SIDE_WRITE):
-            return self._BOTH
-        return self._SPARSE if _mode_declares(self.MO, l, self.SIDE) else self._DENSE
-
-    def _before(self, a: int, b: int) -> bool:
-        ga, gb = self._group(a), self._group(b)
-        return ga < gb if ga != gb else a > b
-
-    def rank(self, l: int) -> int:
-        return sum(1 for i in range(self.D) if self._before(i, l))
-
-    def outer(self, p: int) -> int:
-        for l in range(self.D):
-            if self.rank(l) == self.D - 1 - p:
-                return l
-        raise ValueError("no level at this outer position")  # unreachable: rank is a bijection
-
-
-class _StreamSpans:
-    """Mirrors `box.cuh`'s `StreamSpans<D, B, K, M, MO, SIDE, NS>`: one side's carved
-    span vector, `s(l)` for `l < D` (and `B` past `D`, handled by the caller)."""
-
-    def __init__(self, D: int, B: int, K: int, M: int, MO: int, SIDE: int, NS: int):
-        self.D = D
-        self._bp = _BoxPlan(D, B, K, M)
-        ord_ = _ModeOrder(D, MO, SIDE)
-        need = NS
-        self._g_at = []
-        for p in range(D):
-            gp = min(self._bp.s(ord_.outer(p)), need)
-            self._g_at.append(gp)
-            need = need // gp
-        self._rank = [ord_.rank(l) for l in range(D)]
-
-    def s(self, l: int) -> int:
-        return self._bp.s(l) // self._g_at[self.D - 1 - self._rank[l]]
-
-
-def _owner_rows_vec(D: int, B: int, K: int, M: int) -> tuple:
-    """The UNCARVED table: both sides span the owner's own box (`BoxPlan::s`)."""
-    bp = _BoxPlan(D, B, K, M)
-    return tuple(bp.s(l) if l < D else B for l in range(4))
-
-
-#: the seam's `owner_rows(carve=True)` diagnostic grain (`carry_rows.cuh`'s
-#: `SeamSplitPlan`/`kSeamCarveStreams`): the innermost level's owner run split over
-#: four streams.  A DIAGNOSTIC's declared grain, spelled here from nothing, exactly as
-#: `carry_rows.cuh` spells it from nothing on the device side.
-_K_SEAM_CARVE_STREAMS = 4
-
-
-def _seam_split_vec(D: int, B: int, K: int, M: int) -> tuple:
-    bp = _BoxPlan(D, B, K, M)
-
-    def owner_span(l):
-        return bp.s(l) if l < D else B
-
-    return tuple(
-        (owner_span(l) // _K_SEAM_CARVE_STREAMS if l == D - 1 else owner_span(l))
-        for l in range(4))
-
-
-def _stream_vec(D: int, B: int, K: int, M: int, MO: int, SIDE: int, NS: int) -> tuple:
-    """ONE SIDE of a CARVED arm's actual table (K35 F1): `Arm<>::SR` and `Arm<>::SW`
-    are now derived independently, each from its own `ModeOrder`, so a row carries the
-    read side's vector and then the write side's rather than one vector twice."""
-    sv = _StreamSpans(D, B, K, M, MO, SIDE, NS)
-    return tuple(sv.s(l) if l < D else B for l in range(4))
-
-
-def _derive_span_facts_arms() -> tuple:
-    """`CARRY_ARMS` -> `SPAN_FACTS_ARMS`, ONE derivation instead of two enumerations.
-
-    Two passes over the topologies an UNCARVED (`MO == 0`) `CARRY_ARMS` row declares,
-    in first-seen row order -- every OWNER-ROWS vector, then every SEAM-SPLIT vector --
-    reproduce the family's DIAGNOSTIC tables (`owner_rows(carve=False)` and
-    `owner_rows(carve=True)`), and a third pass over the CARVED rows (`NSW > 1 or
-    NSR > 1`) emits each one's actual dispatch table (`_stream_vec`).  A carved row's
-    vector at `D = 2` happens to equal its topology's seam-split vector (M1P: the body
-    carves once, and the flagship's ALT declaration lands on the same innermost-level
-    split the diagnostic's fixed four-way split names) -- `dict.fromkeys` dedupes it
-    against pass two's row rather than emitting it twice, which is what keeps this at
-    nine rows, matching the tree's pre-K41 hand-written count exactly.
-    """
-    topologies: list = []
-    for row in CARRY_ARMS:
-        D, B, K, M, _DV, _W, _C, _CV, MO, _WPS, _NSW, _NSR, _PK = row
-        if MO == 0 and (D, B, K, M) not in topologies:
-            topologies.append((D, B, K, M))
-
-    rows: dict = {}
-    for D, B, K, M in topologies:
-        v = _owner_rows_vec(D, B, K, M)
-        rows[(D, B) + v + v] = None
-    for D, B, K, M in topologies:
-        v = _seam_split_vec(D, B, K, M)
-        rows[(D, B) + v + v] = None
-    for row in CARRY_ARMS:
-        D, B, K, M, _DV, _W, _C, _CV, MO, _WPS, NSW, NSR, _PK = row
-        if NSW > 1 or NSR > 1:
-            r = _stream_vec(D, B, K, M, MO, _K_SIDE_READ, NSR)
-            w = _stream_vec(D, B, K, M, MO, _K_SIDE_WRITE, NSW)
-            rows[(D, B) + r + w] = None
-    return tuple(rows.keys())
-
 # ---------------------------------------------------------------------------
-# THE CARRY ARM LIST -- one row per built arm, and THE list.  It moved out of
-# `csrc/rola/src/carry/carry.cu` at K36: the rows now generate ONE TRANSLATION
-# UNIT EACH (KERNEL_STANDARDS section 7) as well as the dispatch's X-macro, and
-# two enumerations of one set is the drift shape this project has been bitten by.
+# THE CARRY ARM LIST -- one row per built arm, and THE list.  EMPTY on this line:
+# C0 deleted the carry family's kernels (card C, `development/queue/C_CLEAN_SLATE.md`),
+# so there is no arm to build and no per-arm translation unit to generate.  The table
+# and the selection header it feeds survive because they are the BUILD's contract, not
+# the body's: they describe the FINAL key and stay callable with zero rows.
 #
-# A row is `(D, B, K, M, DV, W, C, CV, MO, WPS, NSW, NSR, PK)` -- the topology,
-# the box capacity, the value width, the window, the chunk, the seam's
-# declaration scalar, the per-level mode declaration, the warps per write stream
-# and the two sides' stream counts, and the park bit.  The prose for each row is
-# in `docs/internals/carry/carry.md`; the invariants the row must satisfy are
-# static_asserted at the dispatch (`CARRY_CV_GATE`).
-CARRY_ARMS: tuple = (
-    (2, 256, 4, 8, 64, 384, 32, 1, 0, 1, 1, 1, 0),      # 0
-    (2, 256, 4, 8, 64, 384, 32, 1, 6, 1, 4, 4, 0),      # 1
-    (2, 256, 4, 8, 64, 512, 32, 1, 0, 1, 1, 1, 0),      # 2
-    (2, 256, 4, 8, 64, 512, 32, 1, 6, 1, 4, 4, 0),      # 3
-    (2, 64, 4, 8, 64, 64, 32, 1, 0, 1, 1, 1, 0),        # 4
-    (2, 64, 4, 8, 64, 64, 32, 1, 6, 1, 4, 4, 0),        # 5
-    (3, 16, 2, 16, 64, 64, 32, 1, 0, 1, 1, 1, 0),       # 6
-    (3, 16, 2, 16, 64, 64, 32, 1, 38, 1, 1, 1, 0),      # 7
-    (4, 8, 2, 8, 64, 64, 32, 1, 0, 1, 1, 1, 0),         # 8
-    (4, 8, 2, 8, 64, 64, 32, 1, 102, 1, 4, 4, 0),       # 9
-    #: K41: the flagship topology's two remaining single-level declarations, FLAT
-    #: (uncarved, NSW=NSR=1 -- "the flat 4-warp executor", `carry::kWarps == 4`), at
-    #: the one window `test_prefill_vs_oracle`'s READ_ONE/WRITE_BOTH cells need (W=512;
-    #: no W=384 twin is exercised by any cell, so none is added).  `carry_kernel_key()`
-    #: keys an uncarved row on `("split", D,B,K,M,DV,W,C)` alone -- MO/WPS/NSW/NSR/PK do
-    #: not enter the key -- so both rows land in row 2's existing TU/group: the
-    #: channel-split body ignores the declaration (it is exact for any support pattern,
-    #: the general slow path), so this adds two dispatch/table rows and ZERO new kernel
-    #: bodies.  MO=1: level 0 read-sparse only, level 1 dense (READ_ONE).  MO=10: both
-    #: levels write-sparse (WRITE_BOTH).
-    (2, 256, 4, 8, 64, 512, 32, 1, 1, 1, 1, 1, 0),      # 10
-    (2, 256, 4, 8, 64, 512, 32, 1, 10, 1, 1, 1, 0),     # 11
-    #: K35 F1: THE TIED ARM.  `MO = 3` makes level 0 sparse on BOTH sides and level 1
-    #: dense on both, so `ModeOrder` classes the two levels identically for the two
-    #: sides, the two orders coincide, and at equal stream counts `StreamSpans` hands
-    #: both sides the SAME vector `[2, 16]`.  The permutation leaf -> (reader, slot) is
-    #: then the identity, `CarryGeom::kTied` recognizes it at compile time, and the
-    #: publish and the pull are elided: `kXchBytes = 0`, `kXchState = kXchZero`.  It is
-    #: carried so the zero is PROVED by a built arm rather than argued from the model.
-    (2, 256, 4, 8, 64, 384, 32, 1, 3, 1, 4, 4, 0),      # 12
-)
+# A row is `(D, DV, warps_per_cta)` -- the routing depth, the value width and the CTA's
+# warp count.  That is the key the rebuilt family is selected on (K50's 2x4 ruling, card
+# C stage C2/G3-G4: `warps_per_cta` in {8, 4}); the mode word, the stream counts and the
+# park bit are RUNTIME, not arm axes, and the window and chunk are the descriptor's.
+# G4 fills this list; nothing before it may add a row.
+CARRY_ARMS: tuple = ()
 
-#: THE SHIPPED / TEST SPLIT (K36).  A default build compiles the SHIPPED rows only.
-#: SHIPPED is the FLAGSHIP TOPOLOGY at the lengths the flagship runs -- flat ALT at
-#: both admitted windows, which is what M1P's transplanted shape serves.
-#: TEST is every row whose window is 64 or whose topology is N = 4096 -- the
-#: conformance cells the fp64 oracle can hold (SMALL, DEEP-3, DEEP-4) -- plus the
-#: UNCARVED DENSE_BOTH controls at the flagship cells.  A test that needs one asks for
-#: it by index and skips, with the arm named, when the binary does not carry it.
-CARRY_TEST_ARMS: tuple = (0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+#: THE SHIPPED / TEST SPLIT (K36).  A default build compiles the SHIPPED rows only;
+#: a TEST row is built for the battery and never shipped.  Both are empty while the
+#: arm list is (C0): a build carries no carry arm at all.
+CARRY_TEST_ARMS: tuple = ()
 CARRY_SHIPPED_ARMS: tuple = tuple(i for i in range(len(CARRY_ARMS))
                                   if i not in CARRY_TEST_ARMS)
 
-SPAN_FACTS_ARMS: tuple = _derive_span_facts_arms()
 
 
 def carry_kernel_key(row) -> tuple:
     """THE INSTANTIATION an arm's body IS -- and therefore what a TU may hold once.
 
-    A carved arm takes `carry_kernel`; an arm that carves nothing takes `carry_split_kernel`, whose parameter
-    list has no `MO` and no stream counts.  Two rows can therefore be different
-    ARMS and one kernel: rows 6 and 7 are the deep-3 topology declared DENSE_BOTH
-    and ALT, and the channel-split body ignores the declaration.  Emitting that
-    kernel from two translation units is the state `tools/ratify.py` refuses by
-    name ("compiled by more than one translation unit"), so the TU is keyed on
-    THIS and the rows that share a key share a file.
+    Two rows that key the same are ONE kernel and share a file; emitting one kernel
+    from two objects is the state `tools/ratify.py` refuses by name.  On the final key
+    a row IS its kernel: `(D, DV, warps_per_cta)` selects a body and nothing else does.
     """
-    (D, B, K, M, DV, W, C, CV, MO, WPS, NSW, NSR, PK) = row
-    if NSW > 1 or NSR > 1:
-        return ("carved", D, B, K, M, DV, W, C, WPS, NSW, NSR, PK, MO)
-    return ("split", D, B, K, M, DV, W, C)
+    return tuple(row)
 
 
 def carry_groups() -> dict[int, list[int]]:
@@ -409,10 +179,6 @@ def carry_tu_of() -> dict[int, int]:
     """`{arm index -> the owning arm index whose file holds it}`."""
     return {i: owner for owner, members in carry_groups().items() for i in members}
 
-
-#: the span arms are STATELESS only: residency is the paging layer's question and
-#: the carry family does not ask it, so no atom-grain row set is emitted.
-SPAN_FACTS_MASKS = (1,)
 
 
 def lex_whole(D: int, B: int, BC: int) -> int:
@@ -472,7 +238,6 @@ def chunk_rows() -> tuple:
     """Every built facts instantiation, as canonical-hashable tuples."""
     rows = [("FACTS",) + plan + plan[2:] + (m,) for plan in sorted(
         {(d, b) + lex_spans(d, b, bc) for (d, b, bc) in facts_tables()}) for m in FACTS_MASKS]
-    rows += [("FACTS",) + plan + (m,) for plan in SPAN_FACTS_ARMS for m in SPAN_FACTS_MASKS]
     rows += [("BLOCK", d, b, bc) for (d, b, bc) in facts_tables()]
     rows += [("ATOM", d, b) for (d, b) in facts_atom_arms()]
     return tuple(sorted(set(rows), key=lambda r: (r[0], r[1:])))
@@ -545,14 +310,6 @@ def facts_shard_source(name: str, rows: list) -> str:
                         f"{mask}>(\n"
                         "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, uint32_t*,\n"
                         "    int, int, cudaStream_t);\n")
-    body.append("\n//: the GIVEN-SPAN arms -- the box lattice's owner ballot rows,\n"
-                "//: consumed by the rola::carry family (K31-i-d).\n")
-    for (d, b, r0, r1, r2, r3, w0, w1, w2, w3) in SPAN_FACTS_ARMS:
-        for mask in SPAN_FACTS_MASKS:
-            body.append(f"template cudaError_t launch_span_facts_arm<{d}, {b}, {r0}, {r1}, "
-                        f"{r2}, {r3}, {w0}, {w1}, {w2}, {w3}, {mask}>(\n"
-                        "    const __nv_bfloat16*, const __nv_bfloat16*, uint32_t*, int, int,\n"
-                        "    cudaStream_t);\n")
     body.append("\n//: the LIVENESS EPILOGUE's arms -- the same (D, B, BC) key as the\n"
                 "//: table it reduces.\n")
     for (d, b, bc) in facts_tables():
@@ -566,23 +323,6 @@ def facts_shard_source(name: str, rows: list) -> str:
                     "    const uint32_t*, uint8_t*, int, int, cudaStream_t);\n")
     body.append("\n}  // namespace rola::chunk\n")
     return "".join(body)
-
-
-CARRY_BANNER_DOC = '''
-#: PER-ROW PROSE, carried with the rows.  It was the commentary around
-#: `CARRY_ARM_<i>` in `carry.cu` before K36 moved the list here; it is emitted above
-#: the row it describes so the generated `.inc` reads the way the hand-written list
-#: did.  Prose about the FAMILY (not about one row) is in
-#: `docs/internals/carry/carry.md`.
-'''
-
-CARRY_ROW_DOC: dict = {}
-#: NO ROW DOC AT M1P.  The container, `d_v = 128`, park, tied and carved-dense rows
-#: -- and the doc blocks that explained them -- left the list with the bodies that
-#: served them (K35 M1P): the transplanted M1a shape is four warps, one warp per
-#: stream, one order and `d_v = 64`, and a declaration outside it is refused by the
-#: dispatch with the whole key named.  Each row returns with the stage that rebuilds
-#: its mechanism, restored from git history rather than kept here commented out.
 
 
 def carry_members_sha256() -> str:
@@ -599,13 +339,13 @@ def carry_selection_header(arms) -> str:
     and by `tools/ratify.py` (from the shipped set or a `--carry-arms`/`--arm` scope)
     to `GENERATED_DIR / CARRY_SELECTION_INC` on every run, UNCONDITIONALLY
     OVERWRITING whatever is there -- never accumulated across runs. Included ONLY by
-    `carry_arms.inc` (the per-arm TUs and the carry dispatch TU reach it through that
-    one checked-in file), never by anything else, so no other translation unit's
-    argv or included content depends on the selection.
+    the carry family's checked-in arm include (the per-arm TUs and the carry dispatch
+    TU reach it through that one file), never by anything else, so no other translation
+    unit's argv or included content depends on the selection.
 
     An empty selection (`arms == []`) still emits the `ROLA_CARRY_BUILT` sentinel
     and zero `ROLA_CARRY_BUILD_<i>` lines: a build that selects nothing must still
-    satisfy the include-guard in `carry_arms_inc()`, not silently omit it.
+    satisfy the dispatch TU's include-guard, not silently omit it.
     """
     n = len(CARRY_ARMS)
     bad = sorted({i for i in arms if not 0 <= i < n})
@@ -616,93 +356,11 @@ def carry_selection_header(arms) -> str:
            "// the CARRY ARM SELECTION for this build/ratify run. NEVER\n",
            "// CHECKED IN; regenerated by setup.py (from ROLA_CARRY_ARMS) and by\n",
            "// tools/ratify.py (from the shipped set or --carry-arms scope) on every run.\n",
-           "// Included only by the per-arm TUs and the carry dispatch TU\n",
-           "// (csrc/rola/src/instantiations/carry_arms.inc).\n",
+           "// Included only by the per-arm TUs and the carry dispatch TU.\n",
            "#define ROLA_CARRY_BUILT 1\n"]
     for i in sorted(set(arms)):
         out.append(f"#define ROLA_CARRY_BUILD_{i} 1\n")
     return "".join(out)
-
-
-def carry_arms_inc() -> str:
-    """`CARRY_ARM_<i>`, and WHICH OF THEM THIS BUILD CARRIES.
-
-    The selection macros (`ROLA_CARRY_BUILT` / `ROLA_CARRY_BUILD_<i>`) come from
-    `build/generated/carry_selection.inc` (K36b) -- a GENERATED, NEVER-CHECKED-IN
-    header, written for this build/ratify run's arm scope by `setup.py` or
-    `tools/ratify.py` before any translation unit that includes this file is
-    compiled. So the subset is a FILE subset first (an unrequested arm's TU is
-    never compiled) and the macro merely agrees with it: `CARRY_ARMS_X` expands to
-    the arms that are actually linkable, which is what makes the dispatch's refusal
-    the only path to an arm the binary does not carry.
-    """
-    out = [BANNER,
-           f"// members-sha256: {carry_members_sha256()}\n",
-           "// Included by ../carry/carry.cu; the carry family's built arm rows.\n",
-           "// A row is (index, D, B, k, m, d_v, W, chunk, carve, level_modes, WPS,\n",
-           "// write streams, read streams, park) -- tools/gen_shards.py owns it.\n",
-           "// clang-format off\n",
-           f'#include "{CARRY_SELECTION_INC}"\n',
-           "#ifndef ROLA_CARRY_BUILT\n",
-           '#error "the build must have generated build/generated/carry_selection.inc '
-           '(setup.py or tools/ratify.py, before this TU compiles) and it must be '
-           'reachable on the include path -- a missing/stale header, not a missing -D, '
-           'is now the failure this guards"\n',
-           "#endif\n",
-           "\n"]
-    for i, row in enumerate(CARRY_ARMS):
-        if i in CARRY_ROW_DOC:
-            for line in CARRY_ROW_DOC[i].splitlines():
-                out.append(f"//: {line}\n" if line else "//:\n")
-        fields = ", ".join(str(x) for x in (i,) + row)
-        tag = "  // TEST" if i in CARRY_TEST_ARMS else ""
-        out.append(f"#define CARRY_ARM_{i}(X_) X_({fields}){tag}\n")
-    out.append("\n//: THE SELECTION.  An arm whose translation unit this build did not\n"
-               "//: compile expands to nothing, so it has no declaration, no dispatch\n"
-               "//: arm and no row in `arms()`.\n")
-    for i in range(len(CARRY_ARMS)):
-        out.append(f"#if defined(ROLA_CARRY_BUILD_{i})\n"
-                   f"#define CARRY_ARM_SEL_{i}(X_) CARRY_ARM_{i}(X_)\n"
-                   f"#else\n"
-                   f"#define CARRY_ARM_SEL_{i}(X_)\n"
-                   f"#endif\n")
-    out.append("\n#define CARRY_ARMS_X(X_) \\\n")
-    for i in range(len(CARRY_ARMS)):
-        tail = "" if i == len(CARRY_ARMS) - 1 else " \\"
-        out.append(f"  CARRY_ARM_SEL_{i}(X_){tail}\n")
-    out.append("// clang-format on\n")
-    return "".join(out)
-
-
-def carry_arm_tu(owner: int, members: list) -> str:
-    """ONE ARM'S TRANSLATION UNIT: an include, a guard, one expansion.
-
-    `members` is normally the one arm; it is two exactly where two rows ARE one
-    kernel (`carry_kernel_key`), because emitting that kernel from two objects is
-    the state `tools/ratify.py` refuses.
-    """
-    #: Full rationale (why the carved/channel-split body is emitted by exactly
-    #: one object, why co-keyed rows share a file, what carry_arms.inc carries,
-    #: what the membership hash guards) is docs/internals-exempt (generated
-    #: dir) and lives, verbatim, in csrc/rola/src/instantiations/README.md's
-    #: "ONE TRANSLATION UNIT PER ARM" / "The membership hash" sections -- this
-    #: header only names the arm(s) and points there.
-    arms_word = (f"arm {owner}" if len(members) == 1 else
-                 f"arms {', '.join(str(i) for i in members)} (one kernel)")
-    body = [f"// GENERATED by tools/gen_shards.py -- do not edit, regenerate; "
-            f"see README.md. {arms_word}.\n",
-            "\n",
-            '#include "../carry/carry_arm.cuh"\n',
-            '#include "carry_arms.inc"  // the row macros this build carries\n',
-            "\n",
-            "namespace rola::carry {\n",
-            "\n"]
-    for i in members:
-        body += [f"#if defined(ROLA_CARRY_BUILD_{i})\n",
-                 f"CARRY_ARM_{i}(CARRY_ARM_DEFINE)\n",
-                 "#endif\n"]
-    body.append("\n}  // namespace rola::carry\n")
-    return "".join(body)
 
 
 def carry_sources() -> list:
@@ -712,15 +370,8 @@ def carry_sources() -> list:
 
 
 def readme() -> str:
-    groups = carry_groups()
-    shared = [m for m in groups.values() if len(m) > 1]
-    grouped = "Every arm has its own file except " + "; ".join(
-        f"rows {', '.join(str(i) for i in m)}, which are ONE kernel (the channel-split "
-        f"body takes no per-level declaration) and therefore one file" for m in shared
-    ) + "." if shared else "Every arm has its own file."
     return README.format(total=len(chunk_rows()), ntables=len(facts_tables()),
-                         natoms=len(facts_atom_arms()), narms=len(FACTS_ARMS),
-                         ncarry=len(CARRY_ARMS), grouped=grouped)
+                         natoms=len(facts_atom_arms()), narms=len(FACTS_ARMS))
 
 
 def generated() -> dict[str, str]:
@@ -728,9 +379,6 @@ def generated() -> dict[str, str]:
     out = {f"{name}.cu": facts_shard_source(name, rows)
            for name, rows in sorted(chunk_shards().items())}
     out["facts_arms.inc"] = facts_arms_inc()
-    for owner, members in carry_groups().items():
-        out[f"carry_arm_{owner}.cu"] = carry_arm_tu(owner, members)
-    out["carry_arms.inc"] = carry_arms_inc()
     for name in list(out):
         out[name] = clang_format(out[name], name)
     out["README.md"] = readme()
