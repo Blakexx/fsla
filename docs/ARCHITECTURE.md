@@ -410,6 +410,15 @@ the CARVE grain, per side, per level, per run of THAT side's partition, from tha
 side's own factors — so a stream's test reads exactly one row per tested level, and a
 level a side spans whole emits no rows at all (`docs/internals/facts/facts_kernel.md`).
 
+**The body in the tree is the reference; the body the foundation is for is new.** The
+carry kernel in the tree is the lineage that proved the design's mechanisms one at a time
+and is kept untouched as the parity reference. The foundation — the descriptor and state
+format, the geometry block, the structure switch, the liveness pass, the constants and the
+launch table, the selection and its manifest — is built as contracts, derivations,
+primitives, tools and tests that no old body consumes. The pipelined body is then written
+from an empty file on those specializations, ground up, and replaces the reference only
+when it beats it. Nothing is ported. *(Ruled.)*
+
 ### 6.2 Carry — the window body
 
 Per window, per owner, against the state as of the window's start:
