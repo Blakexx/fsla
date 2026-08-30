@@ -124,3 +124,7 @@ that into the skill the same day (process/pointers only — never facts).
   a commit-time rule; an agent that starts editing the read-only tip and "moves later" has already
   violated it. new_worktree.sh needs ROLA_BASE_VENV (the one real venv on this host is named in the
   dispatch prompt; sibling venv-* dirs are pointer venvs).
+- THE CLEAN-SLATE LINE (Blake, 2026-08-30; card C_CLEAN_SLATE.md): from C0 on, every carry-family brief
+  targets k31/carry-clean; k35-final holds the OLD carry as the reference and is never edited; a stage
+  is either a foundation FEATURE (shipped + tested on its own, no kernel body) or a KERNEL stage on the
+  features; briefs cite the card and say which.
