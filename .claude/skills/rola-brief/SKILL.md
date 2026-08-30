@@ -89,3 +89,7 @@ that into the skill the same day (process/pointers only — never facts).
 - A DELTA GATE NAMES A COMMITTED HARNESS (G1b-pad, 2026-08-29): a gate stated as "the +X% from stage Y
   is gone" is unmeetable unless stage Y's experiment has a committed invocation to reproduce; brief the
   reproduction first, then the delta.
+- DELETING AN AXIS DELETES ITS RESIDUE (Blake, 2026-08-29): every field, parameter, argument slot or
+  docstring whose only reason to exist was the deleted axis goes with it. A value kept as None / a
+  constant / "reserved" / "always 1" to document its own absence is a DEAD PARAMETER — a stop condition,
+  never a design choice (the coordinator's own NORM brief made this mistake with g_read).
