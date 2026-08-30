@@ -103,3 +103,6 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
   the host had to be restarted): single-TU census compiles, clang-tidy device runs and iteration builds
   take tools/build/build_lock.py's slots exactly like setup.py's gate build; never `xargs -P`/`&` a fan-out
   of nvcc/clang/cicc; never more than the budget's slots in flight from one agent.
+- THE SANITIZER IS EXCLUSIVE (incident 2, 2026-08-29): compute-sanitizer runs never overlap a compile —
+  tools/sanitize_oracle.py holds the build lock exclusively and runs niced; one tool, one family at a
+  time; run it only after the gate build's exit marker. 6 families × 3 tools is 18 instrumented launches.
