@@ -26,6 +26,7 @@ import torch
 
 from benchmarks.cells import conservative_activity
 from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
+from rola.engine.facts.liveness import LivenessLayout
 from rola.ops import carry as carry_ops
 from rola.ops._ext import is_available
 
@@ -61,9 +62,10 @@ def operands(desc: StateFormat, length=TOKENS, bh=BH, device="cuda"):
         write=torch.zeros((bh, length, wtot), dtype=torch.bfloat16, device=device),
         gain=torch.zeros((bh, length), dtype=torch.bfloat16, device=device))
     v = torch.zeros((bh, length, desc.DV), dtype=torch.bfloat16, device=device)
+    layout = LivenessLayout.of(desc, length)
     liveness = carry_ops.LivenessWords(
-        read=torch.zeros((bh, length, wtot // 8), dtype=torch.uint8, device=device),
-        write=torch.zeros((bh, length, wtot // 8), dtype=torch.uint8, device=device))
+        words=torch.zeros((bh, 2, layout.rows, layout.words), dtype=torch.int32,
+                          device=device))
     activity = conservative_activity(desc, bh, device)
     return routes, v, liveness, activity
 
@@ -159,9 +161,29 @@ def test_the_operand_widths_must_be_the_descriptor_s():
 def test_the_liveness_block_is_one_bit_per_digit():
     desc = descriptor()
     routes, v, liveness, activity = operands(desc)
-    wrong = carry_ops.LivenessWords(read=liveness.read[:, :, :-1], write=liveness.write)
+    wrong = carry_ops.LivenessWords(words=liveness.words[:, :, :-1])
     with pytest.raises(carry_ops.CarryRefusal, match="class-1 block"):
         call(desc, liveness=wrong)
+
+
+def test_the_surface_takes_the_pass_s_words_unchanged():
+    """THE TWO CONTRACTS ARE ONE: what the pass emits is what the surface accepts.
+
+    The refusal here is the extension's `carry_forward` by name -- the body is not on
+    this line -- which is reached only AFTER every operand refusal has passed, so
+    getting that far IS the statement that the words were accepted unchanged.
+    """
+    from rola.engine.facts.liveness import side_statics
+    from rola.ops.liveness import liveness_words
+
+    desc = descriptor()
+    routes, v, _, activity = operands(desc)
+    layout = LivenessLayout.of(desc, TOKENS)
+    statics = side_statics(layout, (False,) * layout.D, layout.B)
+    words = liveness_words(routes.read, routes.write, layout, statics, statics)
+    assert tuple(words.shape) == (BH, 2, layout.rows, layout.words)
+    with pytest.raises((AttributeError, RuntimeError, NotImplementedError)):
+        call(desc, liveness=carry_ops.LivenessWords(words=words))
 
 
 def test_the_activity_byte_is_one_per_page():

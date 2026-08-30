@@ -312,3 +312,73 @@ def page_activity(layout: LivenessLayout, read_boxes, read_bits, write_boxes,
             hit = live[:, index, None].expand(-1, pages.numel())
             bits[:, pages] |= hit.to(torch.uint8) * flag
     return bits
+
+
+def atom_spans(layout: LivenessLayout) -> tuple[int, ...]:
+    """THE ATOM AS A BOX: the per-level spans of the trailing 16 canonical leaves.
+
+    A page atom is 16 consecutive leaves in canonical order, and canonical order is the
+    radix over the levels with the last one minor, so an atom IS an aligned rectangle:
+    the last levels whole until their product reaches 16, and an aligned run in the
+    level that completes it. That is what makes the exact per-page fold a special case
+    of :func:`page_activity` rather than a second derivation.
+    """
+    spans, remaining = [1] * layout.D, ATOM_LEAVES
+    for level in reversed(range(layout.D)):
+        span = min(layout.B[level], remaining)
+        if remaining % span or layout.B[level] % span:
+            raise ValueError(f"level {level}'s width {layout.B[level]} does not tile the "
+                             f"{remaining} leaves the page atom still needs")
+        spans[level], remaining = span, remaining // span
+        if remaining == 1:
+            break
+    if remaining != 1:
+        raise ValueError(f"the topology holds {layout.N} leaves, fewer than one page atom")
+    return tuple(spans)
+
+
+def atom_boxes(layout: LivenessLayout) -> list[Box]:
+    """Every atom as a :class:`Box`, in canonical PAGE order -- the finest box set.
+
+    The box->page map is a bijection here, so :func:`page_activity` over these boxes is
+    the exact per-page answer rather than a box-grain over-report.
+    """
+    spans = atom_spans(layout)
+    grid = [[]]
+    for level in range(layout.D):
+        grid = [row + [digit] for row in grid
+                for digit in range(0, layout.B[level], spans[level])]
+    return [Box(start=tuple(row), span=spans) for row in grid]
+
+
+def atom_activity(words: torch.Tensor, layout: LivenessLayout, side: int) -> torch.Tensor:
+    """`[BH, N/16]` bool: :func:`box_activity` at the ATOM box set, every box at once.
+
+    The same law -- the OR over tokens of the AND over levels of the OR over the box's
+    digit run -- folded as one outer product over the levels, which the atom set admits
+    because it is the whole aligned partition and its canonical order is exactly the
+    order that product builds.
+    """
+    spans = atom_spans(layout)
+    bits = unpack(words, layout)[:, side]
+    BH = bits.shape[0]
+    clause = None
+    for level in range(layout.D):
+        base, width, span = layout.row_base(level), layout.B[level], spans[level]
+        run = bits[:, base:base + width, :].reshape(BH, width // span, span, layout.L).any(dim=2)
+        clause = run if clause is None else (
+            clause[:, :, None, :] & run[:, None, :, :]).reshape(BH, -1, layout.L)
+    return clause.any(dim=-1)
+
+
+def page_bits(words: torch.Tensor, layout: LivenessLayout) -> torch.Tensor:
+    """`[BH, N/16]` uint8: the EXACT activity byte, `ATOM_READ | ATOM_WRITTEN`.
+
+    :func:`page_activity` is this fold at an arbitrary carve, where a box straddling a
+    page makes the answer a sound over-report; at the atom box set the map is a
+    bijection and the byte is exact, which is what `plan_exact` allocates on and what a
+    residency check reads.
+    """
+    read = atom_activity(words, layout, READ).to(torch.uint8) * ATOM_READ
+    write = atom_activity(words, layout, WRITE).to(torch.uint8) * ATOM_WRITTEN
+    return read | write

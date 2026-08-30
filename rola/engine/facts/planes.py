@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import torch
 
-from rola.engine import MMA_K_QUANTUM, Mask
-from rola.ops._ext import extension
+from rola.engine import MMA_K_QUANTUM
 
 
 def packed_copy(view: torch.Tensor, dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
@@ -125,7 +124,7 @@ def read_atoms(bits: torch.Tensor) -> torch.Tensor:
 
 def atom_bits(write_plane: torch.Tensor, widths,
               read_plane: torch.Tensor | None = None) -> torch.Tensor:
-    """`[BH, N/16]` uint8: the per-atom ACTIVITY byte, `WRITTEN | READ` (P80b).
+    """`[BH, N/16]` uint8: the per-atom ACTIVITY byte, `WRITTEN | READ`.
 
     Bit 0 is set for an atom this routing WRITES, bit 1 for one it READS; the two are
     orthogonal and are never pre-ORed, because the read-only distinction is what the
@@ -135,23 +134,26 @@ def atom_bits(write_plane: torch.Tensor, widths,
     A CONVENIENCE ENTRY: with no ``read_plane`` the write plane stands in for both
     sides, which answers the write bits exactly and makes the read bits their mirror --
     all a caller that only wants residency needs. A caller that gates a state sweep
-    passes BOTH planes, or takes the byte from the chunk DAG's own facts node, which
-    votes them in the one launch it already runs.
+    passes BOTH planes.
 
-    The page plan's input (docs/internals/paging/stats.md). It is keyed to the 16-leaf
-    quantum and not to `BC`, so the bitmap this returns is the same tensor at every
-    built arm -- which is what lets residency be an OUTPUT of the plan rather than a
-    consequence of it. Device-side: no host synchronization happens here.
+    IT IS A FOLD, NOT A PASS. The one liveness pass emits the class-1 words and this
+    reduces them at the atom box set, where the box->page map is a bijection, so the
+    byte is exact (docs/internals/facts/liveness_contract.md#folds). It is keyed to the
+    16-leaf quantum and to nothing else, which is what lets residency be an OUTPUT of
+    the plan rather than a consequence of it.
 
-    ASKING FOR IT ALONE BUILDS THE UNION TABLE TOO, because both row sets come out of
-    one pass over the plane (docs/internals/facts/facts_kernel.md#the-facts-pass); a
-    call that wants both takes them from the chunk DAG's own node in one launch, and
-    nothing on a measured path comes through here.
+    EVERY LEVEL IS VOTED FROM ITS AMPLITUDES here, which is what the static width mask
+    reduces to on an UNPADDED topology: a softmax amplitude is never zero, so a dense
+    level votes all ones either way. A padded topology's mask is
+    :func:`~rola.engine.facts.liveness.side_statics`'s, over a logical width this entry
+    is not given and does not derive.
     """
-    from rola.engine.facts import manifest as census
-    from rola.engine.rules.arm import arm as arm_rule
+    from rola.engine.facts import liveness as lv
+    from rola.ops.liveness import liveness_words
 
-    widths = tuple(widths)
-    arm = arm_rule(widths, census.chunk_arms())
-    return extension().chunk_facts(read_plane if read_plane is not None else write_plane,
-                                   write_plane, *arm, list(widths), int(Mask.M2), True)[1]
+    widths = tuple(int(width) for width in widths)
+    layout = lv.LivenessLayout(D=len(widths), B=widths, L=int(write_plane.shape[-2]))
+    statics = lv.side_statics(layout, (False,) * layout.D, widths)
+    words = liveness_words(read_plane if read_plane is not None else write_plane,
+                           write_plane, layout, statics, statics)
+    return lv.page_bits(words, layout)

@@ -16,6 +16,7 @@
 #include "src/entmax/factor.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/common/geom_api.cuh"
+#include "src/facts/liveness_api.cuh"
 #include "src/intra/intra.cuh"
 
 namespace py = pybind11;
@@ -48,29 +49,28 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "carry_forward",
       [](const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&,
          at::Tensor&, const std::vector<int64_t>&, int64_t, int64_t, int64_t, const at::Tensor&,
-         const at::Tensor&, const at::Tensor&, const c10::optional<at::Tensor>&,
-         const c10::optional<at::Tensor>&, const c10::optional<at::Tensor>&) {
+         const at::Tensor&, const c10::optional<at::Tensor>&, const c10::optional<at::Tensor>&,
+         const c10::optional<at::Tensor>&) {
         TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_forward)");
       },
       "the carry forward launch surface -- CONTRACT ONLY, no implementation on this line",
       py::arg("read"), py::arg("write"), py::arg("gain"), py::arg("v"), py::arg("num"),
       py::arg("den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
-      py::arg("warps_per_cta"), py::arg("live_read"), py::arg("live_write"), py::arg("activity"),
-      py::arg("state_in"), py::arg("state_out"), py::arg("page_table"));
+      py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
+      py::arg("state_out"), py::arg("page_table"));
   m.def(
       "carry_backward",
       [](const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
          const at::Tensor&, const at::Tensor&, const std::vector<int64_t>&, int64_t, int64_t,
-         int64_t, const at::Tensor&, const at::Tensor&, const at::Tensor&,
-         const c10::optional<at::Tensor>&, const c10::optional<at::Tensor>&,
-         const c10::optional<at::Tensor>&) {
+         int64_t, const at::Tensor&, const at::Tensor&, const c10::optional<at::Tensor>&,
+         const c10::optional<at::Tensor>&, const c10::optional<at::Tensor>&) {
         TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_backward)");
       },
       "the carry reverse launch surface -- CONTRACT ONLY, no implementation on this line",
       py::arg("read"), py::arg("write"), py::arg("gain"), py::arg("v"), py::arg("d_num"),
       py::arg("d_den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
-      py::arg("warps_per_cta"), py::arg("live_read"), py::arg("live_write"), py::arg("activity"),
-      py::arg("state_in"), py::arg("d_state_out"), py::arg("page_table"));
+      py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
+      py::arg("d_state_out"), py::arg("page_table"));
   m.def(
       "carry_build_stamp",
       []() { TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_build_stamp)"); },
@@ -99,6 +99,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "K31 R4: the built reverse intra arms and their census");
   m.def("intra_backward_stamp", &rola::intra::intra_backward_stamp,
         "K31 R4: the reverse intra's device build stamp");
+
+  // ---- the ONE liveness pass, a foundation feature ------------------------
+  m.def("liveness_words", &rola::facts::liveness_words,
+        "the ONE geometry-independent liveness pass -- the class-1 words, one bit per "
+        "(side, token, level, digit); every consumer's grain is a host fold over these",
+        py::arg("read_plane"), py::arg("write_plane"), py::arg("widths"), py::arg("dense_read"),
+        py::arg("mask_read"), py::arg("dense_write"), py::arg("mask_write"));
 
   // ---- the producer's union entmax solve ----------------------------------
   m.def("entmax_union_forward", &rola::entmax::union_forward,
