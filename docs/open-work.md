@@ -3,6 +3,22 @@
 Carried in from the extraction. These become GitHub issues when the repository is
 published (execution checklist E12); until then this file is the list.
 
+## The clean-slate line (card C, ratified 2026-08-30) — what is knowingly absent
+
+This branch has NO carry kernel and NO stats passes: C0 deleted them
+(`docs/internals/DELETIONS.md`, two rows). This is not a regression list, it is the
+plan's own starting state, and the tests are how it is measured — they were KEPT,
+pointed at the final surface, and are RED until the kernel passes them (card C's
+test-driven ruling: no skips, no xfails, no designed refusal).
+
+| # | Absent, and what builds it back |
+|---|---|
+| **C-a** | **The prefill (carry) forward.** `rola/ops/carry.py`, `rola.layer`'s prefill path and the engine's chunk DAG still CALL it and fail at `rola._C` with a missing attribute. C3 (K0–K6) builds it ground up in the pipelined structure, graded from its first probe against the OLD reference on the `k35-final` tip. |
+| **C-b** | **The prefill backward.** C4, after C3. |
+| **C-c** | **The liveness pass** (was: the facts family's union table, atom bitmap, block bitmap). C2 builds it as a foundation feature with host folds; C1 adjusts the Python seam where its outputs replace the atom/block bitmaps. |
+| **C-d** | **Decode's PAGED path, in the meantime.** Decode's own kernel is untouched and its oracle tier is green, but its DAG sourced `atom_bits` from the deleted stats pass, so the paged decode integration tests are red until C-c. This is the one cost C0 pays outside the carry family, and it is stated rather than worked around. |
+| **C-e** | **The carry arm table.** `tools/gen_shards.py`'s `CARRY_ARMS` is EMPTY, its row schema re-declared as the final `(D, DV, warps_per_cta)` key. G3 lands the constants and the launch table (`warps_per_cta` in {8, 4}); G4 fills the table, keys selection and the manifests on it, and brings back the per-arm translation units and the fatbin gate that reads them. |
+
 ## Blocking the release
 
 | # | Item |
