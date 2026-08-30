@@ -43,7 +43,7 @@ construction and a fold may OR whole words without masking. A warp whose `w` is 
 
 <a id="the-read"></a>
 
-### The read: eight digits per lane per transaction
+### The read: sixteen digits per lane per transaction
 
 Lane `t` reads its OWN token's row, so the 32 lanes of one ballot are `rows·2` bytes
 apart — the axis the layout makes minor is tokens, and the axis a lane walks is digits.
@@ -52,16 +52,23 @@ leans on L1 to recover the other fifteen-sixteenths of each sector across the `r
 iterations; measured, L1 does not recover it once `rows` grows, and DRAM traffic runs
 2.5–3.8× the unique bytes.
 
-So a lane loads `kVecDigits = 8` digits — one 16-byte `uint4` — and votes all eight from
-registers. That is one transaction per lane per eight digits instead of eight, and it is
-UNIFORM rather than a fast path with a narrow fallback: `B_l` is a power of two at or
-above 16 by the descriptor's law, so every level's width and every row base is a whole
-number of eight-digit groups, and the pass's seam REFUSES a width that is not
+An earlier `kVecDigits = 8` form (one 16-byte `uint4` per lane) cut that to 1.77–1.92×
+of the unique bytes: a lane's 16-byte load fills only half of the 32-byte sector its
+address falls in, and closing the other half depends on it surviving in cache until the
+adjacent lane's group is read, which at this occupancy it mostly does not.
+
+So a lane loads `kVecDigits = 16` digits — two consecutive `uint4`s, one whole 32-byte
+sector — and votes all sixteen from registers. That is one full sector per lane per
+sixteen digits instead of two half-used ones, and it is UNIFORM rather than a fast path
+with a narrow fallback: `B_l` is a power of two at or above 16 by the descriptor's law,
+so every level's width and every row base is a whole number of sixteen-digit groups,
+and the pass's seam REFUSES a width that is not
 ([`liveness_api.md`](liveness_api.md#the-plan)). There is no remainder loop because
 there is no lawful remainder.
 
-The eight amplitudes are extracted from the four `uint4` members by shift, never through
-a pointer into the loaded value, so the group stays in registers.
+The sixteen amplitudes are extracted from the eight `uint4` members (two loads of four
+each) by shift, never through a pointer into the loaded value, so the group stays in
+registers.
 
 *The store pattern.* Consecutive rows are `words` apart, so lane 0's stores are strided
 4-byte writes. The written volume is `rows · L / 8` bytes per side, an eighth of the

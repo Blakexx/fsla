@@ -33,7 +33,7 @@ PassPlan build_plan(const std::vector<int64_t>& widths, int L, int64_t dense_rea
                 width,
                 " digits wide. B_l is a POWER OF TWO AT OR ABOVE 16 -- the state's format "
                 "descriptor's law (KERNEL_STANDARDS R13), which is what makes every level's "
-                "width and row base a whole number of the eight-digit groups the pass reads "
+                "width and row base a whole number of the sixteen-digit groups the pass reads "
                 "per lane. There is no narrow path and no padding here.");
     plan.B[level] = (int)width;
     plan.rows += (int)width;
