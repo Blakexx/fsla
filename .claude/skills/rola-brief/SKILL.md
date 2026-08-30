@@ -82,3 +82,7 @@ that into the skill the same day (process/pointers only — never facts).
   (many short windows); size priming depth from the ledger (exposed cycles vs cover cycles), never guess.
 - WAITING ON A BUILD: only a harness-tracked task wakes you; a shell-backgrounded build does not — wait
   on its exit marker in-turn (rola-build addendum, G2), never end the turn to "resume on notification".
+- DESIGN POINTS ARE NOT THE WORKER'S TO SETTLE (Blake, 2026-08-29): a stage agent decides IMPLEMENTATION
+  DETAILS only; anything that adds a mechanism, changes a floor's terms, trades code size / SMEM /
+  registers, or departs from the brief's pseudocode is a DESIGN POINT → STOP and report the options with
+  their costs; never "settle" it and continue. If unsure which it is, it is a design point.
