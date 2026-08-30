@@ -364,3 +364,10 @@ on the count; (2) a compile-time exhaustiveness assert (the derivation's possibl
 set) so an arm that could receive an uncovered case does not build; (3) a launch-time refusal at the seam
 naming the uncovered case; (4) a trapping default (`__trap()`, never a fallthrough) and a post-build
 coverage sweep (every arm at every admissible case on a tiny cell).
+
+## CONSTITUTION addendum (Blake, 2026-08-29): R13 — TWO CONTRACTS, ONE TRANSLATOR
+The API accepts any shape (any b_l ≥ 2, any d_v, any L) and serves it by padding; the KERNEL accepts only
+the descriptor's strict shape (powers of two ≥ 16, a shipped DV, N a multiple of 16, bf16 operands) and
+REFUSES the rest — it never pads or masks. The seam is the only translator. Both boundaries are tested:
+API tests prove padded runs bit-identical; kernel-boundary tests call the launch surface with unpadded
+shapes and assert the refusal; a lint keeps logical-width fields out of every kernel entry signature.
