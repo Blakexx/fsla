@@ -18,6 +18,7 @@
 #include "src/facts/facts_api.cuh"
 //: K31 R1 -- the box-native CARRY family, built ALONGSIDE the shipped facts -- see docs/internals/rola_api.md#near-line-31
 #include "src/carry/carry_api.cuh"
+#include "src/carry/geom_api.cuh"
 #include "src/intra/intra.cuh"
 
 namespace py = pybind11;
@@ -62,6 +63,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("pr"), py::arg("pw"), py::arg("widths"), py::arg("k"), py::arg("m"),
         py::arg("carve") = false);
   m.def("carry_arms", &rola::carry::arms, "K31 carry kernel: the built arms");
+  m.def("carry_geometry", &rola::carry::geometry,
+        "G: the addressing block, derived once and flattened -- the SHIPPED derivation, "
+        "which is what a model test must measure",
+        py::arg("widths"), py::arg("level_modes"), py::arg("bc"), py::arg("nsr"), py::arg("nsw"),
+        py::arg("dv"));
+  m.def("carry_sub_boxes", &rola::carry::sub_box_set,
+        "G: the GENERATED set of warp sub-box shapes a side selects its member from",
+        py::arg("depth"), py::arg("box_leaves"), py::arg("workers"));
   // ---- K31 R4: the reverse carry family, two concurrent scans ------------
   m.def("carry_backward_inter", &rola::carry::backward_inter,
         "K31 R4: the cross-window reverse pass -- (d_pr, d_pw, d_gw, d_v, d_state_in, "
