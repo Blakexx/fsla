@@ -100,21 +100,35 @@ echo "[new_worktree] pointer .pth files"
 printf '%s\n' "$WORKTREE" > "$SITE/aa_rola_${NAME}.pth"
 printf '%s\n' "$BASE_VENV/lib/python3.11/site-packages" > "$SITE/zz_rola_base.pth"
 
-echo "[new_worktree] in-tree editable build (--no-deps, through the build lock)"
-# FOOTGUN 2: `pip install -e .` WITHOUT --no-deps resolves pyproject.toml's
-# `torch` dependency FRESH from PyPI -- a different (possibly CPU-only, or a
-# different CUDA build) torch than the one the shared base venv already carries
-# and the extension is about to compile its ABI against, yielding an
-# ABI-mismatched `.so` at import time. The shared base venv IS the dependency
-# resolution here, via the `zz_rola_base.pth` file above -- `--no-deps` is not
-# optional either.
-(
-  cd "$WORKTREE"
-  # The NEW worktree's own build_lock.sh, not this script's -- whatever SHA was
-  # checked out is what governs its own build.
-  ./tools/build/build_lock.sh -- \
-    "$VENV/bin/python" -m pip install -e . --no-deps --no-build-isolation
-)
+MAIN_SO="$(ls "$MAIN_CHECKOUT"/rola/_C.cpython-311-*.so 2>/dev/null | head -1 || true)"
+MAIN_SHA="$(git -C "$MAIN_CHECKOUT" rev-parse HEAD)"
+if [[ "${ROLA_WORKTREE_BUILD:-0}" != "1" && -n "$MAIN_SO" && "$MAIN_SHA" == "$(git -C "$WORKTREE" rev-parse HEAD)" ]]; then
+  # Same SHA as the integration checkout and it carries a built extension: install the
+  # Python package without building, then copy the extension in -- one build per SHA
+  # on this host, not one per worktree. ROLA_WORKTREE_BUILD=1 forces a build.
+  echo "[new_worktree] editable install WITHOUT an extension build; copying $MAIN_SO"
+  (
+    cd "$WORKTREE"
+    ROLA_NO_EXTENSION=1 "$VENV/bin/python" -m pip install -e . --no-deps --no-build-isolation
+  )
+  cp "$MAIN_SO" "$WORKTREE/rola/"
+else
+  echo "[new_worktree] in-tree editable build (--no-deps, through the build lock)"
+  # FOOTGUN 2: `pip install -e .` WITHOUT --no-deps resolves pyproject.toml's
+  # `torch` dependency FRESH from PyPI -- a different (possibly CPU-only, or a
+  # different CUDA build) torch than the one the shared base venv already carries
+  # and the extension is about to compile its ABI against, yielding an
+  # ABI-mismatched `.so` at import time. The shared base venv IS the dependency
+  # resolution here, via the `zz_rola_base.pth` file above -- `--no-deps` is not
+  # optional either.
+  (
+    cd "$WORKTREE"
+    # The NEW worktree's own build_lock.sh, not this script's -- whatever SHA was
+    # checked out is what governs its own build.
+    ./tools/build/build_lock.sh -- \
+      "$VENV/bin/python" -m pip install -e . --no-deps --no-build-isolation
+  )
+fi
 
 echo "[new_worktree] verifying the import"
 # THE FINDER'S OWN MAPPING, read statically first: does the generated editable
