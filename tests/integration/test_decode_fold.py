@@ -37,6 +37,7 @@ import torch
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decode import _decode_step, derive_decode_geometry, fold_levels
 from rola.ops.lattice import permutation
+from rola.ops.paging import to_split_planes
 from tests.oracle.oracle_fixtures import _topology
 
 pytestmark = [
@@ -64,15 +65,29 @@ def declared_row_sum(row: torch.Tensor) -> torch.Tensor:
     return lanes[:, 0]
 
 
+def _hi_truncate(x: torch.Tensor) -> torch.Tensor:
+    """The value a READ-ONLY atom's hi-plane-only load reconstructs: the fp32 word with
+    its low 16 bits zeroed (``hi || 0``, docs/internals/common/state_page.md#load) --
+    G1's truncation, not a round. ``s0`` here is touched by no deposit, so every row the
+    step reads is read-only and this IS the value the kernel's arithmetic sees."""
+    bits = x.contiguous().view(torch.int32)
+    return ((bits >> 16) << 16).view(torch.float32).reshape(x.shape)
+
+
 def _single_leaf_state(BH: int, config, s0: int, device, seed: int):
-    """``[BH, N, d_v + 1]`` zero everywhere but CANONICAL leaf ``s0``, in the plane's own
-    LATTICE order. Returns ``(state, e, m)``."""
+    """A ``[BH, N, d_v + 1]`` logical page, STORED as split bf16 planes (G1's contract,
+    docs/internals/state.md#split-planes) -- zero everywhere but CANONICAL leaf ``s0``,
+    in the plane's own LATTICE order. Returns ``(state, e, m)``: ``state`` in the stored
+    form the step's entry sweep reads, and ``e``/``m`` HI-TRUNCATED to the value a
+    read-only atom's load actually reconstructs -- the reference must be built from what
+    the kernel reads, not from the fp32 draw that never reaches it whole."""
     gen = torch.Generator(device=device).manual_seed(seed)
     pi = permutation(config.widths, config.lattice_k, config.lattice_m, device=device)
     state = torch.zeros(BH, config.N, _DV + 1, dtype=torch.float32, device=device)
     row = torch.rand(BH, _DV + 1, dtype=torch.float32, device=device, generator=gen) + 0.5
     state[:, int(pi[s0])] = row
-    return state, row[:, :_DV], row[:, _DV]
+    row_hi = _hi_truncate(row)
+    return to_split_planes(state), row_hi[:, :_DV], row_hi[:, _DV]
 
 
 def _y_of(read, *, dtype, normalize, seed, s0=0):
@@ -138,7 +153,7 @@ def test_a_strided_view_folds_by_address():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("dtype", _DTYPES)
-@pytest.mark.parametrize("width", [16, 33, 64, 256])
+@pytest.mark.parametrize("width", [16, 32, 64, 256])
 def test_the_normalized_read_matches_the_declared_order(dtype, width):
     read = _read_row(3, 2, width, dtype=dtype, seed=7)
     y, e, m = _y_of(read, dtype=dtype, normalize=(True,), seed=7)
