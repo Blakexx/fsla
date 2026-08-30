@@ -112,7 +112,11 @@ def declared_device_templates(src_root: Path) -> list[tuple[Path, int, str]]:
 
 def manifest_demangled(manifest_dir: Path) -> list[str]:
     mangled = []
-    for f in sorted(manifest_dir.glob("*.json")):
+    #: THE PER-ARCH RATIFICATION FILES, by name. `tools/manifests/` also holds the
+    #: DECLARATIONS the build reads (the shipped set, the derivation's cases and its
+    #: ratified goldens), which carry no `entries` block; a bare `*.json` glob reads
+    #: those as manifests and fails on the missing key.
+    for f in sorted(manifest_dir.glob("sm_*.json")):
         entries = json.loads(f.read_text()).get("entries", {})
         for key in entries:
             # key is "sm_XX:<mangled>"
@@ -170,8 +174,8 @@ def main() -> int:
     if "--test-fixtures" in sys.argv:
         return self_test()
 
-    if not MANIFEST_DIR.is_dir() or not list(MANIFEST_DIR.glob("*.json")):
-        print("unused_instantiations: SKIPPED -- no tools/manifests/*.json "
+    if not MANIFEST_DIR.is_dir() or not list(MANIFEST_DIR.glob("sm_*.json")):
+        print("unused_instantiations: SKIPPED -- no tools/manifests/sm_*.json "
               "(ratify at least once: tools/ratify.py --arch 80 --arch 86)")
         return 0
 

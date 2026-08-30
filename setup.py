@@ -168,6 +168,71 @@ def _write_carry_selection() -> None:
     (gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC).write_text(text)
 
 
+#: THE COVERAGE SWEEP'S PROBE, run in its own interpreter against the freshly built
+#: extension LOADED BY PATH.  By path, and not by `import rola`, because the fact
+#: wanted here is a property of the artifact this build just produced: importing the
+#: package would resolve through whatever is installed in the running environment,
+#: which on a developer box is routinely another worktree's build.
+_ARM_SWEEP_PROBE = """
+import importlib.util, json, sys
+from pathlib import Path
+import torch  # noqa: F401 -- the extension links against it and must load first
+name = Path(sys.argv[1]).name.split(".")[0]  # the module's init symbol is PyInit_<name>
+spec = importlib.util.spec_from_file_location(name, sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(json.dumps([list(row) for row in mod.carry_arms()]))
+"""
+
+
+def _built_extension(build_lib: str) -> Path | None:
+    """The `_C` extension this build produced, found under its own output tree."""
+    found = sorted(Path(build_lib).glob("rola/_C*.so"))
+    return found[0] if found else None
+
+
+def _arm_coverage_sweep(build_lib: str, want: list[int]) -> int:
+    """R9's fourth layer, host side: every built arm answered for by the binary.
+
+    The binary is asked what it carries and the answer is required to be exactly the
+    rows this build selected from the declaration. That is what makes `arm_switch`'s
+    exhaustiveness a checked property of the shipped artifact rather than of the
+    generator alone: the generator, the selection header and the binary are three
+    statements of one set, and this is where the third one is read.
+    """
+    so = _built_extension(build_lib)
+    if so is None:
+        raise RuntimeError(
+            f"no rola/_C*.so under {build_lib} after the build; the arm coverage "
+            f"sweep has no artifact to ask, and a sweep that silently asks nothing "
+            f"is the vacuous gate this project keeps re-learning about")
+    proc = subprocess.run([sys.executable, "-c", _ARM_SWEEP_PROBE, str(so)],
+                          capture_output=True, text=True, cwd=str(ROOT.parent))
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"the arm coverage sweep could not load {so}:\n{proc.stderr}")
+    got = sorted(tuple(row) for row in json.loads(proc.stdout))
+    expect = sorted(tuple(gen_shards.CARRY_ARMS[i]) for i in want)
+    if got != expect:
+        raise RuntimeError(
+            f"{so.name} reports the carry arms {[list(r) for r in got]}, this build "
+            f"selected {[list(r) for r in expect]}. A binary that cannot name what it "
+            f"carries cannot refuse what it does not.")
+    return len(got)
+
+
+def _write_csrc_stamp() -> None:
+    """Write `build/generated/csrc_stamp.inc` for THIS tree (the device stamp's key).
+
+    Beside `_write_carry_selection()`, pre-compile, and from `tools/ratify.py`'s own
+    function so the stamp this build compiles is the stamp that gate assembles. It is
+    a generated HEADER rather than a `-D` for the same reason the arm selection is:
+    the define would reach every translation unit's argv, so every `csrc/` edit would
+    rebuild the whole extension instead of the stamp sites.
+    """
+    ratify.write_csrc_stamp()
+
+
 def _carry_sources() -> list[str]:
     """The per-arm translation units this build compiles, TAKEN FROM THE GENERATOR.
 
@@ -505,6 +570,10 @@ SOURCES = [
     #: that the foundation lands without recompiling the dispatch; it holds no kernel.
     "csrc/rola/src/common/geom.cu",
     "csrc/rola/src/facts/liveness.cu",
+    #: The extension's freshness fact: one kernel returning the csrc content hash it
+    #: compiled against. Its own TU so that a source edit rebuilds this one file
+    #: rather than every translation unit that would otherwise carry the constant.
+    "csrc/rola/src/common/build_stamp.cu",
     # K31 R2: the standalone deterministic intra kernel, one TU.
     "csrc/rola/src/intra/intra.cu",
     # K31 R4: the intra term's reverse pass, its own TU.
@@ -603,6 +672,7 @@ class RoLABuildExtension(BuildExtension):
         pin = _gate_vendored()
         _gate_shards()
         _write_carry_selection()
+        _write_csrc_stamp()
         sccache = _gate_sccache()
         #: THE MACHINE-WIDE CICC BUDGET (KERNEL_STANDARDS §14 addendum 2, Blake
         #: ruling 2026-08-28-night): TOOL-ENFORCED here so no brief, no
@@ -620,6 +690,7 @@ class RoLABuildExtension(BuildExtension):
                                  desired=desired_jobs) as held_slots:
             os.environ["MAX_JOBS"] = str(held_slots)
             super().run()
+        self._post_build_arm_table_check()
         self._post_build_manifest_check()
         write_build_config(ROLA_CUDA_ARCHS, ptxas, manifest, pin, sccache)
 
@@ -641,6 +712,74 @@ class RoLABuildExtension(BuildExtension):
                   "ROLA_DECODE_ARMS unset to get a gateable binary.")
         print("=" * 78)
         return True
+
+    def _post_build_arm_table_check(self):
+        """The built arm table against the DECLARED SHIPPED SET.
+
+        Three statements, asserted after the compile rather than before it, because
+        what is being checked is what this build PRODUCED:
+
+        1. the generator's table still matches `tools/manifests/shipped_set.json`,
+           re-read from disk now. The table was built from the file at import; a
+           build runs for long enough that "the declaration says what it said" is a
+           second statement rather than a restatement of the first;
+        2. the selection header this build compiled against names exactly the arms
+           this build selected -- the binary's arm set is the declaration's, scoped,
+           and not whatever a previous run left in `build/generated/`;
+        3. the coverage sweep: every arm the binary carries is exercised through
+           `arm_switch`, which is R9's fourth layer on the host side.
+
+        A FAILURE HERE IS FATAL WHATEVER `ROLA_STRICT_MANIFEST` SAYS. That switch
+        is about manifest STALENESS -- measurements that go out of date between
+        milestones by design -- and none of these three is a measurement. A binary
+        whose arm set disagrees with the declaration is not stale, it is wrong.
+        """
+        bad = gen_shards.declaration_matches_table()
+        if bad:
+            raise RuntimeError(
+                "the carry arm table does not match the declared shipped set at "
+                f"{gen_shards.SHIPPED_SET_JSON}:\n" + "\n".join(bad))
+
+        want = _carry_arms()
+        header = gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC
+        if not header.exists():
+            raise RuntimeError(
+                f"{header} does not exist after the build; the selection header is "
+                f"what the per-arm translation units and the arm set compile "
+                f"against, so a build without one compiled against something else")
+        text = header.read_text()
+        named = sorted(int(m) for m in re.findall(
+            r"^#define ROLA_CARRY_BUILD_(\d+) 1$", text, re.MULTILINE))
+        if named != want:
+            raise RuntimeError(
+                f"the selection header names carry arms {named}, this build selected "
+                f"{want}. The header is what the translation units compiled against, "
+                f"so the binary carries the header's set and not the build's.")
+        count = re.search(r"^#define ROLA_CARRY_ARM_COUNT (\d+)$", text, re.MULTILINE)
+        declared = re.search(r"^#define ROLA_CARRY_ARM_DECLARED (\d+)$", text,
+                             re.MULTILINE)
+        if count is None or declared is None:
+            raise RuntimeError(
+                f"{header} carries no ROLA_CARRY_ARM_COUNT/ROLA_CARRY_ARM_DECLARED; "
+                f"`arm_switch` has no set to dispatch over and no way to tell an "
+                f"unbuilt arm from an undeclared one")
+        if int(count.group(1)) != len(want) or \
+                int(declared.group(1)) != len(gen_shards.CARRY_ARMS):
+            raise RuntimeError(
+                f"{header} declares {count.group(1)} built / "
+                f"{declared.group(1)} declared arms; this build selected "
+                f"{len(want)} of {len(gen_shards.CARRY_ARMS)} declared")
+        members = sorted(tuple(int(x) for x in m) for m in re.findall(
+            r"^  F\((\d+), (\d+), (\d+), (\d+)\)", text, re.MULTILINE))
+        if members != sorted((i,) + tuple(gen_shards.CARRY_ARMS[i]) for i in want):
+            raise RuntimeError(
+                f"the arm set names {members}, which is not this build's rows of the "
+                f"declaration. The set and the selection are two enumerations of one "
+                f"thing and must not be able to disagree.")
+
+        swept = _arm_coverage_sweep(self.build_lib, want)
+        print(f"arm table OK  {len(want)} built of {len(gen_shards.CARRY_ARMS)} "
+              f"declared, keyed {list(gen_shards.ARM_KEY)}; {swept} arm(s) swept")
 
     def _post_build_manifest_check(self):
         """The pre-build gates prove the INPUTS were ratified. This proves the

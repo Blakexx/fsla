@@ -1,0 +1,13 @@
+{
+ "schema": 1,
+ "family": "carry",
+ "key": ["D", "DV", "warps_per_cta"],
+ "domains": {
+  "D": [1, 2, 3, 4],
+  "DV": [32, 64, 128],
+  "warps_per_cta": [8, 4]
+ },
+ "shipped": [],
+ "test": [],
+ "note": "THE DECLARED SHIPPED SET of the carry family, as DATA. Every row is [D, DV, warps_per_cta] -- the routing depth, the value width and the CTA's warp count -- and that triple is the WHOLE key: the mode word, the stream counts and the park bit are runtime, the window and the chunk are the descriptor's (KERNEL_STANDARDS R11/R16). A row in `shipped` is built by a default install; a row in `test` is a conformance arm built for the battery and never shipped. Both lists are EMPTY on this line: C0 deleted the carry family's kernels (development/queue/C_CLEAN_SLATE.md), so the declaration declares no arm, which is a statement the build, the generator and the post-build check all read and agree on rather than a gap. C3 fills it. Rows are canonical-sorted and the generator refuses any other spelling, so an arm's INDEX -- which the selection header, the per-arm translation units and `ROLA_CARRY_ARMS` all name -- is a property of the declaration and not of an editor's insertion point."
+}

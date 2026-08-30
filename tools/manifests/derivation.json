@@ -1,0 +1,39 @@
+{
+ "cases_sha256": "620e3d85ef304024a171e8d270c4f7097f43a4bd53c0bfbbb41ac18d84dea0c3",
+ "date": "2026-08-30",
+ "golden": {
+  "d1_dv64_w4": "ok: 584 bytes, sha256 9a21b05d51212a9543c5d8e5f5890ab4faec507cb4697d9d488a1f9d583eec4b",
+  "d1_dv64_w8": "ok: 584 bytes, sha256 6257356d6f369a65c049f7744547fa8f95e1453089133174d17af25c6d927a18",
+  "d2_dv128_w4": "ok: 584 bytes, sha256 5b24b8d73420001eb7c38659f489c86fe17bcba572e49d6f78f847592ff7f267",
+  "d2_dv128_w8": "ok: 584 bytes, sha256 a2f621ff620aa74dbbc5b1a9e5cce3df5bf373258c48ca755570f7b4c895f8bc",
+  "d2_dv32_w4": "ok: 584 bytes, sha256 544a430b489d61855c17be70d3cda40f2be7bd9666ed7cbf258014565ea73e63",
+  "d2_dv32_w8": "ok: 584 bytes, sha256 8b2a05d9a5ed52b94d61de0ebd22f899403a3780e5710a84bb834cf5307dd228",
+  "d2_dv64_w4_split": "ok: 584 bytes, sha256 a2f621ff620aa74dbbc5b1a9e5cce3df5bf373258c48ca755570f7b4c895f8bc",
+  "d2_dv64_w8_dense": "ok: 584 bytes, sha256 ffd481f61a5ac627366ff3ce4ad6d2d08add1360f95ff7c92786afe16b37ce64",
+  "d2_dv64_w8_split": "ok: 584 bytes, sha256 dabd1b9abcd7eb0eaf4419ed93eebecb5981d0b03abf5d2c060d4ff1fa53f3ee",
+  "d2_narrow_dv64_w8": "ok: 584 bytes, sha256 7ffac7526e788aea4ae0235e79531004841586228e0190e87c9f86bb8c40caec",
+  "d3_dv64_w8_dense": "ok: 584 bytes, sha256 a1362ef20253824665d550fde0839297ec622f1d86337636f097f2625be7820c",
+  "d3_dv64_w8_mixed": "ok: 584 bytes, sha256 d07b07c7a217eefbe7d50db7d10d130104bbeaafd6ddf35740f973baf480cf06",
+  "d4_dv64_w8_dense": "ok: 584 bytes, sha256 d7464d5c1e4055307d39c4c68baaf54330cae1f8ad1dc8ea2229a499e63cdb45",
+  "d4_dv64_w8_mixed": "ok: 584 bytes, sha256 0581e56567c08ecc6012b4b2bc9454f75b79da6280c98cf01dc4be6cbf214207",
+  "refuse_bc_not_pow2": "refused: BC must be a power of two",
+  "refuse_depth_five": "refused: the addressing block is built to depth four",
+  "refuse_dv_not_granular": "refused: the value width is a power of two, sixteen up",
+  "refuse_streams_not_pow2": "refused: a side's stream count is a power of two",
+  "refuse_width_not_pow2": "refused: every level width must be a power of two",
+  "refuse_width_under_span": "refused: a level is narrower than the owner box's span there",
+  "sb_d1_dv64_w8": "ok: 196 bytes, sha256 eed2193e37c6de31359fb688315b30838ac4c0010c33118d2ade3dc22cebdf56",
+  "sb_d2_dv128_w8": "ok: 196 bytes, sha256 a5f812c272ad6070b73933fed05f8149f81cb948bf73bc39b772e5fd09ac997c",
+  "sb_d2_dv32_w8": "ok: 196 bytes, sha256 a38ff5efef29ac5adde75e83bfc46831d7796a2b38dded9777e66ab5d7213f8d",
+  "sb_d2_dv64_w4": "ok: 196 bytes, sha256 eeabe5373aa3cd05c6e41abb0d05b0452a7eeff37cd83577056dfc719adbb453",
+  "sb_d2_dv64_w8": "ok: 196 bytes, sha256 6db69286f8bc09dbe4355a581827d523390c476699e0dfa3cd3cabd5238ac5b7",
+  "sb_d3_dv64_w8": "ok: 196 bytes, sha256 f60d07356089b426e97a11dd4937bc1b07bd95317184d97dfe0e4d59320ab5c9",
+  "sb_d4_dv128_w4": "ok: 196 bytes, sha256 4f2c3b6fad61c0c24ac07f8e48e63a8c33e98634754b37fbde2e976c431027da",
+  "sb_d4_dv64_w8": "ok: 196 bytes, sha256 f322e0285e22be10ee70f14b0eb5b133b5b50bd392bd375d4b818eed4de926be"
+ },
+ "harness_sha256": "3787454876390fbe5aa65795761cfeea63fc63f732e6338a1058ba360d7c8f52",
+ "schema": 1,
+ "sources": {
+  "common/geom.cuh": "4196115384be00b6fce94be20ccc191407d01fb25503d628aefc7a11b37dda9d"
+ }
+}

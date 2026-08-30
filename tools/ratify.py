@@ -230,6 +230,9 @@ COMPILE_CWD = Path(__file__).resolve().parents[1] / "build" / "temp"
 #: which translation unit expands them.
 STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu",
                   "entmax/factor.cu",
+                  #: the freshness fact's kernel: shipped codegen, so it is measured
+                  #: like every other shipped translation unit.
+                  "common/build_stamp.cu",
                   "intra/intra.cu",
                   #: K31 R4: the reverse pass on the same footing -- a kernel's launch
                   #: bound is a property of the kernel, and each declares its own
@@ -401,18 +404,26 @@ def shard_field(entries: dict) -> dict[str, str]:
 #: left. The mechanism stays so the NEXT macro is a one-line addition, and a
 #: manifest still records the (empty) block, keeping "what did this compile
 #: under" a checkable statement rather than an unverifiable claim.
-RATIFIED_DEFINES: tuple[str, ...] = ()
+#: Each entry is `(macro, the header that defines its default)`, RELATIVE TO `SRC`.
+#: The header is named PER MACRO, because a calibration macro is a property of the
+#: kernel that reads it: naming one header for the whole record makes the record
+#: depend on a file it may have no macro in, and a file the record does not need is a
+#: file the record must not read. An empty tuple reads nothing.
+RATIFIED_DEFINES: tuple[tuple[str, str], ...] = ()
 
 
 def shipped_defines() -> dict[str, int]:
     """The `#define` defaults of :data:`RATIFIED_DEFINES` in the digested source."""
-    src = (SRC / "facts" / "facts_kernel.cuh").read_text()
     out = {}
-    for name in RATIFIED_DEFINES:
-        m = re.search(rf"^#define {name} (\d+)$", src, re.MULTILINE)
+    for name, rel in RATIFIED_DEFINES:
+        path = SRC / rel
+        if not path.exists():
+            raise SystemExit(f"{rel} is ratified as {name}'s source but does not "
+                             f"exist; the provenance record cannot be produced")
+        m = re.search(rf"^#define {name} (\d+)$", path.read_text(), re.MULTILINE)
         if m is None:
-            raise SystemExit(f"facts_kernel.cuh no longer defines a default for "
-                             f"{name}; the provenance record cannot be produced")
+            raise SystemExit(f"{rel} no longer defines a default for {name}; the "
+                             f"provenance record cannot be produced")
         out[name] = int(m.group(1))
     return out
 
@@ -515,6 +526,345 @@ def csrc_digest() -> str:
             h.update(str(path.relative_to(SRC)).encode())
             h.update(path.read_bytes())
     return h.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# THE DERIVATION, RATIFIED
+#
+# The addressing block is HOST code: one function, `derive_carry_geom`, run once per
+# launch, whose output every kernel of the family then addresses through. Its numbers
+# are as much a measured property of this tree as a register count is -- an off-by-one
+# in a span or a shift is a wrong answer nothing else in this gate would see, because
+# the SASS it produces is somebody else's kernel. So it is ratified the same way the
+# codegen is, and with the same two independent statements:
+#
+#   * A CODE HASH over the sources the derivation is computed from. That is the
+#     wholesale trigger: any edit there invalidates the record at once.
+#   * GOLDEN OUTPUTS -- the derived block, byte for byte, on a DECLARED set of named
+#     cases, plus the REFUSAL each declared-illegal case produces. That is the
+#     per-case answer the hash can only ask globally, and it reads the same two ways
+#     the `sass_sha256` ratchet does: with the hash matching, no golden may move; with
+#     the hash moved, the gate names exactly which cases moved and which did not.
+#
+# The refusals are ratified beside the outputs deliberately. R13 makes the kernel's
+# strict shape half a contract whose other half is what it REFUSES, and an unstated
+# refusal is the half that rots -- a derivation that quietly starts admitting a
+# non-power-of-two width would pass a gate that only checked the shapes it admits.
+#
+# The harness compiles the shipped header directly and links no extension, so this
+# check cannot be answered by a stale `.so`: there is no binary in the loop to be
+# stale. That is deliberate -- an extension-trap-proof check of a host function.
+DERIVATION_CASES_JSON = MANIFEST_DIR / "derivation_cases.json"
+DERIVATION_JSON = MANIFEST_DIR / "derivation.json"
+
+
+def load_derivation_cases() -> dict:
+    """The declared cases, read and refused field by field."""
+    if not DERIVATION_CASES_JSON.exists():
+        raise SystemExit(f"no declared derivation cases at {DERIVATION_CASES_JSON}; "
+                         f"the derivation cannot be ratified against nothing")
+    blob = json.loads(DERIVATION_CASES_JSON.read_text())
+    if blob.get("schema") != 1:
+        raise SystemExit(f"{DERIVATION_CASES_JSON.name} declares schema "
+                         f"{blob.get('schema')!r}; this gate reads schema 1")
+    if not blob.get("sources"):
+        raise SystemExit(f"{DERIVATION_CASES_JSON.name} names no `sources`; a golden "
+                         f"output with no code hash beside it cannot say what it is "
+                         f"the output OF")
+    for rel in blob["sources"]:
+        if not (SRC / rel).exists():
+            raise SystemExit(f"{DERIVATION_CASES_JSON.name} names the derivation "
+                             f"source {rel}, which does not exist under {SRC}")
+    names = [c["name"] for c in blob["geometry"]] + [c["name"] for c in blob["sub_boxes"]]
+    if len(names) != len(set(names)):
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        raise SystemExit(f"{DERIVATION_CASES_JSON.name}: duplicate case name(s) "
+                         f"{dupes}; a golden output is keyed by name, so two cases "
+                         f"sharing one would file one measurement over the other")
+    if not names:
+        raise SystemExit(f"{DERIVATION_CASES_JSON.name} declares no case; a record "
+                         f"that measures nothing would pass by existence alone")
+    return blob
+
+
+def derivation_sources(cases: dict) -> dict[str, str]:
+    """`{declared source -> sha256}`, the derivation's code hash, per file.
+
+    PER FILE rather than one digest over the set, so a drift report can name which
+    header moved. `csrc_digest()` is the wholesale trigger for the CODEGEN; this is
+    the narrow one for the derivation, and it must not be widened to all of `csrc/`:
+    a change to a kernel body is not a change to the derivation, and a record that
+    expires on every unrelated edit is a record people re-write without reading.
+    """
+    return {rel: hashlib.sha256((SRC / rel).read_bytes()).hexdigest()
+            for rel in sorted(cases["sources"])}
+
+
+def cases_digest(cases: dict) -> str:
+    """A digest of the DECLARED CASES themselves.
+
+    Without it a green run would be ambiguous: goldens can also stop failing because
+    somebody deleted the case that failed.
+    """
+    payload = {"geometry": cases["geometry"], "sub_boxes": cases["sub_boxes"],
+               "sources": cases["sources"]}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def derivation_harness(cases: dict) -> str:
+    """The C++ the goldens are measured by, RENDERED FROM THE DECLARED CASES.
+
+    It includes the shipped header and calls the shipped entry points; the only thing
+    it adds is a dump. The dump is of the block's RAW BYTES rather than of a field
+    list, which is the point: a field list here would be a second enumeration of the
+    struct, so a field added to `CarryGeomRT` and forgotten here would be a field the
+    goldens do not cover. Value-initialising the block (`{}`) zeroes its padding too,
+    so the bytes are a function of the derivation and not of the stack.
+    """
+    out = ["// GENERATED by tools/ratify.py -- the derivation's golden harness.\n",
+           "#include <cstddef>\n#include <cstdio>\n\n",
+           '#include "common/geom.cuh"\n\n',
+           "namespace {\n\n",
+           "void dump(const char* name, const void* p, size_t n) {\n",
+           '  std::printf("%s\\tok\\t%zu\\t", name, n);\n',
+           "  const unsigned char* b = static_cast<const unsigned char*>(p);\n",
+           '  for (size_t i = 0; i < n; ++i) std::printf("%02x", b[i]);\n',
+           '  std::printf("\\n");\n}\n\n',
+           "}  // namespace\n\nint main() {\n"]
+    for c in cases["geometry"]:
+        widths = ", ".join(str(w) for w in c["widths"])
+        out += ["  {\n",
+                f"    const int w[] = {{{widths}}};\n",
+                "    rola::carry::CarryGeomRT g{};\n",
+                f"    const char* err = rola::carry::derive_carry_geom("
+                f"{len(c['widths'])}, w, {c['bc']}, {c['dv']}, "
+                f"{c['level_modes']}u, {c['nsr']}, {c['nsw']}, g);\n",
+                f'    if (err != nullptr) std::printf("%s\\trefused\\t%s\\n", '
+                f'"{c["name"]}", err);\n',
+                f'    else dump("{c["name"]}", &g, sizeof(g));\n',
+                "  }\n"]
+    for c in cases["sub_boxes"]:
+        out += ["  {\n",
+                f"    const rola::carry::SubBoxSet set = rola::carry::sub_boxes("
+                f"{c['depth']}, {c['box_leaves']}, {c['workers']});\n",
+                f'    dump("{c["name"]}", &set, sizeof(set));\n',
+                "  }\n"]
+    out.append("  return 0;\n}\n")
+    return "".join(out)
+
+
+def _golden_from_output(text: str) -> dict[str, str]:
+    """The harness's stdout, parsed into `{case name -> golden}`.
+
+    An `ok` line's byte dump is hashed HERE rather than in the harness so that one
+    hash function serves the whole gate; a `refused` line keeps its words, because
+    the words are the ratified thing.
+    """
+    golden: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if parts[1] == "refused":
+            golden[parts[0]] = f"refused: {parts[2]}"
+        elif parts[1] == "ok":
+            golden[parts[0]] = (f"ok: {parts[2]} bytes, sha256 "
+                                f"{hashlib.sha256(parts[3].encode()).hexdigest()}")
+        else:
+            raise SystemExit(f"the derivation harness printed an unreadable line: "
+                             f"{line!r}")
+    return golden
+
+
+#: ONE COMPILE PER HARNESS TEXT, keyed by the text itself. The gate calls the
+#: derivation measurement more than once in a run (the check, and every self-test
+#: mutant), and the harness is a pure function of the declared cases -- so a second
+#: compile could only ever produce the same answer more slowly, or a different one,
+#: and a different one would mean the measurement is not reproducible, which is a
+#: property this record needs anyway.
+_DERIVATION_MEASURED: dict[str, dict[str, str]] = {}
+
+
+def measure_derivation(cases: dict) -> tuple[str, dict[str, str]]:
+    """Compile and run the harness. Returns `(harness text, goldens)`.
+
+    No GPU and no extension: `nvcc` is used because the header carries
+    `__host__ __device__` on the functions the device also calls, and defining those
+    away for a host compiler would measure a source the tree does not have.
+    """
+    import tempfile
+
+    text = derivation_harness(cases)
+    memo = _DERIVATION_MEASURED.get(text)
+    if memo is not None:
+        return text, memo
+    with tempfile.TemporaryDirectory(prefix="rola_derivation_") as tmp:
+        src = Path(tmp) / "derivation_harness.cu"
+        exe = Path(tmp) / "derivation_harness"
+        src.write_text(text)
+        cmd = [cuda_bin("nvcc"), "-std=c++17", "-O0", f"-I{SRC}",
+               str(src), "-o", str(exe)]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise SystemExit(
+                f"the derivation harness does not compile against the tree's "
+                f"{', '.join(cases['sources'])}:\n{proc.stderr}\n"
+                f"    {shlex.join(cmd)}")
+        run = subprocess.run([str(exe)], capture_output=True, text=True)
+        if run.returncode != 0:
+            raise SystemExit(f"the derivation harness exited "
+                             f"{run.returncode}:\n{run.stderr}")
+    golden = _golden_from_output(run.stdout)
+    declared = [c["name"] for c in cases["geometry"]] + \
+               [c["name"] for c in cases["sub_boxes"]]
+    missing = [n for n in declared if n not in golden]
+    if missing:
+        raise SystemExit(f"the derivation harness printed no line for {missing}; a "
+                         f"record that silently drops a case proves nothing about it")
+    _DERIVATION_MEASURED[text] = golden
+    return text, golden
+
+
+def derivation_record(cases: dict) -> dict:
+    """The whole ratified record, measured now."""
+    text, golden = measure_derivation(cases)
+    return {"schema": 1,
+            "sources": derivation_sources(cases),
+            "cases_sha256": cases_digest(cases),
+            "harness_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "date": time.strftime("%Y-%m-%d"),
+            "golden": golden}
+
+
+def write_derivation() -> int:
+    """Re-measure and file `tools/manifests/derivation.json`."""
+    cases = load_derivation_cases()
+    record = derivation_record(cases)
+    with host_budget.file_lock("ratify_derivation"):
+        DERIVATION_JSON.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")
+    n_ok = sum(1 for v in record["golden"].values() if v.startswith("ok:"))
+    n_ref = len(record["golden"]) - n_ok
+    print(f"wrote {DERIVATION_JSON} ({n_ok} derived blocks, {n_ref} ratified "
+          f"refusals) over {len(record['sources'])} source file(s)")
+    return 0
+
+
+def check_derivation(record: dict | None = None) -> bool:
+    """The derivation gate: the code hash, the case set, and every golden."""
+    cases = load_derivation_cases()
+    if record is None:
+        if not DERIVATION_JSON.exists():
+            print(f"\nFAIL  THE DERIVATION IS NOT RATIFIED. There is no "
+                  f"{DERIVATION_JSON.name}: the addressing block's outputs are "
+                  f"measured by nothing. Ratify them:\n"
+                  f"    python tools/ratify.py --write-derivation")
+            return False
+        record = json.loads(DERIVATION_JSON.read_text())
+    if record.get("schema") != 1:
+        print(f"\nFAIL  {DERIVATION_JSON.name} records schema "
+              f"{record.get('schema')!r}; this gate reads schema 1")
+        return False
+
+    want_sources = derivation_sources(cases)
+    fresh = record.get("sources") == want_sources
+    want_cases = cases_digest(cases)
+    same_cases = record.get("cases_sha256") == want_cases
+    _, golden = measure_derivation(cases)
+    ratified = record.get("golden", {})
+
+    moved = sorted(n for n in golden if n in ratified and golden[n] != ratified[n])
+    added = sorted(n for n in golden if n not in ratified)
+    dropped = sorted(n for n in ratified if n not in golden)
+
+    if not same_cases:
+        print(f"\nFAIL  DERIVATION CASE DRIFT. The declared cases hash "
+              f"{want_cases[:16]}...; the record was measured on "
+              f"{str(record.get('cases_sha256'))[:16]}.... A golden that stops "
+              f"failing because its case was edited or deleted proves nothing; "
+              f"re-ratify with --write-derivation.")
+    if not fresh:
+        print(f"\nFAIL  DERIVATION SOURCE DRIFT. The record was measured against "
+              f"{record.get('sources')}, the tree hashes to {want_sources}. The "
+              f"derivation's outputs must be re-measured "
+              f"(--write-derivation).")
+        unchanged = [n for n in golden if golden.get(n) == ratified.get(n)]
+        print(f"      {len(unchanged)} of {len(golden)} golden outputs are "
+              f"unchanged and are still described by the record; "
+              f"{len(moved)} moved: {moved}")
+    if (moved or added or dropped) and fresh and same_cases:
+        print("\nFAIL  DERIVATION OUTPUT DRIFT with the sources and the cases "
+              "UNCHANGED. The addressing block derives different values from the "
+              "same code on the same inputs, which is a toolchain or a "
+              "platform difference, not an edit -- investigate before re-writing.")
+    for name in moved:
+        print(f"      {name}\n        ratified: {ratified[name]}\n"
+              f"        this run: {golden[name]}")
+    for name in added:
+        print(f"      {name}: measured now, ratified by nothing")
+    for name in dropped:
+        print(f"      {name}: ratified, but the harness produced no such case")
+
+    if fresh and same_cases and not (moved or added or dropped):
+        n_ref = sum(1 for v in golden.values() if v.startswith("refused:"))
+        print(f"derivation OK  {len(golden)} golden outputs ({n_ref} ratified "
+              f"refusals) over {len(want_sources)} source file(s)")
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# THE DEVICE STAMP'S CSRC KEY
+#
+# A build stamp is the one check a stale binary cannot pass -- but only if its value
+# is a function of the SOURCE. A stamp folded from struct sizes and launch widths is
+# a function of a few declarations, so a csrc change that leaves those alone leaves
+# the stamp alone, and a binary built before the change reads back as fresh. That is
+# what happened: a merge touching `csrc/` was gated without rebuilding, and the
+# freshness assertion did not fire.
+#
+# The fix is to put the csrc digest itself into the device constant, through a
+# GENERATED HEADER rather than a compiler flag. A `-D` on the extension's flag list
+# reaches every translation unit's argv, so every csrc edit would rebuild the whole
+# extension; a header included only by the stamp sites rebuilds only those, and ninja
+# hashes it through the depfile like any other include. (A flag that ninja does NOT
+# hash -- `NVCC_PREPEND_FLAGS` -- is the failure one level over: the binary silently
+# stays the previous variant. Variant selection goes through a generated header.)
+#
+# `setup.py` writes it before it compiles anything and this gate writes it before it
+# measures anything, from the SAME function, so the stamp the gate assembles is the
+# stamp the build assembles.
+CSRC_STAMP_INC = "csrc_stamp.inc"
+
+#: 60 BITS of the digest. The stamp entries return `int64_t`, and a device constant
+#: that has to be folded with other facts must leave room to be folded: 60 bits is
+#: every collision margin this needs and four bits of headroom for the arithmetic.
+CSRC_STAMP_BITS = 60
+
+
+def csrc_stamp(digest: str | None = None) -> int:
+    """The device-side value of the csrc content hash."""
+    d = digest if digest is not None else csrc_digest()
+    return int(d, 16) & ((1 << CSRC_STAMP_BITS) - 1)
+
+
+def csrc_stamp_header(digest: str | None = None) -> str:
+    """The generated header the stamp sites include."""
+    d = digest if digest is not None else csrc_digest()
+    return (f"// GENERATED by tools/ratify.py -- do not edit, regenerate.\n"
+            f"// THE CSRC CONTENT HASH, as a device constant. Written by setup.py\n"
+            f"// before the build compiles and by tools/ratify.py before it measures;\n"
+            f"// never checked in. See docs/ratification.md#the-device-stamp.\n"
+            f"// sha256(csrc/rola/src) = {d}\n"
+            f"#define ROLA_CSRC_STAMP {csrc_stamp(d)}LL\n")
+
+
+def write_csrc_stamp(digest: str | None = None) -> Path:
+    """Write `build/generated/csrc_stamp.inc` for this tree, unconditionally."""
+    gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    path = gen_shards.GENERATED_DIR / CSRC_STAMP_INC
+    with host_budget.file_lock("csrc_stamp_header"):
+        path.write_text(csrc_stamp_header(digest))
+    return path
 
 
 #: The build's own record of exactly what it ran, at the fixed directory
@@ -880,6 +1230,10 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     with host_budget.file_lock("carry_selection_header"):
         (gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC).write_text(
             gen_shards.carry_selection_header(want_arms))
+    #: AND THE CSRC STAMP, for the same reason and from the same function `setup.py`
+    #: calls: the stamp sites include it, so a gate that did not write it would
+    #: measure a tree nobody builds.
+    write_csrc_stamp()
 
     jobs = jobs or build_flags.default_max_jobs(2)
     entries: dict[str, dict] = {}
@@ -1330,6 +1684,13 @@ def main() -> int:
                          f"(default: {' '.join(DEFAULT_ARCHES)}). One manifest file "
                          "per arch, so bringing up a new one touches no other arch's "
                          "measurements.")
+    ap.add_argument("--write-derivation", action="store_true",
+                    help="RE-RATIFY THE DERIVATION ONLY: re-measure the addressing "
+                         "block's golden outputs and file "
+                         "tools/manifests/derivation.json. Its own mode because it "
+                         "compiles one host harness and no kernel: the derivation is "
+                         "arch-independent, so it is neither measured per arch nor "
+                         "worth a whole codegen ratification to refresh.")
     ap.add_argument("--census", action="store_true",
                     help="FORCING CENSUS: compile the whole matrix, print the "
                          "per-key register/spill table, touch no manifest")
@@ -1346,6 +1707,11 @@ def main() -> int:
                          "because a manifest written from a subset of the arms would "
                          "silently drop every one it did not compile.")
     a = ap.parse_args()
+
+    if a.write_derivation:
+        if a.write or a.census or a.self_test:
+            raise SystemExit("--write-derivation is its own mode")
+        return write_derivation()
 
     arches = tuple(a.arch) if a.arch else DEFAULT_ARCHES
     if (a.shard or a.arm) and a.write:
@@ -1470,7 +1836,12 @@ def main() -> int:
                      "entries": mine}, indent=1) + "\n")
                 print(f"wrote {path} ({len(mine)} instantiations) under ptxas: {version}")
             print(f"{len(unhonored)} unhonored bounds across {len(arches)} arch(es)")
-            return 0
+        #: OUTSIDE the manifest lock and outside the per-arch loop: the derivation is
+        #: host code, measured once and filed once, and a re-ratification that
+        #: refreshed the codegen numbers while leaving the derivation's goldens at
+        #: their old values would file a record of two different trees.
+        write_derivation()
+        return 0
     manifest = load_manifest(arches)
     want = manifest["entries"]
     print(f"manifest sha256 {manifest_digest(manifest)}  "
@@ -1496,6 +1867,7 @@ def main() -> int:
     #: source digest current" could disagree.
     fresh = check_freshness(manifest)
     ok = fresh and ok
+    ok = check_derivation() and ok
     ok = check(entries, unhonored, want) and ok
     ok = check_hot_loop(hot, want) and ok
     ok = check_local_presence(local_ops, want) and ok
@@ -1736,6 +2108,37 @@ def main() -> int:
                       f"against version {SASS_HASH_VERSION} digests")
                 return 1
         print("SELF-TEST PASSED: the gate rejects hashes it did not produce")
+
+        #: THE DERIVATION RECORD, mutated one field at a time. The mutants are on the
+        #: RECORD rather than on the sources, so the harness is measured once and each
+        #: arm isolates exactly one of the record's claims -- and a mutant that only
+        #: moved a hash would not prove the golden comparison runs, which is why one
+        #: arm moves a golden with the hashes left intact.
+        print("\n--- SELF-TEST: the derivation record, mutated (all of these MUST "
+              "fail) ---")
+        base = json.loads(DERIVATION_JSON.read_text())
+        a_case = sorted(base["golden"])[0]
+        a_source = sorted(base["sources"])[0]
+        mutants = {
+            "a moved golden output": lambda b: b["golden"].__setitem__(
+                a_case, "ok: 4 bytes, sha256 " + "0" * 64),
+            "a perturbed source hash": lambda b: b["sources"].__setitem__(
+                a_source, "0" * 64),
+            "a perturbed case digest": lambda b: b.__setitem__(
+                "cases_sha256", "0" * 64),
+            "a dropped golden": lambda b: b["golden"].pop(a_case),
+            "a golden for no declared case": lambda b: b["golden"].__setitem__(
+                "__self_test__", "ok: 4 bytes, sha256 " + "0" * 64),
+            "an unreadable schema": lambda b: b.__setitem__("schema", 99),
+        }
+        for name, mutate in mutants.items():
+            blob = json.loads(json.dumps(base))
+            mutate(blob)
+            if check_derivation(blob):
+                print(f"\nSELF-TEST FAILED: the derivation gate ACCEPTED {name}")
+                return 1
+        print(f"SELF-TEST PASSED: the derivation gate rejects all "
+              f"{len(mutants)} record mutants")
     return 0 if ok else 1
 
 
