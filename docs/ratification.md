@@ -17,20 +17,18 @@ tools/manifests/sm_86.json
                                             "sass_sha256": "..." }, ... } }
 ```
 
-**402 entries per architecture**, measured on the current tree: 383 in the three
-long-standing families below, plus the K31 box-native families' 19 — 3 `carry_kernel`
-`<D, B, K, M, W, C, STATE>` arms, 3 `intra_kernel<D, W>` arms, R4's 3 `scan_a_kernel`
-`<D, B, K, M, W, C>`, 3 `scan_b_kernel<D, B, K, M, W, C>` and 3
-`intra_backward_kernel<D, W>` arms, and the four device build stamps (one per family,
-forward and reverse). (The carve axis left `carry_kernel`'s signature in the integration
-rung, which is why its mangled names moved; the intra kernel gained a window axis in the
-same commit. The reverse arms mirror the forward ones because the two directions walk
-one window grid, and the two scans declare their register floors SEPARATELY, since a
-launch bound is a property of a kernel.) The 383: **46 for the facts
-family** — 26 `chunk_facts_tables<PLAN, MASK>` (12 lex `(D, B, BC)` plans crossed with
-the two prefill call classes, plus the 2 GIVEN-SPAN owner-row plans the `rola::carry`
-family consumes, stateless only), 12 `block_bitmap_kernel`, 8 `atom_bitmap_kernel` —
-plus 16
+**347 entries per architecture** on this line, measured on the current tree: 320 entmax
+solves, 17 `decode_step_kernel` and the decode path's device build stamp, and 10
+`intra_kernel`/`intra_backward_kernel` arms.
+
+C0 REMOVED 103 PER ARCH (450 -> 347): the carry family's 43 (`carry_kernel`
+`<D, B, K, M, W, C, STATE>`, `carry_split_kernel`, R4's `scan_a_kernel`/`scan_b_kernel`
+and the build stamps) and the facts family's 60 (`chunk_facts_tables<PLAN, MASK>` over
+the lex `(D, B, BC)` plans crossed with the two prefill call classes plus the GIVEN-SPAN
+owner-row plans, `block_bitmap_kernel`, `atom_bitmap_kernel`). Neither family is built
+here (card C, `docs/internals/DELETIONS.md`); C2 and C3/C4 bring their successors back
+and re-ratify then. The paragraphs below describe the pre-C0 census and are kept as the
+record of what was ratified when: plus 16
 `decode_step_kernel` (`DV x D x DECAY`), the decode path's own device build stamp, and
 the entmax solves' 320. (The K31 wave-2c lattice walk retired the `IN_SMEM` template axis
 and the 32-arm decode matrix it produced, and added the decode build stamp —

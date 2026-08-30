@@ -78,7 +78,7 @@ tokens, global to every owner. The carry kernel computes each window's readout
 against the state as of that window's start and then folds that window's writes; the
 pairs of tokens INSIDE one window are the intra kernel's term. `inter(W) + intra(W)`
 is `W`-invariant and equals the oracle — the identity that licenses two kernels
-(`docs/internals/carry/carry_kernel.md`, `docs/internals/intra/intra_kernel.md`).
+(`docs/internals/intra/intra_kernel.md`; the carry half is off this line, §6).
 
 ---
 
@@ -312,8 +312,8 @@ kernel and no branch on a computed statistic. Per level at most one side is spar
 there is one stored row set per level and a dense side is absent-means-full; the two
 sides' clause sets are different level subsets, which is why the schedule is two-sided
 with independent counts. A read carve and a write carve that coincide are a transit
-whose row map is the identity — the same code, never a second body
-(`docs/internals/carry/carry_kernel.md`).
+whose row map is the identity — the same code, never a second body (the transit's row
+map is derived in `docs/internals/common/geom.md`; the body is off this line, §6).
 
 **The read side has no stream axis: one stream per warp, always.** The write side has
 a stream count only because staging `d_v`-wide value rows into private segments
