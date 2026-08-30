@@ -18,9 +18,10 @@ namespace rola::facts {
 constexpr int kLivenessWarps = 4;
 constexpr int kLivenessThreads = kTokBits * kLivenessWarps;
 
-//: EIGHT DIGITS PER LANE PER LOAD: one sixteen-byte transaction, which every lawful
-//: level's width and row base are aligned to. -- see docs/internals/facts/liveness.md#the-read
-constexpr int kVecDigits = 8;
+//: SIXTEEN DIGITS PER LANE PER LOAD: two eight-byte-aligned `uint4`s, one full
+//: thirty-two-byte sector, which every lawful level's width and row base are aligned
+//: to. -- see docs/internals/facts/liveness.md#the-read
+constexpr int kVecDigits = 16;
 
 //: The digit mask's widest form: four levels of the widest branch, packed.
 constexpr int kMaxDigits = kMaxLevels * 256;
@@ -70,8 +71,10 @@ __global__ __launch_bounds__(kLivenessThreads) void liveness_pass(
       } else {
 #pragma unroll 1
         for (int digit = 0; digit < width; digit += kVecDigits, row += kVecDigits) {
-          const uint4 packed = *reinterpret_cast<const uint4*>(column + row);
-          const uint32_t halves[4] = {packed.x, packed.y, packed.z, packed.w};
+          const uint4* const sector = reinterpret_cast<const uint4*>(column + row);
+          const uint4 lo = sector[0];
+          const uint4 hi = sector[1];
+          const uint32_t halves[8] = {lo.x, lo.y, lo.z, lo.w, hi.x, hi.y, hi.z, hi.w};
 #pragma unroll
           for (int k = 0; k < kVecDigits; ++k) {
             const uint32_t half = halves[k >> 1];
