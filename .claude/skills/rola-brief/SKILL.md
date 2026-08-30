@@ -96,3 +96,11 @@ that into the skill the same day (process/pointers only — never facts).
 - A PYTHON-ONLY STAGE'S GATE STILL NEEDS THE BUILT EXTENSION in its worktree (NORM, 2026-08-29): the brief
   states where the .so comes from and that assert_fresh_binary runs before the tier; "no CUDA build
   available" is a STOP, never a substitute battery.
+- R9'S CONVERSE (G2/G2b, 2026-08-29): before classifying a quantity as "runtime addressing", ask: does it
+  decide WHICH register holds WHICH element in an unrolled loop (a slot → digit map, a fragment layout, a
+  tile shape)? Then it is SHAPE — compile-time, or a uniform structure switch over a generated finite set
+  — never a runtime operand. Spans and per-side sub-box shapes are shape; widths and carve offsets are
+  addressing.
+- A SELECTIVITY LINE beside every instruction floor when a mechanism changes an OWNERSHIP PARTITION
+  (carve, streams, sub-box shape): tokens retained per stream / leaves per box at the sparse cell, before
+  and after. G2b met every per-instruction floor and got 40% slower on selectivity alone.
