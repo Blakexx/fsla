@@ -73,7 +73,14 @@ _FAMILY_TESTS = {
     "facts_atom": "tests/oracle/test_atom_bitmap.py::test_atom_bitmap_is_exact[d2b16-mixed]",
     "facts_block":
         "tests/oracle/test_block_bitmap.py::test_read_and_write_bits_are_exact[d2b16bc64-mixed]",
-    "intra": "tests/oracle/test_prefill_vs_oracle.py::test_the_intra_term_is_actually_present",
+    #: THE INTRA CELL MUST LAUNCH THE INTRA KERNEL, AND ITS ORACLE MUST FIT THE TOOL
+    #: (G2c). The non-vacuity test named here before runs `carry_inter` ALONE -- that is
+    #: its whole point -- so the pair had no intra launch to inspect and reported ZERO
+    #: hazards, VACUOUS by this script's own rule. The flagship prefill cell launches it
+    #: but its fp64 reference is a `T = 2048`, `N = 65,536` python recurrence that times
+    #: out UNDER the sanitizer; the DEEP-3 cell is the same combined operator at `N = 4096`.
+    "intra": ("tests/oracle/test_prefill_vs_oracle.py::"
+              "test_deep_prefill_matches_the_fp64_oracle[alt-d3]"),
     "decode": "tests/oracle/test_decode_vs_oracle.py::test_g1_is_byte_reproducible_against_itself",
 }
 
