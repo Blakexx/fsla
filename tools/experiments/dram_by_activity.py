@@ -141,13 +141,35 @@ def worker_main(args):
                 torch.zeros_like(bits))
         atom_bits = bits.contiguous()
 
-    call, took_modes, took_planes, took_bits = pc.make_call(
-        ext, pr, pw, gw, v, spec["widths"], spec["k"], spec["m"], spec["window"],
-        pc.CHUNK, carve, spec["level_modes"], s_out, page_tbl, atom_bits)
-    if args.variant != "none" and not took_bits:
-        raise RuntimeError(
-            "REFUSED: this binary's carry_forward_inter takes no activity bitmap, so "
-            "the activity byte cannot be controlled and the variant is meaningless.")
+    if args.continuation and args.variant != "none":
+        #: A CONTINUATION: the entry plane IS the exit plane (the in-place law -- the op
+        #: seam refuses two distinct planes under an activity bitmap,
+        #: `docs/internals/state.md#activity`). This is the ONLY shape in which a
+        #: READ-ONLY atom moves any bytes at all: with a null `s_in` -- what
+        #: `probe_cells.make_call` passes, and therefore what every `--state paged`
+        #: number in this campaign measured -- there is no entry sweep, so "read-only"
+        #: means "no state I/O", and the split planes' read-side saving is unobservable
+        #: by construction.
+        call_args = (pr, pw, gw, v, list(spec["widths"]), int(spec["k"]), int(spec["m"]),
+                     int(spec["window"]), int(pc.CHUNK), int(carve),
+                     spec["level_modes"], s_out, s_out, page_tbl, atom_bits)
+        try:
+            ext.carry_forward_inter(*call_args)
+        except TypeError as ex:
+            raise RuntimeError(
+                "REFUSED: this binary's carry_forward_inter does not take "
+                "(s_in, s_out, page_tbl, atom_bits) -- the continuation shape cannot "
+                f"be requested here: {ex}") from ex
+        call = lambda a=call_args: ext.carry_forward_inter(*a)  # noqa: E731
+        took_modes = took_planes = took_bits = True
+    else:
+        call, took_modes, took_planes, took_bits = pc.make_call(
+            ext, pr, pw, gw, v, spec["widths"], spec["k"], spec["m"], spec["window"],
+            pc.CHUNK, carve, spec["level_modes"], s_out, page_tbl, atom_bits)
+        if args.variant != "none" and not took_bits:
+            raise RuntimeError(
+                "REFUSED: this binary's carry_forward_inter takes no activity bitmap, so "
+                "the activity byte cannot be controlled and the variant is meaningless.")
 
     for _ in range(args.warmup):
         call()
@@ -163,6 +185,7 @@ def worker_main(args):
     except Exception:  # noqa: BLE001
         manifest_sha256 = ptxas = None
     print(json.dumps({
+        "continuation": bool(args.continuation),
         "rola_file": rola.__file__, "device_name": torch.cuda.get_device_name(0),
         "sm": f"sm_{props.major}{props.minor}", "driver_cuda": torch.version.cuda,
         "torch": torch.__version__, "manifest_sha256": manifest_sha256, "ptxas": ptxas,
@@ -174,10 +197,10 @@ def worker_main(args):
 
 # ---------------------------------------------------------------------------
 # ORCHESTRATOR.
-def _worker_cmd(binary, cell, variant, warmup, launches, extra=()):
+def _worker_cmd(binary, cell, variant, warmup, launches, continuation=False, extra=()):
     return [pc.venv_python(binary["venv"]), str(THIS_FILE), "--worker", "--cell", cell,
             "--variant", variant, "--warmup", str(warmup), "--launches", str(launches),
-            *extra]
+            *(["--continuation"] if continuation else []), *extra]
 
 
 def _parse_ncu_csv(text):
@@ -200,15 +223,17 @@ def _parse_ncu_csv(text):
     return kernel, per_metric, None
 
 
-def run_variant(binary, cell, variant, warmup, launches, lock_path, out_dir, timeout=1800):
+def run_variant(binary, cell, variant, warmup, launches, lock_path, out_dir,
+                continuation=False, timeout=1800):
     cmd = [NCU_BIN, "--target-processes", "all", "-k", KERNEL_REGEX,
            "--launch-skip", str(warmup), "-c", str(launches),
            "--print-kernel-base", "mangled", "--metrics", ",".join(METRICS), "--csv",
-           *_worker_cmd(binary, cell, variant, warmup, launches)]
+           *_worker_cmd(binary, cell, variant, warmup, launches, continuation)]
     with gpu_lock(lock_path):
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
                               timeout=timeout)
-    Path(out_dir, f"ncu_{binary['label']}_{cell}_{variant}.csv").write_text(proc.stdout)
+    tag = f"{cell}_{variant}{'_cont' if continuation else ''}"
+    Path(out_dir, f"ncu_{binary['label']}_{tag}.csv").write_text(proc.stdout)
     kernel, per_metric, tail = _parse_ncu_csv(proc.stdout)
     stamp = {}
     for line in proc.stdout.splitlines():
@@ -229,12 +254,13 @@ def run_variant(binary, cell, variant, warmup, launches, lock_path, out_dir, tim
     return row
 
 
-def run_source(binary, cell, variant, warmup, lock_path, out_dir, timeout=2400):
+def run_source(binary, cell, variant, warmup, lock_path, out_dir,
+               continuation=False, timeout=2400):
     """One SourceCounters capture, aggregated by source line -- the block attribution."""
     cmd = [NCU_BIN, "--target-processes", "all", "-k", KERNEL_REGEX,
            "--launch-skip", str(warmup), "-c", "1", "--section", "SourceCounters",
            "--import-source", "no", "--page", "source", "--csv",
-           *_worker_cmd(binary, cell, variant, warmup, 1)]
+           *_worker_cmd(binary, cell, variant, warmup, 1, continuation)]
     with gpu_lock(lock_path):
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
                               timeout=timeout)
@@ -261,6 +287,9 @@ def main():
     ap.add_argument("--lock", default=GPU_LOCK_DEFAULT)
     ap.add_argument("--out-dir", default="/tmp/dram_by_activity")
     ap.add_argument("--source", action="store_true", help="also capture SourceCounters")
+    ap.add_argument("--continuation", action="store_true",
+                    help="entry plane IS the exit plane, so the ENTRY sweep runs "
+                         "(the only shape where a read-only atom moves bytes)")
     ap.add_argument("--no-record", action="store_true")
     ap.add_argument("--stage", default=None)
     ap.add_argument("--agent", default=None)
@@ -297,7 +326,7 @@ def main():
             for _ in range(args.rounds):
                 for b in args.binary:  # INTERLEAVED per variant (K36)
                     r = run_variant(b, cell, variant, args.warmup, args.launches,
-                                    args.lock, out_dir)
+                                    args.lock, out_dir, args.continuation)
                     rows.append(r)
                     print(f"  {b['label']:<14}{cell:<18}{variant:<9}"
                           f"dram={fmt(r.get('dram__bytes.sum'), 1e6):>10} MB  "
@@ -308,7 +337,8 @@ def main():
                 if variant == "none":
                     continue
                 for b in args.binary:
-                    s = run_source(b, cell, variant, args.warmup, args.lock, out_dir)
+                    s = run_source(b, cell, variant, args.warmup, args.lock, out_dir,
+                                   args.continuation)
                     print(f"  source {b['label']}/{cell}/{variant} -> {s['csv']} rc={s['rc']}")
 
     print()
@@ -368,13 +398,17 @@ def main():
                     m = e.get(metric)
                     if not m:
                         continue
-                    extra = {"variant": e["variant"], "kernel_name": e["kernel_name"],
+                    extra = {"variant": e["variant"],
+                             "continuation": e["stamp"].get("continuation"),
+                             "kernel_name": e["kernel_name"],
                              "min": m["min"], "max": m["max"], "n_launches": m["n"],
                              "values": m["values"],
                              "census": e["stamp"].get("census"),
                              "arm_row": e["stamp"].get("arm_row")}
                     out_rows.append(store.build_result(
-                        run, kind="ncu", cell=f"{e['cell']}/{e['variant']}",
+                        run, kind="ncu",
+                        cell=(f"{e['cell']}/{e['variant']}"
+                              + ("/cont" if e["stamp"].get("continuation") else "")),
                         arm=e["stamp"].get("resolved_carve"), metric=metric,
                         value=m["median"], unit="count", extra=extra))
             print(f"K38 record: {b['label']} -> {store.write_run(run, out_rows)} "

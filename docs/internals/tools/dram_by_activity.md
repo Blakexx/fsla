@@ -27,6 +27,16 @@ kernel's state sweeps read as *load iff resident and (read|written), store iff w
 The override changes an atom's ACTIVITY and never the RESIDENT set: an atom the routing
 does not touch stays untouched in every variant.
 
+`--continuation` is the second axis, and it is not optional for a read-side question.
+By default the call is made the way `probe_cells.make_call` makes it — with a NULL
+`s_in` — so there is no entry sweep at all and a "read-only" atom moves no bytes
+whatsoever: the split planes' read-side saving is unobservable by construction, and so
+is any read-side regression. `--continuation` passes the exit plane as the entry plane
+(the in-place law: the op seam refuses two distinct planes under an activity bitmap,
+`docs/internals/state.md#activity`), which is what a real continuation does and the only
+shape in which the entry sweep runs. Measured at `k16_w384`: the entry sweep adds
+252 K global-load sectors on the split binary, the hi plane's 4096 x 2080 B.
+
 Two controls are built in. `none` is the noise floor — the two binaries run identical
 work there, so their difference is this host's DRAM run-to-run drift (`## G1b-pad`
 measured ~0.6%). And on every frozen cell the read set and the write set are both *every*
