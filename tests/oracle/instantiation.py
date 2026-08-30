@@ -17,33 +17,45 @@ state's backing is dense or paged. Those three are what a family's config picks
 and what the kernel envelope is stated in, so those three are the census's
 left-hand side.
 
-**Declared here, CHECKED against the shipped arm list.** `tools/gen_shards.py`'s
-`FACTS_ARMS` is THE enumeration of the built `(C, BC, D, B)` dispatch vocabulary
-— the same tuple list the generated instantiation TU and the `facts_arms.inc`
-X-macro come from, so it cannot disagree with the binary the way a hand-kept
-list can. (The conformance census that asserted the projections went with the
-chunk consumer in the K31 deletion batch; baseline = tag `baseline/pre-k31`.)
+**Declared here, as the TESTS' OWN STATEMENT of what the family must cover.**
+`CHUNK_ARMS` used to be read live from `tools/gen_shards.py`'s `FACTS_ARMS`, so
+that it could not disagree with the binary the way a hand-kept list can. C0
+deleted the stats passes and that list with them (card C,
+`development/queue/C_CLEAN_SLATE.md`), so the rows move HERE, unchanged, and
+change meaning with the move: they are no longer a mirror of a built matrix but
+the `(C, BC, D, B)` vocabulary the rebuilt family is REQUIRED to reach, which is
+what a test-driven line wants a test module to hold. When C2's liveness pass and
+G4's arm table exist, this list is what they are checked against — and if the
+final key admits a different vocabulary, this list is the thing to argue with,
+not a comment to update.
+
+(The conformance census that asserted the projections went with the chunk
+consumer in the K31 deletion batch; baseline = tag `baseline/pre-k31`.)
 
 **Pure data and pure CPU.** No torch, no device, no extension: the census runs
 in the CPU CI job, and so does the kernel-envelope predicate below.
 """
 from __future__ import annotations
 
-import pathlib
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-_REPO = pathlib.Path(__file__).resolve().parents[2]
-if str(_REPO / "tools") not in sys.path:
-    sys.path.insert(0, str(_REPO / "tools"))
-
-import gen_shards  # noqa: E402
-
-#: `(C, BC, D, B)` -- the built dispatch vocabulary, read from the generator that
-#: emits the instantiation TU rather than transcribed.
-CHUNK_ARMS: tuple[tuple[int, int, int, int], ...] = tuple(gen_shards.FACTS_ARMS)
+#: `(C, BC, D, B)` -- the dispatch vocabulary the family is stated over. Held here
+#: since C0; see the module docstring for why it is a declaration and not a mirror.
+CHUNK_ARMS: tuple[tuple[int, int, int, int], ...] = (
+    (16, 64, 2, 8), (32, 64, 2, 8), (64, 64, 2, 8),
+    (16, 64, 2, 64), (32, 64, 2, 64), (64, 64, 2, 64),
+    (32, 32, 2, 64), (64, 32, 2, 64),
+    (16, 128, 2, 64), (32, 128, 2, 64), (64, 128, 2, 64),
+    (32, 256, 2, 64),
+    (16, 64, 2, 16), (32, 64, 2, 16), (64, 64, 2, 16),
+    (32, 128, 3, 16), (32, 128, 4, 8), (32, 32, 4, 8),
+    # the FLAT-ROUTING baseline arms (D = 1; N = B <= 256 by the manifest):
+    (32, 64, 1, 64), (32, 64, 1, 256), (16, 64, 1, 256),
+    # the SCALE rung (N = 65536):
+    (32, 128, 2, 256),
+)
 
 #: The `(D, B)` topologies the dispatch can reach. The engine's arm fold pins
 #: `C = CHUNK_TOKENS` and picks `BC` from the manifest, so an arm at any other
