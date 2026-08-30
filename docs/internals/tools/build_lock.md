@@ -1,8 +1,11 @@
 # `tools/build_lock.py` — the compile budget also lowers its own priority
 
 `build_lock.acquire()` is the in-process context manager `setup.py`'s
-`RoLABuildExtension.run()` wraps every real compile in (the machine-wide
-`GLOBAL_CICC_SLOTS` pool this file's own module docstring covers). The NICE
+`RoLABuildExtension.run()` wraps every real compile in. Its slot mechanics
+(the LOCKS brief, 2026-08-29) now delegate to `tools/host_budget.py`'s one
+shared pool — see `host_budget.md` — rather than keeping a second,
+uncoordinated 4-slot pool of its own; `GLOBAL_CICC_SLOTS` is kept as a name
+but is now an alias for `host_budget.HOST_BUDGET_SLOTS`. The NICE
 stage (Blake, 2026-08-29: "I would like it so all our things don't completely
 freeze my system so during future incidents I can continue to do things")
 adds one more thing that acquisition does before yielding control back to the

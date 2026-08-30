@@ -542,7 +542,7 @@ def run_worker(binary: dict, cells: list[str], reps: int, warmup: int, lock_path
            "--reps", str(reps), "--warmup", str(warmup), "--state", state]
     if oneshot:
         cmd.append("--oneshot")
-    with gpu_lock(lock_path):
+    with gpu_lock(lock_path, mode="exclusive"):  # measured work (LOCKS brief item 2)
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
                                timeout=timeout)
     if proc.returncode not in (0, 1):  # 1 = a cell REFUSED, still emits partial JSON
@@ -590,7 +590,7 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
     cmd = [NCU_BIN, "--target-processes", "all", "-k", "regex:carry.*kernel", "-c", "1",
            "--print-kernel-base", "mangled", "--metrics", metrics, "--csv",
            py, str(THIS_FILE), "--worker", "--cells", cell, "--oneshot", "--state", state]
-    with gpu_lock(lock_path):
+    with gpu_lock(lock_path, mode="exclusive"):  # measured work (LOCKS brief item 2)
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
                                timeout=timeout)
     Path(out_csv).write_text(proc.stdout)

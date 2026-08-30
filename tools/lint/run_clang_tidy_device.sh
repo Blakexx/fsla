@@ -127,8 +127,13 @@ PYEOF
 )
 
   echo "== device clang-tidy: ${target#"$ROOT"/} (sm_$ARCH) =="
+  # LOCKS brief item 1: one host-compute-budget slot per translation unit --
+  # a `clang-tidy --cuda-host-only` pass is a full front-end parse per TU, as
+  # CPU-heavy as a `cicc` compile, and previously drew from no shared pool at
+  # all.
   # shellcheck disable=SC2086
-  out=$(clang-tidy "$target" --config-file="$CONFIG" --header-filter='csrc/rola/.*' \
+  out=$(python3 "$ROOT/tools/host_budget.py" --slots 1 --label clang-tidy-tu -- \
+          clang-tidy "$target" --config-file="$CONFIG" --header-filter='csrc/rola/.*' \
           -- $flags -ferror-limit=0 2>&1)
   real=$(echo "$out" | grep -E '^/.*csrc/rola/.*: (warning|error): ' | grep -v 'clang-diagnostic-error' || true)
   noise=$(echo "$out" | grep -E 'clang-diagnostic-error' || true)

@@ -142,6 +142,7 @@ def cuda_bin(tool: str) -> str:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_flags  # noqa: E402
 import gen_shards  # noqa: E402
+import host_budget  # noqa: E402
 import mold_toolchain  # noqa: E402
 import sccache_toolchain  # noqa: E402
 
@@ -919,8 +920,12 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     #: build left behind".
     gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     want_arms = sorted(set(gen_shards.CARRY_SHIPPED_ARMS if arms is None else arms))
-    (gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC).write_text(
-        gen_shards.carry_selection_header(want_arms))
+    #: ONE SHARED OUTPUT FILE (LOCKS brief item 3): two concurrent ratify/build
+    #: invocations racing this write must not interleave -- one must finish
+    #: writing the header before the other starts compiling against it.
+    with host_budget.file_lock("carry_selection_header"):
+        (gen_shards.GENERATED_DIR / gen_shards.CARRY_SELECTION_INC).write_text(
+            gen_shards.carry_selection_header(want_arms))
 
     jobs = jobs or build_flags.default_max_jobs(2)
     entries: dict[str, dict] = {}
@@ -1449,87 +1454,91 @@ def main() -> int:
                 print(f"census written to {a.json}")
             return 0
     if a.write:
-        #: WRITTEN PER ARCH, from the one compile. Splitting here rather than at
-        #: read time is what keeps `sm_86.json` untouched by an `--arch 80` run:
-        #: a bring-up must not restate measurements it did not take.
-        for arch in arches:
-            prefix = f"sm_{arch}:"
-            mine = {k: v for k, v in sorted(entries.items()) if k.startswith(prefix)}
-            if not mine:
-                raise SystemExit(
-                    f"the compile reported NO entries for sm_{arch}; refusing to "
-                    f"write an empty ratification. A manifest that exists but "
-                    f"measures nothing would pass rule 3 by file existence alone.")
-            path = manifest_path(arch)
-            #: The SOURCE DIGEST is recorded beside the toolchain: a manifest is a
-            #: measurement OF a source tree UNDER an assembler, and both halves of
-            #: that sentence must be checkable (the freshness trigger, session 9).
-            path.write_text(json.dumps(
-                {"toolchain": {"ptxas": version, "defines": shipped_defines(),
-                                #: THE CODEGEN FLAG LIST, arch-independent part.
-                                #: A ratification is a measurement OF sources UNDER
-                                #: an assembler AND its flags; without this the
-                                #: third of those was unrecorded and a
-                                #: codegen-affecting flag could land without moving
-                                #: anything a gate reads.
-                                "nvcc_flags": ratified_flags(),
-                                #: The scanner version behind every entry's
-                                #: `sass_sha256`. Same argument as the flag list:
-                                #: a record that cannot say what produced its
-                                #: hashes cannot certify them.
-                                "sass_hash_version": SASS_HASH_VERSION,
-                                #: THE COMPILER CACHE, per the input-closure rule
-                                #: (tools/sccache_toolchain.py). `None` if this
-                                #: ratification ran uncached. Recorded, not
-                                #: ratchet-gated: sccache is a measured-transparent
-                                #: pass-through (docs/build.md#sccache) so its
-                                #: version cannot move the register/spill numbers
-                                #: the way a `ptxas` swap can -- drift is REPORTED
-                                #: (below), not FAILED, the same treatment register
-                                #: drift gets.
-                                "sccache": {"version": sccache_info["version"],
-                                            "sha256": sccache_info["sha256"]}
-                                           if sccache_info else None,
-                                #: THE LINKER, per the constitution's NO
-                                #: FALLBACKS rule extended to the toolchain
-                                #: (Blake ruling 2026-08-28, K39): setup.py
-                                #: links with mold unconditionally, gated hard
-                                #: at build time by tools/mold_toolchain.py.
-                                #: Recorded here for PROVENANCE, same
-                                #: treatment as sccache above -- a linker does
-                                #: not touch codegen, so its version is
-                                #: reported, never ratchet-gated against a
-                                #: SASS body. `None` only when this ratify-only
-                                #: process (no extension link in this run)
-                                #: could not resolve `mold` to ask its version.
-                                "mold": {"version": mold_info["version"],
-                                         "sha256": mold_info["sha256"]}
-                                        if mold_info else None},
-                 "source": {"csrc_sha256": csrc_digest(),
-                            "date": time.strftime("%Y-%m-%d"),
-                            #: K37 -- reproducibility as a checkable statement. The
-                            #: dev container stamps this into the ratifying
-                            #: process's environment (docs/setup.md); a host
-                            #: ratification (this variable unset) records the empty
-                            #: string, which is itself the honest answer to "was
-                            #: this measured inside the pinned image?". Lives beside
-                            #: `csrc_sha256`, not inside `toolchain`, because it
-                            #: identifies WHERE the measurement ran, not WHAT was
-                            #: measured -- `manifest_digest()` hashes
-                            #: `{toolchain, entries, shards}` only, so this field
-                            #: can never move a ratified register/spill number the
-                            #: way a `ptxas` swap can, and its presence here is
-                            #: recorded, never ratchet-gated.
-                            "image_digest": os.environ.get("ROLA_IMAGE_DIGEST", "")},
-                 #: WHICH INSTANTIATIONS THIS RATIFICATION COVERS, by membership
-                 #: hash rather than by file list. It enters the digest, so a
-                 #: re-partition is a visible re-ratification and a scoped
-                 #: re-measurement is a provable statement.
-                 "shards": gen_shards.shard_manifest_block(),
-                 "entries": mine}, indent=1) + "\n")
-            print(f"wrote {path} ({len(mine)} instantiations) under ptxas: {version}")
-        print(f"{len(unhonored)} unhonored bounds across {len(arches)} arch(es)")
-        return 0
+        #: THE MANIFEST IS ONE SHARED ARTIFACT PER ARCH (LOCKS brief item 3):
+        #: two concurrent `--write` ratifications of the same arch would
+        #: interleave their `path.write_text` calls otherwise.
+        with host_budget.file_lock("ratify_manifest"):
+            #: WRITTEN PER ARCH, from the one compile. Splitting here rather than at
+            #: read time is what keeps `sm_86.json` untouched by an `--arch 80` run:
+            #: a bring-up must not restate measurements it did not take.
+            for arch in arches:
+                prefix = f"sm_{arch}:"
+                mine = {k: v for k, v in sorted(entries.items()) if k.startswith(prefix)}
+                if not mine:
+                    raise SystemExit(
+                        f"the compile reported NO entries for sm_{arch}; refusing to "
+                        f"write an empty ratification. A manifest that exists but "
+                        f"measures nothing would pass rule 3 by file existence alone.")
+                path = manifest_path(arch)
+                #: The SOURCE DIGEST is recorded beside the toolchain: a manifest is a
+                #: measurement OF a source tree UNDER an assembler, and both halves of
+                #: that sentence must be checkable (the freshness trigger, session 9).
+                path.write_text(json.dumps(
+                    {"toolchain": {"ptxas": version, "defines": shipped_defines(),
+                                    #: THE CODEGEN FLAG LIST, arch-independent part.
+                                    #: A ratification is a measurement OF sources UNDER
+                                    #: an assembler AND its flags; without this the
+                                    #: third of those was unrecorded and a
+                                    #: codegen-affecting flag could land without moving
+                                    #: anything a gate reads.
+                                    "nvcc_flags": ratified_flags(),
+                                    #: The scanner version behind every entry's
+                                    #: `sass_sha256`. Same argument as the flag list:
+                                    #: a record that cannot say what produced its
+                                    #: hashes cannot certify them.
+                                    "sass_hash_version": SASS_HASH_VERSION,
+                                    #: THE COMPILER CACHE, per the input-closure rule
+                                    #: (tools/sccache_toolchain.py). `None` if this
+                                    #: ratification ran uncached. Recorded, not
+                                    #: ratchet-gated: sccache is a measured-transparent
+                                    #: pass-through (docs/build.md#sccache) so its
+                                    #: version cannot move the register/spill numbers
+                                    #: the way a `ptxas` swap can -- drift is REPORTED
+                                    #: (below), not FAILED, the same treatment register
+                                    #: drift gets.
+                                    "sccache": {"version": sccache_info["version"],
+                                                "sha256": sccache_info["sha256"]}
+                                               if sccache_info else None,
+                                    #: THE LINKER, per the constitution's NO
+                                    #: FALLBACKS rule extended to the toolchain
+                                    #: (Blake ruling 2026-08-28, K39): setup.py
+                                    #: links with mold unconditionally, gated hard
+                                    #: at build time by tools/mold_toolchain.py.
+                                    #: Recorded here for PROVENANCE, same
+                                    #: treatment as sccache above -- a linker does
+                                    #: not touch codegen, so its version is
+                                    #: reported, never ratchet-gated against a
+                                    #: SASS body. `None` only when this ratify-only
+                                    #: process (no extension link in this run)
+                                    #: could not resolve `mold` to ask its version.
+                                    "mold": {"version": mold_info["version"],
+                                             "sha256": mold_info["sha256"]}
+                                            if mold_info else None},
+                     "source": {"csrc_sha256": csrc_digest(),
+                                "date": time.strftime("%Y-%m-%d"),
+                                #: K37 -- reproducibility as a checkable statement. The
+                                #: dev container stamps this into the ratifying
+                                #: process's environment (docs/setup.md); a host
+                                #: ratification (this variable unset) records the empty
+                                #: string, which is itself the honest answer to "was
+                                #: this measured inside the pinned image?". Lives beside
+                                #: `csrc_sha256`, not inside `toolchain`, because it
+                                #: identifies WHERE the measurement ran, not WHAT was
+                                #: measured -- `manifest_digest()` hashes
+                                #: `{toolchain, entries, shards}` only, so this field
+                                #: can never move a ratified register/spill number the
+                                #: way a `ptxas` swap can, and its presence here is
+                                #: recorded, never ratchet-gated.
+                                "image_digest": os.environ.get("ROLA_IMAGE_DIGEST", "")},
+                     #: WHICH INSTANTIATIONS THIS RATIFICATION COVERS, by membership
+                     #: hash rather than by file list. It enters the digest, so a
+                     #: re-partition is a visible re-ratification and a scoped
+                     #: re-measurement is a provable statement.
+                     "shards": gen_shards.shard_manifest_block(),
+                     "entries": mine}, indent=1) + "\n")
+                print(f"wrote {path} ({len(mine)} instantiations) under ptxas: {version}")
+            print(f"{len(unhonored)} unhonored bounds across {len(arches)} arch(es)")
+            return 0
     manifest = load_manifest(arches)
     want = manifest["entries"]
     print(f"manifest sha256 {manifest_digest(manifest)}  "

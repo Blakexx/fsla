@@ -39,6 +39,20 @@ a home path (KERNEL_STANDARDS §17) and is the shared directory KERNEL_STANDARDS
 addendum already requires every GPU-touching container to bind-mount from the host,
 so a container and the bare host serialize against the same lock without a new
 directory convention to keep in sync across both.
+
+**TWO MODES (LOCKS brief, 2026-08-29).** Blake: "allow some controlled level of
+parallelism" -- MEASURED work (`tools/probe_cells.py`, `ncu`, the bench harness's
+`disciplined()`) needs the device to itself, nothing else touching it while a number
+is read; CORRECTNESS work (the oracle/integration/unit-cuda pytest tiers,
+`tools/sanitize_oracle.py`) only needs the device not to be mid-measurement, and two
+such runs interleaving does not corrupt either one's answer. `mode="exclusive"`
+(default, preserving every existing bare call's behavior) waits for and holds BOTH of
+`GPU_SHARED_SLOTS`' underlying slot files -- so it also excludes every `mode="shared"`
+holder. `mode="shared"` takes exactly one of those slot files (waiting for one to free
+if both are held), so up to `GPU_SHARED_SLOTS` correctness runs proceed concurrently,
+and an exclusive acquire cannot proceed while either is held (it needs both). This is
+the same gate/iteration shape `build_lock.py`/`host_budget.py` already use, applied to
+a fixed pool of 2 instead of an open one.
 """
 from __future__ import annotations
 
@@ -47,8 +61,12 @@ import fcntl
 import os
 import shutil
 import subprocess
+import time
 
 GPU_LOCK_DEFAULT = "/tmp/rola_gpu.lock"
+
+#: The correctness-mode pool size ("SHARED with 2 slots", LOCKS brief item 2).
+GPU_SHARED_SLOTS = int(os.environ.get("ROLA_GPU_SHARED_SLOTS", "2"))
 
 #: docs/internals/tools/gpu_lock.md -- the NICE stage (Blake, 2026-08-29).
 _NO_NICE_ENV = "ROLA_NO_NICE"
@@ -76,21 +94,99 @@ def _lower_own_priority() -> None:
 _HELD_MARKER = "ROLA_GPU_LOCK_HELD"
 
 
+def _open_ex(path: str) -> int:
+    return os.open(path, os.O_CREAT | os.O_RDWR, 0o666)
+
+
+def _blocking_acquire(path: str, lock_type: int):
+    fd = _open_ex(path)
+    fcntl.flock(fd, lock_type)
+    return fd
+
+
+def _try_acquire(path: str, lock_type: int):
+    fd = _open_ex(path)
+    try:
+        fcntl.flock(fd, lock_type | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
 @contextlib.contextmanager
-def gpu_lock(path: str | None = None):
-    """Exclusive GPU access, held for the `with` block's duration.
+def gpu_lock(path: str | None = None, *, mode: str = "exclusive"):
+    """GPU access, held for the `with` block's duration.
+
+    Built on ONE reader/writer lock file (`{base}.rw`, native `flock(LOCK_SH
+    | LOCK_EX)`) plus a `GPU_SHARED_SLOTS`-sized counting pool that caps
+    concurrent SHARED holders, plus one admission mutex (`{base}.wq`) that
+    closes a starvation gap PLAIN `flock()` leaves open: Linux's `flock()`
+    does not give a PENDING exclusive request priority over a fresh shared
+    one -- a new `LOCK_SH` succeeds immediately as long as no `LOCK_EX` is
+    CURRENTLY GRANTED, so a steady stream of shared acquirers can keep an
+    exclusive acquirer waiting forever even though it asked first (found by
+    this file's own gate: a three-process repro where a second shared
+    acquirer walked straight past a pending exclusive one). Every acquirer,
+    either mode, takes `{base}.wq` FIRST and holds it for its whole admission
+    step: `mode="exclusive"` holds `wq` across the (possibly long) wait for
+    `rw`'s `LOCK_EX`, so no new shared acquirer can even attempt `rw` while an
+    exclusive request is outstanding; `mode="shared"` holds `wq` only across
+    its own (uncontended, since a live shared holder never blocks another)
+    `LOCK_SH` grab, then releases it immediately -- so shared acquirers still
+    admit concurrently once no writer is queued, and only serialize with each
+    other for the instant it takes to join.
 
     Reentrant: if `ROLA_GPU_LOCK_HELD` is already set (this process or an ancestor
-    already holds a `gpu_lock()`), this is a no-op context -- it neither opens nor
-    waits on the lock file a second time.
+    already holds a `gpu_lock()`, in EITHER mode), this is a no-op context -- it
+    neither opens nor waits on any lock file a second time.
     """
+    if mode not in ("exclusive", "shared"):
+        raise ValueError(f"gpu_lock: mode must be 'exclusive' or 'shared', got {mode!r}")
     if _HELD_MARKER in os.environ:
         yield
         return
-    lock_path = path or os.environ.get("ROLA_GPU_LOCK", GPU_LOCK_DEFAULT)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+    base = path or os.environ.get("ROLA_GPU_LOCK", GPU_LOCK_DEFAULT)
+    wq_path = f"{base}.wq"
+    rw_path = f"{base}.rw"
+    slot_paths = [f"{base}.slot{i}" for i in range(GPU_SHARED_SLOTS)]
+    held: list[int] = []
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        if mode == "exclusive":
+            wq_fd = _blocking_acquire(wq_path, fcntl.LOCK_EX)
+            try:
+                held.append(_blocking_acquire(rw_path, fcntl.LOCK_EX))
+            finally:
+                fcntl.flock(wq_fd, fcntl.LOCK_UN)
+                os.close(wq_fd)
+        else:
+            wq_fd = _blocking_acquire(wq_path, fcntl.LOCK_EX)
+            try:
+                held.append(_blocking_acquire(rw_path, fcntl.LOCK_SH))
+            finally:
+                fcntl.flock(wq_fd, fcntl.LOCK_UN)
+                os.close(wq_fd)
+            for slot in slot_paths:
+                fd = _try_acquire(slot, fcntl.LOCK_EX)
+                if fd is not None:
+                    held.append(fd)
+                    break
+            if len(held) == 1:
+                #: NEVER a hardcoded slot index here: which slot a given
+                #: holder ends up with is a race, so waiting on slot 0
+                #: specifically can wait on a slot nobody is about to free
+                #: while a different one frees immediately (this module's own
+                #: gate found it: releasing "the other" shared holder never
+                #: unblocked a waiter pinned to slot 0). Poll the whole sweep
+                #: instead -- any slot freeing is progress.
+                while len(held) == 1:
+                    for slot in slot_paths:
+                        fd = _try_acquire(slot, fcntl.LOCK_EX)
+                        if fd is not None:
+                            held.append(fd)
+                            break
+                    if len(held) == 1:
+                        time.sleep(0.01)
         os.environ[_HELD_MARKER] = str(os.getpid())
         _lower_own_priority()
         try:
@@ -98,5 +194,6 @@ def gpu_lock(path: str | None = None):
         finally:
             os.environ.pop(_HELD_MARKER, None)
     finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+        for fd in held:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)

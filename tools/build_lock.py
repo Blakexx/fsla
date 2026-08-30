@@ -14,32 +14,46 @@ acquires this budget ITSELF, unconditionally, before the actual compile --
 `pip install -e .` cannot start `cicc` without going through it, from any
 worktree, any agent, any invocation path, brief or no brief.
 
-**THE MECHANISM.** `GLOBAL_CICC_SLOTS` (default 4, `ROLA_GLOBAL_CICC_SLOTS`
-overrides) lock files, `/tmp/rola_cicc_slot_<i>.lock` -- ONE POOL, shared by
-every worktree on this host (the lock files are NOT per-worktree; a build in
-`k31-k39` and a build in `k31-k41` contend for the SAME four slots, which is
-the whole point: the budget is the HOST's, not a checkout's). A GATE build
-(the shipped arm set) takes EVERY slot, blocking until the whole budget is
-free, mirroring `build_lock.sh --gate`'s exclusivity. An ITERATION build takes
-however many slots are free RIGHT NOW, from 1 up to its own desired
-`MAX_JOBS`, BLOCKING (never proceeding with zero) until at least one is free --
-so three iteration builds started at once each still get SOME progress rather
-than one winning everything or all three deadlocking. `MAX_JOBS` is then set
-to the COUNT ACTUALLY HELD, never to what the caller originally asked for --
-the whole enforcement is worthless if a build keeps its self-chosen `MAX_JOBS`
-after being handed fewer slots than that.
+**THE MECHANISM, NOW DRAWN FROM `tools/host_budget.py` (LOCKS brief,
+2026-08-29).** `cicc` used to count against its own private pool
+(`GLOBAL_CICC_SLOTS`/`ROLA_GLOBAL_CICC_SLOTS`, `/tmp/rola_cicc_slot_<i>.lock`),
+separate from every other host-CPU-heavy tool -- a sanitizer run, a
+clang-tidy device pass, a pytest worker -- so three of THOSE running
+alongside a full-budget compile was the same "12+ heavy processes on one
+host" shape this file exists to prevent, wearing a different process name,
+and this file's slot count could not see them. Slot counts now live in
+exactly one place, `tools/host_budget.py`'s `HOST_BUDGET_SLOTS`
+(`ROLA_HOST_BUDGET_SLOTS` overrides, default `os.cpu_count() - 2`) --
+`GLOBAL_CICC_SLOTS` below is that same number, kept as a name this module's
+own callers and docs already cite; `ROLA_GLOBAL_CICC_SLOTS` is superseded.
+A GATE build (the shipped arm set) takes EVERY slot of the shared pool,
+blocking until the whole budget is free, mirroring `build_lock.sh --gate`'s
+exclusivity. An ITERATION build takes however many slots are free RIGHT NOW,
+from 1 up to its own desired `MAX_JOBS`, BLOCKING (never proceeding with
+zero) until at least one is free -- so three iteration builds started at once
+each still get SOME progress rather than one winning everything or all three
+deadlocking. `MAX_JOBS` is then set to the COUNT ACTUALLY HELD, never to what
+the caller originally asked for -- the whole enforcement is worthless if a
+build keeps its self-chosen `MAX_JOBS` after being handed fewer slots than
+that.
 """
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import os
 import shutil
 import subprocess
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-GLOBAL_CICC_SLOTS = int(os.environ.get("ROLA_GLOBAL_CICC_SLOTS", "4"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import host_budget  # noqa: E402 -- path insert must precede this import
+
+#: Kept as a name: callers and docs elsewhere in this tree say
+#: `build_lock.GLOBAL_CICC_SLOTS` -- it is now an alias for the one shared
+#: pool every host-CPU-heavy tool draws from.
+GLOBAL_CICC_SLOTS = host_budget.HOST_BUDGET_SLOTS
 
 #: docs/internals/tools/build_lock.md -- the NICE stage (Blake, 2026-08-29).
 _NO_NICE_ENV = "ROLA_NO_NICE"
@@ -60,40 +74,15 @@ def _lower_own_priority() -> None:
     )
 
 
-def _slot_path(i: int) -> Path:
-    return Path(f"/tmp/rola_cicc_slot_{i}.lock")
-
-
-def _try_acquire(i: int):
-    #: The file object OUTLIVES this function by design -- it is the lock's own
-    #: handle, released by the caller's `finally` block once the compile it
-    #: guards is done -- so a `with` block here (which would close it on this
-    #: function's own return) is the wrong shape, not a missed one (ruff SIM115).
-    fd = open(_slot_path(i), "w")  # noqa: SIM115
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        fd.close()
-        return None
-    return fd
-
-
-def _blocking_acquire(i: int, label: str):
-    fd = open(_slot_path(i), "w")  # noqa: SIM115 -- see _try_acquire
-    print(f"[build_lock] waiting for slot {i} ({label}) ...", flush=True)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    return fd
-
-
 @contextmanager
 def acquire(*, gate: bool, desired: int):
     """Hold `held` slots (yielded) for the wrapped compile; releases on exit.
 
-    `gate=True`: waits for and holds ALL `GLOBAL_CICC_SLOTS` slots -- the
+    `gate=True`: waits for and holds ALL of `host_budget`'s shared slots -- the
     machine-wide budget, exclusively, the same discipline a milestone ratify
     build already required against a single lock file (KERNEL_STANDARDS §15
-    addendum), now against the shared pool every build (gate or iteration)
-    draws from.
+    addendum), now against the shared pool every host-CPU-heavy tool (not
+    just a compile) draws from.
     `gate=False`: waits for AT LEAST ONE free slot (never proceeds with zero),
     then opportunistically takes up to `desired` MORE slots that are free
     RIGHT NOW without waiting further for them -- an iteration build gets
@@ -101,41 +90,7 @@ def acquire(*, gate: bool, desired: int):
     unbounded wait for it.
     """
     desired = max(1, desired)
-    held: list = []
-    try:
-        if gate:
-            print(f"[build_lock] GATE build: waiting for all "
-                  f"{GLOBAL_CICC_SLOTS} slot(s) of the machine-wide cicc "
-                  f"budget ...", flush=True)
-            for i in range(GLOBAL_CICC_SLOTS):
-                held.append(_blocking_acquire(i, "gate"))
-            print(f"[build_lock] GATE build: holding all "
-                  f"{GLOBAL_CICC_SLOTS} slot(s)", flush=True)
-        else:
-            # First pass: grab whatever is free without waiting.
-            for i in range(GLOBAL_CICC_SLOTS):
-                if len(held) >= desired:
-                    break
-                fd = _try_acquire(i)
-                if fd is not None:
-                    held.append(fd)
-            # Never proceed with zero: block on slot 0 if the first pass got
-            # nothing, then retry a free sweep once more (best-effort only --
-            # this does not re-loop indefinitely trying to reach `desired`).
-            if not held:
-                held.append(_blocking_acquire(0, "iteration, at least one slot"))
-                for i in range(1, GLOBAL_CICC_SLOTS):
-                    if len(held) >= desired:
-                        break
-                    fd = _try_acquire(i)
-                    if fd is not None:
-                        held.append(fd)
-            print(f"[build_lock] iteration build: holding {len(held)}/"
-                  f"{GLOBAL_CICC_SLOTS} slot(s) of the machine-wide cicc "
-                  f"budget (wanted {desired})", flush=True)
+    label = "gate" if gate else "iteration"
+    with host_budget.acquire(desired, exclusive=gate, label=f"build_lock:{label}") as held:
         _lower_own_priority()
-        yield len(held)
-    finally:
-        for fd in held:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            fd.close()
+        yield held
