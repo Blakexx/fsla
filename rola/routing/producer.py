@@ -224,7 +224,12 @@ class RouteProducer(nn.Module):
                                        carry_mass=True)
         write_levels, write_mass = _fold(write_bh, B=B, H=H, skip=self._skip("write"),
                                          carry_mass=False)
-        gains = self.side_gain(gain_logits, batch=B, tokens=T, dtype=read_stream.dtype,
+        #: THE GAIN IS A ROUTING FACTOR AND CARRIES THE FACTORS' OWN DTYPE (Blake,
+        #: 2026-08-29): it used to follow the CALLER'S input dtype, so a fp32 layer input
+        #: produced bf16 levels and an fp32 `g_write` -- which the raw decode seam cast
+        #: and the planned seam did not, and the kernel refused. The producer is the one
+        #: place that knows the operand dtype; the seams refuse, they do not translate.
+        gains = self.side_gain(gain_logits, batch=B, tokens=T, dtype=read_levels[0].dtype,
                                device=read_stream.device)
         return RouteFactors(
             topology=self.topology, normalization=self.normalization,

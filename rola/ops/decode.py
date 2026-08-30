@@ -378,11 +378,12 @@ def _decode_step(
     guard_no_grad((v, g_read, g_write, *read_levels, *write_levels,
                    *(decay.dials if decay is not None else ())))
     #: THE OPERANDS ARE bf16, ONE FORM (K50 "THE LAST THREE", item 3: "we are bf16
-    #: everything").  The kernel's dual operand-dtype path -- a float arm of every fold,
-    #: selected by three runtime flags -- is DELETED, so the cast happens once, here, at
-    #: the raw-tensor entry.  This is the carry seam's own shape (`carry_inter` casts `v`
-    #: and `g_write` the same way): the SEAM narrows to the kernel's one form, and the
-    #: kernel refuses anything else by name rather than growing a second body for it.
+    #: everything"), and ONE PLACE KNOWS THAT (Blake, 2026-08-29): the ROUTING PRODUCER
+    #: emits every factor it makes -- levels and `g_write` alike -- in the operand dtype,
+    #: so this seam REFUSES a `g_write` that is not bf16 by name instead of quietly
+    #: casting it. A stray cast here is how the planned path (`decode_dag`) shipped a
+    #: producer-dtype `g_write` to the kernel and the raw path did not: two places knew
+    #: the dtype and they disagreed. -- see docs/internals/decode/decode.md#isbf16
     read_levels = tuple(t.to(torch.bfloat16) for t in read_levels)
     write_levels = tuple(t.to(torch.bfloat16) for t in write_levels)
     g_write = g_write.to(torch.bfloat16)

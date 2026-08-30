@@ -162,6 +162,17 @@ constexpr int sb_scatter_of(int D, int bc, int ns, int a, int P) {
   return row;
 }
 
+//: THE REGION'S SWIZZLE. A member whose innermost span is narrower than the MMA's
+//: eight-row granule scatters an access's rows into too few `row mod 8` values, because
+//: the level's owner run is wider than the sub-box and leaves a gap; 15 of the 55
+//: reachable member pairs conflict unswizzled. This is GF(2)-LINEAR, so it distributes
+//: over the `base ^ scatter(P)` split and every displacement stays an immediate, and it
+//: is a bijection of `[0, BC)`. -- see docs/internals/carry/geom.md#row-swizzle
+constexpr int kSwzShift = 2, kSwzMask = 7;
+__host__ __device__ constexpr int sb_swizzle(int row) {
+  return row ^ ((row >> kSwzShift) & kSwzMask);
+}
+
 //: the member a carved shape IS, or `-1` -- the exhaustiveness question, asked of the
 //: generated set itself and never of a hand-written list.
 constexpr int sb_index(const SubBoxSet& set, int D, const int* bits) {
@@ -397,7 +408,7 @@ __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom
     const int dig = (P >> s.sub_shift[l]) & ((1 << s.sub_bits[l]) - 1);
     row += (off + dig) << g.run_shift[l];
   }
-  return row;
+  return sb_swizzle(row);
 }
 
 //: THE CANONICAL LEAF of owner `O`'s local slot, and the atom that holds it (P80).

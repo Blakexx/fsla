@@ -129,6 +129,12 @@ def _sides(case):
     return _Side(blk, "w", NS), _Side(blk, "r", NS), 64
 
 
+def _swz(row):
+    """THE REGION'S SWIZZLE (G2d), mirroring `geom.cuh`'s `sb_swizzle`: GF(2)-linear, so
+    it distributes over `base ^ scatter(P)` and every fragment term stays an immediate."""
+    return row ^ ((row >> 2) & 7)
+
+
 def _row(side, stream, slot):
     """THE REGION'S ROW: the OWNER-LOCAL CANONICAL INDEX of the leaf this side's stream
     holds at that slot.  Each side reaches a leaf through its OWN base word and its own
@@ -137,7 +143,7 @@ def _row(side, stream, slot):
     for l in range(side.D):
         d = ((slot >> side.shift(l)) & (side.s(l) - 1)) + side.off(l, stream)
         row += d << side.run_shift(l)
-    return row
+    return _swz(row)
 
 
 def _row_of(w_side, r_side, stream, slot):
@@ -217,11 +223,12 @@ def test_the_exchange_row_map_is_affine_in_the_slots_bits(idx, row):
     for side, who in ((w, "publisher"), (r, "consumer")):
         nb = _ilog2c(side.leaf)
         ref_step = [_delta(side, 1 << b) for b in range(nb)]
+        #: PRE-SWIZZLE a slot bit set exactly ONE row bit. The swizzle deliberately mixes
+        #: (bit 2 becomes rows 0 and 2), so what must hold is the property the ADDRESS
+        #: ARITHMETIC actually rests on: the step is NON-ZERO, it is the same for every
+        #: stream, and the composition is exact -- all asserted below.
         for b, st in enumerate(ref_step):
-            assert bin(st).count("1") == 1, f"arm {idx}: {who} slot bit {b} is not one row bit"
-        delta_mask = 0
-        for st in ref_step:
-            delta_mask |= st
+            assert st != 0, f"arm {idx}: {who} slot bit {b} moves no row bit"
         base_mask = 0
         for stream in range(side.ns):
             base = _row(side, stream, 0)
@@ -235,8 +242,9 @@ def test_the_exchange_row_map_is_affine_in_the_slots_bits(idx, row):
                     if slot >> b & 1:
                         acc ^= ref_step[b]
                 assert acc == _row(side, stream, slot)
-        assert delta_mask & base_mask == 0, (
-            f"arm {idx}: a slot bit shares a row bit with a {who} base, so `^` is not `+`")
+        #: THE KERNEL XORS EXPLICITLY (G2d): under the swizzle a slot bit CAN share a row
+        #: bit with the base, so the address arithmetic composes with `^` and never with
+        #: `+`; the exactness assertion above is what stands in for the old disjointness.
 
 
 @pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
@@ -350,6 +358,24 @@ def test_every_member_pair_the_mode_words_can_reach_is_conflict_free():
                 bad.append((key, widths, modes, c))
     assert pairs, "no member pair was reached at all"
     assert not bad, f"member pairs needing a swizzle: {bad}"
+    assert len(pairs) >= 55, f"only {len(pairs)} member pairs reached; the sweep shrank"
+
+
+def test_the_swizzle_is_a_bijection_of_the_region_and_is_linear():
+    """The swizzle re-INDEXES the region: it must lose no row and split no XOR.
+
+    Bijection on `[0, BC)` is what keeps every leaf reachable exactly once; GF(2)-linearity
+    (`swz(a ^ b) == swz(a) ^ swz(b)`) is what lets the kernel swizzle the lane's base ONCE
+    and keep every per-fragment row term a compile-time constant -- without it the address
+    arithmetic would need a runtime XOR per store and the immediates would be gone."""
+    bc = carry_ops.BC
+    assert sorted(_swz(r) for r in range(bc)) == list(range(bc)), (
+        "the swizzle is not a bijection of the region: a leaf is lost or aliased")
+    for a in range(bc):
+        for b in range(bc):
+            assert _swz(a ^ b) == _swz(a) ^ _swz(b), (
+                f"the swizzle is not GF(2)-linear at ({a}, {b}), so `base ^ scatter` "
+                f"does not distribute and the fragment terms stop being immediates")
 
 
 @pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
@@ -470,9 +496,11 @@ def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx,
                         a = ((mrow ^ rr) * ldx * 2 + (L >> 2) * 2 + (2 * m + (i & 1)) * 16)
                         assert mem[a] == out[L][i][0], (
                             f"arm {idx}: the store-back's low half misses its own address")
-                        assert mem[a + nx * ldx * 2] == out[L][i][1], (
+                        a1 = ((mrow ^ rr ^ nx) * ldx * 2 + (L >> 2) * 2
+                              + (2 * m + (i & 1)) * 16)
+                        assert mem[a1] == out[L][i][1], (
                             f"arm {idx}: the store-back's high half misses its own address")
-                        mem[a], mem[a + nx * ldx * 2] = out[L][i]
+                        mem[a], mem[a1] = out[L][i]
     assert mem == before, f"arm {idx}: the two legs are not the identity on the region"
 
     #: THE WRITER'S PULL, in the WRITE layout, and the rejoin's register map.

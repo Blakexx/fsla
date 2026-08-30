@@ -264,7 +264,11 @@ def _sequence():
                            routing=union_routing(1)).cuda()
     torch.manual_seed(507)
     x = torch.randn(_B, _T + 8, _HIDDEN, device="cuda")
-    v = torch.randn(_B, _T + 8, _H, _DV, device="cuda")
+    #: THE CAPTURED PATH IS NOT A TRANSLATING SEAM (G2d): a graph capture hands the
+    #: PLANNED entry its static buffers directly, so the operands must ALREADY be in the
+    #: kernel's one form -- the raw `decode_forward` seam that narrows fp32 is not on this
+    #: path. `v` is the layer's value tensor, not a routing factor, so the caller owns it.
+    v = torch.randn(_B, _T + 8, _H, _DV, device="cuda", dtype=torch.bfloat16)
     with torch.no_grad():
         routes = producer(x[:, :_T])
         config = _config(_WIDTHS, dict(B=_B, H=_H))

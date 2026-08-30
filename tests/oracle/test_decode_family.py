@@ -79,7 +79,12 @@ def _draw(gen, device, T, p_read, p_write, *, widths=_WIDTHS, H=_H, B=_B, dv=_DV
 
 
 def _f32(d):
-    return {k: (tuple(x.float() for x in v) if isinstance(v, tuple)
+    """Every operand in fp32 except `g_write`, which the seam refuses rather than casts.
+
+    See `tests/integration/test_decode_paging.py::_f32` for why the one field is exempt:
+    the producer owns the operand dtype for the factors it emits (G2d)."""
+    return {k: (v.to(torch.bfloat16) if k == "g_write" and v is not None
+                else tuple(x.float() for x in v) if isinstance(v, tuple)
                 else (None if v is None else v.float()))
             for k, v in d.items()}
 

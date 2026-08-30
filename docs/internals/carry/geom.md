@@ -72,6 +72,46 @@ longer share a slot layout, which is what restores the two-sided carve's livenes
 selectivity (the `## G2b` finding) and what makes the transit's row map a per-side
 scatter rather than a per-warp base.
 
+<a id="row-swizzle"></a>
+## The region's swizzle, and why it is free
+
+The bank of a word in the transit region is `(36 * row + col) mod 32`, and `36 * row mod
+32 = 4 * (row mod 8)` — so an access is conflict-free exactly when its rows are distinct
+`mod 8`. A member whose INNERMOST span is narrower than the MMA's eight-row granule
+(`sv(D-1) = 4`) scatters an access's eight rows into only four values there, because the
+level's owner run is wider than the sub-box and leaves a gap in the canonical index. That
+is 15 of the 55 reachable member pairs, the flagship's own among them.
+
+`sb_swizzle(row) = row ^ ((row >> 2) & 7)` clears all 55. Two properties make it free
+rather than a cost, and `test_exchange_layout` asserts both: it is a BIJECTION of
+`[0, BC)`, so no leaf is lost or aliased; and it is GF(2)-LINEAR, so
+`swz(base ^ scatter(P)) = swz(base) ^ swz(scatter(P))` — the lane's base word takes the
+swizzle ONCE at runtime and every per-fragment row term stays a compile-time constant.
+Without linearity each store would need a runtime XOR and the immediates would be gone.
+The address arithmetic composes with `^` and never with `+`: under the swizzle a slot bit
+can share a row bit with the base, which the pre-swizzle layout's disjointness ruled out.
+
+<a id="cta-box-first"></a>
+## The derivation is CTA-BOX-FIRST
+
+`warps_per_sm` splits as `ctas_per_sm × warps_per_cta` (Blake, 2026-08-29).
+`warps_per_cta` is a COMPILE-TIME axis with the two-value set `{8, 4}` — launch shapes
+`(1, 8)` and `(2, 4)` — and the member set is `f(D, leaves_per_warp, warps_per_cta)` with
+THE CTA'S BOX as the unit: the box a CTA owns is `leaves_per_warp × warps_per_cta` leaves,
+balanced over `D`, and each side carves THAT box among the CTA's own warps. `kWarps` never
+enters a shape; it fixes which box the shape law is run on.
+`CarryGeom::sb_matches_arch_law()` asserts that at `warps_per_cta == warps_per_sm` the
+arm's set IS the SM-grain set, so the two derivations cannot drift.
+
+**`(1, 8)` DOES NOT FIT sm_86, and the number is the panel ring.** The readout law ties
+the batch tile to the warps (`kWarps * kMmaN == C`), so eight warps means `C = 64`, and
+`panel_bytes = 2 * kWarps * C * LdS * 2` is therefore QUADRATIC in the warp count:
+81,920 B at `(1, 8)` against 20,480 B at `(2, 4)`. With the readout block and two V slots
+the arm asks **117,760 B against sm_86's 99,328 B per-CTA maximum** and the body's own
+`static_assert(design::smem_fits(bytes))` refuses it at compile time. It fits sm_90's
+227 KB, so `(1, 8)` is the design target the panel law has to be re-shaped for, not a row
+that can simply be added to the arm table.
+
 **The grain this branch compiles.** `warps_per_sm` is eight — one CTA per SM, R15 — but
 these arms compile `kWarps = 4`, so the CTA box is HALF the SM box (`BC = 128` of the SM's
 256 leaves) and the set is the same law run on the half. The two sets are NOT the same

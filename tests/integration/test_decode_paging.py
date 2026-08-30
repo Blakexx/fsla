@@ -136,10 +136,16 @@ def _fixture(widths, *, seed, support=1.0, offset=0.0, B=2, H=3):
 
 
 def _f32(fixture):
+    """The operands in fp32 -- EXCEPT `g_write`, which the seam refuses rather than casts.
+
+    `g_write` is a ROUTING FACTOR: the producer emits it in the operand dtype and the
+    decode seam refuses any other, so a fixture that hands it fp32 is testing a call no
+    producer can make (G2d). The rest stay fp32 on purpose -- narrowing them IS the
+    seam's job and this fixture is what proves it still happens."""
     return (fixture["v"].float(),
             tuple(t.float() for t in fixture["read"]),
             tuple(t.float() for t in fixture["write"]),
-            fixture["g_write"].float())
+            fixture["g_write"].to(torch.bfloat16))
 
 
 def _config(widths, fixture):

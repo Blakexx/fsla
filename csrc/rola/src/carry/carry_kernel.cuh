@@ -705,25 +705,30 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     if (nbr > 0) produce_batch(std::false_type{}, pR, panR, rlist, 0, nr);
     rola::uniform_switch<G::kNA>(geo.w.assign, [&](auto Ac) {
       constexpr int A = decltype(Ac)::value;
-      const int lrow = baseW ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3));
-      const uint32_t pubC = smem_addr(xch) + (uint32_t)(lrow * LdX * 2 + (lane >> 2) * 2);
-      const uint32_t pubM = smem_addr(xch) + (uint32_t)(lrow * LdX * 2 + kDv * 2);
+      //: THE SWIZZLE IS LINEAR, so the lane's base takes it ONCE and every fragment's row
+      //: term stays a compile-time constant. -- see docs/internals/carry/geom.md#row-swizzle
+      const int lrow = sb_swizzle(baseW ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3)));
+      const uint32_t xchB = smem_addr(xch);
+      const uint32_t pubCol = (uint32_t)((lane >> 2) * 2);
       static_for<kNL>([&](auto Jc) {
         constexpr int j = decltype(Jc)::value;
         static_for<4>([&](auto Ec) {
           constexpr int e = decltype(Ec)::value;
-          constexpr int dl = sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN + (e & 1));
+          constexpr int dl = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN + (e & 1)));
           static_for<MCH>([&](auto Mc) {
             constexpr int m = decltype(Mc)::value;
             constexpr int gr = 2 * m + (e >> 1);
-            store_shared_u16(pubC + (uint32_t)(dl * LdX * 2 + gr * 16), hi_bf16(st[m][j][e]));
+            store_shared_u16(
+                xchB + (uint32_t)((lrow ^ dl) * LdX * 2) + pubCol + (uint32_t)(gr * 16),
+                hi_bf16(st[m][j][e]));
           });
         });
         if ((lane >> 2) == 0) {
           static_for<2>([&](auto Ec) {
             constexpr int e = decltype(Ec)::value;
-            constexpr int dl = sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN + e);
-            store_shared_u16(pubM + (uint32_t)(dl * LdX * 2), hi_bf16(mass_st[j][e]));
+            constexpr int dl = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN + e));
+            store_shared_u16(xchB + (uint32_t)((lrow ^ dl) * LdX * 2 + kDv * 2),
+                             hi_bf16(mass_st[j][e]));
           });
         }
       });
@@ -732,20 +737,17 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 
     rola::uniform_switch<G::kNA>(geo.r.assign, [&](auto Ac) {
       constexpr int A = decltype(Ac)::value;
-      constexpr int nx = sb_scatter_of(D, BC, G::kStreams, A, 1);
-      const uint32_t pullC =
-          smem_addr(xch) + (uint32_t)((baseR ^ sb_scatter_of(D, BC, G::kStreams, A, rT)) * LdX * 2);
-      const uint32_t pullM =
-          smem_addr(xch)
-          + (uint32_t)((baseR ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3))) * LdX * 2
-                       + kDv * 2);
+      constexpr int nx = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, 1));
+      const uint32_t xchB = smem_addr(xch);
+      const int pullRow = sb_swizzle(baseR ^ sb_scatter_of(D, BC, G::kStreams, A, rT));
+      const int massRow = sb_swizzle(baseR ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3)));
       static_for<kDw>([&](auto Kc) {
         constexpr int kk = decltype(Kc)::value;
-        constexpr int rk = sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK);
+        constexpr int rk = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK));
         static_for<MCH>([&](auto Mc) {
           constexpr int m = decltype(Mc)::value;
-          load_frag_t(sa[kk][m],
-                      pullC + (uint32_t)(rk * LdX * 2) + (uint32_t)(((2 * m) | cT) * 16));
+          load_frag_t(sa[kk][m], xchB + (uint32_t)((pullRow ^ rk) * LdX * 2)
+                                     + (uint32_t)(((2 * m) | cT) * 16));
         });
         //: the mass's two pairs, a row apart, at the reader's own segment. -- see docs/internals/carry/carry_kernel.md#msw
         ma[kk][0] = 0u;
@@ -753,13 +755,16 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         ma[kk][2] = 0u;
         ma[kk][3] = 0u;
         if ((lane >> 2) == 0) {
-          constexpr int rh = sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK + 8);
-          const uint32_t bLo = pullM + (uint32_t)(rk * LdX * 2);
-          const uint32_t bHi = pullM + (uint32_t)(rh * LdX * 2);
-          ma[kk][0] = (uint32_t)load_shared_u16(bLo)
-                      | ((uint32_t)load_shared_u16(bLo + (uint32_t)(nx * LdX * 2)) << 16);
-          ma[kk][2] = (uint32_t)load_shared_u16(bHi)
-                      | ((uint32_t)load_shared_u16(bHi + (uint32_t)(nx * LdX * 2)) << 16);
+          constexpr int rh = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK + 8));
+          const uint32_t mc = (uint32_t)(kDv * 2);
+          ma[kk][0] =
+              (uint32_t)load_shared_u16(xchB + (uint32_t)((massRow ^ rk) * LdX * 2) + mc)
+              | ((uint32_t)load_shared_u16(xchB + (uint32_t)((massRow ^ rk ^ nx) * LdX * 2) + mc)
+                 << 16);
+          ma[kk][2] =
+              (uint32_t)load_shared_u16(xchB + (uint32_t)((massRow ^ rh) * LdX * 2) + mc)
+              | ((uint32_t)load_shared_u16(xchB + (uint32_t)((massRow ^ rh ^ nx) * LdX * 2) + mc)
+                 << 16);
         }
       });
     });
@@ -872,33 +877,39 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: THE STORE-BACK IS THE PULL RUN BACKWARDS: the reader writes each A fragment -- see docs/internals/carry/carry_kernel.md#store-back
     rola::uniform_switch<G::kNA>(geo.r.assign, [&](auto Ac) {
       constexpr int A = decltype(Ac)::value;
-      constexpr int nx = sb_scatter_of(D, BC, G::kStreams, A, 1);
-      const int mrow = baseR ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3));
-      const uint32_t sbC = smem_addr(xch) + (uint32_t)(mrow * LdX * 2 + (lane >> 2) * 2);
-      const uint32_t pullM = smem_addr(xch) + (uint32_t)(mrow * LdX * 2 + kDv * 2);
+      constexpr int nx = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, 1));
+      const int mrow = sb_swizzle(baseR ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3)));
+      const uint32_t xchB = smem_addr(xch);
+      const uint32_t sbCol = (uint32_t)((lane >> 2) * 2);
       static_for<kDw>([&](auto Kc) {
         constexpr int kk = decltype(Kc)::value;
         static_for<4>([&](auto Ic) {
           constexpr int i = decltype(Ic)::value;
-          constexpr int rr = sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK + (i >> 1) * 8);
-          const uint32_t a0 = sbC + (uint32_t)(rr * LdX * 2);
+          constexpr int rr =
+              sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK + (i >> 1) * 8));
+          const uint32_t a0 = xchB + (uint32_t)((mrow ^ rr) * LdX * 2) + sbCol;
           static_for<MCH>([&](auto Mc) {
             constexpr int m = decltype(Mc)::value;
             constexpr int gr = 2 * m + (i & 1);
             const uint32_t a = a0 + (uint32_t)(gr * 16);
             store_shared_u16(a, (uint16_t)(sa[kk][m][i] & 0xFFFFu));
-            store_shared_u16(a + (uint32_t)(nx * LdX * 2), (uint16_t)(sa[kk][m][i] >> 16));
+            store_shared_u16(
+                xchB + (uint32_t)((mrow ^ rr ^ nx) * LdX * 2) + sbCol + (uint32_t)(gr * 16),
+                (uint16_t)(sa[kk][m][i] >> 16));
           });
         });
         if ((lane >> 2) == 0) {
-          constexpr int rk = sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK);
-          constexpr int rh = sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK + 8);
-          const uint32_t bLo = pullM + (uint32_t)(rk * LdX * 2);
-          const uint32_t bHi = pullM + (uint32_t)(rh * LdX * 2);
-          store_shared_u16(bLo, (uint16_t)(ma[kk][0] & 0xFFFFu));
-          store_shared_u16(bLo + (uint32_t)(nx * LdX * 2), (uint16_t)(ma[kk][0] >> 16));
-          store_shared_u16(bHi, (uint16_t)(ma[kk][2] & 0xFFFFu));
-          store_shared_u16(bHi + (uint32_t)(nx * LdX * 2), (uint16_t)(ma[kk][2] >> 16));
+          constexpr int rk = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK));
+          constexpr int rh = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK + 8));
+          const uint32_t mc = (uint32_t)(kDv * 2);
+          store_shared_u16(xchB + (uint32_t)((mrow ^ rk) * LdX * 2) + mc,
+                           (uint16_t)(ma[kk][0] & 0xFFFFu));
+          store_shared_u16(xchB + (uint32_t)((mrow ^ rk ^ nx) * LdX * 2) + mc,
+                           (uint16_t)(ma[kk][0] >> 16));
+          store_shared_u16(xchB + (uint32_t)((mrow ^ rh) * LdX * 2) + mc,
+                           (uint16_t)(ma[kk][2] & 0xFFFFu));
+          store_shared_u16(xchB + (uint32_t)((mrow ^ rh ^ nx) * LdX * 2) + mc,
+                           (uint16_t)(ma[kk][2] >> 16));
         }
       });
     });
@@ -906,17 +917,13 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: THE WRITER PULLS IN ITS OWN LAYOUT.  Its eight slots of one n-tile are eight -- see docs/internals/carry/carry_kernel.md#writer-pull
     rola::uniform_switch<G::kNA>(geo.w.assign, [&](auto Ac) {
       constexpr int A = decltype(Ac)::value;
-      const uint32_t retC =
-          smem_addr(xch)
-          + (uint32_t)((baseW ^ sb_scatter_of(D, BC, G::kStreams, A, lane & 7)) * LdX * 2);
-      const uint32_t pubM =
-          smem_addr(xch)
-          + (uint32_t)((baseW ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3))) * LdX * 2
-                       + kDv * 2);
+      const uint32_t xchB = smem_addr(xch);
+      const int retRow = sb_swizzle(baseW ^ sb_scatter_of(D, BC, G::kStreams, A, lane & 7));
+      const int pubRow = sb_swizzle(baseW ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3)));
       static_for<kNL>([&](auto Jc) {
         constexpr int j = decltype(Jc)::value;
-        constexpr int dj = sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN);
-        const uint32_t a0 = retC + (uint32_t)(dj * LdX * 2);
+        constexpr int dj = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN));
+        const uint32_t a0 = xchB + (uint32_t)((retRow ^ dj) * LdX * 2);
         static_for<MCH / 2>([&](auto Tc) {
           constexpr int t = decltype(Tc)::value;
           uint32_t r4[4];
@@ -928,10 +935,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         });
         mhi[j] = 0u;
         if ((lane >> 2) == 0) {
-          constexpr int dl0 = sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN);
-          constexpr int dl1 = sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN + 1);
-          const uint32_t m0 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl0 * LdX * 2));
-          const uint32_t m1 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl1 * LdX * 2));
+          constexpr int dl0 = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN));
+          constexpr int dl1 = sb_swizzle(sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN + 1));
+          const uint32_t m0 =
+              (uint32_t)load_shared_u16(xchB + (uint32_t)((pubRow ^ dl0) * LdX * 2 + kDv * 2));
+          const uint32_t m1 =
+              (uint32_t)load_shared_u16(xchB + (uint32_t)((pubRow ^ dl1) * LdX * 2 + kDv * 2));
           mhi[j] = m0 | (m1 << 16);
         }
       });
