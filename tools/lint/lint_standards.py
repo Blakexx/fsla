@@ -561,6 +561,145 @@ def check_no_doc_defines_an_anchor_twice() -> list[str]:
     return findings
 
 
+#: AN IDENTIFIER, as a mirror page writes one in code font: a C++ or Python name, with
+#: optional `::`/`.` qualification and an optional call's parentheses. A page's other
+#: backticked spans -- a path, a flag, a number, a phrase, a type expression -- are not
+#: identifiers and are not checked, so what this rule reads is exactly the set of names a
+#: reader would go looking for in the source.
+_MIRROR_IDENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)*"
+                           r"(?:\(\))?$")
+
+#: The names that are not the source's to carry: language and library vocabulary a page
+#: legitimately writes in code font while describing what the code does. This is a
+#: VOCABULARY, not an allowlist of sites: it says what kind of token is not an
+#: identifier of this repository, never that a particular page may be stale.
+#: NOT AN IDENTIFIER OF THIS REPOSITORY, by its SHAPE: a CUDA runtime call, a PTX or
+#: intrinsic name, an architecture, an ncu counter, or a math symbol with a subscript
+#: (`z_k`, `tau_m`, `R_0`) -- the vocabulary a page writes in code font while describing
+#: what the code does. These are structural forms, not an allowlist of sites: none of
+#: them says that a particular page may be stale.
+_MIRROR_FOREIGN = re.compile(
+    r"^(cuda[A-Z]\w*|CU\w+|__\w+|sm_\d+|tcgen05\w*|wgmma\w*|cp_async\w*"
+    r"|\w*__\w+\.\w+|[A-Za-z]{1,4}_[A-Za-z0-9]{1,3})$")
+
+_MIRROR_NOT_OURS = frozenset((
+    "int", "float", "double", "bool", "void", "char", "unsigned", "long", "short",
+    "size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t",
+    "int32_t", "int64_t", "nullptr", "true", "false", "const", "constexpr", "static",
+    "inline", "template", "typename", "class", "struct", "enum", "union", "namespace",
+    "using", "return", "if", "else", "for", "while", "do", "switch", "case", "default",
+    "break", "continue", "new", "delete", "this", "auto", "public", "private", "protected",
+    "__global__", "__device__", "__host__", "__shared__", "__restrict__", "__syncthreads",
+    "__syncwarp", "__ldg", "__trap", "threadIdx", "blockIdx", "blockDim", "gridDim",
+    "warpSize", "torch", "tensor", "Tensor", "None", "True", "False", "self", "def",
+    "import", "from", "lambda", "dict", "list", "tuple", "set", "str", "bytes", "float32",
+    "float64", "bfloat16", "int32", "uint8", "cuda", "cpu", "num_warps", "num_stages",
+    "static_for", "BOOL_SWITCH", "math_pipe_throttle", "long_scoreboard", "_RS", "_SS",
+    "ldmatrix", "stmatrix", "mma", "wgmma"
+))
+
+
+def _repo_identifier_text() -> str:
+    """Every first-party source, test, tool and build file, as one blob.
+
+    A mirror page legitimately names identifiers that live in OTHER files: the entry its
+    header declares, the tool that writes its generated input, the lint that enforces its
+    law. What no page may name is an identifier that exists NOWHERE -- that is the name
+    that left with its mechanism.
+    """
+    global _REPO_TEXT
+    if _REPO_TEXT is None:
+        chunks = []
+        for root, suffixes in ((_DOCS_SRC, _DOCS_SOURCE_SUFFIXES),
+                               (ROOT / "rola", (".py",)), (ROOT / "tools", (".py", ".sh")),
+                               (ROOT / "tests", (".py",)), (ROOT / "benchmarks", (".py", ".json"))):
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*"):
+                if (path.suffix in suffixes and "third_party" not in path.parts
+                        and "__pycache__" not in path.parts):
+                    chunks.append(path.read_text(errors="ignore"))
+        chunks.append((ROOT / "setup.py").read_text())
+        _REPO_TEXT = "\n".join(chunks)
+    return _REPO_TEXT
+
+
+_REPO_TEXT: str | None = None
+
+
+def _mirror_pairs() -> list[tuple[Path, list[Path]]]:
+    """``(mirror page, the sources it mirrors)`` -- the inverse of `_docs_mirror_for`."""
+    pages: dict[Path, list[Path]] = {}
+    for source in _docs_sources():
+        pages.setdefault(_docs_mirror_for(source), []).append(source)
+    return sorted((doc, sources) for doc, sources in pages.items() if doc.is_file())
+
+
+#: A DECLARED ABSENCE: `<!-- ABSENT: name other_name -->`. A page may name what is GONE --
+#: an entry that was unbound, a mechanism that retired -- and the absence is often the
+#: fact worth keeping. What it may not do is name it by accident, so the names are
+#: declared on one line beside the prose that explains them, and the declaration is
+#: checked in BOTH directions: a declared-absent name that the tree DOES carry is a
+#: finding too, because the passage is then telling a reader the opposite of the truth.
+_MIRROR_ABSENT = re.compile(r"<!--\s*ABSENT:\s*([^>]*?)\s*-->")
+
+
+def check_mirror_pages_name_only_live_identifiers() -> list[str]:
+    """Every identifier a mirror page names in code font EXISTS in its source file.
+
+    A mirror page can outlive the mechanism it documents: the branch that replaced a
+    fan-in ring was forfeited, the ring was tombstoned, and the page went on describing
+    it in full. Nothing in the mirror contract noticed, because the page still existed,
+    still resolved its anchors and still sat at the right path -- every check was about
+    the page's SHAPE and none about whether its subject was still there.
+
+    The check is textual and deliberately weak in one direction only: a name the source
+    does not contain ANYWHERE is a finding, and a name it does contain is accepted
+    wherever it appears. That cannot catch a page describing a live name's dead
+    BEHAVIOUR, but it catches every name that left with its mechanism, which is the
+    failure that was actually paid for.
+    """
+    findings = []
+    for doc, sources in _mirror_pairs():
+        text = "\n".join(source.read_text() for source in sources)
+        page = doc.read_text()
+        absent = {name for line in _MIRROR_ABSENT.findall(page) for name in line.split()}
+        for name in sorted(absent):
+            if re.search(rf"\b{re.escape(name)}\b", _repo_identifier_text()):
+                findings.append(
+                    f"{doc.relative_to(ROOT)}: declares `{name}` ABSENT, and the tree "
+                    f"carries it. The passage tells a reader the opposite of the truth: "
+                    f"drop the name from the declaration, or say what it is now.")
+        seen: set[str] = set()
+        for lineno, line in enumerate(page.splitlines(), 1):
+            if line.lstrip().startswith(("```", "    ")):
+                continue
+            for span in re.findall(r"`([^`\n]{1,80})`", line):
+                match = _MIRROR_IDENT.match(span)
+                if not match:
+                    continue
+                name = match.group(1)
+                if name in _MIRROR_NOT_OURS or name in seen or len(name) < 3:
+                    continue
+                if name in absent:
+                    continue
+                if _MIRROR_FOREIGN.match(span) or _MIRROR_FOREIGN.match(name):
+                    continue
+                if re.search(rf"\b{re.escape(name)}\b", text):
+                    continue
+                if re.search(rf"\b{re.escape(name)}\b", _repo_identifier_text()):
+                    continue
+                seen.add(name)
+                findings.append(
+                    f"{doc.relative_to(ROOT)}:{lineno}: names `{span}` in code font, and "
+                    f"{', '.join(str(s.relative_to(ROOT)) for s in sources)} contains no "
+                    f"`{name}`. A mirror page that outlives its mechanism is a page a "
+                    f"reader trusts and the code no longer honours: delete the passage, "
+                    f"or say in prose that the mechanism is gone and where it went "
+                    f"(docs/internals/DELETIONS.md).")
+    return findings
+
+
 def check_docs_mirror() -> list[str]:
     """The whole `docs/internals/` mirror contract, ported from
     `tests/unit/test_docs_mirror.py` (deleted; RULED 2026-08-29)."""
@@ -570,6 +709,7 @@ def check_docs_mirror() -> list[str]:
     findings += check_every_doc_reference_resolves()
     findings += check_hazard_stubs_cite_their_own_slug()
     findings += check_no_doc_defines_an_anchor_twice()
+    findings += check_mirror_pages_name_only_live_identifiers()
     return findings
 
 

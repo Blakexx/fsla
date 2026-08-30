@@ -51,6 +51,7 @@ store is `add_value`, which is a bf16 device atomic on the closed-world arch set
 
 <a id="provenance"></a>1. Where these came from, and what that constrains
 
+<!-- ABSENT: _production_fwd_kernel _production_bwd_kernel -->
 These four were Triton (`rola/routing/entmax/production.py`'s
 `_production_fwd_kernel`, `_production_bwd_kernel` and their softmax pair) until
 P73 S5. The port is why `rola/` now imports no Triton, why `pyproject.toml` no
@@ -98,7 +99,7 @@ reduction, not `width`:
   amplitude — the autograd contract
   `test_production_factor_empty_rows_preserve_autograd_contract` pins.
 
-The mask pointer is NULL on every plan-level path (`_launch_factor_into` and the
+The mask pointer is NULL on every plan-level path (`_launch_factor_backward_into_logits` and the
 batched entry), and the count reduction is skipped there — one uniform branch on a
 pointer, not a codegen axis, because a mask arm would double the instantiation
 matrix to buy a prologue.

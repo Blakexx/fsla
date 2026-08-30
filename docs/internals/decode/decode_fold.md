@@ -80,6 +80,7 @@ and the decode arm is defined on the simplex, so that level is divided by its ro
 step's `normalize` argument and `RouteFactors.read_simplex`). The write side is never
 normalized, whatever the read side's flags say.
 
+<!-- ABSENT: reduce_kernel -->
 A sum has an ORDER, and floating-point addition is not associative. The torch reduction
 this replaced had whatever order that release's `reduce_kernel` chose — an order no gate can
 hold anything to, because it is not written down anywhere. This one is:

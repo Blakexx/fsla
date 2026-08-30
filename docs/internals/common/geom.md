@@ -144,7 +144,7 @@ is generated from the box the CTA actually owns for exactly that reason.
 
 `leaves_per_warp(DV) = 2048 / DV` is the register law: 32 leaves of state at `DV = 64`,
 16 at `DV = 128`. Its `log2` is split BALANCED over the `D` levels, remainder
-innermost-first — `warp_span_bits` — and that is the whole of `sv(l)`. At `DV = 64`:
+innermost-first — `owner_span_bits` — and that is the whole of `sv(l)`. At `DV = 64`:
 
 | `D` | `sv` | `shift` |
 |---|---|---|

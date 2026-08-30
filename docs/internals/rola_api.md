@@ -1,3 +1,4 @@
+<!-- ABSENT: flash_api carry_owner_rows carry_backward_stamp rola_consumer_forward rola_consumer_occupancy rola_consumer_check_arch_table rola_consumer_smem_bytes rola_sm_shared_bytes page_plan_abi_version page_plan_status_codes page_plan_workspace_bytes rola_page_plan_prepare rola_page_plan_finalize rola_page_plan_publish rola_page_admit_mask rola_page_cache_reset -->
 # `csrc/rola/rola_api.cpp` — the extension's Python binding
 
 The only translation unit that knows pybind exists. One `PYBIND11_MODULE`, four

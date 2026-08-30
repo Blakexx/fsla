@@ -118,6 +118,7 @@ nothing.
 
 ## Where the mechanism was proven
 
+<!-- ABSENT: facts_launch -->
 The ballot grain, the token-minor layout and the past-the-end lane's dead vote:
 `k35-final`'s `csrc/rola/src/facts/facts_kernel.cuh` (`chunk_facts_tables`) and
 `facts_launch.cuh`, which are never edited again. What is NEW here is that the vote is

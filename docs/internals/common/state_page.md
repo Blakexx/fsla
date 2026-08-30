@@ -33,8 +33,8 @@ alignment question K50 left open (no padding).
 ## <a id="load"></a>`load`: the page into its SMEM image
 
 The destination is the body's `[16][LDO]` fp32 staging block with the mass in column
-`DV` -- the same image the fp32 sweep produced, so `page_regs` and the backward's
-`slab` indexing are untouched by this change.
+`DV`: the split planes are rejoined on the way in, so a consumer of the staging block
+indexes fp32 rows and never learns that the storage is split.
 
 `with_lo` is the ACTIVITY fact, CTA-uniform per atom: an atom the call writes is
 loaded from both planes and rejoined exactly; one it only reads is loaded `hi || 0`.

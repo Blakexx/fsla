@@ -1,3 +1,4 @@
+<!-- ABSENT: K31_R0_ABI_RIPPLE_SPEC cum intra_panel kPanelMaxExponent GLA_MASS_DECAY_SPEC MmaPrec PREC PANEL_MAX_EXPONENT -->
 # `csrc/rola/src/decode/decode.cuh` + `csrc/rola/src/decode/decode.cu` — the `T = 1` decode path
 
 This doc covers **two** source files, because they are one component: the header
@@ -490,7 +491,7 @@ prefix-sum structure over the leaf or row space left to consult here at all — 
 count the tiled consumer's `cum`/coarse-index apparatus existed to answer is not a
 question this design asks. What replaces it is the owner-list's own realized count `n_o`
 per (list, level) — a single small array the block-scan in
-[`build_owner_lists`](decode_lattice.md#the-owner-lists) already produces, consulted
+[`compact_owner_lists`](decode_lattice.md#the-owner-lists) already produces, consulted
 directly at unit-resolve time rather than through a second index over it.
 
 ## <a id="splitk-workspace"></a>13. The split-K workspace
@@ -1115,7 +1116,7 @@ IT RETIRES BEFORE THE ADMISSION, and that ordering is load-bearing rather than
 incidental: the table test and the pool claim read a page table the last-arriving
 LIVE segment folds into, so a retired segment must not be inside that window at all.
 docs/internals/decode/decode.md#retirement
-ONE SHARED READ AND ONE COMPARE. `build_term_layout` folds the maximum by `atomicMax`
+ONE SHARED READ AND ONE COMPARE. `publish_term_layout` folds the maximum by `atomicMax`
 inside its own barrier, so learning it costs neither a second block synchronisation
 (which the dense cell, where nothing retires, measured at ~1 %) nor `D + 1` redundant
 reads per thread. The test is written as the COMPARE rather than as `seg >= n_live`
