@@ -111,24 +111,14 @@ decode_step_kernel(DecodeParams p) {
 
   // ---- THE FOLD: every per-token operand, widened and staged, by this CTA ------
   //: TWO BARRIERS FOR THE WHOLE PROLOGUE. -- see docs/internals/decode/decode.md#decode-step-kernel-note-l151
-  if (p.levels_bf16) {
-    fold_row_sums<__nv_bfloat16>(p, b, h, p.read, p.normalize, s_sum);
-  } else {
-    fold_row_sums<float>(p, b, h, p.read, p.normalize, s_sum);
-  }
+  //: THE OPERANDS ARE bf16, ONE FORM (K50 "THE LAST THREE", item 3: "we are bf16
+  //: everything").  The dual operand-dtype path -- a float arm of every fold, selected
+  //: by three runtime flags -- is deleted; the seam refuses a float operand by name.
+  fold_row_sums<__nv_bfloat16>(p, b, h, p.read, p.normalize, s_sum);
   __syncthreads();
-  if (p.levels_bf16) {
-    fold_rows<__nv_bfloat16>(p, b, h, p.read, p.normalize, s_sum, sa_r);
-    fold_rows<__nv_bfloat16>(p, b, h, p.write, nullptr, s_sum, sa_w);
-  } else {
-    fold_rows<float>(p, b, h, p.read, p.normalize, s_sum, sa_r);
-    fold_rows<float>(p, b, h, p.write, nullptr, s_sum, sa_w);
-  }
-  if (p.v_bf16) {
-    fold_value<__nv_bfloat16>(p, b, h, DV, v_tok);
-  } else {
-    fold_value<float>(p, b, h, DV, v_tok);
-  }
+  fold_rows<__nv_bfloat16>(p, b, h, p.read, p.normalize, s_sum, sa_r);
+  fold_rows<__nv_bfloat16>(p, b, h, p.write, nullptr, s_sum, sa_w);
+  fold_value<__nv_bfloat16>(p, b, h, DV, v_tok);
   if (DECAY) {
     for (int l = 0; l < D; ++l) {
       const int width = p.level_width[l];
@@ -141,7 +131,7 @@ decode_step_kernel(DecodeParams p) {
 
   //: The two per-token row scales. At `T = 1` there is no owner rectangle, so -- see docs/internals/decode/decode.md#sr
   const float sr = 1.0f;  // global fixes g_read := 1 (raw is dead)
-  const float sw = p.g_bf16 ? fold_gain<__nv_bfloat16>(p, b, h) : fold_gain<float>(p, b, h);
+  const float sw = fold_gain<__nv_bfloat16>(p, b, h);
   __syncthreads();
 
   // ---- THE FACTOR TABLES ------------------------------------------------------
@@ -590,11 +580,10 @@ void check_i32(const at::Tensor& t, const char* name) {
   TORCH_CHECK(t.is_contiguous(), name, " must be contiguous");
 }
 
-//: ONE FLOATING AXIS OVER THE CLOSED SET THE PRODUCER AND THE VALUE PROJECTION EMIT: an -- see docs/internals/decode/decode.md#isbf16
-int is_bf16(at::ScalarType dtype, const char* what) {
-  TORCH_CHECK(dtype == at::kFloat || dtype == at::kBFloat16, what,
-              " must be float32 or bfloat16, got ", dtype);
-  return dtype == at::kBFloat16 ? 1 : 0;
+//: THE OPERANDS ARE bf16, ONE FORM (K50): the closed set is a single member now, so
+//: this is a refusal and not a selection. -- see docs/internals/decode/decode.md#isbf16
+void require_bf16(at::ScalarType dtype, const char* what) {
+  TORCH_CHECK(dtype == at::kBFloat16, what, " must be bfloat16, got ", dtype);
 }
 
 //: The `[B, 1, H, W] -> [B * H, W]` fold as an ADDRESS. `T != 1` is refused -- the fold -- see docs/internals/decode/decode.md#spanof
@@ -821,9 +810,9 @@ at::Tensor rola_decode_forward(
   }
   p.g_write = detail::scalar_span_of(g_write, BH, "g_write");
   p.v = detail::span_of(v, BH, d_v, "v");
-  p.levels_bf16 = detail::is_bf16(level_dtype, "the routing levels");
-  p.g_bf16 = detail::is_bf16(g_write.scalar_type(), "g_write");
-  p.v_bf16 = detail::is_bf16(v.scalar_type(), "v");
+  detail::require_bf16(level_dtype, "the routing levels");
+  detail::require_bf16(g_write.scalar_type(), "g_write");
+  detail::require_bf16(v.scalar_type(), "v");
 
   TORCH_CHECK(n_split >= 1, "n_split must be >= 1, got ", n_split);
   TORCH_CHECK(ws.dim() == 3 && ws.size(0) == BH && ws.size(1) == n_split && ws.size(2) == cols,

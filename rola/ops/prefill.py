@@ -123,9 +123,12 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     if state_out is None:
         state_out = carry_ops.state_plane(widths, pread.shape[0], value.shape[-1],
                                           device=pread.device)
+    #: `k`/`m` do not reach the forward seam any more (K50): the spans are derived from
+    #: `(widths, modes)` into the addressing block. They stay in this signature because
+    #: the REVERSE family's arms are still keyed by the compile-time box.
     num, den = ext.carry_forward_inter(
-        pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
-        int(chunk), carry_ops.LEAF_SPLIT, intra_ops.pack_modes(tuple(modes)), state_in,
+        pread, pwrite, gwrite, value, list(widths), int(window),
+        int(chunk), int(carry_ops.CARVED), intra_ops.pack_modes(tuple(modes)), state_in,
         state_out, page_table, atom_bits)
     #: SAME STREAM, SAME BUFFERS.  The intra REDs into `num`/`den`; the stream
     #: order is the only synchronization either kernel needs, and there is no
@@ -161,8 +164,8 @@ class _Prefill(torch.autograd.Function):
         state_out = carry_ops.state_plane(widths, pread.shape[0], value.shape[-1],
                                           device=pread.device)
         num, den = ext.carry_forward_inter(
-            pread, pwrite, gwrite, value, list(widths), int(k), int(m), int(window),
-            int(chunk), carry_ops.LEAF_SPLIT, intra_ops.pack_modes(tuple(modes)), state_in,
+            pread, pwrite, gwrite, value, list(widths), int(window),
+            int(chunk), int(carry_ops.CARVED), intra_ops.pack_modes(tuple(modes)), state_in,
             state_out, None)
         ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, num, den, D,
                           int(widths[0]), intra_ops.pack_modes(tuple(modes)), int(window))

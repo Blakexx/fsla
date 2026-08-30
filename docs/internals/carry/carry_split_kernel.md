@@ -365,3 +365,14 @@ THE EXIT STORES ONLY WRITTEN, PLANNED ATOMS (P80b), the carved body's predicate
 exactly (`carry_kernel.md#decltype-2`).  An atom this call does not write is not
 stored and an unplanned one is not addressed at all, which is what leaves a skipped
 slot carrying exactly what it held.
+
+<a id="byrank"></a>
+## The channel split mints in the CANONICAL order
+
+A level's field is `(n_l, run_shift(l))` off the addressing block: how many of that level's
+digits this thread's slot run varies over, and where they sit in the slot index. A level
+whose run does not vary inside the slice contributes ONE amplitude, which is the `n_l == 1`
+case of the same enumeration the carved body uses (`carry_kernel.md#expand-cases`). The
+clamp `n_l = clamp(SPT >> run_shift, 1, s_l)`, with the shift collapsed to zero when the
+level does not vary, is what keeps this body inside the admissible set;
+`tools/field_coverage.py` proves the clamp rather than asserting it.

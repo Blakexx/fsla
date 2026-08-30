@@ -16,10 +16,9 @@
 
 namespace rola::carry {
 
-template <int D, int B, int K, int M, int DV, int W, int C>
+template <int D, int DV, int W, int C>
 struct SplitGeom {
-  using BP = BoxPlan<D, B, K, M>;
-  static constexpr int BC = BP::kBC;
+  static constexpr int BC = kLeavesPerWarp * kWarps;
   //: THE VALUE WIDTH IS THIS ARM'S (K35 S3b), exactly as the carved body's is. -- see docs/internals/carry/carry_split_kernel.md#kdv
   static constexpr int kDv = DV;
   static constexpr int kCols = DV + 1;
@@ -53,27 +52,25 @@ struct SplitGeom {
 };
 
 //: THE SECOND LAUNCH BOUND: the CTA count this arm can actually reach, taken from -- see docs/internals/carry/carry_split_kernel.md#near-line-61
-template <int D, int B, int K, int M, int DV, int W, int C>
-constexpr int kSplitCtaTarget = SplitGeom<D, B, K, M, DV, W, C>::cta_target;
+template <int D, int DV, int W, int C>
+constexpr int kSplitCtaTarget = SplitGeom<D, DV, W, C>::cta_target;
 
 // ---------------------------------------------------------------- the kernel
 
-template <int D, int B, int K, int M, int DV, int W, int C>
-__global__ __launch_bounds__(kThreads, (kSplitCtaTarget<D, B, K, M, DV, W, C>)) void
-carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
-                   const __nv_bfloat16* __restrict__ pwrite,
-                   const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
-                   const uint32_t* __restrict__ rows, float* __restrict__ o,
-                   float* __restrict__ den, int L, int tok_words, int v_row_bytes,
-                   const float* __restrict__ s_in, float* __restrict__ s_out,
-                   const int32_t* __restrict__ page_tbl, const uint8_t* __restrict__ atom_bits) {
-  using BP = BoxPlan<D, B, K, M>;
-  using G = SplitGeom<D, B, K, M, DV, W, C>;
-  using PM = ProduceMap<D, B, K, M, C>;
+template <int D, int DV, int W, int C>
+__global__ __launch_bounds__(kThreads, (kSplitCtaTarget<D, DV, W, C>)) void carry_split_kernel(
+    const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __restrict__ pwrite,
+    const __nv_bfloat16* __restrict__ gwrite, const __nv_bfloat16* __restrict__ v,
+    const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den, int L,
+    int tok_words, int v_row_bytes, const float* __restrict__ s_in, float* __restrict__ s_out,
+    const int32_t* __restrict__ page_tbl, const uint8_t* __restrict__ atom_bits,
+    const CarryGeomRT geo) {
+  using G = SplitGeom<D, DV, W, C>;
+  using PM = SplitSlots<G::BC, C>;
   //: THE ARM'S VALUE WIDTH, named once so the body reads a geometry, not a constant.
   constexpr int kDv = G::kDv, kCols = G::kCols;
 
-  constexpr int BC = BP::kBC;
+  constexpr int BC = G::BC;
   constexpr int LdV = G::LdV, LdS = G::LdS, LdO = G::LdO;
   constexpr int MTOK = C / kMmaM;  // token m-tiles of a batch
   constexpr int NTOK = C / kMmaN;  // token n-tiles of a batch
@@ -94,7 +91,6 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   static_assert(PM::kRowThr * PM::SPT == BC, "the row's threads cover the box exactly");
   static_assert(PM::SPT % 2 == 0, "a thread publishes whole bf16 pairs");
   static_assert(LdS % 8 == 0 && LdV % 8 == 0, "an ldmatrix row address must be 16-byte aligned");
-  static_assert(BP::span_bits(D - 1) >= 1, "the innermost level supplies the adjacent pair");
   static_assert(W % kBallotLanes == 0 && kThreads % kBallotLanes == 0,
                 "a warp's tokens must be exactly one ballot word of the owner's row");
 
@@ -120,8 +116,8 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   const int heads = vRowElems / kDv;
   const __nv_bfloat16* const vPlane =
       pin_address(v + (long)(bh / heads) * L * vRowElems + (long)(bh % heads) * kDv);
-  const __nv_bfloat16* const pR = pin_address(pread + (long)bh * L * BP::kWtot);
-  const __nv_bfloat16* const pW = pin_address(pwrite + (long)bh * L * BP::kWtot);
+  const __nv_bfloat16* const pR = pin_address(pread + (long)bh * L * geo.wtot);
+  const __nv_bfloat16* const pW = pin_address(pwrite + (long)bh * L * geo.wtot);
   const __nv_bfloat16* const gW = pin_address(gwrite + (long)bh * L);
   float* const oPlane = pin_address(o + (long)bh * L * kDv);
   float* const denPlane = pin_address(den + (long)bh * L);
@@ -134,15 +130,15 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    const int o_l = (owner / BP::owner_div(l)) % BP::g(l);
-    runCol[l] = BP::col_base(l) + o_l * BP::s(l);
-    rowOff[l] = (uint32_t)(BP::row_prefix(l) + o_l) * rowBytes;
+    const int o_l = (owner / geo.owner_div[l]) % geo.grid[l];
+    runCol[l] = geo.col_base[l] + o_l * geo.span[l];
+    rowOff[l] = (uint32_t)(geo.r.row_prefix[l] + o_l) * rowBytes;
   });
   //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the side's -- see docs/internals/carry/carry_split_kernel.md#rowsr
-  const uint32_t* const rowsR =
-      pin_address(rows + (long)(2 * bh + 0) * (long)BP::kRows * (long)tok_words);
+  const int rowsBoth = geo.r.rows + geo.w.rows;
+  const uint32_t* const rowsR = pin_address(rows + (long)bh * (long)rowsBoth * (long)tok_words);
   const uint32_t* const rowsW =
-      pin_address(rows + (long)(2 * bh + 1) * (long)BP::kRows * (long)tok_words);
+      pin_address(rows + ((long)bh * (long)rowsBoth + (long)geo.r.rows) * (long)tok_words);
 
   // ---- lane-invariant operand addressing (the shipped idiom) ---------------
   const int lr = lane & 7, tl = lane >> 3;
@@ -203,13 +199,16 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     }
   };
   //: THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80) -- the same re-key the carved -- see docs/internals/carry/carry_split_kernel.md#atombh
-  const uint32_t atomBH = (uint32_t)bh * (uint32_t)(BP::kLeaves / kAtomLeaves);
+  const uint32_t atomBH = (uint32_t)bh * (uint32_t)(geo.leaves / kAtomLeaves);
+  auto canon_atom = [&](int a) {
+    return (uint32_t)geom_canon_leaf(geo, owner, a * kAtomLeaves) >> ilog2c(kAtomLeaves);
+  };
   //: THE ACTIVITY OF THIS OWNER'S ATOMS, READ ONCE AT THE PROLOGUE (P80b): the -- see docs/internals/carry/carry_split_kernel.md#activity
   static_assert(kAtoms <= 32, "one bit per atom per mask: an owner holds at most 32 atoms");
   uint32_t actRead = 0u, actWrite = 0u;
 #pragma unroll
   for (int a = 0; a < kAtoms; ++a) {
-    const uint8_t bits = atom_activity(atom_bits, atomBH + BP::canon_atom(owner, a));
+    const uint8_t bits = atom_activity(atom_bits, atomBH + canon_atom(a));
     actRead |= (uint32_t)((bits & kAtomRead) != 0u) << a;
     actWrite |= (uint32_t)((bits & kAtomWritten) != 0u) << a;
   }
@@ -229,7 +228,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
 #pragma unroll
     for (int a = 0; a < kAtoms; ++a) {
       //: AN ABSENT OR IDLE ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the load -- see docs/internals/carry/carry_split_kernel.md#slot
-      const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
+      const int32_t slot = page_slot(page_tbl, atomBH + canon_atom(a));
       if (slot < 0 || (((actRead | actWrite) >> a) & 1u) == 0u) continue;
       page_sweep(page_base(slot), [&](int sidx, uint32_t off) {
         so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
@@ -251,42 +250,45 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
 
   // ---- the produce's per-thread map ---------------------------------------
   constexpr int kRowThr = PM::kRowThr, SPT = PM::SPT;
+  static_assert(SPT == kLeavesPerWarp && ilog2c(SPT) == 5,
+                "the produce's field enumeration places exactly five slot bits");
   const int prow = tid / kRowThr;  // this thread's token row of the batch
   const int rIn = tid % kRowThr;   // its slot run within the box
   const int slot0 = rIn * SPT;
-  int lvCol[D];
+  //: THE CHANNEL SPLIT MINTS IN THE CANONICAL ORDER -- the innermost level lowest --
+  //: so a level's field is `(n_l, run_shift(l))` off the block: how many of that
+  //: level's digits this thread's slot run varies over, and where they sit in the
+  //: slot index.  A level whose run does not vary inside the slice contributes ONE
+  //: amplitude, which is the `n_l == 1` case of the same enumeration. -- see docs/internals/carry/carry_split_kernel.md#byrank
+  int lvCol[D], lvN[D], lvSh[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    lvCol[l] = runCol[l] + BP::run_of(l, slot0);
+    const int rs = geo.run_shift[l];
+    lvCol[l] = runCol[l] + ((slot0 >> rs) & (geo.span[l] - 1));
+    const int vary = rs >= ilog2c(SPT) ? 0 : (SPT >> rs);
+    lvN[l] = vary < 1 ? 1 : (vary > geo.span[l] ? geo.span[l] : vary);
+    lvSh[l] = lvN[l] == 1 ? 0 : rs;
   });
 
-  //: A DEAD ROW IS ZEROED AT THE NARROWEST FACTOR IT HAS. A padding row of a -- see docs/internals/carry/carry_split_kernel.md#write
+  //: A DEAD ROW IS ZEROED AT THE INNERMOST FACTOR, the one the branch already loads as
+  //: the accumulator's seed. -- see docs/internals/carry/carry_split_kernel.md#write
   auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
                      uint32_t gain, bool have) {
     constexpr bool WRITE = decltype(Wt)::value;
     //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES. -- see docs/internals/carry/carry_split_kernel.md#note-l317
     uint32_t acc[SPT / 2];
     {
-      unsigned short run[PM::n_l(D - 1)];
-      load_run<PM::n_l(D - 1)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[D - 1] * 2)));
-#pragma unroll
-      for (int j = 0; j < SPT; j += 2)
-        acc[j / 2] =
-            ((uint32_t)run[PM::idx_of(D - 1, j + 1)] << 16) | (uint32_t)run[PM::idx_of(D - 1, j)];
+      const void* const src = gather_ptr(base, tokOff + (uint32_t)(lvCol[D - 1] * 2));
+      field_dispatch<SPT>(ilog2c_dev(lvN[D - 1]), 0, [&](auto Kc, auto) {
+        field_seed<SPT, WRITE, decltype(Kc)::value>(acc, src, have);
+      });
     }
     static_for<D - 1>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      unsigned short run[PM::n_l(l)];
-      load_run<PM::n_l(l)>(run, gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2)));
-      if constexpr (!WRITE && l == 0) {
-        //: §6: PM::n_l(0) is compile-time (a constexpr static member function of a -- see docs/internals/carry/carry_split_kernel.md#knl0
-        constexpr int kNL0 = PM::n_l(0);
-#pragma unroll
-        for (int i = 0; i < kNL0; ++i) run[i] = have ? run[i] : (unsigned short)0;
-      }
-#pragma unroll
-      for (int j = 0; j < SPT; j += 2)
-        acc[j / 2] = mul_bf16x2(acc[j / 2], splat_bf16x2_bits(run[PM::idx_of(l, j)]));
+      const void* const src = gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2));
+      field_dispatch<SPT>(ilog2c_dev(lvN[l]), lvSh[l], [&](auto Kc, auto Sc) {
+        field_fold<SPT, decltype(Kc)::value, decltype(Sc)::value>(acc, src);
+      });
     });
     __nv_bfloat16* const row = dst + prow * LdS + slot0;
     if constexpr (WRITE) {
@@ -324,7 +326,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
   for (int win = 0; win < nWindows; ++win) {
     const int tok0 = win * W;
     const int wLen = (L - tok0) < W ? (L - tok0) : W;
-    const uint32_t winP = (uint32_t)tok0 * (uint32_t)(BP::kWtot * 2);
+    const uint32_t winP = (uint32_t)tok0 * (uint32_t)(geo.wtot * 2);
     const uint32_t winG = (uint32_t)tok0 * 2u;
     const uint32_t winV = (uint32_t)tok0 * (uint32_t)v_row_bytes;
     const uint32_t winO = (uint32_t)tok0 * (uint32_t)(kDv * (int)sizeof(float));
@@ -340,7 +342,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
         gain = have ? splat_bf16x2(*reinterpret_cast<const __nv_bfloat16*>(
                           gather_ptr(gW, winG + (uint32_t)tok * 2u)))
                     : 0u;
-      produce(Wt, base, dst, winP + (uint32_t)tok * (uint32_t)(BP::kWtot * 2), gain, have);
+      produce(Wt, base, dst, winP + (uint32_t)tok * (uint32_t)(geo.wtot * 2), gain, have);
     };
 
     // ---- the liveness pass: TWO lists, one per SIDE -----------------------
@@ -360,7 +362,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
         uint32_t mR = 0xFFFFFFFFu, mW = 0xFFFFFFFFu;
         static_for<D>([&](auto Lc) {
           constexpr int l = decltype(Lc)::value;
-          if constexpr (BP::row_g(l) > 0) {
+          if (geo.r.row_g[l] > 0) {
             mR &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsR, rowOff[l] + wordB));
             mW &= *reinterpret_cast<const uint32_t*>(gather_ptr(rowsW, rowOff[l] + wordB));
           }
@@ -574,7 +576,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
 #pragma unroll
     for (int a = 0; a < kAtoms; ++a) {
       //: THE EXIT STORES ONLY WRITTEN, PLANNED ATOMS.  An atom this call does not -- see docs/internals/carry/carry_split_kernel.md#slot-2
-      const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
+      const int32_t slot = page_slot(page_tbl, atomBH + canon_atom(a));
       if (slot < 0 || ((actWrite >> a) & 1u) == 0u) continue;
 #pragma unroll
       for (int p = 0; p < 2; ++p)

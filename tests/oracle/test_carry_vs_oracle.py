@@ -40,20 +40,58 @@ import gen_shards  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
-#: (widths, k, m, W) -- the built arms this suite drives.
-SMALL = ((64, 64), 4, 8, carry_ops.WINDOW_SMALL)  # N = 4096,  BC = 128, owners = 32
-FLAG = ((256, 256), 4, 8, carry_ops.WINDOW)       # N = 65536, BC = 128, owners = 512
-#: THE DEEP ARMS.  Both hold `BC = 128` at `N = 4096`; they differ from the flat
-#: arms only in how those 128 leaves cut into digits, and `DEEP4` is the topology
-#: whose atom rectangle cannot be one level -- `B = 8` is narrower than an atom, so
-#: an atom is level 3's whole span times two of level 2's digits.
-DEEP3 = ((16, 16, 16), 2, 16, carry_ops.WINDOW_SMALL)   # s = (2, 4, 16),   owners = 32
-DEEP4 = ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL)    # s = (2, 2, 4, 8), owners = 32
+#: (widths, W) -- THE CELLS this suite drives, and they are no longer arms.  `(k, m)`
+#: left the vocabulary at K50: the owner's box is a REGISTER shape the arm carries
+#: (`BC = 128`) and the spans that fill it are DERIVED from the topology, so a cell
+#: names a topology and a window and the seam derives the rest.
+SMALL = ((64, 64), carry_ops.WINDOW_SMALL)         # N = 4096,  BC = 128, owners = 32
+FLAG = ((256, 256), carry_ops.WINDOW)              # N = 65536, BC = 128, owners = 512
+#: THE DEEP CELLS.  Both hold `BC = 128` at `N = 4096`; they differ from the flat cells
+#: only in how those 128 leaves cut into digits.  THE SPANS ARE UNCHANGED by K50: the
+#: runtime rule (balance `BC` over the levels, SUBJECT TO the box being a union of whole
+#: atoms) reproduces the compile-time `BoxPlan`'s answer at every built topology, which
+#: is the parity proof `test_the_derived_box_reproduces_the_compile_time_law` asserts.
+DEEP3 = ((16, 16, 16), carry_ops.WINDOW_SMALL)     # s = (2, 4, 16),   owners = 32
+DEEP4 = ((8, 8, 8, 8), carry_ops.WINDOW_SMALL)     # s = (2, 2, 4, 8), owners = 32
 D_V = carry_ops.D_V
 #: the ALTERNATING declaration packed as the seam's word, at depth four.
 ALT4 = 102
 
-CARVE = carry_ops.LEAF_SPLIT
+#: THE BODY, which is all this seam still declares (K50: the carve is derived).
+CARVED = carry_ops.CARVED
+SPLIT = carry_ops.CHANNEL_SPLIT
+
+
+#: THE ADDRESSING BLOCK, DECODED.  `carry_ops.geometry` returns the SHIPPED derivation
+#: flat (one `int64` vector, so the seam needs no schema); this names its fields once so
+#: the law tests read the block instead of re-deriving it in Python -- which would only
+#: prove that two derivations agree with each other (`matching-the-naive-antipattern`).
+_SIDE_ARRAYS = ("level_at", "rank", "span", "grid", "grid_div", "shift", "row_g", "row_prefix")
+_SIDE_SCALARS = ("carves", "rows", "leaf", "streams")
+_BLK_ARRAYS = ("width", "span", "grid", "col_base", "run_shift", "owner_div", "weight")
+_BLK_SCALARS = ("wtot", "owners", "leaves", "local_bits", "min_width", "identity_map")
+_LVL = 4
+
+
+def block(widths, modes=0, ns=4, bc=carry_ops.BC):
+    g = list(carry_ops.geometry(widths, modes, bc, ns, ns))
+    D, i = g[0], 2
+    out = {"D": D, "bc": g[1]}
+    for name in _BLK_ARRAYS:
+        out[name] = g[i:i + D]
+        i += _LVL
+    for name in _BLK_SCALARS:
+        out[name] = g[i]
+        i += 1
+    for side in ("r", "w"):
+        for name in _SIDE_ARRAYS:
+            out[f"{side}_{name}"] = g[i:i + D]
+            i += _LVL
+        for name in _SIDE_SCALARS:
+            out[f"{side}_{name}"] = g[i]
+            i += 1
+    out["map"] = g[i:]
+    return out
 
 
 def _facts_plane(cell, levels):
@@ -66,34 +104,34 @@ def _facts_plane(cell, levels):
     return carry_ops.pack_side(levels).view(cell.B, cell.H, cell.T, -1)
 
 
-def run(cell, arm, carve, chunk=32, state_in=None, modes=0, body="split"):
-    """`modes` IS THE DECLARATION, and it is what selects the BODY -- so `run` ASSERTS
-    WHICH BODY IT GOT, off the device, before it measures anything.
+def run(cell, arm, split, chunk=32, state_in=None, modes=0, body="split"):
+    """THE BODY IS DECLARED, NOT INFERRED (K50) -- and `run` still ASSERTS WHICH BODY IT
+    GOT, off the device, before it measures anything.
 
-    `level_modes = 0` (DENSE_BOTH) reaches the channel-split body; a declaration with a
-    sparse level AND a stream count above one reaches the CARVED body, which is the only
-    body carrying the two-sided carve and its exchange (K35 F1).  Before F1 every cell
-    here ran with `modes = 0`, so the fp64 truth gated ONE of the two shipped bodies and
-    nothing said so -- the suite looked like full coverage because no cell named the body
-    it was exercising.  The stamp's `kXchState` distinguishes them off the built binary
-    (`-1` = no exchange at all = the channel-split body; `0` = tied; `1` = a real
-    transit), so a cell that silently lands on the wrong body now FAILS here rather than
-    reporting green coverage of a body it never touched.
+    Before K50 the declaration `level_modes` picked the body through the arm list, which
+    is why this assertion existed at all (`## F1`: every cell ran at `modes = 0`, so the
+    fp64 truth gated ONE of the two shipped bodies and nothing said so).  The mode word
+    is DATA now and one binary serves every declaration, so the body is the caller's
+    `split` flag -- and the census still answers off the device, because `kXchBytes` is
+    ZERO exactly on the channel-split body and one whole transit region on the carved
+    one.  `kXchState` is GONE with the deleted tied body (K50); what the stamp reports in
+    its place is whether the transit's ROW MAP IS THE IDENTITY, which is a FACT about the
+    geometry and never a second code path.
     """
-    widths, k, m, W = arm
-    require_arm(widths, k, m, W, chunk, carve, modes, d_v=cell.d_v)
+    widths, W = arm
+    require_arm(widths, W, chunk, split, d_v=cell.d_v)
     assert body in ("split", "carved")
-    xch_state = list(carry_ops.build_stamp(widths, k, m, W, chunk, carve, modes,
-                                           cell.d_v))[25]
+    st = list(carry_ops.build_stamp(widths, W, chunk, split, modes, cell.d_v))
+    xch_bytes = st[24]
     if body == "carved":
-        assert xch_state >= 0, (
-            f"this cell asked for the CARVED body (level_modes={modes}) and the binary "
-            f"dispatched the channel-split one (kXchState={xch_state}): the exchange and "
-            f"the two-sided carve would go ungated")
+        assert not split and xch_bytes > 0, (
+            f"this cell asked for the CARVED body and the binary dispatched the "
+            f"channel-split one (transit bytes {xch_bytes}): the transit and the "
+            f"two-sided carve would go ungated")
     else:
-        assert xch_state == -1, (
-            f"this cell asked for the channel-split body (level_modes={modes}) and got a "
-            f"carved one (kXchState={xch_state})")
+        assert split and xch_bytes == 0, (
+            f"this cell asked for the channel-split body and got a carved one "
+            f"(transit bytes {xch_bytes})")
     read, write, g, v = cell.ref_levels()
     #: THE STATE PLANE IS THE CALLER'S (state.md section 4). A fresh cell binds a
     #: dense backing and allocates one; a carried cell ADVANCES ITS OWN PLANE IN PLACE,
@@ -109,13 +147,13 @@ def run(cell, arm, carve, chunk=32, state_in=None, modes=0, body="split"):
                             read_plane=_facts_plane(cell, cell.read_bf))
     num, den, plane = carry_ops.carry_inter(
         cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths,
-        k=k, m=m, window=W, chunk=chunk, carve=carve, level_modes=modes,
+        window=W, chunk=chunk, split=split, level_modes=modes,
         state_in=state_in, state_out=plane, atom_bits=bits)
     return num, den, plane
 
 
 def ref(cell, arm, state_in=None):
-    widths, k, m, W = arm
+    widths, W = arm
     read, write, g, v = cell.ref_levels()
     return reference.inter_reference(read, write, g, v, widths, W, state_in=state_in)
 
@@ -127,89 +165,78 @@ def test_build_stamp_is_this_source():
     assert stamp[3] > 0, "the arm census must report a register count"
 
 
-def test_arms_are_the_declared_solver_rows():
-    """The TOPOLOGY rows, and the declarations each is built for.
+def test_arms_are_the_declared_shape_rows():
+    """AN ARM IS A SHAPE (K50), and the table is asked for the law relating its fields.
 
-    WHAT THE BINARY REPORTS IS A SUBSET (K36): a default build compiles the SHIPPED
-    rows only, so `arms()` is asserted to be declared rows in the declared order, and
-    the table's own properties are asked of `gen_shards.CARRY_ARMS`.
+    WHAT THE BINARY REPORTS IS A SUBSET (K36): a default build compiles the SHIPPED rows
+    only, so `arms()` is asserted to be declared rows in the declared order.
 
-    An arm is `(topology, d_v, declaration)`: the declaration chooses the BODY, so the
-    same topology appears once per declaration built for it.  A declaration with no
-    body built for it is REFUSED at every topology (K35 R-B): DENSE_BOTH is served when
-    it is DECLARED and never as a substitute for something else.
-
-    SINCE F1 THE CARVED ROWS ARE TWO-SIDED.  The body is still four warps, ONE warp per
-    stream and `d_v = 64`, but each side now derives its OWN order and span vector, so a
-    carved row's two vectors are no longer required to agree -- and the ones that DO
-    agree are the tied rows, whose exchange is elided.  What the table is asked for is
-    therefore the LAW relating the three reported quantities rather than a remembered
-    shape: the two vectors, the transit's size, and the transit's STATE.
+    THE KEY LOST ITS TOPOLOGY AND ITS DECLARATION.  Before K50 a row was
+    `(D, B, k, m, d_v, W, C, carve, level_modes)` and every declaration needed its own
+    compiled arm -- the reason the shipped set could not travel ("it's not reasonable for
+    people using a Python library to register their arms in a kernel library when it
+    doesn't compile for their thing").  A row is now
+    `(D, d_v, W, C, warps, WPS, split)`: the REGISTER AND SMEM PLAN, plus which body.
+    So the properties to assert are that the plan is internally consistent and that the
+    ADDRESSING is a function of the call, not of the row.
     """
-    declared = [tuple(row[:9]) for row in gen_shards.CARRY_ARMS]
-    reported = [tuple(a[:9]) for a in carry_ops.arms()]
+    declared = [tuple(row[:7]) for row in gen_shards.CARRY_ARMS]
+    reported = [tuple(a[:7]) for a in carry_ops.arms()]
     unknown = [row for row in reported if row not in declared]
     assert not unknown, f"the binary reports rows that are not declared: {unknown}"
     assert reported == [row for row in declared if row in set(reported)], (
         "the built rows must be the declared rows, in the declared order")
-    #: THE PROPERTIES BELOW ARE THE TABLE'S, so they are asked of the DECLARED rows and
-    #: not of the subset a build carries.
-    keys = {row[:8] for row in declared}
-    dense = {row[:8] for row in declared if row[8] == 0}
-    assert keys == dense, "every topology must carry the DENSE_BOTH body"
-    #: ONE EXECUTOR MAP AND ONE WIDTH (K35 M1P), read off the declared row: `WPS` is the
-    #: row's tenth field, the two stream counts its eleventh and twelfth, and the park
-    #: its last.  A row that breaks any of these has no body in this tree.
+    #: THE ROW'S OWN LAW, asked of the DECLARED rows and not of the subset a build
+    #: carries.  `PK`, `NSW` and `NSR` are DELETED axes (P76 "AXIS PRUNING"): the read
+    #: stream count IS the warp count and the write count is `kWarps / WPS`, so there is
+    #: nothing left to declare about them and nothing left to disagree.
     for row in gen_shards.CARRY_ARMS:
-        D, B, k, m, d_v, W, C, CV, MO, WPS, NSW, NSR, PK = row
+        D, d_v, W, C, warps, WPS, split = row
         assert d_v == D_V, f"{row}: M1P builds one value width"
-        assert (WPS, PK, CV) == (1, 0, carry_ops.LEAF_SPLIT), (
-            f"{row}: one warp per stream, no park, the ruled carve")
-        assert NSW == NSR, f"{row}: M1P carves the box once, in the read side's order"
+        assert (warps, WPS) == (4, 1), f"{row}: four warps, one warp per stream"
+        assert split in (0, 1), f"{row}: the body flag is a body"
+        assert 1 <= D <= 4, f"{row}: the block is built to depth four"
+    #: EVERY BODY MUST BE REACHABLE AT ITS DEPTH: the channel-split control exists so a
+    #: dense measurement has a body that carves nothing, and G4 deletes it.
+    depths = {row[0] for row in gen_shards.CARRY_ARMS}
+    for D in depths:
+        bodies = {row[6] for row in gen_shards.CARRY_ARMS if row[0] == D}
+        assert 1 in bodies, f"depth {D} carries no channel-split control"
+    #: AND THE ROW'S PLAN AGAINST THE DEVICE'S: `BC` is the register law's
+    #: (leaves-per-warp times warps) and the SMEM the arm's own geometry, both read back.
     for arm in carry_ops.arms():
-        D, B, k, m, d_v, W, C, carve, modes, BC, owners, smem, level = arm
-        assert d_v == D_V
-        _, spans_host, _, bc_host, owners_host = carry_ops.box_shape([B] * D, k, m)
-        assert (BC, owners) == (bc_host, owners_host), (
-            "the device box and the host solver disagree about the owner's shape")
-        #: the carve level is the innermost level the READ side carves, or -1 for the
-        #: channel-split body.  IT IS READ OFF THE DERIVED VECTOR (K35 S1b) and no longer
-        #: assumed to be the innermost level the read side is SPARSE at: under ORDER BY
-        #: MODE the read side carves the OUTERMOST levels of its own order.  Comparing
-        #: the seam's reported level against the census's reported vector makes this a
-        #: cross-check of two derivations rather than a restatement of one.
-        sr = list(carry_ops.build_stamp([B] * D, k, m, W, C, carve, modes, d_v))[20:24]
-        carved = [l for l in range(D) if sr[l] < int(spans_host[l])]
-        assert level == (max(carved) if carved else -1), (
-            f"the seam reports carve level {level}, but the derived read vector "
-            f"{sr[:D]} against the owner box {list(spans_host)} carves {carved}")
-        #: THE EXCHANGE'S LAW, read off the census (K35 F1).  The write spans are at
-        #: [16:20], the read spans at [20:24], the transit's bytes at [24] and its STATE
-        #: at [25]: `-1` no exchange at all (the channel-split body), `0` the tie
-        #: (identical vectors AND identical orders, so publish and pull are elided), `1`
-        #: a real transit.  The three are not independent, and asserting the RELATION is
-        #: what makes this a cross-check rather than a restatement: a transit exists
-        #: exactly when the two derived vectors differ, and it is sized to one whole
-        #: `[consumer][leaf][channel]` region when it does.
-        st = list(carry_ops.build_stamp([B] * D, k, m, W, C, carve, modes, d_v))
-        sw_v, sr_v, xch_bytes, xch_state = st[16:20], st[20:24], st[24], st[25]
-        same = sw_v == sr_v
-        if xch_state == -1:
-            assert same and xch_bytes == 0, (
-                f"{arm}: the channel-split body carves neither side, so its two vectors "
-                f"are the owner's box and it has no transit to size")
-        elif xch_state == 0:
-            assert same and xch_bytes == 0, (
-                f"{arm}: a TIED row's two carves coincide, so the permutation is the "
-                f"identity and the transit is elided, not merely small")
-        else:
-            assert xch_state == 1 and not same, (
-                f"{arm}: a row reporting a real transit must have two DIFFERENT derived "
-                f"vectors, or it pays for a permutation that is the identity "
-                f"({sw_v} vs {sr_v})")
-            assert xch_bytes == BC * (d_v + 8) * 2, (
-                f"{arm}: a full transit is one whole [consumer][leaf][channel] region, "
-                f"`BC * LdX * 2` with `LdX = d_v + kPadE`")
+        D, d_v, W, C, warps, WPS, split, BC, smem, cta = arm[:10]
+        assert 32 * warps == BC, f"{arm}: BC is the register law's, not a declaration"
+        assert cta >= 1 and smem > 0, f"{arm}: an arm that reaches no CTA is not an arm"
+
+
+def test_the_addressing_is_a_function_of_the_call_and_not_of_the_arm():
+    """THE SHIP PRINCIPLE, as a test: ONE binary, EVERY former mode word.
+
+    K50's ruling is that a user of the Python package never registers an arm.  The
+    former arm list carried seven distinct mode words across four topologies; every one
+    of them must now resolve on the SAME row, with the derivation -- not the row --
+    telling the spans apart.  A binary that quietly served one declaration's geometry to
+    another would pass every value test in this file, so what is asserted is that the
+    census's derived vectors actually DIFFER between declarations that should differ and
+    COINCIDE where the mode word makes the two sides agree.
+    """
+    assert_fresh_binary()
+    seen = {}
+    for widths, modes in (((256, 256), 0), ((256, 256), 1), ((256, 256), 3),
+                          ((256, 256), 6), ((256, 256), 10), ((16, 16, 16), 38),
+                          ((8, 8, 8, 8), 102)):
+        b = block(widths, modes, ns=4)
+        seen[(widths, modes)] = (tuple(b["r_span"]), tuple(b["w_span"]), b["identity_map"])
+    #: the flagship's ALTERNATING word carves the two sides in OPPOSITE levels -- that is
+    #: the whole of mode-routed ownership -- and its TIED word (`MO = 3`, both sides
+    #: sparse at level 0) hands both sides the same vector, which is the identity map.
+    assert seen[((256, 256), 6)][:2] == ((8, 4), (2, 16))
+    assert seen[((256, 256), 3)][:2] == ((2, 16), (2, 16))
+    assert seen[((256, 256), 6)][2] == 0 and seen[((256, 256), 3)][2] == 1
+    assert len({v[:2] for v in seen.values()}) > 1, (
+        "every declaration derived the same carve: the mode word is not reaching the "
+        "derivation and mode-routed ownership is not being tested")
 
 
 # ---------------------------------------------------------------- the lattice
@@ -228,23 +255,23 @@ def test_lattice_is_a_permutation():
 
 # ------------------------------------------------------- M1: state I/O + fold
 
-def test_m1_state_io_and_fold_dense(carve=CARVE):
+def test_m1_state_io_and_fold_dense():
     """The final state alone, on the tiny cell.  A leaf-order error surfaces here
     as a PERMUTATION rather than as noise, which is why the state is gated first."""
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=256, k_tok=None, seed=1)
-    _, _, plane = run(cell, SMALL, carve)
+    _, _, plane = run(cell, SMALL, SPLIT)
     _, _, s_ref = ref(cell, SMALL)
     got = canonical_from_plane(plane)
     want = s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)
     assert relative(got, want) < BF16_RTOL
 
 
-def test_m1_entry_state_is_carried(carve=CARVE):
+def test_m1_entry_state_is_carried():
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=128, k_tok=None, seed=2, state_in=True)
     s_in = cell.state_in_plane()
-    _, _, plane = run(cell, SMALL, carve, state_in=s_in)
+    _, _, plane = run(cell, SMALL, SPLIT, state_in=s_in)
     s0 = cell.state_in.reshape(cell.B, cell.H, cell.N, cell.d_v + 1)
     _, _, s_ref = ref(cell, SMALL, state_in=s0)
     got = canonical_from_plane(plane)
@@ -252,7 +279,7 @@ def test_m1_entry_state_is_carried(carve=CARVE):
     assert relative(got, want) < BF16_RTOL
 
 
-def test_m1_a_continuation_that_touches_a_strict_subset(carve=CARVE):
+def test_m1_a_continuation_that_touches_a_strict_subset():
     """THE IDLE-RESIDENT CELL (P80b): call two's routing is call one's, truncated.
 
     Two structured-support cells over one plane, advanced IN PLACE. Every atom call one
@@ -269,7 +296,7 @@ def test_m1_a_continuation_that_touches_a_strict_subset(carve=CARVE):
     first = Cell(SMALL[0], T=256, k_tok=None, seed=71, support=0.5)
     second = Cell(SMALL[0], T=256, k_tok=None, seed=72, support=0.25)
 
-    _, _, plane = run(first, SMALL, carve)
+    _, _, plane = run(first, SMALL, SPLIT)
     _, _, s1_ref = ref(first, SMALL)
 
     bits = planes.atom_bits(_facts_plane(second, second.write_bf), SMALL[0],
@@ -281,7 +308,7 @@ def test_m1_a_continuation_that_touches_a_strict_subset(carve=CARVE):
     assert bool(idle.any()), "the truncated cell reaches every atom the first one did"
 
     before = plane.clone()
-    num, den, plane = run(second, SMALL, carve, state_in=plane)
+    num, den, plane = run(second, SMALL, SPLIT, state_in=plane)
     _, _, s2_ref = ref(second, SMALL, state_in=s1_ref)
     got = canonical_from_plane(plane)
     assert relative(got, s2_ref.reshape(second.B * second.H, second.N,
@@ -294,7 +321,7 @@ def test_m1_a_continuation_that_touches_a_strict_subset(carve=CARVE):
     #: something else entirely must produce the same `y`, because nothing reads them.
     perturbed = before.clone()
     perturbed[idle] = -1234.5
-    num2, den2, _ = run(second, SMALL, carve, state_in=perturbed)
+    num2, den2, _ = run(second, SMALL, SPLIT, state_in=perturbed)
     assert torch.equal(num, num2) and torch.equal(den, den2), (
         "perturbing an idle-resident atom moved the readout: the entry sweep is "
         "reading an atom this call does not read")
@@ -302,10 +329,10 @@ def test_m1_a_continuation_that_touches_a_strict_subset(carve=CARVE):
 
 # ------------------------------------------ M2: readout + fan-in, dense cells
 
-def test_m2_inter_dense_small(carve=CARVE):
+def test_m2_inter_dense_small():
     assert_fresh_binary()
     cell = Cell(SMALL[0], T=256, k_tok=None, seed=3)
-    num, den, plane = run(cell, SMALL, carve)
+    num, den, plane = run(cell, SMALL, SPLIT)
     n_ref, d_ref, s_ref = ref(cell, SMALL)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -344,13 +371,13 @@ def test_m2_decomposition_is_exact():
     assert relative(mine, y) < 1e-10
 
 
-def test_m2_inter_dense_flagship(carve=CARVE):
+def test_m2_inter_dense_flagship():
     """The flagship topology at `L = 1024`.  `N = 65536` is the largest cell whose
     fp64 reference fits: `[B,T,H,N]` fp64 is 537 MB at this `L`, and the reference
     holds one window's worth at a time."""
     assert_fresh_binary()
     cell = Cell(FLAG[0], T=1024, k_tok=None, seed=5)
-    num, den, _ = run(cell, FLAG, carve)
+    num, den, _ = run(cell, FLAG, SPLIT)
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -406,10 +433,10 @@ def alt_cell(widths, T, k_tok, seed, cohort=None, d_v=carry_ops.D_V):
 
 
 @pytest.mark.parametrize("k_tok", [4, 16])
-def test_m3_two_sided_alt_small(k_tok, carve=CARVE):
+def test_m3_two_sided_alt_small(k_tok):
     assert_fresh_binary()
     cell = alt_cell(SMALL[0], T=256, k_tok=k_tok, seed=10 + k_tok)
-    num, den, plane = run(cell, SMALL, carve)
+    num, den, plane = run(cell, SMALL, SPLIT)
     n_ref, d_ref, s_ref = ref(cell, SMALL)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -422,7 +449,7 @@ def test_m3_two_sided_alt_small(k_tok, carve=CARVE):
 def test_m3_two_sided_alt_flagship(k_tok):
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=20 + k_tok)
-    num, den, _ = run(cell, FLAG, CARVE)
+    num, den, _ = run(cell, FLAG, SPLIT)
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -437,7 +464,7 @@ def test_m3_two_sided_alt_clustered(k_tok):
     exercised together, and neither is reached by the scattered cells."""
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=40 + k_tok, cohort=64)
-    num, den, _ = run(cell, FLAG, CARVE)
+    num, den, _ = run(cell, FLAG, SPLIT)
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -489,10 +516,10 @@ def both_cell(widths, T, k_tok, seed, d_v=carry_ops.D_V):
 
 
 @pytest.mark.parametrize("k_tok", [4, 16])
-def test_f1_carved_alt_small(k_tok, carve=CARVE):
+def test_f1_carved_alt_small(k_tok):
     assert_fresh_binary()
     cell = alt_cell(SMALL[0], T=256, k_tok=k_tok, seed=60 + k_tok)
-    num, den, plane = run(cell, SMALL, carve, modes=ALT2, body="carved")
+    num, den, plane = run(cell, SMALL, CARVED, modes=ALT2, body="carved")
     n_ref, d_ref, s_ref = ref(cell, SMALL)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -505,7 +532,7 @@ def test_f1_carved_alt_small(k_tok, carve=CARVE):
 def test_f1_carved_alt_flagship(k_tok):
     assert_fresh_binary()
     cell = alt_cell(FLAG[0], T=1024, k_tok=k_tok, seed=70 + k_tok)
-    num, den, _ = run(cell, FLAG, CARVE, modes=ALT2, body="carved")
+    num, den, _ = run(cell, FLAG, CARVED, modes=ALT2, body="carved")
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -513,14 +540,16 @@ def test_f1_carved_alt_flagship(k_tok):
 
 
 @pytest.mark.parametrize("k_tok", [4, 16])
-def test_f1_carved_multi_level_deep4(k_tok, carve=CARVE):
-    """THE MULTI-LEVEL CARVE.  Row 9's derived vectors are write `[1, 2, 2, 8]` and
-    read `[2, 1, 4, 4]` -- four levels, both sides carving more than one of them, and
-    the two orders differing at every level.  It is the widest disorder any built arm
-    hands the exchange, so it is the arm the row map's generality is proved on."""
+def test_f1_carved_multi_level_deep4(k_tok):
+    """THE MULTI-LEVEL CARVE.  At depth four the derived vectors are write
+    `[1, 4, 2, 4]` and read `[2, 1, 4, 4]` -- four levels, both sides carving more than
+    one of them, and the two orders differing at every level.  It is the widest disorder
+    any declaration hands the transit, so it is where the row map's generality is proved.
+    (The WRITE vector moved with the balanced box: at the old `[2, 2, 4, 8]` owner spans
+    it read `[1, 2, 2, 8]`.  Same carve rule, a different box under it.)"""
     assert_fresh_binary()
     cell = alt_cell(DEEP4[0], T=256, k_tok=k_tok, seed=80 + k_tok)
-    num, den, plane = run(cell, DEEP4, carve, modes=ALT4, body="carved")
+    num, den, plane = run(cell, DEEP4, CARVED, modes=ALT4, body="carved")
     n_ref, d_ref, s_ref = ref(cell, DEEP4)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -537,7 +566,7 @@ def test_f1_tied_carve_elides_the_exchange(k_tok):
     a number would mean the two paths were never the same map."""
     assert_fresh_binary()
     cell = both_cell(FLAG[0], T=1024, k_tok=k_tok, seed=90 + k_tok)
-    num, den, _ = run(cell, FLAG, CARVE, modes=BOTH2, body="carved")
+    num, den, _ = run(cell, FLAG, CARVED, modes=BOTH2, body="carved")
     n_ref, d_ref, _ = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -554,11 +583,11 @@ def test_f1b_the_rejoin_survives_the_window_lines_at_the_flagship(k_tok):
     that the readout of the SAME window would hide.  `T` is chosen to be four windows
     with the last one PARTIAL, so a short window's rejoin is in the gate too."""
     assert_fresh_binary()
-    widths, k, m, W = FLAG
+    widths, W = FLAG
     T = 3 * W + W // 2
     assert (T + W - 1) // W >= 3, "the cell must cross at least three window lines"
     cell = alt_cell(FLAG[0], T=T, k_tok=k_tok, seed=110 + k_tok)
-    num, den, plane = run(cell, FLAG, CARVE, modes=ALT2, body="carved")
+    num, den, plane = run(cell, FLAG, CARVED, modes=ALT2, body="carved")
     n_ref, d_ref, s_ref = ref(cell, FLAG)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -567,38 +596,49 @@ def test_f1b_the_rejoin_survives_the_window_lines_at_the_flagship(k_tok):
     assert relative(got, s_ref.reshape(cell.B * cell.H, cell.N, cell.d_v + 1)) < BF16_RTOL
 
 
-def test_f1_the_census_reports_the_exchange_off_the_device():
-    """`kXchBytes`/`kXchState`, read back off the built binary rather than modelled.
+def test_the_census_reports_the_transit_and_its_row_map_off_the_device():
+    """`kXchBytes` and the IDENTITY-MAP fact, read back off the built binary.
 
-    The tied row must report ZERO bytes and `kXchZero`; every other carved row must
-    report one whole `[consumer][leaf][channel]` region and `kXchFull`.  A size alone
-    could not say it -- `kXchFull` and `kXchFullReorder` allocate the same bytes for
-    opposite reasons (K35 S1b) -- so the STATE is what is asserted."""
+    K50 DELETED THE TIED BODY ("one transit, always; the tied case is a transit whose row
+    map is the identity, same code, same register plan").  So the census can no longer
+    report an ELISION, and asserting one would be asserting a body that does not exist.
+    What it reports instead is the FACT -- is this call's row map the identity -- which is
+    exactly what makes a wasted transit visible in the ledger, and the LAW is that the
+    carved body always sizes one whole `[consumer][leaf][channel]` region while the
+    channel-split body has no transit at all.
+    """
     assert_fresh_binary()
-    seen = {}
+    identities = []
     for arm in carry_ops.arms():
-        D, B, k, m, d_v, W, C, carve, modes, BC, owners, smem, level = arm[:13]
-        st = list(carry_ops.build_stamp([B] * D, k, m, W, C, carve, modes, d_v))
-        xch_bytes, xch_state = st[24], st[25]
-        seen[(D, B, W, modes)] = (xch_bytes, xch_state)
-        if xch_state == -1:
-            assert xch_bytes == 0, f"{arm}: the split body has no exchange to size"
-        elif xch_state == 0:
-            assert xch_bytes == 0, f"{arm}: a tied arm's transit is elided, not sized"
-        else:
-            assert xch_bytes == BC * (d_v + 8) * 2, (
-                f"{arm}: a full transit is one [consumer][leaf][channel] region")
-    tied = [v for kk, v in seen.items() if kk[3] == BOTH2]
-    assert tied and all(v == (0, 0) for v in tied), (
-        "the tied arm must be BUILT and must report the zero, or the elision is untested")
+        D, d_v, W, C, warps, WPS, split, BC, smem, cta = arm[:10]
+        widths = {2: (256, 256), 3: (16, 16, 16), 4: (8, 8, 8, 8)}[D]
+        for modes in (0, 3, 6):
+            st = list(carry_ops.build_stamp(widths, W, C, bool(split), modes, d_v))
+            xch_bytes, identity = st[24], st[25]
+            if split:
+                assert xch_bytes == 0, f"{arm}: the channel-split body has no transit"
+            else:
+                assert xch_bytes == BC * (d_v + 8) * 2, (
+                    f"{arm} at modes={modes}: the carved body always runs ONE transit, "
+                    f"sized to a whole [consumer][leaf][channel] region -- an elided one "
+                    f"would be the deleted tied body")
+                identities.append((D, modes, identity))
+    #: NON-VACUITY: the identity map must actually be REACHED by some declaration, or the
+    #: fact is untested and a wasted transit would never be visible.
+    assert any(i for _, _, i in identities), (
+        "no declaration reached the identity row map: the fact that replaced `kTied` is "
+        "not being exercised")
+    assert any(not i for _, _, i in identities), (
+        "every declaration reached the identity map: the permuted transit is untested")
 
 
 def test_m3_lists_differ_when_the_sides_do():
     """NON-VACUITY: the ALT cell must actually drive `nr != nw` somewhere, or the
     two-sided gate above is a dense gate wearing a sparse name."""
     cell = alt_cell(SMALL[0], T=256, k_tok=4, seed=99)
-    widths, k, m, W = SMALL
-    _, s, g, bc, owners = carry_ops.box_shape(widths, k, m)
+    widths, W = SMALL
+    b = block(widths, ns=1)
+    s, g, owners = b["span"], b["grid"], b["owners"]
     read = tuple(t.double() for t in cell.read_bf)
     write = tuple(t.double() for t in cell.write_bf)
     diff = 0
@@ -617,13 +657,13 @@ def test_m3_lists_differ_when_the_sides_do():
 # ---------------------------------------------- the DEEP arms, D = 3 and D = 4
 
 @pytest.mark.parametrize("arm", [DEEP3, DEEP4], ids=["d3", "d4"])
-def test_m2_inter_dense_deep(arm, carve=CARVE):
+def test_m2_inter_dense_deep(arm):
     """Dense both sides at depth three and four: the state plane, the readout and
     the mass column, against the fp64 oracle in CANONICAL order -- so a deep arm's
     mixed-radix leaf order surfaces here as a permutation, not as noise."""
     assert_fresh_binary()
     cell = Cell(arm[0], T=256, k_tok=None, seed=6)
-    num, den, plane = run(cell, arm, carve)
+    num, den, plane = run(cell, arm, SPLIT)
     n_ref, d_ref, s_ref = ref(cell, arm)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -634,12 +674,12 @@ def test_m2_inter_dense_deep(arm, carve=CARVE):
 
 @pytest.mark.parametrize("arm,k_tok", [(DEEP3, 4), (DEEP3, 8), (DEEP4, 2), (DEEP4, 4)],
                          ids=["d3-k4", "d3-k8", "d4-k2", "d4-k4"])
-def test_m3_two_sided_alt_deep(arm, k_tok, carve=CARVE):
+def test_m3_two_sided_alt_deep(arm, k_tok):
     """The ALTERNATING declaration at depth: `D` clause levels, the two sides'
     subsets disjoint, scattered `k_tok` cells."""
     assert_fresh_binary()
     cell = alt_cell(arm[0], T=256, k_tok=k_tok, seed=30 + k_tok + len(arm[0]))
-    num, den, plane = run(cell, arm, carve)
+    num, den, plane = run(cell, arm, SPLIT)
     n_ref, d_ref, s_ref = ref(cell, arm)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
@@ -652,9 +692,10 @@ def test_m3_two_sided_alt_deep(arm, k_tok, carve=CARVE):
 def test_m3_deep_lists_differ_when_the_sides_do(arm):
     """NON-VACUITY at depth, the small arm's gate restated: the deep ALT cell must
     drive `nr != nw` somewhere, or the two-sided gate above is a dense gate."""
-    widths, k, m, W = arm
+    widths, W = arm
     cell = alt_cell(widths, T=256, k_tok=2, seed=77 + len(widths))
-    _, s, g, bc, owners = carry_ops.box_shape(widths, k, m)
+    b = block(widths, ns=1)
+    s, g, owners = b["span"], b["grid"], b["owners"]
     read = tuple(t.double() for t in cell.read_bf)
     write = tuple(t.double() for t in cell.write_bf)
     diff = 0
@@ -670,40 +711,99 @@ def test_m3_deep_lists_differ_when_the_sides_do(arm):
     assert diff > 0, "the deep ALT cell did not separate the two sides' schedules"
 
 
-@pytest.mark.parametrize("arm,spans,atom", [(DEEP3, (2, 4, 16), (1, 1)),
-                                            (DEEP4, (2, 2, 4, 8), (1, 2))],
-                         ids=["d3", "d4"])
-def test_deep_box_is_the_derived_one(arm, spans, atom):
-    """The M1 solve, asserted against the host derivation: the spans, and the atom
-    rectangle they induce.  `DEEP4`'s rectangle spans TWO levels and no `(k, m)` at
-    this box can make it one, because `B = 8` is narrower than an atom."""
-    from rola.ops.lattice import atom_rectangle, walk_unit
-    widths, k, m, W = arm
-    _, s, g, bc, owners = carry_ops.box_shape(widths, k, m)
-    assert tuple(s) == spans and bc == 128
-    assert atom_rectangle(s) == atom
-    base, leaves, atoms = walk_unit(s)
-    assert leaves == 16 * atoms and atoms >= 1
+@pytest.mark.parametrize("arm,spans", [(SMALL, (8, 16)), (FLAG, (8, 16)),
+                                       (DEEP3, (2, 4, 16)), (DEEP4, (2, 2, 4, 8))],
+                         ids=["small", "flag", "d3", "d4"])
+def test_the_derived_box_reproduces_the_compile_time_law(arm, spans):
+    """THE PARITY PROOF: the RUNTIME span rule against the constants `BoxPlan` produced.
+
+    K50's span rule is "balance BC over levels; a level narrower than its balanced share
+    takes its full width and the remainder balances over the others", and its amended
+    ownership ruling names the invariant the balance runs under: "a box is a union of
+    whole atoms".  Balance ALONE does not keep that invariant -- at `D = 3, B = 16` it
+    gives `[4, 4, 8]` and at `D = 4, B = 8` it gives `[2, 4, 4, 4]`, and in both an atom
+    (16 CONSECUTIVE CANONICAL leaves) straddles two owners, so two owners store the same
+    page at page grain.  That is measured, not argued: the unconstrained form failed nine
+    fp64 cells, STATE PLANE only, on BOTH bodies, at exactly those two topologies.
+
+    Balance UNDER the atom invariant reproduces the compile-time law's answer at every
+    built topology -- which is what makes this a parity proof and not a re-declaration.
+    K50's CORRECTION rules the eventual relaxation ("prefill owns whole ROWS ... the fix
+    is ROW-GRAIN activity masks from the facts pass"); that machinery is the page I/O and
+    the facts bit emission, and it is not this stage's to write.
+    """
+    widths, W = arm
+    b = block(widths, ns=1)
+    assert tuple(b["span"]) == spans, (
+        f"the derived box for {widths} is {tuple(b['span'])}, not the law's {spans}")
+    prod = 1
+    for x in b["span"]:
+        prod *= x
+    assert prod == b["bc"] == 128, "the spans must fill the owner's box exactly"
+    for l, (sp, wd) in enumerate(zip(b["span"], b["width"])):
+        assert wd % sp == 0 and b["grid"][l] == wd // sp, (
+            f"level {l}: the span must be an aligned run inside its level")
+    assert b["min_width"] == min(widths), "min_l B_l is reported, not refused"
+    #: THE ATOM INVARIANT ITSELF, asserted directly: walking innermost outward, the box
+    #: must hold WHOLE whatever share of a 16-leaf atom each level contributes.
+    need, l = 16, len(widths) - 1
+    while need > 1 and l >= 0:
+        take = min(widths[l], need)
+        assert b["span"][l] >= take, (
+            f"level {l}: the box spans {b['span'][l]} of the {take} digits a page atom "
+            f"needs there, so an atom straddles two owners")
+        need //= take
+        l -= 1
+
+
+def test_the_derivation_refuses_only_what_the_card_refuses():
+    """THE REFUSAL SET, exactly as K50 states it, and nothing beyond it.
+
+    A shipped kernel that refused more than this would put the arm-registration problem
+    back: the whole point is that a topology nobody compiled still runs.
+    """
+    #: a width that is not a power of two
+    with pytest.raises(RuntimeError, match="power of two"):
+        block((100, 100), ns=1)
+    #: a topology that cannot hold ONE owner's box
+    with pytest.raises(RuntimeError, match="fewer leaves than one owner"):
+        block((4, 4), ns=1)
+    #: and a NARROW level is served, not refused -- it takes its full width and the
+    #: remainder re-balances over the others.  `min_l B_l < 16` is a CENSUS FACT.
+    b = block((2, 2, 4, 8), ns=1)
+    assert tuple(b["span"]) == (2, 2, 4, 8) and tuple(b["grid"]) == (1, 1, 1, 1)
+    assert b["min_width"] == 2
+    #: THE ALIGNMENT REFUSAL IS REAL AND IS NAMED: a level whose column base is not a
+    #: whole number of the runs read out of it would issue an unaligned wide load, so the
+    #: seam refuses it rather than the kernel faulting on it.
+    with pytest.raises(RuntimeError, match="not a whole number of the runs"):
+        block((2, 2, 8, 4), ns=1)
 
 
 # ------------------------------------------------------------------ the refusal
 
-def test_an_unbuilt_declaration_is_refused_and_not_served_dense(): 
-    """THE SEAM REFUSES WHAT IT HAS NO BODY FOR (K35 R-B, P76).
+def test_an_unbuilt_shape_is_refused_and_no_declaration_ever_is():
+    """THE SEAM REFUSES WHAT IT HAS NO BODY FOR -- AND AFTER K50 THAT IS A SHAPE.
 
-    `carry.cu`'s law-3 retry used to re-dispatch an unbuilt declaration with `mo`
-    forced to zero AT THE SAME CARVE, so a caller asking for a declaration nothing
-    was built for silently got the DENSE_BOTH body and no diagnostic -- which is how
-    a 5x loss stayed hidden from a harness for nine stages (`## BISECT (corrected)`).
-    The flagship topology at `carve = LEAF_SPLIT` is built for DENSE_BOTH (row 0) and
-    for the ALT declaration (row 1) and for nothing else, so the depth-four ALT word
-    is a declaration with no body at this topology AND a DENSE_BOTH arm sharing its
-    carve -- exactly the pair the retry used to resolve.  It must raise, and the
-    message must name the key that was asked for, or the refusal is not readable.
+    `carry.cu`'s law-3 retry used to re-dispatch an unbuilt DECLARATION with `mo` forced
+    to zero, so a caller asking for a declaration nothing was built for silently got the
+    DENSE_BOTH body and no diagnostic -- how a 5x loss stayed hidden for nine stages
+    (`## BISECT (corrected)`).  K50 removes the CLASS: a declaration cannot be unbuilt,
+    because the mode word never reaches a template.  So the two halves of this test are
+    (1) every former mode word resolves, at every depth, and (2) an unbuilt SHAPE -- a
+    window no row carries -- still refuses by name.
     """
     assert_fresh_binary()
-    widths, k, m, W = FLAG
+    widths, W = FLAG
     cell = Cell(widths, T=256, k_tok=None, seed=3)
+    #: (1) the depth-four ALTERNATING word at the FLAGSHIP topology: before K50 this was
+    #: a declaration with no body at this topology, and the retry served it dense.
+    num, den, _ = carry_ops.carry_inter(
+        cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths,
+        window=W, chunk=32, split=CARVED, level_modes=ALT4)
+    assert torch.isfinite(num).all() and torch.isfinite(den).all()
+    #: (2) a window no arm carries is a SHAPE the binary does not have, and it must name
+    #: the key rather than degrade to one it does.
     with pytest.raises(RuntimeError, match="unbuilt carry arm"):
         carry_ops.carry_inter(cell.read_bf, cell.write_bf, cell.g_bf, cell.v_bf, widths,
-                              k=k, m=m, window=W, chunk=32, carve=CARVE, level_modes=ALT4)
+                              window=256, chunk=32, split=CARVED, level_modes=ALT4)

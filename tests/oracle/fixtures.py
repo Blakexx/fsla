@@ -106,12 +106,15 @@ ALT = 6
 
 
 def built_arms() -> set:
-    """`{(D, B, k, m, d_v, W, C, carve, level_modes)}` -- what THIS binary carries.
+    """`{(D, d_v, W, C, warps, WPS, split)}` -- what THIS binary carries.
 
-    `arms()` is the binary's own answer (`rola.ops.carry.arms()`), so this is a fact
-    about the `.so` under test and never about the source tree that produced it.
+    AN ARM IS A SHAPE (K50): the digit widths and the mode word left the key with the
+    templates, so a row is the register/SMEM plan and the body, and one row serves
+    every topology and every declaration of its depth. `arms()` is the binary's own
+    answer (`rola.ops.carry.arms()`), so this is a fact about the `.so` under test and
+    never about the source tree that produced it.
     """
-    return {tuple(row[:9]) for row in carry_ops.arms()}
+    return {tuple(row[:7]) for row in carry_ops.arms()}
 
 
 def declared_arms() -> set:
@@ -128,10 +131,10 @@ def declared_arms() -> set:
         sys.path.insert(0, str(tools))
     import gen_shards
 
-    return {tuple(row[:9]) for row in gen_shards.CARRY_ARMS}
+    return {tuple(row[:7]) for row in gen_shards.CARRY_ARMS}
 
 
-def require_arm(widths, k, m, window, chunk, carve, level_modes, d_v=carry_ops.D_V):
+def require_arm(widths, window, chunk, split=False, d_v=carry_ops.D_V):
     """SKIP unless this binary carries the arm, and NAME the one it is missing.
 
     Since K36 a default build compiles the SHIPPED rows only; the conformance cells
@@ -148,14 +151,13 @@ def require_arm(widths, k, m, window, chunk, carve, level_modes, d_v=carry_ops.D
     """
     import pytest
 
-    key = (len(widths), widths[0], k, m, d_v, window, chunk, carve, level_modes)
+    key = (len(widths), d_v, window, chunk, 4, 1, int(bool(split)))
     if key in built_arms() or key not in declared_arms():
         return
     pytest.skip(
-        f"this binary does not carry the carry arm (widths={tuple(widths)}, k={k}, "
-        f"m={m}, d_v={d_v}, W={window}, C={chunk}, carve={carve}, "
-        f"level_modes={level_modes}). It is a declared TEST row; build the battery's "
-        f"set: ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86 pip install -e . "
+        f"this binary does not carry the carry arm (depth={len(widths)}, d_v={d_v}, "
+        f"W={window}, C={chunk}, split={bool(split)}). It is a declared TEST row; build "
+        f"the battery's set: ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86 pip install -e . "
         f"--no-build-isolation")
 
 
@@ -167,8 +169,7 @@ def assert_fresh_binary():
     DENSE_BOTH flagship this used to ask for.
     """
     import rola
-    stamp = carry_ops.build_stamp((256, 256), 4, 8, carry_ops.WINDOW, 32,
-                                  carry_ops.LEAF_SPLIT, ALT)
+    stamp = carry_ops.build_stamp((256, 256), carry_ops.WINDOW, 32, carry_ops.CARVED, ALT)
     assert stamp[0] == carry_ops.BUILD_MAGIC, (
         f"stale binary: the carry kernel's device stamp is {stamp[0]}, not "
         f"{carry_ops.BUILD_MAGIC}. rola is {rola.__file__}")

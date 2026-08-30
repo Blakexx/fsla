@@ -20,26 +20,24 @@ import torch
 from rola.ops import lattice
 from rola.ops._ext import extension
 
-#: THE SEAM'S DECLARATION SCALAR: which built (carve, EXECUTOR MAP) an arm is.  A
-#: stream owns a box, an executor (a warp) runs streams, and the two counts are
-#: independent dials, so an arm is not named by its carve alone.
-#:
-#: ``LEAF_SPLIT`` is the ruled carve (K33 clean-sheet tier A, measured 2026-08-21) --
-#: a stream owns an affine rectangle of the owner's digits and all ``d_v + 1``
-#: channels -- run at ONE warp per stream, which is the ONE executor map the
-#: transplanted M1a body builds (K35 M1P).  The two CONTAINER values, the PARK bit and
-#: the wide value plane named arms whose bodies M1P deleted; each returns as its own
-#: stage, with its constant restored beside its arm row.  A caller asking for one now
-#: reaches the seam's refusal, which names the whole key.
-LEAF_SPLIT = 1
+#: THE BODY, AND IT IS THE ONLY DECLARATION LEFT AT THIS SEAM.  K50 turned the carve
+#: into a DERIVATION -- a stream owns an affine rectangle of the owner's digits, cut
+#: out of ``(level_modes, stream count)`` at the prologue -- so there is no carve to
+#: declare.  What is still a choice is which BODY runs: ``CARVED`` is the design's
+#: (one warp per stream, the transit, the two-sided order), ``CHANNEL_SPLIT`` is the
+#: dense control that keeps the whole box in every warp and splits the channels.  The
+#: split body is deleted at G4; until then a caller names it here.
+CARVED = False
+CHANNEL_SPLIT = True
 
 #: THE VALUE WIDTH IS PART OF AN ARM'S KEY (K35 S3b) and is a template parameter of
 #: both carry bodies.  M1P builds ONE width: the ``d_v`` dial returns as its own stage.
 D_V = 64
 
-#: the ``(k, m)`` capacity that reaches the built box size on the flagship topology,
-#: ``BC = 128``.
-CAP_BC128 = 8
+#: THE OWNER'S BOX, in leaves.  It is a REGISTER SHAPE (K50's register law: leaves per
+#: warp times the CTA's warps), not a routing declaration, and no caller passes it: the
+#: seam reads it off the arm and derives the spans that fill it.
+BC = 128
 
 #: the flagship window, and the conformance cell's -- the architecture doc's
 #: two-constraint sizing (integration rung I1(b)); `rola.ops.intra` names the
@@ -121,8 +119,8 @@ def state_plane(widths, BH: int, d_v: int = D_V, device="cuda") -> torch.Tensor:
                        dtype=torch.float32, device=device)
 
 
-def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
-                window: int, chunk: int = 32, carve: int = LEAF_SPLIT,
+def carry_inter(read_levels, write_levels, g_write, v, widths, *,
+                window: int, chunk: int = 32, split: bool = False,
                 level_modes: int = 0, state_in: torch.Tensor | None = None,
                 state_out: torch.Tensor | None = None,
                 page_table: torch.Tensor | None = None,
@@ -132,6 +130,13 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
     ``num`` is ``[BH, T, d_v]`` fp32 and ``den`` is ``[BH, T]`` fp32. ``d_v`` is READ
     OFF ``v`` and is part of the arm key, so a width no arm declares is refused, not
     degraded.
+
+    THE DIGIT WIDTHS AND THE MODE WORD ARE DATA (K50). An arm is a SHAPE --
+    ``(D, d_v, window, chunk, warps, WPS, body)`` -- and ``widths``/``level_modes``
+    are derived into the addressing block at the seam, which refuses a topology the
+    shape cannot hold rather than asking for an arm nobody compiled. ``split`` picks
+    the CHANNEL-SPLIT body (the dense control, deleted at G4) over the carved one;
+    it is a body, not a geometry.
 
     THE STATE PLANES ARE THE CALLER'S (`docs/internals/state.md` section 4).
     ``state_in``/``state_out`` are ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order
@@ -154,13 +159,14 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
     gw = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
     gw = gw.reshape(gw.shape[0] * gw.shape[1], -1)
     num, den = extension().carry_forward_inter(
-        pr, pw, gw, v.to(torch.bfloat16).contiguous(), list(widths), int(k), int(m),
-        int(window), int(chunk), int(carve), int(level_modes), state_in, state_out,
+        pr, pw, gw, v.to(torch.bfloat16).contiguous(), list(widths),
+        int(window), int(chunk), int(bool(split)), int(level_modes), state_in, state_out,
         page_table, atom_bits)
     return num, den, state_out
 
 
-def owner_rows(read_levels, write_levels, widths, *, k: int, m: int, carve: bool = False):
+def owner_rows(read_levels, write_levels, widths, *, level_modes: int = 0,
+               carve: bool = False):
     """The BALLOT ROWS the liveness pass consumes: ``[BH, entries_read + entries_write, L/32]``.
 
     Row ``prefix_entries(l) + o_l`` of a side's block, bit ``t``, answers "token ``t``'s
@@ -169,15 +175,15 @@ def owner_rows(read_levels, write_levels, widths, *, k: int, m: int, carve: bool
     grow with ``N``. THE TWO SIDES CARRY THEIR OWN PARTITION (K35 S1b): a bitlist is
     voted from one side's own factors, so the read block is at the read carve's runs and
     the write block at the write carve's, and a level a side spans whole emits no rows.
-    This diagnostic asks for ONE grain on both sides, so its two blocks coincide:
-    ``carve`` picks the split of the innermost level's owner run into four groups, whose
-    owner-grain word is then the OR of a group's four rows.
+    ``carve`` picks the GRAIN: ``False`` is the owner's own box (one stream a side),
+    ``True`` is the carved body's own (four streams a side, ordered by ``level_modes``).
+    Both come from the same derivation the kernel runs.
     """
     return extension().carry_owner_rows(pack_side(read_levels), pack_side(write_levels),
-                                        list(widths), int(k), int(m), bool(carve))
+                                        list(widths), int(level_modes), bool(carve))
 
 
-def build_stamp(widths, k, m, window, chunk, carve, level_modes=0, d_v=D_V):
+def build_stamp(widths, window, chunk, split=False, level_modes=0, d_v=D_V):
     """The device magic, the caps digest and the arm's census.
 
     Fields 3.. are the census: registers, SMEM (attributes), binary version, SMEM
@@ -186,18 +192,27 @@ def build_stamp(widths, k, m, window, chunk, carve, level_modes=0, d_v=D_V):
     THREE dials (executors ``stamp[7] // 32``, streams ``stamp[14]``, width
     ``stamp[15]``) are all readable off the device.
 
-    Fields 16..25 are THE DERIVATION READ BACK (K35 S1b): the four write spans
-    ``stamp[16:20]``, the four read spans ``stamp[20:24]``, the exchange's TRANSIT in
-    bytes ``stamp[24]``, and the exchange's STATE ``stamp[25]`` -- ``0`` elided, ``1``
-    full, ``2`` full only because case (c)'s register reorder is not built (so the row
-    OVERPAYS and can be tabled), ``-1`` an arm with no exchange at all.  The spans are no longer declared -- they are what the
-    order-by-mode rule cut out of ``(level_modes, stream count)`` -- so reading them off
-    the device is the only way to see what an arm actually holds.  The transit is ZERO on
-    an arm whose two carves came out identical: the permutation is then the identity and
-    the exchange is elided at compile time.
+    Fields 16..25 are THE DERIVATION READ BACK, and after K50 it is the RUNTIME
+    derivation: the four write spans ``stamp[16:20]``, the four read spans
+    ``stamp[20:24]``, the transit's bytes ``stamp[24]`` (ZERO only on the channel-split
+    body, which has no transit -- the carved body always runs one), and ``stamp[25]``,
+    which is ``1`` when the transit's ROW MAP IS THE IDENTITY. That last field is the
+    former ``kTied``: K50 deleted the elided body ("one transit, always"), so a tie is
+    now a reported FACT that makes a wasted transit visible in the ledger, never a
+    second code path.
     """
-    return extension().carry_build_stamp(list(widths), int(k), int(m), int(window),
-                                         int(chunk), int(carve), int(level_modes), int(d_v))
+    return extension().carry_build_stamp(list(widths), int(window), int(chunk),
+                                         int(bool(split)), int(level_modes), int(d_v))
+
+
+def geometry(widths, level_modes=0, bc=128, nsr=4, nsw=4):
+    """THE ADDRESSING BLOCK the dispatch derives, flattened -- the model test's subject.
+
+    This is the SHIPPED derivation, reached through the extension, not a Python mirror
+    of it: a mirror can only prove that two derivations agree with each other
+    (`matching-the-naive-antipattern`).
+    """
+    return extension().carry_geometry(list(widths), int(level_modes), int(bc), int(nsr), int(nsw))
 
 
 def arms():

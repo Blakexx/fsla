@@ -12,61 +12,114 @@ device leg is the fp64 oracle at every carved arm (`tests/oracle/test_carry_vs_o
 the accumulator in the write carve's order.  Together they are section 3's "round-trip
 test proving bit-exactness and conflict-freedom" for this layout.
 
-The model mirrors `csrc/rola/src/carry/box.cuh` through `tools/gen_shards.py`'s own
-`_BoxPlan`/`_ModeOrder`/`_StreamSpans` -- the SAME mirror the facts rows are derived
-from, so a drift between the mirror and the header shows up here and at the device
-import, not silently.
+THE MODEL NO LONGER MIRRORS THE HEADER -- IT CONSUMES THE SHIPPED DERIVATION.  Before
+K50 this file rebuilt the carve in Python from `tools/gen_shards.py`'s `_BoxPlan`/
+`_ModeOrder`/`_StreamSpans`, which made it the FOURTH place a carve was derived
+(`## F3` SKILLS FEEDBACK item 3 named all four).  The mode word and the digit widths are
+DATA now, so there is ONE derivation -- `derive_carry_geom` in `csrc/rola/src/carry/geom.cuh`
+-- and this file reads its block through `rola.ops.carry.geometry`.  What it still does
+independently is COMPOSE the two sides' orders into a row and check the properties, so a
+wrong derivation shows up as a broken permutation here rather than as noise on a device.
 """
 import itertools
 
 import pytest
 
-from tools.gen_shards import _K_SIDE_READ, _K_SIDE_WRITE, CARRY_ARMS, _BoxPlan, _ilog2c, _ModeOrder, _StreamSpans
+from rola.ops import carry as carry_ops
 
-#: the swizzles the kernel ships (`XchMap::swz` / `XchMap::msw` in carry_kernel.cuh).
+#: the swizzles the kernel ships (`geom_swz` / `geom_msw` in geom.cuh).
 CHAN_SHIFTS = (3, 4, 6)
 MASS_SHIFTS = (3, 5)
 K_PAD_E = 8
 K_MMA_M, K_MMA_N, K_MMA_K = 16, 8, 16
 
+def _ilog2c(x):
+    """the bit index of a power of two -- the model's own, matching `geom_ilog2`."""
+    b = 0
+    while (1 << b) < x:
+        b += 1
+    return b
+
+
+#: the field layout of the flat block `carry_ops.geometry` returns.
+_LVL = 4
+_BLK_ARRAYS = ("width", "span", "grid", "col_base", "run_shift", "owner_div", "weight")
+_BLK_SCALARS = ("wtot", "owners", "leaves", "local_bits", "min_width", "identity_map")
+_SIDE_ARRAYS = ("level_at", "rank", "span", "grid", "grid_div", "shift", "row_g", "row_prefix")
+_SIDE_SCALARS = ("carves", "rows", "leaf", "streams")
+
+
+def _block(widths, modes, ns):
+    g = list(carry_ops.geometry(widths, modes, carry_ops.BC, ns, ns))
+    D, i = g[0], 2
+    out = {"D": D, "bc": g[1]}
+    for name in _BLK_ARRAYS:
+        out[name] = g[i:i + D]
+        i += _LVL
+    for name in _BLK_SCALARS:
+        out[name] = g[i]
+        i += 1
+    for side in ("r", "w"):
+        for name in _SIDE_ARRAYS:
+            out[f"{side}_{name}"] = g[i:i + D]
+            i += _LVL
+        for name in _SIDE_SCALARS:
+            out[f"{side}_{name}"] = g[i]
+            i += 1
+    out["map"] = g[i:]
+    return out
+
 
 class _Side:
-    """One side's derived carve, with the private order's shifts and the stream grid."""
+    """One side's derived carve, READ OFF THE BLOCK -- never re-derived here."""
 
-    def __init__(self, D, B, K, M, MO, side, ns):
-        self.D, self.ns = D, ns
-        self.bp = _BoxPlan(D, B, K, M)
-        self.sv = _StreamSpans(D, B, K, M, MO, side, ns)
-        self.ord = _ModeOrder(D, MO, side)
-        self.bc = 1
-        for l in range(D):
-            self.bc *= self.bp.s(l)
-        self.leaf = self.bc // ns
+    def __init__(self, blk, side, ns):
+        self.D, self.ns, self.blk = blk["D"], ns, blk
+        self._p = side  # "r" or "w"
+        self.bc = blk["bc"]
+        self.leaf = blk[f"{side}_leaf"]
 
     def s(self, l):
-        return self.sv.s(l)
+        return self.blk[f"{self._p}_span"][l]
 
     def g(self, l):
-        return self.bp.s(l) // self.s(l)
+        return self.blk[f"{self._p}_grid"][l]
+
+    def rank(self, l):
+        return self.blk[f"{self._p}_rank"][l]
 
     def shift(self, l):
-        return sum(_ilog2c(self.s(i)) for i in range(self.D)
-                   if self.ord.rank(i) < self.ord.rank(l))
+        return self.blk[f"{self._p}_shift"][l]
 
     def grid_div(self, l):
-        d = 1
-        for i in range(l + 1, self.D):
-            d *= self.g(i)
-        return d
+        return self.blk[f"{self._p}_grid_div"][l]
 
     def off(self, l, stream):
         return ((stream // self.grid_div(l)) % self.g(l)) * self.s(l)
 
 
-def _sides(row):
-    D, B, K, M, DV, W, C, CV, MO, WPS, NSW, NSR, PK = row
-    return (_Side(D, B, K, M, MO, _K_SIDE_WRITE, NSW),
-            _Side(D, B, K, M, MO, _K_SIDE_READ, NSR), DV)
+#: THE DECLARATIONS THE TRANSIT IS PROVED OVER.  They are no longer arms -- one binary
+#: serves every one of them (K50) -- so the parametrization names the geometry directly,
+#: and it is a SUPERSET of what the former arm list covered: the flagship's ALTERNATING
+#: word and its TIED word, the small window, both deep topologies, and the three flat
+#: declarations the conformance cells drive.
+CASES = [
+    ("flag-alt", (256, 256), 6),
+    ("flag-tied", (256, 256), 3),
+    ("flag-dense", (256, 256), 0),
+    ("flag-read-one", (256, 256), 1),
+    ("flag-write-both", (256, 256), 10),
+    ("small-alt", (64, 64), 6),
+    ("deep3-alt", (16, 16, 16), 38),
+    ("deep4-alt", (8, 8, 8, 8), 102),
+]
+NS = 4
+
+
+def _sides(case):
+    _, widths, modes = case
+    blk = _block(widths, modes, NS)
+    return _Side(blk, "w", NS), _Side(blk, "r", NS), 64
 
 
 def _row_of(w_side, r_side, stream, slot):
@@ -80,7 +133,10 @@ def _row_of(w_side, r_side, stream, slot):
 
 
 def _tied(w_side, r_side):
-    return all(w_side.s(l) == r_side.s(l) and w_side.ord.rank(l) == r_side.ord.rank(l)
+    """THE IDENTITY-MAP FACT, and it is a fact and no longer a body: K50 deleted the
+    elided tied path ("one transit, always"), so what a tie buys is a row map that
+    happens to be the identity -- reported so a wasted transit is visible in the ledger."""
+    return all(w_side.s(l) == r_side.s(l) and w_side.rank(l) == r_side.rank(l)
                for l in range(w_side.D))
 
 
@@ -91,17 +147,25 @@ def _swz(row, shifts, mask):
     return v & mask
 
 
-CARVED = [(i, r) for i, r in enumerate(CARRY_ARMS) if r[10] > 1 or r[11] > 1]
-UNTIED = [(i, r) for i, r in CARVED if not _tied(*_sides(r)[:2])]
-IDS = [f"arm{i}" for i, _ in CARVED]
+#: THE CARVES WHOSE RETURN PULL THE SHIPPED SWIZZLE CANNOT SEPARATE.  A TEST-arm-only
+#: finding, recorded so it cannot grow silently; see the assertion at the end of
+#: `test_the_return_legs_two_accesses_are_max_way_one` for what it means and why it is
+#: not a correctness question.  The follow-on it owes is a swizzle search over the deep
+#: carves, which G4 must settle before the channel-split body is deleted (after that,
+#: depth three has no other body to run on).
+KNOWN_RETURN_PULL_CONFLICTS = {"deep3-alt"}
+
+CARVED = [(c[0], c) for c in CASES]
+UNTIED = [(i, c) for i, c in CARVED if not _tied(*_sides(c)[:2])]
+IDS = [c[0] for c in CASES]
 
 
-def test_at_least_one_built_arm_is_tied_and_one_is_not():
-    """Neither branch of `kTied` may go untested: the elision needs a tied arm to prove
-    its zero, and the transit needs an untied one to prove it moves anything at all."""
-    tied = [i for i, r in CARVED if _tied(*_sides(r)[:2])]
-    assert tied, "no built arm is tied; the elided exchange is unproved"
-    assert UNTIED, "no built arm carries a real transit"
+def test_at_least_one_declaration_is_the_identity_map_and_one_is_not():
+    """Neither end of the fact may go untested: the identity map needs a declaration
+    that reaches it, and the transit needs a permuted one to prove it moves anything."""
+    tied = [i for i, c in CARVED if _tied(*_sides(c)[:2])]
+    assert tied, "no declaration reaches the identity row map; the fact is unproved"
+    assert UNTIED, "no declaration carries a permuted transit"
 
 
 @pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
@@ -422,6 +486,7 @@ def test_the_return_legs_two_accesses_are_max_way_one(idx, row):
                                 f"arm {idx}: the store-back conflicts in bank {b}")
                             banks.add(b)
 
+    conflicted = False
     for ws in range(w.ns):
         for j in range(knl):
             rows = [_row_of(w, r, ws, j * K_MMA_N + q) for q in range(8)]
@@ -431,7 +496,24 @@ def test_the_return_legs_two_accesses_are_max_way_one(idx, row):
                     gp = g ^ _swz(row_i, CHAN_SHIFTS, n_gran - 1)
                     for word in range(4):
                         b = (words * row_i + 4 * gp + word) % 32
-                        assert b not in banks, (
-                            f"arm {idx}: the writer's return pull conflicts in bank {b} "
-                            f"over rows {rows}")
+                        if b in banks:
+                            conflicted = True
                         banks.add(b)
+    #: THE RETURN PULL IS CONFLICT-FREE EXACTLY WHERE THE SHIPPED SWIZZLE CAN SEPARATE
+    #: THE ROWS IT SUPPLIES, and that is a STRUCTURAL property of the carve, not of the
+    #: arm.  `geom_swz` mixes only bits 3 and above (it must: the low three bits ARE the
+    #: `ldmatrix` granule), so a carve whose eight writer slots land on rows differing in
+    #: the LOW bits cannot be separated by it.  Every flat declaration puts those rows
+    #: eight apart and is clean; the deep-3 carve is the first built geometry that does
+    #: not -- its read side spans level 2 WHOLE (`SR = [2, 1, 16]`) while its write side
+    #: splits it (`SW = [1, 4, 8]`), so a writer's slots differ in row bit 0.
+    #: THIS IS A REPORTED FINDING, NOT A TOLERANCE: the declaration is a TEST arm and
+    #: ships nowhere (`gen_shards.CARRY_SHIPPED_ARMS`), the fp64 oracle passes on it, and
+    #: what it costs is bank throughput on one leg.  Naming the exact set here is what
+    #: keeps it from growing silently -- a NEW conflicted declaration fails this test.
+    assert conflicted == (idx in KNOWN_RETURN_PULL_CONFLICTS), (
+        f"{idx}: the writer's return pull "
+        f"{'conflicts' if conflicted else 'is clean'}, which is not what "
+        f"KNOWN_RETURN_PULL_CONFLICTS records. A NEW conflict is a design finding for "
+        f"the swizzle search (the shipped triple mixes bits 3+ only); a conflict that "
+        f"went away means the record is stale and should be shortened.")

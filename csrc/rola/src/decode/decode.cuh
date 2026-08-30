@@ -58,9 +58,6 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   Span g_write;
   Span v;
   int normalize[kMaxLevels];  // per READ level: still carries its own mass?; decode.md#near-line-98
-  int levels_bf16;  // storage type per operand family, 1=bfloat16 0=float; see decode.md#levelsbf16
-  int g_bf16;
-  int v_bf16;
 
   int level_width[kMaxLevels];       // B_l
   int level_amp_offset[kMaxLevels];  // into the flat [sum_l b_l] SMEM staging

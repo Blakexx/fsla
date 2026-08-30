@@ -29,7 +29,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from tests.oracle.fixtures import assert_fresh_binary, relative
-from tests.oracle.test_carry_vs_oracle import CARVE, FLAG, SMALL, alt_cell, ref, run
+from tests.oracle.test_carry_vs_oracle import FLAG, SMALL, SPLIT, alt_cell, ref, run
 from tests.oracle.tolerances import BF16_RTOL
 
 _TOOLS = Path(__file__).resolve().parents[2] / "tools"
@@ -80,7 +80,7 @@ def test_carry_vs_oracle_hypothesis(cell_args):
     arm, T, k_tok, seed, cohort, d_v = cell_args
     assert_fresh_binary()
     cell = alt_cell(arm[0], T=T, k_tok=k_tok, seed=seed, cohort=cohort, d_v=d_v)
-    num, den, _ = run(cell, arm, CARVE)
+    num, den, _ = run(cell, arm, SPLIT)
     n_ref, d_ref, _ = ref(cell, arm)
     assert relative(num.reshape(cell.B, cell.H, cell.T, cell.d_v).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL

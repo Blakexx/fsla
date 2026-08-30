@@ -81,7 +81,7 @@ _SUPPORTS = {"sparse": 0.25, "mixed": 0.5, "dense": 1.0}
 
 def _need(arm):
     widths, k, m, window, modes = arm
-    require_arm(widths, k, m, window, 32, carry_ops.LEAF_SPLIT, modes)
+    require_arm(widths, window, 32, carry_ops.CARVED)
 
 
 def _simplex(shape, generator, live=None):
@@ -117,8 +117,8 @@ def _launch(fixture, arm, *, s_in=None, s_out=None, page_tbl=None, bits=_UNSET):
     read, write, g_write, v = fixture
     if bits is _UNSET:
         bits = None if (s_in is None and s_out is None) else _bitmap(fixture, arm)
-    return carry_ops.carry_inter(read, write, g_write, v, widths, k=k, m=m, window=window,
-                                 chunk=32, carve=carry_ops.LEAF_SPLIT, level_modes=modes,
+    return carry_ops.carry_inter(read, write, g_write, v, widths, window=window,
+                                 chunk=32, split=carry_ops.CARVED, level_modes=modes,
                                  state_in=s_in, state_out=s_out, page_table=page_tbl,
                                  atom_bits=bits)
 

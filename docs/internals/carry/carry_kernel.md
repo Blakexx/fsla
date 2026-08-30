@@ -1852,3 +1852,107 @@ full transit only because the register reorder is not built and therefore OVERPA
 knows it. The census reports `-1` for the channel-split body, which has no exchange at all.
 A size alone could not say this: `kXchFull` and `kXchFullReorder` allocate the same bytes
 for opposite reasons.
+
+<a id="splitslots"></a>
+## `SplitSlots` — the channel-split body's slot shape
+
+How many slots one thread mints, from the box size alone (`BC / (threads / C)`). Its
+per-level digit fields come from the addressing block at runtime, exactly as the carved
+body's do. `ProduceMap` beside it is the REVERSE pass's (`backward_kernel.cuh`), whose arm
+family carries no mode word and therefore keeps the compile-time `BoxPlan`.
+
+<a id="load-run-u32"></a>
+## `load_run_u32` — the run that needs no re-tiling
+
+When a level's stream span IS the whole slot run, the private order's map is the identity
+there and the token's amplitudes land in the accumulator pairs directly: one wide load, no
+second array, and therefore no register above the narrower cases. Without it the widest
+case would hold a 32-element `run[]` alongside the 16-element accumulator and set the
+arm's register high-water mark for a case every other case pays for.
+
+<a id="expand-cases"></a>
+## The private order's field, as a CTA-uniform structure branch — and its four enforcement layers
+
+A level's place in one side's private slot order is a pair `(span, shift)` of powers of two
+with `span << shift <= kLeafW`. With `kLeafW = 32` the slot index is `n = 5` bits and the
+admissible set is exactly `(n+1)(n+2)/2 = 21` pairs:
+
+| `shift` | admissible `log2 span` | count |
+|---|---|---|
+| 0 | 0, 1, 2, 3, 4, 5 | 6 |
+| 1 | 0, 1, 2, 3, 4 | 5 |
+| 2 | 0, 1, 2, 3 | 4 |
+| 3 | 0, 1, 2 | 3 |
+| 4 | 0, 1 | 2 |
+| 5 | 0 | 1 |
+
+Every case body is the compile-time code this kernel always had — its immediates intact,
+its `run` array in registers, its trip counts unrolled — so the hot-path instruction count
+is the parent's. The word the branch reads is CTA-uniform (it depends on the geometry block
+and the compile-time slot index, never on the lane), so the branch is coherent: no
+divergence, no predication, and no dynamically indexed local array. That last is the point:
+make `shift`/`span` runtime without this and `run[]` becomes a dynamically indexed local
+array, which is a SPILL — the measured first attempt spilled 96 bytes of stack.
+
+Constitution R9 admits a branch on STRUCTURE. **A structure branch is only as good as what
+happens when the structure is not in the set**, so this one fails fast at four layers, and
+this is the enforcement pattern every structure branch in this family follows (Blake,
+2026-08-29):
+
+1. **The case set is GENERATED, not written down.** `field_dispatch` walks every
+   `(width, position)` pair of an `n`-bit slot index with `static_for`. There is no table
+   to fall out of date with `kLeavesPerWarp`.
+2. **Exhaustiveness is compile-time.** `field_count(n)` walks the same bounds and is
+   `static_assert`ed against the closed form `field_pairs(n)`, and every emitted pair is
+   `static_assert`ed admissible. The derivation cannot leave the set: a side's spans
+   multiply to `kLeafW`, so `shift(r) + log2 span(r) <= log2 kLeafW = n` for every rank.
+   An arm whose leaves-per-warp changed without the enumeration changing does not build.
+3. **The seam refuses before launch.** `derive_side` checks every level's pair against
+   `field_admissible` and names what it rejects, so a bad geometry never reaches a kernel.
+4. **The default TRAPS** — no fallthrough, ever — and `tools/field_coverage.py` (the K43
+   post-build sweep) launches every built arm at every field its depth can REACH, on a tiny
+   cell, so an unreachable trap is a proven fact rather than a promise. The sweep also
+   reports which admissible pairs a depth cannot reach at all, which is the honest form of
+   "covered": at `D = 2` only two fields can be placed in five bits.
+
+<a id="field-seed"></a>
+## `field_seed` and `field_fold`
+
+`field_seed` is the accumulator's seed: the order's INNERMOST level, whose shift is zero by
+definition of rank. It is also where the dead-row mask lands on the read side — zeroing any
+one factor zeroes the product, and the innermost is the one rank the branch already loads.
+`field_fold` is one more level's factor at its own field; a level at bit offset zero splits
+ACROSS the accumulator's pair, so its two slots take different digits, while every other
+level's pair shares one digit.
+
+<a id="byrank"></a>
+## The produce's view is by RANK, and it is never hoisted
+
+A level's place in the private order is runtime, so indexing anything by level inside the
+slot loop would be a dynamic index. Inverting the order at each rank — whose index IS
+compile-time — gives the three values the loop needs: the token column the run starts at,
+the run's width, and its bit offset.
+
+They are read from the block, which is a kernel parameter and therefore CTA-uniform, so
+they live in the UNIFORM datapath. **Hoisting them into arrays instead costs `6D` vector
+registers and spills a body that is already at the file's edge** — measured: the hoisted
+form was 255 registers with 40 bytes of stack, the read-from-the-block form is 242 with
+none. The same applies to the transit's row-map steps (`#xchdelta`).
+
+<a id="xchdelta"></a>
+## The row map's steps are evaluated, not folded and not hoisted
+
+`row(0, P)` used to be a constant expression per publisher slot. It is the block's own map
+now, read at a COMPILE-TIME slot. It is CTA-uniform, so each evaluation is a handful of
+uniform-datapath operations once per window — holding the ten values in vector registers
+instead costs the body its last eleven and spills it. Nothing here assumes the map is
+linear: every step is the map evaluated, and linearity is a property the model test proves
+rather than one the kernel relies on.
+
+<a id="canonatom"></a>
+## `canon_atom`
+
+The canonical atom id of this owner's atom `a`, from the block's own radices — the runtime
+form of what `BoxPlan::canon_atom` folded. It is the address the state plane's page sweeps
+use under both backings, which is why the span rule is constrained to keep an atom inside
+one owner's box (`geom.md#span-rule`).

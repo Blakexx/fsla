@@ -59,8 +59,8 @@ def walls(read, write, g, v, window, modes):
     dnum_bf = d_num.to(torch.bfloat16).contiguous()
 
     def forward():
-        num, den = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(WIDTHS), K, M,
-                                           window, 32, carry_ops.LEAF_SPLIT, 0, None,
+        num, den = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(WIDTHS),
+                                           window, 32, int(carry_ops.CARVED), 0, None,
                                            bench_state, None)
         ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, num, den, len(WIDTHS),
                           WIDTHS[0], packed, window)

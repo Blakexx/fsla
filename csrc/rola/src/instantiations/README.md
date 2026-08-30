@@ -15,7 +15,7 @@ The facts family's launchers, instantiated once each in ONE shard:
 class), `launch_chunk_block_bitmap_arm<D, B, BC>` (the liveness epilogue, the
 same key as the table it reduces) and `launch_chunk_atom_bitmap_arm<D, B>` (the
 stats reduction, keyed to the invariant 16-leaf quantum and therefore BC-free).
-56 instantiations over 12 `(D, B, BC)` tables and 8 `(D, B)`
+46 instantiations over 12 `(D, B, BC)` tables and 8 `(D, B)`
 topologies, projected from the 22-arm `(C, BC, D, B)` vocabulary.
 
 The launcher DEFINITIONS live in `../facts/facts_launch.cuh`, which the
@@ -36,9 +36,9 @@ shard cannot enumerate different sets.
 (KERNEL_STANDARDS section 7). The file is an include, a guard and one expansion
 of `CARRY_ARM_DEFINE` (`../carry/carry_arm.cuh`), so the arm's kernel — the
 carved body or the channel-split one — is emitted by exactly one object and the
-13 arms compile in parallel instead of serially inside one `cicc`.
+10 arms compile in parallel instead of serially inside one `cicc`.
 
-Every arm has its own file except rows 2, 10, 11, which are ONE kernel (the channel-split body takes no per-level declaration) and therefore one file; rows 6, 7, which are ONE kernel (the channel-split body takes no per-level declaration) and therefore one file.
+Every arm has its own file.
 
 `carry_arms.inc` carries the rows themselves and the
 `#if defined(ROLA_CARRY_BUILD_<i>)` selection: `setup.py` puts an arm's file in

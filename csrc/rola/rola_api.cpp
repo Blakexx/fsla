@@ -48,19 +48,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "K31 carry kernel: the INTER (carried-state) term, undivided; the state planes, "
         "the page table and the facts pass' per-atom activity bitmap are the caller's, and "
         "both planes null is the null-state call",
-        py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("widths"), py::arg("k"),
-        py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
-        py::arg("level_modes") = 0, py::arg("s_in") = py::none(), py::arg("s_out") = py::none(),
+        py::arg("pr"), py::arg("pw"), py::arg("gw"), py::arg("v"), py::arg("widths"),
+        py::arg("window"), py::arg("chunk"), py::arg("split"), py::arg("level_modes") = 0,
+        py::arg("s_in") = py::none(), py::arg("s_out") = py::none(),
         py::arg("page_tbl") = py::none(), py::arg("atom_bits") = py::none());
   m.def("carry_build_stamp", &rola::carry::build_stamp,
         "K31 carry kernel: device-side build identity + the arm's census", py::arg("widths"),
-        py::arg("k"), py::arg("m"), py::arg("window"), py::arg("chunk"), py::arg("carve"),
-        py::arg("level_modes") = 0, py::arg("d_v") = 64);
+        py::arg("window"), py::arg("chunk"), py::arg("split"), py::arg("level_modes") = 0,
+        py::arg("d_v") = 64);
   m.def("carry_owner_rows", &rola::carry::owner_rows,
         "K31 carry kernel: the ballot rows, at the lattice's owner spans or at the "
         "carve grain the kernel consumes",
-        py::arg("pr"), py::arg("pw"), py::arg("widths"), py::arg("k"), py::arg("m"),
+        py::arg("pr"), py::arg("pw"), py::arg("widths"), py::arg("level_modes") = 0,
         py::arg("carve") = false);
+  m.def("carry_geometry", &rola::carry::geometry,
+        "K31 carry kernel: the addressing block the dispatch derives, flattened", py::arg("widths"),
+        py::arg("level_modes"), py::arg("bc"), py::arg("nsr"), py::arg("nsw"));
   m.def("carry_arms", &rola::carry::arms, "K31 carry kernel: the built arms");
   // ---- K31 R4: the reverse carry family, two concurrent scans ------------
   m.def("carry_backward_inter", &rola::carry::backward_inter,

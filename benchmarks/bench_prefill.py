@@ -176,8 +176,8 @@ def split_walls(read, write, g, v, widths, k, m, window, modes):
     bench_state = carry_ops.state_plane(widths, pread.shape[0], D_V, device=pread.device)
 
     def carry_only():
-        ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths), k, m,
-                                window, 32, carry_ops.LEAF_SPLIT, packed_modes, None,
+        ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths),
+                                window, 32, int(carry_ops.CARVED), packed_modes, None,
                                 bench_state, None)
 
     o = torch.zeros((1, pread.shape[1], D_V), dtype=torch.float32, device=pread.device)
@@ -189,7 +189,7 @@ def split_walls(read, write, g, v, widths, k, m, window, modes):
 
     def combined():
         num, dn = ext.carry_forward_inter(pread, pwrite, gwrite, value, list(widths),
-                                          k, m, window, 32, carry_ops.LEAF_SPLIT,
+                                          window, 32, int(carry_ops.CARVED),
                                           packed_modes, None, bench_state, None)
         ext.intra_forward(pread, pwrite, gwrite, value, sread, swrite, num, dn, len(widths),
                           widths[0], packed_modes, window)
@@ -243,7 +243,7 @@ def main():
     print(f"# K31 integration I3 -- {torch.cuda.get_device_name()}, topology {widths}, "
           f"(k, m) = ({k}, {m}), N = {N}, L = {T}, N == L: {N == T}, d_v = {D_V}, "
           f"BH = 1, W = {window}, medians of {REPS}")
-    stamp = carry_ops.build_stamp(widths, k, m, window, 32, carry_ops.LEAF_SPLIT)
+    stamp = carry_ops.build_stamp(widths, window, 32, carry_ops.CARVED)
     print(f"# carry stamp {stamp[0]}  regs {stamp[3]}  local {stamp[8]}  smem {stamp[6]}  "
           f"BC {stamp[9]}  owners {stamp[10]}  stages {stamp[11]}  carve level {stamp[13]}")
     print(f"# intra stamp {intra_ops.build_stamp()}  arms {intra_ops.arms()}")

@@ -1,13 +1,12 @@
-// csrc/rola/src/carry/box.cuh -- THE (k, m) BOX LATTICE, as constexpr arithmetic.
-//
-// The R0 spec's LATTICE-1 linearization (development/plans/K31_R0_ABI_RIPPLE_SPEC.md
-// sections 2.1-2.5) made executable: a leaf's canonical index `ell` and its
-// lattice index `lambda` relate by a fixed BIT PERMUTATION, so nothing here
-// divides and nothing here tabulates. Full symbol table and derivation:
-// see docs/internals/carry/box.md
+// csrc/rola/src/carry/box.cuh -- THE (k, m) BOX LATTICE, as constexpr arithmetic:
+// the R0 spec's LATTICE-1 linearization made executable, so nothing here divides and
+// nothing here tabulates. See docs/internals/carry/box.md
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
+
+#include "geom.cuh"
 
 namespace rola::carry {
 
@@ -17,8 +16,16 @@ constexpr long ipowl_c(int b, int e) { return e == 0 ? 1 : b * ipowl_c(b, e - 1)
 constexpr int ceil_pow2c(int x) { return x <= 1 ? 1 : (1 << (ilog2c(2 * x - 1))); }
 constexpr int align16c(int x) { return (x + 15) & ~15; }
 
-//: the page granule: the leaves one atom holds, and the unit every DRAM gather -- see docs/internals/carry/box.md#katomleaves-3
-static constexpr int kAtomLeaves = 16;
+//: the two language utilities the family's headers share. -- see docs/internals/carry/box.md#static-for
+template <int N, class F>
+__device__ __host__ __forceinline__ void static_for(F&& f) {
+  if constexpr (N > 0) {
+    static_for<N - 1>(f);
+    f(std::integral_constant<int, N - 1>{});
+  }
+}
+
+__device__ __forceinline__ int ilog2c_dev(int x) { return 31 - __clz(x); }
 
 //: THE FAMILY'S ARM-INDEPENDENT CONSTANTS (moved here at K36). -- see docs/internals/carry/box.md#kcarrybuildmagic
 static constexpr int kCarryBuildMagic = 31010026;
@@ -86,7 +93,6 @@ struct BoxPlan {
   static constexpr int run_shift(int l) { return sum_span(l + 1); }
   static constexpr int kLocalBits = sum_span(0);
 
-  //: the offset of `local`'s level-`l` digit INSIDE the owner's run.
   static constexpr int run_of(int l, int local) { return (local >> run_shift(l)) & (s(l) - 1); }
   static constexpr int u_of(int l, int local) { return run_of(l, local) >> kKappa; }
   static constexpr int c_of(int l, int local) { return run_of(l, local) & (K - 1); }
@@ -97,7 +103,6 @@ struct BoxPlan {
   static constexpr int kRows = row_entries(0);
   static constexpr int row_prefix(int l) { return l == 0 ? 0 : row_prefix(l - 1) + row_g(l - 1); }
 
-  //: the level's column base in the packed `[BH, L, sum_l B_l]` amplitude plane.
   static constexpr int col_base(int l) { return l * B; }
   static constexpr int kWtot = D * B;
 
@@ -132,7 +137,6 @@ struct BoxPlan {
       return (uint32_t)d * (uint32_t)ipowl_c(B, D - 1 - L) + canon_leaf_acc<L + 1>(O, local);
     }
   }
-  //: owner `O`'s atom `a`, as a CANONICAL atom id inside its own `bh`.
   static __host__ __device__ __forceinline__ uint32_t canon_atom(int O, int a) {
     return canon_leaf_acc<0>(O, a * kAtomLeaves) >> kAtomBits;
   }
@@ -153,79 +157,7 @@ struct BoxPlan {
                 "K1: k, m and B are powers of two");
 };
 
-//: THE PER-LEVEL MODE DECLARATION (the seam's own encoding): two bits per -- see docs/internals/carry/box.md#ksideread
-constexpr uint32_t kSideRead = 1u, kSideWrite = 2u;
-constexpr bool mode_declares(uint32_t modes, int l, uint32_t side) {
-  return ((modes >> (2 * l)) & side) != 0u;
-}
-
-//: THE PRIVATE ORDER, BY MODE (P76, "ORDER BY MODE, THEN CARVE", ruled -- see docs/internals/carry/box.md#modeorder
-template <int D, uint32_t MO, uint32_t SIDE>
-struct ModeOrder {
-  static constexpr int kDense = 0, kSparse = 1, kBothSparse = 2;
-  static constexpr int group(int l) {
-    return (mode_declares(MO, l, kSideRead) && mode_declares(MO, l, kSideWrite))
-               ? kBothSparse
-               : (mode_declares(MO, l, SIDE) ? kSparse : kDense);
-  }
-  //: the rule as a strict order, and `rank` as the position it induces -- `0` innermost. -- see docs/internals/carry/box.md#before-2
-  static constexpr bool before(int a, int b) {
-    return group(a) != group(b) ? group(a) < group(b) : a > b;
-  }
-  static constexpr int count_before(int l, int i) {
-    return i >= D ? 0 : (before(i, l) ? 1 : 0) + count_before(l, i + 1);
-  }
-  static constexpr int rank(int l) { return count_before(l, 0); }
-  //: the level at OUTER position `p`, which is the order the carve walks.
-  static constexpr int at_rank(int r, int l) {
-    return l >= D ? -1 : (rank(l) == r ? l : at_rank(r, l + 1));
-  }
-  static constexpr int outer(int p) { return at_rank(D - 1 - p, 0); }
-};
-
-//: THE STREAM BOX, DERIVED FROM THE ORDER AND A STREAM COUNT. A STREAM owns a -- see docs/internals/carry/box.md#streamspans
-template <int D, int B, int K, int M, uint32_t MO, uint32_t SIDE, int NS>
-struct StreamSpans {
-  using BP = BoxPlan<D, B, K, M>;
-  using Ord = ModeOrder<D, MO, SIDE>;
-  //: the walk, as two mutually recursive counts over OUTER POSITIONS: what the count -- see docs/internals/carry/box.md#gat
-  static constexpr int g_at(int p);
-  static constexpr int need_at(int p) { return p <= 0 ? NS : need_at(p - 1) / g_at(p - 1); }
-  static constexpr int s(int l) { return l >= D ? B : BP::s(l) / g_at(D - 1 - Ord::rank(l)); }
-  static constexpr int g(int l) { return BP::s(l) / s(l); }
-  static constexpr bool carves(int l) { return s(l) < BP::s(l); }
-  static constexpr int prod_g(int l) { return l >= D ? 1 : g(l) * prod_g(l + 1); }
-  static constexpr int prod_s(int l) { return l >= D ? 1 : s(l) * prod_s(l + 1); }
-  static constexpr int kStreams = prod_g(0);
-  static constexpr int kLeaf = prod_s(0);
-  static constexpr int grid_div(int l) { return prod_g(l + 1); }
-
-  static_assert(NS >= 1 && (NS & (NS - 1)) == 0, "a side's stream count is a power of two");
-  static_assert(kStreams == NS,
-                "the stream count must be reachable by carving this side's levels: it "
-                "exceeds the leaves one owner holds");
-  static_assert(kLeaf * kStreams == BP::kBC, "the stream grid partitions the owner's box");
-};
-
-template <int D, int B, int K, int M, uint32_t MO, uint32_t SIDE, int NS>
-constexpr int StreamSpans<D, B, K, M, MO, SIDE, NS>::g_at(int p) {
-  return BP::s(Ord::outer(p)) < need_at(p) ? BP::s(Ord::outer(p)) : need_at(p);
-}
-
-//: ONE SIDE'S BALLOT ROWS. -- see docs/internals/carry/box.md#carverows
-template <class SV>
-struct CarveRows {
-  using BP = typename SV::BP;
-  static constexpr int kLevels = BP::kLevels, kWidth = BP::kWidth;
-  static constexpr int s(int l) { return SV::s(l); }
-  static constexpr int row_g(int l) { return s(l) < kWidth ? kWidth / s(l) : 0; }
-  static constexpr int row_entries(int l) {
-    return l == kLevels ? 0 : row_g(l) + row_entries(l + 1);
-  }
-  static constexpr int kRows = row_entries(0);
-  static constexpr int row_prefix(int l) { return l == 0 ? 0 : row_prefix(l - 1) + row_g(l - 1); }
-  //: how many table rows a digit run of `span` covers at level `l`.
-  static constexpr int rows_of(int span, int l) { return span / s(l); }
-};
+//: THE MODE WORD, THE ORDER AND THE CARVE LEFT THIS FILE AT K50 (`geom.cuh` owns the
+//: one derivation); `BoxPlan` remains for the REVERSE pass. -- see docs/internals/carry/box.md#static-for
 
 }  // namespace rola::carry

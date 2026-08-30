@@ -365,3 +365,28 @@ length, while clearing the intensity bar with room (128 flop/byte).  The
 `[B,T,H,N]`, so `N = 4096` is where a whole cell is checkable, and its `W = 64`
 is held to keep that cell's window count meaningful at the lengths a reference
 can hold.
+
+<a id="block"></a>
+## `derive_block` — the addressing block, derived and refused at the seam
+
+Every launch-time law K50 names lives here and nowhere else. The full refusal set, and what
+is a census fact instead of a refusal, is in `geom.md#refusals`. The seam derives the block
+once per call from `(widths, level_modes)` and the arm's own `BC` and stream counts, and
+hands it to the rows pass and the body by value.
+
+<a id="carry-row-gate"></a>
+## `CARRY_ROW_GATE` — the row's own law
+
+An arm's executor map is its own arithmetic: one READ stream per warp over `WPS` warps a
+stream, and the body flag is a body, not a geometry. `PK`, `NSW` and `NSR` are DELETED axes
+(P76 "AXIS PRUNING"): the read stream count IS the warp count and the write count is
+`kWarps / WPS`, so there is nothing left to declare about them and nothing left to disagree.
+
+<a id="geometry"></a>
+## `geometry` — the derivation, exposed
+
+The model test golden-checks THIS function — the one the dispatch runs — rather than a
+Python mirror of it, because a mirror proves only that two derivations agree with each
+other (`matching-the-naive-antipattern`). The flattened vector also carries the transit's
+row map evaluated over the whole box, so the bijection, the GF(2)-linearity and the
+identity-map fact are all asserted against the shipped composition.

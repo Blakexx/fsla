@@ -60,8 +60,7 @@ def require_carry_arm(window, modes, widths=WIDTHS, k=K, m=M):
     `prefill` runs the carry seam at the ruled carve with the cell's own packed modes,
     so a prefill cell names an arm exactly as a direct `carry_inter` call does.
     """
-    require_arm(widths, k, m, window, 32, carry_ops.LEAF_SPLIT,
-                intra_ops.pack_modes(tuple(modes)))
+    require_arm(widths, window, 32, carry_ops.CARVED)
 
 
 def cell(T, modes, k_tok=None, clustered=False, seed=0, d_v=64, device="cuda",
@@ -207,8 +206,8 @@ def test_the_intra_term_is_actually_present():
     T, window = 1024, 512
     require_carry_arm(window, DENSE)
     read, write, g, v = cell(T, DENSE, seed=3)
-    inter_num, inter_den, _ = carry_ops.carry_inter(read, write, g, v, WIDTHS, k=K, m=M,
-                                                    window=window)
+    inter_num, inter_den, _ = carry_ops.carry_inter(read, write, g, v, WIDTHS,
+                                                    window=window, split=carry_ops.CARVED)
     y_ref, _ = oracle(read, write, g, v)
     err = relative(readout(inter_num, inter_den, T), y_ref)
     assert err > 10 * BF16_RTOL, (

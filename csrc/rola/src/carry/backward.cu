@@ -22,6 +22,11 @@
 
 #include "backward_kernel.cuh"
 #include "carry_api.cuh"
+//: THE REVERSE FAMILY STILL SPEAKS THE GIVEN-SPAN FACTS PASS.  Its arms carry a
+//: compile-time `BoxPlan` (no mode word), so K50's runtime addressing has not reached
+//: it; the include is explicit now that the FORWARD carry votes its own rows and no
+//: longer pulls this header in through `carry_rows.cuh`.
+#include "facts/facts_kernel.cuh"
 #include "facts/facts_kernel.cuh"
 
 namespace rola::chunk {

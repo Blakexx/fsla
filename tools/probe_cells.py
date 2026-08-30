@@ -230,7 +230,13 @@ def _arm_schema(row):
     confirms all three shapes below by direct inspection of the three
     reference binaries this tool validates against):
 
-      * 13 fields (current, k31-formb3 since S3b): D,B,K,M,DV,W,C,CV,MO,thr,cta,smem,xch
+      * 11 fields, LAST FIELD == 2 (K50, the runtime-addressing era): the row is the
+        arm's SHAPE and nothing else -- D,DV,W,C,warps,WPS,split,BC,smem,cta,schema.
+        The topology and the mode word are DATA, so they are NOT in the key: one row
+        serves every topology and every declaration of its depth, which is exactly what
+        this tool must not mistake for "the arm did not change".  The schema version is
+        a FIELD because this row's field count collides with the pre-K35 one below.
+      * 13 fields (k31-formb3 since S3b): D,B,K,M,DV,W,C,CV,MO,thr,cta,smem,xch
       * 12 fields (M1a-era, pre-container-dial): D,B,K,M,W,C,CV,MO,thr,cta,smem,xch (DV implicit=64)
       * 10 fields (mainline-era, pre-K35 declarations): D,B,K,M,W,C,CV,thr,cta,smem
         (no MO -- the kernel is data-adaptive, no declaration argument exists;
@@ -240,6 +246,11 @@ def _arm_schema(row):
     has no declaration word.  Raises rather than guess on an unknown shape.
     """
     n = len(row)
+    if n == 11 and row[10] == 2:
+        rd, rdv, rw, rc, _warps, _wps, rsplit = row[:7]
+        #: `B`, `k` and `m` are not in this era's key at all.  `None` says so, and
+        #: `resolve_arm` must not compare them; `CV` becomes the BODY flag.
+        return rd, None, None, None, rdv, rw, rc, rsplit, None
     if n == 13:
         rd, rb, rk, rm, rdv, rw, rc, rcv, rmo = row[:9]
     elif n == 12:
@@ -271,16 +282,33 @@ def resolve_arm(carry_ops, widths, k, m, d_v, window, chunk, level_modes):
     """
     rows = carry_ops.arms()
     D = len(widths)
+    runtime_addressing = bool(rows) and len(rows[0]) == 11 and rows[0][10] == 2
     by_carve = {}
     for i, row in enumerate(rows):
         rd, rb, rk, rm, rdv, rw, rc, rcv, rmo = _arm_schema(row)
-        if (rd, rb, rk, rm, rw, rc) != (D, widths[0], k, m, window, chunk):
+        if (rd, rw, rc) != (D, window, chunk) or rdv != d_v:
             continue
-        if rdv != d_v:
+        if rb is not None and (rb, rk, rm) != (widths[0], k, m):
             continue
         if rmo is not None and rmo != level_modes:
             continue
         by_carve[rcv] = (i, row)
+    if runtime_addressing:
+        #: THE BODY IS THE CALLER'S NOW, not the arm list's.  Under the older schema a
+        #: cell's `level_modes` chose the body THROUGH the arm list -- a DENSE_BOTH
+        #: declaration had only a channel-split row built for it, a sparse one only a
+        #: carved row.  K50 makes one binary serve every declaration, so the harness
+        #: must name the body explicitly, and it names the one the cell's declaration
+        #: reached on the parent: `level_modes == 0` is the channel-split control, and
+        #: anything else is the carved body.  Getting this wrong would compare two
+        #: different bodies across the tips and call the difference a regression.
+        want = 0 if level_modes else 1
+        if want in by_carve:
+            i, row = by_carve[want]
+            return want, i, row
+        raise RuntimeError(
+            f"REFUSED: this binary carries no {'carved' if want == 0 else 'channel-split'} "
+            f"body at depth={D} d_v={d_v} window={window} chunk={chunk}. arms(): {rows}")
     for cv in CARVE_PREFS:
         if cv in by_carve:
             i, row = by_carve[cv]
@@ -311,6 +339,11 @@ def make_call(ext, pr, pw, gw, v_bf, widths, k, m, window, chunk, carve, level_m
     variant against a stateful baseline).
     """
     args9 = (pr, pw, gw, v_bf, list(widths), int(k), int(m), int(window), int(chunk), int(carve))
+    #: THE K50 SIGNATURE: `k` and `m` left the seam with the templates, and `carve`
+    #: became the BODY flag.  It is probed by ARITY like every other era's -- 13
+    #: positional arguments where the previous era took 15 -- so one invoking copy of
+    #: this file drives both tips and the A/B stays like-for-like.
+    args_rt = (pr, pw, gw, v_bf, list(widths), int(window), int(chunk), int(carve))
 
     #: EVERY PROBE THAT SUCCEEDS MUST LAUNCH THE CONFIGURATION THE TIMED CALL LAUNCHES.
     #: An arity probe is a real kernel launch, and since P80 the seam carries a single
@@ -337,6 +370,12 @@ def make_call(ext, pr, pw, gw, v_bf, widths, k, m, window, chunk, carve, level_m
     #: like the other two and never assumed, so this harness still drives every
     #: earlier binary; an arm that REQUIRES it (`paged_idle`) refuses a binary that
     #: does not take it, rather than measuring an ungated sweep under that name.
+    for tail_bits in (True, False):
+        args = (*args_rt, level_modes, None, s_out, page_tbl) + ((atom_bits,) if tail_bits else ())
+        if tail_bits and atom_bits is None:
+            continue
+        if accepts(*args):
+            return ((lambda a=args: ext.carry_forward_inter(*a)), True, True, tail_bits)
     for takes_bits, takes_modes, takes_planes in (
             (True, True, True), (False, True, True), (False, False, True),
             (False, True, False), (False, False, False)):

@@ -463,3 +463,17 @@ Both are counts, so neither tabulates.
 
 the walk, as two mutually recursive counts over OUTER POSITIONS: what the count
 still asks for when position `p` is reached, and what that position hands back.
+
+<a id="static-for"></a>
+## `static_for` and `ilog2c_dev`
+
+The two language utilities the family's headers share: a compile-time loop, and the runtime
+bit index of a power of two (used only on CTA-uniform geometry words). They live here
+because `box.cuh` is the family's pure-arithmetic header and every other header already
+includes it.
+
+The mode word, the level order and the stream carve LEFT this file at K50. `ModeOrder`,
+`StreamSpans` and `CarveRows` were compile-time functions of the mode word and the digit
+width; both are DATA now, so the one derivation lives in `geom.cuh` and every consumer
+reads its block. `BoxPlan` remains for the REVERSE pass (`backward_kernel.cuh`), whose own
+arm family carries no mode word.

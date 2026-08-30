@@ -107,7 +107,7 @@ def test_every_cotangent_matches_the_reference(T, k_tok, gain, seed, chained):
     assert_fresh_backward_binary()
     #: the replay gate at the end of this test runs the FORWARD arm, which a default
     #: build does not carry at the conformance cell.
-    require_arm(WIDTHS, K, M, WINDOW, 32, carry_ops.LEAF_SPLIT, 0)
+    require_arm(WIDTHS, WINDOW, 32, carry_ops.CARVED)
     cell = Cell(WIDTHS, T, k_tok=k_tok, seed=seed, state_in=chained)
     if gain is not None:
         cell.g_write = torch.full_like(cell.g_write, gain)
@@ -139,7 +139,7 @@ def test_every_cotangent_matches_the_reference(T, k_tok, gain, seed, chained):
     #: THE REPLAY GATE, the cheapest strong gate in the rung: Scan A's slab at the end
     #: of its walk is the forward's own final state, same grid and same batch order.
     fwd = carry_ops.carry_inter(cell.read_bf, cell.write_bf, cell.g_bf.double(),
-                                cell.v_bf.double(), cell.widths, k=K, m=M, window=WINDOW,
+                                cell.v_bf.double(), cell.widths, window=WINDOW,
                                 state_in=cell.state_in_plane(),
                                 state_out=carry_ops.state_plane(
                                     cell.widths, cell.v_bf.shape[0] * cell.v_bf.shape[2],
@@ -239,7 +239,7 @@ def test_the_replay_is_bit_identical_at_the_flagship_arm(window, declaration):
     modes = _declarations()[declaration]
     widths, T = (256, 256), 4 * window
     packed = intra_ops.pack_modes(modes) if _takes_modes() else 0
-    require_arm(widths, K, M, window, 32, carry_ops.LEAF_SPLIT, packed)
+    require_arm(widths, window, 32, carry_ops.CARVED)
     gen = torch.Generator(device="cuda").manual_seed(19)
 
     def plane(width, sparse):
@@ -257,7 +257,7 @@ def test_the_replay_is_bit_identical_at_the_flagship_arm(window, declaration):
     extra = {"level_modes": packed} if _takes_modes() else {}
     #: THE STATE PLANE IS THE CALLER'S (P80): a call handing neither plane is the
     #: NULL-STATE call and produces no state at all, which is not what this cell asks.
-    state_out = carry_ops.carry_inter(read, write, g.double(), v.double(), widths, k=K, m=M,
+    state_out = carry_ops.carry_inter(read, write, g.double(), v.double(), widths,
                                       window=window,
                                       state_out=carry_ops.state_plane(widths, 1, 64),
                                       **extra)[2]
