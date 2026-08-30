@@ -35,6 +35,7 @@ from dataclasses import dataclass
 import torch
 
 from rola._state import MIN_LEVEL_WIDTH, SPLIT_PLANE_DTYPE, StateFormat
+from rola.engine.facts.liveness import LivenessLayout
 from rola.ops import lattice
 from rola.ops._ext import extension
 
@@ -130,17 +131,21 @@ class RoutePlanes:
 
 @dataclass(frozen=True, slots=True)
 class LivenessWords:
-    """The class-1 liveness words, one block per side (C1b owns their derivation).
+    """The class-1 liveness words, in the ONE layout the pass emits and every fold reads.
 
-    Per side, per token, per level, ONE BIT PER DIGIT in canonical order: a side's
-    block is ``[BH, L, sum_l B_l / 8]`` uint8, so a block is ``BH * L * sum_l B_l / 8``
-    bytes exactly. Sparse levels carry the amplitudes' support; a dense level carries
-    its static width mask; a PAD digit is dead by construction, because the producer
-    pads its logits with -inf and the amplitude is then exactly zero.
+    ``words`` is ``[BH, 2, rows, ceil(L / 32)]`` int32 with ``rows = sum_l B_l``, side 0
+    read and side 1 write, ``row = row_base(l) + digit`` in canonical order and
+    ``bit = token % 32`` -- :class:`rola.engine.facts.liveness.LivenessLayout`, which is
+    the contract this surface does not restate and cannot disagree with. Sparse levels
+    carry the amplitudes' support; a dense level carries its static width mask; a PAD
+    digit is dead, because the producer pads its logits with -inf and the amplitude is
+    then exactly zero. :func:`rola.ops.liveness.liveness_words` produces it.
+
+    The type exists so a bare tensor cannot reach the surface by accident; the LAYOUT
+    is the contract's and is checked against the descriptor the call already carries.
     """
 
-    read: torch.Tensor
-    write: torch.Tensor
+    words: torch.Tensor
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,16 +292,16 @@ def _refuse_operands(routes, v, descriptor: StateFormat, liveness, activity):
             f"d_v columns -- the kernel never sees a partial tile.")
     if not isinstance(liveness, LivenessWords):
         raise CarryRefusal(
-            f"the liveness words reach this surface as a rola.ops.carry.LivenessWords "
-            f"pair, got {type(liveness).__name__}.")
-    want = (bh, length, wtot // 8)
-    for name, block in (("liveness.read", liveness.read),
-                        ("liveness.write", liveness.write)):
-        if block.dtype is not torch.uint8 or tuple(block.shape) != want:
-            raise CarryRefusal(
-                f"{name} is {tuple(block.shape)} {block.dtype}; a side's class-1 block is "
-                f"[BH, L, sum_l B_l / 8] = {want} uint8 -- one bit per digit per token in "
-                f"canonical order.")
+            f"the liveness words reach this surface as a rola.ops.carry.LivenessWords, "
+            f"got {type(liveness).__name__}.")
+    layout = LivenessLayout.of(descriptor, length)
+    want = (bh, 2, layout.rows, layout.words)
+    if liveness.words.dtype is not torch.int32 or tuple(liveness.words.shape) != want:
+        raise CarryRefusal(
+            f"liveness.words is {tuple(liveness.words.shape)} {liveness.words.dtype}; the "
+            f"class-1 block is [BH, 2, sum_l B_l, ceil(L / 32)] = {want} int32 -- one bit "
+            f"per digit per token per side in canonical order "
+            f"(rola.engine.facts.liveness.LivenessLayout).")
     pages = descriptor.N // PAGE_LEAVES
     if activity.dtype is not torch.uint8 or tuple(activity.shape) != (bh, pages):
         raise CarryRefusal(
@@ -350,7 +355,7 @@ def carry_forward(routes: RoutePlanes, v: torch.Tensor, *, descriptor: StateForm
     extension().carry_forward(
         routes.read, routes.write, routes.gain, v, num, den,
         list(descriptor.B), int(descriptor.DV), int(descriptor.page_bits),
-        int(launch.warps_per_cta), liveness.read, liveness.write, activity,
+        int(launch.warps_per_cta), liveness.words, activity,
         state_in, state_out, page_table)
     return num, den
 
@@ -390,7 +395,7 @@ def carry_backward(routes: RoutePlanes, v: torch.Tensor, d_num: torch.Tensor,
     return extension().carry_backward(
         routes.read, routes.write, routes.gain, v, d_num, d_den,
         list(descriptor.B), int(descriptor.DV), int(descriptor.page_bits),
-        int(launch.warps_per_cta), liveness.read, liveness.write, activity,
+        int(launch.warps_per_cta), liveness.words, activity,
         state_in, d_state_out, page_table)
 
 

@@ -44,9 +44,11 @@ from __future__ import annotations
 import torch
 
 from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
+from rola.engine.facts.liveness import LivenessLayout, side_statics
 from rola.ops import carry as carry_ops
 from rola.ops import intra as intra_ops
 from rola.ops._ext import extension
+from rola.ops.liveness import liveness_words
 
 #: THE WINDOW, restated so a caller has one import. It is the CARRY KERNEL's constant
 #: (K50's axis law), and the intra family must carry an arm at the same number, because
@@ -71,24 +73,19 @@ def _descriptor(widths, dv: int, bh: int) -> StateFormat:
                        ids=int(bh) * (n >> PAGE_RECTANGLE_BITS))
 
 
-def _liveness_words(pread: torch.Tensor, pwrite: torch.Tensor) -> carry_ops.LivenessWords:
-    """THE CLASS-1 WORDS, packed from the planes this call already built.
+def _liveness_words(pread: torch.Tensor, pwrite: torch.Tensor,
+                    descriptor: StateFormat) -> carry_ops.LivenessWords:
+    """THE CLASS-1 WORDS, from the ONE pass over the planes this call already built.
 
-    Per side, per token, one bit per digit in canonical order -- the exact byte
-    layout `rola.ops.carry.LivenessWords` declares. A level is live where its
-    amplitude is nonzero, which is the digit-grain fact the routing producer's own
-    zero already states, so packing it here is a REPACK of the plane this call
-    already holds, not a second scan of the amplitudes (`benchmarks.cells.
-    liveness_words` packs a cell's own draw the identical way).
+    There is one producer of liveness and this is a CALLER of it, never a second
+    derivation: `rola.ops.liveness.liveness_words` votes every level from its own
+    amplitudes, which is what the static width mask reduces to on an unpadded
+    topology, and the layout is the contract's.
     """
-
-    def pack(plane: torch.Tensor) -> torch.Tensor:
-        bits = (plane != 0).to(torch.uint8)
-        bh, length, wtot = bits.shape
-        weights = 1 << torch.arange(8, device=bits.device, dtype=torch.uint8)
-        return (bits.reshape(bh, length, wtot // 8, 8) * weights).sum(-1).to(torch.uint8)
-
-    return carry_ops.LivenessWords(read=pack(pread), write=pack(pwrite))
+    layout = LivenessLayout.of(descriptor, pread.shape[-2])
+    statics = side_statics(layout, (False,) * layout.D, layout.B)
+    return carry_ops.LivenessWords(
+        words=liveness_words(pread, pwrite, layout, statics, statics))
 
 
 def _conservative_activity(descriptor: StateFormat, bh: int, device) -> torch.Tensor:
@@ -178,7 +175,7 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
     descriptor = _descriptor(widths, dv, bh)
     launch = carry_ops.LaunchShape()
     geometry = carry_ops.geometry_block(descriptor, launch)
-    liveness = _liveness_words(pread, pwrite)
+    liveness = _liveness_words(pread, pwrite, descriptor)
     activity = (atom_bits if atom_bits is not None
                else _conservative_activity(descriptor, bh, v_bh.device))
     #: THE STATE PLANE IS THE CALLER'S WHEN THE CALLER HAS ONE (state.md section 4): a
@@ -224,7 +221,7 @@ class _Prefill(torch.autograd.Function):
         descriptor = _descriptor(widths, dv, bh)
         launch = carry_ops.LaunchShape()
         geometry = carry_ops.geometry_block(descriptor, launch)
-        liveness = _liveness_words(pread, pwrite)
+        liveness = _liveness_words(pread, pwrite, descriptor)
         activity = _conservative_activity(descriptor, bh, v_bh.device)
         state_out = carry_ops.state_plane(descriptor, bh, device=v_bh.device)
 
@@ -258,7 +255,7 @@ class _Prefill(torch.autograd.Function):
         descriptor = _descriptor(widths, dv, bh)
         launch = carry_ops.LaunchShape()
         geometry = carry_ops.geometry_block(descriptor, launch)
-        liveness = _liveness_words(pread, pwrite)
+        liveness = _liveness_words(pread, pwrite, descriptor)
         activity = _conservative_activity(descriptor, bh, pread.device)
 
         routes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)

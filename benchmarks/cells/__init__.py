@@ -230,26 +230,19 @@ def realize(spec: CellSpec, B: int = 1, H: int = 1, device: str = "cuda") -> Rea
 def liveness_words(realized: RealizedCell, descriptor):
     """THE CELL'S OWN STATEMENT of its draw's support, as the class-1 words.
 
-    A cell knows its support because it DREW it, so packing the words here is the
-    draw's own truth and not a second derivation of the facts pass: C2a's pass reads
-    the amplitudes on device and the two legs are then a cross-check, which is the only
-    shape in which two derivations of one fact are allowed to exist.
-
-    Per side, per token, per level, one bit per digit in canonical order:
-    ``[BH, L, sum_l B_l / 8]`` uint8, little-endian within a byte.
+    A cell knows its support because it DREW it, so the words here come from the
+    contract's pure-torch MODEL and never from the pass: the device pass reads the
+    amplitudes itself and the two legs are then a cross-check, which is the only shape
+    in which two derivations of one fact are allowed to exist. The LAYOUT is the one
+    contract both legs share: ``[BH, 2, sum_l B_l, ceil(L / 32)]`` int32.
     """
-    import torch
-
+    from rola.engine.facts import liveness as lv
     from rola.ops.carry import LivenessWords, pack_side
 
-    def pack(levels):
-        plane = pack_side(levels)
-        bits = (plane != 0).to(torch.uint8)
-        bh, length, wtot = bits.shape
-        weights = (1 << torch.arange(8, device=bits.device, dtype=torch.uint8))
-        return (bits.reshape(bh, length, wtot // 8, 8) * weights).sum(-1).to(torch.uint8)
-
-    return LivenessWords(read=pack(realized.read), write=pack(realized.write))
+    read, write = pack_side(realized.read), pack_side(realized.write)
+    layout = lv.LivenessLayout(D=len(descriptor.B), B=tuple(descriptor.B), L=read.shape[-2])
+    statics = lv.side_statics(layout, (False,) * layout.D, layout.B)
+    return LivenessWords(words=lv.liveness_words(read, write, layout, statics, statics))
 
 
 def conservative_activity(descriptor, BH: int = 1, device: str = "cuda"):

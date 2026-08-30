@@ -49,29 +49,28 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "carry_forward",
       [](const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&,
          at::Tensor&, const std::vector<int64_t>&, int64_t, int64_t, int64_t, const at::Tensor&,
-         const at::Tensor&, const at::Tensor&, const c10::optional<at::Tensor>&,
-         const c10::optional<at::Tensor>&, const c10::optional<at::Tensor>&) {
+         const at::Tensor&, const c10::optional<at::Tensor>&, const c10::optional<at::Tensor>&,
+         const c10::optional<at::Tensor>&) {
         TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_forward)");
       },
       "the carry forward launch surface -- CONTRACT ONLY, no implementation on this line",
       py::arg("read"), py::arg("write"), py::arg("gain"), py::arg("v"), py::arg("num"),
       py::arg("den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
-      py::arg("warps_per_cta"), py::arg("live_read"), py::arg("live_write"), py::arg("activity"),
-      py::arg("state_in"), py::arg("state_out"), py::arg("page_table"));
+      py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
+      py::arg("state_out"), py::arg("page_table"));
   m.def(
       "carry_backward",
       [](const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
          const at::Tensor&, const at::Tensor&, const std::vector<int64_t>&, int64_t, int64_t,
-         int64_t, const at::Tensor&, const at::Tensor&, const at::Tensor&,
-         const c10::optional<at::Tensor>&, const c10::optional<at::Tensor>&,
-         const c10::optional<at::Tensor>&) {
+         int64_t, const at::Tensor&, const at::Tensor&, const c10::optional<at::Tensor>&,
+         const c10::optional<at::Tensor>&, const c10::optional<at::Tensor>&) {
         TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_backward)");
       },
       "the carry reverse launch surface -- CONTRACT ONLY, no implementation on this line",
       py::arg("read"), py::arg("write"), py::arg("gain"), py::arg("v"), py::arg("d_num"),
       py::arg("d_den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
-      py::arg("warps_per_cta"), py::arg("live_read"), py::arg("live_write"), py::arg("activity"),
-      py::arg("state_in"), py::arg("d_state_out"), py::arg("page_table"));
+      py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
+      py::arg("d_state_out"), py::arg("page_table"));
   m.def(
       "carry_build_stamp",
       []() { TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_build_stamp)"); },
