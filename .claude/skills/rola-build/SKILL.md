@@ -91,3 +91,7 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
   `--expt-relaxed-constexpr` it fails with unrelated-looking `constexpr __host__` errors) and read
   `cuobjdump -res-usage` on the `.o`: it reproduces the full build's numbers exactly (verified F1b, ten
   kernels, two trees). ~4 s per arm. A register-gated stage answers its gate here, before any full build.
+- A BUILD LAUNCHED AS A SHELL BACKGROUND JOB SENDS NO NOTIFICATION (G2, 2026-08-29): ending your turn to
+  "resume on its notification" is a dead stop — only harness-tracked tasks wake you. Wait on the exit
+  marker yourself (Monitor with an until-loop on the marker file, or `until [ -f marker ]; do sleep 30;
+  done` with a long timeout) and continue in the same turn. Never end a turn on an untracked build.
