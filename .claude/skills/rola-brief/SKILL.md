@@ -115,3 +115,8 @@ that into the skill the same day (process/pointers only — never facts).
 - VERIFY EVERY NAMED PATH EXISTS before treating a brief's ownership line as settled (NICE: the brief named
   tools/build/build_lock.py; the file is tools/build_lock.py — the worker checked with git ls-tree and
   flagged it; do that first, every time).
+- IN-KERNEL SWITCH CHECKLIST (Blake, 2026-08-29; the facts live on card K50 "LESSONS FOR EVERY FUTURE
+  IN-KERNEL SWITCH"): shape vs addressing; generated set with asserts via uniform_switch; switch outside
+  the hot loop, one body per member; one source, N bodies, no __noinline__ in the loop; per-side choices
+  device-side, whole-kernel choices template axes; selectivity + bank lines; compile budget per arm.
+  Every brief that adds or changes a structure branch cites the checklist and answers each item.
