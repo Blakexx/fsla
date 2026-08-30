@@ -322,15 +322,16 @@ slots to per-level digits — is REGISTER SHAPE, not addressing: a runtime span 
 index a register array dynamically (a spill) or a switch over every layout in the hot
 loop (measured 2× instructions). The derivation is generic in the architecture's state
 capacity: `leaves_per_sm` (the register file on sm_80/90, tensor memory on sm_100)
-balanced over the D levels is the SM's box; `workers_per_sm` (warps here; tensor-memory
-lane groups on sm_100) is the constant that carves it; each SIDE's level order divides
-the box, sparse levels first, until the worker count is reached, and what remains is
-that side's worker sub-box and its slot map. The set of shapes a side can select is
-generated from (D, log₂ workers_per_sm, the box's bit vector) — its COUNT is flat across
-architectures while each body's size scales with leaves per worker — and the selection
-per side is a `uniform_switch` over that set outside the window loop. A CTA holds a
-contiguous subset of the SM's worker sub-boxes; how many is a launch parameter and never
-enters the shape. *(Ruled; landing with the runtime-addressing work.)*
+balanced over the D levels is the SM's box; `warps_per_sm` is the constant that carves
+it — a warp owns a segment of the box on every architecture; each SIDE's level order
+divides the box, sparse levels first, until the warp count is reached, and what remains
+is that side's warp segment. The compiled shape is the slot map of the REGISTER TILE a
+warp holds per step (today one tile is the whole segment; on sm_100 a warp walks its
+tensor-memory segment tile by tile, a runtime trip count over identical bodies). The set
+of shapes a side can select is generated from (D, log₂ warps_per_sm, the box's bit
+vector) — its count is flat across architectures — and the selection per side is a
+`uniform_switch` over that set outside the window loop. A CTA holds a contiguous subset
+of the SM's warp segments; how many is a launch parameter and never enters the shape. *(Ruled; landing with the runtime-addressing work.)*
 
 **One geometry block, one derivation.** The modes, the widths, the spans, the row maps
 and the decode lattice are derived in exactly ONE place, from the descriptor, and
