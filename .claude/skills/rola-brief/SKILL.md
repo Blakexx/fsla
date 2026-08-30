@@ -80,3 +80,5 @@ that into the skill the same day (process/pointers only — never facts).
   cover SCALES in the regime where the mechanism is most expensive. A cover that scales with the window's
   live work under a cost that does not (a per-window fixed transit) is uncovered exactly where it matters
   (many short windows); size priming depth from the ledger (exposed cycles vs cover cycles), never guess.
+- WAITING ON A BUILD: only a harness-tracked task wakes you; a shell-backgrounded build does not — wait
+  on its exit marker in-turn (rola-build addendum, G2), never end the turn to "resume on notification".
