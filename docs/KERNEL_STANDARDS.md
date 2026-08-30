@@ -371,3 +371,10 @@ the descriptor's strict shape (powers of two ≥ 16, a shipped DV, N a multiple 
 REFUSES the rest — it never pads or masks. The seam is the only translator. Both boundaries are tested:
 API tests prove padded runs bit-identical; kernel-boundary tests call the launch surface with unpadded
 shapes and assert the refusal; a lint keeps logical-width fields out of every kernel entry signature.
+
+## CONSTITUTION addendum (Blake, 2026-08-29): R9 ENFORCEMENT IS ONE PRIMITIVE
+Every CTA-uniform structure branch in device code is a `uniform_switch<Set>(value, body)`
+(`common/structure_switch.cuh`): the four layers — generated Set with a count assert, compile-time
+exhaustiveness (derivation outputs ⊆ Set), the seam's launch refusal reading the same Set, a `__trap()`
+default with the post-build coverage sweep — are the primitive's contract, never re-implemented per site.
+A hand-written device `switch` on a geometry field is a lint finding.
