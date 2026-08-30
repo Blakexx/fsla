@@ -106,3 +106,7 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
   at a time, and watch the host.
 - A CENSUS COMPILE IS A COMPILE: single-TU nvcc for the register census goes through the build lock's
   slots too (G2c's arm TUs took 54 s each; several in parallel are a build).
+- THE HOST BUDGET IS A MEMORY CAP (measured, incident 3, 2026-08-30): a cicc peaks near 2 GB; the budget
+  default is min(cores−2, RAM/3 GB) (7 on the 23 GB host) and ninja follows it. Never set
+  ROLA_HOST_BUDGET_SLOTS above RAM/3 GB; never run two gate builds concurrently (two worktrees = two
+  budgets' worth only if the budget is shared — it is: one lock directory per host).
