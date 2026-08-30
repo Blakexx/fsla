@@ -8,9 +8,10 @@ declaration actually select, and does every member of the generated set have one
 branch that nothing exercises is a promise, not a proof, and a member no declaration
 reaches is dead code the compiler still pays for.
 
-So, for every SHAPE the arm table declares -- `(D, DV, warps)` -- this enumerates the
-topologies and mode words that depth admits, derives each one's block through the SHIPPED
-derivation (`rola.ops.carry.geometry`, never a mirror), and reports:
+So, for every SHAPE the arm table declares -- `(D, DV, streams)`, at BOTH of K50's
+two-value `warps_per_cta` set (`(1, 8)` shipped, `(2, 4)` the test/diagnostic arm) -- this
+enumerates the topologies and mode words that depth admits, derives each one's block
+through the SHIPPED derivation (`rola.ops.carry.geometry`, never a mirror), and reports:
 
 * the `(side, member)` pairs reached, against the generated set's own size;
 * the liveness clause signature per level and side (`carves`, and whether the level votes
@@ -38,8 +39,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gen_shards  # noqa: E402 -- the path insert must precede it
 
 #: the arch's own law, mirrored from `geom.cuh#arch-constants`: the CTA's box is
-#: `leaves_per_warp(DV)` leaves per warp, and these arms run four warps.
+#: `leaves_per_warp(DV)` leaves per warp.
 WARPS_PER_SM = 8
+
+#: K50's 2x4 ruling (KERNEL_STANDARDS R15): `warps_per_cta` is a compile-time axis with
+#: exactly this two-value set -- `(1, 8)` the shipped, one-CTA-per-SM shape, `(2, 4)` the
+#: latency-diagnostic test arm. No row in `gen_shards.CARRY_ARMS` carries a `warps_per_cta`
+#: field yet (the list is `()` pending G4's refill under the final `(D, DV, warps_per_cta)`
+#: key; today's 13-field schema's `WPS` is "warps per write stream", a DIFFERENT, older
+#: field), so until then this tool sweeps the ARCH axis uniformly across every declared
+#: shape rather than reading a per-row value that does not exist -- the member set is
+#: `f(D, leaves_per_warp, warps_per_cta)` (`docs/internals/common/geom.md#cta-box-first`),
+#: so a gap at either value is a real gap.
+WARPS_PER_CTA = (8, 4)
 
 
 def leaves_per_warp(dv: int) -> int:
@@ -83,37 +95,40 @@ def _shapes():
 def sweep(verbose=True):
     gaps = []
     for (D, dv, nsr, nsw), rows in sorted(_shapes().items()):
-        bc = leaves_per_warp(dv) * 4
-        members = carry_ops.sub_boxes(D, bc, max(nsr, nsw))
-        realized, refused, reached = set(), {}, set()
-        for widths in _topologies(D, bc):
-            for modes in range(0, 1 << (2 * D)):
-                try:
-                    block = carry_ops.geometry(list(widths), level_modes=modes, bc=bc,
-                                               nsr=nsr, nsw=nsw, d_v=dv)
-                except RuntimeError as ex:
-                    refused[str(ex).split(" (widths=")[0]] = (widths, modes)
-                    continue
-                realized.add(_signature(block, D))
-                for side in ("r", "w"):
-                    reached.add((side, block[side]["assign"]))
-        if verbose:
-            print(f"shape D={D} dv={dv} streams=({nsr},{nsw}) BC={bc} "
-                  f"[{len(rows)} arm rows]: {len(realized)} distinct clause signatures, "
-                  f"{len(members)} members generated, {len(reached)} (side, member) pairs "
-                  f"reached")
-            for reason, (widths, modes) in sorted(refused.items()):
-                print(f"    REFUSED (doing its job): {reason} -- e.g. widths={widths} "
-                      f"modes={modes}")
-        if not realized:
-            gaps.append(f"shape D={D} dv={dv}: no declaration derived a block at all")
-            continue
-        #: THE EXHAUSTIVENESS QUESTION, asked of the GENERATED set: a member nothing can
-        #: select is a compiled case no launch reaches.
-        for a in range(len(members)):
-            if nsr > 1 and ("r", a) not in reached and ("w", a) not in reached:
-                gaps.append(f"shape D={D} dv={dv}: member {a} ({members[a]}) of the "
-                            f"generated set is selected by no declaration")
+        for warps_per_cta in WARPS_PER_CTA:
+            bc = leaves_per_warp(dv) * warps_per_cta
+            members = carry_ops.sub_boxes(D, bc, max(nsr, nsw))
+            realized, refused, reached = set(), {}, set()
+            for widths in _topologies(D, bc):
+                for modes in range(0, 1 << (2 * D)):
+                    try:
+                        block = carry_ops.geometry(list(widths), level_modes=modes, bc=bc,
+                                                   nsr=nsr, nsw=nsw, d_v=dv)
+                    except RuntimeError as ex:
+                        refused[str(ex).split(" (widths=")[0]] = (widths, modes)
+                        continue
+                    realized.add(_signature(block, D))
+                    for side in ("r", "w"):
+                        reached.add((side, block[side]["assign"]))
+            if verbose:
+                print(f"shape D={D} dv={dv} streams=({nsr},{nsw}) warps_per_cta="
+                      f"{warps_per_cta} BC={bc} [{len(rows)} arm rows]: {len(realized)} "
+                      f"distinct clause signatures, {len(members)} members generated, "
+                      f"{len(reached)} (side, member) pairs reached")
+                for reason, (widths, modes) in sorted(refused.items()):
+                    print(f"    REFUSED (doing its job): {reason} -- e.g. widths={widths} "
+                          f"modes={modes}")
+            if not realized:
+                gaps.append(f"shape D={D} dv={dv} warps_per_cta={warps_per_cta}: no "
+                            f"declaration derived a block at all")
+                continue
+            #: THE EXHAUSTIVENESS QUESTION, asked of the GENERATED set: a member nothing
+            #: can select is a compiled case no launch reaches.
+            for a in range(len(members)):
+                if nsr > 1 and ("r", a) not in reached and ("w", a) not in reached:
+                    gaps.append(f"shape D={D} dv={dv} warps_per_cta={warps_per_cta}: "
+                                f"member {a} ({members[a]}) of the generated set is "
+                                f"selected by no declaration")
     return gaps
 
 

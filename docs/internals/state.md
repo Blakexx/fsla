@@ -111,6 +111,17 @@ two sequences and continuing after a `clone` stay legal and the caller's semanti
 own. The descriptor is fixed for the state's life and travels with the
 `LayerContinuation`; a re-layout is an explicit state op, never something a call does.
 
+**C1a PINS THIS CONTRACT WITHOUT A KERNEL BODY**
+(`tests/unit/test_state_contract.py`): the seven-field list above, each field's own
+refusal, and that `_kernel_entry` (prefill) and `_decode_entry` (decode) both build the
+call's presented format through `_format_of` and check it through `StateFormat.check` --
+the same two calls, never a second comparison at either seam, which is the ADMISSION LAW
+paragraph above made structural. NOT YET ON THE DESCRIPTOR: the PADDING ruling's
+logical-vs-padded split (`b_l` the caller's width, `B_l` the padded, shipped one) is
+DESIGNED (K50 `## RULED ... PADDING AT THE PRODUCER`) but not built — `B` here already
+carries only the lawful, padded width, and `StateFormat` has no separate logical-width
+field yet. That lands with PAD (card `C_CLEAN_SLATE.md`'s C2), not C1.
+
 `strategy="cow"` is refused AT CONSTRUCTION, by name: copy-on-write branching is
 designed (per-branch tables, refcounted slot GC) and not built, and its settled
 semantics are [§9.1](#cow). `"mutable"` is the built strategy: the call writes in
