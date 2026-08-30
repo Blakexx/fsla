@@ -98,21 +98,15 @@ def canonical_from_plane(plane):
     return from_split_planes(plane).reshape(plane.shape[0], -1, plane.shape[-1])
 
 
-#: THE DECLARATION THE FLAGSHIP SHIPS UNDER: write-sparse on the even levels and
-#: read-sparse on the odd ones (`sum_l mode_l << 2l` = 6 at D = 2).  Spelled here
-#: because the freshness stamp has to be read off an arm the binary actually carries,
-#: and since K36 a default build carries the SHIPPED rows -- of which the DENSE_BOTH
-#: flagship (arm 0) is not one.
-ALT = 6
-
-
 def built_arms() -> set:
-    """`{(D, B, k, m, d_v, W, C, carve, level_modes)}` -- what THIS binary carries.
+    """`{(D, DV, warps_per_cta)}` -- what THIS binary carries.
 
     `arms()` is the binary's own answer (`rola.ops.carry.arms()`), so this is a fact
-    about the `.so` under test and never about the source tree that produced it.
+    about the `.so` under test and never about the source tree that produced it. EMPTY
+    on this line: C0 cleared the carry family, G4 refills the table and C3 builds the
+    bodies (card `development/queue/C_CLEAN_SLATE.md`).
     """
-    return {tuple(row[:9]) for row in carry_ops.arms()}
+    return {tuple(row) for row in carry_ops.arms()}
 
 
 def declared_arms() -> set:
@@ -129,51 +123,40 @@ def declared_arms() -> set:
         sys.path.insert(0, str(tools))
     import gen_shards
 
-    return {tuple(row[:9]) for row in gen_shards.CARRY_ARMS}
+    return {tuple(row) for row in gen_shards.CARRY_ARMS}
 
 
-def require_arm(widths, k, m, window, chunk, carve, level_modes, d_v=carry_ops.D_V):
+def require_arm(D: int, DV: int, warps_per_cta: int) -> None:
     """SKIP unless this binary carries the arm, and NAME the one it is missing.
-
-    Since K36 a default build compiles the SHIPPED rows only; the conformance cells
-    (`N = 4096`, `W = 64`) and the two DENSE_BOTH controls are TEST rows, built for the
-    battery and not shipped. A test that needs one says so here rather than failing
-    inside the dispatch with "unbuilt carry arm", which is the same fact reported as a
-    defect.
 
     AN UNDECLARED ARM IS NOT A SKIP. If the key is in no row of the list at all, the
     binary is not missing it -- nothing builds it, in any configuration -- and turning
     that into a skip would report an absent arm as satisfied coverage. Only a DECLARED
-    row that this build did not compile is skippable; anything else falls through to the
-    dispatch, which refuses it and names the whole key.
+    row this build did not compile is skippable; anything else falls through to the
+    launch surface, which refuses it and names the reason. On the clean line the list is
+    EMPTY, so nothing is skippable and every carry cell reaches the surface's honest
+    no-implementation failure -- which is the state card C's TEST-DRIVEN ruling asks for.
     """
     import pytest
 
-    key = (len(widths), widths[0], k, m, d_v, window, chunk, carve, level_modes)
+    key = (D, DV, warps_per_cta)
     if key in built_arms() or key not in declared_arms():
         return
-    pytest.skip(
-        f"this binary does not carry the carry arm (widths={tuple(widths)}, k={k}, "
-        f"m={m}, d_v={d_v}, W={window}, C={chunk}, carve={carve}, "
-        f"level_modes={level_modes}). It is a declared TEST row; build the battery's "
-        f"set: ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86 pip install -e . "
-        f"--no-build-isolation")
+    pytest.skip(f"this binary does not carry the carry arm {key}; it is a declared TEST "
+                f"row. Build the battery's set: ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86 "
+                f"pip install -e . --no-build-isolation")
 
 
 def assert_fresh_binary():
     """DEVICE-SIDE, because a path or hash check cannot catch an extension trap.
 
-    Read off a SHIPPED arm (the flagship at `ALT`): the stamp itself is arm-independent,
-    but the entry point that returns it is not, and a default build does not carry the
-    DENSE_BOTH flagship this used to ask for.
+    THERE IS NO SUCH FACT FOR THE CARRY FAMILY ON THIS LINE: it has no device code, so
+    the stamp entry refuses rather than returning a stale or invented census, and this
+    helper propagates that refusal instead of substituting a weaker check for it
+    (`extension-trap-device-side-check`). C3-K0 restores the fact and this assertion
+    with it.
     """
-    import rola
-    stamp = carry_ops.build_stamp((256, 256), 4, 8, carry_ops.WINDOW, 32,
-                                  carry_ops.LEAF_SPLIT, ALT)
-    assert stamp[0] == carry_ops.BUILD_MAGIC, (
-        f"stale binary: the carry kernel's device stamp is {stamp[0]}, not "
-        f"{carry_ops.BUILD_MAGIC}. rola is {rola.__file__}")
-    return stamp
+    return carry_ops.build_stamp()
 
 
 def relative(actual, reference):
