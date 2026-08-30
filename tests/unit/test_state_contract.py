@@ -159,3 +159,43 @@ def test_kernel_entry_and_decode_entry_both_call_the_one_admission_law():
 def test_format_of_sources_dv_from_the_value_stream_not_the_routing():
     """`cols` needs `d_v`, which the routing does not carry (`state.md#binding`)."""
     assert "d_v" in inspect.signature(_format_of).parameters
+
+
+# -- K53: DECODE'S OWN OP ENTRY ASKS THE SAME LAW, NOT ONLY A BOUND STATE ------------------
+
+def test_decode_op_entry_reuses_state_format_not_a_second_copy():
+    """STRUCTURAL PIN, decode's side of `test_kernel_entry_and_decode_entry_both_call_the_one_admission_law`.
+
+    That test pins `RoLAState._decode_entry` (a BOUND state's own check); this pins
+    `rola.ops.decode`'s OP ENTRY, which a call reaches directly with no `RoLAState` in
+    play at all (every oracle/integration fixture in `tests/oracle/test_decode_*.py` and
+    `tests/integration/test_decode_*.py` calls `derive_decode_geometry` this way). Before
+    K53 that path asked no floor at all -- `StateFormat` is imported here rather than a
+    hand-rolled power-of-two check, so a future rewrite that duplicates the rule instead
+    of asking the one class shows up as a source diff here.
+    """
+    from rola.ops import decode as decode_ops
+
+    src = inspect.getsource(decode_ops._admit)
+    assert "StateFormat(" in src, "_admit does not route through StateFormat"
+    geometry_src = inspect.getsource(decode_ops.derive_decode_geometry)
+    assert "_admit(" in geometry_src, "derive_decode_geometry does not call _admit"
+
+
+def test_decode_op_entry_refuses_an_unlawful_topology_by_name():
+    """K53: decode's D=4 arm's OLD topology, `(8, 8, 8, 8)`, is unlawful under the floor
+    every prefill call already refuses at -- decode's own entry now refuses it by the
+    SAME name (`StateFormat`'s), not a decode-shaped message of its own."""
+    from rola.ops import decode as decode_ops
+
+    with pytest.raises(ValueError, match="level 0 is 8"):
+        decode_ops._admit((8, 8, 8, 8))
+
+
+@pytest.mark.parametrize("widths", [(64, 64), (16, 16, 16), (16, 16, 16, 16)])
+def test_decode_op_entry_accepts_every_shipped_decode_topology(widths):
+    """The three topologies `test_decode_vs_oracle.py` carries post-K53 -- none of them
+    is refused by the law that replaced the missing floor."""
+    from rola.ops import decode as decode_ops
+
+    decode_ops._admit(widths)  # no raise

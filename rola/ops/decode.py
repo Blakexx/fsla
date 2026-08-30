@@ -34,6 +34,7 @@ from dataclasses import dataclass
 
 import torch
 
+from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
 from rola.engine.plan import DecodeGeometry, DecodePlan
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
@@ -89,6 +90,27 @@ def _shipped_decode_dv(D: int, decay: bool, device) -> tuple[int, ...]:
     return dv_at_shape
 
 
+def _admit(widths: tuple[int, ...]) -> None:
+    """DECODE'S OP ENTRY, THE SAME DESCRIPTOR CHECK AS PREFILL (K53).
+
+    K50 declared ONE admission law for both arms; until now decode's own entry
+    never asked it -- :class:`~rola._state.StateFormat` is what
+    ``RoLAState._kernel_entry`` builds a call's presented descriptor through, and
+    this is the SAME class, so a topology narrower than its floor (every ``B_l`` a
+    power of two at or above :data:`~rola._state.MIN_LEVEL_WIDTH`) is refused by
+    name here exactly as it would be at prefill's seam, rather than only wherever a
+    call happens to route through a bound :class:`~rola._state.RoLAState`.
+
+    Only the levels are this call's business: ``DV`` and ``ids`` are placeholders
+    that satisfy the descriptor's OTHER fields (an even ``DV``, a page-aligned
+    ``N``, which every lawful ``widths`` already is) without asking
+    :func:`_shipped_decode_dv` -- that is decode's own, separate law, checked next,
+    and it alone needs the extension.
+    """
+    StateFormat(D=len(widths), B=widths, order=CANONICAL_ORDER, page_bits=PAGE_RECTANGLE_BITS,
+                DV=2, dtype=SPLIT_PLANE_DTYPE, ids=1)
+
+
 def derive_decode_geometry(
     topology: Topology,
     *,
@@ -105,15 +127,17 @@ def derive_decode_geometry(
     LOGICAL value width, and this is the SEAM -- the geometry this returns carries
     the padded ``DV`` (:func:`_shipped_decode_dv`), which is what the scratch sizing
     and the launch address. Decode's arm key is ``(DV, D, decay)`` ONLY (:func:`arms`):
-    per-level widths are runtime addressing with no floor of their own (unlike
-    carry's box/warp-sub-box register shape), so ``topology.widths`` travels
-    unpadded -- any width this build already runs at continues to.
+    ``DV`` is padded to a shipped value, but the per-level widths carry no such
+    shipped set of their own, so ``topology.widths`` travels to the kernel exactly as
+    the caller holds them -- past :func:`_admit`'s floor, which REFUSES rather than
+    pads (R13: the kernel never pads or masks).
 
     ``n_split`` is FROZEN here and never selected per step: re-deriving it would
     reintroduce exactly the per-step selection the design dissolves
     (:func:`derive_n_split`).
     """
     widths = tuple(topology.widths)
+    _admit(widths)
     d_v = padded_value_width(d_v, shipped=_shipped_decode_dv(len(widths), decay, device))
     D = len(widths)
     k, m = derive_lattice(widths)
@@ -405,8 +429,9 @@ def _decode_step(
     which is what makes this the SEAM for decode's value width: ``v`` here is still
     the caller's own logical ``d_v``, padded to ``config.d_v``, and the returned
     ``y`` is sliced back to it (``rola.ops.padding``). Per-level widths are NOT
-    padded -- decode's arm key carries no width floor, so ``read_levels``/
-    ``write_levels`` reach the kernel exactly as the caller holds them.
+    padded -- :func:`derive_decode_geometry` already refused ``config`` past
+    :func:`_admit`'s floor rather than pad it, so ``read_levels``/``write_levels``
+    reach the kernel exactly as the caller holds them.
     """
     guard_no_grad((v, g_write, *read_levels, *write_levels,
                    *(decay.dials if decay is not None else ())))
