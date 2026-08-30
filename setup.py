@@ -83,17 +83,45 @@ CUTLASS_DIR = ROOT / "csrc" / "third_party" / "cutlass"
 #: the build and the ratification gate must not maintain two copies of the codegen
 #: flag list or two copies of the instantiation matrix. Both are imported from there.
 sys.path.insert(0, str(ROOT / "tools"))
+# These follow the sys.path insert above and cannot be hoisted into the import block
+# at the top of the file.
+# isort: off
 import build_flags  # noqa: E402
 import build_lock  # noqa: E402
 import gen_shards  # noqa: E402
 import mold_toolchain  # noqa: E402
 import ratify  # noqa: E402
 import sccache_toolchain  # noqa: E402
+# isort: on
 
 #: THE RATIFIED SET. Overridable only downward in practice: adding an arch here
 #: without a manifest fails the build at ``_gate_ratified`` (rule 3), which is the
 #: point -- the supported matrix IS the ratified set, not a wish list.
-ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") if a]
+def _declared_archs() -> list[str]:
+    """The architectures this build compiles, from the environment or the manifests.
+
+    ``ROLA_CUDA_ARCHS`` names them explicitly. Unset, they are read from the ratified
+    manifests present in ``tools/manifests`` -- the same files rule 3 then gates each
+    arch against, so the fatbin's arch list and the ratification's have ONE source.
+    An unset variable used to default to a hard-coded pair, which is a second
+    declaration of the supported matrix and the reason a build asked for one arch's
+    worth of slots and compiled two arches' worth of ``cicc``.
+    """
+    env = os.getenv("ROLA_CUDA_ARCHS")
+    if env is not None:
+        return [a for a in env.split(";") if a]
+    named = sorted(p.stem.removeprefix("sm_") for p in MANIFEST_DIR.glob("sm_*.json"))
+    if not named:
+        raise RuntimeError(
+            "ROLA_CUDA_ARCHS is unset and tools/manifests names no ratified "
+            "architecture, so this build has no declared arch list. Name the arches "
+            "(ROLA_CUDA_ARCHS=86) or ratify one first (tools/ratify.py --arch 86 "
+            "--write)."
+        )
+    return named
+
+
+ROLA_CUDA_ARCHS = _declared_archs()
 
 #: THE MILESTONE/CI SWITCH (K43, KERNEL_STANDARDS §16). Manifests go stale between
 #: milestones BY DESIGN -- ratification is a per-milestone act, not a per-stage one --
@@ -600,6 +628,19 @@ def _gate_shards() -> None:
         )
 
 
+def _ninja_jobs(held_slots: int) -> int:
+    """Ninja's job count, so the concurrent ``cicc`` count is the slots held.
+
+    A slot in ``tools/host_budget.py`` is one ``cicc``, and one ``nvcc`` runs one
+    ``cicc`` PER ARCHITECTURE, up to ``--threads``: the two parallelism axes multiply,
+    so the job count is the budget divided by that per-process factor. Setting ninja's
+    ``-j`` to the slot count directly oversubscribes the budget by exactly the number
+    of architectures compiled.
+    """
+    per_process = min(int(os.getenv("ROLA_NVCC_THREADS", "2")), max(1, len(ROLA_CUDA_ARCHS)))
+    return max(1, held_slots // per_process)
+
+
 def build_extension():
     nvcc_threads = int(os.getenv("ROLA_NVCC_THREADS", "2"))
     os.environ.setdefault("MAX_JOBS", str(build_flags.default_max_jobs(nvcc_threads)))
@@ -688,7 +729,7 @@ class RoLABuildExtension(BuildExtension):
                 int(os.environ.get("ROLA_NVCC_THREADS", "2"))))))
         with build_lock.acquire(gate=not _is_iteration_build(),
                                  desired=desired_jobs) as held_slots:
-            os.environ["MAX_JOBS"] = str(held_slots)
+            os.environ["MAX_JOBS"] = str(_ninja_jobs(held_slots))
             super().run()
         self._post_build_arm_table_check()
         self._post_build_manifest_check()
