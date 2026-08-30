@@ -81,3 +81,7 @@ DECLARED arm/`d_v` space via a `st.composite` strategy, opt-in under the `hypoth
 (deselected by default alongside `bench` — `pyproject.toml`'s `addopts`). A SUPPLEMENT to the fixed
 named cells above, never a replacement — run it with `-m hypothesis_cells` when you want shrinking
 to find a minimal failing cell automatically, not as part of the default battery.
+
+- THE RUN RECIPE IS: plain `pytest <file>` from the worktree venv — the conftest takes the GPU lock itself
+  (K46); wrapping it in `flock` SELF-DEADLOCKS (G2c lost 120 s to it). Any `flock … pytest` line in an
+  older section of this skill is stale.

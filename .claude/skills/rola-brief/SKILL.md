@@ -104,3 +104,11 @@ that into the skill the same day (process/pointers only — never facts).
 - A SELECTIVITY LINE beside every instruction floor when a mechanism changes an OWNERSHIP PARTITION
   (carve, streams, sub-box shape): tokens retained per stream / leaves per box at the sparse cell, before
   and after. G2b met every per-instruction floor and got 40% slower on selectivity alone.
+- INHERITED REDS ARE RE-REPRODUCED ON THIS STAGE'S BINARY before their fix is scoped (G2c: a "16 failing
+  decode tests, fix the fixtures" item was a stale-binary artifact; the real defect was 6 tests and a
+  seam gap — a different fix).
+- A STOP CONDITION SAYS WHAT ITS REPORT MUST CONTAIN: "a pair needs a swizzle" is a poor report; "yes, and
+  here is the measured one-line swizzle that clears all 55, unbuilt, with its instruction cost" is the
+  report — write the required contents into the stop condition.
+- A BANK-BEHAVIOUR LINE beside the selectivity line whenever an ownership partition changes: the row map
+  is part of the partition (G2c: identical shared access counts, 2.7× conflicts).

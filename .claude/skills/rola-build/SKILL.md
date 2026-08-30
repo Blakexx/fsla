@@ -104,3 +104,5 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
   (G2c measures racecheck / synccheck / initcheck separately on the gate binary: wall time, peak RSS,
   load) and Blake decides. Until then: run the sanitizer only when nothing else is in flight, one tool
   at a time, and watch the host.
+- A CENSUS COMPILE IS A COMPILE: single-TU nvcc for the register census goes through the build lock's
+  slots too (G2c's arm TUs took 54 s each; several in parallel are a build).
