@@ -8,7 +8,7 @@ over all eight bit values; the kernel's whole predicate is then one shift and on
 `uint32` is a launch argument: the table a call PLANS is the table it RUNS, which a
 second derivation behind the extension boundary could not promise.
 
-SINCE P80b THE TABLE IS BACKING-INVISIBLE at the store clause: the exit sweep stores
+THE TABLE IS BACKING-INVISIBLE at the store clause: the exit sweep stores
 the atoms this call WRITES in either backing, so a block with no write has nothing to
 store in either, and the fresh-dense "written whole" exception is gone with the zeroed
 fresh plane (`rola/engine/facts/nodes.py`'s backing node).
@@ -41,7 +41,7 @@ def run_table(state_in: Any, state_out: Any, page_table: Any) -> int:
         #: the state epilogue stores this block's atoms. An unwritten block must end
         #: holding what it carried in, which is what skipping leaves: a paged slot
         #: unchanged, and a dense plane too, since a continuation is updated in place
-        #: and a FRESH dense plane is ZEROED at bind (P80b) rather than written whole.
+        #: and a FRESH dense plane is ZEROED at bind rather than written whole.
         if stores_out:
             run = run or W
         if run:

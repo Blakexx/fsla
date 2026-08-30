@@ -7,7 +7,7 @@ indistinguishable from four independent decisions until one of them is edited, a
 which point the oracle and the kernel compute different functions and every Tier 1
 gate reports the difference as a kernel bug.
 
-Three sites remain: the API contract (P16) took the `eps` knob off the public
+Three sites remain: the API contract took the `eps` knob off the public
 surface entirely, which is the same conclusion reached from the other end -- a
 number that changes the FUNCTION is not a caller's argument. The grep rule below
 is the one that still covers the whole package, including the entry point that no
@@ -43,7 +43,7 @@ EPS_SITES = (
     ("rola/ops/decode.py", "derive_decode_geometry"),
 )
 
-#: P67 D2-b dropped the retired tiled consumer's row. Its replacement is NOT
+#: The retired tiled consumer's row is dropped. Its replacement is NOT
 #: another row here, because the chunk arm
 #: takes no epsilon PARAMETER -- the executor passes the constant straight
 #: into the launch. Rule 3 below is what covers it: a literal epsilon anywhere in

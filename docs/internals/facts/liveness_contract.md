@@ -71,7 +71,7 @@ handful of words, not a read of `Σ_dense B_l` bf16 per token.
 
 The mask reaches the kernel as BITS, never as a width. `SideStatics` carries
 `dense_levels` (a bitmask over levels — a MODE fact) and `digit_mask` (one bit per
-row). R13's two contracts put the translation at the seam and keep logical-width
+row). The two contracts put the translation at the seam and keep logical-width
 fields out of every kernel entry signature; `rola.engine.facts.liveness.side_statics`
 is that translation, and it is the only place `b_l` appears.
 
@@ -88,7 +88,7 @@ The AND is not a relaxation. A token's live leaf set is the PRODUCT of its per-l
 live digit sets — the routing is a Kronecker product — so "some live leaf inside the
 box" and "every level has a live digit inside its run" are the same statement. The
 consuming side therefore ORs its own span's digits per level and then ANDs the levels;
-that word count is the fold's floor term (C1d's note).
+that word count is the fold's floor term (the note).
 
 The bits are per box over the WHOLE CALL and never per window: the box lives in
 registers from the call's entry to its exit, so the gate is `LOAD on resident ∧ (read ∨

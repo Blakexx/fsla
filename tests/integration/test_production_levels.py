@@ -1,4 +1,4 @@
-"""Gates for the dense per-level production routing solve (V3's producer path).
+"""Gates for the dense per-level production routing solve (the producer path).
 
 `rola.routing.entmax.production.production_routing_factor_levels` is
 what `rola/routing/producer.py` calls. It has two lowerings of one semantics -- a DEVICE
@@ -10,8 +10,7 @@ form at both alphas this file tests (`entmax15` at 1.5, `sparsemax` at 2.0 -- th
 party's own exact forms, inverted algebraically for `tau`) -- there is no bisection
 anywhere in this file's ground truth.
 
-**THE DEVICE LOWERING IS NOT ONE KERNEL**, and it is no longer any part Triton
-(P73 S5). The UNION solve is a hand-CUDA + CUB kernel (`csrc/rola/src/entmax/entmax.cu`);
+**THE DEVICE LOWERING IS NOT ONE KERNEL**, and it is no longer any part Triton. The UNION solve is a hand-CUDA + CUB kernel (`csrc/rola/src/entmax/entmax.cu`);
 the independent per-side solves and the softmax pair are `csrc/rola/src/entmax/factor.cu`,
 ported off Triton for the closed-world AOT policy and for P65, which trains through
 them. Everything below that says "the two lowerings" still means exactly what it
@@ -155,6 +154,7 @@ def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) ->
     base = torch.randn(shape, device=device, dtype=torch.float32, generator=generator)
     if kind == "random":
         return base
+
     if kind == "near_boundary":
         # Quantizing to halves clusters logits onto the candidate thresholds; the jitter
         # then separates them by ~1e-4, which is far inside any tolerance here but still
@@ -835,7 +835,6 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind):
     _assert_levels_match(cuda_vjp[1].cpu(), cpu_vjp[1], gradient=True)
 
 
-
 def test_production_imports_nothing_from_the_reference_package():
     """The STRONGER, STATIC claim, checked directly rather than inferred from a
     monkeypatch. `pyproject.toml` and this module's own docstring say production
@@ -871,7 +870,7 @@ def test_production_imports_nothing_from_the_reference_package():
 
 
 def test_the_package_imports_no_triton_and_declares_none():
-    """P73 S5's RECEIPT, as a static fact about the tree rather than a claim in a doc.
+    """P73 the RECEIPT, as a static fact about the tree rather than a claim in a doc.
 
     `docs/build.md` says the dependencies are "`torch` and `einops`. Not
     `transformers`, not `fla`, not `triton` -- the kernels are CUDA." That sentence

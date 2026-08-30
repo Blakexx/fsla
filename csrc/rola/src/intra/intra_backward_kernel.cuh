@@ -1,10 +1,10 @@
 // Copyright 2026 Blake Bottum
 // SPDX-License-Identifier: Apache-2.0
 //
-// K31 RUNG R4: THE INTRA TERM'S REVERSE PASS.
+// THE INTRA TERM'S REVERSE PASS.
 //
 // RECOMPUTE, NEVER SAVE, AT BOTH GRAINS.  The pairwise coefficient `A` is `[W x W]`
-// per window -- the snapshot class the R4 constraint forbids -- so this kernel rebuilds
+// per window -- the snapshot class this pass's memory contract forbids -- so it rebuilds
 // the per-level Grams from the same staged slabs the forward reads, under the same
 // slab-occupancy mask, and forms `A` in registers.  It is a SEPARATE kernel because the
 // forward intra must stay a pure forward for inference: `dA` needs the seed, which
@@ -46,17 +46,22 @@ constexpr int64_t kIntraBwdMagic = 31040003;
 
 constexpr int kSeedPitch = kValuePitch;
 constexpr int kChanTiles = kValueWidth / kSlabDigits;
+
 constexpr int warps_of(int window) { return threads_of(window) / 32; }
 
 //: THE REVERSE STAGES HALF AS WIDE AS THE FORWARD. Its block carries the -- see docs/internals/intra/intra_backward_kernel.md#kbwdstagecap
 constexpr int kBwdStageCap = 32;
+
 constexpr int bwd_stage_digits(int width) {
   return level_digits(width) < kBwdStageCap ? level_digits(width) : kBwdStageCap;
 }
+
 constexpr int bwd_slabs_per_stage(int width) { return bwd_stage_digits(width) / kSlabDigits; }
+
 constexpr int bwd_stages_per_level(int width) {
   return level_digits(width) / bwd_stage_digits(width);
 }
+
 constexpr int bwd_operand_pitch(int width) { return bwd_stage_digits(width) + 8; }
 
 //: THE RELAY PLANE, one `[kMmaM x kSlabDigits]` tile per warp: every cotangent -- see docs/internals/intra/intra_backward_kernel.md#kxposerows
@@ -579,7 +584,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
         }
       }
 
-      // ---- (I2) d_v = A^T . d_num, off the published image ---------------------
+      // ---- d_v = A^T . d_num, off the published image -------------------------
       //: THE IMAGE IS THE RE-CARVE. `A` and each `dG_l` are accumulated ROW-carved -- -- see docs/internals/intra/intra_backward_kernel.md#syncthreads
       __syncthreads();
       publish_image<D, B, W>(sm, gd, warp, row_lo, col_lo);
@@ -606,7 +611,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
         }
       }
 
-      // ---- PASS 2: (I5) and (I6) against the re-staged slabs -------------------
+      // ---- PASS 2: the two digit contractions against the re-staged slabs ------
       //: THE FIRST FILL IS ISSUED BEFORE THE SEED CONTRACTION ABOVE, so it lands under -- see docs/internals/intra/intra_backward_kernel.md#dpwbase
       float* const dpw_base =
           p.d_pw + (long long)(bh * p.L + wbase + ct * kTile + grp * kPwCols) * p.row_width;
@@ -657,7 +662,7 @@ __global__ __launch_bounds__(threads_of(W), (kBwdCtaTarget<D, B, W>)) void intra
                   base_sup_r + buf * kRBuf + mt * kWarpRows * kSlabRow, 2 * kSlabRow, pr_own);
             }
           }
-          //: (I6)'s contraction runs over the WHOLE block of readers, so it is gated per -- see docs/internals/intra/intra_backward_kernel.md#note-l741
+          //: THE READ-DIGIT contraction runs over the WHOLE block of readers, so it is gated per -- see docs/internals/intra/intra_backward_kernel.md#note-l741
           uint32_t rlive = 0u;
           if (side_bits<D, B, W>(sm, p.modes, ct, l, 1, slab) != 0u) {
 #pragma unroll

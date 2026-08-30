@@ -5,14 +5,14 @@
 The oracle is read, not just run. It is the definition every Tier 1 gate is
 anchored to, so the literal-clarity standard says the file should read like the
 mathematics -- and it did not: 69 lines of shape and domain checking stood
-between the reader and 40 lines of recurrence (audit finding F4). None of it is
+between the reader and 40 lines of recurrence. None of it is
 math. All of it is a boundary.
 
 So the boundary lives here and `rola/ops/naive.py` calls it in one line. Nothing
 is weakened by the move: every check below is the one that was there, and the
 one semantic slack among them -- the simplex tolerance -- is now a named
 constant with its derivation attached rather than a keyword default nobody had
-to justify (finding F5).
+to justify.
 
 `ROLA_V3_SPEC.md` section references are the contract's authority; each check
 cites the clause it enforces.

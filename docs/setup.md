@@ -52,7 +52,7 @@ docker build \
 ```
 
 `ROLA_IMAGE_DIGEST` is stamped into every container built from this image and
-recorded by `tools/ratify.py` as `source.image_digest` (K37) — it is not part
+recorded by `tools/ratify.py` as `source.image_digest` — it is not part
 of the ratified SASS-body digest (`manifest_digest()`), so it can never move a
 register/spill number; it exists purely so a manifest can answer "was this
 measured inside the pinned image, and which Dockerfile" without a registry
@@ -264,7 +264,7 @@ Verify with `python -c "import rola; from rola._build_config import
 BUILD_CONFIG; print(BUILD_CONFIG['archs'])"` against the new venv's python —
 the device-side stamp, never a path check (`extension-trap-device-side-check`)
 -- but run it FROM the new worktree's own directory. **FOOTGUN 3, found
-writing `tools/build/new_worktree.sh` (K46): `python -c` puts `''` (the
+writing `tools/build/new_worktree.sh`: `python -c` puts `''` (the
 process's OWN current directory) first in `sys.path`.** A verification launched
 from inside a DIFFERENT rola worktree (which also carries a `rola/` package)
 resolves `import rola` to THAT worktree instead of the new one — `''` beats
@@ -310,7 +310,7 @@ pytest tests/integration                  # composition, dispatch, two-branches-
 ```
 
 This is the same battery `docs/testing.md` "Running it" names; the session-scoped
-`gpu_lock()` fixture in `tests/conftest.py` (K46) serializes GPU-touching runs the
+`gpu_lock()` fixture in `tests/conftest.py` serializes GPU-touching runs the
 way it does on the bare host — the container adds no scheduling of its own. Expect
 ~3.6 min total on hardware comparable to this repo's dev box (`docs/testing.md`,
 measured 2026-08-06).

@@ -51,6 +51,7 @@ store is `add_value`, which is a bf16 device atomic on the closed-world arch set
 
 <a id="provenance"></a>1. Where these came from, and what that constrains
 
+<!-- ABSENT: _production_fwd_kernel _production_bwd_kernel -->
 These four were Triton (`rola/routing/entmax/production.py`'s
 `_production_fwd_kernel`, `_production_bwd_kernel` and their softmax pair) until
 P73 S5. The port is why `rola/` now imports no Triton, why `pyproject.toml` no
@@ -88,17 +89,17 @@ support by construction rather than by a correction applied afterwards.
 The consequence that shapes the kernel is that the member count is then a
 reduction, not `width`:
 
-* the row max and min are taken over the CANDIDATES, and a fully-masked row has
+* The row max and min are taken over the CANDIDATES, and a fully-masked row has
   neither — `row_max` is defined to 0 there and the sentinel to −1, so the sort and
   the scan still run on finite values;
-* the greatest-valid-`k` search runs over `rank < valid_count`, not `rank < width`,
+* The greatest-valid-`k` search runs over `rank < valid_count`, not `rank < width`,
   which is what keeps a masked column from being admitted by a prefix that never
   included it;
 * an empty row produces `chosen = −1`, hence `tau = 0`, hence no support and no
   amplitude — the autograd contract
   `test_production_factor_empty_rows_preserve_autograd_contract` pins.
 
-The mask pointer is NULL on every plan-level path (`_launch_factor_into` and the
+The mask pointer is NULL on every plan-level path (`_launch_factor_backward_into_logits` and the
 batched entry), and the count reduction is skipped there — one uniform branch on a
 pointer, not a codegen axis, because a mask arm would double the instantiation
 matrix to buy a prologue.
@@ -191,7 +192,7 @@ over four stress fixtures x four routing shapes x two alphas.
 solve's own arithmetic without the storage quantization on top of it. It is a test-side
 argument; no runtime path passes it.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/entmax/factor.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -263,11 +264,11 @@ in registers, where `blockIdx.y` is free to re-read and a plain quotient of it i
 cheap to rematerialize. 4 spilling instantiations became 56.
 -- docs/internals/entmax/entmax.md#stream-split
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/entmax/factor.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/entmax/factor.cu` condensed at their call site into a short pointer.
 

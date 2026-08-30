@@ -39,7 +39,7 @@ untrained exact-entmax router into a real sparse support: the support is genuine
 such wherever it is reported. Same convention, and the same caveat, as
 `benchmark_rola_v3_layer.py`.
 
-**REPOINTED (P67 S3b).** Paging is not a layer configuration any more: the backing
+**REPOINTED.** Paging is not a layer configuration any more: the backing
 belongs to the STATE (`rola.state()`), it is ON by default, and it engages when a
 call carries a state at all. The two timed cells are therefore two STATEFUL calls --
 one on a default (paged) state, one on a state pinned dense with
@@ -232,7 +232,7 @@ def main() -> None:
 
     branches = [int(s) for s in args.branches.split(",")]
     #: TWO DEAD ARMS RETIRED, both older than this benchmark's repoint and both of
-    #: which raised on their first cell: raw normalization (host axis deleted, G4) and
+    #: which raised on their first cell: raw normalization (host axis deleted) and
     #: a decay-configured layer, which the chunk arm refuses (the decay retirement).
     rows = [measure_residency(
         B=args.batch, L=args.seq_len, H=args.heads, d_v=args.head_v_dim,

@@ -100,7 +100,7 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
     return build(shape, device=routes.device, dtype=torch.float32)
 
 
-#: THE TWO ORTHOGONAL BITS the facts pass publishes per atom (P80b); the mirror of
+#: THE TWO ORTHOGONAL BITS the liveness pass publishes per atom; the mirror of
 #: `csrc/rola/src/common/ops.cuh`'s `kAtomWritten`/`kAtomRead`, which is what the
 #: kernel derives `load iff resident and (read or written)` / `store iff written` from.
 ATOM_WRITTEN = 1

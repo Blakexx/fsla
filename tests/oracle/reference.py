@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The fp64 reference for K31 R1's INTER term, and the decomposition that proves it.
+"""The fp64 reference for K31 the INTER term, and the decomposition that proves it.
 
 TWO INDEPENDENT ROUTES TO THE SAME NUMBER, and both are used:
 

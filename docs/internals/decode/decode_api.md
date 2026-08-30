@@ -44,7 +44,7 @@ constant that drifts when it is written down twice. The two arms differ because 
 arm and the deep arms each carry more live state through the same loop.
 
 <a id="arm-subset"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
-The decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, and
+the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, and
 `decode.cu` writes it out one row per arm (`DECODE_ARM_<i>`) so a BUILD can name a subset
 by index: `ROLA_DECODE_ARMS=5` compiles arm 5 and nothing else
 ([`build.md#arm-subset`](../../build.md#arm-subset)). Instantiation is the dominant build
@@ -147,7 +147,7 @@ that a pool requires `page_table` (a dense state has no table to admit into). Th
 the device-side claim are [`paging/paging.md`
 §the-slack-pool](../paging/paging.md#the-slack-pool).
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_api.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -173,7 +173,7 @@ host reads) beside the write-atom set it was reached from (`atom_bits`, which is
 a host admission then plans from), and under a slack pool a growth step admits
 ITSELF: docs/internals/decode/decode_api.md#the-step
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode_api.cuh` condensed at their call site into a short pointer.
 

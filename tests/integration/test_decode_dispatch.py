@@ -106,12 +106,12 @@ _REFUSALS = {
     #: forward-only and has no autograd node, while prefill trains.
     "refuses-training": (BackwardNotImplemented, "TRAINING mode"),
     "refuses-grad": (BackwardNotImplemented, "DECODE step carrying a gradient"),
-    #: PREFILL trains, but statelessly (P65 R-D): a carried state and a gradient are
+    #: PREFILL trains, but statelessly: a carried state and a gradient are
     #: mutually exclusive, and that is what a grad-bearing one-token PREFILL now hits.
     "refuses-stateless": (BackwardNotImplemented, "STATELESS ONLY"),
-    #: every PREFILL-shaped row: the arm is DELETED pending K31 R2 and the op
+    #: every PREFILL-shaped row: the prefill arm is DELETED and the op
     #: names the ruling before it reads the call.
-    "refuses-deleted": (NotImplementedError, "K31 R2"),
+    "refuses-deleted": (NotImplementedError, "the prefill arm is deleted"),
 }
 
 
@@ -205,11 +205,11 @@ def test_a_continuation_round_trips_across_two_decode_steps():
 @_CUDA
 def test_a_cpu_decode_shaped_call_is_refused_at_the_prefill():
     """A CPU sequence cannot be primed: the prefill dispatch is the deletion
-    refusal (until K31 R2 the sentence is the same on every device)."""
+    refusal (the sentence is the same on every device)."""
     layer = _layer("cpu")
     layer.eval()
     x = torch.randn(1, 32, _HIDDEN)
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="K31 R2"):
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
         layer(x, continuation=LayerContinuation(state=rola.state()))
 
 
@@ -242,7 +242,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
 @pytest.mark.cuda
 @_CUDA
 def test_a_dense_pinned_layer_still_reaches_decode():
-    """REPOINTED (P67 S3b): paging is not a layer configuration any more.
+    """REPOINTED: paging is not a layer configuration any more.
 
     This cell used to assert that a PAGED layer kept the tiled path at ``T = 1``,
     because decode had no page table and would have dropped the layer's cap. There is
@@ -267,7 +267,7 @@ def test_a_dense_pinned_layer_still_reaches_decode():
 
 
 # ---------------------------------------------------------------------------
-# H9 (coverage-closure): the table's rows swept over the decay axis the layer
+# COVERAGE CLOSURE: the table's rows swept over the decay axis the layer
 # default never leaves. THE TWO ENVELOPES SEPARATE HERE: decode implements decay
 # (at one token the rule-1 half-mass shift is the identity, so it forms one
 # exponential and has no admissibility precondition), while the chunk arm does not
@@ -300,7 +300,7 @@ def test_every_decay_prefill_row_refuses_with_the_deletion_sentence(L, carried):
     plain = _layer(device).eval()
     cache = _prime(plain, device) if carried else rola.state()
     layer = _layer(device, decay="leaf_mass").eval()
-    with pytest.raises(NotImplementedError, match="K31 R2"):
+    with pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
         _step(layer, cache, device, L=L, grad_enabled=False)
     assert layer.last_execution_backend is None, (
         "the refusal must happen BEFORE a kernel runs; a recorded arm means some "

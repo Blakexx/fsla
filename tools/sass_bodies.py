@@ -49,7 +49,7 @@ with the same version.
 
 Two uses, both binary verdicts:
 
-* a TU restructure (P02's shard) -- pre-shard vs post-shard `.so` must be identical
+* a TU restructure (the shard) -- pre-shard vs post-shard `.so` must be identical
   over all 1,216 ratified entries;
 * the `--split-compile` trial -- the flag is adopted only on an empty diff.
 
@@ -59,7 +59,7 @@ Usage:
     python tools/sass_bodies.py --compare a.json b.json
 
 Both `.so`s must have been built under the SAME `ratify.SASS_HASH_VERSION` -- see the
-version-stamp note above. They no longer need to have been built at the same path (P19).
+version-stamp note above. They no longer need to have been built at the same path.
 """
 from __future__ import annotations
 
@@ -78,6 +78,7 @@ import ratify  # noqa: E402
 #: this tool produces AND into every manifest ratify writes, so both records say what
 #: hashed them.
 HASH_VERSION = ratify.SASS_HASH_VERSION
+
 
 def bodies(so: Path) -> dict[str, str]:
     """`{"sm_XX:mangled" -> sha256 of the instruction text}` for every entry point.

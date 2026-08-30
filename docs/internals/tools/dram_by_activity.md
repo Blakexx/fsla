@@ -40,14 +40,14 @@ shape in which the entry sweep runs. Measured at `k16_w384`: the entry sweep add
 Two controls are built in. `none` is the noise floor — the two binaries run identical
 work there, so their difference is this host's DRAM run-to-run drift (`## G1b-pad`
 measured ~0.6%). And on every frozen cell the read set and the write set are both *every*
-atom (`## G1`), so `asis` and `written` request the same work: any spread between those
+atom, so `asis` and `written` request the same work: any spread between those
 two columns is measurement, not mechanism.
 
 ## How it measures
 
 One `ncu` process per (binary, variant, cell) profiles `--launches` steady-state launches
 after `--warmup` skipped ones (`--launch-skip`), under `gpu_lock()` — never an external
-`flock`, which self-deadlocks against the tool's own acquisition (K38/K41). The reported
+`flock`, which self-deadlocks against the tool's own acquisition. The reported
 figure per metric is the MEDIAN across profiled launches, with min/max kept beside it.
 Binaries are interleaved per variant (A, B, A, B — the K36 lesson), never all of A then
 all of B.

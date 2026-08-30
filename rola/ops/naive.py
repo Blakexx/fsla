@@ -1,4 +1,4 @@
-"""Canonical fp64 reference implementation for the V3 routing-native RoLA oracle.
+"""Canonical fp64 reference implementation for the routing-native RoLA oracle.
 
 **THE CORRECTNESS REFERENCE IS THE TEXTBOOK, BECAUSE THE REDUCTION THEOREM SAYS
 IT MUST BE.** RoLA's consumer is a gated linear-attention recurrence over a

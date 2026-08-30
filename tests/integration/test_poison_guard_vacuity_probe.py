@@ -1,4 +1,4 @@
-"""NON-VACUITY self-gate for `tests/conftest.py`'s NaN-poison guard (H11).
+"""NON-VACUITY self-gate for `tests/conftest.py`'s NaN-poison guard.
 
 The coverage-closure audit found the guard gating on `tests/ops/` and
 `tests/modules/` -- the FORK's layout, neither of which exists in this tree -- so
@@ -18,8 +18,8 @@ import torch
 
 #: An ARBITRARY real `rola` module -- the probe needs a filename and globals
 #: that resolve inside the package, and nothing about the claim depends on
-#: which one. P28 pointed it at `rola.ops.consumer` when `rola.routing.
-#: sequence_parallel` was deleted; P67 D2-b at the chunk arm; K31 points it at
+#: which one. It pointed at `rola.ops.consumer` when `rola.routing.
+#: sequence_parallel` was deleted, then at the chunk arm; today it points at
 #: decode for the same reason and by the same precedent.
 from rola.ops import decode as probe_mod
 

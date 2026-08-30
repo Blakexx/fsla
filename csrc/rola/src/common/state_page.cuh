@@ -3,7 +3,7 @@
 // THE STATE PAGE'S SPLIT bf16 PLANES: the one gather/scatter every body's state
 // I/O goes through. A page is [16 x DV hi][16 x DV lo][16 mass hi][16 mass lo] --
 // the same fp32 bits an fp32-row page held, re-laid out so a hi row is one line
-// and an atom a call only READS moves half of them (K50, 2026-08-29).
+// and an atom a call only READS moves half of them.
 // See docs/internals/common/state_page.md
 
 #include <cuda_runtime.h>

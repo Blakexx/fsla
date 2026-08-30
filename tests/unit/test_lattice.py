@@ -28,6 +28,7 @@ from rola.ops.lattice import (
     to_canonical,
     to_lattice,
 )
+from rola.ops.paging import bytes_equal
 
 #: Every shape of box the shipped topologies produce: `k = 1` (no admissible span),
 #: `m = 1` (no admissible capacity), `D` from 1 to 4, and the flagship's `(4, 8)`.
@@ -51,7 +52,7 @@ def test_the_two_conversions_are_inverse():
     for widths in _TOPOLOGIES:
         k, m = derive_lattice(widths)
         plane = torch.randn(2, 3, math.prod(widths), 5)
-        assert torch.equal(to_canonical(to_lattice(plane, widths, k, m), widths, k, m),
+        assert bytes_equal(to_canonical(to_lattice(plane, widths, k, m), widths, k, m),
                            plane), f"the seam is not round-trip exact at widths={widths}"
 
 

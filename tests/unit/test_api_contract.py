@@ -161,7 +161,7 @@ def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel
 
 
 def test_the_simplex_output_column_is_read_per_duty_not_per_activation():
-    """The skip's licence is a ROUTING-FORM question (P73 S2, ruling R2).
+    """The skip's licence is a ROUTING-FORM question.
 
     Union routing names one entmax for both duties, but hands the write duty the whole
     of the shared solve and the read duty a SHARE of it. A skip keyed on the
@@ -322,10 +322,10 @@ def test_the_layer_takes_the_slot_and_not_the_slot_spelled_out():
 
 #: RETIRED at P67 D2-b (ruling R-2): `test_an_expert_pin_shrinks_the_feasible_set_
 #: and_an_inadmissible_one_is_refused`. Its subject is `RoLA.feasible_BC` and the
-#: tiled ladder `derive.SUPPORTED_BC` behind it, both deleted in D2-c: the chunk
+#: tiled ladder `derive.SUPPORTED_BC` behind it, both deleted with the tiled consumer: the chunk
 #: arm's `BC` belongs to the built arm the manifest carries for a topology and is
 #: not host-selectable, so there is no feasible SET for a pin to shrink. The pin
-#: itself did not become silently inert -- D2-a refused
+#: itself did not become silently inert -- the unsupported-topology arm refused
 #: `PlanOverrides(state_block=...)` on the kernel arm BY NAME, and
 #: `tests/integration/test_layer_dispatch.py` holds that refusal.
 
@@ -349,7 +349,7 @@ def test_the_layer_prefill_path_speaks_the_deletion_refusal():
     DECODE fork alone (`RoLA.validate_decode_envelope`); the dispatch table in
     `tests/integration/test_decode_dispatch.py` is where that is asserted."""
     layer = rola.RoLA(_routes()).double().train()
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="K31 R2"):
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
         layer(torch.randn(2, 6, 32, dtype=torch.float64))
     assert layer.last_execution_backend is None, "the refusal let a kernel run first"
 
@@ -373,7 +373,7 @@ def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
 #: `test_a_plan_carries_its_model_facts_from_tier_zero_and_not_from_a_second_path`
 #: and `test_execute_obeys_a_synthetic_plan_that_no_planner_would_have_chosen`.
 #: Their subject is `rola.expert.{Plan, derive_plan, execute}` -- the plan-as-DATA
-#: seam -- which D2-c deletes whole. The second is a real loss and is recorded as
+#: seam -- which the tiled consumer's deletion takes whole. The second is a real loss and is recorded as
 #: one: it was the adversarial handle a derive-then-immediately-use pipeline does
 #: not have, and the conformance family that used the same handle
 #: (`producer/stale-plan`) retired with it. What replaces the seam is that there is

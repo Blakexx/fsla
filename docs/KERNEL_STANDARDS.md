@@ -46,7 +46,7 @@ addresses it by fragment modes — never by element, never by leaf.
 RULE: a `static_for`/`#pragma unroll` nest over register-resident state iterates fragments (m-tiles × n-tiles ×
 k-steps) with any finer index (leaf → slot, channel → row) folded into constexpr address math. The nest's
 BODY COUNT must be stated as a function of the arm in the code's decl block and must be O(fragments).
-COUNTER-EXAMPLE (S1, 2026-08-26): `page_regs` unrolled per LEAF × atom × channel-group → 4,096 bodies at the
+COUNTER-EXAMPLE: `page_regs` unrolled per LEAF × atom × channel-group → 4,096 bodies at the
 D=4 8-warp arm; compile 5 → 50 min/arch; cicc at 6 GB segfaulting. Per-leaf iteration below the fragment
 grain is a defect, not a style choice.
 
@@ -55,7 +55,7 @@ The fp32 accumulator of one GEMM becomes the A operand of the next by reinterpre
 and narrowing the type — no store, no shuffle.
 - FA2: `flash_fwd_kernel.h:378-380` (`make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMma>(rP.layout()))` → `gemm_rs`); the layout math `utils.h:199-211`.
 - FA3: `hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp:1156-1160` (same, plus an explicit register permute for fp8, and a documented fallback through SMEM when the register-sourced GMMA is unavailable, `:1161-1162`).
-RoLA: the readout's A fragments ARE the fold accumulator's top halves (K35 M1a). Any phase change that
+RoLA: the readout's A fragments ARE the fold accumulator's top halves. Any phase change that
 moves state must be the exchange the design names (§R3), never an ad-hoc copy.
 
 ## 3. Shared memory: copy atoms, swizzles by composition, transposition as a layout operation
@@ -76,7 +76,7 @@ Primitives (`ldmatrix`, `cp.async`, `mma`, `red`) are wrapped ONCE (`csrc/rola/s
 - FA3's producer acquires a stage before issuing, the consumer waits, issues the GEMM, waits for it, and
   releases the stage at once: `hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp:750, 1140-1143`; pipeline types per
   operand `:283-286`; the invariant is documented where it bites (`:787`).
-RULE: overlap requires two stages in flight in ANY form (F4 on P76): the second stage is registers
+RULE: overlap requires two stages in flight in ANY form: the second stage is registers
 (single-slot segments: drain by `ldmatrix`, refill, compute from fragments) or a second SMEM slot. Sync
 carries exactly two facts, "landed" and "drained"; on sm_80 by the per-batch barrier (form (b)), on
 sm_90 by mbarrier. No pipeline state is implicit in loop parity without a comment naming the invariant.
@@ -86,7 +86,7 @@ sm_90 by mbarrier. No pipeline state is implicit in loop parity without a commen
   (`hopper/flash_fwd_kernel_sm90.h:82-83, 308-309, 360-361`), with the budgets `constexpr` per configuration.
 RULE: on sm_80 there is no register redistribution, so a fetcher warp burns a full slice and folds nothing —
 form (b) (role-alternating) everywhere; specialization is the sm_90+ mapping and only where the
-accumulator binds (F4).
+accumulator binds.
 
 ## 6. Unroll discipline
 - CuTe pairs `CUTE_UNROLL` with `CUTE_NO_UNROLL` (`cutlass/include/cute/config.hpp:51-55`): saying "do not
@@ -116,7 +116,7 @@ once per stage. Each arm has a COMPILE BUDGET (wall time, cicc peak RSS) recorde
 ## 8. Arch mapping at the atom, closed-world at the arm
 Feature selection lives where the primitive is defined (`kernel_traits.h:40-44`'s `DefaultCopy` fallback),
 never as `#if` at call sites. RoLA adds: every structural decision states its sm_80/90/100 mapping on the
-card (P76 §4); only measured binaries run (pinned ptxas, per-arch ratified manifests, device stamp).
+card (§4 of the architecture); only measured binaries run (pinned ptxas, per-arch ratified manifests, device stamp).
 
 ## 9. The backstop (checks that should catch nothing)
 `ratify` records per arm and arch: registers, stack, spills, residency (existing) + compile wall time,
@@ -125,15 +125,15 @@ breach fails the gate exactly as a spill does. The device stamp is asserted befo
 
 ## 10. Correctness instruments (unchanged, restated so they sit beside the craft rules)
 The fp64 oracle is the truth. Bit-identity against a previous binary is a REFACTOR instrument, never a
-design constraint (P76 amendment 2026-08-26). No fallbacks, no dead code, no special-case paths; comments
+design constraint (amended 2026-08-26). No fallbacks, no dead code, no special-case paths; comments
 are file-header/decl blocks only, prose goes to `docs/internals/` mirroring `csrc/`. Build the whole design
 or stop and name the gap; efficiency is correctness.
 
-## R. RoLA-specific patterns (no reference analogue) — the rule comes from P76
+## R. RoLA-specific patterns (no reference analogue) — the rule comes from the architecture
 - R1 OWNERSHIP CARVES: a stream owns an affine rectangle of digits per level (per-side span vectors);
   the private slot order puts carved (sparse) levels outermost; liveness is the exact AND over levels.
   Executors ≠ streams (an executor folds the union of its streams' boxes).
-- R2 COOPERATIVE FETCH + EXPANSION (F2/F4): one union walk per batch; writer-side placement into per-stream
+- R2 COOPERATIVE FETCH + EXPANSION: one union walk per batch; writer-side placement into per-stream
   segments of value rows AND fully expanded coefficient rows; memo internal to the fetcher; consumers are
   pure MMA. The per-tile liveness mask is produced by the expansion (it knows which slots it wrote nonzero).
 - R3 THE EXCHANGE (order law): every phase change re-lays the state into the other side's order on every
@@ -142,10 +142,10 @@ or stop and name the gap; efficiency is correctness.
   and ejects. No pair-level or run-alignment constraint on carves.
 - R4 THE FAN-IN RING (§2.6-C): union rank keys a C-row SMEM ring; first writer stores, others `red.shared`;
   the NEXT writer reclaims a complete slot by CAS and flushes it; spin on incomplete; drain at the phase barrier.
-- R5 LO PARK (F5): hi in registers, lo parked into the transit's drained slots, freed registers become
+- R5 LO PARK: hi in registers, lo parked into the transit's drained slots, freed registers become
   leaves (box size); a per-arch/width declaration.
 
-## 11. Debugging a device hang or race (recorded 2026-08-26 after S2d burned 2.5 h reasoning blind)
+## 11. Debugging a device hang or race (recorded 2026-08-26 after a stage burned 2.5 h reasoning blind)
 `cuda-gdb` works on this machine when the process is LAUNCHED under it; ATTACHING (`-p`) is refused by
 Yama `ptrace_scope=1` (a Linux setting, liftable with `sudo sysctl kernel.yama.ptrace_scope=0`).
 Recipe: `flock /tmp/rola_gpu.lock cuda-gdb -q --args <venv>/bin/python repro.py` → `run` → Ctrl-C on a
@@ -156,7 +156,7 @@ for a hang; a bounded loop + `__trap()` converts a hang into a fault but skips b
 debugger. RULE: a hang or a run-to-run-varying miscount is diagnosed with the debugger or the sanitizer
 within the first hour, never by inspection alone; the finding goes in FINDINGS with the debugger's output.
 
-## 12. Warp collectives and fences (recorded 2026-08-26 from S2d/S2d-2)
+## 12. Warp collectives and fences (recorded 2026-08-26)
 - NEVER place a warp-collective (`__shfl_sync`, `__ballot_sync`, `ldmatrix`, `__syncwarp`) inside a
   short-circuit or a lane-divergent predicate: `part && lane_broadcast(x)` splits the warp at an
   instruction that needs every lane, and the split never completes (a hang that survives removing every
@@ -165,7 +165,7 @@ within the first hour, never by inspection alone; the finding goes in FINDINGS w
   counter -> data), EVERY lane that issued the data accesses executes the fence before the `__syncwarp`
   that precedes the one-lane counter update; and EVERY lane that reads the data after a one-lane
   counter check executes a fence after the broadcast and before its loads. A leader-only fence covers
-  the leader only (S2d bug 1: seven of eight lanes unordered).
+  the leader only (the ring hang: seven of eight lanes unordered).
 - Debugging recipe under WSL (cuda-gdb launch mode, attach is refused by Yama): run gdb with a FIFO on
   stdin (`mkfifo in; cuda-gdb -q --args <venv>/bin/python repro.py < in &`), `echo run > in`, wait for
   the hang, `kill -INT <gdb pid>`, then `echo 'info cuda kernels' > in`, `info cuda threads`, `bt` —
@@ -177,8 +177,8 @@ as pseudocode and the implementer rebuilds that function from it — deleting th
 editing around the previous protocol's skeleton. Scaffolding that only made sense for a superseded
 protocol (a deferral rule, a sentinel state, a counter) must not survive; the review checks the function
 against the pseudocode line by line. "Build the whole design" applies at mechanism grain.
-Addendum (S2d-3): a whole rebuild is diffed against the BUG LIST of the thing it replaces, not only against
-the pseudocode — S2d-3 reintroduced S2d-2's `part && lane_broadcast(...)` short-circuit hang while
+Addendum: a whole rebuild is diffed against the BUG LIST of the thing it replaces, not only against
+the pseudocode — a rebuild reintroduced the `part && lane_broadcast(...)` short-circuit hang while
 rewriting the acquire, three lines below its own warning. The previous pass's findings are a checklist
 the rebuild is walked against before its first build.
 
@@ -197,7 +197,7 @@ the build ends) — after which the agent INSPECTS ITS OWN STATE (the marker, th
 repeat if still building. Never trust the pid or the notification alone; the marker is the fact. Name-matched polling (`pgrep -f`) stays forbidden: it self-matches, matches other tracks, and
 re-wakes stopped agents.
 
-## 15. Stage cycle budget (recorded 2026-08-27 from the ledger: S2d-3 ran 63 builds and 22 ratifies in 346 min)
+## 15. Stage cycle budget (recorded 2026-08-27 from the ledger: one stage ran 63 builds and 22 ratifies in 346 min)
 - RATIFY ONCE per stage, after the last source edit. It recompiles every TU on both arches; it is a gate,
   never an iteration tool.
 - A stage has a budget of THREE full build+gate cycles. Iteration is single-arch, arm-subset, oracle-first.
@@ -233,8 +233,8 @@ FINDINGS as a running per-stage ledger next to the previous stage's numbers and 
 reference. A >1.10x regression on either cell vs the previous stage is a RED like a spill: the stage
 reports it, does not rationalize it, and Blake rules. This is the instrument that would have caught
 the 3-9x loss PROBE-K35 found after nine stages.
-§16 addendum 2 (2026-08-28, from R-A): AN INSTRUCTION LEDGER IS NECESSARY, NOT SUFFICIENT. The M1a ->
-S1-parent span cut instructions 5.6% and cost 22% of time (IPC -27%, long-scoreboard x3.6, bank
+§16 addendum 2 (2026-08-28): AN INSTRUCTION LEDGER IS NECESSARY, NOT SUFFICIENT. One measured span
+cut instructions 5.6% and cost 22% of time (IPC -27%, long-scoreboard x3.6, bank
 conflicts x2.6). The stage probe is TIME; every ledger table carries IPC and the top stall reasons
 (ncu `smsp__warp_issue_stalled_*`) beside instruction counts, and a stage whose instructions fall while
 its time rises is RED, not a win.
@@ -250,18 +250,18 @@ R1. [STRUCK 2026-08-28 — subsumed by §R10; see the preamble.] PRICE OVERHEADS
     instructions at dense AND at k16; the replicated schedule; the per-lane gate). The design's payoff and
     its overheads scale with different variables; state both per mechanism.
 R2. THE FAN-IN'S FIGURE OF MERIT IS 128 B SEGMENTS PER RED INSTRUCTION, not sector fullness and not
-    instruction count: one token's 32 contiguous channels per issue (M1a's panel layout) = 1 segment;
+    instruction count: one token's 32 contiguous channels per issue (the staged panel layout) = 1 segment;
     4 rows x 8 channels = 4 segments at identical RED count = +93%; fragment-direct = 8 half sectors.
 R3. FAN-IN ON AMPERE IS NATIVE GLOBAL RED FROM AN ALIGNED LAYOUT. Shared-memory fp32 atomics are a CAS
     loop; a locked SMEM ring paid 18x its floor to halve DRAM. The DRAM question belongs to the A100
     parity-curve receipt, not to the local cell.
-R4. NO PER-WARP WORK THAT ANOTHER WARP ALSO DOES (F2): CTA-identical derivations (union lists, owner
+R4. NO PER-WARP WORK THAT ANOTHER WARP ALSO DOES: CTA-identical derivations (union lists, owner
     ballots) are derived once and published behind a barrier the kernel already pays, or split by
     executor share — never recomputed per warp to avoid a barrier.
 R5. THE SCHEDULE HAS THREE PARTS (fetch over TOKENS once; per-stream SENDS from each stream's own ballot;
     seal-and-consume). A union over (token, stream) pairs collapses the first two and re-fetches k times.
 R6. A KERNEL'S SASS DEPENDS ON ITS TU NEIGHBORS: byte-identity is a claim about a partition, not a body;
-    per-arm TUs make each body canonical (K36: 7 movers, proven inert and free).
+    per-arm TUs make each body canonical (7 movers, proven inert and free).
 R7. STAGED-vs-STRAIGHT IS DECIDED BY LATENCY, NOT COUNTS: "identical sectors and issues" lost 9.5% on
     long-scoreboard (e390764). Time, IPC and stall reasons decide; counts describe.
 
@@ -291,9 +291,9 @@ R10. DESIGN AND CODE FOR ALL REGIMES AT ONCE — dense, sparse, mixed, clustered
 A primitive may select DIFFERENT NATIVE INSTRUCTIONS per architecture; it may never select a wider-type
 emulation on any target architecture. An operation an architecture genuinely lacks is a declared design
 fact with its cost on the card, never an `#if` branch. (Origin: mul_bf16x2's fp32 emulation on sm_80
-lived for months behind a passing oracle; fma.rn.bf16x2 was native all along — K42.)
+lived for months behind a passing oracle; fma.rn.bf16x2 was native all along.)
 
-## §14 addendum (law, 2026-08-28, from K37): CONTAINERS AND THE GPU LOCK
+## §14 addendum (law, 2026-08-28): CONTAINERS AND THE GPU LOCK
 `flock /tmp/rola_gpu.lock` is per-filesystem: a lock taken inside a container serializes nothing on the
 host or in another container. Every container that touches the GPU bind-mounts the host's lock
 directory so one flock governs all. One gate container at a time: stop the previous run before
@@ -311,25 +311,25 @@ build-lock discipline (slots as the parameter).
 The constitution's self-documenting-code clause is gated mechanically: `tools/lint/lint_standards.py`
 measures comment lines / total lines per file under csrc/ and is RED above the mandate's threshold
 (named constant; decl-block level, well under 15%). A `//:` prose block outside a file header is a
-finding. A stage never raises a file's ratio; S5b moves existing prose to the mirrored docs
-(byte-identical SASS gate). Measured 2026-08-28 before S5b: carry.cu 48%, ops.cuh 43%, box.cuh 41%,
+finding. A stage never raises a file's ratio; existing prose moves to the mirrored docs
+(byte-identical SASS gate). Measured 2026-08-28 before that move: carry.cu 48%, ops.cuh 43%, box.cuh 41%,
 carry_kernel.cuh 35%, decode.cu 32%, facts_kernel.cuh 32%.
 
 ## §14 addendum 2 (law, 2026-08-28, after Blake had to shut WSL down): ONE MACHINE, ONE COMPILE BUDGET
 Three tooling agents each ran a full rebuild concurrently (MAX_JOBS=4 each -> 12+ cicc + 3 links) and
 pegged the host at 100% CPU for 10+ minutes. The compile budget is MACHINE-WIDE and TOOL-ENFORCED, not
-brief-enforced: setup.py (via the one build-lock discipline, K39) takes a machine-wide slot before
+brief-enforced: setup.py (via the one build-lock discipline) takes a machine-wide slot before
 compiling and REFUSES/waits when the slots are full — a brief cannot forget it. Until that lands: at
 most TWO agents that build at once; every build goes through tools/build/build_lock.sh; an agent checks
 `pgrep -c cicc` before launching and never wraps a full build in hyperfine (bounded `--runs 3`, on the
-LINK step only). Coordinator error recorded: the K41/K42 briefs omitted the build lock.
+LINK step only). Coordinator error recorded: two briefs omitted the build lock.
 
 ## §18 addendum (law, 2026-08-29): `--no-verify` is never a precedent
 A commit bypasses the hooks only with an explicit, per-commit coordinator authorization naming the
 pre-existing hook failure and the stage that fixes it. "Another stage did it" is not authorization. Red
 hooks are fixed (the hook, or the tree), never routed around.
 
-## CONSTITUTION addendum (Blake, 2026-08-29): THE FOUNDATION LAWS (cards K50, P80c, P79, G_FOUNDATION)
+## CONSTITUTION addendum (Blake, 2026-08-29): THE FOUNDATION LAWS
 - R11 THE AXIS LAW: a compile-time axis is legitimate only as a deterministic function of user input the
   selector can pick; everything else is derived or a constant. Free axes = D and DV. MO and per-level B
   are runtime addressing; BC, K, M, kWarps, S are derived; W and C are constants.
@@ -390,7 +390,7 @@ launch shape, the schedule — is stated in these terms, and a design that coupl
 or to the accumulator's home is misfiled.
 
 ## CONSTITUTION amendment (Blake, 2026-08-29): R20 — THE OWNERSHIP UNIT IS THE CTA's BOX
-R20 read "the SM owns the state; CTAs group warps". Corrected by the arithmetic (G2c): a CTA loads and
+R20 read "the SM owns the state; CTAs group warps". Corrected by the arithmetic: a CTA loads and
 stores its box at entry and exit, so its read-side warps' union and its write-side warps' union must be
 the SAME leaves; carving the SM's box first and handing a CTA half the segments gives the two sides
 different halves at two CTAs per SM. Therefore the ownership unit is the CTA's box — carved per side
@@ -401,7 +401,7 @@ kWarps = warps_per_sm.
 ## CONSTITUTION addendum (Blake, 2026-08-30): SOURCE COMMENTS DESCRIBE THE CODE AS IT IS
 A comment in csrc/ or rola/ states what the code does and why, in the present tense, in the library's
 own terms. It never describes a past state of the kernel, a superseded mechanism, a stage or campaign
-identifier, or a comparison to what was ("G1 replaced…", "the old fp32 rows…", "unlike M1a…"). History,
+identifier, or a comparison to what was ("the previous pass replaced…", "the old fp32 rows…"). History,
 justification and background live in docs/ (DELETIONS.md, ARCHITECTURE's status marks, the internals'
 "why" sections) and in the journal outside the repo. The kernel library references only itself (§17);
 the lint that refuses work codes in source is the mechanical half; reviewers refuse the rest.

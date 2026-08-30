@@ -122,7 +122,7 @@ def test_a_rule_runs_as_a_node_over_a_fact_bag():
 @pytest.mark.parametrize("grad", [False, True])
 def test_the_mask_is_m1_exactly_when_no_state_bit_is_engaged(state_in, state_out, paged, grad):
     """GRAD IS NOT A MASK: it is a retention decision, and the mask must not move
-    with it -- a grad-bearing stateless call runs M1's subgraph exactly."""
+    with it -- a grad-bearing stateless call runs the subgraph exactly."""
     engaged = state_in or state_out or paged
     assert mask(CallClass(state_in, state_out, paged, grad)) is (Mask.M2 if engaged
                                                                  else Mask.M1)

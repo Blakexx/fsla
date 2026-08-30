@@ -26,7 +26,7 @@ write map the walk was going to build anyway.
 **WHAT THE VERDICT BUYS (cells 2-3).** A needy batch-head touches nothing -- no `y`, no
 state, no counter -- so the step can be ENQUEUED before its verdict is host-visible and,
 if the verdict says grow, replayed after the admission. The result is bit-identical to
-S4b's admit-then-step order, which cell 3 states as `torch.equal` against the enumerated
+the admit-then-step order, which cell 3 states as `torch.equal` against the enumerated
 reference's own admission.
 
 THE VERDICT IS PER BATCH-HEAD, so "touches nothing" is a claim about the NEEDY
@@ -107,7 +107,7 @@ def _absent_one_atom_per_bh(fixture, config, arena):
 def _atom_rows(arena, row, column):
     """The `[16, cols]` page an atom maps to, LOGICAL. The caller must know it is resident.
 
-    The stored page is split bf16 planes (K50), so "this atom is zero" is a claim about
+    The stored page is split bf16 planes, so "this atom is zero" is a claim about
     the values it rejoins to and is read through the gather, not off the raw bytes.
     """
     slot = int(arena.page_table[row, column])
@@ -191,7 +191,7 @@ def test_a_step_no_batch_head_can_address_touches_nothing():
 # ---------------------------------------------------------------------------
 
 def test_gated_step_then_admit_then_replay_is_bit_identical_to_admitting_first():
-    """P67-a's host order against S4b's, `torch.equal` on `y` and on the plane.
+    """the host order against S4b's, `torch.equal` on `y` and on the plane.
 
     The reference admits from `_write_atom_bitmap` -- the enumerated reference, whose
     only callers are gates -- so the two orders are compared through two independent
@@ -284,7 +284,7 @@ def _sequence():
             output_final_state=True)
         lattice = to_lattice(oracle_state.float(), _WIDTHS, config.lattice_k,
                              config.lattice_m)
-        #: THE ARENA HOLDS THE STORED FORM (K50's split planes).
+        #: THE ARENA HOLDS THE STORED FORM (the split planes).
         atoms = to_split_planes(lattice.reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS))
         table = arena.page_table
         present = table >= 0

@@ -76,7 +76,7 @@ of the unchanged code differ by ~`5e-7` max-abs at the parity cell. The **state*
 *is* byte-equal and is gated as such. Every `y` comparison in this repository is
 therefore reported against a measured same-order floor. Converting `y` to
 byte-equality was BUILT and MEASURED (a single-writer workspace + one host-fixed-
-order reduce kernel, P10) and then REVERTED (P23, U08 ruling): the mechanism
+order reduce kernel, P10) and then REVERTED: the mechanism
 priced at **+23.0%** step time at the canonical at-scale cell — over 3x the
 figure it was first accepted against — and Blake ruled the price not worth
 carrying. It survives in git (`perf/deterministic-splitk`, tip `70f607b`) and
@@ -97,7 +97,7 @@ beat.
 | **`frag_a_slot` hoist (rung 4) declined** | regressions +0.5…+1.9% persisting at 8× `T` **and** at `N = 65,536`; the foregone −0.99% win reproduced three times and is smaller than the losses it buys | Parked, not closed: a formulation started from the SASS. Revival trigger named — if the kernel becomes issue-bound again. |
 | **Warp specialization demoted** | both mechanisms it is predicted to buy fail measurement: the register recovery does not appear, and `setmaxnreg` is `sm_90+` against an `sm_86` build. The rendezvous spin it was last aimed at no longer exists — the visit's ordering is one hardware barrier | A cell where issue pressure binds. |
 | **The headline metric is CPM, not slots/MMA** | schedulers are **starved, not oversubscribed**: 0.85 eligible warps of 5.81 active; no eligible warp on 52.5% of cycles; issue capacity in 3.2× surplus | "What you gate is what you get": a slots/MMA metric gates a resource held in 3.2× surplus. Any replacement metric needs a bandwidth companion or it repeats the failure in a new coordinate. |
-| **bf16 read-only storage family** (amplitudes, values, projections, `y` cast) | not yet landed; priced at 0–4%, best ~1.5–2%, low end genuinely zero | Its own precision gate first, then the oracle A/B, then perf. Distinct from the state's own STORAGE, which is a live axis in its own right, not this family — the state's ACCUMULATION staying fp32 is the guarantee (§1), unmoved by P40's compensated bf16-pair storage ([fp32-accumulators.md](fp32-accumulators.md#compensated-pair)). |
+| **bf16 read-only storage family** (amplitudes, values, projections, `y` cast) | not yet landed; priced at 0–4%, best ~1.5–2%, low end genuinely zero | Its own precision gate first, then the oracle A/B, then perf. Distinct from the state's own STORAGE, which is a live axis in its own right, not this family — the state's ACCUMULATION staying fp32 is the guarantee (§1), unmoved by the compensated bf16-pair storage ([fp32-accumulators.md](fp32-accumulators.md#compensated-pair)). |
 
 **A choice is only as good as the regime it was measured in**, and this record
 contains its own cautionary tale: perf claims that scale with routing sparsity

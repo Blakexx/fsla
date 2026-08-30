@@ -1,6 +1,6 @@
 # Testing — the three tiers
 
-> **K31 (2026-08-20).** The prefill chunk consumer, its backward and their test tier
+> **2026-08-20.** The prefill chunk consumer, its backward and their test tier
 > are DELETED from the master line (baseline = tag `baseline/pre-k31`;
 > `docs/internals/DELETIONS.md`). Rows below that name the chunk arm, the scans or
 > `bench_chunk.py` describe the baseline tag's tree; the fp64 oracle remains the
@@ -20,7 +20,7 @@ is what keeps the suites from re-proving everything everywhere.
 every test lives in one of these three directories — never a fourth bucket alongside
 them, however narrow or however temporary that bucket's own scope feels at the time.
 `tests/k31/` was exactly that: a fourth directory, named after the campaign that
-built it, gating a kernel as if it were a separate product (K44, `git mv`'d into the
+built it, gating a kernel as if it were a separate product (`git mv`'d into the
 tier each of its tests actually answered — the reference/fixture modules it carried
 became `tests/oracle`'s shared fixtures). **A campaign name never appears in a test
 path** — `tools/lint/lint_standards.py` enforces both of these mechanically: no
@@ -31,7 +31,7 @@ lives in `tools/lint`.** (RULED 2026-08-29.) `tests/unit/test_docs_mirror.py`
 was grep-level from the start — it read files, never imported or ran the code
 they document — so it moved into `tools/lint/lint_standards.py`'s
 `check_docs_mirror` rather than staying in the unit tier under a borrowed
-name. K46 moved five more the same way (test files DELETED):
+name. Five more moved the same way (test files DELETED):
 `test_generated_docs` → `check_supported_table`, `test_shard_partition` →
 `check_shard_partition`, `test_arch_coverage` → `check_arch_coverage`,
 `test_vendored_pin` → `check_vendored_pin`, `test_entmax_pin` →
@@ -132,12 +132,12 @@ Every cell of this cross-product is gated against the oracle:
 | `(widths, D, B)` | the built arm list the manifest carries (`chunk_arms()`), projected |
 | sequence length `T` | 37 across the structural matrix; 512 / 2048 / 8192 on the accumulation arm |
 
-Three axes this cross-product used to carry are gone (P26, `52a67d8`; see
+Three axes this cross-product used to carry are gone (`52a67d8`; see
 [`internals/DELETIONS.md`](internals/DELETIONS.md), revival = git). Normalization
 is no longer an axis: `raw` is dead, `global` (the mass column and the `num`/`den`
 divide, unconditional) is the only value the kernel arm accepts — anything else
 is a named refusal. `BC` is likewise no longer a host axis:
-it belongs to the built arm (P67 D2), so what varies across cells is the ARM. MMA precision is no
+it belongs to the built arm, so what varies across cells is the ARM. MMA precision is no
 longer an axis: `tf32x3` is dead, bf16 storage with fp32 accumulation is the only
 arm the kernel has, and the fp64 oracle stands in as the exactness reference a
 `tf32x3` family delta used to provide. `BT` is no longer an axis: the work unit is
@@ -159,7 +159,7 @@ closes it, at the same tolerance and over the same three lengths (measured slope
 **The window, `GT`, was a fifth axis and is not one now.** It was the tiled
 consumer's token quantum, chosen per launch by reading the realized routing, and
 gated by fixtures built long enough to force the wide arm. Both the axis and its
-kernel retired in P67 D2 ([`internals/DELETIONS.md`](internals/DELETIONS.md)); the
+kernel retired with the tiled consumer ([`internals/DELETIONS.md`](internals/DELETIONS.md)); the
 chunk arm's chunk `rola.engine.rules.arm.CHUNK_TOKENS = 32` is a build fact and not a
 second formulation to gate. It is a CEILING on one super-chunk's gathered entries,
 not a quantum the caller lands on, so `T` is an ordinary length axis here:
@@ -178,7 +178,7 @@ forward, state and both gradients.
    `tests/oracle/test_chunk_ragged_tail.py` (the length axis off the chunk) plus
    the conformance tier's kernel families. The CPU-only fp64 transcription that
    used to sit beside it (`test_algorithm_vs_oracle.py`) transcribed the TILED
-   kernel's control structure and retired with that kernel (P67 D2); the
+   kernel's control structure and retired with that kernel; the
    separation it bought — "the algorithm is wrong" against "fp32 accumulated
    differently" — is carried by the oracle comparison itself, which is fp64 on
    one side, and by `tests/unit/test_oracle_contract.py` on the reference's own
@@ -202,9 +202,9 @@ forward, state and both gradients.
 
 ## The two-branches-agree class — geometry, as data
 
-**The matrix machinery retired with its axes (P67 D2, R-8).** This class held its
+**The matrix machinery retired with its axes.** This class held its
 geometry pairs as a literal table in `matrix.py`, over five axes — `BC`, `DV`,
-`DECAY`, `P` and `paging`. Four of those are gone: `P` in P28, and `BC`/`DV`/
+`DECAY`, `P` and `paging`. Four of those are gone: `P` with sequence-parallelism, and `BC`/`DV`/
 `DECAY` when the tiled consumer went, leaving a one-axis table that could not earn
 the three meta-tests written to keep a matrix honest. The table, its meta-tests
 and `test_endgame_executor.py` (the tiled walk's own gate) are in
@@ -302,12 +302,12 @@ reason:
   realized routing produces. (The stale-plan family drove `rola.expert`'s
   derive/execute seam with a plan priced on a distribution 4x dead; that seam no
   longer exists — there is no plan object to make stale — and the family retired
-  with it in P67 D2.)
+  with it.)
 * **adversarial** — named corners FROZEN PERMANENT (cold read, all-read-only,
   chunk boundary): the bug list, kept forever, and enforced by
   `test_family_meta.py::test_the_adversarial_corners_are_permanent`. Two more —
   `k0-fold` and `ragged-tail` — were forced-`P` fixtures and left with the `P`
-  axis in P28; the freeze protects a demonstrated bug class, not a deleted
+  axis with sequence-parallelism; the freeze protects a demonstrated bug class, not a deleted
   capability's fixture.
 
 **Self-policing**: every family carries an IN-TEST non-vacuity assertion —
@@ -347,7 +347,7 @@ backward lands (M-2), its kernel-VJP gates plug into these same families.
 ## The three meta-tests — RETIRED WITH THE MATRIX, and where each claim went
 
 The retired `test_meta.py` held them, and it went with the table they
-policed (P67 D2, R-8). They are recorded here because a completeness claim that
+policed. They are recorded here because a completeness claim that
 quietly stops being enforced is exactly the failure they existed to prevent, and
 because the successor of each is a specific file rather than a hope.
 
@@ -434,7 +434,7 @@ generated table says so. Manifests only, no device — it passes under
 
 (The fatbin gate that read device entry points per originating object and caught a
 FAILED translation-unit split lived here. It decoded a stats-pass mangled name to ask
-which shard owned an instantiation, so it went with the stats passes in C0 and returns
+which shard owned an instantiation, so it went with the stats passes and returns
 with the sharded family — `docs/internals/DELETIONS.md`.)
 
 **`python tools/header_selfcheck.py`** compiles every header under `csrc/rola/`
@@ -458,7 +458,7 @@ claim; a generated one is a report, and this is what keeps the difference real.
 
 `test_derive.py` (the `BC` derivation, term by term) and `test_dispatch_table.py`
 (the tiled dispatch table joined against the fatbin's entry points) were the third
-and fourth of these gates. Both retired with their subjects in P67 D2: there is no
+and fourth of these gates. Both retired with their subjects: there is no
 derivation left to gate — `BC` belongs to the built arm — and no dispatch table to
 census. The binary-side half of the census question survives, in a stronger form
 than either: the DEVICE-SIDE entry list the build reports (each family's `arms()` and
@@ -482,8 +482,8 @@ all grep-level so a contributor can read the check itself:
    produce. `csrc/rola/src/instantiations/` is the only such directory; eight
    mirror docs restating one sentence would be the ceremony this mandate removes,
    and the next re-partition would orphan them. A generated directory that does not
-   EXIST is not a violation — C0 emptied the carry arm list, so the generator produces
-   nothing and the directory is absent until G4.
+   EXIST is not a violation — the carry arm list is empty, so the generator produces
+   nothing and the directory is absent until a shipped set names rows.
 
 It carries its own non-vacuity guard: a floor on the number of sources found, so
 that a broken glob cannot make the file pass by checking nothing.
@@ -552,7 +552,7 @@ reduction and is not bit-reproducible run to run.
 ```bash
 pytest tests/unit tests/oracle -m "not cuda"                                 # CPU: no device, no build
 pytest tests/unit -m cuda                           # tests/unit's CUDA-marked rows
-pytest tests/oracle                                 # kernels vs the fp64/torch baselines, incl. the families
+pytest tests/oracle                                 # kernels vs the fp64/torch baselines, incl. The families
 pytest tests/integration                            # composition, dispatch, two-branches-agree
 ROLA_FLA_CROSSCHECK=1 pytest tests/oracle/test_oracle_vs_fla.py                # one-time, opt-in -- see below
 ROLA_GRADCHECK_INSURANCE=1 pytest tests/oracle/test_backward_family.py  # one-time, opt-in -- see above
@@ -567,7 +567,7 @@ subset needs choosing. The same battery, scoped as
 deselected in ~18 s** (re-measured 2026-08-29, post-K46: five lint-shaped test
 files moved into `tools/lint/lint_standards.py` and deleted, so the count is the
 prior number minus exactly those files' rows — `test_docs_mirror.py` had already
-moved in S5b). `test_shard_partition.py` (moved in K46 too) had parametrized one
+moved with the comments). `test_shard_partition.py` (moved too) had parametrized one
 row per csrc source alongside `test_docs_mirror.py`'s, so a deleted surface used
 to move the count by more than its own tests; that coupling is gone now that
 both checks are plain functions in `lint_standards.py` rather than parametrized
@@ -595,14 +595,14 @@ time and neither can tell. Every GPU entry point in this repository takes this o
 path through `tools/gpu_lock.py`'s `gpu_lock()`. If you find another spelling
 anywhere, it is a defect — fix it rather than adding a second lock beside it.
 
-**EVERY GPU ENTRY POINT LOCKS ITSELF (K46).** Before K46 the lock was half-and-half:
+**EVERY GPU ENTRY POINT LOCKS ITSELF.** The lock used to be half-and-half:
 `tools/probe_cells.py` and `tools/sanitize_oracle.py` took it internally, but pytest
 and the chunk-arm bench harness relied on the CALLER wrapping the command in an
 external `flock` — and `bench.discipline.require_gpu_lock` REFUSED a bare invocation
-to enforce that. K38 showed the failure mode on the other side: an external `flock`
+to enforce that. The other side showed its own failure mode: an external `flock`
 wrapping a tool that ALSO locks itself deadlocks (per-open-file-description
 semantics — the wrapper's own lock blocks the wrapped process's identical
-`fcntl.flock` call forever). K46 collapses both harnesses onto ONE design: every GPU
+`fcntl.flock` call forever). Both harnesses now share ONE design: every GPU
 entry point — pytest (a session-scoped `gpu_lock()` fixture in `tests/conftest.py`),
 `tools/probe_cells.py`, `tools/sanitize_oracle.py`, `bench.discipline.disciplined`
 (and so every `benchmarks/bench` driver) — takes `gpu_lock()` itself and is invoked
@@ -649,14 +649,14 @@ refusal; none launches a kernel.
 | file | what it plants |
 |---|---|
 | `tests/unit/test_perf_ledger.py` | a row missing its provenance, a row from an unknown schema, a shift smaller than its own scatter, a single unlucky run, an effect with no significance behind it |
-| `tests/unit/test_chunk_bench_harness.py` | K46: pre-existing drift found while touching this row — the file this cites is not in the current tree (`find` came up empty), and its old plant ("a bare invocation with no `flock` ancestor") described `require_gpu_lock`'s ancestor-check design, which K46 replaced with self-locking (`bench.discipline.disciplined` now takes `gpu_lock()` itself); a successor row, if this coverage is re-added, plants a `gpu_lock()` acquisition failure instead. Left named here as a finding, not silently deleted. |
+| `tests/unit/test_chunk_bench_harness.py` | pre-existing drift found while touching this row — the file this cites is not in the current tree (`find` came up empty), and its old plant ("a bare invocation with no `flock` ancestor") described `require_gpu_lock`'s ancestor-check design, since replaced with self-locking (`bench.discipline.disciplined` now takes `gpu_lock()` itself); a successor row, if this coverage is re-added, plants a `gpu_lock()` acquisition failure instead. Left named here as a finding, not silently deleted. |
 | `tests/unit/test_chunk_latency_regression.py` | `bench`-marked and opt-in: HEAD's per-cell latency against the committed baseline, read-only |
 
 `test_probe_harness.py` (the discipline gates: a lock held by another process, a
 clock that never settles, a corrupt ncu section file, a subcommand offering to
 skip the lock) and `benchmarks/test_latency_regression.py` (a baseline taken with
 a different stopwatch, and one that does not say which) went with the probe
-harness in P67 D2. **Their claims are re-anchored** in the two files above, which
+harness. **Their claims are re-anchored** in the two files above, which
 is the chunk-arm harness card's planted-violation obligation discharged
 ([`measurement.md`](measurement.md)); the ncu section-file row has no successor
 because the successor takes no counters yet.
@@ -719,7 +719,7 @@ nobody can falsify.
 
 ### The sanitizer lane
 
-The lane's DRIVER was `rola_probe sanitize`, retired in P67 D2 with the rest of the
+The lane's DRIVER was `rola_probe sanitize`, retired with the rest of the
 harness; the lane's shape and its measured findings are kept here because they are
 what the successor has to reproduce, and re-deriving them from memory is how a
 finding turns into a belief.
@@ -744,9 +744,9 @@ exists for the chunk arm yet** — that is a gap, not a carry-over.
   `__syncthreads()` — exactly the barrier class `racecheck` orders shared memory
   by — so no edge was left that a counter protocol published instead. An empty
   skip-list is the standard the successor lane inherits.
-* **AND THE SUCCESSOR LANE FOUND THE EDGE THAT SENTENCE ANTICIPATED (K47, 2026-08-29).**
+* **AND THE SUCCESSOR LANE FOUND THE EDGE THAT SENTENCE ANTICIPATED.**
   `tools/sanitize_oracle.py`'s decode cell publishes exactly what the bullet above says
-  a barrier saved the tiled consumer from: the decode step's CTA combine (P79) has NO
+  a barrier saved the tiled consumer from: the decode step's CTA combine has NO
   barrier below its prologue and publishes its shared rows with a fence plus an arrival
   counter, so `racecheck` reports 48 RAW hazards on it. The SKIP-LIST IS STILL EMPTY and
   stays that way: the pair is adjudicated, not skipped. `ASSERTED` declares the one idiom

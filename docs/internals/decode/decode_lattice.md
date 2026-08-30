@@ -275,7 +275,7 @@ integer division in the walk's innermost enumeration.
 
 `term_layout` turns those counts into each term's rank space and its unit count,
 and `publish_term_layout` calls it ONE THREAD PER TERM because the terms are
-independent — `D + 2` threads doing at most `D` `ceil_log2`s each, rather than one
+independent — `D + 2` threads doing at most `D` `ceil_log2_dev`s each, rather than one
 thread doing twenty-four in series while the rest wait at the barrier. The unit
 count is zero wherever any of that term's kinds is empty, so an absent owner set
 kills a term outright rather than walking zero-width ranges.
@@ -364,7 +364,8 @@ launch, rather than negotiated at one; the decode build stamp carries it, so a
 host that outgrew the device's box fails a device-side check
 (`decode_api.md#build-stamp`).
 
-The interleave's other two ceilings died with it: `kDecodeMaxCap` bounded the
+<!-- ABSENT: kDecodeMaxCap kDecodeMaxSubBox -->
+the interleave's other two ceilings died with it: `kDecodeMaxCap` bounded the
 capacity radix a unit's low bits carried, and `kDecodeMaxSubBox` bounded the
 intra-sub-box scan. Under mixed radix a unit is a contiguous run, there is no
 capacity radix separate from the run offsets, and there is no sub-box scan to
@@ -376,7 +377,7 @@ Decode takes its lattice as DATA, not as a template arm, so every constraint
 `box.cuh`'s `BoxPlan` states as a `static_assert` is a `TORCH_CHECK` in
 `decode.cu::fill_lattice`:
 
-- `k` and `m` are exact powers of two (K1);
+- `k` and `m` are exact powers of two;
 - `k <= kDecodeMaxSpan`;
 - per level, `s_l = k * m_l <= kDecodeMaxSpan` and `B_l % s_l == 0` (K6: an
   owner sits inside a level — `m_l` is spec §2.5 as the atom-rectangle law
@@ -442,7 +443,7 @@ the largest `k`. That reproduces the built arms (`(64,64)` and `(256,256)` both
 `(4, 8)`) and selects `k = 2` at `(16,16,16)`, whose one-level rectangle the
 `k = 4` box cannot reach.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_lattice.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -484,7 +485,7 @@ The compacted lists this supersedes cost FOUR `cub::BlockScan`s and TWO BARRIERS
 LEVEL to build a table whose only use is `list[i] -> owner`; a warp's 32 lanes already
 hold 32 consecutive owners' answers, so ONE `__ballot_sync` per kind IS that level's
 word, written by its lane 0, and `list[i]` becomes a find-nth-set over the same word
-([`select_owner`](decode_lattice.md#the-owner-lists)). The realized counts ride the same
+(a find-nth-set over that word). The realized counts ride the same
 word as a popcount, so the level's `n_o` needs no second pass either.
 THE COUNTS ARE FOLDED BY ATOMIC, NOT SCANNED: a count is the popcount SUM over a level's
 at most eight words, and the eight lane-zeros that hold them are in different warps.
@@ -565,12 +566,12 @@ cell; this order consumes one level-0 owner's whole region before moving on.
 ### `publish_term_layout`
 
 THE WHOLE TABLE AND THE RETIREMENT BOUND, published once per CTA. ONE THREAD PER TERM,
-because the terms are independent: `D + 2` threads do at most `D` `ceil_log2`s each
+because the terms are independent: `D + 2` threads do at most `D` `ceil_log2_dev`s each
 instead of one thread doing twenty-four in series while the rest wait. `umax` -- the
 largest count the WALK's terms reach, which is the retirement bound -- is folded by
 `atomicMax` inside this function's OWN barrier, so no CTA pays a second block
 synchronisation to learn it: docs/internals/decode/decode.md#retirement
-The candidate slot is not the walk's, so it is not in the retirement bound.
+the candidate slot is not the walk's, so it is not in the retirement bound.
 
 <a id="unit"></a>
 ### `Unit`
@@ -601,7 +602,7 @@ walk had. Laying the terms end to end in one index space and naming the term per
 was measured at `+2.3 ns` of dependent latency per unit, which on the scattered cell
 cost more than the units the decomposition saves:
 docs/internals/decode/decode.md#the-term-loop
-The grid partitions EACH TERM'S index space by the modular map it always used, so the
+the grid partitions EACH TERM'S index space by the modular map it always used, so the
 deposit -- which lives in term 0 alone -- is still one owning CTA, warp and lane per row.
 Within a term the high bits are the OWNER RANK, one padded field per level, and the low
 `lat_outer_bits` are the fixed run offsets in the SAME mixed radix the owner-local index
@@ -668,10 +669,10 @@ CTA's own stride still sweeps one owner region at a time. It is a BIT PERMUTATIO
 an index space whose extent is a power of two, so it is a bijection and the partition
 -- one owning CTA, warp and lane per deposited row -- is exactly the one it was.
 docs/internals/decode/decode_lattice.md#the-write-grain
-The index is CLAMPED, not guarded: at `D == 1` there is no outer level to rotate into
+the index is CLAMPED, not guarded: at `D == 1` there is no outer level to rotate into
 and the block below does not run, but the subscript is still compiled.
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode_lattice.cuh` condensed at their call site into a short pointer.
 

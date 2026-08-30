@@ -8,11 +8,11 @@
 # misc-unused-parameters, bugprone-unused-*, readability-redundant-*).
 #
 # WHY ARM TUs AND NOT decode.cu/carry.cu/etc: `try_clang_tidy_device_tu.sh`
-# (K46) already measured that clang 14's bundled CUDA wrapper headers conflict
+# already measured that clang 14's bundled CUDA wrapper headers conflict
 # with this host's CUDA 12.4 toolkit headers reached transitively through
 # torch/c10 (~99 errors, all inside vendored headers, none in this codebase's
 # own lines) -- torch-bearing device TUs never finish a clean parse. Arm TUs
-# never include torch (K36), so this profile is the one class of device TU
+# never include torch, so this profile is the one class of device TU
 # where the noise floor is smallest; it is still not zero -- see NOISY CHECKS.
 #
 # NOISY CHECKS ON THIS CUDA/clang PAIRING (reported, never silenced with a
@@ -147,4 +147,9 @@ done
 echo "---"
 echo "device clang-tidy: $total_real on-target finding(s) across $(echo "$arm_files" | wc -l) arm TU(s);" \
      "$total_noise toolchain-noise diagnostic(s) excluded from that count (see this script's header)."
+
+# GATING on the ON-TARGET count. Toolchain noise -- clang's bundled CUDA wrapper headers
+# disagreeing with the installed toolkit -- is printed and never counted: it is a fact
+# about the analyzer's own headers, not about this code.
+if [[ "$total_real" -gt 0 ]]; then exit 1; fi
 exit 0

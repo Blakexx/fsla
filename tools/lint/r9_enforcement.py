@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R9 ENFORCEMENT LINT (LINT2 item 6, KERNEL_STANDARDS "R9 ENFORCEMENT: A
+"""R9 ENFORCEMENT LINT (LINT2 item 6, KERNEL_STANDARDS "§R9 ENFORCEMENT: A
 STRUCTURE BRANCH FAILS LOUD AT EVERY LAYER", G4 DRIFT GUARD "the R9
 enforcement clause is MECHANICAL", G_FOUNDATION G5). REPORT-ONLY.
 
@@ -75,6 +75,7 @@ def switch_findings(path: Path, lines: list[str]) -> list[str]:
         m = SWITCH_RE.match(line)
         if not m:
             continue
+
         # Find the switch body's extent by brace counting from this line.
         depth = 0
         started = False
@@ -127,6 +128,7 @@ def if_chain_findings(path: Path, lines: list[str]) -> list[str]:
         if not m or m.group(1) == "constexpr":
             i += 1
             continue
+
         var = m.group(2)
         chain_start = i
         # Walk forward: does this if start a chain testing the same var at

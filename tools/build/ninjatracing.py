@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""K39 -- `.ninja_log` -> a Chrome/Perfetto trace, the compile ledger's visual form.
+"""`.ninja_log` -> a Chrome/Perfetto trace, the compile ledger's visual form.
 
 `build/temp/.ninja_log` (torch's `CUDAExtension` build drives ninja underneath
 `setup.py`) already carries, per compiled TU, the wall-clock start/end this

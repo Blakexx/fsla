@@ -205,13 +205,13 @@ def leaf_rate_dials(decay, topology: Topology) -> torch.Tensor:
     """Flatten ``LeafMassDecay.dials`` to ``[H, sum_l width_l]``, rows at ``level_offsets``.
 
     The leaf rate is ``rate[s] = prod_l delta_l[d_l(s)]`` -- a plain
-    product of **dials**, not an AND over per-branch retentions as in V2. It is
+    product of **dials**, not an AND over per-branch retentions as in the earlier form. It is
     accumulated by the kernel in fp32 and never in bf16: ``rate`` near 1 makes
     ``1 - rate`` catastrophically cancelling, and ``log1p(-rate)`` cannot repair a
     cancellation that already happened in the product (this workflow's
     numerics audit).
 
-    **Cast-boundary re-validation (fix pass, review B1).**
+    **Cast-boundary re-validation.**
     ``LeafMassDecay.__post_init__`` enforces ``0 <= delta < 1`` in the dial
     tensor's OWN dtype (``types.py``). That is not the dtype the kernel reads: an
     fp64 dial in ``[1 - 3e-8, 1)`` is strictly ``< 1`` in fp64 and passes, but

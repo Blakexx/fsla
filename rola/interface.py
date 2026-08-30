@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The public op — and, until K31 R2 lands, its refusal.
+"""The public op — and, until the kernel lands, its refusal.
 
     rola_op(routes, v, decay)
 
@@ -11,9 +11,9 @@ feature map named: ``routes`` is the ``(q, k)`` pair AFTER the map -- a
 it, because none of them are model facts: they are how the op runs, and the op decides
 how it runs.
 
-**THE PREFILL EXECUTION ARM IS DELETED** (K31 pre-build deletion batch, ruling
+**THE PREFILL EXECUTION ARM IS DELETED** (the pre-build deletion batch, ruling
 2026-08-19; baseline = tag ``baseline/pre-k31``). The shipped chunk consumer and
-its two-scan backward were removed ahead of the K31 box-native rebuild, so this
+its two-scan backward were removed ahead of the box-native rebuild, so this
 op currently REFUSES every call, loudly, naming the ruling. What survives of the
 family is its fact layer — the union-table pass, the atom bitmap and the
 liveness epilogue (:mod:`rola.engine.facts`) — the decode arm
@@ -51,9 +51,9 @@ def rola_op(
     state: RoLAState | None = None,
     expert: Any = None,
 ) -> tuple[torch.Tensor, RoLAState | None]:
-    """REFUSED: the prefill execution arm is deleted pending the K31 rebuild.
+    """REFUSED: the prefill execution arm is deleted pending the rebuild.
 
-    The signature is the contract K31 R2 re-implements — ``(y, state)`` over one
+    The signature is the contract the rebuild re-implements — ``(y, state)`` over one
     routing bundle and one value stream — and it is kept so callers break HERE,
     by name, rather than on an import. The fp64 oracle
     (:func:`rola.ops.naive.naive_rola`) is the executable spec and still runs
@@ -61,8 +61,8 @@ def rola_op(
     ``T = 1`` (:class:`rola.RoLA`'s dispatch).
     """
     raise NotImplementedError(
-        "prefill arm deleted pending K31 R2 — see queue K31 card. The shipped "
+        "the prefill arm is deleted; see docs/internals/DELETIONS.md. The shipped "
         "chunk consumer and its backward were removed from the master line "
-        "(baseline = tag baseline/pre-k31); the box-native K31 kernel replaces "
+        "(baseline = tag baseline/pre-k31); the box-native kernel replaces "
         "them. Run the fp64 oracle (rola.ops.naive.naive_rola) for semantics, "
         "or check out the baseline tag for the retired kernel.")

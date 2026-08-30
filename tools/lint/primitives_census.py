@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SASS-SHAPE CENSUS for arch-selected primitives (K42).
+"""SASS-SHAPE CENSUS for arch-selected primitives.
 
 **WHAT THIS CATCHES.** `csrc/rola/src/common/ops.cuh` names a primitive by its
 CONTRACT (KERNEL_STANDARDS section 8: "feature selection lives where the

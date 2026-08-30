@@ -27,6 +27,7 @@ from rola.interface import operands_of, requires_backward
 
 # --- the predicate -----------------------------------------------------------
 
+
 def test_the_predicate_is_false_whenever_grad_is_globally_off():
     leaf = torch.zeros(2, requires_grad=True)
     assert requires_backward(leaf) is True
@@ -95,7 +96,7 @@ def test_the_prefill_arm_refuses_by_naming_the_ruling():
     autograd-gap lesson: a deleted arm must raise, never sever silently)."""
     v, routes = _tiny_routing(requires_grad=True)
     assert requires_backward(v, *routes.tensors()) is True
-    with pytest.raises(NotImplementedError, match="K31 R2"):
+    with pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
         rola.rola_op(routes, v)
     with pytest.raises(NotImplementedError, match="baseline/pre-k31"):
         rola.rola_op(routes, v)
@@ -139,12 +140,10 @@ def test_the_refusal_is_the_same_sentence_with_and_without_a_gradient():
     sentence must come back both times, so a caller cannot be told two different
     things about one bundle."""
     v, routes = _tiny_routing(requires_grad=True)
-    with pytest.raises(NotImplementedError, match="K31 R2"):
+    with pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
         rola.rola_op(routes, v)
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="K31 R2"):
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
         rola.rola_op(routes, v)
-
-
 
 
 def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():

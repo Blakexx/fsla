@@ -46,6 +46,24 @@ source file has no mirror or a stub cites an anchor no doc defines.
 `DELETIONS.md` is the ledger of code removed from this tree — what, when, and
 why it was safe.
 
+## Naming something that is not there
+
+A page may only name identifiers its source still carries. `lint_standards.py` reads
+every name a page writes in code font and fails on one that exists nowhere in the tree:
+a mirror page can otherwise outlive the mechanism it documents, and every earlier check
+was about the page's SHAPE — that it exists, sits at the right path and resolves its
+anchors — rather than about whether its subject was still there.
+
+Naming what is GONE is often the fact worth keeping: an entry that was unbound, a
+mechanism that retired, another project's file the convention was borrowed from. Declare
+those names on one line beside the prose that explains them,
+
+    <!-- ABSENT: rola_consumer_forward rola_page_admit_mask -->
+
+and the check reads the declaration in BOTH directions — a declared-absent name the tree
+actually carries fails too, because the passage is then telling a reader the opposite of
+the truth.
+
 **A bare commit hash cited anywhere in this tree resolves in the source
 repository named by [`docs/provenance.md`](../provenance.md)
 (`flash-linear-attention-rola`, branch `rola-v3`), not in this one, whose history

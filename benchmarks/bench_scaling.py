@@ -52,7 +52,7 @@ never inferred.
 
 **Memory is reported on the same rows as latency**, because the curve's second axis
 is the point: `kv_cache_bytes` for attention (analytic, `2 * B * H * L * d_head *
-itemsize`, the bytes a decoder would have to keep), against V3's `committed_bytes`
+itemsize`, the bytes a decoder would have to keep), against the `committed_bytes`
 (measured, the state's own `PagingResult` -- the bytes the CUDA driver MAPPED, which is
 the only quantity that states a saving; `allocated_bytes` beside it is what the arena
 handed out) and `dense_state_bytes` (analytic, the provisioned `N`). A pool smaller than
@@ -65,7 +65,7 @@ separately rather than conflated with either.
 the stage that failed, and the sweep continues at the next arm. Nothing is silently
 shrunk.
 
-Usage (invoked BARE -- `main()` takes `gpu_lock()` itself, K46):
+Usage (invoked BARE -- `main()` takes `gpu_lock()` itself):
 
     PYTHONPATH=<worktree> python benchmarks/bench_scaling.py \
         --seq-lens 512,1024,2048,4096,8192 --json out.json
@@ -163,6 +163,7 @@ class MatchedAttention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, _ = x.shape
+
         def split(t):
             return t.view(B, L, self.heads, self.d_head).transpose(1, 2)
         q, k, v = split(self.q_proj(x)), split(self.k_proj(x)), split(self.v_proj(x))
@@ -296,9 +297,9 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
            "hidden": hidden, "branches": list(branches),
            "read_router": read_router, "write_router": write_router,
            "logit_gain": logit_gain,
-           #: TWO DEAD AXES RETIRED (P67 S5). Raw normalization used to be refused
+           #: TWO DEAD AXES RETIRED. Raw normalization used to be refused
            #: outright (the mass column is unconditional; the host axis itself is now
-           #: deleted, G4) -- and a decay-configured layer is refused by the chunk arm.
+           #: deleted) -- and a decay-configured layer is refused by the chunk arm.
            #: Both raised on their first cell. The columns stay in the row, as the
            #: CONSTANTS they are, so a reader of an old JSON beside a new one is
            #: comparing the same arm.
@@ -329,7 +330,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         assert layer.last_execution_backend == "cuda", (
             f"cell L={L} took the {layer.last_execution_backend!r} backend, so this row "
             "measures the wrong kernel")
-        # REPOINTED (P67 S3b): paging is the STATE's backing, not a layer flag, and it
+        # REPOINTED: paging is the STATE's backing, not a layer flag, and it
         # engages only on a call that carries a state. The TIMED call above stays
         # stateless -- that is the row this benchmark reports -- and residency is read
         # off one extra stateful call on the same routing, which commits exactly the

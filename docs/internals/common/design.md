@@ -48,7 +48,7 @@ reader sees is a stated engineering decision; a SILENT slower path is the
 forbidden thing.  `Announce` below is that mechanism, and `ops.cuh` wires the
 sites, because whether an implementation is built is a fact about operations.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/common/design.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 

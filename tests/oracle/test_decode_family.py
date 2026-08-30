@@ -48,7 +48,7 @@ pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="decode is a CUDA kernel"),
 ]
 
-#: P67 D2-b: the prefill leg runs on the CHUNK arm, whose built manifest is
+#: The prefill leg runs on the CHUNK arm, whose built manifest is
 #: uniform-width, so the family's topology is a built `(D, B)` and its prefill
 #: length is a multiple of `rola.engine.rules.arm.CHUNK_TOKENS`. DECODE's own envelope
 #: is unchanged -- it is BC-blind and topology-general -- so that is a

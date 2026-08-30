@@ -61,10 +61,12 @@ __device__ __forceinline__ int64_t addr_split(const Strides& s, int64_t sb, int6
 
 template <typename T>
 __device__ __forceinline__ void store_value(T* p, int64_t off, float v);
+
 template <>
 __device__ __forceinline__ void store_value<float>(float* p, int64_t off, float v) {
   p[off] = v;
 }
+
 template <>
 __device__ __forceinline__ void store_value<__nv_bfloat16>(__nv_bfloat16* p, int64_t off, float v) {
   p[off] = __float2bfloat16(v);
@@ -73,10 +75,12 @@ __device__ __forceinline__ void store_value<__nv_bfloat16>(__nv_bfloat16* p, int
 //: The ACCUMULATING store, for the tied backward's second contribution. bf16 device -- see docs/internals/entmax/entmax.md#near-line-86
 template <typename T>
 __device__ __forceinline__ void add_value(T* p, int64_t off, float v);
+
 template <>
 __device__ __forceinline__ void add_value<float>(float* p, int64_t off, float v) {
   atomicAdd(p + off, v);
 }
+
 template <>
 __device__ __forceinline__ void add_value<__nv_bfloat16>(__nv_bfloat16* p, int64_t off, float v) {
   atomicAdd(p + off, __float2bfloat16(v));
@@ -84,10 +88,12 @@ __device__ __forceinline__ void add_value<__nv_bfloat16>(__nv_bfloat16* p, int64
 
 template <typename T>
 __device__ __forceinline__ float load_value(const T* p, int64_t off);
+
 template <>
 __device__ __forceinline__ float load_value<float>(const float* p, int64_t off) {
   return p[off];
 }
+
 template <>
 __device__ __forceinline__ float load_value<__nv_bfloat16>(const __nv_bfloat16* p, int64_t off) {
   return __bfloat162float(p[off]);
@@ -150,6 +156,7 @@ struct RowSort {
 struct Pair {
   float p, q;
 };
+
 struct PairAdd {
   __device__ __forceinline__ Pair operator()(const Pair& a, const Pair& b) const {
     return {a.p + b.p, a.q + b.q};

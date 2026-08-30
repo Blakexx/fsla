@@ -1,122 +1,110 @@
-# tools/lint — every lint, its rule, its gating status, the flip plan
+# `tools/lint` — every lint, its rule, and whether it gates
 
-Mirrors `tools/lint/` file-for-file. `docs/build.md`'s "Standards lint" section
-covers the FIRST generation of these checks (ast-grep rules, `lint_standards.py`,
-`run_clang_tidy.sh`) — this page adds the LINT2 batch (G_FOUNDATION G5's "dead-code
-and readability lints", ratified 2026-08-29, Blake) and states, per lint, whether it
-gates a commit today or only reports.
+Mirrors `tools/lint/` file for file. `docs/build.md`'s "Standards lint" section covers
+the first generation of these checks (the ast-grep rules, `lint_standards.py`,
+`run_clang_tidy.sh`); this page carries the whole roster and states, per lint, whether it
+refuses a commit today or only reports.
 
-| lint | rule | gating today? | flip plan |
-|---|---|---|---|
-| `ast_grep_gate.py` + `tools/lint/rules/*.yml` | KERNEL_STANDARDS shapes an AST can see (§12 fences/collectives, K36 torch-in-arm-TU, anon-namespace kernels, width-shaped `if`) | **yes** | — |
-| `lint_standards.py` | unroll discipline (§6), arm-TU torch include (belt), decode-prologue barrier (P79), `docs/`/`tools/` flock spelling (K46), `check_supported_table`/`check_shard_partition`/`check_arch_coverage`/`check_vendored_pin`/`check_entmax_pin`/`check_repo_portability` | **yes** | — |
-| `run_clang_tidy.sh` | `bugprone-*` + small `readability-*` on HOST TUs (`.clang-tidy`) | **yes** | — |
-| `run_clang_tidy_device.sh` + `clang-tidy-device.yaml` | `clang-analyzer-deadcode.DeadStores`, `misc-unused-parameters`, `bugprone-unused-*`, `readability-redundant-*` on the torch-free carry ARM TUs (clang `--cuda-host-only`) | report-only | G5, after a sweep of whatever this profile finds across the full arm set (widen with `ROLA_CARRY_ARMS=all` first) |
-| `host_warnings.py` | `-Wall -Wextra -Wunused` dry-compile (`-fsyntax-only`) of the host TU(s) in `compile_commands.json`, on-target findings only (`csrc/rola/` lines; vendored-header warnings reported separately, never counted) | report-only | G5, once 0 on-target findings is the steady state (currently is: 0 measured 2026-08-29) |
-| `unused_instantiations.py` | every `__global__` function TEMPLATE in `csrc/rola/` must demangle-match a symbol in a committed manifest (`tools/manifests/*.json`); `__device__` templates are found and counted but explicitly NOT CHECKED (manifests only ever record `ptxas -v` ENTRY functions — see the module docstring for the measured false-positive rate that ruled `__device__` out) | report-only | G5 deletes any `__global__` finding that still holds after a fresh ratify; `__device__` liveness needs a different instrument (a `cuobjdump --dump-elf` STT_FUNC symbol dump) not built here |
-| `run_vulture.sh` + `vulture_whitelist.py` | vulture over `rola/ tools/ tests/ benchmarks/`, whitelist = genuine dynamic uses only (pytest's `pytestmark` convention, pytest fixture injection), each with a one-line reason | report-only | G5, after ruling on the remaining findings (46 measured 2026-08-29) one at a time — a whitelist entry is earned by a genuine dynamic use, never added to silence a real dead-code hit |
-| `run_ruff_e3.sh` | ruff's E30x (pycodestyle blank-line spacing, E301-E306) — preview-gated in ruff 0.16.5, so NOT in `pyproject.toml`'s gating `[tool.ruff.lint].select`; the codes list lives in `[tool.rola_lint.report_only]`, read by this script only | report-only | G5: fix the findings (41 measured 2026-08-29, `--fix` covers all of them), then move the codes into the real `select` and delete the report-only table |
-| `readability_spacing.py` | (a) any function/kernel body >= 40 lines with ZERO blank lines, csrc AND Python; (b) > 1 consecutive blank line, **csrc only** (Python's own convention is 2 between top-level defs — PEP8/ruff's `E303` territory, not this rule's) | report-only | G5: segment the long bodies (10 measured 2026-08-29) and adopt `.clang-format`'s `MaxEmptyLinesToKeep: 1` / `SeparateDefinitionBlocks: Always` (below) as the mechanical enforcement for (b) |
-| `r9_enforcement.py` | KERNEL_STANDARDS "R9 ENFORCEMENT" constitution addendum: a device `switch`/if-chain on a structural field must have a `__trap()` default (never a bare fallthrough) AND a `// R9-CASES: <name>` marker comment naming its generated case set — the marker THIS LINT DEFINES, since no generator emits it yet (G2/G5 adopt it) | report-only | G2/G5: once the generator emits the marker and defaults trap, this lint's finding count is the exhaustiveness backstop (§9: "should catch nothing") |
-| `drift_guards.py` | THE DRIFT GUARDS: eleven laws, each ratified with a stage that removed a mechanism cheap to reintroduce — the arm key, the split planes, byte-identity for storage claims, one derivation site, one admission law, one-value axes, one arm table, one body per op family, `uniform_switch` for a device structure branch, `arm_switch` for a host dispatch on the key, and comments that describe the code as it is | report-only | C2e flips them, sized from the inventory below; each rule owns a fixture pair (`--test-fixtures`) so the flip is a change of exit code, not of confidence |
-| `.clang-tidy` | HOST-only `bugprone-*` + small `readability-*` | **yes** (via `run_clang_tidy.sh`) | — |
-| `clang-tidy-device.yaml` | the LINT2 device check set (above) | report-only (via `run_clang_tidy_device.sh`) | see that row |
-| `clang-format-readability.yaml` + `run_clang_format_readability.sh` | `MaxEmptyLinesToKeep: 1` + `SeparateDefinitionBlocks: Always`, over the root `.clang-format`'s other settings | report-only | G5: fix the 153 diffs measured 2026-08-29 in one dedicated reformat commit, merge these two lines into the root `.clang-format`, delete this file |
+**A GATE IS A CHECK SOMEBODY CAN SATISFY.** Every gating lint below is at ZERO on the tip
+its flip landed on. A check that fires on the shipped tree is not thereby wrong — it is
+the work — but wiring it to refuse commits before that work is done teaches contributors
+to bypass the gate, which costs more than the check was worth. So a lint that is not
+clean yet prints its findings, exits 0, and says here what it is waiting for.
+
+## The gating set
+
+| lint | rule |
+|---|---|
+| `ast_grep_gate.py` + `rules/*.yml` | the standards' shapes an AST can see (§12 fences and collectives, a torch header in a per-arm translation unit, an anonymous-namespace kernel, a width-shaped `if`) |
+| `lint_standards.py` | unroll discipline (§6), the arm-TU torch include, the decode-prologue barrier law, the whole `docs/internals/` mirror contract (including that a mirror page names no identifier the tree does not carry), the flock spelling, the supported matrix, the shard partition, the vendored pin, the comment-density mandate, repository portability |
+| `run_clang_tidy.sh` | clang-tidy on the host translation units |
+| `run_clang_tidy_device.sh` + `clang-tidy-device.yaml` | dead stores, unused parameters and redundant expressions on the TORCH-FREE device translation units, through clang's CUDA front end. Toolchain noise — clang's bundled CUDA wrapper headers disagreeing with the installed toolkit — is printed and never counted |
+| `host_warnings.py` | `-Wall -Wextra -Wunused` dry compile of the host translation units, ON-TARGET findings only; a vendored header's warning is not this codebase's to fix |
+| `unused_instantiations.py` | every `__global__` function template must demangle-match a symbol in a committed manifest. `__device__` templates are found, counted and explicitly NOT checked: manifests record entry functions only, and a wrapped-once helper has no standalone symbol |
+| `run_ruff_e3.sh` | pycodestyle's blank-line family. It keeps its own invocation because ruff preview-gates that family, and turning preview on in `pyproject.toml` would gate every other family's preview rules too |
+| `readability_spacing.py` | a function or kernel body of forty lines or more with ZERO blank lines in it, and a run of blank lines in `csrc` (Python's own two-line convention is ruff's `E303` territory). The rule asks for segmentation and does not say where |
+| `clang-format` (root `.clang-format`) | the formatting floor, including `MaxEmptyLinesToKeep: 1` and `SeparateDefinitionBlocks: Always` — the formatter's half of the readability rule above |
+
+## The report-only set, and what each is waiting for
+
+| lint | findings on this tree | what it is waiting for |
+|---|---|---|
+| `drift_guards.py` | 11 over 11 rules | five `torch.equal` storage claims and two structure findings in the decode family's own files, plus four test-local arm tables. Sized below |
+| `work_codes.py` | 611 | the documentation sweep. `csrc/`, `rola/`, `tools/`, `tests/` and `benchmarks/` are clean; what remains is prose, most of it in the two documents whose subject IS the campaign's history |
+| `r9_enforcement.py` | 1 | `decode_lattice.cuh`'s `switch (kind)` folds its fourth case into a bare default. The fix is a `uniform_switch` and it belongs to the decode family's own stage |
+| `constant_parameters.py` | 144 | a ruling per finding. A knob that only ever takes one value is a constant, and the ruling that made it a rule came from a parameter documented as "stays None" -- the class vulture does not catch, because the name IS used, always with the same value. It over-reports by construction (a positional call site and a caller outside this tree are both invisible), which is why the `reserved:` marker carries a REASON |
+| `run_vulture.sh` | 51 | a ruling per finding. Vulture cannot see cross-module use, so the list mixes genuine dead code with entry points, fixtures and public API; a whitelist entry is earned by a demonstrated dynamic use and never added to silence a real hit |
 
 <a id="drift-guards"></a>
 ## The drift guards, and the inventory they exist to size
 
 Each rule is a law that a stage ratified by DELETING something, and each is a law
-because the deleted thing is cheap to put back: a template axis that "only needs one
-more parameter", a second kernel body for the case the first does not fit, a `float*`
-view of a page, an `if` on the depth in a host entry, a comment explaining what the
-code used to be. A law that lives only in a document is re-broken by the next person
-who has not read it.
+because the deleted thing is cheap to put back: a template axis that "only needs one more
+parameter", a second kernel body for the case the first does not fit, a `float*` view of
+a page, an `if` on the depth in a host entry, a comment explaining what the code used to
+be. A law that lives only in a document is re-broken by the next person who has not read
+it.
 
-REPORT-ONLY here means the file always exits 0 and prints an INVENTORY. A rule that
-fires on the shipped tree is not thereby wrong — it is the work, and the inventory is
-what C2e sizes the flip from. Every rule is a heuristic over text and says so in its
-own docstring: a finding is a question for a reviewer, never a proof.
+Every rule is a heuristic over text and says so in its own docstring: a finding is a
+question for a reviewer, never a proof. Four rules were tightened after their first
+inventory was read, each with its reason in the source — an inventory nobody trusts is an
+inventory nobody flips.
 
-**Measured on this tree (2026-08-30), 73 findings over 11 rules:**
+**Measured 2026-08-30, 11 findings over 11 rules:**
 
 | rule | findings | what they are |
 |---|---|---|
 | `arm_axes` | 0 | no carry kernel exists to carry an axis. The producer's and decode's own axes are deliberately out of scope: whether they fold into `(D, DV, warps_per_cta)` is an open question in `docs/open-work.md`, not a finding |
 | `state_float_view` | 1 | `decode.cuh`'s `float* state` member |
-| `bytes_equal` | 32 | the paging equivalence batteries assert state/page identity with `torch.equal` |
-| `one_derivation_site` | 2 | `decode.cu` calls `fill_lattice` outside the geometry block |
+| `bytes_equal` | 5 | decode's own batteries assert state identity with `torch.equal`. The rule no longer fires on an INTEGER comparison: `torch.equal` is exact on an integer dtype, and the rule is about a float view of storage, which is the one place the two differ |
+| `one_derivation_site` | 0 | the rule names the CARRY block's derivations; decode's lattice fill is derived from decode's own geometry |
 | `one_admission_law` | 0 | — |
-| `single_value_axis` | 2 | `rola/_state.py`'s `_BUILT_STRATEGIES` and `_NAMED_UNBUILT_STRATEGIES` |
-| `second_arm_table` | 5 | four test-local `_ARMS`/`CHUNK_ARMS` tables and `test_carry_geometry.py`'s `ARM_PARAMS` (that one is a deliberately PINNED transcription of a parent tip, and is the case that says whether this rule wants an exemption or a different home) |
+| `single_value_axis` | 0 | — |
+| `second_arm_table` | 4 | three test-local `_ARMS`/`CHUNK_ARMS` tables and `test_carry_geometry.py`'s `ARM_PARAMS`. That last one is a deliberately PINNED transcription of a parent tip and is the case that says whether this rule wants an exemption or a different home |
 | `one_body_per_family` | 0 | a reverse pass is its own op and is not read as a second body |
 | `device_switch_is_uniform` | 1 | `decode_lattice.cuh`'s `switch (kind)` — the same site `r9_enforcement.py` finds, from the other direction |
 | `host_dispatch_is_arm_switch` | 0 | — |
-| `comments_describe_the_present` | 30 | comments naming a past state or a work code, under `csrc/` and `rola/` |
+| `comments_describe_the_present` | 0 | it imports the tree-wide definition of a work code rather than restating it: two regexes for one law is the drift this file exists to catch, one level up |
 
 `device_switch_is_uniform` and `r9_enforcement.py` overlap on purpose and are not the
-same rule: `r9_enforcement.py` asks whether a structure branch has a trapping default
-and a case-set marker, and this one asks whether it is a `uniform_switch` at all —
-which is the form the constitution now requires. Reconciling the two into one rule is
-G5's, once the flip decides which message a finding should carry.
+same rule: `r9_enforcement.py` asks whether a structure branch has a trapping default and
+a case-set marker, and this one asks whether it is a `uniform_switch` at all — which is
+the form the constitution now requires. They find the same site from two directions,
+which is the corroboration that both are connected; reconciling them into one rule waits
+on the fix, so that the flip can decide which message a finding carries.
 
-## The readability format rules are a SEPARATE file, not a root-`.clang-format` edit — the reason is measured, not stylistic
+## Fixtures
 
-Tried first: adding `MaxEmptyLinesToKeep: 1` / `SeparateDefinitionBlocks: Always`
-directly to the root `.clang-format`, which the currently-**GATING**
-`clang-format-check` pre-commit hook reads (`--dry-run --Werror`, scoped to
-`^csrc/rola/.*\.(cu|cuh|cpp|h|hpp)$`, run via `pre-commit run --all-files` against
-every matching file in the tree, not just a commit's diff). Measured 2026-08-29:
-this immediately produced 153 diffs on pre-existing files (`carry_kernel.cuh`,
-`entmax.cuh`, `decode.cuh`, `facts_kernel.cuh`, ...) that predate
-`SeparateDefinitionBlocks: Always`, which took `pre-commit run --all-files` from
-green to red on an EXISTING gating hook — directly contradicting this stage's own
-"report-only, no hook fails on them yet" and "hooks green" gates, and this stage's
-own "CONFIG ONLY: do NOT reformat any source" instruction (reformatting the tree to
-fix it was the only way to keep the root file's edit green, and that is explicitly
-out of scope here). `tools/lint/clang-format-readability.yaml` restates the root
-config's other settings (clang-format style files do not chain/include one
-another) plus the two new ones, invoked only by
-`run_clang_format_readability.sh`'s own report-only pre-commit stage — the root
-`.clang-format` and the `clang-format-check` hook are UNTOUCHED by this stage.
-G5's flip is: fix the 153 diffs (one dedicated, byte-identity/SASS-checked reformat
-commit, the comments-to-docs mandate's own precedent for this shape of change),
-merge the two lines into the root file, and delete this one.
-
-## Fixtures (`tools/lint/fixtures/`, K46 convention)
-
-Every LINT2 lint has a fixture pair under `tools/lint/fixtures/` (a "must fire"
-case and a "must not fire" case, most often in ONE file) and a `--test-fixtures`
-self-test mode on its own driver:
+Every lint owns a fixture pair under `tools/lint/fixtures/` (a "must fire" case and a
+"must not fire" case, most often in one file) and a `--test-fixtures` mode on its own
+driver. A rule that has never been shown to fire is a rule nobody knows is connected; one
+that has never been shown to stay quiet is a rule nobody can afford to make gating.
 
 ```bash
 python3 tools/lint/host_warnings.py --test-fixtures
 python3 tools/lint/unused_instantiations.py --test-fixtures
 python3 tools/lint/readability_spacing.py --test-fixtures
 python3 tools/lint/r9_enforcement.py --test-fixtures
+python3 tools/lint/constant_parameters.py --test-fixtures
+python3 tools/lint/drift_guards.py --test-fixtures
 tools/lint/run_clang_tidy_device.sh --test-fixtures
 tools/lint/run_vulture.sh --test-fixtures      # needs vulture on PATH
 ```
 
 Fixtures are EXCLUDED from every lint's normal-mode scan (`readability_spacing.py`'s
-`py_files()`, `run_vulture.sh`'s `--exclude '*/tools/lint/fixtures/*'`) — the K46
-lesson (`ast_grep_gate.py`'s own header) is that a fixture's deliberate violation
-re-triggering the real report is exactly how a hook drifts silently disabled.
+`py_files()`, `run_vulture.sh`'s `--exclude`, `drift_guards.py`'s `_walk`). The lesson —
+`ast_grep_gate.py`'s own header records it, and it has since bitten three lints in this
+directory — is that a fixture's deliberate violation re-triggering the real report is
+exactly how a hook drifts into being silently disabled.
 
-## Running everything report-only, by hand
+## Running the roster by hand
 
 ```bash
-tools/lint/run_clang_tidy_device.sh
-python3 tools/lint/host_warnings.py
-python3 tools/lint/unused_instantiations.py
-tools/lint/run_vulture.sh
-tools/lint/run_ruff_e3.sh
-python3 tools/lint/readability_spacing.py
-python3 tools/lint/r9_enforcement.py
-tools/lint/run_clang_format_readability.sh
-```
+pre-commit run --all-files          # the whole roster, gates and reports together
 
-Every one of these exits 0 unconditionally (report-only, per G_FOUNDATION G5's
-"GATE = ... wired REPORT-ONLY (no hook fails on them yet)") and is wired into
-`.pre-commit-config.yaml` as a non-blocking stage; a hit is a finding for a human
-to rule on, the same backstop philosophy KERNEL_STANDARDS §9 states for `ratify`.
+python3 tools/lint/drift_guards.py  # the report-only four, on their own
+python3 tools/lint/work_codes.py
+python3 tools/lint/constant_parameters.py
+python3 tools/lint/r9_enforcement.py
+tools/lint/run_vulture.sh
+```

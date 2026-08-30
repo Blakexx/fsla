@@ -4,27 +4,27 @@
 MAX_ROUTING_DEPTH = 4
 MAX_BRANCH_WIDTH = 256
 
-#: THE KERNEL-FACING FLOOR (K50 "PADDING AT THE PRODUCER" / "THE FLOOR IS B_l >= 16"):
+#: THE KERNEL-FACING FLOOR (padding happens at the producer; the floor is B_l >= 16):
 #: every level the state descriptor addresses is a power of two at or above this --
 #: ``rola._state.MIN_LEVEL_WIDTH`` is the same number, asserted equal in
 #: ``tests/unit/test_topology_padding.py`` so the two never drift apart. It lives here,
 #: not imported from ``rola._state``, because this module has no reason to import the
 #: state/paging stack for one integer, and ``rola._state`` already predates this file's
-#: padding concern (C1a: "``B`` already carries only the lawful, padded width").
+#: padding concern: ``B`` already carries only the lawful, padded width.
 PADDED_LEVEL_FLOOR = 16
 
 
 def padded_level_width(width: int, *, floor: int = PADDED_LEVEL_FLOOR) -> int:
     """The next power of two at or above ``floor`` that admits ``width`` real digits.
 
-    K50 "PADDING AT THE PRODUCER": a caller's level width ``b_l`` (any int >= 1, the
+    PADDING AT THE PRODUCER: a caller's level width ``b_l`` (any int >= 1, the
     API contract) is served by the SHIPPED, KERNEL-FACING width ``B_l`` this function
     derives -- never a second input a caller supplies, so a call can never present a
     ``B_l`` that disagrees with its own ``b_l``. ``b_l <= floor`` still pads to
-    ``floor`` (K50: "dissolves the D=1/N<32 corner -- a toy state pads to one warp
+    ``floor`` ("dissolves the D=1/N<32 corner -- a toy state pads to one warp
     with dead slots"); a ``b_l`` already a power of two at or above ``floor`` is its
     own answer, so an already-ideal model pays nothing through this function (though
-    the producer still calls it, uniformly -- KERNEL_STANDARDS R9: a structure branch
+    the producer still calls it, uniformly -- KERNEL_STANDARDS §R9: a structure branch
     is a derived fact, never a data-dependent shortcut).
     """
     if type(width) is not int or width < 1:

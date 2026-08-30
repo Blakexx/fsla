@@ -75,6 +75,7 @@ def _chunk_tokens() -> int:
 
     return CHUNK_TOKENS
 
+
 #: THE TOPOLOGY AXIS, written out rather than reduced because the lattice ``(k, m)`` each
 #: row derives is what the walk is, and the axis has to carry every shape of it:
 #:
@@ -204,7 +205,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     config = derive_decode_geometry(topology, d_v=d_v, decay=decay is not None, BH=B * H,
                                   device=device, n_split=n_split)
     #: THE SEAM. The oracle's plane is canonical forever; the kernel's is lattice-ordered.
-    #: THE STORED FORM IS THE SPLIT PLANES (K50): the seam packs after the lattice
+    #: THE STORED FORM IS THE SPLIT PLANES: the seam packs after the lattice
     #: permutation and unpacks before the inverse, because a page is 16 leaves OF THAT
     #: ORDER and the kernel reads the bytes, not the logical view.
     state = to_split_planes(

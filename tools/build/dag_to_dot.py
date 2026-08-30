@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""K39 -- a DAG tuple (`rola.engine.dags.*`) as Graphviz DOT, and an SVG.
+"""a DAG tuple (`rola.engine.dags.*`) as Graphviz DOT, and an SVG.
 
 `rola/engine/runner.py`'s `Node.needs`/`.gives` already declare the edges
 `docs/internals/engine/*.md`'s prose diagrams describe by hand; this renders

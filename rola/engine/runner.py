@@ -36,7 +36,7 @@ def _nvtx_push(name: str) -> None:
     node needs no opt-in to appear in `nsys`. Guarded so a CPU-only import (no
     CUDA context) never raises: NVTX ranges are a profiling aid, never a
     correctness dependency, and their absence must never change behavior
-    (K39 card, docs/measurement.md "the sanitizer gap"-adjacent instrument for
+    (docs/measurement.md's "the sanitizer gap"-adjacent instrument for
     "what is the span" arguments).
     """
     import torch

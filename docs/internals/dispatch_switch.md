@@ -2,7 +2,7 @@
 
 A kernel whose structural axes are template parameters has to be selected at runtime
 from runtime values. This header is the mechanism for that selection in the
-hand-written launchers: `decode.cu`'s `launch_decode_gemv` and `entmax.cu`'s forward
+hand-written launchers: `decode.cu`'s `launch_decode_step` and `entmax.cu`'s forward
 and backward launchers.
 
 The chunk consumer does not use it, and does not use a switch at all. Its dispatch
@@ -11,7 +11,8 @@ walks a GENERATED ARM LIST: `tools/gen_shards.py` emits
 and `chunk/chunk.cu` expands that same macro four times — the launch dispatch, the
 arm table, the census and the arm listing — so the enumeration exists once and is
 single-sourced with the shards it partitions into
-([`chunk/chunk_kernel.md`](chunk/chunk_kernel.md), `instantiations/README.md`). The
+([`chunk/chunk_kernel.md`](chunk/chunk_kernel.md), `instantiations/README.md`). <!-- ABSENT: dispatch_table -->
+The
 tiled consumer's `dispatch_table.inc` — a mixed-radix key indexing a row carrying
 the launcher, the residency query and the footprint — was the previous form of the
 same rule, and it went with that arm in P67 D2 (`DELETIONS.md`).
@@ -99,11 +100,11 @@ between them: it cannot tell a correct selection from one that reaches the wrong
 instantiated arm. Only the suites can, which is why a dispatch is not verified without
 running them.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/dispatch_switch.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/dispatch_switch.cuh` condensed at their call site into a short pointer.
 

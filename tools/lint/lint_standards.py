@@ -17,13 +17,13 @@ Checks:
      "compile-time bound" by regexing the loop's stop expression, and it can
      only be conservative in one direction --  see HEURISTIC LIMITS below.
   2. NO TORCH INCLUDE IN ARM TUs (belt to the ast-grep rule
-     torch_include_in_arm_tu.yml -- K36). A `#include` line naming `torch/`
+     torch_include_in_arm_tu.yml). A `#include` line naming `torch/`
      under csrc/rola/src/instantiations/, found by TEXT rather than AST so a
      macro-guarded or unusually-formatted include cannot hide from either
      check.
-  3. NO __syncthreads AFTER THE DECODE PROLOGUE (P79's law, ledger
+  3. NO __syncthreads AFTER THE DECODE PROLOGUE (the decode prologue law, ledger
      2026-08-27: "11 barriers, all in the prologue ... 0 after it"; scope
-     fixed 2026-08-29 K46 item 3 -- P79's law is about CTA/grid barriers,
+     fixed 2026-08-29 -- that law is about CTA/grid barriers,
      never about `__syncwarp`, which is intra-warp and which §12 REQUIRES
      around a warp collective). The marker is decode.cu's own section
      comment `// ---- THE WALK`; every `__syncthreads`/`bar.sync` (and any
@@ -78,7 +78,7 @@ TESTS_ROOT = ROOT / "tests"
 
 #: docs/testing.md: "there is no fourth tier". A test answers one of exactly three
 #: questions (oracle/integration/unit), so it lives in exactly one of these three
-#: directories -- never a fourth bucket, campaign-named or otherwise (K44: `tests/k31/`
+#: directories -- never a fourth bucket, campaign-named or otherwise (`tests/k31/`
 #: was exactly that, folded into the tier each of its tests actually answered).
 TESTS_ALLOWED_TIERS = {"unit", "integration", "oracle"}
 
@@ -108,10 +108,10 @@ COMMENT_LINE_RE = re.compile(r"^\s*//")
 
 TORCH_INCLUDE_RE = re.compile(r'#include\s*<\s*torch/')
 
-#: P79's law is about CTA/grid barriers only (`__syncthreads`, PTX `bar.sync`,
+#: The prologue law is about CTA/grid barriers only (`__syncthreads`, PTX `bar.sync`,
 #: and a cluster/grid barrier such as `cluster.sync()`/`grid.sync()`);
 #: `__syncwarp` is intra-warp and is §12's REQUIRED fence around a warp
-#: collective, never this rule's concern (K46 item 3 -- the rule's one
+#: collective, never this rule's concern (the rule's one
 #: remaining finding after MERGE-D1 was decode.cu:722's `__syncwarp`).
 SYNC_RE = re.compile(
     r"__syncthreads\s*\(|\bbar\.sync\b|(?:cluster|grid)\s*\.\s*sync\s*\(")
@@ -127,6 +127,8 @@ def device_files():
 
 
 DEVICE_QUALIFIER_RE = re.compile(r"\b__(global|device)__\b")
+
+
 #: A `.cu` mixes HOST launcher code (std::vector loops over `widths`, TORCH_CHECK,
 #: TensorOptions -- none of it unroll-relevant) with the device kernels §6 is
 #: actually about. Scope the check to the textual span of each `__global__`/
@@ -140,6 +142,7 @@ def device_code_line_ranges(lines: list[str]) -> list[tuple[int, int]]:
     i = 0
     while i < n:
         if DEVICE_QUALIFIER_RE.search(lines[i]) and not COMMENT_LINE_RE.match(lines[i]):
+
             # Find the function's opening brace, scanning forward (signatures
             # with __launch_bounds__(...) or wrapped parameter lists span
             # multiple lines).
@@ -256,7 +259,7 @@ def check_no_torch_in_arm_tus() -> list[str]:
         for idx, line in enumerate(path.read_text().splitlines(), start=1):
             if TORCH_INCLUDE_RE.search(line):
                 findings.append(
-                    f"K36 (belt to torch_include_in_arm_tu.yml): {rel}:{idx}: "
+                    f"belt to torch_include_in_arm_tu.yml: {rel}:{idx}: "
                     f"torch include in a per-arm TU -- {line.strip()!r}"
                 )
     return findings
@@ -271,7 +274,7 @@ def check_no_sync_after_decode_prologue() -> list[str]:
     marker_idx = next((i for i, l in enumerate(lines) if WALK_MARKER_RE.search(l)), None)
     if marker_idx is None:
         findings.append(
-            f"P79's law: {rel}: could not locate the `---- THE WALK` prologue-end "
+            f"the decode prologue law: {rel}: could not locate the `---- THE WALK` prologue-end "
             f"marker this check keys on -- the file was restructured and this check "
             f"needs a new anchor."
         )
@@ -279,14 +282,14 @@ def check_no_sync_after_decode_prologue() -> list[str]:
     for idx in range(marker_idx + 1, len(lines)):
         if SYNC_RE.search(lines[idx]):
             findings.append(
-                f"P79's law (ledger 2026-08-27, decode.cu#per-cta-prologue): "
+                f"the decode prologue law (ledger 2026-08-27, decode.cu#per-cta-prologue): "
                 f"{rel}:{idx + 1}: barrier after the prologue marker "
                 f"(line {marker_idx + 1}) -- {lines[idx].strip()!r}"
             )
     return findings
 
 
-#: K39 (Blake, 2026-08-28): the 2026-08-04 comments-to-docs mandate names "well
+#: The 2026-08-04 comments-to-docs mandate names "well
 #: under 15%" as the line -- a named constant, not a number buried in an f-string,
 #: so a future re-derivation of the threshold has exactly one place to change it.
 COMMENT_DENSITY_THRESHOLD = 0.15
@@ -335,7 +338,7 @@ def _comment_density(lines: list[str]) -> tuple[int, int]:
 def check_comment_density() -> list[str]:
     """Per-file comment-line fraction under `csrc/`, KERNEL_STANDARDS' 2026-08-04
     comments-to-docs mandate. REPORTED, not gated to zero: these are findings for
-    Blake to rule on (S5b moves the prose to `docs/internals/`), never silently
+    Blake to rule on (the prose moves to `docs/internals/`), never silently
     fixed or silenced by this script -- same treatment every other check here
     gets (module docstring)."""
     findings = []
@@ -469,7 +472,7 @@ def check_generated_directories_are_documented_by_their_readme() -> list[str]:
 
     A generated directory that DOES NOT EXIST is not a violation: the generator's own
     `--check` (run below, and by `check_shard_partition`) is what says whether that is
-    correct, and at an empty arm list it is (C0, card C). The rule is about a directory
+    correct, and at an empty arm list it is. The rule is about a directory
     that exists without the README its exemption is paid for with.
     """
     import subprocess
@@ -561,6 +564,145 @@ def check_no_doc_defines_an_anchor_twice() -> list[str]:
     return findings
 
 
+#: AN IDENTIFIER, as a mirror page writes one in code font: a C++ or Python name, with
+#: optional `::`/`.` qualification and an optional call's parentheses. A page's other
+#: backticked spans -- a path, a flag, a number, a phrase, a type expression -- are not
+#: identifiers and are not checked, so what this rule reads is exactly the set of names a
+#: reader would go looking for in the source.
+_MIRROR_IDENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)*"
+                           r"(?:\(\))?$")
+
+#: The names that are not the source's to carry: language and library vocabulary a page
+#: legitimately writes in code font while describing what the code does. This is a
+#: VOCABULARY, not an allowlist of sites: it says what kind of token is not an
+#: identifier of this repository, never that a particular page may be stale.
+#: NOT AN IDENTIFIER OF THIS REPOSITORY, by its SHAPE: a CUDA runtime call, a PTX or
+#: intrinsic name, an architecture, an ncu counter, or a math symbol with a subscript
+#: (`z_k`, `tau_m`, `R_0`) -- the vocabulary a page writes in code font while describing
+#: what the code does. These are structural forms, not an allowlist of sites: none of
+#: them says that a particular page may be stale.
+_MIRROR_FOREIGN = re.compile(
+    r"^(cuda[A-Z]\w*|CU\w+|__\w+|sm_\d+|tcgen05\w*|wgmma\w*|cp_async\w*"
+    r"|\w*__\w+\.\w+|[A-Za-z]{1,4}_[A-Za-z0-9]{1,3})$")
+
+_MIRROR_NOT_OURS = frozenset((
+    "int", "float", "double", "bool", "void", "char", "unsigned", "long", "short",
+    "size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t",
+    "int32_t", "int64_t", "nullptr", "true", "false", "const", "constexpr", "static",
+    "inline", "template", "typename", "class", "struct", "enum", "union", "namespace",
+    "using", "return", "if", "else", "for", "while", "do", "switch", "case", "default",
+    "break", "continue", "new", "delete", "this", "auto", "public", "private", "protected",
+    "__global__", "__device__", "__host__", "__shared__", "__restrict__", "__syncthreads",
+    "__syncwarp", "__ldg", "__trap", "threadIdx", "blockIdx", "blockDim", "gridDim",
+    "warpSize", "torch", "tensor", "Tensor", "None", "True", "False", "self", "def",
+    "import", "from", "lambda", "dict", "list", "tuple", "set", "str", "bytes", "float32",
+    "float64", "bfloat16", "int32", "uint8", "cuda", "cpu", "num_warps", "num_stages",
+    "static_for", "BOOL_SWITCH", "math_pipe_throttle", "long_scoreboard", "_RS", "_SS",
+    "ldmatrix", "stmatrix", "mma", "wgmma"
+))
+
+
+def _repo_identifier_text() -> str:
+    """Every first-party source, test, tool and build file, as one blob.
+
+    A mirror page legitimately names identifiers that live in OTHER files: the entry its
+    header declares, the tool that writes its generated input, the lint that enforces its
+    law. What no page may name is an identifier that exists NOWHERE -- that is the name
+    that left with its mechanism.
+    """
+    global _REPO_TEXT
+    if _REPO_TEXT is None:
+        chunks = []
+        for root, suffixes in ((_DOCS_SRC, _DOCS_SOURCE_SUFFIXES),
+                               (ROOT / "rola", (".py",)), (ROOT / "tools", (".py", ".sh")),
+                               (ROOT / "tests", (".py",)), (ROOT / "benchmarks", (".py", ".json"))):
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*"):
+                if (path.suffix in suffixes and "third_party" not in path.parts
+                        and "__pycache__" not in path.parts):
+                    chunks.append(path.read_text(errors="ignore"))
+        chunks.append((ROOT / "setup.py").read_text())
+        _REPO_TEXT = "\n".join(chunks)
+    return _REPO_TEXT
+
+
+_REPO_TEXT: str | None = None
+
+
+def _mirror_pairs() -> list[tuple[Path, list[Path]]]:
+    """``(mirror page, the sources it mirrors)`` -- the inverse of `_docs_mirror_for`."""
+    pages: dict[Path, list[Path]] = {}
+    for source in _docs_sources():
+        pages.setdefault(_docs_mirror_for(source), []).append(source)
+    return sorted((doc, sources) for doc, sources in pages.items() if doc.is_file())
+
+
+#: A DECLARED ABSENCE: `<!-- ABSENT: name other_name -->`. A page may name what is GONE --
+#: an entry that was unbound, a mechanism that retired -- and the absence is often the
+#: fact worth keeping. What it may not do is name it by accident, so the names are
+#: declared on one line beside the prose that explains them, and the declaration is
+#: checked in BOTH directions: a declared-absent name that the tree DOES carry is a
+#: finding too, because the passage is then telling a reader the opposite of the truth.
+_MIRROR_ABSENT = re.compile(r"<!--\s*ABSENT:\s*([^>]*?)\s*-->")
+
+
+def check_mirror_pages_name_only_live_identifiers() -> list[str]:
+    """Every identifier a mirror page names in code font EXISTS in its source file.
+
+    A mirror page can outlive the mechanism it documents: the branch that replaced a
+    fan-in ring was forfeited, the ring was tombstoned, and the page went on describing
+    it in full. Nothing in the mirror contract noticed, because the page still existed,
+    still resolved its anchors and still sat at the right path -- every check was about
+    the page's SHAPE and none about whether its subject was still there.
+
+    The check is textual and deliberately weak in one direction only: a name the source
+    does not contain ANYWHERE is a finding, and a name it does contain is accepted
+    wherever it appears. That cannot catch a page describing a live name's dead
+    BEHAVIOUR, but it catches every name that left with its mechanism, which is the
+    failure that was actually paid for.
+    """
+    findings = []
+    for doc, sources in _mirror_pairs():
+        text = "\n".join(source.read_text() for source in sources)
+        page = doc.read_text()
+        absent = {name for line in _MIRROR_ABSENT.findall(page) for name in line.split()}
+        for name in sorted(absent):
+            if re.search(rf"\b{re.escape(name)}\b", _repo_identifier_text()):
+                findings.append(
+                    f"{doc.relative_to(ROOT)}: declares `{name}` ABSENT, and the tree "
+                    f"carries it. The passage tells a reader the opposite of the truth: "
+                    f"drop the name from the declaration, or say what it is now.")
+        seen: set[str] = set()
+        for lineno, line in enumerate(page.splitlines(), 1):
+            if line.lstrip().startswith(("```", "    ")):
+                continue
+            for span in re.findall(r"`([^`\n]{1,80})`", line):
+                match = _MIRROR_IDENT.match(span)
+                if not match:
+                    continue
+                name = match.group(1)
+                if name in _MIRROR_NOT_OURS or name in seen or len(name) < 3:
+                    continue
+                if name in absent:
+                    continue
+                if _MIRROR_FOREIGN.match(span) or _MIRROR_FOREIGN.match(name):
+                    continue
+                if re.search(rf"\b{re.escape(name)}\b", text):
+                    continue
+                if re.search(rf"\b{re.escape(name)}\b", _repo_identifier_text()):
+                    continue
+                seen.add(name)
+                findings.append(
+                    f"{doc.relative_to(ROOT)}:{lineno}: names `{span}` in code font, and "
+                    f"{', '.join(str(s.relative_to(ROOT)) for s in sources)} contains no "
+                    f"`{name}`. A mirror page that outlives its mechanism is a page a "
+                    f"reader trusts and the code no longer honours: delete the passage, "
+                    f"or say in prose that the mechanism is gone and where it went "
+                    f"(docs/internals/DELETIONS.md).")
+    return findings
+
+
 def check_docs_mirror() -> list[str]:
     """The whole `docs/internals/` mirror contract, ported from
     `tests/unit/test_docs_mirror.py` (deleted; RULED 2026-08-29)."""
@@ -570,13 +712,14 @@ def check_docs_mirror() -> list[str]:
     findings += check_every_doc_reference_resolves()
     findings += check_hazard_stubs_cite_their_own_slug()
     findings += check_no_doc_defines_an_anchor_twice()
+    findings += check_mirror_pages_name_only_live_identifiers()
     return findings
 
 
-#: K46: "the word `flock` leaves the process" -- every GPU entry point now takes
+#: "The word `flock` leaves the process": -- every GPU entry point now takes
 #: `tools/gpu_lock.py`'s `gpu_lock()` ITSELF, so no committed doc/skill/script should
 #: ever again tell a reader to wrap a command in an external `flock` on the GPU lock
-#: path (that is exactly the K38 self-deadlock shape). A COMMAND LINE is what this
+#: path (that is exactly the self-deadlock shape). A COMMAND LINE is what this
 #: catches -- a line that, once backticks/leading whitespace are stripped, STARTS
 #: with the literal token `flock` naming the GPU lock path; a PROSE mention (a
 #: warning against doing this, or a general statement about `flock`'s per-filesystem
@@ -594,7 +737,7 @@ FLOCK_GPU_LOCK_RE = re.compile(r"^\s*`{0,3}\s*flock\s+\S*rola_gpu")
 #: taught a narrower regex.
 FLOCK_CHECK_EXEMPT_FILES = {ROOT / "docs" / "KERNEL_STANDARDS.md"}
 
-#: "docs, skills, scripts" (the K46 card's own words): committed prose and recipes an
+#: "docs, skills, scripts" (the ruling's own words): committed prose and recipes an
 #: agent or contributor reads and might copy-paste, not generated/vendored trees.
 FLOCK_CHECK_ROOTS = (
     ROOT / "docs",
@@ -619,6 +762,166 @@ def _flock_check_files():
                 if "third_party" in p.parts or "docs/internals" in str(p.relative_to(ROOT)):
                     continue
                 yield p
+
+
+#: A CAMPAIGN WORK CODE: a stage or card identifier -- `K31`, `P80b`, `G5`, `S5c`, and
+#: the `D2-b` form a stage takes when it splits. Work codes are EXTERNAL: they name
+#: entries in a journal this repository does not carry, so a reader of this tree cannot
+#: resolve one, and a reference to one ages into a pointer at nothing.
+#:
+#: THE STANDARDS-SECTION FORM IS THE EXCEPTION AND IT IS SPELLED WITH ITS SECTION SIGN:
+#: `§R13`, `§16`. That is a citation of a document in this tree, at a stable anchor, and
+#: the sign is what makes it one rather than a bare pair of characters that happens to
+#: look like a rule number.
+_WORK_CODE_RE = re.compile(
+    r"(?<![\w§#\-.])([A-Z]{1,3}\d{1,3}(?:[a-z]\b|-[a-z]\b|\b))(?!\.\d)")
+
+#: NOT WORK CODES, by shape: a dtype or width (`F32`, `S8`, `BF16`), an architecture
+#: (`SM86`), a CUDA/PTX name. A vocabulary, never a list of sites.
+_NOT_A_WORK_CODE = re.compile(
+    r"^("
+    r"F16|F32|F64|S8|S16|S32|S64|U8|U16|U32|U64|BF16|TF32|FP8|FP16|FP32|FP64|INT4|INT8"
+    r"|SM\d+|CC\d+"                     # an architecture
+    r"|L1|L2|L1TEX"                      # a cache level
+    r"|A100|A30|A40|A16|A10|A2|H100|H200|V100|L4|L40|T4|RTX\d+|WSL2|CUDA\d+|PTX\d+"   # a machine or a toolkit
+    r"|[A-Z]{1,4}\d{3,4}"                # a linter's own code: E402, BLE001, PLC0415
+    r"|R\d{1,3}|UR\d{1,2}|P\d"           # a SASS register or predicate
+    r"|Q\d"                             # a quartile
+    r"|SXM\d|PCIE\d|HBM\d|GDDR\d|DDR\d"  # a package or memory generation
+    r"|BC\d+|BT\d+|DV\d+|BH\d+"       # a shape, written into a cell id
+    r"|FA\d|CUTLASS\d|TK\d"           # another project's version
+    r")$")
+
+#: TWO BLIND SPOTS, STATED. A hyphen-digit form (`R-6`, `D-1`) is not policed, because
+#: `D-1` is arithmetic and `R-6` is a ruling number and no rule can tell them apart. And
+#: `R<n>` is a SASS REGISTER -- the ratification tool quotes disassembly by the line --
+#: so a bare rung number spelled that way escapes; the standards form is `§R<n>` and is
+#: unambiguous. The sweep that turned this check on removed both classes where it found
+#: them; a new one is caught by review, not here.
+_WORK_CODE_ROOTS = ("csrc", "rola", "docs", "tests", "benchmarks", "tools")
+_WORK_CODE_SUFFIXES = (".py", ".cu", ".cuh", ".cpp", ".h", ".hpp", ".md", ".json",
+                       ".yaml", ".yml", ".sh", ".toml")
+
+
+def _work_code_files():
+    for name in _WORK_CODE_ROOTS:
+        root = ROOT / name
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if (path.suffix in _WORK_CODE_SUFFIXES and "third_party" not in path.parts
+                    and "__pycache__" not in path.parts):
+                yield path
+
+
+#: WHERE A CITATION CAN LIVE. In a source file the rule reads COMMENTS and STRING
+#: LITERALS and nothing else: a name the code chose (`A15`, the alpha-1.5 template
+#: argument) is subject to the naming rules, not to this one, and only text a human
+#: wrote to point somewhere can point outside the tree. Markdown and data files are read
+#: whole -- every line of them is prose.
+_COMMENT_OR_STRING = re.compile(r"//(.*)$|/\*(.*?)\*/|#(.*)$|\"([^\"\n]*)\"|'([^'\n]*)'")
+
+
+def _citable_text(path: Path, line: str, in_docstring: bool = False) -> str:
+    if path.suffix in (".md", ".json", ".yaml", ".yml", ".toml") or in_docstring:
+        return line
+    return " ".join(g or "" for m in _COMMENT_OR_STRING.finditer(line) for g in m.groups())
+
+
+TRIPLE = ('"' * 3, "'" * 3)
+
+
+def _docstring_lines(path: Path, text: str) -> set[int]:
+    """The line numbers inside a triple-quoted string.
+
+    A DOCSTRING IS THIS LANGUAGE'S COMMENT, and it is where the module headers, the
+    reasons and therefore the citations actually live. A line-oriented reader that only
+    knew `#` and a single-line literal would miss every one of them, which is a gap in
+    the medium and not a distinction anybody meant.
+    """
+    if path.suffix != ".py":
+        return set()
+    inside = False
+    lines: set[int] = set()
+    for number, line in enumerate(text.splitlines(), 1):
+        marks = sum(line.count(q) for q in TRIPLE)
+        if inside:
+            lines.add(number)
+        if marks % 2:
+            inside = not inside
+            lines.add(number)
+    return lines
+
+
+def _defined_labels(path: Path, text: str) -> set[str]:
+    """The labels a MARKDOWN page defines for itself, in a heading or a bold lead-in.
+
+    A page that writes `## M2 — NON-VACUITY` and then says `M2` afterwards is using its
+    own vocabulary, and the reader has the definition on the page. That is the same
+    distinction a source file's identifiers make, one medium over.
+    """
+    if path.suffix != ".md":
+        return set()
+    labels = re.findall(r"^#+\s+([A-Z]{1,3}\d{1,3}[a-z]?)\b", text, re.M)
+    labels += re.findall(r"^\*\*([A-Z]{1,3}\d{1,3}[a-z]?)\b", text, re.M)
+    labels += re.findall(r"^\|\s*`?([A-Z]{1,3}\d{1,3}[a-z]?)\b[^|]*\|", text, re.M)
+    return set(labels)
+
+
+def _code_text(path: Path, text: str, docstrings: set[int] | None = None) -> str:
+    """The file's CODE, with comments and string literals removed.
+
+    A LABEL THE FILE ITSELF DEFINES IS NOT A CITATION. A test file whose gates are named
+    `test_teeth_A1_...` writes `GATE A1` in its own assertion messages, and a reader has
+    the definition in front of them; the same two characters in a comment that points at
+    a campaign stage have nothing behind them. The difference is whether the name exists
+    in this file's code, so that is what is checked.
+    """
+    if path.suffix in (".md", ".json", ".yaml", ".yml", ".toml"):
+        return ""
+    docstrings = docstrings or set()
+    return "\n".join("" if number in docstrings else _COMMENT_OR_STRING.sub("", line)
+                     for number, line in enumerate(text.splitlines(), 1))
+
+
+def check_no_campaign_work_codes() -> list[str]:
+    """No file in this tree names a campaign or stage identifier.
+
+    A work code is a pointer into a journal that lives outside this repository. A reader
+    ten years from now has the tree and nothing else, so `K50's axis law` tells them
+    only that a rule exists and that its reason is unreachable, while `the axis law
+    (docs/ARCHITECTURE.md)` tells them where to read it. The rule is therefore not about
+    tidiness: it is what forces a reason into the tree at the moment somebody is still
+    able to write it down.
+
+    The standards sections are the one citable short form and they carry their section
+    sign (`§R13`); everything else becomes prose, a path, or an anchor.
+    """
+    findings = []
+    for path in _work_code_files():
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        docstrings = _docstring_lines(path, text)
+        code_text = _code_text(path, text, docstrings)
+        defined = _defined_labels(path, text)
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for match in _WORK_CODE_RE.finditer(
+                    _citable_text(path, line, lineno in docstrings)):
+                code = match.group(1)
+                if _NOT_A_WORK_CODE.match(code):
+                    continue
+                if re.search(re.escape(code), code_text, re.IGNORECASE):
+                    continue
+                if code in defined:
+                    continue
+                findings.append(
+                    f"{path.relative_to(ROOT)}:{lineno}: names the work code {code!r}. "
+                    f"Work codes are external -- a reader of this tree cannot resolve "
+                    f"one. Say the thing itself and cite where it is written down (a "
+                    f"docs/ path, an anchor, or a standards section as §R<n>).")
+    return findings
 
 
 def check_no_bare_flock_on_gpu_lock() -> list[str]:
@@ -752,7 +1055,7 @@ def check_shard_partition() -> list[str]:
     still runs and still refuses a directory that disagrees with the arm list -- which
     at zero rows means a directory that is not empty.
 
-    THE FALSE-FAIL THIS FIXES (K46 item 2): the retired test recomputed the manifest
+    THE FALSE-FAIL THIS FIXES: the retired test recomputed the manifest
     digest over EVERY `tools/manifests/sm_*.json` file found on disk, but
     `BUILD_CONFIG["manifest_sha256"]` is the digest of whatever arch SUBSET this
     build actually compiled (`ROLA_CUDA_ARCHS`) -- a single-arch iteration build
@@ -954,6 +1257,7 @@ WORKTREE_PATH_RE = re.compile(r"(?<!/path/to)/" + "worktrees/")
 #: a bracketed placeholder token or plain prose mention has no adjacent slash and is
 #: not a finding.
 SCRATCH_DIR_PATH_RE = re.compile(r"(?:/scratch" + r"pad(?=/|\b)|\bscratch" + r"pad(?=/))")
+
 
 #: Third-party/vendored trees and build outputs are not this repo's own tracked
 #: authorship; a lockfile's machine-local ephemeral temp path is not an ad-hoc

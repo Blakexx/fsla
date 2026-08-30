@@ -55,7 +55,7 @@ def box_shape(widths, k: int, m: int):
     The distribution of ``m`` across the levels is R0 spec section 2.5 as the
     atom-rectangle law generalizes it: the INNERMOST level takes as much capacity as it
     can carry -- never less than its balanced share, never less than an atom asks
-    (``s_{D-1} >= MMA_K_QUANTUM``), and never more than its own width admits (K6) -- and
+    (``s_{D-1} >= MMA_K_QUANTUM``), and never more than its own width admits -- and
     the rest of ``j = log2 m`` is spread balanced over the outer levels, innermost first,
     so those exponents differ by at most one.
 
@@ -63,7 +63,7 @@ def box_shape(widths, k: int, m: int):
     atom cannot absorb the floor, and the capacity spills outward rather than the plan
     being refused: the atom then spans more than one level (:func:`atom_rectangle`), which
     costs occupancy where a spanned level is sparse but never correctness. What is still
-    refused is a ``j`` no span vector can carry -- K6, raised below.
+    refused is a ``j`` no span vector can carry -- raised below.
     """
     widths = tuple(int(w) for w in widths)
     D = len(widths)
@@ -86,14 +86,14 @@ def box_shape(widths, k: int, m: int):
     if sum(a) != j:
         raise ValueError(
             f"the capacity m = {m} does not fit widths {widths} at k = {k}: the levels can "
-            f"carry 2^{sum(a)} (R0 spec K6: an owner sits inside a level)")
+            f"carry 2^{sum(a)} (an owner sits inside a level)")
     m_l = [1 << x for x in a]
     s = [k * x for x in m_l]
     for l, (w, t) in enumerate(zip(widths, s, strict=True)):
         if w % t != 0:
             raise ValueError(
                 f"level {l} of width {w} is not a whole number of owner spans k*m_l = {t} "
-                "(R0 spec K6: an owner sits inside a level)")
+                "(an owner sits inside a level)")
     g = [w // t for w, t in zip(widths, s, strict=True)]
     return m_l, s, g, math.prod(s), math.prod(g)
 
@@ -129,9 +129,9 @@ def walk_unit(spans) -> tuple[int, int, int]:
     ``(owner, r_0 .. r_{unit_base-1})`` and the unit's leaves are the trailing spans from
     ``unit_base`` inward -- the SHALLOWEST such suffix holding a whole number of atoms,
     which is what makes the candidate-atom enumeration a PARTITION. ``BC`` is a multiple
-    of an atom (K2), so ``unit_base = 0`` always qualifies and the search is total. The
+    of an atom, so ``unit_base = 0`` always qualifies and the search is total. The
     two clauses the interleaved order needed (``k^D >= 16`` and ``4 % log2 k == 0``) are
-    discharged by the mixed-radix order itself (`box.cuh`, K3/K4).
+    discharged by the mixed-radix order itself.
     """
     atom = int(MMA_K_QUANTUM)
     spans = [int(x) for x in spans]
@@ -140,7 +140,7 @@ def walk_unit(spans) -> tuple[int, int, int]:
         prod *= spans[base]
         if prod % atom == 0:
             return base, prod, prod // atom
-    raise ValueError(f"no suffix of the spans {tuple(spans)} holds a whole atom (K2)")
+    raise ValueError(f"no suffix of the spans {tuple(spans)} holds a whole atom")
 
 
 def _admissible(k: int, m: int, widths) -> tuple[int, ...] | None:

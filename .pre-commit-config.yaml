@@ -1,9 +1,11 @@
 # Lint gates, mirrored exactly by .github/workflows/lint.yml — one tool
-# version in both places, pinned, so a hook pass IS a CI pass.
+# version in both places, pinned, so a hook pass IS a CI pass. A hook named
+# `[report-only]` prints its findings and exits 0; every other hook here refuses the
+# commit, and docs/internals/tools/lint.md carries the table of which is which.
 #
 #   pip install pre-commit && pre-commit install
 #
-# Both hooks are CHECKS, not rewriters: a commit that fails formatting is
+# Every hook is a CHECK, not a rewriter: a commit that fails formatting is
 # refused with the diff named, and the author runs the formatter deliberately.
 # csrc/third_party is vendored under a PIN.json digest (setup.py rule R5) and
 # is never formatted — the `files` scope below is the enforcement of that.
@@ -58,47 +60,50 @@ repos:
         pass_filenames: false
         files: ^(csrc/rola/rola_api\.cpp|\.clang-tidy)$
 
-      # LINT2 (G_FOUNDATION G5 "dead-code and readability lints", REPORT-ONLY
-      # until G5 flips them -- docs/internals/tools/lint.md has the per-lint
-      # gating table and flip plan). Every stage below always exits 0: a hit is
-      # a finding for a human to rule on, never a blocked commit, exactly the
-      # existing hooks' own backstop philosophy (KERNEL_STANDARDS §9) applied
-      # to checks that are not clean enough to gate on YET.
-      - id: clang-tidy-device-report
-        name: "[report-only] clang-tidy device profile (carry arm TUs)"
+      # THE READABILITY AND DEAD-CODE GATES. Every hook below EXITS NONZERO on a
+      # finding: each is at zero on the tip this flip lands on, which is what makes it
+      # a gate a contributor can satisfy rather than a standing debt notice.
+      - id: clang-tidy-device
+        name: clang-tidy device profile (carry arm TUs)
         language: system
         entry: tools/lint/run_clang_tidy_device.sh
         pass_filenames: false
         files: ^csrc/.*\.(cu|cuh)$
-      - id: host-warnings-report
-        name: "[report-only] host -Wall -Wextra -Wunused dry compile"
+      - id: host-warnings
+        name: host -Wall -Wextra -Wunused dry compile
         language: system
         entry: python3 tools/lint/host_warnings.py
         pass_filenames: false
         always_run: true
-      - id: unused-instantiations-report
-        name: "[report-only] unused __global__ instantiation check"
+      - id: unused-instantiations
+        name: unused __global__ instantiation check
         language: system
         entry: python3 tools/lint/unused_instantiations.py
         pass_filenames: false
         always_run: true
+      - id: ruff-e3
+        name: ruff E30x (blank-line spacing, preview)
+        language: system
+        entry: tools/lint/run_ruff_e3.sh
+        pass_filenames: false
+        always_run: true
+      - id: readability-spacing
+        name: readability spacing (long zero-blank bodies, csrc blank runs)
+        language: system
+        entry: python3 tools/lint/readability_spacing.py
+        pass_filenames: false
+        always_run: true
+
+      # STILL REPORT-ONLY, each with the reason it cannot gate YET stated where the
+      # lint's own header states it. A hook here always exits 0: the finding is an
+      # inventory for a human to rule on, never a blocked commit -- the same backstop
+      # philosophy the gating hooks above are held to, applied to checks that are not
+      # clean enough to gate on this tip.
       - id: vulture-report
         name: "[report-only] vulture (Python dead code)"
         language: python
         additional_dependencies: ["vulture==2.16"]
         entry: tools/lint/run_vulture.sh
-        pass_filenames: false
-        always_run: true
-      - id: ruff-e3-report
-        name: "[report-only] ruff E30x (blank-line spacing, preview)"
-        language: system
-        entry: tools/lint/run_ruff_e3.sh
-        pass_filenames: false
-        always_run: true
-      - id: readability-spacing-report
-        name: "[report-only] readability spacing (long zero-blank bodies, csrc blank runs)"
-        language: system
-        entry: python3 tools/lint/readability_spacing.py
         pass_filenames: false
         always_run: true
       - id: r9-enforcement-report
@@ -108,14 +113,20 @@ repos:
         pass_filenames: false
         always_run: true
       - id: drift-guards-report
-        name: "[report-only] drift guards (the laws each stage's deletion ratified)"
+        name: "[report-only] drift guards (the laws each deletion ratified)"
         language: system
         entry: python3 tools/lint/drift_guards.py
         pass_filenames: false
         always_run: true
-      - id: clang-format-readability-report
-        name: "[report-only] clang-format readability profile (MaxEmptyLinesToKeep:1, SeparateDefinitionBlocks:Always)"
+      - id: constant-parameters-report
+        name: "[report-only] constant parameters (a knob with one value is a constant)"
         language: system
-        entry: tools/lint/run_clang_format_readability.sh
+        entry: python3 tools/lint/constant_parameters.py
+        pass_filenames: false
+        always_run: true
+      - id: work-codes-report
+        name: "[report-only] campaign work codes (the sweep's remaining inventory)"
+        language: system
+        entry: python3 tools/lint/work_codes.py
         pass_filenames: false
         always_run: true

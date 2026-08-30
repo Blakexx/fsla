@@ -25,27 +25,26 @@ namespace py = pybind11;
 // THE ONE REASON a carry entry can fail on this line, spelled once so a test can
 // assert it and a caller cannot mistake it for a shape refusal.
 static constexpr const char* kCarryUnimplemented =
-    "the carry kernel has no implementation on this line: csrc/rola/src/carry/ was "
-    "cleared at C0 (development/queue/C_CLEAN_SLATE.md) and C3-K0 builds the body. "
-    "This binary carries the LAUNCH SURFACE and its refusals only";
+    "the carry kernel has no implementation on this line: csrc/rola/src/carry/ is empty "
+    "and this binary carries the LAUNCH SURFACE and its refusals only (see "
+    "docs/ARCHITECTURE.md for the body the surface is waiting for)";
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  // ---- K31 R2: the standalone intra kernel -------------------------------
+  // ---- the standalone intra kernel ----------------------------------------
   m.def("intra_forward", &rola::intra::intra_forward,
-        "K31 intra: the within-window causal term, REDuced into o/den", py::arg("pread"),
+        "intra: the within-window causal term, REDuced into o/den", py::arg("pread"),
         py::arg("pwrite"), py::arg("gwrite"), py::arg("v"), py::arg("sread"), py::arg("swrite"),
         py::arg("o"), py::arg("den"), py::arg("levels"), py::arg("level_width"),
         py::arg("level_modes"), py::arg("window"));
   m.def("intra_build_stamp", &rola::intra::intra_build_stamp,
-        "K31 intra: a fact only the loaded binary can produce");
-  m.def("intra_arms", &rola::intra::intra_arms, "K31 intra: the built (levels, window) arms");
+        "intra: a fact only the loaded binary can produce");
+  m.def("intra_arms", &rola::intra::intra_arms, "intra: the built (levels, window) arms");
 
-  // ---- the CARRY LAUNCH SURFACE (C1c) --------------------------------------
-  // THE ONLY REFUSING STUBS IN THIS TREE. C0 deleted csrc/rola/src/carry/ (card
-  // C_CLEAN_SLATE); C3-K0 builds the body and replaces these three entries with the
-  // dispatch TU's own. The signatures are the FINAL ones -- the descriptor's padded
+  // ---- the CARRY LAUNCH SURFACE --------------------------------------------
+  // THE ONLY REFUSING STUBS IN THIS TREE. csrc/rola/src/carry/ is empty; the body
+  // replaces these three entries with its own dispatch translation unit. The signatures are the FINAL ones -- the descriptor's padded
   // widths, the padded DV, the page rectangle and the launch's warps_per_cta, with no
-  // logical-width field anywhere (KERNEL_STANDARDS R13 addendum's lint).
+  // logical-width field anywhere (KERNEL_STANDARDS.md §R13 addendum's lint).
   m.def(
       "carry_forward",
       [](const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&,
@@ -78,32 +77,32 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "the carry family's device build stamp -- a fact only a BUILT kernel can produce");
   m.def(
       "carry_arms", []() { return std::vector<std::vector<int64_t>>{}; },
-      "the (D, DV, warps_per_cta) carry arms this binary carries; empty until C3 builds "
-      "a body and G4 refills the table");
+      "the (D, DV, warps_per_cta) carry arms this binary carries; empty until a body is "
+      "built and the shipped set names its rows");
 
   m.def("csrc_build_stamp", &rola::csrc_build_stamp,
         "the content hash of csrc/rola/src that this fatbin compiled against, read "
         "back off the device -- the fact a stale binary cannot produce");
 
-  // ---- the addressing block (G2-EXTRACT), a foundation feature ------------
+  // ---- the addressing block, a foundation feature -------------------------
   m.def("carry_geometry", &rola::carry::geometry,
-        "G: the addressing block, derived once and flattened -- the SHIPPED derivation, "
+        "the addressing block, derived once and flattened -- the SHIPPED derivation, "
         "which is what a model test must measure",
         py::arg("widths"), py::arg("level_modes"), py::arg("bc"), py::arg("nsr"), py::arg("nsw"),
         py::arg("dv"));
   m.def("carry_sub_boxes", &rola::carry::sub_box_set,
-        "G: the GENERATED set of warp sub-box shapes a side selects its member from",
-        py::arg("depth"), py::arg("box_leaves"), py::arg("workers"));
+        "the GENERATED set of warp sub-box shapes a side selects its member from", py::arg("depth"),
+        py::arg("box_leaves"), py::arg("workers"));
   m.def("intra_backward", &rola::intra::intra_backward,
-        "K31 R4: the within-window half of the four cotangents, REDUCED into the "
+        "the within-window half of the four cotangents, REDUCED into the "
         "planes the carry's two scans also write",
         py::arg("pread"), py::arg("pwrite"), py::arg("gwrite"), py::arg("v"), py::arg("dnum"),
         py::arg("dden"), py::arg("d_pr"), py::arg("d_pw"), py::arg("d_gw"), py::arg("d_v"),
         py::arg("levels"), py::arg("level_width"), py::arg("level_modes"), py::arg("window"));
   m.def("intra_backward_arms", &rola::intra::intra_backward_arms,
-        "K31 R4: the built reverse intra arms and their census");
+        "the built reverse intra arms and their census");
   m.def("intra_backward_stamp", &rola::intra::intra_backward_stamp,
-        "K31 R4: the reverse intra's device build stamp");
+        "the reverse intra's device build stamp");
 
   // ---- the ONE liveness pass, a foundation feature ------------------------
   m.def("liveness_words", &rola::facts::liveness_words,

@@ -57,7 +57,7 @@ def envelope(unratified: tuple[str, ...], device) -> str | None:
 def training_envelope(grad: bool, state: Any) -> str | None:
     """The one clause that exists only on the grad path: a carried STATE.
 
-    Training in v1 is stateless (P65 R-D) -- the state plane is caller-owned and
+    Training in v1 is stateless -- the state plane is caller-owned and
     mutated in place, and `d initial_state` is not in the scans -- so `state=` and a
     gradient are mutually exclusive, by name, at the boundary rather than silently.
     """

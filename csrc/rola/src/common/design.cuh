@@ -15,6 +15,7 @@ template <bool Suboptimal>
 struct Announce {
   __host__ __device__ constexpr Announce() {}
 };
+
 template <>
 struct Announce<true> {
   [[deprecated(
@@ -158,6 +159,7 @@ constexpr int stages_for(const arch::Caps& c, int slot_bytes, int fixed_bytes, i
 constexpr int stages_for(int slot_bytes, int fixed_bytes, int threads, int reg_floor) {
   return stages_for(arch::kCaps, slot_bytes, fixed_bytes, threads, reg_floor);
 }
+
 constexpr int cta_target(int smem_bytes, int threads, int reg_floor) {
   return cta_target(arch::kCaps, smem_bytes, threads, reg_floor);
 }

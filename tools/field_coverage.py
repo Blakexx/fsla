@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""THE SWEEP OVER THE DECLARED SETS -- R9's fourth enforcement layer, as a tool.
+"""THE SWEEP OVER THE DECLARED SETS -- the fourth enforcement layer, as a tool.
 
 A structure switch's cases are GENERATED (`csrc/rola/src/common/geom.cuh`'s `sub_boxes`)
 and its miss path is a `__trap()` (`csrc/rola/src/common/structure_switch.cuh`). Between
@@ -8,8 +8,7 @@ declaration actually select, and does every member of the generated set have one
 branch that nothing exercises is a promise, not a proof, and a member no declaration
 reaches is dead code the compiler still pays for.
 
-So, for every SHAPE the arm table declares -- `(D, DV, streams)`, at BOTH of K50's
-two-value `warps_per_cta` set (`(1, 8)` shipped, `(2, 4)` the test/diagnostic arm) -- this
+So, for every SHAPE the arm table declares -- `(D, DV, streams)`, at BOTH of the two-value `warps_per_cta` set (`(1, 8)` shipped, `(2, 4)` the test/diagnostic arm) -- this
 enumerates the topologies and mode words that depth admits, derives each one's block
 through the SHIPPED derivation (`rola.ops.carry.geometry`, never a mirror), and reports:
 
@@ -42,10 +41,10 @@ import gen_shards  # noqa: E402 -- the path insert must precede it
 #: `leaves_per_warp(DV)` leaves per warp.
 WARPS_PER_SM = 8
 
-#: K50's 2x4 ruling (KERNEL_STANDARDS R15): `warps_per_cta` is a compile-time axis with
+#: the 2x4 ruling (KERNEL_STANDARDS §R15): `warps_per_cta` is a compile-time axis with
 #: exactly this two-value set -- `(1, 8)` the shipped, one-CTA-per-SM shape, `(2, 4)` the
 #: latency-diagnostic test arm. No row in `gen_shards.CARRY_ARMS` carries a `warps_per_cta`
-#: field yet (the list is `()` pending G4's refill under the final `(D, DV, warps_per_cta)`
+#: field yet (the list is `()` until the shipped set names rows under `(D, DV, warps_per_cta)`
 #: key; today's 13-field schema's `WPS` is "warps per write stream", a DIFFERENT, older
 #: field), so until then this tool sweeps the ARCH axis uniformly across every declared
 #: shape rather than reading a per-row value that does not exist -- the member set is

@@ -80,6 +80,7 @@ and the decode arm is defined on the simplex, so that level is divided by its ro
 step's `normalize` argument and `RouteFactors.read_simplex`). The write side is never
 normalized, whatever the read side's flags say.
 
+<!-- ABSENT: reduce_kernel -->
 A sum has an ORDER, and floating-point addition is not associative. The torch reduction
 this replaced had whatever order that release's `reduce_kernel` chose — an order no gate can
 hold anything to, because it is not written down anywhere. This one is:
@@ -122,7 +123,7 @@ value on the host, and a captured graph replays it with no buffer identity to pr
 per-HEAD constant of the decay arm rather than a per-token operand, and its fp32 cast
 carries a refusal (`rola.ops.decay.leaf_rate_dials`) that the host has to raise.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_fold.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -143,7 +144,7 @@ after this enough. `s_sum` is `[kMaxLevels]` of the caller's shared memory.
 NO BARRIER IS TAKEN HERE -- the caller places it, because a device function that
 synchronizes on entry and exit costs a barrier at every seam between two of them.
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode_fold.cuh` condensed at their call site into a short pointer.
 

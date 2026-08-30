@@ -12,7 +12,7 @@ normalization) that is checkable without an independent implementation.
 
 The conditioning surface this file used to also cover
 (a temperature actuator, a budget embedding, a usage-conditioned bias) is
-DESCOPED (queue P29, 2026-08-06) -- see `docs/internals/DELETIONS.md`.
+DESCOPED -- see `docs/internals/DELETIONS.md`.
 """
 
 from __future__ import annotations

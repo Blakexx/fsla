@@ -162,9 +162,13 @@ static_assert(5 + 5 + kFieldWidthMax <= 32,
 __device__ __forceinline__ int field_pack(int shift, int width, int count) {
   return shift | (width << 5) | (count << 10);
 }
+
 __device__ __forceinline__ int field_shift(int f) { return f & 31; }
+
 __device__ __forceinline__ int field_width(int f) { return (f >> 5) & 31; }
+
 __device__ __forceinline__ int field_count(int f) { return f >> 10; }
+
 //: THE LEVEL'S INDEX OUT OF A TERM'S RANK: the padded field, extracted by shifts alone.
 __device__ __forceinline__ int field_index(int f, int rank) {
   return (rank >> field_shift(f)) & ((1 << field_width(f)) - 1);

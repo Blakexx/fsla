@@ -1,4 +1,4 @@
-"""K38 -- the measurements record: the writer epilogue every measuring tool shares.
+"""THE MEASUREMENTS RECORD: the writer epilogue every measuring tool shares.
 
 **THE RECORD IS COMMITTED JSONL, THE DATABASE IS DERIVED.** One small file per run,
 under `benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` (text, mergeable,
@@ -14,7 +14,7 @@ two writers cannot drift into two shapes the way two throwaway ncu scripts once
 drifted on their metric list.
 
 **A ROW WITHOUT PROVENANCE IS REFUSED, NOT WRITTEN THIN.** `git_sha`, the device
-stamp (`manifest_sha256` -- the binary's own account of itself, K38 KERNEL_STANDARDS
+stamp (`manifest_sha256` -- the binary's own account of itself, KERNEL_STANDARDS
 "the extension trap") and `harness_sha` (the identity of the MEASURING CODE, distinct
 from the kernel it measures) are required on every run record; :func:`build_run`
 raises rather than writing an unusable row, mirroring `bench.ledger.make_row`'s own
@@ -45,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = 1
 
 #: The kinds `tools/probe_cells.py` and the unit/integration drivers can write. The
-#: sketch in K38's card names the full roster this table is meant to grow into
+#: sketch in the card names the full roster this table is meant to grow into
 #: (ncu sections, the census, the compile ledger, ratify, oracle) even though only
 #: `probe` has a live writer as of this stage.
 KINDS = ("probe", "ncu", "census", "compile", "oracle", "ratify")
@@ -67,7 +67,7 @@ def results_dir() -> Path:
 def git_state() -> tuple[str, bool]:
     """`(sha, dirty)` of the tree being measured. Shared with `bench.ledger` by
     re-deriving the same two `git` calls rather than importing across the two
-    record modules, which would otherwise couple K38's schema to the retired one."""
+    record modules, which would otherwise couple the schema to the retired one."""
     sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
                          capture_output=True, text=True, check=True).stdout.strip()
     porcelain = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain"],
@@ -167,7 +167,7 @@ def build_run(*, harness_paths, stage: str | None = None, agent: str | None = No
     }
     missing = [k for k in REQUIRED_RUN_FIELDS if not run.get(k)]
     if missing:
-        raise ValueError(f"a K38 run record is missing required field(s) {missing}; "
+        raise ValueError(f"a run record is missing required field(s) {missing}; "
                           f"refusing to write an unusable row (docs/measurement.md)")
     return run
 

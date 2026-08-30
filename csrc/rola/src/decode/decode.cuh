@@ -35,6 +35,7 @@ constexpr int kUnitRepeats = kDecodeWarps / kUnitBlockWarps;
 constexpr int kDecodeMaxSpan = 32;  // refused at the host entry; decode.md#kdecodemaxspan
 
 constexpr int kDecodeResidentThreads = 1024;  // CTA/SM residency; decode.md#kdecoderesidentthreads
+
 __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
   (void)decay;
   (void)levels;

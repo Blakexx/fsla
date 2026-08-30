@@ -5,7 +5,7 @@ bisection oracle; this module owns the value path every runtime caller takes, an
 fixed-alpha VJP. It offers the same solve through two plan-level surfaces:
 
 * ``production_routing_factor_levels`` -- dense per-level ``[BH, T, width_l]`` factors, the contract
-  V3's consumer and its fp64 oracle both consume. This is what the V3 producer calls.
+  the consumer and its fp64 oracle both consume. This is what the producer calls.
 * ``production_routing_factors`` -- the bf16 tile-major ``RouteDescriptor`` arena ABI.
 
 and through two lowerings of one semantics: hand-CUDA on fp32 CUDA tensors, and the identical
@@ -120,7 +120,6 @@ class _ProductionFactorFn(torch.autograd.Function):
             p.view(shape), support_words, mask.view(shape), dp.view(shape), None, dz.view(shape),
             [0], [0], [0], _one(cols), False, 1, ctx.alpha)
         return dz, None, None, None, None
-
 
 
 def production_factor(z, activation="entmax", alpha=1.5, mask=None):
@@ -525,7 +524,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
 
     Structurally the same plan walk as ``_ProductionRoutingArenaFn`` -- the same
     kernels, the same shared/tied/union dispatch, the same packed support -- against one
-    dense plane per side rather than the tile-major arena the V2 chunk ABI takes.
+    dense plane per side rather than the tile-major arena the earlier chunk ABI took.
 
     ``stored_dtype`` is the STORED form (docs/internals/entmax/factor.md#stored-form):
     ``bfloat16`` is what the consumer reads and therefore what the producer emits, and

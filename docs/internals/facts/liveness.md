@@ -90,9 +90,9 @@ words, so the kernel addresses the mask THROUGH the contract's type and never th
 a private copy of the rule.
 
 **No logical width crosses into it.** `b_l` reaches the digit mask at the host seam
-(`rola.engine.facts.liveness.side_statics`) and nowhere else — R13's two contracts keep
+(`rola.engine.facts.liveness.side_statics`) and nowhere else — the two contracts keep
 width fields out of a kernel entry signature, and a bit operand is the only form that
-satisfies both that and G1b's invariant that a dense level's rows ARE the width mask.
+satisfies both that and the invariant that a dense level's rows ARE the width mask.
 
 <a id="the-kernel"></a>
 
@@ -125,7 +125,8 @@ nothing.
 
 ## Where the mechanism was proven
 
-The ballot grain, the token-minor layout and the past-the-end lane's dead vote:
+<!-- ABSENT: facts_launch -->
+the ballot grain, the token-minor layout and the past-the-end lane's dead vote:
 `k35-final`'s `csrc/rola/src/facts/facts_kernel.cuh` (`chunk_facts_tables`) and
 `facts_launch.cuh`, which are never edited again. What is NEW here is that the vote is
 per DIGIT rather than at a compile-time carve, which is what removes `B`, the spans and

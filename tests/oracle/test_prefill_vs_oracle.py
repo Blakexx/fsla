@@ -9,8 +9,7 @@ itself, so a window-grid disagreement, a double-counted diagonal or a dropped ti
 has nowhere to hide.
 
 RED BY DESIGN (card `development/queue/C_CLEAN_SLATE.md`, "TEST-DRIVEN"): the carry leg
-has no implementation on this line. The window is no longer a cell's to name -- K50's
-axis law made ``W`` a kernel constant (`rola.ops.carry.WINDOW`) and the intra family's
+has no implementation on this line. The window is no longer a cell's to name -- the axis law made ``W`` a kernel constant (`rola.ops.carry.WINDOW`) and the intra family's
 arm must be built at the same number, because the two kernels run ONE grid. Neither is
 ``(k, m)``: the box is derived at launch from the descriptor and the launch shape.
 

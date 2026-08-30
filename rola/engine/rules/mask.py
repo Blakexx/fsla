@@ -8,7 +8,7 @@ from rola.engine import Mask, rule
 
 @rule(gives=("mask",), needs=("call_class",))
 def mask(call_class) -> Mask:
-    """The DAG band this call runs: M2 the moment any state bit is engaged.
+    """The DAG band this call runs: the stateful band the moment any state bit is engaged.
 
     Specialization is per CALL CLASS and never per fact: a bool per fact would be
     `2^n` built subgraphs, and intra-mask variation is a runtime-null output skip

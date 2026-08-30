@@ -5,7 +5,7 @@ message: >-
   KERNEL_STANDARDS.md §12: a fence orders only the FENCING THREAD's own
   accesses. Gating `__threadfence`/`__threadfence_block`/`__threadfence_system`
   behind a single-lane predicate (`if (lane == 0) { ...; __threadfence(); }`)
-  leaves every OTHER lane's writes unordered -- S2d bug 1 ("seven of eight
+  leaves every OTHER lane's writes unordered ("seven of eight
   lanes unordered"). Every lane that issued the data must execute the fence
   itself; only the counter update after it may be single-lane.
 files:

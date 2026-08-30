@@ -84,6 +84,7 @@ def torch_extension_cache_key_flags(name: str = "_C") -> list[str]:
             f"-DTORCH_EXTENSION_NAME={name}", "-DTORCH_API_INCLUDE_EXTENSION_H",
             *(str(x) for x in _get_pybind11_abi_build_flags())]
 
+
 #: THE `-MP` INSURANCE. It adds a phony make target per header to the dependency
 #: file, so a depfile consumer that meets a header which no longer exists treats the
 #: rule as dirty instead of erroring. On the pinned toolchain (nvcc 12.4) with
@@ -138,7 +139,7 @@ def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
 #: RAM into a job count, and the reason this is a formula and not a hardcoded
 #: ``MAX_JOBS``.
 #:
-#: RE-DERIVED AT K36, AND THE OLD VALUE WAS WRONG BY 2x. At 1.5 GB the formula
+#: RE-DERIVED, AND THE OLD VALUE WAS WRONG BY 2x. At 1.5 GB the formula
 #: returned ``MAX_JOBS=7`` on this 23 GB host and a cold-cache build was OOM-KILLED --
 #: three translation units died with ``rc=255`` and the ninja build reported
 #: ``Killed``, twice, before the number was re-measured. The old table was taken when
@@ -146,7 +147,7 @@ def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
 #: joining ``SOURCES``.
 #:
 #: WHAT SETS IT NOW IS THE TENSOR LIBRARY'S HEADER, not any kernel. Measured per
-#: ``cicc`` (sm_86, ``--threads=1``), K36:
+#: ``cicc`` (sm_86, ``--threads=1``):
 #:
 #: ===================================== ========== ==========
 #: translation unit                        wall      peak/cicc
@@ -160,7 +161,7 @@ def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
 #: and per ``cicc`` over a full both-arch build (sampled): ``factor.cu`` 2.92 GB,
 #: ``entmax.cu`` 2.89, ``decode.cu`` 2.81, ``carry/carry.cu`` 2.75 -- every unit that
 #: parses the extension header lands in one narrow band, and the 22 generated carry arm
-#: translation units do not appear in the top twelve at all. Before K36 the carry
+#: translation units do not appear in the top twelve at all. The carry
 #: family's single TU peaked at **6.14 GB** and was the binding term by more than 2x.
 #:
 #: So the constant is the HEADER's footprint, and it stops being a function of the arm
@@ -172,11 +173,11 @@ GB_PER_NVCC_THREAD = 2.9
 def default_max_jobs(nvcc_threads: int) -> int:
     """RAM, not cores, is the binding resource here, and that is a measurement:
     ``MAX_JOBS=8`` was OOM-KILLED on this 23 GB / 16-core host, twice -- once after
-    8m32 while the constant said 1.5 GB, and again at K36 with a cold compiler cache,
+    8m32 while the constant said 1.5 GB, and again with a cold compiler cache,
     which is what forced the re-measurement above. So the memory term participates
     rather than the core count alone.
 
-    At the K36 value this returns 3 for a both-arch build (``--threads=2``) and 7 for a
+    At this value it returns 3 for a both-arch build (``--threads=2``) and 7 for a
     single-arch iteration build on a 22 GB-free host, which are the settings the
     measured builds used.
 

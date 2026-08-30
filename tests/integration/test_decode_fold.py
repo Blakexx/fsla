@@ -68,14 +68,14 @@ def declared_row_sum(row: torch.Tensor) -> torch.Tensor:
 def _hi_truncate(x: torch.Tensor) -> torch.Tensor:
     """The value a READ-ONLY atom's hi-plane-only load reconstructs: the fp32 word with
     its low 16 bits zeroed (``hi || 0``, docs/internals/common/state_page.md#load) --
-    G1's truncation, not a round. ``s0`` here is touched by no deposit, so every row the
+    the truncation, not a round. ``s0`` here is touched by no deposit, so every row the
     step reads is read-only and this IS the value the kernel's arithmetic sees."""
     bits = x.contiguous().view(torch.int32)
     return ((bits >> 16) << 16).view(torch.float32).reshape(x.shape)
 
 
 def _single_leaf_state(BH: int, config, s0: int, device, seed: int):
-    """A ``[BH, N, d_v + 1]`` logical page, STORED as split bf16 planes (G1's contract,
+    """A ``[BH, N, d_v + 1]`` logical page, STORED as split bf16 planes (the contract,
     docs/internals/state.md#split-planes) -- zero everywhere but CANONICAL leaf ``s0``,
     in the plane's own LATTICE order. Returns ``(state, e, m)``: ``state`` in the stored
     form the step's entry sweep reads, and ``e``/``m`` HI-TRUNCATED to the value a

@@ -21,12 +21,13 @@ from rola.ops.paging import (
     AtomKeying,
     ExtentAllocator,
     PageArena,
+    bytes_equal,
     to_split_planes,
 )
 
 _DEVICE = torch.device("cpu")
 
-#: I1: the INSTANTIATED `BC` plus one hypothetical. Every quantity the arena stores is
+#: THE INSTANTIATED `BC` plus one hypothetical. Every quantity the arena stores is
 #: `BC`-INVARIANT after the re-key, so a `BC`-derived literal shows up as a shape
 #: mismatch on the fake row -- or, worse, as a silent pass on all three, which is what
 #: the alternating-BC gate below is for.
@@ -120,7 +121,7 @@ def test_two_sequences_at_alternating_BC_produce_bit_identical_residency():
 
     (table_a, state_a, res_a), (table_b, state_b, res_b) = results
     assert torch.equal(table_a, table_b), "the page table moved with BC"
-    assert torch.equal(state_a, state_b), "the addressed bytes moved with BC"
+    assert bytes_equal(state_a, state_b), "the addressed bytes moved with BC"
     assert res_a.allocated_pages == res_b.allocated_pages == int(atoms.sum())
 
 
@@ -176,7 +177,7 @@ def test_a_continuation_keeps_what_it_already_holds_and_a_fresh_call_does_not():
 def test_an_exhausted_allocator_REFUSES_and_never_grants_a_prefix():
     """A demand the pool cannot serve RAISES; it never grants a prefix.
 
-    RETIRED IN PART WITH THE CAP (P67 S3b): the arena has no ceiling parameter any
+    RETIRED IN PART WITH THE CAP: the arena has no ceiling parameter any
     more, so exhaustion is no longer reachable through `PageArena` at all -- the
     capacity IS the dense limit and the plan's demand is a subset of it by
     construction. The invariant itself still has an owner, and this is it: the
@@ -278,7 +279,7 @@ def test_a_fully_resident_arena_materializes_the_canonical_leaf_order(BC):
     arena.state.index_copy_(
         0, arena.page_table.reshape(-1).long(),
         to_split_planes(dense.reshape(BH * N // MMA_K_QUANTUM, MMA_K_QUANTUM, cols)))
-    assert torch.equal(arena.materialize(), dense)
+    assert bytes_equal(arena.materialize(), dense)
     assert arena.allocated_pages == arena.logical_pages
 
 

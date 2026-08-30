@@ -167,6 +167,7 @@ class RouteDescriptor:
             raise ValueError("route values must have rank 4")
         if self.support_words.ndim != 3:
             raise ValueError("support_words must have rank 3")
+
         offsets = tuple(self.level_offsets)
         support_offsets = tuple(self.support_offsets)
         widths = tuple(self.level_widths)
@@ -174,6 +175,7 @@ class RouteDescriptor:
         flags = tuple(self.support_side_flags)
         stamp = tuple(self.topology_stamp)
         d = len(widths)
+
         if d == 0 or len(offsets) != d + 1:
             raise ValueError("level_offsets must contain D + 1 entries for a nonempty routing plan")
         validate_routing_shape(widths, owner="RouteDescriptor")
@@ -361,6 +363,7 @@ class UnionRouting:
         if duty not in ("read", "write"):
             raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
         return duty == "write" and self.properties.simplex_output
+
 
 LevelRouting: TypeAlias = IndependentRouting | UnionRouting
 
@@ -625,10 +628,10 @@ class ResolvedRouting:
 # Union``), ``IndependentRouting``, and ``UnionRouting`` are reused verbatim --
 # they already satisfy the contract's shapes. Only the topology/decay
 # wrappers are new. These are producer-agnostic: they describe the routing
-# contract the V3 naive oracle (``fla_rola/ops/rola/naive.py``) consumes, not a
+# contract the naive oracle (``rola/ops/naive.py``) consumes, not a
 # projection ABI. They deliberately do not reuse ``ResolvedRouting`` /
 # ``RouteDescriptor``, which are packed-router / kernel ABI types tied to the
-# Q/K-era producer and out of scope for V3 stage 1.
+# earlier Q/K-shaped producer and are not part of this contract.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
@@ -693,7 +696,7 @@ class Topology:
     """The routing topology, and ONLY routing.
 
     ``D = len(levels)`` is validated in ``[1, 4]`` and every level's width in
-    ``[1, 256]`` by ``validate_routing_shape`` -- the same validator ``V2``'s
+    ``[1, 256]`` by ``validate_routing_shape`` -- the same validator the earlier form's
     ``ResolvedRouting`` uses, so the two structural invariants are not
     reimplemented here.
 
@@ -726,7 +729,7 @@ class Topology:
         """The LOGICAL, caller-authored per-level widths (``b_l``) -- unchanged by
         padding. A model built with ``IndependentRouting(width=31, ...)`` reads
         ``31`` here forever; see :attr:`padded_widths` and :meth:`padded` for the
-        kernel-facing, padded ones (``B_l``, K50 "PADDING AT THE PRODUCER")."""
+        kernel-facing, padded ones (``B_l``, padded at the producer)."""
         return tuple(level.width for level in self.levels)
 
     @property
@@ -746,7 +749,7 @@ class Topology:
 
         ``widths == padded_widths`` for an ideal (power-of-two >= 16, every level)
         model: :meth:`padded` still returns an equivalent ``Topology`` in that case,
-        so a caller may always call it uniformly (KERNEL_STANDARDS R9: a structure
+        so a caller may always call it uniformly (KERNEL_STANDARDS §R9: a structure
         branch is a derived fact, never a data-dependent shortcut) -- this property
         exists for callers that want to skip a genuinely zero-cost pad.
         """
@@ -836,7 +839,7 @@ class LeafMassDecay:
     ``rate_leaf[s] = prod_l delta_l[d_l(s)] < 1`` for every leaf ``s``, so
     ``keep = (1 - rate_leaf) ** c = 0`` is unreachable by construction.
 
-    **This check is necessary but NOT sufficient (review B1).** It runs in
+    **This check is necessary but NOT sufficient.** It runs in
     ``dial``'s own dtype, which may be fp64; the kernel only ever reads an fp32
     cast of these dials, and an fp64 value within ~3e-8 of 1 is strictly ``< 1``
     here yet rounds to exactly ``1.0f`` on cast, which NaNs the kernel

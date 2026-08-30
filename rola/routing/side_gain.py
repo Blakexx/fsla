@@ -35,7 +35,7 @@ def softplus_side_gain(logit: torch.Tensor, bias: torch.Tensor | float = 0.0) ->
     migration-equivalent -- the exact ``ELU+1`` decomposition gives ``g_read = sqrt(K)``,
     ``g_write = K`` for the historical width-``K`` feature map. The caller's choice of
     ``bias`` is a new model-level init decision requiring its own quality/stability gate
-    before large training, and must not be presented as equivalent to any V1/V2
+    before large training, and must not be presented as equivalent to any earlier
     checkpoint.
     """
     return F.softplus(logit + bias)

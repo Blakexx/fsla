@@ -56,11 +56,13 @@ class RouteFactors:
             raise TypeError(
                 f"RouteFactors.topology must be a Topology, got {type(self.topology).__name__}")
         D, widths = self.topology.D, self.topology.widths
+
         for name, levels in (("read", self.read), ("write", self.write)):
             if len(levels) != D:
                 raise ValueError(
                     f"RouteFactors.{name} must hold one tensor per routing level "
                     f"(D={D}), got {len(levels)}")
+
         prefix = None
         for name, levels in (("read", self.read), ("write", self.write)):
             for level, tensor in enumerate(levels):
@@ -141,6 +143,7 @@ class RouteFactors:
         #: THE QUOTIENT IS AT LEAST fp32: a bf16 quotient of a bf16 sum of bf16 addends
         #: is three roundings where one is forced, and every consumer of this widens
         #: anyway. A level already wider than fp32 keeps its own width.
+
         def divided(level: torch.Tensor) -> torch.Tensor:
             wide = torch.promote_types(level.dtype, torch.float32)
             return level.to(wide) / level.sum(dim=-1, keepdim=True, dtype=wide)

@@ -23,7 +23,7 @@ import torch
 from rola.engine.rules.paging import admission
 from rola.engine.types import MMA_K_QUANTUM
 
-#: ``log2(MMA_K_QUANTUM)``, DERIVED. Invariant I1: the address expression is
+#: ``log2(MMA_K_QUANTUM)``, DERIVED. THE ADDRESS INVARIANT: the address expression is
 #: ``(slot << _LOG2_ATOM_LEAVES | row)``, and the shift must be an expression in the
 #: named constant rather than the literal 4 -- otherwise a future atom size passes every
 #: instantiated test and silently mis-addresses.
@@ -40,7 +40,7 @@ _ABSENT_PAGE = -1
 def to_split_planes(logical: torch.Tensor) -> torch.Tensor:
     """A logical ``[..., 16, cols]`` fp32 page block in the STORED split-plane form.
 
-    THE PAGE IS ``[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`` (K50, 2026-08-29):
+    THE PAGE IS ``[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]``:
     the same fp32 bits, re-laid out so a value row's hi plane is one 128 B line at
     ``DV = 64`` and an atom a call only READS moves half the bytes. The container stays
     fp32 because the LOGICAL element is fp32 -- ``hi || lo`` is the word exactly -- and
@@ -118,6 +118,7 @@ def from_split_planes(stored: torch.Tensor) -> torch.Tensor:
     words[:, :, d_v] = ((halves[:, 2 * rows:2 * rows + MMA_K_QUANTUM] << 16)
                         | halves[:, 2 * rows + MMA_K_QUANTUM:])
     return words.view(torch.float32).reshape(stored.shape)
+
 
 #: The driver-allocation unit the VMM backing commits in, in bytes. ``None`` resolves it
 #: to the device's own ``cuMemGetAllocationGranularity`` MINIMUM, which is the finest
@@ -334,9 +335,9 @@ class ExtentAllocator:
 
 
 class PageArena:
-    """A pooled, per-layer arena over V3 value panels, keyed by the MMA ATOM.
+    """A pooled, per-layer arena over the value panels, keyed by the MMA ATOM.
 
-    **Pooled, not per-(batch, head)** -- V2's shape, and the reason the savings math
+    **Pooled, not per-(batch, head)** -- the shape, and the reason the savings math
     works (docs/internals/paging/paging.md). One arena backs every ``(batch, head)`` pair, so it tracks the live
     fraction of the WHOLE layer; a per-pair arena would round each pair's tiny live
     fraction up to its own extent and cap savings at the extent-to-footprint ratio.
@@ -793,7 +794,7 @@ class PageArena:
     def materialize(self) -> torch.Tensor:
         """Gather the committed atoms back into a dense ``[BH, N, cols]`` state.
 
-        The explicit bridge OUT, and since K50 the hi||lo GATHER as well: the pages hold
+        The explicit bridge OUT, and the hi||lo GATHER as well: the pages hold
         split bf16 planes, so the logical fp32 view is rejoined here and nowhere on a
         measured path. Allocating ``[BH, N, cols]`` is precisely what paging exists to
         avoid, so this is for oracle comparison and for the existing dense cache

@@ -1,3 +1,4 @@
+<!-- ABSENT: K31_R0_ABI_RIPPLE_SPEC cum intra_panel kPanelMaxExponent GLA_MASS_DECAY_SPEC MmaPrec PREC PANEL_MAX_EXPONENT -->
 # `csrc/rola/src/decode/decode.cuh` + `csrc/rola/src/decode/decode.cu` — the `T = 1` decode path
 
 This doc covers **two** source files, because they are one component: the header
@@ -18,7 +19,7 @@ unconditional; raw normalization is dead — there is no `GLOBAL` axis anywhere 
 this repository, decode included); `n_split` the split-K degree; `k`, `m`,
 `s_l`, `g_l`, `BC` the `(k, m)` lattice's own symbols
 ([`decode_lattice.md`](decode_lattice.md), spec `K31_R0_ABI_RIPPLE_SPEC.md`
-§§2.1–2.5); `BT` is the tiled consumer's token tile, which appears here only to
+§2.1–2.5); `BT` is the tiled consumer's token tile, which appears here only to
 be ruled out.
 
 **The tiled consumer, in this document, is a RETIRED arm.** It was the prefill
@@ -32,8 +33,7 @@ that erases the thing declined leaves the decision unexplained. Where a section
 says a constant is restated rather than included, the header it was not
 included from is one of the deleted ones, and the restatement is now simply
 this file's own constant. There is no surviving prefill consumer to name a
-current doc for; the prefill arm is deleted pending K31 R2's rebuild (queue K31
-card).
+current doc for; the prefill arm is deleted pending K31 the rebuild.
 
 ---
 
@@ -168,7 +168,7 @@ a Cartesian product ([§2](#kronecker-support)), so the step's write-ATOM set is
 per-level exact-nonzero indicators' product ORed 16-deep.
 
 <a id="absorbed-verdict"></a>**THE STEP ASKS THE QUESTION ITSELF, IN ITS OWN PROLOGUE.**
-The exact admission is dear against the launch it precedes, and a sequence whose routing
+the exact admission is dear against the launch it precedes, and a sequence whose routing
 has settled writes atoms that are already resident. What makes the question nearly free is
 that the step has already built the objects it is asked about: the write-side factor tables
 ([`decode_lattice.md`](decode_lattice.md)) are the ones the walk itself resolves units from,
@@ -226,7 +226,7 @@ defined in ascending atom id and this enumeration is where that order comes from
 enumeration serves the table test, the claim and the condensation below.
 
 <a id="atom-bits"></a>**THE CONDENSATION IS PUBLISHED, and it is the only thing that is.**
-The test already has the write-atom set in hand, so writing it out costs one byte per atom
+the test already has the write-atom set in hand, so writing it out costs one byte per atom
 and removes the host derivation from a growth step entirely: `plan_exact` plans from
 `scratch.atom_bits` and derives no support. One CTA per batch-head (`seg == 0`) publishes
 it, UNCONDITIONALLY — a dead atom's `false` is as much of the set as a live one's `true`,
@@ -403,8 +403,8 @@ topology the producer can build and then read past the end of a staged amplitude
 row. So the relation `kDecodeMaxLevelWidth >= kProducerMaxBranchWidth` is
 enforced in two halves:
 
-- the **compile-time** half is the `static_assert` in `decode.cuh`;
-- the **runtime** half is `rola_decode_capacity()`, bound into the extension so
+- The **compile-time** half is the `static_assert` in `decode.cuh`;
+- The **runtime** half is `rola_decode_capacity()`, bound into the extension so
   `tests/unit/test_decode_capacity.py` can assert the two constants agree.
 
 A C++ assertion cannot read a Python constant. The pair is what makes this
@@ -494,7 +494,7 @@ prefix-sum structure over the leaf or row space left to consult here at all — 
 count the tiled consumer's `cum`/coarse-index apparatus existed to answer is not a
 question this design asks. What replaces it is the owner-list's own realized count `n_o`
 per (list, level) — a single small array the block-scan in
-[`build_owner_lists`](decode_lattice.md#the-owner-lists) already produces, consulted
+[`compact_owner_lists`](decode_lattice.md#the-owner-lists) already produces, consulted
 directly at unit-resolve time rather than through a second index over it.
 
 ## <a id="splitk-workspace"></a>13. The split-K workspace
@@ -1040,7 +1040,7 @@ exact-nonzero indicators and the atom set is that product ORed 16-deep. It is th
 object `rola.engine.facts.planes.atom_bits` derives from the facts pass and the same one
 the step condenses, reached by neither's route.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode.cu`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -1119,7 +1119,7 @@ IT RETIRES BEFORE THE ADMISSION, and that ordering is load-bearing rather than
 incidental: the table test and the pool claim read a page table the last-arriving
 LIVE segment folds into, so a retired segment must not be inside that window at all.
 docs/internals/decode/decode.md#retirement
-ONE SHARED READ AND ONE COMPARE. `build_term_layout` folds the maximum by `atomicMax`
+ONE SHARED READ AND ONE COMPARE. `publish_term_layout` folds the maximum by `atomicMax`
 inside its own barrier, so learning it costs neither a second block synchronisation
 (which the dense cell, where nothing retires, measured at ~1 %) nor `D + 1` redundant
 reads per thread. The test is written as the COMPARE rather than as `seg >= n_live`
@@ -1444,7 +1444,7 @@ docs/internals/decode/decode_lattice.md#the-refusals
 
 `BoxPlan`'s section 2.5 as the atom-rectangle law generalizes it: the INNERMOST
 level takes as much capacity as it can carry -- never less than its balanced share,
-never less than an atom asks, never more than its own width admits (K6) -- and the
+never less than an atom asks, never more than its own width admits -- and the
 rest of `j` is spread balanced over the outer levels, innermost first.  The atom
 floor is a PREFERENCE and the width ceiling is the law: a level narrower than an
 atom spills its capacity outward and the atom then spans more than one level.
@@ -1502,7 +1502,7 @@ and `log2(k) | 4` are discharged by the mixed-radix order itself (`box.cuh`, K3/
 A dense backing never asks an atom a liveness question and carries no constraint:
 docs/internals/decode/decode.md#candidate-atoms
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -1706,7 +1706,7 @@ the low `count` bits (`count <= 32`) -- the shift-and-merge every lattice slice 
 read through, written once because it is the one place a funnel shift can be off by
 one. docs/internals/decode/decode.md#extract-bits
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode.cu` condensed at their call site into a short pointer.
 
@@ -1724,7 +1724,7 @@ Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode.cu` con
   olist  [4][olist_total]   i32    those bits COMPACTED: the i-th live owner
   dlist  [dlist_total]      i32    the WRITE side's live digits, OUTER levels only
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode.cuh` condensed at their call site into a short pointer.
 
@@ -2006,9 +2006,9 @@ makes decode's `y` RUN-REPRODUCIBLE -- and that diverges from the tiled consumer
 on purpose: docs/internals/decode/decode.md#determinism
 
 <a id="split-planes"></a>
-### the split bf16 planes, and the unit that reads one
+### The split bf16 planes, and the unit that reads one
 
-THE STATE'S PAGE HOLDS SPLIT bf16 PLANES (K50, 2026-08-29) --
+THE STATE'S PAGE HOLDS SPLIT bf16 PLANES --
 `[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`, the geometry
 `common/state_page.md` defines and the carry addresses with the same blocks. The
 walk's per-leaf row is therefore two 16-bit runs rather than one fp32 run, and the

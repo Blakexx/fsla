@@ -58,6 +58,7 @@ constexpr bool launch_table_rows_are_all_tabulated() {
     if (!denseref::arch::tabulated(kLaunchTable[i].cc)) return false;
   return true;
 }
+
 static_assert(launch_table_rows_are_all_tabulated(),
               "a launch-table row names an architecture arch_caps.cuh does not tabulate");
 static_assert(launch_table_covers(800), "arch_caps.cuh tabulates sm_80");
@@ -71,7 +72,7 @@ static_assert(kLaunchTableRows == 5,
 //: see docs/internals/common/constants.md#bc (the geom.cuh agreement)
 static_assert(leaves_per_warp(64) == 32, "leaves per warp at DV <= 64");
 static_assert(leaves_per_warp(128) == 16, "leaves per warp halves at DV = 128");
-static_assert(warps_per_sm == 8, "KERNEL_STANDARDS R15");
+static_assert(warps_per_sm == 8, "KERNEL_STANDARDS.md §R15");
 
 //: see docs/internals/common/constants.md#s-from-smem
 constexpr int derive_stream_count(int per_stream_bytes, int residency_smem_bytes,

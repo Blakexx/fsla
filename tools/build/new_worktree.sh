@@ -2,10 +2,10 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 #
-# docs/setup.md "pointer venv, the fast path" (K46 item 4), scripted: a new git
+# docs/setup.md "pointer venv, the fast path", scripted: a new git
 # worktree, its POINTER venv (shared base site-packages + this worktree's own
 # in-tree editable build), in one call -- agents kept reverse-engineering this
-# by hand from a sibling worktree's venv (K42, K45 SKILLS FEEDBACK).
+# by hand from a sibling worktree's venv.
 #
 # Usage:
 #   ROLA_BASE_VENV=/path/to/shared/venv tools/build/new_worktree.sh <name> <sha>
@@ -83,6 +83,35 @@ done
 echo "[new_worktree] git worktree add $WORKTREE $SHA"
 git -C "$MAIN_CHECKOUT" worktree add "$WORKTREE" "$SHA"
 
+# THE COMMIT GATE, WIRED BEFORE ANYTHING IS BUILT.
+# A linked worktree inherits the repository's hooks directory, which is invisible from
+# inside the worktree -- so an agent that could not see a hook fire reached for
+# `git -c core.hooksPath=<some path> commit`, and the commit was silently UNGATED.
+# `core.hooksPath` is set here, per worktree, to the tracked `tools/git-hooks`
+# directory: the gate is then a property of the checked-out tree, present by
+# construction, and passing `-c core.hooksPath=` is a deliberate override of a set
+# value rather than a filling-in of an unset one (the same act as `--no-verify`).
+# The path is RELATIVE, which git resolves against the top of the working tree, so the
+# one value is correct in every worktree.
+echo "[new_worktree] wiring core.hooksPath -> tools/git-hooks"
+HOOK="$WORKTREE/tools/git-hooks/pre-commit"
+if [[ ! -x "$HOOK" ]]; then
+  echo "refusing: $HOOK is missing or not executable -- the commit gate is a tracked" >&2
+  echo "file, and a worktree without it would commit unchecked." >&2
+  exit 1
+fi
+# `git config` in a linked worktree writes the SHARED config unless the worktree
+# extension is on, and a shared absolute path would be wrong for every other
+# worktree. The extension is enabled once, on the repository, and the value is then
+# this worktree's own.
+git -C "$WORKTREE" config extensions.worktreeConfig true
+git -C "$WORKTREE" config --worktree core.hooksPath tools/git-hooks
+WIRED="$(git -C "$WORKTREE" config --get core.hooksPath || true)"
+if [[ "$WIRED" != "tools/git-hooks" ]]; then
+  echo "refusing: core.hooksPath reads back as '${WIRED:-unset}' in $WORKTREE" >&2
+  exit 1
+fi
+
 echo "[new_worktree] uv venv --python 3.11 --seed $VENV"
 # FOOTGUN 1: a SEEDLESS venv (no --seed) carries no `pip` binary at all -- a later
 # `pip install ...` (the bare command, not `python -m pip`) then silently resolves
@@ -145,7 +174,7 @@ if ! grep -qF "'rola': '$WORKTREE/rola'" "$FINDER"; then
 fi
 
 # THE LIVE IMPORT, run FROM the worktree, not from wherever this script's own
-# CALLER happened to be sitting. ROOT CAUSE (K46, found across four throwaway
+# CALLER happened to be sitting. ROOT CAUSE (found across four throwaway
 # runs): `python -c` puts `''` -- meaning THE PROCESS's OWN CWD -- first in
 # `sys.path`. The editable build's subshell above already `cd`s into
 # `$WORKTREE`, so it was never affected; this verification step, running in

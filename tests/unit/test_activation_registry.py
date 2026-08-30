@@ -41,6 +41,7 @@ from rola.routing.types import (
 
 # --- the table itself --------------------------------------------------------
 
+
 def test_v0_1_ratifies_exactly_the_two_declared_activation_families():
     """v0.1 ships exactly two ratified families, plus the opaque row.
 
@@ -193,7 +194,7 @@ def test_an_activation_with_a_row_is_configurable_without_widening_an_isinstance
 
 
 def test_mass_decay_accepts_every_ratified_activation():
-    """M2 non-vacuity for the rule above: it must not reject the shipped world."""
+    """Non-vacuity for the rule above: it must not reject the shipped world."""
     for activation in (softmax(), entmax(1.5), entmax(2.0)):
         topology = _topology(activation, activation)
         LeafMassDecay(dials=(torch.full((1, 4), 0.5),)).validate_against(topology)
@@ -247,7 +248,7 @@ def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
         del ACTIVATION_REGISTRY[tag]
 
 
-#: RETIRED at P67 D2-b: `test_the_private_kernel_path_refuses_an_unratified_
+#: RETIRED with the tiled consumer: `test_the_private_kernel_path_refuses_an_unratified_
 #: activation_rather_than_running_it`. Its subject was the retired tiled arm's own
 #: activation check -- a refusal at its private entry, so that a caller who
 #: bypassed the dispatch could not launch something nobody measured. The chunk arm

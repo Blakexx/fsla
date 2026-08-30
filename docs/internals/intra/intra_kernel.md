@@ -198,7 +198,7 @@ ratio, not 1:1 — the term is 62–65% of DRAM peak but its #1 issue stall is
 `math_pipe_throttle`, so a byte saved is not a cycle saved. The dense cell moves by
 nothing measurable, as it must: no side is declared, so no certificate is built at all.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra_kernel.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 

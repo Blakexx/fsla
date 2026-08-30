@@ -4,7 +4,7 @@
 Blake ruling 2026-08-28-night: "three agents' MAX_JOBS=4 each -> 12+ cicc" sat
 this host at 100% CPU for 10+ minutes and forced a WSL shutdown mid-session).
 
-**WHY THIS CANNOT BE A BRIEF INSTRUCTION.** `tools/build/build_lock.sh` (K39,
+**WHY THIS CANNOT BE A BRIEF INSTRUCTION.** `tools/build/build_lock.sh` (
 earlier the same day) already unified the iteration-slot and gate-lock
 mechanisms into one -- but it is an EXTERNAL wrapper a caller has to remember
 to invoke, and three concurrent agents each forgetting it (or each reasonably

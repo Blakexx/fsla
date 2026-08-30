@@ -2,7 +2,7 @@
 
 The migration-equivalence suite (``test_rola_v3_migration_equivalence.py``) only
 exercises ``decay=None`` positively; its sole ``LeafMassDecay`` test is negative
-(records that V3's clock cannot reproduce V2's matrix-level decay law -- spec
+(records that this clock cannot reproduce the earlier matrix-level decay law -- spec
 ). As of that suite, the decay path has **no positive validation** at all.
 
 This file closes that gap by testing the recurrence's invariants directly against
@@ -29,7 +29,7 @@ Covered:
     - affine composability: splitting a sequence and continuing
       the recurrence from the boundary state reproduces the unsplit result,
       exactly, across several split points -- this is the practical form of
-      ``(A1,B1) o (A2,B2) = (A2*A1, A2*B1 + B2)`` since the oracle's own
+      `` o = (A2*A1, A2*B1 + B2)`` since the oracle's own
       state-continuation *is* that composition (the recurrence is affine in
       ``M``, the "no delta correction" consequence);
     - the same ``0 <= delta < 1`` invariant re-checked in the dtype the KERNEL
@@ -44,6 +44,7 @@ import torch
 
 from rola.ops.decay import leaf_rate_dials
 from rola.ops.naive import _leaf_product, naive_rola
+from rola.ops.paging import bytes_equal
 from rola.routing.types import (
     IndependentRouting,
     LeafMassDecay,
@@ -131,12 +132,12 @@ def test_write_conditioned_quiescence_state_bit_identical_across_write_free_inte
     # bit-for-bit -- not merely close.
     state_after_t0 = states[0]
     for t in (1, 2, 3):
-        assert torch.equal(states[t], state_after_t0), (
+        assert bytes_equal(states[t], state_after_t0), (
             f"leaf 0's state changed at write-free token {t}: "
             f"{states[t]} != {state_after_t0} (quiescence violated)"
         )
     # And it must actually change again once genuinely re-written at token 4.
-    assert not torch.equal(states[4], state_after_t0)
+    assert not bytes_equal(states[4], state_after_t0)
 
 
 def test_write_conditioned_quiescence_keep_equals_one_exactly_via_leaf_product():
@@ -365,14 +366,14 @@ def test_split_then_continue_reproduces_unsplit_result_exactly(split_point):
         f"chunked output diverges from unsplit at split_point={split_point}: "
         f"max abs diff {(y_full - y_chunked).abs().max().item()}"
     )
-    assert torch.equal(state_full, state2), (
+    assert bytes_equal(state_full, state2), (
         f"chunked final state diverges from unsplit at split_point={split_point}: "
         f"max abs diff {(state_full - state2).abs().max().item()}"
     )
 
 
 def test_affine_composition_algebra_matches_direct_recurrence():
-    """Pure-arithmetic check of ``(A1,B1) o (A2,B2) = (A2*A1, A2*B1+B2)``
+    """Pure-arithmetic check of `` o = (A2*A1, A2*B1+B2)``
     for a single scalar leaf, independent of the oracle: builds a
     known ``keep``/``W*v`` sequence, computes the direct recurrence, then
     computes it via per-chunk ``(A,B)`` summaries composed with the stated

@@ -51,6 +51,13 @@ AttributeMacros:
 SortUsingDeclarations: Never
 BreakStringLiterals: false
 
+# THE READABILITY FLOOR, in the formatter. A body is segmented by blank lines
+# (`tools/lint/readability_spacing.py` is the textual half of the same rule) and
+# a run of blank lines is one line, so the segmentation means something; a
+# definition is separated from its neighbour, so a reader sees where one ends.
+MaxEmptyLinesToKeep: 1
+SeparateDefinitionBlocks: Always
+
 # Include blocks in this tree are ordered by hand with commentary between
 # groups (torch/extension.h first is load-bearing for the extension TUs);
 # reordering them is a semantic change, not formatting.

@@ -3,7 +3,7 @@
 
 """TIER 2 — the decode path is BC-BLIND, stated as "no dependence", not "no literal".
 
-Spec I1's stated enforcement for the tiled path is to parameterize over every
+Spec the stated enforcement for the tiled path is to parameterize over every
 instantiated ``BC`` plus one hypothetical ``BC``, so a hardcoded quanta-shaped literal
 fails the fake-``BC`` row. The decode path admits a stronger form of the same gate,
 because ``BC`` is not an input to it at all: run the same fixture while the surrounding
@@ -69,7 +69,7 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
     device = "cuda"
     d_v, B, H = 64, 2, 2
     N = math.prod(widths)
-    # P26: the mass column is unconditional (there is no normalization axis at
+    # The mass column is unconditional (there is no normalization axis at
     # all), so `cols = d_v + 1`, always.
     cols = d_v + 1
     topology = _topology(widths)
@@ -81,13 +81,13 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
     v = torch.randn(B, 1, H, d_v, device=device, generator=generator).float()
     m0 = 0.1 * torch.randn(B, H, N, cols, device=device, generator=generator).float()
     m0[..., d_v] = m0[..., d_v].abs()
-    #: THE STATE IS HANDED TO THE KERNEL IN ITS STORED FORM (K50's split planes).
+    #: THE STATE IS HANDED TO THE KERNEL IN ITS STORED FORM (the split planes).
     m0 = to_split_planes(m0)
 
     results = []
     configs = []
     for BC in _BCS:
-        # `BC` is here to be IGNORED. P67 D2-b: the prefill's `BC` used to be a
+        # `BC` is here to be IGNORED. The prefill's `BC` used to be a
         # host-chosen `Plan` field constructed at each value and deliberately not
         # handed to decode; on the chunk arm it belongs to the built arm and is
         # not host-selectable at all, so the loop now varies the number a prefill

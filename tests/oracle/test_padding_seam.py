@@ -4,7 +4,7 @@
 any level width and any value width is served by host-side padding, with no kernel
 change and no oracle arithmetic change.
 
-**TWO CONTRACTS, KEPT SEPARATE (KERNEL_STANDARDS R13).** The API accepts any shape and
+**TWO CONTRACTS, KEPT SEPARATE (KERNEL_STANDARDS §R13).** The API accepts any shape and
 pads; the kernel accepts only its own descriptor's strict shape and refuses the rest.
 `test_the_api_boundary_pads_and_the_kernel_boundary_refuses` is both halves, side by
 side: the API is `rola.ops.prefill`'s `_descriptor`/`_pack_operands` operand-packing
@@ -38,7 +38,7 @@ from rola.ops.intra import DENSE_BOTH, WINDOW_SMALL, intra_forward_padded
 from rola.ops.lattice import to_canonical, to_lattice
 from rola.ops.naive import naive_rola
 from rola.ops.padding import pad_routes, pad_v
-from rola.ops.paging import from_split_planes, to_split_planes
+from rola.ops.paging import bytes_equal, from_split_planes, to_split_planes
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
 from tests.oracle.oracle_fixtures import _simplex
 from tests.oracle.tolerances import BF16_RTOL
@@ -78,7 +78,7 @@ def _padded_case(widths, d_v, *, B=2, T=5, H=2, seed=0):
 
 
 @pytest.mark.parametrize("widths", [(31, 45), (17, 16, 33)],
-                        ids=["D2-nonpow2", "D3-nonpow2"])
+                        ids=["depth2-nonpow2", "depth3-nonpow2"])
 def test_prefill_padded_widths_are_bit_identical_to_the_unpadded_model(widths):
     """Item 5(a): widths (31, 45) at D=2 and (17, 16, 33) at D=3 -- ``y`` bit for bit
     against the same model run at the unpadded, logical widths (the extra padded
@@ -110,7 +110,7 @@ def test_prefill_padding_is_the_ruled_mechanism_not_an_approximation_of_it():
 
 
 # ---------------------------------------------------------------------------
-# TWO CONTRACTS: the API pads, the kernel refuses (KERNEL_STANDARDS R13)
+# TWO CONTRACTS: the API pads, the kernel refuses (KERNEL_STANDARDS §R13)
 # ---------------------------------------------------------------------------
 
 
@@ -118,7 +118,7 @@ def test_prefill_padding_is_the_ruled_mechanism_not_an_approximation_of_it():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the launch surface is the extension's boundary")
 def test_the_api_boundary_pads_and_the_kernel_boundary_refuses():
     """(i) API: `rola.ops.prefill`'s `_descriptor`/`_pack_operands` -- the operand-
-    packing seam onto the carry launch surface (C1c) -- take a genuinely unpadded
+    packing seam onto the carry launch surface -- take a genuinely unpadded
     shape ((31, 45), d_v=8) without ever raising a SHAPE error: they pad, and the only
     failure `carry_forward` can reach past them is the HONEST ABSENCE of the carry
     kernel body (`C_CLEAN_SLATE`: carry is not built on this line). (ii) KERNEL: the
@@ -235,9 +235,9 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail_bit_for_bit()
 
     assert torch.equal(y_padded, y_explicit[..., :d_v_logical]), (
         "a d_v=48 decode step must equal the DV=64 step's first 48 output columns, bit for bit")
-    assert torch.equal(state_padded[..., :d_v_logical], state_explicit[..., :d_v_logical]), (
+    assert bytes_equal(state_padded[..., :d_v_logical], state_explicit[..., :d_v_logical]), (
         "the stored state's real d_v columns must agree bit for bit")
-    assert torch.equal(state_padded[..., d_v_logical:DV], state_explicit[..., d_v_logical:DV]), (
+    assert bytes_equal(state_padded[..., d_v_logical:DV], state_explicit[..., d_v_logical:DV]), (
         "the padded state columns are dead in BOTH calls (nothing ever wrote a nonzero v there)"
     )
 

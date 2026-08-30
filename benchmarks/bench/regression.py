@@ -94,6 +94,7 @@ def iqr(xs) -> float:
 #: baseline, which is what it should be.
 CANONICAL_INSTRUMENT = "cuda_events"
 
+
 def same_instrument(a: str, b: str, what: str) -> None:
     """Refuse to compare two numbers taken with different stopwatches.
 
@@ -110,6 +111,7 @@ def same_instrument(a: str, b: str, what: str) -> None:
             f"same quantity measured twice. Re-measure the older side with the "
             f"current instrument ({CANONICAL_INSTRUMENT!r}) and record it as a new "
             f"measurement.")
+
 
 def summarize(times_ms, *, source: str | None = None) -> dict:
     """The three numbers a baseline entry carries, plus the stopwatch that took them.

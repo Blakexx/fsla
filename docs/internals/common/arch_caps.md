@@ -1,6 +1,6 @@
 # `csrc/rola/src/chunk/arch_caps.cuh` — the capability rows
 
-The ladder's per-architecture capability table (P58 lineage), imported with
+The ladder's per-architecture capability table, imported with
 the chunk family: one `Caps` row per SM generation (async copy, tile loads,
 MMA operand sourcing, TMEM, SMEM/register budgets), consumed by `design.cuh`'s
 derivations. The sm_90 row builds and announces capabilities the 32-thread
@@ -68,7 +68,7 @@ architectural constant -- GA102 ships at 80 and 82 SMs, GA100 at 108 -- so it
 is a runtime `cudaDeviceProp` query, never a table row.  Everything in
 `Caps` is a property of the compute capability itself.
 
-## Comments moved from source (S5b)
+## Comments moved from source
 
 Verbatim `//:` prose blocks from `csrc/rola/src/common/arch_caps.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
@@ -91,7 +91,7 @@ literal: at 256 threads and 3 CTAs it is 80 on every part with 65536
 registers per SM, and the arithmetic that produced it is the table's, not a
 measurement session's.
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/common/arch_caps.cuh` condensed at their call site into a short pointer.
 
@@ -158,7 +158,7 @@ no structural change: the archetypal flag.
 ### `bf16_simd_fma`
 
 FUSED elementwise bf16 arithmetic on a packed pair
-(`fma.rn.bf16x2`).  MEASURED 2026-08-28 (K35 R-C):
+(`fma.rn.bf16x2`).  MEASURED 2026-08-28:
 this one IS available at sm_80, unlike the plain
 `mul.rn.bf16x2` above -- the PTX ISA gates the two
 differently -- so a PRODUCT is one instruction here

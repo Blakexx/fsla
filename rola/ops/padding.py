@@ -1,9 +1,9 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """Host-side padding: the ONE translator between any ``b_l``/``d_v`` and a kernel's own
-shape (K50 "PADDING AT THE PRODUCER", "d_v PADDING IS ALSO HOST-SIDE").
+shape: padding happens at the producer, and the value width is padded host-side too.
 
-**TWO CONTRACTS, ONE TRANSLATOR (KERNEL_STANDARDS R13).** The API accepts any level
+**TWO CONTRACTS, ONE TRANSLATOR (KERNEL_STANDARDS §R13).** The API accepts any level
 width ``b_l >= 1`` and any value width ``d_v``; a kernel accepts only its own
 descriptor's shape (a level's width a power of two at or above 16, the value width one
 of the shipped ``DV``s) and refuses the rest. This module is that translator, and lives
@@ -12,7 +12,7 @@ in ``rola.ops`` because every op's call surface (``rola.ops.carry``, ``rola.ops.
 and neither does the routing producer or the layer -- both hand an op exactly the
 tensors and widths a caller configured, unpadded.
 
-``pad_routes``/``pad_v`` are ZERO-COLUMN pads, not ``-inf``-logit pads: K50 states the
+``pad_routes``/``pad_v`` are ZERO-COLUMN pads, not ``-inf``-logit pads: the descriptor states the
 mechanism as padding the LOGITS with ``-inf`` before entmax/softmax, and a zero-padded
 SOLVED level is the identical tensor, because both softmax and entmax normalize over,
 and threshold against, only the finite entries of a row -- an ``exp(-inf) == 0.0``
@@ -74,7 +74,7 @@ def padded_value_width(d_v: int, *, shipped: tuple[int, ...]) -> int:
 
     Raises rather than silently widening past the shipped ceiling: a ``d_v`` past the
     largest shipped width names no kernel this build carries, so this is a refusal by
-    construction (KERNEL_STANDARDS R16: unknown descriptors are admitted by
+    construction (KERNEL_STANDARDS §R16: unknown descriptors are admitted by
     refusal-checked derivation, never by enumeration) rather than a fourth width
     nobody built.
     """

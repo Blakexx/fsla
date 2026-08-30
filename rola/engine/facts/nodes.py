@@ -68,7 +68,7 @@ def facts_tables(f):
     carries -- its reduction is instantiated `(D, B)` alone -- so residency is still
     an OUTPUT of the plan rather than a consequence of it.
 
-    IT IS ASKED FOR BY EVERY STATEFUL CALL, not only a paged one (P80b): the byte is
+    IT IS ASKED FOR BY EVERY STATEFUL CALL, not only a paged one: the byte is
     the ACTIVITY fact both backings gate their state sweeps on, and only its WRITE
     half is residency's input. A dense-backed call that skipped it would touch a
     different atom set from the paged one, and the equality gate would be certifying
@@ -114,7 +114,7 @@ def join(f):
 def backing(f):
     """The two state planes a launch is given -- and for a CONTINUATION they are ONE.
 
-    A FRESH DENSE PLANE IS ZEROED (P80b), and that is the price of the store
+    A FRESH DENSE PLANE IS ZEROED, and that is the price of the store
     predicate: the exit sweep writes the atoms this call WRITES and no others, so the
     atoms it skips must already hold the zero an absent paged atom reads as. It is one
     fill per SEQUENCE on the expert-override backing, never per call.

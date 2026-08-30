@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""ONE wrapper over `ast-grep scan`, two scopes (K46 item 5).
+"""ONE wrapper over `ast-grep scan`, two scopes.
 
 **THE BUG THIS REPLACES.** `sgconfig.yml`'s rules each carry `files:
 [csrc/**, tools/lint/fixtures/**]` -- the fixtures glob is there so the rule's
@@ -10,7 +10,7 @@ file. But `.pre-commit-config.yaml` invoked `ast-grep scan --config
 sgconfig.yml` with NO path argument, which defaults to the whole repo -- so
 every commit re-triggered every fixture's deliberate violation as a gating
 error. `docs/build.md`'s OWN documented invocation already said `... csrc/`;
-only the wired hook had drifted from it. Every stage since K41 bypassed the
+only the wired hook had drifted from it. A run of stages bypassed the
 hook rather than fix the four-word drift.
 
 **Commit gate (default, no flag):** `ast-grep scan --config sgconfig.yml

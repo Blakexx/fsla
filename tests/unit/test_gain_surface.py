@@ -32,6 +32,7 @@ def _producer(*, gain: bool):
 
 # --- the public flag ---------------------------------------------------------
 
+
 def test_the_public_flag_maps_onto_the_one_internal_boolean():
     """`gain` enables the WRITE gain, and there is no second side to enable:
     the readout is a ratio, which fixes `g_read := 1`."""

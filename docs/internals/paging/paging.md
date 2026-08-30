@@ -63,7 +63,7 @@ an admit mask that annihilated the denied atoms' writes) was DELETED before it: 
 computed a DIFFERENT function from the one the caller asked for, and the closed-world
 standard is that a demand the binary cannot serve is refused at the host rather than
 silently degraded. The ``max_physical_pages`` parameter that survived it is deleted
-with the paged-state-I/O integration (P67 S3b).
+with the paged-state-I/O integration.
 
 The consequence downstream is that admission is TOTAL: every atom the routing realizes
 is resident, so ``admit bit set``, ``resident`` and ``page_table[atom] >= 0`` are one
@@ -186,13 +186,13 @@ Two consequences, both binding on anything that quotes a number:
 * every savings claim carries its pool size and its dense counterfactual — which is why
   `PagingResult` reports `committed_bytes` and `dense_bytes` beside every fraction, and
   why `benchmarks/bench_paging.py` prints all three;
-* the small topologies the test suite uses (0.5–8 MiB pools) are inside the granule
+* The small topologies the test suite uses (0.5–8 MiB pools) are inside the granule
   regime and CANNOT show a saving. They gate correctness, never the claim. The claim is
   measured at pools many chunks wide, which is the standing
   design-for-1M-scale rule arriving in the memory system.
 
 A second floor sits above the granule one and is a property of the ROUTING rather than
-the driver: with unstructured sparsity at long `L`, every atom is live (S1's measurement,
+the driver: with unstructured sparsity at long `L`, every atom is live (the measurement,
 reproduced by `bench_paging` at `logit_gain = 8`: 2048/2048 atoms resident). Sparse
 RESIDENCY needs STRUCTURED support and does not follow from entmax alone.
 

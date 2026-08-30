@@ -24,8 +24,8 @@ deleted the stats passes and that list with them (card C,
 `development/queue/C_CLEAN_SLATE.md`), so the rows move HERE, unchanged, and
 change meaning with the move: they are no longer a mirror of a built matrix but
 the `(C, BC, D, B)` vocabulary the rebuilt family is REQUIRED to reach, which is
-what a test-driven line wants a test module to hold. When C2's liveness pass and
-G4's arm table exist, this list is what they are checked against — and if the
+what a test-driven line wants a test module to hold. When the liveness pass and
+the arm table exist, this list is what they are checked against — and if the
 final key admits a different vocabulary, this list is the thing to argue with,
 not a comment to update.
 

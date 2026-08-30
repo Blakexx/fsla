@@ -1,7 +1,7 @@
 // Copyright 2026 Blake Bottum
 // SPDX-License-Identifier: Apache-2.0
 //
-// K31 R4: the intra term's reverse pass, its own translation unit.
+// The intra term's reverse pass, its own translation unit.
 //
 // It REDUCES into the four gradient planes rather than returning them, exactly as the
 // forward intra reduces into `o`/`den`: the carry's two scans own the cross-window half

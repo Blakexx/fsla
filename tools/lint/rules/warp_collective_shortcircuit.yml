@@ -4,7 +4,7 @@ severity: error
 message: >-
   KERNEL_STANDARDS.md §12: a warp collective inside a short-circuit or a
   ternary branch splits the warp at an instruction that needs every lane --
-  the split never completes. This is the S2d ring hang (recorded 2026-08-26):
+  the split never completes. This is the ring hang (recorded 2026-08-26):
   `part && lane_broadcast(x)` hung and survived removing every explicit wait.
   Hoist the collective out of the `&&`/`||`/`?:`; predicate its RESULT instead.
 note: >-

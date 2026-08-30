@@ -201,7 +201,11 @@ def main() -> int:
           f"function(s) found -- NOT CHECKED (see module docstring: ptxas -v / the "
           f"manifest format only records __global__ entry points; a __device__ "
           f"helper is normally inlined and has no standalone symbol to look up)")
-    return 0
+
+    #: GATING. A `__global__` template the manifests do not carry is either an
+    #: instantiation nobody ships or a manifest that does not describe the binary, and
+    #: both of those are the closed world leaking.
+    return 1 if findings else 0
 
 
 if __name__ == "__main__":

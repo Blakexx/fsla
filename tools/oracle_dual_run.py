@@ -26,13 +26,13 @@ Two surfaces, because the two steps of the decomposition have different contract
 
 * `--surface producer` -- the routing reference: entmax values, the support SET, the
   VJP, and the composed `routing_factors` / `union_split`. Compared under the
-  PRODUCER CONTRACT (P4): `max|dp| <= 1e-13`, `max|dz| <= 1e-13`, and support sets
+  PRODUCER CONTRACT: `max|dp| <= 1e-13`, `max|dz| <= 1e-13`, and support sets
   equal EXACTLY. Bit-identity is deliberately NOT required here -- the declared
   purpose of that step is to replace a bisection with a third party's closed form,
   so agreement to 1e-14 is the result, and the support-set equality is the claim with
   teeth (a threshold that moves by one entry is a routing change, not rounding).
 * `--surface oracle` -- `naive_rola` itself, FORWARD AND BACKWARD. Compared BY
-  BIT-IDENTITY (P2): both sides run fp64 on identical inputs, so a rewrite that only
+  BIT-IDENTITY: both sides run fp64 on identical inputs, so a rewrite that only
   nearly reproduces the old one has changed the definition. Declared exceptions are
   named on the command line (exact key, or a `fnmatch` pattern) and asserted
   individually; anything undeclared is a failure.
@@ -99,7 +99,8 @@ def bind_library(root: Path, label: str) -> Path:
     print(f"{label} library: {actual.parent}")
     return actual.parent
 
-#: P4's thresholds, from the measured agreement with one decade of headroom
+
+#: the thresholds, from the measured agreement with one decade of headroom
 #: (workflows/refactor/p07_audit.md section 3.2: worst 1.42e-14 forward, 6.66e-16 VJP).
 #: The SUPPORT-SET claim carries no tolerance at all, by construction.
 PRODUCER_ATOL = 1e-13
@@ -137,7 +138,7 @@ SEED = 20260805
 DEFAULT_CHUNKS = 16
 
 #: THE FLOOR ON WHAT A RUN MUST HAVE COMPARED, per surface, and a run that produces
-#: fewer quantities FAILS RED. Measured at P71-B (`oracle` 640, `producer` 162) and
+#: fewer quantities FAILS RED. Measured (`oracle` 640, `producer` 162) and
 #: raised whenever the matrix grows: a gate must prove it COMPARED, because a matrix
 #: that quietly stopped emitting rows -- an axis that raises in the generator, a cell
 #: that returns nothing -- reports PASS over whatever survived, and this protocol is
@@ -145,10 +146,10 @@ DEFAULT_CHUNKS = 16
 #: precedent is real: the `oracle` surface was UNRUNNABLE for a window after `raw`
 #: died and nothing said so.
 #:
-#: LOWERED ONCE, at P74-S4, from `oracle` 640 to 512: the `write_levels_stored`
+#: LOWERED ONCE, from `oracle` 640 to 512: the `write_levels_stored`
 #: operand left the oracle's signature under R1 (the producer emits the stored form),
 #: and the 128 `*/dstored{0,1}` gradients it contributed were `None` on both sides by
-#: construction. The shim that kept passing it existed to span exactly the P74 python
+#: construction. The shim that kept passing it existed to span exactly the python
 #: commits and is gone with it; what remains is the same matrix minus a vacuous
 #: operand, which is why this is a legitimate shrink and not a lost row.
 MINIMUM_COMPARISONS = {"oracle": 512, "producer": 162}
@@ -224,6 +225,7 @@ def _call(fn, **kwargs):
     accepted = inspect.signature(fn).parameters
     return fn(**{k: v for k, v in kwargs.items() if k in accepted})
 
+
 def emit_producer() -> dict:
     """Every producer quantity, from whichever `rola` is importable."""
     from rola.routing.entmax.reference import entmax, entmax_forward
@@ -263,7 +265,7 @@ def emit_producer() -> dict:
     return out
 
 
-#: P3's marker for "this input received NO gradient". An empty tensor rather than a
+#: the marker for "this input received NO gradient". An empty tensor rather than a
 #: zero one, because the whole point of the backward half is that `None` and `0.0`
 #: are DIFFERENT answers: `.detach()` at the clock is the oracle's literal spec, and
 #: a manufactured graph edge that turns the refusal into a zero is exactly the defect
@@ -311,7 +313,7 @@ def emit_oracle(chunk: int = 0, chunks: int = 1) -> dict:
                     index += 1
                     B, H = 1, 2
                     #: BOUND BY SIGNATURE, because `d_v` left `Topology` for the
-                    #: layer (P71). The old side still declares the parameter and
+                    #: layer. The old side still declares the parameter and
                     #: is handed it; the new side does not and is not. The oracle
                     #: derives `d_v` from `v` on BOTH sides, so the two are asked
                     #: the same question through two spellings -- which is the
@@ -398,7 +400,7 @@ def _emit(surface: str, chunk: int, chunks: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# THE MUTANTS (P5)
+# THE MUTANTS
 # ---------------------------------------------------------------------------
 
 def apply_mutant(kind: str) -> None:
@@ -412,7 +414,7 @@ def apply_mutant(kind: str) -> None:
         #: OWN derivation (`rola/ops/naive.py::_radix_strides`).
         #:
         #: This mutant used to reverse `Topology.radix_strides`, because the oracle
-        #: imported it. It no longer does (audit finding F3), so that perturbation
+        #: imported it. It no longer does, so that perturbation
         #: now moves nothing here BY DESIGN -- and the inverted claim, that a wrong
         #: production stride leaves the oracle unmoved and therefore DISAGREEING
         #: with the kernel, is asserted where it belongs, in
@@ -434,7 +436,7 @@ def apply_mutant(kind: str) -> None:
         #: THE DETACHMENT AT THE CLOCK, removed. `c = stop_gradient(prod_l
         #: p_write_stored)` is the spec's own wording, so a gradient reaching the
         #: stored levels is a semantic change that the FORWARD cannot see at all --
-        #: this is the mutant that says whether P3's backward half has teeth.
+        #: this is the mutant that says whether the backward half has teeth.
         #:
         #: Source-level, because the detachment is an expression inside the
         #: recurrence rather than a name that can be rebound. The module is
@@ -709,7 +711,7 @@ def main() -> int:
              "reassociated": sorted(set(a.reassociated)),
              #: EVERY failure, not the twelve that fit on a screen: the record is
              #: what a reviewer audits, and a truncated one cannot be joined to the
-             #: tree (P6).
+             #: tree.
              "failures": [[k, why] for t in tallies for k, why in t["failures"]],
              "quantities": sum(t["count"] for t in tallies),
              "worst": max((t["worst"]["value"] for t in tallies), default=0.0),

@@ -35,7 +35,7 @@ Because the transition does not read the state, a chunk's contribution can be
 formed **without knowing the state at the chunk boundary**, and the boundary is
 applied afterwards. Two consequences the engine depends on:
 
-- the backward pass gains **no snapshot pressure**: with a state-dependent write,
+- The backward pass gains **no snapshot pressure**: with a state-dependent write,
   the state at every write point is needed to differentiate, and that has to be
   stored or recomputed. Here it does not.
 - **capacity is routing-derivable**: what a token writes, and where, is a
@@ -51,7 +51,7 @@ rescheduling.** You would have to consume a schedule in order to compute the nex
 schedule, with a global barrier between them, inside the kernel.
 
 Because the recurrence is input-affine, **the plan is complete before launch.**
-The work list is therefore a *free permutation*: the kernel touches the owner
+the work list is therefore a *free permutation*: the kernel touches the owner
 list only through a flat `blockIdx`
 (the only two `p.owners` reads in the kernel, at CTA entry and both indexed by
 `blockIdx`), so any

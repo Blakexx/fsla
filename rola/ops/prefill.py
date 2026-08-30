@@ -1,6 +1,6 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""K31 — the box-native PREFILL: the carry and the intra as one call.
+"""The box-native PREFILL: the carry and the intra as one call.
 
 THE TWO KERNELS ARE ONE OPERATOR, and this module is the seam that says so. The
 window grid is GLOBAL and FIXED, identical for both: the carry computes every
@@ -52,7 +52,7 @@ from rola.ops._ext import extension
 from rola.ops.liveness import liveness_words
 
 #: THE WINDOW, restated so a caller has one import. It is the CARRY KERNEL's constant
-#: (K50's axis law), and the intra family must carry an arm at the same number, because
+#: (the axis law), and the intra family must carry an arm at the same number, because
 #: the two kernels run ONE window grid.
 WINDOW = carry_ops.WINDOW
 
@@ -66,7 +66,7 @@ LEVEL_WIDTHS = (intra_ops.LEVEL_WIDTH, intra_ops.LEVEL_WIDTH_DEEP3, intra_ops.LE
 def _padded_shape(widths, dv: int) -> padding_ops.PaddedShape:
     """This call's `rola.ops.padding.PaddedShape` -- every level widened to
     `padded_level_width` and `dv` widened to the smallest of `carry_ops.SHIPPED_DV`
-    that admits it (KERNEL_STANDARDS R13's "two contracts": the carry surface's
+    that admits it (KERNEL_STANDARDS §the "two contracts": the carry surface's
     kernel boundary refuses anything but its own strict shape, so this seam's
     descriptor and operand packing pad BEFORE either helper builds anything the
     boundary would see). A caller already at a shipped shape pays nothing here --
@@ -322,7 +322,7 @@ class _Prefill(torch.autograd.Function):
 
 def prefill_autograd(read_levels, write_levels, g_write, v, widths, *, modes, sread,
                      swrite, state_in: torch.Tensor | None = None):
-    """:func:`prefill`, differentiable -- the same three kernels with R4's reverse pass.
+    """:func:`prefill`, differentiable -- the same three kernels with the reverse pass.
 
     Returns the same undivided ``(num, den, state_out)``. ``state_in`` and every
     routing operand carry gradients; ``widths`` and ``modes`` and the two support

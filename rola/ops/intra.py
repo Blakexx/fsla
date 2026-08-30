@@ -1,7 +1,7 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 
-"""The K31 intra kernel's call surface — a side kernel, outside the shipped dispatch.
+"""The intra kernel's call surface — a side kernel, outside the shipped dispatch.
 
 The kernel REDUCES into ``o`` and ``den`` (``fan_in_add`` semantics) rather than
 returning them, so the caller owns their allocation and their initial contents;
@@ -20,7 +20,7 @@ from rola.ops.padding import pad_routes, pad_v, slice_y
 
 #: THE PER-LEVEL MODE, two bits per level: bit 0 the READ side is value-sparse there,
 #: bit 1 the WRITE side.  ``BOTH_SPARSE`` says BOTH SIDES ARE SPARSE AT THAT LEVEL AND
-#: NOTHING MORE (P76 clarification, 2026-08-26): each side votes its own bitlists from
+#: NOTHING MORE: each side votes its own bitlists from
 #: its own factors, so the two supports never have to coincide.  Drawing ONE support for
 #: both is a modeling choice with a locality bonus, never a kernel requirement.  The
 #: class is what the carry's order-by-mode rule puts OUTERMOST, because it is where the
@@ -30,8 +30,8 @@ READ_SPARSE = 1
 WRITE_SPARSE = 2
 BOTH_SPARSE = 3
 
-#: the built windows -- the carry family's `W` arms, mirrored (integration rung
-#: I1(b)).  ``WINDOW`` names the flagship because the architecture doc's two
+#: the built windows -- the carry family's `W` arms, mirrored.  ``WINDOW`` names the
+#: flagship because the architecture doc's two
 #: constraints (the C* basin and the intra's ``W/4`` flop/byte intensity) settle
 #: it there; ``WINDOW_SMALL`` is the conformance cell's.
 WINDOW = 384
@@ -146,7 +146,7 @@ def intra_forward_padded(read_levels, write_levels, gwrite, v, modes, *, window=
                          o=None, den=None):
     """:func:`intra_forward`, taking the caller's LOGICAL per-level tensors and ``v``.
 
-    HOST-SIDE PADDING (K50 "PADDING AT THE PRODUCER" / "d_v PADDING IS ALSO
+    HOST-SIDE PADDING ("padding at the producer" / "d_v padding is also
     HOST-SIDE"): every level here is padded to the ONE uniform width this arm ships
     (:func:`_shipped_level_width` -- intra's own kernel takes a single ``level_width``
     for every level, a stricter uniformity than carry's per-level one), ``v`` to

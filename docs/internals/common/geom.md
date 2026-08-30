@@ -10,10 +10,10 @@ CTA's box) holds; `MO` the per-level mode word (two bits a level, read then writ
 (0 innermost); `shift(l)` the slot index's bit offset for level `l`; `kAtomLeaves = 16`
 the page granule.
 
-## What is compile-time and what is not (K50's axis law)
+## What is compile-time and what is not (the axis law)
 
 SHAPE is compile-time because it sizes registers and shared memory. G2 read that too
-narrowly and G2b corrects it (K50's "PROPOSED CORRECTION TO R12", ruled 2026-08-29): the
+narrowly and G2b corrects it (the "PROPOSED CORRECTION TO R12", ruled 2026-08-29): the
 warp's leaf-slot → digit map is baked into the unrolled expansion, so **the sub-box's
 spans and slot layout ARE register shape**, exactly like leaves-per-warp and `DV`. Made
 runtime they force either a dynamically indexed local array (a spill) or a case
@@ -144,7 +144,7 @@ is generated from the box the CTA actually owns for exactly that reason.
 
 `leaves_per_warp(DV) = 2048 / DV` is the register law: 32 leaves of state at `DV = 64`,
 16 at `DV = 128`. Its `log2` is split BALANCED over the `D` levels, remainder
-innermost-first — `warp_span_bits` — and that is the whole of `sv(l)`. At `DV = 64`:
+innermost-first — `owner_span_bits` — and that is the whole of `sv(l)`. At `DV = 64`:
 
 | `D` | `sv` | `shift` |
 |---|---|---|
@@ -158,13 +158,13 @@ A slot index is the MEMBER'S OWN digits in canonical order, innermost lowest, so
 `shift(l) = Σ_{l' > l} log2 sv(l')` — `sb_shift`, evaluated on the member that side
 selected. G2b shared ONE layout across both sides and G2c un-shared it: sharing made the
 transit's rows an aligned run, but it also forced both sides to carve the same levels,
-which is the selectivity the two-sided carve exists for (`## G2b`, `## G2c`). What
+which is the selectivity the two-sided carve exists for. What
 survives the correction:
 
-* the produce's span and shift are IMMEDIATES on both sides — a member is a compile-time
+* The produce's span and shift are IMMEDIATES on both sides — a member is a compile-time
   case of the structure switch — so the expansion is the parent's code at the parent's
   instruction count;
-* the transit's row map is a per-side SCATTER (see below) whose lane-dependent part is one
+* The transit's row map is a per-side SCATTER (see below) whose lane-dependent part is one
   base word and whose per-fragment part is constant;
 * `BC = leaves-per-warp × kWarps` is DERIVED, never an axis: the carve stacks warp
   sub-boxes along the levels where the owner box is wider than the sub-box.
@@ -204,12 +204,12 @@ what makes the model test a PARITY PROOF rather than a re-declaration:
 | `D = 3, B = 16` | `[2, 4, 16]` | `[2, 4, 16]` |
 | `D = 4, B = 16` | `[2, 2, 2, 16]` | — (the parent's `B = 8` topology is unlawful under the floor) |
 
-Under K50's restored floor (`B_l >= 16`, power of two) no level width can bind the
+Under the restored floor (`B_l >= 16`, power of two) no level width can bind the
 balance, so this law is compile-time `f(D, BC)` — which is what lets the channel-split
 body's slice map be immediates too. A level narrower than its span is REFUSED, by name;
 there is no narrower slot layout to fall back to.
 
-K50's CORRECTION rules the eventual relaxation — "prefill owns whole ROWS ... the fix is
+The CORRECTION rules the eventual relaxation — "prefill owns whole ROWS ... the fix is
 ROW-GRAIN activity masks (16 bits per atom) from the facts pass" — and that machinery is
 the page I/O and the facts bit emission. Until it exists, the atom invariant is what the
 page-grain store requires, and the unconstrained balance is a follow-on gated on it.
@@ -225,7 +225,7 @@ column base is not a whole number of the runs read out of it (the wide loads' al
 and a stream count the grid cannot partition.
 
 `min_l B_l` is REPORTED, not refused, and it stays a census fact: the width law above is
-the one the shape actually owns, and under K50's floor (`B_l >= 16`) it never fires for a
+the one the shape actually owns, and under the floor (`B_l >= 16`) it never fires for a
 lawful state. The one topology it removed at G2b is `D = 4, B = 8`, whose conformance
 cells moved to the lawful `(16, 16, 16, 16)`.
 
@@ -278,14 +278,14 @@ Two consequences worth stating for the reader who arrives here first:
   one too. They are the same constant with the same value, both at namespace scope in
   `rola::carry`, so a translation unit that includes BOTH does not compile. No TU does
   today; the body that adopts this block deletes the other copy.
-* the `sb_matches_arch_law` static_assert that G2c put in the carry body — at
+* The `sb_matches_arch_law` static_assert that G2c put in the carry body — at
   `warps_per_cta == warps_per_sm` the arm's set IS `sub_boxes(D, leaves_per_sm(DV),
   warps_per_sm)` — has no body to live in here, so the arch law is asserted in the
   geometry test instead, over the generated set the binding exposes.
 
 <a id="c1a-member-sets"></a>
 **C1a PINS THE PER-SIDE MEMBER SET AT BOTH `warps_per_cta`.** The set is
-`f(D, leaves_per_warp, warps_per_cta)` (`## warp-box-set` above), and K50's 2x4 ruling
+`f(D, leaves_per_warp, warps_per_cta)` (`## warp-box-set` above), and the 2x4 ruling
 gives `warps_per_cta` exactly two values, `{8, 4}` — the shipped one-CTA-per-SM shape and
 the `(2, 4)` diagnostic arm — so `test_the_sub_box_set_is_generated_and_deduplicated` in
 `tests/unit/test_carry_geometry.py` enumerates, de-duplicates and counts the generated set

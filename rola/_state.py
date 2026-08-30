@@ -48,14 +48,14 @@ CANONICAL_ORDER = "mixed-radix-msb-first"
 #: separate bf16 planes of the page, and ``hi || lo`` is the fp32 word exactly.
 SPLIT_PLANE_DTYPE = "fp32 as split bf16 planes"
 
-#: The per-level width floor (K50: ``B_l`` power of two, floor 16 = ``K_max``), which
+#: The per-level width floor (``B_l`` a power of two at or above 16 = ``K_max``), which
 #: is what makes every span fit inside one level's run and the atom stay inside it.
 MIN_LEVEL_WIDTH = 16
 
 
 @dataclass(frozen=True, slots=True)
 class StateFormat:
-    """THE STATE OWNS ITS FORMAT (K50, 2026-08-29): how a kernel reads these bytes.
+    """THE STATE OWNS ITS FORMAT: how a kernel reads these bytes.
 
     Bound from the FIRST call that receives the state and CHECKED against every later
     one, which is what replaces the old "later calls are NOT checked" clause: a state
@@ -81,7 +81,7 @@ class StateFormat:
         for level, width in enumerate(self.B):
             if width & (width - 1) or width < MIN_LEVEL_WIDTH:
                 raise ValueError(
-                    f"B_l is a power of two at or above {MIN_LEVEL_WIDTH} (K50's axis law: the "
+                    f"B_l is a power of two at or above {MIN_LEVEL_WIDTH} (the axis law: the "
                     f"floor is K_max, which is what keeps every span inside one level's run and "
                     f"the atom inside one level); level {level} is {width}")
         if self.order != CANONICAL_ORDER:
@@ -131,7 +131,7 @@ class StateFormat:
             if mine != theirs:
                 raise ValueError(
                     f"this state was bound with {field}={mine!r} and the call presents "
-                    f"{field}={theirs!r}. A state carries its FORMAT (K50): its leaf order, its "
+                    f"{field}={theirs!r}. A state carries its FORMAT: its leaf order, its "
                     f"page rectangle and its value width are what every kernel derives its "
                     f"addressing from, so a call that disagrees is refused here rather than "
                     f"reading somebody else's bytes. Bind a fresh rola.state() for this shape.")
@@ -147,11 +147,14 @@ def _format_of(routes, d_v: int, BH: int) -> StateFormat:
                        page_bits=PAGE_RECTANGLE_BITS, DV=int(d_v), dtype=SPLIT_PLANE_DTYPE,
                        ids=BH * (n >> PAGE_RECTANGLE_BITS))
 
-#: The paging strategies this version BUILDS. `"cow"` is named in the design as the
-#: next one and is refused by name rather than by a generic message, so a caller who
-#: asks for it learns it is scheduled rather than misspelled.
-_BUILT_STRATEGIES = ("mutable",)
-_NAMED_UNBUILT_STRATEGIES = ("cow",)
+
+#: THE ONE PAGING STRATEGY THIS VERSION BUILDS. It is a CONSTANT and not a list: one
+#: value is not an axis, and a list of one is a list that reads as a choice nobody has.
+_BUILT_STRATEGY = "mutable"
+
+#: The next one, named in the design and refused BY NAME rather than by a generic
+#: message, so a caller who asks for it learns it is scheduled rather than misspelled.
+_DESIGNED_STRATEGY = "cow"
 
 
 def state(strategy: str = "mutable", pool_slack: float = 0.0) -> RoLAState:
@@ -187,19 +190,19 @@ class RoLAState:
     copy per advance).
     """
 
-
     __slots__ = ("strategy", "pool_slack", "_shape", "_device", "_paging", "_arena",
                  "_plane", "_format", "__weakref__")
 
     def __init__(self, *, strategy: str = "mutable", pool_slack: float = 0.0) -> None:
-        if strategy in _NAMED_UNBUILT_STRATEGIES:
+        if strategy == _DESIGNED_STRATEGY:
             raise NotImplementedError(
                 f"strategy={strategy!r} is designed and NOT BUILT: copy-on-write state "
                 "branching is named future work (s0_design.md), and its slot refcounts "
-                "and per-branch tables do not exist yet. The built strategy is 'mutable'.")
-        if strategy not in _BUILT_STRATEGIES:
+                f"and per-branch tables do not exist yet. The built strategy is "
+                f"{_BUILT_STRATEGY!r}.")
+        if strategy != _BUILT_STRATEGY:
             raise ValueError(
-                f"strategy must be one of {_BUILT_STRATEGIES}, got {strategy!r}")
+                f"strategy must be {_BUILT_STRATEGY!r}, got {strategy!r}")
         self.strategy = strategy
         self.pool_slack = float(pool_slack)
         self._shape: tuple[int, int, int, int] | None = None
@@ -356,7 +359,7 @@ class RoLAState:
             self._format.check(presented)
         from rola.engine.facts import planes
 
-        #: RESIDENCY IS KEYED ON THE WRITE SET (P80b): the byte carries the READ bit
+        #: RESIDENCY IS KEYED ON THE WRITE SET: the byte carries the READ bit
         #: beside it, and admitting a read-only atom would make exact commitment a
         #: superset (`rola.engine.facts.planes.written_atoms`).
         bitmap = (None if atom_bits is None else planes.written_atoms(

@@ -625,11 +625,10 @@ def test_every_solve_writes_every_element_of_a_dense_level(width):
                 "a solve left an element of its dense output alone")
 
 
-
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 @pytest.mark.parametrize("kind", ["union", "entmax", "softmax"])
 def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
-    """P73 S5's STOP CLAUSE, as a gate: batching may change the launch SHAPE and nothing
+    """P73 the STOP CLAUSE, as a gate: batching may change the launch SHAPE and nothing
     else.
 
     One launch over four levels of one width class, against four launches of one level
@@ -699,7 +698,6 @@ def test_the_batched_solve_is_the_per_level_loop_bit_for_bit(alpha, kind):
     with pytest.raises(RuntimeError, match="one width class"):
         extension().routing_softmax_forward(
             torch.randn(BH, T, 68, device="cuda"), values, None, [0, 4], [0, 4], [4, 64], 1)
-
 
 
 def test_a_uniform_plan_solves_all_its_levels_in_one_launch():

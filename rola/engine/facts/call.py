@@ -81,7 +81,7 @@ def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
     forward-only; the two-pass backward is built and gated, so a grad-bearing call
     now runs. What remains is the CONFIGURATION envelope, which refuses whether or
     not a gradient is attached, plus one clause that exists only on the grad path:
-    a carried STATE. Training in v1 is stateless (P65 R-D) -- the state plane is
+    a carried STATE. Training in v1 is stateless -- the state plane is
     caller-owned and mutated in place, and `d initial_state` is not in the scans --
     so `state=` and a gradient are mutually exclusive, by name, at the boundary
     rather than silently.

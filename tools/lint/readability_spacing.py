@@ -224,7 +224,11 @@ def main() -> int:
     print(f"readability_spacing: {len(blank_findings)} consecutive-blank-line finding(s) (> 1)")
     for f in blank_findings:
         print(f"  {f}")
-    return 0
+
+    #: GATING. A body of forty lines with no blank line in it is a body a reader has to
+    #: re-derive the structure of; the rule asks for segmentation and does not say where,
+    #: so satisfying it is a judgement the author makes once and the reader keeps.
+    return 1 if (body_findings or blank_findings) else 0
 
 
 if __name__ == "__main__":

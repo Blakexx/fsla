@@ -3,14 +3,20 @@
 """THE CELL REGISTRY: the carry family's cells as DATA, with one draw behind them.
 
 `carry_cells.json` holds the records; this module reads them, derives each cell's
-STATE DESCRIPTOR and LAUNCH SHAPE from its fields, and realizes its routing draw. One
-definition, three readers -- the oracle tier, `tools/probe_cells.py` and the benches --
-which is the state G5 finishes reaching (the probe still carries its own frozen mirror
-and the benches their inline specs; both retire there, not here).
+STATE DESCRIPTOR and LAUNCH SHAPE from its fields, realizes its routing draw, and builds
+`carry_call` -- one cell's WHOLE call. ONE definition, three readers: the oracle tier,
+`tools/probe_cells.py` and the benches all reach the kernel through it, so a cell's
+operands are the same tensors in a correctness run and in a measured one.
+
+The registry's other half is `layer.py` (`layer_cells.json`): a LAYER cell declares a
+CONSTRUCTOR -- a producer, a routing template, a gain -- from which the amplitudes are
+PRODUCED, rather than a draw that puts them on the simplex directly. The two answer
+different questions and neither stands in for the other, so both live here under one set
+of names.
 
 A record DECLARES A DRAW AND A SHAPE and never an arm: the arm key is
 ``(D, DV, warps_per_cta)`` and `rola.ops.carry` derives it. Nothing in a record names
-a window, a token tile, a stream count or a ``(k, m)`` box -- K50's axis law made those
+a window, a token tile, a stream count or a ``(k, m)`` box -- the axis law made those
 kernel-internal, derived or constant, so a cell that could name one would be declaring
 something the kernel does not read.
 
@@ -132,7 +138,7 @@ def simplex(shape, k_tok, gen, device, live=None):
     ``live`` truncates a row to its FIRST ``live`` digits -- STRUCTURED support, as
     against ``k_tok``'s unstructured one. The two are different questions: unstructured
     sparsity at long ``L`` still reaches every page, so only a truncation can produce a
-    page the routing never touches (P80b's idle-resident cell). It is applied after both
+    page the routing never touches (the idle-resident cell). It is applied after both
     draws so a cell's RNG stream does not depend on it.
     """
     import torch
@@ -193,7 +199,7 @@ def realize(spec: CellSpec, B: int = 1, H: int = 1, device: str = "cuda") -> Rea
     read-sparse / write-dense -- so the two sides' clause sets are DIFFERENT level
     subsets, which is what the two-sided schedule exists for. ``both`` is sparse on both
     sides at level zero and dense above it; the two sides are drawn INDEPENDENTLY there
-    on purpose, because the kernel never assumes they agree (P76).
+    on purpose, because the kernel never assumes they agree.
     """
     import torch
 
@@ -245,11 +251,38 @@ def liveness_words(realized: RealizedCell, descriptor):
     return LivenessWords(words=lv.liveness_words(read, write, layout, statics, statics))
 
 
+def carry_call(spec: CellSpec, bh: int = 1, device: str = "cuda"):
+    """``(drawn, kwargs)`` -- one cell's WHOLE carry call, built once from its record.
+
+    The kwargs are exactly `rola.ops.carry.carry_forward`'s keyword operands, plus the
+    two positional ones under ``routes`` and ``v``; the state planes and the page table
+    are the CALLER's, because which backing a cell binds is what a caller varies.
+
+    THIS IS THE ONE BINDING. The oracle tier, the benches and `tools/probe_cells.py`
+    all reach the kernel through it, so a cell's operands are the same tensors in a
+    correctness run and in a measured one -- a bench that packed its own would be
+    measuring a second definition of the cell.
+    """
+    from rola.ops import carry as carry_ops
+
+    drawn = realize(spec, device=device)
+    descriptor = spec.descriptor(BH=bh)
+    launch = spec.launch()
+    return drawn, dict(
+        routes=carry_ops.route_planes(drawn.read, drawn.write, drawn.gain),
+        v=drawn.v.permute(0, 2, 1, 3).reshape(bh, spec.tokens, spec.dv).contiguous(),
+        descriptor=descriptor,
+        geometry=carry_ops.geometry_block(descriptor, launch),
+        liveness=liveness_words(drawn, descriptor),
+        activity=conservative_activity(descriptor, bh, device),
+        launch=launch)
+
+
 def conservative_activity(descriptor, BH: int = 1, device: str = "cuda"):
     """Every page READ and WRITTEN -- the truth a caller with no facts pass may state.
 
     It asserts nothing about the draw and therefore skips nothing, which is exactly the
-    pre-facts behaviour (P80b). A cell tightens to the pass's own bits when C2a lands;
+    pre-facts behaviour. A cell may tighten to the liveness pass's own bits;
     until then this is the honest conservative statement rather than an invented one.
     """
     import torch
@@ -269,6 +302,7 @@ __all__ = [
     "CellSpec",
     "RealizedCell",
     "by_name",
+    "carry_call",
     "carry_cells",
     "clustered",
     "conservative_activity",
