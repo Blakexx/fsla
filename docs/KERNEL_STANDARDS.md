@@ -27,8 +27,8 @@ SCOPE. This document is about CRAFT: how a designed piece is realized at the har
 about design. Design authority is `development/queue/P76_*.md` and Blake's rulings; nothing cited here is
 an argument for or against a design choice. Where RoLA has patterns with no analogue in the reference
 kernels (routed ownership, the two carves, the exchange, the fan-in ring, the cooperative expansion), §R
-gives the RoLA rule directly. References are the local copies under `/home/blake/rola_references/`
-(`flash-attention`, `cutlass`, `ThunderKittens`); citations are `path:line`.
+gives the RoLA rule directly. References are the local copies under a named sibling checkout,
+`rola_references/` (`flash-attention`, `cutlass`, `ThunderKittens`); citations are `path:line`.
 
 Every brief points here. Every review applies it line by line. A check in `ratify` (§9) is the backstop
 and should catch nothing.
@@ -211,7 +211,7 @@ re-wakes stopped agents.
   before its next build.
 §15 addendum (build parallelism, 2026-08-27): cicc peaks ~1 GB post-S1, on a 16-CPU / 24 GB machine.
 Gate builds: exclusive lock, MAX_JOBS=8, NVCC_THREADS=2. Iteration builds: one of two parallel slots
-(`rola-scratch/tools/build_slot.sh`), MAX_JOBS=4, single-arch, arm-subset. Re-derive these numbers if
+(`tools/build/build_lock.sh`), MAX_JOBS=4, single-arch, arm-subset. Re-derive these numbers if
 cicc's peak changes (a per-leaf nest can push it back to 6 GB — §1).
 
 ## §16 — Ratify at milestones, not stages (Blake, 2026-08-28)
@@ -314,3 +314,43 @@ measures comment lines / total lines per file under csrc/ and is RED above the m
 finding. A stage never raises a file's ratio; S5b moves existing prose to the mirrored docs
 (byte-identical SASS gate). Measured 2026-08-28 before S5b: carry.cu 48%, ops.cuh 43%, box.cuh 41%,
 carry_kernel.cuh 35%, decode.cu 32%, facts_kernel.cuh 32%.
+
+## §14 addendum 2 (law, 2026-08-28, after Blake had to shut WSL down): ONE MACHINE, ONE COMPILE BUDGET
+Three tooling agents each ran a full rebuild concurrently (MAX_JOBS=4 each -> 12+ cicc + 3 links) and
+pegged the host at 100% CPU for 10+ minutes. The compile budget is MACHINE-WIDE and TOOL-ENFORCED, not
+brief-enforced: setup.py (via the one build-lock discipline, K39) takes a machine-wide slot before
+compiling and REFUSES/waits when the slots are full — a brief cannot forget it. Until that lands: at
+most TWO agents that build at once; every build goes through tools/build/build_lock.sh; an agent checks
+`pgrep -c cicc` before launching and never wraps a full build in hyperfine (bounded `--runs 3`, on the
+LINK step only). Coordinator error recorded: the K41/K42 briefs omitted the build lock.
+
+## §18 addendum (law, 2026-08-29): `--no-verify` is never a precedent
+A commit bypasses the hooks only with an explicit, per-commit coordinator authorization naming the
+pre-existing hook failure and the stage that fixes it. "Another stage did it" is not authorization. Red
+hooks are fixed (the hook, or the tree), never routed around.
+
+## CONSTITUTION addendum (Blake, 2026-08-29): THE FOUNDATION LAWS (cards K50, P80c, P79, G_FOUNDATION)
+- R11 THE AXIS LAW: a compile-time axis is legitimate only as a deterministic function of user input the
+  selector can pick; everything else is derived or a constant. Free axes = D and DV. MO and per-level B
+  are runtime addressing; BC, K, M, kWarps, S are derived; W and C are constants.
+- R12 SHAPE COMPILE-TIME, ADDRESSING RUNTIME: only the register shape (leaves-per-warp × DV) is compiled;
+  every SMEM tenant is launch-sized from the state's descriptor; residency is asserted at the seam as a
+  refusal; no runtime trip count in a register-shaped loop; never max-size SMEM.
+- R13 THE STATE OWNS ITS FORMAT: a descriptor (D, B_l ≥ 16 powers of two, canonical order, page
+  rectangle, DV, split bf16 planes) bound at first call and CHECKED after; prefill and decode share ONE
+  admission law; N is a multiple of 16 (ragged N refused, never padded); pages are [hi][lo][mass] bf16
+  planes; readout operands are the hi plane in every kernel; a reading token moves hi only.
+- R14 OWNERSHIP GRAINS NEST ON THE PAGE, nothing more: decode's unit is the atom; prefill's box owns whole
+  rows; the kernel consumes activity bits at its own (warp-box) grain and the page table derives its own.
+- R15 THE CTA IS THE SM (target): one CTA per SM with the warps the register file admits (8 × 256 regs),
+  streams partition inside it; latency hiding is the kernel's job (covers, split-phase edges) — exposed
+  latency is a coverage finding, never grounds to split the CTA; launch shape is a parameter, decided by
+  ONE measurement then fixed as a law per arch.
+- R16 SHIP WITHOUT ARM REGISTRATION: a Python-package user never registers an arm; the shipped set is
+  D × DV per arch; unknown descriptors are admitted by refusal-checked derivation, not by enumeration.
+- R17 BF16 EVERYTHING: operands are bf16 (one form; float operand paths deleted); state accumulates fp32
+  as split planes; truncation at the readout operand is the declared arithmetic.
+- R18 ONE BODY PER OP FAMILY: the split (channel-carve) body is deleted; dense is the S = 1 point of the
+  one body; a tied carve is a transit with the identity map, never a second body.
+- R19 LAWS LAND WITH THEIR STAGE: a ruling that changes a law is written here in the same stage that
+  implements it, never only on a card; the milestone carries the drift guards (lints, docs rev, skills).
