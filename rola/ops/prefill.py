@@ -62,7 +62,7 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, k: int, m: int,
     """The whole forward term, undivided: ``(num, den, state_out)``.
 
     ``num`` is ``[BH, T, d_v]`` fp32, ``den`` is ``[BH, T]`` fp32 and
-    ``state_out`` is ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order.
+    ``state_out`` is ``[BH, N/16, 16, stored_cols]`` fp32 in CANONICAL leaf order.
     The readout a caller wants is ``num / (den + READOUT_EPS)``; this operator
     does not divide, because the state and the mass are what a chained call
     needs and a ratio is not.

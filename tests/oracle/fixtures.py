@@ -88,14 +88,16 @@ class Cell:
 
 
 def canonical_from_plane(plane):
-    """A ``[BH, N/16, 16, cols]`` state plane as ``[BH, N, cols]`` CANONICAL.
+    """A ``[BH, N/16, 16, stored_cols]`` state plane as ``[BH, N, cols]`` CANONICAL.
 
     The kernel's plane IS the atom-major view of the canonical one (P80) in the STORED
     split-plane form (K50), so this is the hi||lo gather and a reshape. It stays a NAMED step because the assertion it feeds is the family's
     final-state gate, and a leaf-order error must surface at a named seam rather than as
-    noise inside a comparison.
+    noise inside a comparison. The gather is also where the page stride's pad leaves:
+    the plane is `stored_cols` wide and the canonical state is `cols` wide.
     """
-    return from_split_planes(plane).reshape(plane.shape[0], -1, plane.shape[-1])
+    gathered = from_split_planes(plane)
+    return gathered.reshape(plane.shape[0], -1, gathered.shape[-1])
 
 
 #: THE DECLARATION THE FLAGSHIP SHIPS UNDER: write-sparse on the even levels and

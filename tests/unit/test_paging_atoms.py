@@ -16,11 +16,14 @@ from math import prod
 import pytest
 import torch
 
+from rola.engine.types import PAGE_LINE_BYTES, page_stride_bytes, stored_cols
 from rola.ops.paging import (
     MMA_K_QUANTUM,
     AtomKeying,
     ExtentAllocator,
     PageArena,
+    bytes_equal,
+    from_split_planes,
     to_split_planes,
 )
 
@@ -59,7 +62,7 @@ def test_the_atom_keying_is_the_spec_expression_with_no_derived_literals():
             assert keying.row_of(leaf) == leaf % MMA_K_QUANTUM
             for v in (0, 4):
                 assert keying.address(7, leaf, v) == (
-                    (7 * MMA_K_QUANTUM + leaf % MMA_K_QUANTUM) * 5 + v)
+                    (7 * MMA_K_QUANTUM + leaf % MMA_K_QUANTUM) * stored_cols(5) + v)
 
     with pytest.raises(ValueError, match="whole number of"):
         AtomKeying(N=127, cols=4, BH=1)
@@ -80,9 +83,10 @@ def test_every_stored_object_is_BC_invariant(BC):
     arena = _arena(widths=widths, BC=BC, cols=cols, BH=BH)
     N = prod(widths)
     assert tuple(arena.page_table.shape) == (BH, N // MMA_K_QUANTUM)
-    assert tuple(arena.state.shape) == (arena.logical_pages, MMA_K_QUANTUM, cols)
+    assert tuple(arena.state.shape) == (arena.logical_pages, MMA_K_QUANTUM,
+                                       stored_cols(cols))
     assert arena.logical_pages == BH * N // MMA_K_QUANTUM
-    assert arena.dense_bytes() == BH * N * cols * 4
+    assert arena.dense_bytes() == arena.logical_pages * page_stride_bytes(cols)
     assert arena.atoms_per_owner == BC // MMA_K_QUANTUM
 
 
@@ -305,3 +309,68 @@ def test_the_atom_condensation_shape_is_checked_rather_than_broadcast():
     owners = torch.zeros((BH, prod(widths) // arena.BC), dtype=torch.bool)
     with pytest.raises(ValueError, match="atom condensation"):
         arena.plan_exact(owners)
+
+
+# ---------------------------------------------------------------------------
+# 5. The page STRIDE
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("d_v", [32, 64, 128, 256])
+def test_the_page_stride_is_a_whole_number_of_lines_for_every_value_width(d_v):
+    """The law, generic in ``d_v``: a slot's page base is line aligned, so its rows are.
+
+    A page STORES ``64 * (d_v + 1)`` bytes and ``d_v`` is even, so the stored figure is
+    64 B short of a line every time and the pad is exactly one column wide. Asserting
+    the ROUNDING rather than the four numbers is what keeps a fifth value width from
+    needing a table (`state_page.cuh`'s ``Blocks<DV>::kStride``).
+    """
+    cols = d_v + 1
+    stride = page_stride_bytes(cols)
+    assert stride % PAGE_LINE_BYTES == 0
+    assert stride == MMA_K_QUANTUM * (d_v + 2) * 4
+    assert stride == -(-MMA_K_QUANTUM * cols * 4 // PAGE_LINE_BYTES) * PAGE_LINE_BYTES
+    assert stored_cols(cols) == cols + 1
+    #: An already-aligned width takes NO pad -- the rounding is the rule, not the +1.
+    assert stored_cols(d_v) == d_v and page_stride_bytes(d_v) % PAGE_LINE_BYTES == 0
+
+
+def test_the_pad_is_bytes_the_page_neither_carries_nor_compares():
+    """Round trip through the stored form, and the pad's independence from it.
+
+    ``to_split_planes`` widens the last axis to the stride and ``from_split_planes``
+    narrows it back, exactly; and two stored blocks that differ ONLY in their pad are
+    :func:`bytes_equal`, because the pad is bytes no kernel reads or writes.
+    """
+    d_v, pages = 6, 3
+    logical = torch.arange(pages * MMA_K_QUANTUM * (d_v + 1), dtype=torch.float32)
+    logical = logical.reshape(pages, MMA_K_QUANTUM, d_v + 1) / 8.0
+    stored = to_split_planes(logical)
+    assert tuple(stored.shape) == (pages, MMA_K_QUANTUM, d_v + 2)
+    assert torch.equal(from_split_planes(stored), logical)
+
+    scribbled = stored.clone().reshape(pages, -1)
+    carried = MMA_K_QUANTUM * (d_v + 1)
+    scribbled[:, carried:] = -7.5
+    assert bytes_equal(scribbled.reshape(stored.shape), stored)
+    assert torch.equal(from_split_planes(scribbled.reshape(stored.shape)), logical)
+
+    scribbled.reshape(-1)[0] = 1e9
+    assert not bytes_equal(scribbled.reshape(stored.shape), stored)
+
+
+def test_a_logical_block_is_refused_where_a_stored_one_is_wanted():
+    """``from_split_planes`` on an unpacked ``[.., cols]`` block names the mistake.
+
+    And a page whose width the LAW does not produce -- an even ``cols``, which takes no
+    pad -- is read only when the caller states that width, never inferred.
+    """
+    logical = torch.zeros((1, MMA_K_QUANTUM, 65), dtype=torch.float32)
+    with pytest.raises(ValueError, match="to_split_planes"):
+        from_split_planes(logical)
+
+    unpadded = to_split_planes(torch.zeros((1, MMA_K_QUANTUM, 4), dtype=torch.float32))
+    assert tuple(unpadded.shape) == (1, MMA_K_QUANTUM, 4)
+    assert tuple(from_split_planes(unpadded, cols=4).shape) == (1, MMA_K_QUANTUM, 4)
+    with pytest.raises(ValueError, match="stores as"):
+        from_split_planes(unpadded, cols=5)

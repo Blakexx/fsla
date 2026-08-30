@@ -35,6 +35,7 @@ from dataclasses import dataclass
 import torch
 
 from rola.engine.plan import DecodeGeometry, DecodePlan
+from rola.engine.types import stored_cols
 from rola.ops._ext import extension
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decay import leaf_rate_dials
@@ -247,19 +248,24 @@ def step_plane(v: torch.Tensor, config: DecodeGeometry, g_read, decay,
             f"the frozen config says has_decay={config.has_decay} but decay is "
             f"{'absent' if decay is None else 'present'}; the config is frozen for the "
             "sequence and the decay arm is part of it")
+    #: The plane's last axis is the page STRIDE, not the logical `cols`: a page carries
+    #: one pad column so that every slot's hi rows begin on a 128 B line
+    #: (docs/internals/state.md#format).
+    width = stored_cols(config.cols)
     if page_table is None:
         #: PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the dense
         #: plane is the same page sequence with every page resident, and `N` is page
         #: aligned by construction (docs/internals/state.md#format).
-        if state.shape != (B, H, config.N, config.cols):
+        if state.shape != (B, H, config.N, width):
             raise ValueError(
-                f"a dense state is [B, H, N, d_v + 1] = "
-                f"{(B, H, config.N, config.cols)}, got {tuple(state.shape)}")
-        return state.reshape(BH, config.N, config.cols)
-    if state.dim() != 3 or state.shape[1:] != (MMA_K_QUANTUM, config.cols):
+                f"a dense state is [B, H, N, stored_cols] = "
+                f"{(B, H, config.N, width)}, got {tuple(state.shape)}")
+        return state.reshape(BH, config.N, width)
+    if state.dim() != 3 or state.shape[1:] != (MMA_K_QUANTUM, width):
         raise ValueError(
             f"under a page table the state is the arena's plane, "
-            f"[slots, {MMA_K_QUANTUM}, d_v + 1], got {tuple(state.shape)}")
+            f"[slots, {MMA_K_QUANTUM}, stored_cols] = "
+            f"[slots, {MMA_K_QUANTUM}, {width}], got {tuple(state.shape)}")
     if tuple(page_table.shape) != (BH, config.N // MMA_K_QUANTUM):
         raise ValueError(
             f"page_table must be [BH, N / {MMA_K_QUANTUM}] = "

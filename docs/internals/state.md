@@ -126,7 +126,7 @@ The backing is chosen at BIND time and is not a per-call flag:
   slots, and the kernel resolves one slot per atom through the page table. Resident
   state scales with the atoms the routing REALIZES, not with the `N` the topology
   provisions.
-* **dense** — one `[BH, N/16, 16, cols]` plane: the SAME page sequence with every page
+* **dense** — one `[BH, N/16, 16, stored_cols]` plane: the SAME page sequence with every page
   resident. Selected by `expert=PlanOverrides(paging=False)`, and it is what the
   bit-identity gate compares the paged backing against. A FRESH dense bind is ZEROED
   (P80b): the exit sweep stores the atoms a call WRITES and no others, so the atoms it
@@ -135,15 +135,30 @@ The backing is chosen at BIND time and is not a per-call flag:
 <a id="split-planes"></a>**THE PAGE STORES SPLIT bf16 PLANES** (K50, 2026-08-29), in
 BOTH backings. A page — one atom, 16 leaves — holds
 
-    [16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]
+    [16 x DV hi][16 x DV lo][16 mass hi][16 mass lo][pad]
 
-where `hi || lo` is the fp32 word exactly. The bytes are the fp32 page's bytes
-(`16 * cols * 4`), so the arena, the page table, the id space, the VMM commitment and
-the 4 GiB displacement bound are unmoved; what changes is that a hi row is one 128 B
+where `hi || lo` is the fp32 word exactly. The bytes a page CARRIES are the fp32 page's
+bytes (`16 * cols * 4`), so the page table and the id space are unmoved; what changes is
+that a hi row is one 128 B
 line (the fp32 row was 260 B and never line-aligned), the mass rides its own blocks
 rather than column `DV` of each row, and **an atom a call only READS moves half the
 bytes**. The geometry and its two `PRMT`s live in
 [`common/state_page.md`](common/state_page.md#geometry).
+
+**THE PAGE STRIDE IS A WHOLE NUMBER OF 128 B LINES**, which is what makes that
+line-alignment a property of every SLOT and not of every second one. A page carries
+`64 * (DV + 1)` bytes and `DV` is even, so the carried figure is always 64 B short of a
+line; a slot's page base is `slot * stride`, so at the carried figure an odd slot's hi
+rows straddle two lines and each one costs a second sector. The stride therefore ROUNDS
+UP — `stride = round_up(16 * cols * 4, 128)`, one pad column wide, generic in `DV`:
+4,224 B at `DV = 64`, 8,320 at `DV = 128`, 2,176 at `DV = 32`. The pad is bytes no
+kernel reads or writes and no comparison covers (`bytes_equal` stops at the carried
+words); what it costs is capacity — 1.5% more bytes per resident atom at `DV = 64` —
+and what it buys is one L1 request per hi row per warp instruction on every slot. Both
+backings stride by it, the arena's commitment and the dense plane's allocation alike, so
+it moves no address relative to the other and the bit-identity gate is unaffected. The
+mirrors are `Blocks<DV>::kStride` (device) and `rola.engine.types.page_stride_bytes`
+(host); the 4 GiB displacement bound is now `slots * stride`.
 
 THE DECLARATION THAT MAKES HI-ONLY READS EXACT RATHER THAN APPROXIMATE: **the readout
 operand is the hi plane in every kernel.** Prefill's MMA A operand has been
@@ -164,7 +179,8 @@ ARRAY any more, though — a 32-bit word of a stored page is two neighbouring el
 halves — so a byte claim about pages is asserted on the integer view
 (`rola.ops.paging.bytes_equal`), never with `torch.equal`, which is a float comparison
 and would call a byte-identical pair unequal the moment a word happened to read as
-NaN. `materialize()` is the hi||lo GATHER back to the logical `[B, H, N, cols]`.
+NaN. `materialize()` is the hi||lo GATHER back to the logical `[B, H, N, cols]`, which
+is also where the stride's pad is dropped.
 
 <a id="activity"></a>**RESIDENCY IS THE ARENA'S FACT; ACTIVITY IS THE FACTS PASS'
 (P80b), and only the second one decides what a call TOUCHES.** Activity now decides one

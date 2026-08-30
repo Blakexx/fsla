@@ -37,6 +37,7 @@ import torch
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decode import _decode_step, derive_decode_geometry, fold_levels
 from rola.ops.lattice import permutation
+from rola.ops.paging import to_split_planes
 from tests.oracle.oracle_fixtures import _topology
 
 pytestmark = [
@@ -72,7 +73,9 @@ def _single_leaf_state(BH: int, config, s0: int, device, seed: int):
     state = torch.zeros(BH, config.N, _DV + 1, dtype=torch.float32, device=device)
     row = torch.rand(BH, _DV + 1, dtype=torch.float32, device=device, generator=gen) + 0.5
     state[:, int(pi[s0])] = row
-    return state, row[:, :_DV], row[:, _DV]
+    #: The plane the kernel indexes holds STORED pages, not logical fp32 rows
+    #: (docs/internals/state.md#split-planes).
+    return to_split_planes(state), row[:, :_DV], row[:, _DV]
 
 
 def _y_of(read, *, dtype, normalize, seed, s0=0):
@@ -89,7 +92,7 @@ def _y_of(read, *, dtype, normalize, seed, s0=0):
                                     device=device)
     state, e, m = _single_leaf_state(BH, config, s0, device, seed + 1)
     y, _state, _ws = _decode_step(v, read, write, None, g_write, config,
-                                  state.view(B, H, width, _DV + 1),
+                                  state.view(B, H, width, _DV + 2),
                                   normalize=normalize)
     return y.reshape(BH, _DV), e, m
 

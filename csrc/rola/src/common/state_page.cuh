@@ -1,10 +1,10 @@
 #pragma once
 
 // THE STATE PAGE'S SPLIT bf16 PLANES: the one gather/scatter every body's state
-// I/O goes through. A page is [16 x DV hi][16 x DV lo][16 mass hi][16 mass lo] --
-// the same fp32 bits an fp32-row page held, re-laid out so a hi row is one line
-// and an atom a call only READS moves half of them (K50, 2026-08-29).
-// See docs/internals/common/state_page.md
+// I/O goes through. A page is [16 x DV hi][16 x DV lo][16 mass hi][16 mass lo][pad],
+// the same fp32 bits an fp32-row page held, re-laid out so a hi row is one line and
+// STRIDED by `kStride` so every slot's rows keep that line (K50, 2026-08-29).
+// See docs/internals/common/state_page.md and docs/internals/state.md#format
 
 #include <cuda_runtime.h>
 
@@ -25,9 +25,16 @@ struct Blocks {
   static constexpr uint32_t kMassHi = (uint32_t)(2 * kRows * DV * 2);
   static constexpr uint32_t kMassLo = kMassHi + (uint32_t)(kRows * 2);
   static constexpr uint32_t kBytes = kMassLo + (uint32_t)(kRows * 2);
+  static constexpr uint32_t kLine = 128;
+  static constexpr uint32_t kStride = (kBytes + kLine - 1) / kLine * kLine;
   static_assert(DV % 2 == 0, "a 32-bit access carries a PAIR of value columns");
   static_assert(kBytes == (uint32_t)(kRows * (DV + 1) * (int)sizeof(float)),
                 "the split layout is a re-layout of the fp32 page, not a resize");
+  static_assert(kStride % kLine == 0,
+                "a page begins on a 128 B line, so EVERY hi row of EVERY slot does");
+  static_assert(kStride == (uint32_t)(kRows * (DV + 2) * (int)sizeof(float)),
+                "the pad is one stored column wide: kBytes = 64 * (DV + 1) falls 64 B "
+                "short of a line for every even DV, so the stride is 64 * (DV + 2)");
 };
 
 //: The page's SMEM image, `[16][LDO]` fp32 with the mass in column `DV`. -- see docs/internals/common/state_page.md#load

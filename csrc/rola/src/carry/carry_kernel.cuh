@@ -453,7 +453,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     actWrite |= (uint32_t)((bits & kAtomWritten) != 0u) << a;
   });
   //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`, -- see docs/internals/carry/carry_kernel.md#kpagebytes
-  auto page_base = [](int32_t slot) { return (uint32_t)slot * Page::kBytes; };
+  auto page_base = [](int32_t slot) { return (uint32_t)slot * Page::kStride; };
   //: THE PAGE'S SLICE OF A STREAM, PER FRAGMENT. -- see docs/internals/carry/carry_kernel.md#a
   auto page_regs = [&](auto Ac, auto Ld) {
     constexpr int a = decltype(Ac)::value;

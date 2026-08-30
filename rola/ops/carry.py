@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import torch
 
+from rola.engine.types import stored_cols
 from rola.ops import lattice
 from rola.ops._ext import extension
 
@@ -105,9 +106,11 @@ def pack_side(levels) -> torch.Tensor:
 
 
 def state_plane(widths, BH: int, d_v: int = D_V, device="cuda") -> torch.Tensor:
-    """A DENSE state plane, ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order.
+    """A DENSE state plane, ``[BH, N/16, 16, stored_cols]`` fp32 in CANONICAL leaf order.
 
-    The dense BACKING, byte for byte the atom-major view of ``[BH, N, cols]``
+    The dense BACKING: the same STORED pages an arena holds, in atom order with every
+    atom present, so the two backings differ in residency and in nothing else. Its last
+    axis is the page STRIDE, `stored_cols(d_v + 1)`, not the logical `cols`
     (`docs/internals/state.md` section 3). It is the caller's to allocate because the
     planes are the caller's: a continuation hands the SAME tensor in and out and
     advances it in place, which is what keeps a stateful chain to ONE plane per
@@ -117,7 +120,7 @@ def state_plane(widths, BH: int, d_v: int = D_V, device="cuda") -> torch.Tensor:
     n = 1
     for w in widths:
         n *= int(w)
-    return torch.zeros((BH, n // MMA_K_QUANTUM, MMA_K_QUANTUM, d_v + 1),
+    return torch.zeros((BH, n // MMA_K_QUANTUM, MMA_K_QUANTUM, stored_cols(d_v + 1)),
                        dtype=torch.float32, device=device)
 
 
@@ -134,7 +137,7 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
     degraded.
 
     THE STATE PLANES ARE THE CALLER'S (`docs/internals/state.md` section 4).
-    ``state_in``/``state_out`` are ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order
+    ``state_in``/``state_out`` are ``[BH, N/16, 16, stored_cols]`` fp32 in CANONICAL leaf order
     -- `state_plane` builds a dense one, an arena hands over ``arena.state`` -- and a
     CONTINUATION passes the SAME tensor as both, advancing it in place. ``page_table``
     is the ``[BH, N/16]`` int32 slot table; ``None`` is the dense backing, where the
@@ -237,7 +240,7 @@ def carry_backward(read_levels, write_levels, g_write, v, d_num, d_den, widths, 
     shaped like the forward's ``num``/``den``. ``d_pr``/``d_pw`` are
     ``[BH, T, sum_l width_l]`` fp32 on the packed amplitude layout, ``d_v`` is
     ``[BH, T, d_v]``, ``d_gw`` is ``[BH, T]``, and ``d_state_in``/``replay`` are
-    ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order.
+    ``[BH, N/16, 16, stored_cols]`` fp32 in CANONICAL leaf order.
 
     ``page_table`` resolves the two ENTRY slabs the caller owns (``state_in`` and
     ``d_state_out``) through the same slot table the forward uses. The two EXIT slabs

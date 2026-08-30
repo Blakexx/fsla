@@ -321,10 +321,10 @@ decode_step_kernel(DecodeParams p) {
               int slot = page_row[atom];
               if (slot < 0 && claim_row != nullptr) slot = claim_row[atom];
               atom_present = slot >= 0;
-              atom_base = static_cast<int64_t>(slot) * Page::kBytes;
+              atom_base = static_cast<int64_t>(slot) * Page::kStride;
             } else {
               atom_present = true;
-              atom_base = (dense_bh_base + atom) * (int64_t)Page::kBytes;
+              atom_base = (dense_bh_base + atom) * (int64_t)Page::kStride;
             }
           }
 
@@ -807,6 +807,11 @@ at::Tensor rola_decode_forward(
   const int H = static_cast<int>(v.size(2));
   const int d_v = static_cast<int>(v.size(3));
   const int cols = d_v + 1;  // the mass column is unconditional (raw is dead)
+  //: THE PLANE'S LAST AXIS IS THE PAGE STRIDE, not `cols`: a page carries one pad
+  //: column so every slot's hi rows begin on a 128 B line (`state_page.cuh`'s
+  //: `Blocks<DV>::kStride`). `cols` still sizes the split-K workspace, which is
+  //: logical fp32 and has no pages at all.
+  const int state_cols = cols + (cols & 1);
 
   detail::check_f32(state, "state");
   detail::check_f32(ws, "ws");
@@ -823,13 +828,13 @@ at::Tensor rola_decode_forward(
                 "] int32");
     atoms_per_bh = static_cast<int>(tbl.size(1));
     N = static_cast<int64_t>(atoms_per_bh) * kAtomLeaves;
-    TORCH_CHECK(state.dim() == 3 && state.size(1) == kAtomLeaves && state.size(2) == cols,
-                "under a page table the state is the arena's plane, [slots, ", kAtomLeaves,
-                ", d_v + 1]");
+    TORCH_CHECK(state.dim() == 3 && state.size(1) == kAtomLeaves && state.size(2) == state_cols,
+                "under a page table the state is the arena's plane, [slots, ", kAtomLeaves, ", ",
+                state_cols, "]");
     page_ptr = tbl.mutable_data_ptr<int32_t>();
   } else {
-    TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == cols,
-                "state must be [BH, N, d_v + 1]");
+    TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == state_cols,
+                "state must be [BH, N, ", state_cols, "]");
     N = 1;
     for (auto w : level_widths) N *= w;
     TORCH_CHECK(N % kAtomLeaves == 0,
@@ -839,8 +844,8 @@ at::Tensor rola_decode_forward(
                 "LAW; got N = ",
                 N);
     atoms_per_bh = static_cast<int>(N / kAtomLeaves);
-    TORCH_CHECK(state.size(1) == N, "a dense state is [BH, N, d_v + 1] with N = ", N, "; got ",
-                state.size(1));
+    TORCH_CHECK(state.size(1) == N, "a dense state is [BH, N, ", state_cols, "] with N = ", N,
+                "; got ", state.size(1));
   }
 
   DecodeParams p{};

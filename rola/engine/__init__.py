@@ -28,16 +28,20 @@ from rola.engine.runner import (
 )
 from rola.engine.types import (
     MMA_K_QUANTUM,
+    PAGE_LINE_BYTES,
     SUPPLIABLE,
     Arm,
     BackwardNotImplemented,
     CallClass,
     Mask,
     PlanOverrides,
+    page_stride_bytes,
+    stored_cols,
 )
 
 __all__ = [
     "MMA_K_QUANTUM",
+    "PAGE_LINE_BYTES",
     "SUPPLIABLE",
     "Arm",
     "BackwardNotImplemented",
@@ -49,8 +53,10 @@ __all__ = [
     "Node",
     "PlanOverrides",
     "node",
+    "page_stride_bytes",
     "rule",
     "run",
+    "stored_cols",
     "validate_capturable",
     "validate_dag",
 ]

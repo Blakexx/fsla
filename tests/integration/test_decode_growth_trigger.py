@@ -112,12 +112,14 @@ def _arena(widths, BC, BH, **kwargs):
 
 
 def _gathered(arena, BH):
-    """`[BH, N, cols]` from the arena's slots -- what two backings can both hold."""
+    """`[BH, N, stored_cols]` from the arena's slots -- STORED pages, pad and all, which
+    is what two backings can both hold (docs/internals/state.md#format)."""
     table = arena.page_table
-    out = torch.zeros(BH, table.shape[1], MMA_K_QUANTUM, 65, device="cuda")
+    width = arena.stored_cols
+    out = torch.zeros(BH, table.shape[1], MMA_K_QUANTUM, width, device="cuda")
     present = table >= 0
     out[present] = arena.state[table[present].long()]
-    return out.reshape(BH, -1, 65)
+    return out.reshape(BH, -1, width)
 
 
 # ---------------------------------------------------------------------------

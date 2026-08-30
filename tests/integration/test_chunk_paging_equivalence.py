@@ -39,6 +39,7 @@ import pytest
 import torch
 
 from rola.engine.facts import planes
+from rola.engine.types import stored_cols
 from rola.ops import carry as carry_ops
 from rola.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, from_split_planes
 from tests.oracle.fixtures import assert_fresh_binary, require_arm
@@ -50,6 +51,10 @@ pytestmark = [
 
 _DV = carry_ops.D_V
 _COLS = _DV + 1
+#: The page's STORED width: `_COLS` plus the pad that puts every slot's hi rows on a
+#: 128 B line (docs/internals/state.md#format). It is what a state PLANE is shaped by;
+#: `_COLS` is what a materialized, rejoined state is shaped by.
+_STORED = stored_cols(_COLS)
 _POISON = -1234.5
 
 #: `_launch`'s "the caller said nothing", which is not the same as an explicit `None`.
@@ -128,7 +133,7 @@ def _dense(fixture, arm, *, s_in=None, plane=None):
     if plane is None:
         plane = carry_ops.state_plane(widths, _BH(fixture), _DV)
     y, den, out = _launch(fixture, arm, s_in=s_in, s_out=plane)
-    return y, den, from_split_planes(out).view(_BH(fixture), prod(widths), _COLS)
+    return y, den, from_split_planes(out).reshape(_BH(fixture), prod(widths), _COLS)
 
 
 def _side(fixture, which):
@@ -236,7 +241,7 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
         "the plan mapped every atom to its own id, so this cell never exercised "
         "a translation at all")
     assert bytes_equal(_stored(arena),
-                       dense_plane.reshape(-1, MMA_K_QUANTUM, _COLS)), (
+                       dense_plane.reshape(-1, MMA_K_QUANTUM, _STORED)), (
         "the two backings disagree on the STORED bytes: the split layout is part of "
         "the backing-invisibility claim, not only the values it rejoins to")
     assert torch.equal(dense, paged), (
@@ -398,7 +403,7 @@ def test_a_continuation_is_bit_identical_across_the_two_backings(arm):
 
     plane = carry_ops.state_plane(widths, BH, _DV)
     y1_dense, _, _ = _dense(first, arm, plane=plane)
-    s1 = from_split_planes(plane.clone()).view(BH, prod(widths), _COLS)
+    s1 = from_split_planes(plane.clone()).reshape(BH, prod(widths), _COLS)
     #: THE SAME PLANE IN AND OUT: a stateful chain allocates ONE plane for the SEQUENCE.
     y2_dense, _, s2 = _dense(second, arm, s_in=plane, plane=plane)
     s2 = s2.clone()

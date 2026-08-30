@@ -21,7 +21,7 @@ from math import ceil, prod
 import torch
 
 from rola.engine.rules.paging import admission
-from rola.engine.types import MMA_K_QUANTUM
+from rola.engine.types import MMA_K_QUANTUM, page_stride_bytes, stored_cols
 
 #: ``log2(MMA_K_QUANTUM)``, DERIVED. Invariant I1: the address expression is
 #: ``(slot << _LOG2_ATOM_LEAVES | row)``, and the shift must be an expression in the
@@ -40,26 +40,35 @@ _ABSENT_PAGE = -1
 def to_split_planes(logical: torch.Tensor) -> torch.Tensor:
     """A logical ``[..., 16, cols]`` fp32 page block in the STORED split-plane form.
 
-    THE PAGE IS ``[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`` (K50, 2026-08-29):
-    the same fp32 bits, re-laid out so a value row's hi plane is one 128 B line at
-    ``DV = 64`` and an atom a call only READS moves half the bytes. The container stays
-    fp32 because the LOGICAL element is fp32 -- ``hi || lo`` is the word exactly -- and
-    the state's descriptor is what declares the layout (docs/internals/state.md#format).
+    THE PAGE IS ``[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo][pad]`` (K50,
+    2026-08-29; the pad is the page stride's, below): the same fp32 bits, re-laid out so
+    a value row's hi plane is one 128 B line at ``DV = 64`` and an atom a call only READS
+    moves half the bytes. The container stays fp32 because the LOGICAL element is fp32 --
+    ``hi || lo`` is the word exactly -- and the state's descriptor is what declares the
+    layout (docs/internals/state.md#format).
+
+    The returned block is the logical one's shape with its last axis widened from
+    ``cols`` to :func:`rola.engine.types.stored_cols` -- the page stride, which is what
+    makes every slot's hi rows line-aligned and not only the even ones. The pad is
+    ZEROED here (nothing reads it; a defined value is what keeps two calls' stored bytes
+    comparable).
     """
     _refuse_ragged(logical)
     _refuse_dtype(logical)
     pages = logical.reshape(-1, MMA_K_QUANTUM, logical.shape[-1]).contiguous()
     d_v = logical.shape[-1] - 1
+    width = stored_cols(logical.shape[-1])
     words = pages.view(torch.int32)
     hi, lo = (words >> 16).to(torch.int16), words.to(torch.int16)
-    out = torch.empty_like(pages)
+    out = torch.zeros((pages.shape[0], MMA_K_QUANTUM, width), dtype=torch.float32,
+                      device=pages.device)
     stored = out.view(torch.int16).reshape(pages.shape[0], -1)
     rows = MMA_K_QUANTUM * d_v
     stored[:, :rows] = hi[:, :, :d_v].reshape(-1, rows)
     stored[:, rows:2 * rows] = lo[:, :, :d_v].reshape(-1, rows)
     stored[:, 2 * rows:2 * rows + MMA_K_QUANTUM] = hi[:, :, d_v]
-    stored[:, 2 * rows + MMA_K_QUANTUM:] = lo[:, :, d_v]
-    return out.reshape(logical.shape)
+    stored[:, 2 * rows + MMA_K_QUANTUM:2 * rows + 2 * MMA_K_QUANTUM] = lo[:, :, d_v]
+    return out.reshape(*logical.shape[:-1], width)
 
 
 def _refuse_dtype(state: torch.Tensor) -> None:
@@ -88,7 +97,7 @@ def _refuse_ragged(state: torch.Tensor) -> None:
             f"lawful state is page-aligned by construction (docs/internals/state.md#format)")
 
 
-def bytes_equal(a: torch.Tensor, b: torch.Tensor) -> bool:
+def bytes_equal(a: torch.Tensor, b: torch.Tensor, *, cols: int | None = None) -> bool:
     """Byte identity of two STORED page blocks -- the split format's own comparison.
 
     ``torch.equal`` is a FLOAT comparison, and a stored page is not a float: its 32-bit
@@ -96,19 +105,30 @@ def bytes_equal(a: torch.Tensor, b: torch.Tensor) -> bool:
     can contain a word whose float reading is NaN and compare UNEQUAL. The claim the
     backings make is about bytes, so it is asserted on the integer view -- which is
     also strictly stronger than the fp32 ``torch.equal`` it replaces.
+
+    THE PAD IS NOT PART OF THE CLAIM. A page's trailing pad columns are bytes no kernel
+    reads or writes (docs/internals/state.md#format), so the comparison covers the
+    ``16 * (d_v + 1)`` words a page STORES and stops there -- otherwise a dense plane's
+    uninitialized tail would fail against an arena slot admission happened to zero, over
+    bytes neither backing has an opinion about.
     """
-    return a.shape == b.shape and torch.equal(a.contiguous().view(torch.int32),
-                                              b.contiguous().view(torch.int32))
+    if a.shape != b.shape:
+        return False
+    words = MMA_K_QUANTUM * _logical_cols(a.shape[-1], cols)
+    pa = a.contiguous().reshape(-1, MMA_K_QUANTUM * a.shape[-1])[:, :words]
+    pb = b.contiguous().reshape(-1, MMA_K_QUANTUM * b.shape[-1])[:, :words]
+    return torch.equal(pa.contiguous().view(torch.int32), pb.contiguous().view(torch.int32))
 
 
-def from_split_planes(stored: torch.Tensor) -> torch.Tensor:
+def from_split_planes(stored: torch.Tensor, *, cols: int | None = None) -> torch.Tensor:
     """The hi||lo GATHER: stored pages back as the logical ``[..., 16, cols]`` fp32.
 
-    The inverse of :func:`to_split_planes`, and exactly what ``materialize()`` is.
+    The inverse of :func:`to_split_planes`, and exactly what ``materialize()`` is: the
+    last axis narrows from the page stride back to ``cols``, dropping the pad.
     """
     _refuse_dtype(stored)
+    d_v = _logical_cols(stored.shape[-1], cols) - 1
     pages = stored.reshape(-1, MMA_K_QUANTUM, stored.shape[-1]).contiguous()
-    d_v = stored.shape[-1] - 1
     halves = pages.view(torch.int16).reshape(pages.shape[0], -1).to(torch.int32) & 0xFFFF
     rows = MMA_K_QUANTUM * d_v
     words = torch.empty((pages.shape[0], MMA_K_QUANTUM, d_v + 1), dtype=torch.int32,
@@ -116,8 +136,34 @@ def from_split_planes(stored: torch.Tensor) -> torch.Tensor:
     words[:, :, :d_v] = ((halves[:, :rows] << 16)
                          | halves[:, rows:2 * rows]).reshape(-1, MMA_K_QUANTUM, d_v)
     words[:, :, d_v] = ((halves[:, 2 * rows:2 * rows + MMA_K_QUANTUM] << 16)
-                        | halves[:, 2 * rows + MMA_K_QUANTUM:])
-    return words.view(torch.float32).reshape(stored.shape)
+                        | halves[:, 2 * rows + MMA_K_QUANTUM:2 * rows + 2 * MMA_K_QUANTUM])
+    return words.view(torch.float32).reshape(*stored.shape[:-1], d_v + 1)
+
+
+def _logical_cols(width: int, cols: int | None) -> int:
+    """The LOGICAL width of a stored page whose last axis is ``width``.
+
+    ``stored_cols`` rounds the page up to a whole line, so it is not injective and the
+    inverse is only free for a LAWFUL page: ``cols = d_v + 1`` with ``d_v`` even, hence
+    ``cols`` odd, ``width = cols + 1`` even. That is the default. A caller holding a
+    width the law does not produce -- the pure-keying tests do -- states ``cols`` and
+    gets no inference at all; a stated ``cols`` that does not stride to ``width`` is
+    refused rather than silently trusted.
+    """
+    if cols is not None:
+        if stored_cols(cols) != width:
+            raise ValueError(
+                f"cols={cols} stores as {stored_cols(cols)} columns and this block's "
+                f"last axis is {width} (docs/internals/state.md#format)")
+        return cols
+    if width % 2 or width < 4:
+        raise ValueError(
+            f"a LAWFUL stored page is d_v + 2 columns wide with d_v an even value width, "
+            f"so its last axis is even and at least 4; got {width}. An odd width is the "
+            f"LOGICAL [.., cols] block -- pack it with to_split_planes first -- and a "
+            f"page of an unlawful width must state its own cols "
+            f"(docs/internals/state.md#format)")
+    return width - 1
 
 #: The driver-allocation unit the VMM backing commits in, in bytes. ``None`` resolves it
 #: to the device's own ``cuMemGetAllocationGranularity`` MINIMUM, which is the finest
@@ -232,14 +278,27 @@ class AtomKeying:
         """``leaf & (MMA_K_QUANTUM - 1)`` -- the leaf's row inside its atom."""
         return leaf & _ATOM_ROW_MASK
 
+    @property
+    def stored_cols(self) -> int:
+        """The page's STORED width: ``cols`` plus the pad the page stride buys.
+
+        The CONTAINER's last axis, and therefore what the address expression below
+        strides by; ``cols`` stays the LOGICAL width the oracle and the bridge speak
+        (:func:`rola.engine.types.stored_cols`).
+        """
+        return stored_cols(self.cols)
+
     def address(self, slot: int, leaf: int, v: int) -> int:
-        """``((slot << LOG2_ATOM | row) * cols + v)`` -- the value address.
+        """``((slot << LOG2_ATOM | row) * stored_cols + v)`` -- the container address.
 
         The ``|`` is an OR and not an ADD because ``row < MMA_K_QUANTUM`` by
         construction, so the low bits of the shifted slot are provably clear; writing it
         as an OR is what makes that a stated invariant rather than an accident.
+
+        The stride is the STORED width, so the expression names the same word the
+        kernel's ``slot * Blocks<DV>::kStride`` does.
         """
-        return ((slot << _LOG2_ATOM_LEAVES) | self.row_of(leaf)) * self.cols + v
+        return ((slot << _LOG2_ATOM_LEAVES) | self.row_of(leaf)) * self.stored_cols + v
 
     def atoms_per_owner(self, BC: int) -> int:
         """``QPO``. The ONE place ``BC`` meets the keying, and it meets it as a COUNT."""
@@ -391,6 +450,10 @@ class PageArena:
         self.BH = int(BH)
         self.N = int(N)
         self.keying = AtomKeying(N=self.N, cols=self.cols, BH=self.BH)
+        #: The CONTAINER's page width and stride: `cols` plus the pad that puts every
+        #: slot's hi rows on a 128 B line (`rola.engine.types.stored_cols`).
+        self.stored_cols = self.keying.stored_cols
+        self.page_stride = page_stride_bytes(self.cols)
         self.atoms_per_owner = self.keying.atoms_per_owner(self.BC)
         self.owners_total = N // self.BC
         self.device = torch.device(device)
@@ -445,13 +508,13 @@ class PageArena:
                 else torch.cuda.current_device(),
                 dense_limit_pages=self.logical_pages,
                 page_rows=MMA_K_QUANTUM,
-                page_cols=self.cols,
+                page_cols=self.stored_cols,
                 target_chunk_bytes=(C_VMM_CHUNK_BYTES if C_VMM_CHUNK_BYTES is not None
                                     else _vmm_probe(self.device)["allocation_granularity"]))
             self._value_base = self._owner.base()
         else:
             self._value_base = torch.zeros(
-                (self.logical_pages, MMA_K_QUANTUM, self.cols),
+                (self.logical_pages, MMA_K_QUANTUM, self.stored_cols),
                 dtype=torch.float32, device=self.device)
         self._pool_slots = torch.empty((self.BH, self.pool_capacity), dtype=torch.int32,
                                        device=self.device)
@@ -504,7 +567,7 @@ class PageArena:
 
     @property
     def state(self) -> torch.Tensor:
-        """``[slots, MMA_K_QUANTUM, cols]`` -- what the consumer indexes.
+        """``[slots, MMA_K_QUANTUM, stored_cols]`` -- what the consumer indexes.
 
         Bounded to :attr:`mapped_pages`, which is the whole pool under the dense bridge
         and the driver's mapped prefix under the VMM backing. The leading extent is a
@@ -549,10 +612,16 @@ class PageArena:
         return int((self._page_table >= 0).sum())
 
     def dense_bytes(self) -> int:
-        return self.BH * self.N * self.cols * 4
+        """What full residency costs -- the STORED page, pad included.
+
+        The counterfactual the paging claim is measured against is the footprint a
+        dense backing actually has, and a dense backing is the same padded pages with
+        every slot present (docs/internals/state.md#format).
+        """
+        return self.logical_pages * self.page_stride
 
     def allocated_bytes(self) -> int:
-        return self.allocated_pages * MMA_K_QUANTUM * self.cols * 4
+        return self.allocated_pages * self.page_stride
 
     @property
     def committed_bytes(self) -> int:
@@ -802,10 +871,10 @@ class PageArena:
         present = self._page_table >= 0
         index = self._page_table.long().clamp_min(0).reshape(-1)
         gathered = self._value_base.index_select(0, index).view(
-            self.BH, self.keying.atoms_per_bh, MMA_K_QUANTUM, self.cols)
+            self.BH, self.keying.atoms_per_bh, MMA_K_QUANTUM, self.stored_cols)
         dense = torch.zeros_like(gathered)
         dense[present] = gathered[present]
-        return from_split_planes(dense).reshape(self.BH, self.N, self.cols)
+        return from_split_planes(dense, cols=self.cols).reshape(self.BH, self.N, self.cols)
 
 
 class _NullContext:

@@ -224,14 +224,15 @@ def test_gated_step_then_admit_then_replay_is_bit_identical_to_admitting_first()
 
 
 def _gathered(arena, BH):
-    """`[BH, N, cols]` in LATTICE order from the arena's slots -- what the two backings
-    can both hold."""
+    """`[BH, N, stored_cols]` in LATTICE order from the arena's slots -- STORED pages,
+    pad and all, which is what the two backings can both hold."""
     table = arena.page_table
     N = table.shape[1] * MMA_K_QUANTUM
-    out = torch.zeros(BH, table.shape[1], MMA_K_QUANTUM, _COLS, device="cuda")
+    width = arena.stored_cols
+    out = torch.zeros(BH, table.shape[1], MMA_K_QUANTUM, width, device="cuda")
     present = table >= 0
     out[present] = arena.state[table[present].long()]
-    return out.reshape(BH, N, _COLS)
+    return out.reshape(BH, N, width)
 
 
 # ---------------------------------------------------------------------------

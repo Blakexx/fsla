@@ -145,10 +145,14 @@ std::vector<torch::Tensor> backward_inter(torch::Tensor pr, torch::Tensor pw, to
   auto d_pw = torch::zeros({BH, L, wtot}, opt);
   auto d_gw = torch::zeros({BH, L}, opt);
   auto d_v = torch::zeros({BH, L, (int64_t)kDv}, opt);
-  auto d_state_in = torch::zeros({BH, N / kAtomLeaves, (int64_t)kAtomLeaves, (int64_t)kCols}, opt);
-  auto replay = want_replay
-                    ? torch::zeros({BH, N / kAtomLeaves, (int64_t)kAtomLeaves, (int64_t)kCols}, opt)
-                    : torch::zeros({0}, opt);
+  //: BOTH ARE STATE PLANES, so both are `kStoredCols` wide: the sweep writes them
+  //: through the page stride (`common/state_page.cuh`; docs/internals/state.md#format).
+  auto d_state_in =
+      torch::zeros({BH, N / kAtomLeaves, (int64_t)kAtomLeaves, (int64_t)kStoredCols}, opt);
+  auto replay =
+      want_replay
+          ? torch::zeros({BH, N / kAtomLeaves, (int64_t)kAtomLeaves, (int64_t)kStoredCols}, opt)
+          : torch::zeros({0}, opt);
 
   BwdParams p{};
   p.pread = (const __nv_bfloat16*)pr.data_ptr();

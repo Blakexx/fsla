@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import torch
 
-from rola.engine import MMA_K_QUANTUM, Mask
+from rola.engine import MMA_K_QUANTUM, Mask, stored_cols
 from rola.ops._ext import extension
 
 
@@ -79,11 +79,13 @@ def pack_side(levels) -> torch.Tensor:
 
 
 def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
-    """An empty `[BH, N/16, 16, d_v+1]` fp32 state plane for this routing.
+    """An empty `[BH, N/16, 16, stored_cols]` fp32 state plane for this routing.
 
-    The ATOM-MAJOR view of `[BH, N, d_v+1]`, byte for byte: leaves are stored in
-    canonical order, so the reshape between the two is free and the kernel's
-    per-atom addressing and a reader's per-leaf one describe the same bytes.
+    The atom-major sequence of STORED pages, in canonical leaf order with every atom
+    present -- the dense backing is the paged one with full residency, page for page.
+    Its last axis is the page STRIDE, `stored_cols(d_v + 1)`, so a slot's hi rows are
+    line-aligned here exactly as they are in an arena
+    (docs/internals/state.md#format).
 
     Allocation is the caller's, not the kernel entry's -- which is what lets a
     carried state be handed straight back in, and a CONTINUATION does exactly that
@@ -96,7 +98,8 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
     n = 1
     for w in widths:
         n *= w
-    shape = (routes.batch * routes.heads, n // MMA_K_QUANTUM, MMA_K_QUANTUM, d_v + 1)
+    shape = (routes.batch * routes.heads, n // MMA_K_QUANTUM, MMA_K_QUANTUM,
+             stored_cols(d_v + 1))
     build = torch.zeros if zeros else torch.empty
     return build(shape, device=routes.device, dtype=torch.float32)
 

@@ -197,7 +197,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     actWrite |= (uint32_t)((bits & kAtomWritten) != 0u) << a;
   }
   //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`, -- see docs/internals/carry/carry_split_kernel.md#kpagebytes
-  auto page_base = [](int32_t slot) { return (uint32_t)slot * Page::kBytes; };
+  auto page_base = [](int32_t slot) { return (uint32_t)slot * Page::kStride; };
   //: element `k` of an accumulator tile sits at row `(lane>>2) + 8*(k>>1)` and -- see docs/internals/carry/carry_split_kernel.md#pagevalue
   auto page_value = [&](int p, int k) {
     return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + chan0 + (lane >> 2) + 8 * (k >> 1);

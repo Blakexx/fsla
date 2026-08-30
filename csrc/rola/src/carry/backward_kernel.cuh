@@ -44,6 +44,15 @@ static constexpr int kBwdBuildMagic = 31040001;
 static constexpr int kDv = 64;
 static constexpr int kCols = kDv + 1;
 
+//: THE STATE PLANE'S STORED WIDTH: `kCols` plus the page stride's pad. A page carries
+//: `16 * kCols` fp32 words and strides by a whole 128 B line, so the gradient and replay
+//: planes this family ALLOCATES are one column wider than the state they carry
+//: (`common/state_page.cuh`; docs/internals/state.md#format).
+static constexpr int kStoredCols = kCols + (kCols & 1);
+static_assert(rola::state_page::Blocks<kDv>::kStride
+                  == (uint32_t)(16 * kStoredCols * (int)sizeof(float)),
+              "the host allocation and the device stride are one law");
+
 //: THE SEED AND VALUE PLANES ARE PRE-PACKED `cols`-WIDE AND PADDED TO WHOLE MMA -- see docs/internals/carry/backward_kernel.md#kcolspad
 static constexpr int kColsPad = 72;
 static constexpr int kSlabN = kColsPad / kMmaN;
@@ -379,7 +388,7 @@ struct BwdOwner {
   using Page = rola::state_page::Blocks<kCols - 1>;
 
   static __device__ __forceinline__ uint32_t page_off(int32_t slot) {
-    return (uint32_t)slot * Page::kBytes;
+    return (uint32_t)slot * Page::kStride;
   }
 
   __device__ __forceinline__ int slab_col(int q, int e) const {

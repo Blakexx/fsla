@@ -30,8 +30,8 @@ from dataclasses import dataclass
 
 import torch
 
-from rola.engine.types import MMA_K_QUANTUM
-from rola.ops.paging import AtomKeying, PageArena
+from rola.engine.types import MMA_K_QUANTUM, page_stride_bytes, stored_cols
+from rola.ops.paging import AtomKeying, PageArena, from_split_planes
 
 __all__ = ["RoLAState", "StateFormat", "state"]
 
@@ -120,9 +120,20 @@ class StateFormat:
 
     @property
     def page_bytes(self) -> int:
-        """``[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`` -- the same bytes an
-        fp32 page held, re-laid out so a hi row is one line."""
+        """``[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`` -- the bytes a page
+        STORES, which is what an fp32 page of the same rectangle held."""
         return (1 << self.page_bits) * self.cols * 4
+
+    @property
+    def page_stride(self) -> int:
+        """Bytes from one slot's page base to the next: :attr:`page_bytes` plus the pad.
+
+        A page stores ``64 * (DV + 1)`` bytes and ``DV`` is even, so it always falls 64 B
+        short of a whole 128 B line; the arena and the dense backing both stride by the
+        ROUNDED figure so that every slot's hi rows begin on a line, not only the even
+        ones (docs/internals/state.md#format). The pad is never read and never written.
+        """
+        return page_stride_bytes(self.cols)
 
     def check(self, other: StateFormat) -> None:
         """Refuse ``other`` against the bound format, naming the field that differs."""
@@ -278,7 +289,7 @@ class RoLAState:
             return None
         if self._arena is not None:
             return self._arena.materialize().view(self._shape)
-        return self._plane.view(self._shape)
+        return from_split_planes(self._plane, cols=self._shape[3]).reshape(self._shape)
 
     def clone(self, strategy: str | None = None) -> RoLAState:
         """An EAGER deep copy, and the only sanctioned strategy change.
@@ -422,7 +433,8 @@ class RoLAState:
                                       self._shape[0] * self._shape[1]))
         if self._arena is not None:
             return self._arena.state, self._arena.page_table, self._arena
-        return self._plane.view(self._shape), None, None
+        B, H, N, cols = self._shape
+        return self._plane.view(B, H, N, stored_cols(cols)), None, None
 
     def _decode_entry_arena(self, bitmap: torch.Tensor):
         """Admit `bitmap`'s atoms into the carried arena and hand it back.

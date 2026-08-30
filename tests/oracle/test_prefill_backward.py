@@ -85,7 +85,9 @@ def test_every_cotangent_of_the_combined_operator(name, T, window, modes, k_tok,
                                            state_in=state_in)
     d_num = torch.randn(num.shape, device="cuda", dtype=torch.float32, generator=gen)
     d_den = torch.randn(den.shape, device="cuda", dtype=torch.float32, generator=gen)
-    d_state = to_split_planes(torch.randn(state_out.shape, device="cuda",
+    #: The seed is a LOGICAL cotangent packed into the stored form, so it is drawn at
+    #: `cols` and not at `state_out`'s STORED width (docs/internals/state.md#format).
+    d_state = to_split_planes(torch.randn((1, N // 16, 16, 65), device="cuda",
                                           dtype=torch.float32, generator=gen))
     got = torch.autograd.grad((num, den, state_out), leaves + [gv, vv], (d_num, d_den, d_state))
     del num, den, state_out

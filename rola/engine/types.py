@@ -19,6 +19,30 @@ from typing import Any, NamedTuple
 #: it against the atom geometry it addresses.
 MMA_K_QUANTUM = 16
 
+#: The DRAM line a page is aligned to. A page's hi plane is read one row at a time and
+#: a row is `2 * DV` bytes; the row's alignment INSIDE the page is therefore free, but
+#: the alignment it actually gets is the page BASE's, so a page whose size is not a
+#: whole number of lines gives every second slot a row that straddles two of them.
+PAGE_LINE_BYTES = 128
+
+
+def stored_cols(cols: int) -> int:
+    """The page's STORED width in fp32-sized columns: `cols` plus its pad.
+
+    A page holds `16 * cols` fp32 words -- `[16 x DV hi][16 x DV lo][16 mass hi]
+    [16 mass lo]` -- so it is `64 * cols` bytes, which is a whole number of
+    :data:`PAGE_LINE_BYTES` only when `cols` is even. `cols = DV + 1` with `DV` even is
+    never even, so the page carries ONE pad column: bytes no kernel reads or writes,
+    bought so that every hi row of every slot starts on a line
+    (docs/internals/state.md#format).
+    """
+    return cols + (cols & 1)
+
+
+def page_stride_bytes(cols: int) -> int:
+    """Bytes from one slot's page base to the next -- `Blocks<DV>::kStride`'s mirror."""
+    return MMA_K_QUANTUM * stored_cols(cols) * 4
+
 
 class BackwardNotImplemented(NotImplementedError):
     """Raised when a gradient is demanded of the forward-only kernel surface."""
