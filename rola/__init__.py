@@ -41,7 +41,7 @@ and not part of the contract.
 __version__ = "0.1.0.dev0"
 
 #: `rola.state` is the CONSTRUCTOR and nothing else. The class and the function live
-#: in the private `rola._state` (renamed from `rola/state.py` in P67 S5, whose public
+#: in the private `rola._state` (renamed from `rola/state.py`, whose public
 #: name the function was shadowing): docs/internals/state.md
 from rola._state import RoLAState, state
 from rola.interface import rola_op

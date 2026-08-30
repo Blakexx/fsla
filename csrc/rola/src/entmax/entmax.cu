@@ -402,8 +402,8 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
 }
 
 // ---------------------------------------------------------------------------
-// HOST DISPATCH -- the width CLASS is chosen here, so the kernel branches on nothing
-// (I2). One launch per union level. The (w_pad -> LW, IPT) table and why the launch
+// HOST DISPATCH -- the width CLASS is chosen here, so the kernel branches on
+// nothing. One launch per union level. The (w_pad -> LW, IPT) table and why the launch
 // count is unchanged from the Triton lowering: docs/internals/entmax/entmax.md#launch-shape
 // ---------------------------------------------------------------------------
 template <typename LogitT, typename OutT>

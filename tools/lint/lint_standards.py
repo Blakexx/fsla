@@ -761,6 +761,95 @@ def _flock_check_files():
                 yield p
 
 
+#: A CAMPAIGN WORK CODE: a stage or card identifier -- `K31`, `P80b`, `G5`, `S5c`, and
+#: the `D2-b` form a stage takes when it splits. Work codes are EXTERNAL: they name
+#: entries in a journal this repository does not carry, so a reader of this tree cannot
+#: resolve one, and a reference to one ages into a pointer at nothing.
+#:
+#: THE STANDARDS-SECTION FORM IS THE EXCEPTION AND IT IS SPELLED WITH ITS SECTION SIGN:
+#: `§R13`, `§16`. That is a citation of a document in this tree, at a stable anchor, and
+#: the sign is what makes it one rather than a bare pair of characters that happens to
+#: look like a rule number.
+_WORK_CODE_RE = re.compile(
+    r"(?<![\w§#\-.])([A-Z]{1,3}\d{1,3}(?:[a-z]\b|-[a-z]\b|\b))(?!\.\d)")
+
+#: NOT WORK CODES, by shape: a dtype or width (`F32`, `S8`, `BF16`), an architecture
+#: (`SM86`), a CUDA/PTX name. A vocabulary, never a list of sites.
+_NOT_A_WORK_CODE = re.compile(
+    r"^("
+    r"F16|F32|F64|S8|S16|S32|S64|U8|U16|U32|U64|BF16|TF32|FP8|FP16|FP32|FP64|INT4|INT8"
+    r"|SM\d+|CC\d+"                     # an architecture
+    r"|L1|L2|L1TEX"                      # a cache level
+    r"|A100|H100|V100|A10|A40|T4|RTX\d+|WSL2|CUDA\d+|PTX\d+"   # a machine or a toolkit
+    r"|[A-Z]{1,4}\d{3,4}"                # a linter's own code: E402, BLE001, PLC0415
+    r")$")
+
+#: THE BLIND SPOT, STATED: a hyphen-digit form (`R-6`, `D-1`) is not policed, because
+#: `D-1` is arithmetic and `R-6` is a ruling number and no rule can tell them apart. The
+#: sweep that flipped this check on removed the ruling-number references it found; a new
+#: one is caught by review, not here.
+_WORK_CODE_ROOTS = ("csrc", "rola", "docs", "tests", "benchmarks", "tools")
+_WORK_CODE_SUFFIXES = (".py", ".cu", ".cuh", ".cpp", ".h", ".hpp", ".md", ".json",
+                       ".yaml", ".yml", ".sh", ".toml")
+
+
+def _work_code_files():
+    for name in _WORK_CODE_ROOTS:
+        root = ROOT / name
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if (path.suffix in _WORK_CODE_SUFFIXES and "third_party" not in path.parts
+                    and "__pycache__" not in path.parts):
+                yield path
+
+
+#: WHERE A CITATION CAN LIVE. In a source file the rule reads COMMENTS and STRING
+#: LITERALS and nothing else: a name the code chose (`A15`, the alpha-1.5 template
+#: argument) is subject to the naming rules, not to this one, and only text a human
+#: wrote to point somewhere can point outside the tree. Markdown and data files are read
+#: whole -- every line of them is prose.
+_COMMENT_OR_STRING = re.compile(r"//(.*)$|/\*(.*?)\*/|#(.*)$|\"([^\"\n]*)\"|'([^'\n]*)'")
+
+
+def _citable_text(path: Path, line: str) -> str:
+    if path.suffix in (".md", ".json", ".yaml", ".yml", ".toml"):
+        return line
+    return " ".join(g or "" for m in _COMMENT_OR_STRING.finditer(line) for g in m.groups())
+
+
+def check_no_campaign_work_codes() -> list[str]:
+    """No file in this tree names a campaign or stage identifier.
+
+    A work code is a pointer into a journal that lives outside this repository. A reader
+    ten years from now has the tree and nothing else, so `K50's axis law` tells them
+    only that a rule exists and that its reason is unreachable, while `the axis law
+    (docs/ARCHITECTURE.md)` tells them where to read it. The rule is therefore not about
+    tidiness: it is what forces a reason into the tree at the moment somebody is still
+    able to write it down.
+
+    The standards sections are the one citable short form and they carry their section
+    sign (`§R13`); everything else becomes prose, a path, or an anchor.
+    """
+    findings = []
+    for path in _work_code_files():
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for match in _WORK_CODE_RE.finditer(_citable_text(path, line)):
+                code = match.group(1)
+                if _NOT_A_WORK_CODE.match(code):
+                    continue
+                findings.append(
+                    f"{path.relative_to(ROOT)}:{lineno}: names the work code {code!r}. "
+                    f"Work codes are external -- a reader of this tree cannot resolve "
+                    f"one. Say the thing itself and cite where it is written down (a "
+                    f"docs/ path, an anchor, or a standards section as §R<n>).")
+    return findings
+
+
 def check_no_bare_flock_on_gpu_lock() -> list[str]:
     findings = []
     for path in _flock_check_files():

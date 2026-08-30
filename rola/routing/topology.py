@@ -4,13 +4,13 @@
 MAX_ROUTING_DEPTH = 4
 MAX_BRANCH_WIDTH = 256
 
-#: THE KERNEL-FACING FLOOR (K50 "PADDING AT THE PRODUCER" / "THE FLOOR IS B_l >= 16"):
+#: THE KERNEL-FACING FLOOR (padding happens at the producer; the floor is B_l >= 16):
 #: every level the state descriptor addresses is a power of two at or above this --
 #: ``rola._state.MIN_LEVEL_WIDTH`` is the same number, asserted equal in
 #: ``tests/unit/test_topology_padding.py`` so the two never drift apart. It lives here,
 #: not imported from ``rola._state``, because this module has no reason to import the
 #: state/paging stack for one integer, and ``rola._state`` already predates this file's
-#: padding concern (C1a: "``B`` already carries only the lawful, padded width").
+#: padding concern: ``B`` already carries only the lawful, padded width.
 PADDED_LEVEL_FLOOR = 16
 
 

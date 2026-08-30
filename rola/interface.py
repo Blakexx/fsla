@@ -61,8 +61,8 @@ def rola_op(
     ``T = 1`` (:class:`rola.RoLA`'s dispatch).
     """
     raise NotImplementedError(
-        "prefill arm deleted pending K31 R2 — see queue K31 card. The shipped "
+        "the prefill arm is deleted; see docs/internals/DELETIONS.md. The shipped "
         "chunk consumer and its backward were removed from the master line "
-        "(baseline = tag baseline/pre-k31); the box-native K31 kernel replaces "
+        "(baseline = tag baseline/pre-k31); the box-native kernel replaces "
         "them. Run the fp64 oracle (rola.ops.naive.naive_rola) for semantics, "
         "or check out the baseline tag for the retired kernel.")

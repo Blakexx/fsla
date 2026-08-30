@@ -24,7 +24,7 @@ from __future__ import annotations
 #: readout is a ratio, so every output is scaled by ``den/(den + eps)``.
 #:
 #: The value is shared by the oracle (``rola/ops/naive.py``) and decode
-#: (``rola/ops/decode.py``); the deleted chunk consumer read it too, and K31 R2
+#: (``rola/ops/decode.py``); the deleted chunk consumer read it too, and the intra
 #: will again. It is NOT on the public surface: ``rola_op`` takes no ``eps``,
 #: because a number that changes the function is not a caller's argument. The
 #: kernel holds no copy either -- the decode config takes ``eps`` as a runtime

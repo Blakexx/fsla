@@ -67,7 +67,7 @@ __device__ __forceinline__ int32_t page_slot(const int32_t* page_tbl, uint32_t a
   return *reinterpret_cast<const int32_t*>(gather_ptr(page_tbl, atom * (uint32_t)sizeof(int32_t)));
 }
 
-//: THE FACTS PASS' TWO ORTHOGONAL PER-ATOM BITS (P80b), and the one activity -- see docs/internals/common/ops.md#atom-activity
+//: THE FACTS PASS' TWO ORTHOGONAL PER-ATOM BITS, and the one activity -- see docs/internals/common/ops.md#atom-activity
 constexpr uint8_t kAtomWritten = 1u;
 constexpr uint8_t kAtomRead = 2u;
 constexpr uint8_t kAtomActive = kAtomWritten | kAtomRead;
@@ -149,7 +149,7 @@ __device__ __forceinline__ int lane_broadcast(int x, int src) {
 
 using Frag = uint32_t[4];
 
-//: THE `memory` CLOBBER IS PART OF THE CONTRACT (K35 R-B). -- see docs/internals/common/ops.md#load-frag
+//: THE `memory` CLOBBER IS PART OF THE CONTRACT. -- see docs/internals/common/ops.md#load-frag
 __device__ __forceinline__ void load_frag(uint32_t (&r)[4], SmemAddr a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
@@ -195,7 +195,7 @@ __device__ __forceinline__ uint32_t pack_bf16x2(float lo, float hi) {
   return *reinterpret_cast<const uint32_t*>(&p);
 }
 
-//: THE ACCUMULATOR'S TOP HALVES, TAKEN AS A bf16 PAIR (K35). -- see docs/internals/common/ops.md#hi-bf16
+//: THE ACCUMULATOR'S TOP HALVES, TAKEN AS A bf16 PAIR. -- see docs/internals/common/ops.md#hi-bf16
 __device__ __forceinline__ uint16_t hi_bf16(float v) {
   return (uint16_t)(__float_as_uint(v) >> 16);
 }

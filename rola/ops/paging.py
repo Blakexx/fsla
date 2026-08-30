@@ -23,7 +23,7 @@ import torch
 from rola.engine.rules.paging import admission
 from rola.engine.types import MMA_K_QUANTUM
 
-#: ``log2(MMA_K_QUANTUM)``, DERIVED. Invariant I1: the address expression is
+#: ``log2(MMA_K_QUANTUM)``, DERIVED. THE ADDRESS INVARIANT: the address expression is
 #: ``(slot << _LOG2_ATOM_LEAVES | row)``, and the shift must be an expression in the
 #: named constant rather than the literal 4 -- otherwise a future atom size passes every
 #: instantiated test and silently mis-addresses.

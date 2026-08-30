@@ -39,12 +39,12 @@ from rola.engine.facts.liveness import LivenessLayout
 from rola.ops import lattice
 from rola.ops._ext import extension
 
-#: The value widths a shipped binary carries (K50: ``DV`` is a FREE AXIS because it is
+#: The value widths a shipped binary carries (``DV`` is a FREE AXIS because it is
 #: the register shape). A logical ``d_v`` outside the set is served by padding at the
 #: value projection, above this boundary -- never by a kernel that masks.
 SHIPPED_DV: tuple[int, ...] = (32, 64, 128)
 
-#: The launch shapes the arm key admits (K50: ``warps_per_sm`` splits into
+#: The launch shapes the arm key admits (``warps_per_sm`` splits into
 #: ``ctas_per_sm x warps_per_cta``). 8 is the shipped shape -- one CTA per SM, the
 #: register file filled exactly; 4 is the two-CTA latency diagnostic and ships nowhere.
 WARPS_PER_CTA: tuple[int, ...] = (8, 4)
@@ -52,10 +52,10 @@ SHIPPED_WARPS_PER_CTA = 8
 
 #: The state a warp holds is the register file's share of it, so the leaf count per
 #: warp is the budget divided by the value width: 32 leaves at ``DV = 64`` (two m-tiles,
-#: the ldmatrix granule) and half that at ``DV = 128`` (K50's four open items, item 1).
+#: the ldmatrix granule) and half that at ``DV = 128``.
 _LEAVES_PER_WARP_BUDGET = 32 * 64
 
-#: THE KERNEL'S WINDOW, in tokens (K50's axis law: ``W`` is CONSTANT and kernel
+#: THE KERNEL'S WINDOW, in tokens (the axis law: ``W`` is CONSTANT and kernel
 #: internal; a short sequence runs a partial window). It is readable, and never an
 #: argument: the inter/intra decomposition is DEFINED on this grid, so the fp64
 #: reference has to mirror the same number or the two terms would not be one recurrence.
@@ -66,7 +66,7 @@ WINDOW = 512
 PAGE_LEAVES = lattice.MMA_K_QUANTUM
 
 #: The activity byte's two bits, per page, as the facts pass emits them and the kernel
-#: reads them (P80b): a page is loaded iff resident and (READ or WRITTEN), stored iff
+#: reads them: a page is loaded iff resident and (READ or WRITTEN), stored iff
 #: WRITTEN.
 ACTIVITY_WRITTEN = 1
 ACTIVITY_READ = 2
@@ -107,7 +107,7 @@ class LaunchShape:
         if self.warps_per_cta not in WARPS_PER_CTA:
             raise CarryRefusal(
                 f"warps_per_cta={self.warps_per_cta} is not a launch shape this family "
-                f"builds; the set is {WARPS_PER_CTA} (K50: 8 = one CTA per SM, the "
+                f"builds; the set is {WARPS_PER_CTA} (8 = one CTA per SM, the "
                 f"shipped shape; 4 = the two-CTA latency diagnostic).")
 
     @property
@@ -197,7 +197,7 @@ def _refuse_descriptor(descriptor) -> None:
         raise CarryRefusal(
             f"the carry surface is driven by the STATE's format descriptor "
             f"(rola._state.StateFormat), got {type(descriptor).__name__}. The state owns "
-            f"its format (KERNEL_STANDARDS R13) and the kernel derives its addressing "
+            f"its format (KERNEL_STANDARDS.md §R13) and the kernel derives its addressing "
             f"from it; there is no second place to name a shape.")
     for level, width in enumerate(descriptor.B):
         if width & (width - 1) or width < MIN_LEVEL_WIDTH:
@@ -205,7 +205,7 @@ def _refuse_descriptor(descriptor) -> None:
                 f"level {level} is {width} digits wide. THE KERNEL DOES NOT PAD: B_l is a "
                 f"power of two at or above {MIN_LEVEL_WIDTH}, and a logical width outside "
                 f"that is served by padding the producer's logits with -inf above this "
-                f"boundary (KERNEL_STANDARDS R13 addendum, the two contracts).")
+                f"boundary (KERNEL_STANDARDS.md §R13 addendum, the two contracts).")
     if descriptor.DV not in SHIPPED_DV:
         raise CarryRefusal(
             f"DV={descriptor.DV} is not a shipped value width; the set is {SHIPPED_DV}. "
@@ -215,7 +215,7 @@ def _refuse_descriptor(descriptor) -> None:
     if descriptor.N % PAGE_LEAVES:
         raise CarryRefusal(
             f"N={descriptor.N} is not a whole number of {PAGE_LEAVES}-leaf pages. THERE "
-            f"IS NO RAGGED STATE (K50): a lawful state is prod_l B_l with every B_l a "
+            f"IS NO RAGGED STATE: a lawful state is prod_l B_l with every B_l a "
             f"power of two at or above {MIN_LEVEL_WIDTH}, hence page aligned by "
             f"construction; a ragged one is refused, never padded.")
     if descriptor.dtype != SPLIT_PLANE_DTYPE:
@@ -228,7 +228,7 @@ def _refuse_bf16(name: str, tensor: torch.Tensor) -> None:
     if tensor.dtype is not torch.bfloat16:
         raise CarryRefusal(
             f"{name} is {tensor.dtype}; the carry family's operands are bf16 and only "
-            f"bf16 (KERNEL_STANDARDS R17, one form -- the float operand paths are "
+            f"bf16 (KERNEL_STANDARDS.md §R17, one form -- the float operand paths are "
             f"deleted). Cast above this boundary, where the cast is visible.")
 
 
@@ -237,7 +237,7 @@ def _refuse_launch(launch) -> None:
         raise CarryRefusal(
             f"the launch shape is a rola.ops.carry.LaunchShape, got "
             f"{type(launch).__name__}. The window, the token tile and the stream count "
-            f"are not on this surface (K50's axis law): W is a kernel constant, C a file "
+            f"are not on this surface (the axis law): W is a kernel constant, C a file "
             f"constant and S derived.")
 
 
@@ -255,7 +255,7 @@ def _refuse_geometry(block, descriptor: StateFormat, launch: LaunchShape) -> Non
             f"the geometry block was derived for {presented} and this call presents "
             f"{bound}. The kernel derives the SAME block at its prologue from the "
             f"descriptor it is handed, so a block from another shape would address "
-            f"somebody else's leaves (K50: refuse on mismatch).")
+            f"somebody else's leaves (refuse on mismatch).")
 
 
 def _refuse_operands(routes, v, descriptor: StateFormat, liveness, activity):
@@ -469,7 +469,7 @@ def box_shape(widths, k: int, m: int):
     """
     out = lattice.box_shape(widths, k, m)
     assert out[3] % PAGE_LEAVES == 0, (
-        f"K2: an owner box of {out[3]} leaves must be a whole number of "
+        f"an owner box of {out[3]} leaves must be a whole number of "
         f"{PAGE_LEAVES}-leaf pages")
     return out
 

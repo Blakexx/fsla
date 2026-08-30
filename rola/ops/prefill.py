@@ -52,7 +52,7 @@ from rola.ops._ext import extension
 from rola.ops.liveness import liveness_words
 
 #: THE WINDOW, restated so a caller has one import. It is the CARRY KERNEL's constant
-#: (K50's axis law), and the intra family must carry an arm at the same number, because
+#: (the axis law), and the intra family must carry an arm at the same number, because
 #: the two kernels run ONE window grid.
 WINDOW = carry_ops.WINDOW
 

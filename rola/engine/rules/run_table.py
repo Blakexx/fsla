@@ -41,7 +41,7 @@ def run_table(state_in: Any, state_out: Any, page_table: Any) -> int:
         #: the state epilogue stores this block's atoms. An unwritten block must end
         #: holding what it carried in, which is what skipping leaves: a paged slot
         #: unchanged, and a dense plane too, since a continuation is updated in place
-        #: and a FRESH dense plane is ZEROED at bind (P80b) rather than written whole.
+        #: and a FRESH dense plane is ZEROED at bind rather than written whole.
         if stores_out:
             run = run or W
         if run:

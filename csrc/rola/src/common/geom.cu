@@ -10,7 +10,7 @@
 
 namespace rola::carry {
 
-//: THE ADDRESSING BLOCK, DERIVED AND REFUSED AT THE SEAM. Every launch-time law K50
+//: THE ADDRESSING BLOCK, DERIVED AND REFUSED AT THE SEAM. Every launch-time law the axis rule
 //: names lives here; `min_l B_l < 16` is a CENSUS FACT and not one of them.
 //: -- see docs/internals/common/geom_api.md#derive-block
 static CarryGeomRT derive_block(const std::vector<int64_t>& widths, int64_t level_modes, int bc,

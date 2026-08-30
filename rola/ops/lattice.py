@@ -86,14 +86,14 @@ def box_shape(widths, k: int, m: int):
     if sum(a) != j:
         raise ValueError(
             f"the capacity m = {m} does not fit widths {widths} at k = {k}: the levels can "
-            f"carry 2^{sum(a)} (R0 spec K6: an owner sits inside a level)")
+            f"carry 2^{sum(a)} (an owner sits inside a level)")
     m_l = [1 << x for x in a]
     s = [k * x for x in m_l]
     for l, (w, t) in enumerate(zip(widths, s, strict=True)):
         if w % t != 0:
             raise ValueError(
                 f"level {l} of width {w} is not a whole number of owner spans k*m_l = {t} "
-                "(R0 spec K6: an owner sits inside a level)")
+                "(an owner sits inside a level)")
     g = [w // t for w, t in zip(widths, s, strict=True)]
     return m_l, s, g, math.prod(s), math.prod(g)
 
@@ -140,7 +140,7 @@ def walk_unit(spans) -> tuple[int, int, int]:
         prod *= spans[base]
         if prod % atom == 0:
             return base, prod, prod // atom
-    raise ValueError(f"no suffix of the spans {tuple(spans)} holds a whole atom (K2)")
+    raise ValueError(f"no suffix of the spans {tuple(spans)} holds a whole atom")
 
 
 def _admissible(k: int, m: int, widths) -> tuple[int, ...] | None:

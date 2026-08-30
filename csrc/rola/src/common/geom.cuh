@@ -1,7 +1,7 @@
 // csrc/rola/src/common/geom.cuh -- THE ADDRESSING BLOCK: one derivation, computed
 // once per launch on the host, consumed by every kernel of the family.
 //
-// K50's axis law as G2b corrects it: the REGISTER SHAPE -- leaves per warp, `DV`, and
+// THE AXIS LAW: the REGISTER SHAPE -- leaves per warp, `DV`, and
 // the warp sub-box's spans and slot layout -- is compile-time `f(D, DV)`; the widths
 // `B_l`, the per-side orders and the carve OFFSETS they fix are runtime and CTA-uniform.
 // Symbols, the two span laws, the refusal set and the transit's row map:
@@ -241,7 +241,7 @@ constexpr bool mode_declares(uint32_t modes, int l, uint32_t side) {
 
 namespace geom_detail {
 
-//: THE ORDER BY MODE (P76), unchanged in law, on a runtime word.
+//: THE ORDER BY MODE, unchanged in law, on a runtime word.
 inline int mode_group(uint32_t MO, int l, uint32_t side) {
   const bool rd = mode_declares(MO, l, kSideRead), wr = mode_declares(MO, l, kSideWrite);
   if (rd && wr) return 2;                     // both-sparse
@@ -411,8 +411,8 @@ __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom
   return sb_swizzle(row);
 }
 
-//: THE CANONICAL LEAF of owner `O`'s local slot, and the atom that holds it (P80).
-//: THE SAME MAP WITH THE DEPTH AND THE OWNER LAW COMPILE-TIME (R12: no runtime trip
+//: THE CANONICAL LEAF of owner `O`'s local slot, and the atom that holds it.
+//: THE SAME MAP WITH THE DEPTH AND THE OWNER LAW COMPILE-TIME (KERNEL_STANDARDS.md §R12: no runtime trip
 //: count in a register-shaped loop). The kernel knows `D` and `BC` as template
 //: arguments, so the spans and the run shifts are IMMEDIATES here and only the
 //: width-derived terms stay runtime. -- see docs/internals/common/geom.md#canon-leaf

@@ -349,7 +349,7 @@ def test_the_layer_prefill_path_speaks_the_deletion_refusal():
     DECODE fork alone (`RoLA.validate_decode_envelope`); the dispatch table in
     `tests/integration/test_decode_dispatch.py` is where that is asserted."""
     layer = rola.RoLA(_routes()).double().train()
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="K31 R2"):
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
         layer(torch.randn(2, 6, 32, dtype=torch.float64))
     assert layer.last_execution_backend is None, "the refusal let a kernel run first"
 

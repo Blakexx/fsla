@@ -325,7 +325,7 @@ own, and closes its contraction inside one warp.
 <a id="note-l741"></a>
 ### near line 741
 
-(I6)'s contraction runs over the WHOLE block of readers, so it is gated
+The read-digit contraction runs over the WHOLE block of readers, so it is gated
 per row tile: a tile the certificate left unstaged is one whose operand
 rows are all zero, and the rows of a tile the causal walk excludes are
 zero in the image.

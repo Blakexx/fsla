@@ -48,7 +48,7 @@ CANONICAL_ORDER = "mixed-radix-msb-first"
 #: separate bf16 planes of the page, and ``hi || lo`` is the fp32 word exactly.
 SPLIT_PLANE_DTYPE = "fp32 as split bf16 planes"
 
-#: The per-level width floor (K50: ``B_l`` power of two, floor 16 = ``K_max``), which
+#: The per-level width floor (``B_l`` a power of two at or above 16 = ``K_max``), which
 #: is what makes every span fit inside one level's run and the atom stay inside it.
 MIN_LEVEL_WIDTH = 16
 
@@ -81,7 +81,7 @@ class StateFormat:
         for level, width in enumerate(self.B):
             if width & (width - 1) or width < MIN_LEVEL_WIDTH:
                 raise ValueError(
-                    f"B_l is a power of two at or above {MIN_LEVEL_WIDTH} (K50's axis law: the "
+                    f"B_l is a power of two at or above {MIN_LEVEL_WIDTH} (the axis law: the "
                     f"floor is K_max, which is what keeps every span inside one level's run and "
                     f"the atom inside one level); level {level} is {width}")
         if self.order != CANONICAL_ORDER:
@@ -131,7 +131,7 @@ class StateFormat:
             if mine != theirs:
                 raise ValueError(
                     f"this state was bound with {field}={mine!r} and the call presents "
-                    f"{field}={theirs!r}. A state carries its FORMAT (K50): its leaf order, its "
+                    f"{field}={theirs!r}. A state carries its FORMAT: its leaf order, its "
                     f"page rectangle and its value width are what every kernel derives its "
                     f"addressing from, so a call that disagrees is refused here rather than "
                     f"reading somebody else's bytes. Bind a fresh rola.state() for this shape.")
@@ -356,7 +356,7 @@ class RoLAState:
             self._format.check(presented)
         from rola.engine.facts import planes
 
-        #: RESIDENCY IS KEYED ON THE WRITE SET (P80b): the byte carries the READ bit
+        #: RESIDENCY IS KEYED ON THE WRITE SET: the byte carries the READ bit
         #: beside it, and admitting a read-only atom would make exact commitment a
         #: superset (`rola.engine.facts.planes.written_atoms`).
         bitmap = (None if atom_bits is None else planes.written_atoms(

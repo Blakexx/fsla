@@ -1,6 +1,6 @@
 // csrc/rola/src/facts/liveness_contract.cuh -- THE CLASS-1 LIVENESS WORDS: the layout
 // the one geometry-independent pass writes and every fold reads. No kernel and no
-// launch signature lives here; the pass (C2a) and the host folds address these bytes
+// launch signature lives here; the pass and the host folds address these bytes
 // THROUGH this type, and rola/engine/facts/liveness.py is its Python mirror.
 // -- see docs/internals/facts/liveness_contract.md
 #pragma once
@@ -56,7 +56,7 @@ struct LivenessLayout {
   constexpr uint32_t token_bit(int token) const { return 1u << (token % kTokBits); }
 };
 
-//: THE PASS'S PER-SIDE STATIC OPERANDS, which carry no logical width (R13's lint).
+//: THE PASS'S PER-SIDE STATIC OPERANDS, which carry no logical width (KERNEL_STANDARDS.md §R13's lint).
 //: -- see docs/internals/facts/liveness_contract.md#statics
 struct SideStatics {
   uint32_t dense_levels;

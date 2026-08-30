@@ -625,10 +625,10 @@ class ResolvedRouting:
 # Union``), ``IndependentRouting``, and ``UnionRouting`` are reused verbatim --
 # they already satisfy the contract's shapes. Only the topology/decay
 # wrappers are new. These are producer-agnostic: they describe the routing
-# contract the V3 naive oracle (``fla_rola/ops/rola/naive.py``) consumes, not a
+# contract the naive oracle (``rola/ops/naive.py``) consumes, not a
 # projection ABI. They deliberately do not reuse ``ResolvedRouting`` /
 # ``RouteDescriptor``, which are packed-router / kernel ABI types tied to the
-# Q/K-era producer and out of scope for V3 stage 1.
+# earlier Q/K-shaped producer and are not part of this contract.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)

@@ -69,7 +69,7 @@ __global__ __launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY, D)
 decode_step_kernel(DecodeParams p) {
   //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a -- see docs/internals/decode/decode.md#cols
   constexpr int cols = DV + 1;
-  //: THE PAGE'S SPLIT bf16 PLANES (K50) -- the same blocks the carry addresses.
+  //: THE PAGE'S SPLIT bf16 PLANES -- the same blocks the carry addresses.
   using Page = rola::state_page::Blocks<DV>;
   //: Columns per lane: `NC` fully coalesced 128 B transactions, and the lane's -- see docs/internals/decode/decode.md#nc
   constexpr int NC = DV / 32;
@@ -329,7 +329,7 @@ decode_step_kernel(DecodeParams p) {
           }
 
           //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the -- see docs/internals/decode/decode.md#decode-step-kernel-note-l516
-          //: A LEAF THIS STEP ONLY READS PULLS THE hi PLANE ALONE (K50). The plane -- see docs/internals/decode/decode.md#split-planes
+          //: A LEAF THIS STEP ONLY READS PULLS THE hi PLANE ALONE. The plane -- see docs/internals/decode/decode.md#split-planes
           const bool writes = in_w;
           uint8_t* const page =
               atom_present ? reinterpret_cast<uint8_t*>(p.state) + atom_base : nullptr;
@@ -682,7 +682,7 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
                 " exceeds the decode path's ", kDecodeMaxSpan);
     TORCH_CHECK(p.level_width[l] % p.lat_s[l] == 0, "level ", l, " of width ", p.level_width[l],
                 " is not a whole number of owner spans k*m_l = ", p.lat_s[l],
-                " (R0 spec K6: an owner sits inside a level)");
+                " (an owner sits inside a level)");
     p.lat_g[l] = p.level_width[l] / p.lat_s[l];
     bc *= p.lat_s[l];
     owners *= p.lat_g[l];
@@ -886,7 +886,7 @@ at::Tensor rola_decode_forward(
   TORCH_CHECK(page_ptr == nullptr || p.lat_local_bits >= kAtomShift,
               "a paged decode needs one walk unit's leaves to hold a whole number of ", kAtomLeaves,
               "-leaf atoms, and this (k, m) gives an owner only ", (1 << p.lat_local_bits),
-              " (K13: the innermost span must cover an atom)");
+              " (the innermost span must cover an atom)");
 
   const bool decay = dials.has_value();
   const int64_t budget = detail::smem_budget_of(v.device().index());

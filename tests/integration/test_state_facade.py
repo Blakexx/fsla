@@ -6,7 +6,7 @@ Until the K31 batch (baseline = tag `baseline/pre-k31`) this file walked the
 whole stateful surface through the prefill op -- bind-then-continue, chained
 halves vs one whole call, clone independence, dense-vs-paged agreement, the BC
 flip over a live arena. Those claims are claims about the PREFILL BINDING PATH,
-which is deleted pending K31 R2, and they return with it; what remains gated
+which is deleted, and they return with it; what remains gated
 here is the state object's own contract -- construction refusals, the engine's
 state-type refusal, and the decode continuation's carrying requirement.
 """
@@ -47,7 +47,7 @@ def _inputs(seed=0, T=_T, B=2):
 def test_a_raw_tensor_is_not_a_state():
     """The engine's fast-fail refuses a raw tensor where a RoLAState belongs.
 
-    Gated at `validate_context` (the seam K31 R2 re-fronts): `rola_op` itself is
+    Gated at `validate_context` (the seam the rebuilt kernel re-fronts): `rola_op` itself is
     the deletion refusal and speaks before it reads its arguments.
     """
     from rola.engine.dags.chunk_dag import ChunkContext, validate_context

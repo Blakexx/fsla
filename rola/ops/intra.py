@@ -20,7 +20,7 @@ from rola.ops.padding import pad_routes, pad_v, slice_y
 
 #: THE PER-LEVEL MODE, two bits per level: bit 0 the READ side is value-sparse there,
 #: bit 1 the WRITE side.  ``BOTH_SPARSE`` says BOTH SIDES ARE SPARSE AT THAT LEVEL AND
-#: NOTHING MORE (P76 clarification, 2026-08-26): each side votes its own bitlists from
+#: NOTHING MORE: each side votes its own bitlists from
 #: its own factors, so the two supports never have to coincide.  Drawing ONE support for
 #: both is a modeling choice with a locality bonus, never a kernel requirement.  The
 #: class is what the carry's order-by-mode rule puts OUTERMOST, because it is where the
@@ -30,8 +30,8 @@ READ_SPARSE = 1
 WRITE_SPARSE = 2
 BOTH_SPARSE = 3
 
-#: the built windows -- the carry family's `W` arms, mirrored (integration rung
-#: I1(b)).  ``WINDOW`` names the flagship because the architecture doc's two
+#: the built windows -- the carry family's `W` arms, mirrored.  ``WINDOW`` names the
+#: flagship because the architecture doc's two
 #: constraints (the C* basin and the intra's ``W/4`` flop/byte intensity) settle
 #: it there; ``WINDOW_SMALL`` is the conformance cell's.
 WINDOW = 384
