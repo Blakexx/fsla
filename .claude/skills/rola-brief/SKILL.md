@@ -112,3 +112,6 @@ that into the skill the same day (process/pointers only — never facts).
   report — write the required contents into the stop condition.
 - A BANK-BEHAVIOUR LINE beside the selectivity line whenever an ownership partition changes: the row map
   is part of the partition (G2c: identical shared access counts, 2.7× conflicts).
+- VERIFY EVERY NAMED PATH EXISTS before treating a brief's ownership line as settled (NICE: the brief named
+  tools/build/build_lock.py; the file is tools/build_lock.py — the worker checked with git ls-tree and
+  flagged it; do that first, every time).
