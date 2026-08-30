@@ -356,3 +356,11 @@ hooks are fixed (the hook, or the tree), never routed around.
   one body; a tied carve is a transit with the identity map, never a second body.
 - R19 LAWS LAND WITH THEIR STAGE: a ruling that changes a law is written here in the same stage that
   implements it, never only on a card; the milestone carries the drift guards (lints, docs rev, skills).
+
+## CONSTITUTION addendum (Blake, 2026-08-29): R9 ENFORCEMENT — A STRUCTURE BRANCH FAILS LOUD AT EVERY LAYER
+A CTA-uniform branch on structure (e.g. a switch over admissible (span, shift) pairs) is legal only with:
+(1) its cases GENERATED at compile time from the arm's shape, never hand-enumerated, with a static_assert
+on the count; (2) a compile-time exhaustiveness assert (the derivation's possible outputs ⊆ the covered
+set) so an arm that could receive an uncovered case does not build; (3) a launch-time refusal at the seam
+naming the uncovered case; (4) a trapping default (`__trap()`, never a fallthrough) and a post-build
+coverage sweep (every arm at every admissible case on a tiny cell).
