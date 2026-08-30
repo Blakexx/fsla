@@ -136,9 +136,17 @@ def acquire(n: int = 1, *, exclusive: bool = False, label: str = "host-budget"):
     held: list = []
     try:
         if exclusive:
+            # An exclusive draw collects every slot; two exclusive drawers collecting
+            # at once would each hold a subset and wait on the other's forever, so
+            # the collection itself runs under one admission mutex.
             trace(f"exclusive draw ({label}): waiting for all {total} slot(s) ...")
-            for i in range(total):
-                held.append(_blocking_acquire(i, label))
+            with open(_lock_dir() / "rola_host_budget_exclusive.lock", "a+") as admission:
+                fcntl.flock(admission, fcntl.LOCK_EX)
+                try:
+                    for i in range(total):
+                        held.append(_blocking_acquire(i, label))
+                finally:
+                    fcntl.flock(admission, fcntl.LOCK_UN)
         else:
             for i in range(total):
                 if len(held) >= n:
