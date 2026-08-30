@@ -23,7 +23,7 @@ constexpr int kValueWidth = 64;
 
 constexpr int kWidthFlat = 256;  // an instantiation axis, not a constant; see intra.md#kwidthflat
 constexpr int kWidthDeep3 = 16;
-constexpr int kWidthDeep4 = 8;
+constexpr int kWidthDeep4 = 16;
 
 // `window` selects the built arm; `L % window` must be zero, refused per arm; see intra.md#intra-forward
 void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,

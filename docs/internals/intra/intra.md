@@ -25,7 +25,7 @@ length, which is the third constraint and the reason both ends are built.
 `kWindowSmall = 64` is the conformance cell's.
 
 The LEVEL WIDTH is the second instantiation axis, mirroring the carry family's
-topology arms: `kWidthFlat = 256`, `kWidthDeep3 = 16` and `kWidthDeep4 = 8`. The other
+topology arms: `kWidthFlat = 256`, `kWidthDeep3 = 16` and `kWidthDeep4 = 16`. The other
 shape constants are the tile grid the causal staircase is expressed on: `kTile = 64`
 output tokens, `kWarpRows = 16` rows to a warp, `kSlabDigits = 16` digits to an MMA
 k-step, and `kValueWidth = 64`.

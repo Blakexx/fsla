@@ -132,17 +132,6 @@ def test_the_combined_operator_reaches_the_carry_launch_surface():
         f"shape are checked")
 
 
-def test_the_intra_family_has_no_lawful_depth_four_arm():
-    """A REAL GAP, NAMED. The intra family's ``D = 4`` arm is instantiated at level width
-    8, and R13's floor is ``B_l >= 16``: no lawful descriptor can reach it, so a deep-4
-    cell is INTER-ONLY until the intra family is rebuilt at a lawful width. Stating it
-    here keeps it a gap rather than letting the cell list silently omit the depth."""
-    assert INTRA_TOPOLOGY[4] < 16, (
-        "the intra D = 4 arm is now at a lawful width; add the deep-4 combined cell "
-        "back to CELLS and delete this test")
-    assert not any(c.D == 4 for c in CELLS)
-
-
 # ------------------------------------------------- the arithmetic, cell by cell
 
 @pytest.mark.parametrize("spec", CELLS, ids=IDS)

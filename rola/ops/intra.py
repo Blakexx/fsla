@@ -42,7 +42,7 @@ WINDOW_SMALL = 64
 #: contracted padded, which costs that level's Gram throughput and nothing else.
 LEVEL_WIDTH = 256
 LEVEL_WIDTH_DEEP3 = 16
-LEVEL_WIDTH_DEEP4 = 8
+LEVEL_WIDTH_DEEP4 = 16
 VALUE_WIDTH = 64
 
 
