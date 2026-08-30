@@ -88,7 +88,7 @@ def _y_of(read, *, dtype, normalize, seed, s0=0):
     config = derive_decode_geometry(_topology((width,)), d_v=_DV, decay=False, BH=BH,
                                     device=device)
     state, e, m = _single_leaf_state(BH, config, s0, device, seed + 1)
-    y, _state, _ws = _decode_step(v, read, write, None, g_write, config,
+    y, _state, _ws = _decode_step(v, read, write, g_write, config,
                                   state.view(B, H, width, _DV + 1),
                                   normalize=normalize)
     return y.reshape(BH, _DV), e, m

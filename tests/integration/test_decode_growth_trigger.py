@@ -79,7 +79,7 @@ def _step(fixture, config, arena, *, workspace=None, pool=None):
     if workspace is None:
         workspace = DecodeScratch.build(config, BH, torch.device("cuda"))
     y, _state, workspace = _decode_step(
-        v, read, write, None, g_write, config, arena.state, workspace=workspace,
+        v, read, write, g_write, config, arena.state, workspace=workspace,
         page_table=arena.page_table, pool=pool)
     return y, workspace
 
