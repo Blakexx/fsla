@@ -284,6 +284,17 @@ descriptor and the architecture's shared-memory size — the premise being that 
 costs close to nothing, which the private-stream measurement is the standing test of;
 never a density, never a runtime input.)*
 
+**The stream box is sized to its consumers' accumulator tile.** A stream's segment —
+its expanded coefficient rows and value rows — covers exactly one accumulator tile's
+leaves, the multiply its consumers issue. Where a warp's segment is one tile the stream
+box is at least the warp box and the warps sharing a stream partition it; where a warp's
+segment is many tiles (tensor memory) the stream box is smaller than the warp box and the
+warp consumes the stream once per tile — the same token list, coefficients expanded for
+that tile's leaves, the value rows staged once — so liveness is tested at tile grain and
+shared memory is sized to one tile's stream, never to the segment. The tile count per
+segment is a runtime trip count; it is one on the architectures in the tree. *(Ruled;
+built with the pipelined body.)*
+
 **Per-side carves.** Read and write are carved independently: a stream owns an affine
 rectangle of digits per level, per side, and the private slot order puts the carved
 (sparse) levels outermost. Liveness is the exact AND over levels of that side's own
