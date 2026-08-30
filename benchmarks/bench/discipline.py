@@ -166,9 +166,12 @@ def disciplined(*, tier: str, cmd: str):
 
     `gpu_lock()` is held for this whole context (K46): the memory fraction is applied
     under it and before any fixture is built, because it bounds this process's share of
-    a device another process may still be releasing.
+    a device another process may still be releasing. EXCLUSIVE mode (LOCKS brief,
+    2026-08-29, item 2): a bench number is MEASURED work, so it excludes every other
+    GPU-touching tool -- including a correctness-tier pytest run that would otherwise
+    share the device under `mode="shared"`.
     """
-    with gpu_lock():
+    with gpu_lock(mode="exclusive"):
         if not torch.cuda.is_available():
             raise SystemExit("no CUDA device; this harness measures a CUDA kernel")
         torch.cuda.set_per_process_memory_fraction(MEMORY_FRACTION)

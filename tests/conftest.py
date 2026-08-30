@@ -197,7 +197,29 @@ def _touches_gpu(request) -> bool:
 def _gpu_lock_held():
     from gpu_lock import gpu_lock
 
-    with gpu_lock():
+    #: SHARED mode (LOCKS brief, 2026-08-29): a pytest battery is correctness
+    #: work (oracle/integration/cuda-marked unit tests), not a measurement --
+    #: it can share the device with another correctness run (up to
+    #: `gpu_lock.GPU_SHARED_SLOTS` of them) rather than excluding every other
+    #: GPU-touching tool, which only measured work (`probe_cells`, `ncu`, the
+    #: bench harness) needs.
+    with gpu_lock(mode="shared"):
+        yield
+
+
+#: THE HOST-COMPUTE BUDGET, PER XDIST WORKER (LOCKS brief item 1: "a pytest
+#: tier that forks workers draws 1 per worker"). `PYTEST_XDIST_WORKER` is set
+#: by `pytest-xdist` in every worker process (never in the controller), so a
+#: bare `pytest` run (no `-n`) draws nothing here -- only a forked worker
+#: competes with compiles/sanitizer runs/clang-tidy passes for the shared pool.
+@pytest.fixture(scope="session", autouse=True)
+def _host_budget_worker_slot():
+    if "PYTEST_XDIST_WORKER" not in os.environ:
+        yield
+        return
+    import host_budget
+
+    with host_budget.acquire(1, label=f"pytest-worker:{os.environ['PYTEST_XDIST_WORKER']}"):
         yield
 
 

@@ -45,12 +45,31 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # `--show-toplevel` from INSIDE A LINKED WORKTREE returns that worktree's own
-# root, not the main repo's -- e.g. /path/to/worktrees/<name>, which already
-# sits directly inside the one shared worktrees folder
-# (`worktrees-live-in-one-folder`). The default below is that folder itself,
-# not a "/worktrees" appended a second time.
-TOPLEVEL="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
-WORKTREES_DIR="${ROLA_WORKTREES_DIR:-$(dirname "$TOPLEVEL")}"
+# root, not the main repo's -- e.g. /path/to/worktrees/<name> -- so it cannot
+# be used to find "beside the main checkout" from inside a linked worktree.
+# `git worktree list --porcelain`'s FIRST `worktree` line is always the main
+# checkout, regardless of which worktree this script runs from (LOCKS brief
+# item 6, the NICE stage's finding: run from the main checkout, the old
+# `dirname(TOPLEVEL)` default landed one level too high -- the main checkout's
+# own directory is not itself named "worktrees", so its parent isn't either).
+MAIN_CHECKOUT="$(git -C "$SCRIPT_DIR" worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+DEFAULT_WORKTREES_DIR="$(dirname "$MAIN_CHECKOUT")/worktrees"
+
+if [[ -n "${ROLA_WORKTREES_DIR:-}" ]]; then
+  # Explicit override: trusted as given (worktrees-live-in-one-folder's rule
+  # is "ONE folder", not "a folder literally spelled worktrees" -- an agent
+  # naming a different one on purpose is not the mistake this refusal exists
+  # to catch).
+  WORKTREES_DIR="$ROLA_WORKTREES_DIR"
+else
+  WORKTREES_DIR="$DEFAULT_WORKTREES_DIR"
+  if [[ "$(basename "$WORKTREES_DIR")" != "worktrees" ]]; then
+    echo "refusing: the computed worktrees directory $WORKTREES_DIR is not named" >&2
+    echo "'worktrees' -- worktrees live in ONE folder beside the main checkout." >&2
+    echo "Set ROLA_WORKTREES_DIR explicitly if this is deliberate." >&2
+    exit 1
+  fi
+fi
 WORKTREE="$WORKTREES_DIR/$NAME"
 VENV="$WORKTREES_DIR/venv-$NAME"
 

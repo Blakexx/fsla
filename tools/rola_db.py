@@ -45,6 +45,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "benchmarks"))
 
+import host_budget  # noqa: E402 -- path insert must precede this import
+
 from bench.store import KINDS, results_dir  # noqa: E402
 
 SCHEMA_SQL = """
@@ -116,62 +118,67 @@ def rebuild(args) -> int:
     fresh clone plus `rebuild` must reproduce the same database -- that is the
     whole point of the record/database split, and it is what the K38 stage
     validates directly rather than assuming."""
-    rdir = results_dir()
-    out = db_path()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    if out.exists():
-        out.unlink()
-    conn = sqlite3.connect(str(out))
-    conn.executescript(SCHEMA_SQL)
+    #: THE K38 RECORDS DATABASE IS ONE SHARED ARTIFACT (LOCKS brief item 3):
+    #: two concurrent `rebuild` invocations both truncate-then-rewrite `out`,
+    #: so this whole drop/recreate/populate act is one exclusive, short-held
+    #: file lock, not a race.
+    with host_budget.file_lock("rola_db_epilogue"):
+        rdir = results_dir()
+        out = db_path()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.exists():
+            out.unlink()
+        conn = sqlite3.connect(str(out))
+        conn.executescript(SCHEMA_SQL)
 
-    n_runs = n_results = n_files = 0
-    for path in _iter_jsonl_files(rdir):
-        n_files += 1
-        rel = str(path.relative_to(ROOT))
-        run_id = None
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if row.get("kind") == "run":
-                run_id = row["run_id"]
-                missing = [k for k in ("run_id", "git_sha", "stamp_magic", "harness_sha")
-                          if not row.get(k)]
-                if missing:
-                    raise SystemExit(
-                        f"{rel}:{lineno} is missing required provenance field(s) "
-                        f"{missing} -- refusing to index an unusable row "
-                        f"(docs/measurement.md).")
-                conn.execute(
-                    "INSERT INTO runs (run_id, ts, hw_profile, machine_tag, gpu, driver, "
-                    "cuda, image_digest, git_sha, branch, worktree, dirty, stamp_magic, "
-                    "arm_census_hash, harness_sha, stage, agent, purpose, env_json, "
-                    "source_file) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (row["run_id"], row.get("ts"), row.get("hw_profile"), row.get("machine_tag"),
-                     row.get("gpu"), row.get("driver"), row.get("cuda"), row.get("image_digest"),
-                     row["git_sha"], row.get("branch"), row.get("worktree"),
-                     int(bool(row.get("dirty"))), row["stamp_magic"], row.get("arm_census_hash"),
-                     row["harness_sha"], row.get("stage"), row.get("agent"), row.get("purpose"),
-                     json.dumps(row.get("env") or {}, sort_keys=True), rel))
-                n_runs += 1
-            elif row.get("kind") in KINDS:
-                if row.get("run_id") != run_id:
-                    raise SystemExit(
-                        f"{rel}:{lineno} is a {row.get('kind')!r} result whose run_id "
-                        f"does not match this file's own run record -- a K38 record "
-                        f"file is one run, self-contained, and this one is not.")
-                conn.execute(
-                    "INSERT INTO results (run_id, kind, cell, arm, metric, value, unit, "
-                    "extra_json) VALUES (?,?,?,?,?,?,?,?)",
-                    (row["run_id"], row["kind"], row.get("cell"), row.get("arm"),
-                     row["metric"], row.get("value"), row.get("unit"), row.get("extra_json")))
-                n_results += 1
-            else:
-                raise SystemExit(f"{rel}:{lineno} has unrecognized kind {row.get('kind')!r}")
-    conn.commit()
-    conn.close()
-    print(f"rebuilt {out} from {n_files} file(s): {n_runs} runs, {n_results} results")
-    return 0
+        n_runs = n_results = n_files = 0
+        for path in _iter_jsonl_files(rdir):
+            n_files += 1
+            rel = str(path.relative_to(ROOT))
+            run_id = None
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if row.get("kind") == "run":
+                    run_id = row["run_id"]
+                    missing = [k for k in ("run_id", "git_sha", "stamp_magic", "harness_sha")
+                              if not row.get(k)]
+                    if missing:
+                        raise SystemExit(
+                            f"{rel}:{lineno} is missing required provenance field(s) "
+                            f"{missing} -- refusing to index an unusable row "
+                            f"(docs/measurement.md).")
+                    conn.execute(
+                        "INSERT INTO runs (run_id, ts, hw_profile, machine_tag, gpu, driver, "
+                        "cuda, image_digest, git_sha, branch, worktree, dirty, stamp_magic, "
+                        "arm_census_hash, harness_sha, stage, agent, purpose, env_json, "
+                        "source_file) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (row["run_id"], row.get("ts"), row.get("hw_profile"), row.get("machine_tag"),
+                         row.get("gpu"), row.get("driver"), row.get("cuda"), row.get("image_digest"),
+                         row["git_sha"], row.get("branch"), row.get("worktree"),
+                         int(bool(row.get("dirty"))), row["stamp_magic"], row.get("arm_census_hash"),
+                         row["harness_sha"], row.get("stage"), row.get("agent"), row.get("purpose"),
+                         json.dumps(row.get("env") or {}, sort_keys=True), rel))
+                    n_runs += 1
+                elif row.get("kind") in KINDS:
+                    if row.get("run_id") != run_id:
+                        raise SystemExit(
+                            f"{rel}:{lineno} is a {row.get('kind')!r} result whose run_id "
+                            f"does not match this file's own run record -- a K38 record "
+                            f"file is one run, self-contained, and this one is not.")
+                    conn.execute(
+                        "INSERT INTO results (run_id, kind, cell, arm, metric, value, unit, "
+                        "extra_json) VALUES (?,?,?,?,?,?,?,?)",
+                        (row["run_id"], row["kind"], row.get("cell"), row.get("arm"),
+                         row["metric"], row.get("value"), row.get("unit"), row.get("extra_json")))
+                    n_results += 1
+                else:
+                    raise SystemExit(f"{rel}:{lineno} has unrecognized kind {row.get('kind')!r}")
+        conn.commit()
+        conn.close()
+        print(f"rebuilt {out} from {n_files} file(s): {n_runs} runs, {n_results} results")
+        return 0
 
 
 def _connect_ro() -> sqlite3.Connection:

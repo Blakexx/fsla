@@ -26,7 +26,24 @@
 # `docs/build.md#compile-ledger` and the `rola-build` skill point here now;
 # the old out-of-repo build-slot script is superseded (§17: a tool the repo
 # depends on lives in the repo, not in a scratch sibling).
+#
+# NICED (LOCKS brief item 7, 2026-08-29): `tools/build_lock.py`/`tools/gpu_lock.py`
+# already lower their OWN process's priority once they hold their lock (the NICE
+# stage), but this file wraps an EXTERNAL command via `exec` -- the wrapped
+# process never runs any Python of this repo's own, so it never got niced. Every
+# `exec "$@"` below is now `exec "${NICE_CMD[@]}" "$@"`: the wrapped command
+# itself runs niced, the same `ROLA_NO_NICE=1` escape hatch the Python locks honor.
 set -euo pipefail
+
+NICE_CMD=()
+if [[ "${ROLA_NO_NICE:-}" != "1" ]]; then
+  if command -v nice >/dev/null 2>&1; then
+    NICE_CMD+=(nice -n 10)
+  fi
+  if command -v ionice >/dev/null 2>&1; then
+    NICE_CMD=(ionice -c 3 "${NICE_CMD[@]}")
+  fi
+fi
 
 N=${ROLA_BUILD_SLOTS:-2}
 GATE=0
@@ -54,18 +71,18 @@ if [[ $GATE -eq 1 ]]; then
   echo "[build_lock] gate build: all $N slot(s) held, running" >&2
   # fds stay open (and therefore locked) for the lifetime of this process;
   # they close automatically when it exits, releasing every slot at once.
-  exec "$@"
+  exec "${NICE_CMD[@]}" "$@"
 fi
 
 for i in $(seq 0 $((N - 1))); do
   exec {fd}>"/tmp/rola_build_slot_${i}.lock"
   if flock -n "$fd"; then
     echo "[build_lock] iteration build: slot $i" >&2
-    exec "$@"
+    exec "${NICE_CMD[@]}" "$@"
   fi
   exec {fd}>&-
 done
 exec {fd}>"/tmp/rola_build_slot_0.lock"
 flock "$fd"
 echo "[build_lock] iteration build: slot 0 (waited)" >&2
-exec "$@"
+exec "${NICE_CMD[@]}" "$@"

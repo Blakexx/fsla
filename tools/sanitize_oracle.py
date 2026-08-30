@@ -45,6 +45,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import host_budget
 from gpu_lock import gpu_lock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -274,7 +275,11 @@ def main() -> int:
     families = args.family or list(_FAMILY_TESTS)
 
     failures = []
-    with gpu_lock():
+    #: LOCKS brief, 2026-08-29: a sanitizer run is CORRECTNESS work on the GPU
+    #: (`mode="shared"`, item 2) AND draws K=2 of the host-compute budget
+    #: (item 1) -- `compute-sanitizer` itself is CPU-heavy (instrumenting every
+    #: memory access), on top of whatever the wrapped pytest process spends.
+    with host_budget.acquire(2, label="sanitize_oracle"), gpu_lock(mode="shared"):
         for family in families:
             for tool in tools:
                 reason = SKIP.get((family, tool))
