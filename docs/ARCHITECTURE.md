@@ -332,6 +332,10 @@ everything else is derived, addressed at runtime, or constant.**
 | **runtime addressing** | the per-side modes, `B_l`, the orders, the row maps | CTA-uniform values read from the descriptor in the prologue: a few shifts, spans, per-warp offsets, row-map deltas and swizzle words per level. |
 | **constant** | `W`, `C` | kernel internals; a short sequence runs partial windows. |
 
+`W`, `C`, `warps_per_cta`'s `{8, 4}` set, `BC`'s derivation and the per-arch launch
+table are declared once in `csrc/rola/src/common/constants.cuh` / `rola.engine.constants`
+(`docs/internals/common/constants.md`); the S-from-SMEM rule for `S` lives there too.
+
 **Shape is the warp's slot map, and it is compiled.** The quantity that fixes which
 register holds which factor in the unrolled expansion — the map from a worker's leaf
 slots to per-level digits — is REGISTER SHAPE, not addressing: a runtime span would
@@ -703,6 +707,10 @@ far the body is from hiding its own latency — and never becomes the law. Every
 measurement the repository has was taken at two blocks of four warps, where the second
 block was covering every edge; the one-block figure is the number the pipelined body is
 graded against.
+
+The per-arch `(ctas_per_sm, warps_per_cta)` launch table this section describes is data
+in `csrc/rola/src/common/constants.cuh` / `rola.engine.constants`
+(`docs/internals/common/constants.md#launch-table`), not a per-kernel branch.
 
 ---
 
