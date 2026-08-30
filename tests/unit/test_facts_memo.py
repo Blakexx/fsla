@@ -88,7 +88,7 @@ def _decode_scratch_facts():
     from rola.ops.decode import derive_decode_geometry
 
     class _Topology:
-        widths = (4, 4)
+        widths = (16, 16)
 
     return {"geometry": derive_decode_geometry(_Topology(), d_v=64, decay=False, BH=2,
                                                device="cpu"),
