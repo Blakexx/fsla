@@ -18,6 +18,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 
+#include "common/arch_runtime.cuh"
 #include "dispatch_switch.cuh"
 #include "entmax.cuh"
 #include "factor.cuh"
@@ -555,6 +556,7 @@ void factor_forward(const torch::Tensor& logits, const c10::optional<torch::Tens
                     const std::vector<int64_t>& value_offsets,
                     const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
                     int64_t heads, double alpha) {
+  check_arch_table();
   detail::check_logits(logits);
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "independent entmax supports alpha 1.5 / 2.0 only");
   TORCH_CHECK(support_offsets.size() == widths.size(),
@@ -578,6 +580,7 @@ void factor_backward(const torch::Tensor& values, const torch::Tensor& support_w
                      const std::vector<int64_t>& support_offsets,
                      const std::vector<int64_t>& widths, bool accumulate, int64_t heads,
                      double alpha) {
+  check_arch_table();
   detail::check_logits(d_logits);
   TORCH_CHECK(alpha == 1.5 || alpha == 2.0, "independent entmax supports alpha 1.5 / 2.0 only");
   TORCH_CHECK(support_offsets.size() == widths.size(),
@@ -600,6 +603,7 @@ void softmax_forward(const torch::Tensor& logits, torch::Tensor& values,
                      const std::vector<int64_t>& logit_offsets,
                      const std::vector<int64_t>& value_offsets, const std::vector<int64_t>& widths,
                      int64_t heads) {
+  check_arch_table();
   detail::check_logits(logits);
   detail::check_values(values, values_second);
   const auto table = detail::build_table(logit_offsets, value_offsets, {}, widths);
@@ -616,6 +620,7 @@ void softmax_backward(const torch::Tensor& values, const torch::Tensor& d_values
                       const std::vector<int64_t>& logit_offsets,
                       const std::vector<int64_t>& value_offsets, const std::vector<int64_t>& widths,
                       bool accumulate, int64_t heads) {
+  check_arch_table();
   detail::check_logits(d_logits);
   detail::check_values(values, d_values_second);
   TORCH_CHECK(d_values.scalar_type() == values.scalar_type(),

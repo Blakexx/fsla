@@ -4,6 +4,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 
+#include "common/arch_runtime.cuh"
 #include "intra/intra_kernel.cuh"
 
 namespace rola {
@@ -71,6 +72,7 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
                    const at::Tensor& v, const at::Tensor& sread, const at::Tensor& swrite,
                    at::Tensor& o, at::Tensor& den, int64_t levels, int64_t level_width,
                    int64_t level_modes, int64_t window) {
+  check_arch_table();
   const int64_t bh = pread.size(0);
   const int64_t L = pread.size(1);
   const int64_t width = levels * level_width;

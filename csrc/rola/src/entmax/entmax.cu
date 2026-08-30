@@ -19,6 +19,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 
+#include "common/arch_runtime.cuh"
 #include "dispatch_switch.cuh"
 #include "entmax.cuh"
 
@@ -475,6 +476,7 @@ void union_forward(const torch::Tensor& read_logits, const torch::Tensor& write_
                    const std::vector<int64_t>& midpoint_offsets,
                    const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
                    int64_t heads, double alpha) {
+  check_arch_table();
   detail::check_logits(read_logits);
   TORCH_CHECK(read_logits.scalar_type() == write_logits.scalar_type(),
               "read/write routing logits must share a dtype");
@@ -503,6 +505,7 @@ void union_backward(const torch::Tensor& read_logits, const torch::Tensor& write
                     const std::vector<int64_t>& midpoint_offsets,
                     const std::vector<int64_t>& support_offsets, const std::vector<int64_t>& widths,
                     int64_t heads, double alpha) {
+  check_arch_table();
   detail::check_logits(read_logits);
   TORCH_CHECK(read_logits.scalar_type() == d_read_logits.scalar_type(),
               "the union VJP writes logit gradients in the logits' own dtype");

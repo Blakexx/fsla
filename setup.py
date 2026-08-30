@@ -601,6 +601,10 @@ SOURCES = [
     #: G -- the addressing block's host seam (derivation + refusals). Its own TU so
     #: that the foundation lands without recompiling the dispatch; it holds no kernel.
     "csrc/rola/src/common/geom.cu",
+    #: The closed-world arch rule's runtime half (setup.py's rule R4): its own TU,
+    #: beside arch_caps.cuh's compile-time half, so every launching family links one
+    #: definition rather than each carrying its own copy.
+    "csrc/rola/src/common/arch_runtime.cu",
     "csrc/rola/src/facts/liveness.cu",
     #: The extension's freshness fact: one kernel returning the csrc content hash it
     #: compiled against. Its own TU so that a source edit rebuilds this one file

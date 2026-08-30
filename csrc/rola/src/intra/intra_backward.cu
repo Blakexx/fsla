@@ -10,6 +10,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 
+#include "common/arch_runtime.cuh"
 #include "intra/intra_backward_kernel.cuh"
 
 namespace rola {
@@ -55,6 +56,7 @@ void intra_backward(const at::Tensor& pread, const at::Tensor& pwrite, const at:
                     const at::Tensor& v, const at::Tensor& dnum, const at::Tensor& dden,
                     at::Tensor& d_pr, at::Tensor& d_pw, at::Tensor& d_gw, at::Tensor& d_v,
                     int64_t levels, int64_t level_width, int64_t level_modes, int64_t window) {
+  check_arch_table();
   TORCH_CHECK(pread.is_cuda() && pread.is_contiguous() && pread.scalar_type() == at::kBFloat16,
               "the operand planes are contiguous CUDA bf16");
   const int64_t bh = pread.size(0);
