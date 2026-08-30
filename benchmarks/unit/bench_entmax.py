@@ -11,7 +11,9 @@ from pathlib import Path
 
 
 def main() -> int:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(root / "benchmarks"))
+    sys.path.insert(0, str(root))
     from bench.driver import main as drive
 
     return drive({"entmax_solve"}, description=__doc__)

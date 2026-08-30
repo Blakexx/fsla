@@ -46,7 +46,7 @@ in the tree discharges it.
 | the discipline gates (the lock, the dirty-tree refusal, the clock-settle refusal, the extension's identity, the warmup floor) | **DELIVERED** | `benchmarks/bench/discipline.py`, `bench/pairing.py`, `bench/chunk_baseline.py` |
 | their planted-violation tests | **DELIVERED** | `tests/unit/test_chunk_bench_harness.py` — one planted violation per gate, with positive controls |
 | per-cell latency baselines for the chunk arm | **DELIVERED** | `benchmarks/cells/chunk_latency_baseline.json`, recorded whole across seven sessions by `bench_chunk.py baseline --write`; the gate is `tests/unit/test_chunk_latency_regression.py`, which reads and never writes |
-| the frozen cells the baselines are keyed to | **DELIVERED** | `benchmarks/bench/chunk_cells.py` + `benchmarks/cells/chunk_manifest.json` |
+| the frozen cells the baselines are keyed to | **DELIVERED** | `benchmarks/cells/` (the one registry: `carry_cells.json`, `layer_cells.json` + `layer_manifest.json`) |
 | its own LOCKING STATEMENT | **DELIVERED** | below, and enforced by `bench.discipline.disciplined` |
 | a sanitizer measurement for the chunk arm | **STILL OWED** | never existed; see [the sanitizer gap](#the-sanitizer-gap) |
 
@@ -57,7 +57,7 @@ in this tree uses (`tests/conftest.py`, `tools/probe_cells.py`,
 `tools/sanitize_oracle.py`, `bench.discipline.disciplined`). It is invoked BARE —
 
 ```bash
-python benchmarks/unit/bench_chunk_facts.py --tier landing
+python benchmarks/unit/bench_liveness.py --tier landing
 ```
 
 Before K46 this harness was invoked WRAPPED and `bench.discipline.require_gpu_lock`
@@ -199,7 +199,7 @@ fixture from the same registry, and neither owns a round loop of its own.
 ### The chunk arm's committed baseline
 
 `benchmarks/cells/chunk_latency_baseline.json`, one row per `subject|cell` over the
-registry in `benchmarks/bench/chunk_cells.py`. Recorded WHOLE, on a CLEAN tree —
+registry in `benchmarks/cells/`. Recorded WHOLE, on a CLEAN tree —
 `bench.chunk_baseline.write` refuses a dirty one, because a number taken over uncommitted
 edits describes a tree nobody can check out. It carries the GPU, the arch, the driver,
 torch, the assembler, the ratification digest, the recorded sha and the extension's own

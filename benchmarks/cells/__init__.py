@@ -3,10 +3,16 @@
 """THE CELL REGISTRY: the carry family's cells as DATA, with one draw behind them.
 
 `carry_cells.json` holds the records; this module reads them, derives each cell's
-STATE DESCRIPTOR and LAUNCH SHAPE from its fields, and realizes its routing draw. One
-definition, three readers -- the oracle tier, `tools/probe_cells.py` and the benches --
-which is the state G5 finishes reaching (the probe still carries its own frozen mirror
-and the benches their inline specs; both retire there, not here).
+STATE DESCRIPTOR and LAUNCH SHAPE from its fields, realizes its routing draw, and builds
+`carry_call` -- one cell's WHOLE call. ONE definition, three readers: the oracle tier,
+`tools/probe_cells.py` and the benches all reach the kernel through it, so a cell's
+operands are the same tensors in a correctness run and in a measured one.
+
+The registry's other half is `layer.py` (`layer_cells.json`): a LAYER cell declares a
+CONSTRUCTOR -- a producer, a routing template, a gain -- from which the amplitudes are
+PRODUCED, rather than a draw that puts them on the simplex directly. The two answer
+different questions and neither stands in for the other, so both live here under one set
+of names.
 
 A record DECLARES A DRAW AND A SHAPE and never an arm: the arm key is
 ``(D, DV, warps_per_cta)`` and `rola.ops.carry` derives it. Nothing in a record names

@@ -11,7 +11,7 @@ measured alone, which is the BASELINE mode.
 
 Usage (invoked BARE -- `bench.discipline.disciplined` takes `gpu_lock()` itself, K46):
 
-    python benchmarks/unit/bench_chunk_facts.py --tier landing
+    python benchmarks/unit/bench_liveness.py --tier landing
 """
 from __future__ import annotations
 
@@ -22,17 +22,33 @@ import sys
 from pathlib import Path
 
 from bench import store
-from bench.chunk_cells import CELLS, GROUPS
 from bench.discipline import disciplined
 from bench.ledger import append
 from bench.pairing import INSTRUMENTS, REPS_PER_ROUND, Arm, interleaved_ab, measure_arm
 from bench.regression import CANONICAL_INSTRUMENT
 from bench.stats import MIN_ROUNDS, paired_verdict
 from bench.subjects import SUBJECTS, applicable
+from benchmarks.cells import carry_cells
+from benchmarks.cells.layer import build as build_layer_fixture
+from benchmarks.cells.layer import layer_cells
+
+#: THE REGISTRY, read once: `{name -> (kind, record)}` over BOTH cell kinds. A name is
+#: unique across the registry, so a command line names a cell and the kind follows.
+CELLS = {**{c.name: ("carry", c) for c in carry_cells()},
+         **{c.name: ("layer", c) for c in layer_cells()}}
+
+#: Named GROUPS, so a run is cited by a name rather than by a slice of the registry.
+GROUPS = {
+    "all": list(CELLS),
+    "carry": [n for n, (kind, _) in CELLS.items() if kind == "carry"],
+    "layer": [n for n, (kind, _) in CELLS.items() if kind == "layer"],
+    "decode": [n for n, (kind, c) in CELLS.items()
+               if kind == "layer" and c.decode_steps > 0],
+}
 
 #: The probe version of THIS harness. It is inside every fingerprint, so a redefinition
 #: of what a subject measures starts a new series rather than extending the old one.
-PROBE_VERSION = 1
+PROBE_VERSION = 2
 
 #: Rounds per tier. `landing` is `MIN_ROUNDS`, which is DERIVED from the paired test's
 #: alpha: below it no outcome can be significant and the test is undefined, not weak.
@@ -47,23 +63,35 @@ def parse_spec(spec: str, subjects) -> tuple[str, str]:
         raise SystemExit(f"{subject!r} is not one of this driver's subjects: {sorted(subjects)}")
     if cell not in CELLS:
         raise SystemExit(f"{cell!r} is not a registered cell: {sorted(CELLS)}")
-    if subject not in applicable(CELLS[cell]):
+    kind, spec = CELLS[cell]
+    if subject not in applicable(spec, kind):
         raise SystemExit(f"{subject!r} does not apply to {cell!r} "
-                         f"(applicable: {applicable(CELLS[cell])})")
+                         f"(applicable: {applicable(spec, kind)})")
     return subject, cell
 
 
-def build_arm(subject: str, cell: str, cache: dict) -> Arm:
+def fixture(cell: str, cache: dict) -> dict:
     """The fixture is built ONCE per cell per process: two subjects on one cell must see
-    the same fixture, or the pairing is across two draws as well as two arms."""
+    the same fixture, or the pairing is across two draws as well as two arms.
+
+    A CARRY cell's fixture is the record itself -- the draw is realized by whichever
+    subject reads it, from the cell's own seed, so there is nothing to build ahead. A
+    LAYER cell's is the constructed layer, which is expensive and shared.
+    """
     if cell not in cache:
-        cache[cell] = CELLS[cell].build()
-    arm = SUBJECTS[subject](cache[cell])
+        kind, spec = CELLS[cell]
+        cache[cell] = ({"cell": spec} if kind == "carry"
+                       else {**build_layer_fixture(spec), "cell": spec})
+    return cache[cell]
+
+
+def build_arm(subject: str, cell: str, cache: dict) -> Arm:
+    arm = SUBJECTS[subject].build(fixture(cell, cache))
     return Arm(name=f"{subject}|{cell}", call=arm.call)
 
 
 def _row(run, subject: str, cell: str, values, source: str, **extra) -> dict:
-    return run.row(probe=f"chunk:{subject}", probe_version=PROBE_VERSION,
+    return run.row(probe=f"rola:{subject}", probe_version=PROBE_VERSION,
                    arm=f"{subject}|{cell}", source=source, metric="duration", unit="ms",
                    values=values, **extra)
 
@@ -144,7 +172,8 @@ def main(subjects, argv=None, *, description: str = "") -> int:
             wanted = [args.subject] if args.subject else sorted(subjects)
             for cell in names:
                 for subject in wanted:
-                    if subject not in applicable(CELLS[cell]):
+                    kind, spec = CELLS[cell]
+                    if subject not in applicable(spec, kind):
                         continue
                     arm = build_arm(subject, cell, cache)
                     res = measure_arm(arm, rounds=rounds, reps_per_round=args.reps,

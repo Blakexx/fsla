@@ -12,7 +12,7 @@ to require).** This harness takes `gpu_lock()` ITSELF now, the same primitive ev
 other GPU entry point uses (`tools/gpu_lock.py`, `tests/conftest.py`,
 `tools/probe_cells.py`, `tools/sanitize_oracle.py`) -- it is invoked BARE:
 
-    python benchmarks/unit/bench_chunk_facts.py
+    python benchmarks/unit/bench_liveness.py
 
 Before K46 this harness was invoked WRAPPED (an external `flock` on the GPU lock
 path around the whole command) and `require_gpu_lock` REFUSED a bare invocation by
