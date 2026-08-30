@@ -325,9 +325,12 @@ capacity: `leaves_per_sm` (the register file on sm_80/90, tensor memory on sm_10
 balanced over the D levels is the SM's box; `warps_per_sm` is the constant that carves
 it — a warp owns a segment of the box on every architecture; each SIDE's level order
 divides the box, sparse levels first, until the warp count is reached, and what remains
-is that side's warp segment. The compiled shape is the slot map of the REGISTER TILE a
-warp holds per step (today one tile is the whole segment; on sm_100 a warp walks its
-tensor-memory segment tile by tile, a runtime trip count over identical bodies). The set
+is that side's warp segment. The compiled shape is the leaf layout of the MMA ACCUMULATOR TILE —
+the slot map that fixes which leaf row of the tile each expanded coefficient lands on.
+On sm_80/90 that tile is the warp's register fragment and today it is the whole segment;
+on sm_100 it is the tensor-memory tile the MMA accumulates into and reads its A operand
+from in place, and a warp walks its segment tile by tile (a runtime trip count over
+identical bodies; the state never passes through registers to compute). The set
 of shapes a side can select is generated from (D, log₂ warps_per_sm, the box's bit
 vector) — its count is flat across architectures — and the selection per side is a
 `uniform_switch` over that set outside the window loop. A CTA holds a contiguous subset
