@@ -400,31 +400,67 @@ Four kernels and one host-side derivation. They share the window grid, the descr
 and the atom; they share no code path that could make a wrong convention agree with
 itself.
 
-**NOT ON THIS LINE: §6.1 and §6.2.** C0 (card C, `development/queue/C_CLEAN_SLATE.md`)
-deleted the facts kernels and the carry body from this branch. The two sections below
-stand as the SPECIFICATION of what C3 builds and C2's liveness pass replaces, not as a
-description of code in this tree; the old bodies are readable on the `k35-final` tip,
-which is also the parity reference every C3 stage is graded against. §6.3 and §6.4 —
-decode and intra — describe kernels that are here and unchanged.
+**Two of them are not in this tree, and the two sections below are their
+specification.** The clean-slate line (`development/queue/C_CLEAN_SLATE.md`) deleted
+the stats passes and the carry body from this branch: §6.1 states what the foundation
+builds in their place and §6.2 what the body is, mechanism by mechanism, in the order
+the mechanisms are built. The deleted bodies are readable on the `k35-final` branch
+tip, which is never edited again and which is the parity reference every stage of the
+rebuild is graded against from its first probe. §6.3 and §6.4 — decode and intra —
+describe kernels that are here and unchanged.
 
-### 6.1 Facts — the bits
+**Nothing is ported, and nothing is a prototype.** The rebuild reads the old bodies and
+the measured records as SOURCES OF MECHANISM — each stage below names the file or the
+record its mechanism was proven in — and then writes that mechanism in its final form,
+at floor, inside the pipelined structure, from the first commit. There is no
+correct-first-fast-later stage: a stage that loses to the reference on the mechanism it
+replaces is red, and bad performance is a report, never a scope decision. "Ground up"
+means the structure is designed for the whole design from the start, not that what has
+been proven is discarded. *(Ruled.)*
 
-One pass over the routing amplitude planes emits everything downstream launches need:
-the per-side union table of packed liveness bits (`[BH, entries_read + entries_write,
-L/32]`, the two blocks consecutive, shape `Σ_l B_l / s(l)` per side and NOT growing
-with `N`), the per-level width plan, and the activity bits of §3.4. Rows are voted at
-the CARVE grain, per side, per level, per run of THAT side's partition, from that
-side's own factors — so a stream's test reads exactly one row per tested level, and a
-level a side spans whole emits no rows at all (`docs/internals/facts/facts_kernel.md`).
+### 6.1 The liveness pass — the bits
 
-**The body in the tree is the reference; the body the foundation is for is new.** The
-carry kernel in the tree is the lineage that proved the design's mechanisms one at a time
-and is kept untouched as the parity reference. The foundation — the descriptor and state
-format, the geometry block, the structure switch, the liveness pass, the constants and the
-launch table, the selection and its manifest — is built as contracts, derivations,
-primitives, tools and tests that no old body consumes. The pipelined body is then written
-from an empty file on those specializations, ground up, and replaces the reference only
-when it beats it. Nothing is ported. *(Ruled.)*
+One pass over the routing amplitude planes emits everything the downstream launches
+need in place of an amplitude scan: per side, per token, per level, ONE BIT PER DIGIT
+in canonical order — a sparse level's bits voted from that side's own amplitudes, a
+dense level's bits its static width mask — plus the per-level width plan and the
+activity bits of §3.4, folded from the same words on the host. The emitted size per
+side is `L × Σ_l B_l / 8` bytes: a function of the sequence and the address space's
+WIDTHS, never of `N`. Because a pad digit's amplitude is exactly zero by
+construction — the routing producer pads a level's logits with negative infinity before
+the activation, and the descriptor records the logical width beside the padded one
+(§3.1) — pad digits are never live, never mark a box and never allocate a page; the
+kernel sees a dead digit like any other.
+
+Why the bits, and why per DIGIT: a consumer's liveness test becomes word logic over
+data it already holds, instead of the amplitude scan it replaces, which read
+`2 Σ_l s_l` bf16 values per token per owner. The digit grain is what makes the pass
+CARVE-INDEPENDENT — the carve is a runtime fact now (§5), so the pass cannot pre-vote
+at it, and each consumer instead ORs the digits of its own span at each level and ANDs
+the levels together, from bits that are the same for every consumer. That is the one
+structural difference from the pass this replaces, which emitted rows already voted at
+a compile-time carve; the property that vote had — a side spanning a level whole
+contributes nothing, so a stream tests exactly the levels it carves — is preserved,
+because a dense level's bits are all ones and drop out of the conjunction on their own.
+Liveness therefore stays a VALUE test: no structure fact and no measured statistic
+enters a kernel (§R9). The consumers are the carry's window schedule (its per-side,
+per-window live-token union), the host folds that produce the primary and derived
+activity bits of §3.4, and decode's paged admission.
+
+*Where the mechanism was proven:* the union table, the atom-grain vote and the
+block-grain liveness epilogue on the `k35-final` tip's
+`csrc/rola/src/facts/facts_kernel.cuh` and `facts_launch.cuh`; the two-bit activity law
+and the byte gate that certifies it at tag `record/p80b-activity-bits`. *The floor:*
+each amplitude plane read exactly once (unique bytes — the pass is DRAM-bound); the
+emitted bytes as above; the host folds linear in boxes × levels; and, on the consuming
+side, the word operations per (warp, window, side) that the span OR and the level AND
+cost, which is the term the layout is answerable for.
+
+*(Ruled, not yet built: the pass is the FIRST foundation feature of the clean-slate
+line, built and tested on its own before any kernel body, and its word layout, its
+Python reader and its host folds are pinned by the contract stage as an executable
+model before the pass exists. Decode's paged path is red until it lands —
+`docs/open-work.md`.)*
 
 ### 6.2 Carry — the window body
 
@@ -440,68 +476,165 @@ are inside one window, so those pairs belong to the intra term and would be coun
 twice. The batch line therefore IS the window line, except across windows where the
 owner is side-dead, which is the whole-window-skip harvest.
 
-**The schedule.** A window is `W/32` ballot words and a lockstep unit has 32 lanes, so
-a lane holds one word and a row costs one 32-bit load per warp — cheap enough that every
-warp can hold the owner-grain ballots of both sides. *In the tree:* each warp walks its
-own bits over those CTA-identical ballot words and consumes the union list, which is the
-`S = 1` point of §4; the whole-window skip is a ballot test needing no shared word, and
-the write list is balanced at any distribution because each warp takes a fixed slice of
-every word's bits. *Ruled, landing with the pipelined body:* the three-part schedule with
-COOPERATIVE staging — the union of live tokens derived ONCE per side per window; a
-cooperative fetch of un-expanded factor rows and value rows, by executor share, into ONE
-shared staging; the expansion memoized in registers; sends from each stream's own ballot
-into private segments; then seal-and-consume. The edge that staging introduces is
-absorbed by the covers and the split-phase edges below, which is why the earlier
-"cooperative staging forces a barrier the warps wait at" is superseded rather than
-weighed again.
+**The launch surface takes the strict shape and refuses the rest.** The API accepts any
+shape and serves it by padding; the kernel accepts only what the descriptor declares —
+powers of two `≥ 16`, a shipped `DV`, `N` a multiple of 16, bf16 operands, a descriptor
+matching the arm — and refuses everything else by name. It never pads and never masks,
+and the seam is the only translator (`docs/api.md`, KERNEL_STANDARDS §R13). Until a
+body exists the surface fails for ONE honest reason, that there is no implementation:
+no stub computes a wrong answer and no test is skipped to hide the absence.
 
-**Why the schedule has three parts and not two.** A union over (token, stream) pairs
-collapses the fetch and the sends into one walk and re-fetches every token once per
-stream; separating them fetches each token once per window and pays the per-stream cost
-only on the sends. Consumers are then pure matrix multiply. Ownership of a derivation is
-one warp's or one CTA's, never replicated per warp to dodge a barrier the kernel already
-pays.
+**The body is built in seven stages**, each one a shipped increment on the foundation's
+features, each gated by the oracle, a sanitizer run, a census reporting the state
+fraction of the register file, and a probe against the reference body on `k35-final`.
+The pipeline is not the last stage: the structure the later stages fill — one CTA of
+eight warps at 256 registers, double buffering, split-phase edges — exists from the
+skeleton onward, so no stage retrofits a schedule.
 
-**The hybrid transit at the phase change.** The two sides are carved independently, so
-the phase change re-lays the state into the other side's order. The hi plane MOVES: the
-writers publish it and DROP it, holding only the lo plane through PHASE 1; the readers
-pull it in read layout and it IS their A operand — no second bf16 stack exists; after
-PHASE 1 the readers store those same bits back and the writers pull them in write
-layout and rejoin, `(hi << 16) | lo`, exactly, with no arithmetic. The register
-footprint through PHASE 1 is 1.0× the state, not 1.5×. The publisher places each
-leaf's row at the READER's slot, so the reader pulls a contiguous segment with one
-transposing matrix load; the region is XOR-swizzled and conflict-free. A copy form —
-keeping both planes live — is rejected: the register wall is the binding one.
+**1. The skeleton.** The descriptor read and its admission refusal; the geometry
+block's values derived ONCE in the prologue into uniform-datapath registers; the page
+I/O — the box loaded once at the call's entry and stored once at its exit, gated by the
+primary activity bits (§3.4) — the die-fast prologue that exits before touching state
+when a box is neither read nor written this call; and the launch surface above, on a
+trivial one-window cell against the oracle. *Proven form:* the dispatch and its
+by-name refusal, and the state load/store sweeps, in the reference's
+`csrc/rola/src/carry/carry.cu` and `carry_kernel.cuh`; the addressing block itself
+needs no reference — it is alive in this tree at `csrc/rola/src/common/geom.cuh`
+(`docs/internals/common/geom.md`). *Floor:* the prologue's uniform-register and
+instruction counts; zero spill at the register law's allocation; the state fraction;
+state bytes = the box, once in and once out.
 
-**Each transit leg covers itself.** *In the tree:* stores, then work that does not
-depend on the pulled data, then the CTA edge, then the pull. The order is the whole
-mechanism — a cover issued BEFORE the store chain overlaps nothing, which is a defect the
-sequence shows and the stall counters do not. A named barrier does not help here: an
-arrival and a wait executed by the SAME threads are two phases of one barrier rather than
-a split edge, and every warp on this leg is both publisher and puller. *Ruled:* the
-split-phase primitive is the asynchronous barrier — arrive, keep issuing, wait at the use
-— which lets a reader pull a writer's rows as soon as that writer has arrived, at a finer
-grain than the leg.
+**2. The fold, with cooperative staging.** Three parts, not two: the live-token union
+derived ONCE per side per window; a COOPERATIVE fetch of un-expanded factor rows and
+value rows, by executor share, into ONE shared staging, with the expansion memoized in
+registers; then per-stream sends from each stream's own ballot into its private
+segment, and seal-and-consume, after which consumers are pure matrix multiply. A union
+over (token, stream) pairs would collapse the first two parts and re-fetch every token
+once per stream; separating them fetches each token once per window and pays the
+per-stream cost only on the sends. Ownership of a derivation is one warp's or one
+CTA's, never replicated per warp to dodge an edge the kernel already pays, and the edge
+staging introduces is absorbed by the covers and split-phase edges of stage 6 — which
+is why the earlier reading, that cooperative staging forces a barrier the warps wait
+at, is superseded rather than weighed again. The staged batch `C` is a file constant
+(§5) and is never tied to the warp count. *Proven form:* the fold and its ballot walk
+in the reference's `carry_kernel.cuh` (find its sections by the file's own banners, not
+by line numbers); the ballot and owner-row grain in `carry_rows.cuh`; the three-part
+schedule's measured record at tag `record/f3-a247916`. *Floor:* one fetch per (token,
+window) — a re-fetch factor of exactly one in the ledger; sends counted per (stream,
+live token); DRAM and L2 counted as UNIQUE bytes; the expansion's arithmetic issued
+between multiply issues rather than before them.
 
-**The fan-in is a native global reduction out of a staged panel.** The readout
-accumulator's fragment is written to a shared panel in TOKEN-ROW layout, and the
-reduction is then issued from the panel, so one warp instruction covers one token's 32
-contiguous channels — one full 128 B segment. Issuing straight from the accumulator
-fragment is fewer instructions and was measured SLOWER: the fragment's layout half-fills
-its sectors. The figure of merit is therefore 128 B segments per reduction instruction,
-not sector fullness and not instruction count. *Ruled target:* produce the same
-token-row layout in REGISTERS with a shuffle transpose and reduce without the shared
-round trip, measured against the panel.
+**3. The readout and the hybrid transit.** The readout's A-operand fragment IS the
+state accumulator's TOP HALVES — a byte permute of the fp32 pair into a packed bf16
+pair, the truncating read the declared arithmetic specifies (§R17) — so no separate
+bf16 image of the state is ever built, and the hi plane the pages store (§3.2) is the
+same bits by the same rule. The two sides are carved independently, so the phase change
+re-lays the state into the
+other side's order, and the hi plane MOVES: the writers publish it and DROP it, holding
+only the lo plane through PHASE 1; the readers pull it in read layout and it IS their A
+operand — no second bf16 stack exists — and after PHASE 1 the readers store those same
+bits back and the writers pull them in write layout and rejoin, `(hi << 16) | lo`,
+exactly, with no arithmetic. The register footprint through PHASE 1 is 1.0× the state,
+not 1.5×; a copy form keeping both planes live is rejected because the register wall is
+the binding one. The publisher places each leaf's row at the READER's slot, so the
+reader pulls a contiguous segment with one transposing matrix load, and the region is
+XOR-swizzled and conflict-free. The per-side member choice is ONE
+`uniform_switch<Set>` over the generated member set, placed OUTSIDE the loop — one
+specialized body per member, the transit itself outside the switch, since an in-loop
+switch merges every member's live ranges and interleaves their code (KERNEL_STANDARDS
+§R9 enforcement; §5). *Proven form:* the carved body's readout, the
+channel-split readout that proved the fragment identity, and the exchange row-map
+section, all in the reference's `carry_kernel.cuh` (the uncarved channel-split body,
+retired by §R18, is beside it in `carry_split_kernel.cuh`); the `(k, m)` lattice and
+the leaf bit permutation in `carry/box.cuh`, whose arithmetic is most legible in that
+tip's Python mirror of the same law; the swizzle and its bank-conflict ledger at tag
+`record/g2d-4705709`; the row map's derivation is in this tree
+(`docs/internals/common/geom.md`). *Floor:* 1.0× state registers through PHASE 1; zero
+bank conflicts on both legs; one transposing load per contiguous reader segment; and,
+because the switch changes an ownership partition, a SELECTIVITY line and a
+BANK-BEHAVIOUR line beside its per-member instruction count.
 
-**Registers, and what the body is.** The target is a body that hides its own latency by
-construction: a software pipeline where the next batch's produce is issued while the
-tensor pipe works on the current one, double-buffered panels filled asynchronously,
-expansion arithmetic and shared stores interleaved between matrix-multiply issues,
-split-phase edges rather than full barriers, and the fan-in interleaved into the fold
-rather than phased after it. Exposed latency is a COVERAGE finding, never grounds to
-split the CTA (§7). *(Ruled, not yet built: the body in the tree is serial per batch —
-wait, rendezvous, produce, load, multiply — and the measured issue rate is what that
-structure yields.)*
+**4. The streams.** `S` is derived from shared memory (§4), and a stream's segment
+covers exactly one accumulator tile's leaves — the multiply its consumers issue. A warp
+segment of `k` tiles consumes `k` tile-streams in sequence, `k` being a runtime trip
+count that is one on the architectures in the tree; the loop is written with that trip
+count from the first commit, never assuming that a tile and a segment coincide. The
+read side has no stream axis: one stream per accumulator tile, always. *Proven form:*
+the private-segment form and its stream-count axis at tag `record/f3-a247916`, whose
+per-stream value segments fit the one CTA's shared memory — the shared-tile deviation
+it recorded was a symptom of the two-CTA assumption (§7). *Floor:* bytes staged per
+stream = one tile's expanded coefficient rows plus its value rows; the duplicated bytes
+each added stream costs; shared memory filled to the residency target and not past it.
+
+**5. The fan-in.** The window's output reduction is a native global reduction, and the
+figure of merit is 128-BYTE SEGMENTS PER REDUCTION INSTRUCTION — not sector fullness
+and not instruction count. Issuing straight from the accumulator fragment is fewer
+instructions and was measured SLOWER, because the fragment's layout half-fills its
+sectors; writing the fragment to a shared panel in TOKEN-ROW layout and issuing from
+the panel makes one instruction cover one token's 32 contiguous channels, one full
+segment. The stage builds that same token-row layout in REGISTERS with a shuffle
+transpose and reduces without the shared round trip, MEASURED against the panel form,
+which is the control. *Proven form:* the staged panel and its
+measured win over issuing from the fragment, and the alternative lock-and-CAS
+`ring_scatter` form with its flow counters beside it, both in the reference's
+`carry_kernel.cuh`; the law the measurement stands on — staged versus straight is
+decided by LATENCY, not by counts — is KERNEL_STANDARDS §R7. *Floor:* reduction
+instructions per token = `DV` / 32, each covering one full 128 B segment; the shuffle
+count of the transpose; the panel's shared traffic and its edge, removed.
+
+**6. The pipeline.** The body hides its own latency by construction: the next batch's
+produce is issued while the tensor pipe works on the current one, panels are
+double-buffered and filled asynchronously, expansion arithmetic and shared stores are
+interleaved between multiply issues, the edges are asynchronous barriers — arrive, keep
+issuing, wait at the use — rather than full barriers, and the fan-in is interleaved
+into the fold rather than phased after it. `__syncthreads` survives only where a
+write-after-read edge on a region genuinely needs every warp finished. Each transit leg
+covers itself, and the ORDER is the whole mechanism: stores, then work that does not
+depend on the pulled data, then the edge, then the pull — a cover issued BEFORE the
+store chain overlaps nothing, which is a defect the sequence shows and the stall
+counters do not. A named barrier does not help on that leg, because an arrival and a
+wait executed by the SAME threads are two phases of one barrier rather than a split
+edge, and every warp there is both publisher and puller; the asynchronous barrier is
+what lets a reader pull a writer's rows as soon as that writer has arrived, at a finer
+grain than the leg. The launch is one CTA per multiprocessor (§7), and exposed latency
+is a COVERAGE finding, never grounds to split the CTA. On sm_80 the warps are
+symmetric and the pipelining is within each warp; on sm_90 and sm_100 the same schedule
+is expressed as producer/consumer specialization with register repartitioning (§9).
+*Proven form:* the reference's serial per-batch structure — wait, rendezvous, produce,
+load, multiply — and its measured issue rate are the control this stage is graded
+against, not a template. *Floor:* exposed cycles per batch ≈ 0 under the multiplies, by
+the stall mix; a stated target issue rate; every edge per window counted and justified.
+
+**7. The parked lo plane, and the fill rule.** The last stage spends what the earlier
+ones freed: during the readout the lo plane is idle state, so parking it in shared
+memory — aliasing the transit region, dead at that moment — lets its registers house
+the readout's output fragments, the allocation (a maximum over the body's moments)
+falls, and the freed registers become LEAVES. Every moment then fills shared memory to
+the residency target, by value per kilobyte. Both are stated as law in §7, with the
+per-architecture declaration of where parking costs no residency. *Floor:* registers
+per leaf before and after; the leaves per multiprocessor that buys; shared memory
+occupancy at every moment.
+
+**The reverse pass follows the same way, afterwards** — the same features, the same
+grading against the reference, once the forward body stands. Its proven form is the
+zero-snapshot two-scan reverse in the reference's `backward_kernel.cuh` and
+`backward.cu`. **UNSPECIFIED (ruling pending):** whether the reverse carries the
+forward's per-side carve and hybrid transit unchanged or derives its own, and what its
+schedule is in the pipelined structure; today's reverse is built at depth two only, and
+the obstruction is two static assertions on the digit reduction's row and warp maps
+(`docs/open-work.md`).
+
+**UNSPECIFIED (ruling pending): skip-induced wave drift.** Every owner reads the SAME
+amplitude planes, and the design pays for that by having all owners resident on the
+same window at the same time, so one token's runs are fetched once and hit in L2 for
+every other owner. Owners that take the whole-window skip advance along the token axis
+while busy owners lag, the multiprocessors de-phase, and that shared working set
+dissolves; the fixed global window grid does not prevent it. The measured price of the
+de-phasing collapsed once liveness came from ballots rather than amplitudes, so what
+remains is the drift itself, unpriced. There is no phase-coherence law here — the
+candidates on the record are a grid-wide per-window edge, a shared per-window liveness
+scan, and a skip that advances the owner without advancing its stream position — and
+the rebuild does not invent one (`docs/open-work.md`).
 
 ### 6.3 Decode — one wave of fat CTAs
 
@@ -637,7 +770,8 @@ wider-type emulation.
 | the page's plane geometry and its byte permutes | `docs/internals/common/state_page.md` |
 | the arena, the page table, the slack pool | `docs/internals/paging/paging.md` |
 | the addressing block: spans, sub-boxes, the transit row map | `docs/internals/common/geom.md`, `docs/internals/common/geom_api.md` |
-| the owner lattice, the window body, the arms, the facts pass | NOT ON THIS LINE (C0): read them on the `k35-final` tip; C3 rebuilds the body and C2 the liveness pass |
+| the window body and the liveness pass: what is built, in order, and where each mechanism was proven | §6.1, §6.2 |
+| the deleted bodies themselves — the carved window body, the arms, the stats passes | the `k35-final` branch tip, the parity reference (never edited); their mirror pages went with them |
 | the architecture capability table and the closed-world refusal | `docs/internals/common/arch_caps.md` |
 | decode: the step, the walk, growth, capture | `docs/internals/decode/decode.md` |
 | decode's lattice and factor tables | `docs/internals/decode/decode_lattice.md` |

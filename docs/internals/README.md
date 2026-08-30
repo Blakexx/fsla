@@ -40,7 +40,7 @@ never used for general design notes; those are here, in full.
 
 Each file opens with what the source file is and the invariants it must keep,
 then a numbered section per anchored site. Anchor ids are stable: they are cited
-from the source and from `tests/unit/test_docs_mirror.py`, which fails if a
+from the source and from `tools/lint/lint_standards.py`, which fails if a
 source file has no mirror or a stub cites an anchor no doc defines.
 
 `DELETIONS.md` is the ledger of code removed from this tree — what, when, and
@@ -50,6 +50,18 @@ why it was safe.
 repository named by [`docs/provenance.md`](../provenance.md)
 (`flash-linear-attention-rola`, branch `rola-v3`), not in this one, whose history
 begins at the extraction.**
+
+## What this tree does not hold, and where it is
+
+The mirror rule runs source → doc, so a family with no sources here has no pages
+here. The carry (window body) and stats families were deleted from this branch by
+the clean-slate line: their pages went with them, and the bodies are readable on
+the `k35-final` branch tip, which is never edited again and is the parity
+reference the rebuild is graded against. What those kernels ARE — what gets
+built, in what order, and which file or record each mechanism was proven in — is
+stated in [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) §6.1 and §6.2, and what is
+knowingly missing in the meantime is a row in [`docs/open-work.md`](../open-work.md).
+Their mirror pages come back with their stages, one page per source file as ever.
 
 ## Where the other docs live
 
