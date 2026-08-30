@@ -47,6 +47,7 @@ from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE,
 from rola.engine.facts.liveness import LivenessLayout, side_statics
 from rola.ops import carry as carry_ops
 from rola.ops import intra as intra_ops
+from rola.ops import padding as padding_ops
 from rola.ops._ext import extension
 from rola.ops.liveness import liveness_words
 
@@ -62,14 +63,30 @@ LEVEL_WIDTH = intra_ops.LEVEL_WIDTH
 LEVEL_WIDTHS = (intra_ops.LEVEL_WIDTH, intra_ops.LEVEL_WIDTH_DEEP3, intra_ops.LEVEL_WIDTH_DEEP4)
 
 
+def _padded_shape(widths, dv: int) -> padding_ops.PaddedShape:
+    """This call's `rola.ops.padding.PaddedShape` -- every level widened to
+    `padded_level_width` and `dv` widened to the smallest of `carry_ops.SHIPPED_DV`
+    that admits it (KERNEL_STANDARDS R13's "two contracts": the carry surface's
+    kernel boundary refuses anything but its own strict shape, so this seam's
+    descriptor and operand packing pad BEFORE either helper builds anything the
+    boundary would see). A caller already at a shipped shape pays nothing here --
+    `PaddedShape.of` is a no-op past an already-padded width.
+    """
+    return padding_ops.PaddedShape.of(tuple(widths), int(dv), shipped_dv=carry_ops.SHIPPED_DV)
+
+
 def _descriptor(widths, dv: int, bh: int) -> StateFormat:
     """The call's own state descriptor -- the same fields `rola._state._format_of`
-    derives for a routed call, built here from what this operator already has."""
+    derives for a routed call, built here from what this operator already has.
+    `widths`/`dv` are padded first (:func:`_padded_shape`), so the descriptor always
+    names a shape the carry surface's kernel boundary accepts -- a caller's logical
+    shape never reaches `StateFormat` directly."""
+    shape = _padded_shape(widths, dv)
     n = 1
-    for width in widths:
+    for width in shape.padded_widths:
         n *= width
-    return StateFormat(D=len(widths), B=tuple(widths), order=CANONICAL_ORDER,
-                       page_bits=PAGE_RECTANGLE_BITS, DV=int(dv), dtype=SPLIT_PLANE_DTYPE,
+    return StateFormat(D=len(shape.padded_widths), B=shape.padded_widths, order=CANONICAL_ORDER,
+                       page_bits=PAGE_RECTANGLE_BITS, DV=shape.DV, dtype=SPLIT_PLANE_DTYPE,
                        ids=int(bh) * (n >> PAGE_RECTANGLE_BITS))
 
 
@@ -104,12 +121,22 @@ def _pack_operands(read_levels, write_levels, g_write, v):
     ``v_bh`` is `[BH, L, DV]`, the carry surface's own layout; ``v_bthd`` is the
     intra kernel's token-major `[B, T, H, DV]`. Both are views of the one cast, never
     two draws of it.
+
+    THE LEVELS AND ``v`` ARE PADDED FIRST (:func:`_padded_shape`, `rola.ops.padding`):
+    `pad_routes` widens each level's trailing dimension to its `PaddedShape.
+    padded_widths` entry with exact-zero columns before `carry_ops.pack_side` packs
+    it, and `pad_v` widens `v`'s value axis to `PaddedShape.DV` the same way -- a
+    logical `(31, 45)`/`d_v=48` call is packed at the padded shape the carry surface's
+    kernel boundary accepts, and an already-shipped call pays nothing (`pad_routes`/
+    `pad_v` are no-ops past an already-padded width).
     """
-    pread = carry_ops.pack_side(read_levels)
-    pwrite = carry_ops.pack_side(write_levels)
+    widths = tuple(level.shape[-1] for level in read_levels)
+    shape = _padded_shape(widths, v.shape[-1])
+    pread = carry_ops.pack_side(padding_ops.pad_routes(read_levels, shape.padded_widths))
+    pwrite = carry_ops.pack_side(padding_ops.pad_routes(write_levels, shape.padded_widths))
     gwrite = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
     gwrite = gwrite.reshape(gwrite.shape[0] * gwrite.shape[1], -1)
-    v_bthd = v.to(torch.bfloat16).contiguous()
+    v_bthd = padding_ops.pad_v(v.to(torch.bfloat16).contiguous(), shape.DV)
     Bn, T, H, dv = v_bthd.shape
     v_bh = v_bthd.permute(0, 2, 1, 3).contiguous().reshape(Bn * H, T, dv)
     return pread, pwrite, gwrite, v_bh, v_bthd
@@ -166,6 +193,11 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
             f"L = {length} is not a whole number of {WINDOW}-token windows; the "
             f"intra kernel's tile grid is a compile-time count per arm.")
 
+    #: THE LOGICAL VALUE WIDTH, read before `v` is padded -- `slice_y` narrows `num`
+    #: back to this width on the way out, so a caller at an unshipped `d_v` never
+    #: sees the padded tail (`rola.ops.padding`, "TWO CONTRACTS, ONE TRANSLATOR").
+    dv_logical = v.shape[-1]
+
     #: THE OPERANDS ARE PACKED ONCE.  Both kernels read the SAME planes, so a second
     #: pack of either side is how a rounding difference becomes a conformance mystery.
     pread, pwrite, gwrite, v_bh, v_bthd = _pack_operands(read_levels, write_levels,
@@ -196,7 +228,7 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
     extension().intra_forward(pread, pwrite, gwrite, v_bthd, sread, swrite, num, den, D,
                               int(widths[0]), intra_ops.pack_modes(tuple(modes)),
                               int(WINDOW))
-    return num, den, state_out
+    return padding_ops.slice_y(num, dv_logical), den, state_out
 
 
 __all__ = ["LEVEL_WIDTH", "LEVEL_WIDTHS", "WINDOW", "prefill",

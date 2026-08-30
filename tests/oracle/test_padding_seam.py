@@ -7,7 +7,9 @@ change and no oracle arithmetic change.
 **TWO CONTRACTS, KEPT SEPARATE (KERNEL_STANDARDS R13).** The API accepts any shape and
 pads; the kernel accepts only its own descriptor's strict shape and refuses the rest.
 `test_the_api_boundary_pads_and_the_kernel_boundary_refuses` is both halves, side by
-side, on the one call surface (`rola.ops.carry`) this line's kernel has no body for yet.
+side: the API is `rola.ops.prefill`'s `_descriptor`/`_pack_operands` operand-packing
+seam (C2b2), which pads through `rola.ops.padding` onto the carry launch surface
+(`rola.ops.carry`, C1c) this line's kernel has no body for yet.
 
 **PREFILL (no kernel on this line, C_CLEAN_SLATE):** `naive_rola` is already
 dimension-generic (it derives `N`/strides from whatever `Topology` it is handed and
@@ -30,7 +32,7 @@ import math
 import pytest
 import torch
 
-from rola.ops.carry import D_V, box_shape, carry_inter
+from rola.ops.carry import box_shape
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.intra import DENSE_BOTH, WINDOW_SMALL, intra_forward_padded
 from rola.ops.lattice import to_canonical, to_lattice
@@ -112,35 +114,53 @@ def test_prefill_padding_is_the_ruled_mechanism_not_an_approximation_of_it():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="the launch surface is the extension's boundary")
 def test_the_api_boundary_pads_and_the_kernel_boundary_refuses():
-    """(i) API: `carry_inter` (this line's launch surface, no C1c yet) takes a
-    genuinely unpadded shape without ever raising a SHAPE error -- it pads, and the
-    only failure it can reach is the HONEST ABSENCE of the deleted carry kernel
-    (`C_CLEAN_SLATE`: carry is not built on this line). (ii) KERNEL: the descriptor
-    the state addresses bytes with (`rola._state.StateFormat`) refuses that same
-    unpadded shape directly, by name -- the boundary a real kernel launch sits behind.
+    """(i) API: `rola.ops.prefill`'s `_descriptor`/`_pack_operands` -- the operand-
+    packing seam onto the carry launch surface (C1c) -- take a genuinely unpadded
+    shape ((31, 45), d_v=8) without ever raising a SHAPE error: they pad, and the only
+    failure `carry_forward` can reach past them is the HONEST ABSENCE of the carry
+    kernel body (`C_CLEAN_SLATE`: carry is not built on this line). (ii) KERNEL: the
+    descriptor the state addresses bytes with (`rola._state.StateFormat`) refuses that
+    same unpadded shape directly, by name -- the boundary a real kernel launch sits
+    behind.
     """
     from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
+    from rola.ops import carry as carry_ops
+    from rola.ops.prefill import _conservative_activity, _descriptor, _liveness_words, _pack_operands
 
     widths = (31, 45)
     B, T, H, d_v = 1, 2, 1, 8
-    read_levels = tuple(torch.rand(B, T, H, w, dtype=torch.float64) for w in widths)
-    write_levels = tuple(torch.rand(B, T, H, w, dtype=torch.float64) for w in widths)
-    g_write = torch.ones(B, T, H, dtype=torch.float64)
-    v = torch.randn(B, T, H, d_v, dtype=torch.float64)
+    device = "cuda"
+    read_levels = tuple(torch.rand(B, T, H, w, dtype=torch.float64, device=device) for w in widths)
+    write_levels = tuple(torch.rand(B, T, H, w, dtype=torch.float64, device=device) for w in widths)
+    g_write = torch.ones(B, T, H, dtype=torch.float64, device=device)
+    v = torch.randn(B, T, H, d_v, dtype=torch.float64, device=device)
 
-    #: (i) THE API PADS: no ValueError about shape reaches the caller. `carry_inter`
-    #: needs CUDA tensors and the (deleted) extension to go further than this, so the
-    #: honest failure past the padding step is an AttributeError (the missing symbol),
-    #: not this function's own doing.
-    with pytest.raises(AttributeError, match="carry_forward_inter"):
-        carry_inter(read_levels, write_levels, g_write, v, widths, k=1, m=1, window=64)
+    #: (i) THE API PADS: no ValueError about shape reaches the caller. `_pack_operands`
+    #: widens (31, 45) to (32, 64) and d_v=8 to the smallest shipped DV (32) before the
+    #: call ever names `carry_forward`, so the only failure past it is the HONEST
+    #: ABSENCE of the carry kernel body -- not a shape excuse.
+    pread, pwrite, gwrite, v_bh, v_bthd = _pack_operands(read_levels, write_levels, g_write, v)
+    bh, dv = v_bh.shape[0], v_bh.shape[2]
+    descriptor = _descriptor(widths, dv, bh)
+    assert descriptor.B == (32, 64) and descriptor.DV == 32, (
+        "the descriptor names the PADDED shape, never the caller's logical one")
+    launch = carry_ops.LaunchShape()
+    geometry = carry_ops.geometry_block(descriptor, launch)
+    liveness = _liveness_words(pread, pwrite)
+    activity = _conservative_activity(descriptor, bh, v_bh.device)
+    routes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)
+    with pytest.raises(RuntimeError, match="no implementation on this line"):
+        carry_ops.carry_forward(routes, v_bh, descriptor=descriptor, geometry=geometry,
+                                liveness=liveness, activity=activity, launch=launch)
 
     #: (ii) THE KERNEL REFUSES: the unpadded widths, presented directly to the
     #: descriptor a real launch would be checked against, are refused by name.
     with pytest.raises(ValueError, match="level 0 is 31"):
         StateFormat(D=2, B=widths, order=CANONICAL_ORDER, page_bits=PAGE_RECTANGLE_BITS,
-                   DV=D_V, dtype=SPLIT_PLANE_DTYPE, ids=1)
+                   DV=32, dtype=SPLIT_PLANE_DTYPE, ids=1)
 
 
 def test_box_shape_is_a_second_kernel_boundary_that_refuses_unpadded_widths():
