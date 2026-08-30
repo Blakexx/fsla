@@ -35,6 +35,7 @@ import torch
 
 from rola.engine.plan import DecodeGeometry
 from rola.ops.decode import _decode_step, derive_decode_geometry
+from rola.ops.paging import bytes_equal, to_split_planes
 from tests.oracle.instantiation import CHUNK_ARMS
 from tests.oracle.oracle_fixtures import _simplex, _topology
 
@@ -63,7 +64,7 @@ def test_no_field_of_the_frozen_carrier_names_bc():
         f"DecodeGeometry has acquired a BC-shaped field: {sorted(names)}")
 
 
-@pytest.mark.parametrize("widths", [(8, 16), (4, 4, 4), (64, 64)])
+@pytest.mark.parametrize("widths", [(64, 64), (16, 16, 16), (8, 8, 8, 8)])
 def test_decode_output_is_byte_identical_across_prefill_bc(widths):
     device = "cuda"
     d_v, B, H = 64, 2, 2
@@ -81,6 +82,8 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
     v = torch.randn(B, 1, H, d_v, device=device, generator=generator).float()
     m0 = 0.1 * torch.randn(B, H, N, cols, device=device, generator=generator).float()
     m0[..., d_v] = m0[..., d_v].abs()
+    #: THE STATE IS HANDED TO THE KERNEL IN ITS STORED FORM (K50's split planes).
+    m0 = to_split_planes(m0)
 
     results = []
     configs = []
@@ -106,4 +109,5 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
         "the topology, the normalization arm and the device")
     for BC, (y, state) in zip(_BCS[1:], results[1:]):
         assert torch.equal(results[0][0], y), f"decode's y moved with prefill BC={BC}"
-        assert torch.equal(results[0][1], state), f"decode's state moved with prefill BC={BC}"
+        assert bytes_equal(results[0][1], state), (
+            f"decode's state moved with prefill BC={BC}")

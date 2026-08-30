@@ -26,11 +26,126 @@ error where the bytes are addressed, and nothing here polices it in advance.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
+from rola.engine.types import MMA_K_QUANTUM
 from rola.ops.paging import AtomKeying, PageArena
 
-__all__ = ["RoLAState", "state"]
+__all__ = ["RoLAState", "StateFormat", "state"]
+
+#: The page rectangle, as a bit count: an atom is the trailing
+#: ``log2(MMA_K_QUANTUM)`` canonical leaf bits, and the page IS that rectangle.
+PAGE_RECTANGLE_BITS = MMA_K_QUANTUM.bit_length() - 1
+
+#: The one canonical leaf order a descriptor may name today. It is a FIELD rather
+#: than an assumption so a second order is a refusal at the seam and not a silent
+#: reinterpretation of somebody's bytes.
+CANONICAL_ORDER = "mixed-radix-msb-first"
+
+#: The stored form of an fp32 state value: the two halves of the word live in two
+#: separate bf16 planes of the page, and ``hi || lo`` is the fp32 word exactly.
+SPLIT_PLANE_DTYPE = "fp32 as split bf16 planes"
+
+#: The per-level width floor (K50: ``B_l`` power of two, floor 16 = ``K_max``), which
+#: is what makes every span fit inside one level's run and the atom stay inside it.
+MIN_LEVEL_WIDTH = 16
+
+
+@dataclass(frozen=True, slots=True)
+class StateFormat:
+    """THE STATE OWNS ITS FORMAT (K50, 2026-08-29): how a kernel reads these bytes.
+
+    Bound from the FIRST call that receives the state and CHECKED against every later
+    one, which is what replaces the old "later calls are NOT checked" clause: a state
+    handed to a call it does not fit is refused at the seam, by name, instead of
+    mis-addressing bytes somewhere inside a kernel.
+
+    ``dtype`` is the LOGICAL element type -- fp32 -- and the split-plane form is how
+    that word is laid out inside a page, not a narrowing of it
+    (docs/internals/state.md#format).
+    """
+
+    D: int
+    B: tuple[int, ...]
+    order: str
+    page_bits: int
+    DV: int
+    dtype: str
+    ids: int
+
+    def __post_init__(self) -> None:
+        if len(self.B) != self.D:
+            raise ValueError(f"a descriptor names D={self.D} levels and {len(self.B)} widths")
+        for level, width in enumerate(self.B):
+            if width & (width - 1) or width < MIN_LEVEL_WIDTH:
+                raise ValueError(
+                    f"B_l is a power of two at or above {MIN_LEVEL_WIDTH} (K50's axis law: the "
+                    f"floor is K_max, which is what keeps every span inside one level's run and "
+                    f"the atom inside one level); level {level} is {width}")
+        if self.order != CANONICAL_ORDER:
+            raise ValueError(f"the only leaf order this build addresses is {CANONICAL_ORDER!r}")
+        if self.page_bits != PAGE_RECTANGLE_BITS:
+            raise ValueError(
+                f"the page rectangle is the trailing {PAGE_RECTANGLE_BITS} canonical bits")
+        if self.DV % 2:
+            raise ValueError(
+                f"the split planes address a PAIR of value columns per 32-bit access, so DV is "
+                f"even; got {self.DV}")
+        if self.N % (1 << self.page_bits):
+            raise ValueError(
+                f"THERE IS NO RAGGED STATE: N = {self.N} is not a whole number of "
+                f"{1 << self.page_bits}-leaf pages. Under the law above N = prod_l B_l with "
+                f"every B_l a power of two at or above 16, so a lawful state is page aligned "
+                f"by construction; a ragged one is refused here rather than padded or split "
+                f"across a tail page (docs/internals/state.md#format)")
+
+    @property
+    def N(self) -> int:
+        """Leaf capacity -- the mixed-radix product, derived and never configured."""
+        n = 1
+        for width in self.B:
+            n *= width
+        return n
+
+    @property
+    def cols(self) -> int:
+        """``DV`` plus the mass column: the page's LOGICAL width, not its layout."""
+        return self.DV + 1
+
+    @property
+    def atoms_per_bh(self) -> int:
+        return self.N >> self.page_bits
+
+    @property
+    def page_bytes(self) -> int:
+        """``[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`` -- the same bytes an
+        fp32 page held, re-laid out so a hi row is one line."""
+        return (1 << self.page_bits) * self.cols * 4
+
+    def check(self, other: StateFormat) -> None:
+        """Refuse ``other`` against the bound format, naming the field that differs."""
+        for field in ("D", "B", "order", "page_bits", "DV", "dtype", "ids"):
+            mine, theirs = getattr(self, field), getattr(other, field)
+            if mine != theirs:
+                raise ValueError(
+                    f"this state was bound with {field}={mine!r} and the call presents "
+                    f"{field}={theirs!r}. A state carries its FORMAT (K50): its leaf order, its "
+                    f"page rectangle and its value width are what every kernel derives its "
+                    f"addressing from, so a call that disagrees is refused here rather than "
+                    f"reading somebody else's bytes. Bind a fresh rola.state() for this shape.")
+
+
+def _format_of(routes, d_v: int, BH: int) -> StateFormat:
+    """The descriptor a CALL presents: the routes' widths and the value stream's DV."""
+    widths = tuple(routes.topology.widths)
+    n = 1
+    for width in widths:
+        n *= width
+    return StateFormat(D=len(widths), B=widths, order=CANONICAL_ORDER,
+                       page_bits=PAGE_RECTANGLE_BITS, DV=int(d_v), dtype=SPLIT_PLANE_DTYPE,
+                       ids=BH * (n >> PAGE_RECTANGLE_BITS))
 
 #: The paging strategies this version BUILDS. `"cow"` is named in the design as the
 #: next one and is refused by name rather than by a generic message, so a caller who
@@ -74,7 +189,7 @@ class RoLAState:
 
 
     __slots__ = ("strategy", "pool_slack", "_shape", "_device", "_paging", "_arena",
-                 "_plane", "__weakref__")
+                 "_plane", "_format", "__weakref__")
 
     def __init__(self, *, strategy: str = "mutable", pool_slack: float = 0.0) -> None:
         if strategy in _NAMED_UNBUILT_STRATEGIES:
@@ -92,6 +207,7 @@ class RoLAState:
         self._paging = True
         self._arena: PageArena | None = None
         self._plane: torch.Tensor | None = None
+        self._format: StateFormat | None = None
 
     # -- what a caller may ask -------------------------------------------------
 
@@ -100,6 +216,15 @@ class RoLAState:
             return f"RoLAState(strategy={self.strategy!r}, unbound)"
         return (f"RoLAState(strategy={self.strategy!r}, shape={self._shape}, "
                 f"backing={'paged' if self.paged else 'dense'}, device={self._device})")
+
+    @property
+    def format(self) -> StateFormat | None:
+        """This state's FORMAT DESCRIPTOR, or ``None`` while unbound.
+
+        What every kernel derives its addressing from, and what a later call is
+        checked against (docs/internals/state.md#format).
+        """
+        return self._format
 
     @property
     def bound(self) -> bool:
@@ -174,6 +299,7 @@ class RoLAState:
         if not self.bound:
             return out
         out._shape, out._device, out._paging = self._shape, self._device, self._paging
+        out._format = self._format
         if self._arena is None:
             if self._plane is not None:
                 out._plane = self._plane.clone()
@@ -220,10 +346,14 @@ class RoLAState:
         the atom re-key, so a `BC` flip between calls neither rebuilds the arena nor
         moves a byte.
         """
+        presented = _format_of(routes, d_v, routes.batch * routes.heads)
         if not self.bound:
             self._shape = (routes.batch, routes.heads, routes.topology.N, d_v + 1)
             self._device = routes.device
             self._paging = bool(paging)
+            self._format = presented
+        else:
+            self._format.check(presented)
         from rola.engine.facts import planes
 
         #: RESIDENCY IS KEYED ON THE WRITE SET (P80b): the byte carries the READ bit
@@ -282,8 +412,14 @@ class RoLAState:
 
         Dense states hand back a VIEW of their own plane, which is what makes the
         kernel's in-place update the state's update.
+
+        The step's routing is CHECKED against the bound format first: a decode step
+        derives its lattice and its unit from the descriptor, so a routing that
+        disagrees is refused here rather than walked (docs/internals/state.md#format).
         """
         self._require_carrying()
+        self._format.check(_format_of(routes, self._format.DV,
+                                      self._shape[0] * self._shape[1]))
         if self._arena is not None:
             return self._arena.state, self._arena.page_table, self._arena
         return self._plane.view(self._shape), None, None

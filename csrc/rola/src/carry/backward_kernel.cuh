@@ -33,6 +33,7 @@
 #include "carry_kernel.cuh"
 #include "common/design.cuh"
 #include "common/ops.cuh"
+#include "common/state_page.cuh"
 
 namespace rola::carry {
 
@@ -131,8 +132,6 @@ struct BwdOwner {
   static constexpr int kWarpLeaves = BC / kWarps;
   static constexpr int kSlabM = kWarpLeaves / kMmaM;
   static constexpr int kAtoms = BC / kAtomLeaves;
-  static constexpr int kPageElems = kAtomLeaves * kCols;
-  static constexpr int kPageCarry = kThreads - kCols;
   static constexpr int kListStride = G::kListStride;
   static constexpr int kSlotElems = C * LdD;
   static constexpr uint32_t kSlotBytes = (uint32_t)kSlotElems * 2u;
@@ -377,8 +376,10 @@ struct BwdOwner {
   }
 
   //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE.
+  using Page = rola::state_page::Blocks<kCols - 1>;
+
   static __device__ __forceinline__ uint32_t page_off(int32_t slot) {
-    return (uint32_t)slot * (uint32_t)(kPageElems * (int)sizeof(float));
+    return (uint32_t)slot * Page::kBytes;
   }
 
   __device__ __forceinline__ int slab_col(int q, int e) const {
@@ -406,20 +407,7 @@ struct BwdOwner {
       //: AN ABSENT ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the slab keeps the -- see docs/internals/carry/backward_kernel.md#slot
       const int32_t slot = page_slot(tbl, atomBH + BP::canon_atom(owner, a));
       if (slot < 0) continue;
-      const uint32_t base = page_off(slot);
-      int e = tid;
-      int row = tid < kCols ? 0 : 1;
-      int col = tid < kCols ? tid : tid - kCols;
-#pragma unroll 1
-      while (e < kPageElems) {
-        so[row * LdO + col] = *reinterpret_cast<const float*>(
-            gather_ptr(plane, base + (uint32_t)(e * (int)sizeof(float))));
-        e += kThreads;
-        col += kPageCarry;
-        const bool wrap = col >= kCols;
-        row += wrap ? 2 : 1;
-        col -= wrap ? kCols : 0;
-      }
+      rola::state_page::load<kCols - 1, LdO, kThreads>(so, plane, page_off(slot), tid, true);
       rendezvous();
       if (warp == (a >> 1)) {
         const int pm = a & 1;
@@ -455,21 +443,7 @@ struct BwdOwner {
           }
       }
       rendezvous();
-      const uint32_t base = page_off(slot);
-      int e = tid;
-      int row = tid < kCols ? 0 : 1;
-      int col = tid < kCols ? tid : tid - kCols;
-#pragma unroll 1
-      while (e < kPageElems) {
-        store_f32(
-            reinterpret_cast<float*>(gather_ptr(plane, base + (uint32_t)(e * (int)sizeof(float)))),
-            so[row * LdO + col]);
-        e += kThreads;
-        col += kPageCarry;
-        const bool wrap = col >= kCols;
-        row += wrap ? 2 : 1;
-        col -= wrap ? kCols : 0;
-      }
+      rola::state_page::store<kCols - 1, LdO, kThreads>(so, plane, page_off(slot), tid);
     }
   }
 

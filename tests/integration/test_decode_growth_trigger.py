@@ -55,7 +55,7 @@ from rola.ops.decode import (
     _decode_step,
     _write_atom_bitmap,
 )
-from rola.ops.paging import MMA_K_QUANTUM, PageArena
+from rola.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal
 from tests.integration.test_decode_paging import (
     _ARMS,
     _config,
@@ -320,11 +320,11 @@ def test_a_mixed_batch_advances_the_resident_batch_heads_and_no_others(arm):
         "exactly one batch-head cannot address its write set; the verdict vector says "
         f"{int(workspace.growth.sum())}")
     assert bool(workspace.growth[needy]), "the wrong batch-head is flagged"
-    assert torch.equal(after[needy], before[needy]), (
+    assert bytes_equal(after[needy], before[needy]), (
         "the needy batch-head deposited anyway -- its write would be lost into the atom "
         "it cannot address")
     others = [i for i in range(BH) if i != needy]
-    assert not torch.equal(after[others], before[others]), (
+    assert not bytes_equal(after[others], before[others]), (
         "the resident batch-heads did NOT advance: this is the global-no-op mechanism, "
         "and the contract is per batch-head")
 
@@ -360,7 +360,7 @@ def test_the_admission_and_replay_advance_every_sequence_exactly_once(arm):
     assert torch.equal(y_reference, y_replayed), (
         "the replay's `y` is not the admit-first `y`: a batch-head either deposited "
         "twice or was read before it deposited")
-    assert torch.equal(_gathered(reference, BH), _gathered(replayed, BH)), (
+    assert bytes_equal(_gathered(reference, BH), _gathered(replayed, BH)), (
         "the replayed state is not the admit-first state -- exactly-once failed")
 
 
@@ -409,7 +409,7 @@ def test_a_covering_pool_admits_the_growth_itself_and_raises_no_verdict(arm):
     torch.cuda.synchronize()
     assert torch.equal(y_first, y_reference), (
         "a pool-admitted atom is distinguishable from a host-admitted one; it must not be")
-    assert torch.equal(_gathered(fresh, BH), _gathered(reference, BH)), (
+    assert bytes_equal(_gathered(fresh, BH), _gathered(reference, BH)), (
         "the pool-admitted state is not the host-admitted state")
 
 
@@ -444,11 +444,11 @@ def test_an_exhausted_pool_degrades_to_the_host_path_exactly(arm):
     assert fired, "an exhausted pool must degrade to the host verdict"
     assert int((starved.page_table >= 0).sum()) == 0, (
         "an exhausted pool admitted a PREFIX of the demand; the claim is all-or-nothing")
-    assert torch.equal(starved.state, before), "a needy step wrote state"
+    assert bytes_equal(starved.state, before), "a needy step wrote state"
 
     starved.plan_exact(workspace.atom_bits, fresh=False)
     starved.wait()
     y_replayed, _ = _step(fixture, config, starved, workspace=workspace, pool=starved)
     torch.cuda.synchronize()
     assert torch.equal(y_replayed, y_reference)
-    assert torch.equal(_gathered(starved, BH), _gathered(reference, BH))
+    assert bytes_equal(_gathered(starved, BH), _gathered(reference, BH))

@@ -36,6 +36,89 @@ _ATOM_ROW_MASK = MMA_K_QUANTUM - 1
 
 _ABSENT_PAGE = -1
 
+
+def to_split_planes(logical: torch.Tensor) -> torch.Tensor:
+    """A logical ``[..., 16, cols]`` fp32 page block in the STORED split-plane form.
+
+    THE PAGE IS ``[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`` (K50, 2026-08-29):
+    the same fp32 bits, re-laid out so a value row's hi plane is one 128 B line at
+    ``DV = 64`` and an atom a call only READS moves half the bytes. The container stays
+    fp32 because the LOGICAL element is fp32 -- ``hi || lo`` is the word exactly -- and
+    the state's descriptor is what declares the layout (docs/internals/state.md#format).
+    """
+    _refuse_ragged(logical)
+    _refuse_dtype(logical)
+    pages = logical.reshape(-1, MMA_K_QUANTUM, logical.shape[-1]).contiguous()
+    d_v = logical.shape[-1] - 1
+    words = pages.view(torch.int32)
+    hi, lo = (words >> 16).to(torch.int16), words.to(torch.int16)
+    out = torch.empty_like(pages)
+    stored = out.view(torch.int16).reshape(pages.shape[0], -1)
+    rows = MMA_K_QUANTUM * d_v
+    stored[:, :rows] = hi[:, :, :d_v].reshape(-1, rows)
+    stored[:, rows:2 * rows] = lo[:, :, :d_v].reshape(-1, rows)
+    stored[:, 2 * rows:2 * rows + MMA_K_QUANTUM] = hi[:, :, d_v]
+    stored[:, 2 * rows + MMA_K_QUANTUM:] = lo[:, :, d_v]
+    return out.reshape(logical.shape)
+
+
+def _refuse_dtype(state: torch.Tensor) -> None:
+    """The stored form is 32-bit words; a wider or narrower element is not a page."""
+    if state.dtype is not torch.float32:
+        raise ValueError(
+            f"a state page is fp32 words split into bf16 planes, so the pack and the "
+            f"gather run on float32; got {state.dtype}. Convert AFTER the gather, never "
+            f"before it (docs/internals/state.md#split-planes)")
+
+
+def _refuse_ragged(state: torch.Tensor) -> None:
+    """Refuse a state whose leaf axis is not a whole number of pages.
+
+    THERE IS NO RAGGED STATE (Blake, 2026-08-29). A lawful state has
+    ``N = prod_l B_l`` with every ``B_l`` a power of two at or above 16, so ``N`` is
+    page-aligned by construction; a leaf axis that is not is a state no descriptor can
+    name, and it is refused here rather than padded, split across a tail page, or
+    served by a second layout (docs/internals/state.md#format).
+    """
+    n = state.shape[-2] if state.dim() >= 2 else 0
+    if n % MMA_K_QUANTUM:
+        raise ValueError(
+            f"a state's leaf axis is a whole number of {MMA_K_QUANTUM}-leaf pages; got "
+            f"{n}. N = prod_l B_l with each B_l a power of two at or above 16, so a "
+            f"lawful state is page-aligned by construction (docs/internals/state.md#format)")
+
+
+def bytes_equal(a: torch.Tensor, b: torch.Tensor) -> bool:
+    """Byte identity of two STORED page blocks -- the split format's own comparison.
+
+    ``torch.equal`` is a FLOAT comparison, and a stored page is not a float: its 32-bit
+    words are two neighbouring elements' halves, so a page pair that is byte-identical
+    can contain a word whose float reading is NaN and compare UNEQUAL. The claim the
+    backings make is about bytes, so it is asserted on the integer view -- which is
+    also strictly stronger than the fp32 ``torch.equal`` it replaces.
+    """
+    return a.shape == b.shape and torch.equal(a.contiguous().view(torch.int32),
+                                              b.contiguous().view(torch.int32))
+
+
+def from_split_planes(stored: torch.Tensor) -> torch.Tensor:
+    """The hi||lo GATHER: stored pages back as the logical ``[..., 16, cols]`` fp32.
+
+    The inverse of :func:`to_split_planes`, and exactly what ``materialize()`` is.
+    """
+    _refuse_dtype(stored)
+    pages = stored.reshape(-1, MMA_K_QUANTUM, stored.shape[-1]).contiguous()
+    d_v = stored.shape[-1] - 1
+    halves = pages.view(torch.int16).reshape(pages.shape[0], -1).to(torch.int32) & 0xFFFF
+    rows = MMA_K_QUANTUM * d_v
+    words = torch.empty((pages.shape[0], MMA_K_QUANTUM, d_v + 1), dtype=torch.int32,
+                        device=pages.device)
+    words[:, :, :d_v] = ((halves[:, :rows] << 16)
+                         | halves[:, rows:2 * rows]).reshape(-1, MMA_K_QUANTUM, d_v)
+    words[:, :, d_v] = ((halves[:, 2 * rows:2 * rows + MMA_K_QUANTUM] << 16)
+                        | halves[:, 2 * rows + MMA_K_QUANTUM:])
+    return words.view(torch.float32).reshape(stored.shape)
+
 #: The driver-allocation unit the VMM backing commits in, in bytes. ``None`` resolves it
 #: to the device's own ``cuMemGetAllocationGranularity`` MINIMUM, which is the finest
 #: commitment the hardware admits: a smaller target would be rounded back up to it and a
@@ -710,9 +793,11 @@ class PageArena:
     def materialize(self) -> torch.Tensor:
         """Gather the committed atoms back into a dense ``[BH, N, cols]`` state.
 
-        The explicit bridge OUT. Allocating ``[BH, N, cols]`` is precisely what paging
-        exists to avoid, so this is for oracle comparison and for the existing dense
-        cache contract -- never on a measured path.
+        The explicit bridge OUT, and since K50 the hi||lo GATHER as well: the pages hold
+        split bf16 planes, so the logical fp32 view is rejoined here and nowhere on a
+        measured path. Allocating ``[BH, N, cols]`` is precisely what paging exists to
+        avoid, so this is for oracle comparison and for the existing dense cache
+        contract only.
         """
         present = self._page_table >= 0
         index = self._page_table.long().clamp_min(0).reshape(-1)
@@ -720,7 +805,7 @@ class PageArena:
             self.BH, self.keying.atoms_per_bh, MMA_K_QUANTUM, self.cols)
         dense = torch.zeros_like(gathered)
         dense[present] = gathered[present]
-        return dense.reshape(self.BH, self.N, self.cols)
+        return from_split_planes(dense).reshape(self.BH, self.N, self.cols)
 
 
 class _NullContext:
@@ -739,5 +824,8 @@ __all__ = [
     "ExtentAllocator",
     "PageArena",
     "PagingResult",
+    "bytes_equal",
+    "from_split_planes",
+    "to_split_planes",
     "vmm_supported",
 ]

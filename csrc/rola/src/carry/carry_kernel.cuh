@@ -43,6 +43,7 @@
 #include "facts/arch_caps.cuh"
 #include "common/design.cuh"
 #include "common/ops.cuh"
+#include "common/state_page.cuh"
 
 namespace rola::carry {
 
@@ -438,31 +439,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
 
   // ---- the state plane's page sweep, at CANONICAL atom ids -----------------
   constexpr int kAtoms = BC / kAtomLeaves;
-  constexpr int kPageElems = kAtomLeaves * kCols;
-  //: THE SWEEP'S STEP, AS A CARRY.  A step of `kThreads` elements advances the row -- see docs/internals/carry/carry_kernel.md#krowstep
-  constexpr int kRowStep = kThreads / kCols;
-  constexpr int kPageCarry = kThreads - kRowStep * kCols;
-  static_assert(kPageCarry >= 0 && kPageCarry < kCols,
-                "a sweep step's carry is the thread count modulo the row, so the cursor "
-                "crosses at most one row boundary per step");
-  auto page_sweep = [&](uint32_t pageOff, auto&& body) {
-    int e = tid;
-    int row = 0, col = tid;
-    static_for<kRowStep>([&](auto) {
-      const bool over = col >= kCols;
-      row += over ? 1 : 0;
-      col -= over ? kCols : 0;
-    });
-#pragma unroll 1
-    while (e < kPageElems) {
-      body(row * LdO + col, pageOff + (uint32_t)(e * (int)sizeof(float)));
-      e += kThreads;
-      col += kPageCarry;
-      const bool wrap = col >= kCols;
-      row += wrap ? kRowStep + 1 : kRowStep;
-      col -= wrap ? kCols : 0;
-    }
-  };
+  //: THE PAGE HOLDS SPLIT bf16 PLANES (K50): a READ-ONLY atom moves its hi plane -- see docs/internals/carry/carry_kernel.md#split-planes
+  using Page = rola::state_page::Blocks<kDv>;
   //: THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80). -- see docs/internals/carry/carry_kernel.md#atombh
   const uint32_t atomBH = (uint32_t)bh * (uint32_t)(BP::kLeaves / kAtomLeaves);
   //: THE ACTIVITY OF THIS OWNER'S ATOMS, READ ONCE AT THE PROLOGUE (P80b): one -- see docs/internals/carry/carry_kernel.md#activity
@@ -475,8 +453,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     actWrite |= (uint32_t)((bits & kAtomWritten) != 0u) << a;
   });
   //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`, -- see docs/internals/carry/carry_kernel.md#kpagebytes
-  constexpr uint32_t kPageBytes = (uint32_t)(kPageElems * (int)sizeof(float));
-  auto page_base = [](int32_t slot) { return (uint32_t)slot * kPageBytes; };
+  auto page_base = [](int32_t slot) { return (uint32_t)slot * Page::kBytes; };
   //: THE PAGE'S SLICE OF A STREAM, PER FRAGMENT. -- see docs/internals/carry/carry_kernel.md#a
   auto page_regs = [&](auto Ac, auto Ld) {
     constexpr int a = decltype(Ac)::value;
@@ -519,9 +496,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       constexpr int a = decltype(Ac)::value;
       const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
       if (slot < 0 || (((actRead | actWrite) >> a) & 1u) == 0u) return;
-      page_sweep(page_base(slot), [&](int sidx, uint32_t off_) {
-        so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off_));
-      });
+      rola::state_page::load<kDv, LdO, kThreads>(so, plane, page_base(slot), tid,
+                                                 ((actWrite >> a) & 1u) != 0u);
       rendezvous();
       page_regs(Ac, std::true_type{});
       rendezvous();
@@ -1046,9 +1022,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       if (slot < 0 || ((actWrite >> a) & 1u) == 0u) return;
       page_regs(Ac, std::false_type{});
       rendezvous();
-      page_sweep(page_base(slot), [&](int sidx, uint32_t offb) {
-        store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
-      });
+      rola::state_page::store<kDv, LdO, kThreads>(so, plane, page_base(slot), tid);
       rendezvous();
     });
   }

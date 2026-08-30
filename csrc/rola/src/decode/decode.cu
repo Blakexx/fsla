@@ -32,6 +32,7 @@
 #include <cuda_bf16.h>
 #include <torch/extension.h>
 
+#include "common/state_page.cuh"
 #include "decode.cuh"
 #include "decode_api.cuh"
 #include "decode_fold.cuh"
@@ -68,6 +69,8 @@ __global__ __launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY, D)
 decode_step_kernel(DecodeParams p) {
   //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a -- see docs/internals/decode/decode.md#cols
   constexpr int cols = DV + 1;
+  //: THE PAGE'S SPLIT bf16 PLANES (K50) -- the same blocks the carry addresses.
+  using Page = rola::state_page::Blocks<DV>;
   //: Columns per lane: `NC` fully coalesced 128 B transactions, and the lane's -- see docs/internals/decode/decode.md#nc
   constexpr int NC = DV / 32;
 
@@ -269,7 +272,7 @@ decode_step_kernel(DecodeParams p) {
         !paged ? nullptr : p.page_tbl + static_cast<int64_t>(bh) * p.atoms_per_bh;
     const int32_t* claim_row =
         (paged && claimed) ? p.pool_map + static_cast<int64_t>(bh) * p.atoms_per_bh : nullptr;
-    const int64_t dense_bh_base = static_cast<int64_t>(bh) * p.N;
+    const int64_t dense_bh_base = static_cast<int64_t>(bh) * p.atoms_per_bh;
     int cached_atom = -1;
     int64_t atom_base = 0;
     bool atom_present = false;
@@ -318,23 +321,42 @@ decode_step_kernel(DecodeParams p) {
               int slot = page_row[atom];
               if (slot < 0 && claim_row != nullptr) slot = claim_row[atom];
               atom_present = slot >= 0;
-              atom_base = static_cast<int64_t>(slot << kAtomShift) * cols;
+              atom_base = static_cast<int64_t>(slot) * Page::kBytes;
             } else {
               atom_present = true;
-              atom_base = (dense_bh_base + (atom << kAtomShift)) * cols;
+              atom_base = (dense_bh_base + atom) * (int64_t)Page::kBytes;
             }
           }
 
           //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the -- see docs/internals/decode/decode.md#decode-step-kernel-note-l516
-          float* row = atom_present ? (p.state + atom_base + (leaf & kAtomMask) * cols) : nullptr;
+          //: A LEAF THIS STEP ONLY READS PULLS THE hi PLANE ALONE (K50). The plane -- see docs/internals/decode/decode.md#split-planes
+          const bool writes = in_w;
+          uint8_t* const page =
+              atom_present ? reinterpret_cast<uint8_t*>(p.state) + atom_base : nullptr;
+          const int prow = leaf & kAtomMask;
+          uint16_t* const vhi =
+              atom_present ? reinterpret_cast<uint16_t*>(page + prow * DV * 2) : nullptr;
+          uint16_t* const vlo = atom_present
+                                    ? reinterpret_cast<uint16_t*>(page + Page::kLo + prow * DV * 2)
+                                    : nullptr;
+          uint16_t* const mhi =
+              atom_present ? reinterpret_cast<uint16_t*>(page + Page::kMassHi + prow * 2) : nullptr;
+          uint16_t* const mlo =
+              atom_present ? reinterpret_cast<uint16_t*>(page + Page::kMassLo + prow * 2) : nullptr;
           float sv[NC];
 #pragma unroll
           for (int q = 0; q < NC; ++q) sv[q] = 0.0f;
           float smass = 0.0f;
           if (atom_present) {
 #pragma unroll
-            for (int q = 0; q < NC; ++q) sv[q] = row[lane + 32 * q];
-            if (lane == 0) smass = row[DV];
+            for (int q = 0; q < NC; ++q) {
+              const uint32_t w = (uint32_t)vhi[lane + 32 * q] << 16;
+              sv[q] = __uint_as_float(writes ? (w | (uint32_t)vlo[lane + 32 * q]) : w);
+            }
+            if (lane == 0) {
+              const uint32_t w = (uint32_t)*mhi << 16;
+              smass = __uint_as_float(writes ? (w | (uint32_t)*mlo) : w);
+            }
           }
 
           //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS, -- see docs/internals/decode/decode.md#decode-step-kernel-note-l532
@@ -349,12 +371,16 @@ decode_step_kernel(DecodeParams p) {
 #pragma unroll
             for (int q = 0; q < NC; ++q) {
               sv[q] = keep * sv[q] + wv * v_tok[lane + 32 * q];
-              row[lane + 32 * q] = sv[q];
+              const uint32_t w = __float_as_uint(sv[q]);
+              vhi[lane + 32 * q] = (uint16_t)(w >> 16);
+              vlo[lane + 32 * q] = (uint16_t)(w & 0xFFFFu);
             }
             //: The mass column is the `v := 1` column of the identical recurrence.
             if (lane == 0) {
               smass = keep * smass + wv;
-              row[DV] = smass;
+              const uint32_t w = __float_as_uint(smass);
+              *mhi = (uint16_t)(w >> 16);
+              *mlo = (uint16_t)(w & 0xFFFFu);
             }
           }
           if (in_r) {
@@ -804,7 +830,17 @@ at::Tensor rola_decode_forward(
   } else {
     TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == cols,
                 "state must be [BH, N, d_v + 1]");
-    N = state.size(1);
+    N = 1;
+    for (auto w : level_widths) N *= w;
+    TORCH_CHECK(N % kAtomLeaves == 0,
+                "THERE IS NO RAGGED STATE: N = prod_l B_l must be a whole number of ", kAtomLeaves,
+                "-leaf pages, and a lawful routing makes it one (every B_l a "
+                "power of two at or above 16). PREFILL AND DECODE SHARE ONE ADMISSION "
+                "LAW; got N = ",
+                N);
+    atoms_per_bh = static_cast<int>(N / kAtomLeaves);
+    TORCH_CHECK(state.size(1) == N, "a dense state is [BH, N, d_v + 1] with N = ", N, "; got ",
+                state.size(1));
   }
 
   DecodeParams p{};

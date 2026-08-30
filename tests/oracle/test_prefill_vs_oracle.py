@@ -25,6 +25,7 @@ from rola.ops import carry as carry_ops
 from rola.ops import intra as intra_ops
 from rola.ops.constants import READOUT_EPS
 from rola.ops.naive import naive_rola
+from rola.ops.paging import bytes_equal
 from rola.ops.prefill import prefill
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
 from tests.oracle.fixtures import assert_fresh_binary, canonical_from_plane, relative, require_arm
@@ -170,7 +171,7 @@ def test_a_chained_call_equals_one_long_call():
     #: writes its own leaves and nothing reduces across CTAs there, so the state
     #: plane is deterministic, and the chain's only difference is where its entry
     #: state came from -- an fp32 plane written and read back exactly.
-    assert torch.equal(s1, whole_state)
+    assert bytes_equal(s1, whole_state)
     #: THE OUTPUT IS NOT, AND CANNOT BE.  `o`/`den` are accumulated by a RED at
     #: the top (`fan_in_add`), so the order the owners' contributions land in is
     #: the scheduler's and differs run to run -- for the WHOLE call as much as

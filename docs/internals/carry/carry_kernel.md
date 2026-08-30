@@ -1292,6 +1292,21 @@ A null `atom_bits` reads as every atom active (`common/ops.md#atom-activity`), s
 a caller with no facts pass gets the pre-P80b sweep and the two predicates collapse
 to residency alone.
 
+<a id="split-planes"></a>
+### the page's split bf16 planes
+
+THE PAGE HOLDS SPLIT bf16 PLANES (K50, 2026-08-29): `[16 x DV hi][16 x DV lo]
+[16 mass hi][16 mass lo]`, the same bytes the fp32-row page held. The sweep is
+`common/state_page.md`'s one gather/scatter, shared with the channel-split body,
+the backward's slabs and (inline, per row) the decode step, and the fp32-row sweep
+with its `kRowStep`/`kPageCarry` cursor is DELETED with it.
+
+The load's plane count is the ACTIVITY fact this body already read: an atom in
+`actWrite` is loaded from both planes and rejoined exactly; one that is only READ
+is loaded `hi || 0`, which is exact because the read side's operand IS the hi plane
+(`sa`/`ma` are `hi_bf16x2` of the accumulator). The store is always both planes,
+because it stores an accumulator this call advanced.
+
 <a id="kpagebytes"></a>
 ### `kPageBytes`
 
@@ -1525,13 +1540,6 @@ stack frame; a select is one instruction and no memory.
 
 THE ONES OPERAND, AN IMMEDIATE: the mass channel's value is literally 1, so
 the fold's A fragment for it is the constant whose row 0 is ones.
-
-<a id="krowstep"></a>
-### `kRowStep`
-
-THE SWEEP'S STEP, AS A CARRY.  A step of `kThreads` elements advances the row
-cursor by `kRowStep` or by one more, so the walk is a compile-time count of
-predicated subtractions and never a division.
 
 <a id="near-line-443"></a>
 ### near line 443

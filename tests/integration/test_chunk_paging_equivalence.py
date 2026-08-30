@@ -40,7 +40,7 @@ import torch
 
 from rola.engine.facts import planes
 from rola.ops import carry as carry_ops
-from rola.ops.paging import MMA_K_QUANTUM, PageArena
+from rola.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, from_split_planes
 from tests.oracle.fixtures import assert_fresh_binary, require_arm
 
 pytestmark = [
@@ -128,7 +128,7 @@ def _dense(fixture, arm, *, s_in=None, plane=None):
     if plane is None:
         plane = carry_ops.state_plane(widths, _BH(fixture), _DV)
     y, den, out = _launch(fixture, arm, s_in=s_in, s_out=plane)
-    return y, den, out.view(_BH(fixture), prod(widths), _COLS)
+    return y, den, from_split_planes(out).view(_BH(fixture), prod(widths), _COLS)
 
 
 def _side(fixture, which):
@@ -169,6 +169,21 @@ def _paged(fixture, arm, arena, *, s_in=None):
     return y, den, arena.materialize().reshape(_BH(fixture), prod(arm[0]), _COLS)
 
 
+def _stored(arena) -> torch.Tensor:
+    """The arena's pages gathered into CANONICAL atom order, still in the STORED form.
+
+    `materialize` rejoins hi||lo; this one does not, so the comparison it feeds is the
+    BYTE claim over the split layout itself -- a backing that agreed on values while
+    disagreeing on which plane a half lives in would pass the first and fail this.
+    """
+    table = arena.page_table
+    gathered = arena.state.index_select(0, table.long().clamp_min(0).reshape(-1))
+    stored = torch.zeros_like(gathered)
+    present = (table >= 0).reshape(-1)
+    stored[present] = gathered[present]
+    return stored
+
+
 def _y_is_exact(arm) -> bool:
     """`y` is fanned in with `atomicAdd` across owner blocks, so at `owners > 1` the
     path is not bit-reproducible against ITSELF and the comparison is against the
@@ -206,7 +221,8 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
                        seed=len(arm[0]) * 97 + arm[3])
     BH = _BH(fixture)
 
-    y_dense, _, dense = _dense(fixture, arm)
+    dense_plane = carry_ops.state_plane(arm[0], BH, _DV)
+    y_dense, _, dense = _dense(fixture, arm, plane=dense_plane)
     y_control, _, _ = _dense(fixture, arm)
     arena = _arena(arm, BH)
     result = arena.plan_exact(_plan(fixture, arm))
@@ -219,6 +235,10 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
     assert support == "dense" or not torch.equal(arena.page_table, identity), (
         "the plan mapped every atom to its own id, so this cell never exercised "
         "a translation at all")
+    assert bytes_equal(_stored(arena),
+                       dense_plane.reshape(-1, MMA_K_QUANTUM, _COLS)), (
+        "the two backings disagree on the STORED bytes: the split layout is part of "
+        "the backing-invisibility claim, not only the values it rejoins to")
     assert torch.equal(dense, paged), (
         f"the paged state differs from the dense one by "
         f"{(dense - paged).abs().max().item():.3e} over "
@@ -378,7 +398,7 @@ def test_a_continuation_is_bit_identical_across_the_two_backings(arm):
 
     plane = carry_ops.state_plane(widths, BH, _DV)
     y1_dense, _, _ = _dense(first, arm, plane=plane)
-    s1 = plane.clone().view(BH, prod(widths), _COLS)
+    s1 = from_split_planes(plane.clone()).view(BH, prod(widths), _COLS)
     #: THE SAME PLANE IN AND OUT: a stateful chain allocates ONE plane for the SEQUENCE.
     y2_dense, _, s2 = _dense(second, arm, s_in=plane, plane=plane)
     s2 = s2.clone()

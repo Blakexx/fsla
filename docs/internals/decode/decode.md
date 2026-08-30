@@ -2000,3 +2000,37 @@ step has already expanded: docs/internals/decode/decode.md#atom-bits
 Split-K workspace. Slot-ordered and summed by the last-arriving CTA, which is what
 makes decode's `y` RUN-REPRODUCIBLE -- and that diverges from the tiled consumer
 on purpose: docs/internals/decode/decode.md#determinism
+
+<a id="split-planes"></a>
+### the split bf16 planes, and the unit that reads one
+
+THE STATE'S PAGE HOLDS SPLIT bf16 PLANES (K50, 2026-08-29) --
+`[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`, the geometry
+`common/state_page.md` defines and the carry addresses with the same blocks. The
+walk's per-leaf row is therefore two 16-bit runs rather than one fp32 run, and the
+plane count is the leaf's own fact for this step:
+
+* a leaf this step WRITES is read `hi || lo` -- the exact fp32 it carried -- updated,
+  and stored back to both planes, so a sequence's carried precision is untouched. The
+  plane choice keys on `in_w`, the step's own write set, and NOT on whether THIS PASS
+  performs the deposit: a gated step's third outcome is "re-read without depositing"
+  (`done[bh]`), and a re-read of a leaf the step wrote must see the same bytes the
+  depositing pass saw, or two admission orders would compute different `y` for the same
+  step. `deposit` gates the STORE and nothing else;
+* a leaf this step only READS pulls the **hi plane alone**. That is a DECLARED
+  arithmetic statement, not an approximation of one: the readout operand is the hi
+  plane in every kernel (prefill's MMA operand has been `hi_bf16x2` of the
+  accumulator since F1b), and decode now states the same thing about its own
+  readout. The fp64 oracle REPORTS the difference; the gate asserts against the
+  bf16-mirrored band, which is the dual-run protocol the oracle doctrine names.
+
+The address is a BYTE offset now: `slot * Blocks<DV>::kBytes` under a page table, and
+`(bh * atoms_per_bh + atom) * kBytes` dense -- the dense backing is the same
+atom-major page sequence with every page resident, which is what makes the two
+backings one addressing law rather than two.
+
+PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the descriptor. `N`
+comes from the level widths and must be a whole number of pages, which a lawful routing
+makes it by construction; a ragged `N` is REFUSED at this seam rather than padded, and
+decode carries no shape, tolerance or topology prefill does not. The dense plane is
+`[BH, N, cols]` — the same page sequence with every page resident.

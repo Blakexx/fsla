@@ -37,6 +37,7 @@ from rola.engine.rules.arm import CHUNK_TOKENS
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.lattice import to_canonical, to_lattice
 from rola.ops.naive import naive_rola
+from rola.ops.paging import bytes_equal, from_split_planes, to_split_planes
 from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
 from tests.oracle import generators as g
@@ -52,7 +53,7 @@ pytestmark = [
 #: length is a multiple of `rola.engine.rules.arm.CHUNK_TOKENS`. DECODE's own envelope
 #: is unchanged -- it is BC-blind and topology-general -- so that is a
 #: constraint the PREFILL puts on the fixture, not one decode acquired.
-_WIDTHS, _DV, _B, _H = (16, 16), 64, 2, 2
+_WIDTHS, _DV, _B, _H = (64, 64), 64, 2, 2
 
 
 def _draw(gen, device, T, p_read, p_write, *, widths=_WIDTHS, H=_H, B=_B, dv=_DV,
@@ -133,7 +134,7 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
     config = derive_decode_geometry(topology, d_v=_DV, decay=decay_on, BH=_B * _H,
                                   device=device)
     #: THE SEAM: the oracle's plane is canonical, the kernel's is lattice-ordered.
-    state = to_lattice(ref_state.float(), _WIDTHS, config.lattice_k, config.lattice_m)
+    state = to_split_planes(to_lattice(ref_state.float(), _WIDTHS, config.lattice_k, config.lattice_m))
     workspace, cold_seen = None, False
     for s in range(steps):
         step = _draw(gen, device, 1, 0.5, 0.4, norm="global")
@@ -145,7 +146,7 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
             step["v"], step["read"], step["write"], step["g_read"], step["g_write"],
             topology, decay, "global", initial_state=ref_state, output_final_state=True)
         assert g.relative(y, y_ref) < DECODE_RTOL, f"step {s}: y off the oracle"
-        canonical = to_canonical(state, _WIDTHS, config.lattice_k, config.lattice_m)
+        canonical = to_canonical(from_split_planes(state), _WIDTHS, config.lattice_k, config.lattice_m)
         assert g.relative(canonical, ref_state) < DECODE_RTOL, (
             f"step {s}: state off the oracle")
 
@@ -181,7 +182,7 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
 
     config = derive_decode_geometry(topology, d_v=_DV, decay=True, BH=_B * _H,
                                   device=device)
-    state = to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m)
+    state = to_split_planes(to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m))
     ref_state = m0
     workspace, errors = None, {}
     for s in range(1, max(_CHECKPOINTS) + 1):
@@ -194,7 +195,7 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
             step["v"], step["read"], step["write"], step["g_read"], step["g_write"],
             topology, decay, "global", initial_state=ref_state, output_final_state=True)
         if s in _CHECKPOINTS:
-            canonical = to_canonical(state, _WIDTHS, config.lattice_k, config.lattice_m)
+            canonical = to_canonical(from_split_planes(state), _WIDTHS, config.lattice_k, config.lattice_m)
             err_y, err_s = g.relative(y, y_ref), g.relative(canonical, ref_state)
             errors[s] = (err_y, err_s)
             assert err_y < DECODE_RTOL and err_s < DECODE_RTOL, (
@@ -238,7 +239,7 @@ def test_the_decode_split_is_performance_only_under_drift():
 
     outcomes = {}
     for name, config in configs.items():
-        state = to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m)
+        state = to_split_planes(to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m))
         workspace, ys = None, []
         for step in steps:
             fs = _f32(step)
@@ -257,7 +258,7 @@ def test_the_decode_split_is_performance_only_under_drift():
 
     base = outcomes["n_split=1"]
     for name, (ys, state) in outcomes.items():
-        assert torch.equal(state, base[1]), (
+        assert bytes_equal(state, base[1]), (
             f"the {name} carrier's STATE differs from the single-CTA one: the "
             "launch split moved stored numbers")
         for s, (y, y_ref) in enumerate(zip(ys, ys_ref)):

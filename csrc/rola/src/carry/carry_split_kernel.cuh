@@ -183,25 +183,8 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
 
   // ---- the state plane's page sweep, at CANONICAL atom ids -----------------
   constexpr int kAtoms = BC / kAtomLeaves;
-  constexpr int kPageElems = kAtomLeaves * kCols;
-  constexpr int kPageCarry = kThreads - kCols;
-  static_assert(kThreads > kCols && kThreads < 2 * kCols,
-                "the page sweep's step must cross one row boundary, so its row "
-                "cursor advances by one or two and never by a division");
-  auto page_sweep = [&](uint32_t pageOff, auto&& body) {
-    int e = tid;
-    int row = tid < kCols ? 0 : 1;
-    int col = tid < kCols ? tid : tid - kCols;
-#pragma unroll 1
-    while (e < kPageElems) {
-      body(row * LdO + col, pageOff + (uint32_t)(e * (int)sizeof(float)));
-      e += kThreads;
-      col += kPageCarry;
-      const bool wrap = col >= kCols;
-      row += wrap ? 2 : 1;
-      col -= wrap ? kCols : 0;
-    }
-  };
+  //: THE PAGE HOLDS SPLIT bf16 PLANES (K50), the carved body's layout exactly -- see docs/internals/carry/carry_split_kernel.md#split-planes
+  using Page = rola::state_page::Blocks<kDv>;
   //: THE PLANE IS ADDRESSED BY CANONICAL ATOM ID (P80) -- the same re-key the carved -- see docs/internals/carry/carry_split_kernel.md#atombh
   const uint32_t atomBH = (uint32_t)bh * (uint32_t)(BP::kLeaves / kAtomLeaves);
   //: THE ACTIVITY OF THIS OWNER'S ATOMS, READ ONCE AT THE PROLOGUE (P80b): the -- see docs/internals/carry/carry_split_kernel.md#activity
@@ -214,8 +197,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
     actWrite |= (uint32_t)((bits & kAtomWritten) != 0u) << a;
   }
   //: THE SLOT, NOT THE ATOM, ADDRESSES THE PLANE (`ops.cuh`'s `page_slot`, -- see docs/internals/carry/carry_split_kernel.md#kpagebytes
-  constexpr uint32_t kPageBytes = (uint32_t)(kPageElems * (int)sizeof(float));
-  auto page_base = [](int32_t slot) { return (uint32_t)slot * kPageBytes; };
+  auto page_base = [](int32_t slot) { return (uint32_t)slot * Page::kBytes; };
   //: element `k` of an accumulator tile sits at row `(lane>>2) + 8*(k>>1)` and -- see docs/internals/carry/carry_split_kernel.md#pagevalue
   auto page_value = [&](int p, int k) {
     return (p * 8 + (lane & 3) * 2 + (k & 1)) * LdO + chan0 + (lane >> 2) + 8 * (k >> 1);
@@ -231,9 +213,8 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
       //: AN ABSENT OR IDLE ATOM IS SKIPPED, AND WITH IT THE TWO BARRIERS: the load -- see docs/internals/carry/carry_split_kernel.md#slot
       const int32_t slot = page_slot(page_tbl, atomBH + BP::canon_atom(owner, a));
       if (slot < 0 || (((actRead | actWrite) >> a) & 1u) == 0u) continue;
-      page_sweep(page_base(slot), [&](int sidx, uint32_t off) {
-        so[sidx] = *reinterpret_cast<const float*>(gather_ptr(plane, off));
-      });
+      rola::state_page::load<kDv, LdO, kThreads>(so, plane, page_base(slot), tid,
+                                                 ((actWrite >> a) & 1u) != 0u);
       rendezvous();
 #pragma unroll
       for (int p = 0; p < 2; ++p)
@@ -588,9 +569,7 @@ carry_split_kernel(const __nv_bfloat16* __restrict__ pread,
             store_f32(&so[page_mass(p, k)], mass_st[2 * (a / kMassUnits) + p][k]);
       }
       rendezvous();
-      page_sweep(page_base(slot), [&](int sidx, uint32_t offb) {
-        store_f32(reinterpret_cast<float*>(gather_ptr(plane, offb)), so[sidx]);
-      });
+      rola::state_page::store<kDv, LdO, kThreads>(so, plane, page_base(slot), tid);
       rendezvous();
     }
   }

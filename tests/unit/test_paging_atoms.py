@@ -21,6 +21,7 @@ from rola.ops.paging import (
     AtomKeying,
     ExtentAllocator,
     PageArena,
+    to_split_planes,
 )
 
 _DEVICE = torch.device("cpu")
@@ -276,7 +277,7 @@ def test_a_fully_resident_arena_materializes_the_canonical_leaf_order(BC):
     arena.plan_exact(torch.ones((BH, N // MMA_K_QUANTUM), dtype=torch.bool))
     arena.state.index_copy_(
         0, arena.page_table.reshape(-1).long(),
-        dense.reshape(BH * N // MMA_K_QUANTUM, MMA_K_QUANTUM, cols))
+        to_split_planes(dense.reshape(BH * N // MMA_K_QUANTUM, MMA_K_QUANTUM, cols)))
     assert torch.equal(arena.materialize(), dense)
     assert arena.allocated_pages == arena.logical_pages
 

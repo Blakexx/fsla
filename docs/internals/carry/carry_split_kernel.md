@@ -298,6 +298,21 @@ body's two `uint32` masks, folded here over the same `kAtoms` and consulted by t
 same two sweeps (`carry_kernel.md#activity`).  One byte per atom per CTA is the
 whole cost, and the window loop never sees it.
 
+<a id="split-planes"></a>
+### the page's split bf16 planes
+
+THE PAGE HOLDS SPLIT bf16 PLANES (K50, 2026-08-29): `[16 x DV hi][16 x DV lo]
+[16 mass hi][16 mass lo]`, the same bytes the fp32-row page held. The sweep is
+`common/state_page.md`'s one gather/scatter, shared with the channel-split body,
+the backward's slabs and (inline, per row) the decode step, and the fp32-row sweep
+with its `kRowStep`/`kPageCarry` cursor is DELETED with it.
+
+The load's plane count is the ACTIVITY fact this body already read: an atom in
+`actWrite` is loaded from both planes and rejoined exactly; one that is only READ
+is loaded `hi || 0`, which is exact because the read side's operand IS the hi plane
+(`sa`/`ma` are `hi_bf16x2` of the accumulator). The store is always both planes,
+because it stores an accumulator this call advanced.
+
 <a id="kpagebytes"></a>
 ### `kPageBytes`
 

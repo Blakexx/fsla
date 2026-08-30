@@ -65,7 +65,7 @@ import torch
 from rola.ops.decode import _decode_step, _write_atom_bitmap, derive_decode_geometry
 from rola.ops.lattice import permutation, to_canonical
 from rola.ops.naive import naive_rola
-from rola.ops.paging import MMA_K_QUANTUM, PageArena
+from rola.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, from_split_planes, to_split_planes
 
 pytestmark = [
     pytest.mark.cuda,
@@ -91,9 +91,9 @@ from tests.oracle.test_decode_vs_oracle import DECODE_RTOL  # noqa: E402
 #: than one -- their innermost span is narrower than an atom, so the reconciliation
 #: runs through the unit-per-atom shift rather than the atom-per-unit one.
 _ARMS = (
-    ((16, 16), 64),
-    ((4, 4, 4, 4), 64),
-    ((8, 8, 8), 128),
+    ((64, 64), 128),
+    ((8, 8, 8, 8), 128),
+    ((16, 16, 16), 128),
     ((8, 8, 8, 8), 128),
 )
 
@@ -180,7 +180,8 @@ def _seed_from_dense(arena, dense):
     """Copy a dense `[BH, N, cols]` LATTICE-order state into the arena's committed slots."""
     arena.wait()
     BH, N, cols = dense.shape
-    atoms = dense.reshape(BH * (N // MMA_K_QUANTUM), MMA_K_QUANTUM, cols)
+    #: THE ARENA HOLDS THE STORED FORM (K50's split planes); `dense` is the logical one.
+    atoms = to_split_planes(dense.reshape(BH * (N // MMA_K_QUANTUM), MMA_K_QUANTUM, cols))
     table = arena.page_table.reshape(-1)
     present = table >= 0
     arena.state.index_copy_(0, table[present].long(), atoms[present])
@@ -253,13 +254,13 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
 
     y_dense, dense_out, _ = _decode_step(
         v, read, write, None, g_write, config,
-        dense.clone().view(fixture["B"], fixture["H"], config.N, _COLS))
+        to_split_planes(dense.clone().view(fixture["B"], fixture["H"], config.N, _COLS)))
     y_paged, _, _ = _decode_step(
         v, read, write, None, g_write, config, arena.state,
         page_table=arena.page_table)
 
     assert torch.equal(y_dense, y_paged), "the two backings disagree on y"
-    assert torch.equal(dense_out.view(BH, config.N, _COLS),
+    assert torch.equal(from_split_planes(dense_out).view(BH, config.N, _COLS),
                        arena.materialize()), "the two backings disagree on the state"
     # NON-VACUITY: pages were committed, they came back nonzero, and (unless the write
     # support is total) the table is NOT the identity map, so a translation ran.
@@ -309,12 +310,12 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
 
     y_dense, _, _ = _decode_step(
         v, read, write, None, g_write, config,
-        dense.clone().view(fixture["B"], fixture["H"], config.N, _COLS))
+        to_split_planes(dense.clone().view(fixture["B"], fixture["H"], config.N, _COLS)))
     y_paged, _, _ = _decode_step(
         v, read, write, None, g_write, config, arena.state,
         page_table=arena.page_table)
 
-    assert torch.equal(arena.state[resident:],
+    assert bytes_equal(arena.state[resident:],
                        torch.full_like(arena.state[resident:], _POISON)), (
         "the step wrote a page no plan committed")
     assert torch.equal(arena.page_table, table_before), "the step moved the page table"

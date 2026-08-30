@@ -13,6 +13,7 @@ import math
 import torch
 
 from rola.ops import carry as carry_ops
+from rola.ops.paging import from_split_planes, to_split_planes
 
 
 def simplex(shape, k_tok, gen, device, live=None):
@@ -75,26 +76,26 @@ class Cell:
     def state_in_plane(self):
         """``state_in`` as the kernel's state plane, ``[BH, N/16, 16, cols]``.
 
-        A RE-BLOCKING AND NOTHING ELSE since P80: the consumer addresses its state by
+        A RE-BLOCKING AND THE SPLIT-PLANE PACK since K50: the consumer addresses its state by
         CANONICAL atom id in both backings, so the plane is the atom-major view of
         ``[BH, N, cols]`` that `docs/internals/state.md` section 3 defines, and the leaf
         permutation this method used to apply is gone with the lattice keying.
         """
         if self.state_in is None:
             return None
-        return self.state_in.to(torch.float32).reshape(
-            self.B * self.H, self.N // 16, 16, self.d_v + 1).contiguous()
+        return to_split_planes(self.state_in.to(torch.float32).reshape(
+            self.B * self.H, self.N // 16, 16, self.d_v + 1).contiguous())
 
 
 def canonical_from_plane(plane):
     """A ``[BH, N/16, 16, cols]`` state plane as ``[BH, N, cols]`` CANONICAL.
 
-    The kernel's plane IS the atom-major view of the canonical one (P80), so this is a
-    reshape. It stays a NAMED step because the assertion it feeds is the family's
+    The kernel's plane IS the atom-major view of the canonical one (P80) in the STORED
+    split-plane form (K50), so this is the hi||lo gather and a reshape. It stays a NAMED step because the assertion it feeds is the family's
     final-state gate, and a leaf-order error must surface at a named seam rather than as
     noise inside a comparison.
     """
-    return plane.reshape(plane.shape[0], -1, plane.shape[-1])
+    return from_split_planes(plane).reshape(plane.shape[0], -1, plane.shape[-1])
 
 
 #: THE DECLARATION THE FLAGSHIP SHIPS UNDER: write-sparse on the even levels and
