@@ -91,11 +91,11 @@ DEEP_CELLS = [
      (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE), 8, 64),
     ("d3-shared-k4", 3, LEVEL_WIDTH_DEEP3, (BOTH_SPARSE,) * 3, 4, False),
     ("d4-dense", 4, LEVEL_WIDTH_DEEP4, (DENSE_BOTH,) * 4, None, False),
-    ("d4-alt-k2", 4, LEVEL_WIDTH_DEEP4,
-     (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE, READ_SPARSE), 2, False),
     ("d4-alt-k4", 4, LEVEL_WIDTH_DEEP4,
      (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE, READ_SPARSE), 4, False),
-    ("d4-shared-k2", 4, LEVEL_WIDTH_DEEP4, (BOTH_SPARSE,) * 4, 2, False),
+    ("d4-alt-k8", 4, LEVEL_WIDTH_DEEP4,
+     (WRITE_SPARSE, READ_SPARSE, WRITE_SPARSE, READ_SPARSE), 8, False),
+    ("d4-shared-k4", 4, LEVEL_WIDTH_DEEP4, (BOTH_SPARSE,) * 4, 4, False),
 ]
 
 
