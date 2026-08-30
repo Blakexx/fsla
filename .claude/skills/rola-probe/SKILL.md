@@ -88,3 +88,10 @@ report it, Blake rules, don't tune around it.
   no-state control launch shows it) — a DRAM delta under 1% is not a finding; alignment questions are
   L1-REQUEST questions (l1tex requests/wavefronts per instruction), which the fixed metric list does not
   ask — add them explicitly when the mechanism is an alignment.
+- DRAM BYTES ARE BIMODAL ON THIS HOST (G1c-dram, 2026-08-29): dram__bytes swings ±14% launch-to-launch
+  even with NO state I/O (the --state none control) — never quote one draw; report p50 AND p75 over ≥ 60
+  profiled launches per point, interleaved, and compare distributions.
+- `--state paged` WITHOUT `--continuation` RUNS NO ENTRY SWEEP (make_call passes a null s_in): every
+  paged number measured that way is the exit sweep alone and cannot show a read-side effect. Use the
+  continuation shape (entry plane IS exit plane) for any state-traffic claim; tools/experiments/
+  dram_by_activity.py is the committed activity-controlled harness (read-only / written / none variants).
