@@ -378,3 +378,13 @@ Every CTA-uniform structure branch in device code is a `uniform_switch<Set>(valu
 exhaustiveness (derivation outputs ⊆ Set), the seam's launch refusal reading the same Set, a `__trap()`
 default with the post-build coverage sweep — are the primitive's contract, never re-implemented per site.
 A hand-written device `switch` on a geometry field is a lint finding.
+
+## CONSTITUTION addendum (Blake, 2026-08-29): R20 — THE SM OWNS THE STATE; WARPS PARTITION IT; CTAs GROUP WARPS
+On every architecture the unit of state ownership is the multiprocessor: its box is derived on its own
+from the architecture's state capacity (`leaves_per_sm`, from DV) balanced over the D levels. Warps
+partition that box — each side's level order carves it, sparse levels first, until every warp owns a
+segment — and a CTA is only a grouping of warps holding a contiguous subset of those segments (how many
+is a launch parameter). Where the accumulator lives (registers, tensor memory) changes how a warp touches
+its segment, never who owns what. Every mechanism — the carve, the transit, the activity bits, the
+launch shape, the schedule — is stated in these terms, and a design that couples ownership to the CTA
+or to the accumulator's home is misfiled.
