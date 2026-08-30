@@ -106,8 +106,7 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
 - THE SANITIZER IS EXCLUSIVE (incident 2, 2026-08-29): compute-sanitizer runs never overlap a compile —
   tools/sanitize_oracle.py holds the build lock exclusively and runs niced; one tool, one family at a
   time; run it only after the gate build's exit marker. 6 families × 3 tools is 18 instrumented launches.
-- WHY THE SANITIZER PEGS THE HOST: compute-sanitizer instruments EVERY kernel image in the loaded binary
-  at load; against the all-arms gate .so (10 arms × many phase bodies) each of the 18 launches patches
-  hundreds of kernels — minutes of host CPU per launch, independent of the cell size. Run the sanitizer
-  ONLY against a single-arm ITERATION binary of the family under test (sanitize_oracle.py does this by
-  construction from G2c on); the exclusive lock + nice are insurance, not the fix.
+- THE SANITIZER RUNS ON THE GATE BINARY, ALWAYS (a sanitizer on a different binary is the wrong-binary
+  trap). Its host cost on this machine is UNMEASURED (incident 2026-08-29: it pegged the host on its own);
+  G2c measures one family/tool pair (time, peak RSS, load). Until then: exclusive build lock + nice, one
+  tool and one family at a time; any change to what or how it instruments is a design point for Blake.
