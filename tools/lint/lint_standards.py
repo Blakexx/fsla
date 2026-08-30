@@ -465,12 +465,20 @@ def _docs_anchors(doc: Path) -> list[str]:
 
 
 def check_generated_directories_are_documented_by_their_readme() -> list[str]:
-    """Rule 5. The exemption from rule 1 costs a stricter check, not a weaker one."""
+    """Rule 5. The exemption from rule 1 costs a stricter check, not a weaker one.
+
+    A generated directory that DOES NOT EXIST is not a violation: the generator's own
+    `--check` (run below, and by `check_shard_partition`) is what says whether that is
+    correct, and at an empty arm list it is (C0, card C). The rule is about a directory
+    that exists without the README its exemption is paid for with.
+    """
     import subprocess
 
     findings = []
     for name in _DOCS_GENERATED_DIRS:
         directory = _DOCS_SRC / "src" / name
+        if not directory.is_dir():
+            continue
         if not (directory / "README.md").is_file():
             findings.append(
                 f"{directory.relative_to(ROOT)} is exempt from the per-file mirror rule "
@@ -711,12 +719,38 @@ def check_supported_table() -> list[str]:
     return findings
 
 
+def _repo_build_config() -> dict | None:
+    """THIS TREE's `rola/_build_config.py`, loaded BY PATH, or None if unbuilt.
+
+    Never `import rola._build_config`. This module runs as a script, so `sys.path[0]`
+    is `tools/lint/` and not the repository root: a plain import resolves `rola` out of
+    whatever venv happens to be active -- on a box with a shared base venv, that is a
+    DIFFERENT worktree's build, and the two checks below then verdict on a binary this
+    repository never produced. (The extension trap's 14th form; the same rule as
+    `assert_fresh_binary`: a gate reads the artifact it is gating.)
+    """
+    import importlib.util
+
+    path = ROOT / "rola" / "_build_config.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("_rola_repo_build_config", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.BUILD_CONFIG
+
+
 def check_shard_partition() -> list[str]:
-    """Ported from tests/unit/test_shard_partition.py (deleted). The facts family's
-    kernel instantiations live in ONE checked-in TU `tools/gen_shards.py` generates;
-    membership is a function of the arm list alone, the committed shard matches the
-    generator, the dispatch TU cannot satisfy an arm locally, and the manifest on
-    disk is the ratification the CURRENTLY BUILT binary was gated against.
+    """Ported from tests/unit/test_shard_partition.py (deleted). The generated
+    instantiation tree is a function of `tools/gen_shards.py`'s arm list alone, and
+    the manifest on disk is the ratification the CURRENTLY BUILT binary was gated
+    against.
+
+    C0 DELETED THE TWO FAMILIES THAT HAD GENERATED UNITS (card C): the carry arm list
+    is empty and the stats passes' shard is gone, so the per-shard membership-hash
+    half of this check has nothing to read and went with them. `gen_shards --check`
+    still runs and still refuses a directory that disagrees with the arm list -- which
+    at zero rows means a directory that is not empty.
 
     THE FALSE-FAIL THIS FIXES (K46 item 2): the retired test recomputed the manifest
     digest over EVERY `tools/manifests/sm_*.json` file found on disk, but
@@ -727,68 +761,18 @@ def check_shard_partition() -> list[str]:
     `BUILD_CONFIG["archs"]` -- what the build declares -- instead of a directory
     glob.
     """
-    import hashlib
     import subprocess
 
     findings = []
-    if str(_TOOLS_DIR) not in sys.path:
-        sys.path.insert(0, str(_TOOLS_DIR))
-    try:
-        import gen_shards
-    except ImportError as ex:
-        return [f"check_shard_partition: could not import tools/gen_shards.py: {ex}"]
-
-    shard_dir = ROOT / "csrc" / "rola" / "src" / "instantiations"
-    facts_re = re.compile(r"template cudaError_t launch_chunk_facts_arm<(\d+), (\d+), (\d+), (\d+)>")
-    span_re = re.compile(r"template cudaError_t launch_span_facts_arm<(\d+), (\d+), (\d+), (\d+), "
-                         r"(\d+), (\d+), (\d+), (\d+), (\d+), (\d+), (\d+)>")
-    block_re = re.compile(r"template cudaError_t launch_chunk_block_bitmap_arm<(\d+), (\d+), (\d+)>")
-    atom_re = re.compile(r"template cudaError_t launch_chunk_atom_bitmap_arm<(\d+), (\d+)>")
-
-    facts_s0 = shard_dir / "facts_s0.cu"
-    if not facts_s0.is_file():
-        return [f"check_shard_partition: {facts_s0.relative_to(ROOT)} does not exist"]
-    text = facts_s0.read_text()
-    committed = ([("FACTS", int(d), int(b)) + gen_shards.lex_spans(int(d), int(b), int(bc)) * 2
-                 + (int(m),) for d, b, bc, m in facts_re.findall(text)]
-                + [("FACTS",) + tuple(int(x) for x in r) for r in span_re.findall(text)]
-                + [("BLOCK", int(d), int(b), int(bc)) for d, b, bc in block_re.findall(text)]
-                + [("ATOM", int(d), int(b)) for d, b in atom_re.findall(text)])
-    if not committed:
-        findings.append(f"{facts_s0.relative_to(ROOT)} instantiates nothing")
-    elif sorted(map(str, committed)) != sorted(map(str, gen_shards.chunk_rows())):
-        findings.append("the committed shard and tools/gen_shards.py's arm list cover "
-                        "different instantiation sets -- membership is not a function "
-                        "of the arm list alone")
-
-    for name, rows in sorted(gen_shards.chunk_shards().items()):
-        shard_text = (shard_dir / f"{name}.cu").read_text()
-        stated = re.search(r"^// members-sha256: ([0-9a-f]{64})$", shard_text, re.M)
-        if not stated:
-            findings.append(f"{name}.cu states no membership hash")
-            continue
-        blob = "\n".join(sorted(gen_shards.chunk_canonical(r) for r in rows)).encode()
-        if stated.group(1) != hashlib.sha256(blob).hexdigest():
-            findings.append(f"{name}.cu's membership hash does not match its own "
-                            f"generator-derived row set")
-
     proc = subprocess.run([sys.executable, str(_TOOLS_DIR / "gen_shards.py"), "--check"],
                           cwd=str(ROOT), capture_output=True, text=True)
     if proc.returncode != 0:
         findings.append(f"tools/gen_shards.py --check failed:\n{proc.stdout}{proc.stderr}")
 
-    facts_cu = (ROOT / "csrc" / "rola" / "src" / "facts" / "facts.cu")
-    facts_text = facts_cu.read_text()
-    if ('#include "facts_launch.cuh"' in facts_text
-            or '#include "../facts/facts_launch.cuh"' in facts_text):
-        findings.append(f"{facts_cu.relative_to(ROOT)} includes the launcher's own "
-                        f"definition -- the dispatch TU could then satisfy an arm "
-                        f"locally, which is the exact silent non-shard the partition "
-                        f"exists to prevent")
-
-    try:
-        from rola._build_config import BUILD_CONFIG
-    except ImportError:
+    if str(_TOOLS_DIR) not in sys.path:
+        sys.path.insert(0, str(_TOOLS_DIR))
+    BUILD_CONFIG = _repo_build_config()
+    if BUILD_CONFIG is None:
         pass  # not built yet -- nothing to check the manifest against
     else:
         built_archs = BUILD_CONFIG.get("archs")
@@ -816,63 +800,34 @@ def check_shard_partition() -> list[str]:
 
 
 def check_arch_coverage() -> list[str]:
-    """Ported from tests/unit/test_arch_coverage.py (deleted). Every RATIFIED arch's
-    manifest must carry a facts arm for every topology class ANY ratified arch
-    carries one for -- a hole on one arch is invisible to every other gate, which
+    """Ported from tests/unit/test_arch_coverage.py (deleted). A tabulated arch with
+    no ratified manifest is the "will refuse to load" row, and the generated support
+    table must say so -- a hole on one arch is invisible to every other gate, which
     all run on whichever arch the developer's own card happens to be. Device-free:
-    reads `tools/manifests/` only."""
-    import json
+    reads `tools/manifests/` only.
 
+    THE PER-TOPOLOGY HALF WENT WITH THE STATS PASSES (C0, card C). It asserted that
+    every ratified arch's manifest carried a facts arm for every `(D, B)` class any
+    other arch carried one for; there are no facts arms. It returns with the kernel,
+    keyed on the rebuilt family's own arm list, not restored against an empty one.
+    """
     if str(_TOOLS_DIR) not in sys.path:
         sys.path.insert(0, str(_TOOLS_DIR))
     try:
-        import ratify
+        import ratify  # noqa: F401 -- the manifest reader the successor half uses
         import supported
     except ImportError as ex:
         return [f"check_arch_coverage: could not import tools/ratify.py or "
                 f"tools/supported.py: {ex}"]
 
     manifest_dir = _TOOLS_DIR / "manifests"
-
-    def arms(blob: dict) -> set[tuple]:
-        out = set()
-        for key in blob["entries"]:
-            mangled = key.split(":", 1)[1]
-            shape = ratify.parse_shape(mangled)
-            if shape is not None:
-                out.add((shape["kernel"], shape["D"], shape["B"], shape["BC"]))
-        return out
-
-    per_arch = {}
-    for arch in supported.tabulated_archs():
-        path = manifest_dir / f"{arch}.json"
-        if path.is_file():
-            per_arch[arch] = arms(json.loads(path.read_text()))
-
+    per_arch = {arch for arch in supported.tabulated_archs()
+                if (manifest_dir / f"{arch}.json").is_file()}
     findings = []
     if not per_arch:
         return ["no tabulated arch has a ratified manifest; nothing was measured"]
 
-    def classes(a: set[tuple]) -> set[tuple]:
-        return {(d, b) for (_kernel, d, b, _bc) in a}
-
-    union = set().union(*(classes(a) for a in per_arch.values()))
-    if len(union) <= 1:
-        findings.append(f"the facts arms name {len(union)} topology class(es), so "
-                        f"'every arch covers every class' is not a claim about "
-                        f"anything -- either the arm list collapsed or this check is "
-                        f"reading the wrong field")
-    for arch, a in sorted(per_arch.items()):
-        missing = sorted(union - classes(a))
-        if missing:
-            findings.append(
-                f"{arch}'s manifest carries NO facts arm for topology class(es) "
-                f"{missing}, which other ratified arches do carry -- a hole, not a "
-                f"slower path (ArmRule falls back to another BC, never another "
-                f"(D, B)). Restore an arm for {missing} in tools/gen_shards.py and "
-                f"re-ratify {arch}, or drop the class everywhere.")
-
-    unratified = sorted(set(supported.tabulated_archs()) - set(per_arch))
+    unratified = sorted(set(supported.tabulated_archs()) - per_arch)
     table = supported.table()
     for arch in unratified:
         marker = f"| `{arch}` |"
@@ -964,9 +919,8 @@ def check_vendored_pin() -> list[str]:
     if "_gate_vendored" not in setup_text:
         findings.append("closed-world rule 5 gate (_gate_vendored) is gone from setup.py")
 
-    try:
-        from rola._build_config import BUILD_CONFIG
-    except ImportError:
+    BUILD_CONFIG = _repo_build_config()
+    if BUILD_CONFIG is None:
         pass  # not built yet
     else:
         vendored = BUILD_CONFIG.get("vendored")

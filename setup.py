@@ -97,10 +97,9 @@ ROLA_CUDA_ARCHS = [a for a in os.getenv("ROLA_CUDA_ARCHS", "80;86").split(";") i
 
 #: THE MILESTONE/CI SWITCH (K43, KERNEL_STANDARDS §16). Manifests go stale between
 #: milestones BY DESIGN -- ratification is a per-milestone act, not a per-stage one --
-#: so the two POST-BUILD gates that compare the freshly built binary against the
-#: checked-in ``tools/manifests/sm_XX.json`` (``_post_build_fatbin_check``'s
-#: manifest-describes-binary sub-check, ``_post_build_manifest_check``'s
-#: ``ratify.py`` re-run) REPORT a mismatch instead of failing the install by default.
+#: so the POST-BUILD gate that compares the freshly built binary against the
+#: checked-in ``tools/manifests/sm_XX.json`` (``_post_build_manifest_check``'s
+#: ``ratify.py`` re-run) REPORTS a mismatch instead of failing the install by default.
 #: ``ROLA_STRICT_MANIFEST=1`` restores the pre-K43 hard failure: the milestone/CI gate
 #: build that immediately precedes ``tools/ratify.py --write`` sets it (docs/build.md),
 #: because THAT build must fail loudly if the tree it is about to ratify is not
@@ -182,11 +181,11 @@ def _carry_sources() -> list[str]:
 def _is_iteration_build() -> bool:
     """A build whose arm set is not the SHIPPED set is an ITERATION build.
 
-    The two post-build gates prove SHIPPABILITY -- that the fatbin carries every
-    ratified instantiation, in the file the arm list assigns it. A binary built with a
-    different arm set carries a different set BY CONSTRUCTION, so those gates would
-    fail for the one reason that is not a defect. They are skipped here and nowhere
-    else, behind a banner, and the binary stays self-identifying.
+    The post-build gate proves SHIPPABILITY -- that the fatbin carries every ratified
+    instantiation. A binary built with a different arm set carries a different set BY
+    CONSTRUCTION, so that gate would fail for the one reason that is not a defect. It
+    is skipped here and nowhere else, behind a banner, and the binary stays
+    self-identifying.
 
     NOTE the asymmetry, and that it is deliberate: a build carrying MORE than the
     shipped rows (the battery's `all`) is an iteration build too. The manifest ratifies
@@ -227,9 +226,8 @@ def _decode_arm_subset() -> list[str]:
 #: This is a PACKAGING name only. ``PYBIND11_MODULE(TORCH_EXTENSION_NAME, ...)`` takes
 #: it from this constant, so nothing in ``csrc/`` names it; the C++ namespaces
 #: (``rola``, ``rola::paging``) and every kernel symbol are untouched.
-#: The manifests key on MANGLED KERNEL NAMES (``rola::chunk::chunk_facts_tables``
-#: and its siblings), and the module-init symbol they do not contain is the only
-#: thing this rename can move.
+#: The manifests key on MANGLED KERNEL NAMES, and the module-init symbol they do not
+#: contain is the only thing this rename can move.
 MODULE_NAME = "rola._C"
 
 
@@ -492,10 +490,10 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict,
 # ---------------------------------------------------------------------------
 # the extension
 # ---------------------------------------------------------------------------
-#: THE HAND-WRITTEN TRANSLATION UNITS. The chunk consumer's kernel instantiations
-#: are NOT here: they live in the generated shards under
-#: `csrc/rola/src/instantiations/`, which `shard_sources()` appends. `chunk.cu` is
-#: the dispatch and the torch entries only, and compiles like the host file it is.
+#: THE TRANSLATION UNITS. Every one is hand-written on this line: C0 deleted the two
+#: families that had GENERATED instantiation units (the carry family's per-arm TUs and
+#: the stats passes' shard), so nothing is appended to this list but the per-arm carry
+#: units the arm table names -- and it names none until G4.
 SOURCES = [
     "csrc/rola/rola_api.cpp",
     # TRACK D (thunder §6b): the T=1 decode path, one TU.
@@ -503,7 +501,6 @@ SOURCES = [
     "csrc/rola/src/entmax/entmax.cu",
     "csrc/rola/src/entmax/factor.cu",
     "csrc/rola/src/paging/vmm_owner.cu",
-    "csrc/rola/src/facts/facts.cu",
     #: G -- the addressing block's host seam (derivation + refusals). Its own TU so
     #: that the foundation lands without recompiling the dispatch; it holds no kernel.
     "csrc/rola/src/common/geom.cu",
@@ -512,18 +509,6 @@ SOURCES = [
     # K31 R4: the intra term's reverse pass, its own TU.
     "csrc/rola/src/intra/intra_backward.cu",
 ]
-
-
-def shard_sources() -> list[str]:
-    """The generated instantiation shards, TAKEN FROM THE GENERATOR.
-
-    Not globbed off the disk: a shard file that the arm list does not produce must
-    not be able to enter the build by being dropped in the directory, and one it does
-    produce must not be able to leave the build by being deleted. The `--check` gate
-    below is what makes the two agree.
-    """
-    names = sorted(gen_shards.chunk_shards())
-    return [f"csrc/rola/src/instantiations/{name}.cu" for name in names]
 
 
 def _gate_shards() -> None:
@@ -575,7 +560,7 @@ def build_extension():
 
     return CUDAExtension(
         name=MODULE_NAME,
-        sources=SOURCES + shard_sources() + _carry_sources(),
+        sources=SOURCES + _carry_sources(),
         #: The vendored CuTe/CUTLASS headers come LAST, so a repository header always
         #: wins a name collision and the vendored tree can never shadow ours.
         include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include"), str(generated_dir)],
@@ -634,7 +619,6 @@ class RoLABuildExtension(BuildExtension):
                                  desired=desired_jobs) as held_slots:
             os.environ["MAX_JOBS"] = str(held_slots)
             super().run()
-        self._post_build_fatbin_check()
         self._post_build_manifest_check()
         write_build_config(ROLA_CUDA_ARCHS, ptxas, manifest, pin, sccache)
 
@@ -645,60 +629,17 @@ class RoLABuildExtension(BuildExtension):
         if set(_carry_arms()) != set(gen_shards.CARRY_SHIPPED_ARMS):
             print("ITERATION BUILD -- NOT SHIPPABLE.  This build carries carry arms "
                   f"{_carry_arms()}, which is not the SHIPPED set "
-                  f"{list(gen_shards.CARRY_SHIPPED_ARMS)}, so the shippability gates "
-                  "(fatbin instantiation, manifest) are skipped. Build with "
+                  f"{list(gen_shards.CARRY_SHIPPED_ARMS)}, so the shippability gate "
+                  "(the manifest) is skipped. Build with "
                   "ROLA_CARRY_ARMS unset to get a gateable binary.")
         if _decode_arm_subset_active():
             print("ITERATION BUILD -- NOT SHIPPABLE.  ROLA_DECODE_ARMS is set, so this "
                   "fatbin carries a SUBSET of the decode arms, so the shippability "
-                  "gates (fatbin instantiation, manifest) are skipped. "
+                  "gate (the manifest) is skipped. "
                   "rola.ops.decode.arms() lists what it does carry. Build with "
                   "ROLA_DECODE_ARMS unset to get a gateable binary.")
         print("=" * 78)
         return True
-
-    def _post_build_fatbin_check(self):
-        """THE SHARDING ITSELF, PROVEN FROM THE BINARY.
-
-        The two ways a translation-unit split silently fails to split anything --
-        the launcher's definition leaking into the dispatch TU, or a query ladder
-        still taking kernel addresses there -- both leave the build green, the
-        census correct and the manifest byte-identical, while every kernel gets
-        compiled twice and the compile time simply does not fall. `nm` cannot see
-        it either: a `__global__` template's host stub is weak and the linker keeps
-        one. The fatbin can: it carries one device entry per instantiating object.
-        `tools/fatbin_entries.py` counts them, per arch, and checks each one against
-        the shard the arm list says owns it.
-
-        `tools/fatbin_entries.py`'s own `check()` (K43) ALREADY applies the
-        `ROLA_STRICT_MANIFEST` split internally: it downgrades ONLY its "the
-        committed manifest describes this binary" sub-check to a REPORT when not
-        strict, and stays fatal unconditionally for the shard-partition and
-        dispatch-closure sub-checks (those are never a staleness question -- a
-        failure there is a real defect in THIS build regardless of any manifest).
-        So a nonzero exit here, with the identical env passed through, always means
-        something that must stay fatal; this method does not re-derive or soften
-        that distinction, only reports it.
-        """
-        if self._iteration_banner():
-            return
-        so = next(Path(self.build_lib).rglob("_C*.so"), None) or \
-            next((ROOT / "rola").glob("_C*.so"), None)
-        if so is None:
-            raise RuntimeError("built extension not found; the fatbin gate cannot "
-                               "prove a binary it cannot read")
-        cmd = [sys.executable, str(ROOT / "tools" / "fatbin_entries.py"), "--check", str(so)]
-        env = dict(os.environ, ROLA_STRICT_MANIFEST="1" if ROLA_STRICT_MANIFEST else "0")
-        if subprocess.run(cmd, cwd=str(ROOT), env=env).returncode != 0:
-            raise RuntimeError(
-                "the built fatbin does not carry exactly one device entry per "
-                "instantiation in the shard the arm list assigns it to (see the counts "
-                "printed above): either the shard partition and the dispatch have "
-                "drifted apart, or the instantiations are being duplicated across "
-                "translation units and nothing is actually sharded. (A manifest-only "
-                "mismatch is already downgraded to a REPORT above and would not have "
-                "reached this raise unless ROLA_STRICT_MANIFEST=1.)"
-            )
 
     def _post_build_manifest_check(self):
         """The pre-build gates prove the INPUTS were ratified. This proves the

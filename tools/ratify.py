@@ -225,25 +225,16 @@ COMPILE_CWD = Path(__file__).resolve().parents[1] / "build" / "temp"
 #: was the probe.
 #:
 #: Now the gate compiles the shipped sources themselves: the generated instantiation
-#: shard, plus `decode.cu` and `entmax.cu` as the translation units they are in the
-#: build. The facts keys are stable by construction -- the kernels live in a NAMED
-#: namespace, so their mangled names do not depend on which translation unit
-#: expands them -- and the decode/entmax keys name the symbols that are actually in
-#: the `.so`, which `tools/fatbin_entries.py` checks rather than asserts.
+#: the translation units they are in the build. Every key is stable by construction:
+#: the kernels live in a NAMED namespace, so their mangled names do not depend on
+#: which translation unit expands them.
 STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu",
                   "entmax/factor.cu",
-                  #: K31 R1: the carry family is shipped codegen the moment it is in
-                  #: SOURCES, so it is measured like every other shipped TU.
-                  "carry/carry.cu", "intra/intra.cu",
-                  #: K31 R4: the reverse pass's two TUs, on the same footing -- a
-                  #: kernel's launch bound is a property of the kernel, and the two
-                  #: scans declare their register floors separately.
-                  "carry/backward.cu", "intra/intra_backward.cu")
-
-
-def shard_paths() -> list[Path]:
-    names = sorted(gen_shards.chunk_shards())
-    return [SRC / "instantiations" / f"{name}.cu" for name in names]
+                  "intra/intra.cu",
+                  #: K31 R4: the reverse pass on the same footing -- a kernel's launch
+                  #: bound is a property of the kernel, and each declares its own
+                  #: register floor.
+                  "intra/intra_backward.cu")
 
 
 def carry_arm_paths(arms=None) -> list[Path]:
@@ -268,7 +259,7 @@ def tu_paths(shards: tuple[str, ...] | None = None, arms=None) -> list[Path]:
     refuses to file a manifest that does not carry the whole matrix, because a
     partial manifest would silently drop every arm it did not compile.
     """
-    paths = shard_paths()
+    paths: list[Path] = []
     if shards is not None:
         by_stem = {p.stem: p for p in paths}
         unknown = sorted(set(shards) - set(by_stem))
@@ -277,7 +268,7 @@ def tu_paths(shards: tuple[str, ...] | None = None, arms=None) -> list[Path]:
                              f"    known: {', '.join(sorted(by_stem))}")
         paths = [by_stem[s] for s in sorted(shards)]
         return paths
-    return paths + carry_arm_paths(arms) + [SRC / name for name in STANDALONE_TUS]
+    return carry_arm_paths(arms) + [SRC / name for name in STANDALONE_TUS]
 #: The vendored CuTe/CUTLASS headers, in the SAME order `setup.py` passes them
 #: (repository headers first). This gate's whole premise is that it compiles the
 #: shipped translation units under the shipped kernel's flags; an include path the
@@ -383,41 +374,6 @@ OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of ra
 #: are lex-only reductions and keep their integer keys.  Decoded in ONE place: the
 #: manifest key is what the assembler saw, and every consumer of it -- the census's
 #: per-key grouping, the hot-loop gate's reporting, the fatbin gate's ownership
-#: check -- goes through here.
-FACTS_TPL = re.compile(r"(atom_bitmap_kernel|block_bitmap_kernel)"
-                       r"ILi(\d+)ELi(\d+)(?:ELi(\d+))?E")
-#: A FACTS INSTANTIATION NAMES TWO PLANS (K35 S1b): the READ side's partition and the
-#: WRITE side's, because each side's bitlists are voted from its own factors.  When the
-#: two coincide -- every lex caller, and every arm whose derived carves agree -- the
-#: Itanium mangler SUBSTITUTES the repeat (`S3_`) instead of spelling it again, so both
-#: forms have to be read here or symmetric arms collapse onto one another.
-PLAN_SIX = r"ILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)E"
-PLAN_TPL = re.compile(r"(chunk_facts_tables)I[A-Za-z0-9_]*?8SpanPlan" + PLAN_SIX + r"EE"
-                      r"(?:[A-Za-z0-9_]*?" + PLAN_SIX + r"EE|S\d*_)"
-                      r"Li(\d+)E")
-
-
-def parse_shape(mangled: str) -> dict | None:
-    """Shape axes off a facts instantiation's mangled name, or None."""
-    m = PLAN_TPL.search(mangled)
-    if m:
-        D, B = int(m.group(2)), int(m.group(3))
-        read = tuple(int(m.group(4 + i)) for i in range(4))
-        #: the substitution branch means the write plan IS the read plan.
-        write = tuple(int(m.group(10 + i)) for i in range(4)) if m.group(8) else read
-        bc = 1
-        for l in range(D):
-            bc *= read[l]
-        return dict(kernel=m.group(1), D=D, B=B, spans=read + write, spans_r=read,
-                    spans_w=write, mask=int(m.group(14)), BC=bc)
-    m = FACTS_TPL.search(mangled)
-    if not m:
-        return None
-    return dict(kernel=m.group(1), D=int(m.group(2)), B=int(m.group(3)),
-                BC=int(m.group(4)) if m.group(4) else None, spans=None, spans_r=None,
-                spans_w=None, mask=None)
-
-
 def shard_of_key(mangled: str) -> str:
     """The translation unit that owns a ratified instantiation.
 
@@ -427,8 +383,6 @@ def shard_of_key(mangled: str) -> str:
     translation units and carry their file's stem, so every ratified entry answers
     the same question in the same schema.
     """
-    if parse_shape(mangled) is not None:
-        return next(iter(sorted(gen_shards.chunk_shards())))
     for tu in STANDALONE_TUS:
         if f"_{Path(tu).stem}_cu_" in mangled:
             return Path(tu).stem
@@ -1337,30 +1291,10 @@ def census_report(entries: dict, unhonored: list[str],
     hot = hot or {}
     by_key: dict[tuple, list] = {}
     for name, e in sorted(entries.items()):
-        arch = name.split(":", 1)[0]
-        shape = parse_shape(name)
-        if shape is None:
-            continue
-        #: THE SHARD IS A CENSUS COLUMN. Every row of the register/spill table says
-        #: which translation unit would have to be recompiled to move it, which is
-        #: what turns "re-ratify only these shards" from a plan into a checkable
-        #: claim: csrc/rola/src/instantiations/README.md
-        #: the SPANS name a plan; `BC` alone no longer does (two plans of one
-        #: depth can share a `BC` and differ in how it is partitioned).
-        #: `read/write` where the two sides partition differently, the single vector
-        #: where they agree -- the census has to show which carve a row was measured at.
-        if shape["spans"]:
-            span = "x".join(str(x) for x in shape["spans_r"][:shape["D"]])
-            if shape["spans_w"] != shape["spans_r"]:
-                span += "/" + "x".join(str(x) for x in shape["spans_w"][:shape["D"]])
-        else:
-            span = str(shape["BC"] or 0)
-        k = (arch, shard_of_key(name.split(":", 1)[1]), shape["kernel"][:5],
-             span, f"{shape['D']}x{shape['B']}")
-        by_key.setdefault(k, []).append((e, hot.get(name, 0)))
-    print(f"\n{'arch':6} {'shard':10} {'kern':>5} {'spans':>9} "
-          f"{'DxB':>7} {'n':>3} {'regs':>9} {'ctas(reg)':>9} {'st':>6} {'ld':>6} "
-          f"{'#spill':>6} {'worst st':>8} {'hot':>5}")
+        arch, mangled = name.split(":", 1)
+        by_key.setdefault((arch, shard_of_key(mangled)), []).append((e, hot.get(name, 0)))
+    print(f"\n{'arch':6} {'shard':16} {'n':>4} {'regs':>9} {'ctas(reg)':>9} "
+          f"{'st':>6} {'ld':>6} {'#spill':>6} {'worst st':>8} {'hot':>5}")
     for k, es in sorted(by_key.items()):
         regs = sorted(e["regs"] for e, _ in es)
         ctas = sorted(_regs_ctas(r) for r in regs)
@@ -1371,8 +1305,7 @@ def census_report(entries: dict, unhonored: list[str],
         nhot = sum(h for _, h in es)
         rg = f"{regs[0]}-{regs[-1]}" if regs[0] != regs[-1] else f"{regs[0]}"
         cg = f"{ctas[0]}-{ctas[-1]}" if ctas[0] != ctas[-1] else f"{ctas[0]}"
-        print(f"{k[0]:6} {k[1]:10} {k[2]:>5} {k[3]:>9} "
-              f"{k[4]:>7} {len(es):>3} {rg:>9} {cg:>9} {st:>6} "
+        print(f"{k[0]:6} {k[1]:16} {len(es):>4} {rg:>9} {cg:>9} {st:>6} "
               f"{ld:>6} {nsp:>6} {worst:>8} {nhot:>5}")
     total_st = sum(e["spill_stores"] for e in entries.values())
     total_ld = sum(e["spill_loads"] for e in entries.values())

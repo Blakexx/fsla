@@ -15,15 +15,12 @@
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
 #include "src/paging/vmm_owner.cuh"
-#include "src/facts/facts_api.cuh"
 #include "src/common/geom_api.cuh"
 #include "src/intra/intra.cuh"
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  // ---- the facts family (the chunk consumer's surviving fact producers) ---
-  //: ONE PASS, BOTH ROW SETS: the membership union table always, and the atom- -- see docs/internals/rola_api.md#pybind11-module-note-l41
   // ---- K31 R2: the standalone intra kernel -------------------------------
   m.def("intra_forward", &rola::intra::intra_forward,
         "K31 intra: the within-window causal term, REDuced into o/den", py::arg("pread"),
@@ -34,14 +31,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "K31 intra: a fact only the loaded binary can produce");
   m.def("intra_arms", &rola::intra::intra_arms, "K31 intra: the built (levels, window) arms");
 
-  m.def("chunk_facts", &rola::chunk::facts,
-        "facts: the union table and the atom-grain write bitmap, one pass", py::arg("pr"),
-        py::arg("pw"), py::arg("chunk"), py::arg("bc"), py::arg("widths"), py::arg("mask"),
-        py::arg("atoms"));
-  //: the sparse grid's predicate INPUT: three liveness facts per (bh, block), -- see docs/internals/rola_api.md#near-line-58
-  m.def("chunk_block_bits", &rola::chunk::block_bits,
-        "facts: the block-grain read/write/state liveness bitmap", py::arg("tbl"), py::arg("bc"),
-        py::arg("widths"), py::arg("L"), py::arg("page_tbl") = py::none());
   // ---- the addressing block (G2-EXTRACT), a foundation feature ------------
   m.def("carry_geometry", &rola::carry::geometry,
         "G: the addressing block, derived once and flattened -- the SHIPPED derivation, "
@@ -61,8 +50,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "K31 R4: the built reverse intra arms and their census");
   m.def("intra_backward_stamp", &rola::intra::intra_backward_stamp,
         "K31 R4: the reverse intra's device build stamp");
-  m.def("chunk_arms", &rola::chunk::arms,
-        "facts: the built (C, BC, D, B) dispatch vocabulary with plan quantities");
 
   // ---- the producer's union entmax solve ----------------------------------
   m.def("entmax_union_forward", &rola::entmax::union_forward,
