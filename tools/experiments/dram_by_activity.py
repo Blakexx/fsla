@@ -220,8 +220,11 @@ def run_variant(binary, cell, variant, warmup, launches, lock_path, out_dir, tim
         row["error"] = f"no ncu CSV (rc={proc.returncode}): {tail or proc.stderr[-1500:]}"
         return row
     for name, vals in per_metric.items():
+        #: EVERY profiled launch's value is kept, not just the median: `## G1c-dram`
+        #: found this cell's DRAM READ term BIMODAL launch to launch, and a summary
+        #: that reports only a median hides the mode a delta was actually read from.
         row[name] = {"median": statistics.median(vals), "min": min(vals), "max": max(vals),
-                     "n": len(vals)}
+                     "n": len(vals), "values": vals}
         row["n_launches"] = max(row["n_launches"], len(vals))
     return row
 
@@ -367,6 +370,7 @@ def main():
                         continue
                     extra = {"variant": e["variant"], "kernel_name": e["kernel_name"],
                              "min": m["min"], "max": m["max"], "n_launches": m["n"],
+                             "values": m["values"],
                              "census": e["stamp"].get("census"),
                              "arm_row": e["stamp"].get("arm_row")}
                     out_rows.append(store.build_result(
