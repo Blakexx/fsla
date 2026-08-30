@@ -316,6 +316,22 @@ everything else is derived, addressed at runtime, or constant.**
 | **runtime addressing** | the per-side modes, `B_l`, the orders, the row maps | CTA-uniform values read from the descriptor in the prologue: a few shifts, spans, per-warp offsets, row-map deltas and swizzle words per level. |
 | **constant** | `W`, `C` | kernel internals; a short sequence runs partial windows. |
 
+**Shape is the warp's slot map, and it is compiled.** The quantity that fixes which
+register holds which factor in the unrolled expansion — the map from a worker's leaf
+slots to per-level digits — is REGISTER SHAPE, not addressing: a runtime span would
+index a register array dynamically (a spill) or a switch over every layout in the hot
+loop (measured 2× instructions). The derivation is generic in the architecture's state
+capacity: `leaves_per_sm` (the register file on sm_80/90, tensor memory on sm_100)
+balanced over the D levels is the SM's box; `workers_per_sm` (warps here; tensor-memory
+lane groups on sm_100) is the constant that carves it; each SIDE's level order divides
+the box, sparse levels first, until the worker count is reached, and what remains is
+that side's worker sub-box and its slot map. The set of shapes a side can select is
+generated from (D, log₂ workers_per_sm, the box's bit vector) — its COUNT is flat across
+architectures while each body's size scales with leaves per worker — and the selection
+per side is a `uniform_switch` over that set outside the window loop. A CTA holds a
+contiguous subset of the SM's worker sub-boxes; how many is a launch parameter and never
+enters the shape. *(Ruled; landing with the runtime-addressing work.)*
+
 **One geometry block, one derivation.** The modes, the widths, the spans, the row maps
 and the decode lattice are derived in exactly ONE place, from the descriptor, and
 every consumer reads that block. A second derivation site is the defect the oracle's
