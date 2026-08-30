@@ -131,3 +131,8 @@ that into the skill the same day (process/pointers only — never facts).
 - A BASELINE IS A SHA, NEVER "THE SAME TIP" (C0, 2026-08-30): the brief names the exact SHA of every
   parent/baseline worktree, and the worker `git rev-parse HEAD`s it before trusting it (C0's parent was
   two commits ahead and it chased a phantom regression).
+- ONE BRIEF = ONE AGENT = ONE SCOPE (Blake, 2026-08-30, restated): never resume an agent into a further
+  stage or a scope-changing correction — write a new brief and dispatch a fresh, well-scoped agent (the
+  G2c→G2d chain ran one agent through four stages' worth of context; the monolithic C1 covered seven
+  contracts and was split). Sibling stages run in parallel on DISJOINT files on the same branch; each
+  commits detached at the named SHA and the coordinator merges them.
