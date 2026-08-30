@@ -7,6 +7,7 @@
 
 #include <c10/cuda/CUDAStream.h>
 
+#include "common/arch_runtime.cuh"
 #include "facts/liveness.cuh"
 #include "facts/liveness_api.cuh"
 
@@ -69,6 +70,7 @@ at::Tensor liveness_words(const at::Tensor& read_plane, const at::Tensor& write_
                           std::vector<int64_t> widths, int64_t dense_read,
                           std::vector<int64_t> mask_read, int64_t dense_write,
                           std::vector<int64_t> mask_write) {
+  check_arch_table();
   for (const at::Tensor& plane : {read_plane, write_plane}) {
     TORCH_CHECK(plane.is_cuda(), "the pass reads device amplitude planes");
     TORCH_CHECK(plane.scalar_type() == at::kBFloat16, "the pass reads bf16 amplitudes, got ",

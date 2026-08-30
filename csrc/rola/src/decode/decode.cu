@@ -32,6 +32,7 @@
 #include <cuda_bf16.h>
 #include <torch/extension.h>
 
+#include "common/arch_runtime.cuh"
 #include "common/state_page.cuh"
 #include "decode.cuh"
 #include "decode_api.cuh"
@@ -773,6 +774,7 @@ int64_t rola_decode_producer_width_mirror() { return kProducerMaxBranchWidth; }
 
 //: THE STEP'S DECLARED RESIDENCY, in CTAs per SM, read off the same `constexpr` -- see docs/internals/decode/decode.md#rola-decode-residency
 int64_t rola_decode_residency(bool decay, int64_t levels) {
+  check_arch_table();
   TORCH_CHECK(levels >= 1 && levels <= kMaxLevels, "D must be in [1, 4], got ", levels);
   return decode_step_blocks_per_sm(decay, static_cast<int>(levels));
 }
@@ -794,6 +796,7 @@ at::Tensor rola_decode_forward(
     std::vector<int64_t> level_row_offsets, int64_t lattice_k, int64_t lattice_m, int64_t n_split,
     double eps, c10::optional<at::Tensor> page_table, c10::optional<at::Tensor> pool_slots,
     c10::optional<at::Tensor> pool_cursor, c10::optional<at::Tensor> pool_map) {
+  check_arch_table();
   const int D = static_cast<int>(read.size());
   TORCH_CHECK(D >= 1 && D <= kMaxLevels, "D must be in [1, 4], got ", D);
   TORCH_CHECK(static_cast<int>(write.size()) == D && static_cast<int>(normalize.size()) == D

@@ -15,12 +15,14 @@
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
 #include "src/paging/vmm_owner.cuh"
+#include "common/arch_runtime.cuh"
 #include "common/build_stamp.cuh"
 #include "src/common/geom_api.cuh"
 #include "src/facts/liveness_api.cuh"
 #include "src/intra/intra.cuh"
 
 namespace py = pybind11;
+using rola::check_arch_table;
 
 // THE ONE REASON a carry entry can fail on this line, spelled once so a test can
 // assert it and a caller cannot mistake it for a shape refusal.
@@ -28,6 +30,33 @@ static constexpr const char* kCarryUnimplemented =
     "the carry kernel has no implementation on this line: csrc/rola/src/carry/ is empty "
     "and this binary carries the LAUNCH SURFACE and its refusals only (see "
     "docs/ARCHITECTURE.md for the body the surface is waiting for)";
+
+// THE CARRY LAUNCH SURFACE'S TWO STUBS, named (rather than inline lambdas) so the
+// closed-world arch refusal can be their first statement like every other entry's:
+// the refusal that a device was never measured on outranks the refusal that the
+// kernel behind it does not exist yet, and a reader asking "does this call check
+// the device first" gets the same answer here as everywhere else.
+static void carry_forward_unimplemented(const at::Tensor&, const at::Tensor&, const at::Tensor&,
+                                        const at::Tensor&, at::Tensor&, at::Tensor&,
+                                        const std::vector<int64_t>&, int64_t, int64_t, int64_t,
+                                        const at::Tensor&, const at::Tensor&,
+                                        const c10::optional<at::Tensor>&,
+                                        const c10::optional<at::Tensor>&,
+                                        const c10::optional<at::Tensor>&) {
+  check_arch_table();
+  TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_forward)");
+}
+
+static void carry_backward_unimplemented(const at::Tensor&, const at::Tensor&, const at::Tensor&,
+                                         const at::Tensor&, const at::Tensor&, const at::Tensor&,
+                                         const std::vector<int64_t>&, int64_t, int64_t, int64_t,
+                                         const at::Tensor&, const at::Tensor&,
+                                         const c10::optional<at::Tensor>&,
+                                         const c10::optional<at::Tensor>&,
+                                         const c10::optional<at::Tensor>&) {
+  check_arch_table();
+  TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_backward)");
+}
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // ---- the standalone intra kernel ----------------------------------------
@@ -45,32 +74,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // replaces these three entries with its own dispatch translation unit. The signatures are the FINAL ones -- the descriptor's padded
   // widths, the padded DV, the page rectangle and the launch's warps_per_cta, with no
   // logical-width field anywhere (KERNEL_STANDARDS.md §R13 addendum's lint).
-  m.def(
-      "carry_forward",
-      [](const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&,
-         at::Tensor&, const std::vector<int64_t>&, int64_t, int64_t, int64_t, const at::Tensor&,
-         const at::Tensor&, const c10::optional<at::Tensor>&, const c10::optional<at::Tensor>&,
-         const c10::optional<at::Tensor>&) {
-        TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_forward)");
-      },
-      "the carry forward launch surface -- CONTRACT ONLY, no implementation on this line",
-      py::arg("read"), py::arg("write"), py::arg("gain"), py::arg("v"), py::arg("num"),
-      py::arg("den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
-      py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
-      py::arg("state_out"), py::arg("page_table"));
-  m.def(
-      "carry_backward",
-      [](const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
-         const at::Tensor&, const at::Tensor&, const std::vector<int64_t>&, int64_t, int64_t,
-         int64_t, const at::Tensor&, const at::Tensor&, const c10::optional<at::Tensor>&,
-         const c10::optional<at::Tensor>&, const c10::optional<at::Tensor>&) {
-        TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_backward)");
-      },
-      "the carry reverse launch surface -- CONTRACT ONLY, no implementation on this line",
-      py::arg("read"), py::arg("write"), py::arg("gain"), py::arg("v"), py::arg("d_num"),
-      py::arg("d_den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
-      py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
-      py::arg("d_state_out"), py::arg("page_table"));
+  m.def("carry_forward", &carry_forward_unimplemented,
+        "the carry forward launch surface -- CONTRACT ONLY, no implementation on this line",
+        py::arg("read"), py::arg("write"), py::arg("gain"), py::arg("v"), py::arg("num"),
+        py::arg("den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
+        py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
+        py::arg("state_out"), py::arg("page_table"));
+  m.def("carry_backward", &carry_backward_unimplemented,
+        "the carry reverse launch surface -- CONTRACT ONLY, no implementation on this line",
+        py::arg("read"), py::arg("write"), py::arg("gain"), py::arg("v"), py::arg("d_num"),
+        py::arg("d_den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
+        py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
+        py::arg("d_state_out"), py::arg("page_table"));
   m.def(
       "carry_build_stamp",
       []() { TORCH_CHECK(false, kCarryUnimplemented, " (entry: carry_build_stamp)"); },
