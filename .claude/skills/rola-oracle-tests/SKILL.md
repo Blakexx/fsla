@@ -85,3 +85,6 @@ to find a minimal failing cell automatically, not as part of the default battery
 - THE RUN RECIPE IS: plain `pytest <file>` from the worktree venv — the conftest takes the GPU lock itself
   (K46); wrapping it in `flock` SELF-DEADLOCKS (G2c lost 120 s to it). Any `flock … pytest` line in an
   older section of this skill is stale.
+- RED-BY-DESIGN LINES (C0, 2026-08-30): a collection error aborts the WHOLE pytest run — use
+  `--continue-on-collection-errors` to get counts, and per-file loops for per-file counts (the hook
+  denies unscoped `pytest tests/`).

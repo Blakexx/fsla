@@ -110,3 +110,6 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
   default is min(cores−2, RAM/3 GB) (7 on the 23 GB host) and ninja follows it. Never set
   ROLA_HOST_BUDGET_SLOTS above RAM/3 GB; never run two gate builds concurrently (two worktrees = two
   budgets' worth only if the budget is shared — it is: one lock directory per host).
+- ON k31/carry-clean (C0, 2026-08-30): the selection header has no includer until G4 regenerates
+  carry_arms.inc; the single-TU census recipe's instantiations/carry_arm_<i>.cu exist only once K0 adds
+  arms. tools/fatbin_entries.py and setup.py's fatbin gate went with the facts family.

@@ -128,3 +128,6 @@ that into the skill the same day (process/pointers only — never facts).
   targets k31/carry-clean; k35-final holds the OLD carry as the reference and is never edited; a stage
   is either a foundation FEATURE (shipped + tested on its own, no kernel body) or a KERNEL stage on the
   features; briefs cite the card and say which.
+- A BASELINE IS A SHA, NEVER "THE SAME TIP" (C0, 2026-08-30): the brief names the exact SHA of every
+  parent/baseline worktree, and the worker `git rev-parse HEAD`s it before trusting it (C0's parent was
+  two commits ahead and it chased a phantom regression).
