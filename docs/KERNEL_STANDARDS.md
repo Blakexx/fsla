@@ -336,8 +336,10 @@ hooks are fixed (the hook, or the tree), never routed around.
 - R12 SHAPE COMPILE-TIME, ADDRESSING RUNTIME: only the register shape (leaves-per-warp × DV) is compiled;
   every SMEM tenant is launch-sized from the state's descriptor; residency is asserted at the seam as a
   refusal; no runtime trip count in a register-shaped loop; never max-size SMEM.
-- R13 THE STATE OWNS ITS FORMAT: a descriptor (D, B_l ≥ 16 powers of two, canonical order, page
-  rectangle, DV, split bf16 planes) bound at first call and CHECKED after; prefill and decode share ONE
+- R13 THE STATE OWNS ITS FORMAT: a descriptor (D, per-level B_l powers of two, canonical order, the page
+  rectangle = trailing 4 canonical bits (it may span levels), DV, split bf16 planes) bound at first call
+  and CHECKED after; spans balance BC over levels with a narrow level taking its full width (refusal
+  only iff Π B_l < BC); prefill and decode share ONE
   admission law; N is a multiple of 16 (ragged N refused, never padded); pages are [hi][lo][mass] bf16
   planes; readout operands are the hi plane in every kernel; a reading token moves hi only.
 - R14 OWNERSHIP GRAINS NEST ON THE PAGE, nothing more: decode's unit is the atom; prefill's box owns whole
