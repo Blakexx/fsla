@@ -57,3 +57,58 @@ repos:
         entry: tools/lint/run_clang_tidy.sh
         pass_filenames: false
         files: ^(csrc/rola/rola_api\.cpp|\.clang-tidy)$
+
+      # LINT2 (G_FOUNDATION G5 "dead-code and readability lints", REPORT-ONLY
+      # until G5 flips them -- docs/internals/tools/lint.md has the per-lint
+      # gating table and flip plan). Every stage below always exits 0: a hit is
+      # a finding for a human to rule on, never a blocked commit, exactly the
+      # existing hooks' own backstop philosophy (KERNEL_STANDARDS §9) applied
+      # to checks that are not clean enough to gate on YET.
+      - id: clang-tidy-device-report
+        name: "[report-only] clang-tidy device profile (carry arm TUs)"
+        language: system
+        entry: tools/lint/run_clang_tidy_device.sh
+        pass_filenames: false
+        always_run: true
+      - id: host-warnings-report
+        name: "[report-only] host -Wall -Wextra -Wunused dry compile"
+        language: system
+        entry: python3 tools/lint/host_warnings.py
+        pass_filenames: false
+        always_run: true
+      - id: unused-instantiations-report
+        name: "[report-only] unused __global__ instantiation check"
+        language: system
+        entry: python3 tools/lint/unused_instantiations.py
+        pass_filenames: false
+        always_run: true
+      - id: vulture-report
+        name: "[report-only] vulture (Python dead code)"
+        language: system
+        entry: tools/lint/run_vulture.sh
+        pass_filenames: false
+        always_run: true
+      - id: ruff-e3-report
+        name: "[report-only] ruff E30x (blank-line spacing, preview)"
+        language: system
+        entry: tools/lint/run_ruff_e3.sh
+        pass_filenames: false
+        always_run: true
+      - id: readability-spacing-report
+        name: "[report-only] readability spacing (long zero-blank bodies, csrc blank runs)"
+        language: system
+        entry: python3 tools/lint/readability_spacing.py
+        pass_filenames: false
+        always_run: true
+      - id: r9-enforcement-report
+        name: "[report-only] R9 enforcement (device switch/if-chain traps + case markers)"
+        language: system
+        entry: python3 tools/lint/r9_enforcement.py
+        pass_filenames: false
+        always_run: true
+      - id: clang-format-readability-report
+        name: "[report-only] clang-format readability profile (MaxEmptyLinesToKeep:1, SeparateDefinitionBlocks:Always)"
+        language: system
+        entry: tools/lint/run_clang_format_readability.sh
+        pass_filenames: false
+        always_run: true
