@@ -87,7 +87,25 @@ struct CarryGeom {
   static_assert(sb_sound(),
                 "every generated warp sub-box holds leaves-per-warp leaves inside the owner "
                 "box, with the canonical innermost level non-empty");
+  //: THE ARCH LAW, ENFORCED WHERE IT IS EVALUABLE. The shape set is a property of the
+  //: SM box and `warps_per_sm`; a CTA that IS the SM (R15) derives exactly that set, and
+  //: this asserts it rather than trusting the two expressions to agree. Below that warp
+  //: count the two sides' contiguous subsets are DIFFERENT leaf sets, so the CTA box is
+  //: the box the law is run on. -- see docs/internals/carry/geom.md#warp-box-set
   static constexpr bool sb_is_sm_grain = (KWARPS == warps_per_sm);
+  static constexpr bool sb_matches_arch_law() {
+    if constexpr (!sb_is_sm_grain) return true;
+    const SubBoxSet arch = sub_boxes(D, leaves_per_sm(DV), warps_per_sm);
+    const SubBoxSet mine = sub_boxes(D, BC, kStreams);
+    if (arch.count != mine.count) return false;
+    for (int a = 0; a < arch.count; ++a)
+      for (int l = 0; l < D; ++l)
+        if (arch.bits[a][l] != mine.bits[a][l]) return false;
+    return true;
+  }
+  static_assert(sb_matches_arch_law(),
+                "at one CTA per SM the arm's shape set must BE the arch law's set "
+                "f(D, leaves_per_sm, warps_per_sm); kWarps is a launch subset, not a shape");
   static constexpr int LdX = kDv + kPadE;
   //: THE TRANSIT IS UNCONDITIONAL (K50, "kTied IS DELETED WITH THE MO MOVE"): one
   //: transit, always; a tie is a transit whose row map is the identity, reported as

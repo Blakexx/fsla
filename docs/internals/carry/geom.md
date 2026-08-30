@@ -39,10 +39,15 @@ arm. One binary per shape serves every topology and every declaration of its dep
 3. The SM box is `leaves_per_sm` balanced over `D`; the carve divides it, in the side's
    own order, into `warps_per_sm` SEGMENTS.
 4. `leaves_per_warp = leaves_per_sm / warps_per_sm` is the warp's SEGMENT, derived.
-5. The COMPILED SHAPE is the slot map of the REGISTER TILE the warp holds per step.
-6. TILES PER SEGMENT is derived, and it is `1` here: today one tile IS the whole segment.
-   On sm_100 a warp walks its TMEM segment tile by tile — a runtime trip count over
-   identical tile bodies, which is not a shape and does not enter this table.
+5. The COMPILED SHAPE is the MMA ACCUMULATOR TILE's leaf layout — the slot → digit map
+   that fixes which leaf row of the tile each expanded coefficient (the panel row) lands
+   on. On sm_80/sm_90 that tile is the warp's register fragment (32 leaves at `DV = 64`);
+   on sm_100 it is the TMEM tile the MMA addresses in place (`tcgen05.mma` accumulates
+   into TMEM and reads A from TMEM, so the state never passes through registers to
+   compute). The map is the same object either way.
+6. The warp's SEGMENT is its tiles, and TILES PER SEGMENT is derived: it is `1` here, one
+   tile being the whole segment. A warp that walks several tiles does so as a runtime trip
+   count over identical tile bodies — not a shape, and not in this table.
 
 The SHAPE COUNT is flat across architectures: it depends on `D` and on how many bits the
 carve takes (`log2 warps_per_sm`), not on the capacity. What scales with
