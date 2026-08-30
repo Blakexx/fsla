@@ -492,6 +492,18 @@ The census reports the STATE FRACTION of the register file beside the register c
 every stage, because the lever that raises leaves per multiprocessor is registers per
 leaf — the working set — and not the block count.
 
+**Registers per leaf is the lever, and the lo plane is its largest term.** The register
+allocation is the maximum over the body's moments, and during the readout the lo plane
+is idle state: parking it in shared memory for that moment (aliasing the transit region,
+which is dead then) lets its registers house the readout's output fragments instead, so
+the allocation falls and the freed registers become LEAVES — a bigger box per
+multiprocessor, which is the fan-in and DRAM lever. It composes with the hybrid transit
+(the writers drop the hi plane at the phase change; parking drops the rest). The
+companion rule is that every moment FILLS shared memory to the residency target, spending
+it by value per kilobyte: streams first in the fold, the parked lo plane first in the
+readout. *(Ruled, not yet built: lands with the pipelined body; per-architecture
+declaration where it does not cost residency.)*
+
 **The CTA is the multiprocessor** (KERNEL_STANDARDS §R15). One CTA per multiprocessor
 with all the warps the register file admits; streams partition inside it. More CTAs per
 multiprocessor duplicate the cooperative fetch and expansion, run the transit once
