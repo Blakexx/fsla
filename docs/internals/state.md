@@ -189,7 +189,7 @@ activity bitmap is supplied, rather than silently dropping every unwritten atom.
 **THE TWO BIT SETS (P80c, ruled 2026-08-29).** The bits above are the PAGE-GRAIN set:
 one READ and one WRITTEN bit per atom, which is what `plan_exact` allocates from, what
 residency checks read and what a decode step consumes (its unit is the atom). The
-ruling makes them the DERIVED set: the PRIMARY bits are per (window, warp-box, side) at
+ruling makes them the DERIVED set: the PRIMARY bits are per (warp-box, side) over the WHOLE CALL at
 the carve's grain, emitted by the facts pass, and the page bits are the host's OR over
 the warp-boxes each page intersects, through the box→page map. NOT BUILT HERE: the
 primary emission needs the carve as a kernel axis, and the carve is derived at the four
