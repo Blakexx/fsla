@@ -19,6 +19,7 @@ import torch
 
 from rola.ops import lattice
 from rola.ops._ext import extension
+from rola.ops.padding import PaddedShape, pad_routes, pad_v, slice_y
 
 #: THE SEAM'S DECLARATION SCALAR: which built (carve, EXECUTOR MAP) an arm is.  A
 #: stream owns a box, an executor (a warp) runs streams, and the two counts are
@@ -105,7 +106,7 @@ def pack_side(levels) -> torch.Tensor:
 
 
 def state_plane(widths, BH: int, d_v: int = D_V, device="cuda") -> torch.Tensor:
-    """A DENSE state plane, ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order.
+    """A DENSE state plane, ``[BH, N/16, 16, DV+1]`` fp32 in CANONICAL leaf order.
 
     The dense BACKING, byte for byte the atom-major view of ``[BH, N, cols]``
     (`docs/internals/state.md` section 3). It is the caller's to allocate because the
@@ -113,11 +114,17 @@ def state_plane(widths, BH: int, d_v: int = D_V, device="cuda") -> torch.Tensor:
     advances it in place, which is what keeps a stateful chain to ONE plane per
     sequence. A PAGED call passes the arena's plane and its table instead, and the
     kernel is the same kernel -- one base translation, not a second path.
+
+    ``widths``/``d_v`` are LOGICAL (K50 "PADDING AT THE PRODUCER" / "d_v PADDING IS
+    ALSO HOST-SIDE"): the plane this allocates is sized at the PADDED shape
+    (``PaddedShape.of``), which is what :func:`carry_inter` addresses, so a caller
+    that sizes its own plane through this function never has to pad a shape by hand.
     """
+    shape = PaddedShape.of(tuple(widths), d_v, shipped_dv=(D_V,))
     n = 1
-    for w in widths:
-        n *= int(w)
-    return torch.zeros((BH, n // MMA_K_QUANTUM, MMA_K_QUANTUM, d_v + 1),
+    for w in shape.padded_widths:
+        n *= w
+    return torch.zeros((BH, n // MMA_K_QUANTUM, MMA_K_QUANTUM, shape.DV + 1),
                        dtype=torch.float32, device=device)
 
 
@@ -129,18 +136,28 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
                 atom_bits: torch.Tensor | None = None):
     """The INTER term, undivided: ``(num, den, state_out)``.
 
-    ``num`` is ``[BH, T, d_v]`` fp32 and ``den`` is ``[BH, T]`` fp32. ``d_v`` is READ
-    OFF ``v`` and is part of the arm key, so a width no arm declares is refused, not
-    degraded.
+    ``num`` is ``[BH, T, d_v]`` fp32 (``d_v`` LOGICAL, the caller's own -- see below)
+    and ``den`` is ``[BH, T]`` fp32.
+
+    HOST-SIDE PADDING IS THIS FUNCTION'S JOB (K50 "PADDING AT THE PRODUCER" / "d_v
+    PADDING IS ALSO HOST-SIDE", KERNEL_STANDARDS R13 "TWO CONTRACTS, ONE TRANSLATOR"):
+    ``widths`` and ``v``'s value width are the caller's LOGICAL ones -- any
+    ``width >= 1``, any ``d_v`` -- and this is the SEAM: every level is padded to its
+    kernel-facing width, ``v`` to the arm's ``DV``, before either reaches
+    ``box_shape`` or the extension, and the returned ``num`` is sliced back to the
+    caller's own ``d_v`` before it leaves. The kernel itself never sees a width other
+    than its own (``rola.ops.padding``).
 
     THE STATE PLANES ARE THE CALLER'S (`docs/internals/state.md` section 4).
-    ``state_in``/``state_out`` are ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order
-    -- `state_plane` builds a dense one, an arena hands over ``arena.state`` -- and a
-    CONTINUATION passes the SAME tensor as both, advancing it in place. ``page_table``
-    is the ``[BH, N/16]`` int32 slot table; ``None`` is the dense backing, where the
-    slot IS the atom, so the two backings are one kernel, one ABI and one accumulation
-    order. Passing NEITHER plane is the NULL-STATE call: it reaches an arm variant with
-    no state I/O compiled into it and returns ``state_out`` as ``None``.
+    ``state_in``/``state_out`` are ``[BH, N/16, 16, DV+1]`` fp32 in CANONICAL leaf
+    order, at the PADDED ``N``/``DV`` -- `state_plane` builds a dense one at that
+    shape from the same logical ``widths``/``d_v``, an arena hands over
+    ``arena.state`` -- and a CONTINUATION passes the SAME tensor as both, advancing
+    it in place. ``page_table`` is the ``[BH, N/16]`` int32 slot table; ``None`` is
+    the dense backing, where the slot IS the atom, so the two backings are one
+    kernel, one ABI and one accumulation order. Passing NEITHER plane is the
+    NULL-STATE call: it reaches an arm variant with no state I/O compiled into it
+    and returns ``state_out`` as ``None``.
 
     ``atom_bits`` is the facts pass' ``[BH, N/16]`` uint8 ACTIVITY bitmap -- bit 0
     WRITTEN, bit 1 READ, one byte per atom (`rola.engine.facts.planes.atom_bits`). The
@@ -149,15 +166,19 @@ def carry_inter(read_levels, write_levels, g_write, v, widths, *, k: int, m: int
     says WHETHER this call touches it. ``None`` asserts nothing and every resident atom
     is swept, which is the pre-P80b behaviour and what a caller with no facts pass gets.
     """
+    shape = PaddedShape.of(tuple(widths), v.shape[-1], shipped_dv=(D_V,))
+    read_levels = pad_routes(read_levels, shape.padded_widths)
+    write_levels = pad_routes(write_levels, shape.padded_widths)
+    v = pad_v(v, shape.DV)
     pr = pack_side(read_levels)
     pw = pack_side(write_levels)
     gw = g_write.permute(0, 2, 1).contiguous().to(torch.bfloat16)
     gw = gw.reshape(gw.shape[0] * gw.shape[1], -1)
     num, den = extension().carry_forward_inter(
-        pr, pw, gw, v.to(torch.bfloat16).contiguous(), list(widths), int(k), int(m),
-        int(window), int(chunk), int(carve), int(level_modes), state_in, state_out,
-        page_table, atom_bits)
-    return num, den, state_out
+        pr, pw, gw, v.to(torch.bfloat16).contiguous(), list(shape.padded_widths),
+        int(k), int(m), int(window), int(chunk), int(carve), int(level_modes),
+        state_in, state_out, page_table, atom_bits)
+    return slice_y(num, shape.d_v), den, state_out
 
 
 def owner_rows(read_levels, write_levels, widths, *, k: int, m: int, carve: bool = False):

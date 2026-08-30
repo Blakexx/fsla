@@ -116,11 +116,19 @@ own. The descriptor is fixed for the state's life and travels with the
 refusal, and that `_kernel_entry` (prefill) and `_decode_entry` (decode) both build the
 call's presented format through `_format_of` and check it through `StateFormat.check` --
 the same two calls, never a second comparison at either seam, which is the ADMISSION LAW
-paragraph above made structural. NOT YET ON THE DESCRIPTOR: the PADDING ruling's
-logical-vs-padded split (`b_l` the caller's width, `B_l` the padded, shipped one) is
-DESIGNED (K50 `## RULED ... PADDING AT THE PRODUCER`) but not built — `B` here already
-carries only the lawful, padded width, and `StateFormat` has no separate logical-width
-field yet. That lands with PAD (card `C_CLEAN_SLATE.md`'s C2), not C1.
+paragraph above made structural.
+
+**PAD (card `C_CLEAN_SLATE.md`'s C2) KEEPS THIS DESCRIPTOR AT SEVEN FIELDS.** The
+logical-vs-padded split (`b_l` the caller's width, `B_l` the padded, shipped one) lives
+at the op call surface (`rola.ops.padding`, `docs/internals/padding.md`), never here:
+`StateFormat.B` still carries only the lawful, padded width, and `_format_of` still
+builds it from whatever widths the presented routing carries. A caller reaches this
+descriptor with an already-padded `RouteFactors` (`rola.routing.producer.RouteProducer`'s
+own bundle stays at the caller's logical widths, unpadded, by a DIFFERENT, pinned
+contract -- `tests/unit/test_api_contract.py`), so `check()`'s refusal message names
+padded numbers on both sides, never a logical one -- a genuine limit: two different
+logical widths that pad to the same `B_l` are indistinguishable to this check. That
+limit is stated, not hidden, in `docs/internals/padding.md`.
 
 `strategy="cow"` is refused AT CONSTRUCTION, by name: copy-on-write branching is
 designed (per-branch tables, refcounted slot GC) and not built, and its settled
