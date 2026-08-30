@@ -448,7 +448,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   const uint32_t atomBH = (uint32_t)bh * (uint32_t)(geo.leaves / kAtomLeaves);
   //: THE CANONICAL ATOM of this owner's atom `a`, at the block's own radices. -- see docs/internals/carry/carry_kernel.md#canonatom
   auto canon_atom = [&](int a) {
-    return (uint32_t)geom_canon_leaf(geo, owner, a * kAtomLeaves) >> ilog2c(kAtomLeaves);
+    return (uint32_t)geom_canon_leaf_t<D, BC>(geo, owner, a * kAtomLeaves) >> ilog2c(kAtomLeaves);
   };
   //: THE ACTIVITY OF THIS OWNER'S ATOMS, READ ONCE AT THE PROLOGUE (P80b): one -- see docs/internals/carry/carry_kernel.md#activity
   static_assert(kAtoms <= 32, "one bit per atom per mask: an owner holds at most 32 atoms");

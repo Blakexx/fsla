@@ -72,6 +72,22 @@ longer share a slot layout, which is what restores the two-sided carve's livenes
 selectivity (the `## G2b` finding) and what makes the transit's row map a per-side
 scatter rather than a per-warp base.
 
+<a id="canon-leaf"></a>
+## The canonical-leaf map, and why it is compile-time in D
+
+`geom_canon_leaf` walks the levels with `#pragma unroll 1` over the block's RUNTIME depth,
+so every span and run-shift is an array load — and the map is called per atom by the state
+page sweep. The parent computed the same map from `BoxPlan` as a folded bit permutation
+and spent 4,096 instructions on it; the runtime form spends 1,402,880 at `k16_w384`, a
+342x blow-up and the single largest term in that cell's instruction delta.
+
+`geom_canon_leaf_t<D, BC>` is the same law with the DEPTH and the OWNER SPANS compile-time
+— which they are, `f(D, BC)` — leaving only the width-derived `owner_div_bits`, `grid` and
+`weight` runtime. R12 is explicit that a register-shaped loop carries no runtime trip
+count, and the kernel knows `D` and `BC` as template arguments, so the untemplated form was
+a standards violation as well as a cost. The runtime `geom_canon_leaf` stays for the host
+seam, which genuinely does not know `D` at compile time.
+
 <a id="row-swizzle"></a>
 ## The region's swizzle, and why it is free
 

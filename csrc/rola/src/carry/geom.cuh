@@ -412,6 +412,25 @@ __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom
 }
 
 //: THE CANONICAL LEAF of owner `O`'s local slot, and the atom that holds it (P80).
+//: THE SAME MAP WITH THE DEPTH AND THE OWNER LAW COMPILE-TIME (R12: no runtime trip
+//: count in a register-shaped loop). The kernel knows `D` and `BC` as template
+//: arguments, so the spans and the run shifts are IMMEDIATES here and only the
+//: width-derived terms stay runtime. -- see docs/internals/carry/geom.md#canon-leaf
+template <int D, int BC, int L>
+__host__ __device__ inline int geom_canon_acc(const CarryGeomRT& g, int O, int local) {
+  if constexpr (L >= D) {
+    return 0;
+  } else {
+    const int d = (((O >> g.owner_div_bits[L]) & (g.grid[L] - 1)) << owner_span_bits(D, BC, L))
+                  + ((local >> owner_run_shift(D, BC, L)) & (owner_span(D, BC, L) - 1));
+    return d * g.weight[L] + geom_canon_acc<D, BC, L + 1>(g, O, local);
+  }
+}
+template <int D, int BC>
+__host__ __device__ inline int geom_canon_leaf_t(const CarryGeomRT& g, int O, int local) {
+  return geom_canon_acc<D, BC, 0>(g, O, local);
+}
+
 __host__ __device__ inline int geom_canon_leaf(const CarryGeomRT& g, int O, int local) {
   int acc = 0;
 #pragma unroll 1
