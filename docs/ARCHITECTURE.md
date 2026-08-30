@@ -102,7 +102,8 @@ trailing four canonical bits — the innermost levels taken whole plus, where th
 bits fall inside a level, an aligned contiguous sub-run of that level's digits, with
 every level above fixed. That the atom is a digit rectangle at every admissible span
 vector is a theorem of the order, not a constraint on the carve
-(`docs/internals/carry/box.md`).
+(the reference body's `carry/box.cuh` on the parity-reference tip; this line re-derives it in
+`csrc/rola/src/common/geom.cuh`).
 
 **The owner lattice.** An owner (§4) holds a rectangle of digits per level: span
 `s(l)` at level `l`, grid `g(l) = B_l / s(l)`, `BC = Π_l s(l)` leaves. The map from
@@ -115,17 +116,13 @@ and an owner's leaves are one contiguous `BC`-aligned run by construction. Insid
 owner the order is mixed radix over the runs (`local = Σ_l r_l · Π_{l'>l} s(l')`), so
 a bucket keyed on one level's digit owns a contiguous run of leaves.
 
-**Spans are balanced, and the small level takes its width.** `BC` is balanced over
-the levels; a level narrower than its balanced share takes its full width
-(`s(l) = B_l`, `g(l) = 1`) and the remainder balances over the others; the carve
-extends one level deeper when the outer spans' product is smaller than the stream or
-warp count it must feed. The only refusal is `Π_l B_l < BC`. Every span satisfies
-`s(l) ≤ B_l`, and the atom stays inside one level's run wherever the widths admit it.
-There is no uniform per-level span and no capacity multiplier pushing width into the
-innermost level: the earlier atom-floored convention is superseded, and what it
-protected — the innermost run length that amortizes a resolve and lengthens a vector
-load — is a measured efficiency term, never a law. *(Ruled; the derivation moves out
-of the templates with the runtime-addressing work, §5.)*
+**Spans are balanced under the width floor.** Every level is at least 16 wide
+(`B_l` a power of two ≥ 16; a one-level state needs `B ≥ 32`), so the warp's spans —
+compile-time from `(D, leaves_per_warp, warps_per_cta)` (§5) — never exceed a level's
+width and no narrow-level case exists. The earlier atom-floored convention is
+superseded: what it protected (the innermost run that amortizes a resolve and lengthens
+a vector load) is a measured efficiency term, never a law, and decode's unit is the atom
+regardless of prefill's spans (§4).
 
 ---
 
