@@ -697,7 +697,10 @@ setup(
     name="rola",
     version=read_version(),
     packages=find_packages(include=["rola", "rola.*"]),
-    ext_modules=[build_extension()],
+    #: ROLA_NO_EXTENSION=1 installs the Python package with NO extension build -- for a
+    #: worktree that receives a built _C from the integration checkout at the same
+    #: SHA (tools/build/new_worktree.sh); the device stamp still gates freshness.
+    ext_modules=[] if os.getenv("ROLA_NO_EXTENSION") == "1" else [build_extension()],
     cmdclass={"build_ext": RoLABuildExtension},
     zip_safe=False,
 )
