@@ -397,3 +397,11 @@ different halves at two CTAs per SM. Therefore the ownership unit is the CTA's b
 among the CTA's warps — and it equals the SM's box exactly when there is one CTA per SM (the goal).
 The shape set is f(D, leaves_per_warp, kWarps); the architecture law (the SM's box) is asserted at
 kWarps = warps_per_sm.
+
+## CONSTITUTION addendum (Blake, 2026-08-30): SOURCE COMMENTS DESCRIBE THE CODE AS IT IS
+A comment in csrc/ or rola/ states what the code does and why, in the present tense, in the library's
+own terms. It never describes a past state of the kernel, a superseded mechanism, a stage or campaign
+identifier, or a comparison to what was ("G1 replaced…", "the old fp32 rows…", "unlike M1a…"). History,
+justification and background live in docs/ (DELETIONS.md, ARCHITECTURE's status marks, the internals'
+"why" sections) and in the journal outside the repo. The kernel library references only itself (§17);
+the lint that refuses work codes in source is the mechanical half; reviewers refuse the rest.

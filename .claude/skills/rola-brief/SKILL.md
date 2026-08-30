@@ -128,3 +128,21 @@ that into the skill the same day (process/pointers only — never facts).
   targets k31/carry-clean; k35-final holds the OLD carry as the reference and is never edited; a stage
   is either a foundation FEATURE (shipped + tested on its own, no kernel body) or a KERNEL stage on the
   features; briefs cite the card and say which.
+- A BASELINE IS A SHA, NEVER "THE SAME TIP" (C0, 2026-08-30): the brief names the exact SHA of every
+  parent/baseline worktree, and the worker `git rev-parse HEAD`s it before trusting it (C0's parent was
+  two commits ahead and it chased a phantom regression).
+- ONE BRIEF = ONE AGENT = ONE SCOPE (Blake, 2026-08-30, restated): never resume an agent into a further
+  stage or a scope-changing correction — write a new brief and dispatch a fresh, well-scoped agent (the
+  G2c→G2d chain ran one agent through four stages' worth of context; the monolithic C1 covered seven
+  contracts and was split). Sibling stages run in parallel on DISJOINT files on the same branch; each
+  commits detached at the named SHA and the coordinator merges them.
+- "NEVER MERGE/PUSH/RATIFY" DOES NOT MEAN "NEVER COMMIT" (C1a, 2026-08-30): every stage COMMITS its work
+  on its worktree with hooks on; the coordinator merges. And new_worktree.sh's output must not be piped
+  through tail (it masks the exit code) — check `import rola._C` after it, not the log.
+- THE ORPHAN-FILE RULE (C1c, 2026-08-30): when N sibling stages share a branch, a file no sibling owns
+  that blocks a gate is edited by whoever hits it — the MINIMUM edit, reported — never a STOP over a
+  two-line import; a brief hands out ownership AND names this rule.
+- NO PAST STATES IN SOURCE COMMENTS (Blake, 2026-08-30; constitution addendum): comments describe the
+  code as it is — never "replaced X", "the old …", a stage/campaign name, or a comparison; history goes
+  to docs/DELETIONS.md / ARCHITECTURE status marks / the journal. Every brief says so; every review
+  greps the diff's comments for it.

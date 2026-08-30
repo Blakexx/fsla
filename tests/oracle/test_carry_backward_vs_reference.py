@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(not is_available() or not torch.cuda.is_availabl
 
 #: the (64, 64) arm is the conformance cell: the fp64 reference materializes ``[T, N]``,
 #: so ``N = 4096`` is where a whole cell is checkable.
-WIDTHS, K, M, WINDOW = (64, 64), 4, 8, carry_ops.WINDOW_SMALL
+WIDTHS, K, M, WINDOW = (64, 64), 4, 8, carry_ops.WINDOW
 
 #: ONE KAPPA PER OUTPUT, published, never widened per cell. It is a ratio to the
 #: rounded-reference floor, so 1 means "no worse than holding the operands in bf16".
@@ -190,13 +190,15 @@ def test_the_off_support_digit_gradients_are_never_read(k_tok):
 
 
 #: DOES THE FORWARD SEAM TAKE A DECLARATION AT ALL?  Probed from the seam's own
-#: signature rather than from a version, exactly as the A/B harness probes it. While
-#: `carry_inter` has no `level_modes` the carry family ships ONE body and the
-#: declaration axis does not exist for it; the moment the seam gains one, the cases
-#: below widen on their own and the new body cannot land ungated.
+#: signature rather than from a version, exactly as the A/B harness probes it. The
+#: declaration axis left the launch surface at K50 (the mode word is runtime data the
+#: liveness pass carries), so this reads FALSE on the clean line and the cases below
+#: name the one declaration; if a future seam gains one back, they widen on their own.
+#: THIS FILE IS THE REVERSE PASS'S ORACLE AND C4 REBUILDS IT AGAINST THE FINAL SURFACE
+#: (card C_CLEAN_SLATE.md); what C1c changed here is only what kept it from COLLECTING.
 def _takes_modes():
     import inspect
-    return "level_modes" in inspect.signature(carry_ops.carry_inter).parameters
+    return "level_modes" in inspect.signature(carry_ops.carry_forward).parameters
 
 
 #: THE DECLARATIONS THE TREE SHIPS A FORWARD BODY FOR.  A declaration SELECTS a body,
@@ -209,7 +211,7 @@ def _declarations():
     return out
 
 
-@pytest.mark.parametrize("window", [carry_ops.WINDOW, carry_ops.WINDOW_WIDE])
+@pytest.mark.parametrize("window", [carry_ops.WINDOW])
 @pytest.mark.parametrize("declaration", sorted(_declarations()))
 def test_the_replay_is_bit_identical_at_the_flagship_arm(window, declaration):
     """THE CHEAPEST STRONG GATE IN THE RUNG, at the arm the flagship actually runs.
