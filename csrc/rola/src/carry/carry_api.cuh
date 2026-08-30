@@ -17,7 +17,8 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
                    const c10::optional<at::Tensor>& state_out,
                    const c10::optional<at::Tensor>& page_table);
 
-std::vector<int64_t> carry_build_stamp();
+int64_t carry_build_stamp();
+std::vector<std::vector<int64_t>> carry_census();
 std::vector<std::vector<int64_t>> carry_arms();
 
 }  // namespace rola::carry

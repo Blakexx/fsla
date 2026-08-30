@@ -147,25 +147,30 @@ __global__ void carry_stamp_kernel(int* out) {
 
 }  // namespace stamp
 
-std::vector<int64_t> carry_build_stamp() {
+int64_t carry_build_stamp() {
   check_arch_table();
   auto buf = at::empty({4}, at::TensorOptions().dtype(at::kInt).device(at::kCUDA));
   stamp::carry_stamp_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(buf.data_ptr<int32_t>());
   TORCH_CHECK(cudaGetLastError() == cudaSuccess, "the carry build stamp did not run");
   const auto host = buf.to(at::kCPU);
-  std::vector<int64_t> out;
-  for (int i = 0; i < 4; ++i) out.push_back((int64_t)host.data_ptr<int32_t>()[i]);
-#define ROLA_CARRY_ARM_STAMP(I_, D_, DV_, W_)                                          \
+  const int32_t* f = host.data_ptr<int32_t>();
+  //: THE FOUR FACTS AS ONE NUMBER, the way every other family's stamp reads: a mixed
+  //: radix wide enough that no field can carry into its neighbour.
+  return ((((int64_t)f[0] * 1000003 + f[1]) * 1000003) + f[2]) * 16 + f[3];
+}
+
+std::vector<std::vector<int64_t>> carry_census() {
+  std::vector<std::vector<int64_t>> out;
+#define ROLA_CARRY_ARM_CENSUS(I_, D_, DV_, W_)                                          \
   {                                                                                     \
     const ArmCensus c = carry_arm_census_##I_();                                        \
-    for (int x : {(int)(I_), (int)(D_), (int)(DV_), (int)(W_), c.regs, c.local_bytes,   \
-                  c.smem_bytes, c.max_threads, c.binary_version, c.threads,             \
-                  c.box_leaves, c.atoms, c.acc_regs, c.state_elems,                     \
-                  c.state_regs_per_lane, c.segment_slots, c.members})                   \
-      out.push_back((int64_t)x);                                                        \
+    out.push_back({(int64_t)(I_), (int64_t)(D_), (int64_t)(DV_), (int64_t)(W_), c.regs, \
+                   c.local_bytes, c.smem_bytes, c.max_threads, c.binary_version,        \
+                   c.threads, c.box_leaves, c.atoms, c.acc_regs, c.state_elems,         \
+                   c.state_regs_per_lane, c.segment_slots, c.members});                 \
   }
-  ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_STAMP)
-#undef ROLA_CARRY_ARM_STAMP
+  ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_CENSUS)
+#undef ROLA_CARRY_ARM_CENSUS
   return out;
 }
 

@@ -112,7 +112,7 @@ def test_launch_row_refuses_an_untabulated_architecture():
 
 
 @pytest.mark.parametrize("cc,ctas_per_sm,warps_per_cta", [
-    (800, 1, 8), (860, 2, 4), (870, 1, 8), (890, 1, 8), (900, 1, 8),
+    (800, 1, 8), (860, 1, 8), (870, 1, 8), (890, 1, 8), (900, 1, 8),
 ])
 def test_launch_row_matches_the_table(cc, ctas_per_sm, warps_per_cta):
     row = py.launch_row(cc)

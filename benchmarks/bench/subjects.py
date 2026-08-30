@@ -6,9 +6,9 @@ A subject takes a REGISTRY cell, builds everything the launch does not pay for, 
 returns a :class:`bench.pairing.Arm` whose call issues exactly the launch being priced.
 The roster mirrors the oracle roster one for one -- a bench roster that does not match
 the correctness roster is a roster with kernels nobody measures -- and it includes the
-carry, which has no body on this line and whose arm therefore refuses by name. A subject
-that is absent from the roster while its kernel exists is the defect the mirroring
-exists to catch; a subject that refuses is an honest report.
+carry. A subject that is absent from the roster while its kernel exists is the defect the
+mirroring exists to catch; a subject whose kernel is unbuilt refuses by name, which is an
+honest report rather than a number for something that did not run.
 
 **TWO CELL KINDS, ONE REGISTRY.** A subject declares which kind it takes.
 ``kind="carry"`` is a drawn cell (`benchmarks/cells/carry_cells.json`): amplitudes put
@@ -63,9 +63,7 @@ def carry_forward(fx) -> Arm:
     """The inter term: one carry launch over a whole cell, state advanced in place.
 
     The operands are the registry's own `carry_call`, so this prices the same tensors
-    the oracle tier checks. THERE IS NO BODY ON THIS LINE: the call reaches the launch
-    surface's refusal, which is what a bench of an unbuilt kernel must do rather than
-    report a number for something that did not run.
+    the oracle tier checks.
     """
     from rola.ops import carry as carry_ops
 

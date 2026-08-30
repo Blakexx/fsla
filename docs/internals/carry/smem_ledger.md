@@ -2,7 +2,7 @@
 
 Mirrors the `constexpr` offsets in `csrc/rola/src/carry/box.cuh` and the `Smem` accessors
 in `carry/carry_kernel.cuh`. Numbers below are the flagship arm, `D = 2`, `DV = 64`,
-`warps_per_cta = 8`, hence `BC = 256` leaves, `LdX = 72`, `LdO = 65`, `LdV = 64`.
+`warps_per_cta = 8`, hence `BC = 256` leaves, `LdX = 72`, `LdO = 68`, `LdV = 64`.
 
 The ledger's purpose is that shared memory is allocated BY NAME and BY MOMENT. A stage
 that needs bytes states which tenant it is and when it is alive; a stage that quietly grew
@@ -29,7 +29,7 @@ two of them are alive at the same moment:
 
 | moment | who lives in the region's bytes |
 |---|---|
-| the entry sweep | as many state page images as fit: `floor(36,864 / (16 * LdO * 4))` = 8 images of 4,160 bytes = 33,280 bytes, in 2 rounds over the box's 16 pages |
+| the entry sweep | as many state page images as fit: `floor(36,864 / (16 * LdO * 4))` = 8 images of 4,352 bytes = 34,816 bytes, in 2 rounds over the box's 16 pages |
 | the out leg, the return leg | the transit region itself — `BC` rows of `LdX` bf16 channels, the accumulator's halves in the owner-local canonical order |
 | PHASE 1 | the read stream's segment slots and the readout's output block |
 | PHASE 2 | the V ring, one `kSeg x LdV` bf16 tile per warp per slot = 2,048 bytes, `8 * 1 * 2,048` = 16,384 bytes today; and the write stream's segment slots |
@@ -78,9 +78,29 @@ zero-fills rather than reading out of range, so a partial window carries zeros a
 neighbour's bits.
 
 <a id="page-image"></a>
-## The state page image
+## The state page image, and the pad its readers earn
 
-`[16][LdO]` fp32 with the mass in column `DV`. `LdO = DV + 1` is odd, which is the whole
-bank-conflict story: a lane reading one channel down a page's rows steps by an odd number
-of words and meets a different bank each row. `state_page::load` and `::store` are the only
-writers and readers of the global side; this page states only where the image sits.
+`[16][LdO]` fp32 with the mass in column `DV`. `LdO` is `DV + 1` rounded UP to the next
+value congruent to 4 modulo 32, and that congruence is derived from the access pattern
+rather than picked:
+
+The image's reader is the sweep that lifts a warp's accumulator fragments out of it. For a
+fixed channel m-tile, a warp's 32 lanes address four PAGE ROWS (the four values of
+`lane & 3`, whose slots differ by two) times eight CHANNELS (`lane >> 2`), and a lane's
+word index is `row * LdO + channel`. The bank is that index modulo 32, so `LdO mod 32` is
+exactly the stride the four rows are spread by:
+
+| `LdO mod 32` | rows land on | banks reached by the 32 lanes |
+|---|---|---|
+| 1 (`DV + 1` at `DV = 64`) | `0, 2, 4, 6` | 14 of 32 — a two-to-three-way conflict |
+| 4 | `0, 8, 16, 24` | all 32, exactly once — conflict free |
+
+Measured: the pad takes the flagship cell's shared bank conflicts from 524,288 to 4,096 and
+the small cells' from 2,048 to 16. The global side is untouched by it — `state_page::load`
+and `::store` address the PAGE, not the image — and their own image access is a pair of
+adjacent columns per lane, which is conflict free at any `LdO`.
+
+The residue that remains belongs to the OTHER member of the generated sub-box set, whose
+four slots share one page row rather than four: no single leading dimension can serve both,
+and the pattern's own answer is a member-dependent swizzle, exactly as the transit region
+has. That is a measured follow-up, not a gap in this one.

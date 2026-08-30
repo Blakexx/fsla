@@ -45,18 +45,20 @@ frame and two hundred local accesses, in the measurement that found it.
 <a id="census"></a>
 ## The build stamp and the census
 
-`carry_build_stamp` returns the device's own answer first — the page granule and the warps
-per SM, the capability digest the device code compiled against, the state's share of the
-register file, and the cluster size — read back off a kernel THIS binary compiled. A path or
-a content hash could be produced by a stale extension; this could not.
+`carry_build_stamp` returns ONE number, the way every other family's stamp does — a mixed
+radix over four facts a kernel THIS binary compiled read off the device: the page granule
+with the warps per SM, the capability digest the device code compiled against, the state's
+share of the register file, and the cluster size. A path or a content hash could be produced
+by a stale extension; this could not, which is why every harness that has to know which
+binary answered asks for exactly this.
 
-After the head come the per-arm census rows: the register count, the local size, the shared
-bytes, the maximum threads and the binary version from `cudaFuncGetAttributes`, then the box
-plan's own derived numbers — the threads, the box's leaves, its pages, the accumulator's
-register count, the state elements a warp holds, the state registers per lane, the segment
-slot count and the generated member count. The first group is what the compiler did; the
-second is what the design says it should have done, and having both in one vector is what
-makes a disagreement visible.
+`carry_census` is the separate question and returns one row per built arm: the register
+count, the local size, the shared bytes, the maximum threads and the binary version from
+`cudaFuncGetAttributes`, then the box plan's own derived numbers — the threads, the box's
+leaves, its pages, the accumulator's register count, the state elements a warp holds, the
+state registers per lane, the segment slot count and the generated member count. The first
+group is what the compiler did; the second is what the design says it should have done, and
+having both in one row is what makes a disagreement visible.
 
 ## One arm, one translation unit
 

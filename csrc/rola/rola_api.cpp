@@ -71,8 +71,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
         py::arg("d_state_out"), py::arg("page_table"));
   m.def("carry_build_stamp", &rola::carry::carry_build_stamp,
-        "the carry family's device build stamp and per-arm census -- a fact only a BUILT "
-        "kernel can produce");
+        "the carry family's device build stamp -- a fact the loaded binary alone can state");
+  m.def("carry_census", &rola::carry::carry_census,
+        "one row per built carry arm: what the compiler did, then what the box plan says "
+        "it should have done");
   m.def("carry_arms", &rola::carry::carry_arms,
         "the (D, DV, warps_per_cta) carry arms this binary carries");
 

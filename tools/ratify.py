@@ -707,7 +707,13 @@ def measure_derivation(cases: dict) -> tuple[str, dict[str, str]]:
         src = Path(tmp) / "derivation_harness.cu"
         exe = Path(tmp) / "derivation_harness"
         src.write_text(text)
-        cmd = [cuda_bin("nvcc"), "-std=c++17", "-O0", f"-I{SRC}",
+        #: THE HARNESS NAMES AN ARCHITECTURE. The addressing block's state capacity is a
+        #: capability-row quantity, so `common/geom.cuh` reaches `common/arch_caps.cuh`,
+        #: whose tabulation refuses `nvcc`'s DEFAULT device architecture by name. The
+        #: derivation is invariant across the tabulated set -- every row carries the same
+        #: register file -- so naming the smallest tabulated one measures the shipped
+        #: derivation rather than pinning it to a part.
+        cmd = [cuda_bin("nvcc"), "-std=c++17", "-O0", "-arch=sm_80", f"-I{SRC}",
                str(src), "-o", str(exe)]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:

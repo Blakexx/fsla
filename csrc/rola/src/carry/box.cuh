@@ -43,7 +43,7 @@ struct BoxPlan {
   static constexpr int kSegmentSlots = segment_slots(denseref::arch::kCaps);
 
   //: the state page's shared image and the V segment's tile. -- smem_ledger.md#page-image
-  static constexpr int kLdO = kCols;
+  static constexpr int kLdO = kCols + (4 - kCols % 32 + 32) % 32;
   static constexpr int kPageImageBytes = kAtomLeaves * kLdO * (int)sizeof(float);
   static constexpr int kVTileBytes = kSeg * kDv * 2;
 

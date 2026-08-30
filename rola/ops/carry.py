@@ -415,13 +415,25 @@ def arms():
 def build_stamp():
     """The carry family's DEVICE build stamp -- a fact only a BUILT kernel can produce.
 
-    The head is the device's own answer -- the page granule, the warps per SM, the
-    capability digest, the state's share of the register file and the cluster size, read
-    back off a kernel this binary compiled -- and the tail is one census row per built
-    arm. A path or a hash could be produced by a stale binary; this cannot
+    The four device facts as one number: the page granule with the warps per SM, the
+    capability digest the device code compiled against, the state's share of the register
+    file and the cluster size, all read back off a kernel this binary compiled. A path or a
+    hash could be produced by a stale binary; this cannot
     (`extension-trap-device-side-check`).
     """
     return extension().carry_build_stamp()
+
+
+def census():
+    """One row per built arm: what the compiler did, then what the box plan says it should.
+
+    ``(index, D, DV, warps_per_cta, regs, local_bytes, smem_bytes, max_threads,
+    binary_version, threads, box_leaves, atoms, acc_regs, state_elems,
+    state_regs_per_lane, segment_slots, members)``. The first group is
+    ``cudaFuncGetAttributes`` on the arm's own kernel and the second is the derivation;
+    having both in one row is what makes a disagreement visible instead of inferred.
+    """
+    return [tuple(row) for row in extension().carry_census()]
 
 
 def pack_side(levels) -> torch.Tensor:
@@ -564,6 +576,7 @@ __all__ = [
     "build_stamp",
     "carry_backward",
     "carry_forward",
+    "census",
     "geometry",
     "geometry_block",
     "lattice_of_canonical",
