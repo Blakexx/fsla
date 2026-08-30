@@ -36,6 +36,7 @@ mamba-ssm require the same thing for the same reason.
 | `ROLA_SCCACHE` | `auto` (default): use the pinned `sccache` if it resolves and matches; else build uncached. `1`: REQUIRE it -- a missing or mismatched wrapper is a hard failure. `0`: disable. See [below](#sccache). |
 | `ROLA_SCCACHE` | `auto` (default, K39): REQUIRE the pinned `sccache` -- a missing or mismatched wrapper is a hard failure, no uncached fallback. `1`: a synonym of the default, kept for existing invocations. `0`: an EXPLICIT, deliberate opt-out that builds uncached. See [below](#sccache). |
 | `ROLA_SCCACHE_BIN` | Overrides the `sccache` binary `ROLA_SCCACHE` resolves, the same way `CUDA_HOME` overrides `nvcc`/`ptxas`. |
+| `ROLA_NO_NICE` | `0`/unset (default): every `tools/build_lock.py`-guarded compile and every `tools/gpu_lock.py`-guarded run lowers its own CPU niceness and I/O class before doing real work, so it cannot freeze the host (`docs/internals/tools/build_lock.md`, `docs/internals/tools/gpu_lock.md`). `1`: opt out -- the coordinator's own interactive gate runs. |
 
 ### Running a build under the shared lock (`tools/build/build_lock.sh`)
 
