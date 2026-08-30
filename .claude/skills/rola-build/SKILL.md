@@ -113,3 +113,7 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
 - ON k31/carry-clean (C0, 2026-08-30): the selection header has no includer until G4 regenerates
   carry_arms.inc; the single-TU census recipe's instantiations/carry_arm_<i>.cu exist only once K0 adds
   arms. tools/fatbin_entries.py and setup.py's fatbin gate went with the facts family.
+- NEVER CAP THE BUDGET BY HOLDING SLOTS (coordinator's deadlock, 2026-08-30): a gate build acquires ALL
+  slots exclusively, so an external holder on any slot blocks every gate build forever with zero
+  compilers running. The cap is HOST_BUDGET_SLOTS (memory-capped default; ROLA_HOST_BUDGET_SLOTS
+  override), nothing else.
