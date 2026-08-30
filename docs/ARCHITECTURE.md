@@ -276,9 +276,10 @@ leaves — the base case, and the control row forever. `S` is a distribution kno
 fallback and not a threshold; the same code is correct and at floor at every value up
 to one stream per warp. Streams are decoupled from the warp carve: raising `S`
 re-partitions the token lists, not the leaf ownership. *(Ruled; `S = 1` is what is in
-the tree. **UNSPECIFIED (ruling pending):** what the seam keys `S` on. It cannot key
-on a measured density without colliding with KERNEL_STANDARDS §R9, and no structural
-input for it has been ruled.)*
+the tree. `S` is DERIVED: as large as shared memory admits at residency, from the
+descriptor and the architecture's shared-memory size — the premise being that a stream
+costs close to nothing, which the private-stream measurement is the standing test of;
+never a density, never a runtime input.)*
 
 **Per-side carves.** Read and write are carved independently: a stream owns an affine
 rectangle of digits per level, per side, and the private slot order puts the carved
@@ -292,9 +293,10 @@ with independent counts. A read carve and a write carve that coincide are a tran
 whose row map is the identity — the same code, never a second body
 (`docs/internals/carry/carry_kernel.md`).
 
-**The read side's reader count `R` per box has `R = 1` as its shared point.**
-*(UNSPECIFIED (ruling pending): its derivation, like the read side's private
-consumption, is deferred to the pipelined body.)*
+**The read side has no stream axis: one stream per warp, always.** The write side has
+a stream count only because staging `d_v`-wide value rows into private segments
+duplicates bytes per stream; the read side duplicates nothing, so every warp reads its
+own box's tokens.
 
 ---
 
@@ -494,15 +496,13 @@ each, and forbid cross-warp sharing of the readout; streams share all of it. **L
 hiding is the kernel's job** — covers and split-phase edges — so exposed latency is a
 coverage finding and never grounds to split the CTA.
 
-**One CTA per multiprocessor is the TARGET, and the launch shape is a parameter.**
-The block count does not change the leaves resident per multiprocessor (one block of
-eight warps and two of four hold the same registers); what it trades is cross-block
-latency hiding against one shared staging, one transit and a bigger box. It is decided
-by ONE measurement per architecture and then fixed as a law — never a runtime
-heuristic, never a data-dependent choice. *(**UNSPECIFIED (ruling pending):** the value
-of that law. Every measurement the repository has was taken at two blocks of four
-warps, where the second block was covering every edge; the one-block measurement is
-owed, and the per-architecture launch table records its outcome.)*
+**One CTA per multiprocessor is the GOAL, not a measured choice.** The block count
+does not change the leaves resident per multiprocessor (one block of eight warps and two
+of four hold the same registers); a two-block launch is only a DIAGNOSTIC — it says how
+far the body is from hiding its own latency — and never becomes the law. Every
+measurement the repository has was taken at two blocks of four warps, where the second
+block was covering every edge; the one-block figure is the number the pipelined body is
+graded against.
 
 ---
 

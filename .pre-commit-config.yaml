@@ -84,7 +84,8 @@ repos:
         always_run: true
       - id: vulture-report
         name: "[report-only] vulture (Python dead code)"
-        language: system
+        language: python
+        additional_dependencies: ["vulture==2.16"]
         entry: tools/lint/run_vulture.sh
         pass_filenames: false
         always_run: true

@@ -346,8 +346,8 @@ hooks are fixed (the hook, or the tree), never routed around.
   rows; the kernel consumes activity bits at its own (warp-box) grain and the page table derives its own.
 - R15 THE CTA IS THE SM (target): one CTA per SM with the warps the register file admits (8 × 256 regs),
   streams partition inside it; latency hiding is the kernel's job (covers, split-phase edges) — exposed
-  latency is a coverage finding, never grounds to split the CTA; launch shape is a parameter, decided by
-  ONE measurement then fixed as a law per arch.
+  latency is a coverage finding, never grounds to split the CTA; ONE CTA per SM is the goal, not a
+  measured choice — a two-CTA launch is only a diagnostic of how far the body is from the target.
 - R16 SHIP WITHOUT ARM REGISTRATION: a Python-package user never registers an arm; the shipped set is
   D × DV per arch; unknown descriptors are admitted by refusal-checked derivation, not by enumeration.
 - R17 BF16 EVERYTHING: operands are bf16 (one form; float operand paths deleted); state accumulates fp32
