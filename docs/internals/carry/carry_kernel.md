@@ -180,3 +180,34 @@ static_asserts that make the derivation refuse rather than round: the box is a w
 of pages, a warp's leaves are a whole number of n-tiles, the window is a whole number of
 segments, the page images fit the region, the ledger fits the architecture's per-CTA
 maximum. Nothing in it is a literal that a reader has to trust.
+
+<a id="measured"></a>
+## What the frame costs, measured
+
+The one probe over four cells, with the counters the stage gate reads. The frame is what
+every later stage subtracts, so these are the numbers to subtract.
+
+| cell | duration | IPC | barrier | long scoreboard | short scoreboard | not selected |
+|---|---|---|---|---|---|---|
+| one deposit, 16 tokens | 15.2 µs | 0.99 | 7.1% | 11.0% | 6.7% | 3.0% |
+| dense, 256 tokens | 35.8 µs | 1.40 | 3.6% | 17.8% | 2.8% | 3.8% |
+| sparse k=4, 256 tokens | 37.4 µs | 1.38 | 3.6% | 18.3% | 2.9% | 3.7% |
+| dense, 1024 tokens, N = 65,536 | 455.9 µs | 1.28 | 1.1% | 33.9% | 1.0% | 2.8% |
+
+Each line, against what the design says it should be:
+
+* **barrier** falls as the window count and the fold's size grow. The three edges and the
+  two state sweeps' rendezvous are the only CTA-wide synchronisation in the kernel, so this
+  is the whole of it. At this stage the cover slots are empty, so every leg cycle is exposed
+  by construction and this number IS the leg exposure — which makes it the thing to watch
+  when the legs start moving bytes: covered, it should not grow.
+* **long scoreboard** is the dominant line and it grows with the FOLD, not with the state
+  I/O. Its seat is the coefficient expansion's per-lane scalar reads of the gain and the
+  write amplitudes: the expansion itself is in registers, which is the design's form on
+  every architecture, but its FEED is unstaged here. Cooperative staging and a memoized walk
+  are what answer it.
+* **short scoreboard** and **mio throttle** (≈1%) are the tile loads' own latency.
+* **not selected** does not go to zero at one CTA per SM and should not: the SM's eight
+  warps still sit two to a scheduler partition, so a warp that loses a cycle to its partner
+  is counted here. Three per cent is that share. A second CTA would read very differently,
+  which is what makes the counter worth reading at all.
