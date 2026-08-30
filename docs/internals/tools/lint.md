@@ -18,9 +18,47 @@ gates a commit today or only reports.
 | `run_ruff_e3.sh` | ruff's E30x (pycodestyle blank-line spacing, E301-E306) — preview-gated in ruff 0.16.5, so NOT in `pyproject.toml`'s gating `[tool.ruff.lint].select`; the codes list lives in `[tool.rola_lint.report_only]`, read by this script only | report-only | G5: fix the findings (41 measured 2026-08-29, `--fix` covers all of them), then move the codes into the real `select` and delete the report-only table |
 | `readability_spacing.py` | (a) any function/kernel body >= 40 lines with ZERO blank lines, csrc AND Python; (b) > 1 consecutive blank line, **csrc only** (Python's own convention is 2 between top-level defs — PEP8/ruff's `E303` territory, not this rule's) | report-only | G5: segment the long bodies (10 measured 2026-08-29) and adopt `.clang-format`'s `MaxEmptyLinesToKeep: 1` / `SeparateDefinitionBlocks: Always` (below) as the mechanical enforcement for (b) |
 | `r9_enforcement.py` | KERNEL_STANDARDS "R9 ENFORCEMENT" constitution addendum: a device `switch`/if-chain on a structural field must have a `__trap()` default (never a bare fallthrough) AND a `// R9-CASES: <name>` marker comment naming its generated case set — the marker THIS LINT DEFINES, since no generator emits it yet (G2/G5 adopt it) | report-only | G2/G5: once the generator emits the marker and defaults trap, this lint's finding count is the exhaustiveness backstop (§9: "should catch nothing") |
+| `drift_guards.py` | THE DRIFT GUARDS: eleven laws, each ratified with a stage that removed a mechanism cheap to reintroduce — the arm key, the split planes, byte-identity for storage claims, one derivation site, one admission law, one-value axes, one arm table, one body per op family, `uniform_switch` for a device structure branch, `arm_switch` for a host dispatch on the key, and comments that describe the code as it is | report-only | C2e flips them, sized from the inventory below; each rule owns a fixture pair (`--test-fixtures`) so the flip is a change of exit code, not of confidence |
 | `.clang-tidy` | HOST-only `bugprone-*` + small `readability-*` | **yes** (via `run_clang_tidy.sh`) | — |
 | `clang-tidy-device.yaml` | the LINT2 device check set (above) | report-only (via `run_clang_tidy_device.sh`) | see that row |
 | `clang-format-readability.yaml` + `run_clang_format_readability.sh` | `MaxEmptyLinesToKeep: 1` + `SeparateDefinitionBlocks: Always`, over the root `.clang-format`'s other settings | report-only | G5: fix the 153 diffs measured 2026-08-29 in one dedicated reformat commit, merge these two lines into the root `.clang-format`, delete this file |
+
+<a id="drift-guards"></a>
+## The drift guards, and the inventory they exist to size
+
+Each rule is a law that a stage ratified by DELETING something, and each is a law
+because the deleted thing is cheap to put back: a template axis that "only needs one
+more parameter", a second kernel body for the case the first does not fit, a `float*`
+view of a page, an `if` on the depth in a host entry, a comment explaining what the
+code used to be. A law that lives only in a document is re-broken by the next person
+who has not read it.
+
+REPORT-ONLY here means the file always exits 0 and prints an INVENTORY. A rule that
+fires on the shipped tree is not thereby wrong — it is the work, and the inventory is
+what C2e sizes the flip from. Every rule is a heuristic over text and says so in its
+own docstring: a finding is a question for a reviewer, never a proof.
+
+**Measured on this tree (2026-08-30), 73 findings over 11 rules:**
+
+| rule | findings | what they are |
+|---|---|---|
+| `arm_axes` | 0 | no carry kernel exists to carry an axis. The producer's and decode's own axes are deliberately out of scope: whether they fold into `(D, DV, warps_per_cta)` is an open question in `docs/open-work.md`, not a finding |
+| `state_float_view` | 1 | `decode.cuh`'s `float* state` member |
+| `bytes_equal` | 32 | the paging equivalence batteries assert state/page identity with `torch.equal` |
+| `one_derivation_site` | 2 | `decode.cu` calls `fill_lattice` outside the geometry block |
+| `one_admission_law` | 0 | — |
+| `single_value_axis` | 2 | `rola/_state.py`'s `_BUILT_STRATEGIES` and `_NAMED_UNBUILT_STRATEGIES` |
+| `second_arm_table` | 5 | four test-local `_ARMS`/`CHUNK_ARMS` tables and `test_carry_geometry.py`'s `ARM_PARAMS` (that one is a deliberately PINNED transcription of a parent tip, and is the case that says whether this rule wants an exemption or a different home) |
+| `one_body_per_family` | 0 | a reverse pass is its own op and is not read as a second body |
+| `device_switch_is_uniform` | 1 | `decode_lattice.cuh`'s `switch (kind)` — the same site `r9_enforcement.py` finds, from the other direction |
+| `host_dispatch_is_arm_switch` | 0 | — |
+| `comments_describe_the_present` | 30 | comments naming a past state or a work code, under `csrc/` and `rola/` |
+
+`device_switch_is_uniform` and `r9_enforcement.py` overlap on purpose and are not the
+same rule: `r9_enforcement.py` asks whether a structure branch has a trapping default
+and a case-set marker, and this one asks whether it is a `uniform_switch` at all —
+which is the form the constitution now requires. Reconciling the two into one rule is
+G5's, once the flip decides which message a finding should carry.
 
 ## The readability format rules are a SEPARATE file, not a root-`.clang-format` edit — the reason is measured, not stylistic
 

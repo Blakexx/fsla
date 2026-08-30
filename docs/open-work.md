@@ -17,7 +17,8 @@ test-driven ruling: no skips, no xfails, no designed refusal).
 | **C-b** | **The prefill backward.** C4, after C3. |
 | **C-c** | **The liveness pass** (was: the facts family's union table, atom bitmap, block bitmap). C2 builds it as a foundation feature with host folds; C1 adjusts the Python seam where its outputs replace the atom/block bitmaps. |
 | **C-d** | **Decode's PAGED path, in the meantime.** Decode's own kernel is untouched and its oracle tier is green, but its DAG sourced `atom_bits` from the deleted stats pass, so the paged decode integration tests are red until C-c. This is the one cost C0 pays outside the carry family, and it is stated rather than worked around. |
-| **C-e** | **The carry arm table.** `tools/gen_shards.py`'s `CARRY_ARMS` is EMPTY, its row schema re-declared as the final `(D, DV, warps_per_cta)` key. G3 lands the constants and the launch table (`warps_per_cta` in {8, 4}); G4 fills the table, keys selection and the manifests on it, and brings back the per-arm translation units and the fatbin gate that reads them. |
+| **C-e** | **The carry arm table.** The declaration at `tools/manifests/shipped_set.json` declares NO row. Selection, the generated arm set, the manifests' `shards` block and the post-build check are all keyed `(D, DV, warps_per_cta)` and run at zero rows; C3 fills the declaration and brings back the per-arm translation units and the fatbin gate that reads them. |
+| **C-f** | **Whether the other families' instantiation axes fold into the carry key.** `shipped_set.json` is the CARRY family's declaration. The producer's solves key on `(LW, IPT, ALPHA15)`, the decode step on `(DV, D, DECAY)`, the intra family on `(D, B, W)` — each its own closed set, none of them the carry key. Whether they become one keyed set or stay separate declarations is unruled, and `tools/lint/drift_guards.py`'s `arm_axes` rule reads carry kernels only until it is. |
 
 ## Blocking the release
 

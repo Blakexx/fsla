@@ -46,6 +46,131 @@ name is the key because it is exact, stable, and encodes every template argument
 — an entry cannot be silently re-pointed at a different instantiation by a rename
 or a reordering.
 
+## What the shipped set is, and where it is declared
+
+The carry family's arms are a **declaration**, not a literal in a code module:
+`tools/manifests/shipped_set.json` names the rows, keyed
+`(D, DV, warps_per_cta)` — the routing depth, the value width and the CTA's warp
+count, and nothing else (KERNEL_STANDARDS R11: the mode word, the stream counts and
+the park bit are runtime; the window and the chunk are the descriptor's).
+
+`tools/gen_shards.py` owns the *enumeration* — what a row means, which translation
+unit carries it, what the selection header and the `shards` block say about it — and
+reads the *membership* from that file. Keeping the two apart buys three things:
+
+* a shipped set is a statement about the product, so it is reviewable on its own,
+  as a diff, without executing anything;
+* a tool that must not import the package can still read it (a repo tool reads the
+  repo's files; importing the package answers a question about whatever build the
+  running environment happens to point at);
+* the build's post-build check can **re-read the declaration and compare it to the
+  generator's table**, which is a second statement rather than a restatement.
+
+The generator refuses a declaration that is malformed, and names the field: an
+unknown axis value, a duplicate row, a row in both the shipped and the test list, or
+rows out of canonical order — the last because an arm's INDEX is what the selection
+header, the per-arm translation units and `ROLA_CARRY_ARMS` name, so it must be a
+property of the declaration and not of where a row was typed.
+`python tools/gen_shards.py --self-test` requires the reader to refuse ten malformed
+declarations by name, and renders a synthetic three-row table so the selection header,
+the arm set and the shard block are shown producing rows — which the live declaration,
+being empty, cannot show.
+
+**The declaration is empty on this line.** The carry family's kernels are not present,
+so no arm is declared, no per-arm unit is generated and no build carries a carry arm.
+The mechanism is the build's contract, and it is exercised at zero rows.
+
+<a id="arm-switch"></a>
+## `arm_switch`, and what the post-build check proves about it
+
+`csrc/rola/src/common/arm_switch.cuh` is the host twin of `uniform_switch`: one
+branch over a GENERATED arm set, with the same four layers
+([`internals/common/arm_switch.md`](internals/common/arm_switch.md)). The set comes
+from the generated selection header, so the set the host dispatches over and the set
+the translation units compiled against are one enumeration; `ROLA_CARRY_ARM_COUNT`
+and `ROLA_CARRY_ARM_DECLARED` are both emitted, because the refusal has to tell *this
+wheel does not carry that arm* from *nothing builds that arm in any configuration*.
+
+`setup.py::_post_build_arm_table_check` is where the layers become checked facts, and
+it runs **after** the compile because what it checks is what the build produced:
+
+1. the generator's table still matches the declaration, re-read from disk;
+2. the selection header the build compiled against names exactly the arms the build
+   selected — count, declared count, and the set's own members;
+3. the coverage sweep: the freshly built `_C`, **loaded by path**, is asked what it
+   carries, and the answer must be exactly those rows.
+
+A failure is fatal whatever `ROLA_STRICT_MANIFEST` says. The milestone/CI split
+(§16) is about manifest *staleness* — measurements that go out of date between
+milestones by design — and none of these three is a measurement.
+
+<a id="the-derivation"></a>
+## The derivation, ratified as code hash and golden outputs
+
+The addressing block is host code: one function, `derive_carry_geom`, run once per
+launch, whose output every kernel of the family then addresses through. An off-by-one
+in a span or a shift is a wrong answer nothing else in this gate would see, because
+the SASS it produces belongs to somebody else's kernel. So it is ratified with the
+same two independent statements the codegen gets, filed in
+`tools/manifests/derivation.json`:
+
+* a **code hash** per declared source file (`common/geom.cuh` today) — the wholesale
+  trigger, and deliberately *not* `csrc_digest()`: a change to a kernel body is not a
+  change to the derivation, and a record that expires on every unrelated edit is a
+  record people re-write without reading;
+* **golden outputs** — the derived block, byte for byte, on the named cases declared
+  in `tools/manifests/derivation_cases.json`, plus the REFUSAL each declared-illegal
+  case produces.
+
+The refusals are ratified beside the outputs because R13 makes the kernel's strict
+shape half a contract whose other half is what it refuses; a derivation that quietly
+began admitting a non-power-of-two width would pass a gate that only checked the
+shapes it admits.
+
+The record reads the two ways the `sass_sha256` ratchet does: with the code hash
+matching, no golden may move; with it moved, the gate names which cases moved and
+which did not. A separate `cases_sha256` covers the declaration itself, so a golden
+cannot stop failing because somebody deleted the case that failed.
+
+Each geometry case names a real `(D, DV, warps_per_cta)` point through the `BC` that
+pair implies — `BC = leaves_per_warp(DV) × warps_per_cta`. The derived block does not
+depend on `DV` directly; `DV` enters through `BC`. Two arms whose `(DV,
+warps_per_cta)` land on the same `BC` therefore derive the same block, and the
+goldens record that rather than hiding it.
+
+The harness compiles the shipped header and links no extension, so this check cannot
+be answered by a stale `.so`: there is no binary in the loop to be stale.
+`--write-derivation` is its own mode — the derivation is arch-independent, so it is
+neither measured per arch nor worth a whole codegen ratification to refresh — and a
+full `--write` refreshes it too, so a re-ratification can never file codegen numbers
+from one tree beside derivation goldens from another.
+
+<a id="the-device-stamp"></a>
+## The device stamp keys on the csrc content hash
+
+A build stamp is the one check a stale binary cannot pass — but only if its value is
+a function of the SOURCE. A stamp folded from struct sizes and launch widths is a
+function of a few declarations, so a `csrc/` change that leaves those alone leaves the
+stamp alone, and a binary built before the change reads back as fresh.
+
+`rola::csrc_build_stamp()` (`csrc/rola/src/common/build_stamp.cu`) is a kernel that
+returns 60 bits of `csrc_digest()`, compiled in through the generated header
+`build/generated/csrc_stamp.inc`. `tests/unit/test_build_stamp.py` requires the value
+the loaded fatbin returns to EQUAL what this tree hashes to right now — an equality
+against a tree fact, not merely a number that changes.
+
+It is a generated header rather than a `-D` for the reason the arm selection is: a
+define reaches every translation unit's argv, so every `csrc/` edit would rebuild the
+whole extension, while a header included only by the stamp site rebuilds one file and
+is hashed by ninja through the depfile. (A flag ninja does *not* hash —
+`NVCC_PREPEND_FLAGS` — is the failure one level over: the build reports success and
+the binary silently stays the previous variant.) `setup.py` writes the header before
+it compiles anything and `tools/ratify.py` writes it, from the same function, before
+it measures anything.
+
+The footprint stamps each family already carries are untouched and answer a different
+question: whether the loaded binary's struct sizes are the ones this source declares.
+
 ## Why it exists
 
 The kernel's `__launch_bounds__` is computed from a three-term residency formula,

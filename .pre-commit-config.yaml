@@ -107,6 +107,12 @@ repos:
         entry: python3 tools/lint/r9_enforcement.py
         pass_filenames: false
         always_run: true
+      - id: drift-guards-report
+        name: "[report-only] drift guards (the laws each stage's deletion ratified)"
+        language: system
+        entry: python3 tools/lint/drift_guards.py
+        pass_filenames: false
+        always_run: true
       - id: clang-format-readability-report
         name: "[report-only] clang-format readability profile (MaxEmptyLinesToKeep:1, SeparateDefinitionBlocks:Always)"
         language: system

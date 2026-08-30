@@ -15,6 +15,7 @@
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
 #include "src/paging/vmm_owner.cuh"
+#include "common/build_stamp.cuh"
 #include "src/common/geom_api.cuh"
 #include "src/intra/intra.cuh"
 
@@ -79,6 +80,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "carry_arms", []() { return std::vector<std::vector<int64_t>>{}; },
       "the (D, DV, warps_per_cta) carry arms this binary carries; empty until C3 builds "
       "a body and G4 refills the table");
+
+  m.def("csrc_build_stamp", &rola::csrc_build_stamp,
+        "the content hash of csrc/rola/src that this fatbin compiled against, read "
+        "back off the device -- the fact a stale binary cannot produce");
 
   // ---- the addressing block (G2-EXTRACT), a foundation feature ------------
   m.def("carry_geometry", &rola::carry::geometry,
