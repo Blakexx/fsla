@@ -235,10 +235,20 @@ def run_variant(binary, cell, variant, warmup, launches, lock_path, out_dir,
     tag = f"{cell}_{variant}{'_cont' if continuation else ''}"
     Path(out_dir, f"ncu_{binary['label']}_{tag}.csv").write_text(proc.stdout)
     kernel, per_metric, tail = _parse_ncu_csv(proc.stdout)
+    #: The worker's one-line JSON stamp, found by DECODING candidate lines rather than
+    #: by matching a leading key: a key added at the front of the stamp silently
+    #: unstamped every recorded row once already (the `unknown-smunknown` hardware
+    #: profile in this stage's own fourth cycle).
     stamp = {}
     for line in proc.stdout.splitlines():
-        if line.startswith('{"rola_file"'):
-            stamp = json.loads(line)
+        if not line.startswith("{"):
+            continue
+        try:
+            cand = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(cand, dict) and "rola_file" in cand:
+            stamp = cand
     row = {"binary": binary["label"], "cell": cell, "variant": variant, "rc": proc.returncode,
            "kernel_name": kernel, "stamp": stamp, "n_launches": 0}
     if not per_metric:
