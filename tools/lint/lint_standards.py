@@ -784,6 +784,7 @@ _NOT_A_WORK_CODE = re.compile(
     r"|[A-Z]{1,4}\d{3,4}"                # a linter's own code: E402, BLE001, PLC0415
     r"|R\d{1,3}|UR\d{1,2}|P\d"           # a SASS register or predicate
     r"|BC\d+|BT\d+|DV\d+|BH\d+"       # a shape, written into a cell id
+    r"|FA\d|CUTLASS\d|TK\d"           # another project's version
     r")$")
 
 #: TWO BLIND SPOTS, STATED. A hyphen-digit form (`R-6`, `D-1`) is not policed, because
@@ -822,6 +823,21 @@ def _citable_text(path: Path, line: str) -> str:
     return " ".join(g or "" for m in _COMMENT_OR_STRING.finditer(line) for g in m.groups())
 
 
+def _defined_labels(path: Path, text: str) -> set[str]:
+    """The labels a MARKDOWN page defines for itself, in a heading or a bold lead-in.
+
+    A page that writes `## M2 — NON-VACUITY` and then says `M2` afterwards is using its
+    own vocabulary, and the reader has the definition on the page. That is the same
+    distinction a source file's identifiers make, one medium over.
+    """
+    if path.suffix != ".md":
+        return set()
+    labels = re.findall(r"^#+\s+([A-Z]{1,3}\d{1,3}[a-z]?)\b", text, re.M)
+    labels += re.findall(r"^\*\*([A-Z]{1,3}\d{1,3}[a-z]?)\b", text, re.M)
+    labels += re.findall(r"^\|\s*`?([A-Z]{1,3}\d{1,3}[a-z]?)\b[^|]*\|", text, re.M)
+    return set(labels)
+
+
 def _code_text(path: Path, text: str) -> str:
     """The file's CODE, with comments and string literals removed.
 
@@ -856,12 +872,15 @@ def check_no_campaign_work_codes() -> list[str]:
         except UnicodeDecodeError:
             continue
         code_text = _code_text(path, text)
+        defined = _defined_labels(path, text)
         for lineno, line in enumerate(text.splitlines(), 1):
             for match in _WORK_CODE_RE.finditer(_citable_text(path, line)):
                 code = match.group(1)
                 if _NOT_A_WORK_CODE.match(code):
                     continue
                 if re.search(re.escape(code), code_text, re.IGNORECASE):
+                    continue
+                if code in defined:
                     continue
                 findings.append(
                     f"{path.relative_to(ROOT)}:{lineno}: names the work code {code!r}. "

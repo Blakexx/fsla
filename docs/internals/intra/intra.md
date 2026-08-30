@@ -169,7 +169,7 @@ THE LEVEL WIDTH IS AN INSTANTIATION AXIS, not a constant: an arm is a
 <a id="intrabackward"></a>
 ### `intra_backward`
 
-R4's reverse pass: it REDUCES the within-window half of the four cotangents into
+The reverse pass: it REDUCES the within-window half of the four cotangents into
 planes the carry's two scans also write.  ``dnum`` is ``[BH, L, d_v]`` bf16 and
 ``dden`` is ``[BH, L]`` fp32 -- the seeds the op seam forms from the division.
 

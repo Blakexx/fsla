@@ -3,7 +3,7 @@
 Mirrors `csrc/rola/src/common/structure_switch.cuh`.
 
 Constitution R9 permits a CTA-uniform branch on STRUCTURE — a tile count, a mode, an arm
-axis — and forbids one on a measured statistic. R9's enforcement addendum (Blake,
+axis — and forbids one on a measured statistic. The enforcement addendum (Blake,
 2026-08-29) names four layers every such branch owes. They are a contract on the pair
 (generated set, switch), not on the switch alone, and this page states which layer lives
 where so a reviewer can check all four at one reading.
@@ -46,8 +46,8 @@ on the carry kernel's header. Whichever body consumes it next inherits one loop,
 
 The body is instantiated `NA` times AT EACH CALL SITE. A switch inside a loop that the
 schedule enters many times per launch costs code, not branches; a switch enclosing a whole
-phase costs one branch per phase and duplicates the phase. G2's lesson is that code size
-becomes an I-cache stall class, and G2c's is that hoisting the switch to the phase merges
+phase costs one branch per phase and duplicates the phase. The lesson is that code size
+becomes an I-cache stall class, and the is that hoisting the switch to the phase merges
 the members' live ranges and spills — so the placement is stated and MEASURED per user
 rather than left to habit.
 

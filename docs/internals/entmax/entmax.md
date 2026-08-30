@@ -317,7 +317,7 @@ and running the kernel's own arithmetic over ranks `1..c` yields exactly `k*` an
 The certificate needs neither the prefix sums nor a convergence test nor a grow-on-demand
 loop — only `row_max`, which phase B already has — so `c` is exact and known BEFORE the
 sort. Generalized: `P_k >= P_m + (k-m) z_k` gives `cand(k) => z_k > tau_m` for any
-`m <= k*`, i.e. the kernel's own `tau_m` is a self-improving cut.
+`m <= k*`, i.e. The kernel's own `tau_m` is a self-improving cut.
 
 **Why it is not shipped.** MEASURED on production logits at the pinned cell
 (`union_routing(1.5)`, widths 64, the untrained router the campaign runs): realized support
@@ -629,7 +629,7 @@ doing exactly what the per-level loop did -- docs/internals/entmax/entmax.md#lau
 rank-4 tile-major) through ONE stride 5-tuple, so layout is data here and never a
 codegen axis -- docs/internals/entmax/entmax.md#strides
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/entmax/entmax.cu` condensed at their call site into a short pointer.
 
@@ -772,7 +772,7 @@ point of it: at `IPT <= 4` the solve's only shared memory is the epilogue's stag
 ### near line 183
 
 HAZARD logical-warp-mask -- docs/internals/entmax/entmax.md#logical-warp-mask
-The member mask for every hand `__shfl_sync` in this family. It names exactly ONE
+the member mask for every hand `__shfl_sync` in this family. It names exactly ONE
 logical warp; a full `0xffffffff` deadlocks on a ragged support word at `LW < 32`.
 
 <a id="near-line-202"></a>

@@ -21,22 +21,22 @@ tools/manifests/sm_86.json
 solves, 17 `decode_step_kernel` and the decode path's device build stamp, and 10
 `intra_kernel`/`intra_backward_kernel` arms.
 
-C0 REMOVED 103 PER ARCH (450 -> 347): the carry family's 43 (`carry_kernel`
-`<D, B, K, M, W, C, STATE>`, `carry_split_kernel`, R4's `scan_a_kernel`/`scan_b_kernel`
+THE CLEAN SLATE REMOVED 103 PER ARCH (450 -> 347): the carry family's 43 (`carry_kernel`
+`<D, B, K, M, W, C, STATE>`, `carry_split_kernel`, the `scan_a_kernel`/`scan_b_kernel`
 and the build stamps) and the facts family's 60 (`chunk_facts_tables<PLAN, MASK>` over
 the lex `(D, B, BC)` plans crossed with the two prefill call classes plus the GIVEN-SPAN
 owner-row plans, `block_bitmap_kernel`, `atom_bitmap_kernel`). Neither family is built
-here (card C, `docs/internals/DELETIONS.md`); C2 and C3/C4 bring their successors back
+here (`docs/internals/DELETIONS.md`); the rebuilt families bring their successors back
 and re-ratify then. The paragraphs below describe the pre-C0 census and are kept as the
 record of what was ratified when: plus 16
 `decode_step_kernel` (`DV x D x DECAY`), the decode path's own device build stamp, and
-the entmax solves' 320. (The K31 wave-2c lattice walk retired the `IN_SMEM` template axis
+the entmax solves' 320. (The lattice walk retired the `IN_SMEM` template axis
 and the 32-arm decode matrix it produced, and added the decode build stamp —
 [`internals/decode/decode.md` §31](internals/decode/decode.md#instantiation-matrix),
 [`internals/decode/decode_api.md` §build-stamp](internals/decode/decode_api.md#build-stamp).) (The
 chunk consumer's 44 `compacted_kernel`, the walk probe's 6 and the reverse pass'
-14 left with the K31 deletion batch; baseline = tag `baseline/pre-k31`.) The tiled `consumer_forward_kernel<BC, DV, D, DECAY, GT>`
-product that four shards once carried retired in P67 D2
+14 left with the deletion batch; baseline = tag `baseline/pre-k31`.) The tiled `consumer_forward_kernel<BC, DV, D, DECAY, GT>`
+product that four shards once carried retired with the tiled consumer
 ([`docs/internals/DELETIONS.md`](internals/DELETIONS.md)).
 `defines` is the empty tuple — `RATIFIED_DEFINES = ()` in `tools/ratify.py`, since
 the closed-world codegen surface carries no `#define` this gate has to pin. Two
@@ -63,7 +63,7 @@ reads the *membership* from that file. Keeping the two apart buys three things:
 * a tool that must not import the package can still read it (a repo tool reads the
   repo's files; importing the package answers a question about whatever build the
   running environment happens to point at);
-* the build's post-build check can **re-read the declaration and compare it to the
+* The build's post-build check can **re-read the declaration and compare it to the
   generator's table**, which is a second statement rather than a restatement.
 
 The generator refuses a declaration that is malformed, and names the field: an
@@ -94,10 +94,10 @@ wheel does not carry that arm* from *nothing builds that arm in any configuratio
 `setup.py::_post_build_arm_table_check` is where the layers become checked facts, and
 it runs **after** the compile because what it checks is what the build produced:
 
-1. the generator's table still matches the declaration, re-read from disk;
-2. the selection header the build compiled against names exactly the arms the build
+1. The generator's table still matches the declaration, re-read from disk;
+2. The selection header the build compiled against names exactly the arms the build
    selected — count, declared count, and the set's own members;
-3. the coverage sweep: the freshly built `_C`, **loaded by path**, is asked what it
+3. The coverage sweep: the freshly built `_C`, **loaded by path**, is asked what it
    carries, and the answer must be exactly those rows.
 
 A failure is fatal whatever `ROLA_STRICT_MANIFEST` says. The milestone/CI split
@@ -179,7 +179,7 @@ judgement that has to live SOMEWHERE nothing else checks — a document that say
 is not enforced, and a later codegen change can grow the spill silently. The
 manifest is what makes that judgement an asserted invariant instead: a property
 the project believes is a property the project checks. **The ratchet is a
-ratchet, not a spill ban** (P25's recorded adjudication): a spill is admissible
+ratchet, not a spill ban** (the recorded adjudication): a spill is admissible
 when it is priced, recorded here, and worse than every alternative in hand — not
 when it is absent.
 
@@ -191,7 +191,7 @@ is zero-spill.**
 
 The tiled consumer's two priced-spill arms (`<BC=16, DV=32|64, D=1, nodecay,
 GT=16>`, carried deliberately because a 72-register budget removed the spill and
-cost a CTA on exactly those two arms) left the manifest with that kernel in P67 D2.
+cost a CTA on exactly those two arms) left the manifest with that kernel.
 The adjudication is kept because the RULE it settled is what governs the next such
 trade: a spill is admissible when it is priced, recorded, and worse than every
 alternative in hand (`workflows/perf/p36_quantum.md`, "THE ONE RATCHET ITEM,
@@ -201,7 +201,7 @@ RECORDED AND FLAGGED RATHER THAN LAUNDERED").
 
 `python tools/ratify.py` compiles **the translation units the build compiles** —
 the generated per-arm carry units under `csrc/rola/src/instantiations/` (none on this
-line: C0 emptied the arm list), plus `decode.cu`, `entmax.cu`, `factor.cu`, the K31
+line: the arm list is empty), plus `decode.cu`, `entmax.cu`, `factor.cu`, the
 intra family and its reverse translation unit — under the flag list `setup.py` uses,
 imported from
 `tools/build_flags.py` rather than restated. A family is shipped codegen the moment it
@@ -262,7 +262,7 @@ the per-entry answer to what the digest can only ask globally, and it reads two 
 `entmax.cu` used to place their kernels in an anonymous namespace, so the mangled
 name embedded a discriminator derived from the source path; a manifest written in a
 worktree named 192 kernels that no build at any other path would ever define. Fixed
-by moving those kernels into a named internal namespace (P19,
+by moving those kernels into a named internal namespace (
 `workflows/refactor/p19_symbols.md`) — the ratified names are a function of source
 content and toolchain only, and a worktree build now ratifies clean. History:
 `docs/build.md`'s path-trap section.

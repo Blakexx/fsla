@@ -84,7 +84,7 @@ what every kernel derives its addressing from:
 
 | field | what it is |
 |---|---|
-| `D`, `B` | the routing depth and the PER-LEVEL widths `B_l`, each a power of two at or above 16 (K50's axis law: the floor is `K_max`, which keeps every span inside one level's run and the atom inside one level) |
+| `D`, `B` | the routing depth and the PER-LEVEL widths `B_l`, each a power of two at or above 16 (the axis law: the floor is `K_max`, which keeps every span inside one level's run and the atom inside one level) |
 | `order` | the canonical leaf order — MSB-first mixed radix, and a FIELD rather than an assumption, so a second order is a refusal and not a silent reinterpretation of somebody's bytes |
 | `page_bits` | the page rectangle: the trailing `log2(16)` canonical bits. The page IS that rectangle |
 | `DV` | the value width; `cols = DV + 1` is the page's LOGICAL width, not its layout |
@@ -203,7 +203,7 @@ the exit sweep skips must already hold what it carried in, so a gated continuati
 exit plane must BE its entry plane. The op seam REFUSES two distinct planes when an
 activity bitmap is supplied, rather than silently dropping every unwritten atom.
 
-**THE TWO BIT SETS (P80c, ruled 2026-08-29).** The bits above are the PAGE-GRAIN set:
+**THE TWO BIT SETS.** The bits above are the PAGE-GRAIN set:
 one READ and one WRITTEN bit per atom, which is what `plan_exact` allocates from, what
 residency checks read and what a decode step consumes (its unit is the atom). The
 ruling makes them the DERIVED set: the PRIMARY bits are per (warp-box, side) over the WHOLE CALL at

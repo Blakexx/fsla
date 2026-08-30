@@ -40,7 +40,7 @@ shape in which the entry sweep runs. Measured at `k16_w384`: the entry sweep add
 Two controls are built in. `none` is the noise floor — the two binaries run identical
 work there, so their difference is this host's DRAM run-to-run drift (`## G1b-pad`
 measured ~0.6%). And on every frozen cell the read set and the write set are both *every*
-atom (`## G1`), so `asis` and `written` request the same work: any spread between those
+atom, so `asis` and `written` request the same work: any spread between those
 two columns is measurement, not mechanism.
 
 ## How it measures

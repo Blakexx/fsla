@@ -126,11 +126,11 @@ decision over five surfaces, all keyed to the MMA precision axis so that the
 exact arm stays fp32 end to end (journal, 2026-08-04 night, phase-2 scope):
 
 1. spanned-level amplitudes;
-2. the value tensor's HBM storage;
+2. The value tensor's HBM storage;
 3. `v_proj` / `o_proj` as bf16 GEMMs with fp32 accumulation;
 4. `y` cast to bf16 *after* the divide — the divide, the numerator and the
    denominator accumulators all stay fp32;
-5. the host-boundary fp32-only check, relaxed.
+5. The host-boundary fp32-only check, relaxed.
 
 Note what items 3 and 4 preserve: **bf16 operands feeding fp32 accumulation is
 not a violation of this document.** The MMA already works that way. The rule is

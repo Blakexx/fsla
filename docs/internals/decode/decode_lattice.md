@@ -365,7 +365,7 @@ host that outgrew the device's box fails a device-side check
 (`decode_api.md#build-stamp`).
 
 <!-- ABSENT: kDecodeMaxCap kDecodeMaxSubBox -->
-The interleave's other two ceilings died with it: `kDecodeMaxCap` bounded the
+the interleave's other two ceilings died with it: `kDecodeMaxCap` bounded the
 capacity radix a unit's low bits carried, and `kDecodeMaxSubBox` bounded the
 intra-sub-box scan. Under mixed radix a unit is a contiguous run, there is no
 capacity radix separate from the run offsets, and there is no sub-box scan to
@@ -571,7 +571,7 @@ instead of one thread doing twenty-four in series while the rest wait. `umax` --
 largest count the WALK's terms reach, which is the retirement bound -- is folded by
 `atomicMax` inside this function's OWN barrier, so no CTA pays a second block
 synchronisation to learn it: docs/internals/decode/decode.md#retirement
-The candidate slot is not the walk's, so it is not in the retirement bound.
+the candidate slot is not the walk's, so it is not in the retirement bound.
 
 <a id="unit"></a>
 ### `Unit`
@@ -602,7 +602,7 @@ walk had. Laying the terms end to end in one index space and naming the term per
 was measured at `+2.3 ns` of dependent latency per unit, which on the scattered cell
 cost more than the units the decomposition saves:
 docs/internals/decode/decode.md#the-term-loop
-The grid partitions EACH TERM'S index space by the modular map it always used, so the
+the grid partitions EACH TERM'S index space by the modular map it always used, so the
 deposit -- which lives in term 0 alone -- is still one owning CTA, warp and lane per row.
 Within a term the high bits are the OWNER RANK, one padded field per level, and the low
 `lat_outer_bits` are the fixed run offsets in the SAME mixed radix the owner-local index
@@ -669,10 +669,10 @@ CTA's own stride still sweeps one owner region at a time. It is a BIT PERMUTATIO
 an index space whose extent is a power of two, so it is a bijection and the partition
 -- one owning CTA, warp and lane per deposited row -- is exactly the one it was.
 docs/internals/decode/decode_lattice.md#the-write-grain
-The index is CLAMPED, not guarded: at `D == 1` there is no outer level to rotate into
+the index is CLAMPED, not guarded: at `D == 1` there is no outer level to rotate into
 and the block below does not run, but the subscript is still compiled.
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode_lattice.cuh` condensed at their call site into a short pointer.
 

@@ -1,7 +1,7 @@
 # `constants.cuh` — the file constants, the launch table, and the S-from-SMEM rule
 
 The mirror of `csrc/rola/src/common/constants.cuh`, and of its Python twin
-`rola/engine/constants.py`. K50's axis law (`development/queue/K50_mo-runtime.md`,
+`rola/engine/constants.py`. The axis law (`development/queue/K50_mo-runtime.md`,
 `docs/ARCHITECTURE.md` §5) sorts every quantity the carry family reads into four
 classes: **compiled** (`D`, `DV`), **derived** (`BC`, the spans, `kWarps`, `S`),
 **runtime addressing** (`MO`, `B_l`, the orders, the row maps) and **constant** (`W`,
@@ -19,7 +19,7 @@ box, `leaves_per_warp * warps_per_cta`. `S` a side's stream count.
 <a id="window"></a>
 ## `kWindow` = 512
 
-K50's axis law: `W` is a kernel-internal CONSTANT, never an argument. The inter/intra
+The axis law: `W` is a kernel-internal CONSTANT, never an argument. The inter/intra
 decomposition (`docs/ARCHITECTURE.md` §6) is defined on this grid, so the fp64
 reference has to mirror the same number or the two terms are not one recurrence. A
 sequence shorter than a window runs a partial window inside the kernel; a caller never
@@ -96,7 +96,7 @@ own table.
 ## The S-from-SMEM rule
 
 K50: *"S (streams) = min(kWarps, what SMEM admits without losing residency)."* No
-stream segments exist on this branch yet — the fold's private streams are C3-K3's —
+stream segments exist on this branch yet — the fold's private streams are C3-the —
 so `derive_stream_count` is the RULE against a STATED layout, not a read of a real
 one: given the bytes one stream's segment costs and the SMEM residency has left over
 for streams, it returns the largest power of two at or below `warps_per_cta` whose
@@ -108,7 +108,7 @@ S = max { s = warps_per_cta, warps_per_cta/2, ..., 1 : s * per_stream_bytes <= r
     or 0 if no such s exists
 ```
 
-K3 supplies the real `per_stream_bytes` (F3's own measurement: 72,960 B for the
+K3 supplies the real `per_stream_bytes` (the own measurement: 72,960 B for the
 literal per-stream V segment at one flagship cell, `K50_mo-runtime.md`, "THE CTA
 POLICY") and the real `residency_smem_bytes` (the launch's SMEM budget minus every
 other resident tenant — the transit region, the panels, the factor staging). Until

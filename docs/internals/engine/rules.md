@@ -153,7 +153,7 @@ the stateless row in any case.
 
 **IT IS A HOST DECISION IN THE PLACE HOST DECISIONS LIVE.** The fold is a band-2 rule and
 its `uint32` is a `ChunkPlan` field; the deleted consumer's entries took it as a launch
-argument beside the bitmap it predicates over, and K31 R2's will again. The kernel read
+argument beside the bitmap it predicates over, and the rebuilt kernel will again. The kernel read
 `ChunkParams::run_table` and derived nothing: a second derivation behind the
 extension boundary could not promise that the table a call PLANS is the table it RUNS, and
 the seven rows above could only be exercised through a launch. They are now device-free unit

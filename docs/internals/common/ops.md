@@ -366,7 +366,7 @@ each `__shfl_up_sync`.
 <a id="load-frag"></a>
 ### `load_frag`
 
-THE `memory` CLOBBER IS PART OF THE CONTRACT (K35 R-B).  `ldmatrix` READS SHARED
+THE `memory` CLOBBER IS PART OF THE CONTRACT.  `ldmatrix` READS SHARED
 MEMORY, so it has to be ordered against the stores that filled it: without the
 clobber `asm volatile` pins the instruction against other volatile asm but leaves
 the compiler free to move it across a `__syncthreads`/`__syncwarp`, and a warp could
@@ -441,7 +441,7 @@ bf16.  There are THREE routes and the architecture row picks one at the
 primitive's definition (KERNEL_STANDARDS section 8), never at a call site.
 
 THE PTX ISA GATES THE MULTIPLY AND THE FMA DIFFERENTLY, and that is the whole
-reason this entry has three arms rather than two (K35 R-C): `mul.rn.bf16x2`
+reason this entry has three arms rather than two: `mul.rn.bf16x2`
 requires `.target sm_90`, but `fma.rn.bf16x2` is available from sm_80.  So on
 Ampere the product is still ONE instruction -- an HFMA2 with a ZERO ADDEND --
 and the fp32 route below is needed by no built architecture at all.

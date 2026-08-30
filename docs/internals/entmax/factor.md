@@ -89,10 +89,10 @@ support by construction rather than by a correction applied afterwards.
 The consequence that shapes the kernel is that the member count is then a
 reduction, not `width`:
 
-* the row max and min are taken over the CANDIDATES, and a fully-masked row has
+* The row max and min are taken over the CANDIDATES, and a fully-masked row has
   neither — `row_max` is defined to 0 there and the sentinel to −1, so the sort and
   the scan still run on finite values;
-* the greatest-valid-`k` search runs over `rank < valid_count`, not `rank < width`,
+* The greatest-valid-`k` search runs over `rank < valid_count`, not `rank < width`,
   which is what keeps a masked column from being admitted by a prefix that never
   included it;
 * an empty row produces `chosen = −1`, hence `tau = 0`, hence no support and no
@@ -268,7 +268,7 @@ cheap to rematerialize. 4 spilling instantiations became 56.
 
 Verbatim `//:` prose blocks from `csrc/rola/src/entmax/factor.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/entmax/factor.cu` condensed at their call site into a short pointer.
 

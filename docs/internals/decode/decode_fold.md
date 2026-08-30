@@ -144,7 +144,7 @@ after this enough. `s_sum` is `[kMaxLevels]` of the caller's shared memory.
 NO BARRIER IS TAKEN HERE -- the caller places it, because a device function that
 synchronizes on entry and exit costs a barrier at every seam between two of them.
 
-## More comments moved from source (S5b pass 2)
+## More comments moved from source
 
 Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode_fold.cuh` condensed at their call site into a short pointer.
 

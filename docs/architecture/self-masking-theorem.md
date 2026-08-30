@@ -1,7 +1,7 @@
 # The self-masking theorem
 
 > **Dead routes are exact zeros, and zeros are inert — in every accumulator, in
-> the mass channel, and in the clock.**
+> The mass channel, and in the clock.**
 
 This is the most-used single fact in the engine: three separate design
 conclusions rest on it, each of which reduces to it independently (§5). It has a
@@ -158,12 +158,12 @@ because the dead ones contribute exactly nothing. Fetching a coarser rectangle
 than the true support costs bandwidth and never correctness. This is what makes
 the engine's granularity coarsening legal:
 
-- the **paging atom** is one `MMA_K_QUANTUM`-leaf granule, not the true support
+- The **paging atom** is one `MMA_K_QUANTUM`-leaf granule, not the true support
   ([`paging/paging.md`](../internals/paging/paging.md), the atom re-key);
 - **chunk unions** over a chunk's tokens are an OR, deliberately coarser than the
   per-token AND (the `BT` token tile the tiled consumer took this union over is
   retired; the chunk arm's super-chunk is what takes it now);
-- the **block rectangle** is the granularity of a visit: every leaf of the block
+- The **block rectangle** is the granularity of a visit: every leaf of the block
   is resident for the whole visit whether or not the visit's support names it, so a
   leaf outside the support is read, multiplied by an exactly-zero coefficient, and
   contributes nothing to either the readout or the fold.

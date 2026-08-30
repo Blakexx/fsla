@@ -2,7 +2,7 @@
 
 `rola/ops/padding.py` is the ONE translator between a caller's LOGICAL shape (any
 level width `b_l >= 1`, any value width `d_v`) and an op's kernel-facing, PADDED shape
-(a level width a power of two at or above 16, a shipped value width). K50's two
+(a level width a power of two at or above 16, a shipped value width). The two
 rulings ("PADDING AT THE PRODUCER", "d_v PADDING IS ALSO HOST-SIDE") name the
 mechanism; this page states where it actually lives on the `k31/carry-clean` line and
 why it moved there.
