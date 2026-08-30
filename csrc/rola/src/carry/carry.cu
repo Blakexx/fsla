@@ -46,10 +46,11 @@ static CarryGeomRT derive_block(const std::vector<int64_t>& widths, int64_t leve
               "sum_l B_l = ",
               geo.wtot);
   for (int l = 0; l < D; ++l)
-    TORCH_CHECK(geo.col_base[l] % geo.r.row_span[l] == 0 && geo.col_base[l] % geo.w.row_span[l] == 0,
-                "level ", l, "'s column base ", geo.col_base[l],
-                " is not a whole number of the runs read out of it (read ", geo.r.row_span[l],
-                ", write ", geo.w.row_span[l], "): the level runs would not be aligned");
+    TORCH_CHECK(
+        geo.col_base[l] % geo.r.row_span[l] == 0 && geo.col_base[l] % geo.w.row_span[l] == 0,
+        "level ", l, "'s column base ", geo.col_base[l],
+        " is not a whole number of the runs read out of it (read ", geo.r.row_span[l], ", write ",
+        geo.w.row_span[l], "): the level runs would not be aligned");
   return geo;
 }
 
@@ -74,6 +75,12 @@ static torch::Tensor build_rows(const torch::Tensor& pr, const torch::Tensor& pw
 #define CARRY_DV(D_, DV_, W_, C_, KW_, WPS_, SPLIT_) (DV_)
 #define CARRY_NSR(D_, DV_, W_, C_, KW_, WPS_, SPLIT_) ((SPLIT_) ? 1 : (KW_))
 #define CARRY_NSW(D_, DV_, W_, C_, KW_, WPS_, SPLIT_) ((SPLIT_) ? 1 : (KW_) / (WPS_))
+//: THE ARM'S OWN SHAPE-SET SIZE, from the SAME generator the bodies compile against --
+//: R9's enforcement layer 3, the launch-time refusal that names the uncovered member.
+#define CARRY_NA(D_, DV_, W_, C_, KW_, WPS_, SPLIT_)                                       \
+  (rola::carry::sub_boxes((D_), rola::carry::leaves_per_warp(DV_) * (KW_),                \
+                           (SPLIT_) ? 1 : (KW_))                                           \
+       .count)
 
 //: THE ROW'S OWN LAW, checked where it is written. -- see docs/internals/carry/carry.md#carry-row-gate
 #define CARRY_ROW_GATE(I_, D_, DV_, W_, C_, KW_, WPS_, SPLIT_)                             \
@@ -162,6 +169,11 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
     const CarryGeomRT geo = derive_block(widths, level_modes, CARRY_BC(__VA_ARGS__),         \
                                          CARRY_DV(__VA_ARGS__), CARRY_NSR(__VA_ARGS__),       \
                                          CARRY_NSW(__VA_ARGS__));                            \
+    TORCH_CHECK(geo.r.assign >= 0 && geo.r.assign < CARRY_NA(__VA_ARGS__)                    \
+                    && geo.w.assign >= 0 && geo.w.assign < CARRY_NA(__VA_ARGS__),             \
+                "the mode word selects a warp sub-box this arm does not carry: read ",       \
+                (int64_t)geo.r.assign, " write ", (int64_t)geo.w.assign, " of ",             \
+                (int64_t)CARRY_NA(__VA_ARGS__));                                             \
     rows = torch::empty({BH, (long)rows_entries(geo), tokWords},                            \
                         pr.options().dtype(torch::kInt32));                                 \
     err = carry_arm_rows_##I_((const __nv_bfloat16*)pr.data_ptr(),                          \
@@ -256,10 +268,13 @@ std::vector<int64_t> geometry(std::vector<int64_t> widths, int64_t level_modes, 
     for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.grid_div[l]);
     for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.row_g[l]);
     for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.row_prefix[l]);
+    for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.sub_bits[l]);
+    for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.sub_shift[l]);
     o.push_back(s.carves);
     o.push_back(s.rows);
     o.push_back(s.leaf);
     o.push_back(s.streams);
+    o.push_back(s.assign);
   };
   o.push_back(g.D);
   o.push_back(g.bc);
@@ -278,11 +293,13 @@ std::vector<int64_t> geometry(std::vector<int64_t> widths, int64_t level_modes, 
   o.push_back(g.identity_map);
   push_side(g.r);
   push_side(g.w);
-  //: the transit's row map, evaluated over the whole box: the model test asserts it is
-  //: a bijection, that it moves whole WARPS with the slot bits fixed, and that it is
-  //: the IDENTITY exactly when `identity_map` says so.
+  //: THE TRANSIT'S ROW MAP, BOTH SIDES, evaluated over the whole box: the model test
+  //: asserts each side's map is a bijection of the region, that the two together are a
+  //: round trip, and that they coincide exactly when `identity_map` says so.
   for (int w = 0; w < g.w.streams; ++w)
-    for (int P = 0; P < g.w.leaf; ++P) o.push_back(geom_xch_reader(g, w) * g.r.leaf + P);
+    for (int P = 0; P < g.w.leaf; ++P) o.push_back(geom_xch_row(g, g.w, w, P));
+  for (int r = 0; r < g.r.streams; ++r)
+    for (int P = 0; P < g.r.leaf; ++P) o.push_back(geom_xch_row(g, g.r, r, P));
   return o;
 }
 

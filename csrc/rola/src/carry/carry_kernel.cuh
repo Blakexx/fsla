@@ -21,6 +21,7 @@
 #include "facts/arch_caps.cuh"
 #include "common/design.cuh"
 #include "common/ops.cuh"
+#include "common/structure_switch.cuh"
 
 namespace rola::carry {
 
@@ -65,6 +66,28 @@ struct CarryGeom {
   static constexpr int LdS = kLeafW + kPadE;
   static constexpr int LdO = kDv + kPadF;
   //: THE EXCHANGE'S ROW: one leaf's channels and its MASS. -- see docs/internals/carry/carry_kernel.md#ldx
+  //: THE GENERATED SET OF SUB-BOX SHAPES, and R9's layers 1 and 2 over it. -- see docs/internals/carry/carry_kernel.md#warp-box-set
+  static constexpr int kNA = sub_boxes(D, BC, kStreams).count;
+  static_assert(kNA >= 1 && kNA <= kGeomMaxSubBoxes,
+                "the carve's shape set is generated from the box and the warp count; an "
+                "arm whose set overflows the block's bound does not build");
+  static constexpr bool sb_sound() {
+    const SubBoxSet set = sub_boxes(D, BC, kStreams);
+    if (set.count < 1) return false;
+    for (int a = 0; a < set.count; ++a) {
+      int tot = 0;
+      for (int l = 0; l < D; ++l) {
+        if (set.bits[a][l] < 0 || set.bits[a][l] > owner_span_bits(D, BC, l)) return false;
+        tot += set.bits[a][l];
+      }
+      if ((1 << tot) != kLeafW || set.bits[a][D - 1] < 1) return false;
+    }
+    return true;
+  }
+  static_assert(sb_sound(),
+                "every generated warp sub-box holds leaves-per-warp leaves inside the owner "
+                "box, with the canonical innermost level non-empty");
+  static constexpr bool sb_is_sm_grain = (KWARPS == warps_per_sm);
   static constexpr int LdX = kDv + kPadE;
   //: THE TRANSIT IS UNCONDITIONAL (K50, "kTied IS DELETED WITH THE MO MOVE"): one
   //: transit, always; a tie is a transit whose row map is the identity, reported as
@@ -289,19 +312,22 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: `o_l` is a bit-field extract of the owner index: the lattice's owner -- see docs/internals/carry/carry_kernel.md#near-line-296
   int runCol[D];
   //: AND THE STREAM'S OWN DIGIT OFFSET INSIDE THAT RUN, per level AND PER SIDE: the -- see docs/internals/carry/carry_kernel.md#note-l344
-  int offW[D];
+  int offW[D], offR[D];
   //: AND THE BALLOT ROW BASE, per level and per side: the SAME `o_l`, addressing the -- see docs/internals/carry/carry_kernel.md#rowbytes
   uint32_t rowOffR[D], rowOffW[D];
   const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
+  //: THE TWO BASE WORDS, one per side. -- see docs/internals/carry/carry_kernel.md#transit
+  int baseW = 0, baseR = 0;
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
     const int o_l = (owner >> geo.owner_div_bits[l]) & (geo.grid[l] - 1);
     runCol[l] = geo.col_base[l] + (o_l << owner_span_bits(D, BC, l));
-    offW[l] = ((strm >> geo.w.grid_div_bits[l]) & (geo.w.grid[l] - 1)) << warp_span_bits(D, DV, l);
-    rowOffR[l] =
-        (uint32_t)(geo.r.row_prefix[l] + (o_l << (owner_span_bits(D, BC, l) - warp_span_bits(D, DV, l)))) * rowBytes;
-    rowOffW[l] =
-        (uint32_t)(geo.w.row_prefix[l] + (o_l << (owner_span_bits(D, BC, l) - warp_span_bits(D, DV, l)))) * rowBytes;
+    offW[l] = ((strm >> geo.w.grid_div_bits[l]) & (geo.w.grid[l] - 1)) << geo.w.sub_bits[l];
+    offR[l] = ((strm >> geo.r.grid_div_bits[l]) & (geo.r.grid[l] - 1)) << geo.r.sub_bits[l];
+    baseW += offW[l] << owner_run_shift(D, BC, l);
+    baseR += offR[l] << owner_run_shift(D, BC, l);
+    rowOffR[l] = (uint32_t)(geo.r.row_prefix[l] + (o_l << geo.r.grid_bits[l])) * rowBytes;
+    rowOffW[l] = (uint32_t)(geo.w.row_prefix[l] + (o_l << geo.w.grid_bits[l])) * rowBytes;
   });
   //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the READ -- see docs/internals/carry/carry_kernel.md#pin-address
   const int rowsBoth = geo.r.rows + geo.w.rows;
@@ -338,25 +364,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
                 "the transit region separates its rows by the ROW STRIDE: half a row must "
                 "be four times an odd number of words, or an aligned eight of rows shares "
                 "a four-bank block and the pull conflicts");
-  int xchR = 0;
-  static_for<D>([&](auto Lc) {
-    constexpr int l = decltype(Lc)::value;
-    xchR += (offW[l] >> warp_span_bits(D, DV, l)) << geo.r.grid_div_bits[l];
-  });
-  const int xchBase = xchR * kLeafR;
-  const int xchLaneRow = xchBase ^ (lane & 3) * 2;
-  const uint32_t pubC = smem_addr(xch) + (uint32_t)(xchLaneRow * LdX * 2 + (lane >> 2) * 2);
-  const uint32_t pubM = smem_addr(xch) + (uint32_t)(xchLaneRow * LdX * 2 + kDv * 2);
-  //: THE RETURN LEG'S ROW IS THE PUBLISH'S, SUPPLIED BY A DIFFERENT LANE. -- see docs/internals/carry/carry_kernel.md#return-leg
-  const int retRow = xchBase ^ (lane & 7);
-  const uint32_t retC = smem_addr(xch) + (uint32_t)(retRow * LdX * 2);
   const int retG = lane >> 3;
-  //: the READER's segment addresses the same rows for the pull and the store-back.
-  const int pullRow = strm * kLeafR + rT;
-  const uint32_t pullC = smem_addr(xch) + (uint32_t)(pullRow * LdX * 2);
-  const int massRow = strm * kLeafR + 2 * (lane & 3);
-  const uint32_t pullM = smem_addr(xch) + (uint32_t)(massRow * LdX * 2 + kDv * 2);
-  const uint32_t sbC = smem_addr(xch) + (uint32_t)(massRow * LdX * 2 + (lane >> 2) * 2);
 
   // ---- the state, transposed: m = channels, n = this warp's leaves ---------
   float st[MCH][kNL][4];
@@ -385,8 +393,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     int lf = 0;
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      const int dig = ((P >> warp_shift(D, DV, l)) & (warp_span(D, DV, l) - 1)) + offW[l];
-      lf += dig << geo.run_shift[l];
+      const int dig = ((P >> geo.w.sub_shift[l]) & ((1 << geo.w.sub_bits[l]) - 1)) + offW[l];
+      lf += dig << owner_run_shift(D, BC, l);
     });
     return lf;
   };
@@ -506,37 +514,41 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     constexpr bool WRITE = decltype(Wt)::value;
     //: EACH PHASE MINTS FROM ITS OWN CARVE'S OFFSETS, in the ONE canonical slot layout. -- see docs/internals/carry/carry_kernel.md#pm
     const SideGeom& sg = WRITE ? geo.w : geo.r;
-    //: THE RUN'S COLUMN, PER LEVEL: the owner's run at that level plus this stream's
-    //: own offset inside it.  The offset's SHIFT is the sub-box's, an immediate.
-    auto col_at = [&](int l, int sb) {
-      return runCol[l] + (((strm >> sg.grid_div_bits[l]) & (sg.grid[l] - 1)) << sb);
-    };
-    //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES. -- see docs/internals/carry/carry_kernel.md#near-line-497
-    uint32_t acc[SPT / 2];
-    {
-      //: the canonical INNERMOST level seeds the accumulator: its shift is zero.
-      constexpr int l = D - 1, K = warp_span_bits(D, DV, l);
-      const void* const src = gather_ptr(base, tokOff + (uint32_t)(col_at(l, K) * 2));
-      field_seed<SPT, WRITE, K>(acc, src, have);
-    }
-    static_for<D - 1>([&](auto Lc) {
-      constexpr int l = decltype(Lc)::value;
-      constexpr int K = warp_span_bits(D, DV, l), SH = warp_shift(D, DV, l);
-      const void* const src = gather_ptr(base, tokOff + (uint32_t)(col_at(l, K) * 2));
-      field_fold<SPT, K, SH>(acc, src);
+    //: THE SIDE'S OWN MEMBER, SELECTED AT LAUNCH FROM THE MODE WORD. -- see docs/internals/carry/carry_kernel.md#per-side-produce
+    rola::uniform_switch<G::kNA>(sg.assign, [&](auto Ac) {
+      constexpr int A = decltype(Ac)::value;
+      //: THE RUN'S COLUMN, PER LEVEL. -- see docs/internals/carry/carry_kernel.md#byrank
+      auto col_at = [&](int l, int sb) {
+        return runCol[l] + (((strm >> sg.grid_div_bits[l]) & (sg.grid[l] - 1)) << sb);
+      };
+      //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES. -- see docs/internals/carry/carry_kernel.md#near-line-497
+      uint32_t acc[SPT / 2];
+      {
+        //: the canonical INNERMOST level seeds the accumulator: its shift is zero.
+        constexpr int l = D - 1, K = sb_span_bits(D, BC, G::kStreams, A, l);
+        const void* const src = gather_ptr(base, tokOff + (uint32_t)(col_at(l, K) * 2));
+        field_seed<SPT, WRITE, K>(acc, src, have);
+      }
+      static_for<D - 1>([&](auto Lc) {
+        constexpr int l = decltype(Lc)::value;
+        constexpr int K = sb_span_bits(D, BC, G::kStreams, A, l),
+                      SH = sb_shift_of(D, BC, G::kStreams, A, l);
+        const void* const src = gather_ptr(base, tokOff + (uint32_t)(col_at(l, K) * 2));
+        field_fold<SPT, K, SH>(acc, src);
+      });
+      __nv_bfloat16* const row = dst + prow * LdS;
+      if constexpr (WRITE) {
+        static_for<SPT / 2>([&](auto Jc) {
+          constexpr int j = 2 * decltype(Jc)::value;
+          store_bf16x2(row + j, mul_bf16x2(acc[j / 2], gain));
+        });
+      } else {
+        static_for<SPT / 2>([&](auto Jc) {
+          constexpr int j = 2 * decltype(Jc)::value;
+          store_bf16x2(row + j, acc[j / 2]);
+        });
+      }
     });
-    __nv_bfloat16* const row = dst + prow * LdS;
-    if constexpr (WRITE) {
-      static_for<SPT / 2>([&](auto Jc) {
-        constexpr int j = 2 * decltype(Jc)::value;
-        store_bf16x2(row + j, mul_bf16x2(acc[j / 2], gain));
-      });
-    } else {
-      static_for<SPT / 2>([&](auto Jc) {
-        constexpr int j = 2 * decltype(Jc)::value;
-        store_bf16x2(row + j, acc[j / 2]);
-      });
-    }
   };
 
   // ---- V staging -----------------------------------------------------------
@@ -673,47 +685,65 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     rendezvous();
     //: THE OUT LEG'S COVER: read batch zero's factor gathers touch neither `st` nor -- see docs/internals/carry/carry_kernel.md#cover
     if (nbr > 0) produce_batch(std::false_type{}, pR, panR, rlist, 0, nr);
-    static_for<kNL>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      static_for<4>([&](auto Ec) {
-        constexpr int e = decltype(Ec)::value;
-        constexpr int dl = j * kMmaN + (e & 1);
-        static_for<MCH>([&](auto Mc) {
-          constexpr int m = decltype(Mc)::value;
-          constexpr int gr = 2 * m + (e >> 1);
-          store_shared_u16(pubC + (uint32_t)(dl * LdX * 2 + gr * 16), hi_bf16(st[m][j][e]));
-        });
-      });
-      if ((lane >> 2) == 0) {
-        static_for<2>([&](auto Ec) {
+    rola::uniform_switch<G::kNA>(geo.w.assign, [&](auto Ac) {
+      constexpr int A = decltype(Ac)::value;
+      const int lrow = baseW ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3));
+      const uint32_t pubC = smem_addr(xch) + (uint32_t)(lrow * LdX * 2 + (lane >> 2) * 2);
+      const uint32_t pubM = smem_addr(xch) + (uint32_t)(lrow * LdX * 2 + kDv * 2);
+      static_for<kNL>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        static_for<4>([&](auto Ec) {
           constexpr int e = decltype(Ec)::value;
-          constexpr int dl = j * kMmaN + e;
-          store_shared_u16(pubM + (uint32_t)(dl * LdX * 2), hi_bf16(mass_st[j][e]));
+          constexpr int dl = sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN + (e & 1));
+          static_for<MCH>([&](auto Mc) {
+            constexpr int m = decltype(Mc)::value;
+            constexpr int gr = 2 * m + (e >> 1);
+            store_shared_u16(pubC + (uint32_t)(dl * LdX * 2 + gr * 16), hi_bf16(st[m][j][e]));
+          });
         });
-      }
+        if ((lane >> 2) == 0) {
+          static_for<2>([&](auto Ec) {
+            constexpr int e = decltype(Ec)::value;
+            constexpr int dl = sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN + e);
+            store_shared_u16(pubM + (uint32_t)(dl * LdX * 2), hi_bf16(mass_st[j][e]));
+          });
+        }
+      });
     });
     rendezvous();
 
-    static_for<kDw>([&](auto Kc) {
-      constexpr int kk = decltype(Kc)::value;
-      constexpr int rk = kk * kMmaK;
-      static_for<MCH>([&](auto Mc) {
-        constexpr int m = decltype(Mc)::value;
-        load_frag_t(sa[kk][m], pullC + (uint32_t)(rk * LdX * 2) + (uint32_t)(((2 * m) | cT) * 16));
+    rola::uniform_switch<G::kNA>(geo.r.assign, [&](auto Ac) {
+      constexpr int A = decltype(Ac)::value;
+      constexpr int nx = sb_scatter_of(D, BC, G::kStreams, A, 1);
+      const uint32_t pullC =
+          smem_addr(xch) + (uint32_t)((baseR ^ sb_scatter_of(D, BC, G::kStreams, A, rT)) * LdX * 2);
+      const uint32_t pullM =
+          smem_addr(xch)
+          + (uint32_t)((baseR ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3))) * LdX * 2
+                       + kDv * 2);
+      static_for<kDw>([&](auto Kc) {
+        constexpr int kk = decltype(Kc)::value;
+        constexpr int rk = sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK);
+        static_for<MCH>([&](auto Mc) {
+          constexpr int m = decltype(Mc)::value;
+          load_frag_t(sa[kk][m],
+                      pullC + (uint32_t)(rk * LdX * 2) + (uint32_t)(((2 * m) | cT) * 16));
+        });
+        //: the mass's two pairs, a row apart, at the reader's own segment. -- see docs/internals/carry/carry_kernel.md#msw
+        ma[kk][0] = 0u;
+        ma[kk][1] = 0u;
+        ma[kk][2] = 0u;
+        ma[kk][3] = 0u;
+        if ((lane >> 2) == 0) {
+          constexpr int rh = sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK + 8);
+          const uint32_t bLo = pullM + (uint32_t)(rk * LdX * 2);
+          const uint32_t bHi = pullM + (uint32_t)(rh * LdX * 2);
+          ma[kk][0] = (uint32_t)load_shared_u16(bLo)
+                      | ((uint32_t)load_shared_u16(bLo + (uint32_t)(nx * LdX * 2)) << 16);
+          ma[kk][2] = (uint32_t)load_shared_u16(bHi)
+                      | ((uint32_t)load_shared_u16(bHi + (uint32_t)(nx * LdX * 2)) << 16);
+        }
       });
-      //: the mass's two pairs, a row apart, at the reader's own segment. -- see docs/internals/carry/carry_kernel.md#msw
-      ma[kk][0] = 0u;
-      ma[kk][1] = 0u;
-      ma[kk][2] = 0u;
-      ma[kk][3] = 0u;
-      if ((lane >> 2) == 0) {
-        const uint32_t bLo = pullM + (uint32_t)(rk * LdX * 2);
-        const uint32_t bHi = pullM + (uint32_t)((rk + 8) * LdX * 2);
-        ma[kk][0] = (uint32_t)load_shared_u16(bLo)
-                    | ((uint32_t)load_shared_u16(bLo + (uint32_t)(LdX * 2)) << 16);
-        ma[kk][2] = (uint32_t)load_shared_u16(bHi)
-                    | ((uint32_t)load_shared_u16(bHi + (uint32_t)(LdX * 2)) << 16);
-      }
     });
     rendezvous();
 
@@ -822,52 +852,71 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
                   "the writer pulls its hi plane four granules at a time, so the channel "
                   "m-tiles must pair into whole `ldmatrix.x4` groups");
     //: THE STORE-BACK IS THE PULL RUN BACKWARDS: the reader writes each A fragment -- see docs/internals/carry/carry_kernel.md#store-back
-    static_for<kDw>([&](auto Kc) {
-      constexpr int kk = decltype(Kc)::value;
-      static_for<4>([&](auto Ic) {
-        constexpr int i = decltype(Ic)::value;
-        constexpr int rr = kk * kMmaK + (i >> 1) * 8;
-        const uint32_t a0 = sbC + (uint32_t)(rr * LdX * 2);
-        static_for<MCH>([&](auto Mc) {
-          constexpr int m = decltype(Mc)::value;
-          constexpr int gr = 2 * m + (i & 1);
-          const uint32_t a = a0 + (uint32_t)(gr * 16);
-          store_shared_u16(a, (uint16_t)(sa[kk][m][i] & 0xFFFFu));
-          store_shared_u16(a + (uint32_t)(LdX * 2), (uint16_t)(sa[kk][m][i] >> 16));
+    rola::uniform_switch<G::kNA>(geo.r.assign, [&](auto Ac) {
+      constexpr int A = decltype(Ac)::value;
+      constexpr int nx = sb_scatter_of(D, BC, G::kStreams, A, 1);
+      const int mrow = baseR ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3));
+      const uint32_t sbC = smem_addr(xch) + (uint32_t)(mrow * LdX * 2 + (lane >> 2) * 2);
+      const uint32_t pullM = smem_addr(xch) + (uint32_t)(mrow * LdX * 2 + kDv * 2);
+      static_for<kDw>([&](auto Kc) {
+        constexpr int kk = decltype(Kc)::value;
+        static_for<4>([&](auto Ic) {
+          constexpr int i = decltype(Ic)::value;
+          constexpr int rr = sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK + (i >> 1) * 8);
+          const uint32_t a0 = sbC + (uint32_t)(rr * LdX * 2);
+          static_for<MCH>([&](auto Mc) {
+            constexpr int m = decltype(Mc)::value;
+            constexpr int gr = 2 * m + (i & 1);
+            const uint32_t a = a0 + (uint32_t)(gr * 16);
+            store_shared_u16(a, (uint16_t)(sa[kk][m][i] & 0xFFFFu));
+            store_shared_u16(a + (uint32_t)(nx * LdX * 2), (uint16_t)(sa[kk][m][i] >> 16));
+          });
         });
+        if ((lane >> 2) == 0) {
+          constexpr int rk = sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK);
+          constexpr int rh = sb_scatter_of(D, BC, G::kStreams, A, kk * kMmaK + 8);
+          const uint32_t bLo = pullM + (uint32_t)(rk * LdX * 2);
+          const uint32_t bHi = pullM + (uint32_t)(rh * LdX * 2);
+          store_shared_u16(bLo, (uint16_t)(ma[kk][0] & 0xFFFFu));
+          store_shared_u16(bLo + (uint32_t)(nx * LdX * 2), (uint16_t)(ma[kk][0] >> 16));
+          store_shared_u16(bHi, (uint16_t)(ma[kk][2] & 0xFFFFu));
+          store_shared_u16(bHi + (uint32_t)(nx * LdX * 2), (uint16_t)(ma[kk][2] >> 16));
+        }
       });
-      if ((lane >> 2) == 0) {
-        constexpr int rk = kk * kMmaK;
-        const uint32_t bLo = pullM + (uint32_t)(rk * LdX * 2);
-        const uint32_t bHi = pullM + (uint32_t)((rk + 8) * LdX * 2);
-        store_shared_u16(bLo, (uint16_t)(ma[kk][0] & 0xFFFFu));
-        store_shared_u16(bLo + (uint32_t)(LdX * 2), (uint16_t)(ma[kk][0] >> 16));
-        store_shared_u16(bHi, (uint16_t)(ma[kk][2] & 0xFFFFu));
-        store_shared_u16(bHi + (uint32_t)(LdX * 2), (uint16_t)(ma[kk][2] >> 16));
-      }
     });
     rendezvous();
     //: THE WRITER PULLS IN ITS OWN LAYOUT.  Its eight slots of one n-tile are eight -- see docs/internals/carry/carry_kernel.md#writer-pull
-    static_for<kNL>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      constexpr int dj = j * kMmaN;
-      const uint32_t a0 = retC + (uint32_t)(dj * LdX * 2);
-      static_for<MCH / 2>([&](auto Tc) {
-        constexpr int t = decltype(Tc)::value;
-        uint32_t r4[4];
-        load_frag_t(r4, a0 + (uint32_t)((4 * t + retG) * 16));
-        static_for<4>([&](auto Rc) {
-          constexpr int r = decltype(Rc)::value;
-          hi[j][4 * t + r] = r4[r];
+    rola::uniform_switch<G::kNA>(geo.w.assign, [&](auto Ac) {
+      constexpr int A = decltype(Ac)::value;
+      const uint32_t retC =
+          smem_addr(xch)
+          + (uint32_t)((baseW ^ sb_scatter_of(D, BC, G::kStreams, A, lane & 7)) * LdX * 2);
+      const uint32_t pubM =
+          smem_addr(xch)
+          + (uint32_t)((baseW ^ sb_scatter_of(D, BC, G::kStreams, A, 2 * (lane & 3))) * LdX * 2
+                       + kDv * 2);
+      static_for<kNL>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        constexpr int dj = sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN);
+        const uint32_t a0 = retC + (uint32_t)(dj * LdX * 2);
+        static_for<MCH / 2>([&](auto Tc) {
+          constexpr int t = decltype(Tc)::value;
+          uint32_t r4[4];
+          load_frag_t(r4, a0 + (uint32_t)((4 * t + retG) * 16));
+          static_for<4>([&](auto Rc) {
+            constexpr int r = decltype(Rc)::value;
+            hi[j][4 * t + r] = r4[r];
+          });
         });
+        mhi[j] = 0u;
+        if ((lane >> 2) == 0) {
+          constexpr int dl0 = sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN);
+          constexpr int dl1 = sb_scatter_of(D, BC, G::kStreams, A, j * kMmaN + 1);
+          const uint32_t m0 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl0 * LdX * 2));
+          const uint32_t m1 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl1 * LdX * 2));
+          mhi[j] = m0 | (m1 << 16);
+        }
       });
-      mhi[j] = 0u;
-      if ((lane >> 2) == 0) {
-        constexpr int dl0 = j * kMmaN, dl1 = j * kMmaN + 1;
-        const uint32_t m0 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl0 * LdX * 2));
-        const uint32_t m1 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl1 * LdX * 2));
-        mhi[j] = m0 | (m1 << 16);
-      }
     });
     //: THE REJOIN IS EXACT AND IT IS NOT ARITHMETIC. -- see docs/internals/carry/carry_kernel.md#rejoin
     static_for<MCH>([&](auto Mc) {

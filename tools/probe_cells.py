@@ -601,8 +601,12 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
     """One `ncu` oneshot launch: kernel name + metrics for ``cell`` on ``binary``.
 
     Mirrors the session scratchpad's `ledger/run_ledger.sh` pattern -- one
-    `-c 1` capture on a regex-matched `carry.*kernel`, CSV out, under the
-    SAME `gpu_lock()` every wall-clock run uses.
+    A `-c 1` capture on `regex:carry.*kernel` is NOT the carry kernel: since K50 the
+    family launches `carry_rows_kernel` FIRST, so the first match on a post-K50 tip is the
+    ROWS pass while an older parent's first match is the carry body -- the comparison then
+    reads rows-against-carry and every ratio from it is meaningless (found at G2b, which
+    had to capture per kernel by hand). The filter names the BODY explicitly, so the two
+    tips capture the same kernel or capture nothing.
     """
     py = venv_python(binary["venv"])
     metrics = ",".join([
@@ -626,7 +630,8 @@ def run_ncu_cell(binary: dict, cell: str, lock_path: str, out_csv_prefix: str,
         "smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct",
     ])
     out_csv = f"{out_csv_prefix}_{binary['label']}_{cell}.csv"
-    cmd = [NCU_BIN, "--target-processes", "all", "-k", "regex:carry.*kernel", "-c", "1",
+    cmd = [NCU_BIN, "--target-processes", "all", "-k",
+           "regex:^carry_(kernel|split_kernel)", "-c", "1",
            "--print-kernel-base", "mangled", "--metrics", metrics, "--csv",
            py, str(THIS_FILE), "--worker", "--cells", cell, "--oneshot", "--state", state]
     with gpu_lock(lock_path):

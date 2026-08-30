@@ -1933,3 +1933,27 @@ The canonical atom id of this owner's atom `a`, from the block's own radices —
 form of what `BoxPlan::canon_atom` folded. It is the address the state plane's page sweeps
 use under both backings, which is why the span rule is constrained to keep an atom inside
 one owner's box (`geom.md#span-rule`).
+
+<a id="warp-box-set"></a>
+## The generated sub-box set, and R9's four layers
+
+`CarryGeom` derives the arm's shape set from `(D, BC, kStreams)` with the same generator
+the host derivation runs, so the bodies and the seam cannot disagree about what exists.
+`sb_sound()` is R9's layer 2 as a compile-time property of the SET: every member holds
+`leaves_per_worker` leaves, fits the owner box at every level, and leaves the canonical
+innermost level non-empty — that level seeds the accumulator, and only it may sit at slot
+offset zero. Layer 1 is the generator plus `kNA <= kGeomMaxSubBoxes`; layer 3 is the
+dispatch's `CARRY_NA` refusal; layer 4 is `uniform_switch`'s `__trap()` and
+`tools/field_coverage.py`'s `(side, member)` sweep. See
+`docs/internals/common/structure_switch.md` for the contract.
+
+<a id="per-side-produce"></a>
+## The produce is per side and per member
+
+The produce's spans and shifts are the SELECTED MEMBER'S, so the body sits inside a
+CTA-uniform `uniform_switch` over the set and every span, shift and column offset in it is
+an immediate — the property that made G2b cheap, kept while the two sides differ. The
+switch is at the produce and at each transit leg, which is the finest placement that keeps
+the immediates; the cost is that each body is instantiated once per member AT EACH CALL
+SITE, and that cost is measured rather than assumed (`## G2c`).
+

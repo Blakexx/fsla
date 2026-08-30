@@ -30,6 +30,52 @@ the vector register count does not move — which is the census this gates on.
 The consequence is the ship principle: a user of the Python package never registers an
 arm. One binary per shape serves every topology and every declaration of its depth.
 
+<a id="arch-constants"></a>
+## The arch's primary constants, in derivation order
+
+1. `leaves_per_sm(dv)` — what the SM's STATE CAPACITY admits at this value width (the
+   register file on sm_80/sm_90, TMEM on sm_100).
+2. `warps_per_sm` — the sub-box owners are WARPS on every architecture.
+3. The SM box is `leaves_per_sm` balanced over `D`; the carve divides it, in the side's
+   own order, into `warps_per_sm` SEGMENTS.
+4. `leaves_per_warp = leaves_per_sm / warps_per_sm` is the warp's SEGMENT, derived.
+5. The COMPILED SHAPE is the slot map of the REGISTER TILE the warp holds per step.
+6. TILES PER SEGMENT is derived, and it is `1` here: today one tile IS the whole segment.
+   On sm_100 a warp walks its TMEM segment tile by tile — a runtime trip count over
+   identical tile bodies, which is not a shape and does not enter this table.
+
+The SHAPE COUNT is flat across architectures: it depends on `D` and on how many bits the
+carve takes (`log2 warps_per_sm`), not on the capacity. What scales with
+`leaves_per_warp` is each generated body's SIZE.
+
+<a id="warp-box-set"></a>
+## The generated set of sub-box shapes, and why it is a SET
+
+The carve is TOP-DOWN (Blake, 2026-08-29): the box's spans are divided level by level in
+the SIDE'S OWN order — its sparse levels outermost — until the box count reaches the
+warp count; what remains is that side's sub-box. `[4,4,4,4]` at eight warps goes
+`[1,4,4,4]` (four boxes) then `[1,2,4,4]` (eight), and `[1,2,4,4]` is the shape.
+
+Because the result depends on the order, and the order comes from the MODE WORD, there is
+not one shape but a SET: `sub_boxes(D, box_leaves, warps)` runs the carve over EVERY
+level order and de-duplicates. It is a generated constexpr table, never hand-written, and
+`sb_index` is the question "is this carved shape a member" asked of the generator itself.
+At `D = 2` the set has two members, at `D = 3` four, at `D = 4` seven.
+
+Each side selects its member at launch from its own order; the two sides therefore no
+longer share a slot layout, which is what restores the two-sided carve's liveness
+selectivity (the `## G2b` finding) and what makes the transit's row map a per-side
+scatter rather than a per-warp base.
+
+**The grain this branch compiles.** `warps_per_sm` is eight — one CTA per SM, R15 — but
+these arms compile `kWarps = 4`, so the CTA box is HALF the SM box (`BC = 128` of the SM's
+256 leaves) and the set is the same law run on the half. The two sets are NOT the same
+shapes: at `D = 2` the SM box `[16,16]` yields `[2,16]` and `[16,2]`, while the half box
+`[8,16]` yields `[2,16]` and `[8,4]` — and `[16,2]` does not fit a box that is 8 wide at
+level 0. A four-warp CTA cannot be a contiguous subset of the SM's eight sub-boxes with
+BOTH sides covering the same leaves, because the two sides carve different levels. The set
+is generated from the box the CTA actually owns for exactly that reason.
+
 <a id="warp-box"></a>
 ## The warp sub-box, and the canonical slot layout
 

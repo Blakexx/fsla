@@ -26,25 +26,14 @@ constexpr int geom_ilog2(int x) {
   return (1 << b) == x ? b : -1;
 }
 
-//: THE REGISTER LAW (K50): what the register file admits at this value width.
-constexpr int leaves_per_warp(int dv) { return 2048 / dv; }
+//: THE ARCH'S PRIMARY CONSTANTS, IN DERIVATION ORDER. -- see docs/internals/carry/geom.md#arch-constants
+constexpr int leaves_per_sm(int dv) { return 16384 / dv; }
+constexpr int warps_per_sm = 8;
+constexpr int leaves_per_warp(int dv) { return leaves_per_sm(dv) / warps_per_sm; }
 
 //: A BALANCED BIT SPLIT over `D` levels, remainder INNERMOST-FIRST.
 constexpr int balanced_bits(int bits, int D, int l) {
   return bits / D + (l >= D - bits % D ? 1 : 0);
-}
-
-//: THE WARP SUB-BOX -- REGISTER SHAPE, so compile-time `f(D, DV)`. -- see docs/internals/carry/geom.md#warp-box
-constexpr int warp_span_bits(int D, int dv, int l) {
-  return balanced_bits(geom_ilog2(leaves_per_warp(dv)), D, l);
-}
-constexpr int warp_span(int D, int dv, int l) { return 1 << warp_span_bits(D, dv, l); }
-
-//: THE CANONICAL SLOT LAYOUT, THE SAME ON BOTH SIDES. -- see docs/internals/carry/geom.md#canonical-slots
-constexpr int warp_shift(int D, int dv, int l) {
-  int sh = 0;
-  for (int i = l + 1; i < D; ++i) sh += warp_span_bits(D, dv, i);
-  return sh;
 }
 
 //: THE OWNER BOX: `log2 BC` balanced, the ATOM held WHOLE innermost. -- see docs/internals/carry/geom.md#span-rule
@@ -77,6 +66,114 @@ constexpr int owner_run_shift(int D, int bc, int l) {
   return sh;
 }
 
+//: THE CARVE IS TOP-DOWN (Blake, 2026-08-29): the owner box's spans are divided level
+//: by level IN THE SIDE'S OWN ORDER, outermost first, until the box count reaches the
+//: side's stream count; what remains is that side's WARP SUB-BOX.
+//: -- see docs/internals/carry/geom.md#warp-box
+constexpr void carve_sub_bits(int D, int bc, int ns, const int* outer_order, int* bits) {
+  for (int l = 0; l < D; ++l) bits[l] = owner_span_bits(D, bc, l);
+  int want = geom_ilog2(ns);
+  for (int p = 0; p < D && want > 0; ++p) {
+    const int l = outer_order[p];
+    const int take = bits[l] < want ? bits[l] : want;
+    bits[l] -= take;
+    want -= take;
+  }
+}
+
+//: the largest set the generator can return: `D * (D - 1)` shapes at depth four.
+constexpr int kGeomMaxSubBoxes = 12;
+
+//: THE COMPILE-TIME SET OF WARP SUB-BOX SHAPES, GENERATED from the owner spans and the
+//: stream count by running the carve over EVERY level order and de-duplicating. A side
+//: selects one member at launch from its own order; nothing here is hand-written.
+//: -- see docs/internals/carry/geom.md#warp-box-set
+struct SubBoxSet {
+  int count;
+  int bits[kGeomMaxSubBoxes][kGeomMaxLevels];
+};
+
+constexpr SubBoxSet sub_boxes(int D, int box_leaves, int workers) {
+  SubBoxSet set{};
+  set.count = 0;
+  int fact = 1;
+  for (int i = 2; i <= D; ++i) fact *= i;
+  for (int k = 0; k < fact; ++k) {
+    int pool[kGeomMaxLevels] = {0, 1, 2, 3}, order[kGeomMaxLevels] = {0, 0, 0, 0};
+    int rem = k, avail = D;
+    for (int i = 0; i < D; ++i) {
+      int f = 1;
+      for (int j = 2; j <= avail - 1; ++j) f *= j;
+      const int idx = rem / f;
+      rem %= f;
+      order[i] = pool[idx];
+      for (int j = idx; j < avail - 1; ++j) pool[j] = pool[j + 1];
+      --avail;
+    }
+    int b[kGeomMaxLevels] = {0, 0, 0, 0};
+    carve_sub_bits(D, box_leaves, workers, order, b);
+    bool seen = false;
+    for (int a = 0; a < set.count; ++a) {
+      bool eq = true;
+      for (int l = 0; l < D; ++l)
+        if (set.bits[a][l] != b[l]) eq = false;
+      if (eq) seen = true;
+    }
+    if (!seen && set.count < kGeomMaxSubBoxes) {
+      for (int l = 0; l < D; ++l) set.bits[set.count][l] = b[l];
+      ++set.count;
+    }
+  }
+  return set;
+}
+
+//: one member's slot layout: the sub-box's bits packed INNERMOST-FIRST, so the
+//: canonical innermost level sits at offset zero and seeds the accumulator.
+constexpr int sb_shift(const SubBoxSet& set, int D, int a, int l) {
+  int sh = 0;
+  for (int i = l + 1; i < D; ++i) sh += set.bits[a][i];
+  return sh;
+}
+
+//: THE SET BY VALUE, for device code: a static constexpr member of a class is ODR-USED
+//: when a device body names it, so every compile-time consumer below re-derives the set
+//: from the same three numbers instead. -- see docs/internals/carry/geom.md#warp-box-set
+constexpr int sb_span_bits(int D, int bc, int ns, int a, int l) {
+  const SubBoxSet set = sub_boxes(D, bc, ns);
+  return set.bits[a][l];
+}
+constexpr int sb_shift_of(int D, int bc, int ns, int a, int l) {
+  const SubBoxSet set = sub_boxes(D, bc, ns);
+  int sh = 0;
+  for (int i = l + 1; i < D; ++i) sh += set.bits[a][i];
+  return sh;
+}
+
+//: A SLOT'S REGION ROW under one member: each level's slot digit placed at that level's
+//: own bit offset in the owner-local canonical index. GF(2)-LINEAR in the slot's bits, so
+//: a lane-dependent part and a compile-time part compose by OR -- which is what keeps
+//: every transit displacement an immediate. -- see docs/internals/carry/geom.md#row-map
+constexpr int sb_scatter_of(int D, int bc, int ns, int a, int P) {
+  const SubBoxSet set = sub_boxes(D, bc, ns);
+  int row = 0;
+  for (int l = 0; l < D; ++l)
+    row += ((P >> sb_shift_of(D, bc, ns, a, l)) & ((1 << set.bits[a][l]) - 1))
+           << owner_run_shift(D, bc, l);
+  return row;
+}
+
+//: the member a carved shape IS, or `-1` -- the exhaustiveness question, asked of the
+//: generated set itself and never of a hand-written list.
+constexpr int sb_index(const SubBoxSet& set, int D, const int* bits) {
+  for (int a = 0; a < set.count; ++a) {
+    bool eq = true;
+    for (int l = 0; l < D; ++l)
+      if (set.bits[a][l] != bits[l]) eq = false;
+    if (eq) return a;
+  }
+  return -1;
+}
+
 //: ONE SIDE'S CARVE, indexed BY LEVEL except `level_at`, which inverts the order.
 struct SideGeom {
   int level_at[kGeomMaxLevels];    //: rank -> level (rank 0 is innermost)
@@ -92,6 +189,12 @@ struct SideGeom {
   int streams;                     //: prod_l grid(l)
   //: bit counts, never values: no consumer of this block emits an integer divide.
   int grid_div_bits[kGeomMaxLevels];
+  //: THIS SIDE'S WARP SUB-BOX: which member of the generated set its order selects,
+  //: and that member's spans and slot layout. -- see docs/internals/carry/geom.md#warp-box-set
+  int assign;
+  int sub_bits[kGeomMaxLevels];   //: level -> log2 sv(l)
+  int sub_shift[kGeomMaxLevels];  //: level -> the slot index's bit offset
+  int grid_bits[kGeomMaxLevels];  //: level -> log2 grid(l) = log2 s(l) - log2 sv(l)
 };
 
 //: THE BLOCK ITSELF -- what the host hands the kernel, by value, once per launch.
@@ -142,8 +245,8 @@ inline bool mode_before(uint32_t MO, uint32_t side, int a, int b) {
 }  // namespace geom_detail
 
 //: ONE SIDE'S CARVE; `NS == 1` is the S = 1 point of it. -- see docs/internals/carry/geom.md#carve
-inline const char* derive_side(int D, const int* width, const int* span, const int* sub,
-                               uint32_t MO, uint32_t side, int NS, SideGeom& g) {
+inline const char* derive_side(int D, const int* width, const int* span, int bc, uint32_t MO,
+                               uint32_t side, int NS, SideGeom& g) {
   if (NS < 1 || (NS & (NS - 1)) != 0) return "a side's stream count is a power of two";
   for (int l = 0; l < D; ++l) {
     int r = 0;
@@ -152,14 +255,29 @@ inline const char* derive_side(int D, const int* width, const int* span, const i
     g.rank[l] = r;
     g.level_at[r] = l;
   }
+  //: THE SIDE'S OWN CARVE: its order, walked OUTERMOST FIRST.
+  int outer[kGeomMaxLevels] = {0, 0, 0, 0}, sub_bits[kGeomMaxLevels] = {0, 0, 0, 0};
+  for (int p = 0; p < D; ++p) outer[p] = g.level_at[D - 1 - p];
+  carve_sub_bits(D, bc, NS, outer, sub_bits);
+  const SubBoxSet set = sub_boxes(D, bc, NS);
+  g.assign = sb_index(set, D, sub_bits);
+  if (g.assign < 0) return "this side's carved sub-box is not a member of the generated set";
+  int sub[kGeomMaxLevels] = {1, 1, 1, 1};
+  for (int l = 0; l < D; ++l) {
+    g.sub_bits[l] = sub_bits[l];
+    g.sub_shift[l] = sb_shift(set, D, g.assign, l);
+    sub[l] = 1 << sub_bits[l];
+  }
   g.streams = 1;
   g.leaf = 1;
   g.carves = 0;
   for (int l = 0; l < D; ++l) {
-    g.grid[l] = NS == 1 ? 1 : span[l] / sub[l];
+    g.grid[l] = span[l] / sub[l];
     g.row_span[l] = g.grid[l] == 0 ? 0 : span[l] / g.grid[l];
     if (g.grid[l] < 1 || g.grid[l] * g.row_span[l] != span[l])
       return "the warp sub-box does not divide the owner's box at some level";
+    g.grid_bits[l] = geom_ilog2(g.grid[l]);
+    if (g.grid_bits[l] < 0) return "a side's stream grid must be a power of two";
     g.streams *= g.grid[l];
     g.leaf *= g.row_span[l];
     if (g.grid[l] > 1) g.carves |= 1 << l;
@@ -188,6 +306,9 @@ inline const char* derive_side(int D, const int* width, const int* span, const i
     g.grid[l] = 1;
     g.grid_div[l] = 1;
     g.grid_div_bits[l] = 0;
+    g.grid_bits[l] = 0;
+    g.sub_bits[l] = 0;
+    g.sub_shift[l] = 0;
     g.row_span[l] = width[0];
     g.row_g[l] = 0;
     g.row_prefix[l] = pfx;
@@ -203,11 +324,10 @@ inline const char* derive_carry_geom(int D, const int* width, int bc, int dv, ui
   if (geom_ilog2(dv) < 0 || dv % 16 != 0) return "the value width is a power of two, sixteen up";
   g.D = D;
   g.bc = bc;
-  int sub[kGeomMaxLevels] = {1, 1, 1, 1};
+  if (leaves_per_warp(dv) < 1) return "the value width admits no leaves per warp";
   for (int l = 0; l < D; ++l) {
     g.width[l] = width[l];
     g.span[l] = owner_span(D, bc, l);
-    sub[l] = warp_span(D, dv, l);
     if (geom_ilog2(g.width[l]) < 0) return "every level width must be a power of two";
     //: THE ONE WIDTH LAW THIS SHAPE OWNS -- there is no narrower case to fall back to.
     if (g.width[l] < g.span[l]) return "a level is narrower than the owner box's span there";
@@ -255,24 +375,29 @@ inline const char* derive_carry_geom(int D, const int* width, int bc, int dv, ui
     g.span_bits[l] = geom_ilog2(width[0]);
     g.run_shift[l] = 0;
   }
-  if (const char* e = derive_side(D, g.width, g.span, sub, MO, kSideRead, NSR, g.r)) return e;
-  if (const char* e = derive_side(D, g.width, g.span, sub, MO, kSideWrite, NSW, g.w)) return e;
+  if (const char* e = derive_side(D, g.width, g.span, bc, MO, kSideRead, NSR, g.r)) return e;
+  if (const char* e = derive_side(D, g.width, g.span, bc, MO, kSideWrite, NSW, g.w)) return e;
   //: a level nobody carves fixes no digit, so its index weight is not part of the map.
-  int identical = 1;
+  int identical = g.r.assign == g.w.assign ? 1 : 0;
   for (int l = 0; l < D; ++l)
     if (g.r.grid[l] > 1 && g.r.grid_div_bits[l] != g.w.grid_div_bits[l]) identical = 0;
   g.identity_map = identical;
   return nullptr;
 }
 
-//: THE TRANSIT'S ROW MAP: one per-warp base word, the IDENTITY on the slot bits.
+//: THE TRANSIT'S ROW MAP: the region is indexed by the OWNER-LOCAL CANONICAL INDEX, so
+//: each side reaches a leaf through its OWN base word and its own member's fixed shifts.
 //: -- see docs/internals/carry/geom.md#row-map
-__host__ __device__ inline int geom_xch_reader(const CarryGeomRT& g, int w) {
-  int reader = 0;
+__host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom& s, int strm,
+                                            int P) {
+  int row = 0;
 #pragma unroll 1
-  for (int l = 0; l < g.D; ++l)
-    reader += (((w >> g.w.grid_div_bits[l]) & (g.w.grid[l] - 1)) << g.r.grid_div_bits[l]);
-  return reader;
+  for (int l = 0; l < g.D; ++l) {
+    const int off = ((strm >> s.grid_div_bits[l]) & (s.grid[l] - 1)) << s.sub_bits[l];
+    const int dig = (P >> s.sub_shift[l]) & ((1 << s.sub_bits[l]) - 1);
+    row += (off + dig) << g.run_shift[l];
+  }
+  return row;
 }
 
 //: THE CANONICAL LEAF of owner `O`'s local slot, and the atom that holds it (P80).

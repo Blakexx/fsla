@@ -41,8 +41,9 @@ def _ilog2c(x):
 _LVL = 4
 _BLK_ARRAYS = ("width", "span", "grid", "col_base", "run_shift", "owner_div", "weight")
 _BLK_SCALARS = ("wtot", "owners", "leaves", "local_bits", "min_width", "identity_map")
-_SIDE_ARRAYS = ("level_at", "rank", "row_span", "grid", "grid_div", "row_g", "row_prefix")
-_SIDE_SCALARS = ("carves", "rows", "leaf", "streams")
+_SIDE_ARRAYS = ("level_at", "rank", "row_span", "grid", "grid_div", "row_g", "row_prefix",
+                "sub_bits", "sub_shift")
+_SIDE_SCALARS = ("carves", "rows", "leaf", "streams", "assign")
 
 
 def _block(widths, modes, ns):
@@ -85,9 +86,17 @@ class _Side:
         return self.blk[f"{self._p}_rank"][l]
 
     def shift(self, l):
-        """THE CANONICAL SLOT LAYOUT (G2b): the sub-box's digits, innermost lowest.  It is
-        the same expression on both sides, which is the claim this file exists to check."""
-        return sum(_ilog2c(self.s(i)) for i in range(l + 1, self.D))
+        """THIS SIDE'S OWN SLOT LAYOUT (G2c): the member's spans packed innermost-lowest.
+        The two sides select DIFFERENT members from the mode word, so this is read off the
+        block per side rather than shared -- which is the claim this file now checks."""
+        return self.blk[f"{self._p}_sub_shift"][l]
+
+    def assign(self):
+        return self.blk[f"{self._p}_assign"]
+
+    def run_shift(self, l):
+        """the OWNER run's own bit offset -- the region's index is that canonical run."""
+        return sum(_ilog2c(self.blk["span"][i]) for i in range(l + 1, self.D))
 
     def grid_div(self, l):
         return self.blk[f"{self._p}_grid_div"][l]
@@ -120,31 +129,34 @@ def _sides(case):
     return _Side(blk, "w", NS), _Side(blk, "r", NS), 64
 
 
+def _row(side, stream, slot):
+    """THE REGION'S ROW: the OWNER-LOCAL CANONICAL INDEX of the leaf this side's stream
+    holds at that slot.  Each side reaches a leaf through its OWN base word and its own
+    member's shifts, so the two sides meet on the canonical index and nowhere else."""
+    row = 0
+    for l in range(side.D):
+        d = ((slot >> side.shift(l)) & (side.s(l) - 1)) + side.off(l, stream)
+        row += d << side.run_shift(l)
+    return row
+
+
 def _row_of(w_side, r_side, stream, slot):
-    """publisher `stream`'s write slot -> the exchange's row, reader-major.  Under the
-    canonical layout the two sides tile the same box with the same sub-box, so a leaf
-    keeps its SLOT and only changes WARP -- but this composes the two sides' own
-    derivations rather than assuming that, so a broken derivation shows up here."""
-    reader, q = 0, 0
-    for l in range(w_side.D):
-        d = ((slot >> w_side.shift(l)) & (w_side.s(l) - 1)) + w_side.off(l, stream)
-        reader += (d // r_side.s(l)) * r_side.grid_div(l)
-        q |= (d % r_side.s(l)) << r_side.shift(l)
-    return reader * r_side.leaf + q
+    """the publisher's row, kept under its old name for the tests that only need it."""
+    return _row(w_side, stream, slot)
 
 
 def _canonical(w_side, r_side):
-    """THE LAYOUT IS THE SAME ON BOTH SIDES -- the register-shape claim itself."""
-    return all(w_side.s(l) == r_side.s(l) and w_side.shift(l) == r_side.shift(l)
-               for l in range(w_side.D))
+    """the two sides selected the SAME member -- a reported fact, no longer a law."""
+    return w_side.assign() == r_side.assign()
 
 
 def _tied(w_side, r_side):
     """THE IDENTITY-MAP FACT, and it is a fact and no longer a body: K50 deleted the
     elided tied path ("one transit, always"), so what a tie buys is a row map that
     happens to be the identity -- reported so a wasted transit is visible in the ledger."""
-    return all(w_side.g(l) == 1 or w_side.grid_div(l) == r_side.grid_div(l)
-               for l in range(w_side.D))
+    return w_side.assign() == r_side.assign() and all(
+        w_side.g(l) == 1 or w_side.grid_div(l) == r_side.grid_div(l)
+        for l in range(w_side.D))
 
 
 CARVED = [(c[0], c) for c in CASES]
@@ -175,9 +187,18 @@ def test_the_exchange_relays_the_state_leaf_for_leaf(idx, row):
             claimed[row_i] = (stream, slot)
     assert sorted(claimed) == list(range(w.bc)), f"arm {idx}: the rows are not a permutation"
 
-    # and the two derivations agree on WHICH leaf: both sides name the same lattice leaf.
-    for (stream, slot), row_i in ((v, k) for k, v in claimed.items()):
-        reader, q = divmod(row_i, r.leaf)
+    # and the READ side's own map covers the same region exactly once: the two sides meet
+    # on the canonical index, so a leaf is the same ROW to the writer that mints it and to
+    # the reader that pulls it -- whatever members the mode word selected for each.
+    pulled = {}
+    for reader in range(r.ns):
+        for slot in range(r.leaf):
+            row_i = _row(r, reader, slot)
+            assert row_i not in pulled, f"arm {idx}: two consumers claim row {row_i}"
+            pulled[row_i] = (reader, slot)
+    assert sorted(pulled) == list(range(r.bc)), f"arm {idx}: the pull is not a permutation"
+    for row_i, (stream, slot) in claimed.items():
+        reader, q = pulled[row_i]
         for l in range(w.D):
             d_w = ((slot >> w.shift(l)) & (w.s(l) - 1)) + w.off(l, stream)
             d_r = ((q >> r.shift(l)) & (r.s(l) - 1)) + r.off(l, reader)
@@ -193,51 +214,56 @@ def test_the_exchange_row_map_is_affine_in_the_slots_bits(idx, row):
     kernel pay one base per warp and an IMMEDIATE per fragment, and what makes the XOR
     an ADD in the address arithmetic (`XchMap`'s own static_assert)."""
     w, r, _ = _sides(row)
-    nb = _ilog2c(w.leaf)
-    ref_step = [_row_of(w, r, 0, 1 << b) ^ _row_of(w, r, 0, 0) for b in range(nb)]
-    for b, st in enumerate(ref_step):
-        assert bin(st).count("1") == 1, f"arm {idx}: slot bit {b} is not one row bit"
-    delta_mask = 0
-    for st in ref_step:
-        delta_mask |= st
-    base_mask = 0
-    for stream in range(w.ns):
-        base = _row_of(w, r, stream, 0)
-        base_mask |= base
-        for b in range(nb):
-            assert _row_of(w, r, stream, 1 << b) ^ base == ref_step[b], (
-                f"arm {idx}: stream {stream}'s step for bit {b} differs from stream 0's")
-        for slot in range(w.leaf):
-            acc = base
+    for side, who in ((w, "publisher"), (r, "consumer")):
+        nb = _ilog2c(side.leaf)
+        ref_step = [_delta(side, 1 << b) for b in range(nb)]
+        for b, st in enumerate(ref_step):
+            assert bin(st).count("1") == 1, f"arm {idx}: {who} slot bit {b} is not one row bit"
+        delta_mask = 0
+        for st in ref_step:
+            delta_mask |= st
+        base_mask = 0
+        for stream in range(side.ns):
+            base = _row(side, stream, 0)
+            base_mask |= base
             for b in range(nb):
-                if slot >> b & 1:
-                    acc ^= ref_step[b]
-            assert acc == _row_of(w, r, stream, slot)
-    assert delta_mask & base_mask == 0, (
-        f"arm {idx}: a slot bit shares a row bit with a publisher base, so `^` is not `+`")
+                assert _row(side, stream, 1 << b) ^ base == ref_step[b], (
+                    f"arm {idx}: {who} {stream}'s step for bit {b} differs from stream 0's")
+            for slot in range(side.leaf):
+                acc = base
+                for b in range(nb):
+                    if slot >> b & 1:
+                        acc ^= ref_step[b]
+                assert acc == _row(side, stream, slot)
+        assert delta_mask & base_mask == 0, (
+            f"arm {idx}: a slot bit shares a row bit with a {who} base, so `^` is not `+`")
 
 
 @pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
-def test_the_slot_layout_is_the_same_on_both_sides_and_the_map_moves_whole_warps(idx, row):
-    """THE REGISTER-SHAPE CLAIM (G2b), on the shipped derivation.
+def test_each_sides_map_is_its_own_members_scatter_and_the_two_agree_on_the_region(idx, row):
+    """THE PER-SIDE SHAPE CLAIM (G2c), on the shipped derivation.
 
-    The warp sub-box is compile-time `f(D, DV)` and CANONICAL: both sides tile the owner's
-    box with the same spans in the same slot order, so the per-side ORDER can only decide
-    which stream holds which sub-box.  The transit is therefore a permutation of leaves
-    BETWEEN warps with the slot bits FIXED -- one runtime base word per warp and the
-    identity on the slot -- which is what lets the kernel address it with immediates."""
+    Each side selects a member of the GENERATED set from its own order, so the two sides
+    no longer share a slot layout: a leaf keeps neither its slot nor its warp across the
+    transit.  What they DO share is the region's index -- the owner-local canonical run --
+    so each side's map is a bijection of `[0, BC)` built from one base word per stream and
+    the member's fixed shifts on the slot bits, and the identity-map fact is exactly the
+    case where both sides selected the same member with the same stream numbering."""
     w, r, _ = _sides(row)
-    assert _canonical(w, r), (
-        f"arm {idx}: the two sides do not share a slot layout, so the row map is not a "
-        f"warp permutation and the produce's shifts are not immediates")
-    for slot in range(w.leaf):
-        assert _delta(w, r, slot) == slot, (
-            f"arm {idx}: slot {slot} does not keep its offset in the row map")
-    for stream in range(w.ns):
-        base = _row_of(w, r, stream, 0)
-        assert base % r.leaf == 0, f"arm {idx}: publisher {stream}'s base is not a warp base"
-        for slot in range(w.leaf):
-            assert _row_of(w, r, stream, slot) == base + slot
+    for side, who in ((w, "publisher"), (r, "consumer")):
+        seen = set()
+        for stream in range(side.ns):
+            base = _row(side, stream, 0)
+            for slot in range(side.leaf):
+                assert _row(side, stream, slot) == base ^ _delta(side, slot), (
+                    f"arm {idx}: {who} {stream} slot {slot} is not base ^ scatter(slot)")
+                seen.add(_row(side, stream, slot))
+        assert sorted(seen) == list(range(side.bc)), (
+            f"arm {idx}: the {who} side does not cover the region exactly once")
+    same = all(_row(w, s_, p_) == _row(r, s_, p_)
+               for s_ in range(w.ns) for p_ in range(w.leaf))
+    assert same == _tied(w, r), (
+        f"arm {idx}: the identity-map fact disagrees with the two maps")
 
 
 def _bank_free(rows, ldx, gran, word_off=0, words_per_gran=4):
@@ -255,50 +281,75 @@ def _bank_free(rows, ldx, gran, word_off=0, words_per_gran=4):
 
 
 @pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
-def test_the_region_needs_no_swizzle_because_the_row_stride_separates_the_banks(idx, row):
-    """THE SWIZZLE SEARCH, AS A COMPILE-TIME ENUMERATION -- and its answer is NONE.
+def test_the_region_needs_no_swizzle_at_every_member_pair(idx, row):
+    """THE SWIZZLE SEARCH, AS A COMPILE-TIME ENUMERATION, NOW OVER BOTH SIDES' MEMBERS.
 
-    Before G2b a leaf changed both its warp AND its slot in the transit, so a lane quad's
-    four rows sat 16 or 32 apart, `ldx / 2 * 16 = 0 (mod 32)` put them in one four-bank
-    block, and a shift-XOR swizzle on bits 3 and above had to separate them -- which it
-    could not do for the deep-3 carve, whose eight writer rows differed in the LOW bits
-    (the former `KNOWN_RETURN_PULL_CONFLICTS`).  Under the canonical slot layout every
-    access covers rows an ALIGNED RUN apart, and `ldx / 2 = 4 x odd` maps a run of eight
-    onto eight different four-bank blocks by itself.  This asserts that lemma AND walks
-    all four accesses unswizzled at every declaration, which is what deletes the swizzle
-    rather than re-tuning it."""
+    G2b's answer was NONE under a shared slot layout, where every access covered rows an
+    ALIGNED RUN apart and `ldx / 2 = 4 x odd` mapped a run of eight onto eight different
+    four-bank blocks by itself.  With a member per side the rows an access covers are that
+    member's SCATTER of a run, not the run -- so the lemma no longer carries the result and
+    all four accesses are walked, unswizzled, at every declaration the sweep reaches."""
     w, r, dv = _sides(row)
-    ldx, n_gran, leaf = dv + K_PAD_E, dv // K_MMA_M_CH, w.leaf
+    ldx = dv + K_PAD_E
     assert (ldx // 2) % 4 == 0 and (ldx // 2) // 4 % 2 == 1, (
         f"arm {idx}: half a row is {ldx // 2} words, which is not four times an odd "
         f"number -- an aligned eight of rows would share a four-bank block")
+    for bad in _conflicts(w, r, dv):
+        raise AssertionError(f"arm {idx}: {bad}")
 
+
+def _conflicts(w, r, dv):
+    """every conflicting access of the four, at this (write member, read member) pair."""
+    ldx, n_gran, leaf = dv + K_PAD_E, dv // K_MMA_M_CH, w.leaf
+    bad = []
     for stream in range(w.ns):
-        base = _row_of(w, r, stream, 0)
-        #: the publish's lane quad: four rows two apart at eight consecutive channels.
+        base = _row(w, stream, 0)
         for j in range(leaf // K_MMA_N):
             for e1 in (0, 1):
-                rows_p = [base + j * K_MMA_N + 2 * q + e1 for q in range(4)]
+                rows_p = [base ^ _delta(w, j * K_MMA_N + 2 * q + e1) for q in range(4)]
                 for g in range(n_gran):
-                    assert _bank_free(rows_p, ldx, g), f"arm {idx}: publish conflicts"
-                assert _bank_free(rows_p, ldx, n_gran, words_per_gran=1), (
-                    f"arm {idx}: the mass publish conflicts")
-        #: the writer's return pull: eight rows of an aligned eight, one granule.
-        rows_r = [base + q for q in range(8)]
-        for g in range(n_gran):
-            assert _bank_free(rows_r, ldx, g), f"arm {idx}: the return pull conflicts"
-
+                    if not _bank_free(rows_p, ldx, g):
+                        bad.append("publish conflicts")
+                if not _bank_free(rows_p, ldx, n_gran, words_per_gran=1):
+                    bad.append("the mass publish conflicts")
+            rows_r = [base ^ _delta(w, j * K_MMA_N + q) for q in range(8)]
+            for g in range(n_gran):
+                if not _bank_free(rows_r, ldx, g):
+                    bad.append("the return pull conflicts")
     for reader in range(r.ns):
+        rbase = _row(r, reader, 0)
         for kk in range(leaf // K_MMA_K):
             for half in (0, 8):
-                rows_l = [reader * leaf + kk * K_MMA_K + half + i for i in range(8)]
+                rows_l = [rbase ^ _delta(r, kk * K_MMA_K + half + i) for i in range(8)]
                 for g in range(n_gran):
-                    assert _bank_free(rows_l, ldx, g), f"arm {idx}: the pull conflicts"
+                    if not _bank_free(rows_l, ldx, g):
+                        bad.append("the pull conflicts")
                 for e1 in (0, 1):
-                    rows_m = [reader * leaf + kk * K_MMA_K + half + 2 * q + e1
+                    rows_m = [rbase ^ _delta(r, kk * K_MMA_K + half + 2 * q + e1)
                               for q in range(4)]
-                    assert _bank_free(rows_m, ldx, n_gran, words_per_gran=1), (
-                        f"arm {idx}: the mass pull conflicts")
+                    if not _bank_free(rows_m, ldx, n_gran, words_per_gran=1):
+                        bad.append("the mass pull conflicts")
+    return sorted(set(bad))
+
+
+def test_every_member_pair_the_mode_words_can_reach_is_conflict_free():
+    """THE PAIR SWEEP the brief asks for: every `(read member, write member)` a mode word
+    can select, at every topology in the case list, with all four accesses unswizzled.  A
+    pair that needs a swizzle is a STOP, so it is named here rather than tolerated."""
+    pairs, bad = {}, []
+    for _name, widths, _m in CASES:
+        for modes in range(1 << (2 * len(widths))):
+            blk = _block(widths, modes, NS)
+            wS, rS = _Side(blk, "w", NS), _Side(blk, "r", NS)
+            key = (len(widths), rS.assign(), wS.assign())
+            if key in pairs:
+                continue
+            pairs[key] = (widths, modes)
+            c = _conflicts(wS, rS, 64)
+            if c:
+                bad.append((key, widths, modes, c))
+    assert pairs, "no member pair was reached at all"
+    assert not bad, f"member pairs needing a swizzle: {bad}"
 
 
 @pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
@@ -309,7 +360,7 @@ def test_the_transit_is_sized_by_the_disorder_between_the_two_carves(idx, row):
     groups' rows is all `BC` of them)."""
     w, r, dv = _sides(row)
     crossings = sum(1 for stream in range(w.ns) for slot in range(w.leaf)
-                    if _row_of(w, r, stream, slot) != stream * r.leaf + slot)
+                    if _row(w, stream, slot) != _row(r, stream, slot))
     expected = 0 if crossings == 0 else w.bc * (dv + K_PAD_E) * 2
     assert (crossings == 0) == _tied(w, r), (
         f"arm {idx}: `kTied` and the permutation disagree about whether a leaf moves")
@@ -338,10 +389,10 @@ def _addr_mass(row, ldx, dv):
     return row * ldx * 2 + dv * 2
 
 
-def _delta(w, r, slot):
-    """the row map's step per slot bit: the IDENTITY under the canonical layout, and
-    this reads it off the composed derivation rather than assuming it."""
-    return _row_of(w, r, 0, slot) ^ _row_of(w, r, 0, 0)
+def _delta(side, slot):
+    """one side's row map step for a slot value: `row(s, P) = row(s, 0) ^ delta(P)`,
+    read off the shipped derivation rather than assumed."""
+    return _row(side, 0, slot) ^ _row(side, 0, 0)
 
 
 def _ldm_trans(addr_of_lane, mem):
@@ -368,7 +419,7 @@ def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx,
     w, r, dv = _sides(row)
     ldx, n_gran, leaf = dv + K_PAD_E, dv // K_MMA_M_CH, w.leaf
     mch, knl, kdw = dv // K_MMA_M, leaf // K_MMA_N, leaf // K_MMA_K
-    d1, d2, d4 = (_delta(w, r, 1), _delta(w, r, 2), _delta(w, r, 4))
+    d1, d2, d4 = (_delta(w, 1), _delta(w, 2), _delta(w, 4))
 
     mem, published = {}, {}
     for stream in range(w.ns):
@@ -377,11 +428,10 @@ def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx,
             lane_row = base ^ (d2 if lane & 1 else 0) ^ (d4 if lane & 2 else 0)
             for j in range(knl):
                 for e in range(4):
-                    dl = _delta(w, r, j * K_MMA_N + (e & 1))
+                    dl = _delta(w, j * K_MMA_N + (e & 1))
                     for m in range(mch):
                         gr = 2 * m + (e >> 1)
-                        a = (lane_row * ldx * 2 + (lane >> 2) * 2
-                             + dl * ldx * 2 + gr * 16)
+                        a = ((lane_row ^ dl) * ldx * 2 + (lane >> 2) * 2 + gr * 16)
                         slot = j * K_MMA_N + 2 * (lane & 3) + (e & 1)
                         col = m * K_MMA_M + (lane >> 2) + 8 * (e >> 1)
                         assert a == _addr_chan(_row_of(w, r, stream, slot), col, ldx, n_gran), (
@@ -391,8 +441,8 @@ def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx,
                         published[(stream, lane, j, m, e)] = a
                 if (lane >> 2) == 0:
                     for e in range(2):
-                        dl = _delta(w, r, j * K_MMA_N + e)
-                        a = lane_row * ldx * 2 + dv * 2 + dl * ldx * 2
+                        dl = _delta(w, j * K_MMA_N + e)
+                        a = (lane_row ^ dl) * ldx * 2 + dv * 2
                         assert a == _addr_mass(_row_of(w, r, stream, j * K_MMA_N
                                                        + 2 * (lane & 3) + e), ldx, dv)
                         mem[a] = ("mass", stream, lane, j, e)
@@ -405,35 +455,36 @@ def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx,
         for kk in range(kdw):
             for m in range(mch):
                 def addr_of(L, rs=rs, kk=kk, m=m):
-                    row_i = rs * leaf + ((L >> 3) >> 1) * 8 + (L & 7)
-                    return ((row_i + kk * K_MMA_K) * ldx * 2
+                    slot = ((L >> 3) >> 1) * 8 + (L & 7) + kk * K_MMA_K
+                    return (_row(r, rs, slot) * ldx * 2
                             + ((2 * m) | ((L >> 3) & 1)) * 16)
                 out = _ldm_trans(addr_of, mem)
                 for L in range(32):
                     frags[(rs, L, kk, m)] = out[L]
                 # the store-back: the kernel's own address, and it must land the same bits
                 for L in range(32):
-                    sb_c = (rs * leaf + 2 * (L & 3)) * ldx * 2 + (L >> 2) * 2
+                    mrow = _row(r, rs, 2 * (L & 3))
+                    nx = _delta(r, 1)
                     for i in range(4):
-                        rr = kk * K_MMA_K + (i >> 1) * 8
-                        a = sb_c + rr * ldx * 2 + (2 * m + (i & 1)) * 16
+                        rr = _delta(r, kk * K_MMA_K + (i >> 1) * 8)
+                        a = ((mrow ^ rr) * ldx * 2 + (L >> 2) * 2 + (2 * m + (i & 1)) * 16)
                         assert mem[a] == out[L][i][0], (
                             f"arm {idx}: the store-back's low half misses its own address")
-                        assert mem[a + ldx * 2] == out[L][i][1], (
+                        assert mem[a + nx * ldx * 2] == out[L][i][1], (
                             f"arm {idx}: the store-back's high half misses its own address")
-                        mem[a], mem[a + ldx * 2] = out[L][i]
+                        mem[a], mem[a + nx * ldx * 2] = out[L][i]
     assert mem == before, f"arm {idx}: the two legs are not the identity on the region"
 
     #: THE WRITER'S PULL, in the WRITE layout, and the rejoin's register map.
     for ws in range(w.ns):
         base = _row_of(w, r, ws, 0)
         for j in range(knl):
-            dj = _delta(w, r, j * K_MMA_N)
+            dj = _delta(w, j * K_MMA_N)
             for t in range(mch // 2):
                 def addr_of(L, base=base, dj=dj, t=t):
                     ret_row = (base ^ (d1 if L & 1 else 0) ^ (d2 if L & 2 else 0)
                                ^ (d4 if L & 4 else 0))
-                    return (ret_row + dj) * ldx * 2 + (4 * t + (L >> 3)) * 16
+                    return (ret_row ^ dj) * ldx * 2 + (4 * t + (L >> 3)) * 16
                 out = _ldm_trans(addr_of, mem)
                 for L in range(32):
                     for i in range(4):

@@ -66,8 +66,9 @@ SPLIT = carry_ops.CHANNEL_SPLIT
 #: flat (one `int64` vector, so the seam needs no schema); this names its fields once so
 #: the law tests read the block instead of re-deriving it in Python -- which would only
 #: prove that two derivations agree with each other (`matching-the-naive-antipattern`).
-_SIDE_ARRAYS = ("level_at", "rank", "row_span", "grid", "grid_div", "row_g", "row_prefix")
-_SIDE_SCALARS = ("carves", "rows", "leaf", "streams")
+_SIDE_ARRAYS = ("level_at", "rank", "row_span", "grid", "grid_div", "row_g", "row_prefix",
+                "sub_bits", "sub_shift")
+_SIDE_SCALARS = ("carves", "rows", "leaf", "streams", "assign")
 _BLK_ARRAYS = ("width", "span", "grid", "col_base", "run_shift", "owner_div", "weight")
 _BLK_SCALARS = ("wtot", "owners", "leaves", "local_bits", "min_width", "identity_map")
 _LVL = 4
@@ -227,16 +228,19 @@ def test_the_addressing_is_a_function_of_the_call_and_not_of_the_arm():
                           ((256, 256), 6), ((256, 256), 10), ((16, 16, 16), 38),
                           ((16, 16, 16, 16), 102)):
         b = block(widths, modes, ns=4)
-        seen[(widths, modes)] = (tuple(b["r_grid_div"]), tuple(b["w_grid_div"]),
-                                 b["identity_map"])
-    #: THE SUB-BOX IS THE SAME ON BOTH SIDES (G2b) -- it is the register shape -- so the
-    #: mode word reaches the derivation as the CARVE OFFSETS: which stream index bit
-    #: fixes which level's digits.  The flagship's ALTERNATING word ranks the two sides'
-    #: levels oppositely and so hands them opposite offsets (the permuted transit); its
-    #: TIED word (`MO = 3`, both sides sparse at level 0) hands them the same offsets,
-    #: which is the identity map.
-    assert seen[((256, 256), 6)][:2] == ((1, 2), (2, 1))
-    assert seen[((256, 256), 3)][:2] == ((2, 1), (2, 1))
+        seen[(widths, modes)] = (tuple(b["r_grid"]), tuple(b["w_grid"]),
+                                 b["identity_map"], tuple(b["r_grid_div"]),
+                                 tuple(b["w_grid_div"]))
+    #: THE SUB-BOX IS PER SIDE (G2c): each side selects a member of the generated shape
+    #: set from its OWN order, so the mode word decides WHICH LEVEL a side carves -- not
+    #: only which stream holds which sub-box.  The flagship's ALTERNATING word therefore
+    #: gives the read side the level-1 carve and the write side the level-0 carve (the
+    #: parent's two-sided carve, restored); its TIED word (`MO = 3`, both sides sparse at
+    #: level 0) gives both the same member with the same offsets, the identity map.
+    assert seen[((256, 256), 6)][:2] == ((1, 4), (4, 1)), (
+        "the alternating word must carve the two sides at OPPOSITE levels")
+    assert seen[((256, 256), 3)][:2] == ((4, 1), (4, 1)), (
+        "the tied word must give both sides the same carve")
     assert seen[((256, 256), 6)][2] == 0 and seen[((256, 256), 3)][2] == 1
     assert len({v[:2] for v in seen.values()}) > 1, (
         "every declaration derived the same carve: the mode word is not reaching the "

@@ -30,8 +30,10 @@ import torch
 
 from rola.ops import carry as carry_ops
 
-#: a signature is `(side, level, carves, votes_rows)` per level, and the set of them a
-#: depth can produce is what this tool reports rather than assumes.
+#: a signature is `(side, level, carves, votes_rows)` per level PLUS `(side, assignment)`
+#: -- the member of the generated warp-sub-box set that side's order selects, which is the
+#: structure switch's own case -- and the set of them a depth can produce is what this
+#: tool reports rather than assumes.
 
 
 def _topologies(D: int):
@@ -59,7 +61,8 @@ def _clauses(widths, modes, ns, split):
         row_g = g[i + 5 * 4:i + 5 * 4 + D]
         for l in range(D):
             sig.append((side, l, grid[l] > 1, row_g[l] > 0))
-        i += 7 * 4 + 4
+        sig.append((side, "assign", g[i + 9 * 4 + 4]))
+        i += 9 * 4 + 5
     return frozenset(sig)
 
 
@@ -101,11 +104,15 @@ def sweep(verbose=True):
                     return gaps
                 launched += 1
         if verbose:
-            per_level = sorted({(l, c, r) for sig in realized for (_s, l, c, r) in sig})
+            per_level = sorted({(l, c, r) for sig in realized for f in sig
+                                if len(f) == 4 for (_s, l, c, r) in [f]})
+            per_assign = sorted({(s_, a) for sig in realized for f in sig
+                                 if len(f) == 3 for (s_, _k, a) in [f]})
             print(f"arm D={D} dv={d_v} W={W} C={C} warps={warps} WPS={WPS} "
                   f"split={split}: {launched} launches, {len(realized)} distinct clause "
                   f"signatures")
             print(f"    (level, carves, votes rows) reached: {per_level}")
+            print(f"    (side, warp sub-box member) reached: {per_assign}")
         if not realized:
             gaps.append(f"arm {arm[:7]}: no geometry reached the body at all")
     return gaps
