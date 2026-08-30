@@ -1,7 +1,8 @@
 # `csrc/rola/src/decode/decode_lattice.cuh` — the `(k, m)` box lattice and the T=1 factor tables
 
 The leaf order for `T = 1` decode IS the `(k, m)` box lattice, in the ONE order
-`csrc/rola/src/carry/box.cuh` defines and the carry family writes: a leaf is
+the addressing block defines and the carry family writes (`csrc/rola/src/common/geom.cuh`;
+the `(k, m)` box lattice itself is on the `k35-final` tip, C0): a leaf is
 named by its owner coordinate `o_l` at every level and by its per-level RUN
 OFFSET `r_l = d_l - o_l * s_l`, composed in MIXED RADIX most significant level
 first,

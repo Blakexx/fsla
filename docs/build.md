@@ -77,20 +77,12 @@ tools/build/build_lock.sh --gate -- pip install -e . --no-build-isolation
    `tools/gen_shards.py` produces. Generated sources are committed so that what is
    reviewed is what compiles; a stale one fails here rather than shipping a matrix
    nobody wrote.
-5. **Compile.** `ninja`. Both instantiation matrices are generated translation
-   units under `csrc/rola/src/instantiations/`: the facts family in one shard, and
-   **one translation unit per carry arm** (K36), so the arms parallelize across
-   `MAX_JOBS` processes instead of serializing inside one `cicc`.
-6. **The fatbin gate.** `tools/fatbin_entries.py --check` reads the built `.so` and
-   requires exactly one device entry per instantiation per architecture, each in
-   the shard the matrix assigns it, and every ratified name present. This is the
-   only gate that can see a *failed* split: duplicated device code leaves the build
-   green, the manifest byte-identical and `nm` reporting one symbol per arm,
-   because a `__global__` template's host stub is weak and the linker keeps one.
-   Only its "every ratified name present" sub-check is a comparison against the
-   committed manifest; the split/duplication check above it is not, and stays a
-   hard failure regardless of `ROLA_STRICT_MANIFEST` (K43, below).
-7. **Post-build ratification.** `tools/ratify.py --arch …` for exactly the archs
+5. **Compile.** `ninja`. The carry family's instantiation matrix is generated
+   translation units under `csrc/rola/src/instantiations/` — **one translation unit
+   per carry arm** (K36), so the arms parallelize across `MAX_JOBS` processes instead
+   of serializing inside one `cicc`. C0 emptied the arm list (card C), so on this line
+   there is no generated unit and the directory does not exist; G4 refills it.
+6. **Post-build ratification.** `tools/ratify.py --arch …` for exactly the archs
    just built — the pre-build gates prove the *inputs* were ratified; this proves
    the codegen still matches what was measured.
 8. **`rola/_build_config.py`.** Generated, carrying the archs, the assembler, the
@@ -179,15 +171,15 @@ sm_86, one `nvcc --threads=1`, cold:
 | a bare CUDA TU (`cuda_runtime` + `cuda_bf16`, one trivial kernel) | 0.86 s | 0.19 GB |
 | the same, plus `#include <torch/extension.h>` | **33.7 s** | **2.86 GB** |
 | one carry arm, on the torch-free ABI | **4.7 s** | **0.33 GB** |
-| `carry_arm_6.cu` (the two-row shared TU, channel-split body) | 1.2 s | 0.21 GB |
-| `carry/carry.cu` (dispatch only) | 36.2 s | 2.88 GB |
+| a two-row shared arm TU (channel-split body) | 1.2 s | 0.21 GB |
+| the carry dispatch TU (dispatch only) | 36.2 s | 2.88 GB |
 
 An arm's own codegen is about 6 s; the header is about 34 s. That measurement is why
-`csrc/rola/src/carry/carry_arm_abi.cuh` speaks POINTERS and not tensors — with one TU
+the carry family's per-arm ABI header speaks POINTERS and not tensors — with one TU
 per arm a tensor-typed seam would re-pay the header 22 times (~12 minutes of redundant
 parsing) and pin every arm TU's resident set at 2.9 GB, which is the term `MAX_JOBS` is
-derived from. The reasoning is in
-[`docs/internals/carry/carry_arm_abi.md`](internals/carry/carry_arm_abi.md#pointers-not-tensors).
+derived from. (These rows measure the k35-final carry family, which C0 deleted from this line; they
+are kept as the cost model G4's arm units are built back against.)
 
 **Whole-build walls**, both architectures unless stated, sccache OFF, `MAX_JOBS=3`:
 
@@ -213,7 +205,7 @@ The two clean rebuilds are byte-identical in every entry point's SASS
 ## <a id="carry-arm-lists"></a>The carry arm lists: shipped and test
 
 `tools/gen_shards.py` owns the carry arm list and tags each row. A row tagged
-`TEST` in the generated `carry_arms.inc` is a **conformance cell**: the fp64
+`TEST` in the generated arm include is a **conformance cell**: the fp64
 oracle materializes `[B,T,H,N]`, so `N = 4096` is where a whole cell is
 checkable, and the `W = 64` arms exist so that it is. The two uncarved
 `DENSE_BOTH` controls at the flagship cell are test rows for the same reason —
@@ -399,7 +391,6 @@ compilers import it. Pre-existing; recording the flag list in the manifest's
 python -c "from rola import _build_config; print(_build_config.show())"
 cuobjdump --list-ptx rola_cuda.cpython-*.so     # must list NOTHING
 python tools/ratify.py --arch 80 --arch 86       # must PASS
-python tools/fatbin_entries.py --check rola/_C*.so   # must PASS
 ```
 
 The shipped `.so` carries 8 ELF images and **0 PTX images**. That is not a

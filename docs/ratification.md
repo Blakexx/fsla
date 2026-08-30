@@ -77,9 +77,10 @@ RECORDED AND FLAGGED RATHER THAN LAUNDERED").
 ## What it compiles, and why that is the shipped source
 
 `python tools/ratify.py` compiles **the translation units the build compiles** —
-the generated shards under `csrc/rola/src/instantiations/`, plus `decode.cu`,
-`entmax.cu`, `factor.cu`, the K31 carry and intra families and their two reverse
-translation units — under the flag list `setup.py` uses, imported from
+the generated per-arm carry units under `csrc/rola/src/instantiations/` (none on this
+line: C0 emptied the arm list), plus `decode.cu`, `entmax.cu`, `factor.cu`, the K31
+intra family and its reverse translation unit — under the flag list `setup.py` uses,
+imported from
 `tools/build_flags.py` rather than restated. A family is shipped codegen the moment it
 is in `SOURCES`, so it is measured like every other shipped translation unit. Two properties follow, and
 neither held before:
@@ -88,12 +89,10 @@ neither held before:
   anonymous-namespace kernel's mangled discriminator from the file that
   instantiates it, so while the gate compiled a probe under `tools/`, its 80
   decode/entmax keys named symbols that existed in no shipped `.so`. They now name
-  the entry points the binary carries, and `tools/fatbin_entries.py` checks that
-  rather than asserting it.
-- **there is one enumeration of the matrix.** The shards, the kernel's own X-macro
-  walk (`instantiations/chunk_arms.inc`) and this gate's source list all come out of
-  `tools/gen_shards.py`; there is no second file that could enumerate a different
-  arm set.
+  the entry points the binary carries.
+- **there is one enumeration of the matrix.** The per-arm units, the dispatch's own
+  X-macro walk and this gate's source list all come out of `tools/gen_shards.py`;
+  there is no second file that could enumerate a different arm set.
 
 The chunk keys are unaffected by the shard split by construction:
 `rola::chunk::compacted_kernel` lives in a NAMED namespace, so its mangled name

@@ -52,7 +52,8 @@ that.
 |---|---|
 | producer union entmax solve | `entmax_union_forward`, `entmax_union_backward` |
 | producer per-side solves | `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
-| the facts family (the chunk consumer's surviving fact producers; the consumer and its reverse pass left with K31, baseline = tag `baseline/pre-k31`) | `chunk_facts`, `chunk_block_bits`, `chunk_arms` |
+| the addressing block (G2-EXTRACT), a foundation feature | `carry_geometry`, `carry_sub_boxes` |
+| the within-window term and its reverse | `intra_forward`, `intra_arms`, `intra_build_stamp`, `intra_backward`, `intra_backward_arms`, `intra_backward_stamp` |
 | the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_build_stamp`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
 | the VMM owner | `rola_vmm_probe`, `rola_vmm_create`, and the `RoLAVmmOwner` class |
 
@@ -65,8 +66,16 @@ capacity `static_assert`; and `rola_decode_build_stamp` is the device-side fact 
 extension cannot fake ([`decode/decode_api.md`
 §build-stamp](decode/decode_api.md#build-stamp)).
 
-`rola_decode_forward` and `chunk_block_bits` are the entries bound with explicit
-`py::arg` names; the prefill consumer's much larger signature is positional.
+`rola_decode_forward` and the intra entries are bound with explicit `py::arg` names.
+
+**NOT REGISTERED ON THIS LINE (C0, card C).** The carry family's six entries
+(`carry_forward_inter`, `carry_build_stamp`, `carry_owner_rows`, `carry_arms`,
+`carry_backward_inter`, `carry_backward_stamp`) and the stats passes' three
+(`chunk_facts`, `chunk_block_bits`, `chunk_arms`) were bound here until the clean
+slate deleted their kernels. `rola/ops/carry.py` and `rola/engine/facts/` still CALL
+them -- that is the contract, kept deliberately -- and fail at `rola._C` with an
+honest missing-attribute error until C2 and C3 build them back
+([`DELETIONS.md`](DELETIONS.md)).
 
 The tiled consumer's five entries — `rola_consumer_forward`,
 `rola_consumer_occupancy`, `rola_consumer_check_arch_table`,
@@ -146,11 +155,10 @@ extension trap cannot survive ([`decode/decode_api.md`
 
 ## The facts entries (operator adoption)
 
-The facts group above is a PRIVATE seam: declarations in
-`src/facts/facts_api.cuh`, `rola/engine/facts/` the only intended caller. The
-consumer's own entries and its reverse pass left with the K31 deletion batch
-(baseline = tag `baseline/pre-k31`; `docs/internals/DELETIONS.md`). See
-`docs/internals/facts/`.
+The facts group was a PRIVATE seam, `rola/engine/facts/` its only intended caller.
+Its kernels and its declarations left with C0 (`docs/internals/DELETIONS.md`); C2
+rebuilds the pass as the liveness pass, a foundation feature, and C1 adjusts the
+Python seam where its outputs replace the atom and block bitmaps.
 
 ## Comments moved from source (S5b)
 

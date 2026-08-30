@@ -400,6 +400,13 @@ Four kernels and one host-side derivation. They share the window grid, the descr
 and the atom; they share no code path that could make a wrong convention agree with
 itself.
 
+**NOT ON THIS LINE: §6.1 and §6.2.** C0 (card C, `development/queue/C_CLEAN_SLATE.md`)
+deleted the facts kernels and the carry body from this branch. The two sections below
+stand as the SPECIFICATION of what C3 builds and C2's liveness pass replaces, not as a
+description of code in this tree; the old bodies are readable on the `k35-final` tip,
+which is also the parity reference every C3 stage is graded against. §6.3 and §6.4 —
+decode and intra — describe kernels that are here and unchanged.
+
 ### 6.1 Facts — the bits
 
 One pass over the routing amplitude planes emits everything downstream launches need:
@@ -629,10 +636,8 @@ wider-type emulation.
 | the state contract, descriptor, backings, activity bits | `docs/internals/state.md` |
 | the page's plane geometry and its byte permutes | `docs/internals/common/state_page.md` |
 | the arena, the page table, the slack pool | `docs/internals/paging/paging.md` |
-| the owner lattice, the bit permutation, the atom rectangle | `docs/internals/carry/box.md` |
-| the window body: schedule, carve, transit, fetch, fan-in | `docs/internals/carry/carry_kernel.md` |
-| the carry family's arms and their ABI | `docs/internals/carry/carry_arm.md`, `docs/internals/carry/carry_arm_abi.md` |
-| the facts pass and its tables | `docs/internals/facts/facts.md`, `docs/internals/facts/facts_kernel.md` |
+| the addressing block: spans, sub-boxes, the transit row map | `docs/internals/common/geom.md`, `docs/internals/common/geom_api.md` |
+| the owner lattice, the window body, the arms, the facts pass | NOT ON THIS LINE (C0): read them on the `k35-final` tip; C3 rebuilds the body and C2 the liveness pass |
 | the architecture capability table and the closed-world refusal | `docs/internals/common/arch_caps.md` |
 | decode: the step, the walk, growth, capture | `docs/internals/decode/decode.md` |
 | decode's lattice and factor tables | `docs/internals/decode/decode_lattice.md` |

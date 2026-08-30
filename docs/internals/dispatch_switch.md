@@ -90,7 +90,7 @@ do not have.
 
 | half | what it is | what covers it |
 |---|---|---|
-| the instantiation SET | which `(template arguments)` tuples exist in the binary | `tools/ratify.py` (147 entries per arch: 16 decode + 64 entmax + 67 chunk) and `tools/fatbin_entries.py`, both reading the built `.so`. A tuple that stops being instantiated fails them. |
+| the instantiation SET | which `(template arguments)` tuples exist in the binary | `tools/ratify.py` (347 entries per arch: 17 decode + 320 entmax + 10 intra), reading the built `.so`. A tuple that stops being instantiated fails it. |
 | the SELECTION | which tuple a given set of runtime values reaches | the CUDA suites, which exercise every arm |
 
 `tools/sass_bodies.py` hashes DEVICE entry points. Host `.text` is not in that hash, so

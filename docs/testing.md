@@ -432,12 +432,10 @@ will refuse to load* row `tools/supported.py` prints, and the test asserts the
 generated table says so. Manifests only, no device — it passes under
 `CUDA_VISIBLE_DEVICES=""`.
 
-**`python tools/fatbin_entries.py --check <so>`** is the one that needs a built
-binary, and the only one that can see a FAILED split. It reads device entry points
-out of the fatbin — per architecture, per originating object — and requires exactly
-one per instantiation, in the shard the matrix assigns it, with every ratified name
-present. `nm` cannot answer this: a `__global__` template's host stub is weak, so
-the linker keeps one however many objects emitted the device code.
+(The fatbin gate that read device entry points per originating object and caught a
+FAILED translation-unit split lived here. It decoded a stats-pass mangled name to ask
+which shard owned an instantiation, so it went with the stats passes in C0 and returns
+with the sharded family — `docs/internals/DELETIONS.md`.)
 
 **`python tools/header_selfcheck.py`** compiles every header under `csrc/rola/`
 ALONE — one generated translation unit per header, containing that header twice and
@@ -463,9 +461,9 @@ claim; a generated one is a report, and this is what keeps the difference real.
 and fourth of these gates. Both retired with their subjects in P67 D2: there is no
 derivation left to gate — `BC` belongs to the built arm — and no dispatch table to
 census. The binary-side half of the census question survives, in a stronger form
-than either: `tools/fatbin_entries.py --check` above, and the DEVICE-SIDE entry
-list the build reports (`chunk_arms()`, `chunk_build_stamp`), which answer out of
-the running binary rather than out of a host table describing it.
+than either: the DEVICE-SIDE entry list the build reports (each family's `arms()` and
+build stamp), which answers out of the running binary rather than out of a host table
+describing it.
 
 **`tests/unit/test_docs_mirror.py`** pins the `docs/internals/` mirror. The
 engine's design reasons live in a markdown tree that mirrors `csrc/rola/`, with
@@ -483,7 +481,9 @@ all grep-level so a contributor can read the check itself:
    must exist, and the directory may contain nothing its generator does not
    produce. `csrc/rola/src/instantiations/` is the only such directory; eight
    mirror docs restating one sentence would be the ceremony this mandate removes,
-   and the next re-partition would orphan them.
+   and the next re-partition would orphan them. A generated directory that does not
+   EXIST is not a violation — C0 emptied the carry arm list, so the generator produces
+   nothing and the directory is absent until G4.
 
 It carries its own non-vacuity guard: a floor on the number of sources found, so
 that a broken glob cannot make the file pass by checking nothing.

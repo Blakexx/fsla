@@ -13,7 +13,8 @@ owner holds, ``N = prod_l B_l``, ``ell`` = a leaf's canonical MSB-first mixed-ra
 
 THE INTRA-BOX ORDER IS MIXED RADIX over the owner's run offsets, most significant level
 first: ``lambda = O*BC + sum_l r_l * prod_{l' > l} s_l'``. That is the device's order
-(``csrc/rola/src/carry/box.cuh``), it is the ONLY order (the one-order ruling), and it is
+(the addressing block, ``csrc/rola/src/common/geom.cuh``), it is the ONLY order (the
+one-order ruling), and it is
 what makes each level's digits CONTIGUOUS in the owner-local index, and each atom an
 aligned digit rectangle over the trailing levels (:func:`atom_rectangle`).
 

@@ -85,7 +85,7 @@ The build is **ahead-of-time and closed-world**. It emits `code=sm_XX` only, nev
 architecture with no ratified manifest fails the build before it compiles anything.
 
 The consumer's 74 kernel instantiations are compiled as **three generated
-translation units** ([`csrc/rola/src/instantiations/`](csrc/rola/src/instantiations/)),
+translation units** (`csrc/rola/src/instantiations/`, generated per carry arm),
 partitioned as contiguous blocks of the declared arm list, so the matrix parallelizes
 across `MAX_JOBS` instead of serializing inside one compiler process. They are
 checked in — what is reviewed is what compiles — and `python tools/gen_shards.py

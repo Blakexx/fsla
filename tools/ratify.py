@@ -921,8 +921,7 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
                     raise SystemExit(
                         f"{key} was compiled by more than one translation unit "
                         f"({source.name} is the second, after {owner[key]}). Nothing is "
-                        f"sharded; run tools/gen_shards.py --check and "
-                        f"tools/fatbin_entries.py")
+                        f"sharded; run tools/gen_shards.py --check")
                 entries[key] = value
                 owner[key] = source.name
             unhonored |= set(rec["unhonored"])
@@ -1107,7 +1106,7 @@ def sass_scan(sass_lines, wanted: set | None = None) -> dict:
     `wanted` filters; `None` scans every entry point, which is what a whole-binary
     comparison needs. A name appearing twice within one arch with DIFFERENT bodies
     is refused rather than resolved last-writer-wins: it means the kernel is
-    duplicated across objects, which is `tools/fatbin_entries.py`'s failure, and
+    duplicated across objects -- the one-instantiation-per-TU rule broken -- and
     hashing one of the two copies would hide it behind a green comparison.
     """
     report: dict[str, dict] = {}
@@ -1121,7 +1120,7 @@ def sass_scan(sass_lines, wanted: set | None = None) -> dict:
                  "local_ops": locals_seen}
         if key in report and report[key]["body_sha256"] != entry["body_sha256"]:
             raise SystemExit(f"{key} is disassembled twice with DIFFERENT bodies; "
-                             f"run tools/fatbin_entries.py")
+                             f"the same kernel is emitted by two objects")
         report[key] = entry
 
     for line in sass_lines:
