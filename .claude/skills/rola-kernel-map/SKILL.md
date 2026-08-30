@@ -1,3 +1,7 @@
+> THIS MAP DESCRIBES THE k35-final REFERENCE (the old carry, never edited again). On k31/carry-clean
+> csrc/rola/src/carry/ is EMPTY until C3 builds the new kernel; read this map as the source of proven
+> mechanisms (C0's per-mechanism map in the journal ## C0 points at each), not as the tree you edit.
+
 ---
 name: rola-kernel-map
 description: Where each carry-kernel mechanism lives in csrc/rola/src/carry — box.cuh's (k,m) law, ModeOrder/StreamSpans, carry_kernel.cuh sections, the dispatch and its refusal, the arm generator, terminology
