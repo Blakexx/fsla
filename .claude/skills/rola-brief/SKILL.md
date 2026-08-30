@@ -93,3 +93,6 @@ that into the skill the same day (process/pointers only — never facts).
   docstring whose only reason to exist was the deleted axis goes with it. A value kept as None / a
   constant / "reserved" / "always 1" to document its own absence is a DEAD PARAMETER — a stop condition,
   never a design choice (the coordinator's own NORM brief made this mistake with g_read).
+- A PYTHON-ONLY STAGE'S GATE STILL NEEDS THE BUILT EXTENSION in its worktree (NORM, 2026-08-29): the brief
+  states where the .so comes from and that assert_fresh_binary runs before the tier; "no CUDA build
+  available" is a STOP, never a substitute battery.
