@@ -202,6 +202,19 @@ def test_negative_zero_is_dead_like_positive_zero():
     assert bits[0, lv.READ, 5, 0]
 
 
+def test_the_static_mask_packs_into_the_words_the_kernel_reads():
+    """`SideStatics` is an OPERAND, not a description: the bits the seam packs are the
+    bits `digit_in_mask` reads back, and no logical width crosses with them."""
+    layout = lv.LivenessLayout.of(_format((32, 16)), 64)
+    statics = _statics(layout, dense=(0,), logical=(20, 9))
+    words = [statics.mask_word(index) for index in range(lv.mask_words(layout.rows))]
+    assert len(words) == 2
+    for row in range(layout.rows):
+        read_back = bool((words[row // 32] >> (row % 32)) & 1)
+        assert read_back == statics.digit_mask[row]
+    assert sum(statics.digit_mask) == 20 + 9
+
+
 # --------------------------------------------------------------- the folds
 
 
