@@ -86,3 +86,6 @@ that into the skill the same day (process/pointers only — never facts).
   DETAILS only; anything that adds a mechanism, changes a floor's terms, trades code size / SMEM /
   registers, or departs from the brief's pseudocode is a DESIGN POINT → STOP and report the options with
   their costs; never "settle" it and continue. If unsure which it is, it is a design point.
+- A DELTA GATE NAMES A COMMITTED HARNESS (G1b-pad, 2026-08-29): a gate stated as "the +X% from stage Y
+  is gone" is unmeetable unless stage Y's experiment has a committed invocation to reproduce; brief the
+  reproduction first, then the delta.

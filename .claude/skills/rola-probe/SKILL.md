@@ -84,3 +84,7 @@ report it, Blake rules, don't tune around it.
 ## Addendum (F1b, 2026-08-29)
 - THE `sha` COLUMN IS THE WORKTREE HEAD, NOT THE BINARY: commit before the probe you intend to record, or
   the K38 rows name the wrong commit (an uncommitted tree stamps its base).
+- DRAM NOISE FLOOR (G1b-pad, 2026-08-29): single-oneshot ncu DRAM bytes drift ~0.6% on this host (a
+  no-state control launch shows it) — a DRAM delta under 1% is not a finding; alignment questions are
+  L1-REQUEST questions (l1tex requests/wavefronts per instruction), which the fixed metric list does not
+  ask — add them explicitly when the mechanism is an alignment.
