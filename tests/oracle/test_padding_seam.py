@@ -149,7 +149,7 @@ def test_the_api_boundary_pads_and_the_kernel_boundary_refuses():
         "the descriptor names the PADDED shape, never the caller's logical one")
     launch = carry_ops.LaunchShape()
     geometry = carry_ops.geometry_block(descriptor, launch)
-    liveness = _liveness_words(pread, pwrite)
+    liveness = _liveness_words(pread, pwrite, descriptor)
     activity = _conservative_activity(descriptor, bh, v_bh.device)
     routes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)
     with pytest.raises(RuntimeError, match="no implementation on this line"):
