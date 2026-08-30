@@ -17,8 +17,8 @@ from rola.engine import Arm, rule
 
 
 @rule(gives=("arm_envelope",),
-      needs=("widths", "d_v", "normalization", "decay", "arm"))
-def arm_envelope(widths: tuple[int, ...], d_v: int, normalization: str, decay: Any,
+      needs=("widths", "d_v", "decay", "arm"))
+def arm_envelope(widths: tuple[int, ...], d_v: int, decay: Any,
                  arm: Arm | None) -> str | None:
     """Why the chunk arm refuses this call, or None if it runs.
 
@@ -27,8 +27,6 @@ def arm_envelope(widths: tuple[int, ...], d_v: int, normalization: str, decay: A
     """
     if d_v != 64:
         return f"d_v={d_v}; the chunk matrix is built at d_v=64"
-    if normalization != "global":
-        return f"normalization={normalization!r}; the chunk consumer is global-only"
     if decay is not None:
         return "decay is not implemented in the operator (the decay retirement; docs/internals/chunk/chunk.md); use the reference arm"
     if len(set(widths)) != 1:

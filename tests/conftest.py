@@ -221,7 +221,7 @@ def _take_gpu_lock(request):
 
 
 def build_routes(*, hidden_size=64, num_heads=4, widths=(16,), routing=None,
-                 normalization="global", gain=True, bias=False,
+                 gain=True, bias=False,
                  gain_bias_init=None, gain_config=None):
     """One :class:`rola.RouteProducer` covering every level in ``widths``."""
     from rola import dense_routing
@@ -230,14 +230,14 @@ def build_routes(*, hidden_size=64, num_heads=4, widths=(16,), routing=None,
     levels = [dense_routing(w) if routing is None else routing.at(w) for w in widths]
     return RouteProducer(
         levels, hidden_size=hidden_size, num_heads=num_heads, bias=bias,
-        normalization=normalization, gain=gain, gain_bias_init=gain_bias_init,
+        gain=gain, gain_bias_init=gain_bias_init,
         gain_config=gain_config)
 
 
 
 
 def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=None,
-                normalization="global", decay=None, decay_rate=2.0 ** -8, gain=True,
+                decay=None, decay_rate=2.0 ** -8, gain=True,
                 bias=False, expert=None, layer_idx=None, **kwargs):
     """A :class:`rola.RoLA` over :func:`build_routes`.
 
@@ -248,7 +248,7 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
     from rola import ConstantDecay, LearnedDecay, RoLA
 
     routes = build_routes(hidden_size=hidden_size, num_heads=num_heads,
-                          widths=widths, routing=routing, normalization=normalization,
+                          widths=widths, routing=routing,
                           gain=gain, bias=bias, **kwargs)
     sources = {"learned": LearnedDecay, "constant": ConstantDecay}
     source = None if decay is None else sources[decay](
@@ -313,12 +313,13 @@ def raw_side_gain(x, route_W, gain_W, gain_bias, resolved):
                 device=x.device)
 
 
-def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology, normalization):
+def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology):
     """The producer, run over bare parameter tensors -> a plain namespace.
 
     ``v`` is accepted (matching the call sites) and unused: callers need it only
     afterwards, to run the oracle. The return carries the field names those gates
-    read (`read_levels`/`write_levels`/`g_read`/`g_write`).
+    read (`read_levels`/`write_levels`/`g_write`). There is no read-side gain: the
+    readout is a ratio, which fixes it to 1 identically.
     """
     from types import SimpleNamespace
 
@@ -329,7 +330,7 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
     H, hidden_size, _ = route_W.shape
     producer = RouteProducer(
         topology.levels, hidden_size=hidden_size, num_heads=H,
-        normalization=normalization, bias=route_bias is not None)
+        bias=route_bias is not None)
     parameters = {"route_W": fuse_gain_columns(route_W, gain_W),
                   "side_gain.gain_bias": gain_bias}
     if route_bias is not None:
@@ -340,4 +341,4 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology,
 
     return SimpleNamespace(
         read_levels=routes.read_simplex(), write_levels=routes.write,
-        g_read=routes.g_read, g_write=routes.g_write)
+        g_write=routes.g_write)

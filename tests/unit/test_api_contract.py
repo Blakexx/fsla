@@ -57,8 +57,8 @@ def _admitted(routes, v) -> None:
 def _oracle(routes, v):
     from rola.ops.naive import naive_rola
 
-    y, _ = naive_rola(v, routes.read_simplex(), routes.write, routes.g_read, routes.g_write,
-                      routes.topology, None, routes.normalization)
+    y, _ = naive_rola(v, routes.read_simplex(), routes.write, routes.g_write,
+                      routes.topology, None)
     return y
 
 
@@ -80,8 +80,8 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     producer = _routes()
     factors = producer(_x(producer))
     hand_built = RouteFactors(
-        topology=factors.topology, normalization=factors.normalization,
-        read=factors.read, write=factors.write, g_read=factors.g_read,
+        topology=factors.topology,
+        read=factors.read, write=factors.write,
         g_write=factors.g_write)
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     _admitted(hand_built, v)
@@ -94,7 +94,6 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     ("prefix", r"one \[B, T, H\] prefix"),
     ("dtype", "one dtype"),
     ("gain_shape", r"g_write must be a \[B, T, H\]"),
-    ("read_gain", "g_read must be None"),
 ])
 def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, message):
     """Unsealing removed the ORIGIN check, not the invariants. Each row plants one
@@ -103,12 +102,15 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
 
     Deliberately NOT among them: unit-sum-ness. It is a device reduction per level per
     call, it is the producer's own output contract, and conformance fixtures plant
-    non-canonical amplitudes on purpose.
+    non-canonical amplitudes on purpose. Also not among them any more: a planted
+    read-gain column -- there is no `g_read` field left to plant one on, so a caller
+    supplying `g_read=` gets the honest `TypeError` for an unknown keyword instead of
+    a plantable structural violation.
     """
     producer = _routes()
     f = producer(_x(producer))
-    fields = dict(topology=f.topology, normalization=f.normalization,
-                  read=list(f.read), write=list(f.write), g_read=f.g_read,
+    fields = dict(topology=f.topology,
+                  read=list(f.read), write=list(f.write),
                   g_write=f.g_write)
     if break_it == "width":
         fields["read"][0] = fields["read"][0][..., :2]
@@ -120,8 +122,6 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
         fields["write"][0] = fields["write"][0].to(torch.float32)
     elif break_it == "gain_shape":
         fields["g_write"] = fields["g_write"][..., :1]
-    elif break_it == "read_gain":
-        fields["g_read"] = fields["g_write"].clone()
     with pytest.raises((ValueError, TypeError), match=message):
         RouteFactors(**{k: (tuple(v) if isinstance(v, list) else v)
                         for k, v in fields.items()})
@@ -189,15 +189,15 @@ def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
     from rola.routing.types import OpaqueRouting, Topology
 
     class Uniform(torch.nn.Module):
-        hidden_size, num_heads, normalization = 32, 2, "global"
+        hidden_size, num_heads = 32, 2
         topology = Topology(levels=(OpaqueRouting(width=4),))
 
         def forward(self, stream):
             B, T = stream.shape[0], stream.shape[1]
             level = torch.full((B, T, 2, 4), 0.25, dtype=stream.dtype)
             return RouteFactors(
-                topology=self.topology, normalization=self.normalization,
-                read=(level,), write=(level.clone(),), g_read=None,
+                topology=self.topology,
+                read=(level,), write=(level.clone(),),
                 g_write=torch.ones(B, T, 2, dtype=stream.dtype))
 
     producer = Uniform()

@@ -50,10 +50,10 @@ _CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="the decode for
 _DECAY = {"none": None, "leaf_mass": "learned"}
 
 
-def _layer(device, *, norm="global", decay="none"):
+def _layer(device, *, decay="none"):
     return build_layer(
         hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
-        normalization=norm, decay=_DECAY[decay], layer_idx=0,
+        decay=_DECAY[decay], layer_idx=0,
     ).to(device, torch.float32)
 
 
@@ -256,7 +256,7 @@ def test_a_dense_pinned_layer_still_reaches_decode():
     device = "cuda"
     layer = build_layer(
         hidden_size=_HIDDEN, num_heads=_H, d_v=_DV, widths=_BRANCHES,
-        normalization="global", expert=PlanOverrides(paging=False),
+        expert=PlanOverrides(paging=False),
         layer_idx=0,
     ).to(device, torch.float32)
     layer.eval()

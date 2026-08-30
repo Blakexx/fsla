@@ -82,7 +82,7 @@ def _absent_one_written_atom(fixture, config, arena):
 
 def _step(fixture, config, arena, *, workspace=None):
     v, read, write, g_write = _f32(fixture)
-    y, _state, workspace = _decode_step(v, read, write, None, g_write, config, arena.state,
+    y, _state, workspace = _decode_step(v, read, write, g_write, config, arena.state,
                                         workspace=workspace, page_table=arena.page_table)
     return y, workspace
 
@@ -279,8 +279,8 @@ def _sequence():
                                            BC=64)
         arena.wait()
         _y_ref, oracle_state = naive_rola(
-            v[:, :_T], routes.read_simplex(), routes.write, routes.g_read,
-            routes.g_write, routes.topology, None, routes.normalization,
+            v[:, :_T], routes.read_simplex(), routes.write,
+            routes.g_write, routes.topology, None,
             output_final_state=True)
         lattice = to_lattice(oracle_state.float(), _WIDTHS, config.lattice_k,
                              config.lattice_m)
@@ -295,9 +295,9 @@ def _sequence():
 def _static(routes, v):
     """A bundle over buffers that never move -- what capture requires of its inputs."""
     static = RouteFactors(
-        topology=routes.topology, normalization=routes.normalization,
+        topology=routes.topology,
         read=tuple(t.clone() for t in routes.read), write=tuple(t.clone() for t in routes.write),
-        g_read=None, g_write=routes.g_write.clone(),
+        g_write=routes.g_write.clone(),
         read_mass=None if routes.read_mass is None else routes.read_mass.clone())
     return static, v.clone()
 

@@ -57,7 +57,7 @@ _WIDTHS, _DV, _B, _H = (64, 64), 64, 2, 2
 
 
 def _draw(gen, device, T, p_read, p_write, *, widths=_WIDTHS, H=_H, B=_B, dv=_DV,
-          norm="global", write_live=None):
+          write_live=None):
     """`write_live` confines level 0's WRITE support to its first `write_live`
     digits, which makes every leaf under a higher digit provably never written.
     The prefill uses it so the cold-read corner this family owns natively is
@@ -73,10 +73,8 @@ def _draw(gen, device, T, p_read, p_write, *, widths=_WIDTHS, H=_H, B=_B, dv=_DV
         write = (g._masked_simplex((B, T, H, widths[0]), mask, gen, device),) + tuple(
             g._simplex((B, T, H, w), p_write, gen, device) for w in widths[1:])
     g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=gen) + 0.5
-    g_read = (None if norm == "global" else
-              torch.rand(B, T, H, device=device, dtype=torch.float64, generator=gen) + 0.5)
     v = torch.randn(B, T, H, dv, device=device, dtype=torch.float64, generator=gen)
-    return dict(read=read, write=write, g_read=g_read, g_write=g_write, v=v)
+    return dict(read=read, write=write, g_write=g_write, v=v)
 
 
 def _f32(d):
@@ -109,12 +107,12 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
     topology = g._topology(_WIDTHS)
     decay = (None if not decay_on else
              LeafMassDecay(dials=g._decay_dials(_WIDTHS, _H, gen, device)))
-    pre = _draw(gen, device, T, 0.5, 0.4, norm="global",
+    pre = _draw(gen, device, T, 0.5, 0.4,
                 write_live=_WIDTHS[0] // 2)
     f = _f32(pre)
     bundle = RouteFactors(
-        topology=topology, normalization="global", read=f["read"], write=f["write"],
-        g_read=f["g_read"], g_write=f["g_write"])
+        topology=topology, read=f["read"], write=f["write"],
+        g_write=f["g_write"])
     if decay_on:
         # The decay retirement: decay is not a feature of the operator. The
         # kernel arm names the refusal and the dispatch routes such a call to
@@ -122,14 +120,14 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
         # conditions, and the oracle below keeps the handoff semantics alive.
         reason = arm_refusal(bundle, decay, d_v=_DV)
         assert reason is not None and "decay" in reason, reason
-        naive_rola(pre["v"], pre["read"], pre["write"], pre["g_read"],
-                   pre["g_write"], topology, decay, "global",
+        naive_rola(pre["v"], pre["read"], pre["write"],
+                   pre["g_write"], topology, decay,
                    output_final_state=True)
         return
     assert arm_refusal(bundle, decay, d_v=_DV) is None, "the prefill fixture left the envelope"
     _y_ref, ref_state = naive_rola(
-        pre["v"], pre["read"], pre["write"], pre["g_read"], pre["g_write"],
-        topology, decay, "global", output_final_state=True)
+        pre["v"], pre["read"], pre["write"], pre["g_write"],
+        topology, decay, output_final_state=True)
 
     config = derive_decode_geometry(topology, d_v=_DV, decay=decay_on, BH=_B * _H,
                                   device=device)
@@ -137,14 +135,14 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
     state = to_split_planes(to_lattice(ref_state.float(), _WIDTHS, config.lattice_k, config.lattice_m))
     workspace, cold_seen = None, False
     for s in range(steps):
-        step = _draw(gen, device, 1, 0.5, 0.4, norm="global")
+        step = _draw(gen, device, 1, 0.5, 0.4)
         fs = _f32(step)
         y, state, workspace = _decode_step(
-            fs["v"], fs["read"], fs["write"], fs["g_read"], fs["g_write"],
+            fs["v"], fs["read"], fs["write"], fs["g_write"],
             config, state, decay=decay, workspace=workspace)
         y_ref, ref_state = naive_rola(
-            step["v"], step["read"], step["write"], step["g_read"], step["g_write"],
-            topology, decay, "global", initial_state=ref_state, output_final_state=True)
+            step["v"], step["read"], step["write"], step["g_write"],
+            topology, decay, initial_state=ref_state, output_final_state=True)
         assert g.relative(y, y_ref) < DECODE_RTOL, f"step {s}: y off the oracle"
         canonical = to_canonical(from_split_planes(state), _WIDTHS, config.lattice_k, config.lattice_m)
         assert g.relative(canonical, ref_state) < DECODE_RTOL, (
@@ -186,14 +184,14 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
     ref_state = m0
     workspace, errors = None, {}
     for s in range(1, max(_CHECKPOINTS) + 1):
-        step = _draw(gen, device, 1, 0.5, 0.4, norm="global")
+        step = _draw(gen, device, 1, 0.5, 0.4)
         fs = _f32(step)
         y, state, workspace = _decode_step(
-            fs["v"], fs["read"], fs["write"], fs["g_read"], fs["g_write"],
+            fs["v"], fs["read"], fs["write"], fs["g_write"],
             config, state, decay=decay, workspace=workspace)
         y_ref, ref_state = naive_rola(
-            step["v"], step["read"], step["write"], step["g_read"], step["g_write"],
-            topology, decay, "global", initial_state=ref_state, output_final_state=True)
+            step["v"], step["read"], step["write"], step["g_write"],
+            topology, decay, initial_state=ref_state, output_final_state=True)
         if s in _CHECKPOINTS:
             canonical = to_canonical(from_split_planes(state), _WIDTHS, config.lattice_k, config.lattice_m)
             err_y, err_s = g.relative(y, y_ref), g.relative(canonical, ref_state)
@@ -234,7 +232,7 @@ def test_the_decode_split_is_performance_only_under_drift():
                            generator=gen)
     m0[..., _DV] = m0[..., _DV].abs()
     #: The drift: half the steps realized-sparse, half realized-dense, one stream.
-    steps = [_draw(gen, device, 1, p, p, norm="global")
+    steps = [_draw(gen, device, 1, p, p)
              for p in (0.2, 0.2, 1.0, 1.0, 0.3, 1.0)]
 
     outcomes = {}
@@ -244,7 +242,7 @@ def test_the_decode_split_is_performance_only_under_drift():
         for step in steps:
             fs = _f32(step)
             y, state, workspace = _decode_step(
-                fs["v"], fs["read"], fs["write"], fs["g_read"], fs["g_write"],
+                fs["v"], fs["read"], fs["write"], fs["g_write"],
                 config, state, workspace=workspace)
             ys.append(y)
         outcomes[name] = (ys, state)
@@ -252,8 +250,8 @@ def test_the_decode_split_is_performance_only_under_drift():
     ref_state, ys_ref = m0, []
     for step in steps:
         y_ref, ref_state = naive_rola(
-            step["v"], step["read"], step["write"], step["g_read"], step["g_write"],
-            topology, None, "global", initial_state=ref_state, output_final_state=True)
+            step["v"], step["read"], step["write"], step["g_write"],
+            topology, None, initial_state=ref_state, output_final_state=True)
         ys_ref.append(y_ref)
 
     base = outcomes["n_split=1"]
@@ -268,7 +266,7 @@ def test_the_decode_split_is_performance_only_under_drift():
     # The certificates half: an arm mismatch REFUSES rather than degrades.
     step = _f32(steps[0])
     with pytest.raises(ValueError, match="has_decay"):
-        _decode_step(step["v"], step["read"], step["write"], step["g_read"],
+        _decode_step(step["v"], step["read"], step["write"],
                        step["g_write"], configs["n_split=1"],
                        base[1].clone(),
                        decay=LeafMassDecay(dials=g._decay_dials(_WIDTHS, _H, gen, device)))

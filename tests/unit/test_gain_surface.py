@@ -70,12 +70,12 @@ def test_the_public_flag_rejects_a_non_bool_rather_than_coercing_it():
 def test_a_missing_column_becomes_the_constant_one_and_there_is_never_a_read_gain(
         gain, write_is_one):
     """The engine's contract does not change shape when the gain is ablated: an absent
-    write gain is the CONSTANT 1, and there is no read gain in either case -- which is
-    what fixes `g_read := 1` in the ratio."""
+    write gain is the CONSTANT 1, and there is no read-gain column at all in either
+    case -- the ratio readout fixes it to 1 identically."""
     torch.manual_seed(5)
     producer = _producer(gain=gain)
     factors = producer(torch.randn(2, 6, _HIDDEN, dtype=torch.float64))
-    assert factors.g_read is None
+    assert not hasattr(factors, "g_read")
     assert factors.g_write.shape == (2, 6, _H)
     assert torch.equal(
         factors.g_write, torch.ones_like(factors.g_write)) is write_is_one

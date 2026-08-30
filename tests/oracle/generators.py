@@ -110,8 +110,6 @@ class Case:
         self.read_levels, self.write_levels = builder(gen, device, c, p)
 
         self.g_write = torch.rand(*shape, device=device, dtype=torch.float64, generator=gen) + 0.5
-        self.g_read = (None if self.norm == "global" else
-                       torch.rand(*shape, device=device, dtype=torch.float64, generator=gen) + 0.5)
         self.v = torch.randn(*shape, self.d_v, device=device, dtype=torch.float64, generator=gen)
         self.decay = (LeafMassDecay(dials=_decay_dials(self.widths, self.H, gen, device))
                       if c["decay"] else None)
@@ -130,11 +128,10 @@ class Case:
             v=self.v.to(torch.float32),
             read=tuple(t.to(torch.float32) for t in self.read_levels),
             write=tuple(t.to(torch.float32) for t in self.write_levels),
-            g_read=None if self.g_read is None else self.g_read.to(torch.float32),
             g_write=self.g_write.to(torch.float32))
         self.bundle = RouteFactors(
-            topology=self.topology, normalization=self.norm, read=self._f32["read"],
-            write=self._f32["write"], g_read=self._f32["g_read"],
+            topology=self.topology, read=self._f32["read"],
+            write=self._f32["write"],
             g_write=self._f32["g_write"])
         #: WHY the kernel arm refuses this family, or None. Read from the
         #: PRODUCTION predicate, not from the family's pure-CPU mirror: the
@@ -245,8 +242,8 @@ class Case:
 
     def oracle(self):
         return naive_rola(
-            self.v, self.read_levels, self.write_levels, self.g_read, self.g_write,
-            self.topology, self.decay, self.norm,
+            self.v, self.read_levels, self.write_levels, self.g_write,
+            self.topology, self.decay,
             initial_state=self.initial_state, output_final_state=True)
 
 

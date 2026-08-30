@@ -560,10 +560,10 @@ def _producer_params(topology: Topology, *, dtype, device, sides, B=2, L=48, H=2
     }
 
 
-def _run_producer(params, topology, normalization):
+def _run_producer(params, topology):
     return produce_routing(
         params["x"], None, params["v"], params["route_W"], None, params["gain_W"],
-        params["gain_bias"], topology, normalization)
+        params["gain_bias"], topology)
 
 
 @_CUDA
@@ -615,8 +615,7 @@ def test_the_solve_seam_is_exact_on_the_production_logits(alpha):
     params = _producer_params(topology, dtype=torch.float32, device="cuda", sides=1)
 
     H, hidden_size, _ = params["route_W"].shape
-    producer = RouteProducer(topology.levels, hidden_size=hidden_size, num_heads=H,
-                             normalization="global")
+    producer = RouteProducer(topology.levels, hidden_size=hidden_size, num_heads=H)
     parameters = {"route_W": fuse_gain_columns(params["route_W"], params["gain_W"]),
                   "side_gain.gain_bias": params["gain_bias"]}
     read_logits, write_logits, _ = _project_under(producer, parameters, params["x"])
@@ -673,8 +672,7 @@ def _logit_floor(params, read64, write64) -> float:
 def _production_logits(topology, params):
     """The `(read, write)` logits the shipped producer computes for these parameters."""
     H, hidden_size, _ = params["route_W"].shape
-    producer = RouteProducer(topology.levels, hidden_size=hidden_size, num_heads=H,
-                             normalization="global")
+    producer = RouteProducer(topology.levels, hidden_size=hidden_size, num_heads=H)
     parameters = {"route_W": fuse_gain_columns(params["route_W"], params["gain_W"]),
                   "side_gain.gain_bias": params["gain_bias"]}
     read_logits, write_logits, _ = _project_under(producer, parameters, params["x"])
@@ -716,12 +714,12 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
     oracle_params = {name: tensor.to(torch.float64) for name, tensor in production_params.items()}
 
     read_logits, write_logits = _production_logits(topology, production_params)
-    production = _run_producer(production_params, topology, "global")
+    production = _run_producer(production_params, topology)
     #: The solve is patched WHERE THE PRODUCER RESOLVES IT -- `rola.routing.producer`
     #: binds the name at import -- so the oracle arm really runs the reference solve.
     monkeypatch.setattr(
         production_path, "production_routing_factor_levels", oracle_factor_levels)
-    oracle = _run_producer(oracle_params, topology, "global")
+    oracle = _run_producer(oracle_params, topology)
 
     #: THE ENVELOPE RE-DERIVES with the projection's operand class, it is not widened.
     #: The two arms are handed logits differing by the projection's declared class
@@ -764,7 +762,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
     #: `softplus` is 1-Lipschitz and the gain logit is a column of the SAME projection,
     #: so the gain's envelope is `dz` exactly -- half the amplitudes'.
     _assert_levels_match(production.g_write, oracle.g_write, extra_atol=envelope / 2.0)
-    assert production.g_read is None and oracle.g_read is None
+    assert not hasattr(production, "g_read") and not hasattr(oracle, "g_read")
     with capsys.disabled():
         print(f"\n  FLIP ACCOUNTING alpha={alpha}: {flips} support flips in {elements} "
               f"zero-capable elements ({flips / max(elements, 1):.3e}), greatest flipped "

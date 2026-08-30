@@ -38,7 +38,7 @@ def test_the_oracles_autograd_equals_finite_differences():
         read = list(flat[:D])
         write = list(flat[D:2 * D])
         gw, v = flat[2 * D], flat[2 * D + 1]
-        return naive_rola(v, read, write, None, gw, topo, None, "global")[0]
+        return naive_rola(v, read, write, gw, topo, None)[0]
 
     flat = tuple([_simplex((1, T, 1, width), gen) for _ in range(2 * D)]
                  + [(torch.rand(1, T, 1, device=DEV, generator=gen,
@@ -58,7 +58,7 @@ def test_the_oracles_final_state_autograd_equals_finite_differences():
         read = list(flat[:D])
         write = list(flat[D:2 * D])
         gw, v, s0 = flat[2 * D], flat[2 * D + 1], flat[2 * D + 2]
-        return naive_rola(v, read, write, None, gw, topo, None, "global",
+        return naive_rola(v, read, write, gw, topo, None,
                           initial_state=s0, output_final_state=True)[1]
 
     N = width ** D

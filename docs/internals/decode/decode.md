@@ -713,8 +713,8 @@ At `T = 1` there is no owner rectangle, so the per-LEVEL factors the tiled kerne
 hoists into `sr`/`sw` for the fixed levels `l < j` stay in the per-LEAF product
 instead. The split between `R[0,s]` and `sr` is an owner-rectangle artefact, and
 the product is the same product either way. What remains here is exactly the
-per-TOKEN part: the side gains. The read gain is fixed at `1` (`global` fixes
-`g_read := 1`; raw is dead, so there is no arm where it is anything else).
+per-TOKEN part: the side gains. There is no read-side gain at all: the ratio
+readout fixes it to 1 identically, in every arm.
 
 ## <a id="aligned-subranges"></a>26. The unit's leaves are walked in ascending order, over the innermost run's set bits
 

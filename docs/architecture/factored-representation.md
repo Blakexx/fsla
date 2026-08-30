@@ -24,7 +24,8 @@ per-digit quantity:
 
 ```
 W[t,s] = g_write[t] · Π_l  p_write[l][t, d_l(s)]
-R[t,s] = g_read[t]  · Π_l  p_read [l][t, d_l(s)]
+R[t,s] =              Π_l  p_read [l][t, d_l(s)]   # no read-side gain: the ratio
+                                                     # readout fixes it to 1
 rate[s] =             Π_l  delta_l[d_l(s)]
 ```
 

@@ -384,8 +384,8 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     y_ref = None
     for step in (first, second):
         y_ref, ref_state = naive_rola(
-            step["v"], step["read"], step["write"], None, step["g_write"],
-            _topology(widths), None, "global",
+            step["v"], step["read"], step["write"], step["g_write"],
+            _topology(widths), None,
             initial_state=ref_state, output_final_state=True)
     state = to_canonical(arena.materialize(), widths, config.lattice_k,
                          config.lattice_m).view(2, 3, config.N, _COLS)
@@ -442,8 +442,8 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
     y_ref = None
     for step in (first, second):
         y_ref, ref_state = naive_rola(
-            step["v"], step["read"], step["write"], None, step["g_write"],
-            _topology(widths), None, "global",
+            step["v"], step["read"], step["write"], step["g_write"],
+            _topology(widths), None,
             initial_state=ref_state, output_final_state=True)
     state = to_canonical(pooled.materialize(), widths, config.lattice_k,
                          config.lattice_m).view(2, 3, config.N, _COLS)

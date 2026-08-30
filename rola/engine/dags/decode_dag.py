@@ -95,11 +95,11 @@ def backing(f):
 
 
 @node(gives=("state_plane",),
-      needs=("v", "geometry", "routes", "decay", "carried_plane", "page_table"),
+      needs=("v", "geometry", "decay", "carried_plane", "page_table"),
       masks=_DECODE, capturable=True)
 def state_plane(f):
     """The plane the kernel indexes, and the per-step agreement checks that find it."""
-    return bodies.step_plane(f["v"], f["geometry"], f["routes"].g_read, f["decay"],
+    return bodies.step_plane(f["v"], f["geometry"], f["decay"],
                              f["carried_plane"], f["page_table"])
 
 
@@ -191,7 +191,7 @@ def validate_context(ctx: DecodeContext) -> None:
     if ctx.routes.tokens != 1:
         raise ValueError(
             f"the decode op consumes exactly one token, got T={ctx.routes.tokens}")
-    bodies.guard_no_grad((ctx.v, ctx.routes.g_read, ctx.routes.g_write,
+    bodies.guard_no_grad((ctx.v, ctx.routes.g_write,
                           *ctx.routes.read, *ctx.routes.write,
                           *(ctx.decay.dials if ctx.decay is not None else ())))
 

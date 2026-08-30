@@ -98,8 +98,8 @@ def oracle(read_bf, write_bf, g_bf, v_bf, state_in=None, widths=WIDTHS):
                                  write=SoftmaxActivation())
     topo = Topology(levels=tuple(routing.at(w) for w in widths))
     return naive_rola(v_bf.double(), tuple(x.double() for x in read_bf),
-                      tuple(x.double() for x in write_bf), None, g_bf.double(), topo, None,
-                      "global", initial_state=state_in, output_final_state=True)
+                      tuple(x.double() for x in write_bf), g_bf.double(), topo, None,
+                      initial_state=state_in, output_final_state=True)
 
 
 def readout(num, den, T, d_v=64):

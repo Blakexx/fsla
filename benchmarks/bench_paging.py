@@ -50,7 +50,7 @@ plane is `PageArena.plan_exact` over the kernel's OWN exact atom bitmap
 
 Vocabulary: `N` = leaf count = `prod_l width_l`; `BC` = leaves per owner;
 `owners_total` = `N / BC`; `BH` = `batch * heads`; `cols` = `d_v` plus one mass
-column under `state_norm='global'`.
+column (the ratio readout's denominator).
 """
 
 from __future__ import annotations
@@ -85,13 +85,13 @@ def _median_ms(fn, *, reps: int, warmup: int) -> float:
     return statistics.median(samples)
 
 
-def _layer(*, hidden, H, d_v, branches, router, norm, decay, dense_pin=False, seed=0):
+def _layer(*, hidden, H, d_v, branches, router, decay, dense_pin=False, seed=0):
     from rola import LearnedDecay
 
     template = union_routing(1, 1.5) if router == "entmax" else dense_routing(1)
     torch.manual_seed(seed)
     levels = [template.at(w) for w in branches]
-    routes = RouteProducer(levels, hidden_size=hidden, num_heads=H, normalization=norm)
+    routes = RouteProducer(levels, hidden_size=hidden, num_heads=H)
     decay_source = LearnedDecay(widths=routes.widths, num_heads=H) if decay else None
     layer = RoLA(
         routes, d_v=d_v, decay=decay_source, layer_idx=0,
@@ -102,11 +102,11 @@ def _layer(*, hidden, H, d_v, branches, router, norm, decay, dense_pin=False, se
     return layer
 
 
-def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay,
+def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, decay,
                       reps, warmup) -> dict:
     hidden = H * d_v
     layer = _layer(hidden=hidden, H=H, d_v=d_v, branches=branches, router=router,
-                   norm=norm, decay=decay)
+                   decay=decay)
     if logit_gain != 1.0:
         with torch.no_grad():
             layer.routes.route_W.mul_(logit_gain)
@@ -166,7 +166,7 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
 
     paged_ms = _median_ms(step(layer, paged_state), reps=reps, warmup=warmup)
     unpaged = _layer(hidden=hidden, H=H, d_v=d_v, branches=branches, router=router,
-                     norm=norm, decay=decay, dense_pin=True)
+                     decay=decay, dense_pin=True)
     # `load_state_dict` carries the scaled `route_W` across, so both cells route
     # identically and the timing difference is the BACKING and nothing else.
     unpaged.load_state_dict(layer.state_dict())
@@ -184,7 +184,7 @@ def measure_residency(*, B, L, H, d_v, branches, router, logit_gain, norm, decay
     #: a single mapping and saves NOTHING, so `dense_MiB` is printed beside every fraction
     #: rather than left implicit (docs/internals/paging/paging.md#granule).
     return {
-        "router": router, "logit_gain": logit_gain, "norm": norm,
+        "router": router, "logit_gain": logit_gain, "norm": "global",
         "decay": "leaf_mass" if decay else "none",
         #: `BC` is the ARM's, and the arm is a manifest fact: the layer carries no
         #: owner-block pin any more (the `state_block` retirement).
@@ -232,12 +232,12 @@ def main() -> None:
 
     branches = [int(s) for s in args.branches.split(",")]
     #: TWO DEAD ARMS RETIRED, both older than this benchmark's repoint and both of
-    #: which raised on their first cell: `normalization="raw"` and a decay-configured
-    #: layer, which the chunk arm refuses (the decay retirement).
+    #: which raised on their first cell: raw normalization (host axis deleted, G4) and
+    #: a decay-configured layer, which the chunk arm refuses (the decay retirement).
     rows = [measure_residency(
         B=args.batch, L=args.seq_len, H=args.heads, d_v=args.head_v_dim,
         branches=branches, router=args.router, logit_gain=args.logit_gain,
-        norm="global", decay=False, reps=args.reps, warmup=args.warmup)]
+        decay=False, reps=args.reps, warmup=args.warmup)]
 
     head = rows[0]
     print(f"\n=== page commitment — branches={head['branches']} "

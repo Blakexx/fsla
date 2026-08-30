@@ -114,7 +114,7 @@ def test_the_oracle_recurrence_is_flas_naive_gla_under_a_renaming(widths, decay_
         decay = LeafMassDecay(dials=tuple(
             torch.rand(H, w, generator=g, dtype=torch.float64) * 0.3 + 0.1 for w in widths))
 
-    y, state = naive_rola(v, read, write, None, g_write, topology, decay, "global",
+    y, state = naive_rola(v, read, write, g_write, topology, decay,
                           output_final_state=True)
 
     #: The renaming, built from the same inputs by the same rules the oracle uses

@@ -39,7 +39,7 @@ import torch
 
 from rola.ops._oracle_contract import initial_cache, validate_inputs, validate_simplex
 from rola.ops.constants import READOUT_EPS
-from rola.routing.types import DecayConfig, Topology, validate_normalization
+from rola.routing.types import DecayConfig, Topology
 
 
 def _leaf_capacity(widths: tuple[int, ...]) -> int:
@@ -111,11 +111,9 @@ def naive_rola(
     v: torch.Tensor,
     read_levels: tuple[torch.Tensor, ...],
     write_levels: tuple[torch.Tensor, ...],
-    g_read: torch.Tensor | None,
     g_write: torch.Tensor,
     topology: Topology,
     decay: DecayConfig,
-    normalization: str,
     *,
     eps: float = READOUT_EPS,
     initial_state: torch.Tensor | None = None,
@@ -126,9 +124,9 @@ def naive_rola(
     There is no ``q``, no ``k``, and no feature map anywhere in this function.
     Inputs are per-level per-side routing allocations (already normalized
     simplices, one tensor per level, shape ``[B,T,H,width_l]``), the positive
-    write-side gain (``g_write``, shape ``[B,T,H]``; ``g_read`` must be ``None``:
-    the readout is a ratio, which fixes ``g_read := 1`` and production has no
-    read-gain projection to supply one), a ``Topology``, and a ``DecayConfig``
+    write-side gain (``g_write``, shape ``[B,T,H]``; there is no read-side gain
+    at all -- the readout is a ratio, which fixes it to 1 identically and
+    production has no read-gain projection), a ``Topology``, and a ``DecayConfig``
     (``None`` or ``LeafMassDecay``).
 
     ``write_levels`` feeds the deposit ``W`` and trains normally, AND is what the
@@ -153,10 +151,9 @@ def naive_rola(
     is autograd's ordinary answer and this function states nothing else. A test that
     wants a zero asserts ``grad is None`` and supplies the zero itself.
     """
-    validate_normalization(normalization)
     write_levels = tuple(write_levels)
     B, T, H, d_v = validate_inputs(
-        v, read_levels, write_levels, g_read, g_write, topology, decay
+        v, read_levels, write_levels, g_write, topology, decay
     )
     #: DERIVED HERE, not read off `topology`. The oracle's address map is its own
     #: (see `_radix_strides`); `topology` supplies the SHAPE (`widths`), which is
@@ -179,7 +176,7 @@ def naive_rola(
         (v64, torch.ones((B, T, H, 1), device=v.device, dtype=torch.float64)), dim=-1)
 
     #: The read and write allocations, materialized per leaf. `[B,T,H,N]`. The
-    #: readout is a ratio, which fixes `g_read := 1`, so the read side carries none.
+    #: readout is a ratio, so the read side carries no gain column at all.
     R = _leaf_product(read64, strides, N)
     W = g_write64[..., None] * _leaf_product(write64, strides, N)
 

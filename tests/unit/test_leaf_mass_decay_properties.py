@@ -121,7 +121,7 @@ def test_write_conditioned_quiescence_state_bit_identical_across_write_free_inte
         _, final_state = naive_rola(
             v[:, :prefix], (read_levels[0][:, :prefix], read_levels[1][:, :prefix]),
             (write_levels[0][:, :prefix], write_levels[1][:, :prefix]),
-            None, g_write[:, :prefix], topology, decay, "global",
+            g_write[:, :prefix], topology, decay,
             output_final_state=True,
         )
         states.append(final_state[0, 0, 0, :].clone())  # leaf 0's value state
@@ -220,7 +220,7 @@ def test_complete_write_gives_keep_equals_one_minus_rate_exactly():
     g_write = torch.full((B, T, H), g_write_value, dtype=torch.float64)
 
     _, final_state = naive_rola(
-        v, read_levels, write_levels, None, g_write, topology, decay, "global",
+        v, read_levels, write_levels, g_write, topology, decay,
         initial_state=initial_state, output_final_state=True,
     )
     m1 = final_state[0, 0, 0, 0].item()
@@ -259,7 +259,7 @@ def test_zero_rate_gives_keep_equals_one_for_any_c(c_value):
     g_write = torch.ones(B, T, H, dtype=torch.float64)
 
     _, final_state = naive_rola(
-        v, (read_l0,), (write_l0,), None, g_write, topology, decay, "global",
+        v, (read_l0,), (write_l0,), g_write, topology, decay,
         output_final_state=True,
     )
     # With keep==1 always at digit0 (rate==0 regardless of c), the leaf-0
@@ -326,26 +326,23 @@ def _random_case(seed: int, *, B, T, H, dv, widths):
     read_levels = tuple(simplex(w) for w in widths)
     write_levels = tuple(simplex(w) for w in widths)
     v = torch.randn(B, T, H, dv, generator=gen, dtype=torch.float64)
-    g_read = torch.rand(B, T, H, generator=gen, dtype=torch.float64) + 0.5
     g_write = torch.rand(B, T, H, generator=gen, dtype=torch.float64) + 0.5
     dials = tuple(
         (torch.rand(H, w, generator=gen, dtype=torch.float64) * 0.9) for w in widths
     )
     decay = LeafMassDecay(dials=dials)
-    return topology, read_levels, write_levels, v, g_read, g_write, decay
+    return topology, read_levels, write_levels, v, g_write, decay
 
 
-@pytest.mark.parametrize("normalization", ["global"])
 @pytest.mark.parametrize("split_point", [1, 2, 4, 6])
-def test_split_then_continue_reproduces_unsplit_result_exactly(normalization, split_point):
+def test_split_then_continue_reproduces_unsplit_result_exactly(split_point):
     B, T, H, dv, widths = 2, 7, 2, 3, (3, 4)
-    topology, read_levels, write_levels, v, g_read, g_write, decay = _random_case(
+    topology, read_levels, write_levels, v, g_write, decay = _random_case(
         seed=42, B=B, T=T, H=H, dv=dv, widths=widths
     )
-    g_read_arg = None if normalization == "global" else g_read
 
     y_full, state_full = naive_rola(
-        v, read_levels, write_levels, g_read_arg, g_write, topology, decay, normalization,
+        v, read_levels, write_levels, g_write, topology, decay,
         output_final_state=True,
     )
 
@@ -354,24 +351,22 @@ def test_split_then_continue_reproduces_unsplit_result_exactly(normalization, sp
 
     y1, state1 = naive_rola(
         v[:, :split_point], _slice(read_levels, 0, split_point), _slice(write_levels, 0, split_point),
-        None if normalization == "global" else g_read[:, :split_point],
-        g_write[:, :split_point], topology, decay, normalization,
+        g_write[:, :split_point], topology, decay,
         output_final_state=True,
     )
     y2, state2 = naive_rola(
         v[:, split_point:], _slice(read_levels, split_point, T), _slice(write_levels, split_point, T),
-        None if normalization == "global" else g_read[:, split_point:],
-        g_write[:, split_point:], topology, decay, normalization,
+        g_write[:, split_point:], topology, decay,
         initial_state=state1, output_final_state=True,
     )
 
     y_chunked = torch.cat([y1, y2], dim=1)
     assert torch.equal(y_full, y_chunked), (
-        f"chunked output diverges from unsplit at split_point={split_point}, norm={normalization}: "
+        f"chunked output diverges from unsplit at split_point={split_point}: "
         f"max abs diff {(y_full - y_chunked).abs().max().item()}"
     )
     assert torch.equal(state_full, state2), (
-        f"chunked final state diverges from unsplit at split_point={split_point}, norm={normalization}: "
+        f"chunked final state diverges from unsplit at split_point={split_point}: "
         f"max abs diff {(state_full - state2).abs().max().item()}"
     )
 

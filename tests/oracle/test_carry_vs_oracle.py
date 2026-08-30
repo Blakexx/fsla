@@ -339,7 +339,7 @@ def test_m2_decomposition_is_exact():
     routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
     topo = Topology(levels=tuple(routing.at(w) for w in widths))
-    y, _ = naive_rola(v, read, write, None, g, topo, None, "global",
+    y, _ = naive_rola(v, read, write, g, topo, None,
                       output_final_state=False)
     mine = tot[0] / (tot[1][..., None] + READOUT_EPS)
     assert relative(mine, y) < 1e-10

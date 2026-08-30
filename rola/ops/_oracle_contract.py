@@ -56,7 +56,6 @@ def validate_inputs(
     v: torch.Tensor,
     read_levels: tuple[torch.Tensor, ...],
     write_levels: tuple[torch.Tensor, ...],
-    g_read: torch.Tensor | None,
     g_write: torch.Tensor,
     topology: Topology,
     decay: DecayConfig,
@@ -82,12 +81,6 @@ def validate_inputs(
         raise ValueError(f"g_write must have shape [B,T,H]={(B, T, H)}, got {tuple(g_write.shape)}")
     if torch.any(g_write <= 0):
         raise ValueError("g_write must be strictly positive: g_write[t] > 0")
-    if g_read is not None:
-        raise ValueError(
-            "normalization='global' fixes g_read := 1; production has no "
-            "read-gain projection in global cells, so a supplied g_read would be silently "
-            "ignored -- pass g_read=None"
-        )
     if decay is not None:
         if not isinstance(decay, LeafMassDecay):
             raise TypeError(f"decay must be None or LeafMassDecay, got {type(decay).__name__}")

@@ -5,8 +5,8 @@ resident scale with the atoms its routing REALIZES, instead of with the ``N`` it
 topology PROVISIONS.
 
 Vocabulary, defined here and used unqualified: ``N`` = leaf count; ``BC`` = leaves per
-owner block (the owner rectangle); ``cols`` = ``d_v`` plus one mass column under
-``normalization='global'``; ``BH`` = ``batch * heads``; ``MMA_K_QUANTUM = 16``;
+owner block (the owner rectangle); ``cols`` = ``d_v`` plus one mass column (the ratio
+readout's denominator); ``BH`` = ``batch * heads``; ``MMA_K_QUANTUM = 16``;
 **atom** = one ``MMA_K_QUANTUM``-leaf block in canonical leaf order;
 ``QPO = BC / MMA_K_QUANTUM`` = atoms per owner.
 

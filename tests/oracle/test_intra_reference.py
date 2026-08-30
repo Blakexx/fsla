@@ -43,7 +43,7 @@ def _oracle(pread, pwrite, gwrite, v_bh, levels, heads):
 
     v = v_bh.view(batch, heads, length, v_bh.shape[-1]).permute(0, 2, 1, 3).contiguous()
     g = gwrite.view(batch, heads, length).permute(0, 2, 1).contiguous()
-    y, _ = naive_rola(v, split(pread), split(pwrite), None, g, topology, None, "global")
+    y, _ = naive_rola(v, split(pread), split(pwrite), g, topology, None)
     return y
 
 
