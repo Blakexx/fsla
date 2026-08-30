@@ -99,17 +99,8 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
   2026-08-29): the tip's .so stayed pre-merge while the Python moved on; assert_fresh_binary did not
   fire. Python-only stages: the worktree still needs the built .so (copy the tip's, then
   assert_fresh_binary); a pointer venv without it = rola._C ImportError = CPU-only battery = not a gate.
-- EVERY COMPILE RUNS UNDER THE SLOT BUDGET (incident 2026-08-29: an agent pegged the CPU for 10 min and
-  the host had to be restarted): single-TU census compiles, clang-tidy device runs and iteration builds
-  take tools/build/build_lock.py's slots exactly like setup.py's gate build; never `xargs -P`/`&` a fan-out
-  of nvcc/clang/cicc; never more than the budget's slots in flight from one agent.
-- THE SANITIZER IS EXCLUSIVE (incident 2, 2026-08-29): compute-sanitizer runs never overlap a compile —
-  tools/sanitize_oracle.py holds the build lock exclusively and runs niced; one tool, one family at a
-  time; run it only after the gate build's exit marker. 6 families × 3 tools is 18 instrumented launches.
-- THE SANITIZER RUNS ON THE GATE BINARY, ALWAYS (a sanitizer on a different binary is the wrong-binary
-  trap). Its host cost on this machine is UNMEASURED (incident 2026-08-29: it pegged the host on its own);
-  G2c measures one family/tool pair (time, peak RSS, load). Until then: exclusive build lock + nice, one
-  tool and one family at a time; any change to what or how it instruments is a design point for Blake.
-- A RUNAWAY SANITIZER DIES, NEVER FREEZES THE HOST: sanitize_oracle.py runs each tool under a hard
-  RLIMIT_AS cap (~8 GB) and reports per-tool peak RSS; racecheck's hazard records are the suspect when
-  host memory vanishes.
+- HOST INCIDENTS (2026-08-29, CPU pegged / host memory exhausted during a stage's gates): the ROOT CAUSE IS
+  UNMEASURED. No tooling change or rule is declared from it until a measurement confirms the cause
+  (G2c measures racecheck / synccheck / initcheck separately on the gate binary: wall time, peak RSS,
+  load) and Blake decides. Until then: run the sanitizer only when nothing else is in flight, one tool
+  at a time, and watch the host.
