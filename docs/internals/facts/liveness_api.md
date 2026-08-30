@@ -35,8 +35,11 @@ of every kernel entry signature.
 `build_plan` states them all before a launch exists (KERNEL_STANDARDS §18: a seam
 refuses rather than guesses):
 
-* the depth is one to four levels, and each width is one to 256 — the block's fixed
-  extents, so a topology outside them is refused rather than silently truncated;
+* the depth is one to four levels, and **each width is a power of two at or above 16**
+  (the descriptor's law, R13) and at most 256 — the pass reads eight digits per lane in
+  one transaction, and that law is exactly what makes every level's width and row base a
+  whole number of those groups. A narrower or non-power-of-two level is refused BY NAME
+  rather than served by a second, scalar path: there is no fallback in this family;
 * `L ≥ 1`;
 * each side's dense bitmask names only levels inside the depth;
 * each side's digit mask is exactly `mask_words(rows)` words — a short mask would read

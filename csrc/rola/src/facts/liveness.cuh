@@ -18,6 +18,10 @@ namespace rola::facts {
 constexpr int kLivenessWarps = 4;
 constexpr int kLivenessThreads = kTokBits * kLivenessWarps;
 
+//: EIGHT DIGITS PER LANE PER LOAD: one sixteen-byte transaction, which every lawful
+//: level's width and row base are aligned to. -- see docs/internals/facts/liveness.md#the-read
+constexpr int kVecDigits = 8;
+
 //: The digit mask's widest form: four levels of the widest branch, packed.
 constexpr int kMaxDigits = kMaxLevels * 256;
 constexpr int kMaxMaskWords = kMaxDigits / 32;
@@ -65,10 +69,16 @@ __global__ __launch_bounds__(kLivenessThreads) void liveness_pass(
             rows[(long)row * plan.words] = digit_in_mask(statics.digit_mask, row) ? alive : 0u;
       } else {
 #pragma unroll 1
-        for (int digit = 0; digit < width; ++digit, ++row) {
-          const bool live = amplitude_live(column[row]);
-          const uint32_t vote = __ballot_sync(0xffffffffu, real && live);
-          if (lane == 0) rows[(long)row * plan.words] = vote;
+        for (int digit = 0; digit < width; digit += kVecDigits, row += kVecDigits) {
+          const uint4 packed = *reinterpret_cast<const uint4*>(column + row);
+          const uint32_t halves[4] = {packed.x, packed.y, packed.z, packed.w};
+#pragma unroll
+          for (int k = 0; k < kVecDigits; ++k) {
+            const uint32_t half = halves[k >> 1];
+            const uint16_t amplitude = (uint16_t)((k & 1) ? (half >> 16) : half);
+            const uint32_t vote = __ballot_sync(0xffffffffu, real && amplitude_live(amplitude));
+            if (lane == 0) rows[(long)(row + k) * plan.words] = vote;
+          }
         }
       }
     }

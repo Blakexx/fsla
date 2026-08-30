@@ -29,8 +29,12 @@ PassPlan build_plan(const std::vector<int64_t>& widths, int L, int64_t dense_rea
   plan.rows = 0;
   for (int level = 0; level < D; ++level) {
     const int64_t width = widths[level];
-    TORCH_CHECK(width >= 1 && width <= 256, "level ", level, "'s branch width is one to 256, got ",
-                width);
+    TORCH_CHECK(width >= 16 && width <= 256 && (width & (width - 1)) == 0, "level ", level, " is ",
+                width,
+                " digits wide. B_l is a POWER OF TWO AT OR ABOVE 16 -- the state's format "
+                "descriptor's law (KERNEL_STANDARDS R13), which is what makes every level's "
+                "width and row base a whole number of the eight-digit groups the pass reads "
+                "per lane. There is no narrow path and no padding here.");
     plan.B[level] = (int)width;
     plan.rows += (int)width;
   }

@@ -41,18 +41,33 @@ masked out of the ballot by `real`, so the tail word's high bits are zero by
 construction and a fold may OR whole words without masking. A warp whose `w` is past
 `words` returns as a whole lockstep unit before any ballot.
 
-*The read pattern.* Lane `t` reads column `row` of ITS OWN token, so the 32 lanes of one
-ballot are `rows·2` bytes apart. Across the `rows` iterations the warp consumes a whole
-`32 × rows·2 B` tile of the plane and every byte of it exactly once, which is the
-floor: the pass is DRAM-bound on unique bytes, and the scatter is absorbed by L1 within
-the tile. This is the reference pass's pattern unchanged.
+<a id="the-read"></a>
+
+### The read: eight digits per lane per transaction
+
+Lane `t` reads its OWN token's row, so the 32 lanes of one ballot are `rows·2` bytes
+apart — the axis the layout makes minor is tokens, and the axis a lane walks is digits.
+A scalar 2-byte load at that stride touches 32 distinct sectors for 64 useful bytes and
+leans on L1 to recover the other fifteen-sixteenths of each sector across the `rows`
+iterations; measured, L1 does not recover it once `rows` grows, and DRAM traffic runs
+2.5–3.8× the unique bytes.
+
+So a lane loads `kVecDigits = 8` digits — one 16-byte `uint4` — and votes all eight from
+registers. That is one transaction per lane per eight digits instead of eight, and it is
+UNIFORM rather than a fast path with a narrow fallback: `B_l` is a power of two at or
+above 16 by the descriptor's law, so every level's width and every row base is a whole
+number of eight-digit groups, and the pass's seam REFUSES a width that is not
+([`liveness_api.md`](liveness_api.md#the-plan)). There is no remainder loop because
+there is no lawful remainder.
+
+The eight amplitudes are extracted from the four `uint4` members by shift, never through
+a pointer into the loaded value, so the group stays in registers.
 
 *The store pattern.* Consecutive rows are `words` apart, so lane 0's stores are strided
-4-byte writes — the reference's pattern too. The written volume is `rows · L / 8` bytes
-per side, an eighth of the amplitude bytes read, so the pass stays read-dominated even
-with each store paying a sector. Coalescing them would mean staging votes in shared
-memory to gather several token words per store; that is a mechanism this stage did not
-add, and it is recorded here as the one candidate the pass's own ledger points at.
+4-byte writes. The written volume is `rows · L / 8` bytes per side, an eighth of the
+amplitude bytes read, so the pass stays read-dominated. Coalescing them would mean
+staging votes in shared memory to gather several token words per store; that is a
+mechanism this pass does not carry, and it is the one candidate its ledger points at.
 
 <a id="passplan"></a>
 
