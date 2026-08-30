@@ -33,7 +33,7 @@ import re
 import pytest
 import torch
 
-from benchmarks.cells import carry_cells, conservative_activity, liveness_words, realize
+from benchmarks.cells import carry_call, carry_cells, realize
 from rola.ops import carry as carry_ops
 from rola.ops.paging import bytes_equal
 from tests.oracle import reference
@@ -49,21 +49,8 @@ ORACLE_CELLS = carry_cells("oracle")
 IDS = [cell.name for cell in ORACLE_CELLS]
 
 
-def bind(spec, bh=1, device="cuda"):
-    """One cell's whole call: the descriptor, the launch and every operand it takes."""
-    drawn = realize(spec, device=device)
-    desc = spec.descriptor(BH=bh)
-    launch = spec.launch()
-    return drawn, dict(
-        routes=carry_ops.route_planes(drawn.read, drawn.write, drawn.gain),
-        v=drawn.v.permute(0, 2, 1, 3).reshape(bh, spec.tokens, spec.dv).contiguous(),
-        descriptor=desc, geometry=carry_ops.geometry_block(desc, launch),
-        liveness=liveness_words(drawn, desc),
-        activity=conservative_activity(desc, bh, device), launch=launch)
-
-
 def run(spec, state_in=None, state_out=None, page_table=None, bh=1):
-    drawn, call = bind(spec, bh=bh)
+    drawn, call = carry_call(spec, bh=bh)
     routes, v = call.pop("routes"), call.pop("v")
     if state_out is None:
         state_out = carry_ops.state_plane(call["descriptor"], bh)

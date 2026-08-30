@@ -50,6 +50,16 @@ from gpu_lock import gpu_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+@dataclass(frozen=True)
+class Family:
+    """One family's sanitizer row: the cell, the kernel it launches, and whether that
+    kernel is built on this line at all."""
+
+    test: str
+    kernel: str
+    present: bool
+
 #: one cell per family, chosen for being ALREADY a named, gated test -- this script
 #: adds no new cell, it reruns an existing one under the sanitizer. `-k` narrows to
 #: exactly one parametrization so each (family, tool) pair is one launch, not a
@@ -57,32 +67,59 @@ ROOT = Path(__file__).resolve().parents[1]
 #:
 #: THE CARRY SHIPS TWO BODIES AND THE LANE WAS COVERING ONE (K35 F1).  Every cell in
 #: the carry's oracle file declared `level_modes = 0` until F1, which dispatches the
-#: CHANNEL-SPLIT body -- so "carry racecheck CLEAN" was a statement about the body with
-#: no exchange, no panel ring, no shared write list and no carved barriers.  The carved
-#: body is where every shared-memory publish/consume protocol in this family lives, so
-#: it gets its own family row rather than replacing the split one: both bodies run.
+#: THE FAMILIES, RE-KEYED TO WHAT THIS LINE CARRIES. Each row names one already-gated
+#: cell -- this script adds no cell of its own, it reruns an existing one under the
+#: sanitizer -- and states whether the family's kernel EXISTS.
 #:
-#: THE FACTS PASS' TWO BITMAP KERNELS GET THEIR OWN ROWS (K48).  Their shared liveness
-#: flag is written by one lane and read by all of them, which is a shared-memory
-#: publish/consume protocol like any other; it reached the lane only incidentally, as a
-#: record inside the carry cell's report, because the carry op launches the facts pass.
-#: A kernel whose hazards are only ever seen through another family's cell has no gate.
-_FAMILY_TESTS = {
-    "carry": "tests/oracle/test_carry_vs_oracle.py::test_m3_two_sided_alt_small",
-    "carry_carved": "tests/oracle/test_carry_vs_oracle.py::test_f1_carved_alt_small",
-    "facts_atom": "tests/oracle/test_atom_bitmap.py::test_atom_bitmap_is_exact[d2b16-mixed]",
-    "facts_block":
-        "tests/oracle/test_block_bitmap.py::test_read_and_write_bits_are_exact[d2b16bc64-mixed]",
-    #: THE INTRA CELL MUST LAUNCH THE INTRA KERNEL, AND ITS ORACLE MUST FIT THE TOOL
-    #: (G2c). The non-vacuity test named here before runs `carry_inter` ALONE -- that is
-    #: its whole point -- so the pair had no intra launch to inspect and reported ZERO
-    #: hazards, VACUOUS by this script's own rule. The flagship prefill cell launches it
-    #: but its fp64 reference is a `T = 2048`, `N = 65,536` python recurrence that times
-    #: out UNDER the sanitizer; the DEEP-3 cell is the same combined operator at `N = 4096`.
-    "intra": ("tests/oracle/test_prefill_vs_oracle.py::"
-              "test_deep_prefill_matches_the_fp64_oracle[alt-d3]"),
-    "decode": "tests/oracle/test_decode_vs_oracle.py::test_g1_is_byte_reproducible_against_itself",
+#: AN ABSENT FAMILY IS REPORTED, NEVER RUN AND NEVER CLEAN. The carry family's kernels
+#: were cleared at C0 (`development/queue/C_CLEAN_SLATE.md`) and C3 builds the body: a
+#: sanitizer pair over a cell that refuses at the extension boundary launches nothing,
+#: and a tool that reports no hazards over no launch is the vacuous pass this script
+#: exists to refuse (its own rule, learned when a CLEAN came back from a binary that
+#: did not carry the cell's arm). The declaration is checked in BOTH directions: an
+#: absent family whose cell starts passing fails the run, because the kernel it names
+#: has arrived and the row owes a flip.
+#:
+#: `-k`-free ids: each row names ONE parametrization so a pair is one launch, not a
+#: whole file serialized under the heaviest instrumentation this repo has.
+_FAMILIES = {
+    #: THE LIVENESS PASS is the one bit-exact device fact the whole carry line rests
+    #: on: its own shared-memory reduction, gated against the pure-torch model.
+    "liveness": Family(
+        test="tests/unit/test_liveness_pass.py::"
+             "test_the_kernel_is_the_model_bit_for_bit[dense0-widths2-40]",
+        kernel="rola::facts::liveness_words", present=True),
+    #: THE INTRA KERNEL alone, at the deep topology whose fp64 reference fits inside a
+    #: sanitizer's slowdown; the flagship's `N = 65,536` recurrence does not.
+    "intra": Family(
+        test="tests/oracle/test_intra_kernel.py::"
+             "test_deep_intra_matches_the_fp64_reference[d3-alt-k4]",
+        kernel="rola::intra::intra_forward", present=True),
+    "intra_backward": Family(
+        test="tests/oracle/test_intra_backward.py",
+        kernel="rola::intra::intra_backward", present=True),
+    #: THE DECODE STEP, whose combine carries the declared rendezvous below.
+    "decode": Family(
+        test="tests/oracle/test_decode_vs_oracle.py::"
+             "test_g1_is_byte_reproducible_against_itself[widths0-64]",
+        kernel="rola::decode::rola_decode_forward", present=True),
+    #: THE PRODUCER'S SOLVES: their own block-wide reductions, on the routing path.
+    "entmax": Family(
+        test="tests/oracle/test_entmax_cuda_gates.py::"
+             "test_teeth_B_values_reject_beyond_tolerance[1.5]",
+        kernel="rola::entmax::union_forward", present=True),
+    #: ABSENT: the carry forward and its reverse pass. The cells exist and are red at
+    #: the extension boundary; the coverage is owed by the stages that build the bodies.
+    "carry": Family(
+        test="tests/oracle/test_carry_vs_oracle.py::"
+             "test_the_inter_term_is_the_fp64_reference[flagship-alt-k4]",
+        kernel="rola::carry::carry_forward", present=False),
+    "carry_backward": Family(
+        test="tests/oracle/test_carry_backward_vs_reference.py::test_every_cotangent_matches_the_reference",
+        kernel="rola::carry::carry_backward", present=False),
 }
+
+_FAMILY_TESTS = {name: row.test for name, row in _FAMILIES.items()}
 
 #: memcheck is NOT re-run here: it already ran (ad hoc) on paging and is recorded
 #: in FINDINGS; the K39 card's own text is "memcheck already runs on paging" --
@@ -270,6 +307,24 @@ def run_one(python: str, family: str, tool: str, timeout: int) -> tuple[bool, st
     return ok, tail
 
 
+def run_absent(python: str, family: str, tool: str, timeout: int) -> tuple[bool, str]:
+    """An absent family's cell must still FAIL -- otherwise the kernel has arrived.
+
+    The pair is not run under the sanitizer (there is nothing to instrument); what runs
+    is the cell itself, and the declaration holds only while it is red. A pass here is a
+    failure of THIS script: the row says `present=False` and the tree disagrees.
+    """
+    row = _FAMILIES[family]
+    proc = subprocess.run([python, "-m", "pytest", row.test, "-x", "-q"],
+                          cwd=str(ROOT), capture_output=True, text=True, timeout=timeout)
+    out = proc.stdout + proc.stderr
+    if re.search(r"\b[1-9]\d* passed", out):
+        return False, (f"{row.kernel} is declared ABSENT but {row.test} PASSES -- the "
+                       f"kernel is built, so this row owes `present=True` and the pair "
+                       f"owes a real sanitizer run.\n" + "\n".join(out.splitlines()[-20:]))
+    return True, out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tool", action="append", choices=_TOOLS, default=None)
@@ -281,7 +336,8 @@ def main() -> int:
     tools = args.tool or list(_TOOLS)
     families = args.family or list(_FAMILY_TESTS)
 
-    failures = []
+    failures: list = []
+    absent: list = []
     #: LOCKS brief, 2026-08-29: a sanitizer run is CORRECTNESS work on the GPU
     #: (`mode="shared"`, item 2) AND draws K=2 of the host-compute budget
     #: (item 1) -- `compute-sanitizer` itself is CPU-heavy (instrumenting every
@@ -293,7 +349,19 @@ def main() -> int:
                 if reason is not None:
                     print(f"SKIP {family}/{tool}: {reason}")
                     continue
-                print(f"RUN  {family}/{tool} ({_FAMILY_TESTS[family]}) ...", flush=True)
+                row = _FAMILIES[family]
+                if not row.present:
+                    ok, tail = run_absent(args.python, family, tool, args.timeout)
+                    print(f"{'ABSENT' if ok else 'FAIL'} {family}/{tool}: "
+                          f"{row.kernel} has no implementation on this line -- coverage "
+                          f"owed by the stage that builds it")
+                    if not ok:
+                        print(tail)
+                        failures.append((family, tool))
+                    else:
+                        absent.append((family, tool))
+                    continue
+                print(f"RUN  {family}/{tool} ({row.test}) ...", flush=True)
                 ok, tail = run_one(args.python, family, tool, args.timeout)
                 declared = (family, tool) in ASSERTED
                 status = ("DECLARED" if declared else "CLEAN") if ok else "FAIL"
@@ -303,10 +371,14 @@ def main() -> int:
                 if not ok:
                     failures.append((family, tool))
 
+    if absent:
+        print(f"\n{len(absent)} pair(s) ABSENT (the kernel is not built on this line, "
+              f"so the coverage is owed, not held): {absent}")
     if failures:
         print(f"\n{len(failures)} sanitizer failure(s): {failures}")
         return 1
-    print("\nall requested (family, tool) pairs CLEAN")
+    live = len(tools) * len([f for f in families if _FAMILIES[f].present]) - len(failures)
+    print(f"\n{live} LIVE (family, tool) pair(s) CLEAN")
     return 0
 
 

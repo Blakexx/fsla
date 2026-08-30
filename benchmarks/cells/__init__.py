@@ -245,6 +245,33 @@ def liveness_words(realized: RealizedCell, descriptor):
     return LivenessWords(words=lv.liveness_words(read, write, layout, statics, statics))
 
 
+def carry_call(spec: CellSpec, bh: int = 1, device: str = "cuda"):
+    """``(drawn, kwargs)`` -- one cell's WHOLE carry call, built once from its record.
+
+    The kwargs are exactly `rola.ops.carry.carry_forward`'s keyword operands, plus the
+    two positional ones under ``routes`` and ``v``; the state planes and the page table
+    are the CALLER's, because which backing a cell binds is what a caller varies.
+
+    THIS IS THE ONE BINDING. The oracle tier, the benches and `tools/probe_cells.py`
+    all reach the kernel through it, so a cell's operands are the same tensors in a
+    correctness run and in a measured one -- a bench that packed its own would be
+    measuring a second definition of the cell.
+    """
+    from rola.ops import carry as carry_ops
+
+    drawn = realize(spec, device=device)
+    descriptor = spec.descriptor(BH=bh)
+    launch = spec.launch()
+    return drawn, dict(
+        routes=carry_ops.route_planes(drawn.read, drawn.write, drawn.gain),
+        v=drawn.v.permute(0, 2, 1, 3).reshape(bh, spec.tokens, spec.dv).contiguous(),
+        descriptor=descriptor,
+        geometry=carry_ops.geometry_block(descriptor, launch),
+        liveness=liveness_words(drawn, descriptor),
+        activity=conservative_activity(descriptor, bh, device),
+        launch=launch)
+
+
 def conservative_activity(descriptor, BH: int = 1, device: str = "cuda"):
     """Every page READ and WRITTEN -- the truth a caller with no facts pass may state.
 
@@ -269,6 +296,7 @@ __all__ = [
     "CellSpec",
     "RealizedCell",
     "by_name",
+    "carry_call",
     "carry_cells",
     "clustered",
     "conservative_activity",
