@@ -32,6 +32,7 @@ clean yet prints its findings, exits 0, and says here what it is waiting for.
 | `drift_guards.py` | 11 over 11 rules | five `torch.equal` storage claims and two structure findings in the decode family's own files, plus four test-local arm tables. Sized below |
 | `work_codes.py` | 611 | the documentation sweep. `csrc/`, `rola/`, `tools/`, `tests/` and `benchmarks/` are clean; what remains is prose, most of it in the two documents whose subject IS the campaign's history |
 | `r9_enforcement.py` | 1 | `decode_lattice.cuh`'s `switch (kind)` folds its fourth case into a bare default. The fix is a `uniform_switch` and it belongs to the decode family's own stage |
+| `constant_parameters.py` | 144 | a ruling per finding. A knob that only ever takes one value is a constant, and the ruling that made it a rule came from a parameter documented as "stays None" -- the class vulture does not catch, because the name IS used, always with the same value. It over-reports by construction (a positional call site and a caller outside this tree are both invisible), which is why the `reserved:` marker carries a REASON |
 | `run_vulture.sh` | 51 | a ruling per finding. Vulture cannot see cross-module use, so the list mixes genuine dead code with entry points, fixtures and public API; a whitelist entry is earned by a demonstrated dynamic use and never added to silence a real hit |
 
 <a id="drift-guards"></a>
@@ -84,6 +85,7 @@ python3 tools/lint/host_warnings.py --test-fixtures
 python3 tools/lint/unused_instantiations.py --test-fixtures
 python3 tools/lint/readability_spacing.py --test-fixtures
 python3 tools/lint/r9_enforcement.py --test-fixtures
+python3 tools/lint/constant_parameters.py --test-fixtures
 python3 tools/lint/drift_guards.py --test-fixtures
 tools/lint/run_clang_tidy_device.sh --test-fixtures
 tools/lint/run_vulture.sh --test-fixtures      # needs vulture on PATH
@@ -102,6 +104,7 @@ pre-commit run --all-files          # the whole roster, gates and reports togeth
 
 python3 tools/lint/drift_guards.py  # the report-only four, on their own
 python3 tools/lint/work_codes.py
+python3 tools/lint/constant_parameters.py
 python3 tools/lint/r9_enforcement.py
 tools/lint/run_vulture.sh
 ```

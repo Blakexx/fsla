@@ -118,6 +118,12 @@ repos:
         entry: python3 tools/lint/drift_guards.py
         pass_filenames: false
         always_run: true
+      - id: constant-parameters-report
+        name: "[report-only] constant parameters (a knob with one value is a constant)"
+        language: system
+        entry: python3 tools/lint/constant_parameters.py
+        pass_filenames: false
+        always_run: true
       - id: work-codes-report
         name: "[report-only] campaign work codes (the sweep's remaining inventory)"
         language: system
