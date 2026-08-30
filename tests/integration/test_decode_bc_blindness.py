@@ -64,7 +64,7 @@ def test_no_field_of_the_frozen_carrier_names_bc():
         f"DecodeGeometry has acquired a BC-shaped field: {sorted(names)}")
 
 
-@pytest.mark.parametrize("widths", [(64, 64), (16, 16, 16), (8, 8, 8, 8)])
+@pytest.mark.parametrize("widths", [(64, 64), (16, 16, 16), (16, 16, 16, 16)])
 def test_decode_output_is_byte_identical_across_prefill_bc(widths):
     device = "cuda"
     d_v, B, H = 64, 2, 2

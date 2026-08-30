@@ -85,19 +85,23 @@ def _chunk_tokens() -> int:
 #:   (4, 4, 4)     s = (4, 4, 4)             -- the sub-box IS the whole level product
 #:   (3, 5, 7)     k = 1                     -- D = 3 with no admissible span
 #:   (2, 3, 4, 4)  s = (1, 1, 2, 4)          -- D = 4, capacity without a sub-box
-#:   (64, 64)      s = (8, 16)               -- the flagship box, N = 4096
-#:   (16, 16, 16)  s = (2, 4, 16)            -- the deep-3 carry arm's box, atom = ONE level
-#:   (8, 8, 8, 8)  s = (2, 2, 4, 8)          -- the deep-4 carry arm's box, and the one
-#:                                              topology whose atom spans TWO levels, so a
-#:                                              walk unit is two atoms rather than one
+#:   (64, 64)          s = (8, 16)          -- the flagship box, N = 4096
+#:   (16, 16, 16)      s = (2, 4, 16)        -- the deep-3 box, atom = ONE level
+#:   (16, 16, 16, 16)  s = (2, 2, 2, 16)     -- the deep-4 box, N = 65536; atom = ONE level too,
+#:                                              same as the other two rows (K53: below the
+#:                                              width-16 floor the deep-4 box's innermost span
+#:                                              was narrower than the atom and spanned two levels
+#:                                              -- (8, 8, 8, 8) is unlawful now, and moving its
+#:                                              width to the floor also moves this row's span
+#:                                              to exactly the atom)
 #:
 #: The order is positional in the parametrize ids and does not change.
-#: PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29), so decode's cells
-#: are CARRY'S topologies and not a decode-only set: `SMALL`, `DEEP3` and `DEEP4` of
-#: `test_carry_vs_oracle.py`, the three `N = 4096` arms that cover depth two, three and
-#: four. The ragged ones this list used to carry -- (33,), (7, 9), (3, 5, 7), (2, 3, 4, 4)
-#: -- are gone with the ragged state: no descriptor can name them.
-_TOPOLOGIES = [(64, 64), (16, 16, 16), (8, 8, 8, 8)]
+#: PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29; K53): every row here is a
+#: descriptor `StateFormat`/decode's own `_admit` both accept -- depth two, three and four,
+#: each with every level at or above the floor. The ragged ones this list used to carry --
+#: (33,), (7, 9), (3, 5, 7), (2, 3, 4, 4) -- are gone with the ragged state: no descriptor can
+#: name them.
+_TOPOLOGIES = [(64, 64), (16, 16, 16), (16, 16, 16, 16)]
 
 
 def _lattice_mask(mask, config):

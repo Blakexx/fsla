@@ -393,6 +393,10 @@ a header is not, and a header cannot be even where one exists.
 
 ## <a id="level-width-capacity"></a>6. The level-width capacity is a GATE, not a convenience
 
+The CEILING below is the producer's; the FLOOR is `rola.ops.decode._admit` (K53), which
+refuses a `B_l` below the one admission law's floor through `rola._state.StateFormat`,
+the same check prefill's seam runs, before a call reaches this capacity check at all.
+
 `rola/routing/topology.py`'s `MAX_BRANCH_WIDTH = 256` is the widest level the
 PRODUCER will emit. A decode path whose capacity were narrower would accept a
 topology the producer can build and then read past the end of a staged amplitude

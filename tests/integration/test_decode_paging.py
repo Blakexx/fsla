@@ -86,15 +86,14 @@ from tests.oracle.test_decode_vs_oracle import DECODE_RTOL  # noqa: E402
 
 #: `(widths, BC)`. Every leaf count is a whole number of atoms, which is what a paged
 #: keying REQUIRES (`AtomKeying.__post_init__`); the depth axis is what varies, because
-#: the walk's per-word digit decomposition is the part depth reaches.
-#: `(8,8,8)` and `(8,8,8,8)` are the rows where a WALK UNIT is TWO atoms rather
-#: than one -- their innermost span is narrower than an atom, so the reconciliation
-#: runs through the unit-per-atom shift rather than the atom-per-unit one.
+#: the walk's per-word digit decomposition is the part depth reaches. K53: every row is
+#: admission-lawful under the width-16 floor, so a walk unit is exactly one atom in each
+#: (`box_shape`'s innermost span is 16 at every depth here, not narrower).
 _ARMS = (
     ((64, 64), 128),
-    ((8, 8, 8, 8), 128),
+    ((16, 16, 16, 16), 128),
     ((16, 16, 16), 128),
-    ((8, 8, 8, 8), 128),
+    ((16, 16, 16, 16), 128),
 )
 
 #: The fraction of each level's digits the WRITE side is allowed to reach. Residency is a
