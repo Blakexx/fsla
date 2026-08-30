@@ -37,9 +37,10 @@ second definition.
 `T` tokens, `D` routing levels, `B_l` the digit width of level `l`,
 `N = Π_l B_l` the leaf count, `DV` (`d_v`) the value width,
 `cols = DV + 1`, `BH = B·H`, `L` the sequence length of a call, `n` a leaf index,
-`W` the window
-length in tokens, `C` the fan-in ring's depth in rows, `BC` the leaves one owner
-holds, `s(l)` an owner's span at level `l`, `g(l) = B_l / s(l)` the owner grid at
+`W` the window length in tokens, `C` the BATCH TILE — the tokens one fold or readout
+batch carries, which is the token dimension of its matrix multiply and one slot of the
+value ring, so a window's write list of `nw` entries is `ceil(nw / C)` batches —
+`BC` the leaves one owner holds, `s(l)` an owner's span at level `l`, `g(l) = B_l / s(l)` the owner grid at
 that level.
 
 Per token `t` and leaf `n`:
@@ -379,14 +380,27 @@ are inside one window, so those pairs belong to the intra term and would be coun
 twice. The batch line therefore IS the window line, except across windows where the
 owner is side-dead, which is the whole-window-skip harvest.
 
-**The schedule is one ballot word per lane, and it has no barrier.** A window is
-`W/32` ballot words and a lockstep unit has 32 lanes, so each lane holds one word; a
-row costs one 32-bit load per warp, cheaply enough that every warp holds both sides'
-owner-grain ballots and the whole schedule becomes a warp-private computation of
-CTA-identical inputs. The whole-window skip is then a ballot test with no shared word;
-the write list is built balanced at any distribution by each warp taking a fixed slice
-of every word's bits. Staging those rows cooperatively is the obvious economy and is
-REFUSED: it forces a barrier the warps wait at with nothing to overlap.
+**The schedule.** A window is `W/32` ballot words and a lockstep unit has 32 lanes, so
+a lane holds one word and a row costs one 32-bit load per warp — cheap enough that every
+warp can hold the owner-grain ballots of both sides. *In the tree:* each warp walks its
+own bits over those CTA-identical ballot words and consumes the union list, which is the
+`S = 1` point of §4; the whole-window skip is a ballot test needing no shared word, and
+the write list is balanced at any distribution because each warp takes a fixed slice of
+every word's bits. *Ruled, landing with the pipelined body:* the three-part schedule with
+COOPERATIVE staging — the union of live tokens derived ONCE per side per window; a
+cooperative fetch of un-expanded factor rows and value rows, by executor share, into ONE
+shared staging; the expansion memoized in registers; sends from each stream's own ballot
+into private segments; then seal-and-consume. The edge that staging introduces is
+absorbed by the covers and the split-phase edges below, which is why the earlier
+"cooperative staging forces a barrier the warps wait at" is superseded rather than
+weighed again.
+
+**Why the schedule has three parts and not two.** A union over (token, stream) pairs
+collapses the fetch and the sends into one walk and re-fetches every token once per
+stream; separating them fetches each token once per window and pays the per-stream cost
+only on the sends. Consumers are then pure matrix multiply. Ownership of a derivation is
+one warp's or one CTA's, never replicated per warp to dodge a barrier the kernel already
+pays.
 
 **The hybrid transit at the phase change.** The two sides are carved independently, so
 the phase change re-lays the state into the other side's order. The hi plane MOVES: the
@@ -399,30 +413,25 @@ leaf's row at the READER's slot, so the reader pulls a contiguous segment with o
 transposing matrix load; the region is XOR-swizzled and conflict-free. A copy form —
 keeping both planes live — is rejected: the register wall is the binding one.
 
-**Each transit leg is arrive, cover, wait.** Stores, then a non-blocking named-barrier
-arrival, then work that does not depend on the pulled data, then the blocking wait
-immediately before the pull. The cover ABSORBS the wait instead of preceding it — a
-cover issued before the store chain overlaps nothing, which is a defect the sequence
-shows and the stall counters do not.
+**Each transit leg covers itself.** *In the tree:* stores, then work that does not
+depend on the pulled data, then the CTA edge, then the pull. The order is the whole
+mechanism — a cover issued BEFORE the store chain overlaps nothing, which is a defect the
+sequence shows and the stall counters do not. A named barrier does not help here: an
+arrival and a wait executed by the SAME threads are two phases of one barrier rather than
+a split edge, and every warp on this leg is both publisher and puller. *Ruled:* the
+split-phase primitive is the asynchronous barrier — arrive, keep issuing, wait at the use
+— which lets a reader pull a writer's rows as soon as that writer has arrived, at a finer
+grain than the leg.
 
-**The three-part schedule, both sides.** Fetch over TOKENS once per window; per-stream
-SENDS from each stream's own ballot; seal-and-consume. A union over (token, stream)
-pairs collapses the first two and re-fetches the token once per stream, which is the
-whole reason the parts are three. The fetcher expands the routing factors and places
-value rows and fully expanded coefficient rows into the consuming stream's private
-segment; consumers are pure matrix multiply. Ownership of the derivation is one warp's
-or one CTA's, never replicated per warp to dodge a barrier the kernel already pays.
-
-**The fan-in.** A readout contribution is keyed on the token's rank in the CTA's union
-read walk, and lands in a `C`-row shared ring that is a WRITE-BACK CACHE: every
-contribution lands in a ring row, there is no second destination, and a quad whose slot
-does not carry its rank evicts what the slot holds — complete or not — flushes it to
-global with a native reduction, retags and contributes. Eviction is arithmetically
-free because the flush is an addition and a partial sum is a correct partial. Exclusion
-is ONE per-slot lock taken by one lane for its warp row and held across everything that
-touches the row; a failed try is the protocol's only deferral, so nothing in it waits
-and the deadlock question has no interleaving to occur in. The figure of merit is
-128 B segments per reduction instruction, not sector fullness and not instruction count.
+**The fan-in is a native global reduction out of a staged panel.** The readout
+accumulator's fragment is written to a shared panel in TOKEN-ROW layout, and the
+reduction is then issued from the panel, so one warp instruction covers one token's 32
+contiguous channels — one full 128 B segment. Issuing straight from the accumulator
+fragment is fewer instructions and was measured SLOWER: the fragment's layout half-fills
+its sectors. The figure of merit is therefore 128 B segments per reduction instruction,
+not sector fullness and not instruction count. *Ruled target:* produce the same
+token-row layout in REGISTERS with a shuffle transpose and reduce without the shared
+round trip, measured against the panel.
 
 **Registers, and what the body is.** The target is a body that hides its own latency by
 construction: a software pipeline where the next batch's produce is issued while the
@@ -537,7 +546,7 @@ wider-type emulation.
 | operand staging from DRAM | asynchronous copy into shared memory | tensor-memory-accelerator box loads, descriptors built at runtime | same, plus multicast to a cluster |
 | runtime addressing | uniform-datapath registers from the prologue | the same, pairing naturally with runtime descriptors | the same |
 | the transit | shared region, XOR-swizzled, transposing loads | the same region; the exchange can ride distributed shared memory across a cluster | the same |
-| leg edges | named-barrier arrive / wait, split-phase | asynchronous barriers, transaction counts on the completion object | the same |
+| leg edges | a CTA edge with the cover before it; asynchronous barriers (arrive, issue, wait at use) as the split-phase primitive from sm_80 up | the same object, its completion transaction-counted by the copy engine | the same |
 | the fan-in | native global reduction from an aligned layout | the same, vector reduction where the width admits it | the same |
 | the box grain | one CTA per multiprocessor | a two-CTA cluster sharing staging through distributed shared memory | the same |
 | decode's walk and combine | per-warp gathers, arrival-count combine | bulk copies per warp, an asynchronous-barrier arrival | the same |
