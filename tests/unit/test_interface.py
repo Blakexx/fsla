@@ -27,6 +27,7 @@ from rola.interface import operands_of, requires_backward
 
 # --- the predicate -----------------------------------------------------------
 
+
 def test_the_predicate_is_false_whenever_grad_is_globally_off():
     leaf = torch.zeros(2, requires_grad=True)
     assert requires_backward(leaf) is True
@@ -143,8 +144,6 @@ def test_the_refusal_is_the_same_sentence_with_and_without_a_gradient():
         rola.rola_op(routes, v)
     with torch.no_grad(), pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
         rola.rola_op(routes, v)
-
-
 
 
 def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():

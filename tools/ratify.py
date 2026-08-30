@@ -197,6 +197,7 @@ def mold_provenance() -> dict | None:
     except Exception:
         return None
 
+
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
 
@@ -272,6 +273,8 @@ def tu_paths(shards: tuple[str, ...] | None = None, arms=None) -> list[Path]:
         paths = [by_stem[s] for s in sorted(shards)]
         return paths
     return carry_arm_paths(arms) + [SRC / name for name in STANDALONE_TUS]
+
+
 #: The vendored CuTe/CUTLASS headers, in the SAME order `setup.py` passes them
 #: (repository headers first). This gate's whole premise is that it compiles the
 #: shipped translation units under the shipped kernel's flags; an include path the
@@ -364,10 +367,12 @@ def manifest_digest(manifest: dict) -> str:
                        "shards": manifest["shards"]}, sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()
 
+
 ENTRY = re.compile(r"Compiling entry function '([^']+)' for 'sm_(\d+)'")
 SPILL = re.compile(r"(\d+) bytes spill stores, (\d+) bytes spill loads")
 REGS = re.compile(r"Used (\d+) registers")
 OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of range")
+
 
 #: The FACTS kernels' mangled template arguments, in DECLARATION order.  The
 #: union-table pass is templated on the PLAN TYPE, so its key

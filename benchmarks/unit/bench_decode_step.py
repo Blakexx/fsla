@@ -1,6 +1,6 @@
 """UNIT BENCH: one carried single-token decode step.
 
-Invoked BARE (K46: `bench.discipline.disciplined` takes `gpu_lock()` itself):
+Invoked BARE (`bench.discipline.disciplined` takes `gpu_lock()` itself):
 
     python benchmarks/unit/bench_decode_step.py --tier landing
 """

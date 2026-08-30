@@ -39,7 +39,7 @@ jobs:
       - name: ast-grep standards rules (KERNEL_STANDARDS.md, csrc/ only)
         # Pinned to the version validated locally (ast-grep 0.45.2) -- same
         # discipline as clang-format/ruff above: one tool version, everywhere.
-        # `tools/lint/ast_grep_gate.py` (K46 item 5) scopes the scan to csrc/
+        # `tools/lint/ast_grep_gate.py` scopes the scan to csrc/
         # so the rules' own must-fire fixtures under tools/lint/fixtures/
         # never reach this gate.
         run: |
@@ -48,10 +48,29 @@ jobs:
           python3 tools/lint/ast_grep_gate.py
       - name: ast-grep fixture self-test (every rule fires on its own fixture)
         run: python3 tools/lint/ast_grep_gate.py --test-fixtures
-      - name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue)
+      - name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue, the docs mirror, no work codes in a mirror page)
         run: python3 tools/lint/lint_standards.py
+      # THE READABILITY AND DEAD-CODE GATES, mirrored from .pre-commit-config.yaml.
+      # Two of them read a compile database and are therefore the CUDA runner's, not
+      # this one's -- stated here, visibly, rather than skipped inside the script:
+      # `unused_instantiations.py` reads the committed manifests and needs no toolchain,
+      # so it runs; `host_warnings.py` and `run_clang_tidy_device.sh` need `nvcc` to
+      # produce a database at all.
+      - name: unused __global__ instantiation check
+        run: python3 tools/lint/unused_instantiations.py
+      - name: ruff E30x (blank-line spacing, preview)
+        run: tools/lint/run_ruff_e3.sh
+      - name: readability spacing (long zero-blank bodies, csrc blank runs)
+        run: python3 tools/lint/readability_spacing.py
+      - name: drift guards + work codes + R9 enforcement (report-only, printed for the log)
+        run: |
+          python3 tools/lint/drift_guards.py
+          python3 tools/lint/work_codes.py
+          python3 tools/lint/r9_enforcement.py
+      - name: every report-only lint's fixtures still fire
+        run: python3 tools/lint/drift_guards.py --test-fixtures
       - name: clang-tidy (host-only TUs)
-        # K39 (Blake ruling, 2026-08-28): "pre-commit can never be green by
+        # Blake ruling, 2026-08-28: "pre-commit can never be green by
         # absence" -- tools/lint/run_clang_tidy.sh no longer skips; with no
         # compile database to generate one from, it FAILS loudly. THIS job's
         # runner has no CUDA toolchain at all (see the file header), so it
@@ -93,7 +112,7 @@ jobs:
       - name: the README's supported matrix is the derived one
         run: python tools/supported.py --check
       # The shard partition, the README's generated tables and the vendored pin
-      # moved to the `lint` job's lint_standards.py (K46 item 2, RULED 2026-08-29:
+      # moved to the `lint` job's lint_standards.py (RULED 2026-08-29:
       # "a check that does not execute the code under test is a lint, not a test" --
       # docs/testing.md): check_shard_partition, check_supported_table,
       # check_vendored_pin. That job already runs unconditionally on every push/PR

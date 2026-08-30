@@ -65,11 +65,11 @@ NCU_BIN = "/usr/local/cuda/bin/ncu"
 sys.path.insert(0, str(REPO / "benchmarks"))
 sys.path.insert(0, str(REPO))
 
-#: THE STATE ARMS. `fresh` binds one exit plane over a zero entry state -- the
+#: THE STATE SHAPES A CALL CAN BIND. `fresh` binds one exit plane over a zero entry state -- the
 #: like-for-like default. `continuation` passes the SAME plane in and out, which is the
 #: shape a growing sequence actually runs and the one where the entry sweep's loads and
 #: the exit sweep's stores address the same pages.
-STATE_ARMS = ("fresh", "continuation")
+STATE_SHAPES = ("fresh", "continuation")
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--lock", default=GPU_LOCK_DEFAULT)
     ap.add_argument("--ncu", action="store_true")
-    ap.add_argument("--state", choices=STATE_ARMS, default="fresh",
+    ap.add_argument("--state", choices=STATE_SHAPES, default="fresh",
                     help="fresh binds an exit plane over a zero entry state; "
                          "continuation passes the SAME plane in and out")
     ap.add_argument("--out", default=None, help="path for one JSON row per (binary, cell)")

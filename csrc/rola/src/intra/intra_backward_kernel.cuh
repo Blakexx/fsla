@@ -46,17 +46,22 @@ constexpr int64_t kIntraBwdMagic = 31040003;
 
 constexpr int kSeedPitch = kValuePitch;
 constexpr int kChanTiles = kValueWidth / kSlabDigits;
+
 constexpr int warps_of(int window) { return threads_of(window) / 32; }
 
 //: THE REVERSE STAGES HALF AS WIDE AS THE FORWARD. Its block carries the -- see docs/internals/intra/intra_backward_kernel.md#kbwdstagecap
 constexpr int kBwdStageCap = 32;
+
 constexpr int bwd_stage_digits(int width) {
   return level_digits(width) < kBwdStageCap ? level_digits(width) : kBwdStageCap;
 }
+
 constexpr int bwd_slabs_per_stage(int width) { return bwd_stage_digits(width) / kSlabDigits; }
+
 constexpr int bwd_stages_per_level(int width) {
   return level_digits(width) / bwd_stage_digits(width);
 }
+
 constexpr int bwd_operand_pitch(int width) { return bwd_stage_digits(width) + 8; }
 
 //: THE RELAY PLANE, one `[kMmaM x kSlabDigits]` tile per warp: every cotangent -- see docs/internals/intra/intra_backward_kernel.md#kxposerows

@@ -27,25 +27,38 @@ using denseref::ops::stage_wait;
 
 //: THE WINDOW IS AN ARM, so the tile counts it induces are functions of it and -- see docs/internals/intra/intra_kernel.md#tilesof
 constexpr int tiles_of(int window) { return window / kTile; }
+
 //: THE OUTPUT BLOCK IS C = `kTile * row_tiles_of(W)` READER TOKENS. -- see docs/internals/intra/intra_kernel.md#note-l31
 constexpr int row_tiles_of(int window) { return tiles_of(window) >= 2 ? 2 : 1; }
+
 constexpr int rows_of(int window) { return row_tiles_of(window) * kTile; }
+
 //: ONE WARP PER `kWarpRows` OF THE BLOCK: a warp holds the Gram of ONE tile -- see docs/internals/intra/intra_kernel.md#kwarpspertile
 constexpr int threads_of(int window) { return 32 * (rows_of(window) / kWarpRows); }
+
 constexpr int kWarpsPerTile = kTile / kWarpRows;
+
 //: A LEVEL'S STAGED WIDTH is its digit count rounded up to the MMA's -- see docs/internals/intra/intra_kernel.md#kstagecap
 constexpr int level_digits(int width) { return width < kSlabDigits ? kSlabDigits : width; }
+
 constexpr int slabs_per_level(int width) { return level_digits(width) / kSlabDigits; }
+
 constexpr int mask_words(int width) { return (level_digits(width) + 31) / 32; }
+
 //: THE PIPELINE STAGE IS AT MOST AS WIDE AS THE LEVEL. A stage is one cp.async -- see docs/internals/intra/intra_kernel.md#kstagecap-2
 constexpr int kStageCap = 64;
+
 constexpr int stage_digits(int width) {
   return level_digits(width) < kStageCap ? level_digits(width) : kStageCap;
 }
+
 constexpr int slabs_per_stage(int width) { return stage_digits(width) / kSlabDigits; }
+
 constexpr int stages_per_level(int width) { return level_digits(width) / stage_digits(width); }
+
 //: The operand rows are padded so the eight row addresses ldmatrix reads per -- see docs/internals/intra/intra_kernel.md#operandpitch
 constexpr int operand_pitch(int width) { return stage_digits(width) + 8; }
+
 constexpr int kValuePitch = kValueWidth + 8;
 
 //: `sread`/`swrite`: the producer's frozen support word for the plane of the same -- see docs/internals/intra/intra_kernel.md#intraparams

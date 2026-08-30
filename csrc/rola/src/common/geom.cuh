@@ -28,7 +28,9 @@ constexpr int geom_ilog2(int x) {
 
 //: THE ARCH'S PRIMARY CONSTANTS, IN DERIVATION ORDER. -- see docs/internals/common/geom.md#arch-constants
 constexpr int leaves_per_sm(int dv) { return 16384 / dv; }
+
 constexpr int warps_per_sm = 8;
+
 constexpr int leaves_per_warp(int dv) { return leaves_per_sm(dv) / warps_per_sm; }
 
 //: A BALANCED BIT SPLIT over `D` levels, remainder INNERMOST-FIRST.
@@ -57,6 +59,7 @@ constexpr int owner_span_bits(int D, int bc, int l) {
   }
   return b[l];
 }
+
 constexpr int owner_span(int D, int bc, int l) { return 1 << owner_span_bits(D, bc, l); }
 
 //: the owner-local canonical index's bit offset for level `l`.
@@ -142,6 +145,7 @@ constexpr int sb_span_bits(int D, int bc, int ns, int a, int l) {
   const SubBoxSet set = sub_boxes(D, bc, ns);
   return set.bits[a][l];
 }
+
 constexpr int sb_shift_of(int D, int bc, int ns, int a, int l) {
   const SubBoxSet set = sub_boxes(D, bc, ns);
   int sh = 0;
@@ -169,6 +173,7 @@ constexpr int sb_scatter_of(int D, int bc, int ns, int a, int P) {
 //: over the `base ^ scatter(P)` split and every displacement stays an immediate, and it
 //: is a bijection of `[0, BC)`. -- see docs/internals/common/geom.md#row-swizzle
 constexpr int kSwzShift = 2, kSwzMask = 7;
+
 __host__ __device__ constexpr int sb_swizzle(int row) {
   return row ^ ((row >> kSwzShift) & kSwzMask);
 }
@@ -235,6 +240,7 @@ struct CarryGeomRT {
 
 //: THE MODE WORD'S ENCODING, as the seam spells it: two bits per level.
 constexpr uint32_t kSideRead = 1u, kSideWrite = 2u;
+
 constexpr bool mode_declares(uint32_t modes, int l, uint32_t side) {
   return ((modes >> (2 * l)) & side) != 0u;
 }
@@ -266,6 +272,7 @@ inline const char* derive_side(int D, const int* width, const int* span, int bc,
     g.rank[l] = r;
     g.level_at[r] = l;
   }
+
   //: THE SIDE'S OWN CARVE: its order, walked OUTERMOST FIRST.
   int outer[kGeomMaxLevels] = {0, 0, 0, 0}, sub_bits[kGeomMaxLevels] = {0, 0, 0, 0};
   for (int p = 0; p < D; ++p) outer[p] = g.level_at[D - 1 - p];
@@ -336,6 +343,7 @@ inline const char* derive_carry_geom(int D, const int* width, int bc, int dv, ui
   g.D = D;
   g.bc = bc;
   if (leaves_per_warp(dv) < 1) return "the value width admits no leaves per warp";
+
   for (int l = 0; l < D; ++l) {
     g.width[l] = width[l];
     g.span[l] = owner_span(D, bc, l);
@@ -426,6 +434,7 @@ __host__ __device__ inline int geom_canon_acc(const CarryGeomRT& g, int O, int l
     return d * g.weight[L] + geom_canon_acc<D, BC, L + 1>(g, O, local);
   }
 }
+
 template <int D, int BC>
 __host__ __device__ inline int geom_canon_leaf_t(const CarryGeomRT& g, int O, int local) {
   return geom_canon_acc<D, BC, 0>(g, O, local);

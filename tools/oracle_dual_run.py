@@ -99,6 +99,7 @@ def bind_library(root: Path, label: str) -> Path:
     print(f"{label} library: {actual.parent}")
     return actual.parent
 
+
 #: the thresholds, from the measured agreement with one decade of headroom
 #: (workflows/refactor/p07_audit.md section 3.2: worst 1.42e-14 forward, 6.66e-16 VJP).
 #: The SUPPORT-SET claim carries no tolerance at all, by construction.
@@ -223,6 +224,7 @@ def _call(fn, **kwargs):
 
     accepted = inspect.signature(fn).parameters
     return fn(**{k: v for k, v in kwargs.items() if k in accepted})
+
 
 def emit_producer() -> dict:
     """Every producer quantity, from whichever `rola` is importable."""

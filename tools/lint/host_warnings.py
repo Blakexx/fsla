@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HOST warnings dry-compile (LINT2 item 2, G_FOUNDATION G5, REPORT-ONLY until G5).
+"""HOST warnings dry-compile (REPORT-ONLY).
 
 Recompiles every HOST TU (`.cpp` entries in `compile_commands.json`, the same
 scope `tools/lint/run_clang_tidy.sh` names -- currently exactly one,
@@ -75,7 +75,7 @@ def dry_compile(entry: dict) -> tuple[int, str]:
 
 
 def self_test() -> int:
-    """Excluded from the commit gate (K46 convention): the fixture is
+    """Excluded from the commit gate (the fixtures convention): the fixture is
     self-contained C++, no project headers, no compdb needed."""
     fixture = ROOT / "tools" / "lint" / "fixtures" / "host_warnings_unused_param.cpp"
     proc = subprocess.run(["c++", str(fixture), "-fsyntax-only", *HOST_WARNING_FLAGS],
@@ -127,7 +127,11 @@ def main() -> int:
     print(f"host_warnings: {total_on_target} on-target warning(s) in csrc/rola/ across "
           f"{len(entries)} host TU(s); {total_header} in vendored headers "
           f"(torch/pybind11, not this codebase's -- excluded from the on-target count)")
-    return 0
+
+    #: GATING on the ON-TARGET count only. A vendored header's warning is not this
+    #: codebase's to fix and never gates; a warning on our own line is a defect the
+    #: compiler already found.
+    return 1 if total_on_target else 0
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """UNIT BENCH: the entmax solves — the producer's batched multi-level solve.
 
-Invoked BARE (K46: `bench.discipline.disciplined` takes `gpu_lock()` itself):
+Invoked BARE (`bench.discipline.disciplined` takes `gpu_lock()` itself):
 
     python benchmarks/unit/bench_entmax.py --tier landing
 """

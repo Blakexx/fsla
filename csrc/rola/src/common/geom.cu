@@ -56,6 +56,7 @@ std::vector<int64_t> geometry(std::vector<int64_t> widths, int64_t level_modes, 
     o.push_back(s.streams);
     o.push_back(s.assign);
   };
+
   o.push_back(g.D);
   o.push_back(g.bc);
   for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(g.width[l]);
@@ -73,6 +74,7 @@ std::vector<int64_t> geometry(std::vector<int64_t> widths, int64_t level_modes, 
   o.push_back(g.identity_map);
   push_side(g.r);
   push_side(g.w);
+
   //: THE TRANSIT'S ROW MAP, BOTH SIDES, evaluated over the whole box: the model test
   //: asserts each side's map is a bijection of the region and that the two coincide
   //: exactly when `identity_map` says so.

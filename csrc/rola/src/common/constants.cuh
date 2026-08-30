@@ -58,6 +58,7 @@ constexpr bool launch_table_rows_are_all_tabulated() {
     if (!denseref::arch::tabulated(kLaunchTable[i].cc)) return false;
   return true;
 }
+
 static_assert(launch_table_rows_are_all_tabulated(),
               "a launch-table row names an architecture arch_caps.cuh does not tabulate");
 static_assert(launch_table_covers(800), "arch_caps.cuh tabulates sm_80");

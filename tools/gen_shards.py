@@ -21,7 +21,7 @@ which translation unit carries it, what the selection header and the ratificatio
 shard block say about it, is code and lives here.  `setup.py`'s post-build check
 re-reads the declaration and asserts the table still matches it.
 
-**THE LIST IS EMPTY ON THIS LINE.** C0 deleted the carry family's kernels and the
+**THE LIST IS EMPTY ON THIS LINE.** The carry family's kernels are deleted and the
 stats passes with them (card C, `development/queue/C_CLEAN_SLATE.md`), so the
 declaration declares no arm and this generator emits NO file: there is no arm, no
 per-arm unit and no instantiation directory.  What survives is the BUILD's contract
@@ -260,7 +260,6 @@ def carry_groups() -> dict[int, list[int]]:
 def carry_tu_of() -> dict[int, int]:
     """`{arm index -> the owning arm index whose file holds it}`."""
     return {i: owner for owner, members in carry_groups().items() for i in members}
-
 
 
 def carry_members_sha256() -> str:

@@ -267,6 +267,7 @@ def _refuse_operands(routes, v, descriptor: StateFormat, liveness, activity):
     for name, plane in (("routes.read", routes.read), ("routes.write", routes.write),
                         ("routes.gain", routes.gain), ("v", v)):
         _refuse_bf16(name, plane)
+
     wtot = sum(descriptor.B)
     for name, plane in (("routes.read", routes.read), ("routes.write", routes.write)):
         if plane.ndim != 3 or plane.shape[2] != wtot:
@@ -275,6 +276,7 @@ def _refuse_operands(routes, v, descriptor: StateFormat, liveness, activity):
                 f"[BH, L, {wtot}] -- the descriptor's levels {tuple(descriptor.B)} "
                 f"concatenated in canonical order. A plane of a different total width is "
                 f"a different topology, not a servable one.")
+
     bh, length = int(routes.read.shape[0]), int(routes.read.shape[1])
     if tuple(routes.write.shape) != (bh, length, wtot):
         raise CarryRefusal(

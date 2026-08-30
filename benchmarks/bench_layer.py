@@ -1,8 +1,8 @@
-"""RoLA V3 WHOLE-LAYER benchmark at the Stage 0 matched cell, per plane.
+"""The RoLA WHOLE-LAYER benchmark at the Stage 0 matched cell, per plane.
 
 `benchmark_rola_v3_consumer.py` benchmarks the consumer KERNEL and says in its own
-output that it cannot be divided against `20260728-stage0/baseline.md`'s V2 numbers,
-because those are a whole-layer forward and this was not: "a matched whole-layer V3
+output that it cannot be divided against `20260728-stage0/baseline.md`'s attention-baseline numbers,
+because those are a whole-layer forward and this was not: "a matched whole-layer
 number requires the consumer wired into the layer." The consumer is now wired, so this
 script is that number.
 
@@ -12,16 +12,16 @@ kernel, output projection, glue. The producer is then timed separately on the
 identical inputs, so the routing plane is attributed rather than just reported and
 the remainder is named as a residual.
 
-**What is NOT claimed.** V2 and V3 are DIFFERENT MODELS. V2 reads and writes its
+**What is NOT claimed.** The baseline and RoLA are DIFFERENT MODELS. The baseline reads and writes its
 state through content-addressed `Q`/`K` at `d_qk = 16` on top of the same routed
-hierarchy; V3 has no `Q`, no `K` and no feature map anywhere. This script reports
+hierarchy; RoLA has no `Q`, no `K` and no feature map anywhere. This script reports
 OPERATIONAL COST at matched `(B, H, L, d_v, state size)` shapes and prints, in its
 own output, the columns that say what is and is not comparable -- including the
 addressing-entropy columns the architecture makes normative for any
-cross-architecture cell. A single V3/V2 ratio is not a quality ratio and is not a
+cross-architecture cell. A single ratio between them is not a quality ratio and is not a
 matched-capacity ratio; it is a cost ratio at matched shape.
 
-Usage (invoked BARE -- `main()` takes `gpu_lock()` itself, K46):
+Usage (invoked BARE -- `main()` takes `gpu_lock()` itself):
 
     PYTHONPATH=<worktree> python benchmarks/bench_layer.py --json out.json
 """
@@ -107,7 +107,7 @@ def _measure(fn, reps: int, warmup: int) -> dict[str, float]:
             "wall_ms": wall_ms, "wall_iqr": wall_iqr}
 
 
-#: Attribute names a Q/K-era or any future content-addressed V3 layer would carry.
+#: Attribute names a Q/K-era or any future content-addressed layer would carry.
 #: `content_addressing_width` used to be
 #: a hardcoded literal `0`, which would keep reporting 0 even if the layer grew a
 #: content-addressing path back. `_content_addressing_width` below derives the
@@ -129,7 +129,7 @@ def _content_addressing_width(layer) -> int:
     present = [name for name in _CONTENT_ADDRESSING_ATTRS if hasattr(layer, name)]
     if present:
         raise NotImplementedError(
-            f"V3 layer grew content-addressed attribute(s) {present!r}; "
+            f"the layer grew content-addressed attribute(s) {present!r}; "
             "content_addressing_width must be derived from them, not left at the "
             "structural 0")
     return 0
@@ -158,10 +158,10 @@ def _addressing(layer, branches, d_v, H, read_levels, write_levels) -> dict:
       active, so the product-of-means and the mean-of-products coincide) and only
       an APPROXIMATION at a sparse operating point; `realized_read_address_bits`
       inherits that approximation there.
-    * `content_addressing_width` -- `d_qk` for a Q/K architecture, and 0 for V3,
+    * `content_addressing_width` -- `d_qk` for a Q/K architecture, and 0 here,
       which has no Q, no K and no feature map; derived by `_content_addressing_width`
-      rather than hardcoded. THIS ONE IS NOT MATCHED between V2 and V3 and the
-      mismatch is in V2's favour: it carries data-located content addressing on top
+      rather than hardcoded. THIS ONE IS NOT MATCHED between the two and the
+      mismatch is in the baseline's favour: it carries data-located content addressing on top
       of the identical grid-located routing.
     """
     N = math.prod(branches)
@@ -285,7 +285,7 @@ def main() -> None:
                          "real sparse support; the support is genuine, its LEVEL is a "
                          "synthetic stand-in for training and is labelled as such")
     ap.add_argument("--dtype", choices=("float32",), default="float32",
-                    help="the V3 consumer's tensors are fp32 (`v3_consumer.cu` TORCH_CHECKs "
+                    help="the consumer's tensors are fp32 (`v3_consumer.cu` TORCH_CHECKs "
                          "at::kFloat), so this axis exists to be stated, not swept")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
@@ -297,7 +297,7 @@ def main() -> None:
                    H=args.heads, d_v=args.head_v_dim, branches=branches, router=args.router,
                    logit_gain=args.logit_gain, dtype=getattr(torch, args.dtype))
 
-    print(f"\n=== V3 whole layer, per plane (ms, synchronized wall-clock median of "
+    print(f"\n=== whole layer, per plane (ms, synchronized wall-clock median of "
           f"{args.reps}) — router={args.router} logit_gain={args.logit_gain} ===")
     for r in rows:
         print(f"decay={r['decay']:14s} norm={r['norm']:7s} total={r['total_ms']:7.3f} | "
@@ -310,14 +310,14 @@ def main() -> None:
           "launch sequence, so its launch and synchronization overhead is counted in the\n"
           "plane AND absent from the fused whole-layer call; `rest` is `total - producer`\n"
           "(kernel, projections, rearranges, casts, dispatch) and is reported as a residual.")
-    print("\nNOT A MATCHED RATIO. V2 and V3 are DIFFERENT MODELS: V2 addresses its state\n"
+    print("\nNOT A MATCHED RATIO. The two are DIFFERENT MODELS: the baseline addresses its state\n"
           "through content-addressed Q/K at d_qk=16 on top of the same routed hierarchy,\n"
-          "V3 has no Q, no K and no feature map. What is matched here is (B, H, L, d_v,\n"
+          "RoLA has no Q, no K and no feature map. What is matched here is (B, H, L, d_v,\n"
           "state size) and the routing topology, i.e. OPERATIONAL COST AT MATCHED SHAPE.\n"
           "The addressing-entropy columns are reported so the cell is\n"
           "admissible at all: address_space_bits and routing_addressing_width are IDENTICAL\n"
           "on both sides, content_addressing_width is 0 here against the d_qk=16, so the\n"
-          "cells are NOT addressing-entropy matched and the mismatch favours V2.")
+          "cells are NOT addressing-entropy matched and the mismatch favours the baseline.")
     if args.json:
         with open(args.json, "w") as handle:
             json.dump(rows, handle, indent=2)

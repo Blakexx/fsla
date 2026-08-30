@@ -224,6 +224,7 @@ def test_the_two_projection_layouts_are_one_gemm_and_agree_at_the_bit(
                 "to delete is back")
     #: And whatever the flat form shares between its two sides, the token-major form
     #: shares too -- so the layout change materialized nothing the flat one did not.
+
     def one_storage(sides):
         return sides[0].untyped_storage().data_ptr() == sides[1].untyped_storage().data_ptr()
 

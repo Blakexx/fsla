@@ -202,7 +202,6 @@ def test_the_bitmap_is_bc_free():
     assert torch.equal(first.bool(), _oracle_bitmap(write, widths))
 
 
-
 def test_the_stateless_call_class_cannot_be_asked_for_the_bitmap():
     """PLANTED: the class and the outputs must agree, or a call gets an unwritten table.
 

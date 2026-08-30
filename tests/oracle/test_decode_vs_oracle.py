@@ -75,6 +75,7 @@ def _chunk_tokens() -> int:
 
     return CHUNK_TOKENS
 
+
 #: THE TOPOLOGY AXIS, written out rather than reduced because the lattice ``(k, m)`` each
 #: row derives is what the walk is, and the axis has to carry every shape of it:
 #:

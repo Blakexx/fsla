@@ -79,6 +79,7 @@ import ratify  # noqa: E402
 #: hashed them.
 HASH_VERSION = ratify.SASS_HASH_VERSION
 
+
 def bodies(so: Path) -> dict[str, str]:
     """`{"sm_XX:mangled" -> sha256 of the instruction text}` for every entry point.
 

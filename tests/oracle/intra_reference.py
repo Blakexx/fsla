@@ -164,6 +164,7 @@ def slab_skip_rate(pread, pwrite, modes, window=WINDOW, tile=64, slab=16,
     skipped = total = 0
     for level, mode in enumerate(modes):
         span = slice(level * level_width, (level + 1) * level_width)
+
         def union(plane, declared):
             if not declared:
                 return torch.ones((bh, length // tile, slabs), dtype=torch.bool,

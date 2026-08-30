@@ -41,6 +41,7 @@ from rola.routing.types import (
 
 # --- the table itself --------------------------------------------------------
 
+
 def test_v0_1_ratifies_exactly_the_two_declared_activation_families():
     """v0.1 ships exactly two ratified families, plus the opaque row.
 

@@ -147,6 +147,7 @@ def _format_of(routes, d_v: int, BH: int) -> StateFormat:
                        page_bits=PAGE_RECTANGLE_BITS, DV=int(d_v), dtype=SPLIT_PLANE_DTYPE,
                        ids=BH * (n >> PAGE_RECTANGLE_BITS))
 
+
 #: THE ONE PAGING STRATEGY THIS VERSION BUILDS. It is a CONSTANT and not a list: one
 #: value is not an axis, and a list of one is a list that reads as a choice nobody has.
 _BUILT_STRATEGY = "mutable"
@@ -188,7 +189,6 @@ class RoLAState:
     coherent; dense x cow is legal-but-degenerate (no table -> a full-plane
     copy per advance).
     """
-
 
     __slots__ = ("strategy", "pool_slack", "_shape", "_device", "_paging", "_arena",
                  "_plane", "_format", "__weakref__")

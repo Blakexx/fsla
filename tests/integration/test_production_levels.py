@@ -154,6 +154,7 @@ def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) ->
     base = torch.randn(shape, device=device, dtype=torch.float32, generator=generator)
     if kind == "random":
         return base
+
     if kind == "near_boundary":
         # Quantizing to halves clusters logits onto the candidate thresholds; the jitter
         # then separates them by ~1e-4, which is far inside any tolerance here but still
@@ -832,7 +833,6 @@ def test_the_two_lowerings_agree_directly(alpha, shape, kind):
         (cpu_read, cpu_write))
     _assert_levels_match(cuda_vjp[0].cpu(), cpu_vjp[0], gradient=True)
     _assert_levels_match(cuda_vjp[1].cpu(), cpu_vjp[1], gradient=True)
-
 
 
 def test_production_imports_nothing_from_the_reference_package():

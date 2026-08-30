@@ -1,4 +1,4 @@
-"""The results key: a HARDWARE PROFILE, never a hostname (K38, the RULED section).
+"""The results key: a HARDWARE PROFILE, never a hostname.
 
 `benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` is keyed on the thing that
 makes two runs COMPARABLE -- the GPU model and its SM architecture -- not on the box

@@ -33,12 +33,12 @@ draw), mirroring `build_lock.py`'s own gate/iteration split.
 acquire sets `ROLA_HOST_BUDGET_HELD` in the process environment; a NESTED
 acquire that finds the marker already set is a no-op, so an outer tool that
 already holds slots and calls an inner tool that also acquires cannot
-self-deadlock (the K38 shape `gpu_lock.py`'s docstring names, generalized to
+self-deadlock (the shape `gpu_lock.py`'s docstring names, generalized to
 this pool). `ROLA_LOCKS_TRACE=1` prints every acquire/release with the holder
 pid and the slot count, for every lock in this file and `gpu_lock.py` alike.
 
 **THE THIRD CATEGORY: FILE LOCKS.** A handful of tools write ONE shared
-artifact from potentially-concurrent invocations (the K38 records database
+artifact from potentially-concurrent invocations (the records database
 epilogue, a ratify manifest, the generated selection header) -- not a
 counting resource, just mutual exclusion over one output. `file_lock(name)`
 below is that primitive: one named exclusive lock, short-held, reentrant the
@@ -203,7 +203,7 @@ def file_lock(name: str, *, label: str | None = None):
     """One short-held EXCLUSIVE lock over a single named shared artifact.
 
     Not a counting resource like `acquire()` -- this is mutual exclusion over
-    ONE output (the K38 records database, a ratify manifest, the generated
+    ONE output (the records database, a ratify manifest, the generated
     selection header), so two concurrent writers of the same artifact
     serialize instead of interleaving their writes.
     """

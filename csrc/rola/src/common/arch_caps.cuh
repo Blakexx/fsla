@@ -100,9 +100,11 @@ constexpr int regs_per_cta(const Caps& c, int threads, int regs_per_lane) {
 constexpr int ctas_by_smem(const Caps& c, int smem_per_cta) {
   return c.smem_per_sm / (round_up(smem_per_cta, c.smem_granularity) + c.driver_smem_reserve);
 }
+
 constexpr int ctas_by_regs(const Caps& c, int threads, int regs_per_lane) {
   return c.regs_per_sm / regs_per_cta(c, threads, regs_per_lane);
 }
+
 constexpr int ctas_by_threads(const Caps& c, int threads) { return c.max_threads_per_sm / threads; }
 
 //: Resident CTAs per SM: the binding constraint among shared memory, registers, -- see docs/internals/common/arch_caps.md#min4
@@ -110,6 +112,7 @@ constexpr int min4(int a, int b, int d, int e) {
   return a < b ? (a < d ? (a < e ? a : e) : (d < e ? d : e))
                : (b < d ? (b < e ? b : e) : (d < e ? d : e));
 }
+
 constexpr int residency(const Caps& c, int smem_per_cta, int threads, int regs_per_lane) {
   return min4(ctas_by_smem(c, smem_per_cta), ctas_by_regs(c, threads, regs_per_lane),
               ctas_by_threads(c, threads), c.max_ctas_per_sm);

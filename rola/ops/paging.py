@@ -119,6 +119,7 @@ def from_split_planes(stored: torch.Tensor) -> torch.Tensor:
                         | halves[:, 2 * rows + MMA_K_QUANTUM:])
     return words.view(torch.float32).reshape(stored.shape)
 
+
 #: The driver-allocation unit the VMM backing commits in, in bytes. ``None`` resolves it
 #: to the device's own ``cuMemGetAllocationGranularity`` MINIMUM, which is the finest
 #: commitment the hardware admits: a smaller target would be rounded back up to it and a

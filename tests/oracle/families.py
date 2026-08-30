@@ -437,8 +437,6 @@ def _sweep() -> tuple[Family, ...]:
     return tuple(rows)
 
 
-
-
 FAMILIES: tuple[Family, ...] = _STRATIFIED + _PRODUCER + _ADVERSARIAL + _sweep()
 
 _names = [f.name for f in FAMILIES]

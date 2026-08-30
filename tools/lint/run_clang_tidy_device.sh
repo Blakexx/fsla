@@ -147,4 +147,9 @@ done
 echo "---"
 echo "device clang-tidy: $total_real on-target finding(s) across $(echo "$arm_files" | wc -l) arm TU(s);" \
      "$total_noise toolchain-noise diagnostic(s) excluded from that count (see this script's header)."
+
+# GATING on the ON-TARGET count. Toolchain noise -- clang's bundled CUDA wrapper headers
+# disagreeing with the installed toolkit -- is printed and never counted: it is a fact
+# about the analyzer's own headers, not about this code.
+if [[ "$total_real" -gt 0 ]]; then exit 1; fi
 exit 0

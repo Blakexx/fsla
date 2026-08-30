@@ -122,7 +122,6 @@ class _ProductionFactorFn(torch.autograd.Function):
         return dz, None, None, None, None
 
 
-
 def production_factor(z, activation="entmax", alpha=1.5, mask=None):
     """Return ``(values, packed_support_words)`` for an alpha=1.5 or alpha=2 CUDA routing solve.
 

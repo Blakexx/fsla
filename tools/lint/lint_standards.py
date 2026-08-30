@@ -17,13 +17,13 @@ Checks:
      "compile-time bound" by regexing the loop's stop expression, and it can
      only be conservative in one direction --  see HEURISTIC LIMITS below.
   2. NO TORCH INCLUDE IN ARM TUs (belt to the ast-grep rule
-     torch_include_in_arm_tu.yml -- K36). A `#include` line naming `torch/`
+     torch_include_in_arm_tu.yml). A `#include` line naming `torch/`
      under csrc/rola/src/instantiations/, found by TEXT rather than AST so a
      macro-guarded or unusually-formatted include cannot hide from either
      check.
-  3. NO __syncthreads AFTER THE DECODE PROLOGUE (P79's law, ledger
+  3. NO __syncthreads AFTER THE DECODE PROLOGUE (the decode prologue law, ledger
      2026-08-27: "11 barriers, all in the prologue ... 0 after it"; scope
-     fixed 2026-08-29 K46 item 3 -- P79's law is about CTA/grid barriers,
+     fixed 2026-08-29 -- that law is about CTA/grid barriers,
      never about `__syncwarp`, which is intra-warp and which §12 REQUIRES
      around a warp collective). The marker is decode.cu's own section
      comment `// ---- THE WALK`; every `__syncthreads`/`bar.sync` (and any
@@ -78,7 +78,7 @@ TESTS_ROOT = ROOT / "tests"
 
 #: docs/testing.md: "there is no fourth tier". A test answers one of exactly three
 #: questions (oracle/integration/unit), so it lives in exactly one of these three
-#: directories -- never a fourth bucket, campaign-named or otherwise (K44: `tests/k31/`
+#: directories -- never a fourth bucket, campaign-named or otherwise (`tests/k31/`
 #: was exactly that, folded into the tier each of its tests actually answered).
 TESTS_ALLOWED_TIERS = {"unit", "integration", "oracle"}
 
@@ -108,10 +108,10 @@ COMMENT_LINE_RE = re.compile(r"^\s*//")
 
 TORCH_INCLUDE_RE = re.compile(r'#include\s*<\s*torch/')
 
-#: P79's law is about CTA/grid barriers only (`__syncthreads`, PTX `bar.sync`,
+#: The prologue law is about CTA/grid barriers only (`__syncthreads`, PTX `bar.sync`,
 #: and a cluster/grid barrier such as `cluster.sync()`/`grid.sync()`);
 #: `__syncwarp` is intra-warp and is §12's REQUIRED fence around a warp
-#: collective, never this rule's concern (K46 item 3 -- the rule's one
+#: collective, never this rule's concern (the rule's one
 #: remaining finding after MERGE-D1 was decode.cu:722's `__syncwarp`).
 SYNC_RE = re.compile(
     r"__syncthreads\s*\(|\bbar\.sync\b|(?:cluster|grid)\s*\.\s*sync\s*\(")
@@ -127,6 +127,8 @@ def device_files():
 
 
 DEVICE_QUALIFIER_RE = re.compile(r"\b__(global|device)__\b")
+
+
 #: A `.cu` mixes HOST launcher code (std::vector loops over `widths`, TORCH_CHECK,
 #: TensorOptions -- none of it unroll-relevant) with the device kernels §6 is
 #: actually about. Scope the check to the textual span of each `__global__`/
@@ -140,6 +142,7 @@ def device_code_line_ranges(lines: list[str]) -> list[tuple[int, int]]:
     i = 0
     while i < n:
         if DEVICE_QUALIFIER_RE.search(lines[i]) and not COMMENT_LINE_RE.match(lines[i]):
+
             # Find the function's opening brace, scanning forward (signatures
             # with __launch_bounds__(...) or wrapped parameter lists span
             # multiple lines).
@@ -256,7 +259,7 @@ def check_no_torch_in_arm_tus() -> list[str]:
         for idx, line in enumerate(path.read_text().splitlines(), start=1):
             if TORCH_INCLUDE_RE.search(line):
                 findings.append(
-                    f"K36 (belt to torch_include_in_arm_tu.yml): {rel}:{idx}: "
+                    f"belt to torch_include_in_arm_tu.yml: {rel}:{idx}: "
                     f"torch include in a per-arm TU -- {line.strip()!r}"
                 )
     return findings
@@ -271,7 +274,7 @@ def check_no_sync_after_decode_prologue() -> list[str]:
     marker_idx = next((i for i, l in enumerate(lines) if WALK_MARKER_RE.search(l)), None)
     if marker_idx is None:
         findings.append(
-            f"P79's law: {rel}: could not locate the `---- THE WALK` prologue-end "
+            f"the decode prologue law: {rel}: could not locate the `---- THE WALK` prologue-end "
             f"marker this check keys on -- the file was restructured and this check "
             f"needs a new anchor."
         )
@@ -279,14 +282,14 @@ def check_no_sync_after_decode_prologue() -> list[str]:
     for idx in range(marker_idx + 1, len(lines)):
         if SYNC_RE.search(lines[idx]):
             findings.append(
-                f"P79's law (ledger 2026-08-27, decode.cu#per-cta-prologue): "
+                f"the decode prologue law (ledger 2026-08-27, decode.cu#per-cta-prologue): "
                 f"{rel}:{idx + 1}: barrier after the prologue marker "
                 f"(line {marker_idx + 1}) -- {lines[idx].strip()!r}"
             )
     return findings
 
 
-#: K39 (Blake, 2026-08-28): the 2026-08-04 comments-to-docs mandate names "well
+#: The 2026-08-04 comments-to-docs mandate names "well
 #: under 15%" as the line -- a named constant, not a number buried in an f-string,
 #: so a future re-derivation of the threshold has exactly one place to change it.
 COMMENT_DENSITY_THRESHOLD = 0.15
@@ -335,7 +338,7 @@ def _comment_density(lines: list[str]) -> tuple[int, int]:
 def check_comment_density() -> list[str]:
     """Per-file comment-line fraction under `csrc/`, KERNEL_STANDARDS' 2026-08-04
     comments-to-docs mandate. REPORTED, not gated to zero: these are findings for
-    Blake to rule on (S5b moves the prose to `docs/internals/`), never silently
+    Blake to rule on (the prose moves to `docs/internals/`), never silently
     fixed or silenced by this script -- same treatment every other check here
     gets (module docstring)."""
     findings = []
@@ -469,7 +472,7 @@ def check_generated_directories_are_documented_by_their_readme() -> list[str]:
 
     A generated directory that DOES NOT EXIST is not a violation: the generator's own
     `--check` (run below, and by `check_shard_partition`) is what says whether that is
-    correct, and at an empty arm list it is (C0, card C). The rule is about a directory
+    correct, and at an empty arm list it is. The rule is about a directory
     that exists without the README its exemption is paid for with.
     """
     import subprocess
@@ -713,10 +716,10 @@ def check_docs_mirror() -> list[str]:
     return findings
 
 
-#: K46: "the word `flock` leaves the process" -- every GPU entry point now takes
+#: "The word `flock` leaves the process": -- every GPU entry point now takes
 #: `tools/gpu_lock.py`'s `gpu_lock()` ITSELF, so no committed doc/skill/script should
 #: ever again tell a reader to wrap a command in an external `flock` on the GPU lock
-#: path (that is exactly the K38 self-deadlock shape). A COMMAND LINE is what this
+#: path (that is exactly the self-deadlock shape). A COMMAND LINE is what this
 #: catches -- a line that, once backticks/leading whitespace are stripped, STARTS
 #: with the literal token `flock` naming the GPU lock path; a PROSE mention (a
 #: warning against doing this, or a general statement about `flock`'s per-filesystem
@@ -734,7 +737,7 @@ FLOCK_GPU_LOCK_RE = re.compile(r"^\s*`{0,3}\s*flock\s+\S*rola_gpu")
 #: taught a narrower regex.
 FLOCK_CHECK_EXEMPT_FILES = {ROOT / "docs" / "KERNEL_STANDARDS.md"}
 
-#: "docs, skills, scripts" (the K46 card's own words): committed prose and recipes an
+#: "docs, skills, scripts" (the ruling's own words): committed prose and recipes an
 #: agent or contributor reads and might copy-paste, not generated/vendored trees.
 FLOCK_CHECK_ROOTS = (
     ROOT / "docs",
@@ -783,6 +786,8 @@ _NOT_A_WORK_CODE = re.compile(
     r"|A100|A30|A40|A16|A10|A2|H100|H200|V100|L4|L40|T4|RTX\d+|WSL2|CUDA\d+|PTX\d+"   # a machine or a toolkit
     r"|[A-Z]{1,4}\d{3,4}"                # a linter's own code: E402, BLE001, PLC0415
     r"|R\d{1,3}|UR\d{1,2}|P\d"           # a SASS register or predicate
+    r"|Q\d"                             # a quartile
+    r"|SXM\d|PCIE\d|HBM\d|GDDR\d|DDR\d"  # a package or memory generation
     r"|BC\d+|BT\d+|DV\d+|BH\d+"       # a shape, written into a cell id
     r"|FA\d|CUTLASS\d|TK\d"           # another project's version
     r")$")
@@ -1252,6 +1257,7 @@ WORKTREE_PATH_RE = re.compile(r"(?<!/path/to)/" + "worktrees/")
 #: a bracketed placeholder token or plain prose mention has no adjacent slash and is
 #: not a finding.
 SCRATCH_DIR_PATH_RE = re.compile(r"(?:/scratch" + r"pad(?=/|\b)|\bscratch" + r"pad(?=/))")
+
 
 #: Third-party/vendored trees and build outputs are not this repo's own tracked
 #: authorship; a lockfile's machine-local ephemeral temp path is not an ad-hoc

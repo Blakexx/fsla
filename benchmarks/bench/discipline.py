@@ -4,17 +4,17 @@ Six gates run before a number exists, in this order: the lock, the memory fracti
 extension's identity, the tree's identity, the settled clock, the tier. Each of the first
 five is a REFUSAL -- a run that cannot establish the precondition raises rather than
 measuring -- and each has a planted-violation row in
-the retired harness gate (K31; baseline = tag `baseline/pre-k31`). The reasoning behind each gate is
+the retired harness gate (baseline = tag `baseline/pre-k31`). The reasoning behind each gate is
 `docs/measurement.md`; what lives here is the enforcement.
 
-**THE LOCKING STATEMENT (K46, superseding the WRAPPED design `docs/testing.md` used
+**THE LOCKING STATEMENT (superseding the WRAPPED design `docs/testing.md` used
 to require).** This harness takes `gpu_lock()` ITSELF now, the same primitive every
 other GPU entry point uses (`tools/gpu_lock.py`, `tests/conftest.py`,
 `tools/probe_cells.py`, `tools/sanitize_oracle.py`) -- it is invoked BARE:
 
     python benchmarks/unit/bench_liveness.py
 
-Before K46 this harness was invoked WRAPPED (an external `flock` on the GPU lock
+This harness used to be invoked WRAPPED (an external `flock` on the GPU lock
 path around the whole command) and `require_gpu_lock` REFUSED a bare invocation by
 checking that an ancestor process
 held the lock path open. That design was the deliberate OPPOSITE of `tools/probe_cells.py`'s

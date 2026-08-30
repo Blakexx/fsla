@@ -1,4 +1,4 @@
-"""K38 -- the measurements record: the writer epilogue every measuring tool shares.
+"""THE MEASUREMENTS RECORD: the writer epilogue every measuring tool shares.
 
 **THE RECORD IS COMMITTED JSONL, THE DATABASE IS DERIVED.** One small file per run,
 under `benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` (text, mergeable,
@@ -14,7 +14,7 @@ two writers cannot drift into two shapes the way two throwaway ncu scripts once
 drifted on their metric list.
 
 **A ROW WITHOUT PROVENANCE IS REFUSED, NOT WRITTEN THIN.** `git_sha`, the device
-stamp (`manifest_sha256` -- the binary's own account of itself, K38 KERNEL_STANDARDS
+stamp (`manifest_sha256` -- the binary's own account of itself, KERNEL_STANDARDS
 "the extension trap") and `harness_sha` (the identity of the MEASURING CODE, distinct
 from the kernel it measures) are required on every run record; :func:`build_run`
 raises rather than writing an unusable row, mirroring `bench.ledger.make_row`'s own
@@ -167,7 +167,7 @@ def build_run(*, harness_paths, stage: str | None = None, agent: str | None = No
     }
     missing = [k for k in REQUIRED_RUN_FIELDS if not run.get(k)]
     if missing:
-        raise ValueError(f"a K38 run record is missing required field(s) {missing}; "
+        raise ValueError(f"a run record is missing required field(s) {missing}; "
                           f"refusing to write an unusable row (docs/measurement.md)")
     return run
 

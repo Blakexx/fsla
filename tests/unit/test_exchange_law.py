@@ -29,6 +29,7 @@ from rola.ops import carry as carry_ops
 K_PAD_E = 8
 K_MMA_M, K_MMA_N, K_MMA_K = 16, 8, 16
 
+
 def _ilog2c(x):
     """the bit index of a power of two -- the model's own, matching `geom_ilog2`."""
     b = 0

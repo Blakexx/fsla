@@ -9,7 +9,7 @@ line is citable and a row's `arm` field reads the same way. `--ab A:B` runs the 
 interleaved rep by rep through `bench.pairing.interleaved_ab`; without it each spec is
 measured alone, which is the BASELINE mode.
 
-Usage (invoked BARE -- `bench.discipline.disciplined` takes `gpu_lock()` itself, K46):
+Usage (invoked BARE -- `bench.discipline.disciplined` takes `gpu_lock()` itself):
 
     python benchmarks/unit/bench_liveness.py --tier landing
 """

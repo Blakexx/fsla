@@ -256,8 +256,6 @@ def build_routes(*, hidden_size=64, num_heads=4, widths=(16,), routing=None,
         gain_config=gain_config)
 
 
-
-
 def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=None,
                 decay=None, decay_rate=2.0 ** -8, gain=True,
                 bias=False, expert=None, layer_idx=None, **kwargs):

@@ -65,7 +65,7 @@ separately rather than conflated with either.
 the stage that failed, and the sweep continues at the next arm. Nothing is silently
 shrunk.
 
-Usage (invoked BARE -- `main()` takes `gpu_lock()` itself, K46):
+Usage (invoked BARE -- `main()` takes `gpu_lock()` itself):
 
     PYTHONPATH=<worktree> python benchmarks/bench_scaling.py \
         --seq-lens 512,1024,2048,4096,8192 --json out.json
@@ -163,6 +163,7 @@ class MatchedAttention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, _ = x.shape
+
         def split(t):
             return t.view(B, L, self.heads, self.d_head).transpose(1, 2)
         q, k, v = split(self.q_proj(x)), split(self.k_proj(x)), split(self.v_proj(x))

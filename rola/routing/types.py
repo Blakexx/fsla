@@ -167,6 +167,7 @@ class RouteDescriptor:
             raise ValueError("route values must have rank 4")
         if self.support_words.ndim != 3:
             raise ValueError("support_words must have rank 3")
+
         offsets = tuple(self.level_offsets)
         support_offsets = tuple(self.support_offsets)
         widths = tuple(self.level_widths)
@@ -174,6 +175,7 @@ class RouteDescriptor:
         flags = tuple(self.support_side_flags)
         stamp = tuple(self.topology_stamp)
         d = len(widths)
+
         if d == 0 or len(offsets) != d + 1:
             raise ValueError("level_offsets must contain D + 1 entries for a nonempty routing plan")
         validate_routing_shape(widths, owner="RouteDescriptor")
@@ -361,6 +363,7 @@ class UnionRouting:
         if duty not in ("read", "write"):
             raise ValueError(f"duty must be 'read' or 'write', got {duty!r}")
         return duty == "write" and self.properties.simplex_output
+
 
 LevelRouting: TypeAlias = IndependentRouting | UnionRouting
 

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""ONE gpu_lock() every GPU-touching tool takes ITSELF (K46: docs/KERNEL_STANDARDS.md
+"""ONE gpu_lock() every GPU-touching tool takes ITSELF (docs/KERNEL_STANDARDS.md
 §14/§18, "why even have agents manage locks").
 
 **BEFORE THIS FILE.** The GPU lock was half-and-half: `tools/probe_cells.py` and
 `tools/sanitize_oracle.py`'s design took the GPU lock file internally, but pytest
 and the `benchmarks/bench` harness relied on the CALLER remembering to wrap the
 command with an EXTERNAL `flock` on that same lock path. Two incidents came out of
-that split: K38 wrapped a self-locking tool in such an external `flock` and
+that split: a caller once wrapped a self-locking tool in such an external `flock` and
 deadlocked 17 CPU-idle minutes (`flock` is held per open file description, so the
 wrapper's own lock blocks the wrapped process's identical `fcntl.flock` call
 forever); and every brief had to restate the wrapping correctly by hand, which is a
@@ -28,7 +28,7 @@ same-process re-entry (a test fixture calling a helper that also locks) and the
 subprocess case (`tools/sanitize_oracle.py` locking once, then launching
 `compute-sanitizer python -m pytest ...`, whose own conftest fixture sees the marker
 and proceeds without re-locking) -- so a double acquisition cannot deadlock by
-construction, closing the OTHER half of the K38 shape (an outer tool that itself
+construction, closing the OTHER half of that shape (an outer tool that itself
 locks, calling an inner tool that also locks, rather than an outer bare `flock`).
 
 **THE LOCK FILE.** `/tmp/rola_gpu.lock` by default -- the name every doc, skill, and

@@ -12,6 +12,7 @@ namespace rola {
 namespace decode {
 
 __device__ __forceinline__ float widen(float x) { return x; }
+
 __device__ __forceinline__ float widen(const __nv_bfloat16& x) { return __bfloat162float(x); }
 
 template <typename T>

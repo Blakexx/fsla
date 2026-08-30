@@ -48,12 +48,19 @@ class VmmOwner final : public std::enable_shared_from_this<VmmOwner> {
   void close();
 
   bool closed() const { return closed_; }
+
   std::int64_t mapped_capacity_pages() const;
+
   std::int64_t dense_limit_pages() const { return dense_limit_pages_; }
+
   std::uint64_t committed_bytes() const { return committed_bytes_; }
+
   std::uint64_t virtual_bytes() const { return virtual_bytes_; }
+
   std::uint64_t allocation_granularity() const { return allocation_granularity_; }
+
   std::int64_t chunk_pages() const { return chunk_pages_; }
+
   std::string backing_kind() const { return "cuda_driver_vmm"; }
 
  private:

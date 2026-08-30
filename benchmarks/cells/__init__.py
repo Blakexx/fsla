@@ -282,7 +282,7 @@ def conservative_activity(descriptor, BH: int = 1, device: str = "cuda"):
     """Every page READ and WRITTEN -- the truth a caller with no facts pass may state.
 
     It asserts nothing about the draw and therefore skips nothing, which is exactly the
-    pre-facts behaviour. A cell tightens to the pass's own bits when C2a lands;
+    pre-facts behaviour. A cell may tighten to the liveness pass's own bits;
     until then this is the honest conservative statement rather than an invented one.
     """
     import torch

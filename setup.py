@@ -92,6 +92,8 @@ import gen_shards  # noqa: E402
 import mold_toolchain  # noqa: E402
 import ratify  # noqa: E402
 import sccache_toolchain  # noqa: E402
+
+
 # isort: on
 
 #: THE RATIFIED SET. Overridable only downward in practice: adding an arch here
@@ -137,6 +139,7 @@ ROLA_CUDA_ARCHS = _declared_archs()
 #: are prerequisites, not staleness) -- only whether THIS INSTALL treats a
 #: stale-manifest finding as fatal.
 ROLA_STRICT_MANIFEST = os.getenv("ROLA_STRICT_MANIFEST") == "1"
+
 
 #: THE ARM SUBSET IS A FILE SUBSET (KERNEL_STANDARDS section 7, K36). Instantiation
 #: cost is the dominant build resource, so an arm the build does not want is an arm
@@ -307,6 +310,7 @@ def _decode_arm_subset() -> list[str]:
         return []
     rows = " ".join(f"DECODE_ARM_{int(i)}(X_)" for i in spec)
     return [f"-DROLA_DECODE_ARMS(X_)={rows}"]
+
 
 #: THE EXTENSION IS NAMESPACED INSIDE THE PACKAGE, not top-level. A top-level
 #: ``rola_cuda`` is the flash-attention / mamba precedent, and it has one concrete

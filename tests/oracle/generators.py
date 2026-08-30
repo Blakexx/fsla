@@ -160,6 +160,7 @@ class Case:
 
         if p.get("block"):
             blocks = -(-self.T // p["block"])
+
             def blockwise(w, pd):
                 draw = _simplex((self.B, blocks, self.H, w), pd, gen, device)
                 return draw.repeat_interleave(p["block"], dim=1)[:, :self.T]

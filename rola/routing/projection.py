@@ -145,7 +145,7 @@ def _packed_router_logits(
     write_slots = tuple(range(routing.D))
     # `packed_read_slot_lookup` already resolves "which slot feeds this level's READ
     # logits" for tied, untied and mixed plans, so the three-branch slot arithmetic this
-    # function used to carry collapses into one lookup. Fully tied is exactly
+    # function carries collapses into one lookup. Fully tied is exactly
     # `read_slots == write_slots`, stated structurally rather than as `not untied_levels`.
     read_slots = routing.packed_read_slot_lookup
     fully_tied = read_slots == write_slots

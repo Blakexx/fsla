@@ -11,7 +11,7 @@ definition of the experiment, run by BOTH binaries' own venv python out of ONE s
 file, so a cross-tip delta is a fact about the extension and not about the harness.
 
 WHAT IT CONTROLS.  The facts pass publishes one ACTIVITY byte per atom
-(`rola.engine.facts.planes.atom_bits`, P80b: bit 0 = WRITTEN, bit 1 = READ), and the
+(`rola.engine.facts.planes.atom_bits`: bit 0 = WRITTEN, bit 1 = READ), and the
 kernel's state sweeps read it as "load iff resident and (read|written), store iff
 written".  The experiment overrides that byte, leaving everything else -- the draw,
 the arm, the page table, the launch -- identical:
@@ -30,8 +30,8 @@ any spread between them is measurement, not mechanism.
 
 HOW IT MEASURES.  One `ncu` process per (binary, variant, cell) profiles `--count`
 steady-state launches after `--launch-skip` warmups, under `gpu_lock()` (never an
-external `flock` -- K38/K41), and the reported figure is the MEDIAN over launches with
-the min/max kept beside it.  Binaries are interleaved per variant (A,B,A,B -- the K36
+external `flock`), and the reported figure is the MEDIAN over launches with
+the min/max kept beside it.  Binaries are interleaved per variant (A,B,A,B -- the
 lesson), never "all of A then all of B".  Counters are asked in READ and WRITE halves
 because the mechanism under suspicion (a partially-covered sector on the store side)
 moves one half and not the other, and in REQUESTS as well as SECTORS because
@@ -42,7 +42,7 @@ aggregates it by source line, which is how the three blocks of a split page (hi 
 lo values, the two 16-bit mass runs -- `docs/internals/common/state_page.md`) are told
 apart: they are three distinct loops in `common/state_page.cuh`.
 
-Rows are written through the K38 epilogue (`benchmarks/bench/store.py`), one result per
+Rows are written through the record's epilogue (`benchmarks/bench/store.py`), one result per
 (binary, variant, cell, metric), so `tools/rola_db.py` can find them by `--stage`.
 """
 from __future__ import annotations
@@ -400,7 +400,7 @@ def main():
                     worktree_name=Path(b["worktree"]).name,
                     stamp_magic=stamp0.get("manifest_sha256"))
             except ValueError as ex:
-                print(f"K38 record REFUSED for {b['label']}: {ex}", file=sys.stderr)
+                print(f"record REFUSED for {b['label']}: {ex}", file=sys.stderr)
                 continue
             out_rows = []
             for e in entries:
@@ -421,7 +421,7 @@ def main():
                               + ("/cont" if e["stamp"].get("continuation") else "")),
                         arm=e["stamp"].get("resolved_carve"), metric=metric,
                         value=m["median"], unit="count", extra=extra))
-            print(f"K38 record: {b['label']} -> {store.write_run(run, out_rows)} "
+            print(f"record: {b['label']} -> {store.write_run(run, out_rows)} "
                   f"({len(out_rows)} rows)")
 
 
