@@ -43,7 +43,7 @@ WINDOW = 512
 #: The fold's batch tile: an MMA n-tile multiple (``kMmaN = 8``, ``csrc/rola/src/
 #: common/ops.cuh``) times the fold panel's residency (8 n-tiles held at once). Fixed
 #: independently of ``warps_per_cta`` -- the two vary separately.
-BATCH_TILE = 64
+BATCH_TILE = 32
 
 #: The register file's warp count per multiprocessor: eight warps fill it exactly at
 #: 256 registers/lane. Mirrors ``common/geom.cuh``'s ``warps_per_sm``.

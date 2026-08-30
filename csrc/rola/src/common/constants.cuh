@@ -11,7 +11,7 @@ namespace rola::carry {
 constexpr int kWindow = 512;
 
 //: C -- see docs/internals/common/constants.md#batch-tile
-constexpr int kBatchTile = 64;
+constexpr int kBatchTile = 32;
 
 //: see docs/internals/common/constants.md#warps-per-cta
 constexpr int kWarpsPerCtaShipped = 8;

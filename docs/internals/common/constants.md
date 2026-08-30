@@ -28,7 +28,7 @@ value; a follow-on consolidation stage (`C_CLEAN_SLATE.md`'s C2e) is where that 
 is repointed to import this module rather than restate the literal.
 
 <a id="batch-tile"></a>
-## `kBatchTile` = 64 — an MMA n-tile multiple × the panel residency
+## `kBatchTile` = 32 — an MMA n-tile multiple × the panel residency
 
 `C` is the fold's cooperative-staging unit: how many tokens' worth of expanded
 coefficients and value rows the panel holds resident at once. It is `kMmaN` (8,
