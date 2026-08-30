@@ -24,6 +24,7 @@ import torch
 
 from rola.engine.facts import planes
 from rola.ops import carry as carry_ops
+from rola.ops.paging import bytes_equal
 from tests.oracle import reference
 from tests.oracle.fixtures import Cell, assert_fresh_binary, canonical_from_plane, relative, require_arm
 from tests.oracle.tolerances import BF16_RTOL
@@ -286,7 +287,7 @@ def test_m1_a_continuation_that_touches_a_strict_subset(carve=CARVE):
     got = canonical_from_plane(plane)
     assert relative(got, s2_ref.reshape(second.B * second.H, second.N,
                                         second.d_v + 1)) < BF16_RTOL
-    assert torch.equal(plane[idle], before[idle]), (
+    assert bytes_equal(plane[idle], before[idle]), (
         "an idle-resident atom moved: the exit sweep stored an atom this call does "
         "not write")
 

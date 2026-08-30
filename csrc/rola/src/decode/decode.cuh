@@ -111,7 +111,7 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   int32_t* ctr;  // [BH]
 
   int64_t N;
-  int atoms_per_bh;  // N / kAtomLeaves; the page table's row pitch. PAGED backing only.
+  int atoms_per_bh;  // ceil(N / kAtomLeaves): the PAGE count per bh, both backings.
   int BH;
   int H;
   int D;

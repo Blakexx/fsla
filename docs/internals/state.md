@@ -78,16 +78,38 @@ A fresh state has a strategy and nothing else. The FIRST call that receives it t
 `d_v`, which is NOT on the routing — the value width is the value stream's own fact —
 so `rola_op` sources it from `v.shape[-1]`.
 
-Later calls are NOT checked against what was bound. A state used against a call it
-does not fit fails where the bytes are addressed — a reshape or an index raises —
-exactly as it does for a `torch` tensor handed to the wrong op.
+<a id="format"></a>**THE STATE OWNS ITS FORMAT** (K50, 2026-08-29). What binds at that
+first call is a FORMAT DESCRIPTOR (`state.format`, a frozen `StateFormat`), and it is
+what every kernel derives its addressing from:
 
-**The named accepted hazard**: two states of the same `N` and `cols` built from
-DIFFERENT widths have different leaf orders, and interchanging them is silent. That is
-the caller's risk, deliberately: a widths/normalization fingerprint on the state is a
-second contract to keep in step with the first, and every mechanism that carried one
-grew luggage. Resubmitting an older state, sharing one between two sequences, and
-continuing after a `clone` are likewise legal and the caller's semantics to own.
+| field | what it is |
+|---|---|
+| `D`, `B` | the routing depth and the PER-LEVEL widths `B_l`, each a power of two at or above 16 (K50's axis law: the floor is `K_max`, which keeps every span inside one level's run and the atom inside one level) |
+| `order` | the canonical leaf order — MSB-first mixed radix, and a FIELD rather than an assumption, so a second order is a refusal and not a silent reinterpretation of somebody's bytes |
+| `page_bits` | the page rectangle: the trailing `log2(16)` canonical bits. The page IS that rectangle |
+| `DV` | the value width; `cols = DV + 1` is the page's LOGICAL width, not its layout |
+| `dtype` | `"fp32 as split bf16 planes"` — the logical element is fp32, and [section 3](#backing) is how the word is stored |
+| `ids` | the page-table id space, `BH * N / 16` |
+
+**PREFILL AND DECODE SHARE ONE ADMISSION LAW: THE DESCRIPTOR** (Blake, 2026-08-29).
+Decode accepts exactly what prefill accepts — the same `D`, the same per-level `B_l`
+(powers of two at or above 16), the same `N = prod_l B_l`, the same `DV`, bf16 operands,
+and therefore the same topologies. There is no decode-only shape, no decode-only
+tolerance and no decode-only admission branch anywhere, tests included: a second
+admission law is a second contract to keep in step with the first, and the two kernels
+partition ONE paged state.
+
+**Later calls are CHECKED against it, and a mismatch is a refusal at the seam naming
+the field that differs** — at `_kernel_entry` for a chunk call, at `_decode_entry` for a
+step. This REPLACES the old "later calls are NOT checked" clause and the accepted hazard
+that went with it: two states of the same `N` and `cols` built from DIFFERENT widths
+have different leaf orders, and interchanging them used to be silent. It is refused now,
+because the leaf order, the page rectangle and the value width are precisely what a
+kernel addresses bytes with — a state that disagrees with the call is not a risk for the
+caller to own, it is a wrong address. Resubmitting an older state, sharing one between
+two sequences and continuing after a `clone` stay legal and the caller's semantics to
+own. The descriptor is fixed for the state's life and travels with the
+`LayerContinuation`; a re-layout is an explicit state op, never something a call does.
 
 `strategy="cow"` is refused AT CONSTRUCTION, by name: copy-on-write branching is
 designed (per-branch tables, refcounted slot GC) and not built, and its settled
@@ -104,14 +126,50 @@ The backing is chosen at BIND time and is not a per-call flag:
   slots, and the kernel resolves one slot per atom through the page table. Resident
   state scales with the atoms the routing REALIZES, not with the `N` the topology
   provisions.
-* **dense** — one `[BH, N/16, 16, cols]` plane, byte for byte the atom-major view of
-  `[BH, N, cols]`. Selected by `expert=PlanOverrides(paging=False)`, and it is what
-  the bit-identity gate compares the paged backing against. A FRESH dense bind is
-  ZEROED (P80b): the exit sweep stores the atoms a call WRITES and no others, so the
-  atoms it skips must already hold the zero an absent paged atom reads as.
+* **dense** — one `[BH, N/16, 16, cols]` plane: the SAME page sequence with every page
+  resident. Selected by `expert=PlanOverrides(paging=False)`, and it is what the
+  bit-identity gate compares the paged backing against. A FRESH dense bind is ZEROED
+  (P80b): the exit sweep stores the atoms a call WRITES and no others, so the atoms it
+  skips must already hold the zero an absent paged atom reads as.
+
+<a id="split-planes"></a>**THE PAGE STORES SPLIT bf16 PLANES** (K50, 2026-08-29), in
+BOTH backings. A page — one atom, 16 leaves — holds
+
+    [16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]
+
+where `hi || lo` is the fp32 word exactly. The bytes are the fp32 page's bytes
+(`16 * cols * 4`), so the arena, the page table, the id space, the VMM commitment and
+the 4 GiB displacement bound are unmoved; what changes is that a hi row is one 128 B
+line (the fp32 row was 260 B and never line-aligned), the mass rides its own blocks
+rather than column `DV` of each row, and **an atom a call only READS moves half the
+bytes**. The geometry and its two `PRMT`s live in
+[`common/state_page.md`](common/state_page.md#geometry).
+
+THE DECLARATION THAT MAKES HI-ONLY READS EXACT RATHER THAN APPROXIMATE: **the readout
+operand is the hi plane in every kernel.** Prefill's MMA A operand has been
+`hi_bf16x2` of the accumulator since F1b; decode states the same of its own readout.
+So a lo plane is observable only through an atom's continued ACCUMULATION, which is
+the WRITTEN case, and the written case moves and stores both planes. Against the fp64
+oracle this is a dual run: the truth oracle REPORTS the difference and the gate
+asserts against the bf16-mirrored band.
+
+THERE IS NO RAGGED STATE (Blake, 2026-08-29). `N = prod_l B_l` with every `B_l` a power
+of two at or above 16, so a lawful state is PAGE ALIGNED BY CONSTRUCTION, and a leaf
+axis that is not a whole number of pages is REFUSED — not padded, not carried in a tail
+page, not served by a second layout. The refusal is the descriptor's and the seam's, and
+it is one sentence rather than a branch.
+
+THE CONTAINER STAYS `float32`, because the LOGICAL element is fp32. It is not a float
+ARRAY any more, though — a 32-bit word of a stored page is two neighbouring elements'
+halves — so a byte claim about pages is asserted on the integer view
+(`rola.ops.paging.bytes_equal`), never with `torch.equal`, which is a float comparison
+and would call a byte-identical pair unequal the moment a word happened to read as
+NaN. `materialize()` is the hi||lo GATHER back to the logical `[B, H, N, cols]`.
 
 <a id="activity"></a>**RESIDENCY IS THE ARENA'S FACT; ACTIVITY IS THE FACTS PASS'
-(P80b), and only the second one decides what a call TOUCHES.** The facts pass emits
+(P80b), and only the second one decides what a call TOUCHES.** Activity now decides one
+thing more: which PLANES an atom moves (read-only → hi; written → both), which is why
+the byte saving and the skip are the same mechanism. The facts pass emits
 two orthogonal bits per atom — READ and WRITTEN, never pre-ORed — beside the table,
 and every body with state sweeps derives the same two predicates from them, under
 either backing: LOAD an atom iff it is RESIDENT and (read or written); STORE it iff
@@ -128,6 +186,16 @@ the exit sweep skips must already hold what it carried in, so a gated continuati
 exit plane must BE its entry plane. The op seam REFUSES two distinct planes when an
 activity bitmap is supplied, rather than silently dropping every unwritten atom.
 
+**THE TWO BIT SETS (P80c, ruled 2026-08-29).** The bits above are the PAGE-GRAIN set:
+one READ and one WRITTEN bit per atom, which is what `plan_exact` allocates from, what
+residency checks read and what a decode step consumes (its unit is the atom). The
+ruling makes them the DERIVED set: the PRIMARY bits are per (window, warp-box, side) at
+the carve's grain, emitted by the facts pass, and the page bits are the host's OR over
+the warp-boxes each page intersects, through the box→page map. NOT BUILT HERE: the
+primary emission needs the carve as a kernel axis, and the carve is derived at the four
+sites the runtime-addressing stage owns — G1 built the page-grain half it consumes, and
+the warp-box half lands with that stage rather than in a fifth derivation of the carve.
+
 `paging=True` is REFUSED: paging is on by default, so there is nothing to turn on, and
 the expert overrides the MAPPING only. Dense and paged are ONE kernel, one ABI, one
 accumulation order and one base translation — `torch.equal`, not a tolerance
@@ -136,9 +204,10 @@ which backing a state has except by asking (`state.paged`), and no result depend
 the answer. A state never switches backing mid-life: there is one arm, and it reads
 whichever backing the state bound.
 
-`materialize() -> [B, H, N, cols]` gathers the state into a dense tensor. It is for
-the oracle, for a cross-arm hand-off and for a test. **Never on a measured path**:
-allocating `[B, H, N, cols]` is exactly what paging exists to avoid.
+`materialize() -> [B, H, N, cols]` gathers the state into a dense tensor, hi||lo
+rejoin included. It is for the oracle, for a cross-arm hand-off and for a test.
+**Never on a measured path**: allocating `[B, H, N, cols]` is exactly what paging
+exists to avoid, and the rejoin is a second reason not to.
 
 ## <a id="backing-policy"></a>4. What the state contributes to a kernel call
 

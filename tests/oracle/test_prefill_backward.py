@@ -18,6 +18,7 @@ import torch
 
 from rola.ops import intra as intra_ops
 from rola.ops._ext import is_available
+from rola.ops.paging import to_split_planes
 from rola.ops.prefill import prefill_autograd
 from tests.oracle.backward_reference import carry_backward_reference, intra_backward_reference
 from tests.oracle.fixtures import assert_fresh_binary, canonical_from_plane
@@ -68,8 +69,11 @@ def test_every_cotangent_of_the_combined_operator(name, T, window, modes, k_tok,
     require_carry_arm(window, modes)
     seed = zlib.crc32(name.encode()) & 0xFFFF
     read, write, g, v, gen = _cell(T, modes, k_tok, seed)
-    state_in = (0.02 * torch.randn(1, N // 16, 16, 65, device="cuda", dtype=torch.float32,
-                                  generator=gen)) if chained else None
+    #: THE PLANES ARE HANDED TO THE KERNEL IN THEIR STORED FORM (K50's split planes);
+    #: the references read them back through `canonical_from_plane`'s gather.
+    state_in = to_split_planes(
+        0.02 * torch.randn(1, N // 16, 16, 65, device="cuda", dtype=torch.float32,
+                           generator=gen)) if chained else None
 
     leaves = [x.clone().requires_grad_(True) for x in read + write]
     gv = g.clone().requires_grad_(True)
@@ -81,16 +85,17 @@ def test_every_cotangent_of_the_combined_operator(name, T, window, modes, k_tok,
                                            state_in=state_in)
     d_num = torch.randn(num.shape, device="cuda", dtype=torch.float32, generator=gen)
     d_den = torch.randn(den.shape, device="cuda", dtype=torch.float32, generator=gen)
-    d_state = torch.randn(state_out.shape, device="cuda", dtype=torch.float32, generator=gen)
+    d_state = to_split_planes(torch.randn(state_out.shape, device="cuda",
+                                          dtype=torch.float32, generator=gen))
     got = torch.autograd.grad((num, den, state_out), leaves + [gv, vv], (d_num, d_den, d_state))
     del num, den, state_out
     torch.cuda.empty_cache()
 
     dn_bth = d_num.double().reshape(1, 1, T, 64).permute(0, 2, 1, 3)
     dd_bth = d_den.double().reshape(1, 1, T).permute(0, 2, 1)
-    sin64 = (canonical_from_plane(state_in.double()).reshape(1, 1, N, 65)
+    sin64 = (canonical_from_plane(state_in).double().reshape(1, 1, N, 65)
              if chained else None)
-    dso64 = canonical_from_plane(d_state.double()).reshape(1, 1, N, 65)
+    dso64 = canonical_from_plane(d_state).double().reshape(1, 1, N, 65)
     c_read, c_write, c_gw, c_v, _ = carry_backward_reference(
         read, write, g, v, WIDTHS, window, dn_bth, dd_bth, sin64, dso64)
     torch.cuda.empty_cache()

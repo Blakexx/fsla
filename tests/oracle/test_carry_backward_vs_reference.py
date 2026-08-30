@@ -23,6 +23,7 @@ import torch
 
 from rola.ops import carry as carry_ops
 from rola.ops._ext import is_available
+from rola.ops.paging import bytes_equal, from_split_planes, to_split_planes
 from tests.oracle.backward_reference import carry_backward_reference
 from tests.oracle.fixtures import Cell, canonical_from_plane, require_arm
 
@@ -77,11 +78,12 @@ def _run(cell, seed, chained):
     ds_out = (0.05 * torch.randn(cell.B * cell.H, cell.N, cell.d_v + 1, device="cuda",
                                  dtype=torch.float64, generator=gen)) if chained else None
     #: THE SEED IS THE STATE'S OWN PLANE, so it is the same atom-major view of
-    #: `[BH, N, cols]` the forward writes -- a RE-BLOCKING since P80, not a permutation.
+    #: `[BH, N, cols]` the forward writes -- a re-blocking since P80 and, since K50, the
+    #: SPLIT-PLANE pack: the state's gradients are stored in the state's own format.
     ds_plane = None
     if ds_out is not None:
-        ds_plane = ds_out.to(torch.float32).reshape(cell.B * cell.H, cell.N // 16, 16,
-                                                    cell.d_v + 1).contiguous()
+        ds_plane = to_split_planes(ds_out.to(torch.float32).reshape(
+            cell.B * cell.H, cell.N // 16, 16, cell.d_v + 1).contiguous())
     got = carry_ops.carry_backward(
         cell.read_bf, cell.write_bf, cell.g_bf.double(), cell.v_bf.double(), d_num, d_den,
         cell.widths, k=K, m=M, window=WINDOW, state_in=cell.state_in_plane(),
@@ -144,9 +146,9 @@ def test_every_cotangent_matches_the_reference(T, k_tok, gain, seed, chained):
                                 state_out=carry_ops.state_plane(
                                     cell.widths, cell.v_bf.shape[0] * cell.v_bf.shape[2],
                                     cell.v_bf.shape[-1]))
-    assert torch.equal(replay, fwd[2]), (
-        "the replay is not bit-identical to the forward's state_out: rel "
-        f"{float((replay - fwd[2]).abs().max()) / max(1e-30, float(fwd[2].abs().max())):.3e}")
+    assert bytes_equal(replay, fwd[2]), (
+        "the replay is not byte-identical to the forward's state_out: rel "
+        f"{float((from_split_planes(replay) - from_split_planes(fwd[2])).abs().max()) / max(1e-30, float(from_split_planes(fwd[2]).abs().max())):.3e}")
 
 
 def _entmax_vjp(p, dp, alpha=1.5):
@@ -261,4 +263,4 @@ def test_the_replay_is_bit_identical_at_the_flagship_arm(window, declaration):
                                       window=window,
                                       state_out=carry_ops.state_plane(widths, 1, 64),
                                       **extra)[2]
-    assert torch.equal(replay, state_out)
+    assert bytes_equal(replay, state_out)

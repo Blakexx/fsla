@@ -248,9 +248,12 @@ def step_plane(v: torch.Tensor, config: DecodeGeometry, g_read, decay,
             f"{'absent' if decay is None else 'present'}; the config is frozen for the "
             "sequence and the decay arm is part of it")
     if page_table is None:
+        #: PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the dense
+        #: plane is the same page sequence with every page resident, and `N` is page
+        #: aligned by construction (docs/internals/state.md#format).
         if state.shape != (B, H, config.N, config.cols):
             raise ValueError(
-                f"state must be [B, H, N, d_v + 1] = "
+                f"a dense state is [B, H, N, d_v + 1] = "
                 f"{(B, H, config.N, config.cols)}, got {tuple(state.shape)}")
         return state.reshape(BH, config.N, config.cols)
     if state.dim() != 3 or state.shape[1:] != (MMA_K_QUANTUM, config.cols):

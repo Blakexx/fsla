@@ -49,7 +49,7 @@ import torch
 from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
 from rola.ops.decode import _decode_step, _write_atom_bitmap
 from rola.ops.lattice import to_lattice
-from rola.ops.paging import MMA_K_QUANTUM
+from rola.ops.paging import MMA_K_QUANTUM, bytes_equal, from_split_planes, to_split_planes
 from rola.routing.factors import RouteFactors
 from tests.integration.test_decode_paging import (
     _COLS,
@@ -65,7 +65,7 @@ pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="decode is a CUDA kernel"),
 ]
 
-_WIDTHS, _BC = (16, 16), 64
+_WIDTHS, _BC = (64, 64), 128
 
 
 def _absent_one_written_atom(fixture, config, arena):
@@ -105,10 +105,14 @@ def _absent_one_atom_per_bh(fixture, config, arena):
 
 
 def _atom_rows(arena, row, column):
-    """The `[16, cols]` page an atom maps to. The caller must know it is resident."""
+    """The `[16, cols]` page an atom maps to, LOGICAL. The caller must know it is resident.
+
+    The stored page is split bf16 planes (K50), so "this atom is zero" is a claim about
+    the values it rejoins to and is read through the gather, not off the raw bytes.
+    """
     slot = int(arena.page_table[row, column])
     assert slot >= 0, "the atom is absent; there are no rows to read"
-    return arena.state[slot]
+    return from_split_planes(arena.state[slot])
 
 
 # ---------------------------------------------------------------------------
@@ -172,14 +176,14 @@ def test_a_step_no_batch_head_can_address_touches_nothing():
 
     before = arena.state.clone()
     _step(fixture, config, arena)
-    assert torch.equal(arena.state, before), "a step no batch-head could address wrote state"
+    assert bytes_equal(arena.state, before), "a step no batch-head could address wrote state"
 
     #: And the same step against the admitted set is the ordinary step, on the same
     #: buffers -- residency is an input, never a mode.
     arena.plan_exact(bitmap, fresh=False)
     arena.wait()
     _step(fixture, config, arena)
-    assert not torch.equal(arena.state, before), "the admitted step did not run"
+    assert not bytes_equal(arena.state, before), "the admitted step did not run"
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +220,7 @@ def test_gated_step_then_admit_then_replay_is_bit_identical_to_admitting_first()
     y_gated, _ = _step(fixture, config, gated, workspace=workspace)
 
     assert torch.equal(y_reference, y_gated)
-    assert torch.equal(_gathered(reference, BH), _gathered(gated, BH))
+    assert bytes_equal(_gathered(reference, BH), _gathered(gated, BH))
 
 
 def _gathered(arena, BH):
@@ -280,7 +284,8 @@ def _sequence():
             output_final_state=True)
         lattice = to_lattice(oracle_state.float(), _WIDTHS, config.lattice_k,
                              config.lattice_m)
-        atoms = lattice.reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS)
+        #: THE ARENA HOLDS THE STORED FORM (K50's split planes).
+        atoms = to_split_planes(lattice.reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS))
         table = arena.page_table
         present = table >= 0
         arena.state[table[present].long()] = atoms[present]
@@ -343,13 +348,13 @@ def test_the_captured_step_is_the_eager_step_bit_for_bit():
     graph.replay()
     torch.cuda.synchronize()
     captured_y, captured_plane = y_graph.clone(), plane.clone()
-    assert not torch.equal(captured_plane, snapshot), "the compared step did nothing"
+    assert not bytes_equal(captured_plane, snapshot), "the compared step did nothing"
 
     plane.copy_(snapshot)
     eager_y, _ = decode_step_gated(static, static_v, state)
     torch.cuda.synchronize()
     assert torch.equal(captured_y, eager_y)
-    assert torch.equal(captured_plane, plane)
+    assert bytes_equal(captured_plane, plane)
 
 
 def _make_growth(state, static):
@@ -402,7 +407,7 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     assert int(state._arena.page_table[row, column]) < 0, (
         "the held-out atom is resident; the fixture made no growth")
     resident = state._arena.page_table[row][state._arena.page_table[row] >= 0].long()
-    assert torch.equal(plane[resident], snapshot[resident]), (
+    assert bytes_equal(plane[resident], snapshot[resident]), (
         "the needy batch-head deposited under the graph")
 
     admit_growth(state)

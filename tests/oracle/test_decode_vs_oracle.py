@@ -54,6 +54,7 @@ import torch
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.lattice import permutation, to_canonical, to_lattice
 from rola.ops.naive import naive_rola
+from rola.ops.paging import bytes_equal, from_split_planes, to_split_planes
 from rola.routing.types import LeafMassDecay
 from tests.oracle.oracle_fixtures import _decay_dials, _simplex, _topology
 from tests.oracle.tolerances import BF16_RTOL
@@ -91,8 +92,12 @@ def _chunk_tokens() -> int:
 #:                                              walk unit is two atoms rather than one
 #:
 #: The order is positional in the parametrize ids and does not change.
-_TOPOLOGIES = [(16,), (33,), (8, 16), (7, 9), (4, 4, 4), (3, 5, 7), (2, 3, 4, 4), (64, 64),
-               (16, 16, 16), (8, 8, 8, 8)]
+#: PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29), so decode's cells
+#: are CARRY'S topologies and not a decode-only set: `SMALL`, `DEEP3` and `DEEP4` of
+#: `test_carry_vs_oracle.py`, the three `N = 4096` arms that cover depth two, three and
+#: four. The ragged ones this list used to carry -- (33,), (7, 9), (3, 5, 7), (2, 3, 4, 4)
+#: -- are gone with the ragged state: no descriptor can name them.
+_TOPOLOGIES = [(64, 64), (16, 16, 16), (8, 8, 8, 8)]
 
 
 def _lattice_mask(mask, config):
@@ -145,9 +150,9 @@ def _kernel_realized_support(levels, widths, B, H, device, d_v=64):
     write = tuple(t.float() for t in levels)
     g_write = torch.ones(B, 1, H, **f32)
     v = torch.ones(B, 1, H, d_v, **f32)
-    state = torch.zeros(B, H, N, config.cols, **f32)
+    state = to_split_planes(torch.zeros(B, H, N, config.cols, **f32))
     _y, state, _ws = _decode_step(v, empty_read, write, None, g_write, config, state)
-    return (state.reshape(BH, N, config.cols) != 0).any(-1)
+    return (from_split_planes(state).reshape(BH, N, config.cols) != 0).any(-1)
 
 
 def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
@@ -198,10 +203,14 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     config = derive_decode_geometry(topology, d_v=d_v, decay=decay is not None, BH=B * H,
                                   device=device, n_split=n_split)
     #: THE SEAM. The oracle's plane is canonical forever; the kernel's is lattice-ordered.
-    state = (torch.zeros(B, H, N, cols, device=device, dtype=torch.float32)
-             if initial_state is None
-             else to_lattice(initial_state.to(torch.float32), widths,
-                             config.lattice_k, config.lattice_m))
+    #: THE STORED FORM IS THE SPLIT PLANES (K50): the seam packs after the lattice
+    #: permutation and unpacks before the inverse, because a page is 16 leaves OF THAT
+    #: ORDER and the kernel reads the bytes, not the logical view.
+    state = to_split_planes(
+        torch.zeros(B, H, N, cols, device=device, dtype=torch.float32)
+        if initial_state is None
+        else to_lattice(initial_state.to(torch.float32), widths,
+                        config.lattice_k, config.lattice_m))
     workspace = None
     y_outs = []
     for s in range(steps):
@@ -211,7 +220,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
             None if g_reads[s] is None else g_reads[s].float(), g_writes[s].float(),
             config, state, decay=decay, workspace=workspace)
         y_outs.append(y)
-    state = to_canonical(state, widths, config.lattice_k, config.lattice_m)
+    state = to_canonical(from_split_planes(state), widths, config.lattice_k, config.lattice_m)
 
     return dict(y=y_outs, state=state, y_ref=y_refs, state_ref=ref_state, config=config,
                 workspace=workspace, read_levels=read_levels, write_levels=write_levels,
@@ -269,7 +278,7 @@ def test_g4_matches_the_canonical_oracle(widths, p_read, p_write):
 
 @pytest.mark.parametrize("d_v", [32, 64])
 def test_g4_both_value_widths(d_v):
-    _assert_oracle(_case((8, 16), d_v, 2, 2, "global", 0.5, 0.5, seed=77))
+    _assert_oracle(_case((64, 64), d_v, 2, 2, "global", 0.5, 0.5, seed=77))
 
 
 def test_the_empty_support_corner_is_inert_rather_than_undefined():
@@ -291,19 +300,20 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     reference.
     """
     device = "cuda"
-    widths, d_v, B, H = (8, 16), 64, 1, 2
+    widths, d_v, B, H = (64, 64), 64, 1, 2
     topology = _topology(widths)
     zeros = tuple(torch.zeros(B, 1, H, w, device=device, dtype=torch.float32) for w in widths)
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
     config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=B * H, device=device)
-    m0 = 0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32)
+    m0 = to_split_planes(0.1 * torch.randn(B, H, config.N, config.cols, device=device,
+                                      dtype=torch.float32))
     state = m0.clone()
     y, state, _workspace = _decode_step(v, zeros, zeros, None, g_write, config, state)
     assert not _leaf_support(zeros, widths, B, H, device).any(), (
         "the fixture did not produce M = 0")
     assert torch.equal(y, torch.zeros_like(y))
-    assert torch.equal(state, m0), "an untouched state must be byte-unchanged"
+    assert bytes_equal(state, m0), "an untouched state must be byte-unchanged"
 
 
 @pytest.mark.parametrize("n_split", [7, 64])
@@ -315,8 +325,8 @@ def test_more_ctas_than_rows_is_inert(n_split):
     it launches empty CTAs on every call. They must contribute an exact zero to the
     fixed-order combine, not an uninitialized workspace slot.
     """
-    ref = _case((8, 16), 64, 1, 2, "global", 0.3, 0.3, seed=4, n_split=1)
-    got = _case((8, 16), 64, 1, 2, "global", 0.3, 0.3, seed=4, n_split=n_split)
+    ref = _case((64, 64), 64, 1, 2, "global", 0.3, 0.3, seed=4, n_split=1)
+    got = _case((64, 64), 64, 1, 2, "global", 0.3, 0.3, seed=4, n_split=n_split)
     assert torch.equal(ref["state"], got["state"])
     scale = max(1e-30, float(ref["y"][-1].abs().max()))
     assert float((got["y"][-1] - ref["y"][-1]).abs().max()) / scale < DECODE_RTOL
@@ -326,11 +336,12 @@ def test_the_widest_staged_topology():
     """``N = 262,144``: the widest topology the staged carrier reaches, on the oracle.
 
     The lattice is walked from its factors, so ``N`` costs the walk nothing structurally
-    -- which is exactly why it has to be gated rather than assumed. ``(256, 256, 4)``
-    also gives an unequal capacity share (``k = 4, m = 4`` puts ``s_2 = 4`` on the narrow
-    level), so ``pi`` here is not a uniform digit rotation.
+    -- which is exactly why it has to be gated rather than assumed. The widths are
+    LAWFUL (powers of two at or above 16, one admission law with prefill), and the
+    capacity share is still unequal across the three levels, so ``pi`` here is not a
+    uniform digit rotation.
     """
-    widths = (256, 256, 4)
+    widths = (64, 64, 64)
     #: `p = 0.5` rather than something thinner, and `B = 2, H = 3` rather than `1, 2`:
     #: `_simplex` refuses a vacuously dense fixture, and the width-4 level is narrow
     #: enough that a thin Bernoulli mask zeroes every entry and the empty-row repair
@@ -343,7 +354,7 @@ def test_the_widest_staged_topology():
 # G4 -- decay
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("widths", [(16,), (8, 16), (3, 5, 7), (4, 4, 4)])
+@pytest.mark.parametrize("widths", _TOPOLOGIES)
 @pytest.mark.parametrize("p_read,p_write", [(1.0, 1.0), (0.4, 0.3)])
 def test_g4_decay_matches_the_canonical_oracle(widths, p_read, p_write):
     """Survival is inclusive at ``j = t``: the deposit at ``t`` is read at ``t`` with
@@ -361,7 +372,7 @@ def test_g4_decay_matches_the_canonical_oracle(widths, p_read, p_write):
     _assert_oracle(_case(widths, 64, 2, 3, "global", p_read, p_write, seed=1234, decay_dials=dials))
 
 
-@pytest.mark.parametrize("widths", [(8, 16), (3, 5, 7)])
+@pytest.mark.parametrize("widths", _TOPOLOGIES)
 def test_g4_decay_hot_dials(widths):
     """Near-unit retention, where ``1 - rate`` cancels catastrophically and only the
     ``log1pf`` composition recovers the bits."""
@@ -378,8 +389,8 @@ def test_g4_decay_on_the_stored_write_representation():
     producer actually hands decode, run against the oracle on the same tensors.
     """
     generator = torch.Generator(device="cuda").manual_seed(31337)
-    dials = _decay_dials((8, 16), 3, generator, "cuda")
-    _assert_oracle(_case((8, 16), 64, 2, 3, "global", 0.5, 0.4, seed=808,
+    dials = _decay_dials((64, 64), 3, generator, "cuda")
+    _assert_oracle(_case((64, 64), 64, 2, 3, "global", 0.5, 0.4, seed=808,
                          decay_dials=dials, stored_bf16=True))
 
 
@@ -388,7 +399,7 @@ def test_g4_decay_on_the_stored_write_representation():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("n_split", [1, 2, 7, 64])
-@pytest.mark.parametrize("widths", [(8, 16), (64, 64)])
+@pytest.mark.parametrize("widths", _TOPOLOGIES)
 def test_g1_is_byte_reproducible_against_itself(n_split, widths):
     """TWO RUNS OF THIS BINARY GIVE BYTE-IDENTICAL ``y`` AND ``state``.
 
@@ -403,7 +414,7 @@ def test_g1_is_byte_reproducible_against_itself(n_split, widths):
     assert torch.equal(a["state"], b["state"]), "decode's state is not run-reproducible"
 
 
-@pytest.mark.parametrize("widths", [(8, 16), (64, 64)])
+@pytest.mark.parametrize("widths", _TOPOLOGIES)
 def test_g2_state_is_invariant_across_n_split(widths):
     """``state`` is byte-identical across ``n_split``, UNCONDITIONALLY.
 
@@ -428,7 +439,7 @@ def test_g2_state_is_invariant_across_n_split(widths):
 # G6 -- the multi-step recurrence
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("widths", [(8, 16), (7, 9)])
+@pytest.mark.parametrize("widths", _TOPOLOGIES)
 @pytest.mark.parametrize("decay", [False, True])
 def test_g6_sixty_four_chained_steps(widths, decay):
     """64 decode steps against 64 chained oracle steps.
@@ -511,12 +522,13 @@ def test_g7_prefill_decode_seam(widths):
                                   device=device)
     #: THE SEAM ITSELF: the entry state is the oracle's, so it crosses into lattice order
     #: here and its answer crosses back.
-    entry = to_lattice(pre["state"], widths, config.lattice_k, config.lattice_m)
+    entry = to_split_planes(to_lattice(pre["state"], widths, config.lattice_k, config.lattice_m))
     y_dec, state_dec, _ = _decode_step(
         step_v.float(), tuple(t.float() for t in step_read),
         tuple(t.float() for t in step_write), None, step_gw.float(),
         config, entry)
-    state_dec = to_canonical(state_dec, widths, config.lattice_k, config.lattice_m)
+    state_dec = to_canonical(from_split_planes(state_dec), widths, config.lattice_k,
+                             config.lattice_m)
 
     #: THE WHOLE SEQUENCE, on the oracle: prefill and step concatenated, so the
     #: reference sees exactly what the two kernel legs together saw.
