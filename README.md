@@ -217,6 +217,8 @@ the successor harness owes.
 
 ## Evidence
 
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the foundation: the recurrence,
+  the lattice, the state's format, the grains, the axis law and the shipped set.
 - [`docs/architecture/`](docs/architecture/README.md) — the permanent decision
   record: the self-masking theorem, the affine-recurrence rule, the factored
   representation, fp32 accumulation, closed-world codegen, the launch-geometry
