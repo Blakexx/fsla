@@ -45,7 +45,6 @@ from rola.routing.types import (
     SoftmaxActivation,
     Topology,
     UnionRouting,
-    validate_normalization,
 )
 
 __all__ = [
@@ -110,8 +109,6 @@ class RouteProducer(nn.Module):
             stack. The tags name activations from the closed registry
             (``rola/routing/activations.py``) -- users never supply property metadata.
         hidden_size / num_heads: the source stream's width and the head count.
-        normalization: the recurrence's normalization arm; ``'global'`` is the one
-            value, and any other is refused by name rather than coerced.
         bias: a learned bias on the routing projection.
         gain: whether the write-side gain is a learned projection. ``False`` removes the
             column rather than pinning it to 1, so no dead parameter is optimized.
@@ -130,7 +127,6 @@ class RouteProducer(nn.Module):
         *,
         hidden_size: int,
         num_heads: int,
-        normalization: str = "global",
         bias: bool = False,
         gain: bool = True,
         gain_bias_init: float | None = None,
@@ -158,7 +154,6 @@ class RouteProducer(nn.Module):
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.bias = bool(bias)
-        self.normalization = validate_normalization(normalization)
         self.levels = _levels
         #: The two derived views of ONE list: `routing` is the packed-projection layout
         #: the solve reads, `topology` is the routing contract the bundle and the
@@ -227,8 +222,8 @@ class RouteProducer(nn.Module):
         gains = self.side_gain(gain_logits, batch=B, tokens=T, dtype=read_stream.dtype,
                                device=read_stream.device)
         return RouteFactors(
-            topology=self.topology, normalization=self.normalization,
-            read=read_levels, write=write_levels, g_read=None,
+            topology=self.topology,
+            read=read_levels, write=write_levels,
             g_write=gains["g_write"] if write_mass is None else gains["g_write"] * write_mass,
             read_mass=read_mass)
 

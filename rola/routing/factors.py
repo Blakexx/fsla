@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 import torch
 
-from rola.routing.types import Topology, validate_normalization
+from rola.routing.types import Topology
 
 __all__ = ["RouteFactors"]
 
@@ -33,8 +33,8 @@ class RouteFactors:
 
     ``read``/``write``: one ``[B, T, H, width_l]`` level per topology level; ``write``
     is a simplex, ``read`` is a simplex SCALED by ``read_mass``.
-    ``g_read``/``g_write``: ``[B, T, H]`` side gains; ``g_read`` is ``None`` under
-    ``normalization='global'``, where the readout's ratio form fixes it to 1.
+    ``g_write``: ``[B, T, H]`` write-side gain. There is no read-side gain column at
+    all: the readout is a ratio, which fixes it to 1 identically.
     ``read_mass``: the ``[B, T, H]`` per-token scale the read levels carry, or ``None``
     for the unscaled case. :meth:`read_simplex` divides it back out.
 
@@ -43,16 +43,13 @@ class RouteFactors:
     """
 
     topology: Topology
-    normalization: str
     read: tuple[torch.Tensor, ...]
     write: tuple[torch.Tensor, ...]
-    g_read: torch.Tensor | None
     g_write: torch.Tensor
     read_mass: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         """Shapes, devices, dtypes and ``None``-ness only -- never a device reduction."""
-        object.__setattr__(self, "normalization", validate_normalization(self.normalization))
         object.__setattr__(self, "read", tuple(self.read))
         object.__setattr__(self, "write", tuple(self.write))
         if type(self.topology) is not Topology:
@@ -90,12 +87,7 @@ class RouteFactors:
                     raise ValueError(
                         f"every routing level shares one dtype; {name}[{level}] is "
                         f"{tensor.dtype} against {self.read[0].dtype}")
-        if self.g_read is not None:
-            raise ValueError(
-                "RouteFactors.g_read must be None: the readout is a ratio, so g_read := 1 "
-                "under the self-normalizing readout, so there is no read-gain column "
-                "and a supplied one would be silently ignored")
-        for name, column in (("g_read", self.g_read), ("g_write", self.g_write),
+        for name, column in (("g_write", self.g_write),
                              ("read_mass", self.read_mass)):
             if column is None:
                 continue

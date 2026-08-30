@@ -622,7 +622,7 @@ class ResolvedRouting:
 #
 # ``Activation`` (above), ``LevelRouting`` (below, already ``Independent |
 # Union``), ``IndependentRouting``, and ``UnionRouting`` are reused verbatim --
-# they already satisfy the contract's shapes. Only the topology/decay/normalization
+# they already satisfy the contract's shapes. Only the topology/decay
 # wrappers are new. These are producer-agnostic: they describe the routing
 # contract the V3 naive oracle (``fla_rola/ops/rola/naive.py``) consumes, not a
 # projection ABI. They deliberately do not reuse ``ResolvedRouting`` /
@@ -867,18 +867,3 @@ class LeafMassDecay:
 # ``kind: None | LeafMassDecay``. ``FactorizedMassDecay`` was removed and must not be
 # reintroduced here.
 DecayConfig: TypeAlias = None | LeafMassDecay
-
-#: RAW IS DEAD (ruling 2026-08-06): the self-normalizing ratio IS the design, so
-#: "global" is the one normalization. The name survives as a declared restriction
-#: (a hard check, never a coercion); revival = git.
-NORMALIZATION_KINDS = ("global",)
-Normalization: TypeAlias = str
-
-
-def validate_normalization(value: str) -> str:
-    """Validate the ``Normalization`` contract: ``global`` only (raw is dead)."""
-    if value not in NORMALIZATION_KINDS:
-        raise ValueError(
-            f"Normalization must be 'global' (raw is a dead axis; the self-normalizing "
-            f"ratio is the design, revival = git), got {value!r}")
-    return value

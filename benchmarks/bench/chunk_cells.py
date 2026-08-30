@@ -82,8 +82,7 @@ class Cell:
         template = (union_routing(1, self.alpha) if self.alpha is not None
                    else dense_routing(1))
         levels = [template.at(w) for w in self.widths]
-        producer = RouteProducer(levels, hidden_size=self.hidden_size, num_heads=self.H,
-                                 normalization="global")
+        producer = RouteProducer(levels, hidden_size=self.hidden_size, num_heads=self.H)
         layer = RoLA(producer, d_v=self.d_v, decay=None, layer_idx=0)
         layer = layer.to("cuda", self.torch_dtype).eval()
         if self.logit_gain != 1.0:

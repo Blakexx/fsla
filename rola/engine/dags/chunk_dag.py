@@ -116,13 +116,6 @@ def validate_context(ctx: ChunkContext) -> None:
             f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair; "
             "build one with RouteProducer, or construct a RouteFactors directly -- its "
             "invariants are checked either way.")
-    #: THE GAIN LAYOUT AGAINST THE ARM, structurally: the readout is a ratio, which fixes
-    #: `g_read := 1`, so a supplied one would be silently ignored. Checked here rather
-    #: than trusted from the producer because the bundle is hand-constructible.
-    if routes.g_read is not None:
-        raise ValueError(
-            "this bundle carries a g_read tensor: the readout is a ratio, so g_read := 1 "
-            "under the self-normalizing readout, and there is no read-gain column")
     if not isinstance(v, torch.Tensor) or v.ndim != 4:
         raise ValueError(f"v must be [B, T, H, d_v], got {getattr(v, 'shape', type(v).__name__)}")
     #: THE LAST DIM IS NOT CHECKED, IT IS READ. `d_v` is the value stream's own width

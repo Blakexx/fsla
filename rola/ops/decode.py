@@ -224,7 +224,7 @@ def guard_no_grad(operands) -> None:
             "torch.no_grad.")
 
 
-def step_plane(v: torch.Tensor, config: DecodeGeometry, g_read, decay,
+def step_plane(v: torch.Tensor, config: DecodeGeometry, decay,
                state: torch.Tensor, page_table: torch.Tensor | None) -> torch.Tensor:
     """The plane the kernel indexes, and the per-step agreement checks that find it.
 
@@ -239,9 +239,6 @@ def step_plane(v: torch.Tensor, config: DecodeGeometry, g_read, decay,
     BH = B * H
     if d_v != config.d_v:
         raise ValueError(f"v's d_v={d_v} disagrees with the frozen config's {config.d_v}")
-    if g_read is not None:
-        raise ValueError(
-            "normalization='global' fixes g_read := 1 (raw is dead); pass g_read=None")
     if (decay is not None) != config.has_decay:
         raise ValueError(
             f"the frozen config says has_decay={config.has_decay} but decay is "
@@ -353,7 +350,6 @@ def _decode_step(
     v: torch.Tensor,
     read_levels: tuple[torch.Tensor, ...],
     write_levels: tuple[torch.Tensor, ...],
-    g_read: torch.Tensor | None,
     g_write: torch.Tensor,
     config: DecodeGeometry,
     state: torch.Tensor,
@@ -367,9 +363,10 @@ def _decode_step(
     """The RAW-TENSOR entry: the step's own bodies, in the step's order.
 
     ``v`` is ``[B, 1, H, d_v]``; the level tensors are ``[B, 1, H, width_l]``;
-    ``g_write`` is ``[B, 1, H]`` and ``g_read`` is the same or ``None`` under the
-    global arm. ``state`` is the dense ``[B, H, N, d_v + 1]`` plane, or the arena's
-    ``[slots, 16, d_v + 1]`` one under ``page_table``.
+    ``g_write`` is ``[B, 1, H]``. There is no read-side gain at all: the readout
+    is a ratio, which fixes it to 1 identically. ``state`` is the dense
+    ``[B, H, N, d_v + 1]`` plane, or the arena's ``[slots, 16, d_v + 1]`` one under
+    ``page_table``.
 
     ``normalize`` is the per-read-level answer to "does this level still carry its own
     mass"; ``None`` is the ordinary case here, a caller already on the simplex. The
@@ -378,9 +375,9 @@ def _decode_step(
 
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]``.
     """
-    guard_no_grad((v, g_read, g_write, *read_levels, *write_levels,
+    guard_no_grad((v, g_write, *read_levels, *write_levels,
                    *(decay.dials if decay is not None else ())))
-    plane = step_plane(v, config, g_read, decay, state, page_table)
+    plane = step_plane(v, config, decay, state, page_table)
     BH = v.shape[0] * v.shape[2]
     if workspace is None:
         workspace = DecodeScratch.build(config, BH, v.device)

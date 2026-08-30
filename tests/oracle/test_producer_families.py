@@ -56,7 +56,7 @@ def _producer_and_stream(family):
     torch.manual_seed(c["seed"])
     producer = build_routes(
         hidden_size=64, num_heads=c["H"], widths=c["widths"],
-        routing=union_routing(1, alpha=1.5), normalization=c["norm"]).cuda()
+        routing=union_routing(1, alpha=1.5)).cuda()
     B, T = c["B"], c["T"]
     gen = torch.Generator(device="cuda").manual_seed(c["seed"] + 1)
     eps = torch.randn(B, T, 64, device="cuda", generator=gen)

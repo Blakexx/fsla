@@ -170,12 +170,10 @@ def test_the_arm_takes_no_width_threshold():
 # ---------------------------------------------------------------------------
 
 def test_the_arm_envelope_names_each_clause_in_order():
-    good = dict(widths=(64, 64), d_v=64, normalization="global", decay=None,
+    good = dict(widths=(64, 64), d_v=64, decay=None,
                 arm=Arm(32, 128))
     assert arm_envelope(**good) is None
     assert arm_envelope(**{**good, "d_v": 48}) == "d_v=48; the chunk matrix is built at d_v=64"
-    assert arm_envelope(**{**good, "normalization": "local"}) == (
-        "normalization='local'; the chunk consumer is global-only")
     assert "decay is not implemented in the operator" in arm_envelope(**{**good, "decay": object()})
     assert arm_envelope(**{**good, "widths": (64, 16)}) == (
         "widths=(64, 16); the built manifest is uniform-width")
@@ -186,7 +184,7 @@ def test_the_arm_envelope_names_each_clause_in_order():
 def test_the_arm_envelope_refuses_the_widest_clause_first():
     """A call outside several clauses is named by the FIRST one, so the sentence a
     caller reads is stable rather than a race between checks."""
-    assert arm_envelope(widths=(64, 16), d_v=48, normalization="local", decay=object(),
+    assert arm_envelope(widths=(64, 16), d_v=48, decay=object(),
                         arm=None).startswith("d_v=48")
 
 

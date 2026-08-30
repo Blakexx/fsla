@@ -78,7 +78,7 @@ multiplication by exactly `1.0` and addition of exactly `0.0`, both
 bit-preserving. **Nothing in the leaf's row moves.**
 
 There is ONE such line and not two. The mass state is the same recurrence run on
-a value of all ones, so under `normalization="global"` it is the state's last
+a value of all ones, so it is the state's last
 column (`deposit_value` carries a ones column) rather than a second update with
 its own copy of the argument. The substitution therefore covers value and mass
 together, which is the strongest form the citation can take: there is no second

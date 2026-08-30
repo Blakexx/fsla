@@ -164,7 +164,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     N = math.prod(widths)
     cols = d_v + (1 if norm == "global" else 0)
 
-    read_levels, write_levels, g_reads, g_writes, vs = [], [], [], [], []
+    read_levels, write_levels, g_writes, vs = [], [], [], []
     for _ in range(steps):
         read_levels.append(tuple(_simplex((B, 1, H, w), p_read, generator, device) for w in widths))
         write = tuple(_simplex((B, 1, H, w), p_write, generator, device) for w in widths)
@@ -176,9 +176,6 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
             write = tuple(t.to(torch.bfloat16).to(t.dtype) for t in write)
         write_levels.append(write)
         g_writes.append(torch.rand(B, 1, H, device=device, dtype=torch.float64, generator=generator) + 0.5)
-        g_reads.append(None if norm == "global"
-                       else torch.rand(B, 1, H, device=device, dtype=torch.float64,
-                                       generator=generator) + 0.5)
         vs.append(torch.randn(B, 1, H, d_v, device=device, dtype=torch.float64, generator=generator))
 
     initial_state = None
@@ -195,8 +192,8 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     y_refs = []
     for s in range(steps):
         y_ref, ref_state = naive_rola(
-            vs[s], read_levels[s], write_levels[s], g_reads[s], g_writes[s], topology,
-            decay, norm, initial_state=ref_state, output_final_state=True)
+            vs[s], read_levels[s], write_levels[s], g_writes[s], topology,
+            decay, initial_state=ref_state, output_final_state=True)
         y_refs.append(y_ref)
 
     # ---- decode ---------------------------------------------------------------
@@ -217,7 +214,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
         y, state, workspace = _decode_step(
             vs[s].float(), tuple(t.float() for t in read_levels[s]),
             tuple(t.float() for t in write_levels[s]),
-            None if g_reads[s] is None else g_reads[s].float(), g_writes[s].float(),
+            g_writes[s].float(),
             config, state, decay=decay, workspace=workspace)
         y_outs.append(y)
     state = to_canonical(from_split_planes(state), widths, config.lattice_k, config.lattice_m)
@@ -481,10 +478,10 @@ def _oracle_prefill(widths, d_v, B, T, H, generator, device):
     write_levels = tuple(_simplex((B, T, H, w), 0.4, generator, device) for w in widths)
     g_write = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=generator) + 0.5
     v = torch.randn(B, T, H, d_v, device=device, dtype=torch.float64, generator=generator)
-    y, state = naive_rola(v, read_levels, write_levels, None, g_write,
-                          topology, None, "global", output_final_state=True)
+    y, state = naive_rola(v, read_levels, write_levels, g_write,
+                          topology, None, output_final_state=True)
     return dict(topology=topology, read_levels=read_levels, write_levels=write_levels,
-                g_read=None, g_write=g_write, v=v, y=y,
+                g_write=g_write, v=v, y=y,
                 state=state.float())
 
 
@@ -536,8 +533,8 @@ def test_g7_prefill_decode_seam(widths):
     y_ref, state_ref = naive_rola(
         torch.cat([pre["v"], step_v], dim=1),
         cat(pre["read_levels"], step_read), cat(pre["write_levels"], step_write),
-        None, torch.cat([pre["g_write"], step_gw], dim=1),
-        pre["topology"], None, "global", output_final_state=True)
+        torch.cat([pre["g_write"], step_gw], dim=1),
+        pre["topology"], None, output_final_state=True)
 
     scale_y = max(1e-30, float(y_ref[:, L:L + 1].abs().max()))
     scale_s = max(1e-30, float(state_ref.abs().max()))

@@ -222,7 +222,6 @@ def test_two_exact_zero_sides_still_require_one_shared_solve():
 class _StubBundle:
     def __init__(self, topology):
         self.topology = topology
-        self.normalization = "global"
         self.device = torch.device("cuda")
 
 

@@ -45,7 +45,7 @@ WIDTHS = (4, 4)
 B, T, H, D_V = 2, 5, 2, 8
 
 
-def _case(*, decay_on: bool, normalization: str = "global", seed: int = 7):
+def _case(*, decay_on: bool, seed: int = 7):
     """One small differentiable cell; every operand is a distinct leaf tensor."""
     g = torch.Generator().manual_seed(seed)
     topology = Topology(levels=tuple(_ROUTING.at(w) for w in WIDTHS))
@@ -73,7 +73,7 @@ def _case(*, decay_on: bool, normalization: str = "global", seed: int = 7):
     def run(write_override=None):
         return naive_rola(
             operands["v"], read, write if write_override is None else write_override,
-            None, operands["g_write"], topology, decay, normalization,
+            operands["g_write"], topology, decay,
             output_final_state=True)
 
     return operands, write, run
@@ -100,9 +100,8 @@ def _directional(run, write, direction, *, step=1e-5):
 
 
 @pytest.mark.parametrize("decay_on", [False, True])
-@pytest.mark.parametrize("normalization", ["global"])
 def test_the_clock_is_detached_so_autograd_is_deliberately_not_the_forwards_derivative(
-        decay_on, normalization):
+        decay_on):
     """Claim 1, and it is a DIFFERENCE claim, not an agreement one.
 
     The write levels feed BOTH the deposit and the clock, so the true derivative of
@@ -111,7 +110,7 @@ def test_the_clock_is_detached_so_autograd_is_deliberately_not_the_forwards_deri
     DISAGREE, and with decay OFF -- no clock in the recurrence at all -- they must
     agree, which is what proves the disagreement is the clock and not the step size.
     """
-    operands, write, run = _case(decay_on=decay_on, normalization=normalization)
+    operands, write, run = _case(decay_on=decay_on)
     y, state = run()
     analytic = torch.autograd.grad(
         outputs=(y, state), inputs=list(write),
@@ -133,10 +132,9 @@ def test_the_clock_is_detached_so_autograd_is_deliberately_not_the_forwards_deri
 
 
 @pytest.mark.parametrize("decay_on", [False, True])
-@pytest.mark.parametrize("normalization", ["global"])
-def test_every_operand_the_result_depends_on_still_gets_a_real_gradient(decay_on, normalization):
+def test_every_operand_the_result_depends_on_still_gets_a_real_gradient(decay_on):
     """Claim 2, with the NONZERO half that `is not None` alone would not give."""
-    operands, _write, run = _case(decay_on=decay_on, normalization=normalization)
+    operands, _write, run = _case(decay_on=decay_on)
     y, state = run()
     grads = _grads(operands, y, state)
     expected = list(operands)
@@ -166,10 +164,9 @@ def test_the_oracle_declares_the_none_answer_in_its_docstring():
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float64])
-@pytest.mark.parametrize("normalization", ["global"])
-def test_both_outputs_are_fp64_whatever_the_inputs_were(dtype, normalization):
+def test_both_outputs_are_fp64_whatever_the_inputs_were(dtype):
     """Claim 4 (audit F2): the fp64 oracle returns fp64, and the two agree."""
-    operands, _write, run = _case(decay_on=True, normalization=normalization)
+    operands, _write, run = _case(decay_on=True)
     lowered = {}
     for key, tensor in operands.items():
         lowered[key] = tensor.detach().to(dtype)
@@ -179,8 +176,8 @@ def test_both_outputs_are_fp64_whatever_the_inputs_were(dtype, normalization):
     dials = tuple(lowered[f"dial{i}"] for i in range(len(WIDTHS)))
     y, state = naive_rola(
         lowered["v"], read, write,
-        lowered.get("g_read"), lowered["g_write"], topology,
-        LeafMassDecay(dials=dials), normalization, output_final_state=True)
+        lowered["g_write"], topology,
+        LeafMassDecay(dials=dials), output_final_state=True)
     assert y.dtype is torch.float64, (
         f"y came back as {y.dtype} for {dtype} inputs; the oracle returns fp64")
     assert state.dtype is torch.float64, f"the final state came back as {state.dtype}"

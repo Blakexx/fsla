@@ -112,7 +112,6 @@ def instantiation_of(config: Mapping[str, Any]) -> dict[str, Any]:
 #: backwards.
 REFUSAL_CLAUSES: Mapping[str, str] = {
     "d_v": "d_v=",
-    "normalization": "normalization=",
     "decay": "decay",
     "widths": "widths=",
     "topology": "topology (",
@@ -132,8 +131,6 @@ def kernel_refusal(config: Mapping[str, Any]) -> str | None:
     widths = tuple(config["widths"])
     if config["d_v"] != BUILT_DV:
         return "d_v"
-    if config["norm"] != "global":
-        return "normalization"
     if config["decay"]:
         return "decay"
     if len(set(widths)) != 1:

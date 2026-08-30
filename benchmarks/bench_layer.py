@@ -193,18 +193,18 @@ def run(*, reps: int, warmup: int, L: int, B: int, H: int, d_v: int, branches: l
     rows: list[dict] = []
 
     #: TWO DEAD AXES RETIRED, the same pair P67 S5 retired from `bench_scaling.py`
-    #: and this file was never swept for. `normalization='raw'` is refused outright by
-    #: `validate_normalization` -- the mass column is unconditional -- and a
-    #: decay-configured layer is refused by the chunk arm (`arm_envelope`), so it
-    #: dispatches to the reference and the `last_execution_backend` assert below then
-    #: fails. Both raised on their first cell. The columns stay in the row, as the
-    #: CONSTANTS they are, so a reader of an old JSON beside a new one is comparing
-    #: the same arm.
+    #: and this file was never swept for. Raw normalization used to be refused
+    #: outright (the mass column is unconditional; the host axis itself is now
+    #: deleted, G4) -- and a decay-configured layer is refused by the chunk arm
+    #: (`arm_envelope`), so it dispatches to the reference and the
+    #: `last_execution_backend` assert below then fails. Both raised on their first
+    #: cell. The columns stay in the row, as the CONSTANTS they are, so a reader of
+    #: an old JSON beside a new one is comparing the same arm.
     torch.manual_seed(0)
     template = union_routing(1, 1.5) if side == "sparse" else dense_routing(1)
     levels = [template.at(w) for w in branches]
     routes = RouteProducer(
-        levels, hidden_size=hidden, num_heads=H, normalization="global")
+        levels, hidden_size=hidden, num_heads=H)
     layer = RoLA(
         routes, d_v=d_v, decay=None, layer_idx=0,
     ).to("cuda", dtype)

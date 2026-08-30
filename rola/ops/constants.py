@@ -11,8 +11,8 @@ one-API rule exists to forbid (audit finding F6).
 
 from __future__ import annotations
 
-#: The readout denominator's floor: ``y[t] = num[t] / (den[t] + READOUT_EPS)``
-#: under ``normalization="global"``.
+#: The readout denominator's floor: ``y[t] = num[t] / (den[t] + READOUT_EPS)`` --
+#: the readout is a ratio, and this is the one form it has.
 #:
 #: It is a DEFINITION constant, not a guard. ``den[t] = sum_s R[t,s] * mass[t,s]``
 #: is zero exactly when the token reads only leaves no token has written yet --

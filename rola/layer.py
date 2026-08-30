@@ -5,8 +5,8 @@
     RoLA(routes, d_v=..., decay=..., layer_idx=...)
 
 ``routes`` is the feature-map slot: any callable producing a
-:class:`~rola.routing.factors.RouteFactors` bundle that also declares the topology and
-the normalization arm. :class:`~rola.routing.producer.RouteProducer` is the one this
+:class:`~rola.routing.factors.RouteFactors` bundle that also declares the topology.
+:class:`~rola.routing.producer.RouteProducer` is the one this
 package ships.
 It also carries ``hidden_size`` and ``num_heads``, so the layer reads them off it.
 ``d_v`` is the per-head value width, which is the LAYER's: it sizes ``v_proj`` and
@@ -107,7 +107,7 @@ class RoLA(nn.Module):
         routes: the feature-map slot -- any callable returning a
             :class:`~rola.routing.factors.RouteFactors`, typically a
             :class:`~rola.routing.producer.RouteProducer`. It owns the topology (levels,
-            widths), the normalization arm and the side gains, because those are facts
+            widths) and the side gains, because those are facts
             about the map rather than about the layer
             wrapping it, and it owns ``hidden_size``/``num_heads``, which the layer
             reads off it rather than taking a second declaration of.
@@ -133,17 +133,17 @@ class RoLA(nn.Module):
     ) -> None:
         super().__init__()
         #: THE PRODUCER IS A DUCK, so this is a STRUCTURAL check and not an isinstance
-        #: one: the layer reads four facts off the slot and calls it, and anything that
-        #: answers those four and returns a well-formed bundle is a feature map. The
+        #: one: the layer reads three facts off the slot and calls it, and anything that
+        #: answers those three and returns a well-formed bundle is a feature map. The
         #: check exists so a missing attribute is named here rather than surfacing as an
         #: AttributeError inside a forward.
-        missing = [name for name in ("hidden_size", "num_heads", "topology", "normalization")
+        missing = [name for name in ("hidden_size", "num_heads", "topology")
                    if not hasattr(routes, name)]
         if missing or not callable(routes):
             raise TypeError(
                 "RoLA's `routes` argument is the feature-map slot: a callable producing a "
-                "RouteFactors bundle, which also declares hidden_size, num_heads, topology "
-                f"and normalization. {type(routes).__name__} is missing {missing or ['__call__']}. "
+                "RouteFactors bundle, which also declares hidden_size, num_heads and topology. "
+                f"{type(routes).__name__} is missing {missing or ['__call__']}. "
                 "rola.RouteProducer is the one this package ships.")
         hidden_size = routes.hidden_size
         num_heads = routes.num_heads
@@ -183,10 +183,6 @@ class RoLA(nn.Module):
     @property
     def head_v_dim(self) -> int:
         return self.d_v
-
-    @property
-    def normalization(self) -> str:
-        return self.routes.normalization
 
     def validate_decode_envelope(self, *operation_inputs) -> None:
         """THE DECODE ARM'S OWN CLAUSE: it is forward-only and has no node.

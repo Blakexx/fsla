@@ -75,7 +75,6 @@ the no-fallback rule forbids.
 | the module's mode (layer only) | `eval()` | `BackwardNotImplemented` |
 | device | CUDA | refused |
 | `d_v` | `64` | refused |
-| `normalization` | `"global"` | refused |
 | widths | uniform (`len(set(widths)) == 1`) | refused (a jagged topology) |
 | `(D, B)` | the manifest's combinations (`rola.engine.facts.manifest`'s `chunk_arms()`) | refused |
 | `T` | any length | — |
@@ -124,7 +123,7 @@ accretion nowhere to land.
 ### 2.1 The bundle IS the contract
 
 ```python
-RouteFactors(topology, normalization, read, write, g_read, g_write, read_mass=None)
+RouteFactors(topology, read, write, g_write, read_mass=None)
 ```
 
 **The stored form is bf16.** The routing sides have one consumer, and it reads bf16, so
@@ -147,17 +146,18 @@ stored levels, the side gains, the read mass and the topology they are shaped by
 nothing else, and in particular no declaration a caller could pair with tensors that do
 not describe it. `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than
 the provenance: one level per topology level at that level's width, one shared
-`[B, T, H]` prefix, one device, one dtype, `g_read` absent (the ratio readout fixes
-`g_read := 1`, so a supplied column would be silently ignored),
-`g_write` and (when present) `read_mass` shaped `[B, T, H]`. A test that plants a
+`[B, T, H]` prefix, one device, one dtype,
+`g_write` and (when present) `read_mass` shaped `[B, T, H]`. There is no `g_read`
+field at all — the ratio readout fixes the read-side gain to 1 identically, so there
+is nothing for a column to override. A test that plants a
 specific routing pattern builds one directly and is held to exactly those invariants.
 Unit-sum-ness is deliberately not among them: it is a device reduction per level per
 call, it is the shipped producer's own output guarantee, and conformance fixtures plant
 non-canonical amplitudes on purpose. The op still type-gates on the class, so handing it
 bare tensors is still a clean refusal.
 
-A producer also owns the topology (`routes.topology`, `routes.widths`) and the
-normalization arm, because both are facts about the map rather than about the layer
+A producer also owns the topology (`routes.topology`, `routes.widths`), because that is
+a fact about the map rather than about the layer
 wrapping it. It does NOT own `d_v`: the value width is the width of the state each leaf
 holds, which is a fact about the value stream — the layer sizes `v_proj`/`o_proj` with
 it and the op reads it off `v.shape[-1]` at call time.
@@ -169,10 +169,10 @@ projection. `gain=False` removes the column rather than pinning it, so a disable
 is a narrower parameter and not a parameter with an identically zero gradient.
 
 **The side gain is routing's, and it rides the bundle.** Two things put it there
-rather than on the layer. Its SHAPE is defined by the normalization arm — the ratio
-readout fixes `g_read := 1`, so the write side carries the only gain column there is —
-so a layer-owned gain producer would have to be told the routing arm in order to know
-its own columns, which is the coupling running backwards. And the gain is where the
+rather than on the layer. There is no read-side gain at all — the ratio readout fixes
+it to 1 identically — so the write side carries the only gain column there is, and
+a layer-owned gain producer would have to be told that in order to know its own
+columns, which is the coupling running backwards. And the gain is where the
 per-level mass product lands: the producer folds
 each level's mass into it, so the gain and the routing mass are the same number by the
 time any consumer sees either. It rides the bundle rather than arriving as a third op
@@ -235,15 +235,14 @@ the production call it rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
 ### 2.3 The shipped producer
 
 ```python
-RouteProducer(levels, *, hidden_size, num_heads, normalization='global',
+RouteProducer(levels, *, hidden_size, num_heads,
               bias=False, gain=True, gain_bias_init=None, gain_config=None)
 ```
 
 A learned packed per-head router projection, solved with the exact production
 entmax/softmax closed form, folded, gained, and returned as one bundle. Construction
-validates the whole assembly — widths in range, a buildable topology, a gain layout
-consistent with the normalization arm — so an unbuildable model fails on the line that
-built it.
+validates the whole assembly — widths in range, a buildable topology, a gain layout —
+so an unbuildable model fails on the line that built it.
 
 **`levels` is the configuration, and it is a LIST.** One entry per routing level,
 outermost first, each carrying that level's WHOLE spec:
@@ -289,8 +288,8 @@ This is sound because no producer-specific execution path exists: the consumer e
 tensors and cannot tell what produced them — no producer identity reaches the kernel's
 parameters at all. Support bits are computed FROM the tensors, so a foreign producer
 changes nothing about correctness. Its only cost is inside its own module. The layer's
-`routes` slot checks STRUCTURE for the same reason: callable, plus the four facts the
-layer reads (`hidden_size`, `num_heads`, `topology`, `normalization`).
+`routes` slot checks STRUCTURE for the same reason: callable, plus the three facts the
+layer reads (`hidden_size`, `num_heads`, `topology`).
 
 A level filled by a producer that does not name one of our activations is *opaque*: it
 declares `OpaqueRouting(width)` and reads the `("opaque", None)` registry row, whose

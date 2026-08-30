@@ -56,19 +56,17 @@ def _params(topology: Topology, *, B, L, H, dm, dtype, seed=0, gain_sides=2):
     return x, route_W, gain_W, gain_bias, v
 
 
-@pytest.mark.parametrize("normalization", ["global"])
 @pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
-def test_producer_output_satisfies_oracle_contract_and_differentiates(normalization, dtype):
+def test_producer_output_satisfies_oracle_contract_and_differentiates(dtype):
     """Item 4: run the Stage 1 oracle end-to-end on the producer's output, fp64
     and fp32, and check gradients reach every producer input (value stream,
     router weights, side gains)."""
     topology = _topology(mixed=True)
     B, L, H, dm = 2, 9, 2, 7
-    sides = 1 if normalization == "global" else 2
     x, route_W, gain_W, gain_bias, v = _params(
-        topology, B=B, L=L, H=H, dm=dm, dtype=dtype, gain_sides=sides)
+        topology, B=B, L=L, H=H, dm=dm, dtype=dtype, gain_sides=1)
 
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, normalization)
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology)
     assert len(out.read_levels) == topology.D
     assert len(out.write_levels) == topology.D
     for level, width in enumerate(topology.widths):
@@ -79,16 +77,11 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(normalizat
         assert torch.allclose(
             out.write_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
 
-    g_read = out.g_read
-    if normalization == "global":
-        assert g_read is None
-    else:
-        assert g_read.shape == (B, L, H)
-        assert torch.all(g_read > 0)
+    assert not hasattr(out, "g_read")
     assert out.g_write.shape == (B, L, H)
     assert torch.all(out.g_write > 0)
 
-    y, _ = naive_rola(v, out.read_levels, out.write_levels, g_read, out.g_write, topology, None, normalization)
+    y, _ = naive_rola(v, out.read_levels, out.write_levels, out.g_write, topology, None)
     assert torch.isfinite(y).all()
     y.sum().backward()
     for name, tensor in [("x", x), ("route_W", route_W), ("gain_W", gain_W), ("gain_bias", gain_bias)]:
@@ -105,7 +98,7 @@ def test_softmax_level_mass_is_identically_one():
     topology = Topology(levels=levels)
     B, L, H, dm = 1, 4, 1, 5
     x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "global")
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology)
     raw = raw_side_gain(x, route_W, gain_W, gain_bias, resolved_routing_from_topology(topology))
     torch.testing.assert_close(out.g_write, raw["g_write"], rtol=1e-10, atol=1e-10)
 
@@ -136,7 +129,7 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
         topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
     resolved = resolved_routing_from_topology(topology)
 
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, "global")
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology)
 
     read_logits, write_logits, _ = _packed_router_logits(
         x, route_W, resolved, route_bias=None, h_w=None, projection_dtype=torch.float64)

@@ -109,7 +109,7 @@ def _oracle_outputs(topology):
     write = tuple(simplex(w) for w in widths)
     v = torch.randn(B, T, H, d_v, dtype=torch.float64)
     g_write = torch.rand(B, T, H, dtype=torch.float64) + 0.5
-    return naive_rola(v, read, write, None, g_write, topology, None, "global",
+    return naive_rola(v, read, write, g_write, topology, None,
                       output_final_state=True)
 
 

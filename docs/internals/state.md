@@ -6,7 +6,7 @@ that produced it is a workflow record, and this file is what a reader ten years 
 now is owed.
 
 Vocabulary, defined here and used unqualified below: `N` = leaf count;
-`cols` = `d_v` plus one mass column under `normalization='global'`;
+`cols` = `d_v` plus one mass column (the ratio readout's denominator);
 `BH` = `batch * heads`; **atom** = 16 consecutive leaves in canonical leaf order,
 which is the page granule; **slot** = the physical page an atom is mapped to;
 `BC` = leaves one owner block owns.

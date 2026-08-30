@@ -296,11 +296,12 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
            "hidden": hidden, "branches": list(branches),
            "read_router": read_router, "write_router": write_router,
            "logit_gain": logit_gain,
-           #: TWO DEAD AXES RETIRED (P67 S5). `normalization='raw'` is refused outright
-           #: by `validate_normalization` -- the mass column is unconditional -- and a
-           #: decay-configured layer is refused by the chunk arm. Both raised on their
-           #: first cell. The columns stay in the row, as the CONSTANTS they are, so a
-           #: reader of an old JSON beside a new one is comparing the same arm.
+           #: TWO DEAD AXES RETIRED (P67 S5). Raw normalization used to be refused
+           #: outright (the mass column is unconditional; the host axis itself is now
+           #: deleted, G4) -- and a decay-configured layer is refused by the chunk arm.
+           #: Both raised on their first cell. The columns stay in the row, as the
+           #: CONSTANTS they are, so a reader of an old JSON beside a new one is
+           #: comparing the same arm.
            "norm": "global", "decay": "None",
            "paging": paging, "P": 1, "P_role": "PRIMARY",
            "dtype": "float32", "reps": reps, "warmup": warmup}
@@ -309,7 +310,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
         template = routing_tag(read_router, write_router)
         levels = [template.at(w) for w in branches]
         routes = RouteProducer(
-            levels, hidden_size=hidden, num_heads=H, normalization="global")
+            levels, hidden_size=hidden, num_heads=H)
         layer = RoLA(
             routes, d_v=d_v, decay=None, layer_idx=0,
         ).to("cuda", torch.float32).eval()
