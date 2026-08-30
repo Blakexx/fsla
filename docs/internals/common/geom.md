@@ -264,9 +264,13 @@ NOTHING in the shipped kernel bodies. The block landed as a FOUNDATION piece
 (G2-EXTRACT): the parent carry bodies on this branch are the MO/B-templated ones whose
 geometry is compile-time, and they are the parity reference that the pipelined body (F-P)
 is measured against — "the old body is never retrofitted again" (`G_FOUNDATION`, THE CUT).
-What holds the two derivations together until F-P consumes this one is
-`tests/unit/test_carry_geometry.py`, which asserts this block against the PARENT BINARY's
-own compile-time census, arm by arm.
+What held the two derivations together while the parent still built was
+`tests/unit/test_carry_geometry.py`'s live re-read of the parent binary's own compile-time
+census, arm by arm; C0 deleted `carry_build_stamp`/`carry_arms` from the extension
+entirely, so as of C1a that file's parity claim is checked against `ARM_PARAMS`/
+`PARENT_CENSUS`, a table TRANSCRIBED from the parent tip (335c2b9) rather than re-derived
+from a live binary — the A-side of a parity claim is a pinned tip, per `## G1` SKILLS
+FEEDBACK 3, and this is that prediction landing.
 
 Two consequences worth stating for the reader who arrives here first:
 
@@ -278,3 +282,18 @@ Two consequences worth stating for the reader who arrives here first:
   `warps_per_cta == warps_per_sm` the arm's set IS `sub_boxes(D, leaves_per_sm(DV),
   warps_per_sm)` — has no body to live in here, so the arch law is asserted in the
   geometry test instead, over the generated set the binding exposes.
+
+<a id="c1a-member-sets"></a>
+**C1a PINS THE PER-SIDE MEMBER SET AT BOTH `warps_per_cta`.** The set is
+`f(D, leaves_per_warp, warps_per_cta)` (`## warp-box-set` above), and K50's 2x4 ruling
+gives `warps_per_cta` exactly two values, `{8, 4}` — the shipped one-CTA-per-SM shape and
+the `(2, 4)` diagnostic arm — so `test_the_sub_box_set_is_generated_and_deduplicated` in
+`tests/unit/test_carry_geometry.py` enumerates, de-duplicates and counts the generated set
+at BOTH, not only the `4` these arms happen to compile: `{1, 2, 4, 7}` members at
+`D = 1..4, warps_per_cta = 4` and `{1, 2, 5, 8}` at `warps_per_cta = 8`. The arch-law
+assert — at `warps_per_cta == warps_per_sm` the CTA-box law IS the SM-grain law — is what
+`test_the_shape_set_is_the_arch_law_at_one_cta_per_sm` already checks at `warps_per_cta =
+8` (`warps_per_sm`, `## arch-constants`); the two tests together are the "enumerated,
+deduplicated, counted, with the arch-law assert at 8" claim. `tools/field_coverage.py`'s
+sweep does the same over BOTH values for every declared shape, in place of the single
+hard-coded box it swept before.
