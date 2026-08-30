@@ -388,3 +388,12 @@ is a launch parameter). Where the accumulator lives (registers, tensor memory) c
 its segment, never who owns what. Every mechanism — the carve, the transit, the activity bits, the
 launch shape, the schedule — is stated in these terms, and a design that couples ownership to the CTA
 or to the accumulator's home is misfiled.
+
+## CONSTITUTION amendment (Blake, 2026-08-29): R20 — THE OWNERSHIP UNIT IS THE CTA's BOX
+R20 read "the SM owns the state; CTAs group warps". Corrected by the arithmetic (G2c): a CTA loads and
+stores its box at entry and exit, so its read-side warps' union and its write-side warps' union must be
+the SAME leaves; carving the SM's box first and handing a CTA half the segments gives the two sides
+different halves at two CTAs per SM. Therefore the ownership unit is the CTA's box — carved per side
+among the CTA's warps — and it equals the SM's box exactly when there is one CTA per SM (the goal).
+The shape set is f(D, leaves_per_warp, kWarps); the architecture law (the SM's box) is asserted at
+kWarps = warps_per_sm.
