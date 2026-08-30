@@ -6,22 +6,59 @@ on the host, consumed by every kernel of the family.
 **Symbols.** `D` levels; `B_l` level `l`'s digit width; `BC` the leaves one owner (one
 CTA's box) holds; `MO` the per-level mode word (two bits a level, read then write);
 `s(l)` the OWNER span; `g(l) = B_l / s(l)` the owner grid; `NS` a side's stream count;
-`sv(l)` the STREAM span (one warp's box); `rank(l)` a level's position in a side's
-private order (0 innermost); `shift(l)` the private slot index's bit offset for level
-`l`; `kAtomLeaves = 16` the page granule.
+`sv(l)` the WARP SUB-BOX's span; `rank(l)` a level's position in a side's private order
+(0 innermost); `shift(l)` the slot index's bit offset for level `l`; `kAtomLeaves = 16`
+the page granule.
 
 ## What is compile-time and what is not (K50's axis law)
 
-SHAPE is compile-time because it sizes registers and shared memory: the level count `D`,
-the value width `DV`, the window `W`, the batch tile `C`, the CTA's warps and the warps
-per write stream. ADDRESSING is runtime because it does not: level orders, spans, grids,
-column bases, id weights, the transit's row map. Every runtime value here is CTA-UNIFORM,
-so it lives in the uniform datapath and the vector register count does not move — which
-is the census G2 gates on.
+SHAPE is compile-time because it sizes registers and shared memory. G2 read that too
+narrowly and G2b corrects it (K50's "PROPOSED CORRECTION TO R12", ruled 2026-08-29): the
+warp's leaf-slot → digit map is baked into the unrolled expansion, so **the sub-box's
+spans and slot layout ARE register shape**, exactly like leaves-per-warp and `DV`. Made
+runtime they force either a dynamically indexed local array (a spill) or a case
+enumeration — G2 measured the second at 2x instructions, 5.9x I-cache stalls and a 63 →
+190 KB kernel.
+
+So: compile-time is `D`, `DV`, `W`, `C`, the CTA's warps, and the two SPAN LAWS below
+(the warp sub-box from `(D, DV)`, the owner box from `(D, BC)`). Runtime is the widths
+`B_l` — strides, column bases, id weights, the owner grid — and the per-side ORDER, which
+reaches the kernel only as CARVE OFFSETS: which stream index bit fixes which level's
+digits. Every runtime value here is CTA-UNIFORM, so it lives in the uniform datapath and
+the vector register count does not move — which is the census this gates on.
 
 The consequence is the ship principle: a user of the Python package never registers an
 arm. One binary per shape serves every topology and every declaration of its depth.
 
+<a id="warp-box"></a>
+## The warp sub-box, and the canonical slot layout
+
+`leaves_per_warp(DV) = 2048 / DV` is the register law: 32 leaves of state at `DV = 64`,
+16 at `DV = 128`. Its `log2` is split BALANCED over the `D` levels, remainder
+innermost-first — `warp_span_bits` — and that is the whole of `sv(l)`. At `DV = 64`:
+
+| `D` | `sv` | `shift` |
+|---|---|---|
+| 1 | `[32]` | `[0]` |
+| 2 | `[4, 8]` | `[3, 0]` |
+| 3 | `[2, 4, 4]` | `[4, 2, 0]` |
+| 4 | `[2, 2, 2, 4]` | `[4, 3, 2, 0]` |
+
+<a id="canonical-slots"></a>
+The slot layout is CANONICAL and the SAME ON BOTH SIDES: a slot index is the sub-box's
+digits in canonical order, innermost lowest, so `shift(l) = Σ_{l' > l} log2 sv(l')`. The
+per-side order therefore decides only which stream holds which sub-box — the carve
+offsets — and never how a warp lays its own leaves out. Three things follow, and they are
+why the correction is worth its stage:
+
+* the produce's span and shift are IMMEDIATES on both sides, so the expansion is the
+  parent's code with the parent's instruction count;
+* the transit's row map is a permutation of leaves BETWEEN warps with the slot bits
+  FIXED (see below), so its addresses are immediates plus one base word per warp;
+* `BC = leaves-per-warp × kWarps` is DERIVED, never an axis: the carve stacks warp
+  sub-boxes along the levels where the owner box is wider than the sub-box.
+
+<a id="carve"></a>
 <a id="span-rule"></a>
 ## The span rule, and why the atom is a constraint and not an afterthought
 
@@ -54,7 +91,12 @@ what makes the model test a PARITY PROOF rather than a re-declaration:
 | `D = 2, B = 256` | `[8, 16]` | `[8, 16]` |
 | `D = 2, B = 64` | `[8, 16]` | `[8, 16]` |
 | `D = 3, B = 16` | `[2, 4, 16]` | `[2, 4, 16]` |
-| `D = 4, B = 8` | `[2, 2, 4, 8]` | `[2, 2, 4, 8]` |
+| `D = 4, B = 16` | `[2, 2, 2, 16]` | — (the parent's `B = 8` topology is unlawful under the floor) |
+
+Under K50's restored floor (`B_l >= 16`, power of two) no level width can bind the
+balance, so this law is compile-time `f(D, BC)` — which is what lets the channel-split
+body's slice map be immediates too. A level narrower than its span is REFUSED, by name;
+there is no narrower slot layout to fall back to.
 
 K50's CORRECTION rules the eventual relaxation — "prefill owns whole ROWS ... the fix is
 ROW-GRAIN activity masks (16 bits per atom) from the facts pass" — and that machinery is
@@ -64,27 +106,40 @@ page-grain store requires, and the unconstrained balance is a follow-on gated on
 <a id="refusals"></a>
 ## The refusal set, and what is a census fact instead
 
-Refused at the seam, each by name: a width that is not a power of two; `Π_l B_l < BC`; a
-topology that cannot hold one page atom; a packed amplitude row that is not a whole number
-of sixteen-byte granules; a level whose column base is not a whole number of the runs read
-out of it (the wide loads' alignment); and a level whose `(span, shift)` field is outside
-the body's admissible set.
+Refused at the seam, each by name: a width that is not a power of two; **a level
+narrower than the owner box's span there** (which subsumes `Π_l B_l < BC` and names the
+level that cannot hold its share); a value width that is not a multiple of sixteen; a
+packed amplitude row that is not a whole number of sixteen-byte granules; a level whose
+column base is not a whole number of the runs read out of it (the wide loads' alignment);
+and a stream count the grid cannot partition.
 
-`min_l B_l < 16` is **not** refused. The `B_l >= 16` floor in K50's per-level-width ruling
-is guidance about where the geometry is efficient — that ruling's own text says "no refusal
-path", and the later span rule states the refusal set as `Π_l B_l < BC` alone. A narrow
-level takes its full width and the remainder re-balances. `min_width` is reported as a
-census fact so a caller can see it.
+`min_l B_l` is REPORTED, not refused, and it stays a census fact: the width law above is
+the one the shape actually owns, and under K50's floor (`B_l >= 16`) it never fires for a
+lawful state. The one topology it removed at G2b is `D = 4, B = 8`, whose conformance
+cells moved to the lawful `(16, 16, 16, 16)`.
 
 <a id="row-map"></a>
 ## The transit's row map
 
 A publisher's write slot `P` names a lattice digit per level; splitting that digit at the
 reader's own span sends its high part to the READER INDEX and its low part to that
-reader's own slot. `geom_xch_row` is that composition. The model test proves it is a
-bijection of `[0, BC)`, that it is GF(2)-linear in `P`'s bits (which is what lets the
-kernel pay one base per warp and a step per fragment), and that it is the IDENTITY exactly
-when the two sides' orders and span vectors coincide.
+reader's own slot. Under the canonical layout the two sides tile the same box with the
+SAME sub-box, so the low part is `P` itself: the map is
+
+    row(w, P) = reader(w) * leaves-per-warp + P
+
+with `reader(w) = Σ_l ((w >> w.grid_div_bits[l]) & (grid[l]-1)) << r.grid_div_bits[l]`.
+`geom_xch_reader` is that base word — the only runtime part — and the slot bits are the
+identity. The model test still COMPOSES the two sides' own derivations rather than
+assuming this, then asserts the composition is a bijection of `[0, BC)`, that every slot
+keeps its offset, and that each publisher's base is warp-aligned.
+
+Because every row a single access touches is now an aligned run apart, and
+`LdX / 2 = 4 × odd`, the row stride alone puts eight rows in eight different four-bank
+blocks: **the region needs no swizzle**. `geom_swz`/`geom_msw` are deleted with G2b, and
+with them the deep-3 return-pull bank conflict (`KNOWN_RETURN_PULL_CONFLICTS`) — the
+conflict is gone, not tolerated. The proof is a compile-time enumeration over all four
+accesses at every declaration, in `tests/unit/test_exchange_layout.py`.
 
 That identity case is the former `kTied`. K50 DELETED the elided body — "one transit,
 always; the tied case is a transit whose row map is the identity, same code, same register

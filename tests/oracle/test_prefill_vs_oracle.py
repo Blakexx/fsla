@@ -16,6 +16,7 @@ docstring names. The band is the repository's one bf16 family bound.
 """
 from __future__ import annotations
 
+import math
 import zlib
 
 import pytest
@@ -217,9 +218,11 @@ def test_the_intra_term_is_actually_present():
 
 # ------------------------------------------- the DEEP topologies, forward only
 
-#: `(widths, k, m)` -- the M1 solve.  Both hold `BC = 128` at `N = 4096`, and the
-#: window is the conformance arm's, which both families carry at these widths.
-DEEP = [((16, 16, 16), 2, 16), ((8, 8, 8, 8), 2, 8)]
+#: `(widths, k, m)` -- the M1 solve.  Both hold `BC = 128`, and the window is the
+#: conformance arm's, which both families carry at these widths.  Depth four moved to
+#: `B = 16` with G2b: the box's spans are compile-time `f(D, BC)` under K50's restored
+#: `B_l >= 16` floor, so `B = 8` is no longer a lawful state at any depth.
+DEEP = [((16, 16, 16), 2, 16), ((16, 16, 16, 16), 2, 16)]
 DEEP_WINDOW = 64
 
 
@@ -245,7 +248,7 @@ def test_deep_prefill_matches_the_fp64_oracle(widths, k, m, sparse):
     err = relative(readout(num, den, T), y_ref)
     assert err < BF16_RTOL, f"{widths}: the readout leaves the bf16 band at {err:.3e}"
     got = canonical_from_plane(plane)
-    s_err = relative(got, s_ref.reshape(1, 4096, 65))
+    s_err = relative(got, s_ref.reshape(1, math.prod(widths), 65))
     assert s_err < BF16_RTOL, f"{widths}: the final state leaves the band at {s_err:.3e}"
 
 

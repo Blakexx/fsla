@@ -21,15 +21,11 @@ DATA now, so there is ONE derivation -- `derive_carry_geom` in `csrc/rola/src/ca
 independently is COMPOSE the two sides' orders into a row and check the properties, so a
 wrong derivation shows up as a broken permutation here rather than as noise on a device.
 """
-import itertools
 
 import pytest
 
 from rola.ops import carry as carry_ops
 
-#: the swizzles the kernel ships (`geom_swz` / `geom_msw` in geom.cuh).
-CHAN_SHIFTS = (3, 4, 6)
-MASS_SHIFTS = (3, 5)
 K_PAD_E = 8
 K_MMA_M, K_MMA_N, K_MMA_K = 16, 8, 16
 
@@ -45,7 +41,7 @@ def _ilog2c(x):
 _LVL = 4
 _BLK_ARRAYS = ("width", "span", "grid", "col_base", "run_shift", "owner_div", "weight")
 _BLK_SCALARS = ("wtot", "owners", "leaves", "local_bits", "min_width", "identity_map")
-_SIDE_ARRAYS = ("level_at", "rank", "span", "grid", "grid_div", "shift", "row_g", "row_prefix")
+_SIDE_ARRAYS = ("level_at", "rank", "row_span", "grid", "grid_div", "row_g", "row_prefix")
 _SIDE_SCALARS = ("carves", "rows", "leaf", "streams")
 
 
@@ -80,7 +76,7 @@ class _Side:
         self.leaf = blk[f"{side}_leaf"]
 
     def s(self, l):
-        return self.blk[f"{self._p}_span"][l]
+        return self.blk[f"{self._p}_row_span"][l]
 
     def g(self, l):
         return self.blk[f"{self._p}_grid"][l]
@@ -89,7 +85,9 @@ class _Side:
         return self.blk[f"{self._p}_rank"][l]
 
     def shift(self, l):
-        return self.blk[f"{self._p}_shift"][l]
+        """THE CANONICAL SLOT LAYOUT (G2b): the sub-box's digits, innermost lowest.  It is
+        the same expression on both sides, which is the claim this file exists to check."""
+        return sum(_ilog2c(self.s(i)) for i in range(l + 1, self.D))
 
     def grid_div(self, l):
         return self.blk[f"{self._p}_grid_div"][l]
@@ -111,7 +109,7 @@ CASES = [
     ("flag-write-both", (256, 256), 10),
     ("small-alt", (64, 64), 6),
     ("deep3-alt", (16, 16, 16), 38),
-    ("deep4-alt", (8, 8, 8, 8), 102),
+    ("deep4-alt", (16, 16, 16, 16), 102),
 ]
 NS = 4
 
@@ -123,7 +121,10 @@ def _sides(case):
 
 
 def _row_of(w_side, r_side, stream, slot):
-    """publisher `stream`'s write slot -> the exchange's row, reader-major."""
+    """publisher `stream`'s write slot -> the exchange's row, reader-major.  Under the
+    canonical layout the two sides tile the same box with the same sub-box, so a leaf
+    keeps its SLOT and only changes WARP -- but this composes the two sides' own
+    derivations rather than assuming that, so a broken derivation shows up here."""
     reader, q = 0, 0
     for l in range(w_side.D):
         d = ((slot >> w_side.shift(l)) & (w_side.s(l) - 1)) + w_side.off(l, stream)
@@ -132,28 +133,19 @@ def _row_of(w_side, r_side, stream, slot):
     return reader * r_side.leaf + q
 
 
+def _canonical(w_side, r_side):
+    """THE LAYOUT IS THE SAME ON BOTH SIDES -- the register-shape claim itself."""
+    return all(w_side.s(l) == r_side.s(l) and w_side.shift(l) == r_side.shift(l)
+               for l in range(w_side.D))
+
+
 def _tied(w_side, r_side):
     """THE IDENTITY-MAP FACT, and it is a fact and no longer a body: K50 deleted the
     elided tied path ("one transit, always"), so what a tie buys is a row map that
     happens to be the identity -- reported so a wasted transit is visible in the ledger."""
-    return all(w_side.s(l) == r_side.s(l) and w_side.rank(l) == r_side.rank(l)
+    return all(w_side.g(l) == 1 or w_side.grid_div(l) == r_side.grid_div(l)
                for l in range(w_side.D))
 
-
-def _swz(row, shifts, mask):
-    v = 0
-    for sh in shifts:
-        v ^= row >> sh
-    return v & mask
-
-
-#: THE CARVES WHOSE RETURN PULL THE SHIPPED SWIZZLE CANNOT SEPARATE.  A TEST-arm-only
-#: finding, recorded so it cannot grow silently; see the assertion at the end of
-#: `test_the_return_legs_two_accesses_are_max_way_one` for what it means and why it is
-#: not a correctness question.  The follow-on it owes is a swizzle search over the deep
-#: carves, which G4 must settle before the channel-split body is deleted (after that,
-#: depth three has no other body to run on).
-KNOWN_RETURN_PULL_CONFLICTS = {"deep3-alt"}
 
 CARVED = [(c[0], c) for c in CASES]
 UNTIED = [(i, c) for i, c in CARVED if not _tied(*_sides(c)[:2])]
@@ -225,65 +217,88 @@ def test_the_exchange_row_map_is_affine_in_the_slots_bits(idx, row):
         f"arm {idx}: a slot bit shares a row bit with a publisher base, so `^` is not `+`")
 
 
-def _publish_row_sets(w, r):
-    """One `st.shared.b16` covers the lane quad's FOUR rows at EIGHT consecutive
-    channels: the rows vary with `lane & 3`, the channels with `lane >> 2`."""
-    return [[_row_of(w, r, stream, j * K_MMA_N + 2 * q + e1) for q in range(4)]
-            for stream in range(w.ns) for j in range(w.leaf // K_MMA_N) for e1 in (0, 1)]
+@pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
+def test_the_slot_layout_is_the_same_on_both_sides_and_the_map_moves_whole_warps(idx, row):
+    """THE REGISTER-SHAPE CLAIM (G2b), on the shipped derivation.
+
+    The warp sub-box is compile-time `f(D, DV)` and CANONICAL: both sides tile the owner's
+    box with the same spans in the same slot order, so the per-side ORDER can only decide
+    which stream holds which sub-box.  The transit is therefore a permutation of leaves
+    BETWEEN warps with the slot bits FIXED -- one runtime base word per warp and the
+    identity on the slot -- which is what lets the kernel address it with immediates."""
+    w, r, _ = _sides(row)
+    assert _canonical(w, r), (
+        f"arm {idx}: the two sides do not share a slot layout, so the row map is not a "
+        f"warp permutation and the produce's shifts are not immediates")
+    for slot in range(w.leaf):
+        assert _delta(w, r, slot) == slot, (
+            f"arm {idx}: slot {slot} does not keep its offset in the row map")
+    for stream in range(w.ns):
+        base = _row_of(w, r, stream, 0)
+        assert base % r.leaf == 0, f"arm {idx}: publisher {stream}'s base is not a warp base"
+        for slot in range(w.leaf):
+            assert _row_of(w, r, stream, slot) == base + slot
 
 
-@pytest.mark.parametrize("idx,row", UNTIED, ids=[f"arm{i}" for i, _ in UNTIED])
-def test_the_exchange_swizzle_is_a_bank_permutation(idx, row):
-    """MAX-WAY ONE on BOTH legs of the transit, channels and mass.
+def _bank_free(rows, ldx, gran, word_off=0, words_per_gran=4):
+    """the region's bank model: a 16-byte granule is four consecutive banks, and a row
+    is `ldx / 2` words on from the one before it."""
+    words, banks = ldx // 2, set()
+    for row_i in rows:
+        for word in range(words_per_gran):
+            b = (words * row_i + 4 * gran + word_off + word) % 32
+            if b in banks:
+                return False
+        for word in range(words_per_gran):
+            banks.add((words * row_i + 4 * gran + word_off + word) % 32)
+    return True
 
-    `LdX / 2` is `4 (mod 32)` at the built widths, so consecutive rows sit exactly ONE
-    four-bank block apart and a bank is `(4*row + 4*granule + word) mod 32`.  The
-    publish needs its four rows in four DIFFERENT blocks (they are identical mod 8
-    without a swizzle -- `{r, r+16, r+32, r+48}` at the flagship); the pull needs only
-    that the swizzle be CONSTANT over an aligned eight, which every shift >= 3 gives."""
+
+@pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
+def test_the_region_needs_no_swizzle_because_the_row_stride_separates_the_banks(idx, row):
+    """THE SWIZZLE SEARCH, AS A COMPILE-TIME ENUMERATION -- and its answer is NONE.
+
+    Before G2b a leaf changed both its warp AND its slot in the transit, so a lane quad's
+    four rows sat 16 or 32 apart, `ldx / 2 * 16 = 0 (mod 32)` put them in one four-bank
+    block, and a shift-XOR swizzle on bits 3 and above had to separate them -- which it
+    could not do for the deep-3 carve, whose eight writer rows differed in the LOW bits
+    (the former `KNOWN_RETURN_PULL_CONFLICTS`).  Under the canonical slot layout every
+    access covers rows an ALIGNED RUN apart, and `ldx / 2 = 4 x odd` maps a run of eight
+    onto eight different four-bank blocks by itself.  This asserts that lemma AND walks
+    all four accesses unswizzled at every declaration, which is what deletes the swizzle
+    rather than re-tuning it."""
     w, r, dv = _sides(row)
-    ldx = dv + K_PAD_E
-    words = ldx // 2
-    n_gran = dv // 8
+    ldx, n_gran, leaf = dv + K_PAD_E, dv // K_MMA_M_CH, w.leaf
+    assert (ldx // 2) % 4 == 0 and (ldx // 2) // 4 % 2 == 1, (
+        f"arm {idx}: half a row is {ldx // 2} words, which is not four times an odd "
+        f"number -- an aligned eight of rows would share a four-bank block")
 
-    for rows in _publish_row_sets(w, r):
+    for stream in range(w.ns):
+        base = _row_of(w, r, stream, 0)
+        #: the publish's lane quad: four rows two apart at eight consecutive channels.
+        for j in range(leaf // K_MMA_N):
+            for e1 in (0, 1):
+                rows_p = [base + j * K_MMA_N + 2 * q + e1 for q in range(4)]
+                for g in range(n_gran):
+                    assert _bank_free(rows_p, ldx, g), f"arm {idx}: publish conflicts"
+                assert _bank_free(rows_p, ldx, n_gran, words_per_gran=1), (
+                    f"arm {idx}: the mass publish conflicts")
+        #: the writer's return pull: eight rows of an aligned eight, one granule.
+        rows_r = [base + q for q in range(8)]
         for g in range(n_gran):
-            banks = set()
-            for row_i in rows:
-                gp = g ^ _swz(row_i, CHAN_SHIFTS, n_gran - 1)
-                for word in range(4):
-                    b = (words * row_i + 4 * gp + word) % 32
-                    assert b not in banks, (
-                        f"arm {idx}: publish granule {g} conflicts in bank {b} over rows {rows}")
-                    banks.add(b)
-        banks = set()
-        for row_i in rows:
-            b = (words * row_i + 2 * n_gran + _swz(row_i, MASS_SHIFTS, 3)) % 32
-            assert b not in banks, f"arm {idx}: mass publish conflicts in bank {b}"
-            banks.add(b)
+            assert _bank_free(rows_r, ldx, g), f"arm {idx}: the return pull conflicts"
 
     for reader in range(r.ns):
-        for kk in range(r.leaf // K_MMA_K):
+        for kk in range(leaf // K_MMA_K):
             for half in (0, 8):
-                rows = [reader * r.leaf + kk * K_MMA_K + half + i for i in range(8)]
-                assert len({_swz(x, CHAN_SHIFTS, n_gran - 1) for x in rows}) == 1, (
-                    f"arm {idx}: the pull's swizzle is not constant over an aligned eight")
+                rows_l = [reader * leaf + kk * K_MMA_K + half + i for i in range(8)]
                 for g in range(n_gran):
-                    banks = set()
-                    for row_i in rows:
-                        gp = g ^ _swz(row_i, CHAN_SHIFTS, n_gran - 1)
-                        for word in range(4):
-                            b = (words * row_i + 4 * gp + word) % 32
-                            assert b not in banks, f"arm {idx}: pull conflicts in bank {b}"
-                            banks.add(b)
+                    assert _bank_free(rows_l, ldx, g), f"arm {idx}: the pull conflicts"
                 for e1 in (0, 1):
-                    mrows = [reader * r.leaf + kk * K_MMA_K + half + 2 * q + e1
-                             for q in range(4)]
-                    banks = set()
-                    for row_i in mrows:
-                        b = (words * row_i + 2 * n_gran + _swz(row_i, MASS_SHIFTS, 3)) % 32
-                        assert b not in banks, f"arm {idx}: mass pull conflicts in bank {b}"
-                        banks.add(b)
+                    rows_m = [reader * leaf + kk * K_MMA_K + half + 2 * q + e1
+                              for q in range(4)]
+                    assert _bank_free(rows_m, ldx, n_gran, words_per_gran=1), (
+                        f"arm {idx}: the mass pull conflicts")
 
 
 @pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
@@ -301,30 +316,6 @@ def test_the_transit_is_sized_by_the_disorder_between_the_two_carves(idx, row):
     assert expected == (0 if _tied(w, r) else w.bc * (dv + K_PAD_E) * 2)
 
 
-def test_the_shipped_swizzles_are_the_search_result_and_not_a_guess():
-    """Both maps were found by SEARCH over shift-XOR forms against the built arms' real
-    row sets.  This re-runs that search and asserts the shipped form is in the passing
-    set -- so a future arm that breaks it fails HERE, with the alternatives listed,
-    rather than as a silent bank stall."""
-    sets = [rows for _, row in UNTIED for rows in _publish_row_sets(*_sides(row)[:2])]
-    assert sets, "no untied arm to search against"
-
-    def ok(shifts):
-        for rows in sets:
-            for g in range(8):
-                seen = set()
-                for row_i in rows:
-                    v = (row_i + (g ^ _swz(row_i, shifts, 7))) % 8
-                    if v in seen:
-                        return False
-                    seen.add(v)
-        return True
-
-    forms = [c for n in (1, 2, 3) for c in itertools.combinations(range(3, 8), n) if ok(c)]
-    assert CHAN_SHIFTS in forms, f"the shipped channel swizzle fails; passing forms: {forms}"
-    assert not ok(()), "an unswizzled layout must CONFLICT, or the swizzle is unnecessary"
-
-
 # ---------------------------------------------------------------- the hybrid's two legs
 #
 # F1b: the hi plane MOVES.  The writers publish it and drop it; the readers pull it as
@@ -338,16 +329,18 @@ K_MMA_M_CH = 8  #: channels per 16-byte granule
 
 
 def _addr_chan(row, col, ldx, n_gran):
-    """the region's byte address of one channel element, swizzle included."""
+    """the region's byte address of one channel element -- a linear tile, no swizzle."""
     gran, within = divmod(col, K_MMA_M_CH)
-    return row * ldx * 2 + ((gran ^ _swz(row, CHAN_SHIFTS, n_gran - 1)) * 16) + within * 2
+    return row * ldx * 2 + gran * 16 + within * 2
 
 
 def _addr_mass(row, ldx, dv):
-    return row * ldx * 2 + dv * 2 + _swz(row, MASS_SHIFTS, 3) * 4
+    return row * ldx * 2 + dv * 2
 
 
 def _delta(w, r, slot):
+    """the row map's step per slot bit: the IDENTITY under the canonical layout, and
+    this reads it off the composed derivation rather than assuming it."""
     return _row_of(w, r, 0, slot) ^ _row_of(w, r, 0, 0)
 
 
@@ -382,15 +375,13 @@ def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx,
         base = _row_of(w, r, stream, 0)
         for lane in range(32):
             lane_row = base ^ (d2 if lane & 1 else 0) ^ (d4 if lane & 2 else 0)
-            swz_lane = _swz(lane_row, CHAN_SHIFTS, n_gran - 1)
-            msw_lane = _swz(lane_row, MASS_SHIFTS, 3)
             for j in range(knl):
                 for e in range(4):
                     dl = _delta(w, r, j * K_MMA_N + (e & 1))
                     for m in range(mch):
-                        gr = (2 * m + (e >> 1)) ^ _swz(dl, CHAN_SHIFTS, n_gran - 1)
+                        gr = 2 * m + (e >> 1)
                         a = (lane_row * ldx * 2 + (lane >> 2) * 2
-                             + dl * ldx * 2 + ((gr ^ swz_lane) * 16))
+                             + dl * ldx * 2 + gr * 16)
                         slot = j * K_MMA_N + 2 * (lane & 3) + (e & 1)
                         col = m * K_MMA_M + (lane >> 2) + 8 * (e >> 1)
                         assert a == _addr_chan(_row_of(w, r, stream, slot), col, ldx, n_gran), (
@@ -401,8 +392,7 @@ def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx,
                 if (lane >> 2) == 0:
                     for e in range(2):
                         dl = _delta(w, r, j * K_MMA_N + e)
-                        a = (lane_row * ldx * 2 + dv * 2 + dl * ldx * 2
-                             + ((_swz(dl, MASS_SHIFTS, 3) ^ msw_lane) * 4))
+                        a = lane_row * ldx * 2 + dv * 2 + dl * ldx * 2
                         assert a == _addr_mass(_row_of(w, r, stream, j * K_MMA_N
                                                        + 2 * (lane & 3) + e), ldx, dv)
                         mem[a] = ("mass", stream, lane, j, e)
@@ -416,20 +406,17 @@ def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx,
             for m in range(mch):
                 def addr_of(L, rs=rs, kk=kk, m=m):
                     row_i = rs * leaf + ((L >> 3) >> 1) * 8 + (L & 7)
-                    swz_k = _swz(row_i + kk * K_MMA_K, CHAN_SHIFTS, n_gran - 1)
                     return ((row_i + kk * K_MMA_K) * ldx * 2
-                            + (((2 * m) | ((L >> 3) & 1)) ^ swz_k) * 16)
+                            + ((2 * m) | ((L >> 3) & 1)) * 16)
                 out = _ldm_trans(addr_of, mem)
                 for L in range(32):
                     frags[(rs, L, kk, m)] = out[L]
                 # the store-back: the kernel's own address, and it must land the same bits
-                swz_sb = _swz(rs * leaf, CHAN_SHIFTS, n_gran - 1)
                 for L in range(32):
                     sb_c = (rs * leaf + 2 * (L & 3)) * ldx * 2 + (L >> 2) * 2
                     for i in range(4):
                         rr = kk * K_MMA_K + (i >> 1) * 8
-                        gr = (2 * m + (i & 1)) ^ _swz(rr, CHAN_SHIFTS, n_gran - 1)
-                        a = sb_c + rr * ldx * 2 + ((gr ^ swz_sb) * 16)
+                        a = sb_c + rr * ldx * 2 + (2 * m + (i & 1)) * 16
                         assert mem[a] == out[L][i][0], (
                             f"arm {idx}: the store-back's low half misses its own address")
                         assert mem[a + ldx * 2] == out[L][i][1], (
@@ -446,10 +433,7 @@ def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx,
                 def addr_of(L, base=base, dj=dj, t=t):
                     ret_row = (base ^ (d1 if L & 1 else 0) ^ (d2 if L & 2 else 0)
                                ^ (d4 if L & 4 else 0))
-                    swz_ret = _swz(ret_row, CHAN_SHIFTS, n_gran - 1)
-                    return (ret_row + dj) * ldx * 2 + (
-                        ((4 * t + (L >> 3)) ^ swz_ret
-                         ^ _swz(dj, CHAN_SHIFTS, n_gran - 1)) * 16)
+                    return (ret_row + dj) * ldx * 2 + (4 * t + (L >> 3)) * 16
                 out = _ldm_trans(addr_of, mem)
                 for L in range(32):
                     for i in range(4):
@@ -460,60 +444,3 @@ def test_the_hybrid_returns_every_hi_half_to_the_register_that_published_it(idx,
                         assert out[L][i] == want, (
                             f"arm {idx}: writer {ws} lane {L} n-tile {j} granule {g} did not "
                             f"get back its own (m={m}, e={2 * h}, {2 * h + 1})")
-
-
-@pytest.mark.parametrize("idx,row", UNTIED, ids=[f"arm{i}" for i, _ in UNTIED])
-def test_the_return_legs_two_accesses_are_max_way_one(idx, row):
-    """The two NEW accesses, in banks.  The store-back covers four rows two apart inside
-    an aligned eight (one swizzle) at eight consecutive channels; the writer's pull hands
-    `ldmatrix` EIGHT SCATTERED rows at one granule, and it is the swizzle that has to put
-    them in eight different four-bank blocks."""
-    w, r, dv = _sides(row)
-    n_gran, leaf, words = dv // K_MMA_M_CH, w.leaf, (dv + K_PAD_E) // 2
-    mch, knl, kdw = dv // K_MMA_M, leaf // K_MMA_N, leaf // K_MMA_K
-
-    for rs in range(r.ns):
-        for kk in range(kdw):
-            for i in range(4):
-                rows = [rs * leaf + kk * K_MMA_K + (i >> 1) * 8 + 2 * q for q in range(4)]
-                for m in range(mch):
-                    banks = set()
-                    for row_i in rows:
-                        gp = (2 * m + (i & 1)) ^ _swz(row_i, CHAN_SHIFTS, n_gran - 1)
-                        for word in range(4):
-                            b = (words * row_i + 4 * gp + word) % 32
-                            assert b not in banks, (
-                                f"arm {idx}: the store-back conflicts in bank {b}")
-                            banks.add(b)
-
-    conflicted = False
-    for ws in range(w.ns):
-        for j in range(knl):
-            rows = [_row_of(w, r, ws, j * K_MMA_N + q) for q in range(8)]
-            for g in range(n_gran):
-                banks = set()
-                for row_i in rows:
-                    gp = g ^ _swz(row_i, CHAN_SHIFTS, n_gran - 1)
-                    for word in range(4):
-                        b = (words * row_i + 4 * gp + word) % 32
-                        if b in banks:
-                            conflicted = True
-                        banks.add(b)
-    #: THE RETURN PULL IS CONFLICT-FREE EXACTLY WHERE THE SHIPPED SWIZZLE CAN SEPARATE
-    #: THE ROWS IT SUPPLIES, and that is a STRUCTURAL property of the carve, not of the
-    #: arm.  `geom_swz` mixes only bits 3 and above (it must: the low three bits ARE the
-    #: `ldmatrix` granule), so a carve whose eight writer slots land on rows differing in
-    #: the LOW bits cannot be separated by it.  Every flat declaration puts those rows
-    #: eight apart and is clean; the deep-3 carve is the first built geometry that does
-    #: not -- its read side spans level 2 WHOLE (`SR = [2, 1, 16]`) while its write side
-    #: splits it (`SW = [1, 4, 8]`), so a writer's slots differ in row bit 0.
-    #: THIS IS A REPORTED FINDING, NOT A TOLERANCE: the declaration is a TEST arm and
-    #: ships nowhere (`gen_shards.CARRY_SHIPPED_ARMS`), the fp64 oracle passes on it, and
-    #: what it costs is bank throughput on one leg.  Naming the exact set here is what
-    #: keeps it from growing silently -- a NEW conflicted declaration fails this test.
-    assert conflicted == (idx in KNOWN_RETURN_PULL_CONFLICTS), (
-        f"{idx}: the writer's return pull "
-        f"{'conflicts' if conflicted else 'is clean'}, which is not what "
-        f"KNOWN_RETURN_PULL_CONFLICTS records. A NEW conflict is a design finding for "
-        f"the swizzle search (the shipped triple mixes bits 3+ only); a conflict that "
-        f"went away means the record is stale and should be shortened.")

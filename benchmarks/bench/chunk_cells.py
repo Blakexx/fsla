@@ -207,7 +207,7 @@ def _cells() -> dict[str, Cell]:
         #: manifest carries, and the one the paging bench uses for the same reason. It
         #: moves the level count while `N = 4096` is held identical to the pinned cell's,
         #: so a per-level cost is separable from a per-leaf one.
-        Cell(name="chunk-deep-D4-w8", widths=(8, 8, 8, 8), B=2, T=512, H=8, hidden=512,
+        Cell(name="chunk-deep-D4-w8", widths=(16, 16, 16, 16), B=2, T=512, H=8, hidden=512,
              alpha=1.5, logit_gain=8.0, seed=3,
              note="D=4 at N=4096: the level axis at fixed leaf count"),
 

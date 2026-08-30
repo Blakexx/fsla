@@ -32,13 +32,13 @@ namespace design = denseref::design;
 //: names lives here; `min_l B_l < 16` is a CENSUS FACT and not one of them.
 //: -- see docs/internals/carry/carry.md#block
 static CarryGeomRT derive_block(const std::vector<int64_t>& widths, int64_t level_modes, int bc,
-                                int nsr, int nsw) {
+                                int dv, int nsr, int nsw) {
   int w[kGeomMaxLevels] = {1, 1, 1, 1};
   const int D = (int)widths.size();
   TORCH_CHECK(D >= 1 && D <= kGeomMaxLevels, "the routing depth is one to four levels, got ", D);
   for (int l = 0; l < D; ++l) w[l] = (int)widths[l];
   CarryGeomRT geo{};
-  const char* err = derive_carry_geom(D, w, bc, (uint32_t)level_modes, nsr, nsw, geo);
+  const char* err = derive_carry_geom(D, w, bc, dv, (uint32_t)level_modes, nsr, nsw, geo);
   TORCH_CHECK(err == nullptr, "the addressing block refuses this call: ", err == nullptr ? "" : err,
               " (widths=", widths, ", BC=", bc, ", level_modes=", level_modes, ")");
   TORCH_CHECK(geo.wtot % 8 == 0,
@@ -46,10 +46,10 @@ static CarryGeomRT derive_block(const std::vector<int64_t>& widths, int64_t leve
               "sum_l B_l = ",
               geo.wtot);
   for (int l = 0; l < D; ++l)
-    TORCH_CHECK(geo.col_base[l] % geo.r.span[l] == 0 && geo.col_base[l] % geo.w.span[l] == 0,
+    TORCH_CHECK(geo.col_base[l] % geo.r.row_span[l] == 0 && geo.col_base[l] % geo.w.row_span[l] == 0,
                 "level ", l, "'s column base ", geo.col_base[l],
-                " is not a whole number of the runs read out of it (read ", geo.r.span[l],
-                ", write ", geo.w.span[l], "): the level runs would not be aligned");
+                " is not a whole number of the runs read out of it (read ", geo.r.row_span[l],
+                ", write ", geo.w.row_span[l], "): the level runs would not be aligned");
   return geo;
 }
 
@@ -70,7 +70,8 @@ static torch::Tensor build_rows(const torch::Tensor& pr, const torch::Tensor& pw
 //: hold them, which is what lets one binary serve a topology nobody compiled. -- see docs/internals/carry/carry.md#carry-match
 #define CARRY_MATCH(D_, DV_, W_, C_, KW_, WPS_, SPLIT_)                                    \
   (is_arm(widths, D_) && d_v == DV_ && window == W_ && chunk == C_ && split == (SPLIT_))
-#define CARRY_BC(D_, DV_, W_, C_, KW_, WPS_, SPLIT_) (rola::carry::kLeavesPerWarp * (KW_))
+#define CARRY_BC(D_, DV_, W_, C_, KW_, WPS_, SPLIT_) (rola::carry::leaves_per_warp(DV_) * (KW_))
+#define CARRY_DV(D_, DV_, W_, C_, KW_, WPS_, SPLIT_) (DV_)
 #define CARRY_NSR(D_, DV_, W_, C_, KW_, WPS_, SPLIT_) ((SPLIT_) ? 1 : (KW_))
 #define CARRY_NSW(D_, DV_, W_, C_, KW_, WPS_, SPLIT_) ((SPLIT_) ? 1 : (KW_) / (WPS_))
 
@@ -159,7 +160,8 @@ std::vector<torch::Tensor> forward_inter(torch::Tensor pr, torch::Tensor pw, tor
   if (CARRY_MATCH(__VA_ARGS__)) {                                                            \
     matched = true;                                                                         \
     const CarryGeomRT geo = derive_block(widths, level_modes, CARRY_BC(__VA_ARGS__),         \
-                                         CARRY_NSR(__VA_ARGS__), CARRY_NSW(__VA_ARGS__));    \
+                                         CARRY_DV(__VA_ARGS__), CARRY_NSR(__VA_ARGS__),       \
+                                         CARRY_NSW(__VA_ARGS__));                            \
     rows = torch::empty({BH, (long)rows_entries(geo), tokWords},                            \
                         pr.options().dtype(torch::kInt32));                                 \
     err = carry_arm_rows_##I_((const __nv_bfloat16*)pr.data_ptr(),                          \
@@ -202,7 +204,8 @@ std::vector<int64_t> build_stamp(std::vector<int64_t> widths, int64_t window, in
 #define CARRY_CENSUS(I_, ...)                                                               \
   if (CARRY_MATCH(__VA_ARGS__)) {                                                            \
     const CarryGeomRT geo = derive_block(widths, level_modes, CARRY_BC(__VA_ARGS__),         \
-                                         CARRY_NSR(__VA_ARGS__), CARRY_NSW(__VA_ARGS__));    \
+                                         CARRY_DV(__VA_ARGS__), CARRY_NSR(__VA_ARGS__),       \
+                                         CARRY_NSW(__VA_ARGS__));                            \
     int64_t c[kCarryCensusFields];                                                          \
     carry_arm_census_##I_(c, geo);                                                           \
     for (int i = 0; i < kCarryCensusFields; ++i) r.push_back(c[i]);                           \
@@ -229,7 +232,8 @@ torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t
 #define CARRY_ROWS(I_, D_, DV_, W_, C_, KW_, WPS_, SPLIT_)                                 \
   if (is_arm(widths, D_)) {                                                                 \
     const CarryGeomRT geo =                                                                 \
-        derive_block(widths, level_modes, rola::carry::kLeavesPerWarp * (KW_), ns, ns);      \
+        derive_block(widths, level_modes, rola::carry::leaves_per_warp(DV_) * (KW_), DV_, ns,  \
+                     ns);                                                                    \
     return build_rows<D_>(pr, pw, BH, L, geo);                                               \
   }
   CARRY_ARMS_X(CARRY_ROWS)
@@ -241,16 +245,15 @@ torch::Tensor owner_rows(torch::Tensor pr, torch::Tensor pw, std::vector<int64_t
 //: dispatch runs -- rather than a Python mirror of it, because a mirror proves only
 //: that two derivations agree with each other. -- see docs/internals/carry/carry.md#geometry
 std::vector<int64_t> geometry(std::vector<int64_t> widths, int64_t level_modes, int64_t bc,
-                              int64_t nsr, int64_t nsw) {
-  const CarryGeomRT g = derive_block(widths, level_modes, (int)bc, (int)nsr, (int)nsw);
+                              int64_t nsr, int64_t nsw, int64_t dv) {
+  const CarryGeomRT g = derive_block(widths, level_modes, (int)bc, (int)dv, (int)nsr, (int)nsw);
   std::vector<int64_t> o;
   auto push_side = [&](const SideGeom& s) {
     for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.level_at[l]);
     for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.rank[l]);
-    for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.span[l]);
+    for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.row_span[l]);
     for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.grid[l]);
     for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.grid_div[l]);
-    for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.shift[l]);
     for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.row_g[l]);
     for (int l = 0; l < kGeomMaxLevels; ++l) o.push_back(s.row_prefix[l]);
     o.push_back(s.carves);
@@ -276,11 +279,10 @@ std::vector<int64_t> geometry(std::vector<int64_t> widths, int64_t level_modes, 
   push_side(g.r);
   push_side(g.w);
   //: the transit's row map, evaluated over the whole box: the model test asserts it is
-  //: a bijection, that it is GF(2)-linear in the publisher's slot bits, and that it is
+  //: a bijection, that it moves whole WARPS with the slot bits fixed, and that it is
   //: the IDENTITY exactly when `identity_map` says so.
-  const int leaf_r = g.r.leaf;
   for (int w = 0; w < g.w.streams; ++w)
-    for (int P = 0; P < g.w.leaf; ++P) o.push_back(geom_xch_row(g, leaf_r, w, P));
+    for (int P = 0; P < g.w.leaf; ++P) o.push_back(geom_xch_reader(g, w) * g.r.leaf + P);
   return o;
 }
 

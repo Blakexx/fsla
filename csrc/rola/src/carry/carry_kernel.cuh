@@ -48,7 +48,7 @@ struct CarryGeom {
   static constexpr int kWarps = KWARPS;
   static constexpr int kStreams = KWARPS;
   static constexpr int kThreads = kWarps * 32;
-  static constexpr int BC = kLeavesPerWarp * KWARPS;
+  static constexpr int BC = leaves_per_warp(DV) * KWARPS;
   //: THE VALUE WIDTH, AS A DECLARATION.  `kDv` channels plus the MASS column. -- see docs/internals/carry/carry_kernel.md#kdv
   static constexpr int kDv = DV;
   static constexpr int kCols = DV + 1;
@@ -58,7 +58,7 @@ struct CarryGeom {
   //: the stream's leaves, and the private panel row that indexes them. -- see docs/internals/carry/carry_kernel.md#kleafw
   static constexpr int kLeafR = BC / kStreams;
   static constexpr int kLeafW = BC / (kStreams / WPS);
-  static_assert(kLeafW == kLeafR && kLeafR == kLeavesPerWarp,
+  static_assert(kLeafW == kLeafR && kLeafR == leaves_per_warp(DV),
                 "at one stream count per side both carves partition the same box into the "
                 "same number of leaves, so one panel stride serves both phases");
   static constexpr int LdV = kDv + kPadE;
@@ -168,73 +168,6 @@ __device__ __forceinline__ void load_run_u32(uint32_t (&dst)[N], const void* p) 
     *reinterpret_cast<uint4*>(dst + i * 4) = load_vec16(reinterpret_cast<const char*>(p) + i * 16);
 }
 
-//: THE PRIVATE ORDER'S FIELD, AS A CTA-UNIFORM STRUCTURE BRANCH (R9), and its FOUR
-//: enforcement layers: the case set is GENERATED, its size is asserted against the
-//: closed form, the SEAM refuses an inadmissible field, and the default TRAPS (with
-//: `tools/field_coverage.py` proving the trap unreachable).  The 21 admissible pairs,
-//: why a switch and not a spill, and the pattern every structure branch follows:
-//: -- see docs/internals/carry/carry_kernel.md#expand-cases
-
-//: the admissible predicate, shared by the enumeration, the seam and the sweep.
-constexpr bool field_admissible(int span_bits, int shift, int n) {
-  return span_bits >= 0 && shift >= 0 && span_bits + shift <= n;
-}
-constexpr int field_pairs(int n) { return (n + 1) * (n + 2) / 2; }
-
-//: the enumeration's key: one word carrying a level's `(shift, log2 span)`.
-constexpr int field_key(int shift, int span_bits) { return shift * 8 + span_bits; }
-
-//: the enumeration's OWN count, walked with the same bounds `field_dispatch` walks, so
-//: the closed form below is checked against the loop rather than against itself.
-constexpr int field_count(int n) {
-  int c = 0;
-  for (int k = 0; k <= n; ++k)
-    for (int sh = 0; sh <= n; ++sh)
-      if (field_admissible(k, sh, n)) ++c;
-  return c;
-}
-
-//: the enumeration's index space, as arithmetic: pair `IDX` is the `IDX`-th
-//: `(log2 span, shift)` in span-major order, which is what lets the walk RECURSE.
-constexpr int field_offset(int k, int n) {
-  return k <= 0 ? 0 : field_offset(k - 1, n) + (n + 1 - (k - 1));
-}
-constexpr int field_k_of(int idx, int n, int k = 0) {
-  return field_offset(k + 1, n) > idx ? k : field_k_of(idx, n, k + 1);
-}
-constexpr int field_sh_of(int idx, int n) { return idx - field_offset(field_k_of(idx, n), n); }
-
-//: THE GENERATED DISPATCH, AS A WALK THAT STOPS AT ITS MATCH.
-//: -- see docs/internals/carry/carry_kernel.md#expand-cases
-template <int SPT, int IDX, class F>
-__device__ __forceinline__ void field_walk(int key, F&& body) {
-  constexpr int kN = ilog2c(SPT);
-  if constexpr (IDX >= field_pairs(kN)) {
-    //: LAYER 4: no fallthrough, ever.
-    __trap();
-  } else {
-    constexpr int K = field_k_of(IDX, kN);
-    constexpr int SH = field_sh_of(IDX, kN);
-    static_assert(field_admissible(K, SH, kN), "the enumeration emitted an inadmissible pair");
-    if (key == field_key(SH, K)) {
-      body(std::integral_constant<int, K>{}, std::integral_constant<int, SH>{});
-      return;
-    }
-    field_walk<SPT, IDX + 1>(key, static_cast<F&&>(body));
-  }
-}
-
-template <int SPT, class F>
-__device__ __forceinline__ void field_dispatch(int span_bits, int shift, F&& body) {
-  constexpr int kN = ilog2c(SPT);
-  //: LAYERS 1 AND 2, at compile time: generated from the slot index's width, sized by
-  //: the closed form.
-  static_assert(field_count(kN) == field_pairs(kN),
-                "the generated field set is not the admissible set of an n-bit slot index");
-  static_assert(kN >= 1 && (1 << kN) == SPT, "the slot run is a power of two");
-  field_walk<SPT, 0>(field_key(shift, span_bits), static_cast<F&&>(body));
-}
-
 //: THE ACCUMULATOR'S SEED: the order's INNERMOST level, whose shift is zero by
 //: definition of rank.  A run as wide as the whole slot run needs no re-tiling -- the
 //: private order's map is the identity there and the amplitudes land in the accumulator
@@ -269,17 +202,14 @@ __device__ __forceinline__ void field_seed(uint32_t (&acc)[SPT / 2], const void*
 template <int SPT, int K, int SH>
 __device__ __forceinline__ void field_fold(uint32_t (&acc)[SPT / 2], const void* src) {
   constexpr int SV = 1 << K;
+  static_assert(SH >= 1,
+                "only the canonical INNERMOST level sits at bit offset zero, and that level "
+                "SEEDS the accumulator; a folded level's slot pair always shares one digit");
   unsigned short run[SV];
   load_run<SV>(run, src);
   static_for<SPT / 2>([&](auto Jc) {
     constexpr int pp = decltype(Jc)::value;
-    //: a level at bit offset zero splits ACROSS the accumulator's pair, so its two slots
-    //: take different digits; every other level's pair shares one digit.
-    if constexpr (SH == 0)
-      acc[pp] = mul_bf16x2(acc[pp], ((uint32_t)run[(2 * pp + 1) & (SV - 1)] << 16)
-                                        | (uint32_t)run[(2 * pp) & (SV - 1)]);
-    else
-      acc[pp] = mul_bf16x2(acc[pp], splat_bf16x2_bits(run[(pp >> (SH - 1)) & (SV - 1)]));
+    acc[pp] = mul_bf16x2(acc[pp], splat_bf16x2_bits(run[(pp >> (SH - 1)) & (SV - 1)]));
   });
 }
 
@@ -366,12 +296,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
     const int o_l = (owner >> geo.owner_div_bits[l]) & (geo.grid[l] - 1);
-    runCol[l] = geo.col_base[l] + (o_l << geo.span_bits[l]);
-    offW[l] = ((strm >> geo.w.grid_div_bits[l]) & (geo.w.grid[l] - 1)) << geo.w.span_bits[l];
-    rowOffR[l] = (uint32_t)(geo.r.row_prefix[l] + (o_l << (geo.span_bits[l] - geo.r.span_bits[l])))
-                 * rowBytes;
-    rowOffW[l] = (uint32_t)(geo.w.row_prefix[l] + (o_l << (geo.span_bits[l] - geo.w.span_bits[l])))
-                 * rowBytes;
+    runCol[l] = geo.col_base[l] + (o_l << owner_span_bits(D, BC, l));
+    offW[l] = ((strm >> geo.w.grid_div_bits[l]) & (geo.w.grid[l] - 1)) << warp_span_bits(D, DV, l);
+    rowOffR[l] =
+        (uint32_t)(geo.r.row_prefix[l] + (o_l << (owner_span_bits(D, BC, l) - warp_span_bits(D, DV, l)))) * rowBytes;
+    rowOffW[l] =
+        (uint32_t)(geo.w.row_prefix[l] + (o_l << (owner_span_bits(D, BC, l) - warp_span_bits(D, DV, l)))) * rowBytes;
   });
   //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the READ -- see docs/internals/carry/carry_kernel.md#pin-address
   const int rowsBoth = geo.r.rows + geo.w.rows;
@@ -398,36 +328,33 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   //: the warp's own staging region of the readout block.
   float* const sow = so + warp * kMmaN * LdO;
 
-  //: THE TRANSIT'S ADDRESSING IS LOOP-INVARIANT, so it is derived ONCE. -- see docs/internals/carry/carry_kernel.md#transit
+  //: THE TRANSIT'S ADDRESSING IS LOOP-INVARIANT, so it is derived ONCE.  Under the
+  //: canonical slot layout a leaf keeps its SLOT and changes only its WARP, so the row
+  //: map is this ONE base word and the identity on the slot bits, and the region needs
+  //: no swizzle: `LdX / 2 = 4 (mod 8) x odd`, so eight rows an aligned run apart sit in
+  //: eight different four-bank blocks. -- see docs/internals/carry/carry_kernel.md#transit
   __nv_bfloat16* const xch = sw;
-  int xchR = 0, xchQ = 0;
+  static_assert(((LdX / 2) & 3) == 0 && ((LdX / 2) >> 2) % 2 == 1,
+                "the transit region separates its rows by the ROW STRIDE: half a row must "
+                "be four times an odd number of words, or an aligned eight of rows shares "
+                "a four-bank block and the pull conflicts");
+  int xchR = 0;
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    xchR += (offW[l] >> geo.r.span_bits[l]) << geo.r.grid_div_bits[l];
-    xchQ += (offW[l] & (geo.r.span[l] - 1)) << geo.r.shift[l];
+    xchR += (offW[l] >> warp_span_bits(D, DV, l)) << geo.r.grid_div_bits[l];
   });
-  const int xchBase = xchR * kLeafR + xchQ;
-  //: THE ROW MAP'S STEPS ARE EVALUATED, NOT FOLDED AND NOT HOISTED: they are
-  //: CTA-uniform, and holding them in vector registers spills the body.
-  //: -- see docs/internals/carry/carry_kernel.md#xchdelta
-  auto xch_delta = [&](int P) { return geom_xch_row(geo, kLeafR, 0, P); };
-  const int xchLaneRow =
-      xchBase ^ ((lane & 1) ? xch_delta(2) : 0) ^ ((lane & 2) ? xch_delta(4) : 0);
-  const int swzLane = geom_swz(xchLaneRow), mswLane = geom_msw(xchLaneRow);
+  const int xchBase = xchR * kLeafR;
+  const int xchLaneRow = xchBase ^ (lane & 3) * 2;
   const uint32_t pubC = smem_addr(xch) + (uint32_t)(xchLaneRow * LdX * 2 + (lane >> 2) * 2);
   const uint32_t pubM = smem_addr(xch) + (uint32_t)(xchLaneRow * LdX * 2 + kDv * 2);
   //: THE RETURN LEG'S ROW IS THE PUBLISH'S, SUPPLIED BY A DIFFERENT LANE. -- see docs/internals/carry/carry_kernel.md#return-leg
-  const int retQ = lane & 7;
-  const int retRow = xchBase ^ ((retQ & 1) ? xch_delta(1) : 0) ^ ((retQ & 2) ? xch_delta(2) : 0)
-                     ^ ((retQ & 4) ? xch_delta(4) : 0);
+  const int retRow = xchBase ^ (lane & 7);
   const uint32_t retC = smem_addr(xch) + (uint32_t)(retRow * LdX * 2);
-  const int swzRet = geom_swz(retRow), retG = lane >> 3;
+  const int retG = lane >> 3;
   //: the READER's segment addresses the same rows for the pull and the store-back.
   const int pullRow = strm * kLeafR + rT;
-  const int swzPull = geom_swz(pullRow);
   const uint32_t pullC = smem_addr(xch) + (uint32_t)(pullRow * LdX * 2);
   const int massRow = strm * kLeafR + 2 * (lane & 3);
-  const int mswPull = geom_msw(massRow), swzSB = geom_swz(strm * kLeafR);
   const uint32_t pullM = smem_addr(xch) + (uint32_t)(massRow * LdX * 2 + kDv * 2);
   const uint32_t sbC = smem_addr(xch) + (uint32_t)(massRow * LdX * 2 + (lane >> 2) * 2);
 
@@ -458,7 +385,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     int lf = 0;
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      const int dig = ((P >> geo.w.shift[l]) & (geo.w.span[l] - 1)) + offW[l];
+      const int dig = ((P >> warp_shift(D, DV, l)) & (warp_span(D, DV, l) - 1)) + offW[l];
       lf += dig << geo.run_shift[l];
     });
     return lf;
@@ -563,46 +490,40 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   // ---- the produce's per-thread map ---------------------------------------
   //: ONE LANE MINTS ONE TOKEN'S WHOLE ROW: the batch tile is the warp width, so a -- see docs/internals/carry/carry_kernel.md#spt
   constexpr int SPT = kLeafW;
-  static_assert(SPT == kLeavesPerWarp && ilog2c(SPT) == 5,
-                "the produce's field enumeration places exactly five slot bits; a different "
-                "leaves-per-warp is a different enumeration, not a wider case");
+  static_assert(SPT == leaves_per_warp(DV),
+                "the warp's slot run IS the register shape: the sub-box's spans and the slot "
+                "layout are compile-time f(D, DV), and a different leaves-per-warp is a "
+                "different sub-box, not a wider case");
   static_assert(C == kBallotLanes,
                 "a warp's panel row is ONE lane's: the batch tile is the warp width, so a "
                 "thread's slot run is the stream's whole box");
   const int prow = lane;  // this lane's token row of the batch
-  //: THE PRODUCE'S VIEW IS BY RANK, NOT BY LEVEL, AND IT IS NEVER HOISTED: a rank is
-  //: compile-time where a level is not, and reading the three values from the block
-  //: keeps them in the UNIFORM datapath instead of costing `6D` vector registers.
-  //: -- see docs/internals/carry/carry_kernel.md#byrank
+  //: THE PRODUCE'S VIEW IS BY LEVEL, IN THE CANONICAL SLOT LAYOUT: the sub-box's span
+  //: and shift are IMMEDIATES on both sides, and the side's order reaches the produce
+  //: only as the stream's column offset. -- see docs/internals/carry/carry_kernel.md#byrank
   auto produce = [&](auto Wt, const __nv_bfloat16* base, __nv_bfloat16* dst, uint32_t tokOff,
                      uint32_t gain, bool have) {
     constexpr bool WRITE = decltype(Wt)::value;
-    //: EACH PHASE MINTS IN ITS OWN CARVE'S ORDER, from its own digit offsets. -- see docs/internals/carry/carry_kernel.md#pm
+    //: EACH PHASE MINTS FROM ITS OWN CARVE'S OFFSETS, in the ONE canonical slot layout. -- see docs/internals/carry/carry_kernel.md#pm
     const SideGeom& sg = WRITE ? geo.w : geo.r;
-    //: THE RUN'S COLUMN, PER RANK.  Nothing here is hoisted: every operand is a shift
-    //: or a mask off the block (the block carries the BIT COUNTS precisely so this is
-    //: not a divide), and holding the columns in registers instead spills the body.
-    auto col_at = [&](int r) {
-      const int l = sg.level_at[r];
-      return runCol[l] + (((strm >> sg.grid_div_bits[l]) & (sg.grid[l] - 1)) << sg.span_bits[l]);
+    //: THE RUN'S COLUMN, PER LEVEL: the owner's run at that level plus this stream's
+    //: own offset inside it.  The offset's SHIFT is the sub-box's, an immediate.
+    auto col_at = [&](int l, int sb) {
+      return runCol[l] + (((strm >> sg.grid_div_bits[l]) & (sg.grid[l] - 1)) << sb);
     };
-    //: the token column one rank's run starts at, off the block: the owner's run at
-    //: that level plus this stream's own offset inside it.
     //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES. -- see docs/internals/carry/carry_kernel.md#near-line-497
     uint32_t acc[SPT / 2];
     {
-      const void* const src = gather_ptr(base, tokOff + (uint32_t)(col_at(0) * 2));
-      field_dispatch<SPT>(ilog2c_dev(sg.span[sg.level_at[0]]), 0, [&](auto Kc, auto) {
-        field_seed<SPT, WRITE, decltype(Kc)::value>(acc, src, have);
-      });
+      //: the canonical INNERMOST level seeds the accumulator: its shift is zero.
+      constexpr int l = D - 1, K = warp_span_bits(D, DV, l);
+      const void* const src = gather_ptr(base, tokOff + (uint32_t)(col_at(l, K) * 2));
+      field_seed<SPT, WRITE, K>(acc, src, have);
     }
-    static_for<D - 1>([&](auto Rc) {
-      constexpr int r = decltype(Rc)::value + 1;
-      const int l = sg.level_at[r];
-      const void* const src = gather_ptr(base, tokOff + (uint32_t)(col_at(r) * 2));
-      field_dispatch<SPT>(ilog2c_dev(sg.span[l]), sg.shift[l], [&](auto Kc, auto Sc) {
-        field_fold<SPT, decltype(Kc)::value, decltype(Sc)::value>(acc, src);
-      });
+    static_for<D - 1>([&](auto Lc) {
+      constexpr int l = decltype(Lc)::value;
+      constexpr int K = warp_span_bits(D, DV, l), SH = warp_shift(D, DV, l);
+      const void* const src = gather_ptr(base, tokOff + (uint32_t)(col_at(l, K) * 2));
+      field_fold<SPT, K, SH>(acc, src);
     });
     __nv_bfloat16* const row = dst + prow * LdS;
     if constexpr (WRITE) {
@@ -756,22 +677,18 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       constexpr int j = decltype(Jc)::value;
       static_for<4>([&](auto Ec) {
         constexpr int e = decltype(Ec)::value;
-        const int dl = xch_delta(j * kMmaN + (e & 1));
-        const int swzD = geom_swz(dl);
+        constexpr int dl = j * kMmaN + (e & 1);
         static_for<MCH>([&](auto Mc) {
           constexpr int m = decltype(Mc)::value;
-          const int gr = (2 * m + (e >> 1)) ^ swzD;
-          store_shared_u16(pubC + (uint32_t)(dl * LdX * 2) + (uint32_t)((gr ^ swzLane) * 16),
-                           hi_bf16(st[m][j][e]));
+          constexpr int gr = 2 * m + (e >> 1);
+          store_shared_u16(pubC + (uint32_t)(dl * LdX * 2 + gr * 16), hi_bf16(st[m][j][e]));
         });
       });
       if ((lane >> 2) == 0) {
         static_for<2>([&](auto Ec) {
           constexpr int e = decltype(Ec)::value;
-          const int dl = xch_delta(j * kMmaN + e);
-          store_shared_u16(
-              pubM + (uint32_t)(dl * LdX * 2) + (uint32_t)((geom_msw(dl) ^ mswLane) * 4),
-              hi_bf16(mass_st[j][e]));
+          constexpr int dl = j * kMmaN + e;
+          store_shared_u16(pubM + (uint32_t)(dl * LdX * 2), hi_bf16(mass_st[j][e]));
         });
       }
     });
@@ -780,22 +697,18 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     static_for<kDw>([&](auto Kc) {
       constexpr int kk = decltype(Kc)::value;
       constexpr int rk = kk * kMmaK;
-      const int swzK = swzPull ^ geom_swz(rk);
       static_for<MCH>([&](auto Mc) {
         constexpr int m = decltype(Mc)::value;
-        load_frag_t(sa[kk][m],
-                    pullC + (uint32_t)(rk * LdX * 2) + (uint32_t)((((2 * m) | cT) ^ swzK) * 16));
+        load_frag_t(sa[kk][m], pullC + (uint32_t)(rk * LdX * 2) + (uint32_t)(((2 * m) | cT) * 16));
       });
-      //: the mass's two pairs.  `msw` ignores the row's low three bits, so a pair's -- see docs/internals/carry/carry_kernel.md#msw
+      //: the mass's two pairs, a row apart, at the reader's own segment. -- see docs/internals/carry/carry_kernel.md#msw
       ma[kk][0] = 0u;
       ma[kk][1] = 0u;
       ma[kk][2] = 0u;
       ma[kk][3] = 0u;
       if ((lane >> 2) == 0) {
-        const uint32_t bLo =
-            pullM + (uint32_t)(rk * LdX * 2) + (uint32_t)((geom_msw(rk) ^ mswPull) * 4);
-        const uint32_t bHi =
-            pullM + (uint32_t)((rk + 8) * LdX * 2) + (uint32_t)((geom_msw(rk + 8) ^ mswPull) * 4);
+        const uint32_t bLo = pullM + (uint32_t)(rk * LdX * 2);
+        const uint32_t bHi = pullM + (uint32_t)((rk + 8) * LdX * 2);
         ma[kk][0] = (uint32_t)load_shared_u16(bLo)
                     | ((uint32_t)load_shared_u16(bLo + (uint32_t)(LdX * 2)) << 16);
         ma[kk][2] = (uint32_t)load_shared_u16(bHi)
@@ -917,18 +830,16 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
         const uint32_t a0 = sbC + (uint32_t)(rr * LdX * 2);
         static_for<MCH>([&](auto Mc) {
           constexpr int m = decltype(Mc)::value;
-          constexpr int gr = (2 * m + (i & 1)) ^ geom_swz(rr);
-          const uint32_t a = a0 + (uint32_t)((gr ^ swzSB) * 16);
+          constexpr int gr = 2 * m + (i & 1);
+          const uint32_t a = a0 + (uint32_t)(gr * 16);
           store_shared_u16(a, (uint16_t)(sa[kk][m][i] & 0xFFFFu));
           store_shared_u16(a + (uint32_t)(LdX * 2), (uint16_t)(sa[kk][m][i] >> 16));
         });
       });
       if ((lane >> 2) == 0) {
         constexpr int rk = kk * kMmaK;
-        const uint32_t bLo =
-            pullM + (uint32_t)(rk * LdX * 2) + (uint32_t)((geom_msw(rk) ^ mswPull) * 4);
-        const uint32_t bHi =
-            pullM + (uint32_t)((rk + 8) * LdX * 2) + (uint32_t)((geom_msw(rk + 8) ^ mswPull) * 4);
+        const uint32_t bLo = pullM + (uint32_t)(rk * LdX * 2);
+        const uint32_t bHi = pullM + (uint32_t)((rk + 8) * LdX * 2);
         store_shared_u16(bLo, (uint16_t)(ma[kk][0] & 0xFFFFu));
         store_shared_u16(bLo + (uint32_t)(LdX * 2), (uint16_t)(ma[kk][0] >> 16));
         store_shared_u16(bHi, (uint16_t)(ma[kk][2] & 0xFFFFu));
@@ -939,13 +850,12 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     //: THE WRITER PULLS IN ITS OWN LAYOUT.  Its eight slots of one n-tile are eight -- see docs/internals/carry/carry_kernel.md#writer-pull
     static_for<kNL>([&](auto Jc) {
       constexpr int j = decltype(Jc)::value;
-      const int dj = xch_delta(j * kMmaN);
+      constexpr int dj = j * kMmaN;
       const uint32_t a0 = retC + (uint32_t)(dj * LdX * 2);
-      const int swzJ = swzRet ^ geom_swz(dj);
       static_for<MCH / 2>([&](auto Tc) {
         constexpr int t = decltype(Tc)::value;
         uint32_t r4[4];
-        load_frag_t(r4, a0 + (uint32_t)((((4 * t + retG) ^ swzJ) * 16)));
+        load_frag_t(r4, a0 + (uint32_t)((4 * t + retG) * 16));
         static_for<4>([&](auto Rc) {
           constexpr int r = decltype(Rc)::value;
           hi[j][4 * t + r] = r4[r];
@@ -953,11 +863,9 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       });
       mhi[j] = 0u;
       if ((lane >> 2) == 0) {
-        const int dl0 = xch_delta(j * kMmaN), dl1 = xch_delta(j * kMmaN + 1);
-        const uint32_t m0 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl0 * LdX * 2)
-                                                      + (uint32_t)((geom_msw(dl0) ^ mswLane) * 4));
-        const uint32_t m1 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl1 * LdX * 2)
-                                                      + (uint32_t)((geom_msw(dl1) ^ mswLane) * 4));
+        constexpr int dl0 = j * kMmaN, dl1 = j * kMmaN + 1;
+        const uint32_t m0 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl0 * LdX * 2));
+        const uint32_t m1 = (uint32_t)load_shared_u16(pubM + (uint32_t)(dl1 * LdX * 2));
         mhi[j] = m0 | (m1 << 16);
       }
     });

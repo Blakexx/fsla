@@ -52,7 +52,7 @@ FLAG = ((256, 256), carry_ops.WINDOW)              # N = 65536, BC = 128, owners
 #: atoms) reproduces the compile-time `BoxPlan`'s answer at every built topology, which
 #: is the parity proof `test_the_derived_box_reproduces_the_compile_time_law` asserts.
 DEEP3 = ((16, 16, 16), carry_ops.WINDOW_SMALL)     # s = (2, 4, 16),   owners = 32
-DEEP4 = ((8, 8, 8, 8), carry_ops.WINDOW_SMALL)     # s = (2, 2, 4, 8), owners = 32
+DEEP4 = ((16, 16, 16, 16), carry_ops.WINDOW_SMALL)  # s = (2, 2, 2, 16), owners = 2048
 D_V = carry_ops.D_V
 #: the ALTERNATING declaration packed as the seam's word, at depth four.
 ALT4 = 102
@@ -66,7 +66,7 @@ SPLIT = carry_ops.CHANNEL_SPLIT
 #: flat (one `int64` vector, so the seam needs no schema); this names its fields once so
 #: the law tests read the block instead of re-deriving it in Python -- which would only
 #: prove that two derivations agree with each other (`matching-the-naive-antipattern`).
-_SIDE_ARRAYS = ("level_at", "rank", "span", "grid", "grid_div", "shift", "row_g", "row_prefix")
+_SIDE_ARRAYS = ("level_at", "rank", "row_span", "grid", "grid_div", "row_g", "row_prefix")
 _SIDE_SCALARS = ("carves", "rows", "leaf", "streams")
 _BLK_ARRAYS = ("width", "span", "grid", "col_base", "run_shift", "owner_div", "weight")
 _BLK_SCALARS = ("wtot", "owners", "leaves", "local_bits", "min_width", "identity_map")
@@ -225,14 +225,18 @@ def test_the_addressing_is_a_function_of_the_call_and_not_of_the_arm():
     seen = {}
     for widths, modes in (((256, 256), 0), ((256, 256), 1), ((256, 256), 3),
                           ((256, 256), 6), ((256, 256), 10), ((16, 16, 16), 38),
-                          ((8, 8, 8, 8), 102)):
+                          ((16, 16, 16, 16), 102)):
         b = block(widths, modes, ns=4)
-        seen[(widths, modes)] = (tuple(b["r_span"]), tuple(b["w_span"]), b["identity_map"])
-    #: the flagship's ALTERNATING word carves the two sides in OPPOSITE levels -- that is
-    #: the whole of mode-routed ownership -- and its TIED word (`MO = 3`, both sides
-    #: sparse at level 0) hands both sides the same vector, which is the identity map.
-    assert seen[((256, 256), 6)][:2] == ((8, 4), (2, 16))
-    assert seen[((256, 256), 3)][:2] == ((2, 16), (2, 16))
+        seen[(widths, modes)] = (tuple(b["r_grid_div"]), tuple(b["w_grid_div"]),
+                                 b["identity_map"])
+    #: THE SUB-BOX IS THE SAME ON BOTH SIDES (G2b) -- it is the register shape -- so the
+    #: mode word reaches the derivation as the CARVE OFFSETS: which stream index bit
+    #: fixes which level's digits.  The flagship's ALTERNATING word ranks the two sides'
+    #: levels oppositely and so hands them opposite offsets (the permuted transit); its
+    #: TIED word (`MO = 3`, both sides sparse at level 0) hands them the same offsets,
+    #: which is the identity map.
+    assert seen[((256, 256), 6)][:2] == ((1, 2), (2, 1))
+    assert seen[((256, 256), 3)][:2] == ((2, 1), (2, 1))
     assert seen[((256, 256), 6)][2] == 0 and seen[((256, 256), 3)][2] == 1
     assert len({v[:2] for v in seen.values()}) > 1, (
         "every declaration derived the same carve: the mode word is not reaching the "
@@ -611,7 +615,7 @@ def test_the_census_reports_the_transit_and_its_row_map_off_the_device():
     identities = []
     for arm in carry_ops.arms():
         D, d_v, W, C, warps, WPS, split, BC, smem, cta = arm[:10]
-        widths = {2: (256, 256), 3: (16, 16, 16), 4: (8, 8, 8, 8)}[D]
+        widths = {2: (256, 256), 3: (16, 16, 16), 4: (16, 16, 16, 16)}[D]
         for modes in (0, 3, 6):
             st = list(carry_ops.build_stamp(widths, W, C, bool(split), modes, d_v))
             xch_bytes, identity = st[24], st[25]
@@ -712,7 +716,7 @@ def test_m3_deep_lists_differ_when_the_sides_do(arm):
 
 
 @pytest.mark.parametrize("arm,spans", [(SMALL, (8, 16)), (FLAG, (8, 16)),
-                                       (DEEP3, (2, 4, 16)), (DEEP4, (2, 2, 4, 8))],
+                                       (DEEP3, (2, 4, 16)), (DEEP4, (2, 2, 2, 16))],
                          ids=["small", "flag", "d3", "d4"])
 def test_the_derived_box_reproduces_the_compile_time_law(arm, spans):
     """THE PARITY PROOF: the RUNTIME span rule against the constants `BoxPlan` produced.
@@ -765,19 +769,25 @@ def test_the_derivation_refuses_only_what_the_card_refuses():
     #: a width that is not a power of two
     with pytest.raises(RuntimeError, match="power of two"):
         block((100, 100), ns=1)
-    #: a topology that cannot hold ONE owner's box
-    with pytest.raises(RuntimeError, match="fewer leaves than one owner"):
+    #: a topology that cannot hold ONE owner's box -- named at the LEVEL that cannot
+    #: hold its share, which is the field a caller can act on.
+    with pytest.raises(RuntimeError, match="narrower than the owner box's span"):
         block((4, 4), ns=1)
-    #: and a NARROW level is served, not refused -- it takes its full width and the
-    #: remainder re-balances over the others.  `min_l B_l < 16` is a CENSUS FACT.
-    b = block((2, 2, 4, 8), ns=1)
-    assert tuple(b["span"]) == (2, 2, 4, 8) and tuple(b["grid"]) == (1, 1, 1, 1)
-    assert b["min_width"] == 2
+    #: THE ONE WIDTH LAW THE SHAPE OWNS (G2b): the box's spans are compile-time
+    #: `f(D, BC)`, so a level narrower than its span is refused rather than served by a
+    #: narrower slot layout -- there is no narrower layout to fall back to.  Under K50's
+    #: restored floor (`B_l >= 16`) no lawful state reaches it; `min_l B_l` stays a
+    #: CENSUS FACT so an unlawful one is visible in the ledger rather than silently run.
+    with pytest.raises(RuntimeError, match="narrower than the owner box's span"):
+        block((8, 8, 8, 8), ns=1)
+    b = block((16, 16, 16, 16), ns=1)
+    assert tuple(b["span"]) == (2, 2, 2, 16) and tuple(b["grid"]) == (8, 8, 8, 1)
+    assert b["min_width"] == 16
     #: THE ALIGNMENT REFUSAL IS REAL AND IS NAMED: a level whose column base is not a
     #: whole number of the runs read out of it would issue an unaligned wide load, so the
     #: seam refuses it rather than the kernel faulting on it.
     with pytest.raises(RuntimeError, match="not a whole number of the runs"):
-        block((2, 2, 8, 4), ns=1)
+        block((8, 16), ns=1)
 
 
 # ------------------------------------------------------------------ the refusal

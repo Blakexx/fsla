@@ -1871,49 +1871,28 @@ case would hold a 32-element `run[]` alongside the 16-element accumulator and se
 arm's register high-water mark for a case every other case pays for.
 
 <a id="expand-cases"></a>
-## The private order's field, as a CTA-uniform structure branch — and its four enforcement layers
+## The private order's field is an IMMEDIATE (G2b) — what the enumeration was, and why it is gone
 
-A level's place in one side's private slot order is a pair `(span, shift)` of powers of two
-with `span << shift <= kLeafW`. With `kLeafW = 32` the slot index is `n = 5` bits and the
-admissible set is exactly `(n+1)(n+2)/2 = 21` pairs:
+G2 made a level's `(span, shift)` runtime and paid for it with a CTA-uniform branch over
+the 21 admissible pairs of a five-bit slot index, generated with four enforcement layers.
+It was correct and it was expensive: `produce` is inlined at four call sites in two
+instantiations, so the case bodies multiplied by the INLINING as well as by the
+enumeration — 4,072 → 12,216 SASS instructions, 63 → 190 KB, `no_instruction` (fetch)
+stalls 5.9x, and the kernel ran 1.96x the parent's instructions for 1.98x its time.
 
-| `shift` | admissible `log2 span` | count |
-|---|---|---|
-| 0 | 0, 1, 2, 3, 4, 5 | 6 |
-| 1 | 0, 1, 2, 3, 4 | 5 |
-| 2 | 0, 1, 2, 3 | 4 |
-| 3 | 0, 1, 2 | 3 |
-| 4 | 0, 1 | 2 |
-| 5 | 0 | 1 |
+The correction (K50, ruled 2026-08-29) is that the field was never addressing: the warp's
+leaf-slot → digit map is REGISTER SHAPE. It is now compile-time `f(D, DV)` on both sides
+(`geom.md#warp-box`), so `field_seed`/`field_fold` take their `K` and `SH` as template
+arguments straight from `warp_span_bits`/`warp_shift`, the enumeration is deleted with its
+trap and its coverage sweep, and the hot-path instruction count is the parent's by
+construction rather than by a branch that hoists it. What reaches the produce at runtime is
+one thing: the stream's COLUMN OFFSET at each level, `((strm >> grid_div_bits) & (grid-1))
+<< span_bits`, whose shift is an immediate too.
 
-Every case body is the compile-time code this kernel always had — its immediates intact,
-its `run` array in registers, its trip counts unrolled — so the hot-path instruction count
-is the parent's. The word the branch reads is CTA-uniform (it depends on the geometry block
-and the compile-time slot index, never on the lane), so the branch is coherent: no
-divergence, no predication, and no dynamically indexed local array. That last is the point:
-make `shift`/`span` runtime without this and `run[]` becomes a dynamically indexed local
-array, which is a SPILL — the measured first attempt spilled 96 bytes of stack.
-
-Constitution R9 admits a branch on STRUCTURE. **A structure branch is only as good as what
-happens when the structure is not in the set**, so this one fails fast at four layers, and
-this is the enforcement pattern every structure branch in this family follows (Blake,
-2026-08-29):
-
-1. **The case set is GENERATED, not written down.** `field_dispatch` walks every
-   `(width, position)` pair of an `n`-bit slot index with `static_for`. There is no table
-   to fall out of date with `kLeavesPerWarp`.
-2. **Exhaustiveness is compile-time.** `field_count(n)` walks the same bounds and is
-   `static_assert`ed against the closed form `field_pairs(n)`, and every emitted pair is
-   `static_assert`ed admissible. The derivation cannot leave the set: a side's spans
-   multiply to `kLeafW`, so `shift(r) + log2 span(r) <= log2 kLeafW = n` for every rank.
-   An arm whose leaves-per-warp changed without the enumeration changing does not build.
-3. **The seam refuses before launch.** `derive_side` checks every level's pair against
-   `field_admissible` and names what it rejects, so a bad geometry never reaches a kernel.
-4. **The default TRAPS** — no fallthrough, ever — and `tools/field_coverage.py` (the K43
-   post-build sweep) launches every built arm at every field its depth can REACH, on a tiny
-   cell, so an unreachable trap is a proven fact rather than a promise. The sweep also
-   reports which admissible pairs a depth cannot reach at all, which is the honest form of
-   "covered": at `D = 2` only two fields can be placed in five bits.
+The four-layer pattern is still the rule for a structure branch that has to exist
+(constitution R9's enforcement addendum). The branches that remain in this body are the
+liveness clause's `carves`/`row_g` tests, and `tools/field_coverage.py` sweeps THOSE: every
+built arm, every clause signature its depth can reach, on a tiny cell.
 
 <a id="field-seed"></a>
 ## `field_seed` and `field_fold`
@@ -1921,23 +1900,21 @@ this is the enforcement pattern every structure branch in this family follows (B
 `field_seed` is the accumulator's seed: the order's INNERMOST level, whose shift is zero by
 definition of rank. It is also where the dead-row mask lands on the read side — zeroing any
 one factor zeroes the product, and the innermost is the one rank the branch already loads.
-`field_fold` is one more level's factor at its own field; a level at bit offset zero splits
-ACROSS the accumulator's pair, so its two slots take different digits, while every other
-level's pair shares one digit.
+`field_fold` is one more level's factor at its own field. Under the canonical layout only
+the innermost level sits at bit offset zero and that level SEEDS, so a folded level's slot
+pair always shares one digit — the split-across-the-pair case is `static_assert`ed away
+rather than branched on.
 
 <a id="byrank"></a>
-## The produce's view is by RANK, and it is never hoisted
+## The produce's view is BY LEVEL, in the canonical slot layout
 
-A level's place in the private order is runtime, so indexing anything by level inside the
-slot loop would be a dynamic index. Inverting the order at each rank — whose index IS
-compile-time — gives the three values the loop needs: the token column the run starts at,
-the run's width, and its bit offset.
-
-They are read from the block, which is a kernel parameter and therefore CTA-uniform, so
-they live in the UNIFORM datapath. **Hoisting them into arrays instead costs `6D` vector
-registers and spills a body that is already at the file's edge** — measured: the hoisted
-form was 255 registers with 40 bytes of stack, the read-from-the-block form is 242 with
-none. The same applies to the transit's row-map steps (`#xchdelta`).
+The sub-box's span and shift are immediates on both sides, so the produce walks LEVELS in
+canonical order: the innermost seeds the accumulator (its shift is zero by construction)
+and each outer level folds at its own compile-time field. The side's private ORDER reaches
+the produce only through `col_at` — the stream's digit offset inside the owner's run at
+that level, read from the block's `grid_div_bits`/`grid` in the UNIFORM datapath. Nothing
+is hoisted into vector registers: holding the columns would cost `D` registers per side for
+values every lane shares.
 
 <a id="xchdelta"></a>
 ## The row map's steps are evaluated, not folded and not hoisted

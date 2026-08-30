@@ -369,10 +369,16 @@ slot carrying exactly what it held.
 <a id="byrank"></a>
 ## The channel split mints in the CANONICAL order
 
-A level's field is `(n_l, run_shift(l))` off the addressing block: how many of that level's
-digits this thread's slot run varies over, and where they sit in the slot index. A level
-whose run does not vary inside the slice contributes ONE amplitude, which is the `n_l == 1`
-case of the same enumeration the carved body uses (`carry_kernel.md#expand-cases`). The
-clamp `n_l = clamp(SPT >> run_shift, 1, s_l)`, with the shift collapsed to zero when the
-level does not vary, is what keeps this body inside the admissible set;
-`tools/field_coverage.py` proves the clamp rather than asserting it.
+A thread's slot run is the LOW `log2 SPT` bits of the owner-local canonical index, so a
+level's field is `(n_l, run_shift(l))`: how many of that level's digits the run varies over,
+and where they sit in the slot index. `n_l = clamp(SPT >> run_shift(l), 1, s_l)`, and a
+level the run does not vary over contributes ONE amplitude — folded at any offset, so its
+shift is set to one and `field_fold`'s pair law holds without a second case.
+
+Both terms are COMPILE-TIME (G2b): under K50's restored `B_l >= 16` floor the owner box's
+spans are `f(D, BC)` and no level width can bind them (`geom.md#span-rule`), so
+`slice_span`/`slice_shift` are `constexpr` and this body's expansion carries the same
+immediates the carved body's does. Only the run's COLUMN is runtime. This is why the floor
+is load-bearing rather than advisory: without it the slice map is runtime, and a runtime
+slot map is either a spill or the case enumeration G2 measured at 3x the code size
+(`carry_kernel.md#expand-cases`).

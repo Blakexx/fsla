@@ -205,14 +205,15 @@ def build_stamp(widths, window, chunk, split=False, level_modes=0, d_v=D_V):
                                          int(bool(split)), int(level_modes), int(d_v))
 
 
-def geometry(widths, level_modes=0, bc=128, nsr=4, nsw=4):
+def geometry(widths, level_modes=0, bc=128, nsr=4, nsw=4, d_v=64):
     """THE ADDRESSING BLOCK the dispatch derives, flattened -- the model test's subject.
 
     This is the SHIPPED derivation, reached through the extension, not a Python mirror
     of it: a mirror can only prove that two derivations agree with each other
     (`matching-the-naive-antipattern`).
     """
-    return extension().carry_geometry(list(widths), int(level_modes), int(bc), int(nsr), int(nsw))
+    return extension().carry_geometry(list(widths), int(level_modes), int(bc), int(nsr),
+                                      int(nsw), int(d_v))
 
 
 def arms():

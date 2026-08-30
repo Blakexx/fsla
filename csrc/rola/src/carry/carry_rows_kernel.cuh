@@ -64,7 +64,7 @@ __global__ __launch_bounds__(kRowsThreads) void carry_rows_kernel(
     uint32_t* out = tbl + ((long)blockIdx.y * rowsBoth + (side ? geo.r.rows : 0)) * stride + w;
     static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      const int span = sg.span[l];
+      const int span = sg.row_span[l];
       const __nv_bfloat16* p = amp + geo.col_base[l];
       uint32_t* o = out + (long)sg.row_prefix[l] * stride;
 #pragma unroll 1

@@ -16,9 +16,24 @@
 
 namespace rola::carry {
 
+//: THE SLICE'S DIGIT MAP (G2b): a thread's slot run is the LOW `log2 SPT` bits of the
+//: owner-local canonical index, so how many of a level's digits the run varies over --
+//: and where they sit in it -- are compile-time `f(D, BC)`.  A level the run does not
+//: vary over contributes ONE amplitude, folded at any offset.
+//: -- see docs/internals/carry/carry_split_kernel.md#byrank
+constexpr int slice_span(int D, int bc, int spt, int l) {
+  const int rs = owner_run_shift(D, bc, l);
+  const int vary = rs >= ilog2c(spt) ? 1 : (spt >> rs);
+  const int s = owner_span(D, bc, l);
+  return vary < 1 ? 1 : (vary > s ? s : vary);
+}
+constexpr int slice_shift(int D, int bc, int spt, int l) {
+  return slice_span(D, bc, spt, l) == 1 ? 1 : owner_run_shift(D, bc, l);
+}
+
 template <int D, int DV, int W, int C>
 struct SplitGeom {
-  static constexpr int BC = kLeavesPerWarp * kWarps;
+  static constexpr int BC = leaves_per_warp(DV) * kWarps;
   //: THE VALUE WIDTH IS THIS ARM'S (K35 S3b), exactly as the carved body's is. -- see docs/internals/carry/carry_split_kernel.md#kdv
   static constexpr int kDv = DV;
   static constexpr int kCols = DV + 1;
@@ -250,24 +265,18 @@ __global__ __launch_bounds__(kThreads, (kSplitCtaTarget<D, DV, W, C>)) void carr
 
   // ---- the produce's per-thread map ---------------------------------------
   constexpr int kRowThr = PM::kRowThr, SPT = PM::SPT;
-  static_assert(SPT == kLeavesPerWarp && ilog2c(SPT) == 5,
-                "the produce's field enumeration places exactly five slot bits");
+  static_assert(SPT == leaves_per_warp(DV),
+                "a thread's slot run is the register shape; a different leaves-per-warp is a "
+                "different slice law, not a wider case");
   const int prow = tid / kRowThr;  // this thread's token row of the batch
   const int rIn = tid % kRowThr;   // its slot run within the box
   const int slot0 = rIn * SPT;
   //: THE CHANNEL SPLIT MINTS IN THE CANONICAL ORDER -- the innermost level lowest --
-  //: so a level's field is `(n_l, run_shift(l))` off the block: how many of that
-  //: level's digits this thread's slot run varies over, and where they sit in the
-  //: slot index.  A level whose run does not vary inside the slice contributes ONE
-  //: amplitude, which is the `n_l == 1` case of the same enumeration. -- see docs/internals/carry/carry_split_kernel.md#byrank
-  int lvCol[D], lvN[D], lvSh[D];
+  //: so only the run's COLUMN is runtime. -- see docs/internals/carry/carry_split_kernel.md#byrank
+  int lvCol[D];
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    const int rs = geo.run_shift[l];
-    lvCol[l] = runCol[l] + ((slot0 >> rs) & (geo.span[l] - 1));
-    const int vary = rs >= ilog2c(SPT) ? 0 : (SPT >> rs);
-    lvN[l] = vary < 1 ? 1 : (vary > geo.span[l] ? geo.span[l] : vary);
-    lvSh[l] = lvN[l] == 1 ? 0 : rs;
+    lvCol[l] = runCol[l] + ((slot0 >> owner_run_shift(D, BC, l)) & (owner_span(D, BC, l) - 1));
   });
 
   //: A DEAD ROW IS ZEROED AT THE INNERMOST FACTOR, the one the branch already loads as
@@ -278,17 +287,14 @@ __global__ __launch_bounds__(kThreads, (kSplitCtaTarget<D, DV, W, C>)) void carr
     //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES. -- see docs/internals/carry/carry_split_kernel.md#note-l317
     uint32_t acc[SPT / 2];
     {
-      const void* const src = gather_ptr(base, tokOff + (uint32_t)(lvCol[D - 1] * 2));
-      field_dispatch<SPT>(ilog2c_dev(lvN[D - 1]), 0, [&](auto Kc, auto) {
-        field_seed<SPT, WRITE, decltype(Kc)::value>(acc, src, have);
-      });
+      constexpr int l = D - 1;
+      const void* const src = gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2));
+      field_seed<SPT, WRITE, ilog2c(slice_span(D, BC, SPT, l))>(acc, src, have);
     }
     static_for<D - 1>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
       const void* const src = gather_ptr(base, tokOff + (uint32_t)(lvCol[l] * 2));
-      field_dispatch<SPT>(ilog2c_dev(lvN[l]), lvSh[l], [&](auto Kc, auto Sc) {
-        field_fold<SPT, decltype(Kc)::value, decltype(Sc)::value>(acc, src);
-      });
+      field_fold<SPT, ilog2c(slice_span(D, BC, SPT, l)), slice_shift(D, BC, SPT, l)>(acc, src);
     });
     __nv_bfloat16* const row = dst + prow * LdS + slot0;
     if constexpr (WRITE) {

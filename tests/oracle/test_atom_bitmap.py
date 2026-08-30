@@ -65,7 +65,7 @@ pytestmark = [
 #: the design asks for; the two `D = 1` arms are the flat-routing baselines,
 #: carried because they are built and because `D = 1` is the shape with no upper
 #: prefix at all -- the reduction's degenerate carve.
-_ARMS = ((1, 64), (1, 256), (2, 8), (2, 16), (2, 64), (3, 16), (4, 8))
+_ARMS = ((1, 64), (1, 256), (2, 8), (2, 16), (2, 64), (3, 16), (4, 16))
 
 #: The support sweep. `1.0` is the dense limit, where every atom is live and the
 #: reduction's early exit is the path taken.

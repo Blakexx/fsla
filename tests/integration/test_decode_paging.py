@@ -94,7 +94,7 @@ _ARMS = (
     ((16, 16), 64),
     ((4, 4, 4, 4), 64),
     ((8, 8, 8), 128),
-    ((8, 8, 8, 8), 128),
+    ((16, 16, 16, 16), 128),
 )
 
 #: The fraction of each level's digits the WRITE side is allowed to reach. Residency is a

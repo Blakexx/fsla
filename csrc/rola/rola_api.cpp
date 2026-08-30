@@ -63,7 +63,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("carve") = false);
   m.def("carry_geometry", &rola::carry::geometry,
         "K31 carry kernel: the addressing block the dispatch derives, flattened", py::arg("widths"),
-        py::arg("level_modes"), py::arg("bc"), py::arg("nsr"), py::arg("nsw"));
+        py::arg("level_modes"), py::arg("bc"), py::arg("nsr"), py::arg("nsw"),
+        py::arg("dv") = 64);
   m.def("carry_arms", &rola::carry::arms, "K31 carry kernel: the built arms");
   // ---- K31 R4: the reverse carry family, two concurrent scans ------------
   m.def("carry_backward_inter", &rola::carry::backward_inter,

@@ -47,7 +47,7 @@ D_V = 64
 TOPOLOGIES = {
     "flat": ((256, 256), 4, 8, carry_ops.WINDOW_WIDE),
     "deep3": ((16, 16, 16), 2, 16, carry_ops.WINDOW_SMALL),
-    "deep4": ((8, 8, 8, 8), 2, 8, carry_ops.WINDOW_SMALL),
+    "deep4": ((16, 16, 16, 16), 2, 16, carry_ops.WINDOW_SMALL),
 }
 
 #: THE DECLARATION PATTERNS, as functions of depth.  A pattern is a STRUCTURE --
