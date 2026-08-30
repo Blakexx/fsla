@@ -42,6 +42,10 @@ struct SideGeom {
   int rows;                        //: this side's ballot rows in total
   int leaf;                        //: prod_l sv(l) = BC / streams
   int streams;                     //: prod_l grid(l)
+  //: EVERY DIVISOR AND MODULUS IN THIS FAMILY IS A POWER OF TWO, so the block carries
+  //: the BIT COUNTS and no consumer ever emits an integer divide.
+  int span_bits[kGeomMaxLevels];
+  int grid_div_bits[kGeomMaxLevels];
 };
 
 //: THE BLOCK ITSELF -- what the host hands the kernel, by value, once per launch.
@@ -64,6 +68,9 @@ struct CarryGeomRT {
   SideGeom w;
   //: the former `kTied`, now a REPORTED FACT -- see docs/internals/carry/geom.md#row-map
   int identity_map;
+  int span_bits[kGeomMaxLevels];       //: log2 s(l)
+  int grid_bits[kGeomMaxLevels];       //: log2 g(l)
+  int owner_div_bits[kGeomMaxLevels];  //: log2 owner_div(l)
 };
 
 //: THE MODE WORD'S ENCODING, as the seam spells it: two bits per level.
@@ -178,7 +185,13 @@ inline const char* derive_side(int D, const int* width, const int* span, uint32_
   int gd = 1;
   for (int l = D - 1; l >= 0; --l) {
     g.grid_div[l] = gd;
+    g.grid_div_bits[l] = geom_ilog2(gd);
     gd *= g.grid[l];
+  }
+  for (int l = 0; l < D; ++l) {
+    g.span_bits[l] = geom_ilog2(g.span[l]);
+    if (g.span_bits[l] < 0 || g.grid_div_bits[l] < 0)
+      return "a side's spans and stream grid must be powers of two";
   }
   const int leaf_bits = geom_ilog2(g.leaf);
   for (int l = 0; l < D; ++l) {
@@ -206,6 +219,8 @@ inline const char* derive_side(int D, const int* width, const int* span, uint32_
     g.span[l] = width[0];
     g.grid[l] = 1;
     g.grid_div[l] = 1;
+    g.grid_div_bits[l] = 0;
+    g.span_bits[l] = geom_ilog2(width[0]);
     g.shift[l] = 0;
     g.row_g[l] = 0;
     g.row_prefix[l] = pfx;
@@ -243,10 +258,15 @@ inline const char* derive_carry_geom(int D, const int* width, int bc, uint32_t M
   for (int l = D - 1; l >= 0; --l) {
     g.weight[l] = wgt;
     g.owner_div[l] = odiv;
+    g.owner_div_bits[l] = geom_ilog2(odiv);
+    g.grid_bits[l] = geom_ilog2(g.grid[l]);
+    g.span_bits[l] = geom_ilog2(g.span[l]);
     g.run_shift[l] = rsh;
+    if (g.owner_div_bits[l] < 0 || g.grid_bits[l] < 0 || g.span_bits[l] < 0)
+      return "the owner grid and span must be powers of two";
     wgt *= g.width[l];
     odiv *= g.grid[l];
-    rsh += geom_ilog2(g.span[l]);
+    rsh += g.span_bits[l];
   }
   for (int l = D; l < kGeomMaxLevels; ++l) {
     g.width[l] = width[0];
@@ -255,6 +275,9 @@ inline const char* derive_carry_geom(int D, const int* width, int bc, uint32_t M
     g.col_base[l] = wtot;
     g.weight[l] = 1;
     g.owner_div[l] = 1;
+    g.owner_div_bits[l] = 0;
+    g.grid_bits[l] = 0;
+    g.span_bits[l] = geom_ilog2(width[0]);
     g.run_shift[l] = 0;
   }
   if (const char* e = derive_side(D, g.width, g.span, MO, kSideRead, NSR, g.r)) return e;
@@ -273,9 +296,9 @@ __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, int leaf_r, in
 #pragma unroll 1
   for (int l = 0; l < g.D; ++l) {
     const int digit = ((P >> g.w.shift[l]) & (g.w.span[l] - 1))
-                      + ((w / g.w.grid_div[l]) % g.w.grid[l]) * g.w.span[l];
-    reader += (digit / g.r.span[l]) * g.r.grid_div[l];
-    slot += (digit % g.r.span[l]) << g.r.shift[l];
+                      + (((w >> g.w.grid_div_bits[l]) & (g.w.grid[l] - 1)) << g.w.span_bits[l]);
+    reader += (digit >> g.r.span_bits[l]) << g.r.grid_div_bits[l];
+    slot += (digit & (g.r.span[l] - 1)) << g.r.shift[l];
   }
   return reader * leaf_r + slot;
 }
@@ -290,7 +313,7 @@ __host__ __device__ inline int geom_canon_leaf(const CarryGeomRT& g, int O, int 
   int acc = 0;
 #pragma unroll 1
   for (int l = 0; l < g.D; ++l) {
-    const int d = ((O / g.owner_div[l]) % g.grid[l]) * g.span[l]
+    const int d = (((O >> g.owner_div_bits[l]) & (g.grid[l] - 1)) << g.span_bits[l])
                   + ((local >> g.run_shift[l]) & (g.span[l] - 1));
     acc += d * g.weight[l];
   }

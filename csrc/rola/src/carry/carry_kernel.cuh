@@ -181,6 +181,9 @@ constexpr bool field_admissible(int span_bits, int shift, int n) {
 }
 constexpr int field_pairs(int n) { return (n + 1) * (n + 2) / 2; }
 
+//: the enumeration's key: one word carrying a level's `(shift, log2 span)`.
+constexpr int field_key(int shift, int span_bits) { return shift * 8 + span_bits; }
+
 //: the enumeration's OWN count, walked with the same bounds `field_dispatch` walks, so
 //: the closed form below is checked against the loop rather than against itself.
 constexpr int field_count(int n) {
@@ -191,34 +194,45 @@ constexpr int field_count(int n) {
   return c;
 }
 
-//: THE GENERATED DISPATCH.  `body(K, SH)` is invoked with the pair as COMPILE-TIME
-//: constants, exactly once, for the one pair that matches; anything else traps.
+//: the enumeration's index space, as arithmetic: pair `IDX` is the `IDX`-th
+//: `(log2 span, shift)` in span-major order, which is what lets the walk RECURSE.
+constexpr int field_offset(int k, int n) {
+  return k <= 0 ? 0 : field_offset(k - 1, n) + (n + 1 - (k - 1));
+}
+constexpr int field_k_of(int idx, int n, int k = 0) {
+  return field_offset(k + 1, n) > idx ? k : field_k_of(idx, n, k + 1);
+}
+constexpr int field_sh_of(int idx, int n) { return idx - field_offset(field_k_of(idx, n), n); }
+
+//: THE GENERATED DISPATCH, AS A WALK THAT STOPS AT ITS MATCH.
+//: -- see docs/internals/carry/carry_kernel.md#expand-cases
+template <int SPT, int IDX, class F>
+__device__ __forceinline__ void field_walk(int key, F&& body) {
+  constexpr int kN = ilog2c(SPT);
+  if constexpr (IDX >= field_pairs(kN)) {
+    //: LAYER 4: no fallthrough, ever.
+    __trap();
+  } else {
+    constexpr int K = field_k_of(IDX, kN);
+    constexpr int SH = field_sh_of(IDX, kN);
+    static_assert(field_admissible(K, SH, kN), "the enumeration emitted an inadmissible pair");
+    if (key == field_key(SH, K)) {
+      body(std::integral_constant<int, K>{}, std::integral_constant<int, SH>{});
+      return;
+    }
+    field_walk<SPT, IDX + 1>(key, static_cast<F&&>(body));
+  }
+}
+
 template <int SPT, class F>
 __device__ __forceinline__ void field_dispatch(int span_bits, int shift, F&& body) {
   constexpr int kN = ilog2c(SPT);
-  //: LAYERS 1 AND 2, both at compile time: the set is generated from the slot index's
-  //: width, and its size is the closed form.  An arm whose leaves-per-warp moved without
-  //: the enumeration moving with it does not build.
+  //: LAYERS 1 AND 2, at compile time: generated from the slot index's width, sized by
+  //: the closed form.
   static_assert(field_count(kN) == field_pairs(kN),
                 "the generated field set is not the admissible set of an n-bit slot index");
   static_assert(kN >= 1 && (1 << kN) == SPT, "the slot run is a power of two");
-  bool hit = false;
-  static_for<kN + 1>([&](auto Kc) {
-    constexpr int K = decltype(Kc)::value;
-    static_for<kN + 1 - K>([&](auto Sc) {
-      constexpr int SH = decltype(Sc)::value;
-      static_assert(field_admissible(K, SH, kN), "the enumeration emitted an inadmissible pair");
-      if (span_bits == K && shift == SH) {
-        body(Kc, Sc);
-        hit = true;
-      }
-    });
-  });
-  //: LAYER 4: no fallthrough, ever.  The seam refuses an inadmissible field before the
-  //: launch, so reaching this is a defect in the derivation, not a shape the caller can
-  //: ask for -- and `tools/field_coverage.py` proves the trap is unreachable by running
-  //: every built arm at every admissible pair.
-  if (!hit) __trap();
+  field_walk<SPT, 0>(field_key(shift, span_bits), static_cast<F&&>(body));
 }
 
 //: THE ACCUMULATOR'S SEED: the order's INNERMOST level, whose shift is zero by
@@ -283,7 +297,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
              const uint32_t* __restrict__ rows, float* __restrict__ o, float* __restrict__ den,
              int L, int tok_words, int v_row_bytes, const float* __restrict__ s_in,
              float* __restrict__ s_out, const int32_t* __restrict__ page_tbl,
-             const uint8_t* __restrict__ atom_bits, const CarryGeomRT geo) {
+             const uint8_t* __restrict__ atom_bits, const __grid_constant__ CarryGeomRT geo) {
   using G = CarryGeom<D, DV, W, C, KWARPS, WPS>;
   constexpr int kDv = DV;
   constexpr int kCols = DV + 1;
@@ -351,11 +365,13 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    const int o_l = (owner / geo.owner_div[l]) % geo.grid[l];
-    runCol[l] = geo.col_base[l] + o_l * geo.span[l];
-    offW[l] = ((strm / geo.w.grid_div[l]) % geo.w.grid[l]) * geo.w.span[l];
-    rowOffR[l] = (uint32_t)(geo.r.row_prefix[l] + o_l * (geo.span[l] / geo.r.span[l])) * rowBytes;
-    rowOffW[l] = (uint32_t)(geo.w.row_prefix[l] + o_l * (geo.span[l] / geo.w.span[l])) * rowBytes;
+    const int o_l = (owner >> geo.owner_div_bits[l]) & (geo.grid[l] - 1);
+    runCol[l] = geo.col_base[l] + (o_l << geo.span_bits[l]);
+    offW[l] = ((strm >> geo.w.grid_div_bits[l]) & (geo.w.grid[l] - 1)) << geo.w.span_bits[l];
+    rowOffR[l] = (uint32_t)(geo.r.row_prefix[l] + (o_l << (geo.span_bits[l] - geo.r.span_bits[l])))
+                 * rowBytes;
+    rowOffW[l] = (uint32_t)(geo.w.row_prefix[l] + (o_l << (geo.span_bits[l] - geo.w.span_bits[l])))
+                 * rowBytes;
   });
   //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the READ -- see docs/internals/carry/carry_kernel.md#pin-address
   const int rowsBoth = geo.r.rows + geo.w.rows;
@@ -387,8 +403,8 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
   int xchR = 0, xchQ = 0;
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    xchR += (offW[l] / geo.r.span[l]) * geo.r.grid_div[l];
-    xchQ += (offW[l] % geo.r.span[l]) << geo.r.shift[l];
+    xchR += (offW[l] >> geo.r.span_bits[l]) << geo.r.grid_div_bits[l];
+    xchQ += (offW[l] & (geo.r.span[l] - 1)) << geo.r.shift[l];
   });
   const int xchBase = xchR * kLeafR + xchQ;
   //: THE ROW MAP'S STEPS ARE EVALUATED, NOT FOLDED AND NOT HOISTED: they are
@@ -563,14 +579,15 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
     constexpr bool WRITE = decltype(Wt)::value;
     //: EACH PHASE MINTS IN ITS OWN CARVE'S ORDER, from its own digit offsets. -- see docs/internals/carry/carry_kernel.md#pm
     const SideGeom& sg = WRITE ? geo.w : geo.r;
-    //: the token column one rank's run starts at, off the block: the owner's run at
-    //: that level plus this stream's own offset inside it.
+    //: THE RUN'S COLUMN, PER RANK.  Nothing here is hoisted: every operand is a shift
+    //: or a mask off the block (the block carries the BIT COUNTS precisely so this is
+    //: not a divide), and holding the columns in registers instead spills the body.
     auto col_at = [&](int r) {
       const int l = sg.level_at[r];
-      const int o_l = (owner / geo.owner_div[l]) % geo.grid[l];
-      return geo.col_base[l] + o_l * geo.span[l]
-             + ((strm / sg.grid_div[l]) % sg.grid[l]) * sg.span[l];
+      return runCol[l] + (((strm >> sg.grid_div_bits[l]) & (sg.grid[l] - 1)) << sg.span_bits[l]);
     };
+    //: the token column one rank's run starts at, off the block: the owner's run at
+    //: that level plus this stream's own offset inside it.
     //: THE SLOT ACCUMULATORS ARE THE ONLY ARRAY THE PRODUCE CARRIES. -- see docs/internals/carry/carry_kernel.md#near-line-497
     uint32_t acc[SPT / 2];
     {
@@ -683,7 +700,7 @@ carry_kernel(const __nv_bfloat16* __restrict__ pread, const __nv_bfloat16* __res
       static_for<D>([&](auto Lc) {
         constexpr int l = decltype(Lc)::value;
         if (((sg.carves >> l) & 1) != 0) {
-          const uint32_t c = (uint32_t)((s / sg.grid_div[l]) % sg.grid[l]);
+          const uint32_t c = (uint32_t)((s >> sg.grid_div_bits[l]) & (sg.grid[l] - 1));
           m &= *reinterpret_cast<const uint32_t*>(
               gather_ptr(rowsS, rowOffS[l] + c * rowBytes + wordB));
         }

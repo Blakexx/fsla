@@ -130,8 +130,8 @@ __global__ __launch_bounds__(kThreads, (kSplitCtaTarget<D, DV, W, C>)) void carr
   const uint32_t rowBytes = (uint32_t)tok_words * (uint32_t)sizeof(uint32_t);
   static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    const int o_l = (owner / geo.owner_div[l]) % geo.grid[l];
-    runCol[l] = geo.col_base[l] + o_l * geo.span[l];
+    const int o_l = (owner >> geo.owner_div_bits[l]) & (geo.grid[l] - 1);
+    runCol[l] = geo.col_base[l] + (o_l << geo.span_bits[l]);
     rowOff[l] = (uint32_t)(geo.r.row_prefix[l] + o_l) * rowBytes;
   });
   //: ONE 64-BIT BASE PER SIDE, and 32-bit byte displacements after it: the side's -- see docs/internals/carry/carry_split_kernel.md#rowsr
