@@ -217,10 +217,13 @@ path, since allocating that tensor is exactly what paging exists to avoid.
 Residency is the arena's fact; **activity is the facts pass's fact**, and only the
 second decides what a call TOUCHES (KERNEL_STANDARDS §R14).
 
-* **PRIMARY bits — the kernel's grain.** Per (window, warp box, side): one READ bit
-  and one WRITTEN bit, never pre-ORed, emitted by the facts pass at the carve's own
-  grain. The carry kernel gates its state slice LOAD on `resident ∧ (read ∨ written)`
-  and its STORE on `written`, at that grain. Because the gate never references the
+* **PRIMARY bits — the kernel's grain.** Per (warp box, side), over the WHOLE CALL:
+  one READ bit and one WRITTEN bit, never pre-ORed, emitted at the carve's own grain.
+  The state slice is loaded once at the call's entry and stored once at its exit — the
+  box lives in registers across every window — so the gate is per call: LOAD on
+  `resident ∧ (read ∨ written)`, STORE on `written`. Nothing is kept per window: a
+  window with nothing live for a box is a schedule fact, read off the ballots while
+  walking, never stored. Because the gate never references the
   atom, prefill needs no page alignment and no row masks: owners splitting an atom
   write disjoint rows. *(Ruled, not yet built: the emission consumes the carve as a
   kernel input, which arrives with the runtime-addressing work of §5.)*
