@@ -120,3 +120,7 @@ that into the skill the same day (process/pointers only — never facts).
   the hot loop, one body per member; one source, N bodies, no __noinline__ in the loop; per-side choices
   device-side, whole-kernel choices template axes; selectivity + bank lines; compile budget per arm.
   Every brief that adds or changes a structure branch cites the checklist and answers each item.
+- MAKE THE WORKTREE BEFORE THE FIRST EDIT (LOCKS, 2026-08-29): the ownership line is a precondition, not
+  a commit-time rule; an agent that starts editing the read-only tip and "moves later" has already
+  violated it. new_worktree.sh needs ROLA_BASE_VENV (the one real venv on this host is named in the
+  dispatch prompt; sibling venv-* dirs are pointer venvs).
