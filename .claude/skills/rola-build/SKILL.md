@@ -110,3 +110,6 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
   trap). Its host cost on this machine is UNMEASURED (incident 2026-08-29: it pegged the host on its own);
   G2c measures one family/tool pair (time, peak RSS, load). Until then: exclusive build lock + nice, one
   tool and one family at a time; any change to what or how it instruments is a design point for Blake.
+- A RUNAWAY SANITIZER DIES, NEVER FREEZES THE HOST: sanitize_oracle.py runs each tool under a hard
+  RLIMIT_AS cap (~8 GB) and reports per-tool peak RSS; racecheck's hazard records are the suspect when
+  host memory vanishes.
