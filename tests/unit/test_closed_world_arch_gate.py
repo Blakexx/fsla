@@ -71,6 +71,7 @@ _LAUNCHLESS = {
     "rola_decode_producer_width_mirror": "returns a compiled-in width",
     "rola_vmm_create": "a driver allocation, not a kernel launch",
     "rola_vmm_probe": "a driver capability probe, not a kernel launch",
+    "carry_census": "a cudaFuncGetAttributes query of the compiled arms, not a kernel launch",
 }
 
 
