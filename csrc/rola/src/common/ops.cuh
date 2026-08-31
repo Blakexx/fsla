@@ -127,30 +127,6 @@ __device__ __forceinline__ void rendezvous() { __syncthreads(); }
 
 // ------------------------------------------------------------------- edges
 
-//: A SPLIT EDGE'S OBJECT: one `mbarrier` word, arrived at and waited on separately so a
-//: cover slot fits between. -- see docs/internals/common/ops.md#edge
-using EdgeState = uint64_t;
-
-__device__ __forceinline__ void edge_init(SmemAddr a, int arrivals) {
-  asm volatile("mbarrier.init.shared.b64 [%0], %1;" ::"r"(a), "r"(arrivals) : "memory");
-}
-
-__device__ __forceinline__ void edge_arrive(SmemAddr a) {
-  asm volatile("{ .reg .b64 s; mbarrier.arrive.shared.b64 s, [%0]; }" ::"r"(a) : "memory");
-}
-
-//: `phase` alternates 0/1 per completion of this edge; the caller carries its own count.
-__device__ __forceinline__ void edge_wait(SmemAddr a, uint32_t phase) {
-  asm volatile(
-      "{ .reg .pred P;\n"
-      "  SPIN%=: mbarrier.test_wait.parity.shared.b64 P, [%0], %1;\n"
-      "  @P bra DONE%=;\n"
-      "  bra SPIN%=;\n"
-      "  DONE%=: }" ::"r"(a),
-      "r"(phase)
-      : "memory");
-}
-
 //: `rendezvous_group(id, n)` -- a barrier over `n` threads that arrive at the -- see docs/internals/common/ops.md#rendezvous-group
 __device__ __forceinline__ void rendezvous_group(int id, int n) {
   asm volatile("bar.sync %0, %1;\n" ::"r"(id), "r"(n));

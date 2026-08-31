@@ -13,43 +13,49 @@ an allocation would move the residency the whole design is built on.
 | offset | tenant | bytes | owner |
 |---|---|---|---|
 | 0 | the transit region, `BC * LdX * 2` | 36,864 | the exchange between the two sides' carves |
-| 36,864 | the frame's three edge barriers, `3 * 8` | 24 | the frame |
-| 36,888 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
-| 36,952 | the stream's claim cursors, one per production point | 12 | the fold's fill |
-| 36,976 | the segment gains, `kFactorSlots * kSeg * 2` | 64 | the deep index staging |
-| 37,040 | the raw factor rows, `kFactorSlots * kSeg * kRawStride * 2` | 2,304 | the deep index staging |
-| | **total** | **39,344** | |
+| 36,864 | PHASE 2's value ring, `kSegmentSlots * kSeg * LdV * 2` | 2,048 | the fold's staging |
+| 38,912 | PHASE 2's column blocks, `kColSlots * kSpanTotal * kTokStride * 2` | 3,072 | the fold's transpose |
+| 41,984 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
+| 42,048 | the fill's claim cursors, one per production point | 20 | both sides' fills |
+| 42,064 | the write side's segment gains, `kFactorSlots * kSeg * 2` | 64 | the deep index staging |
+| 42,128 | the write side's raw factor rows, `kFactorSlots * kSeg * kRawStride * 2` | 2,304 | the deep index staging |
+| 44,432 | the read side's raw factor rows, `kReadSlots * kSeg * kRawStride * 2` | 2,304 | the readout's ring |
+| | **total** | **46,752** | |
 
-The stream's two edges take no bytes at all: they are NAMED BARRIERS
-(`carry_kernel.md#stream-edges`), which is what an edge with equal participation costs.
+The frame's three edges and the streams' three take no bytes at all: they are NAMED BARRIERS
+(`carry_kernel.md#edges`), which is what an edge with equal participation costs.
 
-At sm_86's 101,376-byte per-CTA maximum this leaves the fill rule most of the budget, and
-the residency is one CTA per SM by the launch bound rather than by the allocation.
+At sm_86's 101,376-byte per-CTA maximum this leaves the parked plane and the fill rule the
+rest of the budget, and the residency is one CTA per SM by the launch bound rather than by
+the allocation.
 
 <a id="region"></a>
 ## The region, and the aliasing structure per moment
 
-The transit region is the largest tenant and the only one whose bytes are re-let. It is
-allocated once at its full size, and every phase-local tenant lives INSIDE it, because no
-two of them are alive at the same moment:
+The transit region is the largest tenant and the only one whose bytes are re-let:
 
 | moment | who lives in the region's bytes |
 |---|---|
 | the entry sweep | as many state page images as fit: `floor(36,864 / (16 * LdO * 4))` = 8 images of 4,352 bytes = 34,816 bytes, in 2 rounds over the box's 16 pages |
-| the out leg, the return leg | the transit region itself — `BC` rows of `LdX` bf16 channels, the accumulator's halves in the owner-local canonical order |
-| PHASE 1 | the read stream's segment slots and the readout's output block |
-| PHASE 2 | the value ring, one `kSeg x LdV` bf16 tile per STREAM per slot = 2,048 bytes, `1 * 1 * 2,048`; and two column blocks, `2 * kSpanTotal * kTokStride * 2` = 3,072 bytes |
+| the out leg, PHASE 1, the return leg | the transit region itself — `BC` rows of `LdX` bf16 channels, the accumulator's halves in the owner-local canonical order — and, from the pull to the store-back, PHASE 1's two output blocks in the first 8,704 of those bytes |
+| PHASE 2 | nothing: the fold's own tenants have their own bytes |
 | the exit sweep | the state page images again |
 
-The edge barriers and the page slots are PERSISTENT: they are alive from the prologue to
-the exit and are never re-let.
+THE REGION IS THE TRANSIT'S, AND THAT IS A RULE THE EDGES FORCE. Each of the frame's three
+edges is a read-after-write on the region (`carry_kernel.md#edges`); a phase-local tenant
+aliased into it introduces a WRITE-AFTER-READ the frame names no edge for, and the fold's
+first act is a `cp.async` into its value ring ahead of any edge. So PHASE 2's value ring and
+column blocks take 5,120 bytes of their own rather than the rejoin's. PHASE 1's fan-in
+panel DOES alias, because the readout stream's own first crossing falls between the pull and
+the first write of a slice, and the store-back rewrites every row before the return leg.
 
-Two consequences worth stating because they are easy to get wrong later. First, a tenant
-that must survive a phase change is NOT a region tenant — the deep index staging that runs
-a window ahead of the phase that consumes it is persistent by construction and takes its
-own bytes. Second, parking the accumulator's low plane in shared memory holds the region
-through PHASE 1, which displaces PHASE 1's own tenants into bytes of their own; that is
-what the parked plane costs, and it is a priced tenant on this table rather than a surprise.
+The page slots and the claim cursors are PERSISTENT: they are alive from the prologue to the
+exit and are never re-let. So is each side's raw factor ring — a tenant that must survive a
+phase change is not a region tenant, and both cover slots fill their ring while the region
+still holds the transit.
+
+Parking the accumulator's low plane in shared memory holds the region through PHASE 1, which
+is why the output blocks are a priced row on this table rather than a surprise later.
 
 ## Reserved by name, for the stages that fill them
 
@@ -58,12 +64,41 @@ allocation nobody sized. None is allocated today.
 
 | tenant | size, at the flagship arm | who fills it |
 |---|---|---|
-| read stream segments | one 16-token slot per accumulator tile; the register fragments are the second buffer where the MMA sources from registers | the fold-and-stream stage |
-| the readout's output block | `C * (DV + 1) * 4` ≈ 8,320 bytes, or none where the reduction is native | the fan-in stage |
 | write stream segments | one 16-token slot per concurrently active accumulator box, each `LdX * 2` plus its coefficient row | the stream stage |
-| the deep index staging | FILLED, at a RING of `kSegmentSlots + 1` segments rather than a window: see below |
 | the lists and ballot words | `W/32` words per side per level run, ≈ 2 KB | the liveness walk |
 | the parked low plane | `BC * (DV + 1) * 2` = 33,280 bytes | the register-relief stage |
+
+<a id="panel"></a>
+## PHASE 1's fan-in panel
+
+One SLICE PER WARP of `[kPanelTokens][kLdO]` fp32, aliased into the region's first bytes.
+The CTA's warps meet here before any of them reaches `num`/`den`, so the planes see one
+contribution per owner box per token rather than one per warp (`carry_kernel.md#fan-in`).
+Each warp writes its own slice WHOLE — an accumulator element belongs to exactly one lane of
+one warp — so the slices are disjoint, nothing contends, and there is no atom in the path.
+
+`kPanelTokens` is DERIVED: the widest power-of-two token count up to `kSeg` whose
+`warps_per_cta` slices fit inside the region. The region's size is `BC * kLdX * 2` and `BC`
+falls as the value width rises, while a slice's width rises with it — so the grain is the
+batch at the shipped value widths and halves at the widest declared one. A `static_assert`
+refuses an arm where even one n-tile of slices would not fit.
+
+The slice's stride is the page image's, and the reason is the same congruence: for a fixed
+channel m-tile a warp's 32 lanes address four TOKEN rows (differing by two, hence by
+`2 * kLdO ≡ 8` words) times eight consecutive channels, so the four rows land on four bank
+quadruples and the eight channels fill each — 32 banks, once. The fan-in's own reads are
+consecutive channels across consecutive threads, which is conflict free at any stride.
+
+<a id="read-ring"></a>
+## The read side's raw ring
+
+`kReadSlots = 2` slots of the SAME `[kSeg][kRawStride]` bf16 shape the write side stages,
+because the runs a box reaches are the BOX's and only the amplitude plane differs. It carries
+no values (the readout's A operand is the state) and no gains (the gain is a write-side
+quantity), and it needs no column block: the readout's B fragment pairs two adjacent LEAVES
+at one token, which the packed plane already stores adjacent, so the expansion reads these
+rows as they lie (`carry_kernel.md#read-expansion`). Two slots is what makes ONE edge a batch
+enough — the slot being staged and the slot being expanded alternate.
 
 <a id="factor-rows"></a>
 ## The deep index staging: what it holds, and why a ring rather than a window

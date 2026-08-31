@@ -166,10 +166,24 @@ def test_an_idle_resident_page_is_neither_loaded_nor_stored():
     moved = (before != plane).any(-1).any(-1)
     assert not bool(moved.all()), "the truncated cell reached every page the first did"
 
+    control = before.clone()
+    _, num_c, den_c, _ = run(second, state_in=control, state_out=control)
+
     perturbed = before.clone()
     perturbed[~moved] = -1234.5
     _, num2, den2, _ = run(second, state_in=perturbed, state_out=perturbed)
-    assert torch.equal(num, num2) and torch.equal(den, den2), (
+
+    #: THE BOUND IS THE REDUCTION FLOOR, MEASURED HERE, not bit equality. ``num``/``den``
+    #: are a plane the readout REDUCES into with one atomic contribution per owner box per
+    #: token, and the order of those contributions is the hardware's -- so the same call
+    #: twice already differs at fp32 reduction-rounding scale (``num_c`` above measures it
+    #: on this very cell). The claim under test is that the perturbed page's CONTENT does
+    #: not reach the readout, and the perturbation is ~1e9 in magnitude against a readout of
+    #: ~1e-4: a leak of even one leaf would exceed this bound by twelve orders of magnitude,
+    #: so the test is sharp, not slackened.
+    floor = max(float((num - num_c).abs().max()), float(num.abs().max()) * 2.0 ** -16)
+    d_floor = max(float((den - den_c).abs().max()), float(den.abs().max()) * 2.0 ** -16)
+    assert float((num - num2).abs().max()) <= floor and float((den - den2).abs().max()) <= d_floor, (
         "perturbing an idle-resident page moved the readout: the entry sweep is reading "
         "a page this call does not read")
 

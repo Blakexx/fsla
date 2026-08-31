@@ -20,7 +20,7 @@ prologue: the parameter block -> uniform registers; the box's two call-level bit
 for each window:
   [out leg]    publish hi(state) -> COVER SLOT A -> edge -> pull as read-side A fragments
   PHASE 1:     per read batch [ stage(b+1) | produce(b+1) | mma(b) | fan-in(b-1) ]
-  [return leg] store back lo(state) -> COVER SLOT B -> edge -> rejoin
+  [return leg] store hi back -> COVER SLOT B -> edge -> rejoin over the kept lo
   PHASE 2:     per write batch [ stage(b+1) | expand(b+1) | fold-mma(b) ]
   [window line]
 exit: the state slice stored, iff this call writes it
@@ -34,20 +34,35 @@ to prevent.
 <a id="edges"></a>
 ## The three edges, and why there are exactly three
 
-`Edge::kOutLeg`, `Edge::kReturnLeg`, `Edge::kWindowLine`. Each is one `mbarrier` word, and
-each is used SPLIT: a unit arrives when its own contribution is published, runs a cover
-slot that depends on nobody, and waits only when it needs what the others published.
+`Edge::kOutLeg`, `Edge::kReturnLeg`, `Edge::kWindowLine`. Each is a NAMED BARRIER id, and
+each is crossed AFTER its cover slot: a unit publishes its own contribution, runs work that
+depends on nobody, and only then arrives at the barrier it needs the others to have reached.
+
+The split the frame wants cannot be had from a named barrier with EQUAL PARTICIPATION — a
+thread that arrives and later syncs on one barrier contributes two arrivals, and the arrive
+is a no-op in the pair. It is had from ORDER instead, and the effect is the same: the cover
+work is issued by every warp before the barrier, which is exactly what a split arrive bought.
+What is not paid is the spin of the split-barrier object this frame used to carry (deleted,
+DELETIONS.md): its wait was a branch loop and a shared-memory read, measured at 21% of issue
+slots where the streams used it. A named barrier sleeps.
 
 * the OUT LEG separates publishing the accumulator's high halves into the transit region
   from reading them back in the other side's carve;
-* the RETURN LEG separates writing the low halves back out of the region from reusing the
-  region's bytes as PHASE 2's segment buffers;
-* the WINDOW LINE separates a window's fold from the next window's publish — the fold
-  writes the accumulator that the publish reads.
+* the RETURN LEG separates the reader writing its high halves back into the region from the
+  writer reading them there;
+* the WINDOW LINE separates this window's rejoin, which READS the region, from the next
+  window's publish, which writes it — and the fold that lies between them touches neither.
 
 Nothing else in the loop is CTA-wide. A segment's producer/consumer handshake belongs to
 its STREAM and is a warp-local wait (`cp.async` groups today) or, where the producer and
-the consumer are different warps, that stream's own barrier — not the frame's.
+the consumer are different warps, that stream's own barrier — not the frame's. There are
+three such stream edges: the fold's `kFilled` and `kEmpty`, and the readout's `kReadBatch`.
+
+The frame's edges are the ONLY CTA-wide points the frame owns, and each of the three is a
+READ-AFTER-WRITE on the region. That is why the region is the transit's ALONE: a phase-local
+tenant aliased into it would introduce a WRITE-AFTER-READ the frame does not name, and the
+one tenant that does alias — PHASE 1's output blocks — is separated from the pull by the
+readout stream's own first crossing and restored by the store-back before the return leg.
 
 The cover slots are load-bearing rather than opportunistic: at one CTA per SM there is no
 second CTA to run while this one waits, so every leg cycle is either covered by
@@ -81,6 +96,118 @@ at `DV = 64` the 65 channels (64 values and the mass) occupy 5 m-tiles of 16, so
 lane's registers hold 65 elements of state. The mass is the deposit value's trailing one,
 so it is not a special case anywhere except that its A fragment is a CONSTANT rather than a
 loaded tile.
+
+<a id="transit"></a>
+## The hybrid transit: the same halves, re-owned
+
+The transit region is `[row = sb_swizzle(local)][col = channel]`, `BC` rows of `kLdX`
+halfwords. `local` is the OWNER-LOCAL CANONICAL INDEX (`geom.md#local-row`) — one law that
+both sides read, never two maps — and `sb_swizzle` is the region's GF(2)-linear row
+permutation. Two facts keep every displacement an immediate:
+
+* `local(strm, P) = local(strm, 0) | scatter(P)`, because a stream's offset at a level and a
+  slot's digits at that level occupy DISJOINT bit fields — so the `|` is a `^` and `scatter`
+  is linear in `P`'s bits;
+* `sb_swizzle` is linear, so `row(strm, P) = row(strm, 0) ^ swizzle(scatter(P))` and the
+  `P`-part is a constant wherever `P` is.
+
+The four legs, in the order the frame runs them:
+
+| leg | what moves | how |
+|---|---|---|
+| publish | the accumulator's high halves, write carve | `st.shared.u16`, 32 lanes covering 4 rows × 8 consecutive channels per issue |
+| pull | the same halves as the readout's A operand, read carve | `ldmatrix.trans.x4`, one per (k-step, channel m-tile) |
+| store back | the halves the reader still holds, read carve | the pull run backwards, `st.shared.u16` |
+| rejoin | the halves as the writer's accumulator, write carve | `ldmatrix.trans.x4`, one per (n-tile PAIR, channel m-tile) |
+
+`ldmatrix.trans` serves both directions because the A operand's thread map and the
+accumulator's thread map AGREE on the channel and compose on the leaf: `lane -> m = lane>>2
+(+8)` in both, and the accumulator's `n = 2*(lane&3) (+1)` is the A operand's `k` of two
+adjacent n-tiles. So one `x4` returns four registers that land exactly on
+`acc[m][j][0..3]` and `acc[m][j+1][0..3]`, and the rejoin is `join_hi_lo` over the LOW
+halves, which never left the register file and are never truncated.
+
+THE MASS CHANNEL is scalar on all four legs. It opens the last channel m-tile
+(`kMassRow == 0`), so an `ldmatrix.x4` at that tile would address the eight channels above the row's width; the four lanes that hold it read and write it as halfwords instead. Every OTHER
+element of that m-tile is structurally zero — the fold's mass A fragment has a single live
+row and the state sweep never loads a channel at or above `DV + 1` — so the rejoin states
+that rather than carrying sixteen zero registers through PHASE 1.
+
+<a id="readout"></a>
+## PHASE 1: the readout
+
+`P[m = channel][n = token] += S^T[c][leaf] . Rcoef[leaf][t]` — the fold with two indices
+swapped, against the state the window ENTERED with. Per batch of `kSeg` tokens: `kDw` k-steps
+(16 leaves each) by `kTokTiles` token n-tiles by `kMCh` channel m-tiles of `mma.m16n8k16`,
+into a panel that is dead at the end of the batch.
+
+The read ring is TWO raw slots and it takes its own bytes rather than the region's: cover
+slot A fills it while the region still holds the published halves. At iteration `b` the loop
+WRITES slot `b % 2` and READS slot `(b + 1) % 2`, and the next iteration swaps them, so the
+ring itself needs only the batch line. Issue order inside a batch:
+
+```
+stage(b + 2) -> slot b%2   | claimed, cp.async, never waited on until the batch ends
+mma(b)                     | against the pulled A fragments, in the tensor pipe
+produce(b + 1)             | the next batch's coefficients, in the SIMT pipe under the MMAs
+deposit(b) -> slice[warp]  | this warp's panel, written whole, no atom in the path
+edge                       | the panel line: the slices are published
+fan-in(b)                  | the CTA sums the slices and reduces into num/den
+cp.async.wait_group        |
+edge                       | the batch line: the ring turns and the panel is free again
+```
+
+TWO crossings a batch, which is the fold's count: the panel is ONE set of slices, because a
+second set does not fit the region at every declared value width, so the fan-in cannot run a
+batch behind the deposits that fill it.
+
+<a id="read-expansion"></a>
+## The read coefficient needs no transpose
+
+The MMA's B fragment is `k = 2*(lane&3) + 8h (+1)`, `n = lane>>2`. On the READ side `k` is
+the LEAF and `n` is the TOKEN — the mirror of the fold, where `k` is the token. So a
+register's two elements are two ADJACENT LEAVES at ONE token, and two adjacent leaves are
+two adjacent amplitude columns of that token's row, which the packed plane already stores
+adjacent. The readout therefore expands from the staged rows AS THEY LIE: one 32-bit shared
+access per (token n-tile, k-step, `h`), and no column block, no transpose pass and no gain.
+
+The memo is the fold's j-slice law on the `k` axis. The innermost level's sub-box span is at
+least the page rectangle, so `P`'s low four bits ARE `local`'s low four bits and every level
+above the innermost has a sub-box shift of at least four — its digit is a function of the
+k-step ALONE, uniform across the warp and across `h`. Both column sets are walked once in
+the prologue (`rcin`, `rcout`) and never inside a window.
+
+<a id="fan-in"></a>
+## The fan-in: one contribution per owner box per token
+
+`num` and `den` are planes the readout REDUCES into, and every owner box of every batch-head
+contributes to every token. The warps of a CTA therefore meet FIRST, in shared memory, and
+the CTA then reduces the sum into the planes with one native `red.global.add.f32` per cell.
+The alternative — each warp reaching the plane directly — issues fewer instructions and the
+same sector traffic per issue, and `warps_per_cta` times the L2 atomic traffic; both counts
+are on the stage's ledger and the measured choice between them belongs to the fan-in stage.
+
+THE WARPS MEET WITHOUT AN ATOM. Each warp writes its own PANEL SLICE whole — an accumulator
+element belongs to exactly one lane of exactly one warp, so the slices are disjoint by
+construction and nothing contends. The CTA then reads all `warps_per_cta` slices of a cell
+and adds them in a fixed order. The shared-memory atomic this began as is not available as a
+native operation here: `red.shared.add.f32` assembles to a compare-and-swap SPIN, which the
+constitution's no-fallback clause refuses and the stage's ledger measured at roughly seven
+and a half instructions per issue.
+
+The panel's TOKEN GRAIN is derived, not chosen: the widest power of two, up to `kSeg`, whose
+`warps_per_cta` slices fit the region they alias into (`smem_ledger.md#panel`). At the
+flagship arm it is the whole batch and the fan-in runs once per batch; at a value width whose
+slices are twice as wide it halves and the fan-in runs twice.
+
+A token past the window's end carries a zero coefficient by construction, but it has no
+cell in the planes — so the fan-in is the one place in the readout that tests a token against
+the window's length.
+
+THE ORDER OF THE CONTRIBUTIONS ACROSS OWNER BOXES IS THE HARDWARE'S. `num` and `den` are
+therefore associativity-dependent: the same call twice agrees to fp32 reduction-rounding, not
+bit for bit. The state plane is not — it is accumulated in registers in a fixed order, which
+is why the dense/paged byte gate is a byte gate.
 
 <a id="slot-map"></a>
 ## From a warp's slot to a leaf, a page and a factor column
@@ -232,12 +359,13 @@ asynchronous copies and the edge makes them visible CTA-wide. EMPTY releases the
 and the raw factor slot, and, because the transpose runs between the two, it publishes the
 column block in the same crossing.
 
-They are NAMED BARRIERS, not mbarriers, and that is a measured choice rather than a
-stylistic one: a stream edge here has EQUAL PARTICIPATION (every thread arrives once) and
-runs once a segment rather than once a window, and `mbarrier.test_wait` SPINS where
-`bar.sync` sleeps. Measured on the frame's own cells, the spin cost 21% of issue slots to branch resolution and
-turned every spin into a shared-memory read; the named barrier costs neither, and it takes no
-shared bytes to allocate.
+They are NAMED BARRIERS, and that is a measured choice rather than a stylistic one: a stream
+edge here has EQUAL PARTICIPATION (every thread arrives once) and runs once a segment rather
+than once a window, and the split-barrier object this family used to carry (deleted,
+DELETIONS.md) WAITED BY SPINNING where `bar.sync` sleeps. Measured on the frame's own cells,
+the spin cost 21% of issue slots to branch resolution and turned every spin into a
+shared-memory read; the named barrier costs neither, and it takes no shared bytes to
+allocate.
 
 They are what the SHARED value slot costs. Staging the segment per warp needs no edge at all
 and is what the frame started from; it also fetches every value row `kWarps` times and holds
@@ -287,32 +415,51 @@ segments, the page images fit the region, the ledger fits the architecture's per
 maximum. Nothing in it is a literal that a reader has to trust.
 
 <a id="measured"></a>
-## What the frame costs, measured
+## What the body costs, measured
 
-The one probe over four cells, with the counters the stage gate reads. The frame is what
-every later stage subtracts, so these are the numbers to subtract.
+One probe over the fixed cells, and the section ledger the stage gate reads. Sections are
+anchored on the frame's own barrier instructions: the three frame edges and the three stream
+edges are named barriers with DISTINCT IDS, so a section boundary is a fact of the
+disassembly rather than a judgement about it.
 
-| cell | duration | IPC | barrier | long scoreboard | short scoreboard | not selected |
-|---|---|---|---|---|---|---|
-| one deposit, 16 tokens | 15.2 µs | 0.99 | 7.1% | 11.0% | 6.7% | 3.0% |
-| dense, 256 tokens | 35.8 µs | 1.40 | 3.6% | 17.8% | 2.8% | 3.8% |
-| sparse k=4, 256 tokens | 37.4 µs | 1.38 | 3.6% | 18.3% | 2.9% | 3.7% |
-| dense, 1024 tokens, N = 65,536 | 455.9 µs | 1.28 | 1.1% | 33.9% | 1.0% | 2.8% |
+| section | instructions | share | stall samples | share |
+|---|---|---|---|---|
+| prologue + entry sweep | 3,670,016 | 4.8% | 3,855 | 10.0% |
+| out leg: publish + cover A | 1,994,752 | 2.6% | 440 | 1.1% |
+| out leg: pull | 495,616 | 0.6% | 85 | 0.2% |
+| PHASE 1, the readout | 43,319,296 | 56.6% | 17,056 | 44.4% |
+| return leg: store-back + cover B | 1,445,376 | 1.9% | 370 | 1.0% |
+| return leg: rejoin | 1,218,560 | 1.6% | 295 | 0.8% |
+| PHASE 2, the fold | 21,658,624 | 28.3% | 15,647 | 40.7% |
+| exit sweep | 2,723,840 | 3.6% | 679 | 1.8% |
 
-Each line, against what the design says it should be:
+Per warp per 16-token batch the two phases are 165 instructions (fold) against 330
+(readout), and each issues exactly 20 MMAs — the two phases' arithmetic is the same size,
+which is what the orientation says it should be. Everything above 20 is that phase's FEED.
 
-* **barrier** falls as the window count and the fold's size grow. The three edges and the
-  two state sweeps' rendezvous are the only CTA-wide synchronisation in the kernel, so this
-  is the whole of it. At this stage the cover slots are empty, so every leg cycle is exposed
-  by construction and this number IS the leg exposure — which makes it the thing to watch
-  when the legs start moving bytes: covered, it should not grow.
-* **long scoreboard** is the dominant line and it grows with the FOLD, not with the state
-  I/O. Its seat is the coefficient expansion's per-lane scalar reads of the gain and the
-  write amplitudes: the expansion itself is in registers, which is the design's form on
-  every architecture, but its FEED is unstaged here. Cooperative staging and a memoized walk
-  are what answer it.
-* **short scoreboard** and **mio throttle** (≈1%) are the tile loads' own latency.
-* **not selected** does not go to zero at one CTA per SM and should not: the SM's eight
-  warps still sit two to a scheduler partition, so a warp that loses a cycle to its partner
-  is counted here. Three per cent is that share. A second CTA would read very differently,
-  which is what makes the counter worth reading at all.
+* THE READOUT'S FEED IS ITS CROSS-WARP FAN-IN, and it is structural rather than fixable. The
+  readout contracts over the LEAF, the leaf is what the carve divides among warps, so every
+  warp produces a full `[tokens × channels]` partial and the CTA sums `warps_per_cta` of
+  them. The floor is 32 stores, 32 loads and 28 adds per lane per batch and the measurement
+  sits on it; per token it is 2 + 2 + 1.75 and it does not fall with a bigger batch. The
+  addressing above that floor is the one line with room in it.
+* THE LEGS COST 6.7% OF THE INSTRUCTIONS AND 3.1% OF THE STALLS, for four passes that move
+  the box's whole high plane twice through shared memory. The publish and the store-back are
+  at their floor of `BC × (DV + 1)` halfwords each way per window; the pull and the rejoin
+  move the same bytes in a quarter of the issues, because `ldmatrix` reads sixteen rows an
+  instruction.
+* LEG EXPOSURE IS ZERO. The three frame edges are crossed once per window per warp and carry
+  no measured stall at all; the covers absorb them, which is what the cover slots are for.
+  Every remaining barrier cycle belongs to a STREAM edge — the fold's two per segment and
+  the readout's two per batch — and the aggregate barrier line FELL from 26.7% of issue
+  slots to 20.5% while the crossings per window more than doubled, which is the named
+  barrier not spinning.
+* SHORT SCOREBOARD and MIO THROTTLE rise (7.1% → 10.9%, 0.8% → 2.8%): the readout's feed is
+  shared memory, and the panel puts 32 stores and 32 loads a batch through the LSU pipe on
+  top of the fold's traffic.
+* BANK CONFLICTS rise with the legs' halfword stores: eight lanes write eight CONSECUTIVE
+  halfwords, so two lanes share a 32-bit word and the store is two-way by construction. A
+  region column layout that put a lane's two channels adjacent would pair them, and it would
+  move the pull's `ldmatrix` — named here, not taken.
+* NOT SELECTED stays at 1.5% and should: the SM's eight warps still sit two to a scheduler
+  partition. A second CTA would read very differently, which is what makes it worth reading.
