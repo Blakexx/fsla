@@ -323,22 +323,6 @@ eight-byte forms are the cache-ALL variant because the sixteen-byte bypass has n
 narrower member; both src and dst are naturally aligned, which is the caller's
 contract and the reason no size is ever split here.
 
-<a id="edge"></a>
-## `edge_init` / `edge_arrive` / `edge_wait` — the split edge
-
-One `mbarrier` word in shared memory, used in three steps rather than two: a unit ARRIVES
-when its own contribution is published, runs work that depends on nobody, and WAITS only
-when it needs what the others published. The cover between the arrive and the wait is the
-whole reason the edge is split; `rendezvous` (a plain full barrier) has no such gap and is
-the right primitive only where there is nothing to cover with.
-
-`edge_wait` takes the edge's PHASE, which alternates on each completion. The caller carries
-its own count — the barrier has no memory of how many times it has been through, and a
-shared counter would be a second synchronisation to get right.
-
-The frame that consumes it names its edges and its cover slots; see
-`docs/internals/carry/carry_kernel.md#edges`.
-
 <a id="fan-in-add-shared"></a>
 ## `fan_in_add_shared` — the same contribution one level down
 

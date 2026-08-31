@@ -42,8 +42,9 @@ The split the frame wants cannot be had from a named barrier with EQUAL PARTICIP
 thread that arrives and later syncs on one barrier contributes two arrivals, and the arrive
 is a no-op in the pair. It is had from ORDER instead, and the effect is the same: the cover
 work is issued by every warp before the barrier, which is exactly what a split arrive bought.
-What is not paid is `mbarrier.test_wait`'s SPIN, which was 21% of issue slots where the
-streams used it and turned every spin into a shared-memory read; a named barrier sleeps.
+What is not paid is the spin of the split-barrier object this frame used to carry (deleted,
+DELETIONS.md): its wait was a branch loop and a shared-memory read, measured at 21% of issue
+slots where the streams used it. A named barrier sleeps.
 
 * the OUT LEG separates publishing the accumulator's high halves into the transit region
   from reading them back in the other side's carve;
@@ -346,12 +347,13 @@ asynchronous copies and the edge makes them visible CTA-wide. EMPTY releases the
 and the raw factor slot, and, because the transpose runs between the two, it publishes the
 column block in the same crossing.
 
-They are NAMED BARRIERS, not mbarriers, and that is a measured choice rather than a
-stylistic one: a stream edge here has EQUAL PARTICIPATION (every thread arrives once) and
-runs once a segment rather than once a window, and `mbarrier.test_wait` SPINS where
-`bar.sync` sleeps. Measured on the frame's own cells, the spin cost 21% of issue slots to branch resolution and
-turned every spin into a shared-memory read; the named barrier costs neither, and it takes no
-shared bytes to allocate.
+They are NAMED BARRIERS, and that is a measured choice rather than a stylistic one: a stream
+edge here has EQUAL PARTICIPATION (every thread arrives once) and runs once a segment rather
+than once a window, and the split-barrier object this family used to carry (deleted,
+DELETIONS.md) WAITED BY SPINNING where `bar.sync` sleeps. Measured on the frame's own cells,
+the spin cost 21% of issue slots to branch resolution and turned every spin into a
+shared-memory read; the named barrier costs neither, and it takes no shared bytes to
+allocate.
 
 They are what the SHARED value slot costs. Staging the segment per warp needs no edge at all
 and is what the frame started from; it also fetches every value row `kWarps` times and holds
