@@ -140,6 +140,14 @@ __device__ __forceinline__ uint32_t lane_ballot(bool pred) {
   return __ballot_sync(0xFFFFFFFFu, pred);
 }
 
+//: THE LANES BEFORE THIS ONE, as the hardware's own register rather than a value the body
+//: would have to carry: `__popc(vote & lanes_below())` is a lane's RANK among the voters.
+__device__ __forceinline__ uint32_t lanes_below() {
+  uint32_t m;
+  asm("mov.u32 %0, %%lanemask_lt;" : "=r"(m));
+  return m;
+}
+
 //: THE TWO READINGS OF A VOTE. A bit vector answers "how many" and "where -- see docs/internals/common/ops.md#bit-count
 __device__ __forceinline__ int bit_count(uint32_t x) { return __popc(x); }
 

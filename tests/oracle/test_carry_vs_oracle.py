@@ -44,7 +44,8 @@ ORACLE_CELLS = carry_cells("oracle")
 IDS = [cell.name for cell in ORACLE_CELLS]
 
 
-def run(spec, state_in=None, state_out=None, page_table=None, bh=1, activity=None):
+def run(spec, state_in=None, state_out=None, page_table=None, bh=1, activity=None,
+        schedule=None):
     drawn, call = carry_call(spec, bh=bh)
     routes, v = call.pop("routes"), call.pop("v")
     if activity is not None:
@@ -52,7 +53,7 @@ def run(spec, state_in=None, state_out=None, page_table=None, bh=1, activity=Non
     if state_out is None:
         state_out = carry_ops.state_plane(call["descriptor"], bh)
     num, den = carry_ops.carry_forward(routes, v, state_in=state_in, state_out=state_out,
-                                       page_table=page_table, **call)
+                                       page_table=page_table, schedule=schedule, **call)
     return drawn, num, den, state_out
 
 
@@ -342,3 +343,95 @@ def test_one_token_writing_one_leaf_is_the_oracles_single_deposit():
     canon = canonical_from_plane(plane)[0]
     assert canon[0].any(), "the single deposit did not land"
     assert not canon[1:].any(), "the single deposit landed on more than one leaf"
+
+
+# ------------------------------------------- the SPARSE bodies, over the density sweep
+
+#: THE TWO STREAM GRAINS a shipped arm can run: the warp sub-box (one stream per warp, the
+#: coarsest reaping this schedule admits) and the PAGE RECTANGLE (the finest the nesting law
+#: admits -- ``leaves_per_warp / 16`` streams per warp, walked in turns). Both are the SAME
+#: arithmetic; what changes is how finely a dead (token, stream) pair can be reaped, so both
+#: must be the fp64 reference and the pair is the reaping bound's own A/B.
+SPARSE_GRAINS = (None, carry_ops.PAGE_LEAVES)
+
+
+def sparse(spec, grain):
+    box = carry_ops.leaves_per_warp(spec.dv)
+    g = None if grain is None else min(grain, box)
+    return carry_ops.CarrySchedule(readout="sparse", fold="sparse", readout_grain=g,
+                                   fold_grain=g)
+
+
+SPARSE_ROWS = [(cell, g) for cell in ORACLE_CELLS for g in SPARSE_GRAINS]
+SPARSE_IDS = [f"{cell.name}-G{'box' if g is None else g}" for cell, g in SPARSE_ROWS]
+
+
+@pytest.mark.parametrize("spec,grain", SPARSE_ROWS, ids=SPARSE_IDS)
+def test_the_sparse_form_is_the_fp64_reference(spec, grain):
+    """THE REAP CHANGES NO SUM. A dead (token, stream) pair's coefficient is a product one of
+    whose factors is an amplitude of exactly zero -- that is the liveness pass's own
+    predicate -- so the term the sparse body never forms was exactly ``+0.0f``. The cells
+    sweep the DENSITY (dense, ``alt`` at two ``k_tok``, ``cohort``, the two structured
+    truncations, the degenerate draws), which is the whole point: a form that is right at one
+    density and wrong at another would pass a single-cell row.
+    """
+    drawn, num, den, plane = run(spec, schedule=sparse(spec, grain))
+    check(spec, num, den, plane, ref(drawn))
+
+
+@pytest.mark.parametrize("spec,grain", SPARSE_ROWS, ids=SPARSE_IDS)
+def test_the_sparse_fold_alone_is_the_fp64_reference(spec, grain):
+    """THE TWO SIDES ARE INDEPENDENT DIALS, so the mixed launches are cells of their own: a
+    sparse fold under a union readout, and the mirror. The two bodies address different
+    planes at different grains and a schedule that is only ever exercised with both sides
+    matched would not catch a side reading the other's carve."""
+    g = sparse(spec, grain)
+    drawn, num, den, plane = run(spec, schedule=carry_ops.CarrySchedule(
+        readout="union", fold="sparse", fold_grain=g.fold_grain))
+    check(spec, num, den, plane, ref(drawn))
+    drawn, num, den, plane = run(spec, schedule=carry_ops.CarrySchedule(
+        readout="sparse", fold="union", readout_grain=g.readout_grain))
+    check(spec, num, den, plane, ref(drawn))
+
+
+#: the fully dense cell the two forms are compared ON: every (token, stream) pair is live, so
+#: the sparse body reaps NOTHING and its operand stream is the union's, term for term.
+BYTE_GATE_CELL = "flat-small-dense"
+
+
+def test_the_two_forms_agree_where_there_is_nothing_to_reap():
+    """UNION IS THE REFERENCE. At a fully dense draw the compaction is the identity, so the
+    two bodies see the same tokens in the same order: the STATE plane -- accumulated in
+    registers in a fixed order -- must agree BYTE FOR BYTE, and ``num``/``den`` to the
+    reduction floor, because the readout's contributions are reduced into the planes in an
+    order the hardware picks (the seam's declared contract, K2 06.1). A leak of one leaf
+    would exceed that floor by orders of magnitude.
+    """
+    spec = by_name(BYTE_GATE_CELL)
+    _, n_u, d_u, s_u = run(spec)
+    _, n_s, d_s, s_s = run(spec, schedule=carry_ops.CarrySchedule(readout="sparse",
+                                                                 fold="sparse"))
+    assert bytes_equal(s_u, s_s)
+    #: the floor is MEASURED on this cell, not assumed: two union runs differ by the atomic
+    #: order alone, and that difference is the bound the sparse run has to sit inside.
+    _, n_c, d_c, _ = run(spec)
+    floor = max(float((n_u - n_c).abs().max()), float(n_u.abs().max()) * 2.0 ** -16)
+    assert float((n_u - n_s).abs().max()) <= floor
+    dfloor = max(float((d_u - d_c).abs().max()), float(d_u.abs().max()) * 2.0 ** -16)
+    assert float((d_u - d_s).abs().max()) <= dfloor
+
+
+def test_the_selection_rule_reads_the_level_modes():
+    """NON-VACUITY for the launch's own choice: a call whose levels are all DENSE cannot reap,
+    so the rule must pick the union body on both sides; declaring a level sparse on one side
+    must move THAT side and only that side."""
+    spec = by_name(BYTE_GATE_CELL)
+    desc = spec.descriptor()
+    assert carry_ops.select_schedule(desc, 0) == carry_ops.CarrySchedule()
+    read_sparse = carry_ops.select_schedule(desc, carry_ops.SIDE_SPARSE[0])
+    assert (read_sparse.readout, read_sparse.fold) == ("sparse", "union")
+    write_sparse = carry_ops.select_schedule(desc, carry_ops.SIDE_SPARSE[1] << 2)
+    assert (write_sparse.readout, write_sparse.fold) == ("union", "sparse")
+    #: the reaping bound is the product of the DENSE levels' widths, per side.
+    assert carry_ops.reaping_bound(desc, carry_ops.SIDE_SPARSE[1] << 2) == (
+        desc.B[0] * desc.B[1], desc.B[0])

@@ -310,11 +310,14 @@ so a production point advances the cursor by its unit count plus one per warp, e
 can carry the next point's base in a register, and no reset — hence no barrier of its own —
 is needed.
 
-There is one cursor PER PRODUCTION POINT (`Fill`), and the reason is the split edges: a
-cover slot runs between an edge's arrive and its wait, so a warp can be inside the cover
-while another has passed the wait and reached the next point. Two points may share a cursor
-only when a completed edge separates them; the cover's does not qualify, and the three
-points the window's schedule has each carry their own.
+There is ONE cursor for every production point of both union bodies. Two points may share a
+cursor exactly when a completed edge separates them, and in this frame every point is
+preceded by one since the last: the covers by their leg's edge, the readout's batches by
+`kReadBatch`, the fold's segments by `kFilled`/`kEmpty`. K1 gave each point its own word
+while the covers still ran between an edge's arrive and its wait; the covers now run BEFORE
+a whole edge (`#edges`), so the five words are one, and the four registers each warp used to
+carry across both phases are four the phases' working sets get instead — which is the
+difference between a spilling body and a body at 242 registers.
 
 <a id="column-block"></a>
 ## The one transpose, and the gain that rides in it
@@ -363,9 +366,9 @@ They are NAMED BARRIERS, and that is a measured choice rather than a stylistic o
 edge here has EQUAL PARTICIPATION (every thread arrives once) and runs once a segment rather
 than once a window, and the split-barrier object this family used to carry (deleted,
 DELETIONS.md) WAITED BY SPINNING where `bar.sync` sleeps. Measured on the frame's own cells,
-the spin cost 21% of issue slots to branch resolution and turned every spin into a
+that spin cost 21% of issue slots to branch resolution and turned every spin into a
 shared-memory read; the named barrier costs neither, and it takes no shared bytes to
-allocate.
+allocate. No spinning wait primitive survives anywhere in this body.
 
 They are what the SHARED value slot costs. Staging the segment per warp needs no edge at all
 and is what the frame started from; it also fetches every value row `kWarps` times and holds
@@ -380,6 +383,12 @@ Each phase has two bodies, `Form::kUnion` and `Form::kSparse`, and the launch pi
 side. The switches are ADDITIVE — "two plus two bodies", four in all, not four combinations
 — so each sits at its own phase: inside the window loop, outside the batch loop that the
 in-kernel-switch ruling calls the hot loop. One uniform branch per phase per window.
+
+THE SPARSE BODIES ARE THE OTHER TWO. `#fold-sparse` and `#readout-sparse` describe them;
+what the switch has to be told is that they are bodies, not combinations — the four-way
+nesting of the two forms would compile four copies of the window loop and spill (K0's own
+finding on the member switches), while two independent binary switches compile four bodies
+at additive cost.
 
 The two per-side MEMBER switches are different: they fix the addressing every stage on that
 side uses, so they sit in the prologue, outside every loop, nested. That nesting is
@@ -396,7 +405,10 @@ side, and the product is then the compile budget's problem rather than the sched
 | 2 the problem (runtime, untuned) | `B_l`, the level modes, `N` | `CarryParams::g`, derived on the host by `derive_carry_geom` |
 | 2 the problem (runtime, untuned) | `BH`, `L` | the grid's `y`, `CarryParams::L` |
 | 3 runtime dials (the only tuned class) | the form per phase | `CarryParams::readout_form` / `fold_form` |
-| 3 runtime dials | the stream grain, the active leaf count, the carve order, the producer:consumer split | not yet consumed; they arrive with the stages that read them |
+| 3 runtime dials | the stream grain `G` per side | `CarryParams::readout_grain_bits` / `fold_grain_bits`, as log2 leaves |
+| 3 runtime dials | the carve order | `CarryParams::g`, the side's `level_at` |
+| 3 runtime dials | the producer:consumer split | not yet consumed; it arrives with the rotation |
+| 5 derived quotients | `active_leaves` = `warps_per_cta * G`, live streams = `warps_per_cta`, the stream catalog = `leaves_per_warp / G` | the sparse bodies' loop bounds |
 | 4 arch-deterministic | `M`, `N_mma`, `K` | `common/ops.cuh` |
 | 4 arch-deterministic | `warps_per_sm`, the launch table, the cluster size, the state's share of the register file | `common/geom.cuh`, `common/constants.cuh` |
 | 4 arch-deterministic | `W`, `kSeg`, the segment slot count | `common/constants.cuh` |
@@ -463,3 +475,114 @@ which is what the orientation says it should be. Everything above 20 is that pha
   move the pull's `ldmatrix` — named here, not taken.
 * NOT SELECTED stays at 1.5% and should: the SM's eight warps still sit two to a scheduler
   partition. A second CTA would read very differently, which is what makes it worth reading.
+
+<a id="streams"></a>
+## The sparse form: streams keyed on leaf ranges
+
+A STREAM keys on a LEAF RANGE of `G` leaves (the nesting law: stream boxes and accumulator
+boxes are power-of-two leaf ranges, one dividing the other). `G` is a runtime dial in
+`[16, leaves_per_warp]`, so a stream lies inside exactly ONE warp's sub-box: its accumulator
+tiles are that warp's registers and its segment is that warp's to fill and to consume. That
+is the whole structural difference from the union form, where the accumulator is sharded over
+every warp and every warp therefore has to consume every segment.
+
+THE REAP is per (token, stream) PAIR. A token is live for a stream when the stream's leaf
+range contains a leaf whose coefficient is nonzero, and because the range is a bit-rectangle
+of the owner-local index — a run of digits at each level, independently — that question
+factorises exactly:
+
+    live(token, stream) = AND over levels l of ( OR over the run of digits d at level l
+                                                of liveness[side][row_base(l) + d][token] )
+
+`stream_masks` folds it once per stream per window, one lane per 32-token word, `sum_l cnt_l`
+coalesced word loads (17 at the flagship: sixteen innermost digits and one outer digit). A
+dead pair is then never staged, never expanded, never sent and never MMA'd — and the term it
+would have contributed was exactly `+0.0f`, because a dead digit's amplitude is exactly zero
+by the liveness pass's own predicate. THE REAP CHANGES NO SUM.
+
+THE ACTIVATION is stream-major and symmetric: `warps_per_cta` streams are live at once, one
+per warp, and the catalog (`leaves_per_warp / G` streams per warp) is walked in TURNS over
+the window. `active_leaves = warps_per_cta * G` is therefore derived here rather than free;
+the rotation that makes it free — half the warps producing, half consuming — is a role
+assignment on top of this schedule, not a restructure of it.
+
+THE COMPACTION is a ballot. For each 32-token word, `rank = popc(live & lanemask_lt)` is a
+lane's position among the live tokens; lanes with `rank < capacity - held` take, claim
+`numProduced` with one `atomicAdd`, and stage their token's rows at `slot & (kSeg - 1)`.
+A LANE THAT TAKES NO TOKEN MUST NOT ISSUE THE COPY AT ALL: a `cp.async` whose source run is
+predicated off still writes its destination — it zero-fills it, which is exactly what the
+union body wants for a token past the window's end — and under compaction that destination
+belongs to a neighbour. The staging is branched, not predicated; racecheck names the
+alternative as a write-write hazard on the value tile.
+
+THE TAIL of a turn is a partial segment. Its unfilled rows are ZEROED — the value rows, the
+factor rows and the gains — rather than predicated, because the deposit reads both operands
+whole: a zero coefficient over a stale value is a zero product only if the stale value is
+finite, which shared memory is not obliged to be, and reading it at all is an initcheck
+violation.
+
+<a id="counters"></a>
+## The stream counters
+
+Each live stream carries `numProduced` and `numConsumed`, 32-bit shared words counted in
+TOKENS. `numProduced` is fetch-added to CLAIM a placement (K1's monotone cursor, generalised
+per stream); the consumer starts a segment at `produced - consumed >= kSegmentTokens`, drains
+it in one `ldmatrix` burst and fetch-adds `numConsumed` to RELEASE the slot; a producer whose
+claim would reach `consumed + capacity` waits, and the capacity IS one segment, because the
+register fragments are the second buffer.
+
+THE WAIT PRIMITIVE IS NEITHER A POLLED COUNTER NOR AN MBARRIER. Under warp-private streams
+the consumer is the producer, so the only completion the consumer can wait on is its own
+`cp.async` group: `cp.async.wait_group 0` and `__syncwarp()`, a warp-local edge with no spin
+loop and no CTA crossing. K1's measured spinning wait — 21% of issue slots — is
+not merely avoided here but unreachable. The counters are the PLACEMENT and RELEASE contract,
+which is what a rotated producer needs from them; the WAIT half becomes the cross-warp edge
+when a warp fills a stream it does not consume.
+
+<a id="fold-sparse"></a>
+## PHASE 2, the sparse form
+
+Per turn: fold the stream's liveness into 16 word masks; then, per segment, claim and stage,
+`cp.async.wait_group` + `__syncwarp`, pad the tail if any, drain the value tile, expand the
+coefficient, release, deposit.
+
+THE EXPANSION READS THE RAW ROWS, with no transpose and no column block. The union body's
+transpose exists because the B fragment pairs two ADJACENT TOKENS, which the packed plane
+stores a row apart; it is worth its cost when eight consumer warps share one block, and it is
+not when one warp does. The pair is assembled where it is used instead — two `ld.shared.u16`
+and a pack, against the union's one `ld.shared.u32` plus a share of a cooperative pass — and
+the gain rides level 0's factor exactly as the transpose applied it.
+
+THE PHASE CROSSES THE CTA ONCE, and that crossing is not a data edge: the rings alias the
+transit region, so `StreamEdge::kEmpty` closes the write-after-read against the rejoin at the
+phase's opening. Against the union body's two crossings per segment — 64 a window — that is
+the stall-budget gate discharged by construction.
+
+THE COVER IS THE OTHER WARPS'. Carrying the drained fragments across the next segment's claim
+would hide its copies behind the current segment's deposits, at 24 registers of live range
+this box has not got. The sparse form crosses no CTA edge inside the phase, so the eight warps
+drift freely and one warp's staging latency is another's issue slots — an overlap the union
+body's per-segment barriers make impossible.
+
+<a id="readout-sparse"></a>
+## PHASE 1, the sparse form
+
+The same streams against the accumulator instead of into it. The ring carries NO value tile
+(the A operand is the transit's registers) and NO column block (the read side's B fragment
+pairs two adjacent LEAVES, which the plane stores adjacent), so it is the raw factor rows plus
+a 16-entry row of window-relative TOKEN IDS.
+
+THE FAN-IN CANNOT SURVIVE COMPACTION. The panel (`#fan-in`) sums `warps_per_cta` per-warp
+slices of one [token x channel] block and issues one contribution per owner box per token —
+which works only because every warp's slice is indexed by the SAME token. A compacted stream's
+token list is its own, so there is no common row to sum, and the sparse readout deposits
+directly: `red.global.add.f32` at `num[tokid[row]][channel]`, four tokens by eight consecutive
+channels per issue, four filled 32-byte sectors. The partial is carried a channel m-tile at a
+time rather than whole, because a direct deposit can be issued before the next group's MMAs.
+
+THE PRICE IS A DENSITY CROSSOVER, NOT A REGRESSION: one contribution per WARP per live token
+instead of one per BOX per token is `warps_per_cta * density` times the union's atomic traffic,
+against an instruction count with no panel round (32 shared stores, 32 shared loads and 28
+adds a batch) and no panel edges. Above density `1 / warps_per_cta` the union wins that term
+and below it the sparse form does; the launch picks the form, and the measurement is reported
+per density rather than averaged.

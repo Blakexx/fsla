@@ -13,14 +13,15 @@ an allocation would move the residency the whole design is built on.
 | offset | tenant | bytes | owner |
 |---|---|---|---|
 | 0 | the transit region, `BC * LdX * 2` | 36,864 | the exchange between the two sides' carves |
-| 36,864 | PHASE 2's value ring, `kSegmentSlots * kSeg * LdV * 2` | 2,048 | the fold's staging |
-| 38,912 | PHASE 2's column blocks, `kColSlots * kSpanTotal * kTokStride * 2` | 3,072 | the fold's transpose |
-| 41,984 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
-| 42,048 | the fill's claim cursors, one per production point | 20 | both sides' fills |
-| 42,064 | the write side's segment gains, `kFactorSlots * kSeg * 2` | 64 | the deep index staging |
-| 42,128 | the write side's raw factor rows, `kFactorSlots * kSeg * kRawStride * 2` | 2,304 | the deep index staging |
-| 44,432 | the read side's raw factor rows, `kReadSlots * kSeg * kRawStride * 2` | 2,304 | the readout's ring |
-| | **total** | **46,752** | |
+| 36,864 | the union fold's value ring, `kSegmentSlots * kSeg * LdV * 2` | 2,048 | the union fold's staging |
+| 38,912 | the union fold's column blocks, `kColSlots * kSpanTotal * kTokStride * 2` | 3,072 | the union fold's transpose |
+| 41,984 | the union fold's segment gains, `kFactorSlots * kSeg * 2` | 64 | the deep index staging |
+| 42,048 | the union fold's raw factor rows, `kFactorSlots * kSeg * kRawStride * 2` | 2,304 | the deep index staging |
+| 44,352 | THE READ BLOCK, `max(union, sparse)` — the union readout's two shared raw slots (2,304) or the sparse readout's `warps_per_cta` private rings (9,472) | 9,472 | whichever form the readout runs |
+| 53,824 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
+| 53,888 | the fill's ONE claim cursor | 4 | both union bodies' fills |
+| 53,892 | the stream counters, `2 * warps_per_cta * 4` | 64 | the sparse bodies' `numProduced`/`numConsumed` |
+| | **total** (16-byte aligned) | **53,968** | |
 
 The frame's three edges and the streams' three take no bytes at all: they are NAMED BARRIERS
 (`carry_kernel.md#edges`), which is what an edge with equal participation costs.
@@ -37,20 +38,42 @@ The transit region is the largest tenant and the only one whose bytes are re-let
 | moment | who lives in the region's bytes |
 |---|---|
 | the entry sweep | as many state page images as fit: `floor(36,864 / (16 * LdO * 4))` = 8 images of 4,352 bytes = 34,816 bytes, in 2 rounds over the box's 16 pages |
-| the out leg, PHASE 1, the return leg | the transit region itself — `BC` rows of `LdX` bf16 channels, the accumulator's halves in the owner-local canonical order — and, from the pull to the store-back, PHASE 1's two output blocks in the first 8,704 of those bytes |
-| PHASE 2 | nothing: the fold's own tenants have their own bytes |
+| the out leg, PHASE 1, the return leg | the transit region itself — `BC` rows of `LdX` bf16 channels, the accumulator's halves in the owner-local canonical order — and, from the pull to the store-back, the UNION readout's fan-in panel in the first 34,816 of those bytes |
+| PHASE 2, union fold | nothing: the union fold's own tenants have their own bytes |
+| PHASE 2, SPARSE fold | the eight private stream rings, `warps_per_cta * (kVTileBytes + kRawSlotBytes + kGainSlotBytes)` = 25,856 bytes |
 | the exit sweep | the state page images again |
 
-THE REGION IS THE TRANSIT'S, AND THAT IS A RULE THE EDGES FORCE. Each of the frame's three
-edges is a read-after-write on the region (`carry_kernel.md#edges`); a phase-local tenant
-aliased into it introduces a WRITE-AFTER-READ the frame names no edge for, and the fold's
-first act is a `cp.async` into its value ring ahead of any edge. So PHASE 2's value ring and
-column blocks take 5,120 bytes of their own rather than the rejoin's. PHASE 1's fan-in
-panel DOES alias, because the readout stream's own first crossing falls between the pull and
-the first write of a slice, and the store-back rewrites every row before the return leg.
+<a id="streams"></a>
+### The sparse form's stream rings
 
-The page slots and the claim cursors are PERSISTENT: they are alive from the prologue to the
-exit and are never re-let. So is each side's raw factor ring — a tenant that must survive a
+A stream is a leaf range of `G` leaves inside ONE warp's sub-box, so its ring is that warp's
+alone and no other warp reads or writes it. `warps_per_cta` streams are LIVE at a time — one
+per warp — and the catalog (`leaves_per_warp / G` per warp) is walked in turns, which is what
+keeps the resident cost `warps_per_cta * (one segment)` instead of `catalog * (one segment)`.
+The ledger is sized at the FINEST grain the nesting law admits (`G = 16`, the page rectangle);
+a coarser runtime `G` uses the same bytes with fewer turns.
+
+| ring | per live stream, at the flagship | why |
+|---|---|---|
+| the fold's value tile | `kSeg * DV * 2` = 2,048 | the A operand, drained by one `ldmatrix.trans` burst |
+| the fold's raw factor rows | `kSeg * kRawStride * 2` = 1,152 | the coefficient, expanded in place — the sparse body has NO column block |
+| the fold's segment gains | `kSeg * 2` = 32 | folded into level 0's factor at the expansion |
+| the readout's raw factor rows | `kSeg * kRawStride * 2` = 1,152 | the B operand, read as it lies |
+| the readout's token ids | `kSeg * 2` = 32 | the window-relative token each compacted row carries, which the direct deposit is addressed by |
+
+THE FOLD'S RINGS ALIAS THE REGION and the readout's do not. The fold's are the bigger pair
+and PHASE 2 is the moment the region is otherwise idle; the WAR against the rejoin, which
+reads the region, is closed by ONE crossing of `StreamEdge::kEmpty` at the sparse fold's
+opening — the sparse body's own edge, at one crossing per window against the union fold's
+two per segment. The readout's rings cannot alias the region, because the UNION readout's
+panel may be living there in the same phase under a mixed schedule; they take the READ BLOCK,
+which the union readout's own two shared slots would otherwise hold, and the two forms never
+coexist. `kSparseFoldBytes <= kReadBlockOffset` is asserted in `box.cuh`, so a value width
+whose rings outgrow the region (DV = 128) overflows into the union fold's feed, which is dead
+whenever the fold is sparse.
+
+The page slots, the claim cursor and the stream counters are PERSISTENT: they are alive from the prologue to the
+exit and are never re-let. So is the union bodies' raw factor ring — a tenant that must survive a
 phase change is not a region tenant, and both cover slots fill their ring while the region
 still holds the transit.
 
@@ -64,7 +87,6 @@ allocation nobody sized. None is allocated today.
 
 | tenant | size, at the flagship arm | who fills it |
 |---|---|---|
-| write stream segments | one 16-token slot per concurrently active accumulator box, each `LdX * 2` plus its coefficient row | the stream stage |
 | the lists and ballot words | `W/32` words per side per level run, ≈ 2 KB | the liveness walk |
 | the parked low plane | `BC * (DV + 1) * 2` = 33,280 bytes | the register-relief stage |
 

@@ -11,8 +11,7 @@
 
 namespace rola::carry {
 
-//: THE FORM a phase runs in -- the one dial the kernel branches on, per side, selected
-//: once outside the window loop. -- see docs/internals/carry/carry_kernel.md#forms
+//: THE FORM a phase runs in. -- see docs/internals/carry/carry_kernel.md#forms
 enum class Form : int { kUnion = 0, kSparse = 1 };
 constexpr int kForms = 2;
 
@@ -36,6 +35,9 @@ struct CarryParams {
   int liveness_words;  //: ceil(L / 32), the class-1 block's word stride
   int readout_form;    //: Form, the read side's
   int fold_form;       //: Form, the write side's
+  //: `G` per side, as log2 LEAVES. -- see docs/internals/carry/carry_kernel.md#streams
+  int readout_grain_bits;
+  int fold_grain_bits;
 };
 
 }  // namespace rola::carry

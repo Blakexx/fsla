@@ -12,17 +12,9 @@
 
 namespace rola::carry {
 
-//: THE FILL's unit, in tokens, and its production points -- one cursor each.
-//: -- see docs/internals/carry/carry_kernel.md#fill
+//: THE FILL's unit, in tokens, and its ONE cursor -- every production point of both union
+//: bodies is preceded by a CTA edge since the last. -- see docs/internals/carry/carry_kernel.md#fill
 constexpr int kUnitTokens = 4;
-enum class Fill : int {
-  kCoverFactors = 0,
-  kPrologueValues = 1,
-  kSegment = 2,
-  kReadCover = 3,
-  kReadSegment = 4
-};
-constexpr int kFillPoints = 5;
 
 //: THE BOX'S ROUTING FOOTPRINT, in amplitude columns, and one level's base in it.
 //: -- see docs/internals/carry/carry_kernel.md#factor-rows
@@ -153,24 +145,54 @@ struct BoxPlan {
                 "into the outermost level's own columns");
   static_assert(kSeg % kUnitTokens == 0, "a segment is a whole number of fill units");
 
+  //: THE SPARSE FORM'S STREAMS, sized at the finest grain the nesting law admits.
+  //: -- see docs/internals/carry/smem_ledger.md#streams
+  static constexpr int kStreamGrainMin = kAtomLeaves;
+  static constexpr int kStreamCatalog = kLeavesPerWarp / kStreamGrainMin;
+  static constexpr int kLiveStreams = kWarps;
+  static constexpr int kTokIdBytes = kSeg * 2;
+  static constexpr int kFoldRingBytes = kVTileBytes + kRawSlotBytes + kGainSlotBytes;
+  static constexpr int kSparseFoldBytes = kLiveStreams * kFoldRingBytes;
+  static constexpr int kReadRingBytes = kRawSlotBytes + kTokIdBytes;
+  static constexpr int kSparseReadBytes = kLiveStreams * kReadRingBytes;
+
   //: the tenants beside the region. -- see docs/internals/carry/smem_ledger.md#region
   static constexpr int kPageSlotBytes = kAtoms * (int)sizeof(int);
+
+  static constexpr int kCounterBytes = 2 * kLiveStreams * 4;
 
   static constexpr int kRegionOffset = 0;
   static constexpr int kVTileOffset = kRegionOffset + kRegionBytes;
   static constexpr int kColOffset = kVTileOffset + kVRingBytes;
-  static constexpr int kPageSlotOffset = kColOffset + kColBytes;
-  static constexpr int kClaimOffset = kPageSlotOffset + kPageSlotBytes;
-  static constexpr int kClaimBytes = kFillPoints * 4;
-  static constexpr int kGainOffset = (kClaimOffset + kClaimBytes + 15) / 16 * 16;
+  static constexpr int kGainOffset = kColOffset + kColBytes;
   static constexpr int kRawOffset = kGainOffset + kFactorSlots * kGainSlotBytes;
-  static constexpr int kReadRawOffset = kRawOffset + kFactorSlots * kRawSlotBytes;
-  static constexpr int kSmemBytes = kReadRawOffset + kReadRawBytes;
+  //: THE READ BLOCK holds whichever read-side ring the readout's FORM asks for.
+  static constexpr int kReadBlockOffset = kRawOffset + kFactorSlots * kRawSlotBytes;
+  static constexpr int kReadRawOffset = kReadBlockOffset;
+  static constexpr int kSparseReadOffset = kReadBlockOffset;
+  static constexpr int kReadBlockBytes =
+      kReadRawBytes > kSparseReadBytes ? kReadRawBytes : kSparseReadBytes;
+  static constexpr int kPageSlotOffset = kReadBlockOffset + kReadBlockBytes;
+  static constexpr int kClaimOffset = kPageSlotOffset + kPageSlotBytes;
+  static constexpr int kClaimBytes = 4;
+  static constexpr int kCounterOffset = kClaimOffset + kClaimBytes;
+  static constexpr int kSmemBytes = (kCounterOffset + kCounterBytes + 15) / 16 * 16;
+
+  //: THE SPARSE FOLD'S RINGS ALIAS THE TRANSIT REGION and overflow into the union fold's
+  //: feed. -- see docs/internals/carry/smem_ledger.md#streams
+  static constexpr int kSparseFoldOffset = kRegionOffset;
+  static_assert(kSparseFoldBytes <= kReadBlockOffset,
+                "the sparse fold's rings fit the transit region plus the union fold's feed, "
+                "which are the two tenants dead while PHASE 2 runs a sparse fold");
+  static_assert(kGainOffset % 16 == 0 && kRawOffset % 16 == 0 && kReadBlockOffset % 16 == 0,
+                "every ring's base carries the widest quantum its runs are staged in");
+  static_assert(kFoldRingBytes % 16 == 0 && kReadRingBytes % 16 == 0,
+                "a private stream ring's stride keeps its successor's base aligned");
 
   static_assert(kVTileOffset % 16 == 0 && kColOffset % 16 == 0,
                 "the value ring and the column block are addressed in 16-byte quanta");
-  static_assert(kRawOffset % 16 == 0 && kReadRawOffset % 16 == 0 && kRawSlotBytes % 8 == 0,
-                "a raw factor slot's base carries the widest quantum its runs are staged in");
+  static_assert(kRawSlotBytes % 16 == 0,
+                "a raw factor slot's bytes keep the next slot's base aligned");
   static_assert(kLdX % denseref::ops::kMmaN == 0 && (kLdX * 2) % 16 == 0,
                 "a transit row's base is an ldmatrix address and its channel groups are "
                 "sixteen-byte quanta");
