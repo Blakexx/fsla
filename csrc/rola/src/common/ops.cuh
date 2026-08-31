@@ -102,6 +102,20 @@ __device__ __forceinline__ void stage_run(SmemAddr dst, const void* src) {
   }
 }
 
+//: THE SAME NARROWER COPY WITH ITS SOURCE RUN PREDICATED. -- see docs/internals/common/ops.md#stage-run-if
+template <int Bytes>
+__device__ __forceinline__ void stage_run_if(SmemAddr dst, const void* src, bool live) {
+  static_assert(Bytes == 4 || Bytes == 8 || Bytes == kStageBytes,
+                "an asynchronous run is 4, 8 or `kStageBytes` bytes");
+  if constexpr (Bytes == kStageBytes) {
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(dst), "l"(src),
+                 "r"(live ? Bytes : 0));
+  } else {
+    asm volatile("cp.async.ca.shared.global [%0], [%1], %2, %3;\n" ::"r"(dst), "l"(src), "n"(Bytes),
+                 "r"(live ? Bytes : 0));
+  }
+}
+
 __device__ __forceinline__ void stage_commit() { asm volatile("cp.async.commit_group;\n"); }
 
 template <int KeepInFlight>

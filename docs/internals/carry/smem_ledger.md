@@ -15,7 +15,11 @@ an allocation would move the residency the whole design is built on.
 | 0 | the transit region, `BC * LdX * 2` | 36,864 | the exchange between the two sides' carves |
 | 36,864 | the frame's three edge barriers, `3 * 8` | 24 | the frame |
 | 36,888 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
-| | **total** | **36,952** | |
+| 36,952 | the stream's two edge barriers, `2 * 8` | 16 | the fold's segment ring |
+| 36,968 | the stream's claim cursors, one per production point | 12 | the fold's fill |
+| 36,992 | the segment gains, `kFactorSlots * kSeg * 2` | 64 | the deep index staging |
+| 37,056 | the raw factor rows, `kFactorSlots * kSeg * kRawStride * 2` | 2,304 | the deep index staging |
+| | **total** | **39,360** | |
 
 At sm_86's 101,376-byte per-CTA maximum this leaves the fill rule most of the budget, and
 the residency is one CTA per SM by the launch bound rather than by the allocation.
@@ -32,7 +36,7 @@ two of them are alive at the same moment:
 | the entry sweep | as many state page images as fit: `floor(36,864 / (16 * LdO * 4))` = 8 images of 4,352 bytes = 34,816 bytes, in 2 rounds over the box's 16 pages |
 | the out leg, the return leg | the transit region itself — `BC` rows of `LdX` bf16 channels, the accumulator's halves in the owner-local canonical order |
 | PHASE 1 | the read stream's segment slots and the readout's output block |
-| PHASE 2 | the V ring, one `kSeg x LdV` bf16 tile per warp per slot = 2,048 bytes, `8 * 1 * 2,048` = 16,384 bytes today; and the write stream's segment slots |
+| PHASE 2 | the value ring, one `kSeg x LdV` bf16 tile per STREAM per slot = 2,048 bytes, `1 * 1 * 2,048`; and the column block, `kSpanTotal * kTokStride * 2` = 1,536 bytes |
 | the exit sweep | the state page images again |
 
 The edge barriers and the page slots are PERSISTENT: they are alive from the prologue to
@@ -55,15 +59,56 @@ allocation nobody sized. None is allocated today.
 | read stream segments | one 16-token slot per accumulator tile; the register fragments are the second buffer where the MMA sources from registers | the fold-and-stream stage |
 | the readout's output block | `C * (DV + 1) * 4` ≈ 8,320 bytes, or none where the reduction is native | the fan-in stage |
 | write stream segments | one 16-token slot per concurrently active accumulator box, each `LdX * 2` plus its coefficient row | the stream stage |
-| the deep index staging | the window's union list and its un-expanded factor rows, a window ahead: ≈ 48 bytes per token, ≈ 24 KB at `W = 512` | the fold stage |
+| the deep index staging | FILLED, at a RING of `kSegmentSlots + 1` segments rather than a window: see below |
 | the lists and ballot words | `W/32` words per side per level run, ≈ 2 KB | the liveness walk |
 | the parked low plane | `BC * (DV + 1) * 2` = 33,280 bytes | the register-relief stage |
+
+<a id="factor-rows"></a>
+## The deep index staging: what it holds, and why a ring rather than a window
+
+The row this table reserved for the deep index staging is FILLED, at `kFactorSlots =
+kSegmentSlots + 1` segment slots — the factor ring runs one segment ahead of the value ring,
+so it carries one slot more — rather than at the window's depth the reservation estimated.
+Two reasons, and neither is the byte count alone. A window's worth at the flagship arm is
+`512 * 66` = 34 KB, which is above the reservation and enough to displace the readout's own
+tenants and the parked plane. And DEPTH BUYS ONLY LATENCY COVER, never traffic: a token's
+factor row is read by exactly one segment, so staging it earlier moves no bytes. What the
+cover slots need from this tenant is that it is PERSISTENT — that production reads only
+routing data, never the current phase's accumulator and never the region — and a ring holds
+that exactly as a window would.
+
+Per slot it holds a segment's `kSeg` factor rows AS THEY LIE in the packed plane
+(`[kSeg][kRawStride]` bf16, each token's `D` contiguous runs of the box's own digits) and
+its `kSeg` gains. The rows are staged by `cp.async`; the gains are not (`carry_kernel.md#column-block`).
+
+`kRawStride` is `kSpanTotal` rounded up to `4 (mod 32)` halfwords, and that congruence is
+the transpose's access pattern rather than a round number: the transpose reads word
+`t * (kRawStride / 2) + p` for token `t` and column pair `p`, so `kRawStride / 2 = 2 (mod 8)`
+spreads a warp's eight token pairs over eight bank quadruples and its four column pairs
+inside the quadruple — 32 lanes, 32 banks, once each. The same stride keeps every row eight-byte
+aligned, which is the widest quantum a level run can be staged in.
+
+<a id="column-block"></a>
+## The column block
+
+`[kSpanTotal][kTokStride]` bf16, one block — written and consumed inside one iteration of the
+fold's loop, so it needs no ring of its own — aliased into the region beside the value ring.
+It stores each amplitude column's `kSeg` tokens ADJACENT, which is the order the MMA's B
+fragment pairs them in.
+
+`kTokStride` is `kSeg` rounded up to `8 (mod 16)` halfwords: the expansion reads word
+`c * (kTokStride / 2) + t / 2`, so `kTokStride / 2` being four times an odd number puts eight
+consecutive columns on eight distinct bank quadruples, and the four token pairs of a warp
+fill each quadruple. At `kSeg = 16` that is 24 halfwords, a 50% pad, and it is what makes the
+expansion's every load conflict free.
 
 <a id="v-tile"></a>
 ## The V tile's layout and its swizzle
 
 A segment's value rows are stored TOKEN MAJOR: `[kSeg][LdV]` bf16, row = token, column =
-value channel. The fold's A operand is CHANNEL major, so the transposing tile load reads
+value channel. There is ONE tile per stream per slot, not one per warp: every warp's A
+operand is the same `V^T` and only its coefficient differs, so the segment carries the
+values once and the box fetches each value row once instead of `kWarps` times. The fold's A operand is CHANNEL major, so the transposing tile load reads
 this layout directly and there is no transpose pass — the same arrangement flash attention
 uses to feed a value tile as an operand.
 

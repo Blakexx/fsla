@@ -167,6 +167,17 @@ class GeometryBlock:
     fields: dict
 
     @property
+    def carve_order(self) -> list[int]:
+        """THE CARVE ORDER this block was derived at: both sides' levels ranked, read side
+        then write side, rank 0 innermost -- the flat form the kernel boundary takes.
+
+        It is READ OFF the shipped derivation rather than re-derived here: the order is a
+        runtime input to `derive_carry_geom`, the block is that function's output, and a
+        second Python sort of the level modes would be a second derivation of the same law.
+        """
+        return list(self.fields["r"]["level_at"]) + list(self.fields["w"]["level_at"])
+
+    @property
     def leaves(self) -> int:
         n = 1
         for width in self.B:
@@ -174,18 +185,25 @@ class GeometryBlock:
         return n
 
 
-def geometry_block(descriptor: StateFormat, launch: LaunchShape) -> GeometryBlock:
+def geometry_block(descriptor: StateFormat, launch: LaunchShape,
+                   level_modes: int = 0) -> GeometryBlock:
     """The host's derivation of the addressing block for this ``(descriptor, launch)``.
 
     The block itself comes from the ONE shipped derivation in
     ``csrc/rola/src/common/geom.cu``; what this adds is the binding of its inputs to
     the descriptor's fields and the launch's shape, so a block a caller hands
     `carry_forward` cannot have been derived from a different state.
+
+    ``level_modes`` is the per-level support declaration, two bits per level in
+    `rola.ops.intra`'s encoding. It is what the CARVE ORDER is derived from: a side
+    carves its sparse levels first, so declaring a level sparse ranks it outermost and
+    makes the warp boxes uniform in activity rather than only in size. Zero -- every
+    level dense on both sides -- is the canonical order and is always lawful.
     """
     _refuse_descriptor(descriptor)
     _refuse_launch(launch)
     BC = box_leaves(descriptor.DV, launch.warps_per_cta)
-    fields = geometry(descriptor.B, bc=BC, d_v=descriptor.DV)
+    fields = geometry(descriptor.B, level_modes=int(level_modes), bc=BC, d_v=descriptor.DV)
     return GeometryBlock(D=descriptor.D, B=tuple(descriptor.B), DV=descriptor.DV,
                          warps_per_cta=launch.warps_per_cta, BC=BC, fields=fields)
 
@@ -358,7 +376,7 @@ def carry_forward(routes: RoutePlanes, v: torch.Tensor, *, descriptor: StateForm
     extension().carry_forward(
         routes.read, routes.write, routes.gain, v, num, den,
         list(descriptor.B), int(descriptor.DV), int(descriptor.page_bits),
-        int(launch.warps_per_cta), liveness.words, activity,
+        int(launch.warps_per_cta), geometry.carve_order, liveness.words, activity,
         state_in, state_out, page_table)
     return num, den
 
@@ -398,7 +416,7 @@ def carry_backward(routes: RoutePlanes, v: torch.Tensor, d_num: torch.Tensor,
     return extension().carry_backward(
         routes.read, routes.write, routes.gain, v, d_num, d_den,
         list(descriptor.B), int(descriptor.DV), int(descriptor.page_bits),
-        int(launch.warps_per_cta), liveness.words, activity,
+        int(launch.warps_per_cta), geometry.carve_order, liveness.words, activity,
         state_in, d_state_out, page_table)
 
 

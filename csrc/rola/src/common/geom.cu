@@ -20,7 +20,9 @@ static CarryGeomRT derive_block(const std::vector<int64_t>& widths, int64_t leve
   TORCH_CHECK(D >= 1 && D <= kGeomMaxLevels, "the routing depth is one to four levels, got ", D);
   for (int l = 0; l < D; ++l) w[l] = (int)widths[l];
   CarryGeomRT geo{};
-  const char* err = derive_carry_geom(D, w, bc, dv, (uint32_t)level_modes, nsr, nsw, geo);
+  CarveOrder order{};
+  carve_order_of_modes(D, (uint32_t)level_modes, order);
+  const char* err = derive_carry_geom(D, w, bc, dv, order, nsr, nsw, geo);
   TORCH_CHECK(err == nullptr, "the addressing block refuses this call: ", err == nullptr ? "" : err,
               " (widths=", widths, ", BC=", bc, ", level_modes=", level_modes, ")");
   TORCH_CHECK(geo.wtot % 8 == 0,

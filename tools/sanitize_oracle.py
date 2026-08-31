@@ -115,6 +115,14 @@ _FAMILIES = {
         test="tests/oracle/test_carry_vs_oracle.py::"
              "test_one_token_writing_one_leaf_is_the_oracles_single_deposit",
         kernel="rola::carry::carry_forward", present=True),
+    #: THE CARRY FOLD'S PRODUCTION SIDE, on the smallest cell that runs the segment ring
+    #: round more than once and the window loop more than once: the claimed fill, the two
+    #: stream edges, the shared value slot every warp drains and the factor ring the
+    #: cover slot starts. The single deposit above cannot reach any of them.
+    "carry_fold": Family(
+        test="tests/oracle/test_carry_vs_oracle.py::"
+             "test_the_folded_state_is_the_fp64_reference[flat-small-multiwindow]",
+        kernel="rola::carry::carry_forward", present=True),
     #: ABSENT: the carry reverse pass. Its cells are red at the extension boundary; the
     #: coverage is owed by the stage that builds the body.
     "carry_backward": Family(

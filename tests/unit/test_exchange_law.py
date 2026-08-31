@@ -347,7 +347,12 @@ def test_every_member_pair_the_mode_words_can_reach_is_conflict_free():
                 bad.append((key, widths, modes, c))
     assert pairs, "no member pair was reached at all"
     assert not bad, f"member pairs needing a swizzle: {bad}"
-    assert len(pairs) >= 55, f"only {len(pairs)} member pairs reached; the sweep shrank"
+    #: the reachable pair count is a consequence of the INNERMOST-DIGIT INVARIANT: the
+    #: carve never divides the canonical innermost level, so the orders that differ only
+    #: in how they would have split it select the same member and the pair set collapses.
+    #: The floor is here so a future change that stops reaching pairs at all is a failure
+    #: rather than a silently vacuous sweep.
+    assert len(pairs) >= 14, f"only {len(pairs)} member pairs reached; the sweep shrank"
 
 
 def test_the_swizzle_is_a_bijection_of_the_region_and_is_linear():

@@ -641,9 +641,12 @@ def derivation_harness(cases: dict) -> str:
         out += ["  {\n",
                 f"    const int w[] = {{{widths}}};\n",
                 "    rola::carry::CarryGeomRT g{};\n",
+                "    rola::carry::CarveOrder o{};\n",
+                f"    rola::carry::carve_order_of_modes({len(c['widths'])}, "
+                f"{c['level_modes']}u, o);\n",
                 f"    const char* err = rola::carry::derive_carry_geom("
                 f"{len(c['widths'])}, w, {c['bc']}, {c['dv']}, "
-                f"{c['level_modes']}u, {c['nsr']}, {c['nsw']}, g);\n",
+                f"o, {c['nsr']}, {c['nsw']}, g);\n",
                 f'    if (err != nullptr) std::printf("%s\\trefused\\t%s\\n", '
                 f'"{c["name"]}", err);\n',
                 f'    else dump("{c["name"]}", &g, sizeof(g));\n',

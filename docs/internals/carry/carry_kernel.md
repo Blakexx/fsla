@@ -127,18 +127,96 @@ refill is covered by the previous segment's chain rather than by a barrier. This
 structural difference from an attention mainloop, which must read-modify-write its
 accumulator on every tile.
 
-Per segment: the value tile is drained out of the shared slot into A fragments by a
+Per segment, in issue order: the warp waits its own staging, the FILLED edge publishes the
+whole CTA's; the value tile is drained out of the shared slot into A fragments by a
 transposing tile load — the segment is stored token major and the operand is channel major,
-so the transpose is the load's, not a pass — the slot is then refilled for the next segment,
-and the coefficients are expanded in registers. A lane holds one leaf per n-tile and four of
-the segment's tokens, so its coefficient is the gain times the product of that leaf's `D`
-factor amplitudes, rounded to bf16 as the declared operand arithmetic. A token past the
-window's end contributes a zero coefficient and its value quantum zero-fills, so a partial
-window is the same code and not a tail case.
+so the transpose is the load's, not a pass; the segment's factor rows are transposed into
+the column block; the EMPTY edge releases the value slot and the raw slot and publishes the
+column block; the segment `kSegmentSlots` ahead is claimed and staged; the coefficients are
+expanded in registers; and the deposits issue. The staging is therefore covered by the
+expansion and the deposits of the segment that issued it, and the deposits of segment `b`
+are still draining in the tensor pipe while segment `b + 1`'s expansion issues in the SIMT
+pipe — the fold's window-blindness is what allows both.
+
+A lane holds one leaf per n-tile and two token PAIRS of the segment, and its coefficient
+pair is the gain times the product of that leaf's `D` factor amplitudes, one packed bf16
+multiply per level, which is the declared operand arithmetic. A token past the window's end
+has zero amplitudes staged and its value quantum zero-fills, so a partial window is the same
+code and not a tail case — nothing in the loop tests a token against the end.
 
 The segment slot count is arch-derived: where the MMA sources both operands from the
 issuing unit's registers, ONE slot suffices and the registers are the second buffer
 (§4's two-stages-in-flight, in its register form); where it does not, the ring is two slots.
+
+<a id="factor-rows"></a>
+## What the fill stages, and why it is that little
+
+A CTA box reaches ONE CONTIGUOUS RUN of digits per level — `owner_span(l)` of them, at
+`col_base(l) + owner_digit(l) * owner_span(l)` in the packed plane — because the owner grid
+fixes the leading digits and the box holds every combination of the rest. So the whole
+routing footprint of a segment is `kSeg` tokens times `sum_l owner_span(l)` amplitudes plus
+`kSeg` gains: 66 bytes a token at the flagship arm, against the 512-column row a token
+occupies. The fill stages exactly those runs, as they lie, with `cp.async` at the widest
+quantum each run's length, base and row stride admit.
+
+Nothing is staged per warp. Every warp of the box reads from the same runs (its leaves are a
+sub-box of the same box) and every warp's A operand is the same `V^T`, so the segment
+carries the values and the factor rows ONCE and the warps differ only in the coefficient
+they expand from them.
+
+<a id="fill"></a>
+## The fill is claimed, not assigned
+
+A fill UNIT is `kUnitTokens` tokens: their value rows are one sixteen-byte quantum per lane
+and their factor runs one eight-byte quantum per lane at the flagship, so a claim is one
+lane-parallel burst of each. A warp takes a unit with a single shared `atomicAdd` on the
+stream's cursor and keeps taking until the segment is gone, so the fill shares out by
+arrival rather than by assignment — which is the property the sparse form needs, where a
+warp's units are not all the same size.
+
+The cursor is MONOTONE and never reset. A warp leaves a fill with exactly one failing claim,
+so a production point advances the cursor by its unit count plus one per warp, every thread
+can carry the next point's base in a register, and no reset — hence no barrier of its own —
+is needed.
+
+There is one cursor PER PRODUCTION POINT (`Fill`), and the reason is the split edges: a
+cover slot runs between an edge's arrive and its wait, so a warp can be inside the cover
+while another has passed the wait and reached the next point. Two points may share a cursor
+only when a completed edge separates them; the cover's does not qualify, and the three
+points the window's schedule has each carry their own.
+
+<a id="column-block"></a>
+## The one transpose, and the gain that rides in it
+
+The MMA's B fragment pairs two ADJACENT TOKENS in one 32-bit register, so a coefficient pair
+is one leaf column at two tokens — and the packed plane stores those two amplitudes a whole
+row apart. `cp.async` writes what it reads, contiguously, so the staged row cannot be in the
+pairing order; the segment's raw rows are therefore transposed ONCE, cooperatively, into a
+column block that stores each column's `kSeg` tokens adjacent. It is a 2x2 halfword block per
+thread: two 32-bit loads, the halfword shuffles between them, two 32-bit stores, one word per
+thread per segment.
+
+The GAIN rides in the same pass. It is per token, and the coefficient needs it exactly once,
+so the transpose multiplies the OUTERMOST level's columns by the token pair's gains as it
+writes them — one packed multiply per thread instead of one per leaf per lane. The gains
+themselves are the one operand a `cp.async` cannot stage: a token's gain is a single bf16 in
+a `[BH, L]` plane, so the run's alignment is a property of `BH * L` rather than of the
+descriptor. They are read instead as one coalesced row by one warp, a segment ahead, and
+stored to shared after that segment's deposits have issued.
+
+<a id="stream-edges"></a>
+## The stream's two edges, which are not the frame's
+
+The frame owns three edges and the loop adds no fourth: the two edges below belong to the
+STREAM, and a stream edge is what the schedule always said would appear here. FILLED
+publishes a segment's staging to every warp that consumes it — a warp waits its OWN
+asynchronous copies and the edge makes them visible CTA-wide. EMPTY releases the value slot
+and the raw factor slot, and, because the transpose runs between the two, it publishes the
+column block in the same crossing.
+
+They are what the SHARED value slot costs. Staging the segment per warp needs no edge at all
+and is what the frame started from; it also fetches every value row `kWarps` times and holds
+`kWarps` copies of it. Two CTA-wide crossings a segment is the price of fetching it once.
 
 <a id="forms"></a>
 ## The two forms per side, and where each switch sits
