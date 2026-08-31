@@ -18,8 +18,8 @@ constexpr int kUnitTokens = 4;
 enum class Fill : int { kCoverFactors = 0, kPrologueValues = 1, kSegment = 2 };
 constexpr int kFillPoints = 3;
 
-//: THE BOX'S ROUTING FOOTPRINT, in amplitude columns, and the catenated run's base for
-//: level `l`. -- see docs/internals/carry/carry_kernel.md#factor-rows
+//: THE BOX'S ROUTING FOOTPRINT, in amplitude columns, and one level's base in it.
+//: -- see docs/internals/carry/carry_kernel.md#factor-rows
 constexpr int span_total(int D, int bc) {
   int total = 0;
   for (int l = 0; l < D; ++l) total += owner_span(D, bc, l);
@@ -32,15 +32,22 @@ constexpr int span_base(int D, int bc, int l) {
   return base;
 }
 
-//: THE SLOT STRIDES, each an access pattern in one congruence: the transpose's over the
-//: raw rows, the expansion's over the column block.
+//: THE SLOT STRIDES, each an access pattern in one congruence.
 //: -- see docs/internals/carry/smem_ledger.md#factor-rows
 constexpr int raw_stride(int span_tot) { return span_tot + ((4 - span_tot % 32) + 32) % 32; }
 
 constexpr int tok_stride(int seg) { return seg + ((8 - seg % 16) + 16) % 16; }
 
-//: THE ASYNCHRONOUS QUANTUM a level's run is staged in: the widest that divides the run,
-//: its base and the stride.
+//: THE J-SLICE OF A LEVEL: which bits of a warp's tile index its digit depends on.
+//: -- see docs/internals/carry/carry_kernel.md#expansion
+constexpr int slice_shift(int shift) { return shift > 3 ? shift - 3 : 0; }
+
+constexpr int slice_bits(int shift, int bits) {
+  const int hi = shift + bits - 3;
+  return hi <= 0 ? 0 : hi - slice_shift(shift);
+}
+
+//: THE ASYNCHRONOUS QUANTUM a run is staged in: the widest that divides run, base, stride.
 constexpr int run_quantum(int span_h, int base_h, int stride_h) {
   const int b = span_h * 2, o = base_h * 2, r = stride_h * 2;
   if (b % 16 == 0 && o % 16 == 0 && r % 16 == 0) return 16;
@@ -84,10 +91,10 @@ struct BoxPlan {
   static constexpr int kTokStride = tok_stride(kSeg);
   static constexpr int kRawSlotBytes = kSeg * kRawStride * 2;
   static constexpr int kGainSlotBytes = kSeg * 2;
-  static constexpr int kColBytes = kSpanTotal * kTokStride * 2;
+  static constexpr int kColSlots = 2;
+  static constexpr int kColBytes = kColSlots * kSpanTotal * kTokStride * 2;
 
-  //: the shared page image, the value tile, and the ring slots the fill stages into.
-  //: -- see docs/internals/carry/smem_ledger.md
+  //: the shared tenants' shapes. -- see docs/internals/carry/smem_ledger.md
   static constexpr int kLdO = kCols + (4 - kCols % 32 + 32) % 32;
   static constexpr int kPageImageBytes = kAtomLeaves * kLdO * (int)sizeof(float);
   static constexpr int kVTileBytes = kSeg * kDv * 2;
@@ -115,21 +122,17 @@ struct BoxPlan {
   static constexpr int kEdges = 3;
   static constexpr int kEdgeBytes = kEdges * (int)sizeof(denseref::ops::EdgeState);
   static constexpr int kPageSlotBytes = kAtoms * (int)sizeof(int);
-  static constexpr int kStreamEdges = 2;
-  static constexpr int kStreamEdgeBytes = kStreamEdges * (int)sizeof(denseref::ops::EdgeState);
 
   static constexpr int kRegionOffset = 0;
   static constexpr int kEdgeOffset = kRegionOffset + kRegionBytes;
   static constexpr int kPageSlotOffset = kEdgeOffset + kEdgeBytes;
-  static constexpr int kStreamEdgeOffset = kPageSlotOffset + kPageSlotBytes;
-  static constexpr int kClaimOffset = kStreamEdgeOffset + kStreamEdgeBytes;
+  static constexpr int kClaimOffset = kPageSlotOffset + kPageSlotBytes;
   static constexpr int kClaimBytes = kFillPoints * 4;
   static constexpr int kGainOffset = (kClaimOffset + kClaimBytes + 15) / 16 * 16;
   static constexpr int kRawOffset = kGainOffset + kFactorSlots * kGainSlotBytes;
   static constexpr int kSmemBytes = kRawOffset + kFactorSlots * kRawSlotBytes;
 
-  static_assert(kEdgeOffset % 8 == 0 && kStreamEdgeOffset % 8 == 0,
-                "an mbarrier is eight-byte aligned");
+  static_assert(kEdgeOffset % 8 == 0, "an mbarrier is eight-byte aligned");
   static_assert(kRawOffset % 16 == 0 && kRawSlotBytes % 8 == 0,
                 "a raw factor slot's base carries the widest quantum its runs are staged in");
 
@@ -148,8 +151,8 @@ struct BoxPlan {
 //: THE FRAME'S EDGES, named. -- see docs/internals/carry/carry_kernel.md#edges
 enum class Edge : int { kWindowLine = 0, kOutLeg = 1, kReturnLeg = 2 };
 
-//: THE STREAM'S OWN EDGES, which are not the frame's.
+//: THE STREAM'S OWN EDGES, which are not the frame's: NAMED BARRIER ids.
 //: -- see docs/internals/carry/carry_kernel.md#stream-edges
-enum class StreamEdge : int { kFilled = 0, kEmpty = 1 };
+enum class StreamEdge : int { kFilled = 1, kEmpty = 2 };
 
 }  // namespace rola::carry

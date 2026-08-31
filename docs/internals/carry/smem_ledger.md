@@ -15,11 +15,13 @@ an allocation would move the residency the whole design is built on.
 | 0 | the transit region, `BC * LdX * 2` | 36,864 | the exchange between the two sides' carves |
 | 36,864 | the frame's three edge barriers, `3 * 8` | 24 | the frame |
 | 36,888 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
-| 36,952 | the stream's two edge barriers, `2 * 8` | 16 | the fold's segment ring |
-| 36,968 | the stream's claim cursors, one per production point | 12 | the fold's fill |
-| 36,992 | the segment gains, `kFactorSlots * kSeg * 2` | 64 | the deep index staging |
-| 37,056 | the raw factor rows, `kFactorSlots * kSeg * kRawStride * 2` | 2,304 | the deep index staging |
-| | **total** | **39,360** | |
+| 36,952 | the stream's claim cursors, one per production point | 12 | the fold's fill |
+| 36,976 | the segment gains, `kFactorSlots * kSeg * 2` | 64 | the deep index staging |
+| 37,040 | the raw factor rows, `kFactorSlots * kSeg * kRawStride * 2` | 2,304 | the deep index staging |
+| | **total** | **39,344** | |
+
+The stream's two edges take no bytes at all: they are NAMED BARRIERS
+(`carry_kernel.md#stream-edges`), which is what an edge with equal participation costs.
 
 At sm_86's 101,376-byte per-CTA maximum this leaves the fill rule most of the budget, and
 the residency is one CTA per SM by the launch bound rather than by the allocation.
@@ -36,7 +38,7 @@ two of them are alive at the same moment:
 | the entry sweep | as many state page images as fit: `floor(36,864 / (16 * LdO * 4))` = 8 images of 4,352 bytes = 34,816 bytes, in 2 rounds over the box's 16 pages |
 | the out leg, the return leg | the transit region itself — `BC` rows of `LdX` bf16 channels, the accumulator's halves in the owner-local canonical order |
 | PHASE 1 | the read stream's segment slots and the readout's output block |
-| PHASE 2 | the value ring, one `kSeg x LdV` bf16 tile per STREAM per slot = 2,048 bytes, `1 * 1 * 2,048`; and the column block, `kSpanTotal * kTokStride * 2` = 1,536 bytes |
+| PHASE 2 | the value ring, one `kSeg x LdV` bf16 tile per STREAM per slot = 2,048 bytes, `1 * 1 * 2,048`; and two column blocks, `2 * kSpanTotal * kTokStride * 2` = 3,072 bytes |
 | the exit sweep | the state page images again |
 
 The edge barriers and the page slots are PERSISTENT: they are alive from the prologue to
@@ -91,8 +93,9 @@ aligned, which is the widest quantum a level run can be staged in.
 <a id="column-block"></a>
 ## The column block
 
-`[kSpanTotal][kTokStride]` bf16, one block — written and consumed inside one iteration of the
-fold's loop, so it needs no ring of its own — aliased into the region beside the value ring.
+`[kSpanTotal][kTokStride]` bf16, TWO blocks — the expansion runs one segment ahead of the
+deposits, so the block it reads and the block the transpose is filling are never the same —
+aliased into the region beside the value ring.
 It stores each amplitude column's `kSeg` tokens ADJACENT, which is the order the MMA's B
 fragment pairs them in.
 

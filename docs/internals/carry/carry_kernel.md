@@ -127,16 +127,20 @@ refill is covered by the previous segment's chain rather than by a barrier. This
 structural difference from an attention mainloop, which must read-modify-write its
 accumulator on every tile.
 
-Per segment, in issue order: the warp waits its own staging, the FILLED edge publishes the
-whole CTA's; the value tile is drained out of the shared slot into A fragments by a
-transposing tile load — the segment is stored token major and the operand is channel major,
-so the transpose is the load's, not a pass; the segment's factor rows are transposed into
-the column block; the EMPTY edge releases the value slot and the raw slot and publishes the
-column block; the segment `kSegmentSlots` ahead is claimed and staged; the coefficients are
-expanded in registers; and the deposits issue. The staging is therefore covered by the
-expansion and the deposits of the segment that issued it, and the deposits of segment `b`
-are still draining in the tensor pipe while segment `b + 1`'s expansion issues in the SIMT
-pipe — the fold's window-blindness is what allows both.
+Per segment, in issue order: the value tile is drained out of the shared slot into A
+fragments by a transposing tile load — the segment is stored token major and the operand is
+channel major, so the transpose is the load's, not a pass; the NEXT segment's factor rows
+are transposed into their column block; the EMPTY edge releases the value slot and
+publishes the column block; the segment `kSegmentSlots` ahead is claimed and staged; the
+NEXT segment's coefficients are expanded in registers; this segment's deposits issue; and
+the FILLED edge publishes the staging to the warps that will drain it.
+
+That order is the schedule's cover, chain by chain. The expansion's shared loads are issued
+BEFORE the deposits that do not depend on them, so their latency sits under the MMA chain
+rather than in front of it; the staging is not waited on until the next iteration, so it is
+covered by an expansion and a whole segment of deposits; and the deposits of segment `b` are
+still draining in the tensor pipe while segment `b + 1`'s expansion issues in the SIMT pipe.
+The fold's window-blindness is what allows the last of those.
 
 A lane holds one leaf per n-tile and two token PAIRS of the segment, and its coefficient
 pair is the gain times the product of that leaf's `D` factor amplitudes, one packed bf16
@@ -204,6 +208,20 @@ a `[BH, L]` plane, so the run's alignment is a property of `BH * L` rather than 
 descriptor. They are read instead as one coalesced row by one warp, a segment ahead, and
 stored to shared after that segment's deposits have issued.
 
+<a id="expansion"></a>
+## The expansion, memoized
+
+A lane's `kNL` leaf tiles do not use `kNL` different columns of a level. The tile index
+contributes the slot's bits ABOVE the lane's three, so a level's column depends only on the
+tile bits its span reaches — its J-SLICE — and every tile with the same slice shares one
+column. The expansion loads each level's DISTINCT columns once into registers and multiplies
+them into the tiles that use them: at the flagship member that is two columns a level rather
+than four, eight packed loads a segment rather than sixteen.
+
+The slice is compile time (`slice_shift`/`slice_bits` on the member's own span layout), so
+the memo is a register array of a compile-time size and the walk that fills `scol` runs once
+in the prologue, per (level, slice) rather than per (level, tile).
+
 <a id="stream-edges"></a>
 ## The stream's two edges, which are not the frame's
 
@@ -214,9 +232,18 @@ asynchronous copies and the edge makes them visible CTA-wide. EMPTY releases the
 and the raw factor slot, and, because the transpose runs between the two, it publishes the
 column block in the same crossing.
 
+They are NAMED BARRIERS, not mbarriers, and that is a measured choice rather than a
+stylistic one: a stream edge here has EQUAL PARTICIPATION (every thread arrives once) and
+runs once a segment rather than once a window, and `mbarrier.test_wait` SPINS where
+`bar.sync` sleeps. Measured on the frame's own cells, the spin cost 21% of issue slots to branch resolution and
+turned every spin into a shared-memory read; the named barrier costs neither, and it takes no
+shared bytes to allocate.
+
 They are what the SHARED value slot costs. Staging the segment per warp needs no edge at all
 and is what the frame started from; it also fetches every value row `kWarps` times and holds
-`kWarps` copies of it. Two CTA-wide crossings a segment is the price of fetching it once.
+`kWarps` copies of it. Two CTA-wide crossings a segment is the price of fetching it once,
+and at `kSegmentSlots = 1` both are structural: one releases the slot before its refill, the
+other publishes the refill.
 
 <a id="forms"></a>
 ## The two forms per side, and where each switch sits

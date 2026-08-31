@@ -37,8 +37,9 @@ struct Smem {
     return ops::smem_addr(base + BP::kRegionOffset + slot * BP::kVTileBytes);
   }
 
-  __device__ __forceinline__ char* column_block() const {
-    return base + BP::kRegionOffset + BP::kColOffsetInRegion;
+  __device__ __forceinline__ char* column_block(int slot) const {
+    return base + BP::kRegionOffset + BP::kColOffsetInRegion
+           + slot * (BP::kColBytes / BP::kColSlots);
   }
 
   __device__ __forceinline__ char* raw_slot(int slot) const {
@@ -47,10 +48,6 @@ struct Smem {
 
   __device__ __forceinline__ __nv_bfloat16* gain_slot(int slot) const {
     return reinterpret_cast<__nv_bfloat16*>(base + BP::kGainOffset + slot * BP::kGainSlotBytes);
-  }
-
-  __device__ __forceinline__ ops::SmemAddr stream_edge(StreamEdge e) const {
-    return ops::smem_addr(base + BP::kStreamEdgeOffset + (int)e * (int)sizeof(ops::EdgeState));
   }
 
   __device__ __forceinline__ unsigned int* claim(Fill f) const {
@@ -206,21 +203,28 @@ __device__ __forceinline__ void stage_unit_factors(const CarryParams& p, const S
   });
 }
 
-//: PRODUCE ONE SEGMENT: every warp claims units until the segment is taken, so the fill
-//: shares out by arrival rather than by assignment.
-template <class BP, int D>
+//: PRODUCE A RUN OF SEGMENTS: every warp claims units until the run is taken, so the fill
+//: shares out by arrival rather than by assignment. The run is ONE production point --
+//: two of them on one cursor would need an edge between, and a cover slot has none.
+//: -- see docs/internals/carry/carry_kernel.md#fill
+template <class BP, int D, int Segs>
 __device__ __forceinline__ void fold_produce(const CarryParams& p, const Smem<BP>& sm,
                                              const int (&abase)[kGeomMaxLevels], int lane, int bh,
-                                             int seg0, int tok_end, int vslot, int fslot,
-                                             bool values, bool factors, Fill point,
+                                             int seg_v, int seg_f, int tok_end, int vslot,
+                                             int fslot, bool values, bool factors, Fill point,
                                              uint32_t& base) {
-  constexpr int kUnits = BP::kSeg / kUnitTokens;
+  constexpr int kPerSeg = BP::kSeg / kUnitTokens;
+  constexpr int kUnits = Segs * kPerSeg;
   for (;;) {
     const uint32_t u = claim_unit<BP>(sm, point, lane);
     if (u >= base + kUnits) break;
-    const int unit = (int)(u - base);
-    if (values) stage_unit_values<BP>(p, sm, vslot, lane, bh, seg0, tok_end, unit);
-    if (factors) stage_unit_factors<BP, D>(p, sm, abase, fslot, lane, bh, seg0, tok_end, unit);
+    const int unit = (int)(u - base), k = unit / kPerSeg, su = unit % kPerSeg;
+    if (values)
+      stage_unit_values<BP>(p, sm, (vslot + k) % BP::kSegmentSlots, lane, bh, seg_v + k * BP::kSeg,
+                            tok_end, su);
+    if (factors)
+      stage_unit_factors<BP, D>(p, sm, abase, (fslot + k) % BP::kFactorSlots, lane, bh,
+                                seg_f + k * BP::kSeg, tok_end, su);
   }
   base += (uint32_t)(kUnits + BP::kWarps);
   ops::stage_commit();
@@ -250,13 +254,14 @@ __device__ __forceinline__ void write_gain(const Smem<BP>& sm, int slot, int lan
 //: per token pair instead of once per leaf.
 //: -- see docs/internals/carry/carry_kernel.md#column-block
 template <class BP, int D>
-__device__ __forceinline__ void fold_transpose(const Smem<BP>& sm, int raw, int gain, int tid) {
+__device__ __forceinline__ void fold_transpose(const Smem<BP>& sm, int raw, int gain, int col,
+                                               int tid) {
   constexpr int kPairs = BP::kSpanTotal / 2;
   constexpr int kRows = BP::kSeg / 2;
   constexpr int kUnits = kPairs * kRows;
   constexpr int kGainPairs = owner_span(D, BP::kBC, 0) / 2;
   const uint32_t* const src = reinterpret_cast<const uint32_t*>(sm.raw_slot(raw));
-  uint32_t* const dst = reinterpret_cast<uint32_t*>(sm.column_block());
+  uint32_t* const dst = reinterpret_cast<uint32_t*>(sm.column_block(col));
   const unsigned short* const g = reinterpret_cast<const unsigned short*>(sm.gain_slot(gain));
   rola::static_for<(kUnits + BP::kThreads - 1) / BP::kThreads>([&](auto Ic) {
     const int idx = decltype(Ic)::value * BP::kThreads + tid;
@@ -277,25 +282,36 @@ __device__ __forceinline__ void fold_transpose(const Smem<BP>& sm, int raw, int 
   });
 }
 
-//: EXPAND: one segment's coefficients for this lane's leaves, in registers. Each level
-//: contributes one PACKED multiply per (leaf tile, token pair); the slot map `scol` was
-//: walked once at the prologue and is never walked again.
-template <class BP, int D>
+//: EXPAND: one segment's coefficients for this lane's leaves, in registers. A level's
+//: column is loaded ONCE PER DISTINCT J-SLICE rather than once per tile -- at the flagship
+//: member that is two columns a level instead of four -- and each level contributes one
+//: packed multiply per (leaf tile, token pair).
+//: -- see docs/internals/carry/carry_kernel.md#expansion
+template <class BP, int D, int NS, int WA>
 __device__ __forceinline__ void fold_expand(const Smem<BP>& sm, uint32_t (&bf)[BP::kNL][2],
-                                            const int (&scol)[BP::kNL][kGeomMaxLevels], int lane) {
-  const uint32_t* const col = reinterpret_cast<const uint32_t*>(sm.column_block());
+                                            const int (&scol)[kGeomMaxLevels][BP::kNL], int slot,
+                                            int lane) {
+  const uint32_t* const col = reinterpret_cast<const uint32_t*>(sm.column_block(slot));
   const int t2 = lane & 3;
-  rola::static_for<BP::kNL>([&](auto Jc) {
-    constexpr int j = decltype(Jc)::value;
-    rola::static_for<2>([&](auto Hc) {
-      constexpr int h = decltype(Hc)::value;
-      const int word = t2 + 4 * h;
-      uint32_t x = col[scol[j][0] * (BP::kTokStride / 2) + word];
-      rola::static_for<D - 1>([&](auto Lc) {
-        constexpr int l = decltype(Lc)::value + 1;
-        x = ops::mul_bf16x2(x, col[scol[j][l] * (BP::kTokStride / 2) + word]);
+  rola::static_for<D>([&](auto Lc) {
+    constexpr int l = decltype(Lc)::value;
+    constexpr int kSh = slice_shift(sb_shift_of(D, BP::kBC, NS, WA, l));
+    constexpr int kBits =
+        slice_bits(sb_shift_of(D, BP::kBC, NS, WA, l), sb_span_bits(D, BP::kBC, NS, WA, l));
+    uint32_t f[1 << kBits][2];
+    rola::static_for<1 << kBits>([&](auto Vc) {
+      constexpr int v = decltype(Vc)::value;
+      rola::static_for<2>([&](auto Hc) {
+        constexpr int h = decltype(Hc)::value;
+        f[v][h] = col[scol[l][v] * (BP::kTokStride / 2) + t2 + 4 * h];
       });
-      bf[j][h] = x;
+    });
+    rola::static_for<BP::kNL>([&](auto Jc) {
+      constexpr int v = (decltype(Jc)::value >> kSh) & ((1 << kBits) - 1);
+      rola::static_for<2>([&](auto Hc) {
+        constexpr int j = decltype(Jc)::value, h = decltype(Hc)::value;
+        bf[j][h] = l == 0 ? f[v][h] : ops::mul_bf16x2(bf[j][h], f[v][h]);
+      });
     });
   });
 }
@@ -340,67 +356,66 @@ __device__ __forceinline__ void cover_write_batch_zero(const CarryParams& p, con
                                                        const int (&abase)[kGeomMaxLevels], int warp,
                                                        int lane, int bh, int t0, int wLen,
                                                        uint32_t (&claim)[kFillPoints]) {
-  const int nSeg = (wLen + BP::kSeg - 1) / BP::kSeg;
   const int tok_end = t0 + wLen;
-  rola::static_for<BP::kSegmentSlots>([&](auto Ic) {
-    constexpr int s = decltype(Ic)::value;
-    if (s >= nSeg) return;
-    const int seg0 = t0 + s * BP::kSeg;
-    const unsigned short gain = warp == 0 ? read_gain<BP>(p, lane, bh, seg0, tok_end) : 0u;
-    fold_produce<BP, D>(p, sm, abase, lane, bh, seg0, tok_end, 0, s, false, true,
-                        Fill::kCoverFactors, claim[(int)Fill::kCoverFactors]);
-    if (warp == 0) write_gain<BP>(sm, s, lane, gain);
-  });
+  fold_produce<BP, D, BP::kFactorSlots>(p, sm, abase, lane, bh, t0, t0, tok_end, 0, 0, false, true,
+                                        Fill::kCoverFactors, claim[(int)Fill::kCoverFactors]);
+  if (warp == 0)
+    rola::static_for<BP::kFactorSlots>([&](auto Ic) {
+      constexpr int s = decltype(Ic)::value;
+      write_gain<BP>(sm, s, lane, read_gain<BP>(p, lane, bh, t0 + s * BP::kSeg, tok_end));
+    });
 }
 
 //: PHASE 2, one form. The fold is WINDOW-BLIND: a deposit never reads the accumulator, so
 //: the segment MMAs of a whole window chain with no accumulator dependency and the
 //: segment slot's refill is covered by the previous segment's chain.
 //: -- see docs/internals/carry/carry_kernel.md#fold
-template <class BP, int D, Form F>
+template <class BP, int D, int NS, int WA, Form F>
 __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>& sm, Acc<BP>& acc,
-                                           const int (&scol)[BP::kNL][kGeomMaxLevels],
+                                           const int (&scol)[kGeomMaxLevels][BP::kNL],
                                            const int (&abase)[kGeomMaxLevels], int tid, int warp,
                                            int lane, int bh, int t0, int wLen,
-                                           uint32_t (&claim)[kFillPoints], uint32_t& phase) {
+                                           uint32_t (&claim)[kFillPoints]) {
   constexpr int S = BP::kSegmentSlots;
   constexpr int Fs = BP::kFactorSlots;
+  constexpr int Cs = BP::kColSlots;
   const int nSeg = (wLen + BP::kSeg - 1) / BP::kSeg;
   const int tok_end = t0 + wLen;
 
-  //: the value rows of the first slots; their factor rows are already in the ring, staged
-  //: by the cover slot the return leg's edge hid.
-  rola::static_for<S>([&](auto Ic) {
-    constexpr int s = decltype(Ic)::value;
-    if (s < nSeg)
-      fold_produce<BP, D>(p, sm, abase, lane, bh, t0 + s * BP::kSeg, tok_end, s, s, true, false,
-                          Fill::kPrologueValues, claim[(int)Fill::kPrologueValues]);
-  });
+  //: the value rows of the first slots; the factor rows they are folded against are
+  //: already in the ring, staged by the cover slot the return leg's edge hid.
+  fold_produce<BP, D, S>(p, sm, abase, lane, bh, t0, t0, tok_end, 0, 0, true, false,
+                         Fill::kPrologueValues, claim[(int)Fill::kPrologueValues]);
+
+  ops::stage_wait<S - 1>();
+  ops::rendezvous_group((int)StreamEdge::kFilled, BP::kThreads);
+  fold_transpose<BP, D>(sm, 0, 0, 0, tid);
+  ops::rendezvous_group((int)StreamEdge::kEmpty, BP::kThreads);
+
+  uint32_t bf[BP::kNL][2];
+  fold_expand<BP, D, NS, WA>(sm, bf, scol, 0, lane);
 
 #pragma unroll 1
   for (int b = 0; b < nSeg; ++b) {
-    const int ahead = b + S;
-    const int seg0 = t0 + b * BP::kSeg;
+    const int ahead = b + S, next = b + 1;
     const unsigned short gain =
-        warp == 0 ? read_gain<BP>(p, lane, bh, t0 + ahead * BP::kSeg, tok_end) : 0u;
-
-    ops::stage_wait<S - 1>();
-    ops::edge_arrive(sm.stream_edge(StreamEdge::kFilled));
-    ops::edge_wait(sm.stream_edge(StreamEdge::kFilled), phase);
+        warp == 0 ? read_gain<BP>(p, lane, bh, t0 + (ahead + 1) * BP::kSeg, tok_end) : 0u;
 
     uint32_t vf[BP::kMCh][4];
     fold_drain<BP>(sm, vf, b % S, lane);
-    fold_transpose<BP, D>(sm, b % Fs, b % Fs, tid);
+    if (next < nSeg) fold_transpose<BP, D>(sm, next % Fs, next % Fs, next % Cs, tid);
 
-    ops::edge_arrive(sm.stream_edge(StreamEdge::kEmpty));
-    ops::edge_wait(sm.stream_edge(StreamEdge::kEmpty), phase);
+    ops::rendezvous_group((int)StreamEdge::kEmpty, BP::kThreads);
 
-    if (ahead < nSeg)
-      fold_produce<BP, D>(p, sm, abase, lane, bh, t0 + ahead * BP::kSeg, tok_end, ahead % S,
-                          ahead % Fs, true, true, Fill::kSegment, claim[(int)Fill::kSegment]);
+    //: the segment `S` ahead, and the factor rows one further still: the expansion runs a
+    //: segment in front of the deposits, so its rows must land a segment earlier. A segment
+    //: past the window's end stages zeros, which is what a zero coefficient already is.
+    fold_produce<BP, D, 1>(p, sm, abase, lane, bh, t0 + ahead * BP::kSeg,
+                           t0 + (ahead + 1) * BP::kSeg, tok_end, ahead % S, (ahead + 1) % Fs, true,
+                           true, Fill::kSegment, claim[(int)Fill::kSegment]);
 
-    uint32_t bf[BP::kNL][2];
-    fold_expand<BP, D>(sm, bf, scol, lane);
+    uint32_t bnext[BP::kNL][2];
+    if (next < nSeg) fold_expand<BP, D, NS, WA>(sm, bnext, scol, next % Cs, lane);
 
     //: DEPOSIT: one MMA per (channel m-tile, leaf n-tile), the segment as the k step.
     rola::static_for<BP::kMCh>([&](auto Mc) {
@@ -411,8 +426,17 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
       });
     });
 
-    if (warp == 0 && ahead < nSeg) write_gain<BP>(sm, ahead % Fs, lane, gain);
-    phase ^= 1u;
+    if (warp == 0) write_gain<BP>(sm, (ahead + 1) % Fs, lane, gain);
+    rola::static_for<BP::kNL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      rola::static_for<2>([&](auto Hc) {
+        constexpr int h = decltype(Hc)::value;
+        bf[j][h] = bnext[j][h];
+      });
+    });
+
+    ops::stage_wait<S - 1>();
+    ops::rendezvous_group((int)StreamEdge::kFilled, BP::kThreads);
   }
   ops::stage_wait<0>();
 }
@@ -432,13 +456,13 @@ __device__ __forceinline__ void readout_phase(const CarryParams& p, const Smem<B
 
 // ------------------------------------------------------------------- the window loop
 
-template <class BP, int D, int RA, int WA>
+template <class BP, int D, int NS, int RA, int WA>
 __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>& sm, Acc<BP>& acc,
-                                            const int (&scol)[BP::kNL][kGeomMaxLevels],
+                                            const int (&scol)[kGeomMaxLevels][BP::kNL],
                                             const int (&abase)[kGeomMaxLevels], int tid, int warp,
                                             int lane, int bh) {
   const int nWindows = (p.L + kWindow - 1) / kWindow;
-  uint32_t phase = 0u, seg_phase = 0u;
+  uint32_t phase = 0u;
   uint32_t claim[kFillPoints] = {0u, 0u, 0u};
 
 #pragma unroll 1
@@ -463,8 +487,8 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     return_leg_rejoin<BP, WA>(p, sm, acc);
 
     rola::uniform_switch<kForms>(p.fold_form, [&](auto Ff) {
-      fold_phase<BP, D, (Form) decltype(Ff)::value>(p, sm, acc, scol, abase, tid, warp, lane, bh,
-                                                    t0, wLen, claim, seg_phase);
+      fold_phase<BP, D, NS, WA, (Form) decltype(Ff)::value>(p, sm, acc, scol, abase, tid, warp,
+                                                            lane, bh, t0, wLen, claim);
     });
 
     ops::edge_arrive(sm.edge(Edge::kWindowLine));
@@ -583,9 +607,6 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void carry_kern
   if (tid == 0) {
     rola::static_for<BP::kEdges>(
         [&](auto Ec) { ops::edge_init(sm.edge((Edge) decltype(Ec)::value), BP::kThreads); });
-    rola::static_for<BP::kStreamEdges>([&](auto Ec) {
-      ops::edge_init(sm.stream_edge((StreamEdge) decltype(Ec)::value), BP::kThreads);
-    });
     rola::static_for<kFillPoints>([&](auto Fc) { *sm.claim((Fill) decltype(Fc)::value) = 0u; });
   }
   if (tid < BP::kAtoms) {
@@ -623,22 +644,28 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void carry_kern
     });
     rola::static_for<kGeomMaxLevels - D>([&](auto Lc) { abase[D + decltype(Lc)::value] = 0; });
 
-    int scol[BP::kNL][kGeomMaxLevels];
-    rola::static_for<BP::kNL>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      const int P = j * ops::kMmaN + (lane >> 2);
-      const int local = slot_local<D, BC, NS, WA>(p.g.w, warp, P);
-      rola::static_for<D>([&](auto Lc) {
-        constexpr int l = decltype(Lc)::value;
-        scol[j][l] = span_base(D, BC, l)
+    int scol[kGeomMaxLevels][BP::kNL];
+    rola::static_for<kGeomMaxLevels>([&](auto Lc) {
+      rola::static_for<BP::kNL>(
+          [&](auto Vc) { scol[decltype(Lc)::value][decltype(Vc)::value] = 0; });
+    });
+    rola::static_for<D>([&](auto Lc) {
+      constexpr int l = decltype(Lc)::value;
+      constexpr int kSh = slice_shift(sb_shift_of(D, BC, NS, WA, l));
+      constexpr int kBits =
+          slice_bits(sb_shift_of(D, BC, NS, WA, l), sb_span_bits(D, BC, NS, WA, l));
+      rola::static_for<1 << kBits>([&](auto Vc) {
+        constexpr int v = decltype(Vc)::value;
+        const int P = (v << kSh) * ops::kMmaN + (lane >> 2);
+        const int local = slot_local<D, BC, NS, WA>(p.g.w, warp, P);
+        scol[l][v] = span_base(D, BC, l)
                      + ((local >> owner_run_shift(D, BC, l)) & (owner_span(D, BC, l) - 1));
       });
-      rola::static_for<kGeomMaxLevels - D>([&](auto Lc) { scol[j][D + decltype(Lc)::value] = 0; });
     });
 
     //: THE READ SIDE'S WARP SUB-BOX, and the two phases' forms -- all outside the loop.
     rola::uniform_switch<sub_boxes(D, BC, NS).count>(p.g.r.assign, [&](auto Ra) {
-      window_loop<BP, D, decltype(Ra)::value, WA>(p, sm, acc, scol, abase, tid, warp, lane, bh);
+      window_loop<BP, D, NS, decltype(Ra)::value, WA>(p, sm, acc, scol, abase, tid, warp, lane, bh);
     });
 
     if (p.state_out != nullptr)
