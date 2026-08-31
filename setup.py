@@ -594,6 +594,10 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict,
 SOURCES = [
     "csrc/rola/rola_api.cpp",
     # TRACK D (thunder §6b): the T=1 decode path, one TU.
+    #: The carry family's dispatch: the kernel boundary's refusals, the addressing
+    #: block's one derivation and the arm resolution. Holds no arm body -- those are
+    #: the generated per-arm units, which is what makes an arm subset a file subset.
+    "csrc/rola/src/carry/carry.cu",
     "csrc/rola/src/decode/decode.cu",
     "csrc/rola/src/entmax/entmax.cu",
     "csrc/rola/src/entmax/factor.cu",

@@ -2,11 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE CARRY LAUNCH SURFACE -- the contract, written before the body exists.
 
-Card `development/queue/C_CLEAN_SLATE.md`: the interfaces are written and tested
-against a refusing binding, and they state the FINAL form of the line, not a bring-up
-form to be widened later. Nothing here dispatches: `csrc/rola/src/carry/` was cleared
-and the body is not built yet, so every entry below reaches the extension's refusing
-stub and says so by name.
+Card `development/queue/C_CLEAN_SLATE.md`: the interfaces state the FINAL form of the
+line, not a bring-up form to be widened later. The forward entry reaches the built body;
+the reverse entry reaches the extension's refusing stub and says so by name.
 
 THE TWO CONTRACTS (KERNEL_STANDARDS §R13 addendum, "TWO CONTRACTS, ONE TRANSLATOR").
 The API above this module accepts any shape -- any logical level width ``b_l >= 2``,
@@ -342,8 +340,8 @@ def carry_forward(routes: RoutePlanes, v: torch.Tensor, *, descriptor: StateForm
     two backings are one kernel, one ABI and one accumulation order. Passing neither
     state plane is the NULL-STATE call.
 
-    THERE IS NO IMPLEMENTATION ON THIS LINE. The refusals below are the contract and run
-    first; the extension's entry then refuses by name until the body is built.
+    The refusals below are the API's own envelope and run first; the extension's entry
+    then applies the KERNEL boundary's shape law to the same call.
     """
     _refuse_descriptor(descriptor)
     _refuse_launch(launch)
@@ -352,8 +350,11 @@ def carry_forward(routes: RoutePlanes, v: torch.Tensor, *, descriptor: StateForm
     _refuse_state("state_in", state_in, descriptor, bh)
     _refuse_state("state_out", state_out, descriptor, bh)
 
-    num = torch.empty((bh, length, descriptor.DV), dtype=torch.float32, device=v.device)
-    den = torch.empty((bh, length), dtype=torch.float32, device=v.device)
+    #: ZEROED, not empty: the readout REDUCES into these planes (one contribution per
+    #: owner box per token), so they are an accumulator the kernel adds into and never a
+    #: buffer it fills.
+    num = torch.zeros((bh, length, descriptor.DV), dtype=torch.float32, device=v.device)
+    den = torch.zeros((bh, length), dtype=torch.float32, device=v.device)
     extension().carry_forward(
         routes.read, routes.write, routes.gain, v, num, den,
         list(descriptor.B), int(descriptor.DV), int(descriptor.page_bits),
@@ -379,7 +380,7 @@ def carry_backward(routes: RoutePlanes, v: torch.Tensor, d_num: torch.Tensor,
     Same descriptor, same geometry block, same liveness words and same activity bits as
     the forward it reverses -- a reverse pass that re-derived any of them would be a
     second derivation of the schedule, which is the drift shape this family has already
-    paid for once. THERE IS NO IMPLEMENTATION ON THIS LINE.
+    paid for once. THERE IS NO REVERSE IMPLEMENTATION ON THIS LINE.
     """
     _refuse_descriptor(descriptor)
     _refuse_launch(launch)
@@ -405,8 +406,8 @@ def arms():
     """``[(D, DV, warps_per_cta)]`` -- the arms THIS binary carries.
 
     The binary's own answer, never the source tree's: an empty list is the honest report
-    of a line whose kernel is not built (the family is cleared; a declared shipped set
-    refills the table and the bodies are built back).
+    of a build that selected no arm, and a short list the honest report of an iteration
+    build (`ROLA_CARRY_ARMS`), which is not shippable.
     """
     return [tuple(row) for row in extension().carry_arms()]
 
@@ -414,13 +415,25 @@ def arms():
 def build_stamp():
     """The carry family's DEVICE build stamp -- a fact only a BUILT kernel can produce.
 
-    There is no such fact on this line: the family has no device code, so this reaches
-    the extension's refusal rather than returning a stale or invented census. That is
-    the honest form of the extension-trap check here (`extension-trap-device-side-
-    check`): a binary that cannot produce the fact must say so, not substitute a path
-    or a hash for it.
+    The four device facts as one number: the page granule with the warps per SM, the
+    capability digest the device code compiled against, the state's share of the register
+    file and the cluster size, all read back off a kernel this binary compiled. A path or a
+    hash could be produced by a stale binary; this cannot
+    (`extension-trap-device-side-check`).
     """
     return extension().carry_build_stamp()
+
+
+def census():
+    """One row per built arm: what the compiler did, then what the box plan says it should.
+
+    ``(index, D, DV, warps_per_cta, regs, local_bytes, smem_bytes, max_threads,
+    binary_version, threads, box_leaves, atoms, acc_regs, state_elems,
+    state_regs_per_lane, segment_slots, members)``. The first group is
+    ``cudaFuncGetAttributes`` on the arm's own kernel and the second is the derivation;
+    having both in one row is what makes a disagreement visible instead of inferred.
+    """
+    return [tuple(row) for row in extension().carry_census()]
 
 
 def pack_side(levels) -> torch.Tensor:
@@ -563,6 +576,7 @@ __all__ = [
     "build_stamp",
     "carry_backward",
     "carry_forward",
+    "census",
     "geometry",
     "geometry_block",
     "lattice_of_canonical",

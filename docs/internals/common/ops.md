@@ -323,6 +323,30 @@ eight-byte forms are the cache-ALL variant because the sixteen-byte bypass has n
 narrower member; both src and dst are naturally aligned, which is the caller's
 contract and the reason no size is ever split here.
 
+<a id="edge"></a>
+## `edge_init` / `edge_arrive` / `edge_wait` — the split edge
+
+One `mbarrier` word in shared memory, used in three steps rather than two: a unit ARRIVES
+when its own contribution is published, runs work that depends on nobody, and WAITS only
+when it needs what the others published. The cover between the arrive and the wait is the
+whole reason the edge is split; `rendezvous` (a plain full barrier) has no such gap and is
+the right primitive only where there is nothing to cover with.
+
+`edge_wait` takes the edge's PHASE, which alternates on each completion. The caller carries
+its own count — the barrier has no memory of how many times it has been through, and a
+shared counter would be a second synchronisation to get right.
+
+The frame that consumes it names its edges and its cover slots; see
+`docs/internals/carry/kernel.md#edges`.
+
+<a id="stage-tile-if"></a>
+## `stage_tile_if` — a predicated staging quantum
+
+`cp.async` with its source run predicated: a live quantum copies its sixteen bytes, a dead
+one ZERO-FILLS its destination and reads nothing. That is what lets a partial tile — the
+last segment of a window shorter than the window — be the same code as a full one instead of
+a tail case, and what keeps it from reading past an operand's end to get there.
+
 <a id="rendezvous-group"></a>
 ### `rendezvous_group`
 

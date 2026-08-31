@@ -38,9 +38,9 @@ diverges and nothing is predicated.
 arm axis — and never a per-lane or data-dependent quantity. That is R9 itself, and the
 primitive cannot check it; a reviewer reads the call site.
 
-The compile-time loop is the primitive's own (`structure_switch_detail::unroll`) rather
-than the carry body's `static_for`: this header is a COMMON primitive and does not depend
-on the carry kernel's header. Whichever body consumes it next inherits one loop, not two.
+The compile-time loop is `common/static_for.cuh`'s `static_for`, a foundation header of its
+own that neither this primitive nor the carry body owns — so the two walk their sets with
+one loop rather than each carrying a copy.
 
 ## Placement is a cost, and it is the caller's
 
@@ -53,7 +53,10 @@ rather than left to habit.
 
 ## Users
 
-- none in the shipped kernel bodies yet. The primitive lands as a foundation piece, with
-  its first measured use recorded beside the body that consumes it.
+- the carry body, four times: the two per-side warp sub-box members in its prologue
+  (nested, outside every loop, because they fix the addressing every stage on that side
+  uses) and the two per-phase forms at their phases (additive — two plus two bodies, not
+  four combinations — inside the window loop and outside the batch loop). The placement's
+  measured cost is in `docs/internals/carry/kernel.md#forms`.
 - `tests/unit/test_structure_switch.py` compiles a toy `__global__` against it and runs
   every layer, the `__trap()` included, in its own process.

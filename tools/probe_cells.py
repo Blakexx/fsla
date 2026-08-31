@@ -258,8 +258,9 @@ def run_worker(binary: dict, bench: str, cells: list[str], reps: int, warmup: in
 
 #: The counters every stage gate reads: the wall time, the instruction and IPC pair the
 #: standards' addendum requires beside it, the three stall reasons, the two memory legs,
-#: and the shared-memory leg -- a layout above its floor shows up as bank conflicts and
-#: MIO pressure long before it shows up in an instruction count.
+#: the shared-memory leg -- a layout above its floor shows up as bank conflicts and MIO
+#: pressure long before it shows up in an instruction count -- and the not-selected share,
+#: which is the launch shape's own claim read back off the scheduler.
 NCU_METRICS = (
     "gpu__time_duration.sum",
     "smsp__inst_executed.sum",
@@ -273,6 +274,10 @@ NCU_METRICS = (
     "smsp__inst_executed_op_shared_ld.sum",
     "smsp__inst_executed_op_shared_st.sum",
     "smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct",
+    #: NOT_SELECTED is the one-CTA-per-SM claim, measured: at the design point there is
+    #: no second CTA for the scheduler to pick instead, so a warp that was eligible and
+    #: not chosen is a sign the launch shape is not the one the design believes it is.
+    "smsp__warp_issue_stalled_not_selected_per_warp_active.pct",
 )
 
 

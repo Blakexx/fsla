@@ -9,13 +9,13 @@ things are asserted here and nothing else.
    TRANSLATOR"): an unpadded shape, a non-bf16 operand and a descriptor mismatch are
    each refused BY THE SURFACE, by name, before any launch. The API above translates by
    padding; this boundary never does.
-2. THE HONEST NO-IMPLEMENTATION FAILURE: a call whose every shape is lawful reaches the
-   extension and is refused there for the ONE reason that is true on this line -- the
-   carry kernel is not built. Not a skip, not a missing attribute, not a shape excuse.
+2. THAT A LAWFUL CALL GETS THROUGH: a call whose every shape is lawful reaches the
+   extension and LAUNCHES, which is the only way to prove the refusals above are refusing
+   the right things rather than everything. The reverse pass has no body on this line and
+   is refused there for the ONE reason that is true of it.
 
 The gate is deliberately shapeless: it draws the smallest lawful cell it can, because
-what is under test is the contract and not the arithmetic (that is the oracle tier's,
-and it is red by design until C3).
+what is under test is the contract and not the arithmetic (that is the oracle tier's).
 """
 from __future__ import annotations
 
@@ -33,9 +33,9 @@ from rola.ops._ext import is_available
 pytestmark = pytest.mark.skipif(not is_available() or not torch.cuda.is_available(),
                                 reason="the launch surface is the extension's boundary")
 
-#: THE ONE REASON, as `csrc/rola/rola_api.cpp`'s `kCarryUnimplemented` spells it. It is
-#: matched rather than restated so a message that drifts fails the meta-test below
-#: instead of silently widening what "the one reason" means.
+#: THE REVERSE PASS'S ONE REASON, as `csrc/rola/rola_api.cpp` spells it. It is matched
+#: rather than restated so a message that drifts fails the meta-test below instead of
+#: silently widening what "the one reason" means.
 NO_IMPLEMENTATION = re.compile(r"no implementation on this line")
 
 #: The smallest lawful descriptor: two levels at the width floor, a shipped DV.
@@ -169,9 +169,9 @@ def test_the_liveness_block_is_one_bit_per_digit():
 def test_the_surface_takes_the_pass_s_words_unchanged():
     """THE TWO CONTRACTS ARE ONE: what the pass emits is what the surface accepts.
 
-    The refusal here is the extension's `carry_forward` by name -- the body is not on
-    this line -- which is reached only AFTER every operand refusal has passed, so
-    getting that far IS the statement that the words were accepted unchanged.
+    The call LAUNCHES, and reaching the launch is the statement: every operand refusal
+    runs first, so a pass output the surface would have re-shaped or refused could not
+    have got this far.
     """
     from rola.engine.facts.liveness import side_statics
     from rola.ops.liveness import liveness_words
@@ -182,8 +182,7 @@ def test_the_surface_takes_the_pass_s_words_unchanged():
     statics = side_statics(layout, (False,) * layout.D, layout.B)
     words = liveness_words(routes.read, routes.write, layout, statics, statics)
     assert tuple(words.shape) == (BH, 2, layout.rows, layout.words)
-    with pytest.raises((AttributeError, RuntimeError, NotImplementedError)):
-        call(desc, liveness=carry_ops.LivenessWords(words=words))
+    call(desc, liveness=carry_ops.LivenessWords(words=words))
 
 
 def test_the_activity_byte_is_one_per_page():
@@ -265,11 +264,12 @@ def test_the_state_owns_its_dtype():
         call(fp32)
 
 
-# -------------------------------------------- the honest no-implementation failure
+# ------------------------------------------------------ what a lawful call reaches
 
-def test_a_lawful_forward_call_reaches_the_one_reason():
-    with pytest.raises(RuntimeError, match=NO_IMPLEMENTATION):
-        call(descriptor())
+def test_a_lawful_forward_call_launches():
+    """The non-vacuity of every refusal above: a call the boundary admits runs."""
+    call(descriptor())
+    torch.cuda.synchronize()
 
 
 def test_a_lawful_backward_call_reaches_the_one_reason():
@@ -284,23 +284,24 @@ def test_a_lawful_backward_call_reaches_the_one_reason():
                                  liveness=liveness, activity=activity, launch=launch)
 
 
-def test_the_device_build_stamp_reaches_the_one_reason():
-    """There is NO device-side fact for this family on this line, and the surface says
-    so rather than substituting a path or a hash for it."""
-    with pytest.raises(RuntimeError, match=NO_IMPLEMENTATION):
-        carry_ops.build_stamp()
+def test_the_device_build_stamp_is_a_device_fact():
+    """A fact only a BUILT kernel can produce, and it is the binary's, not the tree's."""
+    assert isinstance(carry_ops.build_stamp(), int)
 
 
-def test_the_census_is_empty_and_says_so_without_raising():
-    """The census is a fact about the BINARY, and "no arm" is a fact it can state. It is
-    the one carry entry that is not a stub: an empty list is the truth of a line whose
-    table G4 refills and whose bodies C3 builds."""
-    assert carry_ops.arms() == []
+def test_the_arms_and_the_census_agree_on_what_is_built():
+    """The census is a fact about the BINARY. Its rows and the arm list are the same set,
+    read two ways: an arm that reports a census row nobody lists, or the reverse, means the
+    generated selection and the dispatch disagree about what this binary carries."""
+    census = carry_ops.census()
+    assert {row[1:4] for row in census} == set(carry_ops.arms())
+    for row in census:
+        assert row[5] == 0, "an arm that spills has no shippable census"
 
 
-def test_the_stubs_are_the_only_ones():
-    """THE ONLY REFUSING STUBS IN THIS TREE are the three carry entries. A fourth would
-    mean some other family had been half-deleted, which the no-fallback rule forbids."""
+def test_the_reverse_pass_is_the_only_stub():
+    """THE ONLY REFUSING STUB IN THIS TREE is the carry reverse entry. A second would mean
+    some other family had been half-deleted, which the no-fallback rule forbids."""
     from rola.ops._ext import extension
 
     stubs = []
@@ -310,4 +311,4 @@ def test_the_stubs_are_the_only_ones():
         doc = getattr(extension(), name).__doc__ or ""
         if "CONTRACT ONLY" in doc or "only a BUILT kernel" in doc:
             stubs.append(name)
-    assert sorted(stubs) == ["carry_backward", "carry_build_stamp", "carry_forward"]
+    assert sorted(stubs) == ["carry_backward"]

@@ -63,9 +63,14 @@ def is_warps_per_cta(warps_per_cta: int) -> bool:
 
 
 #: The register budget ``leaves_per_warp`` is derived from (``common/geom.cuh``'s
-#: ``leaves_per_sm(dv) = 16384 / dv``): the same literal, mirrored so the two sides'
-#: arithmetic is textually comparable, not merely numerically equal by coincidence.
-_LEAVES_PER_SM_NUMERATOR = 16384
+#: ``leaves_per_sm(dv) = state_elems_per_sm / dv``): the same DERIVATION, mirrored so the
+#: two sides' arithmetic is textually comparable, not merely numerically equal by
+#: coincidence. The numerator is the state's declared share of one SM's register file --
+#: ``regs_per_sm * STATE_FILE_NUMERATOR / STATE_FILE_DENOMINATOR`` -- and 65536 registers
+#: is the value every tabulated architecture's capability row carries.
+STATE_FILE_NUMERATOR, STATE_FILE_DENOMINATOR = 1, 4
+_REGS_PER_SM = 65536
+_LEAVES_PER_SM_NUMERATOR = _REGS_PER_SM * STATE_FILE_NUMERATOR // STATE_FILE_DENOMINATOR
 
 
 def leaves_per_warp(dv: int) -> int:
@@ -97,7 +102,7 @@ class LaunchRow:
 #: warps; every other tabulated architecture runs one CTA of eight warps.
 LAUNCH_TABLE = (
     LaunchRow(800, 1, WARPS_PER_CTA_SHIPPED),
-    LaunchRow(860, 2, WARPS_PER_CTA_DIAGNOSTIC),
+    LaunchRow(860, 1, WARPS_PER_CTA_SHIPPED),
     LaunchRow(870, 1, WARPS_PER_CTA_SHIPPED),
     LaunchRow(890, 1, WARPS_PER_CTA_SHIPPED),
     LaunchRow(900, 1, WARPS_PER_CTA_SHIPPED),

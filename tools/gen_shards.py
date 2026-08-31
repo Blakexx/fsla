@@ -355,15 +355,43 @@ def carry_sources() -> list:
     return {i: f"carry_arm_{tu[i]}.cu" for i in range(len(CARRY_ARMS))}
 
 
+def carry_arm_unit(owner: int, members: list[int]) -> str:
+    """One generated translation unit: the arm bodies its group carries.
+
+    A unit defines an arm only when THIS build selected it, so an arm-subset build
+    parses the file but instantiates nothing -- which is what makes the subset a file
+    subset rather than a macro subset (KERNEL_STANDARDS section 7).
+    """
+    out = [BANNER.replace("regenerate.", f"regenerate; arm group {owner}."),
+           "\n",
+           '#include "carry/carry_arm.cuh"\n',
+           '#include "carry_selection.inc"\n',
+           "\n",
+           "namespace rola::carry {\n",
+           "\n"]
+    for i in members:
+        row = CARRY_ARMS[i]
+        out.append(f"#if defined(ROLA_CARRY_BUILD_{i})\n")
+        out.append(f"ROLA_CARRY_ARM_DEFINE({i}, {row[0]}, {row[1]}, {row[2]})\n")
+        out.append("#endif\n")
+    out.append("\n}  // namespace rola::carry\n")
+    return "".join(out)
+
+
 def generated() -> dict[str, str]:
     """Every file this generator owns: relative path -> content.
 
-    EMPTY while `CARRY_ARMS` is: the arm list produces one translation unit per
-    row and there is no row, so `--write` writes nothing and `--check` asserts that
-    the directory holds nothing either.  The generator's remaining output is the
-    per-run selection header, which is never checked in and never appears here.
+    One translation unit per arm GROUP -- rows that key the same kernel share a file --
+    so an arm the build does not want is a file the build does not compile.
+
+    The directory's `README.md` is listed as its own content: the mirror-doc lint exempts a
+    generated directory only against that page, and listing it here is what stops `--write`
+    from deleting the exemption it is standing on.
     """
-    return {}
+    out = {f"carry_arm_{owner}.cu": carry_arm_unit(owner, members)
+           for owner, members in carry_groups().items()}
+    out["README.md"] = (OUT_DIR / "README.md").read_text()
+    return out
 
 
 _BUILT_LINE_RE = re.compile(r"^#define ROLA_CARRY_BUILT 1$")

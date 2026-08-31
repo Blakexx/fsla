@@ -76,10 +76,18 @@ launches at.
 | `cc` | `ctas_per_sm` | `warps_per_cta` | why |
 |---|---|---|---|
 | 800 | 1 | 8 | the one-CTA shape (KERNEL_STANDARDS §R15) |
-| 860 | 2 | 4 | the local dev part; two CTAs of four warps UNTIL the panel law admits one CTA of eight here (`docs/ARCHITECTURE.md` §7: "every measurement the repository has was taken at two blocks of four warps") |
+| 860 | 1 | 8 | |
 | 870 | 1 | 8 | |
 | 890 | 1 | 8 | |
 | 900 | 1 | 8 | |
+
+The table is ONE row repeated, and `launch_table_is_one_cta_per_sm` asserts that it is: one
+CTA per SM holding every one of the SM's warps, on every architecture. The local dev part
+carried a two-CTA row for as long as the retired body's shared-memory coupling made one CTA
+of eight warps impossible there; the design's peak now fits that part's budget, so the
+exception's reason is gone. `warps_per_cta = 4` stays in the arm key's DOMAIN as the
+two-CTA latency diagnostic — a measurement of how far the one-CTA body is from hiding its
+own latency — and no shipped row names it.
 
 `sm_100` is not a row: `arch_caps.cuh` does not tabulate it yet
 (`future-proof-for-hopper-blackwell`), so there is nothing this table could assert
@@ -91,6 +99,36 @@ row follows sm_90's `(1, 8)` by the same register law, and this table's own
 `launch_row(cc)` REFUSES an untabulated `cc` rather than approximating it from a
 neighbor — the same "never guess" discipline `arch_caps.cuh::caps_of` follows for its
 own table.
+
+<a id="segment"></a>
+## `kSegmentTokens` = 16 — the stream's buffering grain
+
+A SEGMENT is a 16-token slice of a stream's buffer. Sixteen because it is the MMA's `K`:
+one segment is exactly one k-step of the fold, so the buffering grain and the arithmetic
+grain are the same number and a segment is never partly consumed.
+
+It is the BUFFERING grain and not the chain length. A consumer chains every sealed segment
+back to back, so a dense window's MMA chain is as deep as any; short chains occur only where
+sparsity has left little work, which is the segment fixed cost's own crossover and not a
+property of this constant.
+
+<a id="segment-slots"></a>
+## `segment_slots(caps)` — one slot plus registers, or a two-slot ring
+
+Overlap needs two stages in flight, and the second stage is either a second shared slot or
+the REGISTERS (KERNEL_STANDARDS §4). Which one is available is a capability question, so it
+is derived from the capability row rather than tabulated: where the MMA sources both
+operands from the issuing unit's own registers, one slot suffices — drain it into fragments
+in one burst, refill it, compute from the fragments — and where it does not (a warpgroup MMA
+reads its operands from shared memory descriptors), the ring is two slots. Never a literal
+`1` or `2` at a call site.
+
+<a id="cluster"></a>
+## The cluster size
+
+`kClusterCtas` lives in `common/geom.cuh` beside `warps_per_sm`, because it is a level of the
+ownership hierarchy and not a launch-table field; see
+`docs/internals/common/geom.md#cluster`.
 
 <a id="s-from-smem"></a>
 ## The S-from-SMEM rule

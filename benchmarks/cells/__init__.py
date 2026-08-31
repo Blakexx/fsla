@@ -34,7 +34,7 @@ from pathlib import Path
 
 _REGISTRY = Path(__file__).resolve().parent / "carry_cells.json"
 
-DRAWS = ("dense", "alt", "both", "cohort")
+DRAWS = ("dense", "alt", "both", "cohort", "dead", "deposit")
 BACKINGS = ("dense", "paged")
 STATES = ("none", "fresh", "carried")
 TIERS = ("oracle", "probe", "both")
@@ -106,8 +106,11 @@ def _validate(record: dict) -> CellSpec:
         raise ValueError(f"{spec.name}: tier {spec.tier!r} is not one of {TIERS}")
     if (spec.draw == "cohort") != (spec.cohort is not None):
         raise ValueError(f"{spec.name}: a cohort draw carries a cohort and nothing else does")
-    if spec.draw != "dense" and spec.k_tok is None:
+    if spec.draw in ("alt", "both", "cohort") and spec.k_tok is None:
         raise ValueError(f"{spec.name}: a sparse draw states its k_tok")
+    if spec.draw in ("dead", "deposit") and spec.k_tok is not None:
+        raise ValueError(f"{spec.name}: a {spec.draw} draw has no k_tok -- its support is "
+                         f"stated by the draw itself, not by a count")
     return spec
 
 
@@ -171,6 +174,41 @@ def clustered(shape, k_tok, cohort, gen, device):
     return x / x.sum(-1, keepdim=True)
 
 
+#: THE ONE TOKEN a ``deposit`` draw makes live. Not the window's first: a token index the
+#: kernel's segment layout has to place correctly is what makes the cell a test of the
+#: layout rather than of its origin.
+DEPOSIT_TOKEN = 5
+
+
+def _degenerate(spec, shape, gen, device):
+    """The two draws with NO support to sample: nothing live, and exactly one deposit.
+
+    ``dead`` puts zero amplitude on every digit of every level on both sides, so no token
+    reads and no token writes -- the recurrence's identity, whose whole content is that
+    the state comes out as it went in. ``deposit`` is the single-tile point of the fold:
+    one token, one-hot on digit zero of every write level, so exactly one leaf receives
+    exactly one deposit, and the read side is dead so the readout is the zero it would be
+    against an entry state a single window never reads.
+    """
+    import torch
+
+    B, T, H = shape
+    zeros = tuple(torch.zeros(B, T, H, w, device=device, dtype=torch.float64)
+                  for w in spec.widths)
+    write = zeros
+    if spec.draw == "deposit":
+        write = tuple(torch.zeros(B, T, H, w, device=device, dtype=torch.float64)
+                      for w in spec.widths)
+        for level in write:
+            level[:, DEPOSIT_TOKEN, :, 0] = 1.0
+    gain = torch.rand(B, T, H, device=device, dtype=torch.float64, generator=gen) + 0.5
+    v = torch.randn(B, T, H, spec.dv, device=device, dtype=torch.float64, generator=gen)
+    return RealizedCell(spec=spec,
+                        read=tuple(x.to(torch.bfloat16) for x in zeros),
+                        write=tuple(x.to(torch.bfloat16) for x in write),
+                        gain=gain.to(torch.bfloat16), v=v.to(torch.bfloat16))
+
+
 @dataclass(frozen=True, slots=True)
 class RealizedCell:
     """A drawn cell: the bf16 operands the kernel gets, and their fp64 doubles.
@@ -213,6 +251,9 @@ def realize(spec: CellSpec, B: int = 1, H: int = 1, device: str = "cuda") -> Rea
         if spec.draw == "cohort":
             return clustered(shape + (width,), kt, spec.cohort, gen, device)
         return simplex(shape + (width,), kt, gen, device, live=lv)
+
+    if spec.draw in ("dead", "deposit"):
+        return _degenerate(spec, shape, gen, device)
 
     kt = spec.k_tok
     if spec.draw == "dense":
@@ -296,6 +337,7 @@ def conservative_activity(descriptor, BH: int = 1, device: str = "cuda"):
 
 __all__ = [
     "BACKINGS",
+    "DEPOSIT_TOKEN",
     "DRAWS",
     "STATES",
     "TIERS",

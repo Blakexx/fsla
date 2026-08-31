@@ -34,7 +34,8 @@ arm. One binary per shape serves every topology and every declaration of its dep
 ## The arch's primary constants, in derivation order
 
 1. `leaves_per_sm(dv)` — what the SM's STATE CAPACITY admits at this value width (the
-   register file on sm_80/sm_90, TMEM on sm_100).
+   register file on sm_80/sm_90, TMEM on sm_100). See [the state fraction](#state-fraction)
+   for where the capacity number comes from.
 2. `warps_per_sm` — the sub-box owners are WARPS on every architecture.
 3. The SM box is `leaves_per_sm` balanced over `D`; the carve divides it, in the side's
    own order, into `warps_per_sm` SEGMENTS.
@@ -52,6 +53,42 @@ arm. One binary per shape serves every topology and every declaration of its dep
 The SHAPE COUNT is flat across architectures: it depends on `D` and on how many bits the
 carve takes (`log2 warps_per_sm`), not on the capacity. What scales with
 `leaves_per_warp` is each generated body's SIZE.
+
+<a id="state-fraction"></a>
+## The state's share of the register file
+
+`leaves_per_sm(dv) = state_elems_per_sm(caps) / dv`, and
+`state_elems_per_sm = regs_per_sm * kStateFileNumerator / kStateFileDenominator` — the
+capability row's own register count times the share the design gives the STATE, one
+quarter. At 65,536 registers that is 16,384 fp32 elements, hence 256 leaves at `DV = 64`
+and 32 per warp.
+
+The share is a DESIGN NUMBER and the census is what checks it. A warp holding 32 leaves of
+65 channels holds 2,080 fp32 elements, 65 per lane of a 256-register budget at one CTA per
+SM: 25.4 per cent, allocated as 80 registers per lane once the channel count is padded to
+the MMA's m granule. The quarter is therefore the share the design INTENDS and the census
+reports the share it got; a stage that parks part of the state elsewhere revises the
+constant upward, and an architecture whose accumulator lives outside the register file
+(TMEM) derives the number from that capacity instead.
+
+The fraction is one value across the tabulated set, so it is written as a constant rather
+than a per-architecture table; a part that changes it gets a row when it gets a capability
+row.
+
+<a id="cluster"></a>
+## The cluster level
+
+`kClusterCtas` is the number of CTAs one cluster's box is partitioned across. It is
+arch-deterministic and it is 1 on every architecture this build tabulates, so every cluster
+term folds away — a cluster is one CTA and a CTA is one SM.
+
+The level exists as a NAME because it is real where a cluster is real: a two-SM tensor-core
+mode executes one accumulation across a clustered CTA pair, with the accumulator split over
+the pair and one memory fetch landing in both SMs. The hierarchy is therefore state box ->
+cluster box -> CTA box -> warp box -> accumulator boxes, truthfully, on every part; what is
+NOT built is any machinery for a cluster larger than one — no distributed shared memory, no
+multicast, no pair issue. Deleting the level instead would hard-code one architecture into
+the vocabulary, which is the failure the portability rule exists to prevent.
 
 <a id="warp-box-set"></a>
 ## The generated set of sub-box shapes, and why it is a SET
@@ -228,6 +265,23 @@ and a stream count the grid cannot partition.
 the one the shape actually owns, and under the floor (`B_l >= 16`) it never fires for a
 lawful state. The one topology it removed at G2b is `D = 4, B = 8`, whose conformance
 cells moved to the lawful `(16, 16, 16, 16)`.
+
+<a id="local-row"></a>
+<a id="digit"></a>
+## The owner-local canonical index, and the digit it carries
+
+`geom_local_row(side, stream, P)` is the transit row map WITHOUT the swizzle: the stream's
+carve offset and the slot's digit placed at each level's own bit offset in the owner-local
+canonical index. It is written once and reused three ways, which is the point — one law,
+not three:
+
+* the transit's row is this index swizzled;
+* the state's PAGE and ROW are this index split at the page rectangle, `page = local >> 4`
+  and `row = local & 15`, which holds because the owner span law gives the innermost level
+  at least the page's four bits and no shift below it;
+* `geom_digit(g, O, local, l)` recovers level `l`'s ABSOLUTE digit from it — the owner's
+  grid digit above the box's span, the slot's run below — which is what turns a lane's leaf
+  into a column of the packed factor plane.
 
 <a id="row-map"></a>
 ## The transit's row map

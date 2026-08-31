@@ -13,6 +13,14 @@ constexpr int kWindow = 512;
 //: C -- see docs/internals/common/constants.md#batch-tile
 constexpr int kBatchTile = 32;
 
+//: THE SEGMENT -- see docs/internals/common/constants.md#segment
+constexpr int kSegmentTokens = 16;
+
+//: see docs/internals/common/constants.md#segment-slots
+constexpr int segment_slots(const denseref::arch::Caps& c) {
+  return c.mma_a_from_regs && c.mma_b_from_regs ? 1 : 2;
+}
+
 //: see docs/internals/common/constants.md#warps-per-cta
 constexpr int kWarpsPerCtaShipped = 8;
 constexpr int kWarpsPerCtaDiagnostic = 4;
@@ -33,7 +41,7 @@ struct LaunchRow {
 };
 
 constexpr LaunchRow kLaunchTable[] = {
-    {800, 1, kWarpsPerCtaShipped}, {860, 2, kWarpsPerCtaDiagnostic}, {870, 1, kWarpsPerCtaShipped},
+    {800, 1, kWarpsPerCtaShipped}, {860, 1, kWarpsPerCtaShipped}, {870, 1, kWarpsPerCtaShipped},
     {890, 1, kWarpsPerCtaShipped}, {900, 1, kWarpsPerCtaShipped},
 };
 constexpr int kLaunchTableRows = sizeof(kLaunchTable) / sizeof(kLaunchTable[0]);
@@ -68,6 +76,17 @@ static_assert(launch_table_covers(890), "arch_caps.cuh tabulates sm_89");
 static_assert(launch_table_covers(900), "arch_caps.cuh tabulates sm_90");
 static_assert(kLaunchTableRows == 5,
               "a launch-table row was added or removed without a cross-check update");
+
+//: see docs/internals/common/constants.md#launch-table (one CTA per SM on every row)
+constexpr bool launch_table_is_one_cta_per_sm() {
+  for (int i = 0; i < kLaunchTableRows; ++i)
+    if (kLaunchTable[i].ctas_per_sm != 1 || kLaunchTable[i].warps_per_cta != warps_per_sm)
+      return false;
+  return true;
+}
+
+static_assert(launch_table_is_one_cta_per_sm(),
+              "the CTA is the SM: every launch-table row runs one CTA holding warps_per_sm warps");
 
 //: see docs/internals/common/constants.md#bc (the geom.cuh agreement)
 static_assert(leaves_per_warp(64) == 32, "leaves per warp at DV <= 64");
