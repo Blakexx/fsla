@@ -13,7 +13,7 @@
     "support": "the leading fraction of each level's digits the draw may use (structured truncation)",
     "backing": "dense | paged -- which state backing the cell binds",
     "state": "none | fresh | carried -- whether the cell binds an entry state and chains",
-    "tier": "oracle | probe | both -- who reads this record"
+    "tier": "oracle | probe | both -- who reads this record. The `one-box-*` cells are the SANITIZER LANE's declared shape: N = BC, so the launch is one CTA and racecheck sees the whole of the shared memory the design has, at 1/256 the record memory of a flagship cell"
   },
   "cells": [
     {"name": "identity-passthrough-dense", "widths": [16, 16], "dv": 64, "tokens": 16,
@@ -39,6 +39,18 @@
      "backing": "dense", "state": "fresh", "tier": "both"},
     {"name": "flat-small-alt-k16", "widths": [64, 64], "dv": 64, "tokens": 256,
      "warps_per_cta": 8, "draw": "alt", "k_tok": 16, "cohort": null, "support": 1.0,
+     "backing": "dense", "state": "fresh", "tier": "both"},
+    {"name": "one-box-tiny", "widths": [16, 16], "dv": 64, "tokens": 32,
+     "warps_per_cta": 8, "draw": "dense", "k_tok": null, "cohort": null, "support": 1.0,
+     "backing": "dense", "state": "fresh", "tier": "oracle"},
+    {"name": "one-box-short", "widths": [16, 16], "dv": 64, "tokens": 64,
+     "warps_per_cta": 8, "draw": "alt", "k_tok": 4, "cohort": null, "support": 1.0,
+     "backing": "dense", "state": "fresh", "tier": "oracle"},
+    {"name": "one-box-multiwindow", "widths": [16, 16], "dv": 64, "tokens": 1024,
+     "warps_per_cta": 8, "draw": "dense", "k_tok": null, "cohort": null, "support": 1.0,
+     "backing": "dense", "state": "fresh", "tier": "oracle"},
+    {"name": "one-box-alt-k4", "widths": [16, 16], "dv": 64, "tokens": 1024,
+     "warps_per_cta": 8, "draw": "alt", "k_tok": 4, "cohort": null, "support": 1.0,
      "backing": "dense", "state": "fresh", "tier": "both"},
     {"name": "flat-small-multiwindow", "widths": [64, 64], "dv": 64, "tokens": 1024,
      "warps_per_cta": 8, "draw": "dense", "k_tok": null, "cohort": null, "support": 1.0,

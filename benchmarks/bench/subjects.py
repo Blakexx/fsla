@@ -59,6 +59,21 @@ def _carry_operands(fx):
     return carry_call(fx["cell"])
 
 
+def _carry_schedule(name: str, spec):
+    """``union`` | ``sparse`` | ``sparse-gN`` -> the launch's per-side dials."""
+    from rola.ops import carry as carry_ops
+
+    if name == "union":
+        return None
+    if not name.startswith("sparse"):
+        raise ValueError(f"schedule {name!r} is union, sparse or sparse-gN")
+    grain = int(name.split("-g", 1)[1]) if "-g" in name else None
+    if grain is not None:
+        grain = min(grain, carry_ops.leaves_per_warp(spec.dv))
+    return carry_ops.CarrySchedule(readout="sparse", fold="sparse",
+                                   readout_grain=grain, fold_grain=grain)
+
+
 def carry_forward(fx) -> Arm:
     """The inter term: one carry launch over a whole cell, state advanced in place.
 
@@ -76,10 +91,15 @@ def carry_forward(fx) -> Arm:
     #: shape where the entry sweep's loads and the exit sweep's stores address the same
     #: pages -- a different memory schedule, not a different amount of the same one.
     state_in = plane if fx.get("state_arm") == "continuation" else None
+    #: THE SCHEDULE ARM. The per-side runtime dial the launch carries (`CarrySchedule`), so a
+    #: probe's two arms can be the SAME binary differing in exactly the form and the stream
+    #: grain -- which is what the reap is measured as. `union` is what a caller who names
+    #: nothing gets, and it is the cells' own default (they declare every level dense).
+    schedule = _carry_schedule(fx.get("schedule", "union"), spec)
 
     def run():
         return carry_ops.carry_forward(routes, v, state_in=state_in, state_out=plane,
-                                       **call)
+                                       schedule=schedule, **call)
 
     return Arm(name=f"carry_forward|{spec.name}", call=run)
 

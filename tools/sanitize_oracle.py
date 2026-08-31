@@ -59,6 +59,10 @@ class Family:
     test: str
     kernel: str
     present: bool
+    #: RACECHECK'S OWN DRIVER, when pytest's own footprint is what the tool cannot afford:
+    #: an argv suffix run in place of the pytest command, printing `sanitize_cell:` and the
+    #: word LAUNCHED. -- see tools/sanitize_cell.py
+    racecheck_driver: tuple = ()
 
 
 #: one cell per family, chosen for being ALREADY a named, gated test -- this script
@@ -123,6 +127,24 @@ _FAMILIES = {
         test="tests/oracle/test_carry_vs_oracle.py::"
              "test_the_folded_state_is_the_fp64_reference[flat-small-multiwindow]",
         kernel="rola::carry::carry_forward", present=True),
+    #: THE TWO SPARSE BODIES, on the ONE-BOX cell -- `N = BC`, so the grid is 1x1 and the
+    #: coverage is COMPLETE BY CONSTRUCTION: racecheck sees only shared memory, shared memory
+    #: is CTA-local, and every CTA of this family runs identical code. At G = 16 the cell runs
+    #: two turns of the catalog, several segments a turn and a partial tail, over two windows.
+    "carry_sparse": Family(
+        test="tests/oracle/test_carry_vs_oracle.py::"
+             "test_the_sparse_form_is_the_fp64_reference[one-box-multiwindow-G16]",
+        kernel="rola::carry::carry_forward", present=True,
+        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-tiny", "--phase", "fold",
+                          "--readout", "sparse", "--fold", "sparse", "--grain", "16")),
+    #: THE SPARSE FORM WHERE THE REAP IS REAL: the same box on a k_tok = 4 draw, so the
+    #: compaction actually drops pairs and the partial-segment tail runs on every turn.
+    "carry_sparse_reap": Family(
+        test="tests/oracle/test_carry_vs_oracle.py::"
+             "test_the_sparse_form_is_the_fp64_reference[one-box-alt-k4-G16]",
+        kernel="rola::carry::carry_forward", present=True,
+        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-short", "--phase", "fold",
+                          "--readout", "sparse", "--fold", "sparse", "--grain", "16")),
     #: ABSENT: the carry reverse pass. Its cells are red at the extension boundary; the
     #: coverage is owed by the stage that builds the body.
     "carry_backward": Family(
@@ -286,11 +308,11 @@ def adjudicate(decl: AssertedRaces, out: str) -> tuple[bool, str]:
 
 
 def run_one(python: str, family: str, tool: str, timeout: int) -> tuple[bool, str]:
-    test_id = _FAMILY_TESTS[family]
-    cmd = [
-        "compute-sanitizer", f"--tool={tool}", "--error-exitcode=1",
-        python, "-m", "pytest", test_id, "-x", "-q",
-    ]
+    row = _FAMILIES[family]
+    driver = tool == "racecheck" and row.racecheck_driver
+    payload = [python, *row.racecheck_driver] if driver else [
+        python, "-m", "pytest", row.test, "-x", "-q"]
+    cmd = ["compute-sanitizer", f"--tool={tool}", "--error-exitcode=1", *payload]
     try:
         proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -300,7 +322,8 @@ def run_one(python: str, family: str, tool: str, timeout: int) -> tuple[bool, st
     #: A SKIPPED CELL EXITS ZERO AND READS AS CLEAN (the carved family once reported
     #: CLEAN on a binary that did not carry its TEST arm, so the kernel never ran).
     #: The tool refuses the vacuous pass rather than reporting coverage it does not have.
-    if ok and not re.search(r"\b[1-9]\d* passed", out):
+    want = r"sanitize_cell:.*LAUNCHED" if driver else r"\b[1-9]\d* passed"
+    if ok and not re.search(want, out):
         return False, ("VACUOUS: the wrapped pytest exited 0 without passing a test (a skip "
                        "or an empty selection). The kernel never ran, so this pair measures "
                        "nothing -- build the cell's arm (ROLA_CARRY_ARMS=all) and re-run.\n"

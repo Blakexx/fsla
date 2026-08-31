@@ -140,6 +140,7 @@ def worker_main(args) -> None:
             fx = ({"cell": spec} if kind == "carry"
                   else {**_layer_fixture(spec), "cell": spec})
             fx["state_arm"] = args.state
+            fx["schedule"] = args.schedule
             arm = subject.build(fx)
             for _ in range(args.warmup):
                 arm.call()
@@ -147,7 +148,8 @@ def worker_main(args) -> None:
             if args.oneshot:
                 arm.call()
                 torch.cuda.synchronize()
-                rows[name] = {"oneshot": True, "state_arm": args.state}
+                rows[name] = {"oneshot": True, "state_arm": args.state,
+                              "schedule": args.schedule}
                 continue
             times = []
             for _ in range(args.reps):
@@ -159,7 +161,7 @@ def worker_main(args) -> None:
                 times.append(start.elapsed_time(end))
             rows[name] = {"median_ms": statistics.median(times), "min_ms": min(times),
                           "max_ms": max(times), "reps": args.reps, "warmup": args.warmup,
-                          "state_arm": args.state}
+                          "state_arm": args.state, "schedule": args.schedule}
             del arm, fx
             torch.cuda.empty_cache()
         except Exception as ex:  # noqa: BLE001 -- reported per cell, never swallowed
@@ -179,7 +181,16 @@ def _layer_fixture(spec):
 # ORCHESTRATOR
 
 def parse_binary_spec(spec: str) -> dict:
-    """``worktree:/path,venv:/path[,label:NAME]`` -> dict."""
+    """``worktree:/path,venv:/path[,label:NAME][,schedule:NAME]`` -> dict.
+
+    ``schedule`` is the carry family's per-arm runtime dial (`rola.ops.carry.CarrySchedule`):
+    ``union`` (the default, and what a caller who names nothing gets), ``sparse`` (both sides
+    sparse at the reaping bound) or ``sparse-gN`` (both sides sparse at a stream grain of N
+    leaves). It is an ARM property, not a run property, so the two arms of a probe may be the
+    SAME binary differing in exactly the dial under test -- which is what the reap is measured
+    as. An arm whose binary predates the dial ignores it, because each worker runs its own
+    worktree's copy of this file.
+    """
     out = {}
     for part in spec.split(","):
         key, _, value = part.partition(":")
@@ -188,6 +199,7 @@ def parse_binary_spec(spec: str) -> dict:
         raise argparse.ArgumentTypeError(
             f"--binary needs worktree:PATH,venv:PATH (got {spec!r})")
     out.setdefault("label", Path(out["worktree"]).name)
+    out.setdefault("schedule", "union")
     return out
 
 
@@ -222,7 +234,7 @@ def venv_python(venv_path: str) -> str:
 
 
 def worker_argv(binary: dict, bench: str, cells: list[str], reps: int, warmup: int,
-                state: str, oneshot: bool) -> list[str]:
+                state: str, oneshot: bool, schedule: str = "union") -> list[str]:
     """The worker command, built against the MEASURED worktree's own copy of this file.
 
     Both halves come from the tree being measured -- the harness and the registry -- so a
@@ -233,6 +245,11 @@ def worker_argv(binary: dict, bench: str, cells: list[str], reps: int, warmup: i
             str(Path(binary["worktree"]) / "tools" / "probe_cells.py"),
             "--worker", "--bench", bench, "--cells", ",".join(cells),
             "--reps", str(reps), "--warmup", str(warmup), "--state", state]
+    #: PASSED ONLY WHEN IT IS NOT THE DEFAULT: the worker script is the MEASURED tree's, and
+    #: a tip that predates the dial would refuse an argument it has never heard of. `union`
+    #: IS what such a tip runs, so saying nothing says the right thing.
+    if schedule != "union":
+        argv += ["--schedule", schedule]
     if oneshot:
         argv.append("--oneshot")
     return argv
@@ -241,7 +258,8 @@ def worker_argv(binary: dict, bench: str, cells: list[str], reps: int, warmup: i
 def run_worker(binary: dict, bench: str, cells: list[str], reps: int, warmup: int,
                lock_path: str, state: str, oneshot: bool = False,
                timeout: int = 600) -> dict:
-    cmd = worker_argv(binary, bench, cells, reps, warmup, state, oneshot)
+    cmd = worker_argv(binary, bench, cells, reps, warmup, state, oneshot,
+                      binary.get("schedule", "union"))
     with gpu_lock(lock_path, mode="exclusive"):  # measured work
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
                               timeout=timeout)
@@ -286,7 +304,8 @@ def run_ncu_cell(binary: dict, bench: str, symbol: str, cell: str, lock_path: st
     """One `ncu` oneshot launch: the named body's counters for ``cell`` on ``binary``."""
     cmd = [NCU_BIN, "--target-processes", "all", "-k", f"regex:{symbol}", "-c", "1",
            "--print-kernel-base", "mangled", "--metrics", ",".join(NCU_METRICS), "--csv",
-           *worker_argv(binary, bench, [cell], 0, 0, state, oneshot=True)]
+           *worker_argv(binary, bench, [cell], 0, 0, state, True,
+                        binary.get("schedule", "union"))]
     out_csv = f"{out_csv_prefix}_{binary['label']}_{bench}_{cell}.csv"
     with gpu_lock(lock_path, mode="exclusive"):  # measured work
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
@@ -346,6 +365,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--lock", default=GPU_LOCK_DEFAULT)
     ap.add_argument("--ncu", action="store_true")
+    ap.add_argument("--schedule", default="union",
+                    help="the carry family's per-arm runtime dial: union | sparse | "
+                         "sparse-gN (N leaves). Worker-side; the orchestrator reads it off "
+                         "each --binary spec.")
     ap.add_argument("--state", choices=STATE_SHAPES, default="fresh",
                     help="fresh binds an exit plane over a zero entry state; "
                          "continuation passes the SAME plane in and out")
@@ -430,7 +453,8 @@ def main() -> None:
     for binary in args.binary:
         binary["git_sha"] = git_sha(binary["worktree"])
         print(f"BINARY {binary['label']}: worktree={binary['worktree']} "
-              f"venv={binary['venv']} sha={binary['git_sha']}")
+              f"venv={binary['venv']} sha={binary['git_sha']} "
+              f"schedule={binary.get('schedule', 'union')}")
     print(f"STATE ARM: {args.state}")
 
     round_rows = interleaved_rounds(args.binary, args.bench, cells, args.reps,
@@ -450,6 +474,7 @@ def main() -> None:
             entry = {"binary": binary["label"], "worktree": binary["worktree"],
                      "venv": binary["venv"], "git_sha": binary["git_sha"], "cell": cell,
                      "bench": args.bench, "state_arm": args.state,
+                     "schedule": binary.get("schedule", "union"),
                      "reps": args.reps, "warmup": args.warmup, "n_rounds": args.rounds,
                      **{k: stamp.get(k) for k in
                         ("device_name", "device_uuid", "rola_file", "manifest_sha256",
