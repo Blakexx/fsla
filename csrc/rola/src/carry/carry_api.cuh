@@ -13,8 +13,8 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
                    const at::Tensor& v, at::Tensor& num, at::Tensor& den,
                    const std::vector<int64_t>& widths, int64_t dv, int64_t page_bits,
                    int64_t warps_per_cta, const std::vector<int64_t>& carve_order,
-                   const at::Tensor& liveness, const at::Tensor& activity,
-                   const c10::optional<at::Tensor>& state_in,
+                   const std::vector<int64_t>& schedule, const at::Tensor& liveness,
+                   const at::Tensor& activity, const c10::optional<at::Tensor>& state_in,
                    const c10::optional<at::Tensor>& state_out,
                    const c10::optional<at::Tensor>& page_table);
 

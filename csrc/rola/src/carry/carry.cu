@@ -45,6 +45,31 @@ void refuse_shape(const std::vector<int64_t>& widths, int64_t dv, int64_t page_b
               " is not a launch shape this family builds");
 }
 
+//: THE SCHEDULE DIALS AS THE CALL SPELLS THEM: the two per-side runtime dials of the
+//: primitive ledger's class 3, in one list -- [read form, write form, read grain, write
+//: grain], forms as `Form` and grains in LEAVES. -- see docs/internals/carry/carry.md#schedule
+void refuse_schedule(const std::vector<int64_t>& schedule, int dv, int warps_per_cta) {
+  TORCH_CHECK(schedule.size() == 4,
+              "the schedule names each side's FORM and its STREAM GRAIN -- [read form, write "
+              "form, read grain, write grain] -- so it is 4 entries; this call names ",
+              schedule.size());
+  const int lpw = leaves_per_warp(dv);
+  for (int side = 0; side < 2; ++side) {
+    const int64_t form = schedule[side], grain = schedule[2 + side];
+    TORCH_CHECK(form == (int64_t)Form::kUnion || form == (int64_t)Form::kSparse,
+                "a side's form is union(0) or sparse(1); this call names ", form);
+    TORCH_CHECK(grain >= kAtomLeaves && grain <= lpw && (grain & (grain - 1)) == 0,
+                "a side's stream grain is a power of two leaves between the page rectangle (",
+                kAtomLeaves, ") and the warp sub-box (", lpw, "); this call names ", grain);
+    TORCH_CHECK(form == (int64_t)Form::kSparse || grain == lpw,
+                "the UNION form IS the one-stream point of the family, so its grain is the warp "
+                "sub-box (",
+                lpw, "); this call names ", grain, " with the union form");
+  }
+  TORCH_CHECK(is_warps_per_cta(warps_per_cta), "warps_per_cta=", warps_per_cta,
+              " is not a launch shape this family builds");
+}
+
 //: THE CARVE ORDER AS THE CALL SPELLS IT: both sides' levels ranked, read side then write
 //: side, rank 0 innermost. -- see docs/internals/carry/carry.md#carve-order
 CarveOrder carve_order_of(const std::vector<int64_t>& carve_order, int D) {
@@ -72,12 +97,13 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
                    const at::Tensor& v, at::Tensor& num, at::Tensor& den,
                    const std::vector<int64_t>& widths, int64_t dv, int64_t page_bits,
                    int64_t warps_per_cta, const std::vector<int64_t>& carve_order,
-                   const at::Tensor& liveness, const at::Tensor& activity,
-                   const c10::optional<at::Tensor>& state_in,
+                   const std::vector<int64_t>& schedule, const at::Tensor& liveness,
+                   const at::Tensor& activity, const c10::optional<at::Tensor>& state_in,
                    const c10::optional<at::Tensor>& state_out,
                    const c10::optional<at::Tensor>& page_table) {
   check_arch_table();
   refuse_shape(widths, dv, page_bits, warps_per_cta);
+  refuse_schedule(schedule, (int)dv, (int)warps_per_cta);
 
   const int D = (int)widths.size();
   int64_t leaves = 1, wtot = 0;
@@ -130,8 +156,10 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
   p.activity = activity.data_ptr<uint8_t>();
   p.L = (int)L;
   p.liveness_words = (int)words;
-  p.readout_form = (int)Form::kUnion;
-  p.fold_form = (int)Form::kUnion;
+  p.readout_form = (int)schedule[0];
+  p.fold_form = (int)schedule[1];
+  p.readout_grain_bits = geom_ilog2((int)schedule[2]);
+  p.fold_grain_bits = geom_ilog2((int)schedule[3]);
 
   const auto stream = at::cuda::getCurrentCUDAStream();
   cudaError_t status = cudaSuccess;

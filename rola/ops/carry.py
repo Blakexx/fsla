@@ -113,6 +113,107 @@ class LaunchShape:
         return self.warps_per_cta * 32
 
 
+#: The two FORMS a phase runs in, as the kernel's `Form` enum spells them. The union body
+#: is the one-stream point of the family and the dense fast path; the sparse body keys its
+#: streams on leaf ranges and reaps the dead (token, stream) pairs.
+FORMS: tuple[str, ...] = ("union", "sparse")
+
+
+@dataclass(frozen=True, slots=True)
+class CarrySchedule:
+    """THE PER-SIDE RUNTIME DIALS -- the primitive ledger's class 3, and nothing else.
+
+    ``readout``/``fold`` name each side's FORM; ``readout_grain``/``fold_grain`` name each
+    side's STREAM GRAIN ``G`` in LEAVES -- the leaf range one stream keys on. Both are
+    RUNTIME: they enter the kernel as a switch outside the window loop and as a loop bound
+    and a warp-uniform tile predicate inside it, and neither grows a template.
+
+    ``None`` grains take the side's own default: the warp sub-box for the union form (which
+    IS one stream spanning the box) and the reaping bound ``G_min`` for the sparse form,
+    clamped into ``[PAGE_LEAVES, leaves_per_warp]``.
+    """
+
+    readout: str = "union"
+    fold: str = "union"
+    readout_grain: int | None = None
+    fold_grain: int | None = None
+
+    def __post_init__(self) -> None:
+        for side, form in (("readout", self.readout), ("fold", self.fold)):
+            if form not in FORMS:
+                raise CarryRefusal(
+                    f"{side}={form!r} is not a form this kernel carries; the set is {FORMS}. "
+                    f"The two bodies are selected once per launch, outside the window loop.")
+
+    def flat(self, DV: int, grain_min: tuple[int, int]) -> list[int]:
+        """The four entries the kernel boundary takes: two forms then two grains."""
+        box = leaves_per_warp(DV)
+        out = []
+        for side, form, named, floor in (("readout", self.readout, self.readout_grain, grain_min[0]),
+                                         ("fold", self.fold, self.fold_grain, grain_min[1])):
+            if form == "union":
+                grain = box
+            else:
+                grain = box if named is None else int(named)
+                if named is None:
+                    grain = min(box, max(PAGE_LEAVES, floor))
+            if grain & (grain - 1) or not PAGE_LEAVES <= grain <= box:
+                raise CarryRefusal(
+                    f"{side}_grain={grain} is not a lawful stream grain: a power of two "
+                    f"between the page rectangle ({PAGE_LEAVES}) and the warp sub-box "
+                    f"({box}). A finer stream than the page rectangle would divide the "
+                    f"innermost digits below the vector width (KERNEL_STANDARDS.md §R13).")
+            if form == "union" and named is not None and int(named) != box:
+                raise CarryRefusal(
+                    f"{side}={form!r} names a grain of {named}; the union body is the "
+                    f"ONE-STREAM point of the family, so its grain is the warp sub-box "
+                    f"({box}) and naming another is naming two different schedules.")
+            out.append(grain)
+        return [FORMS.index(self.readout), FORMS.index(self.fold), out[0], out[1]]
+
+
+#: THE MODE WORD'S ENCODING, as `csrc/rola/src/common/geom.cuh` spells it and
+#: `rola.ops.intra.pack_modes` packs it: two bits per level, bit 0 the READ side is sparse
+#: there, bit 1 the WRITE side. Named here rather than imported because `rola.ops.intra`
+#: imports this module.
+SIDE_SPARSE: tuple[int, int] = (1, 2)
+
+
+def reaping_bound(descriptor: StateFormat, level_modes: int) -> tuple[int, int]:
+    """``G_min`` per side: the product of that side's DENSE levels' widths.
+
+    THE REAPING BOUND (FP card): a leaf range's liveness depends only on its SPARSE levels'
+    digits, because a dense level admits every token, so the finest stream grain worth having
+    fixes exactly one digit per sparse level and spans the dense ones whole. A finer stream
+    pays token multiplicity and zero-row padding for zero additional reaping.
+    """
+    bound = []
+    for side in SIDE_SPARSE:
+        g = 1
+        for level, width in enumerate(descriptor.B):
+            if not (level_modes >> (2 * level)) & side:
+                g *= width
+        bound.append(g)
+    return bound[0], bound[1]
+
+
+def select_schedule(descriptor: StateFormat, level_modes: int = 0) -> CarrySchedule:
+    """THE SELECTION RULE, structural half: a side with no SPARSE level cannot reap.
+
+    Saturation fixes ``active_leaves`` (an arch mapping, not a dial a caller sees) and the
+    level structure fixes the rest: a side that declares no sparse level takes the UNION
+    form, because every (token, stream) pair on it is live by declaration and the sparse body
+    would pay multiplicity for nothing; a side that declares one takes the SPARSE form at the
+    reaping bound. The DENSITY half of the rule -- the calibrated crossover at which the reap
+    beats the multiplicity, the send replication and the segment's fixed cost -- is MEASURED,
+    not tuned here, and a caller that has measured it names the schedule outright.
+    """
+    forms = ["sparse" if any((level_modes >> (2 * level)) & side
+                             for level in range(descriptor.D)) else "union"
+             for side in SIDE_SPARSE]
+    return CarrySchedule(readout=forms[0], fold=forms[1])
+
+
 @dataclass(frozen=True, slots=True)
 class RoutePlanes:
     """The routing operands as the kernel reads them: two packed planes and the gain.
@@ -165,6 +266,9 @@ class GeometryBlock:
     warps_per_cta: int
     BC: int
     fields: dict
+    #: the per-level support declaration this block was derived at -- the carve order's
+    #: input, and the SELECTION RULE's (the reaping bound is a function of it).
+    level_modes: int = 0
 
     @property
     def carve_order(self) -> list[int]:
@@ -205,7 +309,8 @@ def geometry_block(descriptor: StateFormat, launch: LaunchShape,
     BC = box_leaves(descriptor.DV, launch.warps_per_cta)
     fields = geometry(descriptor.B, level_modes=int(level_modes), bc=BC, d_v=descriptor.DV)
     return GeometryBlock(D=descriptor.D, B=tuple(descriptor.B), DV=descriptor.DV,
-                         warps_per_cta=launch.warps_per_cta, BC=BC, fields=fields)
+                         warps_per_cta=launch.warps_per_cta, BC=BC, fields=fields,
+                         level_modes=int(level_modes))
 
 
 def _refuse_descriptor(descriptor) -> None:
@@ -344,6 +449,7 @@ def _refuse_state(name: str, plane, descriptor: StateFormat, bh: int) -> None:
 def carry_forward(routes: RoutePlanes, v: torch.Tensor, *, descriptor: StateFormat,
                   geometry: GeometryBlock, liveness: LivenessWords,
                   activity: torch.Tensor, launch: LaunchShape,
+                  schedule: CarrySchedule | None = None,
                   state_in: torch.Tensor | None = None,
                   state_out: torch.Tensor | None = None,
                   page_table: torch.Tensor | None = None):
@@ -373,11 +479,14 @@ def carry_forward(routes: RoutePlanes, v: torch.Tensor, *, descriptor: StateForm
     #: buffer it fills.
     num = torch.zeros((bh, length, descriptor.DV), dtype=torch.float32, device=v.device)
     den = torch.zeros((bh, length), dtype=torch.float32, device=v.device)
+    if schedule is None:
+        schedule = select_schedule(descriptor, geometry.level_modes)
     extension().carry_forward(
         routes.read, routes.write, routes.gain, v, num, den,
         list(descriptor.B), int(descriptor.DV), int(descriptor.page_bits),
-        int(launch.warps_per_cta), geometry.carve_order, liveness.words, activity,
-        state_in, state_out, page_table)
+        int(launch.warps_per_cta), geometry.carve_order,
+        schedule.flat(descriptor.DV, reaping_bound(descriptor, geometry.level_modes)),
+        liveness.words, activity, state_in, state_out, page_table)
     return num, den
 
 
@@ -578,12 +687,14 @@ def sub_boxes(depth, box_leaves_, workers):
 __all__ = [
     "ACTIVITY_READ",
     "ACTIVITY_WRITTEN",
+    "FORMS",
     "PAGE_LEAVES",
     "SHIPPED_DV",
     "SHIPPED_WARPS_PER_CTA",
     "WARPS_PER_CTA",
     "WINDOW",
     "CarryRefusal",
+    "CarrySchedule",
     "GeometryBlock",
     "LaunchShape",
     "LivenessWords",
@@ -600,7 +711,9 @@ __all__ = [
     "lattice_of_canonical",
     "leaves_per_warp",
     "pack_side",
+    "reaping_bound",
     "route_planes",
+    "select_schedule",
     "state_plane",
     "sub_boxes",
 ]
