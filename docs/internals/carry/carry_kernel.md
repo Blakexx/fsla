@@ -143,18 +143,23 @@ into a panel that is dead at the end of the batch.
 
 The read ring is TWO raw slots and it takes its own bytes rather than the region's: cover
 slot A fills it while the region still holds the published halves. At iteration `b` the loop
-WRITES slot `b % 2` and READS slot `(b + 1) % 2`, and the next iteration swaps them — so ONE
-edge a batch carries both the release and the publish, where the fold's single value slot
-needs two. Issue order inside a batch:
+WRITES slot `b % 2` and READS slot `(b + 1) % 2`, and the next iteration swaps them, so the
+ring itself needs only the batch line. Issue order inside a batch:
 
 ```
 stage(b + 2) -> slot b%2   | claimed, cp.async, never waited on until the batch ends
-fan-in(b - 1)              | the CTA drains the other panel into num/den and leaves it zero
 mma(b)                     | against the pulled A fragments, in the tensor pipe
-reduce(b) -> block b%2     | red.shared.add.f32, 4 rows x 8 consecutive fp32 = 32 banks once
 produce(b + 1)             | the next batch's coefficients, in the SIMT pipe under the MMAs
-cp.async.wait_group; edge  |
+deposit(b) -> slice[warp]  | this warp's panel, written whole, no atom in the path
+edge                       | the panel line: the slices are published
+fan-in(b)                  | the CTA sums the slices and reduces into num/den
+cp.async.wait_group        |
+edge                       | the batch line: the ring turns and the panel is free again
 ```
+
+TWO crossings a batch, which is the fold's count: the panel is ONE set of slices, because a
+second set does not fit the region at every declared value width, so the fan-in cannot run a
+batch behind the deposits that fill it.
 
 <a id="read-expansion"></a>
 ## The read coefficient needs no transpose
@@ -176,26 +181,33 @@ the prologue (`rcin`, `rcout`) and never inside a window.
 ## The fan-in: one contribution per owner box per token
 
 `num` and `den` are planes the readout REDUCES into, and every owner box of every batch-head
-contributes to every token. The warps of a CTA therefore meet FIRST, in a shared panel of
-`kSeg` tokens by the page image's own stride, in fp32 (`red.shared.add.f32`), and the CTA then drains that panel into the planes
-with one `red.global.add.f32` per cell. The alternative — each warp reaching the plane
-directly — issues the same number of instructions with the same sector efficiency, and
-`warps_per_cta` times the L2 atomic traffic.
+contributes to every token. The warps of a CTA therefore meet FIRST, in shared memory, and
+the CTA then reduces the sum into the planes with one native `red.global.add.f32` per cell.
+The alternative — each warp reaching the plane directly — issues fewer instructions and the
+same sector traffic per issue, and `warps_per_cta` times the L2 atomic traffic; both counts
+are on the stage's ledger and the measured choice between them belongs to the fan-in stage.
 
-There are TWO panels, ping-ponged a batch apart, so the drain of one and the adds into the
-other never meet; the drain leaves the panel it emptied at zero for the batch two ahead, and
-only the window's first pair is cleared explicitly. The panel's stride is the page image's,
-and its `4 mod 32` congruence makes the adds conflict free for exactly the reason it makes
-the page image's reads conflict free (`smem_ledger.md#out-block`).
+THE WARPS MEET WITHOUT AN ATOM. Each warp writes its own PANEL SLICE whole — an accumulator
+element belongs to exactly one lane of exactly one warp, so the slices are disjoint by
+construction and nothing contends. The CTA then reads all `warps_per_cta` slices of a cell
+and adds them in a fixed order. The shared-memory atomic this began as is not available as a
+native operation here: `red.shared.add.f32` assembles to a compare-and-swap SPIN, which the
+constitution's no-fallback clause refuses and the stage's ledger measured at roughly seven
+and a half instructions per issue.
+
+The panel's TOKEN GRAIN is derived, not chosen: the widest power of two, up to `kSeg`, whose
+`warps_per_cta` slices fit the region they alias into (`smem_ledger.md#panel`). At the
+flagship arm it is the whole batch and the fan-in runs once per batch; at a value width whose
+slices are twice as wide it halves and the fan-in runs twice.
 
 A token past the window's end carries a zero coefficient by construction, but it has no
-cell in the planes — so the drain is the one place in the readout that tests a token against
+cell in the planes — so the fan-in is the one place in the readout that tests a token against
 the window's length.
 
-THE ORDER OF THE CONTRIBUTIONS IS THE HARDWARE'S. `num` and `den` are therefore
-associativity-dependent: the same call twice agrees to fp32 reduction-rounding, not bit for
-bit. The state plane is not — it is accumulated in registers in a fixed order, which is why
-the dense/paged byte gate is a byte gate.
+THE ORDER OF THE CONTRIBUTIONS ACROSS OWNER BOXES IS THE HARDWARE'S. `num` and `den` are
+therefore associativity-dependent: the same call twice agrees to fp32 reduction-rounding, not
+bit for bit. The state plane is not — it is accumulated in registers in a fixed order, which
+is why the dense/paged byte gate is a byte gate.
 
 <a id="slot-map"></a>
 ## From a warp's slot to a leaf, a page and a factor column

@@ -45,9 +45,9 @@ THE REGION IS THE TRANSIT'S, AND THAT IS A RULE THE EDGES FORCE. Each of the fra
 edges is a read-after-write on the region (`carry_kernel.md#edges`); a phase-local tenant
 aliased into it introduces a WRITE-AFTER-READ the frame names no edge for, and the fold's
 first act is a `cp.async` into its value ring ahead of any edge. So PHASE 2's value ring and
-column blocks take 5,120 bytes of their own rather than the rejoin's. PHASE 1's output
-blocks DO alias, because the readout stream's own first crossing falls between the pull and
-the first write of a panel, and the store-back rewrites every row before the return leg.
+column blocks take 5,120 bytes of their own rather than the rejoin's. PHASE 1's fan-in
+panel DOES alias, because the readout stream's own first crossing falls between the pull and
+the first write of a slice, and the store-back rewrites every row before the return leg.
 
 The page slots and the claim cursors are PERSISTENT: they are alive from the prologue to the
 exit and are never re-let. So is each side's raw factor ring — a tenant that must survive a
@@ -68,16 +68,26 @@ allocation nobody sized. None is allocated today.
 | the lists and ballot words | `W/32` words per side per level run, ≈ 2 KB | the liveness walk |
 | the parked low plane | `BC * (DV + 1) * 2` = 33,280 bytes | the register-relief stage |
 
-<a id="out-block"></a>
-## PHASE 1's output blocks
+<a id="panel"></a>
+## PHASE 1's fan-in panel
 
-`[kSeg][LdO]` fp32, TWO of them, aliased into the region's first bytes. They are the fan-in's
-panel: the CTA's warps reduce into one of them with `red.shared.add.f32` while the CTA drains
-the other into `num`/`den`, so the planes see one contribution per owner box per token rather
-than one per warp (`carry_kernel.md#fan-in`). `LdO` is the page image's stride and the reason
-is the same congruence: for a fixed channel m-tile a warp's 32 lanes address four TOKEN rows
-(differing by two, hence by `2 * LdO ≡ 8` words) times eight consecutive channels, so the
-four rows land on four bank quadruples and the eight channels fill each — 32 banks, once.
+One SLICE PER WARP of `[kPanelTokens][kLdO]` fp32, aliased into the region's first bytes.
+The CTA's warps meet here before any of them reaches `num`/`den`, so the planes see one
+contribution per owner box per token rather than one per warp (`carry_kernel.md#fan-in`).
+Each warp writes its own slice WHOLE — an accumulator element belongs to exactly one lane of
+one warp — so the slices are disjoint, nothing contends, and there is no atom in the path.
+
+`kPanelTokens` is DERIVED: the widest power-of-two token count up to `kSeg` whose
+`warps_per_cta` slices fit inside the region. The region's size is `BC * kLdX * 2` and `BC`
+falls as the value width rises, while a slice's width rises with it — so the grain is the
+batch at the shipped value widths and halves at the widest declared one. A `static_assert`
+refuses an arm where even one n-tile of slices would not fit.
+
+The slice's stride is the page image's, and the reason is the same congruence: for a fixed
+channel m-tile a warp's 32 lanes address four TOKEN rows (differing by two, hence by
+`2 * kLdO ≡ 8` words) times eight consecutive channels, so the four rows land on four bank
+quadruples and the eight channels fill each — 32 banks, once. The fan-in's own reads are
+consecutive channels across consecutive threads, which is conflict free at any stride.
 
 <a id="read-ring"></a>
 ## The read side's raw ring

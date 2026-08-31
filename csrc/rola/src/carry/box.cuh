@@ -38,6 +38,14 @@ constexpr int span_base(int D, int bc, int l) {
   return base;
 }
 
+//: THE FAN-IN PANEL'S TOKEN GRAIN, in MMA n-tiles: the widest that still fits one slice
+//: per warp inside the region. -- see docs/internals/carry/smem_ledger.md#panel
+constexpr int panel_tiles(int warps, int tiles, int ldo, int region) {
+  int t = tiles;
+  while (t > 1 && warps * t * denseref::ops::kMmaN * ldo * (int)sizeof(float) > region) t >>= 1;
+  return t;
+}
+
 //: THE SLOT STRIDES, each an access pattern in one congruence.
 //: -- see docs/internals/carry/smem_ledger.md#factor-rows
 constexpr int raw_stride(int span_tot) { return span_tot + ((4 - span_tot % 32) + 32) % 32; }
@@ -119,15 +127,18 @@ struct BoxPlan {
       kAtoms < kRegionBytes / kPageImageBytes ? kAtoms : kRegionBytes / kPageImageBytes;
   static constexpr int kStateRounds = (kAtoms + kStatePages - 1) / kStatePages;
   static constexpr int kVRingBytes = kSegmentSlots * kVTileBytes;
-  //: -- see docs/internals/carry/smem_ledger.md#out-block
-  static constexpr int kOutSlots = 2;
-  static constexpr int kOutSlotBytes = kSeg * kLdO * (int)sizeof(float);
-  static constexpr int kOutBytes = kOutSlots * kOutSlotBytes;
+  //: -- see docs/internals/carry/smem_ledger.md#panel
+  static constexpr int kPanelTiles =
+      panel_tiles(kWarps, kSeg / denseref::ops::kMmaN, kLdO, kRegionBytes);
+  static constexpr int kPanelTokens = kPanelTiles * denseref::ops::kMmaN;
+  static constexpr int kPanelRounds = kSeg / kPanelTokens;
+  static constexpr int kPanelSliceBytes = kPanelTokens * kLdO * (int)sizeof(float);
+  static constexpr int kPanelBytes = kWarps * kPanelSliceBytes;
 
   static_assert(kStatePages >= 1, "the region holds at least one page image");
   static_assert(kStatePages * kPageImageBytes <= kRegionBytes, "the page images fit the region");
-  static_assert(kOutBytes <= kRegionBytes,
-                "PHASE 1's output blocks fit the region they alias into");
+  static_assert(kPanelBytes <= kRegionBytes,
+                "the fan-in's per-warp panel slices fit the region they alias into");
   static_assert(kDw >= 1 && kLeavesPerWarp % denseref::ops::kMmaK == 0,
                 "a warp's leaves are a whole number of readout k-tiles, so the fold's n-tiles "
                 "pair into them");

@@ -37,8 +37,8 @@ struct Smem {
   //: blocks in the bytes the pull has finished with. -- see docs/internals/carry/smem_ledger.md#region
   __device__ __forceinline__ char* region() const { return base + BP::kRegionOffset; }
 
-  __device__ __forceinline__ float* out_block(int slot) const {
-    return reinterpret_cast<float*>(base + BP::kRegionOffset + slot * BP::kOutSlotBytes);
+  __device__ __forceinline__ float* panel(int warp) const {
+    return reinterpret_cast<float*>(base + BP::kRegionOffset + warp * BP::kPanelSliceBytes);
   }
 
   __device__ __forceinline__ ops::SmemAddr v_tile(int slot) const {
@@ -297,20 +297,6 @@ __device__ __forceinline__ void out_leg_pull(const CarryParams& p, const Smem<BP
   });
 }
 
-//: THE PANELS ENTER THE WINDOW CLEAN: the fan-in leaves the block it drains at zero, so
-//: only the window's first pair is cleared here.
-template <class BP>
-__device__ __forceinline__ void readout_clear(const Smem<BP>& sm, int tid) {
-  constexpr int kCells = BP::kSeg * (BP::kDv + 1);
-  rola::static_for<(kCells + BP::kThreads - 1) / BP::kThreads>([&](auto Ic) {
-    const int idx = decltype(Ic)::value * BP::kThreads + tid;
-    if (kCells % BP::kThreads != 0 && idx >= kCells) return;
-    const int row = idx / (BP::kDv + 1), col = idx % (BP::kDv + 1);
-    rola::static_for<BP::kOutSlots>(
-        [&](auto Sc) { sm.out_block(decltype(Sc)::value)[row * BP::kLdO + col] = 0.0f; });
-  });
-}
-
 //: PRODUCE: one read batch's coefficients, expanded from the staged factor rows AS THEY
 //: LIE. The MMA's B fragment pairs two adjacent LEAVES in one register at a FIXED token,
 //: and two adjacent leaves are two adjacent amplitude columns of that token's row -- so the
@@ -368,58 +354,61 @@ __device__ __forceinline__ void readout_mma(const Transit<BP>& tr,
   });
 }
 
-//: THE FAN-IN'S FIRST HALF: the CTA's warps reduce into one shared panel, so the plane
-//: receives ONE contribution per owner box per token rather than one per warp.
+//: DEPOSIT: one panel round of this warp's readout accumulator into the warp's OWN slice.
+//: The warp writes its slice WHOLE, so there is nothing to clear and no atom in the path:
+//: an accumulator element belongs to exactly one lane of one warp.
 //: -- see docs/internals/carry/carry_kernel.md#fan-in
 template <class BP>
-__device__ __forceinline__ void readout_reduce(const Smem<BP>& sm, int slot, int lane,
-                                               const float (&po)[BP::kMassTile][BP::kTokTiles][4],
-                                               const float (&pm)[BP::kTokTiles][4]) {
-  const ops::SmemAddr blk = ops::smem_addr(sm.out_block(slot));
-  rola::static_for<BP::kTokTiles>([&](auto Tc) {
+__device__ __forceinline__ void readout_deposit(const Smem<BP>& sm, int warp, int lane, int round,
+                                                const float (&po)[BP::kMassTile][BP::kTokTiles][4],
+                                                const float (&pm)[BP::kTokTiles][4]) {
+  float* const slice = sm.panel(warp);
+  rola::static_for<BP::kPanelTiles>([&](auto Tc) {
     constexpr int t = decltype(Tc)::value;
+    const int tile = round * BP::kPanelTiles + t;
     rola::static_for<4>([&](auto Ec) {
       constexpr int e = decltype(Ec)::value;
-      const ops::SmemAddr row =
-          blk + (uint32_t)((t * ops::kMmaN + 2 * (lane & 3) + (e & 1)) * BP::kLdO * 4);
+      float* const row = slice + (t * ops::kMmaN + 2 * (lane & 3) + (e & 1)) * BP::kLdO;
       rola::static_for<BP::kMassTile>([&](auto Mc) {
         constexpr int m = decltype(Mc)::value;
-        ops::fan_in_add_shared(
-            row + (uint32_t)((m * ops::kMmaM + 8 * (e >> 1)) * 4 + (lane >> 2) * 4), po[m][t][e]);
+        ops::store_f32(row + m * ops::kMmaM + 8 * (e >> 1) + (lane >> 2), po[m][tile][e]);
       });
       if constexpr ((e >> 1) == 0)
-        if ((lane >> 2) == 0) ops::fan_in_add_shared(row + (uint32_t)(BP::kDv * 4), pm[t][e]);
+        if ((lane >> 2) == 0) ops::store_f32(row + BP::kDv, pm[tile][e]);
     });
   });
 }
 
-//: FAN-IN: one drained panel into `num` and `den`, and the panel left at zero for the batch
-//: two ahead. A token past the window's end carries a zero coefficient and NO plane cell,
-//: so the drain is the one place the window's length is tested.
+//: FAN-IN: the CTA sums its warps' slices and reduces ONE contribution per owner box per
+//: token into `num` and `den`. The plane's atom is native and the panel's is none: the
+//: warps meet by writing disjoint cells, not by contending for one.
+//: A token past the window's end carries a zero coefficient by construction but has no cell
+//: in the planes, so this is the one place in the readout that tests a token against the
+//: window's length. -- see docs/internals/carry/carry_kernel.md#fan-in
 template <class BP>
-__device__ __forceinline__ void readout_fan_in(const Smem<BP>& sm, float* num, float* den, int slot,
-                                               int tid, int tok0, int tok_end, bool live) {
-  if (!live) return;
-  float* const blk = sm.out_block(slot);
-  constexpr int kCells = BP::kSeg * BP::kDv;
+__device__ __forceinline__ void readout_fan_in(const Smem<BP>& sm, float* num, float* den,
+                                               int round, int tid, int tok0, int tok_end) {
+  constexpr int kCells = BP::kPanelTokens * BP::kDv;
+  const int base = tok0 + round * BP::kPanelTokens;
   rola::static_for<(kCells + BP::kThreads - 1) / BP::kThreads>([&](auto Ic) {
     const int idx = decltype(Ic)::value * BP::kThreads + tid;
     if (kCells % BP::kThreads != 0 && idx >= kCells) return;
     const int row = idx / BP::kDv, col = idx % BP::kDv;
-    const int tok = tok0 + row;
-    float* const cell = blk + row * BP::kLdO + col;
-    if (tok < tok_end)
-      ops::fan_in_add(reinterpret_cast<float*>(ops::gather_ptr(
-                          num, (uint32_t)tok * (uint32_t)(BP::kDv * 4) + (uint32_t)(col * 4))),
-                      *cell);
-    *cell = 0.0f;
+    if (base + row >= tok_end) return;
+    float sum = 0.0f;
+    rola::static_for<BP::kWarps>(
+        [&](auto Wc) { sum += sm.panel(decltype(Wc)::value)[row * BP::kLdO + col]; });
+    ops::fan_in_add(
+        reinterpret_cast<float*>(ops::gather_ptr(
+            num, (uint32_t)(base + row) * (uint32_t)(BP::kDv * 4) + (uint32_t)(col * 4))),
+        sum);
   });
-  if (tid < BP::kSeg) {
-    const int tok = tok0 + tid;
-    float* const cell = blk + tid * BP::kLdO + BP::kDv;
-    if (tok < tok_end)
-      ops::fan_in_add(reinterpret_cast<float*>(ops::gather_ptr(den, (uint32_t)tok * 4u)), *cell);
-    *cell = 0.0f;
+  if (tid < BP::kPanelTokens && base + tid < tok_end) {
+    float sum = 0.0f;
+    rola::static_for<BP::kWarps>(
+        [&](auto Wc) { sum += sm.panel(decltype(Wc)::value)[tid * BP::kLdO + BP::kDv]; });
+    ops::fan_in_add(reinterpret_cast<float*>(ops::gather_ptr(den, (uint32_t)(base + tid) * 4u)),
+                    sum);
   }
 }
 
@@ -503,25 +492,20 @@ __device__ __forceinline__ void return_leg_rejoin(const CarryParams& p, const Sm
   });
 }
 
-//: PHASE 1, one form: the four slots of a read batch, issued so each covers the next. The
-//: read ring's two slots ALTERNATE between the batch being staged and the batch being
-//: expanded, so ONE edge a batch carries both the release and the publish -- half the
-//: fold's crossings. -- see docs/internals/carry/carry_kernel.md#readout
+//: PHASE 1, one form: the four slots of a read batch, issued so each covers the next.
+//: -- see docs/internals/carry/carry_kernel.md#readout
 template <class BP, int D, Form F>
-__device__ __forceinline__ void readout_phase(const CarryParams& p, const Smem<BP>& sm,
-                                              const Transit<BP>& tr,
-                                              const int (&abase)[kGeomMaxLevels],
-                                              const int (&rcin)[BP::kDw][2],
-                                              const int (&rcout)[kGeomMaxLevels][BP::kDw],
-                                              float* num, float* den, int tid, int lane, int bh,
-                                              int t0, int wLen, uint32_t (&claim)[kFillPoints]) {
+__device__ __forceinline__ void readout_phase(
+    const CarryParams& p, const Smem<BP>& sm, const Transit<BP>& tr,
+    const int (&abase)[kGeomMaxLevels], const int (&rcin)[BP::kDw][2],
+    const int (&rcout)[kGeomMaxLevels][BP::kDw], float* num, float* den, int tid, int warp,
+    int lane, int bh, int t0, int wLen, uint32_t (&claim)[kFillPoints]) {
   const int nSeg = (wLen + BP::kSeg - 1) / BP::kSeg;
   const int tok_end = t0 + wLen;
 
   //: the region's bytes pass from the pull to the panels here, and the batches the cover
   //: staged become visible in the same crossing.
   ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
-  readout_clear<BP>(sm, tid);
 
   uint32_t rb[BP::kDw][BP::kTokTiles][2];
   readout_produce<BP, D>(sm, 0, lane, rcin, rcout, rb);
@@ -530,15 +514,21 @@ __device__ __forceinline__ void readout_phase(const CarryParams& p, const Smem<B
   for (int b = 0; b < nSeg; ++b) {
     readout_stage<BP, D, 1>(p, sm, abase, lane, bh, t0 + (b + BP::kReadSlots) * BP::kSeg, tok_end,
                             b % BP::kReadSlots, Fill::kReadSegment, claim[(int)Fill::kReadSegment]);
-    readout_fan_in<BP>(sm, num, den, (b + BP::kOutSlots - 1) % BP::kOutSlots, tid,
-                       t0 + (b - 1) * BP::kSeg, tok_end, b > 0);
 
     float po[BP::kMassTile][BP::kTokTiles][4], pm[BP::kTokTiles][4];
     readout_mma<BP>(tr, rb, po, pm);
-    readout_reduce<BP>(sm, b % BP::kOutSlots, lane, po, pm);
 
     uint32_t rn[BP::kDw][BP::kTokTiles][2];
     readout_produce<BP, D>(sm, (b + 1) % BP::kReadSlots, lane, rcin, rcout, rn);
+
+    rola::static_for<BP::kPanelRounds>([&](auto Rc) {
+      constexpr int r = decltype(Rc)::value;
+      if constexpr (r > 0) ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
+      readout_deposit<BP>(sm, warp, lane, r, po, pm);
+      ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
+      readout_fan_in<BP>(sm, num, den, r, tid, t0 + b * BP::kSeg, tok_end);
+    });
+
     rola::static_for<BP::kDw>([&](auto Kc) {
       constexpr int kk = decltype(Kc)::value;
       rola::static_for<BP::kTokTiles>([&](auto Tc) {
@@ -553,9 +543,6 @@ __device__ __forceinline__ void readout_phase(const CarryParams& p, const Smem<B
     ops::stage_wait<0>();
     ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
   }
-  readout_fan_in<BP>(sm, num, den, (nSeg + BP::kOutSlots - 1) % BP::kOutSlots, tid,
-                     t0 + (nSeg - 1) * BP::kSeg, tok_end, true);
-  ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
 }
 
 // ------------------------------------------------------------------- PHASE 2's fold
@@ -799,19 +786,6 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
   ops::stage_wait<0>();
 }
 
-//: PHASE 1, one form: the four slots of a read batch, issued so each covers the next.
-template <class BP, int RA, Form F>
-__device__ __forceinline__ void readout_phase(const CarryParams& p, const Smem<BP>& sm, int wLen) {
-  const int nSeg = (wLen + BP::kSeg - 1) / BP::kSeg;
-#pragma unroll 1
-  for (int b = 0; b < nSeg; ++b) {
-    readout_stage<BP, RA>(p, sm, b + 1, nSeg);
-    readout_produce<BP, RA>(p, sm, b + 1, nSeg);
-    readout_mma<BP, RA>(p, sm, b, nSeg);
-    readout_fan_in<BP, RA>(p, sm, b - 1, nSeg);
-  }
-}
-
 // ------------------------------------------------------------------- the window loop
 
 template <class BP, int D, int BC, int NS, int WA>
@@ -837,7 +811,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
 
     rola::uniform_switch<kForms>(p.readout_form, [&](auto Rf) {
       readout_phase<BP, D, (Form) decltype(Rf)::value>(p, sm, tr, abase, rcin, rcout, num, den, tid,
-                                                       lane, bh, t0, wLen, claim);
+                                                       warp, lane, bh, t0, wLen, claim);
     });
 
     return_leg_store<BP, D, BC>(p, sm, tr, warp, lane);

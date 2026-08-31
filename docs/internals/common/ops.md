@@ -323,19 +323,6 @@ eight-byte forms are the cache-ALL variant because the sixteen-byte bypass has n
 narrower member; both src and dst are naturally aligned, which is the caller's
 contract and the reason no size is ever split here.
 
-<a id="fan-in-add-shared"></a>
-## `fan_in_add_shared` — the same contribution one level down
-
-`fan_in_add`'s shared-memory member: `red.shared.add.f32`, fire and forget, no result. It
-exists because a reduction whose contributors are the warps of ONE unit should meet in that
-unit's own memory before any of them reaches a plane every unit shares — the plane then
-receives one contribution per unit instead of one per warp, which is the difference between
-an atomic per owner box and an atomic per warp.
-
-Its contract is `fan_in_add`'s: the order of contributions is the hardware's, so the sum is
-associativity-dependent and the same reduction run twice can differ in the last bits. A
-caller that needs a reproducible sum needs a different algorithm, not a different atom.
-
 <a id="stage-tile-if"></a>
 ## `stage_tile_if` — a predicated staging quantum
 
