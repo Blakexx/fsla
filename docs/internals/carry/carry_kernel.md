@@ -20,7 +20,7 @@ prologue: the parameter block -> uniform registers; the box's two call-level bit
 for each window:
   [out leg]    publish hi(state) -> COVER SLOT A -> edge -> pull as read-side A fragments
   PHASE 1:     per read batch [ stage(b+1) | produce(b+1) | mma(b) | fan-in(b-1) ]
-  [return leg] store back lo(state) -> COVER SLOT B -> edge -> rejoin
+  [return leg] store hi back -> COVER SLOT B -> edge -> rejoin over the kept lo
   PHASE 2:     per write batch [ stage(b+1) | expand(b+1) | fold-mma(b) ]
   [window line]
 exit: the state slice stored, iff this call writes it
@@ -34,20 +34,34 @@ to prevent.
 <a id="edges"></a>
 ## The three edges, and why there are exactly three
 
-`Edge::kOutLeg`, `Edge::kReturnLeg`, `Edge::kWindowLine`. Each is one `mbarrier` word, and
-each is used SPLIT: a unit arrives when its own contribution is published, runs a cover
-slot that depends on nobody, and waits only when it needs what the others published.
+`Edge::kOutLeg`, `Edge::kReturnLeg`, `Edge::kWindowLine`. Each is a NAMED BARRIER id, and
+each is crossed AFTER its cover slot: a unit publishes its own contribution, runs work that
+depends on nobody, and only then arrives at the barrier it needs the others to have reached.
+
+The split the frame wants cannot be had from a named barrier with EQUAL PARTICIPATION — a
+thread that arrives and later syncs on one barrier contributes two arrivals, and the arrive
+is a no-op in the pair. It is had from ORDER instead, and the effect is the same: the cover
+work is issued by every warp before the barrier, which is exactly what a split arrive bought.
+What is not paid is `mbarrier.test_wait`'s SPIN, which was 21% of issue slots where the
+streams used it and turned every spin into a shared-memory read; a named barrier sleeps.
 
 * the OUT LEG separates publishing the accumulator's high halves into the transit region
   from reading them back in the other side's carve;
-* the RETURN LEG separates writing the low halves back out of the region from reusing the
-  region's bytes as PHASE 2's segment buffers;
-* the WINDOW LINE separates a window's fold from the next window's publish — the fold
-  writes the accumulator that the publish reads.
+* the RETURN LEG separates the reader writing its high halves back into the region from the
+  writer reading them there;
+* the WINDOW LINE separates this window's rejoin, which READS the region, from the next
+  window's publish, which writes it — and the fold that lies between them touches neither.
 
 Nothing else in the loop is CTA-wide. A segment's producer/consumer handshake belongs to
 its STREAM and is a warp-local wait (`cp.async` groups today) or, where the producer and
-the consumer are different warps, that stream's own barrier — not the frame's.
+the consumer are different warps, that stream's own barrier — not the frame's. There are
+three such stream edges: the fold's `kFilled` and `kEmpty`, and the readout's `kReadBatch`.
+
+The frame's edges are the ONLY CTA-wide points the frame owns, and each of the three is a
+READ-AFTER-WRITE on the region. That is why the region is the transit's ALONE: a phase-local
+tenant aliased into it would introduce a WRITE-AFTER-READ the frame does not name, and the
+one tenant that does alias — PHASE 1's output blocks — is separated from the pull by the
+readout stream's own first crossing and restored by the store-back before the return leg.
 
 The cover slots are load-bearing rather than opportunistic: at one CTA per SM there is no
 second CTA to run while this one waits, so every leg cycle is either covered by
@@ -81,6 +95,106 @@ at `DV = 64` the 65 channels (64 values and the mass) occupy 5 m-tiles of 16, so
 lane's registers hold 65 elements of state. The mass is the deposit value's trailing one,
 so it is not a special case anywhere except that its A fragment is a CONSTANT rather than a
 loaded tile.
+
+<a id="transit"></a>
+## The hybrid transit: the same halves, re-owned
+
+The transit region is `[row = sb_swizzle(local)][col = channel]`, `BC` rows of `kLdX`
+halfwords. `local` is the OWNER-LOCAL CANONICAL INDEX (`geom.md#local-row`) — one law that
+both sides read, never two maps — and `sb_swizzle` is the region's GF(2)-linear row
+permutation. Two facts keep every displacement an immediate:
+
+* `local(strm, P) = local(strm, 0) | scatter(P)`, because a stream's offset at a level and a
+  slot's digits at that level occupy DISJOINT bit fields — so the `|` is a `^` and `scatter`
+  is linear in `P`'s bits;
+* `sb_swizzle` is linear, so `row(strm, P) = row(strm, 0) ^ swizzle(scatter(P))` and the
+  `P`-part is a constant wherever `P` is.
+
+The four legs, in the order the frame runs them:
+
+| leg | what moves | how |
+|---|---|---|
+| publish | the accumulator's high halves, write carve | `st.shared.u16`, 32 lanes covering 4 rows × 8 consecutive channels per issue |
+| pull | the same halves as the readout's A operand, read carve | `ldmatrix.trans.x4`, one per (k-step, channel m-tile) |
+| store back | the halves the reader still holds, read carve | the pull run backwards, `st.shared.u16` |
+| rejoin | the halves as the writer's accumulator, write carve | `ldmatrix.trans.x4`, one per (n-tile PAIR, channel m-tile) |
+
+`ldmatrix.trans` serves both directions because the A operand's thread map and the
+accumulator's thread map AGREE on the channel and compose on the leaf: `lane -> m = lane>>2
+(+8)` in both, and the accumulator's `n = 2*(lane&3) (+1)` is the A operand's `k` of two
+adjacent n-tiles. So one `x4` returns four registers that land exactly on
+`acc[m][j][0..3]` and `acc[m][j+1][0..3]`, and the rejoin is `join_hi_lo` over the LOW
+halves, which never left the register file and are never truncated.
+
+THE MASS CHANNEL is scalar on all four legs. It opens the last channel m-tile
+(`kMassRow == 0`), so an `ldmatrix.x4` at that tile would address the eight channels above the row's width; the four lanes that hold it read and write it as halfwords instead. Every OTHER
+element of that m-tile is structurally zero — the fold's mass A fragment has a single live
+row and the state sweep never loads a channel at or above `DV + 1` — so the rejoin states
+that rather than carrying sixteen zero registers through PHASE 1.
+
+<a id="readout"></a>
+## PHASE 1: the readout
+
+`P[m = channel][n = token] += S^T[c][leaf] . Rcoef[leaf][t]` — the fold with two indices
+swapped, against the state the window ENTERED with. Per batch of `kSeg` tokens: `kDw` k-steps
+(16 leaves each) by `kTokTiles` token n-tiles by `kMCh` channel m-tiles of `mma.m16n8k16`,
+into a panel that is dead at the end of the batch.
+
+The read ring is TWO raw slots and it takes its own bytes rather than the region's: cover
+slot A fills it while the region still holds the published halves. At iteration `b` the loop
+WRITES slot `b % 2` and READS slot `(b + 1) % 2`, and the next iteration swaps them — so ONE
+edge a batch carries both the release and the publish, where the fold's single value slot
+needs two. Issue order inside a batch:
+
+```
+stage(b + 2) -> slot b%2   | claimed, cp.async, never waited on until the batch ends
+fan-in(b - 1)              | the CTA drains the other panel into num/den and leaves it zero
+mma(b)                     | against the pulled A fragments, in the tensor pipe
+reduce(b) -> block b%2     | red.shared.add.f32, 4 rows x 8 consecutive fp32 = 32 banks once
+produce(b + 1)             | the next batch's coefficients, in the SIMT pipe under the MMAs
+cp.async.wait_group; edge  |
+```
+
+<a id="read-expansion"></a>
+## The read coefficient needs no transpose
+
+The MMA's B fragment is `k = 2*(lane&3) + 8h (+1)`, `n = lane>>2`. On the READ side `k` is
+the LEAF and `n` is the TOKEN — the mirror of the fold, where `k` is the token. So a
+register's two elements are two ADJACENT LEAVES at ONE token, and two adjacent leaves are
+two adjacent amplitude columns of that token's row, which the packed plane already stores
+adjacent. The readout therefore expands from the staged rows AS THEY LIE: one 32-bit shared
+access per (token n-tile, k-step, `h`), and no column block, no transpose pass and no gain.
+
+The memo is the fold's j-slice law on the `k` axis. The innermost level's sub-box span is at
+least the page rectangle, so `P`'s low four bits ARE `local`'s low four bits and every level
+above the innermost has a sub-box shift of at least four — its digit is a function of the
+k-step ALONE, uniform across the warp and across `h`. Both column sets are walked once in
+the prologue (`rcin`, `rcout`) and never inside a window.
+
+<a id="fan-in"></a>
+## The fan-in: one contribution per owner box per token
+
+`num` and `den` are planes the readout REDUCES into, and every owner box of every batch-head
+contributes to every token. The warps of a CTA therefore meet FIRST, in a shared panel of
+`kSeg` tokens by the page image's own stride, in fp32 (`red.shared.add.f32`), and the CTA then drains that panel into the planes
+with one `red.global.add.f32` per cell. The alternative — each warp reaching the plane
+directly — issues the same number of instructions with the same sector efficiency, and
+`warps_per_cta` times the L2 atomic traffic.
+
+There are TWO panels, ping-ponged a batch apart, so the drain of one and the adds into the
+other never meet; the drain leaves the panel it emptied at zero for the batch two ahead, and
+only the window's first pair is cleared explicitly. The panel's stride is the page image's,
+and its `4 mod 32` congruence makes the adds conflict free for exactly the reason it makes
+the page image's reads conflict free (`smem_ledger.md#out-block`).
+
+A token past the window's end carries a zero coefficient by construction, but it has no
+cell in the planes — so the drain is the one place in the readout that tests a token against
+the window's length.
+
+THE ORDER OF THE CONTRIBUTIONS IS THE HARDWARE'S. `num` and `den` are therefore
+associativity-dependent: the same call twice agrees to fp32 reduction-rounding, not bit for
+bit. The state plane is not — it is accumulated in registers in a fixed order, which is why
+the dense/paged byte gate is a byte gate.
 
 <a id="slot-map"></a>
 ## From a warp's slot to a leaf, a page and a factor column

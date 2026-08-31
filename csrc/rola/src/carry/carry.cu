@@ -106,6 +106,8 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
               "call writes, so two planes would silently drop the rest");
   TORCH_CHECK(L <= 0x7FFFFFFF && BH * L * wtot < 0x40000000,
               "the packed routing plane's byte offsets are 32-bit displacements off one base");
+  TORCH_CHECK(L * dv < 0x20000000,
+              "the readout planes' byte offsets are 32-bit displacements off one base");
 
   const int BC = box_leaves((int)dv, (int)warps_per_cta);
   CarryParams p{};

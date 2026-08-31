@@ -366,6 +366,12 @@ __device__ __forceinline__ void store_f32(float* p, float v) { *p = v; }
 //: ONE CONTRIBUTION INTO A SHARED ACCUMULATOR, FIRE AND FORGET. -- see docs/internals/common/ops.md#fan-in-add
 __device__ __forceinline__ void fan_in_add(float* p, float x) { atomicAdd(p, x); }
 
+//: THE SAME CONTRIBUTION ONE LEVEL DOWN: the warps of a CTA reduce into a shared panel
+//: before ONE of them reaches the plane. -- see docs/internals/common/ops.md#fan-in-add-shared
+__device__ __forceinline__ void fan_in_add_shared(SmemAddr a, float x) {
+  asm volatile("red.shared.add.f32 [%0], %1;" ::"r"(a), "f"(x) : "memory");
+}
+
 //: The 16-byte quantum, synchronously. -- see docs/internals/common/ops.md#load-vec16
 __device__ __forceinline__ uint4 load_vec16(const void* p) {
   return *reinterpret_cast<const uint4*>(p);

@@ -15,8 +15,14 @@ namespace rola::carry {
 //: THE FILL's unit, in tokens, and its production points -- one cursor each.
 //: -- see docs/internals/carry/carry_kernel.md#fill
 constexpr int kUnitTokens = 4;
-enum class Fill : int { kCoverFactors = 0, kPrologueValues = 1, kSegment = 2 };
-constexpr int kFillPoints = 3;
+enum class Fill : int {
+  kCoverFactors = 0,
+  kPrologueValues = 1,
+  kSegment = 2,
+  kReadCover = 3,
+  kReadSegment = 4
+};
+constexpr int kFillPoints = 5;
 
 //: THE BOX'S ROUTING FOOTPRINT, in amplitude columns, and one level's base in it.
 //: -- see docs/internals/carry/carry_kernel.md#factor-rows
@@ -78,6 +84,9 @@ struct BoxPlan {
   static constexpr int kNL = kLeavesPerWarp / denseref::ops::kMmaN;
   static constexpr int kMassTile = kDv / denseref::ops::kMmaM;
   static constexpr int kMassRow = kDv - kMassTile * denseref::ops::kMmaM;
+  //: -- see docs/internals/carry/carry_kernel.md#readout
+  static constexpr int kDw = kLeavesPerWarp / denseref::ops::kMmaK;
+  static constexpr int kTokTiles = kSegmentTokens / denseref::ops::kMmaN;
   static constexpr int kAccRegs = kMCh * kNL * 4;
   static constexpr int kStateElems = kLeavesPerWarp * kCols;
 
@@ -93,6 +102,9 @@ struct BoxPlan {
   static constexpr int kGainSlotBytes = kSeg * 2;
   static constexpr int kColSlots = 2;
   static constexpr int kColBytes = kColSlots * kSpanTotal * kTokStride * 2;
+  //: -- see docs/internals/carry/smem_ledger.md#read-ring
+  static constexpr int kReadSlots = 2;
+  static constexpr int kReadRawBytes = kReadSlots * kRawSlotBytes;
 
   //: the shared tenants' shapes. -- see docs/internals/carry/smem_ledger.md
   static constexpr int kLdO = kCols + (4 - kCols % 32 + 32) % 32;
@@ -107,34 +119,50 @@ struct BoxPlan {
       kAtoms < kRegionBytes / kPageImageBytes ? kAtoms : kRegionBytes / kPageImageBytes;
   static constexpr int kStateRounds = (kAtoms + kStatePages - 1) / kStatePages;
   static constexpr int kVRingBytes = kSegmentSlots * kVTileBytes;
-  static constexpr int kColOffsetInRegion = kVRingBytes;
+  //: -- see docs/internals/carry/smem_ledger.md#out-block
+  static constexpr int kOutSlots = 2;
+  static constexpr int kOutSlotBytes = kSeg * kLdO * (int)sizeof(float);
+  static constexpr int kOutBytes = kOutSlots * kOutSlotBytes;
 
   static_assert(kStatePages >= 1, "the region holds at least one page image");
   static_assert(kStatePages * kPageImageBytes <= kRegionBytes, "the page images fit the region");
-  static_assert(kVRingBytes + kColBytes <= kRegionBytes,
-                "PHASE 2's value ring and column block fit the region they alias into");
+  static_assert(kOutBytes <= kRegionBytes,
+                "PHASE 1's output blocks fit the region they alias into");
+  static_assert(kDw >= 1 && kLeavesPerWarp % denseref::ops::kMmaK == 0,
+                "a warp's leaves are a whole number of readout k-tiles, so the fold's n-tiles "
+                "pair into them");
+  static_assert(span_base(D, kBC, D - 1) % 2 == 0,
+                "the readout reads its innermost level's leaf PAIR as one 32-bit access, so "
+                "that level's run begins on a 32-bit boundary of the staged row");
+  static_assert(kMassTile == kMCh - 1,
+                "the mass opens the last channel m-tile, so the tiles below it are whole "
+                "value tiles and the transit's ldmatrix reaches every one of them");
   static_assert(kSpanTotal % 2 == 0 && owner_span(D, kBC, 0) % 2 == 0,
                 "the transpose moves the factor row in column PAIRS, and the gain is folded "
                 "into the outermost level's own columns");
   static_assert(kSeg % kUnitTokens == 0, "a segment is a whole number of fill units");
 
-  //: the persistent tenants beside the region. -- see docs/internals/carry/smem_ledger.md
-  static constexpr int kEdges = 3;
-  static constexpr int kEdgeBytes = kEdges * (int)sizeof(denseref::ops::EdgeState);
+  //: the tenants beside the region. -- see docs/internals/carry/smem_ledger.md#region
   static constexpr int kPageSlotBytes = kAtoms * (int)sizeof(int);
 
   static constexpr int kRegionOffset = 0;
-  static constexpr int kEdgeOffset = kRegionOffset + kRegionBytes;
-  static constexpr int kPageSlotOffset = kEdgeOffset + kEdgeBytes;
+  static constexpr int kVTileOffset = kRegionOffset + kRegionBytes;
+  static constexpr int kColOffset = kVTileOffset + kVRingBytes;
+  static constexpr int kPageSlotOffset = kColOffset + kColBytes;
   static constexpr int kClaimOffset = kPageSlotOffset + kPageSlotBytes;
   static constexpr int kClaimBytes = kFillPoints * 4;
   static constexpr int kGainOffset = (kClaimOffset + kClaimBytes + 15) / 16 * 16;
   static constexpr int kRawOffset = kGainOffset + kFactorSlots * kGainSlotBytes;
-  static constexpr int kSmemBytes = kRawOffset + kFactorSlots * kRawSlotBytes;
+  static constexpr int kReadRawOffset = kRawOffset + kFactorSlots * kRawSlotBytes;
+  static constexpr int kSmemBytes = kReadRawOffset + kReadRawBytes;
 
-  static_assert(kEdgeOffset % 8 == 0, "an mbarrier is eight-byte aligned");
-  static_assert(kRawOffset % 16 == 0 && kRawSlotBytes % 8 == 0,
+  static_assert(kVTileOffset % 16 == 0 && kColOffset % 16 == 0,
+                "the value ring and the column block are addressed in 16-byte quanta");
+  static_assert(kRawOffset % 16 == 0 && kReadRawOffset % 16 == 0 && kRawSlotBytes % 8 == 0,
                 "a raw factor slot's base carries the widest quantum its runs are staged in");
+  static_assert(kLdX % denseref::ops::kMmaN == 0 && (kLdX * 2) % 16 == 0,
+                "a transit row's base is an ldmatrix address and its channel groups are "
+                "sixteen-byte quanta");
 
   static_assert(denseref::design::smem_fits((size_t)kSmemBytes),
                 "the carry box's shared-memory ledger exceeds this architecture's per-CTA "
@@ -148,11 +176,12 @@ struct BoxPlan {
   using Page = rola::state_page::Blocks<DV_>;
 };
 
-//: THE FRAME'S EDGES, named. -- see docs/internals/carry/carry_kernel.md#edges
-enum class Edge : int { kWindowLine = 0, kOutLeg = 1, kReturnLeg = 2 };
-
 //: THE STREAM'S OWN EDGES, which are not the frame's: NAMED BARRIER ids.
 //: -- see docs/internals/carry/carry_kernel.md#stream-edges
-enum class StreamEdge : int { kFilled = 1, kEmpty = 2 };
+enum class StreamEdge : int { kFilled = 1, kEmpty = 2, kReadBatch = 3 };
+
+//: THE FRAME'S EDGES, named -- barrier ids of the same kind, disjoint from the streams'.
+//: -- see docs/internals/carry/carry_kernel.md#edges
+enum class Edge : int { kWindowLine = 4, kOutLeg = 5, kReturnLeg = 6 };
 
 }  // namespace rola::carry
