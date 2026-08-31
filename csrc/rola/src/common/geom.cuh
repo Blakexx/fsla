@@ -99,9 +99,16 @@ constexpr void carve_sub_bits(int D, int bc, int ns, const int* outer_order, int
   int want = geom_ilog2(ns);
   for (int p = 0; p < D && want > 0; ++p) {
     const int l = outer_order[p];
-    const int take = bits[l] < want ? bits[l] : want;
-    bits[l] -= take;
-    want -= take;
+    //: THE INNERMOST DIGITS ARE THE VECTOR WIDTH: the order passes over that level rather
+    //: than dividing it below the page rectangle.
+    //: -- see docs/internals/common/geom.md#innermost-invariant
+    const int floor_l = (l == D - 1) ? kAtomLeavesBits : 0;
+    const int room = bits[l] - floor_l;
+    const int take = room < want ? room : want;
+    if (take > 0) {
+      bits[l] -= take;
+      want -= take;
+    }
   }
 }
 
@@ -282,14 +289,36 @@ inline bool mode_before(uint32_t MO, uint32_t side, int a, int b) {
 
 }  // namespace geom_detail
 
+//: THE CARVE ORDER, a runtime input: each side's levels ranked, rank 0 INNERMOST, and the
+//: structural default the level modes give it.
+//: -- see docs/internals/common/geom.md#carve-order
+struct CarveOrder {
+  int level_at[2][kGeomMaxLevels];
+};
+
+inline void carve_order_of_modes(int D, uint32_t MO, CarveOrder& o) {
+  const uint32_t sides[2] = {kSideRead, kSideWrite};
+  for (int s = 0; s < 2; ++s) {
+    for (int l = 0; l < kGeomMaxLevels; ++l) o.level_at[s][l] = l;
+    for (int l = 0; l < D; ++l) {
+      int r = 0;
+      for (int i = 0; i < D; ++i)
+        if (geom_detail::mode_before(MO, sides[s], i, l)) ++r;
+      o.level_at[s][r] = l;
+    }
+  }
+}
+
 //: ONE SIDE'S CARVE; `NS == 1` is the S = 1 point of it. -- see docs/internals/common/geom.md#carve
-inline const char* derive_side(int D, const int* width, const int* span, int bc, uint32_t MO,
-                               uint32_t side, int NS, SideGeom& g) {
+inline const char* derive_side(int D, const int* width, const int* span, int bc,
+                               const int* level_at, int NS, SideGeom& g) {
   if (NS < 1 || (NS & (NS - 1)) != 0) return "a side's stream count is a power of two";
-  for (int l = 0; l < D; ++l) {
-    int r = 0;
-    for (int i = 0; i < D; ++i)
-      if (geom_detail::mode_before(MO, side, i, l)) ++r;
+  int named = 0;
+  for (int r = 0; r < D; ++r) {
+    const int l = level_at[r];
+    if (l < 0 || l >= D || ((named >> l) & 1) != 0)
+      return "a side's carve order must rank each of its levels exactly once";
+    named |= 1 << l;
     g.rank[l] = r;
     g.level_at[r] = l;
   }
@@ -298,6 +327,11 @@ inline const char* derive_side(int D, const int* width, const int* span, int bc,
   int outer[kGeomMaxLevels] = {0, 0, 0, 0}, sub_bits[kGeomMaxLevels] = {0, 0, 0, 0};
   for (int p = 0; p < D; ++p) outer[p] = g.level_at[D - 1 - p];
   carve_sub_bits(D, bc, NS, outer, sub_bits);
+  int carved = 0;
+  for (int l = 0; l < D; ++l) carved += owner_span_bits(D, bc, l) - sub_bits[l];
+  if (carved != geom_ilog2(NS))
+    return "this carve order cannot reach the side's stream count without dividing the "
+           "innermost level below the page rectangle";
   const SubBoxSet set = sub_boxes(D, bc, NS);
   g.assign = sb_index(set, D, sub_bits);
   if (g.assign < 0) return "this side's carved sub-box is not a member of the generated set";
@@ -356,8 +390,8 @@ inline const char* derive_side(int D, const int* width, const int* span, int bc,
 }
 
 //: THE ONE DERIVATION; returns nullptr or the REFUSAL's own words. -- see docs/internals/common/geom.md#refusals
-inline const char* derive_carry_geom(int D, const int* width, int bc, int dv, uint32_t MO, int NSR,
-                                     int NSW, CarryGeomRT& g) {
+inline const char* derive_carry_geom(int D, const int* width, int bc, int dv,
+                                     const CarveOrder& order, int NSR, int NSW, CarryGeomRT& g) {
   if (D < 1 || D > kGeomMaxLevels) return "the addressing block is built to depth four";
   if (geom_ilog2(bc) < 0) return "BC must be a power of two";
   if (geom_ilog2(dv) < 0 || dv % 16 != 0) return "the value width is a power of two, sixteen up";
@@ -415,8 +449,8 @@ inline const char* derive_carry_geom(int D, const int* width, int bc, int dv, ui
     g.span_bits[l] = geom_ilog2(width[0]);
     g.run_shift[l] = 0;
   }
-  if (const char* e = derive_side(D, g.width, g.span, bc, MO, kSideRead, NSR, g.r)) return e;
-  if (const char* e = derive_side(D, g.width, g.span, bc, MO, kSideWrite, NSW, g.w)) return e;
+  if (const char* e = derive_side(D, g.width, g.span, bc, order.level_at[0], NSR, g.r)) return e;
+  if (const char* e = derive_side(D, g.width, g.span, bc, order.level_at[1], NSW, g.w)) return e;
   //: a level nobody carves fixes no digit, so its index weight is not part of the map.
   int identical = g.r.assign == g.w.assign ? 1 : 0;
   for (int l = 0; l < D; ++l)

@@ -206,7 +206,8 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
 
     descriptor = _descriptor(widths, dv, bh)
     launch = carry_ops.LaunchShape()
-    geometry = carry_ops.geometry_block(descriptor, launch)
+    geometry = carry_ops.geometry_block(descriptor, launch,
+                                        intra_ops.pack_modes(tuple(modes)))
     liveness = _liveness_words(pread, pwrite, descriptor)
     activity = (atom_bits if atom_bits is not None
                else _conservative_activity(descriptor, bh, v_bh.device))
@@ -252,7 +253,8 @@ class _Prefill(torch.autograd.Function):
 
         descriptor = _descriptor(widths, dv, bh)
         launch = carry_ops.LaunchShape()
-        geometry = carry_ops.geometry_block(descriptor, launch)
+        geometry = carry_ops.geometry_block(descriptor, launch,
+                                           intra_ops.pack_modes(tuple(modes)))
         liveness = _liveness_words(pread, pwrite, descriptor)
         activity = _conservative_activity(descriptor, bh, v_bh.device)
         state_out = carry_ops.state_plane(descriptor, bh, device=v_bh.device)
@@ -286,7 +288,8 @@ class _Prefill(torch.autograd.Function):
 
         descriptor = _descriptor(widths, dv, bh)
         launch = carry_ops.LaunchShape()
-        geometry = carry_ops.geometry_block(descriptor, launch)
+        geometry = carry_ops.geometry_block(descriptor, launch,
+                                           intra_ops.pack_modes(tuple(modes)))
         liveness = _liveness_words(pread, pwrite, descriptor)
         activity = _conservative_activity(descriptor, bh, pread.device)
 

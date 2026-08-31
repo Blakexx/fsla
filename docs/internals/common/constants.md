@@ -27,22 +27,6 @@ selects a different `W`. `rola/ops/carry.py`'s own `WINDOW` constant is this sam
 value; a follow-on consolidation stage (`C_CLEAN_SLATE.md`'s C2e) is where that site
 is repointed to import this module rather than restate the literal.
 
-<a id="batch-tile"></a>
-## `kBatchTile` = 32 — an MMA n-tile multiple × the panel residency
-
-`C` is the fold's cooperative-staging unit: how many tokens' worth of expanded
-coefficients and value rows the panel holds resident at once. It is `kMmaN` (8,
-`common/ops.cuh`) times the panel's residency in n-tiles (8), matching the retired
-carry body's own `C` at its shipped launch shape, where `C == kWarps * kMmaN` at
-`kWarps = 8`. K50 and F-P (`development/queue/FP_pipelined-one-cta-body.md`) make `C`
-a FILE CONSTANT going forward — "never tied to warps" — because coupling the batch
-tile to `warps_per_cta` is exactly what made the retired body's diagnostic shape
-(`warps_per_cta = 4`) a different batch size instead of the same batch tile run by
-half as many warps. Fixing `C = 64` continues the shipped shape's own value rather
-than inventing a new one; revisiting it (a different multiple of `kMmaN`, or a
-different panel residency) is a design point for whichever K3/K4 stage first measures
-the fold's panel against real SMEM pressure, not a choice this stage makes.
-
 <a id="warps-per-cta"></a>
 ## `warps_per_cta` ∈ {8, 4} — K50 "the 2×4 issue"
 
@@ -106,6 +90,10 @@ own table.
 A SEGMENT is a 16-token slice of a stream's buffer. Sixteen because it is the MMA's `K`:
 one segment is exactly one k-step of the fold, so the buffering grain and the arithmetic
 grain are the same number and a segment is never partly consumed.
+
+The value rows and the raw factor rows of one segment are the two things the fold's fill
+stages; `carry/box.cuh` sizes both from this constant and `docs/internals/carry/
+smem_ledger.md` names them.
 
 It is the BUFFERING grain and not the chain length. A consumer chains every sealed segment
 back to back, so a dense window's MMA chain is as deep as any; short chains occur only where

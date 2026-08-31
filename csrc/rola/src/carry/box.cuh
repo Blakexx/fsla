@@ -12,6 +12,49 @@
 
 namespace rola::carry {
 
+//: THE FILL's unit, in tokens, and its production points -- one cursor each.
+//: -- see docs/internals/carry/carry_kernel.md#fill
+constexpr int kUnitTokens = 4;
+enum class Fill : int { kCoverFactors = 0, kPrologueValues = 1, kSegment = 2 };
+constexpr int kFillPoints = 3;
+
+//: THE BOX'S ROUTING FOOTPRINT, in amplitude columns, and one level's base in it.
+//: -- see docs/internals/carry/carry_kernel.md#factor-rows
+constexpr int span_total(int D, int bc) {
+  int total = 0;
+  for (int l = 0; l < D; ++l) total += owner_span(D, bc, l);
+  return total;
+}
+
+constexpr int span_base(int D, int bc, int l) {
+  int base = 0;
+  for (int i = 0; i < l; ++i) base += owner_span(D, bc, i);
+  return base;
+}
+
+//: THE SLOT STRIDES, each an access pattern in one congruence.
+//: -- see docs/internals/carry/smem_ledger.md#factor-rows
+constexpr int raw_stride(int span_tot) { return span_tot + ((4 - span_tot % 32) + 32) % 32; }
+
+constexpr int tok_stride(int seg) { return seg + ((8 - seg % 16) + 16) % 16; }
+
+//: THE J-SLICE OF A LEVEL: which bits of a warp's tile index its digit depends on.
+//: -- see docs/internals/carry/carry_kernel.md#expansion
+constexpr int slice_shift(int shift) { return shift > 3 ? shift - 3 : 0; }
+
+constexpr int slice_bits(int shift, int bits) {
+  const int hi = shift + bits - 3;
+  return hi <= 0 ? 0 : hi - slice_shift(shift);
+}
+
+//: THE ASYNCHRONOUS QUANTUM a run is staged in: the widest that divides run, base, stride.
+constexpr int run_quantum(int span_h, int base_h, int stride_h) {
+  const int b = span_h * 2, o = base_h * 2, r = stride_h * 2;
+  if (b % 16 == 0 && o % 16 == 0 && r % 16 == 0) return 16;
+  if (b % 8 == 0 && o % 8 == 0 && r % 8 == 0) return 8;
+  return 4;
+}
+
 //: THE BOX, THE ACCUMULATOR AND THE LEDGER for one arm.
 template <int D_, int DV_, int WARPS_>
 struct BoxPlan {
@@ -42,7 +85,16 @@ struct BoxPlan {
   static constexpr int kSegsPerWindow = kWindow / kSeg;
   static constexpr int kSegmentSlots = segment_slots(denseref::arch::kCaps);
 
-  //: the state page's shared image and the V segment's tile. -- smem_ledger.md#page-image
+  static constexpr int kFactorSlots = kSegmentSlots + 1;
+  static constexpr int kSpanTotal = span_total(D, kBC);
+  static constexpr int kRawStride = raw_stride(kSpanTotal);
+  static constexpr int kTokStride = tok_stride(kSeg);
+  static constexpr int kRawSlotBytes = kSeg * kRawStride * 2;
+  static constexpr int kGainSlotBytes = kSeg * 2;
+  static constexpr int kColSlots = 2;
+  static constexpr int kColBytes = kColSlots * kSpanTotal * kTokStride * 2;
+
+  //: the shared tenants' shapes. -- see docs/internals/carry/smem_ledger.md
   static constexpr int kLdO = kCols + (4 - kCols % 32 + 32) % 32;
   static constexpr int kPageImageBytes = kAtomLeaves * kLdO * (int)sizeof(float);
   static constexpr int kVTileBytes = kSeg * kDv * 2;
@@ -54,13 +106,19 @@ struct BoxPlan {
   static constexpr int kStatePages =
       kAtoms < kRegionBytes / kPageImageBytes ? kAtoms : kRegionBytes / kPageImageBytes;
   static constexpr int kStateRounds = (kAtoms + kStatePages - 1) / kStatePages;
-  static constexpr int kVRingBytes = kWarps * kSegmentSlots * kVTileBytes;
+  static constexpr int kVRingBytes = kSegmentSlots * kVTileBytes;
+  static constexpr int kColOffsetInRegion = kVRingBytes;
 
   static_assert(kStatePages >= 1, "the region holds at least one page image");
   static_assert(kStatePages * kPageImageBytes <= kRegionBytes, "the page images fit the region");
-  static_assert(kVRingBytes <= kRegionBytes, "the V ring fits the region");
+  static_assert(kVRingBytes + kColBytes <= kRegionBytes,
+                "PHASE 2's value ring and column block fit the region they alias into");
+  static_assert(kSpanTotal % 2 == 0 && owner_span(D, kBC, 0) % 2 == 0,
+                "the transpose moves the factor row in column PAIRS, and the gain is folded "
+                "into the outermost level's own columns");
+  static_assert(kSeg % kUnitTokens == 0, "a segment is a whole number of fill units");
 
-  //: the persistent tenants beside the region: the frame's edges and the box's page slots.
+  //: the persistent tenants beside the region. -- see docs/internals/carry/smem_ledger.md
   static constexpr int kEdges = 3;
   static constexpr int kEdgeBytes = kEdges * (int)sizeof(denseref::ops::EdgeState);
   static constexpr int kPageSlotBytes = kAtoms * (int)sizeof(int);
@@ -68,7 +126,15 @@ struct BoxPlan {
   static constexpr int kRegionOffset = 0;
   static constexpr int kEdgeOffset = kRegionOffset + kRegionBytes;
   static constexpr int kPageSlotOffset = kEdgeOffset + kEdgeBytes;
-  static constexpr int kSmemBytes = kPageSlotOffset + kPageSlotBytes;
+  static constexpr int kClaimOffset = kPageSlotOffset + kPageSlotBytes;
+  static constexpr int kClaimBytes = kFillPoints * 4;
+  static constexpr int kGainOffset = (kClaimOffset + kClaimBytes + 15) / 16 * 16;
+  static constexpr int kRawOffset = kGainOffset + kFactorSlots * kGainSlotBytes;
+  static constexpr int kSmemBytes = kRawOffset + kFactorSlots * kRawSlotBytes;
+
+  static_assert(kEdgeOffset % 8 == 0, "an mbarrier is eight-byte aligned");
+  static_assert(kRawOffset % 16 == 0 && kRawSlotBytes % 8 == 0,
+                "a raw factor slot's base carries the widest quantum its runs are staged in");
 
   static_assert(denseref::design::smem_fits((size_t)kSmemBytes),
                 "the carry box's shared-memory ledger exceeds this architecture's per-CTA "
@@ -84,5 +150,9 @@ struct BoxPlan {
 
 //: THE FRAME'S EDGES, named. -- see docs/internals/carry/carry_kernel.md#edges
 enum class Edge : int { kWindowLine = 0, kOutLeg = 1, kReturnLeg = 2 };
+
+//: THE STREAM'S OWN EDGES, which are not the frame's: NAMED BARRIER ids.
+//: -- see docs/internals/carry/carry_kernel.md#stream-edges
+enum class StreamEdge : int { kFilled = 1, kEmpty = 2 };
 
 }  // namespace rola::carry

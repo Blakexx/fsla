@@ -38,8 +38,8 @@ static constexpr const char* kCarryBackwardUnimplemented =
 static void carry_backward_unimplemented(const at::Tensor&, const at::Tensor&, const at::Tensor&,
                                          const at::Tensor&, const at::Tensor&, const at::Tensor&,
                                          const std::vector<int64_t>&, int64_t, int64_t, int64_t,
-                                         const at::Tensor&, const at::Tensor&,
-                                         const c10::optional<at::Tensor>&,
+                                         const std::vector<int64_t>&, const at::Tensor&,
+                                         const at::Tensor&, const c10::optional<at::Tensor>&,
                                          const c10::optional<at::Tensor>&,
                                          const c10::optional<at::Tensor>&) {
   check_arch_table();
@@ -62,14 +62,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "the carry forward pass: the inter term's readout and the window fold, one kernel",
         py::arg("read"), py::arg("write"), py::arg("gain"), py::arg("v"), py::arg("num"),
         py::arg("den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
-        py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
-        py::arg("state_out"), py::arg("page_table"));
+        py::arg("warps_per_cta"), py::arg("carve_order"), py::arg("liveness"), py::arg("activity"),
+        py::arg("state_in"), py::arg("state_out"), py::arg("page_table"));
   m.def("carry_backward", &carry_backward_unimplemented,
         "the carry reverse launch surface -- CONTRACT ONLY, no implementation on this line",
         py::arg("read"), py::arg("write"), py::arg("gain"), py::arg("v"), py::arg("d_num"),
         py::arg("d_den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
-        py::arg("warps_per_cta"), py::arg("liveness"), py::arg("activity"), py::arg("state_in"),
-        py::arg("d_state_out"), py::arg("page_table"));
+        py::arg("warps_per_cta"), py::arg("carve_order"), py::arg("liveness"), py::arg("activity"),
+        py::arg("state_in"), py::arg("d_state_out"), py::arg("page_table"));
   m.def("carry_build_stamp", &rola::carry::carry_build_stamp,
         "the carry family's device build stamp -- a fact the loaded binary alone can state");
   m.def("carry_census", &rola::carry::carry_census,

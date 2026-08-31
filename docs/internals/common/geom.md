@@ -351,3 +351,36 @@ assert — at `warps_per_cta == warps_per_sm` the CTA-box law IS the SM-grain la
 deduplicated, counted, with the arch-law assert at 8" claim. `tools/field_coverage.py`'s
 sweep does the same over BOTH values for every declared shape, in place of the single
 hard-coded box it swept before.
+
+<a id="carve-order"></a>
+## The carve order
+
+The order each side carves its levels in is a RUNTIME INPUT: `derive_carry_geom` takes a
+`CarveOrder` — both sides' levels ranked, rank 0 innermost — and `derive_side` walks it
+BACKWARDS, dividing the outermost level first, until the box count reaches the side's stream
+count. Nothing about the order is compile time; it selects a member of the same generated
+shape set the compile-time switch already covers.
+
+`carve_order_of_modes` is the STRUCTURAL DEFAULT the seam applies when a caller names none:
+a side's SPARSE levels rank outermost, so the carve divides them first and the dense levels
+stay whole until the digits run out. The boxes are uniform in SIZE either way — that is the
+shape law — and what the order shapes is the uniformity of their ACTIVITY, which is what
+reaping reads. A call that declares every level dense on both sides gets the canonical order,
+which is always lawful.
+
+<a id="innermost-invariant"></a>
+## The innermost digits are the vector width
+
+`carve_sub_bits` never divides the CANONICAL INNERMOST level below the page rectangle
+(`kAtomLeaves`). Those digits are the fastest varying ones — adjacent digits there are
+adjacent leaves — so a warp box narrower than the rectangle owns a STRIDE rather than a RUN:
+its leaves would be scattered across every page of the box, its factor columns would no
+longer be one contiguous run per level, and the sixteen-leaf tile that guarantees the
+nesting law would not fit inside it. When an order names that level, the carve passes over it
+and divides the next one instead — the same shape as the owner law's own floor — and a
+stream count no order can reach under the floor is REFUSED by name rather than rounded.
+
+The invariant is visible in the generated shape set: every member ends in the same innermost
+span, so the orders that differ only in how they would have split it collapse onto one
+member. At the flagship arm the set is one shape rather than two; at depth four it is three
+rather than eight.

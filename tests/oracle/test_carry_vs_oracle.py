@@ -99,6 +99,46 @@ def test_the_inter_term_is_the_fp64_reference(spec):
     check(spec, num, den, plane, ref(drawn))
 
 
+#: the cells whose sequence outruns one window, so their fold carries deposits from a
+#: window that has already ended -- both backings and the partial trailing window.
+MULTI_WINDOW = [cell for cell in ORACLE_CELLS if cell.tokens > carry_ops.WINDOW]
+MULTI_WINDOW_IDS = [cell.name for cell in MULTI_WINDOW]
+
+
+@pytest.mark.parametrize("spec", MULTI_WINDOW, ids=MULTI_WINDOW_IDS)
+def test_the_folded_state_is_the_fp64_reference(spec):
+    """THE FOLD ALONE, over more windows than one, against the reference's state.
+
+    The state plane IS the fold's output: every deposit of every window lands in it, in
+    the write carve's own order, so a wrong coefficient, a wrong token pairing, a stale
+    segment slot or a dropped tail window all show here. It is asserted separately from
+    ``num``/``den`` because those are the READOUT's, which is not built on this line --
+    the cell's own row in `test_the_inter_term_is_the_fp64_reference` stays red until it
+    is, and this row is the part the fold owns.
+    """
+    drawn, _, _, plane = run(spec)
+    _, _, s_ref = ref(drawn)
+    assert relative(canonical_from_plane(plane),
+                    s_ref.reshape(1, spec.N, spec.dv + 1)) < BF16_RTOL
+
+
+def test_the_folded_state_is_the_fp64_reference_on_the_paged_backing():
+    """The same claim on the PAGED backing, under a permuted slot table: the fold's
+    deposits reach the same leaves whether the page is where its atom says or somewhere
+    else the table names."""
+    spec = next(c for c in MULTI_WINDOW if c.backing == "paged")
+    desc = spec.descriptor()
+    pages = desc.N // carry_ops.PAGE_LEAVES
+    gen = torch.Generator(device="cuda").manual_seed(spec.seed)
+    slots = torch.argsort(torch.rand(pages, device="cuda", generator=gen))
+    plane = carry_ops.state_plane(desc, 1)
+    drawn, _, _, plane = run(spec, state_out=plane,
+                             page_table=slots.to(torch.int32).reshape(1, pages))
+    _, _, s_ref = ref(drawn)
+    assert relative(canonical_from_plane(plane[0, slots].unsqueeze(0)),
+                    s_ref.reshape(1, spec.N, spec.dv + 1)) < BF16_RTOL
+
+
 def test_a_carried_state_is_advanced_in_place():
     """THE CONTINUATION: the same plane in and out, with the reference chained the same
     way. A stateful chain allocates ONE plane for the sequence."""

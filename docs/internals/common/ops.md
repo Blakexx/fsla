@@ -683,3 +683,13 @@ only zeros bf16 has are +0 and -0 and OR cannot clear a set bit.
 §6: `N` is this function's template parameter (renamed from lowercase `n`
 so the unroll-discipline lint reads it as compile-time); `N / 8` is still an
 arithmetic expression the heuristic can't parse, so name it too.
+
+<a id="stage-run-if"></a>
+## `stage_run_if`
+
+`stage_run`'s predicated form, the narrow-quantum twin of `stage_tile_if`: the copy issues
+with its SOURCE RUN SIZE zeroed, so a dead quantum reads nothing and zero-fills its
+destination. The fold's factor staging is what needs it — a level run is `span_l * 2` bytes
+and only the flagship's is sixteen — and the zero fill is what makes a partial window
+arithmetic rather than a tail case: a token past the window's end lands zero amplitudes, and
+a zero amplitude is a zero coefficient.

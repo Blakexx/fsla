@@ -3,7 +3,7 @@
 """The carry family's file constants, launch table and S-from-SMEM rule: the Python
 mirror of ``csrc/rola/src/common/constants.cuh``.
 
-The two modules declare the SAME numbers -- ``WINDOW``, ``BATCH_TILE``, the
+The two modules declare the SAME numbers -- ``WINDOW``, ``SEGMENT_TOKENS``, the
 ``warps_per_cta`` set, the per-arch launch table and the S-from-SMEM rule -- because a
 caller building a launch on the host and a kernel reading its own prologue must agree
 on all of them without either reading the other's source. ``tests/unit/
@@ -20,8 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 __all__ = [
-    "BATCH_TILE",
     "LAUNCH_TABLE",
+    "SEGMENT_TOKENS",
     "WARPS_PER_CTA",
     "WARPS_PER_CTA_DIAGNOSTIC",
     "WARPS_PER_CTA_SHIPPED",
@@ -40,10 +40,10 @@ __all__ = [
 #: defined on this grid, so the fp64 reference mirrors the same number.
 WINDOW = 512
 
-#: The fold's batch tile: an MMA n-tile multiple (``kMmaN = 8``, ``csrc/rola/src/
-#: common/ops.cuh``) times the fold panel's residency (8 n-tiles held at once). Fixed
-#: independently of ``warps_per_cta`` -- the two vary separately.
-BATCH_TILE = 32
+#: The stream's buffering grain, in tokens: the slice a producer fills, seals and hands
+#: to the consumers, and the k step one deposit MMA contracts. Mirrors
+#: ``common/constants.cuh``'s ``kSegmentTokens``.
+SEGMENT_TOKENS = 16
 
 #: The register file's warp count per multiprocessor: eight warps fill it exactly at
 #: 256 registers/lane. Mirrors ``common/geom.cuh``'s ``warps_per_sm``.

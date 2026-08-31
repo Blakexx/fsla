@@ -45,6 +45,20 @@ void refuse_shape(const std::vector<int64_t>& widths, int64_t dv, int64_t page_b
               " is not a launch shape this family builds");
 }
 
+//: THE CARVE ORDER AS THE CALL SPELLS IT: both sides' levels ranked, read side then write
+//: side, rank 0 innermost. -- see docs/internals/carry/carry.md#carve-order
+CarveOrder carve_order_of(const std::vector<int64_t>& carve_order, int D) {
+  TORCH_CHECK((int)carve_order.size() == 2 * D, "the carve order names each side's ", D,
+              " levels in rank order (read then "
+              "write), so it is ",
+              2 * D, " entries; this call names ", carve_order.size());
+  CarveOrder o{};
+  for (int s = 0; s < 2; ++s)
+    for (int l = 0; l < kGeomMaxLevels; ++l)
+      o.level_at[s][l] = l < D ? (int)carve_order[s * D + l] : l;
+  return o;
+}
+
 void refuse_operand(const char* name, const at::Tensor& t, at::ScalarType dtype,
                     at::IntArrayRef want) {
   TORCH_CHECK(t.is_cuda() && t.is_contiguous(), name, " is a contiguous CUDA tensor");
@@ -57,7 +71,8 @@ void refuse_operand(const char* name, const at::Tensor& t, at::ScalarType dtype,
 void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Tensor& gain,
                    const at::Tensor& v, at::Tensor& num, at::Tensor& den,
                    const std::vector<int64_t>& widths, int64_t dv, int64_t page_bits,
-                   int64_t warps_per_cta, const at::Tensor& liveness, const at::Tensor& activity,
+                   int64_t warps_per_cta, const std::vector<int64_t>& carve_order,
+                   const at::Tensor& liveness, const at::Tensor& activity,
                    const c10::optional<at::Tensor>& state_in,
                    const c10::optional<at::Tensor>& state_out,
                    const c10::optional<at::Tensor>& page_table) {
@@ -96,10 +111,8 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
   CarryParams p{};
   int w[kGeomMaxLevels] = {0, 0, 0, 0};
   for (int l = 0; l < D; ++l) w[l] = (int)widths[l];
-  //: THE CARVE ORDER is a runtime input; this surface carries no mode word, so every
-  //: level is declared dense on both sides and the order is the canonical one.
-  const char* err =
-      derive_carry_geom(D, w, BC, (int)dv, 0u, (int)warps_per_cta, (int)warps_per_cta, p.g);
+  const char* err = derive_carry_geom(D, w, BC, (int)dv, carve_order_of(carve_order, D),
+                                      (int)warps_per_cta, (int)warps_per_cta, p.g);
   TORCH_CHECK(err == nullptr, "the carry addressing block refuses this call: ", err);
 
   p.pread = reinterpret_cast<const __nv_bfloat16*>(read.data_ptr());

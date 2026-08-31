@@ -10,9 +10,6 @@ namespace rola::carry {
 //: W -- see docs/internals/common/constants.md#window
 constexpr int kWindow = 512;
 
-//: C -- see docs/internals/common/constants.md#batch-tile
-constexpr int kBatchTile = 32;
-
 //: THE SEGMENT -- see docs/internals/common/constants.md#segment
 constexpr int kSegmentTokens = 16;
 

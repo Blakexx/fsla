@@ -57,8 +57,8 @@ def test_the_window_agrees():
     assert _constexpr_int("kWindow") == py.WINDOW
 
 
-def test_the_batch_tile_agrees():
-    assert _constexpr_int("kBatchTile") == py.BATCH_TILE
+def test_the_segment_agrees():
+    assert _constexpr_int("kSegmentTokens") == py.SEGMENT_TOKENS
 
 
 def test_the_warps_per_cta_set_agrees():

@@ -87,10 +87,23 @@ PARENT_CENSUS = {
 #: innermost span (16, the page atom held whole), so the shape refuses them by name.
 UNLAWFUL_UNDER_THE_FLOOR = (8, 9)
 
+#: THE ROWS THE INNERMOST-DIGIT INVARIANT RE-CARVES. The carve never divides the
+#: canonical innermost level below the page rectangle -- the fastest-varying digits are
+#: the vector width, and a warp box narrower there owns a stride instead of a run -- so
+#: the order passes over that level and divides the next one instead. The parent carved
+#: its read side to `[8, 4]` at these arms; the same order under the invariant reaches
+#: the same stream count as `[2, 16]`, which makes the two sides' carves coincide and the
+#: transit an identity the parent had to move bytes for. The parent's own numbers are
+#: kept below as the record of what changed.
+RECARVED = {1: ([2, 16], [8, 4]), 3: ([2, 16], [8, 4]), 5: ([2, 16], [8, 4])}
+
 #: THE ARCH CONSTANTS, mirrored from `geom.cuh` -- three scalars, and the only thing in
 #: this file that is a mirror rather than a call. The SET they feed is the shipped
 #: generator's, read through `carry_ops.sub_boxes`. -- docs/internals/common/geom.md#arch-constants
 WARPS_PER_SM = 8
+
+#: the page rectangle in leaves, the grain the innermost digits are never carved below.
+PAGE_RECTANGLE = 16
 
 #: the 2x4 ruling: `warps_per_cta` is a compile-time
 #: axis with exactly this two-value set -- `(1, 8)` the shipped, one-CTA-per-SM shape,
@@ -131,15 +144,22 @@ def test_the_derivation_reproduces_the_parents_census(arm):
     assert g["bc"] == bc
     assert g["owners"] == owners
     assert g["w"]["row_span"] == w_spans, "the WRITE side's stream span vector moved"
-    assert g["r"]["row_span"] == r_spans, "the READ side's stream span vector moved"
+    want_r = RECARVED[arm][0] if arm in RECARVED else r_spans
+    assert g["r"]["row_span"] == want_r, "the READ side's stream span vector moved"
     assert g["w"]["streams"] == _arm(arm)["nsw"]
     assert g["r"]["streams"] == _arm(arm)["nsr"]
     #: the parent ELIDES the transit at compile time exactly when the two carves
     #: coincide; the block reports the same fact instead of a second code path (K50
     #: deleted the elided body). An uncarved arm has no transit at all, so the parent's
     #: zero says nothing there and the claim is made only where it carves.
-    if _arm(arm)["nsw"] > 1:
+    if _arm(arm)["nsw"] > 1 and arm not in RECARVED:
         assert (xch == 0) == bool(g["identity_map"])
+    if arm in RECARVED:
+        assert bool(g["identity_map"]), (
+            "under the innermost-digit invariant both sides reach this stream count on the "
+            "outer level, so the carves coincide and the transit is the identity map -- "
+            f"the parent moved {xch} bytes here because its read side carved "
+            f"{RECARVED[arm][1]}, which the invariant does not admit")
 
 
 @pytest.mark.parametrize("arm", UNLAWFUL_UNDER_THE_FLOOR)
@@ -236,9 +256,14 @@ def test_a_stream_count_that_is_not_a_power_of_two_is_refused():
 #: `f(D, leaves_per_warp, warps_per_cta)`: the member set is enumerated at BOTH of the #: two-value `warps_per_cta` set -- the
 #: shipped `(1, 8)` shape and the `(2, 4)` test/diagnostic arm -- not only the one these
 #: arms happen to compile.
+#: THE INNERMOST-DIGIT INVARIANT IS WHAT MAKES THIS SET SMALL: the carve passes over the
+#: canonical innermost level rather than dividing its digits below the page rectangle, so
+#: every member ends in the same innermost span and the orders that differ only in how
+#: they would have split it collapse onto one shape. That is asserted below as the law --
+#: the counts are its consequence, not a transcription.
 _SUB_BOX_COUNTS = {
-    4: {1: 1, 2: 2, 3: 4, 4: 7},
-    8: {1: 1, 2: 2, 3: 5, 4: 8},
+    4: {1: 1, 2: 1, 3: 2, 4: 3},
+    8: {1: 1, 2: 1, 3: 2, 4: 3},
 }
 
 
@@ -257,6 +282,9 @@ def test_the_sub_box_set_is_generated_and_deduplicated(D, warps_per_cta):
         for s in shape:
             prod *= s
         assert prod * warps_per_cta == box, "a member times the worker count IS the box"
+        assert shape[-1] >= PAGE_RECTANGLE or shape[-1] == carry_ops.leaves_per_warp(dv), (
+            "the innermost digits are the vector width: no member divides the canonical "
+            "innermost level below the page rectangle")
 
 
 def test_the_shape_set_is_the_arch_law_at_one_cta_per_sm():
@@ -274,10 +302,14 @@ def test_the_shape_set_is_the_arch_law_at_one_cta_per_sm():
         by_cta = carry_ops.sub_boxes(D, leaves_per_warp(dv) * WARPS_PER_SM, WARPS_PER_SM)
         assert at_sm == by_cta, (
             "at one CTA per SM the CTA-box law and the SM-box law are the same set")
+    #: the four-warp CTA runs the same law on HALF the box, and reaches the same SHAPE:
+    #: its box is half as wide at level 0 and it carves half as many workers out of it,
+    #: while the innermost level -- which the invariant never divides -- is the same run.
+    #: The two sets are therefore equal by arithmetic, not by being the same derivation,
+    #: and the box they are derived from is what differs.
     half = carry_ops.sub_boxes(2, leaves_per_warp(dv) * 4, 4)
-    assert half != carry_ops.sub_boxes(2, sm_box, WARPS_PER_SM), (
-        "the four-warp CTA's set is the same law on a DIFFERENT box, and is not the "
-        "SM-grain set (G2c: `[16,2]` does not fit a box eight wide at level 0)")
+    assert half == carry_ops.sub_boxes(2, sm_box, WARPS_PER_SM)
+    assert leaves_per_warp(dv) * 4 != sm_box, "the two boxes are not the same box"
 
 
 #: RETIRED (was `test_the_golden_table_is_the_binarys_own`): that test re-read the

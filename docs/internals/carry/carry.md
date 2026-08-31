@@ -68,3 +68,17 @@ arm-subset build is a FILE subset and the arms compile in parallel rather than s
 inside one front end. The dispatch translation unit here holds no arm body — it declares
 the ABI and calls it — which is what keeps a subset build from instantiating an arm locally
 and leaving the shards doing nothing.
+
+<a id="carve-order"></a>
+## The carve order on the launch surface
+
+`carry_forward` takes the carve order as `2 * D` entries — the read side's levels ranked
+innermost first, then the write side's — and hands them to the one derivation, which is
+where the order has always belonged (`docs/internals/common/geom.md#carve-order`). It reaches
+the kernel inside the parameter block's addressing, as each side's `level_at`/`rank`, and
+every stage that addresses a leaf reads it from there.
+
+A CALLER NEVER SPELLS IT. The seam derives it from the level modes it already carries — a
+side's sparse levels rank outermost — and hands the block it derived to this surface, so the
+order the kernel addresses by and the order the host checked against are one derivation and
+not two. A call that declares no modes gets the canonical order.
