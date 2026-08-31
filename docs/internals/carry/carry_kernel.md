@@ -415,32 +415,51 @@ segments, the page images fit the region, the ledger fits the architecture's per
 maximum. Nothing in it is a literal that a reader has to trust.
 
 <a id="measured"></a>
-## What the frame costs, measured
+## What the body costs, measured
 
-The one probe over four cells, with the counters the stage gate reads. The frame is what
-every later stage subtracts, so these are the numbers to subtract.
+One probe over the fixed cells, and the section ledger the stage gate reads. Sections are
+anchored on the frame's own barrier instructions: the three frame edges and the three stream
+edges are named barriers with DISTINCT IDS, so a section boundary is a fact of the
+disassembly rather than a judgement about it.
 
-| cell | duration | IPC | barrier | long scoreboard | short scoreboard | not selected |
-|---|---|---|---|---|---|---|
-| one deposit, 16 tokens | 15.2 µs | 0.99 | 7.1% | 11.0% | 6.7% | 3.0% |
-| dense, 256 tokens | 35.8 µs | 1.40 | 3.6% | 17.8% | 2.8% | 3.8% |
-| sparse k=4, 256 tokens | 37.4 µs | 1.38 | 3.6% | 18.3% | 2.9% | 3.7% |
-| dense, 1024 tokens, N = 65,536 | 455.9 µs | 1.28 | 1.1% | 33.9% | 1.0% | 2.8% |
+| section | instructions | share | stall samples | share |
+|---|---|---|---|---|
+| prologue + entry sweep | 3,670,016 | 4.8% | 3,855 | 10.0% |
+| out leg: publish + cover A | 1,994,752 | 2.6% | 440 | 1.1% |
+| out leg: pull | 495,616 | 0.6% | 85 | 0.2% |
+| PHASE 1, the readout | 43,319,296 | 56.6% | 17,056 | 44.4% |
+| return leg: store-back + cover B | 1,445,376 | 1.9% | 370 | 1.0% |
+| return leg: rejoin | 1,218,560 | 1.6% | 295 | 0.8% |
+| PHASE 2, the fold | 21,658,624 | 28.3% | 15,647 | 40.7% |
+| exit sweep | 2,723,840 | 3.6% | 679 | 1.8% |
 
-Each line, against what the design says it should be:
+Per warp per 16-token batch the two phases are 165 instructions (fold) against 330
+(readout), and each issues exactly 20 MMAs — the two phases' arithmetic is the same size,
+which is what the orientation says it should be. Everything above 20 is that phase's FEED.
 
-* **barrier** falls as the window count and the fold's size grow. The three edges and the
-  two state sweeps' rendezvous are the only CTA-wide synchronisation in the kernel, so this
-  is the whole of it. At this stage the cover slots are empty, so every leg cycle is exposed
-  by construction and this number IS the leg exposure — which makes it the thing to watch
-  when the legs start moving bytes: covered, it should not grow.
-* **long scoreboard** is the dominant line and it grows with the FOLD, not with the state
-  I/O. Its seat is the coefficient expansion's per-lane scalar reads of the gain and the
-  write amplitudes: the expansion itself is in registers, which is the design's form on
-  every architecture, but its FEED is unstaged here. Cooperative staging and a memoized walk
-  are what answer it.
-* **short scoreboard** and **mio throttle** (≈1%) are the tile loads' own latency.
-* **not selected** does not go to zero at one CTA per SM and should not: the SM's eight
-  warps still sit two to a scheduler partition, so a warp that loses a cycle to its partner
-  is counted here. Three per cent is that share. A second CTA would read very differently,
-  which is what makes the counter worth reading at all.
+* THE READOUT'S FEED IS ITS CROSS-WARP FAN-IN, and it is structural rather than fixable. The
+  readout contracts over the LEAF, the leaf is what the carve divides among warps, so every
+  warp produces a full `[tokens × channels]` partial and the CTA sums `warps_per_cta` of
+  them. The floor is 32 stores, 32 loads and 28 adds per lane per batch and the measurement
+  sits on it; per token it is 2 + 2 + 1.75 and it does not fall with a bigger batch. The
+  addressing above that floor is the one line with room in it.
+* THE LEGS COST 6.7% OF THE INSTRUCTIONS AND 3.1% OF THE STALLS, for four passes that move
+  the box's whole high plane twice through shared memory. The publish and the store-back are
+  at their floor of `BC × (DV + 1)` halfwords each way per window; the pull and the rejoin
+  move the same bytes in a quarter of the issues, because `ldmatrix` reads sixteen rows an
+  instruction.
+* LEG EXPOSURE IS ZERO. The three frame edges are crossed once per window per warp and carry
+  no measured stall at all; the covers absorb them, which is what the cover slots are for.
+  Every remaining barrier cycle belongs to a STREAM edge — the fold's two per segment and
+  the readout's two per batch — and the aggregate barrier line FELL from 26.7% of issue
+  slots to 20.5% while the crossings per window more than doubled, which is the named
+  barrier not spinning.
+* SHORT SCOREBOARD and MIO THROTTLE rise (7.1% → 10.9%, 0.8% → 2.8%): the readout's feed is
+  shared memory, and the panel puts 32 stores and 32 loads a batch through the LSU pipe on
+  top of the fold's traffic.
+* BANK CONFLICTS rise with the legs' halfword stores: eight lanes write eight CONSECUTIVE
+  halfwords, so two lanes share a 32-bit word and the store is two-way by construction. A
+  region column layout that put a lane's two channels adjacent would pair them, and it would
+  move the pull's `ldmatrix` — named here, not taken.
+* NOT SELECTED stays at 1.5% and should: the SM's eight warps still sit two to a scheduler
+  partition. A second CTA would read very differently, which is what makes it worth reading.
