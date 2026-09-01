@@ -19,7 +19,7 @@ prologue: the parameter block -> uniform registers; the box's two call-level bit
           once from the generated member set; the state slice loaded
 for each window:
   [out leg]    publish hi(state) -> COVER SLOT A -> edge -> pull as read-side A fragments
-  PHASE 1:     per read batch [ stage(b+1) | produce(b+1) | mma(b) | fan-in(b-1) ]
+  PHASE 1:     per read batch [ stage(b+1) | produce(b+1) | mma(b) | fan-in(b) ]
   [return leg] store hi back -> COVER SLOT B -> edge -> rejoin over the kept lo
   PHASE 2:     per write batch [ stage(b+1) | expand(b+1) | fold-mma(b) ]
   [window line]
@@ -30,6 +30,15 @@ Every bracketed slot is a NAMED function in the source, whether or not it has a 
 The frame is what a schedule is built into; a stage that arrived later and had to invent
 its own edges would be a schedule retrofitted, which is the shape this arrangement exists
 to prevent.
+
+THE FAN-IN IS THE ONE SLOT THAT DOES NOT RIDE A BATCH BEHIND, and the picture says `fan-in(b)`
+because that is what the source does. Two structural facts forbid the skew, and both are
+arithmetic rather than preference: the panel is ONE set of slices, because `warps_per_cta` of
+them already fill 34,816 of the region's 36,864 bytes ([`smem_ledger.md#panel`](smem_ledger.md#panel)),
+so a second set to deposit into while the first is being summed does not exist at any declared
+value width; and skewing would need `po`/`pm` double-buffered, which is 40 more fp32 registers a
+lane on a census that has none to give. The cover the readout actually gets is the next batch's
+staging in flight and the other warps' drift across the panel line.
 
 <a id="edges"></a>
 ## The three edges, and why there are exactly three
@@ -183,9 +192,21 @@ the prologue (`rcin`, `rcout`) and never inside a window.
 `num` and `den` are planes the readout REDUCES into, and every owner box of every batch-head
 contributes to every token. The warps of a CTA therefore meet FIRST, in shared memory, and
 the CTA then reduces the sum into the planes with one native `red.global.add.f32` per cell.
-The alternative — each warp reaching the plane directly — issues fewer instructions and the
-same sector traffic per issue, and `warps_per_cta` times the L2 atomic traffic; both counts
-are on the stage's ledger and the measured choice between them belongs to the fan-in stage.
+
+THE ALTERNATIVE WAS BUILT AND MEASURED, and it lost. Each warp reaching the plane directly — the
+form the SPARSE readout is obliged to use — issues 288 warp-level reductions per CTA per batch
+against this form's 33, an 8.73x ratio that is structural and that the counters read back exactly.
+Both forms spend four filled 32-byte sectors an issue, so the whole difference is the issue count:
+L2 traffic 168 -> 654 MB at the flagship, of which the fan-in's own share is 69 -> 555 MB. It does
+not even buy the instructions it appears to: the direct form pays a per-token global address and a
+dead-token test PER WARP (IMAD 32, IADD3 11, LOP3 8, LEA 8, and 37 branch instructions a warp a
+batch) where the panel computes one address per cell FOR THE WHOLE CTA and reads the eight slices
+at a constant stride, so the two sections cost 145.0 and 154.6 instructions a warp a batch — a 6%
+saving, against 1.39x the wall time and 3.2x the stall samples. THE PANEL AMORTISES ADDRESSING
+ACROSS THE CTA; THE DIRECT FORM REPLICATES IT PER WARP. That is the measured reason this form
+stands, and the direct form's price falls with the density rather than being paid flat, which is
+why the sparse body is right to take it: below one contribution per token it issues FEWER global
+reductions than this floor.
 
 THE WARPS MEET WITHOUT AN ATOM. Each warp writes its own PANEL SLICE whole — an accumulator
 element belongs to exactly one lane of exactly one warp, so the slices are disjoint by

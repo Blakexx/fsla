@@ -99,6 +99,11 @@ contribution per owner box per token rather than one per warp (`carry_kernel.md#
 Each warp writes its own slice WHOLE — an accumulator element belongs to exactly one lane of
 one warp — so the slices are disjoint, nothing contends, and there is no atom in the path.
 
+The panel's REASON is measured, not assumed: the form without it — every warp reducing into
+the planes directly — is 1.39x slower at the flagship and 1.10-1.14x at the small cells, because
+it multiplies the global reductions by `warps_per_cta` while saving only 6% of the section's
+instructions (`carry_kernel.md#fan-in`). These 34,816 bytes buy an 8.73x cut in L2 atomic traffic.
+
 `kPanelTokens` is DERIVED: the widest power-of-two token count up to `kSeg` whose
 `warps_per_cta` slices fit inside the region. The region's size is `BC * kLdX * 2` and `BC`
 falls as the value width rises, while a slice's width rises with it — so the grain is the

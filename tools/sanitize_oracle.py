@@ -115,6 +115,17 @@ _FAMILIES = {
     #: the state slice's two sweeps, the window loop's three edges, the segment ring's
     #: asynchronous staging and one deposit's MMA, in one launch small enough to run under
     #: the heaviest instrumentation this repository has.
+    #: THIS ROW'S RACECHECK IS THE ONE STANDING RED, and K4 narrowed it to a mechanism.
+    #: It is NOT the pytest wrapper: the bare driver is OOM-killed at 23.4 GB too. It is NOT
+    #: the cell: `single-deposit` (sixteen tokens, one box, one window) fails identically to
+    #: `one-box-multiwindow`. It is NOT the union fold: isolated (below) that runs CLEAN over
+    #: two windows. It is THE UNION READOUT'S FAN-IN PANEL, whose barrier interval holds
+    #: `warps_per_cta` slices of `kPanelTokens x kLdO` fp32 written by eight warps and then
+    #: read by all 256 threads with no edge between -- 34,816 bytes of shared accesses in ONE
+    #: interval, and racecheck's shadow state is per access per interval. The size does not
+    #: fall with the token count, because the panel is written whole every batch. The row
+    #: returns at an arm that narrows the interval -- DV = 32 or warps_per_cta = 4, both
+    #: DECLARED and unbuilt -- or on a bigger host; it is not fixed by choosing another cell.
     "carry": Family(
         test="tests/oracle/test_carry_vs_oracle.py::"
              "test_one_token_writing_one_leaf_is_the_oracles_single_deposit",
@@ -123,10 +134,18 @@ _FAMILIES = {
     #: round more than once and the window loop more than once: the claimed fill, the two
     #: stream edges, the shared value slot every warp drains and the factor ring the
     #: cover slot starts. The single deposit above cannot reach any of them.
+    #: RACECHECK TAKES THE BARE DRIVER AND ISOLATES THIS BODY: `--phase fold` zeroes the read
+    #: plane and the readout runs in its SPARSE form, so it reaps everything and the union
+    #: readout's panel -- the row above's blocker -- is not in the interval. What remains
+    #: instrumented is exactly this row's subject, over two windows at a 1x1 grid where
+    #: racecheck's shared-memory-only coverage is complete by construction.
     "carry_fold": Family(
         test="tests/oracle/test_carry_vs_oracle.py::"
              "test_the_folded_state_is_the_fp64_reference[flat-small-multiwindow]",
-        kernel="rola::carry::carry_forward", present=True),
+        kernel="rola::carry::carry_forward", present=True,
+        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-multiwindow",
+                          "--phase", "fold", "--readout", "sparse", "--fold", "union",
+                          "--grain", "16")),
     #: THE TWO SPARSE BODIES, on the ONE-BOX cell -- `N = BC`, so the grid is 1x1 and the
     #: coverage is COMPLETE BY CONSTRUCTION: racecheck sees only shared memory, shared memory
     #: is CTA-local, and every CTA of this family runs identical code. At G = 16 the cell runs
