@@ -736,13 +736,13 @@ __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
   });
 }
 
-//: DEPOSIT ONE TILE: `kMCh x kNL` MMAs, the tile as the k-step, into the resident accumulator.
-template <class BP>
+//: DEPOSIT ONE TILE into a PASS's n-tiles: `kMCh x Tiles` MMAs, the tile as the k-step.
+template <class BP, int J0, int Tiles>
 __device__ __forceinline__ void pool_deposit(Acc<BP>& acc, const Frags<BP>& f) {
   rola::static_for<BP::kMCh>([&](auto Mc) {
     constexpr int mc = decltype(Mc)::value;
-    rola::static_for<BP::kNL>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
+    rola::static_for<Tiles>([&](auto Jc) {
+      constexpr int j = J0 + decltype(Jc)::value;
       ops::mma(acc.c[mc][j], f.vf[mc], f.bf[j]);
     });
   });
@@ -756,18 +756,54 @@ __device__ __forceinline__ void pool_pad_tile(unsigned short* list, int count, i
   if (i < taken + BP::kSeg) list[i & (BP::kListEntries - 1)] = (unsigned short)BP::kPoolPos;
 }
 
-//: PHASE 2, in BATCHES of the pool: fill the batch, build the list under the copies, one
-//: edge, deposit every tile with the next tile's gather in front of it, pad the tail with
-//: the dead row, one edge. Nothing is reclaimed inside a batch, so nothing is tracked.
-//: -- see docs/internals/carry/carry_kernel.md#fold
+//: ONE PASS of a batch: a box's list from its own liveness words, its whole tiles with each
+//: gather in front of the previous deposits, its tail padded to the dead row.
+template <class BP, int D, int NS, int WA, int J0, int Tiles>
+__device__ __forceinline__ void pool_pass(const Smem<BP>& sm, Acc<BP>& acc,
+                                          const int (&scol)[D][BP::kNL], int warp, int lane,
+                                          uint32_t mask, int r0, int rEnd) {
+  unsigned short* const list = sm.fold_list(warp);
+  int count = 0;
+#pragma unroll 1
+  for (int r = r0; r < rEnd; ++r) {
+    const uint32_t live = (uint32_t)ops::lane_broadcast((int)mask, r);
+    const int rank = __popc(live & ops::lanes_below());
+    if ((live >> lane) & 1u)
+      list[(count + rank) & (BP::kListEntries - 1)] =
+          (unsigned short)pool_slot<BP>(r * kRoundTokens + lane);
+    count += __popc(live);
+  }
+  const int whole = count & ~(BP::kSeg - 1);
+  if (count > whole) pool_pad_tile<BP>(list, count, whole, lane);
+  const int tiles = (count + BP::kSeg - 1) / BP::kSeg;
+  __syncwarp();
+  if (tiles == 0) return;
+
+  Frags<BP> f[2];
+  pool_gather<BP, D, NS, WA>(sm, f[0], scol, warp, lane, 0);
+#pragma unroll 1
+  for (int t = 0; t + 1 < tiles; t += 2) {
+    pool_gather<BP, D, NS, WA>(sm, f[1], scol, warp, lane, (t + 1) * BP::kSeg);
+    pool_deposit<BP, J0, Tiles>(acc, f[0]);
+    if (t + 2 < tiles) pool_gather<BP, D, NS, WA>(sm, f[0], scol, warp, lane, (t + 2) * BP::kSeg);
+    pool_deposit<BP, J0, Tiles>(acc, f[1]);
+  }
+  if (tiles & 1) pool_deposit<BP, J0, Tiles>(acc, f[0]);
+  __syncwarp();
+}
+
+//: PHASE 2, in BATCHES of the pool: fill the batch (the union of the warps' boxes), one edge,
+//: then one PASS per box the warp owns -- its own list over the same rows into its own
+//: n-tiles, the reap at the box's grain -- and one edge. Nothing is reclaimed inside a
+//: batch, so nothing is tracked. -- see docs/internals/carry/carry_kernel.md#fold
 template <class BP, int D, int NS, int WA>
 __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>& sm, Acc<BP>& acc,
                                            const int (&scol)[D][BP::kNL], const int (&abase)[D],
                                            int warp, int lane, int bh, int t0, int wLen,
-                                           uint32_t mask) {
+                                           const uint32_t (&mask)[BP::kFoldBoxes]) {
   constexpr int kRoundsPerBatch = BP::kPoolPos / kRoundTokens;
+  constexpr int kTilesPerBox = BP::kNL / BP::kFoldBoxes;
   const int nRounds = (wLen + kRoundTokens - 1) / kRoundTokens;
-  unsigned short* const list = sm.fold_list(warp);
 
   if (warp == 0) pool_zero_dead_row<BP>(sm, lane);
 
@@ -777,40 +813,14 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
 #pragma unroll 1
     for (int r = r0; r < rEnd; ++r)
       pool_fill_round<BP, D>(p, sm, abase, warp, lane, bh, t0, wLen, r);
-
-    //: the batch's list, from the mask words alone, under the copies.
-    int count = 0;
-#pragma unroll 1
-    for (int r = r0; r < rEnd; ++r) {
-      const uint32_t live = (uint32_t)ops::lane_broadcast((int)mask, r);
-      const int rank = __popc(live & ops::lanes_below());
-      if ((live >> lane) & 1u)
-        list[(count + rank) & (BP::kListEntries - 1)] =
-            (unsigned short)pool_slot<BP>(r * kRoundTokens + lane);
-      count += __popc(live);
-    }
-    const int whole = count & ~(BP::kSeg - 1);
-    if (count > whole) pool_pad_tile<BP>(list, count, whole, lane);
-    const int tiles = (count + BP::kSeg - 1) / BP::kSeg;
-
     ops::stage_wait<0>();
     ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
 
-    //: the tiles, each gathered in front of the deposits that cover its gather.
-    if (tiles > 0) {
-      Frags<BP> f[2];
-      pool_gather<BP, D, NS, WA>(sm, f[0], scol, warp, lane, 0);
-#pragma unroll 1
-      for (int t = 0; t + 1 < tiles; t += 2) {
-        pool_gather<BP, D, NS, WA>(sm, f[1], scol, warp, lane, (t + 1) * BP::kSeg);
-        pool_deposit<BP>(acc, f[0]);
-        if (t + 2 < tiles)
-          pool_gather<BP, D, NS, WA>(sm, f[0], scol, warp, lane, (t + 2) * BP::kSeg);
-        pool_deposit<BP>(acc, f[1]);
-      }
-      if (tiles & 1) pool_deposit<BP>(acc, f[0]);
-    }
-    //: the batch's rows are dead for every warp before the next batch overwrites them.
+    rola::static_for<BP::kFoldBoxes>([&](auto Bc) {
+      constexpr int b = decltype(Bc)::value;
+      pool_pass<BP, D, NS, WA, b * kTilesPerBox, kTilesPerBox>(sm, acc, scol, warp, lane, mask[b],
+                                                               r0, rEnd);
+    });
     ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
   }
 }
@@ -1152,11 +1162,16 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     return_leg_store<BP, D, BC>(p, sm, tr, warp, lane);
     int wbase[D];
     factor_runs(wbase);
-    const uint32_t fold_mask =
-        stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, wbase, warp, lane, bh, 0,
-                                geom_ilog2(BP::kLeavesPerWarp), t0, nWords);
-    if (lane < nWords && fold_mask)
-      ops::or_shared_u32(ops::smem_addr(sm.cta_live() + lane), fold_mask);
+    uint32_t fold_mask[BP::kFoldBoxes];
+    uint32_t warp_live = 0u;
+    rola::static_for<BP::kFoldBoxes>([&](auto Bc) {
+      constexpr int b = decltype(Bc)::value;
+      fold_mask[b] = stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, wbase, warp, lane, bh,
+                                             b * BP::kFoldBoxLeaves, BP::kFoldBoxBits, t0, nWords);
+      warp_live |= fold_mask[b];
+    });
+    if (lane < nWords && warp_live)
+      ops::or_shared_u32(ops::smem_addr(sm.cta_live() + lane), warp_live);
     ops::rendezvous_group((int)Edge::kReturnLeg, BP::kThreads);
     return_leg_rejoin<BP, D, BC>(p, sm, tr, acc, warp, lane);
 

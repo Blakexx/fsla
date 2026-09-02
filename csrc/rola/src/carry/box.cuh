@@ -111,6 +111,11 @@ struct BoxPlan {
   static constexpr int kReadSlots = 2;
   static constexpr int kReadRawBytes = kReadSlots * kRawSlotBytes;
 
+  //: THE FOLD'S BOXES per warp: one pass each, at the page's grain. -- kernel.md#fold
+  static constexpr int kFoldBoxLeaves = kAtomLeaves;
+  static constexpr int kFoldBoxBits = geom_ilog2(kAtomLeaves);
+  static constexpr int kFoldBoxes = kLeavesPerWarp / kFoldBoxLeaves;
+
   //: THE POOL's rows and the per-warp lists. -- see docs/internals/carry/smem_ledger.md#pool
   static constexpr int kVRowBytes = kDv * 2;
   static constexpr int kAmpStride = amp_stride(kSpanTotal);
@@ -213,6 +218,8 @@ struct BoxPlan {
   static_assert(kBC % kAtomLeaves == 0, "a CTA box is a whole number of pages");
   static_assert(kLeavesPerWarp % denseref::ops::kMmaN == 0,
                 "a warp's leaves are a whole number of accumulator n-tiles");
+  static_assert(kLeavesPerWarp % kFoldBoxLeaves == 0 && kNL % kFoldBoxes == 0,
+                "a warp's boxes are whole n-tile groups");
   static_assert(kWindow % kSeg == 0, "the window is a whole number of segments");
   static_assert(kMassRow == 0, "the mass channel opens the accumulator's last m-tile");
 
