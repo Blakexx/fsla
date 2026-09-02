@@ -60,17 +60,27 @@ def _carry_operands(fx):
 
 
 def _carry_schedule(name: str, spec):
-    """``union`` | ``sparse`` | ``sparse-gN`` -> the launch's read-side dials."""
+    """``union`` | ``sparse`` | ``sparse-gN`` | ``sparse-gN-fM`` | ``union-fM`` -> the launch's
+    dials: the read side's form and grain N, and the fold's pass grain M (the warp box when
+    unnamed)."""
     from rola.ops import carry as carry_ops
 
-    if name == "union":
+    box = carry_ops.leaves_per_warp(spec.dv)
+    parts = name.split("-")
+    form = parts[0]
+    if form not in ("union", "sparse"):
+        raise ValueError(f"schedule {name!r} is union[-fM], sparse[-gN][-fM]")
+    read = fold = None
+    for part in parts[1:]:
+        if part.startswith("g"):
+            read = min(int(part[1:]), box)
+        elif part.startswith("f"):
+            fold = min(int(part[1:]), box)
+        else:
+            raise ValueError(f"schedule {name!r}: {part!r} is neither gN nor fM")
+    if form == "union" and read is None and fold is None:
         return None
-    if not name.startswith("sparse"):
-        raise ValueError(f"schedule {name!r} is union, sparse or sparse-gN")
-    grain = int(name.split("-g", 1)[1]) if "-g" in name else None
-    if grain is not None:
-        grain = min(grain, carry_ops.leaves_per_warp(spec.dv))
-    return carry_ops.CarrySchedule(readout="sparse", readout_grain=grain, fold_grain=grain)
+    return carry_ops.CarrySchedule(readout=form, readout_grain=read, fold_grain=fold)
 
 
 def carry_forward(fx) -> Arm:
