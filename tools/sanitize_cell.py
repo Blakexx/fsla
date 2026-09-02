@@ -65,7 +65,8 @@ def main() -> int:
         call["liveness"] = carry_ops.LivenessWords(words=words)
     grain = args.grain or None
     schedule = carry_ops.CarrySchedule(
-        readout=args.readout, readout_grain=grain if args.readout == "sparse" else None)
+        readout=args.readout, readout_grain=grain if args.readout == "sparse" else None,
+        fold_grain=grain)
     state = carry_ops.state_plane(call["descriptor"], 1)
     num, den = carry_ops.carry_forward(routes, v, state_in=None, state_out=state,
                                        schedule=schedule, **call)

@@ -358,7 +358,7 @@ SPARSE_GRAINS = (None, carry_ops.PAGE_LEAVES)
 def sparse(spec, grain):
     box = carry_ops.leaves_per_warp(spec.dv)
     g = None if grain is None else min(grain, box)
-    return carry_ops.CarrySchedule(readout="sparse", readout_grain=g)
+    return carry_ops.CarrySchedule(readout="sparse", readout_grain=g, fold_grain=g)
 
 
 SPARSE_ROWS = [(cell, g) for cell in ORACLE_CELLS for g in SPARSE_GRAINS]

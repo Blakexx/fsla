@@ -121,21 +121,24 @@ FORMS: tuple[str, ...] = ("union", "sparse")
 
 @dataclass(frozen=True, slots=True)
 class CarrySchedule:
-    """THE READ SIDE'S RUNTIME DIALS -- the primitive ledger's class 3, and nothing else.
+    """THE RUNTIME DIALS -- the primitive ledger's class 3, and nothing else.
 
-    ``readout`` names the read side's FORM; ``readout_grain`` names its STREAM GRAIN ``G``
-    in LEAVES -- the leaf range one stream keys on. Both are RUNTIME: they enter the kernel
-    as a switch outside the window loop and as a loop bound and a warp-uniform tile
-    predicate inside it, and neither grows a template. The write side has ONE body -- the
-    pool fold -- and no dial: its stream is the warp's box and its reap is the list.
+    ``readout`` names the read side's FORM and ``readout_grain`` its STREAM GRAIN ``G`` in
+    LEAVES -- the leaf range one stream keys on. ``fold_grain`` is the fold's PASS grain: the
+    stream box a pass of the pool fold reaps at; a warp's box holds ``leaves_per_warp / G``
+    of them and walks them in turn over the same rows. All three are RUNTIME: a switch outside
+    the window loop, loop bounds and warp-uniform tile predicates inside it; none grows a
+    template. The fold has ONE body whatever its grain.
 
-    A ``None`` grain takes the side's own default: the warp sub-box for the union form
-    (which IS one stream spanning the box) and the reaping bound ``G_min`` for the sparse
-    form, clamped into ``[PAGE_LEAVES, leaves_per_warp]``.
+    A ``None`` grain takes the side's own default: the warp sub-box (one stream spanning the
+    box -- the measured default for the fold at every density, and what the union readout IS),
+    or, for the sparse readout, the reaping bound ``G_min`` clamped into
+    ``[PAGE_LEAVES, leaves_per_warp]``.
     """
 
     readout: str = "union"
     readout_grain: int | None = None
+    fold_grain: int | None = None
 
     def __post_init__(self) -> None:
         if self.readout not in FORMS:
@@ -144,27 +147,32 @@ class CarrySchedule:
                 f"{FORMS}. The body is selected once per launch, outside the window loop.")
 
     def flat(self, DV: int, grain_min: int) -> list[int]:
-        """The two entries the kernel boundary takes: the form, then the grain."""
+        """The three entries the kernel boundary takes: the read form, then the two grains."""
         box = leaves_per_warp(DV)
+
+        def lawful(name: str, grain: int) -> int:
+            if grain & (grain - 1) or not PAGE_LEAVES <= grain <= box:
+                raise CarryRefusal(
+                    f"{name}={grain} is not a lawful grain: a power of two between the page "
+                    f"rectangle ({PAGE_LEAVES}) and the warp sub-box ({box}). A finer grain "
+                    f"would divide the innermost digits below the vector width "
+                    f"(KERNEL_STANDARDS.md §R13).")
+            return grain
+
         if self.readout == "union":
-            grain = box
+            read = box
+            if self.readout_grain is not None and int(self.readout_grain) != box:
+                raise CarryRefusal(
+                    f"readout={self.readout!r} names a grain of {self.readout_grain}; the union "
+                    f"body is the ONE-STREAM point of the family, so its grain is the warp "
+                    f"sub-box ({box}) and naming another is naming two different schedules.")
         else:
-            grain = box if self.readout_grain is None else int(self.readout_grain)
+            read = lawful("readout_grain", box if self.readout_grain is None
+                          else int(self.readout_grain))
             if self.readout_grain is None:
-                grain = min(box, max(PAGE_LEAVES, grain_min))
-        if grain & (grain - 1) or not PAGE_LEAVES <= grain <= box:
-            raise CarryRefusal(
-                f"readout_grain={grain} is not a lawful stream grain: a power of two "
-                f"between the page rectangle ({PAGE_LEAVES}) and the warp sub-box "
-                f"({box}). A finer stream than the page rectangle would divide the "
-                f"innermost digits below the vector width (KERNEL_STANDARDS.md §R13).")
-        if self.readout == "union" and self.readout_grain is not None \
-                and int(self.readout_grain) != box:
-            raise CarryRefusal(
-                f"readout={self.readout!r} names a grain of {self.readout_grain}; the union "
-                f"body is the ONE-STREAM point of the family, so its grain is the warp "
-                f"sub-box ({box}) and naming another is naming two different schedules.")
-        return [FORMS.index(self.readout), grain]
+                read = min(box, max(PAGE_LEAVES, grain_min))
+        fold = lawful("fold_grain", box if self.fold_grain is None else int(self.fold_grain))
+        return [FORMS.index(self.readout), read, fold]
 
 
 #: THE MODE WORD'S ENCODING, as `csrc/rola/src/common/geom.cuh` spells it and

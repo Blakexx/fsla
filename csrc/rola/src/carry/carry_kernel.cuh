@@ -540,6 +540,12 @@ __device__ __forceinline__ void readout_phase(const CarryParams& p, const Smem<B
   }
 }
 
+//: the live-token masks of one stream box (defined with the streams below).
+template <class BP, int D, int BC>
+__device__ __forceinline__ uint32_t stream_masks(const CarryParams& p, const SideGeom& sg, int side,
+                                                 const int (&abase)[D], int warp, int lane, int bh,
+                                                 int P0, int gbits, int t0, int nWords);
+
 // ------------------------------------------------------------------- PHASE 2's fold
 
 //: THE POOL: this window's rows keyed by POSITION -- the value row and the box's amplitude
@@ -547,11 +553,6 @@ __device__ __forceinline__ void readout_phase(const CarryParams& p, const Smem<B
 //: (`ldmatrix` at per-lane row addresses). Row `kPoolPos` is the DEAD ROW a padded tile reads.
 //: -- see docs/internals/carry/carry_kernel.md#pool
 constexpr int kRoundTokens = 32;
-
-template <class BP>
-__device__ __forceinline__ int pool_slot(int pos) {
-  return pos & (BP::kPoolPos - 1);
-}
 
 //: THE DEAD ROW, zeroed once per window because the pool shares the transit's bytes.
 template <class BP>
@@ -566,77 +567,74 @@ __device__ __forceinline__ void pool_zero_dead_row(const Smem<BP>& sm, int lane)
   }
 }
 
-//: ONE ROUND'S FILL, this warp's four positions. Value rows by `cp.async`; the OUTERMOST
-//: amplitude run through registers, the gain folded into it here once per position rather
-//: than once per leaf at the deposit; the runs below it by `cp.async`. A position past the
-//: window's end is not written at all: its slot may be another position's, still listed.
+//: ONE POSITION'S ROWS into a slot, by lanes `l0 .. l0 + 7`: the value row's eight quanta
+//: by `cp.async`; the OUTERMOST amplitude run through registers with the gain folded in
+//: (`kWords0` words, one per lane); the runs below by `cp.async` at their quantum.
 template <class BP, int D>
-__device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem<BP>& sm,
-                                                const int (&abase)[D], int warp, int lane, int bh,
-                                                int t0, int wLen, int round) {
+__device__ __forceinline__ void pool_copy_position(const CarryParams& p, const Smem<BP>& sm,
+                                                   const int (&abase)[D], int sub, int bh, int tok,
+                                                   int slot) {
   constexpr int kGroups = BP::kDv / 8;
-  static_assert(kUnitTokens * kGroups == ops::kBallotLanes,
-                "one round's value rows are one cp.async per lane");
-  const int pos0 = round * kRoundTokens + warp * kUnitTokens;
+  static_assert(kGroups == 8, "a value row is eight sixteen-byte quanta, one per lane of eight");
   const uint32_t plane = (uint32_t)bh * (uint32_t)p.L * (uint32_t)p.g.wtot * 2u;
-  //: a position no warp's box will list is not copied at all.
-  const uint32_t live = sm.cta_live()[round];
-  if (((live >> (warp * kUnitTokens)) & ((1u << kUnitTokens) - 1u)) == 0u) {
-    ops::stage_commit();
-    return;
-  }
-
+  const uint32_t row = plane + (uint32_t)tok * (uint32_t)p.g.wtot * 2u;
   {
-    const int row = lane / kGroups, group = lane % kGroups;
-    const int pos = pos0 + row;
-    if (pos < wLen && ((live >> (pos & 31)) & 1u)) {
-      const int tok = t0 + pos, slot = pool_slot<BP>(pos);
-      const uint32_t off = ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * (uint32_t)BP::kDv * 2u
-                           + (uint32_t)(group * 16);
-      ops::stage_tile(sm.pool_v() + (uint32_t)v_group_offset<BP>(slot, group),
-                      ops::gather_ptr(p.v, off));
-    }
+    const uint32_t off = ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * (uint32_t)BP::kDv * 2u
+                         + (uint32_t)(sub * 16);
+    ops::stage_tile(sm.pool_v() + (uint32_t)v_group_offset<BP>(slot, sub),
+                    ops::gather_ptr(p.v, off));
   }
-
   {
     constexpr int kWords0 = owner_span(D, BP::kBC, 0) / 2;
     constexpr int kBase0 = span_base(D, BP::kBC, 0);
-    static_assert(kUnitTokens * kWords0 <= ops::kBallotLanes,
-                  "the outermost run's words for one round fit one pass of lanes");
-    const int row = lane / kWords0, word = lane % kWords0;
-    const int pos = pos0 + row;
-    if (row < kUnitTokens && pos < wLen && ((live >> (pos & 31)) & 1u)) {
-      const int tok = t0 + pos, slot = pool_slot<BP>(pos);
-      const uint32_t src =
-          plane + (uint32_t)tok * (uint32_t)p.g.wtot * 2u + (uint32_t)((abase[0] + 2 * word) * 2);
-      const uint32_t a = *reinterpret_cast<const uint32_t*>(ops::gather_ptr(p.pwrite, src));
+    static_assert(kWords0 <= 8, "the outermost run is at most eight words per position");
+    if (sub < kWords0) {
+      const uint32_t a = *reinterpret_cast<const uint32_t*>(
+          ops::gather_ptr(p.pwrite, row + (uint32_t)((abase[0] + 2 * sub) * 2)));
       const unsigned short g = *reinterpret_cast<const unsigned short*>(
           ops::gather_ptr(p.gwrite, ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * 2u));
-      ops::store_shared_u32(sm.pool_amp(slot) + (uint32_t)((kBase0 + 2 * word) * 2),
+      ops::store_shared_u32(sm.pool_amp(slot) + (uint32_t)((kBase0 + 2 * sub) * 2),
                             ops::mul_bf16x2(a, ops::splat_bf16x2_bits(g)));
     }
   }
-
   rola::static_for<D - 1>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value + 1;
     constexpr int kSpan = owner_span(D, BP::kBC, l);
     constexpr int kBase = span_base(D, BP::kBC, l);
     constexpr int kQ = run_quantum(kSpan, kBase, BP::kAmpStride);
     constexpr int kPerToken = kSpan * 2 / kQ;
-    constexpr int kQuanta = kUnitTokens * kPerToken;
-    rola::static_for<(kQuanta + 31) / 32>([&](auto Ic) {
-      const int idx = decltype(Ic)::value * 32 + lane;
-      if (kQuanta % 32 != 0 && idx >= kQuanta) return;
-      const int row = idx / kPerToken, q = idx % kPerToken;
-      const int pos = pos0 + row;
-      if (pos >= wLen || !((live >> (pos & 31)) & 1u)) return;
-      const int tok = t0 + pos, slot = pool_slot<BP>(pos);
-      const uint32_t off =
-          plane + (uint32_t)tok * (uint32_t)p.g.wtot * 2u + (uint32_t)(abase[l] * 2 + q * kQ);
-      ops::stage_run<kQ>(sm.pool_amp(slot) + (uint32_t)(kBase * 2 + q * kQ),
-                         ops::gather_ptr(p.pwrite, off));
-    });
+    static_assert(kPerToken <= 8, "a level's run is at most eight quanta per position");
+    if (sub < kPerToken)
+      ops::stage_run<kQ>(sm.pool_amp(slot) + (uint32_t)(kBase * 2 + sub * kQ),
+                         ops::gather_ptr(p.pwrite, row + (uint32_t)(abase[l] * 2 + sub * kQ)));
   });
+}
+
+//: ONE ROUND'S FILL, by the round's OWNER warp: the round's live lanes rank themselves once
+//: and write their positions into the warp's scratch (the list buffer, idle until the passes),
+//: so each step's four positions are one load, their ranks `prefix + idx`; those whose slot
+//: falls in the batch are copied, eight lanes to a position.
+template <class BP, int D>
+__device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem<BP>& sm,
+                                                const int (&abase)[D], int warp, int lane, int bh,
+                                                int t0, int round, uint32_t live, int prefix,
+                                                int base) {
+  unsigned short* const scratch = sm.fold_list(warp);
+  const int n = __popc(live);
+  if ((live >> lane) & 1u) scratch[__popc(live & ops::lanes_below())] = (unsigned short)lane;
+  __syncwarp();
+  const int g = lane >> 3, sub = lane & 7;
+#pragma unroll 1
+  for (int s = 0; s < n; s += 4) {
+    const int idx = s + g;
+    if (idx < n) {
+      const int slot = prefix + idx - base;
+      if (slot >= 0 && slot < BP::kPoolPos)
+        pool_copy_position<BP, D>(p, sm, abase, sub, bh,
+                                  t0 + round * kRoundTokens + (int)scratch[idx], slot);
+    }
+  }
+  __syncwarp();
   ops::stage_commit();
 }
 
@@ -736,13 +734,16 @@ __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
   });
 }
 
-//: DEPOSIT ONE TILE into a PASS's n-tiles: `kMCh x Tiles` MMAs, the tile as the k-step.
-template <class BP, int J0, int Tiles>
-__device__ __forceinline__ void pool_deposit(Acc<BP>& acc, const Frags<BP>& f) {
+//: DEPOSIT ONE TILE into a PASS's n-tiles `[tile0, tile0 + tiles)`: the range is uniform, so
+//: the tiles outside it are skipped by a branch and the accumulator's indices stay static.
+template <class BP>
+__device__ __forceinline__ void pool_deposit(Acc<BP>& acc, const Frags<BP>& f, int tile0,
+                                             int tiles) {
   rola::static_for<BP::kMCh>([&](auto Mc) {
     constexpr int mc = decltype(Mc)::value;
-    rola::static_for<Tiles>([&](auto Jc) {
-      constexpr int j = J0 + decltype(Jc)::value;
+    rola::static_for<BP::kNL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      if (j < tile0 || j >= tile0 + tiles) return;
       ops::mma(acc.c[mc][j], f.vf[mc], f.bf[j]);
     });
   });
@@ -758,20 +759,26 @@ __device__ __forceinline__ void pool_pad_tile(unsigned short* list, int count, i
 
 //: ONE PASS of a batch: a box's list from its own liveness words, its whole tiles with each
 //: gather in front of the previous deposits, its tail padded to the dead row.
-template <class BP, int D, int NS, int WA, int J0, int Tiles>
+template <class BP, int D, int NS, int WA>
 __device__ __forceinline__ void pool_pass(const Smem<BP>& sm, Acc<BP>& acc,
                                           const int (&scol)[D][BP::kNL], int warp, int lane,
-                                          uint32_t mask, int r0, int rEnd) {
+                                          uint32_t mask, uint32_t cta, int prefix, int nRounds,
+                                          int base, int tile0, int ntiles) {
   unsigned short* const list = sm.fold_list(warp);
   int count = 0;
 #pragma unroll 1
-  for (int r = r0; r < rEnd; ++r) {
+  for (int r = 0; r < nRounds; ++r) {
     const uint32_t live = (uint32_t)ops::lane_broadcast((int)mask, r);
-    const int rank = __popc(live & ops::lanes_below());
-    if ((live >> lane) & 1u)
-      list[(count + rank) & (BP::kListEntries - 1)] =
-          (unsigned short)pool_slot<BP>(r * kRoundTokens + lane);
-    count += __popc(live);
+    const uint32_t uni = (uint32_t)ops::lane_broadcast((int)cta, r);
+    const int ex = ops::lane_broadcast(prefix, r);
+    //: this lane's position's slot: its rank among the CTA's live positions, less the base.
+    const int slot = ex + __popc(uni & ops::lanes_below()) - base;
+    const bool in = ((live >> lane) & 1u) && slot >= 0 && slot < BP::kPoolPos;
+    const uint32_t taking = ops::lane_ballot(in);
+    if (in)
+      list[(count + __popc(taking & ops::lanes_below())) & (BP::kListEntries - 1)] =
+          (unsigned short)slot;
+    count += __popc(taking);
   }
   const int whole = count & ~(BP::kSeg - 1);
   if (count > whole) pool_pad_tile<BP>(list, count, whole, lane);
@@ -784,43 +791,57 @@ __device__ __forceinline__ void pool_pass(const Smem<BP>& sm, Acc<BP>& acc,
 #pragma unroll 1
   for (int t = 0; t + 1 < tiles; t += 2) {
     pool_gather<BP, D, NS, WA>(sm, f[1], scol, warp, lane, (t + 1) * BP::kSeg);
-    pool_deposit<BP, J0, Tiles>(acc, f[0]);
+    pool_deposit<BP>(acc, f[0], tile0, ntiles);
     if (t + 2 < tiles) pool_gather<BP, D, NS, WA>(sm, f[0], scol, warp, lane, (t + 2) * BP::kSeg);
-    pool_deposit<BP, J0, Tiles>(acc, f[1]);
+    pool_deposit<BP>(acc, f[1], tile0, ntiles);
   }
-  if (tiles & 1) pool_deposit<BP, J0, Tiles>(acc, f[0]);
+  if (tiles & 1) pool_deposit<BP>(acc, f[0], tile0, ntiles);
   __syncwarp();
 }
 
-//: PHASE 2, in BATCHES of the pool: fill the batch (the union of the warps' boxes), one edge,
-//: then one PASS per box the warp owns -- its own list over the same rows into its own
-//: n-tiles, the reap at the box's grain -- and one edge. Nothing is reclaimed inside a
-//: batch, so nothing is tracked. -- see docs/internals/carry/carry_kernel.md#fold
-template <class BP, int D, int NS, int WA>
+//: PHASE 2, in BATCHES of the pool BY RANK: the CTA's live positions, in order, `kPoolPos`
+//: at a time -- one batch when the window's live count fits. Fill the batch (each round by
+//: its owner warp), one edge, one PASS per stream box the warp's box holds at the fold's
+//: grain -- its own list over the same rows into its own n-tiles -- one edge. Nothing is
+//: reclaimed inside a batch, so nothing is tracked. -- see docs/internals/carry/carry_kernel.md#fold
+template <class BP, int D, int BC, int NS, int WA>
 __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>& sm, Acc<BP>& acc,
                                            const int (&scol)[D][BP::kNL], const int (&abase)[D],
-                                           int warp, int lane, int bh, int t0, int wLen,
-                                           const uint32_t (&mask)[BP::kFoldBoxes]) {
-  constexpr int kRoundsPerBatch = BP::kPoolPos / kRoundTokens;
-  constexpr int kTilesPerBox = BP::kNL / BP::kFoldBoxes;
+                                           int warp, int lane, int bh, int t0, int wLen) {
   const int nRounds = (wLen + kRoundTokens - 1) / kRoundTokens;
+  const int gbits = p.fold_grain_bits;
+  const int passes = BP::kLeavesPerWarp >> gbits;
+  const int tilesPerPass = (1 << gbits) / ops::kMmaN;
+
+  //: the union's words and their exclusive prefix, one lane per round.
+  const uint32_t cta = lane < nRounds ? sm.cta_live()[lane] : 0u;
+  int prefix = __popc(cta);
+  rola::static_for<5>([&](auto Sc) {
+    constexpr int d = 1 << decltype(Sc)::value;
+    const int up = __shfl_up_sync(0xFFFFFFFFu, prefix, d);
+    if (lane >= d) prefix += up;
+  });
+  const int total = ops::lane_broadcast(prefix, nRounds - 1);
+  prefix -= __popc(cta);
 
   if (warp == 0) pool_zero_dead_row<BP>(sm, lane);
 
 #pragma unroll 1
-  for (int r0 = 0; r0 < nRounds; r0 += kRoundsPerBatch) {
-    const int rEnd = r0 + kRoundsPerBatch < nRounds ? r0 + kRoundsPerBatch : nRounds;
+  for (int base = 0; base < total; base += BP::kPoolPos) {
 #pragma unroll 1
-    for (int r = r0; r < rEnd; ++r)
-      pool_fill_round<BP, D>(p, sm, abase, warp, lane, bh, t0, wLen, r);
+    for (int r = warp; r < nRounds; r += BP::kWarps)
+      pool_fill_round<BP, D>(p, sm, abase, warp, lane, bh, t0, r, ops::lane_broadcast((int)cta, r),
+                             ops::lane_broadcast(prefix, r), base);
     ops::stage_wait<0>();
     ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
 
-    rola::static_for<BP::kFoldBoxes>([&](auto Bc) {
-      constexpr int b = decltype(Bc)::value;
-      pool_pass<BP, D, NS, WA, b * kTilesPerBox, kTilesPerBox>(sm, acc, scol, warp, lane, mask[b],
-                                                               r0, rEnd);
-    });
+#pragma unroll 1
+    for (int pass = 0; pass < passes; ++pass) {
+      const uint32_t mask = stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, abase, warp,
+                                                    lane, bh, pass << gbits, gbits, t0, nRounds);
+      pool_pass<BP, D, NS, WA>(sm, acc, scol, warp, lane, mask, cta, prefix, nRounds, base,
+                               pass * tilesPerPass, tilesPerPass);
+    }
     ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
   }
 }
@@ -1162,14 +1183,13 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     return_leg_store<BP, D, BC>(p, sm, tr, warp, lane);
     int wbase[D];
     factor_runs(wbase);
-    uint32_t fold_mask[BP::kFoldBoxes];
+    //: the union of the warp's stream boxes, for the pool's fill.
     uint32_t warp_live = 0u;
-    rola::static_for<BP::kFoldBoxes>([&](auto Bc) {
-      constexpr int b = decltype(Bc)::value;
-      fold_mask[b] = stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, wbase, warp, lane, bh,
-                                             b * BP::kFoldBoxLeaves, BP::kFoldBoxBits, t0, nWords);
-      warp_live |= fold_mask[b];
-    });
+#pragma unroll 1
+    for (int pass = 0; pass < (BP::kLeavesPerWarp >> p.fold_grain_bits); ++pass)
+      warp_live |=
+          stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, wbase, warp, lane, bh,
+                                  pass << p.fold_grain_bits, p.fold_grain_bits, t0, nWords);
     if (lane < nWords && warp_live)
       ops::or_shared_u32(ops::smem_addr(sm.cta_live() + lane), warp_live);
     ops::rendezvous_group((int)Edge::kReturnLeg, BP::kThreads);
@@ -1194,7 +1214,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
       });
     });
 
-    fold_phase<BP, D, NS, WA>(p, sm, acc, scol, wbase, warp, lane, bh, t0, wLen, fold_mask);
+    fold_phase<BP, D, BC, NS, WA>(p, sm, acc, scol, wbase, warp, lane, bh, t0, wLen);
 
     ops::rendezvous_group((int)Edge::kWindowLine, BP::kThreads);
   }

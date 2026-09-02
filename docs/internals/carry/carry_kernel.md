@@ -274,46 +274,56 @@ V^T[c][t] . Wcoef[t][leaf]`, one `mma.m16n8k16` per (channel m-tile, leaf n-tile
 sixteen tokens. It is WINDOW-BLIND -- a deposit never reads the accumulator, because each
 carries its decay-to-window-end factor -- so a window's tiles chain with no dependency on `C`.
 
-Its operands come from THE POOL (`#pool`): the window's rows keyed by POSITION, filled by
-position and gathered by index. Nothing in the fold is per stream in shared memory; a
-"stream" is a warp's LIST of live positions, and the reap is the list. The phase runs the
-window in BATCHES of the pool's capacity, `kPoolPos` positions:
+Its operands come from THE POOL (`#pool`): the CTA's live positions, in rank order, filled by
+their owner warps and gathered by index. Nothing in the fold is per stream in shared memory; a
+"stream" is a warp's LIST of live slots, and the reap is the list. The phase runs the window's
+live positions in BATCHES of the pool's capacity, `kPoolPos` at a time -- ONE batch whenever
+the window's live count fits:
 
-    for each batch of kPoolPos positions:
-      pool_fill_round, for every round of 32 in the batch   -- this warp's four positions each
-      cp.async.wait_group 0; bar.sync kFoldRound             -- every row visible to every warp
-      for each round: compact the box's live positions into the list; deposit whole tiles
-      pad the batch's tail with the dead row; deposit it
-      bar.sync kFoldRound                                    -- the rows are dead before the next batch's fill
+    the union's words and their prefix, once            -- every warp, one lane per round
+    for each batch of kPoolPos live ranks:
+      pool_fill_round, each round by its owner warp      -- the round's live positions in the batch
+      cp.async.wait_group 0; bar.sync kFoldRound         -- every row visible to every warp
+      pool_pass per box the warp owns                    -- its list, its tiles, its tail padded
+      bar.sync kFoldRound                                -- the rows are dead before the next batch's fill
 
 Two CTA crossings per batch and nothing else CTA-wide inside the phase; no position is
-reclaimed inside a batch, so nothing is tracked. When the window equals the pool (a W tuned to
-the shared-memory budget) there is one batch and the second edge is the window line's.
+reclaimed inside a batch, so nothing is tracked. THE FOLD'S GRAIN is a runtime dial,
+`CarryParams::fold_grain_bits`: a warp's box holds `leaves_per_warp / G` stream boxes and walks
+them in passes, each with its own liveness mask (`stream_masks`), its own list and its own
+n-tiles (`pool_deposit` skips the rest by a uniform predicate, so the accumulator's indices stay
+static). The measured default is the warp box -- one pass, the value fragments gathered once;
+a pass per page reaps at the single-digit tile but repeats the value gathers per pass and
+measured about twice the time on dense routing.
 
 <a id="pool"></a>
-## The pool: filled by position, gathered by index
+## The pool: filled by rank, gathered by index
 
-Per position the pool holds the VALUE ROW (`DV` bf16, `kVRowBytes`) and the AMPLITUDE ROW
-(the box's `D` runs of the write plane, `kAmpStride` halfwords, laid out as `raw_stride`'s
-rows are, at `span_base` per level). Row `kPoolPos` is the DEAD ROW: zero, written once per
-window by `pool_zero_dead_row` because the pool shares the transit region's bytes, and read
-by every entry a padded tile carries.
+Per slot the pool holds the VALUE ROW (`DV` bf16, `kVRowBytes`) and the AMPLITUDE ROW (the
+box's `D` runs of the write plane, `kAmpStride` halfwords, laid out as `raw_stride`'s rows are,
+at `span_base` per level). Row `kPoolPos` is the DEAD ROW: zero, written once per window by
+`pool_zero_dead_row` because the pool shares the transit region's bytes, and read by every
+entry a padded tile carries.
 
-THE FILL IS BY POSITION AND HAS NO CURSOR: in each round of `kRoundTokens` positions warp `w`
-copies positions `32r + 4w .. +3` (`kUnitTokens` of them, `pool_fill_round`). The value rows
-go by `cp.async`, one sixteen-byte quantum per lane. The OUTERMOST run goes through registers
--- a 32-bit word per lane, multiplied by the token's gain (`splat_bf16x2_bits`, `mul_bf16x2`)
-and stored -- so the gain is folded in once per position rather than once per leaf. The runs
-below it go by `cp.async` at the widest quantum their stride admits. THE POOL HOLDS THE UNION
-OF THE WARPS' LIVE POSITIONS: at cover slot B every warp ORs its box's liveness words into the
-CTA's `cta_live` words (one per round, zeroed at the out leg), and the fill copies only the
-positions some warp will list -- a unit with none skips outright. A position past the window's
-end is not written either.
+THE POOL HOLDS THE UNION OF THE WARPS' LIVE POSITIONS, BY RANK. At cover slot B every warp
+ORs its box's liveness words into the CTA's `cta_live` words (one per round of `kRoundTokens`,
+zeroed at the out leg); after the return leg's edge every warp scans them -- lane `r` holds
+round `r`'s word and its exclusive prefix -- so a live position's SLOT is its rank among the
+CTA's live positions less the batch's base. A window whose live count fits `kPoolPos` is one
+batch; the pool fills as far as there are rows to fill.
 
-THE LIST is a warp's own: per round the live lanes of the box's liveness word
-(`stream_masks` over the warp's whole box) rank themselves with `lanes_below` and write their
-pool slot into the warp's `kListEntries`-entry scratch (`fold_list`, 128 bytes, a per-warp
-permutation buffer and not a stream). A tile is sixteen consecutive entries.
+THE FILL HAS NO CURSOR: round `r` is copied by warp `r mod kWarps` (`pool_fill_round`), four
+live positions per step -- lane group `g` takes the g-th remaining live bit -- and each position
+by eight lanes (`pool_copy_position`): the value row's eight quanta by `cp.async`, the OUTERMOST
+run through registers with the token's gain folded in (`splat_bf16x2_bits`, `mul_bf16x2`, one
+word per lane) so the gain is applied once per position rather than once per leaf, and the runs
+below it by `cp.async` at the widest quantum their stride admits. A position no box lists is
+never copied.
+
+THE LIST is a warp's own, of pool SLOTS: per round the lanes whose position is live for the box
+AND whose rank falls in the batch rank themselves with a ballot and write their slot into the
+warp's `kListEntries`-entry scratch (`fold_list`, a per-warp permutation buffer and not a
+stream). A tile is sixteen consecutive entries.
 
 <a id="fill"></a>
 ## The readout's fill is claimed, not assigned

@@ -34,8 +34,9 @@ struct CarryParams {
   int L;               //: tokens in the call
   int liveness_words;  //: ceil(L / 32), the class-1 block's word stride
   int readout_form;    //: Form, the read side's
-  //: the read side's `G`, as log2 LEAVES. -- see docs/internals/carry/carry_kernel.md#streams
+  //: `G` per side, as log2 LEAVES. -- see docs/internals/carry/carry_kernel.md#streams
   int readout_grain_bits;
+  int fold_grain_bits;
 };
 
 }  // namespace rola::carry
