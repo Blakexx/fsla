@@ -16,12 +16,14 @@ What this file owns is the CROSS-BINARY comparison, and only that:
     only thing that differs between an "A" run and a "B" run is which compiled extension
     answers `import rola`. The measurement code is this file plus the registry plus the
     subject, all read from the worktree being measured.
-  * INTERLEAVED ROUNDS, A,B,A,B,A,B -- never all of A then all of B. Run-to-run drift on
-    this host is of the same order as the effects being measured, and a block layout lets
-    a clock change or an arriving process land BETWEEN the arms where it is
-    indistinguishable from the change under test. Two separated runs of an UNMOVED
-    control once read 12% apart here; only interleaving same-cell A/B separates a real
-    schedule change from drift.
+  * INTERLEAVED ROUNDS WITH ALTERNATING ORDER, A,B then B,A then A,B -- never all of A
+    then all of B, and never the same arm first in every round. Run-to-run drift on this
+    host is of the same order as the effects being measured: a block layout lets a clock
+    change land BETWEEN the arms, and a fixed order inside every round charges any drift
+    slower than a round wholly to one arm -- this host has a two-state sustained clock
+    ~17% apart with a minutes-long time constant, and the same binary in both arms once
+    read 0.864 vs 0.739 ms under a fixed order. Alternating the order cancels first-
+    position bias; the clock-fixed ncu duration beside every ratio is the check.
   * THE SYMBOL ASSERT. Before it times anything, each worker asks the binary for the
     family's DEVICE-SIDE build stamp -- a fact only a built kernel can produce -- and
     refuses if the binary cannot answer. A path check and a hash check both pass against
@@ -333,10 +335,12 @@ def run_ncu_cell(binary: dict, bench: str, symbol: str, cell: str, lock_path: st
 
 def interleaved_rounds(binaries: list[dict], bench: str, cells: list[str], reps: int,
                        warmup: int, lock_path: str, rounds: int, state: str) -> dict:
-    """A,B,A,B,A,B -- never "all of A then all of B" (this file's second rule)."""
+    """A,B then B,A then A,B -- interleaved, and the first position alternates by round
+    (this file's second rule), so a drift slower than a round is not charged to one arm."""
     per_binary = {b["label"]: [] for b in binaries}
     for index in range(rounds):
-        for binary in binaries:
+        order = binaries if index % 2 == 0 else list(reversed(binaries))
+        for binary in order:
             payload = run_worker(binary, bench, cells, reps, warmup, lock_path, state)
             per_binary[binary["label"]].append({"round": index, **payload})
     return per_binary
