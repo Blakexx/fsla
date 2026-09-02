@@ -54,6 +54,10 @@ struct Smem {
     return reinterpret_cast<unsigned short*>(base + BP::kListOffset + warp * BP::kListBytes);
   }
 
+  __device__ __forceinline__ unsigned int* cta_live() const {
+    return reinterpret_cast<unsigned int*>(base + BP::kCtaLiveOffset);
+  }
+
   __device__ __forceinline__ char* read_raw_slot(int slot) const {
     return base + BP::kReadRawOffset + slot * BP::kRawSlotBytes;
   }
@@ -575,11 +579,17 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
                 "one round's value rows are one cp.async per lane");
   const int pos0 = round * kRoundTokens + warp * kUnitTokens;
   const uint32_t plane = (uint32_t)bh * (uint32_t)p.L * (uint32_t)p.g.wtot * 2u;
+  //: a position no warp's box will list is not copied at all.
+  const uint32_t live = sm.cta_live()[round];
+  if (((live >> (warp * kUnitTokens)) & ((1u << kUnitTokens) - 1u)) == 0u) {
+    ops::stage_commit();
+    return;
+  }
 
   {
     const int row = lane / kGroups, group = lane % kGroups;
     const int pos = pos0 + row;
-    if (pos < wLen) {
+    if (pos < wLen && ((live >> (pos & 31)) & 1u)) {
       const int tok = t0 + pos, slot = pool_slot<BP>(pos);
       const uint32_t off = ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * (uint32_t)BP::kDv * 2u
                            + (uint32_t)(group * 16);
@@ -595,7 +605,7 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
                   "the outermost run's words for one round fit one pass of lanes");
     const int row = lane / kWords0, word = lane % kWords0;
     const int pos = pos0 + row;
-    if (row < kUnitTokens && pos < wLen) {
+    if (row < kUnitTokens && pos < wLen && ((live >> (pos & 31)) & 1u)) {
       const int tok = t0 + pos, slot = pool_slot<BP>(pos);
       const uint32_t src =
           plane + (uint32_t)tok * (uint32_t)p.g.wtot * 2u + (uint32_t)((abase[0] + 2 * word) * 2);
@@ -619,7 +629,7 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
       if (kQuanta % 32 != 0 && idx >= kQuanta) return;
       const int row = idx / kPerToken, q = idx % kPerToken;
       const int pos = pos0 + row;
-      if (pos >= wLen) return;
+      if (pos >= wLen || !((live >> (pos & 31)) & 1u)) return;
       const int tok = t0 + pos, slot = pool_slot<BP>(pos);
       const uint32_t off =
           plane + (uint32_t)tok * (uint32_t)p.g.wtot * 2u + (uint32_t)(abase[l] * 2 + q * kQ);
@@ -1089,6 +1099,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     //: stages its shared ring here; the sparse readout folds its first stream's liveness,
     //: which reads the class-1 words and nothing else.
     out_leg_publish<BP, D, BC>(p, sm, acc, tr, warp, lane);
+    if (warp == 0 && lane < kWindow / 32) sm.cta_live()[lane] = 0u;
     int abase[D];
     factor_runs(abase);
     uint32_t read_mask = 0u;
@@ -1144,6 +1155,8 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     const uint32_t fold_mask =
         stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, wbase, warp, lane, bh, 0,
                                 geom_ilog2(BP::kLeavesPerWarp), t0, nWords);
+    if (lane < nWords && fold_mask)
+      ops::or_shared_u32(ops::smem_addr(sm.cta_live() + lane), fold_mask);
     ops::rendezvous_group((int)Edge::kReturnLeg, BP::kThreads);
     return_leg_rejoin<BP, D, BC>(p, sm, tr, acc, warp, lane);
 

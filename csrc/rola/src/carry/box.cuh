@@ -172,7 +172,7 @@ struct BoxPlan {
   //: the pool aliases the region and may outgrow it. -- see docs/internals/carry/smem_ledger.md#region
   static constexpr int kPoolBudget =
       denseref::arch::kCaps.smem_per_cta_max
-      - (kReadBlockBytes + kPageSlotBytes + kClaimBytes + kCounterBytes + 64);
+      - (kReadBlockBytes + kPageSlotBytes + kClaimBytes + kCounterBytes + (kWindow / 32) * 4 + 64);
   static constexpr int kPoolPos =
       pool_positions(kPoolBudget, kVRowBytes + kAmpRowBytes, kWarps* kWindow * 2, kWindow);
   static constexpr int kListEntries = kPoolPos;
@@ -191,7 +191,10 @@ struct BoxPlan {
   static constexpr int kPageSlotOffset = kReadBlockOffset + kReadBlockBytes;
   static constexpr int kClaimOffset = kPageSlotOffset + kPageSlotBytes;
   static constexpr int kCounterOffset = kClaimOffset + kClaimBytes;
-  static constexpr int kSmemBytes = (kCounterOffset + kCounterBytes + 15) / 16 * 16;
+  //: THE CTA's live-position words for the fold: the OR of the warps' box words, one per round.
+  static constexpr int kCtaLiveOffset = kCounterOffset + kCounterBytes;
+  static constexpr int kCtaLiveBytes = (kWindow / 32) * 4;
+  static constexpr int kSmemBytes = (kCtaLiveOffset + kCtaLiveBytes + 15) / 16 * 16;
 
   static_assert(kPoolPos % 32 == 0 && kWindow % kPoolPos == 0,
                 "the pool holds whole rounds of thirty-two positions and the window is a whole "

@@ -17,6 +17,7 @@ an allocation would move the residency the whole design is built on.
 | 53,824 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
 | 53,888 | the fill's ONE claim cursor | 4 | both union bodies' fills |
 | 53,892 | the stream counters, `2 * warps_per_cta * 4` | 64 | the sparse bodies' `numProduced`/`numConsumed` |
+| after the counters | the fold's CTA-live words, `W/32 * 4` | 64 | the fill's union of the warps' boxes |
 | | **total** (16-byte aligned) | **53,968** | |
 
 The frame's three edges and the streams' three take no bytes at all: they are NAMED BARRIERS

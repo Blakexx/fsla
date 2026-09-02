@@ -304,8 +304,11 @@ copies positions `32r + 4w .. +3` (`kUnitTokens` of them, `pool_fill_round`). Th
 go by `cp.async`, one sixteen-byte quantum per lane. The OUTERMOST run goes through registers
 -- a 32-bit word per lane, multiplied by the token's gain (`splat_bf16x2_bits`, `mul_bf16x2`)
 and stored -- so the gain is folded in once per position rather than once per leaf. The runs
-below it go by `cp.async` at the widest quantum their stride admits. A position past the
-window's end is NOT written: its slot may be another position's, still in a list.
+below it go by `cp.async` at the widest quantum their stride admits. THE POOL HOLDS THE UNION
+OF THE WARPS' LIVE POSITIONS: at cover slot B every warp ORs its box's liveness words into the
+CTA's `cta_live` words (one per round, zeroed at the out leg), and the fill copies only the
+positions some warp will list -- a unit with none skips outright. A position past the window's
+end is not written either.
 
 THE LIST is a warp's own: per round the live lanes of the box's liveness word
 (`stream_masks` over the warp's whole box) rank themselves with `lanes_below` and write their
