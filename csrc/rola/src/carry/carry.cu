@@ -45,29 +45,24 @@ void refuse_shape(const std::vector<int64_t>& widths, int64_t dv, int64_t page_b
               " is not a launch shape this family builds");
 }
 
-//: THE SCHEDULE DIALS AS THE CALL SPELLS THEM: the two per-side runtime dials of the
-//: primitive ledger's class 3, in one list -- [read form, write form, read grain, write
-//: grain], forms as `Form` and grains in LEAVES. -- see docs/internals/carry/carry.md#schedule
+//: THE SCHEDULE DIALS AS THE CALL SPELLS THEM: the read side's runtime dials of the
+//: primitive ledger's class 3, in one list -- [read form, read grain], the form as `Form`
+//: and the grain in LEAVES. -- see docs/internals/carry/carry.md#schedule
 void refuse_schedule(const std::vector<int64_t>& schedule, int dv, int warps_per_cta) {
-  TORCH_CHECK(schedule.size() == 4,
-              "the schedule names each side's FORM and its STREAM GRAIN -- [read form, write "
-              "form, read grain, write grain] -- so it is 4 entries; this call names ",
-              schedule.size());
-  const int lpw = leaves_per_warp(dv);
-  for (int side = 0; side < 2; ++side) {
-    const int64_t form = schedule[side], grain = schedule[2 + side];
-    TORCH_CHECK(form == (int64_t)Form::kUnion || form == (int64_t)Form::kSparse,
-                "a side's form is union(0) or sparse(1); this call names ", form);
-    TORCH_CHECK(grain >= kAtomLeaves && grain <= lpw && (grain & (grain - 1)) == 0,
-                "a side's stream grain is a power of two leaves between the page rectangle (",
-                kAtomLeaves, ") and the warp sub-box (", lpw, "); this call names ", grain);
-    TORCH_CHECK(form == (int64_t)Form::kSparse || grain == lpw,
-                "the UNION form IS the one-stream point of the family, so its grain is the warp "
-                "sub-box (",
-                lpw, "); this call names ", grain, " with the union form");
-  }
-  TORCH_CHECK(is_warps_per_cta(warps_per_cta), "warps_per_cta=", warps_per_cta,
-              " is not a launch shape this family builds");
+  TORCH_CHECK(schedule.size() == 2,
+              "the schedule names the read side's FORM and its STREAM GRAIN -- [read form, "
+              "read grain] -- and this call passed ",
+              schedule.size(), " entries");
+  const int64_t form = schedule[0], grain = schedule[1];
+  TORCH_CHECK(form == (int64_t)Form::kUnion || form == (int64_t)Form::kSparse,
+              "the read side's form is ", form, "; the forms are union (0) and sparse (1)");
+  const int box = leaves_per_warp(dv);
+  (void)warps_per_cta;
+  TORCH_CHECK(grain >= kAtomLeaves && grain <= box && (grain & (grain - 1)) == 0,
+              "the read side's stream grain is ", grain,
+              " leaves; a grain is a power of two "
+              "between the page rectangle (",
+              kAtomLeaves, ") and the warp sub-box (", box, ")");
 }
 
 //: THE CARVE ORDER AS THE CALL SPELLS IT: both sides' levels ranked, read side then write
@@ -157,9 +152,7 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
   p.L = (int)L;
   p.liveness_words = (int)words;
   p.readout_form = (int)schedule[0];
-  p.fold_form = (int)schedule[1];
-  p.readout_grain_bits = geom_ilog2((int)schedule[2]);
-  p.fold_grain_bits = geom_ilog2((int)schedule[3]);
+  p.readout_grain_bits = geom_ilog2((int)schedule[1]);
 
   const auto stream = at::cuda::getCurrentCUDAStream();
   cudaError_t status = cudaSuccess;
@@ -210,7 +203,7 @@ std::vector<std::vector<int64_t>> carry_census() {
     out.push_back({(int64_t)(I_), (int64_t)(D_), (int64_t)(DV_), (int64_t)(W_), c.regs, \
                    c.local_bytes, c.smem_bytes, c.max_threads, c.binary_version,        \
                    c.threads, c.box_leaves, c.atoms, c.acc_regs, c.state_elems,         \
-                   c.state_regs_per_lane, c.segment_slots, c.members});                 \
+                   c.state_regs_per_lane, c.members});                 \
   }
   ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_CENSUS)
 #undef ROLA_CARRY_ARM_CENSUS

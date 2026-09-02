@@ -65,7 +65,7 @@ slots where the streams used it. A named barrier sleeps.
 Nothing else in the loop is CTA-wide. A segment's producer/consumer handshake belongs to
 its STREAM and is a warp-local wait (`cp.async` groups today) or, where the producer and
 the consumer are different warps, that stream's own barrier — not the frame's. There are
-three such stream edges: the fold's `kFilled` and `kEmpty`, and the readout's `kReadBatch`.
+two such edges: the readout's stream edge `kReadBatch`, and the fold's batch edge `kFoldRound` -- the pool's rows visible before a batch, dead after it.
 
 The frame's edges are the ONLY CTA-wide points the frame owns, and each of the three is a
 READ-AFTER-WRITE on the region. That is why the region is the transit's ALONE: a phase-local
@@ -178,7 +178,7 @@ the LEAF and `n` is the TOKEN — the mirror of the fold, where `k` is the token
 register's two elements are two ADJACENT LEAVES at ONE token, and two adjacent leaves are
 two adjacent amplitude columns of that token's row, which the packed plane already stores
 adjacent. The readout therefore expands from the staged rows AS THEY LIE: one 32-bit shared
-access per (token n-tile, k-step, `h`), and no column block, no transpose pass and no gain.
+access per (token n-tile, k-step, `h`), read as it lies, and no gain.
 
 The memo is the fold's j-slice law on the `k` axis. The innermost level's sub-box span is at
 least the page rectangle, so `P`'s low four bits ARE `local`'s low four bits and every level
@@ -269,147 +269,112 @@ returns.
 <a id="fold"></a>
 ## PHASE 2: the fold
 
-The fold is WINDOW-BLIND. A deposit never reads the accumulator, so a whole window's
-segment MMAs chain back to back with no accumulator dependency, and the segment buffer's
-refill is covered by the previous segment's chain rather than by a barrier. This is the
-structural difference from an attention mainloop, which must read-modify-write its
-accumulator on every tile.
+The fold deposits every live token of the window into the accumulator: `C[c][leaf] += sum_t
+V^T[c][t] . Wcoef[t][leaf]`, one `mma.m16n8k16` per (channel m-tile, leaf n-tile) per tile of
+sixteen tokens. It is WINDOW-BLIND -- a deposit never reads the accumulator, because each
+carries its decay-to-window-end factor -- so a window's tiles chain with no dependency on `C`.
 
-Per segment, in issue order: the value tile is drained out of the shared slot into A
-fragments by a transposing tile load — the segment is stored token major and the operand is
-channel major, so the transpose is the load's, not a pass; the NEXT segment's factor rows
-are transposed into their column block; the EMPTY edge releases the value slot and
-publishes the column block; the segment `kSegmentSlots` ahead is claimed and staged; the
-NEXT segment's coefficients are expanded in registers; this segment's deposits issue; and
-the FILLED edge publishes the staging to the warps that will drain it.
+Its operands come from THE POOL (`#pool`): the window's rows keyed by POSITION, filled by
+position and gathered by index. Nothing in the fold is per stream in shared memory; a
+"stream" is a warp's LIST of live positions, and the reap is the list. The phase runs the
+window in BATCHES of the pool's capacity, `kPoolPos` positions:
 
-That order is the schedule's cover, chain by chain. The expansion's shared loads are issued
-BEFORE the deposits that do not depend on them, so their latency sits under the MMA chain
-rather than in front of it; the staging is not waited on until the next iteration, so it is
-covered by an expansion and a whole segment of deposits; and the deposits of segment `b` are
-still draining in the tensor pipe while segment `b + 1`'s expansion issues in the SIMT pipe.
-The fold's window-blindness is what allows the last of those.
+    for each batch of kPoolPos positions:
+      pool_fill_round, for every round of 32 in the batch   -- this warp's four positions each
+      cp.async.wait_group 0; bar.sync kFoldRound             -- every row visible to every warp
+      for each round: compact the box's live positions into the list; deposit whole tiles
+      pad the batch's tail with the dead row; deposit it
+      bar.sync kFoldRound                                    -- the rows are dead before the next batch's fill
 
-A lane holds one leaf per n-tile and two token PAIRS of the segment, and its coefficient
-pair is the gain times the product of that leaf's `D` factor amplitudes, one packed bf16
-multiply per level, which is the declared operand arithmetic. A token past the window's end
-has zero amplitudes staged and its value quantum zero-fills, so a partial window is the same
-code and not a tail case — nothing in the loop tests a token against the end.
+Two CTA crossings per batch and nothing else CTA-wide inside the phase; no position is
+reclaimed inside a batch, so nothing is tracked. When the window equals the pool (a W tuned to
+the shared-memory budget) there is one batch and the second edge is the window line's.
 
-The segment slot count is arch-derived: where the MMA sources both operands from the
-issuing unit's registers, ONE slot suffices and the registers are the second buffer
-(§4's two-stages-in-flight, in its register form); where it does not, the ring is two slots.
+<a id="pool"></a>
+## The pool: filled by position, gathered by index
 
-<a id="factor-rows"></a>
-## What the fill stages, and why it is that little
+Per position the pool holds the VALUE ROW (`DV` bf16, `kVRowBytes`) and the AMPLITUDE ROW
+(the box's `D` runs of the write plane, `kAmpStride` halfwords, laid out as `raw_stride`'s
+rows are, at `span_base` per level). Row `kPoolPos` is the DEAD ROW: zero, written once per
+window by `pool_zero_dead_row` because the pool shares the transit region's bytes, and read
+by every entry a padded tile carries.
 
-A CTA box reaches ONE CONTIGUOUS RUN of digits per level — `owner_span(l)` of them, at
-`col_base(l) + owner_digit(l) * owner_span(l)` in the packed plane — because the owner grid
-fixes the leading digits and the box holds every combination of the rest. So the whole
-routing footprint of a segment is `kSeg` tokens times `sum_l owner_span(l)` amplitudes plus
-`kSeg` gains: 66 bytes a token at the flagship arm, against the 512-column row a token
-occupies. The fill stages exactly those runs, as they lie, with `cp.async` at the widest
-quantum each run's length, base and row stride admit.
+THE FILL IS BY POSITION AND HAS NO CURSOR: in each round of `kRoundTokens` positions warp `w`
+copies positions `32r + 4w .. +3` (`kUnitTokens` of them, `pool_fill_round`). The value rows
+go by `cp.async`, one sixteen-byte quantum per lane. The OUTERMOST run goes through registers
+-- a 32-bit word per lane, multiplied by the token's gain (`splat_bf16x2_bits`, `mul_bf16x2`)
+and stored -- so the gain is folded in once per position rather than once per leaf. The runs
+below it go by `cp.async` at the widest quantum their stride admits. A position past the
+window's end is NOT written: its slot may be another position's, still in a list.
 
-Nothing is staged per warp. Every warp of the box reads from the same runs (its leaves are a
-sub-box of the same box) and every warp's A operand is the same `V^T`, so the segment
-carries the values and the factor rows ONCE and the warps differ only in the coefficient
-they expand from them.
+THE LIST is a warp's own: per round the live lanes of the box's liveness word
+(`stream_masks` over the warp's whole box) rank themselves with `lanes_below` and write their
+pool slot into the warp's `kListEntries`-entry scratch (`fold_list`, 128 bytes, a per-warp
+permutation buffer and not a stream). A tile is sixteen consecutive entries.
 
 <a id="fill"></a>
-## The fill is claimed, not assigned
+## The readout's fill is claimed, not assigned
 
-A fill UNIT is `kUnitTokens` tokens: their value rows are one sixteen-byte quantum per lane
-and their factor runs one eight-byte quantum per lane at the flagship, so a claim is one
-lane-parallel burst of each. A warp takes a unit with a single shared `atomicAdd` on the
-stream's cursor and keeps taking until the segment is gone, so the fill shares out by
-arrival rather than by assignment — which is the property the sparse form needs, where a
-warp's units are not all the same size.
+The union readout stages its batches through `claim_unit`: one monotone cursor (`Smem::claim`),
+fetch-added per `kUnitTokens`-token unit, so the warps that arrive first take the units and a
+production point is one claim over a run of segments -- two claims on one cursor would need an
+edge between them, and a cover slot has none.
 
-The cursor is MONOTONE and never reset. A warp leaves a fill with exactly one failing claim,
-so a production point advances the cursor by its unit count plus one per warp, every thread
-can carry the next point's base in a register, and no reset — hence no barrier of its own —
-is needed.
+<a id="factor-rows"></a>
+## The factor rows, as they lie
 
-There is ONE cursor for every production point of both union bodies. Two points may share a
-cursor exactly when a completed edge separates them, and in this frame every point is
-preceded by one since the last: the covers by their leg's edge, the readout's batches by
-`kReadBatch`, the fold's segments by `kFilled`/`kEmpty`. K1 gave each point its own word
-while the covers still ran between an edge's arrive and its wait; the covers now run BEFORE
-a whole edge (`#edges`), so the five words are one, and the four registers each warp used to
-carry across both phases are four the phases' working sets get instead — which is the
-difference between a spilling body and a body at 242 registers.
-
-<a id="column-block"></a>
-## The one transpose, and the gain that rides in it
-
-The MMA's B fragment pairs two ADJACENT TOKENS in one 32-bit register, so a coefficient pair
-is one leaf column at two tokens — and the packed plane stores those two amplitudes a whole
-row apart. `cp.async` writes what it reads, contiguously, so the staged row cannot be in the
-pairing order; the segment's raw rows are therefore transposed ONCE, cooperatively, into a
-column block that stores each column's `kSeg` tokens adjacent. It is a 2x2 halfword block per
-thread: two 32-bit loads, the halfword shuffles between them, two 32-bit stores, one word per
-thread per segment.
-
-The GAIN rides in the same pass. It is per token, and the coefficient needs it exactly once,
-so the transpose multiplies the OUTERMOST level's columns by the token pair's gains as it
-writes them — one packed multiply per thread instead of one per leaf per lane. The gains
-themselves are the one operand a `cp.async` cannot stage: a token's gain is a single bf16 in
-a `[BH, L]` plane, so the run's alignment is a property of `BH * L` rather than of the
-descriptor. They are read instead as one coalesced row by one warp, a segment ahead, and
-stored to shared after that segment's deposits have issued.
+`stage_unit_factors` copies a unit's tokens' `D` runs of the box's own digits -- `abase[l]`, the
+level's row base plus the owner's digit, is also the class-1 table's row base -- into a raw slot
+at the widest `cp.async` quantum the stride admits. The readout's ring and the pool's amplitude
+rows share this shape.
 
 <a id="expansion"></a>
-## The expansion, memoized
+## The j-slice of a level
 
-A lane's `kNL` leaf tiles do not use `kNL` different columns of a level. The tile index
-contributes the slot's bits ABOVE the lane's three, so a level's column depends only on the
-tile bits its span reaches — its J-SLICE — and every tile with the same slice shares one
-column. The expansion loads each level's DISTINCT columns once into registers and multiplies
-them into the tiles that use them: at the flagship member that is two columns a level rather
-than four, eight packed loads a segment rather than sixteen.
-
-The slice is compile time (`slice_shift`/`slice_bits` on the member's own span layout), so
-the memo is a register array of a compile-time size and the walk that fills `scol` runs once
-in the prologue, per (level, slice) rather than per (level, tile).
+A warp's n-tiles index a level's digits through `slice_shift` / `slice_bits`: which bits of
+the tile index a level's digit depends on, from the sub-box's shift and span at that level. The
+column memo `scol[l][v]` is one entry per slice `v`, and tile `j` reads slice `(j >> shift) & mask`.
 
 <a id="stream-edges"></a>
-## The stream's two edges, which are not the frame's
+## The readout's stream edge
 
-The frame owns three edges and the loop adds no fourth: the two edges below belong to the
-STREAM, and a stream edge is what the schedule always said would appear here. FILLED
-publishes a segment's staging to every warp that consumes it — a warp waits its OWN
-asynchronous copies and the edge makes them visible CTA-wide. EMPTY releases the value slot
-and the raw factor slot, and, because the transpose runs between the two, it publishes the
-column block in the same crossing.
+`StreamEdge::kReadBatch` is the union readout's batch edge, a named barrier id disjoint from
+the frame's (`Edge`).
 
-They are NAMED BARRIERS, and that is a measured choice rather than a stylistic one: a stream
-edge here has EQUAL PARTICIPATION (every thread arrives once) and runs once a segment rather
-than once a window, and the split-barrier object this family used to carry (deleted,
-DELETIONS.md) WAITED BY SPINNING where `bar.sync` sleeps. Measured on the frame's own cells,
-that spin cost 21% of issue slots to branch resolution and turned every spin into a
-shared-memory read; the named barrier costs neither, and it takes no shared bytes to
-allocate. No spinning wait primitive survives anywhere in this body.
+<a id="pool-tile"></a>
+## One tile: gathered fragments
 
-They are what the SHARED value slot costs. Staging the segment per warp needs no edge at all
-and is what the frame started from; it also fetches every value row `kWarps` times and holds
-`kWarps` copies of it. Two CTA-wide crossings a segment is the price of fetching it once,
-and at `kSegmentSlots = 1` both are structural: one releases the slot before its refill, the
-other publishes the refill.
+`pool_gather` gathers a tile with `ldmatrix.trans` at per-lane row addresses: lane `l` supplies
+row `(l & 7) + ((l >> 4) & 1) * 8` -- its list entry -- for every operand it loads, so ONE list
+read serves all of them. The value rows, channel major, give the A fragments (one `ldmatrix.x4`
+per channel m-tile, exactly the transposing load the old segment drain issued, now at a
+gathered row); the mass m-tile is the constant fragment `mass_frag`. The INNERMOST run gives
+the B fragments directly: sixteen tokens by sixteen digits, addressed as the four 8x8 blocks
+(tokens 0-7 | 8-15) x (digits 0-7 | 8-15), so n-tile `j`'s inner half is `j & 1` and its two
+registers are blocks `j & 1` and `(j & 1) + 2`. That is the token pairing the MMA's B fragment
+wants and the hardware does it; there is no transpose.
+
+The OUTER runs are per-token scalars for a leaf tile: for each outer level and each of its
+slices (`scol`, indexed as `#expansion` indexes it), the lane reads its token pair's two
+halfwords and packs them; one `mul_bf16x2` per fragment register applies the product. At
+`D = 2` that is four shared halfword loads and eight packed multiplies per tile.
+
+Then `pool_deposit`: `kMCh x kNL` MMAs, the tile as the k-step -- issued after the NEXT tile's `pool_gather`, so each gather's shared-memory latency sits under twenty MMAs (`Frags`, two sets in flight).
+
+A PARTIAL TILE at a batch's end is padded to the dead row (`pool_pad_tile`) and deposited; the
+padding rows contribute exactly zero. That padding is the fold's reap floor: one tile per box
+per batch, `16 / kPoolPos` of the batch's positions.
+
 
 <a id="forms"></a>
-## The two forms per side, and where each switch sits
+## The readout's two forms, and where the switch sits
 
-Each phase has two bodies, `Form::kUnion` and `Form::kSparse`, and the launch picks one per
-side. The switches are ADDITIVE — "two plus two bodies", four in all, not four combinations
-— so each sits at its own phase: inside the window loop, outside the batch loop that the
-in-kernel-switch ruling calls the hot loop. One uniform branch per phase per window.
+The readout has two bodies, `Form::kUnion` and `Form::kSparse`, and the launch picks one.
+The switch sits at its phase: inside the window loop, outside the batch loop that the
+in-kernel-switch ruling calls the hot loop -- one uniform branch per window. The fold has ONE
+body, the pool fold (`#fold`), whose reap is its list and needs no form.
 
-THE SPARSE BODIES ARE THE OTHER TWO. `#fold-sparse` and `#readout-sparse` describe them;
-what the switch has to be told is that they are bodies, not combinations — the four-way
-nesting of the two forms would compile four copies of the window loop and spill (K0's own
-finding on the member switches), while two independent binary switches compile four bodies
-at additive cost.
+THE SPARSE READOUT is `#readout-sparse`.
 
 The two per-side MEMBER switches are different: they fix the addressing every stage on that
 side uses, so they sit in the prologue, outside every loop, nested. That nesting is
@@ -425,8 +390,8 @@ side, and the product is then the compile budget's problem rather than the sched
 | 1 arm axes (compile-time free) | `D`, `DV`, `warps_per_cta` | the arm key; template parameters of `carry_kernel`, declared in `tools/manifests/shipped_set.json` |
 | 2 the problem (runtime, untuned) | `B_l`, the level modes, `N` | `CarryParams::g`, derived on the host by `derive_carry_geom` |
 | 2 the problem (runtime, untuned) | `BH`, `L` | the grid's `y`, `CarryParams::L` |
-| 3 runtime dials (the only tuned class) | the form per phase | `CarryParams::readout_form` / `fold_form` |
-| 3 runtime dials | the stream grain `G` per side | `CarryParams::readout_grain_bits` / `fold_grain_bits`, as log2 leaves |
+| 3 runtime dials (the only tuned class) | the readout's form | `CarryParams::readout_form` |
+| 3 runtime dials | the readout's stream grain `G` | `CarryParams::readout_grain_bits`, as log2 leaves |
 | 3 runtime dials | the carve order | `CarryParams::g`, the side's `level_at` |
 | 3 runtime dials | the producer:consumer split | not yet consumed; it arrives with the rotation |
 | 5 derived quotients | `active_leaves` = `warps_per_cta * G`, live streams = `warps_per_cta`, the stream catalog = `leaves_per_warp / G` | the sparse bodies' loop bounds |
@@ -545,8 +510,8 @@ violation.
 <a id="counters"></a>
 ## The stream counters
 
-Each live stream carries `numProduced` and `numConsumed`, 32-bit shared words counted in
-TOKENS. `numProduced` is fetch-added to CLAIM a placement (K1's monotone cursor, generalised
+Each live READOUT stream carries `numProduced` and `numConsumed`, 32-bit shared words
+counted in TOKENS. `numProduced` is fetch-added to CLAIM a placement (K1's monotone cursor, generalised
 per stream); the consumer starts a segment at `produced - consumed >= kSegmentTokens`, drains
 it in one `ldmatrix` burst and fetch-adds `numConsumed` to RELEASE the slot; a producer whose
 claim would reach `consumed + capacity` waits, and the capacity IS one segment, because the
@@ -560,36 +525,11 @@ not merely avoided here but unreachable. The counters are the PLACEMENT and RELE
 which is what a rotated producer needs from them; the WAIT half becomes the cross-warp edge
 when a warp fills a stream it does not consume.
 
-<a id="fold-sparse"></a>
-## PHASE 2, the sparse form
-
-Per turn: fold the stream's liveness into 16 word masks; then, per segment, claim and stage,
-`cp.async.wait_group` + `__syncwarp`, pad the tail if any, drain the value tile, expand the
-coefficient, release, deposit.
-
-THE EXPANSION READS THE RAW ROWS, with no transpose and no column block. The union body's
-transpose exists because the B fragment pairs two ADJACENT TOKENS, which the packed plane
-stores a row apart; it is worth its cost when eight consumer warps share one block, and it is
-not when one warp does. The pair is assembled where it is used instead — two `ld.shared.u16`
-and a pack, against the union's one `ld.shared.u32` plus a share of a cooperative pass — and
-the gain rides level 0's factor exactly as the transpose applied it.
-
-THE PHASE CROSSES THE CTA ONCE, and that crossing is not a data edge: the rings alias the
-transit region, so `StreamEdge::kEmpty` closes the write-after-read against the rejoin at the
-phase's opening. Against the union body's two crossings per segment — 64 a window — that is
-the stall-budget gate discharged by construction.
-
-THE COVER IS THE OTHER WARPS'. Carrying the drained fragments across the next segment's claim
-would hide its copies behind the current segment's deposits, at 24 registers of live range
-this box has not got. The sparse form crosses no CTA edge inside the phase, so the eight warps
-drift freely and one warp's staging latency is another's issue slots — an overlap the union
-body's per-segment barriers make impossible.
-
 <a id="readout-sparse"></a>
 ## PHASE 1, the sparse form
 
 The same streams against the accumulator instead of into it. The ring carries NO value tile
-(the A operand is the transit's registers) and NO column block (the read side's B fragment
+(the A operand is the transit's registers) and no re-layout of its rows (the read side's B fragment
 pairs two adjacent LEAVES, which the plane stores adjacent), so it is the raw factor rows plus
 a 16-entry row of window-relative TOKEN IDS.
 

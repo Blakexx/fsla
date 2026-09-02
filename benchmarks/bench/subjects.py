@@ -60,7 +60,7 @@ def _carry_operands(fx):
 
 
 def _carry_schedule(name: str, spec):
-    """``union`` | ``sparse`` | ``sparse-gN`` -> the launch's per-side dials."""
+    """``union`` | ``sparse`` | ``sparse-gN`` -> the launch's read-side dials."""
     from rola.ops import carry as carry_ops
 
     if name == "union":
@@ -70,8 +70,7 @@ def _carry_schedule(name: str, spec):
     grain = int(name.split("-g", 1)[1]) if "-g" in name else None
     if grain is not None:
         grain = min(grain, carry_ops.leaves_per_warp(spec.dv))
-    return carry_ops.CarrySchedule(readout="sparse", fold="sparse",
-                                   readout_grain=grain, fold_grain=grain)
+    return carry_ops.CarrySchedule(readout="sparse", readout_grain=grain)
 
 
 def carry_forward(fx) -> Arm:

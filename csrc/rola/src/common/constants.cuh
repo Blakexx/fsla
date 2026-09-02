@@ -13,11 +13,6 @@ constexpr int kWindow = 512;
 //: THE SEGMENT -- see docs/internals/common/constants.md#segment
 constexpr int kSegmentTokens = 16;
 
-//: see docs/internals/common/constants.md#segment-slots
-constexpr int segment_slots(const denseref::arch::Caps& c) {
-  return c.mma_a_from_regs && c.mma_b_from_regs ? 1 : 2;
-}
-
 //: see docs/internals/common/constants.md#warps-per-cta
 constexpr int kWarpsPerCtaShipped = 8;
 constexpr int kWarpsPerCtaDiagnostic = 4;

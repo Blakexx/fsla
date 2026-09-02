@@ -24,7 +24,6 @@ struct ArmCensus {
   int acc_regs;
   int state_elems;
   int state_regs_per_lane;
-  int segment_slots;
   int members;
 };
 

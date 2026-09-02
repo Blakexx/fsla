@@ -42,24 +42,20 @@ struct Smem {
     return reinterpret_cast<float*>(base + BP::kRegionOffset + warp * BP::kPanelSliceBytes);
   }
 
-  __device__ __forceinline__ ops::SmemAddr v_tile(int slot) const {
-    return ops::smem_addr(base + BP::kVTileOffset + slot * BP::kVTileBytes);
+  __device__ __forceinline__ ops::SmemAddr pool_v() const {
+    return ops::smem_addr(base + BP::kPoolVOffset);
   }
 
-  __device__ __forceinline__ char* column_block(int slot) const {
-    return base + BP::kColOffset + slot * (BP::kColBytes / BP::kColSlots);
+  __device__ __forceinline__ ops::SmemAddr pool_amp(int slot) const {
+    return ops::smem_addr(base + BP::kPoolAmpOffset + slot * BP::kAmpRowBytes);
   }
 
-  __device__ __forceinline__ char* raw_slot(int slot) const {
-    return base + BP::kRawOffset + slot * BP::kRawSlotBytes;
+  __device__ __forceinline__ unsigned short* fold_list(int warp) const {
+    return reinterpret_cast<unsigned short*>(base + BP::kListOffset + warp * BP::kListBytes);
   }
 
   __device__ __forceinline__ char* read_raw_slot(int slot) const {
     return base + BP::kReadRawOffset + slot * BP::kRawSlotBytes;
-  }
-
-  __device__ __forceinline__ __nv_bfloat16* gain_slot(int slot) const {
-    return reinterpret_cast<__nv_bfloat16*>(base + BP::kGainOffset + slot * BP::kGainSlotBytes);
   }
 
   __device__ __forceinline__ unsigned int* claim() const {
@@ -74,22 +70,6 @@ struct Smem {
   //: folded against and the segment's gains; the readout's carries the factor rows and the
   //: WINDOW-RELATIVE token ids its deposits are addressed by. One slot each: the register
   //: fragments are the second buffer. -- see docs/internals/carry/smem_ledger.md#streams
-  __device__ __forceinline__ char* fold_ring(int s) const {
-    return base + BP::kSparseFoldOffset + s * BP::kFoldRingBytes;
-  }
-
-  __device__ __forceinline__ ops::SmemAddr fold_values(int s) const {
-    return ops::smem_addr(fold_ring(s));
-  }
-
-  __device__ __forceinline__ char* fold_factors(int s) const {
-    return fold_ring(s) + BP::kVTileBytes;
-  }
-
-  __device__ __forceinline__ unsigned short* fold_gains(int s) const {
-    return reinterpret_cast<unsigned short*>(fold_ring(s) + BP::kVTileBytes + BP::kRawSlotBytes);
-  }
-
   __device__ __forceinline__ char* read_ring(int s) const {
     return base + BP::kSparseReadOffset + s * BP::kReadRingBytes;
   }
@@ -107,8 +87,8 @@ struct Smem {
   __device__ __forceinline__ unsigned int* consumed(int s) const { return produced(s) + 1; }
 };
 
-//: THE V TILE'S SWIZZLE: the 16-byte group index XORed with the token row, which is a
-//: bijection of the tile and leaves `ldmatrix .trans` conflict free.
+//: THE V POOL'S SWIZZLE: the 16-byte group index XORed with the row's residue, a bijection
+//: of the row that leaves eight consecutive rows' `ldmatrix .trans` conflict free.
 //: -- see docs/internals/carry/smem_ledger.md#v-tile
 template <class BP>
 __device__ __forceinline__ int v_group_offset(int token_row, int group) {
@@ -150,30 +130,6 @@ __device__ __forceinline__ uint32_t claim_unit(const Smem<BP>& sm, int lane) {
   unsigned int u = 0u;
   if (lane == 0) u = atomicAdd(sm.claim(), 1u);
   return (uint32_t)ops::lane_broadcast((int)u, 0);
-}
-
-//: THE VALUE ROWS of one fill unit, into the stream's segment slot. A token past the
-//: window's end zero fills and reads nothing.
-template <class BP>
-__device__ __forceinline__ void stage_unit_values(const CarryParams& p, const Smem<BP>& sm,
-                                                  int slot, int lane, int bh, int seg0, int tok_end,
-                                                  int unit) {
-  constexpr int kGroups = BP::kDv / 8;
-  constexpr int kQuanta = kUnitTokens * kGroups;
-  const ops::SmemAddr tile = sm.v_tile(slot);
-  const int row0 = unit * kUnitTokens;
-  rola::static_for<(kQuanta + 31) / 32>([&](auto Ic) {
-    const int idx = decltype(Ic)::value * 32 + lane;
-    if (kQuanta % 32 != 0 && idx >= kQuanta) return;
-    const int row = row0 + idx / kGroups, group = idx % kGroups;
-    const int tok = seg0 + row;
-    const uint32_t off =
-        ((uint32_t)bh * (uint32_t)p.L + (uint32_t)(tok < tok_end ? tok : tok_end - 1))
-            * (uint32_t)BP::kDv * 2u
-        + (uint32_t)(group * 16);
-    ops::stage_tile_if(tile + (uint32_t)v_group_offset<BP>(row, group), ops::gather_ptr(p.v, off),
-                       tok < tok_end);
-  });
 }
 
 //: THE FACTOR ROWS of one fill unit, staged AS THEY LIE: each token's D contiguous runs of
@@ -582,116 +538,96 @@ __device__ __forceinline__ void readout_phase(const CarryParams& p, const Smem<B
 
 // ------------------------------------------------------------------- PHASE 2's fold
 
-//: PRODUCE A RUN OF SEGMENTS: every warp claims units until the run is taken, so the fill
-//: shares out by arrival rather than by assignment. The run is ONE production point --
-//: two of them on one cursor would need an edge between, and a cover slot has none.
-//: -- see docs/internals/carry/carry_kernel.md#fill
-template <class BP, int D, int Segs>
-__device__ __forceinline__ void fold_produce(const CarryParams& p, const Smem<BP>& sm,
-                                             const int (&abase)[D], int lane, int bh, int seg_v,
-                                             int seg_f, int tok_end, int vslot, int fslot,
-                                             bool values, bool factors, uint32_t& base) {
-  constexpr int kPerSeg = BP::kSeg / kUnitTokens;
-  constexpr int kUnits = Segs * kPerSeg;
-  for (;;) {
-    const uint32_t u = claim_unit<BP>(sm, lane);
-    if (u >= base + kUnits) break;
-    const int unit = (int)(u - base), k = unit / kPerSeg, su = unit % kPerSeg;
-    if (values)
-      stage_unit_values<BP>(p, sm, (vslot + k) % BP::kSegmentSlots, lane, bh, seg_v + k * BP::kSeg,
-                            tok_end, su);
-    if (factors)
-      stage_unit_factors<BP, D>(p, p.pwrite,
-                                ops::smem_addr(sm.raw_slot((fslot + k) % BP::kFactorSlots)), abase,
-                                lane, bh, seg_f + k * BP::kSeg, tok_end, su);
+//: THE POOL: this window's rows keyed by POSITION -- the value row and the box's amplitude
+//: runs, the outermost carrying the gain. Filled BY POSITION (no cursor), gathered BY INDEX
+//: (`ldmatrix` at per-lane row addresses). Row `kPoolPos` is the DEAD ROW a padded tile reads.
+//: -- see docs/internals/carry/carry_kernel.md#pool
+constexpr int kRoundTokens = 32;
+
+template <class BP>
+__device__ __forceinline__ int pool_slot(int pos) {
+  return pos & (BP::kPoolPos - 1);
+}
+
+//: THE DEAD ROW, zeroed once per window because the pool shares the transit's bytes.
+template <class BP>
+__device__ __forceinline__ void pool_zero_dead_row(const Smem<BP>& sm, int lane) {
+  constexpr int kWords = (BP::kVRowBytes + BP::kAmpRowBytes) / 4;
+  for (int i = lane; i < kWords; i += ops::kBallotLanes) {
+    const uint32_t off = (uint32_t)(i * 4);
+    ops::store_shared_u32(off < BP::kVRowBytes
+                              ? sm.pool_v() + (uint32_t)(BP::kPoolPos * BP::kVRowBytes) + off
+                              : sm.pool_amp(BP::kPoolPos) + (off - BP::kVRowBytes),
+                          0u);
   }
-  base += (uint32_t)(kUnits + BP::kWarps);
-  ops::stage_commit();
 }
 
-//: THE SEGMENT'S GAINS, read as one coalesced row and held in a register until the
-//: iteration that covers the read has issued its deposits.
-template <class BP>
-__device__ __forceinline__ unsigned short read_gain(const CarryParams& p, int lane, int bh,
-                                                    int seg0, int tok_end) {
-  const int tok = seg0 + lane;
-  if (lane >= BP::kSeg || tok >= tok_end) return 0u;
-  return *reinterpret_cast<const unsigned short*>(
-      ops::gather_ptr(p.gwrite, ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * 2u));
-}
-
-template <class BP>
-__device__ __forceinline__ void write_gain(const Smem<BP>& sm, int slot, int lane,
-                                           unsigned short g) {
-  if (lane < BP::kSeg) reinterpret_cast<unsigned short*>(sm.gain_slot(slot))[lane] = g;
-}
-
-//: THE TRANSPOSE: the staged factor rows into the form the coefficient's PACKED multiply
-//: reads. The MMA's B fragment pairs two ADJACENT TOKENS in one register, so a coefficient
-//: pair is one column at two tokens -- which the packed plane stores a row apart and this
-//: block stores adjacent. The outermost level's columns carry the gain, applied here once
-//: per token pair instead of once per leaf.
-//: -- see docs/internals/carry/carry_kernel.md#column-block
+//: ONE ROUND'S FILL, this warp's four positions. Value rows by `cp.async`; the OUTERMOST
+//: amplitude run through registers, the gain folded into it here once per position rather
+//: than once per leaf at the deposit; the runs below it by `cp.async`. A position past the
+//: window's end is not written at all: its slot may be another position's, still listed.
 template <class BP, int D>
-__device__ __forceinline__ void fold_transpose(const Smem<BP>& sm, int raw, int gain, int col,
-                                               int tid) {
-  constexpr int kPairs = BP::kSpanTotal / 2;
-  constexpr int kRows = BP::kSeg / 2;
-  constexpr int kUnits = kPairs * kRows;
-  constexpr int kGainPairs = owner_span(D, BP::kBC, 0) / 2;
-  const uint32_t* const src = reinterpret_cast<const uint32_t*>(sm.raw_slot(raw));
-  uint32_t* const dst = reinterpret_cast<uint32_t*>(sm.column_block(col));
-  const unsigned short* const g = reinterpret_cast<const unsigned short*>(sm.gain_slot(gain));
-  rola::static_for<(kUnits + BP::kThreads - 1) / BP::kThreads>([&](auto Ic) {
-    const int idx = decltype(Ic)::value * BP::kThreads + tid;
-    if (kUnits % BP::kThreads != 0 && idx >= kUnits) return;
-    const int u = idx & (kRows - 1), pair = idx / kRows;
-    const int row = 2 * u;
-    const uint32_t w0 = src[row * (BP::kRawStride / 2) + pair];
-    const uint32_t w1 = src[(row + 1) * (BP::kRawStride / 2) + pair];
-    uint32_t lo = (w0 & 0xFFFFu) | (w1 << 16);
-    uint32_t hi = (w0 >> 16) | (w1 & 0xFFFF0000u);
-    if (pair < kGainPairs) {
-      const uint32_t gp = (uint32_t)g[row] | ((uint32_t)g[row + 1] << 16);
-      lo = ops::mul_bf16x2(lo, gp);
-      hi = ops::mul_bf16x2(hi, gp);
-    }
-    dst[(2 * pair) * (BP::kTokStride / 2) + u] = lo;
-    dst[(2 * pair + 1) * (BP::kTokStride / 2) + u] = hi;
-  });
-}
+__device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem<BP>& sm,
+                                                const int (&abase)[D], int warp, int lane, int bh,
+                                                int t0, int wLen, int round) {
+  constexpr int kGroups = BP::kDv / 8;
+  static_assert(kUnitTokens * kGroups == ops::kBallotLanes,
+                "one round's value rows are one cp.async per lane");
+  const int pos0 = round * kRoundTokens + warp * kUnitTokens;
+  const uint32_t plane = (uint32_t)bh * (uint32_t)p.L * (uint32_t)p.g.wtot * 2u;
 
-//: EXPAND: one segment's coefficients for this lane's leaves, in registers. A level's
-//: column is loaded ONCE PER DISTINCT J-SLICE rather than once per tile -- at the flagship
-//: member that is two columns a level instead of four -- and each level contributes one
-//: packed multiply per (leaf tile, token pair).
-//: -- see docs/internals/carry/carry_kernel.md#expansion
-template <class BP, int D, int NS, int WA>
-__device__ __forceinline__ void fold_expand(const Smem<BP>& sm, uint32_t (&bf)[BP::kNL][2],
-                                            const int (&scol)[D][BP::kNL], int slot, int lane) {
-  const uint32_t* const col = reinterpret_cast<const uint32_t*>(sm.column_block(slot));
-  const int t2 = lane & 3;
-  rola::static_for<D>([&](auto Lc) {
-    constexpr int l = decltype(Lc)::value;
-    constexpr int kSh = slice_shift(sb_shift_of(D, BP::kBC, NS, WA, l));
-    constexpr int kBits =
-        slice_bits(sb_shift_of(D, BP::kBC, NS, WA, l), sb_span_bits(D, BP::kBC, NS, WA, l));
-    uint32_t f[1 << kBits][2];
-    rola::static_for<1 << kBits>([&](auto Vc) {
-      constexpr int v = decltype(Vc)::value;
-      rola::static_for<2>([&](auto Hc) {
-        constexpr int h = decltype(Hc)::value;
-        f[v][h] = col[scol[l][v] * (BP::kTokStride / 2) + t2 + 4 * h];
-      });
-    });
-    rola::static_for<BP::kNL>([&](auto Jc) {
-      constexpr int v = (decltype(Jc)::value >> kSh) & ((1 << kBits) - 1);
-      rola::static_for<2>([&](auto Hc) {
-        constexpr int j = decltype(Jc)::value, h = decltype(Hc)::value;
-        bf[j][h] = l == 0 ? f[v][h] : ops::mul_bf16x2(bf[j][h], f[v][h]);
-      });
+  {
+    const int row = lane / kGroups, group = lane % kGroups;
+    const int pos = pos0 + row;
+    if (pos < wLen) {
+      const int tok = t0 + pos, slot = pool_slot<BP>(pos);
+      const uint32_t off = ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * (uint32_t)BP::kDv * 2u
+                           + (uint32_t)(group * 16);
+      ops::stage_tile(sm.pool_v() + (uint32_t)v_group_offset<BP>(slot, group),
+                      ops::gather_ptr(p.v, off));
+    }
+  }
+
+  {
+    constexpr int kWords0 = owner_span(D, BP::kBC, 0) / 2;
+    constexpr int kBase0 = span_base(D, BP::kBC, 0);
+    static_assert(kUnitTokens * kWords0 <= ops::kBallotLanes,
+                  "the outermost run's words for one round fit one pass of lanes");
+    const int row = lane / kWords0, word = lane % kWords0;
+    const int pos = pos0 + row;
+    if (row < kUnitTokens && pos < wLen) {
+      const int tok = t0 + pos, slot = pool_slot<BP>(pos);
+      const uint32_t src =
+          plane + (uint32_t)tok * (uint32_t)p.g.wtot * 2u + (uint32_t)((abase[0] + 2 * word) * 2);
+      const uint32_t a = *reinterpret_cast<const uint32_t*>(ops::gather_ptr(p.pwrite, src));
+      const unsigned short g = *reinterpret_cast<const unsigned short*>(
+          ops::gather_ptr(p.gwrite, ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * 2u));
+      ops::store_shared_u32(sm.pool_amp(slot) + (uint32_t)((kBase0 + 2 * word) * 2),
+                            ops::mul_bf16x2(a, ops::splat_bf16x2_bits(g)));
+    }
+  }
+
+  rola::static_for<D - 1>([&](auto Lc) {
+    constexpr int l = decltype(Lc)::value + 1;
+    constexpr int kSpan = owner_span(D, BP::kBC, l);
+    constexpr int kBase = span_base(D, BP::kBC, l);
+    constexpr int kQ = run_quantum(kSpan, kBase, BP::kAmpStride);
+    constexpr int kPerToken = kSpan * 2 / kQ;
+    constexpr int kQuanta = kUnitTokens * kPerToken;
+    rola::static_for<(kQuanta + 31) / 32>([&](auto Ic) {
+      const int idx = decltype(Ic)::value * 32 + lane;
+      if (kQuanta % 32 != 0 && idx >= kQuanta) return;
+      const int row = idx / kPerToken, q = idx % kPerToken;
+      const int pos = pos0 + row;
+      if (pos >= wLen) return;
+      const int tok = t0 + pos, slot = pool_slot<BP>(pos);
+      const uint32_t off =
+          plane + (uint32_t)tok * (uint32_t)p.g.wtot * 2u + (uint32_t)(abase[l] * 2 + q * kQ);
+      ops::stage_run<kQ>(sm.pool_amp(slot) + (uint32_t)(kBase * 2 + q * kQ),
+                         ops::gather_ptr(p.pwrite, off));
     });
   });
+  ops::stage_commit();
 }
 
 //: THE MASS CHANNEL'S A FRAGMENT: a constant. The deposit value is the token's values
@@ -705,127 +641,168 @@ __device__ __forceinline__ void mass_frag(uint32_t (&a)[4], int lane) {
   a[3] = 0u;
 }
 
-//: DRAIN: the segment's value tile into the A fragments, which ARE the second buffer --
-//: the slot is free the moment the burst has issued.
+//: ONE TILE'S FRAGMENTS: the value A fragments and the finished coefficient B fragments.
 template <class BP>
-__device__ __forceinline__ void fold_drain(ops::SmemAddr tile, uint32_t (&vf)[BP::kMCh][4],
-                                           int lane) {
+struct Frags {
+  uint32_t vf[BP::kMCh][4];
+  uint32_t bf[BP::kNL][2];
+};
+
+//: GATHER ONE TILE: the list's next sixteen positions into fragments -- the value rows by
+//: `ldmatrix.trans` (one per channel m-tile; the mass m-tile is the constant), the innermost
+//: run's sixteen digits as the four 8x8 blocks (tokens 0-7 | 8-15) x (digits 0-7 | 8-15) so
+//: n-tile j's inner half is j & 1, and the outer runs' product applied as one packed
+//: multiply per fragment register. Issued a tile AHEAD of the deposits that cover it.
+//: -- see docs/internals/carry/carry_kernel.md#pool-tile
+template <class BP, int D, int NS, int WA>
+__device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
+                                            const int (&scol)[D][BP::kNL], int warp, int lane,
+                                            int taken) {
+  const unsigned short* const list = sm.fold_list(warp);
+  const int rowg = (lane & 7) + ((lane >> 4) & 1) * 8;
+  const int colhalf = (lane >> 3) & 1;
+  const int slot = list[(taken + rowg) & (BP::kListEntries - 1)];
+
   rola::static_for<BP::kMCh>([&](auto Mc) {
     constexpr int mc = decltype(Mc)::value;
     if constexpr (mc == BP::kMassTile) {
-      mass_frag<BP>(vf[mc], lane);
+      mass_frag<BP>(f.vf[mc], lane);
     } else {
-      //: THE TRANSPOSING TILE LOAD reads the segment as it is stored -- token major,
-      //: channel minor -- and returns it as the A operand, channel major. The four
-      //: 8x8 blocks are addressed by lanes in tile order, so the lane's token row
-      //: carries the tile's k half and its channel group the tile's m half.
-      const int row = (lane & 7) + ((lane >> 4) & 1) * 8;
-      const int group = mc * 2 + ((lane >> 3) & 1);
-      ops::load_frag_t(vf[mc], tile + (uint32_t)v_group_offset<BP>(row, group));
+      ops::load_frag_t(f.vf[mc],
+                       sm.pool_v() + (uint32_t)v_group_offset<BP>(slot, 2 * mc + colhalf));
     }
   });
-}
 
-//: THE SAME DRAIN WITHOUT THE MASS TILE, for a caller that builds the constant fragment at
-//: its deposits rather than carrying it. -- see docs/internals/carry/carry_kernel.md#streams
-template <class BP>
-__device__ __forceinline__ void fold_drain_values(ops::SmemAddr tile,
-                                                  uint32_t (&vf)[BP::kMassTile][4], int lane) {
-  const int row = (lane & 7) + ((lane >> 4) & 1) * 8;
-  rola::static_for<BP::kMassTile>([&](auto Mc) {
-    constexpr int mc = decltype(Mc)::value;
-    ops::load_frag_t(vf[mc], tile + (uint32_t)v_group_offset<BP>(row, mc * 2 + ((lane >> 3) & 1)));
+  constexpr int kShI = slice_shift(sb_shift_of(D, BP::kBC, NS, WA, D - 1));
+  constexpr int kBitsI =
+      slice_bits(sb_shift_of(D, BP::kBC, NS, WA, D - 1), sb_span_bits(D, BP::kBC, NS, WA, D - 1));
+  constexpr int kInnerTiles = 1 << kBitsI;
+  static_assert(kShI == 0 && kInnerTiles % 2 == 0,
+                "the innermost level is the fastest leaf digit and spans whole 16-column groups");
+  uint32_t in[kInnerTiles / 2][4];
+  rola::static_for<kInnerTiles / 2>([&](auto Gc) {
+    constexpr int g = decltype(Gc)::value;
+    //: `scol` is this lane's own digit column; the block's base is the tile's first.
+    ops::load_frag_t(in[g], sm.pool_amp(slot)
+                                + (uint32_t)((scol[D - 1][2 * g] - (lane >> 2) + 8 * colhalf) * 2));
+  });
+  rola::static_for<BP::kNL>([&](auto Jc) {
+    constexpr int j = decltype(Jc)::value;
+    constexpr int g = (j % kInnerTiles) / 2, c = j & 1;
+    f.bf[j][0] = in[g][c];
+    f.bf[j][1] = in[g][c + 2];
+  });
+
+  const int q = lane & 3;
+  int r0[2], r1[2];
+  rola::static_for<2>([&](auto Hc) {
+    constexpr int h = decltype(Hc)::value;
+    r0[h] = list[(taken + 2 * q + 8 * h) & (BP::kListEntries - 1)];
+    r1[h] = list[(taken + 2 * q + 1 + 8 * h) & (BP::kListEntries - 1)];
+  });
+  rola::static_for<D - 1>([&](auto Lc) {
+    constexpr int l = decltype(Lc)::value;
+    constexpr int kSh = slice_shift(sb_shift_of(D, BP::kBC, NS, WA, l));
+    constexpr int kBits =
+        slice_bits(sb_shift_of(D, BP::kBC, NS, WA, l), sb_span_bits(D, BP::kBC, NS, WA, l));
+    uint32_t head[1 << kBits][2];
+    rola::static_for<1 << kBits>([&](auto Vc) {
+      constexpr int v = decltype(Vc)::value;
+      const uint32_t col = (uint32_t)(scol[l][v] * 2);
+      rola::static_for<2>([&](auto Hc) {
+        constexpr int h = decltype(Hc)::value;
+        head[v][h] = (uint32_t)ops::load_shared_u16(sm.pool_amp(r0[h]) + col)
+                     | ((uint32_t)ops::load_shared_u16(sm.pool_amp(r1[h]) + col) << 16);
+      });
+    });
+    rola::static_for<BP::kNL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      constexpr int v = (j >> kSh) & ((1 << kBits) - 1);
+      rola::static_for<2>([&](auto Hc) {
+        constexpr int h = decltype(Hc)::value;
+        f.bf[j][h] = ops::mul_bf16x2(f.bf[j][h], head[v][h]);
+      });
+    });
   });
 }
 
-//: COVER SLOT B: the write side's first segments' ROUTING data, walked and staged while
-//: the return leg's edge settles. It reads routing only -- never the accumulator and never
-//: the region -- which is what makes it independent of the phase it covers.
-template <class BP, int D>
-__device__ __forceinline__ void cover_write_batch_zero(const CarryParams& p, const Smem<BP>& sm,
-                                                       const int (&abase)[D], int warp, int lane,
-                                                       int bh, int t0, int wLen, uint32_t& claim) {
-  const int tok_end = t0 + wLen;
-  fold_produce<BP, D, BP::kFactorSlots>(p, sm, abase, lane, bh, t0, t0, tok_end, 0, 0, false, true,
-                                        claim);
-  if (warp == 0)
-    rola::static_for<BP::kFactorSlots>([&](auto Ic) {
-      constexpr int s = decltype(Ic)::value;
-      write_gain<BP>(sm, s, lane, read_gain<BP>(p, lane, bh, t0 + s * BP::kSeg, tok_end));
+//: DEPOSIT ONE TILE: `kMCh x kNL` MMAs, the tile as the k-step, into the resident accumulator.
+template <class BP>
+__device__ __forceinline__ void pool_deposit(Acc<BP>& acc, const Frags<BP>& f) {
+  rola::static_for<BP::kMCh>([&](auto Mc) {
+    constexpr int mc = decltype(Mc)::value;
+    rola::static_for<BP::kNL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      ops::mma(acc.c[mc][j], f.vf[mc], f.bf[j]);
     });
+  });
 }
 
-//: PHASE 2, THE UNION FORM. The fold is WINDOW-BLIND: a deposit never reads the accumulator, so
-//: the segment MMAs of a whole window chain with no accumulator dependency and the
-//: segment slot's refill is covered by the previous segment's chain.
+//: A PARTIAL TILE PADDED to the dead row, from the list's end to the tile's.
+template <class BP>
+__device__ __forceinline__ void pool_pad_tile(unsigned short* list, int count, int taken,
+                                              int lane) {
+  const int i = count + lane;
+  if (i < taken + BP::kSeg) list[i & (BP::kListEntries - 1)] = (unsigned short)BP::kPoolPos;
+}
+
+//: PHASE 2, in BATCHES of the pool: fill the batch, build the list under the copies, one
+//: edge, deposit every tile with the next tile's gather in front of it, pad the tail with
+//: the dead row, one edge. Nothing is reclaimed inside a batch, so nothing is tracked.
 //: -- see docs/internals/carry/carry_kernel.md#fold
 template <class BP, int D, int NS, int WA>
 __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>& sm, Acc<BP>& acc,
                                            const int (&scol)[D][BP::kNL], const int (&abase)[D],
-                                           int tid, int warp, int lane, int bh, int t0, int wLen,
-                                           uint32_t& claim) {
-  constexpr int S = BP::kSegmentSlots;
-  constexpr int Fs = BP::kFactorSlots;
-  constexpr int Cs = BP::kColSlots;
-  const int nSeg = (wLen + BP::kSeg - 1) / BP::kSeg;
-  const int tok_end = t0 + wLen;
+                                           int warp, int lane, int bh, int t0, int wLen,
+                                           uint32_t mask) {
+  constexpr int kRoundsPerBatch = BP::kPoolPos / kRoundTokens;
+  const int nRounds = (wLen + kRoundTokens - 1) / kRoundTokens;
+  unsigned short* const list = sm.fold_list(warp);
 
-  //: the value rows of the first slots; the factor rows they are folded against are
-  //: already in the ring, staged by the cover slot the return leg's edge hid.
-  fold_produce<BP, D, S>(p, sm, abase, lane, bh, t0, t0, tok_end, 0, 0, true, false, claim);
-
-  ops::stage_wait<S - 1>();
-  ops::rendezvous_group((int)StreamEdge::kFilled, BP::kThreads);
-  fold_transpose<BP, D>(sm, 0, 0, 0, tid);
-  ops::rendezvous_group((int)StreamEdge::kEmpty, BP::kThreads);
-
-  uint32_t bf[BP::kNL][2];
-  fold_expand<BP, D, NS, WA>(sm, bf, scol, 0, lane);
+  if (warp == 0) pool_zero_dead_row<BP>(sm, lane);
 
 #pragma unroll 1
-  for (int b = 0; b < nSeg; ++b) {
-    const int ahead = b + S, next = b + 1;
-    const unsigned short gain =
-        warp == 0 ? read_gain<BP>(p, lane, bh, t0 + (ahead + 1) * BP::kSeg, tok_end) : 0u;
+  for (int r0 = 0; r0 < nRounds; r0 += kRoundsPerBatch) {
+    const int rEnd = r0 + kRoundsPerBatch < nRounds ? r0 + kRoundsPerBatch : nRounds;
+#pragma unroll 1
+    for (int r = r0; r < rEnd; ++r)
+      pool_fill_round<BP, D>(p, sm, abase, warp, lane, bh, t0, wLen, r);
 
-    uint32_t vf[BP::kMCh][4];
-    fold_drain<BP>(sm.v_tile(b % S), vf, lane);
-    if (next < nSeg) fold_transpose<BP, D>(sm, next % Fs, next % Fs, next % Cs, tid);
+    //: the batch's list, from the mask words alone, under the copies.
+    int count = 0;
+#pragma unroll 1
+    for (int r = r0; r < rEnd; ++r) {
+      const uint32_t live = (uint32_t)ops::lane_broadcast((int)mask, r);
+      const int rank = __popc(live & ops::lanes_below());
+      if ((live >> lane) & 1u)
+        list[(count + rank) & (BP::kListEntries - 1)] =
+            (unsigned short)pool_slot<BP>(r * kRoundTokens + lane);
+      count += __popc(live);
+    }
+    const int whole = count & ~(BP::kSeg - 1);
+    if (count > whole) pool_pad_tile<BP>(list, count, whole, lane);
+    const int tiles = (count + BP::kSeg - 1) / BP::kSeg;
 
-    ops::rendezvous_group((int)StreamEdge::kEmpty, BP::kThreads);
+    ops::stage_wait<0>();
+    ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
 
-    //: the segment `S` ahead, and the factor rows one further still: the expansion runs a
-    //: segment in front of the deposits, so its rows must land a segment earlier. A segment
-    //: past the window's end stages zeros, which is what a zero coefficient already is.
-    fold_produce<BP, D, 1>(p, sm, abase, lane, bh, t0 + ahead * BP::kSeg,
-                           t0 + (ahead + 1) * BP::kSeg, tok_end, ahead % S, (ahead + 1) % Fs, true,
-                           true, claim);
-
-    uint32_t bnext[BP::kNL][2];
-    if (next < nSeg) fold_expand<BP, D, NS, WA>(sm, bnext, scol, next % Cs, lane);
-
-    //: DEPOSIT: one MMA per (channel m-tile, leaf n-tile), the segment as the k step.
-    rola::static_for<BP::kMCh>([&](auto Mc) {
-      constexpr int mc = decltype(Mc)::value;
-      rola::static_for<BP::kNL>([&](auto Jc) {
-        constexpr int j = decltype(Jc)::value;
-        ops::mma(acc.c[mc][j], vf[mc], bf[j]);
-      });
-    });
-
-    if (warp == 0) write_gain<BP>(sm, (ahead + 1) % Fs, lane, gain);
-    rola::static_for<BP::kNL>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      rola::static_for<2>([&](auto Hc) {
-        constexpr int h = decltype(Hc)::value;
-        bf[j][h] = bnext[j][h];
-      });
-    });
-
-    ops::stage_wait<S - 1>();
-    ops::rendezvous_group((int)StreamEdge::kFilled, BP::kThreads);
+    //: the tiles, each gathered in front of the deposits that cover its gather.
+    if (tiles > 0) {
+      Frags<BP> f[2];
+      pool_gather<BP, D, NS, WA>(sm, f[0], scol, warp, lane, 0);
+#pragma unroll 1
+      for (int t = 0; t + 1 < tiles; t += 2) {
+        pool_gather<BP, D, NS, WA>(sm, f[1], scol, warp, lane, (t + 1) * BP::kSeg);
+        pool_deposit<BP>(acc, f[0]);
+        if (t + 2 < tiles)
+          pool_gather<BP, D, NS, WA>(sm, f[0], scol, warp, lane, (t + 2) * BP::kSeg);
+        pool_deposit<BP>(acc, f[1]);
+      }
+      if (tiles & 1) pool_deposit<BP>(acc, f[0]);
+    }
+    //: the batch's rows are dead for every warp before the next batch overwrites them.
+    ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
   }
-  ops::stage_wait<0>();
 }
 
 // ------------------------------------------------------- the streams, both phases
@@ -867,36 +844,6 @@ __device__ __forceinline__ uint32_t stream_masks(const CarryParams& p, const Sid
   return m;
 }
 
-//: ONE LIVE PAIR'S ROWS INTO A PRIVATE RING, BRANCHED AND NEVER PREDICATED: a predicated-off
-//: `cp.async` still zero-fills its destination, and under compaction that destination belongs
-//: to a neighbour. -- see docs/internals/carry/carry_kernel.md#streams
-template <class BP, int D>
-__device__ __forceinline__ void stage_pair_fold(const CarryParams& p, const Smem<BP>& sm,
-                                                const int (&abase)[D], int warp, int bh, int tok,
-                                                int row) {
-  constexpr int kGroups = BP::kDv / 8;
-  const ops::SmemAddr tile = sm.fold_values(warp);
-  const uint32_t voff = ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * (uint32_t)BP::kDv * 2u;
-  rola::static_for<kGroups>([&](auto Gc) {
-    constexpr int gp = decltype(Gc)::value;
-    ops::stage_tile(tile + (uint32_t)v_group_offset<BP>(row, gp),
-                    ops::gather_ptr(p.v, voff + (uint32_t)(gp * 16)));
-  });
-  const ops::SmemAddr raw = ops::smem_addr(sm.fold_factors(warp));
-  const uint32_t plane = ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * (uint32_t)p.g.wtot * 2u;
-  rola::static_for<D>([&](auto Lc) {
-    constexpr int l = decltype(Lc)::value;
-    constexpr int kSpan = owner_span(D, BP::kBC, l);
-    constexpr int kBase = span_base(D, BP::kBC, l);
-    constexpr int kQ = run_quantum(kSpan, kBase, BP::kRawStride);
-    rola::static_for<kSpan * 2 / kQ>([&](auto Qc) {
-      constexpr int q = decltype(Qc)::value;
-      ops::stage_run<kQ>(raw + (uint32_t)((row * BP::kRawStride + kBase) * 2 + q * kQ),
-                         ops::gather_ptr(p.pwrite, plane + (uint32_t)(abase[l] * 2 + q * kQ)));
-    });
-  });
-}
-
 template <class BP, int D>
 __device__ __forceinline__ void stage_pair_read(const CarryParams& p, const Smem<BP>& sm,
                                                 const int (&abase)[D], int warp, int bh, int tok,
@@ -917,27 +864,6 @@ __device__ __forceinline__ void stage_pair_read(const CarryParams& p, const Smem
   sm.read_tokens(warp)[row] = (unsigned short)rel;
 }
 
-//: THE UNFILLED ROWS of a segment the window ran out of tokens for, ZEROED rather than
-//: predicated. -- see docs/internals/carry/carry_kernel.md#streams
-template <class BP>
-__device__ __forceinline__ void pad_fold_slot(const Smem<BP>& sm, int warp, int lane, int fill) {
-  constexpr int kGroups = BP::kDv / 8;
-  constexpr int kWords = BP::kRawStride / 2;
-  const int rows = BP::kSeg - fill;
-  const ops::SmemAddr tile = sm.fold_values(warp);
-  const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
-#pragma unroll 1
-  for (int i = lane; i < rows * kGroups; i += ops::kBallotLanes)
-    ops::store_shared_vec16(tile + (uint32_t)v_group_offset<BP>(fill + i / kGroups, i % kGroups),
-                            zero);
-  const ops::SmemAddr raw = ops::smem_addr(sm.fold_factors(warp));
-#pragma unroll 1
-  for (int i = lane; i < rows * kWords; i += ops::kBallotLanes)
-    ops::store_shared_u32(raw + (uint32_t)(((fill + i / kWords) * kWords + i % kWords) * 4), 0u);
-#pragma unroll 1
-  for (int i = lane; i < rows; i += ops::kBallotLanes) sm.fold_gains(warp)[fill + i] = 0u;
-}
-
 template <class BP>
 __device__ __forceinline__ void pad_read_slot(const Smem<BP>& sm, int warp, int lane, int fill) {
   constexpr int kWords = BP::kRawStride / 2;
@@ -951,53 +877,6 @@ __device__ __forceinline__ void pad_read_slot(const Smem<BP>& sm, int warp, int 
     sm.read_tokens(warp)[fill + i] = (unsigned short)kDeadToken;
 }
 
-//: EXPAND, FROM THE RAW ROWS: a private stream has ONE consumer, so the token pair is
-//: assembled where it is used rather than by a cooperative transpose.
-//: -- see docs/internals/carry/carry_kernel.md#fold-sparse
-template <class BP, int D, int NS, int WA>
-__device__ __forceinline__ void fold_expand_raw(const Smem<BP>& sm, uint32_t (&bf)[BP::kNL][2],
-                                                const int (&scol)[D][BP::kNL], int warp, int lane,
-                                                int tile0, int tiles) {
-  const ops::SmemAddr raw = ops::smem_addr(sm.fold_factors(warp));
-  const unsigned short* const gains = sm.fold_gains(warp);
-  const int t2 = lane & 3;
-  uint32_t gain[2];
-  rola::static_for<2>([&](auto Hc) {
-    constexpr int h = decltype(Hc)::value;
-    const int u = t2 + 4 * h;
-    gain[h] = (uint32_t)gains[2 * u] | ((uint32_t)gains[2 * u + 1] << 16);
-  });
-  rola::static_for<D>([&](auto Lc) {
-    constexpr int l = decltype(Lc)::value;
-    constexpr int kSh = slice_shift(sb_shift_of(D, BP::kBC, NS, WA, l));
-    constexpr int kBits =
-        slice_bits(sb_shift_of(D, BP::kBC, NS, WA, l), sb_span_bits(D, BP::kBC, NS, WA, l));
-    uint32_t f[1 << kBits][2];
-    rola::static_for<1 << kBits>([&](auto Vc) {
-      constexpr int v = decltype(Vc)::value;
-      const uint32_t col = (uint32_t)(scol[l][v] * 2);
-      rola::static_for<2>([&](auto Hc) {
-        constexpr int h = decltype(Hc)::value;
-        const ops::SmemAddr r0 = raw + (uint32_t)(2 * (t2 + 4 * h) * BP::kRawStride * 2) + col;
-        const uint32_t pair =
-            (uint32_t)ops::load_shared_u16(r0)
-            | ((uint32_t)ops::load_shared_u16(r0 + (uint32_t)(BP::kRawStride * 2)) << 16);
-        f[v][h] = l == 0 ? ops::mul_bf16x2(pair, gain[h]) : pair;
-      });
-    });
-    rola::static_for<BP::kNL>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      constexpr int v = (j >> kSh) & ((1 << kBits) - 1);
-      if (j < tile0 || j >= tile0 + tiles) return;
-      rola::static_for<2>([&](auto Hc) {
-        constexpr int h = decltype(Hc)::value;
-        bf[j][h] = l == 0 ? f[v][h] : ops::mul_bf16x2(bf[j][h], f[v][h]);
-      });
-    });
-  });
-}
-
-//: PRODUCE one read segment's coefficients for the k-steps a stream owns.
 template <class BP, int D>
 __device__ __forceinline__ void readout_produce_range(ops::SmemAddr slot, int lane,
                                                       const int (&rcin)[BP::kDw][2],
@@ -1068,104 +947,6 @@ __device__ __forceinline__ void readout_scatter_mass(const Smem<BP>& sm, float* 
                       pm[t][e]);
     });
   });
-}
-
-//: PHASE 2, THE SPARSE FORM. One live stream per warp, the catalog walked in TURNS; the one
-//: CTA crossing is the write-after-read against the rejoin, because the rings alias the
-//: region. -- see docs/internals/carry/carry_kernel.md#fold-sparse
-template <class BP, int D, int BC, int NS, int WA>
-__device__ __forceinline__ void fold_phase_sparse(const CarryParams& p, const Smem<BP>& sm,
-                                                  Acc<BP>& acc, const int (&scol)[D][BP::kNL],
-                                                  const int (&abase)[D], int warp, int lane, int bh,
-                                                  int t0, int wLen, uint32_t mask0) {
-  const int gbits = p.fold_grain_bits;
-  const int turns = BP::kLeavesPerWarp >> gbits;
-  const int tiles = (1 << gbits) / ops::kMmaN;
-  const int nWords = (wLen + ops::kBallotLanes - 1) / ops::kBallotLanes;
-  unsigned int* const produced = sm.produced(warp);
-  unsigned int* const consumed = sm.consumed(warp);
-
-  ops::rendezvous_group((int)StreamEdge::kEmpty, BP::kThreads);
-
-#pragma unroll 1
-  for (int turn = 0; turn < turns; ++turn) {
-    const int P0 = turn << gbits;
-    const int tile0 = P0 / ops::kMmaN;
-    const uint32_t mine = turn == 0
-                              ? mask0
-                              : stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, abase, warp,
-                                                        lane, bh, P0, gbits, t0, nWords);
-    if (lane == 0) {
-      *produced = 0u;
-      *consumed = 0u;
-    }
-    __syncwarp();
-
-    int word = 0;
-    uint32_t live = (uint32_t)ops::lane_broadcast((int)mine, 0);
-
-    //: ONE SEGMENT'S CLAIM: lanes place their live tokens at `numProduced + rank` until the
-    //: slot's capacity is reached, and the slot's capacity IS one segment.
-    auto claim = [&]() -> int {
-      int n = 0;
-#pragma unroll 1
-      while (n < BP::kSeg) {
-#pragma unroll 1
-        while (live == 0u && word + 1 < nWords)
-          live = (uint32_t)ops::lane_broadcast((int)mine, ++word);
-        if (live == 0u) break;
-        const int rank = __popc(live & ops::lanes_below());
-        const bool take = ((live >> lane) & 1u) != 0u && rank < BP::kSeg - n;
-        const uint32_t claimed = ops::lane_ballot(take);
-        unsigned int base = 0u;
-        if (lane == 0) base = atomicAdd(produced, (unsigned int)__popc(claimed));
-        const int slot = ops::lane_broadcast((int)base, 0) + rank;
-        const int tok = t0 + (word << 5) + lane;
-        if (take) {
-          stage_pair_fold<BP, D>(p, sm, abase, warp, bh, tok, slot & (BP::kSeg - 1));
-          sm.fold_gains(warp)[slot & (BP::kSeg - 1)] = *(const unsigned short*)ops::gather_ptr(
-              p.gwrite, ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * 2u);
-        }
-        n += __popc(claimed);
-        live &= ~claimed;
-      }
-      ops::stage_commit();
-      return n;
-    };
-
-    int fill = claim();
-#pragma unroll 1
-    while (fill > 0) {
-      ops::stage_wait<0>();
-      __syncwarp();
-      if (fill < BP::kSeg) {
-        pad_fold_slot<BP>(sm, warp, lane, fill);
-        __syncwarp();
-      }
-      //: THE MASS TILE'S A FRAGMENT IS A CONSTANT, built at the deposit rather than drained.
-      uint32_t vf[BP::kMassTile][4];
-      fold_drain_values<BP>(sm.fold_values(warp), vf, lane);
-      uint32_t bf[BP::kNL][2];
-      fold_expand_raw<BP, D, NS, WA>(sm, bf, scol, warp, lane, tile0, tiles);
-      if (lane == 0) atomicAdd(consumed, (unsigned int)fill);
-      uint32_t mf[4];
-      mass_frag<BP>(mf, lane);
-      rola::static_for<BP::kMCh>([&](auto Mc) {
-        constexpr int mc = decltype(Mc)::value;
-        rola::static_for<BP::kNL>([&](auto Jc) {
-          constexpr int j = decltype(Jc)::value;
-          if (j < tile0 || j >= tile0 + tiles) return;
-          if constexpr (mc == BP::kMassTile)
-            ops::mma(acc.c[mc][j], mf, bf[j]);
-          else
-            ops::mma(acc.c[mc][j], vf[mc], bf[j]);
-        });
-      });
-      //: THE COVER IS THE OTHER WARPS', NOT THIS ONE'S -- the sparse form crosses no CTA edge
-      //: inside the phase. -- see docs/internals/carry/carry_kernel.md#fold-sparse
-      fill = fill == BP::kSeg ? claim() : 0;
-    }
-  }
 }
 
 //: PHASE 1, THE SPARSE FORM: the same streams against the accumulator instead of into it, with
@@ -1355,16 +1136,14 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
       }
     });
 
-    //: COVER SLOT B, the same division on the write side.
+    //: COVER SLOT B: the write side's liveness, folded over the warp's whole box -- routing
+    //: words only, in front of the return leg's edge.
     return_leg_store<BP, D, BC>(p, sm, tr, warp, lane);
     int wbase[D];
     factor_runs(wbase);
-    uint32_t fold_mask = 0u;
-    if (p.fold_form == (int)Form::kUnion)
-      cover_write_batch_zero<BP, D>(p, sm, wbase, warp, lane, bh, t0, wLen, claim);
-    else
-      fold_mask = stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, wbase, warp, lane, bh, 0,
-                                          p.fold_grain_bits, t0, nWords);
+    const uint32_t fold_mask =
+        stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, wbase, warp, lane, bh, 0,
+                                geom_ilog2(BP::kLeavesPerWarp), t0, nWords);
     ops::rendezvous_group((int)Edge::kReturnLeg, BP::kThreads);
     return_leg_rejoin<BP, D, BC>(p, sm, tr, acc, warp, lane);
 
@@ -1387,14 +1166,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
       });
     });
 
-    rola::uniform_switch<kForms>(p.fold_form, [&](auto Ff) {
-      if constexpr ((Form) decltype(Ff)::value == Form::kUnion) {
-        fold_phase<BP, D, NS, WA>(p, sm, acc, scol, wbase, tid, warp, lane, bh, t0, wLen, claim);
-      } else {
-        fold_phase_sparse<BP, D, BC, NS, WA>(p, sm, acc, scol, wbase, warp, lane, bh, t0, wLen,
-                                             fold_mask);
-      }
-    });
+    fold_phase<BP, D, NS, WA>(p, sm, acc, scol, wbase, warp, lane, bh, t0, wLen, fold_mask);
 
     ops::rendezvous_group((int)Edge::kWindowLine, BP::kThreads);
   }

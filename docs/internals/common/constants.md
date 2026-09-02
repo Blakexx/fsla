@@ -100,17 +100,6 @@ back to back, so a dense window's MMA chain is as deep as any; short chains occu
 sparsity has left little work, which is the segment fixed cost's own crossover and not a
 property of this constant.
 
-<a id="segment-slots"></a>
-## `segment_slots(caps)` — one slot plus registers, or a two-slot ring
-
-Overlap needs two stages in flight, and the second stage is either a second shared slot or
-the REGISTERS (KERNEL_STANDARDS §4). Which one is available is a capability question, so it
-is derived from the capability row rather than tabulated: where the MMA sources both
-operands from the issuing unit's own registers, one slot suffices — drain it into fragments
-in one burst, refill it, compute from the fragments — and where it does not (a warpgroup MMA
-reads its operands from shared memory descriptors), the ring is two slots. Never a literal
-`1` or `2` at a call site.
-
 <a id="cluster"></a>
 ## The cluster size
 

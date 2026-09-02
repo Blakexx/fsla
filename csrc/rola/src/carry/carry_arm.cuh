@@ -48,7 +48,6 @@ inline ArmCensus carry_census() {
                    BP::kAccRegs,
                    BP::kStateElems,
                    BP::kStateElems / 32,
-                   BP::kSegmentSlots,
                    sub_boxes(D, BP::kBC, BP::kStreams).count};
 }
 

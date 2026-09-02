@@ -113,63 +113,58 @@ class LaunchShape:
         return self.warps_per_cta * 32
 
 
-#: The two FORMS a phase runs in, as the kernel's `Form` enum spells them. The union body
+#: The two FORMS the READOUT runs in, as the kernel's `Form` enum spells them. The union body
 #: is the one-stream point of the family and the dense fast path; the sparse body keys its
-#: streams on leaf ranges and reaps the dead (token, stream) pairs.
+#: streams on leaf ranges and reaps the dead (token, stream) pairs. The fold has one body.
 FORMS: tuple[str, ...] = ("union", "sparse")
 
 
 @dataclass(frozen=True, slots=True)
 class CarrySchedule:
-    """THE PER-SIDE RUNTIME DIALS -- the primitive ledger's class 3, and nothing else.
+    """THE READ SIDE'S RUNTIME DIALS -- the primitive ledger's class 3, and nothing else.
 
-    ``readout``/``fold`` name each side's FORM; ``readout_grain``/``fold_grain`` name each
-    side's STREAM GRAIN ``G`` in LEAVES -- the leaf range one stream keys on. Both are
-    RUNTIME: they enter the kernel as a switch outside the window loop and as a loop bound
-    and a warp-uniform tile predicate inside it, and neither grows a template.
+    ``readout`` names the read side's FORM; ``readout_grain`` names its STREAM GRAIN ``G``
+    in LEAVES -- the leaf range one stream keys on. Both are RUNTIME: they enter the kernel
+    as a switch outside the window loop and as a loop bound and a warp-uniform tile
+    predicate inside it, and neither grows a template. The write side has ONE body -- the
+    pool fold -- and no dial: its stream is the warp's box and its reap is the list.
 
-    ``None`` grains take the side's own default: the warp sub-box for the union form (which
-    IS one stream spanning the box) and the reaping bound ``G_min`` for the sparse form,
-    clamped into ``[PAGE_LEAVES, leaves_per_warp]``.
+    A ``None`` grain takes the side's own default: the warp sub-box for the union form
+    (which IS one stream spanning the box) and the reaping bound ``G_min`` for the sparse
+    form, clamped into ``[PAGE_LEAVES, leaves_per_warp]``.
     """
 
     readout: str = "union"
-    fold: str = "union"
     readout_grain: int | None = None
-    fold_grain: int | None = None
 
     def __post_init__(self) -> None:
-        for side, form in (("readout", self.readout), ("fold", self.fold)):
-            if form not in FORMS:
-                raise CarryRefusal(
-                    f"{side}={form!r} is not a form this kernel carries; the set is {FORMS}. "
-                    f"The two bodies are selected once per launch, outside the window loop.")
+        if self.readout not in FORMS:
+            raise CarryRefusal(
+                f"readout={self.readout!r} is not a form this kernel carries; the set is "
+                f"{FORMS}. The body is selected once per launch, outside the window loop.")
 
-    def flat(self, DV: int, grain_min: tuple[int, int]) -> list[int]:
-        """The four entries the kernel boundary takes: two forms then two grains."""
+    def flat(self, DV: int, grain_min: int) -> list[int]:
+        """The two entries the kernel boundary takes: the form, then the grain."""
         box = leaves_per_warp(DV)
-        out = []
-        for side, form, named, floor in (("readout", self.readout, self.readout_grain, grain_min[0]),
-                                         ("fold", self.fold, self.fold_grain, grain_min[1])):
-            if form == "union":
-                grain = box
-            else:
-                grain = box if named is None else int(named)
-                if named is None:
-                    grain = min(box, max(PAGE_LEAVES, floor))
-            if grain & (grain - 1) or not PAGE_LEAVES <= grain <= box:
-                raise CarryRefusal(
-                    f"{side}_grain={grain} is not a lawful stream grain: a power of two "
-                    f"between the page rectangle ({PAGE_LEAVES}) and the warp sub-box "
-                    f"({box}). A finer stream than the page rectangle would divide the "
-                    f"innermost digits below the vector width (KERNEL_STANDARDS.md §R13).")
-            if form == "union" and named is not None and int(named) != box:
-                raise CarryRefusal(
-                    f"{side}={form!r} names a grain of {named}; the union body is the "
-                    f"ONE-STREAM point of the family, so its grain is the warp sub-box "
-                    f"({box}) and naming another is naming two different schedules.")
-            out.append(grain)
-        return [FORMS.index(self.readout), FORMS.index(self.fold), out[0], out[1]]
+        if self.readout == "union":
+            grain = box
+        else:
+            grain = box if self.readout_grain is None else int(self.readout_grain)
+            if self.readout_grain is None:
+                grain = min(box, max(PAGE_LEAVES, grain_min))
+        if grain & (grain - 1) or not PAGE_LEAVES <= grain <= box:
+            raise CarryRefusal(
+                f"readout_grain={grain} is not a lawful stream grain: a power of two "
+                f"between the page rectangle ({PAGE_LEAVES}) and the warp sub-box "
+                f"({box}). A finer stream than the page rectangle would divide the "
+                f"innermost digits below the vector width (KERNEL_STANDARDS.md §R13).")
+        if self.readout == "union" and self.readout_grain is not None \
+                and int(self.readout_grain) != box:
+            raise CarryRefusal(
+                f"readout={self.readout!r} names a grain of {self.readout_grain}; the union "
+                f"body is the ONE-STREAM point of the family, so its grain is the warp "
+                f"sub-box ({box}) and naming another is naming two different schedules.")
+        return [FORMS.index(self.readout), grain]
 
 
 #: THE MODE WORD'S ENCODING, as `csrc/rola/src/common/geom.cuh` spells it and
@@ -179,26 +174,23 @@ class CarrySchedule:
 SIDE_SPARSE: tuple[int, int] = (1, 2)
 
 
-def reaping_bound(descriptor: StateFormat, level_modes: int) -> tuple[int, int]:
-    """``G_min`` per side: the product of that side's DENSE levels' widths.
+def reaping_bound(descriptor: StateFormat, level_modes: int) -> int:
+    """``G_min`` for the read side: the product of its DENSE levels' widths.
 
     THE REAPING BOUND (FP card): a leaf range's liveness depends only on its SPARSE levels'
     digits, because a dense level admits every token, so the finest stream grain worth having
     fixes exactly one digit per sparse level and spans the dense ones whole. A finer stream
     pays token multiplicity and zero-row padding for zero additional reaping.
     """
-    bound = []
-    for side in SIDE_SPARSE:
-        g = 1
-        for level, width in enumerate(descriptor.B):
-            if not (level_modes >> (2 * level)) & side:
-                g *= width
-        bound.append(g)
-    return bound[0], bound[1]
+    g = 1
+    for level, width in enumerate(descriptor.B):
+        if not (level_modes >> (2 * level)) & SIDE_SPARSE[0]:
+            g *= width
+    return g
 
 
 def select_schedule(descriptor: StateFormat, level_modes: int = 0) -> CarrySchedule:
-    """THE SELECTION RULE, structural half: a side with no SPARSE level cannot reap.
+    """THE SELECTION RULE, structural half: a read side with no SPARSE level cannot reap.
 
     Saturation fixes ``active_leaves`` (an arch mapping, not a dial a caller sees) and the
     level structure fixes the rest: a side that declares no sparse level takes the UNION
@@ -208,10 +200,9 @@ def select_schedule(descriptor: StateFormat, level_modes: int = 0) -> CarrySched
     beats the multiplicity, the send replication and the segment's fixed cost -- is MEASURED,
     not tuned here, and a caller that has measured it names the schedule outright.
     """
-    forms = ["sparse" if any((level_modes >> (2 * level)) & side
-                             for level in range(descriptor.D)) else "union"
-             for side in SIDE_SPARSE]
-    return CarrySchedule(readout=forms[0], fold=forms[1])
+    sparse = any((level_modes >> (2 * level)) & SIDE_SPARSE[0]
+                 for level in range(descriptor.D))
+    return CarrySchedule(readout="sparse" if sparse else "union")
 
 
 @dataclass(frozen=True, slots=True)
@@ -556,7 +547,7 @@ def census():
 
     ``(index, D, DV, warps_per_cta, regs, local_bytes, smem_bytes, max_threads,
     binary_version, threads, box_leaves, atoms, acc_regs, state_elems,
-    state_regs_per_lane, segment_slots, members)``. The first group is
+    state_regs_per_lane, members)``. The first group is
     ``cudaFuncGetAttributes`` on the arm's own kernel and the second is the derivation;
     having both in one row is what makes a disagreement visible instead of inferred.
     """

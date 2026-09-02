@@ -12,8 +12,7 @@
 
 namespace rola::carry {
 
-//: THE FILL's unit, in tokens, and its ONE cursor -- every production point of both union
-//: bodies is preceded by a CTA edge since the last. -- see docs/internals/carry/carry_kernel.md#fill
+//: THE FILL's unit, in tokens. -- see docs/internals/carry/carry_kernel.md#fill
 constexpr int kUnitTokens = 4;
 
 //: THE BOX'S ROUTING FOOTPRINT, in amplitude columns, and one level's base in it.
@@ -38,11 +37,23 @@ constexpr int panel_tiles(int warps, int tiles, int ldo, int region) {
   return t;
 }
 
-//: THE SLOT STRIDES, each an access pattern in one congruence.
-//: -- see docs/internals/carry/smem_ledger.md#factor-rows
+//: THE SLOT STRIDES, each an access pattern in one congruence. -- see docs/internals/carry/smem_ledger.md#factor-rows
 constexpr int raw_stride(int span_tot) { return span_tot + ((4 - span_tot % 32) + 32) % 32; }
 
-constexpr int tok_stride(int seg) { return seg + ((8 - seg % 16) + 16) % 16; }
+//: THE POOL'S AMPLITUDE ROW STRIDE, in halfwords: an ODD number of sixteen-byte quanta.
+//: -- see docs/internals/carry/smem_ledger.md#pool
+constexpr int amp_stride(int span_tot) {
+  int q = (span_tot * 2 + 15) / 16;
+  if (q % 2 == 0) ++q;
+  return q * 8;
+}
+
+//: THE POOL'S CAPACITY: the largest power of two <= the window whose rows and lists fit. -- see docs/internals/carry/smem_ledger.md#pool
+constexpr int pool_positions(int budget, int row_bytes, int list_bytes, int window) {
+  int c = window;
+  while (c > 32 && (c + 1) * row_bytes + list_bytes > budget) c >>= 1;
+  return c;
+}
 
 //: THE J-SLICE OF A LEVEL: which bits of a warp's tile index its digit depends on.
 //: -- see docs/internals/carry/carry_kernel.md#expansion
@@ -92,24 +103,22 @@ struct BoxPlan {
 
   static constexpr int kSeg = kSegmentTokens;
   static constexpr int kSegsPerWindow = kWindow / kSeg;
-  static constexpr int kSegmentSlots = segment_slots(denseref::arch::kCaps);
 
-  static constexpr int kFactorSlots = kSegmentSlots + 1;
   static constexpr int kSpanTotal = span_total(D, kBC);
   static constexpr int kRawStride = raw_stride(kSpanTotal);
-  static constexpr int kTokStride = tok_stride(kSeg);
   static constexpr int kRawSlotBytes = kSeg * kRawStride * 2;
-  static constexpr int kGainSlotBytes = kSeg * 2;
-  static constexpr int kColSlots = 2;
-  static constexpr int kColBytes = kColSlots * kSpanTotal * kTokStride * 2;
   //: -- see docs/internals/carry/smem_ledger.md#read-ring
   static constexpr int kReadSlots = 2;
   static constexpr int kReadRawBytes = kReadSlots * kRawSlotBytes;
 
+  //: THE POOL's rows and the per-warp lists. -- see docs/internals/carry/smem_ledger.md#pool
+  static constexpr int kVRowBytes = kDv * 2;
+  static constexpr int kAmpStride = amp_stride(kSpanTotal);
+  static constexpr int kAmpRowBytes = kAmpStride * 2;
+
   //: the shared tenants' shapes. -- see docs/internals/carry/smem_ledger.md
   static constexpr int kLdO = kCols + (4 - kCols % 32 + 32) % 32;
   static constexpr int kPageImageBytes = kAtomLeaves * kLdO * (int)sizeof(float);
-  static constexpr int kVTileBytes = kSeg * kDv * 2;
 
   //: THE TRANSIT REGION, and the phase-local tenants that alias into it. -- smem_ledger.md#region
   static constexpr int kLdX =
@@ -118,7 +127,6 @@ struct BoxPlan {
   static constexpr int kStatePages =
       kAtoms < kRegionBytes / kPageImageBytes ? kAtoms : kRegionBytes / kPageImageBytes;
   static constexpr int kStateRounds = (kAtoms + kStatePages - 1) / kStatePages;
-  static constexpr int kVRingBytes = kSegmentSlots * kVTileBytes;
   //: -- see docs/internals/carry/smem_ledger.md#panel
   static constexpr int kPanelTiles =
       panel_tiles(kWarps, kSeg / denseref::ops::kMmaN, kLdO, kRegionBytes);
@@ -140,19 +148,16 @@ struct BoxPlan {
   static_assert(kMassTile == kMCh - 1,
                 "the mass opens the last channel m-tile, so the tiles below it are whole "
                 "value tiles and the transit's ldmatrix reaches every one of them");
-  static_assert(kSpanTotal % 2 == 0 && owner_span(D, kBC, 0) % 2 == 0,
-                "the transpose moves the factor row in column PAIRS, and the gain is folded "
-                "into the outermost level's own columns");
+  static_assert(owner_span(D, kBC, 0) % 2 == 0,
+                "the outermost run is whole 32-bit words: the fill scales it by the gain a "
+                "word at a time");
   static_assert(kSeg % kUnitTokens == 0, "a segment is a whole number of fill units");
 
-  //: THE SPARSE FORM'S STREAMS, sized at the finest grain the nesting law admits.
-  //: -- see docs/internals/carry/smem_ledger.md#streams
+  //: the sparse readout's streams. -- see docs/internals/carry/smem_ledger.md#streams
   static constexpr int kStreamGrainMin = kAtomLeaves;
   static constexpr int kStreamCatalog = kLeavesPerWarp / kStreamGrainMin;
   static constexpr int kLiveStreams = kWarps;
   static constexpr int kTokIdBytes = kSeg * 2;
-  static constexpr int kFoldRingBytes = kVTileBytes + kRawSlotBytes + kGainSlotBytes;
-  static constexpr int kSparseFoldBytes = kLiveStreams * kFoldRingBytes;
   static constexpr int kReadRingBytes = kRawSlotBytes + kTokIdBytes;
   static constexpr int kSparseReadBytes = kLiveStreams * kReadRingBytes;
 
@@ -161,36 +166,38 @@ struct BoxPlan {
 
   static constexpr int kCounterBytes = 2 * kLiveStreams * 4;
 
-  static constexpr int kRegionOffset = 0;
-  static constexpr int kVTileOffset = kRegionOffset + kRegionBytes;
-  static constexpr int kColOffset = kVTileOffset + kVRingBytes;
-  static constexpr int kGainOffset = kColOffset + kColBytes;
-  static constexpr int kRawOffset = kGainOffset + kFactorSlots * kGainSlotBytes;
-  //: THE READ BLOCK holds whichever read-side ring the readout's FORM asks for.
-  static constexpr int kReadBlockOffset = kRawOffset + kFactorSlots * kRawSlotBytes;
-  static constexpr int kReadRawOffset = kReadBlockOffset;
-  static constexpr int kSparseReadOffset = kReadBlockOffset;
   static constexpr int kReadBlockBytes =
       kReadRawBytes > kSparseReadBytes ? kReadRawBytes : kSparseReadBytes;
+  static constexpr int kClaimBytes = 4;
+  //: the pool aliases the region and may outgrow it. -- see docs/internals/carry/smem_ledger.md#region
+  static constexpr int kPoolBudget =
+      denseref::arch::kCaps.smem_per_cta_max
+      - (kReadBlockBytes + kPageSlotBytes + kClaimBytes + kCounterBytes + 64);
+  static constexpr int kPoolPos =
+      pool_positions(kPoolBudget, kVRowBytes + kAmpRowBytes, kWarps* kWindow * 2, kWindow);
+  static constexpr int kListEntries = kPoolPos;
+  static constexpr int kListBytes = kListEntries * 2;
+  static constexpr int kRegionOffset = 0;
+  static constexpr int kPoolVOffset = kRegionOffset;
+  static constexpr int kPoolAmpOffset = kPoolVOffset + (kPoolPos + 1) * kVRowBytes;
+  static constexpr int kListOffset = kPoolAmpOffset + (kPoolPos + 1) * kAmpRowBytes;
+  static constexpr int kPoolBytes = kListOffset + kWarps * kListBytes - kRegionOffset;
+  static constexpr int kRegionTenantBytes =
+      ((kPoolBytes > kRegionBytes ? kPoolBytes : kRegionBytes) + 15) / 16 * 16;
+  //: THE READ BLOCK holds whichever read-side ring the readout's FORM asks for.
+  static constexpr int kReadBlockOffset = kRegionOffset + kRegionTenantBytes;
+  static constexpr int kReadRawOffset = kReadBlockOffset;
+  static constexpr int kSparseReadOffset = kReadBlockOffset;
   static constexpr int kPageSlotOffset = kReadBlockOffset + kReadBlockBytes;
   static constexpr int kClaimOffset = kPageSlotOffset + kPageSlotBytes;
-  static constexpr int kClaimBytes = 4;
   static constexpr int kCounterOffset = kClaimOffset + kClaimBytes;
   static constexpr int kSmemBytes = (kCounterOffset + kCounterBytes + 15) / 16 * 16;
 
-  //: THE SPARSE FOLD'S RINGS ALIAS THE TRANSIT REGION and overflow into the union fold's
-  //: feed. -- see docs/internals/carry/smem_ledger.md#streams
-  static constexpr int kSparseFoldOffset = kRegionOffset;
-  static_assert(kSparseFoldBytes <= kReadBlockOffset,
-                "the sparse fold's rings fit the transit region plus the union fold's feed, "
-                "which are the two tenants dead while PHASE 2 runs a sparse fold");
-  static_assert(kGainOffset % 16 == 0 && kRawOffset % 16 == 0 && kReadBlockOffset % 16 == 0,
-                "every ring's base carries the widest quantum its runs are staged in");
-  static_assert(kFoldRingBytes % 16 == 0 && kReadRingBytes % 16 == 0,
-                "a private stream ring's stride keeps its successor's base aligned");
-
-  static_assert(kVTileOffset % 16 == 0 && kColOffset % 16 == 0,
-                "the value ring and the column block are addressed in 16-byte quanta");
+  static_assert(kPoolPos % 32 == 0 && kWindow % kPoolPos == 0,
+                "the pool holds whole rounds of thirty-two positions and the window is a whole "
+                "number of pools");
+  static_assert(kPoolAmpOffset % 16 == 0 && kListOffset % 16 == 0 && kAmpRowBytes % 16 == 0,
+                "the pool's rows are ldmatrix addresses and sixteen-byte cp.async targets");
   static_assert(kRawSlotBytes % 16 == 0,
                 "a raw factor slot's bytes keep the next slot's base aligned");
   static_assert(kLdX % denseref::ops::kMmaN == 0 && (kLdX * 2) % 16 == 0,
@@ -211,10 +218,10 @@ struct BoxPlan {
 
 //: THE STREAM'S OWN EDGES, which are not the frame's: NAMED BARRIER ids.
 //: -- see docs/internals/carry/carry_kernel.md#stream-edges
-enum class StreamEdge : int { kFilled = 1, kEmpty = 2, kReadBatch = 3 };
+enum class StreamEdge : int { kReadBatch = 3 };
 
 //: THE FRAME'S EDGES, named -- barrier ids of the same kind, disjoint from the streams'.
 //: -- see docs/internals/carry/carry_kernel.md#edges
-enum class Edge : int { kWindowLine = 4, kOutLeg = 5, kReturnLeg = 6 };
+enum class Edge : int { kWindowLine = 4, kOutLeg = 5, kReturnLeg = 6, kFoldRound = 7 };
 
 }  // namespace rola::carry
