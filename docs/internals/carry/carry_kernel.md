@@ -305,14 +305,14 @@ at `span_base` per level). Row `kPoolPos` is the DEAD ROW: zero, written once pe
 `pool_zero_dead_row` because the pool shares the transit region's bytes, and read by every
 entry a padded tile carries.
 
-THE POOL HOLDS THE UNION OF THE WARPS' LIVE POSITIONS, BY RANK. At cover slot B every warp
-reads its streams' liveness words once -- one stream per pass of the fold's grain -- and
-writes each stream's word and its exclusive prefix per round into `stream_words` and
-`stream_prefix` (lane `r` holds round `r`), ORing the words into the CTA's `cta_live` words
-(one per round of `kRoundTokens`, zeroed at the out leg); after the return leg's edge every
-warp scans the union -- lane `r` holds round `r`'s word and its exclusive prefix -- so a live
-position's SLOT is its rank among the CTA's live positions less the batch's base. A window
-whose live count fits `kPoolPos` is one batch; the pool fills as far as there are rows to fill.
+THE POOL HOLDS THE UNION OF THE WARPS' LIVE POSITIONS, BY RANK. At the cover slot in front
+of a phase every warp reads its streams' liveness words once -- one stream per pass of the
+side's grain -- and writes each stream's word and its exclusive prefix per round into
+`stream_words` and `stream_prefix` (lane `r` holds round `r`, `cover_live_words`); at the
+phase's start every warp reads the union off those words (`union_word`) and scans it -- lane
+`r` holds round `r`'s word and its exclusive prefix -- so a live position's SLOT is its rank
+among the CTA's live positions less the batch's base. A window whose live count fits
+`kPoolPos` is one batch; the pool fills as far as there are rows to fill.
 
 THE FILL HAS NO CURSOR: round `r` is copied by warp `r mod kWarps` (`pool_fill_round`), four
 live positions per step -- lane group `g` takes the g-th remaining live bit -- and each position
@@ -356,8 +356,9 @@ column memo `scol[l][v]` is one entry per slice `v`, and tile `j` reads slice `(
 <a id="stream-edges"></a>
 ## The readout's stream edge
 
-`StreamEdge::kReadBatch` is the union readout's batch edge, a named barrier id disjoint from
-the frame's (`Edge`).
+`StreamEdge::kReadBatch` is the readout's batch edge in both forms -- the union's staged
+batches and the sparse form's read-pool batches -- a named barrier id disjoint from the
+frame's (`Edge`).
 
 <a id="pool-tile"></a>
 ## One tile: gathered fragments
@@ -510,46 +511,23 @@ the window. `active_leaves = warps_per_cta * G` is therefore derived here rather
 the rotation that makes it free — half the warps producing, half consuming — is a role
 assignment on top of this schedule, not a restructure of it.
 
-THE COMPACTION is a ballot. For each 32-token word, `rank = popc(live & lanemask_lt)` is a
-lane's position among the live tokens; lanes with `rank < capacity - held` take, claim
-`numProduced` with one `atomicAdd`, and stage their token's rows at `slot & (kSeg - 1)`.
-A LANE THAT TAKES NO TOKEN MUST NOT ISSUE THE COPY AT ALL: a `cp.async` whose source run is
-predicated off still writes its destination — it zero-fills it, which is exactly what the
-union body wants for a token past the window's end — and under compaction that destination
-belongs to a neighbour. The staging is branched, not predicated; racecheck names the
-alternative as a write-write hazard on the value tile.
-
-THE TAIL of a turn is a partial segment. Its unfilled rows are ZEROED — the value rows, the
-factor rows and the gains — rather than predicated, because the deposit reads both operands
-whole: a zero coefficient over a stale value is a zero product only if the stale value is
-finite, which shared memory is not obliged to be, and reading it at all is an initcheck
-violation.
-
-<a id="counters"></a>
-## The stream counters
-
-Each live READOUT stream carries `numProduced` and `numConsumed`, 32-bit shared words
-counted in TOKENS. `numProduced` is fetch-added to CLAIM a placement (K1's monotone cursor, generalised
-per stream); the consumer starts a segment at `produced - consumed >= kSegmentTokens`, drains
-it in one `ldmatrix` burst and fetch-adds `numConsumed` to RELEASE the slot; a producer whose
-claim would reach `consumed + capacity` waits, and the capacity IS one segment, because the
-register fragments are the second buffer.
-
-THE WAIT PRIMITIVE IS NEITHER A POLLED COUNTER NOR AN MBARRIER. Under warp-private streams
-the consumer is the producer, so the only completion the consumer can wait on is its own
-`cp.async` group: `cp.async.wait_group 0` and `__syncwarp()`, a warp-local edge with no spin
-loop and no CTA crossing. K1's measured spinning wait — 21% of issue slots — is
-not merely avoided here but unreachable. The counters are the PLACEMENT and RELEASE contract,
-which is what a rotated producer needs from them; the WAIT half becomes the cross-warp edge
-when a warp fills a stream it does not consume.
+THE COMPACTION IS THE POOL'S. The read side has its own pool of amplitude rows (`#pool`,
+the read tenant), filled by the same walk as the fold's from the read-side live words that
+cover slot A writes (`cover_live_words`: each stream's word per round and its exclusive
+prefix), and the walk mints each stream's list of pool slots as it copies. A stream's pass
+walks its list in whole tiles, the tail padded to the dead row, whose token is `kDeadToken`
+so the scatter skips it. No stream stages, claims or counts anything: the batch edges are the
+phase's only CTA crossings, and there are no counters.
 
 <a id="readout-sparse"></a>
 ## PHASE 1, the sparse form
 
-The same streams against the accumulator instead of into it. The ring carries NO value tile
-(the A operand is the transit's registers) and no re-layout of its rows (the read side's B fragment
-pairs two adjacent LEAVES, which the plane stores adjacent), so it is the raw factor rows plus
-a 16-entry row of window-relative TOKEN IDS.
+The same streams against the accumulator instead of into it. The read pool carries NO value
+row (the A operand is the transit's registers) and no re-layout of its rows (the read side's
+B fragment pairs two adjacent LEAVES, which the plane stores adjacent), so it is the amplitude
+rows alone plus `pool_token`, the slot's window-relative TOKEN ID the scatter is addressed by.
+A stream's tile takes its sixteen positions from its list, the B fragments straight off the
+pool rows (`readout_produce_range`), and deposits (`readout_deposit_tile`).
 
 THE FAN-IN CANNOT SURVIVE COMPACTION. The panel (`#fan-in`) sums `warps_per_cta` per-warp
 slices of one [token x channel] block and issues one contribution per owner box per token —

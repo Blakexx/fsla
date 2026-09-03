@@ -153,61 +153,54 @@ struct BoxPlan {
                 "word at a time");
   static_assert(kSeg % kUnitTokens == 0, "a segment is a whole number of fill units");
 
-  //: the sparse readout's streams. -- see docs/internals/carry/smem_ledger.md#streams
+  //: a side's streams at its finest grain: the catalog per warp, one list each.
+  //: -- see docs/internals/carry/smem_ledger.md#streams
   static constexpr int kStreamGrainMin = kAtomLeaves;
   static constexpr int kStreamCatalog = kLeavesPerWarp / kStreamGrainMin;
-  //: the fold's streams at its finest grain: the catalog per warp, one list each.
-  static constexpr int kFoldStreams = kWarps * kStreamCatalog;
+  static constexpr int kSideStreams = kWarps * kStreamCatalog;
   static constexpr int kRounds = kWindow / 32;
-  static constexpr int kLiveStreams = kWarps;
-  static constexpr int kTokIdBytes = kSeg * 2;
-  static constexpr int kReadRingBytes = kRawSlotBytes + kTokIdBytes;
-  static constexpr int kSparseReadBytes = kLiveStreams * kReadRingBytes;
 
-  //: the tenants beside the region. -- see docs/internals/carry/smem_ledger.md#region
   static constexpr int kPageSlotBytes = kAtoms * (int)sizeof(int);
 
-  static constexpr int kCounterBytes = 2 * kLiveStreams * 4;
-  //: THE LIVE WORDS for the fold, one per round: the CTA's union, and each fold stream's own
-  //: word with its exclusive prefix, minted at cover slot B and walked once by the fill.
-  static constexpr int kCtaLiveBytes = kRounds * 4;
-  static constexpr int kStreamWordBytes = kFoldStreams * kRounds * 4;
-  static constexpr int kStreamPrefixBytes = kFoldStreams * kRounds * 2;
-  static constexpr int kLiveBytes = kCtaLiveBytes + kStreamWordBytes + kStreamPrefixBytes;
+  //: THE LIVE WORDS per side: a stream's word per round and its exclusive prefix.
+  static constexpr int kStreamWordBytes = kSideStreams * kRounds * 4;
+  static constexpr int kStreamPrefixBytes = kSideStreams * kRounds * 2;
+  static constexpr int kLiveBytes = kStreamWordBytes + kStreamPrefixBytes;
   static constexpr int kFillScratchBytes = 32 * 2;
 
-  static constexpr int kReadBlockBytes =
-      kReadRawBytes > kSparseReadBytes ? kReadRawBytes : kSparseReadBytes;
+  static constexpr int kReadBlockBytes = kReadRawBytes;
   static constexpr int kClaimBytes = 4;
   //: the pool aliases the region and may outgrow it. -- see docs/internals/carry/smem_ledger.md#region
   static constexpr int kPoolBudget =
       denseref::arch::kCaps.smem_per_cta_max
-      - (kReadBlockBytes + kPageSlotBytes + kClaimBytes + kCounterBytes + kLiveBytes + 64);
+      - (kReadBlockBytes + kPageSlotBytes + kClaimBytes + 2 * kLiveBytes + 64);
   static constexpr int kPoolPos =
       pool_positions(kPoolBudget, kVRowBytes + kAmpRowBytes,
-                     kFoldStreams* kWindow * 2 + kWarps * kFillScratchBytes, kWindow);
+                     kSideStreams* kWindow * 2 + kWarps * kFillScratchBytes, kWindow);
   static constexpr int kListEntries = kPoolPos;
   static constexpr int kListBytes = kListEntries * 2;
   static constexpr int kRegionOffset = 0;
   static constexpr int kPoolVOffset = kRegionOffset;
   static constexpr int kPoolAmpOffset = kPoolVOffset + (kPoolPos + 1) * kVRowBytes;
   static constexpr int kListOffset = kPoolAmpOffset + (kPoolPos + 1) * kAmpRowBytes;
-  static constexpr int kFillScratchOffset = kListOffset + kFoldStreams * kListBytes;
+  static constexpr int kFillScratchOffset = kListOffset + kSideStreams * kListBytes;
   static constexpr int kPoolBytes = kFillScratchOffset + kWarps * kFillScratchBytes - kRegionOffset;
+  //: THE READ POOL, PHASE 1's tenant of the same bytes. -- smem_ledger.md#pool
+  static constexpr int kReadAmpOffset = kRegionOffset;
+  static constexpr int kReadListOffset = kReadAmpOffset + (kPoolPos + 1) * kAmpRowBytes;
+  static constexpr int kReadScratchOffset = kReadListOffset + kSideStreams * kListBytes;
+  static constexpr int kPoolTokenOffset = kReadScratchOffset + kWarps * kFillScratchBytes;
+  static constexpr int kReadPoolBytes = kPoolTokenOffset + (kPoolPos + 1) * 2 - kRegionOffset;
   static constexpr int kRegionTenantBytes =
       ((kPoolBytes > kRegionBytes ? kPoolBytes : kRegionBytes) + 15) / 16 * 16;
-  //: THE READ BLOCK holds whichever read-side ring the readout's FORM asks for.
   static constexpr int kReadBlockOffset = kRegionOffset + kRegionTenantBytes;
   static constexpr int kReadRawOffset = kReadBlockOffset;
-  static constexpr int kSparseReadOffset = kReadBlockOffset;
   static constexpr int kPageSlotOffset = kReadBlockOffset + kReadBlockBytes;
   static constexpr int kClaimOffset = kPageSlotOffset + kPageSlotBytes;
-  static constexpr int kCounterOffset = kClaimOffset + kClaimBytes;
-  static constexpr int kCtaLiveOffset = kCounterOffset + kCounterBytes;
-  static constexpr int kStreamWordOffset = kCtaLiveOffset + kCtaLiveBytes;
-  static constexpr int kStreamPrefixOffset = kStreamWordOffset + kStreamWordBytes;
-  static constexpr int kSmemBytes = (kCtaLiveOffset + kLiveBytes + 15) / 16 * 16;
+  static constexpr int kLiveOffset = kClaimOffset + kClaimBytes;
+  static constexpr int kSmemBytes = (kLiveOffset + 2 * kLiveBytes + 15) / 16 * 16;
 
+  static_assert(kReadPoolBytes <= kPoolBytes, "the read pool lies within the fold pool's bytes");
   static_assert(kPoolPos % 32 == 0 && kWindow % kPoolPos == 0,
                 "the pool holds whole rounds of thirty-two positions and the window is a whole "
                 "number of pools");

@@ -12,13 +12,12 @@ an allocation would move the residency the whole design is built on.
 
 | offset | tenant | bytes | owner |
 |---|---|---|---|
-| 0 | the transit region, `BC * LdX * 2` -- and, sharing its bytes, THE POOL: `(kPoolPos + 1) * (kVRowBytes + kAmpRowBytes)` rows plus `kFoldStreams * kListBytes` of lists and the fill scratches; the tenant is the larger of the two, `kRegionTenantBytes` | 54,288 | the exchange between the two sides' carves; PHASE 2's rows |
-| 44,352 | THE READ BLOCK, `max(union, sparse)` — the union readout's two shared raw slots (2,304) or the sparse readout's `warps_per_cta` private rings (9,472) | 9,472 | whichever form the readout runs |
+| 0 | the transit region, `BC * LdX * 2` -- and, sharing its bytes, THE POOL: `(kPoolPos + 1) * (kVRowBytes + kAmpRowBytes)` rows plus `kSideStreams * kListBytes` of lists and the fill scratches -- and, in PHASE 1's sparse form, THE READ POOL in the same bytes: `(kPoolPos + 1)` amplitude rows, its lists and scratches, and the slot -> token table; the tenant is the larger of the two, `kRegionTenantBytes` | 54,288 | the exchange between the two sides' carves; PHASE 2's rows |
+| after the region | THE READ BLOCK: the union readout's two shared raw slots | 2,304 | the union readout |
 | 53,824 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
 | 53,888 | the fill's ONE claim cursor | 4 | both union bodies' fills |
-| 53,892 | the stream counters, `2 * warps_per_cta * 4` | 64 | the sparse bodies' `numProduced`/`numConsumed` |
-| after the counters | the fold's LIVE WORDS: the CTA union, `kRounds * 4`, then each fold stream's words, `kFoldStreams * kRounds * 4`, and their exclusive prefixes, `kFoldStreams * kRounds * 2` (`kLiveBytes`) | 928 | cover slot B writes them; the fill walks them once |
-| | **total** (16-byte aligned) | **53,968** | |
+| after the claim | THE LIVE WORDS, per side: each stream's word per round, `kSideStreams * kRounds * 4`, and its exclusive prefix, `kSideStreams * kRounds * 2` (`kLiveBytes` each) | 2 x 768 | cover slot A writes the read side's, cover slot B the write side's; each fill walks its own once |
+| | **total** (16-byte aligned, the flagship arm on sm_86) | **67,616** | |
 
 The frame's three edges and the streams' three take no bytes at all: they are NAMED BARRIERS
 (`carry_kernel.md#edges`), which is what an edge with equal participation costs.
@@ -40,27 +39,18 @@ The transit region is the largest tenant and the only one whose bytes are re-let
 | the exit sweep | the state page images again |
 
 <a id="streams"></a>
-### The sparse form's stream rings
+### The streams: lists and live words, no rings
 
-A stream is a leaf range of `G` leaves inside ONE warp's sub-box, so its ring is that warp's
-alone and no other warp reads or writes it. `warps_per_cta` streams are LIVE at a time — one
-per warp — and the catalog (`leaves_per_warp / G` per warp) is walked in turns, which is what
-keeps the resident cost `warps_per_cta * (one segment)` instead of `catalog * (one segment)`.
-The ledger is sized at the FINEST grain the nesting law admits (`G = 16`, the page rectangle);
-a coarser runtime `G` uses the same bytes with fewer turns.
+A stream is a leaf range of `G` leaves inside ONE warp's sub-box. It owns no ring: its
+operands are the side's pool rows, shared by every stream that names a position, and what
+is the stream's own is its LIST of pool slots (`kListEntries` halfwords, `kListBytes`), minted
+by the fill, and its LIVE WORDS (one 32-bit word per round and a 16-bit exclusive prefix),
+written at the cover slot in front of the phase. The ledger is sized at the FINEST grain the
+nesting law admits (`G = 16`, the page rectangle: `kSideStreams` streams per side); a coarser
+runtime `G` uses fewer of the same lists.
 
-| ring | per live stream, at the flagship | why |
-|---|---|---|
-| the readout's raw factor rows | `kSeg * kRawStride * 2` = 1,152 | the B operand, read as it lies |
-| the readout's token ids | `kSeg * 2` = 32 | the window-relative token each compacted row carries, which the direct deposit is addressed by |
-
-THE READOUT'S RINGS CANNOT ALIAS THE REGION, because the UNION readout's panel may be living
-there in the same phase; they take the READ BLOCK, which the union readout's own two shared
-slots would otherwise hold, and the two forms never coexist. The fold has no rings: its rows
-are the pool (`#pool`), which does alias the region, filled only after the rejoin has read it.
-
-The page slots, the claim cursor and the stream counters are PERSISTENT: they are alive from the prologue to the
-exit and are never re-let. So is the union bodies' raw factor ring — a tenant that must survive a
+The page slots, the claim cursor and the live words are PERSISTENT: they are alive from the
+prologue to the exit and are never re-let. So is the union bodies' raw factor ring — a tenant that must survive a
 phase change is not a region tenant, and both cover slots fill their ring while the region
 still holds the transit.
 
@@ -118,7 +108,9 @@ enough — the slot being staged and the slot being expanded alternate.
 ## The pool
 
 PHASE 2's rows, keyed by position, in the region's bytes (`kPoolVOffset`, `kPoolAmpOffset`,
-`kListOffset`). Capacity `kPoolPos` is `pool_positions` of the budget the other tenants leave:
+`kListOffset`); PHASE 1's sparse form lays its READ POOL in the same bytes (`kReadAmpOffset`,
+`kReadListOffset`, `kReadScratchOffset`, `kPoolTokenOffset`): amplitude rows only, at the
+same capacity, plus the slot -> window-token table the scatter addresses by. Capacity `kPoolPos` is `pool_positions` of the budget the other tenants leave:
 the largest power of two whose rows, plus the dead row and the lists, fit -- 256 at the
 flagship arm on sm_86, where the pool outgrows the transit region and the region tenant is
 sized to it (`kRegionTenantBytes`). Per position: a value row, `kVRowBytes = DV * 2`, and an
@@ -149,8 +141,8 @@ residues collide two-way at most, which is what the measured 3.8% conflict share
 
 ### The lists
 
-`kFoldStreams` lists of `kListEntries` halfword slots (`kListBytes` each), one per stream of
-the fold's finest grain, minted by the fill and consumed by the stream's pass; behind them
+`kSideStreams` lists per side of `kListEntries` halfword slots (`kListBytes` each), one per
+stream of the side's finest grain, minted by the fill and consumed by the stream's pass; behind them
 `warps_per_cta` fill scratches of one round's live lanes (`kFillScratchBytes`). Never a
 stream's operands.
 
