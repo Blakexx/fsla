@@ -348,7 +348,17 @@ __device__ __forceinline__ void store_bf16(__nv_bfloat16* p, float v) { *p = __f
 __device__ __forceinline__ void store_f32(float* p, float v) { *p = v; }
 
 //: ONE CONTRIBUTION INTO A SHARED ACCUMULATOR, FIRE AND FORGET. -- see docs/internals/common/ops.md#fan-in-add
-__device__ __forceinline__ void fan_in_add(float* p, float x) { atomicAdd(p, x); }
+__device__ __forceinline__ void fan_in_add(float* p, float x) {
+  asm volatile("red.global.add.f32 [%0], %1;" ::"l"(p), "f"(x) : "memory");
+}
+
+//: THE SAME, PREDICATED: a dead contributor issues nothing and branches nowhere. -- see docs/internals/common/ops.md#fan-in-add
+__device__ __forceinline__ void fan_in_add_if(float* p, float x, bool live) {
+  asm volatile(
+      "{\n .reg .pred q;\n setp.ne.s32 q, %2, 0;\n @q red.global.add.f32 [%0], %1;\n}" ::"l"(p),
+      "f"(x), "r"((int)live)
+      : "memory");
+}
 
 //: The 16-byte quantum, synchronously. -- see docs/internals/common/ops.md#load-vec16
 __device__ __forceinline__ uint4 load_vec16(const void* p) {

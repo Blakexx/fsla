@@ -945,14 +945,13 @@ __device__ __forceinline__ void readout_produce_range(const Smem<BP>& sm,
   });
 }
 
-//: SCATTER: the readout's partial straight into the planes, addressed by the pool's token
-//: table through the stream's list. A compacted stream's token list is its own, so the
-//: panel has no common row to sum and there is no panel.
-//: -- see docs/internals/carry/carry_kernel.md#readout-sparse
-template <class BP, int M0, int MN>
-__device__ __forceinline__ void readout_scatter(const Smem<BP>& sm, const unsigned short* list,
-                                                int taken, float* num, int lane, int t0,
-                                                const float (&po)[MN][BP::kTokTiles][4]) {
+//: A TILE'S SCATTER ROWS: one 64-bit address per (token, channel row) a lane deposits to,
+//: computed once per tile, addressed by the pool's token table through the stream's list;
+//: the dead row's is null. -- see docs/internals/carry/carry_kernel.md#readout-sparse
+template <class BP>
+__device__ __forceinline__ void readout_scatter_rows(const Smem<BP>& sm, const unsigned short* list,
+                                                     int taken, float* num, int lane, int t0,
+                                                     float* (&rows)[BP::kTokTiles][4]) {
   const unsigned short* const ids = sm.pool_token();
   rola::static_for<BP::kTokTiles>([&](auto Tc) {
     constexpr int t = decltype(Tc)::value;
@@ -960,15 +959,27 @@ __device__ __forceinline__ void readout_scatter(const Smem<BP>& sm, const unsign
       constexpr int e = decltype(Ec)::value;
       const int rel = (int)
           ids[list[(taken + t * ops::kMmaN + 2 * (lane & 3) + (e & 1)) & (BP::kListEntries - 1)]];
-      if (rel == kDeadToken) return;
-      //: ONE 64-BIT ADDRESS PER TOKEN, and the channel m-tiles at IMMEDIATE displacements off
-      //: it: a lane's cells are a fixed sixteen floats apart.
-      float* const row = reinterpret_cast<float*>(ops::gather_ptr(
-          num, (uint32_t)(t0 + rel) * (uint32_t)(BP::kDv * 4)
-                   + (uint32_t)((M0 * ops::kMmaM + 8 * (e >> 1) + (lane >> 2)) * 4)));
+      rows[t][e] = rel == kDeadToken
+                       ? nullptr
+                       : reinterpret_cast<float*>(ops::gather_ptr(
+                             num, (uint32_t)(t0 + rel) * (uint32_t)(BP::kDv * 4)
+                                      + (uint32_t)((8 * (e >> 1) + (lane >> 2)) * 4)));
+    });
+  });
+}
+
+//: SCATTER: the partial straight into the planes -- a compacted stream's token list is its
+//: own, so there is no panel -- the channel m-tiles at IMMEDIATE displacements off the row.
+template <class BP, int M0, int MN>
+__device__ __forceinline__ void readout_scatter(float* const (&rows)[BP::kTokTiles][4],
+                                                const float (&po)[MN][BP::kTokTiles][4]) {
+  rola::static_for<BP::kTokTiles>([&](auto Tc) {
+    constexpr int t = decltype(Tc)::value;
+    rola::static_for<4>([&](auto Ec) {
+      constexpr int e = decltype(Ec)::value;
       rola::static_for<MN>([&](auto Mc) {
         constexpr int m = decltype(Mc)::value;
-        ops::fan_in_add(row + m * ops::kMmaM, po[m][t][e]);
+        ops::fan_in_add_if(rows[t][e] + (M0 + m) * ops::kMmaM, po[m][t][e], rows[t][e] != nullptr);
       });
     });
   });
@@ -1002,6 +1013,8 @@ __device__ __forceinline__ void readout_deposit_tile(
     const Smem<BP>& sm, const Transit<BP>& tr, const uint32_t (&rb)[BP::kDw][BP::kTokTiles][2],
     const unsigned short* list, int taken, float* num, float* den, int lane, int k0, int ks,
     int t0) {
+  float* rows[BP::kTokTiles][4];
+  readout_scatter_rows<BP>(sm, list, taken, num, lane, t0, rows);
   rola::static_for<BP::kMassTile / kScatterTiles>([&](auto Gc) {
     constexpr int g = decltype(Gc)::value;
     float po[kScatterTiles][BP::kTokTiles][4];
@@ -1020,7 +1033,7 @@ __device__ __forceinline__ void readout_deposit_tile(
         });
       });
     });
-    readout_scatter<BP, g * kScatterTiles, kScatterTiles>(sm, list, taken, num, lane, t0, po);
+    readout_scatter<BP, g * kScatterTiles, kScatterTiles>(rows, po);
   });
   float pm[BP::kTokTiles][4];
   rola::static_for<BP::kTokTiles>([&](auto Tc) {

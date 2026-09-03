@@ -121,7 +121,16 @@ the gap is ANNOUNCED rather than taken silently.
                             thread does not consume a result and must not wait
                             for one -- that is what makes this a reduction
                             rather than an atomic read-modify-write, and it is
-                            the whole contract.  No ordering across
+                            the whole contract -- stated as `red.global.add.f32`
+                            outright, because `atomicAdd` with an unused result
+                            is only SOMETIMES lowered to a reduction: one
+                            restructuring of the readout's scatter turned it
+                            into returning atomics and a 2.5x step.
+                            `fan_in_add_if(p, x, live)` is the same with the
+                            predicate INSIDE the PTX: a dead contributor under a
+                            C++ branch costs a BSSY/BSYNC region per reduction
+                            (the scatter's measured ~6 instructions per RED);
+                            under a PTX predicate it costs one setp.  No ordering across
                             contributors is defined and no contributor
                             observes another's value, so a caller that needs a
                             reproducible summation order needs a different
