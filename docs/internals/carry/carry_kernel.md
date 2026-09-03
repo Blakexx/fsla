@@ -306,11 +306,13 @@ at `span_base` per level). Row `kPoolPos` is the DEAD ROW: zero, written once pe
 entry a padded tile carries.
 
 THE POOL HOLDS THE UNION OF THE WARPS' LIVE POSITIONS, BY RANK. At cover slot B every warp
-ORs its box's liveness words into the CTA's `cta_live` words (one per round of `kRoundTokens`,
-zeroed at the out leg); after the return leg's edge every warp scans them -- lane `r` holds
-round `r`'s word and its exclusive prefix -- so a live position's SLOT is its rank among the
-CTA's live positions less the batch's base. A window whose live count fits `kPoolPos` is one
-batch; the pool fills as far as there are rows to fill.
+reads its streams' liveness words once -- one stream per pass of the fold's grain -- and
+writes each stream's word and its exclusive prefix per round into `stream_words` and
+`stream_prefix` (lane `r` holds round `r`), ORing the words into the CTA's `cta_live` words
+(one per round of `kRoundTokens`, zeroed at the out leg); after the return leg's edge every
+warp scans the union -- lane `r` holds round `r`'s word and its exclusive prefix -- so a live
+position's SLOT is its rank among the CTA's live positions less the batch's base. A window
+whose live count fits `kPoolPos` is one batch; the pool fills as far as there are rows to fill.
 
 THE FILL HAS NO CURSOR: round `r` is copied by warp `r mod kWarps` (`pool_fill_round`), four
 live positions per step -- lane group `g` takes the g-th remaining live bit -- and each position
@@ -320,10 +322,13 @@ word per lane) so the gain is applied once per position rather than once per lea
 below it by `cp.async` at the widest quantum their stride admits. A position no box lists is
 never copied.
 
-THE LIST is a warp's own, of pool SLOTS: per round the lanes whose position is live for the box
-AND whose rank falls in the batch rank themselves with a ballot and write their slot into the
-warp's `kListEntries`-entry scratch (`fold_list`, a per-warp permutation buffer and not a
-stream). A tile is sixteen consecutive entries.
+THE LISTS ARE MINTED BY THE FILL, one per stream, of pool SLOTS: the same walk that copies a
+round's positions has every stream's word for the round in hand, so a lane whose position is
+in the batch writes its slot into each stream that holds it, at the stream's prefix plus its
+rank within the word less the stream's count before the batch (`stream_count_before`: the
+union rank's round and lane, read back off the stream's own words). A pass consumes its
+stream's list -- `send - sbase` entries, the tail padded to the dead row -- and builds nothing.
+A tile is sixteen consecutive entries.
 
 <a id="fill"></a>
 ## The readout's fill is claimed, not assigned

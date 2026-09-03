@@ -156,6 +156,9 @@ struct BoxPlan {
   //: the sparse readout's streams. -- see docs/internals/carry/smem_ledger.md#streams
   static constexpr int kStreamGrainMin = kAtomLeaves;
   static constexpr int kStreamCatalog = kLeavesPerWarp / kStreamGrainMin;
+  //: the fold's streams at its finest grain: the catalog per warp, one list each.
+  static constexpr int kFoldStreams = kWarps * kStreamCatalog;
+  static constexpr int kRounds = kWindow / 32;
   static constexpr int kLiveStreams = kWarps;
   static constexpr int kTokIdBytes = kSeg * 2;
   static constexpr int kReadRingBytes = kRawSlotBytes + kTokIdBytes;
@@ -165,6 +168,13 @@ struct BoxPlan {
   static constexpr int kPageSlotBytes = kAtoms * (int)sizeof(int);
 
   static constexpr int kCounterBytes = 2 * kLiveStreams * 4;
+  //: THE LIVE WORDS for the fold, one per round: the CTA's union, and each fold stream's own
+  //: word with its exclusive prefix, minted at cover slot B and walked once by the fill.
+  static constexpr int kCtaLiveBytes = kRounds * 4;
+  static constexpr int kStreamWordBytes = kFoldStreams * kRounds * 4;
+  static constexpr int kStreamPrefixBytes = kFoldStreams * kRounds * 2;
+  static constexpr int kLiveBytes = kCtaLiveBytes + kStreamWordBytes + kStreamPrefixBytes;
+  static constexpr int kFillScratchBytes = 32 * 2;
 
   static constexpr int kReadBlockBytes =
       kReadRawBytes > kSparseReadBytes ? kReadRawBytes : kSparseReadBytes;
@@ -172,16 +182,18 @@ struct BoxPlan {
   //: the pool aliases the region and may outgrow it. -- see docs/internals/carry/smem_ledger.md#region
   static constexpr int kPoolBudget =
       denseref::arch::kCaps.smem_per_cta_max
-      - (kReadBlockBytes + kPageSlotBytes + kClaimBytes + kCounterBytes + (kWindow / 32) * 4 + 64);
+      - (kReadBlockBytes + kPageSlotBytes + kClaimBytes + kCounterBytes + kLiveBytes + 64);
   static constexpr int kPoolPos =
-      pool_positions(kPoolBudget, kVRowBytes + kAmpRowBytes, kWarps* kWindow * 2, kWindow);
+      pool_positions(kPoolBudget, kVRowBytes + kAmpRowBytes,
+                     kFoldStreams* kWindow * 2 + kWarps * kFillScratchBytes, kWindow);
   static constexpr int kListEntries = kPoolPos;
   static constexpr int kListBytes = kListEntries * 2;
   static constexpr int kRegionOffset = 0;
   static constexpr int kPoolVOffset = kRegionOffset;
   static constexpr int kPoolAmpOffset = kPoolVOffset + (kPoolPos + 1) * kVRowBytes;
   static constexpr int kListOffset = kPoolAmpOffset + (kPoolPos + 1) * kAmpRowBytes;
-  static constexpr int kPoolBytes = kListOffset + kWarps * kListBytes - kRegionOffset;
+  static constexpr int kFillScratchOffset = kListOffset + kFoldStreams * kListBytes;
+  static constexpr int kPoolBytes = kFillScratchOffset + kWarps * kFillScratchBytes - kRegionOffset;
   static constexpr int kRegionTenantBytes =
       ((kPoolBytes > kRegionBytes ? kPoolBytes : kRegionBytes) + 15) / 16 * 16;
   //: THE READ BLOCK holds whichever read-side ring the readout's FORM asks for.
@@ -191,10 +203,10 @@ struct BoxPlan {
   static constexpr int kPageSlotOffset = kReadBlockOffset + kReadBlockBytes;
   static constexpr int kClaimOffset = kPageSlotOffset + kPageSlotBytes;
   static constexpr int kCounterOffset = kClaimOffset + kClaimBytes;
-  //: THE CTA's live-position words for the fold: the OR of the warps' box words, one per round.
   static constexpr int kCtaLiveOffset = kCounterOffset + kCounterBytes;
-  static constexpr int kCtaLiveBytes = (kWindow / 32) * 4;
-  static constexpr int kSmemBytes = (kCtaLiveOffset + kCtaLiveBytes + 15) / 16 * 16;
+  static constexpr int kStreamWordOffset = kCtaLiveOffset + kCtaLiveBytes;
+  static constexpr int kStreamPrefixOffset = kStreamWordOffset + kStreamWordBytes;
+  static constexpr int kSmemBytes = (kCtaLiveOffset + kLiveBytes + 15) / 16 * 16;
 
   static_assert(kPoolPos % 32 == 0 && kWindow % kPoolPos == 0,
                 "the pool holds whole rounds of thirty-two positions and the window is a whole "

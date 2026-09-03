@@ -12,12 +12,12 @@ an allocation would move the residency the whole design is built on.
 
 | offset | tenant | bytes | owner |
 |---|---|---|---|
-| 0 | the transit region, `BC * LdX * 2` -- and, sharing its bytes, THE POOL: `(kPoolPos + 1) * (kVRowBytes + kAmpRowBytes)` rows plus `warps_per_cta * kListBytes` of lists; the tenant is the larger of the two, `kRegionTenantBytes` | 54,288 | the exchange between the two sides' carves; PHASE 2's rows |
+| 0 | the transit region, `BC * LdX * 2` -- and, sharing its bytes, THE POOL: `(kPoolPos + 1) * (kVRowBytes + kAmpRowBytes)` rows plus `kFoldStreams * kListBytes` of lists and the fill scratches; the tenant is the larger of the two, `kRegionTenantBytes` | 54,288 | the exchange between the two sides' carves; PHASE 2's rows |
 | 44,352 | THE READ BLOCK, `max(union, sparse)` — the union readout's two shared raw slots (2,304) or the sparse readout's `warps_per_cta` private rings (9,472) | 9,472 | whichever form the readout runs |
 | 53,824 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
 | 53,888 | the fill's ONE claim cursor | 4 | both union bodies' fills |
 | 53,892 | the stream counters, `2 * warps_per_cta * 4` | 64 | the sparse bodies' `numProduced`/`numConsumed` |
-| after the counters | the fold's CTA-live words, `W/32 * 4` | 64 | the fill's union of the warps' boxes |
+| after the counters | the fold's LIVE WORDS: the CTA union, `kRounds * 4`, then each fold stream's words, `kFoldStreams * kRounds * 4`, and their exclusive prefixes, `kFoldStreams * kRounds * 2` (`kLiveBytes`) | 928 | cover slot B writes them; the fill walks them once |
 | | **total** (16-byte aligned) | **53,968** | |
 
 The frame's three edges and the streams' three take no bytes at all: they are NAMED BARRIERS
@@ -149,8 +149,9 @@ residues collide two-way at most, which is what the measured 3.8% conflict share
 
 ### The lists
 
-`warps_per_cta` scratches of `kListEntries` halfword positions (`kListBytes` each): a warp's
-permutation buffer for its compaction, holding at most a tile in hand plus a round, never a
+`kFoldStreams` lists of `kListEntries` halfword slots (`kListBytes` each), one per stream of
+the fold's finest grain, minted by the fill and consumed by the stream's pass; behind them
+`warps_per_cta` fill scratches of one round's live lanes (`kFillScratchBytes`). Never a
 stream's operands.
 
 

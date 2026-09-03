@@ -50,12 +50,26 @@ struct Smem {
     return ops::smem_addr(base + BP::kPoolAmpOffset + slot * BP::kAmpRowBytes);
   }
 
-  __device__ __forceinline__ unsigned short* fold_list(int warp) const {
-    return reinterpret_cast<unsigned short*>(base + BP::kListOffset + warp * BP::kListBytes);
+  __device__ __forceinline__ unsigned short* fold_list(int stream) const {
+    return reinterpret_cast<unsigned short*>(base + BP::kListOffset + stream * BP::kListBytes);
+  }
+
+  __device__ __forceinline__ unsigned short* fill_scratch(int warp) const {
+    return reinterpret_cast<unsigned short*>(base + BP::kFillScratchOffset
+                                             + warp * BP::kFillScratchBytes);
   }
 
   __device__ __forceinline__ unsigned int* cta_live() const {
     return reinterpret_cast<unsigned int*>(base + BP::kCtaLiveOffset);
+  }
+
+  __device__ __forceinline__ unsigned int* stream_words(int stream) const {
+    return reinterpret_cast<unsigned int*>(base + BP::kStreamWordOffset + stream * BP::kRounds * 4);
+  }
+
+  __device__ __forceinline__ unsigned short* stream_prefix(int stream) const {
+    return reinterpret_cast<unsigned short*>(base + BP::kStreamPrefixOffset
+                                             + stream * BP::kRounds * 2);
   }
 
   __device__ __forceinline__ char* read_raw_slot(int slot) const {
@@ -540,12 +554,6 @@ __device__ __forceinline__ void readout_phase(const CarryParams& p, const Smem<B
   }
 }
 
-//: the live-token masks of one stream box (defined with the streams below).
-template <class BP, int D, int BC>
-__device__ __forceinline__ uint32_t stream_masks(const CarryParams& p, const SideGeom& sg, int side,
-                                                 const int (&abase)[D], int warp, int lane, int bh,
-                                                 int P0, int gbits, int t0, int nWords);
-
 // ------------------------------------------------------------------- PHASE 2's fold
 
 //: THE POOL: this window's rows keyed by POSITION -- the value row and the box's amplitude
@@ -611,15 +619,16 @@ __device__ __forceinline__ void pool_copy_position(const CarryParams& p, const S
 }
 
 //: ONE ROUND'S FILL, by the round's OWNER warp: the round's live lanes rank themselves once
-//: and write their positions into the warp's scratch (the list buffer, idle until the passes),
-//: so each step's four positions are one load, their ranks `prefix + idx`; those whose slot
-//: falls in the batch are copied, eight lanes to a position.
+//: into the warp's scratch, four positions per step, eight lanes to a position, those whose
+//: slot falls in the batch. THE SAME WALK MINTS THE LISTS: a lane whose position is in the
+//: batch writes its slot into every stream that holds it, at the stream's own rank of it
+//: less the stream's count before the batch. -- see docs/internals/carry/carry_kernel.md#fill
 template <class BP, int D>
 __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem<BP>& sm,
                                                 const int (&abase)[D], int warp, int lane, int bh,
                                                 int t0, int round, uint32_t live, int prefix,
-                                                int base) {
-  unsigned short* const scratch = sm.fold_list(warp);
+                                                int base, int nStreams, int sbase) {
+  unsigned short* const scratch = sm.fill_scratch(warp);
   const int n = __popc(live);
   if ((live >> lane) & 1u) scratch[__popc(live & ops::lanes_below())] = (unsigned short)lane;
   __syncwarp();
@@ -633,6 +642,16 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
         pool_copy_position<BP, D>(p, sm, abase, sub, bh,
                                   t0 + round * kRoundTokens + (int)scratch[idx], slot);
     }
+  }
+  const uint32_t below = ops::lanes_below();
+  const int rank = prefix + __popc(live & below) - base;
+  const bool in = ((live >> lane) & 1u) && rank >= 0 && rank < BP::kPoolPos;
+#pragma unroll 1
+  for (int s = 0; s < nStreams; ++s) {
+    const uint32_t w = sm.stream_words(s)[round];
+    const int at =
+        (int)sm.stream_prefix(s)[round] + __popc(w & below) - ops::lane_broadcast(sbase, s);
+    if (in && ((w >> lane) & 1u)) sm.fold_list(s)[at] = (unsigned short)rank;
   }
   __syncwarp();
   ops::stage_commit();
@@ -664,9 +683,9 @@ struct Frags {
 //: -- see docs/internals/carry/carry_kernel.md#pool-tile
 template <class BP, int D, int NS, int WA>
 __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
-                                            const int (&scol)[D][BP::kNL], int warp, int lane,
+                                            const int (&scol)[D][BP::kNL], int stream, int lane,
                                             int taken) {
-  const unsigned short* const list = sm.fold_list(warp);
+  const unsigned short* const list = sm.fold_list(stream);
   const int rowg = (lane & 7) + ((lane >> 4) & 1) * 8;
   const int colhalf = (lane >> 3) & 1;
   const int slot = list[(taken + rowg) & (BP::kListEntries - 1)];
@@ -757,29 +776,13 @@ __device__ __forceinline__ void pool_pad_tile(unsigned short* list, int count, i
   if (i < taken + BP::kSeg) list[i & (BP::kListEntries - 1)] = (unsigned short)BP::kPoolPos;
 }
 
-//: ONE PASS of a batch: a box's list from its own liveness words, its whole tiles with each
-//: gather in front of the previous deposits, its tail padded to the dead row.
+//: ONE PASS of a batch: a stream's minted list, its whole tiles with each gather in front of
+//: the previous deposits, its tail padded to the dead row.
 template <class BP, int D, int NS, int WA>
 __device__ __forceinline__ void pool_pass(const Smem<BP>& sm, Acc<BP>& acc,
-                                          const int (&scol)[D][BP::kNL], int warp, int lane,
-                                          uint32_t mask, uint32_t cta, int prefix, int nRounds,
-                                          int base, int tile0, int ntiles) {
-  unsigned short* const list = sm.fold_list(warp);
-  int count = 0;
-#pragma unroll 1
-  for (int r = 0; r < nRounds; ++r) {
-    const uint32_t live = (uint32_t)ops::lane_broadcast((int)mask, r);
-    const uint32_t uni = (uint32_t)ops::lane_broadcast((int)cta, r);
-    const int ex = ops::lane_broadcast(prefix, r);
-    //: this lane's position's slot: its rank among the CTA's live positions, less the base.
-    const int slot = ex + __popc(uni & ops::lanes_below()) - base;
-    const bool in = ((live >> lane) & 1u) && slot >= 0 && slot < BP::kPoolPos;
-    const uint32_t taking = ops::lane_ballot(in);
-    if (in)
-      list[(count + __popc(taking & ops::lanes_below())) & (BP::kListEntries - 1)] =
-          (unsigned short)slot;
-    count += __popc(taking);
-  }
+                                          const int (&scol)[D][BP::kNL], int lane, int stream,
+                                          int count, int tile0, int ntiles) {
+  unsigned short* const list = sm.fold_list(stream);
   const int whole = count & ~(BP::kSeg - 1);
   if (count > whole) pool_pad_tile<BP>(list, count, whole, lane);
   const int tiles = (count + BP::kSeg - 1) / BP::kSeg;
@@ -787,24 +790,44 @@ __device__ __forceinline__ void pool_pass(const Smem<BP>& sm, Acc<BP>& acc,
   if (tiles == 0) return;
 
   Frags<BP> f[2];
-  pool_gather<BP, D, NS, WA>(sm, f[0], scol, warp, lane, 0);
+  pool_gather<BP, D, NS, WA>(sm, f[0], scol, stream, lane, 0);
 #pragma unroll 1
   for (int t = 0; t + 1 < tiles; t += 2) {
-    pool_gather<BP, D, NS, WA>(sm, f[1], scol, warp, lane, (t + 1) * BP::kSeg);
+    pool_gather<BP, D, NS, WA>(sm, f[1], scol, stream, lane, (t + 1) * BP::kSeg);
     pool_deposit<BP>(acc, f[0], tile0, ntiles);
-    if (t + 2 < tiles) pool_gather<BP, D, NS, WA>(sm, f[0], scol, warp, lane, (t + 2) * BP::kSeg);
+    if (t + 2 < tiles) pool_gather<BP, D, NS, WA>(sm, f[0], scol, stream, lane, (t + 2) * BP::kSeg);
     pool_deposit<BP>(acc, f[1], tile0, ntiles);
   }
   if (tiles & 1) pool_deposit<BP>(acc, f[0], tile0, ntiles);
   __syncwarp();
 }
 
+//: A STREAM'S COUNT BEFORE A UNION RANK, in lane `stream` (every lane takes part: the round
+//: is found by ballot): the round the rank falls in, the lane within it, the stream's prefix
+//: there plus its bits below that lane.
+template <class BP>
+__device__ __forceinline__ int stream_count_before(const Smem<BP>& sm, uint32_t cta, int prefix,
+                                                   int total, int nRounds, int nStreams, int lane,
+                                                   int rank) {
+  const int s = lane < nStreams ? lane : nStreams - 1;
+  if (rank >= total)
+    return (int)sm.stream_prefix(s)[nRounds - 1] + __popc(sm.stream_words(s)[nRounds - 1]);
+  const int r = __ffs((int)ops::lane_ballot(prefix + __popc(cta) > rank)) - 1;
+  const int pr = ops::lane_broadcast(prefix, r);
+  const uint32_t uw = (uint32_t)ops::lane_broadcast((int)cta, r);
+  //: the lane of the rank's position: the set bit with `rank - pr` set bits below it.
+  const uint32_t below = ops::lanes_below();
+  const uint32_t at = ops::lane_ballot(((uw >> lane) & 1u) && __popc(uw & below) == rank - pr);
+  return (int)sm.stream_prefix(s)[r] + __popc(sm.stream_words(s)[r] & (at - 1u));
+}
+
 //: PHASE 2, in BATCHES of the pool BY RANK: the CTA's live positions, in order, `kPoolPos`
 //: at a time -- one batch when the window's live count fits. Fill the batch (each round by
-//: its owner warp), one edge, one PASS per stream box the warp's box holds at the fold's
-//: grain -- its own list over the same rows into its own n-tiles -- one edge. Nothing is
-//: reclaimed inside a batch, so nothing is tracked. -- see docs/internals/carry/carry_kernel.md#fold
-template <class BP, int D, int BC, int NS, int WA>
+//: its owner warp, minting every stream's list as it goes), one edge, one PASS per stream
+//: the warp's box holds at the fold's grain -- its own list over the same rows into its own
+//: n-tiles -- one edge. Nothing is reclaimed inside a batch, so nothing is tracked.
+//: -- see docs/internals/carry/carry_kernel.md#fold
+template <class BP, int D, int NS, int WA>
 __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>& sm, Acc<BP>& acc,
                                            const int (&scol)[D][BP::kNL], const int (&abase)[D],
                                            int warp, int lane, int bh, int t0, int wLen) {
@@ -823,23 +846,27 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
   });
   const int total = ops::lane_broadcast(prefix, nRounds - 1);
   prefix -= __popc(cta);
+  const int nStreams = BP::kWarps * passes;
 
   if (warp == 0) pool_zero_dead_row<BP>(sm, lane);
 
 #pragma unroll 1
   for (int base = 0; base < total; base += BP::kPoolPos) {
+    const int sbase =
+        stream_count_before<BP>(sm, cta, prefix, total, nRounds, nStreams, lane, base);
+    const int send = stream_count_before<BP>(sm, cta, prefix, total, nRounds, nStreams, lane,
+                                             base + BP::kPoolPos);
 #pragma unroll 1
     for (int r = warp; r < nRounds; r += BP::kWarps)
       pool_fill_round<BP, D>(p, sm, abase, warp, lane, bh, t0, r, ops::lane_broadcast((int)cta, r),
-                             ops::lane_broadcast(prefix, r), base);
+                             ops::lane_broadcast(prefix, r), base, nStreams, sbase);
     ops::stage_wait<0>();
     ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
 
 #pragma unroll 1
     for (int pass = 0; pass < passes; ++pass) {
-      const uint32_t mask = stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, abase, warp,
-                                                    lane, bh, pass << gbits, gbits, t0, nRounds);
-      pool_pass<BP, D, NS, WA>(sm, acc, scol, warp, lane, mask, cta, prefix, nRounds, base,
+      const int s = warp * passes + pass;
+      pool_pass<BP, D, NS, WA>(sm, acc, scol, lane, s, ops::lane_broadcast(send - sbase, s),
                                pass * tilesPerPass, tilesPerPass);
     }
     ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
@@ -1183,13 +1210,27 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     return_leg_store<BP, D, BC>(p, sm, tr, warp, lane);
     int wbase[D];
     factor_runs(wbase);
-    //: the union of the warp's stream boxes, for the pool's fill.
+    //: each stream's words and their exclusive prefix, and the union, for the pool's fill.
+    const int passes = BP::kLeavesPerWarp >> p.fold_grain_bits;
     uint32_t warp_live = 0u;
 #pragma unroll 1
-    for (int pass = 0; pass < (BP::kLeavesPerWarp >> p.fold_grain_bits); ++pass)
-      warp_live |=
+    for (int pass = 0; pass < passes; ++pass) {
+      const uint32_t m =
           stream_masks<BP, D, BC>(p, p.g.w, rola::facts::kWrite, wbase, warp, lane, bh,
                                   pass << p.fold_grain_bits, p.fold_grain_bits, t0, nWords);
+      warp_live |= m;
+      int pre = __popc(m);
+      rola::static_for<5>([&](auto Sc) {
+        constexpr int d = 1 << decltype(Sc)::value;
+        const int up = __shfl_up_sync(0xFFFFFFFFu, pre, d);
+        if (lane >= d) pre += up;
+      });
+      const int s = warp * passes + pass;
+      if (lane < nWords) {
+        sm.stream_words(s)[lane] = m;
+        sm.stream_prefix(s)[lane] = (unsigned short)(pre - __popc(m));
+      }
+    }
     if (lane < nWords && warp_live)
       ops::or_shared_u32(ops::smem_addr(sm.cta_live() + lane), warp_live);
     ops::rendezvous_group((int)Edge::kReturnLeg, BP::kThreads);
@@ -1214,7 +1255,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
       });
     });
 
-    fold_phase<BP, D, BC, NS, WA>(p, sm, acc, scol, wbase, warp, lane, bh, t0, wLen);
+    fold_phase<BP, D, NS, WA>(p, sm, acc, scol, wbase, warp, lane, bh, t0, wLen);
 
     ops::rendezvous_group((int)Edge::kWindowLine, BP::kThreads);
   }
