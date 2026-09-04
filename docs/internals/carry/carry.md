@@ -86,18 +86,17 @@ not two. A call that declares no modes gets the canonical order.
 <a id="schedule"></a>
 ## The schedule dials
 
-`carry_forward` takes a three-entry `schedule` beside the carve order: `[read form, read
-grain, fold grain]`. The form is `Form`, of which there is one (`sparse` = 1; the entry keeps
-the kernel boundary's shape), and the grains are in LEAVES -- the leaf range one stream keys
-on. The grains are the primitive ledger's class 3, per side, and each is a LAUNCH parameter
+`carry_forward` takes a two-entry `schedule` beside the carve order: `[read grain, fold
+grain]`, in LEAVES -- the leaf range one stream keys on. The grains are the primitive
+ledger's class 3, per side, and each is a LAUNCH parameter
 that selects a body: one uniform switch per phase, inside the window loop and outside the
 batch loop, with the grain's k-step count, stream count and pass structure as compile-time
 facts of the body it selects (`carry_kernel.md#streams`).
 
 The boundary refuses a grain that is not a power of two between the page rectangle and the
 warp sub-box (a finer stream would divide the innermost digits below the vector width, R13).
-The grain at the warp sub-box is the one-stream point of the family, which the bench's
-`union` schedule name selects.
+The grain at the warp sub-box is the one-stream point of the family, the dense form, which
+the bench's `box` schedule name selects.
 
 `rola.ops.carry.select_schedule` picks the default: a side with no SPARSE level cannot reap, so
 it runs at the warp sub-box; a side that declares one runs at the reaping bound

@@ -60,18 +60,18 @@ def _carry_operands(fx):
 
 
 def _carry_schedule(name: str, spec):
-    """``union`` | ``sparse`` | ``sparse-gN`` | ``sparse-gN-fM`` | ``union-fM`` -> the launch's
+    """``box`` | ``sparse`` | ``sparse-gN`` | ``sparse-gN-fM`` | ``box-fM`` -> the launch's
     dials: the read side's stream grain N and the fold's pass grain M (the warp box when
-    unnamed). ``union`` names the one-stream point of the family -- the read grain at the warp
-    box -- and ``sparse`` the reaping bound."""
+    unnamed). ``box`` names the one-stream point of the family -- the read grain at the warp
+    box, the dense form -- and ``sparse`` the reaping bound."""
     from rola.ops import carry as carry_ops
 
     box = carry_ops.leaves_per_warp(spec.dv)
     parts = name.split("-")
     form = parts[0]
-    if form not in ("union", "sparse"):
-        raise ValueError(f"schedule {name!r} is union[-fM], sparse[-gN][-fM]")
-    read = box if form == "union" else None
+    if form not in ("box", "sparse"):
+        raise ValueError(f"schedule {name!r} is box[-fM], sparse[-gN][-fM]")
+    read = box if form == "box" else None
     fold = None
     for part in parts[1:]:
         if part.startswith("g") and form == "sparse":
@@ -104,7 +104,7 @@ def carry_forward(fx) -> Arm:
     #: probe's two arms can be the SAME binary differing in exactly the form and the stream
     #: grain -- which is what the reap is measured as. `union` is what a caller who names
     #: nothing gets, and it is the cells' own default (they declare every level dense).
-    schedule = _carry_schedule(fx.get("schedule", "union"), spec)
+    schedule = _carry_schedule(fx.get("schedule", "box"), spec)
 
     def run():
         return carry_ops.carry_forward(routes, v, state_in=state_in, state_out=plane,

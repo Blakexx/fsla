@@ -12,6 +12,8 @@ Each field's class in the primitive ledger is tabulated in
 class-4 or class-5 quantity — an architecture's constant, or a quotient of others — never
 appears here as a knob.
 
-`Form` is the per-side dial: which of a phase's two bodies this launch runs. Where the
-switch on it sits, and why that placement is additive rather than multiplicative, is
-[`carry_kernel.md#forms`](carry_kernel.md#forms).
+The two grains, `readout_grain_bits` and `fold_grain_bits`, are the per-side dials: each
+selects the compiled body its phase runs. Where the switch on them sits, and why that
+placement is additive rather than multiplicative, is
+[`carry_kernel.md#forms`](carry_kernel.md#forms). The form dial that once stood beside
+them is gone with the union body (`DELETIONS.md`).

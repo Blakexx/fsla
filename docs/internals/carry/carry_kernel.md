@@ -367,9 +367,8 @@ The readout has ONE body (`#readout`); what the launch picks is its STREAM GRAIN
 grain is a body switch (`uniform_switch<kGrainCases>`) that sits at its phase: inside the
 window loop, outside the batch loop that the in-kernel-switch ruling calls the hot loop --
 one uniform branch per window, each case with its k-step count, stream count and pass
-structure as compile-time facts. The fold's pass grain is the same kind of switch. The
-one-stream point of the family (the grain at the warp sub-box) is what the schedule's
-`union` name selects.
+structure as compile-time facts. The fold's pass grain is the same kind of switch. The one-stream point of the family (the grain at the warp sub-box) is what the bench's
+`box` schedule name selects.
 
 The two per-side MEMBER switches are different: they fix the addressing every stage on that
 side uses, so they sit in the prologue, outside every loop, nested. That nesting is

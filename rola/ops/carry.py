@@ -113,41 +113,27 @@ class LaunchShape:
         return self.warps_per_cta * 32
 
 
-#: THE FORM the READOUT runs in, as the kernel's `Form` enum spells it: the sparse body keys
-#: its streams on leaf ranges and reaps the dead (token, stream) pairs; at the coarsest grain
-#: (one stream a warp box) it is the dense point of the family. The entry keeps the enum's
-#: value: the kernel boundary takes the form first. The fold has one body.
-FORMS: dict[str, int] = {"sparse": 1}
-
-
 @dataclass(frozen=True, slots=True)
 class CarrySchedule:
-    """THE RUNTIME DIALS -- the primitive ledger's class 3, and nothing else.
+    """THE LAUNCH DIALS -- the primitive ledger's class 3, and nothing else.
 
-    ``readout`` names the read side's FORM and ``readout_grain`` its STREAM GRAIN ``G`` in
-    LEAVES -- the leaf range one stream keys on. ``fold_grain`` is the fold's PASS grain: the
-    stream box a pass of the pool fold reaps at; a warp's box holds ``leaves_per_warp / G``
-    of them and walks them in turn over the same rows. All three are RUNTIME: a switch outside
-    the window loop, loop bounds and warp-uniform tile predicates inside it; none grows a
-    template. The fold has ONE body whatever its grain.
+    ``readout_grain`` is the read side's STREAM GRAIN ``G`` in LEAVES -- the leaf range one
+    stream keys on; at the warp sub-box it is the one-stream point of the family, the dense
+    form. ``fold_grain`` is the fold's PASS grain: the stream box a pass of the pool fold
+    reaps at; a warp's box holds ``leaves_per_warp / G`` of them and walks them in turn over
+    the same rows. Each selects a compiled body at its phase's entry, one uniform switch per
+    window, outside the batch loop.
 
     A ``None`` grain takes the side's own default: the warp sub-box for the fold (one stream
     spanning the box -- the measured default at every density), and for the readout the
     reaping bound ``G_min`` clamped into ``[PAGE_LEAVES, leaves_per_warp]``.
     """
 
-    readout: str = "sparse"
     readout_grain: int | None = None
     fold_grain: int | None = None
 
-    def __post_init__(self) -> None:
-        if self.readout not in FORMS:
-            raise CarryRefusal(
-                f"readout={self.readout!r} is not a form this kernel carries; the set is "
-                f"{tuple(FORMS)}. The body is selected once per launch, outside the window loop.")
-
     def flat(self, DV: int, grain_min: int) -> list[int]:
-        """The three entries the kernel boundary takes: the read form, then the two grains."""
+        """The two entries the kernel boundary takes: the read grain, then the fold's."""
         box = leaves_per_warp(DV)
 
         def lawful(name: str, grain: int) -> int:
@@ -164,7 +150,7 @@ class CarrySchedule:
         if self.readout_grain is None:
             read = min(box, max(PAGE_LEAVES, grain_min))
         fold = lawful("fold_grain", box if self.fold_grain is None else int(self.fold_grain))
-        return [FORMS[self.readout], read, fold]
+        return [read, fold]
 
 
 #: THE MODE WORD'S ENCODING, as `csrc/rola/src/common/geom.cuh` spells it and
@@ -678,7 +664,6 @@ def sub_boxes(depth, box_leaves_, workers):
 __all__ = [
     "ACTIVITY_READ",
     "ACTIVITY_WRITTEN",
-    "FORMS",
     "PAGE_LEAVES",
     "SHIPPED_DV",
     "SHIPPED_WARPS_PER_CTA",

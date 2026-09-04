@@ -372,8 +372,8 @@ gate on that. *(Ruled, not yet built: today the modes and widths are template
 arguments and the shipped arm set multiplies with them.)*
 
 **SMEM is launch-sized.** Every shared tenant whose size depends on a derived
-quantity — the transit region, the panels, the factor staging, the position bitmaps,
-the per-stream value segments — is sized by the host from the descriptor and passed as
+quantity — the transit region, the pools, the staging tiles, the live words — is sized
+by the host from the descriptor and passed as
 DYNAMIC shared memory, with offsets as uniform values. Never max-sized. Above the
 48 KB static limit the one-time function attribute is set, on every architecture.
 **Residency is ASSERTED at the seam from the launch size, as a refusal** — the launch
@@ -588,12 +588,11 @@ decided by LATENCY, not by counts — is KERNEL_STANDARDS §R7. *Floor:* reducti
 instructions per token per CTA per batch = `DV` / 32, each covering one full 128 B
 line, once, whatever the stream multiplicity.
 
-**6. The pipeline.** The body hides its own latency by construction: the next batch's
-produce is issued while the tensor pipe works on the current one, panels are
-double-buffered and filled asynchronously, expansion arithmetic and shared stores are
-interleaved between multiply issues, the edges are asynchronous barriers — arrive, keep
-issuing, wait at the use — rather than full barriers, and the fan-in is interleaved
-into the fold rather than phased after it. `__syncthreads` survives only where a
+**6. The pipeline.** The body hides its own latency by construction: a batch's rows are
+filled asynchronously while the batch before is consumed, a tile's gather and its B
+fragments are issued ahead of the MMAs that use them, the readout's write-out is
+drained under the MMAs that follow it — the next segment's, then the next batch's —
+and the edges are named barriers crossed once per batch. `__syncthreads` survives only where a
 write-after-read edge on a region genuinely needs every warp finished. Each transit leg
 covers itself, and the ORDER is the whole mechanism: stores, then work that does not
 depend on the pulled data, then the edge, then the pull — a cover issued BEFORE the

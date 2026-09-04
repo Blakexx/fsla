@@ -358,7 +358,7 @@ SPARSE_GRAINS = (None, carry_ops.PAGE_LEAVES)
 def sparse(spec, grain):
     box = carry_ops.leaves_per_warp(spec.dv)
     g = None if grain is None else min(grain, box)
-    return carry_ops.CarrySchedule(readout="sparse", readout_grain=g, fold_grain=g)
+    return carry_ops.CarrySchedule(readout_grain=g, fold_grain=g)
 
 
 SPARSE_ROWS = [(cell, g) for cell in ORACLE_CELLS for g in SPARSE_GRAINS]
@@ -394,7 +394,7 @@ def test_the_two_forms_agree_where_there_is_nothing_to_reap():
     """
     spec = by_name(BYTE_GATE_CELL)
     _, n_u, d_u, s_u = run(spec)
-    _, n_s, d_s, s_s = run(spec, schedule=carry_ops.CarrySchedule(readout="sparse"))
+    _, n_s, d_s, s_s = run(spec, schedule=carry_ops.CarrySchedule())
     assert bytes_equal(s_u, s_s)
     #: the floor is MEASURED on this cell, not assumed: two union runs differ by the atomic
     #: order alone, and that difference is the bound the sparse run has to sit inside.

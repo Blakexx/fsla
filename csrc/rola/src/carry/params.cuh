@@ -10,9 +10,6 @@
 
 namespace rola::carry {
 
-//: THE READ SIDE'S FORM as the schedule spells it. -- see docs/internals/carry/carry.md#schedule
-enum class Form : int { kSparse = 1 };
-
 struct CarryParams {
   //: the problem's addressing, derived once on the host from (descriptor, launch).
   CarryGeomRT g;

@@ -1195,7 +1195,7 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void carry_kern
       state_sweep<BP, D, NS, WA, true>(p, sm, acc, slots, act_read, act_write, warp, lane, tid,
                                        p.state_in, nullptr);
 
-    //: THE TWO PHASES' FORMS are the only switches left inside the loop, one per phase.
+    //: THE TWO PHASES' GRAINS are the only switches left inside the loop, one per phase.
     window_loop<BP, D, BC, NS, WA>(p, sm, acc, owner, num, den, warp, lane, bh);
 
     if (p.state_out != nullptr)

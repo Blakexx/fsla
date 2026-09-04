@@ -46,20 +46,16 @@ void refuse_shape(const std::vector<int64_t>& widths, int64_t dv, int64_t page_b
 }
 
 //: THE SCHEDULE DIALS AS THE CALL SPELLS THEM: the primitive ledger's class 3, in one list --
-//: [read form, read grain, fold grain], the form as `Form` and the grains in LEAVES.
-//: -- see docs/internals/carry/carry.md#schedule
+//: [read grain, fold grain], the grains in LEAVES. -- see docs/internals/carry/carry.md#schedule
 void refuse_schedule(const std::vector<int64_t>& schedule, int dv, int warps_per_cta) {
-  TORCH_CHECK(schedule.size() == 3,
-              "the schedule names the read side's FORM and GRAIN and the fold's GRAIN -- "
-              "[read form, read grain, fold grain] -- and this call passed ",
+  TORCH_CHECK(schedule.size() == 2,
+              "the schedule names the read side's stream grain and the fold's pass grain -- "
+              "[read grain, fold grain] -- and this call passed ",
               schedule.size(), " entries");
-  const int64_t form = schedule[0];
-  TORCH_CHECK(form == (int64_t)Form::kSparse, "the read side's form is ", form,
-              "; the one form is sparse (1)");
   const int box = leaves_per_warp(dv);
   (void)warps_per_cta;
   for (int side = 0; side < 2; ++side) {
-    const int64_t grain = schedule[1 + side];
+    const int64_t grain = schedule[side];
     TORCH_CHECK(grain >= kAtomLeaves && grain <= box && (grain & (grain - 1)) == 0,
                 (side ? "the fold's pass grain is " : "the read side's stream grain is "), grain,
                 " leaves; a grain is a power of two between the page rectangle (", kAtomLeaves,
@@ -153,8 +149,8 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
   p.activity = activity.data_ptr<uint8_t>();
   p.L = (int)L;
   p.liveness_words = (int)words;
-  p.readout_grain_bits = geom_ilog2((int)schedule[1]);
-  p.fold_grain_bits = geom_ilog2((int)schedule[2]);
+  p.readout_grain_bits = geom_ilog2((int)schedule[0]);
+  p.fold_grain_bits = geom_ilog2((int)schedule[1]);
 
   const auto stream = at::cuda::getCurrentCUDAStream();
   cudaError_t status = cudaSuccess;
