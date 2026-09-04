@@ -125,6 +125,12 @@ __device__ __forceinline__ void stage_wait() {
 
 __device__ __forceinline__ void rendezvous() { __syncthreads(); }
 
+//: THE WARP'S OWN EDGE, stated as the instruction: `__syncwarp()` where the compiler cannot -- see docs/internals/common/ops.md#warp-sync
+//: prove convergence becomes a CALL into a helper; this is one WARPSYNC.
+__device__ __forceinline__ void warp_sync() {
+  asm volatile("bar.warp.sync 0xffffffff;" ::: "memory");
+}
+
 // ------------------------------------------------------------------- edges
 
 //: `rendezvous_group(id, n)` -- a barrier over `n` threads that arrive at the -- see docs/internals/common/ops.md#rendezvous-group

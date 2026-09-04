@@ -536,9 +536,11 @@ a `DV + 4` row stride, conflict free both ways), stored a channel m-tile at a ti
 element, then read back a token row at a time so that each `red.global.add.f32` instruction
 covers one token's 32 consecutive channels -- four sectors, where the fragment-order deposit
 it replaced touched eight token rows at four channel pairs, ~32 sectors an instruction, and
-filled the LSU's global queue (the lg-throttle stall, 48% of the readout's samples). A padded
-tile's dead tokens deposit their exact zeros (a zero coefficient row against a finite state)
-at the tile's first token, which is always live, so no reduction is predicated or branched.
+filled the LSU's global queue (the lg-throttle stall, 48% of the readout's samples). A FULL
+tile -- every tile but a stream's last -- deposits with no test at all; the tail tile skips
+its dead tokens by a warp-uniform test per token (their partial is exact zeros, but a zero
+reduced into a live row still costs the row's atomic serialization, which the sink-row probes
+measured at up to 43% on unstructured density).
 
 THE PRICE IS A DENSITY CROSSOVER, NOT A REGRESSION: one contribution per WARP per live token
 instead of one per BOX per token is `warps_per_cta * density` times the union's atomic traffic,

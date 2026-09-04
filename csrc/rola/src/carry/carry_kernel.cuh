@@ -625,7 +625,7 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
   unsigned short* const scratch = sm.fill_scratch(Side, warp);
   const int n = __popc(live);
   if ((live >> lane) & 1u) scratch[__popc(live & ops::lanes_below())] = (unsigned short)lane;
-  __syncwarp();
+  ops::warp_sync();
   const int g = lane >> 3, sub = lane & 7;
 #pragma unroll 1
   for (int s = 0; s < n; s += 4) {
@@ -649,7 +649,7 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
         (int)sm.stream_prefix(Side, s)[round] + __popc(w & below) - ops::lane_broadcast(sbase, s);
     if (in && ((w >> lane) & 1u)) sm.pool_list(Side, s)[at] = (unsigned short)rank;
   }
-  __syncwarp();
+  ops::warp_sync();
   ops::stage_commit();
 }
 
@@ -780,7 +780,7 @@ __device__ __forceinline__ void pool_pass(const Smem<BP>& sm, Acc<BP>& acc,
   const int whole = count & ~(BP::kSeg - 1);
   if (count > whole) pool_pad_tile<BP>(list, count, whole, lane);
   const int tiles = (count + BP::kSeg - 1) / BP::kSeg;
-  __syncwarp();
+  ops::warp_sync();
   if (tiles == 0) return;
 
   Frags<BP> f[2];
@@ -793,7 +793,7 @@ __device__ __forceinline__ void pool_pass(const Smem<BP>& sm, Acc<BP>& acc,
     pool_deposit<BP, Tile0, Tiles>(acc, f[1]);
   }
   if (tiles & 1) pool_deposit<BP, Tile0, Tiles>(acc, f[0]);
-  __syncwarp();
+  ops::warp_sync();
 }
 
 //: A SIDE'S UNION WORD for round `lane`: the OR of its streams' words, read once per window.
@@ -943,12 +943,13 @@ __device__ __forceinline__ void readout_produce_range(const Smem<BP>& sm,
 //: ONE TILE'S DEPOSIT, COALESCED THROUGH THE WARP'S STAGING TILE: the partial is produced a
 //: channel m-tile at a time and stored element-wise into `[token][channel]` rows; then each
 //: token's 64 channels leave as two reductions of 32 consecutive floats (four sectors an
-//: instruction, not thirty-two), the mass as one; a padded tile's dead tokens deposit their
-//: exact zeros at the tile's first token. -- see docs/internals/carry/carry_kernel.md#readout-sparse
+//: instruction, not thirty-two), the mass as one; a full tile deposits untested, the tail
+//: tile skips its dead tokens. -- see docs/internals/carry/carry_kernel.md#readout-sparse
 template <class BP, int K0, int KS>
 __device__ __forceinline__ void readout_deposit_tile(
     const Smem<BP>& sm, const Transit<BP>& tr, const uint32_t (&rb)[BP::kDw][BP::kTokTiles][2],
-    const unsigned short* list, int taken, float* num, float* den, int warp, int lane, int t0) {
+    const unsigned short* list, int taken, float* num, float* den, int warp, int lane, int t0,
+    bool full) {
   constexpr int kS = BP::kStageStride;
   const ops::SmemAddr stage = sm.stage(warp);
   const int q = lane & 3, r = lane >> 2;
@@ -991,35 +992,41 @@ __device__ __forceinline__ void readout_deposit_tile(
         });
     });
   }
-  __syncwarp();
+  ops::warp_sync();
 
-  //: lane `l & 15` holds token `l & 15`'s window-relative id; a dead token is resolved ONCE
-  //: per lane to the tile's first token (always live: the padding is the tail), whose
-  //: cells the padding's exact zeros are added to. No reduction is branched.
-  const int tokl =
+  //: lane `l & 15` holds token `l & 15`'s window-relative id. A FULL tile (every tile but
+  //: a stream's last) deposits with no test at all; the tail tile skips its dead tokens by
+  //: a warp-uniform test per token, so no zero is ever reduced anywhere.
+  const int tok =
       (int)sm.pool_token()[list[(taken + (lane & (BP::kSeg - 1))) & (BP::kListEntries - 1)]];
-  const int tok0 = ops::lane_broadcast(tokl, 0);
-  const int tok = tokl == kDeadToken ? tok0 : tokl;
-  rola::static_for<BP::kSeg>([&](auto Tc) {
-    constexpr int T = decltype(Tc)::value;
-    const int rel = ops::lane_broadcast(tok, T);
-    float* const row = reinterpret_cast<float*>(ops::gather_ptr(
-        num, (uint32_t)(t0 + rel) * (uint32_t)(BP::kDv * 4) + (uint32_t)(lane * 4)));
-    rola::static_for<BP::kDv / 32>([&](auto Hc) {
-      constexpr int h = decltype(Hc)::value;
-      const float v =
-          __uint_as_float(ops::load_shared_u32(stage + (uint32_t)((T * kS + lane + 32 * h) * 4)));
-      ops::fan_in_add(row + 32 * h, v);
+  const auto rows = [&](auto Full) {
+    rola::static_for<BP::kSeg>([&](auto Tc) {
+      constexpr int T = decltype(Tc)::value;
+      const int rel = ops::lane_broadcast(tok, T);
+      if constexpr (!decltype(Full)::value)
+        if (rel == kDeadToken) return;
+      float* const row = reinterpret_cast<float*>(ops::gather_ptr(
+          num, (uint32_t)(t0 + rel) * (uint32_t)(BP::kDv * 4) + (uint32_t)(lane * 4)));
+      rola::static_for<BP::kDv / 32>([&](auto Hc) {
+        constexpr int h = decltype(Hc)::value;
+        const float v =
+            __uint_as_float(ops::load_shared_u32(stage + (uint32_t)((T * kS + lane + 32 * h) * 4)));
+        ops::fan_in_add(row + 32 * h, v);
+      });
     });
-  });
-
-  //: the mass by every lane, the upper half adding zeros beside the lower's cells, so the
-  //: deposit stays convergent to the end.
+  };
   const float m = __uint_as_float(
       ops::load_shared_u32(stage + (uint32_t)(((lane & (BP::kSeg - 1)) * kS + BP::kDv) * 4)));
-  ops::fan_in_add(reinterpret_cast<float*>(ops::gather_ptr(den, (uint32_t)(t0 + tok) * 4u)),
-                  lane < BP::kSeg ? m : 0.0f);
-  __syncwarp();
+  float* const mrow = reinterpret_cast<float*>(ops::gather_ptr(den, (uint32_t)(t0 + tok) * 4u));
+  if (full) {
+    rows(std::integral_constant<bool, true>{});
+    //: the mass by every lane, the upper half adding zeros beside the lower's cells.
+    ops::fan_in_add(mrow, lane < BP::kSeg ? m : 0.0f);
+  } else {
+    rows(std::integral_constant<bool, false>{});
+    if (lane < BP::kSeg && tok != kDeadToken) ops::fan_in_add(mrow, m);
+  }
+  ops::warp_sync();
 }
 
 //: ONE STREAM of a batch: its minted list, whole tiles, the tail padded to the dead row.
@@ -1033,14 +1040,15 @@ __device__ __forceinline__ void readout_stream(const Smem<BP>& sm, const Transit
   const int whole = count & ~(BP::kSeg - 1);
   if (count > whole) pool_pad_tile<BP>(list, count, whole, lane);
   const int tiles = (count + BP::kSeg - 1) / BP::kSeg;
-  __syncwarp();
+  ops::warp_sync();
 #pragma unroll 1
   for (int tile = 0; tile < tiles; ++tile) {
     uint32_t rb[BP::kDw][BP::kTokTiles][2];
     readout_produce_range<BP, D, K0, KS>(sm, list, tile * BP::kSeg, lane, rcin, rcout, rb);
-    readout_deposit_tile<BP, K0, KS>(sm, tr, rb, list, tile * BP::kSeg, num, den, warp, lane, t0);
+    readout_deposit_tile<BP, K0, KS>(sm, tr, rb, list, tile * BP::kSeg, num, den, warp, lane, t0,
+                                     (tile + 1) * BP::kSeg <= count);
   }
-  __syncwarp();
+  ops::warp_sync();
 }
 
 //: PHASE 1, THE SPARSE FORM: the read pool -- the window's live positions' read rows, by

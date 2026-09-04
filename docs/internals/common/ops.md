@@ -682,3 +682,11 @@ destination. The fold's factor staging is what needs it — a level run is `span
 and only the flagship's is sixteen — and the zero fill is what makes a partial window
 arithmetic rather than a tail case: a token past the window's end lands zero amplitudes, and
 a zero amplitude is a zero coefficient.
+
+<a id="warp-sync"></a>
+## `warp_sync()` -- the warp's edge as one instruction
+
+`bar.warp.sync 0xffffffff`. The carry's warp-private rings and staging tiles are ordered by
+warp edges; `__syncwarp()` at a site the compiler cannot prove convergent (after a uniform
+early return, a lane-predicated deposit) is lowered to a CALL into `__cuda_sm70_warpsync`,
+a subroutine inside the tile loop. Stating the instruction keeps the edge a single WARPSYNC.
