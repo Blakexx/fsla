@@ -298,11 +298,14 @@ among the CTA's live positions less the batch's base. A window whose live count 
 
 THE FILL HAS NO CURSOR: round `r` is copied by warp `r mod kWarps` (`pool_fill_round`), four
 live positions per step -- lane group `g` takes the g-th remaining live bit -- and each position
-by eight lanes (`pool_copy_position`): the value row's eight quanta by `cp.async`, the OUTERMOST
-run through registers with the token's gain folded in (`splat_bf16x2_bits`, `mul_bf16x2`, one
-word per lane) so the gain is applied once per position rather than once per leaf, and the runs
-below it by `cp.async` at the widest quantum their stride admits. A position no box lists is
-never copied.
+by eight lanes (`pool_copy_position`): the value row's eight quanta and every amplitude run
+by `cp.async` at the widest quantum their stride admits -- nothing on the fill's path waits on
+a global load. THE GAIN IS THE GATHER'S: cover slot B copies the window's gains into a table
+(`stage_gain_table`, `kGainTableOffset`), the fill writes each position's gain beside its rows
+(`pool_gain`, from the table by round and lane), and the gather folds the two tokens a register
+holds into the outermost run's digit it already multiplies -- one packed multiply per slice
+per half, once per tile rather than once per position at a global load's latency. A position
+no box lists is never copied.
 
 THE LISTS ARE MINTED BY THE FILL, one per stream, of pool SLOTS: the same walk that copies a
 round's positions has every stream's word for the round in hand, so a lane whose position is
@@ -319,8 +322,21 @@ A tile is sixteen consecutive entries.
 The pool's amplitude rows are a position's `D` runs of the box's own digits AS THEY LIE in
 the packed plane -- `abase[l]`, the level's row base plus the owner's digit, is also the
 class-1 table's row base -- copied at the widest `cp.async` quantum the stride admits
-(`pool_copy_position`). Both sides' pools share this shape; the write side's rows carry the
-gain folded into the outermost run.
+(`pool_copy_position`). Both sides' pools share this shape; the write side's pool carries
+the gain beside the rows, one halfword a position.
+
+<a id="memo"></a>
+## The read memo
+
+Everything the readout's B side needs of the geometry depends on the k-step of the box and
+the lane alone: each lane's region row for a k-step's B fragment, the four rows the mass
+lanes read, and the amplitude columns (the inner run's block per lane half, the outer runs'
+digit). `derive_read_memo` computes them once per launch in the prologue -- warp `K mod
+warps` takes k-step `K` -- into three tables behind the live words (`kMemoRowsOffset`,
+`kMemoMassOffset`, `kMemoColOffset`; `smem_ledger.md#memo`), and a stream reads its k-steps'
+entries at its start: a handful of shared loads in place of the owner-local index law's
+integer arithmetic per stream, which was about a hundred instructions of the stream body's
+hundred and fifty.
 
 <a id="expansion"></a>
 ## The j-slice of a level

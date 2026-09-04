@@ -17,7 +17,9 @@ an allocation would move the residency the whole design is built on.
 | 47,968 | THE STAGING TILES, one a warp: `(kSeg + 1) * kStageStride * 4` | 8 x 4,896 | PHASE 1's write-out |
 | 87,136 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
 | after the page slots | THE LIVE WORDS, per side: each stream's word per round, `kSideStreams * kRounds * 4`, and its exclusive prefix, `kSideStreams * kRounds * 2` (`kLiveBytes` each) | 2 x 1,536 | cover slot A writes the read side's, cover slot B the write side's; each fill walks its own once |
-| | **total** (16-byte aligned, the flagship arm on sm_86) | **90,272** | |
+| after the live words | THE READ MEMO: per k-step of the box, each lane's region row (`kKb * 32 * 4`), the mass lanes' four rows (`kKb * 64`) and the amplitude columns (`kKb * kMemoColStride * 2`) | 3,200 | the prologue derives it once; every readout stream reads its k-steps' entries |
+| after the memo | THE GAIN TABLE, the window's write-side gains by window token, `kWindow * 2` | 1,024 | cover slot B copies it; the fold's fill reads it |
+| | **total** (16-byte aligned, the flagship arm on sm_86) | **94,464** | |
 
 The tenant at offset 0 is the larger of the region and PHASE 2's pool; the read pool and
 the staging tiles follow it because the region is READ through the whole of PHASE 1
@@ -53,8 +55,13 @@ of a stream's positions fall in it. The ledger is sized at the FINEST grain the
 nesting law admits (`G = 16`, the page rectangle: `kSideStreams` streams per side); a coarser
 runtime `G` uses fewer of the same lists.
 
-The page slots and the live words are PERSISTENT: they are alive from the prologue to the
-exit and are never re-let.
+The page slots, the live words, the read memo and the gain table are PERSISTENT: they are
+alive from the prologue to the exit and are never re-let.
+
+<a id="memo"></a>
+The READ MEMO (`carry_kernel.md#memo`) is three tables by k-step of the box: `memo_rows(K)`,
+one 32-bit shared address a lane; `memo_mass(K)`, four addresses for each of the four mass
+lanes; `memo_cols(K)`, `2 + (D - 1)` halfword columns.
 
 ## Reserved by name, for the stages that fill them
 
@@ -72,7 +79,7 @@ allocation nobody sized. None is allocated today.
 ## The pool
 
 PHASE 2's rows, keyed by position, in the region's bytes (`kPoolVOffset`, `kPoolAmpOffset`,
-`kListOffset`). PHASE 1's READ POOL lies BEHIND the region (`kReadAmpOffset`,
+`kListOffset`, and one gain halfword a position at `kPoolGainOffset`). PHASE 1's READ POOL lies BEHIND the region (`kReadAmpOffset`,
 `kReadScratchOffset`, `kPoolTokenOffset`, `kStageOffset`), because the region is read through
 the phase: amplitude rows only, in batches of `kReadPos = warps_per_cta * kSeg` positions
 (one slice a warp, 128 at the flagship), the slot -> window-token table the write-out

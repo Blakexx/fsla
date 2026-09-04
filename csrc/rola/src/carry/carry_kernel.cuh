@@ -58,6 +58,14 @@ struct Smem {
     return reinterpret_cast<unsigned short*>(base + at + warp * BP::kFillScratchBytes);
   }
 
+  __device__ __forceinline__ unsigned short* pool_gain() const {
+    return reinterpret_cast<unsigned short*>(base + BP::kPoolGainOffset);
+  }
+
+  __device__ __forceinline__ unsigned short* gain_table() const {
+    return reinterpret_cast<unsigned short*>(base + BP::kGainTableOffset);
+  }
+
   __device__ __forceinline__ unsigned short* pool_token() const {
     return reinterpret_cast<unsigned short*>(base + BP::kPoolTokenOffset);
   }
@@ -80,6 +88,20 @@ struct Smem {
 
   __device__ __forceinline__ int32_t* page_slots() const {
     return reinterpret_cast<int32_t*>(base + BP::kPageSlotOffset);
+  }
+
+  //: THE READ MEMO's three tables, by k-step of the box. -- smem_ledger.md#memo
+  __device__ __forceinline__ uint32_t* memo_rows(int K) const {
+    return reinterpret_cast<uint32_t*>(base + BP::kMemoRowsOffset + K * 32 * 4);
+  }
+
+  __device__ __forceinline__ uint32_t* memo_mass(int K) const {
+    return reinterpret_cast<uint32_t*>(base + BP::kMemoMassOffset + K * 4 * 4 * 4);
+  }
+
+  __device__ __forceinline__ unsigned short* memo_cols(int K) const {
+    return reinterpret_cast<unsigned short*>(base + BP::kMemoColOffset
+                                             + K * BP::kMemoColStride * 2);
   }
 };
 
@@ -137,6 +159,44 @@ __device__ __forceinline__ ops::SmemAddr transit_row(const Smem<BP>& sm, const S
                                                      int strm, int P) {
   return ops::smem_addr(sm.region())
          + (uint32_t)(sb_swizzle(geom_local_row<D, BC>(s, strm, P)) * BP::kLdX * 2);
+}
+
+//: THE READ MEMO, derived once per launch by warp `K % warps`: for k-step `K` of the box
+//: (owner `K / kDw`, its k-step `K % kDw`) each lane's region row for the B fragment, the
+//: four rows the mass lanes read, and the amplitude columns: the inner run's block for
+//: each lane half and the outer runs' digit. -- see docs/internals/carry/carry_kernel.md#memo
+template <class BP, int D, int BC>
+__device__ __forceinline__ void derive_read_memo(const CarryParams& p, const Smem<BP>& sm, int warp,
+                                                 int lane) {
+  const int rT = ((lane >> 4) & 1) * 8 + (lane & 7), cT = (lane >> 3) & 1;
+#pragma unroll 1
+  for (int K = warp; K < BP::kKb; K += BP::kWarps) {
+    const int ow = K / BP::kDw, kk = K % BP::kDw;
+    sm.memo_rows(K)[lane] =
+        transit_row<BP, D, BC>(sm, p.g.r, ow, kk * ops::kMmaK + rT) + (uint32_t)(cT * 8 * 2);
+    if (lane < 16) {
+      const int h = lane >> 3, i = (lane >> 2) & 1, q = lane & 3;
+      const int P = kk * ops::kMmaK + 8 * h + 2 * q + i;
+      sm.memo_mass(K)[q * 4 + 2 * h + i] =
+          transit_row<BP, D, BC>(sm, p.g.r, ow, P) + (uint32_t)(BP::kDv * 2);
+    }
+    if (lane < 2) {
+      const int local = geom_local_row<D, BC>(p.g.r, ow, kk * ops::kMmaK + 8 * lane);
+      sm.memo_cols(K)[lane] =
+          (unsigned short)(span_base(D, BC, D - 1) + (local & (owner_span(D, BC, D - 1) - 1)));
+    }
+    if (lane < D - 1) {
+      const int head = geom_local_row<D, BC>(p.g.r, ow, kk * ops::kMmaK);
+      int col = 0;
+      rola::static_for<D - 1>([&](auto Lc) {
+        constexpr int l = decltype(Lc)::value;
+        if (l == lane)
+          col = span_base(D, BC, l)
+                + ((head >> owner_run_shift(D, BC, l)) & (owner_span(D, BC, l) - 1));
+      });
+      sm.memo_cols(K)[2 + lane] = (unsigned short)col;
+    }
+  }
 }
 
 //: PUBLISH: the accumulator's top halves into the transit region, in the write carve's
@@ -252,13 +312,16 @@ __device__ __forceinline__ void pool_zero_dead_row(const Smem<BP>& sm, int lane)
                                         : sm.pool_amp(Side, kPos) + (off - kVBytes),
                           0u);
   }
-  if constexpr (Side == rola::facts::kRead)
-    if (lane == 0) sm.pool_token()[kPos] = (unsigned short)kDeadToken;
+  if (lane == 0) {
+    if constexpr (Side == rola::facts::kRead)
+      sm.pool_token()[kPos] = (unsigned short)kDeadToken;
+    else
+      sm.pool_gain()[kPos] = 0u;
+  }
 }
 
 //: ONE POSITION'S ROWS into a slot, by lanes `l0 .. l0 + 7`: the value row's eight quanta
-//: by `cp.async`; the OUTERMOST amplitude run through registers with the gain folded in
-//: (`kWords0` words, one per lane); the runs below by `cp.async` at their quantum.
+//: and every amplitude run by `cp.async` at its quantum. The gain is the gather's.
 template <class BP, int D, int Side>
 __device__ __forceinline__ void pool_copy_position(const CarryParams& p, const Smem<BP>& sm,
                                                    const int (&abase)[D], int sub, int bh, int tok,
@@ -274,20 +337,9 @@ __device__ __forceinline__ void pool_copy_position(const CarryParams& p, const S
                          + (uint32_t)(sub * 16);
     ops::stage_tile(sm.pool_v() + (uint32_t)v_group_offset<BP>(slot, sub),
                     ops::gather_ptr(p.v, off));
-    constexpr int kWords0 = owner_span(D, BP::kBC, 0) / 2;
-    constexpr int kBase0 = span_base(D, BP::kBC, 0);
-    static_assert(kWords0 <= 8, "the outermost run is at most eight words per position");
-    if (sub < kWords0) {
-      const uint32_t a = *reinterpret_cast<const uint32_t*>(
-          ops::gather_ptr(p.pwrite, row + (uint32_t)((abase[0] + 2 * sub) * 2)));
-      const unsigned short g = *reinterpret_cast<const unsigned short*>(
-          ops::gather_ptr(p.gwrite, ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * 2u));
-      ops::store_shared_u32(sm.pool_amp(Side, slot) + (uint32_t)((kBase0 + 2 * sub) * 2),
-                            ops::mul_bf16x2(a, ops::splat_bf16x2_bits(g)));
-    }
   }
-  rola::static_for<kW ? D - 1 : D>([&](auto Lc) {
-    constexpr int l = decltype(Lc)::value + (kW ? 1 : 0);
+  rola::static_for<D>([&](auto Lc) {
+    constexpr int l = decltype(Lc)::value;
     constexpr int kSpan = owner_span(D, BP::kBC, l);
     constexpr int kBase = span_base(D, BP::kBC, l);
     constexpr int kQ = run_quantum(kSpan, kBase, BP::kAmpStride);
@@ -327,8 +379,11 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
   const uint32_t below = ops::lanes_below();
   const int rank = prefix + __popc(live & below) - base;
   const bool in = ((live >> lane) & 1u) && rank >= 0 && rank < pool_positions_of<BP, Side>();
-  if constexpr (Side == rola::facts::kRead)
+  if constexpr (Side == rola::facts::kRead) {
     if (in) sm.pool_token()[rank] = (unsigned short)(round * kRoundTokens + lane);
+  } else {
+    if (in) sm.pool_gain()[rank] = sm.gain_table()[round * kRoundTokens + lane];
+  }
   if constexpr (Side == rola::facts::kWrite) {
 #pragma unroll 1
     for (int s = 0; s < nStreams; ++s) {
@@ -415,6 +470,20 @@ __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
     r0[h] = tile[2 * q + 8 * h];
     r1[h] = tile[2 * q + 1 + 8 * h];
   });
+  //: THE GAIN, one bf16 a position, as the pair of the two tokens a register holds: folded
+  //: into the outermost run's digit, or into the fragment itself where there is no run above.
+  uint32_t gain[2];
+  rola::static_for<2>([&](auto Hc) {
+    constexpr int h = decltype(Hc)::value;
+    gain[h] = (uint32_t)sm.pool_gain()[r0[h]] | ((uint32_t)sm.pool_gain()[r1[h]] << 16);
+  });
+  if constexpr (D == 1) {
+    rola::static_for<BP::kNL>([&](auto Jc) {
+      constexpr int j = decltype(Jc)::value;
+      f.bf[j][0] = ops::mul_bf16x2(f.bf[j][0], gain[0]);
+      f.bf[j][1] = ops::mul_bf16x2(f.bf[j][1], gain[1]);
+    });
+  }
   rola::static_for<D - 1>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
     constexpr int kSh = slice_shift(sb_shift_of(D, BP::kBC, NS, WA, l));
@@ -428,6 +497,7 @@ __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
         constexpr int h = decltype(Hc)::value;
         head[v][h] = (uint32_t)ops::load_shared_u16(sm.pool_amp(kSide, r0[h]) + col)
                      | ((uint32_t)ops::load_shared_u16(sm.pool_amp(kSide, r1[h]) + col) << 16);
+        if constexpr (l == 0) head[v][h] = ops::mul_bf16x2(head[v][h], gain[h]);
       });
     });
     rola::static_for<BP::kNL>([&](auto Jc) {
@@ -549,6 +619,7 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
   //: A WINDOW WITH NOTHING LIVE touches the pool not at all; the pool aliases the transit
   //: region, so no warp fills until every warp has rejoined its halves out of it.
   if (total == 0) return;
+  ops::stage_wait<0>();
   ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
   if (warp == 0) pool_zero_dead_row<BP, kSide>(sm, lane);
 
@@ -750,8 +821,8 @@ __device__ __forceinline__ void slice_gather(const Smem<BP>& sm, int p0, int cou
 //: under the pair after it. `pend`: the batch before's last segment and mass drain under
 //: this, the first live stream's, m-tiles. -- see carry_kernel.md#readout
 template <class BP, int D, int BC, int GB, bool Last, bool Full>
-__device__ __forceinline__ void slice_stream(const CarryParams& p, const Smem<BP>& sm, int s,
-                                             int p0, int count, int parity, bool pend,
+__device__ __forceinline__ void slice_stream(const Smem<BP>& sm, int s, int p0, int count,
+                                             int parity, bool pend,
                                              float (&c)[BP::kMassTile * 2][4], float (&cm)[4],
                                              ops::SmemAddr stage, float* numl, float* den, int t0,
                                              int lane) {
@@ -760,47 +831,32 @@ __device__ __forceinline__ void slice_stream(const CarryParams& p, const Smem<BP
   constexpr int kSpanIn = owner_span(D, BC, D - 1) / ops::kMmaK;
   constexpr int kBlocks = kKs < kSpanIn ? kKs : kSpanIn;
   static_assert(BP::kMassTile % 2 == 0, "a slice's row is whole segments of two m-tiles");
-  const int ow = s / kPasses, k0 = (s % kPasses) * kKs;
+  const int K0 = (s / kPasses) * BP::kDw + (s % kPasses) * kKs;
 
+  //: the stream's k-steps off the memo: the columns, each lane's region row, the mass rows.
   int rcin[kBlocks], rcout[D - 1][kKs];
-  rola::static_for<kKs>([&](auto Kc) {
-    constexpr int i = decltype(Kc)::value;
-    const int kk = k0 + i;
-    if constexpr (i < kBlocks) {
-      const int local = geom_local_row<D, BC>(p.g.r, ow, kk * ops::kMmaK + 8 * ((lane >> 4) & 1));
-      rcin[i] = span_base(D, BC, D - 1) + (local & (owner_span(D, BC, D - 1) - 1));
-    }
-    const int head = geom_local_row<D, BC>(p.g.r, ow, kk * ops::kMmaK);
-    rola::static_for<D - 1>([&](auto Lc) {
-      constexpr int l = decltype(Lc)::value;
-      rcout[l][i] =
-          span_base(D, BC, l) + ((head >> owner_run_shift(D, BC, l)) & (owner_span(D, BC, l) - 1));
-    });
-  });
-  uint32_t a[kKs][4];
-  slice_gather<BP, D, BC, kKs, kBlocks>(sm, p0, count, rcin, rcout, lane, a);
-
-  //: the stream's region rows: lane's leaf within a k-step and its channel half.
-  const int rT = ((lane >> 4) & 1) * 8 + (lane & 7), cT = (lane >> 3) & 1;
   ops::SmemAddr rows[kKs];
   uint32_t bm[kKs][2];
   rola::static_for<kKs>([&](auto Kc) {
     constexpr int i = decltype(Kc)::value;
-    const int kk = k0 + i;
-    rows[i] = transit_row<BP, D, BC>(sm, p.g.r, ow, kk * ops::kMmaK + rT) + (uint32_t)(cT * 8 * 2);
+    const unsigned short* const cols = sm.memo_cols(K0 + i);
+    if constexpr (i < kBlocks) rcin[i] = cols[(lane >> 4) & 1];
+    rola::static_for<D - 1>([&](auto Lc) {
+      constexpr int l = decltype(Lc)::value;
+      rcout[l][i] = cols[2 + l];
+    });
+    rows[i] = sm.memo_rows(K0 + i)[lane];
     bm[i][0] = bm[i][1] = 0u;
     if ((lane >> 2) == 0) {
-      rola::static_for<2>([&](auto Hc) {
-        constexpr int h = decltype(Hc)::value;
-        const int P = kk * ops::kMmaK + 8 * h + 2 * (lane & 3);
-        const uint32_t col = (uint32_t)(BP::kDv * 2);
-        bm[i][h] =
-            (uint32_t)ops::load_shared_u16(transit_row<BP, D, BC>(sm, p.g.r, ow, P) + col)
-            | ((uint32_t)ops::load_shared_u16(transit_row<BP, D, BC>(sm, p.g.r, ow, P + 1) + col)
-               << 16);
-      });
+      const uint4 mr = *reinterpret_cast<const uint4*>(sm.memo_mass(K0 + i) + (lane & 3) * 4);
+      bm[i][0] =
+          (uint32_t)ops::load_shared_u16(mr.x) | ((uint32_t)ops::load_shared_u16(mr.y) << 16);
+      bm[i][1] =
+          (uint32_t)ops::load_shared_u16(mr.z) | ((uint32_t)ops::load_shared_u16(mr.w) << 16);
     }
   });
+  uint32_t a[kKs][4];
+  slice_gather<BP, D, BC, kKs, kBlocks>(sm, p0, count, rcin, rcout, lane, a);
 
   //: the B fragments one m-tile ahead of their MMAs.
   uint32_t b4[2][kKs][4];
@@ -924,13 +980,13 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
         const bool pend_here = pend && s == first;
         if (s == last) {
           if (full)
-            slice_stream<BP, D, BC, GB, true, true>(p, sm, s, p0, count, parity, pend_here, c, cm,
+            slice_stream<BP, D, BC, GB, true, true>(sm, s, p0, count, parity, pend_here, c, cm,
                                                     stage, numl, den, t0, lane);
           else
-            slice_stream<BP, D, BC, GB, true, false>(p, sm, s, p0, count, parity, pend_here, c, cm,
+            slice_stream<BP, D, BC, GB, true, false>(sm, s, p0, count, parity, pend_here, c, cm,
                                                      stage, numl, den, t0, lane);
         } else {
-          slice_stream<BP, D, BC, GB, false, true>(p, sm, s, p0, count, parity, pend_here, c, cm,
+          slice_stream<BP, D, BC, GB, false, true>(sm, s, p0, count, parity, pend_here, c, cm,
                                                    stage, numl, den, t0, lane);
         }
       }
@@ -958,6 +1014,21 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
       drain_pending<BP, false>(stage, numl, den, parity, t0, lane);
     ops::warp_sync();
   }
+}
+
+//: THE WINDOW'S GAIN TABLE at cover slot B: the write side's gains for the window's tokens,
+//: sixteen bytes a thread by `cp.async`, the tail past the last whole quantum by halfword.
+//: Landed by the fold's first `stage_wait`, before its first fill.
+template <class BP>
+__device__ __forceinline__ void stage_gain_table(const CarryParams& p, const Smem<BP>& sm, int tid,
+                                                 int bh, int t0, int wLen) {
+  const unsigned short* const src =
+      reinterpret_cast<const unsigned short*>(p.gwrite) + (size_t)bh * p.L + t0;
+  const int whole = wLen / 8;
+  if (tid < whole)
+    ops::stage_tile(ops::smem_addr(sm.gain_table()) + (uint32_t)(tid * 16), src + tid * 8);
+  if (tid < wLen - whole * 8) sm.gain_table()[whole * 8 + tid] = src[whole * 8 + tid];
+  ops::stage_commit();
 }
 
 //: A SIDE'S LIVE WORDS at a cover slot: each of the warp's streams at the side's grain,
@@ -1029,6 +1100,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     factor_runs(wbase);
     cover_live_words<BP, D, BC>(p, sm, rola::facts::kWrite, p.g.w, wbase, p.fold_grain_bits, warp,
                                 lane, bh, t0, nWords);
+    stage_gain_table<BP>(p, sm, warp * 32 + lane, bh, t0, wLen);
     ops::rendezvous_group((int)Edge::kReturnLeg, BP::kThreads);
     return_leg_rejoin<BP, D, BC>(p, sm, tr, acc, warp, lane);
 
@@ -1175,6 +1247,7 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void carry_kern
         (uint32_t)(geom_canon_leaf_t<D, BC>(p.g, owner, tid * kAtomLeaves)) >> kAtomLeavesBits;
     sm.page_slots()[tid] = ops::page_slot(p.page_table, atom_base + canon);
   }
+  derive_read_memo<BP, D, BC>(p, sm, warp, lane);
   ops::rendezvous();
   const int32_t* const slots = sm.page_slots();
 

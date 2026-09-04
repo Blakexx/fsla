@@ -154,7 +154,9 @@ struct BoxPlan {
   static constexpr int kPoolAmpOffset = kPoolVOffset + (kPoolPos + 1) * kVRowBytes;
   static constexpr int kListOffset = kPoolAmpOffset + (kPoolPos + 1) * kAmpRowBytes;
   static constexpr int kFillScratchOffset = kListOffset + kSideStreams * kListBytes;
-  static constexpr int kPoolBytes = kFillScratchOffset + kWarps * kFillScratchBytes - kRegionOffset;
+  //: THE POOL'S GAIN, one bf16 a position, from the window's gain table (below).
+  static constexpr int kPoolGainOffset = kFillScratchOffset + kWarps * kFillScratchBytes;
+  static constexpr int kPoolBytes = kPoolGainOffset + (kPoolPos + 1) * 2 - kRegionOffset;
 
   //: THE READ POOL AND THE STAGING TILES, behind the region. -- see smem_ledger.md#pool
   static constexpr int kReadPos = kWarps * kSeg;
@@ -180,7 +182,19 @@ struct BoxPlan {
       / 16 * 16;
   static constexpr int kPageSlotOffset = kRegionOffset + kRegionTenantBytes;
   static constexpr int kLiveOffset = kPageSlotOffset + kPageSlotBytes;
-  static constexpr int kSmemBytes = (kLiveOffset + 2 * kLiveBytes + 15) / 16 * 16;
+  //: THE READ MEMO: per k-step of the box, each lane's region row for the B fragment, the
+  //: mass rows of the four lanes that hold them, and the amplitude columns -- derived once
+  //: per launch, read per stream. -- see docs/internals/carry/smem_ledger.md#memo
+  static constexpr int kKb = kBC / denseref::ops::kMmaK;
+  static constexpr int kMemoRowsOffset = (kLiveOffset + 2 * kLiveBytes + 15) / 16 * 16;
+  static constexpr int kMemoMassOffset = kMemoRowsOffset + kKb * 32 * 4;
+  static constexpr int kMemoColOffset = kMemoMassOffset + kKb * 4 * 4 * 4;
+  static constexpr int kMemoColStride = 2 + (D - 1);
+  static constexpr int kMemoBytes = kMemoColOffset + kKb * kMemoColStride * 2 - kMemoRowsOffset;
+  //: THE WINDOW'S GAIN TABLE, `kWindow` bf16 by window token, copied at cover slot B and
+  //: read by the fold's fill; persistent, so it is not a region tenant.
+  static constexpr int kGainTableOffset = (kMemoRowsOffset + kMemoBytes + 15) / 16 * 16;
+  static constexpr int kSmemBytes = (kGainTableOffset + kWindow * 2 + 15) / 16 * 16;
 
   static_assert(kPoolPos % 32 == 0 && kWindow % kPoolPos == 0,
                 "the pool holds whole rounds of thirty-two positions and the window is a whole "
