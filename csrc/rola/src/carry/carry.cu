@@ -54,8 +54,8 @@ void refuse_schedule(const std::vector<int64_t>& schedule, int dv, int warps_per
               "[read form, read grain, fold grain] -- and this call passed ",
               schedule.size(), " entries");
   const int64_t form = schedule[0];
-  TORCH_CHECK(form == (int64_t)Form::kUnion || form == (int64_t)Form::kSparse,
-              "the read side's form is ", form, "; the forms are union (0) and sparse (1)");
+  TORCH_CHECK(form == (int64_t)Form::kSparse, "the read side's form is ", form,
+              "; the one form is sparse (1)");
   const int box = leaves_per_warp(dv);
   (void)warps_per_cta;
   for (int side = 0; side < 2; ++side) {
@@ -153,7 +153,6 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
   p.activity = activity.data_ptr<uint8_t>();
   p.L = (int)L;
   p.liveness_words = (int)words;
-  p.readout_form = (int)schedule[0];
   p.readout_grain_bits = geom_ilog2((int)schedule[1]);
   p.fold_grain_bits = geom_ilog2((int)schedule[2]);
 

@@ -411,9 +411,10 @@ def test_the_selection_rule_reads_the_level_modes():
     it, and declaring only a WRITE level sparse must not."""
     spec = by_name(BYTE_GATE_CELL)
     desc = spec.descriptor()
-    assert carry_ops.select_schedule(desc, 0) == carry_ops.CarrySchedule()
-    assert carry_ops.select_schedule(desc, carry_ops.SIDE_SPARSE[0]).readout == "sparse"
-    assert carry_ops.select_schedule(desc, carry_ops.SIDE_SPARSE[1]).readout == "union"
+    box = carry_ops.leaves_per_warp(desc.DV)
+    assert carry_ops.select_schedule(desc, 0).readout_grain == box
+    assert carry_ops.select_schedule(desc, carry_ops.SIDE_SPARSE[0]).readout_grain is None
+    assert carry_ops.select_schedule(desc, carry_ops.SIDE_SPARSE[1]).readout_grain == box
     #: the reaping bound is the product of the read side's DENSE levels' widths.
     import math
     assert carry_ops.reaping_bound(desc, 0) == math.prod(desc.B)

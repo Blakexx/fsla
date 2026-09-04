@@ -1,5 +1,4 @@
-// csrc/rola/src/carry/params.cuh -- THE PARAMETER BLOCK: the descriptor's addressing, the
-// operands and the per-launch dials, handed to the kernel as ONE value.
+// csrc/rola/src/carry/params.cuh -- THE PARAMETER BLOCK, handed to the kernel as ONE value.
 // Each field's class in the primitive ledger: see docs/internals/carry/carry_kernel.md#ledger
 #pragma once
 
@@ -11,9 +10,8 @@
 
 namespace rola::carry {
 
-//: THE FORM a phase runs in. -- see docs/internals/carry/carry_kernel.md#forms
-enum class Form : int { kUnion = 0, kSparse = 1 };
-constexpr int kForms = 2;
+//: THE READ SIDE'S FORM as the schedule spells it. -- see docs/internals/carry/carry.md#schedule
+enum class Form : int { kSparse = 1 };
 
 struct CarryParams {
   //: the problem's addressing, derived once on the host from (descriptor, launch).
@@ -33,7 +31,6 @@ struct CarryParams {
 
   int L;               //: tokens in the call
   int liveness_words;  //: ceil(L / 32), the class-1 block's word stride
-  int readout_form;    //: Form, the read side's
   //: `G` per side, as log2 LEAVES. -- see docs/internals/carry/carry_kernel.md#streams
   int readout_grain_bits;
   int fold_grain_bits;

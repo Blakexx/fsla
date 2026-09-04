@@ -18,9 +18,9 @@ prologue: the parameter block -> uniform registers; the box's two call-level bit
           die fast; the page slots resolved once; the per-side warp sub-box selected
           once from the generated member set; the state slice loaded
 for each window:
-  [out leg]    publish hi(state) -> COVER SLOT A -> edge -> pull as read-side A fragments
+  [out leg]    publish hi(state) -> COVER SLOT A -> edge -> PHASE 1 reads the region as B
   PHASE 1:     per read batch [ stage(b+1) | produce(b+1) | mma(b) | fan-in(b) ]
-  [return leg] store hi back -> COVER SLOT B -> edge -> rejoin over the kept lo
+  [return leg] COVER SLOT B -> edge -> rejoin over the kept lo
   PHASE 2:     per write batch [ stage(b+1) | expand(b+1) | fold-mma(b) ]
   [window line]
 exit: the state slice stored, iff this call writes it
@@ -31,14 +31,10 @@ The frame is what a schedule is built into; a stage that arrived later and had t
 its own edges would be a schedule retrofitted, which is the shape this arrangement exists
 to prevent.
 
-THE FAN-IN IS THE ONE SLOT THAT DOES NOT RIDE A BATCH BEHIND, and the picture says `fan-in(b)`
-because that is what the source does. Two structural facts forbid the skew, and both are
-arithmetic rather than preference: the panel is ONE set of slices, because `warps_per_cta` of
-them already fill 34,816 of the region's 36,864 bytes ([`smem_ledger.md#panel`](smem_ledger.md#panel)),
-so a second set to deposit into while the first is being summed does not exist at any declared
-value width; and skewing would need `po`/`pm` double-buffered, which is 40 more fp32 registers a
-lane on a census that has none to give. The cover the readout actually gets is the next batch's
-staging in flight and the other warps' drift across the panel line.
+THE READOUT'S WRITE-OUT RIDES A STREAM BEHIND, and a batch behind: a slice's rows are
+staged as their segments complete in the batch's last live stream and drained under the
+MMAs that follow -- the next segment's, then the next batch's first stream's -- so the
+reductions to the planes never appear as a burst (`#readout`).
 
 <a id="edges"></a>
 ## The three edges, and why there are exactly three
@@ -68,10 +64,9 @@ the consumer are different warps, that stream's own barrier — not the frame's.
 two such edges: the readout's stream edge `kReadBatch`, and the fold's batch edge `kFoldRound` -- the pool's rows visible before a batch, dead after it.
 
 The frame's edges are the ONLY CTA-wide points the frame owns, and each of the three is a
-READ-AFTER-WRITE on the region. That is why the region is the transit's ALONE: a phase-local
-tenant aliased into it would introduce a WRITE-AFTER-READ the frame does not name, and the
-one tenant that does alias — PHASE 1's output blocks — is separated from the pull by the
-readout stream's own first crossing and restored by the store-back before the return leg.
+READ-AFTER-WRITE on the region. That is why the region is the transit's ALONE through PHASE 1: a phase-local tenant aliased
+into it would introduce a WRITE-AFTER-READ the frame does not name, so the read pool and
+the staging tiles take their own bytes behind it and the readout reads the region in place.
 
 The cover slots are load-bearing rather than opportunistic: at one CTA per SM there is no
 second CTA to run while this one waits, so every leg cycle is either covered by
@@ -120,110 +115,99 @@ permutation. Two facts keep every displacement an immediate:
 * `sb_swizzle` is linear, so `row(strm, P) = row(strm, 0) ^ swizzle(scatter(P))` and the
   `P`-part is a constant wherever `P` is.
 
-The four legs, in the order the frame runs them:
+The two legs, in the order the frame runs them:
 
 | leg | what moves | how |
 |---|---|---|
 | publish | the accumulator's high halves, write carve | `st.shared.u16`, 32 lanes covering 4 rows × 8 consecutive channels per issue |
-| pull | the same halves as the readout's A operand, read carve | `ldmatrix.trans.x4`, one per (k-step, channel m-tile) |
-| store back | the halves the reader still holds, read carve | the pull run backwards, `st.shared.u16` |
 | rejoin | the halves as the writer's accumulator, write carve | `ldmatrix.trans.x4`, one per (n-tile PAIR, channel m-tile) |
 
-`ldmatrix.trans` serves both directions because the A operand's thread map and the
-accumulator's thread map AGREE on the channel and compose on the leaf: `lane -> m = lane>>2
-(+8)` in both, and the accumulator's `n = 2*(lane&3) (+1)` is the A operand's `k` of two
-adjacent n-tiles. So one `x4` returns four registers that land exactly on
+Between them the region is READ ONLY, and PHASE 1 reads it as its B operand where it lies
+(`#readout`): row = leaf, column = channel, `ldmatrix.trans` at a stream's k-step rows returns
+`B[k = leaf][n = channel]`. Nothing pulls the halves into registers and nothing stores them
+back; the read pool takes its own bytes behind the region for exactly this reason
+(`smem_ledger.md#pool`).
+
+`ldmatrix.trans` serves the rejoin because the B operand's thread map and the accumulator's
+thread map AGREE on the channel and compose on the leaf: `lane -> n = lane>>2` in both, and
+the accumulator's `n = 2*(lane&3) (+1)` is the B operand's `k` of two adjacent n-tiles. So one `x4` returns four registers that land exactly on
 `acc[m][j][0..3]` and `acc[m][j+1][0..3]`, and the rejoin is `join_hi_lo` over the LOW
 halves, which never left the register file and are never truncated.
 
-THE MASS CHANNEL is scalar on all four legs. It opens the last channel m-tile
+THE MASS CHANNEL is scalar on both legs and in the readout. It opens the last channel m-tile
 (`kMassRow == 0`), so an `ldmatrix.x4` at that tile would address the eight channels above the row's width; the four lanes that hold it read and write it as halfwords instead. Every OTHER
 element of that m-tile is structurally zero — the fold's mass A fragment has a single live
 row and the state sweep never loads a channel at or above `DV + 1` — so the rejoin states
 that rather than carrying sixteen zero registers through PHASE 1.
 
 <a id="readout"></a>
-## PHASE 1: the readout
+<a id="readout-sparse"></a>
+## PHASE 1: the readout, at the position carve
 
-`P[m = channel][n = token] += S^T[c][leaf] . Rcoef[leaf][t]` — the fold with two indices
-swapped, against the state the window ENTERED with. Per batch of `kSeg` tokens: `kDw` k-steps
-(16 leaves each) by `kTokTiles` token n-tiles by `kMCh` channel m-tiles of `mma.m16n8k16`,
-into a panel that is dead at the end of the batch.
-
-The read ring is TWO raw slots and it takes its own bytes rather than the region's: cover
-slot A fills it while the region still holds the published halves. At iteration `b` the loop
-WRITES slot `b % 2` and READS slot `(b + 1) % 2`, and the next iteration swaps them, so the
-ring itself needs only the batch line. Issue order inside a batch:
+`num[t][c] += sum over leaves of Rcoef[t][leaf] . S[leaf][c]` against the state the window
+ENTERED with, and `den[t] += sum over leaves of Rcoef[t][leaf] . mass[leaf]`. The read pool
+(`#pool`, the read tenant) holds the window's live positions' amplitude rows by rank, in
+batches of `kReadPos = warps_per_cta * kSeg` positions; a warp OWNS the sixteen consecutive
+positions `[16w, 16w + 16)` of every batch -- its SLICE -- and every channel of their rows,
+held in its MMA accumulator (`kMassTile * 2` channel n-tiles and the mass, 36 registers)
+for the whole batch. The stream is the loop variable:
 
 ```
-stage(b + 2) -> slot b%2   | claimed, cp.async, never waited on until the batch ends
-mma(b)                     | against the pulled A fragments, in the tensor pipe
-produce(b + 1)             | the next batch's coefficients, in the SIMT pipe under the MMAs
-deposit(b) -> slice[warp]  | this warp's panel, written whole, no atom in the path
-edge                       | the panel line: the slices are published
-fan-in(b)                  | the CTA sums the slices and reduces into num/den
-cp.async.wait_group        |
-edge                       | the batch line: the ring turns and the panel is free again
+for each batch:
+  fill (cp.async amplitude rows, the token table)  ->  stage_wait  ->  edge
+  per warp: the streams live in its slice (stream_count_before at the slice's two ranks)
+  for each live stream s:                                   one uniform skip per dead one
+    A  = the slice's coefficients for s, gathered ONCE      ldmatrix per inner block, digits per k-step
+    for each channel m-tile m, for each k-step i of s:
+      B  = the region's rows at s's leaves, m-tile m         ldmatrix.trans, one m-tile ahead
+      acc[2m], acc[2m+1] += A . B ; mass += A . B_mass       (B_mass: the region's mass column)
+  edge                                                       before the next fill
 ```
 
-TWO crossings a batch, which is the fold's count: the panel is ONE set of slices, because a
-second set does not fit the region at every declared value width, so the fan-in cannot run a
-batch behind the deposits that fill it.
+EVERY OPERAND IS AT FULL REUSE. A stream's coefficients are gathered once and drive every
+channel n-tile and the mass; a k-step's B rows are read once and drive sixteen positions;
+nothing is replicated across warps, because the warps partition the positions and a row is
+complete inside one warp. The sum across streams happens in the accumulator, so there is no
+pool of partial rows, no read-modify-write and no atom, and a stream's tile is
+`(kMassTile * 2 + 1) * kKs` MMAs against roughly the same number of shared-memory
+instructions -- the tensor pipe is the readout's binding pipe.
 
-<a id="read-expansion"></a>
-## The read coefficient needs no transpose
+THE REAP is per (stream, slice): a stream with no live position in the slice is one uniform
+test and no work. A dead position INSIDE a live stream contributes exact zeros -- its
+amplitude at the stream's outer digit is zero by the liveness pass's own predicate -- so
+correctness never depends on the lists, and the read side mints none. The grain is coarser
+than the list form's (stream, sixteen live tokens): at a random quarter live the slices are
+all live and the MMAs run dense; at a sixteenth, most still are. The MMAs are the cheap
+resource here and the per-tile cost is a fraction of the list form's, so the form wins or
+ties at every density measured (`#cost`); where the tensor pipe were the bound instead, a
+list-sourced tile is the same body with a different tile source.
 
-The MMA's B fragment is `k = 2*(lane&3) + 8h (+1)`, `n = lane>>2`. On the READ side `k` is
-the LEAF and `n` is the TOKEN — the mirror of the fold, where `k` is the token. So a
-register's two elements are two ADJACENT LEAVES at ONE token, and two adjacent leaves are
-two adjacent amplitude columns of that token's row, which the packed plane already stores
-adjacent. The readout therefore expands from the staged rows AS THEY LIE: one 32-bit shared
-access per (token n-tile, k-step, `h`), read as it lies, and no gain.
+THE ROWS LEAVE ONCE A BATCH, AT THE LINE LAW. On this architecture a `red.global.add.f32`
+costs the write path one 128-byte line per line it touches and only a position's 32
+consecutive channels is one line, so the fragment (each lane two positions by channel PAIRS)
+goes through the warp's STAGING TILE (`Smem::stage`, `[position][channel | mass]` fp32 at a
+`DV + 8` stride: the fragment's 64-bit pair stores bank free, a row contiguous) and each
+position's row leaves as `DV / 32` reductions plus one for the mass: 33 an instruction-minimum
+per sixteen positions, once per batch per warp. THE DRAIN IS PROGRESSIVE, so it never appears
+as a burst: a SEGMENT (32 channels, two m-tiles) is final when its second m-tile's last MMA
+lands, so in the batch's last live stream each segment but the last is staged as its m-tile
+pair ends and its four groups of four positions drain under the two m-tiles after it; the
+last segment and the mass are staged after the loop and drain under the NEXT batch's first
+live stream's m-tiles; the window's last batch is flushed at the phase's end with nothing to
+hide under. The seventeenth staging row holds the slice's token ids twice, by batch parity,
+because a batch's own drain and the batch before's are in flight together. A slice past the
+window's count carries the dead token and its rows are skipped by a uniform test per
+position; every other batch drains untested.
 
-The memo is the fold's j-slice law on the `k` axis. The innermost level's sub-box span is at
-least the page rectangle, so `P`'s low four bits ARE `local`'s low four bits and every level
-above the innermost has a sub-box shift of at least four — its digit is a function of the
-k-step ALONE, uniform across the warp and across `h`. Both column sets are walked once in
-the prologue (`rcin`, `rcout`) and never inside a window.
-
-<a id="fan-in"></a>
-## The fan-in: one contribution per owner box per token
-
-`num` and `den` are planes the readout REDUCES into, and every owner box of every batch-head
-contributes to every token. The warps of a CTA therefore meet FIRST, in shared memory, and
-the CTA then reduces the sum into the planes with one native `red.global.add.f32` per cell.
-
-THE ALTERNATIVE WAS BUILT AND MEASURED, and it lost. Each warp reaching the plane directly — the
-form the SPARSE readout is obliged to use — issues 288 warp-level reductions per CTA per batch
-against this form's 33, an 8.73x ratio that is structural and that the counters read back exactly.
-Both forms spend four filled 32-byte sectors an issue, so the whole difference is the issue count:
-L2 traffic 168 -> 654 MB at the flagship, of which the fan-in's own share is 69 -> 555 MB. It does
-not even buy the instructions it appears to: the direct form pays a per-token global address and a
-dead-token test PER WARP (IMAD 32, IADD3 11, LOP3 8, LEA 8, and 37 branch instructions a warp a
-batch) where the panel computes one address per cell FOR THE WHOLE CTA and reads the eight slices
-at a constant stride, so the two sections cost 145.0 and 154.6 instructions a warp a batch — a 6%
-saving, against 1.39x the wall time and 3.2x the stall samples. THE PANEL AMORTISES ADDRESSING
-ACROSS THE CTA; THE DIRECT FORM REPLICATES IT PER WARP. That is the measured reason this form
-stands, and the direct form's price falls with the density rather than being paid flat, which is
-why the sparse body is right to take it: below one contribution per token it issues FEWER global
-reductions than this floor.
-
-THE WARPS MEET WITHOUT AN ATOM. Each warp writes its own PANEL SLICE whole — an accumulator
-element belongs to exactly one lane of exactly one warp, so the slices are disjoint by
-construction and nothing contends. The CTA then reads all `warps_per_cta` slices of a cell
-and adds them in a fixed order. The shared-memory atomic this began as is not available as a
-native operation here: `red.shared.add.f32` assembles to a compare-and-swap SPIN, which the
-constitution's no-fallback clause refuses and the stage's ledger measured at roughly seven
-and a half instructions per issue.
-
-The panel's TOKEN GRAIN is derived, not chosen: the widest power of two, up to `kSeg`, whose
-`warps_per_cta` slices fit the region they alias into (`smem_ledger.md#panel`). At the
-flagship arm it is the whole batch and the fan-in runs once per batch; at a value width whose
-slices are twice as wide it halves and the fan-in runs twice.
-
-A token past the window's end carries a zero coefficient by construction, but it has no
-cell in the planes — so the fan-in is the one place in the readout that tests a token against
-the window's length.
+WHY REDUCTIONS, AND WHY THIS FEW. `num` and `den` are planes every owner box of every
+batch-head reduces into, and the reduction count is the readout's price on this arch: an
+ablation of the list-sourced form at the state carve (the slice form's predecessor) removed
+its reductions alone and recovered a quarter of the whole kernel, while removing its MMAs,
+its staging stores or its staging loads recovered under 4% together -- the reductions cost
+by how many leave the SM, not by issue, and no port on the way to L2 was above 55% while
+they did. The state carve issued one per (stream, token) line; this form issues one per
+(token) line per CTA per batch, the stream multiplicity fewer: 4.33M -> 0.54M at the dense
+flagship cell, and the memory-queue-full stall in the readout from 25% of its samples to 1%.
 
 THE ORDER OF THE CONTRIBUTIONS ACROSS OWNER BOXES IS THE HARDWARE'S. `num` and `den` are
 therefore associativity-dependent: the same call twice agrees to fp32 reduction-rounding, not
@@ -298,7 +282,7 @@ the k-range are compile-time constants -- no MMA is predicated on the grain. The
 ## The pool: filled by rank, gathered by index
 
 Per slot the pool holds the VALUE ROW (`DV` bf16, `kVRowBytes`) and the AMPLITUDE ROW (the
-box's `D` runs of the write plane, `kAmpStride` halfwords, laid out as `raw_stride`'s rows are,
+box's `D` runs of the write plane, `kAmpStride` halfwords, laid out as the pool's amplitude rows are,
 at `span_base` per level). Row `kPoolPos` is the DEAD ROW: zero, written once per window by
 `pool_zero_dead_row` because the pool shares the transit region's bytes, and read by every
 entry a padded tile carries.
@@ -329,20 +313,14 @@ stream's list -- `send - sbase` entries, the tail padded to the dead row -- and 
 A tile is sixteen consecutive entries.
 
 <a id="fill"></a>
-## The readout's fill is claimed, not assigned
-
-The union readout stages its batches through `claim_unit`: one monotone cursor (`Smem::claim`),
-fetch-added per `kUnitTokens`-token unit, so the warps that arrive first take the units and a
-production point is one claim over a run of segments -- two claims on one cursor would need an
-edge between them, and a cover slot has none.
-
 <a id="factor-rows"></a>
 ## The factor rows, as they lie
 
-`stage_unit_factors` copies a unit's tokens' `D` runs of the box's own digits -- `abase[l]`, the
-level's row base plus the owner's digit, is also the class-1 table's row base -- into a raw slot
-at the widest `cp.async` quantum the stride admits. The readout's ring and the pool's amplitude
-rows share this shape.
+The pool's amplitude rows are a position's `D` runs of the box's own digits AS THEY LIE in
+the packed plane -- `abase[l]`, the level's row base plus the owner's digit, is also the
+class-1 table's row base -- copied at the widest `cp.async` quantum the stride admits
+(`pool_copy_position`). Both sides' pools share this shape; the write side's rows carry the
+gain folded into the outermost run.
 
 <a id="expansion"></a>
 ## The j-slice of a level
@@ -354,9 +332,8 @@ column memo `scol[l][v]` is one entry per slice `v`, and tile `j` reads slice `(
 <a id="stream-edges"></a>
 ## The readout's stream edge
 
-`StreamEdge::kReadBatch` is the readout's batch edge in both forms -- the union's staged
-batches and the sparse form's read-pool batches -- a named barrier id disjoint from the
-frame's (`Edge`).
+`StreamEdge::kReadBatch` is the readout's batch edge -- after a batch's fill and before the
+next -- a named barrier id disjoint from the frame's (`Edge`).
 
 <a id="pool-tile"></a>
 ## One tile: gathered fragments
@@ -384,14 +361,15 @@ per batch, `16 / kPoolPos` of the batch's positions.
 
 
 <a id="forms"></a>
-## The readout's two forms, and where the switch sits
+## One readout body, and where its switch sits
 
-The readout has two bodies, `Form::kUnion` and `Form::kSparse`, and the launch picks one.
-The switch sits at its phase: inside the window loop, outside the batch loop that the
-in-kernel-switch ruling calls the hot loop -- one uniform branch per window. The fold has ONE
-body, the pool fold (`#fold`), whose reap is its list and needs no form.
-
-THE SPARSE READOUT is `#readout-sparse`.
+The readout has ONE body (`#readout`); what the launch picks is its STREAM GRAIN, and the
+grain is a body switch (`uniform_switch<kGrainCases>`) that sits at its phase: inside the
+window loop, outside the batch loop that the in-kernel-switch ruling calls the hot loop --
+one uniform branch per window, each case with its k-step count, stream count and pass
+structure as compile-time facts. The fold's pass grain is the same kind of switch. The
+one-stream point of the family (the grain at the warp sub-box) is what the schedule's
+`union` name selects.
 
 The two per-side MEMBER switches are different: they fix the addressing every stage on that
 side uses, so they sit in the prologue, outside every loop, nested. That nesting is
@@ -407,7 +385,6 @@ side, and the product is then the compile budget's problem rather than the sched
 | 1 arm axes (compile-time free) | `D`, `DV`, `warps_per_cta` | the arm key; template parameters of `carry_kernel`, declared in `tools/manifests/shipped_set.json` |
 | 2 the problem (runtime, untuned) | `B_l`, the level modes, `N` | `CarryParams::g`, derived on the host by `derive_carry_geom` |
 | 2 the problem (runtime, untuned) | `BH`, `L` | the grid's `y`, `CarryParams::L` |
-| 3 runtime dials (the only tuned class) | the readout's form | `CarryParams::readout_form` |
 | 3 runtime dials (each selects a compiled body at the phase's entry) | the two sides' stream grains `G` | `CarryParams::readout_grain_bits`, `fold_grain_bits`, as log2 leaves |
 | 3 runtime dials | the carve order | `CarryParams::g`, the side's `level_at` |
 | 3 runtime dials | the producer:consumer split | not yet consumed; it arrives with the rotation |
@@ -430,64 +407,43 @@ segments, the page images fit the region, the ledger fits the architecture's per
 maximum. Nothing in it is a literal that a reader has to trust.
 
 <a id="measured"></a>
+<a id="cost"></a>
 ## What the body costs, measured
 
-One probe over the fixed cells, and the section ledger the stage gate reads. Sections are
-anchored on the frame's own barrier instructions: the three frame edges and the three stream
-edges are named barriers with DISTINCT IDS, so a section boundary is a fact of the
-disassembly rather than a judgement about it.
+Flagship arm, sm_86, `tools/probe_cells.py` against the shipped body at the same schedule
+(`sparse-g32`), milliseconds; per-PC stall sampling and pipe counters by ncu, dense cell:
 
-| section | instructions | share | stall samples | share |
-|---|---|---|---|---|
-| prologue + entry sweep | 3,670,016 | 4.8% | 3,855 | 10.0% |
-| out leg: publish + cover A | 1,994,752 | 2.6% | 440 | 1.1% |
-| out leg: pull | 495,616 | 0.6% | 85 | 0.2% |
-| PHASE 1, the readout | 43,319,296 | 56.6% | 17,056 | 44.4% |
-| return leg: store-back + cover B | 1,445,376 | 1.9% | 370 | 1.0% |
-| return leg: rejoin | 1,218,560 | 1.6% | 295 | 0.8% |
-| PHASE 2, the fold | 21,658,624 | 28.3% | 15,647 | 40.7% |
-| exit sweep | 2,723,840 | 3.6% | 679 | 1.8% |
+| cell | shipped | this body |
+|---|---|---|
+| flagship-dense | 1.420 | 0.697 |
+| flagship-alt-k16 | 0.802 | 0.433 |
+| flagship-alt-k4 | 0.395 | 0.206 |
+| flagship-cohort-k16 | 0.264 | 0.157 |
+| flagship-cohort-k4 | 0.201 | 0.129 |
 
-Per warp per 16-token batch the two phases are 165 instructions (fold) against 330
-(readout), and each issues exactly 20 MMAs — the two phases' arithmetic is the same size,
-which is what the orientation says it should be. Everything above 20 is that phase's FEED.
-
-* THE READOUT'S FEED IS ITS CROSS-WARP FAN-IN, and it is structural rather than fixable. The
-  readout contracts over the LEAF, the leaf is what the carve divides among warps, so every
-  warp produces a full `[tokens × channels]` partial and the CTA sums `warps_per_cta` of
-  them. The floor is 32 stores, 32 loads and 28 adds per lane per batch and the measurement
-  sits on it; per token it is 2 + 2 + 1.75 and it does not fall with a bigger batch. The
-  addressing above that floor is the one line with room in it.
-* THE LEGS COST 6.7% OF THE INSTRUCTIONS AND 3.1% OF THE STALLS, for four passes that move
-  the box's whole high plane twice through shared memory. The publish and the store-back are
-  at their floor of `BC × (DV + 1)` halfwords each way per window; the pull and the rejoin
-  move the same bytes in a quarter of the issues, because `ldmatrix` reads sixteen rows an
-  instruction.
-* LEG EXPOSURE IS ZERO. The three frame edges are crossed once per window per warp and carry
-  no measured stall at all; the covers absorb them, which is what the cover slots are for.
-  Every remaining barrier cycle belongs to a STREAM edge — the fold's two per segment and
-  the readout's two per batch — and the aggregate barrier line FELL from 26.7% of issue
-  slots to 20.5% while the crossings per window more than doubled, which is the named
-  barrier not spinning.
-* SHORT SCOREBOARD and MIO THROTTLE rise (7.1% → 10.9%, 0.8% → 2.8%): the readout's feed is
-  shared memory, and the panel puts 32 stores and 32 loads a batch through the LSU pipe on
-  top of the fold's traffic.
-* BANK CONFLICTS rise with the legs' halfword stores: eight lanes write eight CONSECUTIVE
-  halfwords, so two lanes share a 32-bit word and the store is two-way by construction. A
-  region column layout that put a lane's two channels adjacent would pair them, and it would
-  move the pull's `ldmatrix` — named here, not taken.
-* NOT SELECTED stays at 1.5% and should: the SM's eight warps still sit two to a scheduler
-  partition. A second CTA would read very differently, which is what makes it worth reading.
+* THE READOUT IS TENSOR-BOUND, which is the regime the design wants: its top line is the
+  MMA (math-pipe throttle 25% of its samples, fixed-latency wait 27%), memory-queue-full
+  stalls are 1%, and the tensor pipe runs 26% of the kernel's cycles at two warps a
+  scheduler. Instructions per MMA in the readout are about 1.5.
+* THE FOLD IS NOW THE LARGER PHASE on the dense cell: 43% of the samples against the
+  readout's 51%, its MMA line at 88% math-pipe throttle. The fold's turn is next.
+* THE REDUCTIONS are 0.54M on the dense cell, one per (position, line) per CTA per batch,
+  against the 4.33M the state carve issued; the L2 atomic units run at 30%.
+* THE BATCH EDGE shows on the sparse cells (12% barrier in the readout at alt-k4): a slice's
+  live streams differ across warps, and the batch line waits for the longest. That is the
+  position carve's imbalance, and it is the one cost the list form did not have.
+* THE COVER-WORD WALK reads a level's run of words eight at a time; what remains of it is
+  the prologue's share of the sparse cells (11% at alt-k4).
 
 <a id="streams"></a>
 ## The sparse form: streams keyed on leaf ranges
 
 A STREAM keys on a LEAF RANGE of `G` leaves (the nesting law: stream boxes and accumulator
-boxes are power-of-two leaf ranges, one dividing the other). `G` is a runtime dial in
-`[16, leaves_per_warp]`, so a stream lies inside exactly ONE warp's sub-box: its accumulator
-tiles are that warp's registers and its segment is that warp's to fill and to consume. That
-is the whole structural difference from the union form, where the accumulator is sharded over
-every warp and every warp therefore has to consume every segment.
+boxes are power-of-two leaf ranges, one dividing the other). `G` is a launch dial in
+`[16, leaves_per_warp]`, so a stream lies inside exactly ONE warp's sub-box. On the WRITE
+side that warp's accumulator tiles are the stream's and its list is that warp's to consume;
+on the READ side every warp consumes every stream against its own slice of positions
+(`#readout`), and the stream's leaf range is what the B rows are read at.
 
 THE REAP is per (token, stream) PAIR. A token is live for a stream when the stream's leaf
 range contains a leaf whose coefficient is nonzero, and because the range is a bit-rectangle
@@ -503,58 +459,12 @@ dead pair is then never staged, never expanded, never sent and never MMA'd — a
 would have contributed was exactly `+0.0f`, because a dead digit's amplitude is exactly zero
 by the liveness pass's own predicate. THE REAP CHANGES NO SUM.
 
-THE ACTIVATION is stream-major and symmetric: `warps_per_cta` streams are live at once, one
-per warp, and the catalog (`leaves_per_warp / G` streams per warp) is walked in TURNS over
-the window. `active_leaves = warps_per_cta * G` is therefore derived here rather than free;
-the rotation that makes it free — half the warps producing, half consuming — is a role
-assignment on top of this schedule, not a restructure of it.
+THE COMPACTION IS THE POOL'S. Each side has its pool of rows by rank (`#pool`), filled by
+the same walk from the side's live words that its cover slot writes (`cover_live_words`:
+each stream's word per round and its exclusive prefix). On the write side the walk mints
+each stream's list of pool slots as it copies, and a stream's pass walks its list in whole
+tiles, the tail padded to the dead row. On the read side the slice IS the tile and the
+words answer the one question the readout asks, how many of a stream's positions fall in a
+slice (`stream_count_before` at the slice's two ranks). No stream stages, claims or counts
+anything else: the batch edges are the phase's only CTA crossings, and there are no counters.
 
-THE COMPACTION IS THE POOL'S. The read side has its own pool of amplitude rows (`#pool`,
-the read tenant), filled by the same walk as the fold's from the read-side live words that
-cover slot A writes (`cover_live_words`: each stream's word per round and its exclusive
-prefix), and the walk mints each stream's list of pool slots as it copies. A stream's pass
-walks its list in whole tiles, the tail padded to the dead row, whose token is `kDeadToken`
-so the scatter skips it. No stream stages, claims or counts anything: the batch edges are the
-phase's only CTA crossings, and there are no counters.
-
-<a id="readout-sparse"></a>
-## PHASE 1, the sparse form
-
-The same streams against the accumulator instead of into it. The read pool carries NO value
-row (the A operand is the coefficient) and no re-layout of its rows: a tile's sixteen
-positions' amplitude rows ARE the `[token][leaf]` A operand, gathered by `ldmatrix` as they
-lie (`readout_tile`), each row scaled by its token's head digits. The state's fragments,
-pulled once per window, are the B operand -- the same leaf-pair-at-a-channel elements the
-pull loads, read as B -- so the MMA is C[token][channel]: one per (k-step, channel n-tile)
-and one for the mass column. THE DEPOSIT goes through the warp's staging tile
-(`Smem::stage`, `[token][channel + mass]` fp32 at a `DV + 4` row stride, plus a row of the
-tile's token ids): the C fragment's channel pairs as sixteen 64-bit stores a lane, then each
-token's row as two reductions of 32 consecutive floats -- four sectors an instruction, which
-is what the LSU's global queue admits (the fragment-order deposit it replaced, ~32 sectors an
-instruction, filled that queue; the fragment-direct deposit of the reoriented tile, 8 sectors,
-half filled it). Four tokens a group, the ids one 8-byte load at use, so the deposit's live set
-is one group's. A FULL tile deposits untested; the tail tile skips its dead tokens by a
-warp-uniform test per token (a zero reduced into a live row still costs that row's atomic
-serialization). The lists are padded within their own bounds, so no index wraps.
-
-THE FAN-IN CANNOT SURVIVE COMPACTION. The panel (`#fan-in`) sums `warps_per_cta` per-warp
-slices of one [token x channel] block and issues one contribution per owner box per token —
-which works only because every warp's slice is indexed by the SAME token. A compacted stream's
-token list is its own, so there is no common row to sum, and the sparse readout deposits its
-own partial: THROUGH THE WARP'S STAGING TILE (`Smem::stage`, `[token][channel + mass]` fp32 at
-a `DV + 4` row stride, conflict free both ways), stored a channel m-tile at a time element by
-element, then read back a token row at a time so that each `red.global.add.f32` instruction
-covers one token's 32 consecutive channels -- four sectors, where the fragment-order deposit
-it replaced touched eight token rows at four channel pairs, ~32 sectors an instruction, and
-filled the LSU's global queue (the lg-throttle stall, 48% of the readout's samples). A FULL
-tile -- every tile but a stream's last -- deposits with no test at all; the tail tile skips
-its dead tokens by a warp-uniform test per token (their partial is exact zeros, but a zero
-reduced into a live row still costs the row's atomic serialization, which the sink-row probes
-measured at up to 43% on unstructured density).
-
-THE PRICE IS A DENSITY CROSSOVER, NOT A REGRESSION: one contribution per WARP per live token
-instead of one per BOX per token is `warps_per_cta * density` times the union's atomic traffic,
-against an instruction count with no panel round (32 shared stores, 32 shared loads and 28
-adds a batch) and no panel edges. Above density `1 / warps_per_cta` the union wins that term
-and below it the sparse form does; the launch picks the form, and the measurement is reported
-per density rather than averaged.

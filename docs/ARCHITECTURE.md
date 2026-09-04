@@ -525,21 +525,23 @@ window) — a re-fetch factor of exactly one in the ledger; sends counted per (s
 live token); DRAM and L2 counted as UNIQUE bytes; the expansion's arithmetic issued
 between multiply issues rather than before them.
 
-**3. The readout and the hybrid transit.** The readout's A-operand fragment IS the
+**3. The readout and the hybrid transit.** The readout's B-operand fragment IS the
 state accumulator's TOP HALVES — a byte permute of the fp32 pair into a packed bf16
 pair, the truncating read the declared arithmetic specifies (§R17) — so no separate
 bf16 image of the state is ever built, and the hi plane the pages store (§3.2) is the
 same bits by the same rule. The two sides are carved independently, so the phase change
-re-lays the state into the
-other side's order, and the hi plane MOVES: the writers publish it and DROP it, holding
-only the lo plane through PHASE 1; the readers pull it in read layout and it IS their A
-operand — no second bf16 stack exists — and after PHASE 1 the readers store those same
-bits back and the writers pull them in write layout and rejoin, `(hi << 16) | lo`,
-exactly, with no arithmetic. The register footprint through PHASE 1 is 1.0× the state,
-not 1.5×; a copy form keeping both planes live is rejected because the register wall is
-the binding one. The publisher places each leaf's row at the READER's slot, so the
-reader pulls a contiguous segment with one transposing matrix load, and the region is
-XOR-swizzled and conflict-free. The per-side member choice is ONE
+re-lays the state into the other side's order, and the hi plane MOVES: the writers
+publish it into the shared transit region and DROP it, holding only the lo plane
+through PHASE 1; the region holds it, in the READ carve's order, for the whole phase,
+and the readout reads it there in place as its B operand, stream by stream, with one
+transposing matrix load per (k-step, channel m-tile) — no second bf16 stack exists and
+no register copy of it either — and after PHASE 1 the writers pull those same bits back
+in write layout and rejoin, `(hi << 16) | lo`, exactly, with no arithmetic. The
+register footprint through PHASE 1 is 0.5× the state — the lo plane — plus the
+readout's own working set; a copy form keeping both planes live in registers is
+rejected because the register wall is the binding one. The publisher places each
+leaf's row at the READER's slot, and the region is XOR-swizzled and conflict-free for
+the transposing load. The per-side member choice is ONE
 `uniform_switch<Set>` over the generated member set, placed OUTSIDE the loop — one
 specialized body per member, the transit itself outside the switch, since an in-loop
 switch merges every member's live ranges and interleaves their code (KERNEL_STANDARDS
@@ -567,21 +569,24 @@ it recorded was a symptom of the two-CTA assumption (§7). *Floor:* bytes staged
 stream = one tile's expanded coefficient rows plus its value rows; the duplicated bytes
 each added stream costs; shared memory filled to the residency target and not past it.
 
-**5. The fan-in.** The window's output reduction is a native global reduction, and the
-figure of merit is 128-BYTE SEGMENTS PER REDUCTION INSTRUCTION — not sector fullness
-and not instruction count. Issuing straight from the accumulator fragment is fewer
-instructions and was measured SLOWER, because the fragment's layout half-fills its
-sectors; writing the fragment to a shared panel in TOKEN-ROW layout and issuing from
-the panel makes one instruction cover one token's 32 contiguous channels, one full
-segment. The stage builds that same token-row layout in REGISTERS with a shuffle
-transpose and reduces without the shared round trip, MEASURED against the panel form,
-which is the control. *Proven form:* the staged panel and its
-measured win over issuing from the fragment, and the alternative lock-and-CAS
-`ring_scatter` form with its flow counters beside it, both in the reference's
+**5. The fan-in.** The window's output reduction is a native global reduction, and its
+price is HOW MANY LEAVE THE SM: measured on sm_86, the reductions of a form that issued
+one per (stream, token) line were a quarter of the whole kernel while no port on the
+way to L2 was above 55%, and neither their MMAs nor their staging cost 4% — the
+reduction count, not the issue count, is the figure of merit, with the 128-BYTE LINE
+PER INSTRUCTION as the second. The readout therefore carves by POSITION: a warp owns a
+slice of the batch's positions and every channel of their rows, sums across every
+stream in its MMA accumulator, and the rows leave once per batch per CTA — one
+instruction per position per 32 contiguous channels, through a per-warp staging tile
+in TOKEN-ROW layout, drained progressively under the MMAs that follow. Issuing straight
+from the accumulator fragment is fewer instructions and was measured SLOWER, because
+the fragment touches eight lines an instruction; the shared-memory float add is a
+compare-and-swap spin on this architecture and is not in the path. *Proven form:* the
+position-carved readout with its staged, progressive drain, in the reference's
 `carry_kernel.cuh`; the law the measurement stands on — staged versus straight is
 decided by LATENCY, not by counts — is KERNEL_STANDARDS §R7. *Floor:* reduction
-instructions per token = `DV` / 32, each covering one full 128 B segment; the shuffle
-count of the transpose; the panel's shared traffic and its edge, removed.
+instructions per token per CTA per batch = `DV` / 32, each covering one full 128 B
+line, once, whatever the stream multiplicity.
 
 **6. The pipeline.** The body hides its own latency by construction: the next batch's
 produce is issued while the tensor pipe works on the current one, panels are

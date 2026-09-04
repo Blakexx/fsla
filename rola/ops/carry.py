@@ -113,10 +113,11 @@ class LaunchShape:
         return self.warps_per_cta * 32
 
 
-#: The two FORMS the READOUT runs in, as the kernel's `Form` enum spells them. The union body
-#: is the one-stream point of the family and the dense fast path; the sparse body keys its
-#: streams on leaf ranges and reaps the dead (token, stream) pairs. The fold has one body.
-FORMS: tuple[str, ...] = ("union", "sparse")
+#: THE FORM the READOUT runs in, as the kernel's `Form` enum spells it: the sparse body keys
+#: its streams on leaf ranges and reaps the dead (token, stream) pairs; at the coarsest grain
+#: (one stream a warp box) it is the dense point of the family. The entry keeps the enum's
+#: value: the kernel boundary takes the form first. The fold has one body.
+FORMS: dict[str, int] = {"sparse": 1}
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,13 +131,12 @@ class CarrySchedule:
     the window loop, loop bounds and warp-uniform tile predicates inside it; none grows a
     template. The fold has ONE body whatever its grain.
 
-    A ``None`` grain takes the side's own default: the warp sub-box (one stream spanning the
-    box -- the measured default for the fold at every density, and what the union readout IS),
-    or, for the sparse readout, the reaping bound ``G_min`` clamped into
-    ``[PAGE_LEAVES, leaves_per_warp]``.
+    A ``None`` grain takes the side's own default: the warp sub-box for the fold (one stream
+    spanning the box -- the measured default at every density), and for the readout the
+    reaping bound ``G_min`` clamped into ``[PAGE_LEAVES, leaves_per_warp]``.
     """
 
-    readout: str = "union"
+    readout: str = "sparse"
     readout_grain: int | None = None
     fold_grain: int | None = None
 
@@ -144,7 +144,7 @@ class CarrySchedule:
         if self.readout not in FORMS:
             raise CarryRefusal(
                 f"readout={self.readout!r} is not a form this kernel carries; the set is "
-                f"{FORMS}. The body is selected once per launch, outside the window loop.")
+                f"{tuple(FORMS)}. The body is selected once per launch, outside the window loop.")
 
     def flat(self, DV: int, grain_min: int) -> list[int]:
         """The three entries the kernel boundary takes: the read form, then the two grains."""
@@ -159,20 +159,12 @@ class CarrySchedule:
                     f"(KERNEL_STANDARDS.md §R13).")
             return grain
 
-        if self.readout == "union":
-            read = box
-            if self.readout_grain is not None and int(self.readout_grain) != box:
-                raise CarryRefusal(
-                    f"readout={self.readout!r} names a grain of {self.readout_grain}; the union "
-                    f"body is the ONE-STREAM point of the family, so its grain is the warp "
-                    f"sub-box ({box}) and naming another is naming two different schedules.")
-        else:
-            read = lawful("readout_grain", box if self.readout_grain is None
-                          else int(self.readout_grain))
-            if self.readout_grain is None:
-                read = min(box, max(PAGE_LEAVES, grain_min))
+        read = lawful("readout_grain", box if self.readout_grain is None
+                      else int(self.readout_grain))
+        if self.readout_grain is None:
+            read = min(box, max(PAGE_LEAVES, grain_min))
         fold = lawful("fold_grain", box if self.fold_grain is None else int(self.fold_grain))
-        return [FORMS.index(self.readout), read, fold]
+        return [FORMS[self.readout], read, fold]
 
 
 #: THE MODE WORD'S ENCODING, as `csrc/rola/src/common/geom.cuh` spells it and
@@ -201,16 +193,16 @@ def select_schedule(descriptor: StateFormat, level_modes: int = 0) -> CarrySched
     """THE SELECTION RULE, structural half: a read side with no SPARSE level cannot reap.
 
     Saturation fixes ``active_leaves`` (an arch mapping, not a dial a caller sees) and the
-    level structure fixes the rest: a side that declares no sparse level takes the UNION
-    form, because every (token, stream) pair on it is live by declaration and the sparse body
-    would pay multiplicity for nothing; a side that declares one takes the SPARSE form at the
-    reaping bound. The DENSITY half of the rule -- the calibrated crossover at which the reap
-    beats the multiplicity, the send replication and the segment's fixed cost -- is MEASURED,
-    not tuned here, and a caller that has measured it names the schedule outright.
+    level structure fixes the rest: a side that declares no sparse level runs at the warp
+    sub-box, one stream a warp, because every (token, stream) pair on it is live by
+    declaration and a finer stream would pay multiplicity for nothing; a side that declares
+    one runs at the reaping bound. The DENSITY half of the rule -- the calibrated crossover
+    at which the reap beats the multiplicity and the segment's fixed cost -- is MEASURED, not
+    tuned here, and a caller that has measured it names the schedule outright.
     """
     sparse = any((level_modes >> (2 * level)) & SIDE_SPARSE[0]
                  for level in range(descriptor.D))
-    return CarrySchedule(readout="sparse" if sparse else "union")
+    return CarrySchedule(readout_grain=None if sparse else leaves_per_warp(descriptor.DV))
 
 
 @dataclass(frozen=True, slots=True)

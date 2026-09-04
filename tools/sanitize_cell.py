@@ -35,9 +35,8 @@ if str(ROOT) not in sys.path:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cell", required=True)
-    ap.add_argument("--readout", default="union", choices=("union", "sparse"))
     ap.add_argument("--grain", type=int, default=0,
-                    help="the stream grain in LEAVES; 0 takes each sparse side's default")
+                    help="the stream grain in LEAVES, both sides; 0 takes each side's default")
     ap.add_argument("--phase", default="both", choices=("both", "fold", "readout"),
                     help="which phase's schedule to instrument. racecheck's shadow state is "
                          "per shared access per barrier interval and this host's budget "
@@ -64,14 +63,12 @@ def main() -> int:
         words[:, 0 if args.phase == "fold" else 1] = 0
         call["liveness"] = carry_ops.LivenessWords(words=words)
     grain = args.grain or None
-    schedule = carry_ops.CarrySchedule(
-        readout=args.readout, readout_grain=grain if args.readout == "sparse" else None,
-        fold_grain=grain)
+    schedule = carry_ops.CarrySchedule(readout_grain=grain, fold_grain=grain)
     state = carry_ops.state_plane(call["descriptor"], 1)
     num, den = carry_ops.carry_forward(routes, v, state_in=None, state_out=state,
                                        schedule=schedule, **call)
     torch.cuda.synchronize()
-    print(f"sanitize_cell: {spec.name} phase={args.phase} readout={args.readout} "
+    print(f"sanitize_cell: {spec.name} phase={args.phase} "
           f"grain={grain or 'default'} LAUNCHED "
           f"num={int(num.view(torch.int32).abs().sum()):d} "
           f"den={int(den.view(torch.int32).abs().sum()):d} "

@@ -12,19 +12,21 @@ an allocation would move the residency the whole design is built on.
 
 | offset | tenant | bytes | owner |
 |---|---|---|---|
-| 0 | the transit region, `BC * LdX * 2` -- and, sharing its bytes, THE POOL: `(kPoolPos + 1) * (kVRowBytes + kAmpRowBytes)` rows plus `kSideStreams * kListBytes` of lists and the fill scratches -- and, in PHASE 1's sparse form, THE READ POOL in the same bytes: `(kPoolPos + 1)` amplitude rows, its lists and scratches, and the slot -> token table; the tenant is the larger of the two, `kRegionTenantBytes` | 54,288 | the exchange between the two sides' carves; PHASE 2's rows |
-| after the region | THE READ BLOCK: the union readout's two shared raw slots | 2,304 | the union readout |
-| 53,824 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
-| 53,888 | the fill's ONE claim cursor | 4 | both union bodies' fills |
-| after the claim | THE LIVE WORDS, per side: each stream's word per round, `kSideStreams * kRounds * 4`, and its exclusive prefix, `kSideStreams * kRounds * 2` (`kLiveBytes` each) | 2 x 768 | cover slot A writes the read side's, cover slot B the write side's; each fill walks its own once |
-| | **total** (16-byte aligned, the flagship arm on sm_86) | **67,616** | |
+| 0 | the transit region, `BC * LdX * 2` -- and, sharing its bytes in PHASE 2 only, THE POOL: `(kPoolPos + 1) * (kVRowBytes + kAmpRowBytes)` rows plus `kSideStreams * kListBytes` of lists and the fill scratches | 36,864 (region) / 62,160 (pool) | the exchange between the two sides' carves; PHASE 2's rows |
+| 36,864 | THE READ POOL, behind the region: `(kReadPos + 1)` amplitude rows, the fill scratches, the slot -> token table | 11,104 | PHASE 1's fill |
+| 47,968 | THE STAGING TILES, one a warp: `(kSeg + 1) * kStageStride * 4` | 8 x 4,896 | PHASE 1's write-out |
+| 87,136 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
+| after the page slots | THE LIVE WORDS, per side: each stream's word per round, `kSideStreams * kRounds * 4`, and its exclusive prefix, `kSideStreams * kRounds * 2` (`kLiveBytes` each) | 2 x 1,536 | cover slot A writes the read side's, cover slot B the write side's; each fill walks its own once |
+| | **total** (16-byte aligned, the flagship arm on sm_86) | **90,272** | |
 
-The frame's three edges and the streams' three take no bytes at all: they are NAMED BARRIERS
-(`carry_kernel.md#edges`), which is what an edge with equal participation costs.
+The tenant at offset 0 is the larger of the region and PHASE 2's pool; the read pool and
+the staging tiles follow it because the region is READ through the whole of PHASE 1
+(`carry_kernel.md#readout`) and nothing may alias it there. The frame's three edges and the
+streams' take no bytes at all: they are NAMED BARRIERS (`carry_kernel.md#edges`), which is
+what an edge with equal participation costs.
 
-At sm_86's 101,376-byte per-CTA maximum this leaves the parked plane and the fill rule the
-rest of the budget, and the residency is one CTA per SM by the launch bound rather than by
-the allocation.
+At sm_86's 101,376-byte per-CTA maximum the residency is one CTA per SM by the launch bound
+rather than by the allocation.
 
 <a id="region"></a>
 ## The region, and the aliasing structure per moment
@@ -34,7 +36,7 @@ The transit region is the largest tenant and the only one whose bytes are re-let
 | moment | who lives in the region's bytes |
 |---|---|
 | the entry sweep | as many state page images as fit: `floor(36,864 / (16 * LdO * 4))` = 8 images of 4,352 bytes = 34,816 bytes, in 2 rounds over the box's 16 pages |
-| the out leg, PHASE 1, the return leg | the transit region itself — `BC` rows of `LdX` bf16 channels, the accumulator's halves in the owner-local canonical order — and, from the pull to the store-back, the UNION readout's fan-in panel in the first 34,816 of those bytes |
+| the out leg, PHASE 1, the return leg | the transit region itself — `BC` rows of `LdX` bf16 channels, the accumulator's top halves in the owner-local canonical order — read in place by the readout as its B operand and by the rejoin |
 | PHASE 2 | the pool: `kPoolPos + 1` value rows, `kPoolPos + 1` amplitude rows and the eight lists -- filled only after the rejoin has read the region, dead again at the window line |
 | the exit sweep | the state page images again |
 
@@ -43,19 +45,16 @@ The transit region is the largest tenant and the only one whose bytes are re-let
 
 A stream is a leaf range of `G` leaves inside ONE warp's sub-box. It owns no ring: its
 operands are the side's pool rows, shared by every stream that names a position, and what
-is the stream's own is its LIST of pool slots (`kListEntries` halfwords, `kListBytes`), minted
-by the fill, and its LIVE WORDS (one 32-bit word per round and a 16-bit exclusive prefix),
-written at the cover slot in front of the phase. The ledger is sized at the FINEST grain the
+is the stream's own is its LIVE WORDS (one 32-bit word per round and a 16-bit exclusive
+prefix), written at the cover slot in front of the phase, and -- on the write side -- its
+LIST of pool slots (`kListEntries` halfwords, `kListBytes`), minted by the fill. The read
+side mints no list: a warp's slice of positions is its tile, and the words answer how many
+of a stream's positions fall in it. The ledger is sized at the FINEST grain the
 nesting law admits (`G = 16`, the page rectangle: `kSideStreams` streams per side); a coarser
 runtime `G` uses fewer of the same lists.
 
-The page slots, the claim cursor and the live words are PERSISTENT: they are alive from the
-prologue to the exit and are never re-let. So is the union bodies' raw factor ring — a tenant that must survive a
-phase change is not a region tenant, and both cover slots fill their ring while the region
-still holds the transit.
-
-Parking the accumulator's low plane in shared memory holds the region through PHASE 1, which
-is why the output blocks are a priced row on this table rather than a surprise later.
+The page slots and the live words are PERSISTENT: they are alive from the prologue to the
+exit and are never re-let.
 
 ## Reserved by name, for the stages that fill them
 
@@ -68,54 +67,21 @@ allocation nobody sized. None is allocated today.
 | the parked low plane | `BC * (DV + 1) * 2` = 33,280 bytes | the register-relief stage |
 
 <a id="panel"></a>
-## PHASE 1's fan-in panel
-
-One SLICE PER WARP of `[kPanelTokens][kLdO]` fp32, aliased into the region's first bytes.
-The CTA's warps meet here before any of them reaches `num`/`den`, so the planes see one
-contribution per owner box per token rather than one per warp (`carry_kernel.md#fan-in`).
-Each warp writes its own slice WHOLE — an accumulator element belongs to exactly one lane of
-one warp — so the slices are disjoint, nothing contends, and there is no atom in the path.
-
-The panel's REASON is measured, not assumed: the form without it — every warp reducing into
-the planes directly — is 1.39x slower at the flagship and 1.10-1.14x at the small cells, because
-it multiplies the global reductions by `warps_per_cta` while saving only 6% of the section's
-instructions (`carry_kernel.md#fan-in`). These 34,816 bytes buy an 8.73x cut in L2 atomic traffic.
-
-`kPanelTokens` is DERIVED: the widest power-of-two token count up to `kSeg` whose
-`warps_per_cta` slices fit inside the region. The region's size is `BC * kLdX * 2` and `BC`
-falls as the value width rises, while a slice's width rises with it — so the grain is the
-batch at the shipped value widths and halves at the widest declared one. A `static_assert`
-refuses an arm where even one n-tile of slices would not fit.
-
-The slice's stride is the page image's, and the reason is the same congruence: for a fixed
-channel m-tile a warp's 32 lanes address four TOKEN rows (differing by two, hence by
-`2 * kLdO ≡ 8` words) times eight consecutive channels, so the four rows land on four bank
-quadruples and the eight channels fill each — 32 banks, once. The fan-in's own reads are
-consecutive channels across consecutive threads, which is conflict free at any stride.
-
 <a id="read-ring"></a>
-## The read side's raw ring
-
-`kReadSlots = 2` slots of the SAME `[kSeg][kRawStride]` bf16 shape the write side stages,
-because the runs a box reaches are the BOX's and only the amplitude plane differs. It carries
-no values (the readout's A operand is the state) and no gains (the gain is a write-side
-quantity), and it needs no column block: the readout's B fragment pairs two adjacent LEAVES
-at one token, which the packed plane already stores adjacent, so the expansion reads these
-rows as they lie (`carry_kernel.md#read-expansion`). Two slots is what makes ONE edge a batch
-enough — the slot being staged and the slot being expanded alternate.
-
 <a id="pool"></a>
 ## The pool
 
 PHASE 2's rows, keyed by position, in the region's bytes (`kPoolVOffset`, `kPoolAmpOffset`,
-`kListOffset`); PHASE 1's sparse form lays its READ POOL in the same bytes (`kReadAmpOffset`,
-`kReadListOffset`, `kReadScratchOffset`, `kPoolTokenOffset`, `kStageOffset`): amplitude rows
-only, at the same capacity, the slot -> window-token table the deposit addresses by, and
-`warps_per_cta` STAGING TILES of `(kSeg + 1) * kStageStride` fp32 (`kStageBytes`, 4,624 at
-the flagship: sixteen token rows of `DV + 4` floats, the pad keeping a fragment's 64-bit pair
-stores two-way at most and a token's row contiguous, plus a row of the tile's token ids)
-through which a tile's partial is transposed for its coalesced reductions.
-The region tenant is the largest of the fold pool, the read pool and the region itself. Capacity `kPoolPos` is `pool_positions` of the budget the other tenants leave:
+`kListOffset`). PHASE 1's READ POOL lies BEHIND the region (`kReadAmpOffset`,
+`kReadScratchOffset`, `kPoolTokenOffset`, `kStageOffset`), because the region is read through
+the phase: amplitude rows only, in batches of `kReadPos = warps_per_cta * kSeg` positions
+(one slice a warp, 128 at the flagship), the slot -> window-token table the write-out
+addresses by, and `warps_per_cta` STAGING TILES of `(kSeg + 1) * kStageStride` fp32
+(`kStageBytes`, 4,896 at the flagship: sixteen position rows of `DV + 8` floats -- the
+channels, the mass, and the pad that keeps a fragment's 64-bit pair stores bank free and a
+row contiguous -- plus a row holding two sets of the slice's token ids, by batch parity)
+through which a slice's rows are transposed for their one-line reductions.
+The region tenant is the largest of the fold pool and the region with the read tenants behind it (`kRegionTenantBytes`). Capacity `kPoolPos` is `pool_positions` of the budget the other tenants leave:
 the largest power of two whose rows, plus the dead row and the lists, fit -- 256 at the
 flagship arm on sm_86, where the pool outgrows the transit region and the region tenant is
 sized to it (`kRegionTenantBytes`). Per position: a value row, `kVRowBytes = DV * 2`, and an
@@ -146,10 +112,10 @@ residues collide two-way at most, which is what the measured 3.8% conflict share
 
 ### The lists
 
-`kSideStreams` lists per side of `kListEntries` halfword slots (`kListBytes` each), one per
-stream of the side's finest grain, minted by the fill and consumed by the stream's pass; behind them
-`warps_per_cta` fill scratches of one round's live lanes (`kFillScratchBytes`). Never a
-stream's operands.
+`kSideStreams` lists on the write side of `kListEntries` halfword slots (`kListBytes` each),
+one per stream of the side's finest grain, minted by the fill and consumed by the stream's
+pass; behind each side's rows `warps_per_cta` fill scratches of one round's live lanes
+(`kFillScratchBytes`). Never a stream's operands.
 
 
 <a id="page-image"></a>

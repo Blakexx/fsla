@@ -86,17 +86,19 @@ not two. A call that declares no modes gets the canonical order.
 <a id="schedule"></a>
 ## The schedule dials
 
-`carry_forward` takes a four-entry `schedule` beside the carve order: `[read form, write form,
-read grain, write grain]`. The forms are `Form` (`union` = 0, `sparse` = 1) and the grains are
-in LEAVES — the leaf range one stream keys on. Both are the primitive ledger's class 3, both
-are per side, and both are RUNTIME: the form is one uniform switch per phase outside the window
-loop and the grain is a loop bound and a warp-uniform tile predicate inside it.
+`carry_forward` takes a three-entry `schedule` beside the carve order: `[read form, read
+grain, fold grain]`. The form is `Form`, of which there is one (`sparse` = 1; the entry keeps
+the kernel boundary's shape), and the grains are in LEAVES -- the leaf range one stream keys
+on. The grains are the primitive ledger's class 3, per side, and each is a LAUNCH parameter
+that selects a body: one uniform switch per phase, inside the window loop and outside the
+batch loop, with the grain's k-step count, stream count and pass structure as compile-time
+facts of the body it selects (`carry_kernel.md#streams`).
 
 The boundary refuses a grain that is not a power of two between the page rectangle and the
-warp sub-box (a finer stream would divide the innermost digits below the vector width, R13),
-and refuses a union side whose grain is not the warp sub-box — the union body IS the one-stream
-point of the family, so naming another grain for it would be naming two schedules.
+warp sub-box (a finer stream would divide the innermost digits below the vector width, R13).
+The grain at the warp sub-box is the one-stream point of the family, which the bench's
+`union` schedule name selects.
 
 `rola.ops.carry.select_schedule` picks the default: a side with no SPARSE level cannot reap, so
-it takes the union form; a side that declares one takes the sparse form at the reaping bound
+it runs at the warp sub-box; a side that declares one runs at the reaping bound
 `G_min = prod over that side's DENSE levels of B_l`, clamped into the lawful range.
