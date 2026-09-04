@@ -993,15 +993,16 @@ __device__ __forceinline__ void readout_deposit_tile(
   }
   __syncwarp();
 
-  const int tok =
+  //: lane `l & 15` holds token `l & 15`'s window-relative id; a dead token is resolved ONCE
+  //: per lane to the tile's first token (always live: the padding is the tail), whose
+  //: cells the padding's exact zeros are added to. No reduction is branched.
+  const int tokl =
       (int)sm.pool_token()[list[(taken + (lane & (BP::kSeg - 1))) & (BP::kListEntries - 1)]];
-  //: a dead token deposits its exact zeros at the tile's FIRST token (always live: the
-  //: padding is the tail), so no reduction is branched.
-  const int rel0 = ops::lane_broadcast(tok, 0);
+  const int tok0 = ops::lane_broadcast(tokl, 0);
+  const int tok = tokl == kDeadToken ? tok0 : tokl;
   rola::static_for<BP::kSeg>([&](auto Tc) {
     constexpr int T = decltype(Tc)::value;
-    const int relT = ops::lane_broadcast(tok, T);
-    const int rel = relT == kDeadToken ? rel0 : relT;
+    const int rel = ops::lane_broadcast(tok, T);
     float* const row = reinterpret_cast<float*>(ops::gather_ptr(
         num, (uint32_t)(t0 + rel) * (uint32_t)(BP::kDv * 4) + (uint32_t)(lane * 4)));
     rola::static_for<BP::kDv / 32>([&](auto Hc) {
@@ -1012,11 +1013,12 @@ __device__ __forceinline__ void readout_deposit_tile(
     });
   });
 
-  if (lane < BP::kSeg)
-    ops::fan_in_add(
-        reinterpret_cast<float*>(
-            ops::gather_ptr(den, (uint32_t)(t0 + (tok == kDeadToken ? rel0 : tok)) * 4u)),
-        __uint_as_float(ops::load_shared_u32(stage + (uint32_t)((lane * kS + BP::kDv) * 4))));
+  //: the mass by every lane, the upper half adding zeros beside the lower's cells, so the
+  //: deposit stays convergent to the end.
+  const float m = __uint_as_float(
+      ops::load_shared_u32(stage + (uint32_t)(((lane & (BP::kSeg - 1)) * kS + BP::kDv) * 4)));
+  ops::fan_in_add(reinterpret_cast<float*>(ops::gather_ptr(den, (uint32_t)(t0 + tok) * 4u)),
+                  lane < BP::kSeg ? m : 0.0f);
   __syncwarp();
 }
 
