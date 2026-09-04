@@ -91,16 +91,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("carry_sub_boxes", &rola::carry::sub_box_set,
         "the GENERATED set of warp sub-box shapes a side selects its member from", py::arg("depth"),
         py::arg("box_leaves"), py::arg("workers"));
-  m.def("intra_backward", &rola::intra::intra_backward,
-        "the within-window half of the four cotangents, REDUCED into the "
-        "planes the carry's two scans also write",
-        py::arg("pread"), py::arg("pwrite"), py::arg("gwrite"), py::arg("v"), py::arg("dnum"),
-        py::arg("dden"), py::arg("d_pr"), py::arg("d_pw"), py::arg("d_gw"), py::arg("d_v"),
-        py::arg("levels"), py::arg("level_width"), py::arg("level_modes"), py::arg("window"));
-  m.def("intra_backward_arms", &rola::intra::intra_backward_arms,
-        "the built reverse intra arms and their census");
-  m.def("intra_backward_stamp", &rola::intra::intra_backward_stamp,
-        "the reverse intra's device build stamp");
 
   // ---- the ONE liveness pass, a foundation feature ------------------------
   m.def("liveness_words", &rola::facts::liveness_words,

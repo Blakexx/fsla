@@ -54,7 +54,7 @@ that.
 | producer union entmax solve | `entmax_union_forward`, `entmax_union_backward` |
 | producer per-side solves | `entmax_factor_forward`, `entmax_factor_backward`, `routing_softmax_forward`, `routing_softmax_backward` |
 | the addressing block (G2-EXTRACT), a foundation feature | `carry_geometry`, `carry_sub_boxes` |
-| the within-window term and its reverse | `intra_forward`, `intra_arms`, `intra_build_stamp`, `intra_backward`, `intra_backward_arms`, `intra_backward_stamp` |
+| the within-window term | `intra_forward`, `intra_arms`, `intra_build_stamp` |
 | the T=1 decode path (thunder §6b) | `rola_decode_forward`, `rola_decode_build_stamp`, `rola_decode_capacity`, `rola_decode_producer_width_mirror` |
 | the VMM owner | `rola_vmm_probe`, `rola_vmm_create`, and the `RoLAVmmOwner` class |
 

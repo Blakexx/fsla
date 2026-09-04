@@ -327,3 +327,19 @@ makes the padded contraction exact.
 
 §6: kColChannels/8 is compile-time but the heuristic only reads a bare
 identifier, so name it.
+
+<a id="deposit"></a>
+## The deposit, at the line law
+
+A warp's output block is `kWarpRows` rows by `kValueWidth` channels plus each row's mass,
+final in the MMA accumulator after the block's last column tile. It leaves through the
+warp's staging tile -- `kWarpRows` rows of one 32-channel segment, the mass, and a pad to
+`kStageStride = 40` floats, so a fragment's 64-bit pair stores are bank free and a row is
+contiguous -- a segment at a time: the segment's four n-tiles stored, the warp edge, then
+one `red.global.add.f32` per row covering its 32 consecutive channels, one 128-byte line an
+instruction, and the sixteen masses one line more. The tile is laid in the operand slabs,
+dead by then: the block's last stage ended on a CTA edge after every warp's last MMA and the
+next block's fill begins on one. The fragment-direct reduction it replaced touched eight
+lines an instruction, the form the carry measured and rejected (`carry/carry_kernel.md#readout`).
+The intra's cost is not here (1.6% of the tensor peak at `W = 512`); its rebuild on the
+carry's form is owed.

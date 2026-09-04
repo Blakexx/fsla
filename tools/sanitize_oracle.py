@@ -98,9 +98,6 @@ _FAMILIES = {
         test="tests/oracle/test_intra_kernel.py::"
              "test_deep_intra_matches_the_fp64_reference[d3-alt-k4]",
         kernel="rola::intra::intra_forward", present=True),
-    "intra_backward": Family(
-        test="tests/oracle/test_intra_backward.py",
-        kernel="rola::intra::intra_backward", present=True),
     #: THE DECODE STEP, whose combine carries the declared rendezvous below.
     "decode": Family(
         test="tests/oracle/test_decode_vs_oracle.py::"
@@ -144,7 +141,7 @@ _FAMILIES = {
              "test_the_folded_state_is_the_fp64_reference[flat-small-multiwindow]",
         kernel="rola::carry::carry_forward", present=True,
         racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-multiwindow",
-                          "--phase", "fold", "--readout", "sparse", "--grain", "16")),
+                          "--phase", "fold", "--grain", "16")),
     #: THE TWO SPARSE BODIES, on the ONE-BOX cell -- `N = BC`, so the grid is 1x1 and the
     #: coverage is COMPLETE BY CONSTRUCTION: racecheck sees only shared memory, shared memory
     #: is CTA-local, and every CTA of this family runs identical code. At G = 16 the cell runs
@@ -154,7 +151,7 @@ _FAMILIES = {
              "test_the_sparse_form_is_the_fp64_reference[one-box-multiwindow-G16]",
         kernel="rola::carry::carry_forward", present=True,
         racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-tiny", "--phase", "fold",
-                          "--readout", "sparse", "--grain", "16")),
+                          "--grain", "16")),
     #: THE SPARSE FORM WHERE THE REAP IS REAL: the same box on a k_tok = 4 draw, so the
     #: compaction actually drops pairs and the partial-segment tail runs on every turn.
     "carry_sparse_reap": Family(
@@ -162,7 +159,7 @@ _FAMILIES = {
              "test_the_sparse_form_is_the_fp64_reference[one-box-alt-k4-G16]",
         kernel="rola::carry::carry_forward", present=True,
         racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-short", "--phase", "fold",
-                          "--readout", "sparse", "--grain", "16")),
+                          "--grain", "16")),
     #: ABSENT: the carry reverse pass. Its cells are red at the extension boundary; the
     #: coverage is owed by the stage that builds the body.
     "carry_backward": Family(

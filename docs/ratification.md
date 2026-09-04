@@ -19,7 +19,7 @@ tools/manifests/sm_86.json
 
 **347 entries per architecture** on this line, measured on the current tree: 320 entmax
 solves, 17 `decode_step_kernel` and the decode path's device build stamp, and 10
-`intra_kernel`/`intra_backward_kernel` arms.
+`intra_kernel` arms.
 
 THE CLEAN SLATE REMOVED 103 PER ARCH (450 -> 347): the carry family's 43 (`carry_kernel`
 `<D, B, K, M, W, C, STATE>`, `carry_split_kernel`, the `scan_a_kernel`/`scan_b_kernel`

@@ -18,12 +18,16 @@ using denseref::ops::fan_in_add;
 using denseref::ops::kBf16MagnitudeMask;
 using denseref::ops::load_frag;
 using denseref::ops::load_frag_t;
+using denseref::ops::load_shared_u32;
 using denseref::ops::mma;
 using denseref::ops::pack_bf16x2;
 using denseref::ops::smem_addr;
 using denseref::ops::stage_commit;
 using denseref::ops::stage_tile;
 using denseref::ops::stage_wait;
+using denseref::ops::store_shared_f32x2;
+using denseref::ops::store_shared_u32;
+using denseref::ops::warp_sync;
 
 //: THE WINDOW IS AN ARM, so the tile counts it induces are functions of it and -- see docs/internals/intra/intra_kernel.md#tilesof
 constexpr int tiles_of(int window) { return window / kTile; }
@@ -60,6 +64,13 @@ constexpr int stages_per_level(int width) { return level_digits(width) / stage_d
 constexpr int operand_pitch(int width) { return stage_digits(width) + 8; }
 
 constexpr int kValuePitch = kValueWidth + 8;
+
+//: THE DEPOSIT'S STAGING ROW: one 32-channel segment, the row's mass, and the pad that
+//: keeps a fragment's 64-bit pair stores bank free -- `kWarpRows` rows a warp, laid in the
+//: operand slabs, which are dead once a block's last tile has been consumed.
+//: -- see docs/internals/intra/intra_kernel.md#deposit
+constexpr int kStageStride = 32 + 8;
+constexpr int kStageFloats = kWarpRows * kStageStride;
 
 //: `sread`/`swrite`: the producer's frozen support word for the plane of the same -- see docs/internals/intra/intra_kernel.md#intraparams
 struct IntraParams {
@@ -381,22 +392,52 @@ __global__ __launch_bounds__(threads_of(W)) void intra_kernel(IntraParams p) {
       }
     }
 
-    const int grow = wbase + rt * kTile + trow + row_lo;
-    float* obase = p.o + (long long)(bh * p.L + grow) * kValueWidth;
-#pragma unroll
-    for (int n = 0; n < 8; ++n)
-#pragma unroll
-      for (int i = 0; i < 4; ++i)
-        fan_in_add(obase + (i >> 1) * 8 * kValueWidth + n * 8 + col_lo + (i & 1), oacc[n][i]);
+    //: THE DEPOSIT, at the line law: the block's rows through the warp's staging tile, a
+    //: 32-channel segment at a time, so each reduction is one row's 32 consecutive channels
+    //: -- one 128-byte line -- and the sixteen masses one line more. The slabs are dead here:
+    //: the block's last stage ended on an edge after every warp's last MMA, and the next
+    //: block's fill begins on one.
+    static_assert(threads_of(W) / 32 * kStageFloats * (int)sizeof(float)
+                      <= (int)(sizeof(IntraSmem<D, B, W>::rslab) + sizeof(IntraSmem<D, B, W>::wslab)
+                               + sizeof(IntraSmem<D, B, W>::vslab)),
+                  "the warps' staging tiles fit the operand slabs they alias");
+    const uint32_t stage =
+        smem_addr(&sm.rslab[0][0][0]) + (uint32_t)(warp * kStageFloats * (int)sizeof(float));
 #pragma unroll
     for (int s = 1; s <= 2; s *= 2) {
       dacc[0] += __shfl_xor_sync(0xFFFFFFFFu, dacc[0], s);
       dacc[1] += __shfl_xor_sync(0xFFFFFFFFu, dacc[1], s);
     }
-    if ((lane & 3) == 0) {
-      float* dbase = p.den + (long long)bh * p.L + grow;
-      fan_in_add(dbase, dacc[0]);
-      fan_in_add(dbase + 8, dacc[1]);
+    const int grow = wbase + rt * kTile + trow;
+    float* const obase = p.o + (long long)(bh * p.L + grow) * kValueWidth + lane;
+    constexpr int kSegs = kValueWidth / 32;
+#pragma unroll
+    for (int seg = 0; seg < kSegs; ++seg) {
+#pragma unroll
+      for (int n = 0; n < 4; ++n) {
+        const uint32_t col = (uint32_t)((n * 8 + col_lo) * 4);
+        store_shared_f32x2(stage + (uint32_t)(row_lo * kStageStride * 4) + col,
+                           oacc[seg * 4 + n][0], oacc[seg * 4 + n][1]);
+        store_shared_f32x2(stage + (uint32_t)((row_lo + 8) * kStageStride * 4) + col,
+                           oacc[seg * 4 + n][2], oacc[seg * 4 + n][3]);
+      }
+      if (seg == 0 && (lane & 3) == 0) {
+        store_shared_u32(stage + (uint32_t)((row_lo * kStageStride + 32) * 4),
+                         __float_as_uint(dacc[0]));
+        store_shared_u32(stage + (uint32_t)(((row_lo + 8) * kStageStride + 32) * 4),
+                         __float_as_uint(dacc[1]));
+      }
+      warp_sync();
+#pragma unroll
+      for (int r = 0; r < kWarpRows; ++r)
+        fan_in_add(
+            obase + r * kValueWidth + 32 * seg,
+            __uint_as_float(load_shared_u32(stage + (uint32_t)((r * kStageStride + lane) * 4))));
+      if (seg == 0 && lane < kWarpRows)
+        fan_in_add(
+            p.den + (long long)bh * p.L + grow + lane,
+            __uint_as_float(load_shared_u32(stage + (uint32_t)((lane * kStageStride + 32) * 4))));
+      warp_sync();
     }
   }
 }

@@ -167,11 +167,11 @@ THE LEVEL WIDTH IS AN INSTANTIATION AXIS, not a constant: an arm is a
 `(D, B, W)` triple, matching the carry family's topology arms.
 
 <a id="intrabackward"></a>
-### `intra_backward`
+### The reverse pass
 
-The reverse pass: it REDUCES the within-window half of the four cotangents into
-planes the carry's two scans also write.  ``dnum`` is ``[BH, L, d_v]`` bf16 and
-``dden`` is ``[BH, L]`` fp32 -- the seeds the op seam forms from the division.
+Gone (`DELETIONS.md`, 2026-09-04): the reverse pass is rebuilt from its fp64 reference
+(`tests/oracle/backward_reference.py`) on the position-carved form once the forward is
+final.
 
 <a id="intrabuildstamp"></a>
 ### `intra_build_stamp`

@@ -13,7 +13,7 @@ independently in fp64.
 THE CARRY LEG IS `rola.ops.carry`: this module builds that surface's five
 arguments — the descriptor, the geometry block, the liveness words, the activity
 bits and the launch shape — from what it already has (the packed planes and the
-widths), and calls `carry_forward`/`carry_backward`. The box is a launch
+widths), and calls `carry_forward`. The box is a launch
 consequence and the window is a kernel constant (`carry_ops.WINDOW`); neither is a
 parameter of this operator.
 
@@ -232,123 +232,5 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
     return padding_ops.slice_y(num, dv_logical), den, state_out
 
 
-__all__ = ["LEVEL_WIDTH", "LEVEL_WIDTHS", "WINDOW", "prefill",
-           "prefill_autograd"]
+__all__ = ["LEVEL_WIDTH", "LEVEL_WIDTHS", "WINDOW", "prefill"]
 
-
-class _Prefill(torch.autograd.Function):
-    """The whole operator as ONE autograd node: three kernels forward, three reverse.
-
-    The node is over the UNDIVIDED ``(num, den, state_out)``, so the division's
-    backward is ordinary autograd at whatever forms ``num / (den + eps)`` -- there is
-    no seam formula to keep in step with the kernels. The ctx retains the op's own
-    inputs and NOTHING ELSE: no state, no lists, no thresholds, no pairwise coefficient.
-    """
-
-    @staticmethod
-    def forward(ctx, D, widths, modes, sread, swrite, state_in, g_write, v, *levels):
-        pread, pwrite, gwrite, v_bh, v_bthd = _pack_operands(levels[:D], levels[D:],
-                                                             g_write, v)
-        bh, dv = v_bh.shape[0], v_bh.shape[2]
-
-        descriptor = _descriptor(widths, dv, bh)
-        launch = carry_ops.LaunchShape()
-        geometry = carry_ops.geometry_block(descriptor, launch,
-                                           intra_ops.pack_modes(tuple(modes)))
-        liveness = _liveness_words(pread, pwrite, descriptor)
-        activity = _conservative_activity(descriptor, bh, v_bh.device)
-        state_out = carry_ops.state_plane(descriptor, bh, device=v_bh.device)
-
-        routes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)
-        num, den = carry_ops.carry_forward(
-            routes, v_bh, descriptor=descriptor, geometry=geometry, liveness=liveness,
-            activity=activity, launch=launch, state_in=state_in, state_out=state_out)
-        extension().intra_forward(pread, pwrite, gwrite, v_bthd, sread, swrite, num, den,
-                                  D, int(widths[0]), intra_ops.pack_modes(tuple(modes)),
-                                  int(WINDOW))
-
-        ctx.save_for_backward(pread, pwrite, gwrite, v_bh, v_bthd, state_in)
-        ctx.shape = (v.shape, g_write.shape, tuple(x.shape[-1] for x in levels))
-        ctx.dtypes = tuple(x.dtype for x in (g_write, v) + levels)
-        ctx.plan = (D, tuple(widths), tuple(modes))
-        return num, den, state_out
-
-    @staticmethod
-    def backward(ctx, d_num, d_den, d_state_out):
-        pread, pwrite, gwrite, v_bh, v_bthd, state_in = ctx.saved_tensors
-        D, widths, modes = ctx.plan
-        (Bn, T, H, dv), _, level_widths = ctx.shape
-        bh = Bn * H
-        if d_num is None:
-            d_num = torch.zeros((bh, T, dv), dtype=torch.float32, device=pread.device)
-        if d_den is None:
-            d_den = torch.zeros((bh, T), dtype=torch.float32, device=pread.device)
-        d_num = d_num.contiguous()
-        d_den = d_den.contiguous()
-
-        descriptor = _descriptor(widths, dv, bh)
-        launch = carry_ops.LaunchShape()
-        geometry = carry_ops.geometry_block(descriptor, launch,
-                                           intra_ops.pack_modes(tuple(modes)))
-        liveness = _liveness_words(pread, pwrite, descriptor)
-        activity = _conservative_activity(descriptor, bh, pread.device)
-
-        routes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)
-        d_pr, d_pw, d_gw, d_v, d_state_in = carry_ops.carry_backward(
-            routes, v_bh, d_num, d_den, descriptor=descriptor, geometry=geometry,
-            liveness=liveness, activity=activity, launch=launch, state_in=state_in,
-            d_state_out=d_state_out)
-        #: SAME STREAM, SAME PLANES.  The intra REDs its within-window half into the
-        #: buffers the two scans just wrote, exactly as the forward intra REDs into
-        #: `num`/`den`; nothing is summed on the host.
-        extension().intra_backward(
-            pread, pwrite, gwrite, v_bthd, d_num.to(torch.bfloat16).contiguous(),
-            d_den.to(torch.float32).contiguous(), d_pr, d_pw, d_gw, d_v, D,
-            int(widths[0]), intra_ops.pack_modes(tuple(modes)), int(WINDOW))
-
-        def unflatten(plane, base_dtype):
-            out, off = [], 0
-            for width in level_widths[:D]:
-                part = plane[:, :, off:off + width].reshape(Bn, H, T, width)
-                out.append(part.permute(0, 2, 1, 3).to(base_dtype))
-                off += width
-            return out
-
-        g_read = unflatten(d_pr, ctx.dtypes[2])
-        g_write_levels = unflatten(d_pw, ctx.dtypes[2 + D])
-        g_gain = d_gw.reshape(Bn, H, T).permute(0, 2, 1).to(ctx.dtypes[0])
-        g_value = d_v.reshape(Bn, H, T, dv).permute(0, 2, 1, 3).to(ctx.dtypes[1])
-        g_state = d_state_in if ctx.needs_input_grad[5] else None
-        return (None, None, None, None, None, g_state, g_gain, g_value,
-                *g_read, *g_write_levels)
-
-
-def prefill_autograd(read_levels, write_levels, g_write, v, widths, *, modes, sread,
-                     swrite, state_in: torch.Tensor | None = None):
-    """:func:`prefill`, differentiable -- the same three kernels with the reverse pass.
-
-    Returns the same undivided ``(num, den, state_out)``. ``state_in`` and every
-    routing operand carry gradients; ``widths`` and ``modes`` and the two support
-    words are configuration and carry none -- a support word is a STATEMENT ABOUT
-    where the amplitudes are zero, and the amplitudes it describes are what the
-    gradient flows through.
-    """
-    D = len(widths)
-    if len(modes) != D:
-        raise ValueError(f"{D} levels want {D} support modes; got {len(modes)}")
-    #: THE REVERSE PASS IS BUILT AT DEPTH TWO, WIDTH 256 ONLY.  Both reverse
-    #: families refuse a third level -- the digit reduction's pass geometry is a
-    #: per-arm derivation -- so the differentiable entry is narrower than the
-    #: forward one by exactly that gap, and says so rather than half-serving it.
-    if any(w != LEVEL_WIDTH for w in widths) or D != 2:
-        raise ValueError(
-            f"the differentiable prefill is built at D = 2, level width {LEVEL_WIDTH} "
-            f"only (the reverse families' arms); got {D} levels of widths "
-            f"{tuple(widths)}. The forward-only `prefill` carries the deep arms.")
-    length = read_levels[0].shape[1]
-    if length % WINDOW:
-        raise ValueError(
-            f"L = {length} is not a whole number of {WINDOW}-token windows; the "
-            f"intra kernel's tile grid is a compile-time count per arm.")
-    return _Prefill.apply(D, tuple(widths), tuple(modes), sread, swrite, state_in,
-                          g_write, v, *read_levels, *write_levels)

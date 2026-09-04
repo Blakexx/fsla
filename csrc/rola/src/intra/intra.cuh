@@ -31,15 +31,6 @@ void intra_forward(const at::Tensor& pread, const at::Tensor& pwrite, const at::
                    at::Tensor& o, at::Tensor& den, int64_t levels, int64_t width,
                    int64_t level_modes, int64_t window);
 
-// the reverse pass; see docs/internals/intra/intra.md#intrabackward
-void intra_backward(const at::Tensor& pread, const at::Tensor& pwrite, const at::Tensor& gwrite,
-                    const at::Tensor& v, const at::Tensor& dnum, const at::Tensor& dden,
-                    at::Tensor& d_pr, at::Tensor& d_pw, at::Tensor& d_gw, at::Tensor& d_v,
-                    int64_t levels, int64_t width, int64_t level_modes, int64_t window);
-
-std::vector<std::vector<int64_t>>
-intra_backward_arms();  // (levels, width, window, smem, regs, ...)
-int64_t intra_backward_stamp();
 std::vector<std::vector<int64_t>> intra_arms();  // the built (levels, width, window) arms
 int64_t intra_build_stamp();  // device-side build fact; see intra.md#intrabuildstamp
 
