@@ -288,13 +288,11 @@ the window's live count fits:
       bar.sync kFoldRound                                -- the rows are dead before the next batch's fill
 
 Two CTA crossings per batch and nothing else CTA-wide inside the phase; no position is
-reclaimed inside a batch, so nothing is tracked. THE FOLD'S GRAIN is a runtime dial,
-`CarryParams::fold_grain_bits`: a warp's box holds `leaves_per_warp / G` stream boxes and walks
-them in passes, each with its own liveness mask (`stream_masks`), its own list and its own
-n-tiles (`pool_deposit` skips the rest by a uniform predicate, so the accumulator's indices stay
-static). The measured default is the warp box -- one pass, the value fragments gathered once;
-a pass per page reaps at the single-digit tile but repeats the value gathers per pass and
-measured about twice the time on dense routing.
+reclaimed inside a batch, so nothing is tracked. THE FOLD'S GRAIN is a launch parameter that SELECTS A BODY, `CarryParams::fold_grain_bits`
+through `uniform_switch` at the phase's entry: a warp's box holds `leaves_per_warp / G` stream
+boxes and walks them as passes, and inside the chosen body the pass count, the n-tile range and
+the k-range are compile-time constants -- no MMA is predicated on the grain. The readout's grain
+(`readout_grain_bits`) selects its body the same way.
 
 <a id="pool"></a>
 ## The pool: filled by rank, gathered by index
@@ -410,7 +408,7 @@ side, and the product is then the compile budget's problem rather than the sched
 | 2 the problem (runtime, untuned) | `B_l`, the level modes, `N` | `CarryParams::g`, derived on the host by `derive_carry_geom` |
 | 2 the problem (runtime, untuned) | `BH`, `L` | the grid's `y`, `CarryParams::L` |
 | 3 runtime dials (the only tuned class) | the readout's form | `CarryParams::readout_form` |
-| 3 runtime dials | the readout's stream grain `G` | `CarryParams::readout_grain_bits`, as log2 leaves |
+| 3 runtime dials (each selects a compiled body at the phase's entry) | the two sides' stream grains `G` | `CarryParams::readout_grain_bits`, `fold_grain_bits`, as log2 leaves |
 | 3 runtime dials | the carve order | `CarryParams::g`, the side's `level_at` |
 | 3 runtime dials | the producer:consumer split | not yet consumed; it arrives with the rotation |
 | 5 derived quotients | `active_leaves` = `warps_per_cta * G`, live streams = `warps_per_cta`, the stream catalog = `leaves_per_warp / G` | the sparse bodies' loop bounds |

@@ -158,6 +158,10 @@ struct BoxPlan {
   static constexpr int kStreamGrainMin = kAtomLeaves;
   static constexpr int kStreamCatalog = kLeavesPerWarp / kStreamGrainMin;
   static constexpr int kSideStreams = kWarps * kStreamCatalog;
+  //: THE GRAIN SWITCH: a side's grain is a launch parameter selecting one of these bodies.
+  static constexpr int kGrainBitsMin = kAtomLeavesBits;
+  static constexpr int kGrainCases = kStreamCatalog == 1 ? 1 : (kStreamCatalog == 2 ? 2 : 3);
+  static_assert(kStreamCatalog <= 4, "the grain switch covers a catalog of up to four streams");
   static constexpr int kRounds = kWindow / 32;
 
   static constexpr int kPageSlotBytes = kAtoms * (int)sizeof(int);
