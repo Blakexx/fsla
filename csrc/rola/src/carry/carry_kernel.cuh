@@ -66,6 +66,10 @@ struct Smem {
     return reinterpret_cast<unsigned short*>(base + BP::kPoolTokenOffset);
   }
 
+  __device__ __forceinline__ ops::SmemAddr stage(int warp) const {
+    return ops::smem_addr(base + BP::kStageOffset + warp * BP::kStageBytes);
+  }
+
   __device__ __forceinline__ unsigned int* stream_words(int side, int stream) const {
     return reinterpret_cast<unsigned int*>(base + BP::kLiveOffset + side * BP::kLiveBytes
                                            + stream * BP::kRounds * 4);
@@ -883,10 +887,6 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
 
 // ------------------------------------------------------- the streams, both phases
 
-//: THE CHANNEL M-TILES the sparse readout carries between deposits: the direct scatter frees
-//: it from holding a whole [channels x tokens] partial.
-constexpr int kScatterTiles = 1;
-
 //: THE LIVE-TOKEN MASKS of one stream over one window, ONE PER LANE: the AND over levels of
 //: the OR over the run of digits the stream's leaf range covers there.
 //: -- see docs/internals/carry/carry_kernel.md#streams
@@ -945,107 +945,77 @@ __device__ __forceinline__ void readout_produce_range(const Smem<BP>& sm,
   });
 }
 
-//: A TILE'S SCATTER ROWS: one 64-bit address per (token, channel row) a lane deposits to,
-//: computed once per tile, addressed by the pool's token table through the stream's list;
-//: the dead row's is null. -- see docs/internals/carry/carry_kernel.md#readout-sparse
-template <class BP>
-__device__ __forceinline__ void readout_scatter_rows(const Smem<BP>& sm, const unsigned short* list,
-                                                     int taken, float* num, int lane, int t0,
-                                                     float* (&rows)[BP::kTokTiles][4]) {
-  const unsigned short* const ids = sm.pool_token();
-  rola::static_for<BP::kTokTiles>([&](auto Tc) {
-    constexpr int t = decltype(Tc)::value;
-    rola::static_for<4>([&](auto Ec) {
-      constexpr int e = decltype(Ec)::value;
-      const int rel = (int)
-          ids[list[(taken + t * ops::kMmaN + 2 * (lane & 3) + (e & 1)) & (BP::kListEntries - 1)]];
-      rows[t][e] = rel == kDeadToken
-                       ? nullptr
-                       : reinterpret_cast<float*>(ops::gather_ptr(
-                             num, (uint32_t)(t0 + rel) * (uint32_t)(BP::kDv * 4)
-                                      + (uint32_t)((8 * (e >> 1) + (lane >> 2)) * 4)));
-    });
-  });
-}
-
-//: SCATTER: the partial straight into the planes -- a compacted stream's token list is its
-//: own, so there is no panel -- the channel m-tiles at IMMEDIATE displacements off the row.
-template <class BP, int M0, int MN>
-__device__ __forceinline__ void readout_scatter(float* const (&rows)[BP::kTokTiles][4],
-                                                const float (&po)[MN][BP::kTokTiles][4]) {
-  rola::static_for<BP::kTokTiles>([&](auto Tc) {
-    constexpr int t = decltype(Tc)::value;
-    rola::static_for<4>([&](auto Ec) {
-      constexpr int e = decltype(Ec)::value;
-      rola::static_for<MN>([&](auto Mc) {
-        constexpr int m = decltype(Mc)::value;
-        ops::fan_in_add_if(rows[t][e] + (M0 + m) * ops::kMmaM, po[m][t][e], rows[t][e] != nullptr);
-      });
-    });
-  });
-}
-
-//: THE MASS COLUMN's own deposit: one cell per token, on the lane quad that holds it.
-template <class BP>
-__device__ __forceinline__ void readout_scatter_mass(const Smem<BP>& sm, const unsigned short* list,
-                                                     int taken, float* den, int lane, int t0,
-                                                     const float (&pm)[BP::kTokTiles][4]) {
-  if ((lane >> 2) != 0) return;
-  const unsigned short* const ids = sm.pool_token();
-  rola::static_for<BP::kTokTiles>([&](auto Tc) {
-    constexpr int t = decltype(Tc)::value;
-    rola::static_for<2>([&](auto Ec) {
-      constexpr int e = decltype(Ec)::value;
-      const int rel =
-          (int)ids[list[(taken + t * ops::kMmaN + 2 * (lane & 3) + e) & (BP::kListEntries - 1)]];
-      if (rel == kDeadToken) return;
-      ops::fan_in_add(reinterpret_cast<float*>(ops::gather_ptr(den, (uint32_t)(t0 + rel) * 4u)),
-                      pm[t][e]);
-    });
-  });
-}
-
-//: ONE TILE'S DEPOSIT: the partial a channel group at a time -- a direct deposit can be
-//: issued before the next group's MMAs -- then the mass column.
-//: -- see docs/internals/carry/carry_kernel.md#readout-sparse
+//: ONE TILE'S DEPOSIT, COALESCED THROUGH THE WARP'S STAGING TILE: the partial is produced a
+//: channel m-tile at a time and stored as fragment pairs `[channel][token]`; then each
+//: token's 64 channels leave as two reductions of 32 consecutive floats (four sectors an
+//: instruction, not thirty-two), the mass as one; a padded tile's dead tokens are skipped
+//: by a warp-uniform test. -- see docs/internals/carry/carry_kernel.md#readout-sparse
 template <class BP>
 __device__ __forceinline__ void readout_deposit_tile(
     const Smem<BP>& sm, const Transit<BP>& tr, const uint32_t (&rb)[BP::kDw][BP::kTokTiles][2],
-    const unsigned short* list, int taken, float* num, float* den, int lane, int k0, int ks,
-    int t0) {
-  float* rows[BP::kTokTiles][4];
-  readout_scatter_rows<BP>(sm, list, taken, num, lane, t0, rows);
-  rola::static_for<BP::kMassTile / kScatterTiles>([&](auto Gc) {
+    const unsigned short* list, int taken, float* num, float* den, int warp, int lane, int k0,
+    int ks, int t0) {
+  constexpr int kS = BP::kStageStride;
+  const ops::SmemAddr stage = sm.stage(warp);
+  const int q = lane & 3, r = lane >> 2;
+
+  rola::static_for<BP::kMassTile>([&](auto Gc) {
     constexpr int g = decltype(Gc)::value;
-    float po[kScatterTiles][BP::kTokTiles][4];
+    float po[BP::kTokTiles][4];
     rola::static_for<BP::kTokTiles>([&](auto Tc) {
       constexpr int t = decltype(Tc)::value;
-      rola::static_for<4>([&](auto Ec) {
-        constexpr int e = decltype(Ec)::value;
-        rola::static_for<kScatterTiles>([&](auto Mc) { po[decltype(Mc)::value][t][e] = 0.0f; });
-      });
+      rola::static_for<4>([&](auto Ec) { po[t][decltype(Ec)::value] = 0.0f; });
       rola::static_for<BP::kDw>([&](auto Kc) {
         constexpr int kk = decltype(Kc)::value;
         if (kk < k0 || kk >= k0 + ks) return;
-        rola::static_for<kScatterTiles>([&](auto Mc) {
-          constexpr int m = decltype(Mc)::value;
-          ops::mma(po[m][t], tr.sa[kk][g * kScatterTiles + m], rb[kk][t]);
-        });
+        ops::mma(po[t], tr.sa[kk][g], rb[kk][t]);
+      });
+      rola::static_for<2>([&](auto Hc) {
+        constexpr int h = decltype(Hc)::value;
+        const int c = g * ops::kMmaM + 8 * h + r;
+        ops::store_shared_f32x2(stage + (uint32_t)((c * kS + t * ops::kMmaN + 2 * q) * 4),
+                                po[t][2 * h], po[t][2 * h + 1]);
       });
     });
-    readout_scatter<BP, g * kScatterTiles, kScatterTiles>(rows, po);
   });
-  float pm[BP::kTokTiles][4];
-  rola::static_for<BP::kTokTiles>([&](auto Tc) {
-    constexpr int t = decltype(Tc)::value;
-    rola::static_for<4>([&](auto Ec) { pm[t][decltype(Ec)::value] = 0.0f; });
-    rola::static_for<BP::kDw>([&](auto Kc) {
-      constexpr int kk = decltype(Kc)::value;
-      if (kk < k0 || kk >= k0 + ks) return;
-      ops::mma(pm[t], tr.ma[kk], rb[kk][t]);
+  {
+    float pm[BP::kTokTiles][4];
+    rola::static_for<BP::kTokTiles>([&](auto Tc) {
+      constexpr int t = decltype(Tc)::value;
+      rola::static_for<4>([&](auto Ec) { pm[t][decltype(Ec)::value] = 0.0f; });
+      rola::static_for<BP::kDw>([&](auto Kc) {
+        constexpr int kk = decltype(Kc)::value;
+        if (kk < k0 || kk >= k0 + ks) return;
+        ops::mma(pm[t], tr.ma[kk], rb[kk][t]);
+      });
+      if (r == 0)
+        ops::store_shared_f32x2(stage + (uint32_t)((BP::kDv * kS + t * ops::kMmaN + 2 * q) * 4),
+                                pm[t][0], pm[t][1]);
+    });
+  }
+  __syncwarp();
+
+  const int tok =
+      (int)sm.pool_token()[list[(taken + (lane & (BP::kSeg - 1))) & (BP::kListEntries - 1)]];
+  rola::static_for<BP::kSeg>([&](auto Tc) {
+    constexpr int T = decltype(Tc)::value;
+    const int rel = ops::lane_broadcast(tok, T);
+    if (rel == kDeadToken) return;
+    float* const row = reinterpret_cast<float*>(ops::gather_ptr(
+        num, (uint32_t)(t0 + rel) * (uint32_t)(BP::kDv * 4) + (uint32_t)(lane * 4)));
+    rola::static_for<BP::kDv / 32>([&](auto Hc) {
+      constexpr int h = decltype(Hc)::value;
+      const float v =
+          __uint_as_float(ops::load_shared_u32(stage + (uint32_t)(((lane + 32 * h) * kS + T) * 4)));
+      ops::fan_in_add(row + 32 * h, v);
     });
   });
-  readout_scatter_mass<BP>(sm, list, taken, den, lane, t0, pm);
+
+  if (lane < BP::kSeg && tok != kDeadToken)
+    ops::fan_in_add(
+        reinterpret_cast<float*>(ops::gather_ptr(den, (uint32_t)(t0 + tok) * 4u)),
+        __uint_as_float(ops::load_shared_u32(stage + (uint32_t)((BP::kDv * kS + lane) * 4))));
+  __syncwarp();
 }
 
 //: ONE STREAM of a batch: its minted list, whole tiles, the tail padded to the dead row.
@@ -1053,8 +1023,8 @@ template <class BP, int D>
 __device__ __forceinline__ void readout_stream(const Smem<BP>& sm, const Transit<BP>& tr,
                                                const int (&rcin)[BP::kDw][2],
                                                const int (&rcout)[D][BP::kDw], float* num,
-                                               float* den, int lane, int stream, int count, int k0,
-                                               int ks, int t0) {
+                                               float* den, int warp, int lane, int stream,
+                                               int count, int k0, int ks, int t0) {
   unsigned short* const list = sm.pool_list(rola::facts::kRead, stream);
   const int whole = count & ~(BP::kSeg - 1);
   if (count > whole) pool_pad_tile<BP>(list, count, whole, lane);
@@ -1064,7 +1034,7 @@ __device__ __forceinline__ void readout_stream(const Smem<BP>& sm, const Transit
   for (int tile = 0; tile < tiles; ++tile) {
     uint32_t rb[BP::kDw][BP::kTokTiles][2];
     readout_produce_range<BP, D>(sm, list, tile * BP::kSeg, lane, rcin, rcout, rb, k0, ks);
-    readout_deposit_tile<BP>(sm, tr, rb, list, tile * BP::kSeg, num, den, lane, k0, ks, t0);
+    readout_deposit_tile<BP>(sm, tr, rb, list, tile * BP::kSeg, num, den, warp, lane, k0, ks, t0);
   }
   __syncwarp();
 }
@@ -1116,7 +1086,7 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
 #pragma unroll 1
     for (int pass = 0; pass < passes; ++pass) {
       const int s = warp * passes + pass;
-      readout_stream<BP, D>(sm, tr, rcin, rcout, num, den, lane, s,
+      readout_stream<BP, D>(sm, tr, rcin, rcout, num, den, warp, lane, s,
                             ops::lane_broadcast(send - sbase, s), pass * ks, ks, t0);
     }
     ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);

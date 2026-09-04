@@ -190,9 +190,17 @@ struct BoxPlan {
   static constexpr int kReadListOffset = kReadAmpOffset + (kPoolPos + 1) * kAmpRowBytes;
   static constexpr int kReadScratchOffset = kReadListOffset + kSideStreams * kListBytes;
   static constexpr int kPoolTokenOffset = kReadScratchOffset + kWarps * kFillScratchBytes;
-  static constexpr int kReadPoolBytes = kPoolTokenOffset + (kPoolPos + 1) * 2 - kRegionOffset;
+  //: THE STAGING TILE, one per warp: a tile's partial `[channel + mass][token]` fp32 at an
+  //: 18-float row stride (8-byte aligned pair stores, two-way at most on the column reads).
+  static constexpr int kStageStride = 18;
+  static constexpr int kStageBytes = ((kDv + 1) * kStageStride * 4 + 15) / 16 * 16;
+  static constexpr int kStageOffset = (kPoolTokenOffset + (kPoolPos + 1) * 2 + 15) / 16 * 16;
+  static constexpr int kReadPoolBytes = kStageOffset + kWarps * kStageBytes - kRegionOffset;
   static constexpr int kRegionTenantBytes =
-      ((kPoolBytes > kRegionBytes ? kPoolBytes : kRegionBytes) + 15) / 16 * 16;
+      ((kPoolBytes > kRegionBytes ? (kPoolBytes > kReadPoolBytes ? kPoolBytes : kReadPoolBytes)
+                                  : (kRegionBytes > kReadPoolBytes ? kRegionBytes : kReadPoolBytes))
+       + 15)
+      / 16 * 16;
   static constexpr int kReadBlockOffset = kRegionOffset + kRegionTenantBytes;
   static constexpr int kReadRawOffset = kReadBlockOffset;
   static constexpr int kPageSlotOffset = kReadBlockOffset + kReadBlockBytes;
@@ -200,7 +208,6 @@ struct BoxPlan {
   static constexpr int kLiveOffset = kClaimOffset + kClaimBytes;
   static constexpr int kSmemBytes = (kLiveOffset + 2 * kLiveBytes + 15) / 16 * 16;
 
-  static_assert(kReadPoolBytes <= kPoolBytes, "the read pool lies within the fold pool's bytes");
   static_assert(kPoolPos % 32 == 0 && kWindow % kPoolPos == 0,
                 "the pool holds whole rounds of thirty-two positions and the window is a whole "
                 "number of pools");

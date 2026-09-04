@@ -308,6 +308,11 @@ __device__ __forceinline__ void store_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("st.shared.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
 
+//: TWO fp32 AT ONCE, an 8-byte aligned pair. -- see docs/internals/common/ops.md#store-shared-f32x2
+__device__ __forceinline__ void store_shared_f32x2(SmemAddr a, float x, float y) {
+  asm volatile("st.shared.v2.f32 [%0], {%1,%2};" ::"r"(a), "f"(x), "f"(y) : "memory");
+}
+
 //: ONE CONTRIBUTION INTO A SHARED BITSET, FIRE AND FORGET -- `fan_in_add`'s -- see docs/internals/common/ops.md#or-shared-u32
 __device__ __forceinline__ void or_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("red.shared.or.b32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
@@ -350,14 +355,6 @@ __device__ __forceinline__ void store_f32(float* p, float v) { *p = v; }
 //: ONE CONTRIBUTION INTO A SHARED ACCUMULATOR, FIRE AND FORGET. -- see docs/internals/common/ops.md#fan-in-add
 __device__ __forceinline__ void fan_in_add(float* p, float x) {
   asm volatile("red.global.add.f32 [%0], %1;" ::"l"(p), "f"(x) : "memory");
-}
-
-//: THE SAME, PREDICATED: a dead contributor issues nothing and branches nowhere. -- see docs/internals/common/ops.md#fan-in-add
-__device__ __forceinline__ void fan_in_add_if(float* p, float x, bool live) {
-  asm volatile(
-      "{\n .reg .pred q;\n setp.ne.s32 q, %2, 0;\n @q red.global.add.f32 [%0], %1;\n}" ::"l"(p),
-      "f"(x), "r"((int)live)
-      : "memory");
 }
 
 //: The 16-byte quantum, synchronously. -- see docs/internals/common/ops.md#load-vec16
