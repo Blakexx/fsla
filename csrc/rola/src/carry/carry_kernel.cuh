@@ -682,10 +682,12 @@ __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
                                             const int (&scol)[D][BP::kNL], int stream, int lane,
                                             int taken) {
   constexpr int kSide = rola::facts::kWrite;
-  const unsigned short* const list = sm.pool_list(kSide, stream);
+  //: the tile's sixteen entries: a list is padded within its own bounds, so no wrap.
+  const unsigned short* const tile = sm.pool_list(kSide, stream) + taken;
   const int rowg = (lane & 7) + ((lane >> 4) & 1) * 8;
   const int colhalf = (lane >> 3) & 1;
-  const int slot = list[(taken + rowg) & (BP::kListEntries - 1)];
+  const int slot = tile[rowg];
+  const uint32_t vrow = (uint32_t)(slot * BP::kVRowBytes), s7 = (uint32_t)(slot & 7);
 
   rola::static_for<BP::kMCh>([&](auto Mc) {
     constexpr int mc = decltype(Mc)::value;
@@ -693,7 +695,7 @@ __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
       mass_frag<BP>(f.vf[mc], lane);
     } else {
       ops::load_frag_t(f.vf[mc],
-                       sm.pool_v() + (uint32_t)v_group_offset<BP>(slot, 2 * mc + colhalf));
+                       sm.pool_v() + vrow + ((((uint32_t)(2 * mc + colhalf)) ^ s7) * 16u));
     }
   });
 
@@ -721,8 +723,8 @@ __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
   int r0[2], r1[2];
   rola::static_for<2>([&](auto Hc) {
     constexpr int h = decltype(Hc)::value;
-    r0[h] = list[(taken + 2 * q + 8 * h) & (BP::kListEntries - 1)];
-    r1[h] = list[(taken + 2 * q + 1 + 8 * h) & (BP::kListEntries - 1)];
+    r0[h] = tile[2 * q + 8 * h];
+    r1[h] = tile[2 * q + 1 + 8 * h];
   });
   rola::static_for<D - 1>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
@@ -767,7 +769,7 @@ template <class BP>
 __device__ __forceinline__ void pool_pad_tile(unsigned short* list, int count, int taken,
                                               int lane) {
   const int i = count + lane;
-  if (i < taken + BP::kSeg) list[i & (BP::kListEntries - 1)] = (unsigned short)BP::kPoolPos;
+  if (i < taken + BP::kSeg) list[i] = (unsigned short)BP::kPoolPos;
 }
 
 //: ONE PASS of a batch: a stream's minted list, its whole tiles with each gather in front of
@@ -990,7 +992,7 @@ __device__ __forceinline__ void readout_tile(const Smem<BP>& sm, const Transit<B
 
   //: four tokens a group, the group's ids one 8-byte load at use: nothing is hoisted or held
   //: across the sixteen, so the deposit's live set is one group's.
-  const uint32_t lanebase = (uint32_t)t0 * (uint32_t)(BP::kDv * 4) + (uint32_t)(lane * 4);
+  float* const numl = num + (size_t)t0 * BP::kDv + lane;
   const auto rows = [&](auto Full) {
 #pragma unroll 1
     for (int g = 0; g < BP::kSeg / 4; ++g) {
@@ -1001,8 +1003,7 @@ __device__ __forceinline__ void readout_tile(const Smem<BP>& sm, const Transit<B
         if constexpr (!decltype(Full)::value)
           if (rel == kDeadToken) return;
         const int T = 4 * g + i;
-        float* const row = reinterpret_cast<float*>(
-            ops::gather_ptr(num, (uint32_t)rel * (uint32_t)(BP::kDv * 4) + lanebase));
+        float* const row = numl + (uint32_t)rel * (uint32_t)BP::kDv;
         rola::static_for<BP::kDv / 32>([&](auto Hc) {
           constexpr int h = decltype(Hc)::value;
           ops::fan_in_add(row + 32 * h, __uint_as_float(ops::load_shared_u32(
