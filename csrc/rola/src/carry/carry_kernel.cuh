@@ -946,7 +946,7 @@ __device__ __forceinline__ void readout_produce_range(const Smem<BP>& sm,
 }
 
 //: ONE TILE'S DEPOSIT, COALESCED THROUGH THE WARP'S STAGING TILE: the partial is produced a
-//: channel m-tile at a time and stored as fragment pairs `[channel][token]`; then each
+//: channel m-tile at a time and stored element-wise into `[token][channel]` rows; then each
 //: token's 64 channels leave as two reductions of 32 consecutive floats (four sectors an
 //: instruction, not thirty-two), the mass as one; a padded tile's dead tokens are skipped
 //: by a warp-uniform test. -- see docs/internals/carry/carry_kernel.md#readout-sparse
@@ -970,11 +970,11 @@ __device__ __forceinline__ void readout_deposit_tile(
         if (kk < k0 || kk >= k0 + ks) return;
         ops::mma(po[t], tr.sa[kk][g], rb[kk][t]);
       });
-      rola::static_for<2>([&](auto Hc) {
-        constexpr int h = decltype(Hc)::value;
-        const int c = g * ops::kMmaM + 8 * h + r;
-        ops::store_shared_f32x2(stage + (uint32_t)((c * kS + t * ops::kMmaN + 2 * q) * 4),
-                                po[t][2 * h], po[t][2 * h + 1]);
+      rola::static_for<4>([&](auto Ec) {
+        constexpr int e = decltype(Ec)::value;
+        const int c = g * ops::kMmaM + 8 * (e >> 1) + r;
+        const int tk = t * ops::kMmaN + 2 * q + (e & 1);
+        ops::store_shared_u32(stage + (uint32_t)((tk * kS + c) * 4), __float_as_uint(po[t][e]));
       });
     });
   });
@@ -989,8 +989,12 @@ __device__ __forceinline__ void readout_deposit_tile(
         ops::mma(pm[t], tr.ma[kk], rb[kk][t]);
       });
       if (r == 0)
-        ops::store_shared_f32x2(stage + (uint32_t)((BP::kDv * kS + t * ops::kMmaN + 2 * q) * 4),
-                                pm[t][0], pm[t][1]);
+        rola::static_for<2>([&](auto Ec) {
+          constexpr int e = decltype(Ec)::value;
+          ops::store_shared_u32(
+              stage + (uint32_t)(((t * ops::kMmaN + 2 * q + e) * kS + BP::kDv) * 4),
+              __float_as_uint(pm[t][e]));
+        });
     });
   }
   __syncwarp();
@@ -1006,7 +1010,7 @@ __device__ __forceinline__ void readout_deposit_tile(
     rola::static_for<BP::kDv / 32>([&](auto Hc) {
       constexpr int h = decltype(Hc)::value;
       const float v =
-          __uint_as_float(ops::load_shared_u32(stage + (uint32_t)(((lane + 32 * h) * kS + T) * 4)));
+          __uint_as_float(ops::load_shared_u32(stage + (uint32_t)((T * kS + lane + 32 * h) * 4)));
       ops::fan_in_add(row + 32 * h, v);
     });
   });
@@ -1014,7 +1018,7 @@ __device__ __forceinline__ void readout_deposit_tile(
   if (lane < BP::kSeg && tok != kDeadToken)
     ops::fan_in_add(
         reinterpret_cast<float*>(ops::gather_ptr(den, (uint32_t)(t0 + tok) * 4u)),
-        __uint_as_float(ops::load_shared_u32(stage + (uint32_t)((BP::kDv * kS + lane) * 4))));
+        __uint_as_float(ops::load_shared_u32(stage + (uint32_t)((lane * kS + BP::kDv) * 4))));
   __syncwarp();
 }
 

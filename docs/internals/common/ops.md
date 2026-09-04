@@ -682,9 +682,3 @@ destination. The fold's factor staging is what needs it — a level run is `span
 and only the flagship's is sixteen — and the zero fill is what makes a partial window
 arithmetic rather than a tail case: a token past the window's end lands zero amplitudes, and
 a zero amplitude is a zero coefficient.
-
-<a id="store-shared-f32x2"></a>
-## `store_shared_f32x2(a, x, y)` -- an fp32 pair to shared memory
-
-`st.shared.v2.f32` at an 8-byte aligned address: the readout's staging stores, where a C
-fragment register pair is two consecutive tokens at one channel.

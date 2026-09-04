@@ -109,8 +109,12 @@ enough — the slot being staged and the slot being expanded alternate.
 
 PHASE 2's rows, keyed by position, in the region's bytes (`kPoolVOffset`, `kPoolAmpOffset`,
 `kListOffset`); PHASE 1's sparse form lays its READ POOL in the same bytes (`kReadAmpOffset`,
-`kReadListOffset`, `kReadScratchOffset`, `kPoolTokenOffset`): amplitude rows only, at the
-same capacity, plus the slot -> window-token table the scatter addresses by. Capacity `kPoolPos` is `pool_positions` of the budget the other tenants leave:
+`kReadListOffset`, `kReadScratchOffset`, `kPoolTokenOffset`, `kStageOffset`): amplitude rows
+only, at the same capacity, the slot -> window-token table the deposit addresses by, and
+`warps_per_cta` STAGING TILES of `kSeg * kStageStride` fp32 (`kStageBytes`, 4,352 at the
+flagship: sixteen token rows of `DV + 4` floats, the pad making a fragment store's lanes land
+on distinct banks) through which a tile's partial is transposed for its coalesced reductions.
+The region tenant is the largest of the fold pool, the read pool and the region itself. Capacity `kPoolPos` is `pool_positions` of the budget the other tenants leave:
 the largest power of two whose rows, plus the dead row and the lists, fit -- 256 at the
 flagship arm on sm_86, where the pool outgrows the transit region and the region tenant is
 sized to it (`kRegionTenantBytes`). Per position: a value row, `kVRowBytes = DV * 2`, and an

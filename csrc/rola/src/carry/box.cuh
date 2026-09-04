@@ -185,17 +185,18 @@ struct BoxPlan {
   static constexpr int kListOffset = kPoolAmpOffset + (kPoolPos + 1) * kAmpRowBytes;
   static constexpr int kFillScratchOffset = kListOffset + kSideStreams * kListBytes;
   static constexpr int kPoolBytes = kFillScratchOffset + kWarps * kFillScratchBytes - kRegionOffset;
-  //: THE READ POOL, PHASE 1's tenant of the same bytes. -- smem_ledger.md#pool
   static constexpr int kReadAmpOffset = kRegionOffset;
   static constexpr int kReadListOffset = kReadAmpOffset + (kPoolPos + 1) * kAmpRowBytes;
   static constexpr int kReadScratchOffset = kReadListOffset + kSideStreams * kListBytes;
   static constexpr int kPoolTokenOffset = kReadScratchOffset + kWarps * kFillScratchBytes;
-  //: THE STAGING TILE, one per warp: a tile's partial `[channel + mass][token]` fp32 at an
-  //: 18-float row stride (8-byte aligned pair stores, two-way at most on the column reads).
-  static constexpr int kStageStride = 18;
-  static constexpr int kStageBytes = ((kDv + 1) * kStageStride * 4 + 15) / 16 * 16;
+  //: THE STAGING TILE, one per warp. -- smem_ledger.md#pool
+  static constexpr int kStageStride = kDv + 4;
+  static constexpr int kStageBytes = (kSeg * kStageStride * 4 + 15) / 16 * 16;
   static constexpr int kStageOffset = (kPoolTokenOffset + (kPoolPos + 1) * 2 + 15) / 16 * 16;
   static constexpr int kReadPoolBytes = kStageOffset + kWarps * kStageBytes - kRegionOffset;
+  static_assert(kStageStride % 16 == 4 && kDv % 32 == 0,
+                "the staging rows are DV + 4 floats: four rows apart is eight banks, so a "
+                "fragment store's eight channel rows by four token pairs cover every bank once");
   static constexpr int kRegionTenantBytes =
       ((kPoolBytes > kRegionBytes ? (kPoolBytes > kReadPoolBytes ? kPoolBytes : kReadPoolBytes)
                                   : (kRegionBytes > kReadPoolBytes ? kRegionBytes : kReadPoolBytes))

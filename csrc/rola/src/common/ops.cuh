@@ -308,11 +308,6 @@ __device__ __forceinline__ void store_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("st.shared.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
 
-//: TWO fp32 AT ONCE, an 8-byte aligned pair. -- see docs/internals/common/ops.md#store-shared-f32x2
-__device__ __forceinline__ void store_shared_f32x2(SmemAddr a, float x, float y) {
-  asm volatile("st.shared.v2.f32 [%0], {%1,%2};" ::"r"(a), "f"(x), "f"(y) : "memory");
-}
-
 //: ONE CONTRIBUTION INTO A SHARED BITSET, FIRE AND FORGET -- `fan_in_add`'s -- see docs/internals/common/ops.md#or-shared-u32
 __device__ __forceinline__ void or_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("red.shared.or.b32 [%0], %1;" ::"r"(a), "r"(v) : "memory");

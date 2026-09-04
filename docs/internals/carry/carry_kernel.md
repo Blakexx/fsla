@@ -532,10 +532,15 @@ pool rows (`readout_produce_range`), and deposits (`readout_deposit_tile`).
 THE FAN-IN CANNOT SURVIVE COMPACTION. The panel (`#fan-in`) sums `warps_per_cta` per-warp
 slices of one [token x channel] block and issues one contribution per owner box per token —
 which works only because every warp's slice is indexed by the SAME token. A compacted stream's
-token list is its own, so there is no common row to sum, and the sparse readout deposits
-directly: `red.global.add.f32` at `num[tokid[row]][channel]`, four tokens by eight consecutive
-channels per issue, four filled 32-byte sectors. The partial is carried a channel m-tile at a
-time rather than whole, because a direct deposit can be issued before the next group's MMAs.
+token list is its own, so there is no common row to sum, and the sparse readout deposits its
+own partial: THROUGH THE WARP'S STAGING TILE (`Smem::stage`, `[token][channel + mass]` fp32 at
+a `DV + 4` row stride, conflict free both ways), stored a channel m-tile at a time element by
+element, then read back a token row at a time so that each `red.global.add.f32` instruction
+covers one token's 32 consecutive channels -- four sectors, where the fragment-order deposit
+it replaced touched eight token rows at four channel pairs, ~32 sectors an instruction, and
+filled the LSU's global queue (the lg-throttle stall, 48% of the readout's samples). A padded
+tile's dead tokens are skipped by a warp-uniform test on the broadcast token, so no per-lane
+reduction is predicated.
 
 THE PRICE IS A DENSITY CROSSOVER, NOT A REGRESSION: one contribution per WARP per live token
 instead of one per BOX per token is `warps_per_cta * density` times the union's atomic traffic,
