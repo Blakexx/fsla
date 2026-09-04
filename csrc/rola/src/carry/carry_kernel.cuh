@@ -943,8 +943,8 @@ __device__ __forceinline__ void readout_produce_range(const Smem<BP>& sm,
 //: ONE TILE'S DEPOSIT, COALESCED THROUGH THE WARP'S STAGING TILE: the partial is produced a
 //: channel m-tile at a time and stored element-wise into `[token][channel]` rows; then each
 //: token's 64 channels leave as two reductions of 32 consecutive floats (four sectors an
-//: instruction, not thirty-two), the mass as one; a padded tile's dead tokens are skipped
-//: by a warp-uniform test. -- see docs/internals/carry/carry_kernel.md#readout-sparse
+//: instruction, not thirty-two), the mass as one; a padded tile's dead tokens deposit their
+//: exact zeros at the tile's first token. -- see docs/internals/carry/carry_kernel.md#readout-sparse
 template <class BP, int K0, int KS>
 __device__ __forceinline__ void readout_deposit_tile(
     const Smem<BP>& sm, const Transit<BP>& tr, const uint32_t (&rb)[BP::kDw][BP::kTokTiles][2],
@@ -995,10 +995,13 @@ __device__ __forceinline__ void readout_deposit_tile(
 
   const int tok =
       (int)sm.pool_token()[list[(taken + (lane & (BP::kSeg - 1))) & (BP::kListEntries - 1)]];
+  //: a dead token deposits its exact zeros at the tile's FIRST token (always live: the
+  //: padding is the tail), so no reduction is branched.
+  const int rel0 = ops::lane_broadcast(tok, 0);
   rola::static_for<BP::kSeg>([&](auto Tc) {
     constexpr int T = decltype(Tc)::value;
-    const int rel = ops::lane_broadcast(tok, T);
-    if (rel == kDeadToken) return;
+    const int relT = ops::lane_broadcast(tok, T);
+    const int rel = relT == kDeadToken ? rel0 : relT;
     float* const row = reinterpret_cast<float*>(ops::gather_ptr(
         num, (uint32_t)(t0 + rel) * (uint32_t)(BP::kDv * 4) + (uint32_t)(lane * 4)));
     rola::static_for<BP::kDv / 32>([&](auto Hc) {
@@ -1009,9 +1012,10 @@ __device__ __forceinline__ void readout_deposit_tile(
     });
   });
 
-  if (lane < BP::kSeg && tok != kDeadToken)
+  if (lane < BP::kSeg)
     ops::fan_in_add(
-        reinterpret_cast<float*>(ops::gather_ptr(den, (uint32_t)(t0 + tok) * 4u)),
+        reinterpret_cast<float*>(
+            ops::gather_ptr(den, (uint32_t)(t0 + (tok == kDeadToken ? rel0 : tok)) * 4u)),
         __uint_as_float(ops::load_shared_u32(stage + (uint32_t)((lane * kS + BP::kDv) * 4))));
   __syncwarp();
 }

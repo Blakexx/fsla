@@ -537,8 +537,8 @@ element, then read back a token row at a time so that each `red.global.add.f32` 
 covers one token's 32 consecutive channels -- four sectors, where the fragment-order deposit
 it replaced touched eight token rows at four channel pairs, ~32 sectors an instruction, and
 filled the LSU's global queue (the lg-throttle stall, 48% of the readout's samples). A padded
-tile's dead tokens are skipped by a warp-uniform test on the broadcast token, so no per-lane
-reduction is predicated.
+tile's dead tokens deposit their exact zeros (a zero coefficient row against a finite state)
+at the tile's first token, which is always live, so no reduction is predicated or branched.
 
 THE PRICE IS A DENSITY CROSSOVER, NOT A REGRESSION: one contribution per WARP per live token
 instead of one per BOX per token is `warps_per_cta * density` times the union's atomic traffic,
