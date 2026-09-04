@@ -921,7 +921,7 @@ __device__ __forceinline__ void readout_produce_range(const Smem<BP>& sm,
                                                       uint32_t (&rb)[BP::kDw][BP::kTokTiles][2]) {
   rola::static_for<BP::kTokTiles>([&](auto Tc) {
     constexpr int t = decltype(Tc)::value;
-    const int slot = list[(taken + t * ops::kMmaN + (lane >> 2)) & (BP::kListEntries - 1)];
+    const int slot = list[taken + t * ops::kMmaN + (lane >> 2)];
     const ops::SmemAddr row = sm.pool_amp(rola::facts::kRead, slot);
     rola::static_for<BP::kDw>([&](auto Kc) {
       constexpr int kk = decltype(Kc)::value;
@@ -997,16 +997,16 @@ __device__ __forceinline__ void readout_deposit_tile(
   //: lane `l & 15` holds token `l & 15`'s window-relative id. A FULL tile (every tile but
   //: a stream's last) deposits with no test at all; the tail tile skips its dead tokens by
   //: a warp-uniform test per token, so no zero is ever reduced anywhere.
-  const int tok =
-      (int)sm.pool_token()[list[(taken + (lane & (BP::kSeg - 1))) & (BP::kListEntries - 1)]];
+  const int tok = (int)sm.pool_token()[list[taken + (lane & (BP::kSeg - 1))]];
+  const uint32_t lanebase = (uint32_t)t0 * (uint32_t)(BP::kDv * 4) + (uint32_t)(lane * 4);
   const auto rows = [&](auto Full) {
     rola::static_for<BP::kSeg>([&](auto Tc) {
       constexpr int T = decltype(Tc)::value;
       const int rel = ops::lane_broadcast(tok, T);
       if constexpr (!decltype(Full)::value)
         if (rel == kDeadToken) return;
-      float* const row = reinterpret_cast<float*>(ops::gather_ptr(
-          num, (uint32_t)(t0 + rel) * (uint32_t)(BP::kDv * 4) + (uint32_t)(lane * 4)));
+      float* const row = reinterpret_cast<float*>(
+          ops::gather_ptr(num, (uint32_t)rel * (uint32_t)(BP::kDv * 4) + lanebase));
       rola::static_for<BP::kDv / 32>([&](auto Hc) {
         constexpr int h = decltype(Hc)::value;
         const float v =
