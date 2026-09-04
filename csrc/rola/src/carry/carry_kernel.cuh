@@ -855,6 +855,10 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
   const int total = ops::lane_broadcast(prefix, nRounds - 1);
   prefix -= __popc(cta);
 
+  //: A WINDOW WITH NOTHING LIVE touches the pool not at all; the pool aliases the transit
+  //: region, so no warp fills until every warp has rejoined its halves out of it.
+  if (total == 0) return;
+  ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
   if (warp == 0) pool_zero_dead_row<BP, kSide>(sm, lane);
 
 #pragma unroll 1
@@ -1078,6 +1082,11 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
   const int total = ops::lane_broadcast(prefix, nRounds - 1);
   prefix -= __popc(cta);
 
+  //: A WINDOW WITH NOTHING LIVE touches the pool not at all: the pool aliases the transit
+  //: region, and with no batch there is no batch edge to order a dead-row write against the
+  //: other warps' store-back. And no warp fills until every warp has pulled its transit rows.
+  if (total == 0) return;
+  ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
   if (warp == 0) pool_zero_dead_row<BP, kSide>(sm, lane);
 
 #pragma unroll 1
