@@ -123,6 +123,18 @@
      "backing": "dense", "state": "fresh", "tier": "probe"},
     {"name": "flagship-alt-k4-w4", "widths": [256, 256], "dv": 64, "tokens": 1024,
      "warps_per_cta": 4, "draw": "alt", "k_tok": 4, "cohort": null, "support": 1.0,
+     "backing": "dense", "state": "fresh", "tier": "probe"},
+    {"name": "nl16k-dense", "widths": [128, 128], "dv": 64, "tokens": 16384,
+     "warps_per_cta": 8, "draw": "dense", "k_tok": null, "cohort": null, "support": 1.0,
+     "backing": "dense", "state": "fresh", "tier": "probe"},
+    {"name": "nl16k-alt-k4", "widths": [128, 128], "dv": 64, "tokens": 16384,
+     "warps_per_cta": 8, "draw": "alt", "k_tok": 4, "cohort": null, "support": 1.0,
+     "backing": "dense", "state": "fresh", "tier": "probe"},
+    {"name": "nl64k-dense", "widths": [256, 256], "dv": 64, "tokens": 65536,
+     "warps_per_cta": 8, "draw": "dense", "k_tok": null, "cohort": null, "support": 1.0,
+     "backing": "dense", "state": "fresh", "tier": "probe"},
+    {"name": "nl64k-alt-k4", "widths": [256, 256], "dv": 64, "tokens": 65536,
+     "warps_per_cta": 8, "draw": "alt", "k_tok": 4, "cohort": null, "support": 1.0,
      "backing": "dense", "state": "fresh", "tier": "probe"}
-  ]
+]
 }
