@@ -314,6 +314,28 @@ __device__ __forceinline__ void store_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("st.shared.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
 
+//: TWO fp32 AT ONCE, an 8-byte aligned pair. -- see docs/internals/common/ops.md#store-shared-f32x2
+__device__ __forceinline__ void store_shared_f32x2(SmemAddr a, float x, float y) {
+  asm volatile("st.shared.v2.f32 [%0], {%1,%2};" ::"r"(a), "f"(x), "f"(y) : "memory");
+}
+
+//: ONE 8-BYTE WORD PAIR from shared memory. -- see docs/internals/common/ops.md#load-shared-v4
+__device__ __forceinline__ uint2 load_shared_u64(SmemAddr a) {
+  uint2 v;
+  asm volatile("ld.shared.v2.u32 {%0,%1}, [%2];" : "=r"(v.x), "=r"(v.y) : "r"(a) : "memory");
+  return v;
+}
+
+//: ONE 16-BYTE QUANTUM from shared memory. -- see docs/internals/common/ops.md#load-shared-v4
+__device__ __forceinline__ uint4 load_shared_v4(SmemAddr a) {
+  uint4 v;
+  asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+               : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
+               : "r"(a)
+               : "memory");
+  return v;
+}
+
 //: ONE CONTRIBUTION INTO A SHARED BITSET, FIRE AND FORGET -- `fan_in_add`'s -- see docs/internals/common/ops.md#or-shared-u32
 __device__ __forceinline__ void or_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("red.shared.or.b32 [%0], %1;" ::"r"(a), "r"(v) : "memory");

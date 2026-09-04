@@ -690,3 +690,15 @@ a zero amplitude is a zero coefficient.
 warp edges; `__syncwarp()` at a site the compiler cannot prove convergent (after a uniform
 early return, a lane-predicated deposit) is lowered to a CALL into `__cuda_sm70_warpsync`,
 a subroutine inside the tile loop. Stating the instruction keeps the edge a single WARPSYNC.
+
+<a id="store-shared-f32x2"></a>
+## `store_shared_f32x2(a, x, y)` -- an fp32 pair to shared memory
+
+`st.shared.v2.f32` at an 8-byte aligned address: the readout's staging stores, where a C
+fragment register pair is two consecutive channels of one token.
+
+<a id="load-shared-v4"></a>
+## `load_shared_v4(a)` -- one 16-byte quantum from shared memory
+
+`ld.shared.v4.u32` at a 16-byte aligned address: the readout reads a tile's sixteen token ids
+as two of these, every lane the same address (a broadcast, conflict free).

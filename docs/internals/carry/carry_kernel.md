@@ -521,11 +521,21 @@ phase's only CTA crossings, and there are no counters.
 ## PHASE 1, the sparse form
 
 The same streams against the accumulator instead of into it. The read pool carries NO value
-row (the A operand is the transit's registers) and no re-layout of its rows (the read side's
-B fragment pairs two adjacent LEAVES, which the plane stores adjacent), so it is the amplitude
-rows alone plus `pool_token`, the slot's window-relative TOKEN ID the scatter is addressed by.
-A stream's tile takes its sixteen positions from its list, the B fragments straight off the
-pool rows (`readout_produce_range`), and deposits (`readout_deposit_tile`).
+row (the A operand is the coefficient) and no re-layout of its rows: a tile's sixteen
+positions' amplitude rows ARE the `[token][leaf]` A operand, gathered by `ldmatrix` as they
+lie (`readout_tile`), each row scaled by its token's head digits. The state's fragments,
+pulled once per window, are the B operand -- the same leaf-pair-at-a-channel elements the
+pull loads, read as B -- so the MMA is C[token][channel]: one per (k-step, channel n-tile)
+and one for the mass column. THE DEPOSIT goes through the warp's staging tile
+(`Smem::stage`, `[token][channel + mass]` fp32 at a `DV + 4` row stride, plus a row of the
+tile's token ids): the C fragment's channel pairs as sixteen 64-bit stores a lane, then each
+token's row as two reductions of 32 consecutive floats -- four sectors an instruction, which
+is what the LSU's global queue admits (the fragment-order deposit it replaced, ~32 sectors an
+instruction, filled that queue; the fragment-direct deposit of the reoriented tile, 8 sectors,
+half filled it). Four tokens a group, the ids one 8-byte load at use, so the deposit's live set
+is one group's. A FULL tile deposits untested; the tail tile skips its dead tokens by a
+warp-uniform test per token (a zero reduced into a live row still costs that row's atomic
+serialization). The lists are padded within their own bounds, so no index wraps.
 
 THE FAN-IN CANNOT SURVIVE COMPACTION. The panel (`#fan-in`) sums `warps_per_cta` per-warp
 slices of one [token x channel] block and issues one contribution per owner box per token —
