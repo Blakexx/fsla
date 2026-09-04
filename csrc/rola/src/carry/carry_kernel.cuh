@@ -939,52 +939,59 @@ __device__ __forceinline__ void readout_tile(const Smem<BP>& sm, const Transit<B
   const ops::SmemAddr rowA = sm.pool_amp(kSide, slotA);
   const ops::SmemAddr row0 = sm.pool_amp(kSide, slot0), row1 = sm.pool_amp(kSide, slot1);
 
-  float c[kNCh][4], cm[4];
-  rola::static_for<kNCh>([&](auto Jc) {
-    rola::static_for<4>([&](auto Ec) { c[decltype(Jc)::value][decltype(Ec)::value] = 0.0f; });
-  });
-  rola::static_for<4>([&](auto Ec) { cm[decltype(Ec)::value] = 0.0f; });
+  //: THE A FRAGMENTS FOR THE PASS'S K-STEPS, gathered and head-scaled once (four registers a
+  //: k-step); then n-tile by n-tile over them, so one n-tile's four accumulators are live at
+  //: a time and its pair goes to the staging row the moment its last k-step lands.
+  uint32_t a[BP::kDw][4];
   rola::static_for<BP::kDw>([&](auto Kc) {
     constexpr int kk = decltype(Kc)::value;
     if constexpr (kk < K0 || kk >= K0 + KS) return;
-    uint32_t a[4];
-    ops::load_frag(a, rowA + (uint32_t)(rcin[kk] * 2));
+    ops::load_frag(a[kk], rowA + (uint32_t)(rcin[kk] * 2));
     rola::static_for<D - 1>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
       const uint32_t h0 =
           ops::splat_bf16x2_bits(ops::load_shared_u16(row0 + (uint32_t)(rcout[l][kk] * 2)));
       const uint32_t h1 =
           ops::splat_bf16x2_bits(ops::load_shared_u16(row1 + (uint32_t)(rcout[l][kk] * 2)));
-      a[0] = ops::mul_bf16x2(a[0], h0);
-      a[2] = ops::mul_bf16x2(a[2], h0);
-      a[1] = ops::mul_bf16x2(a[1], h1);
-      a[3] = ops::mul_bf16x2(a[3], h1);
+      a[kk][0] = ops::mul_bf16x2(a[kk][0], h0);
+      a[kk][2] = ops::mul_bf16x2(a[kk][2], h0);
+      a[kk][1] = ops::mul_bf16x2(a[kk][1], h1);
+      a[kk][3] = ops::mul_bf16x2(a[kk][3], h1);
     });
-    rola::static_for<kNCh>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      const uint32_t b[2] = {tr.sa[kk][j >> 1][j & 1], tr.sa[kk][j >> 1][(j & 1) + 2]};
-      ops::mma(c[j], a, b);
-    });
-    const uint32_t bm[2] = {tr.ma[kk][0], tr.ma[kk][2]};
-    ops::mma(cm, a, bm);
   });
-
-  //: THE DEPOSIT, through the warp's staging tile: the fragment's channel pairs as 64-bit
-  //: stores into `[token][channel]` rows (sixteen a lane), the tile's token ids into the
-  //: seventeenth row; then each token's row leaves as two reductions of 32 consecutive
-  //: floats -- four sectors an instruction, which is what the LSU's global queue admits.
   constexpr int kS = BP::kStageStride;
   const ops::SmemAddr stage = sm.stage(warp);
   rola::static_for<kNCh>([&](auto Jc) {
     constexpr int j = decltype(Jc)::value;
+    float c[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    rola::static_for<BP::kDw>([&](auto Kc) {
+      constexpr int kk = decltype(Kc)::value;
+      if constexpr (kk < K0 || kk >= K0 + KS) return;
+      const uint32_t b[2] = {tr.sa[kk][j >> 1][j & 1], tr.sa[kk][j >> 1][(j & 1) + 2]};
+      ops::mma(c, a[kk], b);
+    });
     const uint32_t col = (uint32_t)((j * ops::kMmaN + 2 * q) * 4);
-    ops::store_shared_f32x2(stage + (uint32_t)(r * kS * 4) + col, c[j][0], c[j][1]);
-    ops::store_shared_f32x2(stage + (uint32_t)((r + 8) * kS * 4) + col, c[j][2], c[j][3]);
+    ops::store_shared_f32x2(stage + (uint32_t)(r * kS * 4) + col, c[0], c[1]);
+    ops::store_shared_f32x2(stage + (uint32_t)((r + 8) * kS * 4) + col, c[2], c[3]);
   });
-  if (q == 0) {
-    ops::store_shared_u32(stage + (uint32_t)((r * kS + BP::kDv) * 4), __float_as_uint(cm[0]));
-    ops::store_shared_u32(stage + (uint32_t)(((r + 8) * kS + BP::kDv) * 4), __float_as_uint(cm[2]));
+  {
+    float cm[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    rola::static_for<BP::kDw>([&](auto Kc) {
+      constexpr int kk = decltype(Kc)::value;
+      if constexpr (kk < K0 || kk >= K0 + KS) return;
+      const uint32_t bm[2] = {tr.ma[kk][0], tr.ma[kk][2]};
+      ops::mma(cm, a[kk], bm);
+    });
+    if (q == 0) {
+      ops::store_shared_u32(stage + (uint32_t)((r * kS + BP::kDv) * 4), __float_as_uint(cm[0]));
+      ops::store_shared_u32(stage + (uint32_t)(((r + 8) * kS + BP::kDv) * 4),
+                            __float_as_uint(cm[2]));
+    }
   }
+
+  //: THE DEPOSIT: the tile's token ids into the seventeenth row; then each token's row leaves
+  //: as two reductions of 32 consecutive floats -- four sectors an instruction, which is what
+  //: the LSU's global queue admits.
   if (lane < BP::kSeg)
     ops::store_shared_u16(stage + (uint32_t)(BP::kSeg * kS * 4 + lane * 2),
                           (uint16_t)sm.pool_token()[list[taken + lane]]);
