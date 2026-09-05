@@ -683,6 +683,14 @@ and only the flagship's is sixteen — and the zero fill is what makes a partial
 arithmetic rather than a tail case: a token past the window's end lands zero amplitudes, and
 a zero amplitude is a zero coefficient.
 
+<a id="uniform-warp"></a>
+## `uniform_warp`
+
+The warp's index as a value ptxas knows to be warp-uniform: three ballots on the thread
+index's bits (`popc(ballot(bit)) >> 5`), because `threadIdx.x >> 5` is a per-thread value
+to its analysis and a loop bounded by anything derived from one is a divergent loop, after
+which every shuffle is fenced and outlined (`carry/carry_kernel.md#uniform`).
+
 <a id="warp-sync"></a>
 ## `warp_sync()` -- the warp's edge as one instruction
 

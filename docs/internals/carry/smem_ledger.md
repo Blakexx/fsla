@@ -13,13 +13,14 @@ an allocation would move the residency the whole design is built on.
 | offset | tenant | bytes | owner |
 |---|---|---|---|
 | 0 | the transit region, `BC * LdX * 2` -- and, sharing its bytes in PHASE 2 only, THE POOL: `(kPoolPos + 1) * (kVRowBytes + kAmpRowBytes)` rows plus `kSideStreams * kListBytes` of lists and the fill scratches | 36,864 (region) / 62,160 (pool) | the exchange between the two sides' carves; PHASE 2's rows |
-| 36,864 | THE READ POOL, behind the region: `(kReadPos + 1)` amplitude rows, the fill scratches, the slot -> token table | 11,104 | PHASE 1's fill |
-| 47,968 | THE STAGING TILES, one a warp: `(kSeg + 1) * kStageStride * 4` | 8 x 4,896 | PHASE 1's write-out |
-| 87,136 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
+| 36,864 | THE READ POOL, behind the region: `(kReadPos + 1)` amplitude rows, the fill scratches, the slot -> token table | 21,600 | PHASE 1's fill |
+| 58,464 | THE STAGING TILES, one a warp: `(kSeg + 1) * kStageStride * 4` | 8 x 2,720 | PHASE 1's write-out |
+| 80,224 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
 | after the page slots | THE LIVE WORDS, per side: each stream's word per round, `kSideStreams * kRounds * 4`, and its exclusive prefix, `kSideStreams * kRounds * 2` (`kLiveBytes` each) | 2 x 1,536 | cover slot A writes the read side's, cover slot B the write side's; each fill walks its own once |
 | after the live words | THE READ MEMO: per k-step of the box, each lane's region row (`kKb * 32 * 4`), the mass lanes' four rows (`kKb * 64`) and the amplitude columns (`kKb * kMemoColStride * 2`) | 3,200 | the prologue derives it once; every readout stream reads its k-steps' entries |
 | after the memo | THE GAIN TABLE, the window's write-side gains by window token, `kWindow * 2` | 1,024 | cover slot B copies it; the fold's fill reads it |
-| | **total** (16-byte aligned, the flagship arm on sm_86) | **94,464** | |
+| after the gain table | THE UNIFORM TABLES, per side: the union's word and exclusive prefix per round, each stream's count before the batch and before its end (`kUniformWords`) | 2 x 256 | every warp writes them alike; every loop bound reads them (`carry_kernel.md#uniform`) |
+| | **total** (16-byte aligned, the flagship arm on sm_86) | **88,064** | |
 
 The tenant at offset 0 is the larger of the region and PHASE 2's pool; the read pool and
 the staging tiles follow it because the region is READ through the whole of PHASE 1
@@ -55,8 +56,8 @@ of a stream's positions fall in it. The ledger is sized at the FINEST grain the
 nesting law admits (`G = 16`, the page rectangle: `kSideStreams` streams per side); a coarser
 runtime `G` uses fewer of the same lists.
 
-The page slots, the live words, the read memo and the gain table are PERSISTENT: they are
-alive from the prologue to the exit and are never re-let.
+The page slots, the live words, the read memo, the gain table and the uniform tables are
+PERSISTENT: they are alive from the prologue to the exit and are never re-let.
 
 <a id="memo"></a>
 The READ MEMO (`carry_kernel.md#memo`) is three tables by k-step of the box: `memo_rows(K)`,
@@ -81,13 +82,14 @@ allocation nobody sized. None is allocated today.
 PHASE 2's rows, keyed by position, in the region's bytes (`kPoolVOffset`, `kPoolAmpOffset`,
 `kListOffset`, and one gain halfword a position at `kPoolGainOffset`). PHASE 1's READ POOL lies BEHIND the region (`kReadAmpOffset`,
 `kReadScratchOffset`, `kPoolTokenOffset`, `kStageOffset`), because the region is read through
-the phase: amplitude rows only, in batches of `kReadPos = warps_per_cta * kSeg` positions
-(one slice a warp, 128 at the flagship), the slot -> window-token table the write-out
-addresses by, and `warps_per_cta` STAGING TILES of `(kSeg + 1) * kStageStride` fp32
-(`kStageBytes`, 4,896 at the flagship: sixteen position rows of `DV + 8` floats -- the
-channels, the mass, and the pad that keeps a fragment's 64-bit pair stores bank free and a
-row contiguous -- plus a row holding two sets of the slice's token ids, by batch parity)
-through which a slice's rows are transposed for their one-line reductions.
+the phase: amplitude rows only, in batches of `kReadPos = kSlices * warps_per_cta * kSeg`
+positions (two slices a warp, 256 at the flagship), the slot -> window-token table the
+write-out addresses by, and `warps_per_cta` STAGING TILES of `(kSeg + 1) * kStageStride`
+fp32 (`kStageBytes`, 2,720 at the flagship: sixteen position rows of `32 + 8` floats -- one
+32-channel segment of one slice at a time, a mass column a slice, and the pad that keeps a
+fragment's 64-bit pair stores bank free and a row contiguous -- plus a row holding the
+slices' token ids by (slice, batch parity)) through which a slice's rows are transposed, a
+segment at a time, for their one-line reductions.
 The region tenant is the largest of the fold pool and the region with the read tenants behind it (`kRegionTenantBytes`). Capacity `kPoolPos` is `pool_positions` of the budget the other tenants leave:
 the largest power of two whose rows, plus the dead row and the lists, fit -- 256 at the
 flagship arm on sm_86, where the pool outgrows the transit region and the region tenant is

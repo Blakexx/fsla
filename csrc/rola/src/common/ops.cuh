@@ -146,6 +146,19 @@ __device__ __forceinline__ uint32_t lane_ballot(bool pred) {
   return __ballot_sync(0xFFFFFFFFu, pred);
 }
 
+//: THE WARP'S INDEX AS A WARP-UNIFORM VALUE. -- see docs/internals/common/ops.md#uniform-warp
+template <int Warps>
+__device__ __forceinline__ int uniform_warp() {
+  static_assert(Warps > 0 && (Warps & (Warps - 1)) == 0, "a CTA is a power of two of warps");
+  constexpr int kBits = Warps == 1 ? 0 : (Warps == 2 ? 1 : (Warps == 4 ? 2 : 3));
+  static_assert(Warps == (1 << kBits), "a CTA is one, two, four or eight warps");
+  int w = 0;
+#pragma unroll
+  for (int b = 0; b < kBits; ++b)
+    w |= (__popc(__ballot_sync(0xFFFFFFFFu, ((threadIdx.x >> (5 + b)) & 1u) != 0u)) >> 5) << b;
+  return w;
+}
+
 //: THE LANES BEFORE THIS ONE, as the hardware's own register rather than a value the body
 //: would have to carry: `__popc(vote & lanes_below())` is a lane's RANK among the voters.
 __device__ __forceinline__ uint32_t lanes_below() {

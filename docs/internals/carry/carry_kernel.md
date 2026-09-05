@@ -36,11 +36,26 @@ staged as their segments complete in the batch's last live stream and drained un
 MMAs that follow -- the next segment's, then the next batch's first stream's -- so the
 reductions to the planes never appear as a burst (`#readout`).
 
+<a id="uniform"></a>
+## What the compiler must see as warp-uniform
+
+ptxas fences a shuffle or ballot with a warp-sync, and outlines the pair, wherever it cannot
+prove the warp converged; a loop whose bound it cannot prove uniform is such a place, and
+everything after it inherits the doubt. Two values it does not trust: a shuffled value
+(`lane_broadcast` is a per-lane register to it), and `threadIdx.x >> 5`. So the body keeps
+its loop bounds and fill parameters in the UNIFORM TABLES (`Smem::union_words`,
+`union_prefix`, `stream_base`, `stream_end`; `kUniformOffset`), written by every warp alike
+and read at one shared address, which it does trust; takes its warp index from
+`ops::uniform_warp` (three ballots on the thread index's bits); and writes its lane-conditional
+loops (`union_word`, `stream_masks`) as uniform loops with the lane's part in a predicate.
+
 <a id="edges"></a>
 ## The three edges, and why there are exactly three
 
 `Edge::kOutLeg`, `Edge::kReturnLeg`, `Edge::kWindowLine`. Each is a NAMED BARRIER id, and
-each is crossed AFTER its cover slot: a unit publishes its own contribution, runs work that
+each is crossed AFTER its cover slot. A WARP'S OWN EDGE is a named barrier too (`warp_edge`,
+id `kWarpEdge + warp` over its thirty-two lanes): one instruction, where `bar.warp.sync`
+became a subroutine call under the size cliff (`#forms`). Each frame edge is crossed after its cover slot: a unit publishes its own contribution, runs work that
 depends on nobody, and only then arrives at the barrier it needs the others to have reached.
 
 The split the frame wants cannot be had from a named barrier with EQUAL PARTICIPATION — a
@@ -147,16 +162,22 @@ that rather than carrying sixteen zero registers through PHASE 1.
 `num[t][c] += sum over leaves of Rcoef[t][leaf] . S[leaf][c]` against the state the window
 ENTERED with, and `den[t] += sum over leaves of Rcoef[t][leaf] . mass[leaf]`. The read pool
 (`#pool`, the read tenant) holds the window's live positions' amplitude rows by rank, in
-batches of `kReadPos = warps_per_cta * kSeg` positions; a warp OWNS the sixteen consecutive
-positions `[16w, 16w + 16)` of every batch -- its SLICE -- and every channel of their rows,
-held in its MMA accumulator (`kMassTile * 2` channel n-tiles and the mass, 36 registers)
-for the whole batch. The stream is the loop variable:
+batches of `kReadPos = kSlices * warps_per_cta * kSeg` positions (256 at the flagship); a
+warp OWNS `kSlices` runs of sixteen consecutive positions of every batch -- its SLICES,
+`[16w, 16w + 16)` and `[128 + 16w, 128 + 16w + 16)` -- and every channel of their rows, each
+slice in its own MMA accumulator (`kMassTile * 2` channel n-tiles and the mass, 36
+registers) for the whole batch. Two slices a warp halves the batch edges and lets one load
+of a stream's state rows serve both. CONSECUTIVE positions are the slice by measurement
+(journal §29): on structured routing consecutive tokens share their live streams, so a
+consecutive slice lies in one cohort and is live for its streams alone, where a slice
+spread across the batch is live for every cohort's. The stream is the loop variable:
 
 ```
 for each batch:
   fill (cp.async amplitude rows, the token table)  ->  stage_wait  ->  edge
-  per warp: the streams live in its slice (stream_count_before at the slice's two ranks)
-  for each live stream s:                                   one uniform skip per dead one
+  per warp: the streams live in each slice (stream_count_before at the slice's two ranks)
+  for each stream s live in either slice, its liveness pattern a COMPILED CASE of the body
+    (a predicated-off MMA still holds the tensor pipe for its cycles: journal §30)
     A  = the slice's coefficients for s, gathered ONCE      ldmatrix per inner block, digits per k-step
     for each channel m-tile m, for each k-step i of s:
       B  = the region's rows at s's leaves, m-tile m         ldmatrix.trans, one m-tile ahead
@@ -377,14 +398,18 @@ per batch, `16 / kPoolPos` of the batch's positions.
 
 
 <a id="forms"></a>
-## One readout body, and where its switch sits
+## One readout body, and where its grain sits
 
 The readout has ONE body (`#readout`); what the launch picks is its STREAM GRAIN, and the
-grain is a body switch (`uniform_switch<kGrainCases>`) that sits at its phase: inside the
-window loop, outside the batch loop that the in-kernel-switch ruling calls the hot loop --
-one uniform branch per window, each case with its k-step count, stream count and pass
-structure as compile-time facts. The fold's pass grain is the same kind of switch. The one-stream point of the family (the grain at the warp sub-box) is what the bench's
-`box` schedule name selects.
+grain is a TEMPLATE AXIS OF THE KERNEL SYMBOL (`carry_kernel<D, DV, W, GR, GW>`), the launch
+selecting the instantiation whose two grains the schedule names (`carry_launch`). It was a
+uniform switch inside the symbol until measured: a symbol holding two bodies a phase crossed
+ptxas's size cliff (about 13,600 instructions against the 7,000-11,000 of one), past which
+every shuffle and ballot is fenced with a warp-sync and outlined into a shared subroutine
+whose calling convention holds forty registers -- 255 with spill for a 217-register live
+peak. One symbol a grain pair keeps every body under the cliff; the four symbols build in
+under a minute. The one-stream point of the family (the grain at the warp sub-box) is what
+the bench's `box` schedule name selects.
 
 The two per-side MEMBER switches are different: they fix the addressing every stage on that
 side uses, so they sit in the prologue, outside every loop, nested. That nesting is

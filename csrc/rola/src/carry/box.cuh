@@ -127,7 +127,7 @@ struct BoxPlan {
   static constexpr int kStreamGrainMin = kAtomLeaves;
   static constexpr int kStreamCatalog = kLeavesPerWarp / kStreamGrainMin;
   static constexpr int kSideStreams = kWarps * kStreamCatalog;
-  //: THE GRAIN SWITCH: a side's grain is a launch parameter selecting one of these bodies.
+  //: THE GRAIN CASES: a side's grain selects a kernel symbol. -- carry_kernel.md#forms
   static constexpr int kGrainBitsMin = kAtomLeavesBits;
   static constexpr int kGrainCases = kStreamCatalog == 1 ? 1 : (kStreamCatalog == 2 ? 2 : 3);
   static_assert(kStreamCatalog <= 4, "the grain switch covers a catalog of up to four streams");
@@ -159,17 +159,21 @@ struct BoxPlan {
   static constexpr int kPoolBytes = kPoolGainOffset + (kPoolPos + 1) * 2 - kRegionOffset;
 
   //: THE READ POOL AND THE STAGING TILES, behind the region. -- see smem_ledger.md#pool
-  static constexpr int kReadPos = kWarps * kSeg;
+  //: THE SLICES a warp owns of a batch. -- see docs/internals/carry/carry_kernel.md#readout
+  static constexpr int kSlices = 2;
+  static constexpr int kReadPos = kSlices * kWarps * kSeg;
   static constexpr int kReadAmpOffset = kRegionOffset + kRegionBytes;
   static constexpr int kReadScratchOffset = kReadAmpOffset + (kReadPos + 1) * kAmpRowBytes;
   static constexpr int kPoolTokenOffset = kReadScratchOffset + kWarps * kFillScratchBytes;
-  static constexpr int kStageStride = kDv + 8;
+  //: THE STAGING TILE: one segment of one slice at a time. -- smem_ledger.md#pool
+  static constexpr int kStageStride = 32 + 8;
   static constexpr int kStageBytes = ((kSeg + 1) * kStageStride * 4 + 15) / 16 * 16;
   static constexpr int kStageOffset = (kPoolTokenOffset + (kReadPos + 1) * 2 + 15) / 16 * 16;
   static constexpr int kReadPoolBytes = kStageOffset + kWarps * kStageBytes - kRegionOffset;
-  static_assert(kStageStride % 32 == 8 && kSeg * 4 <= kStageStride * 4,
-                "a staging row is the channels, the mass and the pad that makes the fragment "
-                "pair's stores bank free; the two id sets fit a row");
+  static_assert(kStageStride % 32 == 8 && kSlices * 2 * kSeg * 2 <= kStageStride * 4
+                    && 32 + kSlices <= kStageStride,
+                "a staging row is one segment, a mass column a slice and the pad that makes the "
+                "fragment pair's stores bank free; the id sets fit a row");
   static_assert(kReadPos % 32 == 0 && kWindow % kReadPos == 0,
                 "the read batch holds whole rounds of thirty-two positions and the window is a "
                 "whole number of batches");
@@ -182,19 +186,19 @@ struct BoxPlan {
       / 16 * 16;
   static constexpr int kPageSlotOffset = kRegionOffset + kRegionTenantBytes;
   static constexpr int kLiveOffset = kPageSlotOffset + kPageSlotBytes;
-  //: THE READ MEMO: per k-step of the box, each lane's region row for the B fragment, the
-  //: mass rows of the four lanes that hold them, and the amplitude columns -- derived once
-  //: per launch, read per stream. -- see docs/internals/carry/smem_ledger.md#memo
+  //: THE READ MEMO, by k-step of the box. -- see docs/internals/carry/smem_ledger.md#memo
   static constexpr int kKb = kBC / denseref::ops::kMmaK;
   static constexpr int kMemoRowsOffset = (kLiveOffset + 2 * kLiveBytes + 15) / 16 * 16;
   static constexpr int kMemoMassOffset = kMemoRowsOffset + kKb * 32 * 4;
   static constexpr int kMemoColOffset = kMemoMassOffset + kKb * 4 * 4 * 4;
   static constexpr int kMemoColStride = 2 + (D - 1);
   static constexpr int kMemoBytes = kMemoColOffset + kKb * kMemoColStride * 2 - kMemoRowsOffset;
-  //: THE WINDOW'S GAIN TABLE, `kWindow` bf16 by window token, copied at cover slot B and
-  //: read by the fold's fill; persistent, so it is not a region tenant.
+  //: THE WINDOW'S GAIN TABLE, persistent. -- see docs/internals/carry/smem_ledger.md#pool
   static constexpr int kGainTableOffset = (kMemoRowsOffset + kMemoBytes + 15) / 16 * 16;
-  static constexpr int kSmemBytes = (kGainTableOffset + kWindow * 2 + 15) / 16 * 16;
+  //: THE UNIFORM TABLES, per side. -- see docs/internals/carry/carry_kernel.md#uniform
+  static constexpr int kUniformWords = 2 * kRounds + 2 * kSideStreams;
+  static constexpr int kUniformOffset = (kGainTableOffset + kWindow * 2 + 15) / 16 * 16;
+  static constexpr int kSmemBytes = (kUniformOffset + 2 * kUniformWords * 4 + 15) / 16 * 16;
 
   static_assert(kPoolPos % 32 == 0 && kWindow % kPoolPos == 0,
                 "the pool holds whole rounds of thirty-two positions and the window is a whole "
@@ -224,5 +228,12 @@ enum class StreamEdge : int { kReadBatch = 3 };
 //: THE FRAME'S EDGES, named -- barrier ids of the same kind, disjoint from the streams'.
 //: -- see docs/internals/carry/carry_kernel.md#edges
 enum class Edge : int { kWindowLine = 4, kOutLeg = 5, kReturnLeg = 6, kFoldRound = 7 };
+
+//: A WARP'S OWN EDGE, a named barrier. -- see docs/internals/carry/carry_kernel.md#edges
+constexpr int kWarpEdge = 8;
+
+__device__ __forceinline__ void warp_edge(int warp) {
+  denseref::ops::rendezvous_group(kWarpEdge + warp, 32);
+}
 
 }  // namespace rola::carry
