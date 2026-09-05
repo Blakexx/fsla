@@ -709,29 +709,60 @@ __device__ __forceinline__ uint32_t stream_masks(const CarryParams& p, const Sid
   const int32_t* const words =
       p.liveness + ((long)bh * rola::facts::kSides + side) * ((long)p.g.wtot * p.liveness_words)
       + (t0 >> 5) + (lane < nWords ? lane : 0);
-  uint32_t m = lane < nWords ? 0xFFFFFFFFu : 0u;
+  //: EVERY LEVEL'S RUN IN ONE TRIP: each run's words are loaded sixteen at a time, in two
+  //: eight-blocks under one uniform branch (a short run predicates its first block), and
+  //: no run is OR-ed until every run's loads are out -- the walk waits once, not once a
+  //: block. The rows are L2 hits at every length measured; the wait is their latency.
+  int count[D];
+  const int32_t* row[D];
   rola::static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
     const int room = gbits - sg.sub_shift[l];
-    const int count = 1 << (room <= 0 ? 0 : (room < sg.sub_bits[l] ? room : sg.sub_bits[l]));
+    count[l] = 1 << (room <= 0 ? 0 : (room < sg.sub_bits[l] ? room : sg.sub_bits[l]));
     const int digit = (local >> owner_run_shift(D, BC, l)) & (owner_span(D, BC, l) - 1);
-    const int32_t* row = words + (long)(abase[l] + digit) * p.liveness_words;
-    //: the run's words eight at a time, independent loads in flight together; the loop is
-    //: warp-uniform, a lane past the window's words reading word 0 and keeping nothing.
-    uint32_t o = 0u;
-    int i = 0;
-#pragma unroll 1
-    for (; i + 8 <= count; i += 8, row += 8 * p.liveness_words) {
-      uint32_t v[8];
-      rola::static_for<8>([&](auto Jc) {
-        v[decltype(Jc)::value] = (uint32_t)row[decltype(Jc)::value * p.liveness_words];
-      });
-      rola::static_for<8>([&](auto Jc) { o |= v[decltype(Jc)::value]; });
-    }
-#pragma unroll 1
-    for (; i < count; ++i, row += p.liveness_words) o |= (uint32_t)*row;
-    m &= lane < nWords ? o : 0u;
+    row[l] = words + (long)(abase[l] + digit) * p.liveness_words;
   });
+  uint32_t o[D];
+  rola::static_for<D>([&](auto Lc) { o[decltype(Lc)::value] = 0u; });
+
+  int left[D];
+  rola::static_for<D>([&](auto Lc) { left[decltype(Lc)::value] = count[decltype(Lc)::value]; });
+  bool more = true;
+  const long stride = p.liveness_words;
+#pragma unroll 1
+  while (more) {
+    more = false;
+    uint32_t v[D][16];
+    rola::static_for<D>([&](auto Lc) {
+      constexpr int l = decltype(Lc)::value;
+      //: one pointer stepped a row at a time: one add a load, the stride never multiplied.
+      const int32_t* q = row[l];
+      rola::static_for<8>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        v[l][j] = j < left[l] ? (uint32_t)*q : 0u;
+        q += stride;
+      });
+      if (left[l] > 8) {
+        rola::static_for<8>([&](auto Jc) {
+          v[l][8 + decltype(Jc)::value] = (uint32_t)*q;
+          q += stride;
+        });
+      } else {
+        rola::static_for<8>([&](auto Jc) { v[l][8 + decltype(Jc)::value] = 0u; });
+      }
+      row[l] = q;
+      more |= left[l] > 16;
+      left[l] -= 16;
+    });
+
+    rola::static_for<D>([&](auto Lc) {
+      constexpr int l = decltype(Lc)::value;
+      rola::static_for<16>([&](auto Jc) { o[l] |= v[l][decltype(Jc)::value]; });
+    });
+  }
+
+  uint32_t m = lane < nWords ? 0xFFFFFFFFu : 0u;
+  rola::static_for<D>([&](auto Lc) { m &= o[decltype(Lc)::value]; });
   return m;
 }
 

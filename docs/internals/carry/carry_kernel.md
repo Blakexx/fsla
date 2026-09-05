@@ -478,8 +478,14 @@ Flagship arm, sm_86, `tools/probe_cells.py` against the shipped body at the same
 * THE BATCH EDGE shows on the sparse cells (12% barrier in the readout at alt-k4): a slice's
   live streams differ across warps, and the batch line waits for the longest. That is the
   position carve's imbalance, and it is the one cost the list form did not have.
-* THE COVER-WORD WALK reads a level's run of words eight at a time; what remains of it is
-  the prologue's share of the sparse cells (11% at alt-k4).
+* THE COVER-WORD WALK (`stream_masks`) issues every level's run of words in ONE TRIP --
+  sixteen a run under a uniform branch, a short run predicating its first eight, one
+  stepped pointer a run so a load costs one add -- and ORs nothing until every load is out.
+  Measured 2026-09-04 with cycle counters: the rows are L2 hits at every length (a trip
+  of eight is ~450 cycles with eight warps walking), the walk was four trips and ~2,000
+  cycles a side per window, and forms that collapsed the trips but multiplied the address
+  instructions or spilled gave the saving back. At one trip the sparse cells gain 3-5%
+  and dense 1-2%, at 1K and 64K alike.
 
 <a id="streams"></a>
 ## The sparse form: streams keyed on leaf ranges
