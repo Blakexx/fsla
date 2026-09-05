@@ -405,16 +405,16 @@ def test_the_two_forms_agree_where_there_is_nothing_to_reap():
     assert float((d_u - d_s).abs().max()) <= dfloor
 
 
-def test_the_selection_rule_reads_the_level_modes():
-    """NON-VACUITY for the launch's own choice: a call whose read levels are all DENSE cannot
-    reap, so the rule must pick the union readout; declaring a read level sparse must move
-    it, and declaring only a WRITE level sparse must not."""
+def test_the_selection_rule_picks_the_box_at_every_mode():
+    """The launch's own choice: the warp sub-box on both sides whatever the level modes
+    declare (measured 2026-09-04: the box grain wins at every cell); the reaping bound stays
+    a fact the rule can quote."""
     spec = by_name(BYTE_GATE_CELL)
     desc = spec.descriptor()
     box = carry_ops.leaves_per_warp(desc.DV)
-    assert carry_ops.select_schedule(desc, 0).readout_grain == box
-    assert carry_ops.select_schedule(desc, carry_ops.SIDE_SPARSE[0]).readout_grain is None
-    assert carry_ops.select_schedule(desc, carry_ops.SIDE_SPARSE[1]).readout_grain == box
+    for modes in (0, carry_ops.SIDE_SPARSE[0], carry_ops.SIDE_SPARSE[1]):
+        picked = carry_ops.select_schedule(desc, modes)
+        assert (picked.readout_grain, picked.fold_grain) == (box, box)
     #: the reaping bound is the product of the read side's DENSE levels' widths.
     import math
     assert carry_ops.reaping_bound(desc, 0) == math.prod(desc.B)

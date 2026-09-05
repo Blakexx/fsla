@@ -402,8 +402,7 @@ side, and the product is then the compile budget's problem rather than the sched
 | 2 the problem (runtime, untuned) | `BH`, `L` | the grid's `y`, `CarryParams::L` |
 | 3 runtime dials (each selects a compiled body at the phase's entry) | the two sides' stream grains `G` | `CarryParams::readout_grain_bits`, `fold_grain_bits`, as log2 leaves |
 | 3 runtime dials | the carve order | `CarryParams::g`, the side's `level_at` |
-| 3 runtime dials | the producer:consumer split | not yet consumed; it arrives with the rotation |
-| 5 derived quotients | `active_leaves` = `warps_per_cta * G`, live streams = `warps_per_cta`, the stream catalog = `leaves_per_warp / G` | the sparse bodies' loop bounds |
+| 5 derived quotients | the stream count `warps_per_cta * (leaves_per_warp / G)`, the k-steps a stream `G / 16`, the passes a warp `leaves_per_warp / G` | the bodies' compile-time loop bounds, per grain case |
 | 4 arch-deterministic | `M`, `N_mma`, `K` | `common/ops.cuh` |
 | 4 arch-deterministic | `warps_per_sm`, the launch table, the cluster size, the state's share of the register file | `common/geom.cuh`, `common/constants.cuh` |
 | 4 arch-deterministic | `W`, `kSeg`, the segment slot count | `common/constants.cuh` |

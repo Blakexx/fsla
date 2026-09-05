@@ -176,19 +176,18 @@ def reaping_bound(descriptor: StateFormat, level_modes: int) -> int:
 
 
 def select_schedule(descriptor: StateFormat, level_modes: int = 0) -> CarrySchedule:
-    """THE SELECTION RULE, structural half: a read side with no SPARSE level cannot reap.
+    """THE SELECTION RULE: both sides at the warp sub-box, one stream a warp.
 
-    Saturation fixes ``active_leaves`` (an arch mapping, not a dial a caller sees) and the
-    level structure fixes the rest: a side that declares no sparse level runs at the warp
-    sub-box, one stream a warp, because every (token, stream) pair on it is live by
-    declaration and a finer stream would pay multiplicity for nothing; a side that declares
-    one runs at the reaping bound. The DENSITY half of the rule -- the calibrated crossover
-    at which the reap beats the multiplicity and the segment's fixed cost -- is MEASURED, not
-    tuned here, and a caller that has measured it names the schedule outright.
+    Measured 2026-09-04 on the position-carved readout and the pool fold: the box grain beats
+    the page grain at every cell, dense and sparse, by 3-8% on the read side and more on the
+    fold, because a finer stream gathers its slice's coefficients once more per stream for a
+    reap the box grain already takes per (stream, slice). A caller that has measured a cell
+    where a finer grain wins names the schedule outright; ``level_modes`` is accepted so the
+    rule keeps the seam a density-dependent rule would need.
     """
-    sparse = any((level_modes >> (2 * level)) & SIDE_SPARSE[0]
-                 for level in range(descriptor.D))
-    return CarrySchedule(readout_grain=None if sparse else leaves_per_warp(descriptor.DV))
+    del level_modes
+    box = leaves_per_warp(descriptor.DV)
+    return CarrySchedule(readout_grain=box, fold_grain=box)
 
 
 @dataclass(frozen=True, slots=True)
