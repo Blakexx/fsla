@@ -346,6 +346,13 @@ class-1 table's row base -- copied at the widest `cp.async` quantum the stride a
 (`pool_copy_position`). Both sides' pools share this shape; the write side's pool carries
 the gain beside the rows, one halfword a position.
 
+The fill's cost is its instruction work, not the copies' latency: each position is a
+dependent chain of scratch read, token arithmetic and 64-bit address forms in front of its
+`cp.async`, and the round's owner warp runs two steps of four positions an iteration so
+two chains are in flight together. Measured 2026-09-04 (the coordinator's pool journal,
+section 33): the copies' wait is about a percent of the kernel, and a pool ring that hides
+it under the passes loses to its own edges in every form tried.
+
 <a id="memo"></a>
 ## The read memo
 

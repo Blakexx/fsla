@@ -384,15 +384,18 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
   if ((live >> lane) & 1u) scratch[__popc(live & ops::lanes_below())] = (unsigned short)lane;
   warp_edge(warp);
   const int g = lane >> 3, sub = lane & 7;
+  //: two steps an iteration, their address chains in flight together.
 #pragma unroll 1
-  for (int s = 0; s < n; s += 4) {
-    const int idx = s + g;
-    if (idx < n) {
-      const int slot = prefix + idx - base;
-      if (slot >= 0 && slot < pool_positions_of<BP, Side>())
-        pool_copy_position<BP, D, Side>(p, sm, abase, sub, bh,
-                                        t0 + round * kRoundTokens + (int)scratch[idx], slot);
-    }
+  for (int s = 0; s < n; s += 8) {
+    rola::static_for<2>([&](auto Hc) {
+      const int idx = s + decltype(Hc)::value * 4 + g;
+      if (idx < n) {
+        const int slot = prefix + idx - base;
+        if (slot >= 0 && slot < pool_positions_of<BP, Side>())
+          pool_copy_position<BP, D, Side>(p, sm, abase, sub, bh,
+                                          t0 + round * kRoundTokens + (int)scratch[idx], slot);
+      }
+    });
   }
   const uint32_t below = ops::lanes_below();
   const int rank = prefix + __popc(live & below) - base;
@@ -403,7 +406,7 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
     if (in) sm.pool_gain()[rank] = sm.gain_table()[round * kRoundTokens + lane];
   }
   if constexpr (Side == rola::facts::kWrite) {
-#pragma unroll 1
+#pragma unroll 4
     for (int s = 0; s < nStreams; ++s) {
       const uint32_t w = sm.stream_words(Side, s)[round];
       const int at =
