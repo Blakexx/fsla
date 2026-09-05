@@ -345,15 +345,16 @@ __device__ __forceinline__ void pool_copy_position(const CarryParams& p, const S
                                                    int slot) {
   constexpr bool kW = Side == rola::facts::kWrite;
   constexpr int kGroups = BP::kDv / 8;
-  static_assert(kGroups == 8, "a value row is eight sixteen-byte quanta, one per lane of eight");
+  static_assert(kGroups <= 8, "a value row is at most eight sixteen-byte quanta, one a lane");
   const __nv_bfloat16* const plane_p = kW ? p.pwrite : p.pread;
   const uint32_t plane = (uint32_t)bh * (uint32_t)p.L * (uint32_t)p.g.wtot * 2u;
   const uint32_t row = plane + (uint32_t)tok * (uint32_t)p.g.wtot * 2u;
   if constexpr (kW) {
     const uint32_t off = ((uint32_t)bh * (uint32_t)p.L + (uint32_t)tok) * (uint32_t)BP::kDv * 2u
                          + (uint32_t)(sub * 16);
-    ops::stage_tile(sm.pool_v() + (uint32_t)v_group_offset<BP>(slot, sub),
-                    ops::gather_ptr(p.v, off));
+    if (sub < kGroups)
+      ops::stage_tile(sm.pool_v() + (uint32_t)v_group_offset<BP>(slot, sub),
+                      ops::gather_ptr(p.v, off));
   }
   rola::static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
@@ -448,7 +449,8 @@ __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
   const int rowg = (lane & 7) + ((lane >> 4) & 1) * 8;
   const int colhalf = (lane >> 3) & 1;
   const int slot = tile[rowg];
-  const uint32_t vrow = (uint32_t)(slot * BP::kVRowBytes), s7 = (uint32_t)(slot & 7);
+  constexpr int kGroups = BP::kDv / 8;
+  const uint32_t vrow = (uint32_t)(slot * BP::kVRowBytes), s7 = (uint32_t)(slot & (kGroups - 1));
 
   rola::static_for<BP::kMCh>([&](auto Mc) {
     constexpr int mc = decltype(Mc)::value;
@@ -1046,14 +1048,15 @@ __device__ __forceinline__ void last_stream(const Smem<BP>& sm, int s, int warp,
   constexpr int kKs = (1 << GB) / ops::kMmaK;
   constexpr int kSpanIn = owner_span(D, BC, D - 1) / ops::kMmaK;
   constexpr int kBlocks = kKs < kSpanIn ? kKs : kSpanIn;
-  static_assert(BP::kSlices == 2, "the last stream is written for two slices");
   const int K0 = (s / kPasses) * BP::kDw + (s % kPasses) * kKs;
   StreamOperands<BP, D, kKs, kBlocks> o;
   stream_operands<BP, D, kKs, kBlocks>(sm, K0, lane, o);
-  last_stream_slice<BP, D, BC, GB, 0, Full0, (Lives & 1u) != 0u>(sm, warp, count, seen, parity, o,
-                                                                 c[0], cm[0], stage, numl, lane);
-  last_stream_slice<BP, D, BC, GB, 1, Full1, (Lives & 2u) != 0u>(sm, warp, count, seen, parity, o,
-                                                                 c[1], cm[1], stage, numl, lane);
+  rola::static_for<BP::kSlices>([&](auto Sc) {
+    constexpr int sl = decltype(Sc)::value;
+    constexpr bool kFull = sl == 0 ? Full0 : Full1;
+    last_stream_slice<BP, D, BC, GB, sl, kFull, ((Lives >> sl) & 1u) != 0u>(
+        sm, warp, count, seen, parity, o, c[sl], cm[sl], stage, numl, lane);
+  });
 }
 
 //: PHASE 1: the read pool -- the window's live positions' amplitude rows, by rank, in
@@ -1103,6 +1106,7 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
     const int parity = (base / BP::kReadPos) & 1;
     uint32_t live[BP::kSlices];
     bool full[BP::kSlices];
+    static_assert(BP::kSlices == 1 || BP::kSlices == 2, "a warp owns one or two slices");
     rola::static_for<BP::kSlices>([&](auto Sc) {
       constexpr int sl = decltype(Sc)::value;
       const int c0 = stream_count_before<BP>(sm, kSide, cta, prefix, total, nRounds, kStreams, lane,
@@ -1118,8 +1122,9 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
       }
     });
     warp_edge(warp);
-    const uint32_t any = live[0] | live[1];
-    const uint32_t seen = (live[0] != 0u ? 1u : 0u) | (live[1] != 0u ? 2u : 0u);
+    const uint32_t any = BP::kSlices == 2 ? live[0] | live[BP::kSlices - 1] : live[0];
+    const uint32_t seen =
+        (live[0] != 0u ? 1u : 0u) | (BP::kSlices == 2 && live[BP::kSlices - 1] != 0u ? 2u : 0u);
     //: the batch before's pending segment and masses, out before this batch's streams.
     if (pend != 0u) {
       drain_pending<BP, true>(stage, numl, den, pend, parity ^ 1, t0, lane);
@@ -1142,7 +1147,8 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
 #pragma unroll 1
       for (int s = first; s < last; ++s) {
         if (((any >> s) & 1u) == 0u) continue;
-        const uint32_t lives = ((live[0] >> s) & 1u) | (((live[1] >> s) & 1u) << 1);
+        const uint32_t lives = ((live[0] >> s) & 1u)
+                               | (BP::kSlices == 2 ? ((live[BP::kSlices - 1] >> s) & 1u) << 1 : 0u);
         if (lives == 3u)
           slice_stream<BP, D, BC, GB, 3u>(sm, s, warp, count, c, cm, lane);
         else if (lives == 1u)
@@ -1151,7 +1157,9 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
           slice_stream<BP, D, BC, GB, 2u>(sm, s, warp, count, c, cm, lane);
       }
       {
-        const uint32_t lives = ((live[0] >> last) & 1u) | (((live[1] >> last) & 1u) << 1);
+        const uint32_t lives =
+            ((live[0] >> last) & 1u)
+            | (BP::kSlices == 2 ? ((live[BP::kSlices - 1] >> last) & 1u) << 1 : 0u);
         //: the last stream by its slices' fullness and liveness, each a compiled body.
         const auto run = [&](auto Fc) {
           constexpr int F = decltype(Fc)::value;
@@ -1166,7 +1174,7 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
             last_stream<BP, D, BC, GB, F0, F1, 2u>(sm, last, warp, count, seen, parity, c, cm,
                                                    stage, numl, lane);
         };
-        if (full[1])
+        if (BP::kSlices == 2 && full[BP::kSlices - 1])
           run(std::integral_constant<int, 2>{});
         else if (full[0])
           run(std::integral_constant<int, 1>{});

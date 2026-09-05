@@ -141,9 +141,16 @@ struct BoxPlan {
   static constexpr int kLiveBytes = kStreamWordBytes + kStreamPrefixBytes;
   static constexpr int kFillScratchBytes = 32 * 2;
 
+  //: THE PERSISTENT TENANTS' BYTES, which the pools' budget is the file less: the page
+  //: slots, the live words, the read memo, the gain table, the uniform tables.
+  static constexpr int kKb = kBC / denseref::ops::kMmaK;
+  static constexpr int kMemoColStride = 2 + (D - 1);
+  static constexpr int kMemoBytes = kKb * 32 * 4 + kKb * 4 * 4 * 4 + kKb * kMemoColStride * 2;
+  static constexpr int kUniformWords = 2 * kRounds + 2 * kSideStreams;
+  static constexpr int kPersistentBytes =
+      kPageSlotBytes + 2 * kLiveBytes + kMemoBytes + kWindow * 2 + 2 * kUniformWords * 4 + 5 * 16;
   //: the pool aliases the region and may outgrow it. -- see docs/internals/carry/smem_ledger.md#region
-  static constexpr int kPoolBudget =
-      denseref::arch::kCaps.smem_per_cta_max - (kPageSlotBytes + 2 * kLiveBytes + 64);
+  static constexpr int kPoolBudget = denseref::arch::kCaps.smem_per_cta_max - kPersistentBytes;
   static constexpr int kPoolPos =
       pool_positions(kPoolBudget, kVRowBytes + kAmpRowBytes,
                      kSideStreams* kWindow * 2 + kWarps * kFillScratchBytes, kWindow);
@@ -159,17 +166,26 @@ struct BoxPlan {
   static constexpr int kPoolBytes = kPoolGainOffset + (kPoolPos + 1) * 2 - kRegionOffset;
 
   //: THE READ POOL AND THE STAGING TILES, behind the region. -- see smem_ledger.md#pool
-  //: THE SLICES a warp owns of a batch. -- see docs/internals/carry/carry_kernel.md#readout
-  static constexpr int kSlices = 2;
+  //: THE STAGING TILE: one segment of one slice at a time. -- smem_ledger.md#pool
+  static constexpr int kStageStride = 32 + 8;
+  static constexpr int kStageBytes = ((kSeg + 1) * kStageStride * 4 + 15) / 16 * 16;
+
+  //: THE SLICES a warp owns of a batch: two where the region, the read pool and the staging
+  //: tiles fit the budget at two, else one. -- see docs/internals/carry/carry_kernel.md#readout
+  static constexpr int read_pool_bytes(int slices) {
+    const int pos = slices * kWarps * kSeg;
+    const int tok = kRegionBytes + (pos + 1) * kAmpRowBytes + kWarps * kFillScratchBytes;
+    return (tok + (pos + 1) * 2 + 15) / 16 * 16 + kWarps * kStageBytes;
+  }
+
+  static constexpr int kSlices = read_pool_bytes(2) <= kPoolBudget ? 2 : 1;
   static constexpr int kReadPos = kSlices * kWarps * kSeg;
   static constexpr int kReadAmpOffset = kRegionOffset + kRegionBytes;
   static constexpr int kReadScratchOffset = kReadAmpOffset + (kReadPos + 1) * kAmpRowBytes;
   static constexpr int kPoolTokenOffset = kReadScratchOffset + kWarps * kFillScratchBytes;
-  //: THE STAGING TILE: one segment of one slice at a time. -- smem_ledger.md#pool
-  static constexpr int kStageStride = 32 + 8;
-  static constexpr int kStageBytes = ((kSeg + 1) * kStageStride * 4 + 15) / 16 * 16;
   static constexpr int kStageOffset = (kPoolTokenOffset + (kReadPos + 1) * 2 + 15) / 16 * 16;
   static constexpr int kReadPoolBytes = kStageOffset + kWarps * kStageBytes - kRegionOffset;
+  static_assert(kReadPoolBytes == read_pool_bytes(kSlices), "the ledger and its estimate agree");
   static_assert(kStageStride % 32 == 8 && kSlices * 2 * kSeg * 2 <= kStageStride * 4
                     && 32 + kSlices <= kStageStride,
                 "a staging row is one segment, a mass column a slice and the pad that makes the "
@@ -187,16 +203,14 @@ struct BoxPlan {
   static constexpr int kPageSlotOffset = kRegionOffset + kRegionTenantBytes;
   static constexpr int kLiveOffset = kPageSlotOffset + kPageSlotBytes;
   //: THE READ MEMO, by k-step of the box. -- see docs/internals/carry/smem_ledger.md#memo
-  static constexpr int kKb = kBC / denseref::ops::kMmaK;
   static constexpr int kMemoRowsOffset = (kLiveOffset + 2 * kLiveBytes + 15) / 16 * 16;
   static constexpr int kMemoMassOffset = kMemoRowsOffset + kKb * 32 * 4;
   static constexpr int kMemoColOffset = kMemoMassOffset + kKb * 4 * 4 * 4;
-  static constexpr int kMemoColStride = 2 + (D - 1);
-  static constexpr int kMemoBytes = kMemoColOffset + kKb * kMemoColStride * 2 - kMemoRowsOffset;
+  static_assert(kMemoColOffset + kKb * kMemoColStride * 2 - kMemoRowsOffset == kMemoBytes,
+                "the memo's tables are its bytes");
   //: THE WINDOW'S GAIN TABLE, persistent. -- see docs/internals/carry/smem_ledger.md#pool
   static constexpr int kGainTableOffset = (kMemoRowsOffset + kMemoBytes + 15) / 16 * 16;
   //: THE UNIFORM TABLES, per side. -- see docs/internals/carry/carry_kernel.md#uniform
-  static constexpr int kUniformWords = 2 * kRounds + 2 * kSideStreams;
   static constexpr int kUniformOffset = (kGainTableOffset + kWindow * 2 + 15) / 16 * 16;
   static constexpr int kSmemBytes = (kUniformOffset + 2 * kUniformWords * 4 + 15) / 16 * 16;
 
