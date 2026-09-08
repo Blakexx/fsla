@@ -35,7 +35,7 @@ from benchmarks.cells import by_name, carry_call, carry_cells, realize
 from rola.ops import carry as carry_ops
 from rola.ops.paging import bytes_equal
 from tests.oracle import reference
-from tests.oracle.fixtures import canonical_from_plane, relative
+from tests.oracle.fixtures import canonical_from_plane, relative, relative_per_token
 from tests.oracle.tolerances import BF16_RTOL
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
@@ -67,6 +67,8 @@ def check(spec, num, den, plane, want, bh=1):
     n_ref, d_ref, s_ref = want
     assert relative(num.reshape(bh, 1, spec.tokens, spec.dv).permute(0, 2, 1, 3),
                     n_ref) < BF16_RTOL
+    assert relative_per_token(num.reshape(bh, 1, spec.tokens, spec.dv).permute(0, 2, 1, 3),
+                              n_ref) < BF16_RTOL
     assert relative(den.reshape(bh, 1, spec.tokens).permute(0, 2, 1), d_ref) < BF16_RTOL
     assert relative(canonical_from_plane(plane),
                     s_ref.reshape(bh, spec.N, spec.dv + 1)) < BF16_RTOL
@@ -353,20 +355,31 @@ def test_one_token_writing_one_leaf_is_the_oracles_single_deposit():
 #: arithmetic; what changes is how finely a dead (token, stream) pair can be reaped, so both
 #: must be the fp64 reference and the pair is the reaping bound's own A/B.
 SPARSE_GRAINS = (None, carry_ops.PAGE_LEAVES)
+#: THE FOUR SCHEDULES: each side at either grain. The two sides' fills share one box-words
+#: buffer and a slot's edges, so a hazard between them can sit at one pairing only (the
+#: 2026-09-08 hazard failed at the box read grain with the page fold grain, a pairing the
+#: same-grain rows never ran).
+SPARSE_ROWS = [(cell, gr, gw) for cell in ORACLE_CELLS for gr in SPARSE_GRAINS
+               for gw in SPARSE_GRAINS]
+SPARSE_IDS = [f"{cell.name}-R{'box' if gr is None else gr}-W{'box' if gw is None else gw}"
+              for cell, gr, gw in SPARSE_ROWS]
 
 
-def sparse(spec, grain):
+def sparse(spec, read_grain, fold_grain):
+    """the STREAM form and the box grain named outright: a cell whose read side is dense
+    would resolve to the position form, and a ``None`` read grain is the reaping bound, not
+    the box -- either would leave the stream form at the box unproved."""
     box = carry_ops.leaves_per_warp(spec.dv)
-    g = None if grain is None else min(grain, box)
-    return carry_ops.CarrySchedule(readout_grain=g, fold_grain=g)
+
+    def lawful(g):
+        return box if g is None else min(g, box)
+
+    return carry_ops.CarrySchedule(readout_grain=lawful(read_grain), fold_grain=lawful(fold_grain),
+                                   read_form=carry_ops.READ_FORM_STREAMS)
 
 
-SPARSE_ROWS = [(cell, g) for cell in ORACLE_CELLS for g in SPARSE_GRAINS]
-SPARSE_IDS = [f"{cell.name}-G{'box' if g is None else g}" for cell, g in SPARSE_ROWS]
-
-
-@pytest.mark.parametrize("spec,grain", SPARSE_ROWS, ids=SPARSE_IDS)
-def test_the_sparse_form_is_the_fp64_reference(spec, grain):
+@pytest.mark.parametrize("spec,read_grain,fold_grain", SPARSE_ROWS, ids=SPARSE_IDS)
+def test_the_sparse_form_is_the_fp64_reference(spec, read_grain, fold_grain):
     """THE REAP CHANGES NO SUM. A dead (token, stream) pair's coefficient is a product one of
     whose factors is an amplitude of exactly zero -- that is the liveness pass's own
     predicate -- so the term the sparse readout never forms was exactly ``+0.0f``; the fold
@@ -375,7 +388,7 @@ def test_the_sparse_form_is_the_fp64_reference(spec, grain):
     truncations, the degenerate draws), which is the whole point: a form that is right at one
     density and wrong at another would pass a single-cell row.
     """
-    drawn, num, den, plane = run(spec, schedule=sparse(spec, grain))
+    drawn, num, den, plane = run(spec, schedule=sparse(spec, read_grain, fold_grain))
     check(spec, num, den, plane, ref(drawn))
 
 

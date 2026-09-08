@@ -6,7 +6,11 @@ in `carry/carry_kernel.cuh`. Numbers below are the flagship arm, `D = 2`, `DV = 
 
 The ledger's purpose is that shared memory is allocated BY NAME and BY MOMENT. A stage
 that needs bytes states which tenant it is and when it is alive; a stage that quietly grew
-an allocation would move the residency the whole design is built on.
+an allocation would move the residency the whole design is built on. A tenant written by
+`cp.async` states two edges, not one: the edge its ISSUE follows (the last read of the
+bytes by any warp is before it) and the wait that lands it (the first read after is
+behind it). The wait alone orders a warp against its own copies, never against another
+warp's reads of the old contents.
 
 ## What is allocated, today
 
@@ -19,7 +23,7 @@ an allocation would move the residency the whole design is built on.
 | 80,224 | the box's page slots, `BC/16 * 4` | 64 | the prologue |
 | after the page slots | THE LIVE WORDS, per side: each stream's word per round, `kSideStreams * kRounds * 4`, and its exclusive prefix, `kSideStreams * kRounds * 2` (`kLiveBytes` each) | 2 x 1,536 | cover slot A writes the read side's, cover slot B the write side's; each fill walks its own once |
 | after the live words | THE K-STEP WORDS: the read side's word per k-step of the box in the read order, per round (`kKstepWordBytes`) | 1,024 | the read walk writes; the fill's masks read (`carry_kernel.md#stream-form`) |
-| after the k-step words | THE BOX WORDS: one side's class-1 words for one window, every digit row of the box by round (`kBoxWordsBytes`) | 2,048 | staged a slot ahead by `cp.async`; the cover walks read (`carry_kernel.md#box-words`) |
+| after the k-step words | THE BOX WORDS: one side's class-1 words for one window, every digit row of the box by round (`kBoxWordsBytes`) | 2,048 | issued by `cp.async` past a slot's edge, landed by the next phase's fill wait, read by the cover walk up to the slot's edge after (`carry_kernel.md#box-words`) |
 | after the live words | THE READ MEMO: per k-step of the box, each lane's region row (`kKb * 32 * 4`), the mass lanes' four rows (`kKb * 64`) and the amplitude columns (`kKb * kMemoColStride * 2`) | 3,200 | the prologue derives it once; every readout stream reads its k-steps' entries |
 | after the memo | THE GAIN TABLE, the window's write-side gains by window token, `kWindow * 2` | 1,024 | cover slot B copies it; the fold's fill reads it |
 | after the gain table | THE UNIFORM TABLES, per side: the union's word and exclusive prefix per round, each stream's count before the batch and before its end (`kUniformWords`) | 2 x 256 | every warp writes them alike; every loop bound reads them (`carry_kernel.md#uniform`) |

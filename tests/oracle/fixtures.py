@@ -162,3 +162,18 @@ def assert_fresh_binary():
 def relative(actual, reference):
     scale = max(1e-30, float(reference.abs().max()))
     return float((actual.double() - reference.double()).abs().max()) / scale
+
+
+def relative_per_token(actual, reference, floor=0.02):
+    """THE PER-TOKEN RELATIVE ERROR: the worst token's error on ITS OWN scale, over the
+    tokens whose scale is at least ``floor`` of the tensor's. ``relative`` is one ratio on
+    the tensor's largest entry, and a few tokens wrong by half hide under it when their
+    rows are small -- which is how the box-words hazard of 2026-09-08 passed at two grains.
+    The last axis is the token's row; every axis before it indexes tokens."""
+    a = actual.double().reshape(-1, actual.shape[-1])
+    r = reference.double().reshape(-1, reference.shape[-1])
+    scale = r.abs().amax(1)
+    keep = scale >= floor * max(1e-30, float(scale.max()))
+    if not bool(keep.any()):
+        return 0.0
+    return float(((a - r).abs().amax(1)[keep] / scale[keep]).max())

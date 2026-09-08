@@ -527,8 +527,14 @@ One side's class-1 words for one window -- every digit row of the box, a word pe
 `kBoxRows * kRounds * 4` bytes -- staged into shared memory a slot ahead by `cp.async`
 (`stage_box_words`): the read side's for the window after under the fold, the write side's
 for this window under the readout, one buffer, each landed by the phase's own fill wait
-and read after its edge. The cover walk (`stream_masks_at`) is then shared-memory ORs over a
-run's rows and ANDs across levels, and nothing at a cover slot reads global memory.
+and read after its edge. The ISSUE sits past the slot's edge, at the phase's start: the
+walks read the buffer up to that edge, outer-level rows are shared between warps, and a
+warp that issued before the edge overwrote rows the slower warps were still walking (the
+2026-09-08 hazard: intermittent, invisible at window 0 and on dense draws, and under the
+one-ratio tolerance when it did fire; journal section 39). A shared tenant written by
+`cp.async` states BOTH edges: the one its issue follows and the wait that lands it. The
+cover walk (`stream_masks_at`) is then shared-memory ORs over a run's rows and ANDs across
+levels, and nothing at a cover slot reads global memory.
 
 <a id="stream-form"></a>
 ## PHASE 1: the stream form

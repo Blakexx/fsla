@@ -1943,12 +1943,13 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     Defer<BP> defer;
 
     //: COVER SLOT A: routing-only work in front of the out leg's edge -- the read streams'
-    //: live words off the box words -- and the write side's box words for this window
-    //: issued under the readout.
+    //: live words off the box words. The write side's box words for this window are issued
+    //: past the edge, under the readout: the one buffer is read by every warp's walk up to
+    //: the edge, and a warp's issue before it lands on the walks still running.
     out_leg_publish<BP, D, BC>(p, sm, acc, tr, warp, lane);
     cover_live_words<BP, D, BC, GR, true>(sm, ro.rank0, warp, lane, nWords);
-    stage_box_words<BP, D, BC>(p, sm, rola::facts::kWrite, abase, warp, lane, bh, t0, nWords);
     ops::rendezvous_group((int)Edge::kOutLeg, BP::kThreads);
+    stage_box_words<BP, D, BC>(p, sm, rola::facts::kWrite, abase, warp, lane, bh, t0, nWords);
 
     if constexpr (RF == kReadFormStreams)
       readout_phase_streams<BP, D, BC, GR>(p, sm, abase, defer, num, den, warp, lane, bh, t0, wLen);
@@ -1956,14 +1957,15 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
       readout_phase_pool<BP, D, BC, GR>(p, sm, abase, num, den, warp, lane, bh, t0, wLen);
 
     //: COVER SLOT B: the fold streams' live words off the box words, in front of the return
-    //: leg's edge; the read side's box words for the window after issued under the fold.
+    //: leg's edge; the read side's box words for the window after issued past it, under
+    //: the fold, for the same reason.
     ops::stage_wait<0>();
     cover_live_words<BP, D, BC, GW, false>(sm, ro.rank0, warp, lane, nWords);
     stage_gain_table<BP>(p, sm, warp * 32 + lane, bh, t0, wLen);
+    ops::rendezvous_group((int)Edge::kReturnLeg, BP::kThreads);
     if (win + 1 < nWindows)
       stage_box_words<BP, D, BC>(p, sm, rola::facts::kRead, abase, warp, lane, bh, t0 + kWindow,
                                  words_of(win + 1));
-    ops::rendezvous_group((int)Edge::kReturnLeg, BP::kThreads);
     return_leg_rejoin<BP, D, BC>(p, sm, tr, acc, warp, lane);
 
     int scol[D][BP::kNL];
