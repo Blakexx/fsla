@@ -154,7 +154,8 @@ def worker_main(args) -> None:
             #: device beside them (a binary from before the probe reports none).
             _sustain_load(30.0)
             from rola.ops import carry as carry_ops
-            ghz = carry_ops.sm_clock_ghz()
+            read_ghz = getattr(carry_ops, "sm_clock_ghz", None)
+            ghz = read_ghz() if read_ghz else None
             if args.oneshot:
                 arm.call()
                 torch.cuda.synchronize()
