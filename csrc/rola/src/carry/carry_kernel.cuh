@@ -731,15 +731,24 @@ __device__ __forceinline__ void pool_pass(const Smem<BP>& sm, Acc<BP>& acc,
 }
 
 //: A SIDE'S UNION WORD for round `lane`: the OR of its streams' words, read once per window.
-template <class BP>
-__device__ __forceinline__ uint32_t union_word(const Smem<BP>& sm, int side, int nStreams,
-                                               int nRounds, int lane) {
-  //: the loop is warp-uniform; the lane's part in it is the predicate on the OR.
+template <class BP, int NStreams>
+__device__ __forceinline__ uint32_t union_word(const Smem<BP>& sm, int side, int nRounds,
+                                               int lane) {
+  static_assert(NStreams % 8 == 0 && NStreams <= BP::kSideStreams, "the rows load as quads");
+  static_assert(BP::kRounds <= 16, "a half-warp answers for the rounds");
+  //: the round's row of words as quads: a half-warp a round, the two halves a quad apart,
+  //: folded by one shuffle. Sixteen lanes reading one word each down the round-major
+  //: table would share two banks.
+  const int r = lane & 15;
+  const uint4* const row =
+      reinterpret_cast<const uint4*>(sm.stream_words(side, r < nRounds ? r : 0));
   uint32_t u = 0u;
-  const int r = lane < nRounds ? lane : 0;
-#pragma unroll 1
-  for (int s = 0; s < nStreams; ++s) u |= lane < nRounds ? sm.stream_words(side, r)[s] : 0u;
-  return u;
+  rola::static_for<NStreams / 8>([&](auto Jc) {
+    const uint4 w = row[(lane >> 4) + 2 * decltype(Jc)::value];
+    u |= w.x | w.y | w.z | w.w;
+  });
+  u |= __shfl_xor_sync(0xFFFFFFFFu, u, 16);
+  return lane < nRounds ? u : 0u;
 }
 
 //: A STREAM'S COUNT BEFORE A UNION RANK, in lane `stream` (every lane takes part: the round
@@ -883,7 +892,7 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
   //: the union's words and their exclusive prefix, one lane per round.
   constexpr int kSide = rola::facts::kWrite;
   constexpr int nStreams = BP::kWarps * passes;
-  const uint32_t cta = union_word<BP>(sm, kSide, nStreams, nRounds, lane);
+  const uint32_t cta = union_word<BP, nStreams>(sm, kSide, nRounds, lane);
   int prefix = __popc(cta);
   rola::static_for<5>([&](auto Sc) {
     constexpr int d = 1 << decltype(Sc)::value;
@@ -1368,7 +1377,7 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
   const int nRounds = (wLen + kRoundTokens - 1) / kRoundTokens;
   constexpr int kPasses = BP::kLeavesPerWarp >> GB;
   constexpr int kStreams = BP::kWarps * kPasses;
-  const uint32_t cta = union_word<BP>(sm, kSide, kStreams, nRounds, lane);
+  const uint32_t cta = union_word<BP, kStreams>(sm, kSide, nRounds, lane);
   int prefix = __popc(cta);
   rola::static_for<5>([&](auto Sc) {
     constexpr int d = 1 << decltype(Sc)::value;
@@ -1569,7 +1578,7 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
   static_assert(kKs <= 8, "a stream's k-step cases are compiled from its mask");
   static_assert(kStreams <= 32, "a lane answers for a stream in the tile deal");
   const int nRounds = (wLen + kRoundTokens - 1) / kRoundTokens;
-  const uint32_t cta = union_word<BP>(sm, kSide, kStreams, nRounds, lane);
+  const uint32_t cta = union_word<BP, kStreams>(sm, kSide, nRounds, lane);
   int prefix = __popc(cta);
   rola::static_for<5>([&](auto Sc) {
     constexpr int d = 1 << decltype(Sc)::value;

@@ -47,7 +47,7 @@ its loop bounds and fill parameters in the UNIFORM TABLES (`Smem::union_words`,
 `union_prefix`, `stream_base`, `stream_end`; `kUniformOffset`), written by every warp alike
 and read at one shared address, which it does trust; takes its warp index from
 `ops::uniform_warp` (three ballots on the thread index's bits); and writes its lane-conditional
-loops (`union_word`, `stream_masks_at`) as uniform loops with the lane's part in a predicate.
+loops (`stream_masks_at`) as uniform loops with the lane's part in a predicate.
 
 <a id="edges"></a>
 ## The three edges, and why there are exactly three
@@ -312,7 +312,9 @@ THE POOL HOLDS THE UNION OF THE WARPS' LIVE POSITIONS, BY RANK. At the cover slo
 of a phase every warp reads its streams' liveness words once -- one stream per pass of the
 side's grain -- and writes each stream's word and its exclusive prefix per round into
 `stream_words` and `stream_prefix` (lane `r` holds round `r`, `cover_live_words`); at the
-phase's start every warp reads the union off those words (`union_word`) and scans it -- lane
+phase's start every warp reads the union off those words (`union_word`: a half-warp a round,
+the round's row as quads, one shuffle to fold the halves -- a lane a round reading the
+round-major table one word at a time shares two banks sixteen ways) and scans it -- lane
 `r` holds round `r`'s word and its exclusive prefix -- so a live position's SLOT is its rank
 among the CTA's live positions less the batch's base. A window whose live count fits
 `kPoolPos` is one batch; the pool fills as far as there are rows to fill.
