@@ -34,8 +34,17 @@ The ratio is the effective clock during the spin, in GHz.
 `tools/probe_cells.py` reads the clock after the warm-up, right before the timed reps,
 where the binary carries the probe. Each round's row records `sm_ghz`; the printed row
 shows the rounds' range; the ledger row keeps `round_sm_ghz`. A binary from before the
-probe reports none and prints `GHz n/a`. Under a lock the read is the proof the lock held
-through the reps; without one it is the label that makes a millisecond readable.
+probe reports none and prints `GHz n/a`.
+
+THE LOCK SEAM (`tools/clock_lock.py`): how a clock is locked is the HOST's fact and lives
+outside the tree, in `~/.config/rola/clock.json` -- the target GHz and the lock and unlock
+commands (`nvidia-smi -lgc` as root on Linux; on this Windows host under WSL two elevated
+scheduled tasks a non-admin process may start, `gpu-lock` and `gpu-unlock`). The harness
+locks at start, proves the lock with the device read, unlocks on every exit path, and
+REFUSES a row whose measured clock is off the lock by more than 1%. Without the file the
+run is UNLOCKED: rows carry their measured clock, print `UNLOCKED`, and the ledger keeps
+`clock_locked = false`, as it keeps `dirty`. Nothing in the tree names an operating
+system.
 
 ## How to read a number
 

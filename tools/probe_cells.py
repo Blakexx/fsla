@@ -55,6 +55,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import clock_lock
 from gpu_lock import GPU_LOCK_DEFAULT, gpu_lock
 
 THIS_FILE = Path(__file__).resolve()
@@ -484,6 +485,12 @@ def main() -> None:
               f"schedule={binary.get('schedule', 'box')}")
     print(f"STATE ARM: {args.state}")
 
+    def read_ghz():
+        from rola.ops import carry as carry_ops
+        return carry_ops.sm_clock_ghz()
+
+    clock = clock_lock.engage(read_ghz)
+
     round_rows = interleaved_rounds(args.binary, args.bench, cells, args.reps,
                                     args.warmup, args.lock, args.rounds, args.state)
     results = []
@@ -516,10 +523,19 @@ def main() -> None:
                 shown = "ERROR: " + str(entry["error"])[:20]
             results.append(entry)
             ghz = [g for g in (summary or {}).get("round_sm_ghz", []) if g]
-            clock = f"{min(ghz):.2f}-{max(ghz):.2f}GHz" if ghz else "GHz n/a"
+            #: a locked run refuses a row the device did not measure on the lock; an
+            #: unlocked run keeps the row and says so, the way a dirty tree's rows say so.
+            off = [g for g in ghz if not clock_lock.within(g, clock)]
+            if clock is not None and (off or not ghz):
+                entry["error"] = f"clock off the lock: {ghz or 'unread'}"
+                entry.pop("median_of_round_medians_ms", None)
+                shown = "REFUSED: clock " + (f"{min(off):.3f}GHz" if off else "unread")
+            entry["clock_locked"] = clock is not None
+            state = (f"{min(ghz):.2f}-{max(ghz):.2f}GHz" if ghz else "GHz n/a") + (
+                "" if clock is not None else " UNLOCKED")
             print(f"{binary['label']:<16}{cell:<26}{shown:<26}"
                   f"{str(entry['family_stamp'])[:10]:<12}{binary['git_sha'][:8]:<10}"
-                  f"{clock:<14}{' DIRTY ' + tree[:8] if tree else ''}")
+                  f"{state:<24}{' DIRTY ' + tree[:8] if tree else ''}")
 
     if args.ncu:
         print(f"\nNCU (one oneshot launch per binary x cell, filtered to {subject.symbol})")
