@@ -176,6 +176,47 @@ def prefill_op(fx) -> Arm:
     return Arm(name=f"prefill_op|{spec.name}", call=run)
 
 
+def prefill_op_chunked(fx) -> Arm:
+    """THE SAME SEQUENCE IN FOUR CALLS, the state carried: what a caller that prefills in
+    chunks pays -- every call's fixed cost (packing, liveness, the sweeps in and out of the
+    state) four times over the same windows `prefill_op` runs once. The difference between
+    the two rows IS the per-call price.
+    """
+    from benchmarks.cells import realize
+    from rola.ops import carry as carry_ops
+    from rola.ops import intra as intra_ops
+    from rola.ops import prefill as prefill_ops
+
+    spec = fx["cell"]
+    drawn = realize(spec)
+    modes = _modes_of(spec)
+    D = len(drawn.read)
+    chunks = 4
+    if spec.tokens % (chunks * prefill_ops.WINDOW):
+        raise ValueError(f"{spec.name}: {spec.tokens} tokens is not {chunks} chunks of whole windows")
+    step = spec.tokens // chunks
+    width = intra_ops._shipped_level_width(D, prefill_ops.WINDOW)
+    parts = []
+    for c in range(chunks):
+        sl = slice(c * step, (c + 1) * step)
+        read = [x[:, sl] for x in drawn.read]
+        write = [x[:, sl] for x in drawn.write]
+        parts.append((read, write, drawn.gain[:, sl].contiguous(), drawn.v[:, sl].contiguous(),
+                      intra_ops.pack_support(intra_ops.pad_routes(read, (width,) * D)),
+                      intra_ops.pack_support(intra_ops.pad_routes(write, (width,) * D))))
+    plane = carry_ops.state_plane(prefill_ops._descriptor(list(spec.widths), spec.dv, 1), 1)
+
+    def run():
+        plane.zero_()
+        out = None
+        for read, write, gain, v, sread, swrite in parts:
+            out = prefill_ops.prefill(read, write, gain, v, list(spec.widths), modes=modes,
+                                      sread=sread, swrite=swrite, state_in=plane, state_out=plane)
+        return out
+
+    return Arm(name=f"prefill_op_chunked|{spec.name}|{chunks}", call=run)
+
+
 def attention_reference(fx) -> Arm:
     """THE REFERENCE the carry is measured against: causal attention at the cell's own point
     -- one head of width `dv`, `L` tokens, bf16 -- through torch's FLASH backend, which is
@@ -319,6 +360,9 @@ SUBJECTS = {
                           "the whole RoLA prefill op as the layer calls it: liveness, carry, "
                           "intra and the op's packing",
                           symbol="carry_kernel", stamp="carry_build_stamp"),
+    "prefill_op_chunked": Subject("prefill_op_chunked", "carry", prefill_op_chunked,
+                                  "the same sequence as four carried calls: the per-call price",
+                                  symbol="carry_kernel", stamp="carry_build_stamp"),
     "attention_reference": Subject("attention_reference", "carry", attention_reference,
                                    "causal FlashAttention at the cell's L and dv, one head",
                                    symbol="flash_fwd_kernel", stamp="csrc_build_stamp"),
