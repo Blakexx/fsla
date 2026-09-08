@@ -43,8 +43,11 @@ scheduled tasks a non-admin process may start, `gpu-lock` and `gpu-unlock`). The
 locks at start, proves the lock with the device read, unlocks on every exit path, and
 REFUSES a row whose measured clock is off the lock by more than 1%. Without the file the
 run is UNLOCKED: rows carry their measured clock, print `UNLOCKED`, and the ledger keeps
-`clock_locked = false`, as it keeps `dirty`. Nothing in the tree names an operating
-system.
+`clock_locked = false`, as it keeps `dirty`. The harness names no operating
+system; `tools/setup_clock_lock.py --mhz N` is the one-time host setup that does: under WSL
+it registers the two elevated tasks with hidden launchers (one administrator prompt) and
+proves the round trip, on Linux it writes the `sudo -n nvidia-smi` commands and prints the
+sudoers line, elsewhere it says the host cannot lock.
 
 ## How to read a number
 
