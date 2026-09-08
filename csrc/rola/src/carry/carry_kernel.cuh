@@ -517,7 +517,8 @@ template <class BP, int D, int Side, bool Lists, int NStreams, bool Pair>
 __device__ __forceinline__ void pool_fill_rounds(const CarryParams& p, const Smem<BP>& sm,
                                                  const int (&abase)[D], int warp, int lane, int bh,
                                                  int t0, int round, uint32_t live0, int prefix0,
-                                                 uint32_t live1, int prefix1, int base) {
+                                                 uint32_t live1, int prefix1, int base,
+                                                 int sbase_lane) {
   static_assert(NStreams % 4 == 0 && NStreams <= BP::kSideStreams, "the tables load as quads");
   static_assert(BP::kFillScratchBytes >= 4 * ops::kBallotLanes, "two rounds of lanes fit");
   unsigned short* const scratch = sm.fill_scratch(Side, warp);
@@ -572,11 +573,12 @@ __device__ __forceinline__ void pool_fill_rounds(const CarryParams& p, const Sme
   uint32_t sw[2][NStreams];
   int soff[2][NStreams];
   if constexpr (Lists && NStreams <= 8) {
+    //: the stream bases from lane `s`'s register: the table is warp 0's and read only past
+    //: the batch's fill edge.
     int sbase[NStreams];
-    rola::static_for<NStreams / 4>([&](auto Qc) {
-      constexpr int q = decltype(Qc)::value;
-      const int4 b = reinterpret_cast<const int4*>(sm.stream_base(Side))[q];
-      sbase[4 * q] = b.x, sbase[4 * q + 1] = b.y, sbase[4 * q + 2] = b.z, sbase[4 * q + 3] = b.w;
+    rola::static_for<NStreams>([&](auto Sc) {
+      constexpr int s = decltype(Sc)::value;
+      sbase[s] = __shfl_sync(0xFFFFFFFFu, sbase_lane, s);
     });
     rola::static_for<Pair ? 2 : 1>([&](auto Rc) {
       constexpr int i = decltype(Rc)::value;
@@ -632,7 +634,7 @@ __device__ __forceinline__ void pool_fill_rounds(const CarryParams& p, const Sme
     //: sixteen streams: a runtime loop off the tables, so the symbol stays under the cliff.
 #pragma unroll 1
     for (int s = 0; s < NStreams; ++s) {
-      const int sb = sm.stream_base(Side)[s];
+      const int sb = __shfl_sync(0xFFFFFFFFu, sbase_lane, s);
       const uint32_t w0 = sm.stream_words(Side, round)[s];
       const int at0 = (int)sm.stream_prefix(Side, round)[s] + __popc(w0 & below) - sb;
       unsigned short* const list =
@@ -853,28 +855,32 @@ __device__ __forceinline__ int stream_count_before(const Smem<BP>& sm, int side,
   return (int)sm.stream_prefix(side, r)[s] + __popc(sm.stream_words(side, r)[s] & (at - 1u));
 }
 
-//: THE UNION PUBLISHED: every warp writes the same words and prefix (lane = round), so a
-//: warp reads its own after its edge and the total is one uniform load.
+//: THE UNION PUBLISHED by warp 0 alone (lane = round), read by every warp past the phase's
+//: edge; the total is one uniform load there. Every warp holds the same words, and eight
+//: warps storing them would be a race the sanitizer lane reports.
 template <class BP>
-__device__ __forceinline__ int publish_union(const Smem<BP>& sm, int side, uint32_t cta, int prefix,
-                                             int nRounds, int warp, int lane) {
+__device__ __forceinline__ void publish_union(const Smem<BP>& sm, int side, uint32_t cta,
+                                              int prefix, int nRounds, int lane) {
   if (lane < nRounds) {
     sm.union_words(side)[lane] = cta;
     sm.union_prefix(side)[lane] = prefix;
   }
-  warp_edge(warp);
+}
+
+template <class BP>
+__device__ __forceinline__ int union_total(const Smem<BP>& sm, int side, int nRounds) {
   return sm.union_prefix(side)[nRounds - 1] + __popc(sm.union_words(side)[nRounds - 1]);
 }
 
-//: A BATCH'S STREAM COUNTS PUBLISHED, lane = stream, the same by every warp.
+//: A BATCH'S STREAM COUNTS PUBLISHED by warp 0 alone (lane = stream), read past the batch's
+//: fill edge; the fill takes the bases from the lane's registers by shuffle.
 template <class BP>
 __device__ __forceinline__ void publish_stream_counts(const Smem<BP>& sm, int side, int sbase,
-                                                      int send, int nStreams, int warp, int lane) {
+                                                      int send, int nStreams, int lane) {
   if (lane < nStreams) {
     sm.stream_base(side)[lane] = sbase;
     sm.stream_end(side)[lane] = send;
   }
-  warp_edge(warp);
 }
 
 //: THE DEFERRED TILE: a warp's last readout tile of the window, its rows kept through the
@@ -982,13 +988,14 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
     if (lane >= d) prefix += up;
   });
   prefix -= __popc(cta);
-  const int total = publish_union<BP>(sm, kSide, cta, prefix, nRounds, warp, lane);
+  if (warp == 0) publish_union<BP>(sm, kSide, cta, prefix, nRounds, lane);
 
   //: A WINDOW WITH NOTHING LIVE touches the pool not at all; the pool aliases the transit
   //: region, so no warp fills until every warp has rejoined its halves out of it.
-  if (total == 0) return;
   ops::stage_wait<0>();
   ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
+  const int total = union_total<BP>(sm, kSide, nRounds);
+  if (total == 0) return;
   if (warp == 0) pool_zero_dead_row<BP, kSide>(sm, lane);
 
 #pragma unroll 1
@@ -997,14 +1004,14 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
         stream_count_before<BP>(sm, kSide, cta, prefix, total, nRounds, nStreams, lane, base);
     const int send = stream_count_before<BP>(sm, kSide, cta, prefix, total, nRounds, nStreams, lane,
                                              base + BP::kPoolPos);
-    publish_stream_counts<BP>(sm, kSide, sbase, send, nStreams, warp, lane);
+    if (warp == 0) publish_stream_counts<BP>(sm, kSide, sbase, send, nStreams, lane);
 #pragma unroll 1
     for (int r = warp; r < nRounds; r += fill_step<BP, nStreams>()) {
       const bool two = fill_pairs<nStreams>() && r + BP::kWarps < nRounds;
       pool_fill_rounds<BP, D, kSide, true, nStreams, fill_pairs<nStreams>()>(
           p, sm, abase, warp, lane, bh, t0, r, sm.union_words(kSide)[r], sm.union_prefix(kSide)[r],
           two ? sm.union_words(kSide)[r + BP::kWarps] : 0u,
-          two ? sm.union_prefix(kSide)[r + BP::kWarps] : 0, base);
+          two ? sm.union_prefix(kSide)[r + BP::kWarps] : 0, base, sbase);
       tick();
     }
     ops::stage_wait<0>();
@@ -1469,17 +1476,18 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
     if (lane >= d) prefix += up;
   });
   prefix -= __popc(cta);
-  const int total = publish_union<BP>(sm, kSide, cta, prefix, nRounds, warp, lane);
+  if (warp == 0) publish_union<BP>(sm, kSide, cta, prefix, nRounds, lane);
 
   //: A WINDOW WITH NOTHING LIVE touches the pool not at all, but lands the write side's
   //: box words for the slot after and crosses, as a batch would. No warp fills until every
   //: warp has published its transit rows.
+  ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
+  const int total = union_total<BP>(sm, kSide, nRounds);
   if (total == 0) {
     ops::stage_wait<0>();
     ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
     return;
   }
-  ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
   if (warp == 0) pool_zero_dead_row<BP, kSide>(sm, lane);
 
   const ops::SmemAddr stage = sm.stage(warp);
@@ -1494,7 +1502,7 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
       pool_fill_rounds<BP, D, kSide, false, kStreams, fill_pairs<kStreams>()>(
           p, sm, abase, warp, lane, bh, t0, r, sm.union_words(kSide)[r], sm.union_prefix(kSide)[r],
           two ? sm.union_words(kSide)[r + BP::kWarps] : 0u,
-          two ? sm.union_prefix(kSide)[r + BP::kWarps] : 0, base);
+          two ? sm.union_prefix(kSide)[r + BP::kWarps] : 0, base, 0);
     }
     ops::stage_wait<0>();
     ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
@@ -1673,13 +1681,14 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
     if (lane >= d) prefix += up;
   });
   prefix -= __popc(cta);
-  const int total = publish_union<BP>(sm, kSide, cta, prefix, nRounds, warp, lane);
+  if (warp == 0) publish_union<BP>(sm, kSide, cta, prefix, nRounds, lane);
+  ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
+  const int total = union_total<BP>(sm, kSide, nRounds);
   if (total == 0) {
     ops::stage_wait<0>();
     ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
     return;
   }
-  ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
   if (warp == 0) pool_zero_dead_row<BP, kSide>(sm, lane);
 
   const ops::SmemAddr stage = sm.stage(warp);
@@ -1696,14 +1705,14 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
         stream_count_before<BP>(sm, kSide, cta, prefix, total, nRounds, kStreams, lane, base);
     const int send = stream_count_before<BP>(sm, kSide, cta, prefix, total, nRounds, kStreams, lane,
                                              base + BP::kReadPos);
-    publish_stream_counts<BP>(sm, kSide, sbase, send, kStreams, warp, lane);
+    if (warp == 0) publish_stream_counts<BP>(sm, kSide, sbase, send, kStreams, lane);
 #pragma unroll 1
     for (int r = warp; r < nRounds; r += fill_step<BP, kStreams>()) {
       const bool two = fill_pairs<kStreams>() && r + BP::kWarps < nRounds;
       pool_fill_rounds<BP, D, kSide, true, kStreams, fill_pairs<kStreams>()>(
           p, sm, abase, warp, lane, bh, t0, r, sm.union_words(kSide)[r], sm.union_prefix(kSide)[r],
           two ? sm.union_words(kSide)[r + BP::kWarps] : 0u,
-          two ? sm.union_prefix(kSide)[r + BP::kWarps] : 0, base);
+          two ? sm.union_prefix(kSide)[r + BP::kWarps] : 0, base, sbase);
     }
     ops::stage_wait<0>();
     ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);

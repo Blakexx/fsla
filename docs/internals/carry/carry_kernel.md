@@ -44,8 +44,10 @@ prove the warp converged; a loop whose bound it cannot prove uniform is such a p
 everything after it inherits the doubt. Two values it does not trust: a shuffled value
 (`lane_broadcast` is a per-lane register to it), and `threadIdx.x >> 5`. So the body keeps
 its loop bounds and fill parameters in the UNIFORM TABLES (`Smem::union_words`,
-`union_prefix`, `stream_base`, `stream_end`; `kUniformOffset`), written by every warp alike
-and read at one shared address, which it does trust; takes its warp index from
+`union_prefix`, `stream_base`, `stream_end`; `kUniformOffset`), written by warp 0 and read at
+one shared address past the phase's edge, which it does trust (every warp holds the same
+values; eight warps storing them was a race the sanitizer lane reports, 2026-09-08 -- the
+fill takes the stream bases from the lane's register by shuffle instead); takes its warp index from
 `ops::uniform_warp` (three ballots on the thread index's bits); and writes its lane-conditional
 loops (`stream_masks_at`) as uniform loops with the lane's part in a predicate.
 

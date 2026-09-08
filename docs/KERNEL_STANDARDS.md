@@ -419,3 +419,15 @@ placed past the edge that ends the last read. Born of the box-words hazard of 20
 section 39): the issue sat before a slot's edge, the outer-level rows are shared between warps,
 and the slower walks read the other side's words -- intermittently, invisibly at window 0 and on
 dense draws, and under the one-ratio tolerance when it fired.
+
+## R21 addendum (2026-09-08): THE SANITIZER LANE IS A GATE, AND ITS OOM IS A VERDICT
+`compute-sanitizer --tool racecheck` models `cp.async`: on the box-words hazard it did not
+report, it exhausted the host (23 GB in fifty seconds) and the target was killed -- the
+"open K2 item" read as a host-budget limit was the race's own signature from the day the box
+words landed. With the hazard gone the lane runs the one-CTA cells in seconds at under 1 GB.
+So: the lane runs at every commit of the carry kernel, on `one-box-short` and
+`one-box-multiwindow` at both grains through `tools/sanitize_cell.py`, and must report zero
+hazards; a target killed under the sanitizer is a failing gate, never a resource problem to
+be worked around. Benign races (every warp storing the same word) are not tolerated either:
+a lane with known noise is a lane nobody reads. One warp writes, the readers stand behind an
+edge.
