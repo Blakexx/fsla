@@ -147,12 +147,10 @@ def worker_main(args) -> None:
             for _ in range(args.warmup):
                 arm.call()
             torch.cuda.synchronize()
-            #: THE CLOCK STATE IS LOAD-DEPENDENT (2026-09-08): the SM boosts to its top clock
-            #: under sustained load and sits ~15% lower under a bursty warmup, and the same
-            #: kernel measured 6.45 and 5.92 ms either side of a 10 ms spin. Every binary
-            #: gets the same sustained load before its reps, then the state is read off the
-            #: device beside them (a binary from before the probe reports none).
-            _sustain_load(30.0)
+            #: THE CLOCK the reps run in, read off the device beside them (a binary from before
+            #: the probe reports none). The governor moves it with power, so the number is
+            #: comparable across runs only with the clock locked from the host
+            #: (`docs/internals/common/sm_clock.md`); the read is what proves the lock held.
             from rola.ops import carry as carry_ops
             read_ghz = getattr(carry_ops, "sm_clock_ghz", None)
             ghz = read_ghz() if read_ghz else None
@@ -365,18 +363,6 @@ def interleaved_rounds(binaries: list[dict], bench: str, cells: list[str], reps:
             payload = run_worker(binary, bench, cells, reps, warmup, lock_path, state)
             per_binary[binary["label"]].append({"round": index, **payload})
     return per_binary
-
-
-def _sustain_load(ms: float) -> None:
-    """a dense matmul loop on every SM for at least `ms` milliseconds, synchronised."""
-    import time
-
-    import torch
-    a = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
-    t0 = time.perf_counter()
-    while (time.perf_counter() - t0) * 1000.0 < ms:
-        a = a @ a * 0.001
-    torch.cuda.synchronize()
 
 
 def summarize(round_rows: list[dict], cell: str) -> dict | None:
