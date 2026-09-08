@@ -68,11 +68,12 @@ NCU_BIN = "/usr/local/cuda/bin/ncu"
 sys.path.insert(0, str(REPO / "benchmarks"))
 sys.path.insert(0, str(REPO))
 
-#: THE STATE SHAPES A CALL CAN BIND. `fresh` binds one exit plane over a zero entry state -- the
-#: like-for-like default. `continuation` passes the SAME plane in and out, which is the
-#: shape a growing sequence actually runs and the one where the entry sweep's loads and
-#: the exit sweep's stores address the same pages.
-STATE_SHAPES = ("fresh", "continuation")
+#: THE STATE SHAPES A CALL CAN BIND, the kernel's own (`docs/internals/state.md#four-shapes`,
+#: `benchmarks/bench/subjects.py:STATE_ARMS`): `null` neither plane, `readonly` a plane in
+#: and none out, `fresh` none in and a plane out, `continuation` one plane in and out,
+#: `paged` the continuation under a permuted slot table. The production sequence is
+#: `continuation` or `paged`; `fresh` is the like-for-like default of the tables so far.
+STATE_SHAPES = ("null", "readonly", "fresh", "continuation", "paged")
 
 
 # ---------------------------------------------------------------------------

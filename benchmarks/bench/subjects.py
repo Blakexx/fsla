@@ -85,6 +85,37 @@ def _carry_schedule(name: str, spec):
         read_form=carry_ops.READ_FORM_POSITION if form == "box" else carry_ops.READ_FORM_STREAMS)
 
 
+#: THE STATE ARMS, the kernel's own shapes (`docs/internals/state.md#four-shapes`): `null`
+#: neither plane; `readonly` a plane in and none out; `fresh` none in, a plane out;
+#: `continuation` one plane in and out; `paged` the continuation under a permuted slot
+#: table, the paged backing's own addressing. No arm allocates inside the timed call.
+STATE_ARMS = ("null", "readonly", "fresh", "continuation", "paged")
+
+
+def _state_arm(fx, descriptor, bh: int = 1):
+    """`(state_in, state_out, page_table)` for the arm the fixture names."""
+    import torch
+
+    from rola.ops import carry as carry_ops
+
+    arm = fx.get("state_arm", "fresh")
+    if arm not in STATE_ARMS:
+        raise ValueError(f"state arm {arm!r} is not one of {STATE_ARMS}")
+    if arm == "null":
+        return None, None, None
+    plane = carry_ops.state_plane(descriptor, bh)
+    if arm == "readonly":
+        return plane, None, None
+    if arm == "fresh":
+        return None, plane, None
+    if arm == "continuation":
+        return plane, plane, None
+    pages = descriptor.N // carry_ops.PAGE_LEAVES
+    gen = torch.Generator(device="cuda").manual_seed(fx["cell"].seed)
+    slots = torch.argsort(torch.rand(pages, device="cuda", generator=gen))
+    return plane, plane, slots.to(torch.int32).reshape(1, pages).repeat(bh, 1)
+
+
 def carry_forward(fx) -> Arm:
     """The inter term: one carry launch over a whole cell, state advanced in place.
 
@@ -96,12 +127,7 @@ def carry_forward(fx) -> Arm:
     spec = fx["cell"]
     _drawn, call = _carry_operands(fx)
     routes, v = call.pop("routes"), call.pop("v")
-    plane = carry_ops.state_plane(call["descriptor"], 1)
-    #: THE STATE ARM. `fresh` binds one exit plane over a zero entry state. `continuation`
-    #: passes the SAME plane in and out, which is what a growing sequence runs and the one
-    #: shape where the entry sweep's loads and the exit sweep's stores address the same
-    #: pages -- a different memory schedule, not a different amount of the same one.
-    state_in = plane if fx.get("state_arm") == "continuation" else None
+    state_in, state_out, page_table = _state_arm(fx, call["descriptor"])
     #: THE SCHEDULE ARM. The per-side runtime dial the launch carries (`CarrySchedule`), so a
     #: probe's two arms can be the SAME binary differing in exactly the form and the stream
     #: grain -- which is what the reap is measured as. `union` is what a caller who names
@@ -109,10 +135,10 @@ def carry_forward(fx) -> Arm:
     schedule = _carry_schedule(fx.get("schedule", "box"), spec)
 
     def run():
-        return carry_ops.carry_forward(routes, v, state_in=state_in, state_out=plane,
-                                       schedule=schedule, **call)
+        return carry_ops.carry_forward(routes, v, state_in=state_in, state_out=state_out,
+                                       page_table=page_table, schedule=schedule, **call)
 
-    return Arm(name=f"carry_forward|{spec.name}", call=run)
+    return Arm(name=f"carry_forward|{spec.name}|{fx.get('state_arm', 'fresh')}", call=run)
 
 
 def intra_forward(fx) -> Arm:
@@ -180,12 +206,15 @@ def prefill_op(fx) -> Arm:
     #: the engine's fold of the liveness words (`facts.planes.atom_bits`), a producer-side
     #: fact, so built once here. Passing none states every atom active.
     bits = _atom_bits(drawn.read, drawn.write, spec.widths)
+    state_in, state_out, page_table = _state_arm(fx, prefill_ops._descriptor(list(spec.widths),
+                                                                             spec.dv, 1))
 
     def run():
         return prefill_ops.prefill(drawn.read, drawn.write, drawn.gain, drawn.v, list(spec.widths),
-                                   modes=modes, sread=sread, swrite=swrite, atom_bits=bits)
+                                   modes=modes, sread=sread, swrite=swrite, atom_bits=bits,
+                                   state_in=state_in, state_out=state_out, page_table=page_table)
 
-    return Arm(name=f"prefill_op|{spec.name}", call=run)
+    return Arm(name=f"prefill_op|{spec.name}|{fx.get('state_arm', 'fresh')}", call=run)
 
 
 def prefill_op_chunked(fx) -> Arm:
