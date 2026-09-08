@@ -10,7 +10,7 @@ an allocation would move the residency the whole design is built on. A tenant wr
 `cp.async` states two edges, not one: the edge its ISSUE follows (the last read of the
 bytes by any warp is before it) and the wait that lands it (the first read after is
 behind it). The wait alone orders a warp against its own copies, never against another
-warp's reads of the old contents.
+warp's reads of the old contents (`KERNEL_STANDARDS.md`, R21).
 
 ## What is allocated, today
 

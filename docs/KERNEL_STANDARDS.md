@@ -405,3 +405,17 @@ identifier, or a comparison to what was ("the previous pass replaced…", "the o
 justification and background live in docs/ (DELETIONS.md, ARCHITECTURE's status marks, the internals'
 "why" sections) and in the journal outside the repo. The kernel library references only itself (§17);
 the lint that refuses work codes in source is the mechanical half; reviewers refuse the rest.
+
+## CONSTITUTION addendum (Blake, 2026-09-08): R21 — EVERY ASYNCHRONOUS OPERATION STATES TWO EDGES
+An asynchronous write -- `cp.async` today; TMA, `cp.async.bulk`, `wgmma` on sm_90 and after -- has
+two hazards, and a wait covers only one of them. Its COMPLETION edge (RAW) is the wait or barrier
+phase behind which the first read of the new contents stands. Its ISSUE edge (WAR) is the barrier
+after the last read of the OLD contents by ANY warp: a warp's wait orders that warp against its own
+copies and never against another warp's reads of the bytes it is about to overwrite. Every shared
+tenant an asynchronous operation writes states both edges in the ledger (`smem_ledger.md`), and a
+review refuses a tenant that names only the wait. On sm_90 the two edges are a pipeline stage's
+empty and full barriers; on sm_80 they are the CTA edges the frame already has, and the issue is
+placed past the edge that ends the last read. Born of the box-words hazard of 2026-09-08 (journal
+section 39): the issue sat before a slot's edge, the outer-level rows are shared between warps,
+and the slower walks read the other side's words -- intermittently, invisibly at window 0 and on
+dense draws, and under the one-ratio tolerance when it fired.
