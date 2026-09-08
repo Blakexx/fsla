@@ -89,6 +89,28 @@ class CellSpec:
         from rola.ops.carry import LaunchShape
         return LaunchShape(warps_per_cta=self.warps_per_cta)
 
+    @property
+    def level_modes(self) -> int:
+        """The per-level support the draw actually has, in the kernel's mode word: two
+        bits a level, bit 0 the read side sparse there, bit 1 the write side. A dense or
+        degenerate draw declares nothing; the alternation declares the read side sparse at
+        the odd levels and the write side at the even ones; ``both`` declares level zero
+        sparse on both sides. The carve order is derived from this, so a cell that leaves
+        it at zero runs the canonical carve whatever its draw."""
+        from rola.ops.carry import SIDE_SPARSE
+        if self.draw in ("dense", "dead", "deposit") or self.k_tok is None:
+            return 0
+        modes = 0
+        for level in range(self.D):
+            if self.draw == "both":
+                if level == 0:
+                    modes |= (SIDE_SPARSE[0] | SIDE_SPARSE[1]) << (2 * level)
+            elif level % 2:
+                modes |= SIDE_SPARSE[0] << (2 * level)
+            else:
+                modes |= SIDE_SPARSE[1] << (2 * level)
+        return modes
+
 
 def _validate(record: dict) -> CellSpec:
     spec = CellSpec(name=record["name"], widths=tuple(record["widths"]), dv=record["dv"],
@@ -313,7 +335,7 @@ def carry_call(spec: CellSpec, bh: int = 1, device: str = "cuda"):
         routes=carry_ops.route_planes(drawn.read, drawn.write, drawn.gain),
         v=drawn.v.permute(0, 2, 1, 3).reshape(bh, spec.tokens, spec.dv).contiguous(),
         descriptor=descriptor,
-        geometry=carry_ops.geometry_block(descriptor, launch),
+        geometry=carry_ops.geometry_block(descriptor, launch, level_modes=spec.level_modes),
         liveness=liveness_words(drawn, descriptor),
         activity=conservative_activity(descriptor, bh, device),
         launch=launch)

@@ -16,11 +16,11 @@ namespace rola::carry {
 //: THE GRID: one CTA per (box, batch-head), and the CTA is the SM.
 //: -- see docs/internals/carry/carry.md#launch
 //: ONE GRAIN PAIR, ONE SYMBOL. -- see docs/internals/carry/carry_kernel.md#forms
-template <int D, int DV, int W, int GR, int GW>
+template <int D, int DV, int W, int GR, int GW, int RF>
 inline cudaError_t carry_launch_grain(const CarryParams& p, int owners, int bh,
                                       cudaStream_t stream) {
   using BP = BoxPlan<D, DV, W>;
-  const auto fn = carry_kernel<D, DV, W, GR, GW>;
+  const auto fn = carry_kernel<D, DV, W, GR, GW, RF>;
   static bool configured = false;
   if (!configured) {
     const cudaError_t e =
@@ -38,10 +38,13 @@ inline cudaError_t carry_launch(const CarryParams& p, int owners, int bh, cudaSt
   cudaError_t e = cudaErrorInvalidValue;
   rola::static_for<BP::kGrainCases>([&](auto Rc) {
     rola::static_for<BP::kGrainCases>([&](auto Wc) {
-      constexpr int gr = BP::kGrainBitsMin + decltype(Rc)::value;
-      constexpr int gw = BP::kGrainBitsMin + decltype(Wc)::value;
-      if (p.readout_grain_bits == gr && p.fold_grain_bits == gw)
-        e = carry_launch_grain<D, DV, W, gr, gw>(p, owners, bh, stream);
+      rola::static_for<kReadForms>([&](auto Fc) {
+        constexpr int gr = BP::kGrainBitsMin + decltype(Rc)::value;
+        constexpr int gw = BP::kGrainBitsMin + decltype(Wc)::value;
+        constexpr int rf = decltype(Fc)::value;
+        if (p.readout_grain_bits == gr && p.fold_grain_bits == gw && p.read_form == rf)
+          e = carry_launch_grain<D, DV, W, gr, gw, rf>(p, owners, bh, stream);
+      });
     });
   });
   return e;
@@ -51,8 +54,9 @@ template <int D, int DV, int W>
 inline ArmCensus carry_census() {
   using BP = BoxPlan<D, DV, W>;
   cudaFuncAttributes a{};
-  cudaFuncGetAttributes(&a, carry_kernel<D, DV, W, BP::kGrainBitsMin + BP::kGrainCases - 1,
-                                         BP::kGrainBitsMin + BP::kGrainCases - 1>);
+  cudaFuncGetAttributes(&a,
+                        carry_kernel<D, DV, W, BP::kGrainBitsMin + BP::kGrainCases - 1,
+                                     BP::kGrainBitsMin + BP::kGrainCases - 1, kReadFormStreams>);
   return ArmCensus{(int)a.numRegs,
                    0,
                    0,

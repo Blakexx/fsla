@@ -487,6 +487,71 @@ Flagship arm, sm_86, `tools/probe_cells.py` against the shipped body at the same
   instructions or spilled gave the saving back. At one trip the sparse cells gain 3-5%
   and dense 1-2%, at 1K and 64K alike.
 
+<a id="read-order"></a>
+## The read order: the read side's own carve
+
+The box's leaves have one physical order, the canonical index the region's rows and the
+state's pages follow, with the innermost level the fast digit. The READ side reads its
+leaves in ITS OWN order (`ReadOrder`): the side's carve order from the mode word, rank 0
+innermost. A read-order k-step is sixteen leaves that differ in the rank-0 level's digit
+only, so it runs along that level and takes one digit at each other level, and a read
+stream is a run of read-order leaves. Declaring a level sparse ranks it outermost on that
+side, so a k-step runs along the dense levels and streams are cut along the sparse ones.
+
+Why it exists: the alternating draw is read-sparse on level 1, the physical innermost. In
+the canonical order a k-step is one level-0 digit by all sixteen level-1 digits, so a live
+token is live in every stream and uses one leaf of every k-step, and no order of positions
+can reach that waste -- it sits inside the MMA's K. In the read order the same token is live
+in about one stream and every k-step of it. The host's carve function refuses to divide the
+physical innermost level below a page rectangle, which is right for the fold and the
+sweeps and has nothing to say about which sixteen rows a readout k-step gathers, so the
+read side takes its order from `level_at` directly and maps read-order leaves to physical
+rows itself: the memo's rows and columns (`derive_read_memo`) and the read side's walk
+(`stream_masks` with the read side's `shift`) are the only two places the order enters.
+
+<a id="box-words"></a>
+## The box words
+
+One side's class-1 words for one window -- every digit row of the box, a word per round,
+`kBoxRows * kRounds * 4` bytes -- staged into shared memory a slot ahead by `cp.async`
+(`stage_box_words`): the read side's for the window after under the fold, the write side's
+for this window under the readout, one buffer, each landed by the phase's own fill wait
+and read after its edge. The cover walk (`stream_masks`) is then shared-memory ORs over a
+run's rows and ANDs across levels, and nothing at a cover slot reads global memory.
+
+<a id="stream-form"></a>
+## PHASE 1: the stream form
+
+Selected per launch by the read form (`CarryParams::read_form`, a template axis of the
+kernel symbol beside the grains): the position carve at one stream, the stream form where
+the read side has a sparse level (`CarrySchedule.resolved`). In the stream form a warp OWNS
+a read stream, a sub-box of the read order, `kKs` k-steps of the box:
+
+* THE K-STEP WORDS. The read walk always walks the finest grain, one k-step at a time, and
+  stores each k-step's live word (`kstep_words`); a stream's word is the OR of its k-steps'
+  words, made by the same warp. The fill records each slot's K-STEP MASK from those words
+  (`pool_groups`) and mints the READ SIDE'S LISTS (`pool_list_read`), one a stream, the
+  batch's slots live in it by rank -- the write side's list machinery on the read side.
+* THE RESIDENT SLABS. At the phase's start the warp loads its stream's B fragments for
+  every m-tile and the mass rows from the region through the memo, `kKs * kMassTile * 4`
+  registers, and keeps them for the window. No B row moves inside a batch.
+* THE TILE WALK. A batch's list is walked in tiles of sixteen: the tile's coefficients by
+  `tile_gather` from the three pool rows a lane's fragments take, its ids to the staging
+  tile, its live k-steps the OR of its slots' masks by one ballot a k-step, and the MMAs
+  from a compiled body per live pattern (`tile_mmas<Live>`), so no MMA is issued for a
+  dead k-step. Every slot in the tile is live for this stream, so the tile is dense up to
+  the k-step a token does not need; only the list's tail is padded, with the dead row.
+* THE TILE OUT. Each tile's rows leave through the warp's staging tile at the line law
+  before the next tile: a segment staged, its groups drained, the mass with the first.
+  One outbound row per (position, stream); the multiplicity is the reductions' growth,
+  about 1.1 at alt-k4 and eight at dense, which is why dense keeps the position carve.
+
+Measured 2026-09-05 (journal section 35), interleaved against the position carve: alt-k4
+MMAs 700K -> 215K, reductions 124K -> 136K; nl64k-alt-k4 9.61 -> 7.83 ms, flagship-alt-k16
+0.308 -> 0.263, alt-k4 0.154 -> 0.139; cohort-k4 0.096 -> 0.102 (clustered tokens are
+live in several streams). The 64K sparse window is then fills 20%, edge skew 17%, walk and
+words 15%, MMA 9%, drains 6%: the fixed per-window cost is the remaining problem.
+
 <a id="streams"></a>
 ## The sparse form: streams keyed on leaf ranges
 

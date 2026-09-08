@@ -31,6 +31,13 @@ struct CarryParams {
   //: `G` per side, as log2 LEAVES. -- see docs/internals/carry/carry_kernel.md#streams
   int readout_grain_bits;
   int fold_grain_bits;
+  //: THE READ FORM: the position carve at one stream, or the stream form.
+  //: -- see docs/internals/carry/carry_kernel.md#stream-form
+  int read_form;
 };
+
+constexpr int kReadFormPosition = 0;
+constexpr int kReadFormStreams = 1;
+constexpr int kReadForms = 2;
 
 }  // namespace rola::carry

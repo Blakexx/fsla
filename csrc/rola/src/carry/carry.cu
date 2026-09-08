@@ -48,10 +48,12 @@ void refuse_shape(const std::vector<int64_t>& widths, int64_t dv, int64_t page_b
 //: THE SCHEDULE DIALS AS THE CALL SPELLS THEM: the primitive ledger's class 3, in one list --
 //: [read grain, fold grain], the grains in LEAVES. -- see docs/internals/carry/carry.md#schedule
 void refuse_schedule(const std::vector<int64_t>& schedule, int dv, int warps_per_cta) {
-  TORCH_CHECK(schedule.size() == 2,
-              "the schedule names the read side's stream grain and the fold's pass grain -- "
-              "[read grain, fold grain] -- and this call passed ",
+  TORCH_CHECK(schedule.size() == 3,
+              "the schedule names the read side's stream grain, the fold's pass grain and the "
+              "read form -- [read grain, fold grain, read form] -- and this call passed ",
               schedule.size(), " entries");
+  TORCH_CHECK(schedule[2] == kReadFormPosition || schedule[2] == kReadFormStreams,
+              "the read form is 0 (the position carve) or 1 (the stream form), got ", schedule[2]);
   const int box = leaves_per_warp(dv);
   (void)warps_per_cta;
   for (int side = 0; side < 2; ++side) {
@@ -151,6 +153,7 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
   p.liveness_words = (int)words;
   p.readout_grain_bits = geom_ilog2((int)schedule[0]);
   p.fold_grain_bits = geom_ilog2((int)schedule[1]);
+  p.read_form = (int)schedule[2];
 
   const auto stream = at::cuda::getCurrentCUDAStream();
   cudaError_t status = cudaSuccess;

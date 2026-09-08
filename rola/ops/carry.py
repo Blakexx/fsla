@@ -131,6 +131,19 @@ class CarrySchedule:
 
     readout_grain: int | None = None
     fold_grain: int | None = None
+    #: THE READ FORM: ``READ_FORM_POSITION`` (the position carve, one stream spanning the
+    #: box) or ``READ_FORM_STREAMS`` (a warp its read stream, its list, its resident slabs).
+    #: ``None`` takes the mode word's answer: streams where the read side has a sparse
+    #: level, the position carve otherwise. -- docs/internals/carry/carry_kernel.md#stream-form
+    read_form: int | None = None
+
+    def resolved(self, level_modes: int) -> CarrySchedule:
+        if self.read_form is not None:
+            return self
+        sparse = any((level_modes >> (2 * level)) & SIDE_SPARSE[0]
+                     for level in range(MAX_LEVELS))
+        return CarrySchedule(self.readout_grain, self.fold_grain,
+                             READ_FORM_STREAMS if sparse else READ_FORM_POSITION)
 
     def flat(self, DV: int, grain_min: int) -> list[int]:
         """The two entries the kernel boundary takes: the read grain, then the fold's."""
@@ -150,7 +163,7 @@ class CarrySchedule:
         if self.readout_grain is None:
             read = min(box, max(PAGE_LEAVES, grain_min))
         fold = lawful("fold_grain", box if self.fold_grain is None else int(self.fold_grain))
-        return [read, fold]
+        return [read, fold, int(self.read_form)]
 
 
 #: THE MODE WORD'S ENCODING, as `csrc/rola/src/common/geom.cuh` spells it and
@@ -158,6 +171,9 @@ class CarrySchedule:
 #: there, bit 1 the WRITE side. Named here rather than imported because `rola.ops.intra`
 #: imports this module.
 SIDE_SPARSE: tuple[int, int] = (1, 2)
+READ_FORM_POSITION: int = 0
+READ_FORM_STREAMS: int = 1
+MAX_LEVELS: int = 4
 
 
 def reaping_bound(descriptor: StateFormat, level_modes: int) -> int:
@@ -185,9 +201,8 @@ def select_schedule(descriptor: StateFormat, level_modes: int = 0) -> CarrySched
     where a finer grain wins names the schedule outright; ``level_modes`` is accepted so the
     rule keeps the seam a density-dependent rule would need.
     """
-    del level_modes
     box = leaves_per_warp(descriptor.DV)
-    return CarrySchedule(readout_grain=box, fold_grain=box)
+    return CarrySchedule(readout_grain=box, fold_grain=box).resolved(level_modes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,6 +472,7 @@ def carry_forward(routes: RoutePlanes, v: torch.Tensor, *, descriptor: StateForm
     den = torch.zeros((bh, length), dtype=torch.float32, device=v.device)
     if schedule is None:
         schedule = select_schedule(descriptor, geometry.level_modes)
+    schedule = schedule.resolved(geometry.level_modes)
     extension().carry_forward(
         routes.read, routes.write, routes.gain, v, num, den,
         list(descriptor.B), int(descriptor.DV), int(descriptor.page_bits),

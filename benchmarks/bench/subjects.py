@@ -80,7 +80,9 @@ def _carry_schedule(name: str, spec):
             fold = min(int(part[1:]), box)
         else:
             raise ValueError(f"schedule {name!r}: {part!r} is neither gN nor fM")
-    return carry_ops.CarrySchedule(readout_grain=read, fold_grain=fold)
+    return carry_ops.CarrySchedule(
+        readout_grain=read, fold_grain=fold,
+        read_form=carry_ops.READ_FORM_POSITION if form == "box" else carry_ops.READ_FORM_STREAMS)
 
 
 def carry_forward(fx) -> Arm:
