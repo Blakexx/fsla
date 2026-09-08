@@ -211,6 +211,8 @@ def parse_binary_spec(spec: str) -> dict:
             f"--binary needs worktree:PATH,venv:PATH (got {spec!r})")
     out.setdefault("label", Path(out["worktree"]).name)
     out.setdefault("schedule", "box")
+    #: A LANE is a binary and a bench; `bench:` on a lane overrides the run's `--bench`, so
+    #: one interleaved, clock-locked run can hold several subjects (`tools/compare.py`).
     return out
 
 
@@ -361,7 +363,8 @@ def interleaved_rounds(binaries: list[dict], bench: str, cells: list[str], reps:
     for index in range(rounds):
         order = binaries if index % 2 == 0 else list(reversed(binaries))
         for binary in order:
-            payload = run_worker(binary, bench, cells, reps, warmup, lock_path, state)
+            payload = run_worker(binary, binary.get("bench", bench), cells, reps, warmup,
+                                 lock_path, state)
             per_binary[binary["label"]].append({"round": index, **payload})
     return per_binary
 
@@ -449,7 +452,7 @@ def record(binaries, results, args) -> None:
                 extra["rola_file"] = str(Path(entry["rola_file"]).resolve().relative_to(
                     Path(entry["worktree"]).resolve()))
             rows.append(store.build_result(
-                run, kind="probe", cell=entry["cell"], arm=args.bench,
+                run, kind="probe", cell=entry["cell"], arm=entry["bench"],
                 metric="duration_median_ms", value=entry["median_of_round_medians_ms"],
                 unit="ms", extra=extra))
         print(f"record: {binary['label']} -> {store.write_run(run, rows)} "
@@ -466,8 +469,9 @@ def main() -> None:
     from bench.driver import CELLS
     from bench.subjects import SUBJECTS
 
-    if args.bench not in SUBJECTS:
-        ap.error(f"unknown bench {args.bench!r}; registered: {sorted(SUBJECTS)}")
+    for name in [args.bench] + [b["bench"] for b in args.binary if "bench" in b]:
+        if name not in SUBJECTS:
+            ap.error(f"unknown bench {name!r}; registered: {sorted(SUBJECTS)}")
     cells = args.cells.split(",")
     for cell in cells:
         if cell not in CELLS:
@@ -482,7 +486,7 @@ def main() -> None:
         binary["git_sha"] = git_sha(binary["worktree"])
         print(f"BINARY {binary['label']}: worktree={binary['worktree']} "
               f"venv={binary['venv']} sha={binary['git_sha']} "
-              f"schedule={binary.get('schedule', 'box')}")
+              f"schedule={binary.get('schedule', 'box')} bench={binary.get('bench', args.bench)}")
     print(f"STATE ARM: {args.state}")
 
     def read_ghz():
@@ -512,7 +516,7 @@ def main() -> None:
             entry = {"binary": binary["label"], "worktree": binary["worktree"],
                      "venv": binary["venv"], "git_sha": binary["git_sha"], "tree_sha256": tree,
                      "cell": cell,
-                     "bench": args.bench, "state_arm": args.state,
+                     "bench": binary.get("bench", args.bench), "state_arm": args.state,
                      "schedule": binary.get("schedule", "box"),
                      "reps": args.reps, "warmup": args.warmup, "n_rounds": args.rounds,
                      **{k: stamp.get(k) for k in
@@ -547,7 +551,7 @@ def main() -> None:
         prefix = args.out.rsplit(".", 1)[0] if args.out else "/tmp/probe_cells_ncu"
         for binary in args.binary:
             for cell in cells:
-                row = run_ncu_cell(binary, args.bench, subject.symbol, cell, args.lock,
+                row = run_ncu_cell(binary, binary.get("bench", args.bench), SUBJECTS[binary.get("bench", args.bench)].symbol, cell, args.lock,
                                    prefix, args.state)
                 for result in results:
                     if result["binary"] == binary["label"] and result["cell"] == cell:

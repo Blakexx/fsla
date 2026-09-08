@@ -150,6 +150,32 @@ def intra_forward(fx) -> Arm:
     return Arm(name=f"intra_forward|{spec.name}", call=run)
 
 
+def prefill_op(fx) -> Arm:
+    """THE WHOLE ROLA OP, as the layer calls it: `rola.ops.prefill` over the cell's drawn
+    routes, gain and values -- the liveness pass, the carry and the intra, and the op's own
+    packing of its per-level inputs -- against one `flash_attn_func` call. The support words
+    are the producer's output by the op's contract, so they are built once here, as the
+    producer would have emitted them, and never inside the timed call.
+    """
+    from benchmarks.cells import realize
+    from rola.ops import intra as intra_ops
+    from rola.ops import prefill as prefill_ops
+
+    spec = fx["cell"]
+    drawn = realize(spec)
+    modes = _modes_of(spec)
+    D = len(drawn.read)
+    width = intra_ops._shipped_level_width(D, prefill_ops.WINDOW)
+    sread = intra_ops.pack_support(intra_ops.pad_routes(drawn.read, (width,) * D))
+    swrite = intra_ops.pack_support(intra_ops.pad_routes(drawn.write, (width,) * D))
+
+    def run():
+        return prefill_ops.prefill(drawn.read, drawn.write, drawn.gain, drawn.v, list(spec.widths),
+                                   modes=modes, sread=sread, swrite=swrite)
+
+    return Arm(name=f"prefill_op|{spec.name}", call=run)
+
+
 def attention_reference(fx) -> Arm:
     """THE REFERENCE the carry is measured against: causal attention at the cell's own point
     -- one head of width `dv`, `L` tokens, bf16 -- through torch's FLASH backend, which is
@@ -289,6 +315,10 @@ SUBJECTS = {
     "intra_forward": Subject("intra_forward", "carry", intra_forward,
                              "the within-window term at the shared window",
                              symbol="intra_kernel", stamp="intra_build_stamp"),
+    "prefill_op": Subject("prefill_op", "carry", prefill_op,
+                          "the whole RoLA prefill op as the layer calls it: liveness, carry, "
+                          "intra and the op's packing",
+                          symbol="carry_kernel", stamp="carry_build_stamp"),
     "attention_reference": Subject("attention_reference", "carry", attention_reference,
                                    "causal FlashAttention at the cell's L and dv, one head",
                                    symbol="flash_fwd_kernel", stamp="csrc_build_stamp"),

@@ -56,11 +56,17 @@ void check_support(const at::Tensor& t, const char* name, int64_t bh, int64_t L,
 template <int D, int B, int W>
 void launch(const detail::IntraParams& p, int64_t bh, int64_t windows, cudaStream_t stream) {
   constexpr int kSmem = (int)sizeof(detail::IntraSmem<D, B, W>);
-  const int optin = at::cuda::getCurrentDeviceProperties()->sharedMemPerBlockOptin;
-  TORCH_CHECK(kSmem <= optin, "the intra arm's ", kSmem,
-              "-byte block footprint exceeds this device's ", optin, "-byte opt-in limit");
-  C10_CUDA_CHECK(cudaFuncSetAttribute(detail::intra_kernel<D, B, W>,
-                                      cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
+  //: ONCE per instantiation: the attribute call is a millisecond of host time on the launch
+  //: path, paid every call when it sat here unguarded (2026-09-08).
+  static bool configured = false;
+  if (!configured) {
+    const int optin = at::cuda::getCurrentDeviceProperties()->sharedMemPerBlockOptin;
+    TORCH_CHECK(kSmem <= optin, "the intra arm's ", kSmem,
+                "-byte block footprint exceeds this device's ", optin, "-byte opt-in limit");
+    C10_CUDA_CHECK(cudaFuncSetAttribute(detail::intra_kernel<D, B, W>,
+                                        cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
+    configured = true;
+  }
   const dim3 grid((unsigned)windows, (unsigned)bh, 1);
   detail::intra_kernel<D, B, W><<<grid, detail::threads_of(W), kSmem, stream>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
