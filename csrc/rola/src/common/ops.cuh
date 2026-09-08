@@ -339,6 +339,14 @@ __device__ __forceinline__ uint2 load_shared_u64(SmemAddr a) {
   return v;
 }
 
+__device__ __forceinline__ uint4 load_shared_u128(SmemAddr a) {
+  uint4 v;
+  asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+               : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
+               : "r"(a));
+  return v;
+}
+
 //: ONE 16-BYTE QUANTUM from shared memory. -- see docs/internals/common/ops.md#load-shared-v4
 __device__ __forceinline__ uint4 load_shared_v4(SmemAddr a) {
   uint4 v;

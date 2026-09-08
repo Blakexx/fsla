@@ -47,7 +47,7 @@ its loop bounds and fill parameters in the UNIFORM TABLES (`Smem::union_words`,
 `union_prefix`, `stream_base`, `stream_end`; `kUniformOffset`), written by every warp alike
 and read at one shared address, which it does trust; takes its warp index from
 `ops::uniform_warp` (three ballots on the thread index's bits); and writes its lane-conditional
-loops (`union_word`, `stream_masks`) as uniform loops with the lane's part in a predicate.
+loops (`union_word`, `stream_masks_at`) as uniform loops with the lane's part in a predicate.
 
 <a id="edges"></a>
 ## The three edges, and why there are exactly three
@@ -478,14 +478,11 @@ Flagship arm, sm_86, `tools/probe_cells.py` against the shipped body at the same
 * THE BATCH EDGE shows on the sparse cells (12% barrier in the readout at alt-k4): a slice's
   live streams differ across warps, and the batch line waits for the longest. That is the
   position carve's imbalance, and it is the one cost the list form did not have.
-* THE COVER-WORD WALK (`stream_masks`) issues every level's run of words in ONE TRIP --
-  sixteen a run under a uniform branch, a short run predicating its first eight, one
-  stepped pointer a run so a load costs one add -- and ORs nothing until every load is out.
-  Measured 2026-09-04 with cycle counters: the rows are L2 hits at every length (a trip
-  of eight is ~450 cycles with eight warps walking), the walk was four trips and ~2,000
-  cycles a side per window, and forms that collapsed the trips but multiplied the address
-  instructions or spilled gave the saving back. At one trip the sparse cells gain 3-5%
-  and dense 1-2%, at 1K and 64K alike.
+* THE COVER-WORD WALK reads the box words in shared memory (`#box-words`), every level's
+  rows in one flight, compile-time shaped (`stream_masks_at`). Its global-memory
+  ancestor was measured 2026-09-04 at ~2,000 cycles a side per window, four L2 round
+  trips of ~450 with eight warps walking; the shared-memory walk is ~1,200 and ~700 for
+  the read and write sides (journal section 36).
 
 <a id="read-order"></a>
 ## The read order: the read side's own carve
@@ -507,7 +504,7 @@ physical innermost level below a page rectangle, which is right for the fold and
 sweeps and has nothing to say about which sixteen rows a readout k-step gathers, so the
 read side takes its order from `level_at` directly and maps read-order leaves to physical
 rows itself: the memo's rows and columns (`derive_read_memo`) and the read side's walk
-(`stream_masks` with the read side's `shift`) are the only two places the order enters.
+(`read_kstep_masks`, the read side's shape of `stream_masks_at`) are the only two places the order enters.
 
 <a id="box-words"></a>
 ## The box words
@@ -516,7 +513,7 @@ One side's class-1 words for one window -- every digit row of the box, a word pe
 `kBoxRows * kRounds * 4` bytes -- staged into shared memory a slot ahead by `cp.async`
 (`stage_box_words`): the read side's for the window after under the fold, the write side's
 for this window under the readout, one buffer, each landed by the phase's own fill wait
-and read after its edge. The cover walk (`stream_masks`) is then shared-memory ORs over a
+and read after its edge. The cover walk (`stream_masks_at`) is then shared-memory ORs over a
 run's rows and ANDs across levels, and nothing at a cover slot reads global memory.
 
 <a id="stream-form"></a>
@@ -532,19 +529,26 @@ a read stream, a sub-box of the read order, `kKs` k-steps of the box:
   words, made by the same warp. The fill records each slot's K-STEP MASK from those words
   (`pool_groups`) and mints the READ SIDE'S LISTS (`pool_list_read`), one a stream, the
   batch's slots live in it by rank -- the write side's list machinery on the read side.
-* THE RESIDENT SLABS. At the phase's start the warp loads its stream's B fragments for
-  every m-tile and the mass rows from the region through the memo, `kKs * kMassTile * 4`
-  registers, and keeps them for the window. No B row moves inside a batch.
-* THE TILE WALK. A batch's list is walked in tiles of sixteen: the tile's coefficients by
-  `tile_gather` from the three pool rows a lane's fragments take, its ids to the staging
-  tile, its live k-steps the OR of its slots' masks by one ballot a k-step, and the MMAs
-  from a compiled body per live pattern (`tile_mmas<Live>`), so no MMA is issued for a
-  dead k-step. Every slot in the tile is live for this stream, so the tile is dense up to
-  the k-step a token does not need; only the list's tail is padded, with the dead row.
+* THE DEAL. A batch's tiles -- sixteen slots of one stream's list -- are numbered across
+  the streams (lane `s` holds stream `s`'s tile count and prefix) and warp `w` takes every
+  `kWarps`-th, so the warps' loads match to a tile on every draw; a warp is not tied to a
+  stream. Each tile's B rows come from the region through the memo, 4 KB a tile, the
+  position carve's ratio. (A resident-slab form, a warp its own stream's B for the window,
+  measured 2-5% faster on the alternating cells and 11% slower on the cohort ones, where a
+  window's tokens share a stream and one warp held the whole list.)
+* THE TILE WALK. The tile's coefficients by `tile_gather` from the three pool rows a lane's
+  fragments take, its ids to the staging tile, its live k-steps the OR of its slots' masks
+  by one ballot a k-step, and the MMAs from a compiled body per live pattern
+  (`tile_mmas<Live>`), so no MMA is issued for a dead k-step. Every slot in the tile is
+  live for this stream, so the tile is dense up to the k-step a token does not need; only
+  the list's tail is padded, with the dead row.
 * THE TILE OUT. Each tile's rows leave through the warp's staging tile at the line law
-  before the next tile: a segment staged, its groups drained, the mass with the first.
-  One outbound row per (position, stream); the multiplicity is the reductions' growth,
-  about 1.1 at alt-k4 and eight at dense, which is why dense keeps the position carve.
+  before the next tile: a segment staged, drained whole (`drain_segment`: the ids and the
+  sixteen values in flight before the first reduction), the mass with the first. One
+  outbound row per (position, stream); the multiplicity is the reductions' growth, about
+  1.1 at alt-k4 and eight at dense, which is why dense keeps the position carve. The drain
+  is bound by the reductions' own rate, about 37 cycles a line an SM: a k4 window's 256
+  lines a CTA are near a floor for fp32 rows.
 
 Measured 2026-09-05 (journal section 35), interleaved against the position carve: alt-k4
 MMAs 700K -> 215K, reductions 124K -> 136K; nl64k-alt-k4 9.61 -> 7.83 ms, flagship-alt-k16
@@ -570,7 +574,7 @@ factorises exactly:
     live(token, stream) = AND over levels l of ( OR over the run of digits d at level l
                                                 of liveness[side][row_base(l) + d][token] )
 
-`stream_masks` folds it once per stream per window, one lane per 32-token word, `sum_l cnt_l`
+`stream_masks_at` folds it once per stream per window, one lane per 32-token word, `sum_l cnt_l`
 coalesced word loads (17 at the flagship: sixteen innermost digits and one outer digit). A
 dead pair is then never staged, never expanded, never sent and never MMA'd — and the term it
 would have contributed was exactly `+0.0f`, because a dead digit's amplitude is exactly zero
@@ -578,7 +582,12 @@ by the liveness pass's own predicate. THE REAP CHANGES NO SUM.
 
 THE COMPACTION IS THE POOL'S. Each side has its pool of rows by rank (`#pool`), filled by
 the same walk from the side's live words that its cover slot writes (`cover_live_words`:
-each stream's word per round and its exclusive prefix). On the write side the walk mints
+each stream's word per round and its exclusive prefix, ROUND-MAJOR, so a lane that answers
+for a round takes every stream's word as vector loads and the fill's minting reads a
+position's tables in three of them). The walk itself is compile-time shaped
+(`stream_masks_at`): a level's run is the grain less the level's bit offset in the side's
+order, so every row of every level loads in one flight, the read side's run level chosen
+by one uniform branch. On the write side the walk mints
 each stream's list of pool slots as it copies, and a stream's pass walks its list in whole
 tiles, the tail padded to the dead row. On the read side the slice IS the tile and the
 words answer the one question the readout asks, how many of a stream's positions fall in a
