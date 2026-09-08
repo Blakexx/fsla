@@ -287,7 +287,7 @@ the window's live count fits:
 
     the union's words and their prefix, once            -- every warp, one lane per round
     for each batch of kPoolPos live ranks:
-      pool_fill_round, each round by its owner warp      -- the round's live positions in the batch
+      pool_fill_rounds, each round by its owner warp     -- the round's live positions in the batch
       cp.async.wait_group 0; bar.sync kFoldRound         -- every row visible to every warp
       pool_pass per box the warp owns                    -- its list, its tiles, its tail padded
       bar.sync kFoldRound                                -- the rows are dead before the next batch's fill
@@ -319,11 +319,17 @@ round-major table one word at a time shares two banks sixteen ways) and scans it
 among the CTA's live positions less the batch's base. A window whose live count fits
 `kPoolPos` is one batch; the pool fills as far as there are rows to fill.
 
-THE FILL HAS NO CURSOR: round `r` is copied by warp `r mod kWarps` (`pool_fill_round`), four
-live positions per step -- lane group `g` takes the g-th remaining live bit -- and each position
-by eight lanes (`pool_copy_position`): the value row's eight quanta and every amplitude run
-by `cp.async` at the widest quantum their stride admits -- nothing on the fill's path waits on
-a global load. THE GAIN IS THE GATHER'S: cover slot B copies the window's gains into a table
+THE FILL HAS NO CURSOR: round `r` is copied by warp `r mod kWarps` (`pool_fill_rounds`), and
+a warp takes its two rounds ABREAST -- their live lanes compacted into the two halves of its
+scratch, a position of each round per step (lane group `g` takes the g-th remaining live bit
+of each), the ranks and the list writes of both interleaved -- because one round alone is a
+chain of shared loads, edges and address arithmetic (about 1,200 cycles for 150 instructions)
+that the warp's siblings, on the same chain, do not cover; the list tables load after the
+copies so they are not live across them. Each position is copied by eight lanes
+(`pool_copy_position`): the value row's eight quanta and every amplitude run by `cp.async`
+at the widest quantum their stride admits -- nothing on the fill's path waits on a global
+load. The sixteen-stream side, whose lists are a runtime loop, fills a round at a time
+(`fill_pairs`): both keep that symbol under the cliff. THE GAIN IS THE GATHER'S: cover slot B copies the window's gains into a table
 (`stage_gain_table`, `kGainTableOffset`), the fill writes each position's gain beside its rows
 (`pool_gain`, from the table by round and lane), and the gather folds the two tokens a register
 holds into the outermost run's digit it already multiplies -- one packed multiply per slice

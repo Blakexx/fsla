@@ -459,107 +459,152 @@ __device__ __forceinline__ void pool_copy_position(const CarryParams& p, const S
   });
 }
 
-//: ONE ROUND'S FILL, by the round's OWNER warp: the round's live lanes rank themselves once
-//: into the warp's scratch, four positions per step, eight lanes to a position, those whose
-//: slot falls in the batch. THE SAME WALK MINTS THE LISTS (`Lists`) and, on the read side,
-//: records each slot's k-step mask. -- see docs/internals/carry/carry_kernel.md#fill
-template <class BP, int D, int Side, bool Lists, int NStreams>
-__device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem<BP>& sm,
-                                                const int (&abase)[D], int warp, int lane, int bh,
-                                                int t0, int round, uint32_t live, int prefix,
-                                                int base) {
+//: THE FILL'S PAIRING: rounds two abreast where the lists are static tables (eight streams
+//: or fewer), one at a time where they are the runtime loop.
+template <int NStreams>
+constexpr bool fill_pairs() {
+  return NStreams <= 8;
+}
+
+template <class BP, int NStreams>
+constexpr int fill_step() {
+  return fill_pairs<NStreams>() ? 2 * BP::kWarps : BP::kWarps;
+}
+
+//: THE FILL OF A WARP'S ROUNDS: round `round` and, `Pair`, round `round + kWarps` with it,
+//: their chains abreast -- a position of each a copy step, the ranks and the lists of both
+//: interleaved -- because a round alone is a chain the warp's siblings do not cover. The
+//: second round is absent (`live1 == 0`) at a window's tail. `Pair` follows the lists' form
+//: (`fill_pairs`). -- see docs/internals/carry/carry_kernel.md#fill
+template <class BP, int D, int Side, bool Lists, int NStreams, bool Pair>
+__device__ __forceinline__ void pool_fill_rounds(const CarryParams& p, const Smem<BP>& sm,
+                                                 const int (&abase)[D], int warp, int lane, int bh,
+                                                 int t0, int round, uint32_t live0, int prefix0,
+                                                 uint32_t live1, int prefix1, int base) {
   static_assert(NStreams % 4 == 0 && NStreams <= BP::kSideStreams, "the tables load as quads");
+  static_assert(BP::kFillScratchBytes >= 4 * ops::kBallotLanes, "two rounds of lanes fit");
   unsigned short* const scratch = sm.fill_scratch(Side, warp);
-  const int n = __popc(live);
-  //: THE ROUND'S TABLES, in flight before the copies: every stream's word, prefix and base
-  //: for this lane's round, and the k-step words for the mask.
-  uint32_t sw[NStreams];
-  unsigned short spre[NStreams];
-  int sbase[NStreams];
-  uint32_t kw[BP::kKb];
+  const int round1 = round + BP::kWarps;
+  const int n0 = __popc(live0), n1 = Pair ? __popc(live1) : 0;
+  //: the read side's k-step words, reduced at once to the lane's masks.
+  uint32_t ksteps0 = 0u, ksteps1 = 0u;
+  if constexpr (Side == rola::facts::kRead) {
+    static_assert(BP::kKb % 4 == 0, "the k-step words load as quads");
+    rola::static_for<Pair ? 2 : 1>([&](auto Rc) {
+      constexpr int i = decltype(Rc)::value;
+      const int r = i == 0 ? round : round1;
+      uint32_t ks = 0u;
+      rola::static_for<BP::kKb / 4>([&](auto Qc) {
+        constexpr int q = decltype(Qc)::value;
+        const uint4 w = reinterpret_cast<const uint4*>(sm.kstep_words(r))[q];
+        ks |= ((w.x >> lane) & 1u) << (4 * q) | ((w.y >> lane) & 1u) << (4 * q + 1)
+              | ((w.z >> lane) & 1u) << (4 * q + 2) | ((w.w >> lane) & 1u) << (4 * q + 3);
+      });
+      (i == 0 ? ksteps0 : ksteps1) = ks;
+    });
+  }
+  //: the live lanes of each round, compacted: round 0's in the scratch's first half, round
+  //: 1's in its second.
+  if ((live0 >> lane) & 1u) scratch[__popc(live0 & ops::lanes_below())] = (unsigned short)lane;
+  if (Pair && ((live1 >> lane) & 1u))
+    scratch[ops::kBallotLanes + __popc(live1 & ops::lanes_below())] = (unsigned short)lane;
+  warp_edge(warp);
+  const int g = lane >> 3, sub = lane & 7;
+  const int nmax = n0 > n1 ? n0 : n1;
+  //: a position of each round a step, the two address chains in flight together.
+#pragma unroll 1
+  for (int s = 0; s < nmax; s += 4) {
+    const int idx = s + g;
+    if (idx < n0) {
+      const int slot = prefix0 + idx - base;
+      if (slot >= 0 && slot < pool_positions_of<BP, Side>())
+        pool_copy_position<BP, D, Side>(p, sm, abase, sub, bh,
+                                        t0 + round * kRoundTokens + (int)scratch[idx], slot);
+    }
+    if (Pair && idx < n1) {
+      const int slot = prefix1 + idx - base;
+      if (slot >= 0 && slot < pool_positions_of<BP, Side>())
+        pool_copy_position<BP, D, Side>(
+            p, sm, abase, sub, bh,
+            t0 + round1 * kRoundTokens + (int)scratch[ops::kBallotLanes + idx], slot);
+    }
+  }
+
+  //: THE LIST TABLES, after the copies so they are not live across them: a stream's word
+  //: per round and its list offset -- prefix less base -- per round.
+  uint32_t sw[2][NStreams];
+  int soff[2][NStreams];
   if constexpr (Lists && NStreams <= 8) {
+    int sbase[NStreams];
     rola::static_for<NStreams / 4>([&](auto Qc) {
       constexpr int q = decltype(Qc)::value;
-      const uint4 w = reinterpret_cast<const uint4*>(sm.stream_words(Side, round))[q];
-      sw[4 * q] = w.x, sw[4 * q + 1] = w.y, sw[4 * q + 2] = w.z, sw[4 * q + 3] = w.w;
       const int4 b = reinterpret_cast<const int4*>(sm.stream_base(Side))[q];
       sbase[4 * q] = b.x, sbase[4 * q + 1] = b.y, sbase[4 * q + 2] = b.z, sbase[4 * q + 3] = b.w;
     });
-    rola::static_for<NStreams / 8>([&](auto Qc) {
-      constexpr int q = decltype(Qc)::value;
-      const uint4 w = reinterpret_cast<const uint4*>(sm.stream_prefix(Side, round))[q];
-      const uint32_t v[4] = {w.x, w.y, w.z, w.w};
-      rola::static_for<8>([&](auto Jc) {
-        constexpr int j = decltype(Jc)::value;
-        spre[8 * q + j] = (unsigned short)(v[j / 2] >> (16 * (j & 1)));
+    rola::static_for<Pair ? 2 : 1>([&](auto Rc) {
+      constexpr int i = decltype(Rc)::value;
+      const int r = i == 0 ? round : round1;
+      rola::static_for<NStreams / 4>([&](auto Qc) {
+        constexpr int q = decltype(Qc)::value;
+        const uint4 w = reinterpret_cast<const uint4*>(sm.stream_words(Side, r))[q];
+        sw[i][4 * q] = w.x, sw[i][4 * q + 1] = w.y, sw[i][4 * q + 2] = w.z, sw[i][4 * q + 3] = w.w;
+      });
+      rola::static_for<NStreams / 8>([&](auto Qc) {
+        constexpr int q = decltype(Qc)::value;
+        const uint4 w = reinterpret_cast<const uint4*>(sm.stream_prefix(Side, r))[q];
+        const uint32_t v[4] = {w.x, w.y, w.z, w.w};
+        rola::static_for<8>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          soff[i][8 * q + j] = (int)(v[j / 2] >> (16 * (j & 1)) & 0xFFFFu) - sbase[8 * q + j];
+        });
       });
     });
   }
-  if constexpr (Side == rola::facts::kRead) {
-    static_assert(BP::kKb % 4 == 0, "the k-step words load as quads");
-    rola::static_for<BP::kKb / 4>([&](auto Qc) {
-      constexpr int q = decltype(Qc)::value;
-      const uint4 w = reinterpret_cast<const uint4*>(sm.kstep_words(round))[q];
-      kw[4 * q] = w.x, kw[4 * q + 1] = w.y, kw[4 * q + 2] = w.z, kw[4 * q + 3] = w.w;
-    });
-  }
-  if ((live >> lane) & 1u) scratch[__popc(live & ops::lanes_below())] = (unsigned short)lane;
-  warp_edge(warp);
-  const int g = lane >> 3, sub = lane & 7;
-  //: two steps an iteration, their address chains in flight together.
-#pragma unroll 1
-  for (int s = 0; s < n; s += 8) {
-    rola::static_for<2>([&](auto Hc) {
-      const int idx = s + decltype(Hc)::value * 4 + g;
-      if (idx < n) {
-        const int slot = prefix + idx - base;
-        if (slot >= 0 && slot < pool_positions_of<BP, Side>())
-          pool_copy_position<BP, D, Side>(p, sm, abase, sub, bh,
-                                          t0 + round * kRoundTokens + (int)scratch[idx], slot);
-      }
-    });
-  }
-
   const uint32_t below = ops::lanes_below();
-  const int rank = prefix + __popc(live & below) - base;
-  const bool in = ((live >> lane) & 1u) && rank >= 0 && rank < pool_positions_of<BP, Side>();
+  const int rank0 = prefix0 + __popc(live0 & below) - base;
+  const int rank1 = prefix1 + __popc(live1 & below) - base;
+  const bool in0 = ((live0 >> lane) & 1u) && rank0 >= 0 && rank0 < pool_positions_of<BP, Side>();
+  const bool in1 =
+      Pair && ((live1 >> lane) & 1u) && rank1 >= 0 && rank1 < pool_positions_of<BP, Side>();
   if constexpr (Side == rola::facts::kRead) {
-    if (in) {
-      sm.pool_token()[rank] = (unsigned short)(round * kRoundTokens + lane);
-      uint32_t ksteps = 0u;
-      rola::static_for<BP::kKb>([&](auto Kc) {
-        constexpr int k = decltype(Kc)::value;
-        ksteps |= ((kw[k] >> lane) & 1u) << k;
-      });
-      sm.pool_groups()[rank] = ksteps;
+    if (in0) {
+      sm.pool_token()[rank0] = (unsigned short)(round * kRoundTokens + lane);
+      sm.pool_groups()[rank0] = ksteps0;
+    }
+    if (in1) {
+      sm.pool_token()[rank1] = (unsigned short)(round1 * kRoundTokens + lane);
+      sm.pool_groups()[rank1] = ksteps1;
     }
   } else {
-    if (in) sm.pool_gain()[rank] = sm.gain_table()[round * kRoundTokens + lane];
+    if (in0) sm.pool_gain()[rank0] = sm.gain_table()[round * kRoundTokens + lane];
+    if (in1) sm.pool_gain()[rank1] = sm.gain_table()[round1 * kRoundTokens + lane];
   }
 
   if constexpr (Lists && NStreams <= 8) {
     rola::static_for<NStreams>([&](auto Sc) {
       constexpr int s = decltype(Sc)::value;
-      const int at = (int)spre[s] + __popc(sw[s] & below) - sbase[s];
-      if (in && ((sw[s] >> lane) & 1u)) {
-        if constexpr (Side == rola::facts::kWrite)
-          sm.pool_list(s)[at] = (unsigned short)rank;
-        else
-          sm.pool_list_read(s)[at] = (unsigned short)rank;
-      }
+      unsigned short* const list =
+          Side == rola::facts::kWrite ? sm.pool_list(s) : sm.pool_list_read(s);
+      if (in0 && ((sw[0][s] >> lane) & 1u))
+        list[soff[0][s] + __popc(sw[0][s] & below)] = (unsigned short)rank0;
+      if constexpr (Pair)
+        if (in1 && ((sw[1][s] >> lane) & 1u))
+          list[soff[1][s] + __popc(sw[1][s] & below)] = (unsigned short)rank1;
     });
   } else if constexpr (Lists) {
     //: sixteen streams: a runtime loop off the tables, so the symbol stays under the cliff.
-#pragma unroll 2
+#pragma unroll 1
     for (int s = 0; s < NStreams; ++s) {
-      const uint32_t w = sm.stream_words(Side, round)[s];
-      const int at =
-          (int)sm.stream_prefix(Side, round)[s] + __popc(w & below) - sm.stream_base(Side)[s];
-      if (in && ((w >> lane) & 1u)) {
-        if constexpr (Side == rola::facts::kWrite)
-          sm.pool_list(s)[at] = (unsigned short)rank;
-        else
-          sm.pool_list_read(s)[at] = (unsigned short)rank;
+      const int sb = sm.stream_base(Side)[s];
+      const uint32_t w0 = sm.stream_words(Side, round)[s];
+      const int at0 = (int)sm.stream_prefix(Side, round)[s] + __popc(w0 & below) - sb;
+      unsigned short* const list =
+          Side == rola::facts::kWrite ? sm.pool_list(s) : sm.pool_list_read(s);
+      if (in0 && ((w0 >> lane) & 1u)) list[at0] = (unsigned short)rank0;
+      if constexpr (Pair) {
+        const uint32_t w1 = sm.stream_words(Side, round1)[s];
+        const int at1 = (int)sm.stream_prefix(Side, round1)[s] + __popc(w1 & below) - sb;
+        if (in1 && ((w1 >> lane) & 1u)) list[at1] = (unsigned short)rank1;
       }
     }
   }
@@ -917,10 +962,12 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
                                              base + BP::kPoolPos);
     publish_stream_counts<BP>(sm, kSide, sbase, send, nStreams, warp, lane);
 #pragma unroll 1
-    for (int r = warp; r < nRounds; r += BP::kWarps) {
-      pool_fill_round<BP, D, kSide, true, nStreams>(p, sm, abase, warp, lane, bh, t0, r,
-                                                    sm.union_words(kSide)[r],
-                                                    sm.union_prefix(kSide)[r], base);
+    for (int r = warp; r < nRounds; r += fill_step<BP, nStreams>()) {
+      const bool two = fill_pairs<nStreams>() && r + BP::kWarps < nRounds;
+      pool_fill_rounds<BP, D, kSide, true, nStreams, fill_pairs<nStreams>()>(
+          p, sm, abase, warp, lane, bh, t0, r, sm.union_words(kSide)[r], sm.union_prefix(kSide)[r],
+          two ? sm.union_words(kSide)[r + BP::kWarps] : 0u,
+          two ? sm.union_prefix(kSide)[r + BP::kWarps] : 0, base);
       tick();
     }
     ops::stage_wait<0>();
@@ -1405,10 +1452,13 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
   for (int base = 0; base < total; base += BP::kReadPos) {
     const int count = total - base < BP::kReadPos ? total - base : BP::kReadPos;
 #pragma unroll 1
-    for (int r = warp; r < nRounds; r += BP::kWarps)
-      pool_fill_round<BP, D, kSide, false, kStreams>(p, sm, abase, warp, lane, bh, t0, r,
-                                                     sm.union_words(kSide)[r],
-                                                     sm.union_prefix(kSide)[r], base);
+    for (int r = warp; r < nRounds; r += fill_step<BP, kStreams>()) {
+      const bool two = fill_pairs<kStreams>() && r + BP::kWarps < nRounds;
+      pool_fill_rounds<BP, D, kSide, false, kStreams, fill_pairs<kStreams>()>(
+          p, sm, abase, warp, lane, bh, t0, r, sm.union_words(kSide)[r], sm.union_prefix(kSide)[r],
+          two ? sm.union_words(kSide)[r + BP::kWarps] : 0u,
+          two ? sm.union_prefix(kSide)[r + BP::kWarps] : 0, base);
+    }
     ops::stage_wait<0>();
     ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
 
@@ -1611,10 +1661,13 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
                                              base + BP::kReadPos);
     publish_stream_counts<BP>(sm, kSide, sbase, send, kStreams, warp, lane);
 #pragma unroll 1
-    for (int r = warp; r < nRounds; r += BP::kWarps)
-      pool_fill_round<BP, D, kSide, true, kStreams>(p, sm, abase, warp, lane, bh, t0, r,
-                                                    sm.union_words(kSide)[r],
-                                                    sm.union_prefix(kSide)[r], base);
+    for (int r = warp; r < nRounds; r += fill_step<BP, kStreams>()) {
+      const bool two = fill_pairs<kStreams>() && r + BP::kWarps < nRounds;
+      pool_fill_rounds<BP, D, kSide, true, kStreams, fill_pairs<kStreams>()>(
+          p, sm, abase, warp, lane, bh, t0, r, sm.union_words(kSide)[r], sm.union_prefix(kSide)[r],
+          two ? sm.union_words(kSide)[r + BP::kWarps] : 0u,
+          two ? sm.union_prefix(kSide)[r + BP::kWarps] : 0, base);
+    }
     ops::stage_wait<0>();
     ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
 
