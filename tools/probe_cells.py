@@ -493,6 +493,9 @@ def main() -> None:
 
     round_rows = interleaved_rounds(args.binary, args.bench, cells, args.reps,
                                     args.warmup, args.lock, args.rounds, args.state)
+    #: the lock read again after the rounds: with both reads on it the lock held through
+    #: the run, which vouches for the rows of a binary from before the probe.
+    held = clock is not None and clock_lock.within(read_ghz(), clock)
     results = []
     print()
     print(f"{'binary':<16}{'cell':<26}{'ms (median-of-medians)':<26}{'stamp':<12}{'sha':<10}")
@@ -526,12 +529,14 @@ def main() -> None:
             #: a locked run refuses a row the device did not measure on the lock; an
             #: unlocked run keeps the row and says so, the way a dirty tree's rows say so.
             off = [g for g in ghz if not clock_lock.within(g, clock)]
-            if clock is not None and (off or not ghz):
+            if clock is not None and (off or (not ghz and not held)):
                 entry["error"] = f"clock off the lock: {ghz or 'unread'}"
                 entry.pop("median_of_round_medians_ms", None)
                 shown = "REFUSED: clock " + (f"{min(off):.3f}GHz" if off else "unread")
             entry["clock_locked"] = clock is not None
-            state = (f"{min(ghz):.2f}-{max(ghz):.2f}GHz" if ghz else "GHz n/a") + (
+            entry["clock_held"] = held
+            state = (f"{min(ghz):.2f}-{max(ghz):.2f}GHz" if ghz else
+                     (f"{clock['ghz']:.2f}GHz held" if held else "GHz n/a")) + (
                 "" if clock is not None else " UNLOCKED")
             print(f"{binary['label']:<16}{cell:<26}{shown:<26}"
                   f"{str(entry['family_stamp'])[:10]:<12}{binary['git_sha'][:8]:<10}"
