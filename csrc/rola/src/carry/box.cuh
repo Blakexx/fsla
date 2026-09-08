@@ -104,6 +104,7 @@ struct BoxPlan {
   //: THE TRANSIT REGION, and the phase-local tenants that alias into it. -- smem_ledger.md#region
   static constexpr int kLdX =
       (kCols + denseref::ops::kMmaN - 1) / denseref::ops::kMmaN * denseref::ops::kMmaN;
+  static_assert(kLdX >= kCols + 1, "the mass channel's low half rides beside its high half");
   static constexpr int kRegionBytes = kBC * kLdX * 2;
   static constexpr int kStatePages =
       kAtoms < kRegionBytes / kPageImageBytes ? kAtoms : kRegionBytes / kPageImageBytes;

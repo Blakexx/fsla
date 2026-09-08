@@ -192,9 +192,11 @@ struct Acc {
 //: them there as its B operand, stream by stream -- and the bottom halves never leave the
 //: register file and are never truncated. -- see docs/internals/carry/carry_kernel.md#transit
 template <class BP>
+//: The mass channel's halves both ride in the region row -- column `kDv` the high half,
+//: `kDv + 1` the low -- where the row's padding has room, rather than in eight registers
+//: carried through PHASE 1.
 struct Transit {
   uint32_t lo[BP::kMassTile][BP::kNL][2];
-  uint32_t mlo[BP::kNL];
 };
 
 //: THE READ ORDER: the read side's leaves in ITS carve order, rank 0 innermost -- the run a
@@ -269,16 +271,16 @@ struct TransitRows {
   int base;        //: the swizzled row of the lane's runtime slot bits
   int bit[kBits];  //: the swizzled row of slot bit `b` alone
 
-  //: built where it is used, from the geometry, behind an opaque one tagged by the site:
-  //: the rows are window-invariant, and hoisted out of the window loop or shared between
-  //: the legs they would be six registers carried across PHASE 1.
+  //: built where it is used, from the geometry, behind an opaque one tagged by the site and
+  //: pinned by a memory clobber: the rows are window-invariant, and hoisted out of the
+  //: window loop or up to the other leg they would be six registers carried across PHASE 1.
   __device__ __forceinline__ TransitRows(const SideGeom& s, const SideGeom& r, int strm,
                                          int lane_slot, int site) {
     int one = 1;
-    asm volatile("" : "+r"(one) : "r"(site));
+    asm volatile("" : "+r"(one), "+r"(lane_slot), "+r"(strm) : "r"(site) : "memory");
     ReadOrder<D, BC> ro(r);
     rola::static_for<D>([&](auto Lc) {
-      asm volatile("" : "+r"(ro.shift[decltype(Lc)::value]) : "r"(site));
+      asm volatile("" : "+r"(ro.shift[decltype(Lc)::value]) : "r"(site) : "memory");
     });
     base = sb_swizzle(ro.index(geom_local_row<D, BC>(s, strm, lane_slot)));
     rola::static_for<kBits>([&](auto Bc) {
@@ -365,16 +367,17 @@ __device__ __forceinline__ void out_leg_publish(const CarryParams& p, const Smem
                                 ops::hi_bf16(acc.c[m][j][e + 2 * h]));
         });
       });
-      if ((lane >> 2) == 0)
-        ops::store_shared_u16(row + (uint32_t)(BP::kDv * 2),
-                              ops::hi_bf16(acc.c[BP::kMassTile][j][e]));
+      if ((lane >> 2) == 0) {
+        const uint32_t m = __float_as_uint(acc.c[BP::kMassTile][j][e]);
+        ops::store_shared_u16(row + (uint32_t)(BP::kDv * 2), (uint16_t)(m >> 16));
+        ops::store_shared_u16(row + (uint32_t)(BP::kDv * 2 + 2), (uint16_t)(m & 0xFFFFu));
+      }
     });
     rola::static_for<BP::kMassTile>([&](auto Mc) {
       constexpr int m = decltype(Mc)::value;
       tr.lo[m][j][0] = ops::pack_lo(acc.c[m][j][0], acc.c[m][j][1]);
       tr.lo[m][j][1] = ops::pack_lo(acc.c[m][j][2], acc.c[m][j][3]);
     });
-    tr.mlo[j] = ops::pack_lo(acc.c[BP::kMassTile][j][0], acc.c[BP::kMassTile][j][1]);
   });
 }
 
@@ -416,11 +419,12 @@ __device__ __forceinline__ void return_leg_rejoin(const CarryParams& p, const Sm
     rola::static_for<4>([&](auto Ec) { acc.c[BP::kMassTile][j][decltype(Ec)::value] = 0.0f; });
     if ((lane >> 2) == 0) {
       const uint32_t c = (uint32_t)(BP::kDv * 2);
-      const uint32_t hi =
-          (uint32_t)ops::load_shared_u16(rowsM.template row<j * ops::kMmaN>(sm) + c)
-          | ((uint32_t)ops::load_shared_u16(rowsM.template row<j * ops::kMmaN + 1>(sm) + c) << 16);
-      acc.c[BP::kMassTile][j][0] = ops::join_hi_lo(hi, tr.mlo[j], 0);
-      acc.c[BP::kMassTile][j][1] = ops::join_hi_lo(hi, tr.mlo[j], 1);
+      rola::static_for<2>([&](auto Ec) {
+        constexpr int e = decltype(Ec)::value;
+        const ops::SmemAddr row = rowsM.template row<j * ops::kMmaN + e>(sm);
+        acc.c[BP::kMassTile][j][e] = __uint_as_float(((uint32_t)ops::load_shared_u16(row + c) << 16)
+                                                     | (uint32_t)ops::load_shared_u16(row + c + 2));
+      });
     }
   });
 }
@@ -651,21 +655,13 @@ __device__ __forceinline__ void pool_fill_rounds(const CarryParams& p, const Sme
   ops::stage_commit();
 }
 
-//: THE MASS CHANNEL'S A FRAGMENT: a constant. The deposit value is the token's values
-//: followed by a one, so the accumulator's last m-tile has a single live row.
-template <class BP>
-__device__ __forceinline__ void mass_frag(uint32_t (&a)[4], int lane) {
-  const uint32_t one = ((lane >> 2) == BP::kMassRow) ? 0x3F803F80u : 0u;
-  a[0] = one;
-  a[1] = 0u;
-  a[2] = one;
-  a[3] = 0u;
-}
-
 //: ONE TILE'S FRAGMENTS: the value A fragments and the finished coefficient B fragments.
 template <class BP>
+//: ONE TILE'S FRAGMENTS: the finished coefficient B fragments, gathered a tile ahead, and
+//: the value row's address, its A fragments loaded at the deposit (a tile ahead they were
+//: sixteen more registers a set).
 struct Frags {
-  uint32_t vf[BP::kMCh][4];
+  uint32_t vrow;
   uint32_t bf[BP::kNL][2];
 };
 
@@ -686,17 +682,8 @@ __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
   const int colhalf = (lane >> 3) & 1;
   const int slot = tile[rowg];
   constexpr int kGroups = BP::kDv / 8;
-  const uint32_t vrow = (uint32_t)(slot * BP::kVRowBytes), s7 = (uint32_t)(slot & (kGroups - 1));
-
-  rola::static_for<BP::kMCh>([&](auto Mc) {
-    constexpr int mc = decltype(Mc)::value;
-    if constexpr (mc == BP::kMassTile) {
-      mass_frag<BP>(f.vf[mc], lane);
-    } else {
-      ops::load_frag_t(f.vf[mc],
-                       sm.pool_v() + vrow + ((((uint32_t)(2 * mc + colhalf)) ^ s7) * 16u));
-    }
-  });
+  const uint32_t s7 = (uint32_t)(slot & (kGroups - 1));
+  f.vrow = sm.pool_v() + (uint32_t)(slot * BP::kVRowBytes) + (((uint32_t)colhalf ^ s7) * 16u);
 
   constexpr int kShI = slice_shift(sb_shift_of(D, BP::kBC, NS, WA, D - 1));
   constexpr int kBitsI =
@@ -768,14 +755,51 @@ __device__ __forceinline__ void pool_gather(const Smem<BP>& sm, Frags<BP>& f,
 
 //: DEPOSIT ONE TILE into a PASS's n-tiles `[Tile0, Tile0 + Tiles)`, a compile-time range.
 
+//: THE DEPOSIT: the channel m-tiles by MMA; THE MASS CHANNEL -- the deposit value's trailing
+//: one, so the mass is the coefficients' column sums -- as four adds a lane into a partial
+//: per n-tile, kept in the mass tile's structurally-zero third element and folded into its
+//: row at the phase's end (`mass_fold`). The fold is tensor-bound and that m-tile was a
+//: fifth of its MMAs for one live row.
 template <class BP, int Tile0, int Tiles>
 __device__ __forceinline__ void pool_deposit(Acc<BP>& acc, const Frags<BP>& f) {
-  rola::static_for<BP::kMCh>([&](auto Mc) {
+  constexpr int kGroups = BP::kDv / 8;
+  rola::static_for<BP::kMassTile>([&](auto Mc) {
     constexpr int mc = decltype(Mc)::value;
+    //: the m-tile's value fragment: the group index is XOR-swizzled by the row, and the
+    //: row's part of it is already in `vrow`; `2 * mc` flips only bits above the half's.
+    uint32_t vf[4];
+    ops::load_frag_t(vf, f.vrow ^ (((uint32_t)(2 * mc) & (uint32_t)(kGroups - 1)) * 16u));
     rola::static_for<Tiles>([&](auto Jc) {
       constexpr int j = Tile0 + decltype(Jc)::value;
-      ops::mma(acc.c[mc][j], f.vf[mc], f.bf[j]);
+      ops::mma(acc.c[mc][j], vf, f.bf[j]);
     });
+  });
+  rola::static_for<Tiles>([&](auto Jc) {
+    constexpr int j = Tile0 + decltype(Jc)::value;
+    rola::static_for<2>([&](auto Hc) {
+      const uint32_t w = f.bf[j][decltype(Hc)::value];
+      acc.c[BP::kMassTile][j][2] += __uint_as_float(w << 16) + __uint_as_float(w & 0xFFFF0000u);
+    });
+  });
+}
+
+//: THE MASS FOLDED: a lane's partial is its two k-rows of the column its quad holds; the
+//: quad's sum is the column's, moved to the row-zero lane and element the MMA layout puts
+//: that column at.
+template <class BP>
+__device__ __forceinline__ void mass_fold(Acc<BP>& acc, int lane) {
+  rola::static_for<BP::kNL>([&](auto Jc) {
+    constexpr int j = decltype(Jc)::value;
+    float v = acc.c[BP::kMassTile][j][2];
+    acc.c[BP::kMassTile][j][2] = 0.0f;
+    v += __shfl_xor_sync(0xFFFFFFFFu, v, 1);
+    v += __shfl_xor_sync(0xFFFFFFFFu, v, 2);
+    const float c0 = __shfl_sync(0xFFFFFFFFu, v, 4 * (2 * (lane & 3)));
+    const float c1 = __shfl_sync(0xFFFFFFFFu, v, 4 * (2 * (lane & 3) + 1));
+    if ((lane >> 2) == BP::kMassRow) {
+      acc.c[BP::kMassTile][j][0] += c0;
+      acc.c[BP::kMassTile][j][1] += c1;
+    }
   });
 }
 
@@ -1025,6 +1049,7 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
     });
     ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
   }
+  mass_fold<BP>(acc, lane);
 }
 
 // ------------------------------------------------------- the streams, both phases
@@ -1619,7 +1644,7 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
 //: one staging tile, the rows held in registers until staged. -- carry_kernel.md#defer
 template <class BP, int kKs, uint32_t Live, bool Pending, bool Full>
 __device__ __forceinline__ void tile_mmas(const uint32_t (&a)[kKs][4],
-                                          const uint32_t (&bs)[kKs][BP::kMassTile][4],
+                                          const ops::SmemAddr (&rows)[kKs],
                                           const uint32_t (&bm)[kKs][2],
                                           float (&c)[BP::kMassTile * 2][4], float (&cm)[4],
                                           const float (&pc)[BP::kMassTile * 2][4],
@@ -1627,35 +1652,49 @@ __device__ __forceinline__ void tile_mmas(const uint32_t (&a)[kKs][4],
                                           float* den, int pparity, int t0, int warp, int lane) {
   static_assert(BP::kMassTile == 4 && BP::kDv == 64,
                 "the drain's halves are spelled for four m-tiles");
+  //: the B fragments a k-step at a time -- sixteen registers, not thirty-two -- and the
+  //: tile before's four drain steps spread over the k-steps' m-tiles.
+  constexpr int kSteps = kKs * BP::kMassTile, kPerDrain = kSteps / 4;
   if constexpr (Pending) {
     stage_segment<BP, 0>(stage, pc, lane);
     stage_mass<BP>(stage, pm, 0, lane);
     warp_edge(warp);
   }
-  rola::static_for<BP::kMassTile>([&](auto Mc) {
-    constexpr int m = decltype(Mc)::value;
-    rola::static_for<kKs>([&](auto Kc) {
-      constexpr int i = decltype(Kc)::value;
+
+  rola::static_for<kKs>([&](auto Kc) {
+    constexpr int i = decltype(Kc)::value;
+    uint32_t bs[BP::kMassTile][4];
+    if constexpr ((Live >> i) & 1u) {
+      rola::static_for<BP::kMassTile>([&](auto Mc) {
+        constexpr int m = decltype(Mc)::value;
+        ops::load_frag_t(bs[m], rows[i] + (uint32_t)(m * ops::kMmaM * 2));
+      });
+    }
+    rola::static_for<BP::kMassTile>([&](auto Mc) {
+      constexpr int m = decltype(Mc)::value;
       if constexpr ((Live >> i) & 1u) {
-        const uint32_t b0[2] = {bs[i][m][0], bs[i][m][2]};
-        const uint32_t b1[2] = {bs[i][m][1], bs[i][m][3]};
+        const uint32_t b0[2] = {bs[m][0], bs[m][2]};
+        const uint32_t b1[2] = {bs[m][1], bs[m][3]};
         ops::mma(c[2 * m], a[i], b0);
         ops::mma(c[2 * m + 1], a[i], b1);
         if constexpr (m == 0) ops::mma(cm, a[i], bm[i]);
       }
-    });
-    if constexpr (Pending) {
-      constexpr int seg = m / 2, g0 = (m & 1) * 2;
-      drain_group<BP, Full>(stage, numl, 0, pparity, seg, g0, lane);
-      drain_group<BP, Full>(stage, numl, 0, pparity, seg, g0 + 1, lane);
-      if constexpr (m == 1) {
-        drain_mass<BP, Full>(stage, den, 0, pparity, t0, lane);
-        warp_edge(warp);
-        stage_segment<BP, 1>(stage, pc, lane);
-        warp_edge(warp);
+
+      constexpr int step = i * BP::kMassTile + m;
+      if constexpr (Pending && (step + 1) % kPerDrain == 0) {
+        constexpr int d = (step + 1) / kPerDrain - 1;
+        constexpr int seg = d / 2, g0 = (d & 1) * 2;
+        drain_group<BP, Full>(stage, numl, 0, pparity, seg, g0, lane);
+        drain_group<BP, Full>(stage, numl, 0, pparity, seg, g0 + 1, lane);
+        if constexpr (d == 1) {
+          drain_mass<BP, Full>(stage, den, 0, pparity, t0, lane);
+          warp_edge(warp);
+          stage_segment<BP, 1>(stage, pc, lane);
+          warp_edge(warp);
+        }
+        if constexpr (d == 3) warp_edge(warp);
       }
-      if constexpr (m == 3) warp_edge(warp);
-    }
+    });
   });
 }
 
@@ -1753,15 +1792,6 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
       //: the stream's operands and B rows, from the memo and the region.
       StreamOperands<BP, D, kKs, kKs> o;
       stream_operands<BP, D, kKs, kKs>(sm, s * kKs, lane, o);
-      uint32_t bs[kKs][BP::kMassTile][4];
-      rola::static_for<kKs>([&](auto Kc) {
-        constexpr int i = decltype(Kc)::value;
-        rola::static_for<BP::kMassTile>([&](auto Mc) {
-          constexpr int m = decltype(Mc)::value;
-          ops::load_frag_t(bs[i][m], o.rows[i] + (uint32_t)(m * ops::kMmaM * 2));
-        });
-      });
-
       //: the tile's slots: one a lane for the ids and the mask, and the three a lane's
       //: fragment rows take.
       const auto slot_of = [&](int i) { return at + i < count ? (int)list[at + i] : BP::kReadPos; };
@@ -1789,13 +1819,13 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
         constexpr uint32_t kLive = decltype(Lc)::value + 1u;
         if (lives == kLive) {
           if (!pending)
-            tile_mmas<BP, kKs, kLive, false, false>(a, bs, o.bm, c, cm, pc, pm, stage, numl, den,
-                                                    pparity, t0, warp, lane);
+            tile_mmas<BP, kKs, kLive, false, false>(a, o.rows, o.bm, c, cm, pc, pm, stage, numl,
+                                                    den, pparity, t0, warp, lane);
           else if (pfull)
-            tile_mmas<BP, kKs, kLive, true, true>(a, bs, o.bm, c, cm, pc, pm, stage, numl, den,
+            tile_mmas<BP, kKs, kLive, true, true>(a, o.rows, o.bm, c, cm, pc, pm, stage, numl, den,
                                                   pparity, t0, warp, lane);
           else
-            tile_mmas<BP, kKs, kLive, true, false>(a, bs, o.bm, c, cm, pc, pm, stage, numl, den,
+            tile_mmas<BP, kKs, kLive, true, false>(a, o.rows, o.bm, c, cm, pc, pm, stage, numl, den,
                                                    pparity, t0, warp, lane);
         }
       });

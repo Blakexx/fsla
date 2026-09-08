@@ -115,8 +115,12 @@ static_asserts is a different algorithm rather than a slower arm of this one.
 The cost of the orientation is that the channel count is padded to a multiple of `M = 16`:
 at `DV = 64` the 65 channels (64 values and the mass) occupy 5 m-tiles of 16, so 80 of the
 lane's registers hold 65 elements of state. The mass is the deposit value's trailing one,
-so it is not a special case anywhere except that its A fragment is a CONSTANT rather than a
-loaded tile.
+so the mass m-tile's product is the coefficients' COLUMN SUMS -- and the fold is
+tensor-bound, so that m-tile, one live row of sixteen, was a fifth of its MMAs. The deposit
+sums them instead: four adds a lane per n-tile into the tile's structurally-zero third
+element, folded into the mass row once at the phase's end (`mass_fold`: the quad's sum is
+the column's, moved to the row-zero lane and element the MMA layout puts it at). Measured
+2026-09-08: nl64k-dense 29.2 -> 26.9 ms, flagship-dense -7.5%, sparse cells -1 to -3.6%.
 
 <a id="transit"></a>
 ## The hybrid transit: the same halves, re-owned
@@ -156,10 +160,13 @@ the accumulator's `n = 2*(lane&3) (+1)` is the B operand's `k` of two adjacent n
 halves, which never left the register file and are never truncated.
 
 THE MASS CHANNEL is scalar on both legs and in the readout. It opens the last channel m-tile
-(`kMassRow == 0`), so an `ldmatrix.x4` at that tile would address the eight channels above the row's width; the four lanes that hold it read and write it as halfwords instead. Every OTHER
-element of that m-tile is structurally zero — the fold's mass A fragment has a single live
-row and the state sweep never loads a channel at or above `DV + 1` — so the rejoin states
-that rather than carrying sixteen zero registers through PHASE 1.
+(`kMassRow == 0`), so an `ldmatrix.x4` at that tile would address the eight channels above the row's width; the four lanes that hold it read and write it as halfwords instead -- BOTH
+halves in the region row, the high at column `DV` and the low at `DV + 1`, where the row's
+padding has room, rather than the low in eight registers carried through PHASE 1 (the
+readout sits at the register ceiling; `kLdX >= kCols + 1` is asserted). Every OTHER element
+of that m-tile is structurally zero — the deposit adds its partial into the third and folds
+it back to zero, and the state sweep never loads a channel at or above `DV + 1` — so the
+rejoin states that rather than carrying sixteen zero registers through PHASE 1.
 
 <a id="readout"></a>
 <a id="readout-sparse"></a>
@@ -192,7 +199,9 @@ for each batch:
 ```
 
 EVERY OPERAND IS AT FULL REUSE. A stream's coefficients are gathered once and drive every
-channel n-tile and the mass; a k-step's B rows are read once and drive sixteen positions;
+channel n-tile and the mass; a k-step's B rows are read once, a k-step at a time under
+the tile's MMAs (sixteen registers, not thirty-two, the drain's four steps spread over the
+k-steps' m-tiles), and drive sixteen positions;
 nothing is replicated across warps, because the warps partition the positions and a row is
 complete inside one warp. The sum across streams happens in the accumulator, so there is no
 pool of partial rows, no read-modify-write and no atom, and a stream's tile is
@@ -400,7 +409,9 @@ next -- a named barrier id disjoint from the frame's (`Edge`).
 row `(l & 7) + ((l >> 4) & 1) * 8` -- its list entry -- for every operand it loads, so ONE list
 read serves all of them. The value rows, channel major, give the A fragments (one `ldmatrix.x4`
 per channel m-tile, exactly the transposing load the old segment drain issued, now at a
-gathered row); the mass m-tile is the constant fragment `mass_frag`. The INNERMOST run gives
+gathered row), loaded at the deposit an m-tile at a time rather than a tile ahead (sixteen
+registers a set at the fold's ceiling); the mass m-tile has no fragment (`#accumulator`).
+The INNERMOST run gives
 the B fragments directly: sixteen tokens by sixteen digits, addressed as the four 8x8 blocks
 (tokens 0-7 | 8-15) x (digits 0-7 | 8-15), so n-tile `j`'s inner half is `j & 1` and its two
 registers are blocks `j & 1` and `(j & 1) + 2`. That is the token pairing the MMA's B fragment
