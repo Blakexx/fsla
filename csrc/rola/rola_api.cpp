@@ -81,6 +81,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("csrc_build_stamp", &rola::csrc_build_stamp,
         "the content hash of csrc/rola/src that this fatbin compiled against, read "
         "back off the device -- the fact a stale binary cannot produce");
+  m.def("sm_clock_ghz", &rola::sm_clock_ghz,
+        "the SM's effective clock in GHz under a spin of the given cycles on every SM, read "
+        "off the device: the state a measurement was taken in",
+        py::arg("spin_cycles") = 20000000);
 
   // ---- the addressing block, a foundation feature -------------------------
   m.def("carry_geometry", &rola::carry::geometry,

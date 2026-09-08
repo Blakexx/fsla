@@ -614,6 +614,9 @@ SOURCES = [
     #: compiled against. Its own TU so that a source edit rebuilds this one file
     #: rather than every translation unit that would otherwise carry the constant.
     "csrc/rola/src/common/build_stamp.cu",
+    #: The SM's effective clock under load, read off the device: the harness records it
+    #: with every measurement, because the driver's reported clock is not it on this host.
+    "csrc/rola/src/common/sm_clock.cu",
     # K31 R2: the standalone deterministic intra kernel, one TU.
     "csrc/rola/src/intra/intra.cu",
 ]

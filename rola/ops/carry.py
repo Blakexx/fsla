@@ -543,6 +543,18 @@ def build_stamp():
     return extension().carry_build_stamp()
 
 
+def sm_clock_ghz() -> float | None:
+    """The SM's EFFECTIVE clock under load, read off the device beside a measurement.
+
+    The driver reports one number on this host whatever the silicon runs at; the kernel
+    runs at either of two states minutes apart (journal section 37). A harness records
+    this with every row so a millisecond carries its state. A binary from before the
+    probe reports None.
+    """
+    fn = getattr(extension(), "sm_clock_ghz", None)
+    return None if fn is None else float(fn())
+
+
 def census():
     """One row per built arm: what the compiler did, then what the box plan says it should.
 
@@ -705,6 +717,7 @@ __all__ = [
     "reaping_bound",
     "route_planes",
     "select_schedule",
+    "sm_clock_ghz",
     "state_plane",
     "sub_boxes",
 ]

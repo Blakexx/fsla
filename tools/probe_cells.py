@@ -147,6 +147,14 @@ def worker_main(args) -> None:
             for _ in range(args.warmup):
                 arm.call()
             torch.cuda.synchronize()
+            #: THE CLOCK STATE IS LOAD-DEPENDENT (2026-09-08): the SM boosts to its top clock
+            #: under sustained load and sits ~15% lower under a bursty warmup, and the same
+            #: kernel measured 6.45 and 5.92 ms either side of a 10 ms spin. Every binary
+            #: gets the same sustained load before its reps, then the state is read off the
+            #: device beside them (a binary from before the probe reports none).
+            _sustain_load(30.0)
+            from rola.ops import carry as carry_ops
+            ghz = carry_ops.sm_clock_ghz()
             if args.oneshot:
                 arm.call()
                 torch.cuda.synchronize()
@@ -163,7 +171,8 @@ def worker_main(args) -> None:
                 times.append(start.elapsed_time(end))
             rows[name] = {"median_ms": statistics.median(times), "min_ms": min(times),
                           "max_ms": max(times), "reps": args.reps, "warmup": args.warmup,
-                          "state_arm": args.state, "schedule": args.schedule}
+                          "state_arm": args.state, "schedule": args.schedule,
+                          "sm_ghz": ghz}
             del arm, fx
             torch.cuda.empty_cache()
         except Exception as ex:  # noqa: BLE001 -- reported per cell, never swallowed
@@ -357,13 +366,29 @@ def interleaved_rounds(binaries: list[dict], bench: str, cells: list[str], reps:
     return per_binary
 
 
+def _sustain_load(ms: float) -> None:
+    """a dense matmul loop on every SM for at least `ms` milliseconds, synchronised."""
+    import time
+
+    import torch
+    a = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
+    t0 = time.perf_counter()
+    while (time.perf_counter() - t0) * 1000.0 < ms:
+        a = a @ a * 0.001
+    torch.cuda.synchronize()
+
+
 def summarize(round_rows: list[dict], cell: str) -> dict | None:
     values = [rr["rows"][cell]["median_ms"] for rr in round_rows
               if rr["rows"].get(cell, {}).get("median_ms") is not None]
     if not values:
         return None
+    #: the clock state each round ran in, off the device; the rounds' values, not one
+    #: number, because the state changes between rounds too.
+    ghz = [rr["rows"][cell].get("sm_ghz") for rr in round_rows
+           if rr["rows"].get(cell, {}).get("median_ms") is not None]
     return {"median_of_round_medians_ms": statistics.median(values),
-            "round_medians_ms": values, "n_rounds": len(values)}
+            "round_medians_ms": values, "n_rounds": len(values), "round_sm_ghz": ghz}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -503,9 +528,11 @@ def main() -> None:
                 entry["error"] = first.get("error", refused or "no successful rounds")
                 shown = "ERROR: " + str(entry["error"])[:20]
             results.append(entry)
+            ghz = [g for g in (summary or {}).get("round_sm_ghz", []) if g]
+            clock = f"{min(ghz):.2f}-{max(ghz):.2f}GHz" if ghz else "GHz n/a"
             print(f"{binary['label']:<16}{cell:<26}{shown:<26}"
                   f"{str(entry['family_stamp'])[:10]:<12}{binary['git_sha'][:8]:<10}"
-                  f"{' DIRTY ' + tree[:8] if tree else ''}")
+                  f"{clock:<14}{' DIRTY ' + tree[:8] if tree else ''}")
 
     if args.ncu:
         print(f"\nNCU (one oneshot launch per binary x cell, filtered to {subject.symbol})")
