@@ -34,6 +34,21 @@ what an edge with equal participation costs.
 At sm_86's 101,376-byte per-CTA maximum the residency is one CTA per SM by the launch bound
 rather than by the allocation.
 
+<a id="defer"></a>
+## The deferred tiles
+
+Under the stream form a warp's last readout tile of the window is not drained at the tile:
+its rows are HELD (`Defer`, `kDeferOffset`, one `kDeferTileBytes` tile a warp, rows at
+`kDeferStride`, the mass in column `DV`, the ids after the rows) and reduced out a few rows
+at a time under the fold's fill rounds and passes, the remainder at the window line. The
+tiles alias the read pool, its lists and the staging tiles, which are dead from the phase's
+last edge to the next window's fill, and lie past the fold pool's reach: under the stream
+form the fold pool is CAPPED at the region plus a row of slack (`kPoolCap`), 128 positions at
+the flagship, while the position carve's pool keeps the budget (the box plan takes the
+form). The reductions' rate is per SM, about 16 cycles a line, and they overlap MMAs on
+sibling warps fully; bunched after the tiles they cost the k4 kernel 19%, spread they cost
+nothing measurable (journal section 37).
+
 <a id="region"></a>
 ## The region, and the aliasing structure per moment
 

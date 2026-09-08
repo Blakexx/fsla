@@ -556,6 +556,21 @@ MMAs 700K -> 215K, reductions 124K -> 136K; nl64k-alt-k4 9.61 -> 7.83 ms, flagsh
 live in several streams). The 64K sparse window is then fills 20%, edge skew 17%, walk and
 words 15%, MMA 9%, drains 6%: the fixed per-window cost is the remaining problem.
 
+<a id="defer"></a>
+## The deferred tile
+
+The stream form's reductions are the readout's outbound rows, one line-reduction per 32
+floats. Measured (journal section 37): a line-reduction costs about 16 cycles of the SM's
+atomic path with eight warps issuing, plain stores four, and reductions on one warp run
+beside MMAs on another at full rate; the real kernel's reductions hit L2 at 95%. What made
+them cost 19% of the k4 kernel was bunching: every warp drained its one or two tiles in the
+same short span after the MMAs. So a warp's LAST tile of the window is held in registers
+past the phase's last edge, staged into its deferred tile (`smem_ledger.md#defer`), and
+reduced out two rows at a time under the fold's fill rounds and pass tiles (`Defer`,
+`defer_some`, the fold's `tick`), the rest at the window line. The other tiles still drain
+at the tile, under the next tile's MMAs. The ablation that removes every reduction then
+changes the k4 time by nothing.
+
 <a id="streams"></a>
 ## The sparse form: streams keyed on leaf ranges
 

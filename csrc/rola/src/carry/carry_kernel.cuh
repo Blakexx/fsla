@@ -98,6 +98,11 @@ struct Smem {
                                              + stream * BP::kReadListBytes);
   }
 
+  //: THE DEFERRED TILE, one a warp. -- see docs/internals/carry/smem_ledger.md#defer
+  __device__ __forceinline__ ops::SmemAddr defer_tile(int warp) const {
+    return ops::smem_addr(base + BP::kDeferOffset + warp * BP::kDeferTileBytes);
+  }
+
   //: THE STAGING TILE, one a warp: its slice's rows in the row form the planes take.
   //: -- see docs/internals/carry/smem_ledger.md#pool
   __device__ __forceinline__ ops::SmemAddr stage(int warp) const {
@@ -472,7 +477,7 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
   unsigned short spre[NStreams];
   int sbase[NStreams];
   uint32_t kw[BP::kKb];
-  if constexpr (Lists) {
+  if constexpr (Lists && NStreams <= 8) {
     rola::static_for<NStreams / 4>([&](auto Qc) {
       constexpr int q = decltype(Qc)::value;
       const uint4 w = reinterpret_cast<const uint4*>(sm.stream_words(Side, round))[q];
@@ -532,7 +537,7 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
     if (in) sm.pool_gain()[rank] = sm.gain_table()[round * kRoundTokens + lane];
   }
 
-  if constexpr (Lists) {
+  if constexpr (Lists && NStreams <= 8) {
     rola::static_for<NStreams>([&](auto Sc) {
       constexpr int s = decltype(Sc)::value;
       const int at = (int)spre[s] + __popc(sw[s] & below) - sbase[s];
@@ -543,6 +548,20 @@ __device__ __forceinline__ void pool_fill_round(const CarryParams& p, const Smem
           sm.pool_list_read(s)[at] = (unsigned short)rank;
       }
     });
+  } else if constexpr (Lists) {
+    //: sixteen streams: a runtime loop off the tables, so the symbol stays under the cliff.
+#pragma unroll 2
+    for (int s = 0; s < NStreams; ++s) {
+      const uint32_t w = sm.stream_words(Side, round)[s];
+      const int at =
+          (int)sm.stream_prefix(Side, round)[s] + __popc(w & below) - sm.stream_base(Side)[s];
+      if (in && ((w >> lane) & 1u)) {
+        if constexpr (Side == rola::facts::kWrite)
+          sm.pool_list(s)[at] = (unsigned short)rank;
+        else
+          sm.pool_list_read(s)[at] = (unsigned short)rank;
+      }
+    }
   }
   warp_edge(warp);
   ops::stage_commit();
@@ -686,10 +705,10 @@ __device__ __forceinline__ void pool_pad_tile(unsigned short* list, int count, i
 
 //: ONE PASS of a batch: a stream's minted list, its whole tiles with each gather in front of
 //: the previous deposits, its tail padded to the dead row.
-template <class BP, int D, int NS, int WA, int Tile0, int Tiles>
+template <class BP, int D, int NS, int WA, int Tile0, int Tiles, class Tick>
 __device__ __forceinline__ void pool_pass(const Smem<BP>& sm, Acc<BP>& acc,
                                           const int (&scol)[D][BP::kNL], int warp, int lane,
-                                          int stream, int count) {
+                                          int stream, int count, Tick&& tick) {
   unsigned short* const list = sm.pool_list(stream);
   const int whole = count & ~(BP::kSeg - 1);
   if (count > whole) pool_pad_tile<BP>(list, count, whole, lane);
@@ -702,6 +721,7 @@ __device__ __forceinline__ void pool_pass(const Smem<BP>& sm, Acc<BP>& acc,
 #pragma unroll 1
   for (int t = 0; t + 1 < tiles; t += 2) {
     pool_gather<BP, D, NS, WA>(sm, f[1], scol, stream, lane, (t + 1) * BP::kSeg);
+    tick();
     pool_deposit<BP, Tile0, Tiles>(acc, f[0]);
     if (t + 2 < tiles) pool_gather<BP, D, NS, WA>(sm, f[0], scol, stream, lane, (t + 2) * BP::kSeg);
     pool_deposit<BP, Tile0, Tiles>(acc, f[1]);
@@ -766,16 +786,96 @@ __device__ __forceinline__ void publish_stream_counts(const Smem<BP>& sm, int si
   warp_edge(warp);
 }
 
+//: THE DEFERRED TILE: a warp's last readout tile of the window, its rows kept through the
+//: fold and reduced out a few lines at a time under the fold's own work, so the window's
+//: reductions spread over the window instead of bunching after the tiles.
+//: -- see docs/internals/carry/carry_kernel.md#defer
+template <class BP>
+struct Defer {
+  bool held = false;
+  bool full = false;
+  int t0 = 0;
+  int row = 0;
+};
+
+template <class BP>
+__device__ __forceinline__ uint32_t defer_ids() {
+  return (uint32_t)(BP::kSeg * BP::kDeferStride * 4);
+}
+
+//: THE TILE HELD: every segment's fragments as rows, the mass in column `kDv`, the ids.
+template <class BP>
+__device__ __forceinline__ void defer_stage(ops::SmemAddr tile,
+                                            const float (&c)[BP::kMassTile * 2][4],
+                                            const float (&cm)[4], const uint16_t id, int lane) {
+  constexpr int kS = BP::kDeferStride;
+  const int r = lane >> 2, q = lane & 3;
+  rola::static_for<BP::kMassTile * 2>([&](auto Nc) {
+    constexpr int j = decltype(Nc)::value;
+    const uint32_t col = (uint32_t)((j * ops::kMmaN + 2 * q) * 4);
+    ops::store_shared_f32x2(tile + (uint32_t)(r * kS * 4) + col, c[j][0], c[j][1]);
+    ops::store_shared_f32x2(tile + (uint32_t)((r + 8) * kS * 4) + col, c[j][2], c[j][3]);
+  });
+  if (q == 0) {
+    ops::store_shared_u32(tile + (uint32_t)((r * kS + BP::kDv) * 4), __float_as_uint(cm[0]));
+    ops::store_shared_u32(tile + (uint32_t)(((r + 8) * kS + BP::kDv) * 4), __float_as_uint(cm[2]));
+  }
+  if (lane < BP::kSeg) ops::store_shared_u16(tile + defer_ids<BP>() + (uint32_t)(lane * 2), id);
+}
+
+//: SOME ROWS OUT: `n` rows of the held tile, each its `kDv / 32` lines and its mass.
+template <class BP, int Rows>
+__device__ __forceinline__ void defer_some(const Smem<BP>& sm, Defer<BP>& d, float* num, float* den,
+                                           int warp, int lane) {
+  if (!d.held) return;
+  constexpr int kS = BP::kDeferStride;
+  const ops::SmemAddr tile = sm.defer_tile(warp);
+  float* const numl = num + (size_t)d.t0 * BP::kDv + lane;
+  rola::static_for<Rows>([&](auto Rc) {
+    const int r = d.row + decltype(Rc)::value;
+    const int tok = (int)ops::load_shared_u16(tile + defer_ids<BP>() + (uint32_t)(r * 2));
+    float v[BP::kDv / 32];
+    rola::static_for<BP::kDv / 32>([&](auto Gc) {
+      constexpr int g = decltype(Gc)::value;
+      v[g] = __uint_as_float(ops::load_shared_u32(tile + (uint32_t)((r * kS + g * 32 + lane) * 4)));
+    });
+    const float m =
+        __uint_as_float(ops::load_shared_u32(tile + (uint32_t)((r * kS + BP::kDv) * 4)));
+    if (d.full || tok != kDeadToken) {
+      rola::static_for<BP::kDv / 32>([&](auto Gc) {
+        constexpr int g = decltype(Gc)::value;
+        ops::fan_in_add(numl + (uint32_t)tok * (uint32_t)BP::kDv + g * 32, v[g]);
+      });
+      if (lane == 0)
+        ops::fan_in_add(reinterpret_cast<float*>(ops::gather_ptr(den, (uint32_t)(d.t0 + tok) * 4u)),
+                        m);
+    }
+  });
+  d.row += Rows;
+  if (d.row >= BP::kSeg) d.held = false;
+}
+
+template <class BP>
+__device__ __forceinline__ void defer_flush(const Smem<BP>& sm, Defer<BP>& d, float* num,
+                                            float* den, int warp, int lane) {
+#pragma unroll 1
+  while (d.held) defer_some<BP, 2>(sm, d, num, den, warp, lane);
+}
+
 //: PHASE 2, in BATCHES of the pool BY RANK: the CTA's live positions, in order, `kPoolPos`
 //: at a time -- one batch when the window's live count fits. Fill the batch (each round by
 //: its owner warp, minting every stream's list as it goes), one edge, one PASS per stream
 //: the warp's box holds at the fold's grain -- its own list over the same rows into its own
 //: n-tiles -- one edge. Nothing is reclaimed inside a batch, so nothing is tracked.
 //: -- see docs/internals/carry/carry_kernel.md#fold
-template <class BP, int D, int NS, int WA, int GB>
+template <class BP, int D, int NS, int WA, int GB, bool Defers>
 __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>& sm, Acc<BP>& acc,
                                            const int (&scol)[D][BP::kNL], const int (&abase)[D],
-                                           int warp, int lane, int bh, int t0, int wLen) {
+                                           Defer<BP>& defer, float* num, float* den, int warp,
+                                           int lane, int bh, int t0, int wLen) {
+  const auto tick = [&] {
+    if constexpr (Defers) defer_some<BP, 2>(sm, defer, num, den, warp, lane);
+  };
   const int nRounds = (wLen + kRoundTokens - 1) / kRoundTokens;
   constexpr int passes = BP::kLeavesPerWarp >> GB;
   constexpr int kTilesPerPass = (1 << GB) / ops::kMmaN;
@@ -808,10 +908,12 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
                                              base + BP::kPoolPos);
     publish_stream_counts<BP>(sm, kSide, sbase, send, nStreams, warp, lane);
 #pragma unroll 1
-    for (int r = warp; r < nRounds; r += BP::kWarps)
+    for (int r = warp; r < nRounds; r += BP::kWarps) {
       pool_fill_round<BP, D, kSide, true, nStreams>(p, sm, abase, warp, lane, bh, t0, r,
                                                     sm.union_words(kSide)[r],
                                                     sm.union_prefix(kSide)[r], base);
+      tick();
+    }
     ops::stage_wait<0>();
     ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
 
@@ -819,7 +921,7 @@ __device__ __forceinline__ void fold_phase(const CarryParams& p, const Smem<BP>&
       constexpr int pass = decltype(Pc)::value;
       const int s = warp * passes + pass;
       pool_pass<BP, D, NS, WA, pass * kTilesPerPass, kTilesPerPass>(
-          sm, acc, scol, warp, lane, s, sm.stream_end(kSide)[s] - sm.stream_base(kSide)[s]);
+          sm, acc, scol, warp, lane, s, sm.stream_end(kSide)[s] - sm.stream_base(kSide)[s], tick);
     });
     ops::rendezvous_group((int)Edge::kFoldRound, BP::kThreads);
   }
@@ -1430,9 +1532,9 @@ __device__ __forceinline__ void tile_mmas(const uint32_t (&a)[kKs][4],
 
 template <class BP, int D, int BC, int GB>
 __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, const Smem<BP>& sm,
-                                                      const int (&abase)[D], float* num, float* den,
-                                                      int warp, int lane, int bh, int t0,
-                                                      int wLen) {
+                                                      const int (&abase)[D], Defer<BP>& defer,
+                                                      float* num, float* den, int warp, int lane,
+                                                      int bh, int t0, int wLen) {
   constexpr int kSide = rola::facts::kRead;
   constexpr int kNCh = BP::kMassTile * 2;
   constexpr int kKs = (1 << GB) / ops::kMmaK;
@@ -1461,6 +1563,8 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
 
   const ops::SmemAddr stage = sm.stage(warp);
   float* const numl = num + (size_t)t0 * BP::kDv + lane;
+  float hc[kNCh][4], hm[4];
+  uint16_t hid = kDeadToken;
 #pragma unroll 1
   for (int base = 0; base < total; base += BP::kReadPos) {
     const int sbase =
@@ -1538,8 +1642,26 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
         if (lives == kLive) tile_mmas<BP, kKs, kLive>(a, bs, o.bm, c, cm);
       });
 
-      //: the tile out: staged a segment at a time, each drained at the line law.
+      //: the tile out: the warp's last of the window is HELD for the fold (`#defer`); the
+      //: others are staged a segment at a time, each drained at the line law.
       warp_edge(warp);
+      if (t + BP::kWarps >= ntiles && base + BP::kReadPos >= total) {
+        //: kept in registers until the phase's last edge: the deferred tile's bytes are
+        //: the other warps' pool rows and staging tiles until then.
+        rola::static_for<kNCh>([&](auto Jc) {
+          rola::static_for<4>([&](auto Ic) {
+            hc[decltype(Jc)::value][decltype(Ic)::value] =
+                c[decltype(Jc)::value][decltype(Ic)::value];
+          });
+        });
+        rola::static_for<4>([&](auto Ic) { hm[decltype(Ic)::value] = cm[decltype(Ic)::value]; });
+        hid = (uint16_t)sm.pool_token()[mine];
+        defer.held = true;
+        defer.full = full;
+        defer.t0 = t0;
+        defer.row = 0;
+        continue;
+      }
       rola::static_for<kSegs>([&](auto Gc) {
         constexpr int seg = decltype(Gc)::value;
         stage_segment<BP, seg>(stage, c, lane);
@@ -1560,6 +1682,7 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
     }
     ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
   }
+  if (defer.held) defer_stage<BP>(sm.defer_tile(warp), hc, hm, hid, lane);
 }
 
 //: THE WINDOW'S GAIN TABLE at cover slot B: the write side's gains for the window's tokens,
@@ -1654,6 +1777,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     const int wLen = p.L - t0 < kWindow ? p.L - t0 : kWindow;
     const int nWords = (wLen + ops::kBallotLanes - 1) / ops::kBallotLanes;
     Transit<BP> tr;
+    Defer<BP> defer;
 
     //: COVER SLOT A: routing-only work in front of the out leg's edge -- the read streams'
     //: live words off the box words -- and the write side's box words for this window
@@ -1664,7 +1788,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     ops::rendezvous_group((int)Edge::kOutLeg, BP::kThreads);
 
     if constexpr (RF == kReadFormStreams)
-      readout_phase_streams<BP, D, BC, GR>(p, sm, abase, num, den, warp, lane, bh, t0, wLen);
+      readout_phase_streams<BP, D, BC, GR>(p, sm, abase, defer, num, den, warp, lane, bh, t0, wLen);
     else
       readout_phase_pool<BP, D, BC, GR>(p, sm, abase, num, den, warp, lane, bh, t0, wLen);
 
@@ -1698,7 +1822,9 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
       });
     });
 
-    fold_phase<BP, D, NS, WA, GW>(p, sm, acc, scol, abase, warp, lane, bh, t0, wLen);
+    fold_phase<BP, D, NS, WA, GW, RF == kReadFormStreams>(p, sm, acc, scol, abase, defer, num, den,
+                                                          warp, lane, bh, t0, wLen);
+    if constexpr (RF == kReadFormStreams) defer_flush<BP>(sm, defer, num, den, warp, lane);
 
     ops::stage_wait<0>();
     ops::rendezvous_group((int)Edge::kWindowLine, BP::kThreads);
@@ -1785,7 +1911,7 @@ __device__ __forceinline__ void state_sweep(const CarryParams& p, const Smem<BP>
 template <int D, int DV, int WARPS, int GR, int GW, int RF>
 __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void carry_kernel(
     __grid_constant__ const CarryParams p) {
-  using BP = BoxPlan<D, DV, WARPS>;
+  using BP = BoxPlan<D, DV, WARPS, RF == kReadFormStreams>;
   constexpr int NS = BP::kStreams;
   constexpr int BC = BP::kBC;
   static_assert(owner_span_bits(D, BC, D - 1) >= kAtomLeavesBits,

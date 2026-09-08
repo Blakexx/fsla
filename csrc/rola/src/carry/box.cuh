@@ -37,9 +37,10 @@ constexpr int amp_stride(int span_tot) {
 }
 
 //: THE POOL'S CAPACITY: the largest power of two <= the window whose rows and lists fit. -- see docs/internals/carry/smem_ledger.md#pool
-constexpr int pool_positions(int budget, int row_bytes, int list_bytes, int window) {
+constexpr int pool_positions(int budget, int row_bytes, int list_bytes_per_pos, int scratch_bytes,
+                             int window) {
   int c = window;
-  while (c > 32 && (c + 1) * row_bytes + list_bytes > budget) c >>= 1;
+  while (c > 32 && (c + 1) * row_bytes + c * list_bytes_per_pos + scratch_bytes > budget) c >>= 1;
   return c;
 }
 
@@ -60,7 +61,8 @@ constexpr int run_quantum(int span_h, int base_h, int stride_h) {
 }
 
 //: THE BOX, THE ACCUMULATOR AND THE LEDGER for one arm.
-template <int D_, int DV_, int WARPS_>
+//: `Streams`: the read form's ledger. -- see docs/internals/carry/smem_ledger.md#defer
+template <int D_, int DV_, int WARPS_, bool Streams = false>
 struct BoxPlan {
   static constexpr int D = D_;
   static constexpr int kDv = DV_;
@@ -140,9 +142,7 @@ struct BoxPlan {
   static constexpr int kStreamPrefixBytes = kSideStreams * kRounds * 2;
   static constexpr int kLiveBytes = kStreamWordBytes + kStreamPrefixBytes;
   static constexpr int kLiveBlocks = 2;
-  //: THE K-STEP WORDS, the read side's at the finest grain. -- carry_kernel.md#stream-form
   static constexpr int kKstepWordBytes = kSideStreams * kRounds * 4;
-  //: THE BOX WORDS, one side's for one window. -- see carry_kernel.md#box-words
   static constexpr int kBoxRows = span_total(D, kBC);
   static constexpr int kBoxWordsBytes = kBoxRows * kRounds * 4;
   static constexpr int kFillScratchBytes = 32 * 2 * 2;
@@ -157,9 +157,11 @@ struct BoxPlan {
                                           + kWindow * 2 + 2 * kUniformWords * 4 + 7 * 16;
   //: the pool aliases the region and may outgrow it. -- see docs/internals/carry/smem_ledger.md#region
   static constexpr int kPoolBudget = denseref::arch::kCaps.smem_per_cta_max - kPersistentBytes;
+  //: the fold pool's cap under the stream form. -- see smem_ledger.md#defer
+  static constexpr int kPoolCap = Streams ? kRegionBytes + kAtoms * 256 : kPoolBudget;
   static constexpr int kPoolPos =
-      pool_positions(kPoolBudget, kVRowBytes + kAmpRowBytes,
-                     kSideStreams* kWindow * 2 + kWarps * kFillScratchBytes, kWindow);
+      pool_positions(kPoolBudget < kPoolCap ? kPoolBudget : kPoolCap, kVRowBytes + kAmpRowBytes,
+                     kSideStreams * 2, kWarps* kFillScratchBytes, kWindow);
   static constexpr int kListEntries = kPoolPos;
   static constexpr int kListBytes = kListEntries * 2;
   static constexpr int kRegionOffset = 0;
@@ -189,12 +191,20 @@ struct BoxPlan {
   static constexpr int kReadAmpOffset = kRegionOffset + kRegionBytes;
   static constexpr int kReadScratchOffset = kReadAmpOffset + (kReadPos + 1) * kAmpRowBytes;
   static constexpr int kPoolTokenOffset = kReadScratchOffset + kWarps * kFillScratchBytes;
-  //: each slot's k-step mask and the read side's lists. -- carry_kernel.md#stream-form
   static constexpr int kPoolGroupsOffset = (kPoolTokenOffset + (kReadPos + 1) * 2 + 3) / 4 * 4;
   static constexpr int kReadListOffset = (kPoolGroupsOffset + (kReadPos + 1) * 4 + 15) / 16 * 16;
   static constexpr int kReadListBytes = kReadPos * 2;
   static constexpr int kStageOffset = kReadListOffset + kSideStreams * kReadListBytes;
   static constexpr int kReadPoolBytes = kStageOffset + kWarps * kStageBytes - kRegionOffset;
+  //: THE DEFERRED TILES, one a warp. -- see docs/internals/carry/smem_ledger.md#defer
+  static constexpr int kDeferStride = kDv + 8;
+  static constexpr int kDeferTileBytes = ((kSeg * kDeferStride * 4 + kSeg * 2 + 15) / 16) * 16;
+  static constexpr int kDeferOffset =
+      ((kPoolBytes > kRegionBytes ? kPoolBytes : kRegionBytes) + 15) / 16 * 16;
+  static_assert(!Streams
+                    || kDeferOffset + kWarps * kDeferTileBytes
+                           <= kStageOffset + kWarps * kStageBytes,
+                "the deferred tiles fit behind the fold pool inside the readout's tenants");
   static_assert(kReadPoolBytes == read_pool_bytes(kSlices), "the ledger and its estimate agree");
   static_assert(kStageStride % 32 == 8 && kSlices * 2 * kSeg * 2 <= kStageStride * 4
                     && 32 + kSlices <= kStageStride,

@@ -19,7 +19,7 @@ namespace rola::carry {
 template <int D, int DV, int W, int GR, int GW, int RF>
 inline cudaError_t carry_launch_grain(const CarryParams& p, int owners, int bh,
                                       cudaStream_t stream) {
-  using BP = BoxPlan<D, DV, W>;
+  using BP = BoxPlan<D, DV, W, RF == kReadFormStreams>;
   const auto fn = carry_kernel<D, DV, W, GR, GW, RF>;
   static bool configured = false;
   if (!configured) {
@@ -52,7 +52,7 @@ inline cudaError_t carry_launch(const CarryParams& p, int owners, int bh, cudaSt
 
 template <int D, int DV, int W>
 inline ArmCensus carry_census() {
-  using BP = BoxPlan<D, DV, W>;
+  using BP = BoxPlan<D, DV, W, true>;
   cudaFuncAttributes a{};
   cudaFuncGetAttributes(&a,
                         carry_kernel<D, DV, W, BP::kGrainBitsMin + BP::kGrainCases - 1,
