@@ -131,12 +131,21 @@ def intra_forward(fx) -> Arm:
     drawn = realize(spec)
     modes = _modes_of(spec)
     gwrite = drawn.gain.permute(0, 2, 1).reshape(-1, spec.tokens).contiguous()
-    v = drawn.v.contiguous()
-    read, write = drawn.read, drawn.write
+    #: PACKED ONCE, HERE: the padding and packing are the producer's (host-side, by the
+    #: intra op's own contract) and pricing them per call priced glue -- a fixed ~5 ms that
+    #: read as the kernel at every L (2026-09-08). The launch is what this arm prices, as
+    #: the carry arm prices its launch over the registry's packed operands.
+    D = len(drawn.read)
+    width = intra_ops._shipped_level_width(D, carry_ops.WINDOW)
+    read = intra_ops.pad_routes(drawn.read, (width,) * D)
+    write = intra_ops.pad_routes(drawn.write, (width,) * D)
+    v = intra_ops.pad_v(drawn.v.contiguous(), intra_ops.VALUE_WIDTH)
+    pread, pwrite = intra_ops.pack_side(read), intra_ops.pack_side(write)
+    sread, swrite = intra_ops.pack_support(read), intra_ops.pack_support(write)
 
     def run():
-        return intra_ops.intra_forward_padded(read, write, gwrite, v, modes,
-                                              window=carry_ops.WINDOW)
+        return intra_ops.intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes,
+                                       window=carry_ops.WINDOW)
 
     return Arm(name=f"intra_forward|{spec.name}", call=run)
 
