@@ -141,6 +141,38 @@ def intra_forward(fx) -> Arm:
     return Arm(name=f"intra_forward|{spec.name}", call=run)
 
 
+def attention_reference(fx) -> Arm:
+    """THE REFERENCE the carry is measured against: causal attention at the cell's own point
+    -- one head of width `dv`, `L` tokens, bf16 -- through torch's FLASH backend, which is
+    FlashAttention-2 on sm_86. The capacity-fair comparison is at N = L (`docs/measurement.md`);
+    a cell states its L, and this prices attention at that L so the two sit in one
+    interleaved, clock-locked run rather than one being extrapolated from a flop rate.
+    """
+    import torch
+
+    spec = fx["cell"]
+    L, d = spec.tokens, spec.dv
+    g = torch.Generator(device="cuda").manual_seed(spec.seed)
+    #: THE LIBRARY, ONE EVERYWHERE: Dao's `flash-attn` (FlashAttention-2 here, 3 on Hopper),
+    #: a `bench` dependency and never substituted -- torch's vendored backend would be a
+    #: second baseline. The row names its version, so a number cites its reference.
+    try:
+        import flash_attn
+        from flash_attn import flash_attn_func
+    except ImportError as ex:
+        raise RuntimeError("attention_reference needs flash-attn (`pip install rola[bench]`; the "
+                           "release wheel matching torch, CUDA, ABI and python)") from ex
+    q, k, v = (torch.randn(1, L, 1, d, device="cuda", dtype=torch.bfloat16, generator=g)
+               for _ in range(3))
+
+    def run():
+        with torch.no_grad():
+            return flash_attn_func(q, k, v, causal=True)
+
+    return Arm(name=f"attention_reference|{spec.name}|flash-attn {flash_attn.__version__}",
+               call=run)
+
+
 def liveness_pass(fx) -> Arm:
     """The class-1 liveness words for both sides -- the pass every carry call reads."""
     from benchmarks.cells import realize
@@ -248,6 +280,9 @@ SUBJECTS = {
     "intra_forward": Subject("intra_forward", "carry", intra_forward,
                              "the within-window term at the shared window",
                              symbol="intra_kernel", stamp="intra_build_stamp"),
+    "attention_reference": Subject("attention_reference", "carry", attention_reference,
+                                   "causal FlashAttention at the cell's L and dv, one head",
+                                   symbol="flash_fwd_kernel", stamp="csrc_build_stamp"),
     "liveness_pass": Subject("liveness_pass", "carry", liveness_pass,
                              "both sides' class-1 liveness words",
                              symbol="liveness_pass", stamp="csrc_build_stamp"),

@@ -172,7 +172,7 @@ def worker_main(args) -> None:
             rows[name] = {"median_ms": statistics.median(times), "min_ms": min(times),
                           "max_ms": max(times), "reps": args.reps, "warmup": args.warmup,
                           "state_arm": args.state, "schedule": args.schedule,
-                          "sm_ghz": ghz}
+                          "sm_ghz": ghz, "arm": arm.name}
             del arm, fx
             torch.cuda.empty_cache()
         except Exception as ex:  # noqa: BLE001 -- reported per cell, never swallowed

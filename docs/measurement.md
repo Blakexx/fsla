@@ -83,6 +83,15 @@ Everything below describes the discipline as it was BUILT and measured on the ti
 apparatus. It is the specification the successor is held to; where the successor's
 implementation differs it is noted at the row.
 
+## The reference
+
+Every reported carry number sits beside FlashAttention at the same cell, measured in the
+same interleaved, clock-locked run: the `attention_reference` subject, causal, one head of
+width `dv`, `L` tokens, bf16, through Dao's `flash-attn` (a `bench` dependency, never
+torch's vendored backend as a stand-in, so no two rows cite different baselines; the row
+records the version). The capacity-fair point is `N = L`; a cell states its `L`. The layer
+comparison is the inter term plus the intra term against that one number.
+
 ## The stopwatch
 
 There is one, it is named, and its name travels with every number.
