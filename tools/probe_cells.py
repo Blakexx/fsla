@@ -228,6 +228,17 @@ def git_dirty(worktree: str) -> bool:
     return bool(out.strip()) if not out.startswith("UNKNOWN") else True
 
 
+def tree_digest(worktree: str) -> str:
+    """THE TREE'S OWN IDENTITY: sha256 of the diff against HEAD over the tracked files, empty
+    for a clean tree. A dirty tree's record carries the base commit's sha, and two different
+    uncommitted kernels measured over the same base share that sha -- the deferral of
+    2026-09-05 measured 5.67 and 6.80 under one label and one sha (journal section 39). The
+    digest tells them apart after the fact; the printed row says DIRTY at the time."""
+    import hashlib
+    diff = _git(worktree, "diff", "HEAD", "--", ".")
+    return "" if not diff.strip() or diff.startswith("UNKNOWN") else hashlib.sha256(diff.encode()).hexdigest()
+
+
 def venv_python(venv_path: str) -> str:
     python = Path(venv_path) / "bin" / "python"
     if not python.exists():
@@ -468,6 +479,7 @@ def main() -> None:
     print(f"{'binary':<16}{'cell':<26}{'ms (median-of-medians)':<26}{'stamp':<12}{'sha':<10}")
     for binary in args.binary:
         rounds = round_rows[binary["label"]]
+        tree = tree_digest(binary["worktree"])
         stamp = rounds[0]["stamp"] if rounds else {}
         refused = rounds[0].get("refused") if rounds else None
         if refused:
@@ -476,7 +488,8 @@ def main() -> None:
             summary = summarize(rounds, cell)
             first = rounds[0]["rows"].get(cell, {}) if rounds else {}
             entry = {"binary": binary["label"], "worktree": binary["worktree"],
-                     "venv": binary["venv"], "git_sha": binary["git_sha"], "cell": cell,
+                     "venv": binary["venv"], "git_sha": binary["git_sha"], "tree_sha256": tree,
+                     "cell": cell,
                      "bench": args.bench, "state_arm": args.state,
                      "schedule": binary.get("schedule", "box"),
                      "reps": args.reps, "warmup": args.warmup, "n_rounds": args.rounds,
@@ -491,7 +504,8 @@ def main() -> None:
                 shown = "ERROR: " + str(entry["error"])[:20]
             results.append(entry)
             print(f"{binary['label']:<16}{cell:<26}{shown:<26}"
-                  f"{str(entry['family_stamp'])[:10]:<12}{binary['git_sha'][:8]:<10}")
+                  f"{str(entry['family_stamp'])[:10]:<12}{binary['git_sha'][:8]:<10}"
+                  f"{' DIRTY ' + tree[:8] if tree else ''}")
 
     if args.ncu:
         print(f"\nNCU (one oneshot launch per binary x cell, filtered to {subject.symbol})")
