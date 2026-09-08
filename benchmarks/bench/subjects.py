@@ -150,6 +150,14 @@ def intra_forward(fx) -> Arm:
     return Arm(name=f"intra_forward|{spec.name}", call=run)
 
 
+def _atom_bits(read_levels, write_levels, widths):
+    """the per-atom activity byte of a call, as the engine folds it from both planes."""
+    from rola.engine.facts.planes import atom_bits
+    from rola.ops.carry import pack_side
+
+    return atom_bits(pack_side(write_levels), widths, pack_side(read_levels))
+
+
 def prefill_op(fx) -> Arm:
     """THE WHOLE ROLA OP, as the layer calls it: `rola.ops.prefill` over the cell's drawn
     routes, gain and values -- the liveness pass, the carry and the intra, and the op's own
@@ -168,10 +176,14 @@ def prefill_op(fx) -> Arm:
     width = intra_ops._shipped_level_width(D, prefill_ops.WINDOW)
     sread = intra_ops.pack_support(intra_ops.pad_routes(drawn.read, (width,) * D))
     swrite = intra_ops.pack_support(intra_ops.pad_routes(drawn.write, (width,) * D))
+    #: THE ACTIVITY BYTES gate the state sweeps to the atoms this call touches; they are
+    #: the engine's fold of the liveness words (`facts.planes.atom_bits`), a producer-side
+    #: fact, so built once here. Passing none states every atom active.
+    bits = _atom_bits(drawn.read, drawn.write, spec.widths)
 
     def run():
         return prefill_ops.prefill(drawn.read, drawn.write, drawn.gain, drawn.v, list(spec.widths),
-                                   modes=modes, sread=sread, swrite=swrite)
+                                   modes=modes, sread=sread, swrite=swrite, atom_bits=bits)
 
     return Arm(name=f"prefill_op|{spec.name}", call=run)
 
@@ -203,15 +215,17 @@ def prefill_op_chunked(fx) -> Arm:
         write = [x[:, sl] for x in drawn.write]
         parts.append((read, write, drawn.gain[:, sl].contiguous(), drawn.v[:, sl].contiguous(),
                       intra_ops.pack_support(intra_ops.pad_routes(read, (width,) * D)),
-                      intra_ops.pack_support(intra_ops.pad_routes(write, (width,) * D))))
+                      intra_ops.pack_support(intra_ops.pad_routes(write, (width,) * D)),
+                      _atom_bits(read, write, spec.widths)))
     plane = carry_ops.state_plane(prefill_ops._descriptor(list(spec.widths), spec.dv, 1), 1)
 
     def run():
         plane.zero_()
         out = None
-        for read, write, gain, v, sread, swrite in parts:
+        for read, write, gain, v, sread, swrite, bits in parts:
             out = prefill_ops.prefill(read, write, gain, v, list(spec.widths), modes=modes,
-                                      sread=sread, swrite=swrite, state_in=plane, state_out=plane)
+                                      sread=sread, swrite=swrite, state_in=plane, state_out=plane,
+                                      atom_bits=bits)
         return out
 
     return Arm(name=f"prefill_op_chunked|{spec.name}|{chunks}", call=run)
