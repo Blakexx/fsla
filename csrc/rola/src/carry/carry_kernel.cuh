@@ -1509,12 +1509,25 @@ __device__ __forceinline__ void readout_phase_pool(const CarryParams& p, const S
 //: masks, its rows drained at the line law before the next tile.
 //: -- see docs/internals/carry/carry_kernel.md#stream-form
 
-//: ONE TILE'S MMAs over the live k-steps of the stream.
-template <class BP, int kKs, uint32_t Live>
+//: ONE TILE'S MMAs over the live k-steps of the stream, WITH THE TILE BEFORE'S ROWS OUT
+//: under them: its first segment staged ahead and drained under the first half of the
+//: m-tiles, its second staged at the half and drained under the rest, the mass last --
+//: one staging tile, the rows held in registers until staged. -- carry_kernel.md#defer
+template <class BP, int kKs, uint32_t Live, bool Pending, bool Full>
 __device__ __forceinline__ void tile_mmas(const uint32_t (&a)[kKs][4],
                                           const uint32_t (&bs)[kKs][BP::kMassTile][4],
                                           const uint32_t (&bm)[kKs][2],
-                                          float (&c)[BP::kMassTile * 2][4], float (&cm)[4]) {
+                                          float (&c)[BP::kMassTile * 2][4], float (&cm)[4],
+                                          const float (&pc)[BP::kMassTile * 2][4],
+                                          const float (&pm)[4], ops::SmemAddr stage, float* numl,
+                                          float* den, int pparity, int t0, int warp, int lane) {
+  static_assert(BP::kMassTile == 4 && BP::kDv == 64,
+                "the drain's halves are spelled for four m-tiles");
+  if constexpr (Pending) {
+    stage_segment<BP, 0>(stage, pc, lane);
+    stage_mass<BP>(stage, pm, 0, lane);
+    warp_edge(warp);
+  }
   rola::static_for<BP::kMassTile>([&](auto Mc) {
     constexpr int m = decltype(Mc)::value;
     rola::static_for<kKs>([&](auto Kc) {
@@ -1527,6 +1540,18 @@ __device__ __forceinline__ void tile_mmas(const uint32_t (&a)[kKs][4],
         if constexpr (m == 0) ops::mma(cm, a[i], bm[i]);
       }
     });
+    if constexpr (Pending) {
+      constexpr int seg = m / 2, g0 = (m & 1) * 2;
+      drain_group<BP, Full>(stage, numl, 0, pparity, seg, g0, lane);
+      drain_group<BP, Full>(stage, numl, 0, pparity, seg, g0 + 1, lane);
+      if constexpr (m == 1) {
+        drain_mass<BP, Full>(stage, den, 0, pparity, t0, lane);
+        warp_edge(warp);
+        stage_segment<BP, 1>(stage, pc, lane);
+        warp_edge(warp);
+      }
+      if constexpr (m == 3) warp_edge(warp);
+    }
   });
 }
 
@@ -1563,8 +1588,12 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
 
   const ops::SmemAddr stage = sm.stage(warp);
   float* const numl = num + (size_t)t0 * BP::kDv + lane;
-  float hc[kNCh][4], hm[4];
+  //: the tile before this one, held in registers for the drain under this one's MMAs,
+  //: and -- the same registers, never both -- the window's last tile held for the fold.
+  float pc[kNCh][4], pm[4];
   uint16_t hid = kDeadToken;
+  bool pending = false, pfull = false;
+  int pparity = 0;
 #pragma unroll 1
   for (int base = 0; base < total; base += BP::kReadPos) {
     const int sbase =
@@ -1591,15 +1620,25 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
       const int up = __shfl_up_sync(0xFFFFFFFFu, tpre, d);
       if (lane >= d) tpre += up;
     });
-    const int ntiles = __shfl_sync(0xFFFFFFFFu, tpre, kStreams - 1);
     tpre -= mytiles;
+    //: the deal's table, through the warp's scratch: a value read back from shared memory
+    //: is uniform to ptxas where a shuffled one is not, and the tile loop's bounds and its
+    //: full flag decide branches with edges in them.
+    unsigned short* const deal = sm.fill_scratch(kSide, warp);
+    if (lane < kStreams) {
+      deal[lane] = (unsigned short)tpre;
+      deal[kStreams + lane] = (unsigned short)mycount;
+    }
+    if (lane == kStreams - 1) deal[2 * kStreams] = (unsigned short)(tpre + mytiles);
+    warp_edge(warp);
+    const int ntiles = (int)deal[2 * kStreams];
     int parity = 0;
 #pragma unroll 1
     for (int t = warp; t < ntiles; t += BP::kWarps, parity ^= 1) {
       //: the tile's stream: the last lane whose prefix does not pass it.
       const int s = __popc(ops::lane_ballot(lane < kStreams && tpre <= t)) - 1;
-      const int at = (t - __shfl_sync(0xFFFFFFFFu, tpre, s)) * BP::kSeg;
-      const int count = __shfl_sync(0xFFFFFFFFu, mycount, s);
+      const int at = (t - (int)deal[s]) * BP::kSeg;
+      const int count = (int)deal[kStreams + s];
       const bool full = at + BP::kSeg <= count;
       const unsigned short* const list = sm.pool_list_read(s);
 
@@ -1637,24 +1676,35 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
         rola::static_for<4>([&](auto Ic) { c[decltype(Jc)::value][decltype(Ic)::value] = 0.0f; });
       });
       rola::static_for<4>([&](auto Ic) { cm[decltype(Ic)::value] = 0.0f; });
+      //: this tile's MMAs, the tile before's rows out under them.
       rola::static_for<(1 << kKs) - 1>([&](auto Lc) {
         constexpr uint32_t kLive = decltype(Lc)::value + 1u;
-        if (lives == kLive) tile_mmas<BP, kKs, kLive>(a, bs, o.bm, c, cm);
+        if (lives == kLive) {
+          if (!pending)
+            tile_mmas<BP, kKs, kLive, false, false>(a, bs, o.bm, c, cm, pc, pm, stage, numl, den,
+                                                    pparity, t0, warp, lane);
+          else if (pfull)
+            tile_mmas<BP, kKs, kLive, true, true>(a, bs, o.bm, c, cm, pc, pm, stage, numl, den,
+                                                  pparity, t0, warp, lane);
+          else
+            tile_mmas<BP, kKs, kLive, true, false>(a, bs, o.bm, c, cm, pc, pm, stage, numl, den,
+                                                   pparity, t0, warp, lane);
+        }
       });
+      pending = false;
 
       //: the tile out: the warp's last of the window is HELD for the fold (`#defer`); the
-      //: others are staged a segment at a time, each drained at the line law.
-      warp_edge(warp);
+      //: others are held for the tile after, and go out under its MMAs.
       if (t + BP::kWarps >= ntiles && base + BP::kReadPos >= total) {
         //: kept in registers until the phase's last edge: the deferred tile's bytes are
         //: the other warps' pool rows and staging tiles until then.
         rola::static_for<kNCh>([&](auto Jc) {
           rola::static_for<4>([&](auto Ic) {
-            hc[decltype(Jc)::value][decltype(Ic)::value] =
+            pc[decltype(Jc)::value][decltype(Ic)::value] =
                 c[decltype(Jc)::value][decltype(Ic)::value];
           });
         });
-        rola::static_for<4>([&](auto Ic) { hm[decltype(Ic)::value] = cm[decltype(Ic)::value]; });
+        rola::static_for<4>([&](auto Ic) { pm[decltype(Ic)::value] = cm[decltype(Ic)::value]; });
         hid = (uint16_t)sm.pool_token()[mine];
         defer.held = true;
         defer.full = full;
@@ -1662,27 +1712,41 @@ __device__ __forceinline__ void readout_phase_streams(const CarryParams& p, cons
         defer.row = 0;
         continue;
       }
+      rola::static_for<kNCh>([&](auto Jc) {
+        rola::static_for<4>([&](auto Ic) {
+          pc[decltype(Jc)::value][decltype(Ic)::value] =
+              c[decltype(Jc)::value][decltype(Ic)::value];
+        });
+      });
+      rola::static_for<4>([&](auto Ic) { pm[decltype(Ic)::value] = cm[decltype(Ic)::value]; });
+      pending = true;
+      pfull = full;
+      pparity = parity;
+    }
+    //: a tile still pending at the batch's end goes out here, nothing to hide under.
+    if (pending) {
       rola::static_for<kSegs>([&](auto Gc) {
         constexpr int seg = decltype(Gc)::value;
-        stage_segment<BP, seg>(stage, c, lane);
-        if constexpr (seg == 0) stage_mass<BP>(stage, cm, 0, lane);
+        stage_segment<BP, seg>(stage, pc, lane);
+        if constexpr (seg == 0) stage_mass<BP>(stage, pm, 0, lane);
         warp_edge(warp);
-        if (full)
-          drain_segment<BP, true>(stage, numl, 0, parity, seg, lane);
+        if (pfull)
+          drain_segment<BP, true>(stage, numl, 0, pparity, seg, lane);
         else
-          drain_segment<BP, false>(stage, numl, 0, parity, seg, lane);
+          drain_segment<BP, false>(stage, numl, 0, pparity, seg, lane);
         if constexpr (seg == 0) {
-          if (full)
-            drain_mass<BP, true>(stage, den, 0, parity, t0, lane);
+          if (pfull)
+            drain_mass<BP, true>(stage, den, 0, pparity, t0, lane);
           else
-            drain_mass<BP, false>(stage, den, 0, parity, t0, lane);
+            drain_mass<BP, false>(stage, den, 0, pparity, t0, lane);
         }
         warp_edge(warp);
       });
+      pending = false;
     }
     ops::rendezvous_group((int)StreamEdge::kReadBatch, BP::kThreads);
   }
-  if (defer.held) defer_stage<BP>(sm.defer_tile(warp), hc, hm, hid, lane);
+  if (defer.held) defer_stage<BP>(sm.defer_tile(warp), pc, pm, hid, lane);
 }
 
 //: THE WINDOW'S GAIN TABLE at cover slot B: the write side's gains for the window's tokens,

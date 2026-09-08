@@ -567,9 +567,17 @@ them cost 19% of the k4 kernel was bunching: every warp drained its one or two t
 same short span after the MMAs. So a warp's LAST tile of the window is held in registers
 past the phase's last edge, staged into its deferred tile (`smem_ledger.md#defer`), and
 reduced out two rows at a time under the fold's fill rounds and pass tiles (`Defer`,
-`defer_some`, the fold's `tick`), the rest at the window line. The other tiles still drain
-at the tile, under the next tile's MMAs. The ablation that removes every reduction then
-changes the k4 time by nothing.
+`defer_some`, the fold's `tick`), the rest at the window line. Every other tile is held in
+registers for the tile after and goes out UNDER ITS MMAs (`tile_mmas<.., Pending, Full>`):
+its first segment staged ahead and drained a group per m-tile under the first two m-tiles,
+its second staged at the half and drained under the last two, the mass between -- one
+staging tile, the held rows and the deferred rows the same registers, never both live. A
+tile pending at a batch's end goes out there. The deal's per-tile values pass through the
+warp's fill scratch rather than shuffles, since the tile loop's bounds and its full flag
+decide branches with edges in them and a shuffled value is not uniform to ptxas. The
+ablation that removes every reduction then changes the k4 time by nothing; the
+under-the-MMAs form measured within a percent of the deferral alone (journal section 37),
+and is kept as the structure.
 
 <a id="streams"></a>
 ## The sparse form: streams keyed on leaf ranges
