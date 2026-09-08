@@ -69,6 +69,13 @@ def modes_of(spec):
                  for level in range(spec.D))
 
 
+def fresh_plane(spec, bh: int = 1):
+    """the plane a fresh sequence hands out: the op allocates none."""
+    from rola.ops.prefill import _descriptor
+
+    return carry_ops.state_plane(_descriptor(list(spec.widths), spec.dv, bh), bh)
+
+
 def call(spec, state_in=None):
     """One combined call on the FINAL surface: no window, no ``(k, m)``, no carve."""
     drawn = realize(spec)
@@ -76,7 +83,8 @@ def call(spec, state_in=None):
                           modes=modes_of(spec),
                           sread=intra_ops.pack_support(drawn.read),
                           swrite=intra_ops.pack_support(drawn.write),
-                          state_in=state_in)
+                          state_in=state_in,
+                          state_out=fresh_plane(spec) if state_in is None else state_in)
 
 
 def oracle(drawn, state_in=None):
@@ -164,19 +172,19 @@ def test_a_chained_call_equals_one_long_call():
     sread = intra_ops.pack_support(drawn.read)
     swrite = intra_ops.pack_support(drawn.write)
     whole = prefill(drawn.read, drawn.write, drawn.gain, drawn.v, spec.widths,
-                    modes=modes, sread=sread, swrite=swrite)
+                    modes=modes, sread=sread, swrite=swrite, state_out=fresh_plane(spec))
 
     cut = carry_ops.WINDOW
     words = cut // intra_ops.WORD_TOKENS
     head = prefill(tuple(x[:, :cut] for x in drawn.read),
                    tuple(x[:, :cut] for x in drawn.write), drawn.gain[:, :cut],
                    drawn.v[:, :cut], spec.widths, modes=modes, sread=sread[:, :words],
-                   swrite=swrite[:, :words])
+                   swrite=swrite[:, :words], state_out=fresh_plane(spec))
     tail = prefill(tuple(x[:, cut:] for x in drawn.read),
                    tuple(x[:, cut:] for x in drawn.write), drawn.gain[:, cut:],
                    drawn.v[:, cut:], spec.widths, modes=modes,
                    sread=sread[:, words:].contiguous(),
-                   swrite=swrite[:, words:].contiguous(), state_in=head[2])
+                   swrite=swrite[:, words:].contiguous(), state_in=head[2], state_out=head[2])
 
     assert bytes_equal(tail[2], whole[2])
     num = torch.cat((head[0], tail[0]), dim=1)

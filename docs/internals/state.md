@@ -235,6 +235,20 @@ is this: `_kernel_entry` plans the call's atoms into slots and hands back
 a dense backing — a paged state owns the arena's plane, and a dense continuation was
 launched into its own.
 
+### <a id="four-shapes"></a>The kernel's four shapes, and no plane the caller did not make
+
+`state_in` and `state_out` are two references the caller hands the kernel, and every
+layer above it (`rola.ops.carry.carry_forward`, `rola.ops.prefill.prefill`) passes them
+through and allocates nothing (ruling 2026-09-08). Neither is the NULL-STATE call:
+nothing comes in, nothing goes out, no sweep runs. `state_in` alone is READ-ONLY: the
+readout against a frozen state, the folds accumulate in registers and are never stored.
+`state_out` alone is a FRESH sequence: a zero state, no entry sweep, the box stored whole
+at exit. Both, the SAME tensor, ADVANCE the plane in place. The state lives in the
+register file between the two sweeps -- the exit sweep is a whole store of the box's
+written atoms, never a read-modify-write of bytes -- which is why the out plane needs no
+prior contents and why in and out may be one tensor. A plane comes from
+`rola.ops.carry.state_plane` (dense, zeroed) or the arena (paged, with its page table).
+
 ### <a id="the-dense-continuation"></a>The continuation advances IN PLACE, in either backing
 
 `s_out` and `s_in` are ONE plane for a continued sequence, in either backing, so a

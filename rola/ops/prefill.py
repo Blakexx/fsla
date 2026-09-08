@@ -150,16 +150,20 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
     """The whole forward term, undivided: ``(num, den, state_out)``.
 
     ``num`` is ``[BH, T, d_v]`` fp32, ``den`` is ``[BH, T]`` fp32 and
-    ``state_out`` is ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order.
+    ``state_out`` is ``[BH, N/16, 16, d_v+1]`` fp32 in CANONICAL leaf order -- the
+    caller's own ``state_out`` plane, or ``None`` where the call stores no state.
     The readout a caller wants is ``num / (den + READOUT_EPS)``; this operator
     does not divide, because the state and the mass are what a chained call
     needs and a ratio is not.
 
     THE STATE PLANES ARE THE CALLER'S (`docs/internals/state.md` section 4).
-    ``state_out`` is the plane this call advances -- pass the SAME tensor as
-    ``state_in`` to continue a sequence in place, or the arena's plane together with
-    its ``page_table`` to run the paged backing; a call that passes none is binding a
-    fresh dense backing and gets a plane of its own. ``page_table`` is the
+    THE FOUR SHAPES, the kernel's own, and this operator allocates no plane: neither
+    plane is the NULL-STATE call (nothing in, nothing out); ``state_in`` alone is
+    READ-ONLY (the readout against a frozen state, the folds never stored);
+    ``state_out`` alone is a FRESH sequence (a zero state in, no entry sweep, stored
+    out); both, the SAME tensor, ADVANCE it in place. A plane is the arena's, with its
+    ``page_table`` for the paged backing, or a dense one from
+    :func:`rola.ops.carry.state_plane`. ``page_table`` is the
     ``[BH, N/16]`` int32 slot table, and ``None`` is the dense backing, where the slot
     IS the atom. ``atom_bits`` is the per-atom ACTIVITY byte (bit 0 WRITTEN, bit 1
     READ); a call that passes none states the conservative fact
@@ -211,12 +215,8 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
     liveness = _liveness_words(pread, pwrite, descriptor)
     activity = (atom_bits if atom_bits is not None
                else _conservative_activity(descriptor, bh, v_bh.device))
-    #: THE STATE PLANE IS THE CALLER'S WHEN THE CALLER HAS ONE (state.md section 4): a
-    #: continuation hands its own plane -- the arena's, or the one it is advancing --
-    #: and it is written in place, so a stateful chain allocates ONE plane for the
-    #: SEQUENCE. A call that supplies none is binding a fresh dense backing and gets it.
-    if state_out is None:
-        state_out = carry_ops.state_plane(descriptor, bh, device=v_bh.device)
+    #: THE STATE PLANES ARE THE CALLER'S, both of them, and this operator allocates none:
+    #: the kernel's four shapes pass through as the caller names them (state.md section 4).
 
     routes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)
     num, den = carry_ops.carry_forward(
