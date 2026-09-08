@@ -34,7 +34,7 @@ struct Smem {
     return reinterpret_cast<float*>(base + BP::kRegionOffset + i * BP::kPageImageBytes);
   }
 
-  //: THE TRANSIT REGION, `[row = sb_swizzle(local)][col = channel]`, and PHASE 1's output
+  //: THE TRANSIT REGION, `[row = sb_swizzle(read index)][col = channel]`, and PHASE 1's output
   //: blocks in the bytes the pull has finished with. -- see docs/internals/carry/smem_ledger.md#region
   __device__ __forceinline__ char* region() const { return base + BP::kRegionOffset; }
 
@@ -197,20 +197,10 @@ struct Transit {
   uint32_t mlo[BP::kNL];
 };
 
-//: A SIDE'S REGION ROW, as a shared address. The row IS the owner-local canonical index
-//: under the region's swizzle -- one law, both sides.
-//: -- see docs/internals/carry/carry_kernel.md#transit
-template <class BP, int D, int BC>
-__device__ __forceinline__ ops::SmemAddr transit_row(const Smem<BP>& sm, const SideGeom& s,
-                                                     int strm, int P) {
-  return ops::smem_addr(sm.region())
-         + (uint32_t)(sb_swizzle(geom_local_row<D, BC>(s, strm, P)) * BP::kLdX * 2);
-}
-
 //: THE READ ORDER: the read side's leaves in ITS carve order, rank 0 innermost -- the run a
 //: k-step's sixteen rows walk -- so a k-step and a stream take one digit at each of the
-//: read side's sparse levels and run along its dense ones. The region's rows stay in the
-//: canonical order; a read-order leaf is mapped to its physical row.
+//: read side's sparse levels and run along its dense ones. The region's rows are indexed
+//: in this order; the memo maps a read-order leaf to its physical amplitude columns.
 //: -- see docs/internals/carry/carry_kernel.md#read-order
 template <int D, int BC>
 struct ReadOrder {
@@ -257,13 +247,61 @@ struct ReadOrder {
     return b;
   }
 
-  __device__ __forceinline__ int physical(int v) const {
-    int local = 0;
+  //: the read-order index of a physical row -- `geom_read_index`, the levels unrolled.
+  __device__ __forceinline__ int index(int local) const {
+    int v = 0;
     rola::static_for<D>([&](auto Lc) {
       constexpr int l = decltype(Lc)::value;
-      local += digit<l>(v) << owner_run_shift(D, BC, l);
+      v += ((local >> owner_run_shift(D, BC, l)) & (owner_span(D, BC, l) - 1)) << shift[l];
     });
-    return local;
+    return v;
+  }
+};
+
+//: THE WRITE SIDE'S REGION ROWS: a slot's owner-local canonical row, taken to its read-order
+//: index under the region's swizzle -- one law, both sides. Every step of that map is
+//: GF(2)-linear in the slot's bits, so a warp holds its stream's base row and one row per
+//: slot bit, and a fragment's row is an XOR selection by the slot's compile-time bits.
+//: -- see docs/internals/carry/carry_kernel.md#transit
+template <class BP, int D, int BC>
+struct TransitRows {
+  static constexpr int kBits = geom_ilog2(BP::kLeavesPerWarp);
+  int base;        //: the swizzled row of the lane's runtime slot bits
+  int bit[kBits];  //: the swizzled row of slot bit `b` alone
+
+  //: built where it is used, from the geometry, behind an opaque one tagged by the site:
+  //: the rows are window-invariant, and hoisted out of the window loop or shared between
+  //: the legs they would be six registers carried across PHASE 1.
+  __device__ __forceinline__ TransitRows(const SideGeom& s, const SideGeom& r, int strm,
+                                         int lane_slot, int site) {
+    int one = 1;
+    asm volatile("" : "+r"(one) : "r"(site));
+    ReadOrder<D, BC> ro(r);
+    rola::static_for<D>([&](auto Lc) {
+      asm volatile("" : "+r"(ro.shift[decltype(Lc)::value]) : "r"(site));
+    });
+    base = sb_swizzle(ro.index(geom_local_row<D, BC>(s, strm, lane_slot)));
+    rola::static_for<kBits>([&](auto Bc) {
+      constexpr int b = decltype(Bc)::value;
+      int row = 0;
+      rola::static_for<D>([&](auto Lc) {
+        constexpr int l = decltype(Lc)::value;
+        if (b >= s.sub_shift[l] && b < s.sub_shift[l] + s.sub_bits[l])
+          row = one << (owner_run_shift(D, BC, l) + b - s.sub_shift[l]);
+      });
+      bit[b] = sb_swizzle(ro.index(row));
+    });
+  }
+
+  //: the region row of the lane's slot displaced by the compile-time slot bits of `P`.
+  template <int P>
+  __device__ __forceinline__ ops::SmemAddr row(const Smem<BP>& sm) const {
+    int r = base;
+    rola::static_for<kBits>([&](auto Bc) {
+      constexpr int b = decltype(Bc)::value;
+      if constexpr ((P >> b) & 1) r ^= bit[b];
+    });
+    return ops::smem_addr(sm.region()) + (uint32_t)(r * BP::kLdX * 2);
   }
 };
 
@@ -277,7 +315,7 @@ __device__ __forceinline__ void derive_read_memo(const CarryParams& p, const Sme
   const ReadOrder<D, BC> ro(p.g.r);
   const int rT = ((lane >> 4) & 1) * 8 + (lane & 7), cT = (lane >> 3) & 1;
   const auto row_of = [&](int v) {
-    return ops::smem_addr(sm.region()) + (uint32_t)(sb_swizzle(ro.physical(v)) * BP::kLdX * 2);
+    return ops::smem_addr(sm.region()) + (uint32_t)(sb_swizzle(v) * BP::kLdX * 2);
   };
 #pragma unroll 1
   for (int K = warp; K < BP::kKb; K += BP::kWarps) {
@@ -313,12 +351,12 @@ __device__ __forceinline__ void out_leg_publish(const CarryParams& p, const Smem
                                                 const Acc<BP>& acc, Transit<BP>& tr, int warp,
                                                 int lane) {
   const uint32_t col = (uint32_t)((lane >> 2) * 2);
+  const TransitRows<BP, D, BC> rows(p.g.w, p.g.r, warp, 2 * (lane & 3), 0);
   rola::static_for<BP::kNL>([&](auto Jc) {
     constexpr int j = decltype(Jc)::value;
     rola::static_for<2>([&](auto Ec) {
       constexpr int e = decltype(Ec)::value;
-      const ops::SmemAddr row =
-          transit_row<BP, D, BC>(sm, p.g.w, warp, j * ops::kMmaN + 2 * (lane & 3) + e);
+      const ops::SmemAddr row = rows.template row<j * ops::kMmaN + e>(sm);
       rola::static_for<BP::kMassTile>([&](auto Mc) {
         constexpr int m = decltype(Mc)::value;
         rola::static_for<2>([&](auto Hc) {
@@ -349,10 +387,10 @@ __device__ __forceinline__ void return_leg_rejoin(const CarryParams& p, const Sm
                                                   const Transit<BP>& tr, Acc<BP>& acc, int warp,
                                                   int lane) {
   const int rT = ((lane >> 4) & 1) * 8 + (lane & 7), cT = (lane >> 3) & 1;
+  const TransitRows<BP, D, BC> rowsT(p.g.w, p.g.r, warp, rT, 1);
   rola::static_for<BP::kNL / 2>([&](auto Jc) {
     constexpr int jp = decltype(Jc)::value;
-    const ops::SmemAddr row =
-        transit_row<BP, D, BC>(sm, p.g.w, warp, jp * ops::kMmaK + rT) + (uint32_t)(cT * 8 * 2);
+    const ops::SmemAddr row = rowsT.template row<jp * ops::kMmaK>(sm) + (uint32_t)(cT * 8 * 2);
     rola::static_for<BP::kMassTile>([&](auto Mc) {
       constexpr int m = decltype(Mc)::value;
       uint32_t hi[4];
@@ -372,16 +410,15 @@ __device__ __forceinline__ void return_leg_rejoin(const CarryParams& p, const Sm
   //: it; every other element of the tile is structurally zero (`kMassRow == 0` and the
   //: deposit's A fragment has a single live row), so the rejoin states that rather than
   //: carrying sixteen zero registers through PHASE 1.
+  const TransitRows<BP, D, BC> rowsM(p.g.w, p.g.r, warp, 2 * (lane & 3), 2);
   rola::static_for<BP::kNL>([&](auto Jc) {
     constexpr int j = decltype(Jc)::value;
     rola::static_for<4>([&](auto Ec) { acc.c[BP::kMassTile][j][decltype(Ec)::value] = 0.0f; });
     if ((lane >> 2) == 0) {
-      const int P = j * ops::kMmaN + 2 * (lane & 3);
       const uint32_t c = (uint32_t)(BP::kDv * 2);
       const uint32_t hi =
-          (uint32_t)ops::load_shared_u16(transit_row<BP, D, BC>(sm, p.g.w, warp, P) + c)
-          | ((uint32_t)ops::load_shared_u16(transit_row<BP, D, BC>(sm, p.g.w, warp, P + 1) + c)
-             << 16);
+          (uint32_t)ops::load_shared_u16(rowsM.template row<j * ops::kMmaN>(sm) + c)
+          | ((uint32_t)ops::load_shared_u16(rowsM.template row<j * ops::kMmaN + 1>(sm) + c) << 16);
       acc.c[BP::kMassTile][j][0] = ops::join_hi_lo(hi, tr.mlo[j], 0);
       acc.c[BP::kMassTile][j][1] = ops::join_hi_lo(hi, tr.mlo[j], 1);
     }

@@ -194,16 +194,10 @@ constexpr int sb_scatter_of(int D, int bc, int ns, int a, int P) {
   return row;
 }
 
-//: THE REGION'S SWIZZLE. A member whose innermost span is narrower than the MMA's
-//: eight-row granule scatters an access's rows into too few `row mod 8` values, because
-//: the level's owner run is wider than the sub-box and leaves a gap; 15 of the 55
-//: reachable member pairs conflict unswizzled. This is GF(2)-LINEAR, so it distributes
-//: over the `base ^ scatter(P)` split and every displacement stays an immediate, and it
-//: is a bijection of `[0, BC)`. -- see docs/internals/common/geom.md#row-swizzle
-constexpr int kSwzShift = 2, kSwzMask = 7;
-
+//: THE REGION'S SWIZZLE of a read-order index: every three-bit group folded into the low
+//: three, GF(2)-linear, a bijection. -- see docs/internals/common/geom.md#row-swizzle
 __host__ __device__ constexpr int sb_swizzle(int row) {
-  return row ^ ((row >> kSwzShift) & kSwzMask);
+  return row ^ (((row >> 3) ^ (row >> 6) ^ (row >> 9)) & 7);
 }
 
 //: the member a carved shape IS, or `-1` -- the exhaustiveness question, asked of the
@@ -476,6 +470,21 @@ __host__ __device__ inline int geom_local_row(const SideGeom& s, int strm, int P
   return row;
 }
 
+//: THE READ-ORDER INDEX of an owner-local canonical row: the region's row law, both sides.
+//: -- see docs/internals/carry/carry_kernel.md#read-order
+__host__ __device__ inline int geom_read_index(const CarryGeomRT& g, const SideGeom& r, int local) {
+  int index = 0;
+#pragma unroll 1
+  for (int l = 0; l < g.D; ++l) {
+    int sh = 0;
+#pragma unroll 1
+    for (int m = 0; m < g.D; ++m)
+      if (r.rank[m] < r.rank[l]) sh += geom_ilog2(g.span[m]);
+    index += ((local >> g.run_shift[l]) & (g.span[l] - 1)) << sh;
+  }
+  return index;
+}
+
 __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom& s, int strm,
                                             int P) {
   int row = 0;
@@ -485,7 +494,7 @@ __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom
     const int dig = (P >> s.sub_shift[l]) & ((1 << s.sub_bits[l]) - 1);
     row += (off + dig) << g.run_shift[l];
   }
-  return sb_swizzle(row);
+  return sb_swizzle(geom_read_index(g, g.r, row));
 }
 
 //: THE ABSOLUTE DIGIT of level `l` for owner `O`'s local slot.

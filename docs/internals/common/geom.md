@@ -130,19 +130,31 @@ seam, which genuinely does not know `D` at compile time.
 
 The bank of a word in the transit region is `(36 * row + col) mod 32`, and `36 * row mod
 32 = 4 * (row mod 8)` — so an access is conflict-free exactly when its rows are distinct
-`mod 8`. A member whose INNERMOST span is narrower than the MMA's eight-row granule
-(`sv(D-1) = 4`) scatters an access's eight rows into only four values there, because the
-level's owner run is wider than the sub-box and leaves a gap in the canonical index. That
-is 15 of the 55 reachable member pairs, the flagship's own among them.
+`mod 8`. The region's row is the leaf's READ-ORDER INDEX (`geom_read_index`: the read
+side's carve order from the mode word, rank 0 innermost) under
+`sb_swizzle(row) = row ^ (((row >> 3) ^ (row >> 6) ^ (row >> 9)) & 7)`: every three-bit
+group of the index folded into its low three bits, so index bit `j` lands on bank group
+`e(j mod 3)` and ANY three consecutive index bits are independent.
 
-`sb_swizzle(row) = row ^ ((row >> 2) & 7)` clears all 55. Two properties make it free
-rather than a cost, and `test_exchange_layout` asserts both: it is a BIJECTION of
-`[0, BC)`, so no leaf is lost or aliased; and it is GF(2)-LINEAR, so
-`swz(base ^ scatter(P)) = swz(base) ^ swz(scatter(P))` — the lane's base word takes the
-swizzle ONCE at runtime and every per-fragment row term stays a compile-time constant.
-Without linearity each store would need a runtime XOR and the immediates would be gone.
-The address arithmetic composes with `^` and never with `+`: under the swizzle a slot bit
-can share a row bit with the base, which the pre-swizzle layout's disjointness ruled out.
+Why the read order, not the physical one. The readout's pull (`ldmatrix.trans`) takes
+eight consecutive READ-ORDER leaves; in the physical order those step rows by a power of
+two whenever a read-sparse level sits inside the run level (the alternating draw: sixteen
+rows apart, four-way conflicted, 16 wavefronts a load where 4 are ideal, measured 2026-09-07
+as 16% of every shared wavefront in the kernel). No GF(2)-linear swizzle of the physical
+row clears every order the mode words reach — the deep-4 orders force four row bits into
+one coset of the bank group, and any three of them then collide with the bit-0 pull — and
+neither does any `row ^ f(row >> 3)` with `f` free (both exhaustive searches, journal
+section 38). In the read order the pull is `{0, 1, 2}` always, and the write side's
+accesses — a member's scatter of eight consecutive innermost digits — are a contiguous
+bit triple wherever the rank order puts that level, which the folded swizzle clears.
+The exchange-law model test (tests/unit) walks every access at every reachable (read order, write member).
+
+Two properties keep it free rather than a cost, both asserted: it is a BIJECTION of
+`[0, BC)`, so no leaf is lost or aliased; and every step of the map — the member's
+scatter, the read-order permutation, the swizzle — is GF(2)-LINEAR in the slot's bits, so
+`row(strm, P) = row(strm, 0) ^ XOR_{b in P} row(bit b)`: a warp holds its base row and one
+row per slot bit (`TransitRows`), and a fragment's row is an XOR selection by the slot's
+compile-time bits. The address arithmetic composes with `^` and never with `+`.
 
 <a id="cta-box-first"></a>
 ## The derivation is CTA-BOX-FIRST

@@ -119,16 +119,20 @@ loaded tile.
 <a id="transit"></a>
 ## The hybrid transit: the same halves, re-owned
 
-The transit region is `[row = sb_swizzle(local)][col = channel]`, `BC` rows of `kLdX`
-halfwords. `local` is the OWNER-LOCAL CANONICAL INDEX (`geom.md#local-row`) — one law that
-both sides read, never two maps — and `sb_swizzle` is the region's GF(2)-linear row
-permutation. Two facts keep every displacement an immediate:
+The transit region is `[row = sb_swizzle(index)][col = channel]`, `BC` rows of `kLdX`
+halfwords, where `index` is the leaf's READ-ORDER INDEX (`ReadOrder`, `#read-order`) of its
+OWNER-LOCAL CANONICAL row (`geom.md#local-row`) — one law that both sides read, never two
+maps — and `sb_swizzle` the region's GF(2)-linear row permutation (`geom.md#row-swizzle`).
+Three facts keep every displacement an immediate:
 
 * `local(strm, P) = local(strm, 0) | scatter(P)`, because a stream's offset at a level and a
   slot's digits at that level occupy DISJOINT bit fields — so the `|` is a `^` and `scatter`
   is linear in `P`'s bits;
-* `sb_swizzle` is linear, so `row(strm, P) = row(strm, 0) ^ swizzle(scatter(P))` and the
-  `P`-part is a constant wherever `P` is.
+* the read-order index is a permutation of the row's bits, and `sb_swizzle` is linear, so
+  `row(strm, P) = row(strm, 0) ^ XOR_{b in P} row(1 << b)`;
+* so a warp holds its base row and one row per slot bit (`TransitRows`, built where it is
+  used and never carried across a phase), and a fragment's row is an XOR selection by the
+  slot's compile-time bits.
 
 The two legs, in the order the frame runs them:
 
@@ -495,10 +499,11 @@ Flagship arm, sm_86, `tools/probe_cells.py` against the shipped body at the same
 <a id="read-order"></a>
 ## The read order: the read side's own carve
 
-The box's leaves have one physical order, the canonical index the region's rows and the
-state's pages follow, with the innermost level the fast digit. The READ side reads its
-leaves in ITS OWN order (`ReadOrder`): the side's carve order from the mode word, rank 0
-innermost. A read-order k-step is sixteen leaves that differ in the rank-0 level's digit
+The box's leaves have one physical order, the canonical index the state's pages follow,
+with the innermost level the fast digit. The READ side reads its leaves in ITS OWN order
+(`ReadOrder`): the side's carve order from the mode word, rank 0 innermost -- and the
+transit region's rows are indexed in that order (`geom.md#row-swizzle`), so the pull is
+consecutive rows. A read-order k-step is sixteen leaves that differ in the rank-0 level's digit
 only, so it runs along that level and takes one digit at each other level, and a read
 stream is a run of read-order leaves. Declaring a level sparse ranks it outermost on that
 side, so a k-step runs along the dense levels and streams are cut along the sparse ones.
@@ -510,9 +515,10 @@ can reach that waste -- it sits inside the MMA's K. In the read order the same t
 in about one stream and every k-step of it. The host's carve function refuses to divide the
 physical innermost level below a page rectangle, which is right for the fold and the
 sweeps and has nothing to say about which sixteen rows a readout k-step gathers, so the
-read side takes its order from `level_at` directly and maps read-order leaves to physical
-rows itself: the memo's rows and columns (`derive_read_memo`) and the read side's walk
-(`read_kstep_masks`, the read side's shape of `stream_masks_at`) are the only two places the order enters.
+read side takes its order from `level_at` directly: the memo's columns (`derive_read_memo`,
+the physical leaf of a read-order row), the read side's walk (`read_kstep_masks`, the read
+side's shape of `stream_masks_at`) and the write side's transit rows (`TransitRows`, the
+read-order index of a physical row) are the places the order enters.
 
 <a id="box-words"></a>
 ## The box words

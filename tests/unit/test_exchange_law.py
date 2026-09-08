@@ -117,20 +117,36 @@ def _sides(case):
 
 
 def _swz(row):
-    """THE REGION'S SWIZZLE, mirroring `geom.cuh`'s `sb_swizzle`: GF(2)-linear, so
-    it distributes over `base ^ scatter(P)` and every fragment term stays an immediate."""
-    return row ^ ((row >> 2) & 7)
+    """THE REGION'S SWIZZLE, mirroring `geom.cuh`'s `sb_swizzle`: every three-bit group of
+    the index folded into its low three bits. GF(2)-linear, so it distributes over
+    `base ^ scatter(P)` and every fragment term stays an immediate."""
+    return row ^ (((row >> 3) ^ (row >> 6) ^ (row >> 9)) & 7)
+
+
+def _read_index(blk, local):
+    """THE READ-ORDER INDEX of an owner-local canonical row, mirroring `geom_read_index`:
+    the read side's carve order from the mode word, rank 0 innermost."""
+    D, span, rank = blk["D"], blk["span"], blk["r_rank"]
+    bits = [_ilog2c(x) for x in span]
+    index = 0
+    for l in range(D):
+        sh = sum(bits[m] for m in range(D) if rank[m] < rank[l])
+        rs = sum(bits[i] for i in range(l + 1, D))
+        index += ((local >> rs) & (span[l] - 1)) << sh
+    return index
 
 
 def _row(side, stream, slot):
     """THE REGION'S ROW: the OWNER-LOCAL CANONICAL INDEX of the leaf this side's stream
-    holds at that slot.  Each side reaches a leaf through its OWN base word and its own
-    member's shifts, so the two sides meet on the canonical index and nowhere else."""
+    holds at that slot, taken to its READ-ORDER index under the swizzle.  Each side reaches
+    a leaf through its OWN base word and its own member's shifts, so the two sides meet on
+    the canonical index and nowhere else; the region is indexed in the read order so the
+    readout's pull -- eight consecutive read-order leaves -- is eight consecutive rows."""
     row = 0
     for l in range(side.D):
         d = ((slot >> side.shift(l)) & (side.s(l) - 1)) + side.off(l, stream)
         row += d << side.run_shift(l)
-    return _swz(row)
+    return _swz(_read_index(side.blk, row))
 
 
 def _row_of(w_side, r_side, stream, slot):
@@ -277,14 +293,17 @@ def _bank_free(rows, ldx, gran, word_off=0, words_per_gran=4):
 
 @pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
 def test_the_regions_accesses_are_conflict_free_at_every_declaration(idx, row):
-    """THE SWIZZLE SEARCH, AS A COMPILE-TIME ENUMERATION, NOW OVER BOTH SIDES' MEMBERS.
+    """THE ACCESS SWEEP, AS A COMPILE-TIME ENUMERATION, OVER BOTH SIDES.
 
-    Under a SHARED slot layout every access covered rows an ALIGNED RUN apart and
-    `ldx / 2 = 4 x odd` mapped a run of eight onto eight different four-bank blocks by
-    itself.  With a member per side the rows an access covers are that member's SCATTER of
-    a run, not the run, and 15 of the 55 reachable pairs conflicted -- which is what the
-    region's swizzle (`geom.md#row-swizzle`) is for.  All four accesses are walked here,
-    WITH the swizzle, at every declaration the sweep reaches."""
+    `ldx / 2 = 4 x odd` maps eight consecutive rows onto eight different four-bank blocks
+    by itself, so an access is conflict-free exactly when its rows are distinct mod 8.
+    The write side's accesses are its member's scatter of a run; the pull is eight
+    consecutive READ-ORDER leaves. In the physical order the pull steps rows by a power of
+    two whenever a read-sparse level sits inside the run level, and no GF(2)-linear swizzle
+    of the physical row clears every order the mode words reach -- so the region is
+    indexed in the read order and the swizzle folds the index's three-bit groups
+    (`geom.md#row-swizzle`). All four accesses are walked here, at every declaration the
+    sweep reaches."""
     w, r, dv = _sides(row)
     ldx = dv + K_PAD_E
     assert (ldx // 2) % 4 == 0 and (ldx // 2) // 4 % 2 == 1, (
@@ -312,33 +331,32 @@ def _conflicts(w, r, dv):
             for g in range(n_gran):
                 if not _bank_free(rows_r, ldx, g):
                     bad.append("the return pull conflicts")
-    for reader in range(r.ns):
-        rbase = _row(r, reader, 0)
-        for kk in range(leaf // K_MMA_K):
-            for half in (0, 8):
-                rows_l = [rbase ^ _delta(r, kk * K_MMA_K + half + i) for i in range(8)]
-                for g in range(n_gran):
-                    if not _bank_free(rows_l, ldx, g):
-                        bad.append("the pull conflicts")
-                for e1 in (0, 1):
-                    rows_m = [rbase ^ _delta(r, kk * K_MMA_K + half + 2 * q + e1)
-                              for q in range(4)]
-                    if not _bank_free(rows_m, ldx, n_gran, words_per_gran=1):
-                        bad.append("the mass pull conflicts")
+    #: THE PULL walks the read order: a k-step is sixteen consecutive read-order leaves,
+    #: each half an `ldmatrix` of eight consecutive rows; the mass lanes take four of them.
+    for v0 in range(0, r.bc, K_MMA_K):
+        for half in (0, 8):
+            rows_l = [_swz(v0 + half + i) for i in range(8)]
+            for g in range(n_gran):
+                if not _bank_free(rows_l, ldx, g):
+                    bad.append("the pull conflicts")
+            for e1 in (0, 1):
+                rows_m = [_swz(v0 + half + 2 * q + e1) for q in range(4)]
+                if not _bank_free(rows_m, ldx, n_gran, words_per_gran=1):
+                    bad.append("the mass pull conflicts")
     return sorted(set(bad))
 
 
 def test_every_member_pair_the_mode_words_can_reach_is_conflict_free():
-    """THE PAIR SWEEP: every `(read member, write member)` a mode word can select, at
-    every topology in the case list, with all four accesses under the region's swizzle.
-    Fifteen of these pairs conflict without it (the search), so this sweep is what says
-    the one-line linear re-indexing actually clears every one of them."""
+    """THE PAIR SWEEP: every `(read order, write member)` a mode word can select, at
+    every topology in the case list, with all four accesses under the region's row law.
+    This sweep is what says the read-order indexing and the folded swizzle clear every
+    one of them."""
     pairs, bad = {}, []
     for _name, widths, _m in CASES:
         for modes in range(1 << (2 * len(widths))):
             blk = _block(widths, modes, NS)
             wS, rS = _Side(blk, "w", NS), _Side(blk, "r", NS)
-            key = (len(widths), rS.assign(), wS.assign())
+            key = (len(widths), tuple(blk["r_rank"]), wS.assign())
             if key in pairs:
                 continue
             pairs[key] = (widths, modes)
@@ -361,15 +379,31 @@ def test_the_swizzle_is_a_bijection_of_the_region_and_is_linear():
     Bijection on `[0, BC)` is what keeps every leaf reachable exactly once; GF(2)-linearity
     (`swz(a ^ b) == swz(a) ^ swz(b)`) is what lets the kernel swizzle the lane's base ONCE
     and keep every per-fragment row term a compile-time constant -- without it the address
-    arithmetic would need a runtime XOR per store and the immediates would be gone."""
-    bc = BC
-    assert sorted(_swz(r) for r in range(bc)) == list(range(bc)), (
-        "the swizzle is not a bijection of the region: a leaf is lost or aliased")
-    for a in range(bc):
-        for b in range(bc):
-            assert _swz(a ^ b) == _swz(a) ^ _swz(b), (
-                f"the swizzle is not GF(2)-linear at ({a}, {b}), so `base ^ scatter` "
-                f"does not distribute and the fragment terms stop being immediates")
+    arithmetic would need a runtime XOR per store and the immediates would be gone. Both
+    hold at every box the fold covers, up to twelve index bits."""
+    for bc in (64, 128, 256, 512, 1024, 2048, 4096):
+        assert sorted(_swz(r) for r in range(bc)) == list(range(bc)), (
+            f"the swizzle is not a bijection of a {bc}-leaf region: a leaf is lost or aliased")
+        for a in range(0, bc, 3):
+            for b in range(0, bc, 5):
+                assert _swz(a ^ b) == _swz(a) ^ _swz(b), (
+                    f"the swizzle is not GF(2)-linear at ({a}, {b}), so `base ^ scatter` "
+                    f"does not distribute and the fragment terms stop being immediates")
+
+
+@pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
+def test_the_models_row_map_is_the_shipped_row_map(idx, row):
+    """The model's row law and the kernel's (`geom_xch_row`: the read-order index under the
+    swizzle) are two derivations of one map; the shipped map is asserted against the model
+    row for row, both sides, so neither can drift alone."""
+    w, r, _ = _sides(row)
+    for side, name in ((w, "w"), (r, "r")):
+        shipped = side.blk["map"][name]
+        for stream in range(side.ns):
+            for slot in range(side.leaf):
+                assert shipped[stream][slot] == _row(side, stream, slot), (
+                    f"arm {idx}: the shipped {name} map differs from the model at "
+                    f"({stream}, {slot})")
 
 
 @pytest.mark.parametrize("idx,row", CARVED, ids=IDS)
