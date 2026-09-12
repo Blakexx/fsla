@@ -135,10 +135,16 @@ ledger until its launch carried a state plane.
 <a id="snapshot"></a>
 ## The snapshot
 
-`snapshot_publish`: each warp writes its boxes' high halves into the snapshot as
+`snapshot_publish`: each warp writes its READ-TOUCHED boxes' high halves into the snapshot as
 `[leaf in read order][channel]` pairs (`chan_row_off`: the 16-byte chunk XORed with the row,
 so the readout's `ldmatrix` over eight rows is bank free), and their masses into the mass
-row in read order. 32 KB once a window, skipped when the read side has no live token.
+row in read order. Up to 32 KB once a window. A leaf's READ box is its read-order row's
+sixteen; a row no read tile touches (`read_boxes`, the OR of the window's tile masks minted by
+the head, in read-box numbering) is not published, and a write box with no touched row is
+skipped whole behind `ops::once`; an unpublished row's mass is not written either (den reads
+only live boxes' masses). In the alternating layouts a write box's leaves span all sixteen
+read boxes, so nothing is skipped there; where the two sides' boxes coincide (cohort, the
+structured cells) most of the 32 KB is. The exit's publish (`WithLo`) is every box.
 
 <a id="pool"></a>
 ## The pool

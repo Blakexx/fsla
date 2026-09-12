@@ -97,6 +97,16 @@ struct Smem {
     return reinterpret_cast<int32_t*>(base + BP::kLiveOffset);
   }
 
+  //: THE READ-TOUCHED BOXES of window parity `parity`: the OR of its tile masks, the boxes
+  //: the snapshot must publish.
+  __device__ __forceinline__ uint32_t* read_boxes(int parity) const {
+    return reinterpret_cast<uint32_t*>(base + BP::kLiveOffset + 8) + parity;
+  }
+
+  __device__ __forceinline__ ops::SmemAddr read_boxes_addr(int parity) const {
+    return at(BP::kLiveOffset + 8 + 4 * parity);
+  }
+
   //: THE SNAPSHOT's row `row` (read order), 16-byte chunk `chunk`.
   __device__ __forceinline__ ops::SmemAddr snapshot() const { return at(BP::kSnapshotOffset); }
 
@@ -401,6 +411,7 @@ __device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
     const uint32_t same = __match_any_sync(0xFFFFFFFFu, k);
     uint16_t* const counts = sm.rcounts();
     if (lane < BP::kBuckets) counts[lane * BP::kRounds + rho] = 0;
+    if (g == 0 && warp == 0 && lane == 0) *sm.read_boxes(parity) = 0u;
     __syncwarp();
     if ((same & lt) == 0u) counts[k * BP::kRounds + rho] = (uint16_t)__popc(same);
     key[g] = k;
@@ -505,7 +516,10 @@ __device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
     rola::static_for<4>([&](auto Sc) {
       m |= (uint32_t)__shfl_xor_sync(0xFFFFFFFFu, (int)m, 8 >> decltype(Sc)::value);
     });
-    if ((lane & 15) == 0) sm.tilemask(parity)[tile] = (uint16_t)m;
+    if ((lane & 15) == 0) {
+      sm.tilemask(parity)[tile] = (uint16_t)m;
+      ops::or_shared_u32(sm.read_boxes_addr(parity), m);
+    }
   }
   live[rola::facts::kRead] = sm.live_count()[rola::facts::kRead];
   live[rola::facts::kWrite] = sm.live_count()[rola::facts::kWrite];
@@ -631,28 +645,38 @@ __device__ __forceinline__ void state_gather(const Smem<BP>& sm, State<BP>& st, 
 //: the window's. `WithLo`: the exit's, the low halves into the pool region too. BUDGET:
 //: carry_kernel.md#budgets. -- carry_kernel.md#snapshot
 template <class BP, int D, int BC, bool WithLo>
-__device__ __forceinline__ void snapshot_publish(const Smem<BP>& sm, const State<BP>& st, int warp,
-                                                 int lane) {
+__device__ __forceinline__ void snapshot_publish(const Smem<BP>& sm, const State<BP>& st,
+                                                 uint32_t boxes, int warp, int lane) {
   const int r = lane >> 2, q = lane & 3;
   const ops::SmemAddr snap = sm.snapshot(), lo_stage = sm.region();
   const uint16_t* const rowmap = sm.rowmap();
   rola::static_for<BP::kDealt>([&](auto Bi) {
     constexpr int bi = decltype(Bi)::value;
     const int b = dealt_box(warp, bi, BP::kWarps);
-    rola::static_for<2>([&](auto Hc) {
-      constexpr int h = decltype(Hc)::value;
-      const int ro = (int)rowmap[b * 16 + r + 8 * h];
-      rola::static_for<BP::kNT>([&](auto Jc) {
-        constexpr int j = decltype(Jc)::value;
-        const uint32_t at = chan_row_off<BP>(ro, j) + (uint32_t)(4 * q);
-        const float x0 = st.c[bi][j][2 * h], x1 = st.c[bi][j][2 * h + 1];
-        ops::store_shared_u32(snap + at, ops::hi_bf16x2(x0, x1));
-        if constexpr (WithLo) ops::store_shared_u32(lo_stage + at, ops::lo_bf16x2(x0, x1));
+    //: a leaf's READ box is its read-order row's sixteen (the write box's leaves can span
+    //: several, all sixteen in the alternating layouts); a row no read tile touches is not
+    //: published, and a write box with no touched row is skipped whole behind `ops::once`
+    //: (an `if` ptxas would if-convert into 64 predicated stores, KERNEL_STANDARDS §20).
+    const int ro0 = (int)rowmap[b * 16 + r], ro1 = (int)rowmap[b * 16 + r + 8];
+    const bool t0 = ((boxes >> (ro0 >> 4)) & 1u) != 0u, t1 = ((boxes >> (ro1 >> 4)) & 1u) != 0u;
+    const bool any = __ballot_sync(0xFFFFFFFFu, t0 || t1) != 0u;
+#pragma unroll 1
+    for (int n = ops::once(any); n > 0; --n) {
+      rola::static_for<2>([&](auto Hc) {
+        constexpr int h = decltype(Hc)::value;
+        const int ro = h == 0 ? ro0 : ro1;
+        if (h == 0 ? t0 : t1) {
+          rola::static_for<BP::kNT>([&](auto Jc) {
+            constexpr int j = decltype(Jc)::value;
+            const uint32_t at = chan_row_off<BP>(ro, j) + (uint32_t)(4 * q);
+            const float x0 = st.c[bi][j][2 * h], x1 = st.c[bi][j][2 * h + 1];
+            ops::store_shared_u32(snap + at, ops::hi_bf16x2(x0, x1));
+            if constexpr (WithLo) ops::store_shared_u32(lo_stage + at, ops::lo_bf16x2(x0, x1));
+          });
+        }
       });
-    });
-    if (q == 0) {
-      sm.massrow()[(int)rowmap[b * 16 + r]] = st.m[bi][0];
-      sm.massrow()[(int)rowmap[b * 16 + r + 8]] = st.m[bi][2];
+      if (q == 0 && t0) sm.massrow()[ro0] = st.m[bi][0];
+      if (q == 0 && t1) sm.massrow()[ro1] = st.m[bi][2];
     }
   });
 }
@@ -1429,7 +1453,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     const uint32_t rowbase = (uint32_t)bh * (uint32_t)p.L + (uint32_t)t0;
     const int rlive = live[rola::facts::kRead], wlive = live[rola::facts::kWrite];
     //: THE WINDOW'S EDGE: the state as the readout reads it; the tile counter at zero.
-    if (rlive > 0) snapshot_publish<BP, D, BC, false>(sm, st, warp, lane);
+    if (rlive > 0) snapshot_publish<BP, D, BC, false>(sm, st, *sm.read_boxes(parity), warp, lane);
     pc.lap(kPhaseSnapshot);
     ops::stage_wait<0>();
     ops::rendezvous();
@@ -1556,7 +1580,7 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void carry_kern
 
   if (p.state_out != nullptr) {
     ops::rendezvous();
-    snapshot_publish<BP, D, BC, true>(sm, st, warp, lane);
+    snapshot_publish<BP, D, BC, true>(sm, st, 0xFFFFFFFFu, warp, lane);
     ops::rendezvous();
     state_copy<BP, D, BC, true>(sm, lay[rola::facts::kWrite], slots, act_read, act_write, tid,
                                 nullptr, p.state_out);
