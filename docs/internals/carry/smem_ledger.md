@@ -55,3 +55,29 @@ stream is alive (`kRegionBytes >= kSnapshotBytes`, asserted).
 gather from the slot. Parities come from `PoolCursor`'s use count a slot. `kRingBarOffset`:
 a warp's ring slot's barrier, full at its 32 lanes' landed copies (`RingCursor`).
 `kTakeOffset`: a warp's take word, the tile its lane 0 dealt itself off the counter.
+
+<a id="swizzle"></a>
+## The swizzles: a layout is gated on its store side
+
+A bank line is 128 bytes, eight 16-byte groups. A row layout whose rows are a multiple of 128
+bytes apart puts the same chunk of every row in the same group, so any instruction touching several
+rows at one chunk serializes: the wavefront census (KERNEL_STANDARDS §22 (8)) counts those
+wavefronts above the ideal, and the ideal is the gate.
+
+Channel rows (`chan_row_off`: the pool's V rows and the snapshot's leaf rows, `[row][kDv]` bf16)
+XOR the 16-byte chunk with `(row ^ row >> 4) & 7`. Two access patterns share the rows: eight
+CONSECUTIVE rows (the fold's and the readout's `ldmatrix` of a box, the fill of a chunk), spread by
+the low three bits; and eight rows SIXTEEN APART, a write box's leaves published into the
+alternating read order (leaf `r` of write box `b` lands in read row `16 r + b`), spread by bits four
+to six. The 2026-09-12 census found the low-bits-only swizzle at 8 wavefronts a store on the
+snapshot at N = L alt-k4, 2048 a window where 256 is the ideal, and clean at dense (consecutive rows),
+which is why it hid for a week behind total-time A/Bs. The function is the one place the rule lives;
+every reader and writer of a channel row goes through it.
+
+The drain stage (`drain_off`: a warp's four rows of 64 fp32) XORs the 32-byte chunk (one n-tile's
+pairs over the four `q` lanes) with the stage row, so a pass's four rows' stores take four chunks
+instead of one, and a row's whole-line loads (32 lanes, 128 contiguous bytes before the swizzle)
+permute within the line and stay one wavefront.
+
+32-byte row tiles (`row32_off`: run tiles) XOR the second chunk with the row's bit two, the form
+that makes eight consecutive rows' `ldmatrix` bank free at that width.

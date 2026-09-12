@@ -216,13 +216,32 @@ __device__ __forceinline__ uint32_t row32_elem(int row, int col) {
 }
 
 //: A CHANNEL ROW (`[row][kDv]` bf16: V rows in the pool, the snapshot's leaf rows), the
-//: 16-byte chunk XORed with the row so eight consecutive rows' `ldmatrix` at one chunk is
-//: bank free at every row width.
+//: 16-byte chunk XORed with the row's low bits AND its bits four up, so eight consecutive
+//: rows (`ldmatrix` of a box, the fill of a chunk) and eight rows sixteen apart (a write
+//: box's leaves published into the alternating read order) are both bank free at every row
+//: width. -- smem_ledger.md#swizzle
 template <class BP>
 __device__ __forceinline__ uint32_t chan_row_off(int row, int chunk) {
   constexpr int kGroups = BP::kVChunks < 8 ? BP::kVChunks : 8;
   constexpr int kShift = BP::kVChunks < 8 ? (BP::kVChunks == 4 ? 1 : 0) : 0;
-  return (uint32_t)(row * BP::kVRowBytes + ((chunk ^ ((row >> kShift) & (kGroups - 1))) * 16));
+  const int swz = ((row >> kShift) ^ (row >> (kShift + 4))) & (kGroups - 1);
+  return (uint32_t)(row * BP::kVRowBytes + ((chunk ^ swz) * 16));
+}
+
+//: THE DRAIN STAGE's element: `[row][kDv]` fp32, the 32-byte chunk (eight floats, an n-tile's
+//: pairs over the four `q` lanes) XORed with the row, so a pass's four rows' stores land in
+//: four chunks and a row's whole-line loads stay one wavefront. -- smem_ledger.md#swizzle
+template <class BP>
+__device__ __forceinline__ uint32_t drain_off(int row, int elem) {
+  return (uint32_t)(row * BP::kDv * 4 + (((((elem >> 3) ^ row) << 3) | (elem & 7)) * 4));
+}
+
+//: the same element for a line load: `line` 32 floats wide, lane `lane`'s float; the row
+//: (below four) flips two bits of the lane within the line, one lane constant a row.
+template <class BP>
+__device__ __forceinline__ uint32_t drain_line_off(int row, int line, int lane) {
+  static_assert(BP::kDrainRows <= 4, "the drain swizzle flips the lane's chunk bits within a line");
+  return (uint32_t)(row * BP::kDv * 4 + (line * 32 + ((lane ^ (row << 3)) & 31)) * 4);
 }
 
 //: THE POOL ROW's parts, in slot `s`: the V row, the inner run tile, the outer run tile.
@@ -1223,7 +1242,7 @@ __device__ __forceinline__ void readout_tile(const Smem<BP>& sm, ops::SmemAddr s
       const int srow = r & 3;
       rola::static_for<BP::kNT>([&](auto Jc) {
         constexpr int j = decltype(Jc)::value;
-        ops::store_shared_u64(stage + (uint32_t)(srow * BP::kVRowBytes * 2 + (8 * j + 2 * q) * 4),
+        ops::store_shared_u64(stage + drain_off<BP>(srow, 8 * j + 2 * q),
                               __float_as_uint(y[j][2 * hsel]), __float_as_uint(y[j][2 * hsel + 1]));
       });
     }
@@ -1236,8 +1255,7 @@ __device__ __forceinline__ void readout_tile(const Smem<BP>& sm, ops::SmemAddr s
         float* const row_out = num + (long)(t0 + tok) * BP::kDv;
         rola::static_for<BP::kDv / 32>([&](auto Lc) {
           constexpr int line = decltype(Lc)::value;
-          const float v = ops::load_shared_f32(
-              stage + (uint32_t)(srow * BP::kVRowBytes * 2 + (line * 32 + lane) * 4));
+          const float v = ops::load_shared_f32(stage + drain_line_off<BP>(srow, line, lane));
           ops::red_global_add_f32(row_out + line * 32 + lane, v);
         });
       }

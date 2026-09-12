@@ -524,7 +524,10 @@ by a measurement that ISOLATES the mechanism (a line, a counter, a life range, a
 one thing) before anything is reverted; "it did not work" is not an explanation and is not a verdict.
 A form that loses is a form: the idea stays open on the card until a mechanism-level explanation
 closes it, and the card records which. An instruction count is time only when the sampler agrees
-(a spin that is 10% of instructions and 0.1% of samples is issue slots, not time). A probe that can
+(a spin that is 10% of instructions and 0.1% of samples is issue slots, not time), and a BANK CONFLICT
+is time only when the line's sample share agrees (the drain's 4-way store conflict was 3,072 excess
+wavefronts a window and 0.4% of samples: removing it bought nothing, because the drain's path is its
+global reduction at 3.4% -- the wavefront census is read beside the per-line samples, never alone). A probe that can
 report a stale artifact (a PTX assembled after a failed compile, a worker default standing in for a
 schedule) is a defect in the suite and is fixed before its numbers are used again.
 
