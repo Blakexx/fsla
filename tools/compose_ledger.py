@@ -155,9 +155,19 @@ def main() -> int:
     rc, out = build(everything)
     report["kernel"]["hash_after"] = device_hash() if rc == 0 else None
     report["kernel"]["restored"] = report["kernel"]["hash_after"] == ref
+    #: the kernel read again at the end: the run's drift bound (a rung step smaller than the
+    #: kernel's own before/after difference is not a reading).
+    report["kernel"]["phases_after"] = {c: phases(c, a.launches) for c in cells} if rc == 0 else {}
 
+    drift = []
+    for c in cells:
+        b = report["kernel"]["phases"].get(c, {})
+        e = report["kernel"]["phases_after"].get(c, {})
+        drift.append(f"{c} total {b.get('total')} before, {e.get('total')} after"
+                     + "".join(f"; {ph} {b.get(ph)} / {e.get(ph)}" for lad in ladders for ph in [lad[0]]))
     md = [f"# Composer {report['sha']} ({report['utc']})", "",
-          f"Kernel device hash {ref}; restored after the ladders: {report['kernel']['restored']}.", ""]
+          f"Kernel device hash {ref}; restored after the ladders: {report['kernel']['restored']}.",
+          "Kernel read before and after the ladders (the run's drift bound): " + " | ".join(drift), ""]
     for lad in report["ladders"]:
         phase, order = lad["phase"], lad["order"]
         md.append(f"## {phase}: parts added in order {order}")

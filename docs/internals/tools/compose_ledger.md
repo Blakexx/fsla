@@ -14,7 +14,11 @@ no stall sample is interpreted. A rung is VALID only when two checks pass. The p
 count for each cell must equal the kernel's, since a stub that changed the workload measures a
 different kernel. The build's device instructions must hash differently from the kernel's, since a
 build that did not take the mask measures nothing. The kernel is rebuilt with every part real at
-the end, and its instructions must hash to the value taken before the first rung.
+the end, and its instructions must hash to the value taken before the first rung. The kernel is then
+read again: its before-and-after difference is the run's drift bound, and a rung step smaller than
+that bound is not a reading. The first run needed it: another process had the GPU at 36-38%, and the
+sparse cell read 45% slow with rungs that contradicted each other. Nothing in a single run's numbers
+flagged that except the kernel disagreeing with the day's readings.
 
 Why it exists: on 2026-09-12 five kernel changes were built on inferences from warp-side
 instruments (stall samples, the phase clock, a utilization computed from an HMMA count and a
