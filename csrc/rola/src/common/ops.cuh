@@ -118,12 +118,69 @@ __device__ __forceinline__ void stage_run_if(SmemAddr dst, const void* src, bool
 
 __device__ __forceinline__ void stage_commit() { asm volatile("cp.async.commit_group;\n"); }
 
+//: A SHARED-MEMORY BARRIER OBJECT (`mbarrier`, sm_80+): `count` arrivals complete a phase;
+//: an asynchronous copy arrives when it lands (`.noinc`: it is one of the counted
+//: arrivals), a thread's arrive releases its prior shared stores, a wait acquires. A
+//: slot's phase parity flips at each completion. -- see docs/internals/common/ops.md#mbarrier
+__device__ __forceinline__ void mbar_init(SmemAddr a, uint32_t count) {
+  asm volatile("mbarrier.init.shared.b64 [%0], %1;\n" ::"r"(a), "r"(count) : "memory");
+}
+
+__device__ __forceinline__ void mbar_arrive_when_landed(SmemAddr a) {
+  asm volatile("cp.async.mbarrier.arrive.noinc.shared.b64 [%0];\n" ::"r"(a) : "memory");
+}
+
+__device__ __forceinline__ void mbar_arrive(SmemAddr a) {
+  asm volatile("{\n.reg .b64 st;\nmbarrier.arrive.shared.b64 st, [%0];\n}\n" ::"r"(a) : "memory");
+}
+
+__device__ __forceinline__ void mbar_wait(SmemAddr a, uint32_t parity) {
+  asm volatile(
+      "{\n.reg .pred p;\n"
+      "MBAR_WAIT_%=:\n"
+      "mbarrier.test_wait.parity.shared.b64 p, [%0], %1;\n"
+      "@!p bra MBAR_WAIT_%=;\n}\n" ::"r"(a),
+      "r"(parity)
+      : "memory");
+}
+
+//: THE n-TH SET BIT of a word (n from 0), branch free: a binary search on popcounts.
+//: Undefined past the last set bit. -- see docs/internals/common/ops.md#nth-set-bit
+__device__ __forceinline__ int nth_set_bit(uint32_t w, int n) {
+  int pos = 0;
+#pragma unroll
+  for (int width = 16; width >= 1; width >>= 1) {
+    const int c = __popc(w & ((1u << width) - 1u));
+    const bool hi = n >= c;
+    n -= hi ? c : 0;
+    pos += hi ? width : 0;
+    w = hi ? (w >> width) : w;
+  }
+  return pos;
+}
+
 template <int KeepInFlight>
 __device__ __forceinline__ void stage_wait() {
   asm volatile("cp.async.wait_group %0;\n" ::"n"(KeepInFlight));
 }
 
 __device__ __forceinline__ void rendezvous() { __syncthreads(); }
+
+//: A ONE-TRIP LOOP BOUND ptxas cannot see through: `for (int n = once(cond); n > 0; --n)`
+//: is a real branch where an `if (cond)` on a warp-uniform value would be if-converted
+//: and issued predicated off by every warp. -- see docs/internals/common/ops.md#once
+__device__ __forceinline__ int once(bool cond) {
+  int n = cond ? 1 : 0;
+  asm volatile("" : "+r"(n));
+  return n;
+}
+
+//: THE SM'S CYCLE COUNTER, for the phase ledger. -- see docs/internals/common/ops.md#cycles
+__device__ __forceinline__ long long cycles() {
+  long long c;
+  asm volatile("mov.u64 %0, %%clock64;\n" : "=l"(c));
+  return c;
+}
 
 //: THE WARP'S OWN EDGE, stated as the instruction: `__syncwarp()` where the compiler cannot -- see docs/internals/common/ops.md#warp-sync
 //: prove convergence becomes a CALL into a helper; this is one WARPSYNC.
@@ -214,6 +271,14 @@ __device__ __forceinline__ void load_frag_t(uint32_t (&r)[4], SmemAddr a) {
                : "memory");
 }
 
+//: THE SAME OVER TWO TILES: lanes 0-15 address them. -- see docs/internals/common/ops.md#load-frag
+__device__ __forceinline__ void load_frag_t2(uint32_t (&r)[2], SmemAddr a) {
+  asm volatile("ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%0,%1}, [%2];\n"
+               : "=r"(r[0]), "=r"(r[1])
+               : "r"(a)
+               : "memory");
+}
+
 //: AN 8x8 b16 TILE, TRANSPOSED WHERE IT ALREADY LIES. -- see docs/internals/common/ops.md#transpose-frag-b16
 __device__ __forceinline__ uint32_t transpose_frag_b16(uint32_t x) {
   static_assert(arch::kCaps.reg_transpose_b16,
@@ -233,6 +298,16 @@ __device__ __forceinline__ void mma(float (&d)[4], const uint32_t (&a)[4], const
       "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
       : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
+//: THE SAME ATOM INTO A FRESH ACCUMULATOR (C = 0): the readout's per-box partial.
+__device__ __forceinline__ void mma_fresh(float (&d)[4], const uint32_t (&a)[4],
+                                          const uint32_t* b) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%10,%10,%10};\n"
+      : "=f"(d[0]), "=f"(d[1]), "=f"(d[2]), "=f"(d[3])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]), "f"(0.0f));
 }
 
 // -------------------------------------------------------- bf16 elementwise
@@ -256,6 +331,30 @@ __device__ __forceinline__ uint32_t hi_bf16x2(float lo, float hi) {
       : "=r"(d)
       : "r"(__float_as_uint(lo)), "r"(__float_as_uint(hi)));
   return d;
+}
+
+//: a packed bf16 pair times a packed bf16 pair, elementwise, rounded once.
+__device__ __forceinline__ uint32_t mul_bf16x2(uint32_t a, uint32_t b) {
+  const __nv_bfloat162 p = __hmul2(*reinterpret_cast<const __nv_bfloat162*>(&a),
+                                   *reinterpret_cast<const __nv_bfloat162*>(&b));
+  return *reinterpret_cast<const uint32_t*>(&p);
+}
+
+//: a halfword into both halves of a packed pair.
+__device__ __forceinline__ uint32_t splat_u16(uint32_t x) { return (x & 0xFFFFu) * 0x10001u; }
+
+//: AN fp32 GLOBAL REDUCTION, fire-and-forget, the address stated GLOBAL: a generic
+//: `atomicAdd` on a pinned base lowers to an address-space probe with shared and local
+//: fallbacks and a returning `ATOM` whose round trip the next branch waits on.
+//: -- see docs/internals/common/ops.md#red-global
+__device__ __forceinline__ void red_global_add_f32(float* p, float v) {
+  asm volatile("red.global.add.f32 [%0], %1;\n" ::"l"(__cvta_generic_to_global(p)), "f"(v)
+               : "memory");
+}
+
+//: an fp32 shared-memory add, the CTA's own.
+__device__ __forceinline__ void red_shared_add_f32(SmemAddr a, float v) {
+  asm volatile("red.shared.add.f32 [%0], %1;\n" ::"r"(a), "f"(v) : "memory");
 }
 
 //: One bf16 into BOTH halves of a packed pair, so that a scalar can be an -- see docs/internals/common/ops.md#splat-bf16x2
@@ -378,6 +477,16 @@ __device__ __forceinline__ void store_shared_vec16(SmemAddr a, const uint4& v) {
 }
 
 //: one amplitude out of a staged factor row, by ADDRESS.  Its index is a digit, so -- see docs/internals/common/ops.md#loadsharedu16
+__device__ __forceinline__ void store_shared_u64(SmemAddr a, uint32_t lo, uint32_t hi) {
+  asm volatile("st.shared.v2.u32 [%0], {%1, %2};" ::"r"(a), "r"(lo), "r"(hi) : "memory");
+}
+
+__device__ __forceinline__ float load_shared_f32(SmemAddr a) {
+  float v;
+  asm volatile("ld.shared.f32 %0, [%1];" : "=f"(v) : "r"(a) : "memory");
+  return v;
+}
+
 __device__ __forceinline__ unsigned short load_shared_u16(SmemAddr a) {
   unsigned short v;
   asm volatile("ld.shared.u16 %0, [%1];" : "=h"(v) : "r"(a) : "memory");

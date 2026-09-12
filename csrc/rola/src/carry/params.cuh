@@ -1,18 +1,20 @@
 // csrc/rola/src/carry/params.cuh -- THE PARAMETER BLOCK, handed to the kernel as ONE value.
-// Each field's class in the primitive ledger: see docs/internals/carry/carry_kernel.md#ledger
+// See docs/internals/carry/params.md
 #pragma once
 
 #include <cuda_bf16.h>
 
 #include <cstdint>
 
+#include "carry/layout.cuh"
 #include "common/geom.cuh"
 
 namespace rola::carry {
 
 struct CarryParams {
-  //: the problem's addressing, derived once on the host from (descriptor, launch).
+  //: the addressing, derived on the host, and each side's layout (read, write).
   CarryGeomRT g;
+  SideLayout lay[2];
 
   const __nv_bfloat16* pread;
   const __nv_bfloat16* pwrite;
@@ -28,16 +30,26 @@ struct CarryParams {
 
   int L;               //: tokens in the call
   int liveness_words;  //: ceil(L / 32), the class-1 block's word stride
-  //: `G` per side, as log2 LEAVES. -- see docs/internals/carry/carry_kernel.md#streams
-  int readout_grain_bits;
-  int fold_grain_bits;
-  //: THE READ FORM: the position carve at one stream, or the stream form.
-  //: -- see docs/internals/carry/carry_kernel.md#stream-form
-  int read_form;
+  //: THE ORDER POLICY. -- carry_kernel.md#order
+  int order;
+  //: THE PHASE LEDGER, `[cta][warp][kPhases]` int64, or null. -- carry_kernel.md#phase-ledger
+  long long* ledger;
 };
 
-constexpr int kReadFormPosition = 0;
-constexpr int kReadFormStreams = 1;
-constexpr int kReadForms = 2;
+//: THE PHASES the ledger counts. -- carry_kernel.md#phase-ledger
+enum CarryPhase : int {
+  kPhaseHead = 0,
+  kPhaseReadout = 1,
+  kPhaseFold = 2,
+  kPhaseSnapshot = 3,
+  kPhaseEdges = 4,
+  kPhaseSweep = 5,
+  kPhases = 6
+};
+
+//: THE ORDER POLICIES. -- carry_kernel.md#order
+constexpr int kOrderFirstBox = 0;
+constexpr int kOrderIdentity = 1;
+constexpr int kOrders = 2;
 
 }  // namespace rola::carry

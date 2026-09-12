@@ -10,6 +10,7 @@
 
 #include "carry/box.cuh"
 #include "carry/carry_arm_abi.cuh"
+#include "carry/carry_host.cuh"
 #include "carry/params.cuh"
 #include "common/arch_runtime.cuh"
 #include "common/arm_switch.cuh"
@@ -22,69 +23,11 @@ ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_DECLARE)
 
 namespace {
 
-//: THE PAGE RECTANGLE the descriptor may name -- one law, shared with decode.
-constexpr int64_t kPageBits = kAtomLeavesBits;
-
-//: THE KERNEL BOUNDARY'S SHAPE LAW (KERNEL_STANDARDS.md §R13): the strict descriptor and
-//: nothing else. The seam above pads; this refuses. -- see docs/internals/carry/carry.md#refusals
-void refuse_shape(const std::vector<int64_t>& widths, int64_t dv, int64_t page_bits,
-                  int64_t warps_per_cta) {
-  TORCH_CHECK(page_bits == kPageBits, "the page rectangle is the trailing ", kPageBits,
-              " canonical leaf bits; this call names ", page_bits);
-  TORCH_CHECK(!widths.empty() && (int)widths.size() <= kGeomMaxLevels,
-              "the addressing block is built to depth ", kGeomMaxLevels, "; this call names ",
-              widths.size(), " levels");
-  for (size_t l = 0; l < widths.size(); ++l)
-    TORCH_CHECK(widths[l] >= kAtomLeaves && (widths[l] & (widths[l] - 1)) == 0, "level ", l, " is ",
-                widths[l],
-                " digits wide. THE KERNEL DOES NOT PAD: B_l is a power of two at or above ",
-                kAtomLeaves, ".");
-  TORCH_CHECK(dv > 0 && dv % 16 == 0 && (dv & (dv - 1)) == 0,
-              "DV is a power of two at or above sixteen; this call names ", dv);
-  TORCH_CHECK(is_warps_per_cta((int)warps_per_cta), "warps_per_cta=", warps_per_cta,
-              " is not a launch shape this family builds");
-}
-
-//: THE SCHEDULE DIALS AS THE CALL SPELLS THEM: the primitive ledger's class 3, in one list --
-//: [read grain, fold grain], the grains in LEAVES. -- see docs/internals/carry/carry.md#schedule
-void refuse_schedule(const std::vector<int64_t>& schedule, int dv, int warps_per_cta) {
-  TORCH_CHECK(schedule.size() == 3,
-              "the schedule names the read side's stream grain, the fold's pass grain and the "
-              "read form -- [read grain, fold grain, read form] -- and this call passed ",
-              schedule.size(), " entries");
-  TORCH_CHECK(schedule[2] == kReadFormPosition || schedule[2] == kReadFormStreams,
-              "the read form is 0 (the position carve) or 1 (the stream form), got ", schedule[2]);
-  const int box = leaves_per_warp(dv);
-  (void)warps_per_cta;
-  for (int side = 0; side < 2; ++side) {
-    const int64_t grain = schedule[side];
-    TORCH_CHECK(grain >= kAtomLeaves && grain <= box && (grain & (grain - 1)) == 0,
-                (side ? "the fold's pass grain is " : "the read side's stream grain is "), grain,
-                " leaves; a grain is a power of two between the page rectangle (", kAtomLeaves,
-                ") and the warp sub-box (", box, ")");
-  }
-}
-
-//: THE CARVE ORDER AS THE CALL SPELLS IT: both sides' levels ranked, read side then write
-//: side, rank 0 innermost. -- see docs/internals/carry/carry.md#carve-order
-CarveOrder carve_order_of(const std::vector<int64_t>& carve_order, int D) {
-  TORCH_CHECK((int)carve_order.size() == 2 * D, "the carve order names each side's ", D,
-              " levels in rank order (read then "
-              "write), so it is ",
-              2 * D, " entries; this call names ", carve_order.size());
-  CarveOrder o{};
-  for (int s = 0; s < 2; ++s)
-    for (int l = 0; l < kGeomMaxLevels; ++l)
-      o.level_at[s][l] = l < D ? (int)carve_order[s * D + l] : l;
-  return o;
-}
-
-void refuse_operand(const char* name, const at::Tensor& t, at::ScalarType dtype,
-                    at::IntArrayRef want) {
-  TORCH_CHECK(t.is_cuda() && t.is_contiguous(), name, " is a contiguous CUDA tensor");
-  TORCH_CHECK(t.scalar_type() == dtype, name, " is ", dtype, ", got ", t.scalar_type());
-  TORCH_CHECK(t.sizes() == want, name, " is ", want, ", got ", t.sizes());
-}
+//: THE PHASE LEDGER BINDING: a device int64 tensor `[ctas][warps][kPhases]` the next launches
+//: add their per-warp phase cycles into; unbound (nullptr) in production. The launch checks
+//: the bound tensor covers its grid. -- carry_kernel.md#phase-ledger
+long long* g_phase_ledger = nullptr;
+int64_t g_phase_ledger_ctas = 0;
 
 }  // namespace
 
@@ -96,64 +39,16 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
                    const at::Tensor& activity, const c10::optional<at::Tensor>& state_in,
                    const c10::optional<at::Tensor>& state_out,
                    const c10::optional<at::Tensor>& page_table) {
-  check_arch_table();
-  refuse_shape(widths, dv, page_bits, warps_per_cta);
-  refuse_schedule(schedule, (int)dv, (int)warps_per_cta);
-
+  CarryCall call =
+      derive_carry_call(read, write, gain, v, num, den, widths, dv, page_bits, warps_per_cta,
+                        carve_order, schedule, liveness, activity, state_in, state_out, page_table);
+  CarryParams& p = call.p;
+  const int64_t BH = call.BH;
   const int D = (int)widths.size();
-  int64_t leaves = 1, wtot = 0;
-  for (int l = 0; l < D; ++l) {
-    leaves *= widths[l];
-    wtot += widths[l];
-  }
-  const int64_t BH = read.size(0), L = read.size(1);
-  const int64_t pages = leaves / kAtomLeaves;
-  const int64_t words = (L + 31) / 32;
-
-  refuse_operand("read", read, at::kBFloat16, {BH, L, wtot});
-  refuse_operand("write", write, at::kBFloat16, {BH, L, wtot});
-  refuse_operand("gain", gain, at::kBFloat16, {BH, L});
-  refuse_operand("v", v, at::kBFloat16, {BH, L, dv});
-  refuse_operand("num", num, at::kFloat, {BH, L, dv});
-  refuse_operand("den", den, at::kFloat, {BH, L});
-  refuse_operand("liveness", liveness, at::kInt, {BH, 2, wtot, words});
-  refuse_operand("activity", activity, at::kByte, {BH, pages});
-  if (page_table) refuse_operand("page_table", *page_table, at::kInt, {BH, pages});
-  const std::vector<int64_t> plane{BH, pages, (int64_t)kAtomLeaves, dv + 1};
-  if (state_in) refuse_operand("state_in", *state_in, at::kFloat, plane);
-  if (state_out) refuse_operand("state_out", *state_out, at::kFloat, plane);
-  TORCH_CHECK(!state_in || !state_out || state_in->data_ptr() == state_out->data_ptr(),
-              "a carried state is advanced IN PLACE: the exit sweep stores only the pages this "
-              "call writes, so two planes would silently drop the rest");
-  TORCH_CHECK(L <= 0x7FFFFFFF && BH * L * wtot < 0x40000000,
-              "the packed routing plane's byte offsets are 32-bit displacements off one base");
-  TORCH_CHECK(L * dv < 0x20000000,
-              "the readout planes' byte offsets are 32-bit displacements off one base");
-
-  const int BC = box_leaves((int)dv, (int)warps_per_cta);
-  CarryParams p{};
-  int w[kGeomMaxLevels] = {0, 0, 0, 0};
-  for (int l = 0; l < D; ++l) w[l] = (int)widths[l];
-  const char* err = derive_carry_geom(D, w, BC, (int)dv, carve_order_of(carve_order, D),
-                                      (int)warps_per_cta, (int)warps_per_cta, p.g);
-  TORCH_CHECK(err == nullptr, "the carry addressing block refuses this call: ", err);
-
-  p.pread = reinterpret_cast<const __nv_bfloat16*>(read.data_ptr());
-  p.pwrite = reinterpret_cast<const __nv_bfloat16*>(write.data_ptr());
-  p.gwrite = reinterpret_cast<const __nv_bfloat16*>(gain.data_ptr());
-  p.v = reinterpret_cast<const __nv_bfloat16*>(v.data_ptr());
-  p.num = num.data_ptr<float>();
-  p.den = den.data_ptr<float>();
-  p.state_in = state_in ? state_in->data_ptr<float>() : nullptr;
-  p.state_out = state_out ? state_out->data_ptr<float>() : nullptr;
-  p.page_table = page_table ? page_table->data_ptr<int32_t>() : nullptr;
-  p.liveness = liveness.data_ptr<int32_t>();
-  p.activity = activity.data_ptr<uint8_t>();
-  p.L = (int)L;
-  p.liveness_words = (int)words;
-  p.readout_grain_bits = geom_ilog2((int)schedule[0]);
-  p.fold_grain_bits = geom_ilog2((int)schedule[1]);
-  p.read_form = (int)schedule[2];
+  p.ledger = g_phase_ledger;
+  if (p.ledger != nullptr)
+    TORCH_CHECK(g_phase_ledger_ctas >= (int64_t)p.g.owners * BH, "the bound phase ledger covers ",
+                g_phase_ledger_ctas, " CTAs, the launch needs ", (int64_t)p.g.owners * BH);
 
   const auto stream = at::cuda::getCurrentCUDAStream();
   cudaError_t status = cudaSuccess;
@@ -170,6 +65,19 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
   });
   TORCH_CHECK(launched, "the carry arm set resolved a member that carries no launch");
   TORCH_CHECK(status == cudaSuccess, "the carry launch failed: ", cudaGetErrorString(status));
+}
+
+void carry_ledger_bind(const std::optional<at::Tensor>& ledger) {
+  if (!ledger) {
+    g_phase_ledger = nullptr;
+    g_phase_ledger_ctas = 0;
+    return;
+  }
+  TORCH_CHECK(ledger->is_cuda() && ledger->scalar_type() == at::kLong && ledger->dim() == 3
+                  && ledger->size(2) == kPhases && ledger->is_contiguous(),
+              "the phase ledger is a contiguous CUDA int64 tensor [ctas][warps][", kPhases, "]");
+  g_phase_ledger = reinterpret_cast<long long*>(ledger->data_ptr<int64_t>());
+  g_phase_ledger_ctas = ledger->size(0);
 }
 
 namespace stamp {
@@ -203,8 +111,8 @@ std::vector<std::vector<int64_t>> carry_census() {
     const ArmCensus c = carry_arm_census_##I_();                                        \
     out.push_back({(int64_t)(I_), (int64_t)(D_), (int64_t)(DV_), (int64_t)(W_), c.regs, \
                    c.local_bytes, c.smem_bytes, c.max_threads, c.binary_version,        \
-                   c.threads, c.box_leaves, c.atoms, c.acc_regs, c.state_elems,         \
-                   c.state_regs_per_lane, c.members});                 \
+                   c.threads, c.box_leaves, c.atoms, c.boxes, c.state_elems,            \
+                   c.read_bytes, c.pool_bytes});                                       \
   }
   ROLA_CARRY_ARM_SET_X(ROLA_CARRY_ARM_CENSUS)
 #undef ROLA_CARRY_ARM_CENSUS

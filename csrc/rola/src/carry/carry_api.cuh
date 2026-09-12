@@ -1,6 +1,7 @@
 // csrc/rola/src/carry/carry_api.cuh -- the carry family's HOST entries for the pybind TU.
 // See docs/internals/carry/carry.md
 #pragma once
+#include <optional>
 
 #include <torch/extension.h>
 
@@ -18,6 +19,8 @@ void carry_forward(const at::Tensor& read, const at::Tensor& write, const at::Te
                    const c10::optional<at::Tensor>& state_out,
                    const c10::optional<at::Tensor>& page_table);
 
+//: the phase ledger binding (a debug instrument; None unbinds). -- carry_kernel.md#phase-ledger
+void carry_ledger_bind(const std::optional<at::Tensor>& ledger);
 int64_t carry_build_stamp();
 std::vector<std::vector<int64_t>> carry_census();
 std::vector<std::vector<int64_t>> carry_arms();

@@ -193,10 +193,13 @@ def test_an_idle_resident_page_is_neither_loaded_nor_stored():
 
 # ------------------------------------------------- the dense / paged byte gate
 
-def test_the_two_backings_write_the_same_bytes():
-    """ONE KERNEL, ONE ABI, ONE ACCUMULATION ORDER. The dense backing is the paged one
-    under the identity slot table, so a paged run whose table is a PERMUTATION of the
-    slots must write, page for page, the same bytes the dense run wrote.
+def test_the_two_backings_write_the_same_pages():
+    """ONE KERNEL, ONE ABI. The dense backing is the paged one under the identity slot
+    table, so a paged run whose table is a PERMUTATION of the slots must write, page for
+    page, what the dense run wrote -- to the fold's own floor: the segment locks leave the
+    order in which warps add into a state word to timing, so two runs of ONE backing differ
+    by rounding, and that measured difference is the bound the other backing sits inside.
+    An addressing bug moves whole leaves and exceeds it by orders of magnitude.
 
     A permutation rather than the identity is the point: an identity table would also
     pass for a kernel that ignored the table entirely, which is the shape this gate
@@ -207,16 +210,18 @@ def test_the_two_backings_write_the_same_bytes():
 
     dense = carry_ops.state_plane(desc, 1)
     run(spec, state_out=dense)
+    again = carry_ops.state_plane(desc, 1)
+    run(spec, state_out=again)
 
     gen = torch.Generator(device="cuda").manual_seed(spec.seed)
     slots = torch.argsort(torch.rand(pages, device="cuda", generator=gen))
     paged = carry_ops.state_plane(desc, 1)
     run(spec, state_out=paged, page_table=slots.to(torch.int32).reshape(1, pages))
 
-    assert bytes_equal(paged[0, slots], dense[0]), (
-        "the paged backing wrote different bytes than the dense one at the same pages; "
-        "the two backings are one kernel and one accumulation order, so a difference is "
-        "an addressing bug and never a rounding one")
+    floor = max(float((dense - again).abs().max()), float(dense.abs().max()) * 2.0 ** -16)
+    assert float((paged[0, slots] - dense[0]).abs().max()) <= floor, (
+        "the paged backing wrote different pages than the dense one; the two backings are "
+        "one kernel, so a difference past the fold's floor is an addressing bug")
 
 
 # --------------------------------------------------------------- the lattice
@@ -349,86 +354,61 @@ def test_one_token_writing_one_leaf_is_the_oracles_single_deposit():
 
 # ------------------------------------------- the SPARSE bodies, over the density sweep
 
-#: THE TWO STREAM GRAINS a shipped arm can run: the warp sub-box (one stream per warp, the
-#: coarsest reaping this schedule admits) and the PAGE RECTANGLE (the finest the nesting law
-#: admits -- ``leaves_per_warp / 16`` streams per warp, walked in turns). Both are the SAME
-#: arithmetic; what changes is how finely a dead (token, stream) pair can be reaped, so both
-#: must be the fp64 reference and the pair is the reaping bound's own A/B.
-SPARSE_GRAINS = (None, carry_ops.PAGE_LEAVES)
-#: THE FOUR SCHEDULES: each side at either grain. The two sides' fills share one box-words
-#: buffer and a slot's edges, so a hazard between them can sit at one pairing only (the
-#: 2026-09-08 hazard failed at the box read grain with the page fold grain, a pairing the
-#: same-grain rows never ran).
-SPARSE_ROWS = [(cell, gr, gw) for cell in ORACLE_CELLS for gr in SPARSE_GRAINS
-               for gw in SPARSE_GRAINS]
-SPARSE_IDS = [f"{cell.name}-R{'box' if gr is None else gr}-W{'box' if gw is None else gw}"
-              for cell, gr, gw in SPARSE_ROWS]
+#: THE TWO ORDER POLICIES a shipped arm can run: the first-live-box sort (the default, the
+#: reap) and the identity (token order, every token tiled). Both are the SAME arithmetic;
+#: what changes is which (tile, box) pairs the kernel skips, so both must be the fp64
+#: reference and the pair is the sort's own A/B.
+ORDER_ROWS = [(cell, order) for cell in ORACLE_CELLS for order in carry_ops.ORDER_POLICIES]
+ORDER_IDS = [f"{cell.name}-{order}" for cell, order in ORDER_ROWS]
 
 
-def sparse(spec, read_grain, fold_grain):
-    """the STREAM form and the box grain named outright: a cell whose read side is dense
-    would resolve to the position form, and a ``None`` read grain is the reaping bound, not
-    the box -- either would leave the stream form at the box unproved."""
-    box = carry_ops.leaves_per_warp(spec.dv)
-
-    def lawful(g):
-        return box if g is None else min(g, box)
-
-    return carry_ops.CarrySchedule(readout_grain=lawful(read_grain), fold_grain=lawful(fold_grain),
-                                   read_form=carry_ops.READ_FORM_STREAMS)
-
-
-@pytest.mark.parametrize("spec,read_grain,fold_grain", SPARSE_ROWS, ids=SPARSE_IDS)
-def test_the_sparse_form_is_the_fp64_reference(spec, read_grain, fold_grain):
-    """THE REAP CHANGES NO SUM. A dead (token, stream) pair's coefficient is a product one of
-    whose factors is an amplitude of exactly zero -- that is the liveness pass's own
-    predicate -- so the term the sparse readout never forms was exactly ``+0.0f``; the fold
-    reaps by its list on every row of this file, whatever the readout's form. The cells
-    sweep the DENSITY (dense, ``alt`` at two ``k_tok``, ``cohort``, the two structured
-    truncations, the degenerate draws), which is the whole point: a form that is right at one
-    density and wrong at another would pass a single-cell row.
+@pytest.mark.parametrize("spec,order", ORDER_ROWS, ids=ORDER_IDS)
+def test_the_sparse_form_is_the_fp64_reference(spec, order):
+    """THE REAP CHANGES NO SUM. A dead (tile, box) pair's every coefficient is a product one
+    of whose factors is an amplitude of exactly zero -- that is the liveness pass's own
+    predicate -- so the term the kernel never forms was exactly ``+0.0f``, under either
+    order. The cells sweep the DENSITY (dense, ``alt`` at two ``k_tok``, ``cohort``, the two
+    structured truncations, the degenerate draws), which is the whole point: an order that
+    is right at one density and wrong at another would pass a single-cell row.
     """
-    drawn, num, den, plane = run(spec, schedule=sparse(spec, read_grain, fold_grain))
+    drawn, num, den, plane = run(spec, schedule=carry_ops.CarrySchedule(order=order))
     check(spec, num, den, plane, ref(drawn))
 
 
-#: the fully dense cell the two forms are compared ON: every (token, stream) pair is live, so
-#: the sparse body reaps NOTHING and its operand stream is the union's, term for term.
+#: the fully dense cell the two orders are compared ON: every (tile, box) pair is live, so
+#: the sort reaps NOTHING and the two orders tile the same pairs.
 BYTE_GATE_CELL = "flat-small-dense"
+ORDER_GATE_CELL = "flat-small-multiwindow"
 
 
-def test_the_two_forms_agree_where_there_is_nothing_to_reap():
-    """UNION IS THE REFERENCE. At a fully dense draw the compaction is the identity, so the
-    two bodies see the same tokens in the same order: the STATE plane -- accumulated in
-    registers in a fixed order -- must agree BYTE FOR BYTE, and ``num``/``den`` to the
-    reduction floor, because the readout's contributions are reduced into the planes in an
-    order the hardware picks (the seam's declared contract, K2 06.1). A leak of one leaf
-    would exceed that floor by orders of magnitude.
+def test_the_two_orders_agree_where_there_is_nothing_to_reap():
+    """THE IDENTITY IS THE REFERENCE. At a fully dense draw every token is live in every box,
+    so the two orders tile the same (tile, box) pairs; ``num``/``den`` agree to the reduction
+    floor, because the readout's contributions are reduced into the planes in an order the
+    hardware picks (the seam's declared contract, K2 06.1), and the STATE -- whose fold
+    write-back order across warps the segment locks leave to timing -- to the same floor. A
+    leak of one leaf would exceed that floor by orders of magnitude. Two windows, so the
+    readout is against a folded state and not the zero one.
     """
-    spec = by_name(BYTE_GATE_CELL)
-    _, n_u, d_u, s_u = run(spec)
+    spec = by_name(ORDER_GATE_CELL)
+    ident = carry_ops.CarrySchedule(order=carry_ops.ORDER_IDENTITY)
+    _, n_u, d_u, s_u = run(spec, schedule=ident)
     _, n_s, d_s, s_s = run(spec, schedule=carry_ops.CarrySchedule())
-    assert bytes_equal(s_u, s_s)
-    #: the floor is MEASURED on this cell, not assumed: two union runs differ by the atomic
-    #: order alone, and that difference is the bound the sparse run has to sit inside.
-    _, n_c, d_c, _ = run(spec)
-    floor = max(float((n_u - n_c).abs().max()), float(n_u.abs().max()) * 2.0 ** -16)
-    assert float((n_u - n_s).abs().max()) <= floor
-    dfloor = max(float((d_u - d_c).abs().max()), float(d_u.abs().max()) * 2.0 ** -16)
-    assert float((d_u - d_s).abs().max()) <= dfloor
+    #: the floor is MEASURED on this cell, not assumed: two identity runs differ by the
+    #: reductions' order alone, and that difference is the bound the sorted run has to sit
+    #: inside.
+    _, n_c, d_c, s_c = run(spec, schedule=ident)
+    s_u, s_s, s_c = (canonical_from_plane(x) for x in (s_u, s_s, s_c))
+    for a, b, c in ((n_u, n_s, n_c), (d_u, d_s, d_c), (s_u, s_s, s_c)):
+        floor = max(float((a - c).abs().max()), float(a.abs().max()) * 2.0 ** -16)
+        assert float((a - b).abs().max()) <= floor
 
 
-def test_the_selection_rule_picks_the_box_at_every_mode():
-    """The launch's own choice: the warp sub-box on both sides whatever the level modes
-    declare (measured 2026-09-04: the box grain wins at every cell); the reaping bound stays
-    a fact the rule can quote."""
+def test_the_selection_rule_picks_the_first_box_order_at_every_mode():
+    """The launch's own choice: the first-live-box order whatever the level modes declare
+    (the order study, 2026-09-08: within 1.3x of the optimum at alt-k4, 3-4x below token
+    order; at dense the two policies tile the same work)."""
     spec = by_name(BYTE_GATE_CELL)
     desc = spec.descriptor()
-    box = carry_ops.leaves_per_warp(desc.DV)
     for modes in (0, carry_ops.SIDE_SPARSE[0], carry_ops.SIDE_SPARSE[1]):
-        picked = carry_ops.select_schedule(desc, modes)
-        assert (picked.readout_grain, picked.fold_grain) == (box, box)
-    #: the reaping bound is the product of the read side's DENSE levels' widths.
-    import math
-    assert carry_ops.reaping_bound(desc, 0) == math.prod(desc.B)
-    assert carry_ops.reaping_bound(desc, carry_ops.SIDE_SPARSE[0]) == math.prod(desc.B[1:])
+        assert carry_ops.select_schedule(desc, modes).order == carry_ops.ORDER_FIRST_BOX

@@ -115,94 +115,53 @@ class LaunchShape:
 
 @dataclass(frozen=True, slots=True)
 class CarrySchedule:
-    """THE LAUNCH DIALS -- the primitive ledger's class 3, and nothing else.
+    """THE LAUNCH DIAL -- the primitive ledger's class 3, and nothing else.
 
-    ``readout_grain`` is the read side's STREAM GRAIN ``G`` in LEAVES -- the leaf range one
-    stream keys on; at the warp sub-box it is the one-stream point of the family, the dense
-    form. ``fold_grain`` is the fold's PASS grain: the stream box a pass of the pool fold
-    reaps at; a warp's box holds ``leaves_per_warp / G`` of them and walks them in turn over
-    the same rows. Each selects a compiled body at its phase's entry, one uniform switch per
-    window, outside the batch loop.
-
-    A ``None`` grain takes the side's own default: the warp sub-box for the fold (one stream
-    spanning the box -- the measured default at every density), and for the readout the
-    reaping bound ``G_min`` clamped into ``[PAGE_LEAVES, leaves_per_warp]``.
+    ``order`` is the ORDER POLICY: how the kernel ranks a window's tokens before it tiles
+    them, per side, from the box words alone (docs/internals/carry/carry_kernel.md#order).
+    ``ORDER_FIRST_BOX`` is a counting sort by first live box with the dead tokens last, the
+    tiles over the live prefix -- the default, and the reap (P81 §1: 3-4x fewer (tile, box)
+    pairs than token order at alt-k4). ``ORDER_IDENTITY`` keeps token order and tiles every
+    token: the same arithmetic, the A/B of the sort.
     """
 
-    readout_grain: int | None = None
-    fold_grain: int | None = None
-    #: THE READ FORM: ``READ_FORM_POSITION`` (the position carve, one stream spanning the
-    #: box) or ``READ_FORM_STREAMS`` (a warp its read stream, its list, its resident slabs).
-    #: ``None`` takes the mode word's answer: streams where the read side has a sparse
-    #: level, the position carve otherwise. -- docs/internals/carry/carry_kernel.md#stream-form
-    read_form: int | None = None
+    order: str = "first"
 
-    def resolved(self, level_modes: int) -> CarrySchedule:
-        if self.read_form is not None:
-            return self
-        sparse = any((level_modes >> (2 * level)) & SIDE_SPARSE[0]
-                     for level in range(MAX_LEVELS))
-        return CarrySchedule(self.readout_grain, self.fold_grain,
-                             READ_FORM_STREAMS if sparse else READ_FORM_POSITION)
+    def __post_init__(self) -> None:
+        if self.order not in ORDER_POLICIES:
+            raise CarryRefusal(
+                f"order={self.order!r} is not an order policy; the set is "
+                f"{tuple(ORDER_POLICIES)}.")
 
-    def flat(self, DV: int, grain_min: int) -> list[int]:
-        """The two entries the kernel boundary takes: the read grain, then the fold's."""
-        box = leaves_per_warp(DV)
+    def flat(self) -> list[int]:
+        """The one entry the kernel boundary takes: the order policy's code."""
+        return [ORDER_POLICIES[self.order]]
 
-        def lawful(name: str, grain: int) -> int:
-            if grain & (grain - 1) or not PAGE_LEAVES <= grain <= box:
-                raise CarryRefusal(
-                    f"{name}={grain} is not a lawful grain: a power of two between the page "
-                    f"rectangle ({PAGE_LEAVES}) and the warp sub-box ({box}). A finer grain "
-                    f"would divide the innermost digits below the vector width "
-                    f"(KERNEL_STANDARDS.md §R13).")
-            return grain
 
-        read = lawful("readout_grain", box if self.readout_grain is None
-                      else int(self.readout_grain))
-        if self.readout_grain is None:
-            read = min(box, max(PAGE_LEAVES, grain_min))
-        fold = lawful("fold_grain", box if self.fold_grain is None else int(self.fold_grain))
-        return [read, fold, int(self.read_form)]
-
+#: THE ORDER POLICIES, as `csrc/rola/src/carry/params.cuh` numbers them.
+ORDER_FIRST_BOX: str = "first"
+ORDER_IDENTITY: str = "identity"
+ORDER_POLICIES: dict[str, int] = {ORDER_FIRST_BOX: 0, ORDER_IDENTITY: 1}
 
 #: THE MODE WORD'S ENCODING, as `csrc/rola/src/common/geom.cuh` spells it and
 #: `rola.ops.intra.pack_modes` packs it: two bits per level, bit 0 the READ side is sparse
 #: there, bit 1 the WRITE side. Named here rather than imported because `rola.ops.intra`
 #: imports this module.
 SIDE_SPARSE: tuple[int, int] = (1, 2)
-READ_FORM_POSITION: int = 0
-READ_FORM_STREAMS: int = 1
 MAX_LEVELS: int = 4
 
 
-def reaping_bound(descriptor: StateFormat, level_modes: int) -> int:
-    """``G_min`` for the read side: the product of its DENSE levels' widths.
-
-    THE REAPING BOUND (FP card): a leaf range's liveness depends only on its SPARSE levels'
-    digits, because a dense level admits every token, so the finest stream grain worth having
-    fixes exactly one digit per sparse level and spans the dense ones whole. A finer stream
-    pays token multiplicity and zero-row padding for zero additional reaping.
-    """
-    g = 1
-    for level, width in enumerate(descriptor.B):
-        if not (level_modes >> (2 * level)) & SIDE_SPARSE[0]:
-            g *= width
-    return g
-
-
 def select_schedule(descriptor: StateFormat, level_modes: int = 0) -> CarrySchedule:
-    """THE SELECTION RULE: both sides at the warp sub-box, one stream a warp.
+    """THE SELECTION RULE: the first-live-box order at every density.
 
-    Measured 2026-09-04 on the position-carved readout and the pool fold: the box grain beats
-    the page grain at every cell, dense and sparse, by 3-8% on the read side and more on the
-    fold, because a finer stream gathers its slice's coefficients once more per stream for a
-    reap the box grain already takes per (stream, slice). A caller that has measured a cell
-    where a finer grain wins names the schedule outright; ``level_modes`` is accepted so the
-    rule keeps the seam a density-dependent rule would need.
+    The order study (P81, 2026-09-08) puts it within 1.3x of the ILP optimum's (tile, box)
+    count at alt-k4 and at 3-4x below token order; at dense every token is live in every
+    box and the two policies tile the same work. A caller that has measured a cell where
+    another policy wins names the schedule outright; ``level_modes`` is accepted so the rule
+    keeps the seam a density-dependent rule would need.
     """
-    box = leaves_per_warp(descriptor.DV)
-    return CarrySchedule(readout_grain=box, fold_grain=box).resolved(level_modes)
+    del descriptor, level_modes
+    return CarrySchedule(order=ORDER_FIRST_BOX)
 
 
 @dataclass(frozen=True, slots=True)
@@ -472,12 +431,10 @@ def carry_forward(routes: RoutePlanes, v: torch.Tensor, *, descriptor: StateForm
     den = torch.zeros((bh, length), dtype=torch.float32, device=v.device)
     if schedule is None:
         schedule = select_schedule(descriptor, geometry.level_modes)
-    schedule = schedule.resolved(geometry.level_modes)
     extension().carry_forward(
         routes.read, routes.write, routes.gain, v, num, den,
         list(descriptor.B), int(descriptor.DV), int(descriptor.page_bits),
-        int(launch.warps_per_cta), geometry.carve_order,
-        schedule.flat(descriptor.DV, reaping_bound(descriptor, geometry.level_modes)),
+        int(launch.warps_per_cta), geometry.carve_order, schedule.flat(),
         liveness.words, activity, state_in, state_out, page_table)
     return num, den
 
@@ -559,8 +516,8 @@ def census():
     """One row per built arm: what the compiler did, then what the box plan says it should.
 
     ``(index, D, DV, warps_per_cta, regs, local_bytes, smem_bytes, max_threads,
-    binary_version, threads, box_leaves, atoms, acc_regs, state_elems,
-    state_regs_per_lane, members)``. The first group is
+    binary_version, threads, box_leaves, atoms, boxes, state_elems, read_bytes,
+    pool_bytes)``. The first group is
     ``cudaFuncGetAttributes`` on the arm's own kernel and the second is the derivation;
     having both in one row is what makes a disagreement visible instead of inferred.
     """
@@ -691,6 +648,9 @@ def sub_boxes(depth, box_leaves_, workers):
 __all__ = [
     "ACTIVITY_READ",
     "ACTIVITY_WRITTEN",
+    "ORDER_FIRST_BOX",
+    "ORDER_IDENTITY",
+    "ORDER_POLICIES",
     "PAGE_LEAVES",
     "SHIPPED_DV",
     "SHIPPED_WARPS_PER_CTA",
@@ -714,7 +674,6 @@ __all__ = [
     "lattice_of_canonical",
     "leaves_per_warp",
     "pack_side",
-    "reaping_bound",
     "route_planes",
     "select_schedule",
     "sm_clock_ghz",

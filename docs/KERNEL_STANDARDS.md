@@ -431,3 +431,69 @@ hazards; a target killed under the sanitizer is a failing gate, never a resource
 be worked around. Benign races (every warp storing the same word) are not tolerated either:
 a lane with known noise is a lane nobody reads. One warp writes, the readers stand behind an
 edge.
+
+
+## §19 — THE COMPONENT BUDGET GATE (law, 2026-09-09, from the P81 rebuild's four reference-grade forms)
+Rule 12 said "state the floor before building"; nothing enforced it, and a whole kernel was built four
+times to correctness with its schedule machinery at 3x master's instruction count before the floor was
+ever compared. From here the floor is a GATE, per component, before composition:
+- A COMPONENT is a device function with one job (the head, the operand ring's issue, the fold pair body,
+  the readout tile, the re-layout, the sweeps). Each has a BUDGET LINE in the brief before code: its
+  analytic floors (tensor: HMMAs x 32 cycles / schedulers; bandwidth: bytes / BW; latency: chain depth
+  x latency at the stated prefetch distance), its instruction budget derived from the design's own
+  operation count, and WHO EXECUTES IT HOW MANY TIMES (a per-window job is done once per CTA, by one
+  warp or split across warps -- never replicated on every warp).
+- Each component is built into the PART HARNESS (`benchmarks/unit/bench_carry_parts.py`: one
+  `__global__` driver per component over the real device functions, inputs shaped by a cell's liveness)
+  and measured there -- cycles at the locked clock, instructions, the binding counter -- against its
+  floors. It is accepted at <= 1.3x its binding floor and within its instruction budget; the numbers
+  enter the regression store, and a later change that moves a ratio is red.
+- The COMPOSED kernel carries a phase ledger (a debug build's per-warp `clock64` per phase) and is
+  compared to the sum of its parts; the difference is the composition cost and is reported as such.
+- The per-component instruction count of the shipped binary is attributed by `tools/region_ledger.py`
+  (SourceCounters + lineinfo, functions and struct methods) against `tools/budgets/<kernel>.json`; a
+  component over budget is red, the same as a spill.
+- SKELETON FIRST (Blake, 2026-09-09): the kernel is composed from STUB components before any is
+  implemented -- each stub has the real signature, the real shared-memory tenants and edges, and does
+  the cheapest thing that keeps the composition correct in shape (a zero fold, a pass-through head) --
+  so the final form, its ledger and its phase structure are fixed and compile before the first real
+  component lands. Components are then implemented one at a time into the skeleton, each gated in the
+  part harness and in the composed phase ledger before the next begins. A component is never written
+  outside the form it will live in.
+- A design verdict is never drawn from a build whose components have not passed their gates
+  ("slop numbers get misread as design verdicts" is now a gate, not a memory).
+
+## §20 — ptxas SIGNATURES (law, 2026-09-09): what the SASS gate reads, and the rule behind each
+`tools/sass_gate.py` runs on every iteration build and fails on any of these; each was re-learned by
+trial this week and costs a rebuild when missed.
+- LDL/STL > 0 or a stack frame: LOCAL MEMORY. Causes: a runtime index into a register array or
+  struct member array (the layout struct indexed by a runtime level); a `constexpr` helper with a
+  runtime argument (`span_base(D, BC, l)` with `l` from a variable evaluates the span rule's arrays);
+  a capturing lambda that was not inlined (its `[&]` captures go through memory). Rule: static indices
+  only, compile-time arguments to constexpr helpers, lambdas only where inlining is verified.
+- `CALL.REL.NOINC $__internal_*` : a CONVERGENCE SUBROUTINE. ptxas outlines a collective it cannot
+  prove convergent: under a branch on a loaded value, after a loop whose trip count it cannot prove
+  uniform, inside a lambda with an early `return`. Rule: collectives at the top level of loops whose
+  bounds come from constants, REDUX results or uniform registers; predicate RESULTS, never the
+  collective; a quad sum past a branchy loop goes through shared memory, not shuffles.
+- `@P HMMA` or a pair body whose non-tensor instruction count equals its `if`-guarded block's:
+  IF-CONVERSION. A warp-uniform `if` (dealt work, a runtime flag) is predicated, not branched, and runs
+  predicated-off on every other warp. Rule: a one-trip `for` (`#pragma unroll 1`) forces the branch;
+  better, keep dealt or optional work out of pair bodies.
+- BSSY/BSYNC per item in an unrolled loop where every item is live: the PREDICATED-CHAIN form; use a
+  straight-line block when all items are live (ptxas schedules across items) and a jump table (BRX)
+  when one is. Both, selected by a uniform test, never one for all.
+- A warp's copy tasks mapped so its lanes touch different rows: one L2 request per copy. Rule: tasks
+  CONTIGUOUS in memory across a warp's lanes; coalescing is checked by `l1tex__t_requests` per
+  sector, not assumed.
+- `smsp__inst_executed` / HMMA count above the arm's ceiling (this arm: 16 per HMMA per warp before
+  issue binds the tensor pipe at two warps a scheduler): the kernel is issue-bound; the budget ledger
+  says which component.
+
+## §21 — THE MEASUREMENT PROTOCOL (law, 2026-09-09, after a dense verdict was drawn against the baseline's sparse schedule)
+A comparison is valid only when: the same grid and block (read `launch__grid_size`), the baseline run
+with ITS OWN schedule for the cell, `smsp__inst_executed`, `sm__cycles_active` and `sm__cycles_elapsed`
+beside the time (idle SMs and tail waves are reported, not inferred), the GPU quiet (no sanitizer or
+profiler child alive: a timed-out `compute-sanitizer` leaves its python child on the device), and the
+probe's clock rows accepted. "Issue active at X%" is a ratio over active cycles and says nothing about
+the instruction count; the count is read, never inferred from the ratio.

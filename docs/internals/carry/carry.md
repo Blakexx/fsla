@@ -98,8 +98,6 @@ warp sub-box (a finer stream would divide the innermost digits below the vector 
 The grain at the warp sub-box is the one-stream point of the family, the dense form, which
 the bench's `box` schedule name selects.
 
-`rola.ops.carry.select_schedule` picks the default: the warp sub-box on both sides, one
-stream a warp, which measured fastest at every cell (2026-09-04; the finer grain gathers a
-slice's coefficients once more per stream for a reap the box already takes per (stream,
-slice)). The reaping bound `G_min = prod over a side's DENSE levels of B_l` stays a quotable
-fact (`reaping_bound`) for a caller that has measured a cell where a finer grain wins.
+`rola.ops.carry.select_schedule` picks the default order policy, the first-live-box sort
+(`kOrderFirstBox`); the identity order is the sort's A/B. The stream-grain dials this
+paragraph once described are gone with the frame they selected (`DELETIONS.md`).

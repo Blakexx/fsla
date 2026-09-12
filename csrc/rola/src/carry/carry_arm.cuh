@@ -13,14 +13,12 @@ namespace rola::carry {
 //: THE PARAMETER BLOCK REACHES THE KERNEL AS A GRID CONSTANT: the body reads its fields
 //: through a reference, and only `__grid_constant__` lets that reference address the
 //: constant bank instead of forcing a per-thread local copy of the whole block.
-//: THE GRID: one CTA per (box, batch-head), and the CTA is the SM.
-//: -- see docs/internals/carry/carry.md#launch
-//: ONE GRAIN PAIR, ONE SYMBOL. -- see docs/internals/carry/carry_kernel.md#forms
-template <int D, int DV, int W, int GR, int GW, int RF>
-inline cudaError_t carry_launch_grain(const CarryParams& p, int owners, int bh,
-                                      cudaStream_t stream) {
-  using BP = BoxPlan<D, DV, W, RF == kReadFormStreams>;
-  const auto fn = carry_kernel<D, DV, W, GR, GW, RF>;
+//: THE GRID: one CTA per (box, batch-head), and the CTA is the SM. ONE ARM, ONE SYMBOL:
+//: the order policy is a runtime dial inside it. -- see docs/internals/carry/carry.md#launch
+template <int D, int DV, int W>
+inline cudaError_t carry_launch(const CarryParams& p, int owners, int bh, cudaStream_t stream) {
+  using BP = BoxPlan<D, DV, W>;
+  const auto fn = carry_kernel<D, DV, W>;
   static bool configured = false;
   if (!configured) {
     const cudaError_t e =
@@ -33,30 +31,10 @@ inline cudaError_t carry_launch_grain(const CarryParams& p, int owners, int bh,
 }
 
 template <int D, int DV, int W>
-inline cudaError_t carry_launch(const CarryParams& p, int owners, int bh, cudaStream_t stream) {
-  using BP = BoxPlan<D, DV, W>;
-  cudaError_t e = cudaErrorInvalidValue;
-  rola::static_for<BP::kGrainCases>([&](auto Rc) {
-    rola::static_for<BP::kGrainCases>([&](auto Wc) {
-      rola::static_for<kReadForms>([&](auto Fc) {
-        constexpr int gr = BP::kGrainBitsMin + decltype(Rc)::value;
-        constexpr int gw = BP::kGrainBitsMin + decltype(Wc)::value;
-        constexpr int rf = decltype(Fc)::value;
-        if (p.readout_grain_bits == gr && p.fold_grain_bits == gw && p.read_form == rf)
-          e = carry_launch_grain<D, DV, W, gr, gw, rf>(p, owners, bh, stream);
-      });
-    });
-  });
-  return e;
-}
-
-template <int D, int DV, int W>
 inline ArmCensus carry_census() {
-  using BP = BoxPlan<D, DV, W, true>;
+  using BP = BoxPlan<D, DV, W>;
   cudaFuncAttributes a{};
-  cudaFuncGetAttributes(&a,
-                        carry_kernel<D, DV, W, BP::kGrainBitsMin + BP::kGrainCases - 1,
-                                     BP::kGrainBitsMin + BP::kGrainCases - 1, kReadFormStreams>);
+  cudaFuncGetAttributes(&a, carry_kernel<D, DV, W>);
   return ArmCensus{(int)a.numRegs,
                    0,
                    0,
@@ -67,10 +45,10 @@ inline ArmCensus carry_census() {
                    BP::kThreads,
                    BP::kBC,
                    BP::kAtoms,
-                   BP::kAccRegs,
-                   BP::kStateElems,
-                   BP::kStateElems / 32,
-                   sub_boxes(D, BP::kBC, BP::kStreams).count};
+                   BP::kBoxes,
+                   BP::kBC * (BP::kDv + 1),
+                   BP::kWarps * BP::kWarpReadBytes,
+                   BP::kPoolSlots * BP::kPoolSlotBytes};
 }
 
 #define ROLA_CARRY_ARM_DEFINE(I_, D_, DV_, W_)                                       \

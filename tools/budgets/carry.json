@@ -1,0 +1,147 @@
+{
+ "unit": "instructions per CTA-window (8 warps), cells at window 1",
+ "cells": {
+  "flagship-dense": {
+   "head": 4008.0,
+   "fill": 6028.0,
+   "fold": 21472.0,
+   "readout": 17600.0,
+   "snapshot": 944.0,
+   "edges": 320.0,
+   "total": 50372.0,
+   "hmma": 9216.0,
+   "tensor_floor_cycles": 73728.0,
+   "issue_floor_cycles": 12593.0,
+   "pool_bytes": 98304.0,
+   "binding_floor_cycles": 73728.0,
+   "per_hmma": 5.465711805555555,
+   "live_tokens": [
+    512,
+    512
+   ],
+   "tiles": [
+    32,
+    7
+   ],
+   "pairs": [
+    512,
+    256
+   ]
+  },
+  "flagship-alt-k4": {
+   "head": 4008.0,
+   "fill": 4268.0,
+   "fold": 3872.0,
+   "readout": 1916.0,
+   "snapshot": 944.0,
+   "edges": 320.0,
+   "total": 15328.0,
+   "hmma": 612.0,
+   "tensor_floor_cycles": 4896.0,
+   "issue_floor_cycles": 3832.0,
+   "pool_bytes": 21504.0,
+   "binding_floor_cycles": 4896.0,
+   "per_hmma": 25.045751633986928,
+   "live_tokens": [
+    125,
+    112
+   ],
+   "tiles": [
+    8,
+    2
+   ],
+   "pairs": [
+    36,
+    16
+   ]
+  },
+  "flagship-alt-k16": {
+   "head": 4008.0,
+   "fill": 5720.0,
+   "fold": 6728.0,
+   "readout": 6538.0,
+   "snapshot": 944.0,
+   "edges": 320.0,
+   "total": 24258.0,
+   "hmma": 2196.0,
+   "tensor_floor_cycles": 17568.0,
+   "issue_floor_cycles": 6064.5,
+   "pool_bytes": 64512.0,
+   "binding_floor_cycles": 17568.0,
+   "per_hmma": 11.046448087431694,
+   "live_tokens": [
+    337,
+    336
+   ],
+   "tiles": [
+    22,
+    5
+   ],
+   "pairs": [
+    146,
+    49
+   ]
+  },
+  "flagship-cohort-k4": {
+   "head": 4008.0,
+   "fill": 704.0,
+   "fold": 1472.0,
+   "readout": 0.0,
+   "snapshot": 944.0,
+   "edges": 320.0,
+   "total": 7448.0,
+   "hmma": 288.0,
+   "tensor_floor_cycles": 2304.0,
+   "issue_floor_cycles": 1862.0,
+   "pool_bytes": 12288.0,
+   "binding_floor_cycles": 2304.0,
+   "per_hmma": 25.86111111111111,
+   "live_tokens": [
+    0,
+    64
+   ],
+   "tiles": [
+    0,
+    1
+   ],
+   "pairs": [
+    0,
+    16
+   ]
+  },
+  "flagship-both-k4": {
+   "head": 4008.0,
+   "fill": 4268.0,
+   "fold": 3872.0,
+   "readout": 1970.0,
+   "snapshot": 944.0,
+   "edges": 320.0,
+   "total": 15382.0,
+   "hmma": 630.0,
+   "tensor_floor_cycles": 5040.0,
+   "issue_floor_cycles": 3845.5,
+   "pool_bytes": 23808.0,
+   "binding_floor_cycles": 5040.0,
+   "per_hmma": 24.415873015873014,
+   "live_tokens": [
+    128,
+    124
+   ],
+   "tiles": [
+    8,
+    2
+   ],
+   "pairs": [
+    38,
+    16
+   ]
+  }
+ },
+ "components": {
+  "head": "head",
+  "fill": "pool_fill",
+  "fold": "fold",
+  "readout": "readout",
+  "snapshot": "snapshot_publish"
+ }
+}

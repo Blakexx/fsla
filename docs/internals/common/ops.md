@@ -710,3 +710,48 @@ fragment register pair is two consecutive channels of one token.
 
 `ld.shared.v4.u32` at a 16-byte aligned address: the readout reads a tile's sixteen token ids
 as two of these, every lane the same address (a broadcast, conflict free).
+
+
+<a id="mbarrier"></a>
+## `mbar_init`, `mbar_arrive_when_landed`, `mbar_arrive`, `mbar_wait` — a shared-memory barrier object
+
+An `mbarrier` (sm_80+) completes a phase at `count` arrivals and flips its parity. A thread's
+`cp.async` copies arrive when they LAND (`cp.async.mbarrier.arrive.noinc`: the arrival is one
+of the counted ones, so the count includes it); a thread's own arrive releases its prior
+shared stores; a wait acquires. `mbar_wait` is a `test_wait` spin: cheap when the phase is
+already complete, which is the case the design arranges for. The carry's pool uses a
+full/empty pair a slot (`carry_kernel.md#pool`) so that warps drift freely by a chunk, where
+a CTA barrier would hold every warp to the slowest.
+
+<a id="once"></a>
+## `once` — an opaque one-trip loop bound
+
+`for (int n = ops::once(cond); n > 0; --n)` is a real branch where `if (cond)` on a
+warp-uniform value would be if-converted and every warp would issue the body predicated off
+(KERNEL_STANDARDS §20; the fill's round ownership ran as four passes of zero-size copies on
+every warp until this). The bound is hidden from ptxas by an empty `asm volatile`, so the
+loop cannot be recognized as 0-or-1 trips and flattened.
+
+<a id="nth-set-bit"></a>
+## `nth_set_bit` — the n-th set bit of a word
+
+A branch-free binary search on popcounts, five steps. About thirty instructions; the
+intrinsic `__fns` is a software loop that cost 21% of a dense window once. The carry keeps
+it off its hot paths (the fold's slot map is a ring store and a load instead) and uses it
+where a map of sixteen set bits to lanes is unavoidable.
+
+<a id="cycles"></a>
+## `cycles` — the SM's cycle counter
+
+`%clock64` by `mov`, for the phase ledger (`carry_kernel.md#phase-ledger`); the intrinsic
+`clock64` is not declared in every host-pass compilation of a header that both the launch
+and the part harness include.
+
+<a id="red-global"></a>
+## `red_global_add_f32` — a global reduction stated global
+
+The readout's rows leave `num` and `den` by reduction across owner CTAs. Written as a generic
+`atomicAdd` on the kernel's pinned base pointer, the add lowered to a generic-space atomic: an
+address-space probe, a shared-memory CAS spin and a local fallback beside a RETURNING atomic, whose L2 round trip the next branch then waited on -- 30% of a dense window's stall
+samples sat on those branches. The explicit `red.global.add.f32` on the address converted to
+the global window is fire-and-forget and carries no scoreboard.

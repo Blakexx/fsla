@@ -60,29 +60,19 @@ def _carry_operands(fx):
 
 
 def _carry_schedule(name: str, spec):
-    """``box`` | ``sparse`` | ``sparse-gN`` | ``sparse-gN-fM`` | ``box-fM`` -> the launch's
-    dials: the read side's stream grain N and the fold's pass grain M (the warp box when
-    unnamed). ``box`` names the one-stream point of the family -- the read grain at the warp
-    box, the dense form -- and ``sparse`` the reaping bound."""
+    """``first`` | ``identity`` -> the launch's dial: the ORDER POLICY (`CarrySchedule`).
+    ``first`` is the first-live-box sort, the reap; ``identity`` keeps token order and tiles
+    every token, the sort's A/B."""
     from rola.ops import carry as carry_ops
 
-    box = carry_ops.leaves_per_warp(spec.dv)
-    parts = name.split("-")
-    form = parts[0]
-    if form not in ("box", "sparse"):
-        raise ValueError(f"schedule {name!r} is box[-fM], sparse[-gN][-fM]")
-    read = box if form == "box" else None
-    fold = None
-    for part in parts[1:]:
-        if part.startswith("g") and form == "sparse":
-            read = min(int(part[1:]), box)
-        elif part.startswith("f"):
-            fold = min(int(part[1:]), box)
-        else:
-            raise ValueError(f"schedule {name!r}: {part!r} is neither gN nor fM")
-    return carry_ops.CarrySchedule(
-        readout_grain=read, fold_grain=fold,
-        read_form=carry_ops.READ_FORM_POSITION if form == "box" else carry_ops.READ_FORM_STREAMS)
+    del spec
+    #: the cross-binary probe hands one schedule name to both binaries; the baseline's
+    #: vocabulary (`box`, `sparse-gN`: its dense and reaping schedules) names the reap here.
+    if name == "box" or name.startswith("sparse"):
+        name = carry_ops.ORDER_FIRST_BOX
+    if name not in carry_ops.ORDER_POLICIES:
+        raise ValueError(f"schedule {name!r} is one of {tuple(carry_ops.ORDER_POLICIES)}")
+    return carry_ops.CarrySchedule(order=name)
 
 
 #: THE STATE ARMS, the kernel's own shapes (`docs/internals/state.md#four-shapes`): `null`
@@ -128,11 +118,11 @@ def carry_forward(fx) -> Arm:
     _drawn, call = _carry_operands(fx)
     routes, v = call.pop("routes"), call.pop("v")
     state_in, state_out, page_table = _state_arm(fx, call["descriptor"])
-    #: THE SCHEDULE ARM. The per-side runtime dial the launch carries (`CarrySchedule`), so a
-    #: probe's two arms can be the SAME binary differing in exactly the form and the stream
-    #: grain -- which is what the reap is measured as. `union` is what a caller who names
-    #: nothing gets, and it is the cells' own default (they declare every level dense).
-    schedule = _carry_schedule(fx.get("schedule", "box"), spec)
+    #: THE SCHEDULE ARM. The runtime dial the launch carries (`CarrySchedule`, the order
+    #: policy), so a probe's two arms can be the SAME binary differing in exactly the order
+    #: -- which is what the reap is measured as. `first` is what a caller who names nothing
+    #: gets.
+    schedule = _carry_schedule(fx.get("schedule", "first"), spec)
 
     def run():
         return carry_ops.carry_forward(routes, v, state_in=state_in, state_out=state_out,

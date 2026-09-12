@@ -152,9 +152,9 @@ The exchange-law model test (tests/unit) walks every access at every reachable (
 Two properties keep it free rather than a cost, both asserted: it is a BIJECTION of
 `[0, BC)`, so no leaf is lost or aliased; and every step of the map — the member's
 scatter, the read-order permutation, the swizzle — is GF(2)-LINEAR in the slot's bits, so
-`row(strm, P) = row(strm, 0) ^ XOR_{b in P} row(bit b)`: a warp holds its base row and one
-row per slot bit (`TransitRows`), and a fragment's row is an XOR selection by the slot's
-compile-time bits. The address arithmetic composes with `^` and never with `+`.
+`row(strm, P) = row(strm, 0) ^ XOR_{b in P} row(bit b)`: a warp held its base row and one
+row per slot bit, and a fragment's row was an XOR selection by the slot's compile-time
+bits (the transit that used this is gone with the state carve's snapshot, DELETIONS.md). The address arithmetic composes with `^` and never with `+`.
 
 <a id="cta-box-first"></a>
 ## The derivation is CTA-BOX-FIRST

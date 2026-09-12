@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+# Copyright 2026 Blake Bottum
+# SPDX-License-Identifier: Apache-2.0
+"""THE REGION LEDGER: a kernel's executed instructions and stall samples per COMPONENT -- the
+device function (or struct method) each SASS instruction inlines from -- against the budgets in
+`tools/budgets/<kernel>.json`. KERNEL_STANDARDS §19: a component over budget is red.
+
+    tools/region_ledger.py --csv <ncu SourceCounters csv> --so <extension .so> \\
+        --source csrc/rola/src/carry/carry_kernel.cuh --budget tools/budgets/carry.json \\
+        --per <cta-windows in the launch>
+
+The csv is `ncu --section SourceCounters --page source --print-source sass --csv` of ONE launch
+(rola-ledger skill). Attribution: the innermost frame in the kernel's source of each SASS line
+(`nvdisasm --print-line-info-inline`), the function by the nearest preceding definition --
+`__device__` functions, `__global__` kernels, `struct` blocks and their methods.
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import csv
+import json
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+CUOBJDUMP = "/usr/local/cuda/bin/cuobjdump"
+NVDISASM = "/usr/local/cuda/bin/nvdisasm"
+DEF = [re.compile(r"^__device__ __forceinline__ \S+ (\w+)\("), re.compile(r"^__global__ .* void (\w+)\("),
+       re.compile(r"^(?:template <[^>]*>\s*)?struct (\w+)"), re.compile(r"^  __device__ __forceinline__ (?:\w+ )?(\w+)\(")]
+
+
+def function_map(src_lines: list[str]) -> list[tuple[int, str]]:
+    out = []
+    for i, l in enumerate(src_lines):
+        for rx in DEF:
+            m = rx.match(l)
+            if m:
+                out.append((i + 1, m.group(1)))
+                break
+    return out
+
+
+def fn_of(fmap: list[tuple[int, str]], ln: int) -> str:
+    name = "?"
+    for start, n in fmap:
+        if ln >= start:
+            name = n
+    return name
+
+
+def frames_map(so: Path, member: str) -> dict[int, list[tuple[str, int]]]:
+    """SASS offset -> the inline frame chain at that instruction, innermost first, as
+    (file name, line) pairs, from `nvdisasm --print-line-info-inline`."""
+    tmp = Path(tempfile.mkdtemp(prefix="region_ledger_"))
+    subprocess.run([CUOBJDUMP, "-xelf", "all", str(so.resolve())], cwd=tmp, capture_output=True, check=True)
+    cub = next(p for p in tmp.iterdir() if member in p.name and p.suffix == ".cubin")
+    sass = subprocess.run([NVDISASM, "--print-line-info-inline", "-gi", str(cub)], capture_output=True, text=True, check=True).stdout
+    pending: list[tuple[str, int]] = []
+    chain: list[tuple[str, int]] = []
+    out = {}
+    for l in sass.splitlines():
+        m = re.search(r'//## File "([^"]+)", line (\d+)', l)
+        if m:
+            pending.append((m.group(1).split("/")[-1], int(m.group(2))))
+            continue
+        m = re.match(r"\s*/\*([0-9a-f]{4,5})\*/\s+[A-Z@]", l)
+        if m:
+            if pending:
+                chain = pending
+                pending = []
+            out[int(m.group(1), 16)] = chain
+    return out
+
+
+class Attribution:
+    """Which COMPONENT an instruction belongs to -- the outermost frame in the kernel's source
+    (the component function the call chain inlines into) -- and whether it is a barrier SPIN
+    (an innermost frame inside `mbar_wait`). A spin is the wait for another agent's work and
+    is reported apart from the component's own instructions."""
+
+    def __init__(self, so: Path, member: str, source: Path, ops: Path):
+        self.fmap = function_map(source.read_text().splitlines())
+        self.omap = function_map(ops.read_text().splitlines())
+        self.source, self.ops = source.name, ops.name
+        self.frames = frames_map(so, member)
+
+    def of(self, offset: int, components: set[str] | None = None) -> tuple[str, bool]:
+        """The component: the OUTERMOST frame in the kernel's source whose function is one of
+        `components` (the budget's names), else the outermost frame's function -- in the
+        composed kernel every chain ends in the kernel itself, which is no component."""
+        chain = self.frames.get(offset, [])
+        comp = "?"
+        for f, ln in chain:
+            if f == self.source:
+                fn = fn_of(self.fmap, ln)
+                if components is None or fn in components:
+                    comp = fn
+        if comp == "?":
+            for f, ln in chain:
+                if f == self.source:
+                    comp = fn_of(self.fmap, ln)
+        spin = any(f == self.ops and fn_of(self.omap, ln) == "mbar_wait" for f, ln in chain)
+        return comp, spin
+
+
+def line_map(so: Path, member: str, source_name: str) -> dict[int, int | None]:
+    """SASS offset -> innermost line in `source_name` (None when the chain has none)."""
+    out = {}
+    for off, chain in frames_map(so, member).items():
+        ck = [ln for f, ln in chain if f == source_name]
+        out[off] = ck[0] if ck else None
+    return out
+
+
+def read_source_counters(csv_path: Path) -> list[tuple[int, int, int, dict]]:
+    """(address, instructions executed, stall samples, stall reasons) per SASS line of an
+    `ncu --section SourceCounters --page source --print-source sass --csv` dump."""
+    rows = []
+    hdr = None
+    with csv_path.open() as f:
+        for r in csv.reader(f):
+            if r and r[0] == "Address":
+                hdr = {k: i for i, k in enumerate(r)}
+                continue
+            if hdr and len(r) == len(hdr) and r[0].startswith("0x"):
+                st = {k[6:]: int(r[hdr[k]] or 0) for k in hdr if k.startswith("stall_") and "Not Issued" not in k}
+                rows.append((int(r[0], 16), int(r[hdr["Instructions Executed"]] or 0),
+                             int(r[hdr["Warp Stall Sampling (All Samples)"]] or 0), st))
+    return rows
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--csv", type=Path, required=True)
+    ap.add_argument("--so", type=Path, required=True)
+    ap.add_argument("--source", type=Path, required=True)
+    ap.add_argument("--member", default="carry_arm")
+    ap.add_argument("--ops", type=Path, default=Path("csrc/rola/src/common/ops.cuh"))
+    ap.add_argument("--budget", type=Path, default=None)
+    ap.add_argument("--cell", default=None, help="the budget cell to compare against")
+    ap.add_argument("--per", type=float, default=1.0, help="divisor: CTA-windows in the launch")
+    ap.add_argument("--top", type=int, default=24)
+    a = ap.parse_args()
+    attr = Attribution(a.so, a.member, a.source, a.ops)
+    rows = read_source_counters(a.csv)
+    base = rows[0][0]
+
+    budget_doc = json.loads(a.budget.read_text()) if a.budget else {}
+    components = set(budget_doc.get("components", {}).values()) if budget_doc else None
+    agg: dict[str, list] = collections.defaultdict(lambda: [0, 0, collections.Counter()])
+    tot = samp = 0
+    for addr, n, sm, st in rows:
+        fn, spin = attr.of(addr - base, components)
+        if spin:
+            fn = fn + " [spin]"
+        e = agg[fn]
+        e[0] += n
+        e[1] += sm
+        e[2].update(st)
+        tot += n
+        samp += sm
+    cell_budget = budget_doc.get("cells", {}).get(a.cell, {}) if budget_doc else {}
+    by_fn = {fn: cell_budget.get(comp) for comp, fn in budget_doc.get("components", {}).items()} if budget_doc else {}
+    red = False
+
+    print(f"instructions/unit {tot / a.per:.0f}  samples {samp}")
+    for fn, (n, sm, st) in sorted(agg.items(), key=lambda x: -x[1][0])[: a.top]:
+        top = " ".join(f"{k}:{100 * v / max(1, sm):.0f}%" for k, v in st.most_common(3))
+        b = by_fn.get(fn)
+        flag = ""
+        if b is not None and n / a.per > b:
+            flag = f"  RED > budget {b}"
+            red = True
+        print(f"  {fn:22s} {n / a.per:9.0f} ({100 * n / tot:4.1f}%)  samples {100 * sm / max(1, samp):5.1f}%  {top}{flag}")
+    return 1 if red else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -21,10 +21,10 @@ struct ArmCensus {
   int threads;
   int box_leaves;
   int atoms;
-  int acc_regs;
+  int boxes;
   int state_elems;
-  int state_regs_per_lane;
-  int members;
+  int read_bytes;
+  int pool_bytes;
 };
 
 #define ROLA_CARRY_ARM_DECLARE(I_, D_, DV_, W_)                                      \

@@ -19,7 +19,7 @@ is the oracle tier's row for the same cell -- and it prints a line naming the la
 checksum of its outputs, which is what makes a vacuous pass (a cell whose arm is not built, an
 empty selection) impossible to read as coverage.
 
-    python tools/sanitize_cell.py --cell one-box-short --readout sparse --fold sparse --grain 16
+    python tools/sanitize_cell.py --cell one-box-short --order first
 """
 from __future__ import annotations
 
@@ -35,8 +35,8 @@ if str(ROOT) not in sys.path:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cell", required=True)
-    ap.add_argument("--grain", type=int, default=0,
-                    help="the stream grain in LEAVES, both sides; 0 takes each side's default")
+    ap.add_argument("--order", default="first", choices=("first", "identity"),
+                    help="the order policy, the launch's one dial")
     ap.add_argument("--phase", default="both", choices=("both", "fold", "readout"),
                     help="which phase's schedule to instrument. racecheck's shadow state is "
                          "per shared access per barrier interval and this host's budget "
@@ -62,14 +62,13 @@ def main() -> int:
         words = call["liveness"].words.clone()
         words[:, 0 if args.phase == "fold" else 1] = 0
         call["liveness"] = carry_ops.LivenessWords(words=words)
-    grain = args.grain or None
-    schedule = carry_ops.CarrySchedule(readout_grain=grain, fold_grain=grain)
+    schedule = carry_ops.CarrySchedule(order=args.order)
     state = carry_ops.state_plane(call["descriptor"], 1)
     num, den = carry_ops.carry_forward(routes, v, state_in=None, state_out=state,
                                        schedule=schedule, **call)
     torch.cuda.synchronize()
     print(f"sanitize_cell: {spec.name} phase={args.phase} "
-          f"grain={grain or 'default'} LAUNCHED "
+          f"order={args.order} LAUNCHED "
           f"num={int(num.view(torch.int32).abs().sum()):d} "
           f"den={int(den.view(torch.int32).abs().sum()):d} "
           f"state={int(state.view(torch.int32).abs().sum()):d}")

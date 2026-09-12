@@ -196,12 +196,12 @@ def parse_binary_spec(spec: str) -> dict:
     """``worktree:/path,venv:/path[,label:NAME][,schedule:NAME]`` -> dict.
 
     ``schedule`` is the carry family's per-arm runtime dial (`rola.ops.carry.CarrySchedule`):
-    ``box`` (the default, and what a caller who names nothing gets: one stream a warp box),
-    ``sparse`` (both sides at the reaping bound) or ``sparse-gN`` (both sides at a stream
-    grain of N leaves). It is an ARM property, not a run property, so the two arms of a probe may be the
-    SAME binary differing in exactly the dial under test -- which is what the reap is measured
-    as. An arm whose binary predates the dial ignores it, because each worker runs its own
-    worktree's copy of this file.
+    the ORDER POLICY, ``first`` (the default, and what a caller who names nothing gets: the
+    first-live-box sort) or ``identity`` (token order, every token tiled). It is an ARM
+    property, not a run property, so the two arms of a probe may be the SAME binary differing
+    in exactly the dial under test -- which is what the reap is measured as. An arm whose
+    binary predates the dial ignores it, because each worker runs its own worktree's copy
+    of this file.
     """
     out = {}
     for part in spec.split(","):
@@ -211,7 +211,7 @@ def parse_binary_spec(spec: str) -> dict:
         raise argparse.ArgumentTypeError(
             f"--binary needs worktree:PATH,venv:PATH (got {spec!r})")
     out.setdefault("label", Path(out["worktree"]).name)
-    out.setdefault("schedule", "box")
+    out.setdefault("schedule", "first")
     #: A LANE is a binary and a bench; `bench:` on a lane overrides the run's `--bench`, so
     #: one interleaved, clock-locked run can hold several subjects (`tools/compare.py`).
     return out
@@ -259,7 +259,7 @@ def venv_python(venv_path: str) -> str:
 
 
 def worker_argv(binary: dict, bench: str, cells: list[str], reps: int, warmup: int,
-                state: str, oneshot: bool, schedule: str = "box") -> list[str]:
+                state: str, oneshot: bool, schedule: str = "first") -> list[str]:
     """The worker command, built against the MEASURED worktree's own copy of this file.
 
     Both halves come from the tree being measured -- the harness and the registry -- so a
@@ -273,7 +273,7 @@ def worker_argv(binary: dict, bench: str, cells: list[str], reps: int, warmup: i
     #: PASSED ONLY WHEN IT IS NOT THE DEFAULT: the worker script is the MEASURED tree's, and
     #: a tip that predates the dial would refuse an argument it has never heard of. `box`
     #: IS what such a tip runs, so saying nothing says the right thing.
-    if schedule != "box":
+    if schedule != "first":
         argv += ["--schedule", schedule]
     if oneshot:
         argv.append("--oneshot")
@@ -284,7 +284,7 @@ def run_worker(binary: dict, bench: str, cells: list[str], reps: int, warmup: in
                lock_path: str, state: str, oneshot: bool = False,
                timeout: int = 600) -> dict:
     cmd = worker_argv(binary, bench, cells, reps, warmup, state, oneshot,
-                      binary.get("schedule", "box"))
+                      binary.get("schedule", "first"))
     with gpu_lock(lock_path, mode="exclusive"):  # measured work
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
                               timeout=timeout)
@@ -330,7 +330,7 @@ def run_ncu_cell(binary: dict, bench: str, symbol: str, cell: str, lock_path: st
     cmd = [NCU_BIN, "--target-processes", "all", "-k", f"regex:{symbol}", "-c", "1",
            "--print-kernel-base", "mangled", "--metrics", ",".join(NCU_METRICS), "--csv",
            *worker_argv(binary, bench, [cell], 0, 0, state, True,
-                        binary.get("schedule", "box"))]
+                        binary.get("schedule", "first"))]
     out_csv = f"{out_csv_prefix}_{binary['label']}_{bench}_{cell}.csv"
     with gpu_lock(lock_path, mode="exclusive"):  # measured work
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
@@ -397,9 +397,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--lock", default=GPU_LOCK_DEFAULT)
     ap.add_argument("--ncu", action="store_true")
-    ap.add_argument("--schedule", default="box",
-                    help="the carry family's per-arm runtime dial: union | sparse | "
-                         "sparse-gN (N leaves). Worker-side; the orchestrator reads it off "
+    ap.add_argument("--schedule", default="first",
+                    help="the carry family's per-arm runtime dial, the order policy: "
+                         "first | identity. Worker-side; the orchestrator reads it off "
                          "each --binary spec.")
     ap.add_argument("--state", choices=STATE_SHAPES, default="fresh",
                     help="fresh binds an exit plane over a zero entry state; "
@@ -518,7 +518,7 @@ def main() -> None:
                      "venv": binary["venv"], "git_sha": binary["git_sha"], "tree_sha256": tree,
                      "cell": cell,
                      "bench": binary.get("bench", args.bench), "state_arm": args.state,
-                     "schedule": binary.get("schedule", "box"),
+                     "schedule": binary.get("schedule", "first"),
                      "reps": args.reps, "warmup": args.warmup, "n_rounds": args.rounds,
                      **{k: stamp.get(k) for k in
                         ("device_name", "device_uuid", "rola_file", "manifest_sha256",

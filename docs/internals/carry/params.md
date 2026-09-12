@@ -2,18 +2,15 @@
 
 Mirrors `csrc/rola/src/carry/params.cuh`.
 
-One `struct` by value: the addressing block the host derived, the operands, the two runtime
-dials the body reads today, and the two problem scalars. It reaches the kernel as a GRID
-CONSTANT, which is what lets every inlined stage read its fields through a reference without
-forcing a per-thread local copy — see [`carry.md#launch`](carry.md#launch).
+One `struct` by value: the addressing block the host derived (`CarryGeomRT`), each side's
+layout against the box (`SideLayout`, read then write), the operands, the problem scalars,
+the order dial and the phase ledger. It reaches the kernel as a GRID CONSTANT, so every
+inlined stage reads its fields as constant-bank operands — which is why the layouts live
+here rather than being derived in the kernel (32 registers a side otherwise).
 
-Each field's class in the primitive ledger is tabulated in
-[`carry_kernel.md#ledger`](carry_kernel.md#ledger). The rule that table enforces is that a
-class-4 or class-5 quantity — an architecture's constant, or a quotient of others — never
-appears here as a knob.
+`order` is the ORDER POLICY: `kOrderFirstBox`, the read side's counting sort by first live
+box with the dead last; `kOrderIdentity`, token order and every tile — the sort's A/B. The
+write side has no order: its fold compacts as it walks.
 
-The two grains, `readout_grain_bits` and `fold_grain_bits`, are the per-side dials: each
-selects the compiled body its phase runs. Where the switch on them sits, and why that
-placement is additive rather than multiplicative, is
-[`carry_kernel.md#forms`](carry_kernel.md#forms). The form dial that once stood beside
-them is gone with the union body (`DELETIONS.md`).
+`ledger` is the phase ledger's device row, `[cta][warp][kPhases]` int64, or null; the
+phases are `CarryPhase`. See [`carry_kernel.md#phase-ledger`](carry_kernel.md#phase-ledger).

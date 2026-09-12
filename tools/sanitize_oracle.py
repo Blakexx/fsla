@@ -108,58 +108,40 @@ _FAMILIES = {
         test="tests/oracle/test_entmax_cuda_gates.py::"
              "test_teeth_B_values_reject_beyond_tolerance[1.5]",
         kernel="rola::entmax::union_forward", present=True),
-    #: THE CARRY FORWARD's frame and fold, on the cell that pins every map they compose:
-    #: the state slice's two sweeps, the window loop's three edges, the segment ring's
-    #: asynchronous staging and one deposit's MMA, in one launch small enough to run under
-    #: the heaviest instrumentation this repository has.
-    #: THIS ROW'S RACECHECK IS THE ONE STANDING RED, and K4 narrowed it to a mechanism.
-    #: It is NOT the pytest wrapper: the bare driver is OOM-killed at 23.4 GB too. It is NOT
-    #: the cell: `single-deposit` (sixteen tokens, one box, one window) fails identically to
-    #: `one-box-multiwindow`. It is NOT the union fold: isolated (below) that runs CLEAN over
-    #: two windows. It is THE UNION READOUT'S FAN-IN PANEL, whose barrier interval holds
-    #: `warps_per_cta` slices of `kPanelTokens x kLdO` fp32 written by eight warps and then
-    #: read by all 256 threads with no edge between -- 34,816 bytes of shared accesses in ONE
-    #: interval, and racecheck's shadow state is per access per interval. The size does not
-    #: fall with the token count, because the panel is written whole every batch. The row
-    #: returns at an arm that narrows the interval -- DV = 32 or warps_per_cta = 4, both
-    #: DECLARED and unbuilt -- or on a bigger host; it is not fixed by choosing another cell.
+    #: THE CARRY FORWARD, on the cell that pins every map it composes: the state slice's
+    #: two sweeps, the window's four edges, the head's sort and one deposit's MMA, in one
+    #: launch. Racecheck takes the bare driver on the ONE-BOX cells -- `N = BC`, so the grid
+    #: is 1x1 and the coverage is COMPLETE BY CONSTRUCTION: racecheck sees only shared
+    #: memory, shared memory is CTA-local, and every CTA of this family runs identical code.
     "carry": Family(
         test="tests/oracle/test_carry_vs_oracle.py::"
              "test_one_token_writing_one_leaf_is_the_oracles_single_deposit",
-        kernel="rola::carry::carry_forward", present=True),
-    #: THE CARRY FOLD'S PRODUCTION SIDE, on the smallest cell that runs the segment ring
-    #: round more than once and the window loop more than once: the claimed fill, the two
-    #: stream edges, the shared value slot every warp drains and the factor ring the
-    #: cover slot starts. The single deposit above cannot reach any of them.
-    #: RACECHECK TAKES THE BARE DRIVER AND ISOLATES THIS BODY: `--phase fold` zeroes the read
-    #: plane and the readout runs in its SPARSE form, so it reaps everything and the union
-    #: readout's panel -- the row above's blocker -- is not in the interval. What remains
-    #: instrumented is exactly this row's subject, over two windows at a 1x1 grid where
-    #: racecheck's shared-memory-only coverage is complete by construction.
+        kernel="rola::carry::carry_forward", present=True,
+        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-tiny", "--order",
+                          "first")),
+    #: THE FOLD over more than one window, dense: every warp on every box and segment, the
+    #: segment locks contended, the entry and exit sweeps around it.
     "carry_fold": Family(
         test="tests/oracle/test_carry_vs_oracle.py::"
              "test_the_folded_state_is_the_fp64_reference[flat-small-multiwindow]",
         kernel="rola::carry::carry_forward", present=True,
         racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-multiwindow",
-                          "--phase", "fold", "--grain", "16")),
-    #: THE TWO SPARSE BODIES, on the ONE-BOX cell -- `N = BC`, so the grid is 1x1 and the
-    #: coverage is COMPLETE BY CONSTRUCTION: racecheck sees only shared memory, shared memory
-    #: is CTA-local, and every CTA of this family runs identical code. At G = 16 the cell runs
-    #: two turns of the catalog, several segments a turn and a partial tail, over two windows.
+                          "--order", "first")),
+    #: THE SORT WHERE THE REAP IS REAL: a k_tok = 4 draw over two windows, so the live prefix
+    #: is a fraction of the window and tiles skip boxes; and the identity order on the same
+    #: draw, so both policies' heads run under the tool.
     "carry_sparse": Family(
         test="tests/oracle/test_carry_vs_oracle.py::"
-             "test_the_sparse_form_is_the_fp64_reference[one-box-multiwindow-G16]",
+             "test_the_sparse_form_is_the_fp64_reference[one-box-alt-k4-first]",
         kernel="rola::carry::carry_forward", present=True,
-        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-tiny", "--phase", "fold",
-                          "--grain", "16")),
-    #: THE SPARSE FORM WHERE THE REAP IS REAL: the same box on a k_tok = 4 draw, so the
-    #: compaction actually drops pairs and the partial-segment tail runs on every turn.
+        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-alt-k4", "--order",
+                          "first")),
     "carry_sparse_reap": Family(
         test="tests/oracle/test_carry_vs_oracle.py::"
-             "test_the_sparse_form_is_the_fp64_reference[one-box-alt-k4-G16]",
+             "test_the_sparse_form_is_the_fp64_reference[one-box-short-identity]",
         kernel="rola::carry::carry_forward", present=True,
-        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-short", "--phase", "fold",
-                          "--grain", "16")),
+        racecheck_driver=("tools/sanitize_cell.py", "--cell", "one-box-short", "--order",
+                          "identity")),
     #: ABSENT: the carry reverse pass. Its cells are red at the extension boundary; the
     #: coverage is owed by the stage that builds the body.
     "carry_backward": Family(
@@ -291,7 +273,7 @@ def adjudicate(decl: AssertedRaces, out: str) -> tuple[bool, str]:
     m = _SUMMARY.search(out)
     if m and m.group(1) == "0":
         return True, ("DECLARED EXCEPTION IS NOW DEAD -- racecheck reported no hazards. "
-                      f"Remove ASSERTED[('decode', 'racecheck')]. {decl.exit_condition}")
+                      f"Remove its ASSERTED entry. {decl.exit_condition}")
     want_w, want_r = decl.lines(decl.writes), decl.lines(decl.reads)
     types = set(_HAZARD.findall(out))
     if types - decl.hazard_types:
@@ -314,10 +296,10 @@ def adjudicate(decl: AssertedRaces, out: str) -> tuple[bool, str]:
     if offenders:
         head = "\n".join(f"    {o}" for o in offenders[:10])
         return False, (f"{len(offenders)} racecheck record(s) fall OUTSIDE the declared "
-                       f"K47 combine idiom -- these are NOT covered by any proof:\n{head}")
+                       f"idiom -- these are NOT covered by any proof:\n{head}")
     if records == 0:
         return False, "racecheck failed but produced no parsable race records -- read the raw output"
-    return True, (f"{records} race record(s), every one the DECLARED K47 combine idiom "
+    return True, (f"{records} race record(s), every one the DECLARED idiom "
                   f"(writes at {sorted(want_w)} -> reads at {sorted(want_r)} in "
                   f"{decl.source}, {sorted(decl.hazard_types)} only).")
 

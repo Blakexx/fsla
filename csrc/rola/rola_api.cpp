@@ -70,6 +70,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("d_den"), py::arg("widths"), py::arg("dv"), py::arg("page_bits"),
         py::arg("warps_per_cta"), py::arg("carve_order"), py::arg("liveness"), py::arg("activity"),
         py::arg("state_in"), py::arg("d_state_out"), py::arg("page_table"));
+  m.def("carry_ledger_bind", &rola::carry::carry_ledger_bind,
+        "bind (or unbind with None) the carry phase ledger: a CUDA int64 [ctas][warps][phases] "
+        "tensor the next launches add per-warp phase cycles into");
   m.def("carry_build_stamp", &rola::carry::carry_build_stamp,
         "the carry family's device build stamp -- a fact the loaded binary alone can state");
   m.def("carry_census", &rola::carry::carry_census,
