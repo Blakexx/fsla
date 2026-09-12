@@ -1254,11 +1254,14 @@ __device__ __forceinline__ void readout_tile(const Smem<BP>& sm, ops::SmemAddr s
       const int rank = k * BP::kTile + rlo + srow + 8 * hsel;
       if (rank < live) {
         const int tok = (int)order[rank];
-        float* const row_out = num + (long)(t0 + tok) * BP::kDv;
+        //: the lane's own float of the row, so a line is a CONSTANT offset from it: the
+        //: reduction's address folds into the instruction instead of costing an index and a
+        //: 64-bit add a line. -- carry_kernel.md#readout
+        float* const lane_out = num + (long)(t0 + tok) * BP::kDv + lane;
         rola::static_for<BP::kDv / 32>([&](auto Lc) {
           constexpr int line = decltype(Lc)::value;
           const float v = ops::load_shared_f32(stage + drain_line_off<BP>(srow, line, lane));
-          ops::red_global_add_f32(row_out + line * 32 + lane, v);
+          ops::red_global_add_f32(lane_out + line * 32, v);
         });
       }
     });
