@@ -27,6 +27,17 @@ MMA-only variant then measured the phases' floor directly (readout 38.2K, fold 3
 a window at flagship-dense against 52.4K and 47.0K). The composer makes that measurement a
 mechanical, per-part ladder.
 
+Every rung records, beside the phases: every phase's per-warp row (imbalance per composition); the
+launch's resource counters a CTA-window (shared loads and stores, `ldmatrix` loads, global reductions
+and their translation requests, shared wavefronts and bank conflicts for loads and stores apart,
+issue-slot occupancy, warps active); the STALL CENSUS (every warp-stall sample of a launch by reason,
+and by component and reason, as cycles a warp a window: the sample share times the phase total); and
+the arm's peak live registers from its life ranges. The report's PART STEPS table gives, for each
+added part, its step in the total, in its top stall reasons, in the counters, and in peak live: how
+much of the part fails to overlap, why it stalls, what it spends, and what registers it takes.
+Measured on the kernel at flagship-dense, the census reads the 110K-cycle window as 36.8K pipe-throttled
+(the HMMA floor is 36.9K), 31.5K fixed-latency dependency, 16.3K shared scoreboard, 13.0K issuing.
+
 The report lands in `benchmarks/results/ledgers/<utc>-<sha7>-compose.{json,md}`. Builds run
 serially (the host's memory watchdog kills parallel ones). Every build is an iteration build and
 never ships.
