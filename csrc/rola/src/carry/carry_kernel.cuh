@@ -695,11 +695,12 @@ __device__ __forceinline__ void pool_fill(const CarryParams& p, const Smem<BP>& 
   rola::static_for<2>([&](auto Ic) {
     constexpr int i = decltype(Ic)::value;
     const int rr = r0 + warp + i * BP::kWarps;
-    //: a warp without this round skips it: an opaque one-trip loop, not an `if` ptxas
-    //: would if-convert into passes of zero-size copies (KERNEL_STANDARDS §20).
+    //: a warp without this round, or a round with no live token, skips it: an opaque
+    //: one-trip loop, not an `if` ptxas would if-convert into passes of zero-size copies
+    //: (KERNEL_STANDARDS §20). At N = L most rounds are dead for a CTA.
+    const uint32_t u = rr <= r1 ? sm.unionwords(parity)[rr] : 0u;
 #pragma unroll 1
-    for (int n = ops::once(rr <= r1); n > 0; --n) {
-      const uint32_t u = sm.unionwords(parity)[rr];
+    for (int n = ops::once(u != 0u); n > 0; --n) {
       const int base = (int)sm.prefix(parity)[rr];
       rola::static_for<2>([&](auto Hc) {
         constexpr int half = decltype(Hc)::value;

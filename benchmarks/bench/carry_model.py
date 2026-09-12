@@ -69,15 +69,17 @@ DV_NT = 8                 #: n-tiles of a box at DV = 64
 POOL_TOK = 64             #: tokens a pool slot at DV = 64 (box.cuh: kPoolTok)
 
 
-def _chunk_rounds(write: np.ndarray, wlen: int) -> list[int]:
-    """Per pool chunk, the rounds it spans (the fill walks them; the fold too)."""
+def _chunk_rounds(write: np.ndarray, wlen: int) -> list[tuple[int, int]]:
+    """Per pool chunk: the rounds it SPANS (the fold's walk visits them all) and the rounds
+    that are LIVE (a union token in them: the fill copies only those; a dead round is the
+    skip's ~30 instructions). At N = L most spanned rounds are dead for a CTA."""
     union = write.any(1)
     ranks = np.cumsum(union) - 1
     total = int(union.sum())
     out = []
     for c in range(math.ceil(total / POOL_TOK) if total else 0):
         rounds = np.nonzero((ranks // POOL_TOK == c) & union)[0] // 32
-        out.append(int(rounds.max() - rounds.min() + 1))
+        out.append((int(rounds.max() - rounds.min() + 1), int(len(np.unique(rounds)))))
     return out
 
 
@@ -104,14 +106,14 @@ def budget(lv: Liveness, wlen: int = 512, dv: int = 64, D: int = 2) -> dict:
     #: and ptxas's scoreboard padding (~14 each); a round's setup (~10). A warp without a
     #: round: the ballots for the chunk's rounds and the skip (~25); the arrive (~8).
     rounds_per_chunk = _chunk_rounds(lv.write, wlen)
-    fill = sum(2 * 110 * r + WARPS * 33 for r in rounds_per_chunk)
+    fill = sum(2 * 110 * live + WARPS * 33 for _span, live in rounds_per_chunk)
 
     # --- the fold: the walk a round, the fragments --------------------------------------
     #: a round of the walk: the words, the rank, the keep, the ring store with its gain, the
     #: prefix bookkeeping (~20). A fragment: the ring read and the loop (~10), two entry
     #: shuffles, six ldmatrix with their addresses (~20), the gain pairs (6), then a box:
     #: two shuffles, four packed multiplies, nt + 1 HMMAs, the loop (~3); ~102 + 18.
-    fold = WARPS * sum(rounds_per_chunk) * 20 + frags * (36 + dealt * (9 + nt + 1))
+    fold = WARPS * sum(span for span, _live in rounds_per_chunk) * 20 + frags * (36 + dealt * (9 + nt + 1))
 
     # --- the readout: a warp its tiles, a pair a live box --------------------------------
     #: a tile: the ring issue and wait (~8), A by ldmatrix (1), y zero (4 nt), the mask loop

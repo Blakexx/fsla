@@ -156,7 +156,8 @@ issued at the window's edge, under the head. The pool sits beside the readout's 
 over them: both streams run at once (`smem_ledger.md#pool`).
 
 `pool_fill`: the chunk's rounds by two ballots over the prefix, dealt to warps (`r0 + w`,
-`r0 + w + warps`; a warp without a round skips it behind `ops::once`); a round is two passes
+`r0 + w + warps`; a warp without a round, or whose round has no live token -- its union word
+is zero, which at N = L is most rounds a CTA sees -- skips it behind `ops::once`); a round is two passes
 of sixteen tokens, lanes `j` and `j + 16` a token copying alternate 16-byte halves so each
 instruction's pair covers whole sectors; a lane's token is live by the union word's bit,
 its rank by popcount, in the chunk by range; an idle lane's zero-size copies go to the zero
