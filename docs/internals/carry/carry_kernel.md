@@ -13,15 +13,25 @@ The state for those leaves is fp32 in registers: a warp OWNS two of the box's si
 sixteen-leaf boxes (`w` and `w + 8`) and every channel of them. The call walks the sequence
 in WINDOWS of 512 tokens; per window, in order:
 
-1. the SNAPSHOT: the state's high halves written to shared memory once, the readout's operand;
-2. the READOUT over the read side's sorted tiles, each warp its own tiles;
+1. the EDGE: the SNAPSHOT (the state's high halves written to shared memory once, the
+   readout's operand), the tile counter reset, one CTA barrier; the fold's first chunks
+   issued into their pool slots;
+2. the READOUT over the read side's sorted tiles, dealt to warps by a shared counter;
 3. the HEAD of the next window: the read side's sort, the write side's words;
-4. the FOLD over the write side's union pool, each warp its own boxes.
+4. the FOLD over the write side's union pool, each warp its own boxes, on landed chunks;
+   then the barrier the next snapshot needs.
+
+The two MMA phases are separate stages by ruling (P81, 2026-09-11): on sm_100 the TMEM that
+holds the state during the fold cannot also hold the readout's staging, so the high halves
+transit shared memory between the phases on every architecture. An interleaved form (a fold
+step and a readout step alternating in every warp, dynamic tile dealing) was built and
+measured a wash: the waits it hid were ~1K cycles of a sparse window once the sweep was
+staged, and its step re-entry cost dense 5%.
 
 The readout reads the snapshot and its own staged tiles; the fold reads the pool and writes
 registers. Nothing in them touches until the window end: snapshot before either, fold
 complete before the next snapshot, one CTA barrier at each. The head's sort has three sync
-points of its own. Those five barriers are the window's.
+points of its own. Those five barriers are the window's. -- #window-loop
 
 <a id="carve"></a>
 ## The carve, and why it is two different carves
@@ -133,16 +143,17 @@ row in read order. 32 KB once a window, skipped when the read side has no live t
 <a id="pool"></a>
 ## The pool
 
-The write side's union-live tokens, by rank, in chunks of `kPoolTok` (80 at DV = 64) across
-`kPoolSlots` (3) slots, each slot a token's V row, inner run, outer run and GAIN PAIR (the
+The write side's union-live tokens, by rank, in chunks of `kPoolTok` (64 at DV = 64) across
+`kPoolSlots` (2) slots, each slot a token's V row, inner run, outer run and GAIN PAIR (the
 aligned word of the gain row holding it; the walker takes the half its token's parity
 names), and a ZERO ROW (row `kPoolTok`) the tail of a list pads from. Slots are under
 `mbarrier` pairs: `full` completes at `kThreads` landed-copy arrivals
 (`cp.async.mbarrier.arrive.noinc`), `empty` at `kWarps` arrivals, a warp's after its LAST
 GATHER from the slot, not after its MMAs — a row is free once loaded into registers.
-`PoolCursor` carries a use count a slot for the parities, and a window's chunks take slots
-from 0 in turn so chunk 0 lands in slot 0, the slot free under the readout
-(`kPrefetchFirst`).
+`PoolCursor` carries a use count a slot for the parities (and `full_now` / `empty_now`, the
+same asked once as a vote), and a window's chunks take slots from 0 in turn; chunk 0 is
+issued at the window's edge, under the head. The pool sits beside the readout's blocks, not
+over them: both streams run at once (`smem_ledger.md#pool`).
 
 `pool_fill`: the chunk's rounds by two ballots over the prefix, dealt to warps (`r0 + w`,
 `r0 + w + warps`; a warp without a round skips it behind `ops::once`); a round is two passes
@@ -155,12 +166,16 @@ warp's rows). One copy group; the arrive when it lands.
 <a id="fold"></a>
 ## The fold
 
-`fold`, per chunk: the chunk's rounds by the same two ballots; per round each lane's token
-is KEPT when the warp's word has it and its rank is in the chunk; kept lanes queue their
-pool row with the token's gain (`walk`, a 64-entry ring a warp) at the slot their prefix
-popcount names; every sixteen queued, `fold_fragment`. The chunk two ahead is filled before
-the walk (chunk 1 before the first chunk); the tail pads from the zero row; the slot is
-released after the last gather.
+`FoldStream`, a step function with a cursor. A step: if the warp still owes a fill (the
+chunk after the one it last took), issue it when its slot is empty; take the chunk's slot
+once full (else return false: the caller does other work) and the chunk's rounds by the two
+ballots; walk rounds until sixteen kept rows queue -- per round each lane's token is KEPT
+when the warp's word has it and its rank is in the chunk; kept lanes queue their pool row
+with the token's gain (`walk`, a 64-entry ring a warp) at the slot their prefix popcount
+names -- then `fold_fragment`; or, the rounds out, the tail padded from the zero row, the
+slot released after the last gather, the next chunk. Done when its chunks are folded AND its
+fills are issued (a warp that left with a fill owed would hold the others). `fold` runs a
+stream alone to completion: the part harness's form.
 
 `fold_fragment`: the sixteen entries shuffled to the `ldmatrix` lane maps (`run_lane_row`,
 `v_lane_row`); A = the inner runs transposed (`ldmatrix.trans`: lane (r, q) holds positions
@@ -175,10 +190,19 @@ its mass. About 102 instructions and 18 HMMAs a fragment at DV = 64.
 <a id="readout"></a>
 ## The readout
 
-`readout`: tile `k` to warp `k % warps`; `readout_issue` stages the tile's inner and outer
-runs into the warp's private ring a tile ahead (`rring`; lanes `l`, `l + 16` a row; a rank
-past the live count zero-filled), one copy group a tile, `cp.async.wait_group 1` and a warp
-edge before the take. No CTA barrier in the phase.
+`ReadoutStream`, a step function with a cursor. Tiles are DEALT: lane 0 takes the next
+tile off the window's shared counter (`atom.shared.add`) into the warp's take word and every
+lane reads it back -- a shared load is warp-uniform to the compiler where a shuffle's or a
+reduction's result is not, and a value it cannot prove uniform puts every collective after
+it on the convergence-checking path (51 calls, 19 divergence branches in the first form).
+`readout_issue` stages a tile's inner and outer runs into the warp's private ring a tile
+ahead (`rring`; lanes `l`, `l + 16` a row; a rank past the live count zero-filled); the
+slot's RING BARRIER (`ring_bar`, 32 landed-copy arrivals) says when it landed, so neither
+stream's copies wait on the other's commit groups. A step: the landed tile (`readout_tile`),
+then the next taken tile issued into the slot it freed; a tile not landed returns false. A
+warp with light fold work takes more tiles: the answer to the state carve's imbalance that
+costs no reap. No CTA barrier in the phase. `readout` runs a stream alone: the sequential
+form.
 
 `readout_tile`: A = the inner tile by `ldmatrix` once; per live box (the tile mask's set
 bits): the rows' outer factors off the outer tile, A scaled per row (four packed
@@ -195,8 +219,21 @@ reduction in every form.
 
 `Edge::kCounts` and `Edge::kOrder` are the head's named barriers; `ops::rendezvous` the
 window's two; `warp_edge` (barrier `kWarpEdge + warp`) orders a warp's private rows across
-its lanes and publishes its landed copies. The pool's slots are `mbarrier` pairs, never a
-CTA barrier.
+its lanes and publishes its landed copies. The pool's slots and the readout's ring slots are
+`mbarrier`s, never a CTA barrier.
+
+<a id="window-loop"></a>
+## The window loop
+
+`window_loop`: the edge -- the snapshot (when the read side has a live token), the tile
+counter to zero, the previous window's word copies landed (`cp.async.wait_group 0`), one
+barrier -- then the `FoldStream` constructed (the first `kPoolSlots` chunks issued into
+their slots, free since the last fold's releases), the readout run to completion
+(`readout`: a `ReadoutStream` stepped, waiting on its ring when a tile has not landed), the
+next window's head, the fold run to completion (`fs.step()`, `fs.wait()` when a slot is not
+ready), one barrier. The fold starts on landed chunks because they were in flight under the
+readout and the head; the fill for chunk `kPoolSlots` and after is issued as the fold walks,
+when the slot it goes into is released.
 
 <a id="phase-ledger"></a>
 ## The phase ledger

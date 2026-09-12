@@ -66,7 +66,7 @@ def _fold_kept(write: np.ndarray, wlen: int, warps: int = WARPS) -> tuple[int, i
 
 
 DV_NT = 8                 #: n-tiles of a box at DV = 64
-POOL_TOK = 80             #: tokens a pool slot at DV = 64 (box.cuh: kPoolTok)
+POOL_TOK = 64             #: tokens a pool slot at DV = 64 (box.cuh: kPoolTok)
 
 
 def _chunk_rounds(write: np.ndarray, wlen: int) -> list[int]:
@@ -162,7 +162,7 @@ def cell_liveness(spec, side: str, window: int = 1) -> np.ndarray:
 
 BUDGET_CELLS = ("flagship-dense", "flagship-alt-k4", "flagship-alt-k16", "flagship-cohort-k4",
                 "flagship-both-k4")
-COMPONENTS = {"head": "head", "fill": "pool_fill", "fold": "fold", "readout": "readout",
+COMPONENTS = {"head": "head", "fill": "pool_fill", "fold": "FoldStream", "readout": "ReadoutStream",
               "snapshot": "snapshot_publish"}
 
 

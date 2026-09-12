@@ -726,9 +726,19 @@ An `mbarrier` (sm_80+) completes a phase at `count` arrivals and flips its parit
 `cp.async` copies arrive when they LAND (`cp.async.mbarrier.arrive.noinc`: the arrival is one
 of the counted ones, so the count includes it); a thread's own arrive releases its prior
 shared stores; a wait acquires. `mbar_wait` is a `test_wait` spin: cheap when the phase is
-already complete, which is the case the design arranges for. The carry's pool uses a
-full/empty pair a slot (`carry_kernel.md#pool`) so that warps drift freely by a chunk, where
-a CTA barrier would hold every warp to the slowest.
+already complete, which is the case the design arranges for. `mbar_test` asks once and
+returns the answer, for a stream that does other work when its copies have not landed (the
+carry's interleaved loop; the answer is voted over the warp before it steers a branch, so
+the compiler sees a uniform predicate). The carry's pool uses a full/empty pair a slot
+(`carry_kernel.md#pool`) so that warps drift freely by a chunk, where a CTA barrier would
+hold every warp to the slowest.
+
+<a id="atom-shared-add"></a>
+## `atom_shared_add_u32` — a shared counter's take
+
+`atom.shared.add.u32`, the old value returned: the carry's readout deals tiles off a shared
+counter with it. Stated shared, so ptxas emits no address-space probe (the generic atomic's
+lowering is `red-global`'s story).
 
 <a id="once"></a>
 ## `once` — an opaque one-trip loop bound

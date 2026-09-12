@@ -58,7 +58,7 @@ struct BoxPlan {
   //: THE POOL: union-live tokens by rank, a token's V row, runs and gain pair; `kPoolSlots`
   //: slots under full/empty barriers; a ZERO ROW a slot. -- smem_ledger.md#pool
   static constexpr int kRunBytes = 32;
-  static constexpr int kPoolSlots = 3;
+  static constexpr int kPoolSlots = 2;
   static constexpr int kPoolRowBytes = kVRowBytes + 2 * kRunBytes + 4;
   //: the slot count: the largest multiple of 16 tokens the ledger's remainder holds.
   static constexpr int kPoolTokMax = 128;
@@ -109,11 +109,19 @@ struct BoxPlan {
   static constexpr int kSlotOffset = kRowMapOffset + kRowMapBytes;
   static constexpr int kLedgerOffset = kSlotOffset + round_up16(kAtoms * 4);
   static constexpr int kCounterOffset = kLedgerOffset + kLedgerBytes;
-  static constexpr int kPoolBarOffset = kCounterOffset + 16;
-  static constexpr int kWalkOffset = round_up16(kPoolBarOffset + 2 * kPoolSlots * 8);
+  //: a warp's TAKE WORD: the tile its lane 0 took, read back by every lane (a shared
+  //: load is warp-uniform to the compiler where a shuffle's result is not).
+  static constexpr int kTakeOffset = kCounterOffset + 16;
+  static constexpr int kPoolBarOffset = round_up16(kTakeOffset + kWarps * 4);
+  static constexpr int kRingBarOffset = kPoolBarOffset + 2 * kPoolSlots * 8;
+  static constexpr int kWalkOffset = round_up16(kRingBarOffset + kWarps * kRRSlots * 8);
   static constexpr int kRegionOffset = round_up128(kWalkOffset + kWalkBytes);
-  //: the region: the pool's slots, and the readout's blocks over them.
-  static constexpr int kRemainder = (int)denseref::arch::kCaps.smem_per_cta_max - kRegionOffset;
+  //: the region: the readout's blocks (a warp's ring slots and drain stage), then the
+  //: pool's slots -- both streams run at once, so neither aliases the other.
+  static constexpr int kReadOffset = kRegionOffset;
+  static constexpr int kReadBytes = kWarps * kWarpReadBytes;
+  static constexpr int kPoolOffset = kReadOffset + kReadBytes;
+  static constexpr int kRemainder = (int)denseref::arch::kCaps.smem_per_cta_max - kPoolOffset;
   //: a slot holds `kPoolTok` tokens and the ZERO ROW as row `kPoolTok`.
   static constexpr int kPoolTokFit = (kRemainder / kPoolRowBytes / kPoolSlots - 1) / 16 * 16;
   static constexpr int kPoolTok = kPoolTokFit < kPoolTokMax ? kPoolTokFit : kPoolTokMax;
@@ -123,14 +131,10 @@ struct BoxPlan {
   static constexpr int kPoolInnerOffset = kPoolRows * kVRowBytes;
   static constexpr int kPoolOuterOffset = kPoolInnerOffset + kPoolRows * kRunBytes;
   static constexpr int kPoolGainOffset = kPoolOuterOffset + kPoolRows * kRunBytes;
-  static constexpr int kRegionBytes = kPoolSlots * kPoolSlotBytes;
+  static constexpr int kPoolBytes = kPoolSlots * kPoolSlotBytes;
+  static constexpr int kRegionBytes = kReadBytes + kPoolBytes;
   //: the fill's share of a chunk, a warp.
   static constexpr int kFillPerWarp = kPoolTok / kWarps;
-  //: the readout's blocks sit past slot 0 when they fit (the first chunk then lands under
-  //: the readout), else over the whole region.
-  static constexpr bool kPrefetchFirst =
-      kWarps * kWarpReadBytes <= (kPoolSlots - 1) * kPoolSlotBytes;
-  static constexpr int kReadOffset = kRegionOffset + (kPrefetchFirst ? kPoolSlotBytes : 0);
   static constexpr int kSmemBytes = kRegionOffset + kRegionBytes;
 
   using Page = rola::state_page::Blocks<DV_>;
@@ -151,8 +155,7 @@ struct BoxPlan {
   static_assert(kRRSlots >= 2, "the readout's ring issues a tile ahead");
   static_assert(kRegionBytes >= kSnapshotBytes,
                 "the sweeps stage the low halves across the pool region");
-  static_assert(kWarps * kWarpReadBytes <= kRegionBytes,
-                "the readout's private blocks alias the pool's region");
+  static_assert(kPoolTok >= 16, "a pool slot holds at least one fragment of tokens");
   static_assert(denseref::design::smem_fits((size_t)kSmemBytes),
                 "the carry box's shared-memory ledger exceeds this architecture's per-CTA "
                 "maximum");

@@ -33,14 +33,34 @@ DEF = [re.compile(r"^__device__ __forceinline__ \S+ (\w+)\("), re.compile(r"^__g
 
 
 def function_map(src_lines: list[str]) -> list[tuple[int, str]]:
+    """(line, name) per definition; a struct's methods as `Struct::method`, so a stream's
+    steps attribute to the stream."""
     out = []
+    struct = None
     for i, l in enumerate(src_lines):
-        for rx in DEF:
+        for k, rx in enumerate(DEF):
             m = rx.match(l)
             if m:
-                out.append((i + 1, m.group(1)))
+                name = m.group(1)
+                if k == 2:
+                    struct = name
+                elif k == 3 and struct:
+                    name = f"{struct}::{name}"
+                else:
+                    struct = None
+                out.append((i + 1, name))
                 break
     return out
+
+
+def component_of(fn: str, components: set[str] | None) -> str | None:
+    """The component a function name belongs to: itself, or its struct."""
+    if components is None:
+        return fn
+    if fn in components:
+        return fn
+    head = fn.split("::")[0]
+    return head if head in components else None
 
 
 def fn_of(fmap: list[tuple[int, str]], ln: int) -> str:
@@ -95,9 +115,9 @@ class Attribution:
         comp = "?"
         for f, ln in chain:
             if f == self.source:
-                fn = fn_of(self.fmap, ln)
-                if components is None or fn in components:
-                    comp = fn
+                c = component_of(fn_of(self.fmap, ln), components)
+                if c is not None:
+                    comp = c
         if comp == "?":
             for f, ln in chain:
                 if f == self.source:

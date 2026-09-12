@@ -144,6 +144,28 @@ __device__ __forceinline__ void mbar_wait(SmemAddr a, uint32_t parity) {
       : "memory");
 }
 
+//: the same, asked once: has the phase of parity `parity` completed? The interleaved
+//: loop's streams test their barriers and do the other stream's work when not.
+__device__ __forceinline__ bool mbar_test(SmemAddr a, uint32_t parity) {
+  uint32_t ok;
+  asm volatile(
+      "{\n.reg .pred p;\n"
+      "mbarrier.test_wait.parity.shared.b64 p, [%1], %2;\n"
+      "selp.u32 %0, 1, 0, p;\n}\n"
+      : "=r"(ok)
+      : "r"(a), "r"(parity)
+      : "memory");
+  return ok != 0u;
+}
+
+//: A SHARED COUNTER'S TAKE: the old value, the counter advanced by `v`; explicitly shared
+//: so ptxas emits no address-space probe. -- see docs/internals/common/ops.md#atom-shared-add
+__device__ __forceinline__ uint32_t atom_shared_add_u32(SmemAddr a, uint32_t v) {
+  uint32_t old;
+  asm volatile("atom.shared.add.u32 %0, [%1], %2;" : "=r"(old) : "r"(a), "r"(v) : "memory");
+  return old;
+}
+
 //: THE n-TH SET BIT of a word (n from 0), branch free: a binary search on popcounts.
 //: Undefined past the last set bit. -- see docs/internals/common/ops.md#nth-set-bit
 __device__ __forceinline__ int nth_set_bit(uint32_t w, int n) {

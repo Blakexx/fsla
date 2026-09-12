@@ -247,13 +247,8 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void fold_part_
            decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane, live);
     });
     ops::rendezvous();
-    const int chunks = (live[rola::facts::kWrite] + BP::kPoolTok - 1) / BP::kPoolTok;
 #pragma unroll 1
     for (int r = 0; r < reps; ++r) {
-      if (chunks > 0) {
-        cur.wait_empty(sm, 0);
-        pool_fill<BP, D, BC>(p, sm, wbases, win & 1, 0, 0, rowbase, warp, lane);
-      }
       fold<BP, D, BC, false, false>(p, sm, lay[rola::facts::kWrite], wbases, win & 1,
                                     live[rola::facts::kWrite], rowbase, warp, lane, st, cur, pc);
     }

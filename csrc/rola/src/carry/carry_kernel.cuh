@@ -122,13 +122,22 @@ struct Smem {
     return reinterpret_cast<int32_t*>(base + BP::kCounterOffset);
   }
 
+  __device__ __forceinline__ ops::SmemAddr counter_addr() const { return at(BP::kCounterOffset); }
+
+  __device__ __forceinline__ ops::SmemAddr take_word(int warp) const {
+    return at(BP::kTakeOffset + warp * 4);
+  }
+
   __device__ __forceinline__ uint32_t* walk(int warp) const {
     return reinterpret_cast<uint32_t*>(base + BP::kWalkOffset) + warp * BP::kWalkEntries;
   }
 
+  //: THE REGION: the readout's blocks then the pool; whole, the sweeps' low-half stage.
+  __device__ __forceinline__ ops::SmemAddr region() const { return at(BP::kRegionOffset); }
+
   //: THE POOL's slot `s`: its V rows, inner and outer run tiles, and its barriers.
   __device__ __forceinline__ ops::SmemAddr pool(int s) const {
-    return at(BP::kRegionOffset + s * BP::kPoolSlotBytes);
+    return at(BP::kPoolOffset + s * BP::kPoolSlotBytes);
   }
 
   __device__ __forceinline__ ops::SmemAddr full_bar(int s) const {
@@ -137,6 +146,11 @@ struct Smem {
 
   __device__ __forceinline__ ops::SmemAddr empty_bar(int s) const {
     return at(BP::kPoolBarOffset + (BP::kPoolSlots + s) * 8);
+  }
+
+  //: THE RING BARRIER of warp `w`'s ring slot `r`: full at the lanes' landed copies.
+  __device__ __forceinline__ ops::SmemAddr ring_bar(int warp, int r) const {
+    return at(BP::kRingBarOffset + (warp * BP::kRRSlots + r) * 8);
   }
 
   //: THE READOUT's private block of warp `w`: ring slot `r`, and the drain stage.
@@ -533,7 +547,7 @@ __device__ __forceinline__ void state_copy(const Smem<BP>& sm, const SideLayout&
     const int slot = slots[atom];
     const bool with_lo = ((act_write >> atom) & 1u) != 0u;
     const ops::SmemAddr at =
-        (plane ? sm.pool(0) : sm.snapshot()) + chan_row_off<BP>((int)rowmap[v], chunk);
+        (plane ? sm.region() : sm.snapshot()) + chan_row_off<BP>((int)rowmap[v], chunk);
     const uint32_t off = (uint32_t)(slot < 0 ? 0 : slot) * BP::Page::kBytes
                          + (plane ? BP::Page::kLo : 0u)
                          + (uint32_t)((row * BP::kDv + chunk * 8) * 2);
@@ -586,7 +600,7 @@ template <class BP, int D, int BC>
 __device__ __forceinline__ void state_gather(const Smem<BP>& sm, State<BP>& st, int warp,
                                              int lane) {
   const int r = lane >> 2, q = lane & 3;
-  const ops::SmemAddr hi_stage = sm.snapshot(), lo_stage = sm.pool(0);
+  const ops::SmemAddr hi_stage = sm.snapshot(), lo_stage = sm.region();
   const uint16_t* const rowmap = sm.rowmap();
   rola::static_for<BP::kDealt>([&](auto Bi) {
     constexpr int bi = decltype(Bi)::value;
@@ -617,7 +631,7 @@ template <class BP, int D, int BC, bool WithLo>
 __device__ __forceinline__ void snapshot_publish(const Smem<BP>& sm, const State<BP>& st, int warp,
                                                  int lane) {
   const int r = lane >> 2, q = lane & 3;
-  const ops::SmemAddr snap = sm.snapshot(), lo_stage = sm.pool(0);
+  const ops::SmemAddr snap = sm.snapshot(), lo_stage = sm.region();
   const uint16_t* const rowmap = sm.rowmap();
   rola::static_for<BP::kDealt>([&](auto Bi) {
     constexpr int bi = decltype(Bi)::value;
@@ -716,25 +730,64 @@ __device__ __forceinline__ void pool_fill(const CarryParams& p, const Smem<BP>& 
 }
 
 //: THE POOL CURSOR: a window's chunks take slots from 0 in turn, so chunk 0 always lands
-//: in slot 0, the one free under the readout; each slot's use count (a byte a slot) gives
-//: its barriers' parities: the n-th fill of a slot waits `empty` at parity `(n - 1) & 1`
-//: (no wait for n = 0) and is taken at `full` parity `n & 1`.
+//: in slot 0; a slot's FILL count and TAKE count (a byte each a slot) give its barriers'
+//: parities: the n-th fill of a slot waits `empty` at parity `(n - 1) & 1` (no wait for
+//: n = 0), the n-th take waits `full` at parity `n & 1`. Two counts, because the fill
+//: stream runs ahead of the fold's takes: with one count a fill into a slot still being
+//: read saw zero uses and skipped its wait (the first interleaved form hung at dense).
 template <class BP>
 struct PoolCursor {
-  uint32_t uses;
+  uint32_t uses;  //: fills in the low half, takes in the high half
 
-  __device__ __forceinline__ int n_of(int s) const { return (int)((uses >> (8 * s)) & 0xFFu); }
+  __device__ __forceinline__ int fills_of(int s) const { return (int)((uses >> (8 * s)) & 0xFFu); }
+
+  __device__ __forceinline__ int takes_of(int s) const {
+    return (int)((uses >> (16 + 8 * s)) & 0xFFu);
+  }
 
   __device__ __forceinline__ void wait_empty(const Smem<BP>& sm, int s) const {
-    const int n = n_of(s);
+    const int n = fills_of(s);
     if (n > 0) ops::mbar_wait(sm.empty_bar(s), (uint32_t)(n - 1) & 1u);
   }
 
   __device__ __forceinline__ void wait_full(const Smem<BP>& sm, int s) const {
-    ops::mbar_wait(sm.full_bar(s), (uint32_t)n_of(s) & 1u);
+    ops::mbar_wait(sm.full_bar(s), (uint32_t)takes_of(s) & 1u);
   }
 
-  __device__ __forceinline__ void used(int s) { uses += 1u << (8 * s); }
+  //: the same asked once; a vote, so the answer is warp-uniform to the compiler too.
+  __device__ __forceinline__ bool empty_now(const Smem<BP>& sm, int s) const {
+    const int n = fills_of(s);
+    const bool ok = n == 0 || ops::mbar_test(sm.empty_bar(s), (uint32_t)(n - 1) & 1u);
+    return __all_sync(0xFFFFFFFFu, ok);
+  }
+
+  __device__ __forceinline__ bool full_now(const Smem<BP>& sm, int s) const {
+    const bool ok = ops::mbar_test(sm.full_bar(s), (uint32_t)takes_of(s) & 1u);
+    return __all_sync(0xFFFFFFFFu, ok);
+  }
+
+  __device__ __forceinline__ void filled(int s) { uses += 1u << (8 * s); }
+
+  __device__ __forceinline__ void used(int s) { uses += 1u << (16 + 8 * s); }
+};
+
+//: THE RING CURSOR: a warp's ring slots' use counts, for their barriers' parities.
+template <class BP>
+struct RingCursor {
+  uint32_t uses;
+
+  __device__ __forceinline__ int n_of(int r) const { return (int)((uses >> (8 * r)) & 0xFFu); }
+
+  __device__ __forceinline__ bool full_now(const Smem<BP>& sm, int warp, int r) const {
+    const bool ok = ops::mbar_test(sm.ring_bar(warp, r), (uint32_t)n_of(r) & 1u);
+    return __all_sync(0xFFFFFFFFu, ok);
+  }
+
+  __device__ __forceinline__ void wait_full(const Smem<BP>& sm, int warp, int r) const {
+    ops::mbar_wait(sm.ring_bar(warp, r), (uint32_t)n_of(r) & 1u);
+  }
+
+  __device__ __forceinline__ void used(int r) { uses += 1u << (8 * r); }
 };
 
 // ----------------------------------------------------------------------- the fold
@@ -887,45 +940,115 @@ __device__ __forceinline__ void fold_fragment(ops::SmemAddr slot, uint32_t entry
   });
 }
 
-//: THE FOLD (component `fold`): the write side over the pool. Per chunk the warp walks the
-//: chunk's rounds, kept lanes queue their rows through the walk ring, every sixteen a
-//: fragment; the tail pads from the zero row; the chunk two ahead is filled before the
-//: walk; the slot is released after the last gather. BUDGET: carry_kernel.md#budgets. -- #fold
-template <class BP, int D, int BC, bool Composed, bool Straddle>
-__device__ __forceinline__ void fold(const CarryParams& p, const Smem<BP>& sm,
-                                     const SideLayout& lay, int2 bases, int parity, int live,
-                                     uint32_t rowbase, int warp, int lane, State<BP>& st,
-                                     PoolCursor<BP>& cur, PhaseClock& pc) {
-  static_assert(!Composed && !Straddle, "the fold is spelled for the plain layout");
-  (void)lay;
-  const int chunks = (live + BP::kPoolTok - 1) / BP::kPoolTok;
-  //: chunk 0 landed under the readout; chunk 1 is issued here, chunk `c + 2` under chunk `c`.
-  if (chunks > 1) {
-    cur.wait_empty(sm, 1);
-    pool_fill<BP, D, BC>(p, sm, bases, parity, 1, 1, rowbase, warp, lane);
-  }
-  uint32_t* const ring = sm.walk(warp);
-  const uint32_t* const ww = sm.warpwords(parity, warp);
-  const uint32_t* const uw = sm.unionwords(parity);
-  const uint16_t* const prefix = sm.prefix(parity);
-  const uint32_t lt = (1u << lane) - 1u;
-#pragma unroll 1
-  for (int c = 0; c < chunks; ++c) {
-    const int s = c % BP::kPoolSlots;
-    if (c + 2 < chunks) {
-      const int s2 = (c + 2) % BP::kPoolSlots;
-      cur.wait_empty(sm, s2);
-      pool_fill<BP, D, BC>(p, sm, bases, parity, c + 2, s2, rowbase, warp, lane);
+//: THE FOLD STREAM (component `fold`): the write side over the pool as a step function. A
+//: step is one fragment (the walk until sixteen kept rows queue, then `fold_fragment`), or
+//: the chunk's tail and the slot's release, or the next chunk taken once full; the fill of
+//: the chunk after is issued once its slot is empty. A step that would wait returns false;
+//: done when the chunks are folded AND the fills issued. BUDGET: #budgets. -- #fold
+template <class BP, int D, int BC>
+struct FoldStream {
+  const CarryParams& p;
+  const Smem<BP>& sm;
+  State<BP>& st;
+  PoolCursor<BP>& cur;
+  int2 bases;
+  int parity, warp, lane;
+  uint32_t rowbase;
+  int chunks, c, s;
+  int rr, r1, queued, taken;
+  int fill_c;  //: the chunk whose fill this warp still owes, or -1
+  bool taken_slot, done;
+
+  __device__ __forceinline__ FoldStream(const CarryParams& p_, const Smem<BP>& sm_, int2 bases_,
+                                        int parity_, int live, uint32_t rowbase_, int warp_,
+                                        int lane_, State<BP>& st_, PoolCursor<BP>& cur_)
+      : p(p_),
+        sm(sm_),
+        st(st_),
+        cur(cur_),
+        bases(bases_),
+        parity(parity_),
+        warp(warp_),
+        lane(lane_),
+        rowbase(rowbase_),
+        chunks((live + BP::kPoolTok - 1) / BP::kPoolTok),
+        c(0),
+        s(0),
+        rr(0),
+        r1(-1),
+        queued(0),
+        taken(0),
+        fill_c(-1),
+        taken_slot(false),
+        done(false) {
+    //: the first `kPoolSlots` chunks into their slots, all free since the last fold's
+    //: releases (no wait in fact): the fold starts on landed chunks.
+    if (chunks > 0) {
+      rola::static_for<BP::kPoolSlots>([&](auto Kc) {
+        constexpr int k = decltype(Kc)::value;
+        if (k < chunks) {
+          cur.wait_empty(sm, k);
+          pool_fill<BP, D, BC>(p, sm, bases, parity, k, k, rowbase, warp, lane);
+          cur.filled(k);
+        }
+      });
+      fill_c = chunks > BP::kPoolSlots ? BP::kPoolSlots : -1;
+    } else {
+      done = true;
     }
+  }
+
+  __device__ __forceinline__ void try_fill() {
+    const int fs = fill_c % BP::kPoolSlots;
+    if (cur.empty_now(sm, fs)) {
+      pool_fill<BP, D, BC>(p, sm, bases, parity, fill_c, fs, rowbase, warp, lane);
+      cur.filled(fs);
+      fill_c = fill_c + 1 < chunks ? fill_c + 1 : -1;
+    }
+  }
+
+  //: THE WAIT, when no stream can progress: on the slot this warp's fill owes (its readers
+  //: are behind and unblocked), else on the chunk's fill by every warp (each issues it once
+  //: the slot it goes into is released, which every warp at or past this chunk has done).
+  __device__ __forceinline__ void wait() {
+    if (fill_c >= 0 && (c >= chunks || fill_c == c)) {
+      const int fs = fill_c % BP::kPoolSlots;
+      cur.wait_empty(sm, fs);
+      pool_fill<BP, D, BC>(p, sm, bases, parity, fill_c, fs, rowbase, warp, lane);
+      cur.filled(fs);
+      fill_c = fill_c + 1 < chunks ? fill_c + 1 : -1;
+    } else if (c < chunks && !taken_slot) {
+      cur.wait_full(sm, s);
+    }
+  }
+
+  __device__ __forceinline__ bool step() {
+    if (fill_c >= 0) try_fill();
+    if (c >= chunks) {
+      done = fill_c < 0;
+      return false;
+    }
+    if (!taken_slot) {
+      if (!cur.full_now(sm, s)) return false;
+      const int lo = c * BP::kPoolTok, hi = lo + BP::kPoolTok;
+      const int pr = lane < BP::kRounds ? (int)sm.prefix(parity)[lane] : 0x7FFFFFFF;
+      rr = ops::last_set(__ballot_sync(0xFFFFFFFFu, pr <= lo));
+      r1 = ops::last_set(__ballot_sync(0xFFFFFFFFu, pr < hi));
+      queued = taken = 0;
+      taken_slot = true;
+    }
+
     const ops::SmemAddr slot = sm.pool(s);
-    cur.wait_full(sm, s);
+    uint32_t* const ring = sm.walk(warp);
+    const uint32_t* const ww = sm.warpwords(parity, warp);
+    const uint32_t* const uw = sm.unionwords(parity);
+    const uint16_t* const prefix = sm.prefix(parity);
+    const uint32_t lt = (1u << lane) - 1u;
     const int lo = c * BP::kPoolTok, hi = lo + BP::kPoolTok;
-    const int pr = lane < BP::kRounds ? (int)prefix[lane] : 0x7FFFFFFF;
-    const int r0 = ops::last_set(__ballot_sync(0xFFFFFFFFu, pr <= lo));
-    const int r1 = ops::last_set(__ballot_sync(0xFFFFFFFFu, pr < hi));
-    int queued = 0, taken = 0;
+
+    //: walk rounds until a fragment queues or the chunk's rounds are out.
 #pragma unroll 1
-    for (int rr = r0; rr <= r1; ++rr) {
+    while (queued - taken < BP::kTile && rr <= r1) {
       const uint32_t u = uw[rr], w = ww[rr];
       const int rank = (int)prefix[rr] + __popc(u & lt);
       const bool in = ((w >> lane) & 1u) != 0u && rank >= lo && rank < hi;
@@ -938,14 +1061,17 @@ __device__ __forceinline__ void fold(const CarryParams& p, const Smem<BP>& sm,
         ring[slot_ix] = (uint32_t)(rank - lo) | (g << 16);
       }
       queued += __popc(kept);
+      ++rr;
       __syncwarp();
-#pragma unroll 1
-      while (queued - taken >= BP::kTile) {
-        const uint32_t entry = ring[(taken + (lane & 15)) & (BP::kWalkEntries - 1)];
-        fold_fragment<BP, D, BC>(slot, entry, warp, lane, st);
-        taken += BP::kTile;
-      }
     }
+
+    if (queued - taken >= BP::kTile) {
+      const uint32_t entry = ring[(taken + (lane & 15)) & (BP::kWalkEntries - 1)];
+      fold_fragment<BP, D, BC>(slot, entry, warp, lane, st);
+      taken += BP::kTile;
+      return true;
+    }
+
     //: the tail: the queued rows past the last fragment, the rest from the zero row.
 #pragma unroll 1
     for (int n = ops::once(queued > taken); n > 0; --n) {
@@ -955,8 +1081,29 @@ __device__ __forceinline__ void fold(const CarryParams& p, const Smem<BP>& sm,
       fold_fragment<BP, D, BC>(slot, entry, warp, lane, st);
     }
     __syncwarp();
+
     if (lane == 0) ops::mbar_arrive(sm.empty_bar(s));
     cur.used(s);
+    ++c;
+    s = c % BP::kPoolSlots;
+    taken_slot = false;
+    done = c >= chunks && fill_c < 0;
+    return true;
+  }
+};
+
+//: THE FOLD run alone to completion: the sequential loop's and the part harness's form.
+template <class BP, int D, int BC, bool Composed, bool Straddle>
+__device__ __forceinline__ void fold(const CarryParams& p, const Smem<BP>& sm,
+                                     const SideLayout& lay, int2 bases, int parity, int live,
+                                     uint32_t rowbase, int warp, int lane, State<BP>& st,
+                                     PoolCursor<BP>& cur, PhaseClock& pc) {
+  static_assert(!Composed && !Straddle, "the fold is spelled for the plain layout");
+  (void)lay;
+  FoldStream<BP, D, BC> fs(p, sm, bases, parity, live, rowbase, warp, lane, st, cur);
+#pragma unroll 1
+  while (!fs.done) {
+    if (!fs.step()) fs.wait();
   }
   pc.lap(kPhaseFold);
 }
@@ -965,7 +1112,7 @@ __device__ __forceinline__ void fold(const CarryParams& p, const Smem<BP>& sm,
 
 //: THE READOUT TILE's ring copies: the tile's sixteen tokens' inner and outer runs into
 //: the warp's ring slot, lanes `l` and `l + 16` a row (alternate 16-byte halves), a rank
-//: past the live count zero-filled; one copy group.
+//: past the live count zero-filled; the slot's ring barrier completes when they land.
 template <class BP, int D, int BC>
 __device__ __forceinline__ void readout_issue(const CarryParams& p, const Smem<BP>& sm, int2 bases,
                                               const uint16_t* order, int k, int live,
@@ -980,7 +1127,7 @@ __device__ __forceinline__ void readout_issue(const CarryParams& p, const Smem<B
   ops::stage_run_if<16>(slot + row32_off(row, h), arow + bases.x + h * 16, in);
   ops::stage_run_if<16>(slot + (uint32_t)BP::kRunTileBytes + row32_off(row, h),
                         arow + bases.y + h * 16, in);
-  ops::stage_commit();
+  ops::mbar_arrive_when_landed(sm.ring_bar(warp, slot_ix));
 }
 
 //: THE READOUT TILE: A (the inner tile, `ldmatrix`) once; per live box: the rows' outer
@@ -1076,34 +1223,106 @@ __device__ __forceinline__ void readout_tile(const Smem<BP>& sm, ops::SmemAddr s
   }
 }
 
-//: THE READOUT (component `readout`): the read order's tiles, a warp its own (tile `k` to
-//: warp `k % warps`), staged into the warp's ring a tile ahead. Per tile `readout_tile`.
-//: BUDGET: carry_kernel.md#budgets. -- carry_kernel.md#readout
+//: THE READOUT STREAM (component `readout`): the read order's tiles as a step function,
+//: tiles DEALT by the window's shared counter so a warp with light fold work takes more;
+//: a tile is staged into the warp's ring a tile ahead. A step is one landed tile
+//: (`readout_tile`) and the issue of the next taken one into the slot it frees; a step
+//: whose tile has not landed returns false. BUDGET: carry_kernel.md#budgets. -- #readout
+template <class BP, int D, int BC>
+struct ReadoutStream {
+  const CarryParams& p;
+  const Smem<BP>& sm;
+  RingCursor<BP>& ring;
+  int2 bases;
+  const uint16_t* order;
+  const uint16_t* tmask;
+  float* num;
+  float* den;
+  uint32_t rowbase;
+  int live, tiles, t0, warp, lane;
+  int k, knext, n;
+  bool done;
+
+  __device__ __forceinline__ int take() {
+    //: lane 0 takes and parks the tile in the warp's take word; every lane reads it back:
+    //: a shared load the compiler knows is warp-uniform (a shuffle's or a reduction's
+    //: result is not, and every collective after it would fall to the convergence-checking
+    //: path).
+    if (lane == 0)
+      ops::store_shared_u32(sm.take_word(warp), ops::atom_shared_add_u32(sm.counter_addr(), 1u));
+    __syncwarp();
+    return (int)ops::load_shared_u32(sm.take_word(warp));
+  }
+
+  __device__ __forceinline__ ReadoutStream(const CarryParams& p_, const Smem<BP>& sm_,
+                                           RingCursor<BP>& ring_, int2 bases_, int parity,
+                                           int live_, float* num_, float* den_, uint32_t rowbase_,
+                                           int t0_, int warp_, int lane_)
+      : p(p_),
+        sm(sm_),
+        ring(ring_),
+        bases(bases_),
+        order(sm_.order(parity)),
+        tmask(sm_.tilemask(parity)),
+        num(num_),
+        den(den_),
+        rowbase(rowbase_),
+        live(live_),
+        tiles((live_ + BP::kTile - 1) / BP::kTile),
+        t0(t0_),
+        warp(warp_),
+        lane(lane_),
+        k(0),
+        knext(0),
+        n(0),
+        done(false) {
+    k = take();
+    if (k >= tiles) {
+      done = true;
+      return;
+    }
+    readout_issue<BP, D, BC>(p, sm, bases, order, k, live, rowbase, warp, 0, lane);
+    knext = take();
+    if (knext < tiles)
+      readout_issue<BP, D, BC>(p, sm, bases, order, knext, live, rowbase, warp, 1, lane);
+  }
+
+  __device__ __forceinline__ void wait() { ring.wait_full(sm, warp, n & (BP::kRRSlots - 1)); }
+
+  __device__ __forceinline__ bool step() {
+    const int r = n & (BP::kRRSlots - 1);
+    if (!ring.full_now(sm, warp, r)) return false;
+    __syncwarp();
+    readout_tile<BP, D, BC>(sm, sm.rring(warp, r), (uint32_t)tmask[k], order, k, live, num, den, t0,
+                            warp, lane);
+    ring.used(r);
+    ++n;
+    k = knext;
+    if (k >= tiles) {
+      done = true;
+      return true;
+    }
+    knext = take();
+    __syncwarp();
+    if (knext < tiles)
+      readout_issue<BP, D, BC>(p, sm, bases, order, knext, live, rowbase, warp, r, lane);
+    return true;
+  }
+};
+
+//: THE READOUT run alone to completion: the sequential loop's form.
 template <class BP, int D, int BC, bool Composed, bool Straddle>
 __device__ __forceinline__ void readout(const CarryParams& p, const Smem<BP>& sm,
-                                        const SideLayout& lay, int2 bases, int parity, int live,
-                                        float* num, float* den, uint32_t rowbase, int t0, int warp,
-                                        int lane, PhaseClock& pc) {
+                                        const SideLayout& lay, RingCursor<BP>& ring, int2 bases,
+                                        int parity, int live, float* num, float* den,
+                                        uint32_t rowbase, int t0, int warp, int lane,
+                                        PhaseClock& pc) {
   static_assert(!Composed && !Straddle, "the readout is spelled for the plain layout");
   (void)lay;
-  const uint16_t* const order = sm.order(parity);
-  const uint16_t* const tmask = sm.tilemask(parity);
-  const int tiles = (live + BP::kTile - 1) / BP::kTile;
-  int n = 0;
-  if (warp < tiles)
-    readout_issue<BP, D, BC>(p, sm, bases, order, warp, live, rowbase, warp, 0, lane);
+  ReadoutStream<BP, D, BC> rs(p, sm, ring, bases, parity, live, num, den, rowbase, t0, warp, lane);
 #pragma unroll 1
-  for (int k = warp; k < tiles; k += BP::kWarps, ++n) {
-    const int slot_ix = n & (BP::kRRSlots - 1);
-    if (k + BP::kWarps < tiles)
-      readout_issue<BP, D, BC>(p, sm, bases, order, k + BP::kWarps, live, rowbase, warp,
-                               (n + 1) & (BP::kRRSlots - 1), lane);
-    else
-      ops::stage_commit();
-    ops::stage_wait<1>();
-    __syncwarp();
-    readout_tile<BP, D, BC>(sm, sm.rring(warp, slot_ix), (uint32_t)tmask[k], order, k, live, num,
-                            den, t0, warp, lane);
+  while (!rs.done) {
+    if (!rs.step()) rs.wait();
   }
   pc.lap(kPhaseReadout);
 }
@@ -1141,6 +1360,8 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     ops::mbar_init(sm.full_bar(tid), BP::kThreads);
     ops::mbar_init(sm.empty_bar(tid), BP::kWarps);
   }
+  //: THE RING BARRIERS: a warp's ring slot is full at its 32 lanes' landed copies.
+  if (lane < BP::kRRSlots) ops::mbar_init(sm.ring_bar(warp, lane), 32u);
   constexpr int kZeroParts = BP::kVChunks + 4;
 #pragma unroll 1
   for (int i = tid; i < BP::kPoolSlots * kZeroParts; i += BP::kThreads) {
@@ -1171,39 +1392,37 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     if (win + 1 < nWindows) stage_words(win + 1);
     pc.lap(kPhaseHead);
   };
-  //: THE WINDOW'S FIRST CHUNK, into slot 0 -- the slot free under the readout (the slot's
-  //: previous reader finished in the last fold).
-  const auto issue_first = [&](int win) {
-    const uint32_t rowbase = (uint32_t)bh * (uint32_t)p.L + (uint32_t)(win * kWindow);
-    if (live[rola::facts::kWrite] > 0) {
-      cur.wait_empty(sm, 0);
-      pool_fill<BP, D, BC>(p, sm, wbases, win & 1, 0, 0, rowbase, warp, lane);
-    }
-  };
   run_head(0);
-  issue_first(0);
+  RingCursor<BP> ring{0u};
 
+  //: THE WINDOW, the phases in sequence: the edge (the snapshot, the tile counter reset,
+  //: the words landed, one barrier); the fold stream constructed, its first chunks in flight;
+  //: the READOUT to completion; the next window's HEAD; the FOLD to completion; the barrier
+  //: the next snapshot needs. The two MMA phases stay separate stages (sm_100's TMEM holds
+  //: the state OR the readout's staging, never both). -- carry_kernel.md#window-loop
 #pragma unroll 1
   for (int win = 0; win < nWindows; ++win) {
     const int t0 = win * kWindow, parity = win & 1;
     const uint32_t rowbase = (uint32_t)bh * (uint32_t)p.L + (uint32_t)t0;
     const int rlive = live[rola::facts::kRead], wlive = live[rola::facts::kWrite];
-    //: THE WINDOW'S EDGE: the state as the readout reads it.
+    //: THE WINDOW'S EDGE: the state as the readout reads it; the tile counter at zero.
     if (rlive > 0) snapshot_publish<BP, D, BC, false>(sm, st, warp, lane);
+    if (tid == 0) *sm.counter() = 0;
     pc.lap(kPhaseSnapshot);
-    ops::rendezvous();
-    pc.lap(kPhaseEdges);
-    readout<BP, D, BC, RComposed, RStraddle>(p, sm, lay[rola::facts::kRead], rbases, parity, rlive,
-                                             num, den, rowbase, t0, warp, lane, pc);
-    //: the next window's words, issued a window ago, landed before its head.
     ops::stage_wait<0>();
     ops::rendezvous();
     pc.lap(kPhaseEdges);
-    const int wlive_now = wlive;
+    FoldStream<BP, D, BC> fs(p, sm, wbases, parity, wlive, rowbase, warp, lane, st, cur);
+    readout<BP, D, BC, RComposed, RStraddle>(p, sm, lay[rola::facts::kRead], ring, rbases, parity,
+                                             rlive, num, den, rowbase, t0, warp, lane, pc);
     if (win + 1 < nWindows) run_head(win + 1);
-    fold<BP, D, BC, WComposed, WStraddle>(p, sm, lay[rola::facts::kWrite], wbases, parity,
-                                          wlive_now, rowbase, warp, lane, st, cur, pc);
-    if (win + 1 < nWindows) issue_first(win + 1);
+#pragma unroll 1
+    while (!fs.done) {
+      if (!fs.step()) fs.wait();
+    }
+    pc.lap(kPhaseFold);
+    ops::rendezvous();
+    pc.lap(kPhaseEdges);
   }
 }
 
