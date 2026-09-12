@@ -604,7 +604,7 @@ equal.
 ## <a id="template-axes"></a>20. Why there is no `GLOBAL` axis, and what `NC` is
 
 Raw normalization is dead everywhere in this repository (revival = git;
-[`DELETIONS.md`](DELETIONS.md)): the mass column and the `num/den` divide are
+[`DELETIONS.md`](../DELETIONS.md)): the mass column and the `num/den` divide are
 UNCONDITIONAL, so `cols = DV + 1` at every instantiation and there is nothing left
 for a `GLOBAL` template axis to select between. `decode_step_kernel<DV, D,
 DECAY>` takes exactly three template parameters.

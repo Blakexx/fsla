@@ -24,10 +24,10 @@ struct SmResources {
 Take them from the CUDA C Programming Guide's *Compute Capabilities* table and add
 the row to `sm_arch_tabulated()` and `sm_resources()`. **Do not guess**: an
 overstated resource makes `ptxas` silently discard the launch bound, which is a
-silent occupancy loss on the architecture nobody checked. The chunk dispatch's
-`check_arch_table()` (`csrc/rola/src/chunk/chunk.cu`) checks every row against the
-driver at run time, so a wrong number is caught — but it is caught by a user unless
-you check it first.
+silent occupancy loss on the architecture nobody checked. `check_arch_table()`
+(`csrc/rola/src/common/arch_runtime.cu`, called from every family's launching entry,
+carry included) checks every row against the driver at run time, so a wrong number
+is caught — but it is caught by a user unless you check it first.
 
 ## 2. Probe and ratify
 

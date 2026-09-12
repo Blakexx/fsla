@@ -17,15 +17,15 @@ enforced it, and a tree with no cost model should say WHY it has none.
 
 ## What decides the launch now
 
-`BC` — the leaves one owner block owns — is no longer derived per launch,
-because it is no longer a host-selectable quantity at all. It is a property of
-the BUILT ARM: `tools/gen_shards.py` owns one matrix of `(C, BC, D, B)` tuples,
-emits it as `instantiations/chunk_arms.inc`, and `rola/engine/rules/arm.py` picks the
-arm for a topology out of the binary's own `chunk_arms()` list by a fixed
-preference order over MEASURED arms (`_PIN_C`, `_PIN_BC`, falling back to the
-largest built `BC` for that `(D, B)`). A topology with no built arm gets no
-kernel: `rola.engine.rules.envelope` names the refusing clause and `rola_op` raises it
-([`../api.md`](../api.md) §1.1, the built envelope).
+The leaves one owner block owns are no longer derived per launch, because
+that is no longer a host-selectable quantity at all. It is a property of the
+BUILT ARM: `tools/gen_shards.py` owns the closed-world `CARRY_ARMS` table of
+`(D, DV, warps_per_cta)` tuples, emits it as the generated `carry_selection.inc`
+(one per-arm translation unit, `carry_arm_N.cu`, per shipped row), and
+`carry/carry.cu`'s dispatch runs an arm only if the selection header carries it.
+A topology with no built arm gets no kernel: `rola.engine.rules.envelope` names
+the refusing clause and `rola_op` raises it ([`../api.md`](../api.md) §1.1, the
+built envelope).
 
 That is the same category of answer the old derivation gave, taken one step
 further. The closed form read launch-static facts to choose among compiled
@@ -71,6 +71,6 @@ RESIDENCY GIVEN UP rather than the wider Gram's arithmetic (`BC = 16`: 4 CTAs ->
 `atscale-L2048`), and it survived a `cp.async` prefetch of the amplitude gathers
 that cut `long_scoreboard` 26-46% — so the residency was buying something other
 than the panel builds. Records: `workflows/perf/p36_quantum.md`,
-`workflows/perf/p39_prefetch.md`. The chunk arm's own swizzle axis met the same
-kind of end for the opposite reason — a receipt of -2.1..+2.2%, noise, no winner
-(`instantiations/chunk_arms.inc`).
+`workflows/perf/p39_prefetch.md`. The (since-deleted) chunk arm's own swizzle
+axis met the same kind of end for the opposite reason — a receipt of
+-2.1..+2.2%, noise, no winner (`git show c7eaeb9:instantiations/chunk_arms.inc`).

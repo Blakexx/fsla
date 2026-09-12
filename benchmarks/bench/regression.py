@@ -113,18 +113,6 @@ def same_instrument(a: str, b: str, what: str) -> None:
             f"measurement.")
 
 
-def summarize(times_ms, *, source: str | None = None) -> dict:
-    """The three numbers a baseline entry carries, plus the stopwatch that took them.
-
-    `source` defaults to the committed instrument rather than being optional-in-name-
-    only: an entry with no stopwatch is an entry that cannot be checked against one.
-    """
-    return {"median_ms": round(statistics.median(times_ms), 6),
-            "iqr_ms": round(iqr(times_ms), 6),
-            "reps": len(times_ms),
-            "source": source or CANONICAL_INSTRUMENT}
-
-
 def check_instrument(baseline_arm: dict, got_source: str, key: str) -> None:
     """Refuse a gate comparison whose two sides were taken with different timers.
 

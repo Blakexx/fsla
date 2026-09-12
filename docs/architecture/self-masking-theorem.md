@@ -205,7 +205,7 @@ The same reasoning licenses the emission-side `if (out != 0.0f)` skips: adding
 `0.0f` is the identity, so including the term is a no-op and the test is
 over-inclusion-safe in the direction that matters
 (the membership-authority rule, stated for the surviving arm at
-[`chunk/chunk_kernel.md`](../internals/chunk/chunk_kernel.md)).
+[`carry/carry_kernel.md`](../internals/carry/carry_kernel.md)).
 
 **The direction is asymmetric and that asymmetry is the whole content.**
 Over-approximating support is always safe. **Under-approximating it is wrong** —

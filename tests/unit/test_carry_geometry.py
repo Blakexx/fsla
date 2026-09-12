@@ -11,15 +11,18 @@ against the census the parent binary reports off the device.
 census, transcribed, so the assertion survives the parent's deletion (the SKILLS
 FEEDBACK 3: the A-side of any parity claim is a pinned tip that will not always exist) --
 and C0 IS that deletion: `carry_build_stamp`/`carry_arms` are gone from the extension
-entirely (not merely some arms unbuilt), and `gen_shards.CARRY_ARMS` is `()` pending the refill under the FINAL `(D, DV, warps_per_cta)` key, a different schema than the 13-field
-row this table's provenance names. There is therefore no live binary left to re-read
-against, on this line, ever again (the parent tip is never edited or retrofitted). `## C0`
+entirely (not merely some arms unbuilt). The refill has since landed under the FINAL
+`(D, DV, warps_per_cta)` key (`gen_shards.CARRY_ARMS == ((2, 64, 8),)`, one shipped row),
+a different schema than the 13-field row this table's provenance names. There is
+therefore no live binary left to re-read against, on this line, ever again (the parent
+tip is never edited or retrofitted). `## C0`
 found this file 36F/9P for exactly this reason (parameterized over the now-empty
 `CARRY_ARMS`). The fix is what SKILLS FEEDBACK 3 anticipated: `ARM_PARAMS` below transcribes
 the same 335c2b9 arm rows the parent built `PARENT_CENSUS` from, so `_arm()` no longer reads
 `gen_shards.CARRY_ARMS` at all, and the one-time live cross-check
-(`test_the_golden_table_is_the_binarys_own`) is retired rather than left calling a binding
-that cannot exist on this branch.
+(`test_the_golden_table_is_the_binarys_own`) stays retired by design -- the table is
+pinned-tip evidence, not a stand-in for an empty live set -- rather than left calling a
+binding that cannot exist on this branch.
 
 **WHAT IS ASSERTED AS THE LAW, NOT AS THE TABLE.** The parity rows are 11 of the parent's
 13 arms. The other two are the `D = 4, B = 8` rows, which the RESTORED WIDTH FLOOR

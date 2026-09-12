@@ -11,10 +11,11 @@ tier-1 exactness tolerance. All three families sit INSIDE the built chunk
 matrix, so the kernel arm is reached on every sweep arm and the agreement is
 the whole claim; there is no refusal branch to fall into.
 
-P67 D2-b re-anchored this file. The two families pinned at ``d_v = 32`` moved
-onto built arms (``producer/swept-gain`` to the flat-routing baseline
-``D = 1, B = 64``; ``producer/swept-gain-raw-d2`` to ``d_v = 64`` and, since
-``raw`` normalization has been a dead axis since P26, to the honest name
+P67 D2-b re-anchored this file. The families pinned at ``d_v = 32`` moved onto
+built arms (``producer/swept-gain`` to the flat-routing baseline ``D = 1,
+B = 64``; ``producer/swept-gain-d64`` to the uniform two-level ``D = 2, d_v =
+64`` arm; ``producer/swept-gain-raw-d2`` to ``d_v = 64`` and, since ``raw``
+normalization has been a dead axis since P26, to the honest name
 ``producer/swept-gain-d2``) rather than being left to assert a refusal, which
 would have taken REALIZED routing off the kernel arm entirely — the one thing
 this file exists to keep on it. ``producer/stale-plan`` retired with the

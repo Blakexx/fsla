@@ -1,8 +1,9 @@
 """The HOST dispatch primitive, exercised against a synthetic arm set.
 
 `csrc/rola/src/common/arm_switch.cuh` dispatches over the arm set the generated
-selection header carries, and this binary's set is EMPTY, so nothing in the extension
-can show a member running. This file compiles a probe against the SHIPPED HEADER with
+selection header carries; this file never depends on which arms are actually shipped
+(today's shipped set is one arm, `(2, 64, 8)`, per `tools/manifests/shipped_set.json`).
+This file compiles a probe against the SHIPPED HEADER with
 a synthetic three-arm selection header in front of it -- rendered by the one renderer
 `setup.py` and `tools/ratify.py` use, so what is tested is what a build would emit --
 and checks every layer of the contract:
@@ -14,7 +15,8 @@ and checks every layer of the contract:
 * an arm outside the declaration is refused with the FIELD that misses named -- one
   case per field, because a refusal that names the wrong field is worse than one that
   names none;
-* the EMPTY set refuses everything, which is the state of the shipped binary.
+* the EMPTY set refuses everything, exercised here as a synthetic case (the shipped
+  binary's own set carries one arm, not zero).
 
 The compile goes through `tools/build/build_lock.sh`: a compile is a compile.
 """

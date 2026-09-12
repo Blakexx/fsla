@@ -283,7 +283,7 @@ to be version 1, because guessing produces a confident wrong answer.
 | **R1b** | building under CODEGEN FLAGS the manifest was not ratified under | `ratify.py::check_flags` |
 | **R2** | emitting `code=compute_XX` — any PTX a driver could JIT | `setup.py::gencodes`, asserted on the shipped `.so` (`cuobjdump --list-ptx` reports **0 PTX images**) |
 | **R3** | an architecture in the fatbin with no ratified manifest | `setup.py::_gate_ratified` — a **file-existence** question, asked before anything compiles |
-| **R4** | launching on a device the kernel's arch table does not describe | `chunk/chunk.cu`'s `check_arch_table()` at run time (first statement of every launching entry), `static_assert` at compile time |
+| **R4** | launching on a device the kernel's arch table does not describe | `common/arch_runtime.cu`'s `check_arch_table()` at run time (first statement of every family's launching entry, carry included), `static_assert` at compile time |
 
 There is no environment variable that turns any of these off.
 

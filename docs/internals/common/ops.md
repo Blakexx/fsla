@@ -226,9 +226,9 @@ selecting one, because the alternative is not a slower implementation of the sam
 operation — it is a different algorithm, with a `BCg x d_v` staging buffer that
 does not fit beside the ring.
 
-The SASS gate needs no carve-out for it: `tools/chunk_sass_gate.py` forbids
-`LDL`/`STL`/`ATOM` anywhere and `IMAD.WIDE`/`I2F`/`F2I`/`MUFU` inside a loop body,
-and `MOVM` is in neither set.
+The SASS gate needs no carve-out for it: `MOVM` is not one of the signatures
+`tools/sass_gate.py` reds on (local memory, convergence subroutines, predicated
+HMMA, instructions-per-HMMA).
 
 ### Operations this kernel does not have, and why not
 
@@ -270,7 +270,7 @@ A GATHERED ROW'S ADDRESS: a base formed once, displaced by a 32-bit BYTE
 offset that is zero-extended rather than multiplied out.  The extension is
 written here explicitly because the arithmetic is the contract: at element
 type the compiler is entitled to re-derive `base + index` as a widening
-multiply per access, and it does -- measured at 30 `IMAD.WIDE` in a loop that
+multiply per access, and it does -- measured at `30x IMAD.WIDE` in a loop that
 the form below emits none for.  The caller owns the 32-bit bound.
 
 THE BASE IS A GLOBAL ADDRESS, AND SAYING SO IS PART OF THE OPERATION.  An

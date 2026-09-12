@@ -36,7 +36,7 @@ same week.
   `read_tok_bits` is the sole support authority. Amplitude comparisons exist in
   the kernel only as *performance* skips on a value where inclusion is a no-op
   (`if (out != 0.0f)`), and none of them decides membership
-  ([`chunk/chunk_kernel.md`](../internals/chunk/chunk_kernel.md)).
+  ([`carry/carry_kernel.md`](../internals/carry/carry_kernel.md)).
 - **Paging is bitwise invisible**, not approximately equivalent. An absent atom
   reads as zeros and is never stored back
   ([`paging/paging.md`](../internals/paging/paging.md)).

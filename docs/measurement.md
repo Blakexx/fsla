@@ -69,6 +69,8 @@ rule then had no exception left. K46 reverses that call: a caller having to reme
 self-locking tool can safely call another self-locking tool without the K38 deadlock
 that made the WRAPPED design seem necessary in the first place.
 
+<a id="the-sanitizer-gap"></a>
+
 **The sanitizer gap.** No sanitizer measurement has ever been taken of the chunk arm, and
 this harness does not add one: `compute-sanitizer` runs a kernel under conditions no timing
 instrument reproduces, so it is a THIRD instrument like `ncu` and needs its own refusal
@@ -176,7 +178,8 @@ Three properties are load-bearing:
 
 ### Legacy rows
 
-The banked markdown-era numbers were imported once, by `tools/ledger_import.py`, at
+The banked markdown-era numbers were imported once, by the now-deleted
+`tools/ledger_import.py` (a one-time migration; see `docs/internals/DELETIONS.md`), at
 `probe_version: 0`. That field is inside the fingerprint, so a legacy row can never
 enter a series with a disciplined one. Their warm-up, clock state and lock discipline
 are unknown and the docket numbers were taken with a stopwatch that was not in the

@@ -58,7 +58,7 @@ See [`internals/state.md`](internals/state.md#the-slack-pool) and
 There is no plan argument, no configuration argument, and no statistics argument. Those
 are not model facts — they are how the op RUNS, and the op decides how it runs, per
 call, from the routing it was actually given. They live behind
-[`rola.expert`](#6-the-expert-surface).
+[`rola.expert`](#5-the-expert-surface).
 
 **Any level width, any `d_v`.** A `RouteProducer` level's width and a layer's `d_v` are
 never required to be a power of two or a shipped value — host-side padding at the op's

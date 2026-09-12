@@ -195,8 +195,3 @@ def baseline_series(rows, fp: str, *, source: str, window: int = 20) -> list[dic
             if r["fingerprint"] == fp and r["source"] == source and not r["dirty"]]
     return same[-window:]
 
-
-def median_of(row: dict) -> float:
-    import statistics
-
-    return statistics.median(row["values"])
