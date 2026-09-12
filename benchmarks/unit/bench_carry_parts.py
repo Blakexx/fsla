@@ -28,18 +28,18 @@ import torch  # noqa: E402
 TILE = 16
 WINDOW = 512
 BOXES = 16
-SM86 = "-gencode=arch=compute_86,code=sm_86"
 
 
 def build():
-    from torch.utils.cpp_extension import load
-
-    out = ROOT / "build" / "carry_parts"
-    out.mkdir(parents=True, exist_ok=True)
-    return load(name="rola_carry_parts", sources=[str(ROOT / f) for f in ("benchmarks/unit/carry_parts/carry_parts.cu", "csrc/rola/src/common/arch_runtime.cu", "csrc/rola/src/common/geom.cu")],
-                extra_include_paths=[str(ROOT / "csrc/rola/src"), str(ROOT / "build/generated")],
-                extra_cuda_cflags=["-O3", "-std=c++17", "--expt-relaxed-constexpr", "-lineinfo", SM86],
-                extra_cflags=["-O2", "-std=c++17"], build_directory=str(out), verbose=False)
+    """The driver, built AHEAD OF TIME beside the arm (`ROLA_BUILD_PARTS=1`, setup.py); a
+    torch JIT of the same sources ran for minutes and was killed by the host's memory watchdog."""
+    try:
+        from rola import _C_parts
+    except ImportError as ex:
+        raise SystemExit("the part harness's driver is not built: "
+                         "ROLA_BUILD_PARTS=1 ROLA_CUDA_ARCHS=86 ROLA_CARRY_ARMS=0 "
+                         "tools/build/build_lock.sh -- python -m pip install -e . --no-build-isolation") from ex
+    return _C_parts
 
 
 def call_args(spec, schedule_name: str = "first"):

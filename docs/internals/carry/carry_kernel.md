@@ -267,6 +267,9 @@ over budget. Flagship dense: head 4.0K, fill 6.0K, fold 21.5K (4,608 HMMAs), rea
 <a id="part-harness"></a>
 ## The part harness
 
+Its driver (`benchmarks/unit/carry_parts/carry_parts.cu`) is built ahead of time beside the arm
+under `ROLA_BUILD_PARTS=1` (`docs/build.md#parts`), never by a JIT.
+
 `benchmarks/unit/bench_carry_parts.py` builds `benchmarks/unit/carry_parts/carry_parts.cu`
 (one driver kernel a component, each the kernel's own prologue plus that component, on the
 call the kernel would run) and checks each against a pure reference: the head's order,

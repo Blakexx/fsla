@@ -654,14 +654,7 @@ def _ninja_jobs(held_slots: int) -> int:
     return max(1, held_slots // per_process)
 
 
-def build_extension():
-    nvcc_threads = int(os.getenv("ROLA_NVCC_THREADS", "2"))
-    os.environ.setdefault("MAX_JOBS", str(build_flags.default_max_jobs(nvcc_threads)))
-
-    nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
-        + list(build_flags.DEPFILE_FLAGS) + _decode_arm_subset()
-    assert_no_ptx(nvcc_flags)
-
+def _link_flags() -> list[str]:
     ldflags = ["-lcuda"]
     #: WSL puts the driver stub outside the toolkit's lib dir. A build knob, so it
     #: belongs to the build; the runtime (`rola/ops/_ext.py`) has none of this.
@@ -672,6 +665,43 @@ def build_extension():
     #: the pin (tools/mold_pin.json) is not satisfied -- no fallback to
     #: ld.bfd/ld.gold. See tools/mold_toolchain.py's module docstring.
     ldflags += mold_toolchain.link_flags()
+    return ldflags
+
+
+#: THE PART HARNESS'S DRIVER (`benchmarks/unit/bench_carry_parts.py`), built AHEAD OF TIME
+#: beside the arm under `ROLA_BUILD_PARTS=1` -- the same pass, the same lock, the same cache
+#: -- where a torch JIT `load()` of the same three sources ran for minutes and was killed
+#: by the host's memory watchdog (KERNEL_STANDARDS §22: a gating instrument that cannot
+#: run is a defect). Never shipped: an iteration-build instrument, `-lineinfo` for the
+#: ledgers. docs/build.md#parts
+PARTS_MODULE_NAME = "rola._C_parts"
+PARTS_SOURCES = ["benchmarks/unit/carry_parts/carry_parts.cu",
+                 "csrc/rola/src/common/arch_runtime.cu", "csrc/rola/src/common/geom.cu"]
+
+
+def build_parts_extension():
+    nvcc_threads = int(os.getenv("ROLA_NVCC_THREADS", "2"))
+    nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
+        + list(build_flags.DEPFILE_FLAGS) + ["-lineinfo"]
+    assert_no_ptx(nvcc_flags)
+    return CUDAExtension(
+        name=PARTS_MODULE_NAME,
+        sources=PARTS_SOURCES,
+        include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include"), str(ROOT / "build" / "generated")],
+        extra_compile_args={"cxx": ["-O3", "-std=c++17"], "nvcc": nvcc_flags},
+        extra_link_args=_link_flags(),
+    )
+
+
+def build_extension():
+    nvcc_threads = int(os.getenv("ROLA_NVCC_THREADS", "2"))
+    os.environ.setdefault("MAX_JOBS", str(build_flags.default_max_jobs(nvcc_threads)))
+
+    nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
+        + list(build_flags.DEPFILE_FLAGS) + _decode_arm_subset()
+    assert_no_ptx(nvcc_flags)
+
+    ldflags = _link_flags()
 
     #: The generated selection header's directory (K36b). A FIXED path, added to
     #: every build regardless of arm selection -- it does not itself vary per-arm-set
@@ -894,7 +924,8 @@ setup(
     #: ROLA_NO_EXTENSION=1 installs the Python package with NO extension build -- for a
     #: worktree that receives a built _C from the integration checkout at the same
     #: SHA (tools/build/new_worktree.sh); the device stamp still gates freshness.
-    ext_modules=[] if os.getenv("ROLA_NO_EXTENSION") == "1" else [build_extension()],
+    ext_modules=[] if os.getenv("ROLA_NO_EXTENSION") == "1" else (
+        [build_extension()] + ([build_parts_extension()] if os.getenv("ROLA_BUILD_PARTS") == "1" else [])),
     cmdclass={"build_ext": RoLABuildExtension},
     zip_safe=False,
 )
