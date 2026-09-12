@@ -508,7 +508,16 @@ imbalance is seen, not inferred; (4) the region ledger with per-line stalls; (5)
 the HMMA count times the measured cycles an HMMA holds the pipe, over scheduler cycles -- never a
 profiler's pipe-active ratio, which is normalized to a rate this kernel does not run at; (6) the A/B
 against the baseline RUN WITH ITS OWN SCHEDULE, named per binary (a spec without one ran the dense
-order and recorded the reap).
+order and recorded the reap); (7) THE PHASE CENSUS: the HMMAs a phase COUNTED from the profiler's
+per-instruction dump (never the model's), utilization a phase against the phase ledger's cycles, a
+warp's cycles at its HMMA instructions against its other work a unit (a fragment, a pair) -- the
+number that says whether two warps a scheduler can cover each other (the other work must fit under
+the partner's burst), and the instructions a component against its budget with the launch's
+CTA-window divisor (a budget is per CTA-window; a per-launch total against it flagged everything
+red and meant nothing); (8) THE WAVEFRONT CENSUS: shared-memory wavefronts above the profiler's
+ideal, by source line -- bank conflicts on the store side of a layout, which the load side's
+conflict-free `ldmatrix` hides from every other instrument (an 8-way conflict sat in the snapshot
+for a week as "wider stores don't pay").
 HOW IT IS READ: a component's THEORY -- what the form must do to the ledger, and why -- is written as
 its budget line before the build; the measurement is read against that theory. A miss is explained
 by a measurement that ISOLATES the mechanism (a line, a counter, a life range, a variant that removes

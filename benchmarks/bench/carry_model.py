@@ -117,10 +117,13 @@ def budget(lv: Liveness, wlen: int = 512, dv: int = 64, D: int = 2) -> dict:
 
     # --- the readout: a warp its tiles, a pair a live box --------------------------------
     #: a tile: the ring issue and wait (~8), A by ldmatrix (1), y zero (4 nt), the mask loop
-    #: (~6), the drain: stage 4 nt stores, 16 line reductions, den (~40 + 4 nt). A pair: the
-    #: outer scalars (4), A scaled (4), B by ldmatrix (nt / 2 x4), nt HMMAs, den's fragment
-    #: and HMMA (5), the loop (2).
-    readout = tiles_r * (14 + 8 * nt + 40) + pairs_r * (15 + nt // 2 + nt)
+    #: (~6); the drain, sixteen rows out through the four-row stage as whole lines by
+    #: reduction: 4 nt stores, 4 nt line loads, 4 nt reductions (16 rows x dv / 32 lines), a
+    #: row's token and rank test (2 x 16), four passes' syncs (8), the row bases (16), den
+    #: (~8): 12 nt + 64 (counted from the kernel 2026-09-12; the earlier 40 + 4 nt missed the
+    #: stage reload and half the lines). A pair: the outer scalars (4), A scaled (4), B by
+    #: ldmatrix (nt / 2 x4), nt HMMAs, den's fragment and HMMA (5), the loop (2).
+    readout = tiles_r * (14 + 4 * nt + 12 * nt + 64) + pairs_r * (15 + nt // 2 + nt)
     read_hmma = pairs_r * (nt + 1)
 
     # --- the snapshot and the edges ---------------------------------------------------

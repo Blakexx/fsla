@@ -16,8 +16,12 @@ The steps, each recorded with its outcome (a failure is a row, never a stop):
   oracle      -- the scoped fp64 oracle on the built arm's cells
   phases      -- `tools/phase_ledger.py` per cell: cycles a warp a window per phase, per-warp rows
   profile     -- `ncu` SourceCounters + pipe counters per cell, `tools/region_ledger.py` per
-                 component; tensor utilization = HMMA count x `--hmma-cycles` over scheduler
-                 cycles (never the profiler's pipe-active ratio, §22)
+                 component with the launch's CTA-window divisor; tensor utilization = HMMA count
+                 x `--hmma-cycles` over scheduler cycles (never the profiler's pipe-active ratio,
+                 §22); THE PHASE CENSUS (HMMAs a phase counted from the dump, utilization a phase
+                 against the phase ledger's cycles, a warp's cycles at HMMA vs its other work,
+                 instructions vs budget) and THE WAVEFRONT CENSUS (shared wavefronts above ideal
+                 = bank conflicts, by source line)
   ab          -- `tools/probe_cells.py` per cell against the baseline RUN WITH ITS OWN SCHEDULE
                  (`box` dense, `sparse-g32` sparse), this tree with `first`
 The report lands in `benchmarks/results/ledgers/<utc>-<sha7>-<tag>.json` and `.md`; the diff is
@@ -40,6 +44,7 @@ PY = sys.executable
 NCU = "/usr/local/cuda/bin/ncu"
 NVCC = "/usr/local/cuda/bin/nvcc"
 PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep")
+HMMA_CYCLES, SCHEDULERS = 32, 4  #: the utilization formula's constants (sm_86; --hmma-cycles/--schedulers override the profile step)
 PIPE_METRICS = ",".join([
     "gpu__time_duration.sum", "sm__cycles_elapsed.avg", "smsp__cycles_active.avg",
     "smsp__inst_executed.sum", "sm__inst_executed_pipe_tensor_op_hmma.sum",
@@ -70,6 +75,18 @@ def run(cmd: list[str], timeout: int = 1800, env: dict | None = None) -> tuple[i
 def git_sha() -> str:
     rc, out = run(["git", "rev-parse", "--short=7", "HEAD"])
     return out.strip() if rc == 0 else "unknown"
+
+
+def cta_windows(cell: str) -> int:
+    """The launch's CTA-windows: the per-window divisor every per-unit number in the profile
+    step uses (the phase ledger's own divisor; a budget is per CTA-window, never per launch)."""
+    from benchmarks.cells import by_name
+    from rola.ops import carry as c
+
+    spec = by_name(cell)
+    import math
+
+    return (math.prod(spec.widths) // 256) * ((spec.tokens + c.WINDOW - 1) // c.WINDOW)
 
 
 def extension_so() -> Path:
@@ -138,7 +155,8 @@ def step_profile(report: dict, cells: list[str], scratch: Path, hmma_cycles: int
     worker = [PY, "tools/probe_cells.py", "--worker", "--bench", "carry_forward", "--reps", "0",
               "--warmup", "0", "--state", "fresh", "--oneshot", "--schedule", "first"]
     for cell in cells:
-        row: dict = {}
+        row: dict = {"cta_windows": cta_windows(cell)}
+        per = row["cta_windows"]
         rc, out = run([NCU, "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1",
                        "--metrics", PIPE_METRICS, "--csv", *worker, "--cells", cell], timeout=1800)
         vals = {}
@@ -173,13 +191,20 @@ def step_profile(report: dict, cells: list[str], scratch: Path, hmma_cycles: int
             csv.write_text(out2)
             rc3, out3 = run([PY, "tools/region_ledger.py", "--csv", str(csv), "--so", so, "--source",
                              "csrc/rola/src/carry/carry_kernel.cuh", "--budget", "tools/budgets/carry.json",
-                             "--cell", cell, "--per", "1", "--top", "12"], timeout=900)
+                             "--cell", cell, "--per", str(per), "--top", "12"], timeout=900)
             comps = {}
             for m in re.finditer(r"^\s+(\S+(?: \[spin\])?)\s+(\d+) \(\s*([\d.]+)%\)\s+samples\s+([\d.]+)%\s+(.*)$",
                                  out3, re.M):
                 comps[m.group(1)] = {"instr": int(m.group(2)), "instr_pct": float(m.group(3)),
                                      "samples_pct": float(m.group(4)), "stalls": m.group(5).strip()}
             row["components"] = comps
+            row["census"] = {m.group(1): {"hmma": float(m.group(2)), "other": float(m.group(3)),
+                                          "s_hmma": int(m.group(4)), "s_other": int(m.group(5))}
+                             for m in re.finditer(r"^\s+census (\S+) ([\d.]+) ([\d.]+) (\d+) (\d+)$", out3, re.M)}
+            w = re.search(r"^wavefronts above ideal \(a unit\): (\d+)$", out3, re.M)
+            row["waves_excess"] = int(w.group(1)) if w else None
+            row["waves"] = [{"line": int(m.group(1)), "excess": int(m.group(2)), "per_instr": float(m.group(3)),
+                             "text": m.group(4)} for m in re.finditer(r"^\s+wave (\d+) (\d+) ([\d.]+)/instr (.*)$", out3, re.M)]
         else:
             row["profile_raw"] = (out + out2)[-500:]
 
@@ -232,6 +257,7 @@ def markdown(report: dict, prev: dict | None) -> str:
     out.append(f"**Oracle** {o.get('passed')} passed, {o.get('failed')} failed"
                + (f": {', '.join(o['failures'][:5])}" if o.get("failures") else ""))
     out.append("")
+
     out.append("| cell | " + " | ".join(PHASES) + " | total | prev total | tensor util (active) | A/B master | this | ratio |")
     out.append("|---|" + "---|" * (len(PHASES) + 6))
     for cell in report["cells"]:
@@ -246,11 +272,48 @@ def markdown(report: dict, prev: dict | None) -> str:
                    + f" | {'' if util is None else f'{100 * util:.0f}%'}"
                    + f" | {ab.get('master', '')} | {ab.get('this', '')} | {ab.get('ratio', '') if 'ratio' not in ab else f'{ab[chr(114)+chr(97)+chr(116)+chr(105)+chr(111)]:.3f}'} |")
     out.append("")
+
+    budget = json.loads((ROOT / "tools/budgets/carry.json").read_text()) if (ROOT / "tools/budgets/carry.json").exists() else {}
+    comp_of = {v: k for k, v in budget.get("components", {}).items()}
+    phase_of = {"FoldStream": "fold", "ReadoutStream": "readout", "head": "head", "snapshot_publish": "snapshot"}
+    for cell in report["cells"]:
+        pr = report.get("profile", {}).get(cell, {})
+        cen = pr.get("census")
+        ph = report.get("phases", {}).get(cell, {}).get("per_phase", {})
+        if not cen or not ph:
+            continue
+        cb = budget.get("cells", {}).get(cell, {})
+        out.append(f"**{cell}** phase census (a CTA-window; util = HMMA x {HMMA_CYCLES} / {SCHEDULERS} / phase cycles; "
+                   f"warp cycles split by stall samples at HMMA vs the rest):")
+        out.append("| component | cycles | HMMA | util | instr | budget | non-HMMA/HMMA | at HMMA | at other |")
+        out.append("|---|---|---|---|---|---|---|---|---|")
+
+        for fn in ("ReadoutStream", "FoldStream", "head", "snapshot_publish"):
+            e = cen.get(fn)
+            c = ph.get(phase_of[fn])
+            if not e or c is None:
+                continue
+            h, o = e["hmma"], e["other"]
+            util = h * HMMA_CYCLES / SCHEDULERS / c if c else 0.0
+            sm = e["s_hmma"] + e["s_other"]
+            at_h = c * e["s_hmma"] / sm if sm else 0.0
+            b = cb.get(comp_of.get(fn, ""), None)
+            if fn == "FoldStream" and "fill" in cb:
+                b = (b or 0) + cb["fill"]
+            out.append(f"| {fn} | {c:.0f} | {h:.0f} | {100 * util:.0f}% | {h + o:.0f} | {'' if b is None else f'{b:.0f}'} "
+                       f"| {o / max(1.0, h):.1f} | {at_h:.0f} | {c - at_h:.0f} |")
+        wx = pr.get("waves_excess")
+        if wx is not None:
+            out.append(f"shared wavefronts above ideal a window: **{wx}**; by line: "
+                       + "; ".join(f"L{w['line']} {w['excess']} ({w['per_instr']:.0f}/instr)" for w in pr.get("waves", [])[:5]))
+        out.append("")
+
     for cell in report["cells"]:
         comps = report.get("profile", {}).get(cell, {}).get("components")
         if comps:
             out.append(f"**{cell}** components (samples %): "
                        + "; ".join(f"{k} {v['samples_pct']:.1f}% ({v['stalls']})" for k, v in list(comps.items())[:6]))
+
     if prev:
         out.append("")
         out.append(f"Diff against {prev['sha']} `{prev['tag']}` ({prev['utc']}):")

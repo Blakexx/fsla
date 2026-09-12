@@ -105,6 +105,7 @@ class Attribution:
         self.fmap = function_map(source.read_text().splitlines())
         self.omap = function_map(ops.read_text().splitlines())
         self.source, self.ops = source.name, ops.name
+        self.so, self.member = so, member
         self.frames = frames_map(so, member)
 
     def of(self, offset: int, components: set[str] | None = None) -> tuple[str, bool]:
@@ -152,6 +153,31 @@ def read_source_counters(csv_path: Path) -> list[tuple[int, int, int, dict]]:
     return rows
 
 
+def _num(x: str) -> int:
+    return int(x.replace(",", "")) if x not in ("", "-") else 0
+
+
+def read_source_detail(csv_path: Path) -> dict[int, tuple[str, int, int]]:
+    """address -> (opcode, shared wavefronts, ideal shared wavefronts) per SASS line of the
+    same dump: the opcode classes an instruction (HMMA or not), the wavefronts above the ideal
+    are bank conflicts (KERNEL_STANDARDS §22: a layout's store side is gated by this count)."""
+    out = {}
+    with csv_path.open() as f:
+        hdr = None
+        for r in csv.reader(f):
+            if r and r[0] == "Address":
+                hdr = {k: i for i, k in enumerate(r)}
+                continue
+            if hdr and len(r) == len(hdr) and r[0].startswith("0x"):
+                text = r[hdr["Source"]].strip()
+                op = text.split()[0] if text else "?"
+                if op.startswith("@"):
+                    op = text.split()[1] if len(text.split()) > 1 else op
+                out[int(r[0], 16)] = (op, _num(r[hdr["L1 Wavefronts Shared"]]),
+                                      _num(r[hdr["L1 Wavefronts Shared Ideal"]]))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", type=Path, required=True)
@@ -195,7 +221,47 @@ def main() -> int:
             flag = f"  RED > budget {b}"
             red = True
         print(f"  {fn:22s} {n / a.per:9.0f} ({100 * n / tot:4.1f}%)  samples {100 * sm / max(1, samp):5.1f}%  {top}{flag}")
+    census(rows, attr, components, a.per, read_source_detail(a.csv), a.source, a.top)
     return 1 if red else 0
+
+
+def census(rows, attr: Attribution, components: set[str] | None, per: float,
+           detail: dict[int, tuple[str, int, int]], source: Path, top: int) -> None:
+    """THE PHASE CENSUS (§22): per component, the HMMAs a unit COUNTED from the dump, the
+    other instructions, and the stall samples split between the HMMA instructions and the
+    rest -- the build ledger turns these into tensor utilization a phase and a warp's time
+    at HMMA against its other work. Then THE WAVEFRONT CENSUS: shared-memory wavefronts above
+    the ideal (bank conflicts) a unit, by source line."""
+    base = rows[0][0]
+    cen: dict[str, list] = collections.defaultdict(lambda: [0, 0, 0, 0])
+    waves: dict[int | None, list] = collections.defaultdict(lambda: [0, 0, 0])
+    lm = line_map(attr.so, attr.member, source.name)
+    for addr, n, sm, _st in rows:
+        fn, spin = attr.of(addr - base, components)
+        if spin:
+            continue
+        op, wf, ideal = detail.get(addr, ("?", 0, 0))
+        e = cen[fn]
+        if op.startswith("HMMA"):
+            e[0] += n
+            e[2] += sm
+        else:
+            e[1] += n
+            e[3] += sm
+        if wf > ideal:
+            w = waves[lm.get(addr - base)]
+            w[0] += wf
+            w[1] += ideal
+            w[2] += n
+    print("census (a unit): component hmma other samples_at_hmma samples_at_other")
+    for fn, (h, o, sh, so_) in sorted(cen.items(), key=lambda x: -(x[1][0] + x[1][1])):
+        print(f"  census {fn} {h / per:.1f} {o / per:.1f} {sh} {so_}")
+    tot = sum(w[0] - w[1] for w in waves.values())
+    print(f"wavefronts above ideal (a unit): {tot / per:.0f}")
+    src = source.read_text().splitlines()
+    for ln, (wf, ideal, n) in sorted(waves.items(), key=lambda x: -(x[1][0] - x[1][1]))[:top]:
+        text = src[ln - 1].strip()[:60] if ln else "?"
+        print(f"  wave {ln} {(wf - ideal) / per:.0f} {wf / max(1, n):.1f}/instr {text}")
 
 
 if __name__ == "__main__":

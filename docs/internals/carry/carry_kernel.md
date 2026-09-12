@@ -261,8 +261,9 @@ The budget of each component is the design's own operation count, written in
 (instructions per CTA-window; the formulas name every operation they count). The region
 ledger (`tools/region_ledger.py`) attributes a launch's executed instructions and stalls to
 the component each SASS instruction inlines from, with barrier spins split out, and is red
-over budget. Flagship dense: head 4.0K, fill 6.0K, fold 21.5K (4,608 HMMAs), readout 17.6K
-(4,608 HMMAs); alt-k4: 15.3K in all, the head the largest block.
+over budget. Flagship dense: head 4.0K, fill 5.6K, fold 21.0K (4,608 HMMAs), readout 20.4K
+(4,608 HMMAs; the drain counted from the kernel: 12 nt + 64 a tile); alt-k4: 16.0K in all, the
+head the largest block.
 
 <a id="part-harness"></a>
 ## The part harness
