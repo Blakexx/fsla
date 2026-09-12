@@ -10,6 +10,7 @@
 
 #include "carry/carry_host.cuh"
 #include "carry/carry_kernel.cuh"
+#include "carry_calib.cuh"
 
 namespace rola::carry::parts {
 
@@ -400,4 +401,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                                 P::kPoolOuterOffset, P::kVChunks,     P::kPoolGainOffset};
   });
   m.def("smem_bytes", [] { return (int64_t)rola::carry::parts::FlagPlan::kSmemBytes; });
+  m.def("calibrate", &rola::carry::calib::calibrate);
 }

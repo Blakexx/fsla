@@ -523,7 +523,11 @@ the part's HMMAs, same count, atom and accumulators, and drops its other work), 
 rung, each composition checked by its HMMA count against the kernel's and by its device instructions
 against the kernel's hash. A per-part cost is the difference of two measured times. It exists because
 warp-side instruments cannot say whether the pipe is idle, and the MMA-only composition is the phase's
-measured floor.
+measured floor; (10) THE CALIBRATIONS (`benchmarks/unit/bench_carry_calib.py`, `docs/internals/carry/calibration.md`):
+each operation the parts are made of (the kernel's HMMA atom, shared loads and stores, `ldmatrix` loads,
+asynchronous copies, global reductions, CTA and shared-memory barriers, warp syncs) alone on every warp,
+as cycles an operation a warp on this card -- reference rows every reading uses in place of a constant (the
+HMMA's 32 cycles was one such constant for eight days).
 HOW IT IS READ: a component's THEORY -- what the form must do to the ledger, and why -- is written as
 its budget line before the build; the measurement is read against that theory. A miss is explained
 by a measurement that ISOLATES the mechanism (a line, a counter, a life range, a variant that removes
