@@ -333,6 +333,15 @@ __device__ __forceinline__ uint32_t hi_bf16x2(float lo, float hi) {
   return d;
 }
 
+//: the two floats' LOW halves, packed the same way: the residue under the bf16 plane.
+__device__ __forceinline__ uint32_t lo_bf16x2(float lo, float hi) {
+  uint32_t d;
+  asm("prmt.b32 %0, %1, %2, 0x5410;"
+      : "=r"(d)
+      : "r"(__float_as_uint(lo)), "r"(__float_as_uint(hi)));
+  return d;
+}
+
 //: a packed bf16 pair times a packed bf16 pair, elementwise, rounded once.
 __device__ __forceinline__ uint32_t mul_bf16x2(uint32_t a, uint32_t b) {
   const __nv_bfloat162 p = __hmul2(*reinterpret_cast<const __nv_bfloat162*>(&a),

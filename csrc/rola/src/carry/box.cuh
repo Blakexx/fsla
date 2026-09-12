@@ -149,6 +149,8 @@ struct BoxPlan {
   static_assert(kFillPerWarp * kWarps == kPoolTok && kFillPerWarp <= 16,
                 "the fill deals a chunk evenly, at most sixteen tokens a warp");
   static_assert(kRRSlots >= 2, "the readout's ring issues a tile ahead");
+  static_assert(kRegionBytes >= kSnapshotBytes,
+                "the sweeps stage the low halves across the pool region");
   static_assert(kWarps * kWarpReadBytes <= kRegionBytes,
                 "the readout's private blocks alias the pool's region");
   static_assert(denseref::design::smem_fits((size_t)kSmemBytes),

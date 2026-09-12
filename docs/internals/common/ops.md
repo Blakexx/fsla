@@ -428,6 +428,13 @@ own, so a fragment element reaches shared memory as a 2-byte store rather than a
 half of a packed pair; the value stored is bit-for-bit what `hi_bf16x2` would have
 put in that half.
 
+<a id="lo-bf16x2"></a>
+### `lo_bf16x2`
+
+The two floats' LOW halves packed the same way (`prmt` 0x5410): the residue beneath the
+bf16 plane. The carry's exit sweep stages a state row's low plane with it, so the page's
+lo row is written as whole lines beside the hi row `hi_bf16x2` stages.
+
 <a id="splat-bf16x2"></a>
 ### `splat_bf16x2`
 

@@ -510,92 +510,83 @@ __device__ __forceinline__ constexpr int dealt_box(int warp, int bi, int warps) 
   return warp + bi * warps;
 }
 
-//: THE ENTRY SWEEP: the owned boxes off the pages, hi and lo joined; a page this call only
-//: reads gives hi alone; a page without a slot, or inactive, is zero. THE EXIT SWEEP the
-//: mirror, for the pages this call writes; the exit's mass is read off the mass row past
-//: its edge. -- see docs/internals/carry/carry_kernel.md#state-io
-template <class BP, int D, int BC, bool Load>
-__device__ __forceinline__ void state_sweep(const Smem<BP>& sm, const SideLayout& wo, State<BP>& st,
-                                            const int32_t* slots, uint32_t act_read,
-                                            uint32_t act_write, int warp, int lane,
-                                            const void* plane_in, void* plane_out) {
-  const int r = lane >> 2, q = lane & 3;
+//: THE STAGED SWEEPS: the state crosses the pages as whole 128-byte rows through the
+//: snapshot (hi) and the pool region (lo), never as scattered halves. `state_copy<Store>`
+//: is the CTA's coalesced copy between the pages and the stages, one 16-byte chunk an item,
+//: the masses a row each; `state_gather` joins a warp's boxes off the stages, the mirror of
+//: `snapshot_publish<true>`. A page this call only reads gives hi alone; a page without a
+//: slot, or inactive, is zero. -- see docs/internals/carry/carry_kernel.md#state-io
+template <class BP, int D, int BC, bool Store>
+__device__ __forceinline__ void state_copy(const Smem<BP>& sm, const SideLayout& wo,
+                                           const int32_t* slots, uint32_t act_read,
+                                           uint32_t act_write, int tid, const void* plane_in,
+                                           void* plane_out) {
+  constexpr int kRowItems = BC * BP::kVChunks;
+  constexpr int kItems = 2 * kRowItems / BP::kThreads;
+  static_assert(2 * kRowItems % BP::kThreads == 0, "the sweep deals whole rounds of chunks");
+  const uint16_t* const rowmap = sm.rowmap();
+  rola::static_for<kItems>([&](auto Kc) {
+    const int i = tid + decltype(Kc)::value * BP::kThreads;
+    const int plane = i / kRowItems, v = (i % kRowItems) / BP::kVChunks, chunk = i % BP::kVChunks;
+    const int local = wo.local<D>(v);
+    const int atom = local >> kAtomLeavesBits, row = local & (kAtomLeaves - 1);
+    const int slot = slots[atom];
+    const bool with_lo = ((act_write >> atom) & 1u) != 0u;
+    const ops::SmemAddr at =
+        (plane ? sm.pool(0) : sm.snapshot()) + chan_row_off<BP>((int)rowmap[v], chunk);
+    const uint32_t off = (uint32_t)(slot < 0 ? 0 : slot) * BP::Page::kBytes
+                         + (plane ? BP::Page::kLo : 0u)
+                         + (uint32_t)((row * BP::kDv + chunk * 8) * 2);
+    if constexpr (Store) {
+      if (slot >= 0 && with_lo)
+        *reinterpret_cast<uint4*>(ops::gather_ptr(plane_out, off)) = ops::load_shared_v4(at);
+    } else {
+      const bool present = slot >= 0 && (((act_read | act_write) >> atom) & 1u) != 0u;
+      uint4 x = make_uint4(0u, 0u, 0u, 0u);
+      if (present && (plane == 0 || with_lo))
+        x = *reinterpret_cast<const uint4*>(ops::gather_ptr(plane_in, off));
+      ops::store_shared_vec16(at, x);
+    }
+  });
 
-  rola::static_for<BP::kDealt>([&](auto Bi) {
-    constexpr int bi = decltype(Bi)::value;
-    const int b = dealt_box(warp, bi, BP::kWarps);
-    rola::static_for<BP::kNT>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      rola::static_for<4>([&](auto Ec) {
-        constexpr int e = decltype(Ec)::value;
-        const int leaf = b * 16 + r + 8 * (e >> 1);
-        const int ch = 8 * j + 2 * q + (e & 1);
-        const int local = wo.local<D>(leaf);
-        const int atom = local >> kAtomLeavesBits, row = local & (kAtomLeaves - 1);
-        const int slot = slots[atom];
-        const bool present = slot >= 0 && (((act_read | act_write) >> atom) & 1u) != 0u;
-        const bool with_lo = ((act_write >> atom) & 1u) != 0u;
-        const uint32_t page = (uint32_t)(slot < 0 ? 0 : slot) * BP::Page::kBytes;
-        const uint32_t off = page + (uint32_t)((row * BP::kDv + ch) * 2);
-        float& x = st.c[bi][j][e];
-        if constexpr (Load) {
-          uint32_t hi = 0u, lo = 0u;
-          if (present) hi = *reinterpret_cast<const uint16_t*>(ops::gather_ptr(plane_in, off));
-          if (present && with_lo)
-            lo = *reinterpret_cast<const uint16_t*>(ops::gather_ptr(plane_in, off + BP::Page::kLo));
-          x = __uint_as_float((hi << 16) | lo);
-        } else if (slot >= 0 && with_lo) {
-          const uint32_t w = __float_as_uint(x);
-          *reinterpret_cast<uint16_t*>(ops::gather_ptr(plane_out, off)) = (uint16_t)(w >> 16);
-          *reinterpret_cast<uint16_t*>(ops::gather_ptr(plane_out, off + BP::Page::kLo)) =
-              (uint16_t)(w & 0xFFFFu);
-        }
-      });
-    });
-
-    //: the masses: lane (r, 0) holds leaves `r` in `[0]`, `r + 8` in `[2]`.
-    rola::static_for<2>([&](auto Hc) {
-      constexpr int h = decltype(Hc)::value;
-      const int leaf = b * 16 + r + 8 * h;
-      const int ml = wo.local<D>(leaf);
-      const int matom = ml >> kAtomLeavesBits, mrow = ml & (kAtomLeaves - 1);
-      const int mslot = slots[matom];
-      const bool mpresent = mslot >= 0 && (((act_read | act_write) >> matom) & 1u) != 0u;
-      const bool mlo = ((act_write >> matom) & 1u) != 0u;
-      const uint32_t mo =
-          (uint32_t)(mslot < 0 ? 0 : mslot) * BP::Page::kBytes + (uint32_t)(mrow * 2);
-      if constexpr (Load) {
-        uint32_t w = 0u;
-        if (mpresent) {
-          w = (uint32_t)*reinterpret_cast<const uint16_t*>(
-                  ops::gather_ptr(plane_in, mo + BP::Page::kMassHi))
-              << 16;
-          if (mlo)
-            w |= *reinterpret_cast<const uint16_t*>(
-                ops::gather_ptr(plane_in, mo + BP::Page::kMassLo));
-        }
-        st.m[bi][2 * h] = q == 0 ? __uint_as_float(w) : 0.0f;
-        st.m[bi][2 * h + 1] = 0.0f;
-      } else if (q == 0 && mslot >= 0 && mlo) {
-        const uint32_t w = __float_as_uint(sm.massrow()[wo.plane_row<D>(leaf)]);
+  //: the masses, a leaf a thread, through the mass row.
+#pragma unroll 1
+  for (int v = tid; v < BC; v += BP::kThreads) {
+    const int local = wo.local<D>(v);
+    const int atom = local >> kAtomLeavesBits, row = local & (kAtomLeaves - 1);
+    const int slot = slots[atom];
+    const bool with_lo = ((act_write >> atom) & 1u) != 0u;
+    const uint32_t mo = (uint32_t)(slot < 0 ? 0 : slot) * BP::Page::kBytes + (uint32_t)(row * 2);
+    float& m = sm.massrow()[(int)rowmap[v]];
+    if constexpr (Store) {
+      const uint32_t w = __float_as_uint(m);
+      if (slot >= 0 && with_lo) {
         *reinterpret_cast<uint16_t*>(ops::gather_ptr(plane_out, mo + BP::Page::kMassHi)) =
             (uint16_t)(w >> 16);
         *reinterpret_cast<uint16_t*>(ops::gather_ptr(plane_out, mo + BP::Page::kMassLo)) =
             (uint16_t)(w & 0xFFFFu);
       }
-    });
-  });
+    } else {
+      const bool present = slot >= 0 && (((act_read | act_write) >> atom) & 1u) != 0u;
+      uint32_t w = 0u;
+      if (present) {
+        w = (uint32_t)*reinterpret_cast<const uint16_t*>(
+                ops::gather_ptr(plane_in, mo + BP::Page::kMassHi))
+            << 16;
+        if (with_lo)
+          w |=
+              *reinterpret_cast<const uint16_t*>(ops::gather_ptr(plane_in, mo + BP::Page::kMassLo));
+      }
+      m = __uint_as_float(w);
+    }
+  }
 }
 
-//: THE SNAPSHOT (component `snapshot`), once a window before the readout: the owned boxes'
-//: high halves into the snapshot as `[leaf in read order][channel]` pairs, the readout's B
-//: by `ldmatrix`; and their masses into the mass row in read order. Shared: its edge is
-//: the window's. BUDGET: carry_kernel.md#budgets. -- carry_kernel.md#snapshot
 template <class BP, int D, int BC>
-__device__ __forceinline__ void snapshot_publish(const Smem<BP>& sm, const State<BP>& st, int warp,
-                                                 int lane) {
+__device__ __forceinline__ void state_gather(const Smem<BP>& sm, State<BP>& st, int warp,
+                                             int lane) {
   const int r = lane >> 2, q = lane & 3;
-  const ops::SmemAddr snap = sm.snapshot();
+  const ops::SmemAddr hi_stage = sm.snapshot(), lo_stage = sm.pool(0);
   const uint16_t* const rowmap = sm.rowmap();
   rola::static_for<BP::kDealt>([&](auto Bi) {
     constexpr int bi = decltype(Bi)::value;
@@ -605,8 +596,41 @@ __device__ __forceinline__ void snapshot_publish(const Smem<BP>& sm, const State
       const int ro = (int)rowmap[b * 16 + r + 8 * h];
       rola::static_for<BP::kNT>([&](auto Jc) {
         constexpr int j = decltype(Jc)::value;
-        ops::store_shared_u32(snap + chan_row_off<BP>(ro, j) + (uint32_t)(4 * q),
-                              ops::hi_bf16x2(st.c[bi][j][2 * h], st.c[bi][j][2 * h + 1]));
+        const uint32_t at = chan_row_off<BP>(ro, j) + (uint32_t)(4 * q);
+        const uint32_t hi = ops::load_shared_u32(hi_stage + at);
+        const uint32_t lo = ops::load_shared_u32(lo_stage + at);
+        st.c[bi][j][2 * h] = __uint_as_float(__byte_perm(lo, hi, 0x5410));
+        st.c[bi][j][2 * h + 1] = __uint_as_float(__byte_perm(lo, hi, 0x7632));
+      });
+      st.m[bi][2 * h] = q == 0 ? sm.massrow()[ro] : 0.0f;
+      st.m[bi][2 * h + 1] = 0.0f;
+    });
+  });
+}
+
+//: THE SNAPSHOT (component `snapshot`), once a window before the readout: the owned boxes'
+//: high halves into the snapshot as `[leaf in read order][channel]` pairs, the readout's B
+//: by `ldmatrix`; and their masses into the mass row in read order. Shared: its edge is
+//: the window's. `WithLo`: the exit's, the low halves into the pool region too. BUDGET:
+//: carry_kernel.md#budgets. -- carry_kernel.md#snapshot
+template <class BP, int D, int BC, bool WithLo>
+__device__ __forceinline__ void snapshot_publish(const Smem<BP>& sm, const State<BP>& st, int warp,
+                                                 int lane) {
+  const int r = lane >> 2, q = lane & 3;
+  const ops::SmemAddr snap = sm.snapshot(), lo_stage = sm.pool(0);
+  const uint16_t* const rowmap = sm.rowmap();
+  rola::static_for<BP::kDealt>([&](auto Bi) {
+    constexpr int bi = decltype(Bi)::value;
+    const int b = dealt_box(warp, bi, BP::kWarps);
+    rola::static_for<2>([&](auto Hc) {
+      constexpr int h = decltype(Hc)::value;
+      const int ro = (int)rowmap[b * 16 + r + 8 * h];
+      rola::static_for<BP::kNT>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        const uint32_t at = chan_row_off<BP>(ro, j) + (uint32_t)(4 * q);
+        const float x0 = st.c[bi][j][2 * h], x1 = st.c[bi][j][2 * h + 1];
+        ops::store_shared_u32(snap + at, ops::hi_bf16x2(x0, x1));
+        if constexpr (WithLo) ops::store_shared_u32(lo_stage + at, ops::lo_bf16x2(x0, x1));
       });
     });
     if (q == 0) {
@@ -1165,7 +1189,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     const uint32_t rowbase = (uint32_t)bh * (uint32_t)p.L + (uint32_t)t0;
     const int rlive = live[rola::facts::kRead], wlive = live[rola::facts::kWrite];
     //: THE WINDOW'S EDGE: the state as the readout reads it.
-    if (rlive > 0) snapshot_publish<BP, D, BC>(sm, st, warp, lane);
+    if (rlive > 0) snapshot_publish<BP, D, BC, false>(sm, st, warp, lane);
     pc.lap(kPhaseSnapshot);
     ops::rendezvous();
     pc.lap(kPhaseEdges);
@@ -1238,9 +1262,13 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void carry_kern
     });
     rola::static_for<4>([&](auto Kc) { st.m[decltype(Bi)::value][decltype(Kc)::value] = 0.0f; });
   });
-  if (p.state_in != nullptr)
-    state_sweep<BP, D, BC, true>(sm, lay[rola::facts::kWrite], st, slots, act_read, act_write, warp,
-                                 lane, p.state_in, nullptr);
+  if (p.state_in != nullptr) {
+    state_copy<BP, D, BC, false>(sm, lay[rola::facts::kWrite], slots, act_read, act_write, tid,
+                                 p.state_in, nullptr);
+    ops::rendezvous();
+    state_gather<BP, D, BC>(sm, st, warp, lane);
+    ops::rendezvous();
+  }
   pc.lap(kPhaseSweep);
 
   //: THE STREAMS' VARIANTS, chosen once by the sides' layouts among those the arm can have.
@@ -1279,10 +1307,11 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void carry_kern
   }
 
   if (p.state_out != nullptr) {
-    snapshot_publish<BP, D, BC>(sm, st, warp, lane);
     ops::rendezvous();
-    state_sweep<BP, D, BC, false>(sm, lay[rola::facts::kWrite], st, slots, act_read, act_write,
-                                  warp, lane, nullptr, p.state_out);
+    snapshot_publish<BP, D, BC, true>(sm, st, warp, lane);
+    ops::rendezvous();
+    state_copy<BP, D, BC, true>(sm, lay[rola::facts::kWrite], slots, act_read, act_write, tid,
+                                nullptr, p.state_out);
   }
   pc.lap(kPhaseSweep);
   if (p.ledger != nullptr && lane == 0) {

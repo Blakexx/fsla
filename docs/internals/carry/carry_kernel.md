@@ -107,10 +107,20 @@ ever forms it.
 <a id="state-io"></a>
 ### The sweeps
 
-`state_sweep<Load>`: the entry sweep joins hi and lo planes off the pages (a page this call
-only reads gives hi alone; a page without a slot, or inactive, is zero); the exit sweep
-writes the pages this call writes, the mass off the mass row past the last snapshot. Once a
-call each.
+The state crosses the pages as whole 128-byte rows, staged in shared memory: the high
+halves in the snapshot, the low halves across the pool region (free at both edges of a call;
+`kRegionBytes >= kSnapshotBytes`), the masses in the mass row. `state_copy<Store>` is the
+CTA's coalesced copy between the pages and the stages, one 16-byte chunk an item dealt by
+thread so eight lanes write one row, the masses a leaf a thread; `state_gather` joins a
+warp's boxes off the stages into its accumulators, and `snapshot_publish<true>` is its
+mirror at the exit (the window's publish is `<false>`, hi only). A page this call only reads
+gives hi alone; a page without a slot, or inactive, is zero; the exit stores only the pages
+this call writes. Once a call each, a rendezvous on each side of the stage.
+
+The first form scattered 2-byte halves straight from the accumulator fragments: 128 stores a
+lane, each address register's rewrite waiting on the previous store's scoreboard. At
+alt-k4 that exit was 30% of the kernel's stall samples (12% dense), invisible to the phase
+ledger until its launch carried a state plane.
 
 <a id="snapshot"></a>
 ## The snapshot
