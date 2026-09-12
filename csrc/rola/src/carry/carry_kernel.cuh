@@ -118,11 +118,14 @@ struct Smem {
     return reinterpret_cast<long long*>(base + BP::kLedgerOffset) + warp * kPhases;
   }
 
-  __device__ __forceinline__ int32_t* counter() const {
-    return reinterpret_cast<int32_t*>(base + BP::kCounterOffset);
+  //: THE TILE COUNTER of window parity `parity`: dealt a window ahead, so two.
+  __device__ __forceinline__ int32_t* counter(int parity) const {
+    return reinterpret_cast<int32_t*>(base + BP::kCounterOffset) + parity;
   }
 
-  __device__ __forceinline__ ops::SmemAddr counter_addr() const { return at(BP::kCounterOffset); }
+  __device__ __forceinline__ ops::SmemAddr counter_addr(int parity) const {
+    return at(BP::kCounterOffset + 4 * parity);
+  }
 
   __device__ __forceinline__ ops::SmemAddr take_word(int warp) const {
     return at(BP::kTakeOffset + warp * 4);
@@ -1240,7 +1243,7 @@ struct ReadoutStream {
   float* num;
   float* den;
   uint32_t rowbase;
-  int live, tiles, t0, warp, lane;
+  int parity, live, tiles, t0, warp, lane;
   int k, knext, n;
   bool done;
 
@@ -1250,42 +1253,61 @@ struct ReadoutStream {
     //: result is not, and every collective after it would fall to the convergence-checking
     //: path).
     if (lane == 0)
-      ops::store_shared_u32(sm.take_word(warp), ops::atom_shared_add_u32(sm.counter_addr(), 1u));
+      ops::store_shared_u32(sm.take_word(warp),
+                            ops::atom_shared_add_u32(sm.counter_addr(parity), 1u));
     __syncwarp();
     return (int)ops::load_shared_u32(sm.take_word(warp));
   }
 
   __device__ __forceinline__ ReadoutStream(const CarryParams& p_, const Smem<BP>& sm_,
-                                           RingCursor<BP>& ring_, int2 bases_, int parity,
-                                           int live_, float* num_, float* den_, uint32_t rowbase_,
-                                           int t0_, int warp_, int lane_)
+                                           RingCursor<BP>& ring_, int2 bases_, float* num_,
+                                           float* den_, int warp_, int lane_)
       : p(p_),
         sm(sm_),
         ring(ring_),
         bases(bases_),
-        order(sm_.order(parity)),
-        tmask(sm_.tilemask(parity)),
+        order(nullptr),
+        tmask(nullptr),
         num(num_),
         den(den_),
-        rowbase(rowbase_),
-        live(live_),
-        tiles((live_ + BP::kTile - 1) / BP::kTile),
-        t0(t0_),
+        rowbase(0u),
+        parity(0),
+        live(0),
+        tiles(0),
+        t0(0),
         warp(warp_),
         lane(lane_),
         k(0),
         knext(0),
         n(0),
-        done(false) {
+        done(true) {}
+
+  //: PRIME for the window `parity` whose head just ran: ONE tile taken a warp (every warp
+  //: has its first before any warp a second) and its copies issued into the warp's free ring
+  //: slot -- a window ahead, so they land under the fold. A sparse window has about as many
+  //: tiles as warps; the old two-a-warp deal in the constructor left half the warps idle.
+  __device__ __forceinline__ void prime(int parity_, int live_, uint32_t rowbase_, int t0_) {
+    parity = parity_;
+    live = live_;
+    tiles = (live_ + BP::kTile - 1) / BP::kTile;
+    rowbase = rowbase_;
+    t0 = t0_;
+    order = sm.order(parity);
+    tmask = sm.tilemask(parity);
     k = take();
-    if (k >= tiles) {
-      done = true;
-      return;
-    }
-    readout_issue<BP, D, BC>(p, sm, bases, order, k, live, rowbase, warp, 0, lane);
+    done = k >= tiles;
+    if (!done)
+      readout_issue<BP, D, BC>(p, sm, bases, order, k, live, rowbase, warp, n & (BP::kRRSlots - 1),
+                               lane);
+  }
+
+  //: BEGIN the window's readout: the second tile taken and issued into the other slot.
+  __device__ __forceinline__ void begin() {
+    if (done) return;
     knext = take();
     if (knext < tiles)
-      readout_issue<BP, D, BC>(p, sm, bases, order, knext, live, rowbase, warp, 1, lane);
+      readout_issue<BP, D, BC>(p, sm, bases, order, knext, live, rowbase, warp,
+                               (n + 1) & (BP::kRRSlots - 1), lane);
   }
 
   __device__ __forceinline__ void wait() { ring.wait_full(sm, warp, n & (BP::kRRSlots - 1)); }
@@ -1313,14 +1335,11 @@ struct ReadoutStream {
 
 //: THE READOUT run alone to completion: the sequential loop's form.
 template <class BP, int D, int BC, bool Composed, bool Straddle>
-__device__ __forceinline__ void readout(const CarryParams& p, const Smem<BP>& sm,
-                                        const SideLayout& lay, RingCursor<BP>& ring, int2 bases,
-                                        int parity, int live, float* num, float* den,
-                                        uint32_t rowbase, int t0, int warp, int lane,
+__device__ __forceinline__ void readout(const SideLayout& lay, ReadoutStream<BP, D, BC>& rs,
                                         PhaseClock& pc) {
   static_assert(!Composed && !Straddle, "the readout is spelled for the plain layout");
   (void)lay;
-  ReadoutStream<BP, D, BC> rs(p, sm, ring, bases, parity, live, num, den, rowbase, t0, warp, lane);
+  rs.begin();
 #pragma unroll 1
   while (!rs.done) {
     if (!rs.step()) rs.wait();
@@ -1393,8 +1412,11 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     if (win + 1 < nWindows) stage_words(win + 1);
     pc.lap(kPhaseHead);
   };
-  run_head(0);
   RingCursor<BP> ring{0u};
+  ReadoutStream<BP, D, BC> rs(p, sm, ring, rbases, num, den, warp, lane);
+  if (tid == 0) *sm.counter(0) = 0;
+  run_head(0);
+  rs.prime(0, live[rola::facts::kRead], (uint32_t)bh * (uint32_t)p.L, 0);
 
   //: THE WINDOW, the phases in sequence: the edge (the snapshot, the tile counter reset,
   //: the words landed, one barrier); the fold stream constructed, its first chunks in flight;
@@ -1408,15 +1430,21 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
     const int rlive = live[rola::facts::kRead], wlive = live[rola::facts::kWrite];
     //: THE WINDOW'S EDGE: the state as the readout reads it; the tile counter at zero.
     if (rlive > 0) snapshot_publish<BP, D, BC, false>(sm, st, warp, lane);
-    if (tid == 0) *sm.counter() = 0;
     pc.lap(kPhaseSnapshot);
     ops::stage_wait<0>();
     ops::rendezvous();
     pc.lap(kPhaseEdges);
     FoldStream<BP, D, BC> fs(p, sm, wbases, parity, wlive, rowbase, warp, lane, st, cur);
-    readout<BP, D, BC, RComposed, RStraddle>(p, sm, lay[rola::facts::kRead], ring, rbases, parity,
-                                             rlive, num, den, rowbase, t0, warp, lane, pc);
-    if (win + 1 < nWindows) run_head(win + 1);
+    readout<BP, D, BC, RComposed, RStraddle>(lay[rola::facts::kRead], rs, pc);
+    //: THE NEXT WINDOW'S HEAD, then its readout PRIMED: one tile a warp issued into the rings
+    //: (dead through this window's fold) so the next readout starts on landed tiles; its
+    //: tile counter reset before the head, whose barriers order the reset before the takes.
+    if (win + 1 < nWindows) {
+      if (tid == 0) *sm.counter((win + 1) & 1) = 0;
+      run_head(win + 1);
+      rs.prime((win + 1) & 1, live[rola::facts::kRead],
+               (uint32_t)bh * (uint32_t)p.L + (uint32_t)((win + 1) * kWindow), (win + 1) * kWindow);
+    }
 #pragma unroll 1
     while (!fs.done) {
       if (!fs.step()) fs.wait();

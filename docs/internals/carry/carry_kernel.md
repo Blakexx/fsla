@@ -191,19 +191,22 @@ its mass. About 102 instructions and 18 HMMAs a fragment at DV = 64.
 <a id="readout"></a>
 ## The readout
 
-`ReadoutStream`, a step function with a cursor. Tiles are DEALT: lane 0 takes the next
-tile off the window's shared counter (`atom.shared.add`) into the warp's take word and every
-lane reads it back -- a shared load is warp-uniform to the compiler where a shuffle's or a
-reduction's result is not, and a value it cannot prove uniform puts every collective after
-it on the convergence-checking path (51 calls, 19 divergence branches in the first form).
-`readout_issue` stages a tile's inner and outer runs into the warp's private ring a tile
-ahead (`rring`; lanes `l`, `l + 16` a row; a rank past the live count zero-filled); the
-slot's RING BARRIER (`ring_bar`, 32 landed-copy arrivals) says when it landed, so neither
-stream's copies wait on the other's commit groups. A step: the landed tile (`readout_tile`),
-then the next taken tile issued into the slot it freed; a tile not landed returns false. A
-warp with light fold work takes more tiles: the answer to the state carve's imbalance that
-costs no reap. No CTA barrier in the phase. `readout` runs a stream alone: the sequential
-form.
+`ReadoutStream`, a step function with a cursor that PERSISTS across windows. Tiles are DEALT:
+lane 0 takes the next tile off the window's shared counter (`atom.shared.add`, one counter a
+window parity) into the warp's take word and every lane reads it back -- a shared load is
+warp-uniform to the compiler where a shuffle's or a reduction's result is not, and a value it
+cannot prove uniform puts every collective after it on the convergence-checking path (51
+calls, 19 divergence branches in the first form). `prime`, right after the next window's head:
+ONE tile taken a warp (every warp has its first before any warp a second; a sparse window has
+about as many tiles as warps, and the old two-a-warp deal left half the warps idle) and its
+copies issued into the warp's free ring slot, a window ahead -- the rings are dead through the
+fold, so the next readout starts on landed tiles instead of paying the ~2K-cycle gather of its
+runs per tile exposed. `begin`, at the readout: the second tile taken and issued. `readout_issue`
+stages a tile's inner and outer runs into the warp's private ring (`rring`; lanes `l`,
+`l + 16` a row; a rank past the live count zero-filled); the slot's RING BARRIER (`ring_bar`,
+32 landed-copy arrivals) says when it landed. A step: the landed tile (`readout_tile`), then
+the next taken tile issued into the slot it freed; a tile not landed returns false and the
+caller waits on the ring. A warp with light work takes more tiles. No CTA barrier in the phase.
 
 `readout_tile`: A = the inner tile by `ldmatrix` once; per live box (the tile mask's set
 bits): the rows' outer factors off the outer tile, A scaled per row (four packed
@@ -226,15 +229,16 @@ its lanes and publishes its landed copies. The pool's slots and the readout's ri
 <a id="window-loop"></a>
 ## The window loop
 
-`window_loop`: the edge -- the snapshot (when the read side has a live token), the tile
-counter to zero, the previous window's word copies landed (`cp.async.wait_group 0`), one
-barrier -- then the `FoldStream` constructed (the first `kPoolSlots` chunks issued into
-their slots, free since the last fold's releases), the readout run to completion
-(`readout`: a `ReadoutStream` stepped, waiting on its ring when a tile has not landed), the
-next window's head, the fold run to completion (`fs.step()`, `fs.wait()` when a slot is not
-ready), one barrier. The fold starts on landed chunks because they were in flight under the
-readout and the head; the fill for chunk `kPoolSlots` and after is issued as the fold walks,
-when the slot it goes into is released.
+`window_loop`: the edge -- the snapshot (when the read side has a live token), the previous
+window's word copies landed (`cp.async.wait_group 0`), one barrier -- then the `FoldStream`
+constructed (the first `kPoolSlots` chunks issued into their slots, free since the last
+fold's releases), the readout run to completion on the tiles primed a window ago
+(`readout`: `begin`, then the `ReadoutStream` stepped, waiting on its ring when a tile has not
+landed), the next window's tile counter reset and its head, its readout PRIMED (one tile a
+warp into the rings, dead through this fold), the fold run to completion (`fs.step()`,
+`fs.wait()` when a slot is not ready), one barrier. The fold starts on landed chunks because
+they were in flight under the readout and the head; the next readout starts on landed tiles
+because they were in flight under this fold.
 
 <a id="phase-ledger"></a>
 ## The phase ledger
