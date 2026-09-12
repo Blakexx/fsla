@@ -64,7 +64,10 @@ and the readout (`static_assert`), where it would compose its runs per token.
 
 `abase[l]` is the box's first amplitude column at level `l`, which is also the liveness
 words' digit row base. `run_bases` selects the inner and outer levels' byte bases from it
-statically; `stage_box_words` stages both sides' words a window ahead by `cp.async`.
+statically; `stage_box_words` stages both sides' words a window ahead by `cp.async`, ROUND-MAJOR
+(`words(side, rho)`: a round's `kBoxRows` digit words contiguous), so the head's any-digit OR and
+its sixteen box words are eight 16-byte loads a side rather than thirty-two scalar ones -- the
+row-major form was MIO-bound (FINDINGS §46).
 
 <a id="order"></a>
 <a id="read-order"></a>

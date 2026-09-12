@@ -42,6 +42,7 @@ struct BoxPlan {
   //: THE LIVENESS WORDS staged a window ahead, both sides.
   static constexpr int kBoxRows = span_total(D, kBC);
   static constexpr int kWordsBytes = round_up16(kBoxRows * kRounds * 4);
+  static_assert(kBoxRows % 4 == 0, "a round\'s digit words are whole 16-byte loads");
 
   //: THE HEAD'S PRODUCTS, two by window parity. -- carry_kernel.md#order
   static constexpr int kBuckets = kBoxes + 1;

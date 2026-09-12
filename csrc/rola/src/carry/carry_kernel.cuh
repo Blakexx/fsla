@@ -45,13 +45,15 @@ struct Smem {
     return ops::smem_addr(base) + (uint32_t)off;
   }
 
-  __device__ __forceinline__ const uint32_t* words(int side, int row) const {
+  //: THE LIVENESS WORDS, round-major: round `rho`'s `kBoxRows` digit words are contiguous,
+  //: so a side's any-digit OR and its box words are 16-byte loads.
+  __device__ __forceinline__ const uint32_t* words(int side, int rho) const {
     return reinterpret_cast<const uint32_t*>(base + BP::kWordsOffset + side * BP::kWordsBytes
-                                             + row * BP::kRounds * 4);
+                                             + rho * BP::kBoxRows * 4);
   }
 
-  __device__ __forceinline__ ops::SmemAddr words_addr(int side, int row) const {
-    return at(BP::kWordsOffset + side * BP::kWordsBytes + row * BP::kRounds * 4);
+  __device__ __forceinline__ ops::SmemAddr words_addr(int side, int rho) const {
+    return at(BP::kWordsOffset + side * BP::kWordsBytes + rho * BP::kBoxRows * 4);
   }
 
   //: THE HEAD'S PRODUCTS by window parity: the read order and tile masks; the write side's
@@ -265,7 +267,7 @@ __device__ __forceinline__ void stage_box_words(const CarryParams& p, const Smem
         row = abase[l] + r - span_base(D, BC, l);
     });
     if (lane < nWords)
-      ops::stage_run<4>(sm.words_addr(side, r) + (uint32_t)(lane * 4),
+      ops::stage_run<4>(sm.words_addr(side, lane) + (uint32_t)(r * 4),
                         table + (long)row * p.liveness_words + lane);
   }
   ops::stage_commit();
@@ -283,25 +285,32 @@ __device__ __forceinline__ void box_words(const Smem<BP>& sm, const SideLayout& 
   if constexpr (!Composed && !Straddle) {
     static_assert(kAtomLeaves * BP::kBoxes == BC,
                   "the plain layout is sixteen digits by a digit a box");
-    const uint32_t* const irow = sm.words(side, lay.inner_row) + rho;
-    const uint32_t* const orow = sm.words(side, lay.outer_row) + rho;
+    const ops::SmemAddr round = sm.words_addr(side, rho);
     uint32_t any = 0u;
-    rola::static_for<kAtomLeaves>([&](auto Dc) { any |= irow[decltype(Dc)::value * BP::kRounds]; });
-    rola::static_for<BP::kBoxes>([&](auto Bc) {
-      constexpr int b = decltype(Bc)::value;
-      w[b] = any & orow[b * BP::kRounds];
+    rola::static_for<kAtomLeaves / 4>([&](auto Ic) {
+      const uint4 v =
+          ops::load_shared_v4(round + (uint32_t)((lay.inner_row + 4 * decltype(Ic)::value) * 4));
+      any |= v.x | v.y | v.z | v.w;
+    });
+    rola::static_for<BP::kBoxes / 4>([&](auto Ic) {
+      constexpr int i = decltype(Ic)::value;
+      const uint4 v = ops::load_shared_v4(round + (uint32_t)((lay.outer_row + 4 * i) * 4));
+      w[4 * i] = any & v.x;
+      w[4 * i + 1] = any & v.y;
+      w[4 * i + 2] = any & v.z;
+      w[4 * i + 3] = any & v.w;
     });
     return;
   }
   uint32_t any = ~0u;
 #pragma unroll 1
   for (int i = 0; i < lay.n_inner; ++i) {
-    const uint32_t* const row = sm.words(side, lay.in_row[i]) + rho;
+    const uint32_t* const row = sm.words(side, rho) + lay.in_row[i];
     const int span = lay.in_span[i];
     uint32_t a = 0u;
     rola::static_for<kAtomLeaves>([&](auto Dc) {
       constexpr int d = decltype(Dc)::value;
-      if (d < span) a |= row[d * BP::kRounds];
+      if (d < span) a |= row[d];
     });
     any &= a;
   }
@@ -309,11 +318,11 @@ __device__ __forceinline__ void box_words(const Smem<BP>& sm, const SideLayout& 
   rola::static_for<BP::kBoxes>([&](auto Bc) { w[decltype(Bc)::value] = any; });
 #pragma unroll 1
   for (int i = 0; i < lay.n_outer; ++i) {
-    const uint32_t* const row = sm.words(side, lay.out_row[i]) + rho;
+    const uint32_t* const row = sm.words(side, rho) + lay.out_row[i];
     const int bsh = lay.out_bshift[i], msk = lay.out_mask[i];
     rola::static_for<BP::kBoxes>([&](auto Bc) {
       constexpr int b = decltype(Bc)::value;
-      w[b] &= row[((b >> bsh) & msk) * BP::kRounds];
+      w[b] &= row[(b >> bsh) & msk];
     });
   }
   if constexpr (Straddle) {
@@ -321,13 +330,12 @@ __device__ __forceinline__ void box_words(const Smem<BP>& sm, const SideLayout& 
     rola::static_for<BP::kBoxes>([&](auto Bc) {
       constexpr int b = decltype(Bc)::value;
       const uint32_t* const row =
-          sm.words(side,
-                   lay.srow + ((b & ((1 << lay.cbits) - 1)) << (kAtomLeavesBits - lay.sshift)))
-          + rho;
+          sm.words(side, rho) + lay.srow
+          + ((b & ((1 << lay.cbits) - 1)) << (kAtomLeavesBits - lay.sshift));
       uint32_t a = 0u;
       rola::static_for<kAtomLeaves / 2>([&](auto Dc) {
         constexpr int d = decltype(Dc)::value;
-        if (d < per_class) a |= row[d * BP::kRounds];
+        if (d < per_class) a |= row[d];
       });
       w[b] &= a;
     });
