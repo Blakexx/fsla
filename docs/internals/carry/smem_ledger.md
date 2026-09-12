@@ -22,11 +22,13 @@ of the bytes is before it) and the wait that lands it.
 | warp words, union words, prefix, two parities (`kWarpWordsOffset`, `kUnionOffset`, `kPrefixOffset`) | ~1,300 | written by the head, read by the fill and the fold |
 | live counts (`kLiveOffset`) | 16 | |
 | snapshot (`kSnapshotOffset`) | 32,768 | written at the window start, read by the readout |
-| mass table (`kMassTableOffset`), mass row (`kMassRowOffset`), row map (`kRowMapOffset`) | ~5,600 | |
+| mass row (`kMassRowOffset`), row map (`kRowMapOffset`) | ~1,500 | |
 | page slots, phase ledger, counter, take words, pool and ring barriers, walk rings (`kSlotOffset`..`kWalkOffset`) | ~2,800 | |
 | THE REGION (`kRegionOffset`) | 50,080 | below |
 
-Total `kSmemBytes` = 100,512 B, 98.2 KB of the 99 KB maximum.
+Total `kSmemBytes` = 96,416 B, 94.2 KB of the 99 KB maximum (the 4 KB mass table of the union
+readout, unread since that body's deletion, was removed 2026-09-12; the pool's slot size is
+unchanged by it).
 
 <a id="pool"></a>
 ## The region: the readout's blocks, then the pool

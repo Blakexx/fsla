@@ -63,10 +63,9 @@ struct BoxPlan {
   //: the slot count: the largest multiple of 16 tokens the ledger's remainder holds.
   static constexpr int kPoolTokMax = 128;
 
-  //: THE SNAPSHOT: the state's high halves at the window start, the readout's B; THE MASS
-  //: TABLE. -- carry_kernel.md#snapshot
+  //: THE SNAPSHOT: the state's high halves at the window start, the readout's B.
+  //: -- carry_kernel.md#snapshot
   static constexpr int kSnapshotBytes = kBC * kVRowBytes;
-  static constexpr int kMassTableBytes = kBoxes * 32 * 8;
 
   //: THE READOUT'S PRIVATE RING and DRAIN STAGE, a warp's. -- carry_kernel.md#readout
   static constexpr int kRunTileBytes = kTile * kRunBytes;
@@ -103,8 +102,7 @@ struct BoxPlan {
   static constexpr int kPrefixOffset = kUnionOffset + 2 * kUnionBytes;
   static constexpr int kLiveOffset = kPrefixOffset + 2 * kPrefixBytes;
   static constexpr int kSnapshotOffset = round_up128(kLiveOffset + kLiveBytes);
-  static constexpr int kMassTableOffset = kSnapshotOffset + kSnapshotBytes;
-  static constexpr int kMassRowOffset = kMassTableOffset + kMassTableBytes;
+  static constexpr int kMassRowOffset = kSnapshotOffset + kSnapshotBytes;
   static constexpr int kRowMapOffset = kMassRowOffset + kMassRowBytes;
   static constexpr int kSlotOffset = kRowMapOffset + kRowMapBytes;
   static constexpr int kLedgerOffset = kSlotOffset + round_up16(kAtoms * 4);
