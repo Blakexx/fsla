@@ -285,8 +285,15 @@ def run_worker(binary: dict, bench: str, cells: list[str], reps: int, warmup: in
     cmd = worker_argv(binary, bench, cells, reps, warmup, state, oneshot,
                       binary.get("schedule", "first"))
     with gpu_lock(lock_path, mode="exclusive"):  # measured work
-        proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
-                              timeout=timeout)
+        try:
+            proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
+                                  timeout=timeout)
+        except subprocess.TimeoutExpired as ex:
+            #: A STALL IS A FINDING, NOT A WAIT: the worker is killed and the run says which
+            #: binary and cells hung (a dense N = L draw hung the 2026-09-11 chain for minutes
+            #: until the host's memory watchdog killed the whole chain).
+            raise RuntimeError(f"worker for {binary['label']} on {cells} exceeded {timeout}s "
+                               f"(--timeout); partial stdout={ex.stdout!r}") from ex
     if proc.returncode not in (0, 1):  # 1 = a cell REFUSED, still emits partial JSON
         raise RuntimeError(f"worker for {binary['label']} crashed (rc={proc.returncode}):\n"
                            f"stdout={proc.stdout}\nstderr={proc.stderr}")
@@ -356,7 +363,8 @@ def run_ncu_cell(binary: dict, bench: str, symbol: str, cell: str, lock_path: st
 
 
 def interleaved_rounds(binaries: list[dict], bench: str, cells: list[str], reps: int,
-                       warmup: int, lock_path: str, rounds: int, state: str) -> dict:
+                       warmup: int, lock_path: str, rounds: int, state: str,
+                       timeout: int = 600) -> dict:
     """A,B then B,A then A,B -- interleaved, and the first position alternates by round
     (this file's second rule), so a drift slower than a round is not charged to one arm."""
     per_binary = {b["label"]: [] for b in binaries}
@@ -364,7 +372,7 @@ def interleaved_rounds(binaries: list[dict], bench: str, cells: list[str], reps:
         order = binaries if index % 2 == 0 else list(reversed(binaries))
         for binary in order:
             payload = run_worker(binary, binary.get("bench", bench), cells, reps, warmup,
-                                 lock_path, state)
+                                 lock_path, state, timeout=timeout)
             per_binary[binary["label"]].append({"round": index, **payload})
     return per_binary
 
@@ -401,6 +409,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "The orchestrator refuses it: a binary's schedule goes in its own "
                          "--binary spec as schedule:NAME, because the two trees' vocabularies "
                          "differ (master: box | sparse-gN; this tree: first | identity).")
+    ap.add_argument("--timeout", type=int, default=300,
+                    help="seconds one worker (one binary, all cells, one round) may take "
+                         "before the run fails naming it; a measurement that hangs is a finding")
     ap.add_argument("--state", choices=STATE_SHAPES, default="fresh",
                     help="fresh binds an exit plane over a zero entry state; "
                          "continuation passes the SAME plane in and out")
@@ -507,7 +518,8 @@ def main() -> None:
     clock = clock_lock.engage(read_ghz)
 
     round_rows = interleaved_rounds(args.binary, args.bench, cells, args.reps,
-                                    args.warmup, args.lock, args.rounds, args.state)
+                                    args.warmup, args.lock, args.rounds, args.state,
+                                    args.timeout)
     #: the lock read again after the rounds: with both reads on it the lock held through
     #: the run, which vouches for the rows of a binary from before the probe.
     held = clock is not None and clock_lock.within(read_ghz(), clock)
