@@ -29,6 +29,8 @@ def main() -> int:
     ap.add_argument("cell")
     ap.add_argument("--launches", type=int, default=3)
     ap.add_argument("--state-arm", choices=("fresh", "null"), default="fresh")
+    ap.add_argument("--per-warp", default="readout,fold",
+                    help="the phases whose per-warp rows are printed: an imbalance is seen, not inferred")
     a = ap.parse_args()
 
     import torch
@@ -56,7 +58,7 @@ def main() -> int:
     print(f"{a.cell}: cycles a warp a window (mean over CTAs, warps): "
           + ", ".join(f"{n} {x:.0f}" for n, x in zip(PHASES, per.tolist())) + f"  total {per.sum():.0f}")
     by_warp = ledger.double().mean(dim=0).cpu() / a.launches / windows
-    for ph in ("readout", "fold"):
+    for ph in a.per_warp.split(","):
         i = PHASES.index(ph)
         print(f"  {ph:8s} a warp: " + " ".join(f"{by_warp[w][i]:6.0f}" for w in range(warps)))
     return 0

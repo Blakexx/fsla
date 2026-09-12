@@ -527,7 +527,11 @@ closes it, and the card records which. An instruction count is time only when th
 (a spin that is 10% of instructions and 0.1% of samples is issue slots, not time), and a BANK CONFLICT
 is time only when the line's sample share agrees (the drain's 4-way store conflict was 3,072 excess
 wavefronts a window and 0.4% of samples: removing it bought nothing, because the drain's path is its
-global reduction at 3.4% -- the wavefront census is read beside the per-line samples, never alone). A probe that can
+global reduction at 3.4% -- the wavefront census is read beside the per-line samples, never alone),
+and a BARRIER'S WAIT belongs to whichever phase issues the first instruction that depends on it: a
+deferred-blocking barrier lets the clock read of a lap placed after it issue at arrival, so the wait
+is charged to the next phase, and a wait is read only from per-warp arrival stamps taken before the
+barrier (the 1,738-cycle "scans" were ~460 of scans and the readout's imbalance, 2026-09-12). A probe that can
 report a stale artifact (a PTX assembled after a failed compile, a worker default standing in for a
 schedule) is a defect in the suite and is fixed before its numbers are used again.
 

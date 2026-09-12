@@ -15,3 +15,9 @@ the A/B is not an instrument.
 
 Measured work: the GPU lock exclusive (`tools/gpu_lock.py`). Under `ncu` it is the one launch to
 profile with `--launches 1`.
+
+`--per-warp` names the phases whose per-warp rows are printed (default `readout,fold`). Beside a CTA
+barrier those rows carry the barrier's release wait on whichever side issues first (every barrier
+here defers its block, `carry_kernel.md#phase-ledger`), so they show that an imbalance exists; a wait
+is read from arrival stamps taken before the barrier, not from the rows. A single launch's totals move
+by up to ~5% run to run (nl64k-alt-k4 21,971 / 22,008 / 23,252 on one source); time is the probe's.

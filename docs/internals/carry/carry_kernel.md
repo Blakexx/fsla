@@ -253,13 +253,21 @@ because they were in flight under this fold.
 lane 0 (`%clock64` laps), added into `CarryParams::ledger` at the kernel's end when bound
 (`carry_ledger_bind`). A debug instrument; unbound in production.
 
-The head laps at its own two edges, so a barrier's wait is charged to the block it waits FOR:
-`head_words` is pass one (the box words, masks, buckets, counts, warp and union words) up to the
-counts edge, `head_scans` is the count-table and union scans up to the second counts edge, and
-`head` is what remains — the scatter, the tile masks, and the next window's word staging. The
-three partition the old single `head` row, so totals stay comparable. At N = L alt-k4 they read
-1,388 / 1,738 / 2,454 cycles a warp a window: the scans cost a CTA 1,738 cycles for about sixty
-instructions on one warp, which is latency and two barriers, not work.
+The head laps at its own two edges: `head_words` is pass one (the box words, masks, buckets,
+counts, warp and union words) up to the counts edge, `head_scans` is the count-table and union
+scans up to the second counts edge, and `head` is what remains — the scatter, the tile masks, and
+the next window's word staging. The three partition the old single `head` row, so totals stay
+comparable.
+
+Every CTA barrier in this kernel assembles as a deferred-blocking barrier: a warp arrives and keeps
+issuing, the clock read of the next lap depends on nothing and issues at arrival, and the wait
+materializes at the first instruction that depends on another warp's stores. A lap after a barrier
+therefore charges that barrier's release to the NEXT phase, and per-warp rows beside a barrier are
+not comparable. `head_scans` is the first counts edge's release plus the scans: at N = L alt-k4 it
+reads ~1,740 cycles a warp a window, of which the scans are ~460 on warp 0 and ~250 on warp 1, and
+the rest is the readout's per-warp imbalance arriving at that edge. A wait is read only from arrival
+stamps taken BEFORE the barrier (the edge-wait meter, a measurement variant: the latest arrival minus
+a warp's own, gathered after a later barrier; it costs the kernel 10-14%).
 
 <a id="budgets"></a>
 ## Budgets
