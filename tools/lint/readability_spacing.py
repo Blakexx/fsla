@@ -52,7 +52,19 @@ CSRC_SUFFIXES = (".cu", ".cuh", ".cpp", ".h", ".hpp")
 MIN_BODY_LINES = 40
 
 CONTROL_KEYWORDS = re.compile(r"\b(if|for|while|switch|catch|else)\s*\(")
-SIG_CLOSE_RE = re.compile(r"\)\s*(\w+\s*)*\{\s*$")  # "...) [const] [noexcept] {"
+TAIL_WORDS_RE = re.compile(r"[\w\s]*")
+
+
+def sig_close(line: str) -> bool:
+    """"...) [const] [noexcept] {": the text after the LAST `)` is words and spaces and the
+    line ends in `{`. Linear: the first form, `\)\s*(\w+\s*)*\{\s*$`, backtracked
+    exponentially on a `)` followed by words and no `{` -- every `__launch_bounds__(...) void
+    kernel(` line -- and hung the commit gate for minutes."""
+    s = line.rstrip()
+    if not s.endswith("{"):
+        return False
+    k = s.rfind(")")
+    return k >= 0 and TAIL_WORDS_RE.fullmatch(s[k + 1 : -1]) is not None
 
 
 def csrc_files():
@@ -95,33 +107,43 @@ def consecutive_blank_findings(path: Path, lines: list[str]) -> list[str]:
 
 
 def csrc_body_findings(path: Path, lines: list[str]) -> list[str]:
+    """Function bodies of `MIN_BODY_LINES` or more with no blank line. The brace depth at
+    each line's end is summed ONCE (`depth_end`), so a candidate whose braces never balance
+    (a `{` in a string or a comment, a straddling macro) is skipped in constant time; the
+    first form re-scanned to the end of the file per candidate and took minutes on a
+    1,500-line kernel -- long enough that the commit gate looked hung."""
     findings = []
     n = len(lines)
+    depth_end = [0] * n
+    depth = 0
+    for j, l in enumerate(lines):
+        depth += l.count("{") - l.count("}")
+        depth_end[j] = depth
+
     i = 0
     while i < n:
         line = lines[i]
         # Candidate signature close: look at this line and up to 2 above joined.
         window = " ".join(l.strip() for l in lines[max(0, i - 2) : i + 1])
-        if (SIG_CLOSE_RE.search(line) and "(" in window
+        if (sig_close(line) and "(" in window
                 and not CONTROL_KEYWORDS.search(window)
                 and not window.strip().endswith("; {")):
-            depth = 0
-            started = False
-            j = i
+            base = depth_end[i - 1] if i > 0 else 0
             close = None
-            while j < n:
-                for ch in lines[j]:
-                    if ch == "{":
-                        depth += 1
+
+            #: the body opens on this line or the next few; a candidate that never returns
+            #: to its base depth is unbalanced text, not a function.
+            if depth_end[n - 1] <= base:
+                j = i
+                started = False
+                while j < n and (started or j - i <= 3):
+                    if "{" in lines[j]:
                         started = True
-                    elif ch == "}":
-                        depth -= 1
-                        if started and depth == 0:
-                            close = j
-                            break
-                if close is not None:
-                    break
-                j += 1
+                    if started and depth_end[j] <= base:
+                        close = j
+                        break
+                    j += 1
+
             if close is not None:
                 body = lines[i + 1 : close]
                 if len(body) >= MIN_BODY_LINES and not any(b.strip() == "" for b in body):
