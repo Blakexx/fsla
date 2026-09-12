@@ -66,6 +66,7 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void head_part_
   const SideLayout& lw = lay[rola::facts::kWrite];
   const bool RC = lr.single_inner < 0 || lr.single_outer < 0, RS = lr.straddle >= 0;
   const bool WC = lw.single_inner < 0 || lw.single_outer < 0, WS = lw.straddle >= 0;
+  PhaseClock pc(sm.ledger(warp), lane);
 #pragma unroll 1
   for (int win = 0; win < nWindows; ++win) {
     const int t0 = win * kWindow;
@@ -80,7 +81,7 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void head_part_
     for (int r = 0; r < reps; ++r) {
       run_head(RC, RS, WC, WS, [&](auto rc, auto rs, auto wc, auto ws) {
         head<BP, D, BC, decltype(rc)::value, decltype(rs)::value, decltype(wc)::value,
-             decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane, live);
+             decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane, live, pc);
       });
       ops::rendezvous();
     }
@@ -132,6 +133,7 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void fill_part_
     ops::mbar_init(sm.empty_bar(tid), BP::kWarps);
   }
   ops::rendezvous();
+  PhaseClock pc(sm.ledger(warp), lane);
   int ordinal = 0;
 #pragma unroll 1
   for (int win = 0; win < nWindows; ++win) {
@@ -146,7 +148,7 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void fill_part_
     int live[2] = {0, 0};
     run_head(RC, RS, WC, WS, [&](auto rc, auto rs, auto wc, auto ws) {
       head<BP, D, BC, decltype(rc)::value, decltype(rs)::value, decltype(wc)::value,
-           decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane, live);
+           decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane, live, pc);
     });
     ops::rendezvous();
     const int chunks = (live[rola::facts::kWrite] + BP::kPoolTok - 1) / BP::kPoolTok;
@@ -244,7 +246,7 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void fold_part_
     int live[2] = {0, 0};
     run_head(RC, RS, WC, WS, [&](auto rc, auto rs, auto wc, auto ws) {
       head<BP, D, BC, decltype(rc)::value, decltype(rs)::value, decltype(wc)::value,
-           decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane, live);
+           decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane, live, pc);
     });
     ops::rendezvous();
 #pragma unroll 1

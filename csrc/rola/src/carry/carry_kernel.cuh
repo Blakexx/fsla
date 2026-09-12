@@ -395,7 +395,7 @@ __device__ __forceinline__ void box_words(const Smem<BP>& sm, const SideLayout& 
 template <class BP, int D, int BC, bool RComposed, bool RStraddle, bool WComposed, bool WStraddle>
 __device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
                                      const SideLayout (&lay)[2], int parity, int wLen, int warp,
-                                     int lane, int (&live)[2]) {
+                                     int lane, int (&live)[2], PhaseClock& pc) {
   constexpr int kGroups = BP::kRounds / BP::kWarps;
   static_assert(kGroups * BP::kWarps == BP::kRounds, "the round groups deal evenly");
 
@@ -451,6 +451,7 @@ __device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
   });
 
   ops::rendezvous_group((int)Edge::kCounts, BP::kThreads);
+  pc.lap(kPhaseHeadWords);
 
   //: THE SCANS. Warp 0: the read side's count table, a lane a bucket -- the bucket's counts
 
@@ -512,6 +513,7 @@ __device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
   }
 
   ops::rendezvous_group((int)Edge::kCounts, BP::kThreads);
+  pc.lap(kPhaseHeadScans);
 
   //: PASS TWO: the read side's scatter.
 
@@ -1450,7 +1452,7 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
   int live[2] = {0, 0};
   const auto run_head = [&](int win) {
     head<BP, D, BC, RComposed, RStraddle, WComposed, WStraddle>(p, sm, lay, win & 1, len_of(win),
-                                                                warp, lane, live);
+                                                                warp, lane, live, pc);
     if (win + 1 < nWindows) stage_words(win + 1);
     pc.lap(kPhaseHead);
   };

@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep")
+PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep", "head_words", "head_scans")
 
 
 def main() -> int:

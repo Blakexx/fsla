@@ -253,6 +253,14 @@ because they were in flight under this fold.
 lane 0 (`%clock64` laps), added into `CarryParams::ledger` at the kernel's end when bound
 (`carry_ledger_bind`). A debug instrument; unbound in production.
 
+The head laps at its own two edges, so a barrier's wait is charged to the block it waits FOR:
+`head_words` is pass one (the box words, masks, buckets, counts, warp and union words) up to the
+counts edge, `head_scans` is the count-table and union scans up to the second counts edge, and
+`head` is what remains — the scatter, the tile masks, and the next window's word staging. The
+three partition the old single `head` row, so totals stay comparable. At N = L alt-k4 they read
+1,388 / 1,738 / 2,454 cycles a warp a window: the scans cost a CTA 1,738 cycles for about sixty
+instructions on one warp, which is latency and two barriers, not work.
+
 <a id="budgets"></a>
 ## Budgets
 

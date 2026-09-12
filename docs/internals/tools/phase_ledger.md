@@ -2,7 +2,9 @@
 
 One carry launch (by default three, averaged) on a registry cell with `PhaseClock` bound
 (`carry_ledger_bind`; `docs/internals/carry/carry_kernel.md#phase-ledger`), printed as cycles a
-warp a window per phase — head, readout, fold, snapshot, edges, sweep — averaged over the CTAs and
+warp a window per phase — head, readout, fold, snapshot, edges, sweep, and the head's own two edges
+(head_words up to the counts edge, head_scans up to the second one; `head` is then the scatter, the
+tile masks and the next window's words) — averaged over the CTAs and
 warps, then the readout's and the fold's cycles per warp so an owner imbalance shows.
 
 The launch carries a state plane out (the `fresh` arm, what `tools/probe_cells.py` measures)

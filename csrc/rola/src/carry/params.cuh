@@ -36,7 +36,7 @@ struct CarryParams {
   long long* ledger;
 };
 
-//: THE PHASES the ledger counts. -- carry_kernel.md#phase-ledger
+//: THE PHASES the ledger counts; the head's two edges split its row. -- carry_kernel.md#phase-ledger
 enum CarryPhase : int {
   kPhaseHead = 0,
   kPhaseReadout = 1,
@@ -44,7 +44,9 @@ enum CarryPhase : int {
   kPhaseSnapshot = 3,
   kPhaseEdges = 4,
   kPhaseSweep = 5,
-  kPhases = 6
+  kPhaseHeadWords = 6,
+  kPhaseHeadScans = 7,
+  kPhases = 8
 };
 
 //: THE ORDER POLICIES. -- carry_kernel.md#order

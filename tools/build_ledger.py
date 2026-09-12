@@ -43,7 +43,7 @@ LEDGERS = ROOT / "benchmarks" / "results" / "ledgers"
 PY = sys.executable
 NCU = "/usr/local/cuda/bin/ncu"
 NVCC = "/usr/local/cuda/bin/nvcc"
-PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep")
+PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep", "head_words", "head_scans")
 HMMA_CYCLES, SCHEDULERS = 32, 4  #: the utilization formula's constants (sm_86; --hmma-cycles/--schedulers override the profile step)
 PIPE_METRICS = ",".join([
     "gpu__time_duration.sum", "sm__cycles_elapsed.avg", "smsp__cycles_active.avg",
