@@ -497,3 +497,34 @@ beside the time (idle SMs and tail waves are reported, not inferred), the GPU qu
 profiler child alive: a timed-out `compute-sanitizer` leaves its python child on the device), and the
 probe's clock rows accepted. "Issue active at X%" is a ratio over active cycles and says nothing about
 the instruction count; the count is read, never inferred from the ratio.
+
+## §22 — THE MEASUREMENT SUITE, AND HOW A MEASUREMENT IS READ (law, 2026-09-12, after a week in which a register cap, a "spin", a pipe metric and a schedule default were each misattributed)
+WHAT IS MEASURED, on every build, before any component is judged, as one report diffed against the
+previous build's: (1) the SASS composition (§20) and the REGISTER LIFE RANGES (`nvdisasm
+--print-life-ranges`): peak live registers per source region beside the allocation -- a budget
+argument cites the peak live at the program point, never the allocation; (2) the scoped oracle; (3)
+the phase ledger on the GATE CELLS (the N = L cells, §21's baseline rules) with per-warp rows, so an
+imbalance is seen, not inferred; (4) the region ledger with per-line stalls; (5) tensor utilization as
+the HMMA count times the measured cycles an HMMA holds the pipe, over scheduler cycles -- never a
+profiler's pipe-active ratio, which is normalized to a rate this kernel does not run at; (6) the A/B
+against the baseline RUN WITH ITS OWN SCHEDULE, named per binary (a spec without one ran the dense
+order and recorded the reap).
+HOW IT IS READ: a component's THEORY -- what the form must do to the ledger, and why -- is written as
+its budget line before the build; the measurement is read against that theory. A miss is explained
+by a measurement that ISOLATES the mechanism (a line, a counter, a life range, a variant that removes
+one thing) before anything is reverted; "it did not work" is not an explanation and is not a verdict.
+A form that loses is a form: the idea stays open on the card until a mechanism-level explanation
+closes it, and the card records which. An instruction count is time only when the sampler agrees
+(a spin that is 10% of instructions and 0.1% of samples is issue slots, not time). A probe that can
+report a stale artifact (a PTX assembled after a failed compile, a worker default standing in for a
+schedule) is a defect in the suite and is fixed before its numbers are used again.
+
+## §22 addendum (Blake, 2026-09-12): THE GATE IS A DECISION TREE THAT ONLY GROWS
+"we should never point towards or assume from data that isn't definitive. with our reusable gating
+system, we keep expanding it to add more metrics and data, and any time we find we need more info we
+add more profilers, metrics, etc. to the gate -- so that it becomes a decision tree: any time the
+kernel isn't working, go look at this metric, it deterministically tells you what is going on."
+Consequence: `tools/build_ledger.py` is that tree's trunk. Every number computed by hand in a debug
+session becomes a permanent step of it the same day; a node that cannot decide the question it was
+read for (two mechanisms fit the same numbers) is the signal to add the node that splits them, and
+until that node exists the question is OPEN, not answered by the likelier story.

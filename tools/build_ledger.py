@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+# Copyright 2026 Blake Bottum
+# SPDX-License-Identifier: Apache-2.0
+"""THE BUILD LEDGER (KERNEL_STANDARDS §22): every measurement a build is judged by, in one run,
+as one report diffed against the previous build's. Nothing here is new instrumentation: it drives
+the tools the gate already has and reads their output back, so a number is never typed twice.
+
+    python tools/build_ledger.py --tag fold-two-deep \\
+        --cells nl64k-alt-k4,flagship-dense,flagship-alt-k4,flagship-cohort-k4 \\
+        --baseline worktree:PATH,venv:PATH     # the baseline tree and its venv
+
+The steps, each recorded with its outcome (a failure is a row, never a stop):
+  sass        -- `tools/sass_gate.py` on the installed extension (§20 signatures)
+  registers   -- `tools/life_ranges.py` on a -lineinfo compile of the flagship arm: peak live per
+                 region beside the allocation (a budget cites live, never allocation)
+  oracle      -- the scoped fp64 oracle on the built arm's cells
+  phases      -- `tools/phase_ledger.py` per cell: cycles a warp a window per phase, per-warp rows
+  profile     -- `ncu` SourceCounters + pipe counters per cell, `tools/region_ledger.py` per
+                 component; tensor utilization = HMMA count x `--hmma-cycles` over scheduler
+                 cycles (never the profiler's pipe-active ratio, §22)
+  ab          -- `tools/probe_cells.py` per cell against the baseline RUN WITH ITS OWN SCHEDULE
+                 (`box` dense, `sparse-g32` sparse), this tree with `first`
+The report lands in `benchmarks/results/ledgers/<utc>-<sha7>-<tag>.json` and `.md`; the diff is
+against the newest earlier report for the same cells. Measured work: the GPU lock, quiet GPU.
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import datetime as dt
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+LEDGERS = ROOT / "benchmarks" / "results" / "ledgers"
+PY = sys.executable
+NCU = "/usr/local/cuda/bin/ncu"
+NVCC = "/usr/local/cuda/bin/nvcc"
+PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep")
+PIPE_METRICS = ",".join([
+    "gpu__time_duration.sum", "sm__cycles_elapsed.avg", "smsp__cycles_active.avg",
+    "smsp__inst_executed.sum", "sm__inst_executed_pipe_tensor_op_hmma.sum",
+    "smsp__issue_active.avg.pct_of_peak_sustained_active",
+    "smsp__sass_inst_executed_op_ldsm.sum", "smsp__sass_inst_executed_op_global_red.sum",
+    "dram__bytes_read.sum", "dram__bytes_write.sum",
+])
+ORACLE_K = ("(folded_state or carried_state or idle_resident or two_backings or passes_the_state "
+            "or flagship-dense-first or flagship-alt-k4-first or flagship-alt-k16-first or "
+            "flagship-cohort-k4-first or flagship-both-k4-first or identity or one_token or "
+            "two_orders or sparse_form or partial_window or multiwindow or struct) "
+            "and not dv32 and not dv128 and not deep")
+
+
+def run(cmd: list[str], timeout: int = 1800, env: dict | None = None) -> tuple[int, str]:
+    import os
+    e = dict(os.environ)
+    e.setdefault("ROLA_HOST_BUDGET_SLOTS", "4")
+    if env:
+        e.update(env)
+    try:
+        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout, env=e)
+        return p.returncode, (p.stdout + p.stderr)
+    except subprocess.TimeoutExpired as ex:
+        return 124, f"timeout after {timeout}s: {ex.stdout!r}"
+
+
+def git_sha() -> str:
+    rc, out = run(["git", "rev-parse", "--short=7", "HEAD"])
+    return out.strip() if rc == 0 else "unknown"
+
+
+def extension_so() -> Path:
+    cands = sorted((ROOT / "rola").glob("_C*.so"))
+    if not cands:
+        raise FileNotFoundError("no built extension under rola/")
+    return cands[0]
+
+
+def step_sass(report: dict) -> None:
+    rc, out = run([PY, "tools/sass_gate.py", str(extension_so())])
+    m = re.search(r"instr (\d+) hmma (\d+) per-hmma ([\d.]+) ldl (\d+) calls (\d+) predHMMA (\d+)", out)
+    report["sass"] = {"rc": rc, **({"instr": int(m.group(1)), "hmma": int(m.group(2)),
+                                   "per_hmma": float(m.group(3)), "ldl": int(m.group(4)),
+                                   "calls": int(m.group(5)), "pred_hmma": int(m.group(6))} if m else {"raw": out[-600:]})}
+
+
+def step_registers(report: dict, scratch: Path) -> None:
+    cubin = scratch / "build_ledger_arm0.cubin"
+    rc, out = run([NVCC, "-O3", "-std=c++17", "-arch=sm_86", "--expt-relaxed-constexpr", "-lineinfo",
+                   "-DROLA_CARRY_BUILD_0", "-I", "csrc/rola/src", "-I", "build/generated", "-cubin",
+                   "csrc/rola/src/instantiations/carry_arm_0.cu", "-o", str(cubin)], timeout=900)
+    if rc != 0:
+        report["registers"] = {"rc": rc, "raw": out[-800:]}
+        return
+    rc, out = run([PY, "tools/life_ranges.py", "--cubin", str(cubin), "--source",
+                   "csrc/rola/src/carry/carry_kernel.cuh", "--top", "12"])
+    peak = re.search(r"peak live registers (\d+)", out)
+    regions = dict(re.findall(r"^(\S+)\s+(\d+)\s+[\d.]+\s+\d+$", out, re.M))
+    report["registers"] = {"rc": rc, "peak_live": int(peak.group(1)) if peak else None,
+                           "peak_by_region": {k: int(v) for k, v in regions.items()}}
+
+
+def step_oracle(report: dict) -> None:
+    rc, out = run([PY, "-m", "pytest", "tests/oracle/test_carry_vs_oracle.py", "-q", "-k", ORACLE_K],
+                  timeout=1800)
+    m = re.search(r"(\d+) passed", out)
+    f = re.search(r"(\d+) failed", out)
+    report["oracle"] = {"rc": rc, "passed": int(m.group(1)) if m else 0,
+                        "failed": int(f.group(1)) if f else 0,
+                        "failures": re.findall(r"^FAILED (\S+)", out, re.M)[:20]}
+
+
+def step_phases(report: dict, cells: list[str]) -> None:
+    report["phases"] = {}
+    for cell in cells:
+        rc, out = run([PY, "tools/phase_ledger.py", cell, "--launches", "1"], timeout=900)
+        row = {"rc": rc}
+        m = re.search(r"cycles a warp a window.*?: (.*?)  total ([\d.]+)", out)
+        if m:
+            row["per_phase"] = {k: float(v) for k, v in re.findall(r"(\w+) ([\d.]+)", m.group(1))}
+            row["total"] = float(m.group(2))
+        for ph in ("readout", "fold"):
+            w = re.search(rf"{ph}\s+a warp:\s+([\d\s]+)$", out, re.M)
+            if w:
+                row[f"{ph}_per_warp"] = [int(x) for x in w.group(1).split()]
+        if "per_phase" not in row:
+            row["raw"] = out[-600:]
+        report["phases"][cell] = row
+
+
+def step_profile(report: dict, cells: list[str], scratch: Path, hmma_cycles: int, sms: int,
+                 schedulers: int) -> None:
+    report["profile"] = {}
+    so = str(extension_so())
+    worker = [PY, "tools/probe_cells.py", "--worker", "--bench", "carry_forward", "--reps", "0",
+              "--warmup", "0", "--state", "fresh", "--oneshot", "--schedule", "first"]
+    for cell in cells:
+        row: dict = {}
+        rc, out = run([NCU, "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1",
+                       "--metrics", PIPE_METRICS, "--csv", *worker, "--cells", cell], timeout=1800)
+        vals = {}
+
+        for line in out.splitlines():
+            parts = [p.strip().strip('"') for p in line.split('","')]
+            if len(parts) > 12 and parts[0].isdigit():
+                name, value = parts[-3], parts[-1]
+                with contextlib.suppress(ValueError):
+                    vals[name] = float(value.replace(",", ""))
+        if vals:
+            hmma = vals.get("sm__inst_executed_pipe_tensor_op_hmma.sum", 0.0)
+            cyc = vals.get("sm__cycles_elapsed.avg", 0.0)
+            act = vals.get("smsp__cycles_active.avg", 0.0)
+            row["counters"] = vals
+            if cyc:
+                row["tensor_util_elapsed"] = hmma * hmma_cycles / (sms * schedulers * cyc)
+            if act:
+                row["tensor_util_active"] = hmma * hmma_cycles / (sms * schedulers * act)
+        else:
+            row["counters_raw"] = out[-500:]
+
+        rep = scratch / f"build_ledger_{cell}"
+        rc, out = run([NCU, "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1",
+                       "--section", "SourceCounters", "--metrics", "group:smsp__pcsamp_warp_stall_reasons",
+                       "--import-source", "yes", "-f", "-o", str(rep), *worker, "--cells", cell],
+                      timeout=1800)
+        csv = scratch / f"build_ledger_{cell}.csv"
+        rc2, out2 = run([NCU, "--import", f"{rep}.ncu-rep", "--page", "source", "--print-source",
+                         "sass", "--csv"], timeout=900)
+        if rc2 == 0:
+            csv.write_text(out2)
+            rc3, out3 = run([PY, "tools/region_ledger.py", "--csv", str(csv), "--so", so, "--source",
+                             "csrc/rola/src/carry/carry_kernel.cuh", "--budget", "tools/budgets/carry.json",
+                             "--cell", cell, "--per", "1", "--top", "12"], timeout=900)
+            comps = {}
+            for m in re.finditer(r"^\s+(\S+(?: \[spin\])?)\s+(\d+) \(\s*([\d.]+)%\)\s+samples\s+([\d.]+)%\s+(.*)$",
+                                 out3, re.M):
+                comps[m.group(1)] = {"instr": int(m.group(2)), "instr_pct": float(m.group(3)),
+                                     "samples_pct": float(m.group(4)), "stalls": m.group(5).strip()}
+            row["components"] = comps
+        else:
+            row["profile_raw"] = (out + out2)[-500:]
+
+        report["profile"][cell] = row
+
+
+def step_ab(report: dict, cells: list[str], baseline: str, tag: str) -> None:
+    report["ab"] = {}
+    for cell in cells:
+        sched = "box" if "dense" in cell or "struct" in cell else "sparse-g32"
+        rc, out = run([PY, "tools/probe_cells.py", "--bench", "carry_forward", "--cells", cell,
+                       "--reps", "3", "--warmup", "1", "--rounds", "3", "--timeout", "900",
+                       "--stage", f"ledger-{tag}",
+                       "--binary", f"{baseline},label:master,schedule:{sched}",
+                       "--binary", f"worktree:{ROOT},venv:{Path(PY).parents[1]},label:this,schedule:first"],
+                      timeout=3600)
+        row = {"rc": rc, "master_schedule": sched}
+        for label in ("master", "this"):
+            m = re.search(rf"^{label}\s+\S+\s+([\d.]+)", out, re.M)
+            if m:
+                row[label] = float(m.group(1))
+        if "master" in row and "this" in row and row["master"]:
+            row["ratio"] = row["this"] / row["master"]
+        if "this" not in row:
+            row["raw"] = out[-500:]
+        report["ab"][cell] = row
+
+
+def previous_report(cells: list[str], exclude: Path) -> dict | None:
+    cands = sorted((p for p in LEDGERS.glob("*.json") if p != exclude), key=lambda p: p.stat().st_mtime)
+    for p in reversed(cands):
+        try:
+            r = json.loads(p.read_text())
+        except json.JSONDecodeError:
+            continue
+        if set(cells) & set(r.get("cells", [])):
+            return r
+    return None
+
+
+def markdown(report: dict, prev: dict | None) -> str:
+    out = [f"# Build ledger {report['sha']} `{report['tag']}` ({report['utc']})", ""]
+    s = report.get("sass", {})
+    out.append(f"**SASS** instr {s.get('instr')} hmma {s.get('hmma')} ldl {s.get('ldl')} calls {s.get('calls')} "
+               f"predHMMA {s.get('pred_hmma')}")
+    r = report.get("registers", {})
+    out.append(f"**Registers** peak live {r.get('peak_live')}; by region: "
+               + ", ".join(f"{k} {v}" for k, v in list(r.get("peak_by_region", {}).items())[:8]))
+    o = report.get("oracle", {})
+    out.append(f"**Oracle** {o.get('passed')} passed, {o.get('failed')} failed"
+               + (f": {', '.join(o['failures'][:5])}" if o.get("failures") else ""))
+    out.append("")
+    out.append("| cell | " + " | ".join(PHASES) + " | total | prev total | tensor util (active) | A/B master | this | ratio |")
+    out.append("|---|" + "---|" * (len(PHASES) + 6))
+    for cell in report["cells"]:
+        ph = report.get("phases", {}).get(cell, {}).get("per_phase", {})
+        tot = report.get("phases", {}).get(cell, {}).get("total")
+        pt = (prev or {}).get("phases", {}).get(cell, {}).get("total") if prev else None
+        pr = report.get("profile", {}).get(cell, {})
+        ab = report.get("ab", {}).get(cell, {})
+        util = pr.get("tensor_util_active")
+        out.append(f"| {cell} | " + " | ".join(f"{ph.get(p, 0):.0f}" for p in PHASES)
+                   + f" | {tot if tot is None else f'{tot:.0f}'} | {pt if pt is None else f'{pt:.0f}'}"
+                   + f" | {'' if util is None else f'{100 * util:.0f}%'}"
+                   + f" | {ab.get('master', '')} | {ab.get('this', '')} | {ab.get('ratio', '') if 'ratio' not in ab else f'{ab[chr(114)+chr(97)+chr(116)+chr(105)+chr(111)]:.3f}'} |")
+    out.append("")
+    for cell in report["cells"]:
+        comps = report.get("profile", {}).get(cell, {}).get("components")
+        if comps:
+            out.append(f"**{cell}** components (samples %): "
+                       + "; ".join(f"{k} {v['samples_pct']:.1f}% ({v['stalls']})" for k, v in list(comps.items())[:6]))
+    if prev:
+        out.append("")
+        out.append(f"Diff against {prev['sha']} `{prev['tag']}` ({prev['utc']}):")
+        for cell in report["cells"]:
+            a = report.get("phases", {}).get(cell, {}).get("per_phase", {})
+            b = prev.get("phases", {}).get(cell, {}).get("per_phase", {})
+            if a and b:
+                out.append(f"- {cell}: " + ", ".join(f"{p} {a.get(p, 0) - b.get(p, 0):+.0f}" for p in PHASES))
+    return "\n".join(out) + "\n"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--tag", required=True, help="a few words naming the build")
+    ap.add_argument("--cells", default="nl64k-alt-k4,flagship-dense,flagship-alt-k4,flagship-cohort-k4")
+    ap.add_argument("--baseline", default=None, help="worktree:PATH,venv:PATH of the baseline tree (for --ab)")
+    ap.add_argument("--skip", default="", help="comma list of steps to skip: sass,registers,oracle,phases,profile,ab")
+    ap.add_argument("--hmma-cycles", type=int, default=32,
+                    help="measured cycles one bf16/fp32 m16n8k16 HMMA holds the pipe a scheduler (sm_86: 32)")
+    ap.add_argument("--sms", type=int, default=80)
+    ap.add_argument("--schedulers", type=int, default=4)
+    ap.add_argument("--scratch", type=Path, default=Path("/tmp/rola_build_ledger"))
+    a = ap.parse_args()
+    cells = [c for c in a.cells.split(",") if c]
+    skip = set(a.skip.split(",")) if a.skip else set()
+
+    a.scratch.mkdir(parents=True, exist_ok=True)
+    LEDGERS.mkdir(parents=True, exist_ok=True)
+    report = {"utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%MZ"), "sha": git_sha(),
+              "tag": a.tag, "cells": cells}
+    if "sass" not in skip:
+        step_sass(report)
+    if "registers" not in skip:
+        step_registers(report, a.scratch)
+    if "oracle" not in skip:
+        step_oracle(report)
+    if "phases" not in skip:
+        step_phases(report, cells)
+    if "profile" not in skip:
+        step_profile(report, cells, a.scratch, a.hmma_cycles, a.sms, a.schedulers)
+    if "ab" not in skip:
+        if not a.baseline:
+            ap.error("--ab needs --baseline worktree:PATH,venv:PATH")
+        step_ab(report, cells, a.baseline, a.tag)
+
+    name = f"{report['utc']}-{report['sha']}-{re.sub(r'[^A-Za-z0-9_-]+', '-', a.tag)}"
+    path = LEDGERS / f"{name}.json"
+    path.write_text(json.dumps(report, indent=1) + "\n")
+    prev = previous_report(cells, path)
+    md = markdown(report, prev)
+    (LEDGERS / f"{name}.md").write_text(md)
+    print(md)
+    print(f"report: {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
