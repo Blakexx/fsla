@@ -144,7 +144,7 @@ def worker_main(args) -> None:
             fx = ({"cell": spec} if kind == "carry"
                   else {**_layer_fixture(spec), "cell": spec})
             fx["state_arm"] = args.state
-            fx["schedule"] = args.schedule
+            fx["schedule"] = args.schedule or "first"
             arm = subject.build(fx)
             for _ in range(args.warmup):
                 arm.call()
@@ -160,7 +160,7 @@ def worker_main(args) -> None:
                 arm.call()
                 torch.cuda.synchronize()
                 rows[name] = {"oneshot": True, "state_arm": args.state,
-                              "schedule": args.schedule}
+                              "schedule": args.schedule or "first"}
                 continue
             times = []
             for _ in range(args.reps):
@@ -172,7 +172,7 @@ def worker_main(args) -> None:
                 times.append(start.elapsed_time(end))
             rows[name] = {"median_ms": statistics.median(times), "min_ms": min(times),
                           "max_ms": max(times), "reps": args.reps, "warmup": args.warmup,
-                          "state_arm": args.state, "schedule": args.schedule,
+                          "state_arm": args.state, "schedule": args.schedule or "first",
                           "sm_ghz": ghz, "arm": arm.name}
             del arm, fx
             torch.cuda.empty_cache()
@@ -211,7 +211,6 @@ def parse_binary_spec(spec: str) -> dict:
         raise argparse.ArgumentTypeError(
             f"--binary needs worktree:PATH,venv:PATH (got {spec!r})")
     out.setdefault("label", Path(out["worktree"]).name)
-    out.setdefault("schedule", "first")
     #: A LANE is a binary and a bench; `bench:` on a lane overrides the run's `--bench`, so
     #: one interleaved, clock-locked run can hold several subjects (`tools/compare.py`).
     return out
@@ -397,10 +396,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--lock", default=GPU_LOCK_DEFAULT)
     ap.add_argument("--ncu", action="store_true")
-    ap.add_argument("--schedule", default="first",
-                    help="the carry family's per-arm runtime dial, the order policy: "
-                         "first | identity. Worker-side; the orchestrator reads it off "
-                         "each --binary spec.")
+    ap.add_argument("--schedule", default=None,
+                    help="WORKER-SIDE ONLY: the carry family's order policy (first | identity). "
+                         "The orchestrator refuses it: a binary's schedule goes in its own "
+                         "--binary spec as schedule:NAME, because the two trees' vocabularies "
+                         "differ (master: box | sparse-gN; this tree: first | identity).")
     ap.add_argument("--state", choices=STATE_SHAPES, default="fresh",
                     help="fresh binds an exit plane over a zero entry state; "
                          "continuation passes the SAME plane in and out")
@@ -479,6 +479,16 @@ def main() -> None:
             ap.error(f"unknown cell {cell!r}; registered: {sorted(CELLS)}")
     if not args.binary:
         ap.error("need at least one --binary worktree:PATH,venv:PATH")
+    #: THE SCHEDULE IS A BINARY'S, NEVER THE RUN'S: a top-level value reached no binary and a
+    #: spec without one ran master's `box` (its dense order) under a record saying `first`,
+    #: so every sparse A/B from 2026-09-09 to 09-11 read master unreaped (findings, P81).
+    if args.schedule is not None:
+        ap.error("--schedule is worker-side; give each --binary its own schedule:NAME")
+    if "carry" in args.bench:
+        for binary in args.binary:
+            if "schedule" not in binary:
+                ap.error(f"binary {binary['label']!r} names no schedule: add schedule:NAME "
+                         "(master: box | sparse-g32; this tree: first | identity)")
 
     subject = SUBJECTS[args.bench]
     print(f"BENCH {args.bench}: {subject.what}")
@@ -487,7 +497,7 @@ def main() -> None:
         binary["git_sha"] = git_sha(binary["worktree"])
         print(f"BINARY {binary['label']}: worktree={binary['worktree']} "
               f"venv={binary['venv']} sha={binary['git_sha']} "
-              f"schedule={binary.get('schedule', 'box')} bench={binary.get('bench', args.bench)}")
+              f"schedule={binary.get('schedule')} bench={binary.get('bench', args.bench)}")
     print(f"STATE ARM: {args.state}")
 
     def read_ghz():
@@ -518,7 +528,9 @@ def main() -> None:
                      "venv": binary["venv"], "git_sha": binary["git_sha"], "tree_sha256": tree,
                      "cell": cell,
                      "bench": binary.get("bench", args.bench), "state_arm": args.state,
-                     "schedule": binary.get("schedule", "first"),
+                     #: the schedule the WORKER reports it ran, the spec's only if it is
+                     #: a tip from before the worker reported one.
+                     "schedule": first.get("schedule") or binary.get("schedule"),
                      "reps": args.reps, "warmup": args.warmup, "n_rounds": args.rounds,
                      **{k: stamp.get(k) for k in
                         ("device_name", "device_uuid", "rola_file", "manifest_sha256",
