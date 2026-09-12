@@ -742,7 +742,9 @@ __device__ __forceinline__ void pool_fill(const CarryParams& p, const Smem<BP>& 
 
   rola::static_for<2>([&](auto Ic) {
     constexpr int i = decltype(Ic)::value;
-    const int rr = r0 + warp + i * BP::kWarps;
+    //: the offset rotates with the chunk: a dense chunk spans two rounds, and a fixed offset
+    //: gave warps 0 and 1 every copy of every chunk. -- carry_kernel.md#pool-fill-deal
+    const int rr = r0 + ((warp + chunk) & (BP::kWarps - 1)) + i * BP::kWarps;
     //: a warp without this round, or a round with no live token, skips it: an opaque
     //: one-trip loop, not an `if` ptxas would if-convert into passes of zero-size copies
     //: (KERNEL_STANDARDS §20). At N = L most rounds are dead for a CTA.

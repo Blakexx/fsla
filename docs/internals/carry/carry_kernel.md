@@ -161,14 +161,24 @@ same asked once as a vote), and a window's chunks take slots from 0 in turn; chu
 issued at the window's edge, under the head. The pool sits beside the readout's blocks, not
 over them: both streams run at once (`smem_ledger.md#pool`).
 
-`pool_fill`: the chunk's rounds by two ballots over the prefix, dealt to warps (`r0 + w`,
-`r0 + w + warps`; a warp without a round, or whose round has no live token -- its union word
+`pool_fill`: the chunk's rounds by two ballots over the prefix, dealt to warps (offset
+`(w + chunk) mod warps` from `r0`, and that plus `warps`; a warp without a round, or whose round has no live token -- its union word
 is zero, which at N = L is most rounds a CTA sees -- skips it behind `ops::once`); a round is two passes
 of sixteen tokens, lanes `j` and `j + 16` a token copying alternate 16-byte halves so each
 instruction's pair covers whole sectors; a lane's token is live by the union word's bit,
 its rank by popcount, in the chunk by range; an idle lane's zero-size copies go to the zero
 row (a zero-size `cp.async` ZERO-FILLS its destination — the first form overwrote the next
 warp's rows). One copy group; the arrive when it lands.
+
+<a id="pool-fill-deal"></a>
+The deal rotates with the chunk because a chunk's round span is a density property: at N = L
+sparse a chunk's union tokens span up to sixteen rounds and any fixed offset deals them evenly,
+but a dense 64-token chunk spans exactly two rounds, and the fixed offset (`r0 + w`) gave warps 0
+and 1 every copy of every chunk while six warps skipped. That imbalance surfaced at the fold's end
+barrier (fold rows 49.0K on warps 0,1 against 46.3K on 2,3,6,7 at flagship-dense, the fold plus its
+end-edge wait constant across warps to 200 cycles). Rotating by the chunk keeps the deal a
+bijection between the warps and the chunk's first sixteen rounds, so every round has one filler
+and every warp still arrives at the slot's barrier.
 
 <a id="fold"></a>
 ## The fold
