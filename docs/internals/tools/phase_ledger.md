@@ -21,3 +21,7 @@ barrier those rows carry the barrier's release wait on whichever side issues fir
 here defers its block, `carry_kernel.md#phase-ledger`), so they show that an imbalance exists; a wait
 is read from arrival stamps taken before the barrier, not from the rows. A single launch's totals move
 by up to ~5% run to run (nl64k-alt-k4 21,971 / 22,008 / 23,252 on one source); time is the probe's.
+
+`--warmup` (default 1) runs launches before the ledger is bound: a fresh binary's first launch read
+the fold at 126,797 cycles a warp a window and its second at 35,736 (2026-09-12), so the first launch is
+never a reading.

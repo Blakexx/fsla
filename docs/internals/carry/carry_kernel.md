@@ -256,6 +256,29 @@ warp into the rings, dead through this fold), the fold run to completion (`fs.st
 they were in flight under the readout and the head; the next readout starts on landed tiles
 because they were in flight under this fold.
 
+<a id="parts"></a>
+## The parts (the composer's switches)
+
+Each MMA phase is built from PARTS, compile-time switches read from the generated
+`carry_parts.inc` (`ROLA_CARRY_PARTS`, `docs/build.md#carry-parts`). Production carries every
+part. A STUB keeps its part's HMMAs, with the same count, atom and accumulators, and drops the
+part's other work, so a composition's phase time minus another's is that part's cost in wall time:
+
+| part | real | stub |
+|---|---|---|
+| `readout.stream` | tiles dealt by the shared counter, the ring's issue, landed test and wait | a warp reads every eighth tile by index; no take, no ring |
+| `readout.loads` | A off the ring slot; per box the outer factors, A scaled, B off the snapshot, the masses | fixed bf16 operands in registers |
+| `readout.drain` | the rows out through the stage by reduction, den | every accumulator summed once into a stored sink, so no HMMA is dead |
+| `fold.pool` | the pool fills and the slots' full/empty barriers | no fills, no barriers: a chunk is taken at once |
+| `fold.ring` | the walk's gain loads and ring stores, the fragment's entry off the ring | a fixed entry (pool row 0 at gain 1.0); the walk still counts the kept rows |
+| `fold.loads` | the fragment's pool loads, gain shuffles and scaled A | fixed bf16 operands in registers |
+
+What no stub removes is what sets the HMMA count: the head's masks and order, the tile's box mask
+walk, and the fold's count of kept rows a chunk. The composer checks every composition's HMMA count
+against the kernel's. The switches are `if constexpr` branches around the real statements, left
+verbatim: with every part real the arm's instructions hash identically to a build without them;
+only the debug line table moves.
+
 <a id="phase-ledger"></a>
 ## The phase ledger
 

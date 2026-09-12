@@ -28,6 +28,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cell")
     ap.add_argument("--launches", type=int, default=3)
+    ap.add_argument("--warmup", type=int, default=1,
+                    help="launches run before the ledger is bound (a fresh binary's first launch is not a reading)")
     ap.add_argument("--state-arm", choices=("fresh", "null"), default="fresh")
     ap.add_argument("--per-warp", default="readout,fold",
                     help="the phases whose per-warp rows are printed: an imbalance is seen, not inferred")
@@ -49,6 +51,9 @@ def main() -> int:
         ledger = torch.zeros((owners, warps, len(PHASES)), dtype=torch.int64, device="cuda")
         plane = c.state_plane(kw["descriptor"], 1) if a.state_arm == "fresh" else None
         ext = c.extension()
+        for _ in range(a.warmup):
+            c.carry_forward(routes, v, state_out=plane, **kw)
+        torch.cuda.synchronize()
         ext.carry_ledger_bind(ledger)
         for _ in range(a.launches):
             c.carry_forward(routes, v, state_out=plane, **kw)

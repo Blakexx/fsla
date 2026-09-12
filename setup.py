@@ -252,6 +252,30 @@ def _arm_coverage_sweep(build_lib: str, want: list[int]) -> int:
     return len(got)
 
 
+def _carry_parts() -> tuple[str, ...]:
+    """The carry kernel's REAL parts for this build (the composer's switches): every part
+    unless `ROLA_CARRY_PARTS` names a subset -- `all`, or a comma list of `gen_shards.CARRY_PARTS`
+    names, or `none`. A subset stubs the rest and makes the build an ITERATION build."""
+    spec = os.getenv("ROLA_CARRY_PARTS", "all").strip()
+    if spec in ("", "all"):
+        return gen_shards.CARRY_PARTS
+    if spec == "none":
+        return ()
+    names = tuple(x for x in spec.replace(" ", "").split(",") if x)
+    bad = sorted(set(names) - set(gen_shards.CARRY_PARTS))
+    if bad:
+        raise SystemExit(f"ROLA_CARRY_PARTS: no such part(s) {bad}; the parts are {gen_shards.CARRY_PARTS}")
+    return names
+
+
+def _write_carry_parts() -> None:
+    """Write `build/generated/carry_parts.inc` on EVERY build, so a stubbed mask never
+    outlives the build that asked for it."""
+    gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    (gen_shards.GENERATED_DIR / gen_shards.CARRY_PARTS_INC).write_text(
+        gen_shards.carry_parts_header(_carry_parts()))
+
+
 def _write_csrc_stamp() -> None:
     """Write `build/generated/csrc_stamp.inc` for THIS tree (the device stamp's key).
 
@@ -288,7 +312,8 @@ def _is_iteration_build() -> bool:
     the shipped set; a binary carrying arms it does not ratify is not the thing that
     ships, whichever direction it differs in.
     """
-    return set(_carry_arms()) != set(gen_shards.CARRY_SHIPPED_ARMS) or _decode_arm_subset_active()
+    return (set(_carry_arms()) != set(gen_shards.CARRY_SHIPPED_ARMS) or _decode_arm_subset_active()
+            or set(_carry_parts()) != set(gen_shards.CARRY_PARTS))
 
 
 #: THE ITERATION ARM SUBSET FOR DECODE (KERNEL_STANDARDS section 7, D1b). Same
@@ -756,6 +781,7 @@ class RoLABuildExtension(BuildExtension):
         pin = _gate_vendored()
         _gate_shards()
         _write_carry_selection()
+        _write_carry_parts()
         _write_csrc_stamp()
         sccache = _gate_sccache()
         #: THE MACHINE-WIDE CICC BUDGET (KERNEL_STANDARDS §14 addendum 2, Blake
@@ -788,6 +814,11 @@ class RoLABuildExtension(BuildExtension):
                   f"{list(gen_shards.CARRY_SHIPPED_ARMS)}, so the shippability gate "
                   "(the manifest) is skipped. Build with "
                   "ROLA_CARRY_ARMS unset to get a gateable binary.")
+        if set(_carry_parts()) != set(gen_shards.CARRY_PARTS):
+            print("ITERATION BUILD -- NOT SHIPPABLE.  ROLA_CARRY_PARTS stubs "
+                  f"{sorted(set(gen_shards.CARRY_PARTS) - set(_carry_parts()))} of the carry kernel "
+                  "(a composer measurement build: the stubbed parts keep their HMMAs and drop "
+                  "their other work). Build with ROLA_CARRY_PARTS unset to get the kernel.")
         if _decode_arm_subset_active():
             print("ITERATION BUILD -- NOT SHIPPABLE.  ROLA_DECODE_ARMS is set, so this "
                   "fatbin carries a SUBSET of the decode arms, so the shippability "

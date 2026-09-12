@@ -517,7 +517,13 @@ CTA-window divisor (a budget is per CTA-window; a per-launch total against it fl
 red and meant nothing); (8) THE WAVEFRONT CENSUS: shared-memory wavefronts above the profiler's
 ideal, by source line -- bank conflicts on the store side of a layout, which the load side's
 conflict-free `ldmatrix` hides from every other instrument (an 8-way conflict sat in the snapshot
-for a week as "wider stores don't pay").
+for a week as "wider stores don't pay"); (9) THE COMPOSER (`tools/compose_ledger.py`): a phase's
+time attributed to its PARTS by building compositions in which a part is real or a stub (the stub keeps
+the part's HMMAs, same count, atom and accumulators, and drops its other work), read in wall time rung by
+rung, each composition checked by its HMMA count against the kernel's and by its device instructions
+against the kernel's hash. A per-part cost is the difference of two measured times. It exists because
+warp-side instruments cannot say whether the pipe is idle, and the MMA-only composition is the phase's
+measured floor.
 HOW IT IS READ: a component's THEORY -- what the form must do to the ledger, and why -- is written as
 its budget line before the build; the measurement is read against that theory. A miss is explained
 by a measurement that ISOLATES the mechanism (a line, a counter, a life range, a variant that removes

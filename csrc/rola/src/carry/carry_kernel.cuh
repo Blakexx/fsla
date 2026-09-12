@@ -32,9 +32,27 @@
 #include "common/static_for.cuh"
 #include "facts/liveness_contract.cuh"
 
+#if __has_include("carry_parts.inc")
+#include "carry_parts.inc"
+#endif
+#ifndef ROLA_CARRY_PARTS
+#define ROLA_CARRY_PARTS 0x3fu
+#endif
+
 namespace rola::carry {
 
 namespace ops = denseref::ops;
+
+//: THE PARTS, the composer's switches (bit i of the generated mask REAL; a stub keeps the part's
+//: HMMAs and drops its other work). Production carries all. -- carry_kernel.md#parts
+constexpr bool kReadoutStream = ((ROLA_CARRY_PARTS >> 0) & 1u) != 0u;
+constexpr bool kReadoutLoads = ((ROLA_CARRY_PARTS >> 1) & 1u) != 0u;
+constexpr bool kReadoutDrain = ((ROLA_CARRY_PARTS >> 2) & 1u) != 0u;
+constexpr bool kFoldPool = ((ROLA_CARRY_PARTS >> 3) & 1u) != 0u;
+constexpr bool kFoldRing = ((ROLA_CARRY_PARTS >> 4) & 1u) != 0u;
+constexpr bool kFoldLoads = ((ROLA_CARRY_PARTS >> 5) & 1u) != 0u;
+constexpr uint32_t kStubPair = 0x3F003E80u;   //: bf16 (0.5, 0.25): a stub's operand
+constexpr uint32_t kStubEntry = 0x3F800000u;  //: pool row 0 at gain 1.0: a stub's ring entry
 
 //: THE SHARED BLOCK, as the ledger lays it out. -- see docs/internals/carry/smem_ledger.md
 template <class BP>
@@ -938,57 +956,76 @@ __device__ __forceinline__ int v_lane_row(int lane) { return (lane & 7) + 8 * ((
 template <class BP, int D, int BC>
 __device__ __forceinline__ void fold_fragment(ops::SmemAddr slot, uint32_t entry, int warp,
                                               int lane, State<BP>& st) {
-  const int q = lane & 3;
+  if constexpr (kFoldLoads) {
+    const int q = lane & 3;
 
-  const uint32_t re = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)entry, run_lane_row(lane));
+    const uint32_t re = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)entry, run_lane_row(lane));
 
-  const uint32_t ve = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)entry, v_lane_row(lane));
-  const int rrow = (int)(re & 0xFFu), vrow = (int)(ve & 0xFFu);
-  const int rchunk = (lane >> 3) & 1;
-  uint32_t a[4], sp[4], v[2 * BP::kNT];
-  ops::load_frag_t(a, slot + pool_inner_off<BP>(rrow, rchunk));
-  ops::load_frag_t(sp, slot + pool_outer_off<BP>(rrow, rchunk));
+    const uint32_t ve = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)entry, v_lane_row(lane));
+    const int rrow = (int)(re & 0xFFu), vrow = (int)(ve & 0xFFu);
+    const int rchunk = (lane >> 3) & 1;
+    uint32_t a[4], sp[4], v[2 * BP::kNT];
+    ops::load_frag_t(a, slot + pool_inner_off<BP>(rrow, rchunk));
+    ops::load_frag_t(sp, slot + pool_outer_off<BP>(rrow, rchunk));
 
-  rola::static_for<BP::kNT / 2>([&](auto Ic) {
-    constexpr int i = decltype(Ic)::value;
-    ops::load_frag_t(*reinterpret_cast<uint32_t(*)[4]>(v + 4 * i),
-                     slot + pool_v_off<BP>(vrow, 2 * i + (lane >> 4)));
-  });
-
-  //: the gains of tokens 2q, 2q + 1 and 2q + 8, 2q + 9, off the entries' high halves.
-  uint32_t gp[2];
-
-  rola::static_for<2>([&](auto Hc) {
-    constexpr int h = decltype(Hc)::value;
-    const uint32_t e0 = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)entry, 2 * q + 8 * h);
-    const uint32_t e1 = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)entry, 2 * q + 8 * h + 1);
-    gp[h] = __byte_perm(e0, e1, 0x7632);
-  });
-
-  //: the transposed outer tile's pairs: `[0]` (box r, tokens 2q..), `[1]` (box r + 8,
-
-  //: 2q..), `[2]` (box r, 2q + 8..), `[3]` (box r + 8, 2q + 8..).
-  sp[0] = ops::mul_bf16x2(sp[0], gp[0]);
-  sp[1] = ops::mul_bf16x2(sp[1], gp[0]);
-  sp[2] = ops::mul_bf16x2(sp[2], gp[1]);
-  sp[3] = ops::mul_bf16x2(sp[3], gp[1]);
-
-  rola::static_for<BP::kDealt>([&](auto Bi) {
-    constexpr int bi = decltype(Bi)::value;
-    const int b = dealt_box(warp, bi, BP::kWarps);
-    const int src = ((b & 7) << 2) | q;
-    const uint32_t s0 = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)sp[b < 8 ? 0 : 1], src);
-    const uint32_t s1 = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)sp[b < 8 ? 2 : 3], src);
-    const uint32_t ab[4] = {ops::mul_bf16x2(a[0], s0), ops::mul_bf16x2(a[1], s0),
-                            ops::mul_bf16x2(a[2], s1), ops::mul_bf16x2(a[3], s1)};
-    rola::static_for<BP::kNT>([&](auto Jc) {
-      constexpr int j = decltype(Jc)::value;
-      ops::mma(st.c[bi][j], ab, v + 2 * j);
+    rola::static_for<BP::kNT / 2>([&](auto Ic) {
+      constexpr int i = decltype(Ic)::value;
+      ops::load_frag_t(*reinterpret_cast<uint32_t(*)[4]>(v + 4 * i),
+                       slot + pool_v_off<BP>(vrow, 2 * i + (lane >> 4)));
     });
-    const uint32_t ones = (lane >> 2) == 0 ? 0x3F803F80u : 0u;
-    const uint32_t bm[2] = {ones, ones};
-    ops::mma(st.m[bi], ab, bm);
-  });
+
+    //: the gains of tokens 2q, 2q + 1 and 2q + 8, 2q + 9, off the entries' high halves.
+    uint32_t gp[2];
+
+    rola::static_for<2>([&](auto Hc) {
+      constexpr int h = decltype(Hc)::value;
+      const uint32_t e0 = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)entry, 2 * q + 8 * h);
+      const uint32_t e1 = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)entry, 2 * q + 8 * h + 1);
+      gp[h] = __byte_perm(e0, e1, 0x7632);
+    });
+
+    //: the transposed outer tile's pairs: `[0]` (box r, tokens 2q..), `[1]` (box r + 8,
+
+    //: 2q..), `[2]` (box r, 2q + 8..), `[3]` (box r + 8, 2q + 8..).
+    sp[0] = ops::mul_bf16x2(sp[0], gp[0]);
+    sp[1] = ops::mul_bf16x2(sp[1], gp[0]);
+    sp[2] = ops::mul_bf16x2(sp[2], gp[1]);
+    sp[3] = ops::mul_bf16x2(sp[3], gp[1]);
+
+    rola::static_for<BP::kDealt>([&](auto Bi) {
+      constexpr int bi = decltype(Bi)::value;
+      const int b = dealt_box(warp, bi, BP::kWarps);
+      const int src = ((b & 7) << 2) | q;
+      const uint32_t s0 = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)sp[b < 8 ? 0 : 1], src);
+      const uint32_t s1 = (uint32_t)__shfl_sync(0xFFFFFFFFu, (int)sp[b < 8 ? 2 : 3], src);
+      const uint32_t ab[4] = {ops::mul_bf16x2(a[0], s0), ops::mul_bf16x2(a[1], s0),
+                              ops::mul_bf16x2(a[2], s1), ops::mul_bf16x2(a[3], s1)};
+      rola::static_for<BP::kNT>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        ops::mma(st.c[bi][j], ab, v + 2 * j);
+      });
+      const uint32_t ones = (lane >> 2) == 0 ? 0x3F803F80u : 0u;
+      const uint32_t bm[2] = {ones, ones};
+      ops::mma(st.m[bi], ab, bm);
+    });
+  } else {
+    (void)slot;
+    (void)entry;
+    (void)warp;
+    const uint32_t ab[4] = {kStubPair, kStubPair, kStubPair, kStubPair};
+    uint32_t v[2 * BP::kNT];
+    rola::static_for<2 * BP::kNT>([&](auto Ic) { v[decltype(Ic)::value] = kStubPair; });
+    rola::static_for<BP::kDealt>([&](auto Bi) {
+      constexpr int bi = decltype(Bi)::value;
+      rola::static_for<BP::kNT>([&](auto Jc) {
+        constexpr int j = decltype(Jc)::value;
+        ops::mma(st.c[bi][j], ab, v + 2 * j);
+      });
+      const uint32_t ones = (lane >> 2) == 0 ? 0x3F803F80u : 0u;
+      const uint32_t bm[2] = {ones, ones};
+      ops::mma(st.m[bi], ab, bm);
+    });
+  }
 }
 
 //: THE FOLD STREAM (component `fold`): the write side over the pool as a step function. A
@@ -1035,15 +1072,17 @@ struct FoldStream {
     //: the first `kPoolSlots` chunks into their slots, all free since the last fold's
     //: releases (no wait in fact): the fold starts on landed chunks.
     if (chunks > 0) {
-      rola::static_for<BP::kPoolSlots>([&](auto Kc) {
-        constexpr int k = decltype(Kc)::value;
-        if (k < chunks) {
-          cur.wait_empty(sm, k);
-          pool_fill<BP, D, BC>(p, sm, bases, parity, k, k, rowbase, warp, lane);
-          cur.filled(k);
-        }
-      });
-      fill_c = chunks > BP::kPoolSlots ? BP::kPoolSlots : -1;
+      if constexpr (kFoldPool) {
+        rola::static_for<BP::kPoolSlots>([&](auto Kc) {
+          constexpr int k = decltype(Kc)::value;
+          if (k < chunks) {
+            cur.wait_empty(sm, k);
+            pool_fill<BP, D, BC>(p, sm, bases, parity, k, k, rowbase, warp, lane);
+            cur.filled(k);
+          }
+        });
+        fill_c = chunks > BP::kPoolSlots ? BP::kPoolSlots : -1;
+      }
     } else {
       done = true;
     }
@@ -1080,7 +1119,9 @@ struct FoldStream {
       return false;
     }
     if (!taken_slot) {
-      if (!cur.full_now(sm, s)) return false;
+      if constexpr (kFoldPool) {
+        if (!cur.full_now(sm, s)) return false;
+      }
       const int lo = c * BP::kPoolTok, hi = lo + BP::kPoolTok;
       const int pr = lane < BP::kRounds ? (int)sm.prefix(parity)[lane] : 0x7FFFFFFF;
       rr = ops::last_set(__ballot_sync(0xFFFFFFFFu, pr <= lo));
@@ -1104,12 +1145,14 @@ struct FoldStream {
       const int rank = (int)prefix[rr] + __popc(u & lt);
       const bool in = ((w >> lane) & 1u) != 0u && rank >= lo && rank < hi;
       const uint32_t kept = __ballot_sync(0xFFFFFFFFu, in);
-      if (in) {
-        const int slot_ix = (queued + __popc(kept & lt)) & (BP::kWalkEntries - 1);
-        //: the token's gain: the half of its pool row's gain pair its parity names.
-        const uint32_t gw = ops::load_shared_u32(slot + pool_gain_off<BP>(rank - lo));
-        const uint32_t g = (lane & 1) ? (gw >> 16) : (gw & 0xFFFFu);
-        ring[slot_ix] = (uint32_t)(rank - lo) | (g << 16);
+      if constexpr (kFoldRing) {
+        if (in) {
+          const int slot_ix = (queued + __popc(kept & lt)) & (BP::kWalkEntries - 1);
+          //: the token's gain: the half of its pool row's gain pair its parity names.
+          const uint32_t gw = ops::load_shared_u32(slot + pool_gain_off<BP>(rank - lo));
+          const uint32_t g = (lane & 1) ? (gw >> 16) : (gw & 0xFFFFu);
+          ring[slot_ix] = (uint32_t)(rank - lo) | (g << 16);
+        }
       }
       queued += __popc(kept);
       ++rr;
@@ -1117,8 +1160,12 @@ struct FoldStream {
     }
 
     if (queued - taken >= BP::kTile) {
-      const uint32_t entry = ring[(taken + (lane & 15)) & (BP::kWalkEntries - 1)];
-      fold_fragment<BP, D, BC>(slot, entry, warp, lane, st);
+      if constexpr (kFoldRing) {
+        const uint32_t entry = ring[(taken + (lane & 15)) & (BP::kWalkEntries - 1)];
+        fold_fragment<BP, D, BC>(slot, entry, warp, lane, st);
+      } else {
+        fold_fragment<BP, D, BC>(slot, kStubEntry, warp, lane, st);
+      }
       taken += BP::kTile;
       return true;
     }
@@ -1127,14 +1174,21 @@ struct FoldStream {
 #pragma unroll 1
     for (int n = ops::once(queued > taken); n > 0; --n) {
       const int j = lane & 15;
-      const uint32_t entry =
-          j < queued - taken ? ring[(taken + j) & (BP::kWalkEntries - 1)] : (uint32_t)BP::kPoolTok;
-      fold_fragment<BP, D, BC>(slot, entry, warp, lane, st);
+      if constexpr (kFoldRing) {
+        const uint32_t entry = j < queued - taken ? ring[(taken + j) & (BP::kWalkEntries - 1)]
+                                                  : (uint32_t)BP::kPoolTok;
+        fold_fragment<BP, D, BC>(slot, entry, warp, lane, st);
+      } else {
+        fold_fragment<BP, D, BC>(slot, j < queued - taken ? kStubEntry : (uint32_t)BP::kPoolTok,
+                                 warp, lane, st);
+      }
     }
     __syncwarp();
 
-    if (lane == 0) ops::mbar_arrive(sm.empty_bar(s));
-    cur.used(s);
+    if constexpr (kFoldPool) {
+      if (lane == 0) ops::mbar_arrive(sm.empty_bar(s));
+      cur.used(s);
+    }
     ++c;
     s = c % BP::kPoolSlots;
     taken_slot = false;
@@ -1192,7 +1246,10 @@ __device__ __forceinline__ void readout_tile(const Smem<BP>& sm, ops::SmemAddr s
                                              float* den, int t0, int warp, int lane) {
   const int r = lane >> 2, q = lane & 3;
   uint32_t a[4];
-  ops::load_frag(a, slot + row32_off((lane & 7) + 8 * ((lane >> 3) & 1), lane >> 4));
+  if constexpr (kReadoutLoads)
+    ops::load_frag(a, slot + row32_off((lane & 7) + 8 * ((lane >> 3) & 1), lane >> 4));
+  else
+    rola::static_for<4>([&](auto Ec) { a[decltype(Ec)::value] = kStubPair; });
   const ops::SmemAddr outer = slot + (uint32_t)BP::kRunTileBytes;
   float y[BP::kNT][4], d[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -1206,73 +1263,104 @@ __device__ __forceinline__ void readout_tile(const Smem<BP>& sm, ops::SmemAddr s
   while (rest != 0u) {
     const int b = __ffs((int)rest) - 1;
     rest &= rest - 1u;
-    const uint32_t o_r = ops::splat_u16(ops::load_shared_u16(outer + row32_elem(r, b)));
-    const uint32_t o_r8 = ops::splat_u16(ops::load_shared_u16(outer + row32_elem(r + 8, b)));
-    const uint32_t ab[4] = {ops::mul_bf16x2(a[0], o_r), ops::mul_bf16x2(a[1], o_r8),
-                            ops::mul_bf16x2(a[2], o_r), ops::mul_bf16x2(a[3], o_r8)};
-    const ops::SmemAddr brow = sm.snapshot() + chan_row_off<BP>(b * 16 + snap_row, 0);
-    rola::static_for<BP::kNT / 2>([&](auto Ic) {
-      constexpr int i = decltype(Ic)::value;
-      uint32_t bf[4];
-      //: the chunk index XORs with the row's swizzle: chunk `c` of the row is chunk 0's
-      //: address XOR `16 c`.
-      ops::load_frag_t(bf, brow ^ (uint32_t)((2 * i + (lane >> 4)) * 16));
-      ops::mma(y[2 * i], ab, bf);
-      ops::mma(y[2 * i + 1], ab, bf + 2);
-    });
-    //: den: the box's masses as a B column, lanes `r == 0`.
-    uint32_t bm[2] = {0u, 0u};
-    if (r == 0) {
-      const float2 m0 = *reinterpret_cast<const float2*>(massrow + b * 16 + 2 * q);
-      const float2 m1 = *reinterpret_cast<const float2*>(massrow + b * 16 + 2 * q + 8);
-      bm[0] = ops::hi_bf16x2(m0.x, m0.y);
-      bm[1] = ops::hi_bf16x2(m1.x, m1.y);
+    if constexpr (kReadoutLoads) {
+      const uint32_t o_r = ops::splat_u16(ops::load_shared_u16(outer + row32_elem(r, b)));
+      const uint32_t o_r8 = ops::splat_u16(ops::load_shared_u16(outer + row32_elem(r + 8, b)));
+      const uint32_t ab[4] = {ops::mul_bf16x2(a[0], o_r), ops::mul_bf16x2(a[1], o_r8),
+                              ops::mul_bf16x2(a[2], o_r), ops::mul_bf16x2(a[3], o_r8)};
+      const ops::SmemAddr brow = sm.snapshot() + chan_row_off<BP>(b * 16 + snap_row, 0);
+      rola::static_for<BP::kNT / 2>([&](auto Ic) {
+        constexpr int i = decltype(Ic)::value;
+        uint32_t bf[4];
+        //: the chunk index XORs with the row's swizzle: chunk `c` of the row is chunk 0's
+        //: address XOR `16 c`.
+        ops::load_frag_t(bf, brow ^ (uint32_t)((2 * i + (lane >> 4)) * 16));
+        ops::mma(y[2 * i], ab, bf);
+        ops::mma(y[2 * i + 1], ab, bf + 2);
+      });
+      //: den: the box's masses as a B column, lanes `r == 0`.
+      uint32_t bm[2] = {0u, 0u};
+      if (r == 0) {
+        const float2 m0 = *reinterpret_cast<const float2*>(massrow + b * 16 + 2 * q);
+        const float2 m1 = *reinterpret_cast<const float2*>(massrow + b * 16 + 2 * q + 8);
+        bm[0] = ops::hi_bf16x2(m0.x, m0.y);
+        bm[1] = ops::hi_bf16x2(m1.x, m1.y);
+      }
+      ops::mma(d, ab, bm);
+    } else {
+      (void)b;
+      (void)massrow;
+      const uint32_t ab[4] = {kStubPair, kStubPair, kStubPair, kStubPair};
+      const uint32_t bf[4] = {kStubPair, kStubPair, kStubPair, kStubPair};
+      rola::static_for<BP::kNT / 2>([&](auto Ic) {
+        constexpr int i = decltype(Ic)::value;
+        ops::mma(y[2 * i], ab, bf);
+        ops::mma(y[2 * i + 1], ab, bf + 2);
+      });
+      const uint32_t bm[2] = {kStubPair, kStubPair};
+      ops::mma(d, ab, bm);
     }
-    ops::mma(d, ab, bm);
   }
 
-  //: THE ROWS OUT. Four rows a pass through the stage: lanes `r` in the pass's quarter
+  if constexpr (kReadoutDrain) {
+    //: THE ROWS OUT. Four rows a pass through the stage: lanes `r` in the pass's quarter
 
-  //: write their row's pairs; then each lane reduces one float of each of the four rows'
+    //: write their row's pairs; then each lane reduces one float of each of the four rows'
 
-  //: two lines. Dead ranks (past the live count) leave nothing.
-  const ops::SmemAddr stage = sm.drain(warp);
+    //: two lines. Dead ranks (past the live count) leave nothing.
+    const ops::SmemAddr stage = sm.drain(warp);
 
-  rola::static_for<4>([&](auto Pc) {
-    constexpr int pass = decltype(Pc)::value;
-    constexpr int rlo = (pass & 1) * 4, hsel = pass >> 1;  //: rows rlo..rlo+3 of half hsel
-    __syncwarp();
-    if ((r & 4) == (rlo & 4)) {
-      const int srow = r & 3;
-      rola::static_for<BP::kNT>([&](auto Jc) {
-        constexpr int j = decltype(Jc)::value;
-        ops::store_shared_u64(stage + drain_off<BP>(srow, 8 * j + 2 * q),
-                              __float_as_uint(y[j][2 * hsel]), __float_as_uint(y[j][2 * hsel + 1]));
-      });
-    }
-    __syncwarp();
-    rola::static_for<4>([&](auto Rc) {
-      constexpr int srow = decltype(Rc)::value;
-      const int rank = k * BP::kTile + rlo + srow + 8 * hsel;
-      if (rank < live) {
-        const int tok = (int)order[rank];
-        //: the lane's own float of the row, so a line is a CONSTANT offset from it: the
-        //: reduction's address folds into the instruction instead of costing an index and a
-        //: 64-bit add a line. -- carry_kernel.md#readout
-        float* const lane_out = num + (long)(t0 + tok) * BP::kDv + lane;
-        rola::static_for<BP::kDv / 32>([&](auto Lc) {
-          constexpr int line = decltype(Lc)::value;
-          const float v = ops::load_shared_f32(stage + drain_line_off<BP>(srow, line, lane));
-          ops::red_global_add_f32(lane_out + line * 32, v);
+    rola::static_for<4>([&](auto Pc) {
+      constexpr int pass = decltype(Pc)::value;
+      constexpr int rlo = (pass & 1) * 4, hsel = pass >> 1;  //: rows rlo..rlo+3 of half hsel
+      __syncwarp();
+      if ((r & 4) == (rlo & 4)) {
+        const int srow = r & 3;
+        rola::static_for<BP::kNT>([&](auto Jc) {
+          constexpr int j = decltype(Jc)::value;
+          ops::store_shared_u64(stage + drain_off<BP>(srow, 8 * j + 2 * q),
+                                __float_as_uint(y[j][2 * hsel]),
+                                __float_as_uint(y[j][2 * hsel + 1]));
         });
       }
+      __syncwarp();
+      rola::static_for<4>([&](auto Rc) {
+        constexpr int srow = decltype(Rc)::value;
+        const int rank = k * BP::kTile + rlo + srow + 8 * hsel;
+        if (rank < live) {
+          const int tok = (int)order[rank];
+          //: the lane's own float of the row, so a line is a CONSTANT offset from it: the
+          //: reduction's address folds into the instruction instead of costing an index and a
+          //: 64-bit add a line. -- carry_kernel.md#readout
+          float* const lane_out = num + (long)(t0 + tok) * BP::kDv + lane;
+          rola::static_for<BP::kDv / 32>([&](auto Lc) {
+            constexpr int line = decltype(Lc)::value;
+            const float v = ops::load_shared_f32(stage + drain_line_off<BP>(srow, line, lane));
+            ops::red_global_add_f32(lane_out + line * 32, v);
+          });
+        }
+      });
     });
-  });
 
-  if (q == 0) {
-    const int rank0 = k * BP::kTile + r, rank1 = rank0 + 8;
-    if (rank0 < live) ops::red_global_add_f32(den + t0 + (int)order[rank0], d[0]);
-    if (rank1 < live) ops::red_global_add_f32(den + t0 + (int)order[rank1], d[2]);
+    if (q == 0) {
+      const int rank0 = k * BP::kTile + r, rank1 = rank0 + 8;
+      if (rank0 < live) ops::red_global_add_f32(den + t0 + (int)order[rank0], d[0]);
+      if (rank1 < live) ops::red_global_add_f32(den + t0 + (int)order[rank1], d[2]);
+    }
+  } else {
+    //: the stub's sink: every accumulator read once, so no HMMA is dead.
+    float sink = d[0] + d[1] + d[2] + d[3];
+    rola::static_for<BP::kNT>([&](auto Jc) {
+      rola::static_for<4>([&](auto Ec) { sink += y[decltype(Jc)::value][decltype(Ec)::value]; });
+    });
+    ops::store_shared_u32(sm.drain(warp), __float_as_uint(sink));
+    (void)order;
+    (void)k;
+    (void)live;
+    (void)num;
+    (void)den;
+    (void)t0;
+    (void)q;
   }
 }
 
@@ -1343,11 +1431,16 @@ struct ReadoutStream {
     t0 = t0_;
     order = sm.order(parity);
     tmask = sm.tilemask(parity);
-    k = take();
-    done = k >= tiles;
-    if (!done)
-      readout_issue<BP, D, BC>(p, sm, bases, order, k, live, rowbase, warp, n & (BP::kRRSlots - 1),
-                               lane);
+    if constexpr (kReadoutStream) {
+      k = take();
+      done = k >= tiles;
+      if (!done)
+        readout_issue<BP, D, BC>(p, sm, bases, order, k, live, rowbase, warp,
+                                 n & (BP::kRRSlots - 1), lane);
+    } else {
+      k = warp;
+      done = k >= tiles;
+    }
   }
 
   //: BEGIN the window's readout: the second tile taken and issued into the other slot.
@@ -1388,10 +1481,18 @@ __device__ __forceinline__ void readout(const SideLayout& lay, ReadoutStream<BP,
                                         PhaseClock& pc) {
   static_assert(!Composed && !Straddle, "the readout is spelled for the plain layout");
   (void)lay;
-  rs.begin();
+  if constexpr (kReadoutStream) {
+    rs.begin();
 #pragma unroll 1
-  while (!rs.done) {
-    if (!rs.step()) rs.wait();
+    while (!rs.done) {
+      if (!rs.step()) rs.wait();
+    }
+  } else {
+    //: the stub: a warp's tiles by index (every eighth), no take, no ring, no issue.
+#pragma unroll 1
+    for (int k = rs.k; k < rs.tiles; k += BP::kWarps)
+      readout_tile<BP, D, BC>(rs.sm, rs.sm.rring(rs.warp, 0), (uint32_t)rs.tmask[k], rs.order, k,
+                              rs.live, rs.num, rs.den, rs.t0, rs.warp, rs.lane);
   }
   pc.lap(kPhaseReadout);
 }
