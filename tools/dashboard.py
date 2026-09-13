@@ -119,6 +119,11 @@ def seconds(ts: str) -> float:
     return dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
 
 
+def unit_of(arm: str, calls: int) -> str:
+    """A series is a subject at a call count: the same subject over N carried calls is its own row (`bench.subjects.Subject.calls`)."""
+    return arm if calls == 1 else f"{arm}@calls={calls}"
+
+
 def probe_runs(results: Path, hw: str) -> list[dict]:
     runs = []
     for p in sorted((results / hw).rglob("*.jsonl")):
@@ -133,7 +138,7 @@ def probe_runs(results: Path, hw: str) -> list[dict]:
                      "sha": (head.get("git_sha") or "")[:7], "dirty": bool(head.get("dirty")),
                      "label": extras[0].get("binary") or head.get("worktree") or head["run_id"],
                      "session": extras[0].get("session"),
-                     "rows": [{"cell": x["cell"], "arm": x.get("arm") or DEFAULT_ARM, "ms": x["value"],
+                     "rows": [{"cell": x["cell"], "arm": unit_of(x.get("arm") or DEFAULT_ARM, e.get("calls", 1)), "ms": x["value"],
                                "schedule": e.get("schedule"), "locked": e.get("clock_locked")}
                               for x, e in zip(probes, extras)]})
     return sorted(runs, key=lambda r: (r["ts"], r["run_id"]))

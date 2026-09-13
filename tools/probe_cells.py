@@ -139,14 +139,16 @@ def worker_main(args) -> None:
             if name not in CELLS:
                 raise KeyError(f"{name!r} is not a registered cell")
             kind, spec = CELLS[name]
-            if args.bench not in applicable(spec, kind):
+            calls = args.calls or 1
+            if args.bench not in applicable(spec, kind, calls):
                 raise ValueError(
-                    f"{args.bench} does not apply to {name} "
-                    f"(applicable: {applicable(spec, kind)})")
+                    f"{args.bench} does not apply to {name} at {calls} call(s) "
+                    f"(applicable: {applicable(spec, kind, calls)})")
             fx = ({"cell": spec} if kind == "carry"
                   else {**_layer_fixture(spec), "cell": spec})
             fx["state_arm"] = args.state
             fx["schedule"] = args.schedule or "first"
+            fx["calls"] = calls
             arm = subject.build(fx)
             for _ in range(args.warmup):
                 arm.call()
@@ -162,7 +164,7 @@ def worker_main(args) -> None:
                 arm.call()
                 torch.cuda.synchronize()
                 rows[name] = {"oneshot": True, "state_arm": args.state,
-                              "schedule": args.schedule or "first"}
+                              "schedule": args.schedule or "first", "calls": calls}
                 continue
             times = []
             for _ in range(args.reps):
@@ -175,7 +177,7 @@ def worker_main(args) -> None:
             rows[name] = {"median_ms": statistics.median(times), "min_ms": min(times),
                           "max_ms": max(times), "reps": args.reps, "warmup": args.warmup,
                           "state_arm": args.state, "schedule": args.schedule or "first",
-                          "sm_ghz": ghz, "arm": arm.name}
+                          "calls": calls, "sm_ghz": ghz, "arm": arm.name}
             del arm, fx
             torch.cuda.empty_cache()
         except Exception as ex:  # noqa: BLE001 -- reported per cell, never swallowed
@@ -195,7 +197,7 @@ def _layer_fixture(spec):
 # ORCHESTRATOR
 
 def parse_binary_spec(spec: str) -> dict:
-    """``worktree:/path,venv:/path[,label:NAME][,schedule:NAME]`` -> dict.
+    """``worktree:/path,venv:/path[,label:NAME][,schedule:NAME][,bench:NAME][,calls:N]`` -> dict.
 
     ``schedule`` is the carry family's per-arm runtime dial (`rola.ops.carry.CarrySchedule`):
     the ORDER POLICY, ``first`` (the default, and what a caller who names nothing gets: the
@@ -215,6 +217,11 @@ def parse_binary_spec(spec: str) -> dict:
     out.setdefault("label", Path(out["worktree"]).name)
     #: A LANE is a binary and a bench; `bench:` on a lane overrides the run's `--bench`, so
     #: one interleaved, clock-locked run can hold several subjects (`tools/compare.py`).
+    #: `calls:` is the lane's call count (`bench.subjects.Subject.calls`), a lane's for the
+    #: reason the schedule is: a tree from before the count spells a multi-call unit as a
+    #: bench of its own, and its worker refuses a flag it has never heard of.
+    if "calls" in out:
+        out["calls"] = int(out["calls"])
     return out
 
 
@@ -260,7 +267,7 @@ def venv_python(venv_path: str) -> str:
 
 
 def worker_argv(binary: dict, bench: str, cells: list[str], reps: int, warmup: int,
-                state: str, oneshot: bool, schedule: str = "first") -> list[str]:
+                state: str, oneshot: bool, schedule: str = "first", calls: int = 1) -> list[str]:
     """The worker command, built against the MEASURED worktree's own copy of this file.
 
     Both halves come from the tree being measured -- the harness and the registry -- so a
@@ -276,6 +283,8 @@ def worker_argv(binary: dict, bench: str, cells: list[str], reps: int, warmup: i
     #: IS what such a tip runs, so saying nothing says the right thing.
     if schedule != "first":
         argv += ["--schedule", schedule]
+    if calls != 1:
+        argv += ["--calls", str(calls)]
     if oneshot:
         argv.append("--oneshot")
     return argv
@@ -291,7 +300,7 @@ def run_worker(binary: dict, bench: str, cells: list[str], reps: int, warmup: in
                lock_path: str, state: str, oneshot: bool = False,
                timeout: int = 600) -> dict:
     cmd = worker_argv(binary, bench, cells, reps, warmup, state, oneshot,
-                      binary.get("schedule", "first"))
+                      binary.get("schedule", "first"), binary.get("calls", 1))
     with gpu_lock(lock_path, mode="exclusive"):  # measured work
         try:
             proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
@@ -344,7 +353,7 @@ def run_ncu_cell(binary: dict, bench: str, symbol: str, cell: str, lock_path: st
     cmd = [NCU_BIN, "--target-processes", "all", "-k", f"regex:{symbol}", "-c", "1",
            "--print-kernel-base", "mangled", "--metrics", ",".join(NCU_METRICS), "--csv",
            *worker_argv(binary, bench, [cell], 0, 0, state, True,
-                        binary.get("schedule", "first"))]
+                        binary.get("schedule", "first"), binary.get("calls", 1))]
     out_csv = f"{out_csv_prefix}_{binary['label']}_{bench}_{cell}.csv"
     with gpu_lock(lock_path, mode="exclusive"):  # measured work
         proc = subprocess.run(cmd, cwd=binary["worktree"], capture_output=True, text=True,
@@ -417,6 +426,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "The orchestrator refuses it: a binary's schedule goes in its own "
                          "--binary spec as schedule:NAME, because the two trees' vocabularies "
                          "differ (master: box | sparse-gN; this tree: first | identity).")
+    ap.add_argument("--calls", type=int, default=None,
+                    help="WORKER-SIDE ONLY: the call count the sequence runs as. The orchestrator "
+                         "refuses it: a binary's count goes in its own --binary spec as calls:N, "
+                         "because a tree from before the count names a multi-call unit as its "
+                         "own bench.")
     ap.add_argument("--timeout", type=int, default=300,
                     help="seconds one worker (one binary, all cells, one round) may take "
                          "before the run fails naming it; a measurement that hangs is a finding")
@@ -424,6 +438,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="fresh binds an exit plane over a zero entry state; "
                          "continuation passes the SAME plane in and out")
     ap.add_argument("--out", default=None, help="path for one JSON row per (binary, cell)")
+
     #: Recording is ON by default -- a probe run IS a measurement, and the record's whole
     #: point is that nothing measured is lost to a terminal scrollback.
     ap.add_argument("--no-record", action="store_true",
@@ -489,7 +504,9 @@ def main() -> None:
     from bench.driver import CELLS
     from bench.subjects import SUBJECTS
 
-    for name in [args.bench] + [b["bench"] for b in args.binary if "bench" in b]:
+    #: A LANE'S BENCH IS ITS OWN TREE'S NAME, refused by that tree's worker; only the run's
+    #: bench, and under --ncu every lane's (the symbol is read here), must be this tree's.
+    for name in [args.bench] + [b["bench"] for b in args.binary if "bench" in b and args.ncu]:
         if name not in SUBJECTS:
             ap.error(f"unknown bench {name!r}; registered: {sorted(SUBJECTS)}")
     cells = args.cells.split(",")
@@ -503,6 +520,8 @@ def main() -> None:
     #: so every sparse A/B from 2026-09-09 to 09-11 read master unreaped (findings, P81).
     if args.schedule is not None:
         ap.error("--schedule is worker-side; give each --binary its own schedule:NAME")
+    if args.calls is not None:
+        ap.error("--calls is worker-side; give each --binary its own calls:N")
     if "carry" in args.bench:
         for binary in args.binary:
             if "schedule" not in binary:
@@ -516,7 +535,8 @@ def main() -> None:
         binary["git_sha"] = git_sha(binary["worktree"])
         print(f"BINARY {binary['label']}: worktree={binary['worktree']} "
               f"venv={binary['venv']} sha={binary['git_sha']} "
-              f"schedule={binary.get('schedule')} bench={binary.get('bench', args.bench)}")
+              f"schedule={binary.get('schedule')} bench={binary.get('bench', args.bench)} "
+              f"calls={binary.get('calls', 1)}")
     print(f"STATE ARM: {args.state}")
 
     def read_ghz():
@@ -554,6 +574,7 @@ def main() -> None:
                      #: the schedule the WORKER reports it ran, the spec's only if it is
                      #: a tip from before the worker reported one.
                      "schedule": first.get("schedule") or binary.get("schedule"),
+                     "calls": first.get("calls") or binary.get("calls", 1),
                      "reps": args.reps, "warmup": args.warmup, "n_rounds": args.rounds,
                      **{k: stamp.get(k) for k in
                         ("device_name", "device_uuid", "rola_file", "manifest_sha256",

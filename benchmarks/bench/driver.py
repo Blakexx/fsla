@@ -4,8 +4,9 @@ Thin by design. Every driver under `benchmarks/unit/` and `benchmarks/integratio
 this module plus the name of the subject it prices, so the discipline cannot be acquired
 in nine slightly different ways.
 
-An ARM SPEC is `subject@cell` -- both halves are names from the registries, so a command
-line is citable and a row's `arm` field reads the same way. `--ab A:B` runs the two specs
+An ARM SPEC is `subject@cell`, or `subject@cell@calls=N` for a subject priced as N carried
+calls (`bench.subjects.Subject.calls`) -- every part is a registry name or a declared count,
+so a command line is citable and a row's `arm` field reads the same way. `--ab A:B` runs the two specs
 interleaved rep by rep through `bench.pairing.interleaved_ab`; without it each spec is
 measured alone, which is the BASELINE mode.
 
@@ -55,19 +56,21 @@ PROBE_VERSION = 2
 TIER_ROUNDS = {"light": 3, "landing": MIN_ROUNDS}
 
 
-def parse_spec(spec: str, subjects) -> tuple[str, str]:
-    subject, _, cell = spec.partition("@")
-    if not cell:
-        raise SystemExit(f"arm spec {spec!r} is not `subject@cell`")
+def parse_spec(spec: str, subjects) -> tuple[str, str, int]:
+    subject, _, rest = spec.partition("@")
+    cell, _, count = rest.partition("@")
+    if not cell or (count and not count.startswith("calls=")):
+        raise SystemExit(f"arm spec {spec!r} is not `subject@cell[@calls=N]`")
+    calls = int(count.removeprefix("calls=")) if count else 1
     if subject not in subjects:
         raise SystemExit(f"{subject!r} is not one of this driver's subjects: {sorted(subjects)}")
     if cell not in CELLS:
         raise SystemExit(f"{cell!r} is not a registered cell: {sorted(CELLS)}")
     kind, spec = CELLS[cell]
-    if subject not in applicable(spec, kind):
-        raise SystemExit(f"{subject!r} does not apply to {cell!r} "
-                         f"(applicable: {applicable(spec, kind)})")
-    return subject, cell
+    if subject not in applicable(spec, kind, calls):
+        raise SystemExit(f"{subject!r} does not apply to {cell!r} at {calls} call(s) "
+                         f"(applicable: {applicable(spec, kind, calls)})")
+    return subject, cell, calls
 
 
 def fixture(cell: str, cache: dict) -> dict:
@@ -85,15 +88,20 @@ def fixture(cell: str, cache: dict) -> dict:
     return cache[cell]
 
 
-def build_arm(subject: str, cell: str, cache: dict) -> Arm:
-    arm = SUBJECTS[subject].build(fixture(cell, cache))
-    return Arm(name=f"{subject}|{cell}", call=arm.call)
+def arm_name(subject: str, cell: str, calls: int) -> str:
+    return f"{subject}|{cell}" + (f"|calls={calls}" if calls != 1 else "")
 
 
-def _row(run, subject: str, cell: str, values, source: str, **extra) -> dict:
+def build_arm(subject: str, cell: str, calls: int, cache: dict) -> Arm:
+    #: the count goes on a COPY: the cached fixture is shared by every subject on the cell.
+    arm = SUBJECTS[subject].build({**fixture(cell, cache), "calls": calls})
+    return Arm(name=arm_name(subject, cell, calls), call=arm.call)
+
+
+def _row(run, subject: str, cell: str, calls: int, values, source: str, **extra) -> dict:
     return run.row(probe=f"rola:{subject}", probe_version=PROBE_VERSION,
-                   arm=f"{subject}|{cell}", source=source, metric="duration", unit="ms",
-                   values=values, **extra)
+                   arm=arm_name(subject, cell, calls), source=source, metric="duration",
+                   unit="ms", values=values, **extra)
 
 
 def main(subjects, argv=None, *, description: str = "") -> int:
@@ -134,11 +142,12 @@ def main(subjects, argv=None, *, description: str = "") -> int:
         rows = []
         k38_results = []
 
-        def _k38(subject, cell, values, **extra):
+        def _k38(subject, cell, calls, values, **extra):
             k38_results.append(store.build_result(
                 k38_run, kind="probe", cell=cell, arm=subject, metric="duration_median_ms",
                 value=statistics.median(values), unit="ms",
-                extra={"values": list(values), "instrument": args.instrument, **extra}))
+                extra={"values": list(values), "instrument": args.instrument, "calls": calls,
+                       **extra}))
 
         k38_run = None
         if not args.no_record:
@@ -152,40 +161,39 @@ def main(subjects, argv=None, *, description: str = "") -> int:
 
         if args.ab:
             a_spec, _, b_spec = args.ab.partition(":")
-            a = build_arm(*parse_spec(a_spec, subjects), cache)
-            b = build_arm(*parse_spec(b_spec, subjects), cache)
+            a_unit, b_unit = parse_spec(a_spec, subjects), parse_spec(b_spec, subjects)
+            a, b = build_arm(*a_unit, cache), build_arm(*b_unit, cache)
             result = interleaved_ab(a, b, rounds=rounds, reps_per_round=args.reps,
                                     instrument=args.instrument)
             summary = result.summary()
             summary["significance"] = paired_verdict(result.diffs())
             out.append(summary)
             print(json.dumps(summary, indent=1, sort_keys=True, default=str))
-            for arm, times in ((a, result.a_times), (b, result.b_times)):
-                subject, cell = arm.name.split("|")
-                rows.append(_row(run, subject, cell, times, args.instrument,
+            for arm, unit, times in ((a, a_unit, result.a_times), (b, b_unit, result.b_times)):
+                rows.append(_row(run, *unit, times, args.instrument,
                                  paired_with=(b if arm is a else a).name,
                                  rounds=rounds, reps_per_round=args.reps))
                 if k38_run is not None:
-                    _k38(subject, cell, times, paired_with=(b if arm is a else a).name,
+                    _k38(*unit, times, paired_with=(b if arm is a else a).name,
                         rounds=rounds, reps_per_round=args.reps)
         else:
             wanted = [args.subject] if args.subject else sorted(subjects)
-            for cell in names:
-                for subject in wanted:
-                    kind, spec = CELLS[cell]
-                    if subject not in applicable(spec, kind):
-                        continue
-                    arm = build_arm(subject, cell, cache)
-                    res = measure_arm(arm, rounds=rounds, reps_per_round=args.reps,
-                                      instrument=args.instrument)
-                    res["cell"], res["subject"] = cell, subject
-                    out.append(res)
-                    print(f"  {subject:<20} {cell:<22} "
-                          f"{res['median_ms']:9.4f} ms  IQR {res['iqr_ms']:.4f}")
-                    rows.append(_row(run, subject, cell, res["values"], args.instrument,
-                                     rounds=rounds, reps_per_round=args.reps))
-                    if k38_run is not None:
-                        _k38(subject, cell, res["values"], rounds=rounds, reps_per_round=args.reps)
+            units = [(subject, cell, calls) for cell in names for subject in wanted
+                     for calls in SUBJECTS[subject].calls
+                     if subject in applicable(CELLS[cell][1], CELLS[cell][0], calls)]
+            for subject, cell, calls in units:
+                arm = build_arm(subject, cell, calls, cache)
+                res = measure_arm(arm, rounds=rounds, reps_per_round=args.reps,
+                                  instrument=args.instrument)
+                res["cell"], res["subject"], res["calls"] = cell, subject, calls
+                out.append(res)
+                print(f"  {subject:<20} {cell:<22} {calls:>2} call(s) "
+                      f"{res['median_ms']:9.4f} ms  IQR {res['iqr_ms']:.4f}")
+                rows.append(_row(run, subject, cell, calls, res["values"], args.instrument,
+                                 rounds=rounds, reps_per_round=args.reps))
+                if k38_run is not None:
+                    _k38(subject, cell, calls, res["values"], rounds=rounds,
+                         reps_per_round=args.reps)
         if not args.no_ledger:
             print(f"ledger += {append(rows)} rows")
         if k38_run is not None:

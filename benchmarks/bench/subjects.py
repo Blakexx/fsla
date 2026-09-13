@@ -49,6 +49,10 @@ class Subject:
     #: The device-side stamp entry that proves THIS binary carries the family (a path or
     #: a hash cannot: only a fact the device produces can catch a stale binary).
     stamp: str
+    #: THE CALL COUNTS it is priced at: the cell's sequence as that many carried calls. One is
+    #: the whole sequence in one launch set; a count above one prices what each call's fixed
+    #: cost adds, and the difference between the two rows IS the per-call price.
+    calls: tuple[int, ...] = (1,)
 
 
 # ------------------------------------------------------------------ carry cells
@@ -180,31 +184,61 @@ def prefill_op(fx) -> Arm:
     packing of its per-level inputs -- against one `flash_attn_func` call. The support words
     are the producer's output by the op's contract, so they are built once here, as the
     producer would have emitted them, and never inside the timed call.
+
+    AT `calls` ABOVE ONE the same sequence runs as that many calls over whole windows, the
+    state carried through one plane zeroed per launch set: what a caller that prefills in
+    chunks pays -- every call's fixed cost (packing, liveness, the sweeps in and out of the
+    state) that many times over the windows one call runs. A carried chain binds its own
+    plane, so the state arm is the single call's.
     """
     from benchmarks.cells import realize
+    from rola.ops import carry as carry_ops
     from rola.ops import intra as intra_ops
     from rola.ops import prefill as prefill_ops
 
     spec = fx["cell"]
+    calls = fx.get("calls", 1)
+    if not _splits(spec.tokens, calls):
+        raise ValueError(f"{spec.name}: {spec.tokens} tokens is not {calls} calls of whole windows")
     drawn = realize(spec)
     modes = _modes_of(spec)
     D = len(drawn.read)
     width = intra_ops._shipped_level_width(D, prefill_ops.WINDOW)
-    sread = intra_ops.pack_support(intra_ops.pad_routes(drawn.read, (width,) * D))
-    swrite = intra_ops.pack_support(intra_ops.pad_routes(drawn.write, (width,) * D))
-    #: THE ACTIVITY BYTES gate the state sweeps to the atoms this call touches; they are
-    #: the engine's fold of the liveness words (`facts.planes.atom_bits`), a producer-side
-    #: fact, so built once here. Passing none states every atom active.
-    bits = _atom_bits(drawn.read, drawn.write, spec.widths)
-    state_in, state_out, page_table = _state_arm(fx, prefill_ops._descriptor(list(spec.widths),
-                                                                             spec.dv, 1))
+    step = spec.tokens // calls
+    parts = []
+    for c in range(calls):
+        sl = slice(c * step, (c + 1) * step)
+        read = [x[:, sl] for x in drawn.read]
+        write = [x[:, sl] for x in drawn.write]
+        #: THE ACTIVITY BYTES gate the state sweeps to the atoms this call touches; they are
+        #: the engine's fold of the liveness words (`facts.planes.atom_bits`), a producer-side
+        #: fact, so built once here. Passing none states every atom active.
+        parts.append((read, write, drawn.gain[:, sl].contiguous(), drawn.v[:, sl].contiguous(),
+                      intra_ops.pack_support(intra_ops.pad_routes(read, (width,) * D)),
+                      intra_ops.pack_support(intra_ops.pad_routes(write, (width,) * D)),
+                      _atom_bits(read, write, spec.widths)))
+    descriptor = prefill_ops._descriptor(list(spec.widths), spec.dv, 1)
+    if calls == 1:
+        chain = None
+        state_in, state_out, page_table = _state_arm(fx, descriptor)
+        name = f"prefill_op|{spec.name}|{fx.get('state_arm', 'fresh')}"
+    else:
+        chain = carry_ops.state_plane(descriptor, 1)
+        state_in, state_out, page_table = chain, chain, None
+        name = f"prefill_op|{spec.name}|calls={calls}"
 
     def run():
-        return prefill_ops.prefill(drawn.read, drawn.write, drawn.gain, drawn.v, list(spec.widths),
-                                   modes=modes, sread=sread, swrite=swrite, atom_bits=bits,
-                                   state_in=state_in, state_out=state_out, page_table=page_table)
+        if chain is not None:
+            chain.zero_()
+        out = None
+        for read, write, gain, v, sread, swrite, bits in parts:
+            out = prefill_ops.prefill(read, write, gain, v, list(spec.widths), modes=modes,
+                                      sread=sread, swrite=swrite, atom_bits=bits,
+                                      state_in=state_in, state_out=state_out,
+                                      page_table=page_table)
+        return out
 
-    return Arm(name=f"prefill_op|{spec.name}|{fx.get('state_arm', 'fresh')}", call=run)
+    return Arm(name=name, call=run)
 
 
 def prefill_op_chunked(fx) -> Arm:
@@ -392,7 +426,7 @@ SUBJECTS = {
     "prefill_op": Subject("prefill_op", "carry", prefill_op,
                           "the whole RoLA prefill op as the layer calls it: liveness, carry, "
                           "intra and the op's packing",
-                          symbol="carry_kernel", stamp="carry_build_stamp"),
+                          symbol="carry_kernel", stamp="carry_build_stamp", calls=(1, 4)),
     "prefill_op_chunked": Subject("prefill_op_chunked", "carry", prefill_op_chunked,
                                   "the same sequence as four carried calls: the per-call price",
                                   symbol="carry_kernel", stamp="carry_build_stamp"),
@@ -418,11 +452,18 @@ def _shared_window() -> int:
     return carry_ops.WINDOW
 
 
-def applicable(spec, kind: str) -> list[str]:
-    """Which subjects a cell can carry: its KIND, and the decode subject's own condition."""
+def _splits(tokens: int, calls: int) -> bool:
+    """Whether a sequence runs as `calls` carried calls: one call takes any length, and a
+    chain hands its state off on window boundaries, so each of its calls is whole windows."""
+    return calls == 1 or tokens % (calls * _shared_window()) == 0
+
+
+def applicable(spec, kind: str, calls: int = 1) -> list[str]:
+    """Which subjects a cell can carry at a call count: its KIND, the counts a subject is
+    priced at, the chain's whole windows, and each subject's own condition."""
     out = []
     for name, subject in SUBJECTS.items():
-        if subject.kind != kind:
+        if subject.kind != kind or calls not in subject.calls or not _splits(spec.tokens, calls):
             continue
         if name == "decode_step" and getattr(spec, "decode_steps", 0) == 0:
             continue
