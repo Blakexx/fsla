@@ -330,7 +330,10 @@ and a timing only compares within the session that interleaved it.
 | `environment` | `tools/dev.py container check` | the environment key | the proofs |
 
 A tool run by another tool stores nothing (`--no-record`): the caller keeps the output in its own record. `python -m
-rola_results show [LOCATION]` lists what is stored; `python tools/dev.py store commit -m <message>` commits it
+rola_results sql "..."` queries every location through a derived SQLite index beside the records (`history` and
+`latest` for one location; the views `timing_rows`, `timing_pairs`, `driver_rows`, `cells` flatten the tools' outputs,
+and the rola-results README gives the last, history, compare, baseline and regression questions as SQL); `python
+tools/dev.py store commit -m <message>` commits the records
 (`python -m rola_results commit`), after the repository's own check that every key recomputes from its semantics and
 every output exists. Pushing is the owner's act. The record kept before the library -- the per-run JSONL, the perf
 ledger, the ledger and composer reports -- left the store for the owner's archive (`docs/internals/DELETIONS.md`).
