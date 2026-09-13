@@ -397,6 +397,8 @@ def main() -> int:
     (LEDGERS / f"{name}.md").write_text(md)
     print(md)
     print(f"report: {path}")
+    rc, text = run([PY, "tools/dashboard.py"])
+    print(text.strip() if rc == 0 else f"dashboard: not rendered (rc {rc}): {text[-400:]}")
     return 0
 
 

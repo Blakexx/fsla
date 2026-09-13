@@ -17,7 +17,8 @@ sparse; this tree `first`).
 The report lands in `benchmarks/results/ledgers/<utc>-<sha7>-<tag>.json` and `.md`, and the
 markdown carries the per-phase diff against the newest earlier report for the same cells. A step
 that fails is a row with its output, never a stop. `--skip` names steps to leave out (a CPU-only
-dry run is `--skip oracle,phases,profile,ab`).
+dry run is `--skip oracle,phases,profile,ab`). After the report is written the ledger renders the
+dashboard (`tools/dashboard.py`, [dashboard.md](dashboard.md)).
 
 The tree grows: a number computed by hand during a debug session is added as a step the same day
 (§22 addendum); the phase and wavefront censuses were the 2026-09-12 debug session's hand

@@ -53,6 +53,7 @@ import json
 import statistics
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import clock_lock
@@ -523,6 +524,9 @@ def main() -> None:
     #: the lock read again after the rounds: with both reads on it the lock held through
     #: the run, which vouches for the rows of a binary from before the probe.
     held = clock is not None and clock_lock.within(read_ghz(), clock)
+    #: one id for every row this invocation records: the binaries of an interleaved session
+    #: are paired by it (`tools/dashboard.py`), never by when their rows were written.
+    session = uuid.uuid4().hex[:16]
     results = []
     print()
     print(f"{'binary':<16}{'cell':<26}{'ms (median-of-medians)':<26}{'stamp':<12}{'sha':<10}")
@@ -536,7 +540,7 @@ def main() -> None:
         for cell in cells:
             summary = summarize(rounds, cell)
             first = rounds[0]["rows"].get(cell, {}) if rounds else {}
-            entry = {"binary": binary["label"], "worktree": binary["worktree"],
+            entry = {"binary": binary["label"], "session": session, "worktree": binary["worktree"],
                      "venv": binary["venv"], "git_sha": binary["git_sha"], "tree_sha256": tree,
                      "cell": cell,
                      "bench": binary.get("bench", args.bench), "state_arm": args.state,
