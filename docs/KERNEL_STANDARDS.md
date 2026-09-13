@@ -558,3 +558,18 @@ Consequence: `tools/build_ledger.py` is that tree's trunk. Every number computed
 session becomes a permanent step of it the same day; a node that cannot decide the question it was
 read for (two mechanisms fit the same numbers) is the signal to add the node that splits them, and
 until that node exists the question is OPEN, not answered by the likelier story.
+
+## §23 — THE DEV ENVIRONMENT IS ONE SYSTEM (law, 2026-09-12, from Blake's "one unified dev config ... everything reads that one file", "consolidate everything into one dev env init script, and also ensure docker stays maintained")
+A tree that measures itself is only as reproducible as the machine it runs on. Before this law, 26 environment variables,
+three per-machine files and fourteen hardcoded paths decided that machine, set by five scattered scripts and a page of
+manual steps, and the dev container had drifted for two weeks unnoticed.
+1. ONE LOCATION. Every value that depends on the machine is declared in `tools/dev_config.py` and read from the dev
+   config directory (`~/.config/rola/`, one JSON file a section) through that loader. A tool never reads a setting from
+   the process environment and never spells a machine path; the environment variables that remain are the loader's
+   listed HANDOFFS (a parent process passing a resolved value to a child) and BUILD_PARAMETERS (what one build is).
+   `tools/lint/lint_standards.py` refuses any other read and any CUDA or Windows path spelled in tools, benchmarks or
+   setup.py. A replaced variable is deleted, never kept as a fallback (§18).
+2. ONE INIT. `python tools/dev.py` is the only thing that sets up a host or a container (config, pinned tools, commit
+   gate, clock, worktrees) and the only thing that checks one (`check`: every dependency a row, exit 1 on a red, the
+   build's own gates reused). A new machine-dependent value lands as a schema key with its `init` detection and its
+   `check` row in the same commit.

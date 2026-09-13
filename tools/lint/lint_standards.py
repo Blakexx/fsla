@@ -1304,6 +1304,93 @@ def check_repo_portability() -> list[str]:
     return findings
 
 
+_SETTINGS_SHELL_RE = re.compile(r"\$\{?((?:ROLA_[A-Z0-9_]+)|CUDA_HOME|MAX_JOBS|MOLD_PATH|PYTORCH_NVCC)\b")
+_MACHINE_PATH_RE = re.compile(r"/usr/local/cuda|/mnt/c/Windows")
+
+
+def _python_env_reads(text: str) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+    """A Python file's environment reads -- `os.environ.get(X)`, `os.getenv(X)`, `os.environ[X]`, `X in os.environ` --
+    with X resolved through a module-level string constant or an f-string's literal prefix; and its non-docstring string
+    constants (for machine paths)."""
+    import ast
+
+    tree = ast.parse(text)
+    consts = {t.id: node.value.value for node in tree.body if isinstance(node, ast.Assign)
+              and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+              for t in node.targets if isinstance(t, ast.Name)}
+
+    def name_of(arg: ast.AST) -> str | None:
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return arg.value
+        if isinstance(arg, ast.Name):
+            return consts.get(arg.id)
+        if isinstance(arg, ast.JoinedStr) and arg.values and isinstance(arg.values[0], ast.Constant):
+            return arg.values[0].value
+        return None
+
+    def is_environ(node: ast.AST) -> bool:
+        return isinstance(node, ast.Attribute) and node.attr == "environ"
+
+    reads = []
+    for node in ast.walk(tree):
+        arg = None
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.args:
+            if (node.func.attr == "get" and is_environ(node.func.value)) or node.func.attr == "getenv":
+                arg = node.args[0]
+        elif isinstance(node, ast.Subscript) and is_environ(node.value) and isinstance(node.ctx, ast.Load):
+            arg = node.slice
+        elif isinstance(node, ast.Compare) and any(isinstance(o, (ast.In, ast.NotIn)) for o in node.ops) \
+                and any(is_environ(c) for c in node.comparators):
+            arg = node.left
+        name = name_of(arg) if arg is not None else None
+        if name:
+            reads.append((node.lineno, name))
+    docstrings = {id(node.body[0].value) for node in ast.walk(tree)
+                  if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                  and node.body and isinstance(node.body[0], ast.Expr)
+                  and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str)}
+    strings = [(node.lineno, node.value) for node in ast.walk(tree)
+               if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings]
+    return reads, strings
+
+
+def check_settings_come_from_the_dev_config() -> list[str]:
+    """§23 (1): every machine-dependent value is read through `tools/dev_config.py`. A Python environment read, or a
+    shell expansion of a `ROLA_*` variable (or `MOLD_PATH`), that the loader does not list as a handoff or a build
+    parameter is a finding, and so is a CUDA or Windows path spelled outside the loader in tools, benchmarks or
+    setup.py."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    import dev_config
+
+    allowed = set(dev_config.HANDOFFS) | set(dev_config.BUILD_PARAMETERS)
+    loader = ROOT / "tools" / "dev_config.py"
+    findings = []
+    for path in _tracked_files():
+        rel = path.relative_to(ROOT).as_posix()
+        if (path.suffix not in (".py", ".sh") or path in (loader, _PORTABILITY_LINT_SELF)
+                or rel.startswith(("csrc/third_party/", "benchmarks/results/")) or not path.is_file()):
+            continue
+        text = path.read_text()
+        if path.suffix == ".py":
+            try:
+                reads, strings = _python_env_reads(text)
+            except SyntaxError:
+                continue
+            names = [(n, s) for n, s in reads if s not in allowed]
+            paths = [(n, s) for n, s in strings if _MACHINE_PATH_RE.search(s)]
+        else:
+            code = [(n, line) for n, line in enumerate(text.splitlines(), 1) if not line.lstrip().startswith("#")]
+            names = [(n, m.group(1)) for n, line in code for m in _SETTINGS_SHELL_RE.finditer(line)
+                     if m.group(1) not in allowed]
+            paths = [(n, line.strip()) for n, line in code if _MACHINE_PATH_RE.search(line)]
+        findings += [f"§23 dev config: {rel}:{n}: reads setting {s!r} from the environment -- declare it in "
+                     f"tools/dev_config.py SCHEMA and read it with dev_config.get" for n, s in names]
+        if not rel.startswith("tests/"):
+            findings += [f"§23 dev config: {rel}:{n}: machine path spelled in the tree -- {s[:80]!r}; read it from "
+                         f"the dev config" for n, s in paths]
+    return findings
+
+
 def main() -> int:
     #: THESE THIRTEEN are wired as a BLOCKING pre-commit/CI gate
     #: (.pre-commit-config.yaml, .github/workflows/lint.yml) -- a nonzero exit
@@ -1334,6 +1421,7 @@ def main() -> int:
     gating_findings += check_comment_density()
     gating_findings += check_no_long_comment_blocks()
     gating_findings += check_repo_portability()
+    gating_findings += check_settings_come_from_the_dev_config()
 
     if not gating_findings:
         print("lint_standards: no gating findings")
