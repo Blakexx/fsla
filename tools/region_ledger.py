@@ -192,6 +192,8 @@ def main() -> int:
     ap.add_argument("--cell", default=None, help="the budget cell to compare against")
     ap.add_argument("--per", type=float, default=1.0, help="divisor: CTA-windows in the launch")
     ap.add_argument("--top", type=int, default=24)
+    ap.add_argument("--json", type=Path, default=None,
+                    help="also write the components, the phase census and the wavefront census here")
     a = ap.parse_args()
     attr = Attribution(a.so, a.member, a.source, a.ops)
     rows = read_source_counters(a.csv)
@@ -224,12 +226,19 @@ def main() -> int:
             flag = f"  RED > budget {b}"
             red = True
         print(f"  {fn:22s} {n / a.per:9.0f} ({100 * n / tot:4.1f}%)  samples {100 * sm / max(1, samp):5.1f}%  {top}{flag}")
-    census(rows, attr, components, a.per, read_source_detail(a.csv), a.source, a.top)
+    doc = census(rows, attr, components, a.per, read_source_detail(a.csv), a.source, a.top)
+    if a.json:
+        doc["per"] = a.per
+        doc["instructions_per_unit"] = round(tot / a.per, 1)
+        doc["samples"] = samp
+        doc["components"] = {fn: {"instr_per_unit": round(n / a.per, 1), "samples": sm, "stalls": dict(st),
+                                  "budget": by_fn.get(fn)} for fn, (n, sm, st) in agg.items()}
+        a.json.write_text(json.dumps(doc, sort_keys=True) + "\n")
     return 1 if red else 0
 
 
 def census(rows, attr: Attribution, components: set[str] | None, per: float,
-           detail: dict[int, tuple[str, int, int]], source: Path, top: int) -> None:
+           detail: dict[int, tuple[str, int, int]], source: Path, top: int) -> dict:
     """THE PHASE CENSUS (§22): per component, the HMMAs a unit COUNTED from the dump, the
     other instructions, and the stall samples split between the HMMA instructions and the
     rest -- the build ledger turns these into tensor utilization a phase and a warp's time
@@ -256,15 +265,23 @@ def census(rows, attr: Attribution, components: set[str] | None, per: float,
             w[0] += wf
             w[1] += ideal
             w[2] += n
+
     print("census (a unit): component hmma other samples_at_hmma samples_at_other")
     for fn, (h, o, sh, so_) in sorted(cen.items(), key=lambda x: -(x[1][0] + x[1][1])):
         print(f"  census {fn} {h / per:.1f} {o / per:.1f} {sh} {so_}")
     tot = sum(w[0] - w[1] for w in waves.values())
     print(f"wavefronts above ideal (a unit): {tot / per:.0f}")
     src = source.read_text().splitlines()
-    for ln, (wf, ideal, n) in sorted(waves.items(), key=lambda x: -(x[1][0] - x[1][1]))[:top]:
+    lines = []
+    for ln, (wf, ideal, n) in sorted(waves.items(), key=lambda x: -(x[1][0] - x[1][1])):
         text = src[ln - 1].strip()[:60] if ln else "?"
-        print(f"  wave {ln} {(wf - ideal) / per:.0f} {wf / max(1, n):.1f}/instr {text}")
+        lines.append({"line": ln, "excess_per_unit": round((wf - ideal) / per, 1), "per_instr": round(wf / max(1, n), 2),
+                      "text": text})
+    for w in lines[:top]:
+        print(f"  wave {w['line']} {w['excess_per_unit']:.0f} {w['per_instr']:.1f}/instr {w['text']}")
+    return {"census": {fn: {"hmma_per_unit": round(h / per, 1), "other_per_unit": round(o / per, 1), "samples_at_hmma": sh,
+                            "samples_at_other": so_} for fn, (h, o, sh, so_) in cen.items()},
+            "wavefronts": {"excess_per_unit": round(tot / per, 1), "lines": lines}}
 
 
 if __name__ == "__main__":

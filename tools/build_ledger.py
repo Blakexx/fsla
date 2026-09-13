@@ -38,6 +38,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -46,8 +47,6 @@ import dev_config  # noqa: E402 -- path insert must precede this import
 ROOT = Path(__file__).resolve().parents[1]
 LEDGERS = dev_config.store("ledgers")
 PY = sys.executable
-NCU = dev_config.get("toolchain.ncu")
-NVCC = dev_config.cuda_bin("nvcc")
 PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep", "head_words", "head_scans")
 HMMA_CYCLES, SCHEDULERS = 32, 4  #: the utilization formula's constants (sm_86; --hmma-cycles/--schedulers override the profile step)
 PIPE_METRICS = ",".join([
@@ -81,18 +80,6 @@ def git_sha() -> str:
     return out.strip() if rc == 0 else "unknown"
 
 
-def cta_windows(cell: str) -> int:
-    """The launch's CTA-windows: the per-window divisor every per-unit number in the profile
-    step uses (the phase ledger's own divisor; a budget is per CTA-window, never per launch)."""
-    from benchmarks.cells import by_name
-    from rola.ops import carry as c
-
-    spec = by_name(cell)
-    import math
-
-    return (math.prod(spec.widths) // 256) * ((spec.tokens + c.WINDOW - 1) // c.WINDOW)
-
-
 def extension_so() -> Path:
     cands = sorted((ROOT / "rola").glob("_C*.so"))
     if not cands:
@@ -101,27 +88,24 @@ def extension_so() -> Path:
 
 
 def step_sass(report: dict) -> None:
-    rc, out = run([PY, "tools/sass_gate.py", str(extension_so())])
-    m = re.search(r"instr (\d+) hmma (\d+) per-hmma ([\d.]+) ldl (\d+) calls (\d+) predHMMA (\d+)", out)
-    report["sass"] = {"rc": rc, **({"instr": int(m.group(1)), "hmma": int(m.group(2)),
-                                   "per_hmma": float(m.group(3)), "ldl": int(m.group(4)),
-                                   "calls": int(m.group(5)), "pred_hmma": int(m.group(6))} if m else {"raw": out[-600:]})}
+    doc = instrument(["tools/sass_gate.py", str(extension_so())], 900)
+    arm = next((v for k, v in sorted(doc.items()) if k.endswith(".sm_86.cubin")), None) if "rc" not in doc else None
+    kernel = next(iter(arm["functions"].values()), None) if arm else None
+    report["sass"] = {k: kernel[k] for k in ("instr", "hmma", "per_hmma", "ldl", "calls", "pred_hmma")} if kernel else doc
 
 
-def step_registers(report: dict, scratch: Path) -> None:
-    cubin = scratch / "build_ledger_arm0.cubin"
-    rc, out = run([NVCC, "-O3", "-std=c++17", "-arch=sm_86", "--expt-relaxed-constexpr", "-lineinfo",
-                   "-DROLA_CARRY_BUILD_0", "-I", "csrc/rola/src", "-I", "build/generated", "-cubin",
-                   "csrc/rola/src/instantiations/carry_arm_0.cu", "-o", str(cubin)], timeout=900)
-    if rc != 0:
-        report["registers"] = {"rc": rc, "raw": out[-800:]}
-        return
-    rc, out = run([PY, "tools/life_ranges.py", "--cubin", str(cubin), "--source",
-                   "csrc/rola/src/carry/carry_kernel.cuh", "--top", "12"])
-    peak = re.search(r"peak live registers (\d+)", out)
-    regions = dict(re.findall(r"^(\S+)\s+(\d+)\s+[\d.]+\s+\d+$", out, re.M))
-    report["registers"] = {"rc": rc, "peak_live": int(peak.group(1)) if peak else None,
-                           "peak_by_region": {k: int(v) for k, v in regions.items()}}
+def instrument(args: list[str], timeout: int = 3600) -> dict:
+    """Run one of the tree's instruments with `--json` and return what it wrote, or its rc and output tail."""
+    with tempfile.TemporaryDirectory(prefix="build_ledger_") as tmp:
+        out = Path(tmp) / "out.json"
+        rc, text = run([PY, *args, "--json", str(out)], timeout=timeout)
+        return json.loads(out.read_text()) if out.exists() else {"rc": rc, "raw": text[-800:]}
+
+
+def step_registers(report: dict) -> None:
+    doc = instrument(["tools/life_ranges.py", "--arm", "0", "--source", "csrc/rola/src/carry/carry_kernel.cuh"], 1800)
+    report["registers"] = {"peak_live": doc["peak_live"], "peak_by_region": {k: v["peak"] for k, v in doc["by_region"].items()}} \
+        if "peak_live" in doc else doc
 
 
 def step_oracle(report: dict) -> None:
@@ -137,81 +121,38 @@ def step_oracle(report: dict) -> None:
 def step_phases(report: dict, cells: list[str]) -> None:
     report["phases"] = {}
     for cell in cells:
-        rc, out = run([PY, "tools/phase_ledger.py", cell, "--launches", "1"], timeout=900)
-        row = {"rc": rc}
-        m = re.search(r"cycles a warp a window.*?: (.*?)  total ([\d.]+)", out)
-        if m:
-            row["per_phase"] = {k: float(v) for k, v in re.findall(r"(\w+) ([\d.]+)", m.group(1))}
-            row["total"] = float(m.group(2))
-        for ph in ("readout", "fold"):
-            w = re.search(rf"{ph}\s+a warp:\s+([\d\s]+)$", out, re.M)
-            if w:
-                row[f"{ph}_per_warp"] = [int(x) for x in w.group(1).split()]
-        if "per_phase" not in row:
-            row["raw"] = out[-600:]
-        report["phases"][cell] = row
+        doc = instrument(["tools/phase_ledger.py", cell, "--launches", "1"], 900)
+        report["phases"][cell] = {"per_phase": doc["per_phase"], "total": doc["total"],
+                                  "readout_per_warp": doc["per_warp"]["readout"], "fold_per_warp": doc["per_warp"]["fold"]} \
+            if "per_phase" in doc else doc
 
 
-def step_profile(report: dict, cells: list[str], scratch: Path, hmma_cycles: int, sms: int,
-                 schedulers: int) -> None:
+def step_profile(report: dict, cells: list[str], hmma_cycles: int, sms: int, schedulers: int) -> None:
+    """The pipe counters (`tools/pipe_counters.py`) and the stall census (`tools/stall_census.py`) per cell; tensor
+    utilization = HMMA count x `--hmma-cycles` over scheduler cycles (never the profiler's pipe-active ratio, §22)."""
     report["profile"] = {}
-    so = str(extension_so())
-    worker = [PY, "tools/probe_cells.py", "--worker", "--bench", "carry_forward", "--reps", "0",
-              "--warmup", "0", "--state", "fresh", "--oneshot", "--schedule", "first"]
     for cell in cells:
-        row: dict = {"cta_windows": cta_windows(cell)}
-        per = row["cta_windows"]
-        rc, out = run([NCU, "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1",
-                       "--metrics", PIPE_METRICS, "--csv", *worker, "--cells", cell], timeout=1800)
-        vals = {}
-
-        for line in out.splitlines():
-            parts = [p.strip().strip('"') for p in line.split('","')]
-            if len(parts) > 12 and parts[0].isdigit():
-                name, value = parts[-3], parts[-1]
-                with contextlib.suppress(ValueError):
-                    vals[name] = float(value.replace(",", ""))
-        if vals:
-            hmma = vals.get("sm__inst_executed_pipe_tensor_op_hmma.sum", 0.0)
-            cyc = vals.get("sm__cycles_elapsed.avg", 0.0)
-            act = vals.get("smsp__cycles_active.avg", 0.0)
-            row["counters"] = vals
-            if cyc:
-                row["tensor_util_elapsed"] = hmma * hmma_cycles / (sms * schedulers * cyc)
-            if act:
-                row["tensor_util_active"] = hmma * hmma_cycles / (sms * schedulers * act)
+        counters = instrument(["tools/pipe_counters.py", cell])
+        row: dict = {"cta_windows": counters.get("cta_windows"), "counters": counters.get("launch", counters)}
+        vals = counters.get("launch", {})
+        hmma = vals.get("sm__inst_executed_pipe_tensor_op_hmma.sum", 0.0)
+        for name, metric in (("tensor_util_elapsed", "sm__cycles_elapsed.avg"), ("tensor_util_active", "smsp__cycles_active.avg")):
+            if vals.get(metric):
+                row[name] = hmma * hmma_cycles / (sms * schedulers * vals[metric])
+        census = instrument(["tools/stall_census.py", cell])
+        if "components" in census:
+            samp = max(1, census["samples"])
+            row["components"] = {fn: {"instr": round(c["instr_per_unit"]), "samples_pct": 100 * c["samples"] / samp,
+                                      "stalls": " ".join(f"{k}:{100 * v / max(1, c['samples']):.0f}%" for k, v in
+                                                         sorted(c["stalls"].items(), key=lambda x: -x[1])[:3])}
+                                 for fn, c in sorted(census["components"].items(), key=lambda x: -x[1]["instr_per_unit"])}
+            row["census"] = {fn: {"hmma": c["hmma_per_unit"], "other": c["other_per_unit"], "s_hmma": c["samples_at_hmma"],
+                                  "s_other": c["samples_at_other"]} for fn, c in census["census"].items()}
+            row["waves_excess"] = census["wavefronts"]["excess_per_unit"]
+            row["waves"] = [{"line": w["line"], "excess": w["excess_per_unit"], "per_instr": w["per_instr"], "text": w["text"]}
+                            for w in census["wavefronts"]["lines"][:12]]
         else:
-            row["counters_raw"] = out[-500:]
-
-        rep = scratch / f"build_ledger_{cell}"
-        rc, out = run([NCU, "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1",
-                       "--section", "SourceCounters", "--metrics", "group:smsp__pcsamp_warp_stall_reasons",
-                       "--import-source", "yes", "-f", "-o", str(rep), *worker, "--cells", cell],
-                      timeout=1800)
-        csv = scratch / f"build_ledger_{cell}.csv"
-        rc2, out2 = run([NCU, "--import", f"{rep}.ncu-rep", "--page", "source", "--print-source",
-                         "sass", "--csv"], timeout=900)
-        if rc2 == 0:
-            csv.write_text(out2)
-            rc3, out3 = run([PY, "tools/region_ledger.py", "--csv", str(csv), "--so", so, "--source",
-                             "csrc/rola/src/carry/carry_kernel.cuh", "--budget", "tools/budgets/carry.json",
-                             "--cell", cell, "--per", str(per), "--top", "12"], timeout=900)
-            comps = {}
-            for m in re.finditer(r"^\s+(\S+(?: \[spin\])?)\s+(\d+) \(\s*([\d.]+)%\)\s+samples\s+([\d.]+)%\s+(.*)$",
-                                 out3, re.M):
-                comps[m.group(1)] = {"instr": int(m.group(2)), "instr_pct": float(m.group(3)),
-                                     "samples_pct": float(m.group(4)), "stalls": m.group(5).strip()}
-            row["components"] = comps
-            row["census"] = {m.group(1): {"hmma": float(m.group(2)), "other": float(m.group(3)),
-                                          "s_hmma": int(m.group(4)), "s_other": int(m.group(5))}
-                             for m in re.finditer(r"^\s+census (\S+) ([\d.]+) ([\d.]+) (\d+) (\d+)$", out3, re.M)}
-            w = re.search(r"^wavefronts above ideal \(a unit\): (\d+)$", out3, re.M)
-            row["waves_excess"] = int(w.group(1)) if w else None
-            row["waves"] = [{"line": int(m.group(1)), "excess": int(m.group(2)), "per_instr": float(m.group(3)),
-                             "text": m.group(4)} for m in re.finditer(r"^\s+wave (\d+) (\d+) ([\d.]+)/instr (.*)$", out3, re.M)]
-        else:
-            row["profile_raw"] = (out + out2)[-500:]
-
+            row["profile_raw"] = census
         report["profile"][cell] = row
 
 
@@ -365,25 +306,23 @@ def main() -> int:
                     help="measured cycles one bf16/fp32 m16n8k16 HMMA holds the pipe a scheduler (sm_86: 32)")
     ap.add_argument("--sms", type=int, default=80)
     ap.add_argument("--schedulers", type=int, default=4)
-    ap.add_argument("--scratch", type=Path, default=dev_config.scratch("build_ledger"))
     a = ap.parse_args()
     cells = [c for c in a.cells.split(",") if c]
     skip = set(a.skip.split(",")) if a.skip else set()
 
-    a.scratch.mkdir(parents=True, exist_ok=True)
     LEDGERS.mkdir(parents=True, exist_ok=True)
     report = {"utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%MZ"), "sha": git_sha(),
               "tag": a.tag, "cells": cells}
     if "sass" not in skip:
         step_sass(report)
     if "registers" not in skip:
-        step_registers(report, a.scratch)
+        step_registers(report)
     if "oracle" not in skip:
         step_oracle(report)
     if "phases" not in skip:
         step_phases(report, cells)
     if "profile" not in skip:
-        step_profile(report, cells, a.scratch, a.hmma_cycles, a.sms, a.schedulers)
+        step_profile(report, cells, a.hmma_cycles, a.sms, a.schedulers)
     if "timeline" not in skip:
         step_timeline(report, cells, f"{report['utc']}-{report['sha']}-{re.sub(r'[^A-Za-z0-9_-]+', '-', a.tag)}")
     if "ab" not in skip:

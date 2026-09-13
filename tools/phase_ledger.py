@@ -14,6 +14,7 @@ Measured work: takes the GPU lock exclusive.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 from pathlib import Path
@@ -22,6 +23,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep", "head_words", "head_scans")
+
+
+def cta_windows(cell: str) -> int:
+    """The launch's CTA-windows, owners times windows: the one divisor that turns a launch total into a unit."""
+    from benchmarks.cells import by_name
+    from rola.ops import carry as c
+
+    spec = by_name(cell)
+    return (math.prod(spec.widths) // 256) * ((spec.tokens + c.WINDOW - 1) // c.WINDOW)
 
 
 def main() -> int:
@@ -33,6 +43,7 @@ def main() -> int:
     ap.add_argument("--state-arm", choices=("fresh", "null"), default="fresh")
     ap.add_argument("--per-warp", default="readout,fold",
                     help="the phases whose per-warp rows are printed: an imbalance is seen, not inferred")
+    ap.add_argument("--json", type=Path, default=None, help="also write the reading here: every phase, every warp")
     a = ap.parse_args()
 
     import torch
@@ -66,6 +77,13 @@ def main() -> int:
     for ph in a.per_warp.split(","):
         i = PHASES.index(ph)
         print(f"  {ph:8s} a warp: " + " ".join(f"{by_warp[w][i]:6.0f}" for w in range(warps)))
+    if a.json:
+        a.json.write_text(json.dumps({"cell": a.cell, "launches": a.launches, "warmup": a.warmup, "state_arm": a.state_arm,
+                                      "cta_windows": owners * windows,
+                                      "per_phase": {n: round(x, 1) for n, x in zip(PHASES, per.tolist())},
+                                      "total": round(float(per.sum()), 1),
+                                      "per_warp": {n: [round(by_warp[w][i].item(), 1) for w in range(warps)]
+                                                   for i, n in enumerate(PHASES)}}) + "\n")
     return 0
 
 

@@ -296,6 +296,8 @@ def cmd_check(a) -> int:
     row(os.access(Path(dev_config.get("host.gpu_lock")).parent, os.W_OK), f"host.gpu_lock: {dev_config.get('host.gpu_lock')}")
     ghz = dev_config.get("clock.ghz")
     row(True, f"clock: {'locks at ' + str(ghz) + ' GHz' if ghz else 'unlocked (rows carry their measured clock)'}")
+    suite = Path(dev_config.get("workspace.suite"))
+    row((suite / ".git").exists(), f"workspace.suite is a checkout: {suite}", "clone the suite repository there")
     row(Path(dev_config.get("workspace.worktrees")).is_dir(), f"workspace.worktrees: {dev_config.get('workspace.worktrees')}")
     root = dev_config.store()
     row((root / ".git").is_dir(), f"store.root is a git repository: {root}", "python tools/dev.py init")
@@ -433,7 +435,8 @@ def _mounts() -> list[str]:
         raise SystemExit(f"host.gpu_lock {gpu} must be named {image_gpu.name} for the container to share it")
     mounts = [f"{ROOT}:/workspace/rola", f"{dev_config.get('host.lock_dir')}:{IMAGE_LAYOUT['host']['lock_dir']}",
               f"{gpu.parent}:{image_gpu.parent}", f"{dev_config.get('store.root')}:{IMAGE_LAYOUT['store']['root']}",
-              f"{dev_config.get('workspace.worktrees')}:{IMAGE_LAYOUT['workspace']['worktrees']}"]
+              f"{dev_config.get('workspace.worktrees')}:{IMAGE_LAYOUT['workspace']['worktrees']}",
+              f"{dev_config.get('workspace.suite')}:{IMAGE_LAYOUT['workspace']['suite']}"]
     wsl_lib = dev_config.get("host.wsl_lib")
     #: the whole WSL directory, not only lib/: its libcuda is a loader that opens the host's driver store beside it
     return mounts + ([f"{Path(wsl_lib).parent}:{Path(WSL_LIB_IN_IMAGE).parent}:ro"] if wsl_lib else [])

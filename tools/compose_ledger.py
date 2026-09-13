@@ -38,7 +38,6 @@ import dev_config  # noqa: E402
 import gen_shards  # noqa: E402
 
 PY = sys.executable
-NCU = dev_config.get("toolchain.ncu")
 CUOBJDUMP = dev_config.cuda_bin("cuobjdump")
 NVDISASM = dev_config.cuda_bin("nvdisasm")
 LEDGERS = dev_config.store("ledgers")
@@ -76,118 +75,56 @@ def build(real: tuple[str, ...]) -> tuple[int, str]:
 
 PHASE_NAMES = ("head", "readout", "fold", "snapshot", "edges", "sweep", "head_words", "head_scans")
 
-#: THE RESOURCE COUNTERS a rung records (launch totals; a part's step in each is its resource cost).
-COUNTERS = (
-    "sm__inst_executed_pipe_tensor_op_hmma.sum", "smsp__inst_executed.sum",
-    "sm__cycles_elapsed.avg", "smsp__cycles_active.avg",
-    "smsp__issue_active.avg.pct_of_peak_sustained_active",
-    "smsp__warps_active.avg.per_cycle_active", "smsp__warps_eligible.avg.per_cycle_active",
-    "smsp__sass_inst_executed_op_shared_ld.sum", "smsp__sass_inst_executed_op_shared_st.sum",
-    "smsp__sass_inst_executed_op_ldsm.sum", "smsp__sass_inst_executed_op_global_red.sum",
-    "smsp__sass_inst_executed_op_global_ld.sum",
-    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum", "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum",
-    "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum",
-    "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum",
-    "l1tex__lsu_writeback_active.avg.pct_of_peak_sustained_active",
-    "l1tex__t_requests_pipe_lsu_mem_global_op_red.sum", "lts__t_sectors_op_red.sum",
-    "dram__bytes_read.sum", "dram__bytes_write.sum",
-)
-COMPONENTS = {"FoldStream", "ReadoutStream", "head", "snapshot_publish", "pool_fill"}
 
-
-def worker(cell: str) -> list[str]:
-    return [PY, "tools/probe_cells.py", "--worker", "--bench", "carry_forward", "--reps", "0", "--warmup", "0",
-            "--state", "fresh", "--oneshot", "--schedule", "first", "--cells", cell]
-
-
-def cta_windows(cell: str) -> int:
-    rc, out = run([PY, "-c", "import sys; sys.path.insert(0, 'tools'); import build_ledger as B; "
-                   f"print(B.cta_windows({cell!r}))"], timeout=600)
-    return int(out.strip().splitlines()[-1])
+def _instrument(args: list[str], timeout: int = 3600) -> dict:
+    """Run one of the tree's instruments with `--json` and return what it wrote (a failure is a row, never a stop)."""
+    with tempfile.TemporaryDirectory(prefix="compose_") as tmp:
+        out = Path(tmp) / "out.json"
+        rc, text = run([PY, *args, "--json", str(out)], timeout=timeout)
+        return json.loads(out.read_text()) if out.exists() else {"rc": rc, "raw": text[-800:]}
 
 
 def phases(cell: str, launches: int) -> dict:
     """Cycles a warp a window per phase (warm-up + `launches`), and every phase's per-warp row."""
-    rc, out = run([PY, "tools/phase_ledger.py", cell, "--launches", str(launches), "--warmup", "1",
-                   "--per-warp", ",".join(PHASE_NAMES)], timeout=3600)
-    m = re.search(r"cycles a warp a window.*?: (.*?)  total ([\d.]+)", out)
-    if not m:
-        return {"rc": rc, "raw": out[-800:]}
-    row = {k: float(v) for k, v in re.findall(r"(\w+) ([\d.]+)", m.group(1))}
-    row["total"] = float(m.group(2))
-    row["per_warp"] = {g.group(1): [int(x) for x in g.group(2).split()]
-                       for g in re.finditer(r"^\s+(\w+)\s+a warp:\s+([\d\s]+)$", out, re.M)}
-    return row
+    doc = _instrument(["tools/phase_ledger.py", cell, "--launches", str(launches), "--warmup", "1"])
+    if "per_phase" not in doc:
+        return doc
+    return {**doc["per_phase"], "total": doc["total"], "per_warp": doc["per_warp"]}
 
 
 def counters(cell: str) -> dict:
-    """The rung's resource counters for one launch of the cell, per CTA-window where a sum."""
-    rc, out = run([NCU, "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1",
-                   "--metrics", ",".join(COUNTERS), "--csv", *worker(cell)], timeout=3600)
-    per = cta_windows(cell)
-    vals = {}
-    for line in out.splitlines():
-        parts = [x.strip().strip('"') for x in line.split('","')]
-        if len(parts) > 12 and parts[0].isdigit() and parts[-3] in COUNTERS:
-            v = float(parts[-1].replace(",", ""))
-            vals[parts[-3]] = v / per if parts[-3].endswith(".sum") else v
-    vals["hmma_launch"] = vals.get("sm__inst_executed_pipe_tensor_op_hmma.sum", 0.0) * per
+    """The rung's resource counters (`tools/pipe_counters.py`), a CTA-window where a sum."""
+    doc = _instrument(["tools/pipe_counters.py", cell])
+    if "launch" not in doc:
+        return doc
+    per = doc["cta_windows"]
+    vals = {k: v / per if k.endswith(".sum") else v for k, v in doc["launch"].items()}
+    vals["hmma_launch"] = doc["launch"].get("sm__inst_executed_pipe_tensor_op_hmma.sum", 0.0)
     return vals
 
 
 def census(cell: str, total_cycles: float | None) -> dict:
-    """The rung's stall census: every warp-stall sample of one launch by reason, and by component and
-    reason, as cycles a warp a window (the sample share times the phase ledger's total). A part's step
-    in a reason is how its un-overlapped time stalls."""
-    sys.path.insert(0, str(ROOT / "tools"))
-    import region_ledger as R  # noqa: E402
-    with tempfile.TemporaryDirectory(prefix="compose_census_") as tmp:
-        rep = Path(tmp) / "rep"
-        rc, out = run([NCU, "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1", "--section",
-                       "SourceCounters", "--metrics", "group:smsp__pcsamp_warp_stall_reasons", "--import-source",
-                       "yes", "-f", "-o", str(rep), *worker(cell)], timeout=3600)
-        rc2, out2 = run([NCU, "--import", f"{rep}.ncu-rep", "--page", "source", "--print-source", "sass", "--csv"],
-                        timeout=1800)
-        if rc2:
-            return {"rc": rc2, "raw": (out + out2)[-600:]}
-        csvp = Path(tmp) / "src.csv"
-        csvp.write_text(out2)
-        rows = R.read_source_counters(csvp)
-    so = extension_so()
-    attr = R.Attribution(so, "carry_arm", ROOT / "csrc/rola/src/carry/carry_kernel.cuh",
-                         ROOT / "csrc/rola/src/common/ops.cuh")
-    base = rows[0][0]
-    by_reason: dict[str, int] = {}
-    by_comp: dict[str, dict[str, int]] = {}
-    total = 0
-    for addr, _n, sm, st in rows:
-        fn, spin = attr.of(addr - base, COMPONENTS)
-        fn = fn + " [spin]" if spin else fn
-        for k, v in st.items():
-            by_reason[k] = by_reason.get(k, 0) + v
-            by_comp.setdefault(fn, {})[k] = by_comp.setdefault(fn, {}).get(k, 0) + v
-        total += sm
-    scale = (total_cycles or 0.0) / max(1, total)
-    return {"samples": total,
-            "by_reason": {k: v * scale for k, v in sorted(by_reason.items(), key=lambda x: -x[1])},
-            "by_component": {c: {k: v * scale for k, v in sorted(d.items(), key=lambda x: -x[1])}
-                             for c, d in by_comp.items()}}
+    """The rung's stall census (`tools/stall_census.py`): every stall sample of one launch by reason, and by component
+    and reason, as cycles a warp a window (the sample share times the phase ledger's total)."""
+    doc = _instrument(["tools/stall_census.py", cell])
+    if "components" not in doc:
+        return doc
+    scale = (total_cycles or 0.0) / max(1, doc["samples"])
+    by_reason: dict[str, float] = {}
+    for comp in doc["components"].values():
+        for k, v in comp["stalls"].items():
+            by_reason[k] = by_reason.get(k, 0.0) + v * scale
+    return {"samples": doc["samples"],
+            "by_reason": dict(sorted(by_reason.items(), key=lambda x: -x[1])),
+            "by_component": {c: {k: v * scale for k, v in sorted(d["stalls"].items(), key=lambda x: -x[1])}
+                             for c, d in doc["components"].items()}}
 
 
 def registers() -> dict:
-    """Peak live registers of the rung's arm (a -lineinfo compile against the rung's parts header)."""
-    with tempfile.TemporaryDirectory(prefix="compose_reg_") as tmp:
-        cub = Path(tmp) / "arm0.cubin"
-        rc, out = run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++17", "-arch=sm_86", "--expt-relaxed-constexpr",
-                       "-lineinfo", "-DROLA_CARRY_BUILD_0", "-I", "csrc/rola/src", "-I", "build/generated", "-cubin",
-                       "csrc/rola/src/instantiations/carry_arm_0.cu", "-o", str(cub)], timeout=1800)
-        if rc:
-            return {"rc": rc, "raw": out[-600:]}
-        rc, out = run([PY, "tools/life_ranges.py", "--cubin", str(cub), "--source",
-                       "csrc/rola/src/carry/carry_kernel.cuh", "--top", "8"], timeout=900)
-    peak = re.search(r"peak live registers (\d+)", out)
-    return {"peak_live": int(peak.group(1)) if peak else None,
-            "by_region": {k: int(v) for k, v in re.findall(r"^(\S+)\s+(\d+)\s+[\d.]+\s+\d+$", out, re.M)}}
+    """Peak live registers of the rung's arm (`tools/life_ranges.py --arm 0`, against the rung's parts header)."""
+    doc = _instrument(["tools/life_ranges.py", "--arm", "0", "--source", "csrc/rola/src/carry/carry_kernel.cuh"], 1800)
+    return {"peak_live": doc.get("peak_live"),
+            "by_region": {k: v["peak"] for k, v in doc.get("by_region", {}).items()}} if "peak_live" in doc else doc
 
 
 def timeline(cell: str) -> dict:

@@ -8,6 +8,7 @@ two-deep form was abandoned at "255 registers" when its HMMAs ran at 127 live.
 
     python tools/life_ranges.py --cubin <cubin> --source csrc/rola/src/carry/carry_kernel.cuh
     python tools/life_ranges.py --so <extension .so> --source ... [--member carry_arm] [--top N]
+    python tools/life_ranges.py --arm 0 --source ... [--arch sm_86]   # compiles the carry arm with -lineinfo first
 
 The cubin must carry line info (`-lineinfo`); an extension built without it reports the peak
 and the histogram but no regions. Regions are the innermost source function (struct methods as
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
 import re
 import subprocess
 import sys
@@ -31,7 +33,26 @@ LINE_RE = re.compile(r'//## File "([^"]+)", line (\d+)')
 ADDR_RE = re.compile(r"^\s*/\*([0-9a-f]{4,5})\*/\s+[A-Z@]")
 
 
+def compile_arm(arm: int, arch: str) -> Path:
+    """The carry arm's translation unit compiled alone with line info, against the build's generated headers."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
+    import dev_config
+
+    from bench.hw_profile import current
+
+    arch = arch or "sm_" + current().rsplit("-sm", 1)[1]
+    cubin = dev_config.scratch("life_ranges") / f"carry_arm_{arm}.{arch}.cubin"
+    root = Path(__file__).resolve().parents[1]
+    subprocess.run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++17", f"-arch={arch}", "--expt-relaxed-constexpr",
+                    "-lineinfo", f"-DROLA_CARRY_BUILD_{arm}", "-I", "csrc/rola/src", "-I", "build/generated", "-cubin",
+                    f"csrc/rola/src/instantiations/carry_arm_{arm}.cu", "-o", str(cubin)], cwd=root, check=True,
+                   capture_output=True, timeout=1800)
+    return cubin
+
+
 def cubin_of(args) -> Path:
+    if args.arm is not None:
+        return compile_arm(args.arm, args.arch)
     if args.cubin:
         return Path(args.cubin)
     tmp = Path(tempfile.mkdtemp(prefix="life_ranges_"))
@@ -79,17 +100,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cubin", type=Path, default=None)
     ap.add_argument("--so", type=Path, default=None)
+    ap.add_argument("--arm", type=int, default=None, help="compile this carry arm with -lineinfo and read it")
+    ap.add_argument("--arch", default=None, help="with --arm: the architecture (default: this machine's GPU)")
     ap.add_argument("--member", default="carry_arm")
     ap.add_argument("--source", type=Path, required=True)
     ap.add_argument("--top", type=int, default=16)
+    ap.add_argument("--json", type=Path, default=None, help="also write the peak and every region's live counts here")
     a = ap.parse_args()
-    if (a.cubin is None) == (a.so is None):
-        ap.error("give exactly one of --cubin or --so")
+    if sum(x is not None for x in (a.cubin, a.so, a.arm)) != 1:
+        ap.error("give exactly one of --cubin, --so or --arm")
     cubin = cubin_of(a)
     rows = live_counts(cubin)
     if not rows:
         print("no life-range rows: is this a cubin of the kernel?")
         return 1
+
     lmap = line_map(cubin, a.source.name)
     fmap = function_map(a.source.read_text().splitlines())
     peak = max(r[2] for r in rows)
@@ -97,13 +122,17 @@ def main() -> int:
     print(f"instructions {len(rows)}  peak live registers {peak}")
     print("live histogram (instructions per 20):",
           " ".join(f"{k}-{k + 19}:{v}" for k, v in sorted(hist.items())))
-    if not any(lmap.values()):
-        print("no line info in this cubin: build with -lineinfo for regions")
-        return 0
     per = collections.defaultdict(list)
     for off, _ins, live in rows:
         ln = lmap.get(off)
         per[fn_of(fmap, ln) if ln else "?"].append(live)
+    if a.json:
+        a.json.write_text(json.dumps({"instructions": len(rows), "peak_live": peak, "line_info": any(lmap.values()),
+                                      "by_region": {fn: {"peak": max(v), "mean": round(sum(v) / len(v), 1), "instr": len(v)}
+                                                    for fn, v in sorted(per.items())}}, sort_keys=True) + "\n")
+    if not any(lmap.values()):
+        print("no line info in this cubin: build with -lineinfo for regions")
+        return 0
     print(f"\n{'region':26s} {'peak':>5s} {'mean':>6s} {'instr':>6s}")
     for fn, v in sorted(per.items(), key=lambda x: -max(x[1]))[: a.top]:
         print(f"{fn:26s} {max(v):5d} {sum(v) / len(v):6.1f} {len(v):6d}")

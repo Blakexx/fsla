@@ -25,3 +25,7 @@ by up to ~5% run to run (nl64k-alt-k4 21,971 / 22,008 / 23,252 on one source); t
 `--warmup` (default 1) runs launches before the ledger is bound: a fresh binary's first launch read
 the fold at 126,797 cycles a warp a window and its second at 35,736 (2026-09-12), so the first launch is
 never a reading.
+
+`--json PATH` also writes the reading: the cell, launches, warm-up, state arm, the launch's CTA-windows, every phase's
+cycles a warp a window and the total, and every phase's per-warp row. `cta_windows(cell)` (owners times windows) is the
+one divisor every per-unit number in the instruments uses (`tools/pipe_counters.py`, `tools/stall_census.py`).

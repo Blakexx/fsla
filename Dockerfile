@@ -227,7 +227,7 @@ ENV LD_LIBRARY_PATH=/usr/lib/wsl/lib:${LD_LIBRARY_PATH}
 COPY requirements.lock /opt/rola/bootstrap/requirements.lock
 COPY tools/dev.py tools/dev_config.py tools/sccache_toolchain.py tools/mold_toolchain.py \
      tools/sccache_pin.json tools/mold_pin.json /opt/rola/bootstrap/tools/
-RUN mkdir -p /workspace/rola /workspace/store /workspace/worktrees /run/rola/locks /run/rola/gpu \
+RUN mkdir -p /workspace/rola /workspace/store /workspace/suite /workspace/worktrees /run/rola/locks /run/rola/gpu \
     && /opt/venv/bin/python /opt/rola/bootstrap/tools/dev.py init --image --env-key "${ROLA_ENV_KEY}"
 
 CMD ["/bin/bash"]

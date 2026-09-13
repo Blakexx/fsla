@@ -281,6 +281,12 @@ def worker_argv(binary: dict, bench: str, cells: list[str], reps: int, warmup: i
     return argv
 
 
+def oneshot_argv(cell: str, bench: str = "carry_forward", schedule: str = "first") -> list[str]:
+    """One untimed launch of a cell through this tree's own worker, under this interpreter: what a profiler wraps."""
+    return worker_argv({"venv": str(Path(sys.executable).parents[1]), "worktree": str(REPO)}, bench, [cell], 0, 0,
+                       "fresh", True, schedule)
+
+
 def run_worker(binary: dict, bench: str, cells: list[str], reps: int, warmup: int,
                lock_path: str, state: str, oneshot: bool = False,
                timeout: int = 600) -> dict:

@@ -55,10 +55,10 @@ _INSTANCE = re.compile(r"(\d{15,}) \(\+\d+\): ([-\d.eE+]+)")
 
 def capture(cell: str, out: Path) -> Path:
     """One launch of the cell through the probe worker under PM sampling; returns the report."""
-    worker = [PY, "tools/probe_cells.py", "--worker", "--bench", "carry_forward", "--reps", "0", "--warmup", "0",
-              "--state", "fresh", "--oneshot", "--schedule", "first", "--cells", cell]
+    import probe_cells
+
     r = subprocess.run([NCU, "--target-processes", "all", "-k", "regex:carry_kernel", "-c", "1", "--section",
-                        "PmSampling", "-f", "-o", str(out), *worker], cwd=ROOT, capture_output=True, text=True,
+                        "PmSampling", "-f", "-o", str(out), *probe_cells.oneshot_argv(cell)], cwd=ROOT, capture_output=True, text=True,
                        timeout=3600)
     rep = out.with_suffix(".ncu-rep") if out.suffix != ".ncu-rep" else out
     if r.returncode or not rep.exists():

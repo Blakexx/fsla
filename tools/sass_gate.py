@@ -16,6 +16,7 @@ is a line of zeros and a red names the signature.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -44,6 +45,10 @@ def cubins_of(path: Path, member: str | None) -> list[Path]:
     return [out / n for n in picked]
 
 
+#: the last `gate` call's signature per function, for `--json`
+STATS: dict[str, dict] = {}
+
+
 def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[bool, str]:
     sass = subprocess.run([NVDISASM, str(cubin)], capture_output=True, text=True, check=True).stdout
     funcs: dict[str, list[str]] = {}
@@ -57,8 +62,10 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
         m = INSTR.match(line)
         if m and cur is not None:
             funcs[cur].append((m.group(1) or "").strip() + " " + m.group(2))
+
     ok = True
     report = []
+    STATS.clear()
     for name, ins in funcs.items():
         if kernel and not re.search(kernel, name):
             continue
@@ -78,6 +85,8 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
         if max_per_hmma is not None and hmma and per > max_per_hmma:
             reds.append(f"static instructions per HMMA {per:.1f} > {max_per_hmma}")
         ok &= not reds
+        STATS[name] = {"instr": n, "hmma": hmma, "per_hmma": None if not hmma else round(per, 2), "ldl": ldl,
+                       "calls": calls, "pred_hmma": phmma, "reds": reds}
         short = name[:70]
         report.append(f"{'RED ' if reds else 'ok  '} {short}: instr {n} hmma {hmma} per-hmma {per:.1f} "
                       f"ldl {ldl} calls {calls} predHMMA {phmma}" + (" :: " + "; ".join(reds) if reds else ""))
@@ -90,12 +99,17 @@ def main() -> int:
     ap.add_argument("--kernel", default="carry_kernel")
     ap.add_argument("--member", default="carry_arm")
     ap.add_argument("--max-per-hmma", type=float, default=None)
+    ap.add_argument("--json", type=Path, default=None, help="also write every function's signature here, by cubin")
     a = ap.parse_args()
     allok = True
+    doc = {}
     for cub in cubins_of(a.binary, a.member if a.binary.suffix != ".cubin" else None):
         ok, rep = gate(cub, a.kernel, a.max_per_hmma)
         print(f"== {cub.name}\n{rep}")
+        doc[cub.name] = {"ok": ok, "functions": dict(STATS)}
         allok &= ok
+    if a.json:
+        a.json.write_text(json.dumps(doc, sort_keys=True) + "\n")
     return 0 if allok else 1
 
 

@@ -97,7 +97,8 @@ record for the key of what it stages -- the commit gate refuses it otherwise (KE
 **The mounts come from the host's dev config.** `python3 tools/dev.py container compose` writes
 `.devcontainer/compose.local.yaml` (never committed) binding, onto the image's fixed layout: this checkout at
 `/workspace/rola`, the host's `host.lock_dir` at `/run/rola/locks` and its GPU lock's directory at `/run/rola/gpu`,
-`store.root` at `/workspace/store`, and `workspace.worktrees` at `/workspace/worktrees`. It refuses when no image
+`store.root` at `/workspace/store`, `workspace.suite` at `/workspace/suite`, and `workspace.worktrees` at
+`/workspace/worktrees`. It refuses when no image
 exists for the current key. Under WSL it also mounts the directory above `host.wsl_lib` (`/usr/lib/wsl`) read-only:
 the image's loader path starts at `/usr/lib/wsl/lib`, and without the Windows driver's libraries there CUDA fails to
 initialize inside the container with error 500 even though `nvidia-smi` works (measured 2026-09-12, Docker Desktop
