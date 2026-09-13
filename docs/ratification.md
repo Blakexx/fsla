@@ -5,7 +5,7 @@ did to every instantiation the extension ships, on one architecture, under one
 exact `ptxas`, filed under that assembler's toolchain ([`internals/tools/toolchains.md`](internals/tools/toolchains.md)):
 
 ```
-tools/manifests/cu124/sm_86.json
+tools/manifests/cu13/sm_86.json
   { "toolchain": { "ptxas": "<the whole --version string>", "defines": {},
                    "nvcc_flags": [...], "sass_hash_version": 2,
                    "sccache": {"version": "sccache 0.17.0", "sha256": "..."} },
