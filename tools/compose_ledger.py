@@ -34,12 +34,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+import dev_config  # noqa: E402
 import gen_shards  # noqa: E402
 
 PY = sys.executable
-NCU = "/usr/local/cuda/bin/ncu"
-CUOBJDUMP = "/usr/local/cuda/bin/cuobjdump"
-NVDISASM = "/usr/local/cuda/bin/nvdisasm"
+NCU = dev_config.get("toolchain.ncu")
+CUOBJDUMP = dev_config.cuda_bin("cuobjdump")
+NVDISASM = dev_config.cuda_bin("nvdisasm")
 LEDGERS = ROOT / "benchmarks" / "results" / "ledgers"
 
 
@@ -177,7 +178,7 @@ def registers() -> dict:
     """Peak live registers of the rung's arm (a -lineinfo compile against the rung's parts header)."""
     with tempfile.TemporaryDirectory(prefix="compose_reg_") as tmp:
         cub = Path(tmp) / "arm0.cubin"
-        rc, out = run(["/usr/local/cuda/bin/nvcc", "-O3", "-std=c++17", "-arch=sm_86", "--expt-relaxed-constexpr",
+        rc, out = run([dev_config.cuda_bin("nvcc"), "-O3", "-std=c++17", "-arch=sm_86", "--expt-relaxed-constexpr",
                        "-lineinfo", "-DROLA_CARRY_BUILD_0", "-I", "csrc/rola/src", "-I", "build/generated", "-cubin",
                        "csrc/rola/src/instantiations/carry_arm_0.cu", "-o", str(cub)], timeout=1800)
         if rc:

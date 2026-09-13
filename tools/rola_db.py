@@ -10,10 +10,7 @@ text, mergeable, provenance in every row). THE DATABASE is `.rola/measurements.s
 and `rebuild` refuses nothing that got past the JSONL writer's own provenance gate
 (`benchmarks/bench/store.py`) because that gate already ran when the row was written.
 
-Paths: `ROLA_RESULTS_DIR` (default `<repo>/benchmarks/results`), `ROLA_DB` (default
-`<repo>/.rola/measurements.sqlite`) -- both repo-relative by default so a container, a
-rented A100 box and a laptop clone all resolve the same layout with nothing exported
-(docs/setup.md).
+Paths: `store.results` and `store.db` in the dev config (`tools/dev_config.py`).
 
 Usage:
 
@@ -37,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -45,7 +41,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "benchmarks"))
 
-import host_budget  # noqa: E402 -- path insert must precede this import
+import dev_config  # noqa: E402 -- path insert must precede this import
+import host_budget  # noqa: E402
 
 from bench.store import KINDS, results_dir  # noqa: E402
 
@@ -103,8 +100,7 @@ CREATE VIEW measurements AS
 
 
 def db_path() -> Path:
-    override = os.environ.get("ROLA_DB")
-    return Path(override).resolve() if override else ROOT / ".rola" / "measurements.sqlite"
+    return Path(dev_config.get("store.db")).resolve()
 
 
 def _iter_jsonl_files(root: Path):

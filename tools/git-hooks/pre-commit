@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # THE COMMIT GATE, IN THE TREE. `core.hooksPath` points every checkout and every
-# linked worktree here (tools/build/new_worktree.sh wires it), so the gate is a
+# linked worktree here (`python tools/dev.py worktree` and `init` wire it), so the gate is a
 # property of the tree rather than of one `.git` directory: a worktree cannot be
 # created without it, and there is no configuration left for a caller to supply.
 #

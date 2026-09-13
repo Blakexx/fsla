@@ -37,14 +37,14 @@ shows the rounds' range; the ledger row keeps `round_sm_ghz`. A binary from befo
 probe reports none and prints `GHz n/a`.
 
 THE LOCK SEAM (`tools/clock_lock.py`): how a clock is locked is the HOST's fact and lives
-outside the tree, in `~/.config/rola/clock.json` -- the target GHz and the lock and unlock
+outside the tree, in the dev config's `clock.json` (`tools/dev_config.py`) -- the target GHz and the lock and unlock
 commands (`nvidia-smi -lgc` as root on Linux; on this Windows host under WSL two elevated
 scheduled tasks a non-admin process may start, `gpu-lock` and `gpu-unlock`). The harness
 locks at start, proves the lock with the device read, unlocks on every exit path, and
-REFUSES a row whose measured clock is off the lock by more than 1%. Without the file the
+REFUSES a row whose measured clock is off the lock by more than 1%. Without a clock the
 run is UNLOCKED: rows carry their measured clock, print `UNLOCKED`, and the ledger keeps
 `clock_locked = false`, as it keeps `dirty`. The harness names no operating
-system; `tools/setup_clock_lock.py --mhz N` is the one-time host setup that does: under WSL
+system; `python tools/dev.py clock --mhz N` is the one-time host setup that does: under WSL
 it registers the two elevated tasks with hidden launchers (one administrator prompt) and
 proves the round trip, on Linux it writes the `sudo -n nvidia-smi` commands and prints the
 sudoers line, elsewhere it says the host cannot lock.

@@ -11,8 +11,9 @@ salted hash (`machine_tag`), never the hostname itself -- see `machine_tag` belo
 from __future__ import annotations
 
 import hashlib
-import os
 import re
+import sys
+from pathlib import Path
 
 #: Vendor words carry no comparability information; stripping them is what turns
 #: `torch.cuda.get_device_properties(0).name` into a slug instead of a sentence.
@@ -38,7 +39,7 @@ def hw_profile(gpu_name: str, sm: str) -> str:
     return f"{slugify_gpu(gpu_name)}-{sm.replace('_', '')}"
 
 
-def machine_tag(salt_env: str = "ROLA_MACHINE_SALT") -> str | None:
+def machine_tag() -> str | None:
     """An OPAQUE, salted short hash distinguishing two same-profile machines.
 
     Per the RULED section: nothing identifiable is checked in, ever -- not a
@@ -49,7 +50,10 @@ def machine_tag(salt_env: str = "ROLA_MACHINE_SALT") -> str | None:
     the common case. A hash of the hostname WITHOUT a secret salt would be
     reversible by any reader with a GPU-model list and is not used.
     """
-    salt = os.environ.get(salt_env)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+    import dev_config
+
+    salt = dev_config.get("environment.machine_salt")
     if not salt:
         return None
     import socket

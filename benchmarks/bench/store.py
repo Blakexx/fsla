@@ -29,8 +29,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -38,6 +38,8 @@ from pathlib import Path
 from bench.hw_profile import hw_profile, machine_tag
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+import dev_config  # noqa: E402 -- path insert must precede this import
 
 #: Bump only for a change that makes OLD LINES UNREADABLE (adding a field does not
 #: qualify -- readers ignore what they do not know). Mirrors `bench.ledger.SCHEMA`'s
@@ -57,11 +59,8 @@ REQUIRED_RUN_FIELDS = ("run_id", "ts", "git_sha", "stamp_magic", "harness_sha")
 
 
 def results_dir() -> Path:
-    """`ROLA_RESULTS_DIR`, repo-relative default `benchmarks/results` (§17: no
-    ad-hoc or home-rooted default -- an override is the operator's choice, not a
-    convenience path this module invents)."""
-    override = os.environ.get("ROLA_RESULTS_DIR")
-    return Path(override).resolve() if override else ROOT / "benchmarks" / "results"
+    """`store.results` in the dev config (§17: a named record, never an ad-hoc path)."""
+    return Path(dev_config.get("store.results")).resolve()
 
 
 def git_state() -> tuple[str, bool]:
@@ -152,7 +151,7 @@ def build_run(*, harness_paths, stage: str | None = None, agent: str | None = No
         "gpu": env["gpu"],
         "driver": env["driver_cuda"],
         "cuda": env["driver_cuda"],
-        "image_digest": os.environ.get("ROLA_IMAGE_DIGEST", ""),
+        "image_digest": dev_config.get("environment.image_digest"),
         "git_sha": sha,
         "branch": branch,
         "worktree": worktree_name,

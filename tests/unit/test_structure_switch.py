@@ -13,16 +13,15 @@ consumes it), so nothing in the extension can prove it works. This file compiles
   a device fault, and this is why the toy is a SEPARATE PROCESS: a trap kills the CUDA
   context it runs in, so it cannot be provoked inside the pytest process.
 
-The compile goes through `tools/build/build_lock.sh` -- a census compile is a compile
+The compile runs under the host budget (`tools/host_budget.py`) -- a census compile is a compile
 (`rola-build`), and this one is two.
 """
 
 from __future__ import annotations
 
-import os
 import pathlib
-import shutil
 import subprocess
+import sys
 
 import pytest
 import torch
@@ -30,7 +29,7 @@ import torch
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SRC = REPO / "csrc" / "rola" / "src"
 PROBE = pathlib.Path(__file__).resolve().parent / "fixtures" / "structure_switch_probe.cu"
-BUILD_LOCK = REPO / "tools" / "build" / "build_lock.sh"
+BUILD_LOCK = [sys.executable, str(REPO / "tools" / "host_budget.py"), "--"]
 
 #: the toy's own set size and value law, mirrored from the fixture: a mirror of FIVE
 #: LINES is the price of asserting the bodies ran under the right member at all.
@@ -38,8 +37,9 @@ NA = 5
 
 
 def _nvcc() -> str:
-    cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
-    return shutil.which("nvcc") or f"{cuda_home}/bin/nvcc"
+    import dev_config
+
+    return dev_config.cuda_bin("nvcc")
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +51,7 @@ def probe_binary(tmp_path_factory):
         pytest.skip(f"no nvcc at {nvcc}: the toy kernel cannot be compiled")
     major, minor = torch.cuda.get_device_capability()
     out = tmp_path_factory.mktemp("structure_switch") / "probe"
-    cmd = [str(BUILD_LOCK), "--", nvcc, "-std=c++17", f"-arch=sm_{major}{minor}",
+    cmd = [*BUILD_LOCK, nvcc, "-std=c++17", f"-arch=sm_{major}{minor}",
            "--expt-relaxed-constexpr", f"-I{SRC}", str(PROBE), "-o", str(out)]
     done = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     assert done.returncode == 0, f"the toy kernel did not compile:\n{done.stderr}"

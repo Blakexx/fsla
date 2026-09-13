@@ -22,8 +22,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-NVDISASM = "/usr/local/cuda/bin/nvdisasm"
-CUOBJDUMP = "/usr/local/cuda/bin/cuobjdump"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dev_config  # noqa: E402 -- path insert must precede this import
+
+NVDISASM = dev_config.cuda_bin("nvdisasm")
+CUOBJDUMP = dev_config.cuda_bin("cuobjdump")
 INSTR = re.compile(r"^\s*/\*[0-9a-f]{4,5}\*/\s+(@!?U?P\w+\s+)?([A-Z0-9_.$]+)")
 
 

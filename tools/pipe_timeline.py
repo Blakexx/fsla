@@ -32,8 +32,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dev_config  # noqa: E402 -- path insert must precede this import
+
 ROOT = Path(__file__).resolve().parents[1]
-NCU = "/usr/local/cuda-13.0/bin/ncu"
+NCU = dev_config.get("toolchain.ncu")
 PY = sys.executable
 
 #: the series a timeline reads: (short name, metric column in the raw export, pass-group workload-start key)

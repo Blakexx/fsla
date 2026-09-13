@@ -554,7 +554,7 @@ pytest tests/unit tests/oracle -m "not cuda"                                 # C
 pytest tests/unit -m cuda                           # tests/unit's CUDA-marked rows
 pytest tests/oracle                                 # kernels vs the fp64/torch baselines, incl. The families
 pytest tests/integration                            # composition, dispatch, two-branches-agree
-ROLA_FLA_CROSSCHECK=1 pytest tests/oracle/test_oracle_vs_fla.py                # one-time, opt-in -- see below
+pytest tests/oracle/test_oracle_vs_fla.py   # one-time, opt-in: environment.fla_crosscheck true in the dev config -- see below
 ROLA_GRADCHECK_INSURANCE=1 pytest tests/oracle/test_backward_family.py  # one-time, opt-in -- see above
 ```
 

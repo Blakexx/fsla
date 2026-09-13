@@ -17,8 +17,8 @@ Python subprocess this same interpreter later launches inherit the lowered
 niceness through ordinary `fork`+`exec`, so the effect reaches the actual CPU
 load without touching the compiler invocation itself.
 
-`ROLA_NO_NICE=1` skips this entirely — the coordinator's own interactive gate
-runs opt out (`docs/build.md`'s env-var table). Default is off (nice
+`host.nice: false` in the dev config skips this entirely — the coordinator's own interactive gate
+runs opt out (`docs/internals/tools/dev_config.md`). Default is off (nice
 applied); nothing about the compile's behaviour, output, or elapsed wall time
 changes — this is a scheduling hint, not a resource cap, and the probe/bench
 harnesses' own numbers are GPU-timed, not host-scheduler-timed, so they are
@@ -27,6 +27,6 @@ unaffected by the host running its compiles niced.
 `tests/unit/test_lock_priority.py` is the proof: a child process launched
 from inside `acquire()`'s `with` block reports nice 10 in its own
 `/proc/<pid>/stat` (field 19), and the same child reports 0 under
-`ROLA_NO_NICE=1` — run in a fresh driver subprocess per condition, since an
+`host.nice: false` (a test dev config) — run in a fresh driver subprocess per condition, since an
 unprivileged process's own niceness can only go up, never back down, so the
 two conditions cannot share one process across both assertions.

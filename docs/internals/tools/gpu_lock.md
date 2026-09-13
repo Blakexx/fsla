@@ -44,8 +44,8 @@ its I/O class to idle (`ionice -c 3 -p <pid>`) before the `with` block's body
 — a test, a probe launch, a sanitizer run, a bench — runs. A missing
 `ionice` binary is a logged skip, not a failure.
 
-`ROLA_NO_NICE=1` skips this (the coordinator's interactive gate runs;
-`docs/build.md`'s env-var table). Default is off. This changes nothing about
+`host.nice: false` in the dev config skips this (the coordinator's interactive gate runs;
+`docs/internals/tools/dev_config.md`). Default is off. This changes nothing about
 what a GPU-locked run measures: the probe and bench harnesses' numbers are
 GPU-timed, and niceness only affects host CPU/IO scheduling around the GPU
 work, not the work itself.
@@ -54,7 +54,7 @@ work, not the work itself.
 `tests/unit/test_lock_priority.py`, shared with the build-lock proof) is the
 gate: a child process launched from inside `gpu_lock()`'s `with` block
 reports nice 10 in `/proc/<pid>/stat` (field 19), and 0 under
-`ROLA_NO_NICE=1` — each condition its own fresh driver subprocess, for the
+`host.nice: false` — each condition its own fresh driver subprocess, for the
 same reason `build_lock.md` states (niceness cannot be lowered back down by
 an unprivileged process). The lock path used is a throwaway `tmp_path` file,
 never the real `/tmp/rola_gpu.lock`, so the test never contends with actual

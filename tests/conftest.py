@@ -242,6 +242,28 @@ def _take_gpu_lock(request):
 # have something to run.
 
 
+@pytest.fixture
+def dev_config_env(tmp_path):
+    """`make(host={...}, ...)` writes those sections to a fresh dev config directory (`tools/dev_config.py`) and returns
+    an environment whose children read it, the in-process loader's cache cleared."""
+    import json
+
+    import dev_config
+
+    def make(**sections) -> dict:
+        root = tmp_path / "dev_config"
+        root.mkdir(exist_ok=True)
+        for name, values in sections.items():
+            (root / f"{name}.json").write_text(json.dumps(values))
+        env = dict(os.environ)
+        env[dev_config.POINTER] = str(root)
+        dev_config.load.cache_clear()
+        return env
+
+    yield make
+    dev_config.load.cache_clear()
+
+
 def build_routes(*, hidden_size=64, num_heads=4, widths=(16,), routing=None,
                  gain=True, bias=False,
                  gain_bias_init=None, gain_config=None):

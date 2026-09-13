@@ -32,6 +32,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CUDA_PATH="$(python3 "$ROOT/tools/dev.py" get cuda-home)"
 CC_JSON="${1:-$ROOT/compile_commands.json}"
 
 if [[ ! -f "$CC_JSON" ]]; then
@@ -55,9 +56,9 @@ fi
 rel="${src_from_db#*/csrc/}"
 target="$ROOT/csrc/$rel"
 
-flags=$(python3 - "$CC_JSON" "$src_from_db" "$ROOT" << 'PYEOF'
+flags=$(python3 - "$CC_JSON" "$src_from_db" "$ROOT" "$CUDA_PATH" << 'PYEOF'
 import json, shlex, sys
-cc_json, src, root = sys.argv[1], sys.argv[2], sys.argv[3]
+cc_json, src, root, cuda_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 db = json.load(open(cc_json))
 entry = next(e for e in db if e["file"] == src)
 old_root = entry["file"].split("/csrc/")[0]
@@ -87,7 +88,7 @@ for t in toks:
         continue
     out.append(t)
 out += ["-x", "cuda", "--cuda-host-only",
-        "--cuda-path=/usr/local/cuda", "--cuda-gpu-arch=sm_80"]
+        f"--cuda-path={cuda_path}", "--cuda-gpu-arch=sm_80"]
 print(" ".join(shlex.quote(x) for x in out))
 PYEOF
 )

@@ -72,7 +72,6 @@ import sys
 from pathlib import Path
 
 from setuptools import find_packages, setup
-from torch.utils.cpp_extension import CUDA_HOME, BuildExtension, CUDAExtension
 
 ROOT = Path(__file__).resolve().parent
 CSRC = ROOT / "csrc" / "rola"
@@ -86,6 +85,12 @@ sys.path.insert(0, str(ROOT / "tools"))
 # These follow the sys.path insert above and cannot be hoisted into the import block
 # at the top of the file.
 # isort: off
+import dev_config  # noqa: E402
+
+#: torch.utils.cpp_extension resolves its toolkit when it is imported, so the dev config's is handed to it first.
+if dev_config.get("toolchain.cuda_home"):
+    os.environ["CUDA_HOME"] = dev_config.get("toolchain.cuda_home")
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension  # noqa: E402
 import build_flags  # noqa: E402
 import build_lock  # noqa: E402
 import gen_shards  # noqa: E402
@@ -387,9 +392,7 @@ def assert_no_ptx(flags: list[str]) -> None:
 # ---------------------------------------------------------------------------
 # RULES 1 and 3 -- the pre-build gates
 # ---------------------------------------------------------------------------
-def cuda_bin(tool: str) -> str:
-    home = CUDA_HOME or os.environ.get("CUDA_HOME") or "/usr/local/cuda"
-    return str(Path(home) / "bin" / tool)
+cuda_bin = dev_config.cuda_bin
 
 
 def ptxas_version() -> str:
@@ -538,7 +541,7 @@ def _gate_sccache() -> dict | None:
     if info is None:
         return None
     real_nvcc = cuda_bin("nvcc")
-    wrapper, env = sccache_toolchain.wrap(real_nvcc)
+    wrapper, env = sccache_toolchain.wrap(real_nvcc, info["path"])
     os.environ.update(env)
     os.environ["PYTORCH_NVCC"] = wrapper
     print(f"sccache: wired as PYTORCH_NVCC ({wrapper} -> {real_nvcc})")
@@ -675,7 +678,7 @@ def _ninja_jobs(held_slots: int) -> int:
     ``-j`` to the slot count directly oversubscribes the budget by exactly the number
     of architectures compiled.
     """
-    per_process = min(int(os.getenv("ROLA_NVCC_THREADS", "2")), max(1, len(ROLA_CUDA_ARCHS)))
+    per_process = min(dev_config.get("host.nvcc_threads"), max(1, len(ROLA_CUDA_ARCHS)))
     return max(1, held_slots // per_process)
 
 
@@ -705,7 +708,7 @@ PARTS_SOURCES = ["benchmarks/unit/carry_parts/carry_parts.cu",
 
 
 def build_parts_extension():
-    nvcc_threads = int(os.getenv("ROLA_NVCC_THREADS", "2"))
+    nvcc_threads = dev_config.get("host.nvcc_threads")
     nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
         + list(build_flags.DEPFILE_FLAGS) + ["-lineinfo"]
     assert_no_ptx(nvcc_flags)
@@ -718,9 +721,13 @@ def build_parts_extension():
     )
 
 
+def desired_jobs() -> int:
+    """The ninja jobs a build asks the host budget for: `host.build_jobs`, else derived from `host.nvcc_threads`."""
+    return dev_config.get("host.build_jobs") or build_flags.default_max_jobs(dev_config.get("host.nvcc_threads"))
+
+
 def build_extension():
-    nvcc_threads = int(os.getenv("ROLA_NVCC_THREADS", "2"))
-    os.environ.setdefault("MAX_JOBS", str(build_flags.default_max_jobs(nvcc_threads)))
+    nvcc_threads = dev_config.get("host.nvcc_threads")
 
     nvcc_flags = build_flags.nvcc_flags(ROLA_CUDA_ARCHS, nvcc_threads) \
         + list(build_flags.DEPFILE_FLAGS) + _decode_arm_subset()
@@ -793,11 +800,8 @@ class RoLABuildExtension(BuildExtension):
         #: and MAX_JOBS is clamped to that share, never to what was asked.
         #: `_is_iteration_build` covers BOTH families (ROLA_CARRY_ARMS,
         #: ROLA_DECODE_ARMS) -- one mechanism, not two (§18).
-        desired_jobs = int(os.environ.get(
-            "MAX_JOBS", str(build_flags.default_max_jobs(
-                int(os.environ.get("ROLA_NVCC_THREADS", "2"))))))
         with build_lock.acquire(gate=not _is_iteration_build(),
-                                 desired=desired_jobs) as held_slots:
+                                 desired=desired_jobs()) as held_slots:
             os.environ["MAX_JOBS"] = str(_ninja_jobs(held_slots))
             super().run()
         self._post_build_arm_table_check()
@@ -954,7 +958,7 @@ setup(
     packages=find_packages(include=["rola", "rola.*"]),
     #: ROLA_NO_EXTENSION=1 installs the Python package with NO extension build -- for a
     #: worktree that receives a built _C from the integration checkout at the same
-    #: SHA (tools/build/new_worktree.sh); the device stamp still gates freshness.
+    #: SHA (`python tools/dev.py worktree`); the device stamp still gates freshness.
     ext_modules=[] if os.getenv("ROLA_NO_EXTENSION") == "1" else (
         [build_extension()] + ([build_parts_extension()] if os.getenv("ROLA_BUILD_PARTS") == "1" else [])),
     cmdclass={"build_ext": RoLABuildExtension},

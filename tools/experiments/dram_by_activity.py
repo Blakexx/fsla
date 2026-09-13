@@ -66,6 +66,7 @@ REPO = THIS_FILE.parents[2]
 sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(REPO / "benchmarks"))
 
+import dev_config  # noqa: E402
 import probe_cells as pc  # noqa: E402
 from gpu_lock import GPU_LOCK_DEFAULT, gpu_lock  # noqa: E402
 
@@ -295,7 +296,7 @@ def main():
     ap.add_argument("--launches", type=int, default=6, help="profiled launches per run")
     ap.add_argument("--rounds", type=int, default=1, help="interleaved A/B repetitions")
     ap.add_argument("--lock", default=GPU_LOCK_DEFAULT)
-    ap.add_argument("--out-dir", default="/tmp/dram_by_activity")
+    ap.add_argument("--out-dir", default=str(dev_config.scratch("dram_by_activity")))
     ap.add_argument("--source", action="store_true", help="also capture SourceCounters")
     ap.add_argument("--continuation", action="store_true",
                     help="entry plane IS the exit plane, so the ENTRY sweep runs "

@@ -41,24 +41,24 @@ compile of the same ten translation units becomes a cache hit, not a second
 7-minute compile.
 
 **DEFAULT BEHAVIOUR (K39, Blake ruling 2026-08-28: "a tool that can run one of two
-ways must REFUSE, not choose").** `ROLA_SCCACHE` defaults to `"auto"`, which is
-the SAME gate `"1"` used to be: the pinned wrapper must resolve and match, or the
-build REFUSES -- there is no silent uncached fallback left, so a build no longer
-differs in whether it was cached by nothing more than which binaries happened to
-be on a host's PATH. `"0"` is the one remaining non-refusing outcome: an EXPLICIT
-opt-out that builds uncached deliberately. `"1"` is kept as a synonym of the
-(now-identical) default, so an existing `ROLA_SCCACHE=1` invocation is unaffected.
+ways must REFUSE, not choose").** The pinned wrapper at `toolchain.sccache` (the dev
+config) must match its pin, or the build REFUSES -- there is no silent uncached fallback,
+so a build never differs in whether it was cached by which binaries happened to be on a
+host. `toolchain.sccache_enabled: false` is the one non-refusing outcome: an EXPLICIT
+opt-out that builds uncached deliberately.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import dev_config  # noqa: E402 -- path insert must precede this import
+
 PIN_PATH = HERE / "sccache_pin.json"
 WRAPPER_PATH = HERE / "sccache_nvcc.py"
 
@@ -68,12 +68,8 @@ def pin() -> dict:
 
 
 def resolve_sccache() -> str | None:
-    """`ROLA_SCCACHE_BIN` overrides; otherwise `PATH` lookup, exactly like any other
-    tool this project shells out to (`ptxas`, `nvcc`) -- no hidden search path."""
-    override = os.environ.get("ROLA_SCCACHE_BIN")
-    if override:
-        return override
-    return shutil.which("sccache")
+    """`toolchain.sccache` in the dev config -- no search path; `tools/dev.py init` finds it once."""
+    return dev_config.get("toolchain.sccache")
 
 
 def sccache_version(path: str) -> str:
@@ -102,23 +98,22 @@ def gate() -> dict | None:
     could then differ in whether they were cached by nothing more than which
     binaries happened to be on a given host's PATH that day, exactly the
     reproducibility hazard closed-world rule 1 exists to close for `ptxas`. There
-    is now exactly one non-refusing outcome: `ROLA_SCCACHE=0`, an EXPLICIT,
-    deliberate opt-out (a caller's choice, not the gate's). Every other path --
+    is now exactly one non-refusing outcome: `toolchain.sccache_enabled: false`, an
+    EXPLICIT, deliberate opt-out (a choice in the dev config, not the gate's). Every other path --
     not found, version mismatch, hash mismatch -- raises.
     """
-    mode = os.environ.get("ROLA_SCCACHE", "auto")
-    if mode == "0":
-        print("sccache: disabled (ROLA_SCCACHE=0)")
+    if not dev_config.get("toolchain.sccache_enabled"):
+        print("sccache: disabled (toolchain.sccache_enabled is false)")
         return None
 
     p = pin()
     path = resolve_sccache()
     if path is None:
         raise RuntimeError(
-            f"CLOSED-WORLD RULE 1 (sccache wrapper pin): no `sccache` found on PATH "
-            f"(or $ROLA_SCCACHE_BIN). Pinned build is {p['version_string']} "
-            f"({p['release_asset']}, {p['release_url']}). Install the pinned build, "
-            f"or set ROLA_SCCACHE=0 to build uncached DELIBERATELY -- a build must "
+            f"CLOSED-WORLD RULE 1 (sccache wrapper pin): toolchain.sccache is not set in the "
+            f"dev config. Pinned build is {p['version_string']} "
+            f"({p['release_asset']}, {p['release_url']}). `python tools/dev.py init` installs it, "
+            f"or set toolchain.sccache_enabled false to build uncached DELIBERATELY -- a build must "
             f"not silently differ by whether a compiler cache happened to be "
             f"installed.")
 
@@ -134,14 +129,14 @@ def gate() -> dict | None:
             "this ratification against. Install the pinned build, move the pin "
             "DELIBERATELY (tools/sccache_pin.json) after re-verifying the bit-"
             "identity gate (docs/build.md#sccache) under the new one, or set "
-            "ROLA_SCCACHE=0 to build uncached DELIBERATELY."
+            "toolchain.sccache_enabled false to build uncached DELIBERATELY."
         )
 
     print(f"sccache OK  {version}  sha256 {digest[:16]}...  ({path})")
     return {"version": version, "sha256": digest, "path": path}
 
 
-def wrap(real_nvcc: str) -> tuple[str, dict]:
+def wrap(real_nvcc: str, sccache: str) -> tuple[str, dict]:
     """Point env at the wrapper for `real_nvcc`, returning `(wrapper_path, env_updates)`.
 
     Callers `os.environ.update(env_updates)` (or pass them to `subprocess.run`'s
@@ -149,4 +144,4 @@ def wrap(real_nvcc: str) -> tuple[str, dict]:
     wrapper itself performs no resolution (see module docstring); `real_nvcc` must
     already be the rule-1-gated path.
     """
-    return str(WRAPPER_PATH), {"ROLA_REAL_NVCC": real_nvcc}
+    return str(WRAPPER_PATH), {"ROLA_REAL_NVCC": real_nvcc, "ROLA_SCCACHE_BIN": sccache}

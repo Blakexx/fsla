@@ -19,7 +19,7 @@ delegation).
 
 **THE MECHANISM**, the same one `build_lock.py`/`gpu_lock.py` already used,
 generalized to N callers rather than one: `HOST_BUDGET_SLOTS` lock files
-(`ROLA_HOST_BUDGET_DIR`, default `/tmp` -- overridable so a test battery can
+(`host.lock_dir` in the dev config, default `/tmp` -- a test battery can
 point every acquirer at a throwaway directory instead of the real, possibly
 contended, `/tmp` locks another agent on this host is holding). `acquire(n)`
 waits for at least one free slot (never proceeds with zero), then
@@ -34,7 +34,7 @@ acquire sets `ROLA_HOST_BUDGET_HELD` in the process environment; a NESTED
 acquire that finds the marker already set is a no-op, so an outer tool that
 already holds slots and calls an inner tool that also acquires cannot
 self-deadlock (the shape `gpu_lock.py`'s docstring names, generalized to
-this pool). `ROLA_LOCKS_TRACE=1` prints every acquire/release with the holder
+this pool). `host.locks_trace` prints every acquire/release with the holder
 pid and the slot count, for every lock in this file and `gpu_lock.py` alike.
 
 **THE THIRD CATEGORY: FILE LOCKS.** A handful of tools write ONE shared
@@ -46,12 +46,18 @@ same way.
 """
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import os
+import shutil
+import subprocess
 import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dev_config  # noqa: E402 -- path insert must precede this import
 
 
 def _default_slots() -> int:
@@ -74,21 +80,15 @@ def _default_slots() -> int:
 #: agent process is driving the tool itself -- the same reasoning `nproc`-based
 #: defaults elsewhere in this tree (`build_flags.default_max_jobs`) already use,
 #: just applied to the WHOLE host-compute pool rather than one build's jobs.
-HOST_BUDGET_SLOTS = int(os.environ.get(
-    "ROLA_HOST_BUDGET_SLOTS", str(_default_slots())))
+HOST_BUDGET_SLOTS = dev_config.get("host.budget_slots") or _default_slots()
 
-
-#: Overridable so a test battery (or a container with its own private /tmp)
-#: does not contend with another agent's real locks on this host.
-_LOCK_DIR_ENV = "ROLA_HOST_BUDGET_DIR"
-_DEFAULT_LOCK_DIR = "/tmp"
 
 _HELD_MARKER = "ROLA_HOST_BUDGET_HELD"
-_TRACE_ENV = "ROLA_LOCKS_TRACE"
 
 
 def _lock_dir() -> Path:
-    return Path(os.environ.get(_LOCK_DIR_ENV, _DEFAULT_LOCK_DIR))
+    """`host.lock_dir`: a test battery points it at a throwaway directory; host and containers share the real one."""
+    return Path(dev_config.get("host.lock_dir"))
 
 
 def _slot_path(i: int) -> Path:
@@ -96,8 +96,21 @@ def _slot_path(i: int) -> Path:
 
 
 def trace(msg: str) -> None:
-    if os.environ.get(_TRACE_ENV) == "1":
+    if dev_config.get("host.locks_trace"):
         print(f"[locks pid={os.getpid()}] {msg}", file=sys.stderr, flush=True)
+
+
+def lower_priority(who: str) -> None:
+    """A locked process lowers its own CPU and IO priority (`host.nice`); children it starts inherit both."""
+    if not dev_config.get("host.nice"):
+        return
+    with contextlib.suppress(OSError):
+        os.nice(10)
+    ionice = shutil.which("ionice")
+    if ionice is None:
+        print(f"[{who}] ionice not on PATH; CPU niceness only", flush=True)
+        return
+    subprocess.run([ionice, "-c", "3", "-p", str(os.getpid())], check=False, capture_output=True)
 
 
 def _try_acquire(i: int):
@@ -233,12 +246,11 @@ def file_lock(name: str, *, label: str | None = None):
 def _main(argv: list[str]) -> int:
     """`python tools/host_budget.py [--slots N] [--exclusive] -- <command...>`
 
-    A thin CLI so a bash caller (the clang-tidy device runner: one draw per
-    translation unit) can take a host-budget slot around a subprocess without
-    itself speaking Python.
+    The one CLI for running a command under the host budget: a census compile, a clang-tidy
+    translation unit, anything CPU-heavy that is not `setup.py` (which acquires itself).
+    `--exclusive` is a gate draw. The command runs niced (`host.nice`).
     """
     import argparse
-    import subprocess
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--slots", type=int, default=1)
@@ -252,6 +264,7 @@ def _main(argv: list[str]) -> int:
               file=sys.stderr)
         return 2
     with acquire(a.slots, exclusive=a.exclusive, label=a.label):
+        lower_priority("host_budget")
         return subprocess.run(cmd).returncode
 
 

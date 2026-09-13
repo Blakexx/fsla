@@ -4,10 +4,9 @@
 Blake ruling 2026-08-28-night: "three agents' MAX_JOBS=4 each -> 12+ cicc" sat
 this host at 100% CPU for 10+ minutes and forced a WSL shutdown mid-session).
 
-**WHY THIS CANNOT BE A BRIEF INSTRUCTION.** `tools/build/build_lock.sh` (
-earlier the same day) already unified the iteration-slot and gate-lock
-mechanisms into one -- but it is an EXTERNAL wrapper a caller has to remember
-to invoke, and three concurrent agents each forgetting it (or each reasonably
+**WHY THIS CANNOT BE A BRIEF INSTRUCTION.** An external shell wrapper (the
+same day, since deleted) had already unified the iteration-slot and gate-lock
+mechanisms into one -- but it was a wrapper a caller had to remember to invoke, and three concurrent agents each forgetting it (or each reasonably
 believing their OWN `MAX_JOBS=4` was the whole host's budget, not a share of
 it) is exactly what happened. `RoLABuildExtension.run()` (`setup.py`) now
 acquires this budget ITSELF, unconditionally, before the actual compile --
@@ -23,12 +22,12 @@ alongside a full-budget compile was the same "12+ heavy processes on one
 host" shape this file exists to prevent, wearing a different process name,
 and this file's slot count could not see them. Slot counts now live in
 exactly one place, `tools/host_budget.py`'s `HOST_BUDGET_SLOTS`
-(`ROLA_HOST_BUDGET_SLOTS` overrides, default `os.cpu_count() - 2`) --
+(`host.budget_slots` in the dev config, default `os.cpu_count() - 2`) --
 `GLOBAL_CICC_SLOTS` below is that same number, kept as a name this module's
 own callers and docs already cite; `ROLA_GLOBAL_CICC_SLOTS` is superseded.
 A GATE build (the shipped arm set) takes EVERY slot of the shared pool,
-blocking until the whole budget is free, mirroring `build_lock.sh --gate`'s
-exclusivity. An ITERATION build takes however many slots are free RIGHT NOW,
+blocking until the whole budget is free (`python tools/host_budget.py --exclusive -- <cmd>` is the same draw
+for a command that is not `setup.py`). An ITERATION build takes however many slots are free RIGHT NOW,
 from 1 up to its own desired `MAX_JOBS`, BLOCKING (never proceeding with
 zero) until at least one is free -- so three iteration builds started at once
 each still get SOME progress rather than one winning everything or all three
@@ -39,10 +38,6 @@ that.
 """
 from __future__ import annotations
 
-import contextlib
-import os
-import shutil
-import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -54,24 +49,6 @@ import host_budget  # noqa: E402 -- path insert must precede this import
 #: `build_lock.GLOBAL_CICC_SLOTS` -- it is now an alias for the one shared
 #: pool every host-CPU-heavy tool draws from.
 GLOBAL_CICC_SLOTS = host_budget.HOST_BUDGET_SLOTS
-
-#: docs/internals/tools/build_lock.md -- the NICE stage (Blake, 2026-08-29).
-_NO_NICE_ENV = "ROLA_NO_NICE"
-
-
-def _lower_own_priority() -> None:
-    if os.environ.get(_NO_NICE_ENV) == "1":
-        return
-    with contextlib.suppress(OSError):
-        os.nice(10)
-    ionice = shutil.which("ionice")
-    if ionice is None:
-        print("[build_lock] ionice not on PATH; CPU niceness only", flush=True)
-        return
-    subprocess.run(
-        [ionice, "-c", "3", "-p", str(os.getpid())],
-        check=False, capture_output=True,
-    )
 
 
 @contextmanager
@@ -92,5 +69,5 @@ def acquire(*, gate: bool, desired: int):
     desired = max(1, desired)
     label = "gate" if gate else "iteration"
     with host_budget.acquire(desired, exclusive=gate, label=f"build_lock:{label}") as held:
-        _lower_own_priority()
+        host_budget.lower_priority("build_lock")
         yield held

@@ -131,7 +131,7 @@ documented.
 
 | step | what happens |
 |---|---|
-| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively via `tools/gpu_lock.py`'s `gpu_lock()`; if held, the harness waits. The harness is invoked BARE — never wrapped in an external `flock` on the same path, which self-deadlocks (per-open-file-description semantics; the K38 incident). `gpu_lock()` is REENTRANT (`ROLA_GPU_LOCK_HELD`), so a self-locking caller invoking another self-locking tool as a subprocess cannot deadlock either. `ROLA_GPU_LOCK` still MOVES the lock path for a caller composing with a genuinely DIFFERENT outer lock. |
+| GPU lock | `/tmp/rola_gpu.lock`, taken exclusively via `tools/gpu_lock.py`'s `gpu_lock()`; if held, the harness waits. The harness is invoked BARE — never wrapped in an external `flock` on the same path, which self-deadlocks (per-open-file-description semantics; the K38 incident). `gpu_lock()` is REENTRANT (`ROLA_GPU_LOCK_HELD`), so a self-locking caller invoking another self-locking tool as a subprocess cannot deadlock either. `host.gpu_lock` in the dev config names the lock path (host and containers share it). |
 | memory fraction | `set_per_process_memory_fraction(0.65)`, inside the lock and before the fixture is built — the value the two device-heavy test modules already pin after two whole-machine VRAM freezes |
 | clock settling | `settle_clocks()` — moved to `bench/regression.py` when `bench/instruments.py` went, because `bench_scaling.py` still needs it; **`settled: False` aborts the run.** Clocks cannot be locked from inside WSL2 at all, so targeting the plateau is the only available protocol, not a convenience |
 | tree identity | `git rev-parse` + `git status --porcelain` + `ratify.csrc_digest()`; a dirty tree does not block the run, it stamps `dirty: true`, and dirty rows are excluded from baselines |
@@ -361,7 +361,7 @@ its SM architecture, e.g. `rtx3080ti-sm86`, `a100-sm80` — **never a hostname,
 username, or machine id** (RULED, 2026-08-28: "nothing identifiable is checked
 in"). A memory/interconnect suffix (`SXM4-80GB`, `PCIE-40GB`) is stripped because it
 does not change which SASS body applies. Two boxes that share a profile and are
-ever told apart use `machine_tag`, an opaque salted hash (`ROLA_MACHINE_SALT`), not
+ever told apart use `machine_tag`, an opaque salted hash (`environment.machine_salt` in the dev config), not
 the hostname itself — unset by default, which is the common case.
 
 **ONE FILE PER RUN, SELF-CONTAINED.** The file's first line is the `runs` record
@@ -423,7 +423,6 @@ to run to reproduce it — `.rola/` is gitignored. `baseline` is how a stage gat
 reads "the previous stage's rows" (KERNEL_STANDARDS §16 addendum): the brief names
 the prior stage's string, not a git-history heuristic.
 
-Paths: `ROLA_RESULTS_DIR` (default `<repo>/benchmarks/results`), `ROLA_DB` (default
-`<repo>/.rola/measurements.sqlite`) — both repo-relative by default, so a container,
-a rented A100 box, and a laptop clone all resolve the same layout with nothing
-exported (§17: no home paths, no ad-hoc locations).
+Paths: `store.results` (default `<repo>/benchmarks/results`) and `store.db` (default
+`<repo>/.rola/measurements.sqlite`) in the dev config (`tools/dev_config.py`) — §17: no
+home paths, no ad-hoc locations.

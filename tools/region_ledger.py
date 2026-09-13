@@ -26,8 +26,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-CUOBJDUMP = "/usr/local/cuda/bin/cuobjdump"
-NVDISASM = "/usr/local/cuda/bin/nvdisasm"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dev_config  # noqa: E402 -- path insert must precede this import
+
+CUOBJDUMP = dev_config.cuda_bin("cuobjdump")
+NVDISASM = dev_config.cuda_bin("nvdisasm")
 DEF = [re.compile(r"^__device__ __forceinline__ \S+ (\w+)\("), re.compile(r"^__global__ .* void (\w+)\("),
        re.compile(r"^(?:template <[^>]*>\s*)?struct (\w+)"), re.compile(r"^  __device__ __forceinline__ (?:\w+ )?(\w+)\(")]
 

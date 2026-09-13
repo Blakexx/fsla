@@ -6,7 +6,7 @@ Every unit here uses FAKE children -- small driver scripts that hold a lock
 and wait to be told to release, never a real compile or a real GPU kernel --
 so the whole file runs in well under a second and never touches the real
 `/tmp` lock files another agent on this host may be holding
-(`ROLA_HOST_BUDGET_DIR`/an explicit `gpu_lock(path=...)` point every case at
+(`host.lock_dir` in a test dev config/an explicit `gpu_lock(path=...)` point every case at
 `tmp_path` instead).
 
 Proves, per the brief's Gates line:
@@ -78,17 +78,16 @@ def _release(proc: subprocess.Popen) -> None:
     assert proc.wait(timeout=_TIMEOUT_S) == 0, proc.stderr.read()
 
 
-def _base_env(tmp_path: Path, *, slots: int) -> dict:
-    env = dict(os.environ)
-    env["ROLA_HOST_BUDGET_DIR"] = str(tmp_path)
-    env["ROLA_HOST_BUDGET_SLOTS"] = str(slots)
-    env["ROLA_NO_NICE"] = "1"
+def _base_env(make, tmp_path: Path, *, slots: int) -> dict:
+    env = make(host={"lock_dir": str(tmp_path), "budget_slots": slots, "nice": False})
     env.pop("ROLA_HOST_BUDGET_HELD", None)
     return env
 
 
-def test_n_plus_one_acquirers_block_then_release_frees_a_slot(tmp_path):
-    env = _base_env(tmp_path, slots=2)
+def test_n_plus_one_acquirers_block_then_release_frees_a_slot(tmp_path, dev_config_env):
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    env = _base_env(dev_config_env, locks, slots=2)
     holders = [_spawn(_HOLD_HOST_BUDGET, env) for _ in range(2)]
     try:
         for h in holders:
@@ -112,14 +111,16 @@ def test_n_plus_one_acquirers_block_then_release_frees_a_slot(tmp_path):
                 _release(h)
 
 
-def test_reentrant_acquire_is_a_noop_under_an_ancestors_marker(tmp_path):
+def test_reentrant_acquire_is_a_noop_under_an_ancestors_marker(tmp_path, dev_config_env):
     """A nested acquire that finds `ROLA_HOST_BUDGET_HELD` already set must
     not open or wait on any lock file -- proven here by asking for MORE slots
     than exist (`slots=1`, request `n=5`) and observing it does not block."""
     import host_budget
 
-    env = _base_env(tmp_path, slots=1)
-    os.environ["ROLA_HOST_BUDGET_DIR"] = env["ROLA_HOST_BUDGET_DIR"]
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    env = _base_env(dev_config_env, locks, slots=1)
+    os.environ["ROLA_DEV_CONFIG"] = env["ROLA_DEV_CONFIG"]
     os.environ["ROLA_HOST_BUDGET_HELD"] = "999999"  # an "ancestor" holding it
     try:
         with host_budget.acquire(5, label="nested") as held:
@@ -127,17 +128,15 @@ def test_reentrant_acquire_is_a_noop_under_an_ancestors_marker(tmp_path):
             # could not possibly satisfy a real request for 5 of 1 slot.
             assert held == 5
         # Reentrant path never opened a lock file at all.
-        assert list(tmp_path.iterdir()) == []
+        assert list(locks.iterdir()) == []
     finally:
         os.environ.pop("ROLA_HOST_BUDGET_HELD", None)
-        os.environ.pop("ROLA_HOST_BUDGET_DIR", None)
+        os.environ.pop("ROLA_DEV_CONFIG", None)
 
 
-def test_gpu_lock_shared_pool_admits_two_and_blocks_a_third(tmp_path):
+def test_gpu_lock_shared_pool_admits_two_and_blocks_a_third(tmp_path, dev_config_env):
     lock_path = str(tmp_path / "gpu.lock")
-    env = dict(os.environ)
-    env["ROLA_GPU_SHARED_SLOTS"] = "2"
-    env["ROLA_NO_NICE"] = "1"
+    env = dev_config_env(host={"gpu_shared_slots": 2, "nice": False})
     env.pop("ROLA_GPU_LOCK_HELD", None)
 
     a = _spawn(_HOLD_GPU_LOCK, env, lock_path, "shared")
@@ -160,11 +159,9 @@ def test_gpu_lock_shared_pool_admits_two_and_blocks_a_third(tmp_path):
                 _release(h)
 
 
-def test_gpu_lock_exclusive_waits_for_every_shared_holder_and_vice_versa(tmp_path):
+def test_gpu_lock_exclusive_waits_for_every_shared_holder_and_vice_versa(tmp_path, dev_config_env):
     lock_path = str(tmp_path / "gpu.lock")
-    env = dict(os.environ)
-    env["ROLA_GPU_SHARED_SLOTS"] = "2"
-    env["ROLA_NO_NICE"] = "1"
+    env = dev_config_env(host={"gpu_shared_slots": 2, "nice": False})
     env.pop("ROLA_GPU_LOCK_HELD", None)
 
     shared = _spawn(_HOLD_GPU_LOCK, env, lock_path, "shared")

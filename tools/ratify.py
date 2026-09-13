@@ -117,34 +117,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-
-def cuda_bin(tool: str) -> str:
-    """ONE toolchain location for both binaries, resolved the way the BUILD resolves it.
-
-    `nvcc` drives the compile and `ptxas` is the assembler it invokes and whose
-    report this gate parses, so reading the version from a DIFFERENT `ptxas` than
-    the one that produced the numbers would defeat the check it exists to make.
-    Deriving both from one function is what makes that impossible rather than merely
-    unlikely -- and the resolution order is `setup.py`'s, because the manifest must
-    describe the assembler the EXTENSION will be built with: torch's `CUDA_HOME`
-    first, then `$CUDA_HOME`, then the conventional prefix as a last resort. The
-    hard-coded `/usr/local/cuda` this replaces would silently ratify a different
-    assembler than the build uses on any host with a versioned or relocated toolkit.
-    """
-    try:
-        from torch.utils.cpp_extension import CUDA_HOME
-    except ImportError:
-        CUDA_HOME = None
-    home = CUDA_HOME or os.environ.get("CUDA_HOME") or "/usr/local/cuda"
-    return str(Path(home) / "bin" / tool)
-
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_flags  # noqa: E402
+import dev_config  # noqa: E402
 import gen_shards  # noqa: E402
 import host_budget  # noqa: E402
 import mold_toolchain  # noqa: E402
 import sccache_toolchain  # noqa: E402
+
+#: ONE toolchain location for nvcc and ptxas, the build's own (`dev_config.cuda_bin`): the version this gate reads is
+#: from the assembler that produced the numbers it parses.
+cuda_bin = dev_config.cuda_bin
 
 #: Set once by `gate_sccache()`, read by `_nvcc_command`. `None` means "compile
 #: with the real `nvcc` directly" -- the default until `gate_sccache()` runs, and
@@ -171,7 +154,7 @@ def gate_sccache() -> dict | None:
     info = sccache_toolchain.gate()
     if info is not None:
         real_nvcc = cuda_bin("nvcc")
-        wrapper, env = sccache_toolchain.wrap(real_nvcc)
+        wrapper, env = sccache_toolchain.wrap(real_nvcc, info["path"])
         os.environ.update(env)
         _NVCC_BIN = wrapper
         print(f"sccache: wired for ratify.py's compile ({wrapper} -> {real_nvcc})")
@@ -433,7 +416,7 @@ def shipped_defines() -> dict[str, int]:
 #: therefore excluded from the ratified list. `-gencode` names the targets, which the
 #: per-arch FILING already records -- keeping it would make one arch's manifest
 #: disagree with another's on a block every arch file must share. `--threads` is a
-#: parallelism knob with an env override (`ROLA_NVCC_THREADS`), so including it would
+#: parallelism knob (`host.nvcc_threads` in the dev config), so including it would
 #: make a build that spends more cores on itself read as a codegen change.
 _NON_CODEGEN_FLAG_PREFIXES = ("-gencode", "--threads=")
 
@@ -1838,7 +1821,7 @@ def main() -> int:
                                 #: can never move a ratified register/spill number the
                                 #: way a `ptxas` swap can, and its presence here is
                                 #: recorded, never ratchet-gated.
-                                "image_digest": os.environ.get("ROLA_IMAGE_DIGEST", "")},
+                                "image_digest": dev_config.get("environment.image_digest")},
                      #: WHICH INSTANTIATIONS THIS RATIFICATION COVERS, by membership
                      #: hash rather than by file list. It enters the digest, so a
                      #: re-partition is a visible re-ratification and a scoped

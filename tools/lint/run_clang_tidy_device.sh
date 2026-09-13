@@ -33,6 +33,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CUDA_PATH="$(python3 "$ROOT/tools/dev.py" get cuda-home)"
 CONFIG="$ROOT/tools/lint/clang-tidy-device.yaml"
 
 if [[ "${1:-}" == "--test-fixtures" ]]; then
@@ -40,7 +41,7 @@ if [[ "${1:-}" == "--test-fixtures" ]]; then
   # needs no compdb -- it is self-contained CUDA, no project headers.
   FIX="$ROOT/tools/lint/fixtures/device_lint_unused_param.cu"
   out=$(clang-tidy "$FIX" --config-file="$CONFIG" -- \
-          -x cuda --cuda-host-only --cuda-path=/usr/local/cuda \
+          -x cuda --cuda-host-only --cuda-path="$CUDA_PATH" \
           --cuda-gpu-arch=sm_80 -ferror-limit=0 2>&1)
   if echo "$out" | grep -q "misc-unused-parameters.*bad\|bad(int used"; then :; fi
   if ! echo "$out" | grep -q "'unused_param' is unused \[misc-unused-parameters\]"; then
@@ -89,9 +90,9 @@ for src_from_db in $arm_files; do
   target="$ROOT/csrc/$rel"
   [[ -f "$target" ]] || { echo "run_clang_tidy_device.sh: $target missing, skipping" >&2; continue; }
 
-  flags=$(python3 - "$CC_JSON" "$src_from_db" "$ROOT" "$ARCH" << 'PYEOF'
+  flags=$(python3 - "$CC_JSON" "$src_from_db" "$ROOT" "$ARCH" "$CUDA_PATH" << 'PYEOF'
 import json, shlex, sys
-cc_json, src, root, arch = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+cc_json, src, root, arch, cuda_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 db = json.load(open(cc_json))
 entry = next(e for e in db if e["file"] == src)
 old_root = entry["file"].split("/csrc/")[0]
@@ -120,7 +121,7 @@ for t in toks:
     if t.endswith(".cu"):
         continue
     out.append(t)
-out += ["-x", "cuda", "--cuda-host-only", "--cuda-path=/usr/local/cuda",
+out += ["-x", "cuda", "--cuda-host-only", f"--cuda-path={cuda_path}",
         f"--cuda-gpu-arch=sm_{arch}"]
 print(" ".join(shlex.quote(x) for x in out))
 PYEOF

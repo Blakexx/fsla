@@ -24,42 +24,49 @@ pip install -e . --no-build-isolation
 from PyPI and build the extension against the wrong ABI. Flash-attention and
 mamba-ssm require the same thing for the same reason.
 
-| Environment variable | Effect |
+A build's PARAMETERS -- what one build is -- are environment variables set per invocation, because pip passes
+nothing else to `setup.py`. Everything about the MACHINE is the dev config (`tools/dev_config.py`,
+`docs/internals/tools/dev_config.md`):
+- `host.nvcc_threads` is `nvcc --threads`, default 2, the number of `-gencode` targets. Beyond the target count it
+  buys nothing and multiplies the resident set, since the two parallelism axes multiply.
+- `host.build_jobs` is the jobs a build asks for. Null derives it from **available RAM**, not core count:
+  `MAX_JOBS=8` was OOM-killed on a 23 GB / 16-core host after 8m32. The divisor is a measured GB-per-`cicc`
+  constant in `tools/build_flags.py`, and the host budget then clamps it to the slots held.
+- `toolchain.sccache` is the pinned cache. It must match its pin or the build refuses;
+  `toolchain.sccache_enabled: false` is the one deliberate opt-out, which builds uncached ([below](#sccache)).
+- `toolchain.mold` is the linker and `toolchain.cuda_home` the toolkit.
+- `host.nice` makes every host-budget-guarded compile and every GPU-locked run lower its own CPU niceness and
+  I/O class, so it cannot freeze the host (`docs/internals/tools/build_lock.md`,
+  `docs/internals/tools/gpu_lock.md`).
+
+| Build parameter | Effect |
 |---|---|
 | `ROLA_CUDA_ARCHS` | `;`-separated compute capabilities, default `80;86`. Naming one without a ratified manifest **fails before anything compiles** (rule 3). |
-| `MAX_JOBS` | Parallel compile jobs. The default is derived from **available RAM**, not core count: `MAX_JOBS=8` was OOM-killed on a 23 GB / 16-core host after 8m32. The divisor is a measured GB-per-`cicc` constant in `tools/build_flags.py`, so the same source gives 7 jobs on a 23 GB host and 4 on a 16 GB-class one. |
-| `ROLA_NVCC_THREADS` | `nvcc --threads`, default 2 = the number of `-gencode` targets. Beyond the target count it buys nothing and multiplies the resident set, since the two parallelism axes multiply. |
 | `ROLA_CARRY_ARMS` | A `,`/space list of INDICES into the carry family's arm list (`tools/gen_shards.py`'s `CARRY_ARMS`), or the word `all`. **The subset is a FILE subset**: each selected row contributes its generated `csrc/rola/src/instantiations/carry_arm_<i>.cu` and a `-DROLA_CARRY_BUILD_<i>`, so an arm outside the set is not compiled at all. **The default is the SHIPPED rows** — see [the arm lists](#carry-arm-lists). `all` is the battery's set (shipped + test). A build whose arm set is not the shipped set is **NOT SHIPPABLE**: the build prints a banner and skips the two shippability gates, because the manifest ratifies the shipped set and a binary carrying a different set is not the thing that ships, in either direction. It is self-identifying at run time: `rola.ops.carry.arms()` lists what was built and every entry point refuses an arm the binary does not carry. Pair it with `ROLA_CUDA_ARCHS=86` for iteration. |
 | `ROLA_CARRY_PARTS` <a id="carry-parts"></a> | **Iteration only.** `all` (the default), `none`, or a comma list of the carry kernel's parts (`readout.stream`, `readout.loads`, `readout.drain`, `fold.pool`, `fold.ring`, `fold.loads`) to build REAL; the rest are STUBS that keep their HMMAs and drop their other work, written to the generated `build/generated/carry_parts.inc` on every build and ratify. Any subset makes the build an iteration build (banner, manifest gate skipped). Driven by `tools/compose_ledger.py` (`docs/internals/tools/compose_ledger.md`); with every part real the arm's instructions are identical to a build without the switches. Never shipped. |
 | `ROLA_BUILD_PARTS` <a id="parts"></a> | **Iteration only.** `1` also builds `rola._C_parts`, the part harness's driver (`benchmarks/unit/bench_carry_parts.py`: the head, fill and fold components alone on a cell, KERNEL_STANDARDS §19), in the same pass beside the arm with `-lineinfo`. A torch JIT `load()` of the same three sources ran for minutes and was killed by the host's memory watchdog; a gating instrument that cannot run is a defect (§22). Never shipped. |
 | `ROLA_DECODE_ARMS` | **Iteration only.** Comma- or space-separated indices into the decode family's declared arm list (`csrc/rola/src/decode/decode.cu`'s `DECODE_ARM_<i>`, the `d_v x D x decay` matrix in that order, 16 rows). Compiles only those arms. Unset = every arm, which is what a gate build must be. Same NOT-SHIPPABLE banner/skip mechanism as `ROLA_CARRY_ARMS` (one `_is_iteration_build` covers both families). See [below](#arm-subset). |
 | `ROLA_SKIP_POST_BUILD_RATIFY` | Skips the post-build gate. For iterating on non-kernel code only; a shippable binary is one that passed it. |
 | `ROLA_STRICT_MANIFEST` | `0`/unset (default): the two post-build gates (the fatbin's manifest-describes-binary sub-check, `tools/ratify.py`'s own re-run) REPORT a mismatch against the committed `tools/manifests/sm_XX.json` and the install still succeeds — KERNEL_STANDARDS.md §16 makes that manifest stale between milestones by design, so failing the install on it would fail every ordinary stage build. `1`: restores the pre-K43 hard failure. **The milestone/CI gate build sets it** — it is the build that immediately precedes `tools/ratify.py --write`, so it is the one build that must fail loudly if the tree it is about to ratify is not actually shippable yet. Structural checks (the shard partition actually matching the arm list, the dispatch's link closure) are never affected by this variable — those are properties of the build's own source/binary pair, not of the ratified snapshot, and stay fatal unconditionally. |
-| `ROLA_SCCACHE` | `auto` (default): use the pinned `sccache` if it resolves and matches; else build uncached. `1`: REQUIRE it -- a missing or mismatched wrapper is a hard failure. `0`: disable. See [below](#sccache). |
-| `ROLA_SCCACHE` | `auto` (default): REQUIRE the pinned `sccache` -- a missing or mismatched wrapper is a hard failure, no uncached fallback. `1`: a synonym of the default, kept for existing invocations. `0`: an EXPLICIT, deliberate opt-out that builds uncached. See [below](#sccache). |
-| `ROLA_SCCACHE_BIN` | Overrides the `sccache` binary `ROLA_SCCACHE` resolves, the same way `CUDA_HOME` overrides `nvcc`/`ptxas`. |
-| `ROLA_NO_NICE` | `0`/unset (default): every `tools/build_lock.py`-guarded compile and every `tools/gpu_lock.py`-guarded run lowers its own CPU niceness and I/O class before doing real work, so it cannot freeze the host (`docs/internals/tools/build_lock.md`, `docs/internals/tools/gpu_lock.md`). `1`: opt out -- the coordinator's own interactive gate runs. |
 
-### Running a build under the shared lock (`tools/build/build_lock.sh`)
+### The host budget: every build shares one pool
 
 An **iteration build** (single-arch, `ROLA_CARRY_ARMS` subset) and a **gate build**
-(both arches, the shipped set) both compete for the same host RAM `MAX_JOBS` is
+(both arches, the shipped set) compete for the same host RAM the job count is
 sized against; running one of each at once can OOM the host (the §14
-addendum finding, one level up: concurrent GPU-lock work already did this once
-for a different resource). Blake's ruling of 2026-08-28 unifies what used to
-be two separate mechanisms -- `N` parallel iteration slots and a wholly
-separate exclusive lock file -- into `tools/build/build_lock.sh [--gate] --
-<cmd>`: an iteration build takes ONE of `ROLA_BUILD_SLOTS` (default 2) slot
-locks; a gate build (`--gate`) takes EVERY slot before running, so the two
-disciplines share one set of lock files and cannot overlap.
+addendum finding, one level up). `setup.py` takes the machine-wide host budget
+itself before compiling (`tools/build_lock.py` over `tools/host_budget.py`): an
+iteration build holds the slots free now, a gate build waits for every slot, and
+no invocation path can skip it. Any other CPU-heavy command -- a census compile,
+a clang-tidy translation unit -- runs under the same pool with
+`python tools/host_budget.py [--exclusive] -- <cmd>`.
 
 ```bash
 # iteration: single-arch, arm-subset
-tools/build/build_lock.sh -- env ROLA_CUDA_ARCHS=86 ROLA_CARRY_ARMS=all \
-  pip install -e . --no-build-isolation
+ROLA_CUDA_ARCHS=86 ROLA_CARRY_ARMS=all python -m pip install -e . --no-build-isolation
 
 # gate: both arches, the shipped set
-tools/build/build_lock.sh --gate -- pip install -e . --no-build-isolation
+python -m pip install -e . --no-build-isolation
 ```
 
 ## What the build does, in order
@@ -234,8 +241,8 @@ tarball and binary sha256, verified against upstream's published `.sha256`);
 `tools/sccache_toolchain.py` resolves and gates it (closed-world rule 1's
 extension -- an unpinned or mismatched cache is REFUSED, full stop; Blake
 ruling 2026-08-28, "a tool that can run one of two ways must REFUSE, not
-choose": the only non-refusing outcome is `ROLA_SCCACHE=0`, an explicit
-opt-out, never a silent uncached fallback) before wiring `tools/sccache_nvcc.py` in
+choose": the only non-refusing outcome is `toolchain.sccache_enabled: false` in the dev
+config, an explicit opt-out, never a silent uncached fallback) before wiring `tools/sccache_nvcc.py` in
 as `PYTORCH_NVCC` (`setup.py`) and as the compiler `tools/ratify.py`'s
 post-build recompile uses. The wrapper is a pure pass-through -- it never
 resolves `nvcc` itself, only `exec`s the exact already-`ptxas`-gated path its

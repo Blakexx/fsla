@@ -33,8 +33,7 @@ locks, calling an inner tool that also locks, rather than an outer bare `flock`)
 
 **THE LOCK FILE.** `/tmp/rola_gpu.lock` by default -- the name every doc, skill, and
 script in this tree already cites (`docs/measurement.md`, `docs/testing.md`,
-`docs/setup.md`); `ROLA_GPU_LOCK` overrides it, the same override name
-`benchmarks/bench/discipline.py` already read before this file existed. `/tmp` is not
+`docs/setup.md`); `host.gpu_lock` in the dev config names another. `/tmp` is not
 a home path (KERNEL_STANDARDS §17) and is the shared directory KERNEL_STANDARDS §14
 addendum already requires every GPU-touching container to bind-mount from the host,
 so a container and the bare host serialize against the same lock without a new
@@ -59,33 +58,18 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
-import shutil
-import subprocess
+import sys
 import time
+from pathlib import Path
 
-GPU_LOCK_DEFAULT = "/tmp/rola_gpu.lock"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dev_config  # noqa: E402 -- path insert must precede this import
+import host_budget  # noqa: E402
+
+GPU_LOCK_DEFAULT = dev_config.get("host.gpu_lock")
 
 #: The correctness-mode pool size ("SHARED with 2 slots", LOCKS brief item 2).
-GPU_SHARED_SLOTS = int(os.environ.get("ROLA_GPU_SHARED_SLOTS", "2"))
-
-#: docs/internals/tools/gpu_lock.md -- the NICE stage (Blake, 2026-08-29).
-_NO_NICE_ENV = "ROLA_NO_NICE"
-
-
-def _lower_own_priority() -> None:
-    if os.environ.get(_NO_NICE_ENV) == "1":
-        return
-    with contextlib.suppress(OSError):
-        os.nice(10)
-    ionice = shutil.which("ionice")
-    if ionice is None:
-        print("[gpu_lock] ionice not on PATH; CPU niceness only", flush=True)
-        return
-    subprocess.run(
-        [ionice, "-c", "3", "-p", str(os.getpid())],
-        check=False, capture_output=True,
-    )
-
+GPU_SHARED_SLOTS = dev_config.get("host.gpu_shared_slots")
 
 #: Set to this process's pid on acquire, cleared on release. Presence alone (not an
 #: exact pid match) is what a nested acquire checks -- a marker inherited from an
@@ -146,7 +130,7 @@ def gpu_lock(path: str | None = None, *, mode: str = "exclusive"):
     if _HELD_MARKER in os.environ:
         yield
         return
-    base = path or os.environ.get("ROLA_GPU_LOCK", GPU_LOCK_DEFAULT)
+    base = path or GPU_LOCK_DEFAULT
     wq_path = f"{base}.wq"
     rw_path = f"{base}.rw"
     slot_paths = [f"{base}.slot{i}" for i in range(GPU_SHARED_SLOTS)]
@@ -188,7 +172,7 @@ def gpu_lock(path: str | None = None, *, mode: str = "exclusive"):
                     if len(held) == 1:
                         time.sleep(0.01)
         os.environ[_HELD_MARKER] = str(os.getpid())
-        _lower_own_priority()
+        host_budget.lower_priority("gpu_lock")
         try:
             yield
         finally:

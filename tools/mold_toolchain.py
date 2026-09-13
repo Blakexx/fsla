@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import dev_config  # noqa: E402 -- path insert must precede this import
+
 PIN_PATH = HERE / "mold_pin.json"
 
 
@@ -36,11 +38,8 @@ def pin() -> dict:
 
 
 def resolve_mold() -> str | None:
-    """`MOLD_PATH` overrides; otherwise `PATH` lookup -- no hidden search path."""
-    override = os.environ.get("MOLD_PATH")
-    if override:
-        return override
-    return shutil.which("mold")
+    """`toolchain.mold` in the dev config -- no search path; `tools/dev.py init` finds it once."""
+    return dev_config.get("toolchain.mold")
 
 
 def mold_version(path: str) -> str:
@@ -68,7 +67,7 @@ def link_flags() -> list[str]:
     if path is None or not Path(path).exists():
         raise RuntimeError(
             f"THE LINKER PIN (tools/mold_pin.json): no `mold` binary found (checked "
-            f"$MOLD_PATH and $PATH). Pinned build is {p['version_string']} "
+            f"toolchain.mold in the dev config; `python tools/dev.py init` installs it). Pinned build is {p['version_string']} "
             f"({p['release_asset']}, {p['release_url']}). mold is the extension's "
             f"linker unconditionally -- there is no fallback to the default linker; "
             f"install the pinned release (docs/setup.md names the host-local "

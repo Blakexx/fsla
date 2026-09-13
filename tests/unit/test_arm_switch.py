@@ -18,7 +18,7 @@ and checks every layer of the contract:
 * the EMPTY set refuses everything, exercised here as a synthetic case (the shipped
   binary's own set carries one arm, not zero).
 
-The compile goes through `tools/build/build_lock.sh`: a compile is a compile.
+The compile runs under the host budget (`tools/host_budget.py`): a compile is a compile.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SRC = REPO / "csrc" / "rola" / "src"
 PROBE = pathlib.Path(__file__).resolve().parent / "fixtures" / "arm_switch_probe.cpp"
-BUILD_LOCK = REPO / "tools" / "build" / "build_lock.sh"
+BUILD_LOCK = [sys.executable, str(REPO / "tools" / "host_budget.py"), "--"]
 
 #: THE SYNTHETIC TABLE, and the only mirror in this file: three rows on the real key,
 #: of which a build carries the first and the last. The middle row is what makes
@@ -70,7 +70,7 @@ def _build(tmp_path, arms):
     #: `libc10`, whose `torchCheckFail` takes a `std::string`, so a probe compiled
     #: under the other `std::string` ABI links against a symbol that is not there.
     abi = int(bool(torch._C._GLIBCXX_USE_CXX11_ABI))
-    cmd = [str(BUILD_LOCK), "--", cxx, "-std=c++17", "-O0",
+    cmd = [*BUILD_LOCK, cxx, "-std=c++17", "-O0",
            f"-D_GLIBCXX_USE_CXX11_ABI={abi}",
            f"-I{generated}", f"-I{SRC}"]
     cmd += [f"-I{p}" for p in cpp_extension.include_paths()]

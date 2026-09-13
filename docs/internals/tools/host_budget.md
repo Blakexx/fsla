@@ -10,7 +10,7 @@ running alongside a full-budget compile is the same "12+ heavy processes on
 one host" shape `build_lock.py`'s own module docstring records (the
 2026-08-28-night incident), wearing a different process name. Slot counts
 now live in exactly one place: `HOST_BUDGET_SLOTS`
-(`ROLA_HOST_BUDGET_SLOTS` overrides, default `os.cpu_count() - 2`).
+(`host.budget_slots` in the dev config, default `os.cpu_count() - 2` bounded by memory).
 
 ## The mechanism
 
@@ -42,8 +42,13 @@ no-op — neither opening nor waiting on any lock file a second time. Because
 re-entry and the subprocess case (a tool that holds the budget launching a
 child that also acquires it).
 
-`ROLA_LOCKS_TRACE=1` prints every acquire/release (holder pid, slot count)
-for this file's locks and `tools/gpu_lock.py`'s alike.
+`host.locks_trace: true` prints every acquire/release (holder pid, slot count)
+for this file's locks and `tools/gpu_lock.py`'s alike. The slot locks live in `host.lock_dir`, which a test
+points at a throwaway directory through a test dev config.
+
+`python tools/host_budget.py [--slots N] [--exclusive] -- <cmd>` is the one CLI for a CPU-heavy command that is
+not `setup.py` (a census compile, a clang-tidy translation unit): it holds the slots, lowers its priority per
+`host.nice` (`lower_priority`, shared by the build and GPU locks), and runs the command.
 
 ## `tools/build_lock.py` now draws from here
 
@@ -51,8 +56,7 @@ for this file's locks and `tools/gpu_lock.py`'s alike.
 now calls `host_budget.acquire(desired, exclusive=gate, ...)`.
 `GLOBAL_CICC_SLOTS` is kept as a name (some docs/callers still say
 `build_lock.GLOBAL_CICC_SLOTS`) but is now simply an alias for
-`host_budget.HOST_BUDGET_SLOTS`; `ROLA_GLOBAL_CICC_SLOTS` is superseded by
-`ROLA_HOST_BUDGET_SLOTS`.
+`host_budget.HOST_BUDGET_SLOTS`, set by `host.budget_slots`.
 
 ## Other draws
 

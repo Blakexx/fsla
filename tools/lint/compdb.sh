@@ -11,13 +11,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BUILD_DIR="${ROLA_BUILD_DIR:-$ROOT/build/temp}"
+BUILD_DIR="$ROOT/build/temp"
 OUT="${1:-$ROOT/compile_commands.json}"
 
 if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
   echo "compdb.sh: no build.ninja under $BUILD_DIR" >&2
-  echo "  Run 'pip install -e . --no-build-isolation' first (docs/build.md)," >&2
-  echo "  or point ROLA_BUILD_DIR at an existing build/temp." >&2
+  echo "  Run 'pip install -e . --no-build-isolation' first (docs/build.md)." >&2
   exit 1
 fi
 

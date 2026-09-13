@@ -37,7 +37,7 @@ decomposition's rule is naive torch references only, from third parties, and one
 adopted at a version -- adding an unpinned import of a fast-moving kernel library
 to the routine suite would be taking on exactly the coupling the pin machinery
 exists to prevent. Its job is to catch a transcription error ONCE. Set
-`ROLA_FLA_CROSSCHECK=1` to run it.
+`environment.fla_crosscheck: true` in the dev config (`tools/dev_config.py`) to run it.
 
 **THE ENV GATE HID TEN DAYS OF UNRUNNABILITY, AND THAT IS THIS FILE'S OWN RISK
 CLASS.** The check was written against the `raw` normalization; when `raw` died
@@ -57,8 +57,7 @@ bit-identical in fp64; nothing here loosens them.
 """
 from __future__ import annotations
 
-import os
-
+import dev_config
 import pytest
 import torch
 
@@ -72,10 +71,10 @@ from rola.routing.types import (
 )
 
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("ROLA_FLA_CROSSCHECK"),
+    not dev_config.get("environment.fla_crosscheck"),
     reason="one-time transcription check against flash-linear-attention; FLA is "
            "deliberately NOT a standing dependency (see the module docstring). "
-           "Set ROLA_FLA_CROSSCHECK=1 to run it.")
+           "Set environment.fla_crosscheck true in the dev config to run it.")
 
 _ROUTING = IndependentRouting(
     width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())

@@ -5,7 +5,7 @@
 process's own CPU niceness before anything real runs inside it, so a child it
 launches (a compiler, a test, a probe) inherits nice 10 -- os.nice() cannot be
 lowered back down by an unprivileged process once raised, so each of the two
-conditions below (default vs. `ROLA_NO_NICE=1`) runs in its OWN fresh driver
+conditions below (`host.nice` true vs. false in a test dev config) runs in its OWN fresh driver
 subprocess rather than reusing this test process across both.
 
 docs/internals/tools/{build_lock,gpu_lock}.md carries the mechanism; this file
@@ -14,7 +14,6 @@ spawned from inside the lock's own `with` block.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -65,23 +64,13 @@ def _run_driver(driver_src, env, *extra_args) -> int:
     return int(result.stdout.strip().splitlines()[-1])
 
 
-def test_build_lock_acquire_lowers_child_priority():
-    niced_env = dict(os.environ)
-    niced_env.pop("ROLA_NO_NICE", None)
-    assert _run_driver(_BUILD_LOCK_DRIVER, niced_env) == 10
-
-    opted_out_env = dict(os.environ)
-    opted_out_env["ROLA_NO_NICE"] = "1"
-    assert _run_driver(_BUILD_LOCK_DRIVER, opted_out_env) == 0
+def test_build_lock_acquire_lowers_child_priority(tmp_path, dev_config_env):
+    locks = str(tmp_path)
+    assert _run_driver(_BUILD_LOCK_DRIVER, dev_config_env(host={"lock_dir": locks, "nice": True})) == 10
+    assert _run_driver(_BUILD_LOCK_DRIVER, dev_config_env(host={"lock_dir": locks, "nice": False})) == 0
 
 
-def test_gpu_lock_lowers_child_priority(tmp_path):
+def test_gpu_lock_lowers_child_priority(tmp_path, dev_config_env):
     lock_path = str(tmp_path / "gpu.lock")
-
-    niced_env = dict(os.environ)
-    niced_env.pop("ROLA_NO_NICE", None)
-    assert _run_driver(_GPU_LOCK_DRIVER, niced_env, lock_path) == 10
-
-    opted_out_env = dict(os.environ)
-    opted_out_env["ROLA_NO_NICE"] = "1"
-    assert _run_driver(_GPU_LOCK_DRIVER, opted_out_env, lock_path) == 0
+    assert _run_driver(_GPU_LOCK_DRIVER, dev_config_env(host={"nice": True}), lock_path) == 10
+    assert _run_driver(_GPU_LOCK_DRIVER, dev_config_env(host={"nice": False}), lock_path) == 0

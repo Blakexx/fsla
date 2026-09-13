@@ -38,7 +38,7 @@ def build():
     except ImportError as ex:
         raise SystemExit("the part harness's driver is not built: "
                          "ROLA_BUILD_PARTS=1 ROLA_CUDA_ARCHS=86 ROLA_CARRY_ARMS=0 "
-                         "tools/build/build_lock.sh -- python -m pip install -e . --no-build-isolation") from ex
+                         "python -m pip install -e . --no-build-isolation") from ex
     return _C_parts
 
 

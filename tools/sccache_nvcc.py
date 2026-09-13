@@ -29,5 +29,8 @@ if not REAL_NVCC:
         "tools/sccache_toolchain.py's helpers instead of directly."
     )
 
-SCCACHE_BIN = os.environ.get("ROLA_SCCACHE_BIN", "sccache")
+SCCACHE_BIN = os.environ.get("ROLA_SCCACHE_BIN")
+if not SCCACHE_BIN:
+    sys.exit("tools/sccache_nvcc.py: ROLA_SCCACHE_BIN is not set -- the gated sccache is handed over by the caller "
+             "(tools/sccache_toolchain.py wrap), never resolved here.")
 os.execvp(SCCACHE_BIN, [SCCACHE_BIN, REAL_NVCC] + sys.argv[1:])

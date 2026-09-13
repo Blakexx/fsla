@@ -6,38 +6,38 @@
 A GPU's boost governor moves the SM clock with power, and a kernel number is comparable
 across runs only at one clock (`docs/internals/common/sm_clock.md`). How a clock is locked
 is a fact about the HOST -- `nvidia-smi -lgc` as root on Linux, an elevated scheduled task
-on a Windows host under WSL, nothing at all on a box that forbids it -- so it lives outside
-the tree, in `~/.config/rola/clock.json`:
+on a Windows host under WSL, nothing at all on a box that forbids it -- so it lives in the dev
+config's `clock.json` (`tools/dev_config.py`; `python tools/dev.py clock --mhz N` writes it):
 
     {"ghz": 1.665,
      "lock":   ["/mnt/c/Windows/System32/schtasks.exe", "/run", "/tn", "gpu-lock"],
      "unlock": ["/mnt/c/Windows/System32/schtasks.exe", "/run", "/tn", "gpu-unlock"]}
 
 The harness locks at start, proves the lock with the in-kernel clock read, unlocks on every
-exit path, and refuses a row whose measured clock is off the lock. Without the file a run is
+exit path, and refuses a row whose measured clock is off the lock. Without a clock a run is
 UNLOCKED: rows carry their measured clock and are marked so in the ledger, as dirty rows are.
 """
 from __future__ import annotations
 
 import atexit
-import json
-import os
 import signal
 import subprocess
 import sys
 from pathlib import Path
 
-CONFIG = Path(os.environ.get("ROLA_CLOCK_CONFIG", Path.home() / ".config" / "rola" / "clock.json"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dev_config  # noqa: E402 -- path insert must precede this import
+
 TOLERANCE = 0.01
 
 
 def load() -> dict | None:
-    if not CONFIG.exists():
+    cfg = {key: dev_config.get(f"clock.{key}") for key in ("ghz", "lock", "unlock")}
+    if cfg["ghz"] is None:
         return None
-    cfg = json.loads(CONFIG.read_text())
-    for key in ("ghz", "lock", "unlock"):
-        if key not in cfg:
-            raise SystemExit(f"{CONFIG}: missing {key!r}")
+    missing = [key for key in ("lock", "unlock") if not cfg[key]]
+    if missing:
+        raise SystemExit(f"{dev_config.directory() / 'clock.json'}: ghz is set but {missing} is not")
     return cfg
 
 
@@ -54,7 +54,7 @@ def engage(read_ghz) -> dict | None:
     """lock, prove it with the device read, and arrange the unlock for every exit."""
     cfg = load()
     if cfg is None:
-        print("CLOCK: unlocked (no ~/.config/rola/clock.json); rows carry their measured clock",
+        print("CLOCK: unlocked (no clock in the dev config); rows carry their measured clock",
               file=sys.stderr)
         return None
     _run(cfg["lock"])

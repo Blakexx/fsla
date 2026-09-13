@@ -122,8 +122,8 @@ that into the skill the same day (process/pointers only — never facts).
   Every brief that adds or changes a structure branch cites the checklist and answers each item.
 - MAKE THE WORKTREE BEFORE THE FIRST EDIT (LOCKS, 2026-08-29): the ownership line is a precondition, not
   a commit-time rule; an agent that starts editing the read-only tip and "moves later" has already
-  violated it. new_worktree.sh needs ROLA_BASE_VENV (the one real venv on this host is named in the
-  dispatch prompt; sibling venv-* dirs are pointer venvs).
+  violated it. `python tools/dev.py worktree <name> <sha>` makes it (the base venv is
+  `workspace.base_venv` in the dev config; sibling venv-* dirs are pointer venvs).
 - THE CLEAN-SLATE LINE (Blake, 2026-08-30; card C_CLEAN_SLATE.md): from C0 on, every carry-family brief
   targets k31/carry-clean; k35-final holds the OLD carry as the reference and is never edited; a stage
   is either a foundation FEATURE (shipped + tested on its own, no kernel body) or a KERNEL stage on the
@@ -137,7 +137,7 @@ that into the skill the same day (process/pointers only — never facts).
   contracts and was split). Sibling stages run in parallel on DISJOINT files on the same branch; each
   commits detached at the named SHA and the coordinator merges them.
 - "NEVER MERGE/PUSH/RATIFY" DOES NOT MEAN "NEVER COMMIT" (C1a, 2026-08-30): every stage COMMITS its work
-  on its worktree with hooks on; the coordinator merges. And new_worktree.sh's output must not be piped
+  on its worktree with hooks on; the coordinator merges. And `tools/dev.py worktree`'s output must not be piped
   through tail (it masks the exit code) — check `import rola._C` after it, not the log.
 - THE ORPHAN-FILE RULE (C1c, 2026-08-30): when N sibling stages share a branch, a file no sibling owns
   that blocks a gate is edited by whoever hits it — the MINIMUM edit, reported — never a STOP over a

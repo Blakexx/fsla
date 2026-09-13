@@ -57,11 +57,12 @@ import uuid
 from pathlib import Path
 
 import clock_lock
+import dev_config
 from gpu_lock import GPU_LOCK_DEFAULT, gpu_lock
 
 THIS_FILE = Path(__file__).resolve()
 REPO = THIS_FILE.parents[1]
-NCU_BIN = "/usr/local/cuda/bin/ncu"
+NCU_BIN = dev_config.get("toolchain.ncu")
 
 #: The registry and the bench package are imported from the WORKTREE BEING MEASURED, not
 #: from this file's own tree: a worker runs with its own worktree as the working
@@ -577,7 +578,7 @@ def main() -> None:
 
     if args.ncu:
         print(f"\nNCU (one oneshot launch per binary x cell, filtered to {subject.symbol})")
-        prefix = args.out.rsplit(".", 1)[0] if args.out else "/tmp/probe_cells_ncu"
+        prefix = args.out.rsplit(".", 1)[0] if args.out else str(dev_config.scratch("probe_cells") / "ncu")
         for binary in args.binary:
             for cell in cells:
                 row = run_ncu_cell(binary, binary.get("bench", args.bench), SUBJECTS[binary.get("bench", args.bench)].symbol, cell, args.lock,

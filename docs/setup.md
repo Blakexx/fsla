@@ -13,6 +13,22 @@ names by name (`clangd`, `ast-grep`, `hyperfine`, ...). Reproducing all of that
 by hand on a new machine is exactly the kind of silent drift the rest of this
 repository refuses; the container makes it one build instead of a checklist.
 
+## 0. The dev environment: `tools/dev.py`
+
+Everything this tree needs from a machine -- the CUDA toolkit, Nsight Compute,
+the pinned `sccache` and `mold`, the host's compile slots, the lock files, the SM
+clock, the measurements store, the worktrees folder and base venv -- is one
+directory of JSON files, the dev config (`~/.config/rola/`,
+`docs/internals/tools/dev_config.md`, KERNEL_STANDARDS §23). One command sets a
+machine up and checks it (`docs/internals/tools/dev.md`):
+
+```bash
+python tools/dev.py init          # detect, install the pinned tools, wire the commit gate, check
+python tools/dev.py clock --mhz 1665   # once per host: lock the SM clock (one administrator prompt under WSL)
+python tools/dev.py check         # every dependency, one row each; exit 1 on a red
+python tools/dev.py worktree <name> <sha>   # a worktree, its pointer venv, its gate, its extension
+```
+
 ## 1. Host prerequisites
 
 * **A CUDA 12.4-capable NVIDIA driver.** This repo's own dev box runs driver
@@ -153,26 +169,13 @@ missing. No path is hard-coded to a home directory either way
 
 K39 (Blake ruling, 2026-08-28): `mold` is THE extension's linker unconditionally
 -- `setup.py` refuses to build without it, no fallback to `ld.bfd`/`ld.gold`
-(`tools/mold_toolchain.py`, `tools/mold_pin.json`). Inside the container it is
-already installed (the `Dockerfile`'s pinned release, below); on a bare host
-with no root and no apt package for it (measured on this repo's own dev box:
-`apt-cache policy mold` has no candidate on Ubuntu 22.04, and there is no
-passwordless sudo to install one even if there were), vendor the SAME pinned
-release USER-LOCALLY -- no install step, no root:
-
-```bash
-curl -sSL -o mold.tar.gz \
-  https://github.com/rui314/mold/releases/download/v2.42.0/mold-2.42.0-x86_64-linux.tar.gz
-echo "f5ed2f6e31d1ada4f07fe766fe0de7a73104d1c5cdc59086fcecc16a43720b6d  mold.tar.gz" | sha256sum -c -
-tar xzf mold.tar.gz -C /some/persistent/dir
-export MOLD_PATH=/some/persistent/dir/mold-2.42.0-x86_64-linux/bin/mold
-```
-
-`MOLD_PATH` (or a `mold` already resolvable on `PATH`) is what
-`tools/mold_toolchain.py:link_flags()` checks before every build; the sha256
-above is the exact pin `tools/mold_pin.json` and the `Dockerfile`'s
-`MOLD_SHA256` ARG both carry, so the host and the container link with the
-byte-identical binary.
+(`tools/mold_toolchain.py`, `tools/mold_pin.json`). On a bare host with no root
+and no apt package for it (this repo's dev box: `apt-cache policy mold` has no
+candidate on Ubuntu 22.04), `python tools/dev.py init` downloads the pinned
+release, verifies its sha256 against `tools/mold_pin.json`, unpacks the whole
+release (`bin/mold` beside `bin/ld.mold`, which `-fuse-ld=mold` selects) under
+`host.tools_dir`, and records it as `toolchain.mold`. The container and the host
+link with the byte-identical binary.
 
 ## 3c. The pointer venv, the fast path (many worktrees on one bare host)
 
@@ -189,10 +192,10 @@ that BORROWS a shared base venv's already-installed packages and adds only
 what is actually per-worktree: this checkout's own root, and this checkout's
 own editable-installed extension.
 
-`tools/build/new_worktree.sh <name> <sha>` does the whole sequence below in one
-call; read it before doing this by hand a second time.
+`python tools/dev.py worktree <name> <sha>` does the whole sequence below in one
+call (`docs/internals/tools/dev.md`); read it before doing this by hand a second time.
 
-**1. The shared base venv, built ONCE:**
+**1. The shared base venv, built ONCE** (recorded as `workspace.base_venv` in the dev config):
 
 ```bash
 uv venv --python 3.11 --seed /path/to/shared/base-venv
@@ -236,12 +239,11 @@ echo /path/to/shared/base-venv/lib/python3.11/site-packages  > "$SITE/zz_rola_ba
 venv's copy of anything with the same name. A worktree's own compiled `rola`
 extension is what gets imported, never the base venv's.
 
-**4. The in-tree editable build, `--no-deps`, through the build lock:**
+**4. The in-tree editable build, `--no-deps`:**
 
 ```bash
 cd /path/to/worktrees/<name>
-./tools/build/build_lock.sh -- \
-  /path/to/worktrees/venv-<name>/bin/python -m pip install -e . --no-deps --no-build-isolation
+/path/to/worktrees/venv-<name>/bin/python -m pip install -e . --no-deps --no-build-isolation
 ```
 
 **FOOTGUN 2 — `pip install -e .` without `--no-deps` pulls a fresh,
@@ -255,22 +257,21 @@ imports without error and then crashes or misbehaves at the first real call,
 because the compiled `.so` and the `torch` actually resolved at import time
 were built against two different ABIs. The shared base venv's `torch` (reached
 through the `zz_rola_base.pth` file in step 3) IS the dependency resolution
-here; `--no-deps` is not optional either. `./tools/build/build_lock.sh` is
-the SAME iteration/gate build-slot discipline every other build in this repo
-goes through (`docs/build.md`, `rola-build` skill) — a pointer-venv build is
-still a build, and still shares the machine-wide compile budget.
+here; `--no-deps` is not optional either. `setup.py` takes the machine-wide
+host budget itself (`docs/build.md`, `rola-build` skill) — a pointer-venv build
+is still a build, and still shares the machine-wide compile budget.
 
 Verify with `python -c "import rola; from rola._build_config import
 BUILD_CONFIG; print(BUILD_CONFIG['archs'])"` against the new venv's python —
 the device-side stamp, never a path check (`extension-trap-device-side-check`)
 -- but run it FROM the new worktree's own directory. **FOOTGUN 3, found
-writing `tools/build/new_worktree.sh`: `python -c` puts `''` (the
+writing the worktree tool: `python -c` puts `''` (the
 process's OWN current directory) first in `sys.path`.** A verification launched
 from inside a DIFFERENT rola worktree (which also carries a `rola/` package)
 resolves `import rola` to THAT worktree instead of the new one — `''` beats
 every `.pth`-added path because it is `sys.path[0]`, checked before any of
-them. `tools/build/new_worktree.sh` `cd`s into the new worktree before its own
-verification step for exactly this reason; do the same by hand.
+them. `tools/dev.py worktree` runs its verification from inside the new worktree
+for exactly this reason; do the same by hand.
 
 ## 4. First build of the SHIPPED set
 

@@ -27,7 +27,7 @@ incident-derived). Read §19–§21 before touching a kernel:
 - Perf: `tools/probe_cells.py` (locked clock, interleaved A/B, fixed cells); attribution:
   `tools/region_ledger.py --csv <ncu SourceCounters> --so <.so> --source <kernel.cuh> --budget tools/budgets/<k>.json`.
 - Correctness: `tests/oracle/test_carry_vs_oracle.py` (scoped runs only; never a bare `tests/`).
-- Build: `python -m pip install -e . --no-build-isolation` with `ROLA_CUDA_ARCHS`, `ROLA_HOST_BUDGET_SLOTS`
+- Build: `python -m pip install -e . --no-build-isolation` with `ROLA_CUDA_ARCHS`; the machine is `tools/dev.py check`
   (`docs/build.md`); the device stamp proves the binary is the source.
 - Kernel map: `docs/internals/carry/`; the carry body is `csrc/rola/src/carry/carry_kernel.cuh`, its plan
   `box.cuh`, its host entry `carry.cu`.

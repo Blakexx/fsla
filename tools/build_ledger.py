@@ -40,11 +40,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dev_config  # noqa: E402 -- path insert must precede this import
+
 ROOT = Path(__file__).resolve().parents[1]
 LEDGERS = ROOT / "benchmarks" / "results" / "ledgers"
 PY = sys.executable
-NCU = "/usr/local/cuda/bin/ncu"
-NVCC = "/usr/local/cuda/bin/nvcc"
+NCU = dev_config.get("toolchain.ncu")
+NVCC = dev_config.cuda_bin("nvcc")
 PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep", "head_words", "head_scans")
 HMMA_CYCLES, SCHEDULERS = 32, 4  #: the utilization formula's constants (sm_86; --hmma-cycles/--schedulers override the profile step)
 PIPE_METRICS = ",".join([
@@ -64,7 +67,6 @@ ORACLE_K = ("(folded_state or carried_state or idle_resident or two_backings or 
 def run(cmd: list[str], timeout: int = 1800, env: dict | None = None) -> tuple[int, str]:
     import os
     e = dict(os.environ)
-    e.setdefault("ROLA_HOST_BUDGET_SLOTS", "4")
     if env:
         e.update(env)
     try:
@@ -363,7 +365,7 @@ def main() -> int:
                     help="measured cycles one bf16/fp32 m16n8k16 HMMA holds the pipe a scheduler (sm_86: 32)")
     ap.add_argument("--sms", type=int, default=80)
     ap.add_argument("--schedulers", type=int, default=4)
-    ap.add_argument("--scratch", type=Path, default=Path("/tmp/rola_build_ledger"))
+    ap.add_argument("--scratch", type=Path, default=dev_config.scratch("build_ledger"))
     a = ap.parse_args()
     cells = [c for c in a.cells.split(",") if c]
     skip = set(a.skip.split(",")) if a.skip else set()

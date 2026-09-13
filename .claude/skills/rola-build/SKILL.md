@@ -1,6 +1,6 @@
 ---
 name: rola-build
-description: Iteration vs gate CUDA builds for rola-standalone — arm subsets, tools/build/build_lock.sh, background builds with an exit marker, the compile ledger
+description: Iteration vs gate CUDA builds for rola-standalone — arm subsets, the host budget, background builds with an exit marker, the compile ledger
 ---
 Read `docs/build.md` and KERNEL_STANDARDS §7, §14, §15, §16 addendum 3 first. This skill is the
 mechanics of running a build, not deciding whether one is owed (that's §16: stage gates are
@@ -9,15 +9,13 @@ iteration builds, only milestones ratify).
 ## Iteration vs gate
 - **ONE lock mechanism for both** (K39, Blake ruling 2026-08-28 — supersedes the old two-mechanism
   split of a build-slot script's parallel slots and a separate exclusive `/tmp/rola_ram.lock`):
-  `tools/build/build_lock.sh [--gate] -- <cmd>`, IN the repo (§17). An iteration build takes ONE
-  free slot; a gate build takes EVERY slot (`--gate`) before running, so the two can never overlap
-  and OOM the host — read the script's own header for the exact mechanism.
+  the host budget `setup.py` takes itself (`tools/build_lock.py` over `tools/host_budget.py`). An
+  iteration build holds the slots free now; a gate build waits for EVERY slot, so the two can never
+  overlap and OOM the host. A non-setup.py compile runs `python tools/host_budget.py [--exclusive] -- <cmd>`.
 - **Iteration build**: single-arch, arm-subset. `ROLA_CUDA_ARCHS=<arch> ROLA_CARRY_ARMS=<csv|all>
-  pip install -e . --no-build-isolation`, run through `tools/build/build_lock.sh -- <cmd>` (no
-  `--gate`) — read the script's own header table for the current `MAX_JOBS`/`ROLA_NVCC_THREADS` it
-  uses, don't hand-restate them here.
-- **Gate build**: both arches, default (shipped) arm set, no `ROLA_CARRY_ARMS` override, run through
-  `tools/build/build_lock.sh --gate -- <cmd>`. One gate build per stage; ratify only at milestones
+  python -m pip install -e . --no-build-isolation` — the job count and nvcc threads are the dev config's
+  (`python tools/dev.py show`), don't hand-restate them here.
+- **Gate build**: both arches, default (shipped) arm set, no `ROLA_CARRY_ARMS` override. One gate build per stage; ratify only at milestones
   (§16). A stage's own gate build does NOT set `ROLA_STRICT_MANIFEST` — the committed manifest is
   expected to be stale between milestones (K43), so the post-build check REPORTS, not fails. The
   build that immediately precedes `ratify.py --write` at a milestone DOES set
@@ -108,5 +106,5 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
   slots too (G2c's arm TUs took 54 s each; several in parallel are a build).
 - THE HOST BUDGET IS A MEMORY CAP (measured, incident 3, 2026-08-30): a cicc peaks near 2 GB; the budget
   default is min(cores−2, RAM/3 GB) (7 on the 23 GB host) and ninja follows it. Never set
-  ROLA_HOST_BUDGET_SLOTS above RAM/3 GB; never run two gate builds concurrently (two worktrees = two
+  host.budget_slots above RAM/3 GB; never run two gate builds concurrently (two worktrees = two
   budgets' worth only if the budget is shared — it is: one lock directory per host).
