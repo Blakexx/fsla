@@ -16,10 +16,6 @@ classifiers     = [
 ]
 
 [project.optional-dependencies]
-# Enables the fused short-conv layer path (`use_short_conv=True`). See E1(a):
-# `ShortConvolution` is the ONLY non-optional-able FLA module dependency, and it
-# is only constructed when the user asks for it.
-fla   = ["fla-core"]
 # `pytest-benchmark` was REMOVED, measured: it drove the latency gate's repetition,
 # and its round schedule -- not the kernel -- set the number the gate read once the
 # committed spread narrowed to a device-event IQR. `rola_results` holds the record

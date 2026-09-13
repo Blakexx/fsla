@@ -77,7 +77,6 @@ ABI. Flash-attention and mamba-ssm require the same thing for the same reason.
 | Wheel | `pip install rola` | Pre-built for the ratified matrix |
 | Source | `pip install rola --no-build-isolation` | Builds the fatbin ahead of time; no JIT |
 | Development | `pip install -e . --no-build-isolation` | Runs the R1/R3 gates and the post-build ratification |
-| Extras | `pip install "rola[transformers]"` / `"rola[fla]"` | Optional interop only; the kernel needs neither |
 
 The build is **ahead-of-time and closed-world**. It emits `code=sm_XX` only, never
 `code=compute_XX`, so the fatbin carries no PTX for a driver to JIT; the shipped

@@ -408,8 +408,7 @@ side effect; it is rule 2, checked.
 ## Dependencies
 
 `torch` and `einops`. Not `transformers` (the HF model classes stay in the fork),
-not `fla`, not `triton` — the kernels are CUDA. Optional interop lives behind
-extras (`[transformers]`, `[fla]`) and `rola` itself imports neither.
+not `fla`, not `triton` — the kernels are CUDA. `rola` itself imports neither.
 
 ## Standards lint
 
