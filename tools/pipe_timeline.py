@@ -173,14 +173,6 @@ def chart(tl: dict, title: str, scale: float | None, width_us: float = 1.0) -> s
     return "\n".join(svg) + legend
 
 
-def scale_dir() -> Path:
-    """This card's reference rows in the store: `<store>/<hw-profile>/pipe-timeline-scale-<utc>.json`."""
-    sys.path.insert(0, str(ROOT / "benchmarks"))
-    from bench.hw_profile import current
-
-    return dev_config.store(current())
-
-
 def plateau(tl: dict) -> dict:
     """The MMA-only composition's plateau in the tensor series: the median of the full-occupancy samples where the
     pipe is busy (above 5% of the modeled peak), with its spread."""

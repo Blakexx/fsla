@@ -10,7 +10,7 @@
     python tools/dev.py clock --mhz 1665        # lock this host's SM clock once, prove the round trip, record it
     python tools/dev.py worktree <name> <sha> [--build]   # a worktree, its pointer venv, its gate, its extension
     python tools/dev.py container compose|build|check|gate # the dev container: mounts, image, proof, commit gate
-    python tools/dev.py store import <dir> | commit -m <msg>  # the measurements store (a rola-results checkout)
+    python tools/dev.py store commit -m <msg>   # the measurements store (a rola-results checkout)
 
 The settings live in the dev config directory (`tools/dev_config.py`). Docs: docs/internals/tools/dev.md.
 """
@@ -195,58 +195,9 @@ def _newest_ncu() -> str:
     return str(found[-1])
 
 
-STORE_FILES = {
-    "README.md": """# The measurements store
-
-Every number the rola tree measures, written by every worktree, host and container into this one git repository
-(the rola tree's `store.root`, `tools/dev_config.py`; docs/measurement.md there). Nothing here is written by hand.
-
-    <hw-profile>/<yyyy-mm>/<run_id>.jsonl   the record: one run and its results, provenance in every row
-    <hw-profile>/*.json                     reference rows for a card: calibrations, the pipe timeline's scale
-    <hw-profile>/environment/<key>.json     dev container checks, by environment key
-    ledgers/                                build ledger, composer and timeline reports; the dashboard
-    perf/ledger.jsonl                       the bench driver's append-only regression ledger
-    .rola/, *.ncu-rep, ledgers/dashboard.html   derived or raw (the index, profiler captures, the page): not committed
-
-Commit with `python tools/dev.py store commit -m <message>` from any rola worktree. Pushing is the owner's act.
-""",
-    ".gitattributes": "perf/ledger.jsonl merge=union\nperf/archive/*.jsonl merge=union\n",
-    ".gitignore": ".rola/\n*.ncu-rep\nledgers/dashboard.html\n",
-}
-
-
-def ensure_store() -> Path:
-    """The store at `store.root`: created as a git repository with its layout README when absent."""
-    root = dev_config.store()
-    if not (root / ".git").is_dir():
-        root.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
-        for name, text in STORE_FILES.items():
-            if not (root / name).exists():
-                (root / name).write_text(text)
-        print(f"created the store {root}")
-    return root
-
-
 def cmd_store(a) -> int:
-    root = ensure_store()
     if a.action == "commit":
         return subprocess.run([sys.executable, "-m", "rola_results", "commit", "-m", a.message]).returncode
-    src = Path(a.source)
-    added, same, conflicts = 0, 0, []
-    for path in sorted(p for p in src.rglob("*") if p.is_file()):
-        dest = root / path.relative_to(src)
-        if not dest.exists():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, dest)
-            added += 1
-        elif dest.read_bytes() == path.read_bytes():
-            same += 1
-        else:
-            conflicts.append(str(path.relative_to(src)))
-    print(f"store import {src}: {added} added, {same} already present" + (f", {len(conflicts)} DIFFER from the "
-          f"store (kept the store's): {conflicts}" if conflicts else ""))
-    return 1 if conflicts and not a.keep_existing else 0
 
 
 def _pinned_version(name: str, path: str) -> str:
@@ -322,7 +273,7 @@ def cmd_check(a) -> int:
     row((suite / "rola_bench" / "suite" / "engine.py").exists(), f"workspace.suite holds the measurement suite: {suite}",
         "point workspace.suite at a rola-bench checkout carrying rola_bench/suite")
     row(Path(dev_config.get("workspace.worktrees")).is_dir(), f"workspace.worktrees: {dev_config.get('workspace.worktrees')}")
-    root = dev_config.store()
+    root = Path(dev_config.get("store.root"))
     row((root / "rola_results" / "store.py").is_file(), f"store.root is a rola-results checkout: {root}",
         "clone rola-results to store.root, or point store.root at a checkout")
     found = subprocess.run([str(python), "-c", "import rola_results; print(rola_results.ROOT)"], capture_output=True,
@@ -471,13 +422,6 @@ def _mounts() -> list[str]:
     return mounts + ([f"{Path(wsl_lib).parent}:{Path(WSL_LIB_IN_IMAGE).parent}:ro"] if wsl_lib else [])
 
 
-def _record_dir() -> Path:
-    sys.path.insert(0, str(ROOT / "benchmarks"))
-    from bench.hw_profile import current
-
-    return dev_config.store(current(), "environment")
-
-
 #: run inside the container by `container check`, each a row: the environment check, the GPU and the reference library,
 #: a lock held by the host seen as held, and an iteration build of a copy of the checkout imported
 CONTAINER_PROOFS = {
@@ -609,11 +553,9 @@ def main() -> int:
     p.add_argument("sha")
     p.add_argument("--build", action="store_true", help="build the extension even when the main checkout's can be copied")
     p.set_defaults(fn=cmd_worktree)
-    p = sub.add_parser("store", help="the measurements store: import a directory of rows, or commit new ones")
-    p.add_argument("action", choices=("import", "commit"))
-    p.add_argument("source", nargs="?", help="import: a directory laid out like the store")
+    p = sub.add_parser("store", help="the measurements store: commit new records")
+    p.add_argument("action", choices=("commit",))
     p.add_argument("-m", "--message", default="records", help="commit: the message")
-    p.add_argument("--keep-existing", action="store_true", help="import: a file that differs keeps the store's copy")
     p.set_defaults(fn=cmd_store)
     p = sub.add_parser("container", help="the dev container: compose its mounts, build its image, check it, gate a commit")
     p.add_argument("action", choices=("compose", "build", "check", "gate"))

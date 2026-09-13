@@ -11,7 +11,7 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
     python tools/dev.py clock --mhz 1665
     python tools/dev.py worktree <name> <sha> [--build]
     python tools/dev.py container compose|build|check|gate
-    python tools/dev.py store import <dir> | commit -m <msg>
+    python tools/dev.py store commit -m <msg>
 
 **`init`** writes this machine's config:
 - The CUDA toolkit on `PATH`, or torch's.
@@ -75,9 +75,8 @@ and this file with the modules it imports. Their sha256, path and bytes each, is
 **`store`** keeps the measurements store (`store.root`, a rola-results checkout): `init` links `rola_results` into
 every interpreter that measures here -- the base venv, each worktree's pointer venv (it borrows the base as a plain
 path, which reads none of the base's `.pth` files), python3's user site, and in the image the base venv at the store's
-mount point -- by a one-line `rola_results.pth`, and `worktree` links each new venv; `import <dir>` copies in a
-directory laid out like the store, refusing a file whose bytes differ unless `--keep-existing`; `commit -m` commits the
-records (`python -m rola_results commit`).
+mount point -- by a one-line `rola_results.pth`, and `worktree` links each new venv; `commit -m` commits the records (`python -m
+rola_results commit`).
 
 **`get`** prints one value for a shell caller. `cuda-home` resolves the toolkit, which the clang-tidy device
 scripts pass as `--cuda-path`.

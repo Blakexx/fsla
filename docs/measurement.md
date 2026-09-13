@@ -32,7 +32,7 @@ c7eaeb9:<path>`).
 | methodology | `benchmarks/bench/pairing.py` | HOW: interleaved paired arms, median of per-pair ratios | **RETIRED** — the engine is what the successor most owes |
 | preconditions | `benchmarks/probe/discipline.py` | what the box must be doing first | **RETIRED**; `settle_clocks` survives, moved into `bench/regression.py` |
 | statistics | `benchmarks/bench/stats.py`, `bench/regression.py` | whether a difference is real | **SURVIVES**, gated by `tests/unit/test_perf_ledger.py` |
-| record | `<store>/perf/ledger.jsonl`, `benchmarks/bench/ledger.py` | where the number lives afterwards | **SURVIVES** |
+| record | `rola_results` (the measurements store) | where the number lives afterwards | **REPLACED** 2026-09-12: the perf ledger and `benchmarks/bench/ledger.py` were deleted for the library every tool stores through |
 | driver | `benchmarks/rola_probe.py`, `benchmarks/probe/` | the process that runs all of it | **RETIRED** |
 
 ## What the chunk-arm harness owed, and where it landed
@@ -137,7 +137,7 @@ documented.
 | tree identity | `git rev-parse` + `git status --porcelain` + `ratify.csrc_digest()`; a dirty tree does not block the run, it stamps `dirty: true`, and dirty rows are excluded from baselines |
 | extension identity | `import rola`, then resolve its `__file__` against this checkout's root; **an extension resolved from OUTSIDE this checkout ABORTS the run.** `rola` installs editable into a shared venv, so a probe launched from a worktree can silently import the MAIN tree's compiled extension unless the worktree leads it on `sys.path` — the row would then carry this tree's sha and csrc digest against another tree's kernel, agreeing with itself the way a true negative also would. The resolved path is stamped into every row's `env` regardless |
 | tier | `light` or `landing`, stamped into every row — a light-tier number can never be quoted as a landing one by a reader who did not see the command |
-| ledger write | automatic; there is no path that produces a number without recording where it came from |
+| record write | automatic: stored through `rola_results` at `bench_driver` with where it came from; `--no-record` marks a scratch run |
 
 An identity that does not describe the measured binary is worse than no identity —
 which is why the extension check runs before the clock settles and before any row
@@ -145,46 +145,12 @@ exists, alongside the tree's sha and csrc digest rather than after them.
 
 ## The record
 
-`perf/ledger.jsonl` in the measurements store (`store.root`, a git repository beside the checkouts; `python tools/dev.py store`): append-only, one JSON object per line, one line per measurement
-of one arm. `perf/ledger.jsonl merge=union` in the store's `.gitattributes` is what makes that
-survive two branches appending — every conflict is "both appended at EOF".
-
-```jsonc
-{
-  "schema": 1, "ts": "...", "sha": "...", "dirty": false,
-  "csrc_sha256": "...",              // the KERNEL's identity, not just the tree's
-  "probe": "consumer_forward", "probe_version": 1,
-  "arm": "topo-D2-w64x64-BC64|global|none",
-  "fingerprint": "...",              // sha256(probe, probe_version, arm, gpu, sm, driver, torch, ptxas)
-  "env": { ... },                    // provenance + the settle_clocks() dict + temperatures + the resolved extension path
-  "source": "cuda_events", "metric": "duration", "unit": "ms",
-  "values": [0.0731, 0.0728, ...],   // RAW per-rep samples, IN RUN ORDER
-  "paired_with": "...|raw|none", "round": 2,
-  "tier": "landing", "run_id": "...", "cmd": "rola-probe duration ..."
-}
-```
-
-Three properties are load-bearing:
-
-* **Raw samples, no derived scalars.** The run order carries the drift signal, and a
-  stored median beside its own samples is a second copy that can disagree with them.
-  Medians and IQRs are computed on read.
-* **`paired_with` and `round`.** The alternation structure IS the measurement design,
-  so keeping it makes the natural test a paired one — strictly more powerful than an
-  unpaired test, precisely because drift is common-mode within a round.
-* **The fingerprint carries the box.** GPU, arch, driver, torch and assembler are in
-  it from the first row. A comparison across an arch or a toolchain is impossible
-  rather than discouraged; that is unrecoverable if left until later.
-
-### Legacy rows
-
-The banked markdown-era numbers were imported once, by the now-deleted
-`tools/ledger_import.py` (a one-time migration; see `docs/internals/DELETIONS.md`), at
-`probe_version: 0`. That field is inside the fingerprint, so a legacy row can never
-enter a series with a disciplined one. Their warm-up, clock state and lock discipline
-are unknown and the docket numbers were taken with a stopwatch that was not in the
-tree. They are kept because they are the record, not because they are comparable, and
-their `ts`, `sha` and `csrc_sha256` are null rather than invented.
+A driver run is stored through `rola_results` at `bench_driver` ("The measurements record: `rola_results`" below): the
+RAW per-rep samples in run order, and for an interleaved A/B both arms' samples beside the paired verdict, because the
+run order carries the drift signal and the alternation is the measurement design. Medians and IQRs are computed on read.
+The record's semantics carry the box (GPU, the binary's manifest) and the tree, so a number is never compared across
+them by accident. The append-only perf ledger that held these rows before the library, with its markdown-era legacy
+import, left the store with the rest of the pre-library record (`docs/internals/DELETIONS.md`).
 
 ### The committed latency baseline
 

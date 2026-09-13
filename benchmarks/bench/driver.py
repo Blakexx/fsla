@@ -21,7 +21,6 @@ import json
 from pathlib import Path
 
 from bench.discipline import disciplined
-from bench.ledger import append
 from bench.pairing import INSTRUMENTS, REPS_PER_ROUND, Arm, interleaved_ab, measure_arm
 from bench.regression import CANONICAL_INSTRUMENT
 from bench.stats import MIN_ROUNDS, paired_verdict
@@ -97,12 +96,6 @@ def build_arm(subject: str, cell: str, calls: int, cache: dict) -> Arm:
     return Arm(name=arm_name(subject, cell, calls), call=arm.call)
 
 
-def _row(run, subject: str, cell: str, calls: int, values, source: str, **extra) -> dict:
-    return run.row(probe=f"rola:{subject}", probe_version=PROBE_VERSION,
-                   arm=arm_name(subject, cell, calls), source=source, metric="duration",
-                   unit="ms", values=values, **extra)
-
-
 def record(run, out: list, args, rounds: int, specs: list[str]) -> None:
     """The run as one sample in `rola_results` at `bench_driver`: the semantics are the arm specs, the counts, the
     instrument, the tree (commit and tracked diff), the binary's manifest and the device."""
@@ -133,10 +126,8 @@ def main(subjects, argv=None, *, description: str = "") -> int:
     p.add_argument("--reps", type=int, default=REPS_PER_ROUND, help="reps per round")
     p.add_argument("--instrument", default=CANONICAL_INSTRUMENT, choices=sorted(INSTRUMENTS))
     p.add_argument("--json", default=None, help="also write the results here")
-    p.add_argument("--no-ledger", action="store_true",
-                   help="do not append to perf/ledger.jsonl (a scratch run, not a record)")
     #: THE RECORD: the run as one sample in `rola_results` at `bench_driver`, one shared call
-    #: site (below) for every unit driver. Independent of `--no-ledger`.
+    #: site (below) for every unit driver.
     p.add_argument("--no-record", action="store_true",
                    help="do not store the results (a scratch run, not a record)")
     p.add_argument("--stage", default=None, help="the queue stage this run belongs to")
@@ -151,7 +142,6 @@ def main(subjects, argv=None, *, description: str = "") -> int:
         print(f"run {run.run_id}  sha {run.sha[:12]}{' DIRTY' if run.dirty else ''}  "
               f"clock {run.clocks['sm_mhz']:.0f} MHz  {run.env['gpu']}")
         cache: dict = {}
-        rows = []
 
         if args.ab:
             a_spec, _, b_spec = args.ab.partition(":")
@@ -166,10 +156,6 @@ def main(subjects, argv=None, *, description: str = "") -> int:
             summary["a_times"], summary["b_times"] = list(result.a_times), list(result.b_times)
             out.append(summary)
             print(json.dumps(summary, indent=1, sort_keys=True, default=str))
-            for arm, unit, times in ((a, a_unit, result.a_times), (b, b_unit, result.b_times)):
-                rows.append(_row(run, *unit, times, args.instrument,
-                                 paired_with=(b if arm is a else a).name,
-                                 rounds=rounds, reps_per_round=args.reps))
         else:
             wanted = [args.subject] if args.subject else sorted(subjects)
             units = [(subject, cell, calls) for cell in names for subject in wanted
@@ -184,10 +170,6 @@ def main(subjects, argv=None, *, description: str = "") -> int:
                 out.append(res)
                 print(f"  {subject:<20} {cell:<22} {calls:>2} call(s) "
                       f"{res['median_ms']:9.4f} ms  IQR {res['iqr_ms']:.4f}")
-                rows.append(_row(run, subject, cell, calls, res["values"], args.instrument,
-                                 rounds=rounds, reps_per_round=args.reps))
-        if not args.no_ledger:
-            print(f"ledger += {append(rows)} rows")
         if not args.no_record:
             record(run, out, args, rounds, specs)
     if args.json:

@@ -78,8 +78,8 @@ one host synchronization of the sequence is `plan_exact`'s size read, and the pa
 enqueued ahead of it — so the device is working through the facts pass while the host
 blocks, which is the larger of the two windows. What is given up is the smaller one:
 the admission's own side-stream launches no longer overlap a main-stream table pass.
-The trade is stated as a measurement, not as an argument: `perf/ledger.jsonl` carries
-the pass at two token counts, and the saving is the one that grows with `T`.
+The trade is stated as a measurement, not as an argument: the perf ledger (archived with the store's
+pre-library record) carries the pass at two token counts, and the saving is the one that grows with `T`.
 
 ## <a id="the-join"></a>3. The Join sits before the block bitmap
 

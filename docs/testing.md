@@ -640,7 +640,7 @@ not a correctness gate and must never be able to fail a merge.
 Performance work has its own document — **`docs/measurement.md`** — because the
 instruments are as much a subject of review as the kernel is: one stopwatch
 (`cuda_events`), one harness that acquires its own discipline, and one append-only
-record at `perf/ledger.jsonl` in the measurements store (`store.root`).
+record, stored through `rola_results` in the measurements store (`store.root`).
 
 Three test files hold that machinery to the same non-vacuity standard as everything
 else here. Each plants the violation its instrument exists to catch and requires the

@@ -144,15 +144,6 @@ class Run:
                         build_stamp=self.stamp,
                         gpu_temp_c_start=self.temp_start)
 
-    def row(self, **kwargs) -> dict:
-        """A ledger row with this run's identity already filled in."""
-        from bench.ledger import make_row
-
-        env = dict(self.env, gpu_temp_c_end=_gpu_temp_c())
-        return make_row(env=env, tier=self.tier, run_id=self.run_id,
-                        csrc_sha256=self.csrc_sha256, sha=self.sha, dirty=self.dirty,
-                        cmd=self.cmd, **kwargs)
-
 
 def _git_state():
     """`(sha, dirty)` of the tree being measured (`rola_results.checkout`: dirty is a tracked diff against HEAD)."""

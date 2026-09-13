@@ -1,10 +1,10 @@
-"""The CI regression layer: the judgement, over the record :mod:`bench.ledger` keeps.
+"""The CI regression layer: the judgement over stored measurements.
 
 **WHAT IS SHARED AND WHAT IS NOT.** The methodology stays this repository's own --
 no library provides per-pair ratio IQRs, counter corroboration, or a committed
-statistics manifest. Storage and comparison are `perf/ledger.jsonl`: run this
-commit's latency per ``(cell, arm)``, keep the RAW samples with the instrument that
-took them, and compare against the recorded baseline. A benchmark runner was tried
+statistics manifest. Storage is `rola_results`: run this commit's latency per
+``(cell, arm)``, keep the RAW samples with the instrument that took them, and
+compare against a stored baseline. A benchmark runner was tried
 in that role and removed on measurement -- its round schedule, not the kernel, set
 the number the gate read.
 

@@ -1,111 +1,23 @@
-"""The measurement RECORD: the ledger's schema, the paired test, and the debounce.
+"""The judgement over measurements: the paired test and the debounce.
 
 Every check here plants the violation its instrument exists to catch and requires
 the instrument to fire. A gate that cannot be shown failing is treated as absent,
-so "it passed" is not evidence about any of these three until the planted case is
-also shown rejected.
+so "it passed" is not evidence about either until the planted case is also shown
+rejected.
 
-No device: the ledger is a file format, the test is arithmetic, and the debounce is
-a run-length rule.
+No device: the test is arithmetic, and the debounce is a run-length rule.
 """
 from __future__ import annotations
 
-import json
-
 import pytest
 
-from bench.ledger import (
-    REQUIRED,
-    SCHEMA,
-    append,
-    baseline_series,
-    fingerprint,
-    load,
-    make_row,
-)
 from bench.regression import classify
 from bench.stats import ALPHA, MIN_ROUNDS, classify_flags, paired_verdict
-
-ENV = {"gpu": "NVIDIA GeForce RTX 3080 Ti", "sm": "sm_86", "driver_cuda": "12.4",
-       "torch": "2.6.0+cu124", "ptxas": "cuda_12.4.r12.4"}
-
-
-def _row(**over):
-    base = dict(probe="consumer_forward", probe_version=1, arm="cell|global|none",
-                env=ENV, source="cuda_events", metric="duration", unit="ms",
-                values=[1.0, 1.1, 0.9], tier="landing", run_id="run-1",
-                csrc_sha256="a" * 64, sha="b" * 40, dirty=False)
-    base.update(over)
-    return make_row(**base)
-
-
-# ---------------------------------------------------------------------------
-# THE SCHEMA
-# ---------------------------------------------------------------------------
-
-def test_a_row_carries_every_field_a_reader_would_otherwise_guess():
-    row = _row()
-    assert [k for k in REQUIRED if k not in row] == []
-    assert row["schema"] == SCHEMA
-    #: RAW SAMPLES, in run order, and no derived scalar beside them to disagree.
-    assert row["values"] == [1.0, 1.1, 0.9]
-    assert "median_ms" not in row and "iqr_ms" not in row
-
-
-def test_a_row_missing_its_provenance_is_refused():
-    """PLANTED VIOLATION: the field that ties a number to a kernel is dropped."""
-    with pytest.raises(ValueError, match="missing required field"):
-        _row(csrc_sha256=None)
-    with pytest.raises(ValueError, match="missing required field"):
-        _row(tier=None)
-    with pytest.raises(ValueError, match="records nothing"):
-        _row(values=[])
-
-
-def test_the_fingerprint_separates_what_must_never_be_compared():
-    """PLANTED VIOLATION, four ways: a different box, a different arch, a different
-    assembler, and a redefinition of the probe must each break the series."""
-    base = fingerprint(probe="p", probe_version=1, arm="a", env=ENV)
-    assert base == fingerprint(probe="p", probe_version=1, arm="a", env=dict(ENV))
-    for field, value in (("sm", "sm_90"), ("gpu", "A100"), ("ptxas", "cuda_12.6")):
-        assert base != fingerprint(probe="p", probe_version=1, arm="a",
-                                   env=dict(ENV, **{field: value}))
-    assert base != fingerprint(probe="p", probe_version=2, arm="a", env=ENV)
-    assert base != fingerprint(probe="p", probe_version=1, arm="b", env=ENV)
-
-
-def test_a_legacy_import_can_never_enter_a_disciplined_series():
-    """`probe_version: 0` is inside the fingerprint, which is what makes the banked
-    markdown numbers un-comparable BY CONSTRUCTION rather than by remembering."""
-    live = fingerprint(probe="p", probe_version=1, arm="a", env=ENV)
-    legacy = fingerprint(probe="p", probe_version=0, arm="a", env=ENV)
-    assert live != legacy
-
-
-def test_the_ledger_round_trips_and_dirty_rows_stay_out_of_baselines(tmp_path):
-    path = tmp_path / "ledger.jsonl"
-    clean = [_row(run_id=f"r{i}") for i in range(3)]
-    dirty = _row(run_id="r-dirty", dirty=True)
-    append(clean + [dirty], path=path)
-    rows = load(path=path)
-    assert len(rows) == 4
-    fp = clean[0]["fingerprint"]
-    kept = baseline_series(rows, fp, source="cuda_events")
-    assert [r["run_id"] for r in kept] == ["r0", "r1", "r2"]
-
-
-def test_a_row_from_an_unknown_schema_is_refused_not_guessed_at(tmp_path):
-    """PLANTED VIOLATION: a future writer's row must stop this reader, not be
-    half-interpreted by it."""
-    path = tmp_path / "ledger.jsonl"
-    path.write_text(json.dumps(dict(_row(), schema=SCHEMA + 1)) + "\n")
-    with pytest.raises(ValueError, match="this reader knows schema"):
-        load(path=path)
-
 
 # ---------------------------------------------------------------------------
 # THE PAIRED TEST (I-4)
 # ---------------------------------------------------------------------------
+
 
 def test_the_paired_test_detects_a_planted_shift_and_clears_an_unshifted_pair():
     """NON-VACUITY: the same n, one arm shifted and one not."""

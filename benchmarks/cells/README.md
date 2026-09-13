@@ -12,7 +12,7 @@ compared against one**: a different kernel, a different tiling and a different e
 and quoting these medians beside a current one would be comparing two instruments.
 
 They are kept rather than deleted because they are the RECORD of what was measured — the
-same reason `perf/ledger.jsonl` keeps rows for retired arms.
+same reason the measurements store keeps every sample of a retired arm.
 
 The live registry is `carry_cells.json` (kernel cells) and `layer_cells.json` +
 `layer_manifest.json` (layer cells); `../README.md` is the map.

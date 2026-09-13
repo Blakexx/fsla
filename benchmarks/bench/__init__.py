@@ -1,10 +1,7 @@
-"""The measurement RECORD and the judgement over it.
+"""The judgement over measurements (the record itself is `rola_results`, docs/measurement.md).
 
-Three modules, because measuring has three jobs and only one of them is a fixture:
+Two modules, because judging has two jobs and neither is a fixture:
 
-* :mod:`bench.ledger` -- the record. `perf/ledger.jsonl`: one row per
-  ``(cell, arm)`` per commit, the RAW samples kept with the instrument that took
-  them and the provenance that makes a row replayable.
 * :mod:`bench.stats` -- the statistics. The paired signed-rank verdict and its
   committed manifest, so a claim of "faster" is a test and not a pair of medians.
 * :mod:`bench.regression` -- the judgement. Per-cell thresholds derived from that

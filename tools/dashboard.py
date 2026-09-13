@@ -34,7 +34,6 @@ STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d{4}Z)-([0-9a-f]{7}|unknown)-(.+)$")
 PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep", "head_words", "head_scans")
 GATE_CELLS = ("nl64k-alt-k4", "flagship-dense", "flagship-alt-k4", "flagship-cohort-k4")
 DEFAULT_ARM = "carry_forward"
-SESSION_GAP_S = 2
 
 
 def stamp(stem: str) -> dict:
@@ -117,10 +116,6 @@ def expected_schedule(cell: str) -> str:
     return "box" if "dense" in cell or "struct" in cell else "sparse-g"
 
 
-def seconds(ts: str) -> float:
-    return dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
-
-
 def unit_of(arm: str, calls: int) -> str:
     """A series is a subject at a call count: the same subject over N carried calls is its own row (`bench.subjects.Subject.calls`)."""
     return arm if calls == 1 else f"{arm}@calls={calls}"
@@ -154,9 +149,7 @@ def _utc_seconds(stamp_: str) -> str:
 
 
 def sessions(runs: list[dict]) -> list[list[dict]]:
-    """One probe invocation's runs. A row written since the session field carries it; an older row joins the previous
-    session when it has the same stage, was written within SESSION_GAP_S seconds and names a binary not yet in it
-    (`tools/probe_cells.py` records every binary of an invocation back to back)."""
+    """One probe invocation's runs, by its session id."""
     out: list[list[dict]] = []
     by_key: dict[str, list[dict]] = {}
     for r in runs:
@@ -165,14 +158,6 @@ def sessions(runs: list[dict]) -> list[list[dict]]:
                 by_key[r["session"]] = []
                 out.append(by_key[r["session"]])
             by_key[r["session"]].append(r)
-            continue
-        last = out[-1] if out else None
-        if (last and not last[-1]["session"] and last[-1]["stage"] == r["stage"]
-                and seconds(r["ts"]) - seconds(last[-1]["ts"]) <= SESSION_GAP_S
-                and r["label"] not in {x["label"] for x in last}):
-            last.append(r)
-        else:
-            out.append([r])
     return out
 
 

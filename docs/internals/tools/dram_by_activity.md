@@ -62,8 +62,8 @@ source line — how the three blocks of a split page (hi values, lo values, the 
 mass runs; `docs/internals/common/state_page.md`) are told apart, since they are three
 distinct loops in `csrc/rola/src/common/state_page.cuh`.
 
-Rows go through the K38 epilogue (`benchmarks/bench/store.py`), one per (binary, variant,
-cell, metric), so `tools/rola_db.py` finds them by `--stage`.
+Rows are stored through `rola_results` at `dram_by_activity`, one sample a run, its stage in
+the provenance.
 
 ## Invocation
 

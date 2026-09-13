@@ -22,7 +22,7 @@ classifiers     = [
 fla   = ["fla-core"]
 # `pytest-benchmark` was REMOVED, measured: it drove the latency gate's repetition,
 # and its round schedule -- not the kernel -- set the number the gate read once the
-# committed spread narrowed to a device-event IQR. `perf/ledger.jsonl` is the record
+# committed spread narrowed to a device-event IQR. `rola_results` holds the record
 # now (docs/measurement.md), and nothing else in the tree imports the plugin.
 # `flash-attn` is THE ATTENTION REFERENCE every reported carry number sits beside
 # (`attention_reference` in benchmarks/bench/subjects.py): one library on every host, never

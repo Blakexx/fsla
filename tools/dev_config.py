@@ -71,7 +71,6 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "root": Key("path", str((ROOT.parent if ROOT.parent.name == "worktrees" else ROOT).parent / "rola-results"),
                     "the measurements store: its own git repository, shared by every worktree and the container "
                     "(the record, the ledgers, perf, the environment checks; docs/measurement.md)"),
-        "db": Key("path?", None, "the derived index tools/rola_db.py rebuilds; null is .rola/measurements.sqlite in the store"),
     },
     "workspace": {
         "suite": Key("path", str((ROOT.parent if ROOT.parent.name == "worktrees" else ROOT).parent / "rola-bench"),
@@ -83,8 +82,6 @@ SCHEMA: dict[str, dict[str, Key]] = {
     "environment": {
         "image_digest": Key("str", "", "inside the dev container: sha256 of the Dockerfile the image was built from"),
         "fla_crosscheck": Key("bool", False, "flash-linear-attention is installed: run the oracle's one-time FLA check"),
-        "machine_salt": Key("str?", None, "an operator's secret salt; set, rows carry a salted hash telling two "
-                            "same-profile machines apart (benchmarks/bench/hw_profile.py)"),
     },
 }
 
@@ -191,11 +188,6 @@ def cuda_home() -> str:
 
 def cuda_bin(tool: str) -> str:
     return str(Path(cuda_home()) / "bin" / tool)
-
-
-def store(*parts: str) -> Path:
-    """A path in the measurements store (`store.root`): `store("ledgers")`, `store("perf", "ledger.jsonl")`."""
-    return Path(get("store.root")).joinpath(*parts)
 
 
 def scratch(name: str) -> Path:

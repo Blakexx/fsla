@@ -76,8 +76,7 @@ now calls `host_budget.acquire(desired, exclusive=gate, ...)`.
 
 Not a counting resource: one short-held **exclusive** lock over a single
 named shared artifact, for tools that write ONE output potentially
-concurrently — the K38 records database epilogue (`tools/rola_db.py`'s
-`rebuild()`), a ratify manifest (`tools/ratify.py`'s `--write`), and the
+concurrently — a ratify manifest (`tools/ratify.py`'s `--write`), and the
 generated carry-selection header (`tools/ratify.py`'s unconditional
 per-build write, and `tools/gen_shards.py --write`, both targeting the same
 `CARRY_SELECTION_INC` path). Reentrant per name, the same marker shape as
