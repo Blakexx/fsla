@@ -187,14 +187,19 @@ def test_a_short_history_is_undecided():
 # THE THREE GATES TOGETHER
 # ---------------------------------------------------------------------------
 
+def _run(values):
+    """A judged row: `classify` reads a row's samples and nothing else."""
+    return {"values": values}
+
+
 def _history(values, n=5):
-    return [_row(run_id=f"h{i}", values=values) for i in range(n)]
+    return [_run(values) for _ in range(n)]
 
 
 def test_all_three_gates_must_fire_before_anything_is_called_a_regression():
     history = _history([1.00, 1.01, 0.99, 1.00])
     #: A candidate far above the derived limit, persistent, and significant.
-    slow = _row(run_id="head", values=[1.60, 1.61, 1.59, 1.60])
+    slow = _run([1.60, 1.61, 1.59, 1.60])
     got = classify(history + [slow], slow, paired_diffs=[0.6] * MIN_ROUNDS)
     assert got["verdict"] == "regression"
     assert got["median_ms"] > got["limit_ms"]
@@ -204,14 +209,14 @@ def test_an_effect_without_significance_is_flagged_but_not_confirmed():
     """The planted case the significance gate exists for: the median moved, the
     per-round differences do not agree that it did."""
     history = _history([1.00, 1.01, 0.99, 1.00])
-    slow = _row(run_id="head", values=[1.60, 1.61, 1.59, 1.60])
+    slow = _run([1.60, 1.61, 1.59, 1.60])
     got = classify(history + [slow], slow, paired_diffs=[0.6, -0.6, 0.6, -0.6])
     assert got["verdict"] == "flagged_not_confirmed"
 
 
 def test_an_unchanged_kernel_does_not_fail_its_own_gate():
     history = _history([1.00, 1.01, 0.99, 1.00])
-    same = _row(run_id="head", values=[1.00, 1.00, 1.01, 0.99])
+    same = _run([1.00, 1.00, 1.01, 0.99])
     assert classify(history, same, paired_diffs=[0.0] * 6)["verdict"] == "no_regression"
 
 
