@@ -101,9 +101,7 @@ is a claim; a generated one is a report.
 <!-- BEGIN GENERATED: tools/supported.py -->
 | Compute capability | GPUs | Toolchain | Ratified under | Instantiations | Status |
 |---|---|---|---|---|---|
-| `sm_80` | A100, A30 | `cu124` | ptxas 12.4.99 | 349 | ratified |
 | `sm_80` | A100, A30 | `cu13` | ptxas 13.0.48 | 345 | ratified |
-| `sm_86` | A10, A40, RTX 30xx | `cu124` | ptxas 12.4.99 | 349 | ratified |
 | `sm_86` | A10, A40, RTX 30xx | `cu13` | ptxas 13.0.48 | 345 | ratified |
 | `sm_87` | Jetson Orin | — | — | — | **not ratified — will refuse to load** |
 | `sm_89` | L40S, RTX 40xx | — | — | — | **not ratified — will refuse to load** |
