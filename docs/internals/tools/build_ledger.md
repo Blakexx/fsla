@@ -14,7 +14,7 @@ the pipe timeline per cell (§22 (11), `tools/pipe_timeline.py`: the tensor pipe
 silicon), and `tools/probe_cells.py` against the baseline run with its own schedule (`box` dense, `sparse-g32`
 sparse; this tree `first`).
 
-The report lands in `benchmarks/results/ledgers/<utc>-<sha7>-<tag>.json` and `.md`, and the
+The report lands in `<store>/ledgers/<utc>-<sha7>-<tag>.json` and `.md` (the measurements store), and the
 markdown carries the per-phase diff against the newest earlier report for the same cells. A step
 that fails is a row with its output, never a stop. `--skip` names steps to leave out (a CPU-only
 dry run is `--skip oracle,phases,profile,ab`). After the report is written the ledger renders the

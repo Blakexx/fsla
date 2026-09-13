@@ -170,7 +170,12 @@ def chart(tl: dict, title: str, scale: float | None, width_us: float = 1.0) -> s
     return "\n".join(svg) + legend
 
 
-SCALE_DIR = ROOT / "benchmarks" / "results" / "rtx3080ti-sm86"
+def scale_dir() -> Path:
+    """This card's reference rows in the store: `<store>/<hw-profile>/pipe-timeline-scale-<utc>.json`."""
+    sys.path.insert(0, str(ROOT / "benchmarks"))
+    from bench.hw_profile import current
+
+    return dev_config.store(current())
 
 
 def plateau(tl: dict) -> dict:
@@ -187,7 +192,7 @@ def plateau(tl: dict) -> dict:
 
 
 def stored_scale() -> float | None:
-    rows = sorted(SCALE_DIR.glob("pipe-timeline-scale-*.json"))
+    rows = sorted(scale_dir().glob("pipe-timeline-scale-*.json"))
     return json.loads(rows[-1].read_text())["plateau"] if rows else None
 
 
@@ -195,12 +200,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cell", required=True)
     ap.add_argument("--rep", type=Path, help="an existing PmSampling report instead of a new capture")
-    ap.add_argument("--out", type=Path, help="report path stem (default: benchmarks/results/timelines/<cell>)")
+    ap.add_argument("--out", type=Path, help="report path stem (default: <store>/timelines/<cell>)")
     ap.add_argument("--scale", type=float, help="the MMA-only plateau in the tensor series (default: the stored row)")
     ap.add_argument("--calibrate", action="store_true",
                     help="this capture is the MMA-only composition (ROLA_CARRY_PARTS=none): store its plateau as the scale")
     a = ap.parse_args()
-    out = a.out or ROOT / "benchmarks" / "results" / "timelines" / a.cell
+    out = a.out or dev_config.store("timelines", a.cell)
     out.parent.mkdir(parents=True, exist_ok=True)
     rep = a.rep or capture(a.cell, out)
     tl = parse(*export(rep))
@@ -208,14 +213,14 @@ def main() -> int:
         import datetime as dt
         row = {"utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%MZ"), "cell": a.cell, "report": rep.name,
                "metric": dict(SERIES)["tensor"], "composition": "ROLA_CARRY_PARTS=none", **plateau(tl)}
-        dest = SCALE_DIR / f"pipe-timeline-scale-{row['utc']}.json"
+        dest = scale_dir() / f"pipe-timeline-scale-{row['utc']}.json"
         dest.write_text(json.dumps(row, indent=1) + "\n")
         print(f"scale: {row['plateau']:.2f} (p10 {row['p10']:.2f}, p90 {row['p90']:.2f}, {row['samples']} samples) -> {dest}")
         a.scale = row["plateau"]
     if a.scale is None:
         a.scale = stored_scale()
     summ = summary(tl, a.scale)
-    out.with_suffix(".json").write_text(json.dumps({"cell": a.cell, "report": str(rep), "scale": a.scale,
+    out.with_suffix(".json").write_text(json.dumps({"cell": a.cell, "report": rep.name, "scale": a.scale,
                                                     "summary": summ, **tl}) + "\n")
     out.with_suffix(".html").write_text(f"<title>Pipe timeline {html.escape(a.cell)}</title>\n"
                                         + chart(tl, a.cell, a.scale) + "\n")

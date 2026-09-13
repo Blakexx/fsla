@@ -97,7 +97,7 @@ record for the key of what it stages -- the commit gate refuses it otherwise (KE
 **The mounts come from the host's dev config.** `python3 tools/dev.py container compose` writes
 `.devcontainer/compose.local.yaml` (never committed) binding, onto the image's fixed layout: this checkout at
 `/workspace/rola`, the host's `host.lock_dir` at `/run/rola/locks` and its GPU lock's directory at `/run/rola/gpu`,
-`store.results` at `/workspace/store`, and `workspace.worktrees` at `/workspace/worktrees`. It refuses when no image
+`store.root` at `/workspace/store`, and `workspace.worktrees` at `/workspace/worktrees`. It refuses when no image
 exists for the current key. Under WSL it also mounts the directory above `host.wsl_lib` (`/usr/lib/wsl`) read-only:
 the image's loader path starts at `/usr/lib/wsl/lib`, and without the Windows driver's libraries there CUDA fails to
 initialize inside the container with error 500 even though `nvidia-smi` works (measured 2026-09-12, Docker Desktop
@@ -295,7 +295,7 @@ expects to measure.
 | `sccache` 0.17.0 | `tools/dev.py init --image` from `tools/sccache_pin.json`, verified | the compiler cache `docs/build.md#sccache` measures |
 | `ninja` | apt | the build's actual compile driver (`docs/build.md` step 5) |
 | `mold` 2.42.0 | `tools/dev.py init --image` from `tools/mold_pin.json`, verified | the extension's only linker |
-| `graphviz`, `sqlite3` | apt | dependency/DAG rendering, `perf/ledger.jsonl` inspection |
+| `graphviz`, `sqlite3` | apt | dependency/DAG rendering, the store's record index inspection |
 | `clangd`, `clang-tools-14` (clang-query) | apt | the editor/AST tooling briefs assume is present |
 | `universal-ctags` | apt | cross-referencing the `csrc/` tree |
 | `jq`, `fd` (via `fd-find`) | apt | the shell one-liners this repo's own docs use |

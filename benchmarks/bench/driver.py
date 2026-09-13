@@ -112,13 +112,13 @@ def main(subjects, argv=None, *, description: str = "") -> int:
     p.add_argument("--json", default=None, help="also write the results here")
     p.add_argument("--no-ledger", action="store_true",
                    help="do not append to perf/ledger.jsonl (a scratch run, not a record)")
-    #: K38: the second writer of `benchmarks/results/` -- one shared call site
+    #: K38: the second writer of the record (the store) -- one shared call site
     #: (below) so every unit/integration driver writes the same record shape as
     #: `tools/probe_cells.py`. Independent of `--no-ledger`: the retired
     #: `perf/ledger.jsonl` and the K38 record are two different schemas, either can
     #: be skipped without the other.
     p.add_argument("--no-record", action="store_true",
-                   help="do not write benchmarks/results/ rows (a scratch run, not a record)")
+                   help="do not write record rows to the store (a scratch run, not a record)")
     p.add_argument("--stage", default=None, help="the queue stage this run belongs to")
     args = p.parse_args(argv)
 

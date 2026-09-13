@@ -63,8 +63,8 @@ stage's recorded number, not a fresh re-measurement of it.
 
 ## The measurements record (K38) — every run is ALSO written, not just printed
 As of K38, a probe run (unless `--no-record`) writes each binary's rows through
-`benchmarks/bench/store.py` into `benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` — the
-committed record — and `python tools/rola_db.py rebuild` indexes it into the gitignored
+`benchmarks/bench/store.py` into `<store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` — the
+record in the measurements store (`store.root`; `python tools/dev.py store commit` commits it) — and `python tools/rola_db.py rebuild` indexes it into the gitignored
 `.rola/measurements.sqlite`. Pass `--stage <name>` so a later `rola-db baseline --stage <name>` can
 find these rows; `rola-db last`/`history`/`compare` are how an agent finds a prior number by SQL
 instead of grepping FINDINGS. Read `docs/measurement.md`'s "The measurements record (JSONL) and its

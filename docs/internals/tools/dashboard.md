@@ -4,7 +4,7 @@ The measurement suite stores every number it takes. The dashboard reads those st
 them as one static HTML page. It measures nothing. The same inputs always give the same bytes: no clock,
 no randomness, inputs read in sorted order, data serialized with sorted keys.
 
-    python tools/dashboard.py            # writes benchmarks/results/ledgers/dashboard.html
+    python tools/dashboard.py            # writes <store>/ledgers/dashboard.html
     python tools/dashboard.py --check    # renders twice; refuses unless the bytes agree and no absolute path is inlined
 
 `tools/build_ledger.py` and `tools/compose_ledger.py` render it after writing their reports, so the page is
@@ -15,14 +15,14 @@ JSON. Its header carries the hash of that data.
 
 | input | where | read for |
 |---|---|---|
-| build ledger reports | `benchmarks/results/ledgers/<utc>-<sha7>-<tag>.json` | standings, builds |
-| composer reports | `benchmarks/results/ledgers/<utc>-<sha7>-compose.json` | part ladders |
-| pipe timelines | `benchmarks/results/ledgers/<utc>-<sha7>-<tag>-timeline-<cell>.json` | tensor and ALU pipes over a launch |
-| the probe record | `benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` | variants against a baseline |
-| the timeline scale | `benchmarks/results/<hw-profile>/pipe-timeline-scale-<utc>.json` | the note under the timelines |
+| build ledger reports | `<store>/ledgers/<utc>-<sha7>-<tag>.json` | standings, builds |
+| composer reports | `<store>/ledgers/<utc>-<sha7>-compose.json` | part ladders |
+| pipe timelines | `<store>/ledgers/<utc>-<sha7>-<tag>-timeline-<cell>.json` | tensor and ALU pipes over a launch |
+| the probe record | `<store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` | variants against a baseline |
+| the timeline scale | `<store>/<hw-profile>/pipe-timeline-scale-<utc>.json` | the note under the timelines |
 
 A capture made outside a ledger run joins the page when `tools/pipe_timeline.py --rep <report> --out
-benchmarks/results/ledgers/<utc>-<sha7>-<label>-timeline-<cell>` imports it. The label names the
+<store>/ledgers/<utc>-<sha7>-<label>-timeline-<cell>` imports it. The label names the
 composition, for example `kernel` or `mma-only`.
 
 **Sections.**
@@ -55,7 +55,7 @@ composition, for example `kernel` or `mma-only`.
   removes flagged values.
 
 **Limits.**
-- The ledger directory is not tracked in git, so builds, composer reports and timelines are this machine's
-  history. The probe record is committed and is the same on every clone.
+- Everything the page reads is in the measurements store (`store.root`), shared by every worktree and the container;
+  raw profiler captures and the page itself are not committed there.
 - Standings read build ledger reports only. A probe run outside the ledger does not change the standings,
   because the probe record does not say which binary is the tree's kernel.

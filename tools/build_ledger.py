@@ -26,7 +26,7 @@ The steps, each recorded with its outcome (a failure is a row, never a stop):
                  utilization over time on the stored scale (§22 (11)), with a chart
   ab          -- `tools/probe_cells.py` per cell against the baseline RUN WITH ITS OWN SCHEDULE
                  (`box` dense, `sparse-g32` sparse), this tree with `first`
-The report lands in `benchmarks/results/ledgers/<utc>-<sha7>-<tag>.json` and `.md`; the diff is
+The report lands in `<store>/ledgers/<utc>-<sha7>-<tag>.json` and `.md`; the diff is
 against the newest earlier report for the same cells. Measured work: the GPU lock, quiet GPU.
 """
 from __future__ import annotations
@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_config  # noqa: E402 -- path insert must precede this import
 
 ROOT = Path(__file__).resolve().parents[1]
-LEDGERS = ROOT / "benchmarks" / "results" / "ledgers"
+LEDGERS = dev_config.store("ledgers")
 PY = sys.executable
 NCU = dev_config.get("toolchain.ncu")
 NVCC = dev_config.cuda_bin("nvcc")
@@ -222,7 +222,7 @@ def step_timeline(report: dict, cells: list[str], stem: str) -> None:
     for cell in cells:
         out = LEDGERS / f"{stem}-timeline-{cell}"
         rc, text = run([PY, "tools/pipe_timeline.py", "--cell", cell, "--out", str(out)], timeout=3600)
-        row: dict = {"rc": rc, "html": str(out.with_suffix(".html"))}
+        row: dict = {"rc": rc, "html": out.with_suffix(".html").name}
         m = re.search(r"\{.*\}", text, re.S)
         if rc == 0 and m:
             with contextlib.suppress(json.JSONDecodeError):

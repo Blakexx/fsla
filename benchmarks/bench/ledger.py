@@ -29,11 +29,15 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-LEDGER = ROOT / "perf" / "ledger.jsonl"
+sys.path.insert(0, str(ROOT / "tools"))
+import dev_config  # noqa: E402 -- path insert must precede this import
+
+LEDGER = dev_config.store("perf", "ledger.jsonl")
 
 #: Bump only for a change that makes OLD LINES UNREADABLE. Adding a field does not
 #: qualify; readers ignore what they do not know.

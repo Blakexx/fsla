@@ -31,7 +31,7 @@ What this file owns is the CROSS-BINARY comparison, and only that:
   * `--ncu`, whose kernel filter NAMES THE BODY (the subject's own `symbol`) rather than
     a family prefix, because the first kernel of a family is not the same kernel on two
     tips and a ratio taken across two different kernels means nothing.
-  * THE RECORD. Every run writes `benchmarks/results/` rows through the same writer the
+  * THE RECORD. Every run writes rows to the store (`store.root`) through the same writer the
     benches use, so a measurement is not lost to a terminal scrollback.
 
 Usage:
@@ -421,7 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     #: Recording is ON by default -- a probe run IS a measurement, and the record's whole
     #: point is that nothing measured is lost to a terminal scrollback.
     ap.add_argument("--no-record", action="store_true",
-                    help="do not write benchmarks/results/ rows (a scratch run)")
+                    help="do not write record rows to the store (a scratch run)")
     ap.add_argument("--stage", default=None, help="the queue stage this probe belongs to")
     ap.add_argument("--agent", default=None, help="who ran it (a name, not an identity)")
     ap.add_argument("--purpose", default=None, help="free text: what this probe was for")

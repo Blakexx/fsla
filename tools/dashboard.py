@@ -3,15 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE DASHBOARD: every stored measurement of the kernel and its variants over the cells, as one static page.
 
-    python tools/dashboard.py            # writes benchmarks/results/ledgers/dashboard.html
+    python tools/dashboard.py            # writes <store>/ledgers/dashboard.html
     python tools/dashboard.py --check    # renders twice and refuses unless the bytes agree
 
 It measures nothing. It reads what the suite already stored and renders it, so the same inputs give the same
 bytes (no clock, no randomness, inputs read in sorted order, data serialized with sorted keys):
-  build ledger reports   benchmarks/results/ledgers/<utc>-<sha7>-<tag>.json        standings, builds
-  composer reports       benchmarks/results/ledgers/<utc>-<sha7>-compose.json      part ladders
-  pipe timelines         benchmarks/results/ledgers/<stem>-timeline-<cell>.json    tensor pipe over a launch
-  the probe record       benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl  variants against a baseline
+  build ledger reports   <store>/ledgers/<utc>-<sha7>-<tag>.json        standings, builds
+  composer reports       <store>/ledgers/<utc>-<sha7>-compose.json      part ladders
+  pipe timelines         <store>/ledgers/<stem>-timeline-<cell>.json    tensor pipe over a launch
+  the probe record       <store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl  variants against a baseline
 The page is `tools/dashboard_page.html` with the data inlined; docs/internals/tools/dashboard.md.
 """
 from __future__ import annotations
@@ -25,8 +25,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LEDGERS = ROOT / "benchmarks" / "results" / "ledgers"
-RESULTS = ROOT / "benchmarks" / "results"
+sys.path.insert(0, str(ROOT / "tools"))
+import dev_config  # noqa: E402 -- path insert must precede this import
+
+LEDGERS = dev_config.store("ledgers")
+RESULTS = dev_config.store()
 PAGE = Path(__file__).with_name("dashboard_page.html")
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d{4}Z)-([0-9a-f]{7}|unknown)-(.+)$")
 PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep", "head_words", "head_scans")

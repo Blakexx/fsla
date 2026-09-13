@@ -11,6 +11,7 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
     python tools/dev.py clock --mhz 1665
     python tools/dev.py worktree <name> <sha> [--build]
     python tools/dev.py container compose|build|check|gate
+    python tools/dev.py store import <dir> | commit -m <msg>
 
 **`init`** writes this machine's config:
 - The CUDA toolkit on `PATH`, or torch's.
@@ -69,6 +70,11 @@ and this file with the modules it imports. Their sha256, path and bytes each, is
   records the result as `<store>/<hw-profile>/environment/<key>.json`.
 - `gate` is the commit hook. When the staged files touch an input, it computes the key of the staged blobs and
   refuses the commit without a passing record for that key.
+
+**`store`** keeps the measurements store (`store.root`): `init` creates it as a git repository with its layout README,
+`.gitattributes` (the perf ledger's union merge) and `.gitignore` (the derived index, raw `.ncu-rep` captures, the
+dashboard page); `import <dir>` copies in a directory laid out like the store, refusing a file whose bytes differ unless
+`--keep-existing`; `commit -m` commits what the writers added. `check` reports whether the store is a repository.
 
 **`get`** prints one value for a shell caller. `cuda-home` resolves the toolkit, which the clang-tidy device
 scripts pass as `--cuda-path`.

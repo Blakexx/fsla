@@ -35,10 +35,6 @@ class Key:
     doc: str
 
 
-def _repo_default(rel: str) -> str:
-    return str(ROOT / rel)
-
-
 SCHEMA: dict[str, dict[str, Key]] = {
     "toolchain": {
         "cuda_home": Key("path?", None, "the CUDA toolkit the extension builds with (nvcc, ptxas, nvdisasm, cuobjdump "
@@ -72,8 +68,10 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "unlock": Key("argv?", None, "the command that releases it"),
     },
     "store": {
-        "results": Key("path", _repo_default("benchmarks/results"), "the measurements record every writer appends to"),
-        "db": Key("path", _repo_default(".rola/measurements.sqlite"), "the derived index tools/rola_db.py rebuilds"),
+        "root": Key("path", str((ROOT.parent if ROOT.parent.name == "worktrees" else ROOT).parent / "rola-results"),
+                    "the measurements store: its own git repository, shared by every worktree and the container "
+                    "(the record, the ledgers, perf, the environment checks; docs/measurement.md)"),
+        "db": Key("path?", None, "the derived index tools/rola_db.py rebuilds; null is .rola/measurements.sqlite in the store"),
     },
     "workspace": {
         "worktrees": Key("path", str(ROOT.parent / "worktrees") if ROOT.parent.name != "worktrees" else str(ROOT.parent),
@@ -93,7 +91,7 @@ SCHEMA: dict[str, dict[str, Key]] = {
 IMAGE_LAYOUT = {
     "toolchain": {"cuda_home": "/usr/local/cuda"},
     "host": {"lock_dir": "/run/rola/locks", "gpu_lock": "/run/rola/gpu/rola_gpu.lock", "tools_dir": "/opt/rola/tools"},
-    "store": {"results": "/workspace/store", "db": "/workspace/store/.rola/measurements.sqlite"},
+    "store": {"root": "/workspace/store"},
     "workspace": {"worktrees": "/workspace/worktrees", "base_venv": "/opt/venv"},
 }
 #: where the image's loader looks for the WSL driver's libraries (the Dockerfile's LD_LIBRARY_PATH names it)
@@ -191,6 +189,11 @@ def cuda_home() -> str:
 
 def cuda_bin(tool: str) -> str:
     return str(Path(cuda_home()) / "bin" / tool)
+
+
+def store(*parts: str) -> Path:
+    """A path in the measurements store (`store.root`): `store("ledgers")`, `store("perf", "ledger.jsonl")`."""
+    return Path(get("store.root")).joinpath(*parts)
 
 
 def scratch(name: str) -> Path:

@@ -1,7 +1,7 @@
 """THE MEASUREMENTS RECORD: the writer epilogue every measuring tool shares.
 
 **THE RECORD IS COMMITTED JSONL, THE DATABASE IS DERIVED.** One small file per run,
-under `benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` (text, mergeable,
+under `<store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` (the store repository, `store.root`; text, mergeable,
 provenance in every row). `.rola/measurements.sqlite` is a gitignored cache rebuilt
 FROM that JSONL by `tools/rola_db.py rebuild`; it is never itself the record
 (`docs/measurement.md`, "a committed SQLite database... a binary blob has no diff").
@@ -59,8 +59,8 @@ REQUIRED_RUN_FIELDS = ("run_id", "ts", "git_sha", "stamp_magic", "harness_sha")
 
 
 def results_dir() -> Path:
-    """`store.results` in the dev config (§17: a named record, never an ad-hoc path)."""
-    return Path(dev_config.get("store.results")).resolve()
+    """The measurements store's root (`store.root`, §17: a named sibling repository, never an ad-hoc path)."""
+    return dev_config.store().resolve()
 
 
 def git_state() -> tuple[str, bool]:
@@ -190,7 +190,7 @@ def build_result(run: dict, *, kind: str, cell: str | None, arm: str | None,
 
 def write_run(run: dict, results: list) -> Path:
     """Append the run record and its results to
-    `benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl`. One file per run, so
+    `<store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl`. One file per run, so
     two branches that both measured never conflict on the same line the way one
     shared ledger file would; `.gitattributes`' `merge=union` is not needed here
     because nothing ever shares a path."""

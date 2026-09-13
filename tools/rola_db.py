@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """tools/rola_db.py -- K38: the measurements database, rebuilt from the committed record.
 
-THE RECORD IS `benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` (committed,
+THE RECORD IS `<store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` (committed in the store repository,
 text, mergeable, provenance in every row). THE DATABASE is `.rola/measurements.sqlite`
 (gitignored, derived, disposable) -- an index over the record, never the record itself
 (`docs/measurement.md`: "a committed SQLite database... a binary blob has no diff").
@@ -10,7 +10,7 @@ text, mergeable, provenance in every row). THE DATABASE is `.rola/measurements.s
 and `rebuild` refuses nothing that got past the JSONL writer's own provenance gate
 (`benchmarks/bench/store.py`) because that gate already ran when the row was written.
 
-Paths: `store.results` and `store.db` in the dev config (`tools/dev_config.py`).
+Paths: `store.root` and `store.db` in the dev config (`tools/dev_config.py`).
 
 Usage:
 
@@ -100,13 +100,14 @@ CREATE VIEW measurements AS
 
 
 def db_path() -> Path:
-    return Path(dev_config.get("store.db")).resolve()
+    return Path(dev_config.get("store.db") or dev_config.store(".rola", "measurements.sqlite")).resolve()
 
 
 def _iter_jsonl_files(root: Path):
+    """The record's run files, `<hw-profile>/<yyyy-mm>/<run_id>.jsonl` -- not the store's other JSONL (perf/)."""
     if not root.exists():
         return
-    yield from sorted(root.rglob("*.jsonl"))
+    yield from sorted(root.glob("*/[0-9][0-9][0-9][0-9]-[0-9][0-9]/*.jsonl"))
 
 
 def rebuild(args) -> int:
@@ -130,7 +131,7 @@ def rebuild(args) -> int:
         n_runs = n_results = n_files = 0
         for path in _iter_jsonl_files(rdir):
             n_files += 1
-            rel = str(path.relative_to(ROOT))
+            rel = str(path.relative_to(rdir))
             run_id = None
             for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 if not line.strip():

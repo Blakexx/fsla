@@ -16,7 +16,7 @@ no reading of samples. Each rung is CHECKED: the profiler's HMMA count for the c
 kernel's (a stub that changed the workload fails its rung), and the build's device code must differ
 from the kernel's (a build that did not take the mask fails). The kernel is rebuilt with every part
 real at the end and its device code must hash to the value taken before the first rung.
-Report: `benchmarks/results/ledgers/<utc>-<sha7>-compose.{json,md}`. Serial builds (the host's
+Report: `<store>/ledgers/<utc>-<sha7>-compose.{json,md}`. Serial builds (the host's
 memory watchdog kills parallel ones); measured work takes the GPU lock through the tools it drives.
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ PY = sys.executable
 NCU = dev_config.get("toolchain.ncu")
 CUOBJDUMP = dev_config.cuda_bin("cuobjdump")
 NVDISASM = dev_config.cuda_bin("nvdisasm")
-LEDGERS = ROOT / "benchmarks" / "results" / "ledgers"
+LEDGERS = dev_config.store("ledgers")
 
 
 def run(cmd: list[str], env: dict | None = None, timeout: int = 3600) -> tuple[int, str]:

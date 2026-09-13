@@ -1,6 +1,6 @@
 """The results key: a HARDWARE PROFILE, never a hostname.
 
-`benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` is keyed on the thing that
+`<store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` is keyed on the thing that
 makes two runs COMPARABLE -- the GPU model and its SM architecture -- not on the box
 that happened to run them. `NVIDIA GeForce RTX 3080 Ti` + `sm_86` becomes
 `rtx3080ti-sm86`; `NVIDIA A100-SXM4-80GB` + `sm_80` becomes `a100-sm80`, because the
@@ -32,6 +32,16 @@ def slugify_gpu(name: str) -> str:
         stripped = stripped.replace(word, "")
     stripped = stripped.split("-", 1)[0]
     return re.sub(r"[^A-Za-z0-9]", "", stripped).lower()
+
+
+def current() -> str:
+    """This machine's profile, read from the driver (`nvidia-smi`), for a writer that does not hold a CUDA context."""
+    import subprocess
+
+    line = subprocess.run(["nvidia-smi", "--query-gpu=name,compute_cap", "--format=csv,noheader"],
+                          capture_output=True, text=True, check=True).stdout.splitlines()[0]
+    name, cap = (x.strip() for x in line.split(","))
+    return hw_profile(name, "sm_" + cap.replace(".", ""))
 
 
 def hw_profile(gpu_name: str, sm: str) -> str:

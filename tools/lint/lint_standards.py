@@ -1368,7 +1368,7 @@ def check_settings_come_from_the_dev_config() -> list[str]:
     for path in _tracked_files():
         rel = path.relative_to(ROOT).as_posix()
         if (path.suffix not in (".py", ".sh") or path in (loader, _PORTABILITY_LINT_SELF)
-                or rel.startswith(("csrc/third_party/", "benchmarks/results/")) or not path.is_file()):
+                or rel.startswith("csrc/third_party/") or not path.is_file()):
             continue
         text = path.read_text()
         if path.suffix == ".py":

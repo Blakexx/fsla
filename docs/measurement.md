@@ -32,7 +32,7 @@ c7eaeb9:<path>`).
 | methodology | `benchmarks/bench/pairing.py` | HOW: interleaved paired arms, median of per-pair ratios | **RETIRED** — the engine is what the successor most owes |
 | preconditions | `benchmarks/probe/discipline.py` | what the box must be doing first | **RETIRED**; `settle_clocks` survives, moved into `bench/regression.py` |
 | statistics | `benchmarks/bench/stats.py`, `bench/regression.py` | whether a difference is real | **SURVIVES**, gated by `tests/unit/test_perf_ledger.py` |
-| record | `perf/ledger.jsonl`, `benchmarks/bench/ledger.py` | where the number lives afterwards | **SURVIVES** |
+| record | `<store>/perf/ledger.jsonl`, `benchmarks/bench/ledger.py` | where the number lives afterwards | **SURVIVES** |
 | driver | `benchmarks/rola_probe.py`, `benchmarks/probe/` | the process that runs all of it | **RETIRED** |
 
 ## What the chunk-arm harness owed, and where it landed
@@ -145,8 +145,8 @@ exists, alongside the tree's sha and csrc digest rather than after them.
 
 ## The record
 
-`perf/ledger.jsonl`: append-only, one JSON object per line, one line per measurement
-of one arm. `perf/ledger.jsonl merge=union` in `.gitattributes` is what makes that
+`perf/ledger.jsonl` in the measurements store (`store.root`, a git repository beside the checkouts; `python tools/dev.py store`): append-only, one JSON object per line, one line per measurement
+of one arm. `perf/ledger.jsonl merge=union` in the store's `.gitattributes` is what makes that
 survive two branches appending — every conflict is "both appended at EOF".
 
 ```jsonc
@@ -348,12 +348,20 @@ cannot if each keeps its own private file with its own shape.
 **THE RECORD IS COMMITTED JSONL. THE DATABASE IS A DERIVED, DISPOSABLE CACHE.**
 Exactly the design the "what is deliberately not here" list above ruled out for a
 single committed binary blob, applied the other way around: the TEXT is committed
-(`benchmarks/results/`, one small file per run, mergeable per run rather than per
-repo), and the query surface (`.rola/measurements.sqlite`) is rebuilt from it on
-demand and never itself checked in.
+(one small file per run, mergeable per run rather than per repo), and the query
+surface (`.rola/measurements.sqlite`) is rebuilt from it on demand and never itself
+checked in.
+
+**THE RECORD LIVES IN THE STORE, NOT IN A CHECKOUT (2026-09-12, KERNEL_STANDARDS §17, §23).** Every worktree, host
+and container writes into one git repository, `store.root` in the dev config (default `rola-results` beside the
+checkouts; the container mounts it at `/workspace/store`): the record below, each card's reference rows, the
+container checks, the ledger and composer reports, and `perf/`. A row measured in any worktree is visible to every
+other and to the dashboard at once. `python tools/dev.py store commit -m <message>` commits new rows there;
+`python tools/dev.py store import <dir>` brings in rows a checkout wrote before the move. The store's history began
+with every row the worktrees held on 2026-09-12 (`a6ba88a` there); pushing it is the owner's act.
 
 ```
-benchmarks/results/<hw-profile>/<yyyy-mm>/<run_id>.jsonl
+<store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl
 ```
 
 `<hw-profile>` is `bench.hw_profile.hw_profile(gpu_name, sm)` — the GPU model plus
@@ -399,7 +407,7 @@ table side rather than one index spanning a join.
 FIRST writer — one run per binary in an A/B, since a cross-tip comparison measures
 two different trees' own identities) and by `benchmarks/bench/driver.py` (the SECOND
 writer — every `benchmarks/unit/`/`benchmarks/integration/` driver inherits it,
-alongside — not instead of — the existing `perf/ledger.jsonl` append). Both take
+alongside — not instead of — the existing `<store>/perf/ledger.jsonl` append). Both take
 `--no-record` to skip it for a genuine scratch run, the same shape as
 `--no-ledger`.
 
@@ -423,6 +431,5 @@ to run to reproduce it — `.rola/` is gitignored. `baseline` is how a stage gat
 reads "the previous stage's rows" (KERNEL_STANDARDS §16 addendum): the brief names
 the prior stage's string, not a git-history heuristic.
 
-Paths: `store.results` (default `<repo>/benchmarks/results`) and `store.db` (default
-`<repo>/.rola/measurements.sqlite`) in the dev config (`tools/dev_config.py`) — §17: no
-home paths, no ad-hoc locations.
+Paths: `store.root` and `store.db` (default `<store>/.rola/measurements.sqlite`) in the dev
+config (`tools/dev_config.py`) — §17: no home paths, no ad-hoc locations.
