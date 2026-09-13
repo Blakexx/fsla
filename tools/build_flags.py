@@ -116,7 +116,7 @@ def nvcc_flags(archs, nvcc_threads: int = 2) -> list[str]:
     nvcc across `-gencode` targets, so beyond the number of targets it buys nothing
     while multiplying the peak resident set (`MAX_JOBS` x `--threads` cicc processes).
     """
-    return ["-O3", "-std=c++17", "-lineinfo", f"--threads={nvcc_threads}",
+    return ["-O3", "-std=c++20", "-lineinfo", f"--threads={nvcc_threads}",
             #: MANDATORY, not optional: `tools/ratify.py` parses exactly this report.
             "--ptxas-options=-v",
             #: COMPRESS EVERY IMAGE IN THE FATBIN, not just the PTX and debug ones

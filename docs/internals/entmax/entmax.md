@@ -146,8 +146,8 @@ accepted shape changed**, and no dual run is owed.
 
 ## <a id="warp-row"></a>4.1 The warp-row vocabulary lives in the header
 
-`Strides`/`addr`, `store_value`/`load_value`, `Descending`, `Pair`/`PairAdd`,
-`bf16_nonzero`, `logical_warp_mask`, `five` and the block constants are declared in
+`Strides`/`addr`, `store_value`/`load_value`, `Descending`, `Pair`/`PairAdd`, the row
+reductions `Max`/`Min`/`Sum`, `bf16_nonzero`, `logical_warp_mask`, `five` and the block constants are declared in
 `entmax.cuh` rather than in either `.cu`, because `factor.cu`'s four kernels are the
 same machine over a different phase set and a second copy would be a second thing to
 keep in step.
@@ -156,6 +156,20 @@ They sit behind `#ifdef __CUDACC__`. That guard is load-bearing and not defensiv
 `csrc/rola/rola_api.cpp` includes this header to reach the host declarations below,
 and it is compiled by the HOST compiler, which knows nothing of `__device__` or
 `__nv_bfloat16`.
+
+<a id="reductions"></a>**The row reductions are rola's, not CCCL's.** `Max`, `Min` and `Sum` carry the exact
+bodies and signatures CCCL 2.x shipped as `cub::Max` (`(b > a) ? b : a`), `cub::Min` (`(b < a) ? b : a`) and
+`cub::Sum` (`a + b`): forwarding references, `common_type` results. CCCL 3 (CUDA 13) removed those three in favor of
+`cuda::maximum`, `cuda::minimum` and `cuda::std::plus`, and `cuda::minimum` is `(a < b) ? a : b`: on a tie (`-0.0`
+against `+0.0`) or a NaN it returns the other operand. Owning the bodies keeps every warp-row reduction's RESULT fixed
+across CCCL versions.
+
+**Its codegen is not fixed, and that is a measured, accepted cost.** The functor's type identity reaches `ptxas`'s
+allocation: under one compiler (CUDA 12.4), these bodies in place of `cub::Max`/`Min`/`Sum` moved 512 entmax kernel
+bodies and the register sum 31746 -> 31608, while `using Max = cub::Max` aliases moved none; spill and in-loop locals
+were unchanged. Timed, the port costs 3-5% on a few entmax cells (deep-D4-w8, dense-D2, dense-NL4096) under 12.4 and
+13.0 alike, and CCCL 3's own functors move the cost between cells without removing it. No identity-preserving spelling
+exists once CCCL 3 deleted the originals. Accepted for the CUDA 13 move; the root cause is the K54 card.
 
 The namespace is NAMED (`rola::entmax::detail`), so moving these out of `entmax.cu`
 moved no mangled symbol and changed no generated code — `tools/ratify.py` reported

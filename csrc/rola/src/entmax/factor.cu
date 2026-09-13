@@ -105,7 +105,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
     //: A masked row can be EMPTY, so the member count is a per-row reduction and not -- see docs/internals/entmax/factor.md#validcount
     int valid_count = width;
     if (mask != nullptr) {
-      valid_count = WarpRedI(redi_store).Reduce(local_valid, cub::Sum());
+      valid_count = WarpRedI(redi_store).Reduce(local_valid, Sum());
       valid_count = __shfl_sync(lmask, valid_count, 0, LW);
     }
     const bool has_valid = valid_count > 0;
@@ -119,10 +119,10 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
         local_min = fminf(local_min, z[i]);
       }
     }
-    float row_max = WarpRedF(red_store).Reduce(local_max, cub::Max());
+    float row_max = WarpRedF(red_store).Reduce(local_max, Max());
     row_max = __shfl_sync(lmask, row_max, 0, LW);
     row_max = has_valid ? row_max : 0.0f;
-    float row_min = WarpRedF(red_store).Reduce(local_min, cub::Min());
+    float row_min = WarpRedF(red_store).Reduce(local_min, Min());
     row_min = __shfl_sync(lmask, row_min, 0, LW);
 
     //: A finite row-relative sentinel keeps padded lanes strictly below every real -- see docs/internals/entmax/factor.md#sentinel
@@ -173,7 +173,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void factor_forwa
     //: ONE reduction selects the greatest valid k AND carries its tau: the column in the -- see docs/internals/entmax/factor.md#packedkey
     unsigned long long packed_key = ((unsigned long long)(uint32_t)(best_col + 1) << 32)
                                     | (unsigned long long)__float_as_uint(best_tau);
-    packed_key = WarpRedU(redu_store).Reduce(packed_key, cub::Max());
+    packed_key = WarpRedU(redu_store).Reduce(packed_key, Max());
     packed_key = __shfl_sync(lmask, packed_key, 0, LW);
     const int chosen = (int)(uint32_t)(packed_key >> 32) - 1;
     const float tau = chosen >= 0 ? __uint_as_float((uint32_t)(packed_key & 0xffffffffu)) : 0.0f;
@@ -350,7 +350,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forw
                            : -INFINITY;
       local_max = fmaxf(local_max, e[i]);
     }
-    float row_max = WarpRedF(red_store).Reduce(local_max, cub::Max());
+    float row_max = WarpRedF(red_store).Reduce(local_max, Max());
     row_max = __shfl_sync(lmask, row_max, 0, LW);
 
     float local_sum = 0.0f;
@@ -359,7 +359,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_forw
       e[i] = (lane + i * LW < width) ? expf(e[i] - row_max) : 0.0f;
       local_sum += e[i];
     }
-    float den = WarpRedF(red_store).Reduce(local_sum, cub::Sum());
+    float den = WarpRedF(red_store).Reduce(local_sum, Sum());
     den = __shfl_sync(lmask, den, 0, LW);
 
 #pragma unroll
@@ -415,7 +415,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void softmax_back
         dp += load_value(d_values_second, addr(sdv2, stream, token, value_base + col));
       local_dot += p * dp;
     }
-    float dot = WarpRedF(red_store).Reduce(local_dot, cub::Sum());
+    float dot = WarpRedF(red_store).Reduce(local_dot, Sum());
     dot = __shfl_sync(lmask, dot, 0, LW);
 
 #pragma unroll

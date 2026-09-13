@@ -135,9 +135,9 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
         local_min = fminf(local_min, midpoint[i]);
       }
     }
-    float row_max = WarpRedF(red_store).Reduce(local_max, cub::Max());
+    float row_max = WarpRedF(red_store).Reduce(local_max, Max());
     row_max = __shfl_sync(lmask, row_max, 0, LW);
-    float row_min = WarpRedF(red_store).Reduce(local_min, cub::Min());
+    float row_min = WarpRedF(red_store).Reduce(local_min, Min());
     row_min = __shfl_sync(lmask, row_min, 0, LW);
 
     float keys[IPT];
@@ -189,7 +189,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
     //: ONE reduction selects the greatest valid k AND carries its tau: the column in the -- see docs/internals/entmax/entmax.md#packedkey
     unsigned long long packed_key = ((unsigned long long)(uint32_t)(best_col + 1) << 32)
                                     | (unsigned long long)__float_as_uint(best_tau);
-    packed_key = WarpRedU(redu_store).Reduce(packed_key, cub::Max());
+    packed_key = WarpRedU(redu_store).Reduce(packed_key, Max());
     packed_key = __shfl_sync(lmask, packed_key, 0, LW);
     const int chosen = (int)(uint32_t)(packed_key >> 32) - 1;
     const float tau = chosen >= 0 ? __uint_as_float((uint32_t)(packed_key & 0xffffffffu)) : 0.0f;
@@ -222,7 +222,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
       delta[i] = sup ? logf(values[i]) + log_write_gate(delta[i]) : -INFINITY;
       if (sup) local_lw = fmaxf(local_lw, delta[i]);
     }
-    float max_lw = WarpRedF(red_store).Reduce(local_lw, cub::Max());
+    float max_lw = WarpRedF(red_store).Reduce(local_lw, Max());
     max_lw = __shfl_sync(lmask, max_lw, 0, LW);
     const bool has_mass = max_lw > -INFINITY;
     const float safe_max = has_mass ? max_lw : 0.0f;
@@ -235,7 +235,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
       scaled[i] = (sup && has_mass) ? expf(delta[i] - safe_max) : 0.0f;
       local_den += scaled[i];
     }
-    float den = WarpRedF(red_store).Reduce(local_den, cub::Sum());
+    float den = WarpRedF(red_store).Reduce(local_den, Sum());
     den = __shfl_sync(lmask, den, 0, LW);
     const bool has_weight = den > 0.0f;
     const float safe_den = has_weight ? den : 1.0f;
@@ -339,7 +339,7 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_backwa
           valid ? load_value(d_write, addr(sdw, stream, token, value_base + col)) : 0.0f;
       local_dot += dw * wv;
     }
-    float dot = WarpRedF(red_store).Reduce(local_dot, cub::Sum());
+    float dot = WarpRedF(red_store).Reduce(local_dot, Sum());
     dot = __shfl_sync(lmask, dot, 0, LW);
 
     //: `s` is NOT kept: it is recomputed from a re-read `midpoint_values` in the final -- see docs/internals/entmax/entmax.md#near-line-368

@@ -23,6 +23,8 @@
 
 #ifdef __CUDACC__
 #include <cub/warp/warp_merge_sort.cuh>
+#include <cuda/std/type_traits>
+#include <cuda/std/utility>
 #include <cuda_bf16.h>
 #endif
 
@@ -160,6 +162,31 @@ struct Pair {
 struct PairAdd {
   __device__ __forceinline__ Pair operator()(const Pair& a, const Pair& b) const {
     return {a.p + b.p, a.q + b.q};
+  }
+};
+
+//: THE ROW REDUCTIONS, owned here with the bodies CCCL 2.x shipped as `cub::Max`/`Min`/`Sum` -- see docs/internals/entmax/entmax.md#reductions
+struct Max {
+  template <typename T, typename U>
+  __device__ __forceinline__ typename ::cuda::std::common_type<T, U>::type operator()(T&& t,
+                                                                                      U&& u) const {
+    return ((u) > (t)) ? (u) : (t);
+  }
+};
+
+struct Min {
+  template <typename T, typename U>
+  __device__ __forceinline__ typename ::cuda::std::common_type<T, U>::type operator()(T&& t,
+                                                                                      U&& u) const {
+    return ((u) < (t)) ? (u) : (t);
+  }
+};
+
+struct Sum {
+  template <typename T, typename U>
+  __device__ __forceinline__ auto operator()(T&& t, U&& u) const
+      -> decltype(::cuda::std::forward<T>(t) + ::cuda::std::forward<U>(u)) {
+    return ::cuda::std::forward<T>(t) + ::cuda::std::forward<U>(u);
   }
 };
 

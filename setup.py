@@ -725,7 +725,7 @@ def build_parts_extension():
         name=PARTS_MODULE_NAME,
         sources=PARTS_SOURCES,
         include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include"), str(ROOT / "build" / "generated")],
-        extra_compile_args={"cxx": ["-O3", "-std=c++17"], "nvcc": nvcc_flags},
+        extra_compile_args={"cxx": ["-O3", "-std=c++20"], "nvcc": nvcc_flags},
         extra_link_args=_link_flags(),
     )
 
@@ -759,7 +759,7 @@ def build_extension():
         #: The vendored CuTe/CUTLASS headers come LAST, so a repository header always
         #: wins a name collision and the vendored tree can never shadow ours.
         include_dirs=[str(CSRC / "src"), str(CUTLASS_DIR / "include"), str(generated_dir)],
-        extra_compile_args={"cxx": ["-O3", "-std=c++17"], "nvcc": nvcc_flags},
+        extra_compile_args={"cxx": ["-O3", "-std=c++20"], "nvcc": nvcc_flags},
         extra_link_args=ldflags,
     )
 
