@@ -32,11 +32,14 @@
 # did not (a build under the wrong `ptxas` refuses at the FIRST `pip install`,
 # never producing an unmeasured binary).
 #
-# Everything else pinned in this file (sccache, mold, hyperfine, difftastic) is
-# pinned the SAME way the repo pins its own vendored inputs (`tools/sccache_pin.json`,
-# `csrc/third_party/cutlass/PIN.json`): an exact version, an exact upstream release
-# asset, and a sha256 verified before the archive is trusted -- so a base-image
-# rebuild can never silently swap in a different build of any of them.
+# sccache and mold are installed by `tools/dev.py init --image` from the repo's own pins (`tools/sccache_pin.json`,
+# `tools/mold_pin.json`) -- the same command and the same pins a bare host uses, so the image and the host cannot
+# disagree on either. The container-only tools below (uv, hyperfine, difftastic) are pinned the same way: an exact
+# version, an exact upstream release asset, and a sha256 verified before the archive is trusted.
+#
+# THE IMAGE IS KEPT CURRENT MECHANICALLY (KERNEL_STANDARDS §23 (3)): the environment key hashes this file and every
+# other input `tools/dev.py` lists in ENV_INPUTS; a commit that changes one carries a passing
+# `python tools/dev.py container check` for its key, or the commit gate refuses it.
 FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -46,18 +49,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIPX_HOME=/opt/pipx \
     PIPX_BIN_DIR=/usr/local/bin
-
-# --------------------------------------------------------------------------
-# ROLA_IMAGE_DIGEST -- stamped by the build (below), read by
-# `tools/ratify.py` as `source.image_digest` (K37). Set to the DIGEST of the
-# Dockerfile itself (not a moving `latest` tag, and not the eventual pushed
-# image ID, which does not exist until after the push this repo never does):
-# "was this ratification's compile run under the toolchain this exact
-# Dockerfile describes" is the checkable question, and a Dockerfile digest
-# answers it without needing a registry. Computed as a build-arg so a
-# `docker build` from the checked-in file can set it without a second pass.
-ARG ROLA_IMAGE_DIGEST=""
-ENV ROLA_IMAGE_DIGEST=${ROLA_IMAGE_DIGEST}
 
 # --------------------------------------------------------------------------
 # APT PACKAGES -- everything with a real Ubuntu-22.04 (jammy) package. Left
@@ -111,10 +102,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # dependencies and must be pinned in the SAME command or apt refuses the
 # downgrade with an unmet-dependency error (measured). `--allow-downgrades`
 # is required because the base image ships a NEWER package than this pin.
+#
+# cuobjdump (the SASS gate, the region ledger and the composer extract cubins with it) and Nsight Compute 2025.3 (the
+# PM sampling the pipe timeline reads) are pinned in the same command: the image built on 2026-08-28 carried neither.
 RUN apt-get update && apt-get install -y --allow-downgrades \
         cuda-nvcc-12-4=12.4.99-1 \
         cuda-nvvm-12-4=12.4.99-1 \
         cuda-crt-12-4=12.4.99-1 \
+        cuda-cuobjdump-12-4=12.4.127-1 \
+        nsight-compute-2025.3.0=2025.3.0.19-1 \
     && rm -rf /var/lib/apt/lists/*
 #: FAILS THE BUILD, LOUDLY, IF THE DOWNGRADE DID NOT TAKE: `docs/setup.md`'s
 #: own "verify the toolchain" step is this same string comparison run by
@@ -142,28 +138,6 @@ RUN curl -sSL -o /tmp/uv.tar.gz \
     && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv \
     && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/uvx \
     && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
-
-# --------------------------------------------------------------------------
-# sccache -- REUSES THE REPO'S OWN PIN, not a second one. The exact asset,
-# tarball sha256, and binary sha256 are read out of `tools/sccache_pin.json`
-# at build time so this file cannot drift from the pin the build/ratify gates
-# already check (`tools/sccache_toolchain.py`) -- a Dockerfile hand-copy of
-# those bytes would be a second place the version could go stale.
-COPY tools/sccache_pin.json /tmp/sccache_pin.json
-COPY docker/verify_sccache.py /tmp/verify_sccache.py
-RUN python3 /tmp/verify_sccache.py \
-    && rm -rf /tmp/sccache.tar.gz /tmp/sccache_extract /tmp/sccache_pin.json /tmp/verify_sccache.py
-
-# --------------------------------------------------------------------------
-# mold -- pinned release, sha256-verified (not in 22.04's apt repos).
-ARG MOLD_VERSION=2.42.0
-ARG MOLD_SHA256=f5ed2f6e31d1ada4f07fe766fe0de7a73104d1c5cdc59086fcecc16a43720b6d
-RUN curl -sSL -o /tmp/mold.tar.gz \
-        "https://github.com/rui314/mold/releases/download/v${MOLD_VERSION}/mold-${MOLD_VERSION}-x86_64-linux.tar.gz" \
-    && echo "${MOLD_SHA256}  /tmp/mold.tar.gz" | sha256sum -c - \
-    && tar -xzf /tmp/mold.tar.gz -C /opt \
-    && ln -sf "/opt/mold-${MOLD_VERSION}-x86_64-linux/bin/mold" /usr/local/bin/mold \
-    && rm -f /tmp/mold.tar.gz
 
 # --------------------------------------------------------------------------
 # hyperfine -- pinned release, sha256-verified (not in 22.04's apt repos).
@@ -235,10 +209,25 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     VIRTUAL_ENV=/opt/venv
 
 # --------------------------------------------------------------------------
-# WORKTREES MOUNT POINT. `.devcontainer/devcontainer.json` binds the host
-# worktrees directory here; a plain `docker run` does the same with `-v`
-# (`docs/setup.md`). No home path baked in (§17): the mount source is a
-# host-side argument in both cases, never a value compiled into the image.
-RUN mkdir -p /workspace/worktrees
+# THE IMAGE'S DEV CONFIG -- `tools/dev.py init --image`, the one init every machine runs, from a bootstrap copy of the
+# files it needs: the image's fixed layout (the mount points below, which `python tools/dev.py container compose` binds
+# the host's lock directories, store and worktrees onto), the pinned sccache and mold installed under /opt/rola/tools,
+# then `check --image`. A red check FAILS THE IMAGE BUILD: a tool the tree needs cannot go missing from the image
+# unnoticed again. No home path is baked in (§17): mount sources are host-side, never compiled into the image.
+#
+# ROLA_ENV_KEY is the environment key the image is built from (`container build` passes it): sha256 over the
+# environment's inputs, recorded as `environment.image_digest`, which `tools/ratify.py` stamps as
+# `source.image_digest`. Declared HERE, after every heavy layer, so a new key rebuilds only this step.
+ARG ROLA_ENV_KEY=""
+ENV ROLA_DEV_CONFIG=/opt/rola/dev-config
+#: Under WSL the Windows driver's Linux libraries (libdxcore, libcuda) are mounted read-only at /usr/lib/wsl/lib
+#: (`host.wsl_lib`); without them first on the loader path CUDA fails to initialize with error 500 (measured
+#: 2026-09-12 on Docker Desktop 20.10.17, driver 595.95). On native Linux the directory does not exist and changes nothing.
+ENV LD_LIBRARY_PATH=/usr/lib/wsl/lib:${LD_LIBRARY_PATH}
+COPY requirements.lock /opt/rola/bootstrap/requirements.lock
+COPY tools/dev.py tools/dev_config.py tools/sccache_toolchain.py tools/mold_toolchain.py \
+     tools/sccache_pin.json tools/mold_pin.json /opt/rola/bootstrap/tools/
+RUN mkdir -p /workspace/rola /workspace/store /workspace/worktrees /run/rola/locks /run/rola/gpu \
+    && /opt/venv/bin/python /opt/rola/bootstrap/tools/dev.py init --image --env-key "${ROLA_ENV_KEY}"
 
 CMD ["/bin/bash"]

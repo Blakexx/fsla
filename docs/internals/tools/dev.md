@@ -10,6 +10,7 @@ settings it writes and reads are the dev config ([dev_config.md](dev_config.md))
     python tools/dev.py get <section.key> | cuda-home
     python tools/dev.py clock --mhz 1665
     python tools/dev.py worktree <name> <sha> [--build]
+    python tools/dev.py container compose|build|check|gate
 
 **`init`** writes this machine's config:
 - The CUDA toolkit on `PATH`, or torch's.
@@ -49,6 +50,25 @@ anything is built. It makes a seeded pointer venv beside it with two `.pth` file
 The extension is copied from the main checkout when that checkout is at the same commit and built; `--build`
 builds it anyway. It refuses unless the editable finder maps `rola` to the new worktree, and it imports `rola`
 from inside the worktree. The three footguns this avoids are in `docs/setup.md` §3c.
+
+**The base venv** is part of the machine: `check` compares `workspace.base_venv` against `requirements.lock`, where a
+pin the venv lacks or carries at another version is drift and extras the lock does not name are not. `init` installs
+the missing pins with `uv pip install -r requirements.lock`, adding without removing. flash-attn is pinned there by
+release-wheel URL and sha256.
+
+**`container`** keeps the dev image a supported environment (§23 (3), `docs/setup.md` §2-3). Its inputs are
+`ENV_INPUTS`: the Dockerfile, `.devcontainer/devcontainer.json` and `compose.yaml`, `requirements.lock`, the tool pins,
+and this file with the modules it imports. Their sha256, path and bytes each, is the ENVIRONMENT KEY.
+- `build` copies only those inputs into a context and builds `rola-dev:<key[:12]>`. The image's last step is
+  `init --image`, which writes the fixed layout `IMAGE_LAYOUT`, installs the pins and runs `check --image`. A red row
+  fails the build.
+- `compose` writes `.devcontainer/compose.local.yaml`, binding the host's checkout, lock directories, store and
+  worktrees onto that layout, and refuses without an image for the key.
+- `check` runs `CONTAINER_PROOFS` inside the image with those mounts: `dev.py check`, the GPU with torch and
+  flash-attn, a lock held by a host process seen as held, and an iteration build of a copy of the checkout. It
+  records the result as `<store>/<hw-profile>/environment/<key>.json`.
+- `gate` is the commit hook. When the staged files touch an input, it computes the key of the staged blobs and
+  refuses the commit without a passing record for that key.
 
 **`get`** prints one value for a shell caller. `cuda-home` resolves the toolkit, which the clang-tidy device
 scripts pass as `--cuda-path`.

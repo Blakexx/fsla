@@ -9,6 +9,7 @@
     python tools/dev.py get <section.key>       # one value, for a shell caller (cuda-home resolves the toolkit)
     python tools/dev.py clock --mhz 1665        # lock this host's SM clock once, prove the round trip, record it
     python tools/dev.py worktree <name> <sha> [--build]   # a worktree, its pointer venv, its gate, its extension
+    python tools/dev.py container compose|build|check|gate # the dev container: mounts, image, proof, commit gate
 
 The settings live in the dev config directory (`tools/dev_config.py`). Docs: docs/internals/tools/dev.md.
 """
@@ -26,6 +27,7 @@ import tarfile
 import tempfile
 import textwrap
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -36,6 +38,13 @@ import sccache_toolchain  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" / "mold_pin.json"}
+#: THE ENVIRONMENT'S INPUTS: what the dev image is built from and how it is run. Their hash is the environment key; a
+#: commit changing any of them carries a passing container check for its key (KERNEL_STANDARDS §23 (3)).
+ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/compose.yaml", "requirements.lock",
+              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/dev.py", "tools/dev_config.py",
+              "tools/sccache_toolchain.py", "tools/mold_toolchain.py")
+IMAGE_REPO = "rola-dev"
+IMAGE_LAYOUT, WSL_LIB_IN_IMAGE = dev_config.IMAGE_LAYOUT, dev_config.WSL_LIB_IN_IMAGE
 #: each pinned tool's own version reader, the one its build gate compares against the pin
 VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolchain.mold_version}
 
@@ -89,13 +98,47 @@ def wire_hooks(checkout: Path) -> None:
     subprocess.run(["git", "-C", str(checkout), "config", "--worktree", "core.hooksPath", "tools/git-hooks"], check=True)
 
 
+def env_key(read=lambda rel: (ROOT / rel).read_bytes()) -> str:
+    """sha256 over the environment's inputs, path and bytes each; `read` takes the staged blob for the commit gate."""
+    h = hashlib.sha256()
+    for rel in ENV_INPUTS:
+        h.update(rel.encode() + b"\0" + read(rel) + b"\0")
+    return h.hexdigest()
+
+
+def lock_pins() -> dict[str, str]:
+    """`requirements.lock`'s pins as {normalized name: version}; a URL pin's version is its wheel's."""
+    pins = {}
+    for line in (ROOT / "requirements.lock").read_text().splitlines():
+        if m := re.match(r"^([A-Za-z0-9_.-]+)==(\S+)", line):
+            name, version = m.groups()
+        elif m := re.match(r"^([A-Za-z0-9_.-]+) @ (\S+)", line):
+            name, version = m.group(1), urllib.parse.unquote(m.group(2).split("#")[0].rsplit("/", 1)[1]).split("-")[1]
+        else:
+            continue
+        pins[re.sub(r"[-_.]+", "-", name).lower()] = version
+    return pins
+
+
+def venv_drift(python: str) -> list[str]:
+    """The lock's pins a venv lacks or carries at another version (extras the lock does not name are not drift)."""
+    out = subprocess.run([python, "-m", "pip", "list", "--format=json"], capture_output=True, text=True, check=True)
+    have = {re.sub(r"[-_.]+", "-", p["name"]).lower(): p["version"].split("+")[0] for p in json.loads(out.stdout)}
+    return sorted(f"{name}=={v}" for name, v in lock_pins().items() if have.get(name) != v.split("+")[0])
+
+
 def cmd_init(a) -> int:
-    for section, values in dev_config.detect().items():
+    if a.image:
+        _write_section("toolchain", {"ncu": _newest_ncu()}, force=True)
+        for section, values in IMAGE_LAYOUT.items():
+            _write_section(section, values, force=True)
+        _write_section("environment", {"image_digest": a.env_key}, force=True)
+    for section, values in ({} if a.image else dev_config.detect()).items():
         _write_section(section, values, a.force)
     if dev_config.get("toolchain.cuda_home") is None:
         _write_section("toolchain", {"cuda_home": dev_config.cuda_home()}, a.force)
     base = base_venv_of(Path(sys.prefix))
-    if base:
+    if base and not a.image:
         _write_section("workspace", {"base_venv": base}, a.force)
     tools_dir = Path(dev_config.get("host.tools_dir"))
     for name in PINS:
@@ -103,10 +146,25 @@ def cmd_init(a) -> int:
         pin = json.loads(PINS[name].read_text())
         if current is None or _pinned_version(name, current) != pin["version_string"]:
             _write_section("toolchain", {name: install_pinned(name, tools_dir)}, force=True)
-    wire_hooks(ROOT)
-    if dev_config.get("clock.ghz") is None:
-        print("clock: unset -- this host measures UNLOCKED until `python tools/dev.py clock --mhz <MHz>` runs")
+    base = dev_config.get("workspace.base_venv")
+    drift = venv_drift(str(Path(base) / "bin" / "python")) if base else []
+    if drift:
+        print(f"base venv {base}: installing the lock's {len(drift)} missing pin(s): {' '.join(drift)}")
+        subprocess.run(["uv", "pip", "install", "--python", str(Path(base) / "bin" / "python"),
+                        "-r", str(ROOT / "requirements.lock"), "--extra-index-url", "https://download.pytorch.org/whl/cu124",
+                        "--index-strategy", "unsafe-best-match"], check=True)
+    if not a.image:
+        wire_hooks(ROOT)
+        if dev_config.get("clock.ghz") is None:
+            print("clock: unset -- this host measures UNLOCKED until `python tools/dev.py clock --mhz <MHz>` runs")
     return cmd_check(a)
+
+
+def _newest_ncu() -> str:
+    found = sorted(dev_config.ncu_candidates(), key=lambda p: _ncu_version(str(p)))
+    if not found:
+        raise SystemExit(f"no Nsight Compute CLI under {' or '.join(dev_config.NCU_SEARCH)}")
+    return str(found[-1])
 
 
 def _pinned_version(name: str, path: str) -> str:
@@ -128,7 +186,8 @@ def _ncu_version(ncu: str) -> tuple[int, ...]:
     return tuple(int(x) for x in m.groups()) if m else ()
 
 
-def cmd_check(_a) -> int:
+def cmd_check(a) -> int:
+    image = getattr(a, "image", False)
     rows: list[tuple[bool, str, str]] = []
 
     def row(ok: bool, what: str, fix: str = "") -> None:
@@ -156,8 +215,20 @@ def cmd_check(_a) -> int:
             row(True, f"toolchain {name}: {dev_config.get(f'toolchain.{name}')} matches its pin")
         except RuntimeError as ex:
             row(False, f"toolchain {name}: {str(ex).splitlines()[0][:140]}", "python tools/dev.py init")
+    base = dev_config.get("workspace.base_venv")
+    python = Path(base or "") / "bin" / "python"
+    row(bool(base) and python.exists(), f"workspace.base_venv: {base}", "python tools/dev.py init")
+    if base and python.exists():
+        drift = venv_drift(str(python))
+        row(not drift, f"base venv carries requirements.lock{': drift ' + ' '.join(drift) if drift else ''}",
+            "python tools/dev.py init")
+    if image:
+        return _report(rows)
+    readable = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--git-dir"], capture_output=True).returncode == 0
     hooks = subprocess.run(["git", "-C", str(ROOT), "config", "--get", "core.hooksPath"], capture_output=True, text=True)
-    row(hooks.stdout.strip() == "tools/git-hooks", f"commit gate wired in {ROOT.name}", "python tools/dev.py init")
+    row(not readable or hooks.stdout.strip() == "tools/git-hooks",
+        f"commit gate wired in {ROOT.name}" if readable else f"{ROOT}: no git repository visible here; commits are made "
+        "where it is", "python tools/dev.py init")
     for key in ("host.lock_dir", "host.scratch"):
         path = Path(dev_config.get(key))
         path.mkdir(parents=True, exist_ok=True)
@@ -165,8 +236,6 @@ def cmd_check(_a) -> int:
     row(os.access(Path(dev_config.get("host.gpu_lock")).parent, os.W_OK), f"host.gpu_lock: {dev_config.get('host.gpu_lock')}")
     ghz = dev_config.get("clock.ghz")
     row(True, f"clock: {'locks at ' + str(ghz) + ' GHz' if ghz else 'unlocked (rows carry their measured clock)'}")
-    base = dev_config.get("workspace.base_venv")
-    row(bool(base) and (Path(base) / "bin" / "python").exists(), f"workspace.base_venv: {base}", "python tools/dev.py init")
     row(Path(dev_config.get("workspace.worktrees")).is_dir(), f"workspace.worktrees: {dev_config.get('workspace.worktrees')}")
     row(Path(dev_config.get("store.results")).is_dir(), f"store.results: {dev_config.get('store.results')}")
     return _report(rows)
@@ -294,13 +363,143 @@ def cmd_worktree(a) -> int:
     return 0
 
 
+def _mounts() -> list[str]:
+    """The host paths the container shares, onto `IMAGE_LAYOUT`, as `source:target[:ro]`: the checkout, the lock
+    directories, the store, the worktrees folder, and under WSL the driver's libraries at the path the image's loader
+    searches."""
+    gpu, image_gpu = Path(dev_config.get("host.gpu_lock")), Path(IMAGE_LAYOUT["host"]["gpu_lock"])
+    if gpu.name != image_gpu.name:
+        raise SystemExit(f"host.gpu_lock {gpu} must be named {image_gpu.name} for the container to share it")
+    mounts = [f"{ROOT}:/workspace/rola", f"{dev_config.get('host.lock_dir')}:{IMAGE_LAYOUT['host']['lock_dir']}",
+              f"{gpu.parent}:{image_gpu.parent}", f"{dev_config.get('store.results')}:{IMAGE_LAYOUT['store']['results']}",
+              f"{dev_config.get('workspace.worktrees')}:{IMAGE_LAYOUT['workspace']['worktrees']}"]
+    wsl_lib = dev_config.get("host.wsl_lib")
+    #: the whole WSL directory, not only lib/: its libcuda is a loader that opens the host's driver store beside it
+    return mounts + ([f"{Path(wsl_lib).parent}:{Path(WSL_LIB_IN_IMAGE).parent}:ro"] if wsl_lib else [])
+
+
+def _record_dir() -> Path:
+    smi = subprocess.run(["nvidia-smi", "--query-gpu=name,compute_cap", "--format=csv,noheader"], capture_output=True,
+                         text=True, check=True).stdout.splitlines()[0]
+    name, cap = (x.strip() for x in smi.split(","))
+    sys.path.insert(0, str(ROOT / "benchmarks"))
+    from bench.hw_profile import hw_profile
+
+    return Path(dev_config.get("store.results")) / hw_profile(name, "sm_" + cap.replace(".", "")) / "environment"
+
+
+#: run inside the container by `container check`, each a row: the environment check, the GPU and the reference library,
+#: a lock held by the host seen as held, and an iteration build of a copy of the checkout imported
+CONTAINER_PROOFS = {
+    "dev check": "python tools/dev.py check",
+    "GPU, torch and flash-attn": """python - <<'PY'
+import flash_attn, torch
+assert torch.cuda.is_available(), "no GPU"
+print(torch.cuda.get_device_name(0), flash_attn.__version__)
+PY""",
+    "a host-held lock is held here": """python - <<'PY'
+import fcntl, sys
+f = open("/run/rola/locks/rola_container_probe.lock", "w")
+try:
+    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    print("held by the host: one lock governs both")
+    sys.exit(0)
+print("acquired: the container does not see the host's lock")
+sys.exit(1)
+PY""",
+    "the extension builds and imports": """set -e
+rm -rf /tmp/proof && mkdir /tmp/proof
+tar -C /workspace/rola --exclude=./build --exclude=./.git --exclude='*.so' --exclude=./benchmarks/results -cf - . | tar -C /tmp/proof -xf -
+cd /tmp/proof
+ROLA_CUDA_ARCHS=86 ROLA_CARRY_ARMS=0 python -m pip install -e . --no-deps --no-build-isolation -q
+python -c 'import rola; from rola._build_config import BUILD_CONFIG as c; print("built", c["archs"])'""",
+}
+
+
+def cmd_container(a) -> int:
+    key = env_key()
+    tag = f"{IMAGE_REPO}:{key[:12]}"
+    if a.action == "compose":
+        if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode:
+            raise SystemExit(f"no image {tag} for this environment: python3 tools/dev.py container build")
+        local = ROOT / ".devcontainer" / "compose.local.yaml"
+        doc = {"services": {"rola": {"image": tag, "volumes": _mounts()}}}
+        local.write_text(json.dumps(doc, indent=1) + "\n")
+        print(f"wrote {local} ({tag})")
+        return 0
+    if a.action == "build":
+        with tempfile.TemporaryDirectory(prefix="rola_image_") as context:
+            for rel in ENV_INPUTS:
+                (Path(context) / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / rel, Path(context) / rel)
+            return subprocess.run(["docker", "build", "--build-arg", f"ROLA_ENV_KEY={key}", "-t", tag, "-t",
+                                   f"{IMAGE_REPO}:latest", context]).returncode
+    if a.action == "gate":
+        return _container_gate()
+
+    lock = Path(dev_config.get("host.lock_dir")) / "rola_container_probe.lock"
+    holder = subprocess.Popen([sys.executable, "-c", "import fcntl, sys; f = open(sys.argv[1], 'w'); "
+                               "fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); sys.stdin.read()", str(lock)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    holder.stdout.readline()
+
+    volumes = [x for mount in _mounts() for x in ("-v", mount)]
+    rows = []
+    try:
+        for what, script in CONTAINER_PROOFS.items():
+            done = subprocess.run(["docker", "run", "--rm", "--gpus", "all", "--ipc", "host", *volumes, "-w",
+                                   "/workspace/rola", tag, "bash", "-c", script], capture_output=True, text=True)
+            tail = (done.stdout + done.stderr).strip().splitlines()[-3:]
+            rows.append({"proof": what, "ok": done.returncode == 0, "tail": tail})
+            print(f"{'ok ' if done.returncode == 0 else 'RED'}  {what}" + ("" if done.returncode == 0 else f"  -- {tail}"))
+    finally:
+        holder.stdin.close()
+        holder.wait()
+
+    image_id = subprocess.run(["docker", "image", "inspect", "-f", "{{.Id}}", tag], capture_output=True, text=True).stdout
+    record = {"env_key": key, "image": tag, "image_id": image_id.strip(), "ok": all(r["ok"] for r in rows),
+              "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "proofs": rows}
+    out = _record_dir() / f"{key}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(record, indent=1) + "\n")
+    print(f"container check: {'green' if record['ok'] else 'RED'}; recorded {out}")
+    return 0 if record["ok"] else 1
+
+
+def _container_gate() -> int:
+    """KERNEL_STANDARDS §23 (3): a commit that changes the environment's inputs carries a passing container check for
+    the key of what it stages."""
+    staged = subprocess.run(["git", "-C", str(ROOT), "diff", "--cached", "--name-only"], capture_output=True, text=True,
+                            check=True).stdout.split()
+    if not set(staged) & set(ENV_INPUTS):
+        return 0
+
+    def read(rel: str) -> bytes:
+        blob = subprocess.run(["git", "-C", str(ROOT), "show", f":{rel}"], capture_output=True)
+        return blob.stdout if blob.returncode == 0 else b""
+
+    key = env_key(read)
+    records = list(Path(dev_config.get("store.results")).glob(f"*/environment/{key}.json"))
+    if any(json.loads(r.read_text()).get("ok") for r in records):
+        return 0
+    print(f"§23 (3): this commit changes the dev environment ({', '.join(sorted(set(staged) & set(ENV_INPUTS)))}) and "
+          f"no passing container check exists for its key {key[:12]}.\n  python tools/dev.py container build && "
+          f"python tools/dev.py container check   (with exactly these files in the working tree)")
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init", help="write this machine's dev config, install pinned tools, wire hooks, then check")
     p.add_argument("--force", action="store_true", help="overwrite detected values already in the config")
+    p.add_argument("--image", action="store_true", help="inside the dev image build: its fixed layout, no hooks or clock")
+    p.add_argument("--env-key", default="", help="with --image: the environment key the image is built from")
     p.set_defaults(fn=cmd_init)
-    sub.add_parser("check", help="verify every setting, tool, pin and lock").set_defaults(fn=cmd_check)
+    p = sub.add_parser("check", help="verify every setting, tool, pin and lock")
+    p.add_argument("--image", action="store_true", help="inside an image build: the toolchain, pins and venv only")
+    p.set_defaults(fn=cmd_check)
     sub.add_parser("show", help="every resolved setting and its source").set_defaults(fn=cmd_show)
     p = sub.add_parser("get", help="print one value: <section.key>, or cuda-home")
     p.add_argument("key")
@@ -313,6 +512,9 @@ def main() -> int:
     p.add_argument("sha")
     p.add_argument("--build", action="store_true", help="build the extension even when the main checkout's can be copied")
     p.set_defaults(fn=cmd_worktree)
+    p = sub.add_parser("container", help="the dev container: compose its mounts, build its image, check it, gate a commit")
+    p.add_argument("action", choices=("compose", "build", "check", "gate"))
+    p.set_defaults(fn=cmd_container)
     a = ap.parse_args()
     return a.fn(a)
 

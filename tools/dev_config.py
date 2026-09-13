@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from functools import cache
@@ -61,6 +62,9 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "scratch": Key("path", "/tmp/rola", "the tools' scratch root; never read back as a record"),
         "tools_dir": Key("path", "~/.local/share/rola/tools", "where `tools/dev.py init` installs the pinned tools"),
         "windows_system32": Key("path?", None, "WSL only: the Windows System32 directory as mounted in Linux"),
+        "wsl_lib": Key("path?", None, "WSL only: the Windows driver's Linux libraries (libdxcore, libcuda); the dev "
+                       "container mounts their directory's parent read-only (the loader opens the driver store beside "
+                       "lib/), without which CUDA fails to initialize inside it"),
     },
     "clock": {
         "ghz": Key("float?", None, "the SM clock the harness locks, in GHz; null means this host runs unlocked"),
@@ -83,6 +87,19 @@ SCHEMA: dict[str, dict[str, Key]] = {
                             "same-profile machines apart (benchmarks/bench/hw_profile.py)"),
     },
 }
+
+#: THE DEV IMAGE'S FIXED LAYOUT: `tools/dev.py init --image` writes it as the image's config, and `container compose`
+#: bind-mounts the host's lock directories, store and worktrees onto it, so host and container share one of each.
+IMAGE_LAYOUT = {
+    "toolchain": {"cuda_home": "/usr/local/cuda"},
+    "host": {"lock_dir": "/run/rola/locks", "gpu_lock": "/run/rola/gpu/rola_gpu.lock", "tools_dir": "/opt/rola/tools"},
+    "store": {"results": "/workspace/store", "db": "/workspace/store/.rola/measurements.sqlite"},
+    "workspace": {"worktrees": "/workspace/worktrees", "base_venv": "/opt/venv"},
+}
+#: where the image's loader looks for the WSL driver's libraries (the Dockerfile's LD_LIBRARY_PATH names it)
+WSL_LIB_IN_IMAGE = "/usr/lib/wsl/lib"
+#: where an Nsight Compute CLI installs: the standalone packages, then a CUDA toolkit's wrapper
+NCU_SEARCH = ("/opt/nvidia/nsight-compute/*/ncu", "/usr/local/cuda-*/bin/ncu")
 
 #: Environment variables one of the tree's processes sets for a child it starts. Never a setting: the parent resolved
 #: the value (from this config or from its own state) and the child must use exactly that value.
@@ -187,14 +204,22 @@ def windows_tool(rel: str) -> Path | None:
     return Path(system32) / rel if system32 else None
 
 
+def ncu_candidates() -> list[Path]:
+    """Every installed Nsight Compute CLI under `NCU_SEARCH`, oldest version directory first."""
+    def version(p: Path) -> tuple[int, ...]:
+        return tuple(int(x) for x in re.findall(r"\d+", next((q for q in p.parts if q[0].isdigit() or
+                                                                  q.startswith("cuda-")), "0")))
+
+    return sorted((p for pattern in NCU_SEARCH for p in Path("/").glob(pattern.lstrip("/"))), key=version)
+
+
 def detect() -> dict[str, dict[str, Any]]:
     """This machine's values where they differ from the declared defaults: what `tools/dev.py init` writes."""
     found: dict[str, dict[str, Any]] = {"toolchain": {}, "host": {}, "workspace": {}, "environment": {}}
     nvcc = shutil.which("nvcc")
     if nvcc:
         found["toolchain"]["cuda_home"] = str(Path(nvcc).parents[1])
-    ncus = sorted(Path("/usr/local").glob("cuda-*/bin/ncu"),
-                  key=lambda p: tuple(int(x) for x in p.parts[3].removeprefix("cuda-").split(".") if x.isdigit()))
+    ncus = ncu_candidates()
     if ncus:
         found["toolchain"]["ncu"] = str(ncus[-1])
     for tool in ("sccache", "mold"):
@@ -203,4 +228,7 @@ def detect() -> dict[str, dict[str, Any]]:
     system32 = Path("/mnt/c/Windows/System32")
     if system32.exists():
         found["host"]["windows_system32"] = str(system32)
+    wsl_lib = Path(WSL_LIB_IN_IMAGE)
+    if (wsl_lib / "libdxcore.so").exists():
+        found["host"]["wsl_lib"] = str(wsl_lib)
     return {k: v for k, v in found.items() if v}

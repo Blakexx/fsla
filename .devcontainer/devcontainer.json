@@ -1,84 +1,14 @@
 {
+  // THE DEV CONTAINER (docs/setup.md, KERNEL_STANDARDS §23). The image is `Dockerfile`, built for the current
+  // environment key; the mounts -- this checkout, the host's lock directories, the measurements store and the
+  // worktrees folder -- come from the host's dev config through `python3 tools/dev.py container compose`, which
+  // writes `compose.local.yaml` (not committed). Every setting inside is the image's dev config
+  // (ROLA_DEV_CONFIG=/opt/rola/dev-config), written at image build by the same `tools/dev.py init` a bare host runs.
   "name": "rola-dev",
-  "build": {
-    "dockerfile": "../Dockerfile",
-    "context": "..",
-    "args": {
-      // Stamped into `tools/ratify.py`'s `source.image_digest` (K37) by every
-      // ratification run inside this container. `${localEnv:...}` so it is
-      // supplied by whoever builds the image (a CI runner, a developer's own
-      // `docker build`), never hard-coded here -- see docs/setup.md for how to
-      // compute it (`sha256sum Dockerfile`).
-      "ROLA_IMAGE_DIGEST": "${localEnv:ROLA_IMAGE_DIGEST}"
-    }
-  },
-  // GPU passthrough. `--gpus all` is the WSL2/nvidia-container-toolkit path
-  // docs/setup.md walks through; `hostRequirements.gpu` is the portable
-  // (non-Docker-Desktop-specific) declaration some devcontainer front ends
-  // read instead of `runArgs`.
-  "runArgs": [
-    "--gpus=all",
-    "--ipc=host"
-  ],
-  "hostRequirements": {
-    "gpu": true
-  },
-  // WORKTREES MOUNT -- GENUINELY OPTIONAL (fix 2026-08-29, a question of
-  // Blake's exposed this): the clone IS the workspace; a contributor who has
-  // never heard of "worktrees" must be able to clone, open, and have it
-  // just work, with no directory to create first.
-  //
-  // TWO REAL BUGS FOUND HERE BY ACTUALLY RUNNING `@devcontainers/cli up`
-  // 0.88.0 (not by reasoning about Docker/devcontainer semantics in the
-  // abstract), 2026-08-29:
-  //
-  // BUG 1 (the original form): `"source=${localEnv:ROLA_WORKTREES_DIR:
-  // ${localWorkspaceFolder}/../worktrees},...,type=bind,..."` nested a
-  // `${localWorkspaceFolder}` reference INSIDE a `${localEnv:VAR:default}`
-  // default value. The CLI's substitution pass does not recursively expand a
-  // variable reference sitting inside another variable's default -- it left
-  // the inner `${localWorkspaceFolder}` completely UNEXPANDED and handed
-  // Docker the literal text `--mount source=${localWorkspaceFolder/../worktrees},...`,
-  // which Docker refused outright ("is not an absolute path"),
-  // UNCONDITIONALLY -- whether or not `ROLA_WORKTREES_DIR` was set.
-  //
-  // BUG 2 (the first fix attempt): replacing the object form with a plain
-  // `-v`-shorthand STRING (`"NAME:/workspace/worktrees"`), reasoning that
-  // Docker's classic `-v` auto-detects bind-vs-volume from the shape of
-  // `SOURCE`. That auto-detection is real for a raw `docker run -v` (used
-  // below, verified) -- but `@devcontainers/cli` does NOT pass a plain
-  // string mount through as `-v`: it always emits `--mount`, and does not
-  // reformat a colon-shorthand string into `--mount`'s required
-  // `key=value,key=value` syntax. It forwarded `--mount
-  // rola-worktrees:/workspace/worktrees` verbatim, and Docker refused THAT
-  // too ("must be a key=value pair"). So `mounts` entries here must always
-  // be `--mount`-syntax key=value strings; the bind-vs-volume auto-detect
-  // trick only exists for `docker run -v`.
-  //
-  // THE ACTUAL FIX, verified end-to-end with a real fresh clone + unset
-  // `ROLA_WORKTREES_DIR` + `@devcontainers/cli up`: a STATIC named-volume
-  // mount, unconditionally. `type=volume` mounts auto-create an empty named
-  // volume with NO host resource required to pre-exist (verified: `docker
-  // run --rm --mount type=volume,source=rola-worktrees-test,target=/x
-  // busybox true` succeeds with no prior `docker volume create`) -- so there
-  // is no missing-source question for `@devcontainers/cli` to mishandle at
-  // all. A single static line cannot ALSO switch to a host bind mount when
-  // `ROLA_WORKTREES_DIR` is set (the CLI's `--mount`-only translation gives
-  // no way to make one JSON line pick `type=bind` vs `type=volume`
-  // conditionally) -- a contributor who keeps sibling worktrees
-  // (`rola-branch-structure`) and wants them visible in the devcontainer
-  // gets that from the plain `docker run` form below instead, or by editing
-  // this one line in their own local (uncommitted) checkout to
-  // `type=bind,source=$ROLA_WORKTREES_DIR,target=/workspace/worktrees`. See
-  // `docs/setup.md` for both paths spelled out.
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/rola,type=bind,consistency=cached",
+  "initializeCommand": "python3 tools/dev.py container compose",
+  "dockerComposeFile": ["compose.yaml", "compose.local.yaml"],
+  "service": "rola",
   "workspaceFolder": "/workspace/rola",
-  "mounts": [
-    "type=volume,source=rola-worktrees,target=/workspace/worktrees"
-  ],
-  "remoteEnv": {
-    "ROLA_IMAGE_DIGEST": "${localEnv:ROLA_IMAGE_DIGEST}"
-  },
   "customizations": {
     "vscode": {
       "extensions": [
@@ -93,12 +23,5 @@
       }
     }
   },
-  // The image already carries the venv (`/opt/venv`, built from
-  // `requirements.lock`) and every apt/pinned-release tool; nothing further
-  // to install post-create. The FIRST build of the SHIPPED set and the
-  // battery are run by hand once (docs/setup.md), not on every container
-  // start, because they are multi-minute and the compile cache
-  // (`/workspace/rola/build/temp`) already persists across restarts via the
-  // bind mount above.
-  "postCreateCommand": "python3 --version && nvcc --version && ptxas --version"
+  "postCreateCommand": "python tools/dev.py check"
 }

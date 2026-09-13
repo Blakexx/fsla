@@ -48,32 +48,25 @@ python tools/dev.py worktree <name> <sha>   # a worktree, its pointer venv, its 
     docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
     ```
     A working WSL2 GPU pass-through prints the host's GPU table from inside
-    the container. **This is the gate this repository's own K37 build could
-    not run**: at authoring time (2026-08-28) `docker`/`podman`/`nerdctl` were
-    all absent from `PATH` on the box, and `/usr/bin/docker` was a dangling
-    symlink into `/mnt/wsl/docker-desktop/cli-tools/...` — Docker Desktop's
-    WSL integration was not mounted. Nothing below has been run end-to-end on
-    hardware; the Dockerfile, lock file and this page were built to
-    completion and reviewed by hand instead. Run the `nvidia-smi` check above
-    BEFORE anything else on a fresh machine.
+    the container. Run it BEFORE anything else on a fresh machine;
+    `python tools/dev.py container check` (step 3) is the whole proof.
 * **git**, to clone the repo and (for a developer) create worktrees.
 
 ## 2. Build the image
 
 ```bash
-cd rola-standalone   # this repository's root — the Dockerfile lives here
-docker build \
-  --build-arg ROLA_IMAGE_DIGEST="$(sha256sum Dockerfile | cut -d' ' -f1)" \
-  -t rola-dev:latest .
+python tools/dev.py container build
 ```
 
-`ROLA_IMAGE_DIGEST` is stamped into every container built from this image and
-recorded by `tools/ratify.py` as `source.image_digest` — it is not part
-of the ratified SASS-body digest (`manifest_digest()`), so it can never move a
-register/spill number; it exists purely so a manifest can answer "was this
-measured inside the pinned image, and which Dockerfile" without a registry
-lookup. Passing the flag is optional — an unset `ROLA_IMAGE_DIGEST` records the
-empty string, same as a bare-host build.
+The image is built from the environment's inputs alone -- `Dockerfile`, `.devcontainer/`, `requirements.lock`, the
+tool pins and the `tools/dev.py` files (`ENV_INPUTS`), copied into a throwaway context, never the whole tree -- and
+tagged `rola-dev:<first 12 of the environment key>`. The key is sha256 over those inputs; the image records it as
+`environment.image_digest`, which `tools/ratify.py` stamps as `source.image_digest` and every record row carries.
+
+Its last step is `tools/dev.py init --image`: the same one init a bare host runs, writing the image's dev config
+(`ROLA_DEV_CONFIG=/opt/rola/dev-config`) for its fixed layout, installing the pinned `sccache` and `mold` from the
+repo's pins, and running `check --image`. A red check fails the image build -- the image built on 2026-08-28 went two
+weeks without `cuobjdump`, the Nsight Compute the pipe timeline needs, or flash-attn, and nothing said so.
 
 The build pins its own toolchain the same way the repo's build/ratify gates do
 (`docs/build.md` rule 1) — and this took an extra step, measured, not assumed:
@@ -82,88 +75,48 @@ the base image `nvidia/cuda:12.4.1-devel-ubuntu22.04` does **not** ship the
 `12.4.0-devel-ubuntu22.04` were checked (2026-08-29) and both report
 `V12.4.131, cuda_12.4.r12.4/compiler.34097967_0` — a later CUDA 12.4 package
 revision than `tools/manifests/sm_86.json`/`sm_80.json`'s pinned
-`V12.4.99, cuda_12.4.r12.4/compiler.33961263_0`. The Dockerfile does not use
-the base image's toolchain as-is: it downgrades `cuda-nvcc-12-4`,
-`cuda-nvvm-12-4` and `cuda-crt-12-4` to the exact `12.4.99-1` package version
-from NVIDIA's own apt repo (still available at check time) and asserts the
-resulting `ptxas --version` string right there in the same build step — a
-build whose apt mirror ever stops carrying `12.4.99-1` fails loudly at THAT
-step, not silently later. `setup.py`'s own rule-1 gate is the second,
-independent check: even if the image-build assertion above were ever removed,
-the first `pip install -e .` inside a mismatched container would still refuse
-rather than ship unmeasured codegen.
+`V12.4.99, cuda_12.4.r12.4/compiler.33961263_0`. The Dockerfile downgrades
+`cuda-nvcc-12-4`, `cuda-nvvm-12-4` and `cuda-crt-12-4` to the exact `12.4.99-1`
+package version from NVIDIA's own apt repo and asserts the resulting
+`ptxas --version` string in the same build step; `cuda-cuobjdump-12-4` and
+`nsight-compute-2025.3.0` are pinned in that command too. `setup.py`'s own rule-1
+gate is the second, independent check.
 
-## 3. Open the devcontainer, or run the image directly
-
-**THE CLONE IS THE WORKSPACE; WORKTREES ARE OPTIONAL.** A plain `git clone` of
-this repo, opened with nothing else exported, must start the container —
-verified 2026-08-29 with a real fresh clone in a temp directory,
-`ROLA_WORKTREES_DIR` unset, and the actual `@devcontainers/cli up` (0.88.0),
-not a reasoned-about approximation.
-
-**VS Code / Claude Code, via the devcontainer:**
+## 3. Prove it, then open it
 
 ```bash
-code .   # "Reopen in Container" — reads .devcontainer/devcontainer.json;
-         # works with NOTHING exported.
+python tools/dev.py container check
 ```
 
-`/workspace/worktrees` is a statically-declared, auto-created, empty named
-Docker volume (`rola-worktrees`) — there to write into from inside the
-container, not to read host worktrees from. **Two real bugs were found and
-fixed here by actually running the CLI, not by reasoning about Docker
-semantics in the abstract (2026-08-29):**
-* The original mount nested a `${localWorkspaceFolder}` reference inside a
-  `${localEnv:VAR:default}` default value
-  (`"source=${localEnv:ROLA_WORKTREES_DIR:${localWorkspaceFolder}/../worktrees},...,type=bind,..."`).
-  `@devcontainers/cli`'s substitution pass does not recursively expand a
-  variable reference sitting inside another variable's default, so it handed
-  Docker the literal, unexpanded text `${localWorkspaceFolder/../worktrees}`
-  as a mount source, and Docker refused it outright ("is not an absolute
-  path") — unconditionally, whether or not `ROLA_WORKTREES_DIR` was set.
-* The first fix attempt replaced that with a plain `-v`-shorthand string
-  (`"NAME:/workspace/worktrees"`), reasoning that Docker's classic `-v`
-  auto-detects bind-vs-volume from the shape of `SOURCE` (true, and used
-  below for the plain `docker run` form) — but `@devcontainers/cli` does NOT
-  pass a string mount through as `-v`: it always emits `--mount`, and does
-  not reformat a colon-shorthand string into `--mount`'s required
-  `key=value,key=value` syntax, so Docker refused THAT too ("must be a
-  key=value pair").
+runs the proofs inside the image, with the host's mounts, and records the result under the store as
+`<hw-profile>/environment/<environment key>.json`: `tools/dev.py check` inside; the GPU, torch and flash-attn; a lock
+the HOST holds is seen as held inside (so one lock governs host and container, KERNEL_STANDARDS §14 addendum); and an
+iteration build of a copy of the checkout, imported. **A commit that changes any environment input needs a passing
+record for the key of what it stages -- the commit gate refuses it otherwise (KERNEL_STANDARDS §23 (3)).**
 
-The mount that actually works is `.devcontainer/devcontainer.json`'s current
-`"type=volume,source=rola-worktrees,target=/workspace/worktrees"` — a STATIC
-named volume, unconditionally, because `type=volume` mounts auto-create an
-empty volume with no host resource required to pre-exist, so there is no
-missing-source question left for the CLI to mishandle. This means the
-devcontainer path has NO env-var switch to a host bind mount — a single
-static `--mount`-syntax line cannot conditionally pick `type=bind` vs
-`type=volume`. A contributor who keeps sibling git worktrees
-(`rola-branch-structure`) and wants them reachable from inside the
-devcontainer has two options: use the plain `docker run` form below (which
-DOES support the env-var switch), or edit that one `mounts` line in their own
-local, uncommitted checkout to
-`"type=bind,source=/path/to/your/worktrees,target=/workspace/worktrees"`.
+**The mounts come from the host's dev config.** `python3 tools/dev.py container compose` writes
+`.devcontainer/compose.local.yaml` (never committed) binding, onto the image's fixed layout: this checkout at
+`/workspace/rola`, the host's `host.lock_dir` at `/run/rola/locks` and its GPU lock's directory at `/run/rola/gpu`,
+`store.results` at `/workspace/store`, and `workspace.worktrees` at `/workspace/worktrees`. It refuses when no image
+exists for the current key. Under WSL it also mounts the directory above `host.wsl_lib` (`/usr/lib/wsl`) read-only:
+the image's loader path starts at `/usr/lib/wsl/lib`, and without the Windows driver's libraries there CUDA fails to
+initialize inside the container with error 500 even though `nvidia-smi` works (measured 2026-09-12, Docker Desktop
+20.10.17, driver 595.95 -- the 2026-08-28 image had never been run against the GPU). The whole directory, not `lib/`
+alone: that `libcuda` is a loader that opens the driver store beside it.
 
-**Plain `docker run`, the equivalent without an editor integration, WITH the
-env-var worktrees switch:**
+**VS Code / Claude Code:** "Reopen in Container". `.devcontainer/devcontainer.json` runs `container compose` as its
+`initializeCommand`, then the `rola` service of `.devcontainer/compose.yaml` with the generated mounts, and runs
+`python tools/dev.py check` once created.
 
-```bash
-docker run --rm -it \
-  --gpus all --ipc=host \
-  -v "$(pwd)":/workspace/rola \
-  -v "${ROLA_WORKTREES_DIR:-rola-worktrees}":/workspace/worktrees \
-  -e ROLA_IMAGE_DIGEST="$(sha256sum Dockerfile | cut -d' ' -f1)" \
-  -w /workspace/rola \
-  rola-dev:latest
-```
+**Without an editor:** `docker compose -f .devcontainer/compose.yaml -f .devcontainer/compose.local.yaml run --rm rola bash`.
 
-Here the raw docker CLI's `-v SOURCE:TARGET` shorthand really does
-auto-detect from the shape of `SOURCE` (verified directly, not just for
-`@devcontainers/cli`): `ROLA_WORKTREES_DIR` unset falls back to the bare name
-`rola-worktrees` (a named volume, matching the devcontainer's default
-exactly); set to a host path, Docker bind-mounts that path and creates it if
-missing. No path is hard-coded to a home directory either way
-(KERNEL_STANDARDS.md §17).
+Inside, the SM clock is not locked: the lock is a host act (`tools/dev.py clock`), and rows measured in the container
+record `clock_locked = false`.
+
+The history this replaced, kept because it was measured: the first devcontainer (2026-08-29) mounted worktrees through
+a `${localEnv:...}` default nested inside another variable, which `@devcontainers/cli` does not expand, then through a
+`-v`-style string the CLI forwards as a malformed `--mount`; it ended as a static empty named volume, so host worktrees
+were never visible inside. Generating the mounts from the dev config removes the variable and the question.
 
 ## 3b. Building on the bare host (no container) needs `mold`
 
@@ -338,9 +291,10 @@ expects to measure.
 | Tool | Source | Role |
 |---|---|---|
 | `ptxas`/`nvcc` (CUDA 12.4.99) | base image | the ratified toolchain (`docs/build.md` rule 1) |
-| `sccache` 0.17.0 | `tools/sccache_pin.json`, verified | the compiler cache `docs/build.md#sccache` measures |
+| `cuobjdump`, Nsight Compute 2025.3 | apt, pinned versions | cubin extraction (SASS gate, region ledger, composer); PM sampling (pipe timeline) |
+| `sccache` 0.17.0 | `tools/dev.py init --image` from `tools/sccache_pin.json`, verified | the compiler cache `docs/build.md#sccache` measures |
 | `ninja` | apt | the build's actual compile driver (`docs/build.md` step 5) |
-| `mold` | pinned GitHub release, sha256-verified | fast host-side linking for the extension's `.so` |
+| `mold` 2.42.0 | `tools/dev.py init --image` from `tools/mold_pin.json`, verified | the extension's only linker |
 | `graphviz`, `sqlite3` | apt | dependency/DAG rendering, `perf/ledger.jsonl` inspection |
 | `clangd`, `clang-tools-14` (clang-query) | apt | the editor/AST tooling briefs assume is present |
 | `universal-ctags` | apt | cross-referencing the `csrc/` tree |
@@ -353,8 +307,8 @@ expects to measure.
 
 ## Reproducibility as a statement
 
-`tools/ratify.py`'s written manifests now carry `source.image_digest`: the
-`ROLA_IMAGE_DIGEST` environment variable the container sets (step 2), or the
+`tools/ratify.py`'s written manifests carry `source.image_digest`: the image's
+`environment.image_digest`, the environment key it was built from (step 2), or the
 empty string if a ratification ran on a bare host. It sits beside
 `source.csrc_sha256`/`source.date`, not inside `toolchain` — it identifies
 WHERE a measurement ran, not WHAT was measured, so (like `sccache`'s version)

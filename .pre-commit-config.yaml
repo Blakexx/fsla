@@ -87,6 +87,12 @@ repos:
         entry: tools/lint/run_ruff_e3.sh
         pass_filenames: false
         always_run: true
+      - id: dev-container-current
+        name: "§23 (3): a changed dev environment carries a passing container check"
+        language: system
+        entry: python3 tools/dev.py container gate
+        pass_filenames: false
+        always_run: true
       - id: readability-spacing
         name: readability spacing (long zero-blank bodies, csrc blank runs)
         language: system

@@ -11,3 +11,6 @@ rola/_build_config.py
 # K38: the derived measurements index -- rebuilt from benchmarks/results/, never committed.
 .rola/
 compile_commands.json
+
+# the dev container's host mounts, written by `python3 tools/dev.py container compose` (host paths, never committed)
+.devcontainer/compose.local.yaml

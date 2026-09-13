@@ -573,3 +573,12 @@ manual steps, and the dev container had drifted for two weeks unnoticed.
    gate, clock, worktrees) and the only thing that checks one (`check`: every dependency a row, exit 1 on a red, the
    build's own gates reused). A new machine-dependent value lands as a schema key with its `init` detection and its
    `check` row in the same commit.
+3. THE CONTAINER IS KEPT CURRENT BY A KEYED GATE. The dev image is a supported environment, not a document. It is
+   built by `python tools/dev.py container build` from the environment's inputs (`ENV_INPUTS`: the Dockerfile, the
+   devcontainer and compose files, `requirements.lock`, the tool pins, `tools/dev.py` and the modules it imports) and
+   its last step is the same `init` a host runs, whose `check` fails the image build on a red. Their hash is the
+   environment key. `python tools/dev.py container check` proves the image with the host's mounts (the environment
+   check inside, the GPU and reference library, a host-held lock seen as held, an iteration build imported) and records
+   the result under that key; a commit changing any input is refused by the commit gate unless a passing record exists
+   for the key of what it stages. A host-side toolchain change that the image does not share (a driver, a toolkit
+   path) is not an input and needs no container record; a pin, a lock or a Dockerfile line always is.
