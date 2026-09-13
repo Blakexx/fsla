@@ -38,6 +38,10 @@ much of the part fails to overlap, why it stalls, what it spends, and what regis
 Measured on the kernel at flagship-dense, the census reads the 110K-cycle window as 36.8K pipe-throttled
 (the HMMA floor is 36.9K), 31.5K fixed-latency dependency, 16.3K shared scoreboard, 13.0K issuing.
 
+With `--timeline`, every rung also records its pipe timeline (`docs/internals/tools/pipe_timeline.md`): the
+tensor pipe's true utilization on silicon over full-occupancy samples, and its tensor series in 5 µs bins. A part
+then shows in the report both as a wall-time step and as the change in how the pipe was kept fed.
+
 The report lands in `benchmarks/results/ledgers/<utc>-<sha7>-compose.{json,md}`. Builds run
 serially (the host's memory watchdog kills parallel ones). Every build is an iteration build and
 never ships.

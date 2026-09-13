@@ -189,14 +189,30 @@ def registers() -> dict:
             "by_region": {k: int(v) for k, v in re.findall(r"^(\S+)\s+(\d+)\s+[\d.]+\s+\d+$", out, re.M)}}
 
 
+def timeline(cell: str) -> dict:
+    """The rung's pipe timeline summary (`tools/pipe_timeline.py`, stored scale)."""
+    import pipe_timeline as T
+    with tempfile.TemporaryDirectory(prefix="compose_tl_") as tmp:
+        out = Path(tmp) / "tl"
+        rep = T.capture(cell, out)
+        tl = T.parse(*T.export(rep))
+    summ = T.summary(tl, T.stored_scale())
+    return {"summary": summ, "tensor_5us": T.bins(tl["series"].get("tensor", []), 5.0, tl["duration_us"])}
+
+
+TIMELINE = False
+
+
 def measure(cells: list[str], launches: int) -> dict:
-    """Everything a rung records: per cell the phases (with per-warp rows), the resource counters and the
-    stall census; once, the register life ranges."""
-    out = {"phases": {}, "counters": {}, "census": {}}
+    """Everything a rung records: per cell the phases (with per-warp rows), the resource counters, the stall
+    census and (with --timeline) the pipe timeline; once, the register life ranges."""
+    out = {"phases": {}, "counters": {}, "census": {}, "timeline": {}}
     for c in cells:
         out["phases"][c] = phases(c, launches)
         out["counters"][c] = counters(c)
         out["census"][c] = census(c, out["phases"][c].get("total"))
+        if TIMELINE:
+            out["timeline"][c] = timeline(c)
     out["registers"] = registers()
     out["hmma"] = {c: int(out["counters"][c].get("hmma_launch", 0)) for c in cells}
     return out
@@ -208,7 +224,10 @@ def main() -> int:
     ap.add_argument("--ladder", action="append", required=True,
                     help="PHASE:part,part,... -- the phase's parts in the order they are added back")
     ap.add_argument("--launches", type=int, default=2)
+    ap.add_argument("--timeline", action="store_true", help="capture every rung's pipe timeline (PM sampling)")
     a = ap.parse_args()
+    global TIMELINE
+    TIMELINE = a.timeline
     cells = [c for c in a.cells.split(",") if c]
     everything = gen_shards.CARRY_PARTS
 
@@ -254,7 +273,7 @@ def main() -> int:
                   f"took={row['mask_took']} hmma_ok={row['hmma_ok']}: "
                   + "; ".join(f"{c} {phase} {row['phases'][c].get(phase)}" for c in cells), flush=True)
         rows.append({"real": sorted(everything), "stubbed": [], "hash": ref, "mask_took": True, "hmma_ok": True,
-                     **{k: report["kernel"][k] for k in ("phases", "counters", "census", "registers", "hmma")}})
+                     **{k: report["kernel"][k] for k in ("phases", "counters", "census", "registers", "hmma", "timeline")}})
         report["ladders"].append({"phase": phase, "order": order, "rungs": rows})
 
     rc, out = build(everything)
@@ -277,8 +296,8 @@ def main() -> int:
         phase, order = lad["phase"], lad["order"]
         md.append(f"## {phase}: parts added in order {order}")
         md.append("| rung | real parts of the phase | " + " | ".join(f"{c} {phase} | step | total" for c in cells)
-                  + " | HMMA count = kernel | build took the mask |")
-        md.append("|---|---|" + "---|---|---|" * len(cells) + "---|---|")
+                  + " | HMMA count = kernel | build took the mask | tensor pipe on silicon (cells in order) |")
+        md.append("|---|---|" + "---|---|---|" * len(cells) + "---|---|---|")
         prev = None
         for i, r in enumerate(lad["rungs"]):
             here = [x.split(".", 1)[1] for x in order if x in r["real"]]
@@ -289,8 +308,11 @@ def main() -> int:
                 pv = None if prev is None else (prev.get("phases") or {}).get(c, {}).get(phase)
                 step = "" if v is None or pv is None else f"{v - pv:+.0f}"
                 cells_md.append(f"{'' if v is None else f'{v:.0f}'} | {step} | {'' if t is None else f'{t:.0f}'}")
+            util = " / ".join(
+                f"{100 * u:.0f}%" if (u := (((r.get("timeline") or {}).get(c) or {}).get("summary") or {})
+                                      .get("utilization_mean_full")) is not None else "-" for c in cells)
             md.append(f"| {i} | {', '.join(here) or '(all stubbed)'} | " + " | ".join(cells_md)
-                      + f" | {r.get('hmma_ok')} | {r.get('mask_took')} |")
+                      + f" | {r.get('hmma_ok')} | {r.get('mask_took')} | {util} |")
             prev = r
         md.append("")
         #: THE PART STEPS: each added part's step in the kernel total, in its stall reasons, in the

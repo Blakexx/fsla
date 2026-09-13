@@ -10,7 +10,8 @@ HMMA count × the measured cycles an HMMA holds the pipe over scheduler cycles, 
 (§22 (7): HMMAs a phase counted from the dump, utilization a phase against the phase ledger's
 cycles, a warp's cycles at HMMA against its other work, instructions against budget), the
 wavefront census (§22 (8): shared wavefronts above ideal by source line, the bank conflicts), and
-`tools/probe_cells.py` against the baseline run with its own schedule (`box` dense, `sparse-g32`
+the pipe timeline per cell (§22 (11), `tools/pipe_timeline.py`: the tensor pipe's true utilization over a launch on
+silicon), and `tools/probe_cells.py` against the baseline run with its own schedule (`box` dense, `sparse-g32`
 sparse; this tree `first`).
 
 The report lands in `benchmarks/results/ledgers/<utc>-<sha7>-<tag>.json` and `.md`, and the

@@ -22,6 +22,8 @@ The steps, each recorded with its outcome (a failure is a row, never a stop):
                  against the phase ledger's cycles, a warp's cycles at HMMA vs its other work,
                  instructions vs budget) and THE WAVEFRONT CENSUS (shared wavefronts above ideal
                  = bank conflicts, by source line)
+  timeline    -- `tools/pipe_timeline.py` per cell: PM sampling of one launch, the tensor pipe's true
+                 utilization over time on the stored scale (§22 (11)), with a chart
   ab          -- `tools/probe_cells.py` per cell against the baseline RUN WITH ITS OWN SCHEDULE
                  (`box` dense, `sparse-g32` sparse), this tree with `first`
 The report lands in `benchmarks/results/ledgers/<utc>-<sha7>-<tag>.json` and `.md`; the diff is
@@ -211,6 +213,23 @@ def step_profile(report: dict, cells: list[str], scratch: Path, hmma_cycles: int
         report["profile"][cell] = row
 
 
+def step_timeline(report: dict, cells: list[str], stem: str) -> None:
+    """THE PIPE TIMELINE per cell (`tools/pipe_timeline.py`): PM sampling of one launch, the tensor pipe's true
+    utilization over time on the stored scale, its mean over full-occupancy samples, and the chart."""
+    report["timeline"] = {}
+    for cell in cells:
+        out = LEDGERS / f"{stem}-timeline-{cell}"
+        rc, text = run([PY, "tools/pipe_timeline.py", "--cell", cell, "--out", str(out)], timeout=3600)
+        row: dict = {"rc": rc, "html": str(out.with_suffix(".html"))}
+        m = re.search(r"\{.*\}", text, re.S)
+        if rc == 0 and m:
+            with contextlib.suppress(json.JSONDecodeError):
+                row.update(json.loads(m.group(0)))
+        else:
+            row["raw"] = text[-600:]
+        report["timeline"][cell] = row
+
+
 def step_ab(report: dict, cells: list[str], baseline: str, tag: str) -> None:
     report["ab"] = {}
     for cell in cells:
@@ -240,7 +259,8 @@ def previous_report(cells: list[str], exclude: Path) -> dict | None:
             r = json.loads(p.read_text())
         except json.JSONDecodeError:
             continue
-        if set(cells) & set(r.get("cells", [])):
+        #: build-ledger reports only: the composer's and the timeline's JSON share the directory.
+        if "tag" in r and "phases" in r and set(cells) & set(r.get("cells", [])):
             return r
     return None
 
@@ -273,6 +293,13 @@ def markdown(report: dict, prev: dict | None) -> str:
                    + f" | {ab.get('master', '')} | {ab.get('this', '')} | {ab.get('ratio', '') if 'ratio' not in ab else f'{ab[chr(114)+chr(97)+chr(116)+chr(105)+chr(111)]:.3f}'} |")
     out.append("")
 
+    for cell in report["cells"]:
+        t = report.get("timeline", {}).get(cell, {})
+        if t.get("utilization_mean_full") is not None:
+            out.append(f"**{cell}** tensor pipe on silicon (PM sampling, stored scale): true utilization "
+                       f"{100 * t['utilization_mean_full']:.1f}% over {t.get('full_occupancy_samples')} full-occupancy "
+                       f"1-us samples, idle {100 * (t.get('tensor_idle_share_full') or 0):.1f}% of them; chart {t.get('html')}")
+    out.append("")
     budget = json.loads((ROOT / "tools/budgets/carry.json").read_text()) if (ROOT / "tools/budgets/carry.json").exists() else {}
     comp_of = {v: k for k, v in budget.get("components", {}).items()}
     phase_of = {"FoldStream": "fold", "ReadoutStream": "readout", "head": "head", "snapshot_publish": "snapshot"}
@@ -330,7 +357,8 @@ def main() -> int:
     ap.add_argument("--tag", required=True, help="a few words naming the build")
     ap.add_argument("--cells", default="nl64k-alt-k4,flagship-dense,flagship-alt-k4,flagship-cohort-k4")
     ap.add_argument("--baseline", default=None, help="worktree:PATH,venv:PATH of the baseline tree (for --ab)")
-    ap.add_argument("--skip", default="", help="comma list of steps to skip: sass,registers,oracle,phases,profile,ab")
+    ap.add_argument("--skip", default="",
+                    help="comma list of steps to skip: sass,registers,oracle,phases,profile,timeline,ab")
     ap.add_argument("--hmma-cycles", type=int, default=32,
                     help="measured cycles one bf16/fp32 m16n8k16 HMMA holds the pipe a scheduler (sm_86: 32)")
     ap.add_argument("--sms", type=int, default=80)
@@ -354,6 +382,8 @@ def main() -> int:
         step_phases(report, cells)
     if "profile" not in skip:
         step_profile(report, cells, a.scratch, a.hmma_cycles, a.sms, a.schedulers)
+    if "timeline" not in skip:
+        step_timeline(report, cells, f"{report['utc']}-{report['sha']}-{re.sub(r'[^A-Za-z0-9_-]+', '-', a.tag)}")
     if "ab" not in skip:
         if not a.baseline:
             ap.error("--ab needs --baseline worktree:PATH,venv:PATH")

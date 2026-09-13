@@ -527,7 +527,11 @@ measured floor; (10) THE CALIBRATIONS (`benchmarks/unit/bench_carry_calib.py`, `
 each operation the parts are made of (the kernel's HMMA atom, shared loads and stores, `ldmatrix` loads,
 asynchronous copies, global reductions, CTA and shared-memory barriers, warp syncs) alone on every warp,
 as cycles an operation a warp on this card -- reference rows every reading uses in place of a constant (the
-HMMA's 32 cycles was one such constant for eight days).
+HMMA's 32 cycles was one such constant for eight days); (11) THE PIPE TIMELINE (`tools/pipe_timeline.py`): the
+tensor pipe's true utilization over a launch, measured on silicon by the profiler's PM sampling (1 us samples), on a
+scale taken from the MMA-only composition's plateau -- the one instrument that says when the pipe idled rather
+than how much in total; validated against the HMMA-count utilization at three points (66.8 / 21.0 / 33.9%
+against 65-66 / 20-21 / 33.7%).
 HOW IT IS READ: a component's THEORY -- what the form must do to the ledger, and why -- is written as
 its budget line before the build; the measurement is read against that theory. A miss is explained
 by a measurement that ISOLATES the mechanism (a line, a counter, a life range, a variant that removes
