@@ -74,8 +74,8 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "db": Key("path?", None, "the derived index tools/rola_db.py rebuilds; null is .rola/measurements.sqlite in the store"),
     },
     "workspace": {
-        "suite": Key("path", str((ROOT.parent if ROOT.parent.name == "worktrees" else ROOT).parent / "rola-suite"),
-                     "the measurement suite's checkout (its own repository; it runs this tree's instruments)"),
+        "suite": Key("path", str((ROOT.parent if ROOT.parent.name == "worktrees" else ROOT).parent / "rola-bench"),
+                     "the rola-bench checkout whose measurement suite (rola_bench/suite) runs this tree's instruments"),
         "worktrees": Key("path", str(ROOT.parent / "worktrees") if ROOT.parent.name != "worktrees" else str(ROOT.parent),
                          "the one folder every worktree and its venv live in"),
         "base_venv": Key("path?", None, "the shared venv every worktree's pointer venv borrows site-packages from"),

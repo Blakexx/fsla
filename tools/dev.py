@@ -297,7 +297,8 @@ def cmd_check(a) -> int:
     ghz = dev_config.get("clock.ghz")
     row(True, f"clock: {'locks at ' + str(ghz) + ' GHz' if ghz else 'unlocked (rows carry their measured clock)'}")
     suite = Path(dev_config.get("workspace.suite"))
-    row((suite / ".git").exists(), f"workspace.suite is a checkout: {suite}", "clone the suite repository there")
+    row((suite / "rola_bench" / "suite" / "engine.py").exists(), f"workspace.suite holds the measurement suite: {suite}",
+        "point workspace.suite at a rola-bench checkout carrying rola_bench/suite")
     row(Path(dev_config.get("workspace.worktrees")).is_dir(), f"workspace.worktrees: {dev_config.get('workspace.worktrees')}")
     root = dev_config.store()
     row((root / ".git").is_dir(), f"store.root is a git repository: {root}", "python tools/dev.py init")
