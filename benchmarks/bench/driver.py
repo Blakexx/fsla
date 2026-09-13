@@ -162,6 +162,8 @@ def main(subjects, argv=None, *, description: str = "") -> int:
                                     instrument=args.instrument)
             summary = result.summary()
             summary["significance"] = paired_verdict(result.diffs())
+            #: THE RAW PAIRED SAMPLES, in run order: the alternation is the measurement design
+            summary["a_times"], summary["b_times"] = list(result.a_times), list(result.b_times)
             out.append(summary)
             print(json.dumps(summary, indent=1, sort_keys=True, default=str))
             for arm, unit, times in ((a, a_unit, result.a_times), (b, b_unit, result.b_times)):
