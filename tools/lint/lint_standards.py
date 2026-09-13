@@ -1086,14 +1086,16 @@ def check_shard_partition() -> list[str]:
             arches = sorted(a.removeprefix("sm_") for a in built_archs)
             try:
                 import ratify
-                got = ratify.manifest_digest(ratify.load_manifest(arches))
+                import toolchains
+                name = toolchains.for_ptxas(BUILD_CONFIG["ptxas"]).name
+                got = ratify.manifest_digest(ratify.load_manifest(arches, name))
             except Exception as ex:  # noqa: BLE001
                 findings.append(f"could not recompute the manifest digest for the "
                                 f"built arch subset {arches}: {ex}")
             else:
                 if got != BUILD_CONFIG["manifest_sha256"]:
                     findings.append(
-                        f"tools/manifests/ for {arches} (this build's own declared "
+                        f"tools/manifests/{name}/ for {arches} (this build's own declared "
                         f"arch subset) digests to {got}, which is NOT the "
                         f"ratification the shipped binary was gated against "
                         f"({BUILD_CONFIG['manifest_sha256']}) -- every reader of "
@@ -1123,9 +1125,10 @@ def check_arch_coverage() -> list[str]:
         return [f"check_arch_coverage: could not import tools/ratify.py or "
                 f"tools/supported.py: {ex}"]
 
-    manifest_dir = _TOOLS_DIR / "manifests"
-    per_arch = {arch for arch in supported.tabulated_archs()
-                if (manifest_dir / f"{arch}.json").is_file()}
+    import toolchains
+
+    ratified = {f"sm_{arch}" for t in toolchains.records().values() for arch in t.archs()}
+    per_arch = {arch for arch in supported.tabulated_archs() if arch in ratified}
     findings = []
     if not per_arch:
         return ["no tabulated arch has a ratified manifest; nothing was measured"]

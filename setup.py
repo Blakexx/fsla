@@ -75,7 +75,6 @@ from setuptools import find_packages, setup
 
 ROOT = Path(__file__).resolve().parent
 CSRC = ROOT / "csrc" / "rola"
-MANIFEST_DIR = ROOT / "tools" / "manifests"
 CUTLASS_DIR = ROOT / "csrc" / "third_party" / "cutlass"
 
 #: `tools/` is not an installed package -- it is the repository's instruments -- but
@@ -90,6 +89,8 @@ import dev_config  # noqa: E402
 #: torch.utils.cpp_extension resolves its toolkit when it is imported, so the dev config's is handed to it first.
 if dev_config.get("toolchain.cuda_home"):
     os.environ["CUDA_HOME"] = dev_config.get("toolchain.cuda_home")
+#: torch >= 2.10 prefixes any `ccache`/`sccache` on PATH to every compiler it runs; the only cache is the pinned one.
+os.environ["TORCH_NO_COMPILER_WRAPPER"] = "1"
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension  # noqa: E402
 import build_flags  # noqa: E402
 import build_lock  # noqa: E402
@@ -97,6 +98,7 @@ import gen_shards  # noqa: E402
 import mold_toolchain  # noqa: E402
 import ratify  # noqa: E402
 import sccache_toolchain  # noqa: E402
+import toolchains  # noqa: E402
 
 
 # isort: on
@@ -108,7 +110,7 @@ def _declared_archs() -> list[str]:
     """The architectures this build compiles, from the environment or the manifests.
 
     ``ROLA_CUDA_ARCHS`` names them explicitly. Unset, they are read from the ratified
-    manifests present in ``tools/manifests`` -- the same files rule 3 then gates each
+    manifests of this build's toolchain -- the same files rule 3 then gates each
     arch against, so the fatbin's arch list and the ratification's have ONE source.
     An unset variable used to default to a hard-coded pair, which is a second
     declaration of the supported matrix and the reason a build asked for one arch's
@@ -117,23 +119,26 @@ def _declared_archs() -> list[str]:
     env = os.getenv("ROLA_CUDA_ARCHS")
     if env is not None:
         return [a for a in env.split(";") if a]
-    named = sorted(p.stem.removeprefix("sm_") for p in MANIFEST_DIR.glob("sm_*.json"))
+    named = TOOLCHAIN.archs()
     if not named:
         raise RuntimeError(
-            "ROLA_CUDA_ARCHS is unset and tools/manifests names no ratified "
-            "architecture, so this build has no declared arch list. Name the arches "
-            "(ROLA_CUDA_ARCHS=86) or ratify one first (tools/ratify.py --arch 86 "
-            "--write)."
+            f"ROLA_CUDA_ARCHS is unset and toolchain {TOOLCHAIN.name} ratifies no "
+            f"architecture ({TOOLCHAIN.manifest_dir}), so this build has no declared arch "
+            "list. Name the arches (ROLA_CUDA_ARCHS=86) or ratify one first "
+            "(tools/ratify.py --arch 86 --write)."
         )
     return named
 
 
-ROLA_CUDA_ARCHS = _declared_archs()
+#: THE TOOLCHAIN: the declared record naming the configured toolkit's assembler (tools/toolchains.py). A Python-only
+#: install compiles nothing and resolves none.
+TOOLCHAIN = None if os.getenv("ROLA_NO_EXTENSION") == "1" else toolchains.for_ptxas(ratify.ptxas_version())
+ROLA_CUDA_ARCHS = [] if TOOLCHAIN is None else _declared_archs()
 
 #: THE MILESTONE/CI SWITCH (K43, KERNEL_STANDARDS §16). Manifests go stale between
 #: milestones BY DESIGN -- ratification is a per-milestone act, not a per-stage one --
 #: so the POST-BUILD gate that compares the freshly built binary against the
-#: checked-in ``tools/manifests/sm_XX.json`` (``_post_build_manifest_check``'s
+#: checked-in ``tools/manifests/<toolchain>/sm_XX.json`` (``_post_build_manifest_check``'s
 #: ``ratify.py`` re-run) REPORTS a mismatch instead of failing the install by default.
 #: ``ROLA_STRICT_MANIFEST=1`` restores the pre-K43 hard failure: the milestone/CI gate
 #: build that immediately precedes ``tools/ratify.py --write`` sets it (docs/build.md),
@@ -416,7 +421,7 @@ def manifest_path(arch: str) -> Path:
     architecture's bring-up one reviewable file in a PR rather than a diff inside a
     thousand-line document nobody reads to the end.
     """
-    return MANIFEST_DIR / f"sm_{arch}.json"
+    return TOOLCHAIN.manifest_path(arch)
 
 
 def _gate_ratified(archs: list[str]) -> dict:
@@ -515,16 +520,19 @@ def _gate_vendored() -> dict:
 
 
 def _gate_toolchain(manifest: dict) -> str:
-    pinned = manifest["toolchain"]["ptxas"]
+    import torch
+
+    pinned = toolchains.normalize(manifest["toolchain"]["ptxas"])
     here = ptxas_version()
-    if pinned != here:
+    if pinned != here or here != TOOLCHAIN.ptxas:
         raise RuntimeError(
-            "CLOSED-WORLD RULE 1: this manifest was ratified under a different "
-            f"assembler.\n  manifest: {pinned}\n  this host: {here}\n"
-            "Re-ratify (`python tools/ratify.py --write`) and record the new numbers "
+            f"CLOSED-WORLD RULE 1: toolchain {TOOLCHAIN.name}'s manifests were ratified under a "
+            f"different assembler.\n  manifest: {pinned}\n  this host: {here}\n"
+            f"Re-ratify (`python tools/ratify.py --write`) and record the new numbers "
             "-- do not hand-edit the manifest."
         )
-    print(f"rule 1 OK  ptxas: {here}")
+    toolchains.torch_pairing(TOOLCHAIN, torch.version.cuda)
+    print(f"rule 1 OK  toolchain {TOOLCHAIN.name}, torch CUDA {torch.version.cuda}, ptxas: {here}")
     return here
 
 
@@ -558,6 +566,7 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict,
     config = {
         "version": read_version(),
         "archs": [f"sm_{a}" for a in archs],
+        "toolchain": TOOLCHAIN.name,
         "ptxas": ptxas,
         "torch": torch.__version__,
         "cxx11_abi": bool(torch._C._GLIBCXX_USE_CXX11_ABI),
@@ -910,7 +919,7 @@ class RoLABuildExtension(BuildExtension):
 
         EVERY one of `ratify.py`'s checks (entry set, SASS-body hashes, the
         hot-loop/local-presence ratchets) is a comparison against the COMMITTED
-        `tools/manifests/sm_XX.json`, and that manifest is allowed to be stale
+        `tools/manifests/<toolchain>/sm_XX.json`, and that manifest is allowed to be stale
         between milestones by design (KERNEL_STANDARDS §16) -- unlike the fatbin
         gate above, there is no sub-check here that is independent of the manifest,
         so the K43 split is a single blanket one: FAIL is fatal only under

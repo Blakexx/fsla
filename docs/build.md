@@ -74,11 +74,14 @@ python -m pip install -e . --no-build-isolation
 1. **Rule 2 — gencode.** Emits `-gencode arch=compute_XX,code=sm_XX` only. A
    `code=compute_XX` entry would embed PTX and let the driver just-in-time compile
    for an architecture whose register and spill behaviour was never measured.
-2. **Rule 3 — ratified archs.** `tools/manifests/sm_XX.json` must exist and be
+2. **Rule 3 — ratified archs.** `tools/manifests/<toolchain>/sm_XX.json` must exist and be
    non-empty for every arch being built. A file-existence question, asked first,
    because the cheapest check is the one that must never be tempting to skip.
-3. **Rule 1 — toolchain.** The host `ptxas --version` must equal the string the
-   manifests pin, whitespace-normalized. The whole output, not a parsed release
+3. **Rule 1 — toolchain.** The configured toolkit's `ptxas --version` selects the
+   toolchain: the record in `tools/toolchains/` that names it, whitespace-normalized
+   ([`internals/tools/toolchains.md`](internals/tools/toolchains.md)). A toolkit no
+   record names refuses; that toolchain's manifests must pin the same string; torch
+   must be built for the toolchain's CUDA major. The whole output, not a parsed release
    number: the build string distinguishes two shipments of one nominal release, and
    it is exactly those that can move an allocation while the version says nothing
    changed.

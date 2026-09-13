@@ -61,8 +61,8 @@ cannot drift apart.
 | | |
 |---|---|
 | Python | 3.10 – 3.13 |
-| PyTorch | ≥ 2.6, built against CUDA 12.4 |
-| CUDA toolkit | **12.4** — the toolchain the manifests are ratified under |
+| PyTorch | built for the toolchain's CUDA major (`tools/toolchains/<name>.json`, `torch_index`) |
+| CUDA toolkit | a declared toolchain's exact `ptxas` — the table below names each ratified one |
 | GPU | a **ratified** compute capability (see the table below) |
 | Build | `ninja`; source installs need `--no-build-isolation` |
 
@@ -99,13 +99,13 @@ the committed manifests, and CI fails if it drifts. A hand-maintained support ta
 is a claim; a generated one is a report.
 
 <!-- BEGIN GENERATED: tools/supported.py -->
-| Compute capability | GPUs | Ratified under | Instantiations | Status |
-|---|---|---|---|---|
-| `sm_80` | A100, A30 | ptxas 12.4.99 | 349 | ratified |
-| `sm_86` | A10, A40, RTX 30xx | ptxas 12.4.99 | 349 | ratified |
-| `sm_87` | Jetson Orin | — | — | **not ratified — will refuse to load** |
-| `sm_89` | L40S, RTX 40xx | — | — | **not ratified — will refuse to load** |
-| `sm_90` | — | — | — | **not ratified — will refuse to load** |
+| Compute capability | GPUs | Toolchain | Ratified under | Instantiations | Status |
+|---|---|---|---|---|---|
+| `sm_80` | A100, A30 | `cu124` | ptxas 12.4.99 | 349 | ratified |
+| `sm_86` | A10, A40, RTX 30xx | `cu124` | ptxas 12.4.99 | 349 | ratified |
+| `sm_87` | Jetson Orin | — | — | — | **not ratified — will refuse to load** |
+| `sm_89` | L40S, RTX 40xx | — | — | — | **not ratified — will refuse to load** |
+| `sm_90` | — | — | — | — | **not ratified — will refuse to load** |
 <!-- END GENERATED: tools/supported.py -->
 
 The unratified rows are not an apology; they are the product statement. The first

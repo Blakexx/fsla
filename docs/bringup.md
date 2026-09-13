@@ -4,8 +4,8 @@ An architecture this package has not been ratified on **will refuse to build and
 refuse to load**. That is the product statement, not a defect. Bringing one up is a
 measurement, and this is the procedure.
 
-You need: the target GPU, CUDA 12.4's `nvcc`/`ptxas` (or a decision to re-ratify
-every architecture under a new toolchain — see the last section), and the ability
+You need: the target GPU, a declared toolchain's `nvcc`/`ptxas` (or a new toolchain —
+see the last section), and the ability
 to open a pull request.
 
 ## 1. Tabulate the architecture's resources
@@ -36,7 +36,7 @@ python tools/ratify.py --arch 89 --write
 ```
 
 This compiles the whole dispatch closure for `sm_89`, reads `ptxas -v`, and writes
-`tools/manifests/sm_89.json` — **and touches no other architecture's file.** No GPU
+`tools/manifests/<toolchain>/sm_89.json` — **and touches no other architecture's file.** No GPU
 is required: ratification is a compile-time measurement.
 
 Read the output before committing it. Two things are not automatic:
@@ -81,7 +81,7 @@ that depends on how the compiler laid the kernel out.
 ## 5. Open a pull request
 
 **A manifest change is always a reviewed PR, never a CI auto-commit.** The diff
-should be: the arch-table row, one new `tools/manifests/sm_XX.json`, the
+should be: the arch-table row, one new `tools/manifests/<toolchain>/sm_XX.json`, the
 regenerated README block, and a description carrying the measured spill and
 register profile with any anomaly explained.
 
@@ -92,3 +92,19 @@ architecture**, because every number in every manifest is a property of one
 assembler. The wheel matrix axis and the ratification axis are the same axis — that
 is the whole closed-world point. Budget it as a measurement run, not as a config
 change.
+
+1. **Install the toolkit** and point the dev config's `toolchain.cuda_home` at it. NVIDIA's
+   redistributable archives install without root; they place libraries in `lib/`, where `nvcc`
+   and torch look in `lib64/`, so add `lib64 -> lib`.
+2. **Write the record**, `tools/toolchains/<name>.json`: the whole `ptxas --version` output, the
+   CUDA major, the PyTorch wheel index for that major. A torch of another major is refused.
+3. **Check the compiler cache.** The pinned sccache must compile under the toolkit (sccache 0.17
+   silently produced no objects under nvcc 13.4); otherwise build with
+   `toolchain.sccache_enabled: false` until the pin moves.
+4. **Census before writing.** `python tools/ratify.py --census --json <file>` under the new toolkit
+   against the current toolchain's census: every entry's spill, registers and in-loop locals. A
+   worse entry is a kernel finding, not a verdict on the toolkit.
+5. **Ratify** (`--write`, every shipped arch) into `tools/manifests/<name>/`, build, and run the
+   suite's timing A/B against the current toolchain's build of the same source in one interleaved
+   session, repeated; isolate any regression (compiler against library) before choosing.
+6. **Retire the old toolchain** in a deletion-only commit: its record and its manifests.

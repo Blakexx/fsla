@@ -82,7 +82,7 @@ count (plus the hot-loop parser proving it counts an in-loop `LDL` and clears a 
 one on synthetic SASS). That is what makes a green run mean something: a gate that
 cannot fail is not a gate (`rewrite.md`'s vacuity discipline, applied to itself).
 
-MANIFEST FORMAT: `tools/manifests/sm_XX.json`, ONE FILE PER ARCH, each
+MANIFEST FORMAT: `tools/manifests/<toolchain>/sm_XX.json`, ONE FILE PER ARCH, each
 `{"toolchain": {ptxas, defines, nvcc_flags, sass_hash_version, sccache}, "source":
 {csrc_sha256, date, image_digest}, "shards": {...},
 "entries": {<mangled name>:
@@ -124,6 +124,12 @@ import gen_shards  # noqa: E402
 import host_budget  # noqa: E402
 import mold_toolchain  # noqa: E402
 import sccache_toolchain  # noqa: E402
+import toolchains  # noqa: E402
+
+#: torch.utils.cpp_extension resolves its toolkit when imported; a ratification compiles against the configured one.
+if dev_config.get("toolchain.cuda_home"):
+    os.environ["CUDA_HOME"] = dev_config.get("toolchain.cuda_home")
+os.environ["TORCH_NO_COMPILER_WRAPPER"] = "1"
 
 #: ONE toolchain location for nvcc and ptxas, the build's own (`dev_config.cuda_bin`): the version this gate reads is
 #: from the assembler that produced the numbers it parses.
@@ -268,8 +274,13 @@ CUTLASS_INC = Path(__file__).resolve().parents[1] / "csrc" / "third_party" / "cu
 DEFAULT_ARCHES = ("80", "86")
 
 
-def manifest_path(arch: str) -> Path:
-    """ONE FILE PER ARCH.
+def toolchain(name: str | None = None) -> toolchains.Toolchain:
+    """The named toolchain, or the one whose assembler the configured toolkit's is."""
+    return toolchains.named(name) if name else toolchains.for_ptxas(ptxas_version())
+
+
+def manifest_path(arch: str, name: str | None = None) -> Path:
+    """ONE FILE PER ARCH, per toolchain.
 
     *"Does arch X have a ratified manifest?"* is then a FILE-EXISTENCE question --
     which is what `setup.py`'s rule-3 gate needs to ask before it compiles anything,
@@ -277,10 +288,10 @@ def manifest_path(arch: str) -> Path:
     rather than a 1024-line diff nobody can read. The union of the files is the
     ratification; `load_manifest` is the only thing that forms it.
     """
-    return MANIFEST_DIR / f"sm_{arch}.json"
+    return toolchain(name).manifest_path(arch)
 
 
-def load_manifest(arches) -> dict:
+def load_manifest(arches, name: str | None = None) -> dict:
     """The per-arch files, read as ONE ratification record.
 
     Every file must pin the SAME assembler. A manifest whose halves were ratified
@@ -292,7 +303,7 @@ def load_manifest(arches) -> dict:
     entries: dict[str, dict] = {}
     sources: dict[str, dict | None] = {}
     for arch in arches:
-        path = manifest_path(arch)
+        path = manifest_path(arch, name)
         if not path.exists():
             raise SystemExit(
                 f"no ratified manifest for sm_{arch} at {path}; run\n"
@@ -883,6 +894,10 @@ def _ninja_cuda_template() -> tuple[str, str, str] | None:
 
     nvcc, cuda_cflags, cuda_post_cflags = var("nvcc"), var("cuda_cflags"), var("cuda_post_cflags")
     if nvcc is None or cuda_cflags is None or cuda_post_cflags is None:
+        return None
+    #: A build directory another toolkit wrote is not this ratification's argv: its include paths name that toolkit.
+    includes = {os.path.realpath(flag[2:]) for flag in shlex.split(cuda_cflags) if flag.startswith("-I")}
+    if os.path.realpath(os.path.join(dev_config.cuda_home(), "include")) not in includes:
         return None
     #: AN ITERATION BUILD'S ARGV MUST NEVER BECOME A MANIFEST.  Reusing `build.ninja` VERBATIM is a cache-key fidelity win and
     #: was also a trap: an arm-subset build wrote its `-D` into those very flags, and a
@@ -1762,6 +1777,7 @@ def main() -> int:
                         f"write an empty ratification. A manifest that exists but "
                         f"measures nothing would pass rule 3 by file existence alone.")
                 path = manifest_path(arch)
+                path.parent.mkdir(parents=True, exist_ok=True)
                 #: The SOURCE DIGEST is recorded beside the toolchain: a manifest is a
                 #: measurement OF a source tree UNDER an assembler, and both halves of
                 #: that sentence must be checkable (the freshness trigger, session 9).

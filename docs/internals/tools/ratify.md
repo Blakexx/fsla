@@ -9,7 +9,7 @@ gate must write before it measures anything.
 
 | artifact | scope | written by | checked by |
 |---|---|---|---|
-| `tools/manifests/sm_XX.json` | per arch | `--write` | every run |
+| `tools/manifests/<toolchain>/sm_XX.json` | per toolchain, per arch | `--write` | every run |
 | `tools/manifests/derivation.json` | arch-independent | `--write-derivation`, and `--write` | every run |
 | `build/generated/*.inc` | per run, never checked in | `setup.py` and this gate | — (they are inputs) |
 

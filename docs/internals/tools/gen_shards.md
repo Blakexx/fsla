@@ -17,7 +17,7 @@ independent statements instead of restating one twice.
 |---|---|---|---|
 | `csrc/rola/src/instantiations/carry_arm_<i>.cu` | yes — what is reviewed is what compiles | `--write` | the build's source list |
 | `build/generated/carry_selection.inc` | never | `setup.py`, `tools/ratify.py`, on every run | the per-arm TUs, the carry dispatch TU, `common/arm_switch.cuh` |
-| the `shards` block | recorded in each `tools/manifests/sm_XX.json` | `tools/ratify.py --write` | the manifest digest |
+| the `shards` block | recorded in each `tools/manifests/<toolchain>/sm_XX.json` | `tools/ratify.py --write` | the manifest digest |
 
 The selection header carries two things: the `ROLA_CARRY_BUILD_<i>` selection, and the
 ARM SET `arm_switch` dispatches over — `ROLA_CARRY_ARM_SET_X(F)`, plus

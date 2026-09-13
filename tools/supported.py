@@ -8,7 +8,7 @@ answer, and CI fails on drift:
   size itself for. ``sm_arch_tabulated()`` is a ``static_assert`` at compile time
   and the chunk dispatch's first-launch check a refusal at run time, so an arch
   missing from it cannot execute whatever the table says.
-* ``tools/manifests/sm_XX.json`` -- the architectures that have been MEASURED.
+* ``tools/manifests/<toolchain>/sm_XX.json`` -- the architectures MEASURED, per toolchain (``tools/toolchains.py``).
   One file per arch, so "is it ratified?" is a file-existence question.
 
 The two are not the same set, and **the difference is the product statement**. An
@@ -31,9 +31,10 @@ import re
 import sys
 from pathlib import Path
 
+import toolchains
+
 ROOT = Path(__file__).resolve().parents[1]
 ARCH_TABLE = ROOT / "csrc" / "rola" / "src" / "common" / "arch_caps.cuh"
-MANIFEST_DIR = ROOT / "tools" / "manifests"
 README = ROOT / "README.md"
 
 #: The README's generated regions: `marker -> producer`. TWO of them, because two
@@ -81,15 +82,17 @@ def tabulated_archs() -> list[str]:
     return [f"sm_{c // 10}" for c in codes]
 
 
-def ratified() -> dict[str, dict]:
-    """`sm_XX -> {ptxas, instantiations}` for every committed per-arch manifest."""
-    out = {}
-    for path in sorted(MANIFEST_DIR.glob("sm_*.json")):
-        blob = json.loads(path.read_text())
-        out[path.stem] = {
-            "ptxas": blob["toolchain"]["ptxas"],
-            "instantiations": len(blob["entries"]),
-        }
+def ratified() -> dict[str, list[dict]]:
+    """`sm_XX -> [{toolchain, ptxas, instantiations}]`, one entry per toolchain with a committed manifest for it."""
+    out: dict[str, list[dict]] = {}
+    for toolchain in toolchains.records().values():
+        for arch in toolchain.archs():
+            blob = json.loads(toolchain.manifest_path(arch).read_text())
+            out.setdefault(f"sm_{arch}", []).append({
+                "toolchain": toolchain.name,
+                "ptxas": blob["toolchain"]["ptxas"],
+                "instantiations": len(blob["entries"]),
+            })
     return out
 
 
@@ -100,23 +103,24 @@ def _ptxas_short(version: str) -> str:
 
 def table() -> str:
     rat = ratified()
-    rows = ["| Compute capability | GPUs | Ratified under | Instantiations | Status |",
-            "|---|---|---|---|---|"]
+    rows = ["| Compute capability | GPUs | Toolchain | Ratified under | Instantiations | Status |",
+            "|---|---|---|---|---|---|"]
     for arch in tabulated_archs():
         gpus = GPUS.get(arch, "—")
-        if arch in rat:
-            rows.append(f"| `{arch}` | {gpus} | {_ptxas_short(rat[arch]['ptxas'])} | "
-                        f"{rat[arch]['instantiations']} | ratified |")
-        else:
-            rows.append(f"| `{arch}` | {gpus} | — | — | "
+        for r in rat.get(arch, []):
+            rows.append(f"| `{arch}` | {gpus} | `{r['toolchain']}` | {_ptxas_short(r['ptxas'])} | "
+                        f"{r['instantiations']} | ratified |")
+        if arch not in rat:
+            rows.append(f"| `{arch}` | {gpus} | — | — | — | "
                         f"**not ratified — will refuse to load** |")
     #: Anything ratified but NOT tabulated would be a manifest for an arch the
     #: kernel cannot size itself for. It cannot happen through the normal path, and
     #: if it ever does the table must say so rather than quietly drop the row.
     for arch in sorted(set(rat) - set(tabulated_archs())):
-        rows.append(f"| `{arch}` | {GPUS.get(arch, '—')} | "
-                    f"{_ptxas_short(rat[arch]['ptxas'])} | {rat[arch]['instantiations']} | "
-                    f"**ratified but NOT in the kernel's arch table — a defect** |")
+        for r in rat[arch]:
+            rows.append(f"| `{arch}` | {GPUS.get(arch, '—')} | `{r['toolchain']}` | "
+                        f"{_ptxas_short(r['ptxas'])} | {r['instantiations']} | "
+                        f"**ratified but NOT in the kernel's arch table — a defect** |")
     return "\n".join(rows)
 
 

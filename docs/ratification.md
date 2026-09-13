@@ -2,10 +2,10 @@
 
 A **ratification manifest** is a measured, committed record of what the assembler
 did to every instantiation the extension ships, on one architecture, under one
-exact `ptxas`:
+exact `ptxas`, filed under that assembler's toolchain ([`internals/tools/toolchains.md`](internals/tools/toolchains.md)):
 
 ```
-tools/manifests/sm_86.json
+tools/manifests/cu124/sm_86.json
   { "toolchain": { "ptxas": "<the whole --version string>", "defines": {},
                    "nvcc_flags": [...], "sass_hash_version": 2,
                    "sccache": {"version": "sccache 0.17.0", "sha256": "..."} },

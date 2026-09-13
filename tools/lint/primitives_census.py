@@ -66,7 +66,7 @@ OPS_INCLUDE_DIR = REPO_ROOT / "csrc" / "rola" / "src"
 #: (800, 860, 870, 890; see that file's `tabulated()`). This is a COMPILE-only
 #: gate (no GPU, no ratified manifest needed): `nvcc`/`ptxas` accept any of
 #: these as a `-arch=sm_XX` target on this toolchain regardless of which ones
-#: `tools/ratify.py`'s `DEFAULT_ARCHES` / `tools/manifests/*.json` currently
+#: `tools/ratify.py`'s `DEFAULT_ARCHES` / `tools/manifests/<toolchain>/*.json` currently
 #: ratify for THIS host's default build (80, 86 today) -- the census's job is
 #: auditing the CAPABILITY TABLE's claims, not mirroring one host's build
 #: config, so it compiles every tabulated-and-built row.

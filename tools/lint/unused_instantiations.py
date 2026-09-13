@@ -7,7 +7,7 @@ be present, mangled, in at least one binary's symbol table -- "at least one"
 because the SHIPPED set and the TEST-only arm set (`gen_shards.CARRY_SHIPPED_ARMS`
 vs `CARRY_TEST_ARMS`) are different binaries, and a kernel instantiated only by
 a conformance-only arm is still live. The CHECKED-IN manifests
-(`tools/manifests/sm_80.json`, `sm_86.json` -- closed-world codegen policy:
+(`tools/manifests/<toolchain>/sm_80.json`, `sm_86.json` -- closed-world codegen policy:
 these ARE what a real build produced, ratified) are the source of truth here
 rather than a fresh `cuobjdump` on whatever happens to be built in this
 worktree right now, which would silently narrow the check to this worktree's
@@ -121,11 +121,11 @@ def declared_device_templates(src_root: Path) -> list[tuple[Path, int, str]]:
 
 def manifest_demangled(manifest_dir: Path) -> list[str]:
     mangled = []
-    #: THE PER-ARCH RATIFICATION FILES, by name. `tools/manifests/` also holds the
+    #: THE PER-ARCH RATIFICATION FILES, by name, under every toolchain's directory. `tools/manifests/` also holds the
     #: DECLARATIONS the build reads (the shipped set, the derivation's cases and its
     #: ratified goldens), which carry no `entries` block; a bare `*.json` glob reads
     #: those as manifests and fails on the missing key.
-    for f in sorted(manifest_dir.glob("sm_*.json")):
+    for f in sorted(manifest_dir.glob("*/sm_*.json")):
         entries = json.loads(f.read_text()).get("entries", {})
         for key in entries:
             # key is "sm_XX:<mangled>"
@@ -208,8 +208,8 @@ def main() -> int:
     if "--test-fixtures" in sys.argv:
         return self_test()
 
-    if not MANIFEST_DIR.is_dir() or not list(MANIFEST_DIR.glob("sm_*.json")):
-        print("unused_instantiations: SKIPPED -- no tools/manifests/sm_*.json "
+    if not MANIFEST_DIR.is_dir() or not list(MANIFEST_DIR.glob("*/sm_*.json")):
+        print("unused_instantiations: SKIPPED -- no tools/manifests/<toolchain>/sm_*.json "
               "(ratify at least once: tools/ratify.py --arch 80 --arch 86)")
         return 0
 
