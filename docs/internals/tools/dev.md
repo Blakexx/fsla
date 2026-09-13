@@ -36,7 +36,8 @@ clock is not set by `init`, because locking it asks for administrator consent on
 - The commit gate is wired.
 - The lock directory, scratch directory and GPU lock directory are writable.
 - The clock is set, or the host is marked unlocked.
-- The base venv, the worktrees folder and the store exist.
+- The base venv and the worktrees folder exist; `store.root` is a rola-results checkout, and `rola_results` imports
+  from it in the base venv.
 
 **`clock --mhz N`** locks the SM clock, reads the driver's clock under the lock, and releases it: the round trip
 the harness makes (`tools/clock_lock.py`, [sm_clock.md](../common/sm_clock.md)). Only after the lock is proven
@@ -67,14 +68,16 @@ and this file with the modules it imports. Their sha256, path and bytes each, is
   worktrees onto that layout, and refuses without an image for the key.
 - `check` runs `CONTAINER_PROOFS` inside the image with those mounts: `dev.py check`, the GPU with torch and
   flash-attn, a lock held by a host process seen as held, and an iteration build of a copy of the checkout. It
-  records the result as `<store>/<hw-profile>/environment/<key>.json`.
+  stores the result through `rola_results` at `environment`, one record per key, every check a sample.
 - `gate` is the commit hook. When the staged files touch an input, it computes the key of the staged blobs and
-  refuses the commit without a passing record for that key.
+  refuses the commit without a passing sample for that key.
 
-**`store`** keeps the measurements store (`store.root`): `init` creates it as a git repository with its layout README,
-`.gitattributes` (the perf ledger's union merge) and `.gitignore` (the derived index, raw `.ncu-rep` captures, the
-dashboard page); `import <dir>` copies in a directory laid out like the store, refusing a file whose bytes differ unless
-`--keep-existing`; `commit -m` commits what the writers added. `check` reports whether the store is a repository.
+**`store`** keeps the measurements store (`store.root`, a rola-results checkout): `init` links `rola_results` into
+every interpreter that measures here -- the base venv, each worktree's pointer venv (it borrows the base as a plain
+path, which reads none of the base's `.pth` files), python3's user site, and in the image the base venv at the store's
+mount point -- by a one-line `rola_results.pth`, and `worktree` links each new venv; `import <dir>` copies in a
+directory laid out like the store, refusing a file whose bytes differ unless `--keep-existing`; `commit -m` commits the
+records (`python -m rola_results commit`).
 
 **`get`** prints one value for a shell caller. `cuda-home` resolves the toolkit, which the clang-tidy device
 scripts pass as `--cuda-path`.

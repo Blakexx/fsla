@@ -31,8 +31,8 @@ What this file owns is the CROSS-BINARY comparison, and only that:
   * `--ncu`, whose kernel filter NAMES THE BODY (the subject's own `symbol`) rather than
     a family prefix, because the first kernel of a family is not the same kernel on two
     tips and a ratio taken across two different kernels means nothing.
-  * THE RECORD. Every run writes rows to the store (`store.root`) through the same writer the
-    benches use, so a measurement is not lost to a terminal scrollback.
+  * THE RECORD. Every run stores its rows through `rola_results` at `probe_cells`, so a
+    measurement is not lost to a terminal scrollback.
 
 Usage:
 
@@ -442,7 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
     #: Recording is ON by default -- a probe run IS a measurement, and the record's whole
     #: point is that nothing measured is lost to a terminal scrollback.
     ap.add_argument("--no-record", action="store_true",
-                    help="do not write record rows to the store (a scratch run)")
+                    help="do not store the rows (a scratch run)")
     ap.add_argument("--stage", default=None, help="the queue stage this probe belongs to")
     ap.add_argument("--agent", default=None, help="who ran it (a name, not an identity)")
     ap.add_argument("--purpose", default=None, help="free text: what this probe was for")
@@ -452,46 +452,40 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def record(binaries, results, args) -> None:
-    from bench import store
+def record(binaries, results, args, clock) -> None:
+    """This invocation as one sample in `rola_results` at `probe_cells`. The semantics are what the numbers depend on --
+    each binary's commit, tree digest, manifest and family stamp, its lane (bench, calls, schedule), the cells, the state
+    arm, the counts, the device's software and the clock lock -- so the same session run again is another sample of the
+    same record. A session in which nothing measured is a failed sample carrying its rows."""
+    from rola_results import Store, checkout
+    from rola_results import key as key_of
 
+    arms = []
     for binary in binaries:
-        entries = [r for r in results if r["binary"] == binary["label"]]
-        if not entries:
-            continue
-        head = entries[0]
-        env = {"gpu": head.get("device_name") or "unknown",
-               "sm": head.get("sm") or "sm_unknown",
-               "driver_cuda": head.get("driver_cuda"), "torch": head.get("torch"),
-               "ptxas": head.get("ptxas")}
-        try:
-            run = store.build_run(
-                harness_paths=[THIS_FILE], stage=args.stage, agent=args.agent,
-                purpose=args.purpose, env=env, git_sha=binary["git_sha"],
-                dirty=git_dirty(binary["worktree"]), branch=git_branch(binary["worktree"]),
-                worktree_name=Path(binary["worktree"]).name,
-                stamp_magic=head.get("manifest_sha256"))
-        except ValueError as ex:
-            print(f"record REFUSED for {binary['label']}: {ex}", file=sys.stderr)
-            continue
-        rows = []
-        for entry in entries:
-            if "error" in entry:
-                continue
-            #: The committed record never carries this box's absolute paths: the
-            #: worktree BASENAME is already stamped by `build_run`.
-            extra = dict(entry)
-            extra["worktree"] = Path(entry["worktree"]).name
-            extra["venv"] = Path(entry["venv"]).name
-            if extra.get("rola_file"):
-                extra["rola_file"] = str(Path(entry["rola_file"]).resolve().relative_to(
-                    Path(entry["worktree"]).resolve()))
-            rows.append(store.build_result(
-                run, kind="probe", cell=entry["cell"], arm=entry["bench"],
-                metric="duration_median_ms", value=entry["median_of_round_medians_ms"],
-                unit="ms", extra=extra))
-        print(f"record: {binary['label']} -> {store.write_run(run, rows)} "
-              f"({len(rows)} result row(s))")
+        entry = next(r for r in results if r["binary"] == binary["label"])
+        arms.append({k: entry.get(k) for k in ("git_sha", "tree_sha256", "manifest_sha256", "family_stamp", "bench",
+                                               "calls", "schedule")})
+    head = results[0]
+    semantics = {"cells": sorted({r["cell"] for r in results}), "state_arm": args.state, "reps": args.reps,
+                 "warmup": args.warmup, "rounds": args.rounds, "arms": arms,
+                 "device": {k: head.get(k) for k in ("device_name", "sm", "driver_cuda", "torch", "ptxas")},
+                 "clock_ghz": clock["ghz"] if clock else None}
+    #: the stored rows never carry this box's absolute paths: a checkout is named by its directory
+    rows = []
+    for entry in results:
+        row = {**entry, "worktree": Path(entry["worktree"]).name, "venv": Path(entry["venv"]).name}
+        if row.get("rola_file"):
+            row["rola_file"] = str(Path(entry["rola_file"]).resolve().relative_to(Path(entry["worktree"]).resolve()))
+        rows.append(row)
+    provenance = {"session": head["session"], "stage": args.stage, "agent": args.agent, "purpose": args.purpose,
+                  "arms": [{"label": b["label"], **checkout(b["worktree"])} for b in binaries]}
+    store = Store("probe_cells")
+    if any("error" not in r for r in rows):
+        sample = store.put(semantics, output=rows, provenance=provenance)
+    else:
+        sample = store.put(semantics, error=f"no row measured: {[r['error'] for r in rows]}", provenance=provenance,
+                           rows=rows)
+    print(f"record: {store.location}/{key_of(semantics)} sample {sample['n']} ({len(rows)} rows)")
 
 
 def main() -> None:
@@ -619,7 +613,7 @@ def main() -> None:
         Path(args.out).write_text("".join(json.dumps(r) + "\n" for r in results))
         print(f"\nwrote {len(results)} rows to {args.out}")
     if not args.no_record:
-        record(args.binary, results, args)
+        record(args.binary, results, args, clock)
 
 
 if __name__ == "__main__":

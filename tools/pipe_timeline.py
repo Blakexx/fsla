@@ -18,7 +18,8 @@ calibration row (`--scale`) is the MMA-only composition's plateau: with every re
 MMA phases issue HMMAs as fast as the pipe takes them (measured 31-33 cycles an HMMA a scheduler), so its plateau
 in this series is 100% saturation, and a reading divided by it is the pipe's true utilization at that moment.
 
-Reports land beside the capture: `<out>.json` (series, summary) and `<out>.html` (the chart).
+Reports land beside the capture: `<out>.json` (series, summary) and `<out>.html` (the chart). The JSON is stored
+through `rola_results` at `pipe_timeline`, a calibration's row at `pipe_timeline.scale` (`--no-record`: neither).
 """
 from __future__ import annotations
 
@@ -37,6 +38,8 @@ import dev_config  # noqa: E402 -- path insert must precede this import
 
 ROOT = Path(__file__).resolve().parents[1]
 NCU = dev_config.get("toolchain.ncu")
+#: the `rola_results` location of the calibrations: the MMA-only composition's plateau, per binary
+SCALE = "pipe_timeline.scale"
 PY = sys.executable
 
 #: the series a timeline reads: (short name, metric column in the raw export, pass-group workload-start key)
@@ -192,20 +195,33 @@ def plateau(tl: dict) -> dict:
 
 
 def stored_scale() -> float | None:
-    rows = sorted(scale_dir().glob("pipe-timeline-scale-*.json"))
-    return json.loads(rows[-1].read_text())["plateau"] if rows else None
+    """The newest calibration's plateau (`rola_results` at `pipe_timeline.scale`)."""
+    from rola_results import Store
+
+    store = Store(SCALE)
+    newest = max(((s["utc"], store.dir / s["output"]) for r in store.records() for s in r["samples"] if s["ok"]), default=None)
+    return json.loads(newest[1].read_text())["plateau"] if newest else None
+
+
+def binary() -> str:
+    from rola_results import digest
+
+    return digest(next((ROOT / "rola").glob("_C*.so")))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cell", required=True)
     ap.add_argument("--rep", type=Path, help="an existing PmSampling report instead of a new capture")
-    ap.add_argument("--out", type=Path, help="report path stem (default: <store>/timelines/<cell>)")
+    ap.add_argument("--out", type=Path, help="report path stem (default: the scratch directory's pipe_timeline/<cell>)")
     ap.add_argument("--scale", type=float, help="the MMA-only plateau in the tensor series (default: the stored row)")
     ap.add_argument("--calibrate", action="store_true",
                     help="this capture is the MMA-only composition (ROLA_CARRY_PARTS=none): store its plateau as the scale")
+    ap.add_argument("--no-record", action="store_true", help="store nothing: the caller keeps the reports")
     a = ap.parse_args()
-    out = a.out or dev_config.store("timelines", a.cell)
+    from rola_results import Store, checkout
+
+    out = a.out or dev_config.scratch("pipe_timeline") / a.cell
     out.parent.mkdir(parents=True, exist_ok=True)
     rep = a.rep or capture(a.cell, out)
     tl = parse(*export(rep))
@@ -213,17 +229,21 @@ def main() -> int:
         import datetime as dt
         row = {"utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%MZ"), "cell": a.cell, "report": rep.name,
                "metric": dict(SERIES)["tensor"], "composition": "ROLA_CARRY_PARTS=none", **plateau(tl)}
-        dest = scale_dir() / f"pipe-timeline-scale-{row['utc']}.json"
-        dest.write_text(json.dumps(row, indent=1) + "\n")
-        print(f"scale: {row['plateau']:.2f} (p10 {row['p10']:.2f}, p90 {row['p90']:.2f}, {row['samples']} samples) -> {dest}")
+        if not a.no_record:
+            Store(SCALE).put({"cell": a.cell, "binary": binary(), "composition": row["composition"]}, output=row,
+                             provenance=checkout(ROOT))
+        print(f"scale: {row['plateau']:.2f} (p10 {row['p10']:.2f}, p90 {row['p90']:.2f}, {row['samples']} samples)")
         a.scale = row["plateau"]
     if a.scale is None:
         a.scale = stored_scale()
     summ = summary(tl, a.scale)
-    out.with_suffix(".json").write_text(json.dumps({"cell": a.cell, "report": rep.name, "scale": a.scale,
-                                                    "summary": summ, **tl}) + "\n")
+    doc = {"cell": a.cell, "report": rep.name, "scale": a.scale, "summary": summ, **tl}
+    out.with_suffix(".json").write_text(json.dumps(doc) + "\n")
     out.with_suffix(".html").write_text(f"<title>Pipe timeline {html.escape(a.cell)}</title>\n"
                                         + chart(tl, a.cell, a.scale) + "\n")
+    if not a.no_record:
+        Store("pipe_timeline").put({"cell": a.cell, "binary": binary(), "scale": a.scale}, output=doc,
+                                   provenance=checkout(ROOT))
     print(json.dumps({"cell": a.cell, "duration_us": tl["duration_us"], "series": sorted(tl["series"]), **summ},
                      indent=1))
     return 0

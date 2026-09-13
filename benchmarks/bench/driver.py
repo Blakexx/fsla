@@ -18,11 +18,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
-import sys
 from pathlib import Path
 
-from bench import store
 from bench.discipline import disciplined
 from bench.ledger import append
 from bench.pairing import INSTRUMENTS, REPS_PER_ROUND, Arm, interleaved_ab, measure_arm
@@ -35,6 +32,8 @@ from benchmarks.cells.layer import layer_cells
 
 #: THE REGISTRY, read once: `{name -> (kind, record)}` over BOTH cell kinds. A name is
 #: unique across the registry, so a command line names a cell and the kind follows.
+REPO = Path(__file__).resolve().parents[2]
+
 CELLS = {**{c.name: ("carry", c) for c in carry_cells()},
          **{c.name: ("layer", c) for c in layer_cells()}}
 
@@ -104,6 +103,22 @@ def _row(run, subject: str, cell: str, calls: int, values, source: str, **extra)
                    unit="ms", values=values, **extra)
 
 
+def record(run, out: list, args, rounds: int, specs: list[str]) -> None:
+    """The run as one sample in `rola_results` at `bench_driver`: the semantics are the arm specs, the counts, the
+    instrument, the tree (commit and tracked diff), the binary's manifest and the device."""
+    from rola_results import Store, checkout
+
+    here = checkout(REPO)
+    semantics = {"specs": specs, "tier": args.tier, "rounds": rounds, "reps_per_round": args.reps,
+                 "instrument": args.instrument, "probe_version": PROBE_VERSION, "git_sha": here["git_sha"],
+                 "diff_sha256": here["diff_sha256"], "manifest_sha256": run.env.get("manifest_sha256"),
+                 "device": run.env.get("gpu")}
+    results = json.loads(json.dumps(out, default=str))
+    sample = Store("bench_driver").put(semantics, output=results, provenance={
+        **here, "run_id": run.run_id, "stage": args.stage, "clocks": json.loads(json.dumps(run.clocks, default=str))})
+    print(f"record: bench_driver sample {sample['n']} ({len(results)} result(s))")
+
+
 def main(subjects, argv=None, *, description: str = "") -> int:
     """One driver's whole body. `subjects` is the roster this driver is allowed to run."""
     p = argparse.ArgumentParser(description=description)
@@ -120,13 +135,10 @@ def main(subjects, argv=None, *, description: str = "") -> int:
     p.add_argument("--json", default=None, help="also write the results here")
     p.add_argument("--no-ledger", action="store_true",
                    help="do not append to perf/ledger.jsonl (a scratch run, not a record)")
-    #: K38: the second writer of the record (the store) -- one shared call site
-    #: (below) so every unit/integration driver writes the same record shape as
-    #: `tools/probe_cells.py`. Independent of `--no-ledger`: the retired
-    #: `perf/ledger.jsonl` and the K38 record are two different schemas, either can
-    #: be skipped without the other.
+    #: THE RECORD: the run as one sample in `rola_results` at `bench_driver`, one shared call
+    #: site (below) for every unit driver. Independent of `--no-ledger`.
     p.add_argument("--no-record", action="store_true",
-                   help="do not write record rows to the store (a scratch run, not a record)")
+                   help="do not store the results (a scratch run, not a record)")
     p.add_argument("--stage", default=None, help="the queue stage this run belongs to")
     args = p.parse_args(argv)
 
@@ -140,28 +152,11 @@ def main(subjects, argv=None, *, description: str = "") -> int:
               f"clock {run.clocks['sm_mhz']:.0f} MHz  {run.env['gpu']}")
         cache: dict = {}
         rows = []
-        k38_results = []
-
-        def _k38(subject, cell, calls, values, **extra):
-            k38_results.append(store.build_result(
-                k38_run, kind="probe", cell=cell, arm=subject, metric="duration_median_ms",
-                value=statistics.median(values), unit="ms",
-                extra={"values": list(values), "instrument": args.instrument, "calls": calls,
-                       **extra}))
-
-        k38_run = None
-        if not args.no_record:
-            try:
-                k38_run = store.build_run(
-                    harness_paths=[Path(__file__).resolve(), Path(sys.argv[0]).resolve()],
-                    stage=args.stage, git_sha=run.sha, dirty=run.dirty, env=run.env,
-                    stamp_magic=run.env.get("manifest_sha256"))
-            except ValueError as ex:
-                print(f"K38 record REFUSED: {ex}", file=sys.stderr)
 
         if args.ab:
             a_spec, _, b_spec = args.ab.partition(":")
             a_unit, b_unit = parse_spec(a_spec, subjects), parse_spec(b_spec, subjects)
+            specs = [a_spec, b_spec]
             a, b = build_arm(*a_unit, cache), build_arm(*b_unit, cache)
             result = interleaved_ab(a, b, rounds=rounds, reps_per_round=args.reps,
                                     instrument=args.instrument)
@@ -173,14 +168,12 @@ def main(subjects, argv=None, *, description: str = "") -> int:
                 rows.append(_row(run, *unit, times, args.instrument,
                                  paired_with=(b if arm is a else a).name,
                                  rounds=rounds, reps_per_round=args.reps))
-                if k38_run is not None:
-                    _k38(*unit, times, paired_with=(b if arm is a else a).name,
-                        rounds=rounds, reps_per_round=args.reps)
         else:
             wanted = [args.subject] if args.subject else sorted(subjects)
             units = [(subject, cell, calls) for cell in names for subject in wanted
                      for calls in SUBJECTS[subject].calls
                      if subject in applicable(CELLS[cell][1], CELLS[cell][0], calls)]
+            specs = [f"{s}@{c}" + (f"@calls={n}" if n != 1 else "") for s, c, n in units]
             for subject, cell, calls in units:
                 arm = build_arm(subject, cell, calls, cache)
                 res = measure_arm(arm, rounds=rounds, reps_per_round=args.reps,
@@ -191,14 +184,10 @@ def main(subjects, argv=None, *, description: str = "") -> int:
                       f"{res['median_ms']:9.4f} ms  IQR {res['iqr_ms']:.4f}")
                 rows.append(_row(run, subject, cell, calls, res["values"], args.instrument,
                                  rounds=rounds, reps_per_round=args.reps))
-                if k38_run is not None:
-                    _k38(subject, cell, calls, res["values"], rounds=rounds,
-                         reps_per_round=args.reps)
         if not args.no_ledger:
             print(f"ledger += {append(rows)} rows")
-        if k38_run is not None:
-            out_path = store.write_run(k38_run, k38_results)
-            print(f"K38 record: {out_path} ({len(k38_results)} result row(s))")
+        if not args.no_record:
+            record(run, out, args, rounds, specs)
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(out, fh, indent=1, sort_keys=True, default=str)

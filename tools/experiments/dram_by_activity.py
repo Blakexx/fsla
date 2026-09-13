@@ -42,8 +42,8 @@ aggregates it by source line, which is how the three blocks of a split page (hi 
 lo values, the two 16-bit mass runs -- `docs/internals/common/state_page.md`) are told
 apart: they are three distinct loops in `common/state_page.cuh`.
 
-Rows are written through the record's epilogue (`benchmarks/bench/store.py`), one result per
-(binary, variant, cell, metric), so `tools/rola_db.py` can find them by `--stage`.
+The rows are stored through `rola_results` at `dram_by_activity`, one sample a run, its stage in
+the provenance.
 """
 from __future__ import annotations
 
@@ -382,48 +382,24 @@ def main():
     print(f"\nwrote {len(rows)} rows to {dump}")
 
     if not args.no_record:
-        from bench import store  # noqa: PLC0415
+        from rola_results import Store, checkout  # noqa: PLC0415
 
+        arms = []
         for b in args.binary:
-            entries = [r for r in rows if r["binary"] == b["label"] and "error" not in r]
-            if not entries:
-                continue
-            stamp0 = entries[0]["stamp"]
-            env = {"gpu": stamp0.get("device_name") or "unknown",
-                   "sm": stamp0.get("sm") or "sm_unknown",
-                   "driver_cuda": stamp0.get("driver_cuda"), "torch": stamp0.get("torch"),
-                   "ptxas": stamp0.get("ptxas")}
-            try:
-                run = store.build_run(
-                    harness_paths=[THIS_FILE, Path(pc.__file__).resolve()], stage=args.stage,
-                    agent=args.agent, purpose=args.purpose, env=env, git_sha=b["git_sha"],
-                    dirty=pc.git_dirty(b["worktree"]), branch=pc.git_branch(b["worktree"]),
-                    worktree_name=Path(b["worktree"]).name,
-                    stamp_magic=stamp0.get("manifest_sha256"))
-            except ValueError as ex:
-                print(f"record REFUSED for {b['label']}: {ex}", file=sys.stderr)
-                continue
-            out_rows = []
-            for e in entries:
-                for metric in METRICS:
-                    m = e.get(metric)
-                    if not m:
-                        continue
-                    extra = {"variant": e["variant"],
-                             "continuation": e["stamp"].get("continuation"),
-                             "kernel_name": e["kernel_name"],
-                             "min": m["min"], "max": m["max"], "n_launches": m["n"],
-                             "values": m["values"],
-                             "census": e["stamp"].get("census"),
-                             "arm_row": e["stamp"].get("arm_row")}
-                    out_rows.append(store.build_result(
-                        run, kind="ncu",
-                        cell=(f"{e['cell']}/{e['variant']}"
-                              + ("/cont" if e["stamp"].get("continuation") else "")),
-                        arm=e["stamp"].get("resolved_carve"), metric=metric,
-                        value=m["median"], unit="count", extra=extra))
-            print(f"record: {b['label']} -> {store.write_run(run, out_rows)} "
-                  f"({len(out_rows)} rows)")
+            stamp0 = next((r["stamp"] for r in rows if r["binary"] == b["label"] and "error" not in r), {})
+            arms.append({**{k: v for k, v in checkout(b["worktree"]).items() if k in ("git_sha", "diff_sha256")},
+                         "manifest_sha256": stamp0.get("manifest_sha256")})
+        semantics = {"arms": arms, "cells": sorted({r["cell"] for r in rows}), "variants": args.variants.split(","),
+                     "warmup": args.warmup, "launches": args.launches, "rounds": args.rounds, "source": args.source,
+                     "continuation": args.continuation, "metrics": METRICS}
+        provenance = {"stage": args.stage, "agent": args.agent, "purpose": args.purpose,
+                      "arms": [{"label": b["label"], **checkout(b["worktree"])} for b in args.binary]}
+        store = Store("dram_by_activity")
+        if any("error" not in r for r in rows):
+            sample = store.put(semantics, output=rows, provenance=provenance)
+        else:
+            sample = store.put(semantics, error="no row measured", provenance=provenance, rows=rows)
+        print(f"record: {store.location} sample {sample['n']} ({len(rows)} rows)")
 
 
 if __name__ == "__main__":

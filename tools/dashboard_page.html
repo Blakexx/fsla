@@ -150,7 +150,7 @@ label{display:inline-flex;gap:6px;align-items:center}
     if (t) showTip(t.dataset.tip, ev.clientX, ev.clientY); else if (!ev.target.closest('.chart')) tip.hidden = true;
   });
 
-  document.getElementById('meta').textContent = `${D.hw} · newest input ${D.newest || 'none'} · data sha256 __DIGEST__`;
+  document.getElementById('meta').textContent = `newest input ${D.newest || 'none'} · data sha256 __DIGEST__`;
 
   function table(node, head, rows) {
     node.textContent = '';

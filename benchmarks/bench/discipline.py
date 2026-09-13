@@ -155,9 +155,11 @@ class Run:
 
 
 def _git_state():
-    from bench.ledger import git_state
+    """`(sha, dirty)` of the tree being measured (`rola_results.checkout`: dirty is a tracked diff against HEAD)."""
+    from rola_results import checkout
 
-    return git_state()
+    here = checkout(Path(__file__).resolve().parents[2])
+    return here["git_sha"], here["diff_sha256"] is not None
 
 
 @contextmanager

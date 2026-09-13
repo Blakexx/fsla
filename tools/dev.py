@@ -10,7 +10,7 @@
     python tools/dev.py clock --mhz 1665        # lock this host's SM clock once, prove the round trip, record it
     python tools/dev.py worktree <name> <sha> [--build]   # a worktree, its pointer venv, its gate, its extension
     python tools/dev.py container compose|build|check|gate # the dev container: mounts, image, proof, commit gate
-    python tools/dev.py store import <dir> | commit -m <msg>  # the measurements store (its own git repository)
+    python tools/dev.py store import <dir> | commit -m <msg>  # the measurements store (a rola-results checkout)
 
 The settings live in the dev config directory (`tools/dev_config.py`). Docs: docs/internals/tools/dev.md.
 """
@@ -45,6 +45,8 @@ ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/co
               "tools/sccache_pin.json", "tools/mold_pin.json", "tools/dev.py", "tools/dev_config.py",
               "tools/sccache_toolchain.py", "tools/mold_toolchain.py")
 IMAGE_REPO = "rola-dev"
+#: the `rola_results` location of the container checks, one record per environment key
+RESULTS_ENVIRONMENT = "environment"
 IMAGE_LAYOUT, WSL_LIB_IN_IMAGE = dev_config.IMAGE_LAYOUT, dev_config.WSL_LIB_IN_IMAGE
 #: each pinned tool's own version reader, the one its build gate compares against the pin
 VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolchain.mold_version}
@@ -91,6 +93,29 @@ def base_venv_of(prefix: Path) -> str | None:
     if pointer.exists():
         return str(Path(pointer.read_text().strip()).parents[2])
     return str(prefix) if (site / "torch").is_dir() else None
+
+
+def site_packages(venv: Path) -> Path:
+    return venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+
+
+def link_results(image: bool) -> list[Path]:
+    """`rola_results` importable from every interpreter that measures here, by a one-line `rola_results.pth` naming
+    `store.root`: the base venv (the image's at its build, naming the store's mount point), and on a host each worktree's
+    pointer venv (it borrows the base as a plain path, which reads none of the base's .pth files) and python3's user
+    site."""
+    sites = [site_packages(Path(dev_config.get("workspace.base_venv")))]
+    if not image:
+        sites += [site_packages(v) for v in sorted(Path(dev_config.get("workspace.worktrees")).glob("venv-*"))
+                  if (site_packages(v) / "zz_rola_base.pth").exists()]
+        system = shutil.which("python3", path=os.defpath)
+        if system:
+            sites.append(Path(subprocess.run([system, "-m", "site", "--user-site"], capture_output=True, text=True,
+                                             check=True).stdout.strip()))
+    for site in sites:
+        site.mkdir(parents=True, exist_ok=True)
+        (site / "rola_results.pth").write_text(f"{dev_config.get('store.root')}\n")
+    return sites
 
 
 def wire_hooks(checkout: Path) -> None:
@@ -154,7 +179,8 @@ def cmd_init(a) -> int:
         subprocess.run(["uv", "pip", "install", "--python", str(Path(base) / "bin" / "python"),
                         "-r", str(ROOT / "requirements.lock"), "--extra-index-url", "https://download.pytorch.org/whl/cu124",
                         "--index-strategy", "unsafe-best-match"], check=True)
-    ensure_store()
+    for site in link_results(a.image):
+        print(f"rola_results: linked into {site}")
     if not a.image:
         wire_hooks(ROOT)
         if dev_config.get("clock.ghz") is None:
@@ -205,11 +231,7 @@ def ensure_store() -> Path:
 def cmd_store(a) -> int:
     root = ensure_store()
     if a.action == "commit":
-        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
-        if subprocess.run(["git", "-C", str(root), "diff", "--cached", "--quiet"]).returncode == 0:
-            print("store: nothing to commit")
-            return 0
-        return subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", a.message]).returncode
+        return subprocess.run([sys.executable, "-m", "rola_results", "commit", "-m", a.message]).returncode
     src = Path(a.source)
     added, same, conflicts = 0, 0, []
     for path in sorted(p for p in src.rglob("*") if p.is_file()):
@@ -301,7 +323,12 @@ def cmd_check(a) -> int:
         "point workspace.suite at a rola-bench checkout carrying rola_bench/suite")
     row(Path(dev_config.get("workspace.worktrees")).is_dir(), f"workspace.worktrees: {dev_config.get('workspace.worktrees')}")
     root = dev_config.store()
-    row((root / ".git").is_dir(), f"store.root is a git repository: {root}", "python tools/dev.py init")
+    row((root / "rola_results" / "store.py").is_file(), f"store.root is a rola-results checkout: {root}",
+        "clone rola-results to store.root, or point store.root at a checkout")
+    found = subprocess.run([str(python), "-c", "import rola_results; print(rola_results.ROOT)"], capture_output=True,
+                           text=True)
+    row(found.stdout.strip() == str(root / "records"), f"rola_results imports from store.root in {python}",
+        "python tools/dev.py init")
     return _report(rows)
 
 
@@ -406,9 +433,10 @@ def cmd_worktree(a) -> int:
         raise SystemExit(f"refusing: {worktree}/tools/git-hooks/pre-commit is missing or not executable")
     wire_hooks(worktree)
     subprocess.run(["uv", "venv", "--python", py.removeprefix("python"), "--seed", str(venv)], check=True)
-    site = venv / "lib" / py / "site-packages"
+    site = site_packages(venv)
     (site / f"aa_rola_{a.name}.pth").write_text(f"{worktree}\n")
-    (site / "zz_rola_base.pth").write_text(f"{Path(base) / 'lib' / py / 'site-packages'}\n")
+    (site / "zz_rola_base.pth").write_text(f"{site_packages(Path(base))}\n")
+    (site / "rola_results.pth").write_text(f"{dev_config.get('store.root')}\n")
     main_so = sorted((main / "rola").glob("_C.cpython-*.so"))
     same = subprocess.run(["git", "-C", str(main), "rev-parse", "HEAD"], capture_output=True, text=True).stdout == \
         subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
@@ -519,14 +547,19 @@ def cmd_container(a) -> int:
         holder.stdin.close()
         holder.wait()
 
+    from rola_results import Store, checkout
+
     image_id = subprocess.run(["docker", "image", "inspect", "-f", "{{.Id}}", tag], capture_output=True, text=True).stdout
-    record = {"env_key": key, "image": tag, "image_id": image_id.strip(), "ok": all(r["ok"] for r in rows),
-              "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "proofs": rows}
-    out = _record_dir() / f"{key}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(record, indent=1) + "\n")
-    print(f"container check: {'green' if record['ok'] else 'RED'}; recorded {out}")
-    return 0 if record["ok"] else 1
+    ok = all(r["ok"] for r in rows)
+    result = {"image": tag, "image_id": image_id.strip(), "proofs": rows}
+    store = Store(RESULTS_ENVIRONMENT)
+    if ok:
+        store.put({"env_key": key}, output=result, provenance=checkout(ROOT))
+    else:
+        store.put({"env_key": key}, error=f"RED: {[r['proof'] for r in rows if not r['ok']]}", provenance=checkout(ROOT),
+                  **result)
+    print(f"container check: {'green' if ok else 'RED'}; recorded under {store.dir}")
+    return 0 if ok else 1
 
 
 def _container_gate() -> int:
@@ -541,9 +574,11 @@ def _container_gate() -> int:
         blob = subprocess.run(["git", "-C", str(ROOT), "show", f":{rel}"], capture_output=True)
         return blob.stdout if blob.returncode == 0 else b""
 
+    from rola_results import Store
+    from rola_results import key as record_key
+
     key = env_key(read)
-    records = list(dev_config.store().glob(f"*/environment/{key}.json"))
-    if any(json.loads(r.read_text()).get("ok") for r in records):
+    if Store.complete(Store(RESULTS_ENVIRONMENT).get(record_key({"env_key": key}))):
         return 0
     print(f"§23 (3): this commit changes the dev environment ({', '.join(sorted(set(staged) & set(ENV_INPUTS)))}) and "
           f"no passing container check exists for its key {key[:12]}.\n  python tools/dev.py container build && "

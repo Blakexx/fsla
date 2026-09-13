@@ -3,15 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE DASHBOARD: every stored measurement of the kernel and its variants over the cells, as one static page.
 
-    python tools/dashboard.py            # writes <store>/ledgers/dashboard.html
+    python tools/dashboard.py            # writes the scratch directory's dashboard/dashboard.html
     python tools/dashboard.py --check    # renders twice and refuses unless the bytes agree
 
-It measures nothing. It reads what the suite already stored and renders it, so the same inputs give the same
-bytes (no clock, no randomness, inputs read in sorted order, data serialized with sorted keys):
-  build ledger reports   <store>/ledgers/<utc>-<sha7>-<tag>.json        standings, builds
-  composer reports       <store>/ledgers/<utc>-<sha7>-compose.json      part ladders
-  pipe timelines         <store>/ledgers/<stem>-timeline-<cell>.json    tensor pipe over a launch
-  the probe record       <store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl  variants against a baseline
+It measures nothing. It reads what the tools stored through `rola_results` and renders it, so the same inputs give the
+same bytes (no clock, no randomness, inputs read in sorted order, data serialized with sorted keys):
+  build_ledger           build ledger reports           standings, builds
+  compose_ledger         composer reports               part ladders
+  pipe_timeline          pipe timelines                 tensor pipe over a launch
+  pipe_timeline.scale    the timeline's calibration     the note under the timelines
+  probe_cells            probe sessions                 variants against a baseline
 The page is `tools/dashboard_page.html` with the data inlined; docs/internals/tools/dashboard.md.
 """
 from __future__ import annotations
@@ -28,8 +29,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import dev_config  # noqa: E402 -- path insert must precede this import
 
-LEDGERS = dev_config.store("ledgers")
-RESULTS = dev_config.store()
 PAGE = Path(__file__).with_name("dashboard_page.html")
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d{4}Z)-([0-9a-f]{7}|unknown)-(.+)$")
 PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep", "head_words", "head_scans")
@@ -81,31 +80,34 @@ def compose_row(stem: str, r: dict) -> dict:
 
 def timeline_row(stem: str, r: dict) -> dict:
     cell, scale = r["cell"], r.get("scale")
-    suffix = f"-timeline-{cell}"
     series = r["series"]
 
     def pts(name: str, k: float = 1.0) -> list:
         return [[round(t, 1), round(v * k, 1)] for t, v in series.get(name, [])]
 
-    return {"name": stem, **stamp(stem[: -len(suffix)] if stem.endswith(suffix) else stem), "cell": cell,
+    return {"name": stem, **stamp(stem), "cell": cell,
             "duration_us": round(r["duration_us"], 1), "scaled": bool(scale),
             "summary": {k: round(v, 4) for k, v in r.get("summary", {}).items() if isinstance(v, (int, float))},
             "tensor": pts("tensor", 100.0 / scale if scale else 1.0), "alu": pts("alu"), "warps": pts("warps")}
 
 
-def ledger_inputs(ledgers: Path) -> tuple[list, list, list]:
-    builds, composes, timelines = [], [], []
-    for p in sorted(ledgers.glob("*.json")):
-        try:
-            r = json.loads(p.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        if "series" in r and "cell" in r:
-            timelines.append(timeline_row(p.stem, r))
-        elif "ladders" in r:
-            composes.append(compose_row(p.stem, r))
-        elif "tag" in r and "cells" in r:
-            builds.append(build_row(p.stem, r))
+def stored(location: str) -> list[tuple[str, dict, dict]]:
+    """Every successful sample of a `rola_results` location, oldest first: (its time as `<yyyy-mm-dd>T<hhmm>Z`, its
+    provenance, its output)."""
+    from rola_results import Store
+
+    store = Store(location)
+    out = [(s["utc"], r["key"], s["n"], s["provenance"], store.dir / s["output"]) for r in store.records()
+           for s in r["samples"] if s["ok"]]
+    return [(utc[:13] + utc[14:16] + "Z", prov, json.loads(path.read_text())) for utc, _k, _n, prov, path in sorted(out)]
+
+
+def ledger_inputs() -> tuple[list, list, list]:
+    builds = [build_row(f"{r['utc']}-{r['sha']}-{re.sub(r'[^A-Za-z0-9_-]+', '-', r['tag'])}", r)
+              for _utc, _prov, r in stored("build_ledger")]
+    composes = [compose_row(f"{r['utc']}-{r['sha']}-compose", r) for _utc, _prov, r in stored("compose_ledger")]
+    timelines = [timeline_row(f"{utc}-{(prov.get('git_sha') or 'unknown')[:7]}-timeline-{r['cell']}", r)
+                 for utc, prov, r in stored("pipe_timeline")]
     order = lambda row: (row["utc"], row["name"])  # noqa: E731
     return sorted(builds, key=order), sorted(composes, key=order), sorted(timelines, key=order)
 
@@ -124,24 +126,31 @@ def unit_of(arm: str, calls: int) -> str:
     return arm if calls == 1 else f"{arm}@calls={calls}"
 
 
-def probe_runs(results: Path, hw: str) -> list[dict]:
+def probe_runs() -> list[dict]:
+    """Each binary of each stored probe session (`probe_cells`), as a run: its checkout, commit and branch, and a row per
+    measured cell."""
     runs = []
-    for p in sorted((results / hw).rglob("*.jsonl")):
-        lines = [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
-        head = next((x for x in lines if x.get("kind") == "run"), None)
-        probes = [x for x in lines if x.get("kind") == "probe" and x.get("value") is not None]
-        if not head or not probes:
-            continue
-        extras = [json.loads(x.get("extra_json") or "{}") for x in probes]
-        runs.append({"ts": head.get("ts") or "", "run_id": head["run_id"], "stage": head.get("stage"),
-                     "purpose": head.get("purpose"), "branch": head.get("branch"), "worktree": head.get("worktree"),
-                     "sha": (head.get("git_sha") or "")[:7], "dirty": bool(head.get("dirty")),
-                     "label": extras[0].get("binary") or head.get("worktree") or head["run_id"],
-                     "session": extras[0].get("session"),
-                     "rows": [{"cell": x["cell"], "arm": unit_of(x.get("arm") or DEFAULT_ARM, e.get("calls", 1)), "ms": x["value"],
-                               "schedule": e.get("schedule"), "locked": e.get("clock_locked")}
-                              for x, e in zip(probes, extras)]})
+    for _utc, prov, rows in stored("probe_cells"):
+        arms = {a["label"]: a for a in prov.get("arms", [])}
+        for label in sorted({x["binary"] for x in rows}):
+            mine = [x for x in rows if x["binary"] == label]
+            arm = arms.get(label, {})
+            measured = [x for x in mine if x.get("median_of_round_medians_ms") is not None]
+            if not measured:
+                continue
+            runs.append({"ts": _utc_seconds(_utc), "run_id": f"{prov.get('session')}-{label}", "stage": prov.get("stage"),
+                         "purpose": prov.get("purpose"), "branch": arm.get("branch"), "worktree": mine[0].get("worktree"),
+                         "sha": (mine[0].get("git_sha") or "")[:7], "dirty": bool(arm.get("diff_sha256")),
+                         "label": label, "session": prov.get("session"),
+                         "rows": [{"cell": x["cell"], "arm": unit_of(x.get("bench") or DEFAULT_ARM, x.get("calls") or 1),
+                                   "ms": x["median_of_round_medians_ms"], "schedule": x.get("schedule"),
+                                   "locked": x.get("clock_locked")} for x in measured]})
     return sorted(runs, key=lambda r: (r["ts"], r["run_id"]))
+
+
+def _utc_seconds(stamp_: str) -> str:
+    """`<yyyy-mm-dd>T<hhmm>Z` as the `%Y-%m-%dT%H:%M:%SZ` the variants' times are read in."""
+    return dt.datetime.strptime(stamp_, "%Y-%m-%dT%H%MZ").strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def sessions(runs: list[dict]) -> list[list[dict]]:
@@ -226,16 +235,16 @@ def cell_order(cells: set[str]) -> list[str]:
     return [c for c in GATE_CELLS if c in cells] + sorted(cells - set(GATE_CELLS))
 
 
-def data(ledgers: Path, results: Path, hw: str, baselines: list[str]) -> dict:
-    builds, composes, timelines = ledger_inputs(ledgers)
-    probes = variants(probe_runs(results, hw), baselines)
-    scales = sorted((results / hw).glob("pipe-timeline-scale-*.json"))
+def data(baselines: list[str]) -> dict:
+    builds, composes, timelines = ledger_inputs()
+    probes = variants(probe_runs(), baselines)
+    scales = [r for _utc, _prov, r in stored("pipe_timeline.scale")]
     cells = {c for b in builds for c in b["cells"]} | {t["cell"] for t in timelines}
     cells |= {c for v in probes for c in v["cells"]}
     newest = max([x["utc"] for x in builds + composes + timelines] + [dt.datetime.strptime(v["utc"], "%Y-%m-%dT%H:%M:%SZ")
                   .strftime("%Y-%m-%dT%H%MZ") for v in probes] or [""])
-    return {"hw": hw, "baselines": baselines, "phases": PHASES, "cells": cell_order(cells), "newest": newest,
-            "scale": json.loads(scales[-1].read_text()) if scales else None, "standings": standings(builds),
+    return {"baselines": baselines, "phases": PHASES, "cells": cell_order(cells), "newest": newest,
+            "scale": scales[-1] if scales else None, "standings": standings(builds),
             "builds": builds, "composes": composes, "timelines": timelines, "variants": probes}
 
 
@@ -248,19 +257,16 @@ def render(d: dict) -> bytes:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ledgers", type=Path, default=LEDGERS)
-    ap.add_argument("--results", type=Path, default=RESULTS)
-    ap.add_argument("--hw", default="rtx3080ti-sm86", help="the hardware profile of the probe record to read")
     ap.add_argument("--baselines", default="master,k31/carry-clean",
                     help="git branches a session's baseline run may be on, in order of preference")
-    ap.add_argument("--out", type=Path, default=LEDGERS / "dashboard.html")
+    ap.add_argument("--out", type=Path, default=dev_config.scratch("dashboard") / "dashboard.html")
     ap.add_argument("--check", action="store_true", help="render twice from fresh reads; refuse unless the bytes agree")
     a = ap.parse_args()
     baselines = [b for b in a.baselines.split(",") if b]
 
-    page = render(data(a.ledgers, a.results, a.hw, baselines))
+    page = render(data(baselines))
     if a.check:
-        again = render(data(a.ledgers, a.results, a.hw, baselines))
+        again = render(data(baselines))
         leaks = [s for s in (str(ROOT), "/tmp/", "/home/") if s in page.decode()]
         if page != again or leaks:
             print(f"dashboard: REFUSED ({'renders differ' if page != again else 'absolute paths inlined: ' + ', '.join(leaks)})")

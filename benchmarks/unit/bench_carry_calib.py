@@ -9,15 +9,14 @@ on every warp of every CTA, timed by the host under the locked clock, as cycles 
 The kernels are `benchmarks/unit/carry_parts/carry_calib.cuh`, built into the part harness's module
 (`ROLA_BUILD_PARTS=1`). A calibration is sized from a short launch to take `--seconds` a launch, run
 once to warm, then `--launches` times; the median launch's seconds times the locked clock's cycles a
-second, over the operations a warp issues in it, is the row. The rows land in
-`<store>/<hw-profile>/calibration-<utc>.json`: reference rows for this card, the composer's and the
-tracer's pipe replay read them instead of a constant.
+second, over the operations a warp issues in it, is the row. The rows are stored
+through `rola_results` at `calibration`: reference rows for this card, the composer's and the tracer's
+pipe replay read them instead of a constant.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
 import statistics
 import sys
 import time
@@ -28,7 +27,6 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "benchmarks"))
 
-import dev_config  # noqa: E402
 import torch  # noqa: E402
 
 #: (name, warps, mode, burst, operations a unit a warp, what it stands for in the kernel)
@@ -102,15 +100,16 @@ def main() -> int:
             print(f"{name:20s} {cyc:9.2f} cycles an op a warp   ({iters} units, median {med:.3f} s)  {what}",
                   flush=True)
         read = carry_ops.sm_clock_ghz()
-    from bench.hw_profile import current
+    from rola_results import Store, checkout, digest
 
-    dest = dev_config.store(current())
-    dest.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%MZ")
-    path = dest / f"calibration-{stamp}.json"
-    path.write_text(json.dumps({"utc": stamp, "owners": a.owners, "clock": clock, "ghz_before": ghz,
-                                "ghz_after": read, "rows": rows}, indent=1) + "\n")
-    print(f"report: {path}")
+    semantics = {"binary": digest(mod.__file__), "device": torch.cuda.get_device_name(0), "owners": a.owners,
+                 "seconds": a.seconds, "launches": a.launches, "only": sorted(only),
+                 "clock_ghz": clock["ghz"] if clock else None}
+    sample = Store("calibration").put(semantics, output={"utc": stamp, "owners": a.owners, "clock": clock,
+                                                         "ghz_before": ghz, "ghz_after": read, "rows": rows},
+                                      provenance=checkout(ROOT))
+    print(f"report: calibration sample {sample['n']}")
     return 0 if clock_lock.within(read, clock) else 1
 
 

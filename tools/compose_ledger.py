@@ -16,7 +16,7 @@ no reading of samples. Each rung is CHECKED: the profiler's HMMA count for the c
 kernel's (a stub that changed the workload fails its rung), and the build's device code must differ
 from the kernel's (a build that did not take the mask fails). The kernel is rebuilt with every part
 real at the end and its device code must hash to the value taken before the first rung.
-Report: `<store>/ledgers/<utc>-<sha7>-compose.{json,md}`. Serial builds (the host's
+Report: stored through `rola_results` at `compose_ledger`, its markdown in the scratch directory. Serial builds (the host's
 memory watchdog kills parallel ones); measured work takes the GPU lock through the tools it drives.
 """
 from __future__ import annotations
@@ -40,7 +40,8 @@ import gen_shards  # noqa: E402
 PY = sys.executable
 CUOBJDUMP = dev_config.cuda_bin("cuobjdump")
 NVDISASM = dev_config.cuda_bin("nvdisasm")
-LEDGERS = dev_config.store("ledgers")
+#: where the human-readable report goes; the report itself is stored (`rola_results`)
+SCRATCH = dev_config.scratch("compose_ledger")
 
 
 def run(cmd: list[str], env: dict | None = None, timeout: int = 3600) -> tuple[int, str]:
@@ -287,12 +288,16 @@ def main() -> int:
                           + " | ".join(f"{cb.get(m, 0) - ca.get(m, 0):+.1f}" for _, m in keys)
                           + f" | {pa} -> {pb} |")
             md.append("")
+    from rola_results import Store, checkout
+
     name = f"{report['utc']}-{report['sha']}-compose"
-    LEDGERS.mkdir(parents=True, exist_ok=True)
-    (LEDGERS / f"{name}.json").write_text(json.dumps(report, indent=1) + "\n")
-    (LEDGERS / f"{name}.md").write_text("\n".join(md) + "\n")
+    here = checkout(ROOT)
+    semantics = {"git_sha": here["git_sha"], "diff_sha256": here["diff_sha256"], "cells": report["cells"],
+                 "timeline": TIMELINE}
+    sample = Store("compose_ledger").put(semantics, output=report, provenance=here)
+    (SCRATCH / f"{name}.md").write_text("\n".join(md) + "\n")
     print("\n".join(md))
-    print(f"report: {LEDGERS / name}.json")
+    print(f"report: compose_ledger sample {sample['n']}; markdown {SCRATCH / name}.md")
     rc, text = run([sys.executable, "tools/dashboard.py"])
     print(text.strip() if rc == 0 else f"dashboard: not rendered (rc {rc}): {text[-400:]}")
     ok = report["kernel"]["restored"] and all(r.get("hmma_ok") and r.get("mask_took") for lad in report["ladders"] for r in lad["rungs"])

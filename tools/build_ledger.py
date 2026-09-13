@@ -26,8 +26,8 @@ The steps, each recorded with its outcome (a failure is a row, never a stop):
                  utilization over time on the stored scale (§22 (11)), with a chart
   ab          -- `tools/probe_cells.py` per cell against the baseline RUN WITH ITS OWN SCHEDULE
                  (`box` dense, `sparse-g32` sparse), this tree with `first`
-The report lands in `<store>/ledgers/<utc>-<sha7>-<tag>.json` and `.md`; the diff is
-against the newest earlier report for the same cells. Measured work: the GPU lock, quiet GPU.
+The report is stored through `rola_results` at `build_ledger` and its markdown written to the scratch
+directory; the diff is against the newest earlier stored report sharing a cell. Measured work: the GPU lock, quiet GPU.
 """
 from __future__ import annotations
 
@@ -45,7 +45,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_config  # noqa: E402 -- path insert must precede this import
 
 ROOT = Path(__file__).resolve().parents[1]
-LEDGERS = dev_config.store("ledgers")
+#: where the human-readable report and the timelines' charts go; the report itself is stored (`rola_results`)
+SCRATCH = dev_config.scratch("build_ledger")
 PY = sys.executable
 PHASES = ("head", "readout", "fold", "snapshot", "edges", "sweep", "head_words", "head_scans")
 HMMA_CYCLES, SCHEDULERS = 32, 4  #: the utilization formula's constants (sm_86; --hmma-cycles/--schedulers override the profile step)
@@ -161,7 +162,7 @@ def step_timeline(report: dict, cells: list[str], stem: str) -> None:
     utilization over time on the stored scale, its mean over full-occupancy samples, and the chart."""
     report["timeline"] = {}
     for cell in cells:
-        out = LEDGERS / f"{stem}-timeline-{cell}"
+        out = SCRATCH / f"{stem}-timeline-{cell}"
         rc, text = run([PY, "tools/pipe_timeline.py", "--cell", cell, "--out", str(out)], timeout=3600)
         row: dict = {"rc": rc, "html": out.with_suffix(".html").name}
         m = re.search(r"\{.*\}", text, re.S)
@@ -195,15 +196,21 @@ def step_ab(report: dict, cells: list[str], baseline: str, tag: str) -> None:
         report["ab"][cell] = row
 
 
-def previous_report(cells: list[str], exclude: Path) -> dict | None:
-    cands = sorted((p for p in LEDGERS.glob("*.json") if p != exclude), key=lambda p: p.stat().st_mtime)
-    for p in reversed(cands):
-        try:
-            r = json.loads(p.read_text())
-        except json.JSONDecodeError:
-            continue
-        #: build-ledger reports only: the composer's and the timeline's JSON share the directory.
-        if "tag" in r and "phases" in r and set(cells) & set(r.get("cells", [])):
+def parse_tree(spec: str) -> Path:
+    """The worktree of a `worktree:PATH,venv:PATH` spec."""
+    return Path(dict(part.partition(":")[::2] for part in spec.split(","))["worktree"])
+
+
+def previous_report(cells: list[str], current: tuple[str, int]) -> dict | None:
+    """The newest stored build-ledger report sharing a cell with this one, other than the sample just stored."""
+    from rola_results import Store
+
+    store = Store("build_ledger")
+    samples = sorted((s["utc"], r["key"], s["n"], store.dir / s["output"]) for r in store.records() for s in r["samples"]
+                     if s["ok"] and (r["key"], s["n"]) != current)
+    for _utc, _key, _n, path in reversed(samples):
+        r = json.loads(path.read_text())
+        if set(cells) & set(r.get("cells", [])):
             return r
     return None
 
@@ -310,7 +317,6 @@ def main() -> int:
     cells = [c for c in a.cells.split(",") if c]
     skip = set(a.skip.split(",")) if a.skip else set()
 
-    LEDGERS.mkdir(parents=True, exist_ok=True)
     report = {"utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%MZ"), "sha": git_sha(),
               "tag": a.tag, "cells": cells}
     if "sass" not in skip:
@@ -330,14 +336,19 @@ def main() -> int:
             ap.error("--ab needs --baseline worktree:PATH,venv:PATH")
         step_ab(report, cells, a.baseline, a.tag)
 
+    from rola_results import Store, checkout
+    from rola_results import key as key_of
+
     name = f"{report['utc']}-{report['sha']}-{re.sub(r'[^A-Za-z0-9_-]+', '-', a.tag)}"
-    path = LEDGERS / f"{name}.json"
-    path.write_text(json.dumps(report, indent=1) + "\n")
-    prev = previous_report(cells, path)
+    here = checkout(ROOT)
+    semantics = {"git_sha": here["git_sha"], "diff_sha256": here["diff_sha256"], "tag": a.tag, "cells": cells,
+                 "skip": sorted(skip), "baseline": checkout(parse_tree(a.baseline))["git_sha"] if a.baseline else None}
+    sample = Store("build_ledger").put(semantics, output=report, provenance=here)
+    prev = previous_report(cells, (key_of(semantics), sample["n"]))
     md = markdown(report, prev)
-    (LEDGERS / f"{name}.md").write_text(md)
+    (SCRATCH / f"{name}.md").write_text(md)
     print(md)
-    print(f"report: {path}")
+    print(f"report: build_ledger/{key_of(semantics)} sample {sample['n']}; markdown {SCRATCH / name}.md")
     rc, text = run([PY, "tools/dashboard.py"])
     print(text.strip() if rc == 0 else f"dashboard: not rendered (rc {rc}): {text[-400:]}")
     return 0

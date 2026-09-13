@@ -4,26 +4,24 @@ The measurement suite stores every number it takes. The dashboard reads those st
 them as one static HTML page. It measures nothing. The same inputs always give the same bytes: no clock,
 no randomness, inputs read in sorted order, data serialized with sorted keys.
 
-    python tools/dashboard.py            # writes <store>/ledgers/dashboard.html
+    python tools/dashboard.py            # writes the scratch directory's dashboard/dashboard.html
     python tools/dashboard.py --check    # renders twice; refuses unless the bytes agree and no absolute path is inlined
 
 `tools/build_ledger.py` and `tools/compose_ledger.py` render it after writing their reports, so the page is
 current after every ledger or composer run. The page is `tools/dashboard_page.html` with the data inlined as
 JSON. Its header carries the hash of that data.
 
-**Inputs.**
+**Inputs.** Every input is read through `rola_results` (`docs/measurement.md`), each successful sample of a location:
 
-| input | where | read for |
-|---|---|---|
-| build ledger reports | `<store>/ledgers/<utc>-<sha7>-<tag>.json` | standings, builds |
-| composer reports | `<store>/ledgers/<utc>-<sha7>-compose.json` | part ladders |
-| pipe timelines | `<store>/ledgers/<utc>-<sha7>-<tag>-timeline-<cell>.json` | tensor and ALU pipes over a launch |
-| the probe record | `<store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` | variants against a baseline |
-| the timeline scale | `<store>/<hw-profile>/pipe-timeline-scale-<utc>.json` | the note under the timelines |
+| location | read for |
+|---|---|
+| `build_ledger` | standings, builds |
+| `compose_ledger` | part ladders |
+| `pipe_timeline` | tensor and ALU pipes over a launch |
+| `pipe_timeline.scale` | the note under the timelines |
+| `probe_cells` | variants against a baseline |
 
-A capture made outside a ledger run joins the page when `tools/pipe_timeline.py --rep <report> --out
-<store>/ledgers/<utc>-<sha7>-<label>-timeline-<cell>` imports it. The label names the
-composition, for example `kernel` or `mma-only`.
+A capture made outside a ledger run joins the page when `tools/pipe_timeline.py --rep <report>` imports it.
 
 **Sections.**
 - *Standings*: each gate cell's newest stored value of each build ledger measurement. That is the time
@@ -40,10 +38,8 @@ composition, for example `kernel` or `mma-only`.
 
 **Reading the variants.**
 - *Session.* A probe session is one `tools/probe_cells.py` invocation. Its binaries run interleaved under
-  the clock lock, so only ratios within a session are comparable. Rows written since 2026-09-12 carry the
-  invocation's `session` id. Older rows join a session when they share its stage, were written within 2 s
-  of its last run, and name a binary not already in it. The probe records every binary of an invocation
-  back to back.
+  the clock lock, so only ratios within a session are comparable. A stored session is one sample of a
+  `probe_cells` record, every binary's rows together.
 - *Baseline.* The baseline is the session's run on the first branch in `--baselines` that is present
   (default `master`, then `k31/carry-clean`). A session with several runs on `master` takes, per cell, the
   run that followed master's order policy (`box` dense, `sparse-gN` sparse). A session with no such run
@@ -56,6 +52,6 @@ composition, for example `kernel` or `mma-only`.
 
 **Limits.**
 - Everything the page reads is in the measurements store (`store.root`), shared by every worktree and the container;
-  raw profiler captures and the page itself are not committed there.
+  the page itself is written to the scratch directory.
 - Standings read build ledger reports only. A probe run outside the ledger does not change the standings,
   because the probe record does not say which binary is the tree's kernel.

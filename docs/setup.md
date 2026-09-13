@@ -88,8 +88,8 @@ gate is the second, independent check.
 python tools/dev.py container check
 ```
 
-runs the proofs inside the image, with the host's mounts, and records the result under the store as
-`<hw-profile>/environment/<environment key>.json`: `tools/dev.py check` inside; the GPU, torch and flash-attn; a lock
+runs the proofs inside the image, with the host's mounts, and stores the result through `rola_results` at
+`environment`, under the environment key: `tools/dev.py check` inside; the GPU, torch and flash-attn; a lock
 the HOST holds is seen as held inside (so one lock governs host and container, KERNEL_STANDARDS §14 addendum); and an
 iteration build of a copy of the checkout, imported. **A commit that changes any environment input needs a passing
 record for the key of what it stages -- the commit gate refuses it otherwise (KERNEL_STANDARDS §23 (3)).**

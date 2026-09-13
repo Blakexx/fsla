@@ -61,15 +61,13 @@ by re-running it casually; the tool prints `git_sha` and device stamp on every r
 new number can be told apart from an old one. A stage's §16 perf-probe gate cites the PREVIOUS
 stage's recorded number, not a fresh re-measurement of it.
 
-## The measurements record (K38) — every run is ALSO written, not just printed
-As of K38, a probe run (unless `--no-record`) writes each binary's rows through
-`benchmarks/bench/store.py` into `<store>/<hw-profile>/<yyyy-mm>/<run_id>.jsonl` — the
-record in the measurements store (`store.root`; `python tools/dev.py store commit` commits it) — and `python tools/rola_db.py rebuild` indexes it into the gitignored
-`.rola/measurements.sqlite`. Pass `--stage <name>` so a later `rola-db baseline --stage <name>` can
-find these rows; `rola-db last`/`history`/`compare` are how an agent finds a prior number by SQL
-instead of grepping FINDINGS. Read `docs/measurement.md`'s "The measurements record (JSONL) and its
-derived index" section for the schema before writing a NEW tool that measures anything — the writer
-epilogue is one shared call site on purpose.
+## The measurements record — every run is ALSO stored, not just printed
+A probe run (unless `--no-record`) stores the session through `rola_results` at `probe_cells`: one record per
+measurement (keyed by each binary's commit, tree digest, manifest and lane, the cells and counts), every run a sample
+with all its rows (`python tools/dev.py store commit` commits it; `python -m rola_results show probe_cells` lists it).
+Pass `--stage <name>` so the session's provenance names it. Read `docs/measurement.md`'s "The measurements record:
+`rola_results`" before writing a NEW tool that measures anything — every tool stores through the library at its own
+location.
 
 ## Instruction counts alone are never a verdict
 `--ncu`'s IPC and stall-reason columns are not decoration. §16 addendum 2: an instruction count that
@@ -83,7 +81,7 @@ report it, Blake rules, don't tune around it.
 
 ## Addendum (F1b, 2026-08-29)
 - THE `sha` COLUMN IS THE WORKTREE HEAD, NOT THE BINARY: commit before the probe you intend to record, or
-  the K38 rows name the wrong commit (an uncommitted tree stamps its base).
+  the rows name the wrong commit (an uncommitted tree stamps its base; the tree digest tells two such trees apart).
 - DRAM NOISE FLOOR (G1b-pad, 2026-08-29): single-oneshot ncu DRAM bytes drift ~0.6% on this host (a
   no-state control launch shows it) — a DRAM delta under 1% is not a finding; alignment questions are
   L1-REQUEST questions (l1tex requests/wavefronts per instruction), which the fixed metric list does not
