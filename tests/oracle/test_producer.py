@@ -23,8 +23,10 @@ from conftest import produce_routing, raw_side_gain, resolved_routing_from_topol
 
 from rola.ops.naive import naive_rola
 from rola.routing.types import (
+    EntmaxActivation,
     IndependentRouting,
     SoftmaxActivation,
+    TiedRouting,
     Topology,
     UnionRouting,
 )
@@ -34,7 +36,7 @@ from rola.routing.types import (
 _D_V = 5
 
 
-def _topology(mixed: bool = False) -> Topology:
+def _topology(mixed: bool = False, tied: bool = False) -> Topology:
     levels = [
         IndependentRouting(width=4, read=SoftmaxActivation(), write=SoftmaxActivation()),
         UnionRouting(width=6, alpha=1.5),
@@ -42,6 +44,8 @@ def _topology(mixed: bool = False) -> Topology:
     if mixed:
         levels.append(IndependentRouting(
             width=3, read=SoftmaxActivation(), write=SoftmaxActivation(), tied=True))
+    if tied:
+        levels.append(TiedRouting(width=3, op=EntmaxActivation(1.5)))
     return Topology(levels=tuple(levels))
 
 
@@ -82,6 +86,38 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(dtype):
     assert torch.all(out.g_write > 0)
 
     y, _ = naive_rola(v, out.read_levels, out.write_levels, out.g_write, topology, None)
+    assert torch.isfinite(y).all()
+    y.sum().backward()
+    for name, tensor in [("x", x), ("route_W", route_W), ("gain_W", gain_W), ("gain_bias", gain_bias)]:
+        assert tensor.grad is not None, f"{name} received no gradient"
+        assert torch.isfinite(tensor.grad).all(), f"{name} gradient is non-finite"
+
+
+@pytest.mark.parametrize("normalization", ["global"])
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(normalization, dtype):
+    """Item 4's gate, repeated with a `TiedRouting` level in the mix: the producer's
+    packed projection, solve and mass-fold all admit it end to end, with no code path
+    that only knows `IndependentRouting`/`UnionRouting`."""
+    topology = _topology(mixed=True, tied=True)
+    B, L, H, dm = 2, 9, 2, 7
+    x, route_W, gain_W, gain_bias, v = _params(
+        topology, B=B, L=L, H=H, dm=dm, dtype=dtype, gain_sides=1)
+
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, normalization)
+    assert len(out.read_levels) == len(out.write_levels) == topology.D
+    tied_index = topology.D - 1
+    torch.testing.assert_close(
+        out.read_levels[tied_index], out.write_levels[tied_index], rtol=0, atol=0)
+    for level, width in enumerate(topology.widths):
+        assert out.read_levels[level].shape == (B, L, H, width)
+        assert torch.allclose(
+            out.read_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
+        assert torch.allclose(
+            out.write_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
+
+    y, _ = naive_rola(
+        v, out.read_levels, out.write_levels, out.g_read, out.g_write, topology, None, normalization)
     assert torch.isfinite(y).all()
     y.sum().backward()
     for name, tensor in [("x", x), ("route_W", route_W), ("gain_W", gain_W), ("gain_bias", gain_bias)]:

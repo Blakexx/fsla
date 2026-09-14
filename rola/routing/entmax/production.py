@@ -831,7 +831,10 @@ def _torch_routing_factor_levels(
         if isinstance(level, UnionRouting):
             read_factor, write_factor = _torch_union_split(read_level, write_level, level.alpha)
         elif level.shares_solve:
-            write_factor = _torch_activation(write_level, level.write)
+            # Generic over IndependentRouting(shares_solve) and TiedRouting: both name
+            # ONE activation for the shared solve through the same `.activation('write')`
+            # accessor, and TiedRouting carries no separate `.write` attribute.
+            write_factor = _torch_activation(write_level, level.activation("write"))
             read_factor = write_factor
         elif level.tied:
             read_factor = _torch_activation(write_level, level.read)

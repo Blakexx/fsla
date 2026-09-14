@@ -58,6 +58,7 @@ from rola.routing.types import (
     IndependentRouting,
     ResolvedRouting,
     SoftmaxActivation,
+    TiedRouting,
     Topology,
     UnionRouting,
 )
@@ -127,6 +128,17 @@ def _routings(alpha: float) -> dict[str, ResolvedRouting]:
     """Every structural level shape the V3 producer can hand the solve."""
     return {
         "union": ResolvedRouting((UnionRouting(width=6, alpha=alpha),)),
+        # A second, untied level alongside the tied one -- mirrors "shared_solve"
+        # below -- so `read_logits` is genuinely used somewhere in the graph. A
+        # standalone tied level never reads `read_logits` at all (by design: the read
+        # factor IS the write factor), which makes `production_read` an unused
+        # `autograd.grad` input on its own.
+        "tied": ResolvedRouting(
+            (
+                TiedRouting(width=4, op=EntmaxActivation(alpha)),
+                IndependentRouting(width=5, read=SoftmaxActivation(), write=SoftmaxActivation()),
+            ),
+        ),
         "shared_solve": ResolvedRouting(
             (
                 IndependentRouting(width=4, read=EntmaxActivation(alpha),
@@ -284,7 +296,39 @@ def _check_against_oracle(
 
 
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["union", "shared_solve", "mixed_per_level", "dense_only"])
+def test_tied_routing_is_exactly_shared_solve_independent_routing(alpha):
+    """`TiedRouting(w, A)` is `IndependentRouting(w, A, A, tied=True)` -- not merely
+    close, the SAME solve on the SAME logits, on both the fp64 oracle and the torch
+    production lowering. This is R1's equivalence claim, checked directly rather than
+    inferred from each type separately matching the oracle."""
+    tied = ResolvedRouting((TiedRouting(width=6, op=EntmaxActivation(alpha)),))
+    shared = ResolvedRouting(
+        (IndependentRouting(width=6, read=EntmaxActivation(alpha),
+                            write=EntmaxActivation(alpha), tied=True),))
+    assert tied.packed_router_width == shared.packed_router_width
+    assert tied.packed_slot_widths == shared.packed_slot_widths
+    assert tied.shared_solve_levels == shared.shared_solve_levels == (0,)
+
+    generator = torch.Generator().manual_seed(4242)
+    read = torch.randn(2, 10, 6, dtype=torch.float64, generator=generator)
+    write = torch.randn(2, 10, 6, dtype=torch.float64, generator=generator)
+
+    tied_reads, tied_writes = oracle_factor_levels(read, write, tied)
+    shared_reads, shared_writes = oracle_factor_levels(read, write, shared)
+    assert tied_reads[0] is tied_writes[0]  # the read factor IS the write factor
+    torch.testing.assert_close(tied_reads[0], shared_reads[0], rtol=0, atol=0)
+    torch.testing.assert_close(tied_writes[0], shared_writes[0], rtol=0, atol=0)
+
+    tied_prod_reads, tied_prod_writes = production_routing_factor_levels(
+        read.to(torch.float32), write.to(torch.float32), tied, stored_dtype=torch.float32)
+    shared_prod_reads, shared_prod_writes = production_routing_factor_levels(
+        read.to(torch.float32), write.to(torch.float32), shared, stored_dtype=torch.float32)
+    torch.testing.assert_close(tied_prod_reads[0], shared_prod_reads[0], rtol=0, atol=0)
+    torch.testing.assert_close(tied_prod_writes[0], shared_prod_writes[0], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("alpha", [1.5, 2.0])
+@pytest.mark.parametrize("shape", ["union", "tied", "shared_solve", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_torch_lowering_matches_the_fp64_oracle(alpha, shape, kind):

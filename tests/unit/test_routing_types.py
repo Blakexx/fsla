@@ -14,6 +14,7 @@ from rola.routing.types import (
     ResolvedRouting,
     RouteDescriptor,
     SoftmaxActivation,
+    TiedRouting,
     UnionRouting,
 )
 
@@ -44,6 +45,30 @@ def test_union_routing_has_only_width_and_validated_alpha_and_fixed_split_semant
     assert not hasattr(union, "write")
 
 
+def test_tied_routing_has_only_width_and_one_validated_activation():
+    tied = TiedRouting(width=4, op=EntmaxActivation(1.5))
+    assert [f.name for f in fields(TiedRouting)] == ["width", "op"]
+    assert tied.op == EntmaxActivation(1.5)
+    assert tied.tied is True
+    assert tied.shares_solve is True
+    assert tied.activation("read") is tied.activation("write") is tied.op
+    assert TiedRouting(width=4, op=EntmaxActivation(1.5)) == tied
+    assert TiedRouting(width=4, op=EntmaxActivation(2.0)) != tied
+    with pytest.raises(ValueError, match="duty"):
+        tied.activation("both")
+    # A tied SOFTMAX level is legal and reports DENSE_BOTH (no exact zeros, simplex
+    # output on both duties -- the same registry row IndependentRouting's shared-solve
+    # softmax reports).
+    dense_tied = TiedRouting(width=3, op=SoftmaxActivation())
+    assert dense_tied.duty_simplex_output("read") is dense_tied.duty_simplex_output("write") is True
+    assert not dense_tied.properties.exact_zeros
+
+
+def test_tied_routing_at_another_width_keeps_the_activation():
+    tied = TiedRouting(width=4, op=EntmaxActivation(1.5))
+    assert tied.at(8) == TiedRouting(width=8, op=EntmaxActivation(1.5))
+
+
 def test_resolved_routing_derives_compact_descriptor_metadata():
     plan = ResolvedRouting(
         (
@@ -66,6 +91,33 @@ def test_resolved_routing_derives_compact_descriptor_metadata():
     assert not hasattr(plan, "support_stream_count")
     with pytest.raises(FrozenInstanceError):
         plan.levels = ()
+
+
+def test_tied_routing_packs_identically_to_shared_solve_independent_routing():
+    """A `TiedRouting` level derives the SAME packed metadata as the
+    `IndependentRouting(tied=True, read=write)` it is semantically equal to: one logit
+    slice (a tied level has ONE packed slot, like `tied=True` today), excluded from
+    `untied_levels`, and counted in `shared_solve_levels`."""
+    tied_plan = ResolvedRouting(
+        (TiedRouting(width=4, op=EntmaxActivation(1.5)),
+         UnionRouting(width=5)),
+    )
+    shared_plan = ResolvedRouting(
+        (IndependentRouting(width=4, tied=True, read=EntmaxActivation(1.5),
+                            write=EntmaxActivation(1.5)),
+         UnionRouting(width=5)),
+    )
+    assert tied_plan.level_offsets == shared_plan.level_offsets
+    assert tied_plan.radix_strides == shared_plan.radix_strides
+    assert tied_plan.support_offsets == shared_plan.support_offsets
+    assert tied_plan.support_side_flags == shared_plan.support_side_flags
+    assert tied_plan.topology_stamp == shared_plan.topology_stamp
+    assert tied_plan.untied_levels == shared_plan.untied_levels == (1,)
+    assert tied_plan.shared_solve_levels == shared_plan.shared_solve_levels == (0,)
+    assert tied_plan.packed_router_width == shared_plan.packed_router_width
+    assert tied_plan.packed_slot_widths == shared_plan.packed_slot_widths
+    assert tied_plan.read_level_can_zero == shared_plan.read_level_can_zero == (True, True)
+    assert tied_plan.write_level_can_zero == shared_plan.write_level_can_zero == (True, True)
 
 
 def test_route_descriptor_has_one_compact_tile_major_and_support_arena():
@@ -143,6 +195,8 @@ def test_route_descriptor_rejects_non_exact_integer_token_metadata(field):
                                     write=EntmaxActivation(1.5)), ValueError),
         (lambda: IndependentRouting(width=4, tied=True, read=EntmaxActivation(1.5),
                                     write=EntmaxActivation(2.0)), ValueError),
+        (lambda: TiedRouting(width=0, op=SoftmaxActivation()), ValueError),
+        (lambda: TiedRouting(width=4, op="softmax"), TypeError),
         (lambda: ResolvedRouting(()), ValueError),
     ],
 )
