@@ -53,6 +53,10 @@ class Subject:
     #: the whole sequence in one launch set; a count above one prices what each call's fixed
     #: cost adds, and the difference between the two rows IS the per-call price.
     calls: tuple[int, ...] = (1,)
+    #: THE ARM DIALS it reads, each a property of one arm and never of a run (`bench.provider` names an arm by them):
+    #: `schedule`, the carry order policy (`rola.ops.carry.ORDER_POLICIES`), and `state`, the state arm (`STATE_ARMS`).
+    #: A dial a subject does not read has one value, its default, so it cannot be set where it would reach nothing.
+    dials: tuple[str, ...] = ()
 
 
 # ------------------------------------------------------------------ carry cells
@@ -375,14 +379,14 @@ def decode_step(fx) -> Arm:
 SUBJECTS = {
     "carry_forward": Subject("carry_forward", "carry", carry_forward,
                              "the inter term: one carry launch over a whole cell",
-                             symbol="carry_kernel", stamp="carry_build_stamp"),
+                             symbol="carry_kernel", stamp="carry_build_stamp", dials=("schedule", "state")),
     "intra_forward": Subject("intra_forward", "carry", intra_forward,
                              "the within-window term at the shared window",
                              symbol="intra_kernel", stamp="intra_build_stamp"),
     "prefill_op": Subject("prefill_op", "carry", prefill_op,
                           "the whole RoLA prefill op as the layer calls it: liveness, carry, "
                           "intra and the op's packing",
-                          symbol="carry_kernel", stamp="carry_build_stamp", calls=(1, 4)),
+                          symbol="carry_kernel", stamp="carry_build_stamp", calls=(1, 4), dials=("state",)),
     "attention_reference": Subject("attention_reference", "carry", attention_reference,
                                    "causal FlashAttention at the cell's L and dv, one head",
                                    symbol="flash_fwd_kernel", stamp="csrc_build_stamp"),
