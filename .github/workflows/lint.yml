@@ -62,6 +62,8 @@ jobs:
         run: tools/lint/run_ruff_e3.sh
       - name: readability spacing (long zero-blank bodies, csrc blank runs)
         run: python3 tools/lint/readability_spacing.py
+      - name: every tracked path is declared for the public mirror
+        run: python3 .github/mirror/mirror.py --check
       - name: drift guards + work codes + R9 enforcement (report-only, printed for the log)
         run: |
           python3 tools/lint/drift_guards.py

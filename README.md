@@ -259,10 +259,14 @@ CI auto-commit. See [`docs/bringup.md`](docs/bringup.md).
 
 | Repository | What lives there |
 |---|---|
-| `flash-linear-attention-rola` | The FLA fork: HF model classes, training entry points, and the full development history |
+| `flash-linear-attention` | The fla fork: its `rola` branch holds the RoLA layer and HF model over this package |
 | `rola-zoology` | Synthetic capability evaluations (MQAR and friends) |
-| `rola-bench` | Language-modelling benchmark suites and result data |
+| `rola-bench` | The benchmarks and the local measurement suite |
+| `rola-results` | The measurement records every reported number is read from |
 | `rola-paper` | The paper source |
+
+Each is developed in a private `-dev` repository and published here by a mirror job: a push to the development
+default branch publishes its declared files as one snapshot commit ([`.github/mirror/README.md`](.github/mirror/README.md)).
 
 ## Changelog
 
