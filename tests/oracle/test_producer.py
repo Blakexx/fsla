@@ -93,9 +93,8 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(dtype):
         assert torch.isfinite(tensor.grad).all(), f"{name} gradient is non-finite"
 
 
-@pytest.mark.parametrize("normalization", ["global"])
 @pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
-def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(normalization, dtype):
+def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(dtype):
     """Item 4's gate, repeated with a `TiedRouting` level in the mix: the producer's
     packed projection, solve and mass-fold all admit it end to end, with no code path
     that only knows `IndependentRouting`/`UnionRouting`."""
@@ -104,7 +103,7 @@ def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(nor
     x, route_W, gain_W, gain_bias, v = _params(
         topology, B=B, L=L, H=H, dm=dm, dtype=dtype, gain_sides=1)
 
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology, normalization)
+    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology)
     assert len(out.read_levels) == len(out.write_levels) == topology.D
     tied_index = topology.D - 1
     torch.testing.assert_close(
@@ -116,8 +115,7 @@ def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(nor
         assert torch.allclose(
             out.write_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
 
-    y, _ = naive_rola(
-        v, out.read_levels, out.write_levels, out.g_read, out.g_write, topology, None, normalization)
+    y, _ = naive_rola(v, out.read_levels, out.write_levels, out.g_write, topology, None)
     assert torch.isfinite(y).all()
     y.sum().backward()
     for name, tensor in [("x", x), ("route_W", route_W), ("gain_W", gain_W), ("gain_bias", gain_bias)]:
