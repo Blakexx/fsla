@@ -25,25 +25,10 @@ from bench.pairing import INSTRUMENTS, REPS_PER_ROUND, Arm, interleaved_ab, meas
 from bench.regression import CANONICAL_INSTRUMENT
 from bench.stats import MIN_ROUNDS, paired_verdict
 from bench.subjects import SUBJECTS, applicable
-from benchmarks.cells import carry_cells
 from benchmarks.cells.layer import build as build_layer_fixture
-from benchmarks.cells.layer import layer_cells
+from benchmarks.cells.registry import CELLS, GROUPS
 
-#: THE REGISTRY, read once: `{name -> (kind, record)}` over BOTH cell kinds. A name is
-#: unique across the registry, so a command line names a cell and the kind follows.
 REPO = Path(__file__).resolve().parents[2]
-
-CELLS = {**{c.name: ("carry", c) for c in carry_cells()},
-         **{c.name: ("layer", c) for c in layer_cells()}}
-
-#: Named GROUPS, so a run is cited by a name rather than by a slice of the registry.
-GROUPS = {
-    "all": list(CELLS),
-    "carry": [n for n, (kind, _) in CELLS.items() if kind == "carry"],
-    "layer": [n for n, (kind, _) in CELLS.items() if kind == "layer"],
-    "decode": [n for n, (kind, c) in CELLS.items()
-               if kind == "layer" and c.decode_steps > 0],
-}
 
 #: The probe version of THIS harness. It is inside every fingerprint, so a redefinition
 #: of what a subject measures starts a new series rather than extending the old one.

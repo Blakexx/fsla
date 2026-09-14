@@ -85,8 +85,8 @@ def worker_main(args) -> None:
     import torch
 
     import rola
-    from bench.driver import CELLS
     from bench.subjects import SUBJECTS, applicable
+    from benchmarks.cells.registry import CELLS
     from rola.ops._ext import extension
 
     subject = SUBJECTS[args.bench]
@@ -511,8 +511,8 @@ def main() -> None:
         worker_main(args)
         return
 
-    from bench.driver import CELLS
     from bench.subjects import SUBJECTS
+    from benchmarks.cells.registry import CELLS
 
     #: A LANE'S BENCH IS ITS OWN TREE'S NAME, refused by that tree's worker; only the run's
     #: bench, and under --ncu every lane's (the symbol is read here), must be this tree's.
