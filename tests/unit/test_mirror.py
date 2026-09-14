@@ -14,7 +14,8 @@ _SPEC = importlib.util.spec_from_file_location("mirror", ROOT / ".github" / "mir
 mirror = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(mirror)
 DECL = mirror.declarations()
-#: a home-directory path, joined so this file carries none (§17)
+#: a home-directory path, joined so this file carries none (§17); the fixtures below split their other
+#: private shapes the same way, so the file passes the tripwire it tests
 SOMEONES_HOME = "/".join(("", "home", "someone"))
 
 
@@ -43,7 +44,7 @@ def test_a_clean_export_passes_and_the_tool_does_not_trip_on_itself(tmp_path):
     ("csrc/CLAUDE.md", "notes", "an agent file"),
     ("docs/a/.claude/settings.json", "{}", "an agent file"),
     ("docs/x.md", f"built at {SOMEONES_HOME}/rola", "a home directory"),
-    ("docs/x.md", "contact someone@gmail.com", "a personal email address"),
+    ("docs/x.md", "contact someone" + "@gmail.com", "a personal email address"),
     ("tools/x.py", "token = 'ghp_" + "a" * 36 + "'", "a credential"),
 ])
 def test_the_tripwire_refuses_private_shaped_files(tmp_path, name, text, finding):
