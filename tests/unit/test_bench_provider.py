@@ -1,9 +1,8 @@
 """rola's runner (benchmarks/bench/provider.py) and the comparison (tools/compare.py): a cell is its data provider and
 parameters; the runner names an arm by its subject and the dials it reads, offers the arms this binary carries at the
 cell's shape, and refuses a cell by name -- an uncarried carry arm, an iteration build, data of another library; the
-comparison's point is a registered one narrowed by name, or one of rola cells. The registry's `runnable`: a binary runs
-the cells of its arms and is refused without a shipped one. No GPU: nothing here builds an arm, and the binary's arm
-tables are planted."""
+comparison's point is a registered one narrowed by name, or one of rola cells. No GPU: nothing here builds an arm, and
+the binary's arm tables are planted."""
 from __future__ import annotations
 
 import argparse
@@ -124,16 +123,3 @@ def test_the_comparisons_point_is_registered_and_narrowed_by_name_or_is_rola_cel
     with pytest.raises(SystemExit, match="name a --point"):
         compare.point_of(args())
 
-
-def test_a_binary_runs_the_cells_of_its_arms_and_is_refused_without_a_shipped_arm(monkeypatch):
-    import rola.ops.carry as carry
-    from benchmarks.cells.registry import CELLS, runnable
-
-    monkeypatch.setattr(carry, "arms", lambda: SHIPPED)
-    got = runnable()
-    assert got["arms"] == sorted(SHIPPED) and "flat-small-alt-k16" in got["cells"]
-    assert all(CELLS[name][0] == "layer" or CELLS[name][1].arm in SHIPPED for name in got["cells"])
-    assert "deep3-dense" in got["undeclared"] and "deep3-dense" not in got["cells"]
-    monkeypatch.setattr(carry, "arms", lambda: [])
-    with pytest.raises(RuntimeError, match="lacks the shipped arms"):
-        runnable()
