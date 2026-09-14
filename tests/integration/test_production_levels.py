@@ -327,6 +327,47 @@ def test_tied_routing_is_exactly_shared_solve_independent_routing(alpha):
     torch.testing.assert_close(tied_prod_writes[0], shared_prod_writes[0], rtol=0, atol=0)
 
 
+@_CUDA
+@pytest.mark.parametrize("alpha", [1.5, 2.0])
+def test_cuda_tied_routing_is_exactly_shared_solve_independent_routing(alpha):
+    """R1b: the CUDA-kernel-dispatch path (`_ProductionLevelsFn`, GPU logits) takes a
+    standalone `TiedRouting` level through exactly the `shares_solve` route -- same
+    kernel launch, one solve -- rather than raising the `IndependentRouting`-only
+    assert R1 left in place. Mirrors
+    `test_tied_routing_is_exactly_shared_solve_independent_routing` (CPU/fp64) but
+    forces the CUDA lowering by handing it CUDA fp32 logits. `_ProductionLevelsFn`
+    always allocates read/write as distinct autograd outputs even under
+    `shares_solve` (its own docstring: aliasing one tensor into two graph outputs is
+    unsound), so production's read/write factors are checked bit-identical
+    (`rtol=0, atol=0`) rather than object-identical; the true tensor-IDENTITY claim
+    -- the read factor literally IS the write factor -- lives on the oracle lowering
+    (`routing/reference.py`), which this test also exercises on the same CUDA-resident
+    logits.
+    """
+    tied = ResolvedRouting((TiedRouting(width=6, op=EntmaxActivation(alpha)),))
+    shared = ResolvedRouting(
+        (IndependentRouting(width=6, read=EntmaxActivation(alpha),
+                            write=EntmaxActivation(alpha), tied=True),))
+    generator = torch.Generator(device="cuda").manual_seed(4242)
+    read = torch.randn(2, 10, 6, device="cuda", dtype=torch.float32, generator=generator)
+    write = torch.randn(2, 10, 6, device="cuda", dtype=torch.float32, generator=generator)
+
+    tied_reads, tied_writes = production_routing_factor_levels(
+        read, write, tied, stored_dtype=torch.float32)
+    shared_reads, shared_writes = production_routing_factor_levels(
+        read, write, shared, stored_dtype=torch.float32)
+
+    torch.testing.assert_close(tied_reads[0], shared_reads[0], rtol=0, atol=0)
+    torch.testing.assert_close(tied_writes[0], shared_writes[0], rtol=0, atol=0)
+
+    oracle_read = read.to(torch.float64)
+    oracle_write = write.to(torch.float64)
+    oracle_reads, oracle_writes = oracle_factor_levels(oracle_read, oracle_write, tied)
+    assert oracle_reads[0] is oracle_writes[0]  # the read factor IS the write factor
+    _assert_levels_match(tied_reads[0], oracle_reads[0])
+    _assert_levels_match(tied_writes[0], oracle_writes[0])
+
+
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 @pytest.mark.parametrize("shape", ["union", "tied", "shared_solve", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
@@ -341,7 +382,8 @@ def test_torch_lowering_matches_the_fp64_oracle(alpha, shape, kind):
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["union", "shared_solve", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize(
+    "shape", ["union", "tied", "shared_solve", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_cuda_lowering_matches_the_fp64_oracle(alpha, shape, kind):

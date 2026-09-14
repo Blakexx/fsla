@@ -34,6 +34,7 @@ from rola.routing.types import (
     ResolvedRouting,
     RouteDescriptor,
     SoftmaxActivation,
+    TiedRouting,
     UnionRouting,
 )
 
@@ -360,7 +361,8 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
             raise ValueError("routing logits do not match the resolved routing layout")
 
         fully_shared = all(
-            isinstance(level, IndependentRouting) and level.shares_solve for level in routing.levels)
+            isinstance(level, (IndependentRouting, TiedRouting)) and level.shares_solve
+            for level in routing.levels)
         arena_shape = (
             n_streams,
             _cdiv(tokens, _ROUTE_TILE_SIZE_VALUE),
@@ -405,13 +407,14 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
                 midpoint_offset += width
                 continue
 
-            assert isinstance(level, IndependentRouting)
+            assert isinstance(level, (IndependentRouting, TiedRouting))
             if empty_launch:
                 continue
             if level.shares_solve:
                 second = None if fully_shared else write_arena
-                if isinstance(level.write, EntmaxActivation):
-                    plan.add("entmax", level.write.alpha,
+                shared_activation = level.activation("write")
+                if isinstance(shared_activation, EntmaxActivation):
+                    plan.add("entmax", shared_activation.alpha,
                              (write_logits, read_arena, second, support_words), width,
                              logit_off=logit_offset, value_off=offset,
                              support_off=support_offset, heads=heads)
@@ -488,13 +491,14 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
                     d_read_output, d_write_output, d_read_level, d_write_level, level.alpha)
                 continue
 
-            assert isinstance(level, IndependentRouting)
+            assert isinstance(level, (IndependentRouting, TiedRouting))
             if level.shares_solve:
-                if isinstance(level.write, EntmaxActivation):
+                shared_activation = level.activation("write")
+                if isinstance(shared_activation, EntmaxActivation):
                     _launch_factor_backward_into_logits(
                         read_output, d_read_output, d_write_output,
                         support_words[:, :, support_offset:support_offset + width], d_write_level,
-                        level.write.alpha, accumulate=False)
+                        shared_activation.alpha, accumulate=False)
                 else:
                     _launch_softmax_backward_into_logits(
                         read_output, d_read_output, d_write_output, d_write_level, accumulate=False)
@@ -593,12 +597,13 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 midpoint_offset += width
                 continue
 
-            assert isinstance(level, IndependentRouting)
+            assert isinstance(level, (IndependentRouting, TiedRouting))
             if empty_launch:
                 continue
             if level.shares_solve:
-                if isinstance(level.write, EntmaxActivation):
-                    plan.add("entmax", level.write.alpha,
+                shared_activation = level.activation("write")
+                if isinstance(shared_activation, EntmaxActivation):
+                    plan.add("entmax", shared_activation.alpha,
                              (write_logits, read_plane, write_plane, support_words), width,
                              logit_off=logit_offset, value_off=offset,
                              support_off=support_offset, heads=heads)
@@ -680,12 +685,13 @@ class _ProductionLevelsFn(torch.autograd.Function):
                     d_read_output, d_write_output, d_read_level, d_write_level, level.alpha)
                 continue
 
-            assert isinstance(level, IndependentRouting)
+            assert isinstance(level, (IndependentRouting, TiedRouting))
             if level.shares_solve:
-                if isinstance(level.write, EntmaxActivation):
+                shared_activation = level.activation("write")
+                if isinstance(shared_activation, EntmaxActivation):
                     _launch_factor_backward_into_logits(
                         read_output, d_read_output, d_write_output, words, d_write_level,
-                        level.write.alpha, accumulate=False)
+                        shared_activation.alpha, accumulate=False)
                 else:
                     _launch_softmax_backward_into_logits(
                         read_output, d_read_output, d_write_output, d_write_level, accumulate=False)
