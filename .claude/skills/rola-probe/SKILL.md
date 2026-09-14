@@ -24,7 +24,7 @@ python tools/probe_cells.py \
 ```
 Invoke it BARE. `tools/probe_cells.py` takes the GPU lock ITSELF, via `tools/gpu_lock.py`'s
 `gpu_lock()` in `run_worker`/`run_ncu_cell` — the ONE lock primitive every GPU entry point in this
-tree now uses (K46: `tests/conftest.py`, `tools/sanitize_oracle.py`, `bench.discipline.disciplined`
+tree now uses (K46: `tests/conftest.py`, `tools/sanitize_oracle.py`, `tools/compare.py`
 all take it the same way; the two-family split this section used to describe — some tools
 self-locking, pytest/bench requiring an external wrap — is retired). An outer
 `flock` wrapping this command on the same lock path still blocks the tool's own internal

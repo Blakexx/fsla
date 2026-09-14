@@ -6,7 +6,7 @@ measurement definition.
 
 THIS FILE DEFINES NO STEP, NO CELL AND NO SHAPE. What is measured is a REGISTERED BENCH
 (`benchmarks/bench/subjects.py`) over a REGISTERED CELL (`benchmarks/cells`), which is
-the same callable and the same draw the unit drivers and the receipts run. A bench that
+the same callable and the same draw `tools/compare.py` and the receipts run. A bench that
 cannot be A/B'd through here is the defect: it means a second definition of a launch
 exists somewhere, and two definitions are how a harness comes to disagree with itself.
 
