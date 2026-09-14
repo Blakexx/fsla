@@ -275,13 +275,10 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
     each other downstream.
     """
     def routing_tag(read_router: str, write_router: str):
-        """Old `LevelRoutingConfig(read=side(read_router), write=side(write_router),
-        tied=False, alpha=1.5)`. Per the migration mapping: both sides sparse and
-        untied -> `UnionRouting(alpha)` (`union_routing(1.5)`); otherwise
-        `IndependentRouting(tied, ...)` with each side's own activation -- which
-        is what a MIXED read/write router (the read-dense/write-sparse parity
-        cell) needs, since `IndependentRouting` already takes per-side
-        activations independently of `tied`."""
+        """Both sides sparse -> `UnionRouting(alpha)` (`union_routing(1, 1.5)`);
+        otherwise `IndependentRouting` with each side's own activation, which is
+        what a MIXED read/write router (the read-dense/write-sparse parity cell)
+        needs."""
         from rola import entmax, softmax
         from rola.routing.types import IndependentRouting
 
@@ -290,7 +287,7 @@ def run_v3_cell(*, L, B, H, d_v, branches, hidden, read_router, write_router, lo
 
         if read_router == "entmax" and write_router == "entmax":
             return union_routing(1, 1.5)
-        return IndependentRouting(width=1, tied=False, read=activation(read_router),
+        return IndependentRouting(width=1, read=activation(read_router),
                                   write=activation(write_router))
 
     row = {"arm": arm, "cell_role": cell_role, "L": L, "B": B, "H": H, "d_v": d_v,

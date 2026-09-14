@@ -10,7 +10,7 @@ Design of record: this document. The union split's own solve, and the warp-row
 vocabulary this file shares with it, are [`entmax.md`](entmax.md).
 
 Gates: `tests/integration/test_production_levels.py` (the fp64 oracle, forward AND
-VJP, across `shared_solve` / `mixed_per_level` / `dense_only`),
+VJP, across `tied` / `mixed_per_level` / `dense_only`),
 `tests/unit/test_entmax_production.py` (the masked `production_factor` surface, the
 support word's bit-31 and tail-word contracts, the tile-major arena),
 `tests/integration/test_execution_identity_gates.py` (which routing family reaches

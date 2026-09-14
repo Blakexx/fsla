@@ -28,7 +28,7 @@ from rola.routing.types import (
 
 #: The routing every fixture here is built over: untied softmax on both sides.
 _ROUTING = IndependentRouting(
-    width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())
+    width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 
 #: How many token segments the output charge below is taken over. Eight is the

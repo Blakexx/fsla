@@ -55,7 +55,7 @@ from rola.routing.types import (
 
 def _topology(widths) -> Topology:
     routing = IndependentRouting(
-        width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())
+        width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
     return Topology(levels=tuple(routing.at(w) for w in widths))
 
 

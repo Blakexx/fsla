@@ -72,7 +72,7 @@ _ARMS = ((1, 64), (1, 256), (2, 8), (2, 16), (2, 64), (3, 16), (4, 8))
 _SUPPORTS = {"sparse": 0.35, "mixed": 0.7, "dense": 1.0}
 
 _ROUTING = IndependentRouting(
-    width=1, tied=False, read=SoftmaxActivation(), write=EntmaxActivation(1.5))
+    width=1, read=SoftmaxActivation(), write=EntmaxActivation(1.5))
 
 _B, _T, _H, _DV = 2, 48, 2, 64
 

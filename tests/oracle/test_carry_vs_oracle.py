@@ -259,7 +259,7 @@ def test_the_decomposition_is_exact():
         else:
             assert relative(cur[0], tot[0]) < 1e-12
             assert relative(cur[1], tot[1]) < 1e-12
-    routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
+    routing = IndependentRouting(width=1, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
     topo = Topology(levels=tuple(routing.at(w) for w in spec.widths))
     y, _ = naive_rola(v, read, write, gain, topo, None, output_final_state=False)

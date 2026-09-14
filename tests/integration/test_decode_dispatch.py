@@ -227,7 +227,7 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
 
     device = "cuda"
     widths, d_v = (16, 32), 64
-    routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
+    routing = IndependentRouting(width=1, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
     topology = Topology(levels=tuple(routing.at(w) for w in widths))
     config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=1, device=device)

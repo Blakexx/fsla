@@ -49,16 +49,13 @@ def test_tied_routing_has_only_width_and_one_validated_activation():
     tied = TiedRouting(width=4, op=EntmaxActivation(1.5))
     assert [f.name for f in fields(TiedRouting)] == ["width", "op"]
     assert tied.op == EntmaxActivation(1.5)
-    assert tied.tied is True
-    assert tied.shares_solve is True
     assert tied.activation("read") is tied.activation("write") is tied.op
     assert TiedRouting(width=4, op=EntmaxActivation(1.5)) == tied
     assert TiedRouting(width=4, op=EntmaxActivation(2.0)) != tied
     with pytest.raises(ValueError, match="duty"):
         tied.activation("both")
     # A tied SOFTMAX level is legal and reports DENSE_BOTH (no exact zeros, simplex
-    # output on both duties -- the same registry row IndependentRouting's shared-solve
-    # softmax reports).
+    # output on both duties).
     dense_tied = TiedRouting(width=3, op=SoftmaxActivation())
     assert dense_tied.duty_simplex_output("read") is dense_tied.duty_simplex_output("write") is True
     assert not dense_tied.properties.exact_zeros
@@ -72,10 +69,10 @@ def test_tied_routing_at_another_width_keeps_the_activation():
 def test_resolved_routing_derives_compact_descriptor_metadata():
     plan = ResolvedRouting(
         (
-            IndependentRouting(width=2, tied=True, read=SoftmaxActivation(), write=SoftmaxActivation()),
+            TiedRouting(width=2, op=SoftmaxActivation()),
             IndependentRouting(width=3, read=EntmaxActivation(2.0), write=SoftmaxActivation()),
             UnionRouting(width=5),
-            IndependentRouting(width=4, tied=True, read=EntmaxActivation(1.5), write=SoftmaxActivation()),
+            IndependentRouting(width=4, read=EntmaxActivation(1.5), write=SoftmaxActivation()),
         ),
     )
     assert plan.level_offsets == (0, 2, 5, 10, 14)
@@ -93,31 +90,20 @@ def test_resolved_routing_derives_compact_descriptor_metadata():
         plan.levels = ()
 
 
-def test_tied_routing_packs_identically_to_shared_solve_independent_routing():
-    """A `TiedRouting` level derives the SAME packed metadata as the
-    `IndependentRouting(tied=True, read=write)` it is semantically equal to: one logit
-    slice (a tied level has ONE packed slot, like `tied=True` today), excluded from
-    `untied_levels`, and counted in `shared_solve_levels`."""
+def test_tied_routing_has_one_packed_slot_and_is_the_shared_solve_level():
+    """A `TiedRouting` level has ONE packed slot -- excluded from `untied_levels` and
+    counted in `shared_solve_levels` -- because it names one solve for both duties.
+    `IndependentRouting` carries no shared-solve arm any more (that asymmetric case is
+    deleted), so there is no longer a second construction to compare this against."""
     tied_plan = ResolvedRouting(
         (TiedRouting(width=4, op=EntmaxActivation(1.5)),
          UnionRouting(width=5)),
     )
-    shared_plan = ResolvedRouting(
-        (IndependentRouting(width=4, tied=True, read=EntmaxActivation(1.5),
-                            write=EntmaxActivation(1.5)),
-         UnionRouting(width=5)),
-    )
-    assert tied_plan.level_offsets == shared_plan.level_offsets
-    assert tied_plan.radix_strides == shared_plan.radix_strides
-    assert tied_plan.support_offsets == shared_plan.support_offsets
-    assert tied_plan.support_side_flags == shared_plan.support_side_flags
-    assert tied_plan.topology_stamp == shared_plan.topology_stamp
-    assert tied_plan.untied_levels == shared_plan.untied_levels == (1,)
-    assert tied_plan.shared_solve_levels == shared_plan.shared_solve_levels == (0,)
-    assert tied_plan.packed_router_width == shared_plan.packed_router_width
-    assert tied_plan.packed_slot_widths == shared_plan.packed_slot_widths
-    assert tied_plan.read_level_can_zero == shared_plan.read_level_can_zero == (True, True)
-    assert tied_plan.write_level_can_zero == shared_plan.write_level_can_zero == (True, True)
+    assert tied_plan.untied_levels == (1,)
+    assert tied_plan.shared_solve_levels == (0,)
+    assert tied_plan.packed_slot_widths == (4, 5, 5)
+    assert tied_plan.read_level_can_zero == (True, True)
+    assert tied_plan.write_level_can_zero == (True, True)
 
 
 def test_route_descriptor_has_one_compact_tile_major_and_support_arena():
@@ -187,14 +173,14 @@ def test_route_descriptor_rejects_non_exact_integer_token_metadata(field):
         (lambda: UnionRouting(width=4, alpha=float("nan")), ValueError),
         (lambda: UnionRouting(width=4, alpha=1), ValueError),
         (lambda: UnionRouting(width=4, alpha=1.8), ValueError),
-        (lambda: IndependentRouting(width=4, tied=1, read=SoftmaxActivation(),
+        (lambda: IndependentRouting(width=4, read="softmax",
                                     write=SoftmaxActivation()), TypeError),
-        (lambda: IndependentRouting(width=4, tied=False, read="softmax",
-                                    write=SoftmaxActivation()), TypeError),
-        (lambda: IndependentRouting(width=4, tied=False, read=EntmaxActivation(1.5),
+        (lambda: IndependentRouting(width=4, read=EntmaxActivation(1.5),
                                     write=EntmaxActivation(1.5)), ValueError),
-        (lambda: IndependentRouting(width=4, tied=True, read=EntmaxActivation(1.5),
+        (lambda: IndependentRouting(width=4, read=EntmaxActivation(1.5),
                                     write=EntmaxActivation(2.0)), ValueError),
+        (lambda: IndependentRouting(width=4, read=SoftmaxActivation(),
+                                    write=SoftmaxActivation(), tied=False), TypeError),
         (lambda: TiedRouting(width=0, op=SoftmaxActivation()), ValueError),
         (lambda: TiedRouting(width=4, op="softmax"), TypeError),
         (lambda: ResolvedRouting(()), ValueError),
@@ -205,27 +191,11 @@ def test_invalid_routing_values_are_rejected(factory, error):
         factory()
 
 
-def test_tied_asymmetric_routing_does_not_share_a_solve():
-    asymmetric = IndependentRouting(width=2, tied=True, read=SoftmaxActivation(),
-                                    write=EntmaxActivation(1.5))
-    equal = IndependentRouting(width=2, tied=True, read=EntmaxActivation(1.5),
-                               write=EntmaxActivation(1.5))
-    assert not asymmetric.shares_solve
-    assert equal.shares_solve
-    assert ResolvedRouting((asymmetric, equal)).shared_solve_levels == (1,)
-
-
-@pytest.mark.parametrize(
-    "tied,read_alpha,write_alpha",
-    [
-        (False, 1.5, 1.5),
-        (True, 1.5, 2.0),
-    ],
-)
-def test_independent_routing_rejects_distinct_sparse_support_solves(tied, read_alpha, write_alpha):
+@pytest.mark.parametrize("read_alpha,write_alpha", [(1.5, 1.5), (1.5, 2.0)])
+def test_independent_routing_rejects_distinct_sparse_support_solves(read_alpha, write_alpha):
     with pytest.raises(ValueError, match="UnionRouting"):
         IndependentRouting(
-            width=4, tied=tied,
+            width=4,
             read=EntmaxActivation(read_alpha),
             write=EntmaxActivation(write_alpha),
         )
@@ -244,9 +214,9 @@ def test_packed_router_shape_validation_derives_heads():
         (IndependentRouting(width=2, read=SoftmaxActivation(), write=SoftmaxActivation()),
          UnionRouting(width=3)),
     )
-    # Both levels are untied (one `tied=False`, one union), so the packed slots are
-    # write-0, write-1, read-0, read-1 with widths 2, 3, 2, 3 -- 10 columns, not the
-    # 4 * max(2, 3) = 12 the padded layout stored.
+    # Both levels are untied (an `IndependentRouting` level always is, and so is a
+    # union level), so the packed slots are write-0, write-1, read-0, read-1 with widths
+    # 2, 3, 2, 3 -- 10 columns, not the 4 * max(2, 3) = 12 the padded layout stored.
     assert plan.packed_router_width == 10
     route_W = torch.randn(2, 5, 10)
     route_bias = torch.randn(2, 10)
@@ -278,7 +248,8 @@ def test_packed_router_columns_are_exactly_the_columns_each_slot_consumes(tied, 
     """
     plan = ResolvedRouting(
         tuple(
-            IndependentRouting(width=w, tied=flag, read=SoftmaxActivation(), write=SoftmaxActivation())
+            TiedRouting(width=w, op=SoftmaxActivation()) if flag
+            else IndependentRouting(width=w, read=SoftmaxActivation(), write=SoftmaxActivation())
             for flag, w in zip(tied, (4, 2, 3))
         ),
     )

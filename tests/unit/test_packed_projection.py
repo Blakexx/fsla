@@ -15,8 +15,9 @@ from rola.routing.types import (
 def _routing_for_untied(levels, untied_levels, branch):
     return ResolvedRouting(
         tuple(
-            IndependentRouting(width=branch, tied=level not in untied_levels,
-                               read=SoftmaxActivation(), write=SoftmaxActivation())
+            IndependentRouting(width=branch, read=SoftmaxActivation(), write=SoftmaxActivation())
+            if level in untied_levels
+            else TiedRouting(width=branch, op=SoftmaxActivation())
             for level in range(levels)
         ),
     )
@@ -114,15 +115,14 @@ def test_packed_router_matches_separate_projection_and_gradients(untied_levels, 
             torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-7)
 
 
-def test_tied_routing_reads_off_the_write_projection_like_tied_independent_routing():
-    """A `TiedRouting` level has ONE packed slot (`untied_levels` excludes it, like
-    `IndependentRouting(tied=True)` today): its read logits are a VIEW of its write
-    logits, not a second projected column block."""
+def test_tied_routing_reads_off_the_write_projection():
+    """A `TiedRouting` level has ONE packed slot (`untied_levels` excludes it): its
+    read logits are a VIEW of its write logits, not a second projected column block."""
     torch.manual_seed(7)
     batch, length, hidden = 2, 5, 6
     routing = ResolvedRouting(
         (TiedRouting(width=4, op=EntmaxActivation(1.5)),
-         IndependentRouting(width=3, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())),
+         IndependentRouting(width=3, read=SoftmaxActivation(), write=SoftmaxActivation())),
     )
     assert routing.untied_levels == (1,)
     # slot widths: write-0 (tied, w=4), write-1 (w=3), read-1 (untied, w=3) -> 10 columns.

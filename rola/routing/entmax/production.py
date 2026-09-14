@@ -360,9 +360,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
         if read_logits.ndim != 3 or read_logits.shape[-1] != routing.packed_logit_width:
             raise ValueError("routing logits do not match the resolved routing layout")
 
-        fully_shared = all(
-            isinstance(level, (IndependentRouting, TiedRouting)) and level.shares_solve
-            for level in routing.levels)
+        fully_shared = all(isinstance(level, TiedRouting) for level in routing.levels)
         arena_shape = (
             n_streams,
             _cdiv(tokens, _ROUTE_TILE_SIZE_VALUE),
@@ -410,7 +408,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
             assert isinstance(level, (IndependentRouting, TiedRouting))
             if empty_launch:
                 continue
-            if level.shares_solve:
+            if isinstance(level, TiedRouting):
                 second = None if fully_shared else write_arena
                 shared_activation = level.activation("write")
                 if isinstance(shared_activation, EntmaxActivation):
@@ -424,7 +422,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
                 continue
 
             for activation, source, output in (
-                (level.read, write_logits if level.tied else read_logits, read_arena),
+                (level.read, read_logits, read_arena),
                 (level.write, write_logits, write_arena),
             ):
                 if isinstance(activation, EntmaxActivation):
@@ -492,7 +490,7 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
                 continue
 
             assert isinstance(level, (IndependentRouting, TiedRouting))
-            if level.shares_solve:
+            if isinstance(level, TiedRouting):
                 shared_activation = level.activation("write")
                 if isinstance(shared_activation, EntmaxActivation):
                     _launch_factor_backward_into_logits(
@@ -504,22 +502,18 @@ class _ProductionRoutingArenaFn(torch.autograd.Function):
                         read_output, d_read_output, d_write_output, d_write_level, accumulate=False)
                 continue
 
-            first = True
             for activation, output, d_output, target in (
-                (level.read, read_output, d_read_output,
-                 d_write_level if level.tied else d_read_level),
+                (level.read, read_output, d_read_output, d_read_level),
                 (level.write, write_output, d_write_output, d_write_level),
             ):
                 if isinstance(activation, EntmaxActivation):
                     _launch_factor_backward_into_logits(
                         output, d_output, None,
                         support_words[:, :, support_offset:support_offset + width], target,
-                        activation.alpha,
-                        accumulate=level.tied and not first)
+                        activation.alpha, accumulate=False)
                 else:
                     _launch_softmax_backward_into_logits(
-                        output, d_output, None, target, accumulate=level.tied and not first)
-                first = False
+                        output, d_output, None, target, accumulate=False)
         return d_read_logits, d_write_logits, None
 
 
@@ -527,7 +521,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
     """Solve a routing plan into per-level dense ``[BH, T, width_l]`` factors.
 
     Structurally the same plan walk as ``_ProductionRoutingArenaFn`` -- the same
-    kernels, the same shared/tied/union dispatch, the same packed support -- against one
+    kernels, the same tied/union dispatch, the same packed support -- against one
     dense plane per side rather than the tile-major arena the earlier chunk ABI took.
 
     ``stored_dtype`` is the STORED form (docs/internals/entmax/factor.md#stored-form):
@@ -537,8 +531,8 @@ class _ProductionLevelsFn(torch.autograd.Function):
     quantization on top of it.
 
     Read and write are always distinct allocations, even where one solve serves both
-    (``shares_solve``): the kernels already write a second output and accumulate a
-    second incoming gradient, and returning one tensor twice from a single
+    (a ``TiedRouting`` level): the kernels already write a second output and accumulate
+    a second incoming gradient, and returning one tensor twice from a single
     ``autograd.Function`` would alias two graph outputs.
     """
 
@@ -600,7 +594,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
             assert isinstance(level, (IndependentRouting, TiedRouting))
             if empty_launch:
                 continue
-            if level.shares_solve:
+            if isinstance(level, TiedRouting):
                 shared_activation = level.activation("write")
                 if isinstance(shared_activation, EntmaxActivation):
                     plan.add("entmax", shared_activation.alpha,
@@ -613,7 +607,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 continue
 
             for activation, source, output in (
-                (level.read, write_logits if level.tied else read_logits, read_plane),
+                (level.read, read_logits, read_plane),
                 (level.write, write_logits, write_plane),
             ):
                 if isinstance(activation, EntmaxActivation):
@@ -686,7 +680,7 @@ class _ProductionLevelsFn(torch.autograd.Function):
                 continue
 
             assert isinstance(level, (IndependentRouting, TiedRouting))
-            if level.shares_solve:
+            if isinstance(level, TiedRouting):
                 shared_activation = level.activation("write")
                 if isinstance(shared_activation, EntmaxActivation):
                     _launch_factor_backward_into_logits(
@@ -697,20 +691,17 @@ class _ProductionLevelsFn(torch.autograd.Function):
                         read_output, d_read_output, d_write_output, d_write_level, accumulate=False)
                 continue
 
-            first = True
             for activation, output, d_output, target in (
-                (level.read, read_output, d_read_output,
-                 d_write_level if level.tied else d_read_level),
+                (level.read, read_output, d_read_output, d_read_level),
                 (level.write, write_output, d_write_output, d_write_level),
             ):
                 if isinstance(activation, EntmaxActivation):
                     _launch_factor_backward_into_logits(
                         output, d_output, None, words, target, activation.alpha,
-                        accumulate=level.tied and not first)
+                        accumulate=False)
                 else:
                     _launch_softmax_backward_into_logits(
-                        output, d_output, None, target, accumulate=level.tied and not first)
-                first = False
+                        output, d_output, None, target, accumulate=False)
         return d_read_logits, d_write_logits, None, None
 
 
@@ -836,15 +827,12 @@ def _torch_routing_factor_levels(
         write_level = write_logits[..., span]
         if isinstance(level, UnionRouting):
             read_factor, write_factor = _torch_union_split(read_level, write_level, level.alpha)
-        elif level.shares_solve:
-            # Generic over IndependentRouting(shares_solve) and TiedRouting: both name
-            # ONE activation for the shared solve through the same `.activation('write')`
-            # accessor, and TiedRouting carries no separate `.write` attribute.
+        elif isinstance(level, TiedRouting):
+            # TiedRouting names ONE activation for its one solve through the same
+            # `.activation('write')` accessor it answers `'read'` with; it carries no
+            # separate `.write` attribute.
             write_factor = _torch_activation(write_level, level.activation("write"))
             read_factor = write_factor
-        elif level.tied:
-            read_factor = _torch_activation(write_level, level.read)
-            write_factor = _torch_activation(write_level, level.write)
         else:
             read_factor = _torch_activation(read_level, level.read)
             write_factor = _torch_activation(write_level, level.write)

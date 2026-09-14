@@ -128,21 +128,13 @@ def _routings(alpha: float) -> dict[str, ResolvedRouting]:
     """Every structural level shape the V3 producer can hand the solve."""
     return {
         "union": ResolvedRouting((UnionRouting(width=6, alpha=alpha),)),
-        # A second, untied level alongside the tied one -- mirrors "shared_solve"
-        # below -- so `read_logits` is genuinely used somewhere in the graph. A
-        # standalone tied level never reads `read_logits` at all (by design: the read
-        # factor IS the write factor), which makes `production_read` an unused
-        # `autograd.grad` input on its own.
+        # A second, untied level alongside the tied one, so `read_logits` is genuinely
+        # used somewhere in the graph. A standalone tied level never reads
+        # `read_logits` at all (by design: the read factor IS the write factor), which
+        # makes `production_read` an unused `autograd.grad` input on its own.
         "tied": ResolvedRouting(
             (
                 TiedRouting(width=4, op=EntmaxActivation(alpha)),
-                IndependentRouting(width=5, read=SoftmaxActivation(), write=SoftmaxActivation()),
-            ),
-        ),
-        "shared_solve": ResolvedRouting(
-            (
-                IndependentRouting(width=4, read=EntmaxActivation(alpha),
-                                   write=EntmaxActivation(alpha), tied=True),
                 IndependentRouting(width=5, read=SoftmaxActivation(), write=SoftmaxActivation()),
             ),
         ),
@@ -150,7 +142,7 @@ def _routings(alpha: float) -> dict[str, ResolvedRouting]:
             (
                 IndependentRouting(width=3, read=EntmaxActivation(alpha), write=SoftmaxActivation()),
                 IndependentRouting(width=5, read=SoftmaxActivation(),
-                                   write=EntmaxActivation(alpha), tied=True),
+                                   write=EntmaxActivation(alpha)),
                 UnionRouting(width=4, alpha=alpha),
             ),
         ),
@@ -296,69 +288,39 @@ def _check_against_oracle(
 
 
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-def test_tied_routing_is_exactly_shared_solve_independent_routing(alpha):
-    """`TiedRouting(w, A)` is `IndependentRouting(w, A, A, tied=True)` -- not merely
-    close, the SAME solve on the SAME logits, on both the fp64 oracle and the torch
-    production lowering. This is R1's equivalence claim, checked directly rather than
-    inferred from each type separately matching the oracle."""
+def test_tied_routing_read_factor_is_the_write_factor_on_both_lowerings(alpha):
+    """`TiedRouting`'s read factor IS its write factor -- the same tensor, not merely
+    numerically equal -- on the fp64 oracle lowering, and bit-identical on the torch
+    production lowering (`_ProductionLevelsFn` always allocates read/write as distinct
+    autograd outputs, even for a tied level, so identity does not survive there)."""
     tied = ResolvedRouting((TiedRouting(width=6, op=EntmaxActivation(alpha)),))
-    shared = ResolvedRouting(
-        (IndependentRouting(width=6, read=EntmaxActivation(alpha),
-                            write=EntmaxActivation(alpha), tied=True),))
-    assert tied.packed_router_width == shared.packed_router_width
-    assert tied.packed_slot_widths == shared.packed_slot_widths
-    assert tied.shared_solve_levels == shared.shared_solve_levels == (0,)
-
     generator = torch.Generator().manual_seed(4242)
     read = torch.randn(2, 10, 6, dtype=torch.float64, generator=generator)
     write = torch.randn(2, 10, 6, dtype=torch.float64, generator=generator)
 
-    tied_reads, tied_writes = oracle_factor_levels(read, write, tied)
-    shared_reads, shared_writes = oracle_factor_levels(read, write, shared)
-    assert tied_reads[0] is tied_writes[0]  # the read factor IS the write factor
-    torch.testing.assert_close(tied_reads[0], shared_reads[0], rtol=0, atol=0)
-    torch.testing.assert_close(tied_writes[0], shared_writes[0], rtol=0, atol=0)
+    oracle_reads, oracle_writes = oracle_factor_levels(read, write, tied)
+    assert oracle_reads[0] is oracle_writes[0]  # the read factor IS the write factor
 
-    tied_prod_reads, tied_prod_writes = production_routing_factor_levels(
+    prod_reads, prod_writes = production_routing_factor_levels(
         read.to(torch.float32), write.to(torch.float32), tied, stored_dtype=torch.float32)
-    shared_prod_reads, shared_prod_writes = production_routing_factor_levels(
-        read.to(torch.float32), write.to(torch.float32), shared, stored_dtype=torch.float32)
-    torch.testing.assert_close(tied_prod_reads[0], shared_prod_reads[0], rtol=0, atol=0)
-    torch.testing.assert_close(tied_prod_writes[0], shared_prod_writes[0], rtol=0, atol=0)
+    torch.testing.assert_close(prod_reads[0], prod_writes[0], rtol=0, atol=0)
 
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-def test_cuda_tied_routing_is_exactly_shared_solve_independent_routing(alpha):
-    """R1b: the CUDA-kernel-dispatch path (`_ProductionLevelsFn`, GPU logits) takes a
-    standalone `TiedRouting` level through exactly the `shares_solve` route -- same
-    kernel launch, one solve -- rather than raising the `IndependentRouting`-only
-    assert R1 left in place. Mirrors
-    `test_tied_routing_is_exactly_shared_solve_independent_routing` (CPU/fp64) but
-    forces the CUDA lowering by handing it CUDA fp32 logits. `_ProductionLevelsFn`
-    always allocates read/write as distinct autograd outputs even under
-    `shares_solve` (its own docstring: aliasing one tensor into two graph outputs is
-    unsound), so production's read/write factors are checked bit-identical
-    (`rtol=0, atol=0`) rather than object-identical; the true tensor-IDENTITY claim
-    -- the read factor literally IS the write factor -- lives on the oracle lowering
-    (`routing/reference.py`), which this test also exercises on the same CUDA-resident
-    logits.
-    """
+def test_cuda_tied_routing_read_factor_is_the_write_factor(alpha):
+    """The CUDA-kernel-dispatch path (`_ProductionLevelsFn`, GPU logits) takes a
+    standalone `TiedRouting` level through one kernel launch, one solve. Mirrors
+    `test_tied_routing_read_factor_is_the_write_factor_on_both_lowerings` (CPU/fp64)
+    but forces the CUDA lowering by handing it CUDA fp32 logits."""
     tied = ResolvedRouting((TiedRouting(width=6, op=EntmaxActivation(alpha)),))
-    shared = ResolvedRouting(
-        (IndependentRouting(width=6, read=EntmaxActivation(alpha),
-                            write=EntmaxActivation(alpha), tied=True),))
     generator = torch.Generator(device="cuda").manual_seed(4242)
     read = torch.randn(2, 10, 6, device="cuda", dtype=torch.float32, generator=generator)
     write = torch.randn(2, 10, 6, device="cuda", dtype=torch.float32, generator=generator)
 
     tied_reads, tied_writes = production_routing_factor_levels(
         read, write, tied, stored_dtype=torch.float32)
-    shared_reads, shared_writes = production_routing_factor_levels(
-        read, write, shared, stored_dtype=torch.float32)
-
-    torch.testing.assert_close(tied_reads[0], shared_reads[0], rtol=0, atol=0)
-    torch.testing.assert_close(tied_writes[0], shared_writes[0], rtol=0, atol=0)
+    torch.testing.assert_close(tied_reads[0], tied_writes[0], rtol=0, atol=0)
 
     oracle_read = read.to(torch.float64)
     oracle_write = write.to(torch.float64)
@@ -369,7 +331,7 @@ def test_cuda_tied_routing_is_exactly_shared_solve_independent_routing(alpha):
 
 
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["union", "tied", "shared_solve", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize("shape", ["union", "tied", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_torch_lowering_matches_the_fp64_oracle(alpha, shape, kind):
@@ -383,7 +345,7 @@ def test_torch_lowering_matches_the_fp64_oracle(alpha, shape, kind):
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
 @pytest.mark.parametrize(
-    "shape", ["union", "tied", "shared_solve", "mixed_per_level", "dense_only"])
+    "shape", ["union", "tied", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_cuda_lowering_matches_the_fp64_oracle(alpha, shape, kind):
@@ -396,7 +358,7 @@ def test_cuda_lowering_matches_the_fp64_oracle(alpha, shape, kind):
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["union", "shared_solve", "mixed_per_level"])
+@pytest.mark.parametrize("shape", ["union", "tied", "mixed_per_level"])
 def test_the_two_lowerings_agree_on_exact_ties(alpha, shape):
     """Exact ties, where the oracle cannot arbitrate: the closed forms must still agree.
 
@@ -617,8 +579,7 @@ def test_the_solve_never_reaches_the_reference_cpu(monkeypatch):
 def _producer_topology(alpha: float) -> Topology:
     return Topology(
         levels=(
-            IndependentRouting(width=4, read=EntmaxActivation(alpha),
-                               write=EntmaxActivation(alpha), tied=True),
+            TiedRouting(width=4, op=EntmaxActivation(alpha)),
             UnionRouting(width=6, alpha=alpha),
             IndependentRouting(width=3, read=SoftmaxActivation(), write=SoftmaxActivation()),
         ),
@@ -863,7 +824,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["union", "shared_solve", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize("shape", ["union", "tied", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_the_two_lowerings_agree_directly(alpha, shape, kind):
@@ -998,7 +959,7 @@ def test_the_package_imports_no_triton_and_declares_none():
 
 @_CUDA
 @pytest.mark.parametrize("alpha", [1.5, 2.0])
-@pytest.mark.parametrize("shape", ["union", "shared_solve", "mixed_per_level", "dense_only"])
+@pytest.mark.parametrize("shape", ["union", "tied", "mixed_per_level", "dense_only"])
 @pytest.mark.parametrize(
     "kind", ["random", "near_boundary", "collapsed_support", "large_magnitude"])
 def test_the_stored_form_preserves_the_support_exactly(alpha, shape, kind):

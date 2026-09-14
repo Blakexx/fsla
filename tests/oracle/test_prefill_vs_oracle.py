@@ -89,7 +89,7 @@ def call(spec, state_in=None):
 
 def oracle(drawn, state_in=None):
     read, write, gain, v = drawn.doubles()
-    routing = IndependentRouting(width=1, tied=False, read=SoftmaxActivation(),
+    routing = IndependentRouting(width=1, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
     topo = Topology(levels=tuple(routing.at(w) for w in drawn.spec.widths))
     return naive_rola(v, read, write, gain, topo, None, initial_state=state_in,

@@ -35,7 +35,7 @@ from tests.oracle.families import Family
 TOKEN_WORD = CHUNK_TOKENS
 
 _ROUTING = IndependentRouting(
-    width=1, tied=False, read=SoftmaxActivation(), write=SoftmaxActivation())
+    width=1, read=SoftmaxActivation(), write=SoftmaxActivation())
 
 
 def _topology(widths):
