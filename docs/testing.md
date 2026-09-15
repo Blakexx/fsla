@@ -680,14 +680,13 @@ a missing `record_stream` or a missing join — not a device memory hazard.
 
 `tests/integration/stream_discipline.py` is the fixture; it was four bespoke cells
 guarding one module, and copying them into each new path is how three of the four end
-up missing. **A path that crosses a stream instantiates all five checks.**
+up missing. **A path that crosses a stream instantiates all four checks.**
 
 | check | makes deterministic |
 |---|---|
 | `OrderingSpy` | the publication is joined before the consumer reads it — and a join performed *inside* the publication is recorded distinctly, so it cannot satisfy the outer claim |
 | `record_stream_spy` | a tensor crossing to another stream declares its lifetime there |
 | `allocator_pressure` | the window a lifetime bug needs is actually opened |
-| `assert_agrees_under_launch_blocking` | async and serialized runs agree bit-for-bit |
 | `assert_capture_rejoins` | a fork that never rejoins **refuses to close a CUDA graph capture** |
 
 The last is the only *mechanical* detector of the missing-join class that exists

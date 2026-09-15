@@ -1,27 +1,24 @@
 ---
 name: rola-oracle-tests
-description: Adding or running an fp64-oracle cell for the carry kernel — Cell/alt_cell fixtures, GPU-locked pytest, standing failures, re-deriving expectations from the law
+description: Adding or running an fp64-oracle cell for the carry kernel — registry cells, GPU-locked pytest, standing failures, re-deriving expectations from the law
 ---
 The fp64 oracle is the truth (KERNEL_STANDARDS §10, "Oracle + conformance diff are the crown
 jewels"). Read `tests/oracle/test_carry_vs_oracle.py`'s own module docstring — it states the gate is
 the fp64 oracle, not the shipped kernel, because there is no bit-identity target across a redesign,
 only the arithmetic.
 
-## Adding a cell (`tests/oracle/fixtures.py`)
-Read `Cell`'s signature and `ref_levels()` directly for the current parameter set and what it draws.
-The key design points to preserve when adding a new cell:
-- `ref_levels()` must return the fp64 doubles of the ROUNDED (bf16-cast) operands, never the raw
-  fp64 draws — the oracle must reference what the kernel actually received, not what was cast away.
-- `k_tok` (nonzeros per row) is a property of the DRAW, never told to the kernel — that separation
-  is the design's whole claim.
-- `alt_cell`-style declarations draw a dense pass first (to consume the RNG stream identically),
-  then redraw the real support off a FRESH same-seeded generator — mirror this exactly if you add a
-  new alternating-declaration cell; getting the RNG-stream order wrong silently changes what a
-  "seed" cell means.
-- `cohort` (clustered rather than uniform-random sparsity) uses a different draw helper than the
-  uniform case — check `fixtures.py` for which.
-- Read `alt_cell`'s own ruling comment for which levels are read-sparse vs. write-sparse; don't
-  assume a parity rule without checking it, since it's a design choice recorded there, not a law.
+## Adding a cell (`benchmarks/cells/carry_cells.json`)
+A carry cell is a record in the registry, never a draw written in a test: the file's `fields` block defines each field
+(`widths`, `dv`, `tokens`, `warps_per_cta`, `draw`, `k_tok`, `cohort`, `support`, `backing`, `state`, `tier`), and
+`benchmarks/cells/__init__.py`'s `realize` draws it. The design points to preserve:
+- The oracle reads the ROUNDED operands: `realize` casts the draw to bf16 and `RealizedCell.doubles()` returns their fp64
+  values, so the reference sees what the kernel received, not what the cast threw away.
+- `k_tok` (nonzeros per row) is a property of the DRAW, never told to the kernel -- that separation is the design's
+  whole claim.
+- The sparse side alternates by level (`realize`'s own ruling comment says which levels are read-sparse and which
+  write-sparse); `cohort` draws clustered support through `clustered`, the uniform case through `simplex`.
+- A cell at an arm the binary does not build asks `require_arm` first (the carry oracle's `run` does): a declared test
+  row skips with its name, an undeclared arm runs to the launch surface's refusal and stays red.
 
 ## Running under the GPU lock
 GPU work is serialized by the shared `gpu_lock()` primitive (`tools/gpu_lock.py`, K46) — every
