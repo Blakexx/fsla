@@ -195,12 +195,6 @@
   },
   {
    "path": "tests/oracle/fixtures.py",
-   "message": "unused function 'require_arm' (60% confidence)",
-   "line_sha256": "03544bc8fcab06a1",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/fixtures.py",
    "message": "unused method 'ref_levels' (60% confidence)",
    "line_sha256": "20e6a95334ac5990",
    "count": 1

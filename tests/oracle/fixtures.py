@@ -133,9 +133,10 @@ def require_arm(D: int, DV: int, warps_per_cta: int) -> None:
     binary is not missing it -- nothing builds it, in any configuration -- and turning
     that into a skip would report an absent arm as satisfied coverage. Only a DECLARED
     row this build did not compile is skippable; anything else falls through to the
-    launch surface, which refuses it and names the reason. On the clean line the list is
-    EMPTY, so nothing is skippable and every carry cell reaches the surface's honest
-    no-implementation failure -- which is the state card C's TEST-DRIVEN ruling asks for.
+    launch surface, which refuses it and names the reason: a cell at an arm the declaration
+    does not name stays red, by that name, which is what the test-driven ruling asks for.
+    Every carry cell's call asks for its arm here (the carry and prefill oracles, the
+    paging equivalence file).
     """
     import pytest
 
