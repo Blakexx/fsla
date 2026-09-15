@@ -56,6 +56,3 @@ second definition of a launch exists somewhere.
 **`benchmarks/bench_intra.py`** adds the ROOFLINE to the registered intra bench: the same
 cells and the same timed callable, with the device's own mma.sync ceiling beside them.
 
-**`benchmarks/bench_layer.py`, `bench_scaling.py` and `bench_paging.py`** are curve and
-attribution studies rather than gated cells — a length sweep against attention, and the
-residency question — and they state their own usage lines.
