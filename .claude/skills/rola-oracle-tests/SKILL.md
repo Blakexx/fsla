@@ -7,10 +7,11 @@ jewels"). Read `tests/oracle/test_carry_vs_oracle.py`'s own module docstring —
 the fp64 oracle, not the shipped kernel, because there is no bit-identity target across a redesign,
 only the arithmetic.
 
-## Adding a cell (`benchmarks/cells/carry_cells.json`)
-A carry cell is a record in the registry, never a draw written in a test: the file's `fields` block defines each field
-(`widths`, `dv`, `tokens`, `warps_per_cta`, `draw`, `k_tok`, `cohort`, `support`, `backing`, `state`, `tier`), and
-`benchmarks/cells/__init__.py`'s `realize` draws it. The design points to preserve:
+## Adding a cell (rola-devtools' `rola_devtools/cells/carry.json`)
+A carry cell is a record in the central registry, never a draw written in a test: the file's `fields` block defines each
+field (`widths`, `dv`, `tokens`, `draw`, `k_tok`, `cohort`, `support`, `backing`, `state`, `tier`, `regime`), and
+`rola_devtools.cells.carry.realize` draws it and proves its regime; `benchmarks/cells/__init__.py` is rola's reading
+(the descriptor, the launch shape, `carry_call`). The design points to preserve:
 - The oracle reads the ROUNDED operands: `realize` casts the draw to bf16 and `RealizedCell.doubles()` returns their fp64
   values, so the reference sees what the kernel received, not what the cast threw away.
 - `k_tok` (nonzeros per row) is a property of the DRAW, never told to the kernel -- that separation is the design's
