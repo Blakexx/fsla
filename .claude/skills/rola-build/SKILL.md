@@ -96,7 +96,7 @@ Before committing, run the standards lint: the ast-grep rule pack under tools/li
 - A MERGE THAT TOUCHES csrc/ IS FOLLOWED BY A TIP REBUILD BEFORE ANY GATE IS QUOTED (13th trap form,
   2026-08-29): the tip's .so stayed pre-merge while the Python moved on; assert_fresh_binary did not
   fire. Python-only stages: the worktree still needs the built .so (copy the tip's, then
-  assert_fresh_binary); a pointer venv without it = rola._C ImportError = CPU-only battery = not a gate.
+  assert_fresh_binary); a pointer venv without it = rola_cu13._C ImportError = CPU-only battery = not a gate.
 - HOST INCIDENTS (2026-08-29, CPU pegged / host memory exhausted during a stage's gates): the ROOT CAUSE IS
   UNMEASURED. No tooling change or rule is declared from it until a measurement confirms the cause
   (G2c measures racecheck / synccheck / initcheck separately on the gate binary: wall time, peak RSS,

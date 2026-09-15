@@ -138,7 +138,7 @@ that into the skill the same day (process/pointers only — never facts).
   commits detached at the named SHA and the coordinator merges them.
 - "NEVER MERGE/PUSH/RATIFY" DOES NOT MEAN "NEVER COMMIT" (C1a, 2026-08-30): every stage COMMITS its work
   on its worktree with hooks on; the coordinator merges. And `tools/dev.py worktree`'s output must not be piped
-  through tail (it masks the exit code) — check `import rola._C` after it, not the log.
+  through tail (it masks the exit code) — check `import rola_cu13._C` after it, not the log.
 - THE ORPHAN-FILE RULE (C1c, 2026-08-30): when N sibling stages share a branch, a file no sibling owns
   that blocks a gate is edited by whoever hits it — the MINIMUM edit, reported — never a STOP over a
   two-line import; a brief hands out ownership AND names this rule.
