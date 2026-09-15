@@ -66,11 +66,10 @@ def ref(drawn, state_in=None):
 
 def check(spec, num, den, plane, want, bh=1):
     n_ref, d_ref, s_ref = want
-    assert relative(num.reshape(bh, 1, spec.tokens, spec.dv).permute(0, 2, 1, 3),
-                    n_ref) < BF16_RTOL
-    assert relative_per_token(num.reshape(bh, 1, spec.tokens, spec.dv).permute(0, 2, 1, 3),
-                              n_ref) < BF16_RTOL
-    assert relative(den.reshape(bh, 1, spec.tokens).permute(0, 2, 1), d_ref) < BF16_RTOL
+    #: PER TOKEN, on each token's own scale: the numerator and the denominator are what the kernel computes, and a
+    #: global max would let a small token's error hide under the largest one's.
+    assert relative_per_token(num.reshape(bh, 1, spec.tokens, spec.dv).permute(0, 2, 1, 3), n_ref) < BF16_RTOL
+    assert relative_per_token(den.reshape(bh, 1, spec.tokens, 1).permute(0, 2, 1, 3), d_ref[..., None]) < BF16_RTOL
     assert relative(canonical_from_plane(plane),
                     s_ref.reshape(bh, spec.N, spec.dv + 1)) < BF16_RTOL
 

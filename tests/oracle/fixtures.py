@@ -141,16 +141,16 @@ def relative(actual, reference):
     return float((actual.double() - reference.double()).abs().max()) / scale
 
 
-def relative_per_token(actual, reference, floor=0.02):
-    """THE PER-TOKEN RELATIVE ERROR: the worst token's error on ITS OWN scale, over the
-    tokens whose scale is at least ``floor`` of the tensor's. ``relative`` is one ratio on
-    the tensor's largest entry, and a few tokens wrong by half hide under it when their
-    rows are small -- which is how the box-words hazard of 2026-09-08 passed at two grains.
-    The last axis is the token's row; every axis before it indexes tokens."""
+def relative_per_token(actual, reference):
+    """THE PER-TOKEN RELATIVE ERROR: the worst token's error on ITS OWN scale, the largest entry of its reference row.
+    ``relative`` is one ratio on the tensor's largest entry, and a token wrong by half hides under it when its row is
+    small -- which is how the box-words hazard of 2026-09-08 passed at two grains. A row that is exactly zero in both is
+    a match; a row zero in the reference and not in the kernel is an infinite error. The last axis is the token's row;
+    every axis before it indexes tokens."""
     a = actual.double().reshape(-1, actual.shape[-1])
     r = reference.double().reshape(-1, reference.shape[-1])
-    scale = r.abs().amax(1)
-    keep = scale >= floor * max(1e-30, float(scale.max()))
-    if not bool(keep.any()):
-        return 0.0
-    return float(((a - r).abs().amax(1)[keep] / scale[keep]).max())
+    err, scale = (a - r).abs().amax(1), r.abs().amax(1)
+    zero = scale == 0
+    if bool((err[zero] > 0).any()):
+        return float("inf")
+    return float((err[~zero] / scale[~zero]).max()) if bool((~zero).any()) else 0.0
