@@ -13,8 +13,7 @@ stored with its provenance. This document is what that sentence means.
 | record | `rola_results` (the measurements store) | where a number lives afterwards, and which stored samples are a baseline |
 
 The benchmark repository's suite (rola-bench, `rola_bench/measure`) times through `tools/compare.py`, so a suite number
-and a number taken here are the same measurement. `tools/probe_cells.py` runs the same subjects across two binaries with
-`ncu` beside the timing.
+and a number taken here are the same measurement.
 
 ## The method
 
@@ -172,7 +171,6 @@ and a timing only compares within the session that interleaved it.
 
 | location | writer | the semantics | a sample's output |
 |---|---|---|---|
-| `probe_cells` | `tools/probe_cells.py` | each binary's commit, tree digest, manifest, family stamp and lane (bench, calls, schedule); the cells, state arm, counts, device software, clock lock | every (binary, cell) row |
 | `compare` | `tools/compare.py --record` | the point with its cell records and claim, each arm's label and name with its commit and diff (a foreign arm's runner), the counts, the seed, the reference | the driver's whole result |
 | `suite/<module>` | rola-bench's measurement suite | the module, unit, identities and dependencies | the instrument's raw JSON |
 | `calibration` | `benchmarks/unit/bench_carry_calib.py` | the parts binary, device, owners, sizes, clock | the calibration rows |

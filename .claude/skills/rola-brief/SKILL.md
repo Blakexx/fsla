@@ -35,11 +35,11 @@ numbers or names as if they generalize to every brief.
    allowed — delete). If something is deferred to a later stage, say which stage, don't half-build
    it now.
 8. **Gates**, named exactly (§16 SMALL): the oracle test file(s) + GPU-flock command
-   (`rola-oracle-tests`), the perf probe cells and its pass bar (`rola-probe`), what SASS comparison
+   (`rola-oracle-tests`), the perf cells and their pass bar (`tools/compare.py`, docs/measurement.md), what SASS comparison
    IS and ISN'T expected (state it explicitly per-brief — never assume identical-to-parent unless
    the mechanism is unchanged), the exact commit message, and the compile ledger (`rola-build`).
 9. **Cited baselines, never re-measured cold**: point at the FINDINGS row/table a number comes from
-   (`rola-ledger`/`rola-probe` skills cover HOW those were taken) — a brief re-deriving a baseline
+   (`rola-ledger` and docs/measurement.md cover HOW those were taken) — a brief re-deriving a baseline
    from scratch wastes the stage's build budget on a number that already exists.
 10. **Standing rules folded in by reference**: the build-cycle budget (§15), background builds + exit
     marker (§14, `rola-build`), "no polling" — cite the sections, don't restate their text.
