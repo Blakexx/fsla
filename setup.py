@@ -248,7 +248,9 @@ def _arm_coverage_sweep(build_lib: str, want: list[int]) -> int:
             f"no {PLUGIN}/_C.*so under {build_lib} after the build; the arm coverage "
             f"sweep has no artifact to ask, and a sweep that silently asks nothing "
             f"is the vacuous gate this project keeps re-learning about")
-    proc = subprocess.run([sys.executable, "-c", _ARM_SWEEP_PROBE, str(so)],
+    #: ABSOLUTE: a wheel's `build_lib` is relative to this checkout, and the probe runs outside it (so `import rola`
+    #: cannot resolve the source tree instead of the build).
+    proc = subprocess.run([sys.executable, "-c", _ARM_SWEEP_PROBE, str(so.resolve())],
                           capture_output=True, text=True, cwd=str(ROOT.parent))
     if proc.returncode != 0:
         raise RuntimeError(
