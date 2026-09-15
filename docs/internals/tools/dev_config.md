@@ -43,7 +43,6 @@ resolved value and the file it came from ([dev.md](dev.md)).
 f-string prefixes resolved) and shell expansions.
 - `HANDOFFS`: values one of the tree's own processes passes to a child it starts.
   - `ROLA_DEV_CONFIG` itself.
-  - The lock-held markers (`ROLA_HOST_BUDGET_HELD`, `ROLA_GPU_LOCK_HELD`, `ROLA_FILE_LOCK_HELD_*`).
   - The gated `nvcc` and `sccache` that `setup.py` passes to the compiler wrapper.
   - The inputs `setup.py` sets for torch (`CUDA_HOME`, `MAX_JOBS`, `PYTORCH_NVCC`).
   - pytest-xdist's worker id.

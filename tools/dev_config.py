@@ -92,9 +92,6 @@ NCU_SEARCH = ("/opt/nvidia/nsight-compute/*/ncu", "/usr/local/cuda-*/bin/ncu")
 #: the value (from this config or from its own state) and the child must use exactly that value.
 HANDOFFS = {
     POINTER: "which config directory a child reads (set by a test or the container, never by a setting)",
-    "ROLA_HOST_BUDGET_HELD": "a parent holds host budget slots; a nested acquire is a no-op (tools/host_budget.py)",
-    "ROLA_GPU_LOCK_HELD": "a parent holds the GPU lock; a nested acquire is a no-op (tools/gpu_lock.py)",
-    "ROLA_FILE_LOCK_HELD_": "prefix: a parent holds the named file lock (tools/host_budget.py file_lock)",
     "ROLA_REAL_NVCC": "the gated nvcc setup.py hands the sccache wrapper (tools/sccache_nvcc.py)",
     "ROLA_SCCACHE_BIN": "the gated sccache setup.py hands the sccache wrapper",
     "CUDA_HOME": "torch.utils.cpp_extension's toolkit, set by setup.py from toolchain.cuda_home before torch is imported",
