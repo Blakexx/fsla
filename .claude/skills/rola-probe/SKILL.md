@@ -91,5 +91,4 @@ report it, Blake rules, don't tune around it.
   profiled launches per point, interleaved, and compare distributions.
 - `--state paged` WITHOUT `--continuation` RUNS NO ENTRY SWEEP (make_call passes a null s_in): every
   paged number measured that way is the exit sweep alone and cannot show a read-side effect. Use the
-  continuation shape (entry plane IS exit plane) for any state-traffic claim; tools/experiments/
-  dram_by_activity.py is the committed activity-controlled harness (read-only / written / none variants).
+  continuation shape (entry plane IS exit plane) for any state-traffic claim.

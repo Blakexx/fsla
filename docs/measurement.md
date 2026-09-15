@@ -178,7 +178,6 @@ and a timing only compares within the session that interleaved it.
 | `calibration` | `benchmarks/unit/bench_carry_calib.py` | the parts binary, device, owners, sizes, clock | the calibration rows |
 | `pipe_timeline`, `pipe_timeline.scale` | `tools/pipe_timeline.py` | the cell, binary and scale; a calibration's composition | the series and summary; the plateau |
 | `build_ledger`, `compose_ledger` | `tools/build_ledger.py`, `tools/compose_ledger.py` | the commit and diff, the tag or cells | the report |
-| `dram_by_activity` | `tools/experiments/dram_by_activity.py` | each binary's commit, diff and manifest; the variants, counts | the rows |
 | `environment` | `tools/dev.py container check` | the environment key | the proofs |
 
 A tool run by another tool stores nothing (`--no-record`): the caller keeps the output in its own record. `python -m
