@@ -85,45 +85,6 @@ def built_arms() -> set:
     return {tuple(row) for row in carry_ops.arms()}
 
 
-def declared_arms() -> set:
-    """The rows the ARM LIST declares, in the same key `built_arms` reports.
-
-    Read from `tools/gen_shards.py`, which owns the list and generates both the
-    dispatch's macro and the per-arm translation units.
-    """
-    import sys
-    from pathlib import Path as _Path
-
-    tools = _Path(__file__).resolve().parents[2] / "tools"
-    if str(tools) not in sys.path:
-        sys.path.insert(0, str(tools))
-    import gen_shards
-
-    return {tuple(row) for row in gen_shards.CARRY_ARMS}
-
-
-def require_arm(D: int, DV: int, warps_per_cta: int) -> None:
-    """SKIP unless this binary carries the arm, and NAME the one it is missing.
-
-    AN UNDECLARED ARM IS NOT A SKIP. If the key is in no row of the list at all, the
-    binary is not missing it -- nothing builds it, in any configuration -- and turning
-    that into a skip would report an absent arm as satisfied coverage. Only a DECLARED
-    row this build did not compile is skippable; anything else falls through to the
-    launch surface, which refuses it and names the reason: a cell at an arm the declaration
-    does not name stays red, by that name, which is what the test-driven ruling asks for.
-    Every carry cell's call asks for its arm here (the carry and prefill oracles, the
-    paging equivalence file).
-    """
-    import pytest
-
-    key = (D, DV, warps_per_cta)
-    if key in built_arms() or key not in declared_arms():
-        return
-    pytest.skip(f"this binary does not carry the carry arm {key}; it is a declared TEST "
-                f"row. Build the battery's set: ROLA_CARRY_ARMS=all ROLA_CUDA_ARCHS=86 "
-                f"pip install -e . --no-build-isolation")
-
-
 def assert_fresh_binary():
     """DEVICE-SIDE, because a path or hash check cannot catch an extension trap.
 
