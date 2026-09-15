@@ -119,14 +119,17 @@ def split(combined: Path, out: Path, version: str) -> list[Path]:
     core[f"{info}/top_level.txt"] = b"rola\n"
 
     plugin_info = f"{PLUGIN}-{version}.dist-info"
-    header = [line for line in metadata.splitlines()
-              if line.split(":", 1)[0] in ("Author", "Author-email", "License", "License-File", "Requires-Python")]
-    torch = next(line for line in metadata.splitlines() if re.match(r"Requires-Dist: torch\b", line))
+    #: the build's single-line fields that describe the plugin as well; `License` is not one (setuptools writes the
+    #: licence's whole text into it), the License-File entries name the same files
+    lines = metadata.splitlines()
+    header = [line for line in lines if line.split(":", 1)[0] in ("Author", "Author-email", "License-File", "Classifier",
+                                                                   "Requires-Python")]
+    torch = next(line for line in lines if re.match(r"Requires-Dist: torch\b", line))
     plugin = {n: d for n, d in files.items() if n.startswith(f"{PLUGIN}/")}
     plugin.update({f"{PLUGIN}/manifests/{m.name}": m.read_bytes() for m in manifests})
     plugin.update({n.replace(info, plugin_info, 1): d for n, d in licenses.items()})
     plugin[f"{plugin_info}/METADATA"] = "\n".join([
-        "Metadata-Version: 2.1", f"Name: rola-{TOOLCHAIN}", f"Version: {version}",
+        lines[0], f"Name: rola-{TOOLCHAIN}", f"Version: {version}",
         f"Summary: RoLA's kernels built by the {TOOLCHAIN} toolchain, with the manifests they were ratified against; "
         f"install as rola[{TOOLCHAIN}]", *header, f"Requires-Dist: rola=={version}", torch, ""]).encode()
     plugin[f"{plugin_info}/WHEEL"] = _wheel_meta(PLUGIN_TAG, purelib=False)

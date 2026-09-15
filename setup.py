@@ -1008,6 +1008,8 @@ setup(
     name="rola",
     version=read_version(),
     packages=find_packages(include=["rola", "rola.*", PLUGIN]),
+    #: entmax's pin record, read beside `rola/routing/entmax/pin.py`: without it an installed reference cannot gate itself.
+    package_data={"rola.routing.entmax": ["PIN.json"]},
     extras_require=EXTRAS,
     #: ROLA_NO_EXTENSION=1 installs the Python package with NO extension build -- for a
     #: worktree that receives a built _C from the integration checkout at the same
