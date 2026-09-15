@@ -25,6 +25,6 @@ The rules most often violated by newcomers, restated:
 - The fp64 oracle (rola/reference) is the executable spec — crown jewels;
   changes go through the dual-run protocol, no exceptions.
 - Never run unscoped `pytest tests/`. Every GPU entry point takes
-  `gpu_lock()` itself (`tools/gpu_lock.py`, K46) — invoke GPU commands BARE,
+  `gpu_lock()` itself (`rola_devtools.locks.gpu`, K46) — invoke GPU commands BARE,
   never wrapped in an external `flock` on the same lock path (self-deadlocks).
   Builds: MAX_JOBS=4, nice.

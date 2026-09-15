@@ -21,7 +21,7 @@ A carry cell is a record in the registry, never a draw written in a test: the fi
   row skips with its name, an undeclared arm runs to the launch surface's refusal and stays red.
 
 ## Running under the GPU lock
-GPU work is serialized by the shared `gpu_lock()` primitive (`tools/gpu_lock.py`, K46) — every
+GPU work is serialized by the shared `gpu_lock()` primitive (`rola_devtools.locks.gpu`, K46) — every
 campaign, not just this suite (see `development/operations/OPERATIONS.md`). pytest takes it itself
 via a session-scoped fixture in `tests/conftest.py`; invoke BARE, never wrap the command in an
 external `flock` on the same lock path (self-deadlocks — K38). Run a NAMED file, never the bare

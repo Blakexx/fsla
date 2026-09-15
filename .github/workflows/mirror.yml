@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install the mirror tool
-        run: pip install "rola-devtools @ git+https://github.com/Blakexx/rola-devtools@3318da1c25ecf4f46389b204a23e93ec3a4eb23a"
+        run: pip install -r tools/devtools.txt
       - name: Export and tripwire
         run: python3 -m rola_devtools.mirror /tmp/export
       - name: Commit the export as a snapshot on the public mirror

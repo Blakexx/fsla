@@ -9,9 +9,9 @@ iteration builds, only milestones ratify).
 ## Iteration vs gate
 - **ONE lock mechanism for both** (K39, Blake ruling 2026-08-28 — supersedes the old two-mechanism
   split of a build-slot script's parallel slots and a separate exclusive `/tmp/rola_ram.lock`):
-  the host budget `setup.py` takes itself (`tools/build_lock.py` over `tools/host_budget.py`). An
+  the host budget `setup.py` takes itself (`tools/build_lock.py` over `rola_devtools.locks.host`). An
   iteration build holds the slots free now; a gate build waits for EVERY slot, so the two can never
-  overlap and OOM the host. A non-setup.py compile runs `python tools/host_budget.py [--exclusive] -- <cmd>`.
+  overlap and OOM the host. A non-setup.py compile runs `python -m rola_devtools.locks.host [--exclusive] -- <cmd>`.
 - **Iteration build**: single-arch, arm-subset. `ROLA_CUDA_ARCHS=<arch> ROLA_CARRY_ARMS=<csv|all>
   python -m pip install -e . --no-build-isolation` — the job count and nvcc threads are the dev config's
   (`python tools/dev.py show`), don't hand-restate them here.

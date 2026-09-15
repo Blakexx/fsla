@@ -6,7 +6,6 @@
   {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/build_flags.py"},
   {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/build_lock.py"},
   {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/gen_shards.py"},
-  {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/host_budget.py"},
   {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/ratify.py"},
   {"doc": ".claude/skills/rola-kernel-map/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "csrc/rola/src/carry"},
   {"doc": ".claude/skills/rola-kernel-map/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "49470bd230138627", "target": "csrc/rola/src/common/ops.cuh::mul_bf16x2"},
@@ -24,10 +23,8 @@
   {"doc": ".claude/skills/rola-oracle-tests/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tests/oracle/reference.py"},
   {"doc": ".claude/skills/rola-oracle-tests/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tests/oracle/test_carry_hypothesis_cells.py"},
   {"doc": ".claude/skills/rola-oracle-tests/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tests/oracle/test_carry_vs_oracle.py"},
-  {"doc": ".claude/skills/rola-oracle-tests/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/gpu_lock.py"},
   {"doc": ".claude/skills/rola-oracle-tests/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/sanitize_oracle.py"},
   {"doc": ".claude/skills/rola-ratify/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/build_flags.py"},
-  {"doc": ".claude/skills/rola-ratify/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/ratify.py"},
-  {"doc": "CLAUDE.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/gpu_lock.py"}
+  {"doc": ".claude/skills/rola-ratify/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/ratify.py"}
  ]
 }
