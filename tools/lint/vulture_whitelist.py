@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""VULTURE WHITELIST (LINT2 item 4, G_FOUNDATION G5, REPORT-ONLY until G5).
+"""VULTURE WHITELIST, read by `tools/lint/run_vulture.sh` (which `tools/lint/ratchet.py vulture` gates).
 
 vulture's own convention: a whitelist is Python source that REFERENCES every
 name vulture would otherwise flag, so it disappears from the report; it is
 never executed, only parsed. Every entry below is a GENUINE DYNAMIC USE --
 a name some FRAMEWORK reads by convention, never by an explicit call vulture's
 static analysis can see -- with a one-line reason, per the brief. Anything
-NOT listed here that vulture still flags is a real candidate for G5 to delete,
-not something this stage silences by omission.
+NOT listed here that vulture still flags is a real candidate to delete, never
+silenced by omission.
 
 Run: `vulture rola/ tools/ tests/ benchmarks/ tools/lint/vulture_whitelist.py`
-(`tools/lint/run_vulture.sh` does exactly this, report-only).
+(`tools/lint/run_vulture.sh` does exactly this).
 """
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PYTHON dead-code check (LINT2 item 4, G_FOUNDATION G5, REPORT-ONLY until G5):
+# PYTHON dead-code check, gated by `tools/lint/ratchet.py vulture`:
 # vulture over the Python surface, with the whitelist in
 # `tools/lint/vulture_whitelist.py` (genuine dynamic uses only, each with a
 # one-line reason -- see that file's own docstring). `ruff check --select F401,F841`

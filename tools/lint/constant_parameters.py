@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""NO DEAD PARAMETERS: a knob that only ever takes one value is a constant. REPORT-ONLY.
+"""NO DEAD PARAMETERS: a knob that only ever takes one value is a constant. Gated by `tools/lint/ratchet.py`.
 
 The ruling this mechanizes (Blake, 2026-08-29) came from a real one: a stage shipped a
 parameter documented as "stays None", which is a parameter in name only -- it reads as a
@@ -29,7 +29,7 @@ tree does not exercise yet -- says so on its own line:
 definition's docstring naming the parameter, is the declaration. It carries a REASON,
 which is the whole point: "reserved" without one is indistinguishable from dead.
 
-REPORT-ONLY, and it stays that way until a human has ruled on the inventory. Two blind
+A new finding fails the commit; the findings no human has ruled on yet are the ratchet's baseline. Two blind
 spots make every finding a question rather than a proof, and both are one-directional --
 they over-report, never under-report:
 
@@ -198,7 +198,7 @@ def main() -> int:
     found = findings()
     for finding in found:
         print(f"  {finding}")
-    print(f"constant_parameters: {len(found)} finding(s) -- REPORT ONLY")
+    print(f"constant_parameters: {len(found)} finding(s)")
     return 0
 
 
