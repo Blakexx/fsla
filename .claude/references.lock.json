@@ -1,7 +1,6 @@
 {
  "references": [
   {"doc": ".claude/skills/rola-brief/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "docs/build.md"},
-  {"doc": ".claude/skills/rola-brief/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/compare.py"},
   {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "docs/build.md"},
   {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/build_flags.py"},
   {"doc": ".claude/skills/rola-build/SKILL.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tools/build_lock.py"},
