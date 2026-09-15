@@ -260,12 +260,6 @@
    "count": 1
   },
   {
-   "path": "tests/oracle/oracle_fixtures.py",
-   "message": "unused function '_output_charge' (60% confidence)",
-   "line_sha256": "cbddc4e3ece7a39b",
-   "count": 1
-  },
-  {
    "path": "tests/oracle/test_padding_seam.py",
    "message": "unused variable 'pytestmark_decode' (60% confidence)",
    "line_sha256": "6663926091bb9ed0",
