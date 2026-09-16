@@ -10,7 +10,7 @@ only the arithmetic.
 ## Adding a cell (rola-devtools' `rola_devtools/cells/carry.json`)
 A carry cell is a record in the central registry, never a draw written in a test: the file's `fields` block defines each
 field (`widths`, `dv`, `tokens`, `draw`, `k_tok`, `cohort`, `support`, `backing`, `state`, `tier`, `regime`), and
-`rola_devtools.cells.carry.realize` draws it and proves its regime; `benchmarks/cells/__init__.py` is rola's reading
+`rola_devtools.cells.carry.realize` draws it and proves its regime; `measure/cells/__init__.py` is rola's reading
 (the descriptor, the launch shape, `carry_call`). The design points to preserve:
 - The oracle reads the ROUNDED operands: `realize` casts the draw to bf16 and `RealizedCell.doubles()` returns their fp64
   values, so the reference sees what the kernel received, not what the cast threw away.
