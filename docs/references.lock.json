@@ -166,7 +166,7 @@
   {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "rola/ops/naive.py"},
   {"doc": "docs/architecture/self-masking-theorem.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "tests/integration/test_chunk_paging_equivalence.py"},
   {"doc": "docs/bringup.md", "pinned_at": "27f5dbac007a", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/arch_caps.cuh"},
-  {"doc": "docs/bringup.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "csrc/rola/src/common/arch_runtime.cu"},
+  {"doc": "docs/bringup.md", "pinned_at": "2ddd86559bf7", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/arch_runtime.cu"},
   {"doc": "docs/build.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": ".claude/skills"},
   {"doc": "docs/build.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": ".github/workflows/lint.yml"},
   {"doc": "docs/build.md", "pinned_at": "c1e86602038e", "reviewed": false, "sha256": "", "target": "csrc"},
