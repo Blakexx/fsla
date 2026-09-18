@@ -976,12 +976,6 @@
   {
    "path": "docs/internals/common/constants.md",
    "message": "names the work code 'C2e'",
-   "line_sha256": "5d84a3835c90bda4",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/constants.md",
-   "message": "names the work code 'C2e'",
    "line_sha256": "eccc19bb15befb45",
    "count": 1
   },
@@ -989,12 +983,6 @@
    "path": "docs/internals/common/constants.md",
    "message": "names the work code 'C3'",
    "line_sha256": "0c588860b8442890",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/constants.md",
-   "message": "names the work code 'C3'",
-   "line_sha256": "7b34648999a02453",
    "count": 1
   },
   {
@@ -1017,26 +1005,8 @@
   },
   {
    "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'C0'",
-   "line_sha256": "beb816b249826691",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'G1'",
-   "line_sha256": "6e8cea8bc4f0ac07",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
    "message": "names the work code 'G2'",
    "line_sha256": "5de8f34ad63783c6",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'G2'",
-   "line_sha256": "79bac4aa2a670874",
    "count": 1
   },
   {
@@ -1073,12 +1043,6 @@
    "path": "docs/internals/common/geom.md",
    "message": "names the work code 'G2c'",
    "line_sha256": "ce605792ee6ff60e",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/geom.md",
-   "message": "names the work code 'G2c'",
-   "line_sha256": "e3049e498994a51b",
    "count": 1
   },
   {
