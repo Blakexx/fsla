@@ -63,18 +63,6 @@
   },
   {
    "path": "docs/architecture/fp32-accumulators.md",
-   "message": "names the work code 'D2-b'",
-   "line_sha256": "6c5ba2c24696d49b",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/fp32-accumulators.md",
-   "message": "names the work code 'P67'",
-   "line_sha256": "6c5ba2c24696d49b",
-   "count": 1
-  },
-  {
-   "path": "docs/architecture/fp32-accumulators.md",
    "message": "names the work code 'P67'",
    "line_sha256": "9dd023d9727fe5cc",
    "count": 1
