@@ -71,6 +71,44 @@ __device__ __forceinline__ void pool_prologue(const Smem<BP>& sm, int tid) {
   }
 }
 
+//: THE FRAME'S PROLOGUE for the parts that run a head: the head's barriers and the staged
+//: words', as `window_loop` initializes them (their arrivals complete phases nobody waits on here).
+template <class BP>
+__device__ __forceinline__ void frame_prologue(const Smem<BP>& sm, int tid) {
+  if (tid < 2) {
+    ops::mbar_init(sm.head_bar(tid), BP::kThreads);
+    ops::mbar_init(sm.counts_bar(tid), BP::kThreads);
+    ops::mbar_init(sm.bases_bar(tid), 32u);
+  }
+  if (tid == 2) ops::mbar_init(sm.words_bar(), 32u);
+}
+
+//: A WINDOW'S HEAD as the kernel runs it, its three steps CTA-edged here: the scan warp stages the
+//: words; every warp's pass one; the scan warp's scan; every warp's pass two. `reps` passes.
+template <class BP, int D, int BC>
+__device__ __forceinline__ void part_head(const CarryParams& p, const Smem<BP>& sm,
+                                          const SideLayout (&lay)[2], const int (&abase)[D],
+                                          int win, int bh, int warp, int lane, bool RC, bool RS,
+                                          bool WC, bool WS, int reps) {
+  const int t0 = win * kWindow;
+  const int wLen = p.L - t0 < kWindow ? p.L - t0 : kWindow;
+  if (warp == BP::kScanWarp)
+    stage_box_words<BP, D, BC>(p, sm, abase, lane, bh, t0, (wLen + 31) / 32);
+  ops::mbar_wait(sm.words_bar(), (uint32_t)win & 1u);
+#pragma unroll 1
+  for (int r = 0; r < reps; ++r) {
+    run_head(RC, RS, WC, WS, [&](auto rc, auto rs, auto wc, auto ws) {
+      head_pass_one<BP, D, BC, decltype(rc)::value, decltype(rs)::value, decltype(wc)::value,
+                    decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane);
+    });
+    ops::rendezvous();
+    if (warp == BP::kScanWarp) head_scan<BP>(sm, win & 1, lane);
+    ops::rendezvous();
+    head_pass_two<BP>(p, sm, win & 1, warp, lane);
+    ops::rendezvous();
+  }
+}
+
 //: THE HEAD PART: every window's head, `reps` times over (the products are idempotent);
 //: the last pass's read order, tile masks, live counts, warp words, union words and prefix
 //: written to `[bh][owner][window][...]`.
@@ -97,31 +135,17 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void head_part_
   const SideLayout& lw = lay[rola::facts::kWrite];
   const bool RC = lr.single_inner < 0 || lr.single_outer < 0, RS = lr.straddle >= 0;
   const bool WC = lw.single_inner < 0 || lw.single_outer < 0, WS = lw.straddle >= 0;
-  PhaseClock pc(sm.ledger(warp), lane);
+  frame_prologue<BP>(sm, tid);
+  ops::rendezvous();
 #pragma unroll 1
   for (int win = 0; win < nWindows; ++win) {
-    const int t0 = win * kWindow;
-    const int wLen = p.L - t0 < kWindow ? p.L - t0 : kWindow;
-    const int nWords = (wLen + 31) / 32;
-    stage_box_words<BP, D, BC>(p, sm, rola::facts::kRead, abase, warp, lane, bh, t0, nWords);
-    stage_box_words<BP, D, BC>(p, sm, rola::facts::kWrite, abase, warp, lane, bh, t0, nWords);
-    ops::stage_wait<0>();
-    ops::rendezvous();
-    int live[2] = {0, 0};
-#pragma unroll 1
-    for (int r = 0; r < reps; ++r) {
-      run_head(RC, RS, WC, WS, [&](auto rc, auto rs, auto wc, auto ws) {
-        head<BP, D, BC, decltype(rc)::value, decltype(rs)::value, decltype(wc)::value,
-             decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane, live, pc);
-      });
-      ops::rendezvous();
-    }
+    part_head<BP, D, BC>(p, sm, lay, abase, win, bh, warp, lane, RC, RS, WC, WS, reps);
     const long cta = (long)bh * gridDim.x + owner;
     const long w = cta * nWindows + win;
     for (int t = tid; t < kWindow; t += BP::kThreads)
       out_order[w * kWindow + t] = sm.order(win & 1)[t];
     if (tid < BP::kTiles) out_tilemask[w * BP::kTiles + tid] = sm.tilemask(win & 1)[tid];
-    if (tid < 2) out_live[w * 2 + tid] = live[tid];
+    if (tid < 2) out_live[w * 2 + tid] = sm.live_count(win & 1)[tid];
     if (tid < BP::kWarps * BP::kRounds)
       out_warpwords[w * BP::kWarps * BP::kRounds + tid] =
           sm.warpwords(win & 1, tid / BP::kRounds)[tid % BP::kRounds];
@@ -160,26 +184,16 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void fill_part_
   const bool RC = lr.single_inner < 0 || lr.single_outer < 0, RS = lr.straddle >= 0;
   const bool WC = lw.single_inner < 0 || lw.single_outer < 0, WS = lw.straddle >= 0;
   pool_prologue<BP>(sm, tid);
+  frame_prologue<BP>(sm, tid);
   ops::rendezvous();
-  PhaseClock pc(sm.ledger(warp), lane);
   int ordinal = 0;
 #pragma unroll 1
   for (int win = 0; win < nWindows; ++win) {
     const int t0 = win * kWindow;
-    const int wLen = p.L - t0 < kWindow ? p.L - t0 : kWindow;
-    const int nWords = (wLen + 31) / 32;
     const uint32_t rowbase = (uint32_t)bh * (uint32_t)p.L + (uint32_t)t0;
-    stage_box_words<BP, D, BC>(p, sm, rola::facts::kRead, abase, warp, lane, bh, t0, nWords);
-    stage_box_words<BP, D, BC>(p, sm, rola::facts::kWrite, abase, warp, lane, bh, t0, nWords);
-    ops::stage_wait<0>();
-    ops::rendezvous();
-    int live[2] = {0, 0};
-    run_head(RC, RS, WC, WS, [&](auto rc, auto rs, auto wc, auto ws) {
-      head<BP, D, BC, decltype(rc)::value, decltype(rs)::value, decltype(wc)::value,
-           decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane, live, pc);
-    });
-    ops::rendezvous();
-    const int chunks = (live[rola::facts::kWrite] + BP::kPoolTok - 1) / BP::kPoolTok;
+    part_head<BP, D, BC>(p, sm, lay, abase, win, bh, warp, lane, RC, RS, WC, WS, 1);
+    const int chunks =
+        (sm.live_count(win & 1)[rola::facts::kWrite] + BP::kPoolTok - 1) / BP::kPoolTok;
 #pragma unroll 1
     for (int c = 0; c < chunks; ++c) {
 #pragma unroll 1
@@ -231,6 +245,7 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void fold_part_
   const bool RC = lr.single_inner < 0 || lr.single_outer < 0, RS = lr.straddle >= 0;
   const bool WC = lw.single_inner < 0 || lw.single_outer < 0, WS = lw.straddle >= 0;
   pool_prologue<BP>(sm, tid);
+  frame_prologue<BP>(sm, tid);
   ops::rendezvous();
   PhaseClock pc(sm.ledger(warp), lane);
   State<BP> st;
@@ -243,27 +258,13 @@ __global__ __launch_bounds__(BoxPlan<D, DV, WARPS>::kThreads, 1) void fold_part_
     rola::static_for<4>([&](auto Kc) { st.m[decltype(Bi)::value][decltype(Kc)::value] = 0.0f; });
   });
   PoolCursor<BP> cur{0u};
+  const uint32_t rowbase0 = (uint32_t)bh * (uint32_t)p.L;
 #pragma unroll 1
   for (int win = 0; win < nWindows; ++win) {
-    const int t0 = win * kWindow;
-    const int wLen = p.L - t0 < kWindow ? p.L - t0 : kWindow;
-    const int nWords = (wLen + 31) / 32;
-    const uint32_t rowbase = (uint32_t)bh * (uint32_t)p.L + (uint32_t)t0;
-    stage_box_words<BP, D, BC>(p, sm, rola::facts::kRead, abase, warp, lane, bh, t0, nWords);
-    stage_box_words<BP, D, BC>(p, sm, rola::facts::kWrite, abase, warp, lane, bh, t0, nWords);
-    ops::stage_wait<0>();
-    ops::rendezvous();
-    int live[2] = {0, 0};
-    run_head(RC, RS, WC, WS, [&](auto rc, auto rs, auto wc, auto ws) {
-      head<BP, D, BC, decltype(rc)::value, decltype(rs)::value, decltype(wc)::value,
-           decltype(ws)::value>(p, sm, lay, win & 1, wLen, warp, lane, live, pc);
-    });
-    ops::rendezvous();
+    part_head<BP, D, BC>(p, sm, lay, abase, win, bh, warp, lane, RC, RS, WC, WS, 1);
 #pragma unroll 1
-    for (int r = 0; r < reps; ++r) {
-      fold<BP, D, BC, false, false>(p, sm, lay[rola::facts::kWrite], wbases, win & 1,
-                                    live[rola::facts::kWrite], rowbase, warp, lane, st, cur, pc);
-    }
+    for (int r = 0; r < reps; ++r)
+      fold<BP, D, BC>(p, sm, wbases, win, rowbase0, warp, lane, st, cur, pc);
     ops::rendezvous();
   }
   const long cta = (long)bh * gridDim.x + owner;

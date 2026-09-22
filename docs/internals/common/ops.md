@@ -751,6 +751,15 @@ hold every warp to the slowest.
 counter with it. Stated shared, so ptxas emits no address-space probe (the generic atomic's
 lowering is `red-global`'s story).
 
+<a id="fresh"></a>
+### `fresh`
+
+`fresh(a, b)` makes two values opaque at the point it stands: an empty `asm volatile` that reads
+and writes them, so nothing derived from them afterwards can be computed before it. A step run once
+a window (the head's passes) rebuilds its addressing where it is used instead of ptxas hoisting that
+addressing out of the window loop and holding it live across the fold's bursts, where the registers
+are scarce.
+
 <a id="once"></a>
 ## `once` — an opaque one-trip loop bound
 

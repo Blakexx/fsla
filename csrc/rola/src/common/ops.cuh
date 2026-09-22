@@ -216,6 +216,10 @@ __device__ __forceinline__ int once(bool cond) {
   return n;
 }
 
+//: TWO VALUES MADE OPAQUE at this point, so what derives from them is rebuilt here rather than
+//: hoisted out of the loop. -- see docs/internals/common/ops.md#fresh
+__device__ __forceinline__ void fresh(int& a, int& b) { asm volatile("" : "+r"(a), "+r"(b)); }
+
 //: THE SM'S CYCLE COUNTER, for the phase ledger. -- see docs/internals/common/ops.md#cycles
 __device__ __forceinline__ long long cycles() {
   long long c;

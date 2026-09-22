@@ -12,5 +12,6 @@ low-half stage aliases the readout/pool region at a call's edges (the two stream
 at once), the whole fits the architecture's maximum.
 
 The byte offsets and the per-moment aliasing are in [`smem_ledger.md`](smem_ledger.md);
-what each tenant is for is in [`carry_kernel.md`](carry_kernel.md). `Edge` names the head's
-two named barriers.
+what each tenant is for is in [`carry_kernel.md`](carry_kernel.md). The head's named CTA
+barriers are gone with the head's CTA edges: its steps join at the frame's `mbarrier`s
+(`kFrameBarOffset`, [`carry_kernel.md#edges`](carry_kernel.md#edges)).

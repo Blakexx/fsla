@@ -53,10 +53,12 @@ struct BoxPlan {
   static constexpr int kWarpWordsBytes = kWarps * kRounds * 4;
   static constexpr int kUnionBytes = kRounds * 4;
   static constexpr int kPrefixBytes = round_up16((kRounds + 1) * 2);
-  static constexpr int kLiveBytes = 16;
+  //: the live counts `[parity][side]`, the read-touched boxes and each warp's part of them.
+  static constexpr int kLiveBytes = round_up16(32 + 2 * kWarps * 4);
+  //: THE SCAN WARP: the head's serial step and the words' staging. -- carry_kernel.md#head
+  static constexpr int kScanWarp = kWarps - 1;
 
-  //: THE POOL: union-live tokens by rank, a token's V row, runs and gain pair; `kPoolSlots`
-  //: slots under full/empty barriers; a ZERO ROW a slot. -- smem_ledger.md#pool
+  //: THE POOL: union-live tokens by rank in `kPoolSlots` barriered slots. -- smem_ledger.md#pool
   static constexpr int kRunBytes = 32;
   static constexpr int kPoolSlots = 2;
   static constexpr int kPoolRowBytes = kVRowBytes + 2 * kRunBytes + 4;
@@ -79,8 +81,8 @@ struct BoxPlan {
   //: THE MASS ROW, fp32 in read order; THE ROW MAP, a write leaf's read row.
   static constexpr int kMassRowBytes = kBC * 4;
   static constexpr int kRowMapBytes = kBC * 2;
-  //: THE PHASE LEDGER's accumulators; the readout's tile counter; THE WALK RING, a warp's
-  //: (a chunk's kept rows, a word each); a warp's TAKE and FOLD words. -- smem_ledger.md
+  //: THE PHASE LEDGER, the tile counter, the WALK RING and a warp's take and fold words.
+  //: -- smem_ledger.md
   static constexpr int kLedgerBytes = kWarps * kPhases * 8;
   static constexpr int kWalkEntries = kPoolTokMax;
   static constexpr int kWalkBytes = kWarps * kWalkEntries * 4;
@@ -109,13 +111,15 @@ struct BoxPlan {
   static constexpr int kSlotOffset = kRowMapOffset + kRowMapBytes;
   static constexpr int kLedgerOffset = kSlotOffset + round_up16(kAtoms * 4);
   static constexpr int kCounterOffset = kLedgerOffset + kLedgerBytes;
-  //: a warp's TAKE WORD: the tile its lane 0 took, read back by every lane (a shared
-  //: load is warp-uniform to the compiler where a shuffle's result is not).
+  //: a warp's TAKE WORD: the tile its lane 0 took, read back by every lane.
   static constexpr int kTakeOffset = kCounterOffset + 16;
   static constexpr int kFoldWordOffset = kTakeOffset + kWarps * 4;
   static constexpr int kPoolBarOffset = round_up16(kFoldWordOffset + kWarps * 4);
   static constexpr int kRingBarOffset = kPoolBarOffset + 2 * kPoolSlots * 8;
-  static constexpr int kWalkOffset = round_up16(kRingBarOffset + kWarps * kRRSlots * 8);
+  //: THE FRAME'S BARRIERS, the only edges between the streams. -- carry_kernel.md#edges
+  static constexpr int kFrameBarOffset = kRingBarOffset + kWarps * kRRSlots * 8;
+  static constexpr int kFrameBars = 11;
+  static constexpr int kWalkOffset = round_up16(kFrameBarOffset + kFrameBars * 8);
   static constexpr int kRegionOffset = round_up128(kWalkOffset + kWalkBytes);
   //: the region: the readout's blocks (a warp's ring slots and drain stage), then the
   //: pool's slots -- both streams run at once, so neither aliases the other.
@@ -164,8 +168,5 @@ struct BoxPlan {
                 "maximum");
   static_assert(kBC % kAtomLeaves == 0, "a CTA box is a whole number of pages");
 };
-
-//: THE FRAME'S EDGES, named -- barrier ids. -- see docs/internals/carry/carry_kernel.md#edges
-enum class Edge : int { kCounts = 1, kOrder = 2 };
 
 }  // namespace rola::carry

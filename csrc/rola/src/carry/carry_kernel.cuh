@@ -119,18 +119,23 @@ struct Smem {
     return at(BP::kPrefixOffset + parity * BP::kPrefixBytes);
   }
 
-  __device__ __forceinline__ int32_t* live_count() const {
-    return reinterpret_cast<int32_t*>(base + BP::kLiveOffset);
+  //: THE LIVE COUNTS of window parity `parity`, a side each.
+  __device__ __forceinline__ int32_t* live_count(int parity) const {
+    return reinterpret_cast<int32_t*>(base + BP::kLiveOffset) + 2 * parity;
   }
 
   //: THE READ-TOUCHED BOXES of window parity `parity`: the OR of its tile masks, the boxes
-  //: the snapshot must publish.
+  //: the snapshot must publish; and warp `warp`'s part of them, its rounds'.
   __device__ __forceinline__ uint32_t* read_boxes(int parity) const {
-    return reinterpret_cast<uint32_t*>(base + BP::kLiveOffset + 8) + parity;
+    return reinterpret_cast<uint32_t*>(base + BP::kLiveOffset + 16) + parity;
   }
 
-  __device__ __forceinline__ ops::SmemAddr read_boxes_addr(int parity) const {
-    return at(BP::kLiveOffset + 8 + 4 * parity);
+  __device__ __forceinline__ uint32_t* read_part(int parity, int warp) const {
+    return reinterpret_cast<uint32_t*>(base + BP::kLiveOffset + 32) + parity * BP::kWarps + warp;
+  }
+
+  __device__ __forceinline__ ops::SmemAddr tilemask_addr(int parity, int tile) const {
+    return at(BP::kTileMaskOffset + parity * BP::kTileMaskBytes + (tile >> 1) * 4);
   }
 
   //: THE SNAPSHOT's row `row` (read order), 16-byte chunk `chunk`.
@@ -194,6 +199,32 @@ struct Smem {
   //: THE RING BARRIER of warp `w`'s ring slot `r`: full at the lanes' landed copies.
   __device__ __forceinline__ ops::SmemAddr ring_bar(int warp, int r) const {
     return at(BP::kRingBarOffset + (warp * BP::kRRSlots + r) * 8);
+  }
+
+  //: THE FRAME'S BARRIERS: the head's products, the snapshot's publish and release, the head's
+  //: counts and bases, a window parity each; the staged words. -- carry_kernel.md#edges
+  __device__ __forceinline__ ops::SmemAddr head_bar(int parity) const {
+    return at(BP::kFrameBarOffset + parity * 8);
+  }
+
+  __device__ __forceinline__ ops::SmemAddr pub_bar(int parity) const {
+    return at(BP::kFrameBarOffset + (2 + parity) * 8);
+  }
+
+  __device__ __forceinline__ ops::SmemAddr done_bar(int parity) const {
+    return at(BP::kFrameBarOffset + (4 + parity) * 8);
+  }
+
+  __device__ __forceinline__ ops::SmemAddr counts_bar(int parity) const {
+    return at(BP::kFrameBarOffset + (6 + parity) * 8);
+  }
+
+  __device__ __forceinline__ ops::SmemAddr bases_bar(int parity) const {
+    return at(BP::kFrameBarOffset + (8 + parity) * 8);
+  }
+
+  __device__ __forceinline__ ops::SmemAddr words_bar() const {
+    return at(BP::kFrameBarOffset + 80);
   }
 
   //: THE READOUT's private block of warp `w`: ring slot `r`, and the drain stage.
@@ -331,32 +362,44 @@ __device__ __forceinline__ const char* row_ptr(const CarryParams& p, int side, i
 
 // ------------------------------------------------------------------- the box words
 
-//: THE BOX WORDS STAGED, a window ahead: each of the box's digit rows, the window's words
-//: by `cp.async`, by warp `row % warps`. Issued past the histogram edge (every walk of the
-//: buffer is before it); landed by the next head's wait. -- carry_kernel.md#box-words
+//: THE BOX WORDS STAGED by the scan warp, both sides: each of the box's digit rows, the window's
+//: words by `cp.async`, two rows a pass (lane = row half, word); landed at the words barrier's
+//: next phase. Issued once every warp's pass one has read the buffer (`counts_bar`).
+//: -- carry_kernel.md#box-words
 template <class BP, int D, int BC>
-__device__ __forceinline__ void stage_box_words(const CarryParams& p, const Smem<BP>& sm, int side,
-                                                const int (&abase)[D], int warp, int lane, int bh,
-                                                int t0, int nWords) {
-  const int32_t* const table =
-      p.liveness + ((long)bh * rola::facts::kSides + side) * ((long)p.g.wtot * p.liveness_words)
-      + (t0 >> 5);
+__device__ __forceinline__ void stage_box_words(const CarryParams& p, const Smem<BP>& sm,
+                                                const int (&abase)[D], int lane, int bh, int t0,
+                                                int nWords) {
+  static_assert(BP::kRounds == 16 && BP::kBoxRows % 2 == 0, "two rows of sixteen words a pass");
+  const int word = lane & 15;
+  rola::static_for<rola::facts::kSides>([&](auto Sc) {
+    constexpr int side = decltype(Sc)::value;
+    const int32_t* const table =
+        p.liveness + ((long)bh * rola::facts::kSides + side) * ((long)p.g.wtot * p.liveness_words)
+        + (t0 >> 5);
 #pragma unroll 1
-  for (int r = warp; r < BP::kBoxRows; r += BP::kWarps) {
-    int row = 0;
-    rola::static_for<D>([&](auto Lc) {
-      constexpr int l = decltype(Lc)::value;
-      if (r >= span_base(D, BC, l) && r < span_base(D, BC, l) + owner_span(D, BC, l))
-        row = abase[l] + r - span_base(D, BC, l);
-    });
-    if (lane < nWords)
-      ops::stage_run<4>(sm.words_addr(side, lane) + (uint32_t)(r * 4),
-                        table + (long)row * p.liveness_words + lane);
-  }
+    for (int r = lane >> 4; r < BP::kBoxRows; r += 2) {
+      int row = 0;
+      rola::static_for<D>([&](auto Lc) {
+        constexpr int l = decltype(Lc)::value;
+        if (r >= span_base(D, BC, l) && r < span_base(D, BC, l) + owner_span(D, BC, l))
+          row = abase[l] + r - span_base(D, BC, l);
+      });
+      if (word < nWords)
+        ops::stage_run<4>(sm.words_addr(side, word) + (uint32_t)(r * 4),
+                          table + (long)row * p.liveness_words + word);
+    }
+  });
   ops::stage_commit();
+  ops::mbar_arrive_when_landed(sm.words_bar());
 }
 
 // -------------------------------------------------------------------------- the head
+
+//: THE DEALING: warp `warp`'s `bi`-th box. -- carry_kernel.md#state
+__device__ __forceinline__ constexpr int dealt_box(int warp, int bi, int warps) {
+  return warp + bi * warps;
+}
 
 //: THE BOX WORDS OF A ROUND on a side: word `b` has bit `t` set when token `32 rho + t`
 //: is live in box `b`. The plain layout is two runtime row bases and static offsets; a
@@ -425,30 +468,25 @@ __device__ __forceinline__ void box_words(const Smem<BP>& sm, const SideLayout& 
   }
 }
 
-//: THE HEAD OF A WINDOW (component `head`). Read side: the ORDER (rank -> token, sorted by
-//: first live box, the dead last), the TILE MASKS, the live count. Write side: each warp's
-//: word a round (tokens live in a box it owns), the UNION word, its prefix by round. A warp
-//: takes round groups, lane = token. BUDGET: carry_kernel.md#budgets. -- carry_kernel.md#order
+//: THE HEAD OF A WINDOW (component `head`), three steps joined by barriers, no CTA edge; every
+//: product at the window's parity. PASS ONE, on every warp, its round group: the read side's box
+//: words, each token's mask (kept by token), its bucket, the counts; the write side's words, the
+//: union, the warp's part of the read-touched boxes. Arrives `counts_bar`. -- carry_kernel.md#order
 template <class BP, int D, int BC, bool RComposed, bool RStraddle, bool WComposed, bool WStraddle>
-__device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
-                                     const SideLayout (&lay)[2], int parity, int wLen, int warp,
-                                     int lane, int (&live)[2], PhaseClock& pc) {
+__device__ __forceinline__ void head_pass_one(const CarryParams& p, const Smem<BP>& sm,
+                                              const SideLayout (&lay)[2], int parity, int wLen,
+                                              int warp, int lane) {
+  ops::fresh(warp, lane);
   constexpr int kGroups = BP::kRounds / BP::kWarps;
   static_assert(kGroups * BP::kWarps == BP::kRounds, "the round groups deal evenly");
-
   const uint32_t lt = (1u << lane) - 1u;
-  int key[kGroups], local[kGroups];
-  uint32_t mask[kGroups];
-
-  //: PASS ONE, a round group: the read side's box words, the mask, the bucket, the counts;
-
-  //: the write side's box words, the warps' words, the union word.
+  uint16_t* const counts = sm.rcounts();
+  uint32_t touched = 0u;
 
   rola::static_for<kGroups>([&](auto Gc) {
     constexpr int g = decltype(Gc)::value;
     const int rho = g * BP::kWarps + warp;
     const int t = rho * 32 + lane;
-    const bool in = t < wLen;
     const uint32_t inmask = wLen - rho * 32 >= 32
                                 ? 0xFFFFFFFFu
                                 : (wLen - rho * 32 <= 0 ? 0u : (1u << (wLen - rho * 32)) - 1u);
@@ -457,29 +495,26 @@ __device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
                                                w);
     uint32_t m = 0u;
     rola::static_for<BP::kBoxes>([&](auto Bc) {
-      constexpr int b = BP::kBoxes - 1 - decltype(Bc)::value;
-      m = (m << 1) | ((w[b] >> lane) & 1u);
+      constexpr int b = decltype(Bc)::value;
+      m |= ((w[b] >> lane) & 1u) << b;
     });
-    m = in ? m : 0u;
-    //: the bucket: the first live box, or bucket 0 for every live token under the identity
-    //: order (the sort's A/B: token order, every tile); the dead to the last bucket.
+    m = t < wLen ? m : 0u;
     const int k = m != 0u ? (p.order == kOrderIdentity ? 0 : __ffs((int)m) - 1) : BP::kBoxes;
     const uint32_t same = __match_any_sync(0xFFFFFFFFu, k);
-    uint16_t* const counts = sm.rcounts();
     if (lane < BP::kBuckets) counts[lane * BP::kRounds + rho] = 0;
-    if (g == 0 && warp == 0 && lane == 0) *sm.read_boxes(parity) = 0u;
     __syncwarp();
     if ((same & lt) == 0u) counts[k * BP::kRounds + rho] = (uint16_t)__popc(same);
-    key[g] = k;
-    local[g] = __popc(same & lt);
-    mask[g] = m;
+    sm.masks()[t] = (uint16_t)m;
+    touched |= m;
+
     box_words<BP, D, BC, WComposed, WStraddle>(sm, lay[rola::facts::kWrite], rola::facts::kWrite,
                                                rho, w);
     uint32_t u = 0u;
     rola::static_for<BP::kWarps>([&](auto Wc) {
       constexpr int v = decltype(Wc)::value;
       uint32_t ww = 0u;
-      rola::static_for<BP::kDealt>([&](auto Ic) { ww |= w[v + decltype(Ic)::value * BP::kWarps]; });
+      rola::static_for<BP::kDealt>(
+          [&](auto Ic) { ww |= w[dealt_box(v, decltype(Ic)::value, BP::kWarps)]; });
       ww &= inmask;
       u |= ww;
       if (lane == v) sm.warpwords(parity, v)[rho] = ww;
@@ -487,16 +522,20 @@ __device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
     if (lane == BP::kWarps) sm.unionwords(parity)[rho] = u;
   });
 
-  ops::rendezvous_group((int)Edge::kCounts, BP::kThreads);
-  pc.lap(kPhaseHeadWords);
+  touched = __reduce_or_sync(0xFFFFFFFFu, touched);
+  if (lane == 0) *sm.read_part(parity, warp) = touched;
+  __syncwarp();
+  ops::mbar_arrive(sm.counts_bar(parity));
+}
 
-  //: THE SCANS. Warp 0: the read side's count table, a lane a bucket -- the bucket's counts
-
-  //: by round become its bases in place, the totals scan across lanes, the live count is the
-
-  //: dead bucket's base. Warp 1: the union's prefix by round, a lane a round.
-
-  if (warp == 0) {
+//: THE COUNT SCAN, the scan warp's, once every warp's pass one is in: the read side's count table
+//: into bases in place (a lane a bucket; the dead bucket's base is the live count), the union's
+//: prefix by round (a lane a round), the read-touched boxes from the warps' parts, the parity's tile
+//: masks zeroed and its tile counter reset. Arrives `bases_bar`: the write side is complete.
+template <class BP>
+__device__ __forceinline__ void head_scan(const Smem<BP>& sm, int parity, int lane) {
+  ops::fresh(lane, parity);
+  {
     const ops::SmemAddr row = sm.rcounts_addr() + (uint32_t)(lane * BP::kRounds * 2);
     uint32_t c[BP::kRounds / 2];
     int total = 0;
@@ -519,7 +558,8 @@ __device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
       if (lane >= d) excl += o;
     });
     excl -= total;
-    if (lane == BP::kBoxes) sm.live_count()[rola::facts::kRead] = excl;
+    if (lane == BP::kBoxes) sm.live_count(parity)[rola::facts::kRead] = excl;
+
     if (lane < BP::kBuckets) {
       int run = excl;
       rola::static_for<BP::kRounds / 2>([&](auto Ic) {
@@ -536,9 +576,10 @@ __device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
                                 make_uint4(c[4 * v], c[4 * v + 1], c[4 * v + 2], c[4 * v + 3]));
       });
     }
-  } else if (warp == 1) {
-    const int n = lane < BP::kRounds ? __popc(sm.unionwords(parity)[lane]) : 0;
-    int incl = n;
+  }
+
+  {
+    int incl = lane < BP::kRounds ? __popc(sm.unionwords(parity)[lane]) : 0;
     rola::static_for<4>([&](auto Sc) {
       constexpr int d = 1 << decltype(Sc)::value;
       const int o = __shfl_up_sync(0xFFFFFFFFu, incl, d);
@@ -546,41 +587,47 @@ __device__ __forceinline__ void head(const CarryParams& p, const Smem<BP>& sm,
     });
     if (lane < BP::kRounds) sm.prefix(parity)[lane + 1] = (uint16_t)incl;
     if (lane == 0) sm.prefix(parity)[0] = 0;
-    if (lane == BP::kRounds - 1) sm.live_count()[rola::facts::kWrite] = incl;
+    if (lane == BP::kRounds - 1) sm.live_count(parity)[rola::facts::kWrite] = incl;
   }
 
-  ops::rendezvous_group((int)Edge::kCounts, BP::kThreads);
-  pc.lap(kPhaseHeadScans);
+  const uint32_t touched =
+      __reduce_or_sync(0xFFFFFFFFu, lane < BP::kWarps ? *sm.read_part(parity, lane) : 0u);
+  if (lane < BP::kTiles / 2) ops::store_shared_u32(sm.tilemask_addr(parity, 2 * lane), 0u);
+  if (lane == 0) {
+    *sm.read_boxes(parity) = touched;
+    *sm.counter(parity) = 0;
+  }
+  __syncwarp();
+  ops::mbar_arrive(sm.bases_bar(parity));
+}
 
-  //: PASS TWO: the read side's scatter.
-
+//: PASS TWO, a round group, once the bases are in: a token's rank from its kept mask, the ORDER
+//: scattered, each tile's mask the OR of its ranks' (one reduction a tile the round touches, its
+//: leader's `ATOMS.OR`). Arrives `head_bar`: the window's head is complete.
+template <class BP>
+__device__ __forceinline__ void head_pass_two(const CarryParams& p, const Smem<BP>& sm, int parity,
+                                              int warp, int lane) {
+  ops::fresh(warp, lane);
+  constexpr int kGroups = BP::kRounds / BP::kWarps;
+  const uint32_t lt = (1u << lane) - 1u;
+  const uint16_t* const counts = sm.rcounts();
   rola::static_for<kGroups>([&](auto Gc) {
     constexpr int g = decltype(Gc)::value;
     const int rho = g * BP::kWarps + warp;
     const int t = rho * 32 + lane;
-    const int rank = (int)sm.rcounts()[key[g] * BP::kRounds + rho] + local[g];
+    const uint32_t m = sm.masks()[t];
+    const int k = m != 0u ? (p.order == kOrderIdentity ? 0 : __ffs((int)m) - 1) : BP::kBoxes;
+    const uint32_t same = __match_any_sync(0xFFFFFFFFu, k);
+    const int rank = (int)counts[k * BP::kRounds + rho] + __popc(same & lt);
     sm.order(parity)[rank] = (uint16_t)t;
-    sm.masks()[rank] = (uint16_t)mask[g];
+    const int tile = rank >> 4;
+    const uint32_t group = __match_any_sync(0xFFFFFFFFu, tile);
+    const uint32_t tm = __reduce_or_sync(group, m);
+    if ((group & lt) == 0u && tm != 0u)
+      ops::or_shared_u32(sm.tilemask_addr(parity, tile), tm << (16 * (tile & 1)));
   });
-
-  ops::rendezvous_group((int)Edge::kOrder, BP::kThreads);
-
-  //: THE TILE MASKS: two tiles a warp a pass, sixteen lanes a tile, the OR of its ranks'.
-  static_assert(BP::kTiles % (2 * BP::kWarps) == 0, "the tile-mask passes deal evenly");
-#pragma unroll 1
-  for (int pass = 0; pass < BP::kTiles / (2 * BP::kWarps); ++pass) {
-    const int tile = pass * 2 * BP::kWarps + warp * 2 + (lane >> 4);
-    uint32_t m = sm.masks()[tile * BP::kTile + (lane & 15)];
-    rola::static_for<4>([&](auto Sc) {
-      m |= (uint32_t)__shfl_xor_sync(0xFFFFFFFFu, (int)m, 8 >> decltype(Sc)::value);
-    });
-    if ((lane & 15) == 0) {
-      sm.tilemask(parity)[tile] = (uint16_t)m;
-      ops::or_shared_u32(sm.read_boxes_addr(parity), m);
-    }
-  }
-  live[rola::facts::kRead] = sm.live_count()[rola::facts::kRead];
-  live[rola::facts::kWrite] = sm.live_count()[rola::facts::kWrite];
+  __syncwarp();
+  ops::mbar_arrive(sm.head_bar(parity));
 }
 
 // ------------------------------------------------------------------------- the state
@@ -594,10 +641,6 @@ struct State {
   float c[BP::kDealt][BP::kNT][4];
   float m[BP::kDealt][4];
 };
-
-__device__ __forceinline__ constexpr int dealt_box(int warp, int bi, int warps) {
-  return warp + bi * warps;
-}
 
 //: THE STAGED SWEEPS: the state crosses the pages as whole 128-byte rows through the
 //: snapshot (hi) and the pool region (lo), never as scattered halves. `state_copy<Store>`
@@ -1207,11 +1250,10 @@ __device__ __forceinline__ void frag_mma(FragOperands<BP>& f, FragOperands<BP>& 
   }
 }
 
-//: THE FOLD STREAM (component `fold`): the write side over the pool as a step function. A
-//: chunk's kept rows are WALKED ONCE at its take into the warp's ring; the fragments are then
-//: a counted loop, two a step: each burst's dependencies pull the next gather under it. A
-//: warp's fill share of a later chunk issues when its slot frees, polled through the fold
-//: word. BUDGET: carry_kernel.md#budgets. -- #fold
+//: THE FOLD STREAM (component `fold`): the write side over the pool as a step function, ONE for
+//: the call -- a FILL cursor that crosses the windows and a TAKE that folds the current one, a
+//: chunk's kept rows walked once into the warp's ring and its fragments a counted loop of bursts.
+//: BUDGET: carry_kernel.md#budgets. -- #fold
 template <class BP, int D, int BC>
 struct FoldStream {
   const CarryParams& p;
@@ -1220,15 +1262,15 @@ struct FoldStream {
   PoolCursor<BP>& cur;
   PhaseClock& pc;
   int2 bases;
-  int parity, warp, lane;
-  uint32_t rowbase;
-  int chunks, c, s;
-  int nfrag;
-  int fill_c;  //: the chunk whose fill this warp still owes, or -1
-  bool taken_slot, done;
+  int warp, lane;
+  uint32_t rowbase0;
+  int last;                            //: the fill stops before this window
+  int tw, chunks, c, s, nfrag, ntake;  //: `tw` is `first - 1` until the first window begins
+  bool taken_slot;
+  int fw, fchunks, fc, fs, nfill;  //: `fchunks` is -1 until window `fw`'s head is seen
 
   __device__ __forceinline__ FoldStream(const CarryParams& p_, const Smem<BP>& sm_, int2 bases_,
-                                        int parity_, int live, uint32_t rowbase_, int warp_,
+                                        uint32_t rowbase0_, int first, int last_, int warp_,
                                         int lane_, State<BP>& st_, PoolCursor<BP>& cur_,
                                         PhaseClock& pc_)
       : p(p_),
@@ -1237,60 +1279,99 @@ struct FoldStream {
         cur(cur_),
         pc(pc_),
         bases(bases_),
-        parity(parity_),
         warp(warp_),
         lane(lane_),
-        rowbase(rowbase_),
-        chunks((live + BP::kPoolTok - 1) / BP::kPoolTok),
+        rowbase0(rowbase0_),
+        last(last_),
+        tw(first - 1),
+        chunks(0),
         c(0),
         s(0),
         nfrag(0),
-        fill_c(-1),
+        ntake(0),
         taken_slot(false),
-        done(false) {
-    //: the first `kPoolSlots` chunks into their slots, all free since the last fold's
-    //: releases (no wait in fact): the fold starts on landed chunks.
-    if (chunks > 0) {
-      if constexpr (kFoldPool) {
-        rola::static_for<BP::kPoolSlots>([&](auto Kc) {
-          constexpr int k = decltype(Kc)::value;
-          if (k < chunks) {
-            cur.wait_empty(sm, k);
-            pc.stamp(kTraceFoldFill);
-            pool_fill<BP, D, BC>(p, sm, bases, parity, k, k, rowbase, warp, lane);
-            cur.filled(k);
-          }
-        });
-        fill_c = chunks > BP::kPoolSlots ? BP::kPoolSlots : -1;
-      }
-    } else {
-      done = true;
-    }
-  }
+        fw(first),
+        fchunks(-1),
+        fc(0),
+        fs(0),
+        nfill(0) {}
 
   //: a fact lane 0 knows, made every lane's through the fold word: uniform to the compiler,
-  //: so the branch on it is a plain branch.
+  //: so the branch on it is a plain branch. The second sync: every lane's read before the next
+  //: fact's write.
   __device__ __forceinline__ uint32_t uniform(uint32_t fact) const {
     if (lane == 0) ops::store_shared_u32(sm.fold_word(warp), fact);
     __syncwarp();
-    return ops::load_shared_u32(sm.fold_word(warp));
+    const uint32_t v = ops::load_shared_u32(sm.fold_word(warp));
+    __syncwarp();
+    return v;
   }
 
-  __device__ __forceinline__ bool slot_empty(int fs) const {
-    const int k = cur.fills_of(fs);
-    return uniform(k == 0 || ops::mbar_test(sm.empty_bar(fs), (uint32_t)(k - 1) & 1u)) != 0u;
+  __device__ __forceinline__ bool slot_empty(int k) const {
+    const int n = cur.fills_of(k);
+    return uniform(n == 0 || ops::mbar_test(sm.empty_bar(k), (uint32_t)(n - 1) & 1u)) != 0u;
   }
 
-  __device__ __forceinline__ bool slot_full(int fs) const {
-    return uniform(ops::mbar_test(sm.full_bar(fs), (uint32_t)cur.takes_of(fs) & 1u)) != 0u;
+  __device__ __forceinline__ bool slot_full(int k) const {
+    return uniform(ops::mbar_test(sm.full_bar(k), (uint32_t)cur.takes_of(k) & 1u)) != 0u;
+  }
+
+  __device__ __forceinline__ int chunks_of(int win) const {
+    return (sm.live_count(win & 1)[rola::facts::kWrite] + BP::kPoolTok - 1) / BP::kPoolTok;
+  }
+
+  //: THE WINDOW the take folds next; its head was waited by the window's edge. A fill cursor
+  //: still behind it (on windows with no chunk) joins it here: the head warp reuses a window's
+  //: parity two windows on, so a lagging cursor would read the wrong window's count.
+  __device__ __forceinline__ void begin_window(int win) {
+    tw = win;
+    chunks = chunks_of(win);
+    c = 0;
+    if (fw < win) {
+      fw = win;
+      fc = 0;
+      fchunks = chunks;
+    }
+  }
+
+  __device__ __forceinline__ bool window_done() const { return c >= chunks; }
+
+  //: WHETHER THE FILL CURSOR HAS A CHUNK: its window's write side complete (the take's window's
+  //: by its edge; the next one's tested at `bases_bar`), empty windows passed over. A window two
+  //: ahead has no head yet.
+  __device__ __forceinline__ bool fill_ready() {
+#pragma unroll 1
+    while (fw < last) {
+      if (fchunks < 0) {
+        if (fw > tw + 1) return false;
+        if (fw > tw
+            && uniform(ops::mbar_test(sm.bases_bar(fw & 1), (uint32_t)(fw >> 1) & 1u)) == 0u)
+          return false;
+        fchunks = chunks_of(fw);
+      }
+      if (fc < fchunks) return true;
+      ++fw;
+      fc = 0;
+      fchunks = -1;
+    }
+    return false;
   }
 
   __device__ __forceinline__ void fill_now() {
-    const int fs = fill_c % BP::kPoolSlots;
     pc.stamp(kTraceFoldFill);
-    pool_fill<BP, D, BC>(p, sm, bases, parity, fill_c, fs, rowbase, warp, lane);
+    pool_fill<BP, D, BC>(p, sm, bases, fw & 1, fc, fs, rowbase0 + (uint32_t)(fw * kWindow), warp,
+                         lane);
     cur.filled(fs);
-    fill_c = fill_c + 1 < chunks ? fill_c + 1 : -1;
+    fs = (fs + 1) % BP::kPoolSlots;
+    ++fc;
+    ++nfill;
+  }
+
+  //: THE FILL POLL: this warp's share of the cursor's chunk, once its slot is empty. The stub
+  //: composition (`fold.pool` off) has no fill and no slot barriers at all.
+  __device__ __forceinline__ void try_fill() {
+    if constexpr (!kFoldPool) return;
+    if (fill_ready() && slot_empty(fs)) fill_now();
   }
 
   //: THE WALK of chunk `c` into the ring: its rounds' kept rows and gains by rank, the
@@ -1299,6 +1380,7 @@ struct FoldStream {
   __device__ __forceinline__ void walk() {
     pc.stamp(kTraceFoldWalk);
     const ops::SmemAddr slot = sm.pool(s), ring = sm.ring(warp);
+    const int parity = tw & 1;
     const uint32_t* const ww = sm.warpwords(parity, warp);
     const uint32_t* const uw = sm.unionwords(parity);
     const uint16_t* const prefix = sm.prefix(parity);
@@ -1344,29 +1426,30 @@ struct FoldStream {
     __syncwarp();
   }
 
-  //: THE WAIT, when no stream can progress: on the slot this warp's fill owes (its readers
-  //: are behind and unblocked), else on the chunk's fill by every warp (each issues it once
-  //: the slot it goes into is released, which every warp at or past this chunk has done).
+  //: THE WAIT, when no stream can progress: on the slot this warp's share of the chunk it takes
+  //: next goes into (its readers are behind and unblocked), else on that chunk's fill by every
+  //: warp (each issues it once the slot is released, which every warp at or past it has done).
   __device__ __forceinline__ void wait() {
     pc.stamp(kTraceFoldWait);
-    if (fill_c >= 0 && (c >= chunks || fill_c == c)) {
-      cur.wait_empty(sm, fill_c % BP::kPoolSlots);
+    if constexpr (!kFoldPool) return;
+    if (c >= chunks || taken_slot) return;
+    if (nfill <= ntake) {
+      fill_ready();
+      cur.wait_empty(sm, fs);
       fill_now();
-    } else if (c < chunks && !taken_slot) {
+    } else {
       cur.wait_full(sm, s);
     }
   }
 
-  //: A STEP: a chunk -- the fill poll and the take (the decide tier), its fragments as one
-  //: burst, its release.
+  //: A STEP: the fill poll, then a chunk -- the take (its fill issued, its slot full), the walk,
+  //: its fragments as one burst, its release.
   __device__ __forceinline__ bool step() {
-    if (fill_c >= 0 && slot_empty(fill_c % BP::kPoolSlots)) fill_now();
-    if (c >= chunks) {
-      done = fill_c < 0;
-      return false;
-    }
+    try_fill();
+    if (c >= chunks) return false;
     if (!taken_slot) {
       if constexpr (kFoldPool) {
+        if (nfill <= ntake) return false;
         if (!slot_full(s)) return false;
       }
       taken_slot = true;
@@ -1389,7 +1472,7 @@ struct FoldStream {
     };
     const int half = (nfrag + 1) / 2;
     rola::burst::Burst<FragOperands<BP>>::run(0, half, gather, mma, last);
-    if (fill_c >= 0 && slot_empty(fill_c % BP::kPoolSlots)) fill_now();
+    try_fill();
     pc.stamp(kTraceFoldFragment);
     rola::burst::Burst<FragOperands<BP>>::run(half, nfrag - half, gather, mma, last);
     release();
@@ -1405,23 +1488,22 @@ struct FoldStream {
       cur.used(s);
     }
     ++c;
-    s = c % BP::kPoolSlots;
+    ++ntake;
+    s = (s + 1) % BP::kPoolSlots;
     taken_slot = false;
-    done = c >= chunks && fill_c < 0;
   }
 };
 
-//: THE FOLD run alone to completion: the sequential loop's and the part harness's form.
-template <class BP, int D, int BC, bool Composed, bool Straddle>
-__device__ __forceinline__ void fold(const CarryParams& p, const Smem<BP>& sm,
-                                     const SideLayout& lay, int2 bases, int parity, int live,
-                                     uint32_t rowbase, int warp, int lane, State<BP>& st,
+//: THE FOLD of window `win` run alone to completion, its fill confined to it: the part
+//: harness's form.
+template <class BP, int D, int BC>
+__device__ __forceinline__ void fold(const CarryParams& p, const Smem<BP>& sm, int2 bases, int win,
+                                     uint32_t rowbase0, int warp, int lane, State<BP>& st,
                                      PoolCursor<BP>& cur, PhaseClock& pc) {
-  static_assert(!Composed && !Straddle, "the fold is spelled for the plain layout");
-  (void)lay;
-  FoldStream<BP, D, BC> fs(p, sm, bases, parity, live, rowbase, warp, lane, st, cur, pc);
+  FoldStream<BP, D, BC> fs(p, sm, bases, rowbase0, win, win + 1, warp, lane, st, cur, pc);
+  fs.begin_window(win);
 #pragma unroll 1
-  while (!fs.done) {
+  while (!fs.window_done()) {
     if (!fs.step()) fs.wait();
   }
   pc.lap(kPhaseFold);
@@ -1648,8 +1730,6 @@ struct ReadoutStream {
   RingCursor<BP>& ring;
   PhaseClock& pc;
   int2 bases;
-  const uint16_t* order;
-  const uint16_t* tmask;
   float* num;
   float* den;
   uint32_t rowbase;
@@ -1677,8 +1757,6 @@ struct ReadoutStream {
         ring(ring_),
         pc(pc_),
         bases(bases_),
-        order(nullptr),
-        tmask(nullptr),
         num(num_),
         den(den_),
         rowbase(0u),
@@ -1703,14 +1781,12 @@ struct ReadoutStream {
     tiles = (live_ + BP::kTile - 1) / BP::kTile;
     rowbase = rowbase_;
     t0 = t0_;
-    order = sm.order(parity);
-    tmask = sm.tilemask(parity);
     if constexpr (kReadoutStream) {
       k = take();
       done = k >= tiles;
       if (!done) {
         pc.stamp(kTraceReadoutIssue);
-        readout_issue<BP, D, BC>(p, sm, bases, order, k, live, rowbase, warp,
+        readout_issue<BP, D, BC>(p, sm, bases, sm.order(parity), k, live, rowbase, warp,
                                  n & (BP::kRRSlots - 1), lane);
       }
     } else {
@@ -1725,7 +1801,7 @@ struct ReadoutStream {
     knext = take();
     if (knext < tiles) {
       pc.stamp(kTraceReadoutIssue);
-      readout_issue<BP, D, BC>(p, sm, bases, order, knext, live, rowbase, warp,
+      readout_issue<BP, D, BC>(p, sm, bases, sm.order(parity), knext, live, rowbase, warp,
                                (n + 1) & (BP::kRRSlots - 1), lane);
     }
   }
@@ -1740,8 +1816,8 @@ struct ReadoutStream {
     if (!ring.full_now(sm, warp, r)) return false;
     __syncwarp();
     pc.stamp(kTraceReadoutTile);
-    readout_tile<BP, D, BC>(sm, sm.rring(warp, r), (uint32_t)tmask[k], order, k, live, num, den, t0,
-                            warp, lane, pc);
+    readout_tile<BP, D, BC>(sm, sm.rring(warp, r), (uint32_t)sm.tilemask(parity)[k],
+                            sm.order(parity), k, live, num, den, t0, warp, lane, pc);
     ring.used(r);
     ++n;
     k = knext;
@@ -1753,29 +1829,32 @@ struct ReadoutStream {
     __syncwarp();
     if (knext < tiles) {
       pc.stamp(kTraceReadoutIssue);
-      readout_issue<BP, D, BC>(p, sm, bases, order, knext, live, rowbase, warp, r, lane);
+      readout_issue<BP, D, BC>(p, sm, bases, sm.order(parity), knext, live, rowbase, warp, r, lane);
     }
     return true;
   }
 };
 
-//: THE READOUT run alone to completion: the sequential loop's form.
+//: THE READOUT of a window to completion, the fold stream's fill polled between its tiles so the
+//: next window's chunks keep landing.
 template <class BP, int D, int BC, bool Composed, bool Straddle>
 __device__ __forceinline__ void readout(const SideLayout& lay, ReadoutStream<BP, D, BC>& rs,
-                                        PhaseClock& pc) {
+                                        FoldStream<BP, D, BC>& fs, PhaseClock& pc) {
   static_assert(!Composed && !Straddle, "the readout is spelled for the plain layout");
   (void)lay;
   if constexpr (kReadoutStream) {
     rs.begin();
 #pragma unroll 1
     while (!rs.done) {
+      fs.try_fill();
       if (!rs.step()) rs.wait();
     }
   } else {
     //: the stub: a warp's tiles by index (every eighth), no take, no ring, no issue.
 #pragma unroll 1
     for (int k = rs.k; k < rs.tiles; k += BP::kWarps)
-      readout_tile<BP, D, BC>(rs.sm, rs.sm.rring(rs.warp, 0), (uint32_t)rs.tmask[k], rs.order, k,
+      readout_tile<BP, D, BC>(rs.sm, rs.sm.rring(rs.warp, 0),
+                              (uint32_t)rs.sm.tilemask(rs.parity)[k], rs.sm.order(rs.parity), k,
                               rs.live, rs.num, rs.den, rs.t0, rs.warp, rs.lane, rs.pc);
   }
   pc.lap(kPhaseReadout);
@@ -1783,6 +1862,10 @@ __device__ __forceinline__ void readout(const SideLayout& lay, ReadoutStream<BP,
 
 // ------------------------------------------------------------------- the window loop
 
+//: THE CALL, a warp's program, no CTA edge between the prologue's and the epilogue's: the
+//: snapshot's release, the head, THE PUBLISH, pass one of the next head, the readout primed, THE
+//: FOLD, the scan, THE READOUT, pass two. A wait polls the fill; the two MMA phases stay separate
+//: stages. -- carry_kernel.md#window-loop
 template <class BP, int D, int BC, bool RComposed, bool RStraddle, bool WComposed, bool WStraddle>
 __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>& sm,
                                             const SideLayout (&lay)[2], State<BP>& st, int owner,
@@ -1797,25 +1880,41 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
   const int2 wbases = run_bases<D>(lay[rola::facts::kWrite], abase);
   const int2 rbases = run_bases<D>(lay[rola::facts::kRead], abase);
   const int nWindows = (p.L + kWindow - 1) / kWindow;
+  const uint32_t rowbase0 = (uint32_t)bh * (uint32_t)p.L;
   const auto len_of = [&](int win) {
     const int rest = p.L - win * kWindow;
     return rest < 0 ? 0 : (rest < kWindow ? rest : kWindow);
   };
-  const auto words_of = [&](int win) { return (len_of(win) + 31) / 32; };
+  //: the words' staging recomputes the factor runs rather than holding them across the call.
   const auto stage_words = [&](int win) {
-    stage_box_words<BP, D, BC>(p, sm, rola::facts::kRead, abase, warp, lane, bh, win * kWindow,
-                               words_of(win));
-    stage_box_words<BP, D, BC>(p, sm, rola::facts::kWrite, abase, warp, lane, bh, win * kWindow,
-                               words_of(win));
+    int ab[D];
+    rola::static_for<D>([&](auto Lc) {
+      constexpr int l = decltype(Lc)::value;
+      ab[l] = p.g.col_base[l] + geom_digit<D, BC>(p.g, owner, 0, l);
+    });
+    stage_box_words<BP, D, BC>(p, sm, ab, lane, bh, win * kWindow, (len_of(win) + 31) / 32);
   };
-  //: THE POOL'S BARRIERS: `kThreads` landed-copy arrivals fill a slot; `kWarps` releases
-  //: empty it. THE ZERO ROW of every slot.
+  const auto pass_one = [&](int win) {
+    head_pass_one<BP, D, BC, RComposed, RStraddle, WComposed, WStraddle>(p, sm, lay, win & 1,
+                                                                         len_of(win), warp, lane);
+  };
+  //: THE BARRIERS: a pool slot is full at `kThreads` landed copies and empty at `kWarps`
+  //: releases; a warp's ring slot full at its 32 lanes' copies; the frame's -- a window's counts,
+  //: head, publish and release at every thread, its bases at the scan warp's 32 lanes, the words
+  //: at the scan warp's 32 landed lanes. THE ZERO ROW of every slot.
   if (tid < BP::kPoolSlots) {
     ops::mbar_init(sm.full_bar(tid), BP::kThreads);
     ops::mbar_init(sm.empty_bar(tid), BP::kWarps);
   }
-  //: THE RING BARRIERS: a warp's ring slot is full at its 32 lanes' landed copies.
   if (lane < BP::kRRSlots) ops::mbar_init(sm.ring_bar(warp, lane), 32u);
+  if (tid < 2) {
+    ops::mbar_init(sm.head_bar(tid), BP::kThreads);
+    ops::mbar_init(sm.pub_bar(tid), BP::kThreads);
+    ops::mbar_init(sm.done_bar(tid), BP::kThreads);
+    ops::mbar_init(sm.counts_bar(tid), BP::kThreads);
+    ops::mbar_init(sm.bases_bar(tid), 32u);
+  }
+  if (tid == 2) ops::mbar_init(sm.words_bar(), 32u);
   constexpr int kZeroParts = BP::kVChunks + 4;
 #pragma unroll 1
   for (int i = tid; i < BP::kPoolSlots * kZeroParts; i += BP::kThreads) {
@@ -1832,60 +1931,82 @@ __device__ __forceinline__ void window_loop(const CarryParams& p, const Smem<BP>
           make_uint4(0u, 0u, 0u, 0u));
     if (part == 0) ops::store_shared_u32(sm.pool(s) + pool_gain_off<BP>(BP::kPoolTok), 0u);
   }
-  PoolCursor<BP> cur{0u};
-  stage_words(0);
-  ops::stage_wait<0>();
   ops::rendezvous();
-  pc.lap(kPhaseEdges);
-  //: THE HEAD of window `win`, its words landed; the next window's words issued after it;
-  //: the window's first two pool chunks issued after it (into slots the last fold released).
-  int live[2] = {0, 0};
-  const auto run_head = [&](int win) {
-    head<BP, D, BC, RComposed, RStraddle, WComposed, WStraddle>(p, sm, lay, win & 1, len_of(win),
-                                                                warp, lane, live, pc);
-    if (win + 1 < nWindows) stage_words(win + 1);
-    pc.lap(kPhaseHead);
-  };
+  const bool scanner = warp == BP::kScanWarp;
+  PoolCursor<BP> cur{0u};
   RingCursor<BP> ring{0u};
+  FoldStream<BP, D, BC> fs(p, sm, wbases, rowbase0, 0, nWindows, warp, lane, st, cur, pc);
   ReadoutStream<BP, D, BC> rs(p, sm, ring, rbases, num, den, warp, lane, pc);
-  if (tid == 0) *sm.counter(0) = 0;
-  run_head(0);
-  rs.prime(0, live[rola::facts::kRead], (uint32_t)bh * (uint32_t)p.L, 0);
+  const auto ready = [&](ops::SmemAddr bar, int win) {
+    return fs.uniform(ops::mbar_test(bar, (uint32_t)(win >> 1) & 1u)) != 0u;
+  };
+  //: A FRAME WAIT: the phase of window `win` at a parity barrier, the fill polled meanwhile; the
+  //: trace names the barrier.
+  const auto frame_wait = [&](ops::SmemAddr bar, int win, int ev) {
+    pc.stamp(ev);
+#pragma unroll 1
+    while (!ready(bar, win)) fs.try_fill();
+  };
+  //: THE SCAN of window `win`'s head, the scan warp's: first the words two windows on, into the
+  //: buffer every pass one has now read.
+  const auto scan = [&](int win) {
+    if (win + 1 < nWindows) stage_words(win + 1);
+    head_scan<BP>(sm, win & 1, lane);
+  };
 
-  //: THE WINDOW, the phases in sequence: the edge (the snapshot, the tile counter reset,
-  //: the words landed, one barrier); the fold stream constructed, its first chunks in flight;
-  //: the READOUT to completion; the next window's HEAD; the FOLD to completion; the barrier
-  //: the next snapshot needs. The two MMA phases stay separate stages (sm_100's TMEM holds
-  //: the state OR the readout's staging, never both). -- carry_kernel.md#window-loop
+  //: THE PROLOGUE'S HEAD, window 0's, and window 1's words.
+  if (scanner) stage_words(0);
+  ops::mbar_wait(sm.words_bar(), 0u);
+  pass_one(0);
+  if (scanner) {
+    ops::mbar_wait(sm.counts_bar(0), 0u);
+    scan(0);
+  }
+  ops::mbar_wait(sm.bases_bar(0), 0u);
+  head_pass_two<BP>(p, sm, 0, warp, lane);
+  pc.lap(kPhaseHead);
+
 #pragma unroll 1
   for (int win = 0; win < nWindows; ++win) {
-    const int t0 = win * kWindow, parity = win & 1;
-    const uint32_t rowbase = (uint32_t)bh * (uint32_t)p.L + (uint32_t)t0;
-    const int rlive = live[rola::facts::kRead], wlive = live[rola::facts::kWrite];
-    //: THE WINDOW'S EDGE: the state as the readout reads it; the tile counter at zero.
-    if (rlive > 0) snapshot_publish<BP, D, BC, false>(sm, st, *sm.read_boxes(parity), warp, lane);
-    pc.lap(kPhaseSnapshot);
-    ops::stage_wait<0>();
-    ops::rendezvous();
+    const int t0 = win * kWindow, parity = win & 1, next = win + 1;
+    if (win > 0) frame_wait(sm.done_bar((win - 1) & 1), win - 1, kTraceWaitDone);
+    frame_wait(sm.head_bar(parity), win, kTraceWaitHead);
     pc.lap(kPhaseEdges);
-    FoldStream<BP, D, BC> fs(p, sm, wbases, parity, wlive, rowbase, warp, lane, st, cur, pc);
-    readout<BP, D, BC, RComposed, RStraddle>(lay[rola::facts::kRead], rs, pc);
-    //: THE NEXT WINDOW'S HEAD, then its readout PRIMED: one tile a warp issued into the rings
-    //: (dead through this window's fold) so the next readout starts on landed tiles; its
-    //: tile counter reset before the head, whose barriers order the reset before the takes.
-    if (win + 1 < nWindows) {
-      if (tid == 0) *sm.counter((win + 1) & 1) = 0;
-      run_head(win + 1);
-      rs.prime((win + 1) & 1, live[rola::facts::kRead],
-               (uint32_t)bh * (uint32_t)p.L + (uint32_t)((win + 1) * kWindow), (win + 1) * kWindow);
-    }
+    const int rlive = sm.live_count(parity)[rola::facts::kRead];
+    if (rlive > 0) snapshot_publish<BP, D, BC, false>(sm, st, *sm.read_boxes(parity), warp, lane);
+    ops::mbar_arrive(sm.pub_bar(parity));
+    pc.lap(kPhaseSnapshot);
+    if (next < nWindows) {
+      pc.stamp(kTraceWaitWords);
 #pragma unroll 1
-    while (!fs.done) {
+      while (!fs.uniform(ops::mbar_test(sm.words_bar(), (uint32_t)next & 1u))) fs.try_fill();
+      pc.stamp(kTraceHeadWork);
+      pass_one(next);
+      pc.lap(kPhaseHead);
+    }
+    rs.prime(parity, rlive, rowbase0 + (uint32_t)t0, t0);
+    fs.begin_window(win);
+#pragma unroll 1
+    while (!fs.window_done()) {
       if (!fs.step()) fs.wait();
     }
     pc.lap(kPhaseFold);
-    ops::rendezvous();
+    if (scanner && next < nWindows) {
+      frame_wait(sm.counts_bar(next & 1), next, kTraceWaitCounts);
+      pc.stamp(kTraceHeadWork);
+      scan(next);
+      pc.lap(kPhaseHead);
+    }
+    frame_wait(sm.pub_bar(parity), win, kTraceWaitPub);
     pc.lap(kPhaseEdges);
+    readout<BP, D, BC, RComposed, RStraddle>(lay[rola::facts::kRead], rs, fs, pc);
+    ops::mbar_arrive(sm.done_bar(parity));
+    if (next < nWindows) {
+      frame_wait(sm.bases_bar(next & 1), next, kTraceWaitBases);
+      pc.stamp(kTraceHeadWork);
+      head_pass_two<BP>(p, sm, next & 1, warp, lane);
+      pc.lap(kPhaseHead);
+    }
   }
 }
 

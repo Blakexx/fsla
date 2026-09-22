@@ -30,7 +30,9 @@ from phase_ledger import PHASES  # noqa: E402
 
 #: the trace's events by code: the eight laps (`CarryPhase`), then the streams' steps (`CarryTraceEvent`).
 EVENTS = PHASES + ("fold.walk", "fold.fragment", "fold.wait", "fold.fill",
-                   "readout.tile", "readout.issue", "readout.wait", "readout.drain")
+                   "readout.tile", "readout.issue", "readout.wait", "readout.drain",
+                    "wait.done", "wait.head", "wait.pub", "wait.counts", "wait.bases", "wait.words",
+                    "head.work")
 LAPS = len(PHASES)
 MMA_ACTIVE = frozenset({"fold.fragment", "readout.tile"})
 SCHEDULERS = 4  #: an SM's schedulers; warp `w` issues on scheduler `w % 4`
@@ -54,13 +56,11 @@ def intervals(cycles: list[int], events: list[int]) -> list[tuple[int, int, str]
 
 
 def windows(cycles: list[int], events: list[int]) -> list[tuple[int, int]]:
-    """The window boundaries on a warp: the prologue's edge lap and each edge lap that closes a fold."""
-    edges = PHASES.index("edges")
+    """The window boundaries on a warp: its FOLD LAPS, fold end to fold end -- the one boundary every
+    schedule keeps (the laps around it move whenever the edges do). A window's interval is then the
+    last window's readout and this one's publish, head and fold."""
     fold = PHASES.index("fold")
-    bounds = []
-    for i, ev in enumerate(events):
-        if ev == edges and (not bounds or events[i - 1] == fold):
-            bounds.append(cycles[i])
+    bounds = [cycles[i] for i, ev in enumerate(events) if ev == fold]
     return list(zip(bounds, bounds[1:]))
 
 

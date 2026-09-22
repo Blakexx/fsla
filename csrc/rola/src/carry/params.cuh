@@ -63,7 +63,16 @@ enum CarryTraceEvent : int {
   kTraceReadoutIssue = 13,
   kTraceReadoutWait = 14,
   kTraceReadoutDrain = 15,
-  kTraceEvents = 16
+  //: the frame's waits, a barrier each (carry_kernel.md#edges)
+  kTraceWaitDone = 16,
+  kTraceWaitHead = 17,
+  kTraceWaitPub = 18,
+  kTraceWaitCounts = 19,
+  kTraceWaitBases = 20,
+  kTraceWaitWords = 21,
+  //: the head's work resumed after a wait
+  kTraceHeadWork = 22,
+  kTraceEvents = 23
 };
 
 //: THE ORDER POLICIES. -- carry_kernel.md#order
