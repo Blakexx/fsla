@@ -20,17 +20,17 @@ of the bytes is before it) and the wait that lands it.
 | tile masks, two parities (`kTileMaskOffset`) | 128 | likewise |
 | count table (`kRCountOffset`), masks by rank (`kMaskOffset`) | ~1,600 | the head's working set |
 | warp words, union words, prefix, two parities (`kWarpWordsOffset`, `kUnionOffset`, `kPrefixOffset`) | ~1,300 | written by the head, read by the fill and the fold |
-| live counts (`kLiveOffset`) | 16 | |
+| live counts, the read-touched boxes and each warp's part of them, two parities (`kLiveOffset`) | 96 | written by the head's passes, read at the frame's edges |
 | snapshot (`kSnapshotOffset`) | 32,768 | written at the window start, read by the readout |
 | mass row (`kMassRowOffset`), row map (`kRowMapOffset`) | ~1,500 | |
-| page slots, phase ledger, counter, take words, fold words, pool and ring barriers, walk rings (`kSlotOffset`..`kWalkOffset`) | 4,992 | a walk ring is allocated `kPoolTokMax` words a warp (512 B) where a chunk can queue at most `kPoolTok` (64): a chunk's kept rows, the pool row in the low byte and the gain in the high half, fragment `n` at entry `16 n` |
+| page slots, phase ledger, counter, take words, fold words, pool, ring and frame barriers (`kFrameBars` = 11), walk rings (`kSlotOffset`..`kWalkOffset`) | 5,120 | a walk ring is allocated `kPoolTokMax` words a warp (512 B) where a chunk can queue at most `kPoolTok` (64): a chunk's kept rows, the pool row in the low byte and the gain in the high half, fragment `n` at entry `16 n` |
 | THE REGION (`kRegionOffset`) | 51,104 | below |
 
-Total `kSmemBytes` = 99,616 B, 97.3 KB of the 99 KB maximum: 1,760 B free, and the pool's slot
+Total `kSmemBytes` = 99,744 B, 97.4 KB of the 99 KB maximum: 1,632 B free, and the pool's slot
 takes what the remainder holds in whole sixteens of tokens, so the free bytes are its quantization
 tail. (The 4 KB mass table of the union readout, unread since that body's deletion, was removed
 2026-09-12; the pool's slot size is unchanged by it. Every number in this file is the value
-`BoxPlan<2, 64, 8>`'s constants compile to, re-read 2026-09-19.)
+`BoxPlan<2, 64, 8>`'s constants compile to, re-read 2026-09-24.)
 
 <a id="pool"></a>
 ## The region: the readout's blocks, then the pool
