@@ -614,20 +614,26 @@ _GEOM_LEVEL = ("width", "span", "grid", "col_base", "run_shift", "owner_div", "w
 _GEOM_SCALAR = ("wtot", "owners", "leaves", "local_bits", "min_width", "identity_map")
 _SIDE_LEVEL = ("level_at", "rank", "row_span", "grid", "grid_div", "row_g", "row_prefix",
                "sub_bits", "sub_shift")
-_SIDE_SCALAR = ("carves", "rows", "leaf", "streams", "assign")
+_SIDE_SCALAR = ("carves", "rows", "leaf", "streams", "assign", "interleave")
 
 
-def geometry(widths, level_modes=0, bc=128, nsr=1, nsw=1, d_v=64):
+def geometry(widths, level_modes=0, bc=128, nsr=1, nsw=1, d_v=64,
+             interleave=0,   #: reserved: the int8 carry derives interleaved once its body ships
+             atom_floor=1):  #: reserved: the int8 carry derives without the warp-level page floor
     """THE SHIPPED DERIVATION, read back as a dict of dicts.
 
     ``{scalars..., "r": {side fields}, "w": {...}, "xch": {"w": [...], "r": [...]}}`` --
     every per-level field is a list of length ``D``, the padding levels the block carries
     past ``D`` dropped here because they are a C-array convenience and not part of the
     law. ``xch`` is each side's transit row map over the whole region, ``[stream][slot]``.
-    See ``docs/internals/common/geom.md``.
+    ``interleave`` = 1 places each carved level's stream index in the digit's LOW bits
+    (stream ``w`` owns digits ``w, w + NS, ...``), 0 in its high bits (a run); see
+    ``docs/internals/common/geom.md#interleaved-placement``. ``atom_floor`` = 1 keeps the
+    shipped body's warp-level page floor on the canonical innermost level; 0 lets a side
+    carve it (the tall form, ``geom.md#tall-owner-set``).
     """
     flat = list(extension().carry_geometry(list(widths), int(level_modes), int(bc), int(nsr),
-                                           int(nsw), int(d_v)))
+                                           int(nsw), int(d_v), int(interleave), int(atom_floor)))
     it = iter(range(len(flat)))
 
     def take(n):
@@ -657,10 +663,11 @@ def geometry(widths, level_modes=0, bc=128, nsr=1, nsw=1, d_v=64):
     return out
 
 
-def sub_boxes(depth, box_leaves_, workers):
+def sub_boxes(depth, box_leaves_, workers,
+              atom_floor=1):  #: reserved: the int8 carry's set is generated without the page floor
     """The GENERATED set of warp sub-box shapes, as spans -- `geom_api.md#sub-box-set`."""
     return [tuple(row) for row in
-            extension().carry_sub_boxes(int(depth), int(box_leaves_), int(workers))]
+            extension().carry_sub_boxes(int(depth), int(box_leaves_), int(workers), int(atom_floor))]
 
 
 __all__ = [

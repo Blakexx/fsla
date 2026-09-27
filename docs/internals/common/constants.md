@@ -50,6 +50,11 @@ branch on a compute capability). `box_leaves`/`BC` multiplies that by the launch
 `warps_per_cta` — a derived quantity from two other numbers, never itself a dial a
 caller sets or a template parameter enumerated over.
 
+The int8 carry's TALL owner set is the same kind of derivation under two different
+numbers — half the register file, a 32-channel group per CTA — and lives beside this one as
+`tall_leaves_per_warp()`/`TALL_BOX_LEAVES = 1024` (`geom.md#tall-owner-set`) until the int8 body makes it
+the shipped box.
+
 <a id="launch-table"></a>
 ## The per-arch launch table
 

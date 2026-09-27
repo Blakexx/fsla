@@ -151,8 +151,9 @@ inline CarryCall derive_carry_call(const Tensor& read, const Tensor& write, cons
   CarryParams p{};
   int w[kGeomMaxLevels] = {0, 0, 0, 0};
   for (int l = 0; l < D; ++l) w[l] = (int)widths[l];
+  const bool ilv = false, atomf = true;  //: the shipped body's run placement and page floor
   const char* err = derive_carry_geom(D, w, BC, (int)dv, host::carve_order_of(carve_order, D),
-                                      (int)warps_per_cta, (int)warps_per_cta, p.g);
+                                      (int)warps_per_cta, (int)warps_per_cta, ilv, atomf, p.g);
   STD_TORCH_CHECK(err == nullptr, "the carry addressing block refuses this call: ", err);
   p.lay[0] = make_side_layout(D, BC, p.g.r.rank, p.g.r.rank);
   p.lay[1] = make_side_layout(D, BC, p.g.w.rank, p.g.r.rank);

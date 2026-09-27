@@ -29,7 +29,7 @@ law that failed, plus the two the SEAM owns rather than the shape:
 `min_l B_l` is a CENSUS FACT and never a refusal: `geom.md#refusals` states why.
 
 <a id="geometry"></a>
-## `geometry(widths, level_modes, bc, nsr, nsw, dv)`
+## `geometry(widths, level_modes, bc, nsr, nsw, dv, interleave, atom_floor)`
 
 The block, flattened to one `int64` vector: the scalars and per-level arrays in
 declaration order, then the read side's `SideGeom`, then the write side's, then BOTH
@@ -38,10 +38,13 @@ The maps are in the vector because a bijection claim is about the map's whole im
 the test must not re-implement `geom_xch_row` to make it.
 
 The layout is positional and the reader is `rola/ops/carry.py::geometry`, which names every
-field once; nothing else parses it.
+field once; nothing else parses it. `interleave` (0 or 1) selects the stream placement at
+every carved level (`geom.md#interleaved-placement`) and is echoed in each side's block;
+`atom_floor` (0 or 1) is the warp-level page floor on the canonical innermost level, the shipped
+body's `1` and the tall form's `0` (`geom.md#tall-owner-set`).
 
 <a id="sub-box-set"></a>
-## `sub_box_set(depth, box_leaves, workers)`
+## `sub_box_set(depth, box_leaves, workers, atom_floor)`
 
 The GENERATED set of warp sub-box shapes — `geom.md#warp-box-set` — as spans rather than
 bit counts, one row per member, in the generator's own order (which is what `assign`

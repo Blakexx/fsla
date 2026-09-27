@@ -137,8 +137,9 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def("sm_clock_ghz(int spin_cycles=20000000) -> float");
 
   // ---- the addressing block and the ONE liveness pass ----------------------
-  m.def("carry_geometry(int[] widths, int level_modes, int bc, int nsr, int nsw, int dv) -> int[]");
-  m.def("carry_sub_boxes(int depth, int box_leaves, int workers) -> int[][]");
+  m.def(
+      "carry_geometry(int[] widths, int level_modes, int bc, int nsr, int nsw, int dv, int interleave, int atom_floor) -> int[]");
+  m.def("carry_sub_boxes(int depth, int box_leaves, int workers, int atom_floor) -> int[][]");
   m.def(
       "liveness_words(Tensor read_plane, Tensor write_plane, int[] widths, int dense_read, int[] mask_read, "
       "int dense_write, int[] mask_write) -> Tensor");

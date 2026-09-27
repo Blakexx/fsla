@@ -155,3 +155,27 @@ class TestDeriveStreamCount:
             s = py.derive_stream_count(100, budget, 8)
             assert s >= prev
             prev = s
+
+
+# --------------------------------------------------------------------------- the tall owner set
+GEOM_HEADER = ROOT / "csrc" / "rola" / "src" / "common" / "geom.cuh"
+
+
+def _geom_constexpr_int(name: str) -> int:
+    m = re.search(rf"constexpr int {re.escape(name)}\s*=\s*(-?\d+)\s*;", GEOM_HEADER.read_text())
+    assert m, f"no `constexpr int {name} = ...;` found in {GEOM_HEADER}"
+    return int(m.group(1))
+
+
+def test_the_tall_owner_sets_constants_agree():
+    assert _geom_constexpr_int("kCtaChannels") == py.CTA_CHANNELS
+    assert _geom_constexpr_int("kTallStateFileNumerator") == py.TALL_STATE_FILE_NUMERATOR
+    assert _geom_constexpr_int("kTallStateFileDenominator") == py.TALL_STATE_FILE_DENOMINATOR
+
+
+def test_the_tall_owner_set_is_the_half_share_over_the_channel_group():
+    """`tall_leaves_per_warp = regs_per_sm * 1/2 / kCtaChannels / warps_per_sm`, mirrored."""
+    regs = 65536
+    want = regs * py.TALL_STATE_FILE_NUMERATOR // py.TALL_STATE_FILE_DENOMINATOR // py.CTA_CHANNELS // py.WARPS_PER_SM
+    assert py.tall_leaves_per_warp() == want == 128
+    assert py.TALL_BOX_LEAVES == 1024

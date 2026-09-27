@@ -20,8 +20,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 __all__ = [
+    "CTA_CHANNELS",
     "LAUNCH_TABLE",
     "SEGMENT_TOKENS",
+    "TALL_BOX_LEAVES",
+    "TALL_STATE_FILE_DENOMINATOR",
+    "TALL_STATE_FILE_NUMERATOR",
     "WARPS_PER_CTA",
     "WARPS_PER_CTA_DIAGNOSTIC",
     "WARPS_PER_CTA_SHIPPED",
@@ -29,10 +33,12 @@ __all__ = [
     "WINDOW",
     "LaunchRow",
     "box_leaves",
+    "channel_groups",
     "derive_stream_count",
     "is_warps_per_cta",
     "launch_row",
     "leaves_per_warp",
+    "tall_leaves_per_warp",
 ]
 
 #: The kernel's window, in tokens: a short sequence runs a partial window inside the
@@ -87,6 +93,28 @@ def leaves_per_warp(dv: int) -> int:
 def box_leaves(dv: int, warps_per_cta: int) -> int:
     """``BC``: the CTA's box, ``leaves_per_warp * warps_per_cta``. Never an axis."""
     return leaves_per_warp(dv) * int(warps_per_cta)
+
+
+#: THE TALL OWNER SET: the state takes HALF the register file and a CTA holds
+#: ``CTA_CHANNELS`` of ``DV`` (one channel group), so an owner set is
+#: ``65536 / 2 / 32 = 1024`` leaves and 128 a warp. Mirrors ``common/geom.cuh``'s
+#: ``kCtaChannels`` / ``kTallStateFile*`` / ``tall_leaves_per_warp`` (geom.md#tall-owner-set).
+CTA_CHANNELS = 32
+TALL_STATE_FILE_NUMERATOR, TALL_STATE_FILE_DENOMINATOR = 1, 2
+
+
+def tall_leaves_per_warp() -> int:
+    """128: ``regs_per_sm * 1/2 / CTA_CHANNELS / WARPS_PER_SM``, the same derivation as C++."""
+    return (_REGS_PER_SM * TALL_STATE_FILE_NUMERATOR // TALL_STATE_FILE_DENOMINATOR
+            // CTA_CHANNELS) // WARPS_PER_SM
+
+
+TALL_BOX_LEAVES = tall_leaves_per_warp() * WARPS_PER_SM
+
+
+def channel_groups(dv: int) -> int:
+    """The CTAs one leaf set takes: one per ``CTA_CHANNELS`` of ``DV``."""
+    return int(dv) // CTA_CHANNELS
 
 
 @dataclass(frozen=True, slots=True)

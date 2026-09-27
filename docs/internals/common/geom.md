@@ -326,6 +326,58 @@ always; the tied case is a transit whose row map is the identity, same code, sam
 plan" — so `identity_map` is a reported FACT that makes a wasted transit visible in the
 ledger, and never a second code path.
 
+<a id="tall-owner-set"></a>
+## The tall owner set (ruled 2026-09-26)
+
+The int8 carry's owner set is derived from two numbers the quarter-share law above did not
+have: the state takes **half** the register file (`kTallStateFileNumerator /
+kTallStateFileDenominator = 1/2`, 128 registers a lane of s32 state), and a CTA holds
+`kCtaChannels = 32` of `DV` — one CHANNEL GROUP, `channel_groups(dv) = dv / 32` CTAs per leaf
+set. So `tall_leaves_per_sm = 65536 / 2 / 32 = 1024` and `tall_leaves_per_warp = 128`.
+
+The owner span law is unchanged and gives, at ten bits: `D = 2` a 32 × 32 digit SQUARE;
+`D = 3` `[8, 8, 16]` (balanced 3, 3, 4, the atom whole innermost); `D = 4` `[4, 4, 4, 16]`
+(2, 2, 3, 3 balanced, the innermost raised to the atom's four bits, the surplus taken from the
+widest level above the floor). The square is what makes the per-side carve symmetric: each
+side ranks its sparse level outermost, the eight streams take three of its five bits, and a
+warp owns 4 sparse digits × all 32 dense on BOTH sides, in the side's own carve — the state is
+carved 4 × 32 for the fold and 32 × 4 for the readout, and the transfer between the two is
+what buys the height. At `D = 3` a side's sparse level has three bits, so
+the eight streams take all of them and a warp owns one sparse digit × 128 dense leaves.
+
+The tall carve runs with the WARP-LEVEL ATOM FLOOR OFF (`atom_floor = 0`, the derivation's
+second law flag). `## innermost-invariant` below is the shipped body's operand law: its
+fragments are ldmatrix runs over CONSECUTIVE canonical leaves and each warp stores its own
+pages, so no warp box may be narrower than the page on the canonical innermost level. Neither
+holds in the tall form: the read side's operands arrive through the transfer in the READ
+layout, the write side's fragments are the dense-amplitude and V′ tiles of a digit list, and
+the page I/O is a CTA-level fact (the OWNER spans still hold the atom whole). Under the floor
+the side whose sparse level is the canonical innermost could take only one bit there and would
+carve 8 × 16 — a box sixteen sparse digits wide reaps nothing — so the floor is a per-derivation
+flag the shipped body passes `1` and the tall form `0`.
+
+The shipped kernel keeps the quarter-share box until the int8 body ships; until then the
+tall set is reachable through the binding at `bc = TALL_BOX_LEAVES` and is what
+`tests/unit/test_carry_geometry.py`'s tall-set tests derive.
+
+<a id="interleaved-placement"></a>
+## The interleaved stream placement
+
+`SideGeom::interleave` chooses where a carved level's STREAM INDEX sits inside the level's
+digit. `0`, the run placement: the stream index is the digit's high bits, so stream `w` owns a
+RUN of `sv(l)` consecutive digits (`4w .. 4w+3` at the tall set). `1`, interleaved: the stream
+index is the digit's LOW bits, so stream `w` owns the digits congruent to it (`w, w+8, w+16,
+w+24`). `geom_level_digit(s, l, strm, dig)` is the one place the choice is spelled and both row
+maps (`geom_local_row`, `geom_xch_row`) read it; either form is GF(2)-linear in `(strm, P)`,
+so the transit's immediates survive.
+
+Why it exists: a cohort's live tokens write a contiguous run of sparse digits, and under the
+run placement a window's whole fold lands on one or two warps — measured max/mean warp load
+3.1× at cohort-k16 against 1.07× interleaved, and 1.03–1.18× at the alternating cells under
+either (the 2026-09-26 imbalance study). The tall carve therefore runs
+interleaved on both sides. It is a runtime field of the block (a launch-time law, like the
+carve order), not a template parameter, and the shipped kernel passes `false`.
+
 <a id="on-the-tip"></a>
 ## What consumes this block today
 
@@ -397,3 +449,6 @@ The invariant is visible in the generated shape set: every member ends in the sa
 span, so the orders that differ only in how they would have split it collapse onto one
 member. At the flagship arm the set is one shape rather than two; at depth four it is three
 rather than eight.
+
+The invariant is the SHIPPED BODY'S: `carve_sub_bits`/`sub_boxes` take it as `atom_floor`, and
+the tall form derives with it off (`## tall-owner-set`).

@@ -54,6 +54,25 @@ constexpr int kClusterCtas = 1;
 
 constexpr int leaves_per_warp(int dv) { return leaves_per_sm(dv) / warps_per_sm; }
 
+//: THE TALL OWNER SET: half the register file, one 32-channel group a CTA -> 1024 leaves, 128 a warp.
+//: -- see docs/internals/common/geom.md#tall-owner-set
+constexpr int kCtaChannels = 32;
+constexpr int kTallStateFileNumerator = 1;
+constexpr int kTallStateFileDenominator = 2;
+
+constexpr int tall_state_elems_per_sm(const denseref::arch::Caps& c) {
+  return c.regs_per_sm * kTallStateFileNumerator / kTallStateFileDenominator;
+}
+
+constexpr int tall_leaves_per_sm() {
+  return tall_state_elems_per_sm(denseref::arch::kCaps) / kCtaChannels;
+}
+
+constexpr int tall_leaves_per_warp() { return tall_leaves_per_sm() / warps_per_sm; }
+
+//: the CTAs one leaf set takes: one per channel group.
+constexpr int channel_groups(int dv) { return dv / kCtaChannels; }
+
 //: A BALANCED BIT SPLIT over `D` levels, remainder INNERMOST-FIRST.
 constexpr int balanced_bits(int bits, int D, int l) {
   return bits / D + (l >= D - bits % D ? 1 : 0);
@@ -94,7 +113,8 @@ constexpr int owner_run_shift(int D, int bc, int l) {
 //: by level IN THE SIDE'S OWN ORDER, outermost first, until the box count reaches the
 //: side's stream count; what remains is that side's WARP SUB-BOX.
 //: -- see docs/internals/common/geom.md#warp-box
-constexpr void carve_sub_bits(int D, int bc, int ns, const int* outer_order, int* bits) {
+constexpr void carve_sub_bits(int D, int bc, int ns, const int* outer_order, int* bits,
+                              bool atom_floor = true) {
   for (int l = 0; l < D; ++l) bits[l] = owner_span_bits(D, bc, l);
   int want = geom_ilog2(ns);
   for (int p = 0; p < D && want > 0; ++p) {
@@ -102,7 +122,7 @@ constexpr void carve_sub_bits(int D, int bc, int ns, const int* outer_order, int
     //: THE INNERMOST DIGITS ARE THE VECTOR WIDTH: the order passes over that level rather
     //: than dividing it below the page rectangle.
     //: -- see docs/internals/common/geom.md#innermost-invariant
-    const int floor_l = (l == D - 1) ? kAtomLeavesBits : 0;
+    const int floor_l = (atom_floor && l == D - 1) ? kAtomLeavesBits : 0;
     const int room = bits[l] - floor_l;
     const int take = room < want ? room : want;
     if (take > 0) {
@@ -124,7 +144,7 @@ struct SubBoxSet {
   int bits[kGeomMaxSubBoxes][kGeomMaxLevels];
 };
 
-constexpr SubBoxSet sub_boxes(int D, int box_leaves, int workers) {
+constexpr SubBoxSet sub_boxes(int D, int box_leaves, int workers, bool atom_floor = true) {
   SubBoxSet set{};
   set.count = 0;
   int fact = 1;
@@ -142,7 +162,7 @@ constexpr SubBoxSet sub_boxes(int D, int box_leaves, int workers) {
       --avail;
     }
     int b[kGeomMaxLevels] = {0, 0, 0, 0};
-    carve_sub_bits(D, box_leaves, workers, order, b);
+    carve_sub_bits(D, box_leaves, workers, order, b, atom_floor);
     bool seen = false;
     for (int a = 0; a < set.count; ++a) {
       bool eq = true;
@@ -233,6 +253,7 @@ struct SideGeom {
   int sub_bits[kGeomMaxLevels];   //: level -> log2 sv(l)
   int sub_shift[kGeomMaxLevels];  //: level -> the slot index's bit offset
   int grid_bits[kGeomMaxLevels];  //: level -> log2 grid(l) = log2 s(l) - log2 sv(l)
+  int interleave;  //: 0 = a stream owns a RUN of digits, 1 = INTERLEAVED -- geom.md#interleaved-placement
 };
 
 //: THE BLOCK ITSELF -- what the host hands the kernel, by value, once per launch.
@@ -305,8 +326,10 @@ inline void carve_order_of_modes(int D, uint32_t MO, CarveOrder& o) {
 
 //: ONE SIDE'S CARVE; `NS == 1` is the S = 1 point of it. -- see docs/internals/common/geom.md#carve
 inline const char* derive_side(int D, const int* width, const int* span, int bc,
-                               const int* level_at, int NS, SideGeom& g) {
+                               const int* level_at, int NS, bool interleave, bool atom_floor,
+                               SideGeom& g) {
   if (NS < 1 || (NS & (NS - 1)) != 0) return "a side's stream count is a power of two";
+  g.interleave = interleave ? 1 : 0;
   int named = 0;
   for (int r = 0; r < D; ++r) {
     const int l = level_at[r];
@@ -320,13 +343,13 @@ inline const char* derive_side(int D, const int* width, const int* span, int bc,
   //: THE SIDE'S OWN CARVE: its order, walked OUTERMOST FIRST.
   int outer[kGeomMaxLevels] = {0, 0, 0, 0}, sub_bits[kGeomMaxLevels] = {0, 0, 0, 0};
   for (int p = 0; p < D; ++p) outer[p] = g.level_at[D - 1 - p];
-  carve_sub_bits(D, bc, NS, outer, sub_bits);
+  carve_sub_bits(D, bc, NS, outer, sub_bits, atom_floor);
   int carved = 0;
   for (int l = 0; l < D; ++l) carved += owner_span_bits(D, bc, l) - sub_bits[l];
   if (carved != geom_ilog2(NS))
     return "this carve order cannot reach the side's stream count without dividing the "
            "innermost level below the page rectangle";
-  const SubBoxSet set = sub_boxes(D, bc, NS);
+  const SubBoxSet set = sub_boxes(D, bc, NS, atom_floor);
   g.assign = sb_index(set, D, sub_bits);
   if (g.assign < 0) return "this side's carved sub-box is not a member of the generated set";
   int sub[kGeomMaxLevels] = {1, 1, 1, 1};
@@ -385,7 +408,8 @@ inline const char* derive_side(int D, const int* width, const int* span, int bc,
 
 //: THE ONE DERIVATION; returns nullptr or the REFUSAL's own words. -- see docs/internals/common/geom.md#refusals
 inline const char* derive_carry_geom(int D, const int* width, int bc, int dv,
-                                     const CarveOrder& order, int NSR, int NSW, CarryGeomRT& g) {
+                                     const CarveOrder& order, int NSR, int NSW, bool interleave,
+                                     bool atom_floor, CarryGeomRT& g) {
   if (D < 1 || D > kGeomMaxLevels) return "the addressing block is built to depth four";
   if (geom_ilog2(bc) < 0) return "BC must be a power of two";
   if (geom_ilog2(dv) < 0 || dv % 16 != 0) return "the value width is a power of two, sixteen up";
@@ -443,14 +467,25 @@ inline const char* derive_carry_geom(int D, const int* width, int bc, int dv,
     g.span_bits[l] = geom_ilog2(width[0]);
     g.run_shift[l] = 0;
   }
-  if (const char* e = derive_side(D, g.width, g.span, bc, order.level_at[0], NSR, g.r)) return e;
-  if (const char* e = derive_side(D, g.width, g.span, bc, order.level_at[1], NSW, g.w)) return e;
+  if (const char* e =
+          derive_side(D, g.width, g.span, bc, order.level_at[0], NSR, interleave, atom_floor, g.r))
+    return e;
+  if (const char* e =
+          derive_side(D, g.width, g.span, bc, order.level_at[1], NSW, interleave, atom_floor, g.w))
+    return e;
   //: a level nobody carves fixes no digit, so its index weight is not part of the map.
   int identical = g.r.assign == g.w.assign ? 1 : 0;
   for (int l = 0; l < D; ++l)
     if (g.r.grid[l] > 1 && g.r.grid_div_bits[l] != g.w.grid_div_bits[l]) identical = 0;
   g.identity_map = identical;
   return nullptr;
+}
+
+//: THE LEVEL DIGIT a stream's slot digit names: stream part high (a run) or low (interleaved).
+//: -- see docs/internals/common/geom.md#interleaved-placement
+__host__ __device__ inline int geom_level_digit(const SideGeom& s, int l, int strm, int dig) {
+  const int part = (strm >> s.grid_div_bits[l]) & (s.grid[l] - 1);
+  return s.interleave ? ((dig << s.grid_bits[l]) + part) : ((part << s.sub_bits[l]) + dig);
 }
 
 //: THE TRANSIT'S ROW MAP: the region is indexed by the OWNER-LOCAL CANONICAL INDEX, so
@@ -463,9 +498,8 @@ __host__ __device__ inline int geom_local_row(const SideGeom& s, int strm, int P
   int row = 0;
   rola::static_for<D>([&](auto Lc) {
     constexpr int l = decltype(Lc)::value;
-    const int off = ((strm >> s.grid_div_bits[l]) & (s.grid[l] - 1)) << s.sub_bits[l];
     const int dig = (P >> s.sub_shift[l]) & ((1 << s.sub_bits[l]) - 1);
-    row += (off + dig) << owner_run_shift(D, BC, l);
+    row += geom_level_digit(s, l, strm, dig) << owner_run_shift(D, BC, l);
   });
   return row;
 }
@@ -490,9 +524,8 @@ __host__ __device__ inline int geom_xch_row(const CarryGeomRT& g, const SideGeom
   int row = 0;
 #pragma unroll 1
   for (int l = 0; l < g.D; ++l) {
-    const int off = ((strm >> s.grid_div_bits[l]) & (s.grid[l] - 1)) << s.sub_bits[l];
     const int dig = (P >> s.sub_shift[l]) & ((1 << s.sub_bits[l]) - 1);
-    row += (off + dig) << g.run_shift[l];
+    row += geom_level_digit(s, l, strm, dig) << g.run_shift[l];
   }
   return sb_swizzle(geom_read_index(g, g.r, row));
 }
