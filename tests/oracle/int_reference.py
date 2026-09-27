@@ -146,11 +146,19 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
     for t0 in range(0, T, window):
         sl = slice(t0, min(t0 + window, T))
         # --- readout against the state at the window start -----------------------------------------------------
-        a_rd, m_rd = group_product(read_levels, widths, r_dn, sl, u8)     # [B,t,H,n_rd] unit-max u8, its row scale
+        # THE DECLARED READOUT: B = q(S / sigma_d), sigma_d ONE scale per READ DIGIT (the max |S| over the digit's
+        # leaves and channels -- constant over an MMA's K range; a cross-warp max in-kernel); A = the unit-max dense
+        # read row, u8 against its own max; the per-(token, digit) factor a_sparse x m_t x sigma_d multiplies the
+        # (tile, digit) partial at the accumulate step, in fp32/fixed point, so nothing per leaf is inside an operand.
+        a_rd, m_rd = group_product(read_levels, widths, r_dn, sl, u8)     # [B,t,H,n_rd] unit-max u8 rows, row max
         a_rs, _ = group_product(read_levels, widths, r_sp, sl)             # [B,t,H,n_rs] the sparse amps, fp
-        r_q = a_rd[..., idx_rd] * (a_rs * m_rd)[..., idx_rs]               # [B,t,H,N]; m_rd is the output-row scale
-        sigma = bound.clamp_min(TINY)                                      # [B,H,N]
-        s_op = q_read(state / sigma.unsqueeze(-1)) * sigma.unsqueeze(-1)  # the readout's B operand, dequantized
+        leaf_max = state.abs().amax(-1)                                    # [B,H,N]
+        n_rs = int(idx_rs.max().item()) + 1
+        sigma_d = torch.zeros(Bn, H, n_rs, device=dev, dtype=torch.float64)
+        sigma_d.scatter_reduce_(2, idx_rs.view(1, 1, -1).expand(Bn, H, -1), leaf_max, reduce="amax")
+        sigma_leaf = sigma_d[..., idx_rs].clamp_min(TINY)                  # [B,H,N] each leaf's digit scale
+        s_op = q_read(state / sigma_leaf.unsqueeze(-1)) * sigma_leaf.unsqueeze(-1)
+        r_q = a_rd[..., idx_rd] * (a_rs * m_rd)[..., idx_rs]               # exact per-(token, digit) factor x u8 row
         num[:, sl] = torch.einsum("bthn,bhnc->bthc", r_q, s_op)
         r_fp = leaf_product(read_levels, widths, sl)
         den[:, sl] = torch.einsum("bthn,bhn->bth", r_fp, mass)
