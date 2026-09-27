@@ -102,7 +102,7 @@ def group_product(levels_all, widths, levels, sl, u8=None):
 
 def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, window, *,
                   fold_digits: int = 1, readout_digits: int = 1, exact: bool = False, state_in=None,
-                  scale_tokens: int | None = None):
+                  scale_tokens: int | None = None, bucket_ratio: float | None = None):
     """``(num, den, state)`` in fp64 under the DECLARED int arithmetic; ``sparsity[l] = (read sparse, write sparse)``.
 
     Fold: ``state[leaf] += sum_t A_u8[t, dense(leaf)] * V'[t, sparse(leaf)]`` with ``V' = q(v_hat * scal / zeta) *
@@ -111,7 +111,9 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
     a_sparse[t, sparse]`` against ``S_op = q(state / B) * B``; ``den`` from the exact amplitudes and the mass, as the
     pre-pass computes it. ``exact`` turns every ``q`` and ``u8`` into the identity. ``scale_tokens`` = 32 takes
     ``zeta`` per (digit, tile of 32 LIVE tokens of that digit's list) instead of per (digit, window): the K range of one
-    MMA, whose product a kernel rescales before it joins the state.
+    MMA, whose product a kernel rescales before it joins the state. ``bucket_ratio`` = R sorts a digit's writers by
+    their factor and opens a new bucket (its own ``zeta``, its own fresh accumulator folded into the state at its end)
+    whenever the factor falls below the bucket max / R.
     """
     Bn, T, H, dv = v.shape
     D = len(widths)
@@ -154,16 +156,29 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
         a_ws, _ = group_product(write_levels, widths, w_sp, sl)            # [B,t,H,n_ws]
         scal = a_ws * (g_write[:, sl].double() * s_t[:, sl, :, 0]).unsqueeze(-1) * m_wd   # [B,t,H,n_ws]
         zeta = scal.amax(dim=1, keepdim=True).clamp_min(TINY)                       # [B,1,H,n_ws] per (digit, window)
-        if scale_tokens is not None:                                                # per (digit, tile of its live list)
+        if scale_tokens is not None or bucket_ratio is not None:
+            # per (digit, tile of its live list) with `scale_tokens`; per (digit, BUCKET) with `bucket_ratio`: the
+            # digit's writers sorted by their factor, a new bucket where the factor falls below the bucket max / ratio
             zeta = torch.zeros_like(scal)
             for b in range(Bn):
                 for hh in range(H):
                     for s_ in range(n_ws):
                         col = scal[b, :, hh, s_]
                         live = torch.nonzero(col > 0, as_tuple=False).flatten()
-                        for i in range(0, live.numel(), scale_tokens):
-                            tile = live[i:i + scale_tokens]
-                            zeta[b, tile, hh, s_] = col[tile].max()
+                        if live.numel() == 0:
+                            continue
+                        if bucket_ratio is not None:
+                            order = live[torch.argsort(col[live], descending=True)]
+                            vals = col[order]
+                            top = vals[0]
+                            for i in range(vals.numel()):
+                                if vals[i] < top / bucket_ratio:
+                                    top = vals[i]
+                                zeta[b, order[i], hh, s_] = top
+                        else:
+                            for i in range(0, live.numel(), scale_tokens):
+                                tile = live[i:i + scale_tokens]
+                                zeta[b, tile, hh, s_] = col[tile].max()
             zeta = zeta.clamp_min(TINY)
         vq = q_fold(v_hat[:, sl].unsqueeze(3) * (scal / zeta).unsqueeze(-1)) * zeta.unsqueeze(-1)  # [B,t,H,n_ws,dv]
         for s in range(n_ws):
@@ -184,7 +199,7 @@ def per_token_norm_ratio(err: torch.Tensor, envelope: torch.Tensor) -> torch.Ten
 
 
 def quantization_report(drawn, sparsity, window, digit_pairs=((1, 1), (1, 2), (2, 2)), rotate_values=False,
-                        scale_tokens=None):
+                        scale_tokens=None, bucket_ratio=None):
     """Comparison B on one drawn cell: the declared arithmetic against the unquantized op. Returns one row per digit
     pair: the per-slot error over the slot's envelope (max and the fraction above 2^-8), the per-token norm ratio (max,
     mean) for ``num``, and the state's per-slot max over its envelope. With ``rotate_values`` the values are rotated by
@@ -198,7 +213,8 @@ def quantization_report(drawn, sparsity, window, digit_pairs=((1, 1), (1, 2), (2
     rows = []
     for fd, rd in digit_pairs:
         num, den, state = int_reference(read, write, gain, v_in, widths, sparsity, window,
-                                        fold_digits=fd, readout_digits=rd, scale_tokens=scale_tokens)
+                                        fold_digits=fd, readout_digits=rd, scale_tokens=scale_tokens,
+                                        bucket_ratio=bucket_ratio)
         if rotate_values:
             num, state = unrotate(num, h), torch.cat((unrotate(state[..., :-1], h), state[..., -1:]), -1)
         e_num = (num - true_num).abs()
