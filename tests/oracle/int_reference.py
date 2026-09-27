@@ -102,7 +102,8 @@ def group_product(levels_all, widths, levels, sl, u8=None):
 
 def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, window, *,
                   fold_digits: int = 1, readout_digits: int = 1, exact: bool = False, state_in=None,
-                  scale_tokens: int | None = None, bucket_ratio: float | None = None):
+                  scale_tokens: int | None = None, bucket_ratio: float | None = None,
+                  factor_on: str = "values", a_digits: int = 1):
     """``(num, den, state)`` in fp64 under the DECLARED int arithmetic; ``sparsity[l] = (read sparse, write sparse)``.
 
     Fold: ``state[leaf] += sum_t A_u8[t, dense(leaf)] * V'[t, sparse(leaf)]`` with ``V' = q(v_hat * scal / zeta) *
@@ -113,7 +114,10 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
     ``zeta`` per (digit, tile of 32 LIVE tokens of that digit's list) instead of per (digit, window): the K range of one
     MMA, whose product a kernel rescales before it joins the state. ``bucket_ratio`` = R sorts a digit's writers by
     their factor and opens a new bucket (its own ``zeta``, its own fresh accumulator folded into the state at its end)
-    whenever the factor falls below the bucket max / R.
+    whenever the factor falls below the bucket max / R. ``factor_on="leaves"`` is the RULED form: the per-token
+    factor (sparse amplitude x s_t x gain x dense row max) multiplies the A rows instead, and each LEAF's row is
+    quantized to u8 against its own biggest writer that window (sigma_leaf,w, the pre-pass's max); the values stay the
+    per-token unit-max s8 V-hat, one row a token; ``a_digits`` = 2 gives those rows a u8 high and low digit.
     """
     Bn, T, H, dv = v.shape
     D = len(widths)
@@ -180,15 +184,26 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
                                 tile = live[i:i + scale_tokens]
                                 zeta[b, tile, hh, s_] = col[tile].max()
             zeta = zeta.clamp_min(TINY)
-        vq = q_fold(v_hat[:, sl].unsqueeze(3) * (scal / zeta).unsqueeze(-1)) * zeta.unsqueeze(-1)  # [B,t,H,n_ws,dv]
-        for s in range(n_ws):
+        if factor_on == "leaves":
+            vh = v_hat[:, sl]                                                          # [B,t,H,dv] one s8 row a token
+            for s in range(n_ws):
+                leaves = torch.nonzero(idx_ws == s, as_tuple=False).flatten()
+                a_full = a_wd[..., idx_wd[leaves]] * scal[..., s].unsqueeze(-1)       # [B,t,H,n_wd] the leaf rows' A
+                sigma = a_full.amax(dim=1, keepdim=True).clamp_min(TINY)               # the leaf's biggest writer
+                unit = a_full / sigma
+                a_q = (unit if exact else (quantize_u8_unit(unit) if a_digits == 1 else torch.round(unit * 65535.0) / 65535.0)) * sigma
+                state[:, :, leaves] += torch.einsum("bthd,bthc->bhdc", a_q, vh)
+                bound[:, :, leaves] += a_q.sum(1)
+        else:
+          vq = q_fold(v_hat[:, sl].unsqueeze(3) * (scal / zeta).unsqueeze(-1)) * zeta.unsqueeze(-1)  # [B,t,H,n_ws,dv]
+          for s in range(n_ws):
             leaves = torch.nonzero(idx_ws == s, as_tuple=False).flatten()
             a_d = a_wd[..., idx_wd[leaves]]                                # [B,t,H,n_wd]
             state[:, :, leaves] += torch.einsum("bthd,bthc->bhdc", a_d, vq[:, :, :, s])
             bound[:, :, leaves] += torch.einsum("bthd,bth->bhd", a_d, scal[..., s])
         w_fp = g_write[:, sl].double()[..., None] * leaf_product(write_levels, widths, sl)
         mass += w_fp.sum(1)
-        del a_wd, a_ws, scal, zeta, vq, w_fp
+        del a_wd, a_ws, scal, zeta, w_fp
     full = torch.cat((state, mass.unsqueeze(-1)), -1)
     return num, den, full
 
@@ -199,7 +214,7 @@ def per_token_norm_ratio(err: torch.Tensor, envelope: torch.Tensor) -> torch.Ten
 
 
 def quantization_report(drawn, sparsity, window, digit_pairs=((1, 1), (1, 2), (2, 2)), rotate_values=False,
-                        scale_tokens=None, bucket_ratio=None):
+                        scale_tokens=None, bucket_ratio=None, factor_on="values", a_digits=1):
     """Comparison B on one drawn cell: the declared arithmetic against the unquantized op. Returns one row per digit
     pair: the per-slot error over the slot's envelope (max and the fraction above 2^-8), the per-token norm ratio (max,
     mean) for ``num``, and the state's per-slot max over its envelope. With ``rotate_values`` the values are rotated by
@@ -214,7 +229,7 @@ def quantization_report(drawn, sparsity, window, digit_pairs=((1, 1), (1, 2), (2
     for fd, rd in digit_pairs:
         num, den, state = int_reference(read, write, gain, v_in, widths, sparsity, window,
                                         fold_digits=fd, readout_digits=rd, scale_tokens=scale_tokens,
-                                        bucket_ratio=bucket_ratio)
+                                        bucket_ratio=bucket_ratio, factor_on=factor_on, a_digits=a_digits)
         if rotate_values:
             num, state = unrotate(num, h), torch.cat((unrotate(state[..., :-1], h), state[..., -1:]), -1)
         e_num = (num - true_num).abs()
