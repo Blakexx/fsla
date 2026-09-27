@@ -241,10 +241,11 @@ class RouteProducer(nn.Module):
         #: The producer is the one place that knows the operand dtype.
         gains = self.side_gain(gain_logits, batch=B, tokens=T, dtype=read_levels[0].dtype,
                                device=read_stream.device)
-        return RouteFactors(
-            topology=self.topology,
-            read=read_levels, write=write_levels,
-            g_write=gains["g_write"] if write_mass is None else gains["g_write"] * write_mass,
+        #: THE FORMAT IS WRITTEN HERE (ruled 2026-09-26): u8 unit-max rows with their maxima, the levels a consumer
+        #: computes on being those rows dequantized, the solve's gradient stepped through. -- docs/api.md#2.1
+        return RouteFactors.from_levels(
+            self.topology, read_levels, write_levels,
+            gains["g_write"] if write_mass is None else gains["g_write"] * write_mass,
             read_mass=read_mass)
 
     def _skip(self, duty: str) -> tuple[bool, ...]:

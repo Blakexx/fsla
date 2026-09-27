@@ -22,31 +22,52 @@ from dataclasses import dataclass
 
 import torch
 
+from rola.routing import quant
 from rola.routing.types import Topology
 
 __all__ = ["RouteFactors"]
 
 
+def _quantize_side(levels):
+    rows, scales, dequantized = [], [], []
+    for level in levels:
+        row, scale = quant.quantize_unit_max_rows(level)
+        rows.append(row)
+        scales.append(scale)
+        dequantized.append(quant.straight_through(level, quant.dequantize_rows(row, scale)))
+    return tuple(rows), tuple(scales), tuple(dequantized)
+
+
 @dataclass(frozen=True, slots=True)
 class RouteFactors:
-    """The feature-mapped routing sides and their side gains. Tensors, and nothing else.
+    """The feature-mapped routing sides in THE INTERNAL FORMAT, and their side gain. Tensors, and nothing else.
 
-    ``read``/``write``: one ``[B, T, H, width_l]`` level per topology level; ``write``
-    is a simplex, ``read`` is a simplex SCALED by ``read_mass``.
-    ``g_write``: ``[B, T, H]`` write-side gain. There is no read-side gain column at
-    all: the readout is a ratio, which fixes it to 1 identically.
-    ``read_mass``: the ``[B, T, H]`` per-token scale the read levels carry, or ``None``
-    for the unscaled case. :meth:`read_simplex` divides it back out.
+    ``amp_read``/``amp_write``: one u8 ``[B, T, H, width_l]`` row set per level, each row UNIT-MAX (its
+    largest digit at 255; an all-zero row is a dead token at that level); ``scale_read``/``scale_write``:
+    the rows' maxima, ``[B, T, H]`` per level, in the producer's floating dtype -- a read level's scale
+    carries the read mass, a write level's the normalized simplex's max (its mass rides ``g_write``).
+    ``read``/``write``: the DEQUANTIZED levels, ``rows / 255 * scale``, as the values every consumer
+    computes on, with the producer's gradient stepped straight through the rounding; they are a
+    transitional carry until the intra, decode and carry kernels read the rows themselves.
+    ``g_write``: ``[B, T, H]`` write-side gain (there is no read gain: the readout is a ratio).
+    ``read_mass``: the ``[B, T, H]`` per-token read scale the read levels carry, or ``None``.
+    ``digits``: the amplitude planes' digit count (one).
 
-    Direct construction is legal; ``__post_init__`` holds it to the same invariants a
-    derived bundle satisfies (``docs/api.md`` §2.1).
+    The format is written by the framework's producers and by nothing else (ruled 2026-09-26): a new
+    production is a producer class here. Direct construction is legal for a fixture; ``__post_init__``
+    holds it to the format's invariants (``docs/api.md`` section 2.1).
     """
 
     topology: Topology
     read: tuple[torch.Tensor, ...]
     write: tuple[torch.Tensor, ...]
     g_write: torch.Tensor
+    amp_read: tuple[torch.Tensor, ...]
+    amp_write: tuple[torch.Tensor, ...]
+    scale_read: tuple[torch.Tensor, ...]
+    scale_write: tuple[torch.Tensor, ...]
     read_mass: torch.Tensor | None = None
+    digits: int = 1  #: reserved: the amplitude planes' digit count, one until a two-digit plane is declared
 
     def __post_init__(self) -> None:
         """Shapes, devices, dtypes and ``None``-ness only -- never a device reduction."""
@@ -89,6 +110,24 @@ class RouteFactors:
                     raise ValueError(
                         f"every routing level shares one dtype; {name}[{level}] is "
                         f"{tensor.dtype} against {self.read[0].dtype}")
+        object.__setattr__(self, "amp_read", tuple(self.amp_read))
+        object.__setattr__(self, "amp_write", tuple(self.amp_write))
+        object.__setattr__(self, "scale_read", tuple(self.scale_read))
+        object.__setattr__(self, "scale_write", tuple(self.scale_write))
+        if self.digits != 1:
+            raise ValueError(f"RouteFactors.digits is {self.digits}; the amplitude planes are one u8 digit")
+        for name, rows, scales, levels in (("read", self.amp_read, self.scale_read, self.read),
+                                           ("write", self.amp_write, self.scale_write, self.write)):
+            if len(rows) != D or len(scales) != D:
+                raise ValueError(f"RouteFactors.amp_{name}/scale_{name} hold one tensor per level (D={D}), "
+                                 f"got {len(rows)}/{len(scales)}")
+            for level, (row, scale, dq) in enumerate(zip(rows, scales, levels)):
+                if not isinstance(row, torch.Tensor) or row.dtype is not torch.uint8 or tuple(row.shape) != tuple(dq.shape):
+                    raise TypeError(f"RouteFactors.amp_{name}[{level}] is the level's u8 rows, {tuple(dq.shape)}; got "
+                                    f"{getattr(row, 'dtype', type(row).__name__)} {tuple(getattr(row, 'shape', ()))}")
+                if not isinstance(scale, torch.Tensor) or tuple(scale.shape) != prefix:
+                    raise ValueError(f"RouteFactors.scale_{name}[{level}] is the rows' maxima, [B, T, H]={prefix}; got "
+                                     f"{tuple(getattr(scale, 'shape', ()))}")
         for name, column in (("g_write", self.g_write),
                              ("read_mass", self.read_mass)):
             if column is None:
@@ -97,6 +136,17 @@ class RouteFactors:
                 shape = getattr(column, "shape", type(column).__name__)
                 raise ValueError(
                     f"RouteFactors.{name} must be a [B, T, H]={prefix} tensor, got {shape}")
+
+    @classmethod
+    def from_levels(cls, topology: Topology, read, write, g_write, read_mass=None) -> RouteFactors:
+        """THE FRAMEWORK'S EPILOGUE as a function: floating levels in, the format out. Each level's rows are
+        stored u8 unit-max with their maxima, and the levels a consumer computes on are the dequantized values
+        with the input's gradient stepped straight through the rounding (`rola.routing.quant`)."""
+        amp_read, scale_read, dq_read = _quantize_side(read)
+        amp_write, scale_write, dq_write = _quantize_side(write)
+        return cls(topology=topology, read=dq_read, write=dq_write, g_write=g_write,
+                   amp_read=amp_read, amp_write=amp_write, scale_read=scale_read, scale_write=scale_write,
+                   read_mass=read_mass)
 
     @property
     def batch(self) -> int:

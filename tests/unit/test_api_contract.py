@@ -79,10 +79,8 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     """
     producer = _routes()
     factors = producer(_x(producer))
-    hand_built = RouteFactors(
-        topology=factors.topology,
-        read=factors.read, write=factors.write,
-        g_write=factors.g_write)
+    hand_built = RouteFactors.from_levels(
+        factors.topology, factors.read, factors.write, factors.g_write)
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     _admitted(hand_built, v)
     assert torch.isfinite(_oracle(hand_built, v)).all()
@@ -123,8 +121,8 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
     elif break_it == "gain_shape":
         fields["g_write"] = fields["g_write"][..., :1]
     with pytest.raises((ValueError, TypeError), match=message):
-        RouteFactors(**{k: (tuple(v) if isinstance(v, list) else v)
-                        for k, v in fields.items()})
+        RouteFactors.from_levels(fields["topology"], tuple(fields["read"]), tuple(fields["write"]),
+                                 fields["g_write"])
 
 
 def test_the_op_refuses_anything_that_is_not_a_bundle():
@@ -178,13 +176,11 @@ def test_the_simplex_output_column_is_read_per_duty_not_per_activation():
     assert all(dense.duty_simplex_output(l, d) for l, d in dense.duty_cells())
 
 
-def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
-    """U02, mechanically: THE BUNDLE IS THE WHOLE CONTRACT.
-
-    The duck below shares no base class, no tag and no metadata with the shipped
-    producer -- it is a plain module returning a bundle. It must be admitted by the op
-    and accepted by the layer's slot, and its levels must be OPAQUE: the topology reads
-    the opaque registry row for them, which is the only thing being foreign costs it.
+def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
+    """RULED 2026-09-26: production lives in our framework and emits ONE internal format. A module that returns a
+    bundle can only do so through the format's epilogue (`RouteFactors.from_levels`), so what the op admits is
+    always u8 unit-max rows with their scales; a bundle assembled from bare floating levels is refused by its
+    structure. The layer's slot stays structural: whatever occupies it declares a topology and returns the format.
     """
     from rola.routing.types import OpaqueRouting, Topology
 
@@ -195,20 +191,20 @@ def test_a_foreign_producer_runs_with_no_registration_and_no_tier():
         def forward(self, stream):
             B, T = stream.shape[0], stream.shape[1]
             level = torch.full((B, T, 2, 4), 0.25, dtype=stream.dtype)
-            return RouteFactors(
-                topology=self.topology,
-                read=(level,), write=(level.clone(),),
-                g_write=torch.ones(B, T, 2, dtype=stream.dtype))
+            return RouteFactors.from_levels(self.topology, (level,), (level.clone(),),
+                                            torch.ones(B, T, 2, dtype=stream.dtype))
 
     producer = Uniform()
-    assert type(producer.topology.levels[0]).__name__ == "OpaqueRouting", (
-        "a producer that names no activation must take the opaque registry row")
     factors = producer(_x(producer))
+    assert all(row.dtype is torch.uint8 for row in factors.amp_read + factors.amp_write)
+    assert torch.equal(factors.amp_read[0], torch.full_like(factors.amp_read[0], 255)), "a flat row is all 255s"
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     _admitted(factors, v)
     assert torch.isfinite(_oracle(factors, v)).all()
-    assert rola.RoLA(producer, d_v=8).topology is producer.topology, (
-        "the layer's slot is structural, so a foreign producer occupies it unwrapped")
+    assert rola.RoLA(producer, d_v=8).topology is producer.topology
+    with pytest.raises(TypeError):
+        RouteFactors(topology=producer.topology, read=(factors.read[0],), write=(factors.write[0],),
+                     g_write=factors.g_write)  # the format's fields are not optional
 
 
 def test_a_slot_that_declares_none_of_what_the_layer_reads_is_refused_at_construction():
@@ -235,7 +231,7 @@ def test_one_producer_covers_many_levels_in_the_order_they_were_declared():
 # ---------------------------------------------------------------------------
 
 
-def test_the_public_layout_is_a_view_and_not_a_materialization():
+def test_the_public_levels_are_the_formats_rows_dequantized():
     """The solve emits ONE layout and the public tensors are permuted views of it,
     so nothing on this surface costs a copy.
 
@@ -251,11 +247,14 @@ def test_the_public_layout_is_a_view_and_not_a_materialization():
     """
     producer = _routes(widths=(4, 6))
     factors = producer(_x(producer))
-    for level, public in enumerate(factors.read):
-        assert not public.is_contiguous(), f"level {level}'s public tensor was materialized"
-        assert public._base is not None, (
-            f"level {level}'s public tensor owns its storage; the solve's layout was "
-            "copied out instead of being viewed")
+    #: RULED 2026-09-26: the u8 rows and their scales ARE the stored layout; the dequantized public levels are a
+    #: transitional carry for consumers that still compute on floating levels and go with the last kernel port.
+    for level, (rows, scale, public) in enumerate(zip(factors.amp_read, factors.scale_read, factors.read)):
+        assert rows.dtype is torch.uint8 and tuple(rows.shape) == tuple(public.shape)
+        assert torch.equal(rows.amax(dim=-1), torch.full_like(rows.amax(dim=-1), 255)), (
+            f"level {level}'s rows are not unit-max")
+        assert torch.allclose(rows.to(public.dtype) / 255 * scale.unsqueeze(-1), public.detach()), (
+            f"level {level}'s public level is not its rows dequantized")
 
 
 # ---------------------------------------------------------------------------

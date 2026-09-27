@@ -33,6 +33,9 @@ from rola.routing.types import (
 
 #: the fixtures' value width; it is the LAYER's fact, so a topology no longer
 #: carries one and these gates state their own.
+#: THE FORMAT'S ROUNDING BUDGET on a row's sum: each digit is within half a u8 step of its row max, so a
+#: width-w row's sum is within w / 510 of one (`rola.routing.quant`, ruled 2026-09-26).
+_ROW_BUDGET = 16 / 510 + 1e-4
 _D_V = 5
 
 
@@ -77,9 +80,9 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(dtype):
         assert out.read_levels[level].shape == (B, L, H, width)
         assert out.write_levels[level].shape == (B, L, H, width)
         assert torch.allclose(
-            out.read_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
+            out.read_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=_ROW_BUDGET)
         assert torch.allclose(
-            out.write_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
+            out.write_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=_ROW_BUDGET)
 
     assert not hasattr(out, "g_read")
     assert out.g_write.shape == (B, L, H)
@@ -111,9 +114,9 @@ def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(dty
     for level, width in enumerate(topology.widths):
         assert out.read_levels[level].shape == (B, L, H, width)
         assert torch.allclose(
-            out.read_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
+            out.read_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=_ROW_BUDGET)
         assert torch.allclose(
-            out.write_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=1e-4)
+            out.write_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=_ROW_BUDGET)
 
     y, _ = naive_rola(v, out.read_levels, out.write_levels, out.g_write, topology, None)
     assert torch.isfinite(y).all()
@@ -185,6 +188,11 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
             unfold(raw_levels[0])[..., :, None] * unfold(raw_levels[1])[..., None, :])
         leaf_out = out_gain[..., None, None] * (
             out_levels[0][..., :, None] * out_levels[1][..., None, :])
-        torch.testing.assert_close(
-            leaf_out, leaf_raw, rtol=1e-13, atol=1e-13,
-            msg=f"{side}-side mass fold is not an identity")
+        #: THE FORMAT ROUNDS EACH LEVEL'S ROW to u8 against its max (ruled 2026-09-26), so the identity holds to the
+        #: rounding: |delta_l| <= m_l / 510 a digit, hence |leaf_out - leaf_raw| <= g * m_0 * m_1 / 255 (+ the second
+        #: order term). Above that bound the fold moved mass wrongly; within it the fold is the identity the format allows.
+        m0, m1 = out_levels[0].abs().amax(-1), out_levels[1].abs().amax(-1)
+        bound = (out_gain * m0 * m1 / 255.0 * 1.01 + 1e-13)[..., None, None]
+        excess = ((leaf_out - leaf_raw).abs() - bound).clamp_min(0)
+        assert float(excess.max()) == 0.0, (
+            f"{side}-side mass fold is off by more than the format's rounding: worst excess {float(excess.max()):.3e}")

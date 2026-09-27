@@ -2246,12 +2246,6 @@
    "count": 1
   },
   {
-   "path": "tests/unit/test_api_contract.py",
-   "message": "names the work code 'U02'",
-   "line_sha256": "ef13811d59bbb438",
-   "count": 1
-  },
-  {
    "path": "tests/unit/test_carry_constants.py",
    "message": "names the work code 'C3'",
    "line_sha256": "0d4f6acef7d52d71",

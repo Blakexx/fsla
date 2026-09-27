@@ -172,26 +172,29 @@ documents. The envelope table in [1.1](#11-the-built-envelope-is-the-surface) is
 
 ## 2. The feature map
 
-### 2.1 The bundle IS the contract
+### 2.1 The bundle IS the contract, and it is THE INTERNAL FORMAT
 
 ```python
-RouteFactors(topology, read, write, g_write, read_mass=None)
+RouteFactors(topology, read, write, g_write, amp_read, amp_write, scale_read, scale_write, read_mass=None, digits=1)
+RouteFactors.from_levels(topology, read, write, g_write, read_mass=None)   # the framework's epilogue
 ```
 
-**The stored form is bf16.** The routing sides have one consumer, and it reads bf16, so
-that is what the shipped producer's solve WRITES -- there is no fp32 plane between the
-solve and the operator, and no narrowing pass. `read_simplex()` divides in at least
-fp32 whatever the levels are stored in, because a bf16 quotient of a bf16 sum is three
-roundings where one is forced. The bundle's own invariant is only that every level
-shares ONE dtype, so a bundle in any dtype is legal; bf16 is what the shipped producer
-emits and what every kernel-vs-oracle tolerance in the tree is derived against
-(`tests/oracle/tolerances.py`).
+**The stored form is the internal quantized format** (ruled 2026-09-26). Each level's rows are
+u8 and UNIT-MAX -- the row's largest digit at 255, an all-zero row a dead token at that level --
+with the row's maximum carried beside them as its scale (`amp_read`/`scale_read`,
+`amp_write`/`scale_write`, one tensor per level). A read level's scale carries the read mass; a
+write level's scale is the normalized simplex's max and its mass rides `g_write`. This is what
+the int carry, the intra and the decode kernels read, and it is written in exactly one place:
+the framework's producer epilogue (`rola/routing/quant.py`, `RouteFactors.from_levels`). The fp64
+statement of the arithmetic is `tests/oracle/int_reference.py`, and the op's oracle takes the
+bundle itself as its input.
 
-`RouteFactors` is the op's first operand and the whole producer contract: **any callable
-returning a well-formed one is a producer.** There is no producer base class, no
-per-level tier and no assembly gateway — none of them was a boundary anything checked.
-What is checked is the bundle's own invariants, and they are STRUCTURAL rather than
-provenance-based.
+`read`/`write` are the DEQUANTIZED levels, `rows / 255 * scale`, with the producer's gradient
+stepped straight through the rounding (`quant.straight_through`): every consumer that still
+computes on floating levels computes on the quantized VALUES, so nothing in the tree sees a
+number the kernel would not. They are a transitional carry, deleted with the last kernel port.
+The bundle's dtype invariant is on the scales and dequantized levels (one floating dtype);
+`digits` names the amplitude planes' digit count and is one.
 
 **The bundle is a record of tensors, and it is constructible.** Its fields are the
 stored levels, the side gains, the read mass and the topology they are shaped by —
@@ -343,21 +346,21 @@ checking a claim instead of a fact. Activations stay width-free: an activation i
 function on a row of any length, so a width on one would be a second place the same
 number lives.
 
-### 2.4 Foreign producers
+### 2.4 Production lives in the framework
 
-Any callable returning a well-formed bundle works, with no registration and no tier.
-This is sound because no producer-specific execution path exists: the consumer eats
-tensors and cannot tell what produced them — no producer identity reaches the kernel's
-parameters at all. Support bits are computed FROM the tensors, so a foreign producer
-changes nothing about correctness. Its only cost is inside its own module. The layer's
-`routes` slot checks STRUCTURE for the same reason: callable, plus the three facts the
-layer reads (`hidden_size`, `num_heads`, `topology`).
+RULED 2026-09-26: there is no duck-typed producer. A new kind of production is a producer class
+in this framework, and what it returns is the internal format, built through the format's own
+epilogue (`RouteFactors.from_levels`). Nothing else can construct a bundle the op admits: the
+format's fields are required, checked structurally, and a bundle assembled from bare floating
+levels is refused by name. Correctness is still producer-blind -- every support bit is derived
+from the rows (a zero digit is dead) and nothing about a producer's identity reaches a kernel --
+but the FORMAT is ours, because it is what every kernel reads and what the oracle gates against,
+and a scaling contract spread over foreign code would be a second declaration of the arithmetic.
 
-A level filled by a producer that does not name one of our activations is *opaque*: it
-declares `OpaqueRouting(width)` and reads the `("opaque", None)` registry row, whose
-columns are argued in `rola/routing/activations.py`. What that costs it is the
-activation questions the topology can answer about it — ratification, in particular —
-and nothing else.
+A level filled by a production that names none of our activations is *opaque*: it declares
+`OpaqueRouting(width)` and reads the `("opaque", None)` registry row. What that costs it is the
+activation questions the topology can answer about it -- ratification, in particular -- and
+nothing else.
 
 ### 2.5 The one modelling consequence to know
 
@@ -434,7 +437,7 @@ SCALAR, not a tally — a caller that needs how many times an arm ran spies on t
 ### 4.1 The bf16 projection arm
 
 `v_proj` and `o_proj` run as bf16 GEMMs
-with weights cast per call, and `v` FLOWS bf16 straight into the op. The arm is
+with weights cast per call, and `v` is quantized to the format at the layer -- per-token unit-max s8 with the token's scale, the op computing on the dequantized values with the projection's gradient stepped through -- so the bf16 GEMM output flows into the op as quantized values. The arm is
 UNCONDITIONAL because the op's envelope makes it so: there is no CPU lowering, so a
 non-CUDA forward refuses at `rola_op` and no call off CUDA ever observes a projected
 value. Round-tripping
