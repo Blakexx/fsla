@@ -63,19 +63,26 @@ def test_the_declared_recurrence_is_the_op_when_nothing_is_rounded(name):
 
 @pytest.mark.parametrize("name", REPORT_CELLS)
 def test_the_quantization_report(name, capsys):
-    """REPORTED, NEVER GATED: the declared int arithmetic's error against the unquantized op."""
+    """REPORTED, NEVER GATED: the declared int arithmetic's error against the unquantized op. The two properties
+    asserted are structural: two readout digits everywhere never lose to one (read with the s32 panel, so the packed
+    panel's step does not mask them), and the packed s16 panel's running sum stays inside its 32767 units on every
+    cell (the no-wrap claim behind two channels an ATOMS.ADD.32)."""
     cell = by_name(name)
     drawn = realize(cell, device="cuda")
     lines = [f"{name}: widths={cell.widths} tokens={cell.tokens} draw={cell.draw} k={cell.k_tok}"]
     for basis, rot in (("rotated-basis-read", False), ("real-basis-after-unrotate", True)):
         rows = iref.quantization_report(drawn, _sparsity(cell), carry_ops.WINDOW, rotate_values=rot)
         for r in rows:
-            lines.append(f"  {basis:26s} digits fold={r['fold_digits']} readout={r['readout_digits']}: "
+            lines.append(f"  {basis:26s} fold={r['fold_digits']} eps={r['readout_eps']:<8.3g} flagged {100*r['flag_rate']:5.1f}%: "
                          f"num per-slot err / (2^-8 env): max {r['slot_max']:8.2f}, frac>1 {100*r['slot_frac_over']:5.1f}% | "
                          f"per-token norm err/env: max {r['token_max']:.2e} mean {r['token_mean']:.2e} | "
                          f"state per-slot max {r['state_slot_max']:8.2f} frac>1 {100*r['state_slot_frac_over']:5.1f}% | "
-                         f"den rel {r['den_max_rel']:.1e}")
-        one, two = rows[0], rows[-1]
-        assert two["token_mean"] <= one["token_mean"] * 1.0001, "two digits lost to one on the same draw"
+                         f"den rel {r['den_max_rel']:.1e} | panel peak {r['panel_peak']:.0f}")
+            assert r["panel_peak"] < iref.PANEL_LEVELS, "the packed panel's running sum left its s16 half"
+    #: the readout's own monotonicity, read with the panel step off so its rounding does not mask the digits
+    one, two = iref.quantization_report(drawn, _sparsity(cell), carry_ops.WINDOW, knobs=((1, 1.0), (1, 0.0)),
+                                        panel=False)
+    lines.append(f"  s32 panel: one readout digit mean {one['token_mean']:.2e} -> two {two['token_mean']:.2e}")
+    assert two["token_mean"] <= one["token_mean"] * 1.0001, "two readout digits lost to one on the same draw"
     with capsys.disabled():
         print("\n" + "\n".join(lines))

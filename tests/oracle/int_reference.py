@@ -5,19 +5,24 @@
 THE OP ORACLE MEASURES THAT THE MATH IS IMPLEMENTED; THE LAYER ORACLE MEASURES QUALITY (ruled
 2026-09-26). This module is the first half's reference for the int8 form: the same windowed
 recurrence as :func:`tests.oracle.reference.inter_reference`, run in fp64 on the OPERANDS THE
-KERNEL DECLARES -- per-token unit-max s8 values (one digit, or an s8 high and u8 low digit), u8
-amplitude products for the dense levels, the sparse levels' amplitude times the token's scale and
-gain as a per-(token, write digit) scalar folded into the values at the (digit, window) scale, an
-s32-exact state, and a readout operand that is the state quantized against its own bound. Every
-product of two quantized operands is exact in fp64, so what this reference does NOT model is the
-s32 panel's final rounding (half a step of ``envelope_t / 2^30``), which the op gate states as a
-step term. ``exact=True`` skips every rounding and must reproduce ``inter_reference`` exactly:
+KERNEL DECLARES. The FOLD: per-token unit-max s8 values (one digit, or an s8 high and u8 low
+digit), and per leaf an A row in u8 -- the token's dense write amplitude times its sparse
+amplitude, scale and gain, against the leaf's biggest writer that window -- into an s32-exact
+state. The READOUT (ruled 2026-09-27): the state is read per BLOCK, one read-sparse digit times
+32 read-dense digits, quantized against the block's max |S| at 127 levels, or at 32767 when the
+block's spread (max over smallest live leaf max) exceeds ``R = round(254 * readout_eps)``; A is
+the token's unit-max dense read row in u8; the per-(token, block) factor multiplies the block's
+partial, which is then rounded to the token's PANEL unit ``scale_t / 2^14`` (the packed s16
+panel; ``scale_t`` is the pre-pass's bound readout) before the blocks are summed. Every product
+of two quantized operands is exact in fp64, so the panel step is the only rounding after the
+operands. ``exact=True`` skips every rounding and must reproduce ``inter_reference`` exactly:
 that is the test that the recurrence's STRUCTURE is right before any rounding is judged.
 
 The REPORT (:func:`quantization_report`) is comparison B: the declared arithmetic against the
 unquantized op on the oracle cells, per slot against each slot's envelope and per token in norm,
-reported and never gated (the doctrine's truth-oracle half). The Hadamard rotation is here so the
-report can show the same error in the rotated and the real basis.
+reported and never gated (the doctrine's truth-oracle half), with the fraction of (block, window)
+pairs that took the second digit. The Hadamard rotation is here so the report can show the same
+error in the rotated and the real basis.
 
 Symbols, each at first use: ``D`` levels, ``B_l`` widths, ``N = prod B_l`` leaves, ``dv`` value
 channels, ``W`` the window, ``s_t`` a token's value scale (its max |channel|), ``a`` an amplitude,
@@ -32,6 +37,13 @@ import torch
 from tests.oracle.reference import inter_reference, leaf_product, radix_strides
 
 TINY = 1e-300
+#: The IMMA's K: a read block is one read-sparse digit x 32 consecutive read-dense digits of the
+#: owner set (docs/internals/common/geom.md#tall-owner-set).
+BLOCK_LEAVES = 32
+#: The packed s16 panel: a token's unit is ``scale_t (1 + R/254) / PANEL_LEVELS`` -- the pre-pass's bound
+#: times the most a one-digit block at the declared spread can exceed it, over the s16 half's range.
+PANEL_LEVELS = 32767.0
+HI_LEVELS, TWO_DIGIT_LEVELS = 127.0, 32767.0
 
 
 def hadamard(n: int, device, dtype=torch.float64) -> torch.Tensor:
@@ -54,7 +66,7 @@ def unrotate(y: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
 
 def quantize_unit(x: torch.Tensor, digits: int) -> torch.Tensor:
     """Round ``x`` in [-1, 1] to the declared digit count: 127 levels (s8) or 32767 (s8 high + u8 low)."""
-    levels = 127.0 if digits == 1 else 32767.0
+    levels = HI_LEVELS if digits == 1 else TWO_DIGIT_LEVELS
     return torch.round(x * levels) / levels
 
 
@@ -81,6 +93,17 @@ def group_index(widths, levels) -> torch.Tensor:
     return idx
 
 
+def block_order(widths, read_sparse, read_dense):
+    """``(order, leaves)``: the permutation that lists the canonical leaves block by block, and a block's leaf count.
+    A block is one read-sparse digit tuple and ``BLOCK_LEAVES`` consecutive read-dense digit tuples; a read-dense group
+    narrower than that (a small cell, its K zero-padded in the kernel) is one block."""
+    idx_s, idx_d = group_index(widths, read_sparse), group_index(widths, read_dense)
+    n_d = int(idx_d.max().item()) + 1
+    leaves = min(BLOCK_LEAVES, n_d)
+    assert n_d % leaves == 0, "a read-dense group must tile into blocks"
+    return torch.argsort(idx_s * n_d + idx_d, stable=True), leaves
+
+
 def group_product(levels_all, widths, levels, sl, u8=None):
     """``(product, row_scale)``: the chosen levels' amplitudes multiplied over their digit tuples, ``[B, t, H, prod
     widths[levels]]``, and the per-token scalar factored out of it, ``[B, t, H, 1]``. With ``u8`` each level's row is
@@ -101,23 +124,22 @@ def group_product(levels_all, widths, levels, sl, u8=None):
 
 
 def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, window, *,
-                  fold_digits: int = 1, readout_digits: int = 1, exact: bool = False, state_in=None,
-                  scale_tokens: int | None = None, bucket_ratio: float | None = None,
-                  factor_on: str = "values", a_digits: int = 1):
+                  fold_digits: int = 1, readout_eps: float = 0.0, exact: bool = False, state_in=None,
+                  panel: bool = True, telemetry: dict | None = None):
     """``(num, den, state)`` in fp64 under the DECLARED int arithmetic; ``sparsity[l] = (read sparse, write sparse)``.
 
-    Fold: ``state[leaf] += sum_t A_u8[t, dense(leaf)] * V'[t, sparse(leaf)]`` with ``V' = q(v_hat * scal / zeta) *
-    zeta``, ``scal = a_sparse * s_t * g`` and ``zeta`` the max of ``scal`` over the window's tokens at that digit; the
-    bound ``B[leaf] += sum_t A_u8 * scal`` beside it (the pre-pass's recurrence). Readout: ``R = A_u8[t, dense] *
-    a_sparse[t, sparse]`` against ``S_op = q(state / B) * B``; ``den`` from the exact amplitudes and the mass, as the
-    pre-pass computes it. ``exact`` turns every ``q`` and ``u8`` into the identity. ``scale_tokens`` = 32 takes
-    ``zeta`` per (digit, tile of 32 LIVE tokens of that digit's list) instead of per (digit, window): the K range of one
-    MMA, whose product a kernel rescales before it joins the state. ``bucket_ratio`` = R sorts a digit's writers by
-    their factor and opens a new bucket (its own ``zeta``, its own fresh accumulator folded into the state at its end)
-    whenever the factor falls below the bucket max / R. ``factor_on="leaves"`` is the RULED form: the per-token
-    factor (sparse amplitude x s_t x gain x dense row max) multiplies the A rows instead, and each LEAF's row is
-    quantized to u8 against its own biggest writer that window (sigma_leaf,w, the pre-pass's max); the values stay the
-    per-token unit-max s8 V-hat, one row a token; ``a_digits`` = 2 gives those rows a u8 high and low digit.
+    Fold, per write-sparse digit ``s`` and window: ``A[leaf, t] = a_dense[t, d] x a_sparse[t, s] x s_t x g_t`` in
+    u8 against ``sigma_leaf,w`` (the leaf's largest writer that window), ``state[leaf] += sum_t A x v_hat[t]`` with
+    ``v_hat`` the token's unit-max s8 (``fold_digits`` 2 adds a u8 low digit); the bound ``B[leaf] += sum_t A``
+    beside it (the pre-pass's recurrence). Readout, per block: ``sigma_b = max |S|`` over the block, the block's
+    spread ``sigma_b / min live leaf max``; ``S_op = q(S / sigma_b) sigma_b`` at 127 levels, or 32767 when the spread
+    exceeds ``R = round(254 readout_eps)`` (``readout_eps`` in [0, 1]: 0 is two digits everywhere, 1 one digit
+    wherever the spread is under 254); ``A`` the unit-max dense read row in u8; the (token, block) partial times
+    ``a_sparse x m_t`` rounded to the token's panel unit ``scale_t (1 + R/254) / 32767`` with ``scale_t = sum_leaf r
+    x B`` (the pre-pass's bound readout; ``panel=False`` skips this rounding, the s32 panel); ``den`` from the exact
+    amplitudes and the mass. ``exact`` turns every rounding into the identity. ``telemetry`` receives ``blocks``,
+    ``flagged`` (block-window pairs and how many took two digits) and ``panel_peak`` (the largest |partial sum| in
+    panel units, which the packed panel needs below 32767).
     """
     Bn, T, H, dv = v.shape
     D = len(widths)
@@ -130,9 +152,14 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
     idx_rs, idx_rd = group_index(widths, r_sp).to(dev), group_index(widths, r_dn).to(dev)
     idx_ws, idx_wd = group_index(widths, w_sp).to(dev), group_index(widths, w_dn).to(dev)
     n_ws = int(idx_ws.max().item()) + 1
+    order, blk = block_order(widths, r_sp, r_dn)
+    order = order.to(dev)
+    n_blocks = N // blk
+    if not 0.0 <= readout_eps <= 1.0:
+        raise ValueError("readout_eps is a relative step in [0, 1]")
+    threshold = float(round(254.0 * readout_eps))
     u8 = None if exact else quantize_u8_unit
     q_fold = (lambda x: x) if exact else (lambda x: quantize_unit(x, fold_digits))
-    q_read = (lambda x: x) if exact else (lambda x: quantize_unit(x, readout_digits))
 
     v_hat, s_t = unit_max(v.double())                    # [B,T,H,dv], [B,T,H,1]
     v_hat = q_fold(v_hat)                                 # the producer's s8 (or s8+u8) V-hat
@@ -143,75 +170,54 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
     bound = state.abs().amax(-1) if state_in is not None else torch.zeros(Bn, H, N, device=dev, dtype=torch.float64)
     num = torch.zeros(Bn, T, H, dv, device=dev, dtype=torch.float64)
     den = torch.zeros(Bn, T, H, device=dev, dtype=torch.float64)
+    blocks_seen = flagged = 0
+    panel_peak = 0.0
     for t0 in range(0, T, window):
         sl = slice(t0, min(t0 + window, T))
-        # --- readout against the state at the window start -----------------------------------------------------
-        # THE DECLARED READOUT: B = q(S / sigma_d), sigma_d ONE scale per READ DIGIT (the max |S| over the digit's
-        # leaves and channels -- constant over an MMA's K range; a cross-warp max in-kernel); A = the unit-max dense
-        # read row, u8 against its own max; the per-(token, digit) factor a_sparse x m_t x sigma_d multiplies the
-        # (tile, digit) partial at the accumulate step, in fp32/fixed point, so nothing per leaf is inside an operand.
+        # --- readout against the state at the window start, block by block ------------------------------------
         a_rd, m_rd = group_product(read_levels, widths, r_dn, sl, u8)     # [B,t,H,n_rd] unit-max u8 rows, row max
         a_rs, _ = group_product(read_levels, widths, r_sp, sl)             # [B,t,H,n_rs] the sparse amps, fp
-        leaf_max = state.abs().amax(-1)                                    # [B,H,N]
-        n_rs = int(idx_rs.max().item()) + 1
-        sigma_d = torch.zeros(Bn, H, n_rs, device=dev, dtype=torch.float64)
-        sigma_d.scatter_reduce_(2, idx_rs.view(1, 1, -1).expand(Bn, H, -1), leaf_max, reduce="amax")
-        sigma_leaf = sigma_d[..., idx_rs].clamp_min(TINY)                  # [B,H,N] each leaf's digit scale
-        s_op = q_read(state / sigma_leaf.unsqueeze(-1)) * sigma_leaf.unsqueeze(-1)
-        r_q = a_rd[..., idx_rd] * (a_rs * m_rd)[..., idx_rs]               # exact per-(token, digit) factor x u8 row
-        num[:, sl] = torch.einsum("bthn,bhnc->bthc", r_q, s_op)
-        r_fp = leaf_product(read_levels, widths, sl)
+        r_q = (a_rd[..., idx_rd] * (a_rs * m_rd)[..., idx_rs])[..., order]  # [B,t,H,N] block order
+        r_q = r_q.reshape(Bn, sl.stop - sl.start, H, n_blocks, blk)
+        s_blk = state[:, :, order].reshape(Bn, H, n_blocks, blk, dv)
+        leaf_max = s_blk.abs().amax(-1)                                    # [B,H,blocks,32]
+        sigma_b = leaf_max.amax(-1, keepdim=True)                          # [B,H,blocks,1]
+        live = leaf_max > 0
+        min_live = torch.where(live, leaf_max, torch.inf).amin(-1, keepdim=True)
+        two = (sigma_b > threshold * min_live) & (live.sum(-1, keepdim=True) > 0)
+        levels = torch.where(two, TWO_DIGIT_LEVELS, HI_LEVELS)             # [B,H,blocks,1]
+        unit = (sigma_b / levels).clamp_min(TINY).unsqueeze(-1)            # [B,H,blocks,1,1]
+        s_op = s_blk if exact else torch.round(s_blk / unit) * unit
+        partial = torch.einsum("bthnk,bhnkc->bthnc", r_q, s_op)            # [B,t,H,blocks,dv]
+        r_fp = leaf_product(read_levels, widths, sl)                       # [B,t,H,N] exact amplitudes
+        if not exact:
+            blocks_seen += two.numel()
+            flagged += int(two.sum())
+            if panel:
+                scale_t = torch.einsum("bthn,bhn->bth", r_fp, bound)       # the pre-pass's bound readout
+                p_unit = (scale_t * (1.0 + threshold / 254.0) / PANEL_LEVELS).clamp_min(TINY)[..., None, None]
+                partial = torch.round(partial / p_unit) * p_unit
+                panel_peak = max(panel_peak, float((partial.sum(3).abs() / p_unit[..., 0, :]).max()))
+        num[:, sl] = partial.sum(3)
         den[:, sl] = torch.einsum("bthn,bhn->bth", r_fp, mass)
-        del r_q, r_fp, s_op
+        del r_q, r_fp, s_op, s_blk, partial
         # --- fold ------------------------------------------------------------------------------------------------
         a_wd, m_wd = group_product(write_levels, widths, w_dn, sl, u8)    # [B,t,H,n_wd] unit-max u8, its row scale
         a_ws, _ = group_product(write_levels, widths, w_sp, sl)            # [B,t,H,n_ws]
         scal = a_ws * (g_write[:, sl].double() * s_t[:, sl, :, 0]).unsqueeze(-1) * m_wd   # [B,t,H,n_ws]
-        zeta = scal.amax(dim=1, keepdim=True).clamp_min(TINY)                       # [B,1,H,n_ws] per (digit, window)
-        if scale_tokens is not None or bucket_ratio is not None:
-            # per (digit, tile of its live list) with `scale_tokens`; per (digit, BUCKET) with `bucket_ratio`: the
-            # digit's writers sorted by their factor, a new bucket where the factor falls below the bucket max / ratio
-            zeta = torch.zeros_like(scal)
-            for b in range(Bn):
-                for hh in range(H):
-                    for s_ in range(n_ws):
-                        col = scal[b, :, hh, s_]
-                        live = torch.nonzero(col > 0, as_tuple=False).flatten()
-                        if live.numel() == 0:
-                            continue
-                        if bucket_ratio is not None:
-                            order = live[torch.argsort(col[live], descending=True)]
-                            vals = col[order]
-                            top = vals[0]
-                            for i in range(vals.numel()):
-                                if vals[i] < top / bucket_ratio:
-                                    top = vals[i]
-                                zeta[b, order[i], hh, s_] = top
-                        else:
-                            for i in range(0, live.numel(), scale_tokens):
-                                tile = live[i:i + scale_tokens]
-                                zeta[b, tile, hh, s_] = col[tile].max()
-            zeta = zeta.clamp_min(TINY)
-        if factor_on == "leaves":
-            vh = v_hat[:, sl]                                                          # [B,t,H,dv] one s8 row a token
-            for s in range(n_ws):
-                leaves = torch.nonzero(idx_ws == s, as_tuple=False).flatten()
-                a_full = a_wd[..., idx_wd[leaves]] * scal[..., s].unsqueeze(-1)       # [B,t,H,n_wd] the leaf rows' A
-                sigma = a_full.amax(dim=1, keepdim=True).clamp_min(TINY)               # the leaf's biggest writer
-                unit = a_full / sigma
-                a_q = (unit if exact else (quantize_u8_unit(unit) if a_digits == 1 else torch.round(unit * 65535.0) / 65535.0)) * sigma
-                state[:, :, leaves] += torch.einsum("bthd,bthc->bhdc", a_q, vh)
-                bound[:, :, leaves] += a_q.sum(1)
-        else:
-          vq = q_fold(v_hat[:, sl].unsqueeze(3) * (scal / zeta).unsqueeze(-1)) * zeta.unsqueeze(-1)  # [B,t,H,n_ws,dv]
-          for s in range(n_ws):
+        vh = v_hat[:, sl]                                                  # [B,t,H,dv] one s8 row a token
+        for s in range(n_ws):
             leaves = torch.nonzero(idx_ws == s, as_tuple=False).flatten()
-            a_d = a_wd[..., idx_wd[leaves]]                                # [B,t,H,n_wd]
-            state[:, :, leaves] += torch.einsum("bthd,bthc->bhdc", a_d, vq[:, :, :, s])
-            bound[:, :, leaves] += torch.einsum("bthd,bth->bhd", a_d, scal[..., s])
+            a_full = a_wd[..., idx_wd[leaves]] * scal[..., s].unsqueeze(-1)   # [B,t,H,n_wd] the leaves' A rows
+            sigma = a_full.amax(dim=1, keepdim=True).clamp_min(TINY)           # sigma_leaf,w: the biggest writer
+            a_q = a_full if exact else quantize_u8_unit(a_full / sigma) * sigma
+            state[:, :, leaves] += torch.einsum("bthd,bthc->bhdc", a_q, vh)
+            bound[:, :, leaves] += a_q.sum(1)
         w_fp = g_write[:, sl].double()[..., None] * leaf_product(write_levels, widths, sl)
         mass += w_fp.sum(1)
-        del a_wd, a_ws, scal, zeta, w_fp
+        del a_wd, a_ws, scal, w_fp
+    if telemetry is not None:
+        telemetry.update(blocks=blocks_seen, flagged=flagged, panel_peak=panel_peak)
     full = torch.cat((state, mass.unsqueeze(-1)), -1)
     return num, den, full
 
@@ -221,12 +227,17 @@ def per_token_norm_ratio(err: torch.Tensor, envelope: torch.Tensor) -> torch.Ten
     return err.norm(dim=-1) / envelope.norm(dim=-1).clamp_min(TINY)
 
 
-def quantization_report(drawn, sparsity, window, digit_pairs=((1, 1), (1, 2), (2, 2)), rotate_values=False,
-                        scale_tokens=None, bucket_ratio=None, factor_on="values", a_digits=1):
-    """Comparison B on one drawn cell: the declared arithmetic against the unquantized op. Returns one row per digit
-    pair: the per-slot error over the slot's envelope (max and the fraction above 2^-8), the per-token norm ratio (max,
-    mean) for ``num``, and the state's per-slot max over its envelope. With ``rotate_values`` the values are rotated by
-    the Hadamard before quantization and the outputs unrotated, so the errors are read in the real basis."""
+#: The report's knob settings: (fold digits, readout eps) -- one readout digit wherever the spread allows, the
+#: declared 2^-6 and 2^-7, two digits everywhere, and two digits on both sides.
+REPORT_KNOBS = ((1, 1.0), (1, 2.0 ** -6), (1, 2.0 ** -7), (1, 0.0), (2, 0.0))
+
+
+def quantization_report(drawn, sparsity, window, knobs=REPORT_KNOBS, rotate_values=False, panel=True):
+    """Comparison B on one drawn cell: the declared arithmetic against the unquantized op. Returns one row per knob
+    setting: the per-slot error over the slot's envelope (max and the fraction above 2^-8), the per-token norm ratio
+    (max, mean) for ``num``, the state's per-slot max over its envelope, the fraction of (block, window) pairs that
+    took the second digit and the panel's peak in units. With ``rotate_values`` the values are rotated by the Hadamard
+    before quantization and the outputs unrotated, so the errors are read in the real basis."""
     read, write, gain, v = drawn.doubles()
     widths = drawn.cell.widths
     h = hadamard(v.shape[-1], v.device) if rotate_values else None
@@ -234,17 +245,18 @@ def quantization_report(drawn, sparsity, window, digit_pairs=((1, 1), (1, 2), (2
     true_num, true_den, true_state = inter_reference(read, write, gain, v, widths, window)
     env_num, _, env_state = inter_reference(read, write, gain, v.abs(), widths, window)
     rows = []
-    for fd, rd in digit_pairs:
+    for fd, eps in knobs:
+        tele = {}
         num, den, state = int_reference(read, write, gain, v_in, widths, sparsity, window,
-                                        fold_digits=fd, readout_digits=rd, scale_tokens=scale_tokens,
-                                        bucket_ratio=bucket_ratio, factor_on=factor_on, a_digits=a_digits)
+                                        fold_digits=fd, readout_eps=eps, panel=panel, telemetry=tele)
         if rotate_values:
             num, state = unrotate(num, h), torch.cat((unrotate(state[..., :-1], h), state[..., -1:]), -1)
         e_num = (num - true_num).abs()
         slot = e_num / (env_num * 2.0 ** -8).clamp_min(TINY)
         tok = per_token_norm_ratio(num - true_num, env_num)
         e_state = (state[..., :-1] - true_state[..., :-1]).abs() / (env_state[..., :-1] * 2.0 ** -8).clamp_min(TINY)
-        rows.append(dict(fold_digits=fd, readout_digits=rd,
+        rows.append(dict(fold_digits=fd, readout_eps=eps,
+                         flag_rate=tele["flagged"] / max(tele["blocks"], 1), panel_peak=tele["panel_peak"],
                          slot_max=float(slot.max()), slot_frac_over=float((slot > 1).double().mean()),
                          token_max=float(tok.max()), token_mean=float(tok.mean()),
                          state_slot_max=float(e_state.max()), state_slot_frac_over=float((e_state > 1).double().mean()),
