@@ -21,6 +21,7 @@
 #include "common/build_stamp.cuh"
 #include "common/torch_seam.cuh"
 #include "src/carry/carry_api.cuh"
+#include "src/prepass/prepass_api.cuh"
 #include "src/common/geom_api.cuh"
 #include "src/decode/decode_api.cuh"
 #include "src/entmax/entmax.cuh"
@@ -128,6 +129,11 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "carry_backward(Tensor read, Tensor write, Tensor gain, Tensor v, Tensor d_num, Tensor d_den, int[] widths, "
       "int dv, int page_bits, int warps_per_cta, int[] carve_order, Tensor liveness, Tensor activity, "
       "Tensor? state_in, Tensor? d_state_out, Tensor? page_table) -> ()");
+  m.def(
+      "prepass_forward(Tensor rows_read, Tensor rows_write, Tensor scale_read, Tensor scale_write, Tensor gain, "
+      "Tensor vscale, Tensor(a!) den, Tensor(b!) scale, int[] widths, int level_modes, Tensor liveness) -> ()");
+  m.def("prepass_ledger_bind(Tensor? ledger) -> ()");
+  m.def("prepass_plan(int depth) -> int[]");
   m.def("carry_ledger_bind(Tensor? ledger) -> ()");
   m.def("carry_trace_bind(Tensor? trace, int warps_per_cta) -> ()");
   m.def("carry_build_stamp() -> int");
@@ -203,6 +209,10 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("intra_arms", TORCH_BOX(&rola::intra::intra_arms));
   m.impl("carry_forward", TORCH_BOX(&rola::carry::carry_forward));
   m.impl("carry_backward", TORCH_BOX(&carry_backward_unimplemented));
+
+  m.impl("prepass_forward", TORCH_BOX(&rola::prepass::prepass_forward));
+  m.impl("prepass_ledger_bind", TORCH_BOX(&rola::prepass::prepass_ledger_bind));
+  m.impl("prepass_plan", TORCH_BOX(&rola::prepass::prepass_plan));
   m.impl("carry_ledger_bind", TORCH_BOX(&rola::carry::carry_ledger_bind));
   m.impl("carry_trace_bind", TORCH_BOX(&rola::carry::carry_trace_bind));
   m.impl("carry_build_stamp", TORCH_BOX(&rola::carry::carry_build_stamp));

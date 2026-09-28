@@ -29,6 +29,7 @@
 #include "common/design.cuh"
 #include "common/geom.cuh"
 #include "common/ops.cuh"
+#include "common/phase_clock.cuh"
 #include "common/state_page.cuh"
 #include "common/static_for.cuh"
 #include "facts/liveness_contract.cuh"
@@ -246,48 +247,7 @@ __device__ __forceinline__ void warp_edge(int warp) { ops::rendezvous_group(kWar
 //: THE PHASE LEDGER: a warp's cycles per phase, accumulated in its shared row by lane 0
 //: and added to the launch's ledger at the kernel's end; and THE PHASE TRACE, when bound: the
 //: warp's stamps, one a lap and one a stream step, into its trace row. -- #phase-ledger
-struct PhaseClock {
-  long long* acc;
-  long long* trace;
-  long long mark;
-  int n, cap;
-  bool lead;
-
-  __device__ __forceinline__ PhaseClock(long long* row, int lane)
-      : acc(row), trace(nullptr), mark(ops::cycles()), n(0), cap(0), lead(lane == 0) {
-    if (lead) {
-#pragma unroll
-      for (int ph = 0; ph < kPhases; ++ph) acc[ph] = 0;
-    }
-  }
-
-  __device__ __forceinline__ void bind_trace(long long* row, int cap_) {
-    trace = row;
-    cap = cap_;
-  }
-
-  __device__ __forceinline__ void record(long long now, int ev) {
-    if (trace != nullptr && n < cap) {
-      trace[n] = (now << 8) | (long long)ev;
-      ++n;
-    }
-  }
-
-  //: an activity begins on this warp: a stamp when the trace is bound.
-  __device__ __forceinline__ void stamp(int ev) {
-    if (lead) record(ops::cycles(), ev);
-  }
-
-  //: the cycles since the last mark go to phase `ph`.
-  __device__ __forceinline__ void lap(int ph) {
-    const long long now = ops::cycles();
-    if (lead) {
-      acc[ph] += now - mark;
-      record(now, ph);
-    }
-    mark = now;
-  }
-};
+using PhaseClock = rola::PhaseClock<kPhases>;
 
 //: A 32-BYTE ROW TILE's chunk, `[row][16 halfwords]`, the second chunk swizzled by the
 //: row's bit two, so eight consecutive rows' `ldmatrix` is bank free; and an element.

@@ -41,6 +41,11 @@ static CarryGeomRT derive_block(const std::vector<int64_t>& widths, int64_t leve
   return geo;
 }
 
+CarryGeomRT tall_block(const std::vector<int64_t>& widths, int64_t level_modes) {
+  return derive_block(widths, level_modes, tall_leaves_per_sm(), kCtaChannels, warps_per_sm,
+                      warps_per_sm, false, false);
+}
+
 std::vector<int64_t> geometry(std::vector<int64_t> widths, int64_t level_modes, int64_t bc,
                               int64_t nsr, int64_t nsw, int64_t dv, int64_t interleave,
                               int64_t atom_floor) {

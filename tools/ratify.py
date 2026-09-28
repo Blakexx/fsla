@@ -224,7 +224,9 @@ STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu",
                   #: the freshness fact's kernel: shipped codegen, so it is measured
                   #: like every other shipped translation unit.
                   "common/build_stamp.cu",
-                  "intra/intra.cu")
+                  "intra/intra.cu",
+                  #: the pre-pass: the int8 carry's skeleton, one translation unit, depth two on this line.
+                  "prepass/prepass.cu")
 
 
 def carry_arm_paths(arms=None) -> list[Path]:
