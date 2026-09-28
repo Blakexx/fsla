@@ -43,6 +43,8 @@ Run: ``pytest tests/integration/test_decode_graph_step.py``
 """
 from __future__ import annotations
 
+from dataclasses import fields
+
 import pytest
 import torch
 
@@ -50,7 +52,7 @@ from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_
 from rola.ops.decode import _decode_step, _write_atom_bitmap
 from rola.ops.lattice import to_lattice
 from rola.ops.paging import MMA_K_QUANTUM, bytes_equal, from_split_planes, to_split_planes
-from rola.routing.factors import RouteFactors
+from rola.values import Values
 from tests.integration.test_decode_paging import (
     _COLS,
     _DV,
@@ -292,25 +294,37 @@ def _sequence():
     return producer, x, v, state
 
 
+def _clone_tensors(obj):
+    """The same record over CLONED tensors: every tensor field, tuples of tensors included."""
+    kw = {}
+    for f in fields(obj):
+        val = getattr(obj, f.name)
+        if isinstance(val, torch.Tensor):
+            val = val.clone()
+        elif isinstance(val, tuple) and val and isinstance(val[0], torch.Tensor):
+            val = tuple(t.clone() for t in val)
+        kw[f.name] = val
+    return type(obj)(**kw)
+
+
+def _copy_tensors(static, fresh):
+    for f in fields(static):
+        dst, src = getattr(static, f.name), getattr(fresh, f.name)
+        if isinstance(dst, torch.Tensor):
+            dst.copy_(src)
+        elif isinstance(dst, tuple) and dst and isinstance(dst[0], torch.Tensor):
+            for buffer, level in zip(dst, src):
+                buffer.copy_(level)
+
+
 def _static(routes, v):
-    """A bundle over buffers that never move -- what capture requires of its inputs."""
-    static = RouteFactors(
-        topology=routes.topology,
-        read=tuple(t.clone() for t in routes.read), write=tuple(t.clone() for t in routes.write),
-        g_write=routes.g_write.clone(),
-        read_mass=None if routes.read_mass is None else routes.read_mass.clone())
-    return static, v.clone()
+    """Both bundles over buffers that never move -- what capture requires of its inputs."""
+    return _clone_tensors(routes), _clone_tensors(Values.from_projection(v))
 
 
 def _fill(static, static_v, routes, v):
-    for buffer, level in zip(static.read, routes.read):
-        buffer.copy_(level)
-    for buffer, level in zip(static.write, routes.write):
-        buffer.copy_(level)
-    static.g_write.copy_(routes.g_write)
-    if static.read_mass is not None:
-        static.read_mass.copy_(routes.read_mass)
-    static_v.copy_(v)
+    _copy_tensors(static, routes)
+    _copy_tensors(static_v, Values.from_projection(v))
 
 
 def _capture(static, static_v, state):

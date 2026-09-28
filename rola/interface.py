@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """The public op — and, until the kernel lands, its refusal.
 
-    rola_op(routes, v, decay)
+    rola_op(routes, values, decay)
 
 That is the whole functional surface. It is linear attention's contract with the
 feature map named: ``routes`` is the ``(q, k)`` pair AFTER the map -- a
-:class:`~rola.routing.factors.RouteFactors` bundle -- ``v`` is the value stream, and
-``decay`` is the recurrence dial. No plan, no configuration, no statistics appear on
+:class:`~rola.routing.factors.RouteFactors` bundle -- ``values`` is the value stream in
+the internal format -- a :class:`~rola.values.Values` bundle -- and ``decay`` is the
+recurrence dial. No plan, no configuration, no statistics appear on
 it, because none of them are model facts: they are how the op runs, and the op decides
 how it runs.
 
@@ -34,6 +35,7 @@ from rola.engine.facts.operands import operands_of, requires_backward
 if TYPE_CHECKING:
     from rola.routing.factors import RouteFactors
     from rola.routing.types import DecayConfig
+    from rola.values import Values
 
 __all__ = [
     "BackwardNotImplemented",
@@ -45,7 +47,7 @@ __all__ = [
 
 def rola_op(
     routes: RouteFactors,
-    v: torch.Tensor,
+    values: Values,
     decay: DecayConfig = None,
     *,
     state: RoLAState | None = None,
@@ -54,7 +56,7 @@ def rola_op(
     """REFUSED: the prefill execution arm is deleted pending the rebuild.
 
     The signature is the contract the rebuild re-implements — ``(y, state)`` over one
-    routing bundle and one value stream — and it is kept so callers break HERE,
+    routing bundle and one value bundle — and it is kept so callers break HERE,
     by name, rather than on an import. The fp64 oracle
     (:func:`rola.ops.naive.naive_rola`) is the executable spec and still runs
     every configuration; the decode arm still continues a carried state at

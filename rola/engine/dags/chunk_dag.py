@@ -18,7 +18,7 @@ from rola.engine import SUPPLIABLE, ChunkPlan, node, rules, run, validate_dag
 from rola.engine.facts import nodes
 from rola.engine.facts.call import require_envelope
 
-_SEEDS = ("routes", "v", "decay", "state", "expert", "want_state", "given_state_in",
+_SEEDS = ("routes", "values", "v", "decay", "state", "expert", "want_state", "given_state_in",
           "given_arena")
 
 
@@ -32,7 +32,7 @@ class ChunkContext:
     """
 
     routes: Any
-    v: torch.Tensor
+    values: Any
     decay: Any = None
     state: Any = None
     expert: Any = None
@@ -101,6 +101,7 @@ def validate_context(ctx: ChunkContext) -> None:
     """
     from rola._state import RoLAState
     from rola.routing.factors import RouteFactors
+    from rola.values import Values
 
     illegal = sorted(set(ctx.supplied) - SUPPLIABLE)
     if illegal:
@@ -109,25 +110,29 @@ def validate_context(ctx: ChunkContext) -> None:
             f"{sorted(SUPPLIABLE)}. Everything below the amplitude boundary is one "
             f"canonical implementation, gated once, and substituting it would fork "
             f"fact production.")
-    routes, v, decay = ctx.routes, ctx.v, ctx.decay
+    routes, values, decay = ctx.routes, ctx.values, ctx.decay
     if type(routes) is not RouteFactors:
         raise TypeError(
             "rola_op's first argument must be a RouteFactors bundle, got "
             f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair; "
             "build one with RouteProducer, or construct a RouteFactors directly -- its "
             "invariants are checked either way.")
-    if not isinstance(v, torch.Tensor) or v.ndim != 4:
-        raise ValueError(f"v must be [B, T, H, d_v], got {getattr(v, 'shape', type(v).__name__)}")
+    if type(values) is not Values:
+        raise TypeError(
+            "rola_op's second argument must be a Values bundle, got "
+            f"{type(values).__name__}. The value stream reaches the op in the internal format "
+            "(s8 per-token unit-max values with the token's scale); build one with "
+            "Values.from_projection(v).")
     #: THE LAST DIM IS NOT CHECKED, IT IS READ. `d_v` is the value stream's own width
     #: and the routing carries no value geometry, so there is nothing to agree with;
     #: what must match the bundle is the token addressing, `[B, T, H]`.
     expected = (routes.batch, routes.tokens, routes.heads)
-    if tuple(v.shape[:3]) != expected:
+    if (values.batch, values.tokens, values.heads) != expected:
         raise ValueError(
-            f"v must be [B, T, H, d_v] with [B, T, H]={expected} to match the routing "
-            f"bundle, got {tuple(v.shape)}")
-    if v.device != routes.device:
-        raise ValueError(f"v is on {v.device} but the routing bundle is on {routes.device}")
+            f"values must be [B, T, H, d_v] with [B, T, H]={expected} to match the routing "
+            f"bundle, got {tuple(values.v_hat.shape)}")
+    if values.device != routes.device:
+        raise ValueError(f"values are on {values.device} but the routing bundle is on {routes.device}")
     if decay is not None:
         decay.validate_against(routes.topology)
     if ctx.state is not None and type(ctx.state) is not RoLAState:
@@ -135,13 +140,14 @@ def validate_context(ctx: ChunkContext) -> None:
             "rola_op's `state` argument is a rola.RoLAState from rola.state(), got "
             f"{type(ctx.state).__name__}. A raw tensor is not one: the state owns its own "
             "backing (dense or paged) and the shape it is bound to.")
-    require_envelope(routes, v, decay, ctx.state)
+    require_envelope(routes, values, decay, ctx.state)
 
 
 def build_chunk_plan(ctx: ChunkContext) -> ChunkPlan:
     """Walk the chunk DAG over `ctx` and return the plan its terminal node built."""
     validate_context(ctx)
-    facts = {"routes": ctx.routes, "v": ctx.v, "decay": ctx.decay, "state": ctx.state,
+    facts = {"routes": ctx.routes, "values": ctx.values, "v": ctx.values.v, "decay": ctx.decay,
+             "state": ctx.state,
              "expert": ctx.expert, "want_state": ctx.want_state,
              "given_state_in": ctx.state_in, "given_arena": ctx.arena}
     facts.update(ctx.supplied)

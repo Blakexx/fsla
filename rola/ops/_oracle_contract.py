@@ -25,30 +25,26 @@ import torch
 from rola.routing.types import DecayConfig, LeafMassDecay, Topology
 
 #: How far a routing level's mass may sit from 1 and still be accepted as a
-#: simplex.
-#:
-#: THIS IS A SEMANTIC SLACK, NOT A FLOATING-POINT ONE, which is why it is named
-#: here instead of defaulting quietly inside the check. The oracle is fed the STORED
-#: form, which is bf16, and bf16
-#: carries about 8 mantissa bits, so a width-256 simplex's per-entry rounding
-#: accumulates to a few parts in 1e3 across the sum. `5e-3` covers that and
-#: nothing more: an input that is genuinely unnormalized (a missing softmax, a
-#: level summing to its width) misses it by orders of magnitude.
-SIMPLEX_ATOL = 5e-3
+#: simplex: THE FORMAT'S ROUNDING, per digit. The oracle is fed the STORED form
+#: (ruled 2026-09-26): u8 rows against the row max, so each digit of a width-w
+#: simplex row sits within `row_max / 510 <= 1 / 510` of its value and the row's
+#: sum within `w / 510` of one (`rola.routing.quant`, `docs/api.md` section 2.1).
+#: An input that is genuinely unnormalized (a missing softmax, a level summing
+#: to its width) misses that by orders of magnitude.
+SIMPLEX_DIGIT_ATOL = 1.0 / 510.0
 
 
-def validate_simplex(
-    name: str, levels: tuple[torch.Tensor, ...], *, atol: float = SIMPLEX_ATOL
-) -> None:
-    """Each level is nonnegative and sums to 1 over its width (spec section 4.1)."""
+def validate_simplex(name: str, levels: tuple[torch.Tensor, ...]) -> None:
+    """Each level is nonnegative and sums to 1 over its width (spec section 4.1), to the format's rounding."""
     for level, factors in enumerate(levels):
-        if torch.any(factors < -atol):
+        if torch.any(factors < -SIMPLEX_DIGIT_ATOL):
             raise ValueError(f"{name}[{level}] must be nonnegative (p >= 0)")
         mass = factors.sum(dim=-1)
+        atol = factors.shape[-1] * SIMPLEX_DIGIT_ATOL
         if not torch.allclose(mass, torch.ones_like(mass), atol=atol):
             raise ValueError(
-                f"{name}[{level}] must sum to 1 over its width (sum_d p = 1); "
-                f"max deviation {float((mass - 1).abs().max())}"
+                f"{name}[{level}] must sum to 1 over its width (sum_d p = 1) within the "
+                f"format's rounding {atol:.3g}; max deviation {float((mass - 1).abs().max())}"
             )
 
 
@@ -106,4 +102,4 @@ def initial_cache(
     return initial_state.to(device=device, dtype=torch.float64)
 
 
-__all__ = ["SIMPLEX_ATOL", "initial_cache", "validate_inputs", "validate_simplex"]
+__all__ = ["SIMPLEX_DIGIT_ATOL", "initial_cache", "validate_inputs", "validate_simplex"]

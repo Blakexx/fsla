@@ -134,9 +134,7 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
     pre = _draw(gen, device, T, 0.5, 0.4,
                 write_live=_WIDTHS[0] // 2)
     f = _f32(pre)
-    bundle = RouteFactors(
-        topology=topology, read=f["read"], write=f["write"],
-        g_write=f["g_write"])
+    bundle = RouteFactors.from_levels(topology, f["read"], f["write"], f["g_write"])
     if decay_on:
         # The decay retirement: decay is not a feature of the operator. The
         # kernel arm names the refusal and the dispatch routes such a call to

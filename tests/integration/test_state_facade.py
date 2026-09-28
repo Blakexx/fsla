@@ -51,10 +51,11 @@ def test_a_raw_tensor_is_not_a_state():
     the deletion refusal and speaks before it reads its arguments.
     """
     from rola.engine.dags.chunk_dag import ChunkContext, validate_context
+    from rola.values import Values
 
     producer, (x, v) = _producer(), _inputs()
     with torch.no_grad(), pytest.raises(TypeError, match="rola.RoLAState"):
-        validate_context(ChunkContext(routes=producer(x), v=v,
+        validate_context(ChunkContext(routes=producer(x), values=Values.from_projection(v),
                                       state=torch.zeros(1), want_state=True))
 
 

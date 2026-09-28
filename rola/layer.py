@@ -56,8 +56,8 @@ from rola.interface import (
     requires_backward,
     rola_op,
 )
-from rola.routing import quant
 from rola.routing.decay import validate_decay_source
+from rola.values import Values
 
 if TYPE_CHECKING:
     from rola._state import RoLAState
@@ -245,10 +245,8 @@ class RoLA(nn.Module):
 
         v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
         #: THE VALUES IN THE FORMAT: per-token unit-max s8 with the token's scale, the op computing on the
-        #: dequantized values with the projection's gradient stepped through (docs/api.md#4.1). The s8 plane
-        #: and its scale are what the int carry reads; until it lands they are consumed dequantized.
-        v_hat, v_scale = quant.quantize_values(v)
-        v = quant.straight_through(v, quant.dequantize_values(v_hat, v_scale))
+        #: dequantized view with the projection's gradient stepped through (docs/api.md#4.1).
+        values = Values.from_projection(v)
         routes = self.routes(x)
         decay = None if self.decay is None else self.decay()
         #: a state that carries CONTENTS, which is what makes a step a continuation.
@@ -260,11 +258,11 @@ class RoLA(nn.Module):
             #: it is never asked the PREFILL matrix's questions.  Its GRADIENT clause
             #: is its own too, and is asked here rather than above so that prefill,
             #: which now trains, is not gated on decode's forward-only-ness.
-            self.validate_decode_envelope(*operands_of(routes, v, decay))
-            out, state = decode_forward(routes, v, state, decay=decay, expert=self.expert)
+            self.validate_decode_envelope(*operands_of(routes, values, decay))
+            out, state = decode_forward(routes, values, state, decay=decay, expert=self.expert)
             backend = "decode"
         else:
-            out, state = rola_op(routes, v, decay, state=state, expert=self.expert)
+            out, state = rola_op(routes, values, decay, state=state, expert=self.expert)
             backend = "cuda"
 
         self.last_execution_backend = backend

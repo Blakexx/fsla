@@ -8,10 +8,11 @@ decides which sub-states each token reads and writes. That reduction IS this API
 user who knows linear attention meets exactly ONE new concept here, the feature map,
 and everything else is linear attention's own contract.
 
-    rola_op(routes, v, decay)
+    rola_op(routes, values, decay)
 
-``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle -- ``v`` is
-the value stream, ``decay`` is the recurrence dial. The bundle comes from a producer,
+``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle -- ``values``
+is the value stream in the internal format -- a ``Values`` bundle, ``Values.from_projection(v)``
+-- and ``decay`` is the recurrence dial. The bundle comes from a producer,
 and a producer is ANY callable that returns one; the shipped one takes the routing
 LEVELS, each carrying its own width:
 
@@ -31,6 +32,7 @@ and not part of the contract.
 |---|---|---|
 | op | `rola_op` | STABLE, semver-major to break |
 | feature map | `RouteFactors`, `RouteProducer`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
+| value stream | `Values` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `RoLA`, `LayerContinuation` | STABLE |
 | state | `state()`, `RoLAState` | STABLE |
@@ -68,12 +70,14 @@ from rola.routing.types import (
     entmax,
     softmax,
 )
+from rola.values import Values
 
 __all__ = [
     # the op — the single autograd boundary (rola/interface.py)
     "rola_op",
     # the feature map: the bundle (the whole producer contract) and the shipped producer
     "RouteFactors",
+    "Values",
     "RouteProducer",
     "dense_routing",
     "split_routing",

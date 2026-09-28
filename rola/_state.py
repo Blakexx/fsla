@@ -9,8 +9,8 @@ Storage (an arena or a dense plane), a page table, the logical shape
 (docs/internals/state.md).
 
     s = rola.state()                     # unbound; the first call binds the shape
-    y1, s = rola.rola_op(routes1, v1, state=s)
-    y2, s = rola.rola_op(routes2, v2, state=s)
+    y1, s = rola.rola_op(routes1, values1, state=s)
+    y2, s = rola.rola_op(routes2, values2, state=s)
 
 ``state=None`` is the stateless call and returns ``(y, None)``. That predicate --
 ``state is not None`` -- is the whole engagement signal at the op and at the layer.

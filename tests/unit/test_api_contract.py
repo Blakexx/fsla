@@ -24,6 +24,7 @@ import torch
 
 import rola
 from rola.routing.factors import RouteFactors
+from rola.values import Values
 
 
 def _routes(*, widths=(4, 4), hidden=32, heads=2, routing=None, **kwargs):
@@ -43,7 +44,8 @@ def _validate(routes, v) -> None:
     `validate_context`, which R2 re-fronts with the rebuilt arm."""
     from rola.engine.dags.chunk_dag import ChunkContext, validate_context
 
-    validate_context(ChunkContext(routes=routes, v=v))
+    values = Values.from_projection(v) if isinstance(v, torch.Tensor) else v
+    validate_context(ChunkContext(routes=routes, values=values))
 
 
 def _admitted(routes, v) -> None:
@@ -135,6 +137,35 @@ def test_the_op_refuses_anything_that_is_not_a_bundle():
     #: The well-formed call is the control: the refusal above must be about the TYPE,
     #: not about this fixture being unrunnable.
     _admitted(factors, v)
+
+
+def test_the_op_refuses_a_bare_value_tensor_and_names_the_bundle():
+    """PLANTED VIOLATION: hand the op the value tensor itself. The value stream is a
+    `Values` bundle -- the format the kernels read -- and the refusal says so by name."""
+    from rola.engine.dags.chunk_dag import ChunkContext, validate_context
+
+    producer = _routes()
+    factors = producer(_x(producer))
+    v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
+    with pytest.raises(TypeError, match="Values"):
+        validate_context(ChunkContext(routes=factors, values=v))
+    _admitted(factors, v)
+
+
+def test_the_value_bundle_is_the_format_and_its_view_is_the_rounded_projection():
+    """`Values.from_projection` writes the value format: s8 per token against the token's largest
+    channel, the scale that magnitude, and `v` the dequantized view carrying the projection's
+    gradient (docs/api.md section 4.1)."""
+    v = torch.randn(2, 6, 2, 8, dtype=torch.float64, requires_grad=True)
+    values = Values.from_projection(v)
+    assert values.v_hat.dtype is torch.int8 and tuple(values.v_hat.shape) == (2, 6, 2, 8)
+    assert torch.equal(values.scale, v.detach().abs().amax(-1))
+    assert values.v_hat.abs().amax(-1).eq(127).all()
+    assert torch.allclose(values.v.detach(), values.v_hat.double() * (values.scale / 127.0).unsqueeze(-1))
+    values.v.sum().backward()
+    assert torch.equal(v.grad, torch.ones_like(v))
+    with pytest.raises(ValueError, match="s8"):
+        Values(v_hat=values.v_hat.float(), scale=values.scale, v=values.v)
 
 
 def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel():

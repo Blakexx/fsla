@@ -31,7 +31,7 @@ def topology(f):
 
 
 @node(gives=("call_class",),
-      needs=("routes", "v", "decay", "state", "given_state_in", "given_arena",
+      needs=("routes", "values", "decay", "state", "given_state_in", "given_arena",
              "want_state", "paging"))
 def classify_call(f):
     state, given_arena = f["state"], f["given_arena"]
@@ -40,7 +40,7 @@ def classify_call(f):
         state_out=bool(f["want_state"]),
         paged=given_arena is not None or (state is not None
                                           and state._wants_pages(f["paging"])),
-        grad=requires_backward(*operands_of(f["routes"], f["v"], f["decay"])))
+        grad=requires_backward(*operands_of(f["routes"], f["values"], f["decay"])))
 
 
 @node(gives=("read_plane", "write_plane", "g_write", "read_mass"), needs=("routes",),

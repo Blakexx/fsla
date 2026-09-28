@@ -105,17 +105,23 @@ def collect(files: list[Path]):
     declarations: dict[tuple[str, str], tuple[Path, int, bool]] = {}
     values: dict[tuple[str, str], set] = defaultdict(set)
     unknown: set[tuple[str, str]] = set()
-
+    #: function name -> its positional parameter names, so a POSITIONAL argument at a call
+    #: moves the parameter it lands on (a `self`/`cls` first parameter is skipped for an
+    #: attribute call, which is how a method is called)
+    positional: dict[str, list[str]] = {}
+    trees = []
     for path in files:
         source = path.read_text()
-        lines = source.splitlines()
         try:
-            tree = ast.parse(source)
+            trees.append((path, source.splitlines(), ast.parse(source)))
         except SyntaxError:
             continue
+
+    for path, lines, tree in trees:
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 args = node.args
+                positional[node.name] = [a.arg for a in args.posonlyargs + args.args]
                 defaulted = list(zip(args.args[len(args.args) - len(args.defaults):],
                                      args.defaults, strict=False))
                 defaulted += list(zip(args.kwonlyargs, args.kw_defaults, strict=False))
@@ -130,19 +136,35 @@ def collect(files: list[Path]):
                                 or _docstring_reserves(node, arg.arg))
                     declarations[key] = (path, node.lineno, reserved)
                     values[key].add(("default", value))
-            elif isinstance(node, ast.Call):
-                name = getattr(node.func, "attr", getattr(node.func, "id", None))
-                if name is None:
+
+    def record(key, expr):
+        ok, value = _literal(expr)
+        if ok:
+            values[key].add(("call", value))
+        else:
+            unknown.add(key)
+
+    for _path, _lines, tree in trees:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "attr", getattr(node.func, "id", None))
+            if name is None:
+                continue
+            for keyword in node.keywords:
+                if keyword.arg is None:
                     continue
-                for keyword in node.keywords:
-                    if keyword.arg is None:
-                        continue
-                    key = (name, keyword.arg)
-                    ok, value = _literal(keyword.value)
-                    if ok:
-                        values[key].add(("call", value))
-                    else:
-                        unknown.add(key)
+                record((name, keyword.arg), keyword.value)
+            params = positional.get(name)
+            if params is None:
+                continue
+            if isinstance(node.func, ast.Attribute) and params and params[0] in ("self", "cls"):
+                params = params[1:]
+            for index, expr in enumerate(node.args):
+                if isinstance(expr, ast.Starred):
+                    break
+                if index < len(params):
+                    record((name, params[index]), expr)
     return declarations, values, unknown
 
 

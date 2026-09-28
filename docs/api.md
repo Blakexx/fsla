@@ -31,12 +31,13 @@ y, _ = rola.rola_op(factors, v, decay())
 ## 1. The op
 
 ```python
-rola_op(routes: RouteFactors, v: Tensor, decay: LeafMassDecay | None = None, *,
+rola_op(routes: RouteFactors, values: Values, decay: LeafMassDecay | None = None, *,
         state=None, expert=None) -> (y, state)
 ```
 
-`routes` is the `(q, k)` pair after the feature map. `v` is `[B, T, H, d_v]`. `decay` is
-the recurrence dial. `y` is `[B, T, H, d_v]`.
+`routes` is the `(q, k)` pair after the feature map. `values` is the value stream in the
+internal format, `Values.from_projection(v)` over a `[B, T, H, d_v]` projection (§4.1).
+`decay` is the recurrence dial. `y` is `[B, T, H, d_v]`.
 
 `state` is `None` (a stateless call, returning `(y, None)`) or a `rola.state()` object,
 which is mutated in place and handed back. THE PREDICATE IS `state is not None` — there
@@ -436,8 +437,13 @@ SCALAR, not a tally — a caller that needs how many times an arm ran spies on t
 
 ### 4.1 The bf16 projection arm
 
-`v_proj` and `o_proj` run as bf16 GEMMs
-with weights cast per call, and `v` is quantized to the format at the layer -- per-token unit-max s8 with the token's scale, the op computing on the dequantized values with the projection's gradient stepped through -- so the bf16 GEMM output flows into the op as quantized values. The arm is
+`v_proj` and `o_proj` run as bf16 GEMMs with weights cast per call, and the projection
+is written to the value format at the layer: `Values.from_projection(v)` (`rola/values.py`)
+holds each token's values as s8 with the largest channel at ±127 (`v_hat`), that magnitude
+as the token's `scale`, and `v`, the dequantized view with the projection's gradient
+stepped straight through the rounding. The op takes the bundle, not the tensor. The s8
+plane and its scale are what the int kernels read; `v` is the transitional view every
+consumer still computing on floating values reads, deleted with the last kernel port. The arm is
 UNCONDITIONAL because the op's envelope makes it so: there is no CPU lowering, so a
 non-CUDA forward refuses at `rola_op` and no call off CUDA ever observes a projected
 value. Round-tripping

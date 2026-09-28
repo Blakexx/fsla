@@ -23,8 +23,8 @@ made mechanical.
 
 ```python
 s = rola.state()                        # unbound
-y, s = rola.rola_op(routes, v, state=s) # bound to this call's shape; s is mutated
-y, _ = rola.rola_op(routes, v)          # stateless: (y, None)
+y, s = rola.rola_op(routes, values, state=s) # bound to this call's shape; s is mutated
+y, _ = rola.rola_op(routes, values)          # stateless: (y, None)
 ```
 
 `rola.state` IS THE CONSTRUCTOR, unambiguously: the class and the function live in

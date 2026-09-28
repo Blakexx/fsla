@@ -283,7 +283,7 @@ def test_an_unratified_activation_is_refused_and_the_refusal_names_it():
             (0, "read", ("entmax", 1.75)), (0, "write", ("entmax", 1.75)))
 
         refusal = rola.expert.envelope_refusal(
-            _StubBundle(topology), torch.zeros(1, 1, 1, 64))
+            _StubBundle(topology), rola.Values.from_projection(torch.zeros(1, 1, 1, 64)))
         assert "unratified activations" in refusal and "entmax" in refusal
     finally:
         del ACTIVATION_REGISTRY[tag]

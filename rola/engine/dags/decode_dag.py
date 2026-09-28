@@ -14,8 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import torch
-
 from rola.engine import (
     DecodePlan,
     Mask,
@@ -27,7 +25,7 @@ from rola.engine import (
 )
 from rola.ops import decode as bodies
 
-_SEEDS = ("routes", "v", "decay", "state", "expert")
+_SEEDS = ("routes", "values", "v", "decay", "state", "expert")
 
 #: BOTH decode masks. A node carrying only `Mask.M4` is one the dense backing has no
 #: work for; there is no node the paged backing skips.
@@ -43,7 +41,7 @@ class DecodeContext:
     """
 
     routes: Any
-    v: torch.Tensor
+    values: Any
     state: Any
     decay: Any = None
     expert: Any = None
@@ -191,14 +189,14 @@ def validate_context(ctx: DecodeContext) -> None:
     if ctx.routes.tokens != 1:
         raise ValueError(
             f"the decode op consumes exactly one token, got T={ctx.routes.tokens}")
-    bodies.guard_no_grad((ctx.v, ctx.routes.g_write,
+    bodies.guard_no_grad((ctx.values.v, ctx.routes.g_write,
                           *ctx.routes.read, *ctx.routes.write,
                           *(ctx.decay.dials if ctx.decay is not None else ())))
 
 
 def _facts(ctx: DecodeContext) -> dict:
-    return {"routes": ctx.routes, "v": ctx.v, "decay": ctx.decay, "state": ctx.state,
-            "expert": ctx.expert}
+    return {"routes": ctx.routes, "values": ctx.values, "v": ctx.values.v, "decay": ctx.decay,
+            "state": ctx.state, "expert": ctx.expert}
 
 
 def _scratch_of(state):
@@ -214,7 +212,8 @@ def _scratch_of(state):
     return next(iter(table.values()))
 
 
-def decode_step_gated(routes, v: torch.Tensor, state, *, decay=None, expert=None):
+def decode_step_gated(routes, values, state, *, decay=None, expert=None):   #: reserved: the same dial and door
+    #: as `decode_forward`, so a captured sequence can carry a decay arm; the capture cells run without one
     """ONE decode step with NO host participation -- the CAPTURE-SAFE entry.
 
     Same kernel in the same order as :func:`decode_forward`, minus the verdict read: each
@@ -234,7 +233,7 @@ def decode_step_gated(routes, v: torch.Tensor, state, *, decay=None, expert=None
     carries a done flag into the second and re-reads for its `y` without depositing again
     (docs/internals/decode/decode.md#done-flags).
     """
-    ctx = DecodeContext(routes=routes, v=v, state=state, decay=decay, expert=expert)
+    ctx = DecodeContext(routes=routes, values=values, state=state, decay=decay, expert=expert)
     validate_context(ctx)
     return run(DECODE_STEP, _facts(ctx))["y"], state
 
@@ -273,11 +272,11 @@ def refill_pool(state) -> int:
     return state._arena.refill_pool()
 
 
-def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
+def decode_forward(routes, values, state, *, decay=None, expert=None):
     """ONE decode step over a routing bundle and a carried state -- the whole surface.
 
-    ``routes`` is a one-token :class:`~rola.routing.factors.RouteFactors`; ``v`` is
-    ``[B, 1, H, d_v]``; ``state`` is a :class:`~rola.RoLAState` that CARRIES
+    ``routes`` is a one-token :class:`~rola.routing.factors.RouteFactors`; ``values`` is
+    the one-token :class:`~rola.values.Values`; ``state`` is a :class:`~rola.RoLAState` that CARRIES
     (a step continues a sequence, so an empty state has nothing to decode from).
     Returns ``(y, state)`` -- ``y`` shaped ``[B, 1, H, d_v]`` and the SAME state
     object, updated in place, exactly as :func:`rola.rola_op` returns it.
@@ -286,7 +285,7 @@ def decode_forward(routes, v: torch.Tensor, state, *, decay=None, expert=None):
     that same walk again after the admission the verdict called for -- never a second
     graph (docs/internals/decode/decode.md#growth).
     """
-    ctx = DecodeContext(routes=routes, v=v, state=state, decay=decay, expert=expert)
+    ctx = DecodeContext(routes=routes, values=values, state=state, decay=decay, expert=expert)
     validate_context(ctx)
     facts = run(DECODE_VERDICT, _facts(ctx))
     if not facts["grow"]:

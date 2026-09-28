@@ -17,9 +17,8 @@ from rola.engine.facts import manifest
 from rola.engine.facts.operands import operands_of, requires_backward
 
 if TYPE_CHECKING:
-    import torch
-
     from rola.routing.factors import RouteFactors
+    from rola.values import Values
 
 
 def widths_of(routes) -> tuple[int, ...]:
@@ -31,7 +30,7 @@ def envelope_clauses(routes, decay: Any = None, *, d_v: int) -> tuple:
     """The facts :func:`rola.engine.rules.envelope.arm_envelope` folds, for this call.
 
     `d_v` is the value stream's per-head width, which is a fact about the operand and
-    not about the routing -- the caller reads it off `v` and states it here. The arm
+    not about the routing -- the caller reads it off the value bundle and states it here. The arm
     is the ArmRule's own verdict: the envelope refuses the ABSENCE of an arm and
     never re-derives one.
     """
@@ -45,7 +44,7 @@ def arm_refusal(routes, decay: Any = None, *, d_v: int) -> str | None:
     return rules.arm_envelope(*envelope_clauses(routes, decay, d_v=d_v))
 
 
-def envelope_refusal(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -> str | None:
+def envelope_refusal(routes: RouteFactors, values: Values, decay: Any = None) -> str | None:
     """Why the built kernel arm has no arm for this call, or ``None`` if it runs.
 
     THE ONE AUTHORITY on the envelope's CONFIGURATION clauses, so a caller can ask
@@ -57,10 +56,10 @@ def envelope_refusal(routes: RouteFactors, v: torch.Tensor, decay: Any = None) -
     reason = rules.envelope(tuple(routes.topology.unratified_activations), routes.device)
     if reason is not None:
         return reason
-    return arm_refusal(routes, decay, d_v=v.shape[-1])
+    return arm_refusal(routes, decay, d_v=values.d_v)
 
 
-def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
+def require_envelope(routes: RouteFactors, values: Values, decay: Any = None,
                      state: Any = None) -> None:
     """Refuse anything the built arm cannot run. THE FAST-FAIL, in one place.
 
@@ -76,11 +75,11 @@ def require_envelope(routes: RouteFactors, v: torch.Tensor, decay: Any = None,
     so `state=` and a gradient are mutually exclusive, by name, at the boundary
     rather than silently.
     """
-    grad = requires_backward(*operands_of(routes, v, decay))
+    grad = requires_backward(*operands_of(routes, values, decay))
     stateless = rules.training_envelope(grad, state)
     if stateless is not None:
         raise BackwardNotImplemented(stateless)
-    reason = envelope_refusal(routes, v, decay)
+    reason = envelope_refusal(routes, values, decay)
     if reason is not None:
         raise NotImplementedError(
             f"rola_op runs the BUILT envelope only and there is no arm for this call: "

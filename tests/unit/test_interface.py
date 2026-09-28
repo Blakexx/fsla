@@ -24,6 +24,7 @@ from conftest import build_routes
 import rola
 from rola.expert import envelope_refusal, require_envelope
 from rola.interface import operands_of, requires_backward
+from rola.values import Values
 
 # --- the predicate -----------------------------------------------------------
 
@@ -128,7 +129,7 @@ def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
     with torch.no_grad():
         assert requires_backward(v, *routes.tensors()) is False
         #: CPU, so the DEVICE clause is what speaks -- the gradient clause did not.
-        assert "CUDA kernel" in envelope_refusal(routes, v)
+        assert "CUDA kernel" in envelope_refusal(routes, Values.from_projection(v))
 
 
 def test_the_refusal_is_the_same_sentence_with_and_without_a_gradient():
@@ -146,7 +147,7 @@ def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():
     """The arm is a CUDA kernel and there is no CPU implementation to reach."""
     v, routes = _tiny_routing(requires_grad=False)
     with torch.no_grad():
-        assert "CUDA kernel" in envelope_refusal(routes, v)
+        assert "CUDA kernel" in envelope_refusal(routes, Values.from_projection(v))
 
 
 @pytest.mark.cuda
@@ -162,8 +163,8 @@ def test_the_envelope_admits_a_no_grad_cuda_bundle_on_a_built_arm():
     v = torch.randn(1, 32, 1, 64, device="cuda")
     with torch.no_grad():
         routes = producer(x)
-        assert envelope_refusal(routes, v) is None
-        require_envelope(routes, v)
+        assert envelope_refusal(routes, Values.from_projection(v)) is None
+        require_envelope(routes, Values.from_projection(v))
 
 
 # --- the O-3 name contract ---------------------------------------------------

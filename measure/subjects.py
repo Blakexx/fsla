@@ -346,7 +346,7 @@ def decode_step(fx) -> Launch:
 
     def run():
         with torch.no_grad():
-            y, _ = decode_forward(producer(token), v_token, seeded["state"])
+            y, _ = decode_forward(producer(token), rola.Values.from_projection(v_token), seeded["state"])
         return y
 
     #: THE ARENA'S PHYSICAL PAGES: under the VMM backing the driver maps them outside the caching allocator, so a memory
