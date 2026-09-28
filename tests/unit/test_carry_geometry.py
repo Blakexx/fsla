@@ -39,6 +39,8 @@ grid; `sv(l)` a side's WARP SUB-BOX span; `NS` a side's stream count.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from rola.ops import carry as carry_ops
@@ -348,28 +350,44 @@ def test_the_tall_owner_set_is_derived_from_the_half_share_and_the_channel_group
     assert engine_constants.channel_groups(64) == 2 and engine_constants.channel_groups(128) == 4
 
 
-@pytest.mark.parametrize("widths, spans", [
-    ([128, 128], [32, 32]),          # D = 2: a square
-    ([16, 16, 16], [8, 8, 16]),      # D = 3: 10 bits balanced 3, 3, 4 -- the atom held whole innermost
-    ([16, 16, 16, 16], [4, 4, 4, 16]),  # D = 4: 2, 2, 2, 4 after the atom floor takes its bit back
+@pytest.mark.parametrize("widths, modes, spans", [
+    ([128, 128], ALT2, [128, 8]),           # D = 2, alt: the read-dense level 0 takes 128, the read-sparse 8
+    ([256, 256], ALT2, [128, 8]),           # the dense span is capped at 128, never the width
+    ([128, 128], 0, [32, 32]),              # every level read-dense: the wide spans trim to a square
+    ([16, 16, 16], 0, [8, 8, 16]),          # D = 3 dense: 4, 4, 4 trimmed outermost-first to 3, 3, 4
+    ([16, 16, 16, 16], 0, [4, 4, 8, 8]),    # D = 4 dense: no page floor on the owner spans in the tall law
+    ([16, 16], ALT2, [16, 16]),             # a topology smaller than the set is ONE owner
 ])
-def test_the_tall_owner_set_spans_are_square_at_depth_two_and_hold_the_atom_deeper(widths, spans):
-    g = carry_ops.geometry(widths, level_modes=0, bc=TALL, nsr=8, nsw=8, d_v=64, atom_floor=0)
+def test_the_tall_owner_spans_give_the_read_dense_levels_the_wide_span(widths, modes, spans):
+    g = carry_ops.geometry(widths, level_modes=modes, bc=TALL, nsr=8, nsw=8, d_v=64, atom_floor=0)
     assert g["span"] == spans
     prod = 1
     for s in g["span"]:
         prod *= s
-    assert prod == TALL
+    assert prod == min(TALL, math.prod(widths))
 
 
-def test_each_side_of_the_tall_set_carves_four_sparse_digits_by_thirty_two_dense():
-    """The tall carve: a side ranks its sparse level outermost, the eight streams take three of its
-    five bits, and a warp owns 4 sparse digits x all 32 dense -- on BOTH sides, in their own carves."""
+def test_the_tall_set_carves_a_block_read_warp_and_a_list_fold_warp():
+    """The 8 x 128 region (ruled 2026-09-27): a READ warp holds one 32-leaf K block of dense leaves by 4 sparse
+    digits (its token-major tile draws from 4 reader lists); a FOLD warp holds 16 write-sparse digits by the
+    region's 8 leaves each (one list an MMA). Level 0 is read-dense = write-sparse under ALT2."""
     g = carry_ops.geometry([128, 128], level_modes=ALT2, bc=TALL, nsr=8, nsw=8, d_v=64, atom_floor=0)
-    assert g["w"]["row_span"] == [4, 32], "the write side carves its sparse level 0"
-    assert g["r"]["row_span"] == [32, 4], "the read side carves its sparse level 1"
+    assert g["span"] == [128, 8]
+    assert g["r"]["row_span"] == [32, 4], "the read warp: one K block of 32 dense leaves x 4 sparse digits"
+    assert g["w"]["row_span"] == [16, 8], "the fold warp: 16 write-sparse digits x the region's 8 leaves"
     assert g["w"]["leaf"] == 128 and g["r"]["leaf"] == 128
+    assert g["r"]["grid"] == [4, 2] and g["w"]["grid"] == [8, 1]
     assert not g["identity_map"], "the two carves differ, so the transfer is a real scatter"
+
+
+def test_the_tall_law_at_depth_three_keeps_the_block_and_the_lists():
+    """One read-sparse level of three: the dense pair takes 4 + 4 bits, the sparse level the remaining 2; the
+    read warp's K block is 2 x 16 dense leaves of its innermost two levels by 4 sparse digits."""
+    modes = 1 << (2 * 0)   # level 0 read-sparse (the read bit), levels 1 and 2 read-dense
+    g = carry_ops.geometry([16, 16, 16], level_modes=modes, bc=TALL, nsr=8, nsw=8, d_v=64, atom_floor=0)
+    assert g["span"] == [4, 16, 16]
+    assert g["r"]["row_span"] == [4, 2, 16] and g["r"]["leaf"] == 128
+    assert g["w"]["leaf"] == 128
 
 
 @pytest.mark.parametrize("interleave", [0, 1])
@@ -383,30 +401,38 @@ def test_the_tall_sets_row_maps_are_bijections_under_either_placement(interleave
 
 
 def test_interleaved_placement_gives_a_stream_the_digits_congruent_to_it():
-    """`geom.md#interleaved-placement`: under the run placement stream w owns sparse digits
-    4w..4w+3; interleaved it owns w, w+8, w+16, w+24 -- what keeps a cohort's contiguous run of
-    live digits off one warp (measured 3.1x -> 1.07x imbalance at cohort-k16)."""
+    """`geom.md#interleaved-placement` at the 8 x 128 region: the FOLD warp carves the write-sparse level 0
+    (128 digits, 16 a warp) -- run placement gives stream w digits 16w..16w+15, interleaved w, w+8, ...,
+    w+120. The READ warp carves both levels: two groups of 4 sparse digits on level 1 (run 4p..4p+3,
+    interleaved p, p+2, p+4, p+6) by four 32-leaf dense sub-blocks on level 0 (run 32q..32q+31, interleaved
+    q, q+4, ..., q+124), the dense sub-block varying fastest in the stream index."""
     run = carry_ops.geometry([128, 128], level_modes=ALT2, bc=TALL, nsr=8, nsw=8, d_v=64, interleave=0,
                              atom_floor=0)
     ilv = carry_ops.geometry([128, 128], level_modes=ALT2, bc=TALL, nsr=8, nsw=8, d_v=64, interleave=1,
                              atom_floor=0)
     assert run["xch"] != ilv["xch"]
-    # D = 2, spans (32, 32): local = d0 << 5 | d1; the read side ranks level 1 outermost, so the read
-    # index is d0 | d1 << 5, and the transit row is its swizzle.
-    for g, digits_of in ((run, lambda w: {4 * w + j for j in range(4)}),
-                         (ilv, lambda w: {w + 8 * j for j in range(4)})):
+    # spans (128, 8); the read side ranks level 1 outermost, so BOTH sides' transit rows are in the read
+    # index d0 | d1 << 7, swizzled.
+    for g, ilv_on in ((run, False), (ilv, True)):
         for w in range(8):
-            d0 = {_unswizzle(r) & 31 for r in g["xch"]["w"][w]}      # the write side carves level 0
-            d1 = {_unswizzle(r) >> 5 for r in g["xch"]["r"][w]}      # the read side carves level 1
-            assert d0 == digits_of(w), f"write stream {w} owns digits {sorted(d0)}"
-            assert d1 == digits_of(w), f"read stream {w} owns digits {sorted(d1)}"
+            d0_w = {_unswizzle(r) & 127 for r in g["xch"]["w"][w]}    # the fold warp's write-sparse digits
+            assert {_unswizzle(r) >> 7 for r in g["xch"]["w"][w]} == set(range(8)), "a fold warp holds every leaf of its digits"
+            d0_r = {_unswizzle(r) & 127 for r in g["xch"]["r"][w]}    # the read warp's dense sub-block
+            d1_r = {_unswizzle(r) >> 7 for r in g["xch"]["r"][w]}     # the read warp's sparse digits
+            q, p = w & 3, w >> 2
+            want_w = {w + 8 * j for j in range(16)} if ilv_on else {16 * w + j for j in range(16)}
+            want_d0 = {q + 4 * j for j in range(32)} if ilv_on else {32 * q + j for j in range(32)}
+            want_d1 = {p + 2 * j for j in range(4)} if ilv_on else {4 * p + j for j in range(4)}
+            assert d0_w == want_w, f"fold stream {w} owns write-sparse digits {sorted(d0_w)}"
+            assert d0_r == want_d0, f"read stream {w} owns dense sub-block {sorted(d0_r)}"
+            assert d1_r == want_d1, f"read stream {w} owns sparse digits {sorted(d1_r)}"
 
 
-def test_the_warp_level_atom_floor_is_the_shipped_bodys_law_and_the_tall_carve_runs_without_it():
-    """With the floor, the read side (its sparse level is the canonical innermost) can take one bit
-    there and carves 8 x 16, not pure in its sparse digit; without it, 32 x 4 -- `geom.md#tall-owner-set`."""
+def test_the_tall_law_ignores_the_warp_level_atom_floor():
+    """The warp-level atom floor is the shipped body's ldmatrix law; the tall owner set carves from its own
+    mode-dependent spans and the flag does not enter it -- `geom.md#tall-owner-set`."""
     floored = carry_ops.geometry([128, 128], level_modes=ALT2, bc=TALL, nsr=8, nsw=8, d_v=64, atom_floor=1)
     free = carry_ops.geometry([128, 128], level_modes=ALT2, bc=TALL, nsr=8, nsw=8, d_v=64, atom_floor=0)
-    assert floored["r"]["row_span"] == [8, 16] and free["r"]["row_span"] == [32, 4]
-    assert floored["w"]["row_span"] == free["w"]["row_span"] == [4, 32]
-    assert len(carry_ops.sub_boxes(2, TALL, 8, atom_floor=0)) == 2, "one member per level order at D = 2"
+    assert floored["r"]["row_span"] == free["r"]["row_span"] == [32, 4]
+    assert floored["w"]["row_span"] == free["w"]["row_span"] == [16, 8]
+    assert len(carry_ops.sub_boxes(2, TALL, 8, atom_floor=0)) == 2, "the compile-time set: one member a level order"

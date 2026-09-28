@@ -102,7 +102,9 @@ Because the result depends on the order, and the order comes from the MODE WORD,
 not one shape but a SET: `sub_boxes(D, box_leaves, warps)` runs the carve over EVERY
 level order and de-duplicates. It is a generated constexpr table, never hand-written, and
 `sb_index` is the question "is this carved shape a member" asked of the generator itself.
-At `D = 2` the set has two members, at `D = 3` four, at `D = 4` seven.
+At `D = 2` the set has two members, at `D = 3` four, at `D = 4` seven. The tall owner set
+generates its own set at runtime from its mode-dependent spans, the same carves plus the read
+side's block carve (`## tall-owner-set`), which is why the bound is one more than `D (D - 1)`.
 
 Each side selects its member at launch from its own order; the two sides therefore no
 longer share a slot layout, which is what restores the two-sided carve's liveness
@@ -335,26 +337,57 @@ kTallStateFileDenominator = 1/2`, 128 registers a lane of s32 state), and a CTA 
 `kCtaChannels = 32` of `DV` — one CHANNEL GROUP, `channel_groups(dv) = dv / 32` CTAs per leaf
 set. So `tall_leaves_per_sm = 65536 / 2 / 32 = 1024` and `tall_leaves_per_warp = 128`.
 
-The owner span law is unchanged and gives, at ten bits: `D = 2` a 32 × 32 digit SQUARE;
-`D = 3` `[8, 8, 16]` (balanced 3, 3, 4, the atom whole innermost); `D = 4` `[4, 4, 4, 16]`
-(2, 2, 3, 3 balanced, the innermost raised to the atom's four bits, the surplus taken from the
-widest level above the floor). The square is what makes the per-side carve symmetric: each
-side ranks its sparse level outermost, the eight streams take three of its five bits, and a
-warp owns 4 sparse digits × all 32 dense on BOTH sides, in the side's own carve — the state is
-carved 4 × 32 for the fold and 32 × 4 for the readout, and the transfer between the two is
-what buys the height. At `D = 3` a side's sparse level has three bits, so
-the eight streams take all of them and a warp owns one sparse digit × 128 dense leaves.
+THE TALL OWNER LAW IS MODE-DEPENDENT (ruled 2026-09-27: the region is 8 × 128). Under the
+compile-time law above, the ten bits split by level index; under the tall law they split by
+the READ side's mode: every read-dense level takes the WIDE span, `kTallDenseSpanBitsMax = 7`
+bits (128 digits) or its whole width if narrower, and the read-sparse levels share what
+remains, one bit a round, innermost first. Too much dense trims the widest dense level,
+ties outermost, so a topology that is dense on every read level comes out a square. What a
+narrow level cannot hold returns to the dense levels with room, and a topology smaller than
+the set is one owner. `tall_owner_span_bits` is the law, `read_dense_mask_of_modes` reads
+the mode word for it, and `derive_carry_geom` takes the tall path whenever `bc` is the tall
+leaf count:
 
-The tall carve runs with the WARP-LEVEL ATOM FLOOR OFF (`atom_floor = 0`, the derivation's
-second law flag). `## innermost-invariant` below is the shipped body's operand law: its
-fragments are ldmatrix runs over CONSECUTIVE canonical leaves and each warp stores its own
-pages, so no warp box may be narrower than the page on the canonical innermost level. Neither
-holds in the tall form: the read side's operands arrive through the transfer in the READ
-layout, the write side's fragments are the dense-amplitude and V′ tiles of a digit list, and
-the page I/O is a CTA-level fact (the OWNER spans still hold the atom whole). Under the floor
-the side whose sparse level is the canonical innermost could take only one bit there and would
-carve 8 × 16 — a box sixteen sparse digits wide reaps nothing — so the floor is a per-derivation
-flag the shipped body passes `1` and the tall form `0`.
+| topology, read modes | owner spans | why |
+|---|---|---|
+| `[256, 256]`, level 1 sparse | `[128, 8]` | the dense level capped at 128, the sparse level the remaining 3 bits |
+| `[128, 128]`, both dense | `[32, 32]` | 7 + 7 trimmed to 5 + 5 |
+| `[16, 16, 16]`, all dense | `[8, 8, 16]` | 4, 4, 4 trimmed outermost-first to 3, 3, 4 |
+| `[16, 16, 16]`, level 0 sparse | `[4, 16, 16]` | the dense pair takes 4 + 4, the sparse level 2 |
+| `[16, 16, 16, 16]`, all dense | `[4, 4, 8, 8]` | 16 bits trimmed to 10, no page floor |
+| `[16, 16]` | `[16, 16]` | 256 leaves: one owner |
+
+WHY 128 AND NOT THE SQUARE: the drain. At `N = L` a token's readout leaves one line of
+partials in every CTA it touches, and the L2 charges those per request, `0.15` chip-clocks
+each with every SM draining (the queue card's drain measurement, 2026-09-27). A token touches `k × 256 / d` CTAs,
+so the square's 32 lines a token sat six times above its tensor time at the sparse cell,
+while 128 dense digits a region give 8 lines against a fold whose tiles still fill. The wide
+span is capped rather than taken whole because the fold's per-list leaf count is the region's
+sparse span, and 4 × 256 halves it again for drain margin sm_86 does not need.
+
+THE TWO CARVES OF THE TALL SET. The FOLD warps carve top-down in the write side's order from
+the tall spans (`carve_from_bits`): the write-sparse level is outermost, so at `[128, 8]` the
+eight warps take three of its seven bits and a warp owns 16 write-sparse digits × the region's
+8 leaves, one list an MMA with the fold's leaves on the MMA's N axis. The READ warps take the
+BLOCK CARVE (`tall_read_sub_bits`): a warp holds one K block, `kBlockLeavesBits = 5` bits of
+dense leaves innermost dense level first, and as many read-sparse digits as its 128 leaves
+admit, 4 at `[128, 8]`, so its token-major tile draws from four reader lists rather than one
+list a quarter full at the sparse cell. The sub-box set for the tall spans is generated at
+runtime, `tall_sub_boxes`: the top-down carve in every level order plus the block carve, and
+both sides select their member from it exactly as the shipped body selects from the
+compile-time set.
+
+THE PAGE ATOM IS NOT HELD ON THE OWNER SPANS in the tall law. The lattice order is
+owner-major and then the owner-local mixed radix, so a page is sixteen consecutive local
+indices and always lies inside one owner whatever the innermost span is; what changes when
+the innermost span is 8 is that a page holds two digits of the next level out, a rectangle
+`atom_rectangle` already describes, and nothing in the tall form reads a page as sixteen
+consecutive canonical leaves. The warp-level atom floor stays off for the same reason as before:
+the shipped body's `## innermost-invariant` is its ldmatrix operand law, and the tall form's
+operands come through the transfer and the digit lists. ONE CONSEQUENCE IS OWED: the paged plane
+the decode family reads is laid out by `rola.ops.lattice` in the `(k, m)` form at
+`LATTICE_CAP_BC = 128`, and the two families write and read one plane, so the lattice
+module learns the tall owner law when the int8 carry ships (the queue card's decode consequence).
 
 The shipped kernel keeps the quarter-share box until the int8 body ships; until then the
 tall set is reachable through the binding at `bc = TALL_BOX_LEAVES` and is what

@@ -53,7 +53,10 @@ caller sets or a template parameter enumerated over.
 The int8 carry's TALL owner set is the same kind of derivation under two different
 numbers — half the register file, a 32-channel group per CTA — and lives beside this one as
 `tall_leaves_per_warp()`/`TALL_BOX_LEAVES = 1024` (`geom.md#tall-owner-set`) until the int8 body makes it
-the shipped box.
+the shipped box. Its two shape constants are declared, not derived: `TALL_DENSE_SPAN_MAX = 128`,
+the read-dense span the drain / fold balance chose (ruled 2026-09-27), and `BLOCK_LEAVES = 32`, the
+IMMA's K block of one read-sparse digit's leaves; they mirror `kTallDenseSpanBitsMax` and
+`kBlockLeavesBits` in `common/geom.cuh`.
 
 <a id="launch-table"></a>
 ## The per-arch launch table

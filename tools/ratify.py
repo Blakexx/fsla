@@ -634,7 +634,8 @@ def derivation_harness(cases: dict) -> str:
                 f"{c['level_modes']}u, o);\n",
                 f"    const char* err = rola::carry::derive_carry_geom("
                 f"{len(c['widths'])}, w, {c['bc']}, {c['dv']}, "
-                f"o, {c['nsr']}, {c['nsw']}, g);\n",
+                f"o, {c['nsr']}, {c['nsw']}, {'true' if c.get('interleave', 0) else 'false'}, "
+                f"{'true' if c.get('atom_floor', 1) else 'false'}, g, {c['level_modes']}u);\n",
                 f'    if (err != nullptr) std::printf("%s\\trefused\\t%s\\n", '
                 f'"{c["name"]}", err);\n',
                 f'    else dump("{c["name"]}", &g, sizeof(g));\n',

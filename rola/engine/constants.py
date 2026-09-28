@@ -20,10 +20,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 __all__ = [
+    "BLOCK_LEAVES",
     "CTA_CHANNELS",
     "LAUNCH_TABLE",
     "SEGMENT_TOKENS",
     "TALL_BOX_LEAVES",
+    "TALL_DENSE_SPAN_MAX",
     "TALL_STATE_FILE_DENOMINATOR",
     "TALL_STATE_FILE_NUMERATOR",
     "WARPS_PER_CTA",
@@ -110,6 +112,12 @@ def tall_leaves_per_warp() -> int:
 
 
 TALL_BOX_LEAVES = tall_leaves_per_warp() * WARPS_PER_SM
+
+#: THE TALL OWNER LAW'S SHAPE CONSTANTS (ruled 2026-09-27), mirroring ``kTallDenseSpanBitsMax`` /
+#: ``kBlockLeavesBits``: a read-dense level's span is at most 128 digits (the drain / fold balance) and
+#: the IMMA's K block is 32 leaves of one read-sparse digit (geom.md#tall-owner-set).
+TALL_DENSE_SPAN_MAX = 1 << 7
+BLOCK_LEAVES = 1 << 5
 
 
 def channel_groups(dv: int) -> int:

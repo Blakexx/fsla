@@ -23,7 +23,8 @@ static CarryGeomRT derive_block(const std::vector<int64_t>& widths, int64_t leve
   CarryGeomRT geo{};
   CarveOrder order{};
   carve_order_of_modes(D, (uint32_t)level_modes, order);
-  const char* err = derive_carry_geom(D, w, bc, dv, order, nsr, nsw, interleave, atom_floor, geo);
+  const char* err = derive_carry_geom(D, w, bc, dv, order, nsr, nsw, interleave, atom_floor, geo,
+                                      (uint32_t)level_modes);
   STD_TORCH_CHECK(err == nullptr,
                   "the addressing block refuses this call: ", err == nullptr ? "" : err,
                   " (widths=", shape(widths), ", BC=", bc, ", level_modes=", level_modes, ")");
