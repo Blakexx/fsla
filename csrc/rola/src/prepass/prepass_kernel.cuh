@@ -50,8 +50,8 @@ struct Smem {
     return at(TP::kXferOffset + TP::kXferValueBytes);
   }
 
-  __device__ __forceinline__ ops::SmemAddr panel(int warp) const {
-    return at(TP::kPanelOffset + warp * TP::kPanelRowBytes);
+  __device__ __forceinline__ ops::SmemAddr panel(int buf, int warp) const {
+    return at(TP::kPanelOffset + (buf * TP::kWarps + warp) * TP::kPanelRowBytes);
   }
 
   __device__ __forceinline__ ops::SmemAddr pool_full(int slot) const {
@@ -74,8 +74,13 @@ struct Smem {
     return at(TP::kBarOffset + (TP::kPoolBars + TP::kRingBars + 2 + parity) * 8);
   }
 
-  __device__ __forceinline__ ops::SmemAddr done_bar(int parity) const {
-    return at(TP::kBarOffset + (TP::kPoolBars + TP::kRingBars + 4 + parity) * 8);
+  //: THE RANGE BARRIERS, a panel buffer each: its rows written (one arrival a warp), its drain done.
+  __device__ __forceinline__ ops::SmemAddr rows_bar(int buf) const {
+    return at(TP::kBarOffset + (TP::kPoolBars + TP::kRingBars + 4 + buf) * 8);
+  }
+
+  __device__ __forceinline__ ops::SmemAddr drained_bar(int buf) const {
+    return at(TP::kBarOffset + (TP::kPoolBars + TP::kRingBars + 6 + buf) * 8);
   }
 
   __device__ __forceinline__ long long* ledger(int warp) const {
@@ -145,7 +150,7 @@ __device__ __forceinline__ void stage_words(const PrepassParams& p, const Smem<T
   const int t0 = win * TP::kWindow;
   const int left = (p.L - t0 + 31) / 32;
   const int nwords = left < TP::kRounds ? left : TP::kRounds;
-  const int word = lane & 15, half = lane >> 4;
+  //: a row's sixteen words are 64 contiguous, aligned bytes: four sixteen-byte copies, lane = (row, chunk).
   rola::static_for<2>([&](auto Sc) {
     constexpr int side = decltype(Sc)::value;
     const int32_t* const table =
@@ -156,11 +161,13 @@ __device__ __forceinline__ void stage_words(const PrepassParams& p, const Smem<T
       const int d0 = region_digit0(p.g, owner, l);
       const int span = first < 0 ? 0 : p.g.span[l];
 #pragma unroll 1
-      for (int i = half; i < span; i += 2) {
-        const int row = p.g.col_base[l] + d0 + i;
+      for (int i = lane; i < span * 4; i += 32) {
+        const int r = i >> 2, chunk = i & 3;
+        const int row = p.g.col_base[l] + d0 + r;
         const ops::SmemAddr dst =
-            sm.words(parity) + (uint32_t)((first + i) * TP::kRounds + word) * 4u;
-        ops::stage_run_if<4>(dst, table + (long)row * p.liveness_words + word, word < nwords);
+            sm.words(parity) + (uint32_t)((first + r) * TP::kRounds + chunk * 4) * 4u;
+        ops::stage_run_if<16>(dst, table + (long)row * p.liveness_words + chunk * 4,
+                              chunk * 4 < nwords);
       }
     });
   });
@@ -169,41 +176,55 @@ __device__ __forceinline__ void stage_words(const PrepassParams& p, const Smem<T
 }
 
 // ------------------------------------------------------------------------ the lists
-//: COMPONENT `lists`: a warp's list counts from the staged words -- its 16 fold lists (one a write-sparse
-//: digit) and its read side's union over its 4 sparse digits, by popcount. Lane = word of the window.
+//: THE WARP'S ROWS, once a call: lane k's fold list row (its write-sparse digit's staged row, or -1) and
+//: the warp's four read rows -- registers, compile-time indexed, never re-derived a window.
 template <class TP>
-__device__ __forceinline__ void list_counts(const PrepassParams& p, const Smem<TP>& sm,
-                                            const StagedRows<TP>& rows, int parity, int warp,
-                                            int lane) {
+struct WarpRows {
+  int wrow;                      //: this lane's fold list's staged row, or -1
+  int rrow[TP::kBlocksPerWarp];  //: the warp's read lists' staged rows, or -1
+};
+
+template <class TP>
+__device__ __forceinline__ WarpRows<TP> warp_rows(const PrepassParams& p,
+                                                  const StagedRows<TP>& rows, int warp, int lane) {
+  WarpRows<TP> r{};
+  const int wl = rows.wl;
+  const int wlists = wl >= 0 ? (1 << p.g.w.sub_bits[wl]) : 0;
+  r.wrow = lane < wlists ? rows.wl_row + stream_digit(p.g.w, wl, warp, lane) : -1;
+  const int rl = rows.rl;
+  const int rlists = rl >= 0 ? (1 << p.g.r.sub_bits[rl]) : 0;
+  rola::static_for<TP::kBlocksPerWarp>([&](auto Kc) {
+    constexpr int k = decltype(Kc)::value;
+    r.rrow[k] = k < rlists ? rows.rl_row + stream_digit(p.g.r, rl, warp, k) : -1;
+  });
+  return r;
+}
+
+//: COMPONENT `lists`: a warp's list counts from the staged words -- its 16 fold lists (one a write-sparse
+//: digit, one lane a list) and its read side's union over its 4 sparse digits (lane = round), by popcount
+//: over the window's live words.
+template <class TP>
+__device__ __forceinline__ void list_counts(const Smem<TP>& sm, const WarpRows<TP>& wr, int nwords,
+                                            int parity, int warp, int lane) {
   int* const out = sm.counts(parity, warp);
   constexpr int nlists = TP::kLeavesPerWarp / 8;
   constexpr int kRounds = TP::kRounds, kBlocks = TP::kBlocksPerWarp;
   static_assert(nlists <= 32, "one lane a fold list");
-  //: the fold lists, ONE LANE A LIST: lane k sums the popcounts of its digit's sixteen words.
-  const int wl = rows.wl;
-  const int wlists = wl >= 0 ? (1 << p.g.w.sub_bits[wl]) : 0;
   int count = 0;
-  if (lane < wlists) {
-    const int digit = stream_digit(p.g.w, wl, warp, lane);
-    const ops::SmemAddr row =
-        sm.words(parity) + (uint32_t)((rows.wl_row + digit) * TP::kRounds) * 4u;
+  if (wr.wrow >= 0) {
+    const ops::SmemAddr row = sm.words(parity) + (uint32_t)(wr.wrow * TP::kRounds) * 4u;
 #pragma unroll
     for (int w = 0; w < kRounds; ++w)
-      count += ops::bit_count(ops::load_shared_u32(row + (uint32_t)w * 4u));
+      if (w < nwords) count += ops::bit_count(ops::load_shared_u32(row + (uint32_t)w * 4u));
   }
   if (lane < nlists) out[lane] = count;
-  //: the read union: the warp's sparse digits ORed a round (lane = round), the token-major tile count.
-  const int rl = rows.rl;
   uint32_t any = 0u;
-  if (rl >= 0 && lane < TP::kRounds) {
-    const int rlists = 1 << p.g.r.sub_bits[rl];
+  if (lane < nwords) {
 #pragma unroll
     for (int k = 0; k < kBlocks; ++k) {
-      if (k < rlists) {
-        const int digit = stream_digit(p.g.r, rl, warp, k);
+      if (wr.rrow[k] >= 0)
         any |= ops::load_shared_u32(sm.words(parity)
-                                    + (uint32_t)((rows.rl_row + digit) * TP::kRounds + lane) * 4u);
-      }
+                                    + (uint32_t)(wr.rrow[k] * TP::kRounds + lane) * 4u);
     }
   }
   int total = ops::bit_count(any);
@@ -214,44 +235,70 @@ __device__ __forceinline__ void list_counts(const PrepassParams& p, const Smem<T
 
 // ------------------------------------------------------------------------- the pool
 //: COMPONENT `fill`: chunk `chunk` of window `win` into slot `slot`: every token's write-sparse entries
-//: over the region's digits, its write-dense entries, its two row scales, g and s_t, by cp.async; a slot
-//: is full at `kThreads` landed arrivals. THE STUB stages the window's tokens in order (the compaction to
-//: the union-live tokens is the component's own step).
+//: over the region's digits, its write-dense entries, its two scales, g and s_t, by quad-native cp.async
+//: (`plan.md#pool`); a slot is full at `kThreads` landed arrivals. THE STUB stages the window's tokens
+//: in order (the compaction to the union-live tokens is the component's own step).
 template <class TP>
 __device__ __forceinline__ void pool_fill(const PrepassParams& p, const Smem<TP>& sm,
                                           const StagedRows<TP>& rows, int owner, int bh, int win,
-                                          int chunk, int slot, int tid) {
+                                          int chunk, int slot, int warp, int lane) {
+  static_assert(TP::kPoolTok == 8 * TP::kWarps && TP::kPoolSparseBytes == 2 * 64,
+                "eight tokens a warp for the sparse rows; two 64-byte runs a token");
   const int t0 = win * TP::kWindow + chunk * TP::kPoolTok;
-  const int tok = tid >> 2, part = tid & 3;  //: four threads a token
-  const int t = t0 + tok;
-  const bool live = t < p.L;
-  const uint32_t row = (uint32_t)bh * (uint32_t)p.L + (uint32_t)(live ? t : 0);
-  const ops::SmemAddr dst = sm.pool(slot) + (uint32_t)(tok * TP::kPoolRowBytes);
-  const uint8_t* const wrow = p.rows_write + (long)row * p.g.wtot;
-  //: the write-sparse level's entries: the region's digits, contiguous in the row.
+  const ops::SmemAddr base = sm.pool(slot);
+  const auto row_of = [&](int tok, bool& live) {
+    const int t = t0 + tok;
+    live = t < p.L;
+    return (uint32_t)bh * (uint32_t)p.L + (uint32_t)(live ? t : 0);
+  };
+
+  //: the write-sparse level's entries: a quad copies a 64-byte run of one token's row, eight tokens an
+  //: instruction, two runs a token.
   const int wl = rows.wl;
   if (wl >= 0) {
     const int col = p.g.col_base[wl] + region_digit0(p.g, owner, wl);
-    const int span = p.g.span[wl];
-#pragma unroll 1
-    for (int c = part * 16; c < span; c += 64)
-      ops::stage_run_if<16>(dst + (uint32_t)c, wrow + col + c, live);
+    const int tok = 8 * warp + (lane >> 2);
+    bool live;
+    const uint32_t row = row_of(tok, live);
+    const uint8_t* const wrow = p.rows_write + (long)row * p.g.wtot + col;
+    const ops::SmemAddr dst = base + (uint32_t)(tok * TP::kPoolSparseStride);
+#pragma unroll
+    for (int run = 0; run < 2; ++run) {
+      const int c = run * 64 + (lane & 3) * 16;
+      ops::stage_run_if<16>(dst + (uint32_t)c, wrow + c, live && c < p.g.span[wl]);
+    }
   }
-  //: the write-dense level's entries: the level that is not the sparse one, at depth two.
-  const int wd = wl == 0 ? 1 : 0;
-  if (part == 0 && wd < p.g.D) {
-    const int col = p.g.col_base[wd] + region_digit0(p.g, owner, wd);
-    ops::stage_run_if<8>(dst + (uint32_t)TP::kPoolSparseBytes, wrow + col, live);
+
+  //: the per-token fields, a warp pair a field, a lane a token: the write-dense entries, the two scales,
+  //: g and s_t (the last three contiguous across tokens in global memory).
+  const int tok = lane + 32 * (warp & 1);
+  bool live;
+  const uint32_t row = row_of(tok, live);
+  // R9-CASES: the pool's per-token fields, a warp pair each
+  switch (warp >> 1) {
+    case 0: {
+      const int wd = wl == 0 ? 1 : 0;
+      if (wd < p.g.D) {
+        const int col = p.g.col_base[wd] + region_digit0(p.g, owner, wd);
+        ops::stage_run_if<8>(base + (uint32_t)(TP::kPoolDenseOff + tok * 8),
+                             p.rows_write + (long)row * p.g.wtot + col, live);
+      }
+      break;
+    }
+    case 1:
+      ops::stage_run_if<8>(base + (uint32_t)(TP::kPoolScaleOff + tok * 8),
+                           p.scale_write + (long)row * p.g.D, live);
+      break;
+    case 2:
+      ops::stage_run_if<4>(base + (uint32_t)(TP::kPoolGainOff + tok * 4), p.gain + row, live);
+      break;
+    case 3:
+      ops::stage_run_if<4>(base + (uint32_t)(TP::kPoolVscaleOff + tok * 4), p.vscale + row, live);
+      break;
+    default:
+      __trap();
   }
-  if (part == 1)
-    ops::stage_run_if<8>(dst + (uint32_t)(TP::kPoolSparseBytes + TP::kPoolDenseBytes),
-                         p.scale_write + (long)row * p.g.D, live);
-  if (part == 2) {
-    ops::stage_run_if<4>(dst + (uint32_t)(TP::kPoolSparseBytes + TP::kPoolDenseBytes + 8),
-                         p.gain + row, live);
-    ops::stage_run_if<4>(dst + (uint32_t)(TP::kPoolSparseBytes + TP::kPoolDenseBytes + 12),
-                         p.vscale + row, live);
-  }
+
   ops::stage_commit();
   ops::mbar_arrive_when_landed(sm.pool_full(slot));
 }
@@ -278,8 +325,8 @@ __device__ __forceinline__ void fold(const Smem<TP>& sm, int slot, int parity, i
 #pragma unroll 1
     for (int s = 0; s < steps; ++s) {
       const int tok = (s * 16 + (lane & 15)) & (TP::kPoolTok - 1);
-      touch +=
-          (int32_t)ops::load_shared_u8(pool + (uint32_t)(tok * TP::kPoolRowBytes + (lane >> 4)));
+      touch += (int32_t)ops::load_shared_u8(
+          pool + (uint32_t)(tok * TP::kPoolSparseStride + (lane >> 4)));
     }
     st.c[k][1] += touch;  //: the touched sum rides column 1, which the publish does not read
   });
@@ -337,27 +384,40 @@ template <class TP>
 __device__ __forceinline__ void readout_issue(const PrepassParams& p, const Smem<TP>& sm,
                                               const StagedRows<TP>& rows, int owner, int bh, int t0,
                                               int tile, int rslot, int warp, int lane) {
-  const int t = t0 + tile * TP::kTile + lane;
-  const bool live = t < p.L;
-  const uint32_t row = (uint32_t)bh * (uint32_t)p.L + (uint32_t)(live ? t : 0);
-  const ops::SmemAddr dst = sm.ring(warp, rslot) + (uint32_t)(lane * TP::kRingRowBytes);
-  const uint8_t* const rrow = p.rows_read + (long)row * p.g.wtot;
+  static_assert(TP::kBlockLeaves == 4 * 8, "a token's dense entries are one quad of 8-byte copies");
+  const ops::SmemAddr ring = sm.ring(warp, rslot);
+  const int tbase = t0 + tile * TP::kTile;
   const int rl = rows.rl;
   const int rd = rl == 0 ? 1 : 0;
   if (rd < p.g.D) {
-    //: the warp's dense sub-block: its stream's first digit on the dense level.
+    //: the warp's dense sub-block, its stream's first digit on the dense level: a quad a token, eight
+    //: tokens an instruction (plan.md#ring).
     const int col =
         p.g.col_base[rd] + region_digit0(p.g, owner, rd) + stream_digit(p.g.r, rd, warp, 0);
-    ops::stage_run_if<16>(dst, rrow + col, live);
-    ops::stage_run_if<16>(dst + 16u, rrow + col + 16, live);
+    const int q = lane & 3;
+    constexpr int kQuadRounds = TP::kTile / 8;
+#pragma unroll
+    for (int i = 0; i < kQuadRounds; ++i) {
+      const int tok = 8 * i + (lane >> 2);
+      const int t = tbase + tok;
+      const bool live = t < p.L;
+      const uint32_t row = (uint32_t)bh * (uint32_t)p.L + (uint32_t)(live ? t : 0);
+      ops::stage_run_if<8>(ring + (uint32_t)(tok * TP::kRingRowBytes + q * 8),
+                           p.rows_read + (long)row * p.g.wtot + col + q * 8, live);
+    }
   }
+  //: the sparse entries and the two read scales, a lane a token.
+  const int t = tbase + lane;
+  const bool live = t < p.L;
+  const uint32_t row = (uint32_t)bh * (uint32_t)p.L + (uint32_t)(live ? t : 0);
+  const ops::SmemAddr dst = ring + (uint32_t)(lane * TP::kRingRowBytes);
   if (rl >= 0) {
     const int col =
         p.g.col_base[rl] + region_digit0(p.g, owner, rl) + stream_digit(p.g.r, rl, warp, 0);
-    ops::stage_run_if<4>(dst + (uint32_t)TP::kBlockLeaves, rrow + col, live);
+    ops::stage_run_if<4>(dst + (uint32_t)TP::kRingSparseOff,
+                         p.rows_read + (long)row * p.g.wtot + col, live);
   }
-  ops::stage_run_if<8>(dst + (uint32_t)TP::kBlockLeaves + 8u, p.scale_read + (long)row * p.g.D,
-                       live);
+  ops::stage_run_if<8>(dst + (uint32_t)TP::kRingScaleOff, p.scale_read + (long)row * p.g.D, live);
   ops::stage_commit();
   ops::mbar_arrive_when_landed(sm.ring_bar(warp, rslot));
 }
@@ -366,30 +426,30 @@ __device__ __forceinline__ void readout_issue(const PrepassParams& p, const Smem
 //: THE STUB adds zeros; the hi bytes are the operand.
 template <class TP>
 __device__ __forceinline__ void readout_tile(const Smem<TP>& sm, int tile, int rslot,
-                                             uint32_t rphase, int parity, int warp, int lane,
+                                             uint32_t rphase, int buf, int warp, int lane,
                                              const uint32_t (&hi)[TP::kBlocksPerWarp]) {
   ops::mbar_wait(sm.ring_bar(warp, rslot), rphase);
-  const ops::SmemAddr dst = sm.ring(warp, rslot) + (uint32_t)(lane * TP::kRingRowBytes);
-  const uint32_t a = ops::load_shared_u32(dst);
+  const uint32_t a =
+      ops::load_shared_u32(sm.ring(warp, rslot) + (uint32_t)(lane * TP::kRingRowBytes));
   const float partial = (float)((a & hi[0] & hi[1] & hi[2] & hi[3]) & 0u);
   //: the warp's own panel row: plain stores, summed across the warps at the drain.
   const uint32_t in_range = (uint32_t)((tile * TP::kTile + lane) & (TP::kRange - 1));
-  ops::store_shared_f32x2(sm.panel(warp) + in_range * 8u, partial, partial);
-  (void)parity;
+  ops::store_shared_f32x2(sm.panel(buf, warp) + in_range * 8u, partial, partial);
 }
 
 //: COMPONENT `drain`: the range's eight warp rows summed a token, to the global sums by RED.F32 (256
-//: threads: a token's column each); the rows are overwritten by the next range, never zeroed.
+//: threads: a token's column each). Gated by the buffer's rows barrier, released by its drained barrier;
+//: no CTA-wide barrier.
 template <class TP>
 __device__ __forceinline__ void drain(const PrepassParams& p, const Smem<TP>& sm, int bh, int t0,
-                                      int range, int tid) {
+                                      int range, int buf, int tid) {
   const int i = tid >> 1, col = tid & 1;  //: 128 tokens x 2 columns over 256 threads
   const int t = t0 + range * TP::kRange + i;
   constexpr int kWarps = TP::kWarps;
   float v = 0.0f;
 #pragma unroll
   for (int w = 0; w < kWarps; ++w)
-    v += ops::load_shared_f32(sm.panel(w) + (uint32_t)(i * 8 + col * 4));
+    v += ops::load_shared_f32(sm.panel(buf, w) + (uint32_t)(i * 8 + col * 4));
   if (t < p.L) ops::red_global_add_f32((col == 0 ? p.den : p.scale) + (long)bh * p.L + t, v);
 }
 
@@ -407,7 +467,8 @@ __device__ __forceinline__ void window_loop(const PrepassParams& p, const Smem<T
   float sigma[TP::kBlocksPerWarp];
   uint32_t hi[TP::kBlocksPerWarp] = {0u, 0u, 0u, 0u};
   uint32_t fills0 = 0u, fills1 = 0u;
-  uint32_t rings = 0u;
+  uint32_t rings = 0u, ranges = 0u;
+  const WarpRows<TP> wr = warp_rows<TP>(p, rows, warp, lane);
 
   if (tid < TP::kPoolSlots) {
     ops::mbar_init(sm.pool_full(tid), TP::kThreads);
@@ -417,7 +478,8 @@ __device__ __forceinline__ void window_loop(const PrepassParams& p, const Smem<T
   if (tid < 2) {
     ops::mbar_init(sm.words_bar(tid), 32u);
     ops::mbar_init(sm.pub_bar(tid), TP::kThreads);
-    ops::mbar_init(sm.done_bar(tid), TP::kThreads);
+    ops::mbar_init(sm.rows_bar(tid), TP::kWarps);
+    ops::mbar_init(sm.drained_bar(tid), TP::kThreads);
   }
   ops::rendezvous();
 
@@ -430,7 +492,8 @@ __device__ __forceinline__ void window_loop(const PrepassParams& p, const Smem<T
     const uint32_t phase = (uint32_t)(win >> 1) & 1u;
     ops::mbar_wait(sm.words_bar(parity), phase);
     pc.lap(kPpFrame);
-    list_counts<TP>(p, sm, rows, parity, warp, lane);
+    const int left = (p.L - t0 + 31) / 32;
+    list_counts<TP>(sm, wr, left < TP::kRounds ? left : TP::kRounds, parity, warp, lane);
     ops::rendezvous();
     pc.lap(kPpLists);
     if (scanner && win + 1 < nWindows) {
@@ -438,7 +501,7 @@ __device__ __forceinline__ void window_loop(const PrepassParams& p, const Smem<T
       pc.lap(kPpWords);
     }
     //: the chunks, a slot ahead: fill c+1 while c is folded.
-    pool_fill<TP>(p, sm, rows, owner, bh, win, 0, 0, tid);
+    pool_fill<TP>(p, sm, rows, owner, bh, win, 0, 0, warp, lane);
     ++fills0;
     pc.lap(kPpFill);
 #pragma unroll 1
@@ -447,7 +510,7 @@ __device__ __forceinline__ void window_loop(const PrepassParams& p, const Smem<T
       if (c + 1 < TP::kChunks) {
         const uint32_t nfills = nslot ? fills1 : fills0;
         if (nfills > 0u) ops::mbar_wait(sm.pool_empty(nslot), (nfills - 1u) & 1u);
-        pool_fill<TP>(p, sm, rows, owner, bh, win, c + 1, nslot, tid);
+        pool_fill<TP>(p, sm, rows, owner, bh, win, c + 1, nslot, warp, lane);
         if (nslot)
           ++fills1;
         else
@@ -472,19 +535,24 @@ __device__ __forceinline__ void window_loop(const PrepassParams& p, const Smem<T
     readout_issue<TP>(p, sm, rows, owner, bh, t0, 0, (int)(rings & 1u), warp, lane);
 #pragma unroll 1
     for (int range = 0; range < TP::kRanges; ++range) {
+      //: the panel buffer of this range: free once the range before last was drained.
+      const int buf = (int)(ranges & 1u);
+      if (ranges >= 2u) ops::mbar_wait(sm.drained_bar(buf), ((ranges >> 1) - 1u) & 1u);
 #pragma unroll 1
       for (int tile = 0; tile < TP::kRange / TP::kTile; ++tile) {
         const int abs_tile = range * (TP::kRange / TP::kTile) + tile;
         const int rslot = (int)(rings & 1u);
         if (abs_tile + 1 < TP::kTiles)
           readout_issue<TP>(p, sm, rows, owner, bh, t0, abs_tile + 1, rslot ^ 1, warp, lane);
-        readout_tile<TP>(sm, abs_tile, rslot, (rings >> 1) & 1u, parity, warp, lane, hi);
+        readout_tile<TP>(sm, abs_tile, rslot, (rings >> 1) & 1u, buf, warp, lane, hi);
         ++rings;
       }
+      if (lane == 0) ops::mbar_arrive(sm.rows_bar(buf));
       pc.lap(kPpReadout);
-      ops::rendezvous();
-      drain<TP>(p, sm, bh, t0, range, tid);
-      ops::rendezvous();
+      ops::mbar_wait(sm.rows_bar(buf), (ranges >> 1) & 1u);
+      drain<TP>(p, sm, bh, t0, range, buf, tid);
+      ops::mbar_arrive(sm.drained_bar(buf));
+      ++ranges;
       pc.lap(kPpDrain);
     }
     (void)sigma;

@@ -39,19 +39,25 @@ struct TallPlan {
   static constexpr int kWordsBytes = round_up16(kWordRows * kRounds * 4);
 
   //: the pool -- plan.md#pool
+  //: QUAD-NATIVE COPIES: a lane quad copies 64 contiguous bytes to 64 contiguous bytes (plan.md#pool); the
+  //: sparse rows padded 16 bytes so a digit's bytes across tokens spread over the banks.
   static constexpr int kPoolTok = 64;
   static constexpr int kPoolSlots = 2;
   static constexpr int kPoolSparseBytes = 1 << carry::kTallDenseSpanBitsMax;
-  static constexpr int kPoolDenseBytes = 16;
-  static constexpr int kPoolScalarBytes = 16;
-  static constexpr int kPoolRowBytes = kPoolSparseBytes + kPoolDenseBytes + kPoolScalarBytes;
-  static constexpr int kPoolSlotBytes = round_up128(kPoolTok * kPoolRowBytes);
+  static constexpr int kPoolSparseStride = kPoolSparseBytes + 16;
+  static constexpr int kPoolDenseOff = kPoolTok * kPoolSparseStride;
+  static constexpr int kPoolScaleOff = kPoolDenseOff + kPoolTok * 8;
+  static constexpr int kPoolGainOff = kPoolScaleOff + kPoolTok * 8;
+  static constexpr int kPoolVscaleOff = kPoolGainOff + kPoolTok * 4;
+  static constexpr int kPoolSlotBytes = round_up128(kPoolVscaleOff + kPoolTok * 4);
   static constexpr int kPoolBytes = kPoolSlots * kPoolSlotBytes;
   static constexpr int kChunks = kWindow / kPoolTok;
 
   //: the read ring -- plan.md#ring
   static constexpr int kRingSlots = 2;
   static constexpr int kRingRowBytes = kBlockLeaves + 16;
+  static constexpr int kRingSparseOff = kBlockLeaves;
+  static constexpr int kRingScaleOff = kBlockLeaves + 8;
   static constexpr int kRingSlotBytes = round_up16(kTile * kRingRowBytes);
   static constexpr int kRingBytes = kWarps * kRingSlots * kRingSlotBytes;
 
@@ -64,12 +70,13 @@ struct TallPlan {
   static constexpr int kRange = 128;
   static constexpr int kRanges = kWindow / kRange;
   static constexpr int kPanelRowBytes = kRange * kCols * 4;
-  static constexpr int kPanelBytes = round_up16(kWarps * kPanelRowBytes);
+  static constexpr int kPanelBufs = 2;
+  static constexpr int kPanelBytes = round_up16(kPanelBufs * kWarps * kPanelRowBytes);
 
   //: the barriers and the ledger -- plan.md#ledger
   static constexpr int kPoolBars = 2 * kPoolSlots;
   static constexpr int kRingBars = kWarps * kRingSlots;
-  static constexpr int kFrameBars = 2 * 3;
+  static constexpr int kFrameBars = 2 * 4;
   static constexpr int kBarBytes = round_up16((kPoolBars + kRingBars + kFrameBars) * 8);
   static constexpr int kLedgerBytes = kWarps * kPpPhases * 8;
   static constexpr int kCountBytes = round_up16(kWarps * (kLeavesPerWarp / 8 + kBlocksPerWarp) * 4);

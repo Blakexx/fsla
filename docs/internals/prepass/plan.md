@@ -10,15 +10,35 @@ four blocks a read warp.
 <a id="pool"></a>
 ## The pool
 
-A chunk of 64 tokens in two barriered slots. A row is the write-sparse level's entries over the
-region's digits (128 bytes: the widest span the tall law derives), the write-dense entries (16),
-and four floats — the two write row scales, `g_t` and `s_t` (16). Eight chunks a window.
+A chunk of 64 tokens in two barriered slots. The write-sparse level's entries over the region's
+digits (128 bytes a token, the widest span the tall law derives) are token-major rows at a 144-byte
+stride, so one digit's bytes across consecutive tokens spread over the banks for the fold's gathers;
+the write-dense entries (8 bytes a token), the two write scales (8), `g_t` (4) and `s_t` (4) are
+planes, tokens contiguous, as they are in global memory.
+
+THE COPY RANKING (measured on sm_86, 2026-09-28, a probe of one warp instruction's patterns with
+eight warps in flight, clock cycles a warp instruction; the calibration harness carries the durable
+rows): 32 lanes over 512 contiguous bytes 81; a lane quad a 64-byte run of one row, eight rows 84
+(the same into 160-byte-stride rows 85); a quad of 8-byte copies a 32-byte sector, eight rows 99;
+the carry fill's row pattern (two lanes a row, sixteen rows) 128; a lane pair a 32-byte sector into
+two planes 258; one lane a row, 32 rows 268; eight lanes a 128-byte row into eight planes 239. The
+shared side's stride or padding moves a pattern by 3%; which lanes share a line and how much of a
+line an instruction takes move it 3x. ncu's "shared wavefronts" on an asynchronous copy is 8 for the
+fast patterns and 32 for the slow ones whatever its "ideal" column says, and its theoretical L2
+sectors count a 16-byte lane copy as a full sector. So the sparse rows are copied by quads, a 64-byte
+run of one token a quad, eight tokens an instruction; the per-token fields by whole warps over 32
+consecutive tokens (contiguous in global memory), a warp pair a field. The frame's first plane layout
+(one lane a token) cost 3x on every copy. Eight chunks a window.
 
 <a id="ring"></a>
 ## The read ring
 
-A warp's two slots of a tile's read rows: the dense sub-block's 32 entries, the sparse entries
-and two scales, 48 bytes a token. The ring runs a tile ahead of the tile being read.
+A warp's two slots of a tile's read rows, 48 bytes a token: the dense sub-block's 32 entries, the
+sparse entries (4) and the two read scales (8). The dense entries are copied by quads of 8-byte
+copies (one token's 32-byte sector a quad, eight tokens an instruction), the rest a lane a token; the
+48-byte stride puts eight consecutive tokens on eight distinct bank slices, so the readout's A
+fragment (a token a lane quad, four consecutive leaves a lane) loads conflict-free. The ring runs a
+tile ahead of the tile being read.
 
 <a id="transfer"></a>
 ## The transfer

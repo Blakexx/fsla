@@ -38,7 +38,9 @@ reduced once: the token-major loop's tile count.
 <a id="fill"></a>
 ## `fill`
 
-A chunk's rows into a slot by cp.async, four threads a token; the slot is full at every thread's
+A chunk's rows into a slot by cp.async under the copy ranking (`plan.md#pool`): the write-sparse
+rows by lane quads (a 64-byte run of one token a quad, eight tokens a warp, two runs), the four
+per-token fields by warp pairs over 32 consecutive tokens. The slot is full at every thread's
 landed arrival, empty at one arrival a warp after the fold (the barrier counts warps, so the
 arrival is lane 0's). THE STUB stages the window's tokens in order; the compaction to the
 union-live tokens is the component's own step.
@@ -61,8 +63,9 @@ in registers. THE STUBS write and reduce zeros.
 <a id="readout"></a>
 ## `readout`
 
-The ring runs a tile ahead: `readout_issue` stages tile `t + 1` before `readout_tile` waits tile
-`t`. THE STUB stores zeros into the warp's own panel row. With no work to hide behind, the wait
+The ring runs a tile ahead: `readout_issue` stages tile `t + 1` (the dense sector of a token by a
+quad of 8-byte copies, the sparse entries and the scales a lane a token) before `readout_tile` waits
+tile `t`. THE STUB stores zeros into the warp's own panel row. With no work to hide behind, the wait
 is one global-to-shared round trip a tile, about 1.3K cycles, sixteen tiles a window: the first
 frame measurement's largest row, and the reason the readout component's ring must run more than
 one tile ahead of an 8-IMMA tile.
@@ -78,9 +81,12 @@ the rows are overwritten by the next range.
 
 Per window: wait the words, count the lists, stage the next window's words, fill chunk 0, then a
 slot ahead fill `c + 1` while `c` is folded, publish, wait the publish barrier, rescale, and read
-out each range a tile ahead and drain it. The measured frame with every component stubbed, cycles
-a warp a window on the flagship cells (two windows, 64 CTAs): frame 7.2K, words 1.4K, lists 1.7K,
-fill 7.2K, fold 1.4K, publish 0.2K, rescale 0.2K, readout 21.8K, drain 2.1K — 43K in all. The
-fill's and the readout's rows are latency exposed by construction (nothing to hide the round trip
-behind) and fall as the MMA components land; the frame's barrier waits, the words, the lists and
-the drain are the fixed cost the design carries.
+out each range a tile ahead into a double-buffered panel (the range's rows barrier, the drain's
+barrier a buffer) and drain it. The measured frame with every component stubbed, cycles a warp a
+window on the flagship cells (two windows, 64 CTAs): frame 5.0K, words 1.8K, lists 1.8K, fill 5.5K,
+fold 1.3K, publish 0.2K, rescale 0.1K, readout 14.3K, drain 2.2K, 31.1K in all; the first build
+(token-major rows, four threads a token, one lane a ring token, single panel, serial shuffle counts)
+measured 43K. ncu attributes ~90% of the remaining cycles to barrier polls: the fill's and the
+readout's rows are latency exposed by construction (nothing to hide the round trip behind) and fall
+as the MMA components land; the words, the lists, the drain and the frame's waits are the fixed cost
+the design carries and the thing to price next.

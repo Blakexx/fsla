@@ -27,7 +27,7 @@
   }
  },
  "source": {
-  "csrc_sha256": "87b5a94cf7b267f5c1b946363615f4defe629fea1ce3504a80a80d97ae31fc31",
+  "csrc_sha256": "0c01b68f5e443ad89439ba2831efa30231681f3eafee79361a8f3498fe136228",
   "date": "2026-09-28",
   "image_digest": ""
  },
@@ -2791,12 +2791,12 @@
    "sass_sha256": "0ed33f0c5ff24f2ea40cd4c8d02dbac3a2be1f470d70fb77630390c2b20d5296"
   },
   "sm_80:_ZN4rola7prepass14prepass_kernelILi2EEEvNS0_13PrepassParamsE": {
-   "regs": 84,
+   "regs": 112,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "07cc332bd5e44b0a93d955b0b2e56f635fde6c171d48a49270c7717ccd5a2815"
+   "sass_sha256": "490ec2eb8d1b929c01d1aa519a675a13f115daf07097ca74db89a2f1aee15e63"
   },
   "sm_80:_ZN4rola8stampdet17csrc_stamp_kernelEPl": {
    "regs": 8,
@@ -2804,7 +2804,7 @@
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "b7096cb2e3b25767965743fb4aad9e6b174ed741daf178915f45312f91b6c7e2"
+   "sass_sha256": "5fa4a9a80da28cae23148ede1a7d943617601e7963debdd9d8748955413556f8"
   }
  }
 }
