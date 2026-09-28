@@ -86,3 +86,44 @@ def test_the_quantization_report(name, capsys):
     assert two["token_mean"] <= one["token_mean"] * 1.0001, "two readout digits lost to one on the same draw"
     with capsys.disabled():
         print("\n" + "\n".join(lines))
+
+
+#: the pre-pass gates need a token that reads a WRITTEN state: cells of more than one window
+PREPASS_CELLS = ["one-box-alt-k4", "flagship-alt-k4", "flagship-cohort-k16"]
+
+
+@pytest.mark.parametrize("name", PREPASS_CELLS)
+def test_the_prepass_reference_is_the_op_when_nothing_is_rounded(name):
+    """The pre-pass's structure: with every rounding off its ``den`` is the fp64 op's ``den`` exactly."""
+    cell = by_name(name)
+    drawn = realize(cell, device="cuda")
+    read, write, gain, v = drawn.doubles()
+    _, want_den, _ = reference.inter_reference(read, write, gain, v, cell.widths, carry_ops.WINDOW)
+    den, _ = iref.prepass_reference(read, write, gain, v, cell.widths, _sparsity(cell), carry_ops.WINDOW, exact=True)
+    assert torch.allclose(den, want_den, rtol=1e-11, atol=1e-11 * float(want_den.abs().max()))
+
+
+@pytest.mark.parametrize("name", PREPASS_CELLS)
+def test_the_prepass_den_is_within_its_digits_and_its_scale_is_a_bound(name, capsys):
+    """THE TWO GATES OF THE PRE-PASS. ``den``: per token, its relative error is the u8 READ ROW's -- den multiplies
+    the same 255-level amplitude row num does, so it is exactly as precise as num (about 2^-9 on the cells) and that
+    rounding is common-mode between the two in the ratio; the 15-bit mass column sits under it. The bound asserted
+    is the format's: 2^-8. ``scale``: a BOUND -- never below the readout's own |partials| sum on the same quantized
+    state (an under-read would let the packed panel wrap); the report prints how far above."""
+    cell = by_name(name)
+    drawn = realize(cell, device="cuda")
+    read, write, gain, v = drawn.doubles()
+    sp = _sparsity(cell)
+    _, want_den, _ = reference.inter_reference(read, write, gain, v, cell.widths, carry_ops.WINDOW)
+    env_num, _, _ = reference.inter_reference(read, write, gain, v.abs(), cell.widths, carry_ops.WINDOW)
+    den, scale = iref.prepass_reference(read, write, gain, v, cell.widths, sp, carry_ops.WINDOW)
+    live = want_den > 0
+    rel = ((den - want_den).abs() / want_den.clamp_min(1e-300))[live]
+    assert float(rel.max()) <= 2.0 ** -8, f"den left the amplitude row's precision: max rel {float(rel.max()):.2e}"
+    #: the readout's |partials| sum is at most the fp64 op on |v| (the envelope's own sum), so the bound must clear it
+    env_sum = env_num.abs().amax(-1)
+    assert bool((scale[live] * (1 + 1e-9) >= env_sum[live]).all()), "scale_t under-reads the readout's envelope"
+    over = (scale[live] / env_sum[live].clamp_min(1e-300))
+    with capsys.disabled():
+        print(f"\n{name}: den rel err max {float(rel.max()):.2e} mean {float(rel.mean()):.2e} | "
+              f"scale / envelope-max median {float(over.median()):.1f}x  p99 {float(over.quantile(0.99)):.1f}x")

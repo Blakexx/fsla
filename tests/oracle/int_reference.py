@@ -222,6 +222,82 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
     return num, den, full
 
 
+def prepass_reference(read_levels, write_levels, g_write, v, widths, sparsity, window, *, exact: bool = False,
+                      state_in=None):
+    """``(den, scale)`` per token, ``[B, T, H]`` fp64, under the PRE-PASS's DECLARED arithmetic (the S8 budget
+    line): the carry's skeleton at 8 channels. Fold, per write-sparse digit and window: the same u8 A rows as the
+    carry's fold (against the leaf's largest writer), against B = [g_t, g_t s_t] each as a 15-bit two-digit value
+    against the list's window max (``zeta``), into s32 mass and bound per leaf. Readout, per block (the carry's
+    blocks): B = [mass, bound] each at 15 bits against the block's max, A = the unit-max dense read row in u8, the
+    (token, block) factor ``a_sparse x m_t`` on the partial; the two sums in fp64 here (fp32 RED.F32 in the kernel).
+    ``den`` is the inter denominator against the window-start mass; ``scale`` is the packed panel's per-token bound,
+    which the kernel needs to be >= every running sum of |partials| and reads as ``scale x (1 + R/254) / 32767``.
+    ``exact`` turns every rounding into the identity, reproducing the fp64 op's ``den``."""
+    Bn, T, H, dv = v.shape
+    D = len(widths)
+    N = math.prod(widths)
+    dev = v.device
+    r_sp = [lvl for lvl in range(D) if sparsity[lvl][0]]
+    r_dn = [lvl for lvl in range(D) if not sparsity[lvl][0]]
+    w_sp = [lvl for lvl in range(D) if sparsity[lvl][1]]
+    w_dn = [lvl for lvl in range(D) if not sparsity[lvl][1]]
+    idx_rs, idx_rd = group_index(widths, r_sp).to(dev), group_index(widths, r_dn).to(dev)
+    idx_ws, idx_wd = group_index(widths, w_sp).to(dev), group_index(widths, w_dn).to(dev)
+    n_ws = int(idx_ws.max().item()) + 1
+    order, blk = block_order(widths, r_sp, r_dn)
+    order = order.to(dev)
+    n_blocks = N // blk
+    u8 = None if exact else quantize_u8_unit
+    q15 = (lambda x: x) if exact else (lambda x: torch.round(x * TWO_DIGIT_LEVELS) / TWO_DIGIT_LEVELS)
+
+    _, s_t = unit_max(v.double())
+    if state_in is None:
+        mass = torch.zeros(Bn, H, N, device=dev, dtype=torch.float64)
+        bound = torch.zeros(Bn, H, N, device=dev, dtype=torch.float64)
+    else:
+        mass = state_in.double()[..., dv].clone()
+        bound = state_in.double()[..., :dv].abs().amax(-1)
+
+    den = torch.zeros(Bn, T, H, device=dev, dtype=torch.float64)
+    scale = torch.zeros(Bn, T, H, device=dev, dtype=torch.float64)
+
+    for t0 in range(0, T, window):
+        sl = slice(t0, min(t0 + window, T))
+        # --- readout of mass and bound against the window-start state, block by block ---------------------------
+        a_rd, m_rd = group_product(read_levels, widths, r_dn, sl, u8)
+        a_rs, _ = group_product(read_levels, widths, r_sp, sl)
+        r_q = (a_rd[..., idx_rd] * (a_rs * m_rd)[..., idx_rs])[..., order].reshape(Bn, sl.stop - sl.start, H,
+                                                                                  n_blocks, blk)
+        cols = torch.stack((mass, bound), -1)[:, :, order].reshape(Bn, H, n_blocks, blk, 2)   # [B,H,blocks,leaves,2]
+        sigma = cols.amax(-2, keepdim=True).clamp_min(TINY)                                     # per block, per column
+        cols_q = q15(cols / sigma) * sigma
+        partial = torch.einsum("bthnk,bhnkc->bthnc", r_q, cols_q).sum(3)                         # [B,t,H,2]
+        den[:, sl] = partial[..., 0]
+        scale[:, sl] = partial[..., 1]
+
+        # --- fold of g and g s_t through the carry's A rows ---------------------------------------------------------
+        a_wd, m_wd = group_product(write_levels, widths, w_dn, sl, u8)
+        a_ws, _ = group_product(write_levels, widths, w_sp, sl)
+        g = g_write[:, sl].double()                                                              # [B,t,H]
+        gs = g * s_t[:, sl, :, 0]
+        zeta_g = g.amax(1, keepdim=True).clamp_min(TINY)
+        zeta_gs = gs.amax(1, keepdim=True).clamp_min(TINY)
+        cols_t = torch.stack((q15(g / zeta_g) * zeta_g, q15(gs / zeta_gs) * zeta_gs), -1)      # [B,t,H,2]
+        scal = a_ws * m_wd                                                                       # [B,t,H,n_ws]
+        for sdig in range(n_ws):
+            leaves = torch.nonzero(idx_ws == sdig, as_tuple=False).flatten()
+            a_full = a_wd[..., idx_wd[leaves]] * (scal[..., sdig] * gs)[..., None]                # the carry's A rows
+            sig = a_full.amax(dim=1, keepdim=True).clamp_min(TINY)
+            a_q = a_full if exact else quantize_u8_unit(a_full / sig) * sig
+            #: the A row carries g s_t; mass wants g and bound wants g s_t, so the columns are their ratios
+            ratio = cols_t / gs.clamp_min(TINY)[..., None]                                       # [B,t,H,2]
+            acc = torch.einsum("bthd,bthc->bhdc", a_q, ratio)
+            mass[:, :, leaves] += acc[..., 0]
+            bound[:, :, leaves] += acc[..., 1]
+
+    return den, scale
+
+
 def per_token_norm_ratio(err: torch.Tensor, envelope: torch.Tensor) -> torch.Tensor:
     """``||err[t]|| / ||envelope[t]||`` over the channel axis: the basis-free fidelity number."""
     return err.norm(dim=-1) / envelope.norm(dim=-1).clamp_min(TINY)
