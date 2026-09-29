@@ -1,13 +1,15 @@
 # `csrc/rola/src/decode/decode_fold.cuh` — the decode step's operand pass
 
-Every per-token operand a decode step consumes, widened, normalized where the producer did
-not already leave the level on the simplex, and staged in the SHARED MEMORY of the CTA
-that is about to consume it.
+Every per-token operand a decode step consumes, read from the internal format (docs/api.md
+section 2.1), normalized where the producer did not already leave the level on the simplex,
+and staged in the SHARED MEMORY of the CTA that is about to consume it.
 
 Symbols: `B` batch, `H` heads, `BH = B * H`, `bh = b * H + h`; `D` levels; `b_l` level
-`l`'s width; `d_v` the value width. The operands are the read and write amplitude rows
-(`[B, 1, H, b_l]` each, in the producer's own layout), the write gain (`[B, 1, H]`) and the
-token's value (`[B, 1, H, d_v]`).
+`l`'s width; `d_v` the value width. The operands are the read and write coefficient rows
+(`[B, 1, H, b_l]` each, u8 or f16 unit-max digits in the producer's own layout) with their
+fp32 row maxima (`[B, 1, H]` each), the write gain (`[B, 1, H]`) and the token's value
+digits (`[B, 1, H, d_v]` s8, the u8 low byte beside it at two digits, and the fp32 token
+scale).
 
 ---
 
@@ -43,29 +45,35 @@ own convention.
 What the entry refuses is `T != 1`: the fold is defined on one token and a second one would
 be silently dropped.
 
-The widening rounds nothing — bf16 and fp32 both embed exactly in fp32 — so a cast-only
-operand reaches the walk with the bytes the torch fold would have produced, and
-`tests/integration/test_decode_fold.py` cell 1 states that through the step's own output,
-on strided views as well as contiguous ones.
+<a id="raw"></a>A digit's RAW value rounds nothing — a u8 digit is its integer and an f16 one widens
+exactly to fp32 — and a level that carries its own mass takes its amplitude as
+`raw * (scale / full_scale)`, one fp32 multiply by a per-row factor (`full_scale` is 255 for
+u8 and 1 for f16). `tests/integration/test_decode_fold.py` cell 1 states that through the
+step's own output, on strided views as well as contiguous ones.
 
 ## <a id="the-dtype-arms"></a>3. The dtype arms are runtime, and the step's template axes are not
 
-The fold reads three INDEPENDENT storage families: the routing levels, the write gain and
-the value, each `float` or `bfloat16` — independent because the routing bundle and the
-value projection are different producers, so a bundle carrying bf16 levels beside an fp32
-gain is the ordinary case rather than an oddity.
+The fold reads three INDEPENDENT storage families: the coefficient rows (u8 or f16, ruled
+2026-09-29: u8 serves depth <= 2, f16 any depth), the write gain (`float` or `bfloat16`) and
+the value digits (s8, with a u8 low byte or without). They are independent because the
+routing bundle and the value projection are different producers.
 
-Making them template axes would multiply the step kernel's instantiation matrix by EIGHT,
-for a few hundred bytes of gather in a prologue. So `DecodeParams` carries three flags and
-each gather site picks a fully typed loop from them:
+Making them template axes would multiply the step kernel's instantiation matrix for a few
+hundred bytes of gather in a prologue. So `DecodeParams` carries flags (`rows_f16`,
+`g_bf16`, and the low byte's presence) and each gather site picks a fully typed loop:
 
 ```
-if (p.levels_bf16) fold_side<__nv_bfloat16>(...); else fold_side<float>(...);
+if (p.rows_f16) fold_rows<__half>(...); else fold_rows<uint8_t>(...);
 ```
 
-The branch is taken once per SIDE, not once per element, and both arms are complete — this
-is a dispatch, not a fast path with a fallback. A dtype outside the pair is a REFUSAL at
-the host entry, never a silent widening.
+The branch is on the DECLARED coefficient type, not on the depth, and it is taken once per
+SIDE, not once per element; both arms are complete — a dispatch, not a fast path with a
+fallback. A dtype outside the format is a REFUSAL (the bundle's own, then the host entry's),
+never a silent widening.
+
+<a id="fold-value"></a>The value is folded once a step into the CTA's resident row: the
+digits' integer `q` (`hi` at one digit, `hi * 256 + lo` at two) times the token's
+`scale / 127` or `scale / 32767`.
 
 Contrast `DECAY` and `D` (`decode.md#instantiation-matrix`), which ARE template axes: each
 picks a different loop shape or a different live-register count in the walk's innermost
@@ -77,8 +85,9 @@ rather than a few hundred bytes once per step.
 A read level the producer did not already leave on the simplex still carries its own mass,
 and the decode arm is defined on the simplex, so that level is divided by its row sum
 (`RouteFactors.read_needs_normalization` is the predicate, stated once and read by both the
-step's `normalize` argument and `RouteFactors.read_simplex`). The write side is never
-normalized, whatever the read side's flags say.
+step's `normalize` argument and `RouteFactors.read_simplex`). The row's scale cancels, so the
+normalized amplitude is `raw / sum(raw)`: one divide per digit, no scale read. The write side
+is never normalized, whatever the read side's flags say.
 
 <!-- ABSENT: reduce_kernel -->
 A sum has an ORDER, and floating-point addition is not associative. The torch reduction
@@ -91,20 +100,22 @@ hold anything to, because it is not written down anywhere. This one is:
 > `16, 8, 4, 2, 1`, each adding lane `j + off` into lane `j`. Lane 0 holds the sum.
 > Lanes past the row's width contribute an exact `0.0f`.
 
-That is a total order over the additions, reproducible on any device.
+That is a total order over the additions, reproducible on any device. For u8 digits every
+partial is an integer below `2^24`, so the sum is EXACT and the order moves nothing; for f16
+digits the order is observable, and it is the declared one.
 
 <a id="the-gate"></a>**How it is gated now that nothing publishes it.** The fold has no
 output a test can read — its destination is shared memory the walk consumes and discards.
 So `tests/integration/test_decode_fold.py` gates it through the STEP, on a fixture where
 the step's whole arithmetic collapses onto the divisor: `D = 1`, a read level that is
 nonzero everywhere, an empty write side, and a state whose rows are zero except at one leaf
-`s0`. Then `y[c] = a * e[c] / (a * m + eps)` with `a = row[s0] / row_sum(row)` — one
+`s0`. Then `y[c] = a * e[c] / (a * m + eps)` with `a = raw[s0] / row_sum(raw)` — one
 multiply per column and one divide, so `y` is a function of the divisor's last bits and of
 nothing else. The reference computes exactly that from a torch reimplementation of the
 declared order.
 
 Two cells are the declaration's teeth: one shows the declared order and a plain ascending
-one DISAGREE on a row where summation order is observable, and one puts that row through
+one DISAGREE on an f16 row where summation order is observable, and one puts that row through
 the step and shows `y` follows the declared order rather than the ascending one. So the
 gate is answering a question about order and not merely about arithmetic in general.
 
@@ -130,7 +141,7 @@ Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_fold.cuh`, in sour
 <a id="row-sum"></a>
 ### `row_sum`
 
-THE DECLARED SUM. Lane `j` accumulates `row[j], row[j + 32], ...` in ascending index
+THE DECLARED SUM of a row's raw values. Lane `j` accumulates `raw[j], raw[j + 32], ...` in ascending index
 order into an fp32 register, then the five `__shfl_down_sync` steps fold lane `j`
 into lane `j - off`. Lanes past the row's width contribute an exact `0.0f`.
 docs/internals/decode/decode_fold.md#declared-order
@@ -151,8 +162,8 @@ Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode_fold.cu
 <a id="note-l3"></a>
 ### near line 3
 
-THE DECODE FOLD -- every per-token operand widened, normalized and staged in SHARED
-MEMORY by the CTA that is about to consume it.
+THE DECODE FOLD -- every per-token operand, read from the internal format, normalized and
+staged in SHARED MEMORY by the CTA that is about to consume it.
 
 Three facts a reader must not miss:
   1. THE FOLD IS A GATHER, NOT A COPY PASS. Its inputs are whatever VIEW the producer
@@ -173,5 +184,5 @@ docs/internals/decode/decode_fold.md
 ### near line 53
 
 ONE SIDE'S `D` LEVELS into the flat `[sum_l b_l]` shared staging the walk indexes by
-digit. `normalize` is `nullptr` for a side that never carries its own mass (the write
+digit: `raw / sum` for a normalized level, `raw * scale / full_scale` otherwise. `normalize` is `nullptr` for a side that never carries its own mass (the write
 side, always); otherwise `s_sum` must already hold `fold_row_sums`' answer.

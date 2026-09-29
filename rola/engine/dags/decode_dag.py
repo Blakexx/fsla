@@ -25,7 +25,7 @@ from rola.engine import (
 )
 from rola.ops import decode as bodies
 
-_SEEDS = ("routes", "values", "levels", "v", "decay", "state", "expert")
+_SEEDS = ("routes", "values", "decay", "state", "expert")
 
 #: BOTH decode masks. A node carrying only `Mask.M4` is one the dense backing has no
 #: work for; there is no node the paged backing skips.
@@ -48,10 +48,10 @@ class DecodeContext:
 
 
 @node(gives=("widths", "d_v", "has_decay", "BH", "device", "paged"),
-      needs=("routes", "v", "decay", "state"), masks=_DECODE, capturable=True)
+      needs=("routes", "values", "decay", "state"), masks=_DECODE, capturable=True)
 def decode_call(f):
     routes, state = f["routes"], f["state"]
-    return (tuple(routes.topology.widths), f["v"].shape[-1], f["decay"] is not None,
+    return (tuple(routes.topology.widths), f["values"].d_v, f["decay"] is not None,
             routes.batch * routes.heads, routes.device, bool(state.paged))
 
 
@@ -93,31 +93,32 @@ def backing(f):
 
 
 @node(gives=("state_plane",),
-      needs=("v", "geometry", "decay", "carried_plane", "page_table"),
+      needs=("values", "geometry", "decay", "carried_plane", "page_table"),
       masks=_DECODE, capturable=True)
 def state_plane(f):
     """The plane the kernel indexes, and the per-step agreement checks that find it."""
-    return bodies.step_plane(f["v"], f["geometry"], f["decay"],
+    return bodies.step_plane(f["values"].v_hat, f["geometry"], f["decay"],
                              f["carried_plane"], f["page_table"])
 
 
 @node(gives=("plan",),
-      needs=("geometry", "routes", "levels", "v", "decay", "state_plane", "page_table", "scratch",
-             "pool"),
+      needs=("geometry", "routes", "values", "decay", "state_plane", "page_table", "scratch", "pool"),
       stream="main", masks=_DECODE, capturable=True)
 def build_plan(f):
-    """The launch's arguments, over the producer's OWN views.
+    """The launch's arguments, over the bundles' OWN rows, scales and digits.
 
     It carries a stream because the decay arm's dials are derived here: a per-HEAD
     constant, the one operand the step kernel does not fold
     (docs/internals/decode/decode_fold.md).
     """
-    routes, geometry = f["routes"], f["geometry"]
+    routes, values, geometry = f["routes"], f["values"], f["geometry"]
     return DecodePlan(
-        config=geometry, heads=routes.heads, read=f["levels"][0], write=f["levels"][1],
+        config=geometry, heads=routes.heads, read=routes.amp_read, write=routes.amp_write,
+        read_scale=routes.scale_read, write_scale=routes.scale_write,
         normalize=tuple(routes.read_needs_normalization()),
-        dials=bodies.leaf_rate_dials_for(f["decay"], geometry, f["v"].device),
-        g_write=routes.g_write, v=f["v"], state_plane=f["state_plane"],
+        dials=bodies.leaf_rate_dials_for(f["decay"], geometry, values.device),
+        g_write=routes.g_write, v_hat=values.v_hat, v_lo=values.v_lo, v_scale=values.scale,
+        state_plane=f["state_plane"],
         page_table=f["page_table"], scratch=f["scratch"], pool=f["pool"])
 
 
@@ -141,7 +142,7 @@ def read_verdict(f):
     return bool(workspace.growth_host[0])
 
 
-@node(gives=("atom_bits",), needs=("levels", "geometry"), masks=_DECODE,
+@node(gives=("atom_bits",), needs=("routes", "geometry"), masks=_DECODE,
       reference_only=True)
 def write_atom_bitmap(f):
     """The gate's INDEPENDENT second derivation of the write-atom set.
@@ -151,7 +152,7 @@ def write_atom_bitmap(f):
     that compared the step against itself would prove nothing
     (docs/internals/decode/decode.md#second-derivation).
     """
-    return bodies._write_atom_bitmap(f["levels"][1], f["geometry"])
+    return bodies._write_atom_bitmap(f["routes"].amp_write, f["geometry"])
 
 
 #: THE CAPTURED RECIPE. `decode_step_gated` is exactly this tuple, and a CUDA graph
@@ -194,11 +195,8 @@ def validate_context(ctx: DecodeContext) -> None:
 
 
 def _facts(ctx: DecodeContext) -> dict:
-    #: the kernel still computes on floating levels and values: its seam dequantizes, once a call, until the
-    #: decode port reads the rows.
-    return {"routes": ctx.routes, "values": ctx.values, "levels": ctx.routes.dequantized(),
-            "v": ctx.values.dequantized(), "decay": ctx.decay,
-            "state": ctx.state, "expert": ctx.expert}
+    return {"routes": ctx.routes, "values": ctx.values, "decay": ctx.decay, "state": ctx.state,
+            "expert": ctx.expert}
 
 
 def _scratch_of(state):

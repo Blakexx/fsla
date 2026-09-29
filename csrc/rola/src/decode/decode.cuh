@@ -58,14 +58,17 @@ struct Span {  // one operand's address, as the producer left it; decode.md#span
 };
 
 struct DecodeParams {     // every pointer/extent one decode step needs; see decode.md#decodeparams
-  Span read[kMaxLevels];  // raw operands, addressed not copied; decode.md#decodeparams-note-l152
+  Span read[kMaxLevels];  // unit-max coefficient rows, u8 or f16; see decode.md#decodeparams
   Span write[kMaxLevels];
+  Span read_scale[kMaxLevels];  // fp32 row maxima, [B, 1, H]
+  Span write_scale[kMaxLevels];
   Span g_write;
-  Span v;
+  Span v;                     // the value's s8 high digit
+  Span v_lo;                  // its u8 low digit, base null at one digit
+  Span v_scale;               // the token's fp32 value scale
   int normalize[kMaxLevels];  // per READ level: still carries its own mass?; decode.md#near-line-98
-  int levels_bf16;  // storage type per operand family, 1=bfloat16 0=float; see decode.md#levelsbf16
+  int rows_f16;               // the coefficient rows' type, 1 = f16, 0 = u8
   int g_bf16;
-  int v_bf16;
 
   int level_width[kMaxLevels];       // B_l
   int level_amp_offset[kMaxLevels];  // into the flat [sum_l b_l] SMEM staging

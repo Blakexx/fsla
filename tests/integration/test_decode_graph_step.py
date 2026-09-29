@@ -57,8 +57,8 @@ from tests.integration.test_decode_paging import (
     _COLS,
     _DV,
     _arena,
+    _bundles,
     _config,
-    _f32,
     _fixture,
 )
 
@@ -72,7 +72,7 @@ _WIDTHS, _BC = (64, 64), 128
 
 def _absent_one_written_atom(fixture, config, arena):
     """Admit the step's write set except ONE atom, and say which one. `(bitmap, atom)`."""
-    _v, _read, write, _g = _f32(fixture)
+    write = _bundles(fixture)[0].amp_write
     bitmap = _write_atom_bitmap(write, config)
     row, column = (bitmap.nonzero())[0].tolist()
     held_out = bitmap.clone()
@@ -83,8 +83,8 @@ def _absent_one_written_atom(fixture, config, arena):
 
 
 def _step(fixture, config, arena, *, workspace=None):
-    v, read, write, g_write = _f32(fixture)
-    y, _state, workspace = _decode_step(v, read, write, g_write, config, arena.state,
+    routes, values = _bundles(fixture)
+    y, _state, workspace = _decode_step(routes, values, config, arena.state,
                                         workspace=workspace, page_table=arena.page_table)
     return y, workspace
 
@@ -96,7 +96,7 @@ def _absent_one_atom_per_bh(fixture, config, arena):
     per batch-head, holding out one atom of one batch-head would leave the others running
     and the cell would be asserting the mechanism the design replaced.
     """
-    _v, _read, write, _g = _f32(fixture)
+    write = _bundles(fixture)[0].amp_write
     bitmap = _write_atom_bitmap(write, config)
     held_out = bitmap.clone()
     for row in range(bitmap.shape[0]):
@@ -204,7 +204,7 @@ def test_gated_step_then_admit_then_replay_is_bit_identical_to_admitting_first()
     fixture = _fixture(_WIDTHS, seed=13, support=0.5)
     config = _config(_WIDTHS, fixture)
     BH = fixture["B"] * fixture["H"]
-    _v, _read, write, _g = _f32(fixture)
+    write = _bundles(fixture)[0].amp_write
     bitmap = _write_atom_bitmap(write, config)
 
     reference = _arena(_WIDTHS, _BC, BH)
@@ -377,7 +377,7 @@ def _make_growth(state, static):
     Re-planning also reassigns slots, which is the stronger cell -- the captured graph
     holds the arena's BASE and its table, and neither moves.
     """
-    written = _write_atom_bitmap(static.dequantized()[1], _config(_WIDTHS, dict(B=_B, H=_H)))
+    written = _write_atom_bitmap(static.amp_write, _config(_WIDTHS, dict(B=_B, H=_H)))
     keep = (state._arena.page_table >= 0) & written
     row, column = (keep.nonzero())[0].tolist()
     keep[row, column] = False

@@ -445,16 +445,17 @@ coalesced row loads — the lane→column map is a property of the warp, not of 
 
 ## <a id="params-amps"></a>9. `DecodeParams` — the operands, as addresses
 
-`read[l]` / `write[l]` / `g_write` / `v` are `Span`s: a base pointer and the `(b, h, w)`
-strides of the CALLER'S OWN `[B, 1, H, *]` view. There is no `[BH, b_l]` plane between the
+`read[l]` / `write[l]` (the coefficient rows), `read_scale[l]` / `write_scale[l]` (their fp32
+maxima), `g_write`, `v` / `v_lo` (the value digits) and `v_scale` are `Span`s: a base pointer
+and the `(b, h, w)` strides of the CALLER'S OWN `[B, 1, H, *]` view. There is no `[BH, b_l]` plane between the
 producer and the walk — the step folds these into shared memory itself
 ([`decode_fold.md`](decode_fold.md)), so the `[B, 1, H, W] -> [BH, W]` fold is an ADDRESS
 the kernel computes rather than a pass that ran.
 
 `normalize[l]` says whether read level `l` still carries its own mass, so the fold divides
-it by its row sum. `levels_bf16`, `g_bf16` and `v_bf16` name each operand family's storage
-type; the fold branches on them once per side, never per element
-([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)).
+it by its row sum. `rows_f16` and `g_bf16` name the rows' and the gain's storage type, and a
+null `v_lo` base the one-digit value; the fold branches on them once per side, never per
+element ([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)).
 
 `level_amp_offset[l]` is where level `l`'s staged amplitude row starts inside the flat
 `sum_l b_l` SMEM arrays. It is host-computed and carried rather than recomputed, because
@@ -956,9 +957,9 @@ where the fold already touches every atom holds nothing at all.
 (no owner-blocked amortization — [§3](#bc-absent)), no `MmaPrec`/precision split (there is
 no MMA, and the tf32x3/bf16 split died with the `PREC` axis everywhere else —
 `DELETIONS.md`), no `GLOBAL` (raw normalization is dead; the mass column is unconditional
-— [§20](#template-axes)), no OPERAND STORAGE TYPE (the fold reads three independent dtype
-families as runtime flags selecting a typed loop instead — a template axis there would
-multiply the matrix by eight for a few hundred bytes of gather,
+— [§20](#template-axes)), no OPERAND STORAGE TYPE (the fold reads the rows' type, the gain's
+and the value's digit count as runtime flags selecting a typed loop instead — a template axis
+there would multiply the matrix for a few hundred bytes of gather,
 [`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)), and — the axis this rung
 removed — no ADDRESS-SPACE arm: the factor tables are shared memory unconditionally, at
 every shipped topology, so there is no second arm for a template parameter to select
@@ -1896,8 +1897,10 @@ docs/internals/decode/decode_fold.md#the-dtype-arms
 <a id="spanof"></a>
 ### `span_of`
 
-The `[B, 1, H, W] -> [B * H, W]` fold as an ADDRESS. `T != 1` is refused -- the fold
-is defined on one token and a second one would be silently dropped:
+The `[B, 1, H, W] -> [B * H, W]` fold as an ADDRESS. Each operand's `B` and `H` are checked
+against the value's, not only their product (a transposed pair would fold to the right count
+and the wrong heads). `T != 1` is refused -- the fold is defined on one token and a second
+one would be silently dropped:
 docs/internals/decode/decode_fold.md#the-identity
 
 <a id="gsuf"></a>
@@ -1958,11 +1961,11 @@ recompute. Field by field: docs/internals/decode/decode.md#params-amps
 Per READ level: does it still carry its own mass, so the fold divides it by its row
 sum? The write side is never normalized.
 
-<a id="levelsbf16"></a>
-### `levels_bf16`
+<a id="rowsf16"></a>
+### `rows_f16`
 
-The storage type of each operand family, `1` = bfloat16 and `0` = float. Branching
-on STORAGE selects a typed gather loop once per side, never a test per element:
+The coefficient rows' storage type, `1` = f16 and `0` = u8. Branching on the DECLARED
+type selects a typed gather loop once per side, never a test per element:
 docs/internals/decode/decode_fold.md#the-dtype-arms
 
 <a id="near-line-129"></a>
@@ -2047,4 +2050,15 @@ PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the descriptor. 
 comes from the level widths and must be a whole number of pages, which a lawful routing
 makes it by construction; a ragged `N` is REFUSED at this seam rather than padded, and
 decode carries no shape, tolerance or topology prefill does not. The dense plane is
-`[BH, N, cols]` — the same page sequence with every page resident.
+`[BH, N / 16, page_bytes]` — the same page sequence with every page resident.
+
+<a id="coefficient-rows"></a>
+### The coefficient rows, as the bundle holds them
+
+The step reads the bundle's rows as they are (ruled 2026-09-29): u8 unit-max digits up to
+depth two, f16 at any depth, ONE type a call, each row beside its fp32 max; the write gain
+fp32 or bf16; the value as s8 digits, with the u8 low byte at two digits, and the fp32 token
+scale. The host entry refuses any other type, a u8 row at depth three or more, and levels
+that disagree on the type -- the bundle refuses the same at construction, so a refusal here
+names a direct caller of the ABI. How the fold turns each into a staged amplitude:
+[`decode_fold.md#raw`](decode_fold.md#raw).

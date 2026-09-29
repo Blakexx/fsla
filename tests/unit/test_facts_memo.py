@@ -250,7 +250,7 @@ def test_a_reference_only_node_is_refused_by_every_shipped_dag():
     for dag in (PREFILL_DAG, DECODE_STEP, DECODE_VERDICT):
         assert not any(step.reference_only for step in dag)
     with pytest.raises(ValueError, match="second derivation"):
-        validate_dag((write_atom_bitmap,), ("levels", "geometry"))
+        validate_dag((write_atom_bitmap,), ("routes", "geometry"))
 
 
 def test_the_decode_dag_is_walkable_and_masks_the_growth_band_off_the_dense_step():

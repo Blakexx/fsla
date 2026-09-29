@@ -223,7 +223,9 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     exists to prevent, pointed the other way.
     """
     from rola.ops.decode import _decode_step, derive_decode_geometry
+    from rola.ops.paging import page_layout
     from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
+    from tests.oracle.fixtures import step_bundles
 
     device = "cuda"
     widths, d_v = (16, 32), 64
@@ -234,9 +236,10 @@ def test_the_op_level_guard_raises_rather_than_redirecting():
     levels = tuple(torch.rand(1, 1, 1, w, device=device, requires_grad=True) for w in widths)
     g_write = torch.rand(1, 1, 1, device=device)
     v = torch.randn(1, 1, 1, d_v, device=device)
-    state = torch.zeros(1, 1, config.N, config.cols, device=device)
+    routes, values = step_bundles(v, levels, levels, g_write, topology)
+    state = torch.zeros(1, config.N // 16, page_layout(config.d_v).bytes, dtype=torch.uint8, device=device)
     with pytest.raises(RuntimeError, match="forward-only"):
-        _decode_step(v, levels, levels, g_write, config, state)
+        _decode_step(routes, values, config, state)
 
 
 @pytest.mark.cuda

@@ -78,10 +78,12 @@ _POISON = 0xA5  #: a byte no zeroed page holds
 #: THE ORACLE RULE AND THE TOPOLOGY BUILDER, ADOPTED RATHER THAN INVENTED, imported so there is ONE of each.
 from tests.oracle.fixtures import (  # noqa: E402
     assert_slots_close,
+    bundle_operands,
     oracle_run,
     state_pages,
     state_quantum,
     state_rounded,
+    step_bundles,
 )
 from tests.oracle.oracle_fixtures import (  # noqa: E402
     _topology as _build_topology,
@@ -138,11 +140,14 @@ def _fixture(widths, *, seed, support=1.0, offset=0.0, B=2, H=3):
     return dict(read=read, write=write, g_write=g_write, v=v, B=B, H=H)
 
 
-def _f32(fixture):
-    return (fixture["v"].float(),
-            tuple(t.float() for t in fixture["read"]),
-            tuple(t.float() for t in fixture["write"]),
-            fixture["g_write"].float())
+def _bundles(fixture):
+    """The step in the internal format, ``(RouteFactors, Values)``: what the kernel reads and whose values the
+    oracle takes. Built once a fixture, so every reader sees the same rows."""
+    if "bundles" not in fixture:
+        widths = tuple(level.shape[-1] for level in fixture["read"])
+        fixture["bundles"] = step_bundles(fixture["v"], fixture["read"], fixture["write"], fixture["g_write"],
+                                          _topology(widths))
+    return fixture["bundles"]
 
 
 def _config(widths, fixture):
@@ -231,7 +236,7 @@ def test_the_step_write_atom_set_is_exact(arm, support):
     widths, _BC = arm
     fixture = _fixture(widths, seed=len(widths) * 31 + 7, support=_SUPPORTS[support])
     config = _config(widths, fixture)
-    _v, _read, write, _gw = _f32(fixture)
+    write = _bundles(fixture)[0].amp_write
 
     got = _write_atom_bitmap(write, config)
     want = _leaf_support(write, widths, config).view(
@@ -254,7 +259,8 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
     fixture = _fixture(widths, seed=len(widths) * 97 + BC, support=_SUPPORTS[support])
     config = _config(widths, fixture)
     BH = fixture["B"] * fixture["H"]
-    v, read, write, g_write = _f32(fixture)
+    routes, values = _bundles(fixture)
+    write = routes.amp_write
 
     arena = _arena(widths, BC, BH)
     arena.plan_exact(_write_atom_bitmap(write, config), fresh=True)
@@ -266,10 +272,10 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
     _seed_from_dense(arena, dense)
 
     y_dense, dense_out, _ = _decode_step(
-        v, read, write, g_write, config,
+        routes, values, config,
         state_pages(dense.clone()))
     y_paged, _, _ = _decode_step(
-        v, read, write, g_write, config, arena.state,
+        routes, values, config, arena.state,
         page_table=arena.page_table)
 
     assert torch.equal(y_dense, y_paged), "the two backings disagree on y"
@@ -303,7 +309,8 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
     fixture = _fixture(widths, seed=len(widths) * 13 + 5, support=0.25)
     config = _config(widths, fixture)
     BH = fixture["B"] * fixture["H"]
-    v, read, write, g_write = _f32(fixture)
+    routes, values = _bundles(fixture)
+    write = routes.amp_write
 
     arena = _arena(widths, BC, BH)
     arena.plan_exact(_write_atom_bitmap(write, config), fresh=True)
@@ -321,10 +328,10 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
     table_before = arena.page_table.clone()
 
     y_dense, _, _ = _decode_step(
-        v, read, write, g_write, config,
+        routes, values, config,
         state_pages(dense.clone()))
     y_paged, _, _ = _decode_step(
-        v, read, write, g_write, config, arena.state,
+        routes, values, config, arena.state,
         page_table=arena.page_table)
 
     assert bytes_equal(arena.state[resident:],
@@ -354,7 +361,7 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
     second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
 
-    bits = [_write_atom_bitmap(_f32(step)[2], config) for step in (first, second)]
+    bits = [_write_atom_bitmap(_bundles(step)[0].amp_write, config) for step in (first, second)]
     new_atoms = int((bits[1] & ~bits[0]).sum())
     assert new_atoms > 0, "the second step reaches no new atom; the cell is vacuous"
 
@@ -372,8 +379,8 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
         #: stream, wait once, launch.
         arena.plan_exact(bitmap, fresh=False)
         arena.wait()
-        v, read, write, g_write = _f32(step)
-        y, _, _ = _decode_step(v, read, write, g_write, config, arena.state,
+        routes, values = _bundles(step)
+        y, _, _ = _decode_step(routes, values, config, arena.state,
                                page_table=arena.page_table)
         ys.append(y)
 
@@ -394,7 +401,7 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     #: the fp64 oracle, chained one token at a time -- which is what decode does.
     ref = None
     for step in (first, second):
-        ref = oracle_run(step["v"], step["read"], step["write"], step["g_write"], _topology(widths), entry=ref)
+        ref = oracle_run(*bundle_operands(*_bundles(step)), _topology(widths), entry=ref)
         ref = ref._replace(state=state_rounded(ref.state))
     state = to_canonical(arena.materialize(), widths, config.lattice_k,
                          config.lattice_m).view(2, 3, config.N, _COLS)
@@ -419,7 +426,7 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
     BH = 2 * 3
     first = _fixture(widths, seed=len(widths) * 41 + 1, support=0.5)
     second = _fixture(widths, seed=len(widths) * 41 + 2, support=0.5, offset=0.25)
-    bits = [_write_atom_bitmap(_f32(step)[2], config) for step in (first, second)]
+    bits = [_write_atom_bitmap(_bundles(step)[0].amp_write, config) for step in (first, second)]
     assert int((bits[1] & ~bits[0]).sum()) > 0, "the second step grows nothing here"
 
     admitted = _arena(widths, BC, BH)
@@ -431,8 +438,8 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
             if pool is None:
                 arena.plan_exact(bitmap, fresh=False)
                 arena.wait()
-            v, read, write, g_write = _f32(step)
-            y, _, _ = _decode_step(v, read, write, g_write, config, arena.state,
+            routes, values = _bundles(step)
+            y, _, _ = _decode_step(routes, values, config, arena.state,
                                    page_table=arena.page_table, pool=pool)
             out.append(y)
         ys[name] = out
@@ -446,7 +453,7 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
 
     ref = None
     for step in (first, second):
-        ref = oracle_run(step["v"], step["read"], step["write"], step["g_write"], _topology(widths), entry=ref)
+        ref = oracle_run(*bundle_operands(*_bundles(step)), _topology(widths), entry=ref)
         ref = ref._replace(state=state_rounded(ref.state))
     state = to_canonical(pooled.materialize(), widths, config.lattice_k,
                          config.lattice_m).view(2, 3, config.N, _COLS)

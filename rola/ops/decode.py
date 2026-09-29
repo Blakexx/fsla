@@ -260,7 +260,8 @@ def _fold(t: torch.Tensor) -> torch.Tensor:
 
 
 def fold_levels(levels) -> list[torch.Tensor]:
-    """The per-level amplitude stream, in torch: ``[BH, width_l]`` fp32.
+    """The per-level RAW coefficient values, in torch: ``[BH, width_l]`` fp32 (a u8 digit as its integer, an f16 one
+    widened), the values the step kernel's fold sums and scales.
 
     AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. The shipped path folds inside
     the step kernel, from the producer's own views; a gate that fed the kernel its own
@@ -357,10 +358,14 @@ def step(plan: DecodePlan) -> torch.Tensor:
     y = extension().rola_decode_forward(
         read=list(plan.read),
         write=list(plan.write),
+        read_scale=list(plan.read_scale),
+        write_scale=list(plan.write_scale),
         normalize=[int(bool(flag)) for flag in plan.normalize],
         dials=plan.dials,
         g_write=plan.g_write,
-        v=plan.v,
+        v_hat=plan.v_hat,
+        v_lo=plan.v_lo,
+        v_scale=plan.v_scale,
         state=plan.state_plane,
         ws=plan.scratch.ws,
         ctr=plan.scratch.ctr,
@@ -380,7 +385,7 @@ def step(plan: DecodePlan) -> torch.Tensor:
         pool_cursor=None if pool is None else pool.pool_cursor,
         pool_map=None if pool is None else pool.pool_map,
     )
-    B, _T, H, _d_v = plan.v.shape
+    B, _T, H, _d_v = plan.v_hat.shape
     return y.view(B, H, 1, config.d_v).permute(0, 2, 1, 3).contiguous()
 
 
@@ -407,54 +412,45 @@ def _write_atom_bitmap(write_levels, config: DecodeGeometry) -> torch.Tensor:
 
 
 def _decode_step(
-    v: torch.Tensor,
-    read_levels: tuple[torch.Tensor, ...],
-    write_levels: tuple[torch.Tensor, ...],
-    g_write: torch.Tensor,
+    routes,
+    values,
     config: DecodeGeometry,
     state: torch.Tensor,
     *,
     decay=None,
-    normalize: tuple[bool, ...] | None = None,
     workspace: DecodeScratch | None = None,
     page_table: torch.Tensor | None = None,
     pool=None,
 ) -> tuple[torch.Tensor, torch.Tensor, DecodeScratch]:
-    """The RAW-TENSOR entry: the step's own bodies, in the step's order.
+    """THE BUNDLE ENTRY for one token: the step's own bodies, in the step's order.
 
-    ``v`` is ``[B, 1, H, d_v]``; the level tensors are ``[B, 1, H, width_l]``;
-    ``g_write`` is ``[B, 1, H]``. There is no read-side gain at all: the readout
-    is a ratio, which fixes it to 1 identically. ``state`` is the dense
-    ``[B, H, N, d_v + 1]`` plane, or the arena's ``[slots, 16, d_v + 1]`` one under
-    ``page_table``.
+    ``routes`` is a one-token :class:`~rola.routing.factors.RouteFactors` and ``values`` a one-token
+    :class:`~rola.values.Values`; the kernel reads their rows, scales and digits as they are. ``state`` is the dense
+    ``[BH, N / 16, page_bytes]`` plane, or the arena's ``[slots, page_bytes]`` one under ``page_table``. The read
+    levels a bundle declares off the simplex are normalized in the fold
+    (:meth:`~rola.routing.factors.RouteFactors.read_needs_normalization`).
 
-    ``normalize`` is the per-read-level answer to "does this level still carry its own
-    mass"; ``None`` is the ordinary case here, a caller already on the simplex. The
-    bundle entry reads it off :meth:`~rola.routing.factors.RouteFactors.read_needs_normalization`
-    instead.
+    Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]`` fp32.
 
-    Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]``.
-
-    ``config`` ALREADY CARRIES THE PADDED ``DV`` (:func:`derive_decode_geometry`),
-    which is what makes this the SEAM for decode's value width: ``v`` here is still
-    the caller's own logical ``d_v``, padded to ``config.d_v``, and the returned
-    ``y`` is sliced back to it (``rola.ops.padding``). Per-level widths are NOT
-    padded -- :func:`derive_decode_geometry` already refused ``config`` past
-    :func:`_admit`'s floor rather than pad it, so ``read_levels``/``write_levels``
-    reach the kernel exactly as the caller holds them.
+    ``config`` ALREADY CARRIES THE PADDED ``DV`` (:func:`derive_decode_geometry`), which is what makes this the SEAM
+    for decode's value width: the value digits are padded to ``config.d_v`` with zero columns and the returned ``y``
+    is sliced back to the caller's ``d_v`` (``rola.ops.padding``). Per-level widths are NOT padded --
+    :func:`derive_decode_geometry` already refused ``config`` past :func:`_admit`'s floor rather than pad it, so the
+    rows reach the kernel exactly as the bundle holds them.
     """
-    guard_no_grad((v, g_write, *read_levels, *write_levels,
-                   *(decay.dials if decay is not None else ())))
-    logical_d_v = v.shape[-1]
-    v = pad_v(v, config.d_v)
-    plane = step_plane(v, config, decay, state, page_table)
-    BH = v.shape[0] * v.shape[2]
+    guard_no_grad((*routes.tensors(), *values.tensors(), *(decay.dials if decay is not None else ())))
+    logical_d_v = values.d_v
+    v_hat = pad_v(values.v_hat, config.d_v)
+    v_lo = None if values.v_lo is None else pad_v(values.v_lo, config.d_v)
+    plane = step_plane(v_hat, config, decay, state, page_table)
+    BH = values.batch * values.heads
     if workspace is None:
-        workspace = DecodeScratch.build(config, BH, v.device)
+        workspace = DecodeScratch.build(config, BH, v_hat.device)
     y = step(DecodePlan(
-        config=config, heads=v.shape[2], read=read_levels, write=write_levels,
-        normalize=(False,) * config.D if normalize is None else tuple(normalize),
-        dials=leaf_rate_dials_for(decay, config, v.device),
-        g_write=g_write, v=v, state_plane=plane, page_table=page_table,
-        scratch=workspace, pool=pool))
+        config=config, heads=values.heads, read=routes.amp_read, write=routes.amp_write,
+        read_scale=routes.scale_read, write_scale=routes.scale_write,
+        normalize=tuple(routes.read_needs_normalization()),
+        dials=leaf_rate_dials_for(decay, config, v_hat.device),
+        g_write=routes.g_write, v_hat=v_hat, v_lo=v_lo, v_scale=values.scale,
+        state_plane=plane, page_table=page_table, scratch=workspace, pool=pool))
     return slice_y(y, logical_d_v), state, workspace

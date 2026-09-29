@@ -42,7 +42,7 @@ import torch
 
 from rola.ops.decode import _decode_step, _write_atom_bitmap
 from rola.ops.paging import MMA_K_QUANTUM, PageArena, encode_pages, page_layout, vmm_supported
-from tests.integration.test_decode_paging import _ARMS, _config, _f32, _fixture
+from tests.integration.test_decode_paging import _ARMS, _bundles, _config, _fixture
 
 pytestmark = [
     pytest.mark.cuda,
@@ -234,7 +234,8 @@ def test_the_two_backings_are_bit_identical(arm):
     fixture = _fixture(widths, seed=41 + len(widths), support=0.5)
     config = _config(widths, fixture)
     BH = fixture["B"] * fixture["H"]
-    v, read, write, g_write = _f32(fixture)
+    routes, values = _bundles(fixture)
+    write = routes.amp_write
     bitmap = _write_atom_bitmap(write, config)
 
     outputs = []
@@ -251,7 +252,7 @@ def test_the_two_backings_are_bit_identical(arm):
         seed = torch.arange(int(present.sum()) * MMA_K_QUANTUM * _COLS, device="cuda",
                             dtype=torch.float32).view(-1, MMA_K_QUANTUM, _COLS) * 1e-3
         arena.state.index_copy_(0, table[present].long(), encode_pages(seed))
-        y, _, _ = _decode_step(v, read, write, g_write, config, arena.state,
+        y, _, _ = _decode_step(routes, values, config, arena.state,
                                page_table=table)
         outputs.append((y, arena.materialize(), arena))
 

@@ -18,6 +18,8 @@ import torch
 from rola.ops import carry as carry_ops
 from rola.ops.naive import naive_rola
 from rola.ops.paging import decode_pages, encode_pages, from_split_planes, to_split_planes
+from rola.routing.factors import RouteFactors
+from rola.values import DEFAULT_VALUE_DIGITS, Values
 from tests.oracle import tolerances
 
 
@@ -83,6 +85,22 @@ def plane_from_canonical(canonical, bh: int = 1):
     """A ``[BH, N, cols]`` CANONICAL state as the stored ``[BH, N/16, 16, cols]`` split planes: `canonical_from_plane`
     inverted, so a drawn entry state is the plane a kernel entry reads."""
     return to_split_planes(canonical.float().reshape(bh, -1, 16, canonical.shape[-1]))
+
+
+def step_bundles(v, read, write, g_write, topology, *, read_mass=None, digits: int = DEFAULT_VALUE_DIGITS):
+    """Floating step operands in the internal format: ``(RouteFactors, Values)`` as the framework's epilogue writes
+    them (u8 rows at depth <= 2, f16 deeper; ``digits`` value digits)."""
+    routes = RouteFactors.from_levels(topology, tuple(t.float() for t in read), tuple(t.float() for t in write),
+                                      g_write.float(), read_mass=read_mass)
+    return routes, Values.from_projection(v.float(), digits)
+
+
+def bundle_operands(routes, values):
+    """What the kernel is handed, in fp64 -- the op oracle's inputs: ``(v, read, write, g_write)``, the read levels
+    on the simplex: the op's oracle takes the bundle itself (docs/api.md section 2.1)."""
+    _, write = routes.dequantized()
+    return (values.dequantized().double(), tuple(r.double() for r in routes.read_simplex()),
+            tuple(w.double() for w in write), routes.g_write.double())
 
 
 def state_pages(logical):

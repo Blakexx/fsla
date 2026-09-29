@@ -122,24 +122,20 @@ decode_step_kernel(DecodeParams p) {
 
   // ---- THE FOLD: every per-token operand, widened and staged, by this CTA ------
   //: TWO BARRIERS FOR THE WHOLE PROLOGUE. -- see docs/internals/decode/decode.md#decode-step-kernel-note-l151
-  if (p.levels_bf16) {
-    fold_row_sums<__nv_bfloat16>(p, b, h, p.read, p.normalize, s_sum);
+  if (p.rows_f16) {
+    fold_row_sums<__half>(p, b, h, p.read, p.normalize, s_sum);
   } else {
-    fold_row_sums<float>(p, b, h, p.read, p.normalize, s_sum);
+    fold_row_sums<uint8_t>(p, b, h, p.read, p.normalize, s_sum);
   }
   __syncthreads();
-  if (p.levels_bf16) {
-    fold_rows<__nv_bfloat16>(p, b, h, p.read, p.normalize, s_sum, sa_r);
-    fold_rows<__nv_bfloat16>(p, b, h, p.write, nullptr, s_sum, sa_w);
+  if (p.rows_f16) {
+    fold_rows<__half>(p, b, h, p.read, p.read_scale, p.normalize, s_sum, sa_r);
+    fold_rows<__half>(p, b, h, p.write, p.write_scale, nullptr, s_sum, sa_w);
   } else {
-    fold_rows<float>(p, b, h, p.read, p.normalize, s_sum, sa_r);
-    fold_rows<float>(p, b, h, p.write, nullptr, s_sum, sa_w);
+    fold_rows<uint8_t>(p, b, h, p.read, p.read_scale, p.normalize, s_sum, sa_r);
+    fold_rows<uint8_t>(p, b, h, p.write, p.write_scale, nullptr, s_sum, sa_w);
   }
-  if (p.v_bf16) {
-    fold_value<__nv_bfloat16>(p, b, h, DV, v_tok);
-  } else {
-    fold_value<float>(p, b, h, DV, v_tok);
-  }
+  fold_value(p, b, h, DV, v_tok);
   if (DECAY) {
     for (int l = 0; l < D; ++l) {
       const int width = p.level_width[l];
@@ -658,6 +654,12 @@ void check_f32(const Tensor& t, const char* name) {
   STD_TORCH_CHECK(t.is_contiguous(), name, " must be contiguous");
 }
 
+//: an fp32 operand the step reads by address, strided as the producer left it.
+void check_f32_span(const Tensor& t, const char* name) {
+  STD_TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
+  STD_TORCH_CHECK(t.scalar_type() == Dtype::Float, name, " must be float32, got ", t.scalar_type());
+}
+
 void check_i32(const Tensor& t, const char* name) {
   STD_TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
   STD_TORCH_CHECK(t.scalar_type() == Dtype::Int, name, " must be int32, got ", t.scalar_type());
@@ -672,23 +674,23 @@ int is_bf16(Dtype dtype, const char* what) {
 }
 
 //: The `[B, 1, H, W] -> [B * H, W]` fold as an ADDRESS. `T != 1` is refused -- the fold -- see docs/internals/decode/decode.md#spanof
-Span span_of(const Tensor& t, int64_t BH, int64_t width, const char* name) {
+Span span_of(const Tensor& t, int64_t B, int64_t H, int64_t width, const char* name) {
   STD_TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
   STD_TORCH_CHECK(t.dim() == 4 && t.size(1) == 1, name, " must be [B, 1, H, W], got ",
                   shape(t.sizes()));
-  STD_TORCH_CHECK(t.size(0) * t.size(2) == BH, name, " folds to ", t.size(0) * t.size(2),
-                  " batch-heads against ", BH);
+  STD_TORCH_CHECK(t.size(0) == B && t.size(2) == H, name, " is ", shape(t.sizes()),
+                  " against the value's B = ", B, ", H = ", H);
   STD_TORCH_CHECK(width == 0 || t.size(3) == width, name, " is ", t.size(3), " wide against ",
                   width);
   return Span{t.data_ptr(), t.stride(0), t.stride(2), t.stride(3)};
 }
 
-Span scalar_span_of(const Tensor& t, int64_t BH, const char* name) {
+Span scalar_span_of(const Tensor& t, int64_t B, int64_t H, const char* name) {
   STD_TORCH_CHECK(t.is_cuda(), name, " must be a CUDA tensor");
   STD_TORCH_CHECK(t.dim() == 3 && t.size(1) == 1, name, " must be [B, 1, H], got ",
                   shape(t.sizes()));
-  STD_TORCH_CHECK(t.size(0) * t.size(2) == BH, name, " folds to ", t.size(0) * t.size(2),
-                  " batch-heads against ", BH);
+  STD_TORCH_CHECK(t.size(0) == B && t.size(2) == H, name, " is ", shape(t.sizes()),
+                  " against the value's B = ", B, ", H = ", H);
   return Span{t.data_ptr(), t.stride(0), t.stride(2), 0};
 }
 
@@ -789,7 +791,7 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
 
 //: The per-level geometry every decode entry validates the same way, filled into `p` and -- see docs/internals/decode/decode.md#filllevels
 int fill_levels(DecodeParams& p, const std::vector<Tensor>& levels,
-                const std::vector<int64_t>& level_widths, int64_t BH, int64_t N) {
+                const std::vector<int64_t>& level_widths, int64_t B, int64_t H, int64_t N) {
   int total_rows = 0;
   int64_t expect_n = 1;
   for (int l = 0; l < p.D; ++l) {
@@ -797,7 +799,7 @@ int fill_levels(DecodeParams& p, const std::vector<Tensor>& levels,
     STD_TORCH_CHECK(width >= 1 && width <= kDecodeMaxLevelWidth, "level ", l, " width ", width,
                     " exceeds the decode path's capacity ", kDecodeMaxLevelWidth,
                     " (see kProducerMaxBranchWidth)");
-    p.write[l] = span_of(levels[l], BH, width, "write[l]");
+    p.write[l] = span_of(levels[l], B, H, width, "write[l]");
     p.level_width[l] = width;
     p.level_amp_offset[l] = total_rows;
     total_rows += width;
@@ -839,10 +841,12 @@ int64_t rola_decode_build_stamp() {
 }
 
 Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
+                           std::vector<Tensor> read_scale, std::vector<Tensor> write_scale,
                            std::vector<int64_t> normalize, std::optional<Tensor> dials,
-                           Tensor g_write, Tensor v, Tensor state, Tensor ws, Tensor ctr,
-                           Tensor growth, Tensor growth_any, Tensor growth_ctr, Tensor done,
-                           Tensor atom_bits, std::vector<int64_t> level_widths,
+                           Tensor g_write, Tensor v_hat, std::optional<Tensor> v_lo, Tensor v_scale,
+                           Tensor state, Tensor ws, Tensor ctr, Tensor growth, Tensor growth_any,
+                           Tensor growth_ctr, Tensor done, Tensor atom_bits,
+                           std::vector<int64_t> level_widths,
                            std::vector<int64_t> level_row_offsets, int64_t lattice_k,
                            int64_t lattice_m, int64_t n_split, double eps,
                            std::optional<Tensor> page_table, std::optional<Tensor> pool_slots,
@@ -856,10 +860,12 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                   "read, write, normalize and the two per-level integer vectors must each "
                   "have D entries");
 
-  STD_TORCH_CHECK(v.dim() == 4 && v.size(1) == 1, "v must be [B, 1, H, d_v], got ",
+  const Tensor& v = v_hat;
+  STD_TORCH_CHECK(v.dim() == 4 && v.size(1) == 1, "v_hat must be [B, 1, H, d_v], got ",
                   shape(v.sizes()));
-  const int BH = static_cast<int>(v.size(0) * v.size(2));
+  const int B = static_cast<int>(v.size(0));
   const int H = static_cast<int>(v.size(2));
+  const int BH = B * H;
   const int d_v = static_cast<int>(v.size(3));
   const int cols = d_v + 1;  // the mass column is unconditional (raw is dead)
 
@@ -905,21 +911,40 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
 
   DecodeParams p{};
   p.D = D;
-  const int total_rows = detail::fill_levels(p, write, level_widths, BH, N);
+  const int total_rows = detail::fill_levels(p, write, level_widths, B, H, N);
   detail::fill_lattice(p, lattice_k, lattice_m, N);
-  const Dtype level_dtype = read[0].scalar_type();
+  //: THE COEFFICIENT ROWS: u8 up to depth two, f16 at any depth, one type a call. -- see docs/internals/decode/decode.md#coefficient-rows
+  const Dtype row_dtype = read[0].scalar_type();
+  STD_TORCH_CHECK(row_dtype == Dtype::Byte || row_dtype == Dtype::Half,
+                  "the coefficient rows are u8 or f16, got ", row_dtype);
+  STD_TORCH_CHECK(row_dtype == Dtype::Half || D <= 2, "u8 rows serve depth <= 2; a depth-", D,
+                  " call's rows are f16");
+  STD_TORCH_CHECK(
+      read_scale.size() == static_cast<size_t>(D) && write_scale.size() == static_cast<size_t>(D),
+      "one row scale a level a side");
   for (int l = 0; l < D; ++l) {
-    p.read[l] = detail::span_of(read[l], BH, p.level_width[l], "read[l]");
-    STD_TORCH_CHECK(read[l].scalar_type() == level_dtype && write[l].scalar_type() == level_dtype,
-                    "every routing level shares one dtype; level ", l, " disagrees");
+    p.read[l] = detail::span_of(read[l], B, H, p.level_width[l], "read[l]");
+    STD_TORCH_CHECK(read[l].scalar_type() == row_dtype && write[l].scalar_type() == row_dtype,
+                    "every coefficient row shares one type; level ", l, " disagrees");
+    detail::check_f32_span(read_scale[l], "read_scale[l]");
+    detail::check_f32_span(write_scale[l], "write_scale[l]");
+    p.read_scale[l] = detail::scalar_span_of(read_scale[l], B, H, "read_scale[l]");
+    p.write_scale[l] = detail::scalar_span_of(write_scale[l], B, H, "write_scale[l]");
     p.normalize[l] = normalize[l] != 0 ? 1 : 0;
     p.level_row_offset[l] = static_cast<int>(level_row_offsets[l]);
   }
-  p.g_write = detail::scalar_span_of(g_write, BH, "g_write");
-  p.v = detail::span_of(v, BH, d_v, "v");
-  p.levels_bf16 = detail::is_bf16(level_dtype, "the routing levels");
+  p.rows_f16 = row_dtype == Dtype::Half ? 1 : 0;
+  p.g_write = detail::scalar_span_of(g_write, B, H, "g_write");
   p.g_bf16 = detail::is_bf16(g_write.scalar_type(), "g_write");
-  p.v_bf16 = detail::is_bf16(v.scalar_type(), "v");
+  //: THE VALUE DIGITS: s8 high, u8 low at two digits, the fp32 token scale.
+  STD_TORCH_CHECK(v_hat.scalar_type() == Dtype::Char, "v_hat is s8, got ", v_hat.scalar_type());
+  p.v = detail::span_of(v_hat, B, H, d_v, "v_hat");
+  if (v_lo.has_value()) {
+    STD_TORCH_CHECK(v_lo->scalar_type() == Dtype::Byte, "v_lo is u8, got ", v_lo->scalar_type());
+    p.v_lo = detail::span_of(*v_lo, B, H, d_v, "v_lo");
+  }
+  detail::check_f32_span(v_scale, "v_scale");
+  p.v_scale = detail::scalar_span_of(v_scale, B, H, "v_scale");
 
   STD_TORCH_CHECK(n_split >= 1, "n_split must be >= 1, got ", n_split);
   STD_TORCH_CHECK(ws.dim() == 3 && ws.size(0) == BH && ws.size(1) == n_split && ws.size(2) == cols,

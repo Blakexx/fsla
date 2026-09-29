@@ -40,7 +40,7 @@ from rola.ops.naive import naive_rola
 from rola.ops.padding import pad_routes, pad_v
 from rola.ops.paging import bytes_equal
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-from tests.oracle.fixtures import assert_slots_close, logical_state, oracle_run, state_pages
+from tests.oracle.fixtures import assert_slots_close, logical_state, oracle_run, state_pages, step_bundles
 from tests.oracle.oracle_fixtures import _simplex
 from tests.oracle.tolerances import INTRA_OUTPUT
 
@@ -213,9 +213,8 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail_bit_for_bit()
         state = state_pages(
             to_lattice(torch.zeros(B, H, N, cols, device=device, dtype=torch.float32),
                       widths, config.lattice_k, config.lattice_m))
-        y, state, _ = _decode_step(
-            v.float(), tuple(t.float() for t in read_levels), tuple(t.float() for t in write_levels),
-            g_write.float(), config, state, decay=None)
+        routes, values = step_bundles(v, read_levels, write_levels, g_write, topology)
+        y, state, _ = _decode_step(routes, values, config, state, decay=None)
         logical = logical_state(state, config.d_v).reshape(B, H, N, cols)
         return y, to_canonical(logical, widths, config.lattice_k, config.lattice_m)
 

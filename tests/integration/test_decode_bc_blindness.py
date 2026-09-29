@@ -36,7 +36,7 @@ import torch
 from rola.engine.plan import DecodeGeometry
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.paging import bytes_equal
-from tests.oracle.fixtures import state_pages
+from tests.oracle.fixtures import state_pages, step_bundles
 from tests.oracle.oracle_fixtures import _simplex, _topology
 
 pytestmark = [
@@ -81,6 +81,7 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
     m0[..., d_v] = m0[..., d_v].abs()
     #: THE STATE IS HANDED TO THE KERNEL IN ITS STORED FORM (the int8 state pages).
     m0 = state_pages(m0)
+    routes, values = step_bundles(v, read_levels, write_levels, g_write, topology)
 
     results = []
     configs = []
@@ -97,8 +98,7 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
         config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=B * H, device=device)
         configs.append(config)
         state = m0.clone()
-        y, state, _ = _decode_step(v, read_levels, write_levels, g_write,
-                                     config, state)
+        y, state, _ = _decode_step(routes, values, config, state)
         results.append((y, state))
 
     assert configs[0] == configs[1] == configs[2], (

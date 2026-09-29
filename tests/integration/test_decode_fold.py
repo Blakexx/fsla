@@ -1,14 +1,16 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 
-"""THE DECODE FOLD: the declared summation order, held to BIT-IDENTITY.
+"""THE DECODE FOLD: the declared arithmetic, held to BIT-IDENTITY.
 
 The step's operand pass lives INSIDE the step kernel
 (``csrc/rola/src/decode/decode_fold.cuh``), so what this file gates it gates through the
-step's own output. Two of the three things the fold does are bit-exact for free -- the
-``[B, 1, H, W] -> [B*H, W]`` fold is the same bytes at ``T = 1``, and a widening cast
-rounds nothing. The third, the per-level normalizing sum, has a summation ORDER, and an
-order nobody wrote down is an order no gate can hold anything to.
+step's own output. The fold reads a level's stored row -- u8 or f16 digits against the row's
+fp32 max -- as RAW values (a u8 digit as its integer, an f16 one widened, both exact), and
+makes an amplitude one of two ways: ``raw * (scale / full_scale)`` for a level that carries
+its own mass, and ``raw / row_sum(raw)`` for a read level the fold normalizes (the scale
+cancels). The row sum has an ORDER -- exact for u8 digits, whose raw sum is an integer, and
+observable for f16 ones -- and an order nobody wrote down is an order no gate can hold anything to.
 
 So the order is DECLARED -- lane-strided ascending partials over 32 lanes, folded by the
 five ``__shfl_down_sync`` steps -- and this file is that declaration's gate.
@@ -17,13 +19,13 @@ five ``__shfl_down_sync`` steps -- and this file is that declaration's gate.
 everywhere, no deposit, and a state whose rows are zero except at ONE leaf ``s0``, the
 step's whole arithmetic collapses to
 
-    ``y[c] = a[s0] * e[c] / (a[s0] * m + eps)``,   ``a = row[s0] / row_sum(row)``
+    ``y[c] = a[s0] * e[c] / (a[s0] * m + eps)``
 
 -- one multiply per column and one divide, all in fp32 and all in a fixed order. So ``y``
-is a function of the DIVISOR's last bits and of nothing else, and the reference below
+is a function of the amplitude's last bits and of nothing else, and the reference below
 computes exactly that expression from ``declared_row_sum``.
 
-Cell 4 is the protocol's teeth: on a row built so that summation order is observable, the
+Cell 4 is the protocol's teeth: on an f16 row built so that summation order is observable, the
 declared order and a different one DISAGREE, so the reference is answering a question
 about order rather than about arithmetic in general.
 
@@ -38,15 +40,19 @@ from rola.ops.constants import READOUT_EPS
 from rola.ops.decode import _decode_step, derive_decode_geometry, fold_levels
 from rola.ops.lattice import permutation
 from rola.ops.paging import decode_pages
+from rola.routing import quant
+from rola.routing.factors import RouteFactors
+from rola.routing.types import Topology, UnionRouting
+from rola.values import Values
 from tests.oracle.fixtures import state_pages
-from tests.oracle.oracle_fixtures import _topology
 
 pytestmark = [
     pytest.mark.cuda,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="the fold is a CUDA kernel"),
 ]
 
-_DTYPES = (torch.float32, torch.bfloat16)
+_DTYPES = (torch.uint8, torch.float16)
+_FULL_SCALE = {torch.uint8: 255.0, torch.float16: 1.0}
 _DV = 64
 
 
@@ -86,62 +92,75 @@ def _single_leaf_state(BH: int, config, s0: int, device, seed: int):
     return stored, row_hi[:, :_DV], row_hi[:, _DV]
 
 
-def _y_of(read, *, dtype, normalize, seed, s0=0):
+def _routes(rows, scale, *, normalize):
+    """A one-level bundle over ``rows`` (read) and an empty write side. The level is union-routed, whose read duty is
+    never on the simplex, so a carried read mass is exactly what makes the fold normalize it."""
+    B, T, H, width = rows.shape
+    topology = Topology(levels=(UnionRouting(width=width),))
+    ones = torch.ones(B, T, H, dtype=torch.float32, device=rows.device)
+    return RouteFactors(topology=topology, amp_read=(rows,), amp_write=(torch.zeros_like(rows),),
+                        scale_read=(scale,), scale_write=(torch.zeros_like(scale),), g_write=ones,
+                        read_mass=ones if normalize else None)
+
+
+def _y_of(rows, scale, *, normalize, seed, s0=0):
     """One step over the collapsing fixture. Returns ``(y[BH, d_v], e, m)``."""
-    B, _T, H, width = read[0].shape
-    BH, device = B * H, read[0].device
-    kw = dict(dtype=dtype, device=device)
+    B, _T, H, width = rows.shape
+    BH, device = B * H, rows.device
+    routes = _routes(rows, scale, normalize=normalize)
+    assert routes.read_needs_normalization() == (normalize,)
     #: NO DEPOSIT: an all-zero write side leaves `supp(W)` empty, so every touched row is
     #: read-only and the state the readout sees is the state that was placed.
-    write = tuple(torch.zeros(B, 1, H, width, **kw) for _ in read)
-    g_write = torch.ones(B, 1, H, **kw)
-    v = torch.zeros(B, 1, H, _DV, **kw)
-    config = derive_decode_geometry(_topology((width,)), d_v=_DV, decay=False, BH=BH,
-                                    device=device)
+    values = Values.from_projection(torch.zeros(B, rows.shape[1], H, _DV, device=device))
+    config = derive_decode_geometry(routes.topology, d_v=_DV, decay=False, BH=BH, device=device)
     state, e, m = _single_leaf_state(BH, config, s0, device, seed + 1)
-    y, _state, _ws = _decode_step(v, read, write, g_write, config,
-                                  state,
-                                  normalize=normalize)
+    y, _state, _ws = _decode_step(routes, values, config, state)
     return y.reshape(BH, _DV), e, m
 
 
-def _reference_y(read_level, *, normalize, e, m, s0=0):
-    """The collapsed readout, computed from the DECLARED order and nothing else."""
-    folded = fold_levels((read_level,))[0]
-    a = folded[:, s0] / declared_row_sum(folded) if normalize else folded[:, s0]
+def _reference_y(rows, scale, *, normalize, e, m, s0=0):
+    """The collapsed readout, computed from the DECLARED arithmetic and nothing else."""
+    raw = fold_levels((rows,))[0]
+    if normalize:
+        a = raw[:, s0] / declared_row_sum(raw)
+    else:
+        #: a tensor divisor: torch divides by a SCALAR through its reciprocal, which is not the kernel's IEEE divide.
+        scale = scale.reshape(-1)
+        a = raw[:, s0] * (scale / torch.full_like(scale, _FULL_SCALE[rows.dtype]))
     return (a.unsqueeze(-1) * e) / (a * m + READOUT_EPS).unsqueeze(-1)
 
 
-def _read_row(B, H, width, *, dtype, seed, device="cuda"):
+def _read_rows(B, H, width, *, dtype, seed, device="cuda"):
+    """``(rows, scale)``: a stored read level. Every entry is strictly positive, so `supp(R)` is the whole leaf
+    space and the walk visits every row -- the sum being gated is over the FULL width."""
     gen = torch.Generator(device=device).manual_seed(seed)
-    #: Every entry is strictly positive, so `supp(R)` is the whole leaf space and the
-    #: walk visits every row -- the sum being gated is over the FULL width.
-    return (torch.rand(B, 1, H, width, dtype=dtype, device=device, generator=gen) + 0.25,)
+    level = 0.5 * (torch.rand(B, 1, H, width, device=device, generator=gen) + 0.25)
+    return quant.quantize_unit_max_rows(level, dtype)
 
 
 # ---------------------------------------------------------------------------
-# 1. the cast-only half: the widening and the address fold are exact
+# 1. the unnormalized half: the raw digit at its row's scale, and the address fold
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("dtype", _DTYPES)
 @pytest.mark.parametrize("width", [16, 64, 256])
-def test_the_unnormalized_fold_is_the_torch_fold(dtype, width):
-    """No divide: `y` is the amplitude the torch fold reads out of the same view."""
-    read = _read_row(3, 2, width, dtype=dtype, seed=4)
-    y, e, m = _y_of(read, dtype=dtype, normalize=(False,), seed=4)
-    assert torch.equal(y, _reference_y(read[0], normalize=False, e=e, m=m))
+def test_the_unnormalized_fold_is_the_raw_digit_at_its_scale(dtype, width):
+    rows, scale = _read_rows(3, 2, width, dtype=dtype, seed=4)
+    y, e, m = _y_of(rows, scale, normalize=False, seed=4)
+    assert torch.equal(y, _reference_y(rows, scale, normalize=False, e=e, m=m))
 
 
-def test_a_strided_view_folds_by_address():
-    """A level is ordinarily a VIEW of one packed plane, and the fold indexes it there."""
-    packed = _read_row(3, 2, 32, dtype=torch.float32, seed=3)[0]
-    sliced = (packed[..., ::2],)
-    dense = (sliced[0].contiguous(),)
-    y_view, e, m = _y_of(sliced, dtype=torch.float32, normalize=(True,), seed=8)
-    y_dense, e2, m2 = _y_of(dense, dtype=torch.float32, normalize=(True,), seed=8)
+@pytest.mark.parametrize("dtype", _DTYPES)
+def test_a_strided_view_folds_by_address(dtype):
+    """A level may be a VIEW of one packed plane, and the fold indexes it there."""
+    packed, scale = _read_rows(3, 2, 32, dtype=dtype, seed=3)
+    sliced = packed[..., ::2]
+    dense = sliced.contiguous()
+    y_view, e, m = _y_of(sliced, scale, normalize=True, seed=8)
+    y_dense, e2, m2 = _y_of(dense, scale, normalize=True, seed=8)
     assert torch.equal(e, e2) and torch.equal(m, m2), "the two runs saw different states"
     assert torch.equal(y_view, y_dense)
-    assert torch.equal(y_view, _reference_y(dense[0], normalize=True, e=e, m=m))
+    assert torch.equal(y_view, _reference_y(dense, scale, normalize=True, e=e, m=m))
 
 
 # ---------------------------------------------------------------------------
@@ -151,20 +170,20 @@ def test_a_strided_view_folds_by_address():
 @pytest.mark.parametrize("dtype", _DTYPES)
 @pytest.mark.parametrize("width", [16, 32, 64, 256])
 def test_the_normalized_read_matches_the_declared_order(dtype, width):
-    read = _read_row(3, 2, width, dtype=dtype, seed=7)
-    y, e, m = _y_of(read, dtype=dtype, normalize=(True,), seed=7)
-    assert torch.equal(y, _reference_y(read[0], normalize=True, e=e, m=m))
+    rows, scale = _read_rows(3, 2, width, dtype=dtype, seed=7)
+    y, e, m = _y_of(rows, scale, normalize=True, seed=7)
+    assert torch.equal(y, _reference_y(rows, scale, normalize=True, e=e, m=m))
 
 
 def test_the_flag_is_honoured_and_not_assumed():
     """The same row, both flags: normalizing and not normalizing are DIFFERENT answers."""
-    read = _read_row(2, 2, 64, dtype=torch.float32, seed=11)
-    y_on, e, m = _y_of(read, dtype=torch.float32, normalize=(True,), seed=11)
-    y_off, e2, m2 = _y_of(read, dtype=torch.float32, normalize=(False,), seed=11)
+    rows, scale = _read_rows(2, 2, 64, dtype=torch.uint8, seed=11)
+    y_on, e, m = _y_of(rows, scale, normalize=True, seed=11)
+    y_off, e2, m2 = _y_of(rows, scale, normalize=False, seed=11)
     assert torch.equal(e, e2) and torch.equal(m, m2)
     assert not torch.equal(y_on, y_off), "the normalize flag changed nothing"
-    assert torch.equal(y_on, _reference_y(read[0], normalize=True, e=e, m=m))
-    assert torch.equal(y_off, _reference_y(read[0], normalize=False, e=e, m=m))
+    assert torch.equal(y_on, _reference_y(rows, scale, normalize=True, e=e, m=m))
+    assert torch.equal(y_off, _reference_y(rows, scale, normalize=False, e=e, m=m))
 
 
 # ---------------------------------------------------------------------------
@@ -172,49 +191,51 @@ def test_the_flag_is_honoured_and_not_assumed():
 # ---------------------------------------------------------------------------
 
 def test_more_than_one_token_is_refused():
-    read = _read_row(2, 2, 16, dtype=torch.float32, seed=5)
-    two = tuple(t.repeat(1, 2, 1, 1) for t in read)
-    with pytest.raises(RuntimeError, match=r"\[B, 1, H, W\]"):
-        _y_of(two, dtype=torch.float32, normalize=(False,), seed=5)
+    rows, scale = _read_rows(2, 2, 16, dtype=torch.uint8, seed=5)
+    with pytest.raises(RuntimeError, match=r"must be \[B, 1, H"):
+        _y_of(rows.repeat(1, 2, 1, 1), scale.repeat(1, 2, 1), normalize=False, seed=5)
 
 
-def test_a_dtype_outside_the_instantiated_set_is_refused():
-    read = _read_row(2, 2, 16, dtype=torch.float16, seed=5)
-    with pytest.raises(RuntimeError, match="float32 or bfloat16"):
-        _y_of(read, dtype=torch.float16, normalize=(False,), seed=5)
+def test_a_row_dtype_outside_the_format_is_refused():
+    rows, scale = _read_rows(2, 2, 16, dtype=torch.float16, seed=5)
+    with pytest.raises(TypeError, match="stored as one of"):
+        _routes(rows.to(torch.bfloat16), scale, normalize=False)
 
 
 # ---------------------------------------------------------------------------
 # 4. the teeth: the reference is answering a question about ORDER
 # ---------------------------------------------------------------------------
 
+def _order_observable_row():
+    """An f16 row whose fp32 raw sum depends on the order: each small addend (f16's smallest subnormal, exact in
+    fp32) is half an fp32 ulp of 1, so ascending accumulation loses every one of them; the declared order pairs them
+    off in the lanes first and keeps them."""
+    tiny = 2.0 ** -24
+    return torch.tensor([1.0] + [tiny] * 63, dtype=torch.float16, device="cuda")
+
+
 def test_the_declared_order_is_distinguishable_from_another_one():
     """A row where summation order is OBSERVABLE, so the gate cannot be vacuous."""
-    #: Each addend is half an ulp of 1, so ascending accumulation loses every one of
-    #: them; the declared order pairs them off in the lanes first and keeps them.
-    tiny = 2.0 ** -24
-    row = torch.tensor([[1.0] + [tiny] * 63], dtype=torch.float32, device="cuda")
+    row = _order_observable_row().float().view(1, 64)
     ascending = torch.zeros(1, dtype=torch.float32, device="cuda")
     for k in range(row.shape[1]):
         ascending = ascending + row[:, k]
     declared = declared_row_sum(row)
     assert not torch.equal(declared, ascending)
-    assert declared.item() > ascending.item() == 1.0
 
 
 def test_the_kernel_takes_the_declared_order_and_not_the_ascending_one():
     """The same observable row, THROUGH THE STEP: the two orders give different `y`."""
-    tiny = 2.0 ** -24
-    row = torch.tensor([1.0] + [tiny] * 63, dtype=torch.float32, device="cuda")
-    read = (row.view(1, 1, 1, 64).contiguous(),)
-    y, e, m = _y_of(read, dtype=torch.float32, normalize=(True,), seed=21)
-    folded = fold_levels(read)[0]
-    declared = declared_row_sum(folded)
-    ascending = torch.zeros(folded.shape[0], dtype=torch.float32, device=folded.device)
-    for k in range(folded.shape[1]):
-        ascending = ascending + folded[:, k]
+    rows = _order_observable_row().view(1, 1, 1, 64).contiguous()
+    scale = torch.ones(1, 1, 1, dtype=torch.float32, device="cuda")
+    y, e, m = _y_of(rows, scale, normalize=True, seed=21)
+    raw = fold_levels((rows,))[0]
+    declared = declared_row_sum(raw)
+    ascending = torch.zeros(raw.shape[0], dtype=torch.float32, device=raw.device)
+    for k in range(raw.shape[1]):
+        ascending = ascending + raw[:, k]
     assert not torch.equal(declared, ascending), "the fixture stopped being order-observable"
-    a_asc = folded[:, 0] / ascending
+    a_asc = raw[:, 0] / ascending
     y_asc = (a_asc.unsqueeze(-1) * e) / (a_asc * m + READOUT_EPS).unsqueeze(-1)
-    assert torch.equal(y, _reference_y(read[0], normalize=True, e=e, m=m))
+    assert torch.equal(y, _reference_y(rows, scale, normalize=True, e=e, m=m))
     assert not torch.equal(y, y_asc), "the kernel's divisor is order-blind here"
