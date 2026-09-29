@@ -385,6 +385,16 @@ Host-side ADMISSION is what the slack pool removes for a growth step that fits i
 ([§4e](#the-claim)); a step that overruns the pool, or a state with no pool at all,
 surfaces to the host exactly as it always did.
 
+## <a id="phase-ledger"></a>4f. The phase ledger
+
+`DecodePhase` books every warp's cycles into five phases -- FOLD (the per-token operands staged), FACTOR (the digit
+masks, owner lists and term layout), ADMIT (the paged table test, claim and condensation, through the prologue's last
+barrier), WALK and COMBINE (the deposit, the arrivals, the split-K combine and the publication) -- with the shared
+`PhaseClock` (`common/phase_clock.md`). A warp that returns early (a retired segment, a non-last arriver, a non-last
+CTA) books what it ran and publishes before it returns. The ledger is bound by `rola_decode_ledger_bind` as
+`[BH * n_split][kDecodeWarps][kDecodePhases]` int64, cta = `bh * n_split + seg`; unbound, nothing is written and the
+clock's cost is its reads. It is the instrument the int8 port's budget line is measured with.
+
 ## <a id="max-levels"></a>5. `kMaxLevels` — restated, not included
 
 Spec §1 gives `1 <= D <= 4`. `decode.cuh` states that bound itself rather than

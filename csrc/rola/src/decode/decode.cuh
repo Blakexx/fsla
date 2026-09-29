@@ -36,6 +36,9 @@ constexpr int kDecodeMaxSpan = 32;  // refused at the host entry; decode.md#kdec
 
 constexpr int kDecodeResidentThreads = 1024;  // CTA/SM residency; decode.md#kdecoderesidentthreads
 
+//: THE STEP'S PHASES, as the phase ledger books them; see decode.md#phase-ledger
+enum DecodePhase : int { kPhFold, kPhFactor, kPhAdmit, kPhWalk, kPhCombine, kDecodePhases };
+
 __host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
   (void)decay;
   (void)levels;
@@ -111,6 +114,8 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
 
   float* ws;     // [BH, n_split, cols] -- split-K workspace; see decode.md#ws
   int32_t* ctr;  // [BH]
+  long long*
+      ledger;  // [BH * n_split][kDecodeWarps][kDecodePhases] cycles, or null; see decode.md#phase-ledger
 
   int64_t N;
   int atoms_per_bh;  // ceil(N / kAtomLeaves): the PAGE count per bh, both backings.

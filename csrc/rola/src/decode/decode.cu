@@ -31,6 +31,7 @@
 #include <cuda_bf16.h>
 
 #include "common/arch_runtime.cuh"
+#include "common/phase_clock.cuh"
 #include "common/state_page.cuh"
 #include "decode.cuh"
 #include "decode_api.cuh"
@@ -110,6 +111,14 @@ decode_step_kernel(DecodeParams p) {
   __shared__ int s_units[kMaxTerms];
   //: THE CTA'S WARP ARRIVAL COUNT, and the whole of the combine's synchronisation. It is -- see docs/internals/decode/decode.md#sarrive
   __shared__ int s_arrive;
+  __shared__ long long s_clock[kDecodeWarps][kDecodePhases];
+
+  PhaseClock<kDecodePhases> clock(&s_clock[warp][0], lane);
+  const long cta = static_cast<long>(bh) * p.n_split + seg;
+  auto finish = [&](int phase) {
+    clock.lap(phase);
+    clock.publish(p.ledger, cta, kDecodeWarps, warp);
+  };
 
   // ---- THE FOLD: every per-token operand, widened and staged, by this CTA ------
   //: TWO BARRIERS FOR THE WHOLE PROLOGUE. -- see docs/internals/decode/decode.md#decode-step-kernel-note-l151
@@ -145,6 +154,7 @@ decode_step_kernel(DecodeParams p) {
   const float sr = 1.0f;  // global fixes g_read := 1 (raw is dead)
   const float sw = p.g_bf16 ? fold_gain<__nv_bfloat16>(p, b, h) : fold_gain<float>(p, b, h);
   __syncthreads();
+  clock.lap(kPhFold);
 
   // ---- THE FACTOR TABLES ------------------------------------------------------
   //: `sum_l B_l` bits and at most `sum_l g_l` entries: nothing in this prologue is sized -- see docs/internals/decode/decode.md#near-line-169
@@ -159,11 +169,15 @@ decode_step_kernel(DecodeParams p) {
   compact_owner_lists<D>(p, omask, mask_w, olist, dlist);
   __syncthreads();
   publish_term_layout<D>(p, s_n_o, s_n_d, s_fld, s_units, &s_umax);
+  clock.lap(kPhFactor);
 
   // ---- RETIREMENT: the split's ceiling is captured, the realized work is not ----
   //: `n_split` is FROZEN for the sequence and baked into the captured launch -- see docs/internals/decode/decode.md#umax
   const int umax = s_umax;
-  if (seg > 0 && seg * kUnitBlockWarps >= umax) return;
+  if (seg > 0 && seg * kUnitBlockWarps >= umax) {
+    finish(kPhFactor);
+    return;
+  }
 
   const int inner_bits = p.lat_inner_bits;
 
@@ -254,6 +268,7 @@ decode_step_kernel(DecodeParams p) {
   //: THE PROLOGUE ENDS ON THIS BARRIER AND THERE IS NO OTHER BELOW IT. -- see docs/internals/decode/decode.md#syncthreads-2
   if (tid == 0) s_arrive = 0;
   __syncthreads();
+  clock.lap(kPhAdmit);
 
   //: A NEEDY BATCH-HEAD RUNS NOTHING: no walk, no `y`, no state, no counter -- see docs/internals/decode/decode.md#want-live
   const int want_live = ceil_div_int(umax, kUnitBlockWarps);
@@ -392,6 +407,8 @@ decode_step_kernel(DecodeParams p) {
     }
   }
 
+  clock.lap(kPhWalk);
+
   // ---- THE COMBINE: one deposit, one arrival, one summing warp ----------------
   //: ZERO `__syncthreads` BELOW THE PROLOGUE, and this is the mechanism that -- see docs/internals/decode/decode.md#fold-pitch -- see docs/internals/decode/decode.md#the-warp-arrival
   const int fold_pitch = cols + 3;
@@ -404,7 +421,10 @@ decode_step_kernel(DecodeParams p) {
   int arrived = 0;
   if (lane == 0) arrived = atomicAdd(&s_arrive, 1);
   arrived = __shfl_sync(0xffffffffu, arrived, 0);
-  if (arrived != kDecodeWarps - 1) return;
+  if (arrived != kDecodeWarps - 1) {
+    finish(kPhCombine);
+    return;
+  }
   __threadfence_block();
 
   //: THE MASS COLUMN IS READ BY EVERY LANE, not by lane 0 alone: the value is the same -- see docs/internals/decode/decode.md#near-line-466
@@ -437,7 +457,10 @@ decode_step_kernel(DecodeParams p) {
     int last_cta = 0;
     if (lane == 0) last_cta = (atomicAdd(&p.ctr[bh], 1) == n_live - 1) ? 1 : 0;
     last_cta = __shfl_sync(0xffffffffu, last_cta, 0);
-    if (last_cta == 0) return;
+    if (last_cta == 0) {
+      finish(kPhCombine);
+      return;
+    }
     __threadfence();
 
     //: SLOT ORDER, always -- the whole determinism argument. `__ldcg` bypasses L1 so -- see docs/internals/decode/decode.md#near-line-503
@@ -467,7 +490,10 @@ decode_step_kernel(DecodeParams p) {
     }
   }
 
-  if (!paged) return;
+  if (!paged) {
+    finish(kPhCombine);
+    return;
+  }
 
   // ---- the per-batch-head publication, by its LAST-ARRIVING WARP --------------
   //: EVERY MUTATION A SIBLING CTA COULD HAVE READ HAPPENS HERE AND NOWHERE ELSE, -- see docs/internals/decode/decode.md#row-base
@@ -498,7 +524,10 @@ decode_step_kernel(DecodeParams p) {
   int last_bh = 0;
   if (lane == 0) last_bh = (atomicAdd(p.growth_ctr, 1) == p.BH - 1) ? 1 : 0;
   last_bh = __shfl_sync(0xffffffffu, last_bh, 0);
-  if (last_bh == 0) return;
+  if (last_bh == 0) {
+    finish(kPhCombine);
+    return;
+  }
   __threadfence();
 
   //: THE REDUCTION THE HOST READS, and the done flags' self-reset. Nothing needy means -- see docs/internals/decode/decode.md#seen
@@ -514,6 +543,7 @@ decode_step_kernel(DecodeParams p) {
     *p.growth_any = any_needy ? 1 : 0;
     *p.growth_ctr = 0;
   }
+  finish(kPhCombine);
 }
 
 }  // namespace detail
@@ -561,6 +591,25 @@ std::vector<std::vector<int64_t>> rola_decode_arms() {
   ROLA_DECODE_ARMS(ROLA_DECODE_ROW)
 #undef ROLA_DECODE_ROW
   return out;
+}
+
+//: THE BOUND PHASE LEDGER, or null: the next steps book into it; see decode.md#phase-ledger
+long long* g_phase_ledger = nullptr;
+int64_t g_phase_ledger_ctas = 0;
+
+void rola_decode_ledger_bind(const std::optional<Tensor>& ledger) {
+  if (!ledger) {
+    g_phase_ledger = nullptr;
+    g_phase_ledger_ctas = 0;
+    return;
+  }
+  STD_TORCH_CHECK(ledger->is_cuda() && ledger->scalar_type() == Dtype::Long && ledger->dim() == 3
+                      && ledger->size(1) == kDecodeWarps && ledger->size(2) == kDecodePhases
+                      && ledger->is_contiguous(),
+                  "the decode phase ledger is a contiguous CUDA int64 tensor [ctas][", kDecodeWarps,
+                  "][", kDecodePhases, "]");
+  g_phase_ledger = reinterpret_cast<long long*>(ledger->mutable_data_ptr<int64_t>());
+  g_phase_ledger_ctas = ledger->size(0);
 }
 
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget) {
@@ -949,6 +998,11 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.n_split = static_cast<int>(n_split);
   p.total_rows = total_rows;
   p.eps = static_cast<float>(eps);
+  p.ledger = g_phase_ledger;
+  if (p.ledger != nullptr)
+    STD_TORCH_CHECK(g_phase_ledger_ctas >= static_cast<int64_t>(BH) * n_split,
+                    "the bound decode phase ledger covers ", g_phase_ledger_ctas,
+                    " CTAs; this step launches ", static_cast<int64_t>(BH) * n_split);
 
   launch_decode_step(p, d_v, decay, budget);
   return y;

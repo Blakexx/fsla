@@ -74,6 +74,16 @@ def arms() -> tuple[tuple[int, int, bool], ...]:
 C_DECODE_UNITS_PER_CTA = 16
 
 
+#: THE PHASE LEDGER'S SHAPE: `[ctas][warps][phases]`, the kernel's own `DecodePhase` order.
+LEDGER_PHASES = ("fold", "factor", "admit", "walk", "combine")
+LEDGER_WARPS = 32
+
+
+def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/decode/decode.md#phase-ledger)
+    """Bind the phase ledger the next steps book into, ``[BH * n_split, 32, 5]`` int64 cycles, or ``None``."""
+    extension().rola_decode_ledger_bind(ledger)
+
+
 def _shipped_decode_dv(D: int, decay: bool, device) -> tuple[int, ...]:
     """The ``DV`` values this binary's decode arms ship at this ``(D, decay)``.
 

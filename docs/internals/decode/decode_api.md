@@ -211,3 +211,9 @@ docs/internals/decode/decode_api.md#build-stamp
 THE ARMS THIS BINARY CARRIES, `[d_v, D, decay]` per row. A full build lists the whole
 declared matrix; an ITERATION build (`ROLA_DECODE_ARMS`) lists its subset and is not
 shippable: docs/internals/decode/decode_api.md#arm-subset
+
+## <a id="decode-ledger-bind"></a>`rola_decode_ledger_bind`
+
+Binds the phase ledger the next decode steps book into (`decode.md#phase-ledger`), or unbinds it with `None`: a
+contiguous CUDA int64 tensor `[ctas][kDecodeWarps][kDecodePhases]` covering `BH * n_split` CTAs, which the host entry
+checks before each launch. Measurement only; nothing on the shipped path binds one.
