@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from rola.engine import BackwardNotImplemented, rules
-from rola.engine.facts import manifest
 from rola.engine.facts.operands import operands_of, requires_backward
 
 if TYPE_CHECKING:
@@ -26,22 +25,21 @@ def widths_of(routes) -> tuple[int, ...]:
     return tuple(level.width for level in routes.topology.levels)
 
 
-def envelope_clauses(routes, decay: Any = None, *, d_v: int) -> tuple:
-    """The facts :func:`rola.engine.rules.envelope.arm_envelope` folds, for this call.
+def prefill_clauses(routes, decay: Any = None, *, d_v: int) -> tuple:
+    """The facts :func:`rola.engine.rules.envelope.prefill_envelope` folds, for this segment: the call's shape
+    and the binary's own census of the intra and carry arms at its depth."""
+    from rola.ops import carry as carry_ops
+    from rola.ops import prefill as prefill_ops
 
-    `d_v` is the value stream's per-head width, which is a fact about the operand and
-    not about the routing -- the caller reads it off the value bundle and states it here. The arm
-    is the ArmRule's own verdict: the envelope refuses the ABSENCE of an arm and
-    never re-derives one.
-    """
     widths = widths_of(routes)
-    return (widths, d_v, decay,
-            rules.arm(widths, manifest.chunk_arms()))
+    depth = len(widths)
+    return (widths, d_v, decay, routes.tokens, carry_ops.WINDOW, prefill_ops._intra_level_width(depth),
+            tuple(dv for (d, dv, _warps) in carry_ops.arms() if d == depth))
 
 
 def arm_refusal(routes, decay: Any = None, *, d_v: int) -> str | None:
-    """Why the chunk arm refuses this call, or None if it runs."""
-    return rules.arm_envelope(*envelope_clauses(routes, decay, d_v=d_v))
+    """Why the prefill kernels refuse this segment, or None if they run."""
+    return rules.prefill_envelope(*prefill_clauses(routes, decay, d_v=d_v))
 
 
 def envelope_refusal(routes: RouteFactors, values: Values, decay: Any = None) -> str | None:
@@ -61,27 +59,23 @@ def envelope_refusal(routes: RouteFactors, values: Values, decay: Any = None) ->
 
 def require_envelope(routes: RouteFactors, values: Values, decay: Any = None,
                      state: Any = None) -> None:
-    """Refuse anything the built arm cannot run. THE FAST-FAIL, in one place.
+    """Refuse anything the built kernels cannot run. THE FAST-FAIL, in one place.
 
     There is no second arm to route to: the fp64 oracle is the executable spec, not a
     fallback, and a caller who wants it calls it (:func:`rola.ops.naive.naive_rola`).
 
-    **THE GRADIENT IS NO LONGER A CLAUSE HERE.** It was, while the operator was
-    forward-only; the two-pass backward is built and gated, so a grad-bearing call
-    now runs. What remains is the CONFIGURATION envelope, which refuses whether or
-    not a gradient is attached, plus one clause that exists only on the grad path:
-    a carried STATE. Training in v1 is stateless -- the state plane is
-    caller-owned and mutated in place, and `d initial_state` is not in the scans --
-    so `state=` and a gradient are mutually exclusive, by name, at the boundary
-    rather than silently.
+    A GRADIENT IS REFUSED, loudly: the prefill has no reverse pass until the native
+    backward is rebuilt, and a forward reached from a grad context must raise rather
+    than sever the graph silently (the layer-dispatch autograd gap).
     """
-    grad = requires_backward(*operands_of(routes, values, decay))
-    stateless = rules.training_envelope(grad, state)
-    if stateless is not None:
-        raise BackwardNotImplemented(stateless)
+    if requires_backward(*operands_of(routes, values, decay)):
+        raise BackwardNotImplemented(
+            "a RoLA PREFILL carrying a gradient: the prefill has no reverse pass until the native backward is "
+            "rebuilt, and running it would sever the graph silently. Run under torch.no_grad(), freeze the "
+            "operands, or train through the fp64 oracle (rola.ops.naive.naive_rola).")
     reason = envelope_refusal(routes, values, decay)
     if reason is not None:
         raise NotImplementedError(
-            f"rola_op runs the BUILT envelope only and there is no arm for this call: "
+            f"rola_op runs the BUILT envelope only and there is no kernel for this call: "
             f"{reason}. Nothing else is reachable through this surface "
             "(docs/api.md §1).")

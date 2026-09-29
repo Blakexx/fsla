@@ -37,15 +37,12 @@ def _x(producer, *, B=2, T=6, dtype=torch.float64):
 
 
 def _validate(routes, v) -> None:
-    """One walk of the engine's fast-fail over `(routes, v)`.
-
-    K31: `rola_op` is the deletion refusal and speaks before it reads the bundle,
-    so the bundle contract is gated where it lives -- the chunk DAG's
-    `validate_context`, which R2 re-fronts with the rebuilt arm."""
-    from rola.engine.dags.chunk_dag import ChunkContext, validate_context
+    """One walk of the engine's fast-fail over `(routes, v)`: the prefill DAG's `validate_context`, which is where
+    the bundle contract is gated, before any fact is found."""
+    from rola.engine.dags.prefill_dag import PrefillContext, validate_context
 
     values = Values.from_projection(v) if isinstance(v, torch.Tensor) else v
-    validate_context(ChunkContext(routes=routes, values=values))
+    validate_context(PrefillContext(routes=routes, values=values))
 
 
 def _admitted(routes, v) -> None:
@@ -166,13 +163,13 @@ def test_the_op_refuses_anything_that_is_not_a_bundle():
 def test_the_op_refuses_a_bare_value_tensor_and_names_the_bundle():
     """PLANTED VIOLATION: hand the op the value tensor itself. The value stream is a
     `Values` bundle -- the format the kernels read -- and the refusal says so by name."""
-    from rola.engine.dags.chunk_dag import ChunkContext, validate_context
+    from rola.engine.dags.prefill_dag import PrefillContext, validate_context
 
     producer = _routes()
     factors = producer(_x(producer))
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     with pytest.raises(TypeError, match="Values"):
-        validate_context(ChunkContext(routes=factors, values=v))
+        validate_context(PrefillContext(routes=factors, values=v))
     _admitted(factors, v)
 
 
@@ -376,8 +373,8 @@ def test_the_layer_takes_the_slot_and_not_the_slot_spelled_out():
     signature = inspect.signature(rola.RoLA.__init__)
     assert list(signature.parameters) == [
         "self", "routes",
-        "d_v", "decay", "layer_idx", "expert"]
-    for name in ("d_v", "decay", "layer_idx", "expert"):
+        "d_v", "decay", "layer_idx", "expert", "memory_budget"]
+    for name in ("d_v", "decay", "layer_idx", "expert", "memory_budget"):
         assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 
@@ -403,14 +400,16 @@ def test_the_expert_argument_refuses_a_lookalike():
 # ---------------------------------------------------------------------------
 
 
-def test_the_layer_prefill_path_speaks_the_deletion_refusal():
-    """K31: the layer's prefill dispatch lands on `rola_op`, which is the
-    deletion refusal — the ruling is named before any kernel could run, in
-    training mode and out of it. Training mode's own clause survives on the
-    DECODE fork alone (`RoLA.validate_decode_envelope`); the dispatch table in
-    `tests/integration/test_decode_dispatch.py` is where that is asserted."""
+def test_the_layer_prefill_path_refuses_before_any_kernel_runs():
+    """The layer's prefill dispatch lands on `rola_op`, whose fast-fail speaks before any kernel could run: in
+    training mode the gradient clause (the prefill has no reverse pass yet), out of it the envelope's device
+    clause for these CPU fp64 fixtures."""
+    from rola.engine import BackwardNotImplemented
+
     layer = rola.RoLA(_routes()).double().train()
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
+    with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
+        layer(torch.randn(2, 6, 32, dtype=torch.float64))
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
         layer(torch.randn(2, 6, 32, dtype=torch.float64))
     assert layer.last_execution_backend is None, "the refusal let a kernel run first"
 
@@ -465,7 +464,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
     re-introducing a `measure/` reach fails here with the import error itself,
     and one that merely IMPORTS a measure module fails on the second assertion.
 
-    The module list is the prefill path itself -- the facade, the chunk arm, the
+    The module list is the prefill path itself -- the facade, the prefill DAG, the
     state, decode, paging -- and nothing else: a module the prefill path does not
     resolve does not belong in a probe about what the prefill path resolves. The
     general `measure/` clause is the release blocker.
@@ -493,9 +492,9 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "from rola.ops.decode import step_plane;"
             "from rola.engine.facts.call import require_envelope;"
             "from rola.engine.facts.planes import atom_bits;"
-            "from rola.engine.rules.arm import CHUNK_TOKENS;"
-            "from rola.engine.rules.envelope import arm_envelope;"
-            "from rola.engine.dags.chunk_dag import ChunkContext, build_chunk_plan;"
+            "from rola.engine.rules.envelope import prefill_envelope;"
+            "from rola.engine.dags.prefill_dag import PrefillContext, run_prefill;"
+            "from rola.ops.prefill import prefill;"
             "from rola.ops.decode import derive_decode_geometry;"
             "from rola.ops.paging import PageArena, MMA_K_QUANTUM;"
             # Nothing may have come from a `measure/` or `tests/` tree.

@@ -405,7 +405,7 @@ rest on that property.
 ## 4. The layer
 
 ```python
-RoLA(routes, *, d_v=64, decay=None, layer_idx=None, expert=None)
+RoLA(routes, *, d_v=64, decay=None, layer_idx=None, expert=None, memory_budget=None)
 
 y, continuation = layer(hidden_states, continuation=LayerContinuation(state=rola.state()))
 y, continuation = layer(next_tokens, continuation=continuation)
@@ -436,6 +436,22 @@ forward that pass could take would be a forward no backward can follow.
 inference from a timing, and it is published for exactly that: a benchmark process
 cannot spy on the call it is timing, and wall-clock cannot tell two arms apart. It is a
 SCALAR, not a tally — a caller that needs how many times an arm ran spies on the arm.
+
+### 4.2 Segments: the layer bounds its own working set
+
+A prefill runs as SEGMENTS of `T` tokens (ruled 2026-09-29): per segment the layer projects that
+stretch's routes and values, runs `rola_op` on it and carries the state to the next, so the projections
+are bounded along with the op -- which an op-level split cannot do once the whole call's bundle exists.
+The op runs one segment and knows nothing of segmentation.
+
+`T` is DERIVED, never a knob: the caller declares `memory_budget` (bytes); the layer takes the largest
+whole number of 512-token windows whose working set (`RoLA.segment_bytes_per_token`, an upper bound on
+every per-token tensor a segment allocates, gated against the measured peak) fits beside the state
+(`RoLA.state_bytes`, full residency), and REFUSES a budget below one window beside the state.
+`memory_budget=None` is one segment. The window grid is global, so a boundary on a window boundary moves
+no pair: a segmented call is the whole call (the op's readout to fp32 ULPs,
+`tests/integration/test_layer_segments.py`). A stateless call that spans segments carries an internal
+state and hands none back.
 
 ### 4.1 The bf16 projection arm
 

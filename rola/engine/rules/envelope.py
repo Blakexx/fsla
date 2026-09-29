@@ -36,6 +36,30 @@ def arm_envelope(widths: tuple[int, ...], d_v: int, decay: Any,
     return None
 
 
+@rule(gives=("prefill_envelope",),
+      needs=("widths", "d_v", "decay", "tokens", "window", "intra_width", "carry_dvs"))
+def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, tokens: int, window: int,
+                     intra_width: int | None, carry_dvs: tuple[int, ...]) -> str | None:
+    """Why the prefill has no kernel for this segment, or None if it runs.
+
+    ``intra_width`` is the level width the intra kernel ships at this depth (``None``: none), ``carry_dvs`` the
+    value widths the carry ships at this depth -- the binary's own census, never the source tree's.
+    """
+    depth = len(widths)
+    if decay is not None:
+        return ("decay is not implemented in the operator (the decay retirement; docs/internals/chunk/chunk.md); "
+                "use the reference arm")
+    if intra_width is None:
+        return f"this build carries no intra arm at depth {depth}"
+    if set(widths) != {intra_width}:
+        return f"widths={widths}; the prefill at depth {depth} is built at the intra's one level width {intra_width}"
+    if not any(dv >= d_v for dv in carry_dvs):
+        return f"d_v={d_v}; this build's carry at depth {depth} takes value widths {sorted(carry_dvs)}"
+    if tokens % window:
+        return f"T={tokens} is not a whole number of {window}-token windows"
+    return None
+
+
 @rule(gives=("envelope",), needs=("unratified", "device"))
 def envelope(unratified: tuple[str, ...], device) -> str | None:
     """The operand-side clauses, which precede the arm matrix's own.

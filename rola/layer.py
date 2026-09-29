@@ -48,6 +48,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
+from rola._state import state as rola_state
 from rola.engine import PlanOverrides
 from rola.engine.dags.decode_dag import decode_forward
 from rola.interface import (
@@ -131,6 +132,7 @@ class RoLA(nn.Module):
         decay=None,
         layer_idx: int | None = None,
         expert=None,
+        memory_budget: int | None = None,  #: reserved: the caller's declaration (docs/api.md section 4.2)
     ) -> None:
         super().__init__()
         #: THE PRODUCER IS A DUCK, so this is a STRUCTURAL check and not an isinstance
@@ -150,6 +152,8 @@ class RoLA(nn.Module):
         num_heads = routes.num_heads
         if type(d_v) is not int or d_v < 1:
             raise ValueError(f"d_v must be a positive exact int, got {d_v!r}")
+        if memory_budget is not None and (type(memory_budget) is not int or memory_budget < 1):
+            raise ValueError(f"memory_budget is a positive exact int of bytes, or None; got {memory_budget!r}")
         if decay is not None:
             validate_decay_source(decay, routes.topology, num_heads)
 
@@ -162,6 +166,7 @@ class RoLA(nn.Module):
         self.decay = decay
         self.layer_idx = layer_idx
         self.expert = overrides
+        self.memory_budget = memory_budget
 
         self.value_dim = num_heads * d_v
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
@@ -184,6 +189,44 @@ class RoLA(nn.Module):
     @property
     def head_v_dim(self) -> int:
         return self.d_v
+
+    # --- segmentation (docs/api.md section 4.2) -------------------------------
+
+    def segment_bytes_per_token(self) -> int:
+        """AN UPPER BOUND on a prefill segment's working set per batch-token, in bytes: every per-token tensor
+        a segment allocates, summed as if all were alive at once. Gated against the measured peak
+        (tests/integration/test_layer_segments.py); a kernel port that drops a tensor drops its term here.
+
+        Per head, the routing's ``W`` digits of both sides: the router's fp32 logits (4), the solve's bf16
+        levels (2), the stored rows (1), the seam's fp32 levels (4), the kernels' bf16 planes (2) and the
+        activity pass's bf16 re-pack (2); the ``d_v`` value channels: the bf16 projection (2), the two stored
+        digit planes (2), the seam's fp32 values (4), the kernels' two bf16 layouts (4), ``num`` (4) and ``y``
+        (4); and the per-token scalars (gains, scales, masses, den: 64). Per token, the hidden stream's two bf16
+        casts (the value and the router projections' inputs, 4).
+        """
+        W = 2 * sum(self.topology.widths)
+        per_head = W * (4 + 2 + 1 + 4 + 2 + 2) + self.d_v * (2 + 2 + 4 + 4 + 4 + 4) + 64
+        return self.num_heads * per_head + 4 * self.hidden_size
+
+    def state_bytes(self, batch: int) -> int:
+        """The carried state at full residency, in bytes: the fixed part of a segmented call's footprint."""
+        return batch * self.num_heads * self.topology.N * (self.d_v + 1) * 4
+
+    def segment_tokens(self, batch: int, length: int) -> int:
+        """THE SEGMENT LENGTH, derived from the declared ``memory_budget``: the largest whole number of
+        windows whose working set fits beside the state, capped at ``length``. No budget: one segment. A
+        budget below one window beside the state is refused."""
+        from rola.ops.carry import WINDOW
+
+        if self.memory_budget is None:
+            return length
+        per_window = WINDOW * batch * self.segment_bytes_per_token()
+        windows = (self.memory_budget - self.state_bytes(batch)) // per_window
+        if windows < 1:
+            raise ValueError(
+                f"memory_budget={self.memory_budget} bytes cannot hold one {WINDOW}-token window "
+                f"({per_window} bytes at batch {batch}) beside the state ({self.state_bytes(batch)} bytes)")
+        return min(length, int(windows) * WINDOW)
 
     def validate_decode_envelope(self, *operation_inputs) -> None:
         """THE DECODE ARM'S OWN CLAUSE: it is forward-only and has no node.
@@ -238,38 +281,47 @@ class RoLA(nn.Module):
         x = hidden_states
         B, L, _ = x.shape
         H = self.num_heads
-
-        #: `v` FLOWS bf16 into the op unconditionally (docs/api.md §4.1).
-        v = nn.functional.linear(x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16))
-        stateful = state is not None
-
-        v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
-        #: THE VALUES IN THE FORMAT: per-token unit-max s8 with the token's scale, the op computing on the
-        #: dequantized view with the projection's gradient stepped through (docs/api.md#4.1).
-        values = Values.from_projection(v)
-        routes = self.routes(x)
         decay = None if self.decay is None else self.decay()
         #: a state that carries CONTENTS, which is what makes a step a continuation.
         #: A bound-but-empty state is a fresh sequence, and takes the prefill arm.
-        carrying = stateful and state.carries
+        carrying = state is not None and state.carries
 
         if L == 1 and carrying:
+            routes, values = self._project(x)
             #: decode's envelope is its own -- BC-blind, general in the topology -- so
-            #: it is never asked the PREFILL matrix's questions.  Its GRADIENT clause
-            #: is its own too, and is asked here rather than above so that prefill,
-            #: which now trains, is not gated on decode's forward-only-ness.
+            #: it is never asked the PREFILL matrix's questions.
             self.validate_decode_envelope(*operands_of(routes, values, decay))
             out, state = decode_forward(routes, values, state, decay=decay, expert=self.expert)
-            backend = "decode"
+            self.last_execution_backend = "decode"
         else:
-            out, state = rola_op(routes, values, decay, state=state, expert=self.expert)
-            backend = "cuda"
+            out, state = self._prefill(x, state, decay)
+            self.last_execution_backend = "cuda"
 
-        self.last_execution_backend = backend
         out = out.reshape(B, L, H * self.head_v_dim)
         projected = nn.functional.linear(
             out.to(torch.bfloat16), self.o_proj.weight.to(torch.bfloat16)).to(x.dtype)
         return projected, LayerContinuation(state=state)
+
+    def _project(self, x: torch.Tensor):
+        """One stretch of tokens projected into the format: ``(routes, values)``."""
+        #: `v` FLOWS bf16 into the format (docs/api.md §4.1).
+        v = nn.functional.linear(x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16))
+        v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
+        return self.routes(x), Values.from_projection(v)
+
+    def _prefill(self, x: torch.Tensor, state, decay):
+        """THE SEGMENT LOOP (docs/api.md section 4.2): each segment is projected, run and its state carried to
+        the next, so the projections are bounded with the op. A stateless call that spans segments carries an
+        internal state and hands none back."""
+        B, L, _ = x.shape
+        T = self.segment_tokens(B, L)
+        carried = state if state is not None or T >= L else rola_state()
+        outs = []
+        for start in range(0, L, T):
+            routes, values = self._project(x[:, start:start + T])
+            y, carried = rola_op(routes, values, decay, state=carried, expert=self.expert)
+            outs.append(y)
+        return torch.cat(outs, dim=1) if len(outs) > 1 else outs[0], state if state is None else carried
 
     # --- state accounting (zoology's Hybrid.state_size reads these) ----------
 

@@ -2217,18 +2217,6 @@
   },
   {
    "path": "tests/unit/test_api_contract.py",
-   "message": "names the work code 'K31'",
-   "line_sha256": "cea492bc2b865145",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_api_contract.py",
-   "message": "names the work code 'K31'",
-   "line_sha256": "ff92903c4f153c2e",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_api_contract.py",
    "message": "names the work code 'P67'",
    "line_sha256": "2b527df09e86e2f7",
    "count": 1
@@ -2393,18 +2381,6 @@
    "path": "tests/unit/test_facts_rules.py",
    "message": "names the work code 'P75'",
    "line_sha256": "413b36551e580bbe",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_interface.py",
-   "message": "names the work code 'K31'",
-   "line_sha256": "068bfe723683f3c5",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_interface.py",
-   "message": "names the work code 'K31'",
-   "line_sha256": "81f2a1cf2273a963",
    "count": 1
   },
   {

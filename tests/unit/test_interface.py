@@ -23,7 +23,7 @@ from conftest import build_routes
 
 import rola
 from rola.expert import envelope_refusal, require_envelope
-from rola.interface import operands_of, requires_backward
+from rola.interface import BackwardNotImplemented, operands_of, requires_backward
 from rola.values import Values
 
 # --- the predicate -----------------------------------------------------------
@@ -86,17 +86,18 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
     return v, routes
 
 
-def test_the_prefill_arm_refuses_by_naming_the_ruling():
-    """K31: the prefill execution arm is DELETED, and the op says so by name --
-    the ruling, the queue card and the baseline tag -- before it looks at the
-    bundle at all. The refusal is the surface until R2 lands (the layer-dispatch
-    autograd-gap lesson: a deleted arm must raise, never sever silently)."""
+def test_a_grad_bearing_prefill_is_refused_loudly():
+    """The prefill has no reverse pass until the native backward is rebuilt, so a call that carries a gradient
+    must RAISE, by name, before any launch -- never sever the graph silently (the layer-dispatch autograd gap).
+    The gradient clause speaks before the envelope's: the same bundle on the CPU without a gradient is refused
+    for its device instead."""
     v, routes = _tiny_routing(requires_grad=True)
-    assert requires_backward(v, *routes.tensors()) is True
-    with pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
-        rola.rola_op(routes, v)
-    with pytest.raises(NotImplementedError, match="baseline/pre-k31"):
-        rola.rola_op(routes, v)
+    values = Values.from_projection(v)
+    assert requires_backward(*values.tensors(), *routes.tensors()) is True
+    with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
+        rola.rola_op(routes, values)
+    with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
+        rola.rola_op(routes, values)
 
 
 def test_rola_op_has_no_consumer_only_kwargs_to_silently_ignore():
@@ -132,17 +133,6 @@ def test_an_explicit_no_grad_context_is_how_an_inference_site_calls_the_op():
         assert "CUDA kernel" in envelope_refusal(routes, Values.from_projection(v))
 
 
-def test_the_refusal_is_the_same_sentence_with_and_without_a_gradient():
-    """The K31 refusal speaks whether or not a gradient is attached: the same
-    sentence must come back both times, so a caller cannot be told two different
-    things about one bundle."""
-    v, routes = _tiny_routing(requires_grad=True)
-    with pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
-        rola.rola_op(routes, v)
-    with torch.no_grad(), pytest.raises(NotImplementedError, match="the prefill arm is deleted"):
-        rola.rola_op(routes, v)
-
-
 def test_a_cpu_bundle_is_refused_because_there_is_no_cpu_lowering():
     """The arm is a CUDA kernel and there is no CPU implementation to reach."""
     v, routes = _tiny_routing(requires_grad=False)
@@ -157,10 +147,10 @@ def test_the_envelope_admits_a_no_grad_cuda_bundle_on_a_built_arm():
     gradient off and the operands on the device, an in-matrix bundle must actually be
     ADMITTED. Asserting only the refusals would let the arm rot behind them."""
     torch.manual_seed(5)
-    producer = build_routes(hidden_size=32, num_heads=1, widths=(8, 8),
-                           routing=_dense_routing()).to("cuda")
-    x = torch.randn(1, 32, 32, device="cuda")
-    v = torch.randn(1, 32, 1, 64, device="cuda")
+    producer = rola.RouteProducer([rola.split_routing(256, sparse_duty="write"),
+                                   rola.split_routing(256, sparse_duty="read")], hidden_size=32, num_heads=1).to("cuda")
+    x = torch.randn(1, 512, 32, device="cuda")
+    v = torch.randn(1, 512, 1, 64, device="cuda")
     with torch.no_grad():
         routes = producer(x)
         assert envelope_refusal(routes, Values.from_projection(v)) is None

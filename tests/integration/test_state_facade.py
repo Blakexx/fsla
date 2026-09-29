@@ -50,12 +50,12 @@ def test_a_raw_tensor_is_not_a_state():
     Gated at `validate_context` (the seam the rebuilt kernel re-fronts): `rola_op` itself is
     the deletion refusal and speaks before it reads its arguments.
     """
-    from rola.engine.dags.chunk_dag import ChunkContext, validate_context
+    from rola.engine.dags.prefill_dag import PrefillContext, validate_context
     from rola.values import Values
 
     producer, (x, v) = _producer(), _inputs()
     with torch.no_grad(), pytest.raises(TypeError, match="rola.RoLAState"):
-        validate_context(ChunkContext(routes=producer(x), values=Values.from_projection(v),
+        validate_context(PrefillContext(routes=producer(x), values=Values.from_projection(v),
                                       state=torch.zeros(1), want_state=True))
 
 
