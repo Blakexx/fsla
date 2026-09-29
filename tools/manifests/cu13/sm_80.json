@@ -27,8 +27,8 @@
   }
  },
  "source": {
-  "csrc_sha256": "b4974b2f40d7ef8b19a4af4b1773ffe4f3565695ee10eab6bf69d383a291edce",
-  "date": "2026-09-28",
+  "csrc_sha256": "45a4f2984dbb2dbf9101504490dc2bababe0cef4d7af75beeb1ea9fef4827423",
+  "date": "2026-09-29",
   "image_digest": ""
  },
  "shards": {
@@ -2790,53 +2790,13 @@
    "local_ops": 0,
    "sass_sha256": "0ed33f0c5ff24f2ea40cd4c8d02dbac3a2be1f470d70fb77630390c2b20d5296"
   },
-  "sm_80:_ZN4rola7prepass14prepass_kernelILi2ELi16EEEvNS0_13PrepassParamsE": {
-   "regs": 255,
-   "spill_stores": 740,
-   "spill_loads": 764,
-   "hot_locals": 296,
-   "local_ops": 317,
-   "sass_sha256": "b64499651eb1fb9084597cf1cbbee3ecea5f39a7d277be7d06c8523ab8cec778"
-  },
-  "sm_80:_ZN4rola7prepass14prepass_kernelILi2ELi1EEEvNS0_13PrepassParamsE": {
-   "regs": 176,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "cbe64c6d675b5bb2248b47b7d97ee4d59c44812d64dc398b65a5ebf3e80f6c89"
-  },
-  "sm_80:_ZN4rola7prepass14prepass_kernelILi2ELi2EEEvNS0_13PrepassParamsE": {
-   "regs": 196,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "644eb4b6a6de7d54228c0550b7ffe647b501b79dd52df063cb8c0ee83f5726e6"
-  },
-  "sm_80:_ZN4rola7prepass14prepass_kernelILi2ELi4EEEvNS0_13PrepassParamsE": {
-   "regs": 200,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "f070dd54c64881335830f3a839e9810ab2cdfe8854da33025146075fe52122d5"
-  },
-  "sm_80:_ZN4rola7prepass14prepass_kernelILi2ELi8EEEvNS0_13PrepassParamsE": {
-   "regs": 255,
-   "spill_stores": 0,
-   "spill_loads": 0,
-   "hot_locals": 0,
-   "local_ops": 0,
-   "sass_sha256": "565998d736402a25af82d0cd02731f8a232a1b77b3cd075d3f12b9522897d64a"
-  },
   "sm_80:_ZN4rola8stampdet17csrc_stamp_kernelEPl": {
    "regs": 8,
    "spill_stores": 0,
    "spill_loads": 0,
    "hot_locals": 0,
    "local_ops": 0,
-   "sass_sha256": "04e609ca2b26a07896f5e28b6ad4ebf0e3a61fc206896b1a0b9bf777fb24579e"
+   "sass_sha256": "d51254b015f9c68ed4b5abba75e9613fe093068177f68bb6abdfe2e460b46c54"
   }
  }
 }
