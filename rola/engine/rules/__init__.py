@@ -8,22 +8,17 @@ declared with :func:`rola.engine.runner.rule`, which is what makes this director
 listing the layer's inventory (docs/internals/engine/rules.md).
 """
 
-from rola.engine.rules.arm import CHUNK_TOKENS, arm
-from rola.engine.rules.envelope import arm_envelope, envelope, prefill_envelope, training_envelope
+from rola.engine.rules.envelope import envelope, prefill_envelope
 from rola.engine.rules.mask import decode_mask, mask
 from rola.engine.rules.paging import admission, paging_preference
 from rola.engine.rules.run_table import run_table
 
 __all__ = [
-    "CHUNK_TOKENS",
     "admission",
-    "arm",
-    "arm_envelope",
     "decode_mask",
     "envelope",
     "mask",
     "paging_preference",
     "prefill_envelope",
     "run_table",
-    "training_envelope",
 ]

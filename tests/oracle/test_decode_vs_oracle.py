@@ -31,8 +31,8 @@ left at D2, and the chunk arm left with the K31 deletion batch (baseline = tag
 That took one gate with it and improved another:
 
 * **G5** — decode against the TILED consumer at ``T = 1`` — RETIRES. Its subject was
-  the second prefill kernel as a cross-check, and the chunk arm cannot run ``T = 1``
-  at all (``T`` must be a multiple of ``rola.engine.rules.arm.CHUNK_TOKENS``). What G5
+  the second prefill kernel as a cross-check, and the retired chunk arm could not run ``T = 1``
+  at all (``T`` had to be a whole number of its 32-token chunks). What that gate
   actually established beyond the oracle rows was consumer-to-consumer agreement, and
   after D2 there is one prefill consumer.
 * **G7** — the prefill/decode seam — is now graded against the fp64 ORACLE over the
@@ -66,11 +66,8 @@ pytestmark = [
 
 
 def _chunk_tokens() -> int:
-    """The prefill arm's chunk length. Imported through the function so this
-    module stays importable without the extension for a collection-only run."""
-    from rola.engine.rules.arm import CHUNK_TOKENS
-
-    return CHUNK_TOKENS
+    """The oracle prefill's length unit, in tokens."""
+    return 32
 
 
 #: THE TOPOLOGY AXIS, written out rather than reduced because the lattice ``(k, m)`` each

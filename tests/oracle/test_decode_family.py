@@ -35,7 +35,6 @@ import pytest
 import torch
 
 from rola.engine.facts.call import arm_refusal
-from rola.engine.rules.arm import CHUNK_TOKENS
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.lattice import to_canonical, to_lattice
 from rola.ops.naive import naive_rola
@@ -51,12 +50,11 @@ pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="decode is a CUDA kernel"),
 ]
 
-#: The prefill leg runs on the CHUNK arm, whose built manifest is
-#: uniform-width, so the family's topology is a built `(D, B)` and its prefill
-#: length is a multiple of `rola.engine.rules.arm.CHUNK_TOKENS`. DECODE's own envelope
-#: is unchanged -- it is BC-blind and topology-general -- so that is a
-#: constraint the PREFILL puts on the fixture, not one decode acquired.
+#: The prefill leg is the fp64 oracle, so the family's topology and prefill length are the fixture's own.
+#: DECODE's envelope is BC-blind and topology-general.
 _WIDTHS, _DV, _B, _H = (64, 64), 64, 2, 2
+#: the oracle prefill's length, in tokens.
+_PREFILL_TOKENS = 64
 
 
 def _draw(gen, device, T, p_read, p_write, *, widths=_WIDTHS, H=_H, B=_B, dv=_DV,
@@ -127,7 +125,7 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
     """
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9000 + int(decay_on))
-    T, steps = 2 * CHUNK_TOKENS, 4
+    T, steps = _PREFILL_TOKENS, 4
     topology = _topology(_WIDTHS)
     decay = (None if not decay_on else
              LeafMassDecay(dials=_decay_dials(_WIDTHS, _H, gen, device)))

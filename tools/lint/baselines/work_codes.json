@@ -1250,42 +1250,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/engine/chunk_dag.md",
-   "message": "names the work code 'M1'",
-   "line_sha256": "2e7844e495faebce",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/chunk_dag.md",
-   "message": "names the work code 'M1'",
-   "line_sha256": "69a1e1e89e4b5878",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/chunk_dag.md",
-   "message": "names the work code 'M2'",
-   "line_sha256": "157bd7e0610144cd",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/chunk_dag.md",
-   "message": "names the work code 'M2'",
-   "line_sha256": "2e7844e495faebce",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/chunk_dag.md",
-   "message": "names the work code 'M2'",
-   "line_sha256": "69a1e1e89e4b5878",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/engine/chunk_dag.md",
-   "message": "names the work code 'M2'",
-   "line_sha256": "b5dcbbd421ecc456",
-   "count": 1
-  },
-  {
    "path": "docs/internals/engine/decode_dag.md",
    "message": "names the work code 'M3'",
    "line_sha256": "3dabf5a89b1558b6",
@@ -2057,12 +2021,6 @@
    "path": "tests/oracle/test_decode_vs_oracle.py",
    "message": "names the work code 'G5'",
    "line_sha256": "85c4b1be4069cc76",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_decode_vs_oracle.py",
-   "message": "names the work code 'G5'",
-   "line_sha256": "906ef22abd4be7e2",
    "count": 1
   },
   {

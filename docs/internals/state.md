@@ -228,8 +228,8 @@ exists to avoid, and the rejoin is a second reason not to.
 
 ## <a id="backing-policy"></a>4. What the state contributes to a kernel call
 
-The ORDER of a stateful call is the chunk DAG's and is stated there
-([`engine/chunk_dag.md` §4](engine/chunk_dag.md#host-order)). What is the STATE's own
+The ORDER of a stateful call is the prefill DAG's and is stated there
+([`engine/prefill_dag.md`](engine/prefill_dag.md)). What is the STATE's own
 is this: `_kernel_entry` plans the call's atoms into slots and hands back
 `(s_in, arena)`, and `_kernel_commit` takes the final plane for a state that just BOUND
 a dense backing — a paged state owns the arena's plane, and a dense continuation was

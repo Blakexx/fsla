@@ -131,7 +131,7 @@ Every cell of this cross-product is gated against the oracle:
 |---|---|
 | decay | off, on (including the `1 - rate` catastrophic-cancellation arm) |
 | routing sparsity | dense, sparse, read-only / write-only leaves |
-| `(widths, D, B)` | the built arm list the manifest carries (`chunk_arms()`), projected |
+| `(widths, D, B)` | the built arms the binary carries (`rola.ops.carry.arms`), projected |
 | sequence length `T` | 37 across the structural matrix; 512 / 2048 / 8192 on the accumulation arm |
 
 Three axes this cross-product used to carry are gone (`52a67d8`; see
@@ -164,8 +164,8 @@ length axis is covered states which cells carry it.
 consumer's token quantum, chosen per launch by reading the realized routing, and
 gated by fixtures built long enough to force the wide arm. Both the axis and its
 kernel retired with the tiled consumer ([`internals/DELETIONS.md`](internals/DELETIONS.md)); the
-chunk arm's chunk `rola.engine.rules.arm.CHUNK_TOKENS = 32` is a build fact and not a
-second formulation to gate. It is a CEILING on one super-chunk's gathered entries,
+retired chunk arm's 32-token chunk was a build fact and not a second formulation to
+gate. It is a CEILING on one super-chunk's gathered entries,
 not a quantum the caller lands on, so `T` is an ordinary length axis here:
 the ragged-length rows that held this against the oracle retired with the chunk
 kernel; on this line the combined prefill REFUSES a length that is not whole windows

@@ -71,15 +71,6 @@ class _Whitelist:
     _host_budget_worker_slot = None
     _take_gpu_lock = None
 
-    # THE FACT SYSTEM ADDRESSES BY STRING: a node declares `gives=("union_table", ...)` / `needs=(...)` and reads
-    # `f["union_table"]` (`rola/engine/facts/nodes.py`), so the plan field of the same name has no attribute read.
-    union_table = None
-
-    # `ChunkPlan` IS A CONTRACT, and its consumer is the absent carry launch (card C): the field list is the claim
-    # that no field is `O(N * L)`, so a field with no reader TODAY is the contract the rebuild fills, not dead weight.
-    v_row_bytes = None
-    y_dtype = None
-
     # THE MIRROR IS COMPLETE BY CONSTRUCTION: `LivenessLayout` mirrors `csrc/rola/src/facts/liveness_contract.cuh`
     # member for member, and the C++ member is the one a `static_assert` gates (the liveness contract gate).
     token_bit = None

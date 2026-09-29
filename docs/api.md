@@ -83,11 +83,11 @@ the no-fallback rule forbids.
 | a gradient anywhere in the operands | none | `BackwardNotImplemented` |
 | the module's mode (layer only) | `eval()` | `BackwardNotImplemented` |
 | device | CUDA | refused |
-| `d_v` | `64` | refused |
-| widths | uniform (`len(set(widths)) == 1`) | refused (a jagged topology) |
-| `(D, B)` | the manifest's combinations (`rola.engine.facts.manifest`'s `chunk_arms()`) | refused |
-| `T` | any length | — |
-| `decay` | not implemented in the chunk arm (decode has it) | refused |
+| `d_v` | up to the widest value width the carry ships at the depth | refused |
+| widths | uniform, at the intra's one level width for the depth | refused |
+| `(D, B)` | the binary's own censuses (`rola.ops.carry.arms`, the intra's shipped widths) | refused |
+| `T` | whole 512-token windows (a segment; the layer segments, §4.2) | refused |
+| `decay` | not implemented in the prefill (decode has it) | refused |
 | an unratified activation | — | refused |
 
 Ask before calling: `rola.expert.envelope_refusal(routes, v, decay)` returns the

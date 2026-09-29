@@ -99,11 +99,11 @@ PER_STATE_FACTS = {"scratch": _decode_scratch_facts}
 
 
 def _shipped_per_state_nodes() -> list[Node]:
-    from rola.engine.dags.chunk_dag import CHUNK_DAG
     from rola.engine.dags.decode_dag import DECODE_STEP, DECODE_VERDICT
+    from rola.engine.dags.prefill_dag import PREFILL_DAG
 
     seen: dict[int, Node] = {}
-    for dag in (CHUNK_DAG, DECODE_STEP, DECODE_VERDICT):
+    for dag in (PREFILL_DAG, DECODE_STEP, DECODE_VERDICT):
         seen.update({id(step): step for step in dag if step.per_state})
     return list(seen.values())
 
@@ -209,71 +209,6 @@ def test_a_supplied_fact_short_circuits_its_producer():
     assert facts["read_plane"] == "supplied" and not calls
 
 
-@pytest.fixture
-def census(monkeypatch):
-    """The manifest primitive over a COUNTING stand-in for the extension.
-
-    Device-free by the same argument as the rest of this file: the census is a fact
-    about the loaded binary, and what is under test is how many times it is read.
-    """
-    from rola.engine.facts import manifest
-
-    reads: list[str] = []
-
-    class _Ext:
-        def chunk_arms(self):
-            reads.append("chunk")
-            return [(32, 128, 2, 64, 0, 0, 0, 0, 0)]
-
-    manifest.chunk_arms.cache_clear()
-    monkeypatch.setattr(manifest, "extension", _Ext)
-    yield manifest, reads
-    manifest.chunk_arms.cache_clear()
-
-
-def test_the_build_census_is_read_once_however_many_folds_ask_for_it(census):
-    """A PRIMITIVE declares its caching. The census is a function of the loaded
-    binary and of nothing else, and it has several call sites -- the chunk DAG's
-    node, the adapters in `facts/call.py` and the bitmap-alone helper -- so a
-    per-site memo would be all of them agreeing by hand."""
-    manifest, reads = census
-
-    for _ in range(4):
-        assert manifest.chunk_arms() == ((32, 128, 2, 64),)
-
-    assert reads == ["chunk"], (
-        f"the census was read {len(reads)} times for one binary: {reads}")
-
-
-def test_a_cached_census_is_immutable(census):
-    """A shared cached value a caller could mutate would not be a fact."""
-    manifest, _ = census
-
-    assert isinstance(manifest.chunk_arms(), tuple)
-
-
-def test_the_chunk_dag_is_walkable_and_declares_its_discipline():
-    """The shipped DAG is validated at import; this is that check made visible, plus
-    the two properties a reader would otherwise have to trust."""
-    from rola.engine.dags.chunk_dag import CHUNK_DAG
-
-    assert all(isinstance(step, Node) for step in CHUNK_DAG)
-    joins = [step for step in CHUNK_DAG if step.waits]
-    reads = [step for step in CHUNK_DAG if step.host_sync]
-    assert len(joins) == 1 and len(reads) == 1
-    tables = next(step for step in CHUNK_DAG if step.name == "facts_tables")
-    assert set(tables.gives) == {"union_table", "atom_bits"}, (
-        "the union table and the atom bitmap came apart; they are one pass over the "
-        "amplitude plane and two nodes would read it twice")
-    order = [step.name for step in CHUNK_DAG]
-    assert order.index("facts_tables") < order.index("residency"), (
-        "the facts pass moved past the admission it feeds; the atom bitmap IS the "
-        "page plan's input")
-    assert order.index("join") < order.index("block_bits"), (
-        "the Join moved past the block bitmap, which reads the page table the "
-        "admission writes")
-
-
 # ---------------------------------------------------------------------------
 # the decode family's two structural declarations
 # ---------------------------------------------------------------------------
@@ -308,11 +243,11 @@ def test_a_reference_only_node_is_refused_by_every_shipped_dag():
     set. Splicing it into a shipped DAG would make the gate compare the probe against
     itself, and `validate_dag` is where that is refused.
     """
-    from rola.engine.dags.chunk_dag import CHUNK_DAG
     from rola.engine.dags.decode_dag import DECODE_STEP, DECODE_VERDICT, write_atom_bitmap
+    from rola.engine.dags.prefill_dag import PREFILL_DAG
 
     assert write_atom_bitmap.reference_only
-    for dag in (CHUNK_DAG, DECODE_STEP, DECODE_VERDICT):
+    for dag in (PREFILL_DAG, DECODE_STEP, DECODE_VERDICT):
         assert not any(step.reference_only for step in dag)
     with pytest.raises(ValueError, match="second derivation"):
         validate_dag((write_atom_bitmap,), ("levels", "geometry"))

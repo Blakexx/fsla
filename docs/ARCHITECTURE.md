@@ -793,7 +793,7 @@ wider-type emulation.
 | decode: the step, the walk, growth, capture | `docs/internals/decode/decode.md` |
 | decode's lattice and factor tables | `docs/internals/decode/decode_lattice.md` |
 | the within-window term | `docs/internals/intra/intra.md`, `docs/internals/intra/intra_kernel.md` |
-| the host order of a call | `docs/internals/engine/chunk_dag.md`, `docs/internals/engine/decode_dag.md` |
+| the host order of a call | `docs/internals/engine/prefill_dag.md`, `docs/internals/engine/decode_dag.md` |
 | the public surface | `docs/api.md`, `docs/internals/rola_api.md` |
 | what a manifest is and what it refuses | `docs/ratification.md`, `docs/architecture/closed-world-codegen.md` |
 | the tiers, the tolerances, the conformance regimes | `docs/testing.md` |

@@ -338,11 +338,11 @@ class RoLAState:
                       paging: bool, BC: int):
         """`(s_in, arena)` for the kernel arm, with this call's pages committed.
 
-        The chunk DAG has already run the atom-bitmap pass, so the only thing that
+        The prefill DAG has already run the activity pass, so the only thing that
         happens here is `plan_exact` on the arena's side stream -- one device-to-host
         size read, no other synchronization. The DAG's Join is what puts the
-        admission before the block bitmap and the launch
-        (docs/internals/engine/chunk_dag.md#the-join).
+        admission before anything reads the page table and before the launch
+        (docs/internals/engine/prefill_dag.md).
 
         `BC` arrives FROM THE CALL and is never stored: it is allocator policy (the
         extent default is one owner's atoms), and every ADDRESS is `BC`-invariant by

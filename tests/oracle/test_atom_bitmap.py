@@ -45,7 +45,6 @@ import pytest
 import torch
 
 from rola.engine.facts import planes
-from rola.ops._ext import extension
 from rola.ops.naive import _leaf_product, _radix_strides
 from rola.ops.paging import MMA_K_QUANTUM
 from rola.routing.types import (
@@ -166,58 +165,6 @@ def test_two_token_cross_product_is_excluded():
         "the cross-product atoms are present: the reduction ORed over tokens "
         "before ANDing over levels")
     assert torch.equal(bits, _oracle_bitmap(write, widths))
-
-
-def test_the_bitmap_is_bc_free():
-    """THE PUBLISHED FACT CARRIES NO BLOCK GRAIN, at every built `BC` of a topology.
-
-    The pass that emits the atom rows is templated on `BC` -- it emits the owner
-    block's rows in the same launch -- so the 16-leaf keying of the atom rows is a
-    property of the CODE and this is what holds it: one routing through every built
-    arm, `torch.equal` on the bitmap. A bitmap that moved with `BC` would move
-    residency with the arm, which is the overlap the plan is built to keep.
-    """
-    from rola.engine.facts import manifest as census
-    from rola.engine.types import Mask
-
-    D, B = 2, 64
-    widths = (B,) * D
-    _, write, _ = _fixture(widths, 0.35, seed=4242)
-    packed = _pack(write)
-    bcs = sorted({int(bc) for (c, bc, d, b) in census.chunk_arms() if d == D and b == B})
-    assert len(bcs) > 1, "this topology has one built BC; the claim needs two to vary"
-    first = None
-    for bc in bcs:
-        c = min(int(c) for (c, bc_, d, b) in census.chunk_arms()
-                if d == D and b == B and bc_ == bc)
-        bits = extension().chunk_facts(packed, packed, c, bc, list(widths), Mask.M2,
-                                       True)[1]
-        if first is None:
-            first, first_bc = bits, bc
-            continue
-        assert torch.equal(bits, first), (
-            f"the atom bitmap differs between BC={first_bc} and BC={bc}: the "
-            f"published residency fact has acquired the owner block's grain")
-    assert torch.equal(first.bool(), _oracle_bitmap(write, widths))
-
-
-def test_the_stateless_call_class_cannot_be_asked_for_the_bitmap():
-    """PLANTED: the class and the outputs must agree, or a call gets an unwritten table.
-
-    The stateless variant compiles no atom-grain emission, so asking it for the bitmap
-    is a refusal and never a silently absent fact.
-    """
-    from rola.engine.facts import manifest as census
-    from rola.engine.types import Mask
-
-    D, B = 2, 64
-    widths = (B,) * D
-    _, write, _ = _fixture(widths, 0.35, seed=17)
-    packed = _pack(write)
-    c, bc = next((int(c), int(bc)) for (c, bc, d, b) in census.chunk_arms()
-                 if d == D and b == B)
-    with pytest.raises(RuntimeError, match="stateful call's fact"):
-        extension().chunk_facts(packed, packed, c, bc, list(widths), Mask.M1, True)
 
 
 def test_stats_through_the_host_seam():

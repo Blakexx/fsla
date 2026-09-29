@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, NamedTuple
+from typing import Any
 
 #: the MMA k-extent, and the page granule. The Python mirror of
 #: the MMA k-extent (`chunk/arch_caps.cuh`'s `kMmaK` world), which a C++
@@ -44,13 +44,6 @@ class Mask(IntEnum):
     A GROWTH STEP IS NOT A MASK. It is M4 run twice around an admission, which is why
     the growth path selects no different subgraph (docs/internals/engine/decode_dag.md).
     """
-
-
-class Arm(NamedTuple):
-    """`(C, BC)` -- the built manifest arm a call runs on."""
-
-    c: int
-    bc: int
 
 
 @dataclass(frozen=True, slots=True)

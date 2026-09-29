@@ -22,11 +22,9 @@ set, and none could be exercised without a device.
 | rule | reads | decides |
 |---|---|---|
 | `mask` | `CallClass` | which subgraph — M1 or M2 |
-| `arm` | `widths`, the manifest | `Arm = (C, BC)`, or none |
-| `arm_envelope` | `widths`, `d_v`, decay, `arm` | the arm matrix's refusal, or None |
+| `prefill_envelope` | `widths`, `d_v`, decay, `T`, the window, the intra and carry censuses | the prefill's refusal, or None |
 | `envelope` | unratified activations, device | the operand-side refusal, or None |
-| `training_envelope` | grad, state | the stateless-training refusal, or None |
-| `run_table` | the three state ARGUMENTS' presence | the `uint32` skip table |
+| `run_table` | the three state ARGUMENTS' presence | the `uint32` skip table (in no DAG: kept for the carry port) |
 | `paging_preference` | the expert overrides | dense or paged backing |
 | `admission` | the allocator's cursor, capacity, extent, count | the run's first slot |
 
@@ -62,7 +60,7 @@ handed — survives an import-graph check only while the import hides in a funct
 
 There is no second executor and no rule pass. Band 2 runs INTERLEAVED with band 1 in
 the one walk — `paging_preference` at the head, `mask` the moment the call class
-exists, `arm` the moment the manifest and the topology do, `decode_mask` the moment the
+exists, `decode_mask` the moment the
 step's backing does — and every one of them sits on the DAG's parallel front, never on
 its critical path. That is why the layer costs nothing.
 
@@ -74,16 +72,15 @@ Two of the folds are not in a DAG tuple, and each for a stated reason rather tha
 by oversight (`backward_envelope` and `retention` left with the K31 deletion
 batch's reverse pass; baseline = tag `baseline/pre-k31`):
 
-* `arm_envelope` / `envelope` / `training_envelope` are composed
+* `prefill_envelope` / `envelope` are composed
   by `facts/call.py`'s `envelope_refusal` and `require_envelope`, which
   `validate_context` calls BEFORE the walk's first node so that no refusal can
   arrive with the operands already consumed ([`engine.md` §7](engine.md#refusals)).
   Placing them in the tuple would move a refusal after work. The composition is an
   ADAPTER and lives with the adapters: it reads a bundle rather than folding declared
   fact values, so it carries no `rule` marker and could not live here (§2).
-* `run_table` IS in the chunk tuple, last before the terminal node, so it folds after
-  `backing` has produced the three presences it reads and without stepping between two
-  launches. Its `uint32` is a `ChunkPlan` field and a launch argument
+* `run_table` is in NO tuple: its one consumer, the chunk consumer, is deleted, and the
+  carry port decides whether the rebuilt carry takes it as its sweep predicate
   ([`#run-table`](#run-table)).
 
 ## <a id="derive-never-author"></a>4. Derive; never hand-author the derived artefact
@@ -94,10 +91,8 @@ the RULE once in readable form — the rows of
 it over all eight bit values. The kernel's predicate is then one shift and one AND with
 no call-class knowledge in it.
 
-Generalized: `arm` derives from the manifest and never from a threshold on `d_v` or
-`N`. The rule's inputs do not even include `d_v`, so there is nothing to compare a
-dimension against — what exists is what was built and measured, and the pinned
-preference order over what exists is the whole of the policy.
+Generalized: `prefill_envelope` derives from the binary's own censuses and never from a
+threshold on `d_v` or `N` — what exists is what was built and measured.
 
 ## <a id="admission-splits"></a>5. AdmissionRule splits, and where the seam is
 
@@ -151,9 +146,9 @@ taxonomy and no call-class knowledge in it. The eighth argument triple — a pag
 no state at all — is refused at the binding before the derivation is reached, and derives
 the stateless row in any case.
 
-**IT IS A HOST DECISION IN THE PLACE HOST DECISIONS LIVE.** The fold is a band-2 rule and
-its `uint32` is a `ChunkPlan` field; the deleted consumer's entries took it as a launch
-argument beside the bitmap it predicates over, and the rebuilt kernel will again. The kernel read
+**IT IS A HOST DECISION IN THE PLACE HOST DECISIONS LIVE.** The fold is a band-2 rule; the
+deleted consumer's entries took it as a launch argument beside the bitmap it predicates over,
+and the carry port decides whether the rebuilt carry does. The kernel read
 `ChunkParams::run_table` and derived nothing: a second derivation behind the
 extension boundary could not promise that the table a call PLANS is the table it RUNS, and
 the seven rows above could only be exercised through a launch. They are now device-free unit

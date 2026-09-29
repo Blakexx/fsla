@@ -16,16 +16,6 @@ import torch
 from rola.engine import MMA_K_QUANTUM
 
 
-def packed_copy(view: torch.Tensor, dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
-    """`view` as a contiguous `dtype` tensor, in ONE copy.
-
-    `.to(dtype)` preserves a permuted view's strides, so `.to(dtype).contiguous()`
-    walks the tensor twice; an already-contiguous destination fuses the transpose
-    and the narrowing into the one copy that is actually needed.
-    """
-    return torch.empty(view.shape, dtype=dtype, device=view.device).copy_(view)
-
-
 def _side_plane(levels) -> torch.Tensor | None:
     """The `[B, H, T, sumW]` bf16 plane these levels are already views OF, or None.
 
