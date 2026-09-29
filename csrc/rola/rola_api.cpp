@@ -131,7 +131,8 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "Tensor? state_in, Tensor? d_state_out, Tensor? page_table) -> ()");
   m.def(
       "prepass_forward(Tensor rows_read, Tensor rows_write, Tensor scale_read, Tensor scale_write, Tensor gain, "
-      "Tensor vscale, Tensor(a!) den, Tensor(b!) scale, int[] widths, int level_modes, Tensor liveness) -> ()");
+      "Tensor vscale, Tensor(a!) den, Tensor(b!) scale, int[] widths, int level_modes, Tensor liveness, "
+      "Tensor? fold_dump) -> ()");
   m.def("prepass_ledger_bind(Tensor? ledger) -> ()");
   m.def("prepass_plan(int depth) -> int[]");
   m.def("carry_ledger_bind(Tensor? ledger) -> ()");

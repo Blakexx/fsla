@@ -23,6 +23,7 @@ struct PrepassParams {
   float* den;                 //: [BH, L] the inter denominator, REDUCED into
   float* scale;               //: [BH, L] the packed panel's per-token bound, REDUCED into
   const int32_t* liveness;    //: [BH, 2, wtot, words] the class-1 words
+  float* fold_dump;  //: [BH, N, 2] the fold's fp32 sums a canonical leaf at the end, or null
 
   int L;               //: tokens in the call
   int liveness_words;  //: ceil(L / 32)

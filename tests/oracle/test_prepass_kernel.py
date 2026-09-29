@@ -25,6 +25,7 @@ from tests.oracle import int_reference as iref
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
 CELLS = ["flagship-alt-k4", "flagship-cohort-k16"]
+FOLD_CELLS = ["one-box-alt-k4", "flagship-alt-k4", "flagship-cohort-k16"]
 
 
 def _bundle(cell, drawn):
@@ -72,7 +73,33 @@ def test_the_frame_runs_and_every_phase_is_counted(name, capsys):
     assert bool((ledger.sum(dim=2) > 0).all()), "a warp recorded no cycles"
 
 
-@pytest.mark.xfail(strict=True, reason="the pre-pass's fold and readout components have not landed (queue card S8)")
+@pytest.mark.parametrize("name", FOLD_CELLS)
+def test_the_fold_state_is_the_declared_arithmetic(name):
+    """The fold component's gate: the kernel's fp32 state a canonical leaf against the reference's mass and
+    bound -- identical integers by construction, so the tolerance is fp32 against fp64 accumulation."""
+    import math
+
+    cell = by_name(name)
+    drawn = realize(cell, device="cuda")
+    factors, values, (read, write, gain, v) = _bundle(cell, drawn)
+    N = math.prod(cell.widths)
+    BH = factors.batch * factors.heads
+    state = torch.zeros(BH, N, 2, dtype=torch.float32, device="cuda")
+    pp.prepass_forward(factors, values, cell.declared_sparsity(), fold_dump=state)
+    torch.cuda.synchronize()
+    tel: dict = {}
+    iref.prepass_reference(read, write, gain, v, cell.widths, cell.declared_sparsity(), carry_ops.WINDOW,
+                           telemetry=tel)
+    got = state.reshape(factors.batch, factors.heads, N, 2).double()
+    for col, want in ((0, tel["mass"]), (1, tel["bound"])):
+        have = got[..., col]
+        assert torch.isfinite(have).all()
+        assert bool((want > 0).any()), "the reference fold produced no state"
+        assert torch.allclose(have, want, rtol=2.0 ** -12, atol=2.0 ** -20 * want.max().item()), (
+            col, (have - want).abs().max().item(), want.max().item())
+
+
+@pytest.mark.xfail(strict=True, reason="the pre-pass's readout component has not landed (queue card S8)")
 @pytest.mark.parametrize("name", CELLS)
 def test_den_and_scale_are_the_declared_arithmetic(name):
     cell = by_name(name)

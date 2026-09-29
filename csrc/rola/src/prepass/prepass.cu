@@ -18,10 +18,10 @@ namespace {
 long long* g_ledger = nullptr;
 int64_t g_ledger_ctas = 0;
 
-template <int D>
+template <int D, int Q>
 cudaError_t launch(const PrepassParams& p, int owners, int bh, cudaStream_t stream) {
   using TP = TallPlan<D>;
-  const auto fn = prepass_kernel<D>;
+  const auto fn = prepass_kernel<D, Q>;
   static bool configured = false;
   if (!configured) {
     const cudaError_t e =
@@ -38,9 +38,11 @@ cudaError_t launch(const PrepassParams& p, int owners, int bh, cudaStream_t stre
 void prepass_forward(const Tensor& rows_read, const Tensor& rows_write, const Tensor& scale_read,
                      const Tensor& scale_write, const Tensor& gain, const Tensor& vscale,
                      Tensor& den, Tensor& scale, const std::vector<int64_t>& widths,
-                     int64_t level_modes, const Tensor& liveness) {
-  PrepassCall call = derive_prepass_call(rows_read, rows_write, scale_read, scale_write, gain,
-                                         vscale, den, scale, widths, level_modes, liveness);
+                     int64_t level_modes, const Tensor& liveness,
+                     const std::optional<Tensor>& fold_dump) {
+  PrepassCall call =
+      derive_prepass_call(rows_read, rows_write, scale_read, scale_write, gain, vscale, den, scale,
+                          widths, level_modes, liveness, fold_dump);
   PrepassParams& p = call.p;
   const int D = (int)widths.size();
   p.ledger = g_ledger;
@@ -50,7 +52,32 @@ void prepass_forward(const Tensor& rows_read, const Tensor& rows_write, const Te
                     (int64_t)p.g.owners * call.BH);
   STD_TORCH_CHECK(D == 2, "the pre-pass is built at depth two on this line; this call names depth ",
                   D);
-  const cudaError_t status = launch<2>(p, p.g.owners, (int)call.BH, current_stream());
+  //: the fold's shape: the write-dense level's span in n-tiles of eight (a declared width, R9)
+  const int wl = p.sparse_mask[1] & 1u ? 0 : (p.sparse_mask[1] & 2u ? 1 : -1);
+  const int wd = wl == 0 ? 1 : 0;
+  const int qbits = wl >= 0 ? p.g.span_bits[wd] - 3 : 0;
+  STD_TORCH_CHECK(qbits >= 0 && qbits <= 4,
+                  "the pre-pass has no fold shape for a write-dense span of ",
+                  1 << p.g.span_bits[wd]);
+  cudaError_t status = cudaSuccess;
+  // R9-CASES: the fold's shape, the write-dense span in n-tiles of eight (refused above)
+  switch (qbits) {
+    case 0:
+      status = launch<2, 1>(p, p.g.owners, (int)call.BH, current_stream());
+      break;
+    case 1:
+      status = launch<2, 2>(p, p.g.owners, (int)call.BH, current_stream());
+      break;
+    case 2:
+      status = launch<2, 4>(p, p.g.owners, (int)call.BH, current_stream());
+      break;
+    case 3:
+      status = launch<2, 8>(p, p.g.owners, (int)call.BH, current_stream());
+      break;
+    case 4:
+      status = launch<2, 16>(p, p.g.owners, (int)call.BH, current_stream());
+      break;
+  }
   STD_TORCH_CHECK(status == cudaSuccess,
                   "the pre-pass launch failed: ", cudaGetErrorString(status));
 }
@@ -74,7 +101,7 @@ std::vector<int64_t> prepass_plan(int64_t depth) {
   STD_TORCH_CHECK(depth == 2, "the pre-pass is built at depth two on this line");
   using TP = TallPlan<2>;
   cudaFuncAttributes a{};
-  cudaFuncGetAttributes(&a, prepass_kernel<2>);
+  cudaFuncGetAttributes(&a, prepass_kernel<2, 1>);
   return {TP::kThreads, TP::kSmemBytes, TP::kLeaves, TP::kLeavesPerWarp, TP::kPoolTok,
           TP::kChunks,  TP::kRange,     kPpPhases,   (int64_t)a.numRegs, (int64_t)a.localSizeBytes};
 }

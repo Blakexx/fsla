@@ -68,6 +68,12 @@ fixed-a-window row of the ledger, the one term no probe had measured.
 <a id="call"></a>
 ## The call
 
+The launch picks the kernel's fold shape (`prepass_kernel.md#tiles`) from the write-dense
+level's span, one instantiation a shape beside the depth.
+
+<a id="call-old"></a>
+## The call's derivation
+
 `derive_prepass_call` (`prepass_host.cuh`) refuses shapes and dtypes at the boundary and derives
 the tall owner set through `derive_carry_geom` with `bc` the tall leaf count, both stream counts
 eight, run placement and no warp-level page floor, the mode word from the sparsity declaration.

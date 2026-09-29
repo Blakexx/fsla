@@ -769,6 +769,24 @@ warp-uniform value would be if-converted and every warp would issue the body pre
 every warp until this). The bound is hidden from ptxas by an empty `asm volatile`, so the
 loop cannot be recognized as 0-or-1 trips and flattened.
 
+<a id="imma-u8"></a>
+## `imma_u8` — the int8 atom, u8 × u8 into s32
+
+`mma.sync.m16n8k16.row.col.s32.u8.u8.s32`: A is two registers a lane (row `lane / 4`, four
+consecutive k at `4 (lane % 4)`; the second register is row `lane / 4 + 8`), B one (column
+`lane / 4`, the same four k), the accumulator four s32 (rows `lane / 4` and `+ 8`, columns
+`2 (lane % 4) + {0, 1}`). Both operands unsigned: the pre-pass's digits are magnitudes. Verified
+against a row-by-row product on sm_86 before use (the probe of 2026-09-28).
+
+<a id="prmt"></a>
+## `prmt`, `pack_byte4` — byte selection
+
+`prmt.b32` picks four bytes out of the eight of two words by a selector nibble each (0–3 the
+first word's bytes, 4–7 the second's). `pack_byte4` takes the same byte of four words in order
+with three of them: the pair selector names the byte (`0x0040` byte 0 of each, `0x0051` byte 1,
+`0x0062` byte 2), the last `0x5410` interleaves the two pairs. It is how an int8 operand row is
+formed from four gathered words without shifts or masks.
+
 <a id="nth-set-bit"></a>
 ## `nth_set_bit` — the n-th set bit of a word
 

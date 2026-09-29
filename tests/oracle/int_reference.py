@@ -223,16 +223,20 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
 
 
 def prepass_reference(read_levels, write_levels, g_write, v, widths, sparsity, window, *, exact: bool = False,
-                      state_in=None):
-    """``(den, scale)`` per token, ``[B, T, H]`` fp64, under the PRE-PASS's DECLARED arithmetic (the S8 budget
-    line): the carry's skeleton at 8 channels. Fold, per write-sparse digit and window: the same u8 A rows as the
-    carry's fold (against the leaf's largest writer), against B = [g_t, g_t s_t] each as a 15-bit two-digit value
-    against the list's window max (``zeta``), into s32 mass and bound per leaf. Readout, per block (the carry's
-    blocks): B = [mass, bound] each at 15 bits against the block's max, A = the unit-max dense read row in u8, the
-    (token, block) factor ``a_sparse x m_t`` on the partial; the two sums in fp64 here (fp32 RED.F32 in the kernel).
-    ``den`` is the inter denominator against the window-start mass; ``scale`` is the packed panel's per-token bound,
-    which the kernel needs to be >= every running sum of |partials| and reads as ``scale x (1 + R/254) / 32767``.
-    ``exact`` turns every rounding into the identity, reproducing the fp64 op's ``den``."""
+                      state_in=None, telemetry: dict | None = None):
+    """``(den, scale)`` per token, ``[B, T, H]`` fp64, under the PRE-PASS's DECLARED arithmetic: the carry's
+    skeleton at two columns a leaf. FOLD, per window and write-sparse digit ``s``, column ``m`` in {g, g s_t}:
+    ``zeta_m`` = the window's largest ``col_m(t) m_ws(t) m_wd(t)`` (the two write levels' per-token maxima);
+    ``P_m(t) = rint(2^23 col_m m_ws m_wd / (255 zeta_m))``; ``V_m(t, d) = (P_m(t) a_wd[t, d] + 128) >> 8`` (a
+    15-bit integer, ``a_wd`` the u8 write-dense digit); ``acc_m(s, d) = sum_t a_ws[t, s] V_m(t, d)`` (the u8
+    write-sparse digit, exact in s32); the leaf's column gains ``acc_m zeta_m / (2^15 255)``. Both u8 levels are the
+    bundle's own; the one added rounding is the 15-bit digit a (token, write-dense digit). READOUT, per block (the carry's blocks): B = [mass, bound]
+    each at 15 bits against the block's max, A = the unit-max dense read row in u8, the (token, block) factor
+    ``a_sparse x m_t`` on the partial; the two sums in fp64 here (fp32 RED.F32 in the kernel). ``den`` is the inter
+    denominator against the window-start mass; ``scale`` is the packed panel's per-token bound, which the kernel
+    needs to be >= every running sum of |partials| and reads as ``scale x (1 + R/254) / 32767``. ``exact`` turns
+    every rounding into the identity, reproducing the fp64 op's ``den``. ``telemetry`` receives the final
+    ``mass`` and ``bound`` planes ``[B, H, N]`` when given."""
     Bn, T, H, dv = v.shape
     D = len(widths)
     N = math.prod(widths)
@@ -243,7 +247,6 @@ def prepass_reference(read_levels, write_levels, g_write, v, widths, sparsity, w
     w_dn = [lvl for lvl in range(D) if not sparsity[lvl][1]]
     idx_rs, idx_rd = group_index(widths, r_sp).to(dev), group_index(widths, r_dn).to(dev)
     idx_ws, idx_wd = group_index(widths, w_sp).to(dev), group_index(widths, w_dn).to(dev)
-    n_ws = int(idx_ws.max().item()) + 1
     order, blk = block_order(widths, r_sp, r_dn)
     order = order.to(dev)
     n_blocks = N // blk
@@ -275,26 +278,28 @@ def prepass_reference(read_levels, write_levels, g_write, v, widths, sparsity, w
         den[:, sl] = partial[..., 0]
         scale[:, sl] = partial[..., 1]
 
-        # --- fold of g and g s_t through the carry's A rows ---------------------------------------------------------
-        a_wd, m_wd = group_product(write_levels, widths, w_dn, sl, u8)
-        a_ws, _ = group_product(write_levels, widths, w_sp, sl)
+        # --- fold: the two digit rows against the write-dense u8 row, one 15-bit digit a (token, list) ----------
+        a_wd, m_wd = group_product(write_levels, widths, w_dn, sl, u8)                          # [B,t,H,n_wd]
+        a_ws, m_ws = group_product(write_levels, widths, w_sp, sl, u8)                          # [B,t,H,n_ws]
         g = g_write[:, sl].double()                                                              # [B,t,H]
         gs = g * s_t[:, sl, :, 0]
-        zeta_g = g.amax(1, keepdim=True).clamp_min(TINY)
-        zeta_gs = gs.amax(1, keepdim=True).clamp_min(TINY)
-        cols_t = torch.stack((q15(g / zeta_g) * zeta_g, q15(gs / zeta_gs) * zeta_gs), -1)      # [B,t,H,2]
-        scal = a_ws * m_wd                                                                       # [B,t,H,n_ws]
-        for sdig in range(n_ws):
-            leaves = torch.nonzero(idx_ws == sdig, as_tuple=False).flatten()
-            a_full = a_wd[..., idx_wd[leaves]] * (scal[..., sdig] * gs)[..., None]                # the carry's A rows
-            sig = a_full.amax(dim=1, keepdim=True).clamp_min(TINY)
-            a_q = a_full if exact else quantize_u8_unit(a_full / sig) * sig
-            #: the A row carries g s_t; mass wants g and bound wants g s_t, so the columns are their ratios
-            ratio = cols_t / gs.clamp_min(TINY)[..., None]                                       # [B,t,H,2]
-            acc = torch.einsum("bthd,bthc->bhdc", a_q, ratio)
-            mass[:, :, leaves] += acc[..., 0]
-            bound[:, :, leaves] += acc[..., 1]
+        f = (m_ws * m_wd)[..., 0]
+        a_ws_digit = a_ws if exact else torch.round(a_ws * 255.0)                                  # the u8 bytes
+        for col, target in ((g, mass), (gs, bound)):
+            zeta = (col * f).amax(1, keepdim=True).clamp_min(TINY)                              # [B,1,H]
+            if exact:
+                V = (col * f)[..., None] * a_wd
+                unit = 1.0
+            else:
+                P = torch.round(2.0 ** 23 * (col * f) / (255.0 * zeta))                          # [B,t,H]
+                V = torch.floor((P[..., None] * torch.round(a_wd * 255.0) + 128.0) / 256.0)     # [B,t,H,n_wd]
+                unit = zeta[:, 0] / (2.0 ** 15 * 255.0)                                          # [B,H]
+            acc = torch.einsum("bths,bthd->bhsd", a_ws_digit, V)                                 # [B,H,n_ws,n_wd]
+            target += acc[:, :, idx_ws, idx_wd] * (unit if exact else unit[..., None])
 
+    if telemetry is not None:
+        telemetry["mass"] = mass.clone()
+        telemetry["bound"] = bound.clone()
     return den, scale
 
 

@@ -48,10 +48,11 @@ def _pack_scales(scales) -> torch.Tensor:
 
 
 def liveness_words_u8(rows_read: torch.Tensor, rows_write: torch.Tensor) -> torch.Tensor:
-    """``[BH, 2, sum_l B_l, ceil(L / 32)]`` int32: bit ``t % 32`` of word ``(row, t // 32)`` set when token ``t``'s
-    u8 digit ``row`` is nonzero on that side -- THE FORMAT'S SUPPORT RULE, a torch fold of the rows."""
+    """``[BH, 2, sum_l B_l, words]`` int32, ``words = ceil(L / 32)`` rounded up to a multiple of four (a staged
+    row is whole 16-byte copies): bit ``t % 32`` of word ``(row, t // 32)`` set when token ``t``'s u8 digit ``row``
+    is nonzero on that side -- THE FORMAT'S SUPPORT RULE, a torch fold of the rows."""
     BH, L, wtot = rows_read.shape
-    words = (L + 31) // 32
+    words = (L + 127) // 128 * 4  # whole 16-byte copies a staged row
     pad = words * 32 - L
     out = []
     for rows in (rows_read, rows_write):
@@ -65,11 +66,13 @@ def liveness_words_u8(rows_read: torch.Tensor, rows_write: torch.Tensor) -> torc
     return torch.stack(out, dim=1).contiguous()
 
 
-def prepass_forward(factors: RouteFactors, values: Values, sparsity):
+def prepass_forward(factors: RouteFactors, values: Values, sparsity, *,
+                    fold_dump: torch.Tensor | None = None):  #: reserved: the fold gate's instrument (tests/oracle)
     """``(den, scale)`` as ``[BH, L]`` fp32, REDUCED into zeroed planes by the pre-pass kernel.
 
     ``sparsity`` is the per-level ``(read_sparse, write_sparse)`` declaration. The class-1 words are folded
-    from the rows here, under the format's support rule.
+    from the rows here, under the format's support rule. ``fold_dump``, when given, is ``[BH, N, 2]`` fp32 the
+    kernel writes its final fold sums into by canonical leaf (mass, bound): the fold's gate instrument.
     """
     widths = [int(w) for w in factors.topology.widths]
     rows_read, rows_write = pack_rows(factors.amp_read), pack_rows(factors.amp_write)
@@ -80,7 +83,7 @@ def prepass_forward(factors: RouteFactors, values: Values, sparsity):
     den = torch.zeros(BH, L, dtype=torch.float32, device=gain.device)
     scale = torch.zeros(BH, L, dtype=torch.float32, device=gain.device)
     extension().prepass_forward(rows_read, rows_write, scale_read, scale_write, gain, vscale, den, scale,
-                                widths, level_modes_of(sparsity), liveness)
+                                widths, level_modes_of(sparsity), liveness, fold_dump)
     return den, scale
 
 

@@ -6,6 +6,7 @@
 #include "common/torch_seam.cuh"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "common/arch_runtime.cuh"
@@ -45,7 +46,8 @@ inline PrepassCall derive_prepass_call(const Tensor& rows_read, const Tensor& ro
                                        const Tensor& scale_read, const Tensor& scale_write,
                                        const Tensor& gain, const Tensor& vscale, Tensor& den,
                                        Tensor& scale, const std::vector<int64_t>& widths,
-                                       int64_t level_modes, const Tensor& liveness) {
+                                       int64_t level_modes, const Tensor& liveness,
+                                       const std::optional<Tensor>& fold_dump) {
   check_arch_table();
   const int D = (int)widths.size();
   STD_TORCH_CHECK(D >= 1 && D <= carry::kGeomMaxLevels, "the addressing block is built to depth ",
@@ -58,7 +60,7 @@ inline PrepassCall derive_prepass_call(const Tensor& rows_read, const Tensor& ro
     wtot += widths[l];
   }
   const int64_t BH = rows_read.size(0), L = rows_read.size(1);
-  const int64_t words = (L + 31) / 32;
+  const int64_t words = (L + 127) / 128 * 4;  //: whole 16-byte copies a staged row
   host::refuse_operand("rows_read", rows_read, Dtype::Byte, {BH, L, wtot});
   host::refuse_operand("rows_write", rows_write, Dtype::Byte, {BH, L, wtot});
   host::refuse_operand("scale_read", scale_read, Dtype::Float, {BH, L, (int64_t)D});
@@ -84,6 +86,13 @@ inline PrepassCall derive_prepass_call(const Tensor& rows_read, const Tensor& ro
   p.den = den.mutable_data_ptr<float>();
   p.scale = scale.mutable_data_ptr<float>();
   p.liveness = liveness.const_data_ptr<int32_t>();
+  p.fold_dump = nullptr;
+  if (fold_dump) {
+    int64_t N = 1;
+    for (const int64_t w : widths) N *= w;
+    host::refuse_operand("fold_dump", *fold_dump, Dtype::Float, {BH, N, 2});
+    p.fold_dump = fold_dump->mutable_data_ptr<float>();
+  }
   p.L = (int)L;
   p.liveness_words = (int)words;
   return PrepassCall{p, BH};

@@ -345,6 +345,28 @@ __device__ __forceinline__ void mma(float (&d)[4], const uint32_t (&a)[4], const
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
+//: THE INT8 ATOM, u8 x u8 into s32: the pre-pass's fold (A two registers, B one). -- see docs/internals/common/ops.md#imma-u8
+__device__ __forceinline__ void imma_u8(int32_t (&d)[4], const uint32_t (&a)[2], uint32_t b) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k16.row.col.s32.u8.u8.s32 "
+      "{%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+      : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3])
+      : "r"(a[0]), "r"(a[1]), "r"(b));
+}
+
+//: FOUR BYTES CHOSEN FROM EIGHT by a selector word: the byte gathers of an int8 operand. -- see docs/internals/common/ops.md#prmt
+__device__ __forceinline__ uint32_t prmt(uint32_t lo, uint32_t hi, uint32_t sel) {
+  uint32_t d;
+  asm("prmt.b32 %0, %1, %2, %3;" : "=r"(d) : "r"(lo), "r"(hi), "r"(sel));
+  return d;
+}
+
+//: the same byte of four words, packed in order: the operand row a lane holds.
+__device__ __forceinline__ uint32_t pack_byte4(uint32_t v0, uint32_t v1, uint32_t v2, uint32_t v3,
+                                               uint32_t pair_sel) {
+  return prmt(prmt(v0, v1, pair_sel), prmt(v2, v3, pair_sel), 0x5410u);
+}
+
 //: THE SAME ATOM INTO A FRESH ACCUMULATOR (C = 0): the readout's per-box partial.
 __device__ __forceinline__ void mma_fresh(float (&d)[4], const uint32_t (&a)[4],
                                           const uint32_t* b) {
@@ -481,6 +503,11 @@ __device__ __forceinline__ uint32_t load_shared_u8(SmemAddr a) {
   return v;
 }
 
+//: a byte into shared memory, addressed (the fold's index maps).
+__device__ __forceinline__ void store_shared_u8(SmemAddr a, uint8_t v) {
+  asm volatile("st.shared.u8 [%0], %1;" ::"r"(a), "h"((uint16_t)v) : "memory");
+}
+
 //: A SEQUENTIAL SHARED STORE, ADDRESSED RATHER THAN INDEXED. -- see docs/internals/common/ops.md#store-shared-u16
 __device__ __forceinline__ void store_shared_u16(SmemAddr a, uint16_t v) {
   asm volatile("st.shared.u16 [%0], %1;" ::"r"(a), "h"(v) : "memory");
@@ -489,6 +516,10 @@ __device__ __forceinline__ void store_shared_u16(SmemAddr a, uint16_t v) {
 //: A SHARED WORD ACCESS, ADDRESSED RATHER THAN INDEXED for the same reason -- see docs/internals/common/ops.md#storesharedu32
 __device__ __forceinline__ void store_shared_u32(SmemAddr a, uint32_t v) {
   asm volatile("st.shared.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
+}
+
+__device__ __forceinline__ void store_shared_f32(SmemAddr a, float v) {
+  asm volatile("st.shared.f32 [%0], %1;" ::"r"(a), "f"(v) : "memory");
 }
 
 //: TWO fp32 AT ONCE, an 8-byte aligned pair. -- see docs/internals/common/ops.md#store-shared-f32x2
@@ -539,6 +570,16 @@ __device__ __forceinline__ void store_shared_vec16(SmemAddr a, const uint4& v) {
   asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};" ::"r"(a), "r"(v.x), "r"(v.y), "r"(v.z),
                "r"(v.w)
                : "memory");
+}
+
+//: the 16-byte quantum back out, addressed: four words a lane.
+__device__ __forceinline__ uint4 load_shared_vec16(SmemAddr a) {
+  uint4 v;
+  asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+               : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
+               : "r"(a)
+               : "memory");
+  return v;
 }
 
 //: one amplitude out of a staged factor row, by ADDRESS.  Its index is a digit, so -- see docs/internals/common/ops.md#loadsharedu16

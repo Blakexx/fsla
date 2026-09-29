@@ -10,7 +10,9 @@ the levels whose digit rows the liveness words are staged for, a dense level's d
 live wherever the token is; the bundle's u8 rows on both sides, `[BH, L, sum_l B_l]`, with the
 per-level row maxima `[BH, L, D]`; the write gain and the value scale `[BH, L]`; the two outputs
 `den` and `scale`, `[BH, L]` fp32, REDUCED into; the class-1 liveness words
-`[BH, 2, sum_l B_l, ceil(L / 32)]`; and the ledger and trace bindings.
+`[BH, 2, sum_l B_l, words]`; the optional `fold_dump` plane `[BH, N, 2]` fp32 the fold's final sums
+are written into by canonical leaf (the fold's gate instrument, null otherwise); and the ledger and
+trace bindings.
 
 `PrepassPhase` names the ledger's rows, one a component of the skeleton — frame, words, lists,
 fill, fold, publish, rescale, readout, drain — so the frame's fixed cost is read per component
