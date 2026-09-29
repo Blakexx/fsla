@@ -71,7 +71,7 @@ def support_words(plane) -> torch.Tensor:
     solve of the same amplitudes would have emitted, bit for bit.
 
     A producer-emitted word may be CONSERVATIVE (a set bit is allowed to accompany
-    a stored zero -- the ``RouteDescriptor`` contract); that costs a gated MMA
+    a stored zero -- the support contract); that costs a gated MMA
     group whose product is exactly zero and can move no number.
     """
     bh, length, width = plane.shape

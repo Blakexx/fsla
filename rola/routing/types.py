@@ -131,113 +131,6 @@ Activation: TypeAlias = RoutingActivation
 
 
 @dataclass(frozen=True, slots=True)
-class RouteDescriptor:
-    """Versioned compact routing ABI shared by every routing consumer.
-
-    Values are physically tile-major: ``[BH, ceil(T/32), sum_width, 32]``.
-    Support is packed once per zero-capable level as signed ``int32`` storage
-    carrying uint32 bit patterns in
-    ``[BH, ceil(T/32), sum_sparse_width]``.  There is deliberately no token-major
-    view, padded branch width, digits table, or per-level support tensor in this
-    contract.  A cleared support bit guarantees that the corresponding stored
-    side factor is zero; a set bit may conservatively accompany a stored zero.
-    """
-
-    read_values: torch.Tensor
-    write_values: torch.Tensor
-    support_words: torch.Tensor
-    level_offsets: tuple[int, ...]
-    support_offsets: tuple[int, ...]
-    level_widths: tuple[int, ...]
-    radix_strides: tuple[int, ...]
-    support_side_flags: tuple[int, ...]
-    token_origin: int
-    token_count: int
-    topology_stamp: tuple[int, ...]
-
-    def __post_init__(self) -> None:
-        for name, tensor in (
-            ("read_values", self.read_values),
-            ("write_values", self.write_values),
-            ("support_words", self.support_words),
-        ):
-            if not isinstance(tensor, torch.Tensor):
-                raise TypeError(f"{name} must be a torch.Tensor")
-        if self.read_values.ndim != 4 or self.write_values.ndim != 4:
-            raise ValueError("route values must have rank 4")
-        if self.support_words.ndim != 3:
-            raise ValueError("support_words must have rank 3")
-
-        offsets = tuple(self.level_offsets)
-        support_offsets = tuple(self.support_offsets)
-        widths = tuple(self.level_widths)
-        strides = tuple(self.radix_strides)
-        flags = tuple(self.support_side_flags)
-        stamp = tuple(self.topology_stamp)
-        d = len(widths)
-
-        if d == 0 or len(offsets) != d + 1:
-            raise ValueError("level_offsets must contain D + 1 entries for a nonempty routing plan")
-        validate_routing_shape(widths, owner="RouteDescriptor")
-        if any(type(value) is not int for value in (*offsets, *support_offsets, *widths, *strides, *flags, *stamp)):
-            raise TypeError("RouteDescriptor metadata must contain exact ints")
-        if len(support_offsets) != d or len(strides) != d or len(flags) != d:
-            raise ValueError("RouteDescriptor metadata must contain one entry per routing level")
-        if offsets[0] != 0 or any(end - start != width or width < 2 for start, end, width in zip(offsets, offsets[1:], widths)):
-            raise ValueError("level_offsets must be compact slices matching level_widths >= 2")
-        expected_support_offset = 0
-        for offset, width, flag in zip(support_offsets, widths, flags):
-            if flag not in (0, READ_SUPPORT, WRITE_SUPPORT, READ_SUPPORT | WRITE_SUPPORT):
-                raise ValueError("support_side_flags entries must be READ=1 and/or WRITE=2")
-            if flag == 0:
-                if offset != -1:
-                    raise ValueError("dense routing levels must use support offset -1")
-            else:
-                if offset != expected_support_offset:
-                    raise ValueError("support offsets must compactly represent each sparse level once")
-                expected_support_offset += width
-        expected_strides = tuple(prod(widths[index + 1:]) for index in range(d))
-        if strides != expected_strides:
-            raise ValueError("radix_strides must be canonical MSB-first mixed-radix strides")
-        if type(self.token_origin) is not int or self.token_origin < 0:
-            raise ValueError("token_origin must be a nonnegative exact int")
-        if type(self.token_count) is not int or self.token_count < 0:
-            raise ValueError("token_count must be a nonnegative exact int")
-        route_tiles = (self.token_count + ROUTE_TILE_SIZE - 1) // ROUTE_TILE_SIZE
-        expected_value_shape = (self.read_values.shape[0], route_tiles, offsets[-1], ROUTE_TILE_SIZE)
-        if (
-            self.read_values.dtype != torch.bfloat16
-            or self.write_values.dtype != torch.bfloat16
-            or self.read_values.shape != expected_value_shape
-            or self.write_values.shape != expected_value_shape
-            or not self.read_values.is_contiguous()
-            or not self.write_values.is_contiguous()
-        ):
-            raise ValueError("route values must be contiguous bf16 [BH, route_tiles, sum_width, 32] arenas")
-        if self.read_values.device != self.write_values.device:
-            raise ValueError("read and write route arenas must share a device")
-        expected_support_shape = (self.read_values.shape[0], route_tiles, expected_support_offset)
-        if (
-            self.support_words.dtype != torch.int32
-            or self.support_words.shape != expected_support_shape
-            or not self.support_words.is_contiguous()
-            or self.support_words.device != self.read_values.device
-        ):
-            raise ValueError(
-                "support_words must be contiguous int32 uint32-bit patterns "
-                "[BH, token_words, sum_sparse_width]")
-        expected_stamp = (ROUTE_DESCRIPTOR_VERSION, d, *widths, *strides, *flags)
-        if stamp != expected_stamp:
-            raise ValueError("topology_stamp does not match the RouteDescriptor ABI metadata")
-        object.__setattr__(self, "level_offsets", offsets)
-        object.__setattr__(self, "support_offsets", support_offsets)
-        object.__setattr__(self, "level_widths", widths)
-        object.__setattr__(self, "radix_strides", strides)
-        object.__setattr__(self, "support_side_flags", flags)
-        object.__setattr__(self, "topology_stamp", stamp)
-
-
-@dataclass(frozen=True, slots=True)
 class IndependentRouting:
     """One routing LEVEL: its branch width and its two per-duty activations.
 
@@ -678,9 +571,9 @@ class ResolvedRouting:
 # they already satisfy the contract's shapes. Only the topology/decay
 # wrappers are new. These are producer-agnostic: they describe the routing
 # contract the naive oracle (``rola/ops/naive.py``) consumes, not a
-# projection ABI. They deliberately do not reuse ``ResolvedRouting`` /
-# ``RouteDescriptor``, which are packed-router / kernel ABI types tied to the
-# earlier Q/K-shaped producer and are not part of this contract.
+# projection ABI. They deliberately do not reuse ``ResolvedRouting``, a
+# packed-router type tied to the earlier Q/K-shaped producer and not part of
+# this contract.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)

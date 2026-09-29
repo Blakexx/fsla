@@ -272,12 +272,6 @@
    "count": 1
   },
   {
-   "path": "rola/routing/entmax/production.py",
-   "message": "production_routing_factors(..., token_origin=) is only ever 0 -- across every call in this tree, nothing moves it",
-   "line_sha256": "38fb91a1e9a4ab80",
-   "count": 1
-  },
-  {
    "path": "rola/routing/entmax/reference.py",
    "message": "entmax_forward(..., dim=) is only ever -1 -- across every call in this tree, nothing moves it",
    "line_sha256": "6d91a47c17342777",
@@ -347,12 +341,6 @@
    "path": "rola/routing/projection.py",
    "message": "packed_router_logits_reference(..., route_bias=) is only ever None -- across every call in this tree, nothing moves it",
    "line_sha256": "d43d764a2ff37fdf",
-   "count": 1
-  },
-  {
-   "path": "rola/routing/reference.py",
-   "message": "routing_factors(..., token_origin=) is only ever 0 -- across every call in this tree, nothing moves it",
-   "line_sha256": "76d8ee0d2419e9d9",
    "count": 1
   },
   {

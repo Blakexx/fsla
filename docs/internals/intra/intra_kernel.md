@@ -117,7 +117,7 @@ question in `2 x B x 4 B` = **4 KB**, a 16x cut on that term, for a signature ch
 and no new format.
 
 A producer whose solve is shared across a level's two duties hands the SAME word to
-both sides. The `RouteDescriptor` contract allows a set bit to accompany a stored
+both sides. The support contract allows a set bit to accompany a stored
 zero, and such a bit costs one gated MMA group whose product is exactly zero — it can
 move no number, which is the same argument that makes the gate a certificate.
 
