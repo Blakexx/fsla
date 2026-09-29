@@ -176,26 +176,28 @@ documents. The envelope table in [1.1](#11-the-built-envelope-is-the-surface) is
 ### 2.1 The bundle IS the contract, and it is THE INTERNAL FORMAT
 
 ```python
-RouteFactors(topology, read, write, g_write, amp_read, amp_write, scale_read, scale_write, read_mass=None, digits=1)
+RouteFactors(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=None, source=None)
 RouteFactors.from_levels(topology, read, write, g_write, read_mass=None)   # the framework's epilogue
 ```
 
 **The stored form is the internal quantized format** (ruled 2026-09-26). Each level's rows are
-u8 and UNIT-MAX -- the row's largest digit at 255, an all-zero row a dead token at that level --
-with the row's maximum carried beside them as its scale (`amp_read`/`scale_read`,
-`amp_write`/`scale_write`, one tensor per level). A read level's scale carries the read mass; a
+UNIT-MAX -- u8 with the row's largest digit at 255 up to depth two, or f16 with the largest entry
+at 1 at any depth (ruled 2026-09-29: the producer writes f16 deeper, and every consumer takes
+either); an all-zero row is a dead token at that level -- with the row's maximum carried beside
+them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one tensor per level). A read level's scale carries the read mass; a
 write level's scale is the normalized simplex's max and its mass rides `g_write`. This is what
 the int carry, the intra and the decode kernels read, and it is written in exactly one place:
 the framework's producer epilogue (`rola/routing/quant.py`, `RouteFactors.from_levels`). The fp64
 statement of the arithmetic is `tests/oracle/int_reference.py`, and the op's oracle takes the
 bundle itself as its input.
 
-`read`/`write` are the DEQUANTIZED levels, `rows / 255 * scale`, with the producer's gradient
-stepped straight through the rounding (`quant.straight_through`): every consumer that still
-computes on floating levels computes on the quantized VALUES, so nothing in the tree sees a
-number the kernel would not. They are a transitional carry, deleted with the last kernel port.
-The bundle's dtype invariant is on the scales and dequantized levels (one floating dtype);
-`digits` names the amplitude planes' digit count and is one.
+**Nothing floating is stored.** `RouteFactors.dequantized()` computes the levels, `rows x scale`
+in fp32, at the call: a consumer that still computes on floating levels calls it at its seam, so
+it computes on the quantized VALUES and nothing in the tree sees a number the kernel would not;
+the call goes when that consumer reads the rows. `source` is the producer's floating levels, held
+ONLY when they require a gradient -- the anchor `dequantized()` steps the gradient straight
+through the rounding to (`quant.straight_through`); an inference bundle holds the rows and nothing
+else.
 
 **The bundle is a record of tensors, and it is constructible.** Its fields are the
 stored levels, the side gains, the read mass and the topology they are shaped by —
@@ -244,7 +246,7 @@ WRITE side APPLIES it — the stored level is the simplex and the magnitude fold
 `g_write`, which is where a per-level magnitude belongs, and the decay clock is defined
 on the stored level. The READ side CARRIES it — the readout is a ratio, so a per-token
 scale common to every leaf is homogeneous of degree zero through it, and
-`RouteFactors.read` is stored with the mass still on it while `RouteFactors.read_mass`
+the read rows' scales carry the mass while `RouteFactors.read_mass`
 holds the per-token product (`None` when there is none). `RouteFactors.read_simplex()`
 divides it back out for every consumer defined on the simplex instead: the fp64 oracle
 and its input contract, the reference recurrence. The decode arm is defined on the
@@ -439,11 +441,12 @@ SCALAR, not a tally — a caller that needs how many times an arm ran spies on t
 
 `v_proj` and `o_proj` run as bf16 GEMMs with weights cast per call, and the projection
 is written to the value format at the layer: `Values.from_projection(v)` (`rola/values.py`)
-holds each token's values as s8 with the largest channel at ±127 (`v_hat`), that magnitude
-as the token's `scale`, and `v`, the dequantized view with the projection's gradient
-stepped straight through the rounding. The op takes the bundle, not the tensor. The s8
-plane and its scale are what the int kernels read; `v` is the transitional view every
-consumer still computing on floating values reads, deleted with the last kernel port. The arm is
+holds each token's values against its largest channel: at two digits (the default) the s16
+`round(32767 x)` as an s8 high byte `v_hat` and a u8 low byte `v_lo`, at one the s8
+`round(127 x)` alone; that magnitude is the token's fp32 `scale`. The op takes the bundle, not
+the tensor. The planes and the scale are what the int kernels read; `Values.dequantized()` is
+the fp32 view a consumer still computing on floating values takes at its seam, with the
+projection's gradient stepped straight through when the projection requires one. The arm is
 UNCONDITIONAL because the op's envelope makes it so: there is no CPU lowering, so a
 non-CUDA forward refuses at `rola_op` and no call off CUDA ever observes a projected
 value. Round-tripping

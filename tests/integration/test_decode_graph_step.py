@@ -281,7 +281,7 @@ def _sequence():
                                            BC=64)
         arena.wait()
         _y_ref, oracle_state = naive_rola(
-            v[:, :_T], routes.read_simplex(), routes.write,
+            v[:, :_T], routes.read_simplex(), routes.dequantized()[1],
             routes.g_write, routes.topology, None,
             output_final_state=True)
         lattice = to_lattice(oracle_state.float(), _WIDTHS, config.lattice_k,
@@ -378,7 +378,7 @@ def _make_growth(state, static):
     Re-planning also reassigns slots, which is the stronger cell -- the captured graph
     holds the arena's BASE and its table, and neither moves.
     """
-    written = _write_atom_bitmap(static.write, _config(_WIDTHS, dict(B=_B, H=_H)))
+    written = _write_atom_bitmap(static.dequantized()[1], _config(_WIDTHS, dict(B=_B, H=_H)))
     keep = (state._arena.page_table >= 0) & written
     row, column = (keep.nonzero())[0].tolist()
     keep[row, column] = False

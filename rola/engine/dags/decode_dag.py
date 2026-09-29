@@ -25,7 +25,7 @@ from rola.engine import (
 )
 from rola.ops import decode as bodies
 
-_SEEDS = ("routes", "values", "v", "decay", "state", "expert")
+_SEEDS = ("routes", "values", "levels", "v", "decay", "state", "expert")
 
 #: BOTH decode masks. A node carrying only `Mask.M4` is one the dense backing has no
 #: work for; there is no node the paged backing skips.
@@ -102,7 +102,7 @@ def state_plane(f):
 
 
 @node(gives=("plan",),
-      needs=("geometry", "routes", "v", "decay", "state_plane", "page_table", "scratch",
+      needs=("geometry", "routes", "levels", "v", "decay", "state_plane", "page_table", "scratch",
              "pool"),
       stream="main", masks=_DECODE, capturable=True)
 def build_plan(f):
@@ -114,7 +114,7 @@ def build_plan(f):
     """
     routes, geometry = f["routes"], f["geometry"]
     return DecodePlan(
-        config=geometry, heads=routes.heads, read=routes.read, write=routes.write,
+        config=geometry, heads=routes.heads, read=f["levels"][0], write=f["levels"][1],
         normalize=tuple(routes.read_needs_normalization()),
         dials=bodies.leaf_rate_dials_for(f["decay"], geometry, f["v"].device),
         g_write=routes.g_write, v=f["v"], state_plane=f["state_plane"],
@@ -141,7 +141,7 @@ def read_verdict(f):
     return bool(workspace.growth_host[0])
 
 
-@node(gives=("atom_bits",), needs=("routes", "geometry"), masks=_DECODE,
+@node(gives=("atom_bits",), needs=("levels", "geometry"), masks=_DECODE,
       reference_only=True)
 def write_atom_bitmap(f):
     """The gate's INDEPENDENT second derivation of the write-atom set.
@@ -151,7 +151,7 @@ def write_atom_bitmap(f):
     that compared the step against itself would prove nothing
     (docs/internals/decode/decode.md#second-derivation).
     """
-    return bodies._write_atom_bitmap(f["routes"].write, f["geometry"])
+    return bodies._write_atom_bitmap(f["levels"][1], f["geometry"])
 
 
 #: THE CAPTURED RECIPE. `decode_step_gated` is exactly this tuple, and a CUDA graph
@@ -189,13 +189,15 @@ def validate_context(ctx: DecodeContext) -> None:
     if ctx.routes.tokens != 1:
         raise ValueError(
             f"the decode op consumes exactly one token, got T={ctx.routes.tokens}")
-    bodies.guard_no_grad((ctx.values.v, ctx.routes.g_write,
-                          *ctx.routes.read, *ctx.routes.write,
+    bodies.guard_no_grad((*ctx.values.tensors(), *ctx.routes.tensors(),
                           *(ctx.decay.dials if ctx.decay is not None else ())))
 
 
 def _facts(ctx: DecodeContext) -> dict:
-    return {"routes": ctx.routes, "values": ctx.values, "v": ctx.values.v, "decay": ctx.decay,
+    #: the kernel still computes on floating levels and values: its seam dequantizes, once a call, until the
+    #: decode port reads the rows.
+    return {"routes": ctx.routes, "values": ctx.values, "levels": ctx.routes.dequantized(),
+            "v": ctx.values.dequantized(), "decay": ctx.decay,
             "state": ctx.state, "expert": ctx.expert}
 
 

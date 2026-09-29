@@ -48,8 +48,9 @@ def classify_call(f):
 def pack_planes(f):
     routes = f["routes"]
     mass = routes.read_mass
-    return (planes.pack_side(routes.read),
-            planes.pack_side(routes.write),
+    read, write = routes.dequantized()
+    return (planes.pack_side(read),
+            planes.pack_side(write),
             planes.packed_copy(routes.g_write.permute(0, 2, 1)),
             #: fp32, because it scales the readout's floor and `eps` is an fp32
             #: definition constant; bf16 here would quantize the floor.

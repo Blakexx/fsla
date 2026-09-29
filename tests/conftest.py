@@ -395,5 +395,5 @@ def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology)
     routes = functional_call(producer, parameters, streams)
 
     return SimpleNamespace(
-        read_levels=routes.read_simplex(), write_levels=routes.write,
+        read_levels=routes.read_simplex(), write_levels=routes.dequantized()[1],
         g_write=routes.g_write)

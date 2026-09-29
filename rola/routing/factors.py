@@ -25,33 +25,29 @@ import torch
 from rola.routing import quant
 from rola.routing.types import Topology
 
-__all__ = ["RouteFactors"]
+__all__ = ["U8_MAX_DEPTH", "RouteFactors"]
+
+#: u8 coefficient rows serve depth <= 2; a deeper topology's rows are f16 (ruled 2026-09-29).
+U8_MAX_DEPTH = 2
 
 
-def _quantize_side(levels):
-    rows, scales, dequantized = [], [], []
-    for level in levels:
-        row, scale = quant.quantize_unit_max_rows(level)
-        rows.append(row)
-        scales.append(scale)
-        dequantized.append(quant.straight_through(level, quant.dequantize_rows(row, scale)))
-    return tuple(rows), tuple(scales), tuple(dequantized)
+def _requires_grad(levels) -> bool:
+    return torch.is_grad_enabled() and any(level.requires_grad for level in levels)
 
 
 @dataclass(frozen=True, slots=True)
 class RouteFactors:
     """The feature-mapped routing sides in THE INTERNAL FORMAT, and their side gain. Tensors, and nothing else.
 
-    ``amp_read``/``amp_write``: one u8 ``[B, T, H, width_l]`` row set per level, each row UNIT-MAX (its
-    largest digit at 255; an all-zero row is a dead token at that level); ``scale_read``/``scale_write``:
-    the rows' maxima, ``[B, T, H]`` per level, in the producer's floating dtype -- a read level's scale
-    carries the read mass, a write level's the normalized simplex's max (its mass rides ``g_write``).
-    ``read``/``write``: the DEQUANTIZED levels, ``rows / 255 * scale``, as the values every consumer
-    computes on, with the producer's gradient stepped straight through the rounding; they are a
-    transitional carry until the intra, decode and carry kernels read the rows themselves.
-    ``g_write``: ``[B, T, H]`` write-side gain (there is no read gain: the readout is a ratio).
-    ``read_mass``: the ``[B, T, H]`` per-token read scale the read levels carry, or ``None``.
-    ``digits``: the amplitude planes' digit count (one).
+    ``amp_read``/``amp_write``: one ``[B, T, H, width_l]`` row set per level, each row UNIT-MAX -- u8 with its
+    largest digit at 255 (depth <= 2), or f16 with its largest entry at 1 (any depth); one dtype for the whole
+    bundle. An all-zero row is a dead token at that level. ``scale_read``/``scale_write``: the rows' maxima,
+    fp32 ``[B, T, H]`` per level -- a read level's scale carries the read mass, a write level's the normalized
+    simplex's max (its mass rides ``g_write``). ``g_write``: ``[B, T, H]`` write-side gain (there is no read
+    gain: the readout is a ratio). ``read_mass``: the ``[B, T, H]`` per-token read scale the read levels carry,
+    or ``None``. ``source``: the producer's floating ``(read, write)`` levels, held ONLY when they require a
+    gradient -- the straight-through gradient's anchor for :meth:`dequantized`; ``None`` otherwise, so an
+    inference bundle holds the rows and nothing else.
 
     The format is written by the framework's producers and by nothing else (ruled 2026-09-26): a new
     production is a producer class here. Direct construction is legal for a fixture; ``__post_init__``
@@ -59,110 +55,116 @@ class RouteFactors:
     """
 
     topology: Topology
-    read: tuple[torch.Tensor, ...]
-    write: tuple[torch.Tensor, ...]
-    g_write: torch.Tensor
     amp_read: tuple[torch.Tensor, ...]
     amp_write: tuple[torch.Tensor, ...]
     scale_read: tuple[torch.Tensor, ...]
     scale_write: tuple[torch.Tensor, ...]
+    g_write: torch.Tensor
     read_mass: torch.Tensor | None = None
-    digits: int = 1  #: reserved: the amplitude planes' digit count, one until a two-digit plane is declared
+    source: tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]] | None = None
 
     def __post_init__(self) -> None:
         """Shapes, devices, dtypes and ``None``-ness only -- never a device reduction."""
-        object.__setattr__(self, "read", tuple(self.read))
-        object.__setattr__(self, "write", tuple(self.write))
+        for name in ("amp_read", "amp_write", "scale_read", "scale_write"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
         if type(self.topology) is not Topology:
             raise TypeError(
                 f"RouteFactors.topology must be a Topology, got {type(self.topology).__name__}")
-        D, widths = self.topology.D, self.topology.widths
-
-        for name, levels in (("read", self.read), ("write", self.write)):
-            if len(levels) != D:
-                raise ValueError(
-                    f"RouteFactors.{name} must hold one tensor per routing level "
-                    f"(D={D}), got {len(levels)}")
-
-        prefix = None
-        for name, levels in (("read", self.read), ("write", self.write)):
-            for level, tensor in enumerate(levels):
-                if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4:
-                    shape = getattr(tensor, "shape", type(tensor).__name__)
-                    raise TypeError(
-                        f"RouteFactors.{name}[{level}] must be a [B, T, H, width_l] "
-                        f"tensor, got {shape}")
-                if tensor.shape[-1] != widths[level]:
-                    raise ValueError(
-                        f"RouteFactors.{name}[{level}] is {tensor.shape[-1]} wide but the "
-                        f"topology's level {level} is {widths[level]}")
-                if prefix is None:
-                    prefix = tuple(tensor.shape[:3])
-                elif tuple(tensor.shape[:3]) != prefix:
-                    raise ValueError(
-                        f"every routing level shares one [B, T, H] prefix; "
-                        f"{name}[{level}] is {tuple(tensor.shape[:3])} against {prefix}")
-                if tensor.device != self.read[0].device:
-                    raise ValueError(
-                        f"every routing level lives on one device; {name}[{level}] is on "
-                        f"{tensor.device} against {self.read[0].device}")
-                if tensor.dtype != self.read[0].dtype:
-                    raise ValueError(
-                        f"every routing level shares one dtype; {name}[{level}] is "
-                        f"{tensor.dtype} against {self.read[0].dtype}")
-        object.__setattr__(self, "amp_read", tuple(self.amp_read))
-        object.__setattr__(self, "amp_write", tuple(self.amp_write))
-        object.__setattr__(self, "scale_read", tuple(self.scale_read))
-        object.__setattr__(self, "scale_write", tuple(self.scale_write))
-        if self.digits != 1:
-            raise ValueError(f"RouteFactors.digits is {self.digits}; the amplitude planes are one u8 digit")
-        for name, rows, scales, levels in (("read", self.amp_read, self.scale_read, self.read),
-                                           ("write", self.amp_write, self.scale_write, self.write)):
-            if len(rows) != D or len(scales) != D:
-                raise ValueError(f"RouteFactors.amp_{name}/scale_{name} hold one tensor per level (D={D}), "
-                                 f"got {len(rows)}/{len(scales)}")
-            for level, (row, scale, dq) in enumerate(zip(rows, scales, levels)):
-                if not isinstance(row, torch.Tensor) or row.dtype is not torch.uint8 or tuple(row.shape) != tuple(dq.shape):
-                    raise TypeError(f"RouteFactors.amp_{name}[{level}] is the level's u8 rows, {tuple(dq.shape)}; got "
-                                    f"{getattr(row, 'dtype', type(row).__name__)} {tuple(getattr(row, 'shape', ()))}")
-                if not isinstance(scale, torch.Tensor) or tuple(scale.shape) != prefix:
-                    raise ValueError(f"RouteFactors.scale_{name}[{level}] is the rows' maxima, [B, T, H]={prefix}; got "
+        D = self.topology.D
+        prefix, first = self._check_rows()
+        if first.dtype not in quant.ROW_DTYPES:
+            raise TypeError(f"RouteFactors rows are stored as one of {quant.ROW_DTYPES}, got {first.dtype}")
+        if first.dtype is torch.uint8 and D > U8_MAX_DEPTH:
+            raise ValueError(f"u8 rows serve depth <= {U8_MAX_DEPTH}; a depth-{D} topology's rows are f16")
+        for name in ("scale_read", "scale_write"):
+            scales = getattr(self, name)
+            if len(scales) != D:
+                raise ValueError(f"RouteFactors.{name} holds one tensor per level (D={D}), got {len(scales)}")
+            for level, scale in enumerate(scales):
+                if (not isinstance(scale, torch.Tensor) or scale.dtype is not torch.float32
+                        or tuple(scale.shape) != prefix):
+                    raise ValueError(f"RouteFactors.{name}[{level}] is the rows' maxima, fp32 [B, T, H]={prefix}; "
+                                     f"got {getattr(scale, 'dtype', type(scale).__name__)} "
                                      f"{tuple(getattr(scale, 'shape', ()))}")
-        for name, column in (("g_write", self.g_write),
-                             ("read_mass", self.read_mass)):
-            if column is None:
+        for name, column in (("g_write", self.g_write), ("read_mass", self.read_mass)):
+            if column is None and name == "read_mass":
                 continue
             if not isinstance(column, torch.Tensor) or tuple(column.shape) != prefix:
                 shape = getattr(column, "shape", type(column).__name__)
-                raise ValueError(
-                    f"RouteFactors.{name} must be a [B, T, H]={prefix} tensor, got {shape}")
+                raise ValueError(f"RouteFactors.{name} must be a [B, T, H]={prefix} tensor, got {shape}")
+        if self.source is not None:
+            for side, levels, rows in (("read", self.source[0], self.amp_read),
+                                       ("write", self.source[1], self.amp_write)):
+                if len(levels) != D or any(tuple(a.shape) != tuple(r.shape) for a, r in zip(levels, rows)):
+                    raise ValueError(f"RouteFactors.source's {side} levels are the rows' floating originals")
+
+    def _check_rows(self) -> tuple[tuple[int, ...], torch.Tensor]:
+        """Every row set: one tensor a level, ``[B, T, H, width_l]``, one prefix, device and dtype."""
+        D, widths = self.topology.D, self.topology.widths
+        prefix, first = None, None
+        for name in ("amp_read", "amp_write"):
+            rows = getattr(self, name)
+            if len(rows) != D:
+                raise ValueError(f"RouteFactors.{name} must hold one tensor per routing level (D={D}), got {len(rows)}")
+            for level, tensor in enumerate(rows):
+                if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4:
+                    shape = getattr(tensor, "shape", type(tensor).__name__)
+                    raise TypeError(f"RouteFactors.{name}[{level}] must be a [B, T, H, width_l] tensor, got {shape}")
+                if tensor.shape[-1] != widths[level]:
+                    raise ValueError(f"RouteFactors.{name}[{level}] is {tensor.shape[-1]} wide but the topology's "
+                                     f"level {level} is {widths[level]}")
+                if first is None:
+                    prefix, first = tuple(tensor.shape[:3]), tensor
+                elif tuple(tensor.shape[:3]) != prefix:
+                    raise ValueError(f"every routing level shares one [B, T, H] prefix; {name}[{level}] is "
+                                     f"{tuple(tensor.shape[:3])} against {prefix}")
+                if tensor.device != first.device:
+                    raise ValueError(f"every routing level lives on one device; {name}[{level}] is on "
+                                     f"{tensor.device} against {first.device}")
+                if tensor.dtype != first.dtype:
+                    raise ValueError(f"every routing level shares one row dtype; {name}[{level}] is {tensor.dtype} "
+                                     f"against {first.dtype}")
+        return prefix, first
 
     @classmethod
     def from_levels(cls, topology: Topology, read, write, g_write, read_mass=None) -> RouteFactors:
-        """THE FRAMEWORK'S EPILOGUE as a function: floating levels in, the format out. Each level's rows are
-        stored u8 unit-max with their maxima, and the levels a consumer computes on are the dequantized values
-        with the input's gradient stepped straight through the rounding (`rola.routing.quant`)."""
-        amp_read, scale_read, dq_read = _quantize_side(read)
-        amp_write, scale_write, dq_write = _quantize_side(write)
-        return cls(topology=topology, read=dq_read, write=dq_write, g_write=g_write,
-                   amp_read=amp_read, amp_write=amp_write, scale_read=scale_read, scale_write=scale_write,
-                   read_mass=read_mass)
+        """THE FRAMEWORK'S EPILOGUE as a function: floating levels in, the format out -- u8 rows at depth <= 2 and
+        f16 rows deeper, each against its own max (`rola.routing.quant`)."""
+        dtype = torch.uint8 if topology.D <= U8_MAX_DEPTH else torch.float16
+        read, write = tuple(read), tuple(write)
+        amp_read, scale_read = zip(*(quant.quantize_unit_max_rows(level, dtype) for level in read))
+        amp_write, scale_write = zip(*(quant.quantize_unit_max_rows(level, dtype) for level in write))
+        source = (read, write) if _requires_grad(read + write) else None
+        return cls(topology=topology, amp_read=amp_read, amp_write=amp_write, scale_read=scale_read,
+                   scale_write=scale_write, g_write=g_write, read_mass=read_mass, source=source)
 
     @property
     def batch(self) -> int:
-        return self.read[0].shape[0]
+        return self.amp_read[0].shape[0]
 
     @property
     def tokens(self) -> int:
-        return self.read[0].shape[1]
+        return self.amp_read[0].shape[1]
 
     @property
     def heads(self) -> int:
-        return self.read[0].shape[2]
+        return self.amp_read[0].shape[2]
 
     @property
     def device(self) -> torch.device:
-        return self.read[0].device
+        return self.amp_read[0].device
+
+    def dequantized(self) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
+        """``(read, write)``: the levels as fp32 values, ``rows x scale``, computed at the call. With a ``source``
+        the producer's gradient steps straight through the rounding. A consumer still computing on floating
+        levels calls this at its seam, and the call goes when that consumer reads the rows."""
+        sides = []
+        for side, (rows, scales) in enumerate(((self.amp_read, self.scale_read), (self.amp_write, self.scale_write))):
+            levels = tuple(quant.dequantize_rows(row, scale) for row, scale in zip(rows, scales))
+            if self.source is not None:
+                levels = tuple(quant.straight_through(exact, level) for exact, level in zip(self.source[side], levels))
+            sides.append(levels)
+        return sides[0], sides[1]
 
     def read_needs_normalization(self) -> tuple[bool, ...]:
         """Per read level: is it still off the simplex? THE PREDICATE, stated once.
@@ -172,37 +174,21 @@ class RouteFactors:
         same facts is one divergence waiting to happen.
         """
         if self.read_mass is None:
-            return (False,) * len(self.read)
+            return (False,) * self.topology.D
         return tuple(not self.topology.duty_simplex_output(index, "read")
-                     for index in range(len(self.read)))
+                     for index in range(self.topology.D))
 
     def read_simplex(self) -> tuple[torch.Tensor, ...]:
-        """The read levels on the simplex -- ``read`` with :attr:`read_mass` divided out.
-
-        The consumer a bundle is built for reads ``(read, read_mass)`` unscaled; this is
-        for every consumer that is defined on the simplex instead (the fp64 oracle and
-        its contract, the decode arm, the reference recurrence).
-        """
+        """The dequantized read levels on the simplex -- :attr:`read_mass` divided out PER LEVEL (a simplex is a
+        per-level claim; the levels the topology already declares on it are returned untouched)."""
+        read, _ = self.dequantized()
         if self.read_mass is None:
-            return self.read
-        #: PER LEVEL, not by the product: `read_mass` is the product the readout's ratio
-        #: takes, but a simplex is a per-level claim, and the levels the topology already
-        #: declares on it are returned untouched so this is exactly the bundle a
-        #: mass-carrying one would have been.
-        #:
-        #: THE QUOTIENT IS AT LEAST fp32: a bf16 quotient of a bf16 sum of bf16 addends
-        #: is three roundings where one is forced, and every consumer of this widens
-        #: anyway. A level already wider than fp32 keeps its own width.
-
-        def divided(level: torch.Tensor) -> torch.Tensor:
-            wide = torch.promote_types(level.dtype, torch.float32)
-            return level.to(wide) / level.sum(dim=-1, keepdim=True, dtype=wide)
-
-        return tuple(divided(level) if needs else level
-                     for level, needs in zip(self.read, self.read_needs_normalization(),
-                                             strict=True))
+            return read
+        return tuple(level / level.sum(dim=-1, keepdim=True) if needs else level
+                     for level, needs in zip(read, self.read_needs_normalization(), strict=True))
 
     def tensors(self) -> tuple[torch.Tensor, ...]:
         """Every tensor the OPERATION consumes, for the gradient-reachability predicate."""
         mass = () if self.read_mass is None else (self.read_mass,)
-        return (*self.read, *self.write, self.g_write, *mass)
+        source = () if self.source is None else (*self.source[0], *self.source[1])
+        return (*self.amp_read, *self.amp_write, *self.scale_read, *self.scale_write, self.g_write, *mass, *source)

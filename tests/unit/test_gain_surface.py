@@ -108,8 +108,8 @@ def test_the_gain_rides_the_router_gemm_and_is_not_a_second_projection():
     after = producer(x)
     assert not torch.allclose(before.g_write, after.g_write), (
         "the trailing column does not reach the gain")
-    for side in ("read", "write"):
-        for level, (b, a) in enumerate(zip(getattr(before, side), getattr(after, side))):
+    for side, b_levels, a_levels in zip(("read", "write"), before.dequantized(), after.dequantized()):
+        for level, (b, a) in enumerate(zip(b_levels, a_levels)):
             torch.testing.assert_close(b, a, rtol=0, atol=0,
                                        msg=f"the gain column moved {side} level {level}")
 

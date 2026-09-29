@@ -146,7 +146,7 @@ def validate_context(ctx: ChunkContext) -> None:
 def build_chunk_plan(ctx: ChunkContext) -> ChunkPlan:
     """Walk the chunk DAG over `ctx` and return the plan its terminal node built."""
     validate_context(ctx)
-    facts = {"routes": ctx.routes, "values": ctx.values, "v": ctx.values.v, "decay": ctx.decay,
+    facts = {"routes": ctx.routes, "values": ctx.values, "v": ctx.values.dequantized(), "decay": ctx.decay,
              "state": ctx.state,
              "expert": ctx.expert, "want_state": ctx.want_state,
              "given_state_in": ctx.state_in, "given_arena": ctx.arena}

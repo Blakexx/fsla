@@ -59,8 +59,8 @@ def _admitted(routes, v) -> None:
 def _oracle(routes, v):
     from rola.ops.naive import naive_rola
 
-    y, _ = naive_rola(v, routes.read_simplex(), routes.write, routes.g_write,
-                      routes.topology, None)
+    _, write = routes.dequantized()
+    y, _ = naive_rola(v, routes.read_simplex(), write, routes.g_write, routes.topology, None)
     return y
 
 
@@ -81,8 +81,7 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     """
     producer = _routes()
     factors = producer(_x(producer))
-    hand_built = RouteFactors.from_levels(
-        factors.topology, factors.read, factors.write, factors.g_write)
+    hand_built = RouteFactors.from_levels(factors.topology, *factors.dequantized(), factors.g_write)
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     _admitted(hand_built, v)
     assert torch.isfinite(_oracle(hand_built, v)).all()
@@ -92,7 +91,7 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     ("width", "wide but the topology"),
     ("levels", "one tensor per routing level"),
     ("prefix", r"one \[B, T, H\] prefix"),
-    ("dtype", "one dtype"),
+    ("dtype", "one row dtype"),
     ("gain_shape", r"g_write must be a \[B, T, H\]"),
 ])
 def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, message):
@@ -109,22 +108,47 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
     """
     producer = _routes()
     f = producer(_x(producer))
-    fields = dict(topology=f.topology,
-                  read=list(f.read), write=list(f.write),
-                  g_write=f.g_write)
+    fields = dict(topology=f.topology, amp_read=list(f.amp_read), amp_write=list(f.amp_write),
+                  scale_read=f.scale_read, scale_write=f.scale_write, g_write=f.g_write)
     if break_it == "width":
-        fields["read"][0] = fields["read"][0][..., :2]
+        fields["amp_read"][0] = fields["amp_read"][0][..., :2]
     elif break_it == "levels":
-        fields["read"] = fields["read"][:1]
+        fields["amp_read"] = fields["amp_read"][:1]
     elif break_it == "prefix":
-        fields["write"][1] = fields["write"][1][:1]
+        fields["amp_write"][1] = fields["amp_write"][1][:1]
     elif break_it == "dtype":
-        fields["write"][0] = fields["write"][0].to(torch.float32)
+        fields["amp_write"][0] = fields["amp_write"][0].to(torch.float16)
     elif break_it == "gain_shape":
         fields["g_write"] = fields["g_write"][..., :1]
     with pytest.raises((ValueError, TypeError), match=message):
-        RouteFactors.from_levels(fields["topology"], tuple(fields["read"]), tuple(fields["write"]),
-                                 fields["g_write"])
+        RouteFactors(**fields)
+
+
+def test_rows_are_u8_to_depth_two_and_f16_at_any_depth():
+    """RULED 2026-09-29: the producer writes u8 rows up to depth two and f16 rows deeper; every consumer takes
+    either. An f16 bundle is legal at depth two, a u8 bundle is refused deeper, and both dequantize to the rows'
+    values against their scales."""
+    producer = _routes()
+    f = producer(_x(producer))
+    assert all(row.dtype is torch.uint8 for row in f.amp_read + f.amp_write)
+    read, write = f.dequantized()
+    halves = RouteFactors(topology=f.topology, amp_read=[level.to(torch.float16) for level in f.amp_read],
+                          amp_write=[level.to(torch.float16) / 255 for level in f.amp_write],
+                          scale_read=[s / 255 for s in f.scale_read], scale_write=f.scale_write,
+                          g_write=f.g_write)
+    half_read, half_write = halves.dequantized()
+    for exact, half in zip(read + write, half_read + half_write):
+        torch.testing.assert_close(half, exact, rtol=2 ** -10, atol=0)
+    from rola.routing.types import OpaqueRouting, Topology
+
+    deep = Topology(levels=tuple(OpaqueRouting(width=4) for _ in range(3)))
+    level = torch.full((1, 2, 1, 4), 0.25)
+    bundle = RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, torch.ones(1, 2, 1))
+    assert all(row.dtype is torch.float16 for row in bundle.amp_read + bundle.amp_write)
+    with pytest.raises(ValueError, match="u8 rows serve depth <= 2"):
+        RouteFactors(topology=deep, amp_read=[r.to(torch.uint8) for r in bundle.amp_read],
+                     amp_write=[r.to(torch.uint8) for r in bundle.amp_write], scale_read=bundle.scale_read,
+                     scale_write=bundle.scale_write, g_write=bundle.g_write)
 
 
 def test_the_op_refuses_anything_that_is_not_a_bundle():
@@ -133,7 +157,7 @@ def test_the_op_refuses_anything_that_is_not_a_bundle():
     factors = producer(_x(producer))
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     with pytest.raises(TypeError, match="RouteFactors"):
-        _validate(factors.read, v)
+        _validate(factors.amp_read, v)
     #: The well-formed call is the control: the refusal above must be about the TYPE,
     #: not about this fixture being unrunnable.
     _admitted(factors, v)
@@ -153,19 +177,25 @@ def test_the_op_refuses_a_bare_value_tensor_and_names_the_bundle():
 
 
 def test_the_value_bundle_is_the_format_and_its_view_is_the_rounded_projection():
-    """`Values.from_projection` writes the value format: s8 per token against the token's largest
-    channel, the scale that magnitude, and `v` the dequantized view carrying the projection's
-    gradient (docs/api.md section 4.1)."""
+    """`Values.from_projection` writes the value format against the token's largest channel: at two digits (the
+    default) the s16 ``round(32767 x)`` as an s8 high byte and a u8 low byte, at one the s8 ``round(127 x)``; the
+    scale is that magnitude in fp32, and `dequantized` is the rounded projection carrying its gradient
+    (docs/api.md section 4.1)."""
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64, requires_grad=True)
     values = Values.from_projection(v)
-    assert values.v_hat.dtype is torch.int8 and tuple(values.v_hat.shape) == (2, 6, 2, 8)
-    assert torch.equal(values.scale, v.detach().abs().amax(-1))
-    assert values.v_hat.abs().amax(-1).eq(127).all()
-    assert torch.allclose(values.v.detach(), values.v_hat.double() * (values.scale / 127.0).unsqueeze(-1))
-    values.v.sum().backward()
+    assert values.digits == 2 and values.v_hat.dtype is torch.int8 and values.v_lo.dtype is torch.uint8
+    assert values.scale.dtype is torch.float32 and tuple(values.v_hat.shape) == (2, 6, 2, 8)
+    torch.testing.assert_close(values.scale, v.detach().abs().amax(-1).float())
+    q = values.v_hat.int() * 256 + values.v_lo.int()
+    assert q.abs().amax(-1).eq(32767).all()
+    torch.testing.assert_close(values.dequantized().double(), v.detach(),
+                               rtol=0, atol=float(values.scale.max()) / 32767)
+    values.dequantized().sum().backward()
     assert torch.equal(v.grad, torch.ones_like(v))
+    one = Values.from_projection(v.detach(), digits=1)
+    assert one.digits == 1 and one.v_lo is None and one.v_hat.abs().amax(-1).eq(127).all()
     with pytest.raises(ValueError, match="s8"):
-        Values(v_hat=values.v_hat.float(), scale=values.scale, v=values.v)
+        Values(v_hat=values.v_hat.float(), v_lo=values.v_lo, scale=values.scale)
 
 
 def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel():
@@ -234,7 +264,7 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
     assert torch.isfinite(_oracle(factors, v)).all()
     assert rola.RoLA(producer, d_v=8).topology is producer.topology
     with pytest.raises(TypeError):
-        RouteFactors(topology=producer.topology, read=(factors.read[0],), write=(factors.write[0],),
+        RouteFactors(topology=producer.topology, amp_read=factors.amp_read, amp_write=factors.amp_write,
                      g_write=factors.g_write)  # the format's fields are not optional
 
 
@@ -254,7 +284,7 @@ def test_one_producer_covers_many_levels_in_the_order_they_were_declared():
     producer = _routes(widths=(4, 6))
     assert producer.topology.widths == (4, 6)
     factors = producer(_x(producer))
-    assert [tuple(level.shape[-1:]) for level in factors.read] == [(4,), (6,)]
+    assert [tuple(level.shape[-1:]) for level in factors.amp_read] == [(4,), (6,)]
 
 
 # ---------------------------------------------------------------------------
@@ -278,9 +308,10 @@ def test_the_public_levels_are_the_formats_rows_dequantized():
     """
     producer = _routes(widths=(4, 6))
     factors = producer(_x(producer))
-    #: RULED 2026-09-26: the u8 rows and their scales ARE the stored layout; the dequantized public levels are a
-    #: transitional carry for consumers that still compute on floating levels and go with the last kernel port.
-    for level, (rows, scale, public) in enumerate(zip(factors.amp_read, factors.scale_read, factors.read)):
+    #: RULED 2026-09-26: the u8 rows and their scales ARE the stored layout; the dequantized levels are computed
+    #: at a consumer's seam, for consumers that still compute on floating levels.
+    read, _ = factors.dequantized()
+    for level, (rows, scale, public) in enumerate(zip(factors.amp_read, factors.scale_read, read)):
         assert rows.dtype is torch.uint8 and tuple(rows.shape) == tuple(public.shape)
         assert torch.equal(rows.amax(dim=-1), torch.full_like(rows.amax(dim=-1), 255)), (
             f"level {level}'s rows are not unit-max")

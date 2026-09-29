@@ -80,9 +80,9 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(dtype):
         assert out.read_levels[level].shape == (B, L, H, width)
         assert out.write_levels[level].shape == (B, L, H, width)
         assert torch.allclose(
-            out.read_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=_ROW_BUDGET)
+            out.read_levels[level].sum(dim=-1), torch.ones(B, L, H), atol=_ROW_BUDGET)
         assert torch.allclose(
-            out.write_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=_ROW_BUDGET)
+            out.write_levels[level].sum(dim=-1), torch.ones(B, L, H), atol=_ROW_BUDGET)
 
     assert not hasattr(out, "g_read")
     assert out.g_write.shape == (B, L, H)
@@ -114,9 +114,9 @@ def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(dty
     for level, width in enumerate(topology.widths):
         assert out.read_levels[level].shape == (B, L, H, width)
         assert torch.allclose(
-            out.read_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=_ROW_BUDGET)
+            out.read_levels[level].sum(dim=-1), torch.ones(B, L, H), atol=_ROW_BUDGET)
         assert torch.allclose(
-            out.write_levels[level].sum(dim=-1), torch.ones(B, L, H, dtype=dtype), atol=_ROW_BUDGET)
+            out.write_levels[level].sum(dim=-1), torch.ones(B, L, H), atol=_ROW_BUDGET)
 
     y, _ = naive_rola(v, out.read_levels, out.write_levels, out.g_write, topology, None)
     assert torch.isfinite(y).all()

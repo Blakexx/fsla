@@ -329,7 +329,7 @@ def decode_step(fx) -> Launch:
     #: not of the numbers stored, so nothing has to have computed them.
     producer = fx["layer"].routes
     routes = fx["routes"]
-    bits = planes.atom_bits(planes.pack_side(routes.write), widths)
+    bits = planes.atom_bits(planes.pack_side(routes.dequantized()[1]), widths)
     seeded: dict = {}
 
     def reset():

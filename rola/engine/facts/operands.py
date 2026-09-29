@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 
 
 def operands_of(routes: RouteFactors, values: Values, decay: Any = None) -> tuple:
-    """Every tensor the OPERATION consumes, flat -- the predicate's argument list. The value bundle's
-    differentiable tensor is its straight-through view."""
-    return (values.v, *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
+    """Every tensor the OPERATION consumes, flat -- the predicate's argument list. A bundle's differentiable
+    tensors are its gradient anchors (``source``), present only when the producer's inputs require a gradient."""
+    return (*values.tensors(), *routes.tensors(), *(() if decay is None else tuple(decay.dials)))
 
 
 def requires_backward(*tensors: Any) -> bool:
