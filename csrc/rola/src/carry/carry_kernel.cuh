@@ -157,7 +157,8 @@ struct Smem {
   }
 
   __device__ __forceinline__ long long* ledger(int warp) const {
-    return reinterpret_cast<long long*>(base + BP::kLedgerOffset) + warp * kPhases;
+    return reinterpret_cast<long long*>(base + BP::kLedgerOffset)
+           + warp * rola::PhaseClock<kPhases>::kRow;
   }
 
   //: THE TILE COUNTER of window parity `parity`: dealt a window ahead, so two.

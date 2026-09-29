@@ -34,6 +34,14 @@ constexpr int kUnitRepeats = kDecodeWarps / kUnitBlockWarps;
 
 constexpr int kDecodeMaxSpan = 32;  // refused at the host entry; decode.md#kdecodemaxspan
 
+//: THE LEAF'S LANES: a leaf row is `DV / 8` lanes of 8 channels, so a warp walks `32 / (DV / 8)` units at once. -- see docs/internals/decode/decode.md#leaf-lanes
+template <int DV>
+struct LeafLanes {
+  static constexpr int kLanes = DV / 8;
+  static constexpr int kGroups = 32 / kLanes;
+  static_assert(DV % 32 == 0 && kLanes <= 32, "a leaf row is whole 32-channel groups of 4 lanes");
+};
+
 constexpr int kDecodeResidentThreads = 1024;  // CTA/SM residency; decode.md#kdecoderesidentthreads
 
 //: THE STEP'S PHASES, as the phase ledger books them; see decode.md#phase-ledger

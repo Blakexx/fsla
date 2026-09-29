@@ -12,18 +12,20 @@ namespace rola {
 
 template <int Phases>
 struct PhaseClock {
+  //: A warp's shared row: its `Phases` accumulators, then the last lap's mark, so the clock holds no register across a phase.
+  static constexpr int kRow = Phases + 1;
   long long* acc;
   long long* trace;
-  long long mark;
   int n, cap;
   bool lead;
 
   __device__ __forceinline__ PhaseClock(long long* row, int lane)
-      : acc(row), trace(nullptr), mark(denseref::ops::cycles()), n(0), cap(0), lead(lane == 0) {
+      : acc(row), trace(nullptr), n(0), cap(0), lead(lane == 0) {
     constexpr int kCount = Phases;
     if (lead) {
 #pragma unroll
       for (int ph = 0; ph < kCount; ++ph) acc[ph] = 0;
+      acc[kCount] = denseref::ops::cycles();
     }
   }
 
@@ -46,12 +48,12 @@ struct PhaseClock {
 
   //: the cycles since the last mark go to phase `ph`.
   __device__ __forceinline__ void lap(int ph) {
-    const long long now = denseref::ops::cycles();
     if (lead) {
-      acc[ph] += now - mark;
+      const long long now = denseref::ops::cycles();
+      acc[ph] += now - acc[Phases];
+      acc[Phases] = now;
       record(now, ph);
     }
-    mark = now;
   }
 
   //: the warp's row into the launch's ledger, `[cta][warp][Phases]`.

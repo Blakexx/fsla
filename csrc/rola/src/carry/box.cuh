@@ -83,7 +83,8 @@ struct BoxPlan {
   static constexpr int kRowMapBytes = kBC * 2;
   //: THE PHASE LEDGER, the tile counter, the WALK RING and a warp's take and fold words.
   //: -- smem_ledger.md
-  static constexpr int kLedgerBytes = kWarps * kPhases * 8;
+  static constexpr int kLedgerBytes =
+      kWarps * (kPhases + 1) * 8;  // a warp's phases, then its clock mark
   static constexpr int kWalkEntries = kPoolTokMax;
   static constexpr int kWalkBytes = kWarps * kWalkEntries * 4;
 

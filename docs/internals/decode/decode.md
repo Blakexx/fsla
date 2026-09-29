@@ -1243,10 +1243,9 @@ docs/internals/decode/decode.md#the-warp-arrival
 THE PAGED BASE TRANSLATION, resolved ONCE PER TOUCHED ATOM. The table row is
 pinned here (a plain origin, no per-atom widening multiply); the cache is keyed on
 the atom VALUE, so it is correct whatever order the walk reaches leaves in.
-`atom_base` is the atom's first row as an ELEMENT offset from `p.state`: dense is
-`bh * N + (atom << 4)` (which is why a topology whose `N` is not a whole number of
-atoms still addresses correctly -- the two halves recombine to `bh * N + leaf`),
-paged is `slot << 4`. docs/internals/decode/decode.md#paged-address
+`atom_base` is the atom's page as a BYTE offset from `p.state`: dense is
+`(bh * atoms_per_bh + atom) * kBytes`, paged is `slot * kBytes`.
+docs/internals/decode/decode.md#paged-address
 A CLAIMING STEP READS TWO SOURCES: the page table first, and this step's CLAIM ROW
 only where the table says absent. That is the whole of the pool inside the walk, and
 it is the shape the race-free claim row forces -- the row no longer carries the
@@ -1295,8 +1294,9 @@ docs/internals/decode/decode_lattice.md#the-terms
 <a id="period"></a>
 ### `period`
 
-THE BLOCK, THE REPEAT AND THE PERIOD. A warp's low `kUnitBlockWarpsBits` name its
-unit inside the segment's block; the rest name WHICH of the CTA's `kUnitRepeats`
+THE BLOCK, THE REPEAT AND THE PERIOD, over BATCHES of `kGroups` units (a warp's
+lane groups take one batch). A warp's low `kUnitBlockWarpsBits` name its
+batch inside the segment's block; the rest name WHICH of the CTA's `kUnitRepeats`
 blocks it serves, one period apart. `seg * kUnitBlockWarps + ub` sweeps one whole
 period bijectively, so the partition is the same one-owner-per-row partition it
 was, cut at a granularity the CTA's width no longer sets.
@@ -1306,7 +1306,8 @@ was, cut at a granularity the CTA's width no longer sets.
 
 TWO RESOLVERS, ONE WALK. The write product is enumerated from live DIGITS and
 every other term from live owners crossed with the run radix; both hand back the
-identical `Unit<D>`, and the selector is the term loop's own invariant.
+identical `Unit<D>`, and the selector is the term loop's own invariant. Each lane group
+resolves its own unit, so one resolve's instructions serve `kGroups` units.
 docs/internals/decode/decode_lattice.md#the-write-grain
 
 <a id="decode-step-kernel-note-l474"></a>
@@ -1323,8 +1324,10 @@ unit its term does not realize. docs/internals/decode/decode_lattice.md#the-unit
 ### `t`
 
 THE SLOT LOOP IS THE INNERMOST LEVEL'S RUN, in ASCENDING lattice order -- the
-unit's own contiguous run -- iterated over the TERM's set bits, so a dead
-innermost digit costs one `__ffs` step and no address at all. Ascending is what
+unit's own contiguous run -- iterated over the TERM's set bits, one leaf a lane group
+an iteration, so a dead innermost digit costs one `__ffs` step and no address at all.
+The warp iterates while ANY group holds a bit; a group whose run is spent rides the
+remaining iterations with its loads and stores predicated off and a zero amplitude. Ascending is what
 makes `cached_atom` the walk's only reuse and enough of it:
 docs/internals/decode/decode.md#aligned-subranges
 NO SPECULATIVE UNROLLING: the trip count is a runtime popcount, and an unrolled
@@ -1790,8 +1793,9 @@ template axis and not a runtime test: docs/internals/decode/decode.md#template-a
 <a id="nc"></a>
 ### `NC`
 
-Columns per lane: `NC` fully coalesced 128 B transactions, and the lane's
-accumulators are its own output columns.
+Columns per lane IN THE COMBINE: `NC` fully coalesced 128 B transactions over the fold
+rows, and the summing lane's partials are its own output columns. The walk holds a
+different slice, eight channels a lane ([`#leaf-lanes`](#leaf-lanes)).
 
 <a id="sumax"></a>
 ### `s_umax`
@@ -2029,10 +2033,10 @@ on purpose: docs/internals/decode/decode.md#determinism
 THE STATE'S PAGE IS THE INT8 STATE FORMAT -- `[16 x DV hi s16][16 x DV lo u8][16 x DV/32 exponent s8][16 mass fp32]`,
 `common/state_page.md` -- and the plane count is the leaf's own fact for this step:
 
-* a leaf this step WRITES is read in full, `(hi << 8 | lo) * 2^e`, updated in fp32, and stored: a lane's column `q`
-  is channel `lane + 32 q`, so a GROUP is one column of every lane, and its exponent is the warp's max of `|v|`
-  over it (five `SHFL`s); each value is rounded once to its group's s24 quantum, and the lane-0 exponent and the
-  fp32 mass are stored beside it. The readout then reads the STORED value, so the next step reads exactly what this
+* a leaf this step WRITES is read in full, `(hi << 8 | lo) * 2^e`, updated in fp32, and stored: a lane holds
+  eight consecutive channels ([`#leaf-lanes`](#leaf-lanes)), so a GROUP is four lanes, and its exponent is their
+  max of `|v|` (eight maxima in the lane, then two shuffles); each value is rounded once to its group's s24 quantum, and
+  the group's first lane stores the exponent and the row's first lane the fp32 mass beside it. The readout then reads the STORED value, so the next step reads exactly what this
   one wrote. The plane choice keys on `in_w`, the step's own write set, and NOT on whether THIS PASS performs the
   deposit: a gated step's third outcome is "re-read without depositing" (`done[bh]`), and a re-read of a leaf the
   step wrote must see the same bytes the depositing pass saw, or two admission orders would compute different `y`
@@ -2051,6 +2055,36 @@ comes from the level widths and must be a whole number of pages, which a lawful 
 makes it by construction; a ragged `N` is REFUSED at this seam rather than padded, and
 decode carries no shape, tolerance or topology prefill does not. The dense plane is
 `[BH, N / 16, page_bytes]` — the same page sequence with every page resident.
+
+<a id="s-admission"></a>
+### `s_admission`
+
+The batch-head's admission outcome -- bit 0 needy, bit 1 claimed -- is CTA-uniform and
+settled before the prologue's last barrier; the combine reads it back from shared memory
+after the walk rather than holding the two flags in registers across it, where they
+spilled the deep arms (the walk fills the register file).
+
+<a id="leaf-lanes"></a>
+### The leaf's lanes: a warp walks `32 / (DV / 8)` units at once
+
+A leaf row is `DV / 8` lanes of eight channels each (`LeafLanes<DV>`): one 16-byte load of
+its hi plane, one 8-byte load of its lo plane, its group's exponent byte and (the row's first
+lane) the mass. A warp is therefore `kGroups = 32 / (DV / 8)` lane groups -- four at `DV = 64`
+-- and each group resolves and walks its OWN unit, so a warp holds `kGroups` leaves' loads in
+flight where it held one, and a unit's resolve and a leaf's address, loop control and
+amplitude reads are paid once for `kGroups` leaves. The channels are unpacked by a byte
+permute (`state_page.cuh`'s `mantissa8`: the permute's sign replication extends the s24) and
+the stored row is packed back the same way (`pack_hi8`, `pack_lo8`).
+
+Why: the one-leaf-a-warp walk measured (sm_86, N 64K, d_v 64, H 16 at k ~27, ncu): DRAM 25%,
+0.88 eligible warps a scheduler, 66% of the stall samples on the leaf's loads, and ~144 warp
+instructions a leaf -- latency- and issue-bound at once, each warp holding one leaf's
+loads in flight and paying the whole leaf's overhead per 2-channel slice.
+
+The warp's partial is summed across its groups by a fixed butterfly of `__shfl_xor_sync`
+(offsets `DV / 8, 2 DV / 8, ... 16`) after the walk, so every lane of a channel slice ends
+holding the warp's sum and the first group deposits it; the order is fixed, so the step
+stays byte-reproducible at a fixed `n_split`.
 
 <a id="coefficient-rows"></a>
 ### The coefficient rows, as the bundle holds them

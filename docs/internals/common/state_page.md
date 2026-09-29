@@ -24,12 +24,20 @@ address `kBytes`-sized slots.
 
 - **The exponent** of a group whose largest magnitude is `f * 2^k` (`f` in `[0.5, 1)`) is `e = max(k - 23, -126)`:
   the largest mantissa fits under `2^23`, and `2^e` stays a normal float (`pow2` builds it from the exponent field).
+  `group_exponent` reads `k - 23` off the float's exponent field (`field - 149`; a subnormal's field is 0, and the
+  floor takes it), which is `frexp`'s answer without the call.
   An all-zero group stores `e = 0`, so a zero page is all zero bytes -- the arena's fresh page, byte for byte.
 - **The store** rounds each value once, `m = rint(v / 2^e)`, held inside `+-(2^23 - 1)` (`mantissa`); an all-zero
   group stores zeros, so a zeroed page is the zero state.
-- **A full read** is `value(hi, lo, e) = (hi << 8 | lo) * 2^e`, exact in fp32.
-- **A hi-only read** is `value_hi(hi, e) = hi * 2^(e + 8)`: the value truncated to 15 bits of its group, the s16
-  operand a read-only load uses. Truncation keeps an exact zero a zero.
+- **A full read** is `(hi << 8 | lo) * 2^e`, exact in fp32.
+- **A hi-only read** is `hi * 2^(e + 8)`: the value truncated to 15 bits of its group, the s16 operand a read-only
+  load uses. Truncation keeps an exact zero a zero.
+
+<a id="lane-eight"></a>**A lane's eight channels.** A reader that holds eight consecutive channels of a row a lane
+(the decode walk) loads them as one 16-byte hi word quad and one 8-byte lo word pair. `mantissa8` builds channel
+`c`'s s24 with one byte permute -- its lo byte, its two hi bytes, and the high byte's sign replicated into the top --
+`hi8` its s16 alone, and `pack_hi8` / `pack_lo8` pack eight rounded mantissas back into the two planes (bytes 1-2 of
+each a hi word pair, byte 0 of each a lo word quad).
 
 A value is exact to within half a quantum `2^e`, i.e. `2^-24` of its group's largest magnitude; a group's small
 values keep that absolute precision, not a relative one, which is why the gates allow the store's quantum
