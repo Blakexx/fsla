@@ -37,7 +37,8 @@ import torch
 from rola.ops.constants import READOUT_EPS
 from rola.ops.decode import _decode_step, derive_decode_geometry, fold_levels
 from rola.ops.lattice import permutation
-from rola.ops.paging import to_split_planes
+from rola.ops.paging import decode_pages
+from tests.oracle.fixtures import state_pages
 from tests.oracle.oracle_fixtures import _topology
 
 pytestmark = [
@@ -65,29 +66,24 @@ def declared_row_sum(row: torch.Tensor) -> torch.Tensor:
     return lanes[:, 0]
 
 
-def _hi_truncate(x: torch.Tensor) -> torch.Tensor:
-    """The value a READ-ONLY atom's hi-plane-only load reconstructs: the fp32 word with
-    its low 16 bits zeroed (``hi || 0``, docs/internals/common/state_page.md#load) --
-    the truncation, not a round. ``s0`` here is touched by no deposit, so every row the
-    step reads is read-only and this IS the value the kernel's arithmetic sees."""
-    bits = x.contiguous().view(torch.int32)
-    return ((bits >> 16) << 16).view(torch.float32).reshape(x.shape)
+def logical_read_only(stored):
+    """Stored pages ``[BH, N/16, page_bytes]`` as a read-only load sees them, ``[BH, N, d_v + 1]``."""
+    return decode_pages(stored, _DV, hi_only=True).reshape(stored.shape[0], -1, _DV + 1)
 
 
 def _single_leaf_state(BH: int, config, s0: int, device, seed: int):
-    """A ``[BH, N, d_v + 1]`` logical page, STORED as split bf16 planes (the contract,
-    docs/internals/state.md#split-planes) -- zero everywhere but CANONICAL leaf ``s0``,
-    in the plane's own LATTICE order. Returns ``(state, e, m)``: ``state`` in the stored
-    form the step's entry sweep reads, and ``e``/``m`` HI-TRUNCATED to the value a
-    read-only atom's load actually reconstructs -- the reference must be built from what
-    the kernel reads, not from the fp32 draw that never reaches it whole."""
+    """A ``[BH, N, d_v + 1]`` logical state, STORED as int8 state pages -- zero everywhere but CANONICAL leaf ``s0``,
+    in the plane's own LATTICE order. Returns ``(state, e, m)``: ``state`` in the stored form the step reads, and
+    ``e``/``m`` the values a READ-ONLY load reconstructs (the hi plane at its group exponent, the fp32 mass) -- the
+    reference must be built from what the kernel reads, not from the fp32 draw that never reaches it whole."""
     gen = torch.Generator(device=device).manual_seed(seed)
     pi = permutation(config.widths, config.lattice_k, config.lattice_m, device=device)
     state = torch.zeros(BH, config.N, _DV + 1, dtype=torch.float32, device=device)
     row = torch.rand(BH, _DV + 1, dtype=torch.float32, device=device, generator=gen) + 0.5
     state[:, int(pi[s0])] = row
-    row_hi = _hi_truncate(row)
-    return to_split_planes(state), row_hi[:, :_DV], row_hi[:, _DV]
+    stored = state_pages(state)
+    row_hi = logical_read_only(stored)[:, int(pi[s0])]
+    return stored, row_hi[:, :_DV], row_hi[:, _DV]
 
 
 def _y_of(read, *, dtype, normalize, seed, s0=0):
@@ -104,7 +100,7 @@ def _y_of(read, *, dtype, normalize, seed, s0=0):
                                     device=device)
     state, e, m = _single_leaf_state(BH, config, s0, device, seed + 1)
     y, _state, _ws = _decode_step(v, read, write, g_write, config,
-                                  state.view(B, H, width, _DV + 1),
+                                  state,
                                   normalize=normalize)
     return y.reshape(BH, _DV), e, m
 

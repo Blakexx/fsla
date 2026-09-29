@@ -98,7 +98,8 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
 
   const float* dials;  // [H, total_rows] or nullptr
 
-  float* state;       // DENSE [BH,N,cols] or PAGED [slots,kAtomLeaves,cols]; see decode.md#state
+  uint8_t*
+      state;  // DENSE [BH, atoms, page bytes] or PAGED [slots, page bytes]; see decode.md#state
   int32_t* page_tbl;  // [BH, atoms_per_bh], -1=ABSENT, null=dense; decode.md#decodeparams-note-l250
   int32_t* growth;    // [BH] int32, per-batch-head verdict; see decode.md#growth-2
   int32_t* growth_any;  // [1] int32, OR of growth over batch-heads; see decode.md#growthany

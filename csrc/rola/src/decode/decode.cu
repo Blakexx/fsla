@@ -69,7 +69,7 @@ __global__ __launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY, D)
 decode_step_kernel(DecodeParams p) {
   //: The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a -- see docs/internals/decode/decode.md#cols
   constexpr int cols = DV + 1;
-  //: THE PAGE'S SPLIT bf16 PLANES -- the same blocks the carry addresses.
+  //: THE STATE PAGE: s24 planes at their group exponents, and the mass.
   using Page = rola::state_page::Blocks<DV>;
   //: Columns per lane: `NC` fully coalesced 128 B transactions, and the lane's -- see docs/internals/decode/decode.md#nc
   constexpr int NC = DV / 32;
@@ -343,20 +343,14 @@ decode_step_kernel(DecodeParams p) {
           }
 
           //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the -- see docs/internals/decode/decode.md#decode-step-kernel-note-l516
-          //: A LEAF THIS STEP ONLY READS PULLS THE hi PLANE ALONE. The plane -- see docs/internals/decode/decode.md#split-planes
+          //: A LEAF THIS STEP ONLY READS PULLS THE hi PLANE ALONE, the s16 operand at its group's exponent; a WRITTEN one -- see docs/internals/decode/decode.md#int8-state
           const bool writes = in_w;
-          uint8_t* const page =
-              atom_present ? reinterpret_cast<uint8_t*>(p.state) + atom_base : nullptr;
+          uint8_t* const page = p.state + (atom_present ? atom_base : 0);
           const int prow = leaf & kAtomMask;
-          uint16_t* const vhi =
-              atom_present ? reinterpret_cast<uint16_t*>(page + prow * DV * 2) : nullptr;
-          uint16_t* const vlo = atom_present
-                                    ? reinterpret_cast<uint16_t*>(page + Page::kLo + prow * DV * 2)
-                                    : nullptr;
-          uint16_t* const mhi =
-              atom_present ? reinterpret_cast<uint16_t*>(page + Page::kMassHi + prow * 2) : nullptr;
-          uint16_t* const mlo =
-              atom_present ? reinterpret_cast<uint16_t*>(page + Page::kMassLo + prow * 2) : nullptr;
+          int16_t* const vhi = reinterpret_cast<int16_t*>(page + Page::kHi) + prow * DV;
+          uint8_t* const vlo = page + Page::kLo + prow * DV;
+          int8_t* const vex = reinterpret_cast<int8_t*>(page + Page::kExp) + prow * Page::kGroups;
+          uint32_t* const vmass = reinterpret_cast<uint32_t*>(page + Page::kMass) + prow;
           float sv[NC];
 #pragma unroll
           for (int q = 0; q < NC; ++q) sv[q] = 0.0f;
@@ -364,16 +358,15 @@ decode_step_kernel(DecodeParams p) {
           if (atom_present) {
 #pragma unroll
             for (int q = 0; q < NC; ++q) {
-              const uint32_t w = (uint32_t)vhi[lane + 32 * q] << 16;
-              sv[q] = __uint_as_float(writes ? (w | (uint32_t)vlo[lane + 32 * q]) : w);
+              const int e = vex[q];
+              const int hi = vhi[lane + 32 * q];
+              sv[q] = writes ? state_page::value(hi, vlo[lane + 32 * q], e)
+                             : state_page::value_hi(hi, e);
             }
-            if (lane == 0) {
-              const uint32_t w = (uint32_t)*mhi << 16;
-              smass = __uint_as_float(writes ? (w | (uint32_t)*mlo) : w);
-            }
+            if (lane == 0) smass = __uint_as_float(*vmass);
           }
 
-          //: UPDATE FIRST, THEN READ THE UPDATED ROW -- AND THAT ORDER IS THE SEMANTICS, -- see docs/internals/decode/decode.md#decode-step-kernel-note-l532
+          //: UPDATE FIRST, THEN READ THE STORED ROW -- AND THAT ORDER IS THE SEMANTICS, -- see docs/internals/decode/decode.md#decode-step-kernel-note-l532
           if (in_w && atom_present && deposit) {
             //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT SPLIT: -- see docs/internals/decode/decode.md#decode-step-kernel-note-l541
             float keep = 1.0f;
@@ -382,19 +375,25 @@ decode_step_kernel(DecodeParams p) {
               keep = expf(fminf(aw * log1pf(-rate), kDecodeMaxExponent));
             }
             const float wv = aw * sw;
+            //: A GROUP IS ONE LANE-COLUMN `q` OF EVERY LANE: its exponent is the warp's max, and the row is -- see docs/internals/decode/decode.md#int8-state
 #pragma unroll
             for (int q = 0; q < NC; ++q) {
-              sv[q] = keep * sv[q] + wv * v_tok[lane + 32 * q];
-              const uint32_t w = __float_as_uint(sv[q]);
-              vhi[lane + 32 * q] = (uint16_t)(w >> 16);
-              vlo[lane + 32 * q] = (uint16_t)(w & 0xFFFFu);
+              const float s = keep * sv[q] + wv * v_tok[lane + 32 * q];
+              float amax = fabsf(s);
+#pragma unroll
+              for (int off = 16; off > 0; off >>= 1)
+                amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, off));
+              const int e = state_page::group_exponent(amax);
+              const int m = state_page::mantissa(s, e);
+              vhi[lane + 32 * q] = static_cast<int16_t>(m >> 8);
+              vlo[lane + 32 * q] = static_cast<uint8_t>(m & 0xFF);
+              if (lane == 0) vex[q] = static_cast<int8_t>(e);
+              sv[q] = static_cast<float>(m) * state_page::pow2(e);
             }
-            //: The mass column is the `v := 1` column of the identical recurrence.
+            //: The mass column is the `v := 1` column of the identical recurrence, fp32.
             if (lane == 0) {
               smass = keep * smass + wv;
-              const uint32_t w = __float_as_uint(smass);
-              *mhi = (uint16_t)(w >> 16);
-              *mlo = (uint16_t)(w & 0xFFFFu);
+              *vmass = __float_as_uint(smass);
             }
           }
           if (in_r) {
@@ -864,7 +863,11 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   const int d_v = static_cast<int>(v.size(3));
   const int cols = d_v + 1;  // the mass column is unconditional (raw is dead)
 
-  detail::check_f32(state, "state");
+  STD_TORCH_CHECK(state.is_cuda() && state.scalar_type() == Dtype::Byte && state.is_contiguous(),
+                  "state is the int8 state format's pages, a contiguous CUDA uint8 tensor; got ",
+                  state.scalar_type());
+  const int64_t page_bytes =
+      d_v == 32 ? state_page::Blocks<32>::kBytes : state_page::Blocks<64>::kBytes;
   detail::check_f32(ws, "ws");
   detail::check_i32(ctr, "ctr");
 
@@ -879,13 +882,13 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                     kAtomLeaves, "] int32");
     atoms_per_bh = static_cast<int>(tbl.size(1));
     N = static_cast<int64_t>(atoms_per_bh) * kAtomLeaves;
-    STD_TORCH_CHECK(state.dim() == 3 && state.size(1) == kAtomLeaves && state.size(2) == cols,
-                    "under a page table the state is the arena's plane, [slots, ", kAtomLeaves,
-                    ", d_v + 1]");
+    STD_TORCH_CHECK(state.dim() == 2 && state.size(1) == page_bytes,
+                    "under a page table the state is the arena's plane, [slots, ", page_bytes,
+                    "] bytes");
     page_ptr = tbl.mutable_data_ptr<int32_t>();
   } else {
-    STD_TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == cols,
-                    "state must be [BH, N, d_v + 1]");
+    STD_TORCH_CHECK(state.dim() == 3 && state.size(0) == BH && state.size(2) == page_bytes,
+                    "a dense state is [BH, N / ", kAtomLeaves, ", ", page_bytes, "] bytes");
     N = 1;
     for (auto w : level_widths) N *= w;
     STD_TORCH_CHECK(N % kAtomLeaves == 0,
@@ -896,8 +899,8 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                     "LAW; got N = ",
                     N);
     atoms_per_bh = static_cast<int>(N / kAtomLeaves);
-    STD_TORCH_CHECK(state.size(1) == N, "a dense state is [BH, N, d_v + 1] with N = ", N, "; got ",
-                    state.size(1));
+    STD_TORCH_CHECK(state.size(1) == atoms_per_bh, "a dense state holds N / ", kAtomLeaves, " = ",
+                    atoms_per_bh, " pages a batch-head; got ", state.size(1));
   }
 
   DecodeParams p{};
@@ -957,7 +960,7 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
 
   //: `empty`, not `zeros`: every element is written, so a zero-fill is a launch the -- see docs/internals/decode/decode.md#y
   auto y = empty_cuda({BH, d_v}, Dtype::Float, v.get_device_index());
-  p.state = state.mutable_data_ptr<float>();
+  p.state = state.mutable_data_ptr<uint8_t>();
   p.page_tbl = page_ptr;
   p.atoms_per_bh = atoms_per_bh;
   p.y = y.mutable_data_ptr<float>();

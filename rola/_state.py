@@ -44,8 +44,13 @@ PAGE_RECTANGLE_BITS = MMA_K_QUANTUM.bit_length() - 1
 #: reinterpretation of somebody's bytes.
 CANONICAL_ORDER = "mixed-radix-msb-first"
 
-#: The stored form of an fp32 state value: the two halves of the word live in two
-#: separate bf16 planes of the page, and ``hi || lo`` is the fp32 word exactly.
+#: THE STATE FORMAT (ruled 2026-09-28): a leaf-channel is an s24 at its (leaf, 32-channel group)'s s8
+#: power-of-two exponent, stored as an s16 hi plane and a u8 lo plane; the mass is fp32
+#: (`rola.ops.paging.page_layout`, docs/internals/common/state_page.md).
+STATE_DTYPE = "s24 hi/lo planes at an s8 group exponent, fp32 mass"
+
+#: THE UNPORTED CARRY'S OWN PAGE, fp32 split into two bf16 planes: it describes the carry's
+#: descriptor alone, and the carry port deletes it.
 SPLIT_PLANE_DTYPE = "fp32 as split bf16 planes"
 
 #: The per-level width floor (``B_l`` a power of two at or above 16 = ``K_max``), which
@@ -89,7 +94,9 @@ class StateFormat:
         if self.page_bits != PAGE_RECTANGLE_BITS:
             raise ValueError(
                 f"the page rectangle is the trailing {PAGE_RECTANGLE_BITS} canonical bits")
-        if self.DV % 2:
+        if self.dtype == STATE_DTYPE and self.DV % 32:
+            raise ValueError(f"a channel group is 32 channels, so DV is a multiple of 32; got {self.DV}")
+        if self.dtype == SPLIT_PLANE_DTYPE and self.DV % 2:
             raise ValueError(
                 f"the split planes address a PAIR of value columns per 32-bit access, so DV is "
                 f"even; got {self.DV}")
@@ -120,8 +127,11 @@ class StateFormat:
 
     @property
     def page_bytes(self) -> int:
-        """``[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`` -- the same bytes an
-        fp32 page held, re-laid out so a hi row is one line."""
+        """One page's bytes: the int8 state page (`rola.ops.paging.page_layout`), or the carry's split fp32 page."""
+        if self.dtype == STATE_DTYPE:
+            from rola.ops.paging import page_layout
+
+            return page_layout(self.DV).bytes
         return (1 << self.page_bits) * self.cols * 4
 
     def check(self, other: StateFormat) -> None:
@@ -144,7 +154,7 @@ def _format_of(routes, d_v: int, BH: int) -> StateFormat:
     for width in widths:
         n *= width
     return StateFormat(D=len(widths), B=widths, order=CANONICAL_ORDER,
-                       page_bits=PAGE_RECTANGLE_BITS, DV=int(d_v), dtype=SPLIT_PLANE_DTYPE,
+                       page_bits=PAGE_RECTANGLE_BITS, DV=int(d_v), dtype=STATE_DTYPE,
                        ids=BH * (n >> PAGE_RECTANGLE_BITS))
 
 
@@ -281,7 +291,9 @@ class RoLAState:
             return None
         if self._arena is not None:
             return self._arena.materialize().view(self._shape)
-        return self._plane.view(self._shape)
+        from rola.ops.paging import decode_pages
+
+        return decode_pages(self._plane, self._format.DV).view(self._shape)
 
     def clone(self, strategy: str | None = None) -> RoLAState:
         """An EAGER deep copy, and the only sanctioned strategy change.
@@ -425,7 +437,7 @@ class RoLAState:
                                       self._shape[0] * self._shape[1]))
         if self._arena is not None:
             return self._arena.state, self._arena.page_table, self._arena
-        return self._plane.view(self._shape), None, None
+        return self._plane, None, None
 
     def _decode_entry_arena(self, bitmap: torch.Tensor):
         """Admit `bitmap`'s atoms into the carried arena and hand it back.

@@ -1070,18 +1070,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/common/state_page.md",
-   "message": "names the work code 'K50'",
-   "line_sha256": "3b79d76dbce2b9ae",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/state_page.md",
-   "message": "names the work code 'K50'",
-   "line_sha256": "9b5b501df9841bdf",
-   "count": 1
-  },
-  {
    "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'D1'",
    "line_sha256": "31ec73149379f75f",
@@ -1097,12 +1085,6 @@
    "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'D2'",
    "line_sha256": "13264c321fe2bfbc",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'F1b'",
-   "line_sha256": "1ef850a3d58adc5e",
    "count": 1
   },
   {
@@ -1461,12 +1443,6 @@
   },
   {
    "path": "docs/internals/state.md",
-   "message": "names the work code 'F1b'",
-   "line_sha256": "4b14954ef833689b",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/state.md",
    "message": "names the work code 'G1'",
    "line_sha256": "c45bb34df3985513",
    "count": 1
@@ -1750,19 +1726,7 @@
   {
    "path": "tests/integration/test_decode_dispatch.py",
    "message": "names the work code 'K31'",
-   "line_sha256": "03a62b0f44a17ee5",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_dispatch.py",
-   "message": "names the work code 'K31'",
    "line_sha256": "3ba319609445ccd5",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_dispatch.py",
-   "message": "names the work code 'K31'",
-   "line_sha256": "9fed2425a70dbc86",
    "count": 1
   },
   {

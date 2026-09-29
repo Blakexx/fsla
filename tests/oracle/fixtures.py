@@ -17,7 +17,7 @@ import torch
 
 from rola.ops import carry as carry_ops
 from rola.ops.naive import naive_rola
-from rola.ops.paging import from_split_planes, to_split_planes
+from rola.ops.paging import decode_pages, encode_pages, from_split_planes, to_split_planes
 from tests.oracle import tolerances
 
 
@@ -85,6 +85,43 @@ def plane_from_canonical(canonical, bh: int = 1):
     return to_split_planes(canonical.float().reshape(bh, -1, 16, canonical.shape[-1]))
 
 
+def state_pages(logical):
+    """A logical ``[..., N, d_v + 1]`` state as its stored int8-format pages ``[BH, N/16, page_bytes]``: every leading
+    axis folds into the batch-head axis the decode kernel indexes (`rola.ops.paging.encode_pages`)."""
+    n, cols = logical.shape[-2], logical.shape[-1]
+    return encode_pages(logical.float().reshape(-1, n // 16, 16, cols))
+
+
+def logical_state(pages, d_v: int):
+    """Stored pages ``[BH, N/16, page_bytes]`` as the logical ``[BH, N, d_v + 1]`` fp32 state (`decode_pages`)."""
+    return decode_pages(pages, d_v).reshape(pages.shape[0], -1, d_v + 1)
+
+
+def state_quantum(state):
+    """Each slot's storage quantum under the int8 state format, ``2^e`` with ``e = max(k - 23, -126)`` from its (leaf,
+    32-channel group)'s largest magnitude ``f * 2^k``; zero on the fp32 mass column (`encode_pages`)."""
+    d_v = state.shape[-1] - 1
+    groups = state[..., :d_v].double().reshape(*state.shape[:-1], d_v // 32, 32)
+    amax = groups.abs().amax(-1, keepdim=True)
+    _, k = torch.frexp(amax)
+    quantum = torch.ldexp(torch.ones_like(groups), (k - 23).clamp_min(-126).expand_as(groups))
+    quantum = torch.where(amax == 0, torch.zeros_like(quantum), quantum)
+    return torch.cat([quantum.reshape(*state.shape[:-1], d_v), torch.zeros_like(state[..., d_v:]).double()], -1)
+
+
+def state_rounded(state):
+    """THE DECLARED STORE, in fp64: every leaf-channel rounded once to its group's s24 quantum (`state_quantum`), the
+    mass untouched -- what the decode kernel's store does to a row it writes, so a chained oracle that applies it after
+    each step is the kernel's declared arithmetic (`oracle-two-purposes-doctrine`: a fidelity gate mirrors it)."""
+    quantum = state_quantum(state)
+    d_v = state.shape[-1] - 1
+    out = state.double().clone()
+    q = quantum[..., :d_v]
+    out[..., :d_v] = torch.where(q == 0, out[..., :d_v],
+                                 torch.round(out[..., :d_v] / q.clamp_min(2.0 ** -149)).clamp(-(2 ** 23 - 1), 2 ** 23 - 1) * q)
+    return out.to(state.dtype)
+
+
 def built_arms() -> set:
     """`{(D, DV, warps_per_cta)}` -- what THIS binary carries.
 
@@ -111,14 +148,14 @@ def assert_fresh_binary():
 def allowances(reference, output, envelope=None, derived_atol=0.0):
     """Each slot's allowed error under `output` (`tolerances.Output`), and which term sets it: a clause ``(r, a)`` fails
     a slot whose relative AND absolute errors both pass it, so under clause ``i`` a slot of size ``s = |oracle|`` may be
-    off by ``max(r·s, a + derived_atol)``; a multilinear output adds its envelope term ``rtol·envelope``; the allowance
-    is the smallest. Returns ``(allowance, binding)``, ``binding`` the index of the tightest clause per slot, or
+    off by ``max(r·s, a + derived_atol)``; a multilinear output adds its envelope term ``rtol·envelope + derived_atol``
+    (a declared upstream error adds to whichever budget binds); the allowance is the smallest. Returns ``(allowance, binding)``, ``binding`` the index of the tightest clause per slot, or
     ``len(clauses)`` where the envelope binds."""
     s = reference.double().abs()
     terms = [torch.clamp(r * s, min=a + derived_atol) for r, a in output.clauses]
     if output.rtol is not None:
         assert envelope is not None, f"{output.name} is multilinear: its gate states the envelope"
-        terms.append(output.rtol * envelope.double())
+        terms.append(output.rtol * envelope.double() + derived_atol)
     else:
         assert envelope is None, f"{output.name} states no envelope budget, so a gate cannot hand it one"
     if not terms:
@@ -135,7 +172,7 @@ def assert_slots_close(actual, reference, *, output, what, envelope=None, derive
     Rounding each term costs a share of that term's size whether or not the terms cancel, so a slot that is small
     because its terms cancel keeps their rounding, and a slot that is small because its terms are small keeps nothing.
     ``derived_atol`` is an absolute term the caller derives and states (an upstream seam's declared error), added to
-    every clause's atol, never a loosened constant. A slot whose allowance is zero must be exactly zero; a slot that is
+    every clause's atol and to the envelope term, never a loosened constant. A slot whose allowance is zero must be exactly zero; a slot that is
     not finite on either side fails. The failure names how many slots failed and the worst one: its error over its
     allowance, and the clause or envelope that set the allowance.
     """

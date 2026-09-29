@@ -1,36 +1,42 @@
-# The state page's split bf16 planes
+# The state page: s24 planes at a group exponent
 
-Mirror doc for `csrc/rola/src/common/state_page.cuh`. `Blocks<DV>` — the page's byte
-geometry below — is the ONE definition every body's state I/O is laid out against: the
-carry kernel's `box.cuh` (`BP::Page = Blocks<DV_>`) and the decode step both read its
-offsets (`kBytes`, `kLo`, `kMassHi`, `kMassLo`) directly, each inlining its own sweep
-over the layout (the carry kernel's `state_copy`, `carry_kernel.md#state-io`; decode's
-per-leaf-row access). The channel-split carry body and the two-scan
-backward pass this page once served were deleted whole in the 2026-08-30 carry-family
-rebuild (`docs/internals/DELETIONS.md`, commit ef567f9) and have not been rebuilt; the
-current carry kernel is the single body that replaced them.
+Mirror doc for `csrc/rola/src/common/state_page.cuh`. `Blocks<DV>` is the ONE definition of the int8 state
+format's page (ruled 2026-09-28), and `rola.ops.paging.page_layout` its Python mirror; the device codec below is
+the arithmetic every kernel that reads or writes a stored state uses, and `rola.ops.paging.encode_pages` /
+`decode_pages` its host statement for the oracle and the tests. `SplitBlocks<DV>` is the unported carry's own page.
 
 ## <a id="geometry"></a>The page, in bytes
 
-Ruled by K50 on 2026-08-29 ("THE PAGE STORES SPLIT bf16 PLANES"). A page is one atom
-= 16 leaves, and it holds
+A page is one atom = 16 leaves:
 
-    [16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]
+    [16 x DV hi s16][16 x DV lo u8][16 x DV/32 exponent s8][16 mass fp32]
 
-`hi || lo` is the fp32 word EXACTLY -- `hi` is the truncation `bits >> 16`, `lo` the
-low half -- so the page carries the same bits an fp32 page did, in the same
-`16 * (DV + 1) * 4` bytes, and `Blocks<DV>::kBytes` static-asserts that equality.
-Nothing about the arena, the page table, the id space, the VMM commitment or the
-32-bit displacement bound moves with this: it is a re-layout INSIDE the page.
+A leaf-channel is the s24 mantissa `m = hi << 8 | lo` (hi signed, lo unsigned) at its (leaf, 32-channel group)'s
+power-of-two exponent `e`: its value is `m * 2^e`. The mass is fp32, one a leaf. The mass block starts on a 16-byte
+boundary, so `kBytes` is 1616 / 3168 / 6272 at `DV` 32 / 64 / 128 -- about 3.03 bytes a leaf-channel against the
+split fp32 page's 4. The planes are aligned and never packed into 3-byte elements: a hi row is one 128-byte line at
+`DV = 64`, and a read that needs only the s16 operand touches the hi plane alone.
 
-What the re-layout buys is two things the fp32 rows could not give:
+Nothing about the arena, the page table, the id space or the VMM commitment depends on what is inside a page: they
+address `kBytes`-sized slots.
 
-1. **A hi row is one line.** At `DV = 64` a hi row is 128 B and a page's hi plane is
-   eight lines; the fp32 row was `(DV + 1) * 4` = 260 B, which is 8 sectors plus 4 --
-   never line-aligned, and 2x the bytes.
-2. **A read-only atom moves half the bytes.** An atom this call READS but does not
-   WRITE has a lo plane no arithmetic can observe (see below), so `load` skips it.
+## <a id="codec"></a>The codec
 
-The mass rides its OWN two blocks rather than as column `DV` of each row, which is
-what keeps the value row a power-of-two stride in every access and closes the row
-alignment question K50 left open (no padding).
+- **The exponent** of a group whose largest magnitude is `f * 2^k` (`f` in `[0.5, 1)`) is `e = max(k - 23, -126)`:
+  the largest mantissa fits under `2^23`, and `2^e` stays a normal float (`pow2` builds it from the exponent field).
+  An all-zero group stores `e = 0`, so a zero page is all zero bytes -- the arena's fresh page, byte for byte.
+- **The store** rounds each value once, `m = rint(v / 2^e)`, held inside `+-(2^23 - 1)` (`mantissa`); an all-zero
+  group stores zeros, so a zeroed page is the zero state.
+- **A full read** is `value(hi, lo, e) = (hi << 8 | lo) * 2^e`, exact in fp32.
+- **A hi-only read** is `value_hi(hi, e) = hi * 2^(e + 8)`: the value truncated to 15 bits of its group, the s16
+  operand a read-only load uses. Truncation keeps an exact zero a zero.
+
+A value is exact to within half a quantum `2^e`, i.e. `2^-24` of its group's largest magnitude; a group's small
+values keep that absolute precision, not a relative one, which is why the gates allow the store's quantum
+(`tests/oracle/fixtures.py`'s `state_quantum` and `state_rounded`, the declared store mirrored in fp64).
+
+## <a id="split"></a>`SplitBlocks`: the unported carry's page
+
+`[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`, an fp32 word as two bf16 halves, `16 * (DV + 1) * 4` bytes. The
+shipped carry body reads and writes it through `box.cuh`'s `BP::Page`; its host refuses the int8 state, so a stateful
+prefill is refused by name until the carry's int8 port, which deletes this struct.

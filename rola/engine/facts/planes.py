@@ -68,26 +68,22 @@ def pack_side(levels) -> torch.Tensor:
 
 
 def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
-    """An empty `[BH, N/16, 16, d_v+1]` fp32 state plane for this routing.
-
-    The ATOM-MAJOR view of `[BH, N, d_v+1]`, byte for byte: leaves are stored in
-    canonical order, so the reshape between the two is free and the kernel's
-    per-atom addressing and a reader's per-leaf one describe the same bytes.
+    """A `[BH, N/16, page_bytes]` uint8 state plane for this routing: one int8-format page an atom, in canonical
+    atom order (`rola.ops.paging.page_layout`). An all-zero page is the zero state.
 
     Allocation is the caller's, not the kernel entry's -- which is what lets a
     carried state be handed straight back in, and a CONTINUATION does exactly that
     rather than reaching here at all (docs/internals/state.md#the-dense-continuation).
-    A FRESH bind is the one call that allocates, and it is uninitialized because that
-    plane is written WHOLE: the owner blocks tile the leaf space exactly, so every
-    atom is stored by exactly one CTA.
     """
+    from rola.ops.paging import page_layout
+
     widths = tuple(level.width for level in routes.topology.levels)
     n = 1
     for w in widths:
         n *= w
-    shape = (routes.batch * routes.heads, n // MMA_K_QUANTUM, MMA_K_QUANTUM, d_v + 1)
+    shape = (routes.batch * routes.heads, n // MMA_K_QUANTUM, page_layout(d_v).bytes)
     build = torch.zeros if zeros else torch.empty
-    return build(shape, device=routes.device, dtype=torch.float32)
+    return build(shape, device=routes.device, dtype=torch.uint8)
 
 
 #: THE TWO ORTHOGONAL BITS the liveness pass publishes per atom; the mirror of

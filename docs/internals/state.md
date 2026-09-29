@@ -87,8 +87,8 @@ what every kernel derives its addressing from:
 | `D`, `B` | the routing depth and the PER-LEVEL widths `B_l`, each a power of two at or above 16 (the axis law: the floor is `K_max`, which keeps every span inside one level's run and the atom inside one level) |
 | `order` | the canonical leaf order — MSB-first mixed radix, and a FIELD rather than an assumption, so a second order is a refusal and not a silent reinterpretation of somebody's bytes |
 | `page_bits` | the page rectangle: the trailing `log2(16)` canonical bits. The page IS that rectangle |
-| `DV` | the value width; `cols = DV + 1` is the page's LOGICAL width, not its layout |
-| `dtype` | `"fp32 as split bf16 planes"` — the logical element is fp32, and [section 3](#backing) is how the word is stored |
+| `DV` | the value width, a multiple of 32 (one exponent a 32-channel group); `cols = DV + 1` is the page's LOGICAL width, not its layout |
+| `dtype` | `"s24 hi/lo planes at an s8 group exponent, fp32 mass"` — the int8 state format ([section 3](#backing)); the unported carry's own descriptor names its split fp32 page |
 | `ids` | the page-table id space, `BH * N / 16` |
 
 **PREFILL AND DECODE SHARE ONE ADMISSION LAW: THE DESCRIPTOR** (Blake, 2026-08-29).
@@ -150,26 +150,17 @@ The backing is chosen at BIND time and is not a per-call flag:
   bit-identity gate compares the paged backing against. A FRESH dense bind is ZEROED: the exit sweep stores the atoms a call WRITES and no others, so the atoms it
   skips must already hold the zero an absent paged atom reads as.
 
-<a id="split-planes"></a>**THE PAGE STORES SPLIT bf16 PLANES**, in
-BOTH backings. A page — one atom, 16 leaves — holds
+<a id="int8-state"></a>**THE PAGE IS THE INT8 STATE FORMAT** (ruled 2026-09-28), in BOTH backings. A page — one
+atom, 16 leaves — holds
 
-    [16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]
+    [16 x DV hi s16][16 x DV lo u8][16 x DV/32 exponent s8][16 mass fp32]
 
-where `hi || lo` is the fp32 word exactly. The bytes are the fp32 page's bytes
-(`16 * cols * 4`), so the arena, the page table, the id space, the VMM commitment and
-the 4 GiB displacement bound are unmoved; what changes is that a hi row is one 128 B
-line (the fp32 row was 260 B and never line-aligned), the mass rides its own blocks
-rather than column `DV` of each row, and **an atom a call only READS moves half the
-bytes**. The geometry and its two `PRMT`s live in
-[`common/state_page.md`](common/state_page.md#geometry).
-
-THE DECLARATION THAT MAKES HI-ONLY READS EXACT RATHER THAN APPROXIMATE: **the readout
-operand is the hi plane in every kernel.** Prefill's MMA A operand has been
-`hi_bf16x2` of the accumulator since F1b; decode states the same of its own readout.
-So a lo plane is observable only through an atom's continued ACCUMULATION, which is
-the WRITTEN case, and the written case moves and stores both planes. Against the fp64
-oracle this is a dual run: the truth oracle REPORTS the difference and the gate
-asserts against the bf16-mirrored band.
+a leaf-channel the s24 `hi << 8 | lo` at its (leaf, 32-channel group)'s power-of-two exponent, the mass fp32:
+about 3.03 bytes a leaf-channel against fp32's 4, fp32-class precision (a 24-bit mantissa, a shared exponent a
+group). The arena, the page table, the id space and the VMM commitment address `page_bytes`-sized slots and are
+otherwise unmoved; a read that needs only the s16 operand touches the hi plane alone. The geometry and the codec
+live in [`common/state_page.md`](common/state_page.md#geometry). The unported carry keeps its split fp32 page and
+refuses this format by name, so a stateful prefill is refused until its int8 port.
 
 THERE IS NO RAGGED STATE (Blake, 2026-08-29). `N = prod_l B_l` with every `B_l` a power
 of two at or above 16, so a lawful state is PAGE ALIGNED BY CONSTRUCTION, and a leaf

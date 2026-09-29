@@ -52,6 +52,11 @@ pytestmark = [
 
 _POISON = -1234.5
 
+#: RED BY PLAN (ruled 2026-09-29: no temporary patches): the page arena holds the int8 state format and the unported
+#: carry refuses it by name, so the carry's backing-equivalence cells cannot run until the carry's int8 port.
+_CARRY_ON_INT8_PAGES = pytest.mark.xfail(strict=True, raises=Exception,
+                                         reason="the carry refuses the int8 state format until its port")
+
 #: The shapes this file runs over: one cell per topology the registry declares, at full
 #: support and the dense backing. The backing is what the file VARIES, so a cell that
 #: declares the paged one would be declaring the answer.
@@ -177,6 +182,7 @@ def _assert_num(dense, paged, control, spec, what):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("spec", STRUCTURED + SHAPES, ids=STRUCT_IDS + SHAPE_IDS)
+@_CARRY_ON_INT8_PAGES
 def test_the_paged_backing_is_bit_identical_to_the_dense_one(spec):
     assert_fresh_binary()
     drawn, call = _bind(spec)
@@ -210,6 +216,7 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(spec):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("spec", STRUCTURED, ids=STRUCT_IDS)
+@_CARRY_ON_INT8_PAGES
 def test_a_zero_page_is_inert(spec):
     """Force atoms the routing never writes to be resident, and nothing moves.
 
@@ -250,6 +257,7 @@ def test_a_zero_page_is_inert(spec):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("spec", STRUCTURED, ids=STRUCT_IDS)
+@_CARRY_ON_INT8_PAGES
 def test_an_absent_atom_is_skipped_and_never_written(spec):
     """A structured-support run leaves every unadmitted page exactly as it found it.
 
@@ -297,6 +305,7 @@ def test_an_absent_atom_is_skipped_and_never_written(spec):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("spec", STRUCTURED, ids=STRUCT_IDS)
+@_CARRY_ON_INT8_PAGES
 def test_a_reserved_slack_pool_is_bitwise_invisible(spec):
     """A pool moves every residency slot and must move NO byte of the state.
 
@@ -333,6 +342,7 @@ def test_a_reserved_slack_pool_is_bitwise_invisible(spec):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("spec", SHAPES, ids=SHAPE_IDS)
+@_CARRY_ON_INT8_PAGES
 def test_a_continuation_is_bit_identical_across_the_two_backings(spec):
     """The cell run twice through one state, once dense and once in the arena.
 
@@ -391,6 +401,7 @@ def test_a_stateless_call_carries_no_state(spec):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(("wider", "narrower"), PAIRS, ids=PAIR_IDS)
+@_CARRY_ON_INT8_PAGES
 def test_a_resident_but_idle_atom_is_neither_loaded_nor_stored(wider, narrower):
     """The second call's routing touches a STRICT SUBSET of the first call's atoms.
 

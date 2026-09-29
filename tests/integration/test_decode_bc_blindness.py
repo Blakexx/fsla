@@ -35,7 +35,8 @@ import torch
 
 from rola.engine.plan import DecodeGeometry
 from rola.ops.decode import _decode_step, derive_decode_geometry
-from rola.ops.paging import bytes_equal, to_split_planes
+from rola.ops.paging import bytes_equal
+from tests.oracle.fixtures import state_pages
 from tests.oracle.oracle_fixtures import _simplex, _topology
 
 pytestmark = [
@@ -78,8 +79,8 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
     v = torch.randn(B, 1, H, d_v, device=device, generator=generator).float()
     m0 = 0.1 * torch.randn(B, H, N, cols, device=device, generator=generator).float()
     m0[..., d_v] = m0[..., d_v].abs()
-    #: THE STATE IS HANDED TO THE KERNEL IN ITS STORED FORM (the split planes).
-    m0 = to_split_planes(m0)
+    #: THE STATE IS HANDED TO THE KERNEL IN ITS STORED FORM (the int8 state pages).
+    m0 = state_pages(m0)
 
     results = []
     configs = []

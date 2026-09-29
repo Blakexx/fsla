@@ -38,10 +38,17 @@ from rola.engine.facts.call import arm_refusal
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.lattice import to_canonical, to_lattice
 from rola.ops.naive import naive_rola
-from rola.ops.paging import bytes_equal, from_split_planes, to_split_planes
+from rola.ops.paging import bytes_equal
 from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
-from tests.oracle.fixtures import assert_slots_close, oracle_run
+from tests.oracle.fixtures import (
+    assert_slots_close,
+    logical_state,
+    oracle_run,
+    state_pages,
+    state_quantum,
+    state_rounded,
+)
 from tests.oracle.oracle_fixtures import _decay_dials, _simplex, _topology
 from tests.oracle.tolerances import DECODE_STATE, DECODE_Y
 
@@ -146,11 +153,13 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
         return
     assert arm_refusal(bundle, decay, d_v=_DV) is None, "the prefill fixture left the envelope"
     ref = oracle_run(pre["v"], pre["read"], pre["write"], pre["g_write"], topology, decay)
+    #: the hand-off state is a STORED one: both sides continue from the int8 format's values.
+    ref = ref._replace(state=state_rounded(ref.state))
 
     config = derive_decode_geometry(topology, d_v=_DV, decay=decay_on, BH=_B * _H,
                                   device=device)
     #: THE SEAM: the oracle's plane is canonical, the kernel's is lattice-ordered.
-    state = to_split_planes(to_lattice(ref.state.float(), _WIDTHS, config.lattice_k, config.lattice_m))
+    state = state_pages(to_lattice(ref.state.float(), _WIDTHS, config.lattice_k, config.lattice_m))
     workspace, cold_seen = None, False
     for s in range(steps):
         step = _draw(gen, device, 1, 0.5, 0.4)
@@ -159,9 +168,11 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
             fs["v"], fs["read"], fs["write"], fs["g_write"],
             config, state, decay=decay, workspace=workspace)
         ref = oracle_run(step["v"], step["read"], step["write"], step["g_write"], topology, decay, entry=ref)
+        ref = ref._replace(state=state_rounded(ref.state))
         assert_slots_close(y, ref.y, output=DECODE_Y, envelope=ref.y_envelope, what=f"y at step {s}")
-        canonical = to_canonical(from_split_planes(state), _WIDTHS, config.lattice_k, config.lattice_m)
-        assert_slots_close(canonical, ref.state, output=DECODE_STATE, envelope=ref.state_envelope, what=f"the state at step {s}")
+        canonical = to_canonical(_logical(state), _WIDTHS, config.lattice_k, config.lattice_m)
+        assert_slots_close(canonical, ref.state, output=DECODE_STATE, envelope=ref.state_envelope,
+                           what=f"the state at step {s}", derived_atol=2 * state_quantum(ref.state))
 
         R = _leaf_product(step["read"], _WIDTHS) != 0
         written = (_leaf_product(pre["write"], _WIDTHS) != 0).any(dim=1, keepdim=True)
@@ -169,6 +180,11 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
     assert cold_seen, (
         "no decode step read a prefill-cold leaf; the fixture stopped realizing "
         "the corner this family owns natively")
+
+
+def _logical(state):
+    """The kernel's stored pages as the logical ``[B, H, N, d_v + 1]`` lattice-ordered state."""
+    return logical_state(state, _DV).reshape(_B, _H, -1, _DV + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -192,10 +208,11 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
     m0 = 0.1 * torch.randn(_B, _H, N, cols, device=device, dtype=torch.float64,
                            generator=gen)
     m0[..., _DV] = m0[..., _DV].abs()
+    m0 = state_rounded(m0)
 
     config = derive_decode_geometry(topology, d_v=_DV, decay=True, BH=_B * _H,
                                   device=device)
-    state = to_split_planes(to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m))
+    state = state_pages(to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m))
     ref = m0
     workspace = None
     for s in range(1, max(_CHECKPOINTS) + 1):
@@ -205,10 +222,12 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
             fs["v"], fs["read"], fs["write"], fs["g_write"],
             config, state, decay=decay, workspace=workspace)
         ref = oracle_run(step["v"], step["read"], step["write"], step["g_write"], topology, decay, entry=ref)
+        ref = ref._replace(state=state_rounded(ref.state))
         if s in _CHECKPOINTS:
-            canonical = to_canonical(from_split_planes(state), _WIDTHS, config.lattice_k, config.lattice_m)
+            canonical = to_canonical(_logical(state), _WIDTHS, config.lattice_k, config.lattice_m)
             assert_slots_close(y, ref.y, output=DECODE_Y, envelope=ref.y_envelope, what=f"y at checkpoint {s}")
-            assert_slots_close(canonical, ref.state, output=DECODE_STATE, envelope=ref.state_envelope, what=f"the state at checkpoint {s}")
+            assert_slots_close(canonical, ref.state, output=DECODE_STATE, envelope=ref.state_envelope,
+                               what=f"the state at checkpoint {s}", derived_atol=2 * state_quantum(ref.state))
     # NON-VACUITY: the horizon must actually accumulate fp32-vs-fp64 distance —
     # a zero at the far end would mean the comparison is comparing nothing.
     assert bool((canonical.double() != ref.state).any())
@@ -239,13 +258,14 @@ def test_the_decode_split_is_performance_only_under_drift():
     m0 = 0.1 * torch.randn(_B, _H, N, cols, device=device, dtype=torch.float64,
                            generator=gen)
     m0[..., _DV] = m0[..., _DV].abs()
+    m0 = state_rounded(m0)
     #: The drift: half the steps realized-sparse, half realized-dense, one stream.
     steps = [_draw(gen, device, 1, p, p)
              for p in (0.2, 0.2, 1.0, 1.0, 0.3, 1.0)]
 
     outcomes = {}
     for name, config in configs.items():
-        state = to_split_planes(to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m))
+        state = state_pages(to_lattice(m0.float(), _WIDTHS, config.lattice_k, config.lattice_m))
         workspace, ys = None, []
         for step in steps:
             fs = _f32(step)
@@ -258,6 +278,7 @@ def test_the_decode_split_is_performance_only_under_drift():
     ref, refs = m0, []
     for step in steps:
         ref = oracle_run(step["v"], step["read"], step["write"], step["g_write"], topology, entry=ref)
+        ref = ref._replace(state=state_rounded(ref.state))
         refs.append(ref)
 
     base = outcomes["n_split=1"]

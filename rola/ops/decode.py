@@ -41,7 +41,7 @@ from rola.ops.constants import READOUT_EPS
 from rola.ops.decay import leaf_rate_dials
 from rola.ops.lattice import box_shape, derive_lattice, permutation
 from rola.ops.padding import pad_v, padded_value_width, slice_y
-from rola.ops.paging import MMA_K_QUANTUM
+from rola.ops.paging import MMA_K_QUANTUM, page_layout
 from rola.routing.types import Topology
 
 __all__ = [
@@ -304,19 +304,19 @@ def step_plane(v: torch.Tensor, config: DecodeGeometry, decay,
             f"the frozen config says has_decay={config.has_decay} but decay is "
             f"{'absent' if decay is None else 'present'}; the config is frozen for the "
             "sequence and the decay arm is part of it")
+    page_bytes = page_layout(d_v).bytes
     if page_table is None:
         #: PREFILL AND DECODE SHARE ONE ADMISSION LAW (Blake, 2026-08-29): the dense
         #: plane is the same page sequence with every page resident, and `N` is page
         #: aligned by construction (docs/internals/state.md#format).
-        if state.shape != (B, H, config.N, config.cols):
-            raise ValueError(
-                f"a dense state is [B, H, N, d_v + 1] = "
-                f"{(B, H, config.N, config.cols)}, got {tuple(state.shape)}")
-        return state.reshape(BH, config.N, config.cols)
-    if state.dim() != 3 or state.shape[1:] != (MMA_K_QUANTUM, config.cols):
+        expected = (BH, config.N // MMA_K_QUANTUM, page_bytes)
+        if tuple(state.shape) != expected:
+            raise ValueError(f"a dense state is [BH, N / {MMA_K_QUANTUM}, page_bytes] = {expected}, "
+                             f"got {tuple(state.shape)}")
+        return state
+    if state.dim() != 2 or state.shape[1] != page_bytes:
         raise ValueError(
-            f"under a page table the state is the arena's plane, "
-            f"[slots, {MMA_K_QUANTUM}, d_v + 1], got {tuple(state.shape)}")
+            f"under a page table the state is the arena's plane, [slots, {page_bytes}], got {tuple(state.shape)}")
     if tuple(page_table.shape) != (BH, config.N // MMA_K_QUANTUM):
         raise ValueError(
             f"page_table must be [BH, N / {MMA_K_QUANTUM}] = "

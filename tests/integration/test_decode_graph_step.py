@@ -51,7 +51,7 @@ import torch
 from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
 from rola.ops.decode import _decode_step, _write_atom_bitmap
 from rola.ops.lattice import to_lattice
-from rola.ops.paging import MMA_K_QUANTUM, bytes_equal, from_split_planes, to_split_planes
+from rola.ops.paging import MMA_K_QUANTUM, bytes_equal, decode_pages, encode_pages
 from rola.values import Values
 from tests.integration.test_decode_paging import (
     _COLS,
@@ -109,12 +109,12 @@ def _absent_one_atom_per_bh(fixture, config, arena):
 def _atom_rows(arena, row, column):
     """The `[16, cols]` page an atom maps to, LOGICAL. The caller must know it is resident.
 
-    The stored page is split bf16 planes, so "this atom is zero" is a claim about
-    the values it rejoins to and is read through the gather, not off the raw bytes.
+    The stored page is the int8 state format, so "this atom is zero" is a claim about
+    the values it decodes to, not off the raw bytes.
     """
     slot = int(arena.page_table[row, column])
     assert slot >= 0, "the atom is absent; there are no rows to read"
-    return from_split_planes(arena.state[slot])
+    return decode_pages(arena.state[slot], _DV)
 
 
 # ---------------------------------------------------------------------------
@@ -226,14 +226,13 @@ def test_gated_step_then_admit_then_replay_is_bit_identical_to_admitting_first()
 
 
 def _gathered(arena, BH):
-    """`[BH, N, cols]` in LATTICE order from the arena's slots -- what the two backings
-    can both hold."""
+    """`[BH, N/16, page_bytes]` in LATTICE order from the arena's slots, the stored pages -- what the two backings
+    can both hold, compared as bytes."""
     table = arena.page_table
-    N = table.shape[1] * MMA_K_QUANTUM
-    out = torch.zeros(BH, table.shape[1], MMA_K_QUANTUM, _COLS, device="cuda")
+    out = torch.zeros(BH, table.shape[1], arena.page_bytes, dtype=torch.uint8, device="cuda")
     present = table >= 0
     out[present] = arena.state[table[present].long()]
-    return out.reshape(BH, N, _COLS)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -286,8 +285,8 @@ def _sequence():
             output_final_state=True)
         lattice = to_lattice(oracle_state.float(), _WIDTHS, config.lattice_k,
                              config.lattice_m)
-        #: THE ARENA HOLDS THE STORED FORM (the split planes).
-        atoms = to_split_planes(lattice.reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS))
+        #: THE ARENA HOLDS THE STORED FORM (the int8 state pages).
+        atoms = encode_pages(lattice.reshape(_B * _H, -1, MMA_K_QUANTUM, _COLS))
         table = arena.page_table
         present = table >= 0
         arena.state[table[present].long()] = atoms[present]

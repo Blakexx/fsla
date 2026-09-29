@@ -142,7 +142,7 @@ struct BoxPlan {
   static constexpr int kFillPerWarp = kPoolTok / kWarps;
   static constexpr int kSmemBytes = kRegionOffset + kRegionBytes;
 
-  using Page = rola::state_page::Blocks<DV_>;
+  using Page = rola::state_page::SplitBlocks<DV_>;
 
   static_assert(kBoxes <= 16, "a side's box mask is a halfword");
   static_assert(kBuckets <= 32, "the count scan is one lane a bucket");

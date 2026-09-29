@@ -64,7 +64,7 @@ import torch
 
 from rola.ops.decode import _decode_step, _write_atom_bitmap, derive_decode_geometry
 from rola.ops.lattice import permutation, to_canonical
-from rola.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, from_split_planes, to_split_planes
+from rola.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, encode_pages
 
 pytestmark = [
     pytest.mark.cuda,
@@ -73,10 +73,16 @@ pytestmark = [
 
 _DV = 64
 _COLS = _DV + 1
-_POISON = -4321.5
+_POISON = 0xA5  #: a byte no zeroed page holds
 
 #: THE ORACLE RULE AND THE TOPOLOGY BUILDER, ADOPTED RATHER THAN INVENTED, imported so there is ONE of each.
-from tests.oracle.fixtures import assert_slots_close, oracle_run  # noqa: E402
+from tests.oracle.fixtures import (  # noqa: E402
+    assert_slots_close,
+    oracle_run,
+    state_pages,
+    state_quantum,
+    state_rounded,
+)
 from tests.oracle.oracle_fixtures import (  # noqa: E402
     _topology as _build_topology,
 )
@@ -177,11 +183,21 @@ def _seed_from_dense(arena, dense):
     """Copy a dense `[BH, N, cols]` LATTICE-order state into the arena's committed slots."""
     arena.wait()
     BH, N, cols = dense.shape
-    #: THE ARENA HOLDS THE STORED FORM (the split planes); `dense` is the logical one.
-    atoms = to_split_planes(dense.reshape(BH * (N // MMA_K_QUANTUM), MMA_K_QUANTUM, cols))
+    #: THE ARENA HOLDS THE STORED FORM (the int8 state pages); `dense` is the logical one.
+    atoms = encode_pages(dense.reshape(BH * (N // MMA_K_QUANTUM), MMA_K_QUANTUM, cols))
     table = arena.page_table.reshape(-1)
     present = table >= 0
     arena.state.index_copy_(0, table[present].long(), atoms[present])
+
+
+def _stored_pages(arena):
+    """The arena's slots gathered into atom order, ``[BH, N/16, page_bytes]``, an absent atom a zero page: what a
+    dense plane holding the same state stores, byte for byte."""
+    table = arena.page_table
+    out = torch.zeros(*table.shape, arena.page_bytes, dtype=torch.uint8, device=table.device)
+    present = table >= 0
+    out[present] = arena.state[table[present].long()]
+    return out
 
 
 def _dense_masked_to(arena, dense):
@@ -251,14 +267,13 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
 
     y_dense, dense_out, _ = _decode_step(
         v, read, write, g_write, config,
-        to_split_planes(dense.clone().view(fixture["B"], fixture["H"], config.N, _COLS)))
+        state_pages(dense.clone()))
     y_paged, _, _ = _decode_step(
         v, read, write, g_write, config, arena.state,
         page_table=arena.page_table)
 
     assert torch.equal(y_dense, y_paged), "the two backings disagree on y"
-    assert torch.equal(from_split_planes(dense_out).view(BH, config.N, _COLS),
-                       arena.materialize()), "the two backings disagree on the state"
+    assert bytes_equal(dense_out, _stored_pages(arena)), "the two backings disagree on the state"
     # NON-VACUITY: pages were committed, they came back nonzero, and (unless the write
     # support is total) the table is NOT the identity map, so a translation ran.
     assert arena.allocated_pages > 0
@@ -307,7 +322,7 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
 
     y_dense, _, _ = _decode_step(
         v, read, write, g_write, config,
-        to_split_planes(dense.clone().view(fixture["B"], fixture["H"], config.N, _COLS)))
+        state_pages(dense.clone()))
     y_paged, _, _ = _decode_step(
         v, read, write, g_write, config, arena.state,
         page_table=arena.page_table)
@@ -380,10 +395,12 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
     ref = None
     for step in (first, second):
         ref = oracle_run(step["v"], step["read"], step["write"], step["g_write"], _topology(widths), entry=ref)
+        ref = ref._replace(state=state_rounded(ref.state))
     state = to_canonical(arena.materialize(), widths, config.lattice_k,
                          config.lattice_m).view(2, 3, config.N, _COLS)
     assert_slots_close(ys[-1], ref.y, output=DECODE_Y, envelope=ref.y_envelope, what="the grown step's y")
-    assert_slots_close(state, ref.state, output=DECODE_STATE, envelope=ref.state_envelope, what="the grown state")
+    assert_slots_close(state, ref.state, output=DECODE_STATE, envelope=ref.state_envelope, what="the grown state",
+                       derived_atol=2 * state_quantum(ref.state))
 
 
 @pytest.mark.parametrize("arm", _ARMS, ids=lambda a: "x".join(map(str, a[0])))
@@ -430,7 +447,9 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
     ref = None
     for step in (first, second):
         ref = oracle_run(step["v"], step["read"], step["write"], step["g_write"], _topology(widths), entry=ref)
+        ref = ref._replace(state=state_rounded(ref.state))
     state = to_canonical(pooled.materialize(), widths, config.lattice_k,
                          config.lattice_m).view(2, 3, config.N, _COLS)
     assert_slots_close(ys["pool"][-1], ref.y, output=DECODE_Y, envelope=ref.y_envelope, what="the pool-admitted y")
-    assert_slots_close(state, ref.state, output=DECODE_STATE, envelope=ref.state_envelope, what="the pool-admitted state")
+    assert_slots_close(state, ref.state, output=DECODE_STATE, envelope=ref.state_envelope,
+                       what="the pool-admitted state", derived_atol=2 * state_quantum(ref.state))

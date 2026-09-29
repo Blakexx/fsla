@@ -44,12 +44,6 @@
    "count": 1
   },
   {
-   "path": "csrc/rola/src/decode/decode.cuh",
-   "message": "a float* view of state storage: float* state;       // DENSE [BH,N,cols] or PAGED [slots,kAtomLeaves,cols]; see decode.md#",
-   "line_sha256": "8b5015bbcac10df0",
-   "count": 1
-  },
-  {
    "path": "csrc/rola/src/decode/decode_lattice.cuh",
    "message": "a device switch on 'kind' that is not a uniform_switch<Set>",
    "line_sha256": "6e3e44e259f5b70b",
@@ -71,12 +65,6 @@
    "path": "tests/integration/test_decode_paging.py",
    "message": "'_ARMS' is a literal arm table outside tools/gen_shards.py",
    "line_sha256": "9ba217ecf73f5742",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_paging.py",
-   "message": "a storage identity claim made with torch.equal: assert torch.equal(from_split_planes(dense_out).view(BH, config.N, _COLS),",
-   "line_sha256": "cc0a53315cbab9a3",
    "count": 1
   },
   {

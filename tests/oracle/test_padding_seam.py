@@ -38,9 +38,9 @@ from rola.ops.intra import DENSE_BOTH, WINDOW_SMALL, intra_forward_padded
 from rola.ops.lattice import to_canonical, to_lattice
 from rola.ops.naive import naive_rola
 from rola.ops.padding import pad_routes, pad_v
-from rola.ops.paging import bytes_equal, from_split_planes, to_split_planes
+from rola.ops.paging import bytes_equal
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-from tests.oracle.fixtures import assert_slots_close, oracle_run
+from tests.oracle.fixtures import assert_slots_close, logical_state, oracle_run, state_pages
 from tests.oracle.oracle_fixtures import _simplex
 from tests.oracle.tolerances import INTRA_OUTPUT
 
@@ -210,13 +210,14 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail_bit_for_bit()
         #: d_v=48 or the test's own hand-padded DV=64, the plane the kernel writes
         #: into is the SAME shape either way, which is exactly the claim under test.
         cols = config.cols
-        state = to_split_planes(
+        state = state_pages(
             to_lattice(torch.zeros(B, H, N, cols, device=device, dtype=torch.float32),
                       widths, config.lattice_k, config.lattice_m))
         y, state, _ = _decode_step(
             v.float(), tuple(t.float() for t in read_levels), tuple(t.float() for t in write_levels),
             g_write.float(), config, state, decay=None)
-        return y, to_canonical(from_split_planes(state), widths, config.lattice_k, config.lattice_m)
+        logical = logical_state(state, config.d_v).reshape(B, H, N, cols)
+        return y, to_canonical(logical, widths, config.lattice_k, config.lattice_m)
 
     #: THE PADDED CALL: v at the caller's logical d_v=48.
     y_padded, state_padded = run(v_logical)

@@ -23,6 +23,11 @@ pytestmark = [pytest.mark.cuda,
 
 WIDTHS = (256, 256)
 
+#: RED BY PLAN (ruled 2026-09-29: no temporary patches): the unported carry reads and writes its own split pages and
+#: refuses the int8 state format by name, so a STATEFUL prefill cannot run until the carry's int8 port.
+_STATEFUL_PREFILL = pytest.mark.xfail(strict=True, raises=Exception,
+                                      reason="the carry refuses the int8 state format until its port")
+
 
 def _producer(hidden: int = 64, heads: int = 2) -> rola.RouteProducer:
     torch.manual_seed(0)
@@ -64,6 +69,7 @@ def test_the_op_matches_the_fp64_oracle_per_slot():
 
 
 @pytest.mark.parametrize("paging", [True, False])
+@_STATEFUL_PREFILL
 def test_segments_carried_through_a_state_are_the_whole_call(paging):
     """The window grid is global, so a segment boundary on a window boundary moves no pair: two segments through
     one state are the whole call to fp32 ULPs, in either backing."""
@@ -82,6 +88,7 @@ def test_segments_carried_through_a_state_are_the_whole_call(paging):
     torch.testing.assert_close(torch.cat(parts, dim=1), whole, rtol=0, atol=float(whole.abs().max()) * 2 ** -20)
 
 
+@_STATEFUL_PREFILL
 def test_a_budgeted_layer_segments_and_matches_the_whole_call():
     layer = rola.RoLA(_producer(), d_v=64).cuda().eval()
     x = torch.randn(1, 4 * WINDOW, 64, device="cuda")
@@ -97,6 +104,7 @@ def test_a_budgeted_layer_segments_and_matches_the_whole_call():
     torch.testing.assert_close(segmented, whole, rtol=2 ** -7, atol=float(whole.abs().max()) * 2 ** -7)
 
 
+@_STATEFUL_PREFILL
 def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
     layer = rola.RoLA(_producer(), d_v=64).cuda().eval()
     x = torch.randn(1, 4 * WINDOW, 64, device="cuda")

@@ -53,9 +53,17 @@ import torch
 
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.lattice import permutation, to_canonical, to_lattice
-from rola.ops.paging import bytes_equal, from_split_planes, to_split_planes
+from rola.ops.paging import bytes_equal
 from rola.routing.types import LeafMassDecay
-from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close, oracle_run
+from tests.oracle.fixtures import (
+    assert_planted_errors_fail,
+    assert_slots_close,
+    logical_state,
+    oracle_run,
+    state_pages,
+    state_quantum,
+    state_rounded,
+)
 from tests.oracle.oracle_fixtures import _decay_dials, _simplex, _topology
 from tests.oracle.tolerances import DECODE_STATE, DECODE_Y
 
@@ -149,9 +157,9 @@ def _kernel_realized_support(levels, widths, B, H, device, d_v=64):
     write = tuple(t.float() for t in levels)
     g_write = torch.ones(B, 1, H, **f32)
     v = torch.ones(B, 1, H, d_v, **f32)
-    state = to_split_planes(torch.zeros(B, H, N, config.cols, **f32))
+    state = state_pages(torch.zeros(B, H, N, config.cols, **f32))
     _y, state, _ws = _decode_step(v, empty_read, write, g_write, config, state)
-    return (from_split_planes(state).reshape(BH, N, config.cols) != 0).any(-1)
+    return (logical_state(state, d_v) != 0).any(-1)
 
 
 def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
@@ -183,6 +191,8 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
                                           generator=generator)
         if norm == "global":
             initial_state[..., d_v] = initial_state[..., d_v].abs()
+        #: the entry state IS a stored one: both sides start from the int8 format's values.
+        initial_state = state_rounded(initial_state)
 
     decay = None if decay_dials is None else LeafMassDecay(dials=decay_dials)
 
@@ -192,15 +202,17 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
     for s in range(steps):
         ref = oracle_run(vs[s], read_levels[s], write_levels[s], g_writes[s], topology, decay, entry=ref)
         y_refs.append((ref.y, ref.y_envelope))
+        #: THE DECLARED STORE, mirrored: the step rounds every row it wrote to its group's s24 quantum.
+        ref = ref._replace(state=state_rounded(ref.state))
 
     # ---- decode ---------------------------------------------------------------
     config = derive_decode_geometry(topology, d_v=d_v, decay=decay is not None, BH=B * H,
                                   device=device, n_split=n_split)
     #: THE SEAM. The oracle's plane is canonical forever; the kernel's is lattice-ordered.
-    #: THE STORED FORM IS THE SPLIT PLANES: the seam packs after the lattice
+    #: THE STORED FORM IS THE INT8 STATE PAGE: the seam packs after the lattice
     #: permutation and unpacks before the inverse, because a page is 16 leaves OF THAT
     #: ORDER and the kernel reads the bytes, not the logical view.
-    state = to_split_planes(
+    state = state_pages(
         torch.zeros(B, H, N, cols, device=device, dtype=torch.float32)
         if initial_state is None
         else to_lattice(initial_state.to(torch.float32), widths,
@@ -214,7 +226,7 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
             g_writes[s].float(),
             config, state, decay=decay, workspace=workspace)
         y_outs.append(y)
-    state = to_canonical(from_split_planes(state), widths, config.lattice_k, config.lattice_m)
+    state = to_canonical(logical_state(state, d_v).reshape(B, H, N, cols), widths, config.lattice_k, config.lattice_m)
 
     return dict(y=y_outs, state=state, y_refs=y_refs, ref=ref, config=config,
                 workspace=workspace, read_levels=read_levels, write_levels=write_levels,
@@ -225,7 +237,9 @@ def _assert_oracle(out):
     """Every step's ``y`` and the final state, per slot against the chained oracle's envelopes."""
     for step, (y, (y_ref, y_envelope)) in enumerate(zip(out["y"], out["y_refs"])):
         assert_slots_close(y, y_ref, output=DECODE_Y, envelope=y_envelope, what=f"decode y at step {step}")
-    assert_slots_close(out["state"], out["ref"].state, output=DECODE_STATE, envelope=out["ref"].state_envelope, what="decode state")
+    #: the store's own rounding, on both sides from one fp32 update apart: a tie may land a quantum away.
+    assert_slots_close(out["state"], out["ref"].state, output=DECODE_STATE, envelope=out["ref"].state_envelope,
+                       what="decode state", derived_atol=2 * state_quantum(out["ref"].state))
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +291,8 @@ def test_the_rule_fails_planted_errors_on_the_kernels_own_output():
     out = _case((64, 64), 64, 2, 3, "global", 0.5, 0.4, seed=64, steps=16)
     y_ref, y_envelope = out["y_refs"][-1]
     assert_planted_errors_fail(out["y"][-1], y_ref, output=DECODE_Y, envelope=y_envelope, what="decode y")
-    assert_planted_errors_fail(out["state"], out["ref"].state, output=DECODE_STATE, envelope=out["ref"].state_envelope, what="decode state")
+    assert_planted_errors_fail(out["state"], out["ref"].state, output=DECODE_STATE, envelope=out["ref"].state_envelope,
+                               what="decode state", derived_atol=2 * state_quantum(out["ref"].state))
 
 
 def test_the_empty_support_corner_is_inert_rather_than_undefined():
@@ -305,8 +320,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     g_write = torch.ones(B, 1, H, device=device, dtype=torch.float32)
     v = torch.randn(B, 1, H, d_v, device=device, dtype=torch.float32)
     config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=B * H, device=device)
-    m0 = to_split_planes(0.1 * torch.randn(B, H, config.N, config.cols, device=device,
-                                      dtype=torch.float32))
+    m0 = state_pages(0.1 * torch.randn(B, H, config.N, config.cols, device=device, dtype=torch.float32))
     state = m0.clone()
     y, state, _workspace = _decode_step(v, zeros, zeros, g_write, config, state)
     assert not _leaf_support(zeros, widths, B, H, device).any(), (
@@ -519,13 +533,13 @@ def test_g7_prefill_decode_seam(widths):
                                   device=device)
     #: THE SEAM ITSELF: the entry state is the oracle's, so it crosses into lattice order
     #: here and its answer crosses back.
-    entry = to_split_planes(to_lattice(pre["state"], widths, config.lattice_k, config.lattice_m))
+    entry = state_pages(to_lattice(pre["state"], widths, config.lattice_k, config.lattice_m))
     y_dec, state_dec, _ = _decode_step(
         step_v.float(), tuple(t.float() for t in step_read),
         tuple(t.float() for t in step_write), step_gw.float(),
         config, entry)
-    state_dec = to_canonical(from_split_planes(state_dec), widths, config.lattice_k,
-                             config.lattice_m)
+    state_dec = to_canonical(logical_state(state_dec, d_v).reshape(B, H, config.N, d_v + 1), widths,
+                             config.lattice_k, config.lattice_m)
 
     #: THE WHOLE SEQUENCE, on the oracle: prefill and step concatenated, so the
     #: reference sees exactly what the two kernel legs together saw.
@@ -536,5 +550,7 @@ def test_g7_prefill_decode_seam(widths):
         torch.cat([pre["g_write"], step_gw], dim=1), pre["topology"])
 
     assert_slots_close(y_dec, ref.y[:, L:L + 1], output=DECODE_Y, envelope=ref.y_envelope[:, L:L + 1], what="y across the seam")
-    assert_slots_close(state_dec, ref.state, output=DECODE_STATE, envelope=ref.state_envelope, what="the state across the seam")
+    #: the entry state crossed the seam as a stored one (half a quantum), and the step stored it again.
+    assert_slots_close(state_dec, ref.state, output=DECODE_STATE, envelope=ref.state_envelope,
+                       what="the state across the seam", derived_atol=2 * state_quantum(ref.state))
     assert pre["y"].shape[1] == L

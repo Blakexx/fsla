@@ -1987,7 +1987,8 @@ docs/internals/decode/decode_lattice.md#the-write-grain
 <a id="state"></a>
 ### `state`
 
-DENSE `[BH, N, cols]` or PAGED `[slots, kAtomLeaves, cols]`, `cols = d_v + 1`.
+DENSE `[BH, N / 16, page bytes]` or PAGED `[slots, page bytes]` uint8, one int8-format page a slot
+(`common/state_page.md#geometry`).
 Read AND written in place by the SAME lane in program order:
 docs/internals/decode/decode.md#state-in-place
 
@@ -2019,28 +2020,23 @@ Split-K workspace. Slot-ordered and summed by the last-arriving CTA, which is wh
 makes decode's `y` RUN-REPRODUCIBLE -- and that diverges from the tiled consumer
 on purpose: docs/internals/decode/decode.md#determinism
 
-<a id="split-planes"></a>
-### The split bf16 planes, and the unit that reads one
+<a id="int8-state"></a>
+### The int8 state page, and the unit that reads one
 
-THE STATE'S PAGE HOLDS SPLIT bf16 PLANES --
-`[16 x DV hi][16 x DV lo][16 mass hi][16 mass lo]`, the geometry
-`common/state_page.md` defines and the carry addresses with the same blocks. The
-walk's per-leaf row is therefore two 16-bit runs rather than one fp32 run, and the
-plane count is the leaf's own fact for this step:
+THE STATE'S PAGE IS THE INT8 STATE FORMAT -- `[16 x DV hi s16][16 x DV lo u8][16 x DV/32 exponent s8][16 mass fp32]`,
+`common/state_page.md` -- and the plane count is the leaf's own fact for this step:
 
-* a leaf this step WRITES is read `hi || lo` -- the exact fp32 it carried -- updated,
-  and stored back to both planes, so a sequence's carried precision is untouched. The
-  plane choice keys on `in_w`, the step's own write set, and NOT on whether THIS PASS
-  performs the deposit: a gated step's third outcome is "re-read without depositing"
-  (`done[bh]`), and a re-read of a leaf the step wrote must see the same bytes the
-  depositing pass saw, or two admission orders would compute different `y` for the same
-  step. `deposit` gates the STORE and nothing else;
-* a leaf this step only READS pulls the **hi plane alone**. That is a DECLARED
-  arithmetic statement, not an approximation of one: the readout operand is the hi
-  plane in every kernel (prefill's MMA operand has been `hi_bf16x2` of the
-  accumulator since F1b), and decode now states the same thing about its own
-  readout. The fp64 oracle REPORTS the difference; the gate asserts against the
-  bf16-mirrored band, which is the dual-run protocol the oracle doctrine names.
+* a leaf this step WRITES is read in full, `(hi << 8 | lo) * 2^e`, updated in fp32, and stored: a lane's column `q`
+  is channel `lane + 32 q`, so a GROUP is one column of every lane, and its exponent is the warp's max of `|v|`
+  over it (five `SHFL`s); each value is rounded once to its group's s24 quantum, and the lane-0 exponent and the
+  fp32 mass are stored beside it. The readout then reads the STORED value, so the next step reads exactly what this
+  one wrote. The plane choice keys on `in_w`, the step's own write set, and NOT on whether THIS PASS performs the
+  deposit: a gated step's third outcome is "re-read without depositing" (`done[bh]`), and a re-read of a leaf the
+  step wrote must see the same bytes the depositing pass saw, or two admission orders would compute different `y`
+  for the same step. `deposit` gates the STORE and nothing else;
+* a leaf this step only READS pulls the **hi plane alone**, `hi * 2^(e + 8)` -- the s16 operand every readout
+  takes, a DECLARED statement of the arithmetic rather than an approximation of it -- and the fp32 mass. The
+  gates mirror the declared store in fp64 (`tests/oracle/fixtures.py`, `state_rounded`) and allow its quantum.
 
 The address is a BYTE offset now: `slot * Blocks<DV>::kBytes` under a page table, and
 `(bh * atoms_per_bh + atom) * kBytes` dense -- the dense backing is the same

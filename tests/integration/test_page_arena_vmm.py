@@ -41,7 +41,7 @@ import pytest
 import torch
 
 from rola.ops.decode import _decode_step, _write_atom_bitmap
-from rola.ops.paging import MMA_K_QUANTUM, PageArena, to_split_planes, vmm_supported
+from rola.ops.paging import MMA_K_QUANTUM, PageArena, encode_pages, page_layout, vmm_supported
 from tests.integration.test_decode_paging import _ARMS, _config, _f32, _fixture
 
 pytestmark = [
@@ -52,7 +52,7 @@ pytestmark = [
 ]
 
 _COLS = 65
-_PAGE_BYTES = MMA_K_QUANTUM * _COLS * 4
+_PAGE_BYTES = page_layout(_COLS - 1).bytes
 
 #: A pool whose dense limit is LARGE against the driver's 2 MiB allocation granularity.
 #: The receipt is only meaningful when the pool is many chunks wide: an arena smaller than
@@ -250,7 +250,7 @@ def test_the_two_backings_are_bit_identical(arm):
         present = table >= 0
         seed = torch.arange(int(present.sum()) * MMA_K_QUANTUM * _COLS, device="cuda",
                             dtype=torch.float32).view(-1, MMA_K_QUANTUM, _COLS) * 1e-3
-        arena.state.index_copy_(0, table[present].long(), to_split_planes(seed))
+        arena.state.index_copy_(0, table[present].long(), encode_pages(seed))
         y, _, _ = _decode_step(v, read, write, g_write, config, arena.state,
                                page_table=table)
         outputs.append((y, arena.materialize(), arena))
