@@ -194,8 +194,7 @@ def _stress_logits(routing: ResolvedRouting, kind: str, *, device, seed: int) ->
         # softmax is fp32-ill-conditioned -- a conditioning property of the fixture, not
         # of the solve (both production lowerings agree with each other to 2e-7 there,
         # and disagree with fp64 together). Union's extreme-magnitude contract (the
-        # overflow-free delta) is gated at the fp32 maximum by
-        # `test_rola_entmax_production.py::test_production_union_handles_near_max_logits_and_vjp`.
+        # overflow-free delta) is gated at the fp32 maximum by `test_union_is_exact_at_the_fp32_extremes`.
         return base * 5.0
     raise ValueError(kind)
 
@@ -986,3 +985,46 @@ def test_the_stored_form_preserves_the_support_exactly(alpha, shape, kind):
             stored_reads[level], exact_reads[level], f"{shape}/{kind} read {level}")
         _assert_support_identical(
             stored_writes[level], exact_writes[level], f"{shape}/{kind} write {level}")
+
+
+@_CUDA
+@pytest.mark.parametrize("alpha", [1.5, 2.0])
+@pytest.mark.parametrize("relationship", ["equal", "opposite"])
+def test_union_is_exact_at_the_fp32_extremes(alpha, relationship):
+    """Union's extreme-magnitude contract, the overflow-free delta: opposite fp32 extrema overflow a raw
+    ``read - write`` while their midpoint stays exactly representable. Values and VJP against the fp64 oracle;
+    at opposite extrema the midpoint is uniform, so every member lands on one side or the other."""
+    near_max = torch.finfo(torch.float32).max if relationship == "opposite" else 1.0e8
+    read = torch.tensor([[[near_max, -near_max, near_max, -near_max]]], device="cuda", dtype=torch.float32)
+    write = -read if relationship == "opposite" else read.clone()
+    routing = ResolvedRouting((UnionRouting(width=4, alpha=alpha),))
+    _check_against_oracle(routing, read, write, label=f"fp32-extremes/{relationship}/{alpha}")
+    production_read = read.detach().clone().requires_grad_()
+    production_write = write.detach().clone().requires_grad_()
+    reads, writes = production_routing_factor_levels(
+        production_read, production_write, routing, stored_dtype=torch.float32)
+    assert torch.isfinite(reads[0]).all() and torch.isfinite(writes[0]).all()
+    if relationship == "opposite":
+        assert ((reads[0] + writes[0]) != 0).all()
+    cotangent = torch.tensor([0.3, -0.8, 1.1, 0.4], device="cuda")
+    vjp = torch.autograd.grad((reads[0] * cotangent).sum() - (writes[0] * cotangent).sum(),
+                              (production_read, production_write))
+    assert torch.isfinite(vjp[0]).all() and torch.isfinite(vjp[1]).all()
+
+
+@_CUDA
+def test_an_empty_call_keeps_the_autograd_contract():
+    """Zero tokens: the levels keep their shapes and dtype, and the backward still reaches both logits."""
+    routings = (
+        ResolvedRouting((IndependentRouting(width=4, read=EntmaxActivation(1.5), write=SoftmaxActivation()),) * 2),
+        ResolvedRouting((UnionRouting(width=4, alpha=2.0),)),
+    )
+    for routing in routings:
+        read = torch.empty(1, 0, routing.packed_logit_width, device="cuda", dtype=torch.float32, requires_grad=True)
+        write = torch.empty_like(read, requires_grad=True)
+        reads, writes = production_routing_factor_levels(read, write, routing, stored_dtype=torch.bfloat16)
+        for level in range(routing.D):
+            assert reads[level].shape == writes[level].shape == (1, 0, routing.branches[level])
+            assert reads[level].dtype == writes[level].dtype == torch.bfloat16
+        (sum(r.float().sum() for r in reads) + sum(w.float().sum() for w in writes)).backward()
+        assert read.grad is not None and write.grad is not None
