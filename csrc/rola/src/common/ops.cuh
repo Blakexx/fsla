@@ -345,7 +345,7 @@ __device__ __forceinline__ void mma(float (&d)[4], const uint32_t (&a)[4], const
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
-//: THE INT8 ATOM, u8 x u8 into s32: the pre-pass's fold (A two registers, B one). -- see docs/internals/common/ops.md#imma-u8
+//: THE INT8 ATOM, u8 x u8 into s32 (A two registers, B one). -- see docs/internals/common/ops.md#imma-u8
 __device__ __forceinline__ void imma_u8(int32_t (&d)[4], const uint32_t (&a)[2], uint32_t b) {
   asm volatile(
       "mma.sync.aligned.m16n8k16.row.col.s32.u8.u8.s32 "

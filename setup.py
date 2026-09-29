@@ -649,7 +649,6 @@ SOURCES = [
     #: block's one derivation and the arm resolution. Holds no arm body -- those are
     #: the generated per-arm units, which is what makes an arm subset a file subset.
     "csrc/rola/src/carry/carry.cu",
-    "csrc/rola/src/prepass/prepass.cu",
     "csrc/rola/src/decode/decode.cu",
     "csrc/rola/src/entmax/entmax.cu",
     "csrc/rola/src/entmax/factor.cu",

@@ -775,7 +775,7 @@ loop cannot be recognized as 0-or-1 trips and flattened.
 `mma.sync.m16n8k16.row.col.s32.u8.u8.s32`: A is two registers a lane (row `lane / 4`, four
 consecutive k at `4 (lane % 4)`; the second register is row `lane / 4 + 8`), B one (column
 `lane / 4`, the same four k), the accumulator four s32 (rows `lane / 4` and `+ 8`, columns
-`2 (lane % 4) + {0, 1}`). Both operands unsigned: the pre-pass's digits are magnitudes. Verified
+`2 (lane % 4) + {0, 1}`). Both operands unsigned: the digits are magnitudes. Verified
 against a row-by-row product on sm_86 before use (the probe of 2026-09-28).
 
 <a id="prmt"></a>

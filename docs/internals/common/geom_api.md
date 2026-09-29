@@ -35,8 +35,7 @@ The one entry a kernel family's host seam calls for the tall owner set (`geom.md
 `derive_block` with `bc` the tall leaf count, `dv` the channel group, both stream counts the
 CTA's warps, run placement and no warp-level page floor; the mode word decides the spans. The
 drift guard that keeps `derive_carry_geom` inside the geometry block is what this entry exists
-for -- a family derives its block here and never re-spells the law in its own seam. The pre-pass
-is its first caller (`prepass/prepass_host.md`).
+for -- a family derives its block here and never re-spells the law in its own seam.
 
 <a id="geometry"></a>
 ## `geometry(widths, level_modes, bc, nsr, nsw, dv, interleave, atom_floor)`
