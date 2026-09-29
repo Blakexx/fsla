@@ -1071,12 +1071,6 @@
   },
   {
    "path": "docs/internals/common/state_page.md",
-   "message": "names the work code 'F1b'",
-   "line_sha256": "c1d36fad2cac3e15",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/common/state_page.md",
    "message": "names the work code 'K50'",
    "line_sha256": "3b79d76dbce2b9ae",
    "count": 1

@@ -501,7 +501,6 @@
   {"doc": "docs/internals/common/sm_clock.md", "pinned_at": "8b3c6e3ede2f", "reviewed": true, "sha256": "", "target": "measure/provider.py"},
   {"doc": "docs/internals/common/state_page.md", "pinned_at": "8b3c6e3ede2f", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/state_page.cuh"},
   {"doc": "docs/internals/common/state_page.md", "pinned_at": "8b3c6e3ede2f", "reviewed": true, "sha256": "acaa969d81d248a8", "target": "csrc/rola/src/common/state_page.cuh::load"},
-  {"doc": "docs/internals/common/state_page.md", "pinned_at": "8b3c6e3ede2f", "reviewed": true, "sha256": "c36255628466b41d", "target": "csrc/rola/src/common/state_page.cuh::store"},
   {"doc": "docs/internals/common/state_page.md", "pinned_at": "8b3c6e3ede2f", "reviewed": true, "sha256": "", "target": "docs/internals/DELETIONS.md"},
   {"doc": "docs/internals/common/static_for.md", "pinned_at": "8b3c6e3ede2f", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/static_for.cuh"},
   {"doc": "docs/internals/common/static_for.md", "pinned_at": "8b3c6e3ede2f", "reviewed": true, "sha256": "b1e7d62287d27e2f", "target": "csrc/rola/src/common/static_for.cuh::static_for"},
