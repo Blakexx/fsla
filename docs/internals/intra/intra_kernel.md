@@ -86,17 +86,19 @@ reads eight consecutive tokens at one chunk.
 
 ## The copies
 
-Every copy is `cp.async` of one 16-byte chunk, consecutive threads along a token's contiguous
-run, arriving on its buffer's mbarrier with `cp.async.mbarrier.arrive.noinc` (each of the
-256 threads is one counted arrival). A thread's place in a copy never changes — a stage's row
-`tid / 8` and chunk `tid % 8`, a value row's `tid / 4` and `tid % 4`, one writer-column entry —
-so `Copier` computes each 64-bit base once per CTA, and a copy adds its tile's rows with one
-unsigned 32 × 32 → 64 multiply-add (`rows_of`; the seam bounds a token stride to 31 bits, and
-the two value planes share one layout). Recomputing the (batch, token, head) address at every
-copy, the first form, cost 512 instructions a warp tile pair against the 80 its budget allows
-(the region ledger, below); the bases hold fewer registers than those temporaries did (210 →
-190). The rows are read where the bundle holds them, by their strides, on 16-byte boundaries;
-the producer's rows are head-major, so a CTA's tokens are one contiguous run a row.
+Every copy is `cp.async` of one 16-byte chunk, arriving on its buffer's mbarrier with
+`cp.async.mbarrier.arrive.noinc` when it lands. ONE WARP issues a whole stage (16 copies a
+lane) or a tile's values (8 value-digit copies a lane a plane, 8 writer-column entries), so a
+buffer's `full` barrier counts that warp's 32 lanes. A lane's place in a copy never changes — a
+stage's rows `lane / 8 + 4 i` at chunk `lane % 8`, a value plane's rows `lane / 4 + 8 i` at chunk
+`lane % 4` — so `Copier` computes each 64-bit base once per CTA, and a copy adds its tile's rows
+with one unsigned 32 × 32 → 64 multiply-add (`rows_of`; the seam bounds a token stride to 31
+bits, and the two value planes share one layout). A stage row `j + 4 i`'s swizzled chunk is
+`(lane % 8) ^ j ^ 4 (i & 1)`, one address bit flipped between even and odd `i`. Recomputing the
+(batch, token, head) address at every copy, the first form, cost 512 instructions a warp tile
+pair against the 80 its budget allows (the [region ledger](#region-ledger)). The rows are read
+where the bundle holds them, by their strides, on 16-byte boundaries; the producer's rows are
+head-major, so a CTA's tokens are one contiguous run a row.
 
 <a id="stages"></a>
 <a id="pipeline"></a>
@@ -105,21 +107,46 @@ the producer's rows are head-major, so a CTA's tokens are one contiguous run a r
 
 The reader rows land once, in four parts of one stage's digits each, each on its own
 mbarrier: part `S` leaves beside tile 0's stage `S`, so the first Gram waits for one part and
-one stage, not for 64 KB. The writer side streams: a tile's four stages through three
-buffers, each stage copied two stages ahead of its use (`kStageBuffers - 1`). A buffer's
-`full` barrier counts the 256 copies' arrivals; its `empty` barrier counts the eight warps'
-releases, and the copy that refills a buffer waits on it. The tile's value digits and writer
-columns use one buffer under the same protocol (`values_full`, `values_empty`), read after the
-tile's last stage: each thread tests the buffer's release at the tile's first stages and
-copies as soon as it is free, and waits for it only two stages before the values are read. A
-warp waits only for the data it reads and releases each buffer right after its last read of
-it; no CTA barrier sits inside the sweep.
+one stage, not for 64 KB. The writer side streams a tile's four stages through three buffers,
+each stage copied ONE stage ahead of its use (`kCopyAhead`), which leaves two stages of slack
+between the warps: a buffer is refilled once all eight warps have released its use three
+stages back (`empty`, eight arrivals).
 
-An L2 prefetch of each stage two stages beyond its copy was measured
-and removed: with the value product and epilogue skipped, the Gram's pipeline ran 170 µs a
-head at `L = 64K` without it and 177–182 µs with it at every distance tried (two, six and ten
-stages); it only added requests. Blocking the tile's value copy at its first stage made every
-tile a CTA-wide barrier on the slowest warp's value product, which the test-then-copy removes.
+**The first warp to reach a refill issues it.** Each warp, at a stage's start, claims the
+next stage's copy with an `atomicMax` of its absolute index on the buffer's claim word; the
+warp that raises it waits alone for the buffer's release and issues the copy. The tile's
+values move the other way: **the last warp to release a tile's values copies the next
+tile's** (an arrival counter a tile parity), so nobody waits on the value buffer at all, and
+the values have the next tile's four stages to land before they are read.
+
+**Every warp waits for every stage and every tile's values, read or not.** An mbarrier wait
+tests one phase bit, so it is sound only for a waiter within a phase of the barrier. With the
+copies claimed, a warp that neither reads nor claims waits on nothing; one that skipped its
+waits (the block's first row tile through its last tile, above its diagonal) ran ahead, claimed
+a refill, and read a release two phases old as done, overwriting a stage another warp was
+still reading — intermittently wrong rows, found by repeated launches
+(`test_the_intra_is_bit_identical_across_launches`, which fails on that form). Waiting on every
+phase keeps every warp within a phase of every barrier; a stage no warp reads was not copied,
+and its wait is immediate.
+
+Why this shape, measured (ncu, base clock; `L = 64K` at four heads, `flagship-dense` at `L =
+1K`):
+
+| form | 64K, 4 heads | flagship-dense |
+|---|---|---|
+| every thread copies its share of a stage two ahead; the tile's values tested, then awaited | 1.37 ms | 84 µs |
+| the same, copied one ahead (two stages of slack) | 1.24 ms | 75 µs |
+| one warp copies: the first to a stage's refill, the last to release a tile's values | 1.16 ms | 72 µs |
+
+The shares form bound every warp's data to the slowest warp's copy share, and every thread
+waited on the buffer's release before copying, which locked the warps together a stage at a
+time. The waits were not memory latency: 64 heads that alias one head's data (head stride 0,
+every CTA reading the same L2-resident 4.5 MB) ran exactly as fast as 64 distinct heads.
+
+An L2 prefetch of each stage two stages beyond its copy was measured and removed: it lost in
+every regime (the 4-head cell 1.42 against 1.37 ms, `flagship-dense` 87.5 against 83.8 µs), and
+with the value product and epilogue skipped the Gram's pipeline was no faster at six or ten
+stages ahead than at two.
 
 <a id="slab-gate"></a>
 
@@ -139,13 +166,11 @@ The table drives everything else, uniformly across the CTA:
 
 * a stage is copied only when either row tile reads one of its slabs, and the tile's values
   only when either row tile's pair is live; an uncopied stage's arrival is immediate;
-* a warp waits on a stage only when it reads one of its slabs, and computes the tile only when
-  its pair is live; a stage with every slab live runs as one straight-line block, a stage with
-  some as a branch a k-step, and a level's first step gated off zeroes the accumulator in its
-  place;
-* tile 0's copies leave before the table exists, so they are copied whatever it says and
-  every warp awaits them: a copy that leaves is always awaited by a warp before its buffer is
-  released, so none is in flight when a buffer refills.
+* a warp computes the tile only when its pair is live, and multiplies only the slabs it reads
+  (every warp still waits for every stage, [above](#pipeline)); a stage with every slab live
+  runs as one straight-line block, a stage with some as a branch a k-step, and a level's first
+  step gated off zeroes the accumulator in its place;
+* tile 0's copies leave before the table exists, so they are copied whatever it says.
 
 The gate cannot move a number: a skipped slab's products are all zero, and a skipped pair adds
 exact zeros to `num` and `den`. `test_the_slab_gate_is_an_exact_certificate` holds the gated
@@ -229,13 +254,13 @@ at its locked base clock, since one sequence's events swing ±10% between runs o
 
 | cell | at the kernel's landing | now | against |
 |---|---|---|---|
-| `L = 64K`, 16 batch-heads, a head (events) | 276 µs | 240 µs | ~180 µs budget (1.3×) |
-| `L = 64K`, 4 batch-heads (ncu, base clock) | 1.48 ms | 1.37 ms | |
-| `nl64k-dense` (ncu) | | 369 µs | |
-| `nl64k-alt-k4` (ncu) | | 381 µs | |
-| `flagship-dense`, `L = 1K` (ncu) | | 84 µs | |
-| `flagship-alt-k4` (ncu) | | 85 µs | |
-| `flagship-cohort-k16` (ncu) | | 67 µs | ~5 µs at boost |
+| `L = 64K`, 16 batch-heads, a head (events) | 276 µs | 211 µs | ~180 µs budget (1.17×) |
+| `L = 64K`, 4 batch-heads (ncu, base clock) | 1.48 ms | 1.16 ms | |
+| `nl64k-dense` (ncu) | | 320 µs | |
+| `nl64k-alt-k4` (ncu) | | 332 µs | |
+| `flagship-dense`, `L = 1K` (ncu) | | 72 µs | |
+| `flagship-alt-k4` (ncu) | | 73 µs | |
+| `flagship-cohort-k16` (ncu) | | 61 µs | ~5 µs at boost |
 
 <a id="region-ledger"></a>
 
@@ -244,20 +269,22 @@ per-instruction counts and stall samples attributed to the component each instru
 from, per warp tile pair) is the instrument for the instruction budget. At the kernel's landing
 it read 2,450 instructions a unit against a design count of ~1,200: the copies 512 (budget 80),
 the value product 724 (520), the stage loop's own control 418, the Gram 315 (288), the
-epilogue 219 (180). Now: 2,109 — the copies 292, the value product 629, the control 439, the
-Gram 313, the epilogue 219, the barrier spin 85.
+epilogue 219 (180). After the copy rewrite: 2,109 — the copies 292, the value product 629, the control 439, the
+Gram 313, the epilogue 219, the barrier spin 85. With one warp copying ([the pipeline](#pipeline)): 2,165 — the
+copies 193, the value product 631, the control 458, the Gram 303, the epilogue 218, and the
+spin 226 (every warp now waits on every stage).
 
-**Where the time goes.** Neither DRAM (34–49% of peak) nor L2 (44%) nor the tensor pipe (35%)
-is saturated: warps wait on latency, ~6.7 cycles an issued instruction with two warps a
-scheduler. Two experiments bound it. With the value product skipped the kernel runs ~200 µs a
-head (events, 16 heads), and with the epilogue skipped too ~170 µs — the Gram's pipeline alone,
-2.7× its ~62 µs tensor floor. That pipeline is latency-bound on bytes in flight: one CTA an SM
-keeps two 8 KB stages ahead, and at ~1.5 µs a request that is ~11 GB/s an SM, which is what the
-tensor floor itself needs, so any stall in the stream shows as a wait. Split by where they
-block, the waits were ~13% of warp cycles on a buffer's release by all eight warps, ~6% issuing
-copies and ~7% on data. And warps run in near-lockstep, so their epilogues and value products
-coincide and leave the tensor pipe idle together: the value product costs ~60 µs a head against
-the ~31 µs of its IMMAs.
+**Where the time goes.** Neither DRAM (34–49% of peak) nor L2 (44%) nor the tensor pipe
+(35% at landing) is saturated; the warps wait on each other and on latency, ~6.7 cycles an
+issued instruction with two warps a scheduler. Two experiments at landing bounded it: with the
+value product skipped the kernel ran ~200 µs a head (events, 16 heads), and with the epilogue
+skipped too ~170 µs — the Gram's pipeline alone, 2.7× its ~62 µs tensor floor. That was not
+memory: the aliased-heads run above changed nothing. It was the coupling of the copy protocol
+([the pipeline](#pipeline)), whose two fixes took the 4-head cell from 1.37 to 1.16 ms. What
+remains is the lockstep of the warps' phases: their epilogues and value products coincide and
+leave the tensor pipe idle together, and the value product costs about twice the time of its
+IMMAs. The phase ledger now: Gram 28%, value product 26%, waits 25%, epilogue 9%, gate 6%,
+deposit 3%, reader 3% of the warps' cycles.
 
 At `L = 1K` the grid is eight CTAs, and the time is one CTA's: the heaviest block issues ~11.5K
 IMMAs on one SM, a ~24 µs tensor floor at boost. On `flagship-cohort-k16` every tile pair is live

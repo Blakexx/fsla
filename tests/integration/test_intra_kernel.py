@@ -136,6 +136,17 @@ def test_the_slab_gate_is_an_exact_certificate():
     assert all(torch.equal(a, b) for a, b in zip(_run(*random), _run(*random, gated=False), strict=True))
 
 
+@pytest.mark.parametrize("draw", ("random", "clustered"))
+def test_the_intra_is_bit_identical_across_launches(draw):
+    """The pipeline's copies are claimed by whichever warp gets there first, so a race would show as run-to-run
+    variation: 40 launches over a grid of many CTAs, causal and gated, all bit-identical."""
+    routes, values = _bundle(4096, 4, 0.3, seed=7) if draw == "random" else _clustered(4096, 4, seed=7)
+    first = _run(routes, values)
+    for _ in range(39):
+        again = _run(routes, values)
+        assert torch.equal(again[0], first[0]) and torch.equal(again[1], first[1])
+
+
 def test_the_intra_reduces_into_the_planes_it_is_given():
     """A RED, not a store: what the planes held before stays under what the intra adds."""
     routes, values = _bundle(1024, 2, 0.3)
