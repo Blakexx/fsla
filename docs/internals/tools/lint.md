@@ -41,7 +41,7 @@ tell a real finding from a false one, so a human decides each, and the decision 
 | lint | baseline (2026-09-14) | what burns it down |
 |---|---|---|
 | `work_codes.py` | 558 | prose: `DELETIONS.md` 162 and `open-work.md` 59 need rows that say what each change did; the rest are test and tool docstrings |
-| `constant_parameters.py` | 134 | a ruling per finding: inline the constant, or mark the parameter `reserved:` with its reason. Callers outside the tree and positional calls are invisible, so it over-reports |
+| `constant_parameters.py` | 134; 63 (2026-09-29) | a ruling per finding: inline the constant, or mark the parameter `reserved:` with its reason. The tests count as callers of the public surface (the names `rola` and `rola.expert` export), and a constructor's parameters are keyed by its class -- keyed `__init__`, they matched no call and every class shared one key, which filed 17 exercised options as dead. Callers outside the tree and positional calls are invisible, so it over-reports |
 | `run_vulture.sh` | 60 | a ruling per finding: delete the dead code, or whitelist a demonstrated dynamic use (name-dispatched methods, fixtures, `setup.py` users) |
 | `drift_guards.py` | 20 over 11 rules | the table below |
 | `r9_enforcement.py` | 1 | `decode_lattice.cuh`'s `switch (kind)` folds its fourth case into a bare default; the fix is a `uniform_switch`, a decode kernel change |

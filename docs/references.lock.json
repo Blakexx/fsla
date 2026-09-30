@@ -1062,6 +1062,7 @@
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "b438582105e5", "reviewed": true, "sha256": "", "target": "docs/build.md"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "b438582105e5", "reviewed": true, "sha256": "", "target": "docs/internals"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "c89dfd308291", "reviewed": true, "sha256": "", "target": "docs/internals/tools/coverage.md"},
+  {"doc": "docs/internals/tools/lint.md", "pinned_at": "852fd32966f9", "reviewed": true, "sha256": "", "target": "rola/expert.py"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "7b2f6a09882f", "reviewed": true, "sha256": "", "target": "tools/clang_tidy_pin.json"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "c89dfd308291", "reviewed": true, "sha256": "", "target": "tools/coverage.json"},
   {"doc": "docs/internals/tools/lint.md", "pinned_at": "7b2f6a09882f", "reviewed": true, "sha256": "", "target": "tools/kernels.py"},

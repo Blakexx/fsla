@@ -459,8 +459,10 @@ class PageArena:
     """
 
     def __init__(self, *, widths: tuple[int, ...], BC: int, cols: int, BH: int,
-                 device: torch.device, extent_atoms: int | None = None,
-                 backing: str = "auto", pool_slack: float = 0.0) -> None:
+                 device: torch.device,
+                 extent_atoms: int | None = None,  #: reserved: the tests shrink the extent to reach its boundary
+                 backing: str = "auto",  #: reserved: the tests force each backing on a host that selects VMM
+                 pool_slack: float = 0.0) -> None:
         N = prod(widths)
         self.widths = tuple(widths)
         self.BC = int(BC)
