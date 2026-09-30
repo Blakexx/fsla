@@ -59,8 +59,8 @@ def nvbit_root() -> Path:
     if not tarball.exists():
         urllib.request.urlretrieve(p["release_url"], tarball)
     digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
-    if digest != p["tarball_sha256"]:
-        raise SystemExit(f"{tarball.name}: sha256 {digest} is not the pin's {p['tarball_sha256']}; refused")
+    if digest != p["asset_sha256"]:
+        raise SystemExit(f"{tarball.name}: sha256 {digest} is not the pin's {p['asset_sha256']}; refused")
     root.mkdir(parents=True, exist_ok=True)
     with tarfile.open(tarball) as tar:
         for member in tar.getmembers():

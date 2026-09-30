@@ -51,6 +51,8 @@ SCHEMA: dict[str, dict[str, Key]] = {
         "sccache": Key("path?", None, "the pinned sccache (tools/sccache_pin.json); null means none installed"),
         "sccache_enabled": Key("bool", True, "false builds uncached, the one deliberate opt-out of the sccache gate"),
         "mold": Key("path?", None, "the pinned mold (tools/mold_pin.json), the only linker; null means none installed"),
+        "clang_tidy": Key("path?", None, "the pinned clang-tidy (tools/clang_tidy_pin.json), both clang-tidy profiles' "
+                          "analyzer; null means none installed"),
     },
     **MACHINE,
     "store": {

@@ -6,7 +6,7 @@
     "version_string": "sccache 0.17.0",
     "release_asset": "sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz",
     "release_url": "https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz",
-    "tarball_sha256": "67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006",
+    "asset_sha256": "67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006",
     "binary_sha256": "066c5a84c85044c8f48b3ab571ac114293ea717c3d36985db022af8206e21e63",
     "binary_sha256_recipe": "sha256 over the raw bytes of the extracted `sccache` executable that is actually invoked (not the tarball) -- this is what tools/sccache_toolchain.py gates before use",
     "why_this_target": "x86_64-unknown-linux-musl is a static binary (no glibc version coupling), matching the closed-world preference for a pin that behaves the same on any host, and it is the target sccache itself ships prebuilt (no cargo build needed).",

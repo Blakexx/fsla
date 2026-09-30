@@ -16,7 +16,7 @@ repository refuses; the container makes it one build instead of a checklist.
 ## 0. The dev environment: `tools/dev.py`
 
 Everything this tree needs from a machine -- the CUDA toolkit, Nsight Compute,
-the pinned `sccache` and `mold`, the host's compile slots, the lock files, the SM
+the pinned `sccache`, `mold` and `clang-tidy`, the host's compile slots, the lock files, the SM
 clock, the measurements store, the worktrees folder and base venv -- is one
 directory of JSON files, the dev config (`~/.config/rola/`,
 `docs/internals/tools/dev_config.md`, KERNEL_STANDARDS §23). One command sets a
@@ -69,8 +69,8 @@ tagged `rola-dev:<first 12 of the environment key>`. The key is sha256 over thos
 `environment.image_digest`, which `tools/ratify.py` stamps as `source.image_digest` and every record row carries.
 
 Its last step is `tools/dev.py init --image`: the same one init a bare host runs, writing the image's dev config
-(`ROLA_DEV_CONFIG=/opt/rola/dev-config`) for its fixed layout, installing the pinned `sccache` and `mold` from the
-repo's pins, and running `check --image`. A red check fails the image build -- the image built on 2026-08-28 went two
+(`ROLA_DEV_CONFIG=/opt/rola/dev-config`) for its fixed layout, installing the pinned `sccache`, `mold` and
+`clang-tidy` from the repo's pins, and running `check --image`. A red check fails the image build -- the image built on 2026-08-28 went two
 weeks without `cuobjdump`, the Nsight Compute the pipe timeline needs, or flash-attn, and nothing said so.
 
 The image is built for a toolchain record (`tools/toolchains/<name>.json`; `--toolchain NAME` when more than one is
@@ -289,6 +289,7 @@ stands in for: that the container's compile produced a binary carrying the arms 
 | `sccache` 0.17.0 | `tools/dev.py init --image` from `tools/sccache_pin.json`, verified | the compiler cache `docs/build.md#sccache` measures |
 | `ninja` | apt | the build's actual compile driver (`docs/build.md` step 5) |
 | `mold` 2.42.0 | `tools/dev.py init --image` from `tools/mold_pin.json`, verified | the extension's only linker |
+| `clang-tidy` 22.1.8 | `tools/dev.py init --image` from `tools/clang_tidy_pin.json` (a wheel with its resource headers), verified | both clang-tidy profiles' analyzer, on every translation unit (`docs/build.md`) |
 | `graphviz`, `sqlite3` | apt | dependency/DAG rendering, the store's record index inspection |
 | `clangd`, `clang-tools-14` (clang-query) | apt | the editor/AST tooling briefs assume is present |
 | `universal-ctags` | apt | cross-referencing the `csrc/` tree |

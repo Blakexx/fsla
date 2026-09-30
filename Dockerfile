@@ -14,9 +14,9 @@
 # unless `ptxas --version` is the record's string byte for byte, the same comparison setup.py's rule 1 makes.
 # ubuntu22.04 for the apt package surface the rest of this file needs (deadsnakes, clangd-14, ...).
 #
-# sccache and mold are installed by `tools/dev.py init --image` from the repo's own pins (`tools/sccache_pin.json`,
-# `tools/mold_pin.json`) -- the same command and the same pins a bare host uses, so the image and the host cannot
-# disagree on either. The container-only tools below (uv, hyperfine, difftastic) are pinned the same way: an exact
+# sccache, mold and clang-tidy are installed by `tools/dev.py init --image` from the repo's own pins
+# (`tools/sccache_pin.json`, `tools/mold_pin.json`, `tools/clang_tidy_pin.json`) -- the same command and the same
+# pins a bare host uses, so the image and the host cannot disagree on any of them. The container-only tools below (uv, hyperfine, difftastic) are pinned the same way: an exact
 # version, an exact upstream release asset, and a sha256 verified before the archive is trusted.
 #
 # THE IMAGE IS KEPT CURRENT MECHANICALLY (KERNEL_STANDARDS §23 (3)): the environment key hashes this file and every
@@ -201,7 +201,7 @@ ENV ROLA_DEV_CONFIG=/opt/rola/dev-config
 ENV LD_LIBRARY_PATH=/usr/lib/wsl/lib:${LD_LIBRARY_PATH}
 COPY requirements.lock /opt/rola/bootstrap/requirements.lock
 COPY tools/dev.py tools/dev_config.py tools/sccache_toolchain.py tools/mold_toolchain.py \
-     tools/sccache_pin.json tools/mold_pin.json tools/devtools.txt /opt/rola/bootstrap/tools/
+     tools/sccache_pin.json tools/mold_pin.json tools/clang_tidy_pin.json tools/devtools.txt /opt/rola/bootstrap/tools/
 RUN mkdir -p /workspace/rola /workspace/store /workspace/suite /workspace/worktrees /run/rola/locks /run/rola/gpu \
     && uv pip install --python /opt/venv/bin/python --target /opt/rola/bootstrap/devtools \
         -r /opt/rola/bootstrap/tools/devtools.txt \

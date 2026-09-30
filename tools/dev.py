@@ -30,6 +30,7 @@ import textwrap
 import time
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -39,11 +40,12 @@ import sccache_toolchain  # noqa: E402
 import toolchains  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" / "mold_pin.json"}
+PINS = {"sccache": ROOT / "tools" / "sccache_pin.json", "mold": ROOT / "tools" / "mold_pin.json",
+        "clang_tidy": ROOT / "tools" / "clang_tidy_pin.json"}
 #: THE ENVIRONMENT'S INPUTS: what the dev image is built from and how it is run. Their hash is the environment key; a
 #: commit changing any of them carries a passing container check for its key (KERNEL_STANDARDS §23 (3)).
 ENV_INPUTS = ("Dockerfile", ".devcontainer/devcontainer.json", ".devcontainer/compose.yaml", "requirements.lock",
-              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
+              "tools/sccache_pin.json", "tools/mold_pin.json", "tools/clang_tidy_pin.json", "tools/devtools.txt", "tools/dev.py", "tools/dev_config.py",
               "tools/sccache_toolchain.py", "tools/mold_toolchain.py",
               "tools/toolchains.py",
               *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "tools" / "toolchains").glob("*.json")))
@@ -51,8 +53,17 @@ IMAGE_REPO = "rola-dev"
 #: the `rola_results` location of the container checks, one record per environment key
 RESULTS_ENVIRONMENT = "environment"
 IMAGE_LAYOUT, WSL_LIB_IN_IMAGE = dev_config.IMAGE_LAYOUT, dev_config.WSL_LIB_IN_IMAGE
+
+
+def _clang_tidy_version(path: str) -> str:
+    """`LLVM version X.Y.Z`, the line of `clang-tidy --version` that names the release."""
+    out = subprocess.run([path, "--version"], capture_output=True, text=True, check=True).stdout
+    return next(line.strip() for line in out.splitlines() if line.strip().startswith("LLVM version"))
+
+
 #: each pinned tool's own version reader, the one its build gate compares against the pin
-VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolchain.mold_version}
+VERSION_OF = {"sccache": sccache_toolchain.sccache_version, "mold": mold_toolchain.mold_version,
+              "clang_tidy": _clang_tidy_version}
 
 
 def _write_section(section: str, values: dict, force: bool) -> None:
@@ -69,20 +80,30 @@ def _write_section(section: str, values: dict, force: bool) -> None:
 
 
 def install_pinned(name: str, dest: Path) -> str:
-    """Download the pinned release, verify its tarball sha256 (and the binary's, where the pin has one), and unpack the
-    whole release under `dest` -- its layout is part of the tool (mold selects `ld.mold` beside itself)."""
+    """Download the pinned release, verify its sha256 (and the binary's, where the pin has one), and unpack the whole
+    release under `dest` -- its layout is part of the tool (mold selects `ld.mold` beside itself; clang-tidy reads its
+    resource headers beside its binary). A release is a tarball, or a wheel (a zip) unpacked under its own name."""
     pin = json.loads(PINS[name].read_text())
+    wanted = f"/{pin.get('binary', name)}"
     with tempfile.TemporaryDirectory(prefix=f"rola_{name}_") as tmp:
-        tar_path = Path(tmp) / pin["release_asset"]
-        urllib.request.urlretrieve(pin["release_url"], tar_path)
-        got = hashlib.sha256(tar_path.read_bytes()).hexdigest()
-        if got != pin["tarball_sha256"]:
-            raise SystemExit(f"{name}: tarball sha256 {got} is not the pin's {pin['tarball_sha256']}")
-        with tarfile.open(tar_path) as tf:
-            member = next(m for m in tf.getmembers() if m.name.endswith(f"/{name}") and m.isfile())
-            dest.mkdir(parents=True, exist_ok=True)
-            tf.extractall(dest, filter="tar")
-    binary = dest / member.name
+        asset = Path(tmp) / pin["release_asset"]
+        urllib.request.urlretrieve(pin["release_url"], asset)
+        got = hashlib.sha256(asset.read_bytes()).hexdigest()
+        if got != pin["asset_sha256"]:
+            raise SystemExit(f"{name}: release sha256 {got} is not the pin's {pin['asset_sha256']}")
+        dest.mkdir(parents=True, exist_ok=True)
+        if asset.suffix == ".whl":
+            root = dest / asset.stem
+            with zipfile.ZipFile(asset) as zf:
+                member = next(m for m in zf.namelist() if m.endswith(wanted))
+                zf.extractall(root)
+            binary = root / member
+            binary.chmod(0o755)
+        else:
+            with tarfile.open(asset) as tf:
+                member = next(m for m in tf.getmembers() if m.name.endswith(wanted) and m.isfile())
+                tf.extractall(dest, filter="tar")
+            binary = dest / member.name
     if "binary_sha256" in pin and hashlib.sha256(binary.read_bytes()).hexdigest() != pin["binary_sha256"]:
         raise SystemExit(f"{name}: {binary} sha256 is not the pin's {pin['binary_sha256']}")
     print(f"installed {pin['version_string']} -> {binary}")

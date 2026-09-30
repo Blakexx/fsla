@@ -1,45 +1,30 @@
 #!/usr/bin/env bash
-# DEVICE clang-tidy (gating: an on-target finding fails it): compiles this codebase's TORCH-FREE device TUs -- the per-arm
-# carry instantiations (`csrc/rola/src/instantiations/carry_arm_*.cu`, raw-pointer
-# ABI -- rola-build skill's "the torch-header floor") -- through clang's CUDA
-# frontend (`--cuda-host-only`) and runs the checks in
-# `tools/lint/clang-tidy-device.yaml` (clang-analyzer-deadcode.DeadStores,
-# misc-unused-parameters, bugprone-unused-*, readability-redundant-*).
+# DEVICE clang-tidy (gating): every device translation unit the build compiles -- `tools/kernels.py --units`, the one
+# list the build and ratify read -- through clang's CUDA frontend (`--cuda-host-only`), under the checks in
+# `tools/lint/clang-tidy-device.yaml` (clang-analyzer-deadcode.DeadStores, misc-unused-parameters, bugprone-unused-*,
+# readability-redundant-*), with the PINNED clang-tidy (`tools/clang_tidy_pin.json`, `toolchain.clang_tidy`).
 #
-# WHY ARM TUs AND NOT decode.cu/carry.cu/etc: `try_clang_tidy_device_tu.sh`
-# already measured that clang 14's bundled CUDA wrapper headers conflict
-# with this host's CUDA 12.4 toolkit headers reached transitively through
-# torch/c10 (~99 errors, all inside vendored headers, none in this codebase's
-# own lines) -- torch-bearing device TUs never finish a clean parse. Arm TUs
-# never include torch, so this profile is the one class of device TU
-# where the noise floor is smallest; it is still not zero -- see NOISY CHECKS.
-#
-# NOISY CHECKS ON THIS CUDA/clang PAIRING (reported, never silenced with a
-# `-checks=` exclusion or a suppression comment):
-#   * `clang-diagnostic-error: no template named 'texture'`, from clang 14's
-#     own `__clang_cuda_texture_intrinsics.h` -- a clang14-vs-CUDA-12.4-headers
-#     version mismatch (same root cause `try_clang_tidy_device_tu.sh` found on
-#     decode.cu), unrelated to anything in csrc/rola. It always fires from a
-#     clang-bundled system header path, never from a csrc/rola line, so this
-#     script's counter below excludes diagnostics whose file is NOT under
-#     csrc/rola -- but it prints them, unfiltered, in a NOISE section so the
-#     exclusion is auditable rather than silent.
-#   * `-ferror-limit=0` is required (default 20 aborts before reaching the
-#     arm's own code); clang-tidy still reports "Found compiler error(s)" and
-#     a nonzero PROCESS exit even when it emitted real, on-target findings
-#     first -- so this script counts the on-target findings itself and exits 1
-#     on any; clang-tidy's own `$?` is never read.
+# THE PARSE IS PART OF THE GATE. A unit clang cannot parse is not a unit it analyzed: under the distro's clang 14 a
+# torch-bearing unit's failed parse reported USED parameters as unused (measured 2026-09-29), which is why the pin is
+# a release that parses every unit. Any compiler error, in our lines or a header's, fails the gate; so does an
+# on-target finding. The toolkit's `include/cccl` root (thrust, cub, libcu++ under CUDA 13) is added because nvcc
+# adds it implicitly and clang does not.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CUDA_PATH="$(python3 "$ROOT/tools/dev.py" get cuda-home)"
+CLANG_TIDY="$(python3 "$ROOT/tools/dev.py" get toolchain.clang_tidy)"
 CONFIG="$ROOT/tools/lint/clang-tidy-device.yaml"
+if [[ -z "$CLANG_TIDY" || "$CLANG_TIDY" == "None" || ! -x "$CLANG_TIDY" ]]; then
+  echo "run_clang_tidy_device.sh: FAILED -- no pinned clang-tidy (toolchain.clang_tidy); \`python tools/dev.py init\`" >&2
+  exit 1
+fi
 
 if [[ "${1:-}" == "--test-fixtures" ]]; then
   # Self-test (excluded from the commit gate, K46 convention): the fixture
   # needs no compdb -- it is self-contained CUDA, no project headers.
   FIX="$ROOT/tools/lint/fixtures/device_lint_unused_param.cu"
-  out=$(clang-tidy "$FIX" --config-file="$CONFIG" -- \
+  out=$("$CLANG_TIDY" "$FIX" --config-file="$CONFIG" -- \
           -x cuda --cuda-host-only --cuda-path="$CUDA_PATH" \
           --cuda-gpu-arch=sm_80 -ferror-limit=0 2>&1)
   if echo "$out" | grep -q "misc-unused-parameters.*bad\|bad(int used"; then :; fi
@@ -55,36 +40,48 @@ if [[ "${1:-}" == "--test-fixtures" ]]; then
   exit 0
 fi
 
-CC_JSON="${1:-$ROOT/compile_commands.json}"
+#: THE FILES CHANGED, when pre-commit passes them: only the units whose include closure holds one are re-read
+#: (`tools/kernels.py --units --touching`); with none, every unit (CI, a manual sweep).
+CC_JSON="$ROOT/compile_commands.json"
+if [[ $# -gt 0 ]]; then
+  wanted_units="$(python3 "$ROOT/tools/kernels.py" --units --touching "$@")"
+  if [[ -z "$wanted_units" ]]; then
+    echo "run_clang_tidy_device.sh: no device unit compiles the changed files ($*) -- nothing to re-read."
+    exit 0
+  fi
+else
+  wanted_units="$(python3 "$ROOT/tools/kernels.py" --units)"
+fi
 
 if [[ ! -f "$CC_JSON" ]]; then
   if ! "$ROOT/tools/lint/compdb.sh" "$CC_JSON" >/dev/null 2>&1; then
-    echo "run_clang_tidy_device.sh: SKIPPED -- no build/temp to read a compile database from."
-    echo "  Build first (pip install -e . --no-build-isolation) to exercise this check."
-    exit 0
+    echo "run_clang_tidy_device.sh: FAILED -- no build/temp to read a compile database from; pre-commit is never" >&2
+    echo "  green by absence (Blake, 2026-08-28). Build first: pip install -e . --no-build-isolation" >&2
+    exit 1
   fi
 fi
 
-arm_files=$(python3 - "$CC_JSON" << 'PYEOF'
+unit_files=$(python3 - "$CC_JSON" "$wanted_units" << 'PYEOF'
 import json, sys
 db = json.load(open(sys.argv[1]))
+wanted = set(sys.argv[2].split())
 for e in db:
-    if "/instantiations/carry_arm_" in e["file"] and e["file"].endswith(".cu"):
+    if e["file"].endswith(".cu") and "csrc/" + e["file"].split("/csrc/")[-1] in wanted:
         print(e["file"])
 PYEOF
 )
 
-if [[ -z "$arm_files" ]]; then
-  echo "run_clang_tidy_device.sh: no carry_arm_*.cu TU in the compile database" \
-       "(build with ROLA_CARRY_ARMS set to widen coverage) -- 0 arms checked."
-  exit 0
+if [[ -z "$unit_files" ]]; then
+  echo "run_clang_tidy_device.sh: FAILED -- no device unit of the build in the compile database; a gate with no" \
+       "target does not pass." >&2
+  exit 1
 fi
 
 ARCH="$(python3 -c "from rola_cu13._build_config import BUILD_CONFIG as c; print(c['archs'][0].replace('sm_',''))" 2>/dev/null || echo 80)"
 
 total_real=0
-total_noise=0
-for src_from_db in $arm_files; do
+total_errors=0
+for src_from_db in $unit_files; do
   rel="${src_from_db#*/csrc/}"
   target="$ROOT/csrc/$rel"
   [[ -f "$target" ]] || { echo "run_clang_tidy_device.sh: $target missing, skipping" >&2; continue; }
@@ -120,7 +117,7 @@ for t in toks:
     if t.endswith(".cu"):
         continue
     out.append(t)
-out += ["-x", "cuda", "--cuda-host-only", f"--cuda-path={cuda_path}",
+out += ["-x", "cuda", "--cuda-host-only", f"--cuda-path={cuda_path}", "-isystem", f"{cuda_path}/include/cccl",
         f"--cuda-gpu-arch=sm_{arch}"]
 print(" ".join(shlex.quote(x) for x in out))
 PYEOF
@@ -133,23 +130,20 @@ PYEOF
   # all.
   # shellcheck disable=SC2086
   out=$(python3 -m rola_devtools.locks.host --slots 1 --label clang-tidy-tu -- \
-          clang-tidy "$target" --config-file="$CONFIG" --header-filter='csrc/rola/.*' \
+          "$CLANG_TIDY" "$target" --config-file="$CONFIG" --header-filter='csrc/rola/.*' \
           -- $flags -ferror-limit=0 2>&1)
-  real=$(echo "$out" | grep -E '^/.*csrc/rola/.*: (warning|error): ' | grep -v 'clang-diagnostic-error' || true)
-  noise=$(echo "$out" | grep -E 'clang-diagnostic-error' || true)
+  real=$(echo "$out" | grep -E '^/.*csrc/rola/.*: warning: ' || true)
+  errors=$(echo "$out" | grep -E ': (fatal )?error: ' || true)
   real_n=$(printf '%s\n' "$real" | grep -c . || true)
-  noise_n=$(printf '%s\n' "$noise" | grep -c . || true)
+  errors_n=$(printf '%s\n' "$errors" | grep -c . || true)
   if [[ -n "$real" ]]; then echo "$real"; fi
+  if [[ -n "$errors" ]]; then echo "$errors"; fi
   total_real=$((total_real + real_n))
-  total_noise=$((total_noise + noise_n))
+  total_errors=$((total_errors + errors_n))
 done
 
 echo "---"
-echo "device clang-tidy: $total_real on-target finding(s) across $(echo "$arm_files" | wc -l) arm TU(s);" \
-     "$total_noise toolchain-noise diagnostic(s) excluded from that count (see this script's header)."
-
-# GATING on the ON-TARGET count. Toolchain noise -- clang's bundled CUDA wrapper headers
-# disagreeing with the installed toolkit -- is printed and never counted: it is a fact
-# about the analyzer's own headers, not about this code.
-if [[ "$total_real" -gt 0 ]]; then exit 1; fi
+echo "device clang-tidy: $total_real on-target finding(s) and $total_errors compiler error(s) across" \
+     "$(echo "$unit_files" | wc -l) unit(s)."
+if [[ "$total_real" -gt 0 || "$total_errors" -gt 0 ]]; then exit 1; fi
 exit 0

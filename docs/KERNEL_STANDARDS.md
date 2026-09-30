@@ -425,8 +425,9 @@ dense draws, and under the one-ratio tolerance when it fired.
 report, it exhausted the host (23 GB in fifty seconds) and the target was killed -- the
 "open K2 item" read as a host-budget limit was the race's own signature from the day the box
 words landed. With the hazard gone the lane runs the one-CTA cells in seconds at under 1 GB.
-So: the lane runs at every commit of the carry kernel, on `one-box-short` and
-`one-box-multiwindow` at both grains through `tools/sanitize_cell.py`, and must report zero
+So: the lane runs at every commit that changes a kernel, on that kernel's cells -- `tools/coverage.json`
+names every kernel's row in `tools/sanitize_oracle.py` (the carry's are `one-box-short` and
+`one-box-multiwindow` at both grains, through `tools/sanitize_cell.py`) -- and must report zero
 hazards; a target killed under the sanitizer is a failing gate, never a resource problem to
 be worked around. Benign races (every warp storing the same word) are not tolerated either:
 a lane with known noise is a lane nobody reads. One warp writes, the readers stand behind an
@@ -443,8 +444,9 @@ ever compared. From here the floor is a GATE, per component, before composition:
   x latency at the stated prefetch distance), its instruction budget derived from the design's own
   operation count, and WHO EXECUTES IT HOW MANY TIMES (a per-window job is done once per CTA, by one
   warp or split across warps -- never replicated on every warp).
-- Each component is built into the PART HARNESS (`measure/harness/bench_carry_parts.py`: one
-  `__global__` driver per component over the real device functions, inputs shaped by a cell's liveness)
+- Each component is built into its family's PART HARNESS (the carry's is
+  `measure/harness/bench_carry_parts.py`: one `__global__` driver per component over the real device
+  functions, inputs shaped by a cell's liveness)
   and measured there -- cycles at the locked clock, instructions, the binding counter -- against its
   floors. It is accepted at <= 1.3x its binding floor and within its instruction budget; the numbers
   enter the regression store, and a later change that moves a ratio is red.
@@ -452,7 +454,8 @@ ever compared. From here the floor is a GATE, per component, before composition:
   compared to the sum of its parts; the difference is the composition cost and is reported as such.
 - The per-component instruction count of the shipped binary is attributed by `tools/region_ledger.py`
   (SourceCounters + lineinfo, functions and struct methods) against `tools/budgets/<kernel>.json`; a
-  component over budget is red, the same as a spill.
+  component over budget is red, the same as a spill. Every kernel has its budget file, or an owed or exempt
+  entry in `tools/coverage.json` saying why not (§25).
 - SKELETON FIRST (Blake, 2026-09-09): the kernel is composed from STUB components before any is
   implemented -- each stub has the real signature, the real shared-memory tenants and edges, and does
   the cheapest thing that keeps the composition correct in shape (a zero fold, a pass-through head) --
@@ -464,8 +467,9 @@ ever compared. From here the floor is a GATE, per component, before composition:
   ("slop numbers get misread as design verdicts" is now a gate, not a memory).
 
 ## §20 — ptxas SIGNATURES (law, 2026-09-09): what the SASS gate reads, and the rule behind each
-`tools/sass_gate.py` runs on every iteration build and fails on any of these; each was re-learned by
-trial this week and costs a rebuild when missed.
+`tools/sass_gate.py` runs after every build (`setup.py`'s post-build gate, iteration builds included), on
+every function of every cubin, and fails on any of these -- and on a kernel the source defines that no cubin
+carries; each was re-learned by trial this week and costs a rebuild when missed.
 - LDL/STL > 0 or a stack frame: LOCAL MEMORY. Causes: a runtime index into a register array or
   struct member array (the layout struct indexed by a runtime level); a `constexpr` helper with a
   runtime argument (`span_base(D, BC, l)` with `l` from a variable evaluates the span rule's arrays);
@@ -689,3 +693,21 @@ only measurement there is; the sub-core instruction buffer is three deep, the me
    is the placement in its SASS, which the row's reading states; a row whose placement differs from the kernel's
    measures a different thing.
 
+## §25 — EVERY GATE COVERS EVERY KERNEL (law, 2026-09-29, from Blake's "expand our gates and standard to cover all our kernels and source generically")
+An inventory found the kernel gates had each narrowed to the kernels their author had in mind: the SASS gate read one
+cubin, the device clang-tidy one unit, ratify a hand-written list that had lost three shipped kernels, and the budgets,
+phase-ledger tool and declared arm set named the carry alone. Nothing had decided any of it. So:
+1. ONE KERNEL LIST, DERIVED. `tools/kernels.py` is the translation units the build compiles and every `__global__`
+   the source defines, with its family and the units that compile it. The build, ratify and every gate read it; no
+   tool keeps a second list.
+2. A GATE TAKES ITS TARGETS FROM THE LIST, and a gate that finds no target fails -- it never passes by absence. A
+   narrowing (`--kernel`, `--member`) is a measurement, never a gate.
+3. EVERY KERNEL MEETS EVERY OBLIGATION OR SAYS WHY. `tools/coverage.json` declares, per kernel, the oracle test, the
+   sanitizer row, the budget and the phase ledger -- a pointer, an exemption with its reason, or an owed entry --
+   and `ratchet.py coverage` gates it: a kernel not declared, or a pointer to nothing, fails the commit; owed entries
+   are the backlog and only shrink. Ratified is read off the manifests, not declared.
+4. A GATE RUNS WHERE ITS INPUTS EXIST: the source gates in pre-commit; the binary gates (the SASS gate, ratify) after
+   every build.
+5. A TOOL THAT CANNOT PARSE A UNIT HAS NOT GATED IT. The analyzer is pinned to a release that parses every unit
+   (`tools/clang_tidy_pin.json`), and a parse error is a gate failure: the distro's clang 14 reported used
+   parameters as unused on a unit it could not parse.

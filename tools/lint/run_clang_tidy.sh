@@ -4,13 +4,9 @@
 # This is the GATE script (pre-commit/CI); `tools/lint/try_clang_tidy_device_tu.sh`
 # is a separate, non-gating exploration of whether a device TU can be added.
 #
-# SCOPE. A "host-only TU" here means a `.cpp` file compiled by the C++
-# compiler directly (as opposed to nvcc): the compdb's `file` entries whose
-# suffix is `.cpp`. Right now that is exactly one file, `csrc/rola/rola_api.cpp`.
-# Every other translation unit is a `.cu` compiled by nvcc; clang-tidy 14
-# cannot reliably parse this codebase's device TUs even in `--cuda-host-only`
-# mode (see try_clang_tidy_device_tu.sh's header for the measured reason), so
-# they are not part of this gate.
+# SCOPE. A "host-only TU" here means a `.cpp` file compiled by the C++ compiler directly (as opposed to nvcc): the
+# compdb's `file` entries whose suffix is `.cpp` -- today exactly one, `csrc/rola/rola_api.cpp`. The `.cu` units are
+# `run_clang_tidy_device.sh`'s. Both run the PINNED clang-tidy (`tools/clang_tidy_pin.json`, `toolchain.clang_tidy`).
 #
 # The compdb is built from WHATEVER checkout produced `build/temp` (docs/build.md
 # names it as the fixed, repo-relative build dir) -- which may not be this
@@ -21,6 +17,11 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CC_JSON="${1:-$ROOT/compile_commands.json}"
+CLANG_TIDY="$(python3 "$ROOT/tools/dev.py" get toolchain.clang_tidy)"
+if [[ -z "$CLANG_TIDY" || "$CLANG_TIDY" == "None" || ! -x "$CLANG_TIDY" ]]; then
+  echo "run_clang_tidy.sh: FAILED -- no pinned clang-tidy (toolchain.clang_tidy); \`python tools/dev.py init\`" >&2
+  exit 1
+fi
 
 if [[ ! -f "$CC_JSON" ]]; then
   # Blake ruling, 2026-08-28: "pre-commit can never be green by
@@ -91,7 +92,7 @@ PYEOF
 )
   echo "== clang-tidy: ${target#"$ROOT"/} =="
   # shellcheck disable=SC2086
-  clang-tidy "$target" -- $flags
+  "$CLANG_TIDY" "$target" -- $flags
   status=$?
   if [[ $status -ne 0 ]]; then
     overall_status=1

@@ -118,6 +118,12 @@ def closure(unit: Path, src: Path = SRC) -> set[Path]:
     return seen
 
 
+def units_touching(paths) -> list[Path]:
+    """The units whose compiled files include any of `paths`: what an edit to them makes a unit-level gate re-read."""
+    changed = {Path(p).resolve() for p in paths}
+    return [u for u in units() if closure(u) & changed]
+
+
 def units_of(kernel: Kernel) -> list[Path]:
     """The translation units that compile a kernel's definition."""
     return [u for u in units() if kernel.path in closure(u)]
@@ -175,11 +181,13 @@ def check_manifest(arch: str) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--units", action="store_true", help="print the translation units the build compiles")
+    ap.add_argument("--touching", nargs="*", default=None, metavar="FILE",
+                    help="with --units: only the units whose compiled files include one of these")
     ap.add_argument("--check-manifest", action="store_true", help="compare the source's kernels to the manifests")
     ap.add_argument("--arch", default="86")
     a = ap.parse_args()
     if a.units:
-        for path in units():
+        for path in (units() if a.touching is None else units_touching(a.touching)):
             print(path.relative_to(ROOT))
         return 0
     if a.check_manifest:

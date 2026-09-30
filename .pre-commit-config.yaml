@@ -63,10 +63,10 @@ repos:
       # finding: each is at zero on the tip this flip lands on, which is what makes it
       # a gate a contributor can satisfy rather than a standing debt notice.
       - id: clang-tidy-device
-        name: clang-tidy device profile (carry arm TUs)
+        name: clang-tidy device profile (every device unit, the pinned clang-tidy)
         language: system
         entry: tools/lint/run_clang_tidy_device.sh
-        pass_filenames: false
+        pass_filenames: true
         files: ^csrc/.*\.(cu|cuh)$
       - id: host-warnings
         name: host -Wall -Wextra -Wunused dry compile

@@ -2348,18 +2348,6 @@
    "count": 1
   },
   {
-   "path": "tools/lint/clang-tidy-device.yaml",
-   "message": "names the work code 'G5'",
-   "line_sha256": "dfce40f49df24220",
-   "count": 1
-  },
-  {
-   "path": "tools/lint/clang-tidy-device.yaml",
-   "message": "names the work code 'G5'",
-   "line_sha256": "e8eae1ca10897dae",
-   "count": 1
-  },
-  {
    "path": "tools/lint/lint_standards.py",
    "message": "names the work code 'A1'",
    "line_sha256": "4e6bbe3e17b0a805",

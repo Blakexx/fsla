@@ -544,33 +544,21 @@ pip install -e . --no-build-isolation      # if not already built
 tools/lint/compdb.sh                        # writes ./compile_commands.json
 ```
 
-`.clang-tidy` at the repo root is a conservative `bugprone-*` + small
-`readability-*` set. Run it with `tools/lint/run_clang_tidy.sh` (reads
-`compile_commands.json`, generating it via `compdb.sh` if missing; SKIPS —
-prints why, exits 0 — if no `build/temp` exists yet rather than forcing a
-~7-minute AOT build before every commit):
+Two clang-tidy profiles run the PINNED clang-tidy (`tools/clang_tidy_pin.json`, LLVM 22.1.8, installed by
+`python tools/dev.py init` as `toolchain.clang_tidy`), and every finding fails either:
 
 ```bash
-tools/lint/run_clang_tidy.sh
+tools/lint/run_clang_tidy.sh          # .clang-tidy on every host .cpp (today csrc/rola/rola_api.cpp)
+tools/lint/run_clang_tidy_device.sh   # tools/lint/clang-tidy-device.yaml on every device unit the build compiles
 ```
 
-**Scope: HOST TUs only.** The script finds every `.cpp` entry in the compile
-database (currently exactly one, `csrc/rola/rola_api.cpp`) and lints it with
-the on-disk source, rewriting the compdb's build-tree path to whatever repo
-it's run from. `.cu`/`.cuh` device TUs are NOT part of this gate: clang 14's
-CUDA front end, run `--cuda-host-only`, DOES reach and diagnose this
-codebase's own kernel code (confirmed against `decode.cu` — real
-`bugprone-narrowing-conversions` / `bugprone-implicit-widening-of-
-multiplication-result` hits on its own lines) but cannot complete a clean
-parse: clang 14's bundled CUDA wrapper headers are incompatible with this
-host's CUDA toolkit's libcu++ (`<cuda/std/...>`, reached transitively through
-torch/c10 — "CUDA device code does not support variadic functions", "no
-template named 'texture'", ~99 such hits, all inside toolkit headers), plus a
-few genuine device-only-intrinsic gaps (`__ldcg` has no host-mode overload
-under `--cuda-host-only`). `tools/lint/try_clang_tidy_device_tu.sh`
-reproduces this attempt; it is deliberately NOT wired into pre-commit or CI.
-
-`rola_api.cpp` itself passes with **zero findings** under the current check
-set (validated live: the same command flags a deliberately broken scratch
-file, so the clean pass is the tool actually running, not a silently inert
-config).
+Both read `compile_commands.json`, generating it via `compdb.sh` from `build/temp`, and FAIL rather than skip when
+there is none (pre-commit is never green by absence). The device profile takes its units from `tools/kernels.py`
+and, under pre-commit, re-reads only the units whose include closure holds a changed file; a full sweep of the
+twelve units takes about seven minutes. It runs clang's CUDA frontend `--cuda-host-only` with the toolkit's
+`include/cccl` root added (nvcc adds it implicitly; clang does not), and a compiler error anywhere fails it: the
+parse is part of the gate. The distro's clang 14 could not parse a torch-bearing unit against this toolkit, and its
+failed parse reported used parameters as unused (measured 2026-09-29) -- which is why the analyzer is pinned
+and why the device profile, once scoped to the one torch-free carry unit, now covers every unit. Both profiles were
+validated live against planted findings (a suspicious semicolon in `rola_api.cpp`; an unused parameter and a dead
+store at the end of `decode.cu`), so a clean pass is the tool running, not an inert config.
