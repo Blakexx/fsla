@@ -26,13 +26,14 @@ constexpr int kLogitStride = kMaxColumns + 4;
 constexpr int kLogitBytes = kTokenTile * kLogitStride * static_cast<int>(sizeof(float));
 //: Where a sliced projection's partials sit in each token row: past the columns a sliced job has (at most 64).
 constexpr int kPartialBase = 64;
+//: The threshold's Newton steps at most: rows of every measured distribution settle in 8 or fewer.
+constexpr int kNewtonSteps = 16;
 
-//: THE JOB TABLE, one row of int32 per job -- see docs/internals/produce/produce.md#jobs
+//: THE JOB TABLE, one row of int32 per job: its addressing. Its control rides the parameters as a shape byte.
+//: -- see docs/internals/produce/produce.md#jobs
 enum JobField : int {
-  kFieldKind,
   kFieldHead,
   kFieldHeads,
-  kFieldSolve,
   kFieldWidth,
   kFieldIn0,
   kFieldIn1,
@@ -46,13 +47,32 @@ enum JobField : int {
 
 enum JobKind : int { kJobRoute = 0, kJobValue = 1 };
 
+//: A launch's jobs at most: one shape byte each in the parameter space.
+constexpr int kMaxJobs = 1024;
+
 //: THE SOLVES a route job runs on its row: the closed registry's kerneled activations.
 enum SolveKind : int { kSoftmax = 0, kEntmax15 = 1, kEntmax20 = 2, kUnion15 = 3, kUnion20 = 4 };
 
 enum RowForm : int { kRowsU8 = 0, kRowsF16 = 1 };
 
+//: THE PHASE LEDGER's phases, a warp's cycles each, booked by job over the tiles. -- see docs/internals/produce/produce.md#phase-ledger
+enum ProducePhase : int {
+  kPhaseJob,
+  kPhaseProject,
+  kPhaseBarrier,
+  kPhaseRowLoad,
+  kPhaseThreshold,
+  kPhaseLevels,
+  kPhaseBundle,
+  kPhaseFinish,
+  kPhaseValues,
+  kProducePhases
+};
+
+//: `kind`, `solve` and `rows` (a solve row's elements a lane, as a power of two's exponent) are the shape byte's.
 struct Job {
-  int kind, head, heads, solve, width, in0, in1, out_read, out_write, level, fold_read, fold_write;
+  int kind, solve, rows, head, heads, width, in0, in1, out_read, out_write, level, fold_read,
+      fold_write;
 };
 
 //: THE OPERANDS, as addresses: every tensor the host entry validated, with the strides it read off them.
@@ -79,6 +99,9 @@ struct ProduceParams {
   float* v_scale;      // [BT, H]
   int32_t* arrivals;   // [tiles, H], zero between calls: the finisher resets its own
   float* logit_probe;  // [jobs, BT, kMaxColumns] or null: every job's projection, for its gate
+  float* level_probe;  // the same, a route job's solved levels: read at [0, w), write at [w, 2w)
+  long long* ledger;   // [jobs, warps, phases] or null
+  uint8_t shapes[kMaxJobs];  // a job's kind << 5 | rows << 3 | solve, read by block index: uniform
 
   int BT, hidden, H, C, G, rows, D, d_v, row_form, route_jobs_per_head;
 };

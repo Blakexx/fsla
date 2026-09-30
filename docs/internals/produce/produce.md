@@ -8,15 +8,19 @@ is a runtime field and the family is ONE instantiation.
 
 The components land one at a time into the skeleton, each gated (KERNEL_STANDARDS §19); a component not yet landed
 has its real signature, tenant and edges and does the cheapest thing that keeps the composition's shape (zero digits
-and scales, unit gains). LANDED: the projection. `tests/integration/test_produce_kernel.py` holds the skeleton's
+and scales, unit gains). LANDED: the projection, the solve. `tests/integration/test_produce_kernel.py` holds the skeleton's
 claim (every element of every output is written, whatever the routing, and the arrival counters are back at zero
 after the call) and each landed component's gate.
 
 ## <a id="jobs"></a>The job table
 
-One int32 row per job (`JobField`): the kind, the head (the first of a value job's heads, and their count), the
-solve (`SolveKind`), the level's width, the `route_W` columns of its one or two logit rows, the packed-plane columns
-its rows land at on each side (`-1` for a side it does not write), the level, and whether each side's fold applies.
+One int32 row per job (`JobField`), its ADDRESSING: the head (the first of a value job's heads, and their count), the
+level's width, the `route_W` columns of its one or two logit rows, the packed-plane columns its rows land at on each
+side (`-1` for a side it does not write), the level, and whether each side's fold applies. Its CONTROL -- the kind, the
+solve (`SolveKind`) and the solve row's elements a lane -- is one SHAPE BYTE a job in the launch's parameters
+(`ProduceParams::shapes`, `rola.ops.produce._shape`), read by block index: a value ptxas knows is warp-uniform, so a
+branch on it never outlines the collectives under it into convergence subroutines, as a branch on a loaded job field
+did (692 calls into `WARPSYNC` + shuffle subroutines, KERNEL_STANDARDS §20). At most `kMaxJobs` jobs a launch.
 A ROUTE job is one head's one solve: a union level's two logit rows (read and write), a tied level's one row filling
 both planes, or one side of an independent level. A VALUE job is the heads whose channels fit one job (`256 / d_v`
 of them, at most `kMaxColumns` channels). A row is at most `kMaxWidth` leaves: the widest a warp solves.
@@ -67,8 +71,46 @@ against a 68 TFLOP/s peak, the stub epilogues included.
 ## <a id="route-row"></a>A token's row
 
 One warp a token row: the solve on the row, then the bundle's form of it -- the row against its max as u8 digits
-(depth at most two) or f16, the fp32 max as the row's scale, and the row's mass for the finisher. SKELETON: zero
-digits, scale and mass.
+(depth at most two) or f16, the fp32 max as the row's scale, and the row's mass for the finisher. The bundle's form
+is a SKELETON: zero digits, scale and mass. Every warp makes the same passes over the tile's rows (a count of its live
+tokens, uniform), a row past them solving zeros with its stores off, so no collective sits under a branch ptxas cannot
+prove warp-uniform.
+
+<a id="solve"></a>THE SOLVE (`solve_row`) holds the row striped, element `lane + 32 i` in a lane's `i`th register,
+`IPT` = the width's power-of-two class over 32 (one of four bodies, chosen once a job by its shape byte). A union row
+is the midpoint of its read and write logits (entmax on it) and their overflow-free difference (the split); a tied or
+independent row is its one logit row. Softmax, entmax 1.5 and 2 and both unions are the closed registry's kerneled
+activations, with the reference `rola/routing/entmax/production.py`'s `_torch_union_split` and `_torch_activation`.
+The union's split reuses the entmax family's `union_write` (`docs/internals/entmax/entmax.md#union-write`) with its
+fast policy, and the read side is the value times the sigmoid, both on the special-function unit: the fp32 levels
+feed u8 or f16 digits, a thousand times coarser than those units' error. Gate: every route job's sides against the
+fp64 reference solve on the kernel's own logits, per slot within `(width + 16) 2^-23` (measured at most 0.37 of it,
+the 1.5-union's write side).
+
+<a id="threshold"></a>THE THRESHOLD IS NEWTON FROM THE LEFT (`newton_threshold`), not a sort. With the row shifted by
+its max, `f(tau) = sum_i g(z_i - tau) - 1` (`g(d) = max(d, 0)^2 / 4` at alpha 1.5, `max(d, 0)` at 2) is convex and
+decreasing, and `f(-2) >= 0` (`f(-1)` at alpha 2): Newton from there never passes the root, and each step needs only
+the count, sum and sum of squares of the support `{z > lo}`. The closed form on that support -- the formula the sorted
+solve evaluates at its chosen rank -- IS the root once no member lies below it, which a vote decides (a vote is
+warp-uniform to ptxas, so the loop's exit outlines nothing). At alpha 2 the steps are Michelot's iteration. Measured
+in fp32 over Gaussian, uniform, tied and Cauchy rows of widths 16 to 256 at scales 0.3 to 30: at most 8 steps, 1 to 5
+typically, within 2.2e-6 of the fp64 sorted threshold (8e-8 at alpha 2); `kNewtonSteps` caps it at 16, and a capped
+result is still the closed form on a support whose extra members lie within the last step of the root. WHY NOT THE
+SORT: at one decoded token a CTA has one live row, so its warp's whole solve is the kernel's latency, and the sort's
+network is ~36 dependent shuffle stages of long straight-line code executed once from a cold instruction cache (~30
+cycles an instruction there, ncu's no-instruction stall the top one); the sorted threshold measured 13.8K cycles a
+256-wide row, twelve-round multisection 10K, Newton 2.7K. The sort's bitwise tie-order independence (its sums run in
+sorted order) does not carry over -- these sum in lane order, deterministic run to run; the gate is per slot against
+fp64.
+
+<a id="phase-ledger"></a>THE PHASE LEDGER (`rola.ops.produce.ledger_bind`, `[jobs, 8 warps, 9 phases]` int64 cycles,
+booked over the tiles): job, project, barrier, row load, threshold, levels, bundle, finish, values -- a warp's cycles
+between the kernel's laps (`common/phase_clock.cuh`). MEASURED (the same card, one launch, widths (256, 256), a route
+job's warp 0 a tile): at one token H 16, project 27.7K (the weight stream under 36 CTAs), row load 3.6K, threshold
+2.7K, levels 5.9K, bundle 2.4K (the skeleton's stores), finish 1.3K; at T = 4096, a tile of 32 rows, project 24.2K,
+row load 3.9K, threshold 4.3K, levels 10.4K, bundle 5.3K. The row load and the levels are straight-line code (cold
+at one token), and at prefill the solve's special-function and latency chains sit beside the projection without
+overlapping it (one CTA an SM): the next levers, priced when the bundle's form lands.
 
 ## <a id="finish"></a>The head's finish
 

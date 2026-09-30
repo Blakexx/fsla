@@ -5,11 +5,15 @@
 
 #include "common/torch_seam.cuh"
 
+#include <cstring>
+
 #include "common/arch_runtime.cuh"
 #include "common/burst.cuh"
 #include "common/ops.cuh"
+#include "common/phase_clock.cuh"
 #include "common/static_for.cuh"
 #include "common/structure_switch.cuh"
+#include "entmax/entmax.cuh"
 #include "produce/produce.cuh"
 #include "produce/produce_api.cuh"
 
@@ -18,11 +22,18 @@ namespace produce {
 namespace detail {
 
 namespace ops = denseref::ops;
+namespace row_solve = rola::entmax::detail;
+using Clock = PhaseClock<kProducePhases>;
 
-__device__ __forceinline__ Job load_job(const int32_t* row) {
-  return Job{row[kFieldKind],     row[kFieldHead],  row[kFieldHeads],    row[kFieldSolve],
-             row[kFieldWidth],    row[kFieldIn0],   row[kFieldIn1],      row[kFieldOutRead],
-             row[kFieldOutWrite], row[kFieldLevel], row[kFieldFoldRead], row[kFieldFoldWrite]};
+//: THE BLOCK'S JOB: its control from the parameters' shape byte (uniform, so a branch on it is a warp-uniform branch
+//: ptxas can prove), its addressing from the table.
+__device__ __forceinline__ Job load_job(const ProduceParams& p, int index) {
+  const int shape = p.shapes[index];
+  const int32_t* row = p.jobs + static_cast<int64_t>(index) * kJobFields;
+  return Job{shape >> 5,          shape & 7,           (shape >> 3) & 3, row[kFieldHead],
+             row[kFieldHeads],    row[kFieldWidth],    row[kFieldIn0],   row[kFieldIn1],
+             row[kFieldOutRead],  row[kFieldOutWrite], row[kFieldLevel], row[kFieldFoldRead],
+             row[kFieldFoldWrite]};
 }
 
 //: A job's projection columns: a route job's row (both rows of a union's), or a value job's heads' channels.
@@ -239,9 +250,153 @@ __device__ __forceinline__ void write_digit(const ProduceParams& p, uint8_t* pla
   }
 }
 
-//: ONE TOKEN'S ROW, solved and written as the bundle holds it: digits, scale, mass. STUB: zeros. -- see docs/internals/produce/produce.md#route-row
-__device__ void route_row(const ProduceParams& p, const Job& job, int token, const float* /*row0*/,
-                          const float* /*row1*/, int lane) {
+//: A value the whole warp holds, reduced by a butterfly: every lane ends with the same bits.
+template <class Op>
+__device__ __forceinline__ float warp_all(float v, Op op) {
+#pragma unroll
+  for (int offset = 16; offset > 0; offset >>= 1)
+    v = op(v, __shfl_xor_sync(0xffffffffu, v, offset));
+  return v;
+}
+
+//: SOFTMAX over a row's members.
+template <int IPT>
+__device__ __forceinline__ void softmax_row(const float (&z)[IPT], uint32_t members,
+                                            float (&p)[IPT]) {
+  float m = -INFINITY;
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) m = (members >> i) & 1u ? fmaxf(m, z[i]) : m;
+  m = warp_all(m, [](float a, float b) { return fmaxf(a, b); });
+  float sum = 0.0f;
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) {
+    p[i] = (members >> i) & 1u ? __expf(z[i] - m) : 0.0f;
+    sum += p[i];
+  }
+  sum = warp_all(sum, [](float a, float b) { return a + b; });
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) p[i] = __fdividef(p[i], sum);
+}
+
+//: THE ALPHA-ENTMAX THRESHOLD BY NEWTON FROM THE LEFT (alpha 1.5 or 2): `z` shifted by the row max in place.
+//: `f(tau) = sum g(z - tau) - 1` is convex and decreasing, so Newton from `tau = -2` (alpha 2: `-1`), where `f >= 0`,
+//: never passes the root; the closed form on the support `{z > lo}` is the root once no member lies below it (the
+//: formula the sorted solve evaluates at its chosen rank). A vote ends the loop. -- see docs/internals/produce/produce.md#threshold
+template <int IPT, bool ALPHA15>
+__device__ __forceinline__ float newton_threshold(float (&z)[IPT], uint32_t members) {
+  float m = -INFINITY;
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) m = (members >> i) & 1u ? fmaxf(m, z[i]) : m;
+  m = warp_all(m, [](float a, float b) { return fmaxf(a, b); });
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) z[i] = (members >> i) & 1u ? z[i] - m : 0.0f;
+  float lo = ALPHA15 ? -2.0f : -1.0f, tau = 0.0f;
+#pragma unroll 1
+  for (int step = 0; step < kNewtonSteps; ++step) {
+    float k = 0.0f, P = 0.0f, Q = 0.0f;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const bool in = ((members >> i) & 1u) && z[i] > lo;
+      k += in ? 1.0f : 0.0f;
+      P += in ? z[i] : 0.0f;
+      Q += in ? z[i] * z[i] : 0.0f;
+    }
+    k = warp_all(k, [](float a, float b) { return a + b; });
+    P = warp_all(P, [](float a, float b) { return a + b; });
+    Q = warp_all(Q, [](float a, float b) { return a + b; });
+    tau = ALPHA15 ? __fdividef(P - sqrtf(fmaxf(P * P - k * (Q - 4.0f), 0.0f)), k)
+                  : __fdividef(P - 1.0f, k);
+    bool settled = true;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i)
+      settled = settled && !(((members >> i) & 1u) && z[i] > lo && z[i] < tau);
+    if (__all_sync(0xffffffffu, settled)) break;
+    lo =
+        ALPHA15
+            ? lo + __fdividef((Q - 2.0f * P * lo + k * lo * lo) * 0.25f - 1.0f, 0.5f * (P - k * lo))
+            : tau;
+  }
+  return tau;
+}
+
+//: THE SOLVE of one token's row, element `lane + 32 i` a lane's `i`th: the job's levels, fp32 (a one-sided solve fills
+//: both sides with its one level); a row past the live tokens solves zeros. Compact code on the special-function
+//: unit: the fp32 levels feed u8 or f16 digits. -- see docs/internals/produce/produce.md#solve
+template <int IPT>
+__device__ __forceinline__ void solve_row(const Job& job, float* row, bool live, int lane,
+                                          float (&read)[IPT], float (&write)[IPT], Clock& clock) {
+  const int width = job.width;
+  const bool is_union = job.solve >= kUnion15;
+  float z[IPT], delta[IPT];
+  uint32_t members = 0u;
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) {
+    const int col = lane + 32 * i;
+    const bool member = col < width;
+    members |= (member ? 1u : 0u) << i;
+    const float r = member && live ? row[col] : 0.0f;
+    const float w = member && live && is_union ? row[width + col] : 0.0f;
+    z[i] = is_union ? 0.5f * r + 0.5f * w : r;
+    delta[i] = is_union ? row_solve::overflow_free_delta(r, w, nullptr) : 0.0f;
+  }
+  __syncwarp();
+  clock.lap(kPhaseRowLoad);
+
+  if (job.solve == kSoftmax) {
+    softmax_row<IPT>(z, members, read);
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) write[i] = read[i];
+    clock.lap(kPhaseLevels);
+    return;
+  }
+  const bool alpha15 = job.solve == kEntmax15 || job.solve == kUnion15;
+  const float tau =
+      alpha15 ? newton_threshold<IPT, true>(z, members) : newton_threshold<IPT, false>(z, members);
+  clock.lap(kPhaseThreshold);
+
+  float values[IPT];
+  uint32_t support = 0u;
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) {
+    const bool sup = ((members >> i) & 1u) && z[i] > tau;
+    support |= (sup ? 1u : 0u) << i;
+    float base = (alpha15 ? 0.5f : 1.0f) * (z[i] - tau);
+    base = sup ? fmaxf(base, 0.0f) : 0.0f;
+    values[i] = alpha15 ? base * base : base;
+    read[i] = is_union ? __fdividef(values[i], 1.0f + __expf(-delta[i])) : values[i];
+  }
+  if (!is_union) {
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) write[i] = values[i];
+    clock.lap(kPhaseLevels);
+    return;
+  }
+
+  row_solve::union_write<32, IPT, true>(values, delta, support, 0xffffffffu);
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) write[i] = delta[i];
+  clock.lap(kPhaseLevels);
+}
+
+//: ONE TOKEN'S ROW, solved and written as the bundle holds it: digits, scale, mass. The bundle's form is a STUB
+//: (zeros). -- see docs/internals/produce/produce.md#route-row
+template <int IPT>
+__device__ void route_row(const ProduceParams& p, const Job& job, int job_index, int token,
+                          bool live, float* row, int lane, Clock& clock) {
+  float read[IPT], write[IPT];
+  solve_row<IPT>(job, row, live, lane, read, write, clock);
+  if (!live) return;
+  if (p.level_probe != nullptr) {
+    float* out = p.level_probe + (static_cast<int64_t>(job_index) * p.BT + token) * kMaxColumns;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const int col = lane + 32 * i;
+      if (col < job.width) {
+        out[col] = read[i];
+        out[job.width + col] = write[i];
+      }
+    }
+  }
   const int64_t base = (static_cast<int64_t>(token) * p.H + job.head) * p.rows;
 #pragma unroll 1
   for (int col = lane; col < job.width; col += 32) {
@@ -302,23 +457,39 @@ __device__ void value_rows(const ProduceParams& p, const Job& job, int token0,
 //: THE GRID: token tiles fastest, so the blocks resident together share one job's weights in L2.
 __global__ __launch_bounds__(kProduceThreads, 1) void produce_kernel(ProduceParams p) {
   const int job_index = static_cast<int>(blockIdx.y), tile = static_cast<int>(blockIdx.x);
-  const Job job = load_job(p.jobs + static_cast<int64_t>(job_index) * kJobFields);
+  const Job job = load_job(p, job_index);
   const int token0 = tile * kTokenTile;
   extern __shared__ float logits[];
+  __shared__ long long s_clock[kProduceWarps][Clock::kRow];
+  const int warp = static_cast<int>(threadIdx.x) >> 5;
+  Clock clock(&s_clock[warp][0], static_cast<int>(threadIdx.x) & 31);
+  clock.lap(kPhaseJob);
   accumulate(p, job, token0, logits);
+  clock.lap(kPhaseProject);
   __syncthreads();
+  clock.lap(kPhaseBarrier);
   if (p.logit_probe != nullptr) probe_logits(p, job_index, token0, job_columns(p, job), logits);
   if (job.kind == kJobRoute) {
-    const int warp = static_cast<int>(threadIdx.x) >> 5;
+    //: every warp makes the same passes, a count of the tile's live tokens (uniform), so the solve's collectives sit
+    //: under no branch ptxas cannot prove warp-uniform (KERNEL_STANDARDS §20)
+    const int live = min(kTokenTile, p.BT - token0);
+    const int passes = (live + kProduceWarps - 1) / kProduceWarps;
+    rola::uniform_switch<4>(job.rows, [&](auto I) {
 #pragma unroll 1
-    for (int row = warp; row < kTokenTile && token0 + row < p.BT; row += kProduceWarps) {
-      const float* logit_row = logits + row * kLogitStride;
-      route_row(p, job, token0 + row, logit_row, logit_row + job.width, threadIdx.x & 31);
-    }
+      for (int pass = 0; pass < passes; ++pass) {
+        const int row = pass * kProduceWarps + warp;
+        route_row<1 << decltype(I)::value>(p, job, job_index, token0 + row, row < live,
+                                           logits + row * kLogitStride, threadIdx.x & 31, clock);
+        clock.lap(kPhaseBundle);
+      }
+    });
     finish_head(p, job, tile, token0);
+    clock.lap(kPhaseFinish);
   } else {
     value_rows(p, job, token0, logits);
+    clock.lap(kPhaseValues);
   }
+  clock.publish(p.ledger, job_index, kProduceWarps, warp);
 }
 
 void check_bf16(const Tensor& t, const char* name) {
@@ -332,7 +503,27 @@ void check_f32(const Tensor& t, const char* name, int64_t numel) {
       name, " is a contiguous CUDA fp32 tensor of ", numel, " elements, got ", t.numel());
 }
 
+//: THE BOUND PHASE LEDGER, or null: the next launches book into it.
+long long* g_ledger = nullptr;
+int64_t g_ledger_jobs = 0;
+
 }  // namespace detail
+
+//: -- see docs/internals/produce/produce_api.md#rola-produce-ledger-bind
+void rola_produce_ledger_bind(std::optional<Tensor> ledger) {
+  if (!ledger.has_value()) {
+    detail::g_ledger = nullptr;
+    detail::g_ledger_jobs = 0;
+    return;
+  }
+  STD_TORCH_CHECK(ledger->is_cuda() && ledger->scalar_type() == Dtype::Long && ledger->dim() == 3
+                      && ledger->size(1) == kProduceWarps && ledger->size(2) == kProducePhases
+                      && ledger->is_contiguous(),
+                  "the producer's phase ledger is a contiguous CUDA int64 tensor [jobs][",
+                  kProduceWarps, "][", kProducePhases, "]");
+  detail::g_ledger = reinterpret_cast<long long*>(ledger->mutable_data_ptr<int64_t>());
+  detail::g_ledger_jobs = ledger->size(0);
+}
 
 //: -- see docs/internals/produce/produce_api.md#rola-produce-forward
 void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_bias,
@@ -340,8 +531,8 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                           Tensor amp_write, Tensor scale_read, Tensor scale_write, Tensor mass_read,
                           Tensor mass_write, Tensor read_mass, Tensor g_write, Tensor v_hat,
                           std::optional<Tensor> v_lo, Tensor v_scale, Tensor arrivals,
-                          std::optional<Tensor> logit_probe, int64_t levels,
-                          int64_t route_jobs_per_head) {
+                          std::optional<Tensor> logit_probe, std::optional<Tensor> level_probe,
+                          Tensor shapes, int64_t levels, int64_t route_jobs_per_head) {
   check_arch_table();
   detail::check_bf16(x, "x");
   detail::check_bf16(route_W, "route_W");
@@ -399,9 +590,13 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   STD_TORCH_CHECK(arrivals.scalar_type() == Dtype::Int && arrivals.is_contiguous()
                       && arrivals.numel() >= tiles * H,
                   "arrivals holds a counter a (token tile, head): ", tiles * H);
-  STD_TORCH_CHECK(jobs.size(0) <= 65535, "a launch runs at most 65535 jobs, got ", jobs.size(0));
-  if (logit_probe.has_value()) {
-    detail::check_f32(*logit_probe, "logit_probe", jobs.size(0) * BT * kMaxColumns);
+  STD_TORCH_CHECK(jobs.size(0) <= kMaxJobs, "a launch runs at most ", kMaxJobs, " jobs, got ",
+                  jobs.size(0));
+  STD_TORCH_CHECK(!shapes.is_cuda() && shapes.scalar_type() == Dtype::Byte && shapes.is_contiguous()
+                      && shapes.numel() == jobs.size(0),
+                  "shapes is the plan's host u8 shape byte a job");
+  for (auto [t, name] : {std::pair{&logit_probe, "logit_probe"}, {&level_probe, "level_probe"}}) {
+    if (t->has_value()) detail::check_f32(**t, name, jobs.size(0) * BT * kMaxColumns);
   }
 
   ProduceParams p{};
@@ -427,6 +622,12 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.v_scale = v_scale.mutable_data_ptr<float>();
   p.arrivals = arrivals.mutable_data_ptr<int32_t>();
   p.logit_probe = logit_probe.has_value() ? logit_probe->mutable_data_ptr<float>() : nullptr;
+  p.level_probe = level_probe.has_value() ? level_probe->mutable_data_ptr<float>() : nullptr;
+  std::memcpy(p.shapes, shapes.const_data_ptr(), static_cast<size_t>(shapes.numel()));
+  STD_TORCH_CHECK(detail::g_ledger == nullptr || detail::g_ledger_jobs >= jobs.size(0),
+                  "the bound phase ledger holds ", detail::g_ledger_jobs,
+                  " jobs; this launch runs ", jobs.size(0));
+  p.ledger = detail::g_ledger;
   p.BT = static_cast<int>(BT);
   p.hidden = static_cast<int>(hidden);
   p.H = static_cast<int>(H);

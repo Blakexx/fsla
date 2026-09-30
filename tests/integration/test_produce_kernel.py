@@ -2,8 +2,9 @@
 
 The skeleton's claim is the composition's SHAPE -- every element of every output is written, whatever the routing,
 and the arrival counters are back at zero after the call. The projection's is its logits: every job's columns for
-every token, against the fp32 product of the same bf16 operands, per slot within the envelope
-(docs/internals/produce/produce.md#accumulate).
+every token, against the fp64 product of the same bf16 operands, per slot within the envelope
+(docs/internals/produce/produce.md#accumulate). The solve's is its levels: every route job's sides against the fp64
+reference solve on the kernel's own logits (docs/internals/produce/produce.md#solve).
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import torch
 
 import rola
 from rola.ops.produce import _TOKEN_TILE, ProducerPlan, _job_tensor, hidden_contiguous, job_table
+from rola.routing.entmax.production import _torch_activation, _torch_union_split
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the producer is a CUDA kernel")
 
@@ -20,6 +22,7 @@ _ROUTINGS = {
     "split": [rola.split_routing(64, sparse_duty="write"), rola.split_routing(64, sparse_duty="read")],
     "tied-deep": [rola.tied_routing(16), rola.dense_routing(32), rola.union_routing(16)],
     "wide": [rola.union_routing(256), rola.split_routing(200, sparse_duty="read")],
+    "sparsemax": [rola.union_routing(64, 2.0), rola.tied_routing(32, rola.entmax(2.0))],
 }
 _MAX_COLUMNS = 512
 
@@ -44,7 +47,7 @@ def _operands(name: str, *, B=2, T=5, hidden=48, H=3, d_v=64, bias=True):
 
 
 def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool = False):
-    """One launch into buffers poisoned with ``fill``; the outputs, the arrival counters and the probe after it."""
+    """One launch into buffers poisoned with ``fill``; the outputs, the arrival counters and the probes after it."""
     from rola.ops._ext import extension
 
     B, T, hidden = x.shape
@@ -61,14 +64,15 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
            "scale_read": poisoned(D), "scale_write": poisoned(D), "mass_read": poisoned(D), "mass_write": poisoned(D),
            "read_mass": poisoned(), "g_write": poisoned(), "v_hat": poisoned(d_v, dtype=torch.int8),
            "v_lo": poisoned(d_v, dtype=torch.uint8), "v_scale": poisoned()}
-    jobs, per_head = _job_tensor(plan, "cuda:0")
+    jobs, shapes, per_head = _job_tensor(plan, "cuda:0")
     arrivals = torch.zeros(-(-(B * T) // _TOKEN_TILE) * H, dtype=torch.int32, device="cuda")
-    logits = torch.full((jobs.shape[0], B * T, _MAX_COLUMNS), float("nan"), device="cuda") if probe else None
+    probes = [torch.full((jobs.shape[0], B * T, _MAX_COLUMNS), float("nan"), device="cuda") if probe else None
+              for _ in range(2)]
     extension().rola_produce_forward(
         x.reshape(B * T, hidden).contiguous(), route_W, route_bias, gain_bias, v_W, jobs,
-        *out.values(), arrivals, logits, D, per_head)
+        *out.values(), arrivals, *probes, shapes, D, per_head)
     torch.cuda.synchronize()
-    return out, arrivals, logits
+    return out, arrivals, probes
 
 
 def _expected_logits(plan, x, route_W, route_bias, v_W):
@@ -108,7 +112,7 @@ def test_every_output_is_written_and_the_arrivals_reset(name):
 ])
 def test_the_projection_matches_the_fp32_product(name, B, T, hidden, bias):
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=hidden, bias=bias)
-    _, _, logits = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0, probe=True)
+    _, _, (logits, _) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0, probe=True)
     for index, (product, envelope) in enumerate(_expected_logits(plan, x, route_W, route_bias, v_W)):
         got = logits[index, :, :product.shape[1]].double()
         excess = (got - product).abs() - _projection_rtol(hidden) * envelope
@@ -116,3 +120,39 @@ def test_the_projection_matches_the_fp32_product(name, B, T, hidden, bias):
             f"{name}: job {index}'s logit (token, column) {divmod(int(excess.argmax()), product.shape[1])} is off by "
             f"{float((got - product).abs().flatten()[excess.argmax()]):.3g} against an envelope of "
             f"{float(envelope.flatten()[excess.argmax()]):.3g}")
+
+
+#: the job table's solve codes (produce.cuh `SolveKind`) as the reference's activations
+_ACTIVATIONS = {0: rola.softmax(), 1: rola.entmax(1.5), 2: rola.entmax(2.0)}
+_UNION_ALPHA = {3: 1.5, 4: 2.0}
+
+
+def _solve_rtol(width: int) -> float:
+    """The solve's per-slot bound on a level (every level is at most 1): the fp32 threshold's prefix sums over at most
+    ``width`` sorted members of the shifted row, and the exponentials of softmax and the union's write side, each a few
+    units in the last place a member. Measured below it by the factor the test prints on failure."""
+    return (width + 16) * 2.0 ** -23
+
+
+@pytest.mark.parametrize(("name", "B", "T"), [("union", 2, 5), ("split", 1, 40), ("tied-deep", 3, 7),
+                                              ("wide", 1, 33), ("sparsemax", 2, 9)])
+def test_the_solve_matches_the_fp64_reference_on_the_kernels_logits(name, B, T):
+    plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=64)
+    _, _, (logits, levels) = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0, probe=True)
+    for index, (kind, _head, _heads, solve, width, _in0, in1, out_read, out_write, *_rest) in enumerate(
+            job_table(plan)[0]):
+        if kind != 0:
+            continue
+        row = logits[index].double()
+        if solve in _UNION_ALPHA:
+            read, write = _torch_union_split(row[:, :width], row[:, width:2 * width], _UNION_ALPHA[solve])
+        else:
+            read = write = _torch_activation(row[:, :width], _ACTIVATIONS[solve])
+        for side, expected, out in (("read", read, out_read), ("write", write, out_write)):
+            if out < 0:
+                continue
+            got = levels[index, :, (0 if side == "read" else width):][:, :width].double()
+            error = float((got - expected).abs().max())
+            assert error <= _solve_rtol(width), (
+                f"{name}: job {index} (solve {solve}, width {width}) {side} side is off by {error:.3g}, "
+                f"{error / _solve_rtol(width):.2f} of the bound")

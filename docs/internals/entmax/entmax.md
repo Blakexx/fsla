@@ -208,7 +208,7 @@ The `saturated` flag it returns is not cosmetic: the backward zeroes `d_delta`
 wherever it fires, because at saturation the difference is no longer a
 differentiable function of the two logits.
 
-`log_write_gate` is the companion: `log(sigmoid(-delta)) == -softplus(delta)`,
+`csrc/rola/src/entmax/entmax.cuh`'s `log_write_gate` is the companion: `log(sigmoid(-delta)) == -softplus(delta)`,
 finite for every finite input, computed as `-(max(d,0) + log1p(exp(-|d|)))`.
 **`log1pf` rather than `logf(1+x)`** because the governing baseline is the fp64
 oracle, which uses `logsigmoid`, and `log1pf` is the closer composition to it.
@@ -372,6 +372,11 @@ than merely close: such a row yields `has_valid = 0` → `tau = 0` → `support 
 reads happen once; `midpoint = (r + w)/2` and `delta = r - w` (§6) are all that
 survive into the rest of the kernel.
 
+<a id="threshold"></a>PHASES B AND C ARE ONE HEADER FUNCTION, `threshold<LW, IPT, ALPHA15>`: the union forward calls
+it on the midpoint row and the independent forward (`factor.cu`) on its masked row -- one statement of the sorted
+threshold, taking the row's member bits and their count (a masked row can be empty: its `row_max` is then 0 and its
+sentinel -1).
+
 **PHASE B — row max/min, sentinel-pad, sort descending.** `midpoint` is shifted by
 `row_max` for stability. Padded lanes get a FINITE row-relative sentinel,
 `(row_min - row_max) - 1.0f`, which keeps them strictly below every real value
@@ -383,8 +388,8 @@ identical whatever algorithm produces it. Feeding striped data is therefore fine
 the output arrangement is what the scan reads, and CUB delivers it BLOCKED (rank
 order across lanes), which is exactly what the prefix walk needs.
 
-**PHASE C — `tau`.** `prefix`, `prefix_sq`, `tau_candidates`, `candidate` and
-`chosen_col` **all collapse to scalars**; none is ever materialized full width. One
+**PHASE C — `tau`.** The prefix sums, their squares, the per-rank candidates and the chosen column (full-width
+tensors in the Triton form this replaced) **all collapse to scalars**; none is ever materialized full width. One
 `WarpScan` over the `(sum, sum-of-squares)` pair supplies each lane's carry, and the
 per-rank candidate test is
 
@@ -406,9 +411,11 @@ maps to key 0, so an all-empty row yields `tau = 0`.
 `delta` is still the logit difference and before phase E overwrites it. That
 ordering is the reason the read side needs no saved tensor.
 
-**PHASE E — log-weights IN PLACE over `delta`, then the write normalization.** A
-max-subtracted `exp` / sum over the support, with `has_mass` and `has_weight` guards
-so an empty support produces exact zeros rather than `0/0`.
+<a id="union-write"></a>**PHASE E — log-weights IN PLACE over `delta`, then the write normalization**
+(`union_write<LW, IPT, kFast>` in the header). A max-subtracted `exp` / sum over the support, with `has_mass` and
+`has_weight` guards so an empty support produces exact zeros rather than `0/0`. `kFast` is the fused producer's policy
+(`docs/internals/produce/produce.md#solve`): the logarithms, exponentials and quotient on the special-function unit,
+since its fp32 levels only feed u8 or f16 digits; this family keeps the libm forms.
 
 ## <a id="bf16-support-boundary"></a>10. HAZARD — support is defined at the native bf16 storage boundary
 

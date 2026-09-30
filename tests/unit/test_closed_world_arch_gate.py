@@ -80,6 +80,7 @@ _LAUNCHLESS = {
     "carry_ledger_bind": "binds the device buffer the next carry launch adds into; issues no launch",
     "carry_trace_bind": "binds the device buffer the next carry launch stamps into; issues no launch",
     "rola_decode_ledger_bind": "binds the device buffer the next decode step books into; issues no launch",
+    "rola_produce_ledger_bind": "binds the device buffer the next producer launch books into; issues no launch",
 }
 
 

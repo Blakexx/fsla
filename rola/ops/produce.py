@@ -29,8 +29,8 @@ from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
 from rola.routing.types import IndependentRouting, TiedRouting, UnionRouting
 from rola.values import DEFAULT_VALUE_DIGITS, Values
 
-__all__ = ["ProducerPlan", "ProducerWeights", "hidden_contiguous", "job_table", "produce", "projection_dtype",
-           "route_logits", "run_kernel"]
+__all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "ProducerPlan", "ProducerWeights", "hidden_contiguous", "job_table",
+           "ledger_bind", "produce", "projection_dtype", "route_logits", "run_kernel"]
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,6 @@ def hidden_contiguous(route_W: torch.Tensor) -> torch.Tensor:
 #: THE JOB TABLE's kinds and solves, mirrored from csrc/rola/src/produce/produce.cuh (`JobKind`, `SolveKind`).
 _ROUTE, _VALUE = 0, 1
 _SOLVES = {("softmax", None): 0, ("entmax", 1.5): 1, ("entmax", 2.0): 2, ("union", 1.5): 3, ("union", 2.0): 4}
-_FIELDS = 12
 #: the kernel's widest job (a union level's two rows, or a value job's channels) and widest solve row
 _MAX_COLUMNS = 512
 _MAX_WIDTH = 256
@@ -136,10 +135,21 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
     return jobs, len(per_head)
 
 
+def _shape(job: tuple[int, ...]) -> int:
+    """A job's control as the kernel reads it, one byte in the launch's parameters: ``kind << 5 | rows << 3 | solve``,
+    ``rows`` a solve row's elements a lane as a power of two's exponent (produce.cuh `Job`)."""
+    kind, _head, _heads, solve, width = job[:5]
+    rows = 0 if width <= 32 else 1 if width <= 64 else 2 if width <= 128 else 3
+    return kind << 5 | rows << 3 | solve
+
+
 @lru_cache(maxsize=64)
-def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, int]:
+def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """``(table, shapes, route jobs a head)``: the job table's addressing on the device (every field but the kind and
+    the solve) and its control bytes on the host."""
     jobs, per_head = job_table(plan)
-    return torch.tensor(jobs, dtype=torch.int32, device=device), per_head
+    table = torch.tensor([job[1:3] + job[4:] for job in jobs], dtype=torch.int32, device=device)
+    return table, torch.tensor([_shape(job) for job in jobs], dtype=torch.uint8), per_head
 
 
 #: the per-(token tile, head) arrival counters, zero between calls (the kernel's finisher resets its own), one buffer a
@@ -153,6 +163,18 @@ def _arrivals(device: torch.device, count: int) -> torch.Tensor:
     if key not in _ARRIVALS or _ARRIVALS[key].numel() < count:
         _ARRIVALS[key] = torch.zeros(count, dtype=torch.int32, device=device)
     return _ARRIVALS[key]
+
+
+#: THE PHASE LEDGER'S SHAPE: ``[jobs][warps][phases]``, the kernel's own `ProducePhase` order, booked over the tiles.
+LEDGER_PHASES = ("job", "project", "barrier", "row_load", "threshold", "levels", "bundle", "finish", "values")
+LEDGER_WARPS = 8
+
+
+def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/produce/produce.md#phase-ledger)
+    """Bind the phase ledger the next launches book into, ``[jobs, 8, 9]`` int64 cycles, or ``None``."""
+    from rola.ops._ext import extension
+
+    extension().rola_produce_ledger_bind(ledger)
 
 
 def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> dict[str, torch.Tensor]:
@@ -175,14 +197,14 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
            "scale_read": empty(D), "scale_write": empty(D), "mass_read": empty(D), "mass_write": empty(D),
            "read_mass": empty(), "g_write": empty(), "v_hat": empty(plan.d_v, dtype=torch.int8),
            "v_lo": empty(plan.d_v, dtype=torch.uint8) if plan.value_digits == 2 else None, "v_scale": empty()}
-    jobs, per_head = _job_tensor(plan, str(device))
+    jobs, shapes, per_head = _job_tensor(plan, str(device))
     tiles = -(-(B * T) // _TOKEN_TILE)
     extension().rola_produce_forward(
         x.reshape(B * T, hidden).to(torch.bfloat16).contiguous(), weights.route_W, weights.route_bias,
         weights.gain_bias.float().contiguous(), weights.v_W, jobs,
         *(out[name] for name in ("amp_read", "amp_write", "scale_read", "scale_write", "mass_read", "mass_write",
                                  "read_mass", "g_write", "v_hat", "v_lo", "v_scale")),
-        _arrivals(device, tiles * H), None, D, per_head)
+        _arrivals(device, tiles * H), None, None, shapes, D, per_head)
     return out
 
 

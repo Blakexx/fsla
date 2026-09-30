@@ -26,27 +26,6 @@ namespace rola {
 namespace entmax {
 namespace detail {
 
-//: The overflow-free read-write difference: two opposite-sign finite extrema -- see docs/internals/entmax/entmax.md#overflow-free-delta-2
-__device__ __forceinline__ float overflow_free_delta(float r, float w, bool* saturated) {
-  const float kMax = 3.4028234663852886e38f;
-  const float kHalfMax = 1.7014117331926443e38f;
-  bool rneg = r < 0.0f;
-  bool opposite = rneg != (w < 0.0f);
-  float rmag = fabsf(r), wmag = fabsf(w);
-  float hi = fmaxf(rmag, wmag), lo = fminf(rmag, wmag);
-  float room = kMax - hi;
-  float mag = hi + fminf(lo, room);
-  float opp = rneg ? -mag : mag;
-  float same = (opposite ? 0.0f : r) - (opposite ? 0.0f : w);
-  if (saturated) *saturated = opposite && (hi > kHalfMax) && (lo > room);
-  return opposite ? opp : same;
-}
-
-//: log(sigmoid(-delta)) == -softplus(delta), finite for every finite input. `log1pf` -- see docs/internals/entmax/entmax.md#logwritegate
-__device__ __forceinline__ float log_write_gate(float delta) {
-  return -(fmaxf(delta, 0.0f) + log1pf(expf(-fabsf(delta))));
-}
-
 // ---------------------------------------------------------------------------
 // FORWARD
 // ---------------------------------------------------------------------------
@@ -61,29 +40,18 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
   constexpr int LOGICAL_PER_BLOCK = BLOCK_THREADS / LW;
   constexpr int ITERS = (WORD_TOKENS + LOGICAL_PER_BLOCK - 1) / LOGICAL_PER_BLOCK;
 
-  using WarpScanP = cub::WarpScan<Pair, LW>;
-  using WarpRedF = cub::WarpReduce<float, LW>;
-  using WarpRedU = cub::WarpReduce<unsigned long long, LW>;
-
   //: HAZARD smem-slot-alias -- docs/internals/entmax/entmax.md#smem-slot-alias -- see docs/internals/entmax/entmax.md#sort-bytes
   constexpr int SORT_BYTES = RowSort<LW, IPT>::kSlotBytes;
   constexpr int STAGE_BYTES = W_PAD * (int)sizeof(uint32_t);
   constexpr int RAW_SLOT = SORT_BYTES > STAGE_BYTES ? SORT_BYTES : STAGE_BYTES;
   constexpr int SLOT = (RAW_SLOT + 15) & ~15;
   __shared__ __align__(16) char smem[BLOCK_WARPS * SLOT];
-  //: These three TempStorages are per-thread rather than __shared__, which is -- see docs/internals/entmax/entmax.md#static-assert
-  static_assert(sizeof(typename WarpScanP::TempStorage) <= 4, "WarpScan must be shfl-only");
-  static_assert(sizeof(typename WarpRedF::TempStorage) <= 4, "WarpReduce must be shfl-only");
-  static_assert(sizeof(typename WarpRedU::TempStorage) <= 4, "WarpReduce must be shfl-only");
 
   const int warp = threadIdx.x / WARP_SIZE;
   const int lane = threadIdx.x % LW;
   const unsigned lmask = logical_warp_mask<LW>();
   const int logical = threadIdx.x / LW;  // logical warp id within the block
   const int logical_in_warp = (threadIdx.x % WARP_SIZE) / LW;
-  typename WarpScanP::TempStorage scan_store;
-  typename WarpRedF::TempStorage red_store;
-  typename WarpRedU::TempStorage redu_store;
 
   const int64_t stream = blockIdx.y;
   const int word = blockIdx.x;
@@ -125,73 +93,12 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
       if (sat) saturated_mask |= (1u << i);
     }
 
-    // ---- PHASE B: row max/min, sentinel-pad, sort descending ----
-    float local_max = -INFINITY, local_min = INFINITY;
+    // ---- PHASES B, C: the threshold of the midpoint row (`threshold`) ----
+    uint32_t members = 0u;
 #pragma unroll
-    for (int i = 0; i < IPT; ++i) {
-      if (lane + i * LW < width) {
-        local_max = fmaxf(local_max, midpoint[i]);
-        local_min = fminf(local_min, midpoint[i]);
-      }
-    }
-    float row_max = WarpRedF(red_store).Reduce(local_max, Max());
-    row_max = __shfl_sync(lmask, row_max, 0, LW);
-    float row_min = WarpRedF(red_store).Reduce(local_min, Min());
-    row_min = __shfl_sync(lmask, row_min, 0, LW);
-
-    float keys[IPT];
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) {
-      const bool valid = lane + i * LW < width;
-      midpoint[i] = valid ? midpoint[i] - row_max : 0.0f;
-      //: A finite row-relative sentinel keeps padded lanes strictly below every real -- see docs/internals/entmax/entmax.md#near-line-161
-      keys[i] = valid ? midpoint[i] : (row_min - row_max) - 1.0f;
-    }
-    //: A sort is a PERMUTATION, so striped input is fine and the blocked output is what -- see docs/internals/entmax/entmax.md#near-line-165
-    RowSort<LW, IPT>::sort(keys, lane, lmask, smem + warp * SLOT, logical_in_warp);
-
-    // ---- PHASE C: tau. prefix/prefix_sq/tau_candidates/candidate/chosen_col all
-    //      COLLAPSE TO SCALARS -- none is ever materialized full width. ----
-    Pair local_sum{0.0f, 0.0f};
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) {
-      local_sum.p += keys[i];
-      local_sum.q += keys[i] * keys[i];
-    }
-    Pair carry;
-    WarpScanP(scan_store).ExclusiveScan(local_sum, carry, Pair{0.0f, 0.0f}, PairAdd());
-
-    int best_col = -1;
-    float best_tau = 0.0f;
-    float run_p = carry.p, run_q = carry.q;
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) {
-      run_p += keys[i];
-      run_q += keys[i] * keys[i];
-      const int rank = lane * IPT + i;
-      const float k = (float)(rank + 1);
-      float tau_c;
-      bool cand;
-      if (ALPHA15) {
-        const float disc = run_p * run_p - k * (run_q - 4.0f);
-        tau_c = (run_p - sqrtf(fmaxf(disc, 0.0f))) / k;
-        cand = (rank < width) && (disc >= 0.0f) && (keys[i] > tau_c);
-      } else {
-        tau_c = (run_p - 1.0f) / k;
-        cand = (rank < width) && (keys[i] > tau_c);
-      }
-      if (cand) {
-        best_col = rank;
-        best_tau = tau_c;
-      }
-    }
-    //: ONE reduction selects the greatest valid k AND carries its tau: the column in the -- see docs/internals/entmax/entmax.md#packedkey
-    unsigned long long packed_key = ((unsigned long long)(uint32_t)(best_col + 1) << 32)
-                                    | (unsigned long long)__float_as_uint(best_tau);
-    packed_key = WarpRedU(redu_store).Reduce(packed_key, Max());
-    packed_key = __shfl_sync(lmask, packed_key, 0, LW);
-    const int chosen = (int)(uint32_t)(packed_key >> 32) - 1;
-    const float tau = chosen >= 0 ? __uint_as_float((uint32_t)(packed_key & 0xffffffffu)) : 0.0f;
+    for (int i = 0; i < IPT; ++i) members |= (lane + i * LW < width ? 1u : 0u) << i;
+    const float tau = threshold<LW, IPT, ALPHA15>(midpoint, members, width, lane, lmask,
+                                                  smem + warp * SLOT, logical_in_warp);
 
     // ---- PHASE D: values in place over `midpoint`; `read` emitted HERE, while `delta`
     //      is still the logit difference and before phase E overwrites it. ----
@@ -213,41 +120,16 @@ __global__ __launch_bounds__(BLOCK_THREADS, MIN_BLOCKS_PER_SM) void union_forwar
       }
     }
 
-    // ---- PHASE E: log-weights IN PLACE over `delta`, then the write normalization ----
-    float local_lw = -INFINITY;
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) {
-      const bool sup = (support_mask >> i) & 1u;
-      delta[i] = sup ? logf(values[i]) + log_write_gate(delta[i]) : -INFINITY;
-      if (sup) local_lw = fmaxf(local_lw, delta[i]);
-    }
-    float max_lw = WarpRedF(red_store).Reduce(local_lw, Max());
-    max_lw = __shfl_sync(lmask, max_lw, 0, LW);
-    const bool has_mass = max_lw > -INFINITY;
-    const float safe_max = has_mass ? max_lw : 0.0f;
-
-    float scaled[IPT];
-    float local_den = 0.0f;
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) {
-      const bool sup = (support_mask >> i) & 1u;
-      scaled[i] = (sup && has_mass) ? expf(delta[i] - safe_max) : 0.0f;
-      local_den += scaled[i];
-    }
-    float den = WarpRedF(red_store).Reduce(local_den, Sum());
-    den = __shfl_sync(lmask, den, 0, LW);
-    const bool has_weight = den > 0.0f;
-    const float safe_den = has_weight ? den : 1.0f;
-
+    // ---- PHASE E: the write weights IN PLACE over `delta` (`union_write`) ----
+    union_write<LW, IPT>(values, delta, support_mask, lmask);
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
       const int col = lane + i * LW;
       if (col >= width) continue;
       const bool sup = (support_mask >> i) & 1u;
-      const float write = (sup && has_weight) ? scaled[i] / safe_den : 0.0f;
-      store_value(write_values, addr(swrite, stream, token, value_base + col), write);
+      store_value(write_values, addr(swrite, stream, token, value_base + col), delta[i]);
       //: HAZARD bf16-support-boundary -- docs/internals/entmax/entmax.md#bf16-support-boundary -- see docs/internals/entmax/entmax.md#near-line-267
-      if (sup && (((read_live_mask >> i) & 1u) || bf16_nonzero(write)))
+      if (sup && (((read_live_mask >> i) & 1u) || bf16_nonzero(delta[i])))
         part[i] |= (1u << (token & 31));
     }
   }
