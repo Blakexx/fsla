@@ -48,8 +48,8 @@ silently ignored, because a pin over an axis the binary fixes would be inert.
 3. **Exact routing statistics are MEASUREMENT instruments, not planner inputs.**
    The census and the union statistics that answered "what did this routing do"
    were bench instruments no dispatch path reached; they were deleted with the
-   planner, and the surviving statistics surface (`rola.engine.facts.planes.atom_bits`, the
-   write-atom set the page plan consumes) keeps the same discipline — it is
+   planner, and the surviving statistics surface (`rola.engine.facts.liveness.page_bits` over the
+   facts pass's words, the write-atom set the page plan consumes) keeps the same discipline — it is
    keyed to the 16-leaf quantum, not to `BC`, so it is a fact about the routing
    alone and is legitimately taken BEFORE an arm is chosen.
 4. **Where this sits relative to the field.** FlashAttention, xformers and

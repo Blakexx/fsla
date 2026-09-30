@@ -86,12 +86,13 @@ class Family:
 #: `-k`-free ids: each row names ONE parametrization so a pair is one launch, not a
 #: whole file serialized under the heaviest instrumentation this repo has.
 _FAMILIES = {
-    #: THE LIVENESS PASS is the one bit-exact device fact the whole carry line rests
-    #: on: its own shared-memory reduction, gated against the pure-torch model.
-    "liveness": Family(
-        test="tests/unit/test_liveness_pass.py::"
-             "test_the_kernel_is_the_model_bit_for_bit[dense0-widths2-40]",
-        kernel="rola::facts::liveness_words", present=True),
+    #: THE FACTS PASS is the one bit-exact device fact the whole carry line rests on:
+    #: its shared-memory transpose and window reduction, gated against the pure-torch
+    #: model on packed views with a dense level and a tail word.
+    "facts": Family(
+        test="tests/integration/test_facts_pass.py::"
+             "test_the_words_are_the_model_bit_for_bit[True-dense1-widths2-40]",
+        kernel="rola::facts::rola_facts_forward", present=True),
     #: THE INTRA KERNEL alone, at the deep topology whose fp64 reference fits inside a
     #: sanitizer's slowdown; the flagship's `N = 65,536` recurrence does not.
     "intra": Family(

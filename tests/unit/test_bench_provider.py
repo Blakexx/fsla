@@ -49,7 +49,7 @@ def test_an_arm_is_named_by_its_subject_its_non_default_dials_and_its_constructi
 
 def test_a_cells_arms_are_the_subjects_it_takes_under_the_dials_each_reads(binary):
     names = set(provider.arms(by_name("flagship-alt-k4")))
-    assert {"carry_forward", "carry_forward@schedule=identity", "liveness_pass", "intra_forward", "carry_intra"} <= names
+    assert {"carry_forward", "carry_forward@schedule=identity", "facts_pass", "intra_forward", "carry_intra"} <= names
     assert not any("@schedule=" in name for name in names if not name.startswith("carry_forward"))
     assert all("schedule" in SUBJECTS[name.split("@")[0]].dials for name in names if "@schedule=" in name)
     #: a partial window has no intra grid: the combined op is not offered

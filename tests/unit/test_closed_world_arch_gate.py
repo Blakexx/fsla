@@ -81,6 +81,7 @@ _LAUNCHLESS = {
     "carry_trace_bind": "binds the device buffer the next carry launch stamps into; issues no launch",
     "rola_decode_ledger_bind": "binds the device buffer the next decode step books into; issues no launch",
     "rola_produce_ledger_bind": "binds the device buffer the next producer launch books into; issues no launch",
+    "rola_facts_ledger_bind": "binds the device buffer the next facts pass books into; issues no launch",
 }
 
 
@@ -167,12 +168,15 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
 
     A gate that only ever refuses is indistinguishable from a gate that is never
     reached, so the admitted case is asserted too -- and asserted through a real entry,
-    because the entry is where the call site is. The liveness pass is that entry: it is
-    the one surviving family whose launch takes no arm and no state, so what this cell
-    exercises is the gate and nothing else.
+    because the entry is where the call site is. The facts pass is that entry: its
+    launch takes no arm and no state, so what this cell exercises is the gate and
+    nothing else.
     """
     from rola.engine.facts import liveness as lv
-    from rola.ops.liveness import liveness_words
+    from rola.ops import facts as facts_ops
+    from rola.routing.factors import RouteFactors
+    from rola.routing.types import OpaqueRouting, Topology
+    from rola.values import Values
 
     major, minor = torch.cuda.get_device_capability()
     cc = major * 100 + minor * 10
@@ -183,9 +187,11 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
         "does not carry -- the refusal is then the correct behaviour, and this row is "
         "the one that must be added")
     widths, L = (16, 16), 32
-    plane = torch.zeros(1, L, sum(widths), dtype=torch.bfloat16, device="cuda")
-    plane[..., 0] = 1.0
-    layout = lv.LivenessLayout(D=len(widths), B=widths, L=L)
+    levels = tuple(torch.ones(1, L, 1, width, device="cuda") for width in widths)
+    routes = RouteFactors.from_levels(Topology(levels=tuple(OpaqueRouting(width=w) for w in widths)), levels,
+                                      levels, torch.ones(1, L, 1, device="cuda"))
+    layout = facts_ops.call_layout(routes)
     statics = lv.side_statics(layout, (False,) * layout.D, layout.B)
-    words = liveness_words(plane, plane, layout, statics, statics)
+    words = facts_ops.facts(routes, Values.from_projection(torch.ones(1, L, 1, 8, device="cuda")), layout,
+                            statics, statics).words
     assert words.shape[0] == 1

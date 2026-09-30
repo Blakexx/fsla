@@ -1,11 +1,11 @@
-# `csrc/rola/src/facts/liveness_contract.cuh` — the liveness pass's contract
+# `csrc/rola/src/facts/liveness_contract.cuh` — the class-1 words' contract
 
 Mirror doc for the contract header and for its Python twin
-`rola/engine/facts/liveness.py`. The PASS is a kernel neither file owns (C2a builds
-it); what is written down here is the shape of its output, the two folds over that
-output, and why each is the grain it is. The Python module carries a pure-torch MODEL
-of all three — the executable spec the kernel is graded against — and
-`tests/unit/test_liveness_contract.py` is its gate.
+`rola/engine/facts/liveness.py`. The PASS that writes the words is the facts pass
+([`facts.md`](facts.md)), which neither file owns; what is written down here is the
+shape of its output, the two folds over that output, and why each is the grain it is.
+The Python module carries a pure-torch MODEL of all three — the executable spec the
+kernel is graded against — and `tests/unit/test_liveness_contract.py` is its gate.
 
 Vocabulary, defined here and used unqualified below: `D` = routing depth;
 `B_l` = level `l`'s PADDED width (a power of two at or above 16 — the descriptor's,
@@ -44,36 +44,39 @@ them as `int32`, the same 32 bits, exactly as the union table already did). Per 
 per batch-head that is `Σ_l B_l × L / 8` bytes whenever `L` is a whole number of
 words, and `ceil(L/32) × 4 × Σ_l B_l` in general — it does NOT grow with `N`.
 
-**A row index IS the packed amplitude column.** The routing planes arrive as
-`[BH, L, Σ_l B_l]` with the levels packed on `level_offsets`, so the pass reads column
-`r` and writes row `r`, and no consumer needs a second layout to relate a bit to the
-amplitude that voted it. Tokens are the minor axis because the vote is a warp ballot:
-one row, one lane per token, one word written by lane 0 — the shape the shipped union
-table already had.
+**A row is a level's digit, in canonical order** — the column a packed plane of the
+levels holds it at, which is how the producer writes the bundle (`[B, T, H, Σ_l b_l]`,
+the levels on `level_offsets`). Tokens are the minor axis: a word is 32 consecutive
+tokens of one row, so a consumer walking a window reads a row's words in order, and a
+warp's 32 tokens are one word.
 
 **A token past the end votes dead.** The tail word's high bits are zero by
 construction, so a fold may OR whole words without masking.
 
-**The nonzero test is on the bf16 MAGNITUDE** (`0x7fff`), so an amplitude of `-0` is
-dead exactly like `+0`.
+**The nonzero test is on the digit's bits** (`digit_live`): a u8 digit is live when it
+is nonzero, an f16 unit when its MAGNITUDE (`0x7fff`) is, so `-0` is dead exactly like
+`+0`. The model applies `!= 0` to whatever rows it is given, which is the same test on
+both formats and lets a drawn call state its support from its floating levels.
 
 <a id="statics"></a>
 
 ## Dense levels: the static width mask, and no logical width in the signature
 
-A dense (softmax) level is NOT read by the pass — today's skip stands. Its rows are
-the STATIC WIDTH MASK: ones for digits below `b_l`, zeros for the pad. That is EXACT
-rather than conservative, because a softmax amplitude is never zero and only a pad
-digit's logit is `-inf`; "absent means full" would have marked a fully-pad box live
-and allocated pages of nothing but pad. Unpadded dense levels are bit-identical to
-the all-ones the old pass implied, and the traffic is unchanged: the mask is a
-handful of words, not a read of `Σ_dense B_l` bf16 per token.
+A dense level — an activation with no exact zeros (softmax), as the topology declares
+it — is NOT read by the pass. Its rows are the STATIC WIDTH MASK: ones for digits below
+`b_l`, zeros for the pad. That is exact up to a sound over-report: only a pad digit's
+logit is `-inf`, and a digit whose probability rounded to a zero digit in the bundle's
+format is reported live — work a consumer spends, never a contribution it misses.
+"Absent means full" would have marked a fully-pad box live and allocated pages of
+nothing but pad; the mask is a handful of words, not a read of `Σ_dense b_l` digits a
+token.
 
 The mask reaches the kernel as BITS, never as a width. `SideStatics` carries
-`dense_levels` (a bitmask over levels — a MODE fact) and `digit_mask` (one bit per
-row). The two contracts put the translation at the seam and keep logical-width
-fields out of every kernel entry signature; `rola.engine.facts.liveness.side_statics`
-is that translation, and it is the only place `b_l` appears.
+`dense_levels` (a bitmask over levels — a MODE fact, `level_is_dense` in the header)
+and `digit_mask` (one bit per row, `mask_bit`). The two contracts put the translation
+at the seam and keep logical-width fields out of every kernel entry signature;
+`rola.engine.facts.liveness.side_statics` is that translation, and it is the only place
+`b_l` appears.
 
 <a id="folds"></a>
 
@@ -111,9 +114,9 @@ which the gate asserts against the leaf-level truth.
 
 ## What padding does, and does not, reach
 
-The kernel never learns that padding exists. Pad digits get amplitude exactly zero at
-the producer, so their class-1 bits are zero on a sparse level and zero by the width
-mask on a dense one; a box of nothing but pad digits therefore has both call-level
+The kernel never learns that padding exists. Pad digits lie past a level's rows (the
+bundle holds `b_l` digits a level) and the mask never names them, so their class-1 bits
+are zero on a sparse level and zero by the width mask on a dense one; a box of nothing but pad digits therefore has both call-level
 bits clear and dies at the prologue, and a live box that straddles the pad boundary
 folds zeros on its pad slots. There is no descriptor-keyed dense shortcut in the
 kernel and no host-side grid compaction.

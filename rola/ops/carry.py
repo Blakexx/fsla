@@ -185,9 +185,8 @@ class LivenessWords:
     read and side 1 write, ``row = row_base(l) + digit`` in canonical order and
     ``bit = token % 32`` -- :class:`rola.engine.facts.liveness.LivenessLayout`, which is
     the contract this surface does not restate and cannot disagree with. Sparse levels
-    carry the amplitudes' support; a dense level carries its static width mask; a PAD
-    digit is dead, because the producer pads its logits with -inf and the amplitude is
-    then exactly zero. :func:`rola.ops.liveness.liveness_words` produces it.
+    carry the rows' support; a dense level carries its static width mask; a PAD digit is
+    dead. The facts pass (:func:`rola.ops.facts.facts`) produces it from a bundle.
 
     The type exists so a bare tensor cannot reach the surface by accident; the LAYOUT
     is the contract's and is checked against the descriptor the call already carries.

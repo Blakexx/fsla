@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The prefill family's DAG, read top to bottom, and the context it runs over.
 
-ONE SEGMENT in, its readout out: the facts, the carry and the intra over the segment's
-routes and values, then the post pass ``y = num / (den + eps)``. The stateless and
+ONE SEGMENT in, its readout out: the facts pass over the segment's bundle, the carry and
+the intra, then the post pass ``y = num / (den + eps)``. The stateless and
 stateful bands are one tuple, the stateless being the stateful with the residency band
 masked out. Segmentation is the LAYER's (docs/internals/engine/prefill_dag.md): this
 DAG runs whatever segment it is handed, against whatever state it is handed.
@@ -17,7 +17,7 @@ from typing import Any
 import torch
 
 from rola.engine import SUPPLIABLE, Mask, node, rules, run, validate_dag
-from rola.engine.facts import nodes, planes
+from rola.engine.facts import liveness, nodes
 from rola.engine.facts.call import require_envelope
 
 _SEEDS = ("routes", "values", "levels", "v", "decay", "state", "expert", "want_state",
@@ -70,12 +70,24 @@ def support_words(f):
     return intra_ops.pack_support(read), intra_ops.pack_support(write)
 
 
-@node(gives=("atom_bits",), needs=("levels", "widths"), stream="main")
+@node(gives=("liveness", "zeta", "layout"), needs=("routes", "values"), stream="main")
+def facts(f):
+    """THE FACTS PASS over the bundle, one launch: both sides' class-1 words, the fold's window scales and the layout
+    the words are read in -- the topology's padded widths, its dense levels unread (`rola.ops.facts`)."""
+    from rola.ops import carry as carry_ops
+    from rola.ops import facts as facts_ops
+
+    routes = f["routes"]
+    layout = facts_ops.call_layout(routes)
+    out = facts_ops.facts(routes, f["values"], layout, *facts_ops.call_statics(routes, layout))
+    return carry_ops.LivenessWords(words=out.words), out.zeta, layout
+
+
+@node(gives=("atom_bits",), needs=("liveness", "layout"), stream="main")
 def activity(f):
-    """The per-atom ACTIVITY byte, ``WRITTEN | READ``, from both sides: residency's write set and the carry's
-    sweep gate are ONE fact (`rola.engine.facts.planes.atom_bits`)."""
-    read, write = f["levels"]
-    return planes.atom_bits(planes.pack_side(write), f["widths"], read_plane=planes.pack_side(read))
+    """The per-atom ACTIVITY byte, ``WRITTEN | READ``, folded from the words: residency's write set and the carry's
+    sweep gate are ONE fact (`rola.engine.facts.liveness.page_bits`)."""
+    return liveness.page_bits(f["liveness"].words, f["layout"])
 
 
 @node(gives=("bc",), needs=("d_v",))
@@ -100,7 +112,7 @@ def residency(f):
 
 
 @node(gives=("num", "den"),
-      needs=("levels", "v", "routes", "widths", "modes", "supports", "state_in", "state_out",
+      needs=("levels", "v", "routes", "widths", "modes", "supports", "liveness", "state_in", "state_out",
              "page_table", "atom_bits"),
       stream="main")
 def launch(f):
@@ -112,7 +124,7 @@ def launch(f):
     sread, swrite = f["supports"]
     num, den, _ = prefill_ops.prefill(
         read, write, f["routes"].g_write, f["v"], f["widths"], modes=f["modes"], sread=sread, swrite=swrite,
-        state_in=f["state_in"], state_out=f["state_out"], page_table=f["page_table"], atom_bits=f["atom_bits"])
+        liveness=f["liveness"], state_in=f["state_in"], state_out=f["state_out"], page_table=f["page_table"], atom_bits=f["atom_bits"])
     return num, den
 
 
@@ -133,6 +145,7 @@ PREFILL_DAG = (
     rules.mask.node,
     support_modes,
     support_words,
+    facts,
     activity,
     box,
     residency,

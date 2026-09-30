@@ -497,7 +497,7 @@ def test_the_prefill_path_imports_from_the_INSTALLED_package_layout():
             "from rola.interface import rola_op;"
             "from rola.ops.decode import step_plane;"
             "from rola.engine.facts.call import require_envelope;"
-            "from rola.engine.facts.planes import atom_bits;"
+            "from rola.ops.facts import facts;"
             "from rola.engine.rules.envelope import prefill_envelope;"
             "from rola.engine.dags.prefill_dag import PrefillContext, run_prefill;"
             "from rola.ops.prefill import prefill;"

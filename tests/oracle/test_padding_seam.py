@@ -136,8 +136,9 @@ def test_the_api_boundary_pads_and_the_kernel_boundary_refuses():
     behind.
     """
     from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
+    from rola.engine.facts import liveness as lv
     from rola.ops import carry as carry_ops
-    from rola.ops.prefill import _conservative_activity, _descriptor, _liveness_words, _pack_operands
+    from rola.ops.prefill import _conservative_activity, _descriptor, _pack_operands
 
     widths = (31, 45)
     B, T, H, d_v = 1, 2, 1, 8
@@ -157,7 +158,10 @@ def test_the_api_boundary_pads_and_the_kernel_boundary_refuses():
         "the descriptor names the PADDED shape, never the caller's logical one")
     launch = carry_ops.LaunchShape()
     geometry = carry_ops.geometry_block(descriptor, launch)
-    liveness = _liveness_words(pread, pwrite, descriptor)
+    #: the call's own statement of its support over the padded layout: the contract's model on its levels
+    layout = lv.LivenessLayout.of(descriptor, T)
+    statics = lv.side_statics(layout, (False,) * layout.D, widths)
+    liveness = carry_ops.LivenessWords(words=lv.liveness_words(read_levels, write_levels, layout, statics, statics))
     activity = _conservative_activity(descriptor, bh, v_bh.device)
     routes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)
     carry_ops.carry_forward(routes, v_bh, descriptor=descriptor, geometry=geometry,

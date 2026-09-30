@@ -222,11 +222,24 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
     return num, den, full
 
 
+def fold_zeta(g_write, s_t, m_w, window):
+    """``[B, H, windows, 2]`` fp64: the fold's per-window fixed-point scales -- over each window's tokens the largest
+    ``g m_w`` and ``g s_t m_w`` (``g`` the write gain, ``s_t`` the value scale, ``m_w`` the write levels' maxima
+    multiplied, ``m_ws m_wd``), at least ``TINY``. The facts pass writes them (docs/internals/facts/facts.md#zeta)."""
+    col = g_write.double() * m_w.double()
+    cols = torch.stack((col, col * s_t.double()), -1)                                          # [B, T, H, 2]
+    B, T, H, _ = cols.shape
+    windows = -(-T // window)
+    cols = torch.cat((cols, cols.new_zeros(B, windows * window - T, H, 2)), 1)
+    return cols.reshape(B, windows, window, H, 2).amax(2).permute(0, 2, 1, 3).clamp_min(TINY)
+
+
 def prepass_reference(read_levels, write_levels, g_write, v, widths, sparsity, window, *, exact: bool = False,
                       state_in=None, telemetry: dict | None = None):
     """``(den, scale)`` per token, ``[B, T, H]`` fp64, under the PRE-PASS's DECLARED arithmetic: the carry's
     skeleton at two columns a leaf. FOLD, per window and write-sparse digit ``s``, column ``m`` in {g, g s_t}:
-    ``zeta_m`` = the window's largest ``col_m(t) m_ws(t) m_wd(t)`` (the two write levels' per-token maxima);
+    ``zeta_m`` = the window's largest ``col_m(t) m_ws(t) m_wd(t)`` (the two write levels' per-token maxima,
+    :func:`fold_zeta`);
     ``P_m(t) = rint(2^23 col_m m_ws m_wd / (255 zeta_m))``; ``V_m(t, d) = (P_m(t) a_wd[t, d] + 128) >> 8`` (a
     15-bit integer, ``a_wd`` the u8 write-dense digit); ``acc_m(s, d) = sum_t a_ws[t, s] V_m(t, d)`` (the u8
     write-sparse digit, exact in s32); the leaf's column gains ``acc_m zeta_m / (2^15 255)``. Both u8 levels are the
@@ -284,9 +297,10 @@ def prepass_reference(read_levels, write_levels, g_write, v, widths, sparsity, w
         g = g_write[:, sl].double()                                                              # [B,t,H]
         gs = g * s_t[:, sl, :, 0]
         f = (m_ws * m_wd)[..., 0]
+        zetas = fold_zeta(g, s_t[:, sl, :, 0], f, window)[:, :, 0]                              # [B,H,2]
         a_ws_digit = a_ws if exact else torch.round(a_ws * 255.0)                                  # the u8 bytes
-        for col, target in ((g, mass), (gs, bound)):
-            zeta = (col * f).amax(1, keepdim=True).clamp_min(TINY)                              # [B,1,H]
+        for m, (col, target) in enumerate(((g, mass), (gs, bound))):
+            zeta = zetas[..., m].unsqueeze(1)                                                    # [B,1,H]
             if exact:
                 V = (col * f)[..., None] * a_wd
                 unit = 1.0

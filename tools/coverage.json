@@ -93,6 +93,17 @@
    },
    "ratified": "manifest"
   },
+  "facts_pass": {
+   "oracle": "tests/integration/test_facts_pass.py::test_the_words_are_the_model_bit_for_bit",
+   "sanitizer": "facts",
+   "budget": {
+    "owed": "the facts pass's budget line is on its plan card (the int8 rebuild's facts line); the region ledger's file lands with its optimization pass"
+   },
+   "phases": "tests/integration/test_facts_pass.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
+   "ratified": {
+    "owed": "a new kernel: the next milestone ratify records it"
+   }
+  },
   "intra_kernel": {
    "oracle": "tests/oracle/test_intra_kernel.py",
    "sanitizer": "intra",
@@ -103,19 +114,6 @@
     "owed": "books no phase ledger"
    },
    "ratified": "manifest"
-  },
-  "liveness_pass": {
-   "oracle": "tests/unit/test_liveness_pass.py",
-   "sanitizer": "liveness",
-   "budget": {
-    "owed": "no budget line"
-   },
-   "phases": {
-    "owed": "books no phase ledger"
-   },
-   "ratified": {
-    "owed": "not in the committed manifests; the next milestone ratify records it"
-   }
   },
   "produce_kernel": {
    "oracle": "tests/integration/test_produce_kernel.py::test_the_bundle_matches_the_fp64_composition",

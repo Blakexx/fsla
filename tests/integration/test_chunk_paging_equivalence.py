@@ -29,8 +29,9 @@ page an atom is mapped to, ``-1`` for an atom the plan committed nothing for;
 ``owners = N / box_leaves``.
 
 **THE PLAN IS THE SHIPPED ONE, UNMODIFIED.** The bitmap planned here is
-``rola.engine.facts.planes.atom_bits`` exactly as published -- the kernel's own exact
-write set, canonically keyed -- and the table is ``PageArena.plan_exact``'s. One
+``rola.engine.facts.liveness.page_bits`` over the call's own words, exactly as the prefill
+folds them -- the exact write set, canonically keyed -- and the table is
+``PageArena.plan_exact``'s. One
 representation, shared by the arena, the descriptor and the decode step, is what makes
 this file's byte claim a statement about addressing rather than about a convention.
 """
@@ -40,6 +41,7 @@ import pytest
 import torch
 
 from measure.cells import WARPS_PER_CTA, carry_call, carry_cells
+from rola.engine.facts import liveness as lv
 from rola.engine.facts import planes
 from rola.ops import carry as carry_ops
 from rola.ops.paging import MMA_K_QUANTUM, PageArena, bytes_equal, from_split_planes
@@ -86,25 +88,23 @@ def _box_leaves(spec) -> int:
     return carry_ops.box_leaves(spec.dv, WARPS_PER_CTA)
 
 
-def _activity(spec, drawn, bh=1):
-    """The kernel's own EXACT atom-grain ACTIVITY byte, as the shipped pass publishes it.
+def _activity(call):
+    """The EXACT atom-grain ACTIVITY byte of the call's own words, as the prefill folds them.
 
-    Bit 0 WRITTEN, bit 1 READ, over BOTH sides' packed planes. No re-keying: the kernel
-    addresses its state by the CANONICAL atom id this byte is indexed by, so the plan the
-    engine would build is the plan this file hands the arena and the byte the engine
-    would pass is the byte this file hands the kernel.
+    Bit 0 WRITTEN, bit 1 READ, over BOTH sides. No re-keying: the kernel addresses its
+    state by the CANONICAL atom id this byte is indexed by, so the plan the engine would
+    build is the plan this file hands the arena and the byte the engine would pass is the
+    byte this file hands the kernel.
     """
-    def side(levels):
-        return torch.cat(levels, -1).permute(0, 2, 1, 3).contiguous()
-
-    bits = planes.atom_bits(side(drawn.write), spec.widths, read_plane=side(drawn.read))
-    return bits.reshape(bh, -1)
+    words = call["liveness"].words
+    layout = lv.LivenessLayout.of(call["descriptor"], call["v"].shape[1])
+    return lv.page_bits(words, layout)
 
 
 def _bind(spec, bh=1):
     """The registry's call, with the CELL's own activity in place of the conservative one."""
     drawn, call = carry_call(spec, bh=bh)
-    call["activity"] = _activity(spec, drawn, bh)
+    call["activity"] = _activity(call)
     return drawn, call
 
 

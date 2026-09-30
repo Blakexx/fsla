@@ -63,7 +63,7 @@ verdict` refuses a pair of two. A comparison between this library and another is
 own layer against attention's, because RoLA's number includes the state its capacity buys.
 
 What this line can measure today: the KERNEL level (`carry_forward`, `intra_forward`, `carry_intra` -- the carry and the
-intra as one operator over facts the caller built -- `liveness_pass`, `entmax_solve`) and one OP-level path
+intra as one operator over facts the caller built -- `facts_pass`, `entmax_solve`) and one OP-level path
 (`decode_step`, through the engine's decode DAG, which runs the facts pass and commits the pages it writes). There is no
 op-level prefill and no layer subject: `rola.interface.rola_op` refuses on prefill since the box-native rebuild deleted
 the shipped chunk consumer, so the chunk DAG has no live path to time. The flash reference is a layer entry, and until a

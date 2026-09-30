@@ -43,7 +43,7 @@ def test_the_tree_lists_every_family_and_its_kernels():
     assert {"decode_step_kernel", "decode_stamp_kernel"} <= by_family["decode"]
     assert "carry_kernel" in by_family["carry"]
     assert "intra_kernel" in by_family["intra"]
-    assert "liveness_pass" in by_family["facts"]
+    assert "facts_pass" in by_family["facts"]
     assert {"union_forward_kernel", "factor_backward_kernel"} <= by_family["entmax"]
     assert {"csrc_stamp_kernel", "sm_clock_kernel"} <= by_family["common"]
 

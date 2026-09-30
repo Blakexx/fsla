@@ -10,10 +10,11 @@ with no pair counted twice and none dropped — the study's exactness clause, wh
 `tests/oracle/test_carry_vs_oracle.py::test_m2_decomposition_is_exact` states
 independently in fp64.
 
-THE CARRY LEG IS `rola.ops.carry`: this module builds that surface's five
-arguments — the descriptor, the geometry block, the liveness words, the activity
-bits and the launch shape — from what it already has (the packed planes and the
-widths), and calls `carry_forward`. The box is a launch
+THE CARRY LEG IS `rola.ops.carry`: this module builds three of that surface's five
+arguments — the descriptor, the geometry block and the launch shape — from what it
+already has (the packed planes and the widths), takes the other two — the liveness
+words and the activity bits, the facts pass's (`rola.ops.facts`) — from its caller,
+and calls `carry_forward`. The box is a launch
 consequence and the window is a kernel constant (`carry_ops.WINDOW`); neither is a
 parameter of this operator.
 
@@ -44,12 +45,10 @@ from __future__ import annotations
 import torch
 
 from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE, StateFormat
-from rola.engine.facts.liveness import LivenessLayout, side_statics
 from rola.ops import carry as carry_ops
 from rola.ops import intra as intra_ops
 from rola.ops import padding as padding_ops
 from rola.ops._ext import extension
-from rola.ops.liveness import liveness_words
 
 #: THE WINDOW, restated so a caller has one import. It is the CARRY KERNEL's constant
 #: (the axis law), and the intra family must carry an arm at the same number, because
@@ -88,21 +87,6 @@ def _descriptor(widths, dv: int, bh: int) -> StateFormat:
     return StateFormat(D=len(shape.padded_widths), B=shape.padded_widths, order=CANONICAL_ORDER,
                        page_bits=PAGE_RECTANGLE_BITS, DV=shape.DV, dtype=SPLIT_PLANE_DTYPE,
                        ids=int(bh) * (n >> PAGE_RECTANGLE_BITS))
-
-
-def _liveness_words(pread: torch.Tensor, pwrite: torch.Tensor,
-                    descriptor: StateFormat) -> carry_ops.LivenessWords:
-    """THE CLASS-1 WORDS, from the ONE pass over the planes this call already built.
-
-    There is one producer of liveness and this is a CALLER of it, never a second
-    derivation: `rola.ops.liveness.liveness_words` votes every level from its own
-    amplitudes, which is what the static width mask reduces to on an unpadded
-    topology, and the layout is the contract's.
-    """
-    layout = LivenessLayout.of(descriptor, pread.shape[-2])
-    statics = side_statics(layout, (False,) * layout.D, layout.B)
-    return carry_ops.LivenessWords(
-        words=liveness_words(pread, pwrite, layout, statics, statics))
 
 
 def _conservative_activity(descriptor: StateFormat, bh: int, device) -> torch.Tensor:
@@ -152,6 +136,7 @@ def _intra_level_width(D: int) -> int | None:
 
 
 def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swrite,
+            liveness: carry_ops.LivenessWords,
             state_in: torch.Tensor | None = None,
             state_out: torch.Tensor | None = None,
             page_table: torch.Tensor | None = None,
@@ -182,6 +167,10 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
     DECLARATION about the routing, not a switch: the intra's slab gate reads
     all-ones for an undeclared side and therefore cannot move a number, so
     ``DENSE_BOTH`` everywhere is always correct and only ever slower.
+
+    ``liveness`` is both sides' class-1 words in the descriptor's layout, the facts
+    pass's (:func:`rola.ops.facts.facts`) over the bundle these levels dequantize, or a
+    drawn call's own statement of its support (`measure.cells.liveness_words`).
 
     ``sread``/``swrite`` are the frozen support words of the two sides
     (``[BH, L/32, sum(widths)]`` int32). THEY ARE AN INPUT, NOT A DERIVATION: the
@@ -226,7 +215,6 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
     launch = carry_ops.LaunchShape()
     geometry = carry_ops.geometry_block(descriptor, launch,
                                         intra_ops.pack_modes(tuple(modes)))
-    liveness = _liveness_words(pread, pwrite, descriptor)
     activity = (atom_bits if atom_bits is not None
                else _conservative_activity(descriptor, bh, v_bh.device))
     #: THE STATE PLANES ARE THE CALLER'S, both of them, and this operator allocates none:

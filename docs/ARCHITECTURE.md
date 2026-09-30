@@ -404,7 +404,7 @@ itself.
 **Both of them have since landed, and the two sections below were their
 specification while they did not.** The clean-slate line (`development/queue/C_CLEAN_SLATE.md`)
 deleted the stats passes and the carry body from this branch; §6.1's liveness pass is
-now built (`csrc/rola/src/facts/liveness.{cu,cuh}`, `docs/internals/facts/liveness.md`)
+now built as the facts pass (`csrc/rola/src/facts/facts.{cu,cuh}`, `docs/internals/facts/facts.md`)
 and a carry body has shipped (`csrc/rola/src/carry/`, `docs/internals/carry/carry_kernel.md`),
 though the pipelined body's actual mechanism diverges in places from §6.2's blueprint
 below (its window/snapshot/head/pool structure is not identical to the fold-with-streams
@@ -428,11 +428,12 @@ been proven is discarded. *(Ruled.)*
 
 ### 6.1 The liveness pass — the bits
 
-One pass over the routing amplitude planes emits everything the downstream launches
-need in place of an amplitude scan: per side, per token, per level, ONE BIT PER DIGIT
-in canonical order — a sparse level's bits voted from that side's own amplitudes, a
-dense level's bits its static width mask — plus the per-level width plan and the
-activity bits of §3.4, folded from the same words on the host. The emitted size per
+One pass over the bundle's rows emits everything the downstream launches need in
+place of an amplitude scan: per side, per token, per level, ONE BIT PER DIGIT in
+canonical order — a sparse level's bits voted from that side's own digits, a dense
+level's bits its static width mask — plus the per-level width plan and the activity
+bits of §3.4, folded from the same words on the host, and the fold's per-window scales
+(`docs/internals/facts/facts.md#zeta`). The emitted size per
 side is `L × Σ_l B_l / 8` bytes: a function of the sequence and the address space's
 WIDTHS, never of `N`. Because a pad digit's amplitude is exactly zero by
 construction — the routing producer pads a level's logits with negative infinity before
@@ -459,7 +460,7 @@ activity bits of §3.4, and decode's paged admission.
 block-grain liveness epilogue on the `k35-final` tip's
 csrc/rola/src/facts/facts_kernel.cuh and `facts_launch.cuh`; the two-bit activity law
 and the byte gate that certifies it at tag `record/p80b-activity-bits`. *The floor:*
-each amplitude plane read exactly once (unique bytes — the pass is DRAM-bound); the
+each side's rows read exactly once, a dense level's not at all (unique bytes — the pass is DRAM-bound); the
 emitted bytes as above; the host folds linear in boxes × levels; and, on the consuming
 side, the word operations per (warp, window, side) that the span OR and the level AND
 cost, which is the term the layout is answerable for.

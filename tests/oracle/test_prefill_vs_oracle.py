@@ -83,6 +83,7 @@ def call(spec, state_in=None):
                           modes=modes_of(spec),
                           sread=intra_ops.pack_support(drawn.read),
                           swrite=intra_ops.pack_support(drawn.write),
+                          liveness=liveness_words(drawn, descriptor(spec)),
                           state_in=state_in,
                           state_out=fresh_plane(spec) if state_in is None else state_in)
 
@@ -196,20 +197,26 @@ def test_a_chained_call_equals_one_long_call():
     modes = modes_of(spec)
     sread = intra_ops.pack_support(drawn.read)
     swrite = intra_ops.pack_support(drawn.write)
+    live = liveness_words(drawn, descriptor(spec)).words
     whole = prefill(drawn.read, drawn.write, drawn.gain, drawn.v, spec.widths,
-                    modes=modes, sread=sread, swrite=swrite, state_out=fresh_plane(spec))
+                    modes=modes, sread=sread, swrite=swrite, liveness=carry_ops.LivenessWords(words=live),
+                    state_out=fresh_plane(spec))
 
     cut = carry_ops.WINDOW
     words = cut // intra_ops.WORD_TOKENS
     head = prefill(tuple(x[:, :cut] for x in drawn.read),
                    tuple(x[:, :cut] for x in drawn.write), drawn.gain[:, :cut],
                    drawn.v[:, :cut], spec.widths, modes=modes, sread=sread[:, :words],
-                   swrite=swrite[:, :words], state_out=fresh_plane(spec))
+                   swrite=swrite[:, :words],
+                   liveness=carry_ops.LivenessWords(words=live[..., :words].contiguous()),
+                   state_out=fresh_plane(spec))
     tail = prefill(tuple(x[:, cut:] for x in drawn.read),
                    tuple(x[:, cut:] for x in drawn.write), drawn.gain[:, cut:],
                    drawn.v[:, cut:], spec.widths, modes=modes,
                    sread=sread[:, words:].contiguous(),
-                   swrite=swrite[:, words:].contiguous(), state_in=head[2], state_out=head[2])
+                   swrite=swrite[:, words:].contiguous(),
+                   liveness=carry_ops.LivenessWords(words=live[..., words:].contiguous()),
+                   state_in=head[2], state_out=head[2])
 
     assert bytes_equal(tail[2], whole[2])
     num = torch.cat((head[0], tail[0]), dim=1)
@@ -248,13 +255,14 @@ def test_the_combined_operator_refuses_what_it_has_no_kernel_for():
     inter-only cell, and the combined entry says so instead of half-serving it."""
     spec = next(c for c in CELLS if c.draw == "dense")
     drawn = realize(spec)
+    live = liveness_words(drawn, descriptor(spec))
     with pytest.raises(ValueError, match="level width"):
         prefill(drawn.read, drawn.write, drawn.gain, drawn.v, (64, 64),
                 modes=modes_of(spec), sread=intra_ops.pack_support(drawn.read),
-                swrite=intra_ops.pack_support(drawn.write))
+                swrite=intra_ops.pack_support(drawn.write), liveness=live)
     #: A width another depth ships is not this depth's: depth 3's 16 passes a check that asks
     #: membership in every depth's widths, and then the kernel refuses the support words' shape.
     with pytest.raises(ValueError, match="at depth 2"):
         prefill(drawn.read, drawn.write, drawn.gain, drawn.v, (16, 16),
                 modes=modes_of(spec), sread=intra_ops.pack_support(drawn.read),
-                swrite=intra_ops.pack_support(drawn.write))
+                swrite=intra_ops.pack_support(drawn.write), liveness=live)

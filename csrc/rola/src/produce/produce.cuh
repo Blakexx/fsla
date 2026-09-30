@@ -85,24 +85,24 @@ struct ProduceParams {
   int64_t v_row;
   const int32_t* jobs;  // [n_jobs, kJobFields]
 
-  uint8_t* amp_read;  // [BT, H, rows], u8 or f16
+  uint8_t* amp_read;  // [B, H, T, rows], u8 or f16: every output head-major (produce.md#bundle)
   uint8_t* amp_write;
-  float* scale_read;  // [BT, H, D]
+  float* scale_read;  // [B, H, T, D]
   float* scale_write;
-  float* mass_read;  // [BT, H, D], the finisher's operands
+  float* mass_read;  // [B, H, T, D], the finisher's operands
   float* mass_write;
-  float* read_mass;    // [BT, H]
-  float* g_write;      // [BT, H]
-  int8_t* v_hat;       // [BT, H, d_v]
-  uint8_t* v_lo;       // [BT, H, d_v] or null (one digit)
-  float* v_scale;      // [BT, H]
+  float* read_mass;    // [B, H, T]
+  float* g_write;      // [B, H, T]
+  int8_t* v_hat;       // [B, H, T, d_v]
+  uint8_t* v_lo;       // [B, H, T, d_v] or null (one digit)
+  float* v_scale;      // [B, H, T]
   int32_t* arrivals;   // [tiles, H], zero between calls: the finisher resets its own
   float* logit_probe;  // [jobs, BT, kMaxColumns] or null: every job's projection, for its gate
   float* level_probe;  // the same, a route job's solved levels: read at [0, w), write at [w, 2w)
   long long* ledger;   // [jobs, warps, phases] or null
   int16_t shapes[kMaxJobs];  // a job's shape word (produce.md#jobs), by block index
 
-  int BT, hidden, H, C, G, rows, D, d_v, row_form, route_jobs_per_head;
+  int BT, T, hidden, H, C, G, rows, D, d_v, row_form, route_jobs_per_head;
 };
 
 }  // namespace produce

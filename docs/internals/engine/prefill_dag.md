@@ -16,7 +16,8 @@ against the state the call is handed. `rola.rola_op` validates the context in th
 | `rules.mask` | `mask` | the band: stateless or stateful |
 | `support_modes` | `modes` | per level, which sides can hold exact zeros, off the topology's activations |
 | `support_words` | `supports` | the intra's frozen support words of both sides |
-| `activity` | `atom_bits` | the per-atom `WRITTEN | READ` byte from both sides |
+| `facts` | `liveness`, `zeta`, `layout` | THE FACTS PASS over the bundle, one launch: both sides' class-1 words, the fold's window scales, the layout the words are read in (`rola.ops.facts`) |
+| `activity` | `atom_bits` | the per-atom `WRITTEN | READ` byte, folded from the words (`rola.engine.facts.liveness.page_bits`) |
 | `box` | `bc` | the carry's box, the arena's allocation extent |
 | `residency` (stateful) | `state_in`, `arena` | the state's entry plane, this call's write atoms committed |
 | `nodes.join` (stateful) | | waits for the admission before anything reads the page table |
@@ -26,7 +27,8 @@ against the state the call is handed. `rola.rola_op` validates the context in th
 
 ## The seam
 
-The kernels still compute on floating levels and values, so `run_prefill` seeds the DAG with
-`RouteFactors.dequantized()` and `Values.dequantized()`, computed once a call; `support_words` and
-`activity` derive from those levels. Each goes when its kernel reads the rows: the facts pass emits the
-words and the activity from the u8 / f16 rows, and the intra and carry take the rows themselves.
+The carry and the intra still compute on floating levels and values, so `run_prefill` seeds the DAG with
+`RouteFactors.dequantized()` and `Values.dequantized()`, computed once a call; `support_words` derives from
+those levels. The facts pass reads the bundle's u8 / f16 rows (`facts`), and its words feed the activity
+fold and the carry; `support_words` and the dequantized seeds go when the intra and the carry take the rows
+themselves. `zeta` has no consumer until the carry's int8 fold divides by it.

@@ -25,6 +25,12 @@ namespace ops = denseref::ops;
 namespace row_solve = rola::entmax::detail;
 using Clock = PhaseClock<kProducePhases>;
 
+//: A (token, head)'s slot in the head-major outputs `[B, H, T]`: the flat token split into its batch and step.
+__device__ __forceinline__ int64_t slot_of(const ProduceParams& p, int token, int head) {
+  const int b = token / p.T;
+  return (static_cast<int64_t>(b) * p.H + head) * p.T + (token - b * p.T);
+}
+
 //: THE BLOCK'S JOB: its control from the parameters' shape word (uniform, so a branch on it is a warp-uniform branch
 //: ptxas can prove), its addressing from the table.
 __device__ __forceinline__ Job load_job(const ProduceParams& p, int index) {
@@ -437,8 +443,9 @@ __device__ void route_row(const ProduceParams& p, const Job& job, int job_index,
       }
     }
   }
-  const int64_t first = (static_cast<int64_t>(token) * p.H + job.head) * p.rows;
-  const int64_t at = (static_cast<int64_t>(token) * p.H + job.head) * p.D + job.level;
+  const int64_t slot = slot_of(p, token, job.head);
+  const int64_t first = slot * p.rows;
+  const int64_t at = slot * p.D + job.level;
   if (job.reads) {
     write_side<IPT>(p, read, job.width, live, lane, p.amp_read, first + job.out_read, p.scale_read,
                     p.mass_read, at, reduce_max, top, job.fold_read != 0, false);
@@ -495,7 +502,7 @@ __device__ void finish_head(const ProduceParams& p, const Job& job, int tile, in
     const bool here = t < live;
     const float gain = p.G > 0 ? gain_logit(p, job, token0 + t, here, lane) : 0.0f;
     if (here && lane == 0) {
-      const int64_t at = static_cast<int64_t>(token0 + t) * p.H + job.head;
+      const int64_t at = slot_of(p, token0 + t, job.head);
       float read_mass = 1.0f, write_mass = 1.0f;
 #pragma unroll 1
       for (int l = 0; l < p.D; ++l) {
@@ -530,7 +537,8 @@ __device__ void value_rows(const ProduceParams& p, const Job& job, int token0,
     for (int c = lane; c < p.d_v; c += 32) m = fmaxf(m, fabsf(row[c]));
     m = warp_all(m, [](float a, float b) { return fmaxf(a, b); });
     const float unit = fmaxf(m, 1e-30f);
-    const int64_t at = (static_cast<int64_t>(token0 + t) * p.H + job.head + h) * p.d_v;
+    const int64_t slot = slot_of(p, token0 + t, job.head + h);
+    const int64_t at = slot * p.d_v;
 #pragma unroll 1
     for (int c = lane; c < p.d_v; c += 32) {
       const int q = __float2int_rn(__fdividef(row[c], unit) * full);
@@ -539,7 +547,7 @@ __device__ void value_rows(const ProduceParams& p, const Job& job, int token0,
         if (p.v_lo != nullptr) p.v_lo[at + c] = static_cast<uint8_t>(q & 0xFF);
       }
     }
-    if (here && lane == 0) p.v_scale[(static_cast<int64_t>(token0 + t) * p.H + job.head + h)] = m;
+    if (here && lane == 0) p.v_scale[slot] = m;
   }
 }
 
@@ -659,12 +667,13 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   STD_TORCH_CHECK(levels >= 1 && levels <= 4, "the routing depth is one to four levels, got ",
                   levels);
   const bool f16 = amp_read.scalar_type() == Dtype::Half;
-  STD_TORCH_CHECK((f16 || amp_read.scalar_type() == Dtype::Byte)
-                      && amp_write.scalar_type() == amp_read.scalar_type()
-                      && amp_read.is_contiguous() && amp_write.is_contiguous()
-                      && amp_read.dim() >= 2 && amp_read.sizes() == amp_write.sizes(),
-                  "the rows are [..., H, rows] u8 or f16, contiguous, both sides alike");
-  const int64_t rows = amp_read.size(amp_read.dim() - 1);
+  STD_TORCH_CHECK(
+      (f16 || amp_read.scalar_type() == Dtype::Byte)
+          && amp_write.scalar_type() == amp_read.scalar_type() && amp_read.is_contiguous()
+          && amp_write.is_contiguous() && amp_read.dim() == 4 && amp_read.size(1) == H
+          && amp_read.size(0) * amp_read.size(2) == BT && amp_read.sizes() == amp_write.sizes(),
+      "the rows are head-major [B, H, T, rows] u8 or f16, contiguous, both sides alike");
+  const int64_t rows = amp_read.size(3);
   STD_TORCH_CHECK(amp_read.numel() == BT * H * rows, "the rows hold ", amp_read.numel(),
                   " digits; ", BT, " tokens of ", H, " heads of ", rows, " need ", BT * H * rows);
   for (auto [t, name] : {std::pair{&scale_read, "scale_read"},
@@ -723,6 +732,7 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                   " jobs; this launch runs ", jobs.size(0));
   p.ledger = detail::g_ledger;
   p.BT = static_cast<int>(BT);
+  p.T = static_cast<int>(amp_read.size(2));
   p.hidden = static_cast<int>(hidden);
   p.H = static_cast<int>(H);
   p.C = static_cast<int>(C);

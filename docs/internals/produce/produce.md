@@ -92,6 +92,12 @@ its scale stays the max and its mass rides `read_mass`, as the composition's `_f
 mass and the write gain (within 2^-12 relative, measured 4.8e-5 and 2.7e-6) against the fp64 composition on the same
 bf16 operands, with and without a gain column or a routing bias.
 
+EVERY OUTPUT IS STORED HEAD-MAJOR, `[B, H, T, ...]` (`slot_of`: the flat token split into its batch and step), and the
+bundle's `[B, T, H, ...]` tensors are views of it. At one token the two orders are the same bytes; over a prefill a
+head's token rows are contiguous, and every prefill reader walks one head's tokens -- the facts pass measured 212
+us a head at `(256, 256)`, `L = 64K`, `H = 16` on token-major rows (an 8 KB token stride, DRAM at 360 GB/s) against
+113 us head-major (676 GB/s), the rate of a single head (`docs/internals/facts/facts.md#the-grid`).
+
 <a id="solve"></a>THE SOLVE (`solve_row`) holds the row striped, element `lane + 32 i` in a lane's `i`th register,
 `IPT` = the width's power-of-two class over 32 (one of four bodies, chosen once a job by its shape word). A union row
 is the midpoint of its read and write logits (entmax on it) and their overflow-free difference (the split); a tied or

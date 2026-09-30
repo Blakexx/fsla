@@ -25,7 +25,7 @@
 #include "src/decode/decode_api.cuh"
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
-#include "src/facts/liveness_api.cuh"
+#include "src/facts/facts_api.cuh"
 #include "src/intra/intra.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/produce/produce_api.cuh"
@@ -137,13 +137,17 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def("csrc_build_stamp() -> int");
   m.def("sm_clock_ghz(int spin_cycles=20000000) -> float");
 
-  // ---- the addressing block and the ONE liveness pass ----------------------
+  // ---- the addressing block ------------------------------------------------
   m.def(
       "carry_geometry(int[] widths, int level_modes, int bc, int nsr, int nsw, int dv, int interleave, int atom_floor) -> int[]");
   m.def("carry_sub_boxes(int depth, int box_leaves, int workers, int atom_floor) -> int[][]");
+
+  // ---- the facts pass: the bundle's rows to the class-1 words and zeta ------
   m.def(
-      "liveness_words(Tensor read_plane, Tensor write_plane, int[] widths, int dense_read, int[] mask_read, "
-      "int dense_write, int[] mask_write) -> Tensor");
+      "rola_facts_forward(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v_scale, "
+      "Tensor(a!) words, Tensor(b!) zeta, int[] widths, int dense_read, int[] mask_read, int dense_write, "
+      "int[] mask_write, int window) -> ()");
+  m.def("rola_facts_ledger_bind(Tensor? ledger) -> ()");
 
   // ---- the producer: one launch from the tokens to the bundle -------------
   m.def(
@@ -226,7 +230,8 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("sm_clock_ghz", TORCH_BOX(&rola::sm_clock_ghz));
   m.impl("carry_geometry", TORCH_BOX(&rola::carry::geometry));
   m.impl("carry_sub_boxes", TORCH_BOX(&rola::carry::sub_box_set));
-  m.impl("liveness_words", TORCH_BOX(&rola::facts::liveness_words));
+  m.impl("rola_facts_forward", TORCH_BOX(&rola::facts::rola_facts_forward));
+  m.impl("rola_facts_ledger_bind", TORCH_BOX(&rola::facts::rola_facts_ledger_bind));
   m.impl("rola_produce_forward", TORCH_BOX(&rola::produce::rola_produce_forward));
   m.impl("rola_produce_ledger_bind", TORCH_BOX(&rola::produce::rola_produce_ledger_bind));
   m.impl("entmax_union_forward", TORCH_BOX(&rola::entmax::union_forward));

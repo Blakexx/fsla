@@ -86,7 +86,8 @@ def state_plane(routes, *, d_v: int, zeros: bool = False) -> torch.Tensor:
     return build(shape, device=routes.device, dtype=torch.uint8)
 
 
-#: THE TWO ORTHOGONAL BITS the liveness pass publishes per atom; the mirror of
+#: THE TWO ORTHOGONAL BITS the words' page fold publishes per atom
+#: (`rola.engine.facts.liveness.page_bits`); the mirror of
 #: `csrc/rola/src/common/ops.cuh`'s `kAtomWritten`/`kAtomRead`, which is what the
 #: kernel derives `load iff resident and (read or written)` / `store iff written` from.
 ATOM_WRITTEN = 1
@@ -101,45 +102,3 @@ def written_atoms(bits: torch.Tensor) -> torch.Tensor:
     byte would admit read-only atoms and turn exact commitment into a superset.
     """
     return (bits & ATOM_WRITTEN).bool()
-
-
-def read_atoms(bits: torch.Tensor) -> torch.Tensor:
-    """The READ set as a bool tensor: the half of the activity fact residency ignores."""
-    return (bits & ATOM_READ).bool()
-
-
-def atom_bits(write_plane: torch.Tensor, widths,
-              read_plane: torch.Tensor | None = None) -> torch.Tensor:
-    """`[BH, N/16]` uint8: the per-atom ACTIVITY byte, `WRITTEN | READ`.
-
-    Bit 0 is set for an atom this routing WRITES, bit 1 for one it READS; the two are
-    orthogonal and are never pre-ORed, because the read-only distinction is what the
-    touched-atom census and the continuation accounting are about. THE PAGE PLAN TAKES
-    THE WRITE SET ALONE -- :func:`written_atoms` -- and the kernel takes the byte.
-
-    A CONVENIENCE ENTRY: with no ``read_plane`` the write plane stands in for both
-    sides, which answers the write bits exactly and makes the read bits their mirror --
-    all a caller that only wants residency needs. A caller that gates a state sweep
-    passes BOTH planes.
-
-    IT IS A FOLD, NOT A PASS. The one liveness pass emits the class-1 words and this
-    reduces them at the atom box set, where the box->page map is a bijection, so the
-    byte is exact (docs/internals/facts/liveness_contract.md#folds). It is keyed to the
-    16-leaf quantum and to nothing else, which is what lets residency be an OUTPUT of
-    the plan rather than a consequence of it.
-
-    EVERY LEVEL IS VOTED FROM ITS AMPLITUDES here, which is what the static width mask
-    reduces to on an UNPADDED topology: a softmax amplitude is never zero, so a dense
-    level votes all ones either way. A padded topology's mask is
-    :func:`~rola.engine.facts.liveness.side_statics`'s, over a logical width this entry
-    is not given and does not derive.
-    """
-    from rola.engine.facts import liveness as lv
-    from rola.ops.liveness import liveness_words
-
-    widths = tuple(int(width) for width in widths)
-    layout = lv.LivenessLayout(D=len(widths), B=widths, L=int(write_plane.shape[-2]))
-    statics = lv.side_statics(layout, (False,) * layout.D, widths)
-    words = liveness_words(read_plane if read_plane is not None else write_plane,
-                           write_plane, layout, statics, statics)
-    return lv.page_bits(words, layout)

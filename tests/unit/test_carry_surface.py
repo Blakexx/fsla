@@ -175,13 +175,21 @@ def test_the_surface_takes_the_pass_s_words_unchanged():
     have got this far.
     """
     from rola.engine.facts.liveness import side_statics
-    from rola.ops.liveness import liveness_words
+    from rola.ops import facts as facts_ops
+    from rola.routing.factors import RouteFactors
+    from rola.routing.types import OpaqueRouting, Topology
+    from rola.values import Values
 
     desc = descriptor()
     routes, v, _, activity = operands(desc)
-    layout = LivenessLayout.of(desc, TOKENS)
+    levels = tuple(torch.rand(1, TOKENS, BH, width, device="cuda") for width in desc.B)
+    bundle = RouteFactors.from_levels(Topology(levels=tuple(OpaqueRouting(width=w) for w in desc.B)), levels, levels,
+                                      torch.ones(1, TOKENS, BH, device="cuda"))
+    layout = facts_ops.call_layout(bundle)
+    assert layout == LivenessLayout.of(desc, TOKENS)
     statics = side_statics(layout, (False,) * layout.D, layout.B)
-    words = liveness_words(routes.read, routes.write, layout, statics, statics)
+    words = facts_ops.facts(bundle, Values.from_projection(torch.ones(1, TOKENS, BH, 8, device="cuda")), layout,
+                            statics, statics).words
     assert tuple(words.shape) == (BH, 2, layout.rows, layout.words)
     call(desc, liveness=carry_ops.LivenessWords(words=words))
 

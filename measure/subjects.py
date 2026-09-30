@@ -174,12 +174,16 @@ def intra_forward(fx) -> Launch:
     return Launch(name=f"intra_forward|{spec.name}", call=run)
 
 
-def _atom_bits(read_levels, write_levels, widths):
-    """the per-atom activity byte of a call, as the engine folds it from both planes."""
-    from rola.engine.facts.planes import atom_bits
-    from rola.ops.carry import pack_side
+def _facts_of(read_levels, write_levels, descriptor):
+    """``(liveness, atom_bits)``: a drawn call's own statement of its support -- the class-1 words of its levels (the
+    contract's model, every level voted from its draw) and the per-atom activity byte the engine folds from them."""
+    from rola.engine.facts import liveness as lv
+    from rola.ops.carry import LivenessWords
 
-    return atom_bits(pack_side(write_levels), widths, pack_side(read_levels))
+    layout = lv.LivenessLayout(D=len(descriptor.B), B=tuple(descriptor.B), L=read_levels[0].shape[1])
+    statics = lv.side_statics(layout, (False,) * layout.D, tuple(level.shape[-1] for level in read_levels))
+    words = lv.liveness_words(read_levels, write_levels, layout, statics, statics)
+    return LivenessWords(words=words), lv.page_bits(words, layout)
 
 
 def carry_intra(fx) -> Launch:
@@ -212,19 +216,18 @@ def carry_intra(fx) -> Launch:
     D = len(drawn.read)
     width = intra_ops._shipped_level_width(D, prefill_ops.WINDOW)
     step = spec.tokens // calls
+    descriptor = prefill_ops._descriptor(list(spec.widths), spec.dv, 1)
     parts = []
     for c in range(calls):
         sl = slice(c * step, (c + 1) * step)
         read = [x[:, sl] for x in drawn.read]
         write = [x[:, sl] for x in drawn.write]
-        #: THE ACTIVITY BYTES gate the state sweeps to the atoms this call touches; they are
-        #: the engine's fold of the liveness words (`facts.planes.atom_bits`), a producer-side
-        #: fact, so built once here. Passing none states every atom active.
+        #: THE LIVENESS WORDS AND ACTIVITY BYTES are facts-pass outputs, the caller's, so built
+        #: once here from the draw; the bytes gate the state sweeps to the atoms this call touches.
         parts.append((read, write, drawn.gain[:, sl].contiguous(), drawn.v[:, sl].contiguous(),
                       intra_ops.pack_support(intra_ops.pad_routes(read, (width,) * D)),
                       intra_ops.pack_support(intra_ops.pad_routes(write, (width,) * D)),
-                      _atom_bits(read, write, spec.widths)))
-    descriptor = prefill_ops._descriptor(list(spec.widths), spec.dv, 1)
+                      *_facts_of(read, write, descriptor)))
     if calls == 1:
         chain = None
         state_in, state_out, page_table = _binding(fx, drawn, descriptor)
@@ -238,9 +241,9 @@ def carry_intra(fx) -> Launch:
         if chain is not None:
             chain.zero_()
         out = None
-        for read, write, gain, v, sread, swrite, bits in parts:
+        for read, write, gain, v, sread, swrite, liveness, bits in parts:
             out = prefill_ops.prefill(read, write, gain, v, list(spec.widths), modes=modes,
-                                      sread=sread, swrite=swrite, atom_bits=bits,
+                                      sread=sread, swrite=swrite, liveness=liveness, atom_bits=bits,
                                       state_in=state_in, state_out=state_out,
                                       page_table=page_table)
         return out
@@ -248,23 +251,30 @@ def carry_intra(fx) -> Launch:
     return Launch(name=name, call=run, reset=_restore(state_in) if chain is None else None)
 
 
-def liveness_pass(fx) -> Launch:
-    """The class-1 liveness words for both sides -- the pass every carry call reads."""
+def facts_pass(fx) -> Launch:
+    """Both sides' class-1 words and the fold's window scales, from the cell's draw in the bundle's format: the pass the
+    prefill's facts node launches, a side dense where the cell declares it so (its rows unread)."""
     from measure.cells import realize
     from rola.engine.facts import liveness as lv
-    from rola.ops.carry import pack_side
-    from rola.ops.liveness import liveness_words
+    from rola.ops import facts as facts_ops
+    from rola.routing.factors import RouteFactors
+    from rola.routing.types import OpaqueRouting, Topology
+    from rola.values import Values
 
     spec = fx["cell"]
     drawn = realize(spec)
-    read, write = pack_side(drawn.read), pack_side(drawn.write)
-    layout = lv.LivenessLayout(D=spec.D, B=spec.widths, L=spec.tokens)
-    statics = lv.side_statics(layout, (False,) * spec.D, layout.B)
+    topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
+    routes = RouteFactors.from_levels(topology, drawn.read, drawn.write, drawn.gain.float())
+    values = Values.from_projection(drawn.v)
+    layout = facts_ops.call_layout(routes)
+    declared = spec.declared_sparsity()
+    read_statics, write_statics = (
+        lv.side_statics(layout, tuple(not sparse[side] for sparse in declared), topology.widths) for side in (0, 1))
 
     def run():
-        return liveness_words(read, write, layout, statics, statics)
+        return facts_ops.facts(routes, values, layout, read_statics, write_statics)
 
-    return Launch(name=f"liveness_pass|{spec.name}", call=run)
+    return Launch(name=f"facts_pass|{spec.name}", call=run)
 
 
 def _modes_of(spec):
@@ -316,11 +326,12 @@ def decode_step(fx) -> Launch:
     step, at the same context position, over the same residency.
     """
     import rola
-    from rola.engine.dags.decode_dag import decode_forward
-    from rola.engine.facts import planes
+    from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
+    from rola.engine.facts import liveness as lv
+    from rola.ops import facts as facts_ops
     from rola.ops.carry import box_leaves
 
-    spec, widths = fx["cell"], fx["construction"].widths
+    spec = fx["cell"]
     if spec.decode_steps == 0:
         raise ValueError(f"{spec.name} is a prefill-only cell; it has no decode subject")
     #: The seed binds through the facade's own entry and commits exactly the pages the
@@ -328,7 +339,10 @@ def decode_step(fx) -> Launch:
     #: not of the numbers stored, so nothing has to have computed them.
     layer = fx["layer"]
     routes = fx["routes"]
-    bits = planes.atom_bits(planes.pack_side(routes.dequantized()[1]), widths)
+    layout = facts_ops.call_layout(routes)
+    words = facts_ops.facts(routes, rola.Values.from_projection(fx["v_prefill"]), layout,
+                            *facts_ops.call_statics(routes, layout)).words
+    bits = lv.page_bits(words, layout)
     seeded: dict = {}
 
     def reset():
@@ -345,7 +359,11 @@ def decode_step(fx) -> Launch:
 
     def run():
         with torch.no_grad():
-            y, _ = decode_forward(layer._produce(token)[0], rola.Values.from_projection(v_token), seeded["state"])
+            routes, values = layer._produce(token)[0], rola.Values.from_projection(v_token)
+            y, state = decode_step_gated(routes, values, seeded["state"])
+            if growth_pending(state):
+                admit_growth(state)
+                y, state = decode_step_gated(routes, values, state)
         return y
 
     #: THE ARENA'S PHYSICAL PAGES: under the VMM backing the driver maps them outside the caching allocator, so a memory
@@ -366,9 +384,9 @@ SUBJECTS = {
                            "the carry and the intra as one operator, over facts and support words the caller built: "
                            "the two kernels and the pair's own packing, never the op's facts or paging",
                            level="kernel", symbol="carry_kernel", stamp="carry_build_stamp", calls=(1, 4)),
-    "liveness_pass": Subject("liveness_pass", "carry", liveness_pass,
-                             "both sides' class-1 liveness words",
-                             level="kernel", symbol="liveness_pass", stamp="csrc_build_stamp"),
+    "facts_pass": Subject("facts_pass", "carry", facts_pass,
+                          "both sides' class-1 liveness words and the fold's window scales, from the bundle",
+                          level="kernel", symbol="facts_pass", stamp="csrc_build_stamp"),
     "entmax_solve": Subject("entmax_solve", "layer", entmax_solve,
                             "the producer's batched multi-level solve",
                             level="kernel", symbol="(union|factor|softmax)_forward_kernel",

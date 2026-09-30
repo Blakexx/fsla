@@ -1359,12 +1359,6 @@
   },
   {
    "path": "docs/internals/facts/liveness_contract.md",
-   "message": "names the work code 'C2a'",
-   "line_sha256": "328afb3b5f16beab",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/facts/liveness_contract.md",
    "message": "names the work code 'K50'",
    "line_sha256": "52cac4c088a407a6",
    "count": 1
@@ -2267,12 +2261,6 @@
    "path": "tests/unit/test_facts_rules.py",
    "message": "names the work code 'P75'",
    "line_sha256": "413b36551e580bbe",
-   "count": 1
-  },
-  {
-   "path": "tests/unit/test_liveness_contract.py",
-   "message": "names the work code 'C2a'",
-   "line_sha256": "757aefce43fcd2ad",
    "count": 1
   },
   {

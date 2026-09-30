@@ -184,7 +184,9 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurem
 
 
 def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> dict[str, torch.Tensor]:
-    """The fused producer's launch over bf16 CUDA operands: every output as the kernel writes it, ``[B, T, H, ...]``."""
+    """The fused producer's launch over bf16 CUDA operands: every output ``[B, T, H, ...]``, a view of the head-major
+    ``[B, H, T, ...]`` storage the kernel writes -- a head's tokens contiguous, which every prefill reader walks, and
+    the same bytes as token-major at one token (docs/internals/produce/produce.md#bundle)."""
     from rola.ops._ext import extension
 
     B, T, hidden = x.shape
@@ -197,7 +199,7 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
     row_dtype = torch.uint8 if D <= U8_MAX_DEPTH else torch.float16
 
     def empty(*shape, dtype=torch.float32):
-        return torch.empty(B, T, H, *shape, dtype=dtype, device=device)
+        return torch.empty(B, H, T, *shape, dtype=dtype, device=device)
 
     out = {"amp_read": empty(rows, dtype=row_dtype), "amp_write": empty(rows, dtype=row_dtype),
            "scale_read": empty(D), "scale_write": empty(D), "mass_read": empty(D), "mass_write": empty(D),
@@ -212,7 +214,7 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
         *(out[name] for name in ("amp_read", "amp_write", "scale_read", "scale_write", "mass_read", "mass_write",
                                  "read_mass", "g_write", "v_hat", "v_lo", "v_scale")),
         _arrivals(device, tiles * H), None, None, shapes, D, per_head)
-    return out
+    return {name: None if t is None else t.transpose(1, 2) for name, t in out.items()}
 
 
 def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:

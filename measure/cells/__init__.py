@@ -75,18 +75,17 @@ def level_modes(cell: CarryCell) -> int:
 def liveness_words(realized: RealizedCell, descriptor):
     """THE CELL'S OWN STATEMENT of its draw's support, as the class-1 words.
 
-    A cell knows its support because it drew it, so the words come from the contract's pure-torch MODEL and never from
-    the pass: the device pass reads the amplitudes itself and the two legs are then a cross-check, the only shape in
-    which two derivations of one fact may exist. The LAYOUT is the one contract both legs share:
-    ``[BH, 2, sum_l B_l, ceil(L / 32)]`` int32.
+    A cell knows its support because it drew it, so the words come from the contract's pure-torch MODEL over the drawn
+    levels and never from the pass: the facts pass reads a bundle's rows (`rola.ops.facts`), and the cell's levels are
+    the floats a carry call reads. The LAYOUT is the one contract both share: ``[BH, 2, sum_l B_l, ceil(L / 32)]``
+    int32, every level voted from its draw.
     """
     from rola.engine.facts import liveness as lv
-    from rola.ops.carry import LivenessWords, pack_side
+    from rola.ops.carry import LivenessWords
 
-    read, write = pack_side(realized.read), pack_side(realized.write)
-    layout = lv.LivenessLayout(D=len(descriptor.B), B=tuple(descriptor.B), L=read.shape[-2])
-    statics = lv.side_statics(layout, (False,) * layout.D, layout.B)
-    return LivenessWords(words=lv.liveness_words(read, write, layout, statics, statics))
+    layout = lv.LivenessLayout(D=len(descriptor.B), B=tuple(descriptor.B), L=realized.read[0].shape[1])
+    statics = lv.side_statics(layout, (False,) * layout.D, tuple(level.shape[-1] for level in realized.read))
+    return LivenessWords(words=lv.liveness_words(realized.read, realized.write, layout, statics, statics))
 
 
 def conservative_activity(descriptor, BH: int, device: str):

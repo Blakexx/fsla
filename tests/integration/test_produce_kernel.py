@@ -60,7 +60,7 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
     row_dtype = torch.uint8 if D <= 2 else torch.float16
 
     def poisoned(*shape, dtype=torch.float32):
-        out = torch.empty(B, T, H, *shape, dtype=dtype, device="cuda")
+        out = torch.empty(B, H, T, *shape, dtype=dtype, device="cuda")
         out.view(torch.uint8).fill_(fill)
         return out
 
@@ -76,7 +76,7 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
         x.reshape(B * T, hidden).contiguous(), route_W, route_bias, gain_bias, v_W, jobs,
         *out.values(), arrivals, *probes, shapes, D, per_head)
     torch.cuda.synchronize()
-    return out, arrivals, probes
+    return {key: None if t is None else t.transpose(1, 2) for key, t in out.items()}, arrivals, probes
 
 
 def _expected_logits(plan, x, route_W, route_bias, v_W):
@@ -102,7 +102,7 @@ def test_every_output_is_written_and_the_arrivals_reset(name):
     first, arrivals, _ = _launch(*operands, fill=0x55)
     second, _, _ = _launch(*operands, fill=0xAA)
     for key in (key for key in first if first[key] is not None):
-        assert torch.equal(first[key].view(torch.uint8), second[key].view(torch.uint8)), (
+        assert torch.equal(first[key].contiguous().view(torch.uint8), second[key].contiguous().view(torch.uint8)), (
             f"{name}: `{key}` holds a byte the kernel did not write")
     assert not arrivals.any(), f"{name}: an arrival counter was left standing"
 
@@ -241,7 +241,8 @@ def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     finally:
         producer.ledger_bind(None)
     for key in (key for key in plain if plain[key] is not None):
-        assert torch.equal(plain[key].view(torch.uint8), booked[key].view(torch.uint8)), f"binding moved `{key}`"
+        same = torch.equal(plain[key].contiguous().view(torch.uint8), booked[key].contiguous().view(torch.uint8))
+        assert same, f"binding moved `{key}`"
     phases = dict(zip(producer.LEDGER_PHASES, range(len(producer.LEDGER_PHASES)), strict=True))
     route = [name for name in producer.LEDGER_PHASES if name != "values"]
     for index, job in enumerate(jobs):

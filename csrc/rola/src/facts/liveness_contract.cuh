@@ -1,6 +1,5 @@
-// csrc/rola/src/facts/liveness_contract.cuh -- THE CLASS-1 LIVENESS WORDS: the layout
-// the one geometry-independent pass writes and every fold reads. No kernel and no
-// launch signature lives here; the pass and the host folds address these bytes
+// csrc/rola/src/facts/liveness_contract.cuh -- THE CLASS-1 LIVENESS WORDS: the layout the facts pass writes and
+// every fold reads. No kernel and no launch signature lives here; the pass and the host folds address these bytes
 // THROUGH this type, and rola/engine/facts/liveness.py is its Python mirror.
 // -- see docs/internals/facts/liveness_contract.md
 #pragma once
@@ -11,14 +10,17 @@ namespace rola::facts {
 
 constexpr int kMaxLevels = 4;
 
-//: TOKENS ARE THE MINOR AXIS, thirty-two to a word -- one warp ballot per row.
+//: TOKENS ARE THE MINOR AXIS, thirty-two to a word.
 constexpr int kTokBits = 32;
 
 enum Side : int { kRead = 0, kWrite = 1, kSides = 2 };
 
-constexpr uint16_t kBf16MagnitudeMask = 0x7fffu;
+constexpr uint16_t kF16MagnitudeMask = 0x7fffu;
 
-constexpr bool amplitude_live(uint16_t bits) { return (bits & kBf16MagnitudeMask) != 0u; }
+//: A BUNDLE DIGIT'S NONZERO TEST, on its bits: a u8 digit, or an f16 unit's magnitude, so -0 is dead.
+constexpr bool digit_live(uint8_t digit) { return digit != 0u; }
+
+constexpr bool digit_live(uint16_t bits) { return (bits & kF16MagnitudeMask) != 0u; }
 
 constexpr int token_words(int L) { return (L + kTokBits - 1) / kTokBits; }
 
@@ -56,19 +58,13 @@ struct LivenessLayout {
   constexpr uint32_t token_bit(int token) const { return 1u << (token % kTokBits); }
 };
 
-//: THE PASS'S PER-SIDE STATIC OPERANDS, which carry no logical width (KERNEL_STANDARDS.md §R13's lint).
-//: -- see docs/internals/facts/liveness_contract.md#statics
-struct SideStatics {
-  uint32_t dense_levels;
-  const uint32_t* digit_mask;
-};
-
+//: A SIDE'S STATIC OPERANDS, which carry no logical width (KERNEL_STANDARDS.md §R13's lint): a dense-level bitmask and
+//: the digit mask's words. -- see docs/internals/facts/liveness_contract.md#statics
 constexpr bool level_is_dense(uint32_t dense_levels, int level) {
   return (dense_levels >> level) & 1u;
 }
 
-constexpr bool digit_in_mask(const uint32_t* digit_mask, int row) {
-  return (digit_mask[row / 32] >> (row % 32)) & 1u;
-}
+//: `row`'s bit, from the mask word that holds it (`mask[row / 32]`).
+constexpr bool mask_bit(uint32_t word, int row) { return (word >> (row % 32)) & 1u; }
 
 }  // namespace rola::facts
