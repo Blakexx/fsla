@@ -123,8 +123,8 @@ ACTIVATION_REGISTRY: dict[ActivationTag, ActivationProperties] = {
         support_differentiable=False, kerneled=True),
 }
 
-#: THE ROW FOR A CELL WE DID NOT SOLVE. A producer is duck-typed -- anything callable
-#: returning a :class:`~rola.routing.factors.RouteFactors` -- so a level may be filled
+#: THE ROW FOR A CELL WE DID NOT SOLVE. A caller with its own levels builds the bundle
+#: with :meth:`~rola.routing.factors.RouteFactors.from_levels`, so a level may be filled
 #: by a map this table has never heard of. Such a cell is `opaque`, and its row states
 #: the honest position of every column:
 #:
@@ -132,16 +132,16 @@ ACTIVATION_REGISTRY: dict[ActivationTag, ActivationProperties] = {
 #:   level into `(mass, simplex)` and moves the mass onto the side gain, so the stored
 #:   level is on the simplex whatever the map returned.
 #: * `simplex_output` is FALSE, and it is the column that keeps the line above honest:
-#:   a foreign producer's own output is exactly the thing this package cannot vouch
-#:   for, so an opaque cell always pays the generic fold.
+#:   a caller's own levels are exactly the thing this package cannot vouch for, so an
+#:   opaque cell always pays the generic fold.
 #: * `exact_zeros` is TRUE, which is the CONSERVATIVE reading: it means "may produce
 #:   zeros", so nothing may assume this cell's support is the full rectangle.
 #: * `support_differentiable` is FALSE, the assumption that never over-promises.
 #: * `kerneled` is TRUE, and it is the one that needs saying. The column means "the
 #:   CONSUMER has been ratified for this cell", and the consumer eats tensors: it
 #:   cannot tell what produced them (no producer identity reaches `ConsumerParams`).
-#:   A foreign producer's own solve is its own module's business, so there is no
-#:   unratified kernel of ours to route around.
+#:   A caller's own solve is its own module's business, so there is no unratified
+#:   kernel of ours to route around.
 
 #: The column names, derived from the dataclass so a new column cannot be added to
 #: the rows and forgotten by the generated capability matrix.

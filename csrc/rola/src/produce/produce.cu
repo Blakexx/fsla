@@ -6,6 +6,10 @@
 #include "common/torch_seam.cuh"
 
 #include "common/arch_runtime.cuh"
+#include "common/burst.cuh"
+#include "common/ops.cuh"
+#include "common/static_for.cuh"
+#include "common/structure_switch.cuh"
 #include "produce/produce.cuh"
 #include "produce/produce_api.cuh"
 
@@ -13,18 +17,215 @@ namespace rola {
 namespace produce {
 namespace detail {
 
+namespace ops = denseref::ops;
+
 __device__ __forceinline__ Job load_job(const int32_t* row) {
   return Job{row[kFieldKind],     row[kFieldHead],  row[kFieldHeads],    row[kFieldSolve],
              row[kFieldWidth],    row[kFieldIn0],   row[kFieldIn1],      row[kFieldOutRead],
              row[kFieldOutWrite], row[kFieldLevel], row[kFieldFoldRead], row[kFieldFoldWrite]};
 }
 
-//: THE PROJECTION: the job's columns for the tile's tokens, fp32, into `logits`. STUB: zeros. -- see docs/internals/produce/produce.md#accumulate
-__device__ void accumulate(const ProduceParams& /*p*/, const Job& /*job*/, int /*token0*/,
-                           float (*logits)[kMaxColumns]) {
+//: A job's projection columns: a route job's row (both rows of a union's), or a value job's heads' channels.
+__device__ __forceinline__ int job_columns(const ProduceParams& p, const Job& job) {
+  if (job.kind == kJobValue) return job.heads * p.d_v;
+  return job.in1 >= 0 ? 2 * job.width : job.width;
+}
+
+__device__ __forceinline__ int route_column(const Job& job, int j) {
+  return j < job.width ? job.in0 + j : job.in1 + (j - job.width);
+}
+
+//: THE WEIGHT ROW of job column `j`: its hidden run, contiguous.
+__device__ __forceinline__ const __nv_bfloat16* weight_row(const ProduceParams& p, const Job& job,
+                                                           int j) {
+  if (job.kind == kJobValue) return p.v_W + static_cast<int64_t>(job.head * p.d_v + j) * p.v_row;
+  return p.route_W + job.head * p.w_head + static_cast<int64_t>(route_column(job, j)) * p.w_col;
+}
+
+//: The job's bias row, or null: a value job has none, and a route job only when the routing declares one.
+__device__ __forceinline__ const float* bias_row(const ProduceParams& p, const Job& job) {
+  return job.kind == kJobRoute && p.route_bias != nullptr ? p.route_bias + job.head * p.C : nullptr;
+}
+
+//: Column `j`'s bias: a predicated load, never a branch around one.
+__device__ __forceinline__ float column_bias(const float* bias, const Job& job, int j, bool live) {
+  return bias != nullptr && live ? __ldg(bias + route_column(job, j)) : 0.0f;
+}
+
+//: THE WARPS' SHARE of a job's columns: `per_warp` MMA column tiles a warp, `groups` warps across the columns, and
+//: `slices` warps across the hidden axis where the columns alone would leave warps idle. -- see docs/internals/produce/produce.md#tiling
+struct Tiling {
+  int per_warp, groups, slices;
+};
+
+__device__ __forceinline__ Tiling tiling(int columns) {
+  const int tiles = (columns + 15) / 16;
+  const int per_warp = tiles <= kProduceWarps ? 1 : tiles <= 2 * kProduceWarps ? 2 : 4;
+  const int groups = (tiles + per_warp - 1) / per_warp;
+  const int slices = groups == 1 ? 8 : groups == 2 ? 4 : groups <= 4 ? 2 : 1;
+  return {per_warp, groups, slices};
+}
+
+//: One lane's 16-byte chunk of a hidden run, or zeros past the run's end (and no load).
+__device__ __forceinline__ uint4 chunk(const __nv_bfloat16* run, int k, bool live) {
+  return live ? __ldg(reinterpret_cast<const uint4*>(run + k)) : make_uint4(0u, 0u, 0u, 0u);
+}
+
+//: ONE K-BLOCK's operands: a lane's chunks of its tiles' column runs and of its token groups' rows.
+template <int PerWarp, int Groups>
+struct KBlock {
+  uint4 a[PerWarp][2];
+  uint4 b[Groups];
+};
+
+//: THE K-LOOP of one warp's share: `PerWarp` column tiles by `Groups` token groups over its slice's k-blocks, a
+//: burst. Both operands' fragments are the lanes' 16-byte chunks: the MMA's k order is permuted to the chunk's, the
+//: same permutation on both sides. -- see docs/internals/produce/produce.md#accumulate
+//: @burst
+template <int PerWarp, int Groups>
+__device__ __forceinline__ void project(const ProduceParams& p, const Job& job, int token0,
+                                        int columns, int tile0, int slice, int slices,
+                                        float (&acc)[PerWarp][Groups][4]) {
+  const int lane = static_cast<int>(threadIdx.x) & 31, g = lane >> 2, q = lane & 3;
+  const __nv_bfloat16* w_run[PerWarp][2];
+  bool w_live[PerWarp][2];
+  rola::static_for<PerWarp>([&](auto I) {
+    constexpr int i = decltype(I)::value;
+    rola::static_for<2>([&](auto R) {
+      constexpr int r = decltype(R)::value;
+      const int j = (tile0 + i) * 16 + g + 8 * r;
+      w_live[i][r] = j < columns;
+      w_run[i][r] = (w_live[i][r] ? weight_row(p, job, j) : p.x) + 8 * q;
+    });
+  });
+  const __nv_bfloat16* x_run[Groups];
+  bool x_live[Groups];
+  rola::static_for<Groups>([&](auto N) {
+    constexpr int n = decltype(N)::value;
+    const int token = token0 + n * 8 + g;
+    x_live[n] = token < p.BT;
+    x_run[n] = p.x + static_cast<int64_t>(x_live[n] ? token : 0) * p.hidden + 8 * q;
+  });
+  const int blocks = (p.hidden + kKBlock - 1) / kKBlock;
+  const int count = slice < blocks ? (blocks - slice + slices - 1) / slices : 0;
+
+  using Ops = KBlock<PerWarp, Groups>;
+  auto gather = [&](int unit, Ops& ops) {
+    const int k = (slice + unit * slices) * kKBlock;
+    const bool k_live = k + 8 * q < p.hidden;
+    rola::static_for<PerWarp>([&](auto I) {
+      constexpr int i = decltype(I)::value;
+      ops.a[i][0] = chunk(w_run[i][0], k, k_live && w_live[i][0]);
+      ops.a[i][1] = chunk(w_run[i][1], k, k_live && w_live[i][1]);
+    });
+    rola::static_for<Groups>([&](auto N) {
+      constexpr int n = decltype(N)::value;
+      ops.b[n] = chunk(x_run[n], k, k_live && x_live[n]);
+    });
+  };
+  auto issue = [&](const Ops& ops) {
+    rola::static_for<Groups>([&](auto N) {
+      constexpr int n = decltype(N)::value;
+      const uint32_t b0[2] = {ops.b[n].x, ops.b[n].y};
+      const uint32_t b1[2] = {ops.b[n].z, ops.b[n].w};
+      rola::static_for<PerWarp>([&](auto I) {
+        constexpr int i = decltype(I)::value;
+        const uint4& lo = ops.a[i][0];
+        const uint4& hi = ops.a[i][1];
+        const uint32_t a0[4] = {lo.x, hi.x, lo.y, hi.y};
+        const uint32_t a1[4] = {lo.z, hi.z, lo.w, hi.w};
+        ops::mma(acc[i][n], a0, b0);
+        ops::mma(acc[i][n], a1, b1);
+      });
+    });
+  };
+  rola::burst::Burst<Ops>::run(
+      0, count, gather,
+      [&](Ops& cur, Ops& next, int unit) {
+        gather(unit, next);
+        issue(cur);
+      },
+      [&](Ops& cur, Ops& /*unused*/) { issue(cur); });
+}
+
+//: One warp's share, projected and stored: the logits (+ bias), or a slice's partials. -- see docs/internals/produce/produce.md#accumulate
+template <int PerWarp, int Groups>
+__device__ __forceinline__ void project_share(const ProduceParams& p, const Job& job, int token0,
+                                              int columns, const Tiling& t, float* logits) {
+  const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
+  const int group = warp / t.slices, slice = warp % t.slices;
+  if (group >= t.groups) return;
+  float acc[PerWarp][Groups][4] = {};
+  project<PerWarp, Groups>(p, job, token0, columns, group * PerWarp, slice, t.slices, acc);
+  const int g = lane >> 2, q = lane & 3;
+  const int base = t.slices == 1 ? 0 : kPartialBase + slice * t.groups * 16;
+  const float* bias = t.slices == 1 ? bias_row(p, job) : nullptr;
+  //: a lane's accumulators hold two columns a tile, each for two tokens a group: the column facts once, the stores
+  //: predicated
+  rola::static_for<PerWarp>([&](auto I) {
+    constexpr int i = decltype(I)::value;
+    rola::static_for<2>([&](auto H) {
+      constexpr int h = decltype(H)::value;
+      const int j = (group * PerWarp + i) * 16 + g + 8 * h;
+      const bool live = j < columns;
+      const float b = column_bias(bias, job, j, live);
+      float* column = logits + base + j;
+      rola::static_for<Groups>([&](auto N) {
+        constexpr int n = decltype(N)::value;
+        rola::static_for<2>([&](auto T) {
+          constexpr int tt = decltype(T)::value;
+          if (live) column[(n * 8 + 2 * q + tt) * kLogitStride] = acc[i][n][2 * h + tt] + b;
+        });
+      });
+    });
+  });
+}
+
+//: The slices' partials summed in slice order (+ bias): the same logits on every run.
+__device__ void reduce_slices(const ProduceParams& p, const Job& job, int columns, const Tiling& t,
+                              float* logits) {
 #pragma unroll 1
-  for (int i = threadIdx.x; i < kTokenTile * kMaxColumns; i += kProduceThreads) {
-    (&logits[0][0])[i] = 0.0f;
+  for (int i = static_cast<int>(threadIdx.x); i < kTokenTile * columns; i += kProduceThreads) {
+    float* row = logits + (i / columns) * kLogitStride;
+    const int j = i % columns;
+    float sum = 0.0f;
+#pragma unroll 1
+    for (int s = 0; s < t.slices; ++s) sum += row[kPartialBase + s * t.groups * 16 + j];
+    row[j] = sum + column_bias(bias_row(p, job), job, j, true);
+  }
+}
+
+//: THE PROJECTION: the job's columns for the tile's tokens, fp32 (+ bias), into the logit rows. The warps' share and
+//: the tile's live token groups (three round up to four) choose the burst once. -- see docs/internals/produce/produce.md#accumulate
+__device__ void accumulate(const ProduceParams& p, const Job& job, int token0, float* logits) {
+  const int columns = job_columns(p, job);
+  const Tiling t = tiling(columns);
+  const int live_groups = min(kTokenGroups, (p.BT - token0 + 7) / 8);
+  const int share = t.per_warp == 1 ? 0 : t.per_warp == 2 ? 1 : 2;
+  const int groups = live_groups == 1 ? 0 : live_groups == 2 ? 1 : 2;
+  rola::uniform_switch<3>(share, [&](auto S) {
+    rola::uniform_switch<3>(groups, [&](auto G) {
+      project_share<1 << decltype(S)::value, 1 << decltype(G)::value>(p, job, token0, columns, t,
+                                                                      logits);
+    });
+  });
+  if (t.slices > 1) {
+    __syncthreads();
+    reduce_slices(p, job, columns, t, logits);
+  }
+}
+
+//: The job's logits as computed, for its gate: written only when the probe is asked for.
+__device__ void probe_logits(const ProduceParams& p, int job_index, int token0, int columns,
+                             const float* logits) {
+  float* out = p.logit_probe + static_cast<int64_t>(job_index) * p.BT * kMaxColumns;
+#pragma unroll 1
+  for (int i = static_cast<int>(threadIdx.x); i < kTokenTile * columns; i += kProduceThreads) {
+    const int token = token0 + i / columns;
+    if (token < p.BT) {
+      out[static_cast<int64_t>(token) * kMaxColumns + i % columns] =
+          logits[(i / columns) * kLogitStride + i % columns];
+    }
   }
 }
 
@@ -81,7 +282,7 @@ __device__ void finish_head(const ProduceParams& p, const Job& job, int tile, in
 
 //: THE VALUE DIGITS of the job's heads for the tile's tokens. STUB: zeros. -- see docs/internals/produce/produce.md#value-rows
 __device__ void value_rows(const ProduceParams& p, const Job& job, int token0,
-                           float (* /*logits*/)[kMaxColumns]) {
+                           const float* /*logits*/) {
   const int channels = job.heads * p.d_v;
 #pragma unroll 1
   for (int i = threadIdx.x; i < kTokenTile * channels; i += kProduceThreads) {
@@ -98,19 +299,23 @@ __device__ void value_rows(const ProduceParams& p, const Job& job, int token0,
   }
 }
 
+//: THE GRID: token tiles fastest, so the blocks resident together share one job's weights in L2.
 __global__ __launch_bounds__(kProduceThreads, 1) void produce_kernel(ProduceParams p) {
-  const Job job = load_job(p.jobs + static_cast<int64_t>(blockIdx.x) * kJobFields);
-  const int token0 = static_cast<int>(blockIdx.y) * kTokenTile;
-  __shared__ float logits[kTokenTile][kMaxColumns];
+  const int job_index = static_cast<int>(blockIdx.y), tile = static_cast<int>(blockIdx.x);
+  const Job job = load_job(p.jobs + static_cast<int64_t>(job_index) * kJobFields);
+  const int token0 = tile * kTokenTile;
+  extern __shared__ float logits[];
   accumulate(p, job, token0, logits);
   __syncthreads();
+  if (p.logit_probe != nullptr) probe_logits(p, job_index, token0, job_columns(p, job), logits);
   if (job.kind == kJobRoute) {
     const int warp = static_cast<int>(threadIdx.x) >> 5;
-    const int token = token0 + warp;
-    if (warp < kTokenTile && token < p.BT) {
-      route_row(p, job, token, logits[warp], logits[warp] + job.width, threadIdx.x & 31);
+#pragma unroll 1
+    for (int row = warp; row < kTokenTile && token0 + row < p.BT; row += kProduceWarps) {
+      const float* logit_row = logits + row * kLogitStride;
+      route_row(p, job, token0 + row, logit_row, logit_row + job.width, threadIdx.x & 31);
     }
-    finish_head(p, job, static_cast<int>(blockIdx.y), token0);
+    finish_head(p, job, tile, token0);
   } else {
     value_rows(p, job, token0, logits);
   }
@@ -135,20 +340,30 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                           Tensor amp_write, Tensor scale_read, Tensor scale_write, Tensor mass_read,
                           Tensor mass_write, Tensor read_mass, Tensor g_write, Tensor v_hat,
                           std::optional<Tensor> v_lo, Tensor v_scale, Tensor arrivals,
-                          int64_t levels, int64_t route_jobs_per_head) {
+                          std::optional<Tensor> logit_probe, int64_t levels,
+                          int64_t route_jobs_per_head) {
   check_arch_table();
   detail::check_bf16(x, "x");
   detail::check_bf16(route_W, "route_W");
   detail::check_bf16(v_W, "v_W");
   STD_TORCH_CHECK(x.dim() == 2 && x.is_contiguous(), "x is [BT, hidden], contiguous, got ",
                   shape(x.sizes()));
-  STD_TORCH_CHECK(route_W.dim() == 3 && route_W.stride(2) == 1,
-                  "route_W is [H, hidden, C] with its columns contiguous, got ",
+  STD_TORCH_CHECK(route_W.dim() == 3 && route_W.stride(1) == 1,
+                  "route_W is [H, hidden, C] with its hidden axis contiguous, got ",
                   shape(route_W.sizes()));
-  STD_TORCH_CHECK(v_W.dim() == 2 && v_W.stride(0) == 1,
-                  "v_W is [H * d_v, hidden] with its channels contiguous, got ",
+  STD_TORCH_CHECK(v_W.dim() == 2 && v_W.stride(1) == 1,
+                  "v_W is [H * d_v, hidden] with its hidden axis contiguous, got ",
                   shape(v_W.sizes()));
   const int64_t BT = x.size(0), hidden = x.size(1), H = route_W.size(0), C = route_W.size(2);
+  //: every hidden run is read in 16-byte chunks: eight elements, aligned
+  STD_TORCH_CHECK(hidden % 8 == 0 && route_W.stride(0) % 8 == 0 && route_W.stride(2) % 8 == 0
+                      && v_W.stride(0) % 8 == 0,
+                  "the hidden size and the weights' strides are multiples of 8, got hidden ",
+                  hidden);
+  for (const Tensor* t : {&x, &route_W, &v_W}) {
+    STD_TORCH_CHECK(reinterpret_cast<uintptr_t>(t->const_data_ptr()) % 16 == 0,
+                    "x and the weights start 16-byte aligned");
+  }
   STD_TORCH_CHECK(route_W.size(1) == hidden && v_W.size(1) == hidden, "route_W and v_W read x's ",
                   hidden, " hidden channels");
   STD_TORCH_CHECK(v_W.size(0) % H == 0, "v_W's ", v_W.size(0), " channels are not ", H,
@@ -184,16 +399,20 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   STD_TORCH_CHECK(arrivals.scalar_type() == Dtype::Int && arrivals.is_contiguous()
                       && arrivals.numel() >= tiles * H,
                   "arrivals holds a counter a (token tile, head): ", tiles * H);
+  STD_TORCH_CHECK(jobs.size(0) <= 65535, "a launch runs at most 65535 jobs, got ", jobs.size(0));
+  if (logit_probe.has_value()) {
+    detail::check_f32(*logit_probe, "logit_probe", jobs.size(0) * BT * kMaxColumns);
+  }
 
   ProduceParams p{};
   p.x = reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr());
   p.route_W = reinterpret_cast<const __nv_bfloat16*>(route_W.const_data_ptr());
   p.w_head = route_W.stride(0);
-  p.w_k = route_W.stride(1);
+  p.w_col = route_W.stride(2);
   p.route_bias = route_bias.has_value() ? route_bias->const_data_ptr<float>() : nullptr;
   p.gain_bias = gain_bias.const_data_ptr<float>();
   p.v_W = reinterpret_cast<const __nv_bfloat16*>(v_W.const_data_ptr());
-  p.v_k = v_W.stride(1);
+  p.v_row = v_W.stride(0);
   p.jobs = jobs.const_data_ptr<int32_t>();
   p.amp_read = reinterpret_cast<uint8_t*>(amp_read.mutable_data_ptr());
   p.amp_write = reinterpret_cast<uint8_t*>(amp_write.mutable_data_ptr());
@@ -207,6 +426,7 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.v_lo = v_lo.has_value() ? v_lo->mutable_data_ptr<uint8_t>() : nullptr;
   p.v_scale = v_scale.mutable_data_ptr<float>();
   p.arrivals = arrivals.mutable_data_ptr<int32_t>();
+  p.logit_probe = logit_probe.has_value() ? logit_probe->mutable_data_ptr<float>() : nullptr;
   p.BT = static_cast<int>(BT);
   p.hidden = static_cast<int>(hidden);
   p.H = static_cast<int>(H);
@@ -219,8 +439,18 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.route_jobs_per_head = static_cast<int>(route_jobs_per_head);
 
   const DeviceGuard guard(x.get_device_index());
-  detail::produce_kernel<<<dim3(static_cast<unsigned>(jobs.size(0)), static_cast<unsigned>(tiles)),
-                           kProduceThreads, 0, current_stream()>>>(p);
+  //: ONCE: the attribute call is host time on the launch path
+  static bool configured = false;
+  if (!configured) {
+    const int optin = current_device_properties().sharedMemPerBlockOptin;
+    STD_TORCH_CHECK(kLogitBytes <= optin, "the producer's ", kLogitBytes,
+                    "-byte logit rows exceed this device's ", optin, "-byte opt-in limit");
+    ROLA_CUDA_CHECK(cudaFuncSetAttribute(detail::produce_kernel,
+                                         cudaFuncAttributeMaxDynamicSharedMemorySize, kLogitBytes));
+    configured = true;
+  }
+  detail::produce_kernel<<<dim3(static_cast<unsigned>(tiles), static_cast<unsigned>(jobs.size(0))),
+                           kProduceThreads, kLogitBytes, current_stream()>>>(p);
   ROLA_CUDA_LAUNCH_CHECK();
 }
 

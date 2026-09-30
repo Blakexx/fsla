@@ -35,8 +35,10 @@ the next set's whole chain, so the multiplies issue inside its second half.
 The loop, over units `first .. first + count - 1`: two sets alternate; the first unit is
 gathered ahead; each pair gathers `i + 1`, bursts `i` after it, gathers `i + 2` when it
 exists, bursts `i + 1` after that; an odd count bursts its last unit against the stale other
-set (the hooks then wait for nothing). The count is uniform, so the guards are plain
-branches, and a unit past the count is never gathered. A phase that must decide mid-way (the
+set (the hooks then wait for nothing). The count is uniform, so the guards are real branches:
+the tail's two are one-trip loops (`ops::once`), because a plain `if` around a small burst (the
+producer's one-tile, one-group k-block is two HMMAs) is if-converted into predicated HMMAs
+(§20; measured on the producer, 2026-09-29), and a unit past the count is never gathered. A phase that must decide mid-way (the
 fold polls a freed slot's fill halfway through a chunk) runs two bursts with the decision
 between them: the pipeline restarts once, one exposed gather, and the decide tier stays out
 of the loop.

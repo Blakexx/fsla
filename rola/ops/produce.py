@@ -26,10 +26,10 @@ from rola.routing.factors import U8_MAX_DEPTH, RouteFactors
 from rola.routing.producer import Routing
 from rola.routing.projection import _packed_router_logits
 from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
-from rola.routing.types import EntmaxActivation, IndependentRouting, TiedRouting, UnionRouting
+from rola.routing.types import IndependentRouting, TiedRouting, UnionRouting
 from rola.values import DEFAULT_VALUE_DIGITS, Values
 
-__all__ = ["ProducerPlan", "ProducerWeights", "channel_major", "job_table", "produce", "projection_dtype",
+__all__ = ["ProducerPlan", "ProducerWeights", "hidden_contiguous", "job_table", "produce", "projection_dtype",
            "route_logits", "run_kernel"]
 
 
@@ -64,7 +64,8 @@ class ProducerPlan:
 class ProducerWeights:
     """The tensors a producer call reads, as the call reads them: ``route_W [H, hidden, columns]`` in the projection's
     dtype (``projection_dtype``), ``route_bias [H, columns]`` or ``None``, ``gain_bias [H, gain columns]``, and
-    ``v_W [H * d_v, hidden]`` (a linear's weight) in bf16, channel-contiguous for the kernel (:func:`channel_major`)."""
+    ``v_W [H * d_v, hidden]`` (a linear's weight) in bf16. The kernel reads both weights along the hidden axis, so it
+    takes them with that axis contiguous (:func:`hidden_contiguous`; a linear's weight already is)."""
 
     route_W: torch.Tensor
     route_bias: torch.Tensor | None
@@ -80,22 +81,26 @@ def projection_dtype(x: torch.Tensor) -> torch.dtype:
     return torch.bfloat16 if x.is_cuda else torch.float32
 
 
-def channel_major(W: torch.Tensor) -> torch.Tensor:
-    """A linear's ``[out, in]`` weight stored with its OUT axis contiguous and viewed back: the kernel streams a value
-    job's channels for one input feature as one contiguous run."""
-    return W.t().contiguous().t()
+def hidden_contiguous(route_W: torch.Tensor) -> torch.Tensor:
+    """``route_W [H, hidden, columns]`` stored with its hidden axis contiguous and viewed back: the kernel loads a
+    column's whole hidden run in 16-byte chunks, straight into its MMA fragments."""
+    return route_W.transpose(1, 2).contiguous().transpose(1, 2)
 
 
 #: THE JOB TABLE's kinds and solves, mirrored from csrc/rola/src/produce/produce.cuh (`JobKind`, `SolveKind`).
 _ROUTE, _VALUE = 0, 1
 _SOLVES = {("softmax", None): 0, ("entmax", 1.5): 1, ("entmax", 2.0): 2, ("union", 1.5): 3, ("union", 2.0): 4}
 _FIELDS = 12
-#: the kernel's widest job: a union level's two rows, or a value job's channels
+#: the kernel's widest job (a union level's two rows, or a value job's channels) and widest solve row
 _MAX_COLUMNS = 512
+_MAX_WIDTH = 256
 
 
 def _solve(activation) -> int:
-    return _SOLVES[("entmax", activation.alpha) if isinstance(activation, EntmaxActivation) else ("softmax", None)]
+    """The kernel's solve for an activation, by its registry tag."""
+    if activation.tag not in _SOLVES:
+        raise ValueError(f"the producer kernel has no solve for the activation {activation.tag}")
+    return _SOLVES[activation.tag]
 
 
 def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
@@ -107,6 +112,8 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
     per_head: list[tuple[int, ...]] = []
     for level, spec in enumerate(resolved.levels):
         width = resolved.branches[level]
+        if width > _MAX_WIDTH:
+            raise ValueError(f"the producer solves rows of at most {_MAX_WIDTH} leaves; level {level} is {width} wide")
         write_col, read_col = slots[level], slots[read_slot[level]]
         fold_read, fold_write = int(not plan.read_skip[level]), int(not plan.write_skip[level])
         if isinstance(spec, UnionRouting):
@@ -138,7 +145,7 @@ def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, int]:
 #: the per-(token tile, head) arrival counters, zero between calls (the kernel's finisher resets its own), one buffer a
 #: device grown as a call needs
 _ARRIVALS: dict[str, torch.Tensor] = {}
-_TOKEN_TILE = 4
+_TOKEN_TILE = 32
 
 
 def _arrivals(device: torch.device, count: int) -> torch.Tensor:
@@ -153,6 +160,9 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
     from rola.ops._ext import extension
 
     B, T, hidden = x.shape
+    if hidden % 8:
+        raise ValueError(f"the producer kernel reads hidden runs in 16-byte chunks: the hidden size must be a multiple "
+                         f"of 8, got {hidden}")
     H, D = plan.num_heads, plan.routing.topology.D
     rows = plan.routing.resolved.packed_logit_width
     device = x.device
@@ -172,7 +182,7 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
         weights.gain_bias.float().contiguous(), weights.v_W, jobs,
         *(out[name] for name in ("amp_read", "amp_write", "scale_read", "scale_write", "mass_read", "mass_write",
                                  "read_mass", "g_write", "v_hat", "v_lo", "v_scale")),
-        _arrivals(device, tiles * H), D, per_head)
+        _arrivals(device, tiles * H), None, D, per_head)
     return out
 
 

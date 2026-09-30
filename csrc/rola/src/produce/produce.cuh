@@ -1,9 +1,7 @@
 #pragma once
 
-// THE PRODUCER: one launch from a stretch of tokens to the bundle -- every routing level's projection, solve and
-// unit-max rows, the write gain, and the value digits. The layer's declared routing compiles once into the job table
-// this reads; every width and kind is a runtime field of it, so the family is one instantiation.
-// see docs/internals/produce/produce.md
+// THE PRODUCER: one launch from a stretch of tokens to the bundle, every width and kind a runtime field of the job
+// table the layer's declared routing compiles into. see docs/internals/produce/produce.md
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -15,12 +13,19 @@ namespace produce {
 
 constexpr int kProduceThreads = 256;
 constexpr int kProduceWarps = kProduceThreads / 32;
-//: The tokens a block carries through the projection: each weight element it streams feeds this many dot products.
-constexpr int kTokenTile = 4;
-//: A level's widest row; a union job reads two logit rows of it.
+//: A block's tokens: four MMA token groups. -- see docs/internals/produce/produce.md#accumulate
+constexpr int kTokenTile = 32;
+constexpr int kTokenGroups = kTokenTile / 8;
+//: Four lanes' 16-byte chunks: two MMA k-steps.
+constexpr int kKBlock = 32;
+//: A solve row's widest; a job holds two (a union's) or a value job's heads.
 constexpr int kMaxWidth = 256;
-//: A job's columns: one level's row, both of a union's, or a value job's heads.
 constexpr int kMaxColumns = 2 * kMaxWidth;
+//: Four words past the columns: an accumulator store's 32 lanes hit 32 banks.
+constexpr int kLogitStride = kMaxColumns + 4;
+constexpr int kLogitBytes = kTokenTile * kLogitStride * static_cast<int>(sizeof(float));
+//: Where a sliced projection's partials sit in each token row: past the columns a sliced job has (at most 64).
+constexpr int kPartialBase = 64;
 
 //: THE JOB TABLE, one row of int32 per job -- see docs/internals/produce/produce.md#jobs
 enum JobField : int {
@@ -52,15 +57,13 @@ struct Job {
 
 //: THE OPERANDS, as addresses: every tensor the host entry validated, with the strides it read off them.
 struct ProduceParams {
-  const __nv_bfloat16* x;  // [BT, hidden]
-  //: [H, hidden, C]: (h, k, c) at h * w_head + k * w_k + c -- the columns of one (head, k) are contiguous.
-  const __nv_bfloat16* route_W;
-  int64_t w_head, w_k;
-  const float* route_bias;  // [H, C] or null
-  const float* gain_bias;   // [H, G]
-  //: [H * d_v, hidden] with unit stride on the channel axis: (c, k) at k * v_k + c.
-  const __nv_bfloat16* v_W;
-  int64_t v_k;
+  const __nv_bfloat16* x;        // [BT, hidden]
+  const __nv_bfloat16* route_W;  // [H, hidden, C], (h, k, c) at h * w_head + c * w_col + k
+  int64_t w_head, w_col;
+  const float* route_bias;   // [H, C] or null
+  const float* gain_bias;    // [H, G]
+  const __nv_bfloat16* v_W;  // [H * d_v, hidden], (c, k) at c * v_row + k
+  int64_t v_row;
   const int32_t* jobs;  // [n_jobs, kJobFields]
 
   uint8_t* amp_read;  // [BT, H, rows], u8 or f16
@@ -69,12 +72,13 @@ struct ProduceParams {
   float* scale_write;
   float* mass_read;  // [BT, H, D], the finisher's operands
   float* mass_write;
-  float* read_mass;   // [BT, H]
-  float* g_write;     // [BT, H]
-  int8_t* v_hat;      // [BT, H, d_v]
-  uint8_t* v_lo;      // [BT, H, d_v] or null (one digit)
-  float* v_scale;     // [BT, H]
-  int32_t* arrivals;  // [tiles, H], zero between calls: the finisher resets its own
+  float* read_mass;    // [BT, H]
+  float* g_write;      // [BT, H]
+  int8_t* v_hat;       // [BT, H, d_v]
+  uint8_t* v_lo;       // [BT, H, d_v] or null (one digit)
+  float* v_scale;      // [BT, H]
+  int32_t* arrivals;   // [tiles, H], zero between calls: the finisher resets its own
+  float* logit_probe;  // [jobs, BT, kMaxColumns] or null: every job's projection, for its gate
 
   int BT, hidden, H, C, G, rows, D, d_v, row_form, route_jobs_per_head;
 };
