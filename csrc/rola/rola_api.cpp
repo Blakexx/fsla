@@ -174,11 +174,11 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def(
       "rola_decode_forward(Tensor[] read, Tensor[] write, Tensor[] read_scale, Tensor[] write_scale, int[] normalize, "
       "Tensor? dials, Tensor g_write, Tensor v_hat, Tensor? v_lo, Tensor v_scale, "
-      "Tensor(a!) state, Tensor(b!) ws, Tensor(c!) ctr, Tensor(d!) growth, Tensor(e!) growth_any, "
-      "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor atom_bits, int[] level_widths, int[] level_row_offsets, "
-      "int lattice_k, int lattice_m, bool write_dense, int n_split, float eps, Tensor? page_table=None, Tensor(h!)? pool_slots=None, "
-      "Tensor(i!)? pool_cursor=None, Tensor(j!)? pool_map=None) -> Tensor");
-  m.def("rola_decode_residency(bool decay, int levels) -> int");
+      "Tensor(a!) state, Tensor(b!) yacc, Tensor(c!) queue, Tensor(d!) growth, Tensor(e!) growth_any, "
+      "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor(h!) atom_bits, int[] level_widths, int[] level_row_offsets, "
+      "int lattice_k, int lattice_m, bool write_dense, int ctas, float eps, Tensor(i!)? page_table=None, "
+      "Tensor? pool_slots=None, Tensor(j!)? pool_cursor=None) -> Tensor");
+  m.def("rola_decode_residency() -> int");
   m.def("rola_decode_build_stamp() -> int");
   m.def("rola_decode_arms() -> int[][]");
   m.def("rola_decode_ledger_bind(Tensor? ledger) -> ()");

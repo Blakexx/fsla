@@ -48,8 +48,8 @@ __all__ = [
     "C_DECODE_UNITS_PER_CTA",
     "DecodeScratch",
     "arms",
+    "derive_ctas",
     "derive_decode_geometry",
-    "derive_n_split",
     "leaf_rate_dials_for",
     "step",
     "step_plane",
@@ -80,7 +80,7 @@ LEDGER_WARPS = 16
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/decode/decode.md#phase-ledger)
-    """Bind the phase ledger the next steps book into, ``[BH * n_split, 32, 5]`` int64 cycles, or ``None``."""
+    """Bind the phase ledger the next steps book into, ``[ctas, 16, 5]`` int64 cycles, or ``None``."""
     extension().rola_decode_ledger_bind(ledger)
 
 
@@ -129,7 +129,6 @@ def derive_decode_geometry(
     BH: int,
     device: torch.device | str,
     eps: float = READOUT_EPS,
-    n_split: int | None = None,
 ) -> DecodeGeometry:
     """Build the carrier once, at the boundary.
 
@@ -142,9 +141,8 @@ def derive_decode_geometry(
     the caller holds them -- past :func:`_admit`'s floor, which REFUSES rather than
     pads (R13: the kernel never pads or masks).
 
-    ``n_split`` is FROZEN here and never selected per step: re-deriving it would
-    reintroduce exactly the per-step selection the design dissolves
-    (:func:`derive_n_split`).
+    ``ctas`` is FROZEN here and never selected per step: the grid is launched before the step's
+    work is known, and the work queue balances it inside the launch (:func:`derive_ctas`).
     """
     widths = tuple(topology.widths)
     _admit(widths)
@@ -157,60 +155,56 @@ def derive_decode_geometry(
         row_offset.append(acc)
         acc += w
 
-    if n_split is None:
-        n_split = derive_n_split(widths, k, m, decay=decay, BH=BH, device=device)
-
+    ctas = derive_ctas(widths, k, m, BH=BH, device=device)
     write_dense = not topology.activation_properties(D - 1, "write").exact_zeros
     return DecodeGeometry(
         D=D, widths=widths, level_row_offset=tuple(row_offset), lattice_k=k, lattice_m=m,
-        d_v=int(d_v), has_decay=decay, eps=eps, n_split=int(n_split), write_dense=write_dense)
+        d_v=int(d_v), has_decay=decay, eps=eps, ctas=int(ctas), write_dense=write_dense)
 
 
-def derive_n_split(widths, lattice_k: int, lattice_m: int, *, decay: bool, BH: int,
-                   device) -> int:
-    """CTAs per batch-head: ONE WAVE of the step's own declared residency, work permitting.
+def derive_ctas(widths, lattice_k: int, lattice_m: int, *, BH: int, device) -> int:
+    """The step's resident grid: ONE WAVE of the declared residency, work permitting.
 
-    THE SPLIT IS A WAVE, not a target. Every CTA pays the fold and the factor tables before
-    it can walk anything, so a second wave re-pays that whole prologue for work the first
-    wave could have finished -- which is why over-launching is not free the way a
-    `beyond-realized CTA exits early` argument suggests. One wave is where the replicated
-    prologue is paid exactly once per SM slot.
+    The CTAs stay resident and claim positions from every batch-head's queue, so the grid is
+    not split per batch-head: a head with more live work simply takes more claims
+    (docs/internals/decode/decode.md#queue). One wave is the ceiling because a CTA that
+    waited for a second wave would pay a head's prologue for work the resident CTAs could
+    claim; the supply bound keeps a small topology from launching CTAs with nothing to claim.
 
     The residency comes from :func:`rola.ops._ext.extension().rola_decode_residency`, i.e.
     off the same ``constexpr`` the kernel's ``__launch_bounds__`` are built from: a python
     mirror of a launch bound is exactly the constant that drifts.
-
-    ``n_split`` is FROZEN by the caller for the sequence and never re-selected per step.
     """
-    D = len(widths)
     #: THE UNIT CEILING, from the box's spans: a walk unit's leaves are the innermost
     #: level's run, so ``N / s_{D-1}`` is the unit count exactly wherever the atom
-    #: rectangle is one level and an OVER-count where it spans more -- more CTAs, never
-    #: fewer, which is the direction a split may err in (a CTA with no units exits after
-    #: its prologue).
+    #: rectangle is one level and an OVER-count where it spans more.
     _, spans, _, _, _ = box_shape(widths, lattice_k, lattice_m)
     unit_ceiling = math.prod(widths) // spans[-1]
     dev = torch.device(device)
     if dev.type != "cuda":
         return 1
     sms = torch.cuda.get_device_properties(dev).multi_processor_count
-    residency = extension().rola_decode_residency(decay=bool(decay), levels=D)
-    wave = max(1, (sms * int(residency)) // max(1, BH))
+    residency = extension().rola_decode_residency()
     supply = max(1, math.ceil(unit_ceiling / C_DECODE_UNITS_PER_CTA))
-    return min(supply, wave)
+    return max(1, min(sms * int(residency), BH * supply))
 
 
 @dataclass(slots=True)
 class DecodeScratch:
     """Per-sequence scratch, allocated once and reused across steps.
 
-    ``ctr``, ``growth_ctr`` and ``done`` are zeroed exactly once here: every one of them
-    is reset by the last-arriving CTA that reads it, so no ``memset`` launch ever stands
-    between two decode steps and the whole step stays capturable in a CUDA graph.
+    ``yacc``, ``queue``, ``growth_ctr`` and ``done`` are set exactly once here: every one of them
+    is reset by the kernel that last reads it (a head's finisher, the last CTA out), so no
+    ``memset`` launch ever stands between two decode steps and the whole step stays capturable
+    in a CUDA graph.
     """
 
-    ws: torch.Tensor
-    ctr: torch.Tensor
+    #: `[BH, cols]` fp32, a head's readout sums, added into once by every CTA visit that walks it.
+    yacc: torch.Tensor
+    #: `[4 BH + 2]` int32, THE WORK QUEUE: per head the positions claimed, the positions finished,
+    #: the position count (-1 until published) and the admission state, then the unstarted-head
+    #: cursor and the exit count (docs/internals/decode/decode.md#queue).
+    queue: torch.Tensor
     #: `[BH]` int32, THE PER-BATCH-HEAD VERDICT, and the `[1]` int32 OR of it that the
     #: host reads through a PINNED mirror -- pinned so the read is one DMA rather than a
     #: staging copy, and held here so a steady step allocates nothing
@@ -236,8 +230,8 @@ class DecodeScratch:
         f32 = dict(dtype=torch.float32, device=device)
         cuda = torch.device(device).type == "cuda"
         return DecodeScratch(
-            ws=torch.empty(BH, config.n_split, config.cols, **f32),
-            ctr=torch.zeros(BH, **i32),
+            yacc=torch.zeros(BH, config.cols, **f32),
+            queue=_fresh_queue(BH, device),
             growth=torch.zeros(BH, **i32),
             growth_any=torch.zeros(1, **i32),
             growth_ctr=torch.zeros(1, **i32),
@@ -245,6 +239,13 @@ class DecodeScratch:
             done=torch.zeros(BH, **i32),
             atom_bits=torch.empty(BH, config.N // MMA_K_QUANTUM, dtype=torch.bool,
                                   device=device))
+
+
+def _fresh_queue(BH: int, device) -> torch.Tensor:
+    """The queue as a step finds it: counters zero, every position count unpublished (-1)."""
+    queue = torch.zeros(4 * BH + 2, dtype=torch.int32, device=device)
+    queue[2 * BH:3 * BH] = -1
+    return queue
 
 
 def _fold(t: torch.Tensor) -> torch.Tensor:
@@ -342,12 +343,13 @@ def step(plan: DecodePlan) -> torch.Tensor:
     """THE STEP, in ONE launch, in place on ``plan.state_plane``. ``y`` as ``[B, 1, H, d_v]``.
 
     Fold, expand and walk are one kernel: the per-token operands are gathered from the
-    producer's own views straight into the CTA's shared memory, the support bitmap is
-    built there, and the walk consumes both without either ever reaching DRAM
+    producer's own views straight into the CTA's shared memory, the digit masks and owner
+    lists are built there, and the walk consumes both without either ever reaching DRAM
     (docs/internals/decode/decode.md#per-cta-prologue).
 
-    Every touched row has exactly one owning CTA, warp and lane, so the update needs no
-    atomic and is bitwise reproducible.
+    Every written leaf has exactly one depositing lane group, so the state update needs no
+    atomic and is bitwise reproducible; ``y`` is reproducible to the order the visits add
+    its sums in (docs/internals/decode/decode.md#determinism).
 
     THE ADMISSION QUESTION IS PART OF IT: the write map the walk needs is the map the
     residency test reads, so the test is a pass over shared memory rather than a launch,
@@ -368,8 +370,8 @@ def step(plan: DecodePlan) -> torch.Tensor:
         v_lo=plan.v_lo,
         v_scale=plan.v_scale,
         state=plan.state_plane,
-        ws=plan.scratch.ws,
-        ctr=plan.scratch.ctr,
+        yacc=plan.scratch.yacc,
+        queue=plan.scratch.queue,
         growth=plan.scratch.growth,
         growth_any=plan.scratch.growth_any,
         growth_ctr=plan.scratch.growth_ctr,
@@ -380,12 +382,11 @@ def step(plan: DecodePlan) -> torch.Tensor:
         lattice_k=config.lattice_k,
         lattice_m=config.lattice_m,
         write_dense=config.write_dense,
-        n_split=config.n_split,
+        ctas=config.ctas,
         eps=config.eps,
         page_table=plan.page_table,
         pool_slots=None if pool is None else pool.pool_slots,
         pool_cursor=None if pool is None else pool.pool_cursor,
-        pool_map=None if pool is None else pool.pool_map,
     )
     B, _T, H, _d_v = plan.v_hat.shape
     return y.view(B, H, 1, config.d_v).permute(0, 2, 1, 3).contiguous()

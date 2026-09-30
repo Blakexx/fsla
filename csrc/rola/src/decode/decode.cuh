@@ -29,9 +29,6 @@ constexpr int kUnitBlockWarps = 8;  // NOT the warp count; decode.md#kunitblockw
 constexpr int kUnitBlockWarpsBits = 3;
 static_assert(1 << kUnitBlockWarpsBits == kUnitBlockWarps,
               "kUnitBlockWarpsBits must be log2(kUnitBlockWarps)");
-static_assert(kUnitBlockWarps <= kDecodeWarps && kDecodeWarps % kUnitBlockWarps == 0,
-              "a CTA's warps are a whole number of unit blocks");
-constexpr int kUnitRepeats = kDecodeWarps / kUnitBlockWarps;
 
 constexpr int kDecodeMaxSpan = 32;  // refused at the host entry; decode.md#kdecodemaxspan
 
@@ -51,11 +48,7 @@ constexpr int kDecodeResidentThreads = 512;  // CTA/SM residency; decode.md#kdec
 //: THE STEP'S PHASES, as the phase ledger books them; see decode.md#phase-ledger
 enum DecodePhase : int { kPhFold, kPhFactor, kPhAdmit, kPhWalk, kPhCombine, kDecodePhases };
 
-__host__ __device__ constexpr int decode_step_blocks_per_sm(bool decay, int levels) {
-  (void)decay;
-  (void)levels;
-  return kDecodeResidentThreads / kDecodeThreads;
-}
+constexpr int kDecodeBlocksPerSm = kDecodeResidentThreads / kDecodeThreads;
 
 constexpr int kAtomShift =
     rola::carry::geom_ilog2(kAtomLeaves);  // shift+mask; decode.md#katomshift
@@ -122,24 +115,30 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
 
   const int32_t* pool_slots;  // pre-zeroed by the host; decode.md#decodeparams-note-l275
   int32_t* pool_cursor;
-  int32_t* pool_map;
   int pool_cap;
   float* y;  // [BH, d_v] -- the FUSED ratio readout, num/(den + eps)
 
-  float* ws;     // [BH, n_split, cols] -- split-K workspace; see decode.md#ws
-  int32_t* ctr;  // [BH]
+  float* yacc;  // [BH, cols] -- a head's readout sums, zeroed by its finisher; see decode.md#queue
+  int32_t* queue;  // [4 BH + 2] -- the work queue's counters; see decode.md#queue
   long long*
-      ledger;  // [BH * n_split][kDecodeWarps][kDecodePhases] cycles, or null; see decode.md#phase-ledger
+      ledger;  // [ctas][kDecodeWarps][kDecodePhases] cycles, or null; see decode.md#phase-ledger
 
   int64_t N;
   int atoms_per_bh;  // ceil(N / kAtomLeaves): the PAGE count per bh, both backings.
   int BH;
   int H;
   int D;
-  int n_split;
+  int ctas;        // the resident grid; see decode.md#queue
   int total_rows;  // sum_l b_l
   float eps;
 };
+
+//: THE WORK QUEUE'S ADMISSION WORDS: a head's published state (ready, needy) and a visiting CTA's -- see docs/internals/decode/decode.md#queue-admission
+constexpr int kQueueReady = 2;
+constexpr int kQueueNeedy = 4;
+constexpr int kQueueOwner = 8;
+constexpr int kQueueFollower = 16;
+constexpr int kQueueDecided = 32;
 
 //: `ceil(n / d)` for non-negative ints, used on host and device.
 __host__ __device__ __forceinline__ int ceil_div_int(int n, int d) { return (n + d - 1) / d; }
@@ -161,8 +160,8 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 // `rola_api.cpp` binds only the host entry.
 // ---------------------------------------------------------------------------
 
-size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int olist_total, int dlist_total);
+size_t decode_step_smem_bytes(int total_rows, int d_v, bool decay, int mask_total, int olist_total,
+                              int dlist_total);
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
 
 }  // namespace decode

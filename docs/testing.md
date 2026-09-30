@@ -785,9 +785,10 @@ exists for the chunk arm yet** — that is a gap, not a carry-over.
   other type, in any other kernel, or on lines the declared expressions no longer occupy,
   still FAILS the lane. The declaration carries the PTX-memory-model proof and the
   80,000-launch perturbed-schedule measurement behind it, plus the exit condition that
-  deletes it (`KERNEL_STANDARDS.md` §18: a declared exception, never a blanket skip). If
-  the tool ever goes clean here on its own, the lane says so and asks for the declaration
-  to be removed.
+  deletes it (`KERNEL_STANDARDS.md` §18: a declared exception, never a blanket skip).
+  **THE EXIT CONDITION FIRED (2026-09-29).** The work queue's visit folds its warps' rows
+  behind a `__syncthreads`, so the arrival count and its declaration are gone and
+  `ASSERTED` is empty again, like the skip-list (`DELETIONS.md`).
 * `--leak-check full` is **not** used: torch's caching allocator retains its pools by
   design, so the flag reports 3 "leaks" on a clean run — a lane whose clean state is
   three errors is a lane whose findings nobody reads.

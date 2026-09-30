@@ -36,13 +36,12 @@ separate claim from the capacity is [`decode.md`
 §33](decode.md#producer-width-mirror), and the capacity gate itself is
 [`decode.md` §6](decode.md#level-width-capacity).
 
-<a id="residency"></a>`rola_decode_residency(decay, levels)` returns the step's DECLARED
-CTAs per SM for that arm, read off the same `constexpr` the kernel's `__launch_bounds__`
-are built from. The host's split policy sizes ONE WAVE from it
-([`decode.md` §7](decode.md#declared-residency)), and it is bound rather than mirrored in
-Python for the reason the whole bound surface exists: a launch bound is exactly the
-constant that drifts when it is written down twice. The two arms differ because the decay
-arm and the deep arms each carry more live state through the same loop.
+<a id="residency"></a>`rola_decode_residency()` returns the step's DECLARED CTAs per SM,
+read off the same `constexpr` the kernel's `__launch_bounds__` are built from. The host's
+grid policy sizes ONE WAVE from it ([`decode.md` §30](decode.md#declared-residency)), and it
+is bound rather than mirrored in Python for the reason the whole bound surface exists: a
+launch bound is exactly the constant that drifts when it is written down twice. It takes no
+arm: at one CTA an SM every arm runs at the same 128-register cap.
 
 <a id="arm-subset"></a>**THE ARM LIST IS DATA, AND A BUILD MAY NAME A SUBSET OF IT.**
 the decode family's instantiation matrix is the product `d_v(2) x D(4) x decay(2)`, and
@@ -125,25 +124,26 @@ states. The address the kernel builds from a slot, and what a `-1` means, are
 ## <a id="the-verdict"></a>4. The verdict buffers — required whichever backing this is
 
 `growth`, `growth_any`, `growth_ctr`, `done` and `atom_bits` are the step's OWN
-per-batch-head residency answer, written by the last-arriving CTA of each batch-head and
-read by nobody's prologue but the step's own next call. They are validated whichever
+per-batch-head residency answer, written by each head's owner and finisher
+([`decode.md#one-writer`](decode.md#one-writer)) and read by nobody's prologue but the
+step's own next call. They are validated whichever
 backing the call is — a dense step has nothing to admit and simply never writes a `1` into
 `growth` — because holding one ABI for both backings is what keeps a dense-vs-paged
 disagreement from being expressible in the first place: [`decode.md`
 §4c](decode.md#absorbed-verdict).
 
 `atom_bits` is `[BH, N / 16]` bool, this step's own write-atom set condensed on the
-device, unconditionally, by the `seg == 0` CTA of every batch-head. It is what a host
+device, unconditionally, by every batch-head's owner. It is what a host
 admission (`admit_growth`) plans from, so the host derives no support of its own
 ([`decode.md` §39](decode.md#second-derivation)).
 
-## <a id="the-pool"></a>5. `pool_slots`, `pool_cursor`, `pool_map` — the slack pool, all three or none
+## <a id="the-pool"></a>5. `pool_slots`, `pool_cursor` — the slack pool, both or neither
 
 Present exactly on a paged step whose state reserved slack (`rola.state(pool_slack=...)`
-above `0.0`): the physical slots the host pre-committed and pre-zeroed, how many of each
-batch-head's are spent, and the claim the walk addresses through until the batch-head's
-last-arriving CTA folds it into the real table. `rola_decode_forward` checks that all three
-are present together or none are — the pool is not a mode a caller can half-configure — and
+above `0.0`): the physical slots the host pre-committed and pre-zeroed, and how many of each
+batch-head's are spent. The head's owner writes its claim into the page table itself
+([`decode.md#queue-claim-pool`](decode.md#queue-claim-pool)), so `page_table` is mutable.
+`rola_decode_forward` checks that both are present together or neither is — the pool is not a mode a caller can half-configure — and
 that a pool requires `page_table` (a dense state has no table to admit into). The design and
 the device-side claim are [`paging/paging.md`
 §the-slack-pool](../paging/paging.md#the-slack-pool).
@@ -196,7 +196,7 @@ The full argument, and what each bound symbol claims: docs/internals/decode/deco
 <a id="roladecoderesidency"></a>
 ### `rola_decode_residency`
 
-THE STEP'S DECLARED RESIDENCY in CTAs per SM, so the split policy sizes one wave from
+THE STEP'S DECLARED RESIDENCY in CTAs per SM, so the grid policy sizes one wave from
 the launch bound itself rather than from a python mirror of it:
 docs/internals/decode/decode_api.md#residency
 
@@ -217,5 +217,5 @@ shippable: docs/internals/decode/decode_api.md#arm-subset
 ## <a id="decode-ledger-bind"></a>`rola_decode_ledger_bind`
 
 Binds the phase ledger the next decode steps book into (`decode.md#phase-ledger`), or unbinds it with `None`: a
-contiguous CUDA int64 tensor `[ctas][kDecodeWarps][kDecodePhases]` covering `BH * n_split` CTAs, which the host entry
+contiguous CUDA int64 tensor `[ctas][kDecodeWarps][kDecodePhases]`, a row per resident CTA, which the host entry
 checks before each launch. Measurement only; nothing on the shipped path binds one.

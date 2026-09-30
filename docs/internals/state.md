@@ -47,7 +47,7 @@ does: it governs what a paged arena PRE-COMMITS, not what a call computes. A fra
 above `0.0` reserves that fraction of each batch-head's full residency as physical slots
 a decode step can admit into ON THE DEVICE, with no host round trip — `0.0` is EXACT
 COMMITMENT, unchanged from before the pool existed. The mechanics — sizing, the
-pre-zeroed ordinary slots, the device-side claim and its shadow row, exhaustion and
+pre-zeroed ordinary slots, the device-side claim, exhaustion and
 refill — are [`paging/paging.md` §the-slack-pool](paging/paging.md#the-slack-pool); what
 the pool changes at THIS seam is [§5b](#decode-seam).
 

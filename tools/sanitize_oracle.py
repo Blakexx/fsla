@@ -205,48 +205,11 @@ class AssertedRaces:
         return found
 
 
-#: THE ONE DECLARED EXCEPTION. The decode step's CTA combine ends
-#: the kernel's barriers with its prologue: each warp deposits its partial into
-#: its own shared row, fences, and bumps an arrival count with one atomic; the LAST
-#: ARRIVER fences and sums the rows in fixed warp order. racecheck reports 48 RAW
-#: races between the deposit and that sum, because the synchronization it models is
-#: enumerated by its own documentation -- barrier, syncwarp, cuda::barrier, cluster
-#: barrier, async-copy commit/wait -- and a fence plus an atomic RMW chain is not in
-#: it. See FINDINGS `## K47` for the whole proof; the summary is in `proof` below.
-ASSERTED: dict[tuple[str, str], AssertedRaces] = {
-    ("decode", "racecheck"): AssertedRaces(
-        kernel="decode_step_kernel",
-        source="csrc/rola/src/decode/decode.cu",
-        writes=("my_row[lane + 32 * q] = acc[q]", "my_row[DV] = acc_m"),
-        reads=("part[q] += row[lane + 32 * q]", "part_m += row[DV]"),
-        hazard_types=frozenset({"RAW"}),
-        proof=(
-            "PTX ISA memory model, on the emitted PTX (membar.cta / bar.warp.sync / "
-            "atom.shared.add.u32 / membar.cta): the writer's `membar.cta; "
-            "atom.shared.add [s_arrive]` is a RELEASE PATTERN on the arrival counter "
-            "(PTX 8.8, third bullet, verbatim `fence.release; atom.relaxed [M];`), and "
-            "the last arriver's `atom.shared.add [s_arrive]; membar.cta` is an ACQUIRE "
-            "PATTERN on it (PTX 8.8, third acquire bullet). Every writer's counter "
-            "write precedes the last arriver's counter read in OBSERVATION ORDER via "
-            "the atomic RMW chain (PTX 8.9.2: `for some atomic operation Z, W precedes "
-            "Z and Z precedes R`), so release synchronizes-with acquire (PTX 8.9.4); "
-            "both patterns' bounding fences are morally strong (PTX 8.7 -- cta scope, "
-            "same CTA); causality order is transitive (PTX 8.9.5), so the deposits "
-            "precede the sum's loads and PTX 8.10.6 forbids the stale read. The "
-            "non-lane-0 deposits reach the release through bar.warp.sync's own memory "
-            "ordering (PTX 9.7.14.2). membar.cta is fence.sc.cta on sm_70+. "
-            "MEASURED: 80,000 launches of a probe build with randomized __nanosleep "
-            "skew at all three rendezvous points produced y and state BIT-IDENTICAL to "
-            "the unperturbed kernel across four cells; a probe build replacing the "
-            "arrival count with __syncthreads produced BIT-IDENTICAL y and state over "
-            "20,000 more launches AND reported ZERO hazards, which attributes all 48 "
-            "to the fence-for-barrier substitution alone."),
-        exit_condition=(
-            "DELETE THIS DECLARATION when compute-sanitizer models fence+atomic "
-            "happens-before (the run goes clean on its own and this script says so), "
-            "or when the combine stops using the arrival-count rendezvous."),
-    ),
-}
+#: THE DECLARED EXCEPTIONS, empty. The one it held -- the decode step's warp arrival count,
+#: a fence and an atomic in place of a barrier, which racecheck does not model -- died with
+#: the arrival count: the decode visit folds its warps behind a barrier (DELETIONS.md,
+#: 2026-09-29).
+ASSERTED: dict[tuple[str, str], AssertedRaces] = {}
 
 #: the kernel's demangled name contains spaces, so the name group is GREEDY and the
 #: file:line is anchored on the LAST " in <path>:<line>" of the record line.

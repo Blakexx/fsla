@@ -27,8 +27,9 @@ does.
    pointer compatible with a growing footprint, and it is the whole reason the backing is
    VMM rather than a reallocating pool.
 
-3. *The two backings compute the same function, bit for bit.* Where the memory came from
-   is not a semantic axis, so `y` and the state are `torch.equal` and not merely close.
+3. *The two backings compute the same function.* Where the memory came from is not a
+   semantic axis, so the state is `torch.equal` and `y` agrees to the order the decode
+   step's visits add its sums in (docs/internals/decode/decode.md#determinism).
 
 4. *There is no silent fallback.* A CUDA device whose driver cannot serve VMM raises; the
    dense allocation is reachable only by asking for it by name.
@@ -43,6 +44,7 @@ import torch
 from rola.ops.decode import _decode_step, _write_atom_bitmap
 from rola.ops.paging import MMA_K_QUANTUM, PageArena, encode_pages, page_layout, vmm_supported
 from tests.integration.test_decode_paging import _ARMS, _bundles, _config, _fixture
+from tests.oracle.fixtures import assert_reordered_close
 
 pytestmark = [
     pytest.mark.cuda,
@@ -223,7 +225,7 @@ def test_commitment_survives_reset_and_rollback_returns_it():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arm", _ARMS, ids=lambda a: "x".join(map(str, a[0])))
-def test_the_two_backings_are_bit_identical(arm):
+def test_the_two_backings_agree(arm):
     """Same routing, same `v`, same contents -- VMM-backed and bridge-backed.
 
     `torch.equal` and not a tolerance: where the bytes came from is not a semantic axis,
@@ -256,7 +258,7 @@ def test_the_two_backings_are_bit_identical(arm):
                                page_table=table)
         outputs.append((y, arena.materialize(), arena))
 
-    assert torch.equal(outputs[0][0], outputs[1][0]), "the two backings disagree on y"
+    assert_reordered_close(outputs[1][0], outputs[0][0], "the two backings' y")
     assert torch.equal(outputs[0][1], outputs[1][1]), "the two backings disagree on the state"
     #: NON-VACUITY: the run committed pages, they came back nonzero, and the VMM arena
     #: really did commit less than the dense one.

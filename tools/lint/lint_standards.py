@@ -21,15 +21,17 @@ Checks:
      under csrc/rola/src/instantiations/, found by TEXT rather than AST so a
      macro-guarded or unusually-formatted include cannot hide from either
      check.
-  3. NO __syncthreads AFTER THE DECODE PROLOGUE (the decode prologue law, ledger
+  3. NO __syncthreads IN THE DECODE WALK (the decode prologue law, ledger
      2026-08-27: "11 barriers, all in the prologue ... 0 after it"; scope
      fixed 2026-08-29 -- that law is about CTA/grid barriers,
      never about `__syncwarp`, which is intra-warp and which §12 REQUIRES
-     around a warp collective). The marker is decode.cu's own section
-     comment `// ---- THE WALK`; every `__syncthreads`/`bar.sync` (and any
-     cluster/grid barrier) after that line is a finding for Blake to rule on
-     -- `__syncwarp` after the marker is NOT a finding, it is §12's fence
-     doing its job.
+     around a warp collective; scope narrowed 2026-09-29 with the work queue,
+     whose CTAs visit heads in turn and so fold their partials and switch heads
+     behind one barrier a visit, after the walk). The region is decode.cu's own
+     section comments `// ---- THE WALK` to `// ---- THE READOUT`; every
+     `__syncthreads`/`bar.sync` (and any cluster/grid barrier) inside it is a
+     finding for Blake to rule on -- `__syncwarp` there is NOT a finding, it is
+     §12's fence doing its job.
 
 HEURISTIC LIMITS (check 1):
   - "Device code" is found by brace-counting from each `__global__`/`__device__`
@@ -99,10 +101,7 @@ REL_BOUND_RE = re.compile(r"[<>]=?\s*(.+?)\s*$")
 
 #: `unroll 1` (no unrolling) is the common case, but §6's actual requirement is an
 #: EXPLICIT pragma on a dynamic-bound loop, not that specific factor -- a bare
-#: `#pragma unroll <N>` for any measured N also satisfies it (decode.cu's
-#: `n_live` loop, docs/internals/decode/decode.md#decode-step-kernel-note-l655:
-#: "at 1 it is a correctness [performance] defect on this loop, not a style
-#: choice" -- unroll 8 there is measured, not a default left to the compiler).
+#: `#pragma unroll <N>` for any measured N also satisfies it.
 PRAGMA_UNROLL_RE = re.compile(r"^\s*#pragma\s+unroll(\s+\d+)?\s*$")
 COMMENT_LINE_RE = re.compile(r"^\s*//")
 
@@ -116,6 +115,7 @@ TORCH_INCLUDE_RE = re.compile(r'#include\s*<\s*torch/')
 SYNC_RE = re.compile(
     r"__syncthreads\s*\(|\bbar\.sync\b|(?:cluster|grid)\s*\.\s*sync\s*\(")
 WALK_MARKER_RE = re.compile(r"----\s*THE WALK")
+READOUT_MARKER_RE = re.compile(r"----\s*THE READOUT")
 
 
 def device_files():
@@ -279,12 +279,19 @@ def check_no_sync_after_decode_prologue() -> list[str]:
             f"needs a new anchor."
         )
         return findings
-    for idx in range(marker_idx + 1, len(lines)):
+    end_idx = next((i for i in range(marker_idx + 1, len(lines)) if READOUT_MARKER_RE.search(lines[i])), None)
+    if end_idx is None:
+        findings.append(
+            f"the decode prologue law: {rel}: could not locate the `---- THE READOUT` marker that ends the "
+            f"walk this check covers -- the file was restructured and this check needs a new anchor."
+        )
+        return findings
+    for idx in range(marker_idx + 1, end_idx):
         if SYNC_RE.search(lines[idx]):
             findings.append(
-                f"the decode prologue law (ledger 2026-08-27, decode.cu#per-cta-prologue): "
-                f"{rel}:{idx + 1}: barrier after the prologue marker "
-                f"(line {marker_idx + 1}) -- {lines[idx].strip()!r}"
+                f"the decode prologue law (ledger 2026-08-27, docs/internals/decode/decode.md#no-barrier): "
+                f"{rel}:{idx + 1}: barrier inside the walk "
+                f"(lines {marker_idx + 1}-{end_idx + 1}) -- {lines[idx].strip()!r}"
             )
     return findings
 

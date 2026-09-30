@@ -13,17 +13,19 @@ asking for something no implementation can deliver:
 1. The prefill consumer's ``y`` is not reproducible against ITSELF wherever a ``bh``
    holds more than one owner block — it fans partials in by ``atomicAdd`` and CUDA
    fixes no inter-CTA order (Track K measured 384 of 976 fixture cases differing
-   between two runs of one binary). Decode is deterministic by design.
+   between two runs of one binary). Decode's ``y`` is summed the same way now: its warps
+   add their partials into a batch-head's sums atomically, in whatever order the work
+   queue hands out positions (Blake, 2026-09-29: determinism is not a requirement).
 2. Summation order differs by construction: the prefill kernel contracts inside an
    MMA fragment tree per owner then sums owners by atomic; decode contracts in leaf
-   order in fp32 FMA chains and folds 8 warps then ``n_split`` CTAs in fixed order.
+   order in fp32 FMA chains and adds warps' partials by atomic.
 3. The precision path differs: the prefill readout narrows its operands to bf16 for
    the MMA; decode has no MMA and stays fp32. Decode is the *more* accurate of the
    two, which is the safe direction but is still a difference.
 
-So the gates are: byte-equality where decode is *supposed* to be exact (G1, G2, the
-BC-blindness row in tier 2), and the ORACLE band everywhere else. Decode's byte gates
-are STRONGER than the prefill kernel's, not weaker — G1 is a gate no MMA path passes.
+So the gates are: byte-equality where decode is *supposed* to be exact -- the STATE, which
+no reduction touches (G1, G2, the BC-blindness row in tier 2) -- and the ORACLE band
+everywhere else, ``y`` included.
 
 **P67 D2-b / K31.** The prefill leg here is the fp64 ORACLE now: the tiled consumer
 left at D2, and the chunk arm left with the K31 deletion batch (baseline = tag
@@ -46,6 +48,7 @@ Run: ``pytest tests/oracle/test_decode_vs_oracle.py``
 
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import pytest
@@ -168,7 +171,7 @@ def _kernel_realized_support(rows, widths, B, H, device, d_v=64):
 
 
 def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
-          n_split=None, nonzero_m0=True, steps=1, flushed=False):
+          ctas=None, nonzero_m0=True, steps=1, flushed=False):
     """Build one fixture, run the oracle and decode, return everything both produced."""
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(seed)
@@ -210,7 +213,9 @@ def _case(widths, d_v, B, H, norm, p_read, p_write, *, seed, decay_dials=None,
 
     # ---- decode ---------------------------------------------------------------
     config = derive_decode_geometry(topology, d_v=d_v, decay=decay is not None, BH=B * H,
-                                  device=device, n_split=n_split)
+                                    device=device)
+    if ctas is not None:
+        config = dataclasses.replace(config, ctas=ctas)
     #: THE SEAM. The oracle's plane is canonical forever; the kernel's is lattice-ordered.
     #: THE STORED FORM IS THE INT8 STATE PAGE: the seam packs after the lattice
     #: permutation and unpacks before the inverse, because a page is 16 leaves OF THAT
@@ -316,8 +321,8 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     input. Asserting against the oracle here would have meant weakening the oracle.
 
     It is still worth pinning, because the empty UNIT RANGE it exercises is very much
-    reachable — the frozen ``n_split`` sizes the grid from a CEILING, so ordinary steps
-    launch CTAs with empty ranges — and the degenerate forms of the unit partition and
+    reachable — a head whose support is empty still owes a ``y``, so its one position is
+    claimed and walks nothing — and the degenerate forms of the queue and
     the split-K combine live on that path. So the assertion is against the arithmetic
     identity (a sum over no terms is zero, and ``0 / (0 + eps)`` is zero), not against a
     reference.
@@ -339,20 +344,20 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     assert bytes_equal(state, m0), "an untouched state must be byte-unchanged"
 
 
-@pytest.mark.parametrize("n_split", [7, 64])
-def test_more_ctas_than_rows_is_inert(n_split):
-    """``n_split > M``: the surplus CTAs contribute nothing and the answer does not move.
+@pytest.mark.parametrize("ctas", [7, 64])
+def test_more_ctas_than_rows_is_inert(ctas):
+    """``ctas > positions``: the surplus CTAs claim nothing and the answer does not move.
 
-    The reachable half of the corner above, and what makes a FROZEN ``n_split`` safe: the
-    carrier sizes the grid from a ceiling, so a step whose realized support is far below
-    it launches empty CTAs on every call. They must contribute an exact zero to the
-    fixed-order combine, not an uninitialized workspace slot.
+    The reachable half of the corner above, and what makes a FROZEN grid safe: the grid is
+    sized before the step's work is known, so a step whose realized support is small
+    launches CTAs that find every head's queue empty. They must add nothing to a head's
+    sums and finish no head they did not walk.
     """
-    ref = _case((64, 64), 64, 1, 2, "global", 0.3, 0.3, seed=4, n_split=1)
-    got = _case((64, 64), 64, 1, 2, "global", 0.3, 0.3, seed=4, n_split=n_split)
+    ref = _case((64, 64), 64, 1, 2, "global", 0.3, 0.3, seed=4, ctas=1)
+    got = _case((64, 64), 64, 1, 2, "global", 0.3, 0.3, seed=4, ctas=ctas)
     assert torch.equal(ref["state"], got["state"])
     assert_slots_close(got["y"][-1], ref["y"][-1], output=DECODE_Y, envelope=ref["ref"].y_envelope,
-                       what=f"y at n_split={n_split} against n_split=1")
+                       what=f"y at ctas={ctas} against ctas=1")
 
 
 def test_the_widest_staged_topology():
@@ -424,40 +429,37 @@ def test_g4_decay_on_the_stored_write_representation():
 # G1 / G2 -- determinism
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("n_split", [1, 2, 7, 64])
+@pytest.mark.parametrize("ctas", [1, 2, 7, 64])
 @pytest.mark.parametrize("widths", _TOPOLOGIES)
-def test_g1_is_byte_reproducible_against_itself(n_split, widths):
-    """TWO RUNS OF THIS BINARY GIVE BYTE-IDENTICAL ``y`` AND ``state``.
+def test_g1_the_state_is_byte_reproducible_against_itself(ctas, widths):
+    """TWO RUNS OF THIS BINARY GIVE A BYTE-IDENTICAL ``state``, and ``y`` inside the oracle band.
 
-    This is the gate the tiled consumer cannot pass and decode must. It is what the
-    fixed-order slot combine buys, and a failure means either that combine is not
-    fixed-order or the row partition is not a partition.
+    The state is not a reduction: every touched leaf is walked by exactly one warp, whichever
+    CTA claims its position, so a failure means the positions do not partition the leaves.
+    ``y`` is summed by atomics in queue order, so it is only graded against the oracle.
     """
-    kwargs = dict(seed=2024, n_split=n_split)
-    a = _case(widths, 64, 2, 3, "global", 0.4, 0.3, **kwargs)
-    b = _case(widths, 64, 2, 3, "global", 0.4, 0.3, **kwargs)
-    assert torch.equal(a["y"][-1], b["y"][-1]), "decode's y is not run-reproducible"
+    a = _case(widths, 64, 2, 3, "global", 0.4, 0.3, seed=2024, ctas=ctas)
+    b = _case(widths, 64, 2, 3, "global", 0.4, 0.3, seed=2024, ctas=ctas)
     assert torch.equal(a["state"], b["state"]), "decode's state is not run-reproducible"
+    assert_slots_close(b["y"][-1], a["y_refs"][-1][0], output=DECODE_Y, envelope=a["y_refs"][-1][1],
+                       what=f"y at ctas={ctas}")
 
 
 @pytest.mark.parametrize("widths", _TOPOLOGIES)
-def test_g2_state_is_invariant_across_n_split(widths):
-    """``state`` is byte-identical across ``n_split``, UNCONDITIONALLY.
+def test_g2_state_is_invariant_across_the_grid(widths):
+    """``state`` is byte-identical whatever the resident grid, UNCONDITIONALLY.
 
-    Unlike ``y``, the state is not a reduction: the row partition hands every touched
-    row to exactly one CTA, warp and lane, so changing how the rows are split cannot
-    change a single stored bit. ``y`` is a reduction and fp32 addition is not
-    associative, so ``y`` is only byte-stable at FIXED ``n_split`` (which is what ships,
-    since ``n_split`` is a pure function of the frozen config) and is checked at the
-    oracle band across ``n_split``.
+    Unlike ``y``, the state is not a reduction: the positions hand every touched leaf to
+    exactly one warp, so how many CTAs claim them cannot change a single stored bit. ``y``
+    is a reduction and is checked at the oracle band across grids.
     """
-    ref = _case(widths, 64, 2, 3, "global", 0.4, 0.3, seed=555, n_split=1)
-    for n_split in (2, 7, 64):
-        got = _case(widths, 64, 2, 3, "global", 0.4, 0.3, seed=555, n_split=n_split)
+    ref = _case(widths, 64, 2, 3, "global", 0.4, 0.3, seed=555, ctas=1)
+    for ctas in (2, 7, 64):
+        got = _case(widths, 64, 2, 3, "global", 0.4, 0.3, seed=555, ctas=ctas)
         assert torch.equal(ref["state"], got["state"]), (
-            f"state moved with n_split={n_split}; the row partition is not a partition")
+            f"state moved with ctas={ctas}; the positions do not partition the leaves")
         assert_slots_close(got["y"][-1], ref["y"][-1], output=DECODE_Y, envelope=ref["ref"].y_envelope,
-                           what=f"y at n_split={n_split} against n_split=1")
+                           what=f"y at ctas={ctas} against ctas=1")
 
 
 # ---------------------------------------------------------------------------

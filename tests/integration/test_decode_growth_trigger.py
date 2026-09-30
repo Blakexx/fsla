@@ -63,6 +63,7 @@ from tests.integration.test_decode_paging import (
     _fixture,
     _leaf_support,
 )
+from tests.oracle.fixtures import assert_reordered_close, reordered_close
 
 _SUPPORT = {"sparse": 0.25, "half": 0.5, "all": 1.0}
 
@@ -357,7 +358,7 @@ def test_the_admission_and_replay_advance_every_sequence_exactly_once(arm):
     y_replayed, _ = _step(fixture, config, replayed, workspace=workspace)
     torch.cuda.synchronize()
 
-    assert torch.equal(y_reference, y_replayed), (
+    assert reordered_close(y_replayed, y_reference), (
         "the replay's `y` is not the admit-first `y`: a batch-head either deposited "
         "twice or was read before it deposited")
     assert bytes_equal(_gathered(reference, BH), _gathered(replayed, BH)), (
@@ -401,13 +402,13 @@ def test_a_covering_pool_admits_the_growth_itself_and_raises_no_verdict(arm):
         "the pool cursor did not advance by the batch-head's own demand")
     y_pooled, _ = _step(fixture, config, pooled, workspace=workspace, pool=pooled)
     torch.cuda.synchronize()
-    assert not torch.equal(y_pooled, y_reference), (
+    assert not reordered_close(y_pooled, y_reference), (
         "the second pooled step must differ -- it deposits on top of the first")
 
     fresh = _arena(widths, BC, BH, pool_slack=1.0)
     y_first, _ = _step(fixture, config, fresh, pool=fresh)
     torch.cuda.synchronize()
-    assert torch.equal(y_first, y_reference), (
+    assert reordered_close(y_first, y_reference), (
         "a pool-admitted atom is distinguishable from a host-admitted one; it must not be")
     assert bytes_equal(_gathered(fresh, BH), _gathered(reference, BH)), (
         "the pool-admitted state is not the host-admitted state")
@@ -450,5 +451,5 @@ def test_an_exhausted_pool_degrades_to_the_host_path_exactly(arm):
     starved.wait()
     y_replayed, _ = _step(fixture, config, starved, workspace=workspace, pool=starved)
     torch.cuda.synchronize()
-    assert torch.equal(y_replayed, y_reference)
+    assert_reordered_close(y_replayed, y_reference, "the replayed step's y")
     assert bytes_equal(_gathered(starved, BH), _gathered(reference, BH))

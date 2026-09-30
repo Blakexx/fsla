@@ -25,9 +25,9 @@ write map the walk was going to build anyway.
 
 **WHAT THE VERDICT BUYS (cells 2-3).** A needy batch-head touches nothing -- no `y`, no
 state, no counter -- so the step can be ENQUEUED before its verdict is host-visible and,
-if the verdict says grow, replayed after the admission. The result is bit-identical to
-the admit-then-step order, which cell 3 states as `torch.equal` against the enumerated
-reference's own admission.
+if the verdict says grow, replayed after the admission. The result is the admit-then-step
+order's -- the state bit for bit, `y` to its sums' order -- against the enumerated
+reference's own admission (cell 3).
 
 THE VERDICT IS PER BATCH-HEAD, so "touches nothing" is a claim about the NEEDY
 batch-heads and the exactly-once contract is what covers the others: a batch-head that
@@ -61,6 +61,7 @@ from tests.integration.test_decode_paging import (
     _config,
     _fixture,
 )
+from tests.oracle.fixtures import assert_reordered_close
 
 pytestmark = [
     pytest.mark.cuda,
@@ -192,8 +193,8 @@ def test_a_step_no_batch_head_can_address_touches_nothing():
 # 3. the gated growth order is the admit-first order
 # ---------------------------------------------------------------------------
 
-def test_gated_step_then_admit_then_replay_is_bit_identical_to_admitting_first():
-    """the host order against S4b's, `torch.equal` on `y` and on the plane.
+def test_gated_step_then_admit_then_replay_matches_admitting_first():
+    """the host order against the admit-first order: the plane byte for byte, `y` to its sums' order.
 
     The reference admits from `_write_atom_bitmap` -- the enumerated reference, whose
     only callers are gates -- so the two orders are compared through two independent
@@ -221,7 +222,7 @@ def test_gated_step_then_admit_then_replay_is_bit_identical_to_admitting_first()
     gated.wait()
     y_gated, _ = _step(fixture, config, gated, workspace=workspace)
 
-    assert torch.equal(y_reference, y_gated)
+    assert_reordered_close(y_gated, y_reference, "the gated step's y")
     assert bytes_equal(_gathered(reference, BH), _gathered(gated, BH))
 
 
@@ -341,8 +342,8 @@ def _capture(static, static_v, state):
 
 
 @torch.no_grad()
-def test_the_captured_step_is_the_eager_step_bit_for_bit():
-    """Same kernels, same order, same bytes -- the capture owes exactly this."""
+def test_the_captured_step_is_the_eager_step():
+    """Same kernels, same order, the same state bytes and `y` to its sums' order -- the capture owes exactly this."""
     producer, x, v, state = _sequence()
     token = slice(_T + 4, _T + 5)
     routes = producer(x[:, token])
@@ -366,7 +367,7 @@ def test_the_captured_step_is_the_eager_step_bit_for_bit():
     plane.copy_(snapshot)
     eager_y, _ = decode_step_gated(static, static_v, state)
     torch.cuda.synchronize()
-    assert torch.equal(captured_y, eager_y)
+    assert_reordered_close(captured_y, eager_y, "the captured step's y")
     assert bytes_equal(captured_plane, plane)
 
 
@@ -443,5 +444,5 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
     eager_y, _ = decode_step_gated(eager_static, eager_static_v, eager_state)
     torch.cuda.synchronize()
 
-    assert torch.equal(landed_y, eager_y)
+    assert_reordered_close(landed_y, eager_y, "the landed step's y")
     assert torch.equal(landed, eager_state.materialize())

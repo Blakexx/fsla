@@ -16,7 +16,8 @@ Symbols used throughout: `N` is the leaf count; `D` the number of routing levels
 (`1 <= D <= 4`); `b_l` level `l`'s width; `BH = B * H` the flattened batch-head
 axis; `d_v` the value width and `cols = d_v + 1` (the mass column is
 unconditional; raw normalization is dead — there is no `GLOBAL` axis anywhere in
-this repository, decode included); `n_split` the split-K degree; `k`, `m`,
+this repository, decode included); `ctas` the step's resident grid ([the work
+queue](#queue)); `k`, `m`,
 `s_l`, `g_l`, `BC` the `(k, m)` lattice's own symbols
 ([`decode_lattice.md`](decode_lattice.md), spec `K31_R0_ABI_RIPPLE_SPEC.md`
 §2.1–2.5); `BT` is the tiled consumer's token tile, which appears here only to
@@ -192,11 +193,9 @@ growth_host.copy_  ->  the ONE 4-byte read, after the launch that produced it
 
 <a id="the-table-test"></a>**THE TABLE TEST.** The count of atoms that are written and unmapped
 is a block reduction (`cub::BlockScan::ExclusiveSum`) over one `page_row[a] < 0` test per
-candidate atom. Every CTA of a batch-head computes it, independently and identically: the
-two objects it reads are the CTA's own factor tables and a page table that no launch
-mutates until every CTA of that batch-head has arrived ([§4c](#the-last-arriver)).
-Recomputing beat publishing when it was measured — the split CTAs' recompute of the fold
-and the factor tables is what removed the launch — and the same argument governs here.
+candidate atom. The batch-head's OWNER computes it, once, from its own factor tables and
+the page table, and publishes the outcome to every other visit
+([the admission](#queue-admission)).
 
 <a id="candidate-atoms"></a>**THE CANDIDATE ATOMS ARE ENUMERATED FROM THE SAME LATTICE
 PRODUCT THE WALK USES, RESTRICTED TO THE WRITE LIST.** A unit's leaves are a CONTIGUOUS
@@ -228,14 +227,14 @@ enumeration serves the table test, the claim and the condensation below.
 <a id="atom-bits"></a>**THE CONDENSATION IS PUBLISHED, and it is the only thing that is.**
 the test already has the write-atom set in hand, so writing it out costs one byte per atom
 and removes the host derivation from a growth step entirely: `plan_exact` plans from
-`scratch.atom_bits` and derives no support. One CTA per batch-head (`seg == 0`) publishes
-it, UNCONDITIONALLY — a dead atom's `false` is as much of the set as a live one's `true`,
+`scratch.atom_bits` and derives no support. The batch-head's owner publishes it,
+UNCONDITIONALLY — a dead atom's `false` is as much of the set as a live one's `true`,
 and publishing only the growing batch-heads would leave the buffer carrying an older step's
 answer for the others, which is the very buffer the admission then plans from. It is two
 passes, a clear over the row and a set over the candidate rectangle, because "everything
 outside the write support is false" is a statement about the whole row while the support
 is not. The clear is the one remaining term in a steady step that scales with `N`, and it
-is one byte per atom on one CTA per batch-head.
+is one byte per atom on the batch-head's owner.
 
 The leaf-granular map is published by NOTHING. The factor tables live and die inside the
 CTA that built them ([§12](#factor-tables)); the step's one leaf-level output is this
@@ -263,9 +262,10 @@ a device one — which is in turn what lets the step be enqueued before any host
 and captured in a graph ([§4d](#capture)).
 
 A NEEDY batch-head — one whose write set it can neither address nor admit — runs nothing:
-no walk, no `y`, no state, no counter beyond its arrival. Its verdict lands in `growth[bh]`
-and its write-atom set in `atom_bits`, which is exactly what the host admission needs and
-all of it.
+its owner publishes a position count of zero, so no warp claims, and finishes it with its
+growth flag set ([the finish](#queue-finish)) — no walk, no `y`, no state. Its verdict lands
+in `growth[bh]` and its write-atom set in `atom_bits`, which is exactly what the host
+admission needs and all of it.
 
 The skip is PER BATCH-HEAD and not all-or-nothing, and the thing that used to make that
 unsafe is the done flags below. A batch that shares one verdict wastes every resident
@@ -274,40 +274,37 @@ what a replay does to the sequences that already deposited.
 
 <a id="done-flags"></a>**THE DONE FLAGS.** `DecodeScratch.done` is `[BH]` int32, zeroed
 ONCE at build. A batch-head that advances sets its flag. On the caller's replay a done
-batch-head **walks and reads but does not deposit** — and reproduces its `y` BIT FOR BIT
-while doing so, because [update-then-read](#update-then-read) means the rows it would
-deposit into already hold the deposit and the same expression is their readout. So `y` is
+batch-head **walks and reads but does not deposit** — and reproduces its `y` while doing
+so, up to the order its sums are added in ([§16](#determinism)), because
+[update-then-read](#update-then-read) means the rows it would deposit into already hold the
+deposit and the same expression is their readout. So `y` is
 complete for the whole batch after the replay without `y` ever becoming a buffer that
 survives between steps, and the contract the caller sees is:
 
 > gated step -> `growth_pending` -> `admit_growth` -> replay
 > advances every sequence EXACTLY ONCE.
 
-`tests/integration/test_decode_growth_trigger.py` states it as `torch.equal` on `y` AND on
-the gathered plane against the admit-everything-first order, over a MIXED batch — one
+`tests/integration/test_decode_growth_trigger.py` states it as `torch.equal` on the
+gathered plane, and the reordering bound on `y`, against the admit-everything-first order, over a MIXED batch — one
 batch-head needy, the rest not — which is the cell that can tell the per-batch-head
 contract from the global skip it replaced.
 
-<a id="the-last-arriver"></a>**EVERY CROSS-LAUNCH MUTATION HAPPENS AT ONE POINT, AND THAT
-IS THE WHOLE RACE ARGUMENT.** The done flag, the page table's fold ([§4e](#the-claim)) and
-the pool cursor are all read by the PROLOGUE of every CTA of a batch-head, and all written
-by that batch-head's LAST-ARRIVING CTA — elected from `ctr[bh]`, the split-K counter that
-already existed, which the needy path increments too so that the election is the same
-statement in both branches. A CTA arrives only after it has finished reading, so no CTA of
-a launch can observe a value its own launch wrote. **IT IS ONE WARP THAT DOES THE
-WRITING**, not the CTA: the elected CTA's other warps have already retired at the arrival
-count ([§29](#the-warp-arrival)), so the page table's fold is lane-strided over the row and
-its size folds by a warp shuffle where a block scan used to be — the barrier deletion's
-price, paid on the claiming step alone. Without that, a done flag set early
-would make a sibling CTA skip its own share of the SAME step, and two CTAs' claims would
-disagree about which atoms are free.
+<a id="one-writer"></a>**EVERY CROSS-LAUNCH MUTATION HAS ONE WRITER, AND THAT IS THE WHOLE RACE
+ARGUMENT.** The page table, the pool cursor and the done flag are read by every visit to a
+batch-head. The table and the cursor are written by the head's OWNER inside its admission,
+before it publishes, and no other visit reads either until it has seen that publication
+([the admission](#queue-admission)). The done flag is written by the head's FINISHER, which
+runs only once every position has been claimed and walked ([the finish](#queue-finish)): a
+visit that reads the flag set has no position left to take. Without that, a done flag set
+early would make a sibling visit skip its own share of the SAME step.
 
 <a id="growth-reduction"></a>**THE REDUCTION, AND THE RESET.** The last of those per-batch-head
 writers to arrive at `growth_ctr` ORs `growth` into the `[1]` `growth_any` the host reads.
 Nothing needy is the same statement as every batch-head done, so that one test also decides
 whether the done flags are zeroed for the next step: the flags reset themselves exactly
 when the round is over, no `memset` launch stands between two decode steps, and the whole
-thing is safe to capture. `growth_ctr` resets itself the same way `ctr` does.
+thing is safe to capture. `growth_ctr` resets itself the same way the queue's words do
+([the work queue](#queue)).
 
 ## <a id="the-claim"></a>4e. The slack pool — a growth step that admits itself
 
@@ -316,26 +313,21 @@ a batch-head whose write set is not resident does not have to go to the host at 
 takes slots from its own pool region and advances. `pool_cap = 0` — the shipped default —
 is exact commitment, and the paragraphs below describe machinery that does not run.
 
-**THE ASSIGNMENT IS REPLICATED, NOT COMMUNICATED.** Every CTA of the batch-head computes
-the same mapping: the touched-unmapped atoms in ASCENDING ATOM ID take
-`pool_slots[bh][cursor + rank]`, with `rank` from a block scan over that batch-head's
-atoms. No atomic claims a slot, nothing spins, and nothing is broadcast — which is what
-keeps the step one launch and keeps it capturable. It is ALL-OR-NOTHING: a demand larger
-than the batch-head's remaining pool is a needy batch-head and the host path exactly
-([§4c](#per-bh-verdict)), because a partial claim would deposit part of a step and leave
-the replay to deposit the rest twice.
+<a id="queue-claim-pool"></a>**THE ASSIGNMENT IS THE OWNER'S.** The batch-head's owner
+([the admission](#queue-admission)) maps its touched-unmapped atoms, in ASCENDING ATOM ID, to
+`pool_slots[bh][cursor + rank]`, with `rank` from a block scan over the candidate atoms; it
+writes the slots into the page table and advances the cursor by the demand, all before it
+publishes the head's count. It is ALL-OR-NOTHING: a demand larger than the batch-head's
+remaining pool is a needy batch-head and the host path exactly ([§4c](#per-bh-verdict)),
+because a partial claim would deposit part of a step and leave the replay to deposit the rest
+twice.
 
-**IT WRITES A SHADOW ROW, NOT THE TABLE, AND THAT IS FORCED.** The claim's predicate is
-`page_tbl[a] < 0`. A prologue write into the table would change a sibling CTA's predicate,
-which would change its ranks, and two CTAs would then assign the same slot to different
-atoms — the ordering ambiguity that makes replicated assignment unsound. So the claim
-writes `pool_map[bh]`: a WHOLE copy of that batch-head's table row with the claim merged
-in, every atom present, claimed or resident or absent. The walk then addresses through
-THAT ROW INSTEAD of the table, by one pointer chosen once in the prologue, and the walk's
-own body knows nothing about pools — no extra test, no extra load, no register held across
-it. The batch-head's last-arriving CTA folds the row's new entries into the real table and
-advances the cursor ([§4c](#the-last-arriver)), so by the next step the claim is ordinary
-residency and the shadow row is dead.
+**IT WRITES THE TABLE ITSELF.** No other visit reads the head's table row before the owner's
+publication, so the claim is ordinary residency the moment the walk can see it, and the walk
+addresses through the one table it always does: the walk's body knows nothing about pools.
+The split-K grid replicated the claim in every CTA of the batch-head, where a table write
+would have moved a sibling's predicate; it wrote a shadow row the walk read beside the table,
+and its last CTA folded that row in. One owner deleted all three (`DELETIONS.md`).
 
 **AN ADMITTED ATOM IS AN ADMITTED ATOM.** Pool slots are ordinary arena slots, committed
 and ZEROED by the host before they are named, so an atom the device admitted is
@@ -387,13 +379,14 @@ surfaces to the host exactly as it always did.
 
 ## <a id="phase-ledger"></a>4f. The phase ledger
 
-`DecodePhase` books every warp's cycles into five phases -- FOLD (the per-token operands staged), FACTOR (the digit
-masks, owner lists and term layout), ADMIT (the paged table test, claim and condensation, through the prologue's last
-barrier), WALK and COMBINE (the deposit, the arrivals, the split-K combine and the publication) -- with the shared
-`PhaseClock` (`common/phase_clock.md`). A warp that returns early (a retired segment, a non-last arriver, a non-last
-CTA) books what it ran and publishes before it returns. The ledger is bound by `rola_decode_ledger_bind` as
-`[BH * n_split][kDecodeWarps][kDecodePhases]` int64, cta = `bh * n_split + seg`; unbound, nothing is written and the
-clock's cost is its reads. It is the instrument the int8 port's budget line is measured with.
+`DecodePhase` books every warp's cycles into five phases -- FOLD (phase A of
+[the prologue](#prologue)), FACTOR (phases B and C), ADMIT (the head's positions and its
+admission, through the admission's barrier), WALK (the claims and the leaves) and COMBINE (the
+fold, the head's sums and its finish, and the choice of the next head) -- with the shared
+`PhaseClock` (`common/phase_clock.md`), summed over every head the CTA visits; every warp
+publishes its row at the CTA's exit. The ledger is bound by `rola_decode_ledger_bind` as
+`[ctas][kDecodeWarps][kDecodePhases]` int64, a row per CTA; unbound, nothing is written and the
+clock's cost is its reads.
 
 ## <a id="max-levels"></a>5. `kMaxLevels` — restated, not included
 
@@ -428,20 +421,13 @@ capacity.
 
 ## <a id="decode-threads"></a>7. `kDecodeThreads` — the width IS the arm
 
-The step launches ONE WAVE, SM-aligned: the host takes the declared residency off the
-kernel's own launch bound and sizes `n_split` from it ([§23](#the-split-policy)), so the
-width is the only constant a shape change touches and `n_split` follows.
-
-* **PRIMARY ARM, `kDecodeThreads = 1024`** — 32 warps, ONE CTA per SM. The per-CTA
-  prologue and the ADMISSION are then derived once per SM instead of once per thin CTA,
-  split 32 ways.
-* **COMPARISON ARM, `kDecodeThreads = 512`** — 16 warps, two CTAs per SM. The same 1024
-  resident threads and the same 64-register cap; the two differ only in the single wave's
-  tail, because with no barrier below the prologue there is nothing left for a second
-  resident CTA to interleave WITH.
-
-At `d_v = 64` a warp is exactly two output columns per lane either way, with 128 B
-coalesced row loads — the lane→column map is a property of the warp, not of the CTA.
+The step launches ONE CTA of 512 threads an SM -- 16 warps of up to 128 registers -- and one
+wave of them: the host takes the declared residency off the kernel's own launch bound and sizes
+the grid from it ([§21b](#the-split-policy)). The registers are the whole-atom walk's: a warp
+holds a quarter of an atom's leaves a lane group in flight ([`#whole-atoms`](#whole-atoms)),
+which the 64-register cap of 1024 threads could not hold without spilling; at 512 no arm
+spills, and a visit's prologue is issued by 16 warps where it was 32
+([`#prologue`](#prologue)).
 
 ## <a id="params-amps"></a>9. `DecodeParams` — the operands, as addresses
 
@@ -512,12 +498,11 @@ per (list, level) — a single small array [`build_lists`](decode_lattice.md#the
 produces with the lists, consulted directly at unit-resolve time rather than through a
 second index over it.
 
-## <a id="splitk-workspace"></a>13. The split-K workspace
+## <a id="queue-buffers"></a>13. The queue's buffers
 
-`ws` is `[BH, n_split, cols]` and `ctr` is `[BH]`. The workspace is SLOT-ORDERED
-and summed by the last-arriving CTA, which is what makes decode's `y`
-RUN-REPRODUCIBLE. Why that diverges from the tiled consumer on purpose is
-[§16](#determinism).
+`yacc` is `[BH, cols]` fp32, a head's readout sums, and `queue` is `[4 BH + 2]` int32, the work
+queue's counters. Both are allocated once per sequence and reset by the kernel that last reads
+them ([the work queue](#queue)).
 
 ## <a id="extract-bits"></a>14. `extract_bits` — the funnel shift, written once
 
@@ -548,54 +533,40 @@ lattice's UNIT RANK SPACE ([`decode_lattice.md#the-unit`](decode_lattice.md#the-
 
 What makes it a GEMV rather than a GEMM is that there is one token, so the
 contraction index is the LEAF and the output index is the COLUMN. That is why
-there is no MMA here **and no warp reduction either**: lanes are mapped to OUTPUT
-COLUMNS, so each lane accumulates its own partials in registers for the whole row
-stream and the dot never crosses a lane.
+there is no MMA here: a lane holds eight channels of a leaf
+([`#leaf-lanes`](#leaf-lanes)) and accumulates their partials in registers for the
+whole walk, so the dot never leaves the lane.
 
-The only reductions in the file are the 8-way cross-warp fold and the
-`n_split`-way cross-CTA combine, both over a small FIXED index set. Both are
-fixed-order sums rather than tree primitives because each is `cols` INDEPENDENT
-reductions over 8 (or `n_split`) values — a shape no block-reduce primitive has.
+The reductions are after the walk and over small index sets: the lane groups'
+butterfly, the CTA's fold over its warps, and the head's sums, which every visit
+adds into ([the finish](#queue-finish)). The first two are fixed-order; the third
+is atomic, in arrival order ([§16](#determinism)).
 
-## <a id="determinism"></a>16. Determinism is a shipped property here, and it diverges from the tiled consumer on purpose
+## <a id="determinism"></a>16. `y` is reproducible to its sums' order, and the state bit for bit
 
-The tiled consumer emits each token's output as a split-K partial through
-`atomicAdd` into `num`/`den`, so its `y` is not reproducible against its own
-binary wherever a `bh` holds more than one owner. **Measured: 384 of 976 fixture
-cases differ between two runs of one binary.**
+RULED (Blake, 2026-09-29): "I don't care about determinism." The split-K grid combined `y`
+in slot order, so it was byte-reproducible at a fixed split; the work queue adds each visit's
+partial into the head's sums with `atomicAdd`, in ARRIVAL order ([the finish](#queue-finish)),
+so `y` moves by the reassociation of a few adds a head, each addend an fp32 sum over a visit's
+leaves. The gates compare `y` under that bound (`tests/oracle/fixtures.py`, `reordered_close`:
+`rtol = 2^-14`, `atol = 2^-16 * max |y|`).
 
-Prefill's `y` feeds a loss or an eval aggregate, and that is tolerable. Decode's
-`y` feeds an argmax or a sample that picks the NEXT TOKEN, so a last-bit
-difference in `den` flips a near-tie logit and the divergence compounds
-autoregressively for the rest of the generation.
-
-At `T = 1` the partials are `n_split * cols` floats per `bh`, so the fixed-order
-combine costs one workspace slot per CTA, one `__threadfence()` and one
-`atomicAdd` on an INT counter — an atomic that defines the SCHEDULE, not the
-arithmetic. See [§30](#slot-order).
-
-The STATE is unconditionally reproducible for a stronger reason: the row
-partition is a PARTITION, so every written row has exactly one owning CTA, warp
-and lane, and no atomic touches `state` at all.
+The STATE stays byte-reproducible, for a structural reason: the write term's positions
+PARTITION its leaves ([the positions](#queue-positions)), so every written leaf has exactly one
+depositing lane group, and its new bytes are a function of its old bytes and the token's
+operands alone. No atomic touches `state`, and the gates compare it bit for bit.
 
 ## <a id="no-barrier"></a>17. No barrier per LEAF, and that is the axis that matters
 
-The fold and factor-table prologue costs a FIXED number of barriers and the rest of
-the step costs NONE. Four are unconditional — the read side's row sums, both sides'
-rows/value/dials, the digit masks and the zeroed counts, the owner liveness bitmasks —
-then one closing [`publish_term_layout`](decode_lattice.md#the-owner-lists); the
-admission adds its own where it claims, and the last of them publishes the claim row
-and the zeroed warp arrival count to everything below. The per-(list, level) barriers
-the compacted owner lists needed are gone with the block scans
-([2.1](decode_lattice.md#the-owner-lists)), so the count no longer grows with `D` at
-all — and it never grew with `N` or with a leaf-space bitmap's word count, which is
-the axis the tiled consumer's per-candidate-tile barriers scaled on.
+A visit costs a FIXED number of barriers: the prologue's three ([`#prologue`](#prologue)),
+the admission's one (a paged owner's claim and condensation add their own), the fold's one,
+and two around the choice of the next head. None is per position and none is per leaf; the
+count never grew with `N` or with a leaf-space bitmap's word count, which is the axis the
+tiled consumer's per-candidate-tile barriers scaled on.
 
-**BELOW THE PROLOGUE THERE IS NOT ONE.** The WALK never needed one: a lane's read
-contribution and its write-back are one statement in program order, and the ordering
-is UPDATE-THEN-READ because §2's survival is inclusive at `j = t`
-([§27](#update-then-read)). The cross-warp fold and the split-K hand-off used to need
-five between them; they are now an ARRIVAL COUNT ([§29](#the-warp-arrival)).
+**THE WALK NEVER NEEDED ONE.** A lane group's read contribution and its write-back are one
+statement in program order, and the ordering is UPDATE-THEN-READ because §2's survival is
+inclusive at `j = t` ([§27](#update-then-read)); a warp's claims are its own atomics.
 
 ## <a id="decode-max-exponent"></a>18. `kDecodeMaxExponent` — the same convention, structurally inert here
 
@@ -616,17 +587,13 @@ the repository, and so a future decay form that CAN go positive finds the clamp
 already in place. `tests/unit/test_decode_capacity.py` pins the two constants
 equal.
 
-## <a id="template-axes"></a>20. Why there is no `GLOBAL` axis, and what `NC` is
+## <a id="template-axes"></a>20. Why there is no `GLOBAL` axis
 
 Raw normalization is dead everywhere in this repository (revival = git;
 [`DELETIONS.md`](../DELETIONS.md)): the mass column and the `num/den` divide are
 UNCONDITIONAL, so `cols = DV + 1` at every instantiation and there is nothing left
 for a `GLOBAL` template axis to select between. `decode_step_kernel<DV, D,
 DECAY>` takes exactly three template parameters.
-
-`NC = DV / 32` is columns per lane. The row load is `NC` fully coalesced 128 B
-transactions and the lane's accumulators are its own output columns — the whole
-reason no reduction is needed on the dot ([§15](#gemv-shape)).
 
 ## <a id="smem-ledger"></a>21. The SMEM ledger, and the fold's `+3` pitch
 
@@ -635,7 +602,7 @@ reason no reduction is needed on the dot ([§15](#gemv-shape)).
 | `sa_r`, `sa_w` | `[total_rows]` fp32 | both sides' amplitude rows, UNCOMPACTED and indexed by DIGIT |
 | `sd` | `[total_rows]` fp32 | this head's dial row; `DECAY` only |
 | `v_tok` | `[DV]` fp32 | the token's value, resident |
-| `fold` | `[warps][cols + 3]` fp32 | the cross-warp partials |
+| `fold` | `[warps][cols + 3]` fp32 | a warp's partials, its mass and its position count ([the finish](#queue-finish)) |
 | `mask_r`, `mask_w` | `[mask_total]` u32 | one bit per digit, per side ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)) |
 | `olist` | `[4][olist_total]` i32 | the four KINDS' live owners per level, compacted: the i-th live owner, one indexed load ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)) |
 | `dlist` | `[dlist_total]` i32 | the WRITE side's live digits, OUTER levels only — term 0's own grain ([`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)) |
@@ -648,82 +615,42 @@ The amplitude rows are indexed by DIGIT and are not compacted: **the digit mask
 carries membership, so the digit IS the index**, and no compaction, id list or
 flag packing exists on this path.
 
-<a id="fold-bank-padding"></a>The `+3` pads the fold's row stride to `cols + 3` so the eight warps' stores land
-on distinct banks. The fold reads DOWN the warp axis, so an unpadded stride
-sharing a factor with 32 would collide. `gcd(cols + 3, 32)` is 4 at `cols = 65`
-and 1 at `cols = 32` and at `cols = 64 + 3`.
+<a id="fold-bank-padding"></a>The row is `cols + 3` floats: the `DV` partials, the mass at `DV`, the warp's
+position count at `DV + 1`, and the rest padding the stride off a multiple of 32. Warp 0
+reads DOWN the warp axis, sixteen rows per column, so an unpadded stride sharing a factor
+with 32 would collide; `gcd(cols + 3, 32)` is 4 at `DV = 64` and at `DV = 32`.
 
-## <a id="per-cta-prologue"></a>21b. The prologue is per-CTA, and that is the design
+## <a id="per-cta-prologue"></a>21b. The prologue is per visit, and that is the design
 
-The step is one kernel with three phases — fold, factor, walk — and the grid is
-`(n_split, BH)`, so the first two run once per SPLIT-K CTA rather than once per batch-head.
-Every CTA re-derives the same amplitude rows and the same factor tables for its `bh`, then
-walks only its own share of the unit rank space.
+Every visit a CTA pays to a batch-head folds and factors that head itself
+([`#prologue`](#prologue)), then walks the positions it claims. The tables live and die in its
+shared memory; nothing is published but the admission's outcome.
 
-That redundancy is the price of two properties:
+That redundancy is the price of the factor tables never reaching DRAM. A shared per-head table
+would have to be written by someone and read by everyone -- a global round trip on the walk's
+hottest index, or a launch boundary to order the write against the reads, which is the launch
+this design exists to delete.
 
-- **The factor tables never reach DRAM.** A shared per-`bh` table would have to be written
-  by someone and read by everyone, which is a global round trip on the walk's hottest
-  index — or a launch boundary to order the write against the reads, which is the launch
-  this design exists to delete.
-- **The split partition stays.** Collapsing the grid to one CTA per batch-head
-  (`n_split = 1`) costs no recompute at all, but the walk is row-starved without the
-  split — a topology's `N` is exactly what decides how starved, so there is no regime
-  where collapsing the grid is the better shape.
+**Nothing in the prologue's fixed cost is a term in `N`.** Both digit masks are
+`sum_l ceil(B_l/32)` words per side; the owner and digit lists are one warp a job over arrays
+at most `lat_g[l] <= kDecodeMaxLevelWidth` wide ([`decode_lattice.md`](decode_lattice.md)) --
+bounded by the LEVEL WIDTHS and the OWNER-GRID EXTENTS, never by the leaf space and never by
+the state. The leaf-space bitmap this design replaced (`DELETIONS.md`) did carry a term in `N`.
 
-**Nothing in the recompute's fixed cost is a term in `N`.** Building both masks is
-`sum_l ceil(B_l/32)` words per side; building both owner lists is a block scan per
-(list, level), `D` levels, over an array at most `lat_g[l] <= kDecodeThreads` wide
-([`decode_lattice.md`](decode_lattice.md)) — bounded by the LEVEL WIDTHS and the OWNER-GRID
-EXTENTS, never by the leaf space and never by the state, which is why paying it `n_split`
-times still lands ahead of paying one extra launch once. This is a structural property of
-the walk itself, not a tuning outcome: the leaf-space bitmap this design replaced (its
-construction, its cost and its removal are recorded in `DELETIONS.md`) DID carry a term in
-`N`, which is the gap this design exists to close.
+<a id="the-split-policy"></a>**THE GRID IS ONE WAVE OF THE DECLARED RESIDENCY**, work
+permitting: `rola.ops.decode.derive_ctas` takes `SMs * residency`, with the residency read back
+off the launch bound itself ([`decode_api.md` §2](decode_api.md#residency)), bounded above by
+`BH` times the unit supply, so a small topology does not launch CTAs with nothing to claim. A
+second wave would pay a head's prologue for work the resident CTAs could claim. Both bounds are
+static facts, frozen for the sequence and baked into a captured launch.
 
-<a id="the-split-policy"></a>**The split is ONE WAVE of the declared residency.** Because
-the prologue is per-CTA, a grid deeper than the machine can hold at once re-pays that
-whole prologue in a second wave for work the first wave could have finished, and the
-`beyond-realized CTAs exit early` argument does not cover it: a CTA cannot exit before it
-knows its own range, and knowing its range means running the prologue. So
-`rola.ops.decode.derive_n_split` takes `SMs * residency / BH`, with the residency read
-back off the launch bound itself
-([`decode_api.md` §2](decode_api.md#residency)), bounded ABOVE by the UNIT SUPPLY (`min`
-of the two) so a small topology does not launch CTAs there is no work for. Both bounds
-are static facts — an occupancy fact and a geometry fact.
-
-<a id="retirement"></a>**THE CEILING IS WHAT THE HOST CAPTURES; THE DEVICE IS WHAT SPENDS
-IT.** `n_split` is derived from the DENSE unit ceiling because that is the only count a
-host can know — the count a step actually enumerates is a function of ITS OWN SUPPORT and
-exists only on the device, once the factor tables do
-([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)). Under the
-union-of-products enumeration the two diverge by up to 11x, and at small `BH` — where
-`n_split` is largest — the ceiling over-launches by 5x. So the split policy stays exactly
-what it was, frozen for the sequence and baked into the captured launch, and the SEGMENTS
-RETIRE:
-
-* every CTA derives `n_live = clamp(ceil(max_t units[t] / kDecodeWarps), 1, n_split)` from
-  the counts its own prologue produced — the walk's stride is `n_split * kDecodeWarps`, so
-  the segments with an iteration are exactly the PREFIX `[0, n_live)`;
-* a segment at or past it returns THERE, before the admission question — no walk, no
-  partial, no arrival, and it is not summed;
-* and it returns before the admission on purpose: the table test and the pool claim read a
-  page table the last-arriving live segment folds into ([§4e](#the-claim)), so a retired
-  segment must not be inside that window at all.
-
-**IT IS THE ARRIVAL AND THE COMBINE THAT RETIREMENT ACTUALLY BUYS, NOT THE PROLOGUE**, and
-that was measured rather than assumed. A variant that retired the walk but still wrote
-exact zeros and arrived bought NOTHING; the per-segment cost a large split carries is
-`n_split` atomics on one counter followed by `n_split` `__ldcg` loads per column on ONE
-CTA ([§30](#slot-order)). The measured effect of retiring completely, at `BH = 1` where
-`n_split = 256`, is 10-12 % off every sparse cell.
-
-**AND IT IS NOT A THRESHOLD.** `n_live` is the walk's own loop bound, asked before the
-loop. It is also why a PER-BATCH-HEAD PRE-PASS is not shipped: publishing the factor
-tables and the counts from a `BH`-CTA launch so segments could retire before folding
-anything was built, gated green and measured, and it LOST — at `BH = 1` the pre-pass is a
-single CTA whose whole latency is exposed, and it cost 3-7 us against a saving the
-in-kernel retirement already collects.
+**THE HOST'S CEILING IS WHAT THE DEVICE SPENDS.** The count a step actually enumerates is a
+function of ITS OWN SUPPORT and exists only on the device, once the factor tables do
+([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)), and it varies from head to
+head. So nothing is sized per head: a head with more live positions takes more claims, and a
+CTA that runs out of its heads steals one ([the next head](#queue-next)). The split-K grid
+this replaced cut every head the same number of ways at the dense ceiling and retired the
+segments its support left empty; the queue has no segment to retire (`DELETIONS.md`).
 
 ## <a id="row-scales"></a>22. `sr` and `sw` — the two per-token row scales
 
@@ -736,11 +663,11 @@ readout fixes it to 1 identically, in every arm.
 
 ## <a id="aligned-subranges"></a>26. The unit's leaves are walked in ascending order, over the innermost run's set bits
 
-<a id="the-term-loop"></a>**THE WALK'S OUTER LOOP IS THE TERM**, over the `D + 1`
-products whose disjoint union is the set the step touches
+<a id="the-term-loop"></a>**A POSITION NAMES ONE TERM**, of the `D + 1` products whose
+disjoint union is the set the step touches
 ([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)), and each term's index
-space is partitioned across the grid on its own. That is a LATENCY decision, not
-bookkeeping: inside the term loop every level's KIND is loop-invariant, so the owner-list
+space is laid out as positions on its own ([the positions](#queue-positions)). That is a LATENCY decision, not
+bookkeeping: inside a term every level's KIND is invariant, so the owner-list
 bases, the realized counts, the padded field widths and the membership predicates all
 hoist out of the unit loop and the per-unit dependent chain is the one the
 product-of-unions walk had. The alternative — laying the terms end to end in ONE index
@@ -760,14 +687,14 @@ rank is not monotone in atom id, and the pool claim's canonical ranks are define
 order, so a term slot `D + 1` holds the write product in the old space and the candidates
 read that. Two enumerations of one set, each in the order its consumer needs.
 
-<a id="the-unit-partition"></a>The grid partitions each term's UNIT INDEX SPACE directly — `for
-(unit = seg*kDecodeWarps + warp; unit < units[term]; unit += n_split*kDecodeWarps)` — so there
-is no separate row-range-to-word resolution step: a unit IS the warp's own share, by
-construction, and `resolve_unit`
-([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) is what turns a unit index
-into its `(owner, r_0 .. r_{D-2})` pair before any leaf inside it is touched. Every
-touched leaf therefore has exactly one owning CTA, warp and lane — the unit partition is a
-PARTITION, so no atomic ever touches `state` ([§16](#determinism)).
+<a id="the-unit-partition"></a>The queue hands out each term's UNIT INDEX SPACE directly -- a
+position is a unit of a whole-atom write term, or `kGroups` consecutive units of any other
+term, one a lane group ([the positions](#queue-positions)) -- so there is no separate
+row-range-to-word resolution step: a unit IS its lane group's share, by construction, and
+`resolve_unit` ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) is what turns a
+unit index into its `(owner, r_0 .. r_{D-2})` pair before any leaf inside it is touched.
+Every touched leaf therefore has exactly one owning lane group -- the positions PARTITION the
+units, so no atomic ever touches `state` ([§16](#determinism)).
 
 **A WARP TAKES A WHOLE UNIT, NOT A WHOLE OWNER, AND THAT IS A MEASURED CHOICE.** A unit is
 already the DRAM granule: under the mixed-radix order its leaves are the innermost level's
@@ -776,8 +703,8 @@ across units buys nothing on top of it — the sectors are whole either way. Par
 OWNER grain instead caps the walk's parallelism at the LIVE OWNER COUNT and hands each
 warp the entire `BC`-leaf box to walk serially; measured on the wide sparse arm that cost
 roughly a factor of two, and at `N = 256` (two live owners against eight warps) rather
-more. The CTA's warps take CONSECUTIVE units, so a CTA still covers one contiguous stretch
-of the plane per pass.
+more. Positions are claimed in ascending order, so a head's warps together sweep the plane
+in one contiguous stretch.
 
 Within one resolved unit the walk visits the SET BITS of THAT TERM'S slice — `cw` for the
 write product, `cr` for a read-remainder term, already conditioned by `resolve_unit`
@@ -845,110 +772,23 @@ is no epsilon floor: both of §12 rule 2's prohibitions, inherited verbatim.
 The mass column is the `v := 1` column of the identical recurrence, unconditional
 on every arm — one lane-0 statement, never a second path.
 
-## <a id="fold-and-sr"></a>29. <a id="the-warp-arrival"></a>The cross-warp fold is an ARRIVAL COUNT, and where `sr` is applied
+## <a id="the-fold"></a>29. The CTA's fold
 
-Every warp of a live CTA deposits its `cols` partials into its OWN row of `fold`,
-fences its own stores, and bumps a shared arrival count with one atomic; the warp that
-reads back `kDecodeWarps - 1` is the last arriver, and it alone sums the rows. No
-barrier is involved and none is available: the count itself is the proof that every row
-is written. Its zero is published by the PROLOGUE's last barrier — shared memory is not
-zeroed at CTA start, and that is the one place a zero costs nothing.
+After its last claim a visit folds its warps' partials in shared memory and adds them into the
+head's sums once: one set of atomics a visit, never one a warp
+([the finish](#queue-finish)). There is no read-side row scale left to apply: the fold stages
+normalized amplitudes ([`decode_fold.md`](decode_fold.md)), and the ratio readout fixes the
+read-side gain to 1 ([§22](#row-scales)).
 
-**DETERMINISM SURVIVES BECAUSE THE ORDER IS FIXED, NOT BECAUSE THE ARRIVALS ARE.** The
-sum runs over warps `0 .. kDecodeWarps - 1` per column, which is exactly the order the
-barrier-stepped tree it replaces used, so `y` is byte-reproducible at a fixed `n_split`
-as before ([§30](#slot-order)).
+## <a id="declared-residency"></a>30. The residency is DECLARED
 
-**A WARP THAT WALKS NOTHING STILL DEPOSITS AND ARRIVES.** Retirement at warp grain is
-the walk a warp does not run — its accumulators are exact zeros and adding them changes
-no bit — never an early `return`, which would leave the count short. Retirement at CTA
-grain is unchanged and still returns before the admission ([§22](#retirement)).
-
-**EVERY LANE FENCES ITS OWN ACCESSES**, on both sides of the count: a fence orders only
-the fencing thread, so a leader-only fence before a one-lane atomic would cover one lane
-of thirty-two (`KERNEL_STANDARDS.md` §12).
-
-**AND THE PAIRING IS PROVEN IN THE PTX MEMORY MODEL, WHICH IS NOT WHAT THE SANITIZER
-CHECKS.** The emitted PTX is `membar.cta` / `bar.warp.sync` / `atom.shared.add.u32` /
-`membar.cta`. A fence followed in program order by a strong write on the counter is a
-RELEASE PATTERN on it, and a strong read of the counter followed by a fence is an
-ACQUIRE PATTERN (PTX ISA §8.8, whose own examples are `fence.release; atom.relaxed [M];`
-and `atom.relaxed [M]; fence.acquire;`). Every warp's arrival precedes the last
-arriver's in OBSERVATION ORDER through the counter's atomic RMW chain (§8.9.2), which is
-what makes release synchronize with acquire (§8.9.4); the lanes that are not lane 0 reach
-the release through `bar.warp.sync`'s own memory ordering (§9.7.14.2). Two consequences
-are load-bearing and easy to lose: the arrival MUST keep using its return value, because
-a fire-and-forget `red` forms no acquire pattern at all (§8.11.1), and the fences must
-stay on EVERY lane. `compute-sanitizer racecheck` reports 48 RAW hazards here regardless
-— it models barriers, `__syncwarp`, `cuda::barrier`, cluster barriers and async-copy
-waits, and a fence plus an atomic is none of those. That is adjudicated, with its proof
-and its exit condition, by `tools/sanitize_oracle.py`'s `ASSERTED`; the measurements
-behind it are in FINDINGS `## K47`.
-
-`sr` is applied by the summing warp, before the split-K store, exactly as the tiled
-kernel emits `sr * y` into `num` and `sr * den_acc` into `den`. That makes the combine
-below a plain sum, and keeps the two consumers' dividend and divisor the same objects.
-
-## <a id="slot-order"></a>30. The deterministic split-K combine, over the LIVE segments
-
-SLOT ORDER, always. This is the whole determinism argument: the addends are summed in a
-FIXED order, which gives one answer per binary where an `atomicAdd` race gives one answer
-per arrival order.
-
-THE RANGE IS `n_live`, NOT `n_split` ([§21](#retirement)): retired segments write no
-partial and take no arrival, so both the arrival target and the summed slot range are
-`[0, n_live)`. Every CTA of the batch-head derives that bound identically from the same
-published unit counts, so nothing is communicated and nothing is ordered — and the sum is
-still ASCENDING SLOT ORDER over a range that is a function of the inputs alone, which is
-exactly what G1 asserts (`y` byte-reproducible at a FIXED `n_split`). `y` still moves
-across `n_split`, as it always did, because fp32 addition is not associative.
-
-`__ldcg` bypasses L1 so the reader sees the other CTAs' stores that the
-`__threadfence` above made visible.
-
-`n_live == 1` takes an early return before any of this — not a special case, the
-same expression with zero combine steps. A batch-head whose support is empty still owes a
-`y`, which is why `n_live` is clamped up to one and segment 0 always runs: `y` is then the
-ratio `0 / (0 + eps)` it writes.
-
-The counter is reset to `0` by the last CTA, so no `memset` launch stands between
-two decode steps and the counter is safe to capture in a CUDA graph.
-
-## <a id="declared-residency"></a>30b. The residency is DECLARED, and it is the whole
-perf story of the fusion
-
-`decode_step_kernel` carries
-`__launch_bounds__(kDecodeThreads, decode_step_blocks_per_sm(DECAY, D))`, and that second
-argument is not decoration: it is a REGISTER CAP the assembler must meet, and the census
-is what proves it met it without spilling. `decode_step_blocks_per_sm` is
-`(decay || levels >= kMaxLevels) ? 4 : 5` — TWO TEMPLATE AXES move the declared residency,
-each by exactly one CTA:
-
-- **DECAY** carries a second per-leaf product (the decay rate) and a survival
-  exponential through the same loop as the undecayed arm's amplitude product;
-- **DEEPEST** (`D == kMaxLevels == 4`) resolves one more level per unit — one more owner
-  coordinate, one more fixed digit and one more amplitude factor folded into `Unit<D>`
-  ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) — held live across the
-  same loop.
-
-The measured census is what settles both numbers, and it did move once in wave 2c: an
-earlier draft of the unit carried a RUNTIME loop level between the unit and its slots, and
-spilled 16–30 stores at `D = 2` and `D = 3` against the 48-register cap the `5` implies.
-Collapsing the unit to the innermost run — one shape, uniformly
-([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)) — returned every arm to zero
-spill at the SAME declared residency, which is the outcome the *"ideal regime is not
-negotiable"* rule asks for: the budget was not the thing to relax.
-
-Both are compile-time functions of a template axis rather than a threshold read off a
-measurement, which is what the standing *"branch on structure, not thresholds"* rule asks
-for: a config that is DECAY or `D == 4` gets one fewer CTA/SM, unconditionally, and every
-other config gets the wider budget.
-
-**The claim's SIZE comes out of the fold that applies it** — an atom the shadow row maps
-and the table does not IS a claimed atom ([§4e](#the-claim)) — rather than being carried
-across the walk or re-derived from the write-support enumeration afterwards. Both
-alternatives hold state alive across the loop the register budget is tight in; counting it
-where the fold already touches every atom holds nothing at all.
+`decode_step_kernel` carries `__launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm)`, and the
+second argument is not decoration: it is a REGISTER CAP the assembler must meet, and the census
+is what proves it met it without spilling. `kDecodeBlocksPerSm` is
+`kDecodeResidentThreads / kDecodeThreads = 1`, so every arm runs at 128 registers a thread --
+few warps and full registers, the ideal regime -- and none spills (`tools/sass_gate.py`). It has
+no template axes: DECAY and the deepest arm used to buy their extra live state by giving up a
+CTA of residency, and at one CTA an SM there is none to give up.
 
 ## <a id="instantiation-matrix"></a>31. The instantiation matrix
 
@@ -980,8 +820,8 @@ bound at all.
 
 ## <a id="empty-not-zeros"></a>34. `y` is `at::empty`, not `at::zeros`
 
-Every element is written by the `n_split == 1` CTA or by the last-arriving CTA of
-the combine, so a zero-fill would be a launch that the launch-latency-bound
+Every element is written by its head's finisher ([the finish](#queue-finish)),
+so a zero-fill would be a launch that the launch-latency-bound
 small-batch regime pays for nothing — and an unwritten element showing as garbage
 rather than as a plausible zero is what a gate wants.
 
@@ -1102,39 +942,6 @@ remains here is exactly the per-TOKEN part -- the side gains; the per-LEVEL fact
 the tiled kernel hoists stay in the per-LEAF product.
 docs/internals/decode/decode.md#row-scales
 
-<a id="umax"></a>
-### `umax`
-
-`n_split` is FROZEN for the sequence and baked into the captured launch
-([`decode.md#the-split-policy`](#the-split-policy)), and it is sized from the DENSE
-unit ceiling because that is the only count a host can know. The count this step
-ACTUALLY enumerates is a property of ITS OWN SUPPORT and exists only here, once the
-factor tables do. So the ceiling is what the host captures and the DEVICE is what
-spends it: a segment with no unit in any term retires, and it retires COMPLETELY --
-no walk, no partial, no arrival, and it is not summed.
-THE LIVE SEGMENTS ARE A PREFIX. A segment owns the `kUnitBlockWarps`-wide block at
-`seg * kUnitBlockWarps` of every period, so it has an iteration exactly when
-`seg * kUnitBlockWarps < max_t share[t]` -- a term's SHARE being what one warp takes of it:
-a unit of a whole-atom write term ([`#whole-atoms`](#whole-atoms)), a batch of `kGroups`
-units of every other term ([`#leaf-lanes`](#leaf-lanes)) -- and `n_live` is that bound
-clamped into `[1, n_split]`. Every CTA of the batch-head
-derives it from the same published counts, so the arrival target and the summed slot
-range agree by construction and no CTA has to be told.
-IT IS NOT A THRESHOLD -- it is the walk's own loop bound, asked before the loop.
-AT LEAST ONE, ALWAYS: a batch-head whose support is empty still owes a `y`, and `y`
-is the ratio `0 / (0 + eps)` that segment 0 writes.
-IT RETIRES BEFORE THE ADMISSION, and that ordering is load-bearing rather than
-incidental: the table test and the pool claim read a page table the last-arriving
-LIVE segment folds into, so a retired segment must not be inside that window at all.
-docs/internals/decode/decode.md#retirement
-`D + 1` SHARED READS AND ONE COMPARE: every thread reads the published unit counts and takes
-the largest share itself, behind the term layout's barrier -- no second synchronisation, and
-the shares need the arm's `kGroups`, which the table does not know. The test is written as
-the COMPARE rather than as `seg >= n_live` because they are the same question --
-`seg >= clamp(ceil(max_share / U), 1, n_split)` is `seg > 0 && seg * U >= max_share` at
-`U = kUnitBlockWarps`, since `seg < n_split` always. `n_live` itself is only needed by the
-epilogue.
-
 <a id="win-bits"></a>
 ### `win_bits`
 
@@ -1156,79 +963,21 @@ conditioning that term carries. docs/internals/decode/decode.md#candidate-atoms
 
 Three outcomes PER BATCH-HEAD: advance, no-op, or re-read without depositing:
 docs/internals/decode/decode.md#absorbed-verdict
-NO 64-BIT ADDRESS MAY SURVIVE INTO THE WALK -- each place that needs this
-batch-head's table row forms it again, at two registers of the declared residency:
-docs/internals/decode/decode.md#declared-residency
 
 <a id="a"></a>
 ### `a`
 
 THE TABLE TEST: how many atoms this batch-head's write side reaches that the page
-table does not map. Every CTA of the batch-head computes it independently from the
-same two objects -- its own factor tables and a table no launch mutates until
-every CTA of that batch-head has arrived -- so the answer is a RECOMPUTE and never
-a communication. docs/internals/decode/decode.md#the-table-test
-
-<a id="syncthreads"></a>
-### `__syncthreads`
-
-THE CLAIM, replicated and canonical: the batch-head's touched-unmapped atoms
-take pool slots in ASCENDING ATOM ID from its own cursor, so every CTA of the
-batch-head derives the identical mapping with no atomic and no arrival.
-
-IT WRITES THE CLAIMS AND NOTHING ELSE. Not the page table, because the table is
-the claim's own predicate and a prologue write would move a sibling CTA's ranks;
-and not a whole shadow ROW either, which is the defect this deletes.
-THE ROW-COPY WAS A CROSS-CTA RACE. Every CTA of the batch-head copied the table
-into this row -- writing `-1` for every atom the table does not map yet -- while
-its siblings were already writing their claimed SLOTS into the same addresses,
-with no ordering between CTAs at all. The barrier below orders one CTA's copy
-against its own claim writes and says nothing about anyone else's: a sibling's
-`-1` could land on top of a claimed slot, and a third CTA reading that address
-in the window took the ABSENT path and skipped its deposit. The final value was
-always right, which is what the old comment's "identical mapping" was true of;
-the TRANSIENT was not, and correctness that survives only because one wave of
-CTAs happens to march in step is not correctness.
-SO THE ROW IS CLAIMS-ONLY, every write is the same value from every CTA, and the
-walk reads TWO SOURCES instead of one (`decode.md#the-claim`). It also deletes an
-`atoms_per_bh`-element bulk copy per CTA per claiming step.
+table does not map, counted by the head's owner and published with its admission:
+docs/internals/decode/decode.md#the-table-test
 
 <a id="decode-step-kernel-note-l355"></a>
 ### in `decode_step_kernel`, near line 355
 
-THE CONDENSATION, published UNCONDITIONALLY by one CTA per batch-head: a dead
+THE CONDENSATION, published UNCONDITIONALLY by the head's owner: a dead
 atom's `false` is as much of the set as a live one's `true`, and publishing only
 the growing batch-heads would leave the buffer carrying an older step's answer for
 the others -- which is the set a host admission then plans from.
-
-<a id="syncthreads-2"></a>
-### `__syncthreads`
-
-A PAGED PROLOGUE ENDS ON THIS BARRIER AND THERE IS NO OTHER BELOW IT. It publishes the
-claim row to the walk and the admission outcome to the combine. A dense step claims
-nothing and cannot be needy, so it has nothing to publish here and takes no barrier: its
-zeroed warp arrival count and its admission outcome ride phase A's barrier -- shared memory
-is not zeroed at CTA start, and a barrier already paid publishes a zero for free.
-docs/internals/decode/decode.md#no-barrier
-
-<a id="want-live"></a>
-### `want_live`
-
-A NEEDY BATCH-HEAD RUNS NOTHING: no walk, no `y`, no state, no counter beyond its
-arrival -- which is what lets the step be enqueued before the admission it needs is
-known, and what makes the caller's replay THE SAME STEP rather than a second one.
-docs/internals/decode/decode.md#per-bh-verdict
-`n_live` -- the same bound the retirement test above asked as a COMPARE, formed here
-because the combine and the arrival need the NUMBER rather than the answer.
-
-<a id="decode-step-kernel-note-l386"></a>
-### in `decode_step_kernel`, near line 386
-
-THE WARP'S OWN PARTIAL, and it exists whether or not the warp walks anything: the
-combine is an ARRIVAL COUNT, so every warp of a live CTA deposits and arrives, and a
-warp whose units are all beyond this term's count deposits exact zeros. Retirement at
-warp grain is therefore the walk it does not run, never an early `return`:
-docs/internals/decode/decode.md#the-warp-arrival
 
 <a id="decode-step-kernel-note-l397"></a>
 ### in `decode_step_kernel`, near line 397
@@ -1239,39 +988,27 @@ the atom VALUE, so it is correct whatever order the walk reaches leaves in.
 `atom_base` is the atom's page as a BYTE offset from `p.state`: dense is
 `(bh * atoms_per_bh + atom) * kBytes`, paged is `slot * kBytes`.
 docs/internals/decode/decode.md#paged-address
-A CLAIMING STEP READS TWO SOURCES: the page table first, and this step's CLAIM ROW
-only where the table says absent. That is the whole of the pool inside the walk, and
-it is the shape the race-free claim row forces -- the row no longer carries the
-table's own entries, so it cannot answer for an atom it did not claim.
-THE TABLE COMES FIRST BECAUSE IT ANSWERS ALMOST EVERY ATOM: a claiming step's newly
-claimed atoms are by construction the ones the table does NOT map, so the fallback is
-taken only on them and every resident atom costs one load, as before.
-THE TWO CAN NEVER DISAGREE. `_admit_pages` writes only atoms the table has as absent
-and there is no eviction, so a slot never moves once assigned; a claim row entry from
-an earlier step therefore equals the table's. The one path that could break that is
-`PageArena.reset`, which clears the table and rewinds the allocator -- so it now
-clears this row too (`rola/ops/paging.py`). docs/internals/decode/decode.md#the-claim
 
 <a id="units"></a>
 ### `units`
 
-THE UNIT IS THE (owner, outer-run) PAIR and the grid partitions ITS OWN index
-space -- not the owner's -- so every touched leaf has exactly one owning CTA, warp
-and lane and the state needs no atomic:
+THE UNIT IS THE (owner, outer-run) PAIR and the queue hands out ITS OWN index
+space -- not the owner's -- so every touched leaf has exactly one owning lane group
+and the state needs no atomic:
 docs/internals/decode/decode.md#the-unit-partition
 A WARP TAKES A WHOLE UNIT, and a unit is the DRAM granule itself: under the
 mixed-radix order a unit's leaves are the innermost level's contiguous run, which at
 the flagship spans is one 16-leaf ATOM. Owner-contiguity across units buys nothing
 on top of that -- the sectors are already whole -- while partitioning at owner grain
 would cap the walk's parallelism at the LIVE OWNER COUNT and give each warp the
-whole `BC`-leaf box to walk serially. The CTA's warps take CONSECUTIVE units, so a
-CTA still covers one contiguous stretch of the plane per pass.
+whole `BC`-leaf box to walk serially.
 EVERY LEVEL BUT THE INNERMOST LEAVES THE SLOT LOOP AND THAT IS THE UNIT'S POINT:
 a unit fixes their digits, so their amplitude product is formed ONCE, in
 `resolve_unit`, and every slot below costs ONE innermost amplitude rather than `D`.
-THE OUTER LOOP IS THE TERM, and it is a LATENCY decision: every level's kind is
-loop-invariant inside it, so the list bases, the counts, the field widths and the
-membership predicates all hoist and the per-unit dependent chain is the union walk's.
+A POSITION NAMES ONE TERM, and that is a LATENCY decision: every level's kind is
+invariant inside a term, so the list bases, the counts, the field widths and the
+membership predicates are one packed word a level and the per-unit dependent chain is the
+union walk's.
 The alternative -- one index space, term named per unit -- was BUILT AND MEASURED at
 `+2.3 ns` per unit, which cost the scattered cell more than the decomposition saves.
 docs/internals/decode/decode.md#the-term-loop
@@ -1283,16 +1020,6 @@ THE TERM'S ROW OF THE PACKED TABLE, hoisted once per term: every level's kind,
 field width, field position and realized count is loop-invariant inside the term,
 so the resolver below reads ONE word per level instead of three:
 docs/internals/decode/decode_lattice.md#the-terms
-
-<a id="period"></a>
-### `period`
-
-THE BLOCK, THE REPEAT AND THE PERIOD, over BATCHES of `kGroups` units (a warp's
-lane groups take one batch). A warp's low `kUnitBlockWarpsBits` name its
-batch inside the segment's block; the rest name WHICH of the CTA's `kUnitRepeats`
-blocks it serves, one period apart. `seg * kUnitBlockWarps + ub` sweeps one whole
-period bijectively, so the partition is the same one-owner-per-row partition it
-was, cut at a granularity the CTA's width no longer sets.
 
 <a id="u"></a>
 ### `u`
@@ -1344,7 +1071,7 @@ intra Gram collapses into reading the row after it is written. A row in
 `supp(R) \ supp(W)` has `keep == 1` and no deposit, so the same expression is
 its readout too -- one path, no arm.
 A DONE BATCH-HEAD TAKES THE READ AND NOT THE DEPOSIT, and reproduces its `y`
-BIT FOR BIT while doing so: docs/internals/decode/decode.md#done-flags
+while doing so: docs/internals/decode/decode.md#done-flags
 HAZARD update-then-read -- docs/internals/decode/decode.md#update-then-read
 
 <a id="decode-step-kernel-note-l541"></a>
@@ -1355,76 +1082,6 @@ SPLIT: at `T = 1` the tiled kernel's rule-1 half-mass shift is exactly the
 identity, so ONE `expf` replaces its three. `log1pf` IS the composition
 (never a rounded `1 - rate`) and there is no epsilon floor -- both of that
 rule's rule 2's prohibitions: docs/internals/decode/decode.md#decay-at-read
-
-<a id="fold-pitch"></a>
-### `fold_pitch`
-
-ZERO `__syncthreads` BELOW THE PROLOGUE, and this is the mechanism that removes the
-last of them. Each warp deposits its `cols` partials into ITS OWN shared row, fences,
-and bumps the CTA's arrival count with one atomic; the LAST ARRIVER -- and no barrier
--- is what makes "every row is written" true, and it alone sums them.
-DETERMINISM SURVIVES BECAUSE THE ORDER IS FIXED, not because the arrivals are: the sum
-runs over warps `0 .. kDecodeWarps - 1` per column, exactly the order the barrier-stepped
-tree it replaces used, so `y` is byte-reproducible at a fixed `n_split` as before.
-EVERY LANE FENCES ITS OWN STORES before the one-lane arrival, and every lane fences
-again after the broadcast before it reads a sibling's row (KERNEL_STANDARDS 12: a fence
-orders only the fencing thread).
-HAZARD fold-bank-padding -- docs/internals/decode/decode.md#fold-bank-padding
-
-<a id="decode-step-kernel-note-l619"></a>
-### in `decode_step_kernel`, near line 619
-
-OVER THE LIVE SEGMENTS, NOT OVER THE CEILING -- and this is where retirement is
-actually paid for. The per-segment cost a large split carries is the ARRIVAL AND
-THE COMBINE (`n_split` atomics on one counter, then `n_split` `__ldcg` loads per
-column on ONE warp), not the replicated prologue: a variant that retired the walk
-but still wrote exact zeros and arrived was BUILT AND MEASURED AT ZERO. The order
-is still a FIXED ASCENDING SLOT ORDER over a range every CTA of the batch-head
-derives identically from the published counts, which is the whole of G1; `y` moves
-across `n_split` exactly as it always did (fp32 addition is not associative) and is
-byte-identical at a fixed one. docs/internals/decode/decode.md#slot-order
-A NEEDY BATCH-HEAD'S CTAs ARRIVE ANYWAY and deposit nothing. The arrival is what
-elects one CTA to publish the verdict below, and electing it from the same counter the
-combine uses is what makes "no CTA of this batch-head is still reading" the SAME
-argument in both cases: docs/internals/decode/decode.md#the-last-arriver
-
-<a id="decode-step-kernel-note-l655"></a>
-### in `decode_step_kernel`, near line 655
-
-UNROLLED FOR MEMORY-LEVEL PARALLELISM, and the factor is a MEASURED one. The trip
-count is dynamic, so KERNEL_STANDARDS 6 asks for the pragma to be explicit -- and
-at `1` it is a correctness defect on this loop, not a style choice: the `n_live`
-loads are INDEPENDENT (only the adds chain), and forbidding the unroll leaves one
-load in flight, which measured 26.6 us of a 93 us dense step on ONE warp of ONE CTA
-while 79 SMs idled -- 50 % of the scattered step.
-docs/internals/decode/decode.md#slot-order
-
-<a id="decode-step-kernel-note-l667"></a>
-### in `decode_step_kernel`, near line 667
-
-THE MASS COLUMN IS ONE LANE'S HERE, not every lane's -- the opposite of the
-CTA fold above, and for the opposite reason: this loop's length IS the step's
-tail, so a broadcast load every lane repeats is a third of the only critical
-path left in the kernel. It is broadcast once, at the divide.
-
-<a id="row-base"></a>
-### `row_base`
-
-EVERY MUTATION A SIBLING CTA COULD HAVE READ HAPPENS HERE AND NOWHERE ELSE, which
-is why it is safe: docs/internals/decode/decode.md#the-last-arriver
-IT IS ONE WARP'S WORK NOW, not the CTA's, and that is the barrier deletion's price
-paid where it is cheapest: the CTA's other warps have already retired at the arrival
-count, so the fold is lane-strided over the page table row and its size is folded by a
-warp shuffle instead of a block scan. It runs only on a CLAIMING step.
-
-<a id="row-base-2"></a>
-### `row_base`
-
-THE CLAIM'S SIZE FALLS OUT OF THE FOLD ITSELF -- an atom the shadow row maps and
-the table does not IS a claimed atom -- so it is neither carried across the walk
-nor re-derived from the write-support enumeration. Both of those keep values alive
-through the loop the register budget is tight in, and both were measured to spill:
-docs/internals/decode/decode.md#declared-residency
 
 <a id="decode-arm-0"></a>
 ### `DECODE_ARM_0`
@@ -1481,7 +1138,7 @@ docs/internals/decode/decode.md#producer-width-mirror
 ### `rola_decode_residency`
 
 THE STEP'S DECLARED RESIDENCY, in CTAs per SM, read off the same `constexpr` the
-`__launch_bounds__` are built from. The split policy needs it to size one wave, and a
+`__launch_bounds__` are built from. The grid policy needs it to size one wave, and a
 python mirror of a launch bound is exactly the constant that drifts:
 docs/internals/decode/decode_api.md#residency
 
@@ -1538,45 +1195,19 @@ docs/internals/decode/decode.md#level-width-capacity
 <a id="kdecodethreads"></a>
 ### `kDecodeThreads`
 
-THE STEP LAUNCHES ONE CTA PER SM, 16 warps of up to 128 registers, and that is a SHARING
-decision before it is an occupancy one -- and, since the whole-atom walk, a REGISTER one: a
-warp holds a quarter of an atom's leaves a lane group in flight, which a 64-register cap
-(1024 threads) could not, and 32 warps each issuing the prologue's ~250 instructions cost it
-~2K cycles of issue. At 1024 threads four arms spilled; at 512 none does. Every CTA of a step re-derives the identical per-(step, batch-head)
-setup -- the fold, the digit masks, the four owner lists, the term table, the write
-digit list, and the ADMISSION with its candidate-atom enumeration and page-table probes
--- and those CTAs run PHASE-SYNCHRONIZED, so the duplication has no mutual coverage at
-all. THE COST IS WAVES, NOT COPIES: a derivation duplicated across CONCURRENT SMs is
-wall-free, and it is paid only where the live CTAs exceed the machine and the copies
-SERIALIZE -- 256 thin CTAs over 80 SMs is 3.2 derivations deep per SM, and that depth,
-not the count, is what a wider CTA removes. Measured on this path, that derivation is
-51-87 % of the step at `BH = 1` and 18-59 % at `BH = 8`.
-WIDENING THE CTA IS WHAT SHARES IT. Intra-CTA sharing is native -- shared memory and a
-barrier, which the derivation is already written as -- so a 32-warp CTA derives ONCE
-what four 8-warp CTAs derived four times, and derives it on a chain four times shorter
-because every loop in it is `for i = tid; i < n; i += blockDim`.
-docs/internals/decode/decode.md#decode-threads
-THE WIDTH IS THE ARM, and D1 measures two of them: the PRIMARY arm is the fat CTA
-(1024 threads, 32 warps, one CTA per SM) and the COMPARISON arm is F512 (two CTAs per
-SM). With no barrier after the prologue the two differ only in the single wave's tail,
-which is what the ten-pair table decides between:
+THE STEP LAUNCHES ONE CTA PER SM, 16 warps of up to 128 registers, and the width is a
+REGISTER decision: a warp holds a quarter of an atom's leaves a lane group in flight, which a
+64-register cap (1024 threads) could not, and 32 warps each issuing the prologue's ~250
+instructions cost it ~2K cycles of issue. At 1024 threads four arms spilled; at 512 none does.
 docs/internals/decode/decode.md#decode-threads
 
 <a id="kunitblockwarps"></a>
 ### `kUnitBlockWarps`
 
-THE UNIT PARTITION'S GRANULARITY, AND IT IS NOT THE CTA'S WARP COUNT. Widening the CTA
-is a decision about WHERE THE DERIVATION IS SHARED; it is not a decision about how
-coarsely the unit space is cut, and tying the two together is what made a wider CTA
-retire whole SMs. The block a segment owns stays `kUnitBlockWarps` units wide at every
-width, so `n_live = ceil(umax / kUnitBlockWarps)` -- the live SEGMENT count, and with it
-the machine's coverage -- is the same number at 256 threads and at 1024.
-A CTA THEN SPENDS ITS EXTRA WARPS ON MORE BLOCKS, NOT ON A WIDER ONE: its
-`kUnitRepeats` groups of `kUnitBlockWarps` warps take `kUnitRepeats` blocks one whole
-period apart, so the walk covers the identical unit set in the identical order per
-block, every warp is spent wherever units allow, and each block is still the CONTIGUOUS
-run the write grain's rotation is built on.
-RETIRE WORK, NOT CTAs. docs/internals/decode/decode.md#retirement
+THE ROTATION'S BLOCK: the low `kUnitBlockWarpsBits` bits of a write unit's index are
+rotated into the bottom of the finest outer level's field, so eight consecutive write units --
+eight consecutive positions of a whole-atom write term -- are consecutive atoms:
+docs/internals/decode/decode_lattice.md#krotlevel
 
 <a id="kdecodemaxspan"></a>
 ### `kDecodeMaxSpan`
@@ -1591,23 +1222,12 @@ docs/internals/decode/decode_lattice.md#capacities
 <a id="kdecoderesidentthreads"></a>
 ### `kDecodeResidentThreads`
 
-THE DECLARED RESIDENCY of the step kernel, in CTAs per SM, and it is a BUDGET rather
-than a hope: `__launch_bounds__` turns it into a register cap the assembler must meet,
-and the census is what proves it met it without spilling. The walk is a latency-bound
-stream over state rows, so residency is the one thing it trades registers FOR.
-IT IS ONE, AND IT NO LONGER HAS TEMPLATE AXES. At `kDecodeThreads = 1024` a CTA is the
-SM's whole resident thread budget that the register file admits (65536 / 1024 = 64
-registers per thread), so the DECAY and DEEPEST arms -- which used to buy their extra
-live state by giving up a CTA of residency -- keep the same 64-register cap the widest
-arm needs, and the shallow arms gain headroom rather than losing it (they ran at a cap
-of 51 when five 256-thread CTAs shared the file). ONE is also what makes the derivation
-shared: the host's split policy sizes ONE WAVE of this number, so `n_split` becomes
-`SMs / BH` fat CTAs and the per-(step, batch-head) setup is derived ONE WAVE DEEP
-instead of 3.2. docs/internals/decode/decode.md#declared-residency
-IT IS DECLARED BESIDE THE WIDTH: `kDecodeResidentThreads = 512` is ONE CTA of
-`kDecodeThreads = 512` an SM, so the register file admits 128 registers a thread. The
-walk's registers are what residency is traded for (few warps, full registers -- the ideal
-regime); a second resident CTA would halve them.
+THE DECLARED RESIDENCY of the step kernel, in threads an SM, and it is a BUDGET rather
+than a hope: `__launch_bounds__` turns it into a register cap the assembler must meet, and the
+census is what proves it met it without spilling. `kDecodeResidentThreads = 512` is ONE CTA of
+`kDecodeThreads = 512` an SM, so the register file admits 128 registers a thread. The walk's
+registers are what residency is traded for (few warps, full registers -- the ideal regime); a
+second resident CTA would halve them. docs/internals/decode/decode.md#declared-residency
 
 <a id="katomshift"></a>
 ### `kAtomShift`
@@ -1677,8 +1297,8 @@ docs/internals/decode/decode.md#candidate-atoms
 `[BH, atoms_per_bh]` int32, `-1` = ABSENT; `nullptr` = the dense backing, where the
 slot IS the atom. ONE base translation for both:
 docs/internals/decode/decode.md#paged-address
-MUTABLE because a pool claim folds into it, and only ever at the point where the
-batch-head's last CTA has arrived: docs/internals/decode/decode.md#the-claim
+MUTABLE because the head's owner writes a pool claim into it, before any other visit
+reads it: docs/internals/decode/decode.md#queue-claim-pool
 
 <a id="decodeparams-note-l265"></a>
 ### in `DecodeParams`, near line 265
@@ -1693,9 +1313,8 @@ exists for: docs/internals/decode/decode.md#done-flags
 
 THE SLACK POOL -- physical slots pre-committed and pre-zeroed by the host, from
 which a growth step admits ITSELF. `pool_slots` is `[BH, pool_cap]` slot ids,
-`pool_cursor` `[BH]` how many of each batch-head's are spent, `pool_map`
-`[BH, atoms_per_bh]` the claim the walk addresses through before the fold.
-`pool_cap = 0` (and three null pointers) is EXACT-COMMIT: every growth step goes to
+`pool_cursor` `[BH]` how many of each batch-head's are spent.
+`pool_cap = 0` (and two null pointers) is EXACT-COMMIT: every growth step goes to
 the host, which is the shipped default: docs/internals/decode/decode.md#the-claim
 
 <a id="extract-bits-2"></a>
@@ -1718,10 +1337,9 @@ Verbatim trailing/banner `//` comments from `csrc/rola/src/decode/decode.cu` con
                                    indexed by DIGIT: the digit IS the index.
   sd           [total_rows] fp32   this head's decay dials; DECAY only
   v_tok        [DV]         fp32   the token's value, resident
-  fold  [warps][cols+3]     fp32   the cross-warp partials, bank-padded
+  fold  [warps][cols+3]     fp32   a warp's partials, mass and position count, bank-padded
   mask_r,mask_w [mask_total] u32   one bit per digit, per side
-  omask  [4][omask_total]   u32    the four kinds' owner LIVENESS BITS, per level
-  olist  [4][olist_total]   i32    those bits COMPACTED: the i-th live owner
+  olist  [4][olist_total]   i32    the four kinds' live owners per level, compacted
   dlist  [dlist_total]      i32    the WRITE side's live digits, OUTER levels only
 
 ## More comments moved from source
@@ -1772,25 +1390,11 @@ docs/internals/decode/decode_api.md#build-stamp
 The mass column is UNCONDITIONAL (raw is dead), which is why the shape is a
 template axis and not a runtime test: docs/internals/decode/decode.md#template-axes
 
-<a id="nc"></a>
-### `NC`
-
-Columns per lane IN THE COMBINE: `NC` fully coalesced 128 B transactions over the fold
-rows, and the summing lane's partials are its own output columns. The walk holds a
-different slice, eight channels a lane ([`#leaf-lanes`](#leaf-lanes)).
-
 <a id="near-line-122"></a>
 ### near line 122
 
-One unit count per TERM. The walk's outer loop is the term, so each term's rank space
-is partitioned across the grid on its own and the counts never need summing.
-
-<a id="sarrive"></a>
-### `s_arrive`
-
-THE CTA'S WARP ARRIVAL COUNT, and the whole of the combine's synchronisation. It is
-zeroed in the PROLOGUE, behind the prologue's own last barrier, which is what lets the
-combine below need no barrier at all: docs/internals/decode/decode.md#the-warp-arrival
+One unit count per TERM: each term's rank space is laid out as positions on its own
+(docs/internals/decode/decode.md#queue-positions).
 
 <a id="near-line-169"></a>
 ### near line 169
@@ -1818,26 +1422,6 @@ ranks are defined in: docs/internals/decode/decode_lattice.md#the-write-grain
 THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is
 what makes "stored != 0 => live != 0" an identity:
 docs/internals/decode/decode.md#detached-clock
-
-<a id="near-line-466"></a>
-### near line 466
-
-THE MASS COLUMN IS READ BY EVERY LANE, not by lane 0 alone: the value is the same
-broadcast load for all of them and it is the denominator every lane divides by, so
-carrying it in all 32 registers costs one load and saves the shuffle.
-
-<a id="near-line-503"></a>
-### near line 503
-
-SLOT ORDER, always -- the whole determinism argument. `__ldcg` bypasses L1 so
-the reader sees the stores the `__threadfence` above made visible.
-HAZARD slot-order -- docs/internals/decode/decode.md#slot-order
-
-<a id="lane"></a>
-### `lane`
-
-Reset for the next step: no `memset` launch between two decode steps, and the
-counter is safe to capture in a CUDA graph.
 
 <a id="seen"></a>
 ### `seen`
@@ -1911,8 +1495,8 @@ docs/internals/decode/decode.md#empty-not-zeros
 <a id="pooled"></a>
 ### `pooled`
 
-THE SLACK POOL, present or absent as ONE decision -- three buffers and a capacity,
-or four zeros and exact-commit. There is no half-configured pool:
+THE SLACK POOL, present or absent as ONE decision -- two buffers and a capacity,
+or three zeros and exact-commit. There is no half-configured pool:
 docs/internals/paging/paging.md#the-slack-pool
 
 <a id="kmaxlevels-2"></a>
@@ -1980,13 +1564,13 @@ docs/internals/decode/decode.md#state-in-place
 
 `[BH]` int32, THE PER-BATCH-HEAD VERDICT: `1` where this step writes an atom no
 table entry and no pool slot can address, `0` where it advanced. Written by the
-batch-head's last-arriving CTA: docs/internals/decode/decode.md#per-bh-verdict
+head's finisher, or a needy head's owner: docs/internals/decode/decode.md#per-bh-verdict
 
 <a id="growthany"></a>
 ### `growth_any`
 
-`[1]` int32, the OR of `growth` over batch-heads, and the `[1]` int32
-self-resetting arrival counter of the CTA that reduces it:
+`[1]` int32, the OR of `growth` over batch-heads, written by the last head to finish,
+which the self-resetting `growth_ctr` elects:
 docs/internals/decode/decode.md#growth-reduction
 
 <a id="atombits"></a>
@@ -1995,13 +1579,6 @@ docs/internals/decode/decode.md#growth-reduction
 `[BH, atoms_per_bh]` bool, this step's own write set condensed to atoms. It is what
 a growth step's `plan_exact` admits from, so the host never re-derives the set the
 step has already expanded: docs/internals/decode/decode.md#atom-bits
-
-<a id="ws"></a>
-### `ws`
-
-Split-K workspace. Slot-ordered and summed by the last-arriving CTA, which is what
-makes decode's `y` RUN-REPRODUCIBLE -- and that diverges from the tiled consumer
-on purpose: docs/internals/decode/decode.md#determinism
 
 <a id="int8-state"></a>
 ### The int8 state page, and the unit that reads one
@@ -2032,14 +1609,6 @@ makes it by construction; a ragged `N` is REFUSED at this seam rather than padde
 decode carries no shape, tolerance or topology prefill does not. The dense plane is
 `[BH, N / 16, page_bytes]` — the same page sequence with every page resident.
 
-<a id="s-admission"></a>
-### `s_admission`
-
-The batch-head's admission outcome -- bit 0 needy, bit 1 claimed -- is CTA-uniform and
-settled before the prologue's last barrier; the combine reads it back from shared memory
-after the walk rather than holding the two flags in registers across it, where they
-spilled the deep arms (the walk fills the register file).
-
 <a id="leaf-lanes"></a>
 ### The leaf's lanes: a warp walks `32 / (DV / 8)` units at once
 
@@ -2059,29 +1628,28 @@ loads in flight and paying the whole leaf's overhead per 2-channel slice.
 
 The warp's partial is summed across its groups by a fixed butterfly of `__shfl_xor_sync`
 (offsets `DV / 8, 2 DV / 8, ... 16`) after the walk, so every lane of a channel slice ends
-holding the warp's sum and the first group deposits it; the order is fixed, so the step
-stays byte-reproducible at a fixed `n_split`.
+holding the warp's sum and the first group deposits it into the CTA's fold
+([the finish](#queue-finish)).
 
 <a id="prologue"></a>
 ### The prologue: three phases, three barriers
 
-Every CTA derives the step's tables itself before it walks (the per-CTA derivation,
-[`#per-cta-prologue`](#per-cta-prologue)), in three phases:
+Every visit derives its head's tables itself before it walks
+([`#per-cta-prologue`](#per-cta-prologue)), in three phases:
 
 - **Phase A -- every operand's load at once.** The gain, a value channel's digits and scale
   (the arithmetic deferred past the digit pass, so its load does not queue ahead of the
   digits'), the decay dials, and the digit pass: a warp a mask word, each lane loading its
   digit and its row's scale together, staging `raw * scale / full_scale` (or the raw digit,
   for a level the fold normalizes) and balloting the word
-  ([`decode_fold.md#fold-digits`](decode_fold.md#fold-digits)). The combine's arrival count
-  and a dense step's admission outcome are zeroed here.
+  ([`decode_fold.md#fold-digits`](decode_fold.md#fold-digits)).
 - **Phase B -- one warp a job.** Warp `l` the level's owner lists, warp `D + l` its write
   digit list, warp `2 D - 1 + l` a normalized level's declared sum
   ([`decode_lattice.md#build-lists`](decode_lattice.md#build-lists)).
 - **Phase C.** A normalized level's amplitudes and the term layout, whose barrier ends it.
 
-A dense step then walks with no further barrier; a paged step asks its admission question
-and takes one more ([`#syncthreads-2`](#syncthreads-2)).
+The visit then lays out the head's positions and takes its admission
+([the admission](#queue-admission)).
 
 MEASURED (sm_86, N 64K at (256, 256), d_v 64, H 16, k ~5, the phase ledger): the prologue it
 replaced was 16.5K cycles a warp -- the digit masks 5.8K (sixteen threads each reading 32
@@ -2133,3 +1701,100 @@ scale. The host entry refuses any other type, a u8 row at depth three or more, a
 that disagree on the type -- the bundle refuses the same at construction, so a refusal here
 names a direct caller of the ABI. How the fold turns each into a staged amplitude:
 [`decode_fold.md#raw`](decode_fold.md#raw).
+
+<a id="queue"></a>
+### The work queue
+
+A head's work is known only on the device, after its own prologue, and routing makes it
+uneven: at the probe cells one head's write term is a few units and another's hundreds. So the
+grid is not cut per head. `ctas` CTAs -- one wave of the declared residency
+([§21b](#the-split-policy)) -- stay resident and VISIT heads: a CTA starts on head
+`blockIdx.x % BH`, takes an unstarted head from a cursor when it finishes one, and once none is
+left steals the head with the most work outstanding ([the next head](#queue-next)). A visit
+runs the prologue for its head, walks the POSITIONS its warps claim, and adds its partial into
+the head's sums.
+
+The queue is `[4 BH + 2]` int32 (`DecodeScratch.queue`): per head the positions CLAIMED, the
+positions FINISHED, the position COUNT (`-1` until published) and the admission STATE, then the
+unstarted-head CURSOR and the EXIT count. The sums are `yacc`, `[BH, cols]` fp32. Both are
+allocated once per sequence: a head's finisher zeroes its row of sums, and the last CTA to exit
+resets every word, so no `memset` launch stands between two steps and the step stays
+capturable ([§4d](#capture)).
+
+Nothing waits on a CTA that is not running: a follower waits only on its head's owner, which is
+running because it won the swap ([the admission](#queue-admission)), and no CTA waits for
+another to exit. The one-wave grid is for cost, not for progress.
+
+<a id="queue-positions"></a>**THE POSITIONS.** A head's positions are its terms' shares, laid
+end to end, term by term ([`decode_lattice.md#the-terms`](decode_lattice.md#the-terms)): a
+whole-atom write term ([`#whole-atoms`](#whole-atoms)) gives one position a unit, since a warp
+walks the unit whole, and every other term `ceil(units / kGroups)`, since a warp's lane groups
+take `kGroups` consecutive units ([`#leaf-lanes`](#leaf-lanes)). Thread 0 writes the terms'
+first positions to `s_first` and the count past the last. A head whose support is empty still
+has one position, which walks nothing, so its finish runs and writes its `y` as
+`0 / (0 + eps)`; a needy head has none.
+
+<a id="queue-claim"></a>**THE CLAIM.** Lane 0 of a warp claims a position with one `atomicAdd`
+on the head's claimed word, and the warp walks it; a claim at or past the count ends the warp's
+walk of the head. The NEXT claim is issued before the current position is walked, so its round
+trip hides behind the walk. Each warp therefore overshoots the count by one claim a visit,
+which is harmless: the word is only ever compared with the count, and reset at exit.
+
+<a id="queue-admission"></a>**THE ADMISSION.** A paged head's admission -- the table test, the
+pool claim and the condensation (§4b, [§4e](#queue-claim-pool)) -- is decided once and
+published. The first visit to swap the head's state from 0 to 1 is its OWNER: it runs all
+three and writes the count (0 if needy); every thread fences its own writes; then one swap
+publishes the state word `kQueueReady`, with `kQueueNeedy` if the head is needy. Every other
+visit is a FOLLOWER: thread 0 polls the state (`atomicAdd` of 0, `__nanosleep(64)` between
+polls) until it is ready, and after the barrier that follows every thread fences and reads the
+state and the count itself (`KERNEL_STANDARDS.md` §12: a fence orders only its own thread). A
+stealing visit never owns: it only takes a head whose count is published. An unpaged head, and
+a paged head a replay re-reads (its done flag set), has nothing to decide: every visit derives
+the same count from its own prologue and writes it.
+
+The split-K grid replicated the admission in every CTA of the head instead, which was sound
+because those CTAs ran together from identical inputs. A queue's visits to one head arrive
+at different times -- a stealer arrives mid-walk -- so the decision has one owner, and the
+claim can write the page table itself ([§4e](#queue-claim-pool)).
+
+<a id="queue-finish"></a>**THE FINISH.** After its last claim each warp sums its lane groups'
+partials by the butterfly ([`#leaf-lanes`](#leaf-lanes)) and writes a row of `fold`: its
+partials, its mass and the positions it walked ([§21](#fold-bank-padding)). After one barrier,
+warp 0 sums the rows a column a lane and adds the CTA's partial into the head's sums, one
+`atomicAdd` a column a visit; then every lane fences its adds and lane 0 adds the visit's
+positions to the head's finished word. The visit that brings that word to the count is the
+FINISHER: it fences, reads the sums through `__ldcg` (past L1, which the other SMs' adds never
+reached), writes `y = sums / (den + eps)`, zeroes the sums for the next step, and on a paged
+step sets the head's done flag and clears its growth flag before
+[the verdict's reduction](#growth-reduction). A needy head's owner finishes that head instead,
+with its growth flag set. A visit that walked nothing adds nothing and counts nothing.
+
+ONE SET OF ATOMICS A VISIT, NOT A WARP. Each warp adding its own partial measured a 12.9K-cycle
+combine at `H = 4`: sixteen warps' adds to the same 65 addresses serialize at L2. The fold costs
+one barrier and a sixteen-row sum.
+
+<a id="queue-next"></a>**THE NEXT HEAD.** After the finish and a barrier, warp 0 picks the CTA's
+next head: an unstarted one from the cursor, while the grid is smaller than `BH`; otherwise the
+head with the most positions left (`count - claimed`, read through `__ldcg`, a warp-wide argmax
+per 32 heads, the lower index on a tie) among those whose count is published. It steals that
+head only if at least `kDecodeWarps` positions are left: a steal pays a whole prologue, so it
+takes a head only where every warp gets a position. With nothing to take, the CTA exits, and
+the last one out resets the queue.
+
+MEASURED (sm_86, N 64K at (256, 256), `d_v = 64`, B 1, the split-K grid at `4aed3f17` against
+the queue):
+
+| cell | split-K grid | work queue |
+|---|---|---|
+| k ~27, H 16, dense | 116 us | 105.4 us |
+| k ~27, H 16, paged | 124 us | 116.0 us |
+| k ~5, H 16, dense | 31 us | 30.2 us |
+| k ~5, H 16, paged | -- | 36.0 us |
+| k ~5, H 4, dense | 16.3 us | 18.2 us |
+
+The dense cells gain where heads are uneven; the thin `H = 4` cell loses 1.9 us, because a visit
+costs more than a split CTA did: a single visit's prologue-to-walk span is ~5.3K cycles against
+~3.8K (the positions, the admission's barrier, and the fold's and the next head's barriers), a
+sparse head pays a claim's round trip for every few leaves, and a paged head's followers wait
+out its owner's admission -- and then fence and read its publication thread by thread, ~0.8 us
+of each paged cell.

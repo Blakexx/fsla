@@ -8,9 +8,10 @@ instantiated ``BC`` plus one hypothetical ``BC``, so a hardcoded quanta-shaped l
 fails the fake-``BC`` row. The decode path admits a stronger form of the same gate,
 because ``BC`` is not an input to it at all: run the same fixture while the surrounding
 prefill declares ``BC`` in ``{16, 32, 64}`` — 32 being the HYPOTHETICAL value, not
-instantiated by the tiled consumer — and assert the decode output is BYTE-IDENTICAL.
+instantiated by the tiled consumer — and assert the decode state is BYTE-IDENTICAL and
+``y`` equal to the order its sums are added in (docs/internals/decode/decode.md#determinism).
 
-Contract class (a), engineered identity: ``torch.equal``. The claim is not that decode
+Contract class (a), engineered identity: ``torch.equal`` on the state. The claim is not that decode
 *rounds the same* under different ``BC``; it is that ``BC`` cannot reach decode at all,
 so the two runs execute the identical instruction stream on identical bytes. Anything
 weaker than byte-equality here would be evidence of a dependence.
@@ -36,7 +37,7 @@ import torch
 from rola.engine.plan import DecodeGeometry
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.paging import bytes_equal
-from tests.oracle.fixtures import state_pages, step_bundles
+from tests.oracle.fixtures import assert_reordered_close, state_pages, step_bundles
 from tests.oracle.oracle_fixtures import _simplex, _topology
 
 pytestmark = [
@@ -63,7 +64,7 @@ def test_no_field_of_the_frozen_carrier_names_bc():
 
 
 @pytest.mark.parametrize("widths", [(64, 64), (16, 16, 16), (16, 16, 16, 16)])
-def test_decode_output_is_byte_identical_across_prefill_bc(widths):
+def test_decode_is_blind_to_prefill_bc(widths):
     device = "cuda"
     d_v, B, H = 64, 2, 2
     N = math.prod(widths)
@@ -105,6 +106,6 @@ def test_decode_output_is_byte_identical_across_prefill_bc(widths):
         "the frozen carrier moved with the prefill's BC; it must be a pure function of "
         "the topology, `d_v`, `decay` and the device")
     for BC, (y, state) in zip(_BCS[1:], results[1:]):
-        assert torch.equal(results[0][0], y), f"decode's y moved with prefill BC={BC}"
+        assert_reordered_close(y, results[0][0], f"decode's y at prefill BC={BC}")
         assert bytes_equal(results[0][1], state), (
             f"decode's state moved with prefill BC={BC}")

@@ -531,10 +531,6 @@ class PageArena:
         self._pool_slots = torch.empty((self.BH, self.pool_capacity), dtype=torch.int32,
                                        device=self.device)
         self._pool_cursor = torch.zeros(self.BH, dtype=torch.int32, device=self.device)
-        #: The device's own claim, read by the walk until the step folds it into the
-        #: table. Sized like the table because that is what it indexes.
-        self._pool_map = torch.full((self.BH, self.keying.atoms_per_bh), _ABSENT_PAGE,
-                                    dtype=torch.int32, device=self.device)
         self._cursor_host = torch.empty(self.BH, dtype=torch.int32,
                                         pin_memory=self.device.type == "cuda")
         self._reserve_pool()
@@ -804,11 +800,6 @@ class PageArena:
     def pool_cursor(self) -> torch.Tensor | None:
         """``[BH]`` int32 -- pool slots each batch-head has spent."""
         return self._pool_cursor if self.pool_capacity else None
-
-    @property
-    def pool_map(self) -> torch.Tensor | None:
-        """``[BH, atoms_per_bh]`` int32 -- the device's claim, before the fold."""
-        return self._pool_map if self.pool_capacity else None
 
     def pool_headroom(self) -> int:
         """Pool slots the THINNEST batch-head still has. A host read, at leisure.

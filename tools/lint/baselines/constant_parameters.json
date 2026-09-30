@@ -194,12 +194,6 @@
    "count": 1
   },
   {
-   "path": "rola/ops/decode.py",
-   "message": "derive_decode_geometry(..., n_split=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "aff4ba6418e9b5e8",
-   "count": 1
-  },
-  {
    "path": "rola/ops/intra.py",
    "message": "intra_forward_padded(..., den=) is only ever None -- across every call in this tree, nothing moves it",
    "line_sha256": "59318f223cdfa1be",

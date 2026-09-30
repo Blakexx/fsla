@@ -96,5 +96,6 @@ carries `H` -- and no separate admission-probe entry: the residency test reads t
 anyway ([`decode/decode_fold.md`](decode/decode_fold.md), [`decode/decode.md` §4c](decode/decode.md#absorbed-verdict)).
 
 `growth`, `growth_any`, `growth_ctr`, `done` and `atom_bits` are the verdict's own buffers, required whichever backing
-the call is, so one schema serves both. `pool_slots`, `pool_cursor` and `pool_map` are the slack pool, present exactly
+the call is, so one schema serves both. `yacc` and `queue` are the work queue's sums and counters
+([`decode/decode.md#queue`](decode/decode.md#queue)). `pool_slots` and `pool_cursor` are the slack pool, present exactly
 on a paged step whose state reserved one ([`decode/decode_api.md` §4-5](decode/decode_api.md#the-verdict)).

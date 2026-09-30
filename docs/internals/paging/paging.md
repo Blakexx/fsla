@@ -96,26 +96,19 @@ path. An atom the device later claims into one of them is therefore BYTE-INDISTI
 from one `plan_exact` admitted: no migration, no copy, and the dense-vs-paged equality
 gate is untouched by the pool existing.
 
-**THE DEVICE CLAIM is replicated and canonical, with no atomic and no cross-CTA
-communication.** Every CTA of a batch-head independently computes the SAME mapping: the
-batch-head's touched-unmapped atoms, in ASCENDING ATOM ID, taken from `pool_slots[bh]`
-starting at `pool_cursor[bh]`, via a block scan every CTA runs identically over the same
-inputs. It is all-or-nothing per batch-head — a CTA either finds the demand fits under
-`pool_cap - cursor` and claims the whole of it, or claims nothing and the batch-head is
-`needy` exactly as an unpooled one would be.
+**THE DEVICE CLAIM is the batch-head's owner's.** The first CTA to visit the batch-head
+in a step owns its admission ([`decode.md#queue-admission`](../decode/decode.md#queue-admission)):
+it maps the batch-head's touched-unmapped atoms, in ASCENDING ATOM ID, to `pool_slots[bh]`
+starting at `pool_cursor[bh]`, via a block scan. It is all-or-nothing per batch-head — the
+owner either finds the demand fits under `pool_cap - cursor` and claims the whole of it, or
+claims nothing and the batch-head is `needy` exactly as an unpooled one would be.
 
-<a id="the-shadow-row"></a>**WHY IT WRITES A SHADOW ROW, AND NOT THE TABLE.** The claim's
-predicate is `page_tbl[a] < 0` — an atom not yet mapped. Writing a claimed slot into the
-real table during the prologue would move that predicate out from under a SIBLING CTA
-still computing its own claim, and two CTAs' independently-replicated claims would then
-diverge over which atoms remain unclaimed. The claim instead writes `pool_map[bh]` — a
-WHOLE SHADOW COPY of that batch-head's table row, the claim merged in — and the walk
-addresses through THAT row instead of the table, by choosing one base pointer once,
-before the walk starts. The walk's own body knows nothing about pools: it is the same
-loop over `page_row[atom]` whether `page_row` is the table or the shadow. The batch-head's
-LAST-ARRIVING CTA — elected from the same split-K `ctr[bh]` the combine uses — folds the
-shadow row's new entries into the real table and advances the cursor, once, after every
-sibling CTA is done reading either row.
+<a id="the-table-claim"></a>**IT WRITES THE TABLE ITSELF.** The owner writes the claimed slots
+into the page table and advances the cursor before it publishes the batch-head's admission,
+and no other CTA reads that table row until it has seen the publication, so the walk's own
+body knows nothing about pools: it is the same loop over `page_row[atom]` it always is. (The
+split-K grid replicated the claim in every CTA of the batch-head, where a table write would
+have moved a sibling's predicate; it kept a shadow row until its last CTA folded it in.)
 
 **EXHAUSTION DEGRADES TO THE POOL-FREE PATH, EXACTLY.** A batch-head whose demand exceeds
 `pool_cap - cursor` claims nothing and is `needy`: the verdict, the per-`bh` no-op, the

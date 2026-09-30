@@ -87,6 +87,24 @@ def plane_from_canonical(canonical, bh: int = 1):
     return to_split_planes(canonical.float().reshape(bh, -1, 16, canonical.shape[-1]))
 
 
+def reordered_close(got, want) -> bool:
+    """Is ``got`` the same step's readout as ``want`` up to the order its partials were summed?
+
+    A decode step adds its warps' partials into a batch-head's sums atomically, in the order the
+    work queue hands out positions (docs/internals/decode/decode.md#queue-finish), so two runs of
+    one step agree to fp32 reordering of a sum over the step's leaves, not to the bit: relative
+    ``2^-14`` and absolute ``2^-16`` of the readout's largest magnitude.
+    """
+    scale = float(want.abs().max()) or 1.0
+    return bool(torch.allclose(got, want, rtol=2.0 ** -14, atol=scale * 2.0 ** -16))
+
+
+def assert_reordered_close(got, want, what: str) -> None:
+    """:func:`reordered_close`, as a gate."""
+    worst = float((got - want).abs().max())
+    assert reordered_close(got, want), f"{what}: off by up to {worst:.3g} beyond summation reordering"
+
+
 def step_bundles(v, read, write, g_write, topology, *, read_mass=None, digits: int = DEFAULT_VALUE_DIGITS):
     """Floating step operands in the internal format: ``(RouteFactors, Values)`` as the framework's epilogue writes
     them (u8 rows at depth <= 2, f16 deeper; ``digits`` value digits)."""

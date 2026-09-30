@@ -1072,12 +1072,6 @@
   {
    "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'D1'",
-   "line_sha256": "31ec73149379f75f",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'D1'",
    "line_sha256": "a49e87c67dbe22b6",
    "count": 1
   },
@@ -1085,18 +1079,6 @@
    "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'D2'",
    "line_sha256": "13264c321fe2bfbc",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'G1'",
-   "line_sha256": "3c0cb15bac67e150",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'G1'",
-   "line_sha256": "690e60ce92fdeeb2",
    "count": 1
   },
   {
@@ -1145,12 +1127,6 @@
    "path": "docs/internals/decode/decode.md",
    "message": "names the work code 'K4'",
    "line_sha256": "81bf87043c1c4fd5",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/decode/decode.md",
-   "message": "names the work code 'K47'",
-   "line_sha256": "0a76ff54712a95b9",
    "count": 1
   },
   {
@@ -1763,12 +1739,6 @@
    "path": "tests/integration/test_decode_graph_step.py",
    "message": "names the work code 'S4b'",
    "line_sha256": "b6ed3ca5ffaec9f7",
-   "count": 1
-  },
-  {
-   "path": "tests/integration/test_decode_graph_step.py",
-   "message": "names the work code 'S4b'",
-   "line_sha256": "fcdded3c57bba1a3",
    "count": 1
   },
   {
@@ -2663,12 +2633,6 @@
    "path": "tools/sanitize_oracle.py",
    "message": "names the work code 'K47'",
    "line_sha256": "1be500190fc544e6",
-   "count": 1
-  },
-  {
-   "path": "tools/sanitize_oracle.py",
-   "message": "names the work code 'K47'",
-   "line_sha256": "23730759b13fb064",
    "count": 1
   },
   {

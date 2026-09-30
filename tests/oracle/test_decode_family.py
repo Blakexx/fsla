@@ -29,6 +29,7 @@ realize it, asserted, rather than staging it.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import pytest
@@ -240,9 +241,9 @@ def test_the_horizon_is_conformant_at_every_checkpoint_not_just_the_end():
 # ---------------------------------------------------------------------------
 
 def test_the_decode_split_is_performance_only_under_drift():
-    """Freeze THREE carriers at three ``n_split`` values, then run the SAME
+    """Freeze THREE carriers at three grid sizes (``ctas``), then run the SAME
     drifted stream (sparse steps and dense steps in one sequence) through each.
-    ``n_split`` sizes the LAUNCH -- how many CTAs divide the row space -- and
+    ``ctas`` sizes the LAUNCH -- how many resident CTAs claim the positions -- and
     nothing else, so the states must be BYTE-IDENTICAL across carriers and ``y``
     inside the oracle band. A split that could move a stored number would make
     how many CTAs ran a semantic input, and the whole reason the split can be
@@ -250,11 +251,8 @@ def test_the_decode_split_is_performance_only_under_drift():
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(9200)
     topology = _topology(_WIDTHS)
-    configs = {
-        f"n_split={n}": derive_decode_geometry(topology, d_v=_DV, decay=False, BH=_B * _H, device=device,
-            n_split=n)
-        for n in (1, 3, 8)
-    }
+    derived = derive_decode_geometry(topology, d_v=_DV, decay=False, BH=_B * _H, device=device)
+    configs = {f"ctas={n}": dataclasses.replace(derived, ctas=n) for n in (1, 3, 8)}
     N, cols = topology.N, _DV + 1
     m0 = 0.1 * torch.randn(_B, _H, N, cols, device=device, dtype=torch.float64,
                            generator=gen)
@@ -279,7 +277,7 @@ def test_the_decode_split_is_performance_only_under_drift():
         ref = ref._replace(state=state_rounded(ref.state))
         refs.append(ref)
 
-    base = outcomes["n_split=1"]
+    base = outcomes["ctas=1"]
     for name, (ys, state) in outcomes.items():
         assert bytes_equal(state, base[1]), (
             f"the {name} carrier's STATE differs from the single-CTA one: the "
@@ -290,5 +288,5 @@ def test_the_decode_split_is_performance_only_under_drift():
     # The certificates half: an arm mismatch REFUSES rather than degrades.
     routes, values = steps[0]
     with pytest.raises(ValueError, match="has_decay"):
-        _decode_step(routes, values, configs["n_split=1"], base[1].clone(),
+        _decode_step(routes, values, configs["ctas=1"], base[1].clone(),
                        decay=LeafMassDecay(dials=_decay_dials(_WIDTHS, _H, gen, device)))

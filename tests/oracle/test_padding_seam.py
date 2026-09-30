@@ -18,7 +18,8 @@ fp64 equivalence: the SAME learned routing, padded with `rola.ops.padding.pad_ro
 to the next power of two >= 16 per level, produces the identical `y` a model built
 directly at that padded width (with the extra digits simply never drawn on) would.
 
-**DECODE has a real kernel on this line**, so its half is graded bit for bit through
+**DECODE has a real kernel on this line**, so its half is graded on the stored state bit
+for bit, and on `y` to its sums' order, through
 `rola.ops.decode._decode_step`/`derive_decode_geometry`: a `d_v` decode's own arm table
 does not ship is padded to the smallest one that is, and the result must equal running
 the same weights directly at that shipped `DV` with the pad columns of `v` held at
@@ -40,7 +41,14 @@ from rola.ops.naive import naive_rola
 from rola.ops.padding import pad_routes, pad_v
 from rola.ops.paging import bytes_equal
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
-from tests.oracle.fixtures import assert_slots_close, logical_state, oracle_run, state_pages, step_bundles
+from tests.oracle.fixtures import (
+    assert_reordered_close,
+    assert_slots_close,
+    logical_state,
+    oracle_run,
+    state_pages,
+    step_bundles,
+)
 from tests.oracle.oracle_fixtures import _simplex
 from tests.oracle.tolerances import INTRA_OUTPUT
 
@@ -171,15 +179,15 @@ def test_box_shape_is_a_second_kernel_boundary_that_refuses_unpadded_widths():
 
 
 # ---------------------------------------------------------------------------
-# DECODE: a real kernel on this line -- graded bit for bit, not by the oracle band
+# DECODE: a real kernel on this line -- graded against itself, not by the oracle band
 # ---------------------------------------------------------------------------
 
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="decode is a CUDA kernel")
-def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail_bit_for_bit():
+def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail():
     """Item (i) of the ADDITION: a padded decode run at d_v=48 must equal the SAME
-    model at the shipped DV=64 with the extra 16 value columns unreachable (zero),
-    bit for bit -- both `y` and the stored state.
+    model at the shipped DV=64 with the extra 16 value columns unreachable (zero):
+    the stored state bit for bit, `y` to its sums' order.
 
     Decode's own arm key is `(DV, D, decay)` only (`rola.ops.decode.arms`); per-level
     widths carry no floor of their own (`derive_decode_geometry`'s own docstring) --
@@ -226,8 +234,9 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail_bit_for_bit()
     v_explicit = pad_v(v_logical, DV)
     y_explicit, state_explicit = run(v_explicit)
 
-    assert torch.equal(y_padded, y_explicit[..., :d_v_logical]), (
-        "a d_v=48 decode step must equal the DV=64 step's first 48 output columns, bit for bit")
+    #: y is summed by atomics in queue order, so two runs agree to summation reordering; the state is exact.
+    assert_reordered_close(y_padded, y_explicit[..., :d_v_logical],
+                           "a d_v=48 decode step against the DV=64 step's first 48 output columns")
     assert bytes_equal(state_padded[..., :d_v_logical], state_explicit[..., :d_v_logical]), (
         "the stored state's real d_v columns must agree bit for bit")
     assert bytes_equal(state_padded[..., d_v_logical:DV], state_explicit[..., d_v_logical:DV]), (

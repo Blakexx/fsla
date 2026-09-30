@@ -77,9 +77,11 @@ _POISON = 0xA5  #: a byte no zeroed page holds
 
 #: THE ORACLE RULE AND THE TOPOLOGY BUILDER, ADOPTED RATHER THAN INVENTED, imported so there is ONE of each.
 from tests.oracle.fixtures import (  # noqa: E402
+    assert_reordered_close,
     assert_slots_close,
     bundle_operands,
     oracle_run,
+    reordered_close,
     state_pages,
     state_quantum,
     state_rounded,
@@ -254,7 +256,7 @@ def test_the_step_write_atom_set_is_exact(arm, support):
 
 @pytest.mark.parametrize("support", list(_SUPPORTS), ids=list(_SUPPORTS))
 @pytest.mark.parametrize("arm", _ARMS, ids=lambda a: "x".join(map(str, a[0])))
-def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
+def test_the_paged_backing_matches_the_dense_one(arm, support):
     widths, BC = arm
     fixture = _fixture(widths, seed=len(widths) * 97 + BC, support=_SUPPORTS[support])
     config = _config(widths, fixture)
@@ -278,7 +280,7 @@ def test_the_paged_backing_is_bit_identical_to_the_dense_one(arm, support):
         routes, values, config, arena.state,
         page_table=arena.page_table)
 
-    assert torch.equal(y_dense, y_paged), "the two backings disagree on y"
+    assert_reordered_close(y_paged, y_dense, "the two backings' y")
     assert bytes_equal(dense_out, _stored_pages(arena)), "the two backings disagree on the state"
     # NON-VACUITY: pages were committed, they came back nonzero, and (unless the write
     # support is total) the table is NOT the identity map, so a translation ran.
@@ -338,7 +340,7 @@ def test_an_absent_atom_is_never_written_and_reads_as_zero(arm):
                        torch.full_like(arena.state[resident:], _POISON)), (
         "the step wrote a page no plan committed")
     assert torch.equal(arena.page_table, table_before), "the step moved the page table"
-    assert torch.equal(y_dense, y_paged), (
+    assert reordered_close(y_paged, y_dense), (
         "a read through an absent atom was not inert")
 
 
@@ -446,7 +448,7 @@ def test_a_pool_admitted_sequence_is_the_oracle_s_and_the_host_admitted_one_s(ar
 
     assert torch.equal(pooled.page_table >= 0, bits[0] | bits[1]), (
         "the device admitted a different residency than the two steps' write sets")
-    assert torch.equal(ys["pool"][-1], ys["host"][-1]), (
+    assert reordered_close(ys["pool"][-1], ys["host"][-1]), (
         "a pool-admitted step's y differs from a host-admitted one's")
     assert torch.equal(pooled.materialize(), admitted.materialize()), (
         "a pool-admitted state differs from a host-admitted one")

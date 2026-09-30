@@ -66,7 +66,7 @@ indexes is known.
 host-visible read spliced on the end, never a different walk. `read_verdict` is a single
 `copy_(non_blocking)` of the step's own `growth_any` output into a pinned mirror, and it
 CANNOT be enqueued ahead of the step any more: the verdict the step publishes is its own
-last-arriving CTA's write, so the read is behind it by data dependence, not by host
+last finisher's write, so the read is behind it by data dependence, not by host
 policy. It is the family's ONE `host_sync` node, and it is the last node in the tuple —
 `DECODE_VERDICT[:len(DECODE_STEP)] == DECODE_STEP` is asserted directly
 (`tests/unit/test_facts_memo.py`).
@@ -94,7 +94,7 @@ the declaration is TRUE of a real capture.
 `DecodeGeometry` (`rola/engine/plan.py`) answers "what shape is the launch?" — widths,
 per-level dial row offsets, the `(k, m)` lattice the state plane is written in
 (`lattice_k`, `lattice_m`, [`decode_lattice.md`](../decode/decode_lattice.md)), `d_v`, the
-decay arm, `eps`, `n_split`. None of that is a derived axis. `BC` is deliberately NOT a
+decay arm, `eps`, `ctas`, `write_dense`. None of that is a derived axis. `BC` is deliberately NOT a
 field: owner-blocked AMORTIZATION is a property of how a tiled consumer shares a
 `[BC, cols]` block's cost across many tokens, and with one token there is nothing to
 amortize, so the decode kernels are BC-blind by construction in that sense — the
@@ -110,9 +110,9 @@ are per-call and never cached.
 `scratch` is declared `per_state`, which makes its table a `WeakKeyDictionary` keyed on
 the sequence's state object. The weakness is REQUIRED and not incidental: a dropped
 sequence must drop its buffers, and two live sequences must never share one. Being
-memoized is also what hoists the allocation, and the once-only zeroing of `ctr`,
-`growth_ctr` and `done`, above any captured region — the last-arriving CTA of every step
-resets each of them, so no `memset` ever stands between two decode steps
+memoized is also what hoists the allocation, and the once-only initialization of `yacc`,
+`queue`, `growth_ctr` and `done`, above any captured region — the step's own finishers and
+last CTA out reset each of them, so no `memset` ever stands between two decode steps
 ([`decode.md#capture`](../decode/decode.md#capture)).
 
 Because the launch config is FROZEN for the sequence, a state has exactly one live
@@ -135,8 +135,8 @@ warning the function's docstring used to carry alone.
 
 A step admits into its state's slack pool INSIDE the kernel, from the pool buffers
 `backing` hands the plan — there is no node for it, because it is not a fact the host
-finds: the claim and the fold-back are the kernel's own, elected from the split-K
-arrival counter it already keeps ([`decode.md#the-claim`](../decode/decode.md#the-claim)).
+finds: the claim is the kernel's own, made by the batch-head's owner and written into the
+page table ([`decode.md#the-claim`](../decode/decode.md#the-claim)).
 `pool_headroom` and `refill_pool` (`rola/engine/dags/decode_dag.py`) are HOST reads and
 writes off the step's path entirely — a serving loop polls the first at leisure and calls
 the second on its own schedule, never as a precondition of a step. Pool-covered growth
