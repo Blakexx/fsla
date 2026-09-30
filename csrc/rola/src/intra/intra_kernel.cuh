@@ -489,10 +489,10 @@ __device__ void deposit(Smem<D, B>& sm, const IntraParams& p, int bh, int t_row,
     ops::fan_in_add(p.den + static_cast<int64_t>(bh) * p.L + t_row + lane, sm.den[warp][lane]);
 }
 
-//: ONE STAGE OF A TILE: the stage two ahead issued once its buffer is released, the tile's values at its first stage
-//: once the last tile's are released, each only if the gate reads it; this stage awaited and read where the warp's
-//: slabs meet it, released; at the tile's last stage its values awaited, the epilogue and the value product for a live
-//: pair, the values released. -- see docs/internals/intra/intra_kernel.md#pipeline
+//: ONE STAGE OF A TILE: the next stage's copy claimed by the first warp here; this stage awaited by every warp and read
+//: where the warp's slabs meet it, released; at the tile's last stage its values awaited, the epilogue and the value
+//: product for a live pair, the values released and the next tile's copied by the last warp to release them.
+//: -- see docs/internals/intra/intra_kernel.md#pipeline
 template <int D, int B, int S>
 __device__ __forceinline__ void tile_stage(Smem<D, B>& sm, const IntraParams& p,
                                            const Copier<D, B>& copy, int tile, int tiles,
