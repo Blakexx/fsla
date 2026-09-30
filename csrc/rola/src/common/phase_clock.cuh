@@ -19,8 +19,9 @@ struct PhaseClock {
   int n, cap;
   bool lead;
 
-  __device__ __forceinline__ PhaseClock(long long* row, int lane)
-      : acc(row), trace(nullptr), n(0), cap(0), lead(lane == 0) {
+  //: `on` false: nothing will read the row, and the laps cost nothing but their test
+  __device__ __forceinline__ PhaseClock(long long* row, int lane, bool on = true)
+      : acc(row), trace(nullptr), n(0), cap(0), lead(on && lane == 0) {
     constexpr int kCount = Phases;
     if (lead) {
 #pragma unroll

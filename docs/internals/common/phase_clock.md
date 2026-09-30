@@ -21,3 +21,8 @@ for it. Measured on the decode step (sm_86): the digit masks 0.5K -> 5.8K, the o
 
 The carry aliases it at its phase count (`carry_kernel.md#phase-ledger`). The struct is
 inlined wherever it is used.
+
+**`on`**, the constructor's third argument (default true), says whether anything will read the
+row. Off, lane 0 is not the lead, so every lap and stamp is a test and nothing more. The intra
+passes "a ledger is bound": its ten-odd laps a tile, each a clock read and three shared
+accesses, cost about 1% of an unmeasured launch (`intra/intra_kernel.md`).

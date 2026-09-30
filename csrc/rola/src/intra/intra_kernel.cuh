@@ -610,7 +610,7 @@ __global__ __launch_bounds__(kThreads, 1) void intra_kernel(const IntraParams p)
   const int t_block = t_window + block * kBlockRows;
   const int row_tile = block * kRowTiles + warp / (kWarps / kRowTiles);
   const int tiles = (block + 1) * kRowTiles;
-  Clock clock(&sm.clock[warp][0], lane);
+  Clock clock(&sm.clock[warp][0], lane, p.ledger != nullptr);
   if (tid == 0) {
 #pragma unroll
     for (int i = 0; i < kStageBuffers; ++i) {
