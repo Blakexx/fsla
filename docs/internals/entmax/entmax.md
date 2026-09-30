@@ -674,7 +674,7 @@ that made this kernel re-read rather than stage: docs/internals/entmax/entmax.md
 ---------------------------------------------------------------------------
 
 <a id="logwritegate"></a>
-### `log_write_gate`
+### `csrc/rola/src/entmax/entmax.cuh`'s `log_write_gate`
 
 log(sigmoid(-delta)) == -softplus(delta), finite for every finite input. `log1pf`
 rather than `logf(1+x)` because the governing gate is the fp64 oracle's

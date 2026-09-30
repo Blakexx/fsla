@@ -765,7 +765,6 @@
   {"doc": "docs/internals/entmax/entmax.md", "pinned_at": "785f354f7f10", "reviewed": true, "sha256": "", "target": "csrc/rola/rola_api.cpp"},
   {"doc": "docs/internals/entmax/entmax.md", "pinned_at": "785f354f7f10", "reviewed": true, "sha256": "", "target": "csrc/rola/src/entmax/entmax.cu"},
   {"doc": "docs/internals/entmax/entmax.md", "pinned_at": "8bad0313d8c3", "reviewed": true, "sha256": "4da68537dc7dac60", "target": "csrc/rola/src/entmax/entmax.cu::__launch_bounds__"},
-  {"doc": "docs/internals/entmax/entmax.md", "pinned_at": "785f354f7f10", "reviewed": true, "sha256": "3013f1d866ade2f4", "target": "csrc/rola/src/entmax/entmax.cu::log_write_gate"},
   {"doc": "docs/internals/entmax/entmax.md", "pinned_at": "8bad0313d8c3", "reviewed": true, "sha256": "", "target": "csrc/rola/src/entmax/entmax.cu::overflow_free_delta"},
   {"doc": "docs/internals/entmax/entmax.md", "pinned_at": "785f354f7f10", "reviewed": true, "sha256": "88a7cdcbc1625fe3", "target": "csrc/rola/src/entmax/entmax.cu::union_backward"},
   {"doc": "docs/internals/entmax/entmax.md", "pinned_at": "785f354f7f10", "reviewed": true, "sha256": "dd1cd4937af9e3ee", "target": "csrc/rola/src/entmax/entmax.cu::union_forward"},
