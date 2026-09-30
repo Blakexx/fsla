@@ -30,10 +30,10 @@ using Clock = PhaseClock<kProducePhases>;
 __device__ __forceinline__ Job load_job(const ProduceParams& p, int index) {
   const int shape = p.shapes[index];
   const int32_t* row = p.jobs + static_cast<int64_t>(index) * kJobFields;
-  return Job{shape >> 5,          shape & 7,           (shape >> 3) & 3, row[kFieldHead],
-             row[kFieldHeads],    row[kFieldWidth],    row[kFieldIn0],   row[kFieldIn1],
-             row[kFieldOutRead],  row[kFieldOutWrite], row[kFieldLevel], row[kFieldFoldRead],
-             row[kFieldFoldWrite]};
+  return Job{(shape >> 5) & 1, shape & 7,           (shape >> 3) & 3,    (shape >> 6) & 1,
+             shape >> 7,       row[kFieldHead],     row[kFieldHeads],    row[kFieldWidth],
+             row[kFieldIn0],   row[kFieldIn1],      row[kFieldOutRead],  row[kFieldOutWrite],
+             row[kFieldLevel], row[kFieldFoldRead], row[kFieldFoldWrite]};
 }
 
 //: A job's projection columns: a route job's row (both rows of a union's), or a value job's heads' channels.
@@ -378,45 +378,93 @@ __device__ __forceinline__ void solve_row(const Job& job, float* row, bool live,
   clock.lap(kPhaseLevels);
 }
 
-//: ONE TOKEN'S ROW, solved and written as the bundle holds it: digits, scale, mass. The bundle's form is a STUB
-//: (zeros). -- see docs/internals/produce/produce.md#route-row
+//: ONE SIDE OF A ROW IN THE BUNDLE'S FORM: its digits against its max, the max as its scale, and the level's mass
+//: for the finisher where the fold applies (1 elsewhere). The write side's fold is APPLIED -- its scale is over its
+//: mass, the stored level on the simplex -- and the read side's is carried. -- see docs/internals/produce/produce.md#bundle
+template <int IPT>
+__device__ __forceinline__ void write_side(const ProduceParams& p, const float (&level)[IPT],
+                                           int width, bool live, int lane, uint8_t* plane,
+                                           int64_t first, float* scale, float* mass, int64_t at,
+                                           bool fold, bool applied) {
+  float m = 0.0f, sum = 0.0f;
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) {
+    const bool member = lane + 32 * i < width;
+    m = fmaxf(m, member ? level[i] : 0.0f);
+    sum += member ? level[i] : 0.0f;
+  }
+  m = warp_all(m, [](float a, float b) { return fmaxf(a, b); });
+  sum = warp_all(sum, [](float a, float b) { return a + b; });
+  const float unit = fmaxf(m, 1e-30f);
+#pragma unroll
+  for (int i = 0; i < IPT; ++i) {
+    const int col = lane + 32 * i;
+    if (live && col < width) write_digit(p, plane, first + col, __fdividef(level[i], unit));
+  }
+  if (live && lane == 0) {
+    scale[at] = applied && fold && sum > 0.0f ? m / sum : m;
+    mass[at] = fold ? sum : 1.0f;
+  }
+}
+
+//: ONE TOKEN'S ROW, solved and written as the bundle holds it: each side the job writes, its digits, scale and
+//: mass. A row past the live tokens reduces zeros and stores nothing. -- see docs/internals/produce/produce.md#route-row
 template <int IPT>
 __device__ void route_row(const ProduceParams& p, const Job& job, int job_index, int token,
                           bool live, float* row, int lane, Clock& clock) {
   float read[IPT], write[IPT];
   solve_row<IPT>(job, row, live, lane, read, write, clock);
-  if (!live) return;
   if (p.level_probe != nullptr) {
     float* out = p.level_probe + (static_cast<int64_t>(job_index) * p.BT + token) * kMaxColumns;
 #pragma unroll
     for (int i = 0; i < IPT; ++i) {
       const int col = lane + 32 * i;
-      if (col < job.width) {
+      if (live && col < job.width) {
         out[col] = read[i];
         out[job.width + col] = write[i];
       }
     }
   }
-  const int64_t base = (static_cast<int64_t>(token) * p.H + job.head) * p.rows;
-#pragma unroll 1
-  for (int col = lane; col < job.width; col += 32) {
-    if (job.out_read >= 0) write_digit(p, p.amp_read, base + job.out_read + col, 0.0f);
-    if (job.out_write >= 0) write_digit(p, p.amp_write, base + job.out_write + col, 0.0f);
+  const int64_t first = (static_cast<int64_t>(token) * p.H + job.head) * p.rows;
+  const int64_t at = (static_cast<int64_t>(token) * p.H + job.head) * p.D + job.level;
+  if (job.reads) {
+    write_side<IPT>(p, read, job.width, live, lane, p.amp_read, first + job.out_read, p.scale_read,
+                    p.mass_read, at, job.fold_read != 0, false);
   }
-  if (lane == 0) {
-    const int64_t at = (static_cast<int64_t>(token) * p.H + job.head) * p.D + job.level;
-    if (job.out_read >= 0) {
-      p.scale_read[at] = 0.0f;
-      p.mass_read[at] = 0.0f;
-    }
-    if (job.out_write >= 0) {
-      p.scale_write[at] = 0.0f;
-      p.mass_write[at] = 0.0f;
-    }
+  if (job.writes) {
+    write_side<IPT>(p, write, job.width, live, lane, p.amp_write, first + job.out_write,
+                    p.scale_write, p.mass_write, at, job.fold_write != 0, true);
   }
 }
 
-//: THE HEAD'S FINISH, by the last of its route jobs in the tile: read_mass and g_write. STUB: ones. -- see docs/internals/produce/produce.md#finish
+//: THE WRITE GAIN'S LOGIT of one token: the gain column's dot product with the token's row, a warp's lanes over the
+//: hidden axis in 16-byte chunks, plus both biases.
+__device__ __forceinline__ float gain_logit(const ProduceParams& p, const Job& job, int token,
+                                            bool live, int lane) {
+  const int column = p.C - p.G;
+  const __nv_bfloat16* w = p.route_W + job.head * p.w_head + static_cast<int64_t>(column) * p.w_col;
+  const __nv_bfloat16* xr = p.x + static_cast<int64_t>(live ? token : 0) * p.hidden;
+  float dot = 0.0f;
+#pragma unroll 1
+  for (int k0 = 0; k0 < p.hidden; k0 += 256) {
+    const int k = k0 + 8 * lane;
+    const uint4 wc = chunk(w, k, live && k < p.hidden);
+    const uint4 xc = chunk(xr, k, live && k < p.hidden);
+    const uint32_t wv[4] = {wc.x, wc.y, wc.z, wc.w};
+    const uint32_t xv[4] = {xc.x, xc.y, xc.z, xc.w};
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+      dot += ops::pair_lo(wv[j]) * ops::pair_lo(xv[j]) + ops::pair_hi(wv[j]) * ops::pair_hi(xv[j]);
+    }
+  }
+  dot = warp_all(dot, [](float a, float b) { return a + b; });
+  const float bias = p.route_bias != nullptr ? p.route_bias[job.head * p.C + column] : 0.0f;
+  return dot + bias + p.gain_bias[job.head * p.G];
+}
+
+//: THE HEAD'S FINISH, by the last of its route jobs in the tile to arrive: `read_mass`, the product of the levels'
+//: read masses, and `g_write`, the gain's softplus times the write masses -- the other jobs' masses read past the
+//: fence, coherently. -- see docs/internals/produce/produce.md#finish
 __device__ void finish_head(const ProduceParams& p, const Job& job, int tile, int token0) {
   __shared__ int s_last;
   __threadfence();
@@ -425,12 +473,27 @@ __device__ void finish_head(const ProduceParams& p, const Job& job, int tile, in
     s_last = atomicAdd(&p.arrivals[tile * p.H + job.head], 1) + 1 == p.route_jobs_per_head ? 1 : 0;
   }
   __syncthreads();
-  if (s_last == 0) return;
+  if (!__any_sync(0xffffffffu, s_last != 0)) return;
   __threadfence();
-  if (threadIdx.x < kTokenTile && token0 + static_cast<int>(threadIdx.x) < p.BT) {
-    const int64_t at = static_cast<int64_t>(token0 + threadIdx.x) * p.H + job.head;
-    p.read_mass[at] = 1.0f;
-    p.g_write[at] = 1.0f;
+  const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
+  const int live = min(kTokenTile, p.BT - token0);
+#pragma unroll 1
+  for (int pass = 0; pass < (live + kProduceWarps - 1) / kProduceWarps; ++pass) {
+    const int t = pass * kProduceWarps + warp;
+    const bool here = t < live;
+    const float gain = p.G > 0 ? gain_logit(p, job, token0 + t, here, lane) : 0.0f;
+    if (here && lane == 0) {
+      const int64_t at = static_cast<int64_t>(token0 + t) * p.H + job.head;
+      float read_mass = 1.0f, write_mass = 1.0f;
+#pragma unroll 1
+      for (int l = 0; l < p.D; ++l) {
+        read_mass *= __ldcg(p.mass_read + at * p.D + l);
+        write_mass *= __ldcg(p.mass_write + at * p.D + l);
+      }
+      const float softplus = gain > 20.0f ? gain : log1pf(expf(gain));
+      p.read_mass[at] = read_mass;
+      p.g_write[at] = (p.G > 0 ? softplus : 1.0f) * write_mass;
+    }
   }
   if (threadIdx.x == 0) p.arrivals[tile * p.H + job.head] = 0;
 }

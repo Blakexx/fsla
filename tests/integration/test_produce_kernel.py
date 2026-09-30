@@ -4,7 +4,9 @@ The skeleton's claim is the composition's SHAPE -- every element of every output
 and the arrival counters are back at zero after the call. The projection's is its logits: every job's columns for
 every token, against the fp64 product of the same bf16 operands, per slot within the envelope
 (docs/internals/produce/produce.md#accumulate). The solve's is its levels: every route job's sides against the fp64
-reference solve on the kernel's own logits (docs/internals/produce/produce.md#solve).
+reference solve on the kernel's own logits (docs/internals/produce/produce.md#solve). The bundle's is the routes the
+fp64 composition makes from the same bf16 operands: every row's digits, every scale, the read mass and the write gain
+(docs/internals/produce/produce.md#bundle).
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ import pytest
 import torch
 
 import rola
-from rola.ops.produce import _TOKEN_TILE, ProducerPlan, _job_tensor, hidden_contiguous, job_table
+from rola.ops.produce import _TOKEN_TILE, ProducerPlan, ProducerWeights, _job_tensor, hidden_contiguous, job_table, produce
 from rola.routing.entmax.production import _torch_activation, _torch_union_split
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the producer is a CUDA kernel")
@@ -34,9 +36,9 @@ def _projection_rtol(hidden: int) -> float:
     return (hidden + 1) * 2.0 ** -23
 
 
-def _operands(name: str, *, B=2, T=5, hidden=48, H=3, d_v=64, bias=True):
+def _operands(name: str, *, B=2, T=5, hidden=48, H=3, d_v=64, bias=True, gain=True):
     torch.manual_seed(0)
-    plan = ProducerPlan(routing=rola.Routing(_ROUTINGS[name]), num_heads=H, hidden_size=hidden, d_v=d_v)
+    plan = ProducerPlan(routing=rola.Routing(_ROUTINGS[name], gain=gain), num_heads=H, hidden_size=hidden, d_v=d_v)
     C = plan.routing.columns
     route_W = hidden_contiguous(torch.randn(H, hidden, C, device="cuda").to(torch.bfloat16))
     route_bias = torch.randn(H, C, device="cuda") if bias else None
@@ -156,3 +158,41 @@ def test_the_solve_matches_the_fp64_reference_on_the_kernels_logits(name, B, T):
             assert error <= _solve_rtol(width), (
                 f"{name}: job {index} (solve {solve}, width {width}) {side} side is off by {error:.3g}, "
                 f"{error / _solve_rtol(width):.2f} of the bound")
+
+
+#: the bundle's per-slot bounds against the fp64 composition. A u8 digit is a level within the solve's bound of the
+#: reference's, rounded: the same digit or its neighbour. An f16 unit value: one f16 unit in the last place at 1. A
+#: scale is a row's max (the write side's over its mass, about 1): twice the solve's bound. The read mass and the write
+#: gain: measured at most 4.8e-5 and 2.7e-6 relative over these cells.
+_UNIT_F16 = 2.0 ** -10
+_MASS_RTOL = 2.0 ** -12
+
+
+@pytest.mark.parametrize(("name", "B", "T", "bias", "gain"), [
+    ("union", 2, 5, True, True), ("split", 1, 40, True, True), ("tied-deep", 3, 7, False, True),
+    ("wide", 1, 33, True, True), ("sparsemax", 2, 9, True, False),   # no gain column: the gain is 1
+])
+def test_the_bundle_matches_the_fp64_composition(name, B, T, bias, gain):
+    plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=64, bias=bias, gain=gain)
+    gain_bias = torch.randn_like(gain_bias)
+    out, _, _ = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0x55)
+    reference = ProducerWeights(route_W=route_W.double(), gain_bias=gain_bias.double(), v_W=v_W.double(),
+                                route_bias=None if route_bias is None else route_bias.double())
+    routes, _ = produce(x.double(), plan, reference)
+    offsets = plan.routing.resolved.level_offsets
+    for level, width in enumerate(plan.routing.resolved.branches):
+        for side, rows, scales in (("read", routes.amp_read, routes.scale_read),
+                                   ("write", routes.amp_write, routes.scale_write)):
+            got = out[f"amp_{side}"][..., offsets[level]:offsets[level] + width]
+            if got.dtype == torch.uint8:
+                digit = int((got.int() - rows[level].int()).abs().max())
+                assert digit <= 1, f"{name}: level {level} {side} digits off by {digit}"
+            else:
+                unit = float((got.float() - rows[level].float()).abs().max())
+                assert unit <= _UNIT_F16, f"{name}: level {level} {side} f16 units off by {unit:.3g}"
+            scale = float((out[f"scale_{side}"][..., level].double() - scales[level].double()).abs().max())
+            assert scale <= (width + 16) * 2.0 ** -22, f"{name}: level {level} {side} scale off by {scale:.3g}"
+    read_mass = routes.read_mass if routes.read_mass is not None else torch.ones_like(routes.g_write)
+    for key, expected in (("read_mass", read_mass), ("g_write", routes.g_write)):
+        error = float(((out[key].double() - expected.double()).abs() / expected.double().abs()).max())
+        assert error <= _MASS_RTOL, f"{name}: {key} off by {error:.3g} relative"

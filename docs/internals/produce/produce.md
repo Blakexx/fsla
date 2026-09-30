@@ -8,7 +8,7 @@ is a runtime field and the family is ONE instantiation.
 
 The components land one at a time into the skeleton, each gated (KERNEL_STANDARDS §19); a component not yet landed
 has its real signature, tenant and edges and does the cheapest thing that keeps the composition's shape (zero digits
-and scales, unit gains). LANDED: the projection, the solve. `tests/integration/test_produce_kernel.py` holds the skeleton's
+and scales, unit gains). LANDED: the projection, the solve, the bundle. `tests/integration/test_produce_kernel.py` holds the skeleton's
 claim (every element of every output is written, whatever the routing, and the arrival counters are back at zero
 after the call) and each landed component's gate.
 
@@ -70,11 +70,19 @@ against a 68 TFLOP/s peak, the stub epilogues included.
 
 ## <a id="route-row"></a>A token's row
 
-One warp a token row: the solve on the row, then the bundle's form of it -- the row against its max as u8 digits
-(depth at most two) or f16, the fp32 max as the row's scale, and the row's mass for the finisher. The bundle's form
-is a SKELETON: zero digits, scale and mass. Every warp makes the same passes over the tile's rows (a count of its live
-tokens, uniform), a row past them solving zeros with its stores off, so no collective sits under a branch ptxas cannot
-prove warp-uniform.
+One warp a token row: the solve on the row, then the bundle's form of it. Every warp makes the same passes over the
+tile's rows (a count of its live tokens, uniform), a row past them solving and reducing zeros with its stores off, so
+no collective sits under a branch ptxas cannot prove warp-uniform.
+
+<a id="bundle"></a>THE BUNDLE'S FORM (`write_side`), for each side the job writes (a shape bit each): the row against
+its max as u8 digits (depth at most two, round to nearest even of `unit x 255`) or f16 units, the max clamped at
+`1e-30` as `quantize_unit_max_rows` clamps it; the max as the side's scale; and the level's mass for the finisher
+where the fold applies (1 elsewhere, so the finisher multiplies every level without the plan's flags). The WRITE fold
+is applied -- its scale is the max over the mass, the stored level on the simplex -- and the READ fold is carried:
+its scale stays the max and its mass rides `read_mass`, as the composition's `_fold` does. Gate: every row's digits
+(within one), f16 units (within one unit in the last place at 1), scales (within twice the solve's bound), the read
+mass and the write gain (within 2^-12 relative, measured 4.8e-5 and 2.7e-6) against the fp64 composition on the same
+bf16 operands, with and without a gain column or a routing bias.
 
 <a id="solve"></a>THE SOLVE (`solve_row`) holds the row striped, element `lane + 32 i` in a lane's `i`th register,
 `IPT` = the width's power-of-two class over 32 (one of four bodies, chosen once a job by its shape byte). A union row
@@ -115,9 +123,12 @@ overlapping it (one CTA an SM): the next levers, priced when the bundle's form l
 ## <a id="finish"></a>The head's finish
 
 The route jobs of one (token tile, head) each write their masses, fence, and add one to the pair's arrival counter;
-the last to arrive forms the head's `read_mass` (the product of the read masses whose fold applies) and `g_write`
-(the gain logit's softplus times the write masses), and resets the counter, so no launch zeroes it between calls.
-SKELETON: unit read mass and gain.
+the last to arrive -- a vote on the count ends the others, so the collectives past it are warp-uniform -- reads the
+masses coherently (`__ldcg`) and forms the head's `read_mass`, the product of its levels' read masses, and `g_write`,
+the write gain's softplus (`softplus` as torch's, linear past 20) times the write masses; then it resets the counter,
+so no launch zeroes it between calls. The gain's logit (`gain_logit`) is the routing's trailing gain column against
+the token's row, a warp's lanes over the hidden axis in 16-byte chunks, plus the column's routing bias and
+`gain_bias`; a routing without a gain column has a gain of 1.
 
 ## <a id="value-rows"></a>The value digits
 

@@ -69,10 +69,11 @@ enum ProducePhase : int {
   kProducePhases
 };
 
-//: `kind`, `solve` and `rows` (a solve row's elements a lane, as a power of two's exponent) are the shape byte's.
+//: `kind`, `solve`, `rows` (a solve row's elements a lane, as a power of two's exponent), `reads` and `writes` (the
+//: sides a route job writes) are the shape byte's.
 struct Job {
-  int kind, solve, rows, head, heads, width, in0, in1, out_read, out_write, level, fold_read,
-      fold_write;
+  int kind, solve, rows, reads, writes, head, heads, width, in0, in1, out_read, out_write, level,
+      fold_read, fold_write;
 };
 
 //: THE OPERANDS, as addresses: every tensor the host entry validated, with the strides it read off them.
@@ -101,7 +102,8 @@ struct ProduceParams {
   float* logit_probe;  // [jobs, BT, kMaxColumns] or null: every job's projection, for its gate
   float* level_probe;  // the same, a route job's solved levels: read at [0, w), write at [w, 2w)
   long long* ledger;   // [jobs, warps, phases] or null
-  uint8_t shapes[kMaxJobs];  // a job's kind << 5 | rows << 3 | solve, read by block index: uniform
+  uint8_t
+      shapes[kMaxJobs];  // writes << 7 | reads << 6 | kind << 5 | rows << 3 | solve, by block index
 
   int BT, hidden, H, C, G, rows, D, d_v, row_form, route_jobs_per_head;
 };

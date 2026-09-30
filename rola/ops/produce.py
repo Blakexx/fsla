@@ -136,11 +136,12 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
 
 
 def _shape(job: tuple[int, ...]) -> int:
-    """A job's control as the kernel reads it, one byte in the launch's parameters: ``kind << 5 | rows << 3 | solve``,
-    ``rows`` a solve row's elements a lane as a power of two's exponent (produce.cuh `Job`)."""
-    kind, _head, _heads, solve, width = job[:5]
+    """A job's control as the kernel reads it, one byte in the launch's parameters:
+    ``writes << 7 | reads << 6 | kind << 5 | rows << 3 | solve``, ``rows`` a solve row's elements a lane as a power of
+    two's exponent and ``reads``/``writes`` the sides a route job writes (produce.cuh `Job`)."""
+    kind, _head, _heads, solve, width, _in0, _in1, out_read, out_write = job[:9]
     rows = 0 if width <= 32 else 1 if width <= 64 else 2 if width <= 128 else 3
-    return kind << 5 | rows << 3 | solve
+    return int(out_write >= 0) << 7 | int(out_read >= 0) << 6 | kind << 5 | rows << 3 | solve
 
 
 @lru_cache(maxsize=64)
@@ -229,8 +230,9 @@ def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tu
                                       g_write if write_mass is None else g_write * write_mass,
                                       read_mass=read_mass)
 
-    #: `v` FLOWS bf16 into the format (docs/api.md section 4.1)
-    v = F.linear(x.to(torch.bfloat16), weights.v_W)
+    #: `v` FLOWS bf16 into the format (docs/api.md section 4.1); the fp64 reference computes it in fp64
+    v_dtype = torch.float64 if x.dtype == torch.float64 else torch.bfloat16
+    v = F.linear(x.to(v_dtype), weights.v_W.to(v_dtype))
     values = Values.from_projection(rearrange(v, "b l (h d) -> b l h d", d=plan.d_v), digits=plan.value_digits)
     return routes, values
 
