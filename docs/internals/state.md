@@ -302,8 +302,10 @@ the facade, and the dense-contents bridge that existed to carry it (`_dense_entr
 
 ## <a id="decode-seam"></a>5b. The `T = 1` seam
 
-`rola.engine.dags.decode_dag.decode_forward(routes, v, state, decay=..., expert=...)` takes
-and returns the state exactly as `rola_op` does. Three things live behind that seam:
+`rola.engine.dags.decode_dag.decode_step_gated(routes, v, state, decay=..., expert=...)` takes and
+returns the state exactly as `rola_op` does, and its caller owns the verdict (`growth_pending`, then
+`admit_growth` and the step again -- the layer's `_step` and one-token `forward`). Three things live
+behind that seam:
 
 * **The frozen carrier and the scratch** (`DecodeGeometry`, `DecodeScratch`) are the
   decode DAG's own memoized nodes, not the state's — launch machinery fails the

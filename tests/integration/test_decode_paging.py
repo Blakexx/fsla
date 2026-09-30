@@ -377,7 +377,7 @@ def test_a_step_grows_residency_by_exactly_its_new_atoms(arm):
 
     ys = []
     for step, bitmap in zip((first, second), bits):
-        #: THE GROWTH ORDER, exactly `decode_forward`'s: plan the union on the side
+        #: THE GROWTH ORDER, exactly the layer's: plan the union on the side
         #: stream, wait once, launch.
         arena.plan_exact(bitmap, fresh=False)
         arena.wait()

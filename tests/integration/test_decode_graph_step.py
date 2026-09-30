@@ -446,3 +446,49 @@ def test_a_growth_step_lands_under_the_graph_by_replay():
 
     assert_reordered_close(landed_y, eager_y, "the landed step's y")
     assert torch.equal(landed, eager_state.materialize())
+
+
+@torch.no_grad()
+def test_the_layers_step_captures_and_replays_as_the_eager_forward_across_an_admission():
+    """THE LAYER'S ONE-TOKEN STEP UNDER A GRAPH: `RoLA._step` -- the producer's launch, the gated step, the output
+    projection -- captured whole. Two identical sequences take the same warm-up steps and lose the same written atom;
+    one replays the captured step, admits at the verdict and replays again, the other runs the eager one-token
+    `forward` (step, verdict, admission, step). The pair advances each exactly once: the same state bytes, and `y`
+    to its sums' order."""
+    from rola import LayerContinuation
+
+    warm, token = slice(_T + 4, _T + 5), slice(_T + 5, _T + 6)
+
+    layer, x, _v, state = _sequence()
+    static_x = x[:, warm].clone()
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side):
+        for _ in range(3):
+            layer._step(static_x, state)
+    torch.cuda.current_stream().wait_stream(side)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        y_graph = layer._step(static_x, state)
+    static_x.copy_(x[:, token])
+    row, column = _make_growth(state, layer._produce(x[:, token])[0])
+    graph.replay()
+    torch.cuda.synchronize()
+    assert growth_pending(state), "the fixture's growth token is already resident"
+    admit_growth(state)
+    graph.replay()
+    torch.cuda.synchronize()
+    assert not growth_pending(state), "the replay did not clear the verdict"
+    landed_y, landed = y_graph.clone(), state.materialize().clone()
+
+    layer2, x2, _v2, eager_state = _sequence()
+    for _ in range(3):
+        layer2._step(x2[:, warm], eager_state)
+    assert _make_growth(eager_state, layer2._produce(x2[:, token])[0]) == (row, column), (
+        "the two sequences are not the same sequence")
+    eager_y, _ = layer2(x2[:, token], continuation=LayerContinuation(state=eager_state))
+    torch.cuda.synchronize()
+    assert layer2.last_execution_backend == "decode"
+
+    assert_reordered_close(landed_y, eager_y, "the layer's landed step")
+    assert bytes_equal(landed, eager_state.materialize()), "the captured pair and the eager forward moved the state apart"

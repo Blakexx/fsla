@@ -10,10 +10,8 @@ read only the plan (docs/internals/engine/engine.md).
 
 from rola.engine.dags.decode_dag import (
     DECODE_STEP,
-    DECODE_VERDICT,
     DecodeContext,
     admit_growth,
-    decode_forward,
     decode_step_gated,
     growth_pending,
 )
@@ -26,12 +24,10 @@ from rola.engine.dags.prefill_dag import (
 
 __all__ = [
     "DECODE_STEP",
-    "DECODE_VERDICT",
     "PREFILL_DAG",
     "DecodeContext",
     "PrefillContext",
     "admit_growth",
-    "decode_forward",
     "decode_step_gated",
     "growth_pending",
     "run_prefill",

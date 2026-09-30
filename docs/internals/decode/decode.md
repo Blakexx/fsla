@@ -339,9 +339,8 @@ host-admitted one reach the same state and the same `y`.
 ## <a id="capture"></a>4d. CUDA-graph capture — `decode_step_gated`
 
 With no host read inside it the step is capturable, and `rola.engine.dags.decode_dag.decode_step_gated`
-is that entry: the same kernel in the same order as `decode_forward` minus the verdict
-read. The CALLER owns the verdict, at whatever synchronization it already has (a decode
-loop syncs once per token to sample):
+is the decode entry. The CALLER owns the verdict, at whatever synchronization it already has
+(a decode loop syncs once per token to sample):
 
 ```
 y, state = decode_step_gated(...)   # or graph.replay()
@@ -356,8 +355,11 @@ step it had skipped — for the batch-heads that had skipped it, and for no othe
 ([§4c](#done-flags)). Nothing in the loop reallocates — the workspace is built once, every
 counter and flag is reset by the last CTA that reads it, and the arena's base address and
 page table are objects an admission writes IN PLACE (the reservation never moves), so a
-graph captured over them survives growth. The eager `decode_forward` remains THE base
-path; capture is an optimization the caller selects, not a fallback either way.
+graph captured over them survives growth. The layer's one-token `forward` runs this loop
+eagerly; `RoLA._step` -- the producer's launch, the gated step and the output projection --
+is the same step whole, and a caller that captures it replays one graph a token
+(`tests/integration/test_decode_graph_step.py`); capture is an optimization the caller
+selects, not a fallback either way.
 
 Measured before the absorption (RTX 3080 Ti, medians of 15 x 50, one steady paged step,
 `d_v = 64`, `BH = 6`), a loop of steps with one synchronize at the end, against the

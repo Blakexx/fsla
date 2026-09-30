@@ -49,7 +49,7 @@ no-regression-list rule — a reader here wants what is absent NOW, not an obsol
 **THE KERNEL HALF IS DONE.** A dedicated `T = 1` decode path ships: bitmap support
 expansion + token-stationary gather-GEMV, fold and walk in ONE kernel
 (`csrc/rola/src/decode/decode.cu`), behind the same state facade as the chunk arm
-(`decode_forward(routes, v, state)`), with a PAGED backing whose address is the 16-leaf
+(`decode_step_gated(routes, v, state)`), with a PAGED backing whose address is the 16-leaf
 atom and the step's own per-batch-head residency verdict, reached off the write map the
 walk builds anyway, that keeps a steady step off any admission preamble at all
 (`docs/internals/decode/decode.md`). Gated by

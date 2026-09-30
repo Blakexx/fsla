@@ -420,7 +420,7 @@ rest on that property.
 ## 4. The layer
 
 ```python
-RoLA(routes, *, d_v=64, decay=None, layer_idx=None, expert=None, memory_budget=None)
+RoLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, expert=None, memory_budget=None)
 
 y, continuation = layer(hidden_states, continuation=LayerContinuation(state=rola.state()))
 y, continuation = layer(next_tokens, continuation=continuation)
@@ -431,10 +431,19 @@ y, _ = layer(hidden_states)                            # stateless -> (y, LayerC
 the container. See §1.2; a bare `RoLAState` or the retired `(state, conv_rings)` tuple
 is refused by name rather than adopted.
 
-`routes` is the only positional argument, and it is the only declaration of
-`hidden_size`/`num_heads`: the layer reads both off the producer rather than taking a
-second copy to check against. `d_v` is the per-head value width — the layer's, because
-it sizes `v_proj`/`o_proj`; the default is the width the chunk matrix is built at.
+`routing` is the declared `Routing` (§2.3), and the layer owns every weight it implies.
+`d_v` is the per-head value width — the layer's, because it sizes `v_proj`/`o_proj`; the
+default is the width the chunk matrix is built at.
+
+<a id="one-token-step"></a>**One token of a carried sequence is `_step`, then the verdict.** `RoLA._step(x, state)`
+is the whole token with no host read inside it -- the producer's one launch, the gated decode
+step, the output projection -- so a caller can capture it in a CUDA graph and replay it a
+token. A batch-head whose write atoms the state can neither address nor admit skips itself;
+`forward` then asks `growth_pending(state)`, admits and steps again, which advances every
+sequence exactly once (`docs/internals/decode/decode.md#capture`). MEASURED at a decode cell
+(N 64K, H 16, d_v 64, B 1, paged, RTX 3080 Ti): eager `forward` ~600 us a token; the
+captured step 73 us a token (its GPU time), 161-187 us with the verdict read every token --
+a 4-byte copy and a sync, which a serving loop pays at the sync that samples its token.
 
 `value_conv`/`route_conv` (a causal short convolution over the value/routing-source
 stream) were DELETED at K45 (docs/internals/DELETIONS.md): they were never reviewed as

@@ -48,7 +48,7 @@ import torch.nn as nn
 from rola._inference_copy import InferenceCopy, reads_copy
 from rola._state import state as rola_state
 from rola.engine import PlanOverrides
-from rola.engine.dags.decode_dag import decode_forward
+from rola.engine.dags.decode_dag import admit_growth, decode_step_gated, growth_pending
 from rola.interface import (
     BackwardNotImplemented,
     operands_of,
@@ -236,7 +236,7 @@ class RoLA(nn.Module):
     def validate_decode_envelope(self, *operation_inputs) -> None:
         """THE DECODE ARM'S OWN CLAUSE: it is forward-only and has no node.
 
-        `decode_forward` is a bare extension call with no autograd node on it, so a
+        The gated decode step is a bare extension call with no autograd node on it, so a
         grad-bearing continuation step would return a tensor whose graph is severed
         and say nothing -- the layer-dispatch autograd gap, on the one path that
         still has it. Training mode alone is enough: reentrant checkpointing runs its
@@ -292,19 +292,37 @@ class RoLA(nn.Module):
         carrying = state is not None and state.carries
 
         if L == 1 and carrying:
-            routes, values = self._produce(x)
-            #: decode's envelope is its own -- BC-blind, general in the topology -- so
-            #: it is never asked the PREFILL matrix's questions.
-            self.validate_decode_envelope(*operands_of(routes, values, decay))
-            out, state = decode_forward(routes, values, state, decay=decay, expert=self.expert)
+            #: THE STEP, THE VERDICT, THE ADMISSION: a batch-head whose write atoms are absent skipped itself, and the
+            #: same step run again after the admission performs it (docs/api.md section 4)
+            projected = self._step(x, state)
+            if growth_pending(state):
+                admit_growth(state)
+                projected = self._step(x, state)
             self.last_execution_backend = "decode"
-        else:
-            out, state = self._prefill(x, state, decay)
-            self.last_execution_backend = "cuda"
+            return projected, LayerContinuation(state=state)
 
-        out = out.reshape(B, L, H * self.head_v_dim)
-        projected = nn.functional.linear(out.to(torch.bfloat16), self._bf16(self.o_proj.weight, self._o_copy)).to(x.dtype)
-        return projected, LayerContinuation(state=state)
+        out, state = self._prefill(x, state, decay)
+        self.last_execution_backend = "cuda"
+        return self._project(out.reshape(B, L, H * self.head_v_dim), x.dtype), LayerContinuation(state=state)
+
+    def _step(self, x: torch.Tensor, state) -> torch.Tensor:
+        """ONE DECODED TOKEN WITH NO HOST READ INSIDE: the producer's launch, the gated decode step and the output
+        projection, ``x [B, 1, hidden]`` to the projected ``[B, 1, hidden]`` -- CUDA-graph capturable. A batch-head
+        whose write atoms the state can neither address nor admit is a no-op; the caller owns the verdict at its own
+        synchronization -- ``growth_pending(state)``, then ``admit_growth(state)`` and the step again (a captured
+        step's replay), which advances every sequence exactly once (docs/internals/decode/decode.md#done-flags).
+        """
+        decay = None if self.decay is None else self.decay()
+        routes, values = self._produce(x)
+        #: decode's envelope is its own -- BC-blind, general in the topology -- so it is never asked the PREFILL
+        #: matrix's questions.
+        self.validate_decode_envelope(*operands_of(routes, values, decay))
+        out, _state = decode_step_gated(routes, values, state, decay=decay, expert=self.expert)
+        return self._project(out.reshape(x.shape[0], 1, self.num_heads * self.head_v_dim), x.dtype)
+
+    def _project(self, out: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        """The output projection, bf16 operands, in the caller's dtype."""
+        return nn.functional.linear(out.to(torch.bfloat16), self._bf16(self.o_proj.weight, self._o_copy)).to(dtype)
 
     def _produce(self, x: torch.Tensor):
         """One stretch of tokens into the format: ``(routes, values)``, from one producer call."""

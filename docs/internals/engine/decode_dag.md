@@ -13,10 +13,9 @@ Symbols used below: `B` batch, `H` heads, `BH = B*H`, `D` level count, `N` leaf 
 
 `Mask.M3` is decode-dense and `Mask.M4` is decode-paged. After the step absorbed its own
 residency question, the node SET is one tuple for both — a dense call simply never finds
-an atom the table does not map, because it has no table. What the mask still separates is
-the host-visible verdict READ: a dense step has no residency fact to read back, so
-`read_verdict` carries `Mask.M4` alone and `DECODE_STEP` itself carries none of the
-band-specific work either mask would drop.
+an atom the table does not map, because it has no table. The host-visible verdict READ is
+not a node: `growth_pending` makes it at the caller's synchronization, and answers `False`
+for a dense state without reading, since a dense step has no residency fact to read back.
 
 **A GROWTH STEP IS NOT A THIRD MASK.** It is `DECODE_STEP` walked twice around an
 admission the host performs between the two walks. A mask selects a subgraph; growth
@@ -60,20 +59,19 @@ the plane's extent against the backing, the page table's against `[BH, N/16]`. T
 checked per step and not at plan build because that is where the plane the step actually
 indexes is known.
 
-## <a id="the-verdict"></a>3. The verdict is ONE node, appended, and it is the step's own output
+## <a id="the-verdict"></a>3. The verdict is the step's own output, read by its caller
 
-`DECODE_VERDICT` is `DECODE_STEP + (read_verdict,)` — the captured recipe with the
-host-visible read spliced on the end, never a different walk. `read_verdict` is a single
-`copy_(non_blocking)` of the step's own `growth_any` output into a pinned mirror, and it
-CANNOT be enqueued ahead of the step any more: the verdict the step publishes is its own
-last finisher's write, so the read is behind it by data dependence, not by host
-policy. It is the family's ONE `host_sync` node, and it is the last node in the tuple —
-`DECODE_VERDICT[:len(DECODE_STEP)] == DECODE_STEP` is asserted directly
-(`tests/unit/test_facts_memo.py`).
-
-`decode_step_gated` runs `DECODE_STEP` alone — the caller owns the verdict, at whatever
-synchronization it already has, through `growth_pending` and `admit_growth`
-([`decode.md#capture`](../decode/decode.md#capture)).
+`decode_step_gated` runs `DECODE_STEP` — the whole tuple, the step its last node — and the
+caller owns the verdict, at whatever synchronization it already has, through
+`growth_pending` and `admit_growth` ([`decode.md#capture`](../decode/decode.md#capture)).
+`growth_pending` is a single copy of the step's own `growth_any` output into a pinned
+mirror, and it cannot be enqueued ahead of the step: the verdict the step publishes is its
+own last finisher's write, so the read is behind it by data dependence. The layer's
+one-token `forward` is that caller (`RoLA._step`, then the verdict, the admission and the
+step again), and a serving loop that captures `_step` reads it at the sync that samples
+its token. The verdict was a DAG node appended to the step (`DECODE_VERDICT`) until the
+layer composed it itself (2026-09-30); `DECODE_STEP` ending at the step with no host read
+is asserted directly (`tests/unit/test_facts_memo.py`).
 
 ## <a id="capturable"></a>4. `capturable` is a declaration, not a hope
 
@@ -81,8 +79,8 @@ Every node of `DECODE_STEP` declares `capturable=True`, and
 `rola.engine.runner.validate_capturable` refuses the tuple at import if one does not. A
 node cannot declare both `capturable` and `host_sync`: reading a device value on the host
 is precisely what a capture forbids, and the two attributes are one claim written from
-two ends — which is exactly why `read_verdict` lives only in `DECODE_VERDICT`, appended
-after the captured tuple, and never inside `DECODE_STEP` itself.
+two ends — which is exactly why the verdict read lives in `growth_pending`, outside the
+captured tuple, and never inside `DECODE_STEP` itself.
 
 The declaration is what makes the property survive editing. A node added to the step that
 reads a device value, or allocates per step, fails at import rather than at some caller's
