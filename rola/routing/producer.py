@@ -173,11 +173,6 @@ class Routing:
         return self.resolved.packed_router_width + self.gain_columns
 
 
-def _hidden_major(W: torch.Tensor) -> torch.Tensor:
-    """``[H, hidden, cols]`` stored hidden-major and viewed back, so the projection's einsum reads it with no copy."""
-    return W.permute(1, 0, 2).contiguous().permute(1, 0, 2)
-
-
 def _init_packed_router(W: nn.Parameter) -> None:
     """Init ``[H, hidden, packed_router_width]`` like an ``nn.Linear(hidden, cols)``.
 

@@ -185,8 +185,9 @@ at 1 at any depth (ruled 2026-09-29: the producer writes f16 deeper, and every c
 either); an all-zero row is a dead token at that level -- with the row's maximum carried beside
 them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one tensor per level). A read level's scale carries the read mass; a
 write level's scale is the normalized simplex's max and its mass rides `g_write`. This is what
-the int carry, the intra and the decode kernels read, and it is written in exactly one place:
-the framework's producer epilogue (`rola/routing/quant.py`, `RouteFactors.from_levels`). The fp64
+the int carry, the intra and the decode kernels read, and it is written by the framework's producer
+alone: the fused kernel's epilogue, and the reference's (`rola/routing/quant.py`, `RouteFactors.from_levels`),
+gated against each other (`tests/integration/test_produce_kernel.py`). The fp64
 statement of the arithmetic is `tests/oracle/int_reference.py`, and the op's oracle takes the
 bundle itself as its input.
 
@@ -300,9 +301,11 @@ RULED 2026-09-29: the producer is a DECLARED CONFIGURATION. A `Routing` is data 
 the projection bias -- and the layer compiles it once into its producer plan and owns every weight it implies: the
 packed per-head routing projection `route_W`, its bias, the write gain's bias, `v_proj` and `o_proj`. One producer
 call (`rola.ops.produce.produce`) turns a stretch of tokens into the bundle -- the projection, the exact
-entmax/softmax solves, the fold, the gain, the unit-max rows and the value digits -- which is what lets one fused
-kernel stand behind it. Construction validates the whole declaration -- widths in range, a buildable topology, a
-gain layout -- so an unbuildable model fails on the line that built it.
+entmax/softmax solves, the fold, the gain, the unit-max rows and the value digits -- and on CUDA with no gradient
+that call is ONE LAUNCH of the fused producer kernel (`docs/internals/produce/produce.md`), the bundle's rows and
+scales views of the planes it writes. The torch composition behind the same call is the reference: fp64, the host,
+and -- until the native backward -- the path a gradient takes. Construction validates the whole declaration --
+widths in range, a buildable topology, a gain layout -- so an unbuildable model fails on the line that built it.
 
 **`levels` is the configuration, and it is a LIST.** One entry per routing level,
 outermost first, each carrying that level's WHOLE spec:
@@ -337,16 +340,13 @@ uniform(depth, level)                     # `depth` levels spelled the same way
 because a broadcast is a rule the reader has to know before they can read the widths off
 the call.
 
-**Every level is one launch group, not one launch each.** The levels share a packed
-`route_W` and are dispatched per level inside the solve kernel with no privileged level,
-so a model pays one GEMM and one solve group for the whole topology. Levels sharing an
-operator, an alpha, a width class and an operand set share a single launch; levels that
-do not are genuinely different `(operator, source, destination)` triples and issue
-separately.
+**Every level, every head and the values are one launch.** The plan compiles into the
+kernel's job table -- a job per head's solve and per group of value heads -- so a model pays
+one launch for the whole topology, whatever its levels' operators, alphas and widths.
 
 <a id="projection-weight"></a>**The projection reads a laid-out copy of `route_W` when no gradient flows.** The GEMM's
-operands are bf16 and it contracts over the hidden axis, so an inference step would otherwise
-cast the whole fp32 parameter and re-lay it out hidden-major on every call -- measured at
+operands are bf16 and the kernel reads each column's hidden run contiguous (`hidden_contiguous`), so an inference
+step would otherwise cast the whole fp32 parameter and re-lay it out on every call -- measured at
 ~55 us of GPU a decode step at `H = 16`, `(256, 256)`, more than the decode kernel. The copy
 is made once and reused while the parameter's version counter, storage, device and the
 projection dtype are unchanged; an in-place update (an optimizer step, `load_state_dict`)

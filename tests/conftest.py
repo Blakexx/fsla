@@ -368,14 +368,18 @@ def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
     from types import SimpleNamespace
 
     from rola import Routing
-    from rola.ops.produce import ProducerPlan, ProducerWeights, produce
+    from rola.ops.produce import ProducerPlan, ProducerWeights, hidden_contiguous, produce, projection_dtype
 
     H, hidden_size, _ = route_W.shape
     d_v = v.shape[-1]
     plan = ProducerPlan(routing=Routing(topology.levels, bias=route_bias is not None, gain=bool(gain_W.shape[1])),
                         num_heads=H, hidden_size=hidden_size, d_v=d_v)
     bias = None if route_bias is None else torch.cat([route_bias, route_bias.new_zeros(H, gain_W.shape[1])], dim=-1)
-    weights = ProducerWeights(route_W=fuse_gain_columns(route_W, gain_W), route_bias=bias, gain_bias=gain_bias,
+    #: THE WEIGHTS IN THE PRODUCER'S CONTRACT FORM: the projection's dtype, and on the kernel's path (CUDA, no fp64)
+    #: the hidden axis contiguous
+    fused = fuse_gain_columns(route_W, gain_W).to(projection_dtype(x))
+    weights = ProducerWeights(route_W=hidden_contiguous(fused) if fused.dtype is torch.bfloat16 else fused,
+                              route_bias=bias, gain_bias=gain_bias,
                               v_W=torch.zeros(H * d_v, hidden_size, dtype=torch.bfloat16, device=x.device))
     routes, _values = produce(x, plan, weights)
     return SimpleNamespace(

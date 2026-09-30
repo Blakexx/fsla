@@ -6,6 +6,10 @@ value digits. The layer declares its routing (`rola.Routing`), owns the weights,
 (`rola/ops/produce.py`); `job_table` turns the plan into the rows this kernel reads, so every width, kind and offset
 is a runtime field and the family is ONE instantiation.
 
+`rola.ops.produce.produce` runs this kernel on CUDA when no gradient flows (`run_kernel` allocates the outputs;
+`_kernel_bundle` views its packed planes as the bundle's per-level rows and scales); the torch composition behind the
+same call is the fp64 and host reference, and until the native backward the path a gradient takes.
+
 The components land one at a time into the skeleton, each gated (KERNEL_STANDARDS §19); a component not yet landed
 has its real signature, tenant and edges and does the cheapest thing that keeps the composition's shape (zero digits
 and scales, unit gains). LANDED: every component -- the projection, the solve, the bundle, the values. `tests/integration/test_produce_kernel.py` holds the skeleton's

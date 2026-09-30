@@ -103,6 +103,12 @@ _FAMILIES = {
         test="tests/oracle/test_decode_vs_oracle.py::"
              "test_g1_the_state_is_byte_reproducible_against_itself[widths0-64]",
         kernel="rola::decode::rola_decode_forward", present=True),
+    #: THE FUSED PRODUCER on a union routing: the projection's burst, the solve and bundle rows under uniform passes,
+    #: the arrival counters and the head's finisher, the value digits -- every component, one launch.
+    "produce": Family(
+        test="tests/integration/test_produce_kernel.py::"
+             "test_the_bundle_matches_the_fp64_composition[union-2-5-True-True]",
+        kernel="rola::produce::rola_produce_forward", present=True),
     #: THE PRODUCER'S SOLVES: their own block-wide reductions, on the routing path.
     "entmax": Family(
         test="tests/oracle/test_entmax_cuda_gates.py::"

@@ -223,3 +223,28 @@ def test_the_value_digits_match_the_fp64_composition(name, B, T, digits):
     assert excess.max() <= 0, f"{name}: a value digit off by {float(excess.max()):.3g} past its bound"
     scale_excess = (out["v_scale"].double() - values.scale.double()).abs() - error.amax(-1)
     assert scale_excess.max() <= 0, f"{name}: a value scale off by {float(scale_excess.max()):.3g} past its bound"
+
+
+def test_a_bound_ledger_books_every_phase_and_changes_nothing():
+    """The phase ledger (docs/internals/produce/produce.md#phase-ledger): every warp of every job books, a route job
+    every route phase and a value job its own, and the outputs are the same bytes with it bound or not."""
+    from rola.ops import produce as producer
+
+    operands = _operands("union", B=2, T=40, hidden=64)
+    plain, _, _ = _launch(*operands, fill=0x55)
+    jobs = job_table(operands[0])[0]
+    ledger = torch.zeros(len(jobs), producer.LEDGER_WARPS, len(producer.LEDGER_PHASES), dtype=torch.int64,
+                         device="cuda")
+    producer.ledger_bind(ledger)
+    try:
+        booked, _, _ = _launch(*operands, fill=0x55)
+    finally:
+        producer.ledger_bind(None)
+    for key in (key for key in plain if plain[key] is not None):
+        assert torch.equal(plain[key].view(torch.uint8), booked[key].view(torch.uint8)), f"binding moved `{key}`"
+    phases = dict(zip(producer.LEDGER_PHASES, range(len(producer.LEDGER_PHASES)), strict=True))
+    route = [name for name in producer.LEDGER_PHASES if name != "values"]
+    for index, job in enumerate(jobs):
+        names = route if job[0] == 0 else ["job", "project", "barrier", "values"]
+        for name in names:
+            assert bool((ledger[index, :, phases[name]] > 0).all()), f"job {index}: a warp booked no `{name}`"

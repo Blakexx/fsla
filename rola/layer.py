@@ -55,9 +55,9 @@ from rola.interface import (
     requires_backward,
     rola_op,
 )
-from rola.ops.produce import ProducerPlan, ProducerWeights, produce, projection_dtype
+from rola.ops.produce import ProducerPlan, ProducerWeights, hidden_contiguous, produce, projection_dtype
 from rola.routing.decay import validate_decay_source
-from rola.routing.producer import Routing, _hidden_major, _init_packed_router
+from rola.routing.producer import Routing, _init_packed_router
 from rola.routing.side_gain import init_side_gain_bias
 
 if TYPE_CHECKING:
@@ -173,7 +173,7 @@ class RoLA(nn.Module):
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
         #: the weights' copies for a step no gradient flows through (rola/_inference_copy.py).
-        self._route_copy = InferenceCopy(lay=_hidden_major)
+        self._route_copy = InferenceCopy(lay=hidden_contiguous)
         self._v_copy = InferenceCopy(lay=None)
         self._o_copy = InferenceCopy(lay=None)
 

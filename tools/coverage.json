@@ -118,18 +118,12 @@
    }
   },
   "produce_kernel": {
-   "oracle": {
-    "owed": "the op gate against the reference producer lands with the kernel's components"
-   },
-   "sanitizer": {
-    "owed": "a sanitizer row lands with the op gate"
-   },
+   "oracle": "tests/integration/test_produce_kernel.py::test_the_bundle_matches_the_fp64_composition",
+   "sanitizer": "produce",
    "budget": {
-    "owed": "the floor (the weight stream, ~12 us at H 16) is on the plan card; the budget file lands with the measured components"
+    "owed": "the producer's budget lines are on its plan card; the region ledger's file lands with its optimization pass"
    },
-   "phases": {
-    "owed": "the phase ledger lands with the measured components"
-   },
+   "phases": "tests/integration/test_produce_kernel.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
    "ratified": {
     "owed": "a new kernel: the next milestone ratify records it"
    }

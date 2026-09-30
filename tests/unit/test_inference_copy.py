@@ -9,12 +9,12 @@ import torch
 from torch import nn
 
 from rola._inference_copy import InferenceCopy, reads_copy
-from rola.routing.producer import _hidden_major
+from rola.ops.produce import hidden_contiguous
 
 
 def test_the_copy_is_the_cast_and_is_reused_until_the_weight_moves():
     W = nn.Parameter(torch.randn(4, 8, 6))
-    copy = InferenceCopy(lay=_hidden_major)
+    copy = InferenceCopy(lay=hidden_contiguous)
     first = copy(W, torch.bfloat16)
     assert torch.equal(first, W.detach().to(torch.bfloat16))
     assert copy(W, torch.bfloat16) is first

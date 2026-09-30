@@ -7,8 +7,10 @@
 The layer declares WHAT it routes (:class:`rola.routing.producer.Routing`), owns the weights, and compiles a
 :class:`ProducerPlan` once; this is the one primitive that computes the bundle from them. It is the whole job --
 the projection, every level's solve, the mass fold, the write gain, the quantization into unit-max rows and the
-value digits -- because every step reads the same declaration, and it is one call so that one fused kernel can
-stand behind it (docs/api.md section 2). The bundles it returns are the ones the ops take; a caller with its own
+value digits -- because every step reads the same declaration, and it is one call so that one fused kernel stands
+behind it (docs/api.md section 2): on CUDA with no gradient, the producer kernel's one launch
+(docs/internals/produce/produce.md). The torch composition is the reference -- fp64, the host -- and, until the
+native backward has the kernel write the levels a gradient reads, the path a gradient takes. The bundles it returns are the ones the ops take; a caller with its own
 levels builds them with :meth:`RouteFactors.from_levels` and :meth:`Values.from_projection`, the same format
 utilities.
 """
@@ -21,6 +23,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 
+from rola.engine.facts.operands import requires_backward
 from rola.routing.entmax.production import production_routing_factor_levels
 from rola.routing.factors import U8_MAX_DEPTH, RouteFactors
 from rola.routing.producer import Routing
@@ -200,8 +203,9 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
            "v_lo": empty(plan.d_v, dtype=torch.uint8) if plan.value_digits == 2 else None, "v_scale": empty()}
     jobs, shapes, per_head = _job_tensor(plan, str(device))
     tiles = -(-(B * T) // _TOKEN_TILE)
+    route_bias = None if weights.route_bias is None else weights.route_bias.float().contiguous()
     extension().rola_produce_forward(
-        x.reshape(B * T, hidden).to(torch.bfloat16).contiguous(), weights.route_W, weights.route_bias,
+        x.reshape(B * T, hidden).to(torch.bfloat16).contiguous(), weights.route_W, route_bias,
         weights.gain_bias.float().contiguous(), weights.v_W, jobs,
         *(out[name] for name in ("amp_read", "amp_write", "scale_read", "scale_write", "mass_read", "mass_write",
                                  "read_mass", "g_write", "v_hat", "v_lo", "v_scale")),
@@ -210,9 +214,38 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
 
 
 def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:
-    """``x [B, T, hidden]`` -> ``(RouteFactors, Values)``, the bundle the ops take."""
+    """``x [B, T, hidden]`` -> ``(RouteFactors, Values)``, the bundle the ops take: the kernel's on CUDA with no
+    gradient, the composition's otherwise."""
     if x.ndim != 3 or x.shape[-1] != plan.hidden_size:
         raise ValueError(f"x must be [B, T, {plan.hidden_size}], got {tuple(x.shape)}")
+    operands = (x, weights.route_W, weights.route_bias, weights.gain_bias, weights.v_W)
+    if x.is_cuda and x.dtype != torch.float64 and not requires_backward(*(t for t in operands if t is not None)):
+        return _kernel_bundle(x, plan, weights)
+    return _composition(x, plan, weights)
+
+
+def _kernel_bundle(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:
+    """The kernel's outputs as the bundle: each level's rows and scale a view of the packed planes the kernel
+    writes (the ops read them by address), and the read mass only where a read level folds."""
+    out = run_kernel(x, plan, weights)
+    resolved, D = plan.routing.resolved, plan.routing.topology.D
+    spans = tuple(zip(resolved.level_offsets[:D], resolved.branches, strict=True))
+
+    def rows(plane: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        return tuple(plane[..., offset:offset + width] for offset, width in spans)
+
+    def scales(plane: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        return tuple(plane[..., level] for level in range(D))
+
+    routes = RouteFactors(topology=plan.routing.topology, amp_read=rows(out["amp_read"]),
+                          amp_write=rows(out["amp_write"]), scale_read=scales(out["scale_read"]),
+                          scale_write=scales(out["scale_write"]), g_write=out["g_write"],
+                          read_mass=None if all(plan.read_skip) else out["read_mass"])
+    return routes, Values(v_hat=out["v_hat"], v_lo=out["v_lo"], scale=out["v_scale"])
+
+
+def _composition(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:
+    """The producer in torch: the fp64 and host reference, and the path a gradient takes."""
     B, T, _ = x.shape
     H = plan.num_heads
     routing = plan.routing

@@ -623,6 +623,10 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                   "v_W is [H * d_v, hidden] with its hidden axis contiguous, got ",
                   shape(v_W.sizes()));
   const int64_t BT = x.size(0), hidden = x.size(1), H = route_W.size(0), C = route_W.size(2);
+  if (route_bias.has_value()) detail::check_f32(*route_bias, "route_bias", H * C);
+  STD_TORCH_CHECK(gain_bias.is_cuda() && gain_bias.scalar_type() == Dtype::Float
+                      && gain_bias.is_contiguous() && gain_bias.numel() % H == 0,
+                  "gain_bias is a contiguous CUDA fp32 [H, G]");
   //: every hidden run is read in 16-byte chunks: eight elements, aligned
   STD_TORCH_CHECK(hidden % 8 == 0 && route_W.stride(0) % 8 == 0 && route_W.stride(2) % 8 == 0
                       && v_W.stride(0) % 8 == 0,
