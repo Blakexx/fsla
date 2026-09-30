@@ -121,6 +121,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_flags  # noqa: E402
 import dev_config  # noqa: E402
 import gen_shards  # noqa: E402
+import kernels  # noqa: E402
 import mold_toolchain  # noqa: E402
 import sass  # noqa: E402
 import sccache_toolchain  # noqa: E402
@@ -203,42 +204,11 @@ SRC = Path(__file__).resolve().parents[1] / "csrc" / "rola" / "src"
 #: unchanged shell CWD.
 COMPILE_CWD = Path(__file__).resolve().parents[1] / "build" / "temp"
 
-#: THE TRANSLATION UNITS THIS GATE COMPILES -- THE SHIPPED ONES.
-#:
-#: It used to compile a probe: one file under `tools/` that re-enumerated the
-#: instantiation matrix and `#include`d `decode.cu` and `entmax.cu` to reach their
-#: dispatch closures. That probe was a SECOND enumeration of a set the dispatch
-#: already defined (the drift shape this project has been bitten by), it re-compiled
-#: the whole matrix on every build cycle on top of the build's own compile of it,
-#: and -- the part that was never stated -- its decode/entmax keys named symbols
-#: that existed IN NO SHIPPED BINARY, because nvcc derives an anonymous-namespace
-#: kernel's mangled discriminator from the file that instantiates it, and that file
-#: was the probe.
-#:
-#: Now the gate compiles the shipped sources themselves: the generated instantiation
-#: the translation units they are in the build. Every key is stable by construction:
-#: the kernels live in a NAMED namespace, so their mangled names do not depend on
-#: which translation unit expands them.
-STANDALONE_TUS = ("decode/decode.cu", "entmax/entmax.cu",
-                  "entmax/factor.cu",
-                  #: the freshness fact's kernel: shipped codegen, so it is measured
-                  #: like every other shipped translation unit.
-                  "common/build_stamp.cu",
-                  "intra/intra.cu")
 
-
-def carry_arm_paths(arms=None) -> list[Path]:
-    """The carry family's per-arm translation units, for the arms this gate measures.
-
-    THE RATIFIED SET IS EVERY DECLARED ARM: each is built and shipped.  `arms` scopes
-    further, and like `--shard` it is a MEASUREMENT scope only.
-    """
-    want = sorted(set(range(len(gen_shards.CARRY_ARMS)) if arms is None else arms))
-    files = gen_shards.carry_sources()
-    return [SRC / "instantiations" / name
-            for name in sorted({files[i] for i in want})]
-
-
+#: THE TRANSLATION UNITS THIS GATE COMPILES ARE THE BUILD'S: `tools/kernels.py`'s one list, so every kernel the
+#: binary ships is measured and no second enumeration can drift from the build's (it did: three kernels went
+#: unratified behind a hand-listed tuple). The kernels live in NAMED namespaces, so their mangled names do not depend
+#: on which translation unit expands them. -- see docs/internals/tools/ratify.md
 def tu_paths(shards: tuple[str, ...] | None = None, arms=None) -> list[Path]:
     """The translation units to compile. `shards` scopes to a subset by stem.
 
@@ -246,16 +216,15 @@ def tu_paths(shards: tuple[str, ...] | None = None, arms=None) -> list[Path]:
     refuses to file a manifest that does not carry the whole matrix, because a
     partial manifest would silently drop every arm it did not compile.
     """
-    paths: list[Path] = []
+    paths = kernels.units(arms)
     if shards is not None:
         by_stem = {p.stem: p for p in paths}
         unknown = sorted(set(shards) - set(by_stem))
         if unknown:
             raise SystemExit(f"no such shard: {', '.join(unknown)}\n"
                              f"    known: {', '.join(sorted(by_stem))}")
-        paths = [by_stem[s] for s in sorted(shards)]
-        return paths
-    return carry_arm_paths(arms) + [SRC / name for name in STANDALONE_TUS]
+        return [by_stem[s] for s in sorted(shards)]
+    return paths
 
 
 #: The vendored CuTe/CUTLASS headers, in the SAME order `setup.py` passes them
@@ -370,24 +339,14 @@ OUT_OF_RANGE = re.compile(r"Value of threads per SM for entry (\S+) is out of ra
 #: are lex-only reductions and keep their integer keys.  Decoded in ONE place: the
 #: manifest key is what the assembler saw, and every consumer of it -- the census's
 #: per-key grouping, the hot-loop gate's reporting, the fatbin gate's ownership
-def shard_of_key(mangled: str) -> str:
-    """The translation unit that owns a ratified instantiation.
-
-    An arm's shard is a STRUCTURAL function of its tuple, so it is recomputed from
-    the mangled name rather than recorded beside it -- the name is what the assembler
-    saw and cannot disagree with the binary. The decode and entmax kernels are single
-    translation units and carry their file's stem, so every ratified entry answers
-    the same question in the same schema.
-    """
-    for tu in STANDALONE_TUS:
-        if f"_{Path(tu).stem}_cu_" in mangled:
-            return Path(tu).stem
-    return "?"
-
-
 def shard_field(entries: dict) -> dict[str, str]:
-    """`{entry key -> shard}`, the census's per-row shard column."""
-    return {name: shard_of_key(name.split(":", 1)[1]) for name in entries}
+    """`{entry key -> the kernel it instantiates}`, the census's per-row shard column.
+
+    The shard is read off the symbol the assembler saw (`tools/kernels.py`'s demangling), so it cannot disagree
+    with the binary and every family answers in the same schema.
+    """
+    keys = sorted(entries)
+    return dict(zip(keys, kernels.demangled_names([k.split(":", 1)[1] for k in keys])))
 
 
 #: The calibration macros a shipped binary compiles under (coverage-closure audit
@@ -1220,7 +1179,7 @@ def measure_units(arches, objdir: str, sources: list[Path], arms=None,
     #: a later --write ... inherited the SUBSET and certified a manifest for arms
     #: nobody built." The old fix was argv-substitution; the header gets the same
     #: unconditional-overwrite treatment for the same reason: `arms=None` here means
-    #: the shipped set (`carry_arm_paths`'s own default), never "whatever the last
+    #: the shipped set (`kernels.arm_units`'s own default), never "whatever the last
     #: build left behind".
     gen_shards.GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     want_arms = sorted(set(range(len(gen_shards.CARRY_ARMS)) if arms is None else arms))
@@ -1645,11 +1604,11 @@ def _regs_ctas(regs: int) -> int:
 def census_report(entries: dict, unhonored: list[str],
                   hot: dict[str, int] | None = None) -> None:
     hot = hot or {}
+    shard = shard_field(entries)
     by_key: dict[tuple, list] = {}
     for name, e in sorted(entries.items()):
-        arch, mangled = name.split(":", 1)
-        by_key.setdefault((arch, shard_of_key(mangled)), []).append((e, hot.get(name, 0)))
-    print(f"\n{'arch':6} {'shard':16} {'n':>4} {'regs':>9} {'ctas(reg)':>9} "
+        by_key.setdefault((name.split(":", 1)[0], shard[name]), []).append((e, hot.get(name, 0)))
+    print(f"\n{'arch':6} {'shard':24} {'n':>4} {'regs':>9} {'ctas(reg)':>9} "
           f"{'st':>6} {'ld':>6} {'#spill':>6} {'worst st':>8} {'hot':>5}")
     for k, es in sorted(by_key.items()):
         regs = sorted(e["regs"] for e, _ in es)
@@ -1661,7 +1620,7 @@ def census_report(entries: dict, unhonored: list[str],
         nhot = sum(h for _, h in es)
         rg = f"{regs[0]}-{regs[-1]}" if regs[0] != regs[-1] else f"{regs[0]}"
         cg = f"{ctas[0]}-{ctas[-1]}" if ctas[0] != ctas[-1] else f"{ctas[0]}"
-        print(f"{k[0]:6} {k[1]:16} {len(es):>4} {rg:>9} {cg:>9} {st:>6} "
+        print(f"{k[0]:6} {k[1]:24} {len(es):>4} {rg:>9} {cg:>9} {st:>6} "
               f"{ld:>6} {nsp:>6} {worst:>8} {nhot:>5}")
     total_st = sum(e["spill_stores"] for e in entries.values())
     total_ld = sum(e["spill_loads"] for e in entries.values())

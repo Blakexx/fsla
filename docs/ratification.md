@@ -203,14 +203,15 @@ RECORDED AND FLAGGED RATHER THAN LAUNDERED").
 
 ## What it compiles, and why that is the shipped source
 
-`python tools/ratify.py` compiles **the translation units the build compiles** —
-the generated per-arm carry units under `csrc/rola/src/instantiations/` (one today,
-`carry_arm_0.cu`, matching the one-row shipped set), plus `decode.cu`, `entmax.cu`,
-`factor.cu` and the intra family (`intra.cu`) — under the flag list `setup.py` uses,
-imported from
-`tools/build_flags.py` rather than restated. A family is shipped codegen the moment it
-is in `SOURCES`, so it is measured like every other shipped translation unit. Two properties follow, and
-neither held before:
+`python tools/ratify.py` compiles **the translation units the build compiles**, taken
+from the one list both read (`tools/kernels.py`): every hand-written `.cu` under
+`csrc/rola/src`, plus the generated per-arm carry units under `instantiations/` that the arm
+selection names -- under the flag list `setup.py` uses, imported from `tools/build_flags.py`
+rather than restated. A kernel is shipped codegen the moment its file is under `src/`, so it
+is measured like every other; `python tools/kernels.py --check-manifest` names any kernel the
+source defines and no manifest records. (The list was a hand-written tuple until 2026-09-29,
+and three kernels -- `liveness_pass`, `carry_stamp_kernel`, `sm_clock_kernel` -- had fallen
+out of it.) Two properties follow, and neither held before:
 
 - **the numbers describe the shipped binary.** `nvcc` derives an
   anonymous-namespace kernel's mangled discriminator from the file that

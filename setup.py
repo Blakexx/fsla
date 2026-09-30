@@ -96,6 +96,7 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension  # noqa: E40
 import build_flags  # noqa: E402
 import build_lock  # noqa: E402
 import gen_shards  # noqa: E402
+import kernels  # noqa: E402
 import mold_toolchain  # noqa: E402
 import ratify  # noqa: E402
 import sccache_toolchain  # noqa: E402
@@ -309,8 +310,7 @@ def _carry_sources() -> list[str]:
     Two rows that are ONE kernel share a file (the generator's `carry_kernel_key`), so
     this is a set and not a list comprehension over the indices.
     """
-    files = gen_shards.carry_sources()
-    return sorted({f"csrc/rola/src/instantiations/{files[i]}" for i in _carry_arms()})
+    return [str(p.relative_to(ROOT)) for p in kernels.arm_units(_carry_arms())]
 
 
 def _is_iteration_build() -> bool:
@@ -638,39 +638,10 @@ def write_build_config(archs: list[str], ptxas: str, manifest: dict, pin: dict,
 # ---------------------------------------------------------------------------
 # the extension
 # ---------------------------------------------------------------------------
-#: THE TRANSLATION UNITS. Every one is hand-written on this line: C0 deleted the two
-#: families that had GENERATED instantiation units (the carry family's per-arm TUs and
-#: the stats passes' shard), so nothing is appended to this list but the per-arm carry
-#: units the arm table names -- and it names none until G4.
-SOURCES = [
-    "csrc/rola/rola_api.cpp",
-    # TRACK D (thunder §6b): the T=1 decode path, one TU.
-    #: The carry family's dispatch: the kernel boundary's refusals, the addressing
-    #: block's one derivation and the arm resolution. Holds no arm body -- those are
-    #: the generated per-arm units, which is what makes an arm subset a file subset.
-    "csrc/rola/src/carry/carry.cu",
-    "csrc/rola/src/decode/decode.cu",
-    "csrc/rola/src/entmax/entmax.cu",
-    "csrc/rola/src/entmax/factor.cu",
-    "csrc/rola/src/paging/vmm_owner.cu",
-    #: G -- the addressing block's host seam (derivation + refusals). Its own TU so
-    #: that the foundation lands without recompiling the dispatch; it holds no kernel.
-    "csrc/rola/src/common/geom.cu",
-    #: The closed-world arch rule's runtime half (setup.py's rule R4): its own TU,
-    #: beside arch_caps.cuh's compile-time half, so every launching family links one
-    #: definition rather than each carrying its own copy.
-    "csrc/rola/src/common/arch_runtime.cu",
-    "csrc/rola/src/facts/liveness.cu",
-    #: The extension's freshness fact: one kernel returning the csrc content hash it
-    #: compiled against. Its own TU so that a source edit rebuilds this one file
-    #: rather than every translation unit that would otherwise carry the constant.
-    "csrc/rola/src/common/build_stamp.cu",
-    #: The SM's effective clock under load, read off the device: the harness records it
-    #: with every measurement, because the driver's reported clock is not it on this host.
-    "csrc/rola/src/common/sm_clock.cu",
-    # K31 R2: the standalone deterministic intra kernel, one TU.
-    "csrc/rola/src/intra/intra.cu",
-]
+#: THE TRANSLATION UNITS, DERIVED: the host binding, then every hand-written `.cu` under `csrc/rola/src`
+#: (`tools/kernels.py`, the one list the build, the ratification and the gates share). The per-arm carry units
+#: are appended by the arm selection.
+SOURCES = ["csrc/rola/rola_api.cpp"] + [str(p.relative_to(ROOT)) for p in kernels.hand_units()]
 
 
 def _gate_shards() -> None:
@@ -830,6 +801,7 @@ class RoLABuildExtension(BuildExtension):
             os.environ["MAX_JOBS"] = str(_ninja_jobs(held_slots))
             super().run()
         self._post_build_arm_table_check()
+        self._post_build_sass_gate()
         self._post_build_manifest_check()
         record = write_build_config(ROLA_CUDA_ARCHS, ptxas, manifest, pin, sccache)
         #: A wheel's build tree took the package's files before this record was written; it ships this build's.
@@ -928,13 +900,30 @@ class RoLABuildExtension(BuildExtension):
         print(f"arm table OK  {len(want)} built of {len(gen_shards.CARRY_ARMS)} "
               f"declared, keyed {list(gen_shards.ARM_KEY)}; {swept} arm(s) swept")
 
+    def _post_build_sass_gate(self):
+        """KERNEL_STANDARDS §20 on the binary this build produced: `tools/sass_gate.py` reads every function of every
+        cubin (local memory, stack frames, convergence subroutines, predicated HMMA) and reds any kernel the source
+        defines that no cubin carries. It compares against no manifest, so it runs on EVERY build, iteration builds
+        included, and a red is fatal: a binary with a spill is not a binary to measure."""
+        so = _built_extension(self.build_lib)
+        if so is None:
+            raise SystemExit("post-build SASS gate: no `_C` extension under the build tree to read")
+        proc = subprocess.run([sys.executable, str(ROOT / "tools" / "sass_gate.py"), str(so)], cwd=str(ROOT),
+                              capture_output=True, text=True)
+        lines = proc.stdout.splitlines()
+        reds = [line for line in lines if line.startswith("RED")]
+        read = sum(1 for line in lines if line.startswith(("ok", "RED ")))
+        print(f"post-build: the SASS gate read {read} function(s), {len(reds)} red")
+        if proc.returncode != 0:
+            print("\n".join(reds) or proc.stdout + proc.stderr)
+            raise SystemExit("post-build SASS gate FAILED (KERNEL_STANDARDS §20): the reds are printed above")
+
     def _post_build_manifest_check(self):
         """The pre-build gates prove the INPUTS were ratified. This proves the
         codegen still matches what was measured: `tools/ratify.py` re-compiles the
-        SHIPPED translation units -- the eight instantiation shards plus
-        `decode.cu` and `entmax.cu`, under the same flag list this build uses
-        (`tools/build_flags.py`) -- and fails on any spill growth or unhonored
-        launch bound.
+        SHIPPED translation units -- every unit the build compiles (`tools/kernels.py`),
+        under the same flag list this build uses (`tools/build_flags.py`) -- and fails
+        on any spill growth or unhonored launch bound.
 
         EVERY one of `ratify.py`'s checks (entry set, SASS-body hashes, the
         hot-loop/local-presence ratchets) is a comparison against the COMMITTED
