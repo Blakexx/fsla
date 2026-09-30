@@ -481,14 +481,15 @@ carries; each was re-learned by trial this week and costs a rebuild when missed.
   bounds come from constants, REDUX results or uniform registers; predicate RESULTS, never the
   collective; a quad sum past a branchy loop goes through shared memory, not shuffles.
   ADDENDUM (2026-09-29): the gate read NONE of these until this date -- it matched the call's operands
-  against its opcode alone. Reading them (a call into a block of at most eight instructions that syncs
-  the warp, runs one collective and returns) found 10,253 across 341 functions: every entmax-family
-  kernel, every decode arm, five intra arms. They are `tools/sass_backlog.json`, a ratchet the gate
-  holds (above a function's count or not recorded: red; below it: shrink the record). A job table or
-  any control read from global memory is a "loaded value": control that a branch around collectives
-  reads belongs in the uniform datapath (kernel parameters indexed by block index, constants), and a
-  data-dependent loop exits on a vote, which ptxas knows is uniform. A long region ptxas reconverges
-  once on entry is not a convergence subroutine.
+  against its opcode alone. Reading them found 10,258 calls into `WARPSYNC` + collective subroutines
+  across the entmax family, the decode arms and five intra arms, and EVERY ONE GUARDED: this ptxas (CUDA
+  13) emits the inline collective for a converged warp and reaches the subroutine only through a
+  `BRA.DIV` into a fallback block or past a `BRA.CONV` (probed: a branch on a loaded value and a loop
+  whose bound it cannot prove uniform compile to inline shuffles or to guarded fallbacks, never to an
+  unguarded call). A guarded call is cold code, not a cost a collective: the gate counts it (`guarded`)
+  and reds only an UNGUARDED call, a converged warp's. The rule's reason is now code size: control a
+  branch around collectives reads belongs in the uniform datapath (kernel parameters indexed by block
+  index, constants), which keeps the fallbacks out; a data-dependent loop exits on a vote.
 - `@P HMMA` or a pair body whose non-tensor instruction count equals its `if`-guarded block's:
   IF-CONVERSION. A warp-uniform `if` (dealt work, a runtime flag) is predicated, not branched, and runs
   predicated-off on every other warp. Rule: a one-trip `for` (`#pragma unroll 1`) forces the branch;

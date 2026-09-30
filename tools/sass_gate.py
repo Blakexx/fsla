@@ -8,17 +8,16 @@ of them. Runs on every build (`tools/sass_gate.py <cubin|.so> [--kernel regex] [
 What it reads, per function of every cubin (every kernel and every outlined device function; `--kernel` and
 `--member` narrow a MEASUREMENT, and a narrowing that matches nothing is red, never a silent pass):
   local memory  -- LDL/STL instructions, or a nonzero stack frame (`cuobjdump -res-usage`)
-  outlined collectives -- a `CALL.REL.NOINC` into a convergence subroutine: a short block (`_SUBROUTINE`
-                  instructions at most) that syncs the warp, runs one collective and returns -- paid on every
-                  collective it wraps. A call to an arithmetic slow path is not one, nor a long region ptxas
-                  reconverges once on entry
+  outlined collectives -- a `CALL.REL.NOINC` into a convergence subroutine (a short block, `_SUBROUTINE`
+                  instructions at most, that syncs the warp, runs one collective and returns) that a CONVERGED
+                  warp executes. ptxas guards the ones it emits: a `BRA.DIV` into a fallback block, or a
+                  `BRA.CONV` past the call, so a converged warp runs the inline collective; a guarded call is cold
+                  code, counted (`guarded`) and not red. A call to an arithmetic slow path is not one, nor a long
+                  region ptxas reconverges once on entry
   predicated HMMA -- `@P HMMA`: if-converted tensor work
   instructions per HMMA -- the static ratio, a ceiling the arm states (issue-bound above it)
 On a whole extension it also reds every kernel the source defines (`tools/kernels.py`) that no cubin carries: a gate
-that cannot see a kernel has not gated it. THE CONVERGENCE BACKLOG (`tools/sass_backlog.json`) records, per function,
-the convergence subroutines the tree carried when the check first read them (it read none before 2026-09-29: it
-matched a call's operands against its opcode alone): a function above its recorded count, or not recorded, is red;
-one below it is red too until the record shrinks (`--write-backlog`), so the backlog only pays down. It prints the counts it reads, the same way `ratify` prints registers and
+that cannot see a kernel has not gated it. It prints the counts it reads, the same way `ratify` prints registers and
 spills, so a clean run is a line of zeros and a red names the signature.
 """
 from __future__ import annotations
@@ -61,39 +60,46 @@ def stacks(cubin: Path) -> dict[str, int]:
 #: the last `gate` call's signature per function, for `--json`
 STATS: dict[str, dict] = {}
 
-BACKLOG = Path(__file__).resolve().parent / "sass_backlog.json"
 
-
-def backlog() -> dict[str, int]:
-    """`{function: convergence subroutines owed}`."""
-    return json.loads(BACKLOG.read_text())["convergence"] if BACKLOG.exists() else {}
-
-
-def convergence_calls(lines: list[tuple[int, str, str]], labels: dict[str, int]) -> int:
-    """The calls whose target block, up to its `RET`, holds a `WARPSYNC` and a collective: `(address, opcode,
-    operands)` a line, the function's own, and its labels (`{name: line index}`). A target is an address
+def convergence_calls(lines: list[tuple[int, str, str]], labels: dict[str, int]) -> tuple[int, int]:
+    """``(hot, guarded)``: the calls into a convergence subroutine a converged warp executes, and those only a
+    diverged one reaches (in a block a `BRA.DIV` enters, or past a `BRA.CONV` in the call's block). ``lines`` are
+    ``(address, opcode, operands)``, the function's own; ``labels`` ``{name: line index}``. A target is an address
     (`cuobjdump`) or a label (`nvdisasm`: `` `($__internal_1_$__cuda_sm70_shflsync_bfly_p) ``)."""
     at = {addr: k for k, (addr, _, _) in enumerate(lines)}
-    count = 0
-    for _, opcode, operands in lines:
-        if not opcode.startswith("CALL.REL"):
-            continue
-        address = re.match(r"(0x[0-9a-f]+)", operands)
+
+    def resolve(operands: str) -> int | None:
+        address = re.match(r"(?:~URZ,\s*)?(0x[0-9a-f]+)", operands)
         label = re.search(r"\(([^)]+)\)", operands)
-        start = (at.get(int(address.group(1), 16)) if address else labels.get(label.group(1)) if label else None)
-        if start is None:
-            continue
+        return at.get(int(address.group(1), 16)) if address else labels.get(label.group(1)) if label else None
+
+    def subroutine(start: int) -> bool:
         block = []
         for _, op, _ in lines[start:start + _SUBROUTINE + 1]:
             if op.startswith("RET"):
-                count += "WARPSYNC" in block and any(_COLLECTIVE.match(o) for o in block)
-                break
+                return "WARPSYNC" in block and any(_COLLECTIVE.match(o) for o in block)
             block.append(op)
-    return count
+        return False
+
+    starts = {0, *labels.values()} | {k for k in (resolve(o) for _, op, o in lines if op.startswith("BRA"))
+                                       if k is not None}
+    fallback = {k for k in (resolve(o) for _, op, o in lines if op.startswith("BRA.DIV")) if k is not None}
+    hot = guarded = 0
+    block, conv = 0, False
+    for k, (_, opcode, operands) in enumerate(lines):
+        if k in starts:
+            block, conv = k, False
+        conv = conv or opcode.startswith("BRA.CONV")
+        target = resolve(operands) if opcode.startswith("CALL.REL") else None
+        if target is not None and subroutine(target):
+            if block in fallback or conv:
+                guarded += 1
+            else:
+                hot += 1
+    return hot, guarded
 
 
-def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None,
-         owed: dict[str, int] | None = None) -> tuple[bool, str]:
+def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[bool, str]:
     funcs: dict[str, list[str]] = {}
     whole: dict[str, list[tuple[int, str, str]]] = {}
     labels: dict[str, dict[str, int]] = {}
@@ -127,7 +133,7 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None,
         n = len(ins)
         stack = frame.get(name, 0)
         ldl = sum(1 for i in ins if re.search(r"\b(LDL|STL)\b", i))
-        calls = convergence_calls(whole[name], labels[name])
+        calls, guarded = convergence_calls(whole[name], labels[name])
         phmma = sum(1 for i in ins if re.match(r"@!?P\d+ HMMA", i))
         hmma = sum(1 for i in ins if " HMMA" in i or i.startswith("HMMA"))
         per = (n / hmma) if hmma else float("nan")
@@ -136,19 +142,18 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None,
             reds.append(f"local memory ({ldl} LDL/STL)")
         if stack:
             reds.append(f"stack frame ({stack} B)")
-        debt = (owed or {}).get(name, 0)
-        if calls > debt:
-            reds.append(f"convergence subroutines ({calls} calls into WARPSYNC + a collective, {debt} owed)")
+        if calls:
+            reds.append(f"convergence subroutines a converged warp executes ({calls})")
         if phmma:
             reds.append(f"predicated HMMA ({phmma})")
         if max_per_hmma is not None and hmma and per > max_per_hmma:
             reds.append(f"static instructions per HMMA {per:.1f} > {max_per_hmma}")
         ok &= not reds
         STATS[name] = {"instr": n, "hmma": hmma, "per_hmma": None if not hmma else round(per, 2), "ldl": ldl,
-                       "stack": stack, "calls": calls, "pred_hmma": phmma, "reds": reds}
+                       "stack": stack, "calls": calls, "guarded": guarded, "pred_hmma": phmma, "reds": reds}
         short = name[:70]
         report.append(f"{'RED ' if reds else 'ok  '} {short}: instr {n} hmma {hmma} per-hmma {per:.1f} "
-                      f"ldl {ldl} stack {stack} calls {calls} predHMMA {phmma}"
+                      f"ldl {ldl} stack {stack} calls {calls} guarded {guarded} predHMMA {phmma}"
                       + (" :: " + "; ".join(reds) if reds else ""))
     return ok, "\n".join(report)
 
@@ -167,20 +172,14 @@ def main() -> int:
     ap.add_argument("--member", default=None, help="narrow to the cubins whose name holds this (a measurement)")
     ap.add_argument("--max-per-hmma", type=float, default=None)
     ap.add_argument("--json", type=Path, default=None, help="also write every function's signature here, by cubin")
-    ap.add_argument("--write-backlog", action="store_true",
-                    help="record this binary's convergence subroutines as the backlog (after reading every red)")
     a = ap.parse_args()
     allok = True
     doc = {}
     seen: set[str] = set()
-    owed = {} if a.write_backlog else backlog()
-    #: a function's convergence subroutines, its most over the cubins read (one per arch)
-    found: dict[str, int] = {}
-
+    guarded = 0
     for cub in cubins_of(a.binary, a.member if a.binary.suffix != ".cubin" else None):
-        ok, rep = gate(cub, a.kernel, a.max_per_hmma, owed=owed)
-        for n, st in STATS.items():
-            found[n] = max(found.get(n, 0), st["calls"])
+        ok, rep = gate(cub, a.kernel, a.max_per_hmma)
+        guarded += sum(st["guarded"] for st in STATS.values())
         if rep:
             print(f"== {cub.name}\n{rep}")
         doc[cub.name] = {"ok": ok, "functions": dict(STATS)}
@@ -197,22 +196,8 @@ def main() -> int:
     if a.json:
         a.json.write_text(json.dumps(doc, sort_keys=True) + "\n")
 
-    if a.write_backlog:
-        debt = {n: c for n, c in sorted(found.items()) if c}
-        BACKLOG.write_text(json.dumps({"about": _BACKLOG_ABOUT, "convergence": debt}, indent=1) + "\n")
-        print(f"wrote {BACKLOG.name}: {len(debt)} function(s), {sum(debt.values())} convergence subroutine(s)")
-        return 0
-    for name in sorted(n for n in found if found[n] < owed.get(n, 0)):
-        print(f"RED  {name[:70]}: convergence backlog paid down ({found[name]} of {owed[name]} owed) -- shrink "
-              f"{BACKLOG.name} (`--write-backlog`)")
-        allok = False
-    print(f"convergence backlog: {sum(owed.values())} subroutine(s) owed across {len(owed)} function(s)")
+    print(f"guarded convergence fallbacks (cold code, not red): {guarded}")
     return 0 if allok else 1
-
-
-_BACKLOG_ABOUT = ("The convergence subroutines each function carried when tools/sass_gate.py first read them "
-                  "(2026-09-29; the check read none before). The gate reds a function above its count or below it; "
-                  "pay one down and shrink its entry.")
 
 
 if __name__ == "__main__":

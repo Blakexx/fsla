@@ -32,7 +32,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 |---|---|---|---|
 | [`ratify.py`](ratify.md) | the spill manifest, the census, the SASS-body gate and the derivation | `setup.py` (post-build), a person at a milestone | `tools/manifests/` |
 | `sass.py` | THE DISASSEMBLER SEAM: the one `cuobjdump`/`nvdisasm` invocation and line grammar | `ratify.py`, `sass_gate.py`, `region_ledger.py`, `life_ranges.py` | — |
-| `sass_gate.py` | the ptxas signatures of KERNEL_STANDARDS §20, red on any of them; the convergence backlog (`sass_backlog.json`) as a ratchet | every iteration build; the `sass` instrument | `--json`, `--write-backlog` |
+| `sass_gate.py` | the ptxas signatures of KERNEL_STANDARDS §20, red on any of them; guarded convergence fallbacks counted | every iteration build; the `sass` instrument | `--json` |
 | `sass_bodies.py` | per-instantiation SASS body hashes, the codegen-equivalence instrument | a person, comparing two builds | `--json` |
 | `header_selfcheck.py` | every header compiles alone | a person, after moving a declaration | — |
 

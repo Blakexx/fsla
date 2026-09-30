@@ -105,7 +105,6 @@
   {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "13de98d29755", "reviewed": true, "sha256": "", "target": "tools/region_ledger.py"},
   {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "13de98d29755", "reviewed": true, "sha256": "", "target": "tools/sanitize_cell.py"},
   {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "7b2f6a09882f", "reviewed": true, "sha256": "", "target": "tools/sanitize_oracle.py"},
-  {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "8bad0313d8c3", "reviewed": true, "sha256": "", "target": "tools/sass_backlog.json"},
   {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "13de98d29755", "reviewed": true, "sha256": "", "target": "tools/sass_gate.py"},
   {"doc": "docs/KERNEL_STANDARDS.md", "pinned_at": "fdea64a15dbe", "reviewed": true, "sha256": "", "target": "tools/warp_timeline.py"},
   {"doc": "docs/api.md", "pinned_at": "05c8ad2a69c7", "reviewed": true, "sha256": "7ff0c17e0220b6d2", "target": "docs/api.md#11-the-built-envelope-is-the-surface"},

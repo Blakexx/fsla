@@ -19,8 +19,8 @@ level's width, the `route_W` columns of its one or two logit rows, the packed-pl
 side (`-1` for a side it does not write), the level, and whether each side's fold applies. Its CONTROL -- the kind, the
 solve (`SolveKind`) and the solve row's elements a lane -- is one SHAPE BYTE a job in the launch's parameters
 (`ProduceParams::shapes`, `rola.ops.produce._shape`), read by block index: a value ptxas knows is warp-uniform, so a
-branch on it never outlines the collectives under it into convergence subroutines, as a branch on a loaded job field
-did (692 calls into `WARPSYNC` + shuffle subroutines, KERNEL_STANDARDS §20). At most `kMaxJobs` jobs a launch.
+branch on it compiles its collectives inline alone, where a branch on a loaded job field gave each a guarded fallback
+subroutine as well (692 of them: cold code, KERNEL_STANDARDS §20). At most `kMaxJobs` jobs a launch.
 A ROUTE job is one head's one solve: a union level's two logit rows (read and write), a tied level's one row filling
 both planes, or one side of an independent level. A VALUE job is the heads whose channels fit one job (`256 / d_v`
 of them, at most `kMaxColumns` channels). A row is at most `kMaxWidth` leaves: the widest a warp solves.
