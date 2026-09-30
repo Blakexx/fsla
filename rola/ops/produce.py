@@ -15,19 +15,22 @@ utilities.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import torch
 import torch.nn.functional as F
 from einops import rearrange
 
 from rola.routing.entmax.production import production_routing_factor_levels
-from rola.routing.factors import RouteFactors
+from rola.routing.factors import U8_MAX_DEPTH, RouteFactors
 from rola.routing.producer import Routing
 from rola.routing.projection import _packed_router_logits
 from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
+from rola.routing.types import EntmaxActivation, IndependentRouting, TiedRouting, UnionRouting
 from rola.values import DEFAULT_VALUE_DIGITS, Values
 
-__all__ = ["ProducerPlan", "ProducerWeights", "produce", "projection_dtype", "route_logits"]
+__all__ = ["ProducerPlan", "ProducerWeights", "channel_major", "job_table", "produce", "projection_dtype",
+           "route_logits", "run_kernel"]
 
 
 @dataclass(frozen=True)
@@ -61,7 +64,7 @@ class ProducerPlan:
 class ProducerWeights:
     """The tensors a producer call reads, as the call reads them: ``route_W [H, hidden, columns]`` in the projection's
     dtype (``projection_dtype``), ``route_bias [H, columns]`` or ``None``, ``gain_bias [H, gain columns]``, and
-    ``v_W [H * d_v, hidden]`` (a linear's weight) in bf16."""
+    ``v_W [H * d_v, hidden]`` (a linear's weight) in bf16, channel-contiguous for the kernel (:func:`channel_major`)."""
 
     route_W: torch.Tensor
     route_bias: torch.Tensor | None
@@ -75,6 +78,102 @@ def projection_dtype(x: torch.Tensor) -> torch.dtype:
     if x.dtype == torch.float64:
         return torch.float64
     return torch.bfloat16 if x.is_cuda else torch.float32
+
+
+def channel_major(W: torch.Tensor) -> torch.Tensor:
+    """A linear's ``[out, in]`` weight stored with its OUT axis contiguous and viewed back: the kernel streams a value
+    job's channels for one input feature as one contiguous run."""
+    return W.t().contiguous().t()
+
+
+#: THE JOB TABLE's kinds and solves, mirrored from csrc/rola/src/produce/produce.cuh (`JobKind`, `SolveKind`).
+_ROUTE, _VALUE = 0, 1
+_SOLVES = {("softmax", None): 0, ("entmax", 1.5): 1, ("entmax", 2.0): 2, ("union", 1.5): 3, ("union", 2.0): 4}
+_FIELDS = 12
+#: the kernel's widest job: a union level's two rows, or a value job's channels
+_MAX_COLUMNS = 512
+
+
+def _solve(activation) -> int:
+    return _SOLVES[("entmax", activation.alpha) if isinstance(activation, EntmaxActivation) else ("softmax", None)]
+
+
+def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
+    """``(jobs, route jobs a head)``: the plan compiled into the kernel's job table (docs/internals/produce/produce.md
+    #jobs). A route job is one head's one solve -- a union level's two logit rows, a tied level's one row filling both
+    planes, or one side of an independent level; a value job is the heads whose channels fit one job."""
+    resolved = plan.routing.resolved
+    slots, read_slot, out = resolved.packed_slot_offsets, resolved.packed_read_slot_lookup, resolved.level_offsets
+    per_head: list[tuple[int, ...]] = []
+    for level, spec in enumerate(resolved.levels):
+        width = resolved.branches[level]
+        write_col, read_col = slots[level], slots[read_slot[level]]
+        fold_read, fold_write = int(not plan.read_skip[level]), int(not plan.write_skip[level])
+        if isinstance(spec, UnionRouting):
+            per_head.append((_ROUTE, 0, 1, _SOLVES[("union", spec.alpha)], width, read_col, write_col, out[level],
+                             out[level], level, fold_read, fold_write))
+        elif isinstance(spec, TiedRouting):
+            per_head.append((_ROUTE, 0, 1, _solve(spec.op), width, write_col, -1, out[level], out[level], level,
+                             fold_read, fold_write))
+        elif isinstance(spec, IndependentRouting):
+            per_head.append((_ROUTE, 0, 1, _solve(spec.read), width, read_col, -1, out[level], -1, level,
+                             fold_read, 0))
+            per_head.append((_ROUTE, 0, 1, _solve(spec.write), width, write_col, -1, -1, out[level], level,
+                             0, fold_write))
+    jobs = [(job[0], head, *job[2:]) for head in range(plan.num_heads) for job in per_head]
+    if plan.d_v > _MAX_COLUMNS:
+        raise ValueError(f"a value job holds at most {_MAX_COLUMNS} channels, one head's d_v={plan.d_v} does not fit")
+    heads_per = max(1, _MAX_COLUMNS // 2 // plan.d_v)
+    for head in range(0, plan.num_heads, heads_per):
+        jobs.append((_VALUE, head, min(heads_per, plan.num_heads - head), 0, 0, -1, -1, -1, -1, 0, 0, 0))
+    return jobs, len(per_head)
+
+
+@lru_cache(maxsize=64)
+def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, int]:
+    jobs, per_head = job_table(plan)
+    return torch.tensor(jobs, dtype=torch.int32, device=device), per_head
+
+
+#: the per-(token tile, head) arrival counters, zero between calls (the kernel's finisher resets its own), one buffer a
+#: device grown as a call needs
+_ARRIVALS: dict[str, torch.Tensor] = {}
+_TOKEN_TILE = 4
+
+
+def _arrivals(device: torch.device, count: int) -> torch.Tensor:
+    key = str(device)
+    if key not in _ARRIVALS or _ARRIVALS[key].numel() < count:
+        _ARRIVALS[key] = torch.zeros(count, dtype=torch.int32, device=device)
+    return _ARRIVALS[key]
+
+
+def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> dict[str, torch.Tensor]:
+    """The fused producer's launch over bf16 CUDA operands: every output as the kernel writes it, ``[B, T, H, ...]``."""
+    from rola.ops._ext import extension
+
+    B, T, hidden = x.shape
+    H, D = plan.num_heads, plan.routing.topology.D
+    rows = plan.routing.resolved.packed_logit_width
+    device = x.device
+    row_dtype = torch.uint8 if D <= U8_MAX_DEPTH else torch.float16
+
+    def empty(*shape, dtype=torch.float32):
+        return torch.empty(B, T, H, *shape, dtype=dtype, device=device)
+
+    out = {"amp_read": empty(rows, dtype=row_dtype), "amp_write": empty(rows, dtype=row_dtype),
+           "scale_read": empty(D), "scale_write": empty(D), "mass_read": empty(D), "mass_write": empty(D),
+           "read_mass": empty(), "g_write": empty(), "v_hat": empty(plan.d_v, dtype=torch.int8),
+           "v_lo": empty(plan.d_v, dtype=torch.uint8) if plan.value_digits == 2 else None, "v_scale": empty()}
+    jobs, per_head = _job_tensor(plan, str(device))
+    tiles = -(-(B * T) // _TOKEN_TILE)
+    extension().rola_produce_forward(
+        x.reshape(B * T, hidden).to(torch.bfloat16).contiguous(), weights.route_W, weights.route_bias,
+        weights.gain_bias.float().contiguous(), weights.v_W, jobs,
+        *(out[name] for name in ("amp_read", "amp_write", "scale_read", "scale_write", "mass_read", "mass_write",
+                                 "read_mass", "g_write", "v_hat", "v_lo", "v_scale")),
+        _arrivals(device, tiles * H), D, per_head)
+    return out
 
 
 def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:

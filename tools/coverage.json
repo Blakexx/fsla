@@ -45,23 +45,6 @@
    },
    "ratified": "manifest"
   },
-  "sm_clock_kernel": {
-   "oracle": {
-    "owed": "no test reads it; measure/executors.py records it with every measurement"
-   },
-   "sanitizer": {
-    "exempt": "a dependent spin on each SM and one timer read; no shared memory, no data between threads"
-   },
-   "budget": {
-    "exempt": "an instrument, not a workload"
-   },
-   "phases": {
-    "exempt": "an instrument, not a workload"
-   },
-   "ratified": {
-    "owed": "not in the committed manifests; the next milestone ratify records it"
-   }
-  },
   "decode_stamp_kernel": {
    "oracle": "tests/unit/test_decode_capacity.py",
    "sanitizer": {
@@ -84,21 +67,8 @@
    "phases": "tests/integration/test_decode_phase_ledger.py",
    "ratified": "manifest"
   },
-  "union_forward_kernel": {
-   "oracle": "tests/oracle/test_entmax_cuda_gates.py",
-   "sanitizer": "entmax",
-   "budget": {
-    "owed": "no budget line"
-   },
-   "phases": {
-    "owed": "books no phase ledger"
-   },
-   "ratified": "manifest"
-  },
-  "union_backward_kernel": {
-   "oracle": {
-    "owed": "no test grades the union solve's gradient against a reference"
-   },
+  "factor_backward_kernel": {
+   "oracle": "tests/unit/test_entmax_production.py::test_production_factor_mask_ties_support_values_and_vjp",
    "sanitizer": {
     "owed": "no sanitizer row launches it"
    },
@@ -123,8 +93,68 @@
    },
    "ratified": "manifest"
   },
-  "factor_backward_kernel": {
-   "oracle": "tests/unit/test_entmax_production.py::test_production_factor_mask_ties_support_values_and_vjp",
+  "intra_kernel": {
+   "oracle": "tests/oracle/test_intra_kernel.py",
+   "sanitizer": "intra",
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": "manifest"
+  },
+  "liveness_pass": {
+   "oracle": "tests/unit/test_liveness_pass.py",
+   "sanitizer": "liveness",
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": {
+    "owed": "not in the committed manifests; the next milestone ratify records it"
+   }
+  },
+  "produce_kernel": {
+   "oracle": {
+    "owed": "the op gate against the reference producer lands with the kernel's components"
+   },
+   "sanitizer": {
+    "owed": "a sanitizer row lands with the op gate"
+   },
+   "budget": {
+    "owed": "the floor (the weight stream, ~12 us at H 16) is on the plan card; the budget file lands with the measured components"
+   },
+   "phases": {
+    "owed": "the phase ledger lands with the measured components"
+   },
+   "ratified": {
+    "owed": "a new kernel: the next milestone ratify records it"
+   }
+  },
+  "sm_clock_kernel": {
+   "oracle": {
+    "owed": "no test reads it; measure/executors.py records it with every measurement"
+   },
+   "sanitizer": {
+    "exempt": "a dependent spin on each SM and one timer read; no shared memory, no data between threads"
+   },
+   "budget": {
+    "exempt": "an instrument, not a workload"
+   },
+   "phases": {
+    "exempt": "an instrument, not a workload"
+   },
+   "ratified": {
+    "owed": "not in the committed manifests; the next milestone ratify records it"
+   }
+  },
+  "softmax_backward_kernel": {
+   "oracle": {
+    "owed": "no test grades the softmax level's gradient against a reference"
+   },
    "sanitizer": {
     "owed": "no sanitizer row launches it"
    },
@@ -151,34 +181,6 @@
    },
    "ratified": "manifest"
   },
-  "softmax_backward_kernel": {
-   "oracle": {
-    "owed": "no test grades the softmax level's gradient against a reference"
-   },
-   "sanitizer": {
-    "owed": "no sanitizer row launches it"
-   },
-   "budget": {
-    "owed": "no budget line"
-   },
-   "phases": {
-    "owed": "books no phase ledger"
-   },
-   "ratified": "manifest"
-  },
-  "liveness_pass": {
-   "oracle": "tests/unit/test_liveness_pass.py",
-   "sanitizer": "liveness",
-   "budget": {
-    "owed": "no budget line"
-   },
-   "phases": {
-    "owed": "books no phase ledger"
-   },
-   "ratified": {
-    "owed": "not in the committed manifests; the next milestone ratify records it"
-   }
-  },
   "stamp_kernel": {
    "oracle": "tests/oracle/test_intra_kernel.py",
    "sanitizer": {
@@ -192,9 +194,24 @@
    },
    "ratified": "manifest"
   },
-  "intra_kernel": {
-   "oracle": "tests/oracle/test_intra_kernel.py",
-   "sanitizer": "intra",
+  "union_backward_kernel": {
+   "oracle": {
+    "owed": "no test grades the union solve's gradient against a reference"
+   },
+   "sanitizer": {
+    "owed": "no sanitizer row launches it"
+   },
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": "manifest"
+  },
+  "union_forward_kernel": {
+   "oracle": "tests/oracle/test_entmax_cuda_gates.py",
+   "sanitizer": "entmax",
    "budget": {
     "owed": "no budget line"
    },

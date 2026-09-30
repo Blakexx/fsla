@@ -53,7 +53,7 @@ else
   wanted_units="$(python3 "$ROOT/tools/kernels.py" --units)"
 fi
 
-if [[ ! -f "$CC_JSON" ]]; then
+if [[ ! -f "$CC_JSON" || "$ROOT/build/temp/build.ninja" -nt "$CC_JSON" ]]; then
   if ! "$ROOT/tools/lint/compdb.sh" "$CC_JSON" >/dev/null 2>&1; then
     echo "run_clang_tidy_device.sh: FAILED -- no build/temp to read a compile database from; pre-commit is never" >&2
     echo "  green by absence (Blake, 2026-08-28). Build first: pip install -e . --no-build-isolation" >&2

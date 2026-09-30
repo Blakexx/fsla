@@ -23,7 +23,7 @@ if [[ -z "$CLANG_TIDY" || "$CLANG_TIDY" == "None" || ! -x "$CLANG_TIDY" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$CC_JSON" ]]; then
+if [[ ! -f "$CC_JSON" || "$ROOT/build/temp/build.ninja" -nt "$CC_JSON" ]]; then
   # Blake ruling, 2026-08-28: "pre-commit can never be green by
   # absence." Try to generate one from an already-built tree
   # (`docs/build.md`'s documented, fixed `build/temp` dir); if there is

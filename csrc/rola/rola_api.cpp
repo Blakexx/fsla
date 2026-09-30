@@ -28,6 +28,7 @@
 #include "src/facts/liveness_api.cuh"
 #include "src/intra/intra.cuh"
 #include "src/paging/vmm_owner.cuh"
+#include "src/produce/produce_api.cuh"
 
 using rola::check_arch_table;
 using rola::Tensor;
@@ -144,6 +145,13 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "liveness_words(Tensor read_plane, Tensor write_plane, int[] widths, int dense_read, int[] mask_read, "
       "int dense_write, int[] mask_write) -> Tensor");
 
+  // ---- the producer: one launch from the tokens to the bundle -------------
+  m.def(
+      "rola_produce_forward(Tensor x, Tensor route_W, Tensor? route_bias, Tensor gain_bias, Tensor v_W, Tensor jobs, "
+      "Tensor(a!) amp_read, Tensor(b!) amp_write, Tensor(c!) scale_read, Tensor(d!) scale_write, "
+      "Tensor(e!) mass_read, Tensor(f!) mass_write, Tensor(g!) read_mass, Tensor(h!) g_write, Tensor(i!) v_hat, "
+      "Tensor(j!)? v_lo, Tensor(k!) v_scale, Tensor(l!) arrivals, int levels, int route_jobs_per_head) -> ()");
+
   // ---- the producer's solves -----------------------------------------------
   m.def(
       "entmax_union_forward(Tensor read_logits, Tensor write_logits, Tensor(a!) midpoint_values, "
@@ -216,6 +224,7 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("carry_geometry", TORCH_BOX(&rola::carry::geometry));
   m.impl("carry_sub_boxes", TORCH_BOX(&rola::carry::sub_box_set));
   m.impl("liveness_words", TORCH_BOX(&rola::facts::liveness_words));
+  m.impl("rola_produce_forward", TORCH_BOX(&rola::produce::rola_produce_forward));
   m.impl("entmax_union_forward", TORCH_BOX(&rola::entmax::union_forward));
   m.impl("entmax_union_backward", TORCH_BOX(&rola::entmax::union_backward));
   m.impl("entmax_factor_forward", TORCH_BOX(&rola::entmax::factor_forward));
