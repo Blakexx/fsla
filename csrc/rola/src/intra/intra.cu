@@ -3,6 +3,7 @@
 
 #include "common/torch_seam.cuh"
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -41,6 +42,9 @@ RowView row_view(const Tensor& t, int64_t B, int64_t T, int64_t H, int64_t width
                       && (t.stride(0) * bytes) % kChunk == 0 && (t.stride(1) * bytes) % kChunk == 0
                       && (t.stride(2) * bytes) % kChunk == 0,
                   name, "'s rows start and stride on 16 bytes, digits contiguous");
+  STD_TORCH_CHECK(
+      t.stride(1) > 0 && t.stride(1) <= INT32_MAX, name,
+      "'s token stride fits 31 bits (a copy adds its tile's rows by one 32-bit stride)");
   return RowView{t.const_data_ptr(), t.stride(0), t.stride(1), t.stride(2)};
 }
 
@@ -49,6 +53,8 @@ ColumnView column_view(const Tensor& t, int64_t B, int64_t T, int64_t H, const c
                       && t.size(1) == T && t.size(2) == H,
                   name, " is a CUDA fp32 [B, T, H] = [", B, ", ", T, ", ", H, "], got ",
                   shape(t.sizes()));
+  STD_TORCH_CHECK(t.stride(1) > 0 && t.stride(1) <= INT32_MAX, name,
+                  "'s token stride fits 31 bits");
   return ColumnView{t.const_data_ptr<float>(), t.stride(0), t.stride(1), t.stride(2)};
 }
 
@@ -130,6 +136,10 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.v_hat = detail::row_view(v_hat, B, T, H, kValueWidth, Dtype::Char, "v_hat");
   p.v_lo = v_lo.has_value() ? detail::row_view(*v_lo, B, T, H, kValueWidth, Dtype::Byte, "v_lo")
                             : RowView{nullptr, 0, 0, 0};
+  STD_TORCH_CHECK(!v_lo.has_value()
+                      || (v_lo->stride(0) == v_hat.stride(0) && v_lo->stride(1) == v_hat.stride(1)
+                          && v_lo->stride(2) == v_hat.stride(2)),
+                  "v_lo is laid out as v_hat is (one copy address serves both planes)");
   p.H = static_cast<int>(H);
   p.L = static_cast<int>(T);
   p.windows = static_cast<int>(T / kWindow);

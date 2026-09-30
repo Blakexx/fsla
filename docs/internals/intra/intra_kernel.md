@@ -88,11 +88,15 @@ reads eight consecutive tokens at one chunk.
 
 Every copy is `cp.async` of one 16-byte chunk, consecutive threads along a token's contiguous
 run, arriving on its buffer's mbarrier with `cp.async.mbarrier.arrive.noinc` (each of the
-256 threads is one counted arrival). A thread computes a copy's address from the CTA's
-(batch, head, window) and its own place at the copy (`Copier`), a few multiply-adds, rather
-than holding addresses in registers across the loop. The rows are read where the bundle holds
-them, by their strides, on 16-byte boundaries (the seam refuses others); the producer's rows
-are head-major, so a CTA's tokens are one contiguous run a row.
+256 threads is one counted arrival). A thread's place in a copy never changes — a stage's row
+`tid / 8` and chunk `tid % 8`, a value row's `tid / 4` and `tid % 4`, one writer-column entry —
+so `Copier` computes each 64-bit base once per CTA, and a copy adds its tile's rows with one
+unsigned 32 × 32 → 64 multiply-add (`rows_of`; the seam bounds a token stride to 31 bits, and
+the two value planes share one layout). Recomputing the (batch, token, head) address at every
+copy, the first form, cost 512 instructions a warp tile pair against the 80 its budget allows
+(the region ledger, below); the bases hold fewer registers than those temporaries did (210 →
+190). The rows are read where the bundle holds them, by their strides, on 16-byte boundaries;
+the producer's rows are head-major, so a CTA's tokens are one contiguous run a row.
 
 <a id="stages"></a>
 <a id="pipeline"></a>
@@ -102,13 +106,20 @@ are head-major, so a CTA's tokens are one contiguous run a row.
 The reader rows land once, in four parts of one stage's digits each, each on its own
 mbarrier: part `S` leaves beside tile 0's stage `S`, so the first Gram waits for one part and
 one stage, not for 64 KB. The writer side streams: a tile's four stages through three
-buffers, each stage copied two stages ahead of its use (`kStageBuffers - 1`) and pulled into
-L2 two stages beyond that (`prefetch_l2`). A buffer's `full` barrier counts the 256 copies'
-arrivals; its `empty` barrier counts the eight warps' releases, and the copy that refills a
-buffer waits on it. The tile's value digits and writer columns follow the same protocol on
-one buffer (`values_full`, `values_empty`), issued at a tile's first stage and read at its
-last. A warp waits only for the data it reads and releases each buffer right after its last
-read of it; no CTA barrier sits inside the sweep.
+buffers, each stage copied two stages ahead of its use (`kStageBuffers - 1`). A buffer's
+`full` barrier counts the 256 copies' arrivals; its `empty` barrier counts the eight warps'
+releases, and the copy that refills a buffer waits on it. The tile's value digits and writer
+columns use one buffer under the same protocol (`values_full`, `values_empty`), read after the
+tile's last stage: each thread tests the buffer's release at the tile's first stages and
+copies as soon as it is free, and waits for it only two stages before the values are read. A
+warp waits only for the data it reads and releases each buffer right after its last read of
+it; no CTA barrier sits inside the sweep.
+
+An L2 prefetch of each stage two stages beyond its copy was measured
+and removed: with the value product and epilogue skipped, the Gram's pipeline ran 170 µs a
+head at `L = 64K` without it and 177–182 µs with it at every distance tried (two, six and ten
+stages); it only added requests. Blocking the tile's value copy at its first stage made every
+tile a CTA-wide barrier on the slowest warp's value product, which the test-then-copy removes.
 
 <a id="slab-gate"></a>
 
@@ -167,15 +178,17 @@ anything is quantized, and `A · s` — the value product's `P` — replaces the
 ## The value product
 
 `P` against each row's maximum over the tile (the quad's two shuffles), as the declared digits:
-`a = min(rint(P · LW / m), LW)`, `LW` = 65535 at two weight digits (the default) or 255 at
-one. The two digit bytes are packed by `prmt` from the accumulator's own registers into the
+`a = rint(P · LW / m)`, `LW` = 65535 at two weight digits (the default) or 255 at one — no
+clamp is needed, since `P ≤ m` and `m · (LW / m)` rounds within an ulp of `LW`. The two digit bytes are packed by `prmt` from the accumulator's own registers into the
 IMMA A fragment — the accumulator's layout IS the A fragment's under a fixed permutation of
 k, lane `(g, tq)` holding tokens `{2tq, 2tq + 1, 8 + 2tq, 9 + 2tq}` of each n-tile — and the
 values are loaded to match it: `ldmatrix.trans` of the token-major value rows and one `prmt` a
 register (`0x6420` the even bytes, `0x7531` the odd). Per 16-channel group, the digit products
 accumulate in s32 by their weight — hi × `v_hat`, (lo × `v_hat`, hi × `v_lo`), lo × `v_lo`, two
-weight digits by two value digits — and one scaled fp32 add a group (`unit = m / (LW · LV)`)
-lands them in the output accumulator. The four channel groups are a real branch apart
+weight digits by two value digits. Below hi × `v_hat`'s weight the sum is exact in s32 (at most
+1.6e9 over a tile), so it is formed by one integer multiply-add and converted once; at one
+digit either way the whole sum is. One scaled fp32 add a group (`unit = m / (LW · LV)`) lands
+it in the output accumulator. The four channel groups are a real branch apart
 (`rola::uniform_switch`): unrolled together, the compiler hoisted every group's value loads
 over the others and spilled.
 
@@ -187,10 +200,11 @@ ones, and the gate allows three bounds plus fp32 accumulation against the slot's
 
 ## The deposit
 
-After the sweep a CTA barrier frees the reader region, and each warp stages its 16 rows × 64
-channels there (a 68-float pitch, so the accumulator's pair stores are bank free), then
-reduces each row into `num` as two 128-byte `red.global.add.f32` runs, lanes on consecutive
-channels, and its 16 row sums into `den`. A RED, not a store: the carry reduces into the same
+After its last tile each warp stages its 16 rows × 64 channels in its own 16 reader rows —
+which no other warp reads, so no CTA barrier is needed and a warp of the block's first row
+tile deposits while the second row tile's warps finish their last tile — at a 68-float pitch
+(the accumulator's pair stores are bank free), then reduces each row into `num` as two 128-byte
+`red.global.add.f32` runs, lanes on consecutive channels, and its 16 row sums into `den`. A RED, not a store: the carry reduces into the same
 planes on the same stream, and the caller owns zeroing them.
 
 <a id="phase-ledger"></a>
@@ -210,29 +224,48 @@ that (~34 µs), the bytes ~75 MB (~94 µs); floor ~115 µs, budget 1.3× (~150 �
 out the output's read-modify-write (`num` and `den` reduced, ~34 MB a head), which puts the
 byte floor at ~139 µs and the budget at ~180 µs.
 
-Measured (sm_86, CUDA events at boost clocks; `(256, 256)`):
+Measured (sm_86, `(256, 256)`): the 16-head cell by CUDA events at boost clocks; the rest by ncu
+at its locked base clock, since one sequence's events swing ±10% between runs of one binary.
 
-| cell | measured | against |
-|---|---|---|
-| `L = 64K`, 16 batch-heads, a head (every digit live) | 276 µs | ~180 µs budget (1.5×) |
-| `nl64k-dense` (one sequence) | 286 µs | |
-| `nl64k-alt-k4` | 294 µs | |
-| `flagship-dense` (`L = 1K`) | 65 µs | |
-| `flagship-alt-k4` | 64 µs | |
-| `flagship-cohort-k16` | 49 µs | ~5 µs |
+| cell | at the kernel's landing | now | against |
+|---|---|---|---|
+| `L = 64K`, 16 batch-heads, a head (events) | 276 µs | 240 µs | ~180 µs budget (1.3×) |
+| `L = 64K`, 4 batch-heads (ncu, base clock) | 1.48 ms | 1.37 ms | |
+| `nl64k-dense` (ncu) | | 369 µs | |
+| `nl64k-alt-k4` (ncu) | | 381 µs | |
+| `flagship-dense`, `L = 1K` (ncu) | | 84 µs | |
+| `flagship-alt-k4` (ncu) | | 85 µs | |
+| `flagship-cohort-k16` (ncu) | | 67 µs | ~5 µs at boost |
 
-The ledger at `L = 64K`, 16 batch-heads: data waits 27%, Gram 27.5%, value product 20%,
-deposit 11%, epilogue 7%, reader 4%, gate 3.5% of the warps' cycles. The Gram runs at ~1.2×
-its tensor floor and the value product at ~1.8× its own; one CTA an SM leaves nothing to fill
-the waits.
+<a id="region-ledger"></a>
+
+**The region ledger** (`tools/region_ledger.py` against `tools/budgets/intra.json`: ncu's
+per-instruction counts and stall samples attributed to the component each instruction inlines
+from, per warp tile pair) is the instrument for the instruction budget. At the kernel's landing
+it read 2,450 instructions a unit against a design count of ~1,200: the copies 512 (budget 80),
+the value product 724 (520), the stage loop's own control 418, the Gram 315 (288), the
+epilogue 219 (180). Now: 2,109 — the copies 292, the value product 629, the control 439, the
+Gram 313, the epilogue 219, the barrier spin 85.
+
+**Where the time goes.** Neither DRAM (34–49% of peak) nor L2 (44%) nor the tensor pipe (35%)
+is saturated: warps wait on latency, ~6.7 cycles an issued instruction with two warps a
+scheduler. Two experiments bound it. With the value product skipped the kernel runs ~200 µs a
+head (events, 16 heads), and with the epilogue skipped too ~170 µs — the Gram's pipeline alone,
+2.7× its ~62 µs tensor floor. That pipeline is latency-bound on bytes in flight: one CTA an SM
+keeps two 8 KB stages ahead, and at ~1.5 µs a request that is ~11 GB/s an SM, which is what the
+tensor floor itself needs, so any stall in the stream shows as a wait. Split by where they
+block, the waits were ~13% of warp cycles on a buffer's release by all eight warps, ~6% issuing
+copies and ~7% on data. And warps run in near-lockstep, so their epilogues and value products
+coincide and leave the tensor pipe idle together: the value product costs ~60 µs a head against
+the ~31 µs of its IMMAs.
 
 At `L = 1K` the grid is eight CTAs, and the time is one CTA's: the heaviest block issues ~11.5K
-IMMAs on one SM, a ~24 µs tensor floor, and runs 64 µs. On `flagship-cohort-k16` every tile
-pair is live and the gate keeps 2.5 of 16 slabs a pair, so the Gram's IMMAs fall to a sixth
-and the time only to 49 µs: the line's ~5 µs assumed the gate would skip most of a cohort draw's
-work, and the value product, the epilogue and the chain of stages stay. Reaching it takes the
-heaviest block's sweep split across SMs — the output's REDs allow a reader row to take its
-pairs from several CTAs — at a price in reader bytes the large-`L` regime pays.
+IMMAs on one SM, a ~24 µs tensor floor at boost. On `flagship-cohort-k16` every tile pair is live
+and the gate keeps 2.5 of 16 slabs a pair, so the Gram's IMMAs fall to a sixth and the time only
+by a fifth: the line's ~5 µs assumed the gate would skip most of a cohort draw's work, and the
+value product, the epilogue and the chain of stages stay. Reaching it takes the heaviest
+block's sweep split across SMs — the output's REDs allow a reader row to take its pairs from
+several CTAs — at a price in reader bytes the large-`L` regime pays.
 
 The gate's own cost, from the ledger with the unions read and with every level declared dense
 (nothing read): 1.1% for the prologue's barrier, 2.5% for the unions' round trip, which tile

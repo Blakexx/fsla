@@ -191,6 +191,11 @@ def test_the_seam_refuses_what_no_arm_is_built_for():
                          scale_write=tuple(s[:, :1000] for s in routes.scale_write), g_write=routes.g_write[:, :1000])
     with pytest.raises(RuntimeError, match="whole number of 512"):
         intra_ops.intra_forward(short, values, unions, layout, *statics, num, den)
+    lo = torch.zeros((*values.v_lo.shape[:3], 128), dtype=torch.uint8, device="cuda")[..., :64]
+    lo.copy_(values.v_lo)
+    with pytest.raises(RuntimeError, match="v_lo is laid out as v_hat is"):
+        intra_ops.intra_forward(routes, Values(v_hat=values.v_hat, v_lo=lo, scale=values.scale), unions, layout,
+                                *statics, num, den)
 
 
 def test_the_loaded_binary_states_the_arm_it_carries():

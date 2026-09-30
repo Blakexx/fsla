@@ -782,13 +782,6 @@ signed values. `imma_u8_k32_fresh` takes C from the zero register, so the accumu
 the first step of a sum: a level's Gram starts there. On sm_86 one issues every 16 cycles a
 scheduler (8 on sm_80), four times the bf16 fp32-accumulate rate (the probe of 2026-09-28).
 
-<a id="prefetch-l2"></a>
-## `prefetch_l2` — a line into L2 ahead of its copy
-
-`prefetch.global.L2`: no register, no completion, no ordering. A copy issued later finds the
-line in L2 and its round trip is L2's rather than DRAM's. The intra issues one a token for the
-stage two after the one it copies (`intra/intra_kernel.md#pipeline`).
-
 <a id="prmt"></a>
 ## `prmt`, `pack_byte4` — byte selection
 

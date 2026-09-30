@@ -31,6 +31,8 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
 * every level is one width, and an arm is built at it (`no intra arm at D levels of B digits`);
 * a row set or value plane starts and strides on 16 bytes, digits contiguous — the kernel's
   copies are 16-byte `cp.async` chunks (the producer's planes are);
+* every token stride fits 31 bits, and `v_lo` is laid out as `v_hat` is — a copy adds its
+  tile's rows by one 32-bit stride, and one address serves both value planes;
 * the unions and outputs are the shapes above, and the dense bitmasks name levels inside the
   depth.
 

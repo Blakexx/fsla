@@ -137,11 +137,6 @@ __device__ __forceinline__ void stage_run_lanes(SmemAddr dst, const void* src, b
 
 __device__ __forceinline__ void stage_commit() { asm volatile("cp.async.commit_group;\n"); }
 
-//: A LINE BROUGHT INTO L2 ahead of its copy, so the copy's round trip is L2's. -- see docs/internals/common/ops.md#prefetch-l2
-__device__ __forceinline__ void prefetch_l2(const void* src) {
-  asm volatile("prefetch.global.L2 [%0];\n" ::"l"(src));
-}
-
 //: A SHARED-MEMORY BARRIER OBJECT (`mbarrier`, sm_80+): `count` arrivals complete a phase;
 //: an asynchronous copy arrives when it lands (`.noinc`: it is one of the counted
 //: arrivals), a thread's arrive releases its prior shared stores, a wait acquires. A

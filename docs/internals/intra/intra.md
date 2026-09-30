@@ -14,9 +14,8 @@ kernels run one grid — cut into `kTile` = 64-token tiles, `kWindowTiles` = 8; 
 owns `kWarpRows` = 16 readers, so a CTA is `kWarps` = 8 warps. The values are `kValueWidth` = 64
 channels and the depth at most `kMaxLevels` = 4. A copy moves `kChunk` = 16 bytes (an
 `ldmatrix` row); a writer stage is `kStageDigits` = 128 digits of one level; a slab is
-`kSlabDigits` = 32 digits, one IMMA k-step and the gate's grain. `kStageBuffers` = 3 stages are
-in flight and `kPrefetchStages` = 2 more are pulled into L2 ahead of them
-([`intra_kernel.md`](intra_kernel.md#pipeline)). `IntraPhase` is the phase ledger's column
+`kSlabDigits` = 32 digits, one IMMA k-step and the gate's grain. `kStageBuffers` = 3 stage
+buffers, a stage copied two ahead of its use ([`intra_kernel.md`](intra_kernel.md#pipeline)). `IntraPhase` is the phase ledger's column
 order.
 
 <a id="intraparams"></a>

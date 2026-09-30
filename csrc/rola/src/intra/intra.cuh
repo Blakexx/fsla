@@ -27,7 +27,6 @@ constexpr int kChunk = 16;
 constexpr int kStageDigits = 128;
 constexpr int kSlabDigits = 32;
 constexpr int kStageBuffers = 3;
-constexpr int kPrefetchStages = 2;
 
 enum IntraPhase : int {
   kPhaseReader,
