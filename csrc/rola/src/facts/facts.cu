@@ -42,7 +42,7 @@ __device__ __forceinline__ uint32_t word_bits(const Digit (&digit)[kTokBits]) {
 
 //: A WARP'S PART OF A UNIT, a (side, level, 32-digit group): its `kPartWords` of the window's words, each lane its
 //: digit's bits into its tile row -- a sparse level's voted from the rows, a dense level's the width mask over the live
-//: tokens. -- see docs/internals/facts/facts.md#vote
+//: tokens -- and each 64-token tile's union, the ballot of its words. -- see docs/internals/facts/facts.md#vote
 template <typename Digit>
 __device__ void vote_part(const FactsParams& p, int code, int bh, int word0, int lane,
                           uint32_t* row) {
@@ -55,17 +55,31 @@ __device__ void vote_part(const FactsParams& p, int code, int bh, int word0, int
   const RowView view = p.rows[side][level];
   const Digit* const column =
       static_cast<const Digit*>(view.base) + b * view.sb + h * view.sh + digit;
+  uint32_t* const unions =
+      p.unions
+      + ((static_cast<int64_t>(bh) * kSides + side) * p.groups + p.group_base[level] + group)
+            * p.tiles;
+  uint32_t tile = 0u;
 #pragma unroll 1
   for (int j = 0; j < kPartWords; ++j) {
     const int t0 = (word0 + j) * kTokBits;
     const int live = min(kTokBits, p.L - t0);
     if (live <= 0) break;
+    uint32_t bits;
     if (dense) {
-      row[j] = in_mask ? (live == kTokBits ? ~0u : (1u << live) - 1u) : 0u;
+      bits = in_mask ? (live == kTokBits ? ~0u : (1u << live) - 1u) : 0u;
     } else {
       Digit digits[kTokBits];
       load_word(digits, column + t0 * view.st, view.st, live, in_mask);
-      row[j] = word_bits(digits);
+      bits = word_bits(digits);
+    }
+    row[j] = bits;
+    tile |= bits;
+    //: a tile closes at its second word, or at the call's last
+    if (((word0 + j) & 1) || t0 + kTokBits >= p.L) {
+      const uint32_t u = __ballot_sync(0xffffffffu, tile != 0u);
+      if (lane == 0) unions[(word0 + j) >> 1] = u;
+      tile = 0u;
     }
   }
 }
@@ -218,8 +232,8 @@ void rola_facts_ledger_bind(std::optional<Tensor> ledger) {
 //: -- see docs/internals/facts/facts_api.md#rola-facts-forward
 void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                         std::vector<Tensor> scale_write, Tensor g_write, Tensor v_scale,
-                        Tensor words, Tensor zeta, std::vector<int64_t> widths, int64_t dense_read,
-                        std::vector<int64_t> mask_read, int64_t dense_write,
+                        Tensor words, Tensor unions, Tensor zeta, std::vector<int64_t> widths,
+                        int64_t dense_read, std::vector<int64_t> mask_read, int64_t dense_write,
                         std::vector<int64_t> mask_write, int64_t window) {
   check_arch_table();
   const int D = static_cast<int>(widths.size());
@@ -299,7 +313,18 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   STD_TORCH_CHECK(zeta.is_cuda() && zeta.scalar_type() == Dtype::Float && zeta.is_contiguous()
                       && zeta.numel() == B * H * p.windows * 2,
                   "zeta is the contiguous fp32 [", B * H, ", ", p.windows, ", 2] window scales");
+  LivenessLayout layout{D, {}, p.L};
+  for (int level = 0; level < D; ++level) layout.B[level] = p.B[level];
+  for (int level = 0; level < D; ++level) p.group_base[level] = layout.group_base(level);
+  p.groups = layout.groups();
+  p.tiles = layout.tiles();
+  STD_TORCH_CHECK(unions.is_cuda() && unions.scalar_type() == Dtype::Int && unions.is_contiguous()
+                      && unions.dim() == 4 && unions.size(0) == B * H && unions.size(1) == kSides
+                      && unions.size(2) == p.groups && unions.size(3) == p.tiles,
+                  "unions is the contiguous int32 tile-union table [", B * H, ", 2, ", p.groups,
+                  ", ", p.tiles, "], got ", shape(unions.sizes()));
   p.words = reinterpret_cast<uint32_t*>(words.mutable_data_ptr<int32_t>());
+  p.unions = reinterpret_cast<uint32_t*>(unions.mutable_data_ptr<int32_t>());
   p.zeta = zeta.mutable_data_ptr<float>();
   p.ledger = detail::g_ledger;
 

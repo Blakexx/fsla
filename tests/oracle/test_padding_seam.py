@@ -35,7 +35,6 @@ import torch
 
 from rola.ops.carry import box_shape
 from rola.ops.decode import _decode_step, derive_decode_geometry
-from rola.ops.intra import DENSE_BOTH, WINDOW_SMALL, intra_forward_padded
 from rola.ops.lattice import to_canonical, to_lattice
 from rola.ops.naive import naive_rola
 from rola.ops.padding import pad_routes, pad_v
@@ -43,14 +42,11 @@ from rola.ops.paging import bytes_equal
 from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
 from tests.oracle.fixtures import (
     assert_reordered_close,
-    assert_slots_close,
     logical_state,
-    oracle_run,
     state_pages,
     step_bundles,
 )
 from tests.oracle.oracle_fixtures import _simplex
-from tests.oracle.tolerances import INTRA_OUTPUT
 
 # ---------------------------------------------------------------------------
 # PREFILL: the fp64 naive is the ONE ground truth on this line (no kernel body)
@@ -251,43 +247,3 @@ def test_decode_padded_d_v_matches_the_shipped_dv_with_a_zero_tail():
 # ---------------------------------------------------------------------------
 # INTRA: item (ii) of the ADDITION -- graded against its own oracle
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.cuda
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="intra is a CUDA kernel")
-def test_intra_padded_nonpow2_levels_and_d_v_match_the_oracle():
-    """A D=2 topology at (17, 19) -- neither a power of two, neither the shipped
-    LEVEL_WIDTH=256 -- and d_v=48 (VALUE_WIDTH=64 shipped), through
-    `intra_forward_padded`. With a zero initial state and no decay, one window's
-    whole recurrence is its intra term (`test_intra_reference.py`'s own claim), so
-    the padded kernel's ``o / (den + eps)`` must land in the same bf16 band every
-    other intra gate is held to against the UNPADDED fp64 oracle.
-    """
-    from rola.ops.constants import READOUT_EPS
-
-    device = "cuda"
-    widths = (17, 19)
-    B, H, d_v = 2, 2, 48
-    window = WINDOW_SMALL
-    generator = torch.Generator(device=device).manual_seed(3)
-
-    read_levels = tuple(_simplex((B, window, H, w), 1.0, generator, device) for w in widths)
-    write_levels = tuple(_simplex((B, window, H, w), 1.0, generator, device) for w in widths)
-    g_write = (torch.rand(B, window, H, device=device, dtype=torch.float64, generator=generator)
-              + 0.5)
-    v = torch.randn(B, window, H, d_v, device=device, dtype=torch.float64, generator=generator)
-
-    topology = _dense_topology(widths)
-    oracle = oracle_run(v, read_levels, write_levels, g_write, topology)
-
-    def bf16(t):
-        return t.to(torch.bfloat16)
-
-    gwrite_bh = g_write.permute(0, 2, 1).reshape(B * H, window).to(torch.bfloat16).contiguous()
-    v_token_major = bf16(v).contiguous()
-    o, den = intra_forward_padded(
-        tuple(bf16(t) for t in read_levels), tuple(bf16(t) for t in write_levels),
-        gwrite_bh, v_token_major, (DENSE_BOTH,) * len(widths), window=window)
-    y_kernel = (o / (den.unsqueeze(-1) + READOUT_EPS)).view(B, H, window, d_v).permute(0, 2, 1, 3)
-
-    assert_slots_close(y_kernel, oracle.y, output=INTRA_OUTPUT, envelope=oracle.y_envelope, what="the padded intra readout")

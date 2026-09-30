@@ -10,14 +10,15 @@ static operands off its topology, and `facts` packs them into this argument list
 
 ## `rola_facts_forward`
 
-    rola_facts_forward(read[], write[], scale_write[], g_write, v_scale, words!, zeta!,
+    rola_facts_forward(read[], write[], scale_write[], g_write, v_scale, words!, unions!, zeta!,
                        widths, dense_read, mask_read, dense_write, mask_write, window) -> ()
 
 Each side's rows a level (`[B, T, H, b_l]`, one dtype for the call: u8 or f16), the
 write levels' scales, the write gain and the value scale (`[B, T, H]` fp32, any
-strides), and the two outputs the caller allocates: `words` the contiguous int32
-`[B·H, 2, rows, ceil(T/32)]` and `zeta` the contiguous fp32 `[B·H, windows, 2]`. The
-pass writes every element of both. `widths` are the layout's PADDED widths; `dense_*`
+strides), and the three outputs the caller allocates: `words` the contiguous int32
+`[B·H, 2, rows, ceil(T/32)]`, `unions` the contiguous int32 `[B·H, 2, groups,
+ceil(T/64)]` ([`liveness_contract.md`](liveness_contract.md#tile-unions)) and `zeta` the
+contiguous fp32 `[B·H, windows, 2]`. The pass writes every element of all three. `widths` are the layout's PADDED widths; `dense_*`
 is a bitmask over levels and `mask_*` one bit a row, packed by
 `rola.engine.facts.liveness.side_statics` — the only place `b_l` appears.
 

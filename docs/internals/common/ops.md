@@ -770,13 +770,24 @@ every warp until this). The bound is hidden from ptxas by an empty `asm volatile
 loop cannot be recognized as 0-or-1 trips and flattened.
 
 <a id="imma-u8"></a>
-## `imma_u8` — the int8 atom, u8 × u8 into s32
+## `imma_u8_k32`, `imma_u8_k32_fresh`, `imma_u8s8_k32` — the int8 atom
 
-`mma.sync.m16n8k16.row.col.s32.u8.u8.s32`: A is two registers a lane (row `lane / 4`, four
-consecutive k at `4 (lane % 4)`; the second register is row `lane / 4 + 8`), B one (column
-`lane / 4`, the same four k), the accumulator four s32 (rows `lane / 4` and `+ 8`, columns
-`2 (lane % 4) + {0, 1}`). Both operands unsigned: the digits are magnitudes. Verified
-against a row-by-row product on sm_86 before use (the probe of 2026-09-28).
+`mma.sync.m16n8k32.row.col.s32.u8.{u8,s8}.s32`, 4096 multiply-adds: A is four registers a lane
+(rows `lane / 4` and `+ 8`, four consecutive k a register at `4 (lane % 4)` and `+ 16`), B two
+(column `lane / 4`, the same k), the accumulator four s32 (rows `lane / 4` and `+ 8`, columns
+`2 (lane % 4) + {0, 1}`) -- exactly the register image `ldmatrix` gives of two 16-byte rows a
+lane, so a token-major row of digits is an operand with no shuffle. `u8.u8` is the Gram's
+digits against digits (magnitudes both); `u8.s8` the value product's unsigned weights against
+signed values. `imma_u8_k32_fresh` takes C from the zero register, so the accumulator is not live before
+the first step of a sum: a level's Gram starts there. On sm_86 one issues every 16 cycles a
+scheduler (8 on sm_80), four times the bf16 fp32-accumulate rate (the probe of 2026-09-28).
+
+<a id="prefetch-l2"></a>
+## `prefetch_l2` — a line into L2 ahead of its copy
+
+`prefetch.global.L2`: no register, no completion, no ordering. A copy issued later finds the
+line in L2 and its round trip is L2's rather than DRAM's. The intra issues one a token for the
+stage two after the one it copies (`intra/intra_kernel.md#pipeline`).
 
 <a id="prmt"></a>
 ## `prmt`, `pack_byte4` — byte selection

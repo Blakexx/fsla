@@ -14,10 +14,10 @@ from rola.engine.facts import planes
 from rola.engine.facts.operands import operands_of, requires_backward
 
 
-@node(gives=("widths", "d_v"), needs=("routes", "v"))
+@node(gives=("widths", "d_v"), needs=("routes", "values"))
 def topology(f):
     return (tuple(level.width for level in f["routes"].topology.levels),
-            f["v"].shape[-1])
+            f["values"].v_hat.shape[-1])
 
 
 @node(gives=("call_class",),

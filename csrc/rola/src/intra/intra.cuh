@@ -1,37 +1,69 @@
-// Copyright 2026 Blake Bottum
-// SPDX-License-Identifier: Apache-2.0
+// csrc/rola/src/intra/intra.cuh -- THE INTRA's constants and operand block: the within-window pairs, the Gram over the
+// bundle's u8 rows, the value product over its s8 values, reduced into the output planes.
+// see docs/internals/intra/intra.md
 #pragma once
-
-#include "common/torch_seam.cuh"
 
 #include <cstdint>
 
-namespace rola {
-namespace intra {
+namespace rola::intra {
 
-constexpr uint32_t kModeReadSparse = 1u;  // see docs/internals/intra/intra.md#kmodereadsparse
-constexpr uint32_t kModeWriteSparse = 2u;
-
-constexpr int kWindowFlagship = 384;  // see docs/internals/intra/intra.md#kwindowflagship
-constexpr int kWindowWide = 512;      // see docs/internals/intra/intra.md#kwindowwide
-constexpr int kWindowSmall = 64;
+//: THE WINDOW IS THE CARRY'S, so the two kernels run one grid; a window is eight 64-token tiles, walked in blocks of
+//: two row tiles. -- see docs/internals/intra/intra.md#constants
+constexpr int kWindow = 512;
 constexpr int kTile = 64;
+constexpr int kWindowTiles = kWindow / kTile;
+constexpr int kRowTiles = 2;
+constexpr int kBlockRows = kRowTiles * kTile;
+constexpr int kBlocks = kWindowTiles / kRowTiles;
 constexpr int kWarpRows = 16;
-constexpr int kSlabDigits =
-    16;  // the MMA contraction step; see docs/internals/intra/intra.md#kslabdigits
+constexpr int kWarps = kBlockRows / kWarpRows;
+constexpr int kThreads = kWarps * 32;
 constexpr int kValueWidth = 64;
+constexpr int kMaxLevels = 4;
 
-constexpr int kWidthFlat = 256;  // an instantiation axis, not a constant; see intra.md#kwidthflat
-constexpr int kWidthDeep3 = 16;
-constexpr int kWidthDeep4 = 16;
+//: A COPY GRANULE, an ldmatrix row, the column side's stage of digits, and a SLAB: one level's 32 digits, one IMMA
+//: k-step, the slab gate's grain. -- see docs/internals/intra/intra.md#constants
+constexpr int kChunk = 16;
+constexpr int kStageDigits = 128;
+constexpr int kSlabDigits = 32;
+constexpr int kStageBuffers = 3;
+constexpr int kPrefetchStages = 2;
 
-// `window` selects the built arm; `L % window` must be zero, refused per arm; see intra.md#intra-forward
-void intra_forward(const Tensor& pread, const Tensor& pwrite, const Tensor& gwrite, const Tensor& v,
-                   const Tensor& sread, const Tensor& swrite, Tensor& o, Tensor& den,
-                   int64_t levels, int64_t width, int64_t level_modes, int64_t window);
+enum IntraPhase : int {
+  kPhaseReader,
+  kPhaseGate,
+  kPhaseWait,
+  kPhaseGram,
+  kPhaseEpilogue,
+  kPhaseValue,
+  kPhaseDeposit,
+  kIntraPhases
+};
 
-std::vector<std::vector<int64_t>> intra_arms();  // the built (levels, width, window) arms
-int64_t intra_build_stamp();  // device-side build fact; see intra.md#intrabuildstamp
+//: One level's rows or a value plane where the bundle holds them: the batch, token and head strides in elements.
+struct RowView {
+  const void* base;
+  int64_t sb, st, sh;
+};
 
-}  // namespace intra
-}  // namespace rola
+struct ColumnView {
+  const float* base;
+  int64_t sb, st, sh;
+};
+
+//: THE OPERAND BLOCK, by value. -- see docs/internals/intra/intra.md#intraparams
+struct IntraParams {
+  RowView read[kMaxLevels];
+  RowView write[kMaxLevels];
+  ColumnView scale_write[kMaxLevels];
+  ColumnView g_write, v_scale;
+  RowView v_hat, v_lo;
+  const uint32_t* unions;
+  float* num;
+  float* den;
+  long long* ledger;
+  int H, L, windows, weight_digits;
+  uint32_t dense[2];
+};
+
+}  // namespace rola::intra

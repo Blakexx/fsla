@@ -1,345 +1,258 @@
-# `csrc/rola/src/intra/` — the K31 window-intra kernel
+# `csrc/rola/src/intra/intra_kernel.cuh` — the intra kernel
 
-The within-window causal term, as its own deterministic side kernel. It computes
-nothing the carry kernel computes: the carry kernel's readout sees the state as
-of a window's start, and every pair of tokens INSIDE one window belongs here.
-The design it implements is `development/plans/K31_BOX_NATIVE_KERNEL_STUDY_2026-08-18.md`
-§2.1 (the global window grid) and §2.5 (the factorized, windowed, tiled intra).
+Mirror doc for the kernel that computes every pair of tokens inside one window, over the
+bundle as the producer wrote it: the Gram of each level's u8 digits by int8 tensor ops, the
+value product in u8 weights against the s8 values, the rows reduced into the output planes the
+carry reduces into beside it. The carry's readout sees the state as of a window's start, so
+the within-window pairs are this kernel's and only this kernel's. Its constants and operand
+block are [`intra.md`](intra.md), its host seam [`intra_api.md`](intra_api.md); the declared arithmetic it is graded against is
+`intra_bundle_reference` in `tests/oracle/int_reference.py`, itself graded against the fp64
+intra of the bundle's dequantized levels; `tests/integration/test_intra_kernel.py` holds the
+kernel to it per slot.
+
+Vocabulary, defined here and used unqualified below: `D` = routing depth; `B` = a level's
+width in digits (the built arm: `D = 2`, `B = 256`); `L` = tokens; `BH` = batch × heads;
+**window** = the carry's 512 tokens; **tile** = 64 consecutive tokens, eight to a window;
+**block** = two tiles, the 128 READERS a CTA owns; **stage** = 128 digits of one level for one
+writer tile; **slab** = 32 digits of one level, one IMMA k-step; **IMMA** = one
+`mma.sync.m16n8k32` on 8-bit operands, 4096 multiply-adds.
 
 ## What it computes
 
-For a window `w` of `W` tokens (`W` and the level width `B` are the instantiation axes;
-the built arms are `(2, 256, 384)`, `(2, 256, 512)` — the two ends of the architecture
-doc's band — `(2, 256, 64)`, the conformance cell, and the deep pair `(3, 16, 64)` and
-`(4, 8, 64)`. They pair with the carry family's arms, because the two kernels share ONE
-global window grid),
+For a window, a reader `t` and a writer `t' <= t` in it:
 
-    A[t, t'] = gain(t') * prod_l G_l[t, t'],   G_l = R_l · W_l^T over level l's B digits
-    o[t]   += sum_{t' <= t in w} A[t, t'] · v[t']
-    den[t] += sum_{t' <= t in w} A[t, t']
+    G_l[t, t']  = Σ_d r_l[t, d] · w_l[t', d]                 level l's digits, exact s32
+    A[t, t']    = f(t') · Π_l G_l[t, t'],    f(t') = g(t') · Π_l sw_l(t') / 255^(2D)
+    den[t]     += Σ_t' A[t, t']
+    num[t]     += Σ_t' A[t, t'] · s(t') · q(t') / LV       q the value digits, LV their levels
 
-The gain is a per-COLUMN scalar applied AFTER the level product, which is the
-shipped kernel's gain law: support bits are ungained. `den` is the same `A`
-summed — the mass the ones-column of the oracle's recurrence produces — so the
-kernel carries no second matrix for it.
+`r_l`, `w_l` are the rows' u8 digits (a row's unit value times 255), `sw_l` the write levels'
+scales, `g` the write gain, `s` the value scale. The READER's factor `Π_l sr_l(t)` is not
+applied: it is per token and cancels in `num / den`, the output contract the carry keeps too,
+and the readout divides by `den + READOUT_EPS / r(t)` so the defined readout is kept exactly
+(`rola.ops.prefill.readout`). `num` takes one declared rounding, the value product's weights
+([below](#value-product)); `den` takes none but fp32's.
 
-`[W x W]` is never materialized. The window's `(W/64) x (W/64)` tile grid of `[64 x 64]`
-output blocks is walked lower-triangular (21 tile-pairs at `W = 384`, 36 at `W = 512`);
-the diagonal blocks carry the within-tile staircase. Per tile-pair the per-level Gram
-accumulates in registers over the level's whole digit axis, the levels are
-Hadamard-multiplied there, and the result becomes the A operand of the value MMA
-**in place** — the accumulator-to-A fragment identity, no shared-memory round trip
-on sm_80.
+<a id="arms"></a>
 
-## The output block is C = 128 reader tokens
+## The arm
 
-The unit of the walk is not the tile pair but the BLOCK: two row tiles, 128 reader
-tokens, sweeping the column tiles together. One staged column tile — its `W_l`
-operand slabs, its value rows, its gains — is consumed by both row tiles, so a
-window of 8 tiles stages 20 column tiles instead of 36. What the block does NOT
-change is the row side: each row tile's operands are still re-staged per column
-tile. Cutting that needs two column tiles per block as well, which multiplies the
-Gram tiles a warp must hold; the census already refuses two of them (below).
+`Arm<D, B>` derives everything from the two template axes: a reader row is `D · B` bytes,
+a level `B / 128` stages, a tile `D · B / 128` stages (four at the built arm), `D · B / 32`
+slabs (sixteen), and `kUnit = 255^(-2D)`, the integer Gram's scale. The built set is one
+macro in `intra.cu` (`ROLA_INTRA_ARMS_X`, `(2, 256)`), so the dispatch and the arm list read
+the same rows. The rows at depth above two are f16 (`produce/produce.md#bundle`); their arms —
+the Gram as f16 HMMA on the narrow levels — are not built, and the seam refuses them by name.
 
-A window whose grid is a single tile has no pair to share with, so the block
-collapses onto it and the CTA halves with it — `row_tiles_of(W)`, `rows_of(W)` and
-`threads_of(W)` are one derivation, and the arm's tile count is what picks it.
+<a id="the-grid"></a>
 
-## The carve, and why it has no reductions
+## The grid: a CTA a block, the heaviest first
 
-One CTA per `(bh, window)`, one warp per `kWarpRows = 16` rows of the block —
-eight warps at the paired arms, four at a single-tile one. A warp holds the Gram
-of ONE tile pair and owns 16 output rows and every column; the row tiles are
-shared ACROSS warps rather than stacked in one warp's registers, which is what
-keeps the accumulator budget independent of `C`. Output rows are disjoint per
-warp and the causal triangle's imbalance lands nowhere — neither between warps
-nor between CTAs; the block's last column tile leaves the low half of the warps
-idle for that one sweep, which is the strictly-upper pair not being computed.
+A CTA is one (batch-head, window, block): `blockIdx.y` the batch-head, `blockIdx.x` the window
+times four plus the block, heaviest first. Block `b`'s readers pair with writer tiles `0 ..
+2b + 1`, so the window's four blocks carry 2, 4, 6 and 8 tiles; launching the eight-tile block
+first lets the short ones fill in behind it. Eight warps a CTA, each owning 16 readers: warps
+0–3 the block's first tile, 4–7 its second. A warp's rows are its own for the whole sweep, so
+its output is final in registers at the end and nothing is exchanged between warps. At ~100 KB
+of shared memory and 210 registers a thread, one CTA runs an SM.
 
-The block's whole reader side is resident, so the footprint clears the 48 KB a
-kernel gets unasked (65 664 B at `W = 512`) and the arms launch on opted-in
-dynamic shared memory, re-declared per launch because the opt-in is per device.
+<a id="smem"></a>
 
-Write-back is `fan_in_add` (a non-returning RED) into caller-owned `o`/`den`
-planes, so the kernel is composable with a concurrent carry kernel and with
-itself; the caller owns zeroing.
+## Shared memory
 
-## The pipeline stage is as wide as the level allows
+| tenant | bytes | holds |
+|---|---|---|
+| `reader` | `128 · D · B` = 64 KB | the block's reader rows, loaded once, every level |
+| `stage[3]` | 3 × 8 KB | three writer stages in flight |
+| `v_hat`, `v_lo` | 2 × 4 KB | the writer tile's value digits |
+| `column` | `(2 + D) · 64 · 4` | the writer tile's gain, value scale and write scales |
+| `den` | 512 | a warp's 16 row sums, added across tiles |
+| `gate` | 64 | the slab gate's table |
+| barriers, clock | ~0.5 KB | full/empty a stage buffer, one a reader part, full/empty the values |
 
-A stage is one `cp.async` fill and one pair of barriers, and several `kSlabDigits = 16`
-MMA steps ride it, so barriers are per stage and not per MMA step. At `B = 256` a stage
-is `kStageCap = 64` digits and four steps ride it: 16 barriers per tile-pair rather than
-64. Measured on sm_86, narrowing the stage to the MMA step cost 1.66x on the dense cell.
-A level that fits inside one stage IS one stage, which is what the deep arms are.
+The reader region is dead after the sweep and holds the deposit's staging tile.
 
-A LEVEL NARROWER THAN THE MMA'S CONTRACTION STEP IS CONTRACTED PADDED. There is no
-`k < 16` tensor op, so at `B = 8` a level's slab is 16 digits of which 8 are real: the
-tail is zeroed once at entry and never staged, and the Gram MMA runs at
-`kSlabDigits / B = 2x` the arithmetic it needs on that level. It costs nothing else, it
-is uniform (a no-op wherever `kSlabDigits` divides `B`), and the deep conformance cells
-are its gate — a stale byte in the pad is a wrong Gram, not a crash.
+<a id="swizzle"></a>
 
-Operand rows are padded (`operand_pitch(B)`, `kValuePitch`) so that the eight row
-addresses `ldmatrix` reads per 8x8 tile land in eight distinct banks, while every
-row base stays 16-byte aligned for `cp.async`.
+## The swizzle
+
+A row is 16-byte chunks; chunk `c` of row `r` sits at `c ^ (r & 7)` (`swizzle8`), so the eight
+rows an `ldmatrix` reads at one chunk lie in eight bank groups, and a copy's consecutive
+threads along one token's run still write whole chunks. The value rows are 64 bytes — four
+chunks — and pair rows the same way (`swizzle4`: `c ^ ((r >> 1) & 3)`), because `ldmatrix.trans`
+reads eight consecutive tokens at one chunk.
+
+<a id="copies"></a>
+
+## The copies
+
+Every copy is `cp.async` of one 16-byte chunk, consecutive threads along a token's contiguous
+run, arriving on its buffer's mbarrier with `cp.async.mbarrier.arrive.noinc` (each of the
+256 threads is one counted arrival). A thread computes a copy's address from the CTA's
+(batch, head, window) and its own place at the copy (`Copier`), a few multiply-adds, rather
+than holding addresses in registers across the loop. The rows are read where the bundle holds
+them, by their strides, on 16-byte boundaries (the seam refuses others); the producer's rows
+are head-major, so a CTA's tokens are one contiguous run a row.
+
+<a id="stages"></a>
+<a id="pipeline"></a>
+
+## The pipeline
+
+The reader rows land once, in four parts of one stage's digits each, each on its own
+mbarrier: part `S` leaves beside tile 0's stage `S`, so the first Gram waits for one part and
+one stage, not for 64 KB. The writer side streams: a tile's four stages through three
+buffers, each stage copied two stages ahead of its use (`kStageBuffers - 1`) and pulled into
+L2 two stages beyond that (`prefetch_l2`). A buffer's `full` barrier counts the 256 copies'
+arrivals; its `empty` barrier counts the eight warps' releases, and the copy that refills a
+buffer waits on it. The tile's value digits and writer columns follow the same protocol on
+one buffer (`values_full`, `values_empty`), issued at a tile's first stage and read at its
+last. A warp waits only for the data it reads and releases each buffer right after its last
+read of it; no CTA barrier sits inside the sweep.
+
+<a id="slab-gate"></a>
 
 ## The slab gate
 
-The one sparsity tier the study kept. Before the tile walk, the CTA summarizes
-each `(tile, level, side)` as a `B`-bit digit union over that tile's 64 tokens. A
-slab's MMA group issues only when the row side's 16-bit window AND the column
-side's is nonempty; the staging for a whole stage is skipped when all four of its
-slabs are dead.
+A tile pair whose product is exactly zero is not computed, and a slab whose digits meet in
+no token pair is not multiplied. The certificate is the facts pass's TILE UNIONS
+([`facts/liveness_contract.md`](../facts/liveness_contract.md#tile-unions)): per side,
+32-digit group and 64-token tile, the digits live anywhere in the tile. Warp 0 reads, a lane a
+slab, the reader side's two unions for the block and the writer side's eight for the window
+(40 bytes a lane) and builds the table `gate[tile][row tile]`: bit `s` set when slab `s`'s
+reader and writer unions meet. A level with no bit set makes the pair's product zero, so the
+whole word clears, and a pair above the diagonal is zero too. A side's dense level (the
+topology's declaration, the statics the facts pass took) answers all-ones and is not read.
 
-THE UNION IS READ, NEVER RE-DERIVED. The support is a producer artifact: the entmax
-solve that made the amplitudes freezes the same exact-nonzero test into a
-32-token-blocked word (`entmax/factor.cu:219-241` — one bit per `(token, digit)`, bit
-`token & 31`, digits contiguous), and `factor_backward_kernel` already unpacks that
-word rather than re-testing, which is why the producer's two directions cannot
-disagree about the support set. The intra takes the same word, one per side, in the
-plane's own digit order: `sread`/`swrite`, `[BH, ceil(L/32), D*B]` int32, so a word's
-column IS the plane's digit.
+The table drives everything else, uniformly across the CTA:
 
-That layout is a zero-transpose fit for a TILE-grain union. A 64-token tile is
-EXACTLY TWO WORDS per digit, so the union is `(w0 | w1) != 0`; the work axis is
-(tile, certificate word) and the unit is a WARP holding 32 CONSECUTIVE DIGITS, one per
-lane, which makes each of the two loads one 128-byte line and makes the `__ballot` of
-the per-lane test the certificate word itself — no atomic, no cross-lane reduction, no
-transpose. A level narrower than one 32-digit word is ONE unit and a wide level
-several, the same loop at every width; digits past `B` (a padded level's tail)
-contribute a cleared bit, as they must.
+* a stage is copied only when either row tile reads one of its slabs, and the tile's values
+  only when either row tile's pair is live; an uncopied stage's arrival is immediate;
+* a warp waits on a stage only when it reads one of its slabs, and computes the tile only when
+  its pair is live; a stage with every slab live runs as one straight-line block, a stage with
+  some as a branch a k-step, and a level's first step gated off zeroes the accumulator in its
+  place;
+* tile 0's copies leave before the table exists, so they are copied whatever it says and
+  every warp awaits them: a copy that leaves is always awaited by a warp before its buffer is
+  released, so none is in flight when a buffer refills.
 
-The bytes are the point. Re-deriving the union scans the tile's bf16 AMPLITUDES —
-64 tokens x `B` digits x 2 B = **65.5 KB per (tile, level, declared side)** at
-`B = 256`, which at `L = 65536` measured as **67.1 MB of the intra forward's 574.2 MB
-DRAM read**, the whole previously-unattributed 12%. The word answers the identical
-question in `2 x B x 4 B` = **4 KB**, a 16x cut on that term, for a signature change
-and no new format.
+The gate cannot move a number: a skipped slab's products are all zero, and a skipped pair adds
+exact zeros to `num` and `den`. `test_the_slab_gate_is_an_exact_certificate` holds the gated
+run to the ungated run's bits on a clustered draw where the gate skips pairs and slabs.
 
-A producer whose solve is shared across a level's two duties hands the SAME word to
-both sides. The support contract allows a set bit to accompany a stored
-zero, and such a bit costs one gated MMA group whose product is exactly zero — it can
-move no number, which is the same argument that makes the gate a certificate.
+<a id="gram"></a>
 
-A side the launch's mode word does not declare sparse is never summarized and
-answers all-ones, so the gate self-deactivates at dense routing rather than
-becoming a second code path. The modes are a LAUNCH ARGUMENT, not a compile-time
-pattern axis: `DENSE_BOTH`, `READ_SPARSE`, `WRITE_SPARSE`, `BOTH_SPARSE` (union
-routing, which runs on exactly this machinery).
+## The Gram
 
-The gate is an exact zero certificate, so it cannot move a number — the battery
-asserts bitwise equality between a gated and an ungated run of the same operands.
+A stage is four k-steps (`gram_step`); a k-step is the warp's 16 reader rows against the
+stage's 64 writer tokens over one slab: one `ldmatrix.x4` of the reader rows, four of the
+stage, eight IMMAs into the level's `int32[8][4]` accumulator. Both operands are token-major
+rows read by plain `ldmatrix` — no transpose anywhere. A level's first k-step starts its
+accumulator from zero (`imma_u8_k32_fresh`), so the accumulator is dead between levels. At a
+level's last stage the s32 sums convert to fp32 — exactly, since a level's sum is at most
+`255² · 256 < 2^24` — and multiply into the running level product (`fold_level`).
 
-## Where the time goes (sm_86, measured)
+<a id="epilogue"></a>
 
-The Π→Σ collapse that makes this term cheap in FLOPs also collapses its
-arithmetic intensity. Per window the Gram issues `W^2 · sum_l B_l` flops against
-`4 · W · sum_l B_l` operand bytes, so the ideal intensity is `W/4` — 128 flop/byte
-at `W = 512`, against a 3080 Ti's 94 flop/byte compute/bandwidth balance. Ideal
-intensity is therefore NOT what binds; the tile walk's operand RE-READ is, and it
-grows with `W`, not away from it.
+## The epilogue
 
-Both levers are pulled. `W` is an instantiation axis and the flagship is 384–512
-(the architecture doc's sizing law); the output block is `C = 128`. The re-read
-each addresses is a tile-staging count against the window's distinct tiles — at
-`W = 512`, 16 distinct tiles against 72 stagings before the block and 56 after
-(the row side's 36 are untouched, the column side's 36 became 20).
+At the tile's last stage the level product becomes `A`: each lane reads its two writer columns'
+factors (`f = g · Π sw_l · kUnit` and the value scale `s`) from shared memory and the quad's
+columns reach the lanes that hold them by shuffles; on the diagonal tile a column above its
+row is zero. The row sums go to `den` (two quad shuffles, one shared add a row) before
+anything is quantized, and `A · s` — the value product's `P` — replaces the accumulator.
 
-Measured at `W = 512`, `BH = 1`, `L = 65536`, dense (`ncu`, four launches, and the
-free-running wall beside it):
+<a id="value-product"></a>
 
-| | dur ms | wall ms | DRAM read MB | vs ideal | tensor | occ | long-scoreboard |
-|---|---|---|---|---|---|---|---|
-| one row tile per sweep | 1.322 | 1.33 | 646.7 | 4.5x | 17.2% | 13.2% | 18.8% |
-| `C = 128` | 0.938 | 0.74 | 507.2 | 3.6x | 26.0% | 16.6% | 10.1% |
+## The value product
 
-The ideal is 142.7 MB — the two operand planes, the value plane and the gains,
-read once. Traffic fell 1.28x and the wall fell 1.8x, because the block also
-halves the column stagings and the barriers per unit of issued MMA: the same
-Gram work now rides half as many `cp.async` fills on the column side. The term is
-no longer bandwidth-dominated at the dense cell.
+`P` against each row's maximum over the tile (the quad's two shuffles), as the declared digits:
+`a = min(rint(P · LW / m), LW)`, `LW` = 65535 at two weight digits (the default) or 255 at
+one. The two digit bytes are packed by `prmt` from the accumulator's own registers into the
+IMMA A fragment — the accumulator's layout IS the A fragment's under a fixed permutation of
+k, lane `(g, tq)` holding tokens `{2tq, 2tq + 1, 8 + 2tq, 9 + 2tq}` of each n-tile — and the
+values are loaded to match it: `ldmatrix.trans` of the token-major value rows and one `prmt` a
+register (`0x6420` the even bytes, `0x7531` the odd). Per 16-channel group, the digit products
+accumulate in s32 by their weight — hi × `v_hat`, (lo × `v_hat`, hi × `v_lo`), lo × `v_lo`, two
+weight digits by two value digits — and one scaled fp32 add a group (`unit = m / (LW · LV)`)
+lands them in the output accumulator. The four channel groups are a real branch apart
+(`rola::uniform_switch`): unrolled together, the compiler hoisted every group's value loads
+over the others and spilled.
 
-What remains is the ROW side's 4.5x, and what would cut it is more tile pairs
-per warp — which is the budget the census refuses. Stacking just the block's two
-row tiles in one warp's registers (the four-warp form of the same block)
-assembles 255 registers with 72 spill stores and 17 in-loop local accesses at
-`W = 512`; two column tiles as well would want twice that again. The shipped
-block, sharing the row tiles across warps instead, is register-clean at 168
-registers (`W = 512` and `W = 384`), 96 (`W = 64`), zero spill, zero local, on both
-ratified architectures.
-
-The CTA is register-bound to one per SM (256 threads x 168 registers), so a grid
-of 128 CTAs — `BH = 1` at `L = 65536` — runs 1.6 waves and pays a tail. Cells short
-enough to be tail-dominated show it: the cohort-64 cells run 0.42/0.46 ms against
-0.39/0.43 before at `BH = 1`, while the same cells at `BH = 8` run 2.85/3.10 ms
-against 3.34/3.90. Dense and scattered are faster at both.
-
-The slab gate, measured, is a CLUSTERING mechanism and not a sparsity one: at
-`k_tok = 4` SCATTERED the kernel runs 1.09 ms against dense's 0.94 (near
-indistinguishable), and at cohort 64 it runs 0.53 ms with DRAM read down 2.5x.
-That is the same fact the ballot-intersection tier's `k_tok ~ 7` crossover
-records, seen from the built side, and it is why that tier is not built.
-
-READING THE CERTIFICATE INSTEAD OF REBUILDING IT is worth a fixed ~65 MB of the
-read, at `W = 512`, `BH = 1`, `L = 65536` (`ncu`, one settled launch, paired against
-the scan form on the same draws):
-
-| cell | DRAM read MB | `ncu` dur ms | free-running median ms |
-|---|---|---|---|
-| `k_tok = 4` scattered, scan | 583.6 | 1.040 | 0.820 |
-| `k_tok = 4` scattered, word | **511.1** (−72.5, −12.4%) | **0.963** (−7.4%) | **0.756** (−7.9%) |
-| `k_tok = 4` cohort 64, scan | 205.9 | 0.483 | 0.372 |
-| `k_tok = 4` cohort 64, word | **142.6** (−63.2, −30.7%) | **0.407** (−15.8%) | **0.298** (−19.8%) |
-
-The cut is an ABSOLUTE constant in the bytes, not a fraction: the scan reads a tile's
-whole amplitude rows whatever the routing puts in them, so both cells shed the same
-~65 MB and only the denominator differs. The wall follows at about 0.5–0.6 of the byte
-ratio, not 1:1 — the term is 62–65% of DRAM peak but its #1 issue stall is
-`math_pipe_throttle`, so a byte saved is not a cycle saved. The dense cell moves by
-nothing measurable, as it must: no side is declared, so no certificate is built at all.
-
-## Comments moved from source
-
-Verbatim `//:` prose blocks from `csrc/rola/src/intra/intra_kernel.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
-
-<a id="note-l31"></a>
-### near line 31
-
-THE OUTPUT BLOCK IS C = `kTile * row_tiles_of(W)` READER TOKENS.  The column
-operands staged for one column tile serve every row tile of the block, which
-is what takes the tile-pair grid's operand re-read down; a window with a
-single tile has no pair to share with, so the block collapses onto it.
-
-<a id="kwarpspertile"></a>
-### `kWarpsPerTile`
-
-ONE WARP PER `kWarpRows` OF THE BLOCK: a warp holds the Gram of ONE tile pair,
-so the block's accumulator budget per thread does not grow with C -- the row
-tiles are shared across warps, not stacked in one warp's registers.  The CTA
-width is therefore a function of the arm, like every other tile count here.
-
-<a id="kstagecap"></a>
-### `kStageCap`
-
-A LEVEL'S STAGED WIDTH is its digit count rounded up to the MMA's contraction
-step: a level narrower than one step is contracted PADDED, because there is no
-`k < 16` tensor op.  The pad is zeroed once and never staged, so it costs MMA
-throughput on that level and nothing else -- exactly `kSlabDigits / B` when
-`B < kSlabDigits`, and nothing at all otherwise.
-
-<a id="kstagecap-2"></a>
-### `kStageCap`
-
-THE PIPELINE STAGE IS AT MOST AS WIDE AS THE LEVEL.  A stage is one cp.async
-fill and one pair of barriers, and several `kSlabDigits` steps ride it, so the
-barrier count per tile-pair is the stage count and not the MMA-step count.  A
-level that fits inside one stage IS one stage.
-
-<a id="alignas"></a>
-### `alignas`
-
-THE OPERAND SLABS ARE PER-TILE-PAIR AND DO NOT GROW WITH THE WINDOW: only the
-zero-certificate masks do, at one word per (tile, level, side, 32 digits).
-The block's whole reader side is resident, which puts the footprint past the
-48 KB a kernel gets unasked, so the arm launches on opted-in dynamic shared
-memory.
-
-<a id="build-masks"></a>
-### `build_masks`
-
-One bit per digit, unioned over a tile's 64 tokens -- the exact zero
-certificate the slab gate reads.  A side the mode word does not declare
-sparse is never summarized and answers all-ones, which is what makes the
-gate self-deactivating rather than a second code path.
--- docs/internals/intra/intra_kernel.md#the-slab-gate
-
-<a id="kfill"></a>
-### `kFill`
-
-THE PAD IS ZEROED ONCE, AND ONLY WHERE THERE IS ONE.  A level narrower than
-the MMA's contraction step leaves the slab's tail unstaged, and a zero there is
-what makes the padded contraction equal the `B`-wide one.  A level that fills
-its staged width has no tail, so the fill is not merely skipped at runtime --
-it is not compiled, because the registers it costs are live across the whole
-tile-pair loop.
-
-<a id="tilesof"></a>
-### `tiles_of`
-
-THE WINDOW IS AN ARM, so the tile counts it induces are functions of it and
-never file-scope constants -- the carry's `W` template argument, mirrored.
-
-<a id="operandpitch"></a>
-### `operand_pitch`
-
-The operand rows are padded so the eight row addresses ldmatrix reads per
-8x8 tile land in eight distinct banks; the pad is in elements and keeps every
-row base 16-byte aligned, which cp.async requires.
-
-<a id="intraparams"></a>
-### `IntraParams`
-
-`sread`/`swrite`: the producer's frozen support word for the plane of the same
-name, `[BH, token_words, row_width]` int32, bit `token & 31` of word
-`token / 32`, so a word's COLUMN is the plane's digit.
-
-<a id="koctets"></a>
-### `kOctets`
-
-§6: `N` is this function's template parameter (renamed from lowercase `n`
-so the unroll-discipline lint reads it as compile-time); `N / 8` is still an
-arithmetic expression the heuristic can't parse, so name it too.
-
-<a id="lane"></a>
-### `lane`
-
-no zero-fill and no leading barrier: every DECLARED (tile, level, side, word)
-is written once by one lane, and `slab_bits` answers an undeclared side from
-the mode word without reading the array.
-
-<a id="near-line-185"></a>
-### near line 185
-
-One bit per row tile of the block: the pairs of this stage with work in them.
-A strictly-upper pair is never set, which is how the causal grid is walked.
-
-<a id="krowtiles"></a>
-### `kRowTiles`
-
-§6: row_tiles_of(W) is compile-time (W is this function's template parameter)
-but the heuristic can't see through the function call, so name it.
-
-<a id="kcoldigitoctets"></a>
-### `kColDigitOctets`
-
-§6: kColDigits/8 and kStage/16 are compile-time but the heuristic only reads a
-bare identifier, so name them.
-
-<a id="near-line-218"></a>
-### near line 218
-
-a level's REAL digits only.  Where `B` is narrower than the MMA's contraction
-step the slab's tail was zeroed at entry and is never refilled, which is what
-makes the padded contraction exact.
-
-<a id="kcolchanneloctets"></a>
-### `kColChannelOctets`
-
-§6: kColChannels/8 is compile-time but the heuristic only reads a bare
-identifier, so name it.
+A weight moves by at most half its unit, so a slot's error is bounded by `m / (2 LW) · Σ |q| /
+LV` a tile, the reference's `bound`; the kernel's weights are within one unit of the exact
+ones, and the gate allows three bounds plus fp32 accumulation against the slot's envelope.
 
 <a id="deposit"></a>
-## The deposit, at the line law
 
-A warp's output block is `kWarpRows` rows by `kValueWidth` channels plus each row's mass,
-final in the MMA accumulator after the block's last column tile. It leaves through the
-warp's staging tile -- `kWarpRows` rows of one 32-channel segment, the mass, and a pad to
-`kStageStride = 40` floats, so a fragment's 64-bit pair stores are bank free and a row is
-contiguous -- a segment at a time: the segment's four n-tiles stored, the warp edge, then
-one `red.global.add.f32` per row covering its 32 consecutive channels, one 128-byte line an
-instruction, and the sixteen masses one line more. The tile is laid in the operand slabs,
-dead by then: the block's last stage ended on a CTA edge after every warp's last MMA and the
-next block's fill begins on one. The fragment-direct reduction it replaced touched eight
-lines an instruction, the form the carry measured and rejected (`carry/carry_kernel.md#readout`).
-The intra's cost is not here (1.6% of the tensor peak at `W = 512`); its rebuild on the
-carry's form is owed.
+## The deposit
+
+After the sweep a CTA barrier frees the reader region, and each warp stages its 16 rows × 64
+channels there (a 68-float pitch, so the accumulator's pair stores are bank free), then
+reduces each row into `num` as two 128-byte `red.global.add.f32` runs, lanes on consecutive
+channels, and its 16 row sums into `den`. A RED, not a store: the carry reduces into the same
+planes on the same stream, and the caller owns zeroing them.
+
+<a id="phase-ledger"></a>
+
+## The phase ledger
+
+`rola_intra_ledger_bind` binds a `[8][7]` int64 buffer (warp × `reader`, `gate`, `wait`,
+`gram`, `epilogue`, `value`, `deposit`) every CTA's warps add their cycles into
+(`rola.ops.intra.ledger_bind`); a bound ledger moves no output. A phase is booked at the lap
+that ends it, so a producer's wait on an `empty` barrier lands in whichever phase laps next.
+
+## The budget line and where the time goes
+
+The line (ruled 2026-09-30, on the int8 rebuild's plan card), per head at `(256, 256)`, `d_v` 64, `L = 64K`:
+the Gram 2.36M IMMAs (~68 µs at sm_86's 16 cycles an IMMA a scheduler), the value product half
+that (~34 µs), the bytes ~75 MB (~94 µs); floor ~115 µs, budget 1.3× (~150 µs). The line left
+out the output's read-modify-write (`num` and `den` reduced, ~34 MB a head), which puts the
+byte floor at ~139 µs and the budget at ~180 µs.
+
+Measured (sm_86, CUDA events at boost clocks; `(256, 256)`):
+
+| cell | measured | against |
+|---|---|---|
+| `L = 64K`, 16 batch-heads, a head (every digit live) | 276 µs | ~180 µs budget (1.5×) |
+| `nl64k-dense` (one sequence) | 286 µs | |
+| `nl64k-alt-k4` | 294 µs | |
+| `flagship-dense` (`L = 1K`) | 65 µs | |
+| `flagship-alt-k4` | 64 µs | |
+| `flagship-cohort-k16` | 49 µs | ~5 µs |
+
+The ledger at `L = 64K`, 16 batch-heads: data waits 27%, Gram 27.5%, value product 20%,
+deposit 11%, epilogue 7%, reader 4%, gate 3.5% of the warps' cycles. The Gram runs at ~1.2×
+its tensor floor and the value product at ~1.8× its own; one CTA an SM leaves nothing to fill
+the waits.
+
+At `L = 1K` the grid is eight CTAs, and the time is one CTA's: the heaviest block issues ~11.5K
+IMMAs on one SM, a ~24 µs tensor floor, and runs 64 µs. On `flagship-cohort-k16` every tile
+pair is live and the gate keeps 2.5 of 16 slabs a pair, so the Gram's IMMAs fall to a sixth
+and the time only to 49 µs: the line's ~5 µs assumed the gate would skip most of a cohort draw's
+work, and the value product, the epilogue and the chain of stages stay. Reaching it takes the
+heaviest block's sweep split across SMs — the output's REDs allow a reader row to take its
+pairs from several CTAs — at a price in reader bytes the large-`L` regime pays.
+
+The gate's own cost, from the ledger with the unions read and with every level declared dense
+(nothing read): 1.1% for the prologue's barrier, 2.5% for the unions' round trip, which tile
+0's stages could hide.
+
+## Other architectures
+
+On sm_80 the form is the same, and the IMMA issues every 8 cycles, so the byte floor binds
+harder. On sm_90 the writer stages move by TMA boxes and the Gram and value product are
+`wgmma` from shared memory (u8 × s8 at k 32), the reader side resident as now; the
+warp-uniform gate carries over unchanged. sm_100's `tcgen05` takes the same shared-memory
+operands with the accumulator in tensor memory.
+
+## Where the mechanism came from
+
+The bf16 intra it replaces (deleted 2026-09-30, [`DELETIONS.md`](../DELETIONS.md)) walked
+the same 128-reader blocks and lower-triangular tiles, gated slabs on the producer's support
+words, and deposited through a staging tile by REDs; those stay. What is new is the input —
+the bundle's u8 rows, half the frame's bf16 bytes a digit — which lets the whole reader block
+sit in shared memory once instead of being re-staged for every column tile (the frame read
+3.6× its ideal bytes), the int8 Gram exact in s32, the mbarrier pipeline, the value product in
+u8 weights with the accumulator reused as its operand, and the gate's certificate from the
+facts pass's tile unions rather than a word per token.

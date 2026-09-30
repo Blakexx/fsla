@@ -27,6 +27,10 @@ from rola.engine.facts.planes import ATOM_READ, ATOM_WRITTEN
 #: Tokens are the table's minor axis, 32 to a word: one warp ballot per row.
 TOK_BITS = 32
 
+#: A TILE UNION's grain: 64 tokens (two words) of a 32-digit group of one level.
+TILE_TOKENS = 64
+GROUP_DIGITS = 32
+
 #: The two sides, in table order.
 READ, WRITE = 0, 1
 SIDES = 2
@@ -107,6 +111,21 @@ class LivenessLayout:
 
     def token_bit(self, token: int) -> int:
         return 1 << (token % TOK_BITS)
+
+    def group_base(self, level: int) -> int:
+        return sum(-(-width // GROUP_DIGITS) for width in self.B[:level])
+
+    @property
+    def groups(self) -> int:
+        """A side's 32-digit groups: each level's digits in groups of 32, a narrower level one group."""
+        return self.group_base(self.D)
+
+    @property
+    def tiles(self) -> int:
+        return -(-self.L // TILE_TOKENS)
+
+    def union_index(self, bh: int, side: int, group: int, tile: int) -> int:
+        return ((bh * SIDES + side) * self.groups + group) * self.tiles + tile
 
     @property
     def N(self) -> int:
@@ -223,6 +242,27 @@ def liveness_words(read_rows, write_rows, layout: LivenessLayout, read_statics: 
                 live[:, base:base + layout.B[level], :] = True
         sides.append(_pack(live & mask[None, :, None], layout))
     return torch.stack(sides, dim=1)
+
+
+def tile_unions(words: torch.Tensor, layout: LivenessLayout) -> torch.Tensor:
+    """THE MODEL OF THE TILE UNIONS: `[BH, 2, rows, words]` words -> `[BH, 2, groups, tiles]` int32, bit ``i`` of
+    (group ``g`` of level ``l``, tile ``t``) set when digit ``32 g + i`` of level ``l`` is live at a token in
+    ``[64 t, 64 t + 64)``: the OR of the tile's two words, a row a bit."""
+    BH = words.shape[0]
+    pad = 2 * layout.tiles - layout.words
+    if pad:
+        words = torch.cat([words, words.new_zeros((*words.shape[:-1], pad))], dim=-1)
+    live = (words.reshape(BH, SIDES, layout.rows, layout.tiles, 2) != 0).any(-1)
+    groups = []
+    for level, width in enumerate(layout.B):
+        base = layout.row_base(level)
+        rows = live[:, :, base:base + width]
+        rows = torch.cat([rows, rows.new_zeros((BH, SIDES, -width % GROUP_DIGITS, layout.tiles))], dim=2)
+        groups.append(rows.reshape(BH, SIDES, -1, GROUP_DIGITS, layout.tiles))
+    bits = torch.cat(groups, dim=2).to(torch.int64)
+    weights = (1 << torch.arange(GROUP_DIGITS, device=words.device, dtype=torch.int64))[:, None]
+    unions = (bits * weights).sum(dim=3)
+    return (unions - (unions >= 1 << 31).to(torch.int64) * (1 << 32)).to(WORD_DTYPE)
 
 
 def unpack(words: torch.Tensor, layout: LivenessLayout) -> torch.Tensor:

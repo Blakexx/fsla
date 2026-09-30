@@ -1,447 +1,624 @@
-// Copyright 2026 Blake Bottum
-// SPDX-License-Identifier: Apache-2.0
+// csrc/rola/src/intra/intra_kernel.cuh -- THE INTRA KERNEL: a CTA a (batch-head, window, block of 128 readers), the
+// block's reader rows resident in shared memory, the writer tiles streamed through three stage buffers under full and
+// empty mbarriers under the slab gate the facts pass's words give; a tile's Gram over each level's digits, the epilogue
+// into the value product's weights, the value product, and the block's rows reduced into the output planes at the end.
+// see docs/internals/intra/intra_kernel.md
 #pragma once
 
-#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <utility>
 
 #include "common/ops.cuh"
+#include "common/phase_clock.cuh"
+#include "common/structure_switch.cuh"
+#include "facts/liveness_contract.cuh"
 #include "intra/intra.cuh"
 
-namespace rola {
-namespace intra {
-namespace detail {
+namespace rola::intra::detail {
 
-using denseref::ops::fan_in_add;
-using denseref::ops::kBf16MagnitudeMask;
-using denseref::ops::load_frag;
-using denseref::ops::load_frag_t;
-using denseref::ops::load_shared_u32;
-using denseref::ops::mma;
-using denseref::ops::pack_bf16x2;
-using denseref::ops::smem_addr;
-using denseref::ops::stage_commit;
-using denseref::ops::stage_tile;
-using denseref::ops::stage_wait;
-using denseref::ops::store_shared_f32x2;
-using denseref::ops::store_shared_u32;
-using denseref::ops::warp_sync;
+namespace ops = denseref::ops;
+using Clock = PhaseClock<kIntraPhases>;
 
-//: THE WINDOW IS AN ARM, so the tile counts it induces are functions of it and -- see docs/internals/intra/intra_kernel.md#tilesof
-constexpr int tiles_of(int window) { return window / kTile; }
-
-//: THE OUTPUT BLOCK IS C = `kTile * row_tiles_of(W)` READER TOKENS. -- see docs/internals/intra/intra_kernel.md#note-l31
-constexpr int row_tiles_of(int window) { return tiles_of(window) >= 2 ? 2 : 1; }
-
-constexpr int rows_of(int window) { return row_tiles_of(window) * kTile; }
-
-//: ONE WARP PER `kWarpRows` OF THE BLOCK: a warp holds the Gram of ONE tile -- see docs/internals/intra/intra_kernel.md#kwarpspertile
-constexpr int threads_of(int window) { return 32 * (rows_of(window) / kWarpRows); }
-
-constexpr int kWarpsPerTile = kTile / kWarpRows;
-
-//: A LEVEL'S STAGED WIDTH is its digit count rounded up to the MMA's -- see docs/internals/intra/intra_kernel.md#kstagecap
-constexpr int level_digits(int width) { return width < kSlabDigits ? kSlabDigits : width; }
-
-constexpr int slabs_per_level(int width) { return level_digits(width) / kSlabDigits; }
-
-constexpr int mask_words(int width) { return (level_digits(width) + 31) / 32; }
-
-//: THE PIPELINE STAGE IS AT MOST AS WIDE AS THE LEVEL. A stage is one cp.async -- see docs/internals/intra/intra_kernel.md#kstagecap-2
-constexpr int kStageCap = 64;
-
-constexpr int stage_digits(int width) {
-  return level_digits(width) < kStageCap ? level_digits(width) : kStageCap;
-}
-
-constexpr int slabs_per_stage(int width) { return stage_digits(width) / kSlabDigits; }
-
-constexpr int stages_per_level(int width) { return level_digits(width) / stage_digits(width); }
-
-//: The operand rows are padded so the eight row addresses ldmatrix reads per -- see docs/internals/intra/intra_kernel.md#operandpitch
-constexpr int operand_pitch(int width) { return stage_digits(width) + 8; }
-
-constexpr int kValuePitch = kValueWidth + 8;
-
-//: THE DEPOSIT'S STAGING ROW: one 32-channel segment, the row's mass, and the pad that
-//: keeps a fragment's 64-bit pair stores bank free -- `kWarpRows` rows a warp, laid in the
-//: operand slabs, which are dead once a block's last tile has been consumed.
-//: -- see docs/internals/intra/intra_kernel.md#deposit
-constexpr int kStageStride = 32 + 8;
-constexpr int kStageFloats = kWarpRows * kStageStride;
-
-//: `sread`/`swrite`: the producer's frozen support word for the plane of the same -- see docs/internals/intra/intra_kernel.md#intraparams
-struct IntraParams {
-  const __nv_bfloat16* pread;
-  const __nv_bfloat16* pwrite;
-  const __nv_bfloat16* gwrite;
-  const __nv_bfloat16* v;
-  const int32_t* sread;
-  const int32_t* swrite;
-  float* o;
-  float* den;
-  int L;
-  int row_width;
-  int token_words;
-  int heads;
-  int tokens;
-  uint32_t modes;
+//: AN ARM: `D` levels of `B` u8 digits a side. -- see docs/internals/intra/intra_kernel.md#arms
+template <int D, int B>
+struct Arm {
+  static constexpr int kRowBytes = D * B;
+  static constexpr int kRowChunks = kRowBytes / kChunk;
+  static constexpr int kLevelChunks = B / kChunk;
+  static constexpr int kStagesPerLevel = B / kStageDigits;
+  static constexpr int kStages = D * kStagesPerLevel;
+  static constexpr int kStageChunks = kStageDigits / kChunk;
+  static constexpr int kStageCopies = kTile * kStageChunks / kThreads;
+  static constexpr int kColumns = (2 + D) * kTile;
+  static constexpr int kSlabs = D * B / kSlabDigits;
+  static constexpr int kSlabsPerLevel = B / kSlabDigits;
+  static constexpr int kSlabsPerStage = kStageDigits / kSlabDigits;
+  //: A digit is its unit value times 255, so a level's integer Gram is 255^2 its unit Gram.
+  static constexpr float kUnit = 1.0f
+                                 / (D == 1   ? 65025.0f
+                                    : D == 2 ? 65025.0f * 65025.0f
+                                    : D == 3 ? 65025.0f * 65025.0f * 65025.0f
+                                             : 65025.0f * 65025.0f * 65025.0f * 65025.0f);
+  static_assert(B % kStageDigits == 0, "a stage lies inside one level");
+  static_assert(kStages >= kStageBuffers, "a tile's values land while its first stages are read");
+  static_assert(kColumns <= kThreads, "a thread copies at most one writer column entry a tile");
+  static_assert(kSlabs <= 32, "a tile pair's slabs are one word");
 };
 
-//: THE OPERAND SLABS ARE PER-TILE-PAIR AND DO NOT GROW WITH THE WINDOW: only -- see docs/internals/intra/intra_kernel.md#alignas
-template <int D, int B, int W>
-struct alignas(16) IntraSmem {
-  __nv_bfloat16 rslab[2][rows_of(W)][operand_pitch(B)];
-  __nv_bfloat16 wslab[2][kTile][operand_pitch(B)];
-  __nv_bfloat16 vslab[kTile][kValuePitch];
-  __nv_bfloat16 gain[kTile];
-  uint32_t mask[tiles_of(W)][D][2][mask_words(B)];
+//: THE SHARED TENANTS: the block's reader rows, three writer stages, the tile's value rows and writer columns (the
+//: gain, the value scale, each write level's scale), the slab gate's table, and the pipeline's mbarriers.
+//: -- see docs/internals/intra/intra_kernel.md#smem
+template <int D, int B>
+struct alignas(128) Smem {
+  uint8_t reader[kBlockRows][Arm<D, B>::kRowBytes];
+  uint8_t stage[kStageBuffers][kTile][kStageDigits];
+  uint8_t v_hat[kTile][kValueWidth];
+  uint8_t v_lo[kTile][kValueWidth];
+  float column[2 + D][kTile];
+  float den[kWarps][kWarpRows];
+  uint32_t gate[kWindowTiles][kRowTiles];
+  uint64_t full[kStageBuffers], empty[kStageBuffers];
+  uint64_t reader_full[Arm<D, B>::kStages], values_full, values_empty;
+  long long clock[kWarps][Clock::kRow];
 };
 
-__device__ __forceinline__ uint32_t nonzero_pair(uint32_t w) {
-  const uint32_t m = w & kBf16MagnitudeMask;
-  return ((m & 0xFFFFu) != 0u ? 1u : 0u) | ((m & 0xFFFF0000u) != 0u ? 2u : 0u);
+//: A ROW'S 16-BYTE CHUNK, placed so eight consecutive rows at one chunk lie in eight bank groups; a 64-byte value row's
+//: four chunks by row pairs. -- see docs/internals/intra/intra_kernel.md#swizzle
+__device__ __forceinline__ int swizzle8(int row, int chunk) { return chunk ^ (row & 7); }
+
+__device__ __forceinline__ int swizzle4(int row, int chunk) { return chunk ^ ((row >> 1) & 3); }
+
+template <typename T>
+__device__ __forceinline__ const T* at(const RowView& v, int b, int t, int h) {
+  return static_cast<const T*>(v.base) + b * v.sb + t * v.st + h * v.sh;
 }
 
-template <int N>
-__device__ __forceinline__ uint32_t digit_union_word(const __nv_bfloat16* row) {
-  static_assert(N % 8 == 0 && N <= 32, "a certificate word covers 8, 16 or 32 digits");
-  uint32_t bits = 0;
-  //: §6: `N` is this function's template parameter (renamed from lowercase `n` -- see docs/internals/intra/intra_kernel.md#koctets
-  constexpr int kOctets = N / 8;
-#pragma unroll
-  for (int q = 0; q < kOctets; ++q) {
-    const uint4 x = *reinterpret_cast<const uint4*>(row + q * 8);
-    bits |= nonzero_pair(x.x) << (q * 8 + 0);
-    bits |= nonzero_pair(x.y) << (q * 8 + 2);
-    bits |= nonzero_pair(x.z) << (q * 8 + 4);
-    bits |= nonzero_pair(x.w) << (q * 8 + 6);
+//: A THREAD'S COPIES: a copy's global address from the CTA's (batch, head, window) and the thread's place, a few
+//: multiply-adds at the copy rather than registers held across the loop. -- see docs/internals/intra/intra_kernel.md#copies
+template <int D, int B>
+struct Copier {
+  using A = Arm<D, B>;
+  int b, h, t_window, tid;
+
+  //: the writer column `c`: the gain, the value scale, then each write level's scale
+  static __device__ __forceinline__ const ColumnView& column_view(const IntraParams& p, int c) {
+    return c == 0 ? p.g_write : c == 1 ? p.v_scale : p.scale_write[c - 2];
   }
-  return bits;
-}
 
-//: One bit per digit, unioned over a tile's 64 tokens -- the exact zero -- see docs/internals/intra/intra_kernel.md#build-masks
-template <int D, int B, int W>
-__device__ void build_masks(IntraSmem<D, B, W>& sm, const IntraParams& p, int bh, int wbase,
-                            int tid) {
-  constexpr int kTiles = tiles_of(W);
-  constexpr int kThreads = threads_of(W);
-  constexpr int kWords = mask_words(B);
-  constexpr int kWarps = kThreads / 32;
-  constexpr int kUnits = kTiles * kWords;
-  //: no zero-fill and no leading barrier: every DECLARED (tile, level, side, word) -- see docs/internals/intra/intra_kernel.md#lane
-  const int lane = tid & 31;
-  const int warp = tid >> 5;
-  const int word0 = (wbase >> 5) + bh * p.token_words;
+  //: tile `tile`'s stage `S`, arriving on its buffer's full mbarrier when it lands; a stage no warp reads is not
+  //: copied, and its arrival is immediate
+  template <int S>
+  __device__ __forceinline__ void stage(const Smem<D, B>& sm, const IntraParams& p, int buf,
+                                        int tile, bool issue) const {
+    constexpr int kLevel = S / A::kStagesPerLevel;
+    constexpr int kDigit0 = (S % A::kStagesPerLevel) * kStageDigits;
+    if (!issue) {
+      ops::mbar_arrive(ops::smem_addr(&sm.full[buf]));
+      return;
+    }
+    const RowView& w = p.write[kLevel];
+    constexpr int kCopies = A::kStageCopies;
 #pragma unroll
-  for (int l = 0; l < D; ++l) {
+    for (int i = 0; i < kCopies; ++i) {
+      const int q = tid + i * kThreads, j = q / A::kStageChunks, k = q % A::kStageChunks;
+      ops::stage_tile(ops::smem_addr(&sm.stage[buf][j][swizzle8(j, k) * kChunk]),
+                      at<uint8_t>(w, b, t_window + tile * kTile + j, h) + kDigit0 + k * kChunk);
+    }
+    ops::mbar_arrive_when_landed(ops::smem_addr(&sm.full[buf]));
+  }
+
+  //: tile `tile`'s stage `S` into L2: a thread at a token's first chunk, its line
+  template <int S>
+  __device__ __forceinline__ void prefetch(const IntraParams& p, int tile) const {
+    constexpr int kLevel = S / A::kStagesPerLevel;
+    constexpr int kDigit0 = (S % A::kStagesPerLevel) * kStageDigits;
+    constexpr int kCopies = A::kStageCopies;
+    if (tid % A::kStageChunks == 0) {
 #pragma unroll
-    for (int side = 0; side < 2; ++side) {
-      const uint32_t want = (side == 0 ? kModeReadSparse : kModeWriteSparse);
-      if (((p.modes >> (2 * l)) & want) == 0u) continue;
-      const int32_t* words = (side == 0) ? p.sread : p.swrite;
-      for (int u = warp; u < kUnits; u += kWarps) {
-        const int w = u % kWords;
-        const int ti = u / kWords;
-        const int digit = w * 32 + lane;
-        const long long base = (long long)(word0 + ti * (kTile / 32)) * p.row_width + l * B + digit;
-        const bool live =
-            digit < B && ((uint32_t)words[base] | (uint32_t)words[base + p.row_width]) != 0u;
-        const uint32_t bits = __ballot_sync(0xFFFFFFFFu, live);
-        if (lane == 0) sm.mask[ti][l][side][w] = bits;
+      for (int i = 0; i < kCopies; ++i) {
+        const int j = (tid + i * kThreads) / A::kStageChunks;
+        ops::prefetch_l2(at<uint8_t>(p.write[kLevel], b, t_window + tile * kTile + j, h) + kDigit0);
       }
     }
   }
-  __syncthreads();
-}
 
-template <int D, int B, int W>
-__device__ __forceinline__ uint32_t slab_bits(const IntraSmem<D, B, W>& sm, uint32_t modes, int ti,
-                                              int l, int side, int slab) {
-  const uint32_t want = (side == 0 ? kModeReadSparse : kModeWriteSparse);
-  if (((modes >> (2 * l)) & want) == 0u) return 0xFFFFu;
-  return (sm.mask[ti][l][side][slab >> 1] >> ((slab & 1) * 16)) & 0xFFFFu;
-}
-
-template <int D, int B, int W>
-__device__ __forceinline__ bool slab_live(const IntraSmem<D, B, W>& sm, uint32_t modes, int rt,
-                                          int ct, int l, int slab) {
-  return (slab_bits(sm, modes, rt, l, 0, slab) & slab_bits(sm, modes, ct, l, 1, slab)) != 0u;
-}
-
-template <int D, int B, int W>
-__device__ __forceinline__ bool stage_live(const IntraSmem<D, B, W>& sm, uint32_t modes, int rt,
-                                           int ct, int l, int stage) {
-  constexpr int kSubs = slabs_per_stage(B);
-  bool any = false;
-#pragma unroll
-  for (int sub = 0; sub < kSubs; ++sub)
-    any = any || slab_live<D, B, W>(sm, modes, rt, ct, l, stage * kSubs + sub);
-  return any;
-}
-
-//: One bit per row tile of the block: the pairs of this stage with work in them. -- see docs/internals/intra/intra_kernel.md#near-line-185
-template <int D, int B, int W>
-__device__ __forceinline__ uint32_t live_rows(const IntraSmem<D, B, W>& sm, uint32_t modes, int rt0,
-                                              int ct, int l, int stage) {
-  uint32_t bits = 0u;
-  //: §6: row_tiles_of(W) is compile-time (W is this function's template parameter) -- see docs/internals/intra/intra_kernel.md#krowtiles
-  constexpr int kRowTiles = row_tiles_of(W);
-#pragma unroll
-  for (int r = 0; r < kRowTiles; ++r)
-    if (rt0 + r >= ct && stage_live<D, B, W>(sm, modes, rt0 + r, ct, l, stage)) bits |= 1u << r;
-  return bits;
-}
-
-template <int D, int B, int W>
-__device__ __forceinline__ void stage_slabs(IntraSmem<D, B, W>& sm, const IntraParams& p, int bh,
-                                            int wbase, int rt0, int ct, int l, int stage, int buf,
-                                            int tid, uint32_t rows) {
-  constexpr int kStage = stage_digits(B);
-  const int digit = l * B + stage * kStage;
-  const long long base = (long long)(bh * p.L + wbase) * p.row_width + digit;
-
-  constexpr int kThreads = threads_of(W);
-  constexpr int kColThreads = kThreads / kTile;
-  constexpr int kColDigits = kStage / kColThreads;
-  static_assert(kColDigits >= 8, "a staging thread's share of a stage is one cp.async granule");
-  //: §6: kColDigits/8 and kStage/16 are compile-time but the heuristic only reads a -- see docs/internals/intra/intra_kernel.md#kcoldigitoctets
-  constexpr int kColDigitOctets = kColDigits / 8;
-  constexpr int kStageHexadecs = kStage / 16;
-  const int ctoken = tid / kColThreads;
-  const int cpart = (tid % kColThreads) * kColDigits;
-  //: a level's REAL digits only.  Where `B` is narrower than the MMA's contraction -- see docs/internals/intra/intra_kernel.md#near-line-218
-  if (cpart < B) {
-    const __nv_bfloat16* wsrc =
-        p.pwrite + base + (long long)(ct * kTile + ctoken) * p.row_width + cpart;
-#pragma unroll
-    for (int c = 0; c < kColDigitOctets; ++c)
-      stage_tile(smem_addr(&sm.wslab[buf][ctoken][cpart + c * 8]), wsrc + c * 8);
+  //: tile `tile`'s value digits and writer columns, or an immediate arrival when no warp's pair with it is live
+  __device__ __forceinline__ void values(const Smem<D, B>& sm, const IntraParams& p, int tile,
+                                         bool issue) const {
+    if (!issue) {
+      ops::mbar_arrive(ops::smem_addr(&sm.values_full));
+      return;
+    }
+    const int j = tid >> 2, k = tid & 3, t0 = t_window + tile * kTile;
+    const uint32_t dst = static_cast<uint32_t>(j * kValueWidth + swizzle4(j, k) * kChunk);
+    ops::stage_tile(ops::smem_addr(&sm.v_hat[0][0]) + dst,
+                    at<uint8_t>(p.v_hat, b, t0 + j, h) + k * kChunk);
+    if (p.v_lo.base != nullptr)
+      ops::stage_tile(ops::smem_addr(&sm.v_lo[0][0]) + dst,
+                      at<uint8_t>(p.v_lo, b, t0 + j, h) + k * kChunk);
+    if (tid < A::kColumns) {
+      const int c = tid / kTile, t = tid % kTile;
+      const ColumnView& v = column_view(p, c);
+      ops::stage_run<4>(ops::smem_addr(&sm.column[c][t]),
+                        v.base + b * v.sb + (t0 + t) * v.st + h * v.sh);
+    }
+    ops::mbar_arrive_when_landed(ops::smem_addr(&sm.values_full));
   }
+};
 
-  const int rtoken = (tid >> 1) & (kTile - 1);
-  const int rtile = tid / (2 * kTile);
-  const int rpart = (tid & 1) * (kStage / 2);
-  if (((rows >> rtile) & 1u) && rpart < B) {
-    const __nv_bfloat16* rsrc =
-        p.pread + base + (long long)((rt0 + rtile) * kTile + rtoken) * p.row_width + rpart;
+//: THE BLOCK'S READER ROWS, once, a stage's digits at a time: part `S` goes out beside tile 0's stage `S` and arrives
+//: on its own mbarrier, so the first Gram waits for one part, not the block's rows; a chunk a copy, consecutive threads
+//: along a token's run.
+template <int D, int B, int S>
+__device__ __forceinline__ void load_reader_part(Smem<D, B>& sm, const IntraParams& p, int b, int h,
+                                                 int t0, int tid) {
+  using A = Arm<D, B>;
+  constexpr int kLevel = S / A::kStagesPerLevel;
+  constexpr int kDigit0 = (S % A::kStagesPerLevel) * kStageDigits;
+  constexpr int kCopies = kBlockRows * A::kStageChunks / kThreads;
 #pragma unroll
-    for (int c = 0; c < kStageHexadecs; ++c)
-      stage_tile(smem_addr(&sm.rslab[buf][rtile * kTile + rtoken][rpart + c * 8]), rsrc + c * 8);
+  for (int i = 0; i < kCopies; ++i) {
+    const int q = tid + i * kThreads;
+    const int r = q / A::kStageChunks, k = q % A::kStageChunks;
+    ops::stage_tile(ops::smem_addr(&sm.reader[r][swizzle8(r, S * A::kStageChunks + k) * kChunk]),
+                    at<uint8_t>(p.read[kLevel], b, t0 + r, h) + kDigit0 + k * kChunk);
   }
+  ops::mbar_arrive_when_landed(ops::smem_addr(&sm.reader_full[S]));
 }
 
-template <int D, int B, int W>
-__device__ __forceinline__ void stage_values(IntraSmem<D, B, W>& sm, const IntraParams& p, int bh,
-                                             int wbase, int ct, int tid) {
-  constexpr int kThreads = threads_of(W);
-  constexpr int kColThreads = kThreads / kTile;
-  constexpr int kColChannels = kValueWidth / kColThreads;
-  //: §6: kColChannels/8 is compile-time but the heuristic only reads a bare -- see docs/internals/intra/intra_kernel.md#kcolchanneloctets
-  constexpr int kColChannelOctets = kColChannels / 8;
-  const int b = bh / p.heads;
-  const int h = bh - b * p.heads;
-  const int t0 = wbase + ct * kTile;
-  const int token = tid / kColThreads;
-  const int part = (tid % kColThreads) * kColChannels;
-  const __nv_bfloat16* src =
-      p.v + ((long long)(b * p.tokens + t0 + token) * p.heads + h) * kValueWidth + part;
-#pragma unroll
-  for (int c = 0; c < kColChannelOctets; ++c)
-    stage_tile(smem_addr(&sm.vslab[token][part + c * 8]), src + c * 8);
-  if (tid < kTile / 8) {
-    stage_tile(smem_addr(&sm.gain[tid * 8]), p.gwrite + (long long)bh * p.L + t0 + tid * 8);
+//: THE GATE TABLE: per (window tile, row tile) the slabs whose reader and writer tile unions meet (the facts pass's), a
+//: lane a slab, cleared whole when a level has none (the pair's product is exactly zero) or the pair lies above the
+//: diagonal; a dense level answers all-ones unread. One warp. -- see docs/internals/intra/intra_kernel.md#slab-gate
+template <int D, int B>
+__device__ __forceinline__ void gate_table(Smem<D, B>& sm, const IntraParams& p, int bh, int window,
+                                           int block, int lane) {
+  using A = Arm<D, B>;
+  constexpr uint32_t kLevelMask = (1u << A::kSlabsPerLevel) - 1u;
+  const int tiles = p.L / facts::kTileTokens;
+  static_assert(B % facts::kGroupDigits == 0,
+                "a level is whole groups, so slab `s` is the side's group `s`");
+  const int level = min(lane / A::kSlabsPerLevel, D - 1);
+  const int group = lane;
+  const bool slab = lane < A::kSlabs;
+  const uint32_t all = slab ? ~0u : 0u;
+  const int tile0 = window * kWindowTiles;
+  uint2 reader = {all, all};
+  uint4 writer[2] = {{all, all, all, all}, {all, all, all, all}};
+  if (slab && !facts::level_is_dense(p.dense[facts::kRead], level))
+    reader = *reinterpret_cast<const uint2*>(p.unions
+                                             + facts::union_address(bh, facts::kRead, group,
+                                                                    tile0 + block * kRowTiles,
+                                                                    A::kSlabs, tiles));
+  if (slab && !facts::level_is_dense(p.dense[facts::kWrite], level)) {
+    const uint32_t* const w =
+        p.unions + facts::union_address(bh, facts::kWrite, group, tile0, A::kSlabs, tiles);
+    writer[0] = ops::load_vec16(w);
+    writer[1] = ops::load_vec16(w + 4);
   }
-}
-
-template <int D, int B, int W>
-__global__ __launch_bounds__(threads_of(W)) void intra_kernel(IntraParams p) {
-  constexpr int kTiles = tiles_of(W);
-  constexpr int kRowTiles = row_tiles_of(W);
-  constexpr int kStages = stages_per_level(B);
-  constexpr int kSubs = slabs_per_stage(B);
-  static_assert(kTiles * kTile == W, "the window is a whole number of output tiles");
-  static_assert(kTiles % kRowTiles == 0, "the window is a whole number of output blocks");
-  static_assert((B & (B - 1)) == 0 && B >= 8, "one uniform power-of-two level width");
-  extern __shared__ __align__(16) char raw[];
-  IntraSmem<D, B, W>& sm = *reinterpret_cast<IntraSmem<D, B, W>*>(raw);
-  const int tid = threadIdx.x;
-  const int warp = tid >> 5;
-  const int lane = tid & 31;
-  const int bh = blockIdx.y;
-  const int wbase = blockIdx.x * W;
-
-  //: THE PAD IS ZEROED ONCE, AND ONLY WHERE THERE IS ONE. A level narrower than -- see docs/internals/intra/intra_kernel.md#kfill
-  if constexpr (level_digits(B) > B) {
-    constexpr int kFill = (int)(sizeof(sm.rslab) + sizeof(sm.wslab)) / (int)sizeof(uint4);
-    uint4* z = reinterpret_cast<uint4*>(&sm.rslab[0][0][0]);
-    for (int i = tid; i < kFill; i += threads_of(W)) z[i] = make_uint4(0u, 0u, 0u, 0u);
-  }
-  build_masks<D, B, W>(sm, p, bh, wbase, tid);
-
-  //: The warp's row tile within the block, and its rows within that tile.
-  const int mine = (warp / kWarpsPerTile) & (kRowTiles - 1);
-  const int arow = warp * kWarpRows + (lane & 15);
-  const int trow = (warp % kWarpsPerTile) * kWarpRows;
-  const int acol = (lane >> 4) * 8;
-  const int row_lo = lane >> 2;
-  const int col_lo = (lane & 3) * 2;
-
-  for (int rt0 = 0; rt0 < kTiles; rt0 += kRowTiles) {
-    const int rt = rt0 + mine;
-    float oacc[8][4];
+  const uint32_t rows[kRowTiles] = {reader.x, reader.y};
+  const uint32_t columns[kWindowTiles] = {writer[0].x, writer[0].y, writer[0].z, writer[0].w,
+                                          writer[1].x, writer[1].y, writer[1].z, writer[1].w};
 #pragma unroll
-    for (int n = 0; n < 8; ++n)
+  for (int t = 0; t < kWindowTiles; ++t)
 #pragma unroll
-      for (int i = 0; i < 4; ++i) oacc[n][i] = 0.f;
-    float dacc[2] = {0.f, 0.f};
-
-#pragma unroll 1
-    for (int ct = 0; ct < rt0 + kRowTiles; ++ct) {
-      __syncthreads();
-      stage_values<D, B, W>(sm, p, bh, wbase, ct, tid);
-      uint32_t rows = live_rows<D, B, W>(sm, p.modes, rt0, ct, 0, 0);
-      if (rows) stage_slabs<D, B, W>(sm, p, bh, wbase, rt0, ct, 0, 0, 0, tid, rows);
-      stage_commit();
-
-      float gram[D][8][4];
+    for (int rt = 0; rt < kRowTiles; ++rt) {
+      uint32_t mask = __ballot_sync(0xffffffffu, (rows[rt] & columns[t]) != 0u);
 #pragma unroll
       for (int l = 0; l < D; ++l)
-#pragma unroll
-        for (int n = 0; n < 8; ++n)
-#pragma unroll
-          for (int i = 0; i < 4; ++i) gram[l][n][i] = 0.f;
-
-#pragma unroll
-      for (int l = 0; l < D; ++l) {
-#pragma unroll
-        for (int stage = 0; stage < kStages; ++stage) {
-          const int step = l * kStages + stage;
-          const int nl = (stage + 1 == kStages) ? l + 1 : l;
-          const int ns = (stage + 1 == kStages) ? 0 : stage + 1;
-          uint32_t next_rows = 0u;
-          if (nl < D) {
-            next_rows = live_rows<D, B, W>(sm, p.modes, rt0, ct, nl, ns);
-            if (next_rows)
-              stage_slabs<D, B, W>(sm, p, bh, wbase, rt0, ct, nl, ns, (step + 1) & 1, tid,
-                                   next_rows);
-          }
-          stage_commit();
-          stage_wait<1>();
-          __syncthreads();
-          if ((rows >> mine) & 1u) {
-            const int buf = step & 1;
-#pragma unroll
-            for (int sub = 0; sub < kSubs; ++sub) {
-              const int slab = stage * kSubs + sub;
-              if (!slab_live<D, B, W>(sm, p.modes, rt, ct, l, slab)) continue;
-              const int k0 = sub * kSlabDigits + acol;
-              uint32_t af[4];
-              load_frag(af, smem_addr(&sm.rslab[buf][arow][k0]));
-#pragma unroll
-              for (int jn = 0; jn < 4; ++jn) {
-                uint32_t bf[4];
-                load_frag(bf, smem_addr(&sm.wslab[buf][jn * 16 + (lane & 15)][k0]));
-                const uint32_t b0[2] = {bf[0], bf[2]};
-                const uint32_t b1[2] = {bf[1], bf[3]};
-                mma(gram[l][2 * jn], af, b0);
-                mma(gram[l][2 * jn + 1], af, b1);
-              }
-            }
-          }
-          rows = next_rows;
-          __syncthreads();
-        }
-      }
-
-      if (rt >= ct) {
-#pragma unroll
-        for (int n = 0; n < 8; ++n) {
-#pragma unroll
-          for (int i = 0; i < 4; ++i) {
-            float a = gram[0][n][i];
-#pragma unroll
-            for (int l = 1; l < D; ++l) a *= gram[l][n][i];
-            const int cl = n * 8 + col_lo + (i & 1);
-            a *= __bfloat162float(sm.gain[cl]);
-            if (rt == ct && cl > trow + row_lo + (i >> 1) * 8) a = 0.f;
-            gram[0][n][i] = a;
-          }
-          dacc[0] += gram[0][n][0] + gram[0][n][1];
-          dacc[1] += gram[0][n][2] + gram[0][n][3];
-        }
-
-#pragma unroll
-        for (int kb = 0; kb < 4; ++kb) {
-          const uint32_t av[4] = {pack_bf16x2(gram[0][2 * kb][0], gram[0][2 * kb][1]),
-                                  pack_bf16x2(gram[0][2 * kb][2], gram[0][2 * kb][3]),
-                                  pack_bf16x2(gram[0][2 * kb + 1][0], gram[0][2 * kb + 1][1]),
-                                  pack_bf16x2(gram[0][2 * kb + 1][2], gram[0][2 * kb + 1][3])};
-#pragma unroll
-          for (int nv = 0; nv < 4; ++nv) {
-            uint32_t bf[4];
-            load_frag_t(bf, smem_addr(&sm.vslab[kb * 16 + (lane & 15)][nv * 16 + acol]));
-            const uint32_t b0[2] = {bf[0], bf[1]};
-            const uint32_t b1[2] = {bf[2], bf[3]};
-            mma(oacc[nv * 2], av, b0);
-            mma(oacc[nv * 2 + 1], av, b1);
-          }
-        }
-      }
+        if (((mask >> (l * A::kSlabsPerLevel)) & kLevelMask) == 0u) mask = 0u;
+      if (lane == 0) sm.gate[t][rt] = t <= block * kRowTiles + rt ? mask : 0u;
     }
+}
 
-    //: THE DEPOSIT, at the line law: the block's rows through the warp's staging tile, a
-    //: 32-channel segment at a time, so each reduction is one row's 32 consecutive channels
-    //: -- one 128-byte line -- and the sixteen masses one line more. The slabs are dead here:
-    //: the block's last stage ended on an edge after every warp's last MMA, and the next
-    //: block's fill begins on one.
-    static_assert(threads_of(W) / 32 * kStageFloats * (int)sizeof(float)
-                      <= (int)(sizeof(IntraSmem<D, B, W>::rslab) + sizeof(IntraSmem<D, B, W>::wslab)
-                               + sizeof(IntraSmem<D, B, W>::vslab)),
-                  "the warps' staging tiles fit the operand slabs they alias");
-    const uint32_t stage =
-        smem_addr(&sm.rslab[0][0][0]) + (uint32_t)(warp * kStageFloats * (int)sizeof(float));
+//: stage `S`'s slabs of a gate word
+template <int D, int B, int S>
+__device__ __forceinline__ uint32_t stage_slabs(uint32_t gate) {
+  using A = Arm<D, B>;
+  return (gate >> (S * A::kSlabsPerStage)) & ((1u << A::kSlabsPerStage) - 1u);
+}
+
+//: whether tile `tile`'s stage `S` is copied: tile 0's always (its copies leave before the gate is known), a later
+//: tile's when either row tile reads one of its slabs
+template <int D, int B, int S>
+__device__ __forceinline__ bool stage_issued(const Smem<D, B>& sm, int tile) {
+  return tile == 0 || stage_slabs<D, B, S>(sm.gate[tile][0] | sm.gate[tile][1]) != 0u;
+}
+
+//: THE WARP'S STATE ACROSS A BLOCK: the level's s32 Gram, the running level product and the output; the row sums
+//: live in shared memory, a warp's 16 rows, so no register holds them across the loop.
+struct Acc {
+  int32_t gram[8][4];
+  float product[8][4];
+  float out[8][4];
+};
+
+//: ONE K-STEP OF A STAGE: the warp's 16 reader rows against the stage's 64 writer tokens over one slab's 32 digits,
+//: eight IMMAs into the level's s32 accumulator (fresh at a level's first step); both operands by plain ldmatrix off
+//: token-major rows. -- see docs/internals/intra/intra_kernel.md#gram
+template <int D, int B, int S, int K>
+__device__ __forceinline__ void gram_step(const Smem<D, B>& sm, int buf, int warp, int lane,
+                                          Acc& acc) {
+  using A = Arm<D, B>;
+  constexpr int kChunk0 =
+      (S / A::kStagesPerLevel) * A::kLevelChunks + (S % A::kStagesPerLevel) * A::kStageChunks;
+  constexpr bool kFresh = S % A::kStagesPerLevel == 0 && K == 0;
+  const int arow = warp * kWarpRows + (lane & 15);
+  const int brow = (lane & 7) + ((lane >> 4) << 3);
+  uint32_t a[4];
+  ops::load_frag(
+      a, ops::smem_addr(&sm.reader[arow][swizzle8(arow, kChunk0 + 2 * K + (lane >> 4)) * kChunk]));
 #pragma unroll
-    for (int s = 1; s <= 2; s *= 2) {
-      dacc[0] += __shfl_xor_sync(0xFFFFFFFFu, dacc[0], s);
-      dacc[1] += __shfl_xor_sync(0xFFFFFFFFu, dacc[1], s);
-    }
-    const int grow = wbase + rt * kTile + trow;
-    float* const obase = p.o + (long long)(bh * p.L + grow) * kValueWidth + lane;
-    constexpr int kSegs = kValueWidth / 32;
-#pragma unroll
-    for (int seg = 0; seg < kSegs; ++seg) {
-#pragma unroll
-      for (int n = 0; n < 4; ++n) {
-        const uint32_t col = (uint32_t)((n * 8 + col_lo) * 4);
-        store_shared_f32x2(stage + (uint32_t)(row_lo * kStageStride * 4) + col,
-                           oacc[seg * 4 + n][0], oacc[seg * 4 + n][1]);
-        store_shared_f32x2(stage + (uint32_t)((row_lo + 8) * kStageStride * 4) + col,
-                           oacc[seg * 4 + n][2], oacc[seg * 4 + n][3]);
-      }
-      if (seg == 0 && (lane & 3) == 0) {
-        store_shared_u32(stage + (uint32_t)((row_lo * kStageStride + 32) * 4),
-                         __float_as_uint(dacc[0]));
-        store_shared_u32(stage + (uint32_t)(((row_lo + 8) * kStageStride + 32) * 4),
-                         __float_as_uint(dacc[1]));
-      }
-      warp_sync();
-#pragma unroll
-      for (int r = 0; r < kWarpRows; ++r)
-        fan_in_add(
-            obase + r * kValueWidth + 32 * seg,
-            __uint_as_float(load_shared_u32(stage + (uint32_t)((r * kStageStride + lane) * 4))));
-      if (seg == 0 && lane < kWarpRows)
-        fan_in_add(
-            p.den + (long long)bh * p.L + grow + lane,
-            __uint_as_float(load_shared_u32(stage + (uint32_t)((lane * kStageStride + 32) * 4))));
-      warp_sync();
+  for (int j = 0; j < 4; ++j) {
+    const int token = 16 * j + brow;
+    uint32_t b[4];
+    ops::load_frag(
+        b,
+        ops::smem_addr(&sm.stage[buf][token][swizzle8(token, 2 * K + ((lane >> 3) & 1)) * kChunk]));
+    if constexpr (kFresh) {
+      ops::imma_u8_k32_fresh(acc.gram[2 * j], a, b[0], b[1]);
+      ops::imma_u8_k32_fresh(acc.gram[2 * j + 1], a, b[2], b[3]);
+    } else {
+      ops::imma_u8_k32(acc.gram[2 * j], a, b[0], b[1]);
+      ops::imma_u8_k32(acc.gram[2 * j + 1], a, b[2], b[3]);
     }
   }
 }
 
-}  // namespace detail
-}  // namespace intra
-}  // namespace rola
+//: THE GRAM OF ONE STAGE, its four k-steps under the warp's slab bits: one straight-line block when every slab is live,
+//: a branch a step otherwise; a level's first step, gated off, zeroes the accumulator in its place.
+template <int D, int B, int S>
+__device__ __forceinline__ void gram_stage(const Smem<D, B>& sm, int buf, int warp, int lane,
+                                           uint32_t slabs, Acc& acc) {
+  using A = Arm<D, B>;
+  if (slabs == (1u << A::kSlabsPerStage) - 1u) {
+    rola::static_for<A::kSlabsPerStage>(
+        [&](auto K) { gram_step<D, B, S, decltype(K)::value>(sm, buf, warp, lane, acc); });
+    return;
+  }
+  rola::static_for<A::kSlabsPerStage>([&](auto K) {
+    constexpr int kK = decltype(K)::value;
+    if ((slabs >> kK) & 1u) {
+      gram_step<D, B, S, kK>(sm, buf, warp, lane, acc);
+    } else if constexpr (S % A::kStagesPerLevel == 0 && kK == 0) {
+#pragma unroll
+      for (int n = 0; n < 8; ++n)
+#pragma unroll
+        for (int i = 0; i < 4; ++i) acc.gram[n][i] = 0;
+    }
+  });
+}
+
+//: A LEVEL'S GRAM INTO THE RUNNING PRODUCT: exact s32 to fp32 (a level's sum is under 2^24), multiplied level by level.
+__device__ __forceinline__ void fold_level(bool first, Acc& acc) {
+#pragma unroll
+  for (int n = 0; n < 8; ++n)
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+      const float g = static_cast<float>(acc.gram[n][i]);
+      acc.product[n][i] = first ? g : acc.product[n][i] * g;
+    }
+}
+
+//: THE EPILOGUE: the level product times the writer factor (a lane's two columns' factors, shuffled to the lanes that
+//: hold them), zero above the diagonal on a diagonal tile, the row sums into `den`, and the value scale folded in: the
+//: value product's `P`. -- see docs/internals/intra/intra_kernel.md#epilogue
+template <int D, int B>
+__device__ __forceinline__ void epilogue(Smem<D, B>& sm, bool diagonal, int warp, int lane,
+                                         Acc& acc) {
+  using A = Arm<D, B>;
+  float f[2], s[2];
+#pragma unroll
+  for (int j = 0; j < 2; ++j) {
+    f[j] = sm.column[0][2 * lane + j] * A::kUnit;
+    s[j] = sm.column[1][2 * lane + j];
+#pragma unroll
+    for (int l = 0; l < D; ++l) f[j] *= sm.column[2 + l][2 * lane + j];
+  }
+  const int g = lane >> 2, tq = lane & 3;
+  const int row0 = (warp % (kWarps / kRowTiles)) * kWarpRows + g;
+  float den[2] = {0.0f, 0.0f};
+#pragma unroll
+  for (int n = 0; n < 8; ++n) {
+    const float fa = __shfl_sync(0xffffffffu, f[0], 4 * n + tq);
+    const float fb = __shfl_sync(0xffffffffu, f[1], 4 * n + tq);
+    const float sa = __shfl_sync(0xffffffffu, s[0], 4 * n + tq);
+    const float sb = __shfl_sync(0xffffffffu, s[1], 4 * n + tq);
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+      const int col = 8 * n + 2 * tq + (i & 1), row = row0 + 8 * (i >> 1);
+      const float p = diagonal && col > row ? 0.0f : acc.product[n][i] * ((i & 1) ? fb : fa);
+      den[i >> 1] += p;
+      acc.product[n][i] = p * ((i & 1) ? sb : sa);
+    }
+  }
+#pragma unroll
+  for (int r = 0; r < 2; ++r) {
+    den[r] += __shfl_xor_sync(0xffffffffu, den[r], 1);
+    den[r] += __shfl_xor_sync(0xffffffffu, den[r], 2);
+  }
+  if (tq == 0) {
+    sm.den[warp][g] += den[0];
+    sm.den[warp][g + 8] += den[1];
+  }
+}
+
+//: THE VALUE PRODUCT: `P` against its row maximum over the tile (the quad's two shuffles) as `kWeightDigits` u8 digits,
+//: packed from the accumulator's own registers into the A fragment (the K order the V load matches); V by ldmatrix.trans
+//: and one prmt a register; the digit products into s32 by their weight, one scaled add a channel group.
+//: -- see docs/internals/intra/intra_kernel.md#value-product
+template <int D, int B, int kWeightDigits, bool kValueLo>
+__device__ __forceinline__ void value_product(const Smem<D, B>& sm, int lane, Acc& acc) {
+  constexpr float kLevels = kWeightDigits == 2 ? 65535.0f : 255.0f;
+  constexpr float kValueLevels = kValueLo ? 32767.0f : 127.0f;
+  constexpr uint32_t kHiSel = kWeightDigits == 2 ? 0x0051u : 0x0040u, kLoSel = 0x0040u;
+  //: the digit products' weights: hi x v_hat, then (hi x v_lo, lo x v_hat), then lo x v_lo
+  constexpr float kHH = (kWeightDigits == 2 ? 256.0f : 1.0f) * (kValueLo ? 256.0f : 1.0f);
+  constexpr float kMid = kWeightDigits == 2 && kValueLo ? 256.0f : 1.0f;
+
+  float m[2] = {0.0f, 0.0f};
+#pragma unroll
+  for (int n = 0; n < 8; ++n)
+#pragma unroll
+    for (int i = 0; i < 4; ++i) m[i >> 1] = fmaxf(m[i >> 1], acc.product[n][i]);
+  float inv[2], unit[2];
+#pragma unroll
+  for (int r = 0; r < 2; ++r) {
+    m[r] = fmaxf(m[r], __shfl_xor_sync(0xffffffffu, m[r], 1));
+    m[r] = fmaxf(m[r], __shfl_xor_sync(0xffffffffu, m[r], 2));
+    inv[r] = m[r] > 0.0f ? kLevels / m[r] : 0.0f;
+    unit[r] = m[r] / (kLevels * kValueLevels);
+  }
+
+  uint32_t hi[2][4], lo[2][4];
+#pragma unroll
+  for (int kk = 0; kk < 2; ++kk) {
+    uint32_t q[4][4];
+#pragma unroll
+    for (int t = 0; t < 4; ++t)
+#pragma unroll
+      for (int i = 0; i < 4; ++i)
+        q[t][i] = min(__float2uint_rn(acc.product[4 * kk + t][i] * inv[i >> 1]),
+                      static_cast<uint32_t>(kLevels));
+#pragma unroll
+    for (int half = 0; half < 2; ++half) {
+      hi[kk][2 * half] = ops::pack_byte4(q[2 * half][0], q[2 * half][1], q[2 * half + 1][0],
+                                         q[2 * half + 1][1], kHiSel);
+      hi[kk][2 * half + 1] = ops::pack_byte4(q[2 * half][2], q[2 * half][3], q[2 * half + 1][2],
+                                             q[2 * half + 1][3], kHiSel);
+      if constexpr (kWeightDigits == 2) {
+        lo[kk][2 * half] = ops::pack_byte4(q[2 * half][0], q[2 * half][1], q[2 * half + 1][0],
+                                           q[2 * half + 1][1], kLoSel);
+        lo[kk][2 * half + 1] = ops::pack_byte4(q[2 * half][2], q[2 * half][3], q[2 * half + 1][2],
+                                               q[2 * half + 1][3], kLoSel);
+      }
+    }
+  }
+
+  //: one channel group at a time, a real branch apart, so a group's loads are not hoisted over the others'
+#pragma unroll 1
+  for (int j = 0; j < kValueWidth / 16; ++j) {
+    rola::uniform_switch<kValueWidth / 16>(j, [&](auto J) {
+      constexpr int kJ = decltype(J)::value;
+      int32_t hh[2][4] = {}, mid[2][4] = {}, ll[2][4] = {};
+#pragma unroll
+      for (int kk = 0; kk < 2; ++kk) {
+        const int token = 32 * kk + 8 * (lane >> 3) + (lane & 7);
+        uint32_t v[4];
+        ops::load_frag_t(v, ops::smem_addr(&sm.v_hat[token][swizzle4(token, kJ) * kChunk]));
+        const uint32_t even[2] = {ops::prmt(v[0], v[1], 0x6420u), ops::prmt(v[2], v[3], 0x6420u)};
+        const uint32_t odd[2] = {ops::prmt(v[0], v[1], 0x7531u), ops::prmt(v[2], v[3], 0x7531u)};
+        ops::imma_u8s8_k32(hh[0], hi[kk], even[0], even[1]);
+        ops::imma_u8s8_k32(hh[1], hi[kk], odd[0], odd[1]);
+        if constexpr (kWeightDigits == 2) {
+          ops::imma_u8s8_k32(mid[0], lo[kk], even[0], even[1]);
+          ops::imma_u8s8_k32(mid[1], lo[kk], odd[0], odd[1]);
+        }
+        if constexpr (kValueLo) {
+          ops::load_frag_t(v, ops::smem_addr(&sm.v_lo[token][swizzle4(token, kJ) * kChunk]));
+          const uint32_t lo_even[2] = {ops::prmt(v[0], v[1], 0x6420u),
+                                       ops::prmt(v[2], v[3], 0x6420u)};
+          const uint32_t lo_odd[2] = {ops::prmt(v[0], v[1], 0x7531u),
+                                      ops::prmt(v[2], v[3], 0x7531u)};
+          ops::imma_u8_k32(mid[0], hi[kk], lo_even[0], lo_even[1]);
+          ops::imma_u8_k32(mid[1], hi[kk], lo_odd[0], lo_odd[1]);
+          if constexpr (kWeightDigits == 2) {
+            ops::imma_u8_k32(ll[0], lo[kk], lo_even[0], lo_even[1]);
+            ops::imma_u8_k32(ll[1], lo[kk], lo_odd[0], lo_odd[1]);
+          }
+        }
+      }
+#pragma unroll
+      for (int e = 0; e < 2; ++e)
+#pragma unroll
+        for (int i = 0; i < 4; ++i)
+          acc.out[2 * kJ + e][i] +=
+              (static_cast<float>(hh[e][i]) * kHH + static_cast<float>(mid[e][i]) * kMid
+               + static_cast<float>(ll[e][i]))
+              * unit[i >> 1];
+    });
+  }
+}
+
+//: THE DEPOSIT: the warp's 16 rows reduced into the output planes through a staging tile, a row's channels two lines
+//: of consecutive reductions; a row's sum into `den` from its quad. -- see docs/internals/intra/intra_kernel.md#deposit
+template <int D, int B>
+__device__ void deposit(Smem<D, B>& sm, const IntraParams& p, int bh, int t_row, int warp, int lane,
+                        Acc& acc) {
+  constexpr int kPitch = kValueWidth + 4;
+  float* const staging = reinterpret_cast<float*>(&sm.reader[0][0]) + warp * kWarpRows * kPitch;
+  const int g = lane >> 2, tq = lane & 3;
+#pragma unroll
+  for (int n = 0; n < 8; ++n) {
+    const int channel = 16 * (n >> 1) + 4 * tq + (n & 1);
+#pragma unroll
+    for (int i = 0; i < 4; ++i)
+      staging[(g + 8 * (i >> 1)) * kPitch + channel + 2 * (i & 1)] = acc.out[n][i];
+  }
+  __syncwarp();
+  float* const num = p.num + (static_cast<int64_t>(bh) * p.L + t_row) * kValueWidth;
+#pragma unroll
+  for (int r = 0; r < kWarpRows; ++r) {
+    ops::fan_in_add(num + r * kValueWidth + lane, staging[r * kPitch + lane]);
+    ops::fan_in_add(num + r * kValueWidth + 32 + lane, staging[r * kPitch + 32 + lane]);
+  }
+  if (lane < kWarpRows)
+    ops::fan_in_add(p.den + static_cast<int64_t>(bh) * p.L + t_row + lane, sm.den[warp][lane]);
+}
+
+//: ONE STAGE OF A TILE: the stage two ahead issued once its buffer is released, the tile's values at its first stage
+//: once the last tile's are released, each only if the gate reads it; this stage awaited and read where the warp's
+//: slabs meet it, released; at the tile's last stage its values awaited, the epilogue and the value product for a live
+//: pair, the values released. -- see docs/internals/intra/intra_kernel.md#pipeline
+template <int D, int B, int S>
+__device__ __forceinline__ void tile_stage(Smem<D, B>& sm, const IntraParams& p,
+                                           const Copier<D, B>& copy, int tile, int tiles,
+                                           int row_tile, int warp, int lane, Acc& acc,
+                                           Clock& clock) {
+  using A = Arm<D, B>;
+  constexpr int kNextS = (S + kStageBuffers - 1) % A::kStages;
+  constexpr int kNextTile = (S + kStageBuffers - 1) / A::kStages;
+  const int it = tile * A::kStages + S;
+  const int next = it + kStageBuffers - 1;
+  if (tile + kNextTile < tiles) {
+    const int nbuf = next % kStageBuffers, use = next / kStageBuffers;
+    if (use > 0) ops::mbar_wait(ops::smem_addr(&sm.empty[nbuf]), (use - 1) & 1);
+    copy.template stage<kNextS>(sm, p, nbuf, tile + kNextTile,
+                                stage_issued<D, B, kNextS>(sm, tile + kNextTile));
+  }
+  constexpr int kAheadS = (S + kStageBuffers - 1 + kPrefetchStages) % A::kStages;
+  constexpr int kAheadTile = (S + kStageBuffers - 1 + kPrefetchStages) / A::kStages;
+  if (tile + kAheadTile < tiles && stage_issued<D, B, kAheadS>(sm, tile + kAheadTile))
+    copy.template prefetch<kAheadS>(p, tile + kAheadTile);
+  if constexpr (S == 0) {
+    if (tile > 0) {
+      ops::mbar_wait(ops::smem_addr(&sm.values_empty), (tile - 1) & 1);
+      copy.values(sm, p, tile, (sm.gate[tile][0] | sm.gate[tile][1]) != 0u);
+    }
+  }
+  const int buf = it % kStageBuffers;
+  //: the warp's slabs of this tile pair: none when the pair is dead or above the diagonal
+  const uint32_t mine = sm.gate[tile][row_tile % kRowTiles];
+  const uint32_t slabs = stage_slabs<D, B, S>(mine);
+  const bool first = tile == 0;
+  const bool live = mine != 0u;
+  //: a copy that leaves is awaited by a warp that reads it -- tile 0's by every warp -- so none is in flight at release
+  if (first || slabs != 0u) {
+    if (first) ops::mbar_wait(ops::smem_addr(&sm.reader_full[S]), 0);
+    ops::mbar_wait(ops::smem_addr(&sm.full[buf]), (it / kStageBuffers) & 1);
+    clock.lap(kPhaseWait);
+  }
+  if (live) {
+    gram_stage<D, B, S>(sm, buf, warp, lane, slabs, acc);
+    if constexpr ((S + 1) % A::kStagesPerLevel == 0) fold_level(S < A::kStagesPerLevel, acc);
+    clock.lap(kPhaseGram);
+  }
+  __syncwarp();
+  if (lane == 0) ops::mbar_arrive(ops::smem_addr(&sm.empty[buf]));
+  if constexpr (S == A::kStages - 1) {
+    if (first || live) ops::mbar_wait(ops::smem_addr(&sm.values_full), tile & 1);
+    if (live) {
+      epilogue(sm, tile == row_tile, warp, lane, acc);
+      clock.lap(kPhaseEpilogue);
+      if (p.weight_digits == 2) {
+        if (p.v_lo.base != nullptr)
+          value_product<D, B, 2, true>(sm, lane, acc);
+        else
+          value_product<D, B, 2, false>(sm, lane, acc);
+      } else {
+        if (p.v_lo.base != nullptr)
+          value_product<D, B, 1, true>(sm, lane, acc);
+        else
+          value_product<D, B, 1, false>(sm, lane, acc);
+      }
+      clock.lap(kPhaseValue);
+    }
+    __syncwarp();
+    if (lane == 0) ops::mbar_arrive(ops::smem_addr(&sm.values_empty));
+  }
+}
+
+//: THE PROLOGUE'S COPIES: the reader's parts in stage order, the first two writer stages interleaved after parts 0
+//: and 1, so tile 0's first stage waits for one part and one stage.
+template <int D, int B, int... S>
+__device__ __forceinline__ void load_reader_parts(Smem<D, B>& sm, const IntraParams& p,
+                                                  const Copier<D, B>& copy, int b, int h,
+                                                  int t_block, int tid,
+                                                  std::integer_sequence<int, S...>) {
+  const auto part = [&](auto I) {
+    constexpr int kS = decltype(I)::value;
+    load_reader_part<D, B, kS>(sm, p, b, h, t_block, tid);
+    if constexpr (kS < kStageBuffers - 1) copy.template stage<kS>(sm, p, kS, 0, true);
+  };
+  (part(std::integral_constant<int, S>{}), ...);
+}
+
+template <int D, int B, int... S>
+__device__ __forceinline__ void tile_stages(Smem<D, B>& sm, const IntraParams& p,
+                                            const Copier<D, B>& copy, int tile, int tiles,
+                                            int row_tile, int warp, int lane, Acc& acc,
+                                            Clock& clock, std::integer_sequence<int, S...>) {
+  (tile_stage<D, B, S>(sm, p, copy, tile, tiles, row_tile, warp, lane, acc, clock), ...);
+}
+
+//: THE GRID: a CTA a (window, block) along x -- a window's heaviest block first -- and a batch-head along y. The
+//: block's readers land once; the writer tiles `0 .. 2 block + 1` stream through the stage buffers, each warp waiting
+//: only on the data it reads and releasing it after. -- see docs/internals/intra/intra_kernel.md#the-grid
+template <int D, int B>
+__global__ __launch_bounds__(kThreads, 1) void intra_kernel(const IntraParams p) {
+  using A = Arm<D, B>;
+  extern __shared__ __align__(128) unsigned char raw[];
+  Smem<D, B>& sm = *reinterpret_cast<Smem<D, B>*>(raw);
+  const int tid = static_cast<int>(threadIdx.x), warp = tid >> 5, lane = tid & 31;
+  const int bh = static_cast<int>(blockIdx.y);
+  const int window = static_cast<int>(blockIdx.x) / kBlocks;
+  const int block = kBlocks - 1 - static_cast<int>(blockIdx.x) % kBlocks;
+  const int b = bh / p.H, h = bh - b * p.H;
+  const int t_window = window * kWindow;
+  const int t_block = t_window + block * kBlockRows;
+  const int row_tile = block * kRowTiles + warp / (kWarps / kRowTiles);
+  const int tiles = (block + 1) * kRowTiles;
+  Clock clock(&sm.clock[warp][0], lane);
+  if (tid == 0) {
+#pragma unroll
+    for (int i = 0; i < kStageBuffers; ++i) {
+      ops::mbar_init(ops::smem_addr(&sm.full[i]), kThreads);
+      ops::mbar_init(ops::smem_addr(&sm.empty[i]), kWarps);
+    }
+    constexpr int kParts = A::kStages;
+#pragma unroll
+    for (int s = 0; s < kParts; ++s) ops::mbar_init(ops::smem_addr(&sm.reader_full[s]), kThreads);
+    ops::mbar_init(ops::smem_addr(&sm.values_full), kThreads);
+    ops::mbar_init(ops::smem_addr(&sm.values_empty), kWarps);
+  }
+  __syncthreads();
+
+  Acc acc;
+#pragma unroll
+  for (int n = 0; n < 8; ++n)
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+      acc.out[n][i] = 0.0f;
+    }
+  if (lane < kWarpRows) sm.den[warp][lane] = 0.0f;
+
+  const Copier<D, B> copy{b, h, t_window, tid};
+  load_reader_parts(sm, p, copy, b, h, t_block, tid, std::make_integer_sequence<int, A::kStages>{});
+  copy.values(sm, p, 0, true);
+  clock.lap(kPhaseReader);
+  if (warp == 0) gate_table(sm, p, bh, window, block, lane);
+  __syncthreads();
+  clock.lap(kPhaseGate);
+
+#pragma unroll 1
+  for (int tile = 0; tile < tiles; ++tile)
+    tile_stages(sm, p, copy, tile, tiles, row_tile, warp, lane, acc, clock,
+                std::make_integer_sequence<int, A::kStages>{});
+  __syncthreads();
+  deposit(sm, p, bh, t_block + warp * kWarpRows, warp, lane, acc);
+  clock.lap(kPhaseDeposit);
+  clock.publish(p.ledger, 0, kWarps, warp);
+}
+
+}  // namespace rola::intra::detail

@@ -17,8 +17,7 @@ would break both pins for no reason: nothing downstream of the producer needs a 
 `RouteFactors` to exist as an object.
 
 **KERNEL CONTRACT.** Every op's call surface -- `rola.ops.carry.carry_forward`,
-`rola.ops.decode.derive_decode_geometry`/`_decode_step`, `rola.ops.intra`'s
-`intra_forward_padded` -- receives the caller's logical tensors and widths directly and
+`rola.ops.decode.derive_decode_geometry`/`_decode_step` -- receives the caller's logical tensors and widths directly and
 pads INTERNALLY, once, before touching `box_shape`, the extension, or any launch-facing
 derivation. The kernel itself is never handed a width other than its own; `y` (or
 `num`/`o`) is sliced back to the caller's own `d_v` before it leaves the op.
@@ -68,11 +67,11 @@ in a backward pass, and no parameter reads a pad column, so its gradient is exac
   levels here would be importing carry's constraint into a kernel that does not have
   it; an earlier draft of this stage did exactly that and broke that cell, which is
   how this scope line was found.
-* **intra** (`rola.ops.intra.intra_forward_padded`) pads MORE aggressively than carry:
-  its kernel takes one uniform `level_width` for every level (`intra_forward`'s own
-  `width // levels`), so every level pads to the SAME value -- the shipped width at
-  `(D, window)` read off `rola.ops.intra.arms()` -- not to its own independent next
-  power of two. `v` pads to the single shipped `VALUE_WIDTH`.
+* **intra** (`rola.ops.intra.intra_forward`) pads nothing: it reads the bundle's rows
+  where the producer stores them, at their own widths, and its arm is one level width
+  for every level -- a bundle whose levels are not that width is refused
+  (`rola.ops.prefill.intra_admits`), never padded at the seam. The values are the
+  format's 64 channels.
 
 ## Where the shipped sets come from
 

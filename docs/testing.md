@@ -181,8 +181,8 @@ cells cover.
    to protect — the fp64 oracle is the exactness reference this bound is measured
    against directly.
 2. The **kernel-vs-oracle arm** is `tests/oracle/test_carry_vs_oracle.py`,
-   `tests/oracle/test_prefill_vs_oracle.py`, `tests/oracle/test_decode_vs_oracle.py`
-   and `tests/oracle/test_intra_kernel.py`, each per slot under its output kind
+   `tests/oracle/test_prefill_vs_oracle.py` and `tests/oracle/test_decode_vs_oracle.py`,
+   each per slot under its output kind
    (`tests/oracle/tolerances.py`). The CPU-only fp64 transcription that
    used to sit beside it (`test_algorithm_vs_oracle.py`) transcribed the TILED
    kernel's control structure and retired with that kernel; the

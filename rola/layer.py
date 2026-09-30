@@ -202,15 +202,15 @@ class RoLA(nn.Module):
         a segment allocates, summed as if all were alive at once. Gated against the measured peak
         (tests/integration/test_layer_segments.py); a kernel port that drops a tensor drops its term here.
 
-        Per head, the routing's ``W`` digits of both sides: the router's fp32 logits (4), the solve's bf16
-        levels (2), the stored rows (1), the seam's fp32 levels (4), the kernels' bf16 planes (2) and the
-        activity pass's bf16 re-pack (2); the ``d_v`` value channels: the bf16 projection (2), the two stored
-        digit planes (2), the seam's fp32 values (4), the kernels' two bf16 layouts (4), ``num`` (4) and ``y``
-        (4); and the per-token scalars (gains, scales, masses, den: 64). Per token, the hidden stream's two bf16
-        casts (the value and the router projections' inputs, 4).
+        Per head, the routing's ``W`` digits of both sides: the stored rows (1), the carry leg's fp32 levels (4)
+        with one level's dequantizing temporary beside them (1), its bf16 planes (2), and the facts pass's class-1
+        words (an eighth); the ``d_v`` value channels: the two stored digit planes (2), the carry leg's fp32 values
+        (4), its two bf16 layouts (4), ``num`` (4) and ``y`` (4); and the per-token scalars (gains, scales, masses,
+        den: 64). Per token, the hidden stream's two bf16 casts (the value and the router projections' inputs, 4).
+        The fused producer holds nothing but the bundle it writes.
         """
         W = 2 * sum(self.topology.widths)
-        per_head = W * (4 + 2 + 1 + 4 + 2 + 2) + self.d_v * (2 + 2 + 4 + 4 + 4 + 4) + 64
+        per_head = W * (1 + 4 + 1 + 2) + W // 8 + self.d_v * (2 + 4 + 4 + 4 + 4) + 64
         return self.num_heads * per_head + 4 * self.hidden_size
 
     def state_bytes(self, batch: int) -> int:

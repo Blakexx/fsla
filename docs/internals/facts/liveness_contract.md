@@ -31,6 +31,13 @@ LIVENESS PASS") admits exactly two classes of fact.
   levels, computed on the fly by the owning warp and never stored, because
   `O(#boxes × L)` has no consumer.
 
+The int8 rebuild's ruling of 2026-09-28 widened what the facts kernel owns to anything
+determinable from the raw produced values, so two per-grain aggregates now sit beside
+the classes and are written by the same pass: zeta, per window ([`facts.md`](facts.md#zeta)),
+and the [tile unions](#tile-unions), per 64 tokens. Neither is a class-2 fact — neither is
+over the whole call nor `O(N)` — and neither is derived by a consumer: each is the OR or
+the maximum of what the pass already holds when it holds it.
+
 <a id="layout"></a>
 
 ## The class-1 word layout
@@ -77,6 +84,25 @@ and `digit_mask` (one bit per row, `mask_bit`). The two contracts put the transl
 at the seam and keep logical-width fields out of every kernel entry signature;
 `rola.engine.facts.liveness.side_statics` is that translation, and it is the only place
 `b_l` appears.
+
+<a id="tile-unions"></a>
+
+## The tile unions
+
+    [BH][side][group][tile]      group: a level's digits in 32s, group_base(l) = Σ_{i<l} ceil(B_i / 32)
+    tile = token / 64,  bit i of (group g of level l) = digit 32 g + i
+
+A word per (side, 32-digit group of a level, 64-token tile): bit `i` set when that digit is
+live at some token of the tile — the OR of the tile's two class-1 words, a row a bit. A
+level narrower than 32 digits is one group with its high bits clear; `groups = Σ_l
+ceil(B_l / 32)` a side, `tiles = ceil(L / 64)`, and a tile past `L`'s last word ORs only
+the words that exist. `union_address` in the header is the table's address from its
+extents, which `LivenessLayout::union_index` and a kernel with compile-time extents both
+call; `tile_unions` in the Python module is the model, gated against the per-token bits.
+
+The intra's slab gate is the consumer (`intra/intra_kernel.md#slab-gate`): a CTA reads 40
+bytes a lane of it where reading the words themselves took a 64-byte run from each of 512
+rows 8 KB apart — measured at `L = 64K`, 10% of the intra's warp cycles against 3.5%.
 
 <a id="folds"></a>
 

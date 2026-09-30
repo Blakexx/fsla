@@ -15,20 +15,19 @@ against the state the call is handed. `rola.rola_op` validates the context in th
 | `nodes.classify_call` | `call_class` | the engagement bits: state in, state out, paged |
 | `rules.mask` | `mask` | the band: stateless or stateful |
 | `support_modes` | `modes` | per level, which sides can hold exact zeros, off the topology's activations |
-| `support_words` | `supports` | the intra's frozen support words of both sides |
-| `facts` | `liveness`, `zeta`, `layout` | THE FACTS PASS over the bundle, one launch: both sides' class-1 words, the fold's window scales, the layout the words are read in (`rola.ops.facts`) |
+| `facts` | `liveness`, `unions`, `zeta`, `layout`, `statics` | THE FACTS PASS over the bundle, one launch: both sides' class-1 words and their tile unions, the fold's window scales, the layout the words are read in and the two sides' statics (`rola.ops.facts`) |
 | `activity` | `atom_bits` | the per-atom `WRITTEN | READ` byte, folded from the words (`rola.engine.facts.liveness.page_bits`) |
 | `box` | `bc` | the carry's box, the arena's allocation extent |
 | `residency` (stateful) | `state_in`, `arena` | the state's entry plane, this call's write atoms committed |
 | `nodes.join` (stateful) | | waits for the admission before anything reads the page table |
 | `nodes.backing` | `page_table`, `state_out` | the planes the launch is handed; a continuation's are one |
 | `launch` | `num`, `den` | the carry, then the intra into the same buffers (`rola.ops.prefill.prefill`) |
-| `post` | `y` | THE POST PASS, `y = num / (den + eps)`, `[B, T, H, d_v]` fp32 |
+| `post` | `y` | THE POST PASS, `y = num / (den + eps / r)`, `[B, T, H, d_v]` fp32 (`rola.ops.prefill.readout`; `r` the reader factor the kernels leave out) |
 
 ## The seam
 
-The carry and the intra still compute on floating levels and values, so `run_prefill` seeds the DAG with
-`RouteFactors.dequantized()` and `Values.dequantized()`, computed once a call; `support_words` derives from
-those levels. The facts pass reads the bundle's u8 / f16 rows (`facts`), and its words feed the activity
-fold and the carry; `support_words` and the dequantized seeds go when the intra and the carry take the rows
-themselves. `zeta` has no consumer until the carry's int8 fold divides by it.
+The DAG is seeded with the bundle itself. The facts pass and the intra read its u8 rows and s8 values
+where the producer stores them; the carry, until its int8 port, computes on floating operands the prefill
+dequantizes from the bundle once a call (`rola.ops.prefill._carry_levels`: the read rows at unit scale, since
+the reader factor cancels, and the write rows and values whole). The words feed the activity fold and the
+carry, the tile unions the intra's slab gate. `zeta` has no consumer until the carry's int8 fold divides by it.

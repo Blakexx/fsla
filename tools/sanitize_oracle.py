@@ -39,7 +39,9 @@ every other agent").
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -93,12 +95,13 @@ _FAMILIES = {
         test="tests/integration/test_facts_pass.py::"
              "test_the_words_are_the_model_bit_for_bit[True-dense1-widths2-40]",
         kernel="rola::facts::rola_facts_forward", present=True),
-    #: THE INTRA KERNEL alone, at the deep topology whose fp64 reference fits inside a
-    #: sanitizer's slowdown; the flagship's `N = 65,536` recurrence does not.
+    #: THE INTRA KERNEL alone on the bundle: the stage buffers' full/empty barriers, the reader's parts, the value
+    #: tile's hand-off and the deposit's staging, at both digit counts -- one launch.
     "intra": Family(
-        test="tests/oracle/test_intra_kernel.py::"
-             "test_deep_intra_matches_the_fp64_reference[d3-alt-k4]",
-        kernel="rola::intra::intra_forward", present=True),
+        test="tests/integration/test_intra_kernel.py::"
+             "test_every_digit_count_is_the_declared_arithmetic[2-2]",
+        kernel="rola::intra::rola_intra_forward", present=True,
+        racecheck_driver=("tools/sanitize_cell.py", "--kernel", "intra", "--cell", "flagship-alt-k4")),
     #: THE DECODE STEP on the whole resident grid: the work queue's visits, claims and head switches.
     "decode": Family(
         test="tests/oracle/test_decode_vs_oracle.py::"
@@ -280,11 +283,17 @@ def run_one(python: str, family: str, tool: str, timeout: int) -> tuple[bool, st
     payload = [python, *row.racecheck_driver] if driver else [
         python, "-m", "pytest", row.test, "-x", "-q"]
     cmd = ["compute-sanitizer", f"--tool={tool}", "--error-exitcode=1", *payload]
+    #: ITS OWN SESSION, killed whole on a timeout: compute-sanitizer runs the target under a subreaper, so killing the
+    #: direct child left the target running on the GPU under the next pair's lock.
+    proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
     try:
-        proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=timeout)
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
         return False, f"TIMEOUT after {timeout}s -- a hang under {tool}, not a correctness verdict"
-    out = proc.stdout + proc.stderr
+    out = stdout + stderr
     ok = proc.returncode == 0
     #: A SKIPPED CELL EXITS ZERO AND READS AS CLEAN (the carved family once reported
     #: CLEAN on a binary that did not carry its TEST arm, so the kernel never ran).
@@ -304,7 +313,7 @@ def run_one(python: str, family: str, tool: str, timeout: int) -> tuple[bool, st
         return passed, ("DECLARED EXCEPTION -- " + note + "\n  proof: " + decl.proof
                         + "\n  exit:  " + decl.exit_condition) if passed else (
                         "DECLARED EXCEPTION DOES NOT COVER THIS RUN -- " + note)
-    tail = "\n".join(proc.stdout.splitlines()[-30:] + proc.stderr.splitlines()[-30:])
+    tail = "\n".join(stdout.splitlines()[-30:] + stderr.splitlines()[-30:])
     return ok, tail
 
 

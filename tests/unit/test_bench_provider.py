@@ -27,12 +27,12 @@ DECODE_CELL = "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"
 
 @pytest.fixture
 def binary(monkeypatch):
-    """A binary carrying the shipped carry arms, the intra arm at depth 2 and the carry's window, and every decode arm."""
+    """A binary carrying the shipped carry arms, the intra arm at depth 2, and every decode arm."""
     import rola.ops.carry as carry
     import rola.ops.decode as decode
     import rola.ops.intra as intra
 
-    tables = SimpleNamespace(carry=list(SHIPPED), intra=[(2, 256, carry.WINDOW, 0)],
+    tables = SimpleNamespace(carry=list(SHIPPED), intra=[(2, 256, 0)],
                              decode=[(dv, d, decay) for dv in (32, 64) for d in (1, 2, 3, 4) for decay in (False, True)])
     monkeypatch.setattr(carry, "arms", lambda: tables.carry)
     monkeypatch.setattr(intra, "arms", lambda: tables.intra)

@@ -137,6 +137,11 @@ __device__ __forceinline__ void stage_run_lanes(SmemAddr dst, const void* src, b
 
 __device__ __forceinline__ void stage_commit() { asm volatile("cp.async.commit_group;\n"); }
 
+//: A LINE BROUGHT INTO L2 ahead of its copy, so the copy's round trip is L2's. -- see docs/internals/common/ops.md#prefetch-l2
+__device__ __forceinline__ void prefetch_l2(const void* src) {
+  asm volatile("prefetch.global.L2 [%0];\n" ::"l"(src));
+}
+
 //: A SHARED-MEMORY BARRIER OBJECT (`mbarrier`, sm_80+): `count` arrivals complete a phase;
 //: an asynchronous copy arrives when it lands (`.noinc`: it is one of the counted
 //: arrivals), a thread's arrive releases its prior shared stores, a wait acquires. A
@@ -352,13 +357,34 @@ __device__ __forceinline__ void mma(float (&d)[4], const uint32_t (&a)[4], const
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
-//: THE INT8 ATOM, u8 x u8 into s32 (A two registers, B one). -- see docs/internals/common/ops.md#imma-u8
-__device__ __forceinline__ void imma_u8(int32_t (&d)[4], const uint32_t (&a)[2], uint32_t b) {
+//: THE INT8 ATOM AT K = 32, u8 x u8 into s32 (A four registers, B two). -- see docs/internals/common/ops.md#imma-u8
+__device__ __forceinline__ void imma_u8_k32(int32_t (&d)[4], const uint32_t (&a)[4], uint32_t b0,
+                                            uint32_t b1) {
   asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.s32.u8.u8.s32 "
-      "{%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+      "mma.sync.aligned.m16n8k32.row.col.s32.u8.u8.s32 "
+      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
       : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(b));
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+//: THE SAME INTO A FRESH ACCUMULATOR (C = 0), so the accumulator is not live before it.
+__device__ __forceinline__ void imma_u8_k32_fresh(int32_t (&d)[4], const uint32_t (&a)[4],
+                                                  uint32_t b0, uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k32.row.col.s32.u8.u8.s32 "
+      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%10,%10,%10};\n"
+      : "=r"(d[0]), "=r"(d[1]), "=r"(d[2]), "=r"(d[3])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "r"(0));
+}
+
+//: THE SAME, u8 A against s8 B: unsigned weights against signed values.
+__device__ __forceinline__ void imma_u8s8_k32(int32_t (&d)[4], const uint32_t (&a)[4], uint32_t b0,
+                                              uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k32.row.col.s32.u8.s8.s32 "
+      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+      : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
 //: FOUR BYTES CHOSEN FROM EIGHT by a selector word: the byte gathers of an int8 operand. -- see docs/internals/common/ops.md#prmt

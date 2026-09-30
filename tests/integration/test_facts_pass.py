@@ -109,7 +109,9 @@ def test_the_words_are_the_model_bit_for_bit(widths, L, dense, packed):
         routes, values = _bundle(widths, L, (statics, statics), dtype, packed=packed)
         got = facts_ops.facts(routes, values, layout, statics, statics)
         assert got.words.shape == (routes.batch * routes.heads, lv.SIDES, layout.rows, layout.words)
-        assert torch.equal(got.words.cpu(), _model(routes, layout, statics, statics)), dtype
+        want = _model(routes, layout, statics, statics)
+        assert torch.equal(got.words.cpu(), want), dtype
+        assert torch.equal(got.unions.cpu(), lv.tile_unions(want, layout)), dtype
 
 
 @pytest.mark.parametrize(("widths", "L"), _SHAPES)
@@ -239,7 +241,7 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
         facts_ops.extension().rola_facts_forward(
             wide, wide, list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
-            torch.empty((2, 1, 2), device="cuda"), list(layout.B), 0, [statics.mask_word(0)], 0,
+            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 2), device="cuda"), list(layout.B), 0, [statics.mask_word(0)], 0,
             [statics.mask_word(0)], facts_ops.WINDOW)
 
 
@@ -262,7 +264,7 @@ def test_the_seam_refuses_another_window():
         facts_ops.extension().rola_facts_forward(
             list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
-            torch.empty((2, 1, 2), device="cuda"), list(layout.B), 0, [statics.mask_word(0)], 0,
+            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 2), device="cuda"), list(layout.B), 0, [statics.mask_word(0)], 0,
             [statics.mask_word(0)], 256)
 
 
@@ -282,7 +284,9 @@ def test_the_producers_bundle_through_its_topologys_statics():
     read_statics, write_statics = facts_ops.call_statics(routes, layout)
     assert read_statics.dense_levels == (True, False) and write_statics.dense_levels == (False, False)
     got = facts_ops.facts(routes, values, layout, read_statics, write_statics)
-    assert torch.equal(got.words.cpu(), _model(routes, layout, read_statics, write_statics))
+    want = _model(routes, layout, read_statics, write_statics)
+    assert torch.equal(got.words.cpu(), want)
+    assert torch.equal(got.unions.cpu(), lv.tile_unions(want, layout))
 
 
 # --------------------------------------------------------------- the folds it feeds

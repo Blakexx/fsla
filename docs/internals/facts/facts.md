@@ -1,8 +1,8 @@
 # `csrc/rola/src/facts/facts.cuh` / `facts.cu` — the facts pass
 
 Mirror doc for the one pass that reads a call's bundle before the carry and the intra
-do: both sides' class-1 liveness words and the fold's per-window scales, zeta, in one
-launch. What the words ARE — their layout, the folds over them and why each is the
+do: both sides' class-1 liveness words, their tile unions and the fold's per-window
+scales, zeta, in one launch. What the words ARE — their layout, the folds over them and why each is the
 grain it is — is [`liveness_contract.md`](liveness_contract.md), which this kernel does
 not restate and must not contradict; its host seam is [`facts_api.md`](facts_api.md).
 `rola.engine.facts.liveness.liveness_words` is the pure-torch MODEL the words are graded
@@ -41,6 +41,8 @@ consecutive, so the blocks at work together read one head's neighbouring windows
 item's eight warps take its four units two ways each: warp `w` votes unit `w mod 4`'s
 half `w / 4` of the window's words into that unit's shared tile, the block meets at a
 barrier, and each warp stores its half of its unit's rows; a barrier closes the item.
+A warp's half of a window is four 64-token tiles, so it writes those tiles' unions itself
+([the vote](#vote)).
 
 Why this shape, measured at `(256, 256)` on sm_86 (ncu kernel time; `L = 64K` over 16
 batch-heads, a head's share, and `L = 1K` over one):
@@ -97,6 +99,10 @@ digit, or an f16 unit's magnitude, so `-0` is dead) OR-ed into the lane's word a
 token's bit, into the lane's row of the unit's tile. A token past `L` is not loaded and
 votes dead. A lane whose digit the mask does not name (a pad digit, or one past `B_l`)
 loads nothing and votes zero; a dense level's words are the mask over the live tokens.
+At each tile's second word — or the call's last word, closing a one-word tile — the warp
+ballots its lanes' OR of the tile's words, and lane 0 stores the word: the tile union
+([`liveness_contract.md`](liveness_contract.md#tile-unions)), four a warp's part, one
+ballot and one store each.
 
 <a id="transpose"></a>
 

@@ -164,18 +164,6 @@
    "count": 1
   },
   {
-   "path": "rola/ops/intra.py",
-   "message": "intra_forward_padded(..., den=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "59318f223cdfa1be",
-   "count": 1
-  },
-  {
-   "path": "rola/ops/intra.py",
-   "message": "intra_forward_padded(..., o=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "59318f223cdfa1be",
-   "count": 1
-  },
-  {
    "path": "rola/routing/entmax/production.py",
    "message": "production_factor(..., activation=) is only ever 'entmax' -- across every call in this tree, nothing moves it",
    "line_sha256": "d18cfb8e300da4c0",

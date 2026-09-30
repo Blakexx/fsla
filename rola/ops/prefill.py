@@ -10,35 +10,29 @@ with no pair counted twice and none dropped — the study's exactness clause, wh
 `tests/oracle/test_carry_vs_oracle.py::test_m2_decomposition_is_exact` states
 independently in fp64.
 
-THE CARRY LEG IS `rola.ops.carry`: this module builds three of that surface's five
-arguments — the descriptor, the geometry block and the launch shape — from what it
-already has (the packed planes and the widths), takes the other two — the liveness
-words and the activity bits, the facts pass's (`rola.ops.facts`) — from its caller,
-and calls `carry_forward`. The box is a launch
-consequence and the window is a kernel constant (`carry_ops.WINDOW`); neither is a
-parameter of this operator.
+THE INTRA READS THE BUNDLE (`rola.ops.intra`): its rows and values as the producer wrote
+them, and the facts pass's words for its gate. THE CARRY LEG IS `rola.ops.carry`, still on
+floating planes until its int8 port: this module dequantizes the bundle for it once a call
+-- the read side at its unit rows, since the reader's per-token factor cancels in
+``num / den`` and the intra drops it too (the output contract) -- builds that surface's
+descriptor, geometry block and launch shape, takes the liveness words and activity bits
+from its caller, and calls `carry_forward`. The window is a kernel constant
+(`carry_ops.WINDOW`), not a parameter of this operator.
 
-Symbols, each at first use: ``widths`` the per-level digit counts, ``D`` levels,
-``W`` the window length in tokens (the carry's constant), ``d_v`` value channels,
-``modes`` the per-level support-mode declaration the intra's zero certificate reads.
+Symbols, each at first use: ``D`` levels, ``W`` the window length in tokens (the carry's
+constant), ``d_v`` value channels, ``modes`` the per-level support-mode declaration the
+carry's carve order reads.
 
 WHY THE INTRA GOES SECOND AND REDUCES.  The intra kernel's write-back is a RED
-(``fan_in_add``), not a store, so it ADDS into whatever ``o``/``den`` already
+(``fan_in_add``), not a store, so it ADDS into whatever ``num``/``den`` already
 hold. The carry allocates and fills them; the intra then folds its term into the
-same buffers on the same stream. Nothing is summed on the host, and there is no
-second output pair to reconcile — which is the whole reason the intra was built
-as a reducer rather than as a returner.
+same buffers on the same stream.
 
 WHAT THIS OPERATOR REFUSES, and why each refusal is structural rather than a
 missing feature:
 
-* ``L % W != 0`` — the intra's tile grid is a COMPILE-TIME count per arm, so a
-  partial trailing window has no kernel. (The carry alone tolerates one; the
-  combined operator cannot, and a host-side patch for the tail would be a second
-  code path for the case the window grid exists to remove.)
-* any topology but ``(256, 256)`` — the intra's level width is 256 by
-  instantiation. The carry's ``(64, 64)`` arm therefore has no intra partner and
-  is an INTER-ONLY conformance cell; see `docs/internals/intra/intra_kernel.md`.
+* ``L % W != 0`` — the intra's windows are whole, its grid a window a column.
+* a topology or value width no intra arm is built at (`rola.ops.intra.arms`).
 """
 from __future__ import annotations
 
@@ -48,18 +42,12 @@ from rola._state import CANONICAL_ORDER, PAGE_RECTANGLE_BITS, SPLIT_PLANE_DTYPE,
 from rola.ops import carry as carry_ops
 from rola.ops import intra as intra_ops
 from rola.ops import padding as padding_ops
-from rola.ops._ext import extension
+from rola.routing import quant
 
 #: THE WINDOW, restated so a caller has one import. It is the CARRY KERNEL's constant
 #: (the axis law), and the intra family must carry an arm at the same number, because
 #: the two kernels run ONE window grid.
 WINDOW = carry_ops.WINDOW
-
-#: the level widths the intra kernel is instantiated at, and therefore the ones the
-#: combined operator has.  A topology is admitted when BOTH families carry an arm at
-#: its ``(D, B, W)``; the widths are uniform per topology, as everywhere else.
-LEVEL_WIDTH = intra_ops.LEVEL_WIDTH
-LEVEL_WIDTHS = (intra_ops.LEVEL_WIDTH, intra_ops.LEVEL_WIDTH_DEEP3, intra_ops.LEVEL_WIDTH_DEEP4)
 
 
 def _padded_shape(widths, dv: int) -> padding_ops.PaddedShape:
@@ -100,11 +88,8 @@ def _conservative_activity(descriptor: StateFormat, bh: int, device) -> torch.Te
 
 
 def _pack_operands(read_levels, write_levels, g_write, v):
-    """The planes both kernels read, packed ONCE: `(pread, pwrite, gwrite, v_bh, v_bthd)`.
-
-    ``v_bh`` is `[BH, L, DV]`, the carry surface's own layout; ``v_bthd`` is the
-    intra kernel's token-major `[B, T, H, DV]`. Both are views of the one cast, never
-    two draws of it.
+    """The carry's planes, packed ONCE: `(pread, pwrite, gwrite, v_bh)`, ``v_bh`` the carry
+    surface's `[BH, L, DV]`.
 
     THE LEVELS AND ``v`` ARE PADDED FIRST (:func:`_padded_shape`, `rola.ops.padding`):
     `pad_routes` widens each level's trailing dimension to its `PaddedShape.
@@ -123,20 +108,47 @@ def _pack_operands(read_levels, write_levels, g_write, v):
     v_bthd = padding_ops.pad_v(v.to(torch.bfloat16).contiguous(), shape.DV)
     Bn, T, H, dv = v_bthd.shape
     v_bh = v_bthd.permute(0, 2, 1, 3).contiguous().reshape(Bn * H, T, dv)
-    return pread, pwrite, gwrite, v_bh, v_bthd
+    return pread, pwrite, gwrite, v_bh
 
 
-def _intra_level_width(D: int) -> int | None:
-    """The level width the intra kernel ships at depth ``D`` and the op's window, or None
-    where it ships none: one width PER DEPTH, never membership in the widths of every depth."""
-    try:
-        return intra_ops._shipped_level_width(D, WINDOW)
-    except ValueError:
-        return None
+def intra_admits(widths, d_v: int) -> bool:
+    """Whether an intra arm is built at these level widths and value width."""
+    return (len(set(widths)) == 1 and d_v == intra_ops.VALUE_WIDTH
+            and intra_ops.level_width(len(widths)) == widths[0])
 
 
-def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swrite,
-            liveness: carry_ops.LivenessWords,
+def _carry_levels(routes, values):
+    """The carry leg's floating operands from the bundle, dequantized once: the read side at its unit rows (the
+    reader's factor cancels in ``num / den``, and the intra drops it), the write side and the values whole."""
+    read = tuple(quant.dequantize_rows(rows, torch.ones_like(scale))
+                 for rows, scale in zip(routes.amp_read, routes.scale_read, strict=True))
+    write = tuple(quant.dequantize_rows(rows, scale)
+                  for rows, scale in zip(routes.amp_write, routes.scale_write, strict=True))
+    return read, write, values.dequantized()
+
+
+def reader_factor(routes) -> torch.Tensor:
+    """``[BH, T]``: each token's read scales multiplied -- the per-token factor the kernels leave out of ``num`` and
+    ``den``."""
+    r = routes.scale_read[0]
+    for scale in routes.scale_read[1:]:
+        r = r * scale
+    return r.permute(0, 2, 1).reshape(routes.batch * routes.heads, routes.tokens)
+
+
+def readout(num: torch.Tensor, den: torch.Tensor, routes) -> torch.Tensor:
+    """THE READOUT, ``y = num / (den + eps)`` of the full sums, ``[B, T, H, d_v]`` fp32. The kernels' sums leave out
+    each token's reader factor ``r`` (it cancels in the ratio), so the floor divides by it: ``num' / (den' + eps / r)``
+    is the defined readout exactly, and a token that reads nothing (``r = 0``) reads zero."""
+    from rola.ops.constants import READOUT_EPS
+
+    y = num / (den + READOUT_EPS / reader_factor(routes)).unsqueeze(-1)
+    return y.reshape(routes.batch, routes.heads, routes.tokens, -1).permute(0, 2, 1, 3)
+
+
+def prefill(routes, values, *, modes, liveness: carry_ops.LivenessWords, unions: torch.Tensor, layout, read_statics,
+            write_statics,
+            weight_digits: int = intra_ops.DEFAULT_WEIGHT_DIGITS,
             state_in: torch.Tensor | None = None,
             state_out: torch.Tensor | None = None,
             page_table: torch.Tensor | None = None,
@@ -168,47 +180,25 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
     all-ones for an undeclared side and therefore cannot move a number, so
     ``DENSE_BOTH`` everywhere is always correct and only ever slower.
 
-    ``liveness`` is both sides' class-1 words in the descriptor's layout, the facts
-    pass's (:func:`rola.ops.facts.facts`) over the bundle these levels dequantize, or a
-    drawn call's own statement of its support (`measure.cells.liveness_words`).
-
-    ``sread``/``swrite`` are the frozen support words of the two sides
-    (``[BH, L/32, sum(widths)]`` int32). THEY ARE AN INPUT, NOT A DERIVATION: the
-    routing producer emits exactly this word from the solve that produced the
-    amplitudes (``entmax/factor.cu:219-241``), so deriving them here would be a
-    second pass over the planes to answer a question already answered. A caller
-    that drew its planes instead of solving them has
-    :func:`rola.ops.intra.pack_support`.
+    ``liveness`` is both sides' class-1 words in ``layout`` and ``unions`` their tile
+    unions, the facts pass's (:func:`rola.ops.facts.facts`) over this bundle with
+    ``read_statics`` and ``write_statics``. ``weight_digits`` is the intra value
+    product's declared digit count.
     """
-    D = len(widths)
+    widths = routes.topology.widths
+    D, d_v, length = len(widths), values.v_hat.shape[-1], routes.tokens
     if len(modes) != D:
         raise ValueError(f"{D} levels want {D} support modes; got {len(modes)}")
-    shipped = _intra_level_width(D)
-    if shipped is None:
+    if not intra_admits(widths, d_v):
         raise ValueError(
-            f"this build carries no intra arm at depth {D} and the {WINDOW}-token window, so "
-            f"the combined prefill has no kernel for widths {tuple(widths)}.")
-    if len(set(widths)) != 1 or widths[0] != shipped:
-        raise ValueError(
-            f"the combined prefill is built at the intra kernel's one uniform level width "
-            f"at depth {D} ({shipped}, read off its arms); got widths {tuple(widths)}. A "
-            f"topology neither family carries is an inter-only cell -- call "
-            f"rola.ops.carry.carry_forward directly.")
-    length = read_levels[0].shape[1]
+            f"this build carries no intra arm at level widths {tuple(widths)} and d_v {d_v} "
+            f"(built: {intra_ops.arms()}). A topology only the carry carries is an inter-only "
+            f"cell -- call rola.ops.carry.carry_forward directly.")
     if length % WINDOW:
-        raise ValueError(
-            f"L = {length} is not a whole number of {WINDOW}-token windows; the "
-            f"intra kernel's tile grid is a compile-time count per arm.")
+        raise ValueError(f"L = {length} is not a whole number of {WINDOW}-token windows")
 
-    #: THE LOGICAL VALUE WIDTH, read before `v` is padded -- `slice_y` narrows `num`
-    #: back to this width on the way out, so a caller at an unshipped `d_v` never
-    #: sees the padded tail (`rola.ops.padding`, "TWO CONTRACTS, ONE TRANSLATOR").
-    dv_logical = v.shape[-1]
-
-    #: THE OPERANDS ARE PACKED ONCE.  Both kernels read the SAME planes, so a second
-    #: pack of either side is how a rounding difference becomes a conformance mystery.
-    pread, pwrite, gwrite, v_bh, v_bthd = _pack_operands(read_levels, write_levels,
-                                                         g_write, v)
+    read_levels, write_levels, v = _carry_levels(routes, values)
+    pread, pwrite, gwrite, v_bh = _pack_operands(read_levels, write_levels, routes.g_write, v)
     bh, dv = v_bh.shape[0], v_bh.shape[2]
 
     descriptor = _descriptor(widths, dv, bh)
@@ -220,19 +210,17 @@ def prefill(read_levels, write_levels, g_write, v, widths, *, modes, sread, swri
     #: THE STATE PLANES ARE THE CALLER'S, both of them, and this operator allocates none:
     #: the kernel's four shapes pass through as the caller names them (state.md section 4).
 
-    routes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)
+    planes = carry_ops.RoutePlanes(read=pread, write=pwrite, gain=gwrite)
     num, den = carry_ops.carry_forward(
-        routes, v_bh, descriptor=descriptor, geometry=geometry, liveness=liveness,
+        planes, v_bh, descriptor=descriptor, geometry=geometry, liveness=liveness,
         activity=activity, launch=launch, state_in=state_in, state_out=state_out,
         page_table=page_table)
     #: SAME STREAM, SAME BUFFERS.  The intra REDs into `num`/`den`; the stream
-    #: order is the only synchronization either kernel needs, and there is no
-    #: host round trip between them.
-    extension().intra_forward(pread, pwrite, gwrite, v_bthd, sread, swrite, num, den, D,
-                              int(widths[0]), intra_ops.pack_modes(tuple(modes)),
-                              int(WINDOW))
-    return padding_ops.slice_y(num, dv_logical), den, state_out
+    #: order is the only synchronization either kernel needs.
+    intra_ops.intra_forward(routes, values, unions, layout, read_statics, write_statics, num, den,
+                            weight_digits=weight_digits)
+    return num, den, state_out
 
 
-__all__ = ["LEVEL_WIDTH", "LEVEL_WIDTHS", "WINDOW", "prefill"]
+__all__ = ["WINDOW", "intra_admits", "prefill", "reader_factor", "readout"]
 

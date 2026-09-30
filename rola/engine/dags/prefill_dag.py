@@ -20,8 +20,7 @@ from rola.engine import SUPPLIABLE, Mask, node, rules, run, validate_dag
 from rola.engine.facts import liveness, nodes
 from rola.engine.facts.call import require_envelope
 
-_SEEDS = ("routes", "values", "levels", "v", "decay", "state", "expert", "want_state",
-          "given_state_in", "given_arena")
+_SEEDS = ("routes", "values", "decay", "state", "expert", "want_state", "given_state_in", "given_arena")
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,27 +59,19 @@ def support_modes(f):
     return tuple(modes)
 
 
-@node(gives=("supports",), needs=("levels",), stream="main")
-def support_words(f):
-    """The intra's frozen support words of both sides, from the levels this call computes on (until the facts
-    pass emits them from the rows)."""
-    from rola.ops import intra as intra_ops
-
-    read, write = f["levels"]
-    return intra_ops.pack_support(read), intra_ops.pack_support(write)
-
-
-@node(gives=("liveness", "zeta", "layout"), needs=("routes", "values"), stream="main")
+@node(gives=("liveness", "unions", "zeta", "layout", "statics"), needs=("routes", "values"), stream="main")
 def facts(f):
-    """THE FACTS PASS over the bundle, one launch: both sides' class-1 words, the fold's window scales and the layout
-    the words are read in -- the topology's padded widths, its dense levels unread (`rola.ops.facts`)."""
+    """THE FACTS PASS over the bundle, one launch: both sides' class-1 words and their tile unions, the fold's window
+    scales, the layout the words are read in -- the topology's padded widths -- and the two sides' statics, their
+    dense levels unread (`rola.ops.facts`)."""
     from rola.ops import carry as carry_ops
     from rola.ops import facts as facts_ops
 
     routes = f["routes"]
     layout = facts_ops.call_layout(routes)
-    out = facts_ops.facts(routes, f["values"], layout, *facts_ops.call_statics(routes, layout))
-    return carry_ops.LivenessWords(words=out.words), out.zeta, layout
+    statics = facts_ops.call_statics(routes, layout)
+    out = facts_ops.facts(routes, f["values"], layout, *statics)
+    return carry_ops.LivenessWords(words=out.words), out.unions, out.zeta, layout, statics
 
 
 @node(gives=("atom_bits",), needs=("liveness", "layout"), stream="main")
@@ -112,7 +103,7 @@ def residency(f):
 
 
 @node(gives=("num", "den"),
-      needs=("levels", "v", "routes", "widths", "modes", "supports", "liveness", "state_in", "state_out",
+      needs=("routes", "values", "modes", "liveness", "unions", "layout", "statics", "state_in", "state_out",
              "page_table", "atom_bits"),
       stream="main")
 def launch(f):
@@ -120,22 +111,20 @@ def launch(f):
     (`rola.ops.prefill.prefill`)."""
     from rola.ops import prefill as prefill_ops
 
-    read, write = f["levels"]
-    sread, swrite = f["supports"]
+    read_statics, write_statics = f["statics"]
     num, den, _ = prefill_ops.prefill(
-        read, write, f["routes"].g_write, f["v"], f["widths"], modes=f["modes"], sread=sread, swrite=swrite,
-        liveness=f["liveness"], state_in=f["state_in"], state_out=f["state_out"], page_table=f["page_table"], atom_bits=f["atom_bits"])
+        f["routes"], f["values"], modes=f["modes"], liveness=f["liveness"], unions=f["unions"], layout=f["layout"],
+        read_statics=read_statics, write_statics=write_statics, state_in=f["state_in"], state_out=f["state_out"],
+        page_table=f["page_table"], atom_bits=f["atom_bits"])
     return num, den
 
 
 @node(gives=("y",), needs=("num", "den", "routes"), stream="main")
 def post(f):
-    """THE POST PASS: ``y = num / (den + eps)``, ``[B, T, H, d_v]`` fp32."""
-    from rola.ops.constants import READOUT_EPS
+    """THE POST PASS: ``y = num / (den + eps)``, ``[B, T, H, d_v]`` fp32 (`rola.ops.prefill.readout`)."""
+    from rola.ops import prefill as prefill_ops
 
-    routes, num = f["routes"], f["num"]
-    y = num / (f["den"].unsqueeze(-1) + READOUT_EPS)
-    return y.reshape(routes.batch, routes.heads, routes.tokens, -1).permute(0, 2, 1, 3)
+    return prefill_ops.readout(f["num"], f["den"], f["routes"])
 
 
 PREFILL_DAG = (
@@ -144,7 +133,6 @@ PREFILL_DAG = (
     nodes.classify_call,
     rules.mask.node,
     support_modes,
-    support_words,
     facts,
     activity,
     box,
@@ -211,12 +199,12 @@ def run_prefill(ctx: PrefillContext) -> tuple[torch.Tensor, torch.Tensor | None]
     """Walk the prefill DAG over a VALIDATED `ctx` (:func:`validate_context`, which the caller runs in its own
     grad mode): ``(y, state_out)``, the plane the call stored into or ``None``.
 
-    The kernels still compute on floating levels and values, so the seam dequantizes them once a call; the
-    call goes when the kernels read the rows.
+    The facts pass and the intra read the bundle; the carry leg's floating operands are `rola.ops.prefill`'s,
+    dequantized there once a call until the carry reads the rows.
     """
-    facts = {"routes": ctx.routes, "values": ctx.values, "levels": ctx.routes.dequantized(),
-             "v": ctx.values.dequantized(), "decay": ctx.decay, "state": ctx.state, "expert": ctx.expert,
-             "want_state": ctx.want_state, "given_state_in": ctx.state_in, "given_arena": ctx.arena}
+    facts = {"routes": ctx.routes, "values": ctx.values, "decay": ctx.decay, "state": ctx.state,
+             "expert": ctx.expert, "want_state": ctx.want_state, "given_state_in": ctx.state_in,
+             "given_arena": ctx.arena}
     facts.update(ctx.supplied)
     done = run(PREFILL_DAG, facts)
     return done["y"], done["state_out"]

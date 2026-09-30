@@ -29,12 +29,12 @@ def prefill_clauses(routes, decay: Any = None, *, d_v: int) -> tuple:
     """The facts :func:`rola.engine.rules.envelope.prefill_envelope` folds, for this segment: the call's shape
     and the binary's own census of the intra and carry arms at its depth."""
     from rola.ops import carry as carry_ops
-    from rola.ops import prefill as prefill_ops
+    from rola.ops import intra as intra_ops
 
     widths = widths_of(routes)
     depth = len(widths)
-    return (widths, d_v, decay, routes.tokens, carry_ops.WINDOW, prefill_ops._intra_level_width(depth),
-            tuple(dv for (d, dv, _warps) in carry_ops.arms() if d == depth))
+    return (widths, d_v, decay, routes.tokens, carry_ops.WINDOW, intra_ops.level_width(depth),
+            intra_ops.VALUE_WIDTH, tuple(dv for (d, dv, _warps) in carry_ops.arms() if d == depth))
 
 
 def arm_refusal(routes, decay: Any = None, *, d_v: int) -> str | None:

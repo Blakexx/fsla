@@ -11,7 +11,7 @@ and returns a builder for every arm this checkout runs on it, or refuses the cel
 `measure/executors.py`'s timing entry calls it on the cell a registration hands it; a profiler launches one arm
 through `oneshot_argv`.
 An arm is a subject that applies to the cell (`measure.subjects.applicable`, the cell's own facts) and whose kernel this
-binary carries at the cell's shape (the intra arm at the cell's depth and window for `intra_forward` and `carry_intra`,
+binary carries at the cell's shape (the intra arm at the cell's depth and level width for `intra_forward` and `carry_intra`,
 the decode arm for `decode_step`), with its dials: its name is the subject, then `@calls=N` for a call count other than
 one and `@schedule=S` for a carry order other than `first`, each only where the subject reads that dial
 (`Subject.calls`, `Subject.dials`), and on a layer cell `@layer=C` for each RoLA construction declared for that input
@@ -95,14 +95,10 @@ def _refuse_a_partial_binary() -> None:
 def _kernel_carried(subject: str, spec, construction) -> bool:
     """Whether this binary carries the kernel `subject` launches at the cell's shape, or a layer cell's construction
     (the cell's own facts are `measure.subjects.applicable`'s)."""
-    from rola.ops import carry, decode, intra
-    from rola.ops.prefill import _intra_level_width
+    from rola.ops import decode, intra
 
-    if subject == "carry_intra":
-        return len(set(spec.widths)) == 1 and _intra_level_width(len(spec.widths)) == spec.widths[0]
-    if subject == "intra_forward":
-        widths = {lw for levels, lw, window, _smem in intra.arms() if levels == len(spec.widths) and window == carry.WINDOW}
-        return bool(widths) and max(spec.widths) <= min(widths)
+    if subject in ("carry_intra", "intra_forward"):
+        return set(spec.widths) == {intra.level_width(len(spec.widths))}
     if subject == "decode_step":
         rows = decode.arms()
         padded = [dv for dv, _d, _decay in rows if dv >= spec.dv]

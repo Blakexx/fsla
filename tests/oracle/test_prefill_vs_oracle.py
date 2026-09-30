@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """THE COMBINED OPERATOR against the canonical fp64 oracle.
 
-THE REFERENCE IS `rola.ops.naive.naive_rola` DIRECTLY, and that is the point of this
-file. Each family's own conformance would pass on two different window grids; here the
+THE REFERENCE IS `rola.ops.naive.naive_rola` DIRECTLY, on the bundle's own dequantized
+levels and values -- the op gate compares on the same quantized inputs the kernels read --
+and that is the point of this file. Each family's own conformance would pass on two different window grids; here the
 two kernels run as one call and the whole answer is compared against the recurrence
 itself, so a window-grid disagreement, a double-counted diagonal or a dropped tile pair
 has nowhere to hide.
@@ -24,22 +25,20 @@ from __future__ import annotations
 import pytest
 import torch
 
-from measure.cells import carry_cells, conservative_activity, descriptor, launch, liveness_words, realize
+from measure.cells import carry_cells, conservative_activity, descriptor, launch, realize
+from rola.engine.facts import liveness as lv
 from rola.ops import carry as carry_ops
+from rola.ops import facts as facts_ops
 from rola.ops import intra as intra_ops
-from rola.ops.constants import READOUT_EPS
 from rola.ops.paging import bytes_equal
-from rola.ops.prefill import prefill
-from rola.routing.types import IndependentRouting, SoftmaxActivation, Topology
+from rola.ops.prefill import _carry_levels, prefill, readout
+from rola.routing.factors import RouteFactors
+from rola.routing.types import IndependentRouting, OpaqueRouting, SoftmaxActivation, Topology
+from rola.values import Values
 from tests.oracle.fixtures import assert_planted_errors_fail, assert_slots_close, canonical_from_plane, oracle_run, relative
 from tests.oracle.tolerances import BF16_RTOL, PREFILL_READOUT, PREFILL_STATE
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
-
-#: THE TOPOLOGY EACH DEPTH'S INTRA ARM IS INSTANTIATED AT, ``D -> B_l``. A combined cell
-#: needs BOTH families at its topology; one only the carry carries is an inter-only cell.
-INTRA_TOPOLOGY = {2: intra_ops.LEVEL_WIDTH, 3: intra_ops.LEVEL_WIDTH_DEEP3,
-                  4: intra_ops.LEVEL_WIDTH_DEEP4}
 
 #: The registry's cells the combined operator can run: the dense backing, a fresh state,
 #: the shipped value width, and a topology both families carry. A cell whose carry arm no
@@ -47,7 +46,7 @@ INTRA_TOPOLOGY = {2: intra_ops.LEVEL_WIDTH, 3: intra_ops.LEVEL_WIDTH_DEEP3,
 CELLS = tuple(c for c in carry_cells(tier="oracle")
               if c.backing == "dense" and c.state == "fresh" and c.dv == 64
               and len(set(c.widths)) == 1
-              and INTRA_TOPOLOGY.get(c.D) == c.widths[0])
+              and intra_ops.level_width(c.D) == c.widths[0])
 IDS = [c.name for c in CELLS]
 
 
@@ -76,31 +75,46 @@ def fresh_plane(spec, bh: int = 1):
     return carry_ops.state_plane(_descriptor(list(spec.widths), spec.dv, bh), bh)
 
 
+def bundle(drawn, spec):
+    """The cell's draw in the format the kernels read: u8 rows (f16 deeper), two value digits."""
+    topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
+    return (RouteFactors.from_levels(topology, drawn.read, drawn.write, drawn.gain.float()),
+            Values.from_projection(drawn.v))
+
+
+def run(spec, routes, values, *, state_in=None, state_out=None):
+    """The facts pass and the combined operator on one bundle, a side dense where the cell declares it so."""
+    layout = facts_ops.call_layout(routes)
+    declared = spec.declared_sparsity()
+    read_statics, write_statics = (lv.side_statics(layout, tuple(not s[side] for s in declared), spec.widths)
+                                   for side in (0, 1))
+    out = facts_ops.facts(routes, values, layout, read_statics, write_statics)
+    return prefill(routes, values, modes=modes_of(spec), liveness=carry_ops.LivenessWords(words=out.words),
+                   unions=out.unions,
+                   layout=layout, read_statics=read_statics, write_statics=write_statics, state_in=state_in,
+                   state_out=state_out)
+
+
 def call(spec, state_in=None):
-    """One combined call on the FINAL surface: no window, no ``(k, m)``, no carve."""
-    drawn = realize(spec)
-    return drawn, prefill(drawn.read, drawn.write, drawn.gain, drawn.v, spec.widths,
-                          modes=modes_of(spec),
-                          sread=intra_ops.pack_support(drawn.read),
-                          swrite=intra_ops.pack_support(drawn.write),
-                          liveness=liveness_words(drawn, descriptor(spec)),
-                          state_in=state_in,
-                          state_out=fresh_plane(spec) if state_in is None else state_in)
+    """One combined call on the FINAL surface: the cell's bundle, no window, no ``(k, m)``, no carve."""
+    routes, values = bundle(realize(spec), spec)
+    return (routes, values), run(spec, routes, values, state_in=state_in,
+                                 state_out=fresh_plane(spec) if state_in is None else state_in)
 
 
-def oracle(drawn, state_in=None):
-    """The fp64 recurrence on the cell's draw, with each slot's envelope (`tests.oracle.fixtures.oracle_run`)."""
-    read, write, gain, v = drawn.doubles()
+def oracle(routes, values, state_in=None, *, carry=False):
+    """The fp64 recurrence with each slot's envelope (`tests.oracle.fixtures.oracle_run`), on the bundle's own
+    dequantized levels and values -- the intra's inputs -- or, with ``carry``, the state's writers as the carry leg's
+    bf16 planes hold them, the inputs the state is written from until the carry reads the rows."""
+    (read, write), v, gain = routes.dequantized(), values.dequantized(), routes.g_write
+    if carry:
+        _, write, v = _carry_levels(routes, values)
+        write, v, gain = tuple(w.bfloat16() for w in write), v.bfloat16(), gain.bfloat16()
     routing = IndependentRouting(width=1, read=SoftmaxActivation(),
                                  write=SoftmaxActivation())
-    topo = Topology(levels=tuple(routing.at(w) for w in drawn.cell.widths))
-    return oracle_run(v, read, write, gain, topo, entry=state_in)
-
-
-def readout(num, den, spec):
-    """``[BH, L, DV]`` / ``[BH, L]`` seen as the oracle's ``[B, L, H, DV]``."""
-    y = num / (den[..., None].double() + READOUT_EPS)
-    return y.reshape(1, 1, spec.tokens, spec.dv).permute(0, 2, 1, 3)
+    topo = Topology(levels=tuple(routing.at(level.shape[-1]) for level in read))
+    return oracle_run(v.double(), tuple(r.double() for r in read), tuple(w.double() for w in write), gain.double(),
+                      topo, entry=state_in)
 
 
 # ------------------------------------------- the grid, and the surface it runs on
@@ -110,10 +124,9 @@ def test_the_two_kernels_run_one_window_grid():
     the intra's is still an arm axis, so what must hold is that the intra family is BUILT
     at the carry's constant. If it were not, the combined operator would have no grid and
     the cells below would be comparing two different decompositions."""
-    built = (intra_ops.WINDOW, intra_ops.WINDOW_WIDE, intra_ops.WINDOW_SMALL)
-    assert carry_ops.WINDOW in built, (
-        f"the carry's fixed window {carry_ops.WINDOW} is not among the intra family's "
-        f"built windows {built}; one operator needs one grid")
+    assert intra_ops.WINDOW == carry_ops.WINDOW, (
+        f"the carry's fixed window {carry_ops.WINDOW} is not the intra's {intra_ops.WINDOW}; one operator needs one "
+        "grid")
 
 
 def test_the_combined_operator_reaches_the_carry_launch_surface():
@@ -144,10 +157,11 @@ def test_the_combined_operator_reaches_the_carry_launch_surface():
 
 @pytest.mark.parametrize("spec", CELLS, ids=IDS)
 def test_prefill_matches_the_fp64_oracle(spec):
-    drawn, (num, den, plane) = call(spec)
-    ref = oracle(drawn)
-    assert_slots_close(readout(num, den, spec), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope,
+    (routes, values), (num, den, plane) = call(spec)
+    ref = oracle(routes, values)
+    assert_slots_close(readout(num, den, routes), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope,
                        what=f"{spec.name} readout")
+    ref = oracle(routes, values, carry=True)
     shape = (1, spec.N, spec.dv + 1)
     assert_slots_close(canonical_from_plane(plane), ref.state.reshape(shape), output=PREFILL_STATE,
                        envelope=ref.state_envelope.reshape(shape), what=f"{spec.name} state")
@@ -164,10 +178,10 @@ def test_the_per_slot_rule_fails_what_a_global_max_passes():
     slots past their allowance).
     """
     spec = next(c for c in CELLS if c.name == "flagship-dense")
-    drawn, (num, den, _plane) = call(spec)
-    ref = oracle(drawn)
+    (routes, values), (num, den, _plane) = call(spec)
+    ref = oracle(routes, values)
     y_ref, y_env = ref.y, ref.y_envelope
-    y = readout(num, den, spec).double()
+    y = readout(num, den, routes).double()
     assert_planted_errors_fail(y, y_ref, output=PREFILL_READOUT, envelope=y_env, what=f"{spec.name} readout")
     small = y_ref.abs() < 0.99 * BF16_RTOL * float(y_ref.abs().max())
     zeroed = torch.where(small, torch.zeros_like(y), y)
@@ -193,38 +207,30 @@ def test_a_chained_call_equals_one_long_call():
     chain. Agreement to fp32 rounding is what a reordered fp32 sum can promise, and it is
     far tighter than the bf16 band."""
     spec = next(c for c in CELLS if c.draw == "dense")
-    drawn = realize(spec)
-    modes = modes_of(spec)
-    sread = intra_ops.pack_support(drawn.read)
-    swrite = intra_ops.pack_support(drawn.write)
-    live = liveness_words(drawn, descriptor(spec)).words
-    whole = prefill(drawn.read, drawn.write, drawn.gain, drawn.v, spec.widths,
-                    modes=modes, sread=sread, swrite=swrite, liveness=carry_ops.LivenessWords(words=live),
-                    state_out=fresh_plane(spec))
+    routes, values = bundle(realize(spec), spec)
+    whole = run(spec, routes, values, state_out=fresh_plane(spec))
 
     cut = carry_ops.WINDOW
-    words = cut // intra_ops.WORD_TOKENS
-    head = prefill(tuple(x[:, :cut] for x in drawn.read),
-                   tuple(x[:, :cut] for x in drawn.write), drawn.gain[:, :cut],
-                   drawn.v[:, :cut], spec.widths, modes=modes, sread=sread[:, :words],
-                   swrite=swrite[:, :words],
-                   liveness=carry_ops.LivenessWords(words=live[..., :words].contiguous()),
-                   state_out=fresh_plane(spec))
-    tail = prefill(tuple(x[:, cut:] for x in drawn.read),
-                   tuple(x[:, cut:] for x in drawn.write), drawn.gain[:, cut:],
-                   drawn.v[:, cut:], spec.widths, modes=modes,
-                   sread=sread[:, words:].contiguous(),
-                   swrite=swrite[:, words:].contiguous(),
-                   liveness=carry_ops.LivenessWords(words=live[..., words:].contiguous()),
-                   state_in=head[2], state_out=head[2])
+
+    def part(sl):
+        return (RouteFactors(topology=routes.topology, amp_read=tuple(r[:, sl] for r in routes.amp_read),
+                             amp_write=tuple(r[:, sl] for r in routes.amp_write),
+                             scale_read=tuple(s[:, sl] for s in routes.scale_read),
+                             scale_write=tuple(s[:, sl] for s in routes.scale_write), g_write=routes.g_write[:, sl]),
+                Values(v_hat=values.v_hat[:, sl], v_lo=values.v_lo[:, sl], scale=values.scale[:, sl]))
+
+    head_routes, head_values = part(slice(0, cut))
+    tail_routes, tail_values = part(slice(cut, None))
+    head = run(spec, head_routes, head_values, state_out=fresh_plane(spec))
+    tail = run(spec, tail_routes, tail_values, state_in=head[2], state_out=head[2])
 
     assert bytes_equal(tail[2], whole[2])
     num = torch.cat((head[0], tail[0]), dim=1)
     den = torch.cat((head[1], tail[1]), dim=1)
     assert relative(num, whole[0]) < 1e-5
     assert relative(den, whole[1]) < 1e-5
-    ref = oracle(drawn)
-    assert_slots_close(readout(num, den, spec), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope,
+    ref = oracle(routes, values)
+    assert_slots_close(readout(num, den, routes), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope,
                        what="the chained readout")
 
 
@@ -234,18 +240,21 @@ def test_the_intra_term_is_actually_present():
     cell in this file that drives the carry LAUNCH SURFACE directly, so it is where the
     combined operator's carry leg and the kernel boundary are the same call."""
     spec = next(c for c in CELLS if c.draw == "dense")
-    drawn = realize(spec)
+    routes, values = bundle(realize(spec), spec)
+    read, write, v = _carry_levels(routes, values)
     desc = descriptor(spec)
     shape = launch()
+    layout = facts_ops.call_layout(routes)
+    words = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout)).words
     num, den = carry_ops.carry_forward(
-        carry_ops.route_planes(drawn.read, drawn.write, drawn.gain),
-        drawn.v.permute(0, 2, 1, 3).reshape(1, spec.tokens, spec.dv).contiguous(),
+        carry_ops.route_planes(read, write, routes.g_write),
+        v.bfloat16().permute(0, 2, 1, 3).reshape(1, spec.tokens, spec.dv).contiguous(),
         descriptor=desc, geometry=carry_ops.geometry_block(desc, shape),
-        liveness=liveness_words(drawn, desc), activity=conservative_activity(desc, 1, "cuda"),
+        liveness=carry_ops.LivenessWords(words=words), activity=conservative_activity(desc, 1, "cuda"),
         launch=shape, state_out=carry_ops.state_plane(desc, 1))
-    ref = oracle(drawn)
+    ref = oracle(routes, values)
     with pytest.raises(AssertionError, match="slots are off the oracle"):
-        assert_slots_close(readout(num, den, spec), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope,
+        assert_slots_close(readout(num, den, routes), ref.y, output=PREFILL_READOUT, envelope=ref.y_envelope,
                            what="the inter term alone")
 
 
@@ -254,15 +263,16 @@ def test_the_combined_operator_refuses_what_it_has_no_kernel_for():
     becoming a host-side second code path: a topology only the carry family carries is an
     inter-only cell, and the combined entry says so instead of half-serving it."""
     spec = next(c for c in CELLS if c.draw == "dense")
-    drawn = realize(spec)
-    live = liveness_words(drawn, descriptor(spec))
-    with pytest.raises(ValueError, match="level width"):
-        prefill(drawn.read, drawn.write, drawn.gain, drawn.v, (64, 64),
-                modes=modes_of(spec), sread=intra_ops.pack_support(drawn.read),
-                swrite=intra_ops.pack_support(drawn.write), liveness=live)
-    #: A width another depth ships is not this depth's: depth 3's 16 passes a check that asks
-    #: membership in every depth's widths, and then the kernel refuses the support words' shape.
-    with pytest.raises(ValueError, match="at depth 2"):
-        prefill(drawn.read, drawn.write, drawn.gain, drawn.v, (16, 16),
-                modes=modes_of(spec), sread=intra_ops.pack_support(drawn.read),
-                swrite=intra_ops.pack_support(drawn.write), liveness=live)
+    routes, values = bundle(realize(spec), spec)
+    layout = facts_ops.call_layout(routes)
+    statics = facts_ops.call_statics(routes, layout)
+    out = facts_ops.facts(routes, values, layout, *statics)
+    words = carry_ops.LivenessWords(words=out.words)
+    for width in (64, 16):
+        narrow = RouteFactors(topology=Topology(levels=(OpaqueRouting(width=width),) * 2),
+                              amp_read=tuple(r[..., :width] for r in routes.amp_read),
+                              amp_write=tuple(r[..., :width] for r in routes.amp_write),
+                              scale_read=routes.scale_read, scale_write=routes.scale_write, g_write=routes.g_write)
+        with pytest.raises(ValueError, match="no intra arm"):
+            prefill(narrow, values, modes=modes_of(spec), liveness=words, unions=out.unions, layout=layout, read_statics=statics[0],
+                    write_statics=statics[1])

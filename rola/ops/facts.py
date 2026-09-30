@@ -28,10 +28,12 @@ LEDGER_WARPS = 8
 
 class Facts(NamedTuple):
     """One call's facts: ``words`` the ``[BH, 2, rows, ceil(L / 32)]`` int32 class-1 table (:class:`LivenessLayout`),
-    and ``zeta`` the ``[BH, windows, 2]`` fp32 window scales -- per window the largest ``g m_w`` and ``g m_w s_t``,
-    ``m_w`` the product of the write levels' scales and ``s_t`` the value scale."""
+    ``unions`` the ``[BH, 2, groups, ceil(L / 64)]`` int32 tile unions (``tile_unions``), and ``zeta`` the
+    ``[BH, windows, 2]`` fp32 window scales -- per window the largest ``g m_w`` and ``g m_w s_t``, ``m_w`` the
+    product of the write levels' scales and ``s_t`` the value scale."""
 
     words: torch.Tensor
+    unions: torch.Tensor
     zeta: torch.Tensor
 
 
@@ -57,23 +59,25 @@ def _dense_bits(statics: SideStatics) -> int:
 
 
 def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, write_statics: SideStatics) -> Facts:
-    """THE PASS: both sides' words and zeta from the bundle (``routes``, ``values``) in ONE launch.
+    """THE PASS: both sides' words, their tile unions and zeta from the bundle (``routes``, ``values``) in ONE launch.
 
-    Same words, bit for bit, as :func:`rola.engine.facts.liveness.liveness_words` over the bundle's rows; zeta per
+    Same words, bit for bit, as :func:`rola.engine.facts.liveness.liveness_words` over the bundle's rows, and their
+    unions as :func:`rola.engine.facts.liveness.tile_unions`; zeta per
     slot within fp32 rounding of ``fold_zeta`` (``tests/integration/test_facts_pass.py``). The rows are read where the
     bundle holds them, any width, offset or dtype of the format, each level's ``[B, T, H, w_l]`` view by its strides.
     """
     BH = routes.batch * routes.heads
     window_words = WINDOW // 32
     words = torch.empty((BH, 2, layout.rows, layout.words), dtype=torch.int32, device=routes.device)
+    unions = torch.empty((BH, 2, layout.groups, layout.tiles), dtype=torch.int32, device=routes.device)
     zeta = torch.empty((BH, -(-layout.words // window_words), 2), dtype=torch.float32, device=routes.device)
     count = mask_words(layout.rows)
     extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
-        words, zeta, list(layout.B),
+        words, unions, zeta, list(layout.B),
         _dense_bits(read_statics), [read_statics.mask_word(i) for i in range(count)],
         _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], WINDOW)
-    return Facts(words=words, zeta=zeta)
+    return Facts(words=words, unions=unions, zeta=zeta)
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/facts/facts.md#phase-ledger)

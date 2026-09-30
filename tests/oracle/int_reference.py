@@ -234,6 +234,80 @@ def fold_zeta(g_write, s_t, m_w, window):
     return cols.reshape(B, windows, window, H, 2).amax(2).permute(0, 2, 1, 3).clamp_min(TINY)
 
 
+#: The intra's column tile: the value product's A is scaled a (reader row, column tile).
+INTRA_TILE = 64
+#: The weights' levels at one or two u8 digits.
+WEIGHT_LEVELS = {1: 255.0, 2: 65535.0}
+
+
+def unit_rows(rows) -> tuple[torch.Tensor, ...]:
+    """A bundle side's rows as fp64 unit values: a u8 digit over 255, an f16 unit as it is."""
+    return tuple(r.double() / 255.0 if r.dtype is torch.uint8 else r.double() for r in rows)
+
+
+def value_digits(values) -> tuple[torch.Tensor, float]:
+    """``(q, levels)``: a value's integer digits, fp64 ``[B, T, H, dv]`` -- ``v_hat 256 + v_lo`` over 32767 at two
+    digits, ``v_hat`` over 127 at one -- the bundle's value being ``scale q / levels``."""
+    if values.v_lo is None:
+        return values.v_hat.double(), HI_LEVELS
+    return values.v_hat.double() * 256.0 + values.v_lo.double(), TWO_DIGIT_LEVELS
+
+
+def intra_bundle_reference(routes, values, window, *, weight_digits: int = 2, exact: bool = False,
+                           telemetry: dict | None = None):
+    """``(num, den)``, fp64 ``[B, T, H, dv]`` and ``[B, T, H]``: the INTRA's declared arithmetic on the bundle.
+
+    Per window, reader ``t`` and writer ``t' <= t`` in it: ``G_l[t, t'] = sum_d r_l[t, d] w_l[t', d]`` over the
+    rows' unit values (:func:`unit_rows`); ``A[t, t'] = f(t') prod_l G_l[t, t']`` with the writer factor
+    ``f(t') = g(t') prod_l sw_l(t')`` (the write gain times the write levels' scales). The reader's factor
+    ``prod_l sr_l(t)`` is not applied: it is per token and cancels in ``num / den`` (the output contract, carry
+    and intra alike). ``den[t] = sum_t' A`` exactly. THE VALUE PRODUCT: ``P = A s(t')`` (the value scale folded
+    into the columns), ``sigma(t, c)`` = the largest ``P`` over column tile ``c`` (``INTRA_TILE`` tokens from the
+    window's start), ``a = round(P / sigma LW)`` with ``LW`` = 255 at one weight digit, 65535 at two, and
+    ``num[t] = sum_c sigma / LW sum_{t' in c} a q(t') / LV`` over the value's digits (:func:`value_digits`).
+    ``exact`` skips the rounding of ``a``: ``num = sum A s q / LV``, the unquantized product on the bundle's values.
+    ``telemetry`` receives ``bound``, the per-slot bound the rounding implies: a weight moves by at most half its unit,
+    ``sum_c sigma / (2 LW) sum_{t' in c} |q| / LV``.
+    """
+    reads, writes = unit_rows(routes.amp_read), unit_rows(routes.amp_write)
+    f = routes.g_write.double()
+    for scale in routes.scale_write:
+        f = f * scale.double()
+    q, levels_v = value_digits(values)
+    s = values.scale.double()
+    Bn, T, H, dv = q.shape
+    LW = WEIGHT_LEVELS[weight_digits]
+    num = torch.zeros(Bn, T, H, dv, device=q.device, dtype=torch.float64)
+    den = torch.zeros(Bn, T, H, device=q.device, dtype=torch.float64)
+    bound = torch.zeros_like(num)
+    for t0 in range(0, T, window):
+        sl = slice(t0, min(t0 + window, T))
+        n = sl.stop - sl.start
+        A = f[:, sl].permute(0, 2, 1)[:, :, None, :]                                    # [B,H,1,n] the writers
+        for r, w in zip(reads, writes, strict=True):
+            A = A * torch.einsum("bthd,bshd->bhts", r[:, sl], w[:, sl])
+        A = A * torch.tril(torch.ones(n, n, device=q.device, dtype=torch.float64))
+        den[:, sl] = A.sum(-1).permute(0, 2, 1)
+        P = A * s[:, sl].permute(0, 2, 1)[:, :, None, :]
+        qw = q[:, sl].permute(0, 2, 1, 3)                                                # [B,H,n,dv]
+        if exact:
+            num[:, sl] = (P @ qw / levels_v).permute(0, 2, 1, 3)
+            continue
+        out = torch.zeros(Bn, H, n, dv, device=q.device, dtype=torch.float64)
+        half = torch.zeros_like(out)
+        for c0 in range(0, n, INTRA_TILE):
+            cut = slice(c0, min(c0 + INTRA_TILE, n))
+            sigma = P[..., cut].amax(-1, keepdim=True)                                  # [B,H,n,1]
+            a = torch.round(P[..., cut] / sigma.clamp_min(TINY) * LW)
+            out += sigma / LW * (a @ qw[:, :, cut] / levels_v)
+            half += sigma / (2.0 * LW) * qw[:, :, cut].abs().sum(2, keepdim=True) / levels_v
+        num[:, sl] = out.permute(0, 2, 1, 3)
+        bound[:, sl] = half.permute(0, 2, 1, 3)
+    if telemetry is not None:
+        telemetry["bound"] = bound
+    return num, den
+
+
 def prepass_reference(read_levels, write_levels, g_write, v, widths, sparsity, window, *, exact: bool = False,
                       state_in=None, telemetry: dict | None = None):
     """``(den, scale)`` per token, ``[B, T, H]`` fp64, under the PRE-PASS's DECLARED arithmetic: the carry's

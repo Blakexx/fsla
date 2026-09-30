@@ -121,6 +121,8 @@ def test_header_constants_mirror_the_python_reader():
     text = _HEADER.read_text()
     constants = dict(re.findall(r"constexpr (?:int|uint16_t) (\w+) = (0x[0-9a-fA-F]+|\d+)u?;", text))
     assert int(constants["kTokBits"]) == lv.TOK_BITS
+    assert int(constants["kTileTokens"]) == lv.TILE_TOKENS
+    assert int(constants["kGroupDigits"]) == lv.GROUP_DIGITS
     assert int(constants["kMaxLevels"]) == 4
     assert int(constants["kF16MagnitudeMask"], 16) == lv.F16_MAGNITUDE_MASK
     assert re.search(r"kRead = 0, kWrite = 1, kSides = 2", text)
@@ -140,6 +142,8 @@ def test_header_compiles_as_a_standalone_translation_unit(tmp_path):
                       "static_assert(kL.side_bytes() == 64 * 32 / 8);\n"
                       "static_assert(kL.word_index(1, 1, 0, 0) == 3 * kL.side_words());\n"
                       "static_assert(kL.token_bit(33) == 2u);\n"
+                      "static_assert(kL.groups() == 2 && kL.group_base(1) == 1 && kL.tiles() == 1);\n"
+                      "static_assert(kL.union_index(1, 1, 1, 0) == 3 * 2 + 1);\n"
                       "static_assert(!rola::facts::digit_live(uint16_t{0x8000}));\n"
                       "static_assert(rola::facts::digit_live(uint16_t{0x0001}));\n"
                       "static_assert(!rola::facts::digit_live(uint8_t{0}));\n"
@@ -198,6 +202,29 @@ def test_a_token_past_the_end_votes_dead():
     tail = words[:, :, :, 1]
     assert torch.equal(tail, torch.ones_like(tail))
     assert lv.unpack(words, layout).shape[-1] == 33
+
+
+@pytest.mark.parametrize(("widths", "L"), _SHAPES)
+def test_a_tile_union_is_its_groups_digits_live_anywhere_in_its_64_tokens(widths, L):
+    """The unions against the per-token bits directly: bit ``i`` of (group ``g`` of level ``l``, tile ``t``) is digit
+    ``32 g + i`` of level ``l`` live at some token of the tile; a group past a narrow level's digits is dead."""
+    layout = lv.LivenessLayout.of(_format(widths), L)
+    statics = _statics(layout)
+    rows = _draw(layout, statics)
+    words = lv.liveness_words(rows, rows, layout, statics, statics)
+    bits = lv.unpack(words, layout)
+    unions = lv.tile_unions(words, layout)
+    assert unions.shape == (2, lv.SIDES, layout.groups, layout.tiles)
+    for level, width in enumerate(widths):
+        for digit in range(width):
+            group, bit = layout.group_base(level) + digit // lv.GROUP_DIGITS, digit % lv.GROUP_DIGITS
+            for tile in range(layout.tiles):
+                want = bits[:, :, layout.row_of(level, digit), tile * lv.TILE_TOKENS:(tile + 1) * lv.TILE_TOKENS]
+                got = (unions[:, :, group, tile] >> bit) & 1
+                assert torch.equal(got.bool(), want.any(-1))
+        for digit in range(width, -(-width // lv.GROUP_DIGITS) * lv.GROUP_DIGITS):
+            group, bit = layout.group_base(level) + digit // lv.GROUP_DIGITS, digit % lv.GROUP_DIGITS
+            assert not ((unions[:, :, group] >> bit) & 1).any()
 
 
 def test_negative_zero_is_dead_like_positive_zero():

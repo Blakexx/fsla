@@ -1,19 +1,21 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""THE INTRA KERNEL'S ROOFLINE: wall time beside the device's own mma.sync ceiling.
+"""THE INTRA KERNEL'S ROOFLINE: wall time beside the device's own int8 mma.sync ceiling.
 
 The other benches answer "how long"; this one answers "how much of the machine". It
 reports, per cell, the wall time, the tile-pairs per millisecond, and the achieved
-fraction of the bf16/fp32 mma ceiling -- the number that says whether a window's cost is
-the arithmetic or everything around it.
+fraction of the u8 IMMA ceiling (s32 accumulate) -- the number that says whether a window's
+cost is the arithmetic or everything around it.
 
 THE CELLS AND THE STEP ARE THE REGISTRY'S. This file defines neither: the cells are
 `measure/cells` records and the timed callable is the registered `intra_forward`
 bench, so a number here is commensurable with the same cell's number from a timing
 session of `declare.py`. What is added is arithmetic ON TOP of that
-measurement -- the issued MAC count is EXACT (the window's lower-triangular tile grid is
-`n(n+1)/2` of its `n = W/64` squared tiles), so the fraction is a fraction and not an
-estimate.
+measurement -- the issued MAC count of a dense cell is EXACT (the window's lower-triangular
+tile grid is `n(n+1)/2` of its `n = W/64` squared tiles, a pair's Gram over every level's
+digits and its value product in the weight digits times the value digits), so the fraction
+is a fraction and not an estimate; a sparse cell's gate skips pairs, and its fraction is of
+the dense count.
 
 Symbols at first use: ``BH`` = batch times heads, ``L`` = tokens, ``W`` = the window the
 carry and the intra share, ``D`` = routing levels, ``DV`` = the padded value width.
@@ -32,10 +34,9 @@ from pathlib import Path
 import torch
 
 TILE = 64
-#: sm_86 consumer parts issue 256 bf16 MACs per clock per SM with an fp32 accumulator
-#: (half the fp16-accumulate rate) -- the mma.sync ceiling this kernel's fraction is
-#: quoted against.
-MACS_PER_CLOCK_PER_SM = 256
+#: sm_86 issues 1024 u8 MACs per clock per SM into an s32 accumulator (measured 2026-09-28, four times the bf16
+#: fp32-accumulate rate) -- the ceiling this kernel's fraction is quoted against.
+MACS_PER_CLOCK_PER_SM = 1024
 
 
 def peak_flops():
@@ -55,8 +56,8 @@ def tile_pairs(window: int) -> int:
     return tiles * (tiles + 1) // 2
 
 
-def macs(bh: int, length: int, levels: int, window: int, dv: int) -> int:
-    per_tile = TILE * TILE * (levels * 256 + dv)
+def macs(bh: int, length: int, widths, window: int, dv: int, weight_digits: int, value_digits: int) -> int:
+    per_tile = TILE * TILE * (sum(widths) + weight_digits * value_digits * dv)
     return bh * (length // window) * tile_pairs(window) * per_tile
 
 
@@ -79,6 +80,8 @@ def main() -> int:
     from measure.cells import by_name, carry_cells
     from measure.subjects import SUBJECTS, applicable
     from rola.ops.carry import WINDOW
+    from rola.ops.intra import DEFAULT_WEIGHT_DIGITS
+    from rola.values import DEFAULT_VALUE_DIGITS
 
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -98,8 +101,8 @@ def main() -> int:
 
     flops, clock = peak_flops()
     print(f"device {torch.cuda.get_device_name()}  clock {clock / 1e9:.3f} GHz  "
-          f"mma.sync ceiling {flops / 1e12:.1f} TFLOP/s  window {WINDOW}")
-    print(f"{'cell':<28}{'ms':>9}{'tiles/ms':>12}{'TFLOP/s':>10}{'peak':>8}")
+          f"u8 IMMA ceiling {flops / 1e12:.1f} TOP/s  window {WINDOW}")
+    print(f"{'cell':<28}{'ms':>9}{'tiles/ms':>12}{'TOP/s':>10}{'peak':>8}")
     rows = []
     for spec in specs:
         if spec.tokens % WINDOW:
@@ -111,11 +114,12 @@ def main() -> int:
         ms = median_ms(arm.call, args.repeats)
         windows = spec.tokens // WINDOW
         tiles = windows * tile_pairs(WINDOW)
-        achieved = 2.0 * macs(1, spec.tokens, spec.D, WINDOW, spec.dv) / (ms * 1e-3)
+        achieved = 2.0 * macs(1, spec.tokens, spec.widths, WINDOW, spec.dv, DEFAULT_WEIGHT_DIGITS,
+                              DEFAULT_VALUE_DIGITS) / (ms * 1e-3)
         print(f"{spec.name:<28}{ms:>9.3f}{tiles / ms:>12.0f}{achieved / 1e12:>10.2f}"
               f"{achieved / flops * 100:>7.1f}%")
-        rows.append({"cell": spec.name, "ms": ms, "tiles_per_ms": tiles / ms, "tflop_per_s": achieved,
-                     "ceiling_tflop_per_s": flops, "fraction": achieved / flops, "clock_hz": clock})
+        rows.append({"cell": spec.name, "ms": ms, "tiles_per_ms": tiles / ms, "top_per_s": achieved,
+                     "ceiling_top_per_s": flops, "fraction": achieved / flops, "clock_hz": clock})
         del arm
         torch.cuda.empty_cache()
     if args.json:

@@ -414,8 +414,8 @@ design record it was written as rather than rewritten stage by stage against the
 mechanism, which this pass could not responsibly complete; `docs/internals/carry/carry_kernel.md`
 is the authority on what actually runs. The deleted bodies are readable on the `k35-final` branch
 tip, which is never edited again and which is the parity reference every stage of the
-rebuild is graded against from its first probe. §6.3 and §6.4 — decode and intra —
-describe kernels that are here and unchanged.
+rebuild is graded against from its first probe. §6.3 describes the decode kernel that is
+here; §6.4 the intra as the int8 rebuild made it.
 
 **Nothing is ported, and nothing is a prototype.** The rebuild reads the old bodies and
 the measured records as SOURCES OF MECHANISM — each stage below names the file or the
@@ -670,19 +670,18 @@ readout reads the row — IS the semantics, not an optimization
 
 ### 6.4 Intra — the within-window term
 
-The causal term inside a window, as its own deterministic side kernel, reducing into
-the same output and mass buffers the carry kernel allocated. Per window it walks the
-lower-triangular tile grid of `[64 × 64]` output blocks; per tile pair the per-level
-Gram matrices accumulate in registers over the level's digit axis, the levels are
-multiplied together there, and the result becomes the A operand of the value multiply
-IN PLACE — the accumulator-to-A fragment identity, with no shared-memory round trip.
-The `[W × W]` matrix is never materialized. Where it touches the paged state it does
-so through the same descriptor as every other kernel, and its ownership grain is its
-own — the kernel in the tree reads no state at all, since every leaf it touches is
-written and read inside the one window. *(**UNSPECIFIED (ruling pending):** what that
-grain is once the intra term owns state, and whether the intra family's instantiation
-axes fold into the `D × DV` shipped set of §8 — its window and level width are
-template axes today.)*
+The causal term inside a window, as its own deterministic side kernel over the bundle,
+reducing into the same output and mass planes the carry reduces into. A CTA owns a
+block of 128 readers of one window, resident in shared memory, and walks the writer
+tiles up to its diagonal; per tile pair each level's Gram accumulates EXACTLY in s32
+over its u8 digits by int8 tensor ops, the levels multiply in fp32, and the result
+becomes the A operand of the value product IN PLACE — the accumulator-to-A fragment
+identity — as u8 weights against the s8 values. The `[W × W]` matrix is never
+materialized, and a tile pair or 32-digit slab whose digits meet nowhere is skipped on
+the facts pass's tile unions, an exact certificate. The window is the carry's constant
+(the two kernels run one grid) and the level width the arm's axis
+(`docs/internals/intra/intra_kernel.md`). The kernel reads no state: every pair it
+computes is written and read inside the one window.
 
 ---
 
@@ -793,7 +792,7 @@ wider-type emulation.
 | the architecture capability table and the closed-world refusal | `docs/internals/common/arch_caps.md` |
 | decode: the step, the walk, growth, capture | `docs/internals/decode/decode.md` |
 | decode's lattice and factor tables | `docs/internals/decode/decode_lattice.md` |
-| the within-window term | `docs/internals/intra/intra.md`, `docs/internals/intra/intra_kernel.md` |
+| the within-window term | `docs/internals/intra/intra_kernel.md`, `docs/internals/intra/intra_api.md` |
 | the host order of a call | `docs/internals/engine/prefill_dag.md`, `docs/internals/engine/decode_dag.md` |
 | the public surface | `docs/api.md`, `docs/internals/rola_api.md` |
 | what a manifest is and what it refuses | `docs/ratification.md`, `docs/architecture/closed-world-codegen.md` |

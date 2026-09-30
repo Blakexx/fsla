@@ -82,6 +82,7 @@ _LAUNCHLESS = {
     "rola_decode_ledger_bind": "binds the device buffer the next decode step books into; issues no launch",
     "rola_produce_ledger_bind": "binds the device buffer the next producer launch books into; issues no launch",
     "rola_facts_ledger_bind": "binds the device buffer the next facts pass books into; issues no launch",
+    "rola_intra_ledger_bind": "binds the device buffer the next intra launch books into; issues no launch",
 }
 
 

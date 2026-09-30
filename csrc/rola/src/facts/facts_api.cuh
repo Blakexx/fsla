@@ -14,8 +14,8 @@ void rola_facts_ledger_bind(std::optional<Tensor> ledger);  // facts_api.md#rola
 
 void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                         std::vector<Tensor> scale_write, Tensor g_write, Tensor v_scale,
-                        Tensor words, Tensor zeta, std::vector<int64_t> widths, int64_t dense_read,
-                        std::vector<int64_t> mask_read, int64_t dense_write,
+                        Tensor words, Tensor unions, Tensor zeta, std::vector<int64_t> widths,
+                        int64_t dense_read, std::vector<int64_t> mask_read, int64_t dense_write,
                         std::vector<int64_t> mask_write,
                         int64_t window);  // facts_api.md#rola-facts-forward
 

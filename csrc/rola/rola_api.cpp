@@ -26,7 +26,7 @@
 #include "src/entmax/entmax.cuh"
 #include "src/entmax/factor.cuh"
 #include "src/facts/facts_api.cuh"
-#include "src/intra/intra.cuh"
+#include "src/intra/intra_api.cuh"
 #include "src/paging/vmm_owner.cuh"
 #include "src/produce/produce_api.cuh"
 
@@ -113,10 +113,12 @@ std::tuple<int64_t, bool, int64_t, std::string> vmm_probe(int64_t device) {
 }  // namespace
 
 STABLE_TORCH_LIBRARY(rola, m) {
-  // ---- the standalone intra kernel ----------------------------------------
+  // ---- the intra: the within-window pairs over the bundle -------------------
   m.def(
-      "intra_forward(Tensor pread, Tensor pwrite, Tensor gwrite, Tensor v, Tensor sread, Tensor swrite, "
-      "Tensor(a!) o, Tensor(b!) den, int levels, int level_width, int level_modes, int window) -> ()");
+      "rola_intra_forward(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v_hat, "
+      "Tensor? v_lo, Tensor v_scale, Tensor unions, Tensor(a!) num, Tensor(b!) den, int[] widths, int dense_read, "
+      "int dense_write, int weight_digits, int window) -> ()");
+  m.def("rola_intra_ledger_bind(Tensor? ledger) -> ()");
   m.def("intra_build_stamp() -> int");
   m.def("intra_arms() -> int[][]");
 
@@ -145,7 +147,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
   // ---- the facts pass: the bundle's rows to the class-1 words and zeta ------
   m.def(
       "rola_facts_forward(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v_scale, "
-      "Tensor(a!) words, Tensor(b!) zeta, int[] widths, int dense_read, int[] mask_read, int dense_write, "
+      "Tensor(a!) words, Tensor(b!) unions, Tensor(c!) zeta, int[] widths, int dense_read, int[] mask_read, int dense_write, "
       "int[] mask_write, int window) -> ()");
   m.def("rola_facts_ledger_bind(Tensor? ledger) -> ()");
 
@@ -215,7 +217,8 @@ STABLE_TORCH_LIBRARY(rola, m) {
 }
 
 STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
-  m.impl("intra_forward", TORCH_BOX(&rola::intra::intra_forward));
+  m.impl("rola_intra_forward", TORCH_BOX(&rola::intra::rola_intra_forward));
+  m.impl("rola_intra_ledger_bind", TORCH_BOX(&rola::intra::rola_intra_ledger_bind));
   m.impl("intra_build_stamp", TORCH_BOX(&rola::intra::intra_build_stamp));
   m.impl("intra_arms", TORCH_BOX(&rola::intra::intra_arms));
   m.impl("carry_forward", TORCH_BOX(&rola::carry::carry_forward));

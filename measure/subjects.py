@@ -50,6 +50,12 @@ def _restore(state_in):
     return lambda: state_in.copy_(entry)
 
 
+#: THE LEVELS A SUBJECT MAY PRICE, and what each owes (`Subject.level`). rola has no `layer` subject on this line: the
+#: prefill arm (`rola.interface.rola_op`) refuses since the rebuild deleted the shipped chunk consumer, so neither the
+#: op's prefill path nor a layer around it has anything to time. Decode is the one op-level path that runs.
+LEVELS = ("kernel", "op", "layer")
+
+
 @dataclass(frozen=True)
 class Subject:
     """One registered bench: what it prices, at which LEVEL, which cell kind it takes, how it builds."""
@@ -82,6 +88,10 @@ class Subject:
     #: value, its default, so it cannot be set where it would reach nothing. The state a call binds is the CELL's
     #: (`measure.cells.state_binding`), never a dial.
     dials: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.level not in LEVELS:
+            raise ValueError(f"subject {self.name!r} prices level {self.level!r}; a subject prices one of {LEVELS}")
 
 
 # ------------------------------------------------------------------ carry cells
@@ -140,71 +150,72 @@ def carry_forward(fx) -> Launch:
 
 
 def intra_forward(fx) -> Launch:
-    """The within-window term on the same cell, at the window the two kernels share.
+    """The within-window term on the cell's bundle, at the window the two kernels share, over the facts pass's unions.
 
-    THE WINDOW IS THE CARRY'S CONSTANT, not the intra arm's default: the two kernels run
-    ONE grid, so pricing the intra at a window the carry does not run would be pricing a
-    different decomposition. A cell whose L is not a whole number of that window has no
-    grid for this subject and is not applicable to it.
+    THE WINDOW IS THE CARRY'S CONSTANT: the two kernels run ONE grid, so a cell whose L is not a whole number of it has
+    no grid for this subject and is not applicable to it. The bundle and its unions are built once, here; the planes
+    the launch reduces into are zeroed untimed before every call.
     """
     from measure.cells import realize
-    from rola.ops import carry as carry_ops
+    from rola.ops import facts as facts_ops
     from rola.ops import intra as intra_ops
 
     spec = fx["cell"]
-    drawn = realize(spec)
-    modes = _modes_of(spec)
-    gwrite = drawn.gain.permute(0, 2, 1).reshape(-1, spec.tokens).contiguous()
-    #: PACKED ONCE, HERE: the padding and packing are the producer's (host-side, by the
-    #: intra op's own contract) and pricing them per call priced glue -- a fixed ~5 ms that
-    #: read as the kernel at every L (2026-09-08). The launch is what this arm prices, as
-    #: the carry arm prices its launch over the registry's packed operands.
-    D = len(drawn.read)
-    width = intra_ops._shipped_level_width(D, carry_ops.WINDOW)
-    read = intra_ops.pad_routes(drawn.read, (width,) * D)
-    write = intra_ops.pad_routes(drawn.write, (width,) * D)
-    v = intra_ops.pad_v(drawn.v.contiguous(), intra_ops.VALUE_WIDTH)
-    pread, pwrite = intra_ops.pack_side(read), intra_ops.pack_side(write)
-    sread, swrite = intra_ops.pack_support(read), intra_ops.pack_support(write)
+    routes, values, layout, statics = bundle_of(spec, realize(spec))
+    unions = facts_ops.facts(routes, values, layout, *statics).unions
+    bh = routes.batch * routes.heads
+    num = torch.zeros(bh, spec.tokens, intra_ops.VALUE_WIDTH, device="cuda")
+    den = torch.zeros(bh, spec.tokens, device="cuda")
 
     def run():
-        return intra_ops.intra_forward(pread, pwrite, gwrite, v, sread, swrite, modes,
-                                       window=carry_ops.WINDOW)
+        return intra_ops.intra_forward(routes, values, unions, layout, *statics, num, den)
 
-    return Launch(name=f"intra_forward|{spec.name}", call=run)
+    def reset():
+        num.zero_()
+        den.zero_()
+
+    return Launch(name=f"intra_forward|{spec.name}", call=run, reset=reset)
 
 
-def _facts_of(read_levels, write_levels, descriptor):
-    """``(liveness, atom_bits)``: a drawn call's own statement of its support -- the class-1 words of its levels (the
-    contract's model, every level voted from its draw) and the per-atom activity byte the engine folds from them."""
+def bundle_of(spec, drawn, tokens: slice = slice(None)):
+    """``(routes, values, layout, (read_statics, write_statics))``: the cell's draw over ``tokens`` in the format the
+    kernels read, a side dense where the cell declares it so."""
     from rola.engine.facts import liveness as lv
-    from rola.ops.carry import LivenessWords
+    from rola.ops import facts as facts_ops
+    from rola.routing.factors import RouteFactors
+    from rola.routing.types import OpaqueRouting, Topology
+    from rola.values import Values
 
-    layout = lv.LivenessLayout(D=len(descriptor.B), B=tuple(descriptor.B), L=read_levels[0].shape[1])
-    statics = lv.side_statics(layout, (False,) * layout.D, tuple(level.shape[-1] for level in read_levels))
-    words = lv.liveness_words(read_levels, write_levels, layout, statics, statics)
-    return LivenessWords(words=words), lv.page_bits(words, layout)
+    topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
+    routes = RouteFactors.from_levels(topology, [x[:, tokens] for x in drawn.read],
+                                      [x[:, tokens] for x in drawn.write], drawn.gain[:, tokens].float())
+    values = Values.from_projection(drawn.v[:, tokens])
+    layout = facts_ops.call_layout(routes)
+    declared = spec.declared_sparsity()
+    statics = tuple(lv.side_statics(layout, tuple(not sparse[side] for sparse in declared), topology.widths)
+                    for side in (0, 1))
+    return routes, values, layout, statics
 
 
 def carry_intra(fx) -> Launch:
-    """THE TWO KERNELS AS ONE OPERATOR: `rola.ops.prefill` over the cell's drawn routes, gain and values -- the
-    liveness pass, the carry and the intra, and that seam's own packing of its per-level inputs.
+    """THE TWO KERNELS AS ONE OPERATOR: `rola.ops.prefill` over the cell's bundle -- the carry, the intra, and the
+    carry leg's own dequantize-and-pack of the bundle, over facts the caller built.
 
-    A KERNEL-LEVEL SUBJECT, not the op (Blake, 2026-09-15). The support words are the producer's output and the activity
-    bits are the facts pass's, so both are built once here, outside the timed call, exactly as `rola.ops.prefill`'s
-    contract says they are the caller's. What an OP-level number would add -- producing those facts, planning and
-    committing the pages, the packing the op owns -- is not timed here and has no live path to time until the prefill
-    arm is rebuilt (`rola.interface.rola_op`).
+    A KERNEL-LEVEL SUBJECT, not the op (Blake, 2026-09-15). The liveness words, zeta and activity bits are the facts
+    pass's, so they are built once here, outside the timed call, exactly as `rola.ops.prefill`'s contract says they are
+    the caller's. What an OP-level number would add -- producing the bundle and its facts, planning and committing the
+    pages -- is not timed here and has no live path to time until the prefill arm is rebuilt
+    (`rola.interface.rola_op`).
 
-    AT `calls` ABOVE ONE the same sequence runs as that many calls over whole windows, the
-    state carried through one plane zeroed per launch set: what a caller that prefills in
-    chunks pays -- every call's fixed cost (packing, liveness, the sweeps in and out of the
-    state) that many times over the windows one call runs. A carried chain binds its own
-    plane, so the cell's state binding is the single call's.
+    AT `calls` ABOVE ONE the same sequence runs as that many calls over whole windows, each its own bundle, the state
+    carried through one plane zeroed per launch set: what a caller that prefills in chunks pays -- every call's fixed
+    cost that many times over the windows one call runs. A carried chain binds its own plane, so the cell's state
+    binding is the single call's.
     """
     from measure.cells import realize
+    from rola.engine.facts import liveness as lv
     from rola.ops import carry as carry_ops
-    from rola.ops import intra as intra_ops
+    from rola.ops import facts as facts_ops
     from rola.ops import prefill as prefill_ops
 
     spec = fx["cell"]
@@ -213,21 +224,14 @@ def carry_intra(fx) -> Launch:
         raise ValueError(f"{spec.name}: {spec.tokens} tokens is not {calls} calls of whole windows")
     drawn = realize(spec)
     modes = _modes_of(spec)
-    D = len(drawn.read)
-    width = intra_ops._shipped_level_width(D, prefill_ops.WINDOW)
     step = spec.tokens // calls
     descriptor = prefill_ops._descriptor(list(spec.widths), spec.dv, 1)
     parts = []
     for c in range(calls):
-        sl = slice(c * step, (c + 1) * step)
-        read = [x[:, sl] for x in drawn.read]
-        write = [x[:, sl] for x in drawn.write]
-        #: THE LIVENESS WORDS AND ACTIVITY BYTES are facts-pass outputs, the caller's, so built
-        #: once here from the draw; the bytes gate the state sweeps to the atoms this call touches.
-        parts.append((read, write, drawn.gain[:, sl].contiguous(), drawn.v[:, sl].contiguous(),
-                      intra_ops.pack_support(intra_ops.pad_routes(read, (width,) * D)),
-                      intra_ops.pack_support(intra_ops.pad_routes(write, (width,) * D)),
-                      *_facts_of(read, write, descriptor)))
+        routes, values, layout, statics = bundle_of(spec, drawn, slice(c * step, (c + 1) * step))
+        out = facts_ops.facts(routes, values, layout, *statics)
+        parts.append((routes, values, layout, statics, carry_ops.LivenessWords(words=out.words), out.unions,
+                      lv.page_bits(out.words, layout)))
     if calls == 1:
         chain = None
         state_in, state_out, page_table = _binding(fx, drawn, descriptor)
@@ -241,11 +245,10 @@ def carry_intra(fx) -> Launch:
         if chain is not None:
             chain.zero_()
         out = None
-        for read, write, gain, v, sread, swrite, liveness, bits in parts:
-            out = prefill_ops.prefill(read, write, gain, v, list(spec.widths), modes=modes,
-                                      sread=sread, swrite=swrite, liveness=liveness, atom_bits=bits,
-                                      state_in=state_in, state_out=state_out,
-                                      page_table=page_table)
+        for routes, values, layout, (read_statics, write_statics), liveness, unions, bits in parts:
+            out = prefill_ops.prefill(routes, values, modes=modes, liveness=liveness, unions=unions, layout=layout,
+                                      read_statics=read_statics, write_statics=write_statics, atom_bits=bits,
+                                      state_in=state_in, state_out=state_out, page_table=page_table)
         return out
 
     return Launch(name=name, call=run, reset=_restore(state_in) if chain is None else None)
@@ -255,24 +258,13 @@ def facts_pass(fx) -> Launch:
     """Both sides' class-1 words and the fold's window scales, from the cell's draw in the bundle's format: the pass the
     prefill's facts node launches, a side dense where the cell declares it so (its rows unread)."""
     from measure.cells import realize
-    from rola.engine.facts import liveness as lv
     from rola.ops import facts as facts_ops
-    from rola.routing.factors import RouteFactors
-    from rola.routing.types import OpaqueRouting, Topology
-    from rola.values import Values
 
     spec = fx["cell"]
-    drawn = realize(spec)
-    topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
-    routes = RouteFactors.from_levels(topology, drawn.read, drawn.write, drawn.gain.float())
-    values = Values.from_projection(drawn.v)
-    layout = facts_ops.call_layout(routes)
-    declared = spec.declared_sparsity()
-    read_statics, write_statics = (
-        lv.side_statics(layout, tuple(not sparse[side] for sparse in declared), topology.widths) for side in (0, 1))
+    routes, values, layout, statics = bundle_of(spec, realize(spec))
 
     def run():
-        return facts_ops.facts(routes, values, layout, read_statics, write_statics)
+        return facts_ops.facts(routes, values, layout, *statics)
 
     return Launch(name=f"facts_pass|{spec.name}", call=run)
 
@@ -396,11 +388,6 @@ SUBJECTS = {
                            "and the kernels, as the op runs them",
                            level="op", symbol="decode_step_kernel", stamp="rola_decode_build_stamp"),
 }
-
-#: THE LEVELS A SUBJECT MAY PRICE, and what each owes (`Subject.level`). rola has no `layer` subject on this line: the
-#: prefill arm (`rola.interface.rola_op`) refuses since the rebuild deleted the shipped chunk consumer, so neither the
-#: op's prefill path nor a layer around it has anything to time. Decode is the one op-level path that runs.
-LEVELS = ("kernel", "op", "layer")
 
 
 def _shared_window() -> int:

@@ -127,3 +127,54 @@ def test_the_prepass_den_is_within_its_digits_and_its_scale_is_a_bound(name, cap
     with capsys.disabled():
         print(f"\n{name}: den rel err max {float(rel.max()):.2e} mean {float(rel.mean()):.2e} | "
               f"scale / envelope-max median {float(over.median()):.1f}x  p99 {float(over.quantile(0.99)):.1f}x")
+
+
+# --------------------------------------------------------------- the intra's declared arithmetic, on the bundle
+
+INTRA_CELLS = ["flat-small-alt-k4", "one-box-short", "deep3-alt-k4"]
+
+
+def _bundle(name):
+    """The cell's draw in the bundle's format: u8 rows at depth <= 2, f16 deeper; two value digits."""
+    from rola.routing.factors import RouteFactors
+    from rola.routing.types import OpaqueRouting, Topology
+    from rola.values import Values
+
+    cell = by_name(name)
+    drawn = realize(cell)
+    topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in cell.widths))
+    routes = RouteFactors.from_levels(topology, drawn.read, drawn.write, drawn.gain.float())
+    return cell, routes, Values.from_projection(drawn.v)
+
+
+@pytest.mark.parametrize("name", INTRA_CELLS)
+def test_the_intra_reference_is_the_intra_on_the_bundle_when_nothing_is_rounded(name):
+    """Unrounded, the declared intra times the reader's factor IS the fp64 intra of the bundle's own dequantized
+    levels and values: the structure (the Grams, the writer factor, the causal window) before any rounding."""
+    cell, routes, values = _bundle(name)
+    num, den = iref.intra_bundle_reference(routes, values, carry_ops.WINDOW, exact=True)
+    read, write = routes.dequantized()
+    want_num, want_den = reference.intra_reference(read, write, routes.g_write, values.dequantized(), cell.widths,
+                                                   carry_ops.WINDOW)
+    envelope, _ = reference.intra_reference(read, write, routes.g_write, values.dequantized().abs(), cell.widths,
+                                            carry_ops.WINDOW)
+    reader = torch.ones_like(den)
+    for scale in routes.scale_read:
+        reader = reader * scale.double()
+    #: per slot against the slot's envelope: the dequantized operands are fp32, a few units of 2^-24 each
+    assert ((num * reader[..., None] - want_num).abs() <= 2.0 ** -20 * envelope).all()
+    assert ((den * reader - want_den).abs() <= 2.0 ** -20 * want_den).all()
+
+
+@pytest.mark.parametrize("name", INTRA_CELLS)
+@pytest.mark.parametrize("digits", (1, 2))
+def test_the_intra_weights_round_within_half_a_unit_a_term(name, digits):
+    """The value product's one rounding, bounded per slot: a weight moves by at most half its unit ``sigma / LW``,
+    so a slot's error is at most ``sum_c sigma / (2 LW) sum_{t' in c} |q| / LV``; and it moves at all."""
+    _, routes, values = _bundle(name)
+    exact, _ = iref.intra_bundle_reference(routes, values, carry_ops.WINDOW, exact=True)
+    seen: dict = {}
+    got, _ = iref.intra_bundle_reference(routes, values, carry_ops.WINDOW, weight_digits=digits, telemetry=seen)
+    err = (got - exact).abs()
+    assert (err <= seen["bound"] * (1 + 1e-9)).all(), (err - seen["bound"]).max()
+    assert err.max() > 0

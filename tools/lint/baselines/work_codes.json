@@ -1364,18 +1364,6 @@
    "count": 1
   },
   {
-   "path": "docs/internals/intra/intra.md",
-   "message": "names the work code 'I1'",
-   "line_sha256": "6f41c22f30828f9b",
-   "count": 1
-  },
-  {
-   "path": "docs/internals/intra/intra_kernel.md",
-   "message": "names the work code 'K31'",
-   "line_sha256": "e39992ee98e18091",
-   "count": 1
-  },
-  {
    "path": "docs/internals/padding.md",
    "message": "names the work code 'C1c'",
    "line_sha256": "954b0e6bdb18f0e7",
@@ -1494,18 +1482,6 @@
    "message": "names the work code 'K31-i'",
    "line_sha256": "cc558588a8b66d82",
    "count": 2
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'K31-i'",
-   "line_sha256": "e747dff17459f0fc",
-   "count": 1
-  },
-  {
-   "path": "docs/open-work.md",
-   "message": "names the work code 'K31-i'",
-   "line_sha256": "ff36cf8f6011ba30",
-   "count": 1
   },
   {
    "path": "docs/open-work.md",
@@ -1856,12 +1832,6 @@
    "count": 1
   },
   {
-   "path": "tests/oracle/intra_reference.py",
-   "message": "names the work code 'K31'",
-   "line_sha256": "46d91b6e8d871522",
-   "count": 1
-  },
-  {
    "path": "tests/oracle/oracle_fixtures.py",
    "message": "names the work code 'D2-b'",
    "line_sha256": "1686c18fa19a04f4",
@@ -1997,18 +1967,6 @@
    "path": "tests/oracle/test_entmax_cuda_gates.py",
    "message": "names the work code 'I6'",
    "line_sha256": "ec05cddb75dfd5de",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_intra_kernel.py",
-   "message": "names the work code 'K31'",
-   "line_sha256": "fab201512c10626e",
-   "count": 1
-  },
-  {
-   "path": "tests/oracle/test_intra_reference.py",
-   "message": "names the work code 'K31'",
-   "line_sha256": "00c50fca29530711",
    "count": 1
   },
   {
