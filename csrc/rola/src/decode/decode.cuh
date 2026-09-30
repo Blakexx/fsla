@@ -21,7 +21,8 @@ static_assert(kDecodeMaxLevelWidth >= kProducerMaxBranchWidth,
               "MAX_BRANCH_WIDTH: a topology the producer can emit would over-read "
               "the staged amplitude row");
 
-constexpr int kDecodeThreads = 1024;  // one fat CTA per SM; see decode.md#kdecodethreads
+constexpr int kDecodeThreads =
+    512;  // one CTA per SM, 16 warps of 128 registers; decode.md#kdecodethreads
 constexpr int kDecodeWarps = kDecodeThreads / 32;
 
 constexpr int kUnitBlockWarps = 8;  // NOT the warp count; decode.md#kunitblockwarps
@@ -34,6 +35,9 @@ constexpr int kUnitRepeats = kDecodeWarps / kUnitBlockWarps;
 
 constexpr int kDecodeMaxSpan = 32;  // refused at the host entry; decode.md#kdecodemaxspan
 
+//: `expf(88) = 1.65e38 < FLT_MAX`. THE SAME VALUE AND THE SAME CONVENTION as -- see docs/internals/decode/decode.md#kdecodemaxexponent
+constexpr float kDecodeMaxExponent = 88.0f;
+
 //: THE LEAF'S LANES: a leaf row is `DV / 8` lanes of 8 channels, so a warp walks `32 / (DV / 8)` units at once. -- see docs/internals/decode/decode.md#leaf-lanes
 template <int DV>
 struct LeafLanes {
@@ -42,7 +46,7 @@ struct LeafLanes {
   static_assert(DV % 32 == 0 && kLanes <= 32, "a leaf row is whole 32-channel groups of 4 lanes");
 };
 
-constexpr int kDecodeResidentThreads = 1024;  // CTA/SM residency; decode.md#kdecoderesidentthreads
+constexpr int kDecodeResidentThreads = 512;  // CTA/SM residency; decode.md#kdecoderesidentthreads
 
 //: THE STEP'S PHASES, as the phase ledger books them; see decode.md#phase-ledger
 enum DecodePhase : int { kPhFold, kPhFactor, kPhAdmit, kPhWalk, kPhCombine, kDecodePhases };
@@ -76,6 +80,7 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   Span v_scale;               // the token's fp32 value scale
   int normalize[kMaxLevels];  // per READ level: still carries its own mass?; decode.md#near-line-98
   int rows_f16;               // the coefficient rows' type, 1 = f16, 0 = u8
+  int write_atoms;            // the write term walks whole atoms; decode.md#whole-atoms
   int g_bf16;
 
   int level_width[kMaxLevels];       // B_l

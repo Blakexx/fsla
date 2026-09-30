@@ -86,11 +86,9 @@ def test_a_dropped_sequence_drops_its_scratch():
 #: discipline a gate rather than a habit.
 def _decode_scratch_facts():
     from rola.ops.decode import derive_decode_geometry
+    from tests.oracle.oracle_fixtures import _topology
 
-    class _Topology:
-        widths = (16, 16)
-
-    return {"geometry": derive_decode_geometry(_Topology(), d_v=64, decay=False, BH=2,
+    return {"geometry": derive_decode_geometry(_topology((16, 16)), d_v=64, decay=False, BH=2,
                                                device="cpu"),
             "BH": 2, "device": "cpu"}
 

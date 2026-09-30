@@ -33,7 +33,7 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                            Tensor growth_ctr, Tensor done, Tensor atom_bits,
                            std::vector<int64_t> level_widths,
                            std::vector<int64_t> level_row_offsets, int64_t lattice_k,
-                           int64_t lattice_m, int64_t n_split, double eps,
+                           int64_t lattice_m, bool write_dense, int64_t n_split, double eps,
                            std::optional<Tensor> page_table, std::optional<Tensor> pool_slots,
                            std::optional<Tensor> pool_cursor, std::optional<Tensor> pool_map);
 

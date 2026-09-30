@@ -158,17 +158,13 @@ __device__ __forceinline__ int term_layout(const DecodeParams& p, const int32_t*
   return (term == 0) ? (1 << acc) : (1 << (acc + p.lat_outer_bits));
 }
 
-//: THE WHOLE TABLE AND THE RETIREMENT BOUND, published once per CTA. -- see docs/internals/decode/decode_lattice.md#publish-term-layout
+//: THE WHOLE TABLE, published once per CTA: each term's fields and unit count. -- see docs/internals/decode/decode_lattice.md#publish-term-layout
 template <int D>
 __device__ __forceinline__ void publish_term_layout(const DecodeParams& p, const int32_t* n_o,
                                                     const int32_t* n_d, int32_t* fld,
-                                                    int32_t* units, int32_t* umax) {
+                                                    int32_t* units) {
   const int t = threadIdx.x;
-  if (t <= D + 1) {
-    const int u = term_layout<D>(p, n_o, n_d, t, fld + t * kMaxLevels);
-    units[t] = u;
-    if (t <= D) atomicMax(umax, u);
-  }
+  if (t <= D + 1) units[t] = term_layout<D>(p, n_o, n_d, t, fld + t * kMaxLevels);
   __syncthreads();
 }
 

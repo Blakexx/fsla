@@ -176,7 +176,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "Tensor? dials, Tensor g_write, Tensor v_hat, Tensor? v_lo, Tensor v_scale, "
       "Tensor(a!) state, Tensor(b!) ws, Tensor(c!) ctr, Tensor(d!) growth, Tensor(e!) growth_any, "
       "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor atom_bits, int[] level_widths, int[] level_row_offsets, "
-      "int lattice_k, int lattice_m, int n_split, float eps, Tensor? page_table=None, Tensor(h!)? pool_slots=None, "
+      "int lattice_k, int lattice_m, bool write_dense, int n_split, float eps, Tensor? page_table=None, Tensor(h!)? pool_slots=None, "
       "Tensor(i!)? pool_cursor=None, Tensor(j!)? pool_map=None) -> Tensor");
   m.def("rola_decode_residency(bool decay, int levels) -> int");
   m.def("rola_decode_build_stamp() -> int");

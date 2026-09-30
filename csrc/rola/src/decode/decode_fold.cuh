@@ -46,14 +46,19 @@ __device__ __forceinline__ float scale_of(const Span& s, int b, int h) {
   return *row_of<float>(s, b, h);
 }
 
-//: THE DIGIT PASS: every digit of both sides, one load a thread, staged and balloted into the digit masks -- see docs/internals/decode/decode_fold.md#fold-digits
+//: THE DIGIT PASS: every digit of both sides, a thread's slots' loads issued before any is used, staged and -- see docs/internals/decode/decode_fold.md#fold-digits
 template <int D, typename T>
 __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h, float* sa_r,
                                             float* sa_w, uint32_t* mask_r, uint32_t* mask_w) {
+  //: a side is at most `kMaxLevels` levels of `kDecodeMaxLevelWidth` digits, so a thread holds at most this many slots.
+  constexpr int kSlots = (2 * kMaxLevels * kDecodeMaxLevelWidth) / kDecodeThreads;
   const int lane = threadIdx.x & 31;
   const int slots = p.mask_total << 5;
-#pragma unroll 1
-  for (int s = threadIdx.x; s < 2 * slots; s += kDecodeThreads) {
+  float x[kSlots];
+  float scale[kSlots];
+#pragma unroll
+  for (int j = 0; j < kSlots; ++j) {
+    const int s = threadIdx.x + j * kDecodeThreads;
     const bool write_side = s >= slots;
     const int word = (write_side ? s - slots : s) >> 5;
     int l = 0;
@@ -62,19 +67,31 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
       if (word >= p.mask_off[q]) l = q;
     }
     const int digit = ((word - p.mask_off[l]) << 5) + lane;
-    const bool valid = digit < p.level_width[l];
+    const bool valid = s < 2 * slots && digit < p.level_width[l];
     const Span& rows = write_side ? p.write[l] : p.read[l];
-    //: the digit and its row's scale are loaded together: one round trip.
-    const float x = valid ? raw(row_of<T>(rows, b, h)[digit * rows.sw]) : 0.0f;
-    const float scale =
-        valid ? scale_of(write_side ? p.write_scale[l] : p.read_scale[l], b, h) : 0.0f;
-    const uint32_t live = __ballot_sync(0xffffffffu, x != 0.0f);
+    x[j] = valid ? raw(row_of<T>(rows, b, h)[digit * rows.sw]) : 0.0f;
+    scale[j] = valid ? scale_of(write_side ? p.write_scale[l] : p.read_scale[l], b, h) : 0.0f;
+  }
+
+#pragma unroll
+  for (int j = 0; j < kSlots; ++j) {
+    const int s = threadIdx.x + j * kDecodeThreads;
+    if (s >= 2 * slots) break;
+    const bool write_side = s >= slots;
+    const int word = (write_side ? s - slots : s) >> 5;
+    int l = 0;
+#pragma unroll
+    for (int q = 1; q < D; ++q) {
+      if (word >= p.mask_off[q]) l = q;
+    }
+    const int digit = ((word - p.mask_off[l]) << 5) + lane;
+    const uint32_t live = __ballot_sync(0xffffffffu, x[j] != 0.0f);
     if (lane == 0) (write_side ? mask_w : mask_r)[word] = live;
-    if (valid) {
+    if (digit < p.level_width[l]) {
       //: a level the fold normalizes stays RAW until its sum is known (`normalize_rows`).
       const bool normalized = !write_side && p.normalize[l] != 0;
-      const float unit = normalized ? 1.0f : scale / full_scale<T>();
-      (write_side ? sa_w : sa_r)[p.level_amp_offset[l] + digit] = x * unit;
+      const float unit = normalized ? 1.0f : scale[j] / full_scale<T>();
+      (write_side ? sa_w : sa_r)[p.level_amp_offset[l] + digit] = x[j] * unit;
     }
   }
 }

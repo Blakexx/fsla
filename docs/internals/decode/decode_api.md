@@ -168,7 +168,9 @@ over the caller's RAW `[B, 1, H, *]` views. There is no operand plane between th
 producer and the walk, and no probe launch in front of it: the write set the walk
 enumerates is the set the residency test reads, so the test is a pass over shared
 memory. `lattice_k`/`lattice_m` name the `(k, m)` box the state plane is written in --
-the leaf order travels with the plane rather than being assumed.
+the leaf order travels with the plane rather than being assumed. `write_dense` is the
+topology's declaration that the innermost level's write side has no exact zeros, which lets
+the write term walk whole atoms (`decode.md#whole-atoms`).
 The verdict is PER BATCH-HEAD (`growth`, `done`, and the `growth_any` reduction the
 host reads) beside the write-atom set it was reached from (`atom_bits`, which is what
 a host admission then plans from), and under a slack pool a growth step admits

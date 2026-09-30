@@ -41,6 +41,9 @@ class DecodeGeometry:
     has_decay: bool
     eps: float
     n_split: int
+    #: THE INNERMOST LEVEL'S WRITE SIDE IS DENSE BY DECLARATION (its activation has no exact zeros), so every write
+    #: unit is a whole atom and the step walks it as one (docs/internals/decode/decode.md#whole-atoms).
+    write_dense: bool
 
     @property
     def N(self) -> int:

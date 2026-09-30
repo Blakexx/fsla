@@ -37,14 +37,12 @@
 #include "decode_api.cuh"
 #include "decode_fold.cuh"
 #include "decode_lattice.cuh"
+#include "decode_leaf.cuh"
 #include "dispatch_switch.cuh"
 
 namespace rola {
 namespace decode {
 namespace detail {
-
-//: `expf(88) = 1.65e38 < FLT_MAX`. THE SAME VALUE AND THE SAME CONVENTION as -- see docs/internals/decode/decode.md#kdecodemaxexponent
-constexpr float kDecodeMaxExponent = 88.0f;
 
 //: NOT an anonymous namespace: nvcc mangles anonymous-namespace kernels with a hash that -- see docs/internals/decode/decode.md#near-line-51
 namespace stampdet {
@@ -103,8 +101,6 @@ decode_step_kernel(DecodeParams p) {
   __shared__ int s_running;
   __shared__ int s_n_o[kKinds * kMaxLevels];
   __shared__ int s_n_d[kMaxLevels];
-  //: The retirement bound, folded by `publish_term_layout`'s own `atomicMax` -- which is why -- see docs/internals/decode/decode.md#sumax
-  __shared__ int s_umax;
   //: THE TERM TABLE, ONE PACKED WORD PER (term, level): the field's position, its -- see docs/internals/decode/decode.md#decode-step-kernel-note-l137
   __shared__ int s_fld[kMaxTerms * kMaxLevels];
   //: One unit count per TERM. The walk's outer loop is the term, so each term's rank space -- see docs/internals/decode/decode.md#near-line-122
@@ -146,7 +142,6 @@ decode_step_kernel(DecodeParams p) {
   }
   if (tid < DV) v_tok[tid] = value_of(p, v_c);
   if (tid == 0) {
-    s_umax = 0;
     s_arrive = 0;
     s_admission = 0;
   }
@@ -159,13 +154,18 @@ decode_step_kernel(DecodeParams p) {
   __syncthreads();
   //: PHASE C: the normalized amplitudes and the term layout (whose barrier ends it).
   normalize_rows(p, sa_r, s_sum);
-  publish_term_layout<D>(p, s_n_o, s_n_d, s_fld, s_units, &s_umax);
+  publish_term_layout<D>(p, s_n_o, s_n_d, s_fld, s_units);
   clock.lap(kPhFactor);
 
   // ---- RETIREMENT: the split's ceiling is captured, the realized work is not ----
-  //: `n_split` is FROZEN for the sequence and baked into the captured launch -- see docs/internals/decode/decode.md#umax
-  const int umax = s_umax;
-  const int batch_max = ceil_div_int(umax, Lanes::kGroups);
+  //: `n_split` is FROZEN for the sequence; the realized work is a warp's largest share of a term: a unit of a -- see docs/internals/decode/decode.md#umax
+  int batch_max = 0;
+#pragma unroll
+  for (int term = 0; term <= D; ++term) {
+    const int share =
+        (term == 0 && p.write_atoms) ? s_units[0] : ceil_div_int(s_units[term], Lanes::kGroups);
+    batch_max = share > batch_max ? share : batch_max;
+  }
   if (seg > 0 && seg * kUnitBlockWarps >= batch_max) {
     finish(kPhFactor);
     return;
@@ -299,13 +299,64 @@ decode_step_kernel(DecodeParams p) {
       const int32_t* fld = s_fld + term * kMaxLevels;
       //: TERM 0 IS THE WRITE PRODUCT: every leaf it walks is written, and no other term writes. -- see docs/internals/decode/decode_lattice.md#the-terms
       const bool writes = term == 0;
-      //: THE BLOCK, THE REPEAT AND THE PERIOD, over BATCHES of `kGroups` units. A warp's low -- see docs/internals/decode/decode.md#period
+      //: THE BLOCK, THE REPEAT AND THE PERIOD, over a warp's share of the term. A warp's low -- see docs/internals/decode/decode.md#period
       const int period = p.n_split * kUnitBlockWarps;
       const int ub = warp & (kUnitBlockWarps - 1);
       const int ur = warp >> kUnitBlockWarpsBits;
+      const int first = seg * kUnitBlockWarps + ub + ur * period;
+      const int stride = period * kUnitRepeats;
+
+      if (writes && p.write_atoms) {
+        //: THE WRITE TERM BY WHOLE ATOMS: a warp a unit, its lane groups a quarter of the atom's leaves each, every -- see docs/internals/decode/decode.md#whole-atoms
+        constexpr int kRows = kAtomLeaves / Lanes::kGroups;
 #pragma unroll 1
-      for (int batch = seg * kUnitBlockWarps + ub + ur * period; batch * Lanes::kGroups < units;
-           batch += period * kUnitRepeats) {
+        for (int unit = first; unit < units; unit += stride) {
+          const Unit<D> u = resolve_write_unit<D, DECAY>(p, mask_r, mask_w, sa_r, sa_w, sd, olist,
+                                                         dlist, fld, unit);
+          if (u.cw == 0u) continue;
+          const uint32_t br = u.live_r ? u.cr : 0u;
+#pragma unroll 1
+          for (int a = 0; a < (1 << p.atoms_per_unit_shift); ++a) {
+            const int atom = (u.base >> kAtomShift) + a;
+            bool present = true;
+            int64_t base = (dense_bh_base + atom) * static_cast<int64_t>(Page::kBytes);
+            if (page_row != nullptr) {
+              int slot = page_row[atom];
+              if (slot < 0 && claim_row != nullptr) slot = claim_row[atom];
+              present = slot >= 0;
+              base = static_cast<int64_t>(slot) * Page::kBytes;
+            }
+            uint8_t* const page = p.state + base;
+            LeafAddr addr[kRows];
+            LeafSlice slice[kRows];
+#pragma unroll
+            for (int k = 0; k < kRows; ++k) {
+              addr[k] = leaf_addr<DV>(page, k * Lanes::kGroups + grp, ch0);
+              slice[k] = load_leaf(addr[k], present, true, row_lead);
+            }
+#pragma unroll
+            for (int k = 0; k < kRows; ++k) {
+              const int t = (a << kAtomShift) + k * Lanes::kGroups + grp;
+              //: ONLY THE WRITE SUPPORT IS THIS TERM'S: a leaf outside it belongs to a read term, which reads it.
+              const bool mine = present && ((u.cw >> t) & 1u) != 0u;
+              const bool in_r = ((br >> t) & 1u) != 0u;
+              const float ar = (mine && in_r) ? u.ar * sa_r[u.dlast + t] : 0.0f;
+              if (deposit) {
+                const float aw = mine ? u.aw * sa_w[u.dlast + t] : 0.0f;
+                const float rate = (DECAY && mine) ? u.rate * sd[u.dlast + t] : 0.0f;
+                deposit_leaf<DECAY>(slice[k], addr[k], ar, aw, rate, sw, v_tok, ch0, mine, row_lead,
+                                    exp_lead, acc, acc_m);
+              } else {
+                read_full(slice[k], ar, row_lead, acc, acc_m);
+              }
+            }
+          }
+        }
+        continue;
+      }
+
+#pragma unroll 1
+      for (int batch = first; batch * Lanes::kGroups < units; batch += stride) {
         const int unit = batch * Lanes::kGroups + grp;
         const bool has_unit = unit < units;
         //: TWO RESOLVERS, ONE WALK. -- see docs/internals/decode/decode.md#u
@@ -345,82 +396,19 @@ decode_step_kernel(DecodeParams p) {
           //: AN ABSENT ATOM READS AS ZEROS AND IS NOT WRITTEN. Exact, not defensive: the -- see docs/internals/decode/decode.md#decode-step-kernel-note-l516
           const bool present = live && atom_present;
           const float ar = (present && in_r) ? u.ar * sa_r[off_last] : 0.0f;
-
           //: A LEAF THIS STEP ONLY READS PULLS THE hi PLANE ALONE; a WRITTEN one both planes -- see docs/internals/decode/decode.md#int8-state
-          uint8_t* const page = p.state + atom_base;
-          const int prow = leaf & kAtomMask;
-          uint8_t* const row_hi = page + Page::kHi + (prow * DV + ch0) * 2;
-          uint8_t* const row_lo = page + Page::kLo + prow * DV + ch0;
-          uint8_t* const row_ex = page + Page::kExp + prow * Page::kGroups + (ch0 >> 5);
-          uint32_t* const row_mass = reinterpret_cast<uint32_t*>(page + Page::kMass) + prow;
-          uint4 hi = make_uint4(0u, 0u, 0u, 0u);
-          uint2 lo = make_uint2(0u, 0u);
-          int e = 0;
-          float mass = 0.0f;
-          if (present) {
-            hi = *reinterpret_cast<const uint4*>(row_hi);
-            if (writes) lo = *reinterpret_cast<const uint2*>(row_lo);
-            e = *reinterpret_cast<const int8_t*>(row_ex);
-            if (row_lead) mass = __uint_as_float(*row_mass);
-          }
-
+          const LeafAddr addr = leaf_addr<DV>(p.state + atom_base, leaf & kAtomMask, ch0);
+          const LeafSlice slice = load_leaf(addr, present, writes, row_lead);
           if (!writes) {
-#pragma unroll
-            for (int c = 0; c < 8; ++c) {
-              acc[c] = fmaf(static_cast<float>(state_page::hi8(hi, c)),
-                            ar * state_page::pow2(e + 8), acc[c]);
-            }
-            if (row_lead) acc_m += ar * mass;
+            read_hi(slice, ar, row_lead, acc, acc_m);
           } else if (!deposit) {
-#pragma unroll
-            for (int c = 0; c < 8; ++c) {
-              acc[c] = fmaf(static_cast<float>(state_page::mantissa8(hi, lo, c)),
-                            ar * state_page::pow2(e), acc[c]);
-            }
-            if (row_lead) acc_m += ar * mass;
+            read_full(slice, ar, row_lead, acc, acc_m);
           } else {
             //: UPDATE FIRST, THEN READ THE STORED ROW -- AND THAT ORDER IS THE SEMANTICS, -- see docs/internals/decode/decode.md#decode-step-kernel-note-l532
             const float aw = present ? u.aw * sa_w[off_last] : 0.0f;
-            //: DECAY AT READ, VIA THE DETACHED CLOCK, WITH NO SWEEP AND NO EXPONENT SPLIT: -- see docs/internals/decode/decode.md#decode-step-kernel-note-l541
-            float keep = 1.0f;
-            if (DECAY) {
-              const float rate = u.rate * sd[off_last];
-              //: THE CLOCK IS THE STORED WRITE ALLOCATION ITSELF -- no side gain, which is -- see docs/internals/decode/decode.md#log1pf
-              keep = expf(fminf(aw * log1pf(-rate), kDecodeMaxExponent));
-            }
-            const float wv = aw * sw;
-            const float kept = keep * state_page::pow2(e);
-            //: A GROUP IS 32 CHANNELS, FOUR LANES OF EIGHT: its exponent is their max, two SHFLs, and the row is -- see docs/internals/decode/decode.md#int8-state
-            const float4 v0 = *reinterpret_cast<const float4*>(v_tok + ch0);
-            const float4 v1 = *reinterpret_cast<const float4*>(v_tok + ch0 + 4);
-            const float vt[8] = {v0.x, v0.y, v0.z, v0.w, v1.x, v1.y, v1.z, v1.w};
-            float sv[8];
-            float amax = 0.0f;
-#pragma unroll
-            for (int c = 0; c < 8; ++c) {
-              sv[c] = fmaf(static_cast<float>(state_page::mantissa8(hi, lo, c)), kept, wv * vt[c]);
-              amax = fmaxf(amax, fabsf(sv[c]));
-            }
-            amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1));
-            amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 2));
-            const int en = state_page::group_exponent(amax);
-            int m[8];
-#pragma unroll
-            for (int c = 0; c < 8; ++c) m[c] = state_page::mantissa(sv[c], en);
-            if (present) {
-              *reinterpret_cast<uint4*>(row_hi) = state_page::pack_hi8(m);
-              *reinterpret_cast<uint2*>(row_lo) = state_page::pack_lo8(m);
-              if (exp_lead) *reinterpret_cast<int8_t*>(row_ex) = static_cast<int8_t>(en);
-            }
-            const float arp = ar * state_page::pow2(en);
-#pragma unroll
-            for (int c = 0; c < 8; ++c) acc[c] = fmaf(static_cast<float>(m[c]), arp, acc[c]);
-            //: The mass column is the `v := 1` column of the identical recurrence, fp32.
-            if (row_lead) {
-              mass = keep * mass + wv;
-              if (present) *row_mass = __float_as_uint(mass);
-              acc_m += ar * mass;
-            }
+            const float rate = DECAY ? u.rate * sd[off_last] : 0.0f;
+            deposit_leaf<DECAY>(slice, addr, ar, aw, rate, sw, v_tok, ch0, present, row_lead,
+                                exp_lead, acc, acc_m);
           }
         }
       }
@@ -877,7 +865,7 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                            Tensor growth_ctr, Tensor done, Tensor atom_bits,
                            std::vector<int64_t> level_widths,
                            std::vector<int64_t> level_row_offsets, int64_t lattice_k,
-                           int64_t lattice_m, int64_t n_split, double eps,
+                           int64_t lattice_m, bool write_dense, int64_t n_split, double eps,
                            std::optional<Tensor> page_table, std::optional<Tensor> pool_slots,
                            std::optional<Tensor> pool_cursor, std::optional<Tensor> pool_map) {
   check_arch_table();
@@ -963,6 +951,8 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     p.level_row_offset[l] = static_cast<int>(level_row_offsets[l]);
   }
   p.rows_f16 = row_dtype == Dtype::Half ? 1 : 0;
+  //: whole atoms need the innermost run to cover one: a span of at least an atom (decode.md#whole-atoms).
+  p.write_atoms = (write_dense && p.lat_inner_bits >= kAtomShift) ? 1 : 0;
   p.g_write = detail::scalar_span_of(g_write, B, H, "g_write");
   p.g_bf16 = detail::is_bf16(g_write.scalar_type(), "g_write");
   //: THE VALUE DIGITS: s8 high, u8 low at two digits, the fp32 token scale.

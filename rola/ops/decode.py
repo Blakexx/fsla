@@ -76,7 +76,7 @@ C_DECODE_UNITS_PER_CTA = 16
 
 #: THE PHASE LEDGER'S SHAPE: `[ctas][warps][phases]`, the kernel's own `DecodePhase` order.
 LEDGER_PHASES = ("fold", "factor", "admit", "walk", "combine")
-LEDGER_WARPS = 32
+LEDGER_WARPS = 16
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/decode/decode.md#phase-ledger)
@@ -160,9 +160,10 @@ def derive_decode_geometry(
     if n_split is None:
         n_split = derive_n_split(widths, k, m, decay=decay, BH=BH, device=device)
 
+    write_dense = not topology.activation_properties(D - 1, "write").exact_zeros
     return DecodeGeometry(
         D=D, widths=widths, level_row_offset=tuple(row_offset), lattice_k=k, lattice_m=m,
-        d_v=int(d_v), has_decay=decay, eps=eps, n_split=int(n_split))
+        d_v=int(d_v), has_decay=decay, eps=eps, n_split=int(n_split), write_dense=write_dense)
 
 
 def derive_n_split(widths, lattice_k: int, lattice_m: int, *, decay: bool, BH: int,
@@ -378,6 +379,7 @@ def step(plan: DecodePlan) -> torch.Tensor:
         level_row_offsets=list(config.level_row_offset),
         lattice_k=config.lattice_k,
         lattice_m=config.lattice_m,
+        write_dense=config.write_dense,
         n_split=config.n_split,
         eps=config.eps,
         page_table=plan.page_table,

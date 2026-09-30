@@ -374,7 +374,6 @@ Decode takes its lattice as DATA, not as a template arm, so every constraint
   generalizes it, innermost first to the atom floor, capped by the level's own
   width and balanced over the rest, restated in `fill_lattice`'s loop and in
   `rola.ops.lattice.box_shape`);
-- `g_l <= kDecodeThreads` — a level's owner grid is built in one block pass;
 - `owners * BC == N` — the lattice PARTITIONS the leaf space exactly, with no
   remainder leaf and no double-covered one.
 
@@ -528,13 +527,11 @@ cell; this order consumes one level-0 owner's whole region before moving on.
 <a id="publish-term-layout"></a>
 ### `publish_term_layout`
 
-THE WHOLE TABLE AND THE RETIREMENT BOUND, published once per CTA. ONE THREAD PER TERM,
-because the terms are independent: `D + 2` threads do at most `D` `ceil_log2_dev`s each
-instead of one thread doing twenty-four in series while the rest wait. `umax` -- the
-largest count the WALK's terms reach, which is the retirement bound -- is folded by
-`atomicMax` inside this function's OWN barrier, so no CTA pays a second block
-synchronisation to learn it: docs/internals/decode/decode.md#retirement
-the candidate slot is not the walk's, so it is not in the retirement bound.
+THE WHOLE TABLE, published once per CTA. ONE THREAD PER TERM, because the terms are
+independent: `D + 2` threads do at most `D` `ceil_log2_dev`s each (a leading-zero count)
+instead of one thread doing twenty-four in series while the rest wait. The retirement bound
+is each thread's own read of the counts behind this barrier: docs/internals/decode/decode.md#umax
+the candidate slot is not the walk's, so it is not in the bound.
 
 <a id="unit"></a>
 ### `Unit`

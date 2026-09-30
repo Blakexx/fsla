@@ -1114,8 +1114,10 @@ spends it: a segment with no unit in any term retires, and it retires COMPLETELY
 no walk, no partial, no arrival, and it is not summed.
 THE LIVE SEGMENTS ARE A PREFIX. A segment owns the `kUnitBlockWarps`-wide block at
 `seg * kUnitBlockWarps` of every period, so it has an iteration exactly when
-`seg * kUnitBlockWarps < max_t units[t]`,
-and `n_live` is that bound clamped into `[1, n_split]`. Every CTA of the batch-head
+`seg * kUnitBlockWarps < max_t share[t]` -- a term's SHARE being what one warp takes of it:
+a unit of a whole-atom write term ([`#whole-atoms`](#whole-atoms)), a batch of `kGroups`
+units of every other term ([`#leaf-lanes`](#leaf-lanes)) -- and `n_live` is that bound
+clamped into `[1, n_split]`. Every CTA of the batch-head
 derives it from the same published counts, so the arrival target and the summed slot
 range agree by construction and no CTA has to be told.
 IT IS NOT A THRESHOLD -- it is the walk's own loop bound, asked before the loop.
@@ -1125,15 +1127,13 @@ IT RETIRES BEFORE THE ADMISSION, and that ordering is load-bearing rather than
 incidental: the table test and the pool claim read a page table the last-arriving
 LIVE segment folds into, so a retired segment must not be inside that window at all.
 docs/internals/decode/decode.md#retirement
-ONE SHARED READ AND ONE COMPARE. `publish_term_layout` folds the maximum by `atomicMax`
-inside its own barrier, so learning it costs neither a second block synchronisation
-(which the dense cell, where nothing retires, measured at ~1 %) nor `D + 1` redundant
-reads per thread. The test is written as the COMPARE rather than as `seg >= n_live`
-because they are the same question -- `seg >= clamp(ceil(umax / U), 1, n_split)` is
-`seg > 0 && seg * U >= umax` at `U = kUnitBlockWarps`, since `seg < n_split` always --
-and this form keeps the
-division and the two clamps off the path every CTA walks, on the cell where nothing
-retires. `n_live` itself is only needed by the epilogue.
+`D + 1` SHARED READS AND ONE COMPARE: every thread reads the published unit counts and takes
+the largest share itself, behind the term layout's barrier -- no second synchronisation, and
+the shares need the arm's `kGroups`, which the table does not know. The test is written as
+the COMPARE rather than as `seg >= n_live` because they are the same question --
+`seg >= clamp(ceil(max_share / U), 1, n_split)` is `seg > 0 && seg * U >= max_share` at
+`U = kUnitBlockWarps`, since `seg < n_split` always. `n_live` itself is only needed by the
+epilogue.
 
 <a id="win-bits"></a>
 ### `win_bits`
@@ -1538,8 +1538,11 @@ docs/internals/decode/decode.md#level-width-capacity
 <a id="kdecodethreads"></a>
 ### `kDecodeThreads`
 
-THE STEP LAUNCHES ONE FAT CTA PER SM, and that is a SHARING decision before it is an
-occupancy one. Every CTA of a step re-derives the identical per-(step, batch-head)
+THE STEP LAUNCHES ONE CTA PER SM, 16 warps of up to 128 registers, and that is a SHARING
+decision before it is an occupancy one -- and, since the whole-atom walk, a REGISTER one: a
+warp holds a quarter of an atom's leaves a lane group in flight, which a 64-register cap
+(1024 threads) could not, and 32 warps each issuing the prologue's ~250 instructions cost it
+~2K cycles of issue. At 1024 threads four arms spilled; at 512 none does. Every CTA of a step re-derives the identical per-(step, batch-head)
 setup -- the fold, the digit masks, the four owner lists, the term table, the write
 digit list, and the ADMISSION with its candidate-atom enumeration and page-table probes
 -- and those CTAs run PHASE-SYNCHRONIZED, so the duplication has no mutual coverage at
@@ -1601,11 +1604,10 @@ of 51 when five 256-thread CTAs shared the file). ONE is also what makes the der
 shared: the host's split policy sizes ONE WAVE of this number, so `n_split` becomes
 `SMs / BH` fat CTAs and the per-(step, batch-head) setup is derived ONE WAVE DEEP
 instead of 3.2. docs/internals/decode/decode.md#declared-residency
-IT IS DERIVED FROM THE WIDTH, not written down twice: the register file admits 64
-registers per thread across 1024 resident threads, so a CTA of `kDecodeThreads` leaves
-room for exactly `1024 / kDecodeThreads` of itself. At 1024 that is the one fat CTA per
-SM; at 512 it is two, and both put the same 1024 threads and the same 64-register cap on
-the SM. The arm's width is then the ONLY constant a shape change touches.
+IT IS DECLARED BESIDE THE WIDTH: `kDecodeResidentThreads = 512` is ONE CTA of
+`kDecodeThreads = 512` an SM, so the register file admits 128 registers a thread. The
+walk's registers are what residency is traded for (few warps, full registers -- the ideal
+regime); a second resident CTA would halve them.
 
 <a id="katomshift"></a>
 ### `kAtomShift`
@@ -1776,12 +1778,6 @@ template axis and not a runtime test: docs/internals/decode/decode.md#template-a
 Columns per lane IN THE COMBINE: `NC` fully coalesced 128 B transactions over the fold
 rows, and the summing lane's partials are its own output columns. The walk holds a
 different slice, eight channels a lane ([`#leaf-lanes`](#leaf-lanes)).
-
-<a id="sumax"></a>
-### `s_umax`
-
-The retirement bound, folded by `publish_term_layout`'s own `atomicMax` -- which is why
-it is zeroed HERE, behind the fold's barrier: docs/internals/decode/decode.md#retirement
 
 <a id="near-line-122"></a>
 ### near line 122
@@ -2095,6 +2091,37 @@ over four more barriers. This one is 5.85K: phase A 2.9K, B 1.2K, C 0.9K, the de
 admission 0.8K. Its floor is the per-warp instruction count: phase A issues ~250
 instructions in each of 32 warps, and an empty barrier costs ~400 cycles across 32 warps
 (both measured) -- so the next cut is fewer, fuller warps, not a shorter chain.
+
+<a id="whole-atoms"></a>
+### The write term by whole atoms
+
+When the innermost level's WRITE side is dense by declaration (its activation has no exact
+zeros; `DecodeGeometry.write_dense`, from `Topology.activation_properties`) and the innermost
+run covers an atom, every write-term unit is a whole atom, and the step walks it as one: a warp
+takes a unit, and its `kGroups` lane groups take `16 / kGroups` of the atom's leaves each
+(leaf `k * kGroups + grp`). Every leaf's loads are issued before any leaf's math, and for a
+fixed `k` the warp's 32 lanes read one contiguous run of the page -- the hi plane in 512-byte
+pieces at `DV = 64` -- so the page is read whole, the pattern the microbenchmarks measured at
+715-820 GB/s against 446-508 for a leaf's four scattered pieces. Every other term, and a write
+term whose innermost level is sparse, keeps a leaf a lane group
+([`#leaf-lanes`](#leaf-lanes)); both forms run one statement of the leaf's arithmetic
+([`decode_leaf.md`](decode_leaf.md)).
+
+ONLY THE WRITE SUPPORT IS THE TERM'S. A dense declaration does not make every stored digit
+nonzero -- a softmax digit can quantize to a zero u8 -- and a leaf outside the write support
+belongs to a read term, which reads it. So the atom walk reads and deposits a leaf only under
+its write bit (`Unit::cw`), and stores nothing else; reading it here as well double-counted it
+in `y` (caught by the oracle's sparse-write cells).
+
+The decision is the declaration's, not the data's: branching on how many of an atom's leaves a
+token writes would be a fuzzy threshold (KERNEL_STANDARDS R9). A topology that declares a sparse
+innermost write side walks its write term a leaf a lane group, correctly, at the pieces' rate.
+
+MEASURED (sm_86, N 64K at (256, 256), d_v 64, B 1, 16 warps of <= 128 registers, no spill): H 16
+at k ~27, 159 -> 116 us dense (124 paged) -- the write term moves its 43.8 MB of pages at ~650
+GB/s against the page pattern's ~820, the read terms their ~19 MB of pieces at ~475 against the
+pieces' ~480; H 4 at k ~5, 23 -> 16 us. The read terms are at their pattern's ceiling: the next
+lever there is the page's layout, not the walk.
 
 <a id="coefficient-rows"></a>
 ### The coefficient rows, as the bundle holds them
