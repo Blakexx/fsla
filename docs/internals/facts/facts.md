@@ -169,6 +169,13 @@ nothing runs 5.3 µs, and the rest is the warps' load chains
 ([the grid](#the-grid)). Reading half of each token row (alt) costs a page visit all
 the same, so alt runs at 59 µs where its bytes alone would take 54.
 
+Writing the [tile unions](liveness_contract.md#tile-unions) (2026-09-30) added 131 KB of
+stores a head at `L = 64K` and a ballot a tile to the vote: all-sparse 99 µs a head, alt 62,
+all-dense 23 (from 98, 59, 19), `L = 1K` all-sparse 13.4 µs (from 12.9). The dense case
+pays most because its vote loads nothing and the per-tile ballot is then most of its
+loop; a dense level's union is its width mask on every live tile, one ballot a unit
+rather than a tile.
+
 The sm_80 form is this one, re-measured for its residency point (HBM's page behaviour
 is not GDDR6X's). On sm_90 the rows move by TMA: a unit's `[tokens × 32 digits]` box
 lands in shared memory in one instruction, the vote reads it from there, and the
