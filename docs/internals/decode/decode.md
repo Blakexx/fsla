@@ -564,8 +564,9 @@ and two around the choice of the next head. None is per position and none is per
 count never grew with `N` or with a leaf-space bitmap's word count, which is the axis the
 tiled consumer's per-candidate-tile barriers scaled on.
 
-**THE WALK NEVER NEEDED ONE.** A lane group's read contribution and its write-back are one
-statement in program order, and the ordering is UPDATE-THEN-READ because §2's survival is
+**THE WALK NEVER NEEDED ONE, AND IT DECLARES SO.** The walk sits between `//: @barrier-free` and
+`//: @barrier-free-end`, so a CTA barrier in it fails the standards lint. A lane group's read contribution and
+its write-back are one statement in program order, and the ordering is UPDATE-THEN-READ because §2's survival is
 inclusive at `j = t` ([§27](#update-then-read)); a warp's claims are its own atomics.
 
 ## <a id="decode-max-exponent"></a>18. `kDecodeMaxExponent` — the same convention, structurally inert here

@@ -21,17 +21,15 @@ Checks:
      under csrc/rola/src/instantiations/, found by TEXT rather than AST so a
      macro-guarded or unusually-formatted include cannot hide from either
      check.
-  3. NO __syncthreads IN THE DECODE WALK (the decode prologue law, ledger
-     2026-08-27: "11 barriers, all in the prologue ... 0 after it"; scope
-     fixed 2026-08-29 -- that law is about CTA/grid barriers,
-     never about `__syncwarp`, which is intra-warp and which §12 REQUIRES
-     around a warp collective; scope narrowed 2026-09-29 with the work queue,
-     whose CTAs visit heads in turn and so fold their partials and switch heads
-     behind one barrier a visit, after the walk). The region is decode.cu's own
-     section comments `// ---- THE WALK` to `// ---- THE READOUT`; every
-     `__syncthreads`/`bar.sync` (and any cluster/grid barrier) inside it is a
-     finding for Blake to rule on -- `__syncwarp` there is NOT a finding, it is
-     §12's fence doing its job.
+  3. NO CTA BARRIER IN A DECLARED BARRIER-FREE REGION (Blake, 2026-09-29, generalizing
+     the decode prologue law of 2026-08-27, "11 barriers, all in the prologue ... 0 after
+     it"). Any device file may declare a region between `//: @barrier-free <reason>` and
+     `//: @barrier-free-end`; every `__syncthreads`/`bar.sync` (and any cluster/grid
+     barrier) inside one is a finding, and so is a region that does not close or opens
+     inside another. The decode step declares its walk. The law is about CTA/grid barriers
+     only, never `__syncwarp`, which is intra-warp and which §12 REQUIRES around a warp
+     collective. The closer is not `//: @end` because a docrefs `//: @ref` region closes on
+     that.
 
 HEURISTIC LIMITS (check 1):
   - "Device code" is found by brace-counting from each `__global__`/`__device__`
@@ -75,7 +73,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CSRC_ROLA = ROOT / "csrc" / "rola"
 INSTANTIATIONS = CSRC_ROLA / "src" / "instantiations"
-DECODE_CU = CSRC_ROLA / "src" / "decode" / "decode.cu"
 TESTS_ROOT = ROOT / "tests"
 
 #: docs/testing.md: "there is no fourth tier". A test answers one of exactly three
@@ -107,15 +104,15 @@ COMMENT_LINE_RE = re.compile(r"^\s*//")
 
 TORCH_INCLUDE_RE = re.compile(r'#include\s*<\s*torch/')
 
-#: The prologue law is about CTA/grid barriers only (`__syncthreads`, PTX `bar.sync`,
+#: The barrier-free law is about CTA/grid barriers only (`__syncthreads`, PTX `bar.sync`,
 #: and a cluster/grid barrier such as `cluster.sync()`/`grid.sync()`);
 #: `__syncwarp` is intra-warp and is §12's REQUIRED fence around a warp
 #: collective, never this rule's concern (the rule's one
 #: remaining finding after MERGE-D1 was decode.cu:722's `__syncwarp`).
 SYNC_RE = re.compile(
     r"__syncthreads\s*\(|\bbar\.sync\b|(?:cluster|grid)\s*\.\s*sync\s*\(")
-WALK_MARKER_RE = re.compile(r"----\s*THE WALK")
-READOUT_MARKER_RE = re.compile(r"----\s*THE READOUT")
+BARRIER_FREE_RE = re.compile(r"//:\s*@barrier-free(?!-end)\b")
+BARRIER_FREE_END_RE = re.compile(r"//:\s*@barrier-free-end\b")
 
 
 def device_files():
@@ -265,34 +262,27 @@ def check_no_torch_in_arm_tus() -> list[str]:
     return findings
 
 
-def check_no_sync_after_decode_prologue() -> list[str]:
+def check_barrier_free_regions() -> list[str]:
+    """Every declared barrier-free region, in every device file: closed, not nested, and holding no CTA barrier."""
     findings = []
-    if not DECODE_CU.is_file():
-        return findings
-    rel = DECODE_CU.relative_to(ROOT)
-    lines = DECODE_CU.read_text().splitlines()
-    marker_idx = next((i for i, l in enumerate(lines) if WALK_MARKER_RE.search(l)), None)
-    if marker_idx is None:
-        findings.append(
-            f"the decode prologue law: {rel}: could not locate the `---- THE WALK` prologue-end "
-            f"marker this check keys on -- the file was restructured and this check "
-            f"needs a new anchor."
-        )
-        return findings
-    end_idx = next((i for i in range(marker_idx + 1, len(lines)) if READOUT_MARKER_RE.search(lines[i])), None)
-    if end_idx is None:
-        findings.append(
-            f"the decode prologue law: {rel}: could not locate the `---- THE READOUT` marker that ends the "
-            f"walk this check covers -- the file was restructured and this check needs a new anchor."
-        )
-        return findings
-    for idx in range(marker_idx + 1, end_idx):
-        if SYNC_RE.search(lines[idx]):
-            findings.append(
-                f"the decode prologue law (ledger 2026-08-27, docs/internals/decode/decode.md#no-barrier): "
-                f"{rel}:{idx + 1}: barrier inside the walk "
-                f"(lines {marker_idx + 1}-{end_idx + 1}) -- {lines[idx].strip()!r}"
-            )
+    for path in sorted(device_files()):
+        rel = path.relative_to(ROOT)
+        opened = None
+        for idx, line in enumerate(path.read_text().splitlines(), 1):
+            if BARRIER_FREE_RE.search(line):
+                if opened is not None:
+                    findings.append(f"the barrier-free law: {rel}:{idx}: a region opens inside the one opened at line "
+                                    f"{opened}")
+                opened = idx
+            elif BARRIER_FREE_END_RE.search(line):
+                if opened is None:
+                    findings.append(f"the barrier-free law: {rel}:{idx}: `@barrier-free-end` closes no region")
+                opened = None
+            elif opened is not None and not COMMENT_LINE_RE.match(line) and SYNC_RE.search(line):
+                findings.append(f"the barrier-free law (docs/internals/tools/lint.md): {rel}:{idx}: a CTA barrier in "
+                                f"the region declared at line {opened} -- {line.strip()!r}")
+        if opened is not None:
+            findings.append(f"the barrier-free law: {rel}:{opened}: the region opened here never closes")
     return findings
 
 
@@ -1423,7 +1413,7 @@ def main() -> int:
     gating_findings: list[str] = []
     gating_findings += check_unroll_discipline()
     gating_findings += check_no_torch_in_arm_tus()
-    gating_findings += check_no_sync_after_decode_prologue()
+    gating_findings += check_barrier_free_regions()
     gating_findings += check_tests_tier_directories()
     gating_findings += check_docs_mirror()
     gating_findings += check_no_bare_flock_on_gpu_lock()

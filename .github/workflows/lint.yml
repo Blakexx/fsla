@@ -49,7 +49,7 @@ jobs:
           python3 tools/lint/ast_grep_gate.py
       - name: ast-grep fixture self-test (every rule fires on its own fixture)
         run: python3 tools/lint/ast_grep_gate.py --test-fixtures
-      - name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue, the docs mirror, no work codes in a mirror page)
+      - name: lint_standards.py (unroll discipline, arm-TU torch include, barrier-free regions, the docs mirror, no work codes in a mirror page)
         run: python3 tools/lint/lint_standards.py
       # THE READABILITY AND DEAD-CODE GATES, mirrored from .pre-commit-config.yaml.
       # Two of them read a compile database and are therefore the CUDA runner's, not

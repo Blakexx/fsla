@@ -42,7 +42,7 @@ repos:
         pass_filenames: false
         files: ^csrc/.*\.(cu|cuh|cpp|h|hpp)$
       - id: lint-standards
-        name: lint_standards.py (unroll discipline, arm-TU torch include, decode prologue, docs mirror, no bare-flock GPU lock, repo portability)
+        name: lint_standards.py (unroll discipline, arm-TU torch include, barrier-free regions, docs mirror, no bare-flock GPU lock, repo portability)
         language: system
         entry: python3 tools/lint/lint_standards.py
         pass_filenames: false

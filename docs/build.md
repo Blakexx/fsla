@@ -475,10 +475,10 @@ hooks and `.github/workflows/lint.yml` exactly like clang-format/ruff above:
    device code carries `#pragma unroll 1`, scoped to `__global__`/`__device__`
    function bodies by brace-counting so host launcher loops are out of
    scope), the torch-include check again as a text belt to the ast-grep
-   rule, a CTA/grid barrier (`__syncthreads`/`bar.sync`) occurring after
-   decode.cu's `---- THE WALK` marker (the prologue law: barriers confined to the
-   prologue; `__syncwarp` is intra-warp and excluded — §12 requires it
-   around warp collectives, it is not the barrier that law forbids), and a
+   rule, a CTA/grid barrier (`__syncthreads`/`bar.sync`) inside a region a
+   device file declares barrier-free (`//: @barrier-free <reason>` ...
+   `//: @barrier-free-end`; the decode step declares its walk; `__syncwarp` is
+   intra-warp and excluded — §12 requires it around warp collectives), and a
    committed doc/skill/script wrapping a command in an external `flock` on
    the GPU lock path (every GPU entry point takes `gpu_lock()` itself
    now, so that spelling never belongs on a command line again — scoped to

@@ -376,6 +376,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
     bool atom_present = false;
 
     // ---- THE WALK: a warp claims a position, walks it, claims again -------------------
+    //: @barrier-free the walk: a lane group's read and write-back are one statement in program order; see docs/internals/decode/decode.md#no-barrier
     //: A NEEDY BATCH-HEAD RUNS NOTHING: its count is zero, so no warp claims. -- see docs/internals/decode/decode.md#queue-admission
     //: THE NEXT CLAIM IS ISSUED BEFORE THE CURRENT POSITION IS WALKED, so its round trip hides behind the walk. -- see docs/internals/decode/decode.md#queue-claim
     int claim = 0;
@@ -499,6 +500,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
         }
       }
     }
+    //: @barrier-free-end
     clock.lap(kPhWalk);
 
     // ---- THE READOUT: the CTA folds its warps' partials, adds them into the head's sums once, and the ------
