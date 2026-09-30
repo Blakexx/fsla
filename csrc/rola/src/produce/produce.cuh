@@ -29,7 +29,7 @@ constexpr int kPartialBase = 64;
 //: The threshold's Newton steps at most: rows of every measured distribution settle in 8 or fewer.
 constexpr int kNewtonSteps = 16;
 
-//: THE JOB TABLE, one row of int32 per job: its addressing. Its control rides the parameters as a shape byte.
+//: THE JOB TABLE, one row of int32 per job: its addressing. Its control rides the parameters as a shape word.
 //: -- see docs/internals/produce/produce.md#jobs
 enum JobField : int {
   kFieldHead,
@@ -40,14 +40,12 @@ enum JobField : int {
   kFieldOutRead,
   kFieldOutWrite,
   kFieldLevel,
-  kFieldFoldRead,
-  kFieldFoldWrite,
   kJobFields
 };
 
 enum JobKind : int { kJobRoute = 0, kJobValue = 1 };
 
-//: A launch's jobs at most: one shape byte each in the parameter space.
+//: A launch's jobs at most: one shape word each in the parameter space.
 constexpr int kMaxJobs = 1024;
 
 //: THE SOLVES a route job runs on its row: the closed registry's kerneled activations.
@@ -69,8 +67,8 @@ enum ProducePhase : int {
   kProducePhases
 };
 
-//: `kind`, `solve`, `rows` (a solve row's elements a lane, as a power of two's exponent), `reads` and `writes` (the
-//: sides a route job writes) are the shape byte's.
+//: `kind`, `solve`, `rows` (a solve row's elements a lane, as a power of two's exponent), `reads`/`writes` (the sides
+//: a route job writes) and `fold_read`/`fold_write` (whose fold applies) are the shape word's.
 struct Job {
   int kind, solve, rows, reads, writes, head, heads, width, in0, in1, out_read, out_write, level,
       fold_read, fold_write;
@@ -102,8 +100,7 @@ struct ProduceParams {
   float* logit_probe;  // [jobs, BT, kMaxColumns] or null: every job's projection, for its gate
   float* level_probe;  // the same, a route job's solved levels: read at [0, w), write at [w, 2w)
   long long* ledger;   // [jobs, warps, phases] or null
-  uint8_t
-      shapes[kMaxJobs];  // writes << 7 | reads << 6 | kind << 5 | rows << 3 | solve, by block index
+  int16_t shapes[kMaxJobs];  // a job's shape word (produce.md#jobs), by block index
 
   int BT, hidden, H, C, G, rows, D, d_v, row_form, route_jobs_per_head;
 };

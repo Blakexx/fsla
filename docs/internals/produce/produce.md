@@ -21,7 +21,8 @@ after the call) and each landed component's gate.
 One int32 row per job (`JobField`), its ADDRESSING: the head (the first of a value job's heads, and their count), the
 level's width, the `route_W` columns of its one or two logit rows, the packed-plane columns its rows land at on each
 side (`-1` for a side it does not write), the level, and whether each side's fold applies. Its CONTROL -- the kind, the
-solve (`SolveKind`) and the solve row's elements a lane -- is one SHAPE BYTE a job in the launch's parameters
+solve (`SolveKind`), the solve row's elements a lane, the sides it writes and whose fold applies -- is one SHAPE WORD
+(int16) a job in the launch's parameters
 (`ProduceParams::shapes`, `rola.ops.produce._shape`), read by block index: a value ptxas knows is warp-uniform, so a
 branch on it compiles its collectives inline alone, where a branch on a loaded job field gave each a guarded fallback
 subroutine as well (692 of them: cold code, KERNEL_STANDARDS §20). At most `kMaxJobs` jobs a launch.
@@ -81,7 +82,10 @@ no collective sits under a branch ptxas cannot prove warp-uniform.
 <a id="bundle"></a>THE BUNDLE'S FORM (`write_side`), for each side the job writes (a shape bit each): the row against
 its max as u8 digits (depth at most two, round to nearest even of `unit x 255`) or f16 units, the max clamped at
 `1e-30` as `quantize_unit_max_rows` clamps it; the max as the side's scale; and the level's mass for the finisher
-where the fold applies (1 elsewhere, so the finisher multiplies every level without the plan's flags). The WRITE fold
+where the fold applies (1 elsewhere, so the finisher multiplies every level without the plan's flags). A side reduces
+only what the solve did not give: a one-activation row's max is its top element's own value (`top`: `(-tau/2)^2`,
+`-tau` or `1 / sum`, the same expressions the elements are), so only a union's sides reduce their max, and only a
+folded side its mass -- the fold bits ride the job's shape word, so the choice is warp-uniform. The WRITE fold
 is applied -- its scale is the max over the mass, the stored level on the simplex -- and the READ fold is carried:
 its scale stays the max and its mass rides `read_mass`, as the composition's `_fold` does. Gate: every row's digits
 (within one), f16 units (within one unit in the last place at 1), scales (within twice the solve's bound), the read
@@ -89,7 +93,7 @@ mass and the write gain (within 2^-12 relative, measured 4.8e-5 and 2.7e-6) agai
 bf16 operands, with and without a gain column or a routing bias.
 
 <a id="solve"></a>THE SOLVE (`solve_row`) holds the row striped, element `lane + 32 i` in a lane's `i`th register,
-`IPT` = the width's power-of-two class over 32 (one of four bodies, chosen once a job by its shape byte). A union row
+`IPT` = the width's power-of-two class over 32 (one of four bodies, chosen once a job by its shape word). A union row
 is the midpoint of its read and write logits (entmax on it) and their overflow-free difference (the split); a tied or
 independent row is its one logit row. Softmax, entmax 1.5 and 2 and both unions are the closed registry's kerneled
 activations, with the reference `rola/routing/entmax/production.py`'s `_torch_union_split` and `_torch_activation`.

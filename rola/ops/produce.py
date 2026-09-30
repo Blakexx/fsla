@@ -139,21 +139,23 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
 
 
 def _shape(job: tuple[int, ...]) -> int:
-    """A job's control as the kernel reads it, one byte in the launch's parameters:
-    ``writes << 7 | reads << 6 | kind << 5 | rows << 3 | solve``, ``rows`` a solve row's elements a lane as a power of
-    two's exponent and ``reads``/``writes`` the sides a route job writes (produce.cuh `Job`)."""
-    kind, _head, _heads, solve, width, _in0, _in1, out_read, out_write = job[:9]
+    """A job's control as the kernel reads it, one int16 word in the launch's parameters:
+    ``fold_write << 9 | fold_read << 8 | writes << 7 | reads << 6 | kind << 5 | rows << 3 | solve``, ``rows`` a solve
+    row's elements a lane as a power of two's exponent, ``reads``/``writes`` the sides a route job writes and
+    ``fold_read``/``fold_write`` whose fold applies (produce.cuh `Job`)."""
+    kind, _head, _heads, solve, width, _in0, _in1, out_read, out_write, _level, fold_read, fold_write = job
     rows = 0 if width <= 32 else 1 if width <= 64 else 2 if width <= 128 else 3
-    return int(out_write >= 0) << 7 | int(out_read >= 0) << 6 | kind << 5 | rows << 3 | solve
+    return (fold_write << 9 | fold_read << 8 | int(out_write >= 0) << 7 | int(out_read >= 0) << 6 | kind << 5
+            | rows << 3 | solve)
 
 
 @lru_cache(maxsize=64)
 def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """``(table, shapes, route jobs a head)``: the job table's addressing on the device (every field but the kind and
-    the solve) and its control bytes on the host."""
+    """``(table, shapes, route jobs a head)``: the job table's addressing on the device (the head, the heads, the
+    width, the columns in and out, the level) and its control words on the host."""
     jobs, per_head = job_table(plan)
-    table = torch.tensor([job[1:3] + job[4:] for job in jobs], dtype=torch.int32, device=device)
-    return table, torch.tensor([_shape(job) for job in jobs], dtype=torch.uint8), per_head
+    table = torch.tensor([job[1:3] + job[4:10] for job in jobs], dtype=torch.int32, device=device)
+    return table, torch.tensor([_shape(job) for job in jobs], dtype=torch.int16), per_head
 
 
 #: the per-(token tile, head) arrival counters, zero between calls (the kernel's finisher resets its own), one buffer a

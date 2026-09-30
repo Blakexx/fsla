@@ -8,8 +8,8 @@ contiguous (`hidden_contiguous`; the head and column axes read through their str
 bf16, a linear's weight as stored; the plan's job table on the device; every output, allocated by the caller so a gate
 can poison them; the arrival counters, zero between calls; the optional logit and level probes
 `[jobs, B * T, kMaxColumns]` fp32, which receive every job's projection and every route job's solved levels (read at
-`[0, w)`, write at `[w, 2w)`) for their gates and are null in production; and the plan's shape bytes, a host u8 tensor
-a job, copied into the launch's parameters. It validates each against the
+`[0, w)`, write at `[w, 2w)`) for their gates and are null in production; and the plan's shape words, a host int16
+tensor a job, copied into the launch's parameters. It validates each against the
 others -- one hidden width, a multiple of 8 with 16-byte-aligned weights and strides (every hidden run is read in
 16-byte chunks), whole heads of value channels, the rows `[..., H, rows]` u8 or f16 on both sides, the fp32 per-level
 scales and masses, the counters covering every (token tile, head), at most 65535 jobs -- and launches token tiles by
