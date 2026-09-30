@@ -33,6 +33,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from rola._inference_copy import InferenceCopy, reads_copy
 from rola.routing.entmax.production import production_routing_factor_levels
 from rola.routing.factors import RouteFactors
 from rola.routing.projection import _packed_router_logits
@@ -189,7 +190,7 @@ class RouteProducer(nn.Module):
         self.route_W = nn.Parameter(torch.empty(num_heads, hidden_size, columns))
         _init_packed_router(self.route_W)
         #: the projection's copy of `route_W` for a step no gradient flows through (`_projection_weight`).
-        self._weight_cache: tuple[tuple, torch.Tensor] | None = None
+        self._weight_copy = InferenceCopy(lay=_hidden_major)
         if self.bias:
             self.route_bias = nn.Parameter(torch.zeros(num_heads, columns))
         else:
@@ -305,13 +306,7 @@ class RouteProducer(nn.Module):
         step anyway (docs/api.md section 2.3, projection-weight).
         """
         W = self.route_W
-        if torch.is_grad_enabled() and W.requires_grad:
-            return W
-        key = (W._version, W.data_ptr(), W.device, dtype)
-        if self._weight_cache is None or self._weight_cache[0] != key:
-            laid = W.detach().to(dtype).permute(1, 0, 2).contiguous().permute(1, 0, 2)
-            self._weight_cache = (key, laid)
-        return self._weight_cache[1]
+        return self._weight_copy(W, dtype) if reads_copy(W) else W
 
     def _solve(self, x: torch.Tensor, x_w: torch.Tensor | None):
         read_logits, write_logits, gain_logits = self._project(x, x_w)
@@ -320,6 +315,11 @@ class RouteProducer(nn.Module):
 
 
 # --- helpers ----------------------------------------------------------------
+
+
+def _hidden_major(W: torch.Tensor) -> torch.Tensor:
+    """``[H, hidden, cols]`` stored hidden-major and viewed back, so the projection's einsum reads it with no copy."""
+    return W.permute(1, 0, 2).contiguous().permute(1, 0, 2)
 
 
 def _init_packed_router(W: nn.Parameter) -> None:

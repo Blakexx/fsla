@@ -351,6 +351,8 @@ projection dtype are unchanged; an in-place update (an optimizer step, `load_sta
 moves the version and so the copy. A step that trains casts inside the graph, since its
 gradient must reach the parameter and the parameter changes every step anyway. (Writing
 through `route_W.data` bypasses the version counter, as it does for every autograd cache.)
+The layer's value and output projections read their bf16 weights the same way (another ~6 us
+a step and two launches at `H = 16`); the one mechanism is `rola/_inference_copy.py`.
 
 Activation *properties* are never supplied by a caller — they come from the closed
 registry in `rola/routing/activations.py`, keyed on the tag. Metadata a caller could

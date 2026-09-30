@@ -48,6 +48,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
+from rola._inference_copy import InferenceCopy, reads_copy
 from rola._state import state as rola_state
 from rola.engine import PlanOverrides
 from rola.engine.dags.decode_dag import decode_forward
@@ -171,6 +172,9 @@ class RoLA(nn.Module):
         self.value_dim = num_heads * d_v
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
+        #: the projections' bf16 copies for a step no gradient flows through (rola/_inference_copy.py).
+        self._v_copy = InferenceCopy(lay=None)
+        self._o_copy = InferenceCopy(lay=None)
 
         #: Which kernel the last forward took. A plain attribute, not a buffer:
         #: diagnostic state must not enter a state_dict and must not be cast by
@@ -298,16 +302,20 @@ class RoLA(nn.Module):
             self.last_execution_backend = "cuda"
 
         out = out.reshape(B, L, H * self.head_v_dim)
-        projected = nn.functional.linear(
-            out.to(torch.bfloat16), self.o_proj.weight.to(torch.bfloat16)).to(x.dtype)
+        projected = nn.functional.linear(out.to(torch.bfloat16), self._bf16(self.o_proj.weight, self._o_copy)).to(x.dtype)
         return projected, LayerContinuation(state=state)
 
     def _project(self, x: torch.Tensor):
         """One stretch of tokens projected into the format: ``(routes, values)``."""
         #: `v` FLOWS bf16 into the format (docs/api.md §4.1).
-        v = nn.functional.linear(x.to(torch.bfloat16), self.v_proj.weight.to(torch.bfloat16))
+        v = nn.functional.linear(x.to(torch.bfloat16), self._bf16(self.v_proj.weight, self._v_copy))
         v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
         return self.routes(x), Values.from_projection(v)
+
+    @staticmethod
+    def _bf16(W: torch.Tensor, copy: InferenceCopy) -> torch.Tensor:
+        """A projection weight in bf16: the reused copy when no gradient flows, else the cast in the graph."""
+        return copy(W, torch.bfloat16) if reads_copy(W) else W.to(torch.bfloat16)
 
     def _prefill(self, x: torch.Tensor, state, decay):
         """THE SEGMENT LOOP (docs/api.md section 4.2): each segment is projected, run and its state carried to
