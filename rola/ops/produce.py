@@ -10,9 +10,9 @@ the projection, every level's solve, the mass fold, the write gain, the quantiza
 value digits -- because every step reads the same declaration, and it is one call so that one fused kernel stands
 behind it (docs/api.md section 2): on CUDA with no gradient, the producer kernel's one launch
 (docs/internals/produce/produce.md). The torch composition is the reference -- fp64, the host -- and, until the
-native backward has the kernel write the levels a gradient reads, the path a gradient takes. The bundles it returns are the ones the ops take; a caller with its own
-levels builds them with :meth:`RouteFactors.from_levels` and :meth:`Values.from_projection`, the same format
-utilities.
+native backward has the kernel write the levels a gradient reads, the path a gradient takes. The bundles it
+returns are the ones the ops take; a caller with its own levels builds them with :meth:`RouteFactors.from_levels` and
+:meth:`Values.from_projection`, the same format utilities.
 """
 from __future__ import annotations
 
