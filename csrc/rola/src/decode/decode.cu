@@ -95,8 +95,7 @@ decode_step_kernel(DecodeParams p) {
   float* fold = v_tok + DV;
   uint32_t* mask_r = reinterpret_cast<uint32_t*>(fold + kDecodeWarps * (cols + 3));
   uint32_t* mask_w = mask_r + p.mask_total;
-  uint32_t* omask = mask_w + p.mask_total;
-  int32_t* olist = reinterpret_cast<int32_t*>(omask + kKinds * p.omask_total);
+  int32_t* olist = reinterpret_cast<int32_t*>(mask_w + p.mask_total);
   int32_t* dlist = olist + kKinds * p.olist_total;
 
   __shared__ float s_sum[kMaxLevels];
@@ -123,50 +122,43 @@ decode_step_kernel(DecodeParams p) {
                   warp);
   };
 
-  // ---- THE FOLD: every per-token operand, widened and staged, by this CTA ------
-  //: TWO BARRIERS FOR THE WHOLE PROLOGUE. -- see docs/internals/decode/decode.md#decode-step-kernel-note-l151
-  if (p.rows_f16) {
-    fold_row_sums<__half>(p, b, h, p.read, p.normalize, s_sum);
-  } else {
-    fold_row_sums<uint8_t>(p, b, h, p.read, p.normalize, s_sum);
-  }
-  __syncthreads();
-  if (p.rows_f16) {
-    fold_rows<__half>(p, b, h, p.read, p.read_scale, p.normalize, s_sum, sa_r);
-    fold_rows<__half>(p, b, h, p.write, p.write_scale, nullptr, s_sum, sa_w);
-  } else {
-    fold_rows<uint8_t>(p, b, h, p.read, p.read_scale, p.normalize, s_sum, sa_r);
-    fold_rows<uint8_t>(p, b, h, p.write, p.write_scale, nullptr, s_sum, sa_w);
-  }
-  fold_value(p, b, h, DV, v_tok);
+  // ---- THE PROLOGUE: three phases, three barriers ------------------------------
+  //: PHASE A, EVERY OPERAND'S LOAD AT ONCE: the gain, a value channel, the dials and the digits of both sides -- see docs/internals/decode/decode.md#prologue
+  const float sr = 1.0f;  // global fixes g_read := 1 (raw is dead); decode.md#sr
+  const float sw = p.g_bf16 ? fold_gain<__nv_bfloat16>(p, b, h) : fold_gain<float>(p, b, h);
+  const ValueDigits v_c = tid < DV ? load_value(p, b, h, tid) : ValueDigits{0, 0.0f};
   if (DECAY) {
-    for (int l = 0; l < D; ++l) {
-      const int width = p.level_width[l];
-      const int off = p.level_amp_offset[l];
-      const float* rd = p.dials + static_cast<int64_t>(h) * total_rows + p.level_row_offset[l];
 #pragma unroll 1
-      for (int g = tid; g < width; g += kDecodeThreads) sd[off + g] = rd[g];
+    for (int i = tid; i < total_rows; i += kDecodeThreads) {
+      int l = 0;
+#pragma unroll
+      for (int q = 1; q < D; ++q) {
+        if (i >= p.level_amp_offset[q]) l = q;
+      }
+      sd[i] = p.dials[static_cast<int64_t>(h) * total_rows + p.level_row_offset[l]
+                      + (i - p.level_amp_offset[l])];
     }
   }
-
-  //: The two per-token row scales. At `T = 1` there is no owner rectangle, so -- see docs/internals/decode/decode.md#sr
-  const float sr = 1.0f;  // global fixes g_read := 1 (raw is dead)
-  const float sw = p.g_bf16 ? fold_gain<__nv_bfloat16>(p, b, h) : fold_gain<float>(p, b, h);
+  if (p.rows_f16) {
+    fold_digits<D, __half>(p, b, h, sa_r, sa_w, mask_r, mask_w);
+  } else {
+    fold_digits<D, uint8_t>(p, b, h, sa_r, sa_w, mask_r, mask_w);
+  }
+  if (tid < DV) v_tok[tid] = value_of(p, v_c);
+  if (tid == 0) {
+    s_umax = 0;
+    s_arrive = 0;
+    s_admission = 0;
+  }
   __syncthreads();
   clock.lap(kPhFold);
 
-  // ---- THE FACTOR TABLES ------------------------------------------------------
-  //: `sum_l B_l` bits and at most `sum_l g_l` entries: nothing in this prologue is sized -- see docs/internals/decode/decode.md#near-line-169
-  build_digit_mask<D>(p, sa_r, mask_r);
-  build_digit_mask<D>(p, sa_w, mask_w);
-  if (tid < kKinds * kMaxLevels) s_n_o[tid] = 0;
-  if (tid < kMaxLevels) s_n_d[tid] = 0;
-  if (tid == 0) s_umax = 0;
+  //: PHASE B, FROM THE DIGIT MASKS, one warp a job: the owner and digit lists with their counts, and a -- see docs/internals/decode/decode.md#prologue
+  build_lists<D>(p, mask_r, mask_w, olist, dlist, s_n_o, s_n_d);
+  sum_staged_rows(p, sa_r, s_sum, 2 * D - 1);
   __syncthreads();
-  build_owner_mask<D>(p, mask_r, mask_w, omask, s_n_o, s_n_d);
-  __syncthreads();
-  compact_owner_lists<D>(p, omask, mask_w, olist, dlist);
-  __syncthreads();
+  //: PHASE C: the normalized amplitudes and the term layout (whose barrier ends it).
+  normalize_rows(p, sa_r, s_sum);
   publish_term_layout<D>(p, s_n_o, s_n_d, s_fld, s_units, &s_umax);
   clock.lap(kPhFactor);
 
@@ -265,12 +257,11 @@ decode_step_kernel(DecodeParams p) {
       if (a >= 0) atom_row[a] = true;
     }
   }
-  //: THE PROLOGUE ENDS ON THIS BARRIER AND THERE IS NO OTHER BELOW IT. -- see docs/internals/decode/decode.md#syncthreads-2
-  if (tid == 0) {
-    s_arrive = 0;
-    s_admission = (needy ? 1 : 0) | (claimed ? 2 : 0);
+  //: A PAGED PROLOGUE ENDS ON THIS BARRIER, and there is no other below it; a dense one has nothing to publish. -- see docs/internals/decode/decode.md#syncthreads-2
+  if (paged) {
+    if (tid == 0) s_admission = (needy ? 1 : 0) | (claimed ? 2 : 0);
+    __syncthreads();
   }
-  __syncthreads();
   clock.lap(kPhAdmit);
 
   //: A NEEDY BATCH-HEAD RUNS NOTHING: no walk, no `y`, no state, no counter -- see docs/internals/decode/decode.md#want-live
@@ -590,12 +581,12 @@ decode_step_kernel(DecodeParams p) {
 }  // namespace detail
 
 size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int omask_total, int olist_total, int dlist_total) {
+                              int olist_total, int dlist_total) {
   const size_t amps = static_cast<size_t>(total_rows) * (decay ? 3 : 2);
   const size_t fold = static_cast<size_t>(kDecodeWarps) * (cols + 3);
-  const size_t tables =
-      2 * static_cast<size_t>(mask_total) + kKinds * static_cast<size_t>(omask_total)
-      + kKinds * static_cast<size_t>(olist_total) + static_cast<size_t>(dlist_total);
+  const size_t tables = 2 * static_cast<size_t>(mask_total)
+                        + kKinds * static_cast<size_t>(olist_total)
+                        + static_cast<size_t>(dlist_total);
   return (amps + static_cast<size_t>(d_v) + fold + tables) * sizeof(float);
 }
 
@@ -658,7 +649,7 @@ void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem
   STD_TORCH_CHECK(d_v == 32 || d_v == 64, "decode instantiates d_v in {32, 64}, got ", d_v);
   const int cols = d_v + 1;
   const size_t smem = decode_step_smem_bytes(p.total_rows, d_v, cols, decay, p.mask_total,
-                                             p.omask_total, p.olist_total, p.dlist_total);
+                                             p.olist_total, p.dlist_total);
   STD_TORCH_CHECK(static_cast<int64_t>(smem) <= smem_budget,
                   "the decode step's staged operands need ", smem,
                   " B of shared memory against a per-block budget of ", smem_budget,
@@ -810,7 +801,6 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
   p.lat_units_per_atom_shift = p.lat_inner_bits < kAtomShift ? kAtomShift - p.lat_inner_bits : 0;
 
   int mask_total = 0;
-  int omask_total = 0;
   int olist_total = 0;
   int dlist_total = 0;
   for (int l = 0; l < D; ++l) {
@@ -818,19 +808,12 @@ void fill_lattice(DecodeParams& p, int64_t k, int64_t m, int64_t N) {
     p.mask_off[l] = mask_total;
     p.mask_words[l] = ceil_div_int(p.level_width[l], 32);
     mask_total += p.mask_words[l];
-    p.omask_off[l] = omask_total;
-    p.omask_words[l] = ceil_div_int(p.lat_g[l], 32);
-    omask_total += p.omask_words[l];
     p.olist_off[l] = olist_total;
     olist_total += p.lat_g[l];
     p.dlist_off[l] = dlist_total;
     if (l < D - 1) dlist_total += p.level_width[l];
-    STD_TORCH_CHECK(p.lat_g[l] <= kDecodeThreads, "level ", l, "'s owner grid is ", p.lat_g[l],
-                    " wide against the ", kDecodeThreads,
-                    " threads that ballot its liveness in one block pass");
   }
   p.mask_total = mask_total;
-  p.omask_total = omask_total;
   p.olist_total = olist_total;
   p.dlist_total = dlist_total;
 }

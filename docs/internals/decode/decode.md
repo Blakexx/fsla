@@ -508,9 +508,9 @@ offsets directly ([`decode_lattice.md#the-unit`](decode_lattice.md#the-unit)), s
 prefix-sum structure over the leaf or row space left to consult here at all — the row
 count the tiled consumer's `cum`/coarse-index apparatus existed to answer is not a
 question this design asks. What replaces it is the owner-list's own realized count `n_o`
-per (list, level) — a single small array the block-scan in
-[`compact_owner_lists`](decode_lattice.md#the-owner-lists) already produces, consulted
-directly at unit-resolve time rather than through a second index over it.
+per (list, level) — a single small array [`build_lists`](decode_lattice.md#the-owner-lists)
+produces with the lists, consulted directly at unit-resolve time rather than through a
+second index over it.
 
 ## <a id="splitk-workspace"></a>13. The split-K workspace
 
@@ -637,8 +637,7 @@ reason no reduction is needed on the dot ([§15](#gemv-shape)).
 | `v_tok` | `[DV]` fp32 | the token's value, resident |
 | `fold` | `[warps][cols + 3]` fp32 | the cross-warp partials |
 | `mask_r`, `mask_w` | `[mask_total]` u32 | one bit per digit, per side ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)) |
-| `omask` | `[4][omask_total]` u32 | the four KINDS' owner LIVENESS BITS, one per owner coordinate, per level — the BUILDER of the two lists below ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)) |
-| `olist` | `[4][olist_total]` i32 | those bits compacted: the i-th live owner, one indexed load |
+| `olist` | `[4][olist_total]` i32 | the four KINDS' live owners per level, compacted: the i-th live owner, one indexed load ([`decode_lattice.md#the-owner-lists`](decode_lattice.md#the-owner-lists)) |
 | `dlist` | `[dlist_total]` i32 | the WRITE side's live digits, OUTER levels only — term 0's own grain ([`decode_lattice.md#the-write-grain`](decode_lattice.md#the-write-grain)) |
 
 Every one of them is FILLED BY THIS CTA, from the raw operands and from nothing else: the
@@ -1095,14 +1094,6 @@ the level's realized count in one read where three arrays used to be read separa
 `D + 2` rows -- the walk's `D + 1` terms and the admission's candidate slot:
 docs/internals/decode/decode_lattice.md#the-terms
 
-<a id="decode-step-kernel-note-l151"></a>
-### in `decode_step_kernel`, near line 151
-
-TWO BARRIERS FOR THE WHOLE PROLOGUE. The read side's row sums are the only thing
-anything downstream waits on, so they take the first; everything else -- both sides'
-rows, the value, the dials -- is independent and shares the second.
-docs/internals/decode/decode_fold.md
-
 <a id="sr"></a>
 ### `sr`
 
@@ -1213,9 +1204,11 @@ the others -- which is the set a host admission then plans from.
 <a id="syncthreads-2"></a>
 ### `__syncthreads`
 
-THE PROLOGUE ENDS ON THIS BARRIER AND THERE IS NO OTHER BELOW IT. It publishes the
-claim row to the walk and the zeroed warp arrival count to the combine -- shared memory
-is not zeroed at CTA start, and this is the one place a zero can be published for free.
+A PAGED PROLOGUE ENDS ON THIS BARRIER AND THERE IS NO OTHER BELOW IT. It publishes the
+claim row to the walk and the admission outcome to the combine. A dense step claims
+nothing and cannot be needy, so it has nothing to publish here and takes no barrier: its
+zeroed warp arrival count and its admission outcome ride phase A's barrier -- shared memory
+is not zeroed at CTA start, and a barrier already paid publishes a zero for free.
 docs/internals/decode/decode.md#no-barrier
 
 <a id="want-live"></a>
@@ -1655,19 +1648,6 @@ atom does not get a deeper walk -- it gets SEVERAL UNITS PER ATOM, which the
 candidate enumeration absorbs (`lat_units_per_atom_shift`) and the walk never sees.
 docs/internals/decode/decode_lattice.md#the-unit
 
-<a id="decodeparams-note-l209"></a>
-### in `DecodeParams`, near line 209
-
-THE OWNER LIVENESS BITMASK'S word layout: one bit per OWNER COORDINATE, per level,
-per kind -- `omask_words[l] = ceil(lat_g[l] / 32)` words at `omask_off[l]` of an
-`omask_total`-word plane, one plane per kind. It replaces the four COMPACTED owner
-lists: a rank selects its owner by find-nth-set instead of by an indexed load, which
-is what deletes the prologue's block scans and their barriers:
-docs/internals/decode/decode_lattice.md#the-owner-lists
-THE WRITE SIDE'S LIVE-DIGIT LIST NEEDS NO PLANE AT ALL: the write digit mask IS its
-bitmask, so term 0's grain is the same find-nth-set over `mask_w`:
-docs/internals/decode/decode_lattice.md#the-write-grain
-
 <a id="decodeparams-note-l221"></a>
 ### in `DecodeParams`, near line 221
 
@@ -2085,6 +2065,36 @@ The warp's partial is summed across its groups by a fixed butterfly of `__shfl_x
 (offsets `DV / 8, 2 DV / 8, ... 16`) after the walk, so every lane of a channel slice ends
 holding the warp's sum and the first group deposits it; the order is fixed, so the step
 stays byte-reproducible at a fixed `n_split`.
+
+<a id="prologue"></a>
+### The prologue: three phases, three barriers
+
+Every CTA derives the step's tables itself before it walks (the per-CTA derivation,
+[`#per-cta-prologue`](#per-cta-prologue)), in three phases:
+
+- **Phase A -- every operand's load at once.** The gain, a value channel's digits and scale
+  (the arithmetic deferred past the digit pass, so its load does not queue ahead of the
+  digits'), the decay dials, and the digit pass: a warp a mask word, each lane loading its
+  digit and its row's scale together, staging `raw * scale / full_scale` (or the raw digit,
+  for a level the fold normalizes) and balloting the word
+  ([`decode_fold.md#fold-digits`](decode_fold.md#fold-digits)). The combine's arrival count
+  and a dense step's admission outcome are zeroed here.
+- **Phase B -- one warp a job.** Warp `l` the level's owner lists, warp `D + l` its write
+  digit list, warp `2 D - 1 + l` a normalized level's declared sum
+  ([`decode_lattice.md#build-lists`](decode_lattice.md#build-lists)).
+- **Phase C.** A normalized level's amplitudes and the term layout, whose barrier ends it.
+
+A dense step then walks with no further barrier; a paged step asks its admission question
+and takes one more ([`#syncthreads-2`](#syncthreads-2)).
+
+MEASURED (sm_86, N 64K at (256, 256), d_v 64, H 16, k ~5, the phase ledger): the prologue it
+replaced was 16.5K cycles a warp -- the digit masks 5.8K (sixteen threads each reading 32
+digits one shared load at a time), the operand fold 5.0K (a global round trip per level
+and side, one after another), the owner masks, compaction, term layout and admission 5.2K
+over four more barriers. This one is 5.85K: phase A 2.9K, B 1.2K, C 0.9K, the dense
+admission 0.8K. Its floor is the per-warp instruction count: phase A issues ~250
+instructions in each of 32 warps, and an empty barrier costs ~400 cycles across 32 warps
+(both measured) -- so the next cut is fewer, fuller warps, not a shorter chain.
 
 <a id="coefficient-rows"></a>
 ### The coefficient rows, as the bundle holds them

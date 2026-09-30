@@ -97,9 +97,6 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   int mask_off[kMaxLevels];    // digit masks' word layout; see decode.md#near-line-132
   int mask_words[kMaxLevels];
   int mask_total;
-  int omask_off[kMaxLevels];  // owner bitmask word layout; decode.md#decodeparams-note-l209
-  int omask_words[kMaxLevels];
-  int omask_total;
   int olist_off[kMaxLevels];  // compacted bitmask lists; decode.md#decodeparams-note-l221
   int olist_total;
   int dlist_off[kMaxLevels];  // write side's live-digit list, outer only; decode.md#near-line-150
@@ -160,7 +157,7 @@ __device__ __forceinline__ uint32_t extract_bits(const uint32_t* src, int src_wo
 // ---------------------------------------------------------------------------
 
 size_t decode_step_smem_bytes(int total_rows, int d_v, int cols, bool decay, int mask_total,
-                              int omask_total, int olist_total, int dlist_total);
+                              int olist_total, int dlist_total);
 void launch_decode_step(const DecodeParams& p, int d_v, bool decay, int64_t smem_budget);
 
 }  // namespace decode

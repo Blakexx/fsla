@@ -802,6 +802,11 @@ where a map of sixteen set bits to lanes is unavoidable.
 `clock64` is not declared in every host-pass compilation of a header that both the launch
 and the part harness include.
 
+<a id="cycles-after"></a>`cycles_after(after)` is the same read with `after` as an input the
+instruction does not use: the read cannot issue until `after` has arrived, so a load placed
+first is scheduled first. `ptxas` deletes a clock read whose value is unused, volatile asm or
+not, so a dependency is the only way to order one.
+
 <a id="red-global"></a>
 ## `red_global_add_f32` — a global reduction stated global
 

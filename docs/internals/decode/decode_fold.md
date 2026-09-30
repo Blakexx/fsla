@@ -63,7 +63,7 @@ hundred bytes of gather in a prologue. So `DecodeParams` carries flags (`rows_f1
 `g_bf16`, and the low byte's presence) and each gather site picks a fully typed loop:
 
 ```
-if (p.rows_f16) fold_rows<__half>(...); else fold_rows<uint8_t>(...);
+if (p.rows_f16) fold_digits<D, __half>(...); else fold_digits<D, uint8_t>(...);
 ```
 
 The branch is on the DECLARED coefficient type, not on the depth, and it is taken once per
@@ -73,7 +73,8 @@ never a silent widening.
 
 <a id="fold-value"></a>The value is folded once a step into the CTA's resident row: the
 digits' integer `q` (`hi` at one digit, `hi * 256 + lo` at two) times the token's
-`scale / 127` or `scale / 32767`.
+`scale / 127` or `scale / 32767`. `load_value` issues the loads before the digit pass and
+`value_of` does the arithmetic after it, so the channel's loads ride the same round trip.
 
 Contrast `DECAY` and `D` (`decode.md#instantiation-matrix`), which ARE template axes: each
 picks a different loop shape or a different live-register count in the walk's innermost
@@ -138,22 +139,30 @@ carries a refusal (`rola.ops.decay.leaf_rate_dials`) that the host has to raise.
 
 Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_fold.cuh`, in source order, one heading per declaration. Source keeps only a short decl block pointing here.
 
-<a id="row-sum"></a>
-### `row_sum`
+<a id="fold-digits"></a>
+### `fold_digits`
 
-THE DECLARED SUM of a row's raw values. Lane `j` accumulates `raw[j], raw[j + 32], ...` in ascending index
+THE DIGIT PASS: every digit of both sides in one pass, a warp a mask word. A lane loads its
+digit and its row's fp32 scale together (one round trip), the warp's ballot of the
+exact-nonzero test is the digit mask's word ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)),
+and the lane stages `raw * (scale / full_scale)` -- or, for a read level the fold
+normalizes, the raw digit itself, until its sum is known. Slots past a level's width are
+not loaded and ballot a zero.
+
+<a id="row-sum"></a>
+### `sum_staged_rows`
+
+THE DECLARED SUM of a normalized level's raw digits, read back from their staging. Warp
+`first + l` owns level `l`; lane `j` accumulates `raw[j], raw[j + 32], ...` in ascending index
 order into an fp32 register, then the five `__shfl_down_sync` steps fold lane `j`
 into lane `j - off`. Lanes past the row's width contribute an exact `0.0f`.
 docs/internals/decode/decode_fold.md#declared-order
 
-<a id="fold-row-sums"></a>
-### `fold_row_sums`
+<a id="normalize-rows"></a>
+### `normalize_rows`
 
-THE ROW SUMS, for a side that carries its own mass. Warp `l < D` owns level `l`'s sum,
-which is why `D <= kMaxLevels <= kDecodeWarps` is the condition that makes ONE barrier
-after this enough. `s_sum` is `[kMaxLevels]` of the caller's shared memory.
-NO BARRIER IS TAKEN HERE -- the caller places it, because a device function that
-synchronizes on entry and exit costs a barrier at every seam between two of them.
+A normalized level's amplitudes, `raw / sum`, written in place over its staging on the
+far side of the barrier that published the sums.
 
 ## More comments moved from source
 
@@ -179,10 +188,3 @@ Three facts a reader must not miss:
 
 The declared order, the dtype arms and the cast argument:
 docs/internals/decode/decode_fold.md
-
-<a id="near-line-53"></a>
-### near line 53
-
-ONE SIDE'S `D` LEVELS into the flat `[sum_l b_l]` shared staging the walk indexes by
-digit: `raw / sum` for a normalized level, `raw * scale / full_scale` otherwise. `normalize` is `nullptr` for a side that never carries its own mass (the write
-side, always); otherwise `s_sum` must already hold `fold_row_sums`' answer.

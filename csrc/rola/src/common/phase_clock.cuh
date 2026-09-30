@@ -47,10 +47,13 @@ struct PhaseClock {
   }
 
   //: the cycles since the last mark go to phase `ph`.
+  //: The mark's load is the instruction a deferred barrier issues before it blocks, so a lap right after
+  //: `__syncthreads` books the release, not the arrival -- see docs/internals/common/phase_clock.md#deferred-barrier
   __device__ __forceinline__ void lap(int ph) {
     if (lead) {
-      const long long now = denseref::ops::cycles();
-      acc[ph] += now - acc[Phases];
+      const long long mark = acc[Phases];
+      const long long now = denseref::ops::cycles_after(mark);
+      acc[ph] += now - mark;
       acc[Phases] = now;
       record(now, ph);
     }

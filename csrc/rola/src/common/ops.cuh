@@ -227,6 +227,13 @@ __device__ __forceinline__ long long cycles() {
   return c;
 }
 
+//: The counter, read only once `after` has arrived: a load placed first then issues before the read. -- see docs/internals/common/ops.md#cycles-after
+__device__ __forceinline__ long long cycles_after(long long after) {
+  long long c;
+  asm volatile("mov.u64 %0, %%clock64;\n" : "=l"(c) : "l"(after));
+  return c;
+}
+
 //: THE WARP'S OWN EDGE, stated as the instruction: `__syncwarp()` where the compiler cannot -- see docs/internals/common/ops.md#warp-sync
 //: prove convergence becomes a CALL into a helper; this is one WARPSYNC.
 __device__ __forceinline__ void warp_sync() {

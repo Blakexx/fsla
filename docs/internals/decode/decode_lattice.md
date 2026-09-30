@@ -49,14 +49,15 @@ formulas. This doc is their authority; `decode.cuh` merely carries them.
 
 ---
 
-## <a id="the-digit-mask"></a>1. `build_digit_mask` — one bit per digit, race-free without atomics
+## <a id="the-digit-mask"></a>1. The digit masks — one bit per digit, balloted in the fold
 
 A side's DIGIT MASK is `sum_l ceil(B_l/32)` words, one bit per digit of every
 level, packed level by level (`mask_off[l]` / `mask_words[l]` locate a level's
-slice, `mask_total` the whole plane). One thread owns one destination word and
-reads only the amplitudes that word covers — the exact-nonzero test spec
-LATTICE-1 assumes throughout, never a threshold — so the pass needs no atomic
-and no second pass to merge partial words.
+slice, `mask_total` the whole plane). The fold's digit pass
+([`decode_fold.md#fold-digits`](decode_fold.md#fold-digits)) gives a warp one mask word:
+each lane loads its digit, and one `__ballot_sync` of the exact-nonzero test -- the one
+spec LATTICE-1 assumes throughout, never a threshold -- IS the word, stored by lane 0. No
+atomic, no second pass, no re-read of the staged amplitudes.
 
 `level_slice` reads `count <= kDecodeMaxSpan` digits of one level as a single
 word through `extract_bits` (`decode.md#extract-bits` — the funnel shift is
@@ -216,35 +217,24 @@ byte; nothing about the claim, the shadow row or the atom bits moved. `tests/int
 test_decode_paging.py` is what holds that: it exercises growth, the pool claim and the
 replay path, and it passes unedited.
 
-## <a id="the-owner-lists"></a>2.1 `build_owner_mask` — four kinds, one ballot per kind per level
+## <a id="the-owner-lists"></a>2.1 `build_lists` — one warp a level, four kinds, running ranks
 
 The terms ask for four per-level digit sets — `W_l`, `R_l`, `R_l & W_l`,
-`R_l & ~W_l` — so there are four OWNER LIVENESS BITMASKS, `omask[kind][level]`,
-one bit per owner coordinate, with `n_o` the realized count. THE DIGIT MASKS STAY
-TWO: a kind's bits are a boolean function of the read and write bits
-(`kind_bits`), formed where they are read, on single digits and on whole owner
-spans alike.
+`R_l & ~W_l` — so each level has four OWNER LISTS, `olist[kind][level]`, the live owner
+coordinates in ascending order, with `n_o` their counts. THE DIGIT MASKS STAY TWO: a
+kind's bits are a boolean function of the read and write bits (`kind_bits`), formed where
+they are read, on single digits and on whole owner spans alike.
 
-Each thread reads ITS OWNER'S SPAN ONCE per side (`lat_g[l] <= kDecodeThreads`
-follows from the level-width capacity, `decode.md#level-width-capacity`, so one
-block covers a whole level's owner grid) and all four kinds fall out of that one
-pair of slices — exactly as they did when this function compacted them.
-
-**THE BALLOT IS WHAT REPLACED THE BLOCK SCAN.** A warp's 32 lanes already hold 32
-consecutive owners' answers, so one `__ballot_sync` per kind IS that level's
-32-owner word and its lane 0 stores it; the realized count rides the same word as
-a `__popc` folded by one shared atomic. The four `cub::BlockScan` exclusive sums
-that used to compact those bits into lists — and the TWO BARRIERS PER LEVEL they
-carried — are gone, and with them the only reason the prologue's cost grew with
-the live owner count rather than with the owner grid.
-
-**THE BALLOT WORDS COMPACT THEMSELVES.** `compact_owner_lists` runs on the other
-side of one barrier: an owner the ballot found live writes ITSELF into
-`olist[kind][level][rank]`, where `rank` is the popcount of its kind's bits below
-it — at most `kDecodeMaxLevelWidth / 32 = 8` `POPC`s, and exactly one at every
-topology whose level is 32 owners or narrower, which the flagship's two levels
-both are. The WRITE DIGIT LIST is compacted the same way straight off `mask_w`,
-its count being that mask's popcount ([2.2](#the-write-grain)).
+<a id="build-lists"></a>**ONE WARP A LEVEL, AND NOTHING CROSSES A WARP.** Warp `l < D` walks
+level `l`'s owner grid 32 owners at a time: each lane reads ITS OWNER'S SPAN once per side,
+one `__ballot_sync` per kind is those 32 owners' liveness, and a live owner writes itself at
+`run + popcount(bits below it)`, `run` being the warp's own running count. Warp `D + l`
+compacts level `l`'s live WRITE digits (outer levels only) the same way straight off
+`mask_w` -- a level's at most eight words load together, then rank in order -- its count
+being the mask's popcount ([2.2](#the-write-grain)). Both counts are stored by lane 0. So
+the owner liveness words are never stored, no count needs an atomic, and the lists need no
+barrier between building and compacting: the prologue's phase B is these warps and one
+barrier ([`decode.md#prologue`](decode.md#prologue)).
 
 **WHY THE LIST SURVIVES AND ONLY THE SCAN DIES — MEASURED.** Reading the bitmask
 directly at USE time (`select(i-th set bit)` by `__fns`, no list plane at all) was
@@ -257,13 +247,13 @@ per-CTA replication is what makes a use-time cost so much more expensive than a
 build-time one, and it is the same fact [`decode.md#per-cta-prologue`] states about
 the derivation generally.
 
-<a id="ballot-uniformity"></a>**HAZARD — ballot uniformity.** `build_owner_mask`'s
-`__ballot_sync(0xffffffff, ...)` runs with the WHOLE CTA present: the level loop is
-unrolled over the template `D` and no thread branches around it. An owner beyond
-`lat_g[l]` contributes zero slices and therefore a zero bit, and the store is
-predicated AFTER the ballot on `lane == 0 && word < omask_words[l]` — never before
-it. Predicating the collective instead would split the warp at an instruction that
-needs every lane (`KERNEL_STANDARDS.md` §12).
+<a id="ballot-uniformity"></a>**HAZARD — ballot uniformity.** `build_lists`'s
+`__ballot_sync(0xffffffff, ...)` runs with a WHOLE WARP present: the role branch is on the
+warp index, uniform across its lanes, and the group loop's bound is the level's, not the
+lane's. An owner beyond `lat_g[l]` contributes zero slices and therefore a zero bit, and
+the list store is predicated AFTER the ballot on the lane's own bit — never before it.
+Predicating the collective instead would split the warp at an instruction that needs every
+lane (`KERNEL_STANDARDS.md` §12).
 
 **Each level's live count is padded to the next power of two.** A level's field
 width is `ceil_log2(n_o[kind][l])`, its position the running sum of the levels
@@ -470,46 +460,19 @@ LAYOUT. The candidate slot is the write product again, enumerated the way it alw
 was (live owners crossed with the FULL run radix), and it exists because the walk's
 own write term no longer is: docs/internals/decode/decode_lattice.md#the-write-grain
 
-<a id="build-owner-mask"></a>
-### `build_owner_mask`
-
-THE OWNER LIVENESS BITMASK: per KIND and level, ONE BIT PER OWNER COORDINATE, set
-where that kind's digit set has any digit inside the owner's span. Thread `tid` owns
-owner `tid` on both sides, reads its span ONCE, and all four kinds fall out of that one
-pair of slices exactly as they did; `lat_g[l] <= kDecodeThreads` follows from the
-level-width capacity, so one pass covers every owner. The caller's barrier before this
-must have published both digit masks and zeroed the two count rows.
-
-THE BALLOT IS WHAT REPLACES THE BLOCK SCAN, and that is this function's whole subject.
-The compacted lists this supersedes cost FOUR `cub::BlockScan`s and TWO BARRIERS PER
-LEVEL to build a table whose only use is `list[i] -> owner`; a warp's 32 lanes already
-hold 32 consecutive owners' answers, so ONE `__ballot_sync` per kind IS that level's
-word, written by its lane 0, and `list[i]` becomes a find-nth-set over the same word
-(a find-nth-set over that word). The realized counts ride the same
-word as a popcount, so the level's `n_o` needs no second pass either.
-THE COUNTS ARE FOLDED BY ATOMIC, NOT SCANNED: a count is the popcount SUM over a level's
-at most eight words, and the eight lane-zeros that hold them are in different warps.
-THE DIGIT LIST HAS NO PLANE. Term 0's outer levels enumerate live WRITE DIGITS, and the
-write digit mask already IS one bit per digit -- so the list is `mask_w` itself, its
-count is `mask_w`'s popcount, and the digit list's scan field disappears with it.
-
 <a id="compact-owner-lists"></a>
-### `compact_owner_lists`
+### The compaction
 
-THE COMPACTION, AND IT COSTS ONE `POPC` PER WORD. An owner that the ballot found live
-writes ITSELF into its rank slot: its rank is the popcount of its kind's bits below it,
-which is at most `kDecodeMaxLevelWidth / 32 = 8` popcounts and, at every topology whose
-level is 32 owners or narrower, exactly one. The caller's barrier before this must have
-published `omask`.
+The owner and digit compaction is `build_lists`' own loop now: a live owner's rank is its
+warp's running count plus the popcount of its kind's bits below it
+([2.1](#the-owner-lists)).
 
-WHY NOT SELECT AT USE TIME. Reading the bitmask directly -- `select(i-th set bit)` by
-`__fns` -- deletes these planes entirely, and was BUILT AND MEASURED: `__fns` is not one
-instruction on sm_86 but ~56 SASS with reconvergence-stack ops, and the ADMISSION
-resolves one owner rank per LEVEL per CANDIDATE ATOM per CTA per step (4096 candidates
-at the flagship), so the select cost +2.3M instructions on the dense step -- +25 % of the
-whole step, against a prologue saving of a tenth of that. THE SCAN IS STILL GONE: what
-this replaces is `cub::BlockScan`, four of them per level with two barriers, not the
-list. docs/internals/decode/decode_lattice.md#the-owner-lists
+WHY NOT SELECT AT USE TIME. Reading a liveness bitmask directly -- `select(i-th set bit)` by
+`__fns` -- would delete the list planes entirely, and was BUILT AND MEASURED: `__fns` is not
+one instruction on sm_86 but ~56 SASS with reconvergence-stack ops, and the ADMISSION
+resolves one owner rank per LEVEL per CANDIDATE ATOM per CTA per step (4096 candidates at
+the flagship), so the select cost +2.3M instructions on the dense step -- +25 % of the
+whole step, against a prologue saving of a tenth of that.
 
 <a id="kfieldwidthmax"></a>
 ### `kFieldWidthMax`
@@ -733,13 +696,6 @@ and term `j >= 1` splits at level `j - 1`.
 
 A KIND'S BITS, from the two sides' bits. One expression, used on single digits and on
 whole owner spans alike, which is what keeps the digit masks at two planes.
-
-<a id="near-line-53"></a>
-### near line 53
-
-One side's DIGIT MASK, one bit per digit of every level, packed level by level. One
-thread owns one destination word and reads the amplitudes it covers, so the pass is
-race-free without atomics and costs `sum_l ceil(B_l / 32)` words.
 
 <a id="levelslice"></a>
 ### `level_slice`
