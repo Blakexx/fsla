@@ -19,6 +19,9 @@
 namespace rola::intra::detail {
 
 namespace ops = denseref::ops;
+
+//: THE WINDOW'S PIECES where a CTA reads its own: one uniform constant load
+__constant__ Pieces kPieceTable = Pieces{};
 using Clock = PhaseClock<kIntraPhases, true>;
 
 //: AN ARM: `D` levels of `B` u8 digits a side. -- see docs/internals/intra/intra_kernel.md#arms
@@ -240,8 +243,8 @@ __device__ __forceinline__ uint32_t stage_slabs(uint32_t gate) {
 //: whether tile `tile`'s stage `S` is copied: tile 0's always (its copies leave before the gate is known), a later
 //: tile's when either row tile reads one of its slabs
 template <int D, int B, int S>
-__device__ __forceinline__ bool stage_issued(const Smem<D, B>& sm, int tile) {
-  return tile == 0 || stage_slabs<D, B, S>(sm.gate[tile][0] | sm.gate[tile][1]) != 0u;
+__device__ __forceinline__ bool stage_issued(const Smem<D, B>& sm, int tile, int t0) {
+  return tile == t0 || stage_slabs<D, B, S>(sm.gate[tile][0] | sm.gate[tile][1]) != 0u;
 }
 
 //: THE WARP'S STATE ACROSS A BLOCK: the level's s32 Gram, the running level product and the output; the row sums
@@ -495,7 +498,7 @@ __device__ void deposit(Smem<D, B>& sm, const IntraParams& p, int bh, int t_row,
 //: -- see docs/internals/intra/intra_kernel.md#pipeline
 template <int D, int B, int S>
 __device__ __forceinline__ void tile_stage(Smem<D, B>& sm, const IntraParams& p,
-                                           const Copier<D, B>& copy, int tile, int tiles,
+                                           const Copier<D, B>& copy, int tile, int t0, int t1,
                                            int row_tile, int warp, int lane, Acc& acc,
                                            Clock& clock) {
   using A = Arm<D, B>;
@@ -503,24 +506,25 @@ __device__ __forceinline__ void tile_stage(Smem<D, B>& sm, const IntraParams& p,
   const bool leader = lane == 0;
   constexpr int kNextS = (S + kCopyAhead) % A::kStages;
   constexpr int kNextTile = (S + kCopyAhead) / A::kStages;
-  const int it = tile * A::kStages + S;
+  //: the piece's own stage index: its copies, claims and phases count from the piece's first tile
+  const int r = tile - t0, it = r * A::kStages + S;
   const int next = it + kCopyAhead;
   //: the first warp to reach a stage's refill claims it and alone waits for the buffer's release
-  if (tile + kNextTile < tiles) {
+  if (tile + kNextTile < t1) {
     const int nbuf = next % kStageBuffers, use = next / kStageBuffers;
     int claimed = 0;
     if (leader) claimed = atomicMax(&sm.claim[nbuf], next) < next;
     if (__shfl_sync(0xffffffffu, claimed, 0)) {
       if (use > 0) ops::mbar_wait(ops::smem_addr(&sm.empty[nbuf]), (use - 1) & 1);
       copy.template stage<kNextS>(sm, p, nbuf, tile + kNextTile,
-                                  stage_issued<D, B, kNextS>(sm, tile + kNextTile));
+                                  stage_issued<D, B, kNextS>(sm, tile + kNextTile, t0));
     }
   }
   const int buf = it % kStageBuffers;
   //: the warp's slabs of this tile pair: none when the pair is dead or above the diagonal
   const uint32_t mine = sm.gate[tile][row_tile % kRowTiles];
   const uint32_t slabs = stage_slabs<D, B, S>(mine);
-  const bool first = tile == 0;
+  const bool first = tile == t0;
   const bool live = mine != 0u;
   //: EVERY warp waits for every stage, read or not: a barrier's wait tests one phase bit, so it is sound only for a
   //: waiter within a phase of the barrier, and a warp that skipped waits could run ahead, claim a refill and read a
@@ -536,7 +540,7 @@ __device__ __forceinline__ void tile_stage(Smem<D, B>& sm, const IntraParams& p,
   __syncwarp();
   if (leader) ops::mbar_arrive(ops::smem_addr(&sm.empty[buf]));
   if constexpr (S == A::kStages - 1) {
-    ops::mbar_wait(ops::smem_addr(&sm.values_full), tile & 1);
+    ops::mbar_wait(ops::smem_addr(&sm.values_full), r & 1);
     if (live) {
       epilogue(sm, tile == row_tile, warp, lane, acc);
       clock.lap(kPhaseEpilogue);
@@ -560,9 +564,9 @@ __device__ __forceinline__ void tile_stage(Smem<D, B>& sm, const IntraParams& p,
     int last = 0;
     if (leader) {
       __threadfence_block();
-      last = atomicAdd(&sm.values_released[tile & 1], 1) == (tile / 2 + 1) * kWarps - 1;
+      last = atomicAdd(&sm.values_released[r & 1], 1) == (r / 2 + 1) * kWarps - 1;
     }
-    if (__shfl_sync(0xffffffffu, last, 0) && tile + 1 < tiles) {
+    if (__shfl_sync(0xffffffffu, last, 0) && tile + 1 < t1) {
       __threadfence_block();
       copy.values(sm, p, tile + 1, (sm.gate[tile + 1][0] | sm.gate[tile + 1][1]) != 0u);
     }
@@ -574,28 +578,28 @@ __device__ __forceinline__ void tile_stage(Smem<D, B>& sm, const IntraParams& p,
 template <int D, int B, int... S>
 __device__ __forceinline__ void load_reader_parts(Smem<D, B>& sm, const IntraParams& p,
                                                   const Copier<D, B>& copy, int b, int h,
-                                                  int t_block, int tid,
+                                                  int t_block, int t0, int tid,
                                                   std::integer_sequence<int, S...>) {
   const auto part = [&](auto I) {
     constexpr int kS = decltype(I)::value;
     load_reader_part<D, B, kS>(sm, p, b, h, t_block, tid);
     if constexpr (kS < kCopyAhead)
-      if (tid < 32) copy.template stage<kS>(sm, p, kS, 0, true);
+      if (tid < 32) copy.template stage<kS>(sm, p, kS, t0, true);
   };
   (part(std::integral_constant<int, S>{}), ...);
 }
 
 template <int D, int B, int... S>
 __device__ __forceinline__ void tile_stages(Smem<D, B>& sm, const IntraParams& p,
-                                            const Copier<D, B>& copy, int tile, int tiles,
+                                            const Copier<D, B>& copy, int tile, int t0, int t1,
                                             int row_tile, int warp, int lane, Acc& acc,
                                             Clock& clock, std::integer_sequence<int, S...>) {
-  (tile_stage<D, B, S>(sm, p, copy, tile, tiles, row_tile, warp, lane, acc, clock), ...);
+  (tile_stage<D, B, S>(sm, p, copy, tile, t0, t1, row_tile, warp, lane, acc, clock), ...);
 }
 
-//: THE GRID: a CTA a (window, block) along x -- a window's heaviest block first -- and a batch-head along y. The
-//: block's readers land once; the writer tiles `0 .. 2 block + 1` stream through the stage buffers, each warp waiting
-//: only on the data it reads and releasing it after. -- see docs/internals/intra/intra_kernel.md#the-grid
+//: THE GRID: a CTA a (window, piece) along x -- a window's longest piece first -- and a batch-head along y. The
+//: block's readers land once; the piece's writer tiles stream through the stage buffers, and its partial sums reduce
+//: into the output planes. -- see docs/internals/intra/intra_kernel.md#the-grid
 template <int D, int B>
 __global__ __launch_bounds__(kThreads, 1) void intra_kernel(const IntraParams p) {
   using A = Arm<D, B>;
@@ -603,13 +607,13 @@ __global__ __launch_bounds__(kThreads, 1) void intra_kernel(const IntraParams p)
   Smem<D, B>& sm = *reinterpret_cast<Smem<D, B>*>(raw);
   const int tid = static_cast<int>(threadIdx.x), warp = tid >> 5, lane = tid & 31;
   const int bh = static_cast<int>(blockIdx.y);
-  const int window = static_cast<int>(blockIdx.x) / kBlocks;
-  const int block = kBlocks - 1 - static_cast<int>(blockIdx.x) % kBlocks;
+  const int window = static_cast<int>(blockIdx.x) / Pieces::count();
+  const Piece piece = kPieceTable.table[static_cast<int>(blockIdx.x) % Pieces::count()];
+  const int block = piece.block;
   const int b = bh / p.H, h = bh - b * p.H;
   const int t_window = window * kWindow;
   const int t_block = t_window + block * kBlockRows;
   const int row_tile = block * kRowTiles + warp / (kWarps / kRowTiles);
-  const int tiles = (block + 1) * kRowTiles;
   Clock clock(&sm.clock[warp][0], lane, p.ledger != nullptr);
   if (tid == 0) {
 #pragma unroll
@@ -636,16 +640,17 @@ __global__ __launch_bounds__(kThreads, 1) void intra_kernel(const IntraParams p)
   if (lane < kWarpRows) sm.den[warp][lane] = 0.0f;
 
   const Copier<D, B> copy(p, b, h, t_window, lane);
-  load_reader_parts(sm, p, copy, b, h, t_block, tid, std::make_integer_sequence<int, A::kStages>{});
-  if (warp == 0) copy.values(sm, p, 0, true);
+  load_reader_parts(sm, p, copy, b, h, t_block, piece.t0, tid,
+                    std::make_integer_sequence<int, A::kStages>{});
+  if (warp == 0) copy.values(sm, p, piece.t0, true);
   clock.lap(kPhaseReader);
   if (warp == 0) gate_table(sm, p, bh, window, block, lane);
   __syncthreads();
   clock.lap(kPhaseGate);
 
 #pragma unroll 1
-  for (int tile = 0; tile < tiles; ++tile)
-    tile_stages(sm, p, copy, tile, tiles, row_tile, warp, lane, acc, clock,
+  for (int tile = piece.t0; tile < piece.t1; ++tile)
+    tile_stages(sm, p, copy, tile, piece.t0, piece.t1, row_tile, warp, lane, acc, clock,
                 std::make_integer_sequence<int, A::kStages>{});
   deposit(sm, p, bh, t_block + warp * kWarpRows, warp, lane, acc);
   clock.lap(kPhaseDeposit);

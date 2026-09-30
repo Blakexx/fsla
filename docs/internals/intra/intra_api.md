@@ -37,7 +37,7 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
   depth.
 
 The arm's footprint is past the 48 KB a kernel gets unasked, so the first launch of an arm
-checks it against the device's opt-in and sets the attribute; the grid is `(windows × 4, B·H)`.
+checks it against the device's opt-in and sets the attribute; the grid is `(windows × 6, B·H)`, a CTA a piece.
 
 <a id="rola-intra-ledger-bind"></a>
 

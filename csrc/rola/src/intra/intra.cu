@@ -72,7 +72,7 @@ void launch(const IntraParams& p, int64_t bh, int device, cudaStream_t stream) {
                                          cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
     configured = true;
   }
-  const dim3 grid(static_cast<unsigned>(p.windows * kBlocks), static_cast<unsigned>(bh));
+  const dim3 grid(static_cast<unsigned>(p.windows * Pieces::count()), static_cast<unsigned>(bh));
   intra_kernel<D, B><<<grid, kThreads, kSmem, stream>>>(p);
   ROLA_CUDA_LAUNCH_CHECK();
 }

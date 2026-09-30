@@ -16,6 +16,38 @@ constexpr int kRowTiles = 2;
 constexpr int kBlockRows = kRowTiles * kTile;
 constexpr int kBlocks = kWindowTiles / kRowTiles;
 constexpr int kWarpRows = 16;
+//: A PIECE: at most `kPieceTiles` of a block's writer tiles, one CTA's sweep, so no CTA carries a block's whole
+//: diagonal; a block's pieces reduce their partial sums into the same rows. -- see docs/internals/intra/intra.md#pieces
+constexpr int kPieceTiles = 4;
+
+struct Piece {
+  int block, t0, t1;
+};
+
+//: A WINDOW'S PIECES, longest first and the heavier block first among equals, so the long sweeps start first.
+constexpr int piece_count() {
+  int n = 0;
+  for (int b = 0; b < kBlocks; ++b) n += ((b + 1) * kRowTiles + kPieceTiles - 1) / kPieceTiles;
+  return n;
+}
+
+struct Pieces {
+  Piece table[piece_count()]{};
+
+  static constexpr int count() { return piece_count(); }
+
+  constexpr Pieces() {
+    int n = 0;
+    for (int len = kPieceTiles; len > 0; --len)
+      for (int b = kBlocks - 1; b >= 0; --b)
+        for (int t0 = 0; t0 < (b + 1) * kRowTiles; t0 += kPieceTiles) {
+          const int t1 =
+              t0 + kPieceTiles < (b + 1) * kRowTiles ? t0 + kPieceTiles : (b + 1) * kRowTiles;
+          if (t1 - t0 == len) table[n++] = Piece{b, t0, t1};
+        }
+  }
+};
+
 constexpr int kWarps = kBlockRows / kWarpRows;
 constexpr int kThreads = kWarps * 32;
 constexpr int kValueWidth = 64;

@@ -19,6 +19,16 @@ buffers, a stage copied `kCopyAhead` = 1 ahead of its use, which leaves two stag
 between the warps ([`intra_kernel.md`](intra_kernel.md#pipeline)). `IntraPhase` is the phase ledger's column
 order.
 
+<a id="pieces"></a>
+
+## The pieces
+
+`kPieceTiles` = 4 caps a CTA's sweep: block `b`'s tiles `0 .. 2b + 1` cut into pieces of at most
+four, so the diagonal pair lands in the block's last piece. `Pieces` builds the window's table
+at compile time, longest first and the heavier block first among equals — `(3, 0..3)`,
+`(3, 4..7)`, `(2, 0..3)`, `(1, 0..3)`, `(2, 4..5)`, `(0, 0..1)` — and the kernel reads its entry from
+constant memory by `blockIdx.x` modulo six. Why four is [`intra_kernel.md`](intra_kernel.md#the-grid).
+
 <a id="intraparams"></a>
 
 ## `IntraParams` — the operand block, by value
@@ -36,7 +46,7 @@ kernel parameter of under a kilobyte, so a launch allocates nothing to learn its
 `ROLA_INTRA_ARMS_X` is the built set, `(2, 256)`, one macro the dispatch and `intra_arms`
 both expand, so neither can name an arm the other does not. The host entry turns each tensor
 into a view after checking it (`row_view`, `column_view`: dtype, shape, 16-byte starts and
-strides), fills the block and launches `intra_kernel<D, B>` on a `(windows × 4, B·H)` grid of
+strides), fills the block and launches `intra_kernel<D, B>` on a `(windows × 6, B·H)` grid of
 256 threads. An arm's footprint is past the 48 KB a kernel gets unasked, so its first launch
 checks it against the device's opt-in and sets the attribute once.
 

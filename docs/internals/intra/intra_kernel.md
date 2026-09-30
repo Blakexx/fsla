@@ -46,15 +46,31 @@ the Gram as f16 HMMA on the narrow levels — are not built, and the seam refuse
 
 <a id="the-grid"></a>
 
-## The grid: a CTA a block, the heaviest first
+## The grid: a CTA a piece, the longest first
 
-A CTA is one (batch-head, window, block): `blockIdx.y` the batch-head, `blockIdx.x` the window
-times four plus the block, heaviest first. Block `b`'s readers pair with writer tiles `0 ..
-2b + 1`, so the window's four blocks carry 2, 4, 6 and 8 tiles; launching the eight-tile block
-first lets the short ones fill in behind it. Eight warps a CTA, each owning 16 readers: warps
-0–3 the block's first tile, 4–7 its second. A warp's rows are its own for the whole sweep, so
-its output is final in registers at the end and nothing is exchanged between warps. At ~100 KB
-of shared memory and 210 registers a thread, one CTA runs an SM.
+Block `b`'s readers pair with writer tiles `0 .. 2b + 1`, so a window's four blocks carry 2, 4,
+6 and 8 tiles. A CTA is one PIECE of a block's sweep — at most `kPieceTiles` = 4 of its tiles,
+the diagonal pair always in the last piece ([`intra.md`](intra.md#pieces)) — so a window is six
+CTAs: the two halves of block 3, the first half of block 2, block 1, then block 2's diagonal
+pair and block 0, longest first so the short ones fill in behind. `blockIdx.y` is the
+batch-head. Each piece stages its block's readers and reduces its partial sums into the output
+planes, so a row of blocks 2 and 3 takes two reductions from the intra, in either order. Eight
+warps a CTA, each owning 16 readers: warps 0–3 the block's first tile, 4–7 its second. A warp's
+rows are its own for the whole sweep, so its output is final in registers at the end and nothing
+is exchanged between warps. At ~100 KB of shared memory and ~208 registers a thread, one CTA
+runs an SM.
+
+Why pieces, and why four (ncu, base clock): at `L = 1K` the whole call is a few CTAs and its time
+is the heaviest one's sweep, so the piece length sets the small call's latency; at `L = 64K` the
+machine is full and each piece adds a reader staging, a prologue and a reduction a row. One
+length serves every call — a length chosen from `L` would be the fuzzy threshold §R9 forbids.
+
+| tiles a piece | `flagship-dense` | `flagship-cohort-k16` | `nl64k-dense` | `L = 64K`, 4 heads |
+|---|---|---|---|---|
+| 8 (a CTA a block) | 70.9 µs | 61.2 µs | 316 µs | 1.14 ms |
+| 6 | 57.8 | 50.5 | 323 | 1.18 |
+| **4** | **42.4** | **38.7** | **324** | **1.24** |
+| 2 | 26.6 | 25.6 | 345 | 1.42 |
 
 <a id="smem"></a>
 
@@ -125,7 +141,7 @@ copies claimed, a warp that neither reads nor claims waits on nothing; one that 
 waits (the block's first row tile through its last tile, above its diagonal) ran ahead, claimed
 a refill, and read a release two phases old as done, overwriting a stage another warp was
 still reading — intermittently wrong rows, found by repeated launches
-(`test_the_intra_is_bit_identical_across_launches`, which fails on that form). Waiting on every
+(`test_the_intra_is_reproducible_across_launches`, which fails on that form). Waiting on every
 phase keeps every warp within a phase of every barrier; a stage no warp reads was not copied,
 and its wait is immediate.
 
@@ -174,7 +190,8 @@ The table drives everything else, uniformly across the CTA:
 
 The gate cannot move a number: a skipped slab's products are all zero, and a skipped pair adds
 exact zeros to `num` and `den`. `test_the_slab_gate_is_an_exact_certificate` holds the gated
-run to the ungated run's bits on a clustered draw where the gate skips pairs and slabs.
+run to the ungated run's sums, to the pieces' fp32 reassociation, on a clustered draw where the gate skips pairs
+and slabs.
 
 <a id="gram"></a>
 
@@ -260,13 +277,13 @@ at its locked base clock, since one sequence's events swing ±10% between runs o
 
 | cell | at the kernel's landing | now | against |
 |---|---|---|---|
-| `L = 64K`, 16 batch-heads, a head (events) | 276 µs | 211 µs | ~180 µs budget (1.17×) |
-| `L = 64K`, 4 batch-heads (ncu, base clock) | 1.48 ms | 1.16 ms | |
-| `nl64k-dense` (ncu) | | 320 µs | |
-| `nl64k-alt-k4` (ncu) | | 332 µs | |
-| `flagship-dense`, `L = 1K` (ncu) | | 72 µs | |
-| `flagship-alt-k4` (ncu) | | 73 µs | |
-| `flagship-cohort-k16` (ncu) | | 61 µs | ~5 µs at boost |
+| `L = 64K`, 16 batch-heads, a head (events) | 276 µs | ~235 µs | ~180 µs budget (1.3×) |
+| `L = 64K`, 4 batch-heads (ncu, base clock) | 1.48 ms | 1.24 ms | |
+| `nl64k-dense` (ncu) | | 324 µs | |
+| `nl64k-alt-k4` (ncu) | | 333 µs | |
+| `flagship-dense`, `L = 1K` (ncu) | | 42 µs | |
+| `flagship-alt-k4` (ncu) | | 43 µs | |
+| `flagship-cohort-k16` (ncu) | | 39 µs | ~5 µs at boost |
 
 <a id="region-ledger"></a>
 
@@ -298,7 +315,9 @@ and the gate keeps 2.5 of 16 slabs a pair, so the Gram's IMMAs fall to a sixth a
 by a fifth: the line's ~5 µs assumed the gate would skip most of a cohort draw's work, and the
 value product, the epilogue and the chain of stages stay. Reaching it takes the heaviest
 block's sweep split across SMs — the output's REDs allow a reader row to take its pairs from
-several CTAs — at a price in reader bytes the large-`L` regime pays.
+several CTAs — at a price in reader bytes the large-`L` regime pays: the pieces
+([the grid](#the-grid)), which took `flagship-dense` from 71 to 42 µs at base clock for 9% at
+`L = 64K`.
 
 The gate's own cost, from the ledger with the unions read and with every level declared dense
 (nothing read): 1.1% for the prologue's barrier, 2.5% for the unions' round trip, which tile
