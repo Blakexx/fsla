@@ -922,6 +922,7 @@
   {"doc": "docs/internals/produce/produce.md", "pinned_at": "267ecc97af6a", "reviewed": true, "sha256": "3118405d8e100379", "target": "rola/ops/produce.py::hidden_contiguous"},
   {"doc": "docs/internals/produce/produce.md", "pinned_at": "8bad0313d8c3", "reviewed": true, "sha256": "f8872ee43ec377c3", "target": "rola/ops/produce.py::ledger_bind"},
   {"doc": "docs/internals/produce/produce.md", "pinned_at": "8bad0313d8c3", "reviewed": true, "sha256": "b5df9a40287f813e", "target": "rola/routing/entmax/production.py::_torch_union_split"},
+  {"doc": "docs/internals/produce/produce.md", "pinned_at": "542740f46cfa", "reviewed": true, "sha256": "cfe92b3f9d59d9c5", "target": "rola/routing/quant.py::quantize_values"},
   {"doc": "docs/internals/produce/produce.md", "pinned_at": "b8479aec3bcc", "reviewed": true, "sha256": "", "target": "tests/integration/test_produce_kernel.py"},
   {"doc": "docs/internals/produce/produce_api.md", "pinned_at": "b8479aec3bcc", "reviewed": true, "sha256": "", "target": "csrc/rola/src/produce/produce_api.cuh"},
   {"doc": "docs/internals/produce/produce_api.md", "pinned_at": "8bad0313d8c3", "reviewed": true, "sha256": "ae3b5525033620d6", "target": "rola/ops/produce.py::run_kernel"},

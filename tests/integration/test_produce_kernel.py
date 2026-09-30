@@ -6,7 +6,8 @@ every token, against the fp64 product of the same bf16 operands, per slot within
 (docs/internals/produce/produce.md#accumulate). The solve's is its levels: every route job's sides against the fp64
 reference solve on the kernel's own logits (docs/internals/produce/produce.md#solve). The bundle's is the routes the
 fp64 composition makes from the same bf16 operands: every row's digits, every scale, the read mass and the write gain
-(docs/internals/produce/produce.md#bundle).
+(docs/internals/produce/produce.md#bundle). The values': every channel's digits and every scale, against the same
+(docs/internals/produce/produce.md#value-rows).
 """
 from __future__ import annotations
 
@@ -36,9 +37,10 @@ def _projection_rtol(hidden: int) -> float:
     return (hidden + 1) * 2.0 ** -23
 
 
-def _operands(name: str, *, B=2, T=5, hidden=48, H=3, d_v=64, bias=True, gain=True):
+def _operands(name: str, *, B=2, T=5, hidden=48, H=3, d_v=64, bias=True, gain=True, digits=2):
     torch.manual_seed(0)
-    plan = ProducerPlan(routing=rola.Routing(_ROUTINGS[name], gain=gain), num_heads=H, hidden_size=hidden, d_v=d_v)
+    plan = ProducerPlan(routing=rola.Routing(_ROUTINGS[name], gain=gain), num_heads=H, hidden_size=hidden, d_v=d_v,
+                        value_digits=digits)
     C = plan.routing.columns
     route_W = hidden_contiguous(torch.randn(H, hidden, C, device="cuda").to(torch.bfloat16))
     route_bias = torch.randn(H, C, device="cuda") if bias else None
@@ -65,7 +67,7 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
     out = {"amp_read": poisoned(rows, dtype=row_dtype), "amp_write": poisoned(rows, dtype=row_dtype),
            "scale_read": poisoned(D), "scale_write": poisoned(D), "mass_read": poisoned(D), "mass_write": poisoned(D),
            "read_mass": poisoned(), "g_write": poisoned(), "v_hat": poisoned(d_v, dtype=torch.int8),
-           "v_lo": poisoned(d_v, dtype=torch.uint8), "v_scale": poisoned()}
+           "v_lo": poisoned(d_v, dtype=torch.uint8) if plan.value_digits == 2 else None, "v_scale": poisoned()}
     jobs, shapes, per_head = _job_tensor(plan, "cuda:0")
     arrivals = torch.zeros(-(-(B * T) // _TOKEN_TILE) * H, dtype=torch.int32, device="cuda")
     probes = [torch.full((jobs.shape[0], B * T, _MAX_COLUMNS), float("nan"), device="cuda") if probe else None
@@ -99,7 +101,7 @@ def test_every_output_is_written_and_the_arrivals_reset(name):
     operands = _operands(name)
     first, arrivals, _ = _launch(*operands, fill=0x55)
     second, _, _ = _launch(*operands, fill=0xAA)
-    for key in first:
+    for key in (key for key in first if first[key] is not None):
         assert torch.equal(first[key].view(torch.uint8), second[key].view(torch.uint8)), (
             f"{name}: `{key}` holds a byte the kernel did not write")
     assert not arrivals.any(), f"{name}: an arrival counter was left standing"
@@ -196,3 +198,28 @@ def test_the_bundle_matches_the_fp64_composition(name, B, T, bias, gain):
     for key, expected in (("read_mass", read_mass), ("g_write", routes.g_write)):
         error = float(((out[key].double() - expected.double()).abs() / expected.double().abs()).max())
         assert error <= _MASS_RTOL, f"{name}: {key} off by {error:.3g} relative"
+
+
+@pytest.mark.parametrize(("name", "B", "T", "digits"), [("union", 2, 5, 2), ("wide", 1, 33, 1), ("split", 1, 40, 2)])
+def test_the_value_digits_match_the_fp64_composition(name, B, T, digits):
+    """Per slot, one digit plus the projection's fp32 error at the digit count's full scale: ``(hidden + 1) 2^-23`` of
+    the envelope sum |x| |W| over the token's scale."""
+    hidden, H, d_v = 64, 3, 64
+    plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=hidden, H=H, d_v=d_v,
+                                                             digits=digits)
+    out, _, _ = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0x55)
+    reference = ProducerWeights(route_W=route_W.double(), gain_bias=gain_bias.double(), v_W=v_W.double(),
+                                route_bias=None if route_bias is None else route_bias.double())
+    _, values = produce(x.double(), plan, reference)
+
+    def whole(v_hat, v_lo):
+        return v_hat.int() * 256 + v_lo.int() if v_lo is not None else v_hat.int()
+
+    full = 32767.0 if digits == 2 else 127.0
+    envelope = (x.double().abs() @ v_W.double().abs().t()).reshape(B, T, H, d_v)
+    error = (hidden + 1) * 2.0 ** -23 * envelope
+    scale = values.scale.double()[..., None]
+    excess = (whole(out["v_hat"], out["v_lo"]) - whole(values.v_hat, values.v_lo)).abs() - (1 + full * error / scale)
+    assert excess.max() <= 0, f"{name}: a value digit off by {float(excess.max()):.3g} past its bound"
+    scale_excess = (out["v_scale"].double() - values.scale.double()).abs() - error.amax(-1)
+    assert scale_excess.max() <= 0, f"{name}: a value scale off by {float(scale_excess.max()):.3g} past its bound"

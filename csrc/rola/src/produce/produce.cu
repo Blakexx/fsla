@@ -498,22 +498,36 @@ __device__ void finish_head(const ProduceParams& p, const Job& job, int tile, in
   if (threadIdx.x == 0) p.arrivals[tile * p.H + job.head] = 0;
 }
 
-//: THE VALUE DIGITS of the job's heads for the tile's tokens. STUB: zeros. -- see docs/internals/produce/produce.md#value-rows
+//: THE VALUE DIGITS of the job's heads for the tile's tokens: a warp a (token, head), its lanes over the channels --
+//: the channel max |v| as the scale, and each channel's digits against it at the digit count's full scale, s8 alone
+//: or the s16's s8 high byte and u8 low byte. -- see docs/internals/produce/produce.md#value-rows
 __device__ void value_rows(const ProduceParams& p, const Job& job, int token0,
-                           const float* /*logits*/) {
-  const int channels = job.heads * p.d_v;
+                           const float* logits) {
+  const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
+  const int pairs = min(kTokenTile, p.BT - token0) * job.heads;
+  const float full = p.v_lo != nullptr ? 32767.0f : 127.0f;
 #pragma unroll 1
-  for (int i = threadIdx.x; i < kTokenTile * channels; i += kProduceThreads) {
-    const int token = token0 + i / channels;
-    if (token >= p.BT) continue;
-    const int64_t at = static_cast<int64_t>(token) * p.H * p.d_v + job.head * p.d_v + i % channels;
-    p.v_hat[at] = 0;
-    if (p.v_lo != nullptr) p.v_lo[at] = 0;
-  }
-  if (threadIdx.x < kTokenTile * job.heads) {
-    const int token = token0 + threadIdx.x / job.heads;
-    if (token < p.BT)
-      p.v_scale[static_cast<int64_t>(token) * p.H + job.head + threadIdx.x % job.heads] = 0.0f;
+  for (int pass = 0; pass < (pairs + kProduceWarps - 1) / kProduceWarps; ++pass) {
+    const int pair = pass * kProduceWarps + warp;
+    const bool here = pair < pairs;
+    const int t = here ? pair / job.heads : 0;
+    const int h = here ? pair - t * job.heads : 0;
+    const float* row = logits + t * kLogitStride + h * p.d_v;
+    float m = 0.0f;
+#pragma unroll 1
+    for (int c = lane; c < p.d_v; c += 32) m = fmaxf(m, fabsf(row[c]));
+    m = warp_all(m, [](float a, float b) { return fmaxf(a, b); });
+    const float unit = fmaxf(m, 1e-30f);
+    const int64_t at = (static_cast<int64_t>(token0 + t) * p.H + job.head + h) * p.d_v;
+#pragma unroll 1
+    for (int c = lane; c < p.d_v; c += 32) {
+      const int q = __float2int_rn(__fdividef(row[c], unit) * full);
+      if (here) {
+        p.v_hat[at + c] = static_cast<int8_t>(p.v_lo != nullptr ? q >> 8 : q);
+        if (p.v_lo != nullptr) p.v_lo[at + c] = static_cast<uint8_t>(q & 0xFF);
+      }
+    }
+    if (here && lane == 0) p.v_scale[(static_cast<int64_t>(token0 + t) * p.H + job.head + h)] = m;
   }
 }
 

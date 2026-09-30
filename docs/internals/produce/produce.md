@@ -8,7 +8,7 @@ is a runtime field and the family is ONE instantiation.
 
 The components land one at a time into the skeleton, each gated (KERNEL_STANDARDS §19); a component not yet landed
 has its real signature, tenant and edges and does the cheapest thing that keeps the composition's shape (zero digits
-and scales, unit gains). LANDED: the projection, the solve, the bundle. `tests/integration/test_produce_kernel.py` holds the skeleton's
+and scales, unit gains). LANDED: every component -- the projection, the solve, the bundle, the values. `tests/integration/test_produce_kernel.py` holds the skeleton's
 claim (every element of every output is written, whatever the routing, and the arrival counters are back at zero
 after the call) and each landed component's gate.
 
@@ -132,5 +132,9 @@ the token's row, a warp's lanes over the hidden axis in 16-byte chunks, plus the
 
 ## <a id="value-rows"></a>The value digits
 
-Per token and head: the channel max as the scale, and each channel's digits against it -- s8 alone, or the s16's s8
-high byte and u8 low byte. SKELETON: zeros.
+A warp a (token, head), its lanes over the channels: the channel max |v| (clamped at `1e-30`) as the scale, and each
+channel's digits against it at the digit count's full scale (127, or 32767 split into the s16's s8 high byte and u8
+low byte), round to nearest even -- `rola.routing.quant.quantize_values`, on the fp32 projection rather than the bf16
+the composition's linear rounds it to. Gate: every digit within one plus the projection's fp32 error at full scale,
+every scale within that error, against the fp64 composition (measured: at most one digit, on 0.1-0.2 % of the
+channels; scales within 2.4e-7 relative).
