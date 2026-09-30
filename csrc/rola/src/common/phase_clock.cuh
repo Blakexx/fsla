@@ -10,18 +10,18 @@
 
 namespace rola {
 
-template <int Phases>
+//: `Gated`: an unbound clock's laps issue nothing. -- see docs/internals/common/phase_clock.md#on
+template <int Phases, bool Gated = false>
 struct PhaseClock {
   //: A warp's shared row: its `Phases` accumulators, then the last lap's mark, so the clock holds no register across a phase.
   static constexpr int kRow = Phases + 1;
   long long* acc;
   long long* trace;
   int n, cap;
-  bool lead;
+  bool on, lead;
 
-  //: `on` false: nothing will read the row, and the laps cost nothing but their test
-  __device__ __forceinline__ PhaseClock(long long* row, int lane, bool on = true)
-      : acc(row), trace(nullptr), n(0), cap(0), lead(on && lane == 0) {
+  __device__ __forceinline__ PhaseClock(long long* row, int lane, bool on_ = true)
+      : acc(row), trace(nullptr), n(0), cap(0), on(on_), lead(on_ && lane == 0) {
     constexpr int kCount = Phases;
     if (lead) {
 #pragma unroll
@@ -51,6 +51,14 @@ struct PhaseClock {
   //: The mark's load is the instruction a deferred barrier issues before it blocks, so a lap right after
   //: `__syncthreads` books the release, not the arrival -- see docs/internals/common/phase_clock.md#deferred-barrier
   __device__ __forceinline__ void lap(int ph) {
+    if constexpr (Gated) {
+      for (int k = denseref::ops::once(on); k > 0; --k) lap_lead(ph);
+    } else {
+      lap_lead(ph);
+    }
+  }
+
+  __device__ __forceinline__ void lap_lead(int ph) {
     if (lead) {
       const long long mark = acc[Phases];
       const long long now = denseref::ops::cycles_after(mark);

@@ -22,7 +22,11 @@ for it. Measured on the decode step (sm_86): the digit masks 0.5K -> 5.8K, the o
 The carry aliases it at its phase count (`carry_kernel.md#phase-ledger`). The struct is
 inlined wherever it is used.
 
-**`on`**, the constructor's third argument (default true), says whether anything will read the
-row. Off, lane 0 is not the lead, so every lap and stamp is a test and nothing more. The intra
-passes "a ledger is bound": its ten-odd laps a tile, each a clock read and three shared
-accesses, cost about 1% of an unmeasured launch (`intra/intra_kernel.md`).
+<a id="on"></a>**`on`**, the constructor's third argument (default true), says whether anything will read the
+row. Off, lane 0 is not the lead. The compiler if-converts a lap into lane 0's predicated
+block, so an off lap still issues its seven instructions predicated off; **`Gated`**, the
+template's second argument (default false), makes the lap a real branch on the warp-uniform
+`on` (`ops::once`), so an off clock issues nothing. The intra takes `Gated` and passes "a ledger
+is bound": its ten-odd laps a tile cost ~3% of an unmeasured launch before (ncu: `L = 64K` at
+four heads 1.17 → 1.14 ms over the two steps). The carry and decode keep the default: the
+branch's reconvergence changed the carry's register allocation and it spilled 512 bytes.

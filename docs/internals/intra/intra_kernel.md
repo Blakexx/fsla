@@ -217,6 +217,12 @@ it in the output accumulator. The four channel groups are a real branch apart
 (`rola::uniform_switch`): unrolled together, the compiler hoisted every group's value loads
 over the others and spilled.
 
+Pairing a tile's four channel groups with the next tile's first-stage k-steps, so one's ALU work
+and the other's IMMAs share issue, was built and measured against the phases' lockstep: fully
+unrolled it spilled at 255 registers; with each (k-step, group) pair a real branch apart it held
+233 and ran slower (ncu, base clock: `flagship-dense` 71.3 → 77.3 µs, `L = 64K` at four heads
+1.16 → 1.18 ms). The groups stay after the epilogue, one channel group at a time.
+
 A weight moves by at most half its unit, so a slot's error is bounded by `m / (2 LW) · Σ |q| /
 LV` a tile, the reference's `bound`; the kernel's weights are within one unit of the exact
 ones, and the gate allows three bounds plus fp32 accumulation against the slot's envelope.

@@ -504,7 +504,7 @@
   {"doc": "docs/internals/common/ops.md", "pinned_at": "d3d24b1ea3ba", "reviewed": true, "sha256": "", "target": "tools/sass_gate.py"},
   {"doc": "docs/internals/common/phase_clock.md", "pinned_at": "2e5d01ac4234", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/phase_clock.cuh"},
   {"doc": "docs/internals/common/phase_clock.md", "pinned_at": "2e5d01ac4234", "reviewed": true, "sha256": "87f97a6362dd8c91", "target": "csrc/rola/src/common/phase_clock.cuh::bind_trace"},
-  {"doc": "docs/internals/common/phase_clock.md", "pinned_at": "6766d6405213", "reviewed": true, "sha256": "02cef9eafd166778", "target": "csrc/rola/src/common/phase_clock.cuh::lap"},
+  {"doc": "docs/internals/common/phase_clock.md", "pinned_at": "bf8bf45959ba", "reviewed": true, "sha256": "dc4e5313fcf9b589", "target": "csrc/rola/src/common/phase_clock.cuh::lap"},
   {"doc": "docs/internals/common/phase_clock.md", "pinned_at": "2e5d01ac4234", "reviewed": true, "sha256": "8ab7bb146c90690a", "target": "csrc/rola/src/common/phase_clock.cuh::publish"},
   {"doc": "docs/internals/common/phase_clock.md", "pinned_at": "2e5d01ac4234", "reviewed": true, "sha256": "d4973ad01ffe9c72", "target": "csrc/rola/src/common/phase_clock.cuh::stamp"},
   {"doc": "docs/internals/common/sm_clock.md", "pinned_at": "8b3c6e3ede2f", "reviewed": true, "sha256": "", "target": "csrc/rola/src/common/sm_clock.cu"},

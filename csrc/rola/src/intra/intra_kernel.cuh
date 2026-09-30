@@ -19,7 +19,7 @@
 namespace rola::intra::detail {
 
 namespace ops = denseref::ops;
-using Clock = PhaseClock<kIntraPhases>;
+using Clock = PhaseClock<kIntraPhases, true>;
 
 //: AN ARM: `D` levels of `B` u8 digits a side. -- see docs/internals/intra/intra_kernel.md#arms
 template <int D, int B>
