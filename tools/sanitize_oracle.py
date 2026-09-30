@@ -98,10 +98,10 @@ _FAMILIES = {
         test="tests/oracle/test_intra_kernel.py::"
              "test_deep_intra_matches_the_fp64_reference[d3-alt-k4]",
         kernel="rola::intra::intra_forward", present=True),
-    #: THE DECODE STEP, whose combine carries the declared rendezvous below.
+    #: THE DECODE STEP on the whole resident grid: the work queue's visits, claims and head switches.
     "decode": Family(
         test="tests/oracle/test_decode_vs_oracle.py::"
-             "test_g1_is_byte_reproducible_against_itself[widths0-64]",
+             "test_g1_the_state_is_byte_reproducible_against_itself[widths0-64]",
         kernel="rola::decode::rola_decode_forward", present=True),
     #: THE PRODUCER'S SOLVES: their own block-wide reductions, on the routing path.
     "entmax": Family(

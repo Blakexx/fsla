@@ -1,0 +1,35 @@
+# `tools/lint/coverage.py` + `tools/coverage.json` — every kernel, every obligation
+
+THE QUESTION A GATE CANNOT ASK OF ITSELF: which kernels does it cover? Each gate is written against the kernels its
+author had in mind, and the inventory that preceded this lint found most of the kernel gates had narrowed to one family
+without anyone deciding so (`sass_gate.py` read one cubin; `ratify.py`'s unit list had lost three kernels). This lint
+asks the question across all of them, and the ratchet makes the answer hold.
+
+## <a id="declaration"></a>The declaration
+
+`tools/coverage.json` names every kernel the source defines ([`kernels.md`](kernels.md)) and, per OBLIGATION, how it is
+met:
+
+| obligation | met by |
+|---|---|
+| `oracle` | a test grading the kernel against a reference per slot -- an fp64 oracle, or a bit-exact model of a discrete function (the liveness pass) |
+| `sanitizer` | a row of `tools/sanitize_oracle.py`'s family table, present, whose test launches the kernel |
+| `budget` | a budget line under `tools/budgets/` (KERNEL_STANDARDS §19) |
+| `phases` | a phase ledger the kernel books, and the test or tool that reads it (§22) |
+
+A value is a POINTER (a file, or `file::test`, whose `def` must exist; a sanitizer row name), `{"exempt": reason}` --
+a stamp kernel has no budget -- or `{"owed": reason}`. RATIFIED is not declared: it is read off the manifests, so a
+kernel no `tools/manifests/*/sm_*.json` records is a finding for each arch.
+
+## <a id="findings"></a>The findings, and the ratchet
+
+One finding per gap: a kernel the declaration does not name (at the kernel's own `file:line`), a declared kernel the
+source no longer defines, an obligation left blank, a pointer that resolves to nothing -- a deleted test, a renamed
+test in a sanitizer row, a budget file that is gone -- and each owed entry. `tools/lint/ratchet.py coverage` holds
+today's findings as the backlog, so a new kernel fails the commit until it is declared, a pointer that breaks fails
+it, and paying an owed entry shrinks the baseline in the commit that pays it.
+
+The first run found one pointer that had already broken: the sanitizer's decode row named a test the work queue's
+commit had renamed, so the lane would have failed to launch its cell.
+
+The lint reads the sanitizer table by AST and imports nothing of rola's, so it runs where the other commit hooks run.
