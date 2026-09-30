@@ -188,6 +188,8 @@ class RouteProducer(nn.Module):
         columns = self.routing.packed_router_width + self.side_gain.columns
         self.route_W = nn.Parameter(torch.empty(num_heads, hidden_size, columns))
         _init_packed_router(self.route_W)
+        #: the projection's copy of `route_W` for a step no gradient flows through (`_projection_weight`).
+        self._weight_cache: tuple[tuple, torch.Tensor] | None = None
         if self.bias:
             self.route_bias = nn.Parameter(torch.zeros(num_heads, columns))
         else:
@@ -289,9 +291,27 @@ class RouteProducer(nn.Module):
         #: implementation choice rather than a change to what a reference accepts.
         cuda_solve = projection_dtype is torch.bfloat16
         return _packed_router_logits(
-            x, self.route_W, self.routing, route_bias=self.route_bias, h_w=x_w,
+            x, self._projection_weight(projection_dtype), self.routing, route_bias=self.route_bias, h_w=x_w,
             projection_dtype=projection_dtype, token_major=cuda_solve,
             gain_columns=self.side_gain.columns)
+
+    def _projection_weight(self, dtype: torch.dtype) -> torch.Tensor:
+        """``route_W`` as the projection reads it: in ``dtype``, stored ``[hidden, H, cols]`` and viewed as ``[H, hidden,
+        cols]``, so the einsum contracts it without re-laying it out.
+
+        A step no gradient flows through reads a copy made once and reused while the parameter is unchanged (its
+        version counter, storage and dtype key it); casting and re-laying out the whole weight each step cost more
+        GPU time than the decode kernel. A step that trains casts inside the graph, as the parameter changes every
+        step anyway (docs/api.md section 2.3, projection-weight).
+        """
+        W = self.route_W
+        if torch.is_grad_enabled() and W.requires_grad:
+            return W
+        key = (W._version, W.data_ptr(), W.device, dtype)
+        if self._weight_cache is None or self._weight_cache[0] != key:
+            laid = W.detach().to(dtype).permute(1, 0, 2).contiguous().permute(1, 0, 2)
+            self._weight_cache = (key, laid)
+        return self._weight_cache[1]
 
     def _solve(self, x: torch.Tensor, x_w: torch.Tensor | None):
         read_logits, write_logits, gain_logits = self._project(x, x_w)

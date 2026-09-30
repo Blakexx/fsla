@@ -342,6 +342,16 @@ operator, an alpha, a width class and an operand set share a single launch; leve
 do not are genuinely different `(operator, source, destination)` triples and issue
 separately.
 
+<a id="projection-weight"></a>**The projection reads a laid-out copy of `route_W` when no gradient flows.** The GEMM's
+operands are bf16 and it contracts over the hidden axis, so an inference step would otherwise
+cast the whole fp32 parameter and re-lay it out hidden-major on every call -- measured at
+~55 us of GPU a decode step at `H = 16`, `(256, 256)`, more than the decode kernel. The copy
+is made once and reused while the parameter's version counter, storage, device and the
+projection dtype are unchanged; an in-place update (an optimizer step, `load_state_dict`)
+moves the version and so the copy. A step that trains casts inside the graph, since its
+gradient must reach the parameter and the parameter changes every step anyway. (Writing
+through `route_W.data` bypasses the version counter, as it does for every autograd cache.)
+
 Activation *properties* are never supplied by a caller — they come from the closed
 registry in `rola/routing/activations.py`, keyed on the tag. Metadata a caller could
 supply is metadata a caller could supply wrong, and a validator reading it would be
