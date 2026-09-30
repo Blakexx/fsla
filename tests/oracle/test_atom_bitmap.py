@@ -176,15 +176,15 @@ def test_stats_through_the_host_seam():
     """
     import sys
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
-    from conftest import build_routes
+    from conftest import build_layer
 
     from rola.routing.producer import union_routing
 
     torch.manual_seed(0)
-    producer = build_routes(hidden_size=64, num_heads=_H, widths=(16, 16),
-                           routing=union_routing(1)).cuda()
+    layer = build_layer(hidden_size=64, num_heads=_H, widths=(16, 16), routing=union_routing(1)).cuda().eval()
     x = torch.randn(_B, _T, 64, device="cuda")
-    routes = producer(x)
+    with torch.no_grad():
+        routes, _values = layer._produce(x)
     _, write = routes.dequantized()
     bits = planes.atom_bits(planes.pack_side(write), routes.topology.widths)
     assert bits.dtype == torch.uint8 and bits.device.type == "cuda"

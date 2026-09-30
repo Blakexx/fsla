@@ -11,19 +11,18 @@ A user who knows linear attention should find one unfamiliar thing on this page.
 ```python
 import rola
 
-routes   = rola.RouteProducer(rola.uniform(2, rola.union_routing(64, alpha=1.5)),
-                              hidden_size=1024, num_heads=8)
-decay    = rola.LearnedDecay(2 ** -8, widths=routes.widths, num_heads=8)
+routing = rola.Routing(rola.uniform(2, rola.union_routing(64, alpha=1.5)))
+decay   = rola.LearnedDecay(2 ** -8, widths=routing.widths, num_heads=8)
 
-layer = rola.RoLA(routes, d_v=64, decay=decay, layer_idx=0).cuda().eval()
+layer = rola.RoLA(routing, hidden_size=1024, num_heads=8, d_v=64, decay=decay, layer_idx=0).cuda().eval()
 y, _ = layer(hidden_states)                     # stateless: (y, None)
 ```
 
-or, without the layer:
+or, without the layer, from levels you computed yourself -- the format's own utilities build the bundles:
 
 ```python
-factors = routes(hidden_states)          # the (q, k) pair, after the feature map
-y, _ = rola.rola_op(factors, v, decay())
+factors = rola.RouteFactors.from_levels(topology, read_levels, write_levels, g_write)
+y, _ = rola.rola_op(factors, rola.Values.from_projection(v), decay())
 ```
 
 ---
@@ -61,7 +60,7 @@ are not model facts — they are how the op RUNS, and the op decides how it runs
 call, from the routing it was actually given. They live behind
 [`rola.expert`](#5-the-expert-surface).
 
-**Any level width, any `d_v`.** A `RouteProducer` level's width and a layer's `d_v` are
+**Any level width, any `d_v`.** A `Routing` level's width and a layer's `d_v` are
 never required to be a power of two or a shipped value — host-side padding at the op's
 own call surface serves the rest, with no kernel change
 ([`docs/internals/padding.md`](internals/padding.md)). `rola.rola_op`'s CUDA arm is
@@ -290,17 +289,20 @@ an inverse copy pair. It was priced at 2.82 % of the whole step at `L = 4096`
 the production call it rides: 3.085 ms vs 2.732 ms at `L = 4096` and 0.942 ms vs
 0.835 ms at `L = 1024` — 12.9 % and 12.7 % of production-plus-fold, at both lengths.
 
-### 2.3 The shipped producer
+### 2.3 The declared routing, and the producer
 
 ```python
-RouteProducer(levels, *, hidden_size, num_heads,
-              bias=False, gain=True, gain_bias_init=None, gain_config=None)
+Routing(levels, *, gain=True, gain_bias_init=None, gain_config=None, bias=False)
+RoLA(routing, *, hidden_size, num_heads, d_v=64, decay=None, layer_idx=None, ...)
 ```
 
-A learned packed per-head router projection, solved with the exact production
-entmax/softmax closed form, folded, gained, and returned as one bundle. Construction
-validates the whole assembly — widths in range, a buildable topology, a gain layout —
-so an unbuildable model fails on the line that built it.
+RULED 2026-09-29: the producer is a DECLARED CONFIGURATION. A `Routing` is data -- the levels, the write gain and
+the projection bias -- and the layer compiles it once into its producer plan and owns every weight it implies: the
+packed per-head routing projection `route_W`, its bias, the write gain's bias, `v_proj` and `o_proj`. One producer
+call (`rola.ops.produce.produce`) turns a stretch of tokens into the bundle -- the projection, the exact
+entmax/softmax solves, the fold, the gain, the unit-max rows and the value digits -- which is what lets one fused
+kernel stand behind it. Construction validates the whole declaration -- widths in range, a buildable topology, a
+gain layout -- so an unbuildable model fails on the line that built it.
 
 **`levels` is the configuration, and it is a LIST.** One entry per routing level,
 outermost first, each carrying that level's WHOLE spec:
@@ -331,7 +333,7 @@ tied_routing(width, activation=entmax(1.5))  # one activation, one solve, shared
 uniform(depth, level)                     # `depth` levels spelled the same way
 ```
 
-`uniform` is a list builder, not a broadcast: a producer takes a list and nothing else,
+`uniform` is a list builder, not a broadcast: a routing takes a list and nothing else,
 because a broadcast is a rule the reader has to know before they can read the widths off
 the call.
 
@@ -363,14 +365,15 @@ number lives.
 
 ### 2.4 Production lives in the framework
 
-RULED 2026-09-26: there is no duck-typed producer. A new kind of production is a producer class
-in this framework, and what it returns is the internal format, built through the format's own
-epilogue (`RouteFactors.from_levels`). Nothing else can construct a bundle the op admits: the
-format's fields are required, checked structurally, and a bundle assembled from bare floating
-levels is refused by name. Correctness is still producer-blind -- every support bit is derived
-from the rows (a zero digit is dead) and nothing about a producer's identity reaches a kernel --
-but the FORMAT is ours, because it is what every kernel reads and what the oracle gates against,
-and a scaling contract spread over foreign code would be a second declaration of the arithmetic.
+RULED 2026-09-26, and 2026-09-29: there is no duck-typed producer, and the layer takes no callable feature map. A
+new kind of production is added to the framework -- its activation to the closed registry, its solve to the
+producer, its reference and its oracle -- and what it returns is the internal format. A caller of the ops with its
+own levels builds the bundles through the format's own utilities (`RouteFactors.from_levels`,
+`Values.from_projection`), which are the same epilogue the producer applies; nothing else constructs a bundle the op
+admits: the format's fields are required, checked structurally, and a bundle assembled from bare floating levels is
+refused by name. Correctness is still producer-blind -- every support bit is derived from the rows (a zero digit is
+dead) and nothing about a producer's identity reaches a kernel -- but the FORMAT is ours, because it is what every
+kernel reads and what the oracle gates against.
 
 A level filled by a production that names none of our activations is *opaque*: it declares
 `OpaqueRouting(width)` and reads the `("opaque", None)` registry row. What that costs it is the

@@ -29,17 +29,20 @@ _STATEFUL_PREFILL = pytest.mark.xfail(strict=True, raises=Exception,
                                       reason="the carry refuses the int8 state format until its port")
 
 
-def _producer(hidden: int = 64, heads: int = 2) -> rola.RouteProducer:
+def _routing() -> rola.Routing:
+    return rola.Routing([rola.split_routing(WIDTHS[0], sparse_duty="write"),
+                         rola.split_routing(WIDTHS[1], sparse_duty="read")])
+
+
+def _layer(hidden: int = 64, heads: int = 2, **kwargs) -> rola.RoLA:
     torch.manual_seed(0)
-    return rola.RouteProducer([rola.split_routing(WIDTHS[0], sparse_duty="write"),
-                               rola.split_routing(WIDTHS[1], sparse_duty="read")],
-                              hidden_size=hidden, num_heads=heads)
+    return rola.RoLA(_routing(), hidden_size=hidden, num_heads=heads, d_v=64, **kwargs)
 
 
 def _bundles(tokens: int, heads: int = 2):
-    producer = _producer(heads=heads).cuda()
+    layer = _layer(heads=heads).cuda().eval()
     with torch.no_grad():
-        routes = producer(torch.randn(1, tokens, 64, device="cuda"))
+        routes, _values = layer._produce(torch.randn(1, tokens, 64, device="cuda"))
         values = rola.Values.from_projection(torch.randn(1, tokens, heads, 64, device="cuda"))
     return routes, values
 
@@ -90,7 +93,7 @@ def test_segments_carried_through_a_state_are_the_whole_call(paging):
 
 @_STATEFUL_PREFILL
 def test_a_budgeted_layer_segments_and_matches_the_whole_call():
-    layer = rola.RoLA(_producer(), d_v=64).cuda().eval()
+    layer = _layer().cuda().eval()
     x = torch.randn(1, 4 * WINDOW, 64, device="cuda")
     with torch.no_grad():
         whole, whole_cont = layer(x)
@@ -106,7 +109,7 @@ def test_a_budgeted_layer_segments_and_matches_the_whole_call():
 
 @_STATEFUL_PREFILL
 def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
-    layer = rola.RoLA(_producer(), d_v=64).cuda().eval()
+    layer = _layer().cuda().eval()
     x = torch.randn(1, 4 * WINDOW, 64, device="cuda")
     with torch.no_grad():
         _, whole = layer(x, continuation=rola.LayerContinuation(state=rola.state()))
@@ -117,7 +120,7 @@ def test_a_stateful_segmented_call_leaves_the_whole_calls_state():
 
 
 def test_the_budget_derives_the_segment_and_refuses_below_one_window():
-    layer = rola.RoLA(_producer(), d_v=64)
+    layer = _layer()
     assert layer.segment_tokens(2, 3 * WINDOW) == 3 * WINDOW, "no budget: one segment"
     per_window = WINDOW * 2 * layer.segment_bytes_per_token()
     layer.memory_budget = layer.state_bytes(2) + 2 * per_window + per_window // 2
@@ -127,17 +130,14 @@ def test_the_budget_derives_the_segment_and_refuses_below_one_window():
     with pytest.raises(ValueError, match="cannot hold one"):
         layer.segment_tokens(2, 8 * WINDOW)
     with pytest.raises(ValueError, match="memory_budget"):
-        rola.RoLA(_producer(), memory_budget=0)
+        _layer(memory_budget=0)
 
 
 @pytest.mark.parametrize("heads,hidden", [(2, 64), (4, 256)])
 def test_the_working_set_bound_holds_against_the_measured_peak(heads, hidden):
     """`segment_bytes_per_token` is an UPPER BOUND on the layer's working set: the measured peak's slope over the
     sequence length must sit under it, and within 1.5x of it (a bound that loose would starve the budget)."""
-    producer = rola.RouteProducer([rola.split_routing(WIDTHS[0], sparse_duty="write"),
-                                   rola.split_routing(WIDTHS[1], sparse_duty="read")],
-                                  hidden_size=hidden, num_heads=heads)
-    layer = rola.RoLA(producer, d_v=64).cuda().eval()
+    layer = _layer(hidden=hidden, heads=heads).cuda().eval()
     peaks = {}
     for tokens in (WINDOW, 8 * WINDOW):
         x = torch.randn(1, tokens, hidden, device="cuda")

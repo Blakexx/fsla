@@ -167,8 +167,8 @@ def validate_context(ctx: PrefillContext) -> None:
         raise TypeError(
             "rola_op's first argument must be a RouteFactors bundle, got "
             f"{type(routes).__name__}. The routing sides are the feature-mapped (q, k) pair; "
-            "build one with RouteProducer, or construct a RouteFactors directly -- its "
-            "invariants are checked either way.")
+            "a layer builds one with its producer, and RouteFactors.from_levels builds one from any levels -- "
+            "its invariants are checked either way.")
     if type(values) is not Values:
         raise TypeError(
             "rola_op's second argument must be a Values bundle, got "

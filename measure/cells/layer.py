@@ -61,25 +61,25 @@ def build(cell, construction: Construction) -> dict:
     import torch
     from rola_devtools.cells.layer import realize
 
-    from rola import RoLA, RouteProducer, dense_routing, union_routing
+    from rola import RoLA, Routing, dense_routing, union_routing
 
     if cell.name not in construction.cells:
         raise ValueError(f"{construction.name} is declared for {list(construction.cells)}, not {cell.name}")
     torch.manual_seed(cell.seed)
     template = union_routing(1, construction.alpha) if construction.alpha is not None else dense_routing(1)
-    producer = RouteProducer([template.at(w) for w in construction.widths], hidden_size=cell.hidden_size,
-                             num_heads=cell.H)
-    layer = RoLA(producer, d_v=cell.dv, decay=None, layer_idx=0).to("cuda", cell.torch_dtype).eval()
+    routing = Routing([template.at(w) for w in construction.widths])
+    layer = RoLA(routing, hidden_size=cell.hidden_size, num_heads=cell.H, d_v=cell.dv, decay=None,
+                 layer_idx=0).to("cuda", cell.torch_dtype).eval()
     if construction.logit_gain != 1.0:
         with torch.no_grad():
-            producer.route_W.mul_(construction.logit_gain)
+            layer.route_W.mul_(construction.logit_gain)
     for param in layer.parameters():
         param.requires_grad_(False)
     drawn = realize(cell)
     x, v = drawn.x, drawn.v
     with torch.no_grad():
-        routes = layer.routes(x[:, :cell.tokens])
-    return {"cell": cell, "construction": construction, "layer": layer, "producer": layer.routes, "x": x, "v": v,
+        routes, _values = layer._produce(x[:, :cell.tokens])
+    return {"cell": cell, "construction": construction, "layer": layer, "x": x, "v": v,
             "routes": routes, "v_prefill": v[:, :cell.tokens].contiguous(),
             "v_kernel": v[:, :cell.tokens].to(torch.bfloat16).contiguous()}
 

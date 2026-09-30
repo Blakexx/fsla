@@ -19,7 +19,7 @@ import pathlib
 
 import pytest
 import torch
-from conftest import build_routes
+from conftest import build_layer
 
 import rola
 from rola.expert import envelope_refusal, require_envelope
@@ -70,18 +70,15 @@ def _tiny_routing(requires_grad: bool, device: str = "cpu"):
 
     Old: five loose tensors (one routing level, its gains) plus a `_StubPlan`
     carrying only `topology`/`normalization`. New: `rola_op` takes a
-    `RouteFactors`, obtainable only from `RouteProducer`, so the fixture builds
-    one -- `requires_grad` on the source stream `x` reaches every tensor the
-    producer derives (read/write levels, gains), exactly as `requires_grad` on the
-    five loose tensors used to.
+    `RouteFactors`, which the fixture takes from a layer's producer -- `requires_grad`
+    on the source stream `x` reaches every tensor the producer derives (read/write
+    levels, gains), exactly as `requires_grad` on the five loose tensors used to.
     """
     torch.manual_seed(3)
     B, T, H, d_v, hidden, w = 1, 8, 1, 16, 8, 4
-    producer = build_routes(
-        hidden_size=hidden, num_heads=H, widths=(w,), routing=_dense_routing()
-    ).to(device)
+    layer = build_layer(hidden_size=hidden, num_heads=H, widths=(w,), d_v=d_v, routing=_dense_routing()).to(device)
     x = torch.randn(B, T, hidden, device=device, requires_grad=requires_grad)
-    routes = producer(x)
+    routes, _values = layer._produce(x)
     v = torch.randn(B, T, H, d_v, device=device, requires_grad=requires_grad)
     return v, routes
 
@@ -147,12 +144,13 @@ def test_the_envelope_admits_a_no_grad_cuda_bundle_on_a_built_arm():
     gradient off and the operands on the device, an in-matrix bundle must actually be
     ADMITTED. Asserting only the refusals would let the arm rot behind them."""
     torch.manual_seed(5)
-    producer = rola.RouteProducer([rola.split_routing(256, sparse_duty="write"),
-                                   rola.split_routing(256, sparse_duty="read")], hidden_size=32, num_heads=1).to("cuda")
+    layer = rola.RoLA(rola.Routing([rola.split_routing(256, sparse_duty="write"),
+                                    rola.split_routing(256, sparse_duty="read")]),
+                      hidden_size=32, num_heads=1, d_v=64).to("cuda").eval()
     x = torch.randn(1, 512, 32, device="cuda")
     v = torch.randn(1, 512, 1, 64, device="cuda")
     with torch.no_grad():
-        routes = producer(x)
+        routes, _values = layer._produce(x)
         assert envelope_refusal(routes, Values.from_projection(v)) is None
         require_envelope(routes, Values.from_projection(v))
 

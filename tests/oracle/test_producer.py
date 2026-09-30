@@ -73,7 +73,7 @@ def test_producer_output_satisfies_oracle_contract_and_differentiates(dtype):
     x, route_W, gain_W, gain_bias, v = _params(
         topology, B=B, L=L, H=H, dm=dm, dtype=dtype, gain_sides=1)
 
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology)
+    out = produce_routing(x, v, route_W, None, gain_W, gain_bias, topology)
     assert len(out.read_levels) == topology.D
     assert len(out.write_levels) == topology.D
     for level, width in enumerate(topology.widths):
@@ -106,7 +106,7 @@ def test_producer_output_satisfies_oracle_contract_with_a_tied_routing_level(dty
     x, route_W, gain_W, gain_bias, v = _params(
         topology, B=B, L=L, H=H, dm=dm, dtype=dtype, gain_sides=1)
 
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology)
+    out = produce_routing(x, v, route_W, None, gain_W, gain_bias, topology)
     assert len(out.read_levels) == len(out.write_levels) == topology.D
     tied_index = topology.D - 1
     torch.testing.assert_close(
@@ -135,7 +135,7 @@ def test_softmax_level_mass_is_identically_one():
     topology = Topology(levels=levels)
     B, L, H, dm = 1, 4, 1, 5
     x, route_W, gain_W, gain_bias, v = _params(topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology)
+    out = produce_routing(x, v, route_W, None, gain_W, gain_bias, topology)
     raw = raw_side_gain(x, route_W, gain_W, gain_bias, resolved_routing_from_topology(topology))
     torch.testing.assert_close(out.g_write, raw["g_write"], rtol=1e-10, atol=1e-10)
 
@@ -166,10 +166,10 @@ def test_union_mass_fold_is_an_exact_identity_at_fp64():
         topology, B=B, L=L, H=H, dm=dm, dtype=torch.float64, gain_sides=1)
     resolved = resolved_routing_from_topology(topology)
 
-    out = produce_routing(x, None, v, route_W, None, gain_W, gain_bias, topology)
+    out = produce_routing(x, v, route_W, None, gain_W, gain_bias, topology)
 
     read_logits, write_logits, _ = _packed_router_logits(
-        x, route_W, resolved, route_bias=None, h_w=None, projection_dtype=torch.float64)
+        x, route_W, resolved, route_bias=None, projection_dtype=torch.float64)
     reads_raw, writes_raw = routing_factor_levels(read_logits, write_logits, resolved)
     gains_raw = raw_side_gain(x, route_W, gain_W, gain_bias, resolved)
 

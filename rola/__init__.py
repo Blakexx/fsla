@@ -12,13 +12,13 @@ and everything else is linear attention's own contract.
 
 ``routes`` is the ``(q, k)`` pair after the map -- a ``RouteFactors`` bundle -- ``values``
 is the value stream in the internal format -- a ``Values`` bundle, ``Values.from_projection(v)``
--- and ``decay`` is the recurrence dial. The bundle comes from a producer,
-and a producer is ANY callable that returns one; the shipped one takes the routing
-LEVELS, each carrying its own width:
+-- and ``decay`` is the recurrence dial. The layer DECLARES its routing -- the levels, each carrying its own
+width -- and computes the bundles itself, in one producer call; a caller of the op with its own levels builds the
+bundles with the same format utilities, ``RouteFactors.from_levels`` and ``Values.from_projection``:
 
-    routes = RouteProducer(uniform(2, union_routing(64, alpha=1.5)),
-                           hidden_size=1024, num_heads=8)
-    layer = RoLA(routes, d_v=64, decay=LearnedDecay(widths=routes.widths, num_heads=8))
+    routing = Routing(uniform(2, union_routing(64, alpha=1.5)))
+    layer = RoLA(routing, hidden_size=1024, num_heads=8, d_v=64,
+                 decay=LearnedDecay(widths=routing.widths, num_heads=8))
 
 **No public name says `v3`.** This repository IS that generation; encoding it in the
 API would force a break at the next one for a reason that is not an API reason.
@@ -31,7 +31,7 @@ and not part of the contract.
 | Group | Names | Stability |
 |---|---|---|
 | op | `rola_op` | STABLE, semver-major to break |
-| feature map | `RouteFactors`, `RouteProducer`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
+| feature map | `RouteFactors`, `Routing`, `dense_routing`, `split_routing`, `tied_routing`, `union_routing`, `uniform` | STABLE |
 | value stream | `Values` | STABLE |
 | recurrence dials | `ConstantDecay`, `LearnedDecay`, `DecaySource`, `LeafMassDecay` | STABLE |
 | layer | `RoLA`, `LayerContinuation` | STABLE |
@@ -52,7 +52,7 @@ from rola.ops.naive import naive_rola
 from rola.routing.decay import ConstantDecay, DecaySource, LearnedDecay
 from rola.routing.factors import RouteFactors
 from rola.routing.producer import (
-    RouteProducer,
+    Routing,
     dense_routing,
     split_routing,
     tied_routing,
@@ -78,7 +78,7 @@ __all__ = [
     # the feature map: the bundle (the whole producer contract) and the shipped producer
     "RouteFactors",
     "Values",
-    "RouteProducer",
+    "Routing",
     "dense_routing",
     "split_routing",
     "tied_routing",

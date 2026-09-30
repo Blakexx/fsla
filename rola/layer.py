@@ -1,16 +1,14 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
-"""The RoLA layer: a value projection, the feature-map slot, and the op.
+"""The RoLA layer: the declared routing, its weights, the producer and the op.
 
-    RoLA(routes, d_v=..., decay=..., layer_idx=...)
+    RoLA(Routing([...]), hidden_size=..., num_heads=..., d_v=..., decay=..., layer_idx=...)
 
-``routes`` is the feature-map slot: any callable producing a
-:class:`~rola.routing.factors.RouteFactors` bundle that also declares the topology.
-:class:`~rola.routing.producer.RouteProducer` is the one this
-package ships.
-It also carries ``hidden_size`` and ``num_heads``, so the layer reads them off it.
-``d_v`` is the per-head value width, which is the LAYER's: it sizes ``v_proj`` and
-``o_proj``, and the routing carries no value geometry at all. ``decay`` is a decay
+The routing is DECLARED (:class:`~rola.routing.producer.Routing`): data the layer compiles once into a producer
+plan. The layer owns every weight the declaration implies -- the packed routing projection, its bias, the write
+gain's bias, ``v_proj`` and ``o_proj`` -- and one producer call (:func:`rola.ops.produce.produce`) turns a stretch
+of tokens into the bundle the op takes. ``d_v`` is the per-head value width, which is the LAYER's: it sizes
+``v_proj`` and ``o_proj``, and the routing carries no value geometry at all. ``decay`` is a decay
 SOURCE (:mod:`rola.routing.decay`), the slot that decides where the recurrence's
 forgetting rates come from. Everything else the layer used to take was either one of
 those facts spelled out flat, or a launch decision the op makes.
@@ -46,7 +44,6 @@ from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
-from einops import rearrange
 
 from rola._inference_copy import InferenceCopy, reads_copy
 from rola._state import state as rola_state
@@ -58,8 +55,10 @@ from rola.interface import (
     requires_backward,
     rola_op,
 )
+from rola.ops.produce import ProducerPlan, ProducerWeights, produce, projection_dtype
 from rola.routing.decay import validate_decay_source
-from rola.values import Values
+from rola.routing.producer import Routing, _hidden_major, _init_packed_router
+from rola.routing.side_gain import init_side_gain_bias
 
 if TYPE_CHECKING:
     from rola._state import RoLAState
@@ -107,16 +106,13 @@ class RoLA(nn.Module):
     """Routed linear attention.
 
     Args:
-        routes: the feature-map slot -- any callable returning a
-            :class:`~rola.routing.factors.RouteFactors`, typically a
-            :class:`~rola.routing.producer.RouteProducer`. It owns the topology (levels,
-            widths) and the side gains, because those are facts
-            about the map rather than about the layer
-            wrapping it, and it owns ``hidden_size``/``num_heads``, which the layer
-            reads off it rather than taking a second declaration of.
+        routing: the declared routing (:class:`~rola.routing.producer.Routing`): the
+            levels, the write gain and the projection bias. Data the layer compiles
+            into its producer; the weights it implies are the layer's.
+        hidden_size / num_heads: the source stream's width and the head count.
         d_v: per-head value width -- the width of the state each leaf holds. It sizes
-            ``v_proj`` and ``o_proj``, which is why it is the layer's; the default is
-            the width the chunk matrix is built at.
+            ``v_proj`` and ``o_proj``; the default is the width the chunk matrix is
+            built at.
         decay: a decay source (:mod:`rola.routing.decay`), or ``None`` for a
             non-decaying recurrence. Validated against the topology at construction.
         layer_idx: index into the recurrent cache.
@@ -127,8 +123,10 @@ class RoLA(nn.Module):
 
     def __init__(
         self,
-        routes,
+        routing: Routing,
         *,
+        hidden_size: int,
+        num_heads: int,
         d_v: int = 64,
         decay=None,
         layer_idx: int | None = None,
@@ -136,43 +134,46 @@ class RoLA(nn.Module):
         memory_budget: int | None = None,  #: reserved: the caller's declaration (docs/api.md section 4.2)
     ) -> None:
         super().__init__()
-        #: THE PRODUCER IS A DUCK, so this is a STRUCTURAL check and not an isinstance
-        #: one: the layer reads three facts off the slot and calls it, and anything that
-        #: answers those three and returns a well-formed bundle is a feature map. The
-        #: check exists so a missing attribute is named here rather than surfacing as an
-        #: AttributeError inside a forward.
-        missing = [name for name in ("hidden_size", "num_heads", "topology")
-                   if not hasattr(routes, name)]
-        if missing or not callable(routes):
+        if not isinstance(routing, Routing):
             raise TypeError(
-                "RoLA's `routes` argument is the feature-map slot: a callable producing a "
-                "RouteFactors bundle, which also declares hidden_size, num_heads and topology. "
-                f"{type(routes).__name__} is missing {missing or ['__call__']}. "
-                "rola.RouteProducer is the one this package ships.")
-        hidden_size = routes.hidden_size
-        num_heads = routes.num_heads
+                "RoLA's first argument is the declared routing, a rola.Routing -- got "
+                f"{type(routing).__name__}. The routing is data the layer compiles into its producer; a "
+                "callable feature map is not taken (docs/api.md section 2).")
         if type(d_v) is not int or d_v < 1:
             raise ValueError(f"d_v must be a positive exact int, got {d_v!r}")
         if memory_budget is not None and (type(memory_budget) is not int or memory_budget < 1):
             raise ValueError(f"memory_budget is a positive exact int of bytes, or None; got {memory_budget!r}")
+        #: the plan validates `hidden_size` and `num_heads`
+        self.plan = ProducerPlan(routing=routing, num_heads=num_heads, hidden_size=hidden_size, d_v=d_v)
         if decay is not None:
-            validate_decay_source(decay, routes.topology, num_heads)
+            validate_decay_source(decay, routing.topology, num_heads)
 
         overrides = PlanOverrides() if expert is None else PlanOverrides.of(expert)
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.d_v = d_v
-        self.routes = routes
+        self.routing = routing
         self.decay = decay
         self.layer_idx = layer_idx
         self.expert = overrides
         self.memory_budget = memory_budget
 
+        #: ONE ROUTING PARAMETER, and the write gain's columns are its trailing span: the gain is a function of the
+        #: same stream as the routing logits, so its column is one more column of the same GEMM.
+        self.route_W = nn.Parameter(torch.empty(num_heads, hidden_size, routing.columns))
+        _init_packed_router(self.route_W)
+        if routing.bias:
+            self.route_bias = nn.Parameter(torch.zeros(num_heads, routing.columns))
+        else:
+            self.register_parameter("route_bias", None)
+        gain_bias = 0.0 if routing.gain_bias_init is None else init_side_gain_bias(routing.gain_bias_init)
+        self.gain_bias = nn.Parameter(torch.full((num_heads, routing.gain_columns), gain_bias))
         self.value_dim = num_heads * d_v
         self.v_proj = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.o_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
-        #: the projections' bf16 copies for a step no gradient flows through (rola/_inference_copy.py).
+        #: the weights' copies for a step no gradient flows through (rola/_inference_copy.py).
+        self._route_copy = InferenceCopy(lay=_hidden_major)
         self._v_copy = InferenceCopy(lay=None)
         self._o_copy = InferenceCopy(lay=None)
 
@@ -187,8 +188,8 @@ class RoLA(nn.Module):
 
     @property
     def topology(self):
-        """The routing topology, which is the feature map's, not the layer's."""
-        return self.routes.topology
+        """The routing topology, the declaration's."""
+        return self.routing.topology
 
     @property
     def head_v_dim(self) -> int:
@@ -291,7 +292,7 @@ class RoLA(nn.Module):
         carrying = state is not None and state.carries
 
         if L == 1 and carrying:
-            routes, values = self._project(x)
+            routes, values = self._produce(x)
             #: decode's envelope is its own -- BC-blind, general in the topology -- so
             #: it is never asked the PREFILL matrix's questions.
             self.validate_decode_envelope(*operands_of(routes, values, decay))
@@ -305,12 +306,16 @@ class RoLA(nn.Module):
         projected = nn.functional.linear(out.to(torch.bfloat16), self._bf16(self.o_proj.weight, self._o_copy)).to(x.dtype)
         return projected, LayerContinuation(state=state)
 
-    def _project(self, x: torch.Tensor):
-        """One stretch of tokens projected into the format: ``(routes, values)``."""
-        #: `v` FLOWS bf16 into the format (docs/api.md §4.1).
-        v = nn.functional.linear(x.to(torch.bfloat16), self._bf16(self.v_proj.weight, self._v_copy))
-        v = rearrange(v, "b l (h d) -> b l h d", d=self.head_v_dim)
-        return self.routes(x), Values.from_projection(v)
+    def _produce(self, x: torch.Tensor):
+        """One stretch of tokens into the format: ``(routes, values)``, from one producer call."""
+        return produce(x, self.plan, self._weights(x))
+
+    def _weights(self, x: torch.Tensor) -> ProducerWeights:
+        """The layer's weights as the producer reads them: the reused copies when no gradient flows."""
+        dtype = projection_dtype(x)
+        route_W = self._route_copy(self.route_W, dtype) if reads_copy(self.route_W) else self.route_W.to(dtype)
+        return ProducerWeights(route_W=route_W, route_bias=self.route_bias, gain_bias=self.gain_bias,
+                               v_W=self._bf16(self.v_proj.weight, self._v_copy))
 
     @staticmethod
     def _bf16(W: torch.Tensor, copy: InferenceCopy) -> torch.Tensor:
@@ -326,7 +331,7 @@ class RoLA(nn.Module):
         carried = state if state is not None or T >= L else rola_state()
         outs = []
         for start in range(0, L, T):
-            routes, values = self._project(x[:, start:start + T])
+            routes, values = self._produce(x[:, start:start + T])
             y, carried = rola_op(routes, values, decay, state=carried, expert=self.expert)
             outs.append(y)
         return torch.cat(outs, dim=1) if len(outs) > 1 else outs[0], state if state is None else carried

@@ -12,8 +12,8 @@ structural rather than provenance-based.
 
 The bundle carries tensors and nothing else, which is why it is constructible rather
 than sealed. What its invariants are, and why unit-sum-ness is not among them:
-``docs/api.md`` section 2.1. :class:`~rola.routing.producer.RouteProducer` is the one
-this package ships; hand construction is equally legal and equally checked.
+``docs/api.md`` section 2.1. The layer's producer (:func:`rola.ops.produce.produce`) builds it from a declared
+:class:`~rola.routing.producer.Routing`; :meth:`RouteFactors.from_levels` builds it from any levels, equally checked.
 """
 
 from __future__ import annotations

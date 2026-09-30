@@ -49,9 +49,10 @@ import pytest
 import torch
 from conftest import fuse_gain_columns, produce_routing, resolved_routing_from_topology
 
-import rola.routing.producer as production_path
+import rola.ops.produce as production_path
+from rola.ops.produce import ProducerPlan, ProducerWeights, route_logits
 from rola.routing.entmax.production import production_routing_factor_levels
-from rola.routing.producer import RouteProducer
+from rola.routing.producer import Routing
 from rola.routing.reference import routing_factor_levels as oracle_factor_levels
 from rola.routing.types import (
     EntmaxActivation,
@@ -602,7 +603,7 @@ def _producer_params(topology: Topology, *, dtype, device, sides, B=2, L=48, H=2
 
 def _run_producer(params, topology):
     return produce_routing(
-        params["x"], None, params["v"], params["route_W"], None, params["gain_W"],
+        params["x"], params["v"], params["route_W"], None, params["gain_W"],
         params["gain_bias"], topology)
 
 
@@ -658,19 +659,15 @@ def test_the_solve_seam_is_exact_on_the_production_logits(alpha):
     resolved = resolved_routing_from_topology(topology)
     params = _producer_params(topology, dtype=torch.float32, device="cuda", sides=1)
 
-    H, hidden_size, _ = params["route_W"].shape
-    producer = RouteProducer(topology.levels, hidden_size=hidden_size, num_heads=H)
-    parameters = {"route_W": fuse_gain_columns(params["route_W"], params["gain_W"]),
-                  "side_gain.gain_bias": params["gain_bias"]}
-    read_logits, write_logits, _ = _project_under(producer, parameters, params["x"])
+    read_logits, write_logits = _production_logits(topology, params)
     assert read_logits.dtype is torch.bfloat16, (
         "the shipped projection emits bf16 logits; this gate is meaningless against any "
         "other dtype")
 
     kernel_read, kernel_write = production_routing_factor_levels(
-        read_logits, write_logits, producer.routing)
+        read_logits, write_logits, resolved)
     reference_read, reference_write = oracle_factor_levels(
-        _flat64(read_logits), _flat64(write_logits), producer.routing)
+        _flat64(read_logits), _flat64(write_logits), resolved)
 
     for level in range(topology.D):
         if resolved.read_level_can_zero[level]:
@@ -683,27 +680,6 @@ def test_the_solve_seam_is_exact_on_the_production_logits(alpha):
         _assert_levels_match(kernel_write[level], reference_write[level], stored=True)
 
 
-def _project_under(producer, parameters, x):
-    """`RouteProducer._project` alone, under the caller's parameter tensors.
-
-    The seam gate needs the LOGITS the shipped forward computes and nothing that happens
-    after them, so the projection is run as its own module rather than reconstructed --
-    reconstructing it is how a gate ends up measuring a second implementation.
-    """
-    from torch.func import functional_call
-
-    class _Projection(torch.nn.Module):
-        def __init__(self, inner):
-            super().__init__()
-            self.inner = inner
-
-        def forward(self, stream):
-            return self.inner._project(stream, None)
-
-    named = {f"inner.{name}": value for name, value in parameters.items()}
-    return functional_call(_Projection(producer), named, (x,))
-
-
 def _logit_floor(params, read64, write64) -> float:
     """The declared class's bound on the logit error: operand term + output term."""
     x = params["x"].double().abs()
@@ -714,12 +690,14 @@ def _logit_floor(params, read64, write64) -> float:
 
 
 def _production_logits(topology, params):
-    """The `(read, write)` logits the shipped producer computes for these parameters."""
+    """The `(read, write)` logits the shipped producer computes for these parameters: its projection step
+    (`route_logits`), under the caller's parameter tensors -- reconstructing it is how a gate ends up measuring a
+    second implementation."""
     H, hidden_size, _ = params["route_W"].shape
-    producer = RouteProducer(topology.levels, hidden_size=hidden_size, num_heads=H)
-    parameters = {"route_W": fuse_gain_columns(params["route_W"], params["gain_W"]),
-                  "side_gain.gain_bias": params["gain_bias"]}
-    read_logits, write_logits, _ = _project_under(producer, parameters, params["x"])
+    plan = ProducerPlan(routing=Routing(topology.levels), num_heads=H, hidden_size=hidden_size, d_v=8)
+    weights = ProducerWeights(route_W=fuse_gain_columns(params["route_W"], params["gain_W"]), route_bias=None,
+                              gain_bias=params["gain_bias"], v_W=params["x"].new_zeros(0))
+    read_logits, write_logits, _ = route_logits(params["x"], plan, weights)
     return read_logits, write_logits
 
 
@@ -759,7 +737,7 @@ def test_producer_production_path_matches_its_oracle_path(monkeypatch, alpha, ca
 
     read_logits, write_logits = _production_logits(topology, production_params)
     production = _run_producer(production_params, topology)
-    #: The solve is patched WHERE THE PRODUCER RESOLVES IT -- `rola.routing.producer`
+    #: The solve is patched WHERE THE PRODUCER RESOLVES IT -- `rola.ops.produce`
     #: binds the name at import -- so the oracle arm really runs the reference solve.
     monkeypatch.setattr(
         production_path, "production_routing_factor_levels", oracle_factor_levels)

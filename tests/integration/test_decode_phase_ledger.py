@@ -18,7 +18,7 @@ def _carrying_state(layer, x) -> rola.RoLAState:
     """A dense state bound by the layer's own routing and holding a drawn entry state, so a one-token call is a
     decode step without a prefill."""
     with torch.no_grad():
-        routes = layer.routes(x)
+        routes, _values = layer._produce(x)
         state = rola.state()
         state._kernel_entry(routes, None, d_v=layer.d_v, paging=False, BC=64)
         entry = 0.1 * torch.randn(routes.batch * routes.heads, layer.topology.N, layer.d_v + 1, device="cuda")
@@ -29,9 +29,8 @@ def _carrying_state(layer, x) -> rola.RoLAState:
 
 def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     torch.manual_seed(0)
-    producer = rola.RouteProducer([rola.split_routing(64, sparse_duty="write"),
-                                   rola.split_routing(64, sparse_duty="read")], hidden_size=64, num_heads=2)
-    layer = rola.RoLA(producer, d_v=64, expert=PlanOverrides(paging=False)).cuda().eval()
+    routing = rola.Routing([rola.split_routing(64, sparse_duty="write"), rola.split_routing(64, sparse_duty="read")])
+    layer = rola.RoLA(routing, hidden_size=64, num_heads=2, d_v=64, expert=PlanOverrides(paging=False)).cuda().eval()
     x = torch.randn(1, 1, 64, device="cuda")
     plain_state = _carrying_state(layer, x)
     booked_state = plain_state.clone()

@@ -28,12 +28,18 @@ from rola.values import Values
 
 
 def _routes(*, widths=(4, 4), hidden=32, heads=2, routing=None, **kwargs):
+    """A layer over a declared routing: the producer is the layer's."""
     levels = [rola.dense_routing(w) if routing is None else routing.at(w) for w in widths]
-    return rola.RouteProducer(levels, hidden_size=hidden, num_heads=heads, **kwargs)
+    return rola.RoLA(rola.Routing(levels, **kwargs), hidden_size=hidden, num_heads=heads, d_v=8)
 
 
-def _x(producer, *, B=2, T=6, dtype=torch.float64):
-    return torch.randn(B, T, producer.hidden_size, dtype=dtype)
+def _x(layer, *, B=2, T=6, dtype=torch.float64):
+    return torch.randn(B, T, layer.hidden_size, dtype=dtype)
+
+
+def _factors(layer, **kwargs) -> RouteFactors:
+    """The routes of a stretch of tokens, from the layer's producer."""
+    return layer._produce(_x(layer, **kwargs))[0]
 
 
 def _validate(routes, v) -> None:
@@ -77,7 +83,7 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     exactly that.
     """
     producer = _routes()
-    factors = producer(_x(producer))
+    factors = _factors(producer)
     hand_built = RouteFactors.from_levels(factors.topology, *factors.dequantized(), factors.g_write)
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     _admitted(hand_built, v)
@@ -104,7 +110,7 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
     a plantable structural violation.
     """
     producer = _routes()
-    f = producer(_x(producer))
+    f = _factors(producer)
     fields = dict(topology=f.topology, amp_read=list(f.amp_read), amp_write=list(f.amp_write),
                   scale_read=f.scale_read, scale_write=f.scale_write, g_write=f.g_write)
     if break_it == "width":
@@ -126,7 +132,7 @@ def test_rows_are_u8_to_depth_two_and_f16_at_any_depth():
     either. An f16 bundle is legal at depth two, a u8 bundle is refused deeper, and both dequantize to the rows'
     values against their scales."""
     producer = _routes()
-    f = producer(_x(producer))
+    f = _factors(producer)
     assert all(row.dtype is torch.uint8 for row in f.amp_read + f.amp_write)
     read, write = f.dequantized()
     halves = RouteFactors(topology=f.topology, amp_read=[level.to(torch.float16) for level in f.amp_read],
@@ -151,7 +157,7 @@ def test_rows_are_u8_to_depth_two_and_f16_at_any_depth():
 def test_the_op_refuses_anything_that_is_not_a_bundle():
     """PLANTED VIOLATION: hand the op the tensors directly, as the old signature did."""
     producer = _routes()
-    factors = producer(_x(producer))
+    factors = _factors(producer)
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     with pytest.raises(TypeError, match="RouteFactors"):
         _validate(factors.amp_read, v)
@@ -166,7 +172,7 @@ def test_the_op_refuses_a_bare_value_tensor_and_names_the_bundle():
     from rola.engine.dags.prefill_dag import PrefillContext, validate_context
 
     producer = _routes()
-    factors = producer(_x(producer))
+    factors = _factors(producer)
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     with pytest.raises(TypeError, match="Values"):
         validate_context(PrefillContext(routes=factors, values=v))
@@ -204,7 +210,7 @@ def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel
     with the expected prefix in the message rather than handed to a kernel.
     """
     producer = _routes()
-    factors = producer(_x(producer))
+    factors = _factors(producer)
     with pytest.raises(ValueError, match=r"\[B, T, H\]=\(2, 6, 2\)"):
         _validate(factors, torch.randn(2, 5, 2, 8, dtype=torch.float64))
     #: the control: the same call at a width the bundle never declared is admitted.
@@ -224,9 +230,7 @@ def test_the_simplex_output_column_is_read_per_duty_not_per_activation():
     activation's row alone would skip a fold that is not an identity, so the read
     cell's answer must be ``False`` while its own activation's column is ``True``.
     """
-    union = rola.RouteProducer(
-        [rola.union_routing(4, 1.5), rola.union_routing(4, 1.5)],
-        hidden_size=32, num_heads=2).topology
+    union = rola.Routing([rola.union_routing(4, 1.5), rola.union_routing(4, 1.5)]).topology
     dense = _routes().topology
     assert [union.duty_simplex_output(l, d) for l, d in union.duty_cells()] == [
         False, True, False, True]
@@ -238,7 +242,8 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
     """RULED 2026-09-26: production lives in our framework and emits ONE internal format. A module that returns a
     bundle can only do so through the format's epilogue (`RouteFactors.from_levels`), so what the op admits is
     always u8 unit-max rows with their scales; a bundle assembled from bare floating levels is refused by its
-    structure. The layer's slot stays structural: whatever occupies it declares a topology and returns the format.
+    structure. Such levels reach the op through the format's utilities; the LAYER takes a declared routing, and a
+    callable in its place is refused (ruled 2026-09-29: the producer is a declared configuration).
     """
     from rola.routing.types import OpaqueRouting, Topology
 
@@ -259,20 +264,21 @@ def test_a_producer_outside_the_framework_still_emits_the_format_or_nothing():
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64)
     _admitted(factors, v)
     assert torch.isfinite(_oracle(factors, v)).all()
-    assert rola.RoLA(producer, d_v=8).topology is producer.topology
+    with pytest.raises(TypeError, match="declared routing"):
+        rola.RoLA(producer, hidden_size=32, num_heads=2, d_v=8)
     with pytest.raises(TypeError):
         RouteFactors(topology=producer.topology, amp_read=factors.amp_read, amp_write=factors.amp_write,
                      g_write=factors.g_write)  # the format's fields are not optional
 
 
-def test_a_slot_that_declares_none_of_what_the_layer_reads_is_refused_at_construction():
+def test_a_layer_without_a_declared_routing_is_refused_at_construction():
     """Construction-time validation, so an unbuildable model fails on the line that
     built it rather than inside a forward several frames away.
 
-    PLANTED VIOLATION: a callable that declares nothing.
+    PLANTED VIOLATION: a module where the declaration goes.
     """
-    with pytest.raises(TypeError, match="hidden_size"):
-        rola.RoLA(torch.nn.Identity())
+    with pytest.raises(TypeError, match="declared routing"):
+        rola.RoLA(torch.nn.Identity(), hidden_size=32, num_heads=2)
 
 
 def test_one_producer_covers_many_levels_in_the_order_they_were_declared():
@@ -280,7 +286,7 @@ def test_one_producer_covers_many_levels_in_the_order_they_were_declared():
     were declared in."""
     producer = _routes(widths=(4, 6))
     assert producer.topology.widths == (4, 6)
-    factors = producer(_x(producer))
+    factors = _factors(producer)
     assert [tuple(level.shape[-1:]) for level in factors.amp_read] == [(4,), (6,)]
 
 
@@ -304,7 +310,7 @@ def test_the_public_levels_are_the_formats_rows_dequantized():
     owed, is that the public tensors are views.
     """
     producer = _routes(widths=(4, 6))
-    factors = producer(_x(producer))
+    factors = _factors(producer)
     #: RULED 2026-09-26: the u8 rows and their scales ARE the stored layout; the dequantized levels are computed
     #: at a consumer's seam, for consumers that still compute on floating levels.
     read, _ = factors.dequantized()
@@ -341,9 +347,9 @@ def test_a_decay_source_sized_for_another_topology_is_refused_at_construction():
     """PLANTED VIOLATION: the right source, the wrong widths."""
     producer = _routes(widths=(4, 4))
     with pytest.raises(ValueError, match="widths"):
-        rola.RoLA(producer,
+        rola.RoLA(producer.routing, hidden_size=32, num_heads=2,
                   decay=rola.LearnedDecay(widths=(4, 6), num_heads=2))
-    rola.RoLA(producer, decay=rola.LearnedDecay(widths=(4, 4), num_heads=2))
+    rola.RoLA(producer.routing, hidden_size=32, num_heads=2, decay=rola.LearnedDecay(widths=(4, 4), num_heads=2))
 
 
 # ---------------------------------------------------------------------------
@@ -366,15 +372,15 @@ def test_no_launch_geometry_is_reachable_from_the_top_level():
     assert quarantined.issubset(set(expert.__all__))
 
 
-def test_the_layer_takes_the_slot_and_not_the_slot_spelled_out():
+def test_the_layer_takes_the_declaration_and_its_widths_and_nothing_spelled_out():
     """The constructor's shape IS the claim. A knob creeping back is what this catches."""
     import inspect
 
     signature = inspect.signature(rola.RoLA.__init__)
     assert list(signature.parameters) == [
-        "self", "routes",
+        "self", "routing", "hidden_size", "num_heads",
         "d_v", "decay", "layer_idx", "expert", "memory_budget"]
-    for name in ("d_v", "decay", "layer_idx", "expert", "memory_budget"):
+    for name in ("hidden_size", "num_heads", "d_v", "decay", "layer_idx", "expert", "memory_budget"):
         assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 
@@ -392,7 +398,7 @@ def test_the_expert_argument_refuses_a_lookalike():
     """PLANTED VIOLATION: a dict that happens to have the right keys."""
     producer = _routes()
     with pytest.raises(TypeError, match="PlanOverrides"):
-        rola.RoLA(producer, expert={"state_block": 16})
+        rola.RoLA(producer.routing, hidden_size=32, num_heads=2, expert={"state_block": 16})
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +412,7 @@ def test_the_layer_prefill_path_refuses_before_any_kernel_runs():
     clause for these CPU fp64 fixtures."""
     from rola.engine import BackwardNotImplemented
 
-    layer = rola.RoLA(_routes()).double().train()
+    layer = _routes().double().train()
     with pytest.raises(BackwardNotImplemented, match="has no reverse pass"):
         layer(torch.randn(2, 6, 32, dtype=torch.float64))
     with torch.no_grad(), pytest.raises(NotImplementedError, match="CUDA kernel"):
@@ -416,7 +422,7 @@ def test_the_layer_prefill_path_refuses_before_any_kernel_runs():
 
 def test_an_unsupported_forward_keyword_raises_rather_than_being_swallowed():
     """PLANTED VIOLATION: the HF-compat keyword the layer used to accept and ignore."""
-    layer = rola.RoLA(_routes()).double().eval()
+    layer = _routes().double().eval()
     x = torch.randn(2, 6, 32, dtype=torch.float64)
     with pytest.raises(TypeError, match="output_attentions"):
         layer(x, output_attentions=True)

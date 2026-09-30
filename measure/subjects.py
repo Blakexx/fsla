@@ -296,8 +296,7 @@ def entmax_solve(fx) -> Launch:
     from rola.routing.entmax.production import production_routing_factor_levels
 
     spec = fx["cell"]
-    producer = fx["layer"].routes
-    routing = producer.routing
+    routing = fx["layer"].routing.resolved
     gen = torch.Generator(device="cuda").manual_seed(spec.seed + 900)
     shape = (spec.B * spec.H, spec.tokens, routing.packed_logit_width)
     read_logits = torch.randn(shape, device="cuda", dtype=torch.float32, generator=gen)
@@ -327,7 +326,7 @@ def decode_step(fx) -> Launch:
     #: The seed binds through the facade's own entry and commits exactly the pages the
     #: routing writes -- a decode step's cost is a function of residency and routing,
     #: not of the numbers stored, so nothing has to have computed them.
-    producer = fx["layer"].routes
+    layer = fx["layer"]
     routes = fx["routes"]
     bits = planes.atom_bits(planes.pack_side(routes.dequantized()[1]), widths)
     seeded: dict = {}
@@ -346,7 +345,7 @@ def decode_step(fx) -> Launch:
 
     def run():
         with torch.no_grad():
-            y, _ = decode_forward(producer(token), rola.Values.from_projection(v_token), seeded["state"])
+            y, _ = decode_forward(layer._produce(token)[0], rola.Values.from_projection(v_token), seeded["state"])
         return y
 
     #: THE ARENA'S PHYSICAL PAGES: under the VMM backing the driver maps them outside the caching allocator, so a memory

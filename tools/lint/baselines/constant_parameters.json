@@ -201,32 +201,14 @@
   },
   {
    "path": "rola/routing/producer.py",
-   "message": "forward(..., write_stream=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "7f344b4b34f30beb",
-   "count": 1
-  },
-  {
-   "path": "rola/routing/producer.py",
    "message": "split_routing(..., alpha=) is only ever 1.5 -- across every call in this tree, nothing moves it",
    "line_sha256": "b6c53523513c1581",
    "count": 1
   },
   {
    "path": "rola/routing/projection.py",
-   "message": "packed_router_logits(..., h_w=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "0c6c0b53e40d5eb1",
-   "count": 1
-  },
-  {
-   "path": "rola/routing/projection.py",
    "message": "packed_router_logits(..., route_bias=) is only ever None -- across every call in this tree, nothing moves it",
    "line_sha256": "0c6c0b53e40d5eb1",
-   "count": 1
-  },
-  {
-   "path": "rola/routing/projection.py",
-   "message": "packed_router_logits_reference(..., h_w=) is only ever None -- across every call in this tree, nothing moves it",
-   "line_sha256": "d43d764a2ff37fdf",
    "count": 1
   },
   {

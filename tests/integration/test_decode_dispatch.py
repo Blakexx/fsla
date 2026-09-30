@@ -74,7 +74,7 @@ def _prime(layer, device, *, prefill=32, paged=True):
     x = torch.randn(1, prefill, _HIDDEN, device=device)
     state = rola.state()
     with torch.no_grad():
-        routes = layer.routes(x)
+        routes, _values = layer._produce(x)
         if paged:
             bits = torch.ones(x.shape[0] * _H,
                               routes.topology.N // MMA_K_QUANTUM,

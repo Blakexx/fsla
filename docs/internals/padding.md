@@ -9,7 +9,7 @@ why it moved there.
 
 ## Two contracts, kept separate (KERNEL_STANDARDS §R13)
 
-**API CONTRACT.** `rola.routing.producer.RouteProducer`'s bundle
+**API CONTRACT.** The layer producer's bundle
 (`RouteFactors`) and `rola.layer.RoLA` stay at the caller's own, unpadded widths --
 `tests/unit/test_api_contract.py` pins this: one tensor shape per declared level, and
 every public tensor a VIEW of the solve's packed layout with zero copy. Padding those

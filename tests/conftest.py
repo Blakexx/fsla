@@ -277,38 +277,31 @@ def dev_config_env(tmp_path):
     dev_config.reload()
 
 
-def build_routes(*, hidden_size=64, num_heads=4, widths=(16,), routing=None,
-                 gain=True, bias=False,
-                 gain_bias_init=None, gain_config=None):
-    """One :class:`rola.RouteProducer` covering every level in ``widths``."""
-    from rola import dense_routing
-    from rola.routing.producer import RouteProducer
+def build_routing(*, widths=(16,), routing=None, gain=True, bias=False, gain_bias_init=None, gain_config=None):
+    """One declared :class:`rola.Routing` covering every level in ``widths``."""
+    from rola import Routing, dense_routing
 
     levels = [dense_routing(w) if routing is None else routing.at(w) for w in widths]
-    return RouteProducer(
-        levels, hidden_size=hidden_size, num_heads=num_heads, bias=bias,
-        gain=gain, gain_bias_init=gain_bias_init,
-        gain_config=gain_config)
+    return Routing(levels, gain=gain, bias=bias, gain_bias_init=gain_bias_init, gain_config=gain_config)
 
 
 def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=None,
                 decay=None, decay_rate=2.0 ** -8, gain=True,
                 bias=False, expert=None, layer_idx=None, **kwargs):
-    """A :class:`rola.RoLA` over :func:`build_routes`.
+    """A :class:`rola.RoLA` over :func:`build_routing`.
 
     ``decay`` takes ``None`` (no decay), ``'learned'`` or ``'constant'`` -- the two
     shipped decay SOURCES -- rather than a rate, because which source a model uses is
-    the choice the slot exists to express.
+    the choice the slot exists to express. A test that needs a bundle takes it from
+    the layer's producer: ``layer._produce(x)``.
     """
     from rola import ConstantDecay, LearnedDecay, RoLA
 
-    routes = build_routes(hidden_size=hidden_size, num_heads=num_heads,
-                          widths=widths, routing=routing,
-                          gain=gain, bias=bias, **kwargs)
+    declared = build_routing(widths=widths, routing=routing, gain=gain, bias=bias, **kwargs)
     sources = {"learned": LearnedDecay, "constant": ConstantDecay}
     source = None if decay is None else sources[decay](
-        decay_rate, widths=routes.widths, num_heads=num_heads)
-    return RoLA(routes, d_v=d_v, decay=source,
+        decay_rate, widths=declared.widths, num_heads=num_heads)
+    return RoLA(declared, hidden_size=hidden_size, num_heads=num_heads, d_v=d_v, decay=source,
                 layer_idx=layer_idx, expert=expert)
 
 
@@ -319,18 +312,15 @@ def build_layer(*, hidden_size=64, num_heads=4, d_v=32, widths=(16,), routing=No
 # The low-level producer gates in tests/oracle/test_producer.py and
 # tests/integration/test_production_levels.py drive raw parameter tensors directly
 # (route_W, gain_W, ... as bare leaves) rather than a module's parameters, which
-# is what lets them isolate a backward-through-every-tensor gate. The production
-# orchestration is `RouteProducer` -- an nn.Module over nn.Parameters -- so
-# `produce_routing` builds one and runs it under
-# `torch.nn.utils.stateless.functional_call` with the caller's tensors standing
-# in for its parameters. The graph reaches the caller's leaves and the numerics
-# are the REAL producer's, not a second derivation of them.
+# is what lets them isolate a backward-through-every-tensor gate. The producer is a
+# primitive over bare tensors (`rola.ops.produce.produce`), so `produce_routing`
+# calls it with the caller's tensors: the graph reaches the caller's leaves and the
+# numerics are the REAL producer's, not a second derivation of them.
 
 
 def resolved_routing_from_topology(topology):
-    """A `ResolvedRouting` over a `Topology`'s own levels -- exactly what
-    `RouteProducer.__init__` builds for itself
-    (`self.routing = ResolvedRouting(levels=self.levels)`)."""
+    """A `ResolvedRouting` over a `Topology`'s own levels -- exactly what a declared
+    `Routing` resolves (`Routing.resolved`)."""
     from rola.routing.types import ResolvedRouting
 
     return ResolvedRouting(levels=topology.levels)
@@ -350,50 +340,44 @@ def raw_side_gain(x, route_W, gain_W, gain_bias, resolved):
     """`g_write` BEFORE the mass fold, through the library's own two pieces.
 
     Not a second implementation: the projection is `_packed_router_logits`' gain span
-    and the nonlinearity is `SideGain`, which is exactly what the producer composes --
-    what the producer does NOT expose is the value between them, which is what a fold
-    gate has to see.
+    and the nonlinearity is `softplus_side_gain`, which is exactly what the producer
+    composes -- what the producer does NOT expose is the value between them, which is
+    what a fold gate has to see.
     """
     from rola.routing.projection import _packed_router_logits
-    from rola.routing.side_gain import GainConfig, SideGain
+    from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
 
     columns = gain_W.shape[1]
     _, _, gain_logits = _packed_router_logits(
-        x, fuse_gain_columns(route_W, gain_W), resolved, route_bias=None, h_w=None,
+        x, fuse_gain_columns(route_W, gain_W), resolved, route_bias=None,
         projection_dtype=x.dtype, gain_columns=columns)
-    gain = SideGain(num_heads=gain_W.shape[0], config=GainConfig.from_public(bool(columns)))
-    with torch.no_grad():
-        gain.gain_bias.copy_(gain_bias)
-    return gain(gain_logits, batch=x.shape[0], tokens=x.shape[1], dtype=x.dtype,
-                device=x.device)
+    if not columns:
+        return {"g_write": torch.ones(x.shape[0], x.shape[1], gain_W.shape[0], dtype=x.dtype, device=x.device)}
+    biased = gain_logits + gain_bias.to(gain_logits.dtype)[None, None, :, :]
+    return {"g_write": softplus_side_gain(biased[..., WRITE_GAIN]).to(x.dtype)}
 
 
-def produce_routing(x, x_w, v, route_W, route_bias, gain_W, gain_bias, topology):
+def produce_routing(x, v, route_W, route_bias, gain_W, gain_bias, topology):
     """The producer, run over bare parameter tensors -> a plain namespace.
 
-    ``v`` is accepted (matching the call sites) and unused: callers need it only
-    afterwards, to run the oracle. The return carries the field names those gates
-    read (`read_levels`/`write_levels`/`g_write`). There is no read-side gain: the
-    readout is a ratio, which fixes it to 1 identically.
+    ``v`` sizes the value half the producer also computes (from a zero weight: these gates read the routing) and is
+    the callers' input to the oracle afterwards. The return carries the field names those gates read
+    (`read_levels`/`write_levels`/`g_write`). There is no read-side gain: the readout is a ratio, which fixes it to 1
+    identically.
     """
     from types import SimpleNamespace
 
-    from torch.func import functional_call
-
-    from rola.routing.producer import RouteProducer
+    from rola import Routing
+    from rola.ops.produce import ProducerPlan, ProducerWeights, produce
 
     H, hidden_size, _ = route_W.shape
-    producer = RouteProducer(
-        topology.levels, hidden_size=hidden_size, num_heads=H,
-        bias=route_bias is not None)
-    parameters = {"route_W": fuse_gain_columns(route_W, gain_W),
-                  "side_gain.gain_bias": gain_bias}
-    if route_bias is not None:
-        parameters["route_bias"] = torch.cat(
-            [route_bias, route_bias.new_zeros(H, gain_W.shape[1])], dim=-1)
-    streams = (x,) if x_w is None else (x, x_w)
-    routes = functional_call(producer, parameters, streams)
-
+    d_v = v.shape[-1]
+    plan = ProducerPlan(routing=Routing(topology.levels, bias=route_bias is not None, gain=bool(gain_W.shape[1])),
+                        num_heads=H, hidden_size=hidden_size, d_v=d_v)
+    bias = None if route_bias is None else torch.cat([route_bias, route_bias.new_zeros(H, gain_W.shape[1])], dim=-1)
+    weights = ProducerWeights(route_W=fuse_gain_columns(route_W, gain_W), route_bias=bias, gain_bias=gain_bias,
+                              v_W=torch.zeros(H * d_v, hidden_size, dtype=torch.bfloat16, device=x.device))
+    routes, _values = produce(x, plan, weights)
     return SimpleNamespace(
         read_levels=routes.read_simplex(), write_levels=routes.dequantized()[1],
         g_write=routes.g_write)

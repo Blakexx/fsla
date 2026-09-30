@@ -123,7 +123,7 @@ logical-vs-padded split (`b_l` the caller's width, `B_l` the padded, shipped one
 at the op call surface (`rola.ops.padding`, `docs/internals/padding.md`), never here:
 `StateFormat.B` still carries only the lawful, padded width, and `_format_of` still
 builds it from whatever widths the presented routing carries. A caller reaches this
-descriptor with an already-padded `RouteFactors` (`rola.routing.producer.RouteProducer`'s
+descriptor with an already-padded `RouteFactors` (the layer producer's
 own bundle stays at the caller's logical widths, unpadded, by a DIFFERENT, pinned
 contract -- `tests/unit/test_api_contract.py`), so `check()`'s refusal message names
 padded numbers on both sides, never a logical one -- a genuine limit: two different
