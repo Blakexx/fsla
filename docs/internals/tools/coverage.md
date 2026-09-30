@@ -16,18 +16,20 @@ met:
 | `sanitizer` | a row of `tools/sanitize_oracle.py`'s family table, present, whose test launches the kernel |
 | `budget` | a budget line under `tools/budgets/` (KERNEL_STANDARDS §19) |
 | `phases` | a phase ledger the kernel books, and the test or tool that reads it (§22) |
+| `ratified` | the committed manifests record it (`"manifest"`, checked per arch), or owed until the next milestone ratify (§16) |
 
 A value is a POINTER (a file, or `file::test`, whose `def` must exist; a sanitizer row name), `{"exempt": reason}` --
-a stamp kernel has no budget -- or `{"owed": reason}`. RATIFIED is not declared: it is read off the manifests, so a
-kernel no `tools/manifests/*/sm_*.json` records is a finding for each arch.
+a stamp kernel has no budget -- or `{"owed": reason}`.
 
 ## <a id="findings"></a>The findings, and the ratchet
 
-One finding per gap: a kernel the declaration does not name (at the kernel's own `file:line`), a declared kernel the
-source no longer defines, an obligation left blank, a pointer that resolves to nothing -- a deleted test, a renamed
-test in a sanitizer row, a budget file that is gone -- and each owed entry. `tools/lint/ratchet.py coverage` holds
-today's findings as the backlog, so a new kernel fails the commit until it is declared, a pointer that breaks fails
-it, and paying an owed entry shrinks the baseline in the commit that pays it.
+One finding per UNDECLARED gap: a kernel the declaration does not name (at the kernel's own `file:line`), a declared
+kernel the source no longer defines, an obligation left blank, a pointer that resolves to nothing -- a deleted test,
+a renamed test in a sanitizer row, a budget file that is gone -- and a kernel declared ratified that a manifest does
+not record. `tools/lint/ratchet.py coverage` gates them, so a new kernel fails the commit until it is declared and a
+pointer that breaks fails it. OWED entries are the backlog: printed with their reasons and counted, never findings,
+because a new kernel necessarily lands owing (no budget yet, not ratified until the milestone) and each owed line is a
+reviewed line of the declaration. Paying one replaces it with a pointer.
 
 The first run found one pointer that had already broken: the sanitizer's decode row named a test the work queue's
 commit had renamed, so the lane would have failed to launch its cell.

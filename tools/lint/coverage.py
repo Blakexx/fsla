@@ -5,13 +5,17 @@
 `tools/lint/ratchet.py coverage`.
 
 `tools/kernels.py` derives the kernels; `tools/coverage.json` declares, per kernel and obligation, the artifact that
-meets it, an exemption with its reason, or an owed entry. This prints one finding per gap, and the ratchet holds
-today's gaps as its backlog, so:
+meets it, an exemption with its reason, or an owed entry with its reason. The FINDINGS (the ratchet gates them) are
+the gaps nobody declared:
 
-- a kernel the declaration does not name is a NEW finding: a kernel lands gated, never silently uncovered;
-- a pointer to nothing (a deleted test, a renamed sanitizer row, a `file::test` whose test is gone) is a new finding;
-- an owed entry is backlog, and paying it (a pointer in its place) shrinks the baseline;
-- RATIFIED is read, not declared: a kernel no `tools/manifests/*/sm_*.json` records is a finding per arch.
+- a kernel the declaration does not name: a kernel lands declared, never silently uncovered;
+- a pointer to nothing (a deleted test, a renamed sanitizer row, a `file::test` whose test is gone);
+- an obligation left blank, a declared kernel the source no longer defines;
+- RATIFIED declared as `"manifest"` for a kernel no `tools/manifests/*/sm_*.json` records, per arch.
+
+OWED entries are the backlog, printed with their reasons and counted, never findings: a new kernel necessarily lands
+owing (no budget yet; not ratified until the milestone, KERNEL_STANDARDS §16), and each owed line is a reviewed line
+of the declaration.
 
 Usage:
 
@@ -69,48 +73,78 @@ def findings() -> list[str]:
     text = DECLARATION.read_text()
     blob = json.loads(text)
     obligations, declared = blob["obligations"], blob["kernels"]
-    rows = sanitizer_rows()
     source = {k.name: k for k in kernels.kernels()}
-    out = []
-    for name, k in sorted(source.items()):
-        if name not in declared:
-            out.append(f"{k.where()}: `{name}` ({k.family}) is not declared in {REL} -- declare how it meets "
-                       f"{sorted(obligations)}")
+    out = [f"{k.where()}: `{name}` ({k.family}) is not declared in {REL} -- declare how it meets {sorted(obligations)}"
+           for name, k in sorted(source.items()) if name not in declared]
+
+    rows = sanitizer_rows()
     for name, entry in sorted(declared.items()):
         at = f"{REL}:{line_of(text, name)}"
         if name not in source:
             out.append(f"{at}: `{name}` is declared but no source defines it -- stale")
             continue
         for obligation in sorted(obligations):
-            value = entry.get(obligation)
-            if value is None:
-                out.append(f"{at}: `{name}` declares nothing for `{obligation}`")
-            elif isinstance(value, dict) and "owed" in value:
-                out.append(f"{at}: `{name}` owes `{obligation}` -- {value['owed']}")
-            elif isinstance(value, dict) and value.get("exempt"):
-                continue
-            elif obligation == "sanitizer":
-                row = rows.get(value)
-                if row is None:
-                    out.append(f"{at}: `{name}`'s sanitizer row `{value}` is not in tools/sanitize_oracle.py")
-                elif not row[1] or not test_node_exists(row[0]):
-                    out.append(f"{at}: `{name}`'s sanitizer row `{value}` launches nothing (present={row[1]}, "
-                               f"test {row[0]!r})")
-            elif not isinstance(value, str) or not test_node_exists(value):
-                out.append(f"{at}: `{name}`'s `{obligation}` points at {value!r}, which does not exist")
-        for extra in sorted(set(entry) - set(obligations)):
-            out.append(f"{at}: `{name}` declares `{extra}`, which is not an obligation")
-    for manifest in sorted((ROOT / "tools" / "manifests").glob("*/sm_*.json")):
-        arch = manifest.stem.split("_", 1)[1]
-        out += kernels.check_manifest(arch)
+            out += _check(name, obligation, entry.get(obligation), at, source[name], rows)
+        out += [f"{at}: `{name}` declares `{extra}`, which is not an obligation"
+                for extra in sorted(set(entry) - set(obligations))]
+
+    for arch in manifest_arches():
+        out += [f"tools/manifests/*/sm_{arch}.json: `{n}` is recorded but no source defines it -- stale"
+                for n in sorted(recorded(arch) - set(source))]
     return out
+
+
+def _check(name: str, obligation: str, value, at: str, kernel, rows) -> list[str]:
+    """The findings of one kernel's one obligation: none when it is owed, exempt, or a pointer that resolves."""
+    if value is None:
+        return [f"{at}: `{name}` declares nothing for `{obligation}`"]
+    if isinstance(value, dict) and ("owed" in value or value.get("exempt")):
+        return []
+    if obligation == "ratified":
+        if value != "manifest":
+            return [f"{at}: `{name}`'s `ratified` is {value!r}; it is \"manifest\" or owed"]
+        return [f"{kernel.where()}: `{name}` ({kernel.family}) is declared ratified but no sm_{arch} manifest "
+                f"records it" for arch in manifest_arches() if name not in recorded(arch)]
+    if obligation == "sanitizer":
+        row = rows.get(value)
+        if row is None:
+            return [f"{at}: `{name}`'s sanitizer row `{value}` is not in tools/sanitize_oracle.py"]
+        if not row[1] or not test_node_exists(row[0]):
+            return [f"{at}: `{name}`'s sanitizer row `{value}` launches nothing (present={row[1]}, test {row[0]!r})"]
+        return []
+    if not isinstance(value, str) or not test_node_exists(value):
+        return [f"{at}: `{name}`'s `{obligation}` points at {value!r}, which does not exist"]
+    return []
+
+
+def owed() -> list[str]:
+    """Every owed obligation, with its reason: the backlog."""
+    blob = json.loads(DECLARATION.read_text())
+    return [f"{name}: {obligation} -- {value['owed']}" for name, entry in sorted(blob["kernels"].items())
+            for obligation, value in sorted(entry.items()) if isinstance(value, dict) and "owed" in value]
+
+
+def manifest_arches() -> list[str]:
+    return sorted({p.stem.split("_", 1)[1] for p in (ROOT / "tools" / "manifests").glob("*/sm_*.json")})
+
+
+_RECORDED: dict[str, set[str]] = {}
+
+
+def recorded(arch: str) -> set[str]:
+    if arch not in _RECORDED:
+        _RECORDED[arch] = kernels.manifest_kernels(arch)
+    return _RECORDED[arch]
 
 
 def main() -> int:
     found = findings()
+    backlog = owed()
     for line in found:
         print(f"  {line}")
-    print(f"coverage: {len(kernels.kernels())} kernel(s), {len(found)} gap(s)")
+    for line in backlog:
+        print(f"  owed: {line}")
+    print(f"coverage: {len(kernels.kernels())} kernel(s), {len(found)} undeclared gap(s), {len(backlog)} owed")
     return 0
 
 

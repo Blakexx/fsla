@@ -705,7 +705,8 @@ phase-ledger tool and declared arm set named the carry alone. Nothing had decide
 3. EVERY KERNEL MEETS EVERY OBLIGATION OR SAYS WHY. `tools/coverage.json` declares, per kernel, the oracle test, the
    sanitizer row, the budget and the phase ledger -- a pointer, an exemption with its reason, or an owed entry --
    and `ratchet.py coverage` gates it: a kernel not declared, or a pointer to nothing, fails the commit; owed entries
-   are the backlog and only shrink. Ratified is read off the manifests, not declared.
+   are the reviewed backlog, printed with their reasons (a new kernel lands owing its budget and its ratification).
+   Ratified is declared "manifest" and checked against the committed manifests, or owed until the milestone.
 4. A GATE RUNS WHERE ITS INPUTS EXIST: the source gates in pre-commit; the binary gates (the SASS gate, ratify) after
    every build.
 5. A TOOL THAT CANNOT PARSE A UNIT HAS NOT GATED IT. The analyzer is pinned to a release that parses every unit

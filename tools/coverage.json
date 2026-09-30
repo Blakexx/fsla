@@ -1,101 +1,207 @@
 {
- "about": "Every kernel the source defines (tools/kernels.py) and how it meets each obligation: a pointer to the artifact that meets it (a test file, `file::test`, a budget, a sanitizer row of tools/sanitize_oracle.py), {\"exempt\": reason}, or {\"owed\": reason}. Checked by tools/lint/coverage.py, gated as a ratchet: an owed entry is backlog, and a kernel absent from this file fails the commit. Docs: docs/internals/tools/coverage.md",
+ "about": "Every kernel the source defines (tools/kernels.py) and how it meets each obligation: a pointer to the artifact that meets it (a test file, `file::test`, a budget, a sanitizer row of tools/sanitize_oracle.py), {\"exempt\": reason}, or {\"owed\": reason}. Checked by tools/lint/coverage.py, gated as a ratchet: a kernel absent from this file, or a pointer to nothing, fails the commit; owed entries are the backlog, printed with their reasons. Docs: docs/internals/tools/coverage.md",
  "obligations": {
   "oracle": "a test grading the kernel against a reference per slot (an fp64 oracle, or a bit-exact model of a discrete function)",
   "sanitizer": "a row of tools/sanitize_oracle.py's family table whose cell launches the kernel",
   "budget": "a budget line under tools/budgets/ (KERNEL_STANDARDS §19)",
-  "phases": "a phase ledger the kernel books and a test or tool that reads it (KERNEL_STANDARDS §22)"
+  "phases": "a phase ledger the kernel books and a test or tool that reads it (KERNEL_STANDARDS §22)",
+  "ratified": "recorded by the committed manifests (\"manifest\", checked per arch), or owed until the next milestone ratify (KERNEL_STANDARDS §16)"
  },
  "kernels": {
   "carry_kernel": {
    "oracle": "tests/oracle/test_carry_vs_oracle.py",
    "sanitizer": "carry",
    "budget": "tools/budgets/carry.json",
-   "phases": "tools/phase_ledger.py"
+   "phases": "tools/phase_ledger.py",
+   "ratified": "manifest"
   },
   "carry_stamp_kernel": {
-   "oracle": {"owed": "its reader (tests/unit/test_carry_surface.py) only asserts an int; read it against the footprint the source declares, as decode's and intra's are"},
-   "sanitizer": {"exempt": "one thread writes one constant"},
-   "budget": {"exempt": "a footprint stamp, not a workload"},
-   "phases": {"exempt": "a footprint stamp, not a workload"}
+   "oracle": {
+    "owed": "its reader (tests/unit/test_carry_surface.py) only asserts an int; read it against the footprint the source declares, as decode's and intra's are"
+   },
+   "sanitizer": {
+    "exempt": "one thread writes one constant"
+   },
+   "budget": {
+    "exempt": "a footprint stamp, not a workload"
+   },
+   "phases": {
+    "exempt": "a footprint stamp, not a workload"
+   },
+   "ratified": {
+    "owed": "not in the committed manifests; the next milestone ratify records it"
+   }
   },
   "csrc_stamp_kernel": {
    "oracle": "tests/unit/test_build_stamp.py",
-   "sanitizer": {"exempt": "one thread writes one constant"},
-   "budget": {"exempt": "a freshness stamp, not a workload"},
-   "phases": {"exempt": "a freshness stamp, not a workload"}
+   "sanitizer": {
+    "exempt": "one thread writes one constant"
+   },
+   "budget": {
+    "exempt": "a freshness stamp, not a workload"
+   },
+   "phases": {
+    "exempt": "a freshness stamp, not a workload"
+   },
+   "ratified": "manifest"
   },
   "sm_clock_kernel": {
-   "oracle": {"owed": "no test reads it; measure/executors.py records it with every measurement"},
-   "sanitizer": {"exempt": "a dependent spin on each SM and one timer read; no shared memory, no data between threads"},
-   "budget": {"exempt": "an instrument, not a workload"},
-   "phases": {"exempt": "an instrument, not a workload"}
+   "oracle": {
+    "owed": "no test reads it; measure/executors.py records it with every measurement"
+   },
+   "sanitizer": {
+    "exempt": "a dependent spin on each SM and one timer read; no shared memory, no data between threads"
+   },
+   "budget": {
+    "exempt": "an instrument, not a workload"
+   },
+   "phases": {
+    "exempt": "an instrument, not a workload"
+   },
+   "ratified": {
+    "owed": "not in the committed manifests; the next milestone ratify records it"
+   }
   },
   "decode_stamp_kernel": {
    "oracle": "tests/unit/test_decode_capacity.py",
-   "sanitizer": {"exempt": "one thread writes one constant"},
-   "budget": {"exempt": "a footprint stamp, not a workload"},
-   "phases": {"exempt": "a footprint stamp, not a workload"}
+   "sanitizer": {
+    "exempt": "one thread writes one constant"
+   },
+   "budget": {
+    "exempt": "a footprint stamp, not a workload"
+   },
+   "phases": {
+    "exempt": "a footprint stamp, not a workload"
+   },
+   "ratified": "manifest"
   },
   "decode_step_kernel": {
    "oracle": "tests/oracle/test_decode_vs_oracle.py",
    "sanitizer": "decode",
-   "budget": {"owed": "no tools/budgets/decode.json: the decode step's budget lines are written on its plan card, not as a gated file"},
-   "phases": "tests/integration/test_decode_phase_ledger.py"
+   "budget": {
+    "owed": "no tools/budgets/decode.json: the decode step's budget lines are written on its plan card, not as a gated file"
+   },
+   "phases": "tests/integration/test_decode_phase_ledger.py",
+   "ratified": "manifest"
   },
   "union_forward_kernel": {
    "oracle": "tests/oracle/test_entmax_cuda_gates.py",
    "sanitizer": "entmax",
-   "budget": {"owed": "no budget line"},
-   "phases": {"owed": "books no phase ledger"}
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": "manifest"
   },
   "union_backward_kernel": {
-   "oracle": {"owed": "no test grades the union solve's gradient against a reference"},
-   "sanitizer": {"owed": "no sanitizer row launches it"},
-   "budget": {"owed": "no budget line"},
-   "phases": {"owed": "books no phase ledger"}
+   "oracle": {
+    "owed": "no test grades the union solve's gradient against a reference"
+   },
+   "sanitizer": {
+    "owed": "no sanitizer row launches it"
+   },
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": "manifest"
   },
   "factor_forward_kernel": {
    "oracle": "tests/unit/test_entmax_production.py::test_production_factor_mask_ties_support_values_and_vjp",
-   "sanitizer": {"owed": "no sanitizer row launches it"},
-   "budget": {"owed": "no budget line"},
-   "phases": {"owed": "books no phase ledger"}
+   "sanitizer": {
+    "owed": "no sanitizer row launches it"
+   },
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": "manifest"
   },
   "factor_backward_kernel": {
    "oracle": "tests/unit/test_entmax_production.py::test_production_factor_mask_ties_support_values_and_vjp",
-   "sanitizer": {"owed": "no sanitizer row launches it"},
-   "budget": {"owed": "no budget line"},
-   "phases": {"owed": "books no phase ledger"}
+   "sanitizer": {
+    "owed": "no sanitizer row launches it"
+   },
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": "manifest"
   },
   "softmax_forward_kernel": {
-   "oracle": {"owed": "no test grades the softmax level against a reference (the dense-level tests are self-consistency)"},
-   "sanitizer": {"owed": "no sanitizer row launches it"},
-   "budget": {"owed": "no budget line"},
-   "phases": {"owed": "books no phase ledger"}
+   "oracle": {
+    "owed": "no test grades the softmax level against a reference (the dense-level tests are self-consistency)"
+   },
+   "sanitizer": {
+    "owed": "no sanitizer row launches it"
+   },
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": "manifest"
   },
   "softmax_backward_kernel": {
-   "oracle": {"owed": "no test grades the softmax level's gradient against a reference"},
-   "sanitizer": {"owed": "no sanitizer row launches it"},
-   "budget": {"owed": "no budget line"},
-   "phases": {"owed": "books no phase ledger"}
+   "oracle": {
+    "owed": "no test grades the softmax level's gradient against a reference"
+   },
+   "sanitizer": {
+    "owed": "no sanitizer row launches it"
+   },
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": "manifest"
   },
   "liveness_pass": {
    "oracle": "tests/unit/test_liveness_pass.py",
    "sanitizer": "liveness",
-   "budget": {"owed": "no budget line"},
-   "phases": {"owed": "books no phase ledger"}
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": {
+    "owed": "not in the committed manifests; the next milestone ratify records it"
+   }
   },
   "stamp_kernel": {
    "oracle": "tests/oracle/test_intra_kernel.py",
-   "sanitizer": {"exempt": "one thread writes one constant"},
-   "budget": {"exempt": "a footprint stamp, not a workload"},
-   "phases": {"exempt": "a footprint stamp, not a workload"}
+   "sanitizer": {
+    "exempt": "one thread writes one constant"
+   },
+   "budget": {
+    "exempt": "a footprint stamp, not a workload"
+   },
+   "phases": {
+    "exempt": "a footprint stamp, not a workload"
+   },
+   "ratified": "manifest"
   },
   "intra_kernel": {
    "oracle": "tests/oracle/test_intra_kernel.py",
    "sanitizer": "intra",
-   "budget": {"owed": "no budget line"},
-   "phases": {"owed": "books no phase ledger"}
+   "budget": {
+    "owed": "no budget line"
+   },
+   "phases": {
+    "owed": "books no phase ledger"
+   },
+   "ratified": "manifest"
   }
  }
 }

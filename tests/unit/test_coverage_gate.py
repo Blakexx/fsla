@@ -20,7 +20,6 @@ def test_an_undeclared_kernel_is_a_finding(monkeypatch):
     real = kernels.kernels()
     ghost = replace(real[0], name="ghost_kernel")
     monkeypatch.setattr(kernels, "kernels", lambda src=kernels.SRC: [*real, ghost])
-    monkeypatch.setattr(kernels, "check_manifest", lambda arch: [])
     assert any("`ghost_kernel`" in f and "is not declared" in f for f in coverage.findings())
 
 
@@ -34,3 +33,8 @@ def test_a_test_node_that_is_gone_does_not_resolve():
 def test_every_sanitizer_row_the_declaration_names_launches_a_real_test():
     rows = coverage.sanitizer_rows()
     assert rows["decode"][1] and coverage.test_node_exists(rows["decode"][0])
+
+
+def test_an_owed_obligation_is_backlog_and_not_a_finding():
+    assert not any("owes" in f for f in coverage.findings())
+    assert any("budget" in line for line in coverage.owed())
