@@ -165,6 +165,9 @@ _FAMILY_TESTS = {name: row.test for name, row in _FAMILIES.items()}
 #: in FINDINGS; the K39 card's own text is "memcheck already runs on paging" --
 #: this script's job is the three tools that never had ANY committed invocation.
 _TOOLS = ("racecheck", "synccheck", "initcheck")
+#: RACECHECK IS DEFERRED (Blake, 2026-10-01): out of the default run for every kernel, runnable only by an explicit
+#: `--tool racecheck`, until it is taken up again (docs/testing.md#the-sanitizer-lane).
+_DEFAULT_TOOLS = ("synccheck", "initcheck")
 
 #: entries here are (family, tool) pairs with a recorded reason, mirroring
 #: `docs/testing.md`'s "committed suppressions file, and an explicit skip-list
@@ -343,7 +346,7 @@ def main() -> int:
     ap.add_argument("--python", default=sys.executable)
     args = ap.parse_args()
 
-    tools = args.tool or list(_TOOLS)
+    tools = args.tool or list(_DEFAULT_TOOLS)
     families = args.family or list(_FAMILY_TESTS)
 
     failures: list = []

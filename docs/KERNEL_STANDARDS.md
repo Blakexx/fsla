@@ -432,6 +432,9 @@ hazards; a target killed under the sanitizer is a failing gate, never a resource
 be worked around. Benign races (every warp storing the same word) are not tolerated either:
 a lane with known noise is a lane nobody reads. One warp writes, the readers stand behind an
 edge.
+RACECHECK DEFERRED (Blake, 2026-10-01, overrules the racecheck half of this addendum): racecheck leaves the lane
+for every kernel until it is taken up again; synccheck, initcheck and memcheck stay, and the one-warp-writes rule
+stands (`docs/testing.md#the-sanitizer-lane`).
 
 
 ## §19 — THE COMPONENT BUDGET GATE (law, 2026-09-09, from the P81 rebuild's four reference-grade forms)

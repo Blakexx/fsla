@@ -753,6 +753,15 @@ harness; the lane's shape and its measured findings are kept here because they a
 what the successor has to reproduce, and re-deriving them from memory is how a
 finding turns into a belief.
 
+**RACECHECK IS DEFERRED (Blake, 2026-10-01: "stop doing racecheck entirely, saying we will come back to it
+later ... not just for intra, for any kernel").** The lane runs synccheck and initcheck by default; racecheck runs
+only by an explicit `--tool racecheck`, and no commit, stage or milestone waits on it. Why: it does not finish on
+our mbarrier pipelines -- the intra's declared cell timed out at 600 s with memory flat, every waiting warp's polls
+tracked inside one barrier interval -- it reports false hazards on a fence standing in for a barrier, and its
+barrier table overflows past ~20 mbarriers. What covers races meanwhile: the repeat-launch bitwise tests (they
+caught the intra's skipped-wait race), synccheck, memcheck and the per-slot oracle. What it found before stays
+recorded below.
+
 **A scheduled lane over a named subset, never a PR gate** — the shape every surveyed
 adopter converged on, because the tools cost one to two orders of magnitude and a gate
 that takes an hour gets disabled. `--error-exitcode=1`, a committed suppressions file,
