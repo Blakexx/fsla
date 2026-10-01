@@ -156,8 +156,9 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "rola_produce_forward(Tensor x, Tensor route_W, Tensor? route_bias, Tensor gain_bias, Tensor v_W, Tensor jobs, "
       "Tensor(a!) amp_read, Tensor(b!) amp_write, Tensor(c!) scale_read, Tensor(d!) scale_write, "
       "Tensor(e!) mass_read, Tensor(f!) mass_write, Tensor(g!) read_mass, Tensor(h!) g_write, Tensor(i!) v_hat, "
-      "Tensor(j!)? v_lo, Tensor(k!) v_scale, Tensor(l!) arrivals, Tensor(m!)? logit_probe, Tensor(n!)? level_probe, Tensor shapes, int levels, "
-      "int route_jobs_per_head) -> ()");
+      "Tensor(j!)? v_lo, Tensor(k!) v_scale, Tensor(l!) arrivals, Tensor(o!) words_read, Tensor(p!) words_write, "
+      "Tensor(q!) terms_read, Tensor(r!) terms_write, Tensor(s!) flags, Tensor(m!)? logit_probe, Tensor(n!)? level_probe, "
+      "Tensor shapes, int levels, int route_jobs_per_head) -> ()");
 
   m.def("rola_produce_ledger_bind(Tensor? ledger) -> ()");
 

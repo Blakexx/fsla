@@ -66,6 +66,7 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     slot within fp32 rounding of ``fold_zeta`` (``tests/integration/test_facts_pass.py``). The rows are read where the
     bundle holds them, any width, offset or dtype of the format, each level's ``[B, T, H, w_l]`` view by its strides.
     """
+    routes.refuse_sparse("the facts pass", "its deletion (the producer makes the words)")
     BH = routes.batch * routes.heads
     window_words = WINDOW // 32
     words = torch.empty((BH, 2, layout.rows, layout.words), dtype=torch.int32, device=routes.device)

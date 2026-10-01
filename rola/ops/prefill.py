@@ -185,6 +185,7 @@ def prefill(routes, values, *, modes, liveness: carry_ops.LivenessWords, unions:
     ``read_statics`` and ``write_statics``. ``weight_digits`` is the intra value
     product's declared digit count.
     """
+    routes.refuse_sparse("the prefill", "the int8 carry reads it")
     widths = routes.topology.widths
     D, d_v, length = len(widths), values.v_hat.shape[-1], routes.tokens
     if len(modes) != D:

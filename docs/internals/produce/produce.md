@@ -25,13 +25,22 @@ solve (`SolveKind`), the solve row's elements a lane, the sides it writes and wh
 (int16) a job in the launch's parameters
 (`ProduceParams::shapes`, `rola.ops.produce._shape`), read by block index: a value ptxas knows is warp-uniform, so a
 branch on it compiles its collectives inline alone, where a branch on a loaded job field gave each a guarded fallback
-subroutine as well (692 of them: cold code, KERNEL_STANDARDS §20). At most `kMaxJobs` jobs a launch.
+subroutine as well (692 of them: cold code, KERNEL_STANDARDS §20). At most `kMaxJobs` jobs a launch. A side the topology declares sparse (its
+activation has exact zeros) carries a shape bit, `sparse_read` / `sparse_write`: its `out_*` field is then its first
+row in the side's sparse buffers, and `mask_read` / `mask_write` its first word in the one-token masks (#sparse). The
+shape word's fields are `kind`, `solve`, `rows` (a solve row's elements a lane, as a power of two's exponent),
+`reads` / `writes`, `fold_read` / `fold_write` and `sparse_read` / `sparse_write`; the table's, the head, the heads,
+the width, the logit columns in, the output column or row out a side, the level and the mask words a side. A block's
+`Tile` is its first token, how many are live, and its sequence, window and place in the window.
 A ROUTE job is one head's one solve: a union level's two logit rows (read and write), a tied level's one row filling
 both planes, or one side of an independent level. A VALUE job is the heads whose channels fit one job (`256 / d_v`
 of them, at most `kMaxColumns` channels). A row is at most `kMaxWidth` leaves: the widest a warp solves.
 
 THE GRID is token tiles of `kTokenTile` tokens by jobs, the tiles fastest: the blocks resident together are one job's
-tiles, so at prefill its weights are read from DRAM once and served to the rest from L2.
+tiles, so at prefill its weights are read from DRAM once and served to the rest from L2. Over more than one token a
+tile is 32 tokens of ONE sequence (`Tile`, `make_tile`: a sequence's last tile may be partial), so a sparse level's
+word for the tile is one sequence's; at one token a tile is 32 of the flat batch's tokens, one each, so the decode
+step's projection still streams a job's weights once for the whole batch.
 
 ## <a id="accumulate"></a>The projection
 
@@ -133,6 +142,28 @@ job's warp 0 a tile): at one token H 16, project 27.7K (the weight stream under 
 row load 3.9K, threshold 4.3K, levels 10.4K, bundle 5.3K. The row load and the levels are straight-line code (cold
 at one token), and at prefill the solve's special-function and latency chains sit beside the projection without
 overlapping it (one CTA an SM): the next levers, priced when the bundle's form lands.
+
+## <a id="sparse"></a>A sparse level
+
+A sparse side's digits are the same digits a dense side writes (`write_side`'s unit-max form, u8 or f16); only their
+placement is the format's (`docs/internals/routing/sparse.md`): the WORDS, a bit a (token, digit), digit-major
+`[B, H, rows, nw]`, and the TERMS, each (digit, window) slot holding the window's live digits from its front in token
+order, `[B, H, rows, windows, slot]`. Dense levels go to each side's packed plane, which holds only them.
+
+OVER MORE THAN ONE TOKEN, a tile at a time (`pack_side`, after the tile's rows): each row's warp stages the side's
+digits in its own logit row, already spent -- the solve read the row into registers before any digit is written, a
+side `kSideBytes` in. Then (1) THE WORDS by a ballot transpose: warp `g` takes digits `32 g ..`, and for each one a
+ballot over the lanes as the tile's tokens gives the digit's word for the tile, written to the words and kept in
+shared memory; the sequence's last tile also zeroes the words past it (a row rounds to four words), so no bit past
+`T` reads live. (2) THE LOOK-BACK: the tile publishes (a fence, then its bit in the window's flag word), waits until
+every earlier tile of its window has published, and counts each digit's live tokens in those tiles off their words.
+A tile waits only on lower block indices, which the hardware dispatches first, so the wait cannot close a cycle; the
+window's last tile past its wait resets the window's two counters for the next call. (3) THE TERMS: each live digit
+lands at its (digit, window) slot + the digit's count in the earlier tiles + its rank among the tile's live tokens
+(a popcount of the word below its lane), so a slot is the window's live digits from its front in token order.
+
+AT ONE TOKEN (the decode step) each row writes its own form in `write_side`, no tile pass: a mask word a register (a
+ballot), and each live digit at its rank among the row's live digits, the running popcount of the words before it.
 
 ## <a id="finish"></a>The head's finish
 

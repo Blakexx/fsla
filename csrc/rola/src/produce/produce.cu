@@ -5,7 +5,9 @@
 
 #include "common/torch_seam.cuh"
 
+#include <algorithm>
 #include <cstring>
+#include <tuple>
 
 #include "common/arch_runtime.cuh"
 #include "common/burst.cuh"
@@ -36,10 +38,23 @@ __device__ __forceinline__ int64_t slot_of(const ProduceParams& p, int token, in
 __device__ __forceinline__ Job load_job(const ProduceParams& p, int index) {
   const int shape = p.shapes[index];
   const int32_t* row = p.jobs + static_cast<int64_t>(index) * kJobFields;
-  return Job{(shape >> 5) & 1, shape & 7,        (shape >> 3) & 3,   (shape >> 6) & 1,
-             (shape >> 7) & 1, row[kFieldHead],  row[kFieldHeads],   row[kFieldWidth],
-             row[kFieldIn0],   row[kFieldIn1],   row[kFieldOutRead], row[kFieldOutWrite],
-             row[kFieldLevel], (shape >> 8) & 1, (shape >> 9) & 1};
+  return Job{(shape >> 5) & 1,  shape & 7,           (shape >> 3) & 3,    (shape >> 6) & 1,
+             (shape >> 7) & 1,  row[kFieldHead],     row[kFieldHeads],    row[kFieldWidth],
+             row[kFieldIn0],    row[kFieldIn1],      row[kFieldOutRead],  row[kFieldOutWrite],
+             row[kFieldLevel],  (shape >> 8) & 1,    (shape >> 9) & 1,    (shape >> 10) & 1,
+             (shape >> 11) & 1, row[kFieldMaskRead], row[kFieldMaskWrite]};
+}
+
+//: THE BLOCK'S TILE: a sequence's 32 tokens (a call over more than one token: a tile never straddles two sequences,
+//: so its words are one sequence's), or 32 of the flat batch's (one token each). -- see docs/internals/produce/produce.md#sparse
+__device__ __forceinline__ Tile make_tile(const ProduceParams& p, int index) {
+  if (p.tiles_per_seq == 0) {
+    const int token0 = index * kTokenTile;
+    return Tile{token0, min(kTokenTile, p.BT - token0), 0, 0, 0};
+  }
+  const int b = index / p.tiles_per_seq, in_seq = index - b * p.tiles_per_seq;
+  return Tile{b * p.T + in_seq * kTokenTile, min(kTokenTile, p.T - in_seq * kTokenTile), b,
+              in_seq / kWindowTiles, in_seq % kWindowTiles};
 }
 
 //: A job's projection columns: a route job's row (both rows of a union's), or a value job's heads' channels.
@@ -101,7 +116,7 @@ struct KBlock {
 //: @burst
 template <int PerWarp, int Groups>
 __device__ __forceinline__ void project(const ProduceParams& p, const Job& job, int token0,
-                                        int columns, int tile0, int slice, int slices,
+                                        int live, int columns, int tile0, int slice, int slices,
                                         float (&acc)[PerWarp][Groups][4]) {
   const int lane = static_cast<int>(threadIdx.x) & 31, g = lane >> 2, q = lane & 3;
   const __nv_bfloat16* w_run[PerWarp][2];
@@ -120,7 +135,7 @@ __device__ __forceinline__ void project(const ProduceParams& p, const Job& job, 
   rola::static_for<Groups>([&](auto N) {
     constexpr int n = decltype(N)::value;
     const int token = token0 + n * 8 + g;
-    x_live[n] = token < p.BT;
+    x_live[n] = n * 8 + g < live;
     x_run[n] = p.x + static_cast<int64_t>(x_live[n] ? token : 0) * p.hidden + 8 * q;
   });
   const int blocks = (p.hidden + kKBlock - 1) / kKBlock;
@@ -168,12 +183,13 @@ __device__ __forceinline__ void project(const ProduceParams& p, const Job& job, 
 //: One warp's share, projected and stored: the logits (+ bias), or a slice's partials. -- see docs/internals/produce/produce.md#accumulate
 template <int PerWarp, int Groups>
 __device__ __forceinline__ void project_share(const ProduceParams& p, const Job& job, int token0,
-                                              int columns, const Tiling& t, float* logits) {
+                                              int live, int columns, const Tiling& t,
+                                              float* logits) {
   const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
   const int group = warp / t.slices, slice = warp % t.slices;
   if (group >= t.groups) return;
   float acc[PerWarp][Groups][4] = {};
-  project<PerWarp, Groups>(p, job, token0, columns, group * PerWarp, slice, t.slices, acc);
+  project<PerWarp, Groups>(p, job, token0, live, columns, group * PerWarp, slice, t.slices, acc);
   const int g = lane >> 2, q = lane & 3;
   const int base = t.slices == 1 ? 0 : kPartialBase + slice * t.groups * 16;
   const float* bias = t.slices == 1 ? bias_row(p, job) : nullptr;
@@ -214,16 +230,17 @@ __device__ void reduce_slices(const ProduceParams& p, const Job& job, int column
 
 //: THE PROJECTION: the job's columns for the tile's tokens, fp32 (+ bias), into the logit rows. The warps' share and
 //: the tile's live token groups (three round up to four) choose the burst once. -- see docs/internals/produce/produce.md#accumulate
-__device__ void accumulate(const ProduceParams& p, const Job& job, int token0, float* logits) {
+__device__ void accumulate(const ProduceParams& p, const Job& job, const Tile& tile,
+                           float* logits) {
   const int columns = job_columns(p, job);
   const Tiling t = tiling(columns);
-  const int live_groups = min(kTokenGroups, (p.BT - token0 + 7) / 8);
+  const int live_groups = min(kTokenGroups, (tile.live + 7) / 8);
   const int share = t.per_warp == 1 ? 0 : t.per_warp == 2 ? 1 : 2;
   const int groups = live_groups == 1 ? 0 : live_groups == 2 ? 1 : 2;
   rola::uniform_switch<3>(share, [&](auto S) {
     rola::uniform_switch<3>(groups, [&](auto G) {
-      project_share<1 << decltype(S)::value, 1 << decltype(G)::value>(p, job, token0, columns, t,
-                                                                      logits);
+      project_share<1 << decltype(S)::value, 1 << decltype(G)::value>(
+          p, job, tile.token0, tile.live, columns, t, logits);
     });
   });
   if (t.slices > 1) {
@@ -233,28 +250,51 @@ __device__ void accumulate(const ProduceParams& p, const Job& job, int token0, f
 }
 
 //: The job's logits as computed, for its gate: written only when the probe is asked for.
-__device__ void probe_logits(const ProduceParams& p, int job_index, int token0, int columns,
+__device__ void probe_logits(const ProduceParams& p, int job_index, const Tile& tile, int columns,
                              const float* logits) {
   float* out = p.logit_probe + static_cast<int64_t>(job_index) * p.BT * kMaxColumns;
 #pragma unroll 1
   for (int i = static_cast<int>(threadIdx.x); i < kTokenTile * columns; i += kProduceThreads) {
-    const int token = token0 + i / columns;
-    if (token < p.BT) {
+    const int token = tile.token0 + i / columns;
+    if (i / columns < tile.live) {
       out[static_cast<int64_t>(token) * kMaxColumns + i % columns] =
           logits[(i / columns) * kLogitStride + i % columns];
     }
   }
 }
 
-//: One digit of a row plane, in the plane's form: a u8 byte, or an f16 of the unit value.
-__device__ __forceinline__ void write_digit(const ProduceParams& p, uint8_t* plane, int64_t index,
-                                            float unit) {
+//: One digit in the format's form, as its bits: a u8 byte, or an f16 of the unit value. Zero is a dead digit.
+__device__ __forceinline__ uint32_t digit_bits(const ProduceParams& p, float unit) {
+  return p.row_form == kRowsF16 ? static_cast<uint32_t>(__half_as_ushort(__float2half_rn(unit)))
+                                : __float2uint_rn(unit * 255.0f);
+}
+
+__device__ __forceinline__ void store_digit(const ProduceParams& p, uint8_t* base, int64_t index,
+                                            uint32_t bits) {
   if (p.row_form == kRowsF16) {
-    reinterpret_cast<__half*>(plane)[index] = __float2half_rn(unit);
+    reinterpret_cast<uint16_t*>(base)[index] = static_cast<uint16_t>(bits);
   } else {
-    plane[index] = static_cast<uint8_t>(__float2uint_rn(unit * 255.0f));
+    base[index] = static_cast<uint8_t>(bits);
   }
 }
+
+__device__ __forceinline__ uint32_t load_digit(const ProduceParams& p, const uint8_t* base,
+                                               int index) {
+  return p.row_form == kRowsF16 ? reinterpret_cast<const uint16_t*>(base)[index] : base[index];
+}
+
+//: WHERE A SIDE'S DIGITS GO: a dense level's packed plane row; a sparse level's staged row (a call over more than one
+//: token: the spent logit row, packed by `pack_side`); or, at one token, the token's mask and terms.
+struct SideDest {
+  uint8_t* plane;
+  int64_t first;
+  uint8_t* stage;
+  int32_t* mask;
+  uint8_t* terms;
+};
+
+//: A side's bytes in its token's spent logit row: the solve has read the row into registers before any is written.
+constexpr int kSideBytes = kMaxWidth * 2;
 
 //: A value the whole warp holds, reduced by a butterfly: every lane ends with the same bits.
 template <class Op>
@@ -396,9 +436,9 @@ __device__ __forceinline__ void solve_row(const Job& job, float* row, bool live,
 //: -- see docs/internals/produce/produce.md#bundle
 template <int IPT>
 __device__ __forceinline__ void write_side(const ProduceParams& p, const float (&level)[IPT],
-                                           int width, bool live, int lane, uint8_t* plane,
-                                           int64_t first, float* scale, float* mass, int64_t at,
-                                           bool reduce_max, float top, bool fold, bool applied) {
+                                           int width, bool live, int lane, const SideDest& dest,
+                                           float* scale, float* mass, int64_t at, bool reduce_max,
+                                           float top, bool fold, bool applied) {
   float m = top, sum = 1.0f;
   if (reduce_max) {
     m = 0.0f;
@@ -413,10 +453,29 @@ __device__ __forceinline__ void write_side(const ProduceParams& p, const float (
     sum = warp_all(sum, [](float a, float b) { return a + b; });
   }
   const float unit = fmaxf(m, 1e-30f);
+  if (dest.mask != nullptr) {
+    //: one token: its mask word a register, and each live digit at its rank among the row's live digits
+    uint32_t below = 0u;
 #pragma unroll
-  for (int i = 0; i < IPT; ++i) {
-    const int col = lane + 32 * i;
-    if (live && col < width) write_digit(p, plane, first + col, __fdividef(level[i], unit));
+    for (int i = 0; i < IPT; ++i) {
+      const int col = lane + 32 * i;
+      const uint32_t bits = col < width ? digit_bits(p, __fdividef(level[i], unit)) : 0u;
+      const uint32_t word = __ballot_sync(0xffffffffu, bits != 0u);
+      if (live && lane == i && 32 * i < width) dest.mask[i] = static_cast<int32_t>(word);
+      if (live && bits != 0u) {
+        store_digit(p, dest.terms, below + __popc(word & ((1u << lane) - 1u)), bits);
+      }
+      below += __popc(word);
+    }
+  } else {
+    uint8_t* const base = dest.stage != nullptr ? dest.stage : dest.plane;
+    const int64_t first = dest.stage != nullptr ? 0 : dest.first;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i) {
+      const int col = lane + 32 * i;
+      if (live && col < width)
+        store_digit(p, base, first + col, digit_bits(p, __fdividef(level[i], unit)));
+    }
   }
   if (live && lane == 0) {
     scale[at] = applied && fold && sum > 0.0f ? m / sum : m;
@@ -444,15 +503,33 @@ __device__ void route_row(const ProduceParams& p, const Job& job, int job_index,
     }
   }
   const int64_t slot = slot_of(p, token, job.head);
-  const int64_t first = slot * p.rows;
   const int64_t at = slot * p.D + job.level;
+  const int esize = p.row_form == kRowsF16 ? 2 : 1;
+
+  auto dest = [&](int side) {
+    const bool sparse = side == 0 ? job.sparse_read != 0 : job.sparse_write != 0;
+    const int out = side == 0 ? job.out_read : job.out_write;
+    SideDest d{side == 0 ? p.amp_read : p.amp_write,
+               slot * (side == 0 ? p.rows_read : p.rows_write) + out, nullptr, nullptr, nullptr};
+    if (sparse && p.tiles_per_seq != 0) {
+      d.stage = reinterpret_cast<uint8_t*>(row) + side * kSideBytes;
+    } else if (sparse) {
+      d.mask = (side == 0 ? p.words_read : p.words_write)
+               + slot * (side == 0 ? p.mask_words_read : p.mask_words_write)
+               + (side == 0 ? job.mask_read : job.mask_write);
+      d.terms = (side == 0 ? p.terms_read : p.terms_write)
+                + (slot * (side == 0 ? p.sparse_rows_read : p.sparse_rows_write) + out) * esize;
+    }
+    return d;
+  };
+
   if (job.reads) {
-    write_side<IPT>(p, read, job.width, live, lane, p.amp_read, first + job.out_read, p.scale_read,
-                    p.mass_read, at, reduce_max, top, job.fold_read != 0, false);
+    write_side<IPT>(p, read, job.width, live, lane, dest(0), p.scale_read, p.mass_read, at,
+                    reduce_max, top, job.fold_read != 0, false);
   }
   if (job.writes) {
-    write_side<IPT>(p, write, job.width, live, lane, p.amp_write, first + job.out_write,
-                    p.scale_write, p.mass_write, at, reduce_max, top, job.fold_write != 0, true);
+    write_side<IPT>(p, write, job.width, live, lane, dest(1), p.scale_write, p.mass_write, at,
+                    reduce_max, top, job.fold_write != 0, true);
   }
 }
 
@@ -484,7 +561,8 @@ __device__ __forceinline__ float gain_logit(const ProduceParams& p, const Job& j
 //: THE HEAD'S FINISH, by the last of its route jobs in the tile to arrive: `read_mass`, the product of the levels'
 //: read masses, and `g_write`, the gain's softplus times the write masses -- the other jobs' masses read past the
 //: fence, coherently. -- see docs/internals/produce/produce.md#finish
-__device__ void finish_head(const ProduceParams& p, const Job& job, int tile, int token0) {
+__device__ void finish_head(const ProduceParams& p, const Job& job, int tile, const Tile& span) {
+  const int token0 = span.token0;
   __shared__ int s_last;
   __threadfence();
   __syncthreads();
@@ -495,7 +573,7 @@ __device__ void finish_head(const ProduceParams& p, const Job& job, int tile, in
   if (!__any_sync(0xffffffffu, s_last != 0)) return;
   __threadfence();
   const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
-  const int live = min(kTokenTile, p.BT - token0);
+  const int live = span.live;
 #pragma unroll 1
   for (int pass = 0; pass < (live + kProduceWarps - 1) / kProduceWarps; ++pass) {
     const int t = pass * kProduceWarps + warp;
@@ -520,10 +598,11 @@ __device__ void finish_head(const ProduceParams& p, const Job& job, int tile, in
 //: THE VALUE DIGITS of the job's heads for the tile's tokens: a warp a (token, head), its lanes over the channels --
 //: the channel max |v| as the scale, and each channel's digits against it at the digit count's full scale, s8 alone
 //: or the s16's s8 high byte and u8 low byte. -- see docs/internals/produce/produce.md#value-rows
-__device__ void value_rows(const ProduceParams& p, const Job& job, int token0,
+__device__ void value_rows(const ProduceParams& p, const Job& job, const Tile& tile,
                            const float* logits) {
   const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
-  const int pairs = min(kTokenTile, p.BT - token0) * job.heads;
+  const int token0 = tile.token0;
+  const int pairs = tile.live * job.heads;
   const float full = p.v_lo != nullptr ? 32767.0f : 127.0f;
 #pragma unroll 1
   for (int pass = 0; pass < (pairs + kProduceWarps - 1) / kProduceWarps; ++pass) {
@@ -551,39 +630,137 @@ __device__ void value_rows(const ProduceParams& p, const Job& job, int token0,
   }
 }
 
+//: A SPARSE SIDE'S TILE INTO THE FORMAT, a call over more than one token: the digit words by a ballot transpose of the
+//: tile's staged rows (warp g the digits 32g.., a ballot a digit over the tokens), published; each digit's live count
+//: in the window's earlier tiles off their words once they are published (the LOOK-BACK: a tile waits only on lower
+//: block indices, which run first); then each live digit at its slot + that count + its rank among the tile's.
+//: -- see docs/internals/produce/produce.md#sparse
+__device__ void pack_side(const ProduceParams& p, const Job& job, int job_index, const Tile& tile,
+                          int side, const float* logits) {
+  __shared__ uint32_t s_words[kMaxWidth];
+  __shared__ int s_base[kMaxWidth];
+  const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
+  const int width = job.width;
+  const int row0 = side == 0 ? job.out_read : job.out_write;
+  const int rows = side == 0 ? p.sparse_rows_read : p.sparse_rows_write;
+  int32_t* const words = side == 0 ? p.words_read : p.words_write;
+  uint8_t* const terms = side == 0 ? p.terms_read : p.terms_write;
+  const int64_t bh = static_cast<int64_t>(tile.b) * p.H + job.head;
+  const int seq_tile = tile.window * kWindowTiles + tile.slot_tile;
+  const uint8_t* const stage = reinterpret_cast<const uint8_t*>(logits) + side * kSideBytes;
+  const bool mine_group = warp * 32 < width;
+
+  if (mine_group) {
+    uint32_t mine = 0u;
+#pragma unroll 1
+    for (int d = 0; d < 32; ++d) {
+      const int col = warp * 32 + d;
+      const bool on = lane < tile.live && col < width
+                      && load_digit(p, stage + lane * kLogitStride * 4, col) != 0u;
+      const uint32_t word = __ballot_sync(0xffffffffu, on);
+      mine = lane == d ? word : mine;
+    }
+    const int col = warp * 32 + lane;
+    if (col < width) {
+      s_words[col] = mine;
+      int32_t* const run = words + (bh * rows + row0 + col) * p.nw;
+      run[seq_tile] = static_cast<int32_t>(mine);
+      //: the sequence's last tile zeroes the words past it (the row rounds to four): no phantom live token
+      if (seq_tile == p.tiles_per_seq - 1) {
+#pragma unroll 1
+        for (int j = seq_tile + 1; j < p.nw; ++j) run[j] = 0;
+      }
+    }
+  }
+
+  __threadfence();
+  __syncthreads();
+  int* const flag =
+      p.flags
+      + (((static_cast<int64_t>(job_index) * 2 + side) * p.B + tile.b) * p.windows + tile.window)
+            * 2;
+  const int tiles_here = min(kWindowTiles, p.tiles_per_seq - tile.window * kWindowTiles);
+  if (threadIdx.x == 0) {
+    atomicOr(flag, 1 << tile.slot_tile);
+    const int want = (1 << tile.slot_tile) - 1;
+#pragma unroll 1
+    while ((atomicOr(flag, 0) & want) != want) __nanosleep(64);
+  }
+  __syncthreads();
+  __threadfence();
+
+  if (static_cast<int>(threadIdx.x) < width) {
+    const int32_t* run =
+        words + (bh * rows + row0 + threadIdx.x) * p.nw + tile.window * kWindowTiles;
+    int base = 0;
+#pragma unroll 1
+    for (int j = 0; j < tile.slot_tile; ++j) base += __popc(static_cast<uint32_t>(__ldcg(run + j)));
+    s_base[threadIdx.x] = base;
+  }
+  //: the window's last tile past its wait resets the window's flags for the next call
+  if (threadIdx.x == 0 && atomicAdd(flag + 1, 1) + 1 == tiles_here) {
+    atomicExch(flag, 0);
+    atomicExch(flag + 1, 0);
+  }
+  __syncthreads();
+
+  if (mine_group) {
+#pragma unroll 1
+    for (int d = 0; d < 32 && warp * 32 + d < width; ++d) {
+      const int col = warp * 32 + d;
+      const uint32_t word = s_words[col];
+      if (((word >> lane) & 1u) != 0u) {
+        const int64_t at = ((bh * rows + row0 + col) * p.windows + tile.window) * p.slot
+                           + s_base[col] + __popc(word & ((1u << lane) - 1u));
+        store_digit(p, terms, at, load_digit(p, stage + lane * kLogitStride * 4, col));
+      }
+    }
+  }
+}
+
 //: THE GRID: token tiles fastest, so the blocks resident together share one job's weights in L2.
 __global__ __launch_bounds__(kProduceThreads, 1) void produce_kernel(ProduceParams p) {
-  const int job_index = static_cast<int>(blockIdx.y), tile = static_cast<int>(blockIdx.x);
+  const int job_index = static_cast<int>(blockIdx.y), tile_index = static_cast<int>(blockIdx.x);
   const Job job = load_job(p, job_index);
-  const int token0 = tile * kTokenTile;
+  const Tile tile = make_tile(p, tile_index);
   extern __shared__ float logits[];
   __shared__ long long s_clock[kProduceWarps][Clock::kRow];
   const int warp = static_cast<int>(threadIdx.x) >> 5;
   Clock clock(&s_clock[warp][0], static_cast<int>(threadIdx.x) & 31);
   clock.lap(kPhaseJob);
-  accumulate(p, job, token0, logits);
+  accumulate(p, job, tile, logits);
   clock.lap(kPhaseProject);
   __syncthreads();
   clock.lap(kPhaseBarrier);
-  if (p.logit_probe != nullptr) probe_logits(p, job_index, token0, job_columns(p, job), logits);
+  if (p.logit_probe != nullptr) probe_logits(p, job_index, tile, job_columns(p, job), logits);
+
   if (job.kind == kJobRoute) {
     //: every warp makes the same passes, a count of the tile's live tokens (uniform), so the solve's collectives sit
     //: under no branch ptxas cannot prove warp-uniform (KERNEL_STANDARDS §20)
-    const int live = min(kTokenTile, p.BT - token0);
+    const int live = tile.live;
     const int passes = (live + kProduceWarps - 1) / kProduceWarps;
     rola::uniform_switch<4>(job.rows, [&](auto I) {
 #pragma unroll 1
       for (int pass = 0; pass < passes; ++pass) {
         const int row = pass * kProduceWarps + warp;
-        route_row<1 << decltype(I)::value>(p, job, job_index, token0 + row, row < live,
+        route_row<1 << decltype(I)::value>(p, job, job_index, tile.token0 + row, row < live,
                                            logits + row * kLogitStride, threadIdx.x & 31, clock);
         clock.lap(kPhaseBundle);
       }
     });
-    finish_head(p, job, tile, token0);
+    if (p.tiles_per_seq != 0) {
+#pragma unroll 1
+      for (int side = 0; side < 2; ++side) {
+        if ((side == 0 ? job.sparse_read : job.sparse_write) != 0) {
+          __syncthreads();
+          pack_side(p, job, job_index, tile, side, logits);
+        }
+      }
+    }
+    finish_head(p, job, tile_index, tile);
     clock.lap(kPhaseFinish);
   } else {
-    value_rows(p, job, token0, logits);
+    value_rows(p, job, tile, logits);
     clock.lap(kPhaseValues);
   }
   clock.publish(p.ledger, job_index, kProduceWarps, warp);
@@ -628,8 +805,10 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                           Tensor amp_write, Tensor scale_read, Tensor scale_write, Tensor mass_read,
                           Tensor mass_write, Tensor read_mass, Tensor g_write, Tensor v_hat,
                           std::optional<Tensor> v_lo, Tensor v_scale, Tensor arrivals,
-                          std::optional<Tensor> logit_probe, std::optional<Tensor> level_probe,
-                          Tensor shapes, int64_t levels, int64_t route_jobs_per_head) {
+                          Tensor words_read, Tensor words_write, Tensor terms_read,
+                          Tensor terms_write, Tensor flags, std::optional<Tensor> logit_probe,
+                          std::optional<Tensor> level_probe, Tensor shapes, int64_t levels,
+                          int64_t route_jobs_per_head) {
   check_arch_table();
   detail::check_bf16(x, "x");
   detail::check_bf16(route_W, "route_W");
@@ -670,12 +849,42 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   STD_TORCH_CHECK(
       (f16 || amp_read.scalar_type() == Dtype::Byte)
           && amp_write.scalar_type() == amp_read.scalar_type() && amp_read.is_contiguous()
-          && amp_write.is_contiguous() && amp_read.dim() == 4 && amp_read.size(1) == H
-          && amp_read.size(0) * amp_read.size(2) == BT && amp_read.sizes() == amp_write.sizes(),
-      "the rows are head-major [B, H, T, rows] u8 or f16, contiguous, both sides alike");
-  const int64_t rows = amp_read.size(3);
-  STD_TORCH_CHECK(amp_read.numel() == BT * H * rows, "the rows hold ", amp_read.numel(),
-                  " digits; ", BT, " tokens of ", H, " heads of ", rows, " need ", BT * H * rows);
+          && amp_write.is_contiguous() && amp_read.dim() == 4 && amp_write.dim() == 4
+          && amp_read.size(1) == H && amp_read.size(0) * amp_read.size(2) == BT
+          && amp_write.sizes().slice(0, 3) == amp_read.sizes().slice(0, 3),
+      "the dense levels' rows are head-major [B, H, T, rows] u8 or f16, contiguous, both sides "
+      "one [B, H, T]");
+  const int64_t B = amp_read.size(0), T = amp_read.size(2);
+  //: the sparse levels (produce.md#sparse): the digit form over more than one token, the token form at one
+  const int64_t nw = (((T + kTokenTile - 1) / kTokenTile) + 3) / 4 * 4;
+  const int64_t slot =
+      std::min<int64_t>(kTermWindow, (T + kTokenTile - 1) / kTokenTile * kTokenTile);
+  const int64_t windows = (T + slot - 1) / slot;
+  for (auto [w, t, name] :
+       {std::tuple{&words_read, &terms_read, "read"}, {&words_write, &terms_write, "write"}}) {
+    STD_TORCH_CHECK(w->scalar_type() == Dtype::Int && w->is_contiguous() && t->is_contiguous()
+                        && t->scalar_type() == amp_read.scalar_type(),
+                    "the ", name,
+                    " side's sparse words are contiguous int32 and its terms "
+                    "contiguous in the rows' dtype");
+    if (T == 1) {
+      STD_TORCH_CHECK(w->dim() == 3 && t->dim() == 3 && w->size(0) == B && w->size(1) == H
+                          && t->size(0) == B && t->size(1) == H,
+                      "at one token the ", name,
+                      " side's sparse levels are a mask [B, H, words] and "
+                      "terms [B, H, rows]");
+    } else {
+      STD_TORCH_CHECK(w->dim() == 4 && t->dim() == 5 && w->size(0) == B && w->size(1) == H
+                          && w->size(3) == nw && t->sizes().slice(0, 3) == w->sizes().slice(0, 3)
+                          && t->size(3) == windows && t->size(4) == slot,
+                      "the ", name, " side's sparse levels are words [B, H, rows, ", nw,
+                      "] and terms [B, H, rows, ", windows, ", ", slot, "]");
+    }
+  }
+  const int64_t tiles_per_seq = T == 1 ? 0 : (T + kTokenTile - 1) / kTokenTile;
+  STD_TORCH_CHECK(flags.is_cuda() && flags.scalar_type() == Dtype::Int && flags.is_contiguous()
+                      && (T == 1 || flags.numel() >= jobs.size(0) * 2 * B * windows * 2),
+                  "flags holds a window's two counters a (job, side, sequence, window)");
   for (auto [t, name] : {std::pair{&scale_read, "scale_read"},
                          {&scale_write, "scale_write"},
                          {&mass_read, "mass_read"},
@@ -688,7 +897,7 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   STD_TORCH_CHECK(
       v_hat.scalar_type() == Dtype::Char && v_hat.is_contiguous() && v_hat.numel() == BT * H * d_v,
       "v_hat is [BT, H, d_v] int8");
-  const int64_t tiles = (BT + kTokenTile - 1) / kTokenTile;
+  const int64_t tiles = T == 1 ? (BT + kTokenTile - 1) / kTokenTile : B * tiles_per_seq;
   STD_TORCH_CHECK(arrivals.scalar_type() == Dtype::Int && arrivals.is_contiguous()
                       && arrivals.numel() >= tiles * H,
                   "arrivals holds a counter a (token tile, head): ", tiles * H);
@@ -713,6 +922,11 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.jobs = jobs.const_data_ptr<int32_t>();
   p.amp_read = reinterpret_cast<uint8_t*>(amp_read.mutable_data_ptr());
   p.amp_write = reinterpret_cast<uint8_t*>(amp_write.mutable_data_ptr());
+  p.words_read = words_read.mutable_data_ptr<int32_t>();
+  p.words_write = words_write.mutable_data_ptr<int32_t>();
+  p.terms_read = reinterpret_cast<uint8_t*>(terms_read.mutable_data_ptr());
+  p.terms_write = reinterpret_cast<uint8_t*>(terms_write.mutable_data_ptr());
+  p.flags = flags.mutable_data_ptr<int32_t>();
   p.scale_read = scale_read.mutable_data_ptr<float>();
   p.scale_write = scale_write.mutable_data_ptr<float>();
   p.mass_read = mass_read.mutable_data_ptr<float>();
@@ -732,12 +946,22 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                   " jobs; this launch runs ", jobs.size(0));
   p.ledger = detail::g_ledger;
   p.BT = static_cast<int>(BT);
-  p.T = static_cast<int>(amp_read.size(2));
+  p.T = static_cast<int>(T);
+  p.B = static_cast<int>(B);
+  p.tiles_per_seq = static_cast<int>(tiles_per_seq);
+  p.nw = static_cast<int>(nw);
+  p.windows = static_cast<int>(windows);
+  p.slot = static_cast<int>(slot);
+  p.sparse_rows_read = static_cast<int>(terms_read.size(2));
+  p.sparse_rows_write = static_cast<int>(terms_write.size(2));
+  p.mask_words_read = T == 1 ? static_cast<int>(words_read.size(2)) : 0;
+  p.mask_words_write = T == 1 ? static_cast<int>(words_write.size(2)) : 0;
   p.hidden = static_cast<int>(hidden);
   p.H = static_cast<int>(H);
   p.C = static_cast<int>(C);
   p.G = static_cast<int>(gain_bias.numel() / H);
-  p.rows = static_cast<int>(rows);
+  p.rows_read = static_cast<int>(amp_read.size(3));
+  p.rows_write = static_cast<int>(amp_write.size(3));
   p.D = static_cast<int>(levels);
   p.d_v = static_cast<int>(d_v);
   p.row_form = f16 ? kRowsF16 : kRowsU8;

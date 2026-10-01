@@ -183,15 +183,20 @@ def bundle_of(spec, drawn, tokens: slice = slice(None)):
     from rola.engine.facts import liveness as lv
     from rola.ops import facts as facts_ops
     from rola.routing.factors import RouteFactors
-    from rola.routing.types import OpaqueRouting, Topology
+    from rola.routing.types import EntmaxActivation, IndependentRouting, SoftmaxActivation, Topology
     from rola.values import Values
 
-    topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
+    declared = spec.declared_sparsity()
+
+    def side(sparse: bool):
+        return EntmaxActivation(alpha=1.5) if sparse else SoftmaxActivation()
+
+    topology = Topology(levels=tuple(IndependentRouting(width=w, read=side(sparse[0]), write=side(sparse[1]))
+                                     for w, sparse in zip(spec.widths, declared)))
     routes = RouteFactors.from_levels(topology, [x[:, tokens] for x in drawn.read],
                                       [x[:, tokens] for x in drawn.write], drawn.gain[:, tokens].float())
     values = Values.from_projection(drawn.v[:, tokens])
     layout = facts_ops.call_layout(routes)
-    declared = spec.declared_sparsity()
     statics = tuple(lv.side_statics(layout, tuple(not sparse[side] for sparse in declared), topology.widths)
                     for side in (0, 1))
     return routes, values, layout, statics

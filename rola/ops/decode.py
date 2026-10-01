@@ -442,6 +442,7 @@ def _decode_step(
     rows reach the kernel exactly as the bundle holds them.
     """
     guard_no_grad((*routes.tensors(), *values.tensors(), *(decay.dials if decay is not None else ())))
+    routes.refuse_sparse("the decode step", "its port onto the token form")
     logical_d_v = values.d_v
     v_hat = pad_v(values.v_hat, config.d_v)
     v_lo = None if values.v_lo is None else pad_v(values.v_lo, config.d_v)

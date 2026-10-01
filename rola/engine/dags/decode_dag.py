@@ -112,6 +112,7 @@ def build_plan(f):
     (docs/internals/decode/decode_fold.md).
     """
     routes, values, geometry = f["routes"], f["values"], f["geometry"]
+    routes.refuse_sparse("the decode step", "its port onto the token form")
     return DecodePlan(
         config=geometry, heads=routes.heads, read=routes.amp_read, write=routes.amp_write,
         read_scale=routes.scale_read, write_scale=routes.scale_write,
