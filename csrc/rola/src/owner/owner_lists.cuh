@@ -27,8 +27,11 @@ template <class C>
 struct ListTenants {
   uint32_t words[2][C::kWordRows][kWindowWords];
   uint32_t partial[2][16][kWindowWords];
+  uint32_t sector_partial[C::RD / 32][16][kWindowWords];
   uint32_t uni[2][kWindowWords];
+  uint32_t sector_uni[C::RD / 32][kWindowWords];
   uint16_t base[2][kWindowWords];
+  uint16_t token_of[2][kWindow];
   uint16_t count[C::kWordRows];
   uint16_t entries[2][kWarps][kListCapacity];
   uint16_t total[2][kWarps];
@@ -166,16 +169,23 @@ __device__ void window_lists(ListTenants<C>& sm, const OwnerParams& p, int buf, 
       "the half-warps take rows and lists in pairs, so every loop around a shuffle has one trip count");
   constexpr int kRowTrips = C::kWordRows / 16;
   const int warp = tid >> 5, lane = tid & 31, k = tid & 15, q = tid >> 4;
-  uint32_t part[2] = {0u, 0u};
+  constexpr int kSectors = C::RD / 32;
+  uint32_t part[2] = {0u, 0u}, sector[kSectors] = {};
 #pragma unroll
   for (int i = 0; i < kRowTrips; ++i) {
     const int row = q + 16 * i;
-    part[row_is_write<C>(row) ? 0 : 1] |= sm.words[buf][row][k];
-    const int n = half_sum(row_sparse<C>(p, row) ? __popc(sm.words[buf][row][k]) : 32);
+    const uint32_t w = sm.words[buf][row][k];
+    part[row_is_write<C>(row) ? 0 : 1] |= w;
+#pragma unroll
+    for (int c = 0; c < kSectors; ++c)
+      if (row >= 32 * c && row < 32 * c + 32) sector[c] |= w;
+    const int n = half_sum(row_sparse<C>(p, row) ? __popc(w) : 32);
     if (k == 0) sm.count[row] = static_cast<uint16_t>(n);
   }
   sm.partial[0][q][k] = part[0];
   sm.partial[1][q][k] = part[1];
+#pragma unroll
+  for (int c = 0; c < kSectors; ++c) sm.sector_partial[c][q][k] = sector[c];
   __syncthreads();
 
   if (warp == 0) {
@@ -185,8 +195,20 @@ __device__ void window_lists(ListTenants<C>& sm, const OwnerParams& p, int buf, 
     for (int i = 0; i < 16; ++i) u |= sm.partial[side][i][k];
     if ((side == 0 ? p.sparse_write : p.sparse_read) == 0) u = ~0u;
     const int c = __popc(u);
+    const int base = half_prefix(c, lane) - c;
     sm.uni[side][k] = u;
-    sm.base[side][k] = static_cast<uint16_t>(half_prefix(c, lane) - c);
+    sm.base[side][k] = static_cast<uint16_t>(base);
+#pragma unroll 1
+    for (int i = 0; u != 0u; ++i) {
+      sm.token_of[side][base + i] = static_cast<uint16_t>(32 * k + __ffs(u) - 1);
+      u &= u - 1u;
+    }
+  } else if (warp == 1 && lane < 16 * kSectors) {
+    const int c = lane >> 4;
+    uint32_t u = 0u;
+#pragma unroll
+    for (int i = 0; i < 16; ++i) u |= sm.sector_partial[c][i][k];
+    sm.sector_uni[c][k] = p.sparse_write != 0 ? u : ~0u;
   }
   __syncthreads();
 

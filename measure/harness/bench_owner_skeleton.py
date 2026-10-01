@@ -37,8 +37,9 @@ def ops():
     return torch.ops.rola_owner
 
 
-def cell_words(name: str):
-    """``(spec, words, level_s, sparse_write, sparse_read)``: the cell's facts words and its carve's sides."""
+def cell_bundle(name: str):
+    """``(spec, routes, values, words, level_s, sparse_write, sparse_read)``: the cell's bundle, its facts words and its
+    carve's sides."""
     from measure.cells import by_name, realize
     from measure.subjects import bundle_of
     from rola.ops import facts as facts_ops
@@ -49,7 +50,13 @@ def cell_words(name: str):
     declared = spec.declared_sparsity()
     level_s = 1 if declared[1][0] or not declared[0][0] else 0
     level_r = 1 - level_s
-    return spec, words, level_s, int(declared[level_r][1]), int(declared[level_s][0])
+    return spec, routes, values, words, level_s, int(declared[level_r][1]), int(declared[level_s][0])
+
+
+def cell_words(name: str):
+    """``(spec, words, level_s, sparse_write, sparse_read)``."""
+    spec, _routes, _values, words, level_s, sw, sr = cell_bundle(name)
+    return spec, words, level_s, sw, sr
 
 
 def _popc(x: int) -> int:
@@ -154,12 +161,115 @@ def check_lists(name: str, steps=(STEP_CHOSEN, STEP_PER_LIST, STEP_MERGED)) -> b
     return ok
 
 
+def _bits(words_row) -> np.ndarray:
+    """A window's 16 words as 512 booleans, token order."""
+    w = np.asarray(words_row, dtype=np.uint32)
+    return ((w[:, None] >> np.arange(32, dtype=np.uint32)) & 1).astype(bool).reshape(-1)
+
+
+def fill_model(routes, values, w, level_s, sw, sr, rs, rd, bh, cg, sb, rb, win):
+    """One CTA-window's write and read pool rows, in slot order, `owner_fill.cuh`'s layout."""
+    level_r = 1 - level_s
+    H = routes.heads
+    b, h = divmod(bh, H)
+    row_base = (0, routes.topology.widths[0])
+    cols = slice(WINDOW_WORDS * win, WINDOW_WORDS * (win + 1))
+    s0, r0 = sb * rs, rb * rd
+    if sw:
+        wrows = np.stack([_bits(w[bh, 1, row_base[level_r] + r0 + j, cols]) for j in range(rd)])
+    else:
+        wrows = np.ones((rd, WINDOW), dtype=bool)
+    if sr:
+        rrows = np.stack([_bits(w[bh, 0, row_base[level_s] + s0 + i, cols]) for i in range(rs)])
+    else:
+        rrows = np.ones((rs, WINDOW), dtype=bool)
+    out = []
+    t0 = win * WINDOW
+
+    def take(x, tokens, lo, hi):
+        return x[b, t0 + tokens, h, lo:hi].contiguous().view(torch.uint8).cpu().numpy()
+
+    wt = np.nonzero(wrows.any(0))[0]
+    dense = take(routes.amp_write[level_s], wt, s0, s0 + rs)
+    sparse = take(routes.amp_write[level_r], wt, r0, r0 + rd).copy()
+    for c in range(rd // 32):
+        live = wrows[32 * c:32 * c + 32][:, wt].any(0)
+        sparse[~live, 32 * c:32 * c + 32] = 0
+    v_hat = take(values.v_hat, wt, cg * 32, cg * 32 + 32)
+    v_lo = take(values.v_lo, wt, cg * 32, cg * 32 + 32) if values.v_lo is not None else np.zeros_like(v_hat)
+    cols4 = [routes.g_write, values.scale, routes.scale_write[0], routes.scale_write[1]]
+    factors = np.stack([c[b, t0 + wt, h].float().cpu().numpy() for c in cols4], 1).astype(np.float32).view(np.uint8)
+    out.append(np.concatenate([dense, sparse, v_hat, v_lo, factors], 1))
+    rt = np.nonzero(rrows.any(0))[0]
+    out.append(np.concatenate([take(routes.amp_read[level_r], rt, r0, r0 + rd),
+                               take(routes.amp_read[level_s], rt, s0, s0 + rs)], 1))
+    return out
+
+
+def check_fill(name: str) -> bool:
+    spec, routes, values, words, level_s, sw, sr = cell_bundle(name)
+    w = words.cpu().numpy().view(np.uint32)
+    widths = tuple(spec.widths)
+    ok = True
+    BH, windows = words.shape[0], spec.tokens // WINDOW
+    for rs, rd in CARVES:
+        sblocks, rblocks = widths[level_s] // rs, widths[1 - level_s] // rd
+        wd, rdump = ops().fill_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
+                                    routes.g_write, values.v_hat, values.v_lo, values.scale, words, level_s, sw, sr,
+                                    rs, rd, 1)
+        torch.cuda.synchronize()
+        wrow, rrow = rs + rd + 64 + 16, rd + rs
+        wd = wd.cpu().numpy().reshape(-1, WINDOW, wrow)
+        rdump = rdump.cpu().numpy().reshape(-1, WINDOW, rrow)
+        bad = total = 0
+        for z in range(BH * 2):
+            bh, cg = divmod(z, 2)
+            for rb in range(rblocks):
+                for sb in range(sblocks):
+                    cta = (z * rblocks + rb) * sblocks + sb
+                    for win in range(windows):
+                        want_w, want_r = fill_model(routes, values, w, level_s, sw, sr, rs, rd, bh, cg, sb, rb, win)
+                        i = cta * windows + win
+                        total += 1
+                        if not (np.array_equal(wd[i, :len(want_w)], want_w)
+                                and np.array_equal(rdump[i, :len(want_r)], want_r)):
+                            bad += 1
+        print(f"fill {name} carve {rs}x{rd}: {total - bad}/{total} CTA-windows match")
+        ok &= bad == 0
+    return ok
+
+
+#: launches a carve under `--run`: ncu reads one, the rest show its spread
+RUN_REPS = 3
+
+
+def run_part(name: str, part: str) -> None:
+    """The part on the cell's whole call, no dump, each carve `RUN_REPS` times: the launches an ncu run reads."""
+    spec, routes, values, words, level_s, sw, sr = cell_bundle(name)
+    for rs, rd in CARVES:
+        for _ in range(RUN_REPS):
+            if part == "lists":
+                ops().lists_part(words, list(spec.widths), level_s, sw, sr, rs, rd, STEP_CHOSEN, 0)
+            else:
+                ops().fill_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
+                                routes.g_write, values.v_hat, values.v_lo, values.scale, words, level_s, sw, sr,
+                                rs, rd, 0)
+    torch.cuda.synchronize()
+    print(f"ran {part} on {name}: carves {CARVES}, {RUN_REPS} each, BH {words.shape[0]}, L {spec.tokens}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--check", choices=("lists",), required=True)
+    ap.add_argument("--check", choices=("lists", "fill"))
+    ap.add_argument("--run", choices=("lists", "fill"), help="the part's launches alone, for ncu")
     ap.add_argument("--cell", action="append", required=True)
     args = ap.parse_args()
-    ok = all(check_lists(cell) for cell in args.cell)
+    if args.run:
+        for cell in args.cell:
+            run_part(cell, args.run)
+        return 0
+    check = {"lists": check_lists, "fill": check_fill}[args.check]
+    ok = all(check(cell) for cell in args.cell)
     return 0 if ok else 1
 
 

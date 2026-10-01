@@ -14,6 +14,8 @@ constexpr int kThreads = kWarps * 32;
 constexpr int kChannels = 32;
 constexpr int kChannelGroups = 2;
 constexpr int kListCapacity = kWindow;
+constexpr int kWritePool = 128;
+constexpr int kReadPool = 128;
 
 //: A CARVE: RS read-sparse by RD read-dense digits a CTA. -- see docs/internals/owner/owner.md#carve
 template <int RS_, int RD_>
@@ -29,8 +31,21 @@ struct Carve {
 //: A STEP FORM. -- see docs/internals/owner/owner.md#step
 enum Step : int { kStepChosen = 0, kStepPerList = 1, kStepMerged = 2 };
 
+//: A LEVEL'S ROWS OR A VALUE PLANE, and a per-token column, where the bundle holds them: strides in elements.
+struct RowView {
+  const void* base;
+  int64_t sb, st, sh;
+};
+
+struct ColumnView {
+  const float* base;
+  int64_t sb, st, sh;
+};
+
 //: THE OPERAND BLOCK, a grid constant. -- see docs/internals/owner/owner.md#params
 struct OwnerParams {
+  RowView read[2], write[2], v_hat, v_lo;
+  ColumnView factor[4];
   const uint32_t* words;
   int64_t side_words, row_words;
   int level_s, level_r;

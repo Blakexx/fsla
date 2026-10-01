@@ -56,3 +56,5 @@ pricing table are on the rebuild's plan card, in its skeleton block. Built so fa
   words staged before this window's lists; with a dump it writes each CTA-window's unions, row counts, forms, totals
   and entries, which `--check lists` holds bit for bit against the model at both carves and every step setting.
   Checked: `flagship-alt-k4`, `flagship-dense`, `flagship-cohort-k16`, `flagship-alt-k4-L4096`.
+* `fill_part` — the lists, then each window's write and read passes ([`owner_fill.md`](owner_fill.md)); with a dump
+  it writes every pool row to its slot, which `--check fill` holds byte for byte against the model.
