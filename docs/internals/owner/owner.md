@@ -1,0 +1,58 @@
+# `csrc/rola/src/owner/owner.cuh` — the owner carry's constants, carve and operand block
+
+Mirror doc for the header the owner carry's components share. The owner carry is the rebuild's int8 carry: a CTA OWNS a box of leaves and, window by window, folds the window's writes into the box's state and
+reads the box's state out to the window's readers. It is being built as a SKELETON in the part harness first
+([below](#skeleton)), priced across two carves and two step forms; the carve chosen from that, it replaces
+`csrc/rola/src/carry/` in place.
+
+Vocabulary, defined here and used unqualified in this directory's docs: **level S** = the read-sparse level, **level
+R** = the read-dense level (in the split routing the cells declare, level R is write-sparse and level S write-dense);
+**box** = a CTA's leaves, `RS` digits of level S by `RD` digits of level R, for one channel group of 32; **window** =
+512 tokens; **write list** = the tokens live at one of the box's level-R write digits in a window (the fold's unit);
+**read digit** = one of the box's level-S read digits (the readout's unit); **pool slot** = a live token's rank among
+the window's live tokens of a side.
+
+<a id="constants"></a>
+
+## The constants
+
+`kWindow` 512 tokens, the intra's and the facts pass's, so a row of the facts pass's words is `kWindowWords` = 16 words
+a window. `kWarps` = 8 warps a CTA, `kChannels` = 32 a channel group, `kChannelGroups` = 2 at `d_v` 64.
+`kListCapacity` = 512 entries: a warp's list buffer a side, one window's tokens.
+
+<a id="carve"></a>
+
+## The carve
+
+`Carve<RS, RD>`: a CTA owns `RS` level-S digits and `RD` level-R digits, so a warp folds `RD / 8` write lists and reads
+out `RS / 8` read digits; the staged word rows are the `RD` write rows then the `RS` read rows. The two carves priced
+are `(16, 64)` and `(32, 32)` — 1,024 leaves a CTA either way, 128 CTAs a head at `(256, 256)` with two channel groups.
+
+<a id="step"></a>
+
+`Step` names a warp's loop step for a window: `kStepPerList` compacts each list and steps over its own tokens (every
+IMMA is a live pair); `kStepMerged` compacts the warp's union once and steps over it, the operand that does not depend
+on the list loaded once a step for all the warp's lists; `kStepChosen` lets the cost comparison over the window's exact
+counts pick ([`owner_lists.md`](owner_lists.md#step-cost)). A measurement forces one form to price it.
+
+<a id="params"></a>
+
+## `OwnerParams` — the operand block, a grid constant
+
+The facts pass's words (`words`, contiguous `[BH, 2, rows, L / 32]` int32, with a side's and a row's word counts), which
+level is S and which R, each level's first row in the layout and its width, whether level R's write side and level S's
+read side are sparse (a dense side's words are not read: its union is every token and its form merged), `H`, `L`, the
+window count, a forced step form, the lists' dump for the harness's model check, and the phase ledger.
+
+<a id="skeleton"></a>
+
+## The skeleton in the part harness
+
+`measure/harness/owner/owner_skeleton.cu` builds the components into the parts module (`torch.ops.rola_owner`) and
+`measure/harness/bench_owner_skeleton.py` checks each against a pure model and prices it. The plan, the order and the
+pricing table are on the rebuild's plan card, in its skeleton block. Built so far:
+
+* `lists_part` — the words and the lists ([`owner_lists.md`](owner_lists.md)) over every window of every box, the next window's
+  words staged before this window's lists; with a dump it writes each CTA-window's unions, row counts, forms, totals
+  and entries, which `--check lists` holds bit for bit against the model at both carves and every step setting.
+  Checked: `flagship-alt-k4`, `flagship-dense`, `flagship-cohort-k16`, `flagship-alt-k4-L4096`.
