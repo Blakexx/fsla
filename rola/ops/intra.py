@@ -62,7 +62,6 @@ def intra_forward(routes, values, unions: torch.Tensor, layout: LivenessLayout, 
     ``unions`` is the facts pass's ``[BH, 2, groups, L / 64]`` tile-union table in ``layout``; the statics are the
     ones it was made with. Every level is ``layout``'s width and the call a whole number of `WINDOW`-token windows.
     """
-    routes.refuse_sparse("the intra", "its port onto the format")
     extension().rola_intra_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.v_hat,
         values.v_lo, values.scale, unions, num, den, list(layout.B), _dense_bits(read_statics),

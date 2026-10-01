@@ -45,15 +45,14 @@ class PrefillContext:
 
 @node(gives=("modes",), needs=("routes",))
 def support_modes(f):
-    """Per level, which sides can hold exact zeros -- the intra's slab declaration, read off the topology's
-    activations (a declaration, never a switch: ``DENSE_BOTH`` is always correct and only slower)."""
+    """Per level, which sides the bundle flags ``sparse`` -- the intra's slab declaration (a declaration, never a
+    switch: ``DENSE_BOTH`` is always correct and only slower)."""
     from rola.ops import intra as intra_ops
 
-    topology = f["routes"].topology
+    routes = f["routes"]
     modes = []
-    for level in range(topology.D):
-        read = topology.activation_properties(level, "read").exact_zeros
-        write = topology.activation_properties(level, "write").exact_zeros
+    for level in range(routes.topology.D):
+        read, write = routes.sparse[0][level], routes.sparse[1][level]
         modes.append(intra_ops.BOTH_SPARSE if read and write else intra_ops.READ_SPARSE if read
                      else intra_ops.WRITE_SPARSE if write else intra_ops.DENSE_BOTH)
     return tuple(modes)

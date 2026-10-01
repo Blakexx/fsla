@@ -175,21 +175,26 @@ documents. The envelope table in [1.1](#11-the-built-envelope-is-the-surface) is
 ### 2.1 The bundle IS the contract, and it is THE INTERNAL FORMAT
 
 ```python
-RouteFactors(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=None, source=None)
-RouteFactors.from_levels(topology, read, write, g_write, read_mass=None)   # the framework's epilogue
+RouteFactors(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=None, source=None,
+             sparse=None)
+RouteFactors.from_levels(topology, read, write, g_write, read_mass=None, *, sparse=None)   # the framework's epilogue
+RouteFactors.from_rows(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=None,
+                       source=None, *, sparse=None)                                    # rows already in the format
 ```
 
 **The stored form is the internal quantized format** (ruled 2026-09-26). Each level's rows are
 UNIT-MAX -- u8 with the row's largest digit at 255 up to depth two, or f16 with the largest entry
 at 1 at any depth (ruled 2026-09-29: the producer writes f16 deeper, and every consumer takes
 either); a zero digit is dead, an all-zero row a dead token at that level -- with the row's maximum
-carried beside them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one entry
-per level). An entry is `[B, T, H, width]` rows (dense) or a `SparseLevel(words, terms)`: its bitlist
-and its live digits packed in bit order (ruled 2026-09-30;
-[`internals/routing/sparse.md`](internals/routing/sparse.md)). The bundle is SELF-DESCRIBING -- the
-entry's type is the fact, chosen at production (the producer stores a side sparse where its
-activation has exact zeros; `from_levels(..., sparse=)` lets a caller choose) -- and a one-token
-bundle is all rows. `RouteFactors.rows(level, side)` is any level as rows, for a reference. A read level's scale carries the read mass; a
+carried beside them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one
+`[B, T, H, width]` tensor per level). Every level is stored as rows, once (ruled 2026-10-01: the
+intra and decode read rows, and the carry reads rows through the facts pass's words). `sparse` is
+`(read, write)`, a bool a level: the levels whose support the facts pass words because they may hold
+exact zeros worth skipping. It is set at production -- the producer flags a side whose activation
+has exact zeros, and `from_levels`/`from_rows` default to that rule -- and read by every consumer;
+no consumer derives it from the activations. A flag cannot disagree with the rows: a sparse-flagged
+level with no zeros costs its words, and a dense-flagged level with zeros is read whole.
+`RouteFactors.rows(level, side)` is a level's rows. A read level's scale carries the read mass; a
 write level's scale is the normalized simplex's max and its mass rides `g_write`. This is what
 the int carry, the intra and the decode kernels read, and it is written by the framework's producer
 alone: the fused kernel's epilogue, and the reference's (`rola/routing/quant.py`, `RouteFactors.from_levels`),
@@ -209,9 +214,8 @@ else.
 stored levels, the side gains, the read mass and the topology they are shaped by —
 nothing else, and in particular no declaration a caller could pair with tensors that do
 not describe it. `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than
-the provenance: one level per topology level at that level's width, rows or (over more than one
-token) a `SparseLevel` (any words-and-terms pair is a valid one: a set bit over a zero term wastes a
-slot, and a term no bit reaches is never read), one shared
+the provenance: one level per topology level at that level's width, one `sparse` flag a level a
+side, one shared
 `[B, T, H]` prefix, one device, one dtype,
 `g_write` and (when present) `read_mass` shaped `[B, T, H]`. There is no `g_read`
 field at all — the ratio readout fixes the read-side gain to 1 identically, so there

@@ -129,6 +129,7 @@ def derive_decode_geometry(
     BH: int,
     device: torch.device | str,
     eps: float = READOUT_EPS,
+    write_dense: bool | None = None,
 ) -> DecodeGeometry:
     """Build the carrier once, at the boundary.
 
@@ -156,7 +157,10 @@ def derive_decode_geometry(
         acc += w
 
     ctas = derive_ctas(widths, k, m, BH=BH, device=device)
-    write_dense = not topology.activation_properties(D - 1, "write").exact_zeros
+    #: the bundle's flag where the caller has one (the step's graph); a caller holding a topology alone takes the
+    #: production rule
+    if write_dense is None:
+        write_dense = not topology.activation_properties(D - 1, "write").exact_zeros
     return DecodeGeometry(
         D=D, widths=widths, level_row_offset=tuple(row_offset), lattice_k=k, lattice_m=m,
         d_v=int(d_v), has_decay=decay, eps=eps, ctas=int(ctas), write_dense=write_dense)

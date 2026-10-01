@@ -1,13 +1,12 @@
 """The fused producer's kernel (csrc/rola/src/produce/), at the op, one gate a landed component.
 
-The skeleton's claim is the composition's SHAPE -- every element of every output is written, whatever the routing
-(a sparse level: every word, and every term its words reach), and the arrival counters and look-back flags are back at
-zero after the call. The projection's is its logits: every job's columns for
+The skeleton's claim is the composition's SHAPE -- every element of every output is written, whatever the routing,
+and the arrival counters are back at zero after the call. The projection's is its logits: every job's columns for
 every token, against the fp64 product of the same bf16 operands, per slot within the envelope
 (docs/internals/produce/produce.md#accumulate). The solve's is its levels: every route job's sides against the fp64
 reference solve on the kernel's own logits (docs/internals/produce/produce.md#solve). The bundle's is the routes the
-fp64 composition makes from the same bf16 operands: every level's digits (a sparse level's as its words place them),
-every scale, the read mass and the write gain (docs/internals/produce/produce.md#bundle, #sparse). The values': every channel's digits and every scale, against the same
+fp64 composition makes from the same bf16 operands: every row's digits, every scale, the read mass and the write gain
+(docs/internals/produce/produce.md#bundle). The values': every channel's digits and every scale, against the same
 (docs/internals/produce/produce.md#value-rows).
 """
 from __future__ import annotations
@@ -16,10 +15,8 @@ import pytest
 import torch
 
 import rola
-from rola.ops import produce as producer
-from rola.ops.produce import ProducerPlan, ProducerWeights, hidden_contiguous, job_table, kernel_bundle, produce
+from rola.ops.produce import _TOKEN_TILE, ProducerPlan, ProducerWeights, _job_tensor, hidden_contiguous, job_table, produce
 from rola.routing.entmax.production import _torch_activation, _torch_union_split
-from rola.routing.sparse import SparseLevel
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the producer is a CUDA kernel")
 
@@ -54,34 +51,32 @@ def _operands(name: str, *, B=2, T=5, hidden=48, H=3, d_v=64, bias=True, gain=Tr
 
 
 def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool = False):
-    """One launch into buffers poisoned with ``fill``; the outputs, whether every counter is back at zero, and the
-    probes after it."""
-    B, T, _ = x.shape
-    jobs = len(job_table(plan)[0])
-    probes = tuple(torch.full((jobs, B * T, _MAX_COLUMNS), float("nan"), device="cuda") if probe else None
-                   for _ in range(2))
-    weights = ProducerWeights(route_W=route_W, route_bias=route_bias, gain_bias=gain_bias, v_W=v_W)
-    buffers = producer.kernel_outputs(plan, B, T, x.device)
-    for t in buffers.values():
-        if t is not None:
-            t.view(torch.uint8).fill_(fill)
-    out = producer.launch(x, plan, weights, buffers, probes)
+    """One launch into buffers poisoned with ``fill``; the outputs, the arrival counters and the probes after it."""
+    from rola.ops._ext import extension
+
+    B, T, hidden = x.shape
+    H, D, d_v = plan.num_heads, plan.routing.topology.D, plan.d_v
+    rows = plan.routing.resolved.packed_logit_width
+    row_dtype = torch.uint8 if D <= 2 else torch.float16
+
+    def poisoned(*shape, dtype=torch.float32):
+        out = torch.empty(B, H, T, *shape, dtype=dtype, device="cuda")
+        out.view(torch.uint8).fill_(fill)
+        return out
+
+    out = {"amp_read": poisoned(rows, dtype=row_dtype), "amp_write": poisoned(rows, dtype=row_dtype),
+           "scale_read": poisoned(D), "scale_write": poisoned(D), "mass_read": poisoned(D), "mass_write": poisoned(D),
+           "read_mass": poisoned(), "g_write": poisoned(), "v_hat": poisoned(d_v, dtype=torch.int8),
+           "v_lo": poisoned(d_v, dtype=torch.uint8) if plan.value_digits == 2 else None, "v_scale": poisoned()}
+    jobs, shapes, per_head = _job_tensor(plan, "cuda:0")
+    arrivals = torch.zeros(-(-(B * T) // _TOKEN_TILE) * H, dtype=torch.int32, device="cuda")
+    probes = [torch.full((jobs.shape[0], B * T, _MAX_COLUMNS), float("nan"), device="cuda") if probe else None
+              for _ in range(2)]
+    extension().rola_produce_forward(
+        x.reshape(B * T, hidden).contiguous(), route_W, route_bias, gain_bias, v_W, jobs,
+        *out.values(), arrivals, *probes, shapes, D, per_head)
     torch.cuda.synchronize()
-    cleared = all(not t.any() for (kind, _), t in producer._COUNTERS.items() if kind in ("arrivals", "flags"))
-    return out, cleared, probes
-
-
-def _stored(plan, out) -> dict[str, torch.Tensor]:
-    """Every byte a launch defines: the dense outputs whole, and each sparse level's words and the rows its words and
-    terms place (a term past a slot's live count is unspecified)."""
-    routes, _ = kernel_bundle(out, plan)
-    stored = {key: t for key, t in out.items() if t is not None and not key.startswith(("words_", "terms_"))}
-    for side in ("read", "write"):
-        for level, entry in enumerate(getattr(routes, f"amp_{side}")):
-            if isinstance(entry, SparseLevel):
-                stored[f"{side}[{level}].words"] = entry.words
-                stored[f"{side}[{level}].rows"] = entry.dense(routes.tokens)
-    return stored
+    return {key: None if t is None else t.transpose(1, 2) for key, t in out.items()}, arrivals, probes
 
 
 def _expected_logits(plan, x, route_W, route_bias, v_W):
@@ -102,16 +97,14 @@ def _expected_logits(plan, x, route_W, route_bias, v_W):
 
 
 @pytest.mark.parametrize("name", list(_ROUTINGS))
-@pytest.mark.parametrize(("B", "T"), [(2, 5), (1, 1), (2, 1100)])   # a partial tile; the decode shape; three windows
-def test_every_output_is_written_and_the_counters_reset(name, B, T):
-    operands = _operands(name, B=B, T=T)
-    first, cleared, _ = _launch(*operands, fill=0x55)
+def test_every_output_is_written_and_the_arrivals_reset(name):
+    operands = _operands(name)
+    first, arrivals, _ = _launch(*operands, fill=0x55)
     second, _, _ = _launch(*operands, fill=0xAA)
-    a, b = _stored(operands[0], first), _stored(operands[0], second)
-    for key in a:
-        assert torch.equal(a[key].contiguous().view(torch.uint8), b[key].contiguous().view(torch.uint8)), (
+    for key in (key for key in first if first[key] is not None):
+        assert torch.equal(first[key].contiguous().view(torch.uint8), second[key].contiguous().view(torch.uint8)), (
             f"{name}: `{key}` holds a byte the kernel did not write")
-    assert cleared, f"{name}: an arrival counter or a look-back flag was left standing"
+    assert not arrivals.any(), f"{name}: an arrival counter was left standing"
 
 
 @pytest.mark.parametrize(("name", "B", "T", "hidden", "bias"), [
@@ -180,29 +173,24 @@ _MASS_RTOL = 2.0 ** -12
 @pytest.mark.parametrize(("name", "B", "T", "bias", "gain"), [
     ("union", 2, 5, True, True), ("split", 1, 40, True, True), ("tied-deep", 3, 7, False, True),
     ("wide", 1, 33, True, True), ("sparsemax", 2, 9, True, False),   # no gain column: the gain is 1
-    ("split", 2, 1100, True, True), ("union", 3, 1, True, True),     # three windows (the look-back); one token
 ])
 def test_the_bundle_matches_the_fp64_composition(name, B, T, bias, gain):
     plan, x, route_W, route_bias, gain_bias, v_W = _operands(name, B=B, T=T, hidden=64, bias=bias, gain=gain)
     gain_bias = torch.randn_like(gain_bias)
     out, _, _ = _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill=0x55)
-    kernel, _ = kernel_bundle(out, plan)
     reference = ProducerWeights(route_W=route_W.double(), gain_bias=gain_bias.double(), v_W=v_W.double(),
                                 route_bias=None if route_bias is None else route_bias.double())
     routes, _ = produce(x.double(), plan, reference)
+    offsets = plan.routing.resolved.level_offsets
     for level, width in enumerate(plan.routing.resolved.branches):
-        for side, scales in (("read", routes.scale_read), ("write", routes.scale_write)):
-            entry = getattr(kernel, f"amp_{side}")[level]
-            got, want = kernel.rows(level, side), routes.rows(level, side)
-            if isinstance(entry, SparseLevel):
-                #: the words are exactly the stored digits' support: a set bit places a nonzero term, a clear one a zero
-                assert torch.equal(SparseLevel.from_rows(got).words, entry.words), (
-                    f"{name}: level {level} {side} words disagree with the terms they place")
+        for side, rows, scales in (("read", routes.amp_read, routes.scale_read),
+                                   ("write", routes.amp_write, routes.scale_write)):
+            got = out[f"amp_{side}"][..., offsets[level]:offsets[level] + width]
             if got.dtype == torch.uint8:
-                digit = int((got.int() - want.int()).abs().max())
+                digit = int((got.int() - rows[level].int()).abs().max())
                 assert digit <= 1, f"{name}: level {level} {side} digits off by {digit}"
             else:
-                unit = float((got.float() - want.float()).abs().max())
+                unit = float((got.float() - rows[level].float()).abs().max())
                 assert unit <= _UNIT_F16, f"{name}: level {level} {side} f16 units off by {unit:.3g}"
             scale = float((out[f"scale_{side}"][..., level].double() - scales[level].double()).abs().max())
             assert scale <= (width + 16) * 2.0 ** -22, f"{name}: level {level} {side} scale off by {scale:.3g}"
@@ -240,9 +228,10 @@ def test_the_value_digits_match_the_fp64_composition(name, B, T, digits):
 def test_a_bound_ledger_books_every_phase_and_changes_nothing():
     """The phase ledger (docs/internals/produce/produce.md#phase-ledger): every warp of every job books, a route job
     every route phase and a value job its own, and the outputs are the same bytes with it bound or not."""
+    from rola.ops import produce as producer
+
     operands = _operands("union", B=2, T=40, hidden=64)
     plain, _, _ = _launch(*operands, fill=0x55)
-    plain = _stored(operands[0], plain)
     jobs = job_table(operands[0])[0]
     ledger = torch.zeros(len(jobs), producer.LEDGER_WARPS, len(producer.LEDGER_PHASES), dtype=torch.int64,
                          device="cuda")
@@ -251,7 +240,6 @@ def test_a_bound_ledger_books_every_phase_and_changes_nothing():
         booked, _, _ = _launch(*operands, fill=0x55)
     finally:
         producer.ledger_bind(None)
-    booked = _stored(operands[0], booked)
     for key in (key for key in plain if plain[key] is not None):
         same = torch.equal(plain[key].contiguous().view(torch.uint8), booked[key].contiguous().view(torch.uint8))
         assert same, f"binding moved `{key}`"

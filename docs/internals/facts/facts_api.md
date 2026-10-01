@@ -4,7 +4,7 @@ Mirror doc for the pass's host entries and for the refusals they make before a l
 exists. The kernel is [`facts.md`](facts.md); the words' shape and meaning are
 [`liveness_contract.md`](liveness_contract.md). `rola/ops/facts.py` is the Python
 caller: `call_layout` and `call_statics` read a bundle's layout and its two sides'
-static operands off its topology, and `facts` packs them into this argument list.
+static operands off its `sparse` flags and topology, and `facts` packs them into this argument list.
 
 <a id="rola-facts-forward"></a>
 

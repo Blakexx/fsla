@@ -14,7 +14,7 @@ against the state the call is handed. `rola.rola_op` validates the context in th
 | `nodes.topology` | `widths`, `d_v` | the level widths and the value width |
 | `nodes.classify_call` | `call_class` | the engagement bits: state in, state out, paged |
 | `rules.mask` | `mask` | the band: stateless or stateful |
-| `support_modes` | `modes` | per level, which sides can hold exact zeros, off the topology's activations |
+| `support_modes` | `modes` | per level, which sides can hold exact zeros, off the bundle's `sparse` flags (`docs/api.md` §2.1) |
 | `facts` | `liveness`, `unions`, `zeta`, `layout`, `statics` | THE FACTS PASS over the bundle, one launch: both sides' class-1 words and their tile unions, the fold's window scales, the layout the words are read in and the two sides' statics (`rola.ops.facts`) |
 | `activity` | `atom_bits` | the per-atom `WRITTEN | READ` byte, folded from the words (`rola.engine.facts.liveness.page_bits`) |
 | `box` | `bc` | the carry's box, the arena's allocation extent |

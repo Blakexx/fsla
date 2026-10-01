@@ -44,13 +44,10 @@ def call_layout(routes) -> LivenessLayout:
 
 
 def call_statics(routes, layout: LivenessLayout) -> tuple[SideStatics, SideStatics]:
-    """``(read, write)``: each side's static operands as the topology declares them -- a level whose activation has no
-    exact zeros is DENSE (not read; its words are the width mask), and the rows' own widths are the logical ones."""
-    topology = routes.topology
-    return tuple(
-        side_statics(layout, tuple(not topology.activation_properties(level, side).exact_zeros
-                                   for level in range(layout.D)), topology.widths)
-        for side in ("read", "write"))
+    """``(read, write)``: each side's static operands as the bundle declares them -- a level not flagged ``sparse`` is
+    DENSE (not read; its words are the width mask), and the rows' own widths are the logical ones."""
+    return tuple(side_statics(layout, tuple(not flag for flag in flags), routes.topology.widths)
+                 for flags in routes.sparse)
 
 
 def _dense_bits(statics: SideStatics) -> int:
@@ -66,7 +63,6 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     slot within fp32 rounding of ``fold_zeta`` (``tests/integration/test_facts_pass.py``). The rows are read where the
     bundle holds them, any width, offset or dtype of the format, each level's ``[B, T, H, w_l]`` view by its strides.
     """
-    routes.refuse_sparse("the facts pass", "its deletion (the producer makes the words)")
     BH = routes.batch * routes.heads
     window_words = WINDOW // 32
     words = torch.empty((BH, 2, layout.rows, layout.words), dtype=torch.int32, device=routes.device)

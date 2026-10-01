@@ -29,13 +29,11 @@ from rola.routing.factors import U8_MAX_DEPTH, RouteFactors
 from rola.routing.producer import Routing
 from rola.routing.projection import _packed_router_logits
 from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
-from rola.routing.sparse import SparseLevel, slot_of, word_count
 from rola.routing.types import IndependentRouting, TiedRouting, UnionRouting
 from rola.values import DEFAULT_VALUE_DIGITS, Values
 
-__all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "ProducerPlan", "ProducerWeights", "SideLayout", "hidden_contiguous",
-           "job_table", "kernel_bundle", "kernel_outputs", "launch", "ledger_bind", "produce", "projection_dtype",
-           "route_logits", "run_kernel", "side_layouts"]
+__all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "ProducerPlan", "ProducerWeights", "hidden_contiguous", "job_table",
+           "ledger_bind", "produce", "projection_dtype", "route_logits", "run_kernel"]
 
 
 @dataclass(frozen=True)
@@ -107,46 +105,12 @@ def _solve(activation) -> int:
     return _SOLVES[activation.tag]
 
 
-@dataclass(frozen=True)
-class SideLayout:
-    """Where one side's levels land in the kernel's outputs: a dense level at its column ``out`` in the side's packed
-    rows (``dense`` wide), a sparse level at its first row ``out`` of the side's sparse buffers (``sparse`` rows).
-    docs/internals/produce/produce.md#sparse"""
-
-    is_sparse: tuple[bool, ...]
-    out: tuple[int, ...]
-    dense: int
-    sparse: int
-
-
-def side_layouts(plan: ProducerPlan, tokens: int) -> tuple[SideLayout, SideLayout]:
-    """``(read, write)``: each side's levels packed by form, in level order. The producer stores a side sparse where
-    its activation has exact zeros -- over more than one token; a one-token call is all rows."""
-    topology, widths = plan.routing.topology, plan.routing.resolved.branches
-    layouts = []
-    for side in ("read", "write"):
-        is_sparse = tuple(tokens > 1 and topology.activation_properties(level, side).exact_zeros
-                          for level in range(topology.D))
-        out, dense, sparse = [], 0, 0
-        for level, width in enumerate(widths[:topology.D]):
-            out.append(sparse if is_sparse[level] else dense)
-            if is_sparse[level]:
-                sparse += width
-            else:
-                dense += width
-        layouts.append(SideLayout(is_sparse, tuple(out), dense, sparse))
-    return layouts[0], layouts[1]
-
-
-def job_table(plan: ProducerPlan, tokens: int = 2) -> tuple[list[tuple[int, ...]], int]:
+def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
     """``(jobs, route jobs a head)``: the plan compiled into the kernel's job table (docs/internals/produce/produce.md
     #jobs). A route job is one head's one solve -- a union level's two logit rows, a tied level's one row filling both
-    planes, or one side of an independent level; a value job is the heads whose channels fit one job. A job row is
-    ``(kind, head, heads, solve, width, in0, in1, out_read, out_write, level, fold_read, fold_write, sparse_read,
-    sparse_write)``, its sides' outputs placed by :func:`side_layouts` for a call of ``tokens`` tokens."""
+    planes, or one side of an independent level; a value job is the heads whose channels fit one job."""
     resolved = plan.routing.resolved
-    slots, read_slot = resolved.packed_slot_offsets, resolved.packed_read_slot_lookup
-    rl, wl = side_layouts(plan, tokens)
+    slots, read_slot, out = resolved.packed_slot_offsets, resolved.packed_read_slot_lookup, resolved.level_offsets
     per_head: list[tuple[int, ...]] = []
     for level, spec in enumerate(resolved.levels):
         width = resolved.branches[level]
@@ -154,62 +118,57 @@ def job_table(plan: ProducerPlan, tokens: int = 2) -> tuple[list[tuple[int, ...]
             raise ValueError(f"the producer solves rows of at most {_MAX_WIDTH} leaves; level {level} is {width} wide")
         write_col, read_col = slots[level], slots[read_slot[level]]
         fold_read, fold_write = int(not plan.read_skip[level]), int(not plan.write_skip[level])
-        ro, wo = rl.out[level], wl.out[level]
-        rs, ws = int(rl.is_sparse[level]), int(wl.is_sparse[level])
         if isinstance(spec, UnionRouting):
-            per_head.append((_ROUTE, 0, 1, _SOLVES[("union", spec.alpha)], width, read_col, write_col, ro, wo, level,
-                             fold_read, fold_write, rs, ws))
+            per_head.append((_ROUTE, 0, 1, _SOLVES[("union", spec.alpha)], width, read_col, write_col, out[level],
+                             out[level], level, fold_read, fold_write))
         elif isinstance(spec, TiedRouting):
-            per_head.append((_ROUTE, 0, 1, _solve(spec.op), width, write_col, -1, ro, wo, level,
-                             fold_read, fold_write, rs, ws))
+            per_head.append((_ROUTE, 0, 1, _solve(spec.op), width, write_col, -1, out[level], out[level], level,
+                             fold_read, fold_write))
         elif isinstance(spec, IndependentRouting):
-            per_head.append((_ROUTE, 0, 1, _solve(spec.read), width, read_col, -1, ro, -1, level,
-                             fold_read, 0, rs, 0))
-            per_head.append((_ROUTE, 0, 1, _solve(spec.write), width, write_col, -1, -1, wo, level,
-                             0, fold_write, 0, ws))
+            per_head.append((_ROUTE, 0, 1, _solve(spec.read), width, read_col, -1, out[level], -1, level,
+                             fold_read, 0))
+            per_head.append((_ROUTE, 0, 1, _solve(spec.write), width, write_col, -1, -1, out[level], level,
+                             0, fold_write))
     jobs = [(job[0], head, *job[2:]) for head in range(plan.num_heads) for job in per_head]
     if plan.d_v > _MAX_COLUMNS:
         raise ValueError(f"a value job holds at most {_MAX_COLUMNS} channels, one head's d_v={plan.d_v} does not fit")
     heads_per = max(1, _MAX_COLUMNS // 2 // plan.d_v)
     for head in range(0, plan.num_heads, heads_per):
-        jobs.append((_VALUE, head, min(heads_per, plan.num_heads - head), 0, 0, -1, -1, -1, -1, 0, 0, 0, 0, 0))
+        jobs.append((_VALUE, head, min(heads_per, plan.num_heads - head), 0, 0, -1, -1, -1, -1, 0, 0, 0))
     return jobs, len(per_head)
 
 
 def _shape(job: tuple[int, ...]) -> int:
-    """A job's control as the kernel reads it, one int16 word in the launch's parameters: ``sparse_write << 11 |
-    sparse_read << 10 | fold_write << 9 | fold_read << 8 | writes << 7 | reads << 6 | kind << 5 | rows << 3 | solve``,
-    ``rows`` a solve row's elements a lane as a power of two's exponent, ``reads``/``writes`` the sides a route job
-    writes, ``fold_read``/``fold_write`` whose fold applies and ``sparse_read``/``sparse_write`` which side is a
-    sparse level (produce.cuh `Job`)."""
-    (kind, _head, _heads, solve, width, _in0, _in1, out_read, out_write, _level, fold_read, fold_write, sparse_read,
-     sparse_write) = job
+    """A job's control as the kernel reads it, one int16 word in the launch's parameters:
+    ``fold_write << 9 | fold_read << 8 | writes << 7 | reads << 6 | kind << 5 | rows << 3 | solve``, ``rows`` a solve
+    row's elements a lane as a power of two's exponent, ``reads``/``writes`` the sides a route job writes and
+    ``fold_read``/``fold_write`` whose fold applies (produce.cuh `Job`)."""
+    kind, _head, _heads, solve, width, _in0, _in1, out_read, out_write, _level, fold_read, fold_write = job
     rows = 0 if width <= 32 else 1 if width <= 64 else 2 if width <= 128 else 3
-    return (sparse_write << 11 | sparse_read << 10 | fold_write << 9 | fold_read << 8 | int(out_write >= 0) << 7
-            | int(out_read >= 0) << 6 | kind << 5 | rows << 3 | solve)
+    return (fold_write << 9 | fold_read << 8 | int(out_write >= 0) << 7 | int(out_read >= 0) << 6 | kind << 5
+            | rows << 3 | solve)
 
 
 @lru_cache(maxsize=64)
-def _job_tensor(plan: ProducerPlan, device: str, tokens: int) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """``(table, shapes, route jobs a head)`` for a call of ``tokens`` tokens (one, or more: the forms differ): the job
-    table's addressing on the device (the head, the heads, the width, the columns in and out, the level) and its
-    control words on the host."""
-    jobs, per_head = job_table(plan, tokens)
+def _job_tensor(plan: ProducerPlan, device: str) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """``(table, shapes, route jobs a head)``: the job table's addressing on the device (the head, the heads, the
+    width, the columns in and out, the level) and its control words on the host."""
+    jobs, per_head = job_table(plan)
     table = torch.tensor([job[1:3] + job[4:10] for job in jobs], dtype=torch.int32, device=device)
     return table, torch.tensor([_shape(job) for job in jobs], dtype=torch.int16), per_head
 
 
-#: the per-(token tile, head) arrival counters and the per-(job, side, sequence, window) look-back flags, zero between
-#: calls (the kernel resets its own), one buffer each a device, grown as a call needs
-_COUNTERS: dict[tuple[str, str], torch.Tensor] = {}
+#: the per-(token tile, head) arrival counters, zero between calls (the kernel's finisher resets its own), one buffer a
+#: device grown as a call needs
+_ARRIVALS: dict[str, torch.Tensor] = {}
 _TOKEN_TILE = 32
 
 
-def _counters(kind: str, device: torch.device, count: int) -> torch.Tensor:
-    key = (kind, str(device))
-    if key not in _COUNTERS or _COUNTERS[key].numel() < count:
-        _COUNTERS[key] = torch.zeros(max(count, 1), dtype=torch.int32, device=device)
-    return _COUNTERS[key]
+def _arrivals(device: torch.device, count: int) -> torch.Tensor:
+    key = str(device)
+    if key not in _ARRIVALS or _ARRIVALS[key].numel() < count:
+        _ARRIVALS[key] = torch.zeros(count, dtype=torch.int32, device=device)
+    return _ARRIVALS[key]
 
 
 #: THE PHASE LEDGER'S SHAPE: ``[jobs][warps][phases]``, the kernel's own `ProducePhase` order, booked over the tiles.
@@ -224,35 +183,10 @@ def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurem
     extension().rola_produce_ledger_bind(ledger)
 
 
-def kernel_outputs(plan: ProducerPlan, B: int, T: int, device: torch.device) -> dict[str, torch.Tensor | None]:
-    """Every buffer the producer kernel writes for ``B`` sequences of ``T`` tokens, unwritten: each side's dense
-    levels as one packed plane head-major ``[B, H, T, rows]`` (every dense output is head-major -- a head's tokens
-    contiguous, which every prefill reader walks, and the same bytes as token-major at one token,
-    docs/internals/produce/produce.md#bundle), and each side's sparse buffers ``words_*``, ``terms_*``
-    (docs/internals/produce/produce.md#sparse)."""
-    H, D = plan.num_heads, plan.routing.topology.D
-    row_dtype = torch.uint8 if D <= U8_MAX_DEPTH else torch.float16
-
-    def empty(*shape, dtype=torch.float32):
-        return torch.empty(B, H, T, *shape, dtype=dtype, device=device)
-
-    out = {}
-    slot = slot_of(T)
-    for side, layout in zip(("read", "write"), side_layouts(plan, T)):
-        out[f"amp_{side}"] = empty(layout.dense, dtype=row_dtype)
-        out[f"words_{side}"] = torch.empty(B, H, layout.sparse, word_count(T), dtype=torch.int32, device=device)
-        out[f"terms_{side}"] = torch.empty(B, H, layout.sparse, -(-T // slot), slot, dtype=row_dtype, device=device)
-    out.update(scale_read=empty(D), scale_write=empty(D), mass_read=empty(D), mass_write=empty(D),
-               read_mass=empty(), g_write=empty(), v_hat=empty(plan.d_v, dtype=torch.int8),
-               v_lo=empty(plan.d_v, dtype=torch.uint8) if plan.value_digits == 2 else None, v_scale=empty())
-    return out
-
-
-def launch(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights, out: dict[str, torch.Tensor | None],
-           probes: tuple) -> dict[str, torch.Tensor | None]:
-    """The fused producer's ONE launch over bf16 CUDA operands, into ``out`` (:func:`kernel_outputs`'s buffers);
-    ``probes`` the logit and level probes, ``(None, None)`` in production. Returns ``out`` with every dense output
-    viewed ``[B, T, H, ...]`` and the sparse buffers as allocated."""
+def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> dict[str, torch.Tensor]:
+    """The fused producer's launch over bf16 CUDA operands: every output ``[B, T, H, ...]``, a view of the head-major
+    ``[B, H, T, ...]`` storage the kernel writes -- a head's tokens contiguous, which every prefill reader walks, and
+    the same bytes as token-major at one token (docs/internals/produce/produce.md#bundle)."""
     from rola.ops._ext import extension
 
     B, T, hidden = x.shape
@@ -260,27 +194,27 @@ def launch(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights, out: d
         raise ValueError(f"the producer kernel reads hidden runs in 16-byte chunks: the hidden size must be a multiple "
                          f"of 8, got {hidden}")
     H, D = plan.num_heads, plan.routing.topology.D
+    rows = plan.routing.resolved.packed_logit_width
     device = x.device
-    jobs, shapes, per_head = _job_tensor(plan, str(device), min(T, 2))
-    tiles = -(-(B * T) // _TOKEN_TILE) if T == 1 else B * -(-T // _TOKEN_TILE)
-    windows = 1 if T == 1 else -(-T // slot_of(T))
+    row_dtype = torch.uint8 if D <= U8_MAX_DEPTH else torch.float16
+
+    def empty(*shape, dtype=torch.float32):
+        return torch.empty(B, H, T, *shape, dtype=dtype, device=device)
+
+    out = {"amp_read": empty(rows, dtype=row_dtype), "amp_write": empty(rows, dtype=row_dtype),
+           "scale_read": empty(D), "scale_write": empty(D), "mass_read": empty(D), "mass_write": empty(D),
+           "read_mass": empty(), "g_write": empty(), "v_hat": empty(plan.d_v, dtype=torch.int8),
+           "v_lo": empty(plan.d_v, dtype=torch.uint8) if plan.value_digits == 2 else None, "v_scale": empty()}
+    jobs, shapes, per_head = _job_tensor(plan, str(device))
+    tiles = -(-(B * T) // _TOKEN_TILE)
     route_bias = None if weights.route_bias is None else weights.route_bias.float().contiguous()
     extension().rola_produce_forward(
         x.reshape(B * T, hidden).to(torch.bfloat16).contiguous(), weights.route_W, route_bias,
         weights.gain_bias.float().contiguous(), weights.v_W, jobs,
         *(out[name] for name in ("amp_read", "amp_write", "scale_read", "scale_write", "mass_read", "mass_write",
                                  "read_mass", "g_write", "v_hat", "v_lo", "v_scale")),
-        _counters("arrivals", device, tiles * H), out["words_read"], out["words_write"], out["terms_read"],
-        out["terms_write"], _counters("flags", device, jobs.shape[0] * 2 * B * windows * 2), *probes, shapes, D,
-        per_head)
-    return {name: t if t is None or name.startswith(("words_", "terms_")) else t.transpose(1, 2)
-            for name, t in out.items()}
-
-
-def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> dict[str, torch.Tensor | None]:
-    """The producer kernel over fresh buffers: :func:`launch` into :func:`kernel_outputs`."""
-    B, T, _ = x.shape
-    return launch(x, plan, weights, kernel_outputs(plan, B, T, x.device), (None, None))
+        _arrivals(device, tiles * H), None, None, shapes, D, per_head)
+    return {name: None if t is None else t.transpose(1, 2) for name, t in out.items()}
 
 
 def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:
@@ -295,35 +229,30 @@ def produce(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tu
 
 
 def _kernel_bundle(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:
-    return kernel_bundle(run_kernel(x, plan, weights), plan)
+    """The kernel's outputs as the bundle: each level's rows and scale a view of the packed planes the kernel
+    writes (the ops read them by address), and the read mass only where a read level folds."""
+    out = run_kernel(x, plan, weights)
+    resolved, D = plan.routing.resolved, plan.routing.topology.D
+    spans = tuple(zip(resolved.level_offsets[:D], resolved.branches, strict=True))
 
-
-def kernel_bundle(out: dict[str, torch.Tensor], plan: ProducerPlan) -> tuple[RouteFactors, Values]:
-    """:func:`run_kernel`'s outputs as the bundle: a dense level's rows and every scale a view of the packed planes
-    the kernel writes, a sparse level a view of its side's buffers (the ops read them by address), and the read mass
-    only where a read level folds."""
-    D, widths = plan.routing.topology.D, plan.routing.resolved.branches
-
-    def entries(side: str, layout: SideLayout) -> tuple:
-        plane, words, terms = out[f"amp_{side}"], out[f"words_{side}"], out[f"terms_{side}"]
-        levels = []
-        for level in range(D):
-            o, w = layout.out[level], widths[level]
-            if not layout.is_sparse[level]:
-                levels.append(plane[..., o:o + w])
-            else:
-                levels.append(SparseLevel(words=words[:, :, o:o + w], terms=terms[:, :, o:o + w]))
-        return tuple(levels)
+    def rows(plane: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        return tuple(plane[..., offset:offset + width] for offset, width in spans)
 
     def scales(plane: torch.Tensor) -> tuple[torch.Tensor, ...]:
         return tuple(plane[..., level] for level in range(D))
 
-    rl, wl = side_layouts(plan, out["scale_read"].shape[1])
-    routes = RouteFactors(topology=plan.routing.topology, amp_read=entries("read", rl),
-                          amp_write=entries("write", wl), scale_read=scales(out["scale_read"]),
+    routes = RouteFactors(topology=plan.routing.topology, amp_read=rows(out["amp_read"]),
+                          amp_write=rows(out["amp_write"]), scale_read=scales(out["scale_read"]),
                           scale_write=scales(out["scale_write"]), g_write=out["g_write"],
-                          read_mass=None if all(plan.read_skip) else out["read_mass"])
+                          read_mass=None if all(plan.read_skip) else out["read_mass"], sparse=_sparse_flags(plan))
     return routes, Values(v_hat=out["v_hat"], v_lo=out["v_lo"], scale=out["v_scale"])
+
+
+def _sparse_flags(plan: ProducerPlan) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
+    """The bundle's ``sparse`` flags, decided here at production: a side whose activation has exact zeros."""
+    topology = plan.routing.topology
+    return tuple(tuple(topology.activation_properties(level, side).exact_zeros for level in range(topology.D))
+                 for side in ("read", "write"))
 
 
 def _composition(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) -> tuple[RouteFactors, Values]:

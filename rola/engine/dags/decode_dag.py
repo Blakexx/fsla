@@ -47,23 +47,23 @@ class DecodeContext:
     expert: Any = None
 
 
-@node(gives=("widths", "d_v", "has_decay", "BH", "device", "paged"),
+@node(gives=("widths", "d_v", "has_decay", "BH", "device", "paged", "write_dense"),
       needs=("routes", "values", "decay", "state"), masks=_DECODE, capturable=True)
 def decode_call(f):
     routes, state = f["routes"], f["state"]
     return (tuple(routes.topology.widths), f["values"].d_v, f["decay"] is not None,
-            routes.batch * routes.heads, routes.device, bool(state.paged))
+            routes.batch * routes.heads, routes.device, bool(state.paged), not routes.sparse[1][-1])
 
 
 @node(gives=("geometry",),
-      needs=("routes", "widths", "d_v", "has_decay", "BH", "device"),
-      pure_of=("widths", "d_v", "has_decay", "BH", "device"), masks=_DECODE,
+      needs=("routes", "widths", "d_v", "has_decay", "BH", "device", "write_dense"),
+      pure_of=("widths", "d_v", "has_decay", "BH", "device", "write_dense"), masks=_DECODE,
       capturable=True)
 def geometry(f):
     """The frozen carrier. Memoized on the CONFIG half alone, which is what it is."""
     return bodies.derive_decode_geometry(
         f["routes"].topology, d_v=f["d_v"], decay=f["has_decay"], BH=f["BH"],
-        device=f["device"])
+        device=f["device"], write_dense=f["write_dense"])
 
 
 @node(gives=("scratch",), needs=("state", "geometry", "BH", "device"),

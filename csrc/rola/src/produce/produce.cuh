@@ -28,9 +28,6 @@ constexpr int kLogitBytes = kTokenTile * kLogitStride * static_cast<int>(sizeof(
 constexpr int kPartialBase = 64;
 //: The threshold's Newton steps at most: rows of every measured distribution settle in 8 or fewer.
 constexpr int kNewtonSteps = 16;
-//: A SPARSE LEVEL's term slot: a window of tokens, and the token tiles in it. -- see docs/internals/produce/produce.md#sparse
-constexpr int kTermWindow = 512;
-constexpr int kWindowTiles = kTermWindow / kTokenTile;
 
 //: THE JOB TABLE, one row of int32 per job: its addressing. Its control rides the parameters as a shape word.
 //: -- see docs/internals/produce/produce.md#jobs
@@ -70,15 +67,11 @@ enum ProducePhase : int {
   kProducePhases
 };
 
-//: A JOB: its control (the shape word's fields) and its addressing (the table's). -- see docs/internals/produce/produce.md#jobs
+//: `kind`, `solve`, `rows` (a solve row's elements a lane, as a power of two's exponent), `reads`/`writes` (the sides
+//: a route job writes) and `fold_read`/`fold_write` (whose fold applies) are the shape word's.
 struct Job {
   int kind, solve, rows, reads, writes, head, heads, width, in0, in1, out_read, out_write, level,
-      fold_read, fold_write, sparse_read, sparse_write;
-};
-
-//: A BLOCK'S TOKENS: a sequence's tile, or the flat batch's at one token. -- see docs/internals/produce/produce.md#jobs
-struct Tile {
-  int token0, live, b, window, slot_tile;
+      fold_read, fold_write;
 };
 
 //: THE OPERANDS, as addresses: every tensor the host entry validated, with the strides it read off them.
@@ -92,13 +85,8 @@ struct ProduceParams {
   int64_t v_row;
   const int32_t* jobs;  // [n_jobs, kJobFields]
 
-  uint8_t* amp_read;  // the dense levels [B, H, T, rows], head-major (produce.md#bundle)
+  uint8_t* amp_read;  // [B, H, T, rows], u8 or f16: every output head-major (produce.md#bundle)
   uint8_t* amp_write;
-  int32_t* words_read;  // the sparse levels' words and terms (produce.md#sparse)
-  int32_t* words_write;
-  uint8_t* terms_read;
-  uint8_t* terms_write;
-  int32_t* flags;     // [jobs, 2, B, windows, 2], zero between calls
   float* scale_read;  // [B, H, T, D]
   float* scale_write;
   float* mass_read;  // [B, H, T, D], the finisher's operands
@@ -114,8 +102,7 @@ struct ProduceParams {
   long long* ledger;   // [jobs, warps, phases] or null
   int16_t shapes[kMaxJobs];  // a job's shape word (produce.md#jobs), by block index
 
-  int BT, T, hidden, H, C, G, rows_read, rows_write, D, d_v, row_form, route_jobs_per_head;
-  int B, tiles_per_seq, nw, windows, slot, sparse_rows_read, sparse_rows_write;
+  int BT, T, hidden, H, C, G, rows, D, d_v, row_form, route_jobs_per_head;
 };
 
 }  // namespace produce

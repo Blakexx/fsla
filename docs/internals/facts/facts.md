@@ -23,8 +23,8 @@ view of the producer's packed plane or a tensor of its own, by its strides. Ther
 alignment law: a level may start at any byte and be any width. The pass also reads the
 write levels' scales, the write gain and the value scale for zeta — a few words a token.
 
-A DENSE level (an activation with no exact zeros; the topology declares it,
-`rola.ops.facts.call_statics`) is not read: its words are the width mask over the live
+A DENSE level (the bundle's `sparse` flag unset, set at production for an activation with
+no exact zeros; `rola.ops.facts.call_statics`) is not read: its words are the width mask over the live
 tokens ([`liveness_contract.md`](liveness_contract.md#statics)). Every other level's rows
 are read once, whole, whatever their support: the read is density-blind, so the pass
 costs the same on a sparse and a dense draw of a sparse level.

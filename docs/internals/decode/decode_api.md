@@ -169,7 +169,7 @@ producer and the walk, and no probe launch in front of it: the write set the wal
 enumerates is the set the residency test reads, so the test is a pass over shared
 memory. `lattice_k`/`lattice_m` name the `(k, m)` box the state plane is written in --
 the leaf order travels with the plane rather than being assumed. `write_dense` is the
-topology's declaration that the innermost level's write side has no exact zeros, which lets
+bundle's flag that the innermost level's write side is dense (`docs/api.md` §2.1), which lets
 the write term walk whole atoms (`decode.md#whole-atoms`).
 The verdict is PER BATCH-HEAD (`growth`, `done`, and the `growth_any` reduction the
 host reads) beside the write-atom set it was reached from (`atom_bits`, which is what
