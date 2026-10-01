@@ -1,5 +1,6 @@
-// THE INTRA'S TRANSLATION UNIT -- the built arms, the host entry that validates the bundle's views and launches one, the
-// phase-ledger bind and the build stamp. see docs/internals/intra/intra.md
+// THE INTRA'S TRANSLATION UNIT -- the call's geometry (its levels' widths, stages and footprint), the host entry that
+// validates the bundle's views and launches the kernel, the phase-ledger bind and the build stamp.
+// see docs/internals/intra/intra.md
 
 #include "common/torch_seam.cuh"
 
@@ -16,9 +17,9 @@ namespace rola::intra {
 //: NOT an anonymous namespace: a kernel's mangled name must not carry the build path.
 namespace stampdet {
 
-//: THE BUILT ARM's footprint and the operand block's size, read back by a test as the device-side build fact.
+//: THE BUILT KERNEL's fixed tenants and the operand block's size, read back by a test as the device-side build fact.
 __global__ void stamp_kernel(int64_t* out) {
-  *out = static_cast<int64_t>(sizeof(detail::Smem<2, 256>)) * 1000003
+  *out = static_cast<int64_t>(sizeof(detail::Smem)) * 1000003
          + static_cast<int64_t>(sizeof(IntraParams));
 }
 
@@ -26,8 +27,39 @@ __global__ void stamp_kernel(int64_t* out) {
 
 namespace detail {
 
-//: THE BUILT SET: one macro, so the dispatch and the arm list cannot drift.
-#define ROLA_INTRA_ARMS_X(X_) X_(2, 256)
+//: THE CALL'S GEOMETRY from its levels' widths: each level's slabs and stages, the reader row's pitch and the footprint.
+//: -- see docs/internals/intra/intra.md#stages
+struct Geometry {
+  Stage stage[kMaxLevels][kLevelStages];
+  int slab0[kMaxLevels], level_stages[kMaxLevels];
+  uint32_t level_slabs[kMaxLevels];
+  int stages, slabs, pitch;
+  int64_t smem;
+};
+
+Geometry geometry(const std::vector<int64_t>& widths) {
+  const int D = static_cast<int>(widths.size());
+  STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels,
+                  "the intra reads u8 rows, which serve one or two levels; got ", D);
+  Geometry g{};
+  for (int l = 0; l < D; ++l) {
+    const int64_t w = widths[l];
+    STD_TORCH_CHECK(w >= kChunk && w <= kMaxLevelWidth && w % kChunk == 0, "level ", l, " is ", w,
+                    " digits wide; the intra reads a level of ", kChunk, " to ", kMaxLevelWidth,
+                    " digits in whole ", kChunk, "-digit copy granules");
+    const int slabs = static_cast<int>((w + kSlabDigits - 1) / kSlabDigits);
+    g.slab0[l] = g.slabs;
+    g.level_slabs[l] = ((1u << slabs) - 1u) << g.slabs;
+    for (int first = 0; first < slabs; first += kSlabsPerStage) {
+      const int n = slabs - first < kSlabsPerStage ? slabs - first : kSlabsPerStage;
+      g.stage[l][g.level_stages[l]++] = Stage{g.stages++, g.slabs + first, (1u << n) - 1u};
+    }
+    g.slabs += slabs;
+  }
+  g.pitch = (g.stages > kMinPitchStages ? g.stages : kMinPitchStages) * kStageDigits;
+  g.smem = static_cast<int64_t>(sizeof(Smem)) + static_cast<int64_t>(kBlockRows) * g.pitch;
+  return g;
+}
 
 RowView row_view(const Tensor& t, int64_t B, int64_t T, int64_t H, int64_t width, Dtype dtype,
                  const char* name) {
@@ -58,22 +90,21 @@ ColumnView column_view(const Tensor& t, int64_t B, int64_t T, int64_t H, const c
   return ColumnView{t.const_data_ptr<float>(), t.stride(0), t.stride(1), t.stride(2)};
 }
 
-template <int D, int B>
-void launch(const IntraParams& p, int64_t bh, int device, cudaStream_t stream) {
-  constexpr int kSmem = static_cast<int>(sizeof(Smem<D, B>));
-  static bool configured = false;
-  if (!configured) {
-    int optin = 0;
-    ROLA_CUDA_CHECK(
-        cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
-    STD_TORCH_CHECK(kSmem <= optin, "the intra arm's ", kSmem, "-byte footprint exceeds the ",
-                    optin, "-byte opt-in");
-    ROLA_CUDA_CHECK(cudaFuncSetAttribute(intra_kernel<D, B>,
-                                         cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
-    configured = true;
+template <int D>
+void launch(const IntraParams& p, int64_t smem, int64_t bh, cudaStream_t stream) {
+  //: the attribute call is host time on the launch path: raised only when a call's footprint passes the last one set
+  static int64_t configured = 0;
+  if (smem > configured) {
+    const int optin = current_device_properties().sharedMemPerBlockOptin;
+    STD_TORCH_CHECK(smem <= optin, "the intra's ", smem,
+                    "-byte footprint at these widths exceeds this device's ", optin,
+                    "-byte opt-in");
+    ROLA_CUDA_CHECK(cudaFuncSetAttribute(
+        intra_kernel<D>, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem)));
+    configured = smem;
   }
   const dim3 grid(static_cast<unsigned>(p.windows * Pieces::count()), static_cast<unsigned>(bh));
-  intra_kernel<D, B><<<grid, kThreads, kSmem, stream>>>(p);
+  intra_kernel<D><<<grid, kThreads, static_cast<size_t>(smem), stream>>>(p);
   ROLA_CUDA_LAUNCH_CHECK();
 }
 
@@ -105,10 +136,10 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   check_arch_table();
   const int D = static_cast<int>(widths.size());
   STD_TORCH_CHECK(
-      D >= 1 && D <= kMaxLevels && static_cast<int>(read.size()) == D
-          && static_cast<int>(write.size()) == D && static_cast<int>(scale_write.size()) == D,
-      "one to four levels, each side one row set a level and the write side one scale a "
-      "level");
+      D >= 1 && static_cast<int>(read.size()) == D && static_cast<int>(write.size()) == D
+          && static_cast<int>(scale_write.size()) == D,
+      "each side one row set a level and the write side one scale a level, against the layout's ",
+      D, " levels");
   STD_TORCH_CHECK(window == kWindow, "the intra's window is the carry's ", kWindow, " tokens, got ",
                   window);
   STD_TORCH_CHECK(weight_digits == 1 || weight_digits == 2,
@@ -122,15 +153,32 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   const int64_t B = read[0].size(0), T = read[0].size(1), H = read[0].size(2);
   STD_TORCH_CHECK(T % kWindow == 0, "the call is a whole number of ", kWindow,
                   "-token windows, got ", T);
-  const int64_t width = widths[0];
-  for (int64_t w : widths) STD_TORCH_CHECK(w == width, "the intra's levels are one width");
+  std::vector<int64_t> row_widths(D);
+  for (int l = 0; l < D; ++l) {
+    row_widths[l] = read[l].dim() == 4 ? read[l].size(3) : 0;
+    STD_TORCH_CHECK(row_widths[l] <= widths[l], "level ", l, "'s rows are ", row_widths[l],
+                    " digits wide, past the layout's ", widths[l]);
+  }
+  const detail::Geometry g = detail::geometry(row_widths);
 
   IntraParams p{};
+  facts::LivenessLayout layout{D, {}, static_cast<int>(T)};
+  for (int l = 0; l < D; ++l) layout.B[l] = static_cast<int>(widths[l]);
   for (int l = 0; l < D; ++l) {
-    p.read[l] = detail::row_view(read[l], B, T, H, width, dtype, "read[l]");
-    p.write[l] = detail::row_view(write[l], B, T, H, width, dtype, "write[l]");
+    p.read[l] = detail::row_view(read[l], B, T, H, row_widths[l], dtype, "read[l]");
+    p.write[l] = detail::row_view(write[l], B, T, H, row_widths[l], dtype, "write[l]");
     p.scale_write[l] = detail::column_view(scale_write[l], B, T, H, "scale_write[l]");
+    p.width[l] = static_cast<int>(row_widths[l]);
+    p.slab0[l] = g.slab0[l];
+    p.level_slabs[l] = g.level_slabs[l];
+    p.level_stages[l] = g.level_stages[l];
+    p.group0[l] = layout.group_base(l);
+    for (int i = 0; i < g.level_stages[l]; ++i) p.stage[l][i] = g.stage[l][i];
   }
+  p.stages = g.stages;
+  p.slabs = g.slabs;
+  p.groups = layout.groups();
+  p.pitch = g.pitch;
   p.g_write = detail::column_view(g_write, B, T, H, "g_write");
   p.v_scale = detail::column_view(v_scale, B, T, H, "v_scale");
   p.v_hat = detail::row_view(v_hat, B, T, H, kValueWidth, Dtype::Char, "v_hat");
@@ -149,8 +197,6 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write,
       "the dense-level bitmasks name levels inside the depth");
   p.dense[0] = static_cast<uint32_t>(dense_read);
   p.dense[1] = static_cast<uint32_t>(dense_write);
-  facts::LivenessLayout layout{D, {}, p.L};
-  for (int l = 0; l < D; ++l) layout.B[l] = static_cast<int>(width);
   STD_TORCH_CHECK(unions.is_cuda() && unions.scalar_type() == Dtype::Int && unions.is_contiguous()
                       && unions.dim() == 4 && unions.size(0) == B * H
                       && unions.size(1) == facts::kSides && unions.size(2) == layout.groups()
@@ -171,25 +217,14 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   const int device = read[0].get_device_index();
   const DeviceGuard guard(device);
   const cudaStream_t stream = current_stream();
-#define ROLA_INTRA_DISPATCH(D_, B_)                  \
-  if (D == (D_) && width == (B_)) {                  \
-    detail::launch<D_, B_>(p, B * H, device, stream); \
-  } else
-  ROLA_INTRA_ARMS_X(ROLA_INTRA_DISPATCH) {
-    STD_TORCH_CHECK(false, "no intra arm at ", D, " levels of ", width, " digits");
-  }
-#undef ROLA_INTRA_DISPATCH
+  if (D == 1)
+    detail::launch<1>(p, g.smem, B * H, stream);
+  else
+    detail::launch<2>(p, g.smem, B * H, stream);
 }
 
-//: -- see docs/internals/intra/intra_api.md#intra-arms
-std::vector<std::vector<int64_t>> intra_arms() {
-  std::vector<std::vector<int64_t>> out;
-#define ROLA_INTRA_LIST(D_, B_) \
-  out.push_back({int64_t{D_}, int64_t{B_}, static_cast<int64_t>(sizeof(detail::Smem<D_, B_>))});
-  ROLA_INTRA_ARMS_X(ROLA_INTRA_LIST)
-#undef ROLA_INTRA_LIST
-  return out;
-}
+//: -- see docs/internals/intra/intra_api.md#intra-footprint
+int64_t intra_footprint(std::vector<int64_t> widths) { return detail::geometry(widths).smem; }
 
 //: -- see docs/internals/intra/intra_api.md#intra-build-stamp
 int64_t intra_build_stamp() {

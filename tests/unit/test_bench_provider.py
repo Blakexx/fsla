@@ -27,15 +27,13 @@ DECODE_CELL = "layer-B2-T128-H2-h128-dv64-fp32-s4-dec8"
 
 @pytest.fixture
 def binary(monkeypatch):
-    """A binary carrying the shipped carry arms, the intra arm at depth 2, and every decode arm."""
+    """A binary carrying the shipped carry arms and every decode arm (the intra reads its widths by rule)."""
     import rola.ops.carry as carry
     import rola.ops.decode as decode
-    import rola.ops.intra as intra
 
-    tables = SimpleNamespace(carry=list(SHIPPED), intra=[(2, 256, 0)],
+    tables = SimpleNamespace(carry=list(SHIPPED),
                              decode=[(dv, d, decay) for dv in (32, 64) for d in (1, 2, 3, 4) for decay in (False, True)])
     monkeypatch.setattr(carry, "arms", lambda: tables.carry)
-    monkeypatch.setattr(intra, "arms", lambda: tables.intra)
     monkeypatch.setattr(decode, "arms", lambda: tuple(tables.decode))
     return tables
 
@@ -64,8 +62,10 @@ def test_a_layer_cells_arms_are_its_declared_constructions(binary):
     assert all(name.endswith("@layer=chunk-decode-w16") for name in names)
 
 
-def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary):
-    binary.intra = []
+def test_an_arm_is_offered_only_where_the_binary_carries_its_kernel(binary, monkeypatch):
+    import rola.ops.intra as intra
+
+    monkeypatch.setattr(intra, "reads", lambda widths: False)
     names = set(provider.arms(by_name("flagship-alt-k4")))
     assert "carry_forward" in names and not any(name.startswith(("carry_intra", "intra_forward")) for name in names)
     assert "decode_step@layer=chunk-decode-w16" in provider.arms(by_name(DECODE_CELL))

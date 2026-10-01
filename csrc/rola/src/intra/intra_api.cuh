@@ -19,7 +19,7 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write,
 
 void rola_intra_ledger_bind(std::optional<Tensor> ledger);  // intra_api.md#rola-intra-ledger-bind
 
-std::vector<std::vector<int64_t>> intra_arms();  // intra_api.md#intra-arms
+int64_t intra_footprint(std::vector<int64_t> widths);  // intra_api.md#intra-footprint
 
 int64_t intra_build_stamp();  // intra_api.md#intra-build-stamp
 

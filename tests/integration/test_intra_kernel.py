@@ -30,24 +30,28 @@ WINDOW = intra_ops.WINDOW
 FP32 = 2.0 ** -20
 
 
-def _bundle(L, H, keep, *, B=1, head_major=True, value_digits=2, seed=0):
-    """A (256, 256) bundle: u8 rows with ``keep`` of their digits live, scales and gains in [0.1, 1.1), Gaussian
-    values in the format; head-major storage (the producer's) or token-major."""
+def _bundle(L, H, keep, *, widths=(256, 256), B=1, head_major=True, value_digits=2, seed=0):
+    """A bundle at ``widths``: u8 rows with ``keep`` of their digits live, scales and gains in [0.1, 1.1), Gaussian
+    values in the format; each side one packed plane, head-major (the producer's) or token-major."""
     gen = torch.Generator(device="cuda").manual_seed(seed)
+    bounds = [sum(widths[:level]) for level in range(len(widths) + 1)]
 
     def rows():
-        shape = (B, H, L, 512) if head_major else (B, L, H, 512)
+        shape = (B, H, L, bounds[-1]) if head_major else (B, L, H, bounds[-1])
         d = torch.randint(1, 256, shape, device="cuda", generator=gen).to(torch.uint8)
         d *= (torch.rand(shape, device="cuda", generator=gen) < keep).to(torch.uint8)
         d = d.transpose(1, 2) if head_major else d
-        return d[..., :256], d[..., 256:]
+        return tuple(d[..., a:b] for a, b in zip(bounds, bounds[1:]))
+
+    def columns():
+        return tuple(column() for _ in widths)
 
     def column():
         return torch.rand((B, L, H), device="cuda", generator=gen) + 0.1
 
-    routes = RouteFactors(topology=Topology(levels=(OpaqueRouting(width=256), OpaqueRouting(width=256))),
-                          amp_read=rows(), amp_write=rows(), scale_read=(column(), column()),
-                          scale_write=(column(), column()), g_write=column())
+    routes = RouteFactors(topology=Topology(levels=tuple(OpaqueRouting(width=w) for w in widths)),
+                          amp_read=rows(), amp_write=rows(), scale_read=columns(), scale_write=columns(),
+                          g_write=column())
     values = Values.from_projection(torch.randn(B, L, H, 64, device="cuda", generator=gen), value_digits)
     return routes, values
 
@@ -120,6 +124,20 @@ def test_the_intra_is_the_declared_arithmetic_per_slot(L, H, keep):
     _check(*_bundle(L, H, keep))
 
 
+#: THE WIDTHS THE INTRA READS AT RUNTIME: one or two levels, each a whole number of 16-digit granules -- a stage short
+#: of its four slabs, a slab half past a level's digits, and levels narrower than the facts layout's (48 in a 64)
+@pytest.mark.parametrize("widths", [(256,), (64,), (16,), (48,), (64, 64), (128, 32), (16, 256), (48, 80), (96, 160)])
+def test_every_width_is_the_declared_arithmetic(widths):
+    _check(*_bundle(1024, 2, 0.3, widths=widths, seed=11))
+
+
+@pytest.mark.parametrize("widths", [(64, 64), (48, 80)])
+def test_the_slab_gate_is_an_exact_certificate_at_any_width(widths):
+    """A sparse draw at narrow and uneven widths: the gated run is the ungated one's sums."""
+    routes, values = _bundle(1024, 2, 0.02, widths=widths, seed=13)
+    assert all(_same(a, b) for a, b in zip(_run(routes, values), _run(routes, values, gated=False), strict=True))
+
+
 @pytest.mark.parametrize("weight_digits", (1, 2))
 @pytest.mark.parametrize("value_digits", (1, 2))
 def test_every_digit_count_is_the_declared_arithmetic(weight_digits, value_digits):
@@ -164,12 +182,14 @@ def test_the_intra_reduces_into_the_planes_it_is_given():
     assert _same(num, plain_num + 0.5) and _same(den, plain_den + 2.0)
 
 
-def test_the_producers_bundle():
+@pytest.mark.parametrize("widths", [(256, 256), (64, 128)])
+def test_the_producers_bundle(widths):
     """A real producer's bundle -- head-major packed rows, the alternating routing's statics -- per slot."""
     import rola
 
     torch.manual_seed(0)
-    routing = rola.Routing([rola.split_routing(256, sparse_duty="write"), rola.split_routing(256, sparse_duty="read")])
+    routing = rola.Routing([rola.split_routing(widths[0], sparse_duty="write"),
+                            rola.split_routing(widths[1], sparse_duty="read")])
     layer = rola.RoLA(routing, hidden_size=128, num_heads=2, d_v=64).cuda().eval()
     with torch.no_grad():
         routes, values = layer._produce(torch.randn(1, 1024, 128, device="cuda"))
@@ -215,7 +235,26 @@ def test_the_seam_refuses_what_no_arm_is_built_for():
                                 *statics, num, den)
 
 
-def test_the_loaded_binary_states_the_arm_it_carries():
-    """The extension-trap check: the device's own footprint of the built arm is the one the arm table reports."""
-    (smem,) = [smem for depth, width, smem in intra_ops.arms() if (depth, width) == (2, 256)]
-    assert intra_ops.build_stamp() // 1000003 == smem
+def test_the_seam_refuses_widths_it_does_not_read():
+    """A level off the 16-digit granule, and rows wider than the facts layout's level."""
+    routes, values = _bundle(1024, 1, 0.3, widths=(24,))
+    layout = facts_ops.call_layout(routes)
+    statics = facts_ops.call_statics(routes, layout)
+    unions = facts_ops.facts(routes, values, layout, *statics).unions
+    num, den = torch.zeros(1, 1024, 64, device="cuda"), torch.zeros(1, 1024, device="cuda")
+    with pytest.raises(RuntimeError, match="whole 16-digit copy granules"):
+        intra_ops.intra_forward(routes, values, unions, layout, *statics, num, den)
+    routes, values = _bundle(1024, 1, 0.3, widths=(64,))
+    narrow = lv.LivenessLayout(D=1, B=(32,), L=1024)
+    with pytest.raises(RuntimeError, match="past the layout's 32"):
+        intra_ops.intra_forward(routes, values, unions, narrow, *statics, num, den)
+    assert not intra_ops.admits((24,), 64) and not intra_ops.admits((64, 64, 64), 64)
+    assert not intra_ops.admits((64,), 128) and intra_ops.admits((48, 80), 64)
+
+
+def test_the_loaded_binary_states_the_footprint_it_carries():
+    """The extension-trap check: the device's own fixed tenants are the footprint law's, a reader row of three or more
+    128-digit stage slots past them."""
+    tenants = intra_ops.build_stamp() // 1000003
+    assert intra_ops.footprint((256, 256)) == tenants + 128 * 4 * 128
+    assert intra_ops.footprint((64,)) == intra_ops.footprint((128, 32)) == tenants + 128 * 3 * 128

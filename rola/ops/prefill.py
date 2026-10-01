@@ -32,7 +32,7 @@ WHAT THIS OPERATOR REFUSES, and why each refusal is structural rather than a
 missing feature:
 
 * ``L % W != 0`` — the intra's windows are whole, its grid a window a column.
-* a topology or value width no intra arm is built at (`rola.ops.intra.arms`).
+* level widths or a value width the intra does not read (`rola.ops.intra.admits`).
 """
 from __future__ import annotations
 
@@ -112,9 +112,8 @@ def _pack_operands(read_levels, write_levels, g_write, v):
 
 
 def intra_admits(widths, d_v: int) -> bool:
-    """Whether an intra arm is built at these level widths and value width."""
-    return (len(set(widths)) == 1 and d_v == intra_ops.VALUE_WIDTH
-            and intra_ops.level_width(len(widths)) == widths[0])
+    """Whether the intra reads these level widths and value width (`rola.ops.intra.admits`)."""
+    return intra_ops.admits(widths, d_v)
 
 
 def _carry_levels(routes, values):
@@ -191,8 +190,9 @@ def prefill(routes, values, *, modes, liveness: carry_ops.LivenessWords, unions:
         raise ValueError(f"{D} levels want {D} support modes; got {len(modes)}")
     if not intra_admits(widths, d_v):
         raise ValueError(
-            f"this build carries no intra arm at level widths {tuple(widths)} and d_v {d_v} "
-            f"(built: {intra_ops.arms()}). A topology only the carry carries is an inter-only "
+            f"the intra does not read level widths {tuple(widths)} at d_v {d_v} (one or two levels of "
+            f"{intra_ops.WIDTH_GRANULE}-digit granules up to {intra_ops.MAX_LEVEL_WIDTH}, d_v "
+            f"{intra_ops.VALUE_WIDTH}). A topology only the carry carries is an inter-only "
             f"cell -- call rola.ops.carry.carry_forward directly.")
     if length % WINDOW:
         raise ValueError(f"L = {length} is not a whole number of {WINDOW}-token windows")

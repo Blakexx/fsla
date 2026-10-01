@@ -83,8 +83,8 @@ the no-fallback rule forbids.
 | the module's mode (layer only) | `eval()` | `BackwardNotImplemented` |
 | device | CUDA | refused |
 | `d_v` | up to the widest value width the carry ships at the depth | refused |
-| widths | uniform, at the intra's one level width for the depth | refused |
-| `(D, B)` | the binary's own censuses (`rola.ops.carry.arms`, the intra's shipped widths) | refused |
+| widths | one or two levels, each a whole number of 16-digit granules up to 256, any mix (`rola.ops.intra.admits`) | refused |
+| `D` | the binary's own carry census (`rola.ops.carry.arms`) | refused |
 | `T` | whole 512-token windows (a segment; the layer segments, §4.2) | refused |
 | `decay` | not implemented in the prefill (decode has it) | refused |
 | an unratified activation | — | refused |

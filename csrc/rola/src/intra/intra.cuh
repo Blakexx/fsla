@@ -51,15 +51,22 @@ struct Pieces {
 constexpr int kWarps = kBlockRows / kWarpRows;
 constexpr int kThreads = kWarps * 32;
 constexpr int kValueWidth = 64;
-constexpr int kMaxLevels = 4;
 
-//: A COPY GRANULE, an ldmatrix row, the column side's stage of digits, and a SLAB: one level's 32 digits, one IMMA
-//: k-step, the slab gate's grain. -- see docs/internals/intra/intra.md#constants
+//: THE ROWS' LEVELS: u8 rows serve depth <= 2, each level 16 to 256 digits in whole copy granules.
+constexpr int kMaxLevels = 2;
+constexpr int kMaxLevelWidth = 256;
+
+//: A COPY GRANULE, a STAGE (at most 128 digits of one level) and a SLAB (32 digits, one IMMA k-step).
+//: -- see docs/internals/intra/intra.md#constants
 constexpr int kChunk = 16;
 constexpr int kStageDigits = 128;
 constexpr int kSlabDigits = 32;
+constexpr int kSlabsPerStage = kStageDigits / kSlabDigits;
 constexpr int kStageBuffers = 3;
-constexpr int kCopyAhead = 1;
+constexpr int kLevelStages = kMaxLevelWidth / kStageDigits;
+constexpr int kMaxStages = kMaxLevels * kLevelStages;
+constexpr int kMinPitchStages = 3;
+constexpr int kColumns = 2 + kMaxLevels;
 
 enum IntraPhase : int {
   kPhaseReader,
@@ -83,7 +90,15 @@ struct ColumnView {
   int64_t sb, st, sh;
 };
 
-//: THE OPERAND BLOCK, by value. -- see docs/internals/intra/intra.md#intraparams
+//: A LEVEL'S STAGE: its reader slot and copy order (`index`), its slabs the gate bits `mask << slab0`.
+//: -- see docs/internals/intra/intra.md#stages
+struct Stage {
+  int index, slab0;
+  uint32_t mask;
+};
+
+//: THE OPERAND BLOCK, a grid constant: the views, the call's widths and the stage table they give.
+//: -- see docs/internals/intra/intra.md#intraparams
 struct IntraParams {
   RowView read[kMaxLevels];
   RowView write[kMaxLevels];
@@ -94,6 +109,10 @@ struct IntraParams {
   float* num;
   float* den;
   long long* ledger;
+  Stage stage[kMaxLevels][kLevelStages];
+  int width[kMaxLevels], slab0[kMaxLevels], group0[kMaxLevels], level_stages[kMaxLevels];
+  uint32_t level_slabs[kMaxLevels];
+  int stages, slabs, groups, pitch;
   int H, L, windows, weight_digits;
   uint32_t dense[2];
 };

@@ -10,12 +10,13 @@ block are [`intra.md`](intra.md), its host seam [`intra_api.md`](intra_api.md); 
 intra of the bundle's dequantized levels; `tests/integration/test_intra_kernel.py` holds the
 kernel to it per slot.
 
-Vocabulary, defined here and used unqualified below: `D` = routing depth; `B` = a level's
-width in digits (the built arm: `D = 2`, `B = 256`); `L` = tokens; `BH` = batch × heads;
-**window** = the carry's 512 tokens; **tile** = 64 consecutive tokens, eight to a window;
-**block** = two tiles, the 128 READERS a CTA owns; **stage** = 128 digits of one level for one
-writer tile; **slab** = 32 digits of one level, one IMMA k-step; **IMMA** = one
-`mma.sync.m16n8k32` on 8-bit operands, 4096 multiply-adds.
+Vocabulary, defined here and used unqualified below: `D` = routing depth, one or two (the
+arm); `w_l` = level `l`'s width in digits, the call's (a whole number of 16-digit granules up to
+256); `L` = tokens; `BH` = batch × heads; **window** = the carry's 512 tokens; **tile** = 64
+consecutive tokens, eight to a window; **block** = two tiles, the 128 READERS a CTA owns;
+**stage** = at most 128 digits of one level for one writer tile, a level's one or two;
+**slab** = 32 digits of one level, one IMMA k-step; **IMMA** = one `mma.sync.m16n8k32` on 8-bit
+operands, 4096 multiply-adds.
 
 ## What it computes
 
@@ -35,14 +36,19 @@ and the readout divides by `den + READOUT_EPS / r(t)` so the defined readout is 
 
 <a id="arms"></a>
 
-## The arm
+## The arms and the widths
 
-`Arm<D, B>` derives everything from the two template axes: a reader row is `D · B` bytes,
-a level `B / 128` stages, a tile `D · B / 128` stages (four at the built arm), `D · B / 32`
-slabs (sixteen), and `kUnit = 255^(-2D)`, the integer Gram's scale. The built set is one
-macro in `intra.cu` (`ROLA_INTRA_ARMS_X`, `(2, 256)`), so the dispatch and the arm list read
-the same rows. The rows at depth above two are f16 (`produce/produce.md#bundle`); their arms —
-the Gram as f16 HMMA on the narrow levels — are not built, and the seam refuses them by name.
+The arm is the depth, `intra_kernel<D>` at `D` = 1 and 2: it fixes the levels the walk visits,
+the writer columns (`2 + D`), and `kUnit<D> = 255^(-2D)`, the integer Gram's scale. The widths are
+the call's ([`intra.md`](intra.md#stages)): each level is read at its own width, padded only to the
+32-digit slab in shared memory, its slabs in stages of four. The walk visits a level's stages
+with the level and the stage's place in it known at compile time -- the level's first stage
+starts the accumulator, its last folds it, and a stage knows which copy follows it -- and
+branches once a level on whether the level has a second stage; what stays a runtime value is a
+stage's slot (its `index`), its slab mask, and the copies' row pointers and zero-fill. That
+structure is measured, [below](#runtime-widths). The rows at depth above two are f16
+(`produce/produce.md#bundle`); their arms — the Gram as f16 HMMA on the narrow levels — are not
+built, and the seam refuses them by name.
 
 <a id="the-grid"></a>
 
@@ -57,8 +63,8 @@ batch-head. Each piece stages its block's readers and reduces its partial sums i
 planes, so a row of blocks 2 and 3 takes two reductions from the intra, in either order. Eight
 warps a CTA, each owning 16 readers: warps 0–3 the block's first tile, 4–7 its second. A warp's
 rows are its own for the whole sweep, so its output is final in registers at the end and nothing
-is exchanged between warps. At ~100 KB of shared memory and ~208 registers a thread, one CTA
-runs an SM.
+is exchanged between warps. At ~100 KB of shared memory at (256, 256) and ~218 registers a
+thread (202 at depth one), one CTA runs an SM.
 
 Why pieces, and why four (ncu, base clock): at `L = 1K` the whole call is a few CTAs and its time
 is the heaviest one's sweep, so the piece length sets the small call's latency; at `L = 64K` the
@@ -78,15 +84,18 @@ length serves every call — a length chosen from `L` would be the fuzzy thresho
 
 | tenant | bytes | holds |
 |---|---|---|
-| `reader` | `128 · D · B` = 64 KB | the block's reader rows, loaded once, every level |
+| reader rows | `128 · pitch`, 64 KB at (256, 256) | the block's reader rows, loaded once, every level, a 128-byte slot a stage (`pitch` = `max(stages, 3)` slots) |
 | `stage[3]` | 3 × 8 KB | three writer stages in flight |
 | `v_hat`, `v_lo` | 2 × 4 KB | the writer tile's value digits |
-| `column` | `(2 + D) · 64 · 4` | the writer tile's gain, value scale and write scales |
+| `column` | `(2 + 2) · 64 · 4` | the writer tile's gain, value scale and write scales |
 | `den` | 512 | a warp's 16 row sums, added across tiles |
 | `gate` | 64 | the slab gate's table |
 | barriers, clock | ~0.5 KB | full/empty a stage buffer, one a reader part, full/empty the values |
 
-The reader region is dead after the sweep and holds the deposit's staging tile.
+The reader rows follow the fixed tenants (`reader_rows`), sized by the call's widths, so the
+launch's dynamic shared memory is `sizeof(Smem) + 128 · pitch`. The reader region is dead after
+the sweep and holds the deposit's staging tile; its pitch is at least three slots so a warp's 16
+rows hold that tile.
 
 <a id="swizzle"></a>
 
@@ -110,7 +119,10 @@ stage's rows `lane / 8 + 4 i` at chunk `lane % 8`, a value plane's rows `lane / 
 `lane % 4` — so `Copier` computes each 64-bit base once per CTA, and a copy adds its tile's rows
 with one unsigned 32 × 32 → 64 multiply-add (`rows_of`; the seam bounds a token stride to 31
 bits, and the two value planes share one layout). A stage row `j + 4 i`'s swizzled chunk is
-`(lane % 8) ^ j ^ 4 (i & 1)`, one address bit flipped between even and odd `i`. Recomputing the
+`(lane % 8) ^ j ^ 4 (i & 1)`, one address bit flipped between even and odd `i`. A chunk past its
+level's digits -- the second half of a 16-digit tail, a short stage's empty slots -- is copied
+with a zero source size, so it lands as zeros and reads nothing; `Copier` holds each level's row
+pointer and a bit a (level, stage) for whether the lane's chunk lies inside the level. Recomputing the
 (batch, token, head) address at every copy, the first form, cost 512 instructions a warp tile
 pair against the 80 its budget allows (the [region ledger](#region-ledger)). The rows are read
 where the bundle holds them, by their strides, on 16-byte boundaries; the producer's rows are
@@ -121,19 +133,21 @@ head-major, so a CTA's tokens are one contiguous run a row.
 
 ## The pipeline
 
-The reader rows land once, in four parts of one stage's digits each, each on its own
-mbarrier: part `S` leaves beside tile 0's stage `S`, so the first Gram waits for one part and
-one stage, not for 64 KB. The writer side streams a tile's four stages through three buffers,
-each stage copied ONE stage ahead of its use (`kCopyAhead`), which leaves two stages of slack
-between the warps: a buffer is refilled once all eight warps have released its use three
-stages back (`empty`, eight arrivals).
+The reader rows land once, a part a stage, each into its slot and on its own mbarrier: the
+first part leaves beside tile 0's first stage, so the first Gram waits for one part and one
+stage, not for the whole block's rows. The writer side streams a tile's stages, level by level,
+through three buffers, each stage copied ONE stage ahead of its use -- the level's second stage,
+the next level's first, or past the last level the next tile's first -- which leaves two stages
+of slack between the warps: a buffer is refilled once all eight warps have released its use
+three stages back (`empty`, eight arrivals). A call with fewer stages than buffers (a one-level
+call of at most 128 digits has one a tile) runs the same ring across tiles.
 
 **The first warp to reach a refill issues it.** Each warp, at a stage's start, claims the
 next stage's copy with an `atomicMax` of its absolute index on the buffer's claim word; the
 warp that raises it waits alone for the buffer's release and issues the copy. The tile's
 values move the other way: **the last warp to release a tile's values copies the next
 tile's** (an arrival counter a tile parity), so nobody waits on the value buffer at all, and
-the values have the next tile's four stages to land before they are read.
+the values have the next tile's stages to land before they are read.
 
 **Every warp waits for every stage and every tile's values, read or not.** An mbarrier wait
 tests one phase bit, so it is sound only for a waiter within a phase of the barrier. With the
@@ -174,9 +188,12 @@ no token pair is not multiplied. The certificate is the facts pass's TILE UNIONS
 32-digit group and 64-token tile, the digits live anywhere in the tile. Warp 0 reads, a lane a
 slab, the reader side's two unions for the block and the writer side's eight for the window
 (40 bytes a lane) and builds the table `gate[tile][row tile]`: bit `s` set when slab `s`'s
-reader and writer unions meet. A level with no bit set makes the pair's product zero, so the
-whole word clears, and a pair above the diagonal is zero too. A side's dense level (the
-topology's declaration, the statics the facts pass took) answers all-ones and is not read.
+reader and writer unions meet. Slabs are numbered across the levels, and slab `s` of level `l`
+reads the union table's group `group0_l + s - slab0_l`: the table is laid out by the facts pass's
+own (padded) widths, never narrower than the rows. A level with no bit set makes the pair's
+product zero, so the whole word clears, and a pair above the diagonal is zero too. A side's
+dense level (the bundle's `sparse` flag unset, the statics the facts pass took) answers all-ones
+and is not read.
 
 The table drives everything else, uniformly across the CTA:
 
@@ -197,13 +214,15 @@ and slabs.
 
 ## The Gram
 
-A stage is four k-steps (`gram_step`); a k-step is the warp's 16 reader rows against the
+A stage is at most four k-steps (`gram_step`); a k-step is the warp's 16 reader rows against the
 stage's 64 writer tokens over one slab: one `ldmatrix.x4` of the reader rows, four of the
 stage, eight IMMAs into the level's `int32[8][4]` accumulator. Both operands are token-major
 rows read by plain `ldmatrix` — no transpose anywhere. A level's first k-step starts its
 accumulator from zero (`imma_u8_k32_fresh`), so the accumulator is dead between levels. At a
 level's last stage the s32 sums convert to fp32 — exactly, since a level's sum is at most
-`255² · 256 < 2^24` — and multiply into the running level product (`fold_level`).
+`255² · 256 < 2^24` at any width the kernel reads — and multiply into the running level product
+(`fold_level`). A stage's slabs past its last are absent from its mask, so a short stage runs its
+slabs as the gated form does.
 
 <a id="epilogue"></a>
 
@@ -322,6 +341,26 @@ several CTAs — at a price in reader bytes the large-`L` regime pays: the piece
 The gate's own cost, from the ledger with the unions read and with every level declared dense
 (nothing read): 1.1% for the prologue's barrier, 2.5% for the unions' round trip, which tile
 0's stages could hide.
+
+<a id="runtime-widths"></a>
+
+**What runtime widths cost** (2026-10-01, ncu at base clock, `L = 64K`, 16 batch-heads, `(256,
+256)`, a dense draw, against the fixed-width kernel it replaced):
+
+| form | unions read | every level dense | instructions |
+|---|---|---|---|
+| fixed width, `(2, 256)` the arm | 4.85 ms | 4.68 ms | 580M |
+| a runtime stage loop | 5.12 | 5.14 | 618M |
+| depth the arm, a level's stages unrolled, the fold templated | 5.01 | 4.87 | 606M |
+| ... rows precomputed in `Copier`, the stage mask from the host | 4.90 | 4.79 | 598M |
+| ... a stage templated on ending its level (now) | 4.89 | 4.76 | 591M |
+
+The runtime loop paid in the stage's bookkeeping -- a guard, the wrap, the first/last/level
+tests, a select a product element where the fold chose its first level at runtime -- 33
+compares, 42 multiply-adds and 24 branches a warp tile more, and branch stalls up half. What
+remains (+0.8%, +1.7%) is the runtime ring index and slab shift a stage and the prologue's
+address arithmetic, amortized over a piece's tiles; templating the six stage patterns (a level's
+one or two stages at each depth) would take it out at three times the instantiations.
 
 ## Other architectures
 

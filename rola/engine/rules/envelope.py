@@ -17,23 +17,22 @@ from rola.engine import rule
 
 
 @rule(gives=("prefill_envelope",),
-      needs=("widths", "d_v", "decay", "tokens", "window", "intra_width", "intra_dv", "carry_dvs"))
+      needs=("widths", "d_v", "decay", "tokens", "window", "intra_reads", "intra_dv", "carry_dvs"))
 def prefill_envelope(widths: tuple[int, ...], d_v: int, decay: Any, tokens: int, window: int,
-                     intra_width: int | None, intra_dv: int, carry_dvs: tuple[int, ...]) -> str | None:
+                     intra_reads: bool, intra_dv: int, carry_dvs: tuple[int, ...]) -> str | None:
     """Why the prefill has no kernel for this segment, or None if it runs.
 
-    ``intra_width`` is the level width the intra kernel ships at this depth (``None``: none) and ``intra_dv`` the
-    value width it reads; ``carry_dvs`` the value widths the carry ships at this depth -- the binary's own census,
-    never the source tree's.
+    ``intra_reads`` is whether the intra kernel reads these level widths (`rola.ops.intra.admits`) and ``intra_dv``
+    the value width it reads; ``carry_dvs`` the value widths the carry ships at this depth -- the binary's own
+    census, never the source tree's.
     """
     depth = len(widths)
     if decay is not None:
         return ("decay is not implemented in the operator (the decay retirement; docs/internals/chunk/chunk.md); "
                 "use the reference arm")
-    if intra_width is None:
-        return f"this build carries no intra arm at depth {depth}"
-    if set(widths) != {intra_width}:
-        return f"widths={widths}; the prefill at depth {depth} is built at the intra's one level width {intra_width}"
+    if not intra_reads:
+        return (f"widths={widths}; the intra reads one or two levels, each a whole number of 16-digit granules up "
+                f"to 256, within the device's shared memory")
     if d_v != intra_dv:
         return f"d_v={d_v}; the intra reads value width {intra_dv}"
     if not any(dv >= d_v for dv in carry_dvs):

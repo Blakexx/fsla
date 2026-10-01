@@ -41,12 +41,11 @@ from tests.oracle.tolerances import BF16_RTOL, PREFILL_READOUT, PREFILL_STATE
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda required")
 
 #: The registry's cells the combined operator can run: the dense backing, a fresh state,
-#: the shipped value width, and a topology both families carry. A cell whose carry arm no
+#: the shipped value width, and widths the intra reads. A cell whose carry arm no
 #: build carries yet, or whose window is partial, stays selected and red (TEST-DRIVEN).
 CELLS = tuple(c for c in carry_cells(tier="oracle")
               if c.backing == "dense" and c.state == "fresh" and c.dv == 64
-              and len(set(c.widths)) == 1
-              and intra_ops.level_width(c.D) == c.widths[0])
+              and intra_ops.reads(c.widths))
 IDS = [c.name for c in CELLS]
 
 
@@ -206,7 +205,7 @@ def test_a_chained_call_equals_one_long_call():
     contributions land in is the scheduler's -- for the whole call as much as for the
     chain. Agreement to fp32 rounding is what a reordered fp32 sum can promise, and it is
     far tighter than the bf16 band."""
-    spec = next(c for c in CELLS if c.draw == "dense")
+    spec = next(c for c in CELLS if c.name == "flagship-dense")
     routes, values = bundle(realize(spec), spec)
     whole = run(spec, routes, values, state_out=fresh_plane(spec))
 
@@ -239,7 +238,7 @@ def test_the_intra_term_is_actually_present():
     above would be testing the carry and calling it the operator. This is also the one
     cell in this file that drives the carry LAUNCH SURFACE directly, so it is where the
     combined operator's carry leg and the kernel boundary are the same call."""
-    spec = next(c for c in CELLS if c.draw == "dense")
+    spec = next(c for c in CELLS if c.name == "flagship-dense")
     routes, values = bundle(realize(spec), spec)
     read, write, v = _carry_levels(routes, values)
     desc = descriptor(spec)
@@ -260,19 +259,19 @@ def test_the_intra_term_is_actually_present():
 
 def test_the_combined_operator_refuses_what_it_has_no_kernel_for():
     """The refusal is STRUCTURAL, and stating it is how a gap stays a gap rather than
-    becoming a host-side second code path: a topology only the carry family carries is an
-    inter-only cell, and the combined entry says so instead of half-serving it."""
-    spec = next(c for c in CELLS if c.draw == "dense")
+    becoming a host-side second code path: widths the intra does not read (off its 16-digit
+    granule) are an inter-only cell, and the combined entry says so instead of half-serving it."""
+    spec = next(c for c in CELLS if c.name == "flagship-dense")
     routes, values = bundle(realize(spec), spec)
     layout = facts_ops.call_layout(routes)
     statics = facts_ops.call_statics(routes, layout)
     out = facts_ops.facts(routes, values, layout, *statics)
     words = carry_ops.LivenessWords(words=out.words)
-    for width in (64, 16):
+    for width in (24, 8):
         narrow = RouteFactors(topology=Topology(levels=(OpaqueRouting(width=width),) * 2),
                               amp_read=tuple(r[..., :width] for r in routes.amp_read),
                               amp_write=tuple(r[..., :width] for r in routes.amp_write),
                               scale_read=routes.scale_read, scale_write=routes.scale_write, g_write=routes.g_write)
-        with pytest.raises(ValueError, match="no intra arm"):
+        with pytest.raises(ValueError, match="the intra does not read level widths"):
             prefill(narrow, values, modes=modes_of(spec), liveness=words, unions=out.unions, layout=layout, read_statics=statics[0],
                     write_statics=statics[1])

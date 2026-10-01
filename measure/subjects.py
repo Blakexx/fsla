@@ -403,6 +403,12 @@ def _splits(tokens: int, calls: int) -> bool:
     return calls == 1 or tokens % (calls * _shared_window()) == 0
 
 
+def _intra_reads(widths) -> bool:
+    from rola.ops import intra as intra_ops
+
+    return intra_ops.reads(widths)
+
+
 def applicable(spec, kind: str, calls: int = 1) -> list[str]:
     """Which subjects a cell can carry at a call count: its KIND, the counts a subject is
     priced at, the chain's whole windows, and each subject's own condition."""
@@ -412,10 +418,9 @@ def applicable(spec, kind: str, calls: int = 1) -> list[str]:
             continue
         if name == "decode_step" and getattr(spec, "decode_steps", 0) == 0:
             continue
-        if name == "intra_forward" and spec.tokens % _shared_window():
-            continue
-        #: the kernel pair runs the intra kernel's tile grid (whole windows) at one uniform level width
-        if name == "carry_intra" and (spec.tokens % _shared_window() or len(set(spec.widths)) != 1):
+        #: the intra runs its tile grid (whole windows) at widths it reads; the kernel pair runs it
+        if name in ("intra_forward", "carry_intra") and (spec.tokens % _shared_window()
+                                                         or not _intra_reads(spec.widths)):
             continue
         out.append(name)
     return out

@@ -172,7 +172,7 @@
    "ratified": "manifest"
   },
   "stamp_kernel": {
-   "oracle": "tests/integration/test_intra_kernel.py::test_the_loaded_binary_states_the_arm_it_carries",
+   "oracle": "tests/integration/test_intra_kernel.py::test_the_loaded_binary_states_the_footprint_it_carries",
    "sanitizer": {
     "exempt": "one thread writes one constant"
    },

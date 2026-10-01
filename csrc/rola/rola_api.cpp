@@ -120,7 +120,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
       "int dense_write, int weight_digits, int window) -> ()");
   m.def("rola_intra_ledger_bind(Tensor? ledger) -> ()");
   m.def("intra_build_stamp() -> int");
-  m.def("intra_arms() -> int[][]");
+  m.def("intra_footprint(int[] widths) -> int");
 
   // ---- the CARRY LAUNCH SURFACE --------------------------------------------
   m.def(
@@ -220,7 +220,7 @@ STABLE_TORCH_LIBRARY_IMPL(rola, CompositeExplicitAutograd, m) {
   m.impl("rola_intra_forward", TORCH_BOX(&rola::intra::rola_intra_forward));
   m.impl("rola_intra_ledger_bind", TORCH_BOX(&rola::intra::rola_intra_ledger_bind));
   m.impl("intra_build_stamp", TORCH_BOX(&rola::intra::intra_build_stamp));
-  m.impl("intra_arms", TORCH_BOX(&rola::intra::intra_arms));
+  m.impl("intra_footprint", TORCH_BOX(&rola::intra::intra_footprint));
   m.impl("carry_forward", TORCH_BOX(&rola::carry::carry_forward));
   m.impl("carry_backward", TORCH_BOX(&carry_backward_unimplemented));
 

@@ -98,7 +98,7 @@ def _kernel_carried(subject: str, spec, construction) -> bool:
     from rola.ops import decode, intra
 
     if subject in ("carry_intra", "intra_forward"):
-        return set(spec.widths) == {intra.level_width(len(spec.widths))}
+        return intra.reads(spec.widths)
     if subject == "decode_step":
         rows = decode.arms()
         padded = [dv for dv, _d, _decay in rows if dv >= spec.dv]
