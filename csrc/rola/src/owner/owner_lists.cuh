@@ -26,8 +26,7 @@ constexpr int kCostEntry = 6;
 template <class C>
 struct ListTenants {
   uint32_t words[2][C::kWordRows][kWindowWords];
-  uint32_t partial[2][16][kWindowWords];
-  uint32_t sector_partial[C::RD / 32][16][kWindowWords];
+  uint32_t partial[2][kWarps][kWindowWords];
   uint32_t uni[2][kWindowWords];
   uint32_t sector_uni[C::RD / 32][kWindowWords];
   uint16_t base[2][kWindowWords];
@@ -80,10 +79,100 @@ __device__ __forceinline__ int half_prefix(int x, int lane) {
   return x;
 }
 
-__device__ __forceinline__ int half_sum(int x) {
+//: A WARP'S SIDE IN REGISTERS: its `kLists` rows, a lane `kWords` consecutive words of one (row `lane / kLanes`, words
+//: from `kWords * (lane % kLanes)`), and what a few shuffles make of them: the row's count, the row's live tokens before
+//: the lane's words, the row's first entry (the rows before it), the warp union's words of the lane's group and the
+//: union's tokens before them. -- see docs/internals/owner/owner_lists.md#lanes
+template <class C, int kSide>
+struct SideLanes {
+  static constexpr int kLists = kSide == 0 ? C::kFoldLists : C::kReadDigits;
+  static constexpr int kLanes = 32 / kLists;
+  static constexpr int kWords = kWindowWords / kLanes;
+  uint32_t w[kWords], u[kWords];
+  int row0, row, group, count, before, offset, listed, steps, union_count, union_before;
+
+  __device__ __forceinline__ SideLanes(const ListTenants<C>& sm, int buf, int warp, int lane)
+      : row0(kSide == 0 ? warp * C::kFoldLists : C::RD + warp * C::kReadDigits),
+        row(lane / kLanes),
+        group(lane % kLanes) {
+    int c = 0;
 #pragma unroll
-  for (int d = 1; d < 16; d <<= 1) x += __shfl_xor_sync(0xffffffffu, x, d, 16);
-  return x;
+    for (int i = 0; i < kWords; ++i) {
+      w[i] = sm.words[buf][row0 + row][kWords * group + i];
+      c += __popc(w[i]);
+    }
+    const int incl = group_prefix(c);
+    before = incl - c;
+    count = __shfl_sync(0xffffffffu, incl, kLanes - 1, kLanes);
+    int rows = count;
+#pragma unroll
+    for (int d = 1; d < kLists; d <<= 1) {
+      const int y = __shfl_up_sync(0xffffffffu, rows, d * kLanes);
+      if (row >= d) rows += y;
+    }
+    offset = rows - count;
+    listed = __shfl_sync(0xffffffffu, rows, 31);
+    int s = group == 0 ? (count + 31) >> 5 : 0;
+#pragma unroll
+    for (int d = 1; d < 32; d <<= 1) s += __shfl_xor_sync(0xffffffffu, s, d);
+    steps = s;
+    int uc = 0;
+#pragma unroll
+    for (int i = 0; i < kWords; ++i) {
+      u[i] = w[i];
+#pragma unroll
+      for (int d = kLanes; d < 32; d <<= 1) u[i] |= __shfl_xor_sync(0xffffffffu, u[i], d);
+      uc += __popc(u[i]);
+    }
+    const int uincl = group_prefix(uc);
+    union_before = uincl - uc;
+    union_count = __shfl_sync(0xffffffffu, uincl, kLanes - 1, kLanes);
+  }
+
+  //: the inclusive prefix of `x` over the lanes of the row
+  static __device__ __forceinline__ int group_prefix(int x) {
+    const int lane = static_cast<int>(threadIdx.x) & 31;
+#pragma unroll
+    for (int d = 1; d < kLanes; d <<= 1) {
+      const int y = __shfl_up_sync(0xffffffffu, x, d, kLanes);
+      if (lane % kLanes >= d) x += y;
+    }
+    return x;
+  }
+};
+
+//: A WARP'S FORM for a side from the exact counts: the cheaper of per list and merged by the step cost, merged when the
+//: lists' entries pass the buffer. -- see docs/internals/owner/owner_lists.md#step-cost
+template <class C, int kSide>
+__device__ __forceinline__ int side_form(const SideLanes<C, kSide>& sl, int step) {
+  using S = SideLanes<C, kSide>;
+  constexpr int kWords = S::kWords;
+  const int per_list_cost =
+      sl.steps * (kCostOperandA + kCostOperandB + kCostImmas) + sl.listed * kCostEntry;
+  const int merged_cost =
+      ((sl.union_count + 31) >> 5) * (kCostOperandB + S::kLists * (kCostOperandA + kCostImmas))
+      + sl.union_count * kCostEntry;
+  const int form = step != kStepChosen            ? step
+                   : per_list_cost <= merged_cost ? kStepPerList
+                                                  : kStepMerged;
+  return sl.listed > kListCapacity ? kStepMerged : form;
+}
+
+//: A WARP'S SIDE, FIRST HALF: the rows' counts and the warp union's words into shared memory; a dense side's counts
+//: are the window and its union every token.
+template <class C, int kSide>
+__device__ __forceinline__ void side_counts(ListTenants<C>& sm, const SideLanes<C, kSide>& sl,
+                                            bool sparse, int warp, int lane) {
+  using S = SideLanes<C, kSide>;
+  constexpr int kWords = S::kWords;
+  if (sl.group == 0)
+    sm.count[sl.row0 + sl.row] = static_cast<uint16_t>(sparse ? sl.count : kWindow);
+  if (sl.row == 0) {
+#pragma unroll
+    for (int i = 0; i < kWords; ++i)
+      sm.partial[kSide][warp][S::kWords * sl.group + i] = sparse ? sl.u[i] : ~0u;
+  }
+  (void)lane;
 }
 
 //: A WORD'S ENTRIES: each set bit of `bits` (word `k`) as its union slot, written from `at` in bit order
@@ -100,120 +189,78 @@ __device__ __forceinline__ void word_entries(ListTenants<C>& sm, int side, int w
   }
 }
 
-//: A WARP'S SIDE: its rows' union, the two forms' costs over the exact counts, the chosen form's entries. A dense
-//: side's form is merged over every token, with no entries (the slot is the token).
+//: A WARP'S SIDE, SECOND HALF: the chosen form's entries -- per list, each row's tokens from its offset; merged, the
+//: union's from 0 -- and the form and entry total. A dense side writes no entries.
 template <class C, int kSide>
-__device__ __forceinline__ void warp_lists(ListTenants<C>& sm, const OwnerParams& p, int buf,
-                                           int warp, int lane) {
-  constexpr int kLists = kSide == 0 ? C::kFoldLists : C::kReadDigits;
-  const int row0 = kSide == 0 ? warp * C::kFoldLists : C::RD + warp * C::kReadDigits;
-  const int k = lane & 15, half = lane >> 4;
-  if ((kSide == 0 ? p.sparse_write : p.sparse_read) == 0) {
-    if (lane == 0) {
-      sm.form[kSide][warp] = kStepMerged;
-      sm.total[kSide][warp] = kWindow;
-    }
-    return;
-  }
-
-  uint32_t u = 0u;
-#pragma unroll
-  for (int jj = 0; jj < kLists; jj += 2) u |= sm.words[buf][row0 + jj + half][k];
-  u |= __shfl_xor_sync(0xffffffffu, u, 16);
-  const int merged_n = half_sum(__popc(u));
-  int listed = 0, steps = 0;
-#pragma unroll
-  for (int j = 0; j < kLists; ++j) {
-    listed += sm.count[row0 + j];
-    steps += (sm.count[row0 + j] + 31) >> 5;
-  }
-  const int per_list_cost =
-      steps * (kCostOperandA + kCostOperandB + kCostImmas) + listed * kCostEntry;
-  const int merged_cost =
-      ((merged_n + 31) >> 5) * (kCostOperandB + kLists * (kCostOperandA + kCostImmas))
-      + merged_n * kCostEntry;
-  int form = p.step != kStepChosen          ? p.step
-             : per_list_cost <= merged_cost ? kStepPerList
-                                            : kStepMerged;
-  if (listed > kListCapacity) form = kStepMerged;
-
-  if (form == kStepMerged) {
-    const int c = __popc(u);
-    const int at = half_prefix(c, lane) - c;
-    if (half == 0) word_entries(sm, kSide, warp, k, u, at);
-  } else {
-#pragma unroll
-    for (int jj = 0; jj < kLists; jj += 2) {
-      const int j = jj + half;
-      int off = 0;
-#pragma unroll
-      for (int i = 0; i < kLists; ++i)
-        if (i < j) off += sm.count[row0 + i];
-      const uint32_t w = sm.words[buf][row0 + j][k];
-      const int c = __popc(w);
-      word_entries(sm, kSide, warp, k, w, off + half_prefix(c, lane) - c);
-    }
-  }
+__device__ __forceinline__ void side_entries(ListTenants<C>& sm, const SideLanes<C, kSide>& sl,
+                                             int form, bool sparse, int warp, int lane) {
+  using S = SideLanes<C, kSide>;
+  constexpr int kWords = S::kWords;
   if (lane == 0) {
-    sm.form[kSide][warp] = static_cast<uint8_t>(form);
-    sm.total[kSide][warp] = static_cast<uint16_t>(form == kStepMerged ? merged_n : listed);
+    sm.form[kSide][warp] = static_cast<uint8_t>(sparse ? form : kStepMerged);
+    sm.total[kSide][warp] = static_cast<uint16_t>(!sparse               ? kWindow
+                                                  : form == kStepMerged ? sl.union_count
+                                                                        : sl.listed);
+  }
+  if (!sparse) return;
+  const bool merged = form == kStepMerged;
+  if (merged && sl.row != 0) return;
+  int at = merged ? sl.union_before : sl.offset + sl.before;
+#pragma unroll
+  for (int i = 0; i < kWords; ++i) {
+    const uint32_t bits = merged ? sl.u[i] : sl.w[i];
+    word_entries(sm, kSide, warp, S::kWords * sl.group + i, bits, at);
+    at += __popc(bits);
   }
 }
 
-//: THE LISTS: the unions, ranks and row counts by the whole CTA, then each warp's fold lists (side 0) and read digits
-//: (side 1). -- see docs/internals/owner/owner_lists.md#lists
+//: THE LISTS: each warp its own rows (counts, offsets, its union, its forms), the CTA's unions, sector unions and ranks
+//: from the warps' unions, then every warp's share of the slot-to-token table and its entries.
+//: -- see docs/internals/owner/owner_lists.md#lists
 template <class C>
 __device__ void window_lists(ListTenants<C>& sm, const OwnerParams& p, int buf, int tid) {
-  static_assert(
-      C::kWordRows % 16 == 0 && C::kFoldLists % 2 == 0 && C::kReadDigits % 2 == 0,
-      "the half-warps take rows and lists in pairs, so every loop around a shuffle has one trip count");
-  constexpr int kRowTrips = C::kWordRows / 16;
-  const int warp = tid >> 5, lane = tid & 31, k = tid & 15, q = tid >> 4;
-  constexpr int kSectors = C::RD / 32;
-  uint32_t part[2] = {0u, 0u}, sector[kSectors] = {};
-#pragma unroll
-  for (int i = 0; i < kRowTrips; ++i) {
-    const int row = q + 16 * i;
-    const uint32_t w = sm.words[buf][row][k];
-    part[row_is_write<C>(row) ? 0 : 1] |= w;
-#pragma unroll
-    for (int c = 0; c < kSectors; ++c)
-      if (row >= 32 * c && row < 32 * c + 32) sector[c] |= w;
-    const int n = half_sum(row_sparse<C>(p, row) ? __popc(w) : 32);
-    if (k == 0) sm.count[row] = static_cast<uint16_t>(n);
-  }
-  sm.partial[0][q][k] = part[0];
-  sm.partial[1][q][k] = part[1];
-#pragma unroll
-  for (int c = 0; c < kSectors; ++c) sm.sector_partial[c][q][k] = sector[c];
+  static_assert(C::kFoldLists <= 8 && C::kReadDigits <= 8 && kWarps == 8,
+                "a side's rows fill a warp's lanes evenly");
+  constexpr int kSectors = C::RD / 32, kSectorWarps = kWarps / kSectors;
+  const int warp = tid >> 5, lane = tid & 31;
+  const bool sparse_w = p.sparse_write != 0, sparse_r = p.sparse_read != 0;
+  const SideLanes<C, 0> fold(sm, buf, warp, lane);
+  const SideLanes<C, 1> read(sm, buf, warp, lane);
+  const int fold_form = side_form(fold, p.step), read_form = side_form(read, p.step);
+  side_counts(sm, fold, sparse_w, warp, lane);
+  side_counts(sm, read, sparse_r, warp, lane);
   __syncthreads();
 
   if (warp == 0) {
-    const int side = lane >> 4;
+    const int side = lane >> 4, k = lane & 15;
     uint32_t u = 0u;
+    uint32_t sector[kSectors] = {};
 #pragma unroll
-    for (int i = 0; i < 16; ++i) u |= sm.partial[side][i][k];
-    if ((side == 0 ? p.sparse_write : p.sparse_read) == 0) u = ~0u;
-    const int c = __popc(u);
-    const int base = half_prefix(c, lane) - c;
-    sm.uni[side][k] = u;
-    sm.base[side][k] = static_cast<uint16_t>(base);
-#pragma unroll 1
-    for (int i = 0; u != 0u; ++i) {
-      sm.token_of[side][base + i] = static_cast<uint16_t>(32 * k + __ffs(u) - 1);
-      u &= u - 1u;
+    for (int w = 0; w < kWarps; ++w) {
+      const uint32_t x = sm.partial[side][w][k];
+      u |= x;
+      sector[w / kSectorWarps] |= x;
     }
-  } else if (warp == 1 && lane < 16 * kSectors) {
-    const int c = lane >> 4;
-    uint32_t u = 0u;
+    const int c = __popc(u);
+    sm.uni[side][k] = u;
+    sm.base[side][k] = static_cast<uint16_t>(half_prefix(c, lane) - c);
+    if (side == 0) {
 #pragma unroll
-    for (int i = 0; i < 16; ++i) u |= sm.sector_partial[c][i][k];
-    sm.sector_uni[c][k] = p.sparse_write != 0 ? u : ~0u;
+      for (int s = 0; s < kSectors; ++s) sm.sector_uni[s][k] = sector[s];
+    }
   }
   __syncthreads();
 
-  warp_lists<C, 0>(sm, p, buf, warp, lane);
-  warp_lists<C, 1>(sm, p, buf, warp, lane);
+#pragma unroll
+  for (int i = 0; i < 4; ++i) {
+    const int index = 4 * warp + i, side = index >> 4, k = index & 15;
+    const uint32_t word = sm.uni[side][k];
+    if ((word >> lane) & 1u)
+      sm.token_of[side][sm.base[side][k] + __popc(word & ((1u << lane) - 1u))] =
+          static_cast<uint16_t>(32 * k + lane);
+  }
+  side_entries(sm, fold, fold_form, sparse_w, warp, lane);
+  side_entries(sm, read, read_form, sparse_r, warp, lane);
   __syncthreads();
 }
 

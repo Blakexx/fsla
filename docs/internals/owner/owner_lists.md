@@ -17,20 +17,35 @@ mask, and the lists never need them. At `(16, 64)` that is 80 rows, 5 KB a buffe
 
 ## The lists
 
-The whole CTA first: a thread a (word, row sixteenth) ORs its rows into a partial union and every half-warp counts one
-row's live tokens (16 popcounts summed); one warp then ORs the partials into the write and read unions and takes their
-ranks, `base[k]` = the live tokens before word `k`. A token's POOL SLOT is `base[k] + popc(union[k] & below(b))` for bit
-`b` of word `k`: its rank among the window's live tokens of its side, so a side's pool holds each live token once.
+Each warp first works alone on its own rows: its fold lists (side 0) and its read digits (side 1). A dense side's
+counts are the window and its union every token, and it writes no entries (its slot is the token).
 
-Then each warp alone, for its fold lists (side 0) and its read digits (side 1): it ORs its rows into its own union,
-compares the two step forms' costs over the exact counts, and writes the chosen form's entries — pool slots in token
-order — into its 512-entry buffer: per list, each list's tokens one list after another (a list's offset is its
-predecessors' counts), or merged, the warp union's tokens once. A dense side writes no entries: its form is merged and
-its slot is the token itself. A per-list form whose lists hold more than 512 entries between them takes the merged form
-(its union never exceeds the window).
+<a id="lanes"></a>
 
-The half-warps take rows and lists in pairs, and every loop that holds a shuffle has the same trip count on both
-halves (the carve's row and list counts are even, asserted).
+A side's rows sit in the warp's lanes, a lane `kWords` consecutive words of one row (`SideLanes`: 8 rows of 4 words
+at `(16, 64)`'s fold side, 2 rows of 1 at its read side; 4 of 2 either side at `(32, 32)`). A few shuffles then give
+every lane its row's live count, the row's live tokens before its words, the row's first entry (the rows before it), the
+warp union of its word group, the union's tokens before them, the lists' total and their k-steps. From those the warp
+picks its form ([below](#step-cost)), writes its rows' counts and its union's words, and waits.
+
+One warp then ORs the eight warps' unions into the CTA's write and read unions (and the write side's sector unions,
+four warps' rows a sector at `(16, 64)`, all eight at `(32, 32)`) and takes their ranks, `base[k]` = the live tokens
+before word `k`. A token's POOL SLOT is `base[k] + popc(union[k] & below(b))` for bit `b` of word `k`: its rank among
+the window's live tokens of its side.
+
+Last, every warp fills its share of the slot-to-token table (four union words, a lane a bit) and writes its entries for
+its chosen form — pool slots in token order, per list each row's tokens from its offset, merged the union's once —
+into its 512-entry buffer, a lane walking the set bits of each of its words. A per-list form whose lists hold more than
+512 entries between them takes the merged form.
+
+<a id="measured"></a>
+
+Measured (`flagship-alt-k4-L16384`, 4 heads): 5.4K warp-instructions a CTA-window at `(16, 64)`, 5.1K at `(32, 32)`,
+0.17 ms a head at 64K; the first form (a half-warp a row, shuffles a row, a CTA pass for counts and unions) issued 6.8K.
+Most of what is left is the entries (a lane walks its words' bits one at a time, and at alt-k4 a word holds about half a
+live bit, so lanes idle) and the slot-to-token table. The card's ~0.76K line assumed eight lane-instructions an entry
+at full lane use, which words this sparse do not give; one loop over a lane's four words together cost more (its
+selection outweighed the iterations it saved).
 
 <a id="step-cost"></a>
 
