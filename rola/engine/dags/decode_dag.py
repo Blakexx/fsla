@@ -112,7 +112,6 @@ def build_plan(f):
     (docs/internals/decode/decode_fold.md).
     """
     routes, values, geometry = f["routes"], f["values"], f["geometry"]
-    routes.refuse_sparse("the decode step", "its port onto the token form")
     return DecodePlan(
         config=geometry, heads=routes.heads, read=routes.amp_read, write=routes.amp_write,
         read_scale=routes.scale_read, write_scale=routes.scale_write,
@@ -139,7 +138,9 @@ def write_atom_bitmap(f):
     that compared the step against itself would prove nothing
     (docs/internals/decode/decode.md#second-derivation).
     """
-    return bodies._write_atom_bitmap(f["routes"].amp_write, f["geometry"])
+    routes = f["routes"]
+    return bodies._write_atom_bitmap([routes.rows(level, "write") for level in range(routes.topology.D)],
+                                     f["geometry"])
 
 
 #: THE CAPTURED RECIPE. `decode_step_gated` is exactly this tuple, and a CUDA graph

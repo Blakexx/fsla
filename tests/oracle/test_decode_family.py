@@ -179,7 +179,7 @@ def test_the_handoff_holds_across_the_arms_from_an_oracle_prefill(decay_on):
         assert_slots_close(canonical, ref.state, output=DECODE_STATE, envelope=ref.state_envelope,
                            what=f"the state at step {s}", derived_atol=2 * state_quantum(ref.state))
 
-        R = _leaf_product(tuple(r.float() for r in routes.amp_read), _WIDTHS) != 0
+        R = _leaf_product(tuple(r.float() for r in routes.read_rows), _WIDTHS) != 0
         written = (_leaf_product(pre["write"], _WIDTHS) != 0).any(dim=1, keepdim=True)
         cold_seen = cold_seen or bool((R & ~written).any())
     assert cold_seen, (

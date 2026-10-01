@@ -85,7 +85,7 @@ class SparseLevel:
         if not isinstance(words, torch.Tensor) or words.dtype is not torch.int32:
             raise TypeError(f"SparseLevel.words is int32, got {getattr(words, 'dtype', type(words).__name__)}")
         if not isinstance(terms, torch.Tensor) or terms.dtype not in quant.ROW_DTYPES:
-            raise TypeError(f"SparseLevel.terms is one of {quant.ROW_DTYPES}, got "
+            raise TypeError(f"SparseLevel.terms are stored as one of {quant.ROW_DTYPES}, got "
                             f"{getattr(terms, 'dtype', type(terms).__name__)}")
         if words.device != terms.device:
             raise ValueError(f"SparseLevel's words and terms live on one device: {words.device}, {terms.device}")

@@ -98,9 +98,8 @@ def _routes(rows, scale, *, normalize):
     B, T, H, width = rows.shape
     topology = Topology(levels=(UnionRouting(width=width),))
     ones = torch.ones(B, T, H, dtype=torch.float32, device=rows.device)
-    return RouteFactors(topology=topology, amp_read=(rows,), amp_write=(torch.zeros_like(rows),),
-                        scale_read=(scale,), scale_write=(torch.zeros_like(scale),), g_write=ones,
-                        read_mass=ones if normalize else None)
+    return RouteFactors.from_rows(topology, (rows,), (torch.zeros_like(rows),), (scale,), (torch.zeros_like(scale),),
+                                  ones, read_mass=ones if normalize else None)
 
 
 def _y_of(rows, scale, *, normalize, seed, s0=0):

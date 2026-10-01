@@ -166,11 +166,19 @@ class RouteFactors:
         read, write = tuple(read), tuple(write)
         amp_read, scale_read = zip(*(quant.quantize_unit_max_rows(level, dtype) for level in read))
         amp_write, scale_write = zip(*(quant.quantize_unit_max_rows(level, dtype) for level in write))
+        source = (read, write) if _requires_grad(read + write) else None
+        return cls.from_rows(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=read_mass,
+                             source=source)
+
+    @classmethod
+    def from_rows(cls, topology: Topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=None,
+                  source=None) -> RouteFactors:
+        """The bundle over rows already in the format (unit-max u8 or f16, ``[B, T, H, width_l]`` a level a side):
+        each declared-sparse side packed (:meth:`SparseLevel.from_rows`), every other kept as rows."""
         amp_read, amp_write = (
             tuple(SparseLevel.from_rows(rows) if topology.activation_properties(level, side).exact_zeros else rows
                   for level, rows in enumerate(entries))
             for side, entries in zip(SIDES, (amp_read, amp_write)))
-        source = (read, write) if _requires_grad(read + write) else None
         return cls(topology=topology, amp_read=amp_read, amp_write=amp_write, scale_read=scale_read,
                    scale_write=scale_write, g_write=g_write, read_mass=read_mass, source=source)
 
@@ -196,6 +204,16 @@ class RouteFactors:
         if any(isinstance(entry, SparseLevel) for entry in (*self.amp_read, *self.amp_write)):
             raise NotImplementedError(f"{reader} does not read a sparse level's native format until {port} "
                                       f"(docs/internals/routing/sparse.md)")
+
+    @property
+    def read_rows(self) -> tuple[torch.Tensor, ...]:
+        """Every read level as rows (:meth:`rows`), for the references."""
+        return tuple(self.rows(level, "read") for level in range(self.topology.D))
+
+    @property
+    def write_rows(self) -> tuple[torch.Tensor, ...]:
+        """Every write level as rows (:meth:`rows`), for the references."""
+        return tuple(self.rows(level, "write") for level in range(self.topology.D))
 
     def rows(self, level: int, side: str) -> torch.Tensor:
         """``level``'s rows ``[B, T, H, width_l]`` on ``side``: a dense level's own, a sparse level's

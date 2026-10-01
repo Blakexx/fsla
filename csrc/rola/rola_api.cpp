@@ -190,7 +190,8 @@ STABLE_TORCH_LIBRARY(rola, m) {
 
   // ---- the T=1 decode path -------------------------------------------------
   m.def(
-      "rola_decode_forward(Tensor[] read, Tensor[] write, Tensor[] read_scale, Tensor[] write_scale, int[] normalize, "
+      "rola_decode_forward(Tensor[] read, Tensor[] write, Tensor[] read_mask, Tensor[] write_mask, int[] read_sparse, "
+      "int[] write_sparse, Tensor[] read_scale, Tensor[] write_scale, int[] normalize, "
       "Tensor? dials, Tensor g_write, Tensor v_hat, Tensor? v_lo, Tensor v_scale, "
       "Tensor(a!) state, Tensor(b!) yacc, Tensor(c!) queue, Tensor(d!) growth, Tensor(e!) growth_any, "
       "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor(h!) atom_bits, int[] level_widths, int[] level_row_offsets, "

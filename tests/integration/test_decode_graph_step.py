@@ -73,7 +73,7 @@ _WIDTHS, _BC = (64, 64), 128
 
 def _absent_one_written_atom(fixture, config, arena):
     """Admit the step's write set except ONE atom, and say which one. `(bitmap, atom)`."""
-    write = _bundles(fixture)[0].amp_write
+    write = _bundles(fixture)[0].write_rows
     bitmap = _write_atom_bitmap(write, config)
     row, column = (bitmap.nonzero())[0].tolist()
     held_out = bitmap.clone()
@@ -97,7 +97,7 @@ def _absent_one_atom_per_bh(fixture, config, arena):
     per batch-head, holding out one atom of one batch-head would leave the others running
     and the cell would be asserting the mechanism the design replaced.
     """
-    write = _bundles(fixture)[0].amp_write
+    write = _bundles(fixture)[0].write_rows
     bitmap = _write_atom_bitmap(write, config)
     held_out = bitmap.clone()
     for row in range(bitmap.shape[0]):
@@ -205,7 +205,7 @@ def test_gated_step_then_admit_then_replay_matches_admitting_first():
     fixture = _fixture(_WIDTHS, seed=13, support=0.5)
     config = _config(_WIDTHS, fixture)
     BH = fixture["B"] * fixture["H"]
-    write = _bundles(fixture)[0].amp_write
+    write = _bundles(fixture)[0].write_rows
     bitmap = _write_atom_bitmap(write, config)
 
     reference = _arena(_WIDTHS, _BC, BH)
@@ -378,7 +378,7 @@ def _make_growth(state, static):
     Re-planning also reassigns slots, which is the stronger cell -- the captured graph
     holds the arena's BASE and its table, and neither moves.
     """
-    written = _write_atom_bitmap(static.amp_write, _config(_WIDTHS, dict(B=_B, H=_H)))
+    written = _write_atom_bitmap(static.write_rows, _config(_WIDTHS, dict(B=_B, H=_H)))
     keep = (state._arena.page_table >= 0) & written
     row, column = (keep.nonzero())[0].tolist()
     keep[row, column] = False

@@ -456,6 +456,19 @@ space — has no counterpart here: the walk never addresses a leaf as a flat int
 as the `(owner, fixed run offsets, innermost digit)` decomposition the `(k, m)` box's fields carry
 ([`decode_lattice.md`](decode_lattice.md), and `lat_*` fields on this same struct).
 
+<a id="sparse-levels"></a>**A sparse level** (`docs/internals/routing/sparse.md`) reaches the step in its token form: the
+level's `read[l]` / `write[l]` span is its packed terms (`[B, 1, H, width]` as a view), `read_mask[l]` /
+`write_mask[l]` its mask `[B, 1, H, ceil(width / 32)]`, and `read_sparse[l]` / `write_sparse[l]` say which levels are
+so. Only the digit pass's LOAD changes (`fold_digits`): a slot's digit is its rank among the token's live digits -- the
+warp's slots share one mask word, so the rank is one warp reduction of the earlier words' popcounts plus the popcount
+of its word below the lane -- gathered from the terms, or zero where the bit is clear. The ballot that follows
+rebuilds exactly the mask (a live digit's term is nonzero), so the staging, the lists and the walk read the same
+shared memory as for rows. MEASURED (2026-09-30, sm_86, H 16, (256, 256) split, ncu kernel time, against the rows the
+step read before): +5.3% at 1.9% live write digits (21.8 -> 22.9 us), +2% dense (69.5 -> 70.9 us) -- the rank and the
+mask's load ahead of the term's, while the staging stays dense by digit. Deferring the term's staging past the lists
+gained nothing (the lists' phase took it back). The gain the format offers is the walk reading a sparse level's
+coefficients by their place in the live-digit lists (already in rank order), so the prologue stages live digits only.
+
 ## <a id="detached-clock"></a>10. The detached clock, and why there is no sweep
 
 The clock is the STORED WRITE ALLOCATION ITSELF — `c[t, s] = prod_l p_write[t, d_l(s)]`,

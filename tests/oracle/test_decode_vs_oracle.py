@@ -162,8 +162,8 @@ def _kernel_realized_support(rows, widths, B, H, device, d_v=64):
     config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=BH, device=device)
     f32 = dict(device=device, dtype=torch.float32)
     ones = torch.ones(B, 1, H, **f32)
-    routes = RouteFactors(topology=topology, amp_read=tuple(torch.zeros_like(r) for r in rows), amp_write=rows,
-                          scale_read=(ones,) * len(widths), scale_write=(ones,) * len(widths), g_write=ones)
+    routes = RouteFactors.from_rows(topology, tuple(torch.zeros_like(r) for r in rows), rows, (ones,) * len(widths),
+                                    (ones,) * len(widths), ones)
     values = Values.from_projection(torch.ones(B, 1, H, d_v, **f32))
     state = state_pages(torch.zeros(B, H, N, config.cols, **f32))
     _y, state, _ws = _decode_step(routes, values, config, state)
@@ -276,11 +276,11 @@ def test_g3_expansion_is_the_exact_leaf_support(widths, p_read, p_write):
     out = _case(widths, 64, 2, 3, "global", p_read, p_write, seed=17)
     B, H, device, config = out["B"], out["H"], out["device"], out["config"]
     routes = out["routes"][0]
-    want_r = _lattice_mask(_leaf_support(routes.amp_read, widths, B, H, device), config)
-    want_w = _lattice_mask(_leaf_support(routes.amp_write, widths, B, H, device), config)
-    assert torch.equal(_kernel_realized_support(routes.amp_read, widths, B, H, device),
+    want_r = _lattice_mask(_leaf_support(routes.read_rows, widths, B, H, device), config)
+    want_w = _lattice_mask(_leaf_support(routes.write_rows, widths, B, H, device), config)
+    assert torch.equal(_kernel_realized_support(routes.read_rows, widths, B, H, device),
                        want_r), "the read walk is not the exact read support"
-    assert torch.equal(_kernel_realized_support(routes.amp_write, widths, B, H, device),
+    assert torch.equal(_kernel_realized_support(routes.write_rows, widths, B, H, device),
                        want_w), "the write walk is not the exact write support"
 
 
@@ -338,7 +338,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     state = m0.clone()
     routes, values = step_bundles(v, zeros, zeros, g_write, topology)
     y, state, _workspace = _decode_step(routes, values, config, state)
-    assert not _leaf_support(routes.amp_write, widths, B, H, device).any(), (
+    assert not _leaf_support(routes.write_rows, widths, B, H, device).any(), (
         "the fixture did not produce M = 0")
     assert torch.equal(y, torch.zeros_like(y))
     assert bytes_equal(state, m0), "an untouched state must be byte-unchanged"
@@ -420,7 +420,7 @@ def test_g4_decay_on_the_stored_write_representation():
     dials = _decay_dials((64, 64), 3, generator, "cuda")
     out = _case((64, 64), 64, 2, 3, "global", 0.5, 0.4, seed=808, decay_dials=dials, flushed=True)
     flushed = any(bool(((drawn > 0) & (row == 0)).any())
-                  for drawn, row in zip(out["drawn_write"][0], out["routes"][0].amp_write))
+                  for drawn, row in zip(out["drawn_write"][0], out["routes"][0].write_rows))
     assert flushed, "no drawn amplitude flushed in storage: the row is vacuous"
     _assert_oracle(out)
 
