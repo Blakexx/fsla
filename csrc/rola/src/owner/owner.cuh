@@ -15,7 +15,9 @@ constexpr int kChannels = 32;
 constexpr int kChannelGroups = 2;
 constexpr int kListCapacity = kWindow;
 constexpr int kWritePool = 128;
+constexpr int kWritePass = kWritePool - 1;
 constexpr int kReadPool = 128;
+constexpr int kReadPass = kReadPool - 1;
 
 //: A CARVE: RS read-sparse by RD read-dense digits a CTA. -- see docs/internals/owner/owner.md#carve
 template <int RS_, int RD_>

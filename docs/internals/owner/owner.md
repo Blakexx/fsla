@@ -58,3 +58,9 @@ pricing table are on the rebuild's plan card, in its skeleton block. Built so fa
   Checked: `flagship-alt-k4`, `flagship-dense`, `flagship-cohort-k16`, `flagship-alt-k4-L4096`.
 * `fill_part` — the lists, then each window's write and read passes ([`owner_fill.md`](owner_fill.md)); with a dump
   it writes every pool row to its slot, which `--check fill` holds byte for byte against the model.
+* `drain_part` — the lists, then each window's read passes' panels drained ([`owner_drain.md`](owner_drain.md)).
+* `fold_part`, `readout_part` — the fill's passes, then the fold ([`owner_fold.md`](owner_fold.md)) or the readout
+  ([`owner_readout.md`](owner_readout.md)) in a forced or chosen form, a checksum so nothing is dead.
+
+Parts are priced per head at <= 256K token-heads (64K x 4 or 16K x 16): above that this box's GPU address translation
+slows every scattered read 10-30x, the kernel unchanged.

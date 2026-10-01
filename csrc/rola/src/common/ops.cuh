@@ -316,6 +316,13 @@ __device__ __forceinline__ void load_frag(uint32_t (&r)[4], SmemAddr a) {
                : "memory");
 }
 
+__device__ __forceinline__ void load_frag2(uint32_t (&r)[2], SmemAddr a) {
+  asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];\n"
+               : "=r"(r[0]), "=r"(r[1])
+               : "r"(a)
+               : "memory");
+}
+
 __device__ __forceinline__ void load_frag_t(uint32_t (&r)[4], SmemAddr a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])

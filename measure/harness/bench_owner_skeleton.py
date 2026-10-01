@@ -37,16 +37,18 @@ def ops():
     return torch.ops.rola_owner
 
 
-def cell_bundle(name: str):
-    """``(spec, routes, values, words, level_s, sparse_write, sparse_read)``: the cell's bundle, its facts words and its
-    carve's sides."""
+def cell_bundle(name: str, heads: int = 1):
+    """``(spec, routes, values, words, level_s, sparse_write, sparse_read)``: the cell's bundle at ``heads`` heads, its
+    facts words and its carve's sides."""
     from measure.cells import by_name, realize
     from measure.subjects import bundle_of
     from rola.ops import facts as facts_ops
 
     spec = by_name(name)
-    routes, values, layout, statics = bundle_of(spec, realize(spec))
+    routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
     words = facts_ops.facts(routes, values, layout, *statics).words
+    #: the floating draw is gone; at many heads its cached blocks would push the bundle out of device memory
+    torch.cuda.empty_cache()
     declared = spec.declared_sparsity()
     level_s = 1 if declared[1][0] or not declared[0][0] else 0
     level_r = 1 - level_s
@@ -250,13 +252,28 @@ def check_fill(name: str) -> bool:
 RUN_REPS = 3
 
 
-def run_part(name: str, part: str) -> None:
-    """The part on the cell's whole call, no dump, each carve `RUN_REPS` times: the launches an ncu run reads."""
-    spec, routes, values, words, level_s, sw, sr = cell_bundle(name)
+def run_part(name: str, part: str, heads: int) -> None:
+    """The part on the cell's whole call at ``heads`` heads, no dump, each carve `RUN_REPS` times: the launches an
+    ncu run reads."""
+    spec, routes, values, words, level_s, sw, sr = cell_bundle(name, heads)
     for rs, rd in CARVES:
         for _ in range(RUN_REPS):
             if part == "lists":
                 ops().lists_part(words, list(spec.widths), level_s, sw, sr, rs, rd, STEP_CHOSEN, 0)
+            elif part.startswith("fold"):
+                step = {"fold": STEP_CHOSEN, "fold-list": STEP_PER_LIST, "fold-merged": STEP_MERGED}[part]
+                ops().fold_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
+                                routes.g_write, values.v_hat, values.v_lo, values.scale, words, level_s, sw, sr,
+                                rs, rd, step)
+            elif part.startswith("readout"):
+                step = {"readout": STEP_CHOSEN, "readout-list": STEP_PER_LIST, "readout-merged": STEP_MERGED}[part]
+                ops().readout_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
+                                   routes.g_write, values.v_hat, values.v_lo, values.scale, words, level_s, sw, sr,
+                                   rs, rd, step)
+            elif part == "drain":
+                num = torch.zeros(words.shape[0], spec.tokens, 64, device="cuda")
+                den = torch.zeros(words.shape[0], spec.tokens, device="cuda")
+                ops().drain_part(words, list(spec.widths), level_s, sw, sr, heads, rs, rd, num, den)
             else:
                 ops().fill_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
                                 routes.g_write, values.v_hat, values.v_lo, values.scale, words, level_s, sw, sr,
@@ -265,17 +282,50 @@ def run_part(name: str, part: str) -> None:
     print(f"ran {part} on {name}: carves {CARVES}, {RUN_REPS} each, BH {words.shape[0]}, L {spec.tokens}")
 
 
+def check_drain(name: str) -> bool:
+    """A panel of ones drained: each token's `num` channels and `den` are the count of boxes it is read-live in."""
+    spec, words, level_s, sw, sr = cell_words(name)
+    widths, L, BH = tuple(spec.widths), spec.tokens, words.shape[0]
+    bits = _all_bits(words)
+    level_r = 1 - level_s
+    ok = True
+    for rs, rd in CARVES:
+        num = torch.zeros(BH, L, 64, device="cuda")
+        den = torch.zeros(BH, L, device="cuda")
+        ops().drain_part(words, list(widths), level_s, sw, sr, BH, rs, rd, num, den)
+        torch.cuda.synchronize()
+        rows = bits[:, 0, widths[0] * level_s: widths[0] * level_s + widths[level_s]] if sr else None
+        boxes = np.zeros((BH, L))
+        for sb in range(widths[level_s] // rs):
+            live = rows[:, sb * rs:(sb + 1) * rs].any(1) if sr else np.ones((BH, L), bool)
+            boxes += live * (widths[level_r] // rd)
+        want = torch.tensor(boxes, dtype=torch.float32)
+        good = (torch.equal(num.cpu(), want[..., None].expand(-1, -1, 64).contiguous())
+                and torch.equal(den.cpu(), want))
+        print(f"drain {name} carve {rs}x{rd}: {'match' if good else 'MISMATCH'}")
+        ok &= good
+    return ok
+
+
+def _all_bits(words):
+    """The words as booleans, ``[BH, 2, rows, L]``."""
+    w = words.cpu().numpy().view(np.uint32)
+    return ((w[..., None] >> np.arange(32, dtype=np.uint32)) & 1).astype(bool).reshape(*w.shape[:3], -1)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--check", choices=("lists", "fill"))
-    ap.add_argument("--run", choices=("lists", "fill"), help="the part's launches alone, for ncu")
+    ap.add_argument("--check", choices=("lists", "fill", "drain"))
+    ap.add_argument("--run", choices=("lists", "fill", "drain", "fold", "fold-list", "fold-merged", "readout", "readout-list",
+                                         "readout-merged"), help="the part's launches alone, for ncu")
     ap.add_argument("--cell", action="append", required=True)
+    ap.add_argument("--heads", type=int, default=1, help="heads under --run: enough to fill the machine")
     args = ap.parse_args()
     if args.run:
         for cell in args.cell:
-            run_part(cell, args.run)
+            run_part(cell, args.run, args.heads)
         return 0
-    check = {"lists": check_lists, "fill": check_fill}[args.check]
+    check = {"lists": check_lists, "fill": check_fill, "drain": check_drain}[args.check]
     ok = all(check(cell) for cell in args.cell)
     return 0 if ok else 1
 
