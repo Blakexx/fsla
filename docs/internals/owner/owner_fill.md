@@ -8,12 +8,19 @@ the slots and liveness come from the lists ([`owner_lists.md`](owner_lists.md)).
 
 ## The pools
 
-A write row, one a write-live token: its write-dense slice (level S's write coefficients for the box's `RS` digits),
-its write-sparse slice (level R's for the box's `RD` digits), its two value digits for the CTA's 32 channels
-(`v_hat`, then `v_lo` or zeros at one value digit) and its four factors (write gain, value scale, the two write
-scales): 160 bytes at `(16, 64)`, 144 at `(32, 32)`. A read row, one a read-live token: its read-dense slice (level R's
-read coefficients, `RD` bytes) then its read-sparse slice (level S's, `RS` bytes). Each pool holds 128 rows; a window
-whose union is larger is filled, and consumed, in passes.
+A write row, one a write-live token, 160 bytes: a 64-byte coefficient run (at `(16, 64)` the write-sparse slice, level
+R's write coefficients for the box's 64 digits; at `(32, 32)` the write-dense slice, level S's for the box's 32 digits,
+then the write-sparse slice), the two value digits for the CTA's 32 channels (`v_hat`, then `v_lo` or zeros at one
+value digit), then at `(16, 64)` the 16-byte dense slice, then the four factors (write gain, value scale, the two write
+scales). A read row, one a read-live token: a 64-byte run (the read-dense slice, level R's read coefficients, or at
+`(32, 32)` the read-dense and read-sparse slices), then at `(16, 64)` the read-sparse chunk: 96 or 64 bytes. Each pool
+holds 128 rows; a window whose union is larger is filled, and consumed, in passes.
+
+EVERY RUN SITS AT ITS GLOBAL SECTOR'S 32-BYTE PHASE: the pools are 128-byte aligned, the runs at 32-byte offsets, the
+pitches multiples of 32. A `cp.async` lane pair coalesces into one L2 sector request only when its shared destination
+has the source's 32-byte phase (measured by a standalone copy probe: 2 sectors a token aligned, 4 at a
+16-byte offset, 3 at a 144-byte pitch). The first layout put the pools at 16 modulo 32 and read 41.1M sectors a head at
+`(32, 32)` against 27.1M aligned.
 
 <a id="quads"></a>
 
@@ -39,8 +46,6 @@ runs of one copy. The read pass is the read-dense run and the read-sparse chunk 
 ## Measured
 
 `--check fill` holds every pool row against the model (`flagship-alt-k4`, `flagship-dense`). Under ncu at
-`nl64k-alt-k4` (64K tokens, one head), a CTA-window reads 2,363 L2 sectors at `(16, 64)` and 2,508 at `(32, 32)`. The
-model of the bytes predicts the opposite order (1,989 and 1,404 without the factors): per instruction, `(16, 64)`
-meets its ideal sectors except the 16-byte slices' half-sector waste, but at `(32, 32)` every two-lane 32-byte run
-costs 1.5 sectors and a read run 2, about 850 excess sectors a CTA-window from the same copy code — open, to be probed
-before the carve is priced on fill bytes.
+`nl64k-alt-k4` (64K tokens, one head), a CTA-window reads 2,245 L2 sectors at `(16, 64)` and 1,657 at `(32, 32)`: the
+byte model's 1,989 and 1,404 plus the factor columns' ~256 (four 4-byte reads a token through L1, which keeps a
+window's 64 sectors a column). The fill part (lists included, each pass waited on) runs 2.35 and 1.93 ms.

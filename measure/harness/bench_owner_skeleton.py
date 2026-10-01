@@ -199,11 +199,18 @@ def fill_model(routes, values, w, level_s, sw, sr, rs, rd, bh, cg, sb, rb, win):
     v_lo = take(values.v_lo, wt, cg * 32, cg * 32 + 32) if values.v_lo is not None else np.zeros_like(v_hat)
     cols4 = [routes.g_write, values.scale, routes.scale_write[0], routes.scale_write[1]]
     factors = np.stack([c[b, t0 + wt, h].float().cpu().numpy() for c in cols4], 1).astype(np.float32).view(np.uint8)
-    out.append(np.concatenate([dense, sparse, v_hat, v_lo, factors], 1))
+    run = sparse if rs == 16 else np.concatenate([dense, sparse], 1)
+    tail = np.concatenate([dense, factors], 1) if rs == 16 else factors
+    out.append(np.concatenate([run, v_hat, v_lo, tail], 1))
     rt = np.nonzero(rrows.any(0))[0]
     out.append(np.concatenate([take(routes.amp_read[level_r], rt, r0, r0 + rd),
                                take(routes.amp_read[level_s], rt, s0, s0 + rs)], 1))
     return out
+
+
+def pool_rows(rs):
+    """``(write row bytes, read row bytes)``, `owner_fill.cuh`'s pitches."""
+    return 160, (96 if rs == 16 else 64)
 
 
 def check_fill(name: str) -> bool:
@@ -218,7 +225,7 @@ def check_fill(name: str) -> bool:
                                     routes.g_write, values.v_hat, values.v_lo, values.scale, words, level_s, sw, sr,
                                     rs, rd, 1)
         torch.cuda.synchronize()
-        wrow, rrow = rs + rd + 64 + 16, rd + rs
+        wrow, rrow = pool_rows(rs)
         wd = wd.cpu().numpy().reshape(-1, WINDOW, wrow)
         rdump = rdump.cpu().numpy().reshape(-1, WINDOW, rrow)
         bad = total = 0
@@ -231,8 +238,8 @@ def check_fill(name: str) -> bool:
                         want_w, want_r = fill_model(routes, values, w, level_s, sw, sr, rs, rd, bh, cg, sb, rb, win)
                         i = cta * windows + win
                         total += 1
-                        if not (np.array_equal(wd[i, :len(want_w)], want_w)
-                                and np.array_equal(rdump[i, :len(want_r)], want_r)):
+                        if not (np.array_equal(wd[i, :len(want_w), :want_w.shape[1]], want_w)
+                                and np.array_equal(rdump[i, :len(want_r), :want_r.shape[1]], want_r)):
                             bad += 1
         print(f"fill {name} carve {rs}x{rd}: {total - bad}/{total} CTA-windows match")
         ok &= bad == 0

@@ -12,12 +12,17 @@
 
 namespace rola::owner::detail {
 
-//: THE POOLS: a write row is the dense slice, the sparse slice, two value planes of the channel group and four factors;
-//: a read row the read-dense slice then the read-sparse slice. -- see docs/internals/owner/owner_fill.md#pools
+//: THE POOLS, every copied run at its global sector's 32-byte phase: a write row is a 64-byte coefficient run, the two
+//: value planes, then the dense slice (16 x 64) and the factors; a read row a 64-byte run and the read-sparse chunk
+//: (16 x 64). -- see docs/internals/owner/owner_fill.md#pools
 template <class C>
-struct Pools {
-  static constexpr int kWriteRow = C::RS + C::RD + 2 * kChannels + 16;
-  static constexpr int kReadRow = C::RD + C::RS;
+struct alignas(128) Pools {
+  static constexpr int kRun = 64, kValues = kRun, kTail = kValues + 2 * kChannels;
+  static constexpr int kFactors = kTail + (C::RS == 16 ? 16 : 0);
+  static constexpr int kWriteRow = 160;
+  static constexpr int kReadRow = C::RS == 16 ? 96 : 64;
+  static_assert(C::RD + (C::RS == 32 ? C::RS : 0) == kRun && kFactors + 16 <= kWriteRow,
+                "the row's runs fit");
   uint8_t write[kWritePool][kWriteRow];
   uint8_t read[kReadPool][kReadRow];
 };
@@ -85,14 +90,15 @@ __device__ void fill_write(Pools<C>& pools, const ListTenants<C>& sm, const Fill
     uint8_t* const row = pools.write[r];
     if constexpr (C::RS == 16) {
       const bool live = (sm.sector_uni[q >> 1][t >> 5] >> (t & 31)) & 1u;
-      ops::stage_tile_if(ops::smem_addr(row + C::RS + 16 * q), token_row(lanes.run, tg), live);
-      ops::stage_run_lanes<16>(ops::smem_addr(row), token_row(lanes.dense, tg), q == 0);
+      ops::stage_tile_if(ops::smem_addr(row + 16 * q), token_row(lanes.run, tg), live);
+      ops::stage_run_lanes<16>(ops::smem_addr(row + Pools<C>::kTail), token_row(lanes.dense, tg),
+                               q == 0);
     } else {
       ops::stage_tile(ops::smem_addr(row + 16 * q), token_row(lanes.run, tg));
     }
-    ops::stage_tile_if(ops::smem_addr(row + C::RS + C::RD + 16 * q), token_row(lanes.values, tg),
-                       values_live);
-    ops::stage_run<4>(ops::smem_addr(row + C::RS + C::RD + 2 * kChannels + 4 * q),
+    ops::stage_tile_if(ops::smem_addr(row + Pools<C>::kValues + 16 * q),
+                       token_row(lanes.values, tg), values_live);
+    ops::stage_run<4>(ops::smem_addr(row + Pools<C>::kFactors + 4 * q),
                       token_row(lanes.factor, tg));
   }
   ops::stage_commit();
@@ -110,7 +116,8 @@ __device__ void fill_read(Pools<C>& pools, const ListTenants<C>& sm, const FillL
     uint8_t* const row = pools.read[r];
     ops::stage_tile(ops::smem_addr(row + 16 * q), token_row(lanes.read_run, tg));
     if constexpr (C::RS == 16)
-      ops::stage_run_lanes<16>(ops::smem_addr(row + C::RD), token_row(lanes.read_tail, tg), q == 0);
+      ops::stage_run_lanes<16>(ops::smem_addr(row + Pools<C>::kRun), token_row(lanes.read_tail, tg),
+                               q == 0);
   }
   ops::stage_commit();
 }
