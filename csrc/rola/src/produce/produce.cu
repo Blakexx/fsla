@@ -38,11 +38,11 @@ __device__ __forceinline__ int64_t slot_of(const ProduceParams& p, int token, in
 __device__ __forceinline__ Job load_job(const ProduceParams& p, int index) {
   const int shape = p.shapes[index];
   const int32_t* row = p.jobs + static_cast<int64_t>(index) * kJobFields;
-  return Job{(shape >> 5) & 1,  shape & 7,           (shape >> 3) & 3,    (shape >> 6) & 1,
-             (shape >> 7) & 1,  row[kFieldHead],     row[kFieldHeads],    row[kFieldWidth],
-             row[kFieldIn0],    row[kFieldIn1],      row[kFieldOutRead],  row[kFieldOutWrite],
-             row[kFieldLevel],  (shape >> 8) & 1,    (shape >> 9) & 1,    (shape >> 10) & 1,
-             (shape >> 11) & 1, row[kFieldMaskRead], row[kFieldMaskWrite]};
+  return Job{(shape >> 5) & 1, shape & 7,        (shape >> 3) & 3,   (shape >> 6) & 1,
+             (shape >> 7) & 1, row[kFieldHead],  row[kFieldHeads],   row[kFieldWidth],
+             row[kFieldIn0],   row[kFieldIn1],   row[kFieldOutRead], row[kFieldOutWrite],
+             row[kFieldLevel], (shape >> 8) & 1, (shape >> 9) & 1,   (shape >> 10) & 1,
+             (shape >> 11) & 1};
 }
 
 //: THE BLOCK'S TILE: a sequence's 32 tokens (a call over more than one token: a tile never straddles two sequences,
@@ -283,14 +283,12 @@ __device__ __forceinline__ uint32_t load_digit(const ProduceParams& p, const uin
   return p.row_form == kRowsF16 ? reinterpret_cast<const uint16_t*>(base)[index] : base[index];
 }
 
-//: WHERE A SIDE'S DIGITS GO: a dense level's packed plane row; a sparse level's staged row (a call over more than one
-//: token: the spent logit row, packed by `pack_side`); or, at one token, the token's mask and terms.
+//: WHERE A SIDE'S DIGITS GO: a dense level's packed plane row, or a sparse level's staged row (the spent logit row,
+//: packed by `pack_side`).
 struct SideDest {
   uint8_t* plane;
   int64_t first;
   uint8_t* stage;
-  int32_t* mask;
-  uint8_t* terms;
 };
 
 //: A side's bytes in its token's spent logit row: the solve has read the row into registers before any is written.
@@ -453,29 +451,13 @@ __device__ __forceinline__ void write_side(const ProduceParams& p, const float (
     sum = warp_all(sum, [](float a, float b) { return a + b; });
   }
   const float unit = fmaxf(m, 1e-30f);
-  if (dest.mask != nullptr) {
-    //: one token: its mask word a register, and each live digit at its rank among the row's live digits
-    uint32_t below = 0u;
+  uint8_t* const base = dest.stage != nullptr ? dest.stage : dest.plane;
+  const int64_t first = dest.stage != nullptr ? 0 : dest.first;
 #pragma unroll
-    for (int i = 0; i < IPT; ++i) {
-      const int col = lane + 32 * i;
-      const uint32_t bits = col < width ? digit_bits(p, __fdividef(level[i], unit)) : 0u;
-      const uint32_t word = __ballot_sync(0xffffffffu, bits != 0u);
-      if (live && lane == i && 32 * i < width) dest.mask[i] = static_cast<int32_t>(word);
-      if (live && bits != 0u) {
-        store_digit(p, dest.terms, below + __popc(word & ((1u << lane) - 1u)), bits);
-      }
-      below += __popc(word);
-    }
-  } else {
-    uint8_t* const base = dest.stage != nullptr ? dest.stage : dest.plane;
-    const int64_t first = dest.stage != nullptr ? 0 : dest.first;
-#pragma unroll
-    for (int i = 0; i < IPT; ++i) {
-      const int col = lane + 32 * i;
-      if (live && col < width)
-        store_digit(p, base, first + col, digit_bits(p, __fdividef(level[i], unit)));
-    }
+  for (int i = 0; i < IPT; ++i) {
+    const int col = lane + 32 * i;
+    if (live && col < width)
+      store_digit(p, base, first + col, digit_bits(p, __fdividef(level[i], unit)));
   }
   if (live && lane == 0) {
     scale[at] = applied && fold && sum > 0.0f ? m / sum : m;
@@ -504,22 +486,13 @@ __device__ void route_row(const ProduceParams& p, const Job& job, int job_index,
   }
   const int64_t slot = slot_of(p, token, job.head);
   const int64_t at = slot * p.D + job.level;
-  const int esize = p.row_form == kRowsF16 ? 2 : 1;
 
   auto dest = [&](int side) {
     const bool sparse = side == 0 ? job.sparse_read != 0 : job.sparse_write != 0;
     const int out = side == 0 ? job.out_read : job.out_write;
     SideDest d{side == 0 ? p.amp_read : p.amp_write,
-               slot * (side == 0 ? p.rows_read : p.rows_write) + out, nullptr, nullptr, nullptr};
-    if (sparse && p.tiles_per_seq != 0) {
-      d.stage = reinterpret_cast<uint8_t*>(row) + side * kSideBytes;
-    } else if (sparse) {
-      d.mask = (side == 0 ? p.words_read : p.words_write)
-               + slot * (side == 0 ? p.mask_words_read : p.mask_words_write)
-               + (side == 0 ? job.mask_read : job.mask_write);
-      d.terms = (side == 0 ? p.terms_read : p.terms_write)
-                + (slot * (side == 0 ? p.sparse_rows_read : p.sparse_rows_write) + out) * esize;
-    }
+               slot * (side == 0 ? p.rows_read : p.rows_write) + out, nullptr};
+    if (sparse) d.stage = reinterpret_cast<uint8_t*>(row) + side * kSideBytes;
     return d;
   };
 
@@ -867,19 +840,14 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                     "the ", name,
                     " side's sparse words are contiguous int32 and its terms "
                     "contiguous in the rows' dtype");
-    if (T == 1) {
-      STD_TORCH_CHECK(w->dim() == 3 && t->dim() == 3 && w->size(0) == B && w->size(1) == H
-                          && t->size(0) == B && t->size(1) == H,
-                      "at one token the ", name,
-                      " side's sparse levels are a mask [B, H, words] and "
-                      "terms [B, H, rows]");
-    } else {
-      STD_TORCH_CHECK(w->dim() == 4 && t->dim() == 5 && w->size(0) == B && w->size(1) == H
-                          && w->size(3) == nw && t->sizes().slice(0, 3) == w->sizes().slice(0, 3)
-                          && t->size(3) == windows && t->size(4) == slot,
-                      "the ", name, " side's sparse levels are words [B, H, rows, ", nw,
-                      "] and terms [B, H, rows, ", windows, ", ", slot, "]");
-    }
+    STD_TORCH_CHECK(w->dim() == 4 && t->dim() == 5 && w->size(0) == B && w->size(1) == H
+                        && w->size(3) == nw && t->sizes().slice(0, 3) == w->sizes().slice(0, 3)
+                        && t->size(3) == windows && t->size(4) == slot,
+                    "the ", name, " side's sparse levels are words [B, H, rows, ", nw,
+                    "] and terms [B, H, rows, ", windows, ", ", slot, "]");
+    STD_TORCH_CHECK(T > 1 || w->size(2) == 0,
+                    "a one-token call holds every level as rows: no sparse level on the ", name,
+                    " side");
   }
   const int64_t tiles_per_seq = T == 1 ? 0 : (T + kTokenTile - 1) / kTokenTile;
   STD_TORCH_CHECK(flags.is_cuda() && flags.scalar_type() == Dtype::Int && flags.is_contiguous()
@@ -954,8 +922,6 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.slot = static_cast<int>(slot);
   p.sparse_rows_read = static_cast<int>(terms_read.size(2));
   p.sparse_rows_write = static_cast<int>(terms_write.size(2));
-  p.mask_words_read = T == 1 ? static_cast<int>(words_read.size(2)) : 0;
-  p.mask_words_write = T == 1 ? static_cast<int>(words_write.size(2)) : 0;
   p.hidden = static_cast<int>(hidden);
   p.H = static_cast<int>(H);
   p.C = static_cast<int>(C);

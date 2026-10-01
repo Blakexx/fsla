@@ -3,18 +3,17 @@
 """A SPARSE LEVEL IN THE INTERNAL FORMAT: one side of one routing level as its bitlist and its live coefficients
 packed in bit order.
 
-A level whose activation has exact zeros is stored this way on that side; every other level stays unit-max rows
-(:class:`~rola.routing.factors.RouteFactors`). The coefficients are the rows' own digits (u8, or f16 above depth two);
-only their placement differs. Two forms, by the call's shape -- docs/internals/routing/sparse.md:
+Which levels are stored this way is chosen at production -- by the producer from its activation, or by a caller of
+:meth:`~rola.routing.factors.RouteFactors.from_levels` -- and the entry's type records it: a bundle is self-describing.
+The coefficients are the rows' own digits (u8, or f16 above depth two); only their placement differs. A one-token
+bundle holds every level as rows: the form compacts tokens, and one token has none to compact.
+docs/internals/routing/sparse.md
 
-THE DIGIT FORM (``T > 1``): ``words`` int32 ``[B, H, width, nw]``, bit ``t`` of word ``i`` set when token ``32 i + t``
+``words`` int32 ``[B, H, width, nw]``, bit ``t`` of word ``i`` set when token ``32 i + t``
 is live on the digit (``nw`` is ``T / 32`` rounded up to a whole word, then to four; the bits past ``T`` are zero), and
 ``terms`` ``[B, H, width, windows, slot]``: each (digit, window) slot holds the window's live coefficients from its
 front in token order, so the ``k``-th set bit of the digit's window words is the slot's ``k``-th entry. ``slot`` is the
 window, or ``T`` rounded up to a word below it. Past a slot's live count its entries are unspecified.
-
-THE TOKEN FORM (``T == 1``, the decode step): ``words`` int32 ``[B, H, ceil(width / 32)]``, the token's mask over the
-digits, and ``terms`` ``[B, H, width]``, its live coefficients in digit order from the front.
 
 ANY (words, terms) PAIR IS A VALID LEVEL: a set bit over a zero term costs a slot and contributes nothing, and a term
 no bit reaches is never read. So the structure is the only invariant checked.
@@ -89,22 +88,10 @@ class SparseLevel:
                             f"{getattr(terms, 'dtype', type(terms).__name__)}")
         if words.device != terms.device:
             raise ValueError(f"SparseLevel's words and terms live on one device: {words.device}, {terms.device}")
-        if words.ndim == 3 and terms.ndim == 3:
-            if words.shape[:2] != terms.shape[:2] or words.shape[2] != -(-terms.shape[2] // WORD_TOKENS):
-                raise ValueError(f"a token-form SparseLevel's mask is [B, H, ceil(width / 32)] over terms [B, H, width]; "
-                                 f"got {tuple(words.shape)} and {tuple(terms.shape)}")
-        elif words.ndim == 4 and terms.ndim == 5:
-            if words.shape[:3] != terms.shape[:3] or words.shape[3] % 4 or words.shape[3] * WORD_TOKENS < (
-                    terms.shape[3] - 1) * terms.shape[4]:
-                raise ValueError(f"a digit-form SparseLevel is words [B, H, width, nw] and terms "
-                                 f"[B, H, width, windows, slot]; got {tuple(words.shape)} and {tuple(terms.shape)}")
-        else:
-            raise ValueError(f"a SparseLevel is the digit form (words 4-d, terms 5-d) or the token form (both 3-d); "
-                             f"got {words.ndim}-d words and {terms.ndim}-d terms")
-
-    @property
-    def token_form(self) -> bool:
-        return self.words.ndim == 3
+        if (words.ndim != 4 or terms.ndim != 5 or words.shape[:3] != terms.shape[:3] or words.shape[3] % 4
+                or words.shape[3] * WORD_TOKENS < (terms.shape[3] - 1) * terms.shape[4]):
+            raise ValueError(f"a SparseLevel is words [B, H, width, nw] and terms [B, H, width, windows, slot]; got "
+                             f"{tuple(words.shape)} and {tuple(terms.shape)}")
 
     @property
     def width(self) -> int:
@@ -119,11 +106,7 @@ class SparseLevel:
         """THE REFERENCE PACKING: unit-max rows ``[B, T, H, width]`` in, the level out (a zero digit is dead)."""
         B, T, H, width = rows.shape
         if T == 1:
-            x = rows[:, 0]
-            live = x != 0
-            pad = -width % WORD_TOKENS
-            words = _pack_bits(torch.nn.functional.pad(live, (0, pad)))
-            return cls(words=words.contiguous(), terms=_front_pack(x, live).contiguous())
+            raise ValueError("a one-token bundle holds every level as rows: there are no tokens to compact")
         x = rows.permute(0, 2, 3, 1)
         live = x != 0
         whole = -(-T // WORD_TOKENS) * WORD_TOKENS
@@ -138,9 +121,6 @@ class SparseLevel:
 
     def dense(self, tokens: int) -> torch.Tensor:
         """The rows ``[B, T, H, width]`` this level holds -- for the oracle and the references, never a kernel path."""
-        if self.token_form:
-            live = _unpack_bits(self.words, self.width)
-            return _unpack_front(self.terms, live).unsqueeze(1)
         B, H, width, windows, slot = self.terms.shape
         covered = min(self.words.shape[-1] * WORD_TOKENS, windows * slot)
         live = torch.nn.functional.pad(_unpack_bits(self.words, covered), (0, windows * slot - covered))

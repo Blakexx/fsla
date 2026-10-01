@@ -26,8 +26,6 @@
 #include "common/torch_seam.cuh"
 #include <cuda_bf16.h>
 
-#include <tuple>
-
 #include "common/arch_runtime.cuh"
 #include "common/phase_clock.cuh"
 #include "common/state_page.cuh"
@@ -904,8 +902,6 @@ int64_t rola_decode_build_stamp() {
 }
 
 Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
-                           std::vector<Tensor> read_mask, std::vector<Tensor> write_mask,
-                           std::vector<int64_t> read_sparse, std::vector<int64_t> write_sparse,
                            std::vector<Tensor> read_scale, std::vector<Tensor> write_scale,
                            std::vector<int64_t> normalize, std::optional<Tensor> dials,
                            Tensor g_write, Tensor v_hat, std::optional<Tensor> v_lo, Tensor v_scale,
@@ -987,26 +983,7 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   STD_TORCH_CHECK(
       read_scale.size() == static_cast<size_t>(D) && write_scale.size() == static_cast<size_t>(D),
       "one row scale a level a side");
-  STD_TORCH_CHECK(read_mask.size() == static_cast<size_t>(D)
-                      && write_mask.size() == static_cast<size_t>(D)
-                      && read_sparse.size() == static_cast<size_t>(D)
-                      && write_sparse.size() == static_cast<size_t>(D),
-                  "one mask and one sparse flag a level a side");
   for (int l = 0; l < D; ++l) {
-    for (auto [mask, flag, span, sparse, name] :
-         {std::tuple{&read_mask[l], read_sparse[l], &p.read_mask[l], &p.read_sparse[l],
-                     "read_mask[l]"},
-          {&write_mask[l], write_sparse[l], &p.write_mask[l], &p.write_sparse[l],
-           "write_mask[l]"}}) {
-      *sparse = flag != 0 ? 1 : 0;
-      if (flag != 0) {
-        STD_TORCH_CHECK(mask->scalar_type() == Dtype::Int, name, " is int32");
-        *span = detail::span_of(*mask, B, H, (p.level_width[l] + 31) / 32, name);
-        STD_TORCH_CHECK(span->sw == 1, name, "'s words are contiguous");
-      } else {
-        *span = Span{nullptr, 0, 0, 0};
-      }
-    }
     p.read[l] = detail::span_of(read[l], B, H, p.level_width[l], "read[l]");
     STD_TORCH_CHECK(read[l].scalar_type() == row_dtype && write[l].scalar_type() == row_dtype,
                     "every coefficient row shares one type; level ", l, " disagrees");

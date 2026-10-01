@@ -27,10 +27,10 @@ solve (`SolveKind`), the solve row's elements a lane, the sides it writes and wh
 branch on it compiles its collectives inline alone, where a branch on a loaded job field gave each a guarded fallback
 subroutine as well (692 of them: cold code, KERNEL_STANDARDS §20). At most `kMaxJobs` jobs a launch. A side the topology declares sparse (its
 activation has exact zeros) carries a shape bit, `sparse_read` / `sparse_write`: its `out_*` field is then its first
-row in the side's sparse buffers, and `mask_read` / `mask_write` its first word in the one-token masks (#sparse). The
-shape word's fields are `kind`, `solve`, `rows` (a solve row's elements a lane, as a power of two's exponent),
-`reads` / `writes`, `fold_read` / `fold_write` and `sparse_read` / `sparse_write`; the table's, the head, the heads,
-the width, the logit columns in, the output column or row out a side, the level and the mask words a side. A block's
+row in the side's sparse buffers (#sparse). The shape word's fields are `kind`, `solve`, `rows` (a solve row's
+elements a lane, as a power of two's exponent), `reads` / `writes`, `fold_read` / `fold_write` and `sparse_read` /
+`sparse_write`; the table's, the head, the heads, the width, the logit columns in, the output column or row out a
+side, and the level. A block's
 `Tile` is its first token, how many are live, and its sequence, window and place in the window.
 A ROUTE job is one head's one solve: a union level's two logit rows (read and write), a tied level's one row filling
 both planes, or one side of an independent level. A VALUE job is the heads whose channels fit one job (`256 / d_v`
@@ -145,8 +145,10 @@ overlapping it (one CTA an SM): the next levers, priced when the bundle's form l
 
 ## <a id="sparse"></a>A sparse level
 
-A sparse side's digits are the same digits a dense side writes (`write_side`'s unit-max form, u8 or f16); only their
-placement is the format's (`docs/internals/routing/sparse.md`): the WORDS, a bit a (token, digit), digit-major
+The producer stores a side sparse where its activation has exact zeros, over more than one token (`side_layouts`);
+a one-token call -- the decode step -- writes every level as rows, since one token has nothing to compact. A sparse
+side's digits are the same digits a dense side writes (`write_side`'s unit-max form, u8 or f16); only their placement
+is the format's (`docs/internals/routing/sparse.md`): the WORDS, a bit a (token, digit), digit-major
 `[B, H, rows, nw]`, and the TERMS, each (digit, window) slot holding the window's live digits from its front in token
 order, `[B, H, rows, windows, slot]`. Dense levels go to each side's packed plane, which holds only them.
 
@@ -161,9 +163,6 @@ A tile waits only on lower block indices, which the hardware dispatches first, s
 window's last tile past its wait resets the window's two counters for the next call. (3) THE TERMS: each live digit
 lands at its (digit, window) slot + the digit's count in the earlier tiles + its rank among the tile's live tokens
 (a popcount of the word below its lane), so a slot is the window's live digits from its front in token order.
-
-AT ONE TOKEN (the decode step) each row writes its own form in `write_side`, no tile pass: a mask word a register (a
-ballot), and each live digit at its rank among the row's live digits, the running popcount of the words before it.
 
 ## <a id="finish"></a>The head's finish
 

@@ -62,14 +62,9 @@ struct Span {  // one operand's address, as the producer left it; decode.md#span
   int64_t sw;
 };
 
-struct DecodeParams {  // every pointer/extent one decode step needs; see decode.md#decodeparams
-  Span read
-      [kMaxLevels];  // unit-max coefficient rows, or a sparse level's terms; decode.md#decodeparams
+struct DecodeParams {     // every pointer/extent one decode step needs; see decode.md#decodeparams
+  Span read[kMaxLevels];  // unit-max coefficient rows, u8 or f16; see decode.md#decodeparams
   Span write[kMaxLevels];
-  Span read_mask[kMaxLevels];  // a sparse level's token mask; decode.md#sparse-levels
-  Span write_mask[kMaxLevels];
-  int read_sparse[kMaxLevels];
-  int write_sparse[kMaxLevels];
   Span read_scale[kMaxLevels];  // fp32 row maxima, [B, 1, H]
   Span write_scale[kMaxLevels];
   Span g_write;

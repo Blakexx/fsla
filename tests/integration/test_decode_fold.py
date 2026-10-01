@@ -191,7 +191,7 @@ def test_the_flag_is_honoured_and_not_assumed():
 
 def test_more_than_one_token_is_refused():
     rows, scale = _read_rows(2, 2, 16, dtype=torch.uint8, seed=5)
-    with pytest.raises(RuntimeError, match=r"must be \[B, 1, H"):
+    with pytest.raises(ValueError, match="takes one token"):
         _y_of(rows.repeat(1, 2, 1, 1), scale.repeat(1, 2, 1), normalize=False, seed=5)
 
 

@@ -43,9 +43,10 @@ class RouteFactors:
     """The feature-mapped routing sides in THE INTERNAL FORMAT, and their side gain. Tensors, and nothing else.
 
     ``amp_read``/``amp_write``: one entry per level, each row UNIT-MAX -- u8 with its largest digit at 255
-    (depth <= 2), or f16 with its largest entry at 1 (any depth); one dtype for the whole bundle. A level whose
-    activation has exact zeros on that side is a :class:`~rola.routing.sparse.SparseLevel` (its bitlist and its
-    live digits in bit order); every other level is ``[B, T, H, width_l]`` rows. A zero digit is dead. ``scale_read``/``scale_write``: the rows' maxima,
+    (depth <= 2), or f16 with its largest entry at 1 (any depth); one dtype for the whole bundle. An entry is
+    ``[B, T, H, width_l]`` rows (dense: every digit is read) or a :class:`~rola.routing.sparse.SparseLevel` (its
+    bitlist and its live digits in bit order): the entry's type is the whole fact, chosen at production. A
+    one-token bundle is all rows. A zero digit is dead. ``scale_read``/``scale_write``: the rows' maxima,
     fp32 ``[B, T, H]`` per level -- a read level's scale carries the read mass, a write level's the normalized
     simplex's max (its mass rides ``g_write``). ``g_write``: ``[B, T, H]`` write-side gain (there is no read
     gain: the readout is a ratio). ``read_mass``: the ``[B, T, H]`` per-token read scale the read levels carry,
@@ -94,9 +95,8 @@ class RouteFactors:
                     raise ValueError(f"RouteFactors.source's {side} levels are the rows' floating originals")
 
     def sparse(self, level: int, side: str) -> bool:
-        """Is ``level`` stored as a :class:`SparseLevel` on ``side``? The topology's declaration: its activation
-        there has exact zeros."""
-        return self.topology.activation_properties(level, side).exact_zeros
+        """Is ``level`` stored as a :class:`SparseLevel` on ``side``? The entry says so."""
+        return isinstance(getattr(self, f"amp_{side}")[level], SparseLevel)
 
     def _check_scales(self) -> tuple[int, ...]:
         """The scales: fp32 ``[B, T, H]`` a level a side, one prefix and device -- the bundle's ``[B, T, H]``."""
@@ -119,8 +119,8 @@ class RouteFactors:
         return prefix
 
     def _check_rows(self, prefix: tuple[int, ...]) -> torch.dtype:
-        """Every level's entry: a :class:`SparseLevel` where the topology declares the side sparse, else rows
-        ``[B, T, H, width_l]``; the bundle's prefix, device and one dtype. Returns the dtype."""
+        """Every level's entry: rows ``[B, T, H, width_l]`` or, over more than one token, a :class:`SparseLevel`; the
+        bundle's prefix, device and one dtype. Returns the dtype."""
         D, widths = self.topology.D, self.topology.widths
         B, T, H = prefix
         device = self.scale_read[0].device
@@ -132,15 +132,13 @@ class RouteFactors:
                 raise ValueError(f"RouteFactors.{name} must hold one entry per routing level (D={D}), got {len(entries)}")
             for level, entry in enumerate(entries):
                 where = f"RouteFactors.{name}[{level}]"
-                if self.sparse(level, side):
-                    if not isinstance(entry, SparseLevel):
-                        raise TypeError(f"{where}: the topology declares this side sparse, so it is a SparseLevel, "
-                                        f"got {type(entry).__name__}")
-                    if entry.token_form != (T == 1) or entry.terms.shape[:2] != (B, H) or entry.width != widths[level]:
-                        form = "the token form" if T == 1 else "the digit form"
-                        raise ValueError(f"{where} is {form} of [B, H, width]={(B, H, widths[level])}; got words "
+                if isinstance(entry, SparseLevel):
+                    if T == 1:
+                        raise ValueError(f"{where}: a one-token bundle holds every level as rows")
+                    if entry.terms.shape[:2] != (B, H) or entry.width != widths[level]:
+                        raise ValueError(f"{where} is [B, H, width]={(B, H, widths[level])}; got words "
                                          f"{tuple(entry.words.shape)}, terms {tuple(entry.terms.shape)}")
-                    if not entry.token_form and entry.words.shape[3] * 32 < T:
+                    if entry.words.shape[3] * 32 < T:
                         raise ValueError(f"{where}'s words cover {entry.words.shape[3] * 32} tokens, not T = {T}")
                     tensor = entry.terms
                 else:
@@ -159,26 +157,33 @@ class RouteFactors:
         return dtype
 
     @classmethod
-    def from_levels(cls, topology: Topology, read, write, g_write, read_mass=None) -> RouteFactors:
-        """THE FRAMEWORK'S EPILOGUE as a function: floating levels in, the format out -- u8 rows at depth <= 2 and
-        f16 rows deeper, each against its own max (`rola.routing.quant`)."""
+    def from_levels(cls, topology: Topology, read, write, g_write, read_mass=None, *, sparse=None) -> RouteFactors:
+        """THE FRAMEWORK'S EPILOGUE as a function: floating levels in, the format out -- u8 digits at depth <= 2 and
+        f16 deeper, each row against its own max (`rola.routing.quant`), each side ``sparse`` names packed
+        (:meth:`from_rows`)."""
         dtype = torch.uint8 if topology.D <= U8_MAX_DEPTH else torch.float16
         read, write = tuple(read), tuple(write)
         amp_read, scale_read = zip(*(quant.quantize_unit_max_rows(level, dtype) for level in read))
         amp_write, scale_write = zip(*(quant.quantize_unit_max_rows(level, dtype) for level in write))
         source = (read, write) if _requires_grad(read + write) else None
         return cls.from_rows(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=read_mass,
-                             source=source)
+                             source=source, sparse=sparse)
 
     @classmethod
     def from_rows(cls, topology: Topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=None,
-                  source=None) -> RouteFactors:
-        """The bundle over rows already in the format (unit-max u8 or f16, ``[B, T, H, width_l]`` a level a side):
-        each declared-sparse side packed (:meth:`SparseLevel.from_rows`), every other kept as rows."""
+                  source=None, *, sparse=None) -> RouteFactors:
+        """The bundle over rows already in the format (unit-max u8 or f16, ``[B, T, H, width_l]`` a level a side), each
+        side ``sparse`` names packed (:meth:`SparseLevel.from_rows`), every other kept as rows. ``sparse`` is
+        ``(read, write)``, a bool a level each; by default a side whose activation has exact zeros. A one-token
+        bundle is all rows whatever ``sparse`` says."""
+        if sparse is None:
+            sparse = tuple(tuple(topology.activation_properties(level, side).exact_zeros
+                                 for level in range(topology.D)) for side in SIDES)
+        one_token = scale_read[0].shape[1] == 1
         amp_read, amp_write = (
-            tuple(SparseLevel.from_rows(rows) if topology.activation_properties(level, side).exact_zeros else rows
-                  for level, rows in enumerate(entries))
-            for side, entries in zip(SIDES, (amp_read, amp_write)))
+            tuple(SparseLevel.from_rows(rows) if flag and not one_token else rows
+                  for rows, flag in zip(entries, flags, strict=True))
+            for entries, flags in zip((amp_read, amp_write), sparse))
         return cls(topology=topology, amp_read=amp_read, amp_write=amp_write, scale_read=scale_read,
                    scale_write=scale_write, g_write=g_write, read_mass=read_mass, source=source)
 

@@ -26,8 +26,6 @@ void rola_decode_ledger_bind(const std::optional<Tensor>& ledger);
 
 //: THE WHOLE STEP IN ONE LAUNCH -- fold, factor, walk, AND ITS OWN ADMISSION -- see docs/internals/decode/decode_api.md#note-l43
 Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
-                           std::vector<Tensor> read_mask, std::vector<Tensor> write_mask,
-                           std::vector<int64_t> read_sparse, std::vector<int64_t> write_sparse,
                            std::vector<Tensor> read_scale, std::vector<Tensor> write_scale,
                            std::vector<int64_t> normalize, std::optional<Tensor> dials,
                            Tensor g_write, Tensor v_hat, std::optional<Tensor> v_lo, Tensor v_scale,

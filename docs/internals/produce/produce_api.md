@@ -6,9 +6,8 @@ The one launch of the producer (`produce.md`). The caller -- `rola.ops.produce.r
 as the kernel reads them: `x` as `[B * T, hidden]` bf16; `route_W` as `[H, hidden, C]` bf16 with its hidden axis
 contiguous (`hidden_contiguous`; the head and column axes read through their strides); `v_W` as `[H * d_v, hidden]`
 bf16, a linear's weight as stored; the plan's job table on the device; every output, allocated by the caller so a gate
-can poison them -- each side's dense levels as one packed plane `[B, H, T, rows]`, its sparse levels as words and terms
-(`[B, H, rows, nw]` and `[B, H, rows, windows, slot]` over more than one token, a mask `[B, H, words]` and terms
-`[B, H, rows]` at one, `produce.md#sparse`); the arrival counters and the look-back flags (two counters a (job, side,
+can poison them -- each side's dense levels as one packed plane `[B, H, T, rows]`, its sparse levels as words `[B, H, rows, nw]` and
+terms `[B, H, rows, windows, slot]` (none at one token, `produce.md#sparse`); the arrival counters and the look-back flags (two counters a (job, side,
 sequence, window)), zero between calls; the optional logit and level probes
 `[jobs, B * T, kMaxColumns]` fp32, which receive every job's projection and every route job's solved levels (read at
 `[0, w)`, write at `[w, 2w)`) for their gates and are null in production; and the plan's shape words, a host int16

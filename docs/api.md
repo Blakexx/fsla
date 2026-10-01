@@ -184,11 +184,12 @@ UNIT-MAX -- u8 with the row's largest digit at 255 up to depth two, or f16 with 
 at 1 at any depth (ruled 2026-09-29: the producer writes f16 deeper, and every consumer takes
 either); a zero digit is dead, an all-zero row a dead token at that level -- with the row's maximum
 carried beside them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one entry
-per level). A SIDE THE TOPOLOGY DECLARES SPARSE -- its activation has exact zeros -- is stored as a
-`SparseLevel(words, terms)`: its bitlist and its live digits packed in bit order (ruled 2026-09-30;
-[`internals/routing/sparse.md`](internals/routing/sparse.md)); every other level is
-`[B, T, H, width]` rows. A one-token bundle holds a sparse level in its token form (the token's mask
-and its live digits). `RouteFactors.rows(level, side)` is any level as rows, for a reference. A read level's scale carries the read mass; a
+per level). An entry is `[B, T, H, width]` rows (dense) or a `SparseLevel(words, terms)`: its bitlist
+and its live digits packed in bit order (ruled 2026-09-30;
+[`internals/routing/sparse.md`](internals/routing/sparse.md)). The bundle is SELF-DESCRIBING -- the
+entry's type is the fact, chosen at production (the producer stores a side sparse where its
+activation has exact zeros; `from_levels(..., sparse=)` lets a caller choose) -- and a one-token
+bundle is all rows. `RouteFactors.rows(level, side)` is any level as rows, for a reference. A read level's scale carries the read mass; a
 write level's scale is the normalized simplex's max and its mass rides `g_write`. This is what
 the int carry, the intra and the decode kernels read, and it is written by the framework's producer
 alone: the fused kernel's epilogue, and the reference's (`rola/routing/quant.py`, `RouteFactors.from_levels`),
@@ -208,9 +209,9 @@ else.
 stored levels, the side gains, the read mass and the topology they are shaped by —
 nothing else, and in particular no declaration a caller could pair with tensors that do
 not describe it. `RouteFactors.__post_init__` therefore checks the STRUCTURE rather than
-the provenance: one level per topology level at that level's width, a `SparseLevel` exactly where
-the topology declares a side sparse (any words-and-terms pair is a valid one: a set bit over a zero
-term wastes a slot, and a term no bit reaches is never read), one shared
+the provenance: one level per topology level at that level's width, rows or (over more than one
+token) a `SparseLevel` (any words-and-terms pair is a valid one: a set bit over a zero term wastes a
+slot, and a term no bit reaches is never read), one shared
 `[B, T, H]` prefix, one device, one dtype,
 `g_write` and (when present) `read_mass` shaped `[B, T, H]`. There is no `g_read`
 field at all — the ratio readout fixes the read-side gain to 1 identically, so there

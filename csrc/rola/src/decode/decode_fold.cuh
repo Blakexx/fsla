@@ -69,21 +69,7 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
     const int digit = ((word - p.mask_off[l]) << 5) + lane;
     const bool valid = s < 2 * slots && digit < p.level_width[l];
     const Span& rows = write_side ? p.write[l] : p.read[l];
-    int at = digit;
-    bool live = valid;
-    if ((write_side ? p.write_sparse[l] : p.read_sparse[l]) != 0) {
-      //: a sparse level's digit is its rank among the token's live digits: the earlier words' popcounts summed by
-      //: one warp reduction, then its own word below the lane (decode.md#sparse-levels)
-      const int wi = word - p.mask_off[l];
-      const int32_t* mask = row_of<int32_t>(write_side ? p.write_mask[l] : p.read_mask[l], b, h);
-      const uint32_t mine = lane < p.mask_words[l] ? static_cast<uint32_t>(mask[lane]) : 0u;
-      const int prefix =
-          static_cast<int>(__reduce_add_sync(0xffffffffu, lane < wi ? __popc(mine) : 0));
-      const uint32_t word_bits = __shfl_sync(0xffffffffu, mine, wi);
-      live = valid && ((word_bits >> lane) & 1u) != 0u;
-      at = prefix + __popc(word_bits & ((1u << lane) - 1u));
-    }
-    x[j] = live ? raw(row_of<T>(rows, b, h)[at * rows.sw]) : 0.0f;
+    x[j] = valid ? raw(row_of<T>(rows, b, h)[digit * rows.sw]) : 0.0f;
     scale[j] = valid ? scale_of(write_side ? p.write_scale[l] : p.read_scale[l], b, h) : 0.0f;
   }
 

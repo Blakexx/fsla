@@ -42,7 +42,6 @@ from rola.ops.decay import leaf_rate_dials
 from rola.ops.lattice import box_shape, derive_lattice, permutation
 from rola.ops.padding import pad_v, padded_value_width, slice_y
 from rola.ops.paging import MMA_K_QUANTUM, page_layout
-from rola.routing.sparse import SparseLevel
 from rola.routing.types import Topology
 
 __all__ = [
@@ -340,30 +339,6 @@ def leaf_rate_dials_for(decay, config: DecodeGeometry, device) -> torch.Tensor |
     return leaf_rate_dials(decay, config).to(device).float()
 
 
-#: a dense level's mask operand, which the kernel never reads (one a device)
-_NO_MASK: dict[str, torch.Tensor] = {}
-
-
-def _operands(levels) -> tuple[list[torch.Tensor], list[torch.Tensor], list[int]]:
-    """One side's levels as the kernel takes them: each level's rows ``[B, 1, H, W]`` -- a sparse level's packed terms
-    viewed so -- its token mask ``[B, 1, H, ceil(W / 32)]`` where sparse, and the sparse flags
-    (docs/internals/decode/decode.md#sparse-levels)."""
-    rows, masks, flags = [], [], []
-    for level in levels:
-        if isinstance(level, SparseLevel):
-            rows.append(level.terms.unsqueeze(1))
-            masks.append(level.words.unsqueeze(1))
-            flags.append(1)
-        else:
-            key = str(level.device)
-            if key not in _NO_MASK:
-                _NO_MASK[key] = torch.empty(0, dtype=torch.int32, device=level.device)
-            rows.append(level)
-            masks.append(_NO_MASK[key])
-            flags.append(0)
-    return rows, masks, flags
-
-
 def step(plan: DecodePlan) -> torch.Tensor:
     """THE STEP, in ONE launch, in place on ``plan.state_plane``. ``y`` as ``[B, 1, H, d_v]``.
 
@@ -383,15 +358,9 @@ def step(plan: DecodePlan) -> torch.Tensor:
     """
     config = plan.config
     pool = plan.pool
-    read, read_mask, read_sparse = _operands(plan.read)
-    write, write_mask, write_sparse = _operands(plan.write)
     y = extension().rola_decode_forward(
-        read=read,
-        write=write,
-        read_mask=read_mask,
-        write_mask=write_mask,
-        read_sparse=read_sparse,
-        write_sparse=write_sparse,
+        read=list(plan.read),
+        write=list(plan.write),
         read_scale=list(plan.read_scale),
         write_scale=list(plan.write_scale),
         normalize=[int(bool(flag)) for flag in plan.normalize],
@@ -473,6 +442,9 @@ def _decode_step(
     rows reach the kernel exactly as the bundle holds them.
     """
     guard_no_grad((*routes.tensors(), *values.tensors(), *(decay.dials if decay is not None else ())))
+    if routes.tokens != 1:
+        raise ValueError(f"the decode step takes one token, and a one-token bundle is all rows: the routes are "
+                         f"[B, T={routes.tokens}, H]")
     logical_d_v = values.d_v
     v_hat = pad_v(values.v_hat, config.d_v)
     v_lo = None if values.v_lo is None else pad_v(values.v_lo, config.d_v)

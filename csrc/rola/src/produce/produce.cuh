@@ -43,8 +43,6 @@ enum JobField : int {
   kFieldOutRead,
   kFieldOutWrite,
   kFieldLevel,
-  kFieldMaskRead,
-  kFieldMaskWrite,
   kJobFields
 };
 
@@ -75,7 +73,7 @@ enum ProducePhase : int {
 //: A JOB: its control (the shape word's fields) and its addressing (the table's). -- see docs/internals/produce/produce.md#jobs
 struct Job {
   int kind, solve, rows, reads, writes, head, heads, width, in0, in1, out_read, out_write, level,
-      fold_read, fold_write, sparse_read, sparse_write, mask_read, mask_write;
+      fold_read, fold_write, sparse_read, sparse_write;
 };
 
 //: A BLOCK'S TOKENS: a sequence's tile, or the flat batch's at one token. -- see docs/internals/produce/produce.md#jobs
@@ -117,8 +115,7 @@ struct ProduceParams {
   int16_t shapes[kMaxJobs];  // a job's shape word (produce.md#jobs), by block index
 
   int BT, T, hidden, H, C, G, rows_read, rows_write, D, d_v, row_form, route_jobs_per_head;
-  int B, tiles_per_seq, nw, windows, slot, sparse_rows_read, sparse_rows_write, mask_words_read,
-      mask_words_write;
+  int B, tiles_per_seq, nw, windows, slot, sparse_rows_read, sparse_rows_write;
 };
 
 }  // namespace produce
