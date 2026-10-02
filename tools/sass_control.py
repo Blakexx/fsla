@@ -24,7 +24,8 @@ import burst_tier  # noqa: E402
 import sass  # noqa: E402
 
 #: THE MACHINE, an architecture: the cycles an HMMA holds the tensor pipe a scheduler (sm_86: bf16 with
-#: fp32 accumulate at half rate, calibration `hmma_1w` 32.4; sm_80 full rate) and the issue-to-result
+#: fp32 accumulate at half rate, calibration `hmma_1w` 32.4; sm_80 full rate, 8 cycles an m16n8k16 from the A100's
+#: 1024 FMA an SM a clock, unmeasured here), an IMMA's by shape (`imma_pipe`) and the issue-to-result
 #: latency of the scoreboard classes (calibration.md's rows where one exists -- the dependent-chain rows put a
 #: shared load, a matrix load and a shuffle at 25, 25 and 24 on sm_86, 2026-09-19; `REDUX` 40, the `redux_chain` row
 #: less its link's two fixed-latency instructions; `R2UR` 39 is measured in place,
@@ -33,13 +34,22 @@ import sass  # noqa: E402
 #: calibration row with four loads after each burst hid 35 of their 42 cycles, one slot's worth, so two in
 #: flight). A cubin of an architecture without a row is refused.
 MACHINES = {
-    "sm_86": {"hmma_pipe": 32.5, "latency": {"LDSM": 25, "LDS": 25, "LDG": 400, "SHFL": 24, "STS": 20, "S2R": 20,
-                                              "VOTE": 20, "HMMA": 35, "MUFU": 20, "I2F": 12, "F2I": 12, "F2F": 12,
+    "sm_86": {"hmma_pipe": 32.5, "imma_pipe": {"16832": 16.0, "16816": 8.0},
+              #: a scheduler's issue pipes and the cycles a warp instruction holds one (16-lane integer ALU, the
+              #: FMA pair taking an FP32 instruction a cycle, IMAD on the heavy half), shared by its warps; and the
+              #: tensor pipe's extension a cycle an FP32 or IADD3 instruction costs it (probe `imma_pattern`
+              #: probe4, 2026-10-01: the IMMA side's extra cycles with that class run by the partner warp)
+              "pipes": {"alu": {"IADD3": 2, "LOP3": 2, "PRMT": 2, "SHF": 2, "ISETP": 2, "SEL": 2, "IMNMX": 2,
+                                "I2IP": 2, "HMNMX2": 2, "LEA": 2, "FLO": 2, "POPC": 2, "PLOP3": 2, "I2FP": 4,
+                                "FSEL": 2, "FMNMX": 2, "MOV": 2},
+                        "fma": {"FFMA": 1, "FMUL": 1, "FADD": 1, "HFMA2": 1, "HADD2": 1, "HMUL2": 1, "IMAD": 2}},
+              "tensor_interference": {"FFMA": 1.15, "FMUL": 0.85, "FADD": 1.0, "IADD3": 1.45, "IMAD": 0.23}, "latency": {"LDSM": 25, "LDS": 25, "LDG": 400, "SHFL": 24, "STS": 20, "S2R": 20,
+                                              "VOTE": 20, "HMMA": 35, "IMMA": 35, "MUFU": 20, "I2F": 12, "F2I": 12, "F2F": 12,
                                               "HFMA2": 6, "FFMA": 5, "R2UR": 39, "REDUX": 40, "DEFAULT": 6}, "read": 6, "hmma_queue": 0,
               "schedulers": 4, "mem_wavefront": 1.0, "mem_sector": 2.0, "mem_queue": 4.0, "issue": {"RED": 12, "ATOM": 12, "ATOMG": 12,
                                                                                     "STG": 4, "LDG": 4}},
-    "sm_80": {"hmma_pipe": 16.0, "latency": {"LDSM": 25, "LDS": 25, "LDG": 400, "SHFL": 24, "STS": 20, "S2R": 20,
-                                              "VOTE": 20, "HMMA": 35, "MUFU": 20, "I2F": 12, "F2I": 12, "F2F": 12,
+    "sm_80": {"hmma_pipe": 8.0, "imma_pipe": {"16832": 8.0, "16816": 4.0}, "latency": {"LDSM": 25, "LDS": 25, "LDG": 400, "SHFL": 24, "STS": 20, "S2R": 20,
+                                              "VOTE": 20, "HMMA": 35, "IMMA": 35, "MUFU": 20, "I2F": 12, "F2I": 12, "F2F": 12,
                                               "HFMA2": 6, "FFMA": 5, "R2UR": 39, "REDUX": 40, "DEFAULT": 6}, "read": 6, "hmma_queue": 0,
               "schedulers": 4, "mem_wavefront": 1.0, "mem_sector": 2.0, "mem_queue": 4.0, "issue": {"RED": 12, "ATOM": 12, "ATOMG": 12,
                                                                                     "STG": 4, "LDG": 4}},
@@ -94,6 +104,22 @@ def encoded(cubin: Path) -> dict[int, tuple[str, dict]]:
     return {a: (t, c) for a, (t, c) in out.items() if c is not None}
 
 
+#: THE MMA OPCODES the tensor pipe takes, and the cycles one holds it a scheduler: an HMMA `hmma_pipe`, an IMMA
+#: by its shape (`imma_pipe`: sm_86 m16n8k32 16, probe `imma_pattern` 2026-10-01; sm_80 the int8 rate, twice the
+#: fp16 one, from the literature until a row is measured there).
+MMA = ("HMMA", "IMMA")
+
+
+def mma_cost(text: str, mach: dict) -> float:
+    op = opcode(text)
+    if op == "HMMA":
+        return mach["hmma_pipe"]
+    if op == "IMMA":
+        m = re.search(r"IMMA\.(\d{5})", text)
+        return mach["imma_pipe"][m.group(1) if m else "16832"]
+    return 0.0
+
+
 def opcode(text: str) -> str:
     return re.sub(r"^@!?U?P\w+\s+", "", text).split()[0].split(".")[0] if text else "?"
 
@@ -141,7 +167,7 @@ def loop_of(cubin: Path, source: Path, function: str) -> list[tuple[int, str, di
     #: phase loop around it
     enc = encoded(cubin)
     addrs = sorted(enc)
-    mine = {a for a, t, _ in body if opcode(t) == "HMMA"}
+    mine = {a for a, t, _ in body if opcode(t) in MMA}
     best = None
     for a in addrs:
         t = enc[a][0]

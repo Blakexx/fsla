@@ -389,10 +389,35 @@ __device__ __forceinline__ void imma_u8s8_k32(int32_t (&d)[4], const uint32_t (&
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
+//: the u8 x s8 atom into a fresh accumulator (C = 0).
+__device__ __forceinline__ void imma_u8s8_k32_fresh(int32_t (&d)[4], const uint32_t (&a)[4],
+                                                    uint32_t b0, uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k32.row.col.s32.u8.s8.s32 "
+      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%10,%10,%10};\n"
+      : "=r"(d[0]), "=r"(d[1]), "=r"(d[2]), "=r"(d[3])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "r"(0));
+}
+
 //: FOUR BYTES CHOSEN FROM EIGHT by a selector word: the byte gathers of an int8 operand. -- see docs/internals/common/ops.md#prmt
 __device__ __forceinline__ uint32_t prmt(uint32_t lo, uint32_t hi, uint32_t sel) {
   uint32_t d;
   asm("prmt.b32 %0, %1, %2, %3;" : "=r"(d) : "r"(lo), "r"(hi), "r"(sel));
+  return d;
+}
+
+//: THE LARGER OF EACH HALFWORD PAIR on the fp16 order (`HMNMX2`): for halfwords in `[0x0400, 0x7bff]` -- positive
+//: normal fp16 -- the integer order, two lanes an instruction where a byte or halfword integer max is emulated.
+__device__ __forceinline__ uint32_t hmax2(uint32_t a, uint32_t b) {
+  uint32_t d;
+  asm("max.f16x2 %0, %1, %2;" : "=r"(d) : "r"(a), "r"(b));
+  return d;
+}
+
+//: TWO s32 SATURATED TO u16 AND PACKED, `hi` in the upper half (`I2IP.U16.S32.SAT`).
+__device__ __forceinline__ uint32_t pack_sat_u16(int32_t hi, int32_t lo) {
+  uint32_t d;
+  asm("cvt.pack.sat.u16.s32 %0, %1, %2;" : "=r"(d) : "r"(hi), "r"(lo));
   return d;
 }
 

@@ -14,7 +14,9 @@ then the write-sparse slice), the two value digits for the CTA's 32 channels (`v
 value digit), then at `(16, 64)` the 16-byte dense slice, then the four factors (write gain, value scale, the two write
 scales). A read row, one a read-live token: a 64-byte run (the read-dense slice, level R's read coefficients, or at
 `(32, 32)` the read-dense and read-sparse slices), then at `(16, 64)` the read-sparse chunk: 96 or 64 bytes. Each pool
-holds 128 rows; a window whose union is larger is filled, and consumed, in passes.
+holds 128 rows; a window whose union is larger is filled, and consumed, in passes. The write pool (`WritePool`, the
+fold's) also holds each row's dense digits' bit lengths, the fold's scale operand; the read pool (`ReadPool`) is the
+readout's; the row layout is `Rows`. They are separate tenants so a kernel places each with its phase.
 
 EVERY RUN SITS AT ITS GLOBAL SECTOR'S 32-BYTE PHASE: the pools are 128-byte aligned, the runs at 32-byte offsets, the
 pitches multiples of 32. A `cp.async` lane pair coalesces into one L2 sector request only when its shared destination

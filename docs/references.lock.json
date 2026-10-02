@@ -932,6 +932,8 @@
   {"doc": "docs/internals/owner/owner_fill.md", "pinned_at": "2b1d62523444", "reviewed": true, "sha256": "", "target": "docs/internals/owner/owner.md"},
   {"doc": "docs/internals/owner/owner_fill.md", "pinned_at": "2b1d62523444", "reviewed": true, "sha256": "", "target": "docs/internals/owner/owner_lists.md"},
   {"doc": "docs/internals/owner/owner_fold.md", "pinned_at": "6c4116ca2a9a", "reviewed": true, "sha256": "", "target": "csrc/rola/src/owner/owner_fold.cuh"},
+  {"doc": "docs/internals/owner/owner_fold.md", "pinned_at": "b87a5b975282", "reviewed": true, "sha256": "abf6aed7625912d8", "target": "csrc/rola/src/owner/owner_fold.cuh::a_token"},
+  {"doc": "docs/internals/owner/owner_fold.md", "pinned_at": "b87a5b975282", "reviewed": true, "sha256": "31597597812440d8", "target": "csrc/rola/src/owner/owner_fold.cuh::add_sums"},
   {"doc": "docs/internals/owner/owner_fold.md", "pinned_at": "6c4116ca2a9a", "reviewed": true, "sha256": "", "target": "docs/internals/owner/owner.md"},
   {"doc": "docs/internals/owner/owner_fold.md", "pinned_at": "6c4116ca2a9a", "reviewed": true, "sha256": "", "target": "docs/internals/owner/owner_fill.md"},
   {"doc": "docs/internals/owner/owner_lists.md", "pinned_at": "624d64d0e143", "reviewed": true, "sha256": "", "target": "csrc/rola/src/owner/owner_lists.cuh"},

@@ -32,7 +32,7 @@ struct ReadPanel {
 //: THE ZERO ROW (and the panel's spill row) an n-tile's idle lanes address: the last row, which a pass of `kReadPass`
 //: slots never fills.
 template <class C>
-__device__ __forceinline__ const uint8_t* read_zero_row(const Pools<C>& pools) {
+__device__ __forceinline__ const uint8_t* read_zero_row(const ReadPool<C>& pools) {
   return pools.read[kReadPass];
 }
 
@@ -110,10 +110,10 @@ __device__ __forceinline__ void panel_add(ReadPanel& panel, const int32_t (&tota
 //: every digit's weighted products summed in registers and the tile added once. -- see
 //: docs/internals/owner/owner_readout.md#forms
 template <class C>
-__device__ void readout_pass(ReadPanel& panel, const Pools<C>& pools, const ListTenants<C>& sm,
+__device__ void readout_pass(ReadPanel& panel, const ReadPool<C>& pools, const ListTenants<C>& sm,
                              const OwnerParams& p, const ReadState<C>& rs,
                              int (&cursor)[C::kReadDigits], int first, int n, int warp, int lane) {
-  constexpr int kFactorAt = C::RS == 16 ? Pools<C>::kRun : C::RD;
+  constexpr int kFactorAt = C::RS == 16 ? Rows<C>::kRun : C::RD;
   const int row0 = C::RD + warp * C::kReadDigits;
   const int limit = first + n;
   const int factor_byte = kFactorAt + warp * C::kReadDigits;

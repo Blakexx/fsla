@@ -61,6 +61,9 @@ def simulate(body, warps: int, iterations: int, trace: bool, sm_warps: int = 0) 
     total = min(sm_warps, schedulers * warps)
     pipe_done: list[list[float]] = [[] for _ in range(schedulers)]  #: HMMA completion times a scheduler, in order
     port_busy: list[set[int]] = [set() for _ in range(schedulers)]
+    pipes = MACHINE.get("pipes", {})
+    interference = MACHINE.get("tensor_interference", {})
+    pipe_free: list[dict[str, float]] = [dict.fromkeys(pipes, 0.0) for _ in range(schedulers)]
     mem_free = 0.0  #: when the SM's memory pipe takes its next instruction
     issued = []
     #: every warp starts at once: the probe rows read the same with the pair half a period apart, and the
@@ -78,7 +81,7 @@ def simulate(body, warps: int, iterations: int, trace: bool, sm_warps: int = 0) 
         for b in range(6):
             if (c["wait"] >> b) & 1:
                 ready = max(ready, s["bars"][b])
-        if op == "HMMA":
+        if op in sc.MMA:
             #: a slot in the queue: the pipe executes one and holds `HMMA_QUEUE` behind it
             pending = [d for d in pipe_done[k] if d > ready]
             if len(pending) > HMMA_QUEUE:
@@ -89,17 +92,25 @@ def simulate(body, warps: int, iterations: int, trace: bool, sm_warps: int = 0) 
             #: while the backlog is longer (the profiler's `mio_throttle`), so a warp's loads are taken soon
             #: after they issue and its next loads wait at issue, not at their landing
             ready = max(ready, mem_free - MACHINE["mem_queue"])
+        #: the issue pipe it needs, shared by the scheduler's warps
+        pipe = next((p for p, ops in pipes.items() if op in ops), None)
+        if pipe is not None:
+            ready = max(ready, pipe_free[k][pipe])
         t = int(ready)
         while t in port_busy[k]:
             t += 1
+        if pipe is not None:
+            pipe_free[k][pipe] = t + pipes[pipe][op]
+        if op in interference and pipe_done[k] and pipe_done[k][-1] > t:
+            pipe_done[k][-1] += interference[op]
         #: a global access holds the scheduler's issue port `issue` cycles (its lanes' addresses and data
         #: through the LSU: calibration.md's reduction rows, ~12 a coalesced reduction), other instructions one
         for i in range(MACHINE["issue"].get(op, 1)):
             port_busy[k].add(t + i)
 
-        if op == "HMMA":
+        if op in sc.MMA:
             pipe_done[k] = [d for d in pipe_done[k] if d > t]
-            pipe_done[k].append(max(t, pipe_done[k][-1] if pipe_done[k] else t) + HMMA_PIPE)
+            pipe_done[k].append(max(t, pipe_done[k][-1] if pipe_done[k] else t) + sc.mma_cost(text, MACHINE))
         lat = LATENCY.get(op, LATENCY["DEFAULT"])
         done = t + lat
         if cost:
@@ -122,9 +133,10 @@ def simulate(body, warps: int, iterations: int, trace: bool, sm_warps: int = 0) 
     # steady state: the last two iterations' span on warp 0
     m0 = marks[0]
     period = (m0[-1] - m0[-3]) / 2 if len(m0) >= 3 else (m0[-1] - m0[0]) / max(1, len(m0) - 1)
-    hmmas = sum(1 for _, t, _ in body if sc.opcode(t) == "HMMA")
+    hmmas = sum(1 for _, t, _ in body if sc.opcode(t) in sc.MMA)
+    busy = sum(sc.mma_cost(t, MACHINE) for _, t, _ in body)
     return {"instructions": n, "hmmas": hmmas, "warps": warps, "sm_warps": total, "period": period,
-            "occupancy": hmmas * warps * HMMA_PIPE / period if period else float("nan"), "trace": issued}
+            "occupancy": busy * warps / period if period else float("nan"), "trace": issued}
 
 
 #: the calibration rows the model is read against (`measure/harness/bench_carry_calib.py`): row name -> the probe
@@ -255,7 +267,7 @@ def main() -> int:
     print(f"machine {arch}: an HMMA holds the pipe {HMMA_PIPE} cycles a scheduler")
     body = sc.loop_of(cubin, a.source, a.function)
     print(f"loop of {a.source.name}:{a.function}: {len(body)} instructions, "
-          f"{sum(1 for _, t, _ in body if sc.opcode(t) == 'HMMA')} HMMAs, {body[0][0]:#07x}..{body[-1][0]:#07x}")
+          f"{sum(1 for _, t, _ in body if sc.opcode(t) in sc.MMA)} MMAs, {body[0][0]:#07x}..{body[-1][0]:#07x}")
     for warps in ([a.warps] if a.warps else [1, 2]):
         r = simulate(body, warps, a.iterations, a.trace, sm_warps=a.sm_warps)
         print(f"  {warps} warp(s) a scheduler, {r['sm_warps']} on the SM: period {r['period']:.0f} cycles, "

@@ -15,7 +15,7 @@ constexpr int kChannels = 32;
 constexpr int kChannelGroups = 2;
 constexpr int kListCapacity = kWindow;
 constexpr int kWritePool = 128;
-constexpr int kWritePass = kWritePool - 1;
+constexpr int kWritePass = kWritePool;
 constexpr int kReadPool = 128;
 constexpr int kReadPass = kReadPool - 1;
 

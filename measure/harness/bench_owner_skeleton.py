@@ -261,10 +261,12 @@ def run_part(name: str, part: str, heads: int) -> None:
             if part == "lists":
                 ops().lists_part(words, list(spec.widths), level_s, sw, sr, rs, rd, STEP_CHOSEN, 0)
             elif part.startswith("fold"):
+                if (rs, rd) != FOLD_CARVE:
+                    continue
                 step = {"fold": STEP_CHOSEN, "fold-list": STEP_PER_LIST, "fold-merged": STEP_MERGED}[part]
                 ops().fold_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
                                 routes.g_write, values.v_hat, values.v_lo, values.scale, words, level_s, sw, sr,
-                                rs, rd, step)
+                                rs, rd, step, 0)
             elif part.startswith("readout"):
                 step = {"readout": STEP_CHOSEN, "readout-list": STEP_PER_LIST, "readout-merged": STEP_MERGED}[part]
                 ops().readout_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
@@ -313,19 +315,173 @@ def _all_bits(words):
     return ((w[..., None] >> np.arange(32, dtype=np.uint32)) & 1).astype(bool).reshape(*w.shape[:3], -1)
 
 
+#: THE FOLD'S DECLARED ARITHMETIC (the plan card's fold line): two coefficient digits at a power-of-two scale a (list, leaf, pass),
+#: each rounded once, the pass's digit sums into the fp32 state -- `owner_fold.cuh`'s, bit for bit.
+WRITE_PASS = 128
+FOLD_CARVE = (16, 64)
+FACTOR_TOP = 32
+
+
+def _bitlen(x: np.ndarray) -> np.ndarray:
+    """``floor(log2 x) + 1``, and 0 at 0, elementwise on non-negative integers below 2^53."""
+    out = np.zeros(x.shape, dtype=np.int64)
+    nz = x > 0
+    out[nz] = np.frexp(x[nz].astype(np.float64))[1]
+    return out
+
+
+def token_factor(g, sw_s, sw_r, vs):
+    """``(m, e)``: the token factor ``((g sw_S) sw_R) vs`` in fp32 as a 16-bit mantissa and an exponent in
+    ``[-79, 32]``, ``F ~ m 2^e``; below ``2^-64`` (and NaN) zero, above the top saturated."""
+    f = ((g.astype(np.float32) * sw_s.astype(np.float32)).astype(np.float32) * sw_r.astype(np.float32)).astype(np.float32)
+    f = (f * vs.astype(np.float32)).astype(np.float32)
+    bits = f.view(np.uint32).astype(np.int64)
+    m = (((bits & 0x7FFFFF) | 0x800000) + 128) >> 8
+    e = (bits >> 23) - 142
+    carry = m == 65536
+    m, e = np.where(carry, 32768, m), np.where(carry, e + 1, e)
+    top = e > FACTOR_TOP
+    m, e = np.where(top, 65535, m), np.where(top, FACTOR_TOP, e)
+    zero = ~(f >= np.float32(2.0 ** -64))
+    return np.where(zero, 0, m), np.where(zero, 0, e)
+
+
+def _rne_shift(p: np.ndarray, sh: np.ndarray) -> np.ndarray:
+    """``RNE(p / 2^sh)`` for ``sh >= 1``, elementwise int64."""
+    sh = np.minimum(sh, 40)
+    q = p >> sh
+    r = p - (q << sh)
+    half = np.left_shift(1, sh - 1)
+    return q + ((r > half) | ((r == half) & ((q & 1) == 1)))
+
+
+def fold_model(routes, values, w, level_s, sw, bh, cg, sb, rb):
+    """One CTA's fp32 fold state after every window, ``[lists, leaves, 32]``, passes of `WRITE_PASS` slots of each
+    window's write union."""
+    rs, rd = FOLD_CARVE
+    level_r = 1 - level_s
+    b, h = divmod(bh, routes.heads)
+    s0, r0 = sb * rs, rb * rd
+    u_wd = routes.amp_write[level_s][b, :, h, s0:s0 + rs].cpu().numpy().astype(np.int64)          # [T, 16]
+    u_ws = routes.amp_write[level_r][b, :, h, r0:r0 + rd].cpu().numpy().astype(np.int64)          # [T, 64]
+
+    def col(x):
+        return x[b, :, h].float().cpu().numpy()
+
+    m_f, e_f = token_factor(col(routes.g_write), col(routes.scale_write[level_s]), col(routes.scale_write[level_r]),
+                            col(values.scale))
+    v_hat = values.v_hat[b, :, h, cg * 32:cg * 32 + 32].cpu().numpy().astype(np.int64)            # [T, 32]
+    v_lo = (values.v_lo[b, :, h, cg * 32:cg * 32 + 32].cpu().numpy().astype(np.int64) if values.v_lo is not None
+            else np.zeros_like(v_hat))
+    X = np.zeros((rd, rs, 32), dtype=np.float32)
+    row_base = (0, routes.topology.widths[0])
+
+    for win in range(u_wd.shape[0] // WINDOW):
+        cols = slice(WINDOW_WORDS * win, WINDOW_WORDS * (win + 1))
+        if sw:
+            live = np.zeros(WINDOW, dtype=bool)
+            for j in range(rd):
+                live |= _bits(w[bh, 1, row_base[level_r] + r0 + j, cols])
+            tokens = np.nonzero(live)[0] + win * WINDOW
+        else:
+            tokens = np.arange(win * WINDOW, (win + 1) * WINDOW)
+        for first in range(0, len(tokens), WRITE_PASS):
+            t = tokens[first:first + WRITE_PASS]
+            c = u_ws[t] * m_f[t, None]                                                   # [n, 64]
+            p = u_wd[t][:, None, :] * c[:, :, None]                                      # [n, 64, 16]
+            ok = p > 0
+            L = _bitlen(u_wd[t])[:, None, :] + (_bitlen(c) + e_f[t, None])[:, :, None]
+            K = np.where(ok, L, np.iinfo(np.int64).min).max(0)
+            K = np.where(ok.any(0), K, 0)                                                # [64, 16]
+            sh = K[None] - 16 - e_f[t, None, None]
+            assert (sh[ok] >= 1).all()
+            A = np.where(ok, np.minimum(_rne_shift(p, np.where(ok, sh, 1)), 65535), 0)
+            hi, lo = A >> 8, A & 255
+
+            vh, vl = v_hat[t], v_lo[t]
+            hh = np.einsum("nsd,nc->sdc", hi, vh)
+            mid = np.einsum("nsd,nc->sdc", hi, vl) + np.einsum("nsd,nc->sdc", lo, vh)
+            ll = np.einsum("nsd,nc->sdc", lo, vl)
+            hm = hh * 256 + mid
+            assert np.abs(hm).max(initial=0) < 2 ** 31 and ll.max(initial=0) < 2 ** 24
+            low = np.ldexp(np.float32(1), K - 16).astype(np.float32)[..., None]
+            high = np.ldexp(np.float32(1), K - 8).astype(np.float32)[..., None]
+            X = (X + ll.astype(np.float32) * low).astype(np.float32)
+            X = (X + hm.astype(np.float32) * high).astype(np.float32)
+    return X
+
+
+def check_fold(name: str, steps=(STEP_CHOSEN, STEP_PER_LIST, STEP_MERGED)) -> bool:
+    """Every CTA's state after the call, against `fold_model`, bit for bit, under each step form."""
+    spec, routes, values, words, level_s, sw, sr = cell_bundle(name)
+    w = words.cpu().numpy().view(np.uint32)
+    widths = tuple(spec.widths)
+    rs, rd = FOLD_CARVE
+    sblocks, rblocks = widths[level_s] // rs, widths[1 - level_s] // rd
+    BH = words.shape[0]
+    want = {}
+    for z in range(BH * 2):
+        bh, cg = divmod(z, 2)
+        for rb in range(rblocks):
+            for sb in range(sblocks):
+                want[z, rb, sb] = fold_model(routes, values, w, level_s, sw, bh, cg, sb, rb)
+    ok = True
+    for step in steps:
+        got = ops().fold_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
+                              routes.g_write, values.v_hat, values.v_lo, values.scale, words, level_s, sw, sr,
+                              rs, rd, step, 1)
+        torch.cuda.synchronize()
+        got = got.cpu().numpy().reshape(-1, rd, rs, 32)
+        bad = worst = 0
+        for (z, rb, sb), x in want.items():
+            y = got[(z * rblocks + rb) * sblocks + sb]
+            if not np.array_equal(y.view(np.uint32), x.view(np.uint32)):
+                bad += 1
+                worst = max(worst, int((y.view(np.uint32) != x.view(np.uint32)).sum()))
+        print(f"fold {name} step {step}: {len(want) - bad}/{len(want)} CTAs match bit for bit"
+              + (f" (worst CTA: {worst} elements differ)" if bad else ""))
+        ok &= bad == 0
+    return ok
+
+
+#: the fold part's phase ledger, `owner_skeleton.cu`'s order: the fold's own phases, then the part's
+FOLD_PHASES = ("head", "scale", "first step", "bursts", "state add", "lists", "fill", "token factors", "pass sync")
+
+
+def ledger_fold(name: str, heads: int) -> None:
+    """The fold part's phase ledger on the cell: each phase's cycles a warp a window, and its share of the warp's."""
+    spec, routes, values, words, level_s, sw, sr = cell_bundle(name, heads)
+    rs, rd = FOLD_CARVE
+    led = ops().fold_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write,
+                          values.v_hat, values.v_lo, values.scale, words, level_s, sw, sr, rs, rd, STEP_CHOSEN, 2)
+    torch.cuda.synchronize()
+    led = led.cpu().numpy().astype(np.float64)                         # [ctas, warps, phases]
+    windows = spec.tokens // WINDOW
+    per = led.sum(axis=(0, 1)) / (led.shape[0] * led.shape[1] * windows)
+    total = per.sum()
+    print(f"fold part phase ledger, {name} x {heads} heads: {total:,.0f} cycles a warp a window")
+    for ph, c in zip(FOLD_PHASES, per):
+        print(f"  {ph:14s} {c:10,.0f}  {100 * c / total:5.1f}%")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--check", choices=("lists", "fill", "drain"))
+    ap.add_argument("--check", choices=("lists", "fill", "drain", "fold"))
     ap.add_argument("--run", choices=("lists", "fill", "drain", "fold", "fold-list", "fold-merged", "readout", "readout-list",
                                          "readout-merged"), help="the part's launches alone, for ncu")
     ap.add_argument("--cell", action="append", required=True)
     ap.add_argument("--heads", type=int, default=1, help="heads under --run: enough to fill the machine")
+    ap.add_argument("--ledger", choices=("fold",), help="the part's phase ledger on each cell (at --heads)")
     args = ap.parse_args()
+    if args.ledger:
+        for cell in args.cell:
+            ledger_fold(cell, args.heads)
+        return 0
     if args.run:
         for cell in args.cell:
             run_part(cell, args.run, args.heads)
         return 0
-    check = {"lists": check_lists, "fill": check_fill, "drain": check_drain}[args.check]
+    check = {"lists": check_lists, "fill": check_fill, "drain": check_drain, "fold": check_fold}[args.check]
     ok = all(check(cell) for cell in args.cell)
     return 0 if ok else 1
 

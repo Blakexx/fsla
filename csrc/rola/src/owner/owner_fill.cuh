@@ -12,19 +12,31 @@
 
 namespace rola::owner::detail {
 
-//: THE POOLS, every copied run at its global sector's 32-byte phase: a write row is a 64-byte coefficient run, the two
-//: value planes, then the dense slice (16 x 64) and the factors; a read row a 64-byte run and the read-sparse chunk
+//: THE POOLS' ROWS, every copied run at its global sector's 32-byte phase: a write row is a 64-byte coefficient run, the
+//: two value planes, then the dense slice (16 x 64) and the factors; a read row a 64-byte run and the read-sparse chunk
 //: (16 x 64). -- see docs/internals/owner/owner_fill.md#pools
 template <class C>
-struct alignas(128) Pools {
+struct Rows {
   static constexpr int kRun = 64, kValues = kRun, kTail = kValues + 2 * kChannels;
   static constexpr int kFactors = kTail + (C::RS == 16 ? 16 : 0);
   static constexpr int kWriteRow = 160;
   static constexpr int kReadRow = C::RS == 16 ? 96 : 64;
   static_assert(C::RD + (C::RS == 32 ? C::RS : 0) == kRun && kFactors + 16 <= kWriteRow,
                 "the row's runs fit");
-  uint8_t write[kWritePool][kWriteRow];
-  uint8_t read[kReadPool][kReadRow];
+};
+
+//: THE WRITE POOL, the fold's: a pass's rows, and each row's dense digits' bit lengths, biased (0 for a dead digit), the
+//: fold's scales' operand.
+template <class C>
+struct alignas(128) WritePool {
+  uint8_t write[kWritePool][Rows<C>::kWriteRow];
+  uint16_t bits[kWritePool][16];
+};
+
+//: THE READ POOL, the readout's.
+template <class C>
+struct alignas(128) ReadPool {
+  uint8_t read[kReadPool][Rows<C>::kReadRow];
 };
 
 //: A PLANE'S BASE FOR THE CTA'S (batch, head): a token's row is this plus its token stride.
@@ -79,7 +91,7 @@ struct FillLanes {
 //: factors, and at 16 x 64 the dense slice's chunk by the quad's first lane. A sparse sector the token is not live in
 //: lands as zeros and reads nothing. -- see docs/internals/owner/owner_fill.md#write-pass
 template <class C>
-__device__ void fill_write(Pools<C>& pools, const ListTenants<C>& sm, const FillLanes<C>& lanes,
+__device__ void fill_write(WritePool<C>& pools, const ListTenants<C>& sm, const FillLanes<C>& lanes,
                            const OwnerParams& p, int win, int first, int n, int tid) {
   const int q = lanes.q;
   const bool values_live = q < 2 || p.v_lo.base != nullptr;
@@ -91,15 +103,14 @@ __device__ void fill_write(Pools<C>& pools, const ListTenants<C>& sm, const Fill
     if constexpr (C::RS == 16) {
       const bool live = (sm.sector_uni[q >> 1][t >> 5] >> (t & 31)) & 1u;
       ops::stage_tile_if(ops::smem_addr(row + 16 * q), token_row(lanes.run, tg), live);
-      ops::stage_run_lanes<16>(ops::smem_addr(row + Pools<C>::kTail), token_row(lanes.dense, tg),
+      ops::stage_run_lanes<16>(ops::smem_addr(row + Rows<C>::kTail), token_row(lanes.dense, tg),
                                q == 0);
     } else {
       ops::stage_tile(ops::smem_addr(row + 16 * q), token_row(lanes.run, tg));
     }
-    ops::stage_tile_if(ops::smem_addr(row + Pools<C>::kValues + 16 * q),
-                       token_row(lanes.values, tg), values_live);
-    ops::stage_run<4>(ops::smem_addr(row + Pools<C>::kFactors + 4 * q),
-                      token_row(lanes.factor, tg));
+    ops::stage_tile_if(ops::smem_addr(row + Rows<C>::kValues + 16 * q), token_row(lanes.values, tg),
+                       values_live);
+    ops::stage_run<4>(ops::smem_addr(row + Rows<C>::kFactors + 4 * q), token_row(lanes.factor, tg));
   }
   ops::stage_commit();
 }
@@ -107,7 +118,7 @@ __device__ void fill_write(Pools<C>& pools, const ListTenants<C>& sm, const Fill
 //: A READ PASS: slots `[first, first + n)` of the window's read union, a quad a token: the read-dense slice's 64-byte
 //: run and the read-sparse chunk by the first lane (16 x 64), or the two slices' 32-byte runs (32 x 32).
 template <class C>
-__device__ void fill_read(Pools<C>& pools, const ListTenants<C>& sm, const FillLanes<C>& lanes,
+__device__ void fill_read(ReadPool<C>& pools, const ListTenants<C>& sm, const FillLanes<C>& lanes,
                           int win, int first, int n, int tid) {
   const int q = lanes.q;
 #pragma unroll 1
@@ -116,7 +127,7 @@ __device__ void fill_read(Pools<C>& pools, const ListTenants<C>& sm, const FillL
     uint8_t* const row = pools.read[r];
     ops::stage_tile(ops::smem_addr(row + 16 * q), token_row(lanes.read_run, tg));
     if constexpr (C::RS == 16)
-      ops::stage_run_lanes<16>(ops::smem_addr(row + Pools<C>::kRun), token_row(lanes.read_tail, tg),
+      ops::stage_run_lanes<16>(ops::smem_addr(row + Rows<C>::kRun), token_row(lanes.read_tail, tg),
                                q == 0);
   }
   ops::stage_commit();
