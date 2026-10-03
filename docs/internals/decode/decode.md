@@ -441,8 +441,9 @@ producer and the walk — the step folds these into shared memory itself
 the kernel computes rather than a pass that ran.
 
 `normalize[l]` says whether read level `l` still carries its own mass, so the fold divides
-it by its row sum. `rows_f16` and `g_bf16` name the rows' and the gain's storage type; the fold
-branches on them once per side, never per element ([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)).
+it by its row sum. `floor_read` and `floor_write` name each side's dense levels, a bit a level:
+their zero digits, in a live row, read as the floor ([`../facts/liveness_contract.md#floor`](../facts/liveness_contract.md#floor)).
+`g_bf16` names the gain's storage type; the fold branches on it once a step, never per element ([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)).
 
 `level_amp_offset[l]` is where level `l`'s staged amplitude row starts inside the flat
 `sum_l b_l` SMEM arrays. It is host-computed and carried rather than recomputed, because

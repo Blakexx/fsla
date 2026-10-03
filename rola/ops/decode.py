@@ -42,6 +42,7 @@ from rola.ops.decay import leaf_rate_dials
 from rola.ops.lattice import box_shape, derive_lattice, permutation
 from rola.ops.padding import pad_v, padded_value_width, slice_y
 from rola.ops.paging import MMA_K_QUANTUM, page_layout
+from rola.routing import quant
 from rola.routing.types import Topology
 
 __all__ = [
@@ -265,15 +266,23 @@ def _fold(t: torch.Tensor) -> torch.Tensor:
     return t.permute(0, 2, 1, 3).reshape(B * H, W).contiguous()
 
 
-def fold_levels(levels) -> list[torch.Tensor]:
-    """The per-level RAW coefficient values, in torch: ``[BH, width_l]`` fp32 (a u8 digit as its integer), the values the step kernel's fold sums and scales.
+def fold_levels(levels, scales, floored) -> list[torch.Tensor]:
+    """The per-level RAW coefficient values, in torch: ``[BH, width_l]`` fp32 (a u8 digit as its integer; a
+    ``floored`` level's zeros, in a live row, at the dense floor), the values the step kernel's fold sums and scales.
 
     AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. The shipped path folds inside
     the step kernel, from the producer's own views; a gate that fed the kernel its own
     fold's output would prove nothing about the fold
     (docs/internals/decode/decode_fold.md#the-gate).
     """
-    return [_fold(t).float() for t in levels]
+    out = []
+    for rows, scale, floor in zip(levels, scales, floored, strict=True):
+        raw = _fold(rows).float()
+        if floor:
+            live = _fold(scale.unsqueeze(-1)) > 0
+            raw = torch.where(live, raw.clamp_min(quant.AMP_LEVELS * quant.DENSE_FLOOR), raw)
+        out.append(raw)
+    return out
 
 
 def guard_no_grad(operands) -> None:
@@ -367,6 +376,8 @@ def step(plan: DecodePlan) -> torch.Tensor:
         read_scale=list(plan.read_scale),
         write_scale=list(plan.write_scale),
         normalize=[int(bool(flag)) for flag in plan.normalize],
+        floor_read=plan.floor[0],
+        floor_write=plan.floor[1],
         dials=plan.dials,
         g_write=plan.g_write,
         v=plan.v,
@@ -394,8 +405,9 @@ def step(plan: DecodePlan) -> torch.Tensor:
     return y.view(B, H, 1, config.d_v).permute(0, 2, 1, 3).contiguous()
 
 
-def _write_atom_bitmap(write_levels, config: DecodeGeometry) -> torch.Tensor:
-    """``[BH, N / 16]`` bool: the atoms this ONE-TOKEN step deposits into, EXACTLY.
+def _write_atom_bitmap(write_live, config: DecodeGeometry) -> torch.Tensor:
+    """``[BH, N / 16]`` bool: the atoms this ONE-TOKEN step deposits into, EXACTLY, from each write level's live
+    digits (:meth:`~rola.routing.factors.RouteFactors.live`).
 
     AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. Deleting it would delete the
     gate's reference; calling it on a shipped path would delete the gate's independence
@@ -403,12 +415,12 @@ def _write_atom_bitmap(write_levels, config: DecodeGeometry) -> torch.Tensor:
     support digit by digit and crosses into lattice order through ``pi``, so it shares no
     step of the kernel's own enumeration.
     """
-    device = write_levels[0].device
+    device = write_live[0].device
     index = torch.arange(config.N, device=device)
     live = None
     for level, width in enumerate(config.widths):
         digit = (index // math.prod(config.widths[level + 1:])) % width
-        column = _fold(write_levels[level])[:, digit] != 0
+        column = _fold(write_live[level])[:, digit]
         live = column if live is None else (live & column)
     pi = permutation(config.widths, config.lattice_k, config.lattice_m, device=device)
     lattice_live = torch.empty_like(live)
@@ -456,7 +468,7 @@ def _decode_step(
     y = step(DecodePlan(
         config=config, heads=values.heads, read=routes.amp_read, write=routes.amp_write,
         read_scale=routes.scale_read, write_scale=routes.scale_write,
-        normalize=tuple(routes.read_needs_normalization()),
+        normalize=tuple(routes.read_needs_normalization()), floor=routes.floor_bits(),
         dials=leaf_rate_dials_for(decay, config, v.device),
         g_write=routes.g_write, v=v, v_scale=values.scale,
         state_plane=plane, page_table=page_table, scratch=workspace, pool=pool))

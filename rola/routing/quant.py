@@ -4,7 +4,8 @@
 
 One declaration of the arithmetic the op's oracle takes as its input
 (``tests/oracle/int_reference.py`` is its fp64 statement). A coefficient row is stored against its own max --
-u8 with the max digit at 255, at every depth -- and the row's max is its fp32 scale. A token's values
+u8 with the max digit at 255, at every depth -- and the row's max is its fp32 scale; a DENSE level's zero digit, in a
+live row, reads as ``DENSE_FLOOR`` of the row max (docs/internals/facts/liveness_contract.md#floor). A token's values
 are stored as f16 against their largest channel (at 1), the largest its fp32 scale. ``straight_through`` hands a
 consumer the DEQUANTIZED values with an identity gradient, which is how the format trains (docs/api.md
 section 2.1).
@@ -15,6 +16,7 @@ import torch
 
 __all__ = [
     "AMP_LEVELS",
+    "DENSE_FLOOR",
     "ROW_DTYPE",
     "VALUE_DTYPE",
     "dequantize_rows",
@@ -28,6 +30,8 @@ __all__ = [
 AMP_LEVELS = 255.0
 #: the stored coefficient form: u8 at every depth.
 ROW_DTYPE = torch.uint8
+#: a dense level's zero digit, in a live row, as a fraction of the row max: inside the digit's own [0, 1/510).
+DENSE_FLOOR = 2.0 ** -13
 #: the stored value form: f16 against the token's largest channel.
 VALUE_DTYPE = torch.float16
 _TINY = 1e-30
@@ -41,8 +45,13 @@ def quantize_unit_max_rows(level: torch.Tensor) -> tuple[torch.Tensor, torch.Ten
     return torch.round(unit * AMP_LEVELS).to(ROW_DTYPE), scale
 
 
-def dequantize_rows(rows: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    return rows.float() / AMP_LEVELS * scale.unsqueeze(-1)
+def dequantize_rows(rows: torch.Tensor, scale: torch.Tensor, dense: bool) -> torch.Tensor:
+    """The rows' amplitudes, fp32: each digit over 255 times its row's scale, a dense level's zeros at the floor (a
+    dead row, its scale 0, stays zero)."""
+    unit = rows.float() / AMP_LEVELS
+    if dense:
+        unit = unit.clamp_min(DENSE_FLOOR)
+    return unit * scale.unsqueeze(-1)
 
 
 def quantize_values(v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

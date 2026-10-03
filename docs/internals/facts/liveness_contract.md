@@ -38,6 +38,34 @@ and the [tile unions](#tile-unions), per 64 tokens. Neither is a class-2 fact �
 over the whole call nor `O(N)` — and neither is derived by a consumer: each is the OR or
 the maximum of what the pass already holds when it holds it.
 
+## <a id="max"></a>The digits: each against its row's max
+
+Python's statement of the digits is `rola.routing.quant` (`AMP_LEVELS`, `DENSE_FLOOR`, `dequantize_rows`);
+`tests/unit/test_api_contract.py` holds the two to the same constants.
+
+Every level's row is stored unit-max: u8 digits with the row's largest at 255 (`kRowMaxDigit`), the row's max beside
+it as an fp32 scale. A digit `b` is the amplitude `b / 255 × scale`. An all-zero row, its scale 0, is a dead token at
+that level.
+
+## <a id="floor"></a>The dense floor
+
+A DENSE level is one whose activation has no exact zeros (the bundle's `sparse` flag unset: softmax, not entmax).
+Its stored zero digit therefore means a true weight below half a digit, in `[0, 1/510)` of the row max, and it reads
+as `kDenseFloor` = 2^-13 of the row max instead of 0 — inside that interval, so it is as faithful a reading of the
+stored digit as 0 is (ruled 2026-10-03). It applies only in a live row (scale > 0): a dead row stays zero everywhere,
+including where a consumer normalizes the row by its own sum. A sparse level's zero is exact and stays 0.
+
+What it buys: the fp16 fold scales each write list by one power of two, and the readout publishes each 64-leaf block
+at one; both keep 11 bits a term but only a bounded range below their largest. With the floor, the list's strongest
+token writes every leaf of its list at no less than 2^-13 of the list's top, and a reader weights the leaves of a
+block within 2^13 of each other, so what fp16 loses below its range is a small fraction of every leaf it touches
+whatever the gain spread. The cost to the model: a peaked row's mass grows by at most 255 × 2^-13 ≈ 3% of its max,
+inside the uncertainty its own zero digits already carry.
+
+Every consumer reads it the same way: `dequantize_rows`, the decode fold, the fp16 fold and readout, the intra and the
+oracle's references. Numerical safety asks for one dense level a side (the alternating split, or fully dense);
+sparse-sparse routing has no floor to lean on and is declared at the caller's risk.
+
 <a id="layout"></a>
 
 ## The class-1 word layout

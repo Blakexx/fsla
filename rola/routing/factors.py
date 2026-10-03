@@ -189,11 +189,31 @@ class RouteFactors:
         sides = []
         for side, name in enumerate(SIDES):
             scales = getattr(self, f"scale_{name}")
-            levels = tuple(quant.dequantize_rows(self.rows(level, name), scale) for level, scale in enumerate(scales))
+            levels = tuple(quant.dequantize_rows(self.rows(level, name), scale, not self.sparse[side][level])
+                           for level, scale in enumerate(scales))
             if self.source is not None:
                 levels = tuple(quant.straight_through(exact, level) for exact, level in zip(self.source[side], levels))
             sides.append(levels)
         return sides[0], sides[1]
+
+    def live(self, side: str) -> tuple[torch.Tensor, ...]:
+        """THE LIVE DIGITS of one side, a bool ``[B, T, H, width_l]`` a level: a sparse level's nonzero digits, and
+        every digit of a dense level's live row (its zeros read as the floor; docs/internals/facts/liveness_contract.md#floor).
+        The one definition every support and atom set is derived from."""
+        index = SIDES.index(side)
+        out = []
+        for level in range(self.topology.D):
+            rows = self.rows(level, side)
+            live = rows != 0
+            if not self.sparse[index][level]:
+                live = live | (getattr(self, f"scale_{side}")[level] > 0).unsqueeze(-1)
+            out.append(live)
+        return tuple(out)
+
+    def floor_bits(self) -> tuple[int, int]:
+        """``(read, write)``: each side's dense levels as a bitmask -- the levels whose zero digits, in a live row,
+        read as the floor (docs/internals/facts/liveness_contract.md#floor)."""
+        return tuple(sum(1 << level for level, sparse in enumerate(flags) if not sparse) for flags in self.sparse)
 
     def read_needs_normalization(self) -> tuple[bool, ...]:
         """Per read level: is it still off the simplex? THE PREDICATE, stated once.

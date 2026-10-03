@@ -33,6 +33,7 @@ import math
 
 import torch
 
+from rola.routing import quant
 from tests.oracle.reference import inter_reference, leaf_product, radix_strides
 
 TINY = 1e-300
@@ -233,9 +234,16 @@ INTRA_TILE = 64
 WEIGHT_LEVELS = {1: 255.0, 2: 65535.0}
 
 
-def unit_rows(rows) -> tuple[torch.Tensor, ...]:
-    """A bundle side's rows as fp64 unit values: a u8 digit over 255."""
-    return tuple(r.double() / 255.0 for r in rows)
+def unit_rows(rows, scales, sparse) -> tuple[torch.Tensor, ...]:
+    """A bundle side's rows as fp64 unit values: a u8 digit over 255, a dense level's zeros in a live row at the floor
+    (docs/internals/facts/liveness_contract.md#floor)."""
+    out = []
+    for r, scale, is_sparse in zip(rows, scales, sparse, strict=True):
+        unit = r.double() / 255.0
+        if not is_sparse:
+            unit = torch.where((scale > 0).unsqueeze(-1), unit.clamp_min(quant.DENSE_FLOOR), unit)
+        out.append(unit)
+    return tuple(out)
 
 
 def value_units(values) -> torch.Tensor:
@@ -259,7 +267,8 @@ def intra_bundle_reference(routes, values, window, *, weight_digits: int = 2, ex
     ``telemetry`` receives ``bound``, the per-slot bound the rounding implies: a weight moves by at most half its unit,
     ``sum_c sigma / (2 LW) sum_{t' in c} |q|``.
     """
-    reads, writes = unit_rows(routes.amp_read), unit_rows(routes.amp_write)
+    reads = unit_rows(routes.amp_read, routes.scale_read, routes.sparse[0])
+    writes = unit_rows(routes.amp_write, routes.scale_write, routes.sparse[1])
     f = routes.g_write.double()
     for scale in routes.scale_write:
         f = f * scale.double()

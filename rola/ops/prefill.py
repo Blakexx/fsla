@@ -119,10 +119,10 @@ def intra_admits(widths, d_v: int) -> bool:
 def _carry_levels(routes, values):
     """The carry leg's floating operands from the bundle, dequantized once: the read side at its unit rows (the
     reader's factor cancels in ``num / den``, and the intra drops it), the write side and the values whole."""
-    read = tuple(quant.dequantize_rows(rows, torch.ones_like(scale))
-                 for rows, scale in zip(routes.amp_read, routes.scale_read, strict=True))
-    write = tuple(quant.dequantize_rows(rows, scale)
-                  for rows, scale in zip(routes.amp_write, routes.scale_write, strict=True))
+    read = tuple(quant.dequantize_rows(rows, torch.ones_like(scale) * (scale > 0), not sparse)
+                 for rows, scale, sparse in zip(routes.amp_read, routes.scale_read, routes.sparse[0], strict=True))
+    write = tuple(quant.dequantize_rows(rows, scale, not sparse)
+                  for rows, scale, sparse in zip(routes.amp_write, routes.scale_write, routes.sparse[1], strict=True))
     return read, write, values.dequantized()
 
 

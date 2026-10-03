@@ -899,10 +899,11 @@ int64_t rola_decode_build_stamp() {
 
 Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                            std::vector<Tensor> read_scale, std::vector<Tensor> write_scale,
-                           std::vector<int64_t> normalize, std::optional<Tensor> dials,
-                           Tensor g_write, Tensor v, Tensor v_scale, Tensor state, Tensor yacc,
-                           Tensor queue, Tensor growth, Tensor growth_any, Tensor growth_ctr,
-                           Tensor done, Tensor atom_bits, std::vector<int64_t> level_widths,
+                           std::vector<int64_t> normalize, int64_t floor_read, int64_t floor_write,
+                           std::optional<Tensor> dials, Tensor g_write, Tensor v, Tensor v_scale,
+                           Tensor state, Tensor yacc, Tensor queue, Tensor growth,
+                           Tensor growth_any, Tensor growth_ctr, Tensor done, Tensor atom_bits,
+                           std::vector<int64_t> level_widths,
                            std::vector<int64_t> level_row_offsets, int64_t lattice_k,
                            int64_t lattice_m, bool write_dense, int64_t ctas, double eps,
                            std::optional<Tensor> page_table, std::optional<Tensor> pool_slots,
@@ -986,6 +987,11 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   }
   //: whole atoms need the innermost run to cover one: a span of at least an atom (decode.md#whole-atoms).
   p.write_atoms = (write_dense && p.lat_inner_bits >= kAtomShift) ? 1 : 0;
+  STD_TORCH_CHECK(
+      floor_read >= 0 && floor_read < (1 << D) && floor_write >= 0 && floor_write < (1 << D),
+      "the floor bitmasks name levels inside the depth ", D, ": ", floor_read, ", ", floor_write);
+  p.floor_read = static_cast<uint32_t>(floor_read);
+  p.floor_write = static_cast<uint32_t>(floor_write);
   p.g_write = detail::scalar_span_of(g_write, B, H, "g_write");
   p.g_bf16 = detail::is_bf16(g_write.scalar_type(), "g_write");
   //: THE VALUE: f16 against the token's largest channel, the fp32 token scale.

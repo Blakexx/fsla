@@ -123,7 +123,7 @@ def _lattice_mask(mask, config):
 
 
 def _leaf_support(levels, widths, B, H, device):
-    """``[BH, N]`` bool: leaf ``s`` is live iff EVERY level's digit is exact-nonzero.
+    """``[BH, N]`` bool: leaf ``s`` is live iff EVERY level's digit is live (``RouteFactors.live``).
 
     This is `schedule.py`'s own definition of the support bitmap
     (``read_mask = tuple(level != 0 ...)``) taken to leaf granularity, written here in
@@ -142,7 +142,7 @@ def _leaf_support(levels, widths, B, H, device):
     return mask
 
 
-def _kernel_realized_support(rows, widths, B, H, device, d_v=64):
+def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     """The step kernel's OWN touched leaf set, as ``[BH, N]`` bool in LATTICE order.
 
     The walk is ONE device path and it does not know which side it is serving, so the
@@ -153,8 +153,8 @@ def _kernel_realized_support(rows, widths, B, H, device, d_v=64):
 
     The read side is left empty so the walk's union is the set under test, the state
     starts at zero and ``v`` is all ones, so a deposited row is a nonzero row and the
-    correspondence is exact rather than statistical. ``rows`` are a bundle's own stored
-    rows, so the support is the one the kernel is handed.
+    correspondence is exact rather than statistical. ``side``'s rows are the bundle's own stored rows, carried with
+    its sparse flags (a dense level's zeros read as the floor), so the support is the one the kernel is handed.
     """
     topology = _topology(widths)
     N = math.prod(widths)
@@ -162,8 +162,10 @@ def _kernel_realized_support(rows, widths, B, H, device, d_v=64):
     config = derive_decode_geometry(topology, d_v=d_v, decay=False, BH=BH, device=device)
     f32 = dict(device=device, dtype=torch.float32)
     ones = torch.ones(B, 1, H, **f32)
+    rows = routes.read_rows if side == "read" else routes.write_rows
+    flags = routes.sparse[0] if side == "read" else routes.sparse[1]
     routes = RouteFactors.from_rows(topology, tuple(torch.zeros_like(r) for r in rows), rows, (ones,) * len(widths),
-                                    (ones,) * len(widths), ones)
+                                    (ones,) * len(widths), ones, sparse=((True,) * len(widths), flags))
     values = Values.from_projection(torch.ones(B, 1, H, d_v, **f32))
     state = state_pages(torch.zeros(B, H, N, config.cols, **f32))
     _y, state, _ws = _decode_step(routes, values, config, state)
@@ -276,11 +278,11 @@ def test_g3_expansion_is_the_exact_leaf_support(widths, p_read, p_write):
     out = _case(widths, 64, 2, 3, "global", p_read, p_write, seed=17)
     B, H, device, config = out["B"], out["H"], out["device"], out["config"]
     routes = out["routes"][0]
-    want_r = _lattice_mask(_leaf_support(routes.read_rows, widths, B, H, device), config)
-    want_w = _lattice_mask(_leaf_support(routes.write_rows, widths, B, H, device), config)
-    assert torch.equal(_kernel_realized_support(routes.read_rows, widths, B, H, device),
+    want_r = _lattice_mask(_leaf_support(routes.live("read"), widths, B, H, device), config)
+    want_w = _lattice_mask(_leaf_support(routes.live("write"), widths, B, H, device), config)
+    assert torch.equal(_kernel_realized_support(routes, "read", widths, B, H, device),
                        want_r), "the read walk is not the exact read support"
-    assert torch.equal(_kernel_realized_support(routes.write_rows, widths, B, H, device),
+    assert torch.equal(_kernel_realized_support(routes, "write", widths, B, H, device),
                        want_w), "the write walk is not the exact write support"
 
 
@@ -338,7 +340,7 @@ def test_the_empty_support_corner_is_inert_rather_than_undefined():
     state = m0.clone()
     routes, values = step_bundles(v, zeros, zeros, g_write, topology)
     y, state, _workspace = _decode_step(routes, values, config, state)
-    assert not _leaf_support(routes.write_rows, widths, B, H, device).any(), (
+    assert not _leaf_support(routes.live("write"), widths, B, H, device).any(), (
         "the fixture did not produce M = 0")
     assert torch.equal(y, torch.zeros_like(y))
     assert bytes_equal(state, m0), "an untouched state must be byte-unchanged"

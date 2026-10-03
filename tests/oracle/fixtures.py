@@ -107,9 +107,12 @@ def assert_reordered_close(got, want, what: str) -> None:
 
 def step_bundles(v, read, write, g_write, topology, *, read_mass=None):
     """Floating step operands in the internal format: ``(RouteFactors, Values)`` as the framework's epilogue writes
-    them (u8 rows, f16 values)."""
+    them (u8 rows, f16 values). A drawn level with exact zeros is declared SPARSE, as a production whose activation
+    has exact zeros is, so its zeros stay exact rather than reading as the dense floor
+    (docs/internals/facts/liveness_contract.md#floor)."""
+    sparse = tuple(tuple(bool((level == 0).any()) for level in side) for side in (read, write))
     routes = RouteFactors.from_levels(topology, tuple(t.float() for t in read), tuple(t.float() for t in write),
-                                      g_write.float(), read_mass=read_mass)
+                                      g_write.float(), read_mass=read_mass, sparse=sparse)
     return routes, Values.from_projection(v.float())
 
 

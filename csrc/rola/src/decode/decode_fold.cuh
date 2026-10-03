@@ -9,6 +9,7 @@
 
 #include <cstdint>
 
+#include "facts/liveness_contract.cuh"
 #include "decode.cuh"
 
 namespace rola {
@@ -17,9 +18,6 @@ namespace decode {
 __device__ __forceinline__ float widen(float x) { return x; }
 
 __device__ __forceinline__ float widen(const __nv_bfloat16& x) { return __bfloat162float(x); }
-
-//: A row's max digit: a u8 digit times its row's scale over this is the amplitude. -- see docs/internals/decode/decode_fold.md#raw
-constexpr float kRowMaxDigit = 255.0f;
 
 template <typename T>
 __device__ __forceinline__ const T* row_of(const Span& s, int b, int h) {
@@ -69,13 +67,16 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
       if (word >= p.mask_off[q]) l = q;
     }
     const int digit = ((word - p.mask_off[l]) << 5) + lane;
-    const uint32_t live = __ballot_sync(0xffffffffu, x[j] != 0.0f);
+    const bool floored =
+        ((write_side ? p.floor_write : p.floor_read) >> l & 1u) != 0u && scale[j] > 0.0f;
+    const float raw = floored ? fmaxf(x[j], facts::kDenseFloorDigit) : x[j];
+    const uint32_t live = __ballot_sync(0xffffffffu, raw != 0.0f);
     if (lane == 0) (write_side ? mask_w : mask_r)[word] = live;
     if (digit < p.level_width[l]) {
       //: a level the fold normalizes stays RAW until its sum is known (`normalize_rows`).
       const bool normalized = !write_side && p.normalize[l] != 0;
-      const float unit = normalized ? 1.0f : scale[j] / kRowMaxDigit;
-      (write_side ? sa_w : sa_r)[p.level_amp_offset[l] + digit] = x[j] * unit;
+      const float unit = normalized ? 1.0f : scale[j] / facts::kRowMaxDigit;
+      (write_side ? sa_w : sa_r)[p.level_amp_offset[l] + digit] = raw * unit;
     }
   }
 }

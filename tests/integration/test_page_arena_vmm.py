@@ -237,7 +237,7 @@ def test_the_two_backings_agree(arm):
     config = _config(widths, fixture)
     BH = fixture["B"] * fixture["H"]
     routes, values = _bundles(fixture)
-    write = routes.write_rows
+    write = routes.live("write")
     bitmap = _write_atom_bitmap(write, config)
 
     outputs = []

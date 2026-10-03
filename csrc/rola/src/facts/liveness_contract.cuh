@@ -20,6 +20,11 @@ enum Side : int { kRead = 0, kWrite = 1, kSides = 2 };
 //: A BUNDLE DIGIT'S NONZERO TEST: a u8 digit.
 constexpr bool digit_live(uint8_t digit) { return digit != 0u; }
 
+//: THE DIGITS against the row max, and a dense level's floor. -- see docs/internals/facts/liveness_contract.md#floor
+constexpr float kRowMaxDigit = 255.0f;
+constexpr float kDenseFloor = 1.0f / 8192.0f;
+constexpr float kDenseFloorDigit = kRowMaxDigit * kDenseFloor;
+
 constexpr int token_words(int L) { return (L + kTokBits - 1) / kTokBits; }
 
 constexpr int mask_words(int bits) { return (bits + 31) / 32; }

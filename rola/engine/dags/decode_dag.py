@@ -115,7 +115,7 @@ def build_plan(f):
     return DecodePlan(
         config=geometry, heads=routes.heads, read=routes.amp_read, write=routes.amp_write,
         read_scale=routes.scale_read, write_scale=routes.scale_write,
-        normalize=tuple(routes.read_needs_normalization()),
+        normalize=tuple(routes.read_needs_normalization()), floor=routes.floor_bits(),
         dials=bodies.leaf_rate_dials_for(f["decay"], geometry, values.device),
         g_write=routes.g_write, v=values.v, v_scale=values.scale,
         state_plane=f["state_plane"],
@@ -139,8 +139,7 @@ def write_atom_bitmap(f):
     (docs/internals/decode/decode.md#second-derivation).
     """
     routes = f["routes"]
-    return bodies._write_atom_bitmap([routes.rows(level, "write") for level in range(routes.topology.D)],
-                                     f["geometry"])
+    return bodies._write_atom_bitmap(routes.live("write"), f["geometry"])
 
 
 #: THE CAPTURED RECIPE. `decode_step_gated` is exactly this tuple, and a CUDA graph

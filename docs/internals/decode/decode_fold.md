@@ -44,7 +44,8 @@ own convention.
 What the entry refuses is `T != 1`: the fold is defined on one token and a second one would
 be silently dropped.
 
-<a id="raw"></a>A digit's RAW value rounds nothing — a u8 digit is its integer — and a level that
+<a id="raw"></a>A digit's RAW value rounds nothing — a u8 digit is its integer, a dense level's zero
+in a live row the floor's `255 × 2^-13` ([`../facts/liveness_contract.md#floor`](../facts/liveness_contract.md#floor)) — and a level that
 carries its own mass takes its amplitude as `raw * (scale / 255)`, one fp32 multiply by a
 per-row factor (255 is `kRowMaxDigit`, the row max's digit). `tests/integration/test_decode_fold.py` cell 1 states that through the
 step's own output, on strided views as well as contiguous ones.
@@ -137,8 +138,8 @@ Verbatim `//:` prose blocks from `csrc/rola/src/decode/decode_fold.cuh`, in sour
 ### `fold_digits`
 
 THE DIGIT PASS: every digit of both sides in one pass, a warp a mask word. A lane loads its
-digit and its row's fp32 scale together (one round trip), the warp's ballot of the
-exact-nonzero test is the digit mask's word ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)),
+digit and its row's fp32 scale together (one round trip), a dense level's zero in a live
+row is raised to the floor, the warp's ballot of the nonzero test is the digit mask's word ([`decode_lattice.md#the-digit-mask`](decode_lattice.md#the-digit-mask)),
 and the lane stages `raw * (scale / 255)` -- or, for a read level the fold
 normalizes, the raw digit itself, until its sum is known. Slots past a level's width are
 not loaded and ballot a zero.

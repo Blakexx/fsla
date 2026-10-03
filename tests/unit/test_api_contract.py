@@ -127,6 +127,29 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
         RouteFactors(**fields)
 
 
+def test_the_digit_header_mirrors_the_quantizer():
+    """`facts/liveness_contract.cuh` and `rola.routing.quant` state one format: the row max's digit and the dense floor."""
+    from pathlib import Path
+
+    from rola.routing import quant
+
+    text = (Path(__file__).resolve().parents[2] / "csrc/rola/src/facts/liveness_contract.cuh").read_text()
+    assert "constexpr float kRowMaxDigit = 255.0f;" in text and quant.AMP_LEVELS == 255.0
+    assert "constexpr float kDenseFloor = 1.0f / 8192.0f;" in text and quant.DENSE_FLOOR == 1.0 / 8192.0
+
+
+def test_a_dense_levels_zero_digit_reads_as_the_floor_in_a_live_row_only():
+    """RULED 2026-10-03 (docs/internals/facts/liveness_contract.md#floor): a dense level's zero digit dequantizes to
+    the floor times its row's scale, a dead row (scale 0) stays zero, and a sparse level's zero is exact."""
+    from rola.routing import quant
+
+    rows = torch.tensor([[255, 0, 3], [0, 0, 0]], dtype=torch.uint8)
+    scale = torch.tensor([2.0, 0.0])
+    dense = quant.dequantize_rows(rows, scale, True)
+    assert dense[0, 1] == 2.0 * quant.DENSE_FLOOR and dense[0, 0] == 2.0 and torch.equal(dense[1], torch.zeros(3))
+    assert quant.dequantize_rows(rows, scale, False)[0, 1] == 0.0
+
+
 def test_rows_are_u8_at_every_depth():
     """RULED 2026-10-03: the producer writes u8 rows at every depth, each against its own max; a row of any other
     type is refused, and a deep bundle dequantizes to its levels within half a digit a row."""

@@ -110,7 +110,8 @@ def _y_of(rows, scale, *, normalize, seed, s0=0):
 
 def _reference_y(rows, scale, *, normalize, e, m, s0=0):
     """The collapsed readout, computed from the DECLARED arithmetic and nothing else."""
-    raw = fold_levels((rows,))[0]
+    floored = _routes(rows, scale, normalize=normalize).floor_bits()[0] & 1
+    raw = fold_levels((rows,), (scale,), (floored,))[0]
     if normalize:
         a = raw[:, s0] / declared_row_sum(raw)
     else:
