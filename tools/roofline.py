@@ -56,8 +56,8 @@ def tile_pairs(window: int) -> int:
     return tiles * (tiles + 1) // 2
 
 
-def macs(bh: int, length: int, widths, window: int, dv: int, weight_digits: int, value_digits: int) -> int:
-    per_tile = TILE * TILE * (sum(widths) + weight_digits * value_digits * dv)
+def macs(bh: int, length: int, widths, window: int, dv: int, weight_digits: int) -> int:
+    per_tile = TILE * TILE * (sum(widths) + weight_digits * dv)
     return bh * (length // window) * tile_pairs(window) * per_tile
 
 
@@ -81,7 +81,6 @@ def main() -> int:
     from measure.subjects import SUBJECTS, applicable
     from rola.ops.carry import WINDOW
     from rola.ops.intra import DEFAULT_WEIGHT_DIGITS
-    from rola.values import DEFAULT_VALUE_DIGITS
 
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -114,8 +113,7 @@ def main() -> int:
         ms = median_ms(arm.call, args.repeats)
         windows = spec.tokens // WINDOW
         tiles = windows * tile_pairs(WINDOW)
-        achieved = 2.0 * macs(1, spec.tokens, spec.widths, WINDOW, spec.dv, DEFAULT_WEIGHT_DIGITS,
-                              DEFAULT_VALUE_DIGITS) / (ms * 1e-3)
+        achieved = 2.0 * macs(1, spec.tokens, spec.widths, WINDOW, spec.dv, DEFAULT_WEIGHT_DIGITS) / (ms * 1e-3)
         print(f"{spec.name:<28}{ms:>9.3f}{tiles / ms:>12.0f}{achieved / 1e12:>10.2f}"
               f"{achieved / flops * 100:>7.1f}%")
         rows.append({"cell": spec.name, "ms": ms, "tiles_per_ms": tiles / ms, "top_per_s": achieved,

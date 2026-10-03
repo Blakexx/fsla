@@ -6,7 +6,7 @@ Three claims. (1) The Hadamard rotation is exact for the op: it is orthogonal an
 un-rotating the op's output on rotated values IS the op on the values. (2) The declared recurrence is the op's: with
 every rounding turned off, `int_reference` reproduces `inter_reference` to fp64 on every cell it is run on -- the
 structure is judged before any rounding is. (3) THE REPORT: on the oracle cells, the declared arithmetic's error against
-the unquantized op, per slot over the slot's envelope and per token in norm, at one and two digits, in the rotated and
+the unquantized op, per slot over the slot's envelope and per token in norm, at one and two readout digits, in the rotated and
 the real basis. It is PRINTED and never gated (`docs/internals/...`: the truth oracle reports, the fidelity gate is the
 op gate on the same quantized inputs, quality is the layer oracle's). The one property asserted is monotone: two digits
 never lose to one on the same draw.
@@ -73,14 +73,14 @@ def test_the_quantization_report(name, capsys):
     for basis, rot in (("rotated-basis-read", False), ("real-basis-after-unrotate", True)):
         rows = iref.quantization_report(drawn, _sparsity(cell), carry_ops.WINDOW, rotate_values=rot)
         for r in rows:
-            lines.append(f"  {basis:26s} fold={r['fold_digits']} eps={r['readout_eps']:<8.3g} flagged {100*r['flag_rate']:5.1f}%: "
+            lines.append(f"  {basis:26s} eps={r['readout_eps']:<8.3g} flagged {100*r['flag_rate']:5.1f}%: "
                          f"num per-slot err / (2^-8 env): max {r['slot_max']:8.2f}, frac>1 {100*r['slot_frac_over']:5.1f}% | "
                          f"per-token norm err/env: max {r['token_max']:.2e} mean {r['token_mean']:.2e} | "
                          f"state per-slot max {r['state_slot_max']:8.2f} frac>1 {100*r['state_slot_frac_over']:5.1f}% | "
                          f"den rel {r['den_max_rel']:.1e} | panel peak {r['panel_peak']:.0f}")
             assert r["panel_peak"] < iref.PANEL_LEVELS, "the packed panel's running sum left its s16 half"
     #: the readout's own monotonicity, read with the panel step off so its rounding does not mask the digits
-    one, two = iref.quantization_report(drawn, _sparsity(cell), carry_ops.WINDOW, knobs=((1, 1.0), (1, 0.0)),
+    one, two = iref.quantization_report(drawn, _sparsity(cell), carry_ops.WINDOW, knobs=(1.0, 0.0),
                                         panel=False)
     lines.append(f"  s32 panel: one readout digit mean {one['token_mean']:.2e} -> two {two['token_mean']:.2e}")
     assert two["token_mean"] <= one["token_mean"] * 1.0001, "two readout digits lost to one on the same draw"
@@ -135,7 +135,7 @@ INTRA_CELLS = ["flat-small-alt-k4", "one-box-short", "deep3-alt-k4"]
 
 
 def _bundle(name):
-    """The cell's draw in the bundle's format: u8 rows at depth <= 2, f16 deeper; two value digits."""
+    """The cell's draw in the bundle's format: u8 rows at depth <= 2, f16 deeper; f16 values."""
     from rola.routing.factors import RouteFactors
     from rola.routing.types import OpaqueRouting, Topology
     from rola.values import Values
@@ -170,7 +170,7 @@ def test_the_intra_reference_is_the_intra_on_the_bundle_when_nothing_is_rounded(
 @pytest.mark.parametrize("digits", (1, 2))
 def test_the_intra_weights_round_within_half_a_unit_a_term(name, digits):
     """The value product's one rounding, bounded per slot: a weight moves by at most half its unit ``sigma / LW``,
-    so a slot's error is at most ``sum_c sigma / (2 LW) sum_{t' in c} |q| / LV``; and it moves at all."""
+    so a slot's error is at most ``sum_c sigma / (2 LW) sum_{t' in c} |q|``; and it moves at all."""
     _, routes, values = _bundle(name)
     exact, _ = iref.intra_bundle_reference(routes, values, carry_ops.WINDOW, exact=True)
     seen: dict = {}

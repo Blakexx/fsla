@@ -68,8 +68,7 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   Span read_scale[kMaxLevels];  // fp32 row maxima, [B, 1, H]
   Span write_scale[kMaxLevels];
   Span g_write;
-  Span v;                     // the value's s8 high digit
-  Span v_lo;                  // its u8 low digit, base null at one digit
+  Span v;                     // the value, f16 against the token's largest channel
   Span v_scale;               // the token's fp32 value scale
   int normalize[kMaxLevels];  // per READ level: still carries its own mass?; decode.md#near-line-98
   int rows_f16;               // the coefficient rows' type, 1 = f16, 0 = u8

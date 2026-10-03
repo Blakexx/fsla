@@ -5,8 +5,7 @@
 THE OP ORACLE MEASURES THAT THE MATH IS IMPLEMENTED; THE LAYER ORACLE MEASURES QUALITY (ruled
 2026-09-26). This module is the first half's reference for the int8 form: the same windowed
 recurrence as :func:`tests.oracle.reference.inter_reference`, run in fp64 on the OPERANDS THE
-KERNEL DECLARES. The FOLD: per-token unit-max s8 values (one digit, or an s8 high and u8 low
-digit), and per leaf an A row in u8 -- the token's dense write amplitude times its sparse
+KERNEL DECLARES. The FOLD: per-token unit-max f16 values (the producer's), and per leaf an A row in u8 -- the token's dense write amplitude times its sparse
 amplitude, scale and gain, against the leaf's biggest writer that window -- into an s32-exact
 state. The READOUT (ruled 2026-09-27): the state is read per BLOCK, one read-sparse digit times
 32 read-dense digits, quantized against the block's max |S| at 127 levels, or at 32767 when the
@@ -64,12 +63,6 @@ def unrotate(y: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
     return y @ h.T
 
 
-def quantize_unit(x: torch.Tensor, digits: int) -> torch.Tensor:
-    """Round ``x`` in [-1, 1] to the declared digit count: 127 levels (s8) or 32767 (s8 high + u8 low)."""
-    levels = HI_LEVELS if digits == 1 else TWO_DIGIT_LEVELS
-    return torch.round(x * levels) / levels
-
-
 def quantize_u8_unit(p: torch.Tensor) -> torch.Tensor:
     """An amplitude in [0, 1] as u8: ``round(255 p) / 255``."""
     return torch.round(p * 255.0) / 255.0
@@ -124,13 +117,13 @@ def group_product(levels_all, widths, levels, sl, u8=None):
 
 
 def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, window, *,
-                  fold_digits: int = 1, readout_eps: float = 0.0, exact: bool = False, state_in=None,
+                  readout_eps: float = 0.0, exact: bool = False, state_in=None,
                   panel: bool = True, telemetry: dict | None = None):
     """``(num, den, state)`` in fp64 under the DECLARED int arithmetic; ``sparsity[l] = (read sparse, write sparse)``.
 
     Fold, per write-sparse digit ``s`` and window: ``A[leaf, t] = a_dense[t, d] x a_sparse[t, s] x s_t x g_t`` in
     u8 against ``sigma_leaf,w`` (the leaf's largest writer that window), ``state[leaf] += sum_t A x v_hat[t]`` with
-    ``v_hat`` the token's unit-max s8 (``fold_digits`` 2 adds a u8 low digit); the bound ``B[leaf] += sum_t A``
+    ``v_hat`` the token's unit-max f16 value; the bound ``B[leaf] += sum_t A``
     beside it (the pre-pass's recurrence). Readout, per block: ``sigma_b = max |S|`` over the block, the block's
     spread ``sigma_b / min live leaf max``; ``S_op = q(S / sigma_b) sigma_b`` at 127 levels, or 32767 when the spread
     exceeds ``R = round(254 readout_eps)`` (``readout_eps`` in [0, 1]: 0 is two digits everywhere, 1 one digit
@@ -159,10 +152,10 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
         raise ValueError("readout_eps is a relative step in [0, 1]")
     threshold = float(round(254.0 * readout_eps))
     u8 = None if exact else quantize_u8_unit
-    q_fold = (lambda x: x) if exact else (lambda x: quantize_unit(x, fold_digits))
+    q_fold = (lambda x: x) if exact else (lambda x: x.to(torch.float16).double())
 
     v_hat, s_t = unit_max(v.double())                    # [B,T,H,dv], [B,T,H,1]
-    v_hat = q_fold(v_hat)                                 # the producer's s8 (or s8+u8) V-hat
+    v_hat = q_fold(v_hat)                                 # the producer's f16 V-hat
     state = (torch.zeros(Bn, H, N, dv, device=dev, dtype=torch.float64) if state_in is None
              else state_in.double()[..., :dv].clone())
     mass = (torch.zeros(Bn, H, N, device=dev, dtype=torch.float64) if state_in is None
@@ -205,7 +198,7 @@ def int_reference(read_levels, write_levels, g_write, v, widths, sparsity, windo
         a_wd, m_wd = group_product(write_levels, widths, w_dn, sl, u8)    # [B,t,H,n_wd] unit-max u8, its row scale
         a_ws, _ = group_product(write_levels, widths, w_sp, sl)            # [B,t,H,n_ws]
         scal = a_ws * (g_write[:, sl].double() * s_t[:, sl, :, 0]).unsqueeze(-1) * m_wd   # [B,t,H,n_ws]
-        vh = v_hat[:, sl]                                                  # [B,t,H,dv] one s8 row a token
+        vh = v_hat[:, sl]                                                  # [B,t,H,dv] one f16 row a token
         for s in range(n_ws):
             leaves = torch.nonzero(idx_ws == s, as_tuple=False).flatten()
             a_full = a_wd[..., idx_wd[leaves]] * scal[..., s].unsqueeze(-1)   # [B,t,H,n_wd] the leaves' A rows
@@ -245,12 +238,9 @@ def unit_rows(rows) -> tuple[torch.Tensor, ...]:
     return tuple(r.double() / 255.0 if r.dtype is torch.uint8 else r.double() for r in rows)
 
 
-def value_digits(values) -> tuple[torch.Tensor, float]:
-    """``(q, levels)``: a value's integer digits, fp64 ``[B, T, H, dv]`` -- ``v_hat 256 + v_lo`` over 32767 at two
-    digits, ``v_hat`` over 127 at one -- the bundle's value being ``scale q / levels``."""
-    if values.v_lo is None:
-        return values.v_hat.double(), HI_LEVELS
-    return values.v_hat.double() * 256.0 + values.v_lo.double(), TWO_DIGIT_LEVELS
+def value_units(values) -> torch.Tensor:
+    """``q``: a value's f16 unit, fp64 ``[B, T, H, dv]``, the bundle's value being ``scale q``."""
+    return values.v.double()
 
 
 def intra_bundle_reference(routes, values, window, *, weight_digits: int = 2, exact: bool = False,
@@ -264,16 +254,16 @@ def intra_bundle_reference(routes, values, window, *, weight_digits: int = 2, ex
     and intra alike). ``den[t] = sum_t' A`` exactly. THE VALUE PRODUCT: ``P = A s(t')`` (the value scale folded
     into the columns), ``sigma(t, c)`` = the largest ``P`` over column tile ``c`` (``INTRA_TILE`` tokens from the
     window's start), ``a = round(P / sigma LW)`` with ``LW`` = 255 at one weight digit, 65535 at two, and
-    ``num[t] = sum_c sigma / LW sum_{t' in c} a q(t') / LV`` over the value's digits (:func:`value_digits`).
-    ``exact`` skips the rounding of ``a``: ``num = sum A s q / LV``, the unquantized product on the bundle's values.
+    ``num[t] = sum_c sigma / LW sum_{t' in c} a q(t')`` over the value's f16 units (:func:`value_units`).
+    ``exact`` skips the rounding of ``a``: ``num = sum A s q``, the unquantized product on the bundle's values.
     ``telemetry`` receives ``bound``, the per-slot bound the rounding implies: a weight moves by at most half its unit,
-    ``sum_c sigma / (2 LW) sum_{t' in c} |q| / LV``.
+    ``sum_c sigma / (2 LW) sum_{t' in c} |q|``.
     """
     reads, writes = unit_rows(routes.amp_read), unit_rows(routes.amp_write)
     f = routes.g_write.double()
     for scale in routes.scale_write:
         f = f * scale.double()
-    q, levels_v = value_digits(values)
+    q = value_units(values)
     s = values.scale.double()
     Bn, T, H, dv = q.shape
     LW = WEIGHT_LEVELS[weight_digits]
@@ -291,7 +281,7 @@ def intra_bundle_reference(routes, values, window, *, weight_digits: int = 2, ex
         P = A * s[:, sl].permute(0, 2, 1)[:, :, None, :]
         qw = q[:, sl].permute(0, 2, 1, 3)                                                # [B,H,n,dv]
         if exact:
-            num[:, sl] = (P @ qw / levels_v).permute(0, 2, 1, 3)
+            num[:, sl] = (P @ qw).permute(0, 2, 1, 3)
             continue
         out = torch.zeros(Bn, H, n, dv, device=q.device, dtype=torch.float64)
         half = torch.zeros_like(out)
@@ -299,8 +289,8 @@ def intra_bundle_reference(routes, values, window, *, weight_digits: int = 2, ex
             cut = slice(c0, min(c0 + INTRA_TILE, n))
             sigma = P[..., cut].amax(-1, keepdim=True)                                  # [B,H,n,1]
             a = torch.round(P[..., cut] / sigma.clamp_min(TINY) * LW)
-            out += sigma / LW * (a @ qw[:, :, cut] / levels_v)
-            half += sigma / (2.0 * LW) * qw[:, :, cut].abs().sum(2, keepdim=True) / levels_v
+            out += sigma / LW * (a @ qw[:, :, cut])
+            half += sigma / (2.0 * LW) * qw[:, :, cut].abs().sum(2, keepdim=True)
         num[:, sl] = out.permute(0, 2, 1, 3)
         bound[:, sl] = half.permute(0, 2, 1, 3)
     if telemetry is not None:
@@ -396,9 +386,9 @@ def per_token_norm_ratio(err: torch.Tensor, envelope: torch.Tensor) -> torch.Ten
     return err.norm(dim=-1) / envelope.norm(dim=-1).clamp_min(TINY)
 
 
-#: The report's knob settings: (fold digits, readout eps) -- one readout digit wherever the spread allows, the
-#: declared 2^-6 and 2^-7, two digits everywhere, and two digits on both sides.
-REPORT_KNOBS = ((1, 1.0), (1, 2.0 ** -6), (1, 2.0 ** -7), (1, 0.0), (2, 0.0))
+#: The report's readout eps settings: one readout digit wherever the spread allows, the declared 2^-6 and 2^-7, and
+#: two digits everywhere.
+REPORT_KNOBS = (1.0, 2.0 ** -6, 2.0 ** -7, 0.0)
 
 
 def quantization_report(drawn, sparsity, window, knobs=REPORT_KNOBS, rotate_values=False, panel=True):
@@ -414,17 +404,17 @@ def quantization_report(drawn, sparsity, window, knobs=REPORT_KNOBS, rotate_valu
     true_num, true_den, true_state = inter_reference(read, write, gain, v, widths, window)
     env_num, _, env_state = inter_reference(read, write, gain, v.abs(), widths, window)
     rows = []
-    for fd, eps in knobs:
+    for eps in knobs:
         tele = {}
         num, den, state = int_reference(read, write, gain, v_in, widths, sparsity, window,
-                                        fold_digits=fd, readout_eps=eps, panel=panel, telemetry=tele)
+                                        readout_eps=eps, panel=panel, telemetry=tele)
         if rotate_values:
             num, state = unrotate(num, h), torch.cat((unrotate(state[..., :-1], h), state[..., -1:]), -1)
         e_num = (num - true_num).abs()
         slot = e_num / (env_num * 2.0 ** -8).clamp_min(TINY)
         tok = per_token_norm_ratio(num - true_num, env_num)
         e_state = (state[..., :-1] - true_state[..., :-1]).abs() / (env_state[..., :-1] * 2.0 ** -8).clamp_min(TINY)
-        rows.append(dict(fold_digits=fd, readout_eps=eps,
+        rows.append(dict(readout_eps=eps,
                          flag_rate=tele["flagged"] / max(tele["blocks"], 1), panel_peak=tele["panel_peak"],
                          slot_max=float(slot.max()), slot_frac_over=float((slot > 1).double().mean()),
                          token_max=float(tok.max()), token_mean=float(tok.mean()),

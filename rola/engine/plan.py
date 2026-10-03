@@ -81,9 +81,8 @@ class DecodePlan:
     normalize: tuple[bool, ...]
     dials: torch.Tensor | None
     g_write: torch.Tensor
-    #: The value's digits, `[B, 1, H, d_v]` s8 and u8 (``None`` at one digit), and its fp32 `[B, 1, H]` scale.
-    v_hat: torch.Tensor
-    v_lo: torch.Tensor | None
+    #: The value, `[B, 1, H, d_v]` f16 against the token's largest channel, and its fp32 `[B, 1, H]` scale.
+    v: torch.Tensor
     v_scale: torch.Tensor
     state_plane: torch.Tensor
     page_table: torch.Tensor | None

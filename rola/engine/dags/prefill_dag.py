@@ -181,7 +181,7 @@ def validate_context(ctx: PrefillContext) -> None:
     if (values.batch, values.tokens, values.heads) != expected:
         raise ValueError(
             f"values must be [B, T, H, d_v] with [B, T, H]={expected} to match the routing "
-            f"bundle, got {tuple(values.v_hat.shape)}")
+            f"bundle, got {tuple(values.v.shape)}")
     if values.device != routes.device:
         raise ValueError(f"values are on {values.device} but the routing bundle is on {routes.device}")
     if decay is not None:

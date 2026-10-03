@@ -1,6 +1,6 @@
 # `csrc/rola/src/owner/owner.cuh` — the owner carry's constants, carve and operand block
 
-Mirror doc for the header the owner carry's components share. The owner carry is the rebuild's int8 carry: a CTA OWNS a box of leaves and, window by window, folds the window's writes into the box's state and
+Mirror doc for the header the owner carry's components share. The owner carry is the rebuild's fp16 carry: a CTA OWNS a box of leaves and, window by window, folds the window's writes into the box's state and
 reads the box's state out to the window's readers. It is being built as a SKELETON in the part harness first
 ([below](#skeleton)), priced across two carves and two step forms; the carve chosen from that, it replaces
 `csrc/rola/src/carry/` in place.
@@ -59,9 +59,6 @@ pricing table are on the rebuild's plan card, in its skeleton block. Built so fa
 * `fill_part` — the lists, then each window's write and read passes ([`owner_fill.md`](owner_fill.md)); with a dump
   it writes every pool row to its slot, which `--check fill` holds byte for byte against the model.
 * `drain_part` — the lists, then each window's read passes' panels drained ([`owner_drain.md`](owner_drain.md)).
-* `fold_part` — the fill's passes, each pass's token factors, then the fold ([`owner_fold.md`](owner_fold.md)) in a
-  forced or chosen form; with dump 1 it writes every CTA's state, which `--check fold` holds bit for bit against the
-  model; with dump 2 its phase ledger (`--ledger fold`: the fold's phases and the part's lists, fill, factors and sync).
 * `readout_part` — the read passes, then the readout ([`owner_readout.md`](owner_readout.md)) in a forced or chosen
   form, a checksum so nothing is dead.
 

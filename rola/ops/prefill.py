@@ -185,7 +185,7 @@ def prefill(routes, values, *, modes, liveness: carry_ops.LivenessWords, unions:
     product's declared digit count.
     """
     widths = routes.topology.widths
-    D, d_v, length = len(widths), values.v_hat.shape[-1], routes.tokens
+    D, d_v, length = len(widths), values.d_v, routes.tokens
     if len(modes) != D:
         raise ValueError(f"{D} levels want {D} support modes; got {len(modes)}")
     if not intra_admits(widths, d_v):

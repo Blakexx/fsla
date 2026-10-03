@@ -2,7 +2,7 @@
 
 RULED 2026-09-29: the producer is a declared configuration compiled into ONE kernel launch -- from a stretch of
 tokens to the bundle the ops take: every routing level's projection, solve and unit-max rows, the write gain, and the
-value digits. The layer declares its routing (`rola.Routing`), owns the weights, and compiles a producer plan once
+f16 values. The layer declares its routing (`rola.Routing`), owns the weights, and compiles a producer plan once
 (`rola/ops/produce.py`); `job_table` turns the plan into the rows this kernel reads, so every width, kind and offset
 is a runtime field and the family is ONE instantiation.
 
@@ -144,11 +144,10 @@ so no launch zeroes it between calls. The gain's logit (`gain_logit`) is the rou
 the token's row, a warp's lanes over the hidden axis in 16-byte chunks, plus the column's routing bias and
 `gain_bias`; a routing without a gain column has a gain of 1.
 
-## <a id="value-rows"></a>The value digits
+## <a id="value-rows"></a>The values
 
 A warp a (token, head), its lanes over the channels: the channel max |v| (clamped at `1e-30`) as the scale, and each
-channel's digits against it at the digit count's full scale (127, or 32767 split into the s16's s8 high byte and u8
-low byte), round to nearest even -- `rola.routing.quant.quantize_values`, on the fp32 projection rather than the bf16
-the composition's linear rounds it to. Gate: every digit within one plus the projection's fp32 error at full scale,
-every scale within that error, against the fp64 composition (measured: at most one digit, on 0.1-0.2 % of the
-channels; scales within 2.4e-7 relative).
+channel divided by it (round to nearest) and rounded to f16 -- `rola.routing.quant.quantize_values`, on the fp32
+projection rather than the bf16 the composition's linear rounds it to. Gate: every value within one f16 unit in the
+last place plus the projection's fp32 error (the channel's and the scale's, over the scale), every scale within that
+error, against the fp64 composition.

@@ -7,9 +7,8 @@ and staged in the SHARED MEMORY of the CTA that is about to consume it.
 Symbols: `B` batch, `H` heads, `BH = B * H`, `bh = b * H + h`; `D` levels; `b_l` level
 `l`'s width; `d_v` the value width. The operands are the read and write coefficient rows
 (`[B, 1, H, b_l]` each, u8 or f16 unit-max digits in the producer's own layout) with their
-fp32 row maxima (`[B, 1, H]` each), the write gain (`[B, 1, H]`) and the token's value
-digits (`[B, 1, H, d_v]` s8, the u8 low byte beside it at two digits, and the fp32 token
-scale).
+fp32 row maxima (`[B, 1, H]` each), the write gain (`[B, 1, H]`) and the token's values
+(`[B, 1, H, d_v]` f16 against its largest channel, and the fp32 token scale).
 
 ---
 
@@ -55,12 +54,12 @@ step's own output, on strided views as well as contiguous ones.
 
 The fold reads three INDEPENDENT storage families: the coefficient rows (u8 or f16, ruled
 2026-09-29: u8 serves depth <= 2, f16 any depth), the write gain (`float` or `bfloat16`) and
-the value digits (s8, with a u8 low byte or without). They are independent because the
+the values (f16). They are independent because the
 routing bundle and the value projection are different producers.
 
 Making them template axes would multiply the step kernel's instantiation matrix for a few
 hundred bytes of gather in a prologue. So `DecodeParams` carries flags (`rows_f16`,
-`g_bf16`, and the low byte's presence) and each gather site picks a fully typed loop:
+`g_bf16`) and each gather site picks a fully typed loop:
 
 ```
 if (p.rows_f16) fold_digits<D, __half>(...); else fold_digits<D, uint8_t>(...);
@@ -72,9 +71,9 @@ fallback. A dtype outside the format is a REFUSAL (the bundle's own, then the ho
 never a silent widening.
 
 <a id="fold-value"></a>The value is folded once a step into the CTA's resident row: the
-digits' integer `q` (`hi` at one digit, `hi * 256 + lo` at two) times the token's
-`scale / 127` or `scale / 32767`. `load_value` issues the loads before the digit pass and
-`value_of` does the arithmetic after it, so the channel's loads ride the same round trip.
+channel's f16 unit times the token's `scale`. `load_value` issues the loads before the digit
+pass and `value_of` does the arithmetic after it, so the channel's loads ride the same round
+trip.
 
 Contrast `DECAY` and `D` (`decode.md#instantiation-matrix`), which ARE template axes: each
 picks a different loop shape or a different live-register count in the walk's innermost

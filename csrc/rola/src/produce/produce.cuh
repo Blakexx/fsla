@@ -93,8 +93,7 @@ struct ProduceParams {
   float* mass_write;
   float* read_mass;    // [B, H, T]
   float* g_write;      // [B, H, T]
-  int8_t* v_hat;       // [B, H, T, d_v]
-  uint8_t* v_lo;       // [B, H, T, d_v] or null (one digit)
+  __half* v;           // [B, H, T, d_v], f16 against the token's largest channel
   float* v_scale;      // [B, H, T]
   int32_t* arrivals;   // [tiles, H], zero between calls: the finisher resets its own
   float* logit_probe;  // [jobs, BT, kMaxColumns] or null: every job's projection, for its gate

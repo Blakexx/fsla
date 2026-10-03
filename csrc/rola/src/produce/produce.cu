@@ -517,14 +517,13 @@ __device__ void finish_head(const ProduceParams& p, const Job& job, int tile, in
   if (threadIdx.x == 0) p.arrivals[tile * p.H + job.head] = 0;
 }
 
-//: THE VALUE DIGITS of the job's heads for the tile's tokens: a warp a (token, head), its lanes over the channels --
-//: the channel max |v| as the scale, and each channel's digits against it at the digit count's full scale, s8 alone
-//: or the s16's s8 high byte and u8 low byte. -- see docs/internals/produce/produce.md#value-rows
+//: THE VALUES of the job's heads for the tile's tokens: a warp a (token, head), its lanes over the channels -- the
+//: channel max |v| as the scale, and each channel against it rounded once to f16.
+//: -- see docs/internals/produce/produce.md#value-rows
 __device__ void value_rows(const ProduceParams& p, const Job& job, int token0,
                            const float* logits) {
   const int warp = static_cast<int>(threadIdx.x) >> 5, lane = static_cast<int>(threadIdx.x) & 31;
   const int pairs = min(kTokenTile, p.BT - token0) * job.heads;
-  const float full = p.v_lo != nullptr ? 32767.0f : 127.0f;
 #pragma unroll 1
   for (int pass = 0; pass < (pairs + kProduceWarps - 1) / kProduceWarps; ++pass) {
     const int pair = pass * kProduceWarps + warp;
@@ -541,11 +540,7 @@ __device__ void value_rows(const ProduceParams& p, const Job& job, int token0,
     const int64_t at = slot * p.d_v;
 #pragma unroll 1
     for (int c = lane; c < p.d_v; c += 32) {
-      const int q = __float2int_rn(__fdividef(row[c], unit) * full);
-      if (here) {
-        p.v_hat[at + c] = static_cast<int8_t>(p.v_lo != nullptr ? q >> 8 : q);
-        if (p.v_lo != nullptr) p.v_lo[at + c] = static_cast<uint8_t>(q & 0xFF);
-      }
+      if (here) p.v[at + c] = __float2half_rn(__fdiv_rn(row[c], unit));
     }
     if (here && lane == 0) p.v_scale[slot] = m;
   }
@@ -626,10 +621,10 @@ void rola_produce_ledger_bind(std::optional<Tensor> ledger) {
 void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_bias,
                           Tensor gain_bias, Tensor v_W, Tensor jobs, Tensor amp_read,
                           Tensor amp_write, Tensor scale_read, Tensor scale_write, Tensor mass_read,
-                          Tensor mass_write, Tensor read_mass, Tensor g_write, Tensor v_hat,
-                          std::optional<Tensor> v_lo, Tensor v_scale, Tensor arrivals,
-                          std::optional<Tensor> logit_probe, std::optional<Tensor> level_probe,
-                          Tensor shapes, int64_t levels, int64_t route_jobs_per_head) {
+                          Tensor mass_write, Tensor read_mass, Tensor g_write, Tensor v,
+                          Tensor v_scale, Tensor arrivals, std::optional<Tensor> logit_probe,
+                          std::optional<Tensor> level_probe, Tensor shapes, int64_t levels,
+                          int64_t route_jobs_per_head) {
   check_arch_table();
   detail::check_bf16(x, "x");
   detail::check_bf16(route_W, "route_W");
@@ -685,9 +680,8 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   detail::check_f32(read_mass, "read_mass", BT * H);
   detail::check_f32(g_write, "g_write", BT * H);
   detail::check_f32(v_scale, "v_scale", BT * H);
-  STD_TORCH_CHECK(
-      v_hat.scalar_type() == Dtype::Char && v_hat.is_contiguous() && v_hat.numel() == BT * H * d_v,
-      "v_hat is [BT, H, d_v] int8");
+  STD_TORCH_CHECK(v.scalar_type() == Dtype::Half && v.is_contiguous() && v.numel() == BT * H * d_v,
+                  "v is [BT, H, d_v] f16");
   const int64_t tiles = (BT + kTokenTile - 1) / kTokenTile;
   STD_TORCH_CHECK(arrivals.scalar_type() == Dtype::Int && arrivals.is_contiguous()
                       && arrivals.numel() >= tiles * H,
@@ -719,8 +713,7 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.mass_write = mass_write.mutable_data_ptr<float>();
   p.read_mass = read_mass.mutable_data_ptr<float>();
   p.g_write = g_write.mutable_data_ptr<float>();
-  p.v_hat = v_hat.mutable_data_ptr<int8_t>();
-  p.v_lo = v_lo.has_value() ? v_lo->mutable_data_ptr<uint8_t>() : nullptr;
+  p.v = reinterpret_cast<__half*>(v.mutable_data_ptr());
   p.v_scale = v_scale.mutable_data_ptr<float>();
   p.arrivals = arrivals.mutable_data_ptr<int32_t>();
   p.logit_probe = logit_probe.has_value() ? logit_probe->mutable_data_ptr<float>() : nullptr;

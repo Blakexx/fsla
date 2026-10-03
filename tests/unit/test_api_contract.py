@@ -180,25 +180,20 @@ def test_the_op_refuses_a_bare_value_tensor_and_names_the_bundle():
 
 
 def test_the_value_bundle_is_the_format_and_its_view_is_the_rounded_projection():
-    """`Values.from_projection` writes the value format against the token's largest channel: at two digits (the
-    default) the s16 ``round(32767 x)`` as an s8 high byte and a u8 low byte, at one the s8 ``round(127 x)``; the
-    scale is that magnitude in fp32, and `dequantized` is the rounded projection carrying its gradient
+    """`Values.from_projection` writes the value format against the token's largest channel: f16 with that channel
+    at 1; the scale is its magnitude in fp32, and `dequantized` is the rounded projection carrying its gradient
     (docs/api.md section 4.1)."""
     v = torch.randn(2, 6, 2, 8, dtype=torch.float64, requires_grad=True)
     values = Values.from_projection(v)
-    assert values.digits == 2 and values.v_hat.dtype is torch.int8 and values.v_lo.dtype is torch.uint8
-    assert values.scale.dtype is torch.float32 and tuple(values.v_hat.shape) == (2, 6, 2, 8)
+    assert values.v.dtype is torch.float16 and tuple(values.v.shape) == (2, 6, 2, 8)
+    assert values.scale.dtype is torch.float32
     torch.testing.assert_close(values.scale, v.detach().abs().amax(-1).float())
-    q = values.v_hat.int() * 256 + values.v_lo.int()
-    assert q.abs().amax(-1).eq(32767).all()
-    torch.testing.assert_close(values.dequantized().double(), v.detach(),
-                               rtol=0, atol=float(values.scale.max()) / 32767)
+    assert values.v.abs().amax(-1).eq(1).all()
+    torch.testing.assert_close(values.dequantized().double(), v.detach(), rtol=2.0 ** -11, atol=0)
     values.dequantized().sum().backward()
     assert torch.equal(v.grad, torch.ones_like(v))
-    one = Values.from_projection(v.detach(), digits=1)
-    assert one.digits == 1 and one.v_lo is None and one.v_hat.abs().amax(-1).eq(127).all()
-    with pytest.raises(ValueError, match="s8"):
-        Values(v_hat=values.v_hat.float(), v_lo=values.v_lo, scale=values.scale)
+    with pytest.raises(ValueError, match="f16"):
+        Values(v=values.v.float(), scale=values.scale)
 
 
 def test_the_bundle_carries_v_shape_disagreement_to_the_caller_not_to_the_kernel():

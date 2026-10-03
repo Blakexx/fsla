@@ -216,7 +216,7 @@ def test_a_chained_call_equals_one_long_call():
                              amp_write=tuple(r[:, sl] for r in routes.amp_write),
                              scale_read=tuple(s[:, sl] for s in routes.scale_read),
                              scale_write=tuple(s[:, sl] for s in routes.scale_write), g_write=routes.g_write[:, sl]),
-                Values(v_hat=values.v_hat[:, sl], v_lo=values.v_lo[:, sl], scale=values.scale[:, sl]))
+                Values(v=values.v[:, sl], scale=values.scale[:, sl]))
 
     head_routes, head_values = part(slice(0, cut))
     tail_routes, tail_values = part(slice(cut, None))

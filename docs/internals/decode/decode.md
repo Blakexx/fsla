@@ -434,16 +434,15 @@ spills, and a visit's prologue is issued by 16 warps where it was 32
 ## <a id="params-amps"></a>9. `DecodeParams` — the operands, as addresses
 
 `read[l]` / `write[l]` (the coefficient rows), `read_scale[l]` / `write_scale[l]` (their fp32
-maxima), `g_write`, `v` / `v_lo` (the value digits) and `v_scale` are `Span`s: a base pointer
+maxima), `g_write`, `v` (the f16 values) and `v_scale` are `Span`s: a base pointer
 and the `(b, h, w)` strides of the CALLER'S OWN `[B, 1, H, *]` view. There is no `[BH, b_l]` plane between the
 producer and the walk — the step folds these into shared memory itself
 ([`decode_fold.md`](decode_fold.md)), so the `[B, 1, H, W] -> [BH, W]` fold is an ADDRESS
 the kernel computes rather than a pass that ran.
 
 `normalize[l]` says whether read level `l` still carries its own mass, so the fold divides
-it by its row sum. `rows_f16` and `g_bf16` name the rows' and the gain's storage type, and a
-null `v_lo` base the one-digit value; the fold branches on them once per side, never per
-element ([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)).
+it by its row sum. `rows_f16` and `g_bf16` name the rows' and the gain's storage type; the fold
+branches on them once per side, never per element ([`decode_fold.md#the-dtype-arms`](decode_fold.md#the-dtype-arms)).
 
 `level_amp_offset[l]` is where level `l`'s staged amplitude row starts inside the flat
 `sum_l b_l` SMEM arrays. It is host-computed and carried rather than recomputed, because
@@ -1699,8 +1698,7 @@ lever there is the page's layout, not the walk.
 
 The step reads the bundle's rows as they are (ruled 2026-09-29): u8 unit-max digits up to
 depth two, f16 at any depth, ONE type a call, each row beside its fp32 max; the write gain
-fp32 or bf16; the value as s8 digits, with the u8 low byte at two digits, and the fp32 token
-scale. The host entry refuses any other type, a u8 row at depth three or more, and levels
+fp32 or bf16; the value in f16 against its largest channel, and the fp32 token scale. The host entry refuses any other type, a u8 row at depth three or more, and levels
 that disagree on the type -- the bundle refuses the same at construction, so a refusal here
 names a direct caller of the ABI. How the fold turns each into a staged amplitude:
 [`decode_fold.md#raw`](decode_fold.md#raw).

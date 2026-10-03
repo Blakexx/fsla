@@ -155,8 +155,8 @@ STABLE_TORCH_LIBRARY(rola, m) {
   m.def(
       "rola_produce_forward(Tensor x, Tensor route_W, Tensor? route_bias, Tensor gain_bias, Tensor v_W, Tensor jobs, "
       "Tensor(a!) amp_read, Tensor(b!) amp_write, Tensor(c!) scale_read, Tensor(d!) scale_write, "
-      "Tensor(e!) mass_read, Tensor(f!) mass_write, Tensor(g!) read_mass, Tensor(h!) g_write, Tensor(i!) v_hat, "
-      "Tensor(j!)? v_lo, Tensor(k!) v_scale, Tensor(l!) arrivals, Tensor(m!)? logit_probe, Tensor(n!)? level_probe, Tensor shapes, int levels, "
+      "Tensor(e!) mass_read, Tensor(f!) mass_write, Tensor(g!) read_mass, Tensor(h!) g_write, Tensor(i!) v, "
+      "Tensor(j!) v_scale, Tensor(k!) arrivals, Tensor(l!)? logit_probe, Tensor(m!)? level_probe, Tensor shapes, int levels, "
       "int route_jobs_per_head) -> ()");
 
   m.def("rola_produce_ledger_bind(Tensor? ledger) -> ()");
@@ -190,7 +190,7 @@ STABLE_TORCH_LIBRARY(rola, m) {
   // ---- the T=1 decode path -------------------------------------------------
   m.def(
       "rola_decode_forward(Tensor[] read, Tensor[] write, Tensor[] read_scale, Tensor[] write_scale, int[] normalize, "
-      "Tensor? dials, Tensor g_write, Tensor v_hat, Tensor? v_lo, Tensor v_scale, "
+      "Tensor? dials, Tensor g_write, Tensor v, Tensor v_scale, "
       "Tensor(a!) state, Tensor(b!) yacc, Tensor(c!) queue, Tensor(d!) growth, Tensor(e!) growth_any, "
       "Tensor(f!) growth_ctr, Tensor(g!) done, Tensor(h!) atom_bits, int[] level_widths, int[] level_row_offsets, "
       "int lattice_k, int lattice_m, bool write_dense, int ctas, float eps, Tensor(i!)? page_table=None, "

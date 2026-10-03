@@ -83,7 +83,7 @@ def _bundle(widths, L, statics, dtype, *, B=1, H=2, seed=0, packed=False):
     routes = RouteFactors(topology=Topology(levels=tuple(OpaqueRouting(width=w) for w in widths)),
                           amp_read=rows[0], amp_write=rows[1], scale_read=tuple(column() for _ in range(D)),
                           scale_write=tuple(column() for _ in range(D)), g_write=column())
-    values = Values(v_hat=torch.zeros((B, L, H, 8), dtype=torch.int8, device="cuda"), v_lo=None, scale=column())
+    values = Values(v=torch.zeros((B, L, H, 8), dtype=torch.float16, device="cuda"), scale=column())
     return routes, values
 
 

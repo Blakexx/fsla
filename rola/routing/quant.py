@@ -5,9 +5,9 @@
 One declaration of the arithmetic the op's oracle takes as its input
 (``tests/oracle/int_reference.py`` is its fp64 statement). A coefficient row is stored against its own max --
 u8 with the max digit at 255, or f16 with the max at 1 -- and the row's max is its fp32 scale. A token's values
-are stored against their largest channel: one digit is s8 at +-127; two digits are the s16 ``q = round(32767 x)``
-split into an s8 high byte and a u8 low byte. ``straight_through`` hands a consumer the DEQUANTIZED values with
-an identity gradient, which is how the format trains (docs/api.md section 2.1).
+are stored as f16 against their largest channel (at 1), the largest its fp32 scale. ``straight_through`` hands a
+consumer the DEQUANTIZED values with an identity gradient, which is how the format trains (docs/api.md
+section 2.1).
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import torch
 __all__ = [
     "AMP_LEVELS",
     "ROW_DTYPES",
-    "VALUE_DIGITS",
+    "VALUE_DTYPE",
     "dequantize_rows",
     "dequantize_values",
     "quantize_unit_max_rows",
@@ -28,8 +28,8 @@ __all__ = [
 AMP_LEVELS = 255.0
 #: the stored coefficient forms: u8 (depth <= 2) and f16 (any depth).
 ROW_DTYPES = (torch.uint8, torch.float16)
-#: the value digit counts and their levels: s8 alone at +-127, or s8 high + u8 low of an s16 at +-32767.
-VALUE_DIGITS = {1: 127.0, 2: 32767.0}
+#: the stored value form: f16 against the token's largest channel.
+VALUE_DTYPE = torch.float16
 _TINY = 1e-30
 
 
@@ -50,25 +50,16 @@ def dequantize_rows(rows: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return unit * scale.unsqueeze(-1)
 
 
-def quantize_values(v: torch.Tensor, digits: int) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
-    """``(v_hat s8 [..., c], v_lo u8 [..., c] or None, scale fp32 [...])``: the token's largest channel at the
-    digit count's full scale."""
-    if digits not in VALUE_DIGITS:
-        raise ValueError(f"the value digit count is one of {tuple(VALUE_DIGITS)}, got {digits}")
+def quantize_values(v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(unit f16 [..., c], scale fp32 [...])``: the token's values against its largest channel, rounded once to
+    f16; an all-zero token stays zero."""
     exact = v.detach().float()
     scale = exact.abs().amax(dim=-1)
-    q = torch.round(exact / scale.clamp_min(_TINY).unsqueeze(-1) * VALUE_DIGITS[digits]).to(torch.int32)
-    if digits == 1:
-        return q.to(torch.int8), None, scale
-    return (q >> 8).to(torch.int8), (q & 0xFF).to(torch.uint8), scale
+    return (exact / scale.clamp_min(_TINY).unsqueeze(-1)).to(VALUE_DTYPE), scale
 
 
-def dequantize_values(v_hat: torch.Tensor, v_lo: torch.Tensor | None, scale: torch.Tensor) -> torch.Tensor:
-    if v_lo is None:
-        q, levels = v_hat.float(), VALUE_DIGITS[1]
-    else:
-        q, levels = v_hat.float() * 256.0 + v_lo.float(), VALUE_DIGITS[2]
-    return q * (scale / levels).unsqueeze(-1)
+def dequantize_values(unit: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    return unit.float() * scale.unsqueeze(-1)
 
 
 def straight_through(exact: torch.Tensor, dequantized: torch.Tensor) -> torch.Tensor:

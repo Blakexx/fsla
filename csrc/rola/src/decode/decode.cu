@@ -199,7 +199,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
     // ---- THE PROLOGUE: three phases, three barriers ------------------------------
     //: PHASE A, EVERY OPERAND'S LOAD AT ONCE: the gain, a value channel, the dials and the digits of both sides -- see docs/internals/decode/decode.md#prologue
     const float sw = p.g_bf16 ? fold_gain<__nv_bfloat16>(p, b, h) : fold_gain<float>(p, b, h);
-    const ValueDigits v_c = tid < DV ? load_value(p, b, h, tid) : ValueDigits{0, 0.0f};
+    const ValueUnit v_c = tid < DV ? load_value(p, b, h, tid) : ValueUnit{__float2half(0.0f), 0.0f};
     if (DECAY) {
 #pragma unroll 1
       for (int i = tid; i < total_rows; i += kDecodeThreads) {
@@ -217,7 +217,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
     } else {
       fold_digits<D, uint8_t>(p, b, h, sa_r, sa_w, mask_r, mask_w);
     }
-    if (tid < DV) v_tok[tid] = value_of(p, v_c);
+    if (tid < DV) v_tok[tid] = value_of(v_c);
     __syncthreads();
     clock.lap(kPhFold);
 
@@ -904,10 +904,9 @@ int64_t rola_decode_build_stamp() {
 Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                            std::vector<Tensor> read_scale, std::vector<Tensor> write_scale,
                            std::vector<int64_t> normalize, std::optional<Tensor> dials,
-                           Tensor g_write, Tensor v_hat, std::optional<Tensor> v_lo, Tensor v_scale,
-                           Tensor state, Tensor yacc, Tensor queue, Tensor growth,
-                           Tensor growth_any, Tensor growth_ctr, Tensor done, Tensor atom_bits,
-                           std::vector<int64_t> level_widths,
+                           Tensor g_write, Tensor v, Tensor v_scale, Tensor state, Tensor yacc,
+                           Tensor queue, Tensor growth, Tensor growth_any, Tensor growth_ctr,
+                           Tensor done, Tensor atom_bits, std::vector<int64_t> level_widths,
                            std::vector<int64_t> level_row_offsets, int64_t lattice_k,
                            int64_t lattice_m, bool write_dense, int64_t ctas, double eps,
                            std::optional<Tensor> page_table, std::optional<Tensor> pool_slots,
@@ -921,8 +920,7 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                   "read, write, normalize and the two per-level integer vectors must each "
                   "have D entries");
 
-  const Tensor& v = v_hat;
-  STD_TORCH_CHECK(v.dim() == 4 && v.size(1) == 1, "v_hat must be [B, 1, H, d_v], got ",
+  STD_TORCH_CHECK(v.dim() == 4 && v.size(1) == 1, "v must be [B, 1, H, d_v], got ",
                   shape(v.sizes()));
   const int B = static_cast<int>(v.size(0));
   const int H = static_cast<int>(v.size(2));
@@ -999,13 +997,9 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.write_atoms = (write_dense && p.lat_inner_bits >= kAtomShift) ? 1 : 0;
   p.g_write = detail::scalar_span_of(g_write, B, H, "g_write");
   p.g_bf16 = detail::is_bf16(g_write.scalar_type(), "g_write");
-  //: THE VALUE DIGITS: s8 high, u8 low at two digits, the fp32 token scale.
-  STD_TORCH_CHECK(v_hat.scalar_type() == Dtype::Char, "v_hat is s8, got ", v_hat.scalar_type());
-  p.v = detail::span_of(v_hat, B, H, d_v, "v_hat");
-  if (v_lo.has_value()) {
-    STD_TORCH_CHECK(v_lo->scalar_type() == Dtype::Byte, "v_lo is u8, got ", v_lo->scalar_type());
-    p.v_lo = detail::span_of(*v_lo, B, H, d_v, "v_lo");
-  }
+  //: THE VALUE: f16 against the token's largest channel, the fp32 token scale.
+  STD_TORCH_CHECK(v.scalar_type() == Dtype::Half, "v is f16, got ", v.scalar_type());
+  p.v = detail::span_of(v, B, H, d_v, "v");
   detail::check_f32_span(v_scale, "v_scale");
   p.v_scale = detail::scalar_span_of(v_scale, B, H, "v_scale");
 

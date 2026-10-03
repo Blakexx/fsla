@@ -19,7 +19,7 @@ from rola.ops import carry as carry_ops
 from rola.ops.naive import naive_rola
 from rola.ops.paging import decode_pages, encode_pages, from_split_planes, to_split_planes
 from rola.routing.factors import RouteFactors
-from rola.values import DEFAULT_VALUE_DIGITS, Values
+from rola.values import Values
 from tests.oracle import tolerances
 
 
@@ -105,12 +105,12 @@ def assert_reordered_close(got, want, what: str) -> None:
     assert reordered_close(got, want), f"{what}: off by up to {worst:.3g} beyond summation reordering"
 
 
-def step_bundles(v, read, write, g_write, topology, *, read_mass=None, digits: int = DEFAULT_VALUE_DIGITS):
+def step_bundles(v, read, write, g_write, topology, *, read_mass=None):
     """Floating step operands in the internal format: ``(RouteFactors, Values)`` as the framework's epilogue writes
-    them (u8 rows at depth <= 2, f16 deeper; ``digits`` value digits)."""
+    them (u8 rows at depth <= 2, f16 deeper; f16 values)."""
     routes = RouteFactors.from_levels(topology, tuple(t.float() for t in read), tuple(t.float() for t in write),
                                       g_write.float(), read_mass=read_mass)
-    return routes, Values.from_projection(v.float(), digits)
+    return routes, Values.from_projection(v.float())
 
 
 def bundle_operands(routes, values):

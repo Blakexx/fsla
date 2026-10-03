@@ -97,7 +97,7 @@ def backing(f):
       masks=_DECODE, capturable=True)
 def state_plane(f):
     """The plane the kernel indexes, and the per-step agreement checks that find it."""
-    return bodies.step_plane(f["values"].v_hat, f["geometry"], f["decay"],
+    return bodies.step_plane(f["values"].v, f["geometry"], f["decay"],
                              f["carried_plane"], f["page_table"])
 
 
@@ -105,7 +105,7 @@ def state_plane(f):
       needs=("geometry", "routes", "values", "decay", "state_plane", "page_table", "scratch", "pool"),
       stream="main", masks=_DECODE, capturable=True)
 def build_plan(f):
-    """The launch's arguments, over the bundles' OWN rows, scales and digits.
+    """The launch's arguments, over the bundles' OWN rows, scales and values.
 
     It carries a stream because the decay arm's dials are derived here: a per-HEAD
     constant, the one operand the step kernel does not fold
@@ -117,7 +117,7 @@ def build_plan(f):
         read_scale=routes.scale_read, write_scale=routes.scale_write,
         normalize=tuple(routes.read_needs_normalization()),
         dials=bodies.leaf_rate_dials_for(f["decay"], geometry, values.device),
-        g_write=routes.g_write, v_hat=values.v_hat, v_lo=values.v_lo, v_scale=values.scale,
+        g_write=routes.g_write, v=values.v, v_scale=values.scale,
         state_plane=f["state_plane"],
         page_table=f["page_table"], scratch=f["scratch"], pool=f["pool"])
 

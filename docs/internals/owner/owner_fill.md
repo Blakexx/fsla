@@ -10,13 +10,11 @@ the slots and liveness come from the lists ([`owner_lists.md`](owner_lists.md)).
 
 A write row, one a write-live token, 160 bytes: a 64-byte coefficient run (at `(16, 64)` the write-sparse slice, level
 R's write coefficients for the box's 64 digits; at `(32, 32)` the write-dense slice, level S's for the box's 32 digits,
-then the write-sparse slice), the two value digits for the CTA's 32 channels (`v_hat`, then `v_lo` or zeros at one
-value digit), then at `(16, 64)` the 16-byte dense slice, then the four factors (write gain, value scale, the two write
+then the write-sparse slice), the CTA's 32 channels of the token's f16 values (64 bytes), then at `(16, 64)` the 16-byte dense slice, then the four factors (write gain, value scale, the two write
 scales). A read row, one a read-live token: a 64-byte run (the read-dense slice, level R's read coefficients, or at
 `(32, 32)` the read-dense and read-sparse slices), then at `(16, 64)` the read-sparse chunk: 96 or 64 bytes. Each pool
-holds 128 rows; a window whose union is larger is filled, and consumed, in passes. The write pool (`WritePool`, the
-fold's) also holds each row's dense digits' bit lengths, the fold's scale operand; the read pool (`ReadPool`) is the
-readout's; the row layout is `Rows`. They are separate tenants so a kernel places each with its phase.
+holds 128 rows; a window whose union is larger is filled, and consumed, in passes. The write pool (`WritePool`) is the
+fold's, the read pool (`ReadPool`) the readout's; the row layout is `Rows`. They are separate tenants so a kernel places each with its phase.
 
 EVERY RUN SITS AT ITS GLOBAL SECTOR'S 32-BYTE PHASE: the pools are 128-byte aligned, the runs at 32-byte offsets, the
 pitches multiples of 32. A `cp.async` lane pair coalesces into one L2 sector request only when its shared destination
@@ -39,7 +37,7 @@ instructions (16 x 64 at `nl64k-alt-k4`: 516M against 159M a head, 5.0 against 2
 ## The write pass
 
 At `(16, 64)` the quad copies the sparse slice's 64-byte run, a 32-byte sector it is not live in landing as zeros and
-reading nothing (the lists' sector unions), then the value planes' two 32-byte runs, then the four factors (4 bytes
+reading nothing (the lists' sector unions), then the values' two 32-byte runs, then the four factors (4 bytes
 each, through L1), and its first lane the 16-byte dense slice. At `(32, 32)` the dense and sparse slices are two 32-byte
 runs of one copy. The read pass is the read-dense run and the read-sparse chunk (or the two 32-byte runs).
 

@@ -54,10 +54,6 @@ def pack_modes(modes: tuple[int, ...]) -> int:
     return packed
 
 
-def _dense_bits(statics: SideStatics) -> int:
-    return sum(1 << level for level, dense in enumerate(statics.dense_levels) if dense)
-
-
 def intra_forward(routes, values, unions: torch.Tensor, layout: LivenessLayout, read_statics: SideStatics,
                   write_statics: SideStatics, num: torch.Tensor, den: torch.Tensor, *,
                   weight_digits: int = DEFAULT_WEIGHT_DIGITS) -> None:
@@ -67,10 +63,9 @@ def intra_forward(routes, values, unions: torch.Tensor, layout: LivenessLayout, 
     ones it was made with. Each level's rows are read at their own width (:func:`admits`), at most ``layout``'s, and
     the call is a whole number of `WINDOW`-token windows.
     """
-    extension().rola_intra_forward(
-        list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.v_hat,
-        values.v_lo, values.scale, unions, num, den, list(layout.B), _dense_bits(read_statics),
-        _dense_bits(write_statics), int(weight_digits), WINDOW)
+    raise NotImplementedError(
+        "the intra on f16 values is not built: its value product reads the retired int8 value digits and is "
+        "rebuilt as an fp16 MMA in the intra's port (docs/internals/intra/intra_kernel.md#value-product)")
 
 
 def footprint(widths) -> int:

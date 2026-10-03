@@ -370,8 +370,7 @@ def step(plan: DecodePlan) -> torch.Tensor:
         normalize=[int(bool(flag)) for flag in plan.normalize],
         dials=plan.dials,
         g_write=plan.g_write,
-        v_hat=plan.v_hat,
-        v_lo=plan.v_lo,
+        v=plan.v,
         v_scale=plan.v_scale,
         state=plan.state_plane,
         yacc=plan.scratch.yacc,
@@ -392,7 +391,7 @@ def step(plan: DecodePlan) -> torch.Tensor:
         pool_slots=None if pool is None else pool.pool_slots,
         pool_cursor=None if pool is None else pool.pool_cursor,
     )
-    B, _T, H, _d_v = plan.v_hat.shape
+    B, _T, H, _d_v = plan.v.shape
     return y.view(B, H, 1, config.d_v).permute(0, 2, 1, 3).contiguous()
 
 
@@ -432,7 +431,7 @@ def _decode_step(
     """THE BUNDLE ENTRY for one token: the step's own bodies, in the step's order.
 
     ``routes`` is a one-token :class:`~rola.routing.factors.RouteFactors` and ``values`` a one-token
-    :class:`~rola.values.Values`; the kernel reads their rows, scales and digits as they are. ``state`` is the dense
+    :class:`~rola.values.Values`; the kernel reads their rows, scales and values as they are. ``state`` is the dense
     ``[BH, N / 16, page_bytes]`` plane, or the arena's ``[slots, page_bytes]`` one under ``page_table``. The read
     levels a bundle declares off the simplex are normalized in the fold
     (:meth:`~rola.routing.factors.RouteFactors.read_needs_normalization`).
@@ -440,7 +439,7 @@ def _decode_step(
     Returns ``(y, state, workspace)`` with ``y`` shaped ``[B, 1, H, d_v]`` fp32.
 
     ``config`` ALREADY CARRIES THE PADDED ``DV`` (:func:`derive_decode_geometry`), which is what makes this the SEAM
-    for decode's value width: the value digits are padded to ``config.d_v`` with zero columns and the returned ``y``
+    for decode's value width: the values are padded to ``config.d_v`` with zero columns and the returned ``y``
     is sliced back to the caller's ``d_v`` (``rola.ops.padding``). Per-level widths are NOT padded --
     :func:`derive_decode_geometry` already refused ``config`` past :func:`_admit`'s floor rather than pad it, so the
     rows reach the kernel exactly as the bundle holds them.
@@ -450,17 +449,16 @@ def _decode_step(
         raise ValueError(f"the decode step takes one token, and a one-token bundle is all rows: the routes are "
                          f"[B, T={routes.tokens}, H]")
     logical_d_v = values.d_v
-    v_hat = pad_v(values.v_hat, config.d_v)
-    v_lo = None if values.v_lo is None else pad_v(values.v_lo, config.d_v)
-    plane = step_plane(v_hat, config, decay, state, page_table)
+    v = pad_v(values.v, config.d_v)
+    plane = step_plane(v, config, decay, state, page_table)
     BH = values.batch * values.heads
     if workspace is None:
-        workspace = DecodeScratch.build(config, BH, v_hat.device)
+        workspace = DecodeScratch.build(config, BH, v.device)
     y = step(DecodePlan(
         config=config, heads=values.heads, read=routes.amp_read, write=routes.amp_write,
         read_scale=routes.scale_read, write_scale=routes.scale_write,
         normalize=tuple(routes.read_needs_normalization()),
-        dials=leaf_rate_dials_for(decay, config, v_hat.device),
-        g_write=routes.g_write, v_hat=v_hat, v_lo=v_lo, v_scale=values.scale,
+        dials=leaf_rate_dials_for(decay, config, v.device),
+        g_write=routes.g_write, v=v, v_scale=values.scale,
         state_plane=plane, page_table=page_table, scratch=workspace, pool=pool))
     return slice_y(y, logical_d_v), state, workspace

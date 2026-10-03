@@ -17,7 +17,7 @@ from rola.engine.facts.operands import operands_of, requires_backward
 @node(gives=("widths", "d_v"), needs=("routes", "values"))
 def topology(f):
     return (tuple(level.width for level in f["routes"].topology.levels),
-            f["values"].v_hat.shape[-1])
+            f["values"].d_v)
 
 
 @node(gives=("call_class",),

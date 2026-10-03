@@ -1,5 +1,5 @@
 // csrc/rola/src/owner/owner_fill.cuh -- THE FILL: a pass of the window's live tokens into the write pool (a token's
-// write-dense slice, the live sectors of its write-sparse slice, its value digits for the CTA's channels and its
+// write-dense slice, the live sectors of its write-sparse slice, its f16 values for the CTA's channels and its
 // factors) or the read pool (its read-dense slice and its read-sparse slice), from the bundle where it lies.
 // see docs/internals/owner/owner_fill.md
 #pragma once
@@ -13,7 +13,7 @@
 namespace rola::owner::detail {
 
 //: THE POOLS' ROWS, every copied run at its global sector's 32-byte phase: a write row is a 64-byte coefficient run, the
-//: two value planes, then the dense slice (16 x 64) and the factors; a read row a 64-byte run and the read-sparse chunk
+//: f16 values, then the dense slice (16 x 64) and the factors; a read row a 64-byte run and the read-sparse chunk
 //: (16 x 64). -- see docs/internals/owner/owner_fill.md#pools
 template <class C>
 struct Rows {
@@ -25,12 +25,10 @@ struct Rows {
                 "the row's runs fit");
 };
 
-//: THE WRITE POOL, the fold's: a pass's rows, and each row's dense digits' bit lengths, biased (0 for a dead digit), the
-//: fold's scales' operand.
+//: THE WRITE POOL, the fold's: a pass's rows.
 template <class C>
 struct alignas(128) WritePool {
   uint8_t write[kWritePool][Rows<C>::kWriteRow];
-  uint16_t bits[kWritePool][16];
 };
 
 //: THE READ POOL, the readout's.
@@ -67,8 +65,7 @@ struct FillLanes {
   __device__ __forceinline__ FillLanes(const OwnerParams& p, int b, int h, int cg, int s0, int r0,
                                        int tid)
       : q(tid & 3) {
-    const RowView& v = q < 2 ? p.v_hat : p.v_lo;
-    values = plane(v.base != nullptr ? v : p.v_hat, b, h, cg * kChannels + 16 * (q & 1));
+    values = plane(p.v, b, h, 2 * cg * kChannels + 16 * q);
     factor = plane(p.factor[q], b, h);
     if constexpr (C::RS == 16) {
       run = plane(p.write[p.level_r], b, h, r0 + 16 * q);
@@ -87,14 +84,13 @@ struct FillLanes {
 };
 
 //: A WRITE PASS: slots `[first, first + n)` of the window's write union, a quad a token: the 64-byte run of the sparse
-//: slice (16 x 64) or the dense and sparse slices' 32-byte runs (32 x 32), the two value planes' 32-byte runs, the four
+//: slice (16 x 64) or the dense and sparse slices' 32-byte runs (32 x 32), the f16 values' 64-byte run, the four
 //: factors, and at 16 x 64 the dense slice's chunk by the quad's first lane. A sparse sector the token is not live in
 //: lands as zeros and reads nothing. -- see docs/internals/owner/owner_fill.md#write-pass
 template <class C>
 __device__ void fill_write(WritePool<C>& pools, const ListTenants<C>& sm, const FillLanes<C>& lanes,
                            const OwnerParams& p, int win, int first, int n, int tid) {
   const int q = lanes.q;
-  const bool values_live = q < 2 || p.v_lo.base != nullptr;
 #pragma unroll 1
   for (int r = tid >> 2; r < n; r += kThreads / 4) {
     const int t = sm.token_of[0][first + r];
@@ -108,8 +104,7 @@ __device__ void fill_write(WritePool<C>& pools, const ListTenants<C>& sm, const 
     } else {
       ops::stage_tile(ops::smem_addr(row + 16 * q), token_row(lanes.run, tg));
     }
-    ops::stage_tile_if(ops::smem_addr(row + Rows<C>::kValues + 16 * q), token_row(lanes.values, tg),
-                       values_live);
+    ops::stage_tile(ops::smem_addr(row + Rows<C>::kValues + 16 * q), token_row(lanes.values, tg));
     ops::stage_run<4>(ops::smem_addr(row + Rows<C>::kFactors + 4 * q), token_row(lanes.factor, tg));
   }
   ops::stage_commit();

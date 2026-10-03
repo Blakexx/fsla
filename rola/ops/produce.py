@@ -30,7 +30,7 @@ from rola.routing.producer import Routing
 from rola.routing.projection import _packed_router_logits
 from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
 from rola.routing.types import IndependentRouting, TiedRouting, UnionRouting
-from rola.values import DEFAULT_VALUE_DIGITS, Values
+from rola.values import Values
 
 __all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "ProducerPlan", "ProducerWeights", "hidden_contiguous", "job_table",
            "ledger_bind", "produce", "projection_dtype", "route_logits", "run_kernel"]
@@ -39,13 +39,12 @@ __all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "ProducerPlan", "ProducerWeights", "
 @dataclass(frozen=True)
 class ProducerPlan:
     """What one layer's producer computes, compiled once from its declaration: the routing, the heads, the widths
-    in and out, and the value digits. Every per-call decision is read off this, never off the data."""
+    in and out. Every per-call decision is read off this, never off the data."""
 
     routing: Routing
     num_heads: int
     hidden_size: int
     d_v: int
-    value_digits: int = DEFAULT_VALUE_DIGITS
     #: per level, whether a side's fold is an identity -- the topology's DECLARED simplex outputs, never a runtime
     #: `sum == 1` test, which would be the reduction the skip exists to delete (docs/api.md section 2.2)
     read_skip: tuple[bool, ...] = field(init=False)
@@ -203,8 +202,8 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
 
     out = {"amp_read": empty(rows, dtype=row_dtype), "amp_write": empty(rows, dtype=row_dtype),
            "scale_read": empty(D), "scale_write": empty(D), "mass_read": empty(D), "mass_write": empty(D),
-           "read_mass": empty(), "g_write": empty(), "v_hat": empty(plan.d_v, dtype=torch.int8),
-           "v_lo": empty(plan.d_v, dtype=torch.uint8) if plan.value_digits == 2 else None, "v_scale": empty()}
+           "read_mass": empty(), "g_write": empty(), "v": empty(plan.d_v, dtype=torch.float16),
+           "v_scale": empty()}
     jobs, shapes, per_head = _job_tensor(plan, str(device))
     tiles = -(-(B * T) // _TOKEN_TILE)
     route_bias = None if weights.route_bias is None else weights.route_bias.float().contiguous()
@@ -212,7 +211,7 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
         x.reshape(B * T, hidden).to(torch.bfloat16).contiguous(), weights.route_W, route_bias,
         weights.gain_bias.float().contiguous(), weights.v_W, jobs,
         *(out[name] for name in ("amp_read", "amp_write", "scale_read", "scale_write", "mass_read", "mass_write",
-                                 "read_mass", "g_write", "v_hat", "v_lo", "v_scale")),
+                                 "read_mass", "g_write", "v", "v_scale")),
         _arrivals(device, tiles * H), None, None, shapes, D, per_head)
     return {name: None if t is None else t.transpose(1, 2) for name, t in out.items()}
 
@@ -245,7 +244,7 @@ def _kernel_bundle(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights
                           amp_write=rows(out["amp_write"]), scale_read=scales(out["scale_read"]),
                           scale_write=scales(out["scale_write"]), g_write=out["g_write"],
                           read_mass=None if all(plan.read_skip) else out["read_mass"], sparse=_sparse_flags(plan))
-    return routes, Values(v_hat=out["v_hat"], v_lo=out["v_lo"], scale=out["v_scale"])
+    return routes, Values(v=out["v"], scale=out["v_scale"])
 
 
 def _sparse_flags(plan: ProducerPlan) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
@@ -277,7 +276,7 @@ def _composition(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) 
     #: `v` FLOWS bf16 into the format (docs/api.md section 4.1); the fp64 reference computes it in fp64
     v_dtype = torch.float64 if x.dtype == torch.float64 else torch.bfloat16
     v = F.linear(x.to(v_dtype), weights.v_W.to(v_dtype))
-    values = Values.from_projection(rearrange(v, "b l (h d) -> b l h d", d=plan.d_v), digits=plan.value_digits)
+    values = Values.from_projection(rearrange(v, "b l (h d) -> b l h d", d=plan.d_v))
     return routes, values
 
 

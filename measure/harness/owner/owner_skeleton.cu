@@ -14,7 +14,6 @@
 #include "owner/owner.cuh"
 #include "owner/owner_drain.cuh"
 #include "owner/owner_fill.cuh"
-#include "owner/owner_fold.cuh"
 #include "owner/owner_lists.cuh"
 #include "owner/owner_readout.cuh"
 
@@ -185,107 +184,6 @@ void run_drain(const OwnerParams& p, int64_t bh, Tensor& num, Tensor& den) {
   ROLA_CUDA_LAUNCH_CHECK();
 }
 
-//: THE FOLD PART'S PHASES, after the fold's own: the window's lists, a pass's fill and its wait, its token factors,
-//: the pass's closing barrier.
-enum FoldPartPhase : int {
-  kPartLists = detail::kFoldPhases,
-  kPartFill,
-  kPartFactors,
-  kPartSync,
-  kPartPhases
-};
-
-//: THE FOLD PART'S TENANTS: the lists, the write pool, the fold's own and each warp's phase clock row.
-template <class C>
-struct FoldPartTenants {
-  ListTenants<C> lists;
-  detail::WritePool<C> write;
-  detail::FoldTenants<C> fold;
-  long long clock[kWarps][kPartPhases + 1];
-};
-
-//: THE FOLD PART: each window's lists, then its write passes, each filled, its token factors formed, and folded by
-//: every warp in its form; the state dumped when asked (`[lists][leaves][channels]` a CTA), else its sum.
-template <class C>
-__global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__ OwnerParams p,
-                                                         float* out, int dump) {
-  extern __shared__ __align__(128) unsigned char raw[];
-  FoldPartTenants<C>& sm = *reinterpret_cast<FoldPartTenants<C>*>(raw);
-  const int tid = static_cast<int>(threadIdx.x), warp = tid >> 5, lane = tid & 31;
-  const int s0 = static_cast<int>(blockIdx.x) * C::RS, r0 = static_cast<int>(blockIdx.y) * C::RD;
-  const int bh = static_cast<int>(blockIdx.z) / kChannelGroups,
-            cg = static_cast<int>(blockIdx.z) % kChannelGroups;
-  const int b = bh / p.H, h = bh - b * p.H;
-  const detail::FillLanes<C> lanes(p, b, h, cg, s0, r0, tid);
-  detail::FoldState<C> st{};
-  PhaseClock<kPartPhases, true> clk(sm.clock[warp], lane, p.ledger != nullptr);
-  detail::stage_words(sm.lists, p, bh, s0, r0, 0, 0, tid);
-#pragma unroll 1
-  for (int win = 0; win < p.windows; ++win) {
-    const int buf = win & 1;
-    ops::stage_wait<0>();
-    __syncthreads();
-    if (win + 1 < p.windows) detail::stage_words(sm.lists, p, bh, s0, r0, win + 1, buf ^ 1, tid);
-    detail::window_lists(sm.lists, p, buf, tid);
-    detail::fold_cursors(sm.lists, sm.fold, warp);
-    clk.lap(kPartLists);
-    const int live = sm.lists.base[0][kWindowWords - 1] + __popc(sm.lists.uni[0][kWindowWords - 1]);
-#pragma unroll 1
-    for (int first = 0; first < live; first += kWritePass) {
-      const int n = min(kWritePass, live - first);
-      detail::fill_write(sm.write, sm.lists, lanes, p, win, first, n, tid);
-      ops::stage_wait<0>();
-      __syncthreads();
-      clk.lap(kPartFill);
-      detail::token_factors(sm.write, p, n, tid);
-      __syncthreads();
-      clk.lap(kPartFactors);
-      detail::fold_pass(sm.write, sm.lists, sm.fold, p, st, first, n, warp, lane, clk);
-      __syncthreads();
-      clk.lap(kPartSync);
-    }
-  }
-  const int g = lane >> 2, tq = lane & 3;
-  const int64_t cta =
-      (static_cast<int64_t>(blockIdx.z) * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
-  float sum = 0.0f;
-#pragma unroll
-  for (int j = 0; j < C::kFoldLists; ++j)
-#pragma unroll
-    for (int nn = 0; nn < 4; ++nn)
-#pragma unroll
-      for (int i = 0; i < 4; ++i) {
-        const int leaf = 2 * g + (i >> 1);
-        const int ch = 16 * (nn >> 1) + 2 * (2 * tq + (i & 1)) + (nn & 1);
-        if (dump != 0)
-          out[((cta * C::RD + warp * C::kFoldLists + j) * C::RS + leaf) * kChannels + ch] =
-              st.acc[j][nn][i];
-        sum += st.acc[j][nn][i];
-      }
-  if (dump == 0) atomicAdd(out, sum);
-  clk.publish(p.ledger, cta, kWarps, warp);
-}
-
-template <class C>
-Tensor run_fold(OwnerParams p, int64_t bh, int dump) {
-  const int64_t sb = p.width[p.level_s] / C::RS, rb = p.width[p.level_r] / C::RD;
-  const int64_t ctas = sb * rb * bh * kChannelGroups;
-  //: dump 1: the state; dump 2: the phase ledger `[ctas][warps][phases]`, cycles
-  Tensor ledger = dump == 2 ? zeros_cuda({ctas, kWarps, kPartPhases}, Dtype::Long)
-                            : empty_cuda({1}, Dtype::Long);
-  Tensor out = zeros_cuda({dump == 1 ? ctas * C::RD * C::RS * kChannels : 1}, Dtype::Float);
-  p.ledger = dump == 2 ? reinterpret_cast<long long*>(ledger.mutable_data_ptr<int64_t>()) : nullptr;
-  constexpr int kSmem = static_cast<int>(sizeof(FoldPartTenants<C>));
-  ROLA_CUDA_CHECK(
-      cudaFuncSetAttribute(fold_part<C>, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
-  const dim3 grid(static_cast<unsigned>(sb), static_cast<unsigned>(rb),
-                  static_cast<unsigned>(bh * kChannelGroups));
-  fold_part<C><<<grid, kThreads, kSmem, current_stream()>>>(p, out.mutable_data_ptr<float>(),
-                                                            dump == 1 ? 1 : 0);
-  ROLA_CUDA_LAUNCH_CHECK();
-  return dump == 2 ? ledger : out;
-}
-
 //: THE READOUT PART: each window's lists, then its read passes, each filled and read out by every warp in its form into
 //: the shared panel; the panel's checksum written so nothing is dead.
 template <class C>
@@ -417,11 +315,13 @@ Tensor lists_part_op(Tensor words, std::vector<int64_t> widths, int64_t level_s,
 }
 
 RowView row_view(const Tensor& t, int64_t width) {
+  const int64_t e = static_cast<int64_t>(t.element_size());
   STD_TORCH_CHECK(t.is_cuda() && t.dim() == 4 && t.size(3) == width && t.stride(3) == 1
                       && reinterpret_cast<uintptr_t>(t.const_data_ptr()) % 16 == 0
-                      && t.stride(1) % 16 == 0 && t.stride(2) % 16 == 0 && t.stride(0) % 16 == 0,
-                  "a row view is [B, T, H, width] bytes, starting and striding on 16 bytes");
-  return RowView{t.const_data_ptr(), t.stride(0), t.stride(1), t.stride(2)};
+                      && t.stride(1) * e % 16 == 0 && t.stride(2) * e % 16 == 0
+                      && t.stride(0) * e % 16 == 0,
+                  "a row view is [B, T, H, width], starting and striding on 16 bytes");
+  return RowView{t.const_data_ptr(), t.stride(0) * e, t.stride(1) * e, t.stride(2) * e};
 }
 
 ColumnView column_view(const Tensor& t) {
@@ -449,21 +349,20 @@ std::vector<Tensor> run_fill(OwnerParams p, int64_t bh, bool dump) {
   return {w, r};
 }
 
-//: THE BUNDLE'S PARAMS for the fill and the fold.
+//: THE BUNDLE'S PARAMS for the fill and the readout.
 OwnerParams bundle_params(const std::vector<Tensor>& read, const std::vector<Tensor>& write,
                           const std::vector<Tensor>& scale_write, const Tensor& g_write,
-                          const Tensor& v_hat, const std::optional<Tensor>& v_lo,
-                          const Tensor& v_scale, const Tensor& words, int64_t level_s,
-                          int64_t sparse_write, int64_t sparse_read, int64_t step);
+                          const Tensor& v, const Tensor& v_scale, const Tensor& words,
+                          int64_t level_s, int64_t sparse_write, int64_t sparse_read, int64_t step);
 
 //: -- see docs/internals/owner/owner.md#skeleton
 std::vector<Tensor> fill_part_op(std::vector<Tensor> read, std::vector<Tensor> write,
-                                 std::vector<Tensor> scale_write, Tensor g_write, Tensor v_hat,
-                                 std::optional<Tensor> v_lo, Tensor v_scale, Tensor words,
-                                 int64_t level_s, int64_t sparse_write, int64_t sparse_read,
-                                 int64_t rs, int64_t rd, int64_t dump) {
-  const OwnerParams p = bundle_params(read, write, scale_write, g_write, v_hat, v_lo, v_scale,
-                                      words, level_s, sparse_write, sparse_read, kStepChosen);
+                                 std::vector<Tensor> scale_write, Tensor g_write, Tensor v,
+                                 Tensor v_scale, Tensor words, int64_t level_s,
+                                 int64_t sparse_write, int64_t sparse_read, int64_t rs, int64_t rd,
+                                 int64_t dump) {
+  const OwnerParams p = bundle_params(read, write, scale_write, g_write, v, v_scale, words, level_s,
+                                      sparse_write, sparse_read, kStepChosen);
   const int64_t bh = read[0].size(0) * read[0].size(2);
   const DeviceGuard guard(words.get_device_index());
   if (rs == 16 && rd == 64) return run_fill<Carve<16, 64>>(p, bh, dump != 0);
@@ -472,27 +371,12 @@ std::vector<Tensor> fill_part_op(std::vector<Tensor> read, std::vector<Tensor> w
 }
 
 //: -- see docs/internals/owner/owner.md#skeleton
-Tensor fold_part_op(std::vector<Tensor> read, std::vector<Tensor> write,
-                    std::vector<Tensor> scale_write, Tensor g_write, Tensor v_hat,
-                    std::optional<Tensor> v_lo, Tensor v_scale, Tensor words, int64_t level_s,
-                    int64_t sparse_write, int64_t sparse_read, int64_t rs, int64_t rd, int64_t step,
-                    int64_t dump) {
-  const OwnerParams p = bundle_params(read, write, scale_write, g_write, v_hat, v_lo, v_scale,
-                                      words, level_s, sparse_write, sparse_read, step);
-  const int64_t bh = read[0].size(0) * read[0].size(2);
-  const DeviceGuard guard(words.get_device_index());
-  STD_TORCH_CHECK(rs == 16 && rd == 64, "the fold is built for the ruled carve, (16, 64)");
-  return run_fold<Carve<16, 64>>(p, bh, static_cast<int>(dump));
-}
-
-//: -- see docs/internals/owner/owner.md#skeleton
 Tensor readout_part_op(std::vector<Tensor> read, std::vector<Tensor> write,
-                       std::vector<Tensor> scale_write, Tensor g_write, Tensor v_hat,
-                       std::optional<Tensor> v_lo, Tensor v_scale, Tensor words, int64_t level_s,
-                       int64_t sparse_write, int64_t sparse_read, int64_t rs, int64_t rd,
-                       int64_t step) {
-  const OwnerParams p = bundle_params(read, write, scale_write, g_write, v_hat, v_lo, v_scale,
-                                      words, level_s, sparse_write, sparse_read, step);
+                       std::vector<Tensor> scale_write, Tensor g_write, Tensor v, Tensor v_scale,
+                       Tensor words, int64_t level_s, int64_t sparse_write, int64_t sparse_read,
+                       int64_t rs, int64_t rd, int64_t step) {
+  const OwnerParams p = bundle_params(read, write, scale_write, g_write, v, v_scale, words, level_s,
+                                      sparse_write, sparse_read, step);
   const int64_t bh = read[0].size(0) * read[0].size(2);
   const DeviceGuard guard(words.get_device_index());
   if (rs == 16 && rd == 64) return run_readout<Carve<16, 64>>(p, bh);
@@ -502,9 +386,9 @@ Tensor readout_part_op(std::vector<Tensor> read, std::vector<Tensor> write,
 
 OwnerParams bundle_params(const std::vector<Tensor>& read, const std::vector<Tensor>& write,
                           const std::vector<Tensor>& scale_write, const Tensor& g_write,
-                          const Tensor& v_hat, const std::optional<Tensor>& v_lo,
-                          const Tensor& v_scale, const Tensor& words, int64_t level_s,
-                          int64_t sparse_write, int64_t sparse_read, int64_t step) {
+                          const Tensor& v, const Tensor& v_scale, const Tensor& words,
+                          int64_t level_s, int64_t sparse_write, int64_t sparse_read,
+                          int64_t step) {
   STD_TORCH_CHECK(read.size() == 2 && write.size() == 2 && scale_write.size() == 2,
                   "two levels a side");
   OwnerParams p{};
@@ -524,8 +408,8 @@ OwnerParams bundle_params(const std::vector<Tensor>& read, const std::vector<Ten
   p.factor[1] = column_view(v_scale);
   p.factor[2] = column_view(scale_write[0]);
   p.factor[3] = column_view(scale_write[1]);
-  p.v_hat = row_view(v_hat, 2 * kChannels);
-  p.v_lo = v_lo.has_value() ? row_view(*v_lo, 2 * kChannels) : RowView{nullptr, 0, 0, 0};
+  STD_TORCH_CHECK(v.scalar_type() == Dtype::Half, "the values are f16");
+  p.v = row_view(v, 2 * kChannels);
   p.sparse_write = static_cast<int>(sparse_write);
   p.sparse_read = static_cast<int>(sparse_read);
   p.H = static_cast<int>(read[0].size(2));
@@ -584,15 +468,11 @@ STABLE_TORCH_LIBRARY(rola_owner, m) {
       "drain_part(Tensor words, int[] widths, int level_s, int sparse_write, int sparse_read, int heads, int rs, "
       "int rd, Tensor(a!) num, Tensor(b!) den) -> ()");
   m.def(
-      "fold_part(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v_hat, Tensor? v_lo, "
-      "Tensor v_scale, Tensor words, int level_s, int sparse_write, int sparse_read, int rs, int rd, int step, "
-      "int dump) -> Tensor");
-  m.def(
-      "readout_part(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v_hat, Tensor? v_lo, "
+      "readout_part(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v, "
       "Tensor v_scale, Tensor words, int level_s, int sparse_write, int sparse_read, int rs, int rd, int step) "
       "-> Tensor");
   m.def(
-      "fill_part(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v_hat, Tensor? v_lo, "
+      "fill_part(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v, "
       "Tensor v_scale, Tensor words, int level_s, int sparse_write, int sparse_read, int rs, int rd, int dump) "
       "-> Tensor[]");
 }
@@ -602,6 +482,5 @@ STABLE_TORCH_LIBRARY_IMPL(rola_owner, CompositeExplicitAutograd, m) {
   m.impl("lists_dump_words", TORCH_BOX(&rola::owner::skeleton::lists_dump_words));
   m.impl("fill_part", TORCH_BOX(&rola::owner::skeleton::fill_part_op));
   m.impl("drain_part", TORCH_BOX(&rola::owner::skeleton::drain_part_op));
-  m.impl("fold_part", TORCH_BOX(&rola::owner::skeleton::fold_part_op));
   m.impl("readout_part", TORCH_BOX(&rola::owner::skeleton::readout_part_op));
 }

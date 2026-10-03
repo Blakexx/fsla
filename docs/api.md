@@ -313,7 +313,7 @@ RULED 2026-09-29: the producer is a DECLARED CONFIGURATION. A `Routing` is data 
 the projection bias -- and the layer compiles it once into its producer plan and owns every weight it implies: the
 packed per-head routing projection `route_W`, its bias, the write gain's bias, `v_proj` and `o_proj`. One producer
 call (`rola.ops.produce.produce`) turns a stretch of tokens into the bundle -- the projection, the exact
-entmax/softmax solves, the fold, the gain, the unit-max rows and the value digits -- and on CUDA with no gradient
+entmax/softmax solves, the fold, the gain, the unit-max rows and the f16 values -- and on CUDA with no gradient
 that call is ONE LAUNCH of the fused producer kernel (`docs/internals/produce/produce.md`), the bundle's rows and
 scales views of the planes it writes. The torch composition behind the same call is the reference: fp64, the host,
 and -- until the native backward -- the path a gradient takes. Construction validates the whole declaration --
@@ -493,10 +493,9 @@ state and hands none back.
 
 `v_proj` and `o_proj` run as bf16 GEMMs with weights cast per call, and the projection
 is written to the value format at the layer: `Values.from_projection(v)` (`rola/values.py`)
-holds each token's values against its largest channel: at two digits (the default) the s16
-`round(32767 x)` as an s8 high byte `v_hat` and a u8 low byte `v_lo`, at one the s8
-`round(127 x)` alone; that magnitude is the token's fp32 `scale`. The op takes the bundle, not
-the tensor. The planes and the scale are what the int kernels read; `Values.dequantized()` is
+holds each token's values `v` in f16 against its largest channel (at 1); that magnitude is
+the token's fp32 `scale`. The op takes the bundle, not the tensor. The plane and the scale are
+what the kernels read; `Values.dequantized()` is
 the fp32 view a consumer still computing on floating values takes at its seam, with the
 projection's gradient stepped straight through when the projection requires one. The arm is
 UNCONDITIONAL because the op's envelope makes it so: there is no CPU lowering, so a

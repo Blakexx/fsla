@@ -125,21 +125,19 @@ __device__ __forceinline__ void normalize_rows(const DecodeParams& p, float* sa_
   }
 }
 
-//: Channel `c` of the token's value, LOADED: its digits and the token's scale, the arithmetic left for after the digit pass. -- see docs/internals/decode/decode_fold.md#fold-value
-struct ValueDigits {
-  int q;
+//: Channel `c` of the token's value, LOADED: its f16 unit and the token's scale, the product left for after the digit pass. -- see docs/internals/decode/decode_fold.md#fold-value
+struct ValueUnit {
+  __half unit;
   float scale;
 };
 
-__device__ __forceinline__ ValueDigits load_value(const DecodeParams& p, int b, int h, int c) {
-  const int hi = row_of<int8_t>(p.v, b, h)[c * p.v.sw];
-  const int lo = p.v_lo.base != nullptr ? row_of<uint8_t>(p.v_lo, b, h)[c * p.v_lo.sw] : 0;
-  return ValueDigits{p.v_lo.base != nullptr ? hi * 256 + lo : hi, scale_of(p.v_scale, b, h)};
+__device__ __forceinline__ ValueUnit load_value(const DecodeParams& p, int b, int h, int c) {
+  return ValueUnit{row_of<__half>(p.v, b, h)[c * p.v.sw], scale_of(p.v_scale, b, h)};
 }
 
-//: The channel's value, `q * scale / (127 or 32767)`.
-__device__ __forceinline__ float value_of(const DecodeParams& p, const ValueDigits& d) {
-  return static_cast<float>(d.q) * (d.scale / (p.v_lo.base != nullptr ? 32767.0f : 127.0f));
+//: The channel's value, `unit * scale`.
+__device__ __forceinline__ float value_of(const ValueUnit& d) {
+  return __half2float(d.unit) * d.scale;
 }
 
 //: The write gain, a per-token scalar every thread of the CTA reads.
