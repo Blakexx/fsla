@@ -80,7 +80,7 @@ tile's rows (a count of its live tokens, uniform), a row past them solving and r
 no collective sits under a branch ptxas cannot prove warp-uniform.
 
 <a id="bundle"></a>THE BUNDLE'S FORM (`write_side`), for each side the job writes (a shape bit each): the row against
-its max as u8 digits (depth at most two, round to nearest even of `unit x 255`) or f16 units, the max clamped at
+its max as u8 digits (round to nearest even of `unit x 255`), the max clamped at
 `1e-30` as `quantize_unit_max_rows` clamps it; the max as the side's scale; and the level's mass for the finisher
 where the fold applies (1 elsewhere, so the finisher multiplies every level without the plan's flags). A side reduces
 only what the solve did not give: a one-activation row's max is its top element's own value (`top`: `(-tau/2)^2`,
@@ -105,7 +105,7 @@ independent row is its one logit row. Softmax, entmax 1.5 and 2 and both unions 
 activations, with the reference `rola/routing/entmax/production.py`'s `_torch_union_split` and `_torch_activation`.
 The union's split reuses the entmax family's `union_write` (`docs/internals/entmax/entmax.md#union-write`) with its
 fast policy, and the read side is the value times the sigmoid, both on the special-function unit: the fp32 levels
-feed u8 or f16 digits, a thousand times coarser than those units' error. Gate: every route job's sides against the
+feed u8 digits, a thousand times coarser than those units' error. Gate: every route job's sides against the
 fp64 reference solve on the kernel's own logits, per slot within `(width + 16) 2^-23` (measured at most 0.37 of it,
 the 1.5-union's write side).
 

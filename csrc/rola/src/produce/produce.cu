@@ -246,16 +246,6 @@ __device__ void probe_logits(const ProduceParams& p, int job_index, int token0, 
   }
 }
 
-//: One digit of a row plane, in the plane's form: a u8 byte, or an f16 of the unit value.
-__device__ __forceinline__ void write_digit(const ProduceParams& p, uint8_t* plane, int64_t index,
-                                            float unit) {
-  if (p.row_form == kRowsF16) {
-    reinterpret_cast<__half*>(plane)[index] = __float2half_rn(unit);
-  } else {
-    plane[index] = static_cast<uint8_t>(__float2uint_rn(unit * 255.0f));
-  }
-}
-
 //: A value the whole warp holds, reduced by a butterfly: every lane ends with the same bits.
 template <class Op>
 __device__ __forceinline__ float warp_all(float v, Op op) {
@@ -328,7 +318,7 @@ __device__ __forceinline__ float newton_threshold(float (&z)[IPT], uint32_t memb
 
 //: THE SOLVE of one token's row, element `lane + 32 i` a lane's `i`th: the job's levels, fp32 (a one-sided solve fills
 //: both sides with its one level); a row past the live tokens solves zeros. Compact code on the special-function
-//: unit: the fp32 levels feed u8 or f16 digits. `top` is a one-activation row's max, its top element's own value
+//: unit: the fp32 levels feed u8 digits. `top` is a one-activation row's max, its top element's own value
 //: (a union's sides are reduced). -- see docs/internals/produce/produce.md#solve
 template <int IPT>
 __device__ __forceinline__ void solve_row(const Job& job, float* row, bool live, int lane,
@@ -395,10 +385,10 @@ __device__ __forceinline__ void solve_row(const Job& job, float* row, bool live,
 //: already give: its max when `top` is not it (a union's sides), its mass where the fold applies.
 //: -- see docs/internals/produce/produce.md#bundle
 template <int IPT>
-__device__ __forceinline__ void write_side(const ProduceParams& p, const float (&level)[IPT],
-                                           int width, bool live, int lane, uint8_t* plane,
-                                           int64_t first, float* scale, float* mass, int64_t at,
-                                           bool reduce_max, float top, bool fold, bool applied) {
+__device__ __forceinline__ void write_side(const float (&level)[IPT], int width, bool live,
+                                           int lane, uint8_t* plane, int64_t first, float* scale,
+                                           float* mass, int64_t at, bool reduce_max, float top,
+                                           bool fold, bool applied) {
   float m = top, sum = 1.0f;
   if (reduce_max) {
     m = 0.0f;
@@ -416,7 +406,10 @@ __device__ __forceinline__ void write_side(const ProduceParams& p, const float (
 #pragma unroll
   for (int i = 0; i < IPT; ++i) {
     const int col = lane + 32 * i;
-    if (live && col < width) write_digit(p, plane, first + col, __fdividef(level[i], unit));
+    if (live && col < width) {
+      plane[first + col] =
+          static_cast<uint8_t>(__float2uint_rn(__fdividef(level[i], unit) * 255.0f));
+    }
   }
   if (live && lane == 0) {
     scale[at] = applied && fold && sum > 0.0f ? m / sum : m;
@@ -447,12 +440,12 @@ __device__ void route_row(const ProduceParams& p, const Job& job, int job_index,
   const int64_t first = slot * p.rows;
   const int64_t at = slot * p.D + job.level;
   if (job.reads) {
-    write_side<IPT>(p, read, job.width, live, lane, p.amp_read, first + job.out_read, p.scale_read,
+    write_side<IPT>(read, job.width, live, lane, p.amp_read, first + job.out_read, p.scale_read,
                     p.mass_read, at, reduce_max, top, job.fold_read != 0, false);
   }
   if (job.writes) {
-    write_side<IPT>(p, write, job.width, live, lane, p.amp_write, first + job.out_write,
-                    p.scale_write, p.mass_write, at, reduce_max, top, job.fold_write != 0, true);
+    write_side<IPT>(write, job.width, live, lane, p.amp_write, first + job.out_write, p.scale_write,
+                    p.mass_write, at, reduce_max, top, job.fold_write != 0, true);
   }
 }
 
@@ -661,13 +654,12 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                   "jobs is the plan's [n, ", kJobFields, "] int32 job table on the device");
   STD_TORCH_CHECK(levels >= 1 && levels <= 4, "the routing depth is one to four levels, got ",
                   levels);
-  const bool f16 = amp_read.scalar_type() == Dtype::Half;
-  STD_TORCH_CHECK(
-      (f16 || amp_read.scalar_type() == Dtype::Byte)
-          && amp_write.scalar_type() == amp_read.scalar_type() && amp_read.is_contiguous()
-          && amp_write.is_contiguous() && amp_read.dim() == 4 && amp_read.size(1) == H
-          && amp_read.size(0) * amp_read.size(2) == BT && amp_read.sizes() == amp_write.sizes(),
-      "the rows are head-major [B, H, T, rows] u8 or f16, contiguous, both sides alike");
+  STD_TORCH_CHECK(amp_read.scalar_type() == Dtype::Byte && amp_write.scalar_type() == Dtype::Byte
+                      && amp_read.is_contiguous() && amp_write.is_contiguous()
+                      && amp_read.dim() == 4 && amp_read.size(1) == H
+                      && amp_read.size(0) * amp_read.size(2) == BT
+                      && amp_read.sizes() == amp_write.sizes(),
+                  "the rows are head-major [B, H, T, rows] u8, contiguous, both sides alike");
   const int64_t rows = amp_read.size(3);
   STD_TORCH_CHECK(amp_read.numel() == BT * H * rows, "the rows hold ", amp_read.numel(),
                   " digits; ", BT, " tokens of ", H, " heads of ", rows, " need ", BT * H * rows);
@@ -733,7 +725,6 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.rows = static_cast<int>(rows);
   p.D = static_cast<int>(levels);
   p.d_v = static_cast<int>(d_v);
-  p.row_form = f16 ? kRowsF16 : kRowsU8;
   p.route_jobs_per_head = static_cast<int>(route_jobs_per_head);
 
   const DeviceGuard guard(x.get_device_index());

@@ -63,7 +63,7 @@ struct Span {  // one operand's address, as the producer left it; decode.md#span
 };
 
 struct DecodeParams {     // every pointer/extent one decode step needs; see decode.md#decodeparams
-  Span read[kMaxLevels];  // unit-max coefficient rows, u8 or f16; see decode.md#decodeparams
+  Span read[kMaxLevels];  // unit-max coefficient rows, u8; see decode.md#decodeparams
   Span write[kMaxLevels];
   Span read_scale[kMaxLevels];  // fp32 row maxima, [B, 1, H]
   Span write_scale[kMaxLevels];
@@ -71,7 +71,6 @@ struct DecodeParams {     // every pointer/extent one decode step needs; see dec
   Span v;                     // the value, f16 against the token's largest channel
   Span v_scale;               // the token's fp32 value scale
   int normalize[kMaxLevels];  // per READ level: still carries its own mass?; decode.md#near-line-98
-  int rows_f16;               // the coefficient rows' type, 1 = f16, 0 = u8
   int write_atoms;            // the write term walks whole atoms; decode.md#whole-atoms
   int g_bf16;
 

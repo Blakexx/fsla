@@ -266,8 +266,7 @@ def _fold(t: torch.Tensor) -> torch.Tensor:
 
 
 def fold_levels(levels) -> list[torch.Tensor]:
-    """The per-level RAW coefficient values, in torch: ``[BH, width_l]`` fp32 (a u8 digit as its integer, an f16 one
-    widened), the values the step kernel's fold sums and scales.
+    """The per-level RAW coefficient values, in torch: ``[BH, width_l]`` fp32 (a u8 digit as its integer), the values the step kernel's fold sums and scales.
 
     AN ENUMERATED REFERENCE -- ITS ONLY CALLERS ARE GATES. The shipped path folds inside
     the step kernel, from the producer's own views; a gate that fed the kernel its own

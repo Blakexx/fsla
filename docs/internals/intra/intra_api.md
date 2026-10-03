@@ -29,8 +29,8 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
 * `window` is the carry's 512 tokens — the two kernels run one window grid — and `T` a whole
   number of windows;
 * the weights are one or two u8 digits;
-* the rows are u8: the f16 rows' arms (depth above two) are not built, and the refusal says so;
-* one or two levels (u8 rows serve depth two), each a whole number of 16-digit copy granules
+* the rows are u8;
+* one or two levels (the built arms serve depth two), each a whole number of 16-digit copy granules
   from 16 to 256, and no wider than the layout's level, which its union groups come from;
 * a row set or value plane starts and strides on 16 bytes, digits contiguous — the kernel's
   copies are 16-byte `cp.async` chunks (the producer's planes are);

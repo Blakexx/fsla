@@ -107,7 +107,7 @@ def assert_reordered_close(got, want, what: str) -> None:
 
 def step_bundles(v, read, write, g_write, topology, *, read_mass=None):
     """Floating step operands in the internal format: ``(RouteFactors, Values)`` as the framework's epilogue writes
-    them (u8 rows at depth <= 2, f16 deeper; f16 values)."""
+    them (u8 rows, f16 values)."""
     routes = RouteFactors.from_levels(topology, tuple(t.float() for t in read), tuple(t.float() for t in write),
                                       g_write.float(), read_mass=read_mass)
     return routes, Values.from_projection(v.float())

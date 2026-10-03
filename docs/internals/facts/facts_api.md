@@ -13,7 +13,7 @@ static operands off its `sparse` flags and topology, and `facts` packs them into
     rola_facts_forward(read[], write[], scale_write[], g_write, v_scale, words!, unions!, zeta!,
                        widths, dense_read, mask_read, dense_write, mask_write, window) -> ()
 
-Each side's rows a level (`[B, T, H, b_l]`, one dtype for the call: u8 or f16), the
+Each side's rows a level (`[B, T, H, b_l]` u8), the
 write levels' scales, the write gain and the value scale (`[B, T, H]` fp32, any
 strides), and the three outputs the caller allocates: `words` the contiguous int32
 `[B·H, 2, rows, ceil(T/32)]`, `unions` the contiguous int32 `[B·H, 2, groups,
@@ -28,8 +28,8 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
   a scale a level; a level is 1 to 256 digits wide;
 * `window` is the carry's 512 tokens — zeta's grain is the carry's window, and a caller
   that means another has no fold to hand it to;
-* the rows are u8 or f16, all alike, `[B, T, H, width]` with the first level's `B, T,
-  H`, digits contiguous;
+* the rows are u8, `[B, T, H, width]` with the first level's `B, T, H`, digits
+  contiguous;
 * each side's dense bitmask names only levels inside the depth, and its digit mask is
   exactly `mask_words(rows)` words;
 * **a mask bit names a digit inside its level's rows.** The kernel reads a digit iff

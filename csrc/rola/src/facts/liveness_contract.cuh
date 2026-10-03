@@ -17,12 +17,8 @@ constexpr int kGroupDigits = 32;
 
 enum Side : int { kRead = 0, kWrite = 1, kSides = 2 };
 
-constexpr uint16_t kF16MagnitudeMask = 0x7fffu;
-
-//: A BUNDLE DIGIT'S NONZERO TEST, on its bits: a u8 digit, or an f16 unit's magnitude, so -0 is dead.
+//: A BUNDLE DIGIT'S NONZERO TEST: a u8 digit.
 constexpr bool digit_live(uint8_t digit) { return digit != 0u; }
-
-constexpr bool digit_live(uint16_t bits) { return (bits & kF16MagnitudeMask) != 0u; }
 
 constexpr int token_words(int L) { return (L + kTokBits - 1) / kTokBits; }
 

@@ -29,7 +29,7 @@ BOTH_SPARSE = 3
 
 #: The value width the kernel reads.
 VALUE_WIDTH = 64
-#: THE ROWS' LEVELS: u8 rows serve depth <= 2, each level a whole number of 16-digit copy granules up to 256.
+#: THE ROWS' LEVELS: the built arms serve depth <= 2, each level a whole number of 16-digit copy granules up to 256.
 MAX_LEVELS = 2
 WIDTH_GRANULE = 16
 MAX_LEVEL_WIDTH = 256

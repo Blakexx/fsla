@@ -662,7 +662,6 @@
   {"doc": "docs/internals/decode/decode_api.md", "pinned_at": "b82fafddfefb", "reviewed": true, "sha256": "", "target": "tests/unit/test_decode_capacity.py"},
   {"doc": "docs/internals/decode/decode_fold.md", "pinned_at": "b82fafddfefb", "reviewed": true, "sha256": "", "target": "csrc/rola/src/decode/decode_fold.cuh"},
   {"doc": "docs/internals/decode/decode_fold.md", "pinned_at": "6766d6405213", "reviewed": true, "sha256": "f9aaafeb4463b580", "target": "csrc/rola/src/decode/decode_fold.cuh::fold_digits"},
-  {"doc": "docs/internals/decode/decode_fold.md", "pinned_at": "c620639e339b", "reviewed": true, "sha256": "fa5ab2684bedd4ff", "target": "csrc/rola/src/decode/decode_fold.cuh::full_scale"},
   {"doc": "docs/internals/decode/decode_fold.md", "pinned_at": "6766d6405213", "reviewed": true, "sha256": "16fd6afb0a2d8b79", "target": "csrc/rola/src/decode/decode_fold.cuh::load_value"},
   {"doc": "docs/internals/decode/decode_fold.md", "pinned_at": "6766d6405213", "reviewed": true, "sha256": "93c1ebfbc1d3d875", "target": "csrc/rola/src/decode/decode_fold.cuh::normalize_rows"},
   {"doc": "docs/internals/decode/decode_fold.md", "pinned_at": "6766d6405213", "reviewed": true, "sha256": "fb72e1c467ba63d0", "target": "csrc/rola/src/decode/decode_fold.cuh::sum_staged_rows"},

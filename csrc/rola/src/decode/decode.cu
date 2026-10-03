@@ -212,11 +212,7 @@ __global__ __launch_bounds__(kDecodeThreads, kDecodeBlocksPerSm) void decode_ste
                         + (i - p.level_amp_offset[l])];
       }
     }
-    if (p.rows_f16) {
-      fold_digits<D, __half>(p, b, h, sa_r, sa_w, mask_r, mask_w);
-    } else {
-      fold_digits<D, uint8_t>(p, b, h, sa_r, sa_w, mask_r, mask_w);
-    }
+    fold_digits<D>(p, b, h, sa_r, sa_w, mask_r, mask_w);
     if (tid < DV) v_tok[tid] = value_of(v_c);
     __syncthreads();
     clock.lap(kPhFold);
@@ -972,19 +968,15 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.D = D;
   const int total_rows = detail::fill_levels(p, write, level_widths, B, H, N);
   detail::fill_lattice(p, lattice_k, lattice_m, N);
-  //: THE COEFFICIENT ROWS: u8 up to depth two, f16 at any depth, one type a call. -- see docs/internals/decode/decode.md#coefficient-rows
-  const Dtype row_dtype = read[0].scalar_type();
-  STD_TORCH_CHECK(row_dtype == Dtype::Byte || row_dtype == Dtype::Half,
-                  "the coefficient rows are u8 or f16, got ", row_dtype);
-  STD_TORCH_CHECK(row_dtype == Dtype::Half || D <= 2, "u8 rows serve depth <= 2; a depth-", D,
-                  " call's rows are f16");
+  //: THE COEFFICIENT ROWS: u8 at every depth. -- see docs/internals/decode/decode.md#coefficient-rows
   STD_TORCH_CHECK(
       read_scale.size() == static_cast<size_t>(D) && write_scale.size() == static_cast<size_t>(D),
       "one row scale a level a side");
   for (int l = 0; l < D; ++l) {
     p.read[l] = detail::span_of(read[l], B, H, p.level_width[l], "read[l]");
-    STD_TORCH_CHECK(read[l].scalar_type() == row_dtype && write[l].scalar_type() == row_dtype,
-                    "every coefficient row shares one type; level ", l, " disagrees");
+    STD_TORCH_CHECK(read[l].scalar_type() == Dtype::Byte && write[l].scalar_type() == Dtype::Byte,
+                    "the coefficient rows are u8; level ", l, " is ", read[l].scalar_type(),
+                    " and ", write[l].scalar_type());
     detail::check_f32_span(read_scale[l], "read_scale[l]");
     detail::check_f32_span(write_scale[l], "write_scale[l]");
     p.read_scale[l] = detail::scalar_span_of(read_scale[l], B, H, "read_scale[l]");
@@ -992,7 +984,6 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     p.normalize[l] = normalize[l] != 0 ? 1 : 0;
     p.level_row_offset[l] = static_cast<int>(level_row_offsets[l]);
   }
-  p.rows_f16 = row_dtype == Dtype::Half ? 1 : 0;
   //: whole atoms need the innermost run to cover one: a span of at least an atom (decode.md#whole-atoms).
   p.write_atoms = (write_dense && p.lat_inner_bits >= kAtomShift) ? 1 : 0;
   p.g_write = detail::scalar_span_of(g_write, B, H, "g_write");

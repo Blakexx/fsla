@@ -183,9 +183,8 @@ RouteFactors.from_rows(topology, amp_read, amp_write, scale_read, scale_write, g
 ```
 
 **The stored form is the internal quantized format** (ruled 2026-09-26). Each level's rows are
-UNIT-MAX -- u8 with the row's largest digit at 255 up to depth two, or f16 with the largest entry
-at 1 at any depth (ruled 2026-09-29: the producer writes f16 deeper, and every consumer takes
-either); a zero digit is dead, an all-zero row a dead token at that level -- with the row's maximum
+UNIT-MAX -- u8 with the row's largest digit at 255, at every depth (ruled 2026-10-03: the
+kernels convert the digits to f16 in registers); a zero digit is dead, an all-zero row a dead token at that level -- with the row's maximum
 carried beside them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one
 `[B, T, H, width]` tensor per level). Every level is stored as rows, once (ruled 2026-10-01: the
 intra and decode read rows, and the carry reads rows through the facts pass's words). `sparse` is

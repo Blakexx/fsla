@@ -52,7 +52,7 @@ constexpr int kWarps = kBlockRows / kWarpRows;
 constexpr int kThreads = kWarps * 32;
 constexpr int kValueWidth = 64;
 
-//: THE ROWS' LEVELS: u8 rows serve depth <= 2, each level 16 to 256 digits in whole copy granules.
+//: THE ROWS' LEVELS: the built arms serve depth <= 2, each level 16 to 256 digits in whole copy granules.
 constexpr int kMaxLevels = 2;
 constexpr int kMaxLevelWidth = 256;
 

@@ -56,14 +56,13 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
     B, T, hidden = x.shape
     H, D, d_v = plan.num_heads, plan.routing.topology.D, plan.d_v
     rows = plan.routing.resolved.packed_logit_width
-    row_dtype = torch.uint8 if D <= 2 else torch.float16
 
     def poisoned(*shape, dtype=torch.float32):
         out = torch.empty(B, H, T, *shape, dtype=dtype, device="cuda")
         out.view(torch.uint8).fill_(fill)
         return out
 
-    out = {"amp_read": poisoned(rows, dtype=row_dtype), "amp_write": poisoned(rows, dtype=row_dtype),
+    out = {"amp_read": poisoned(rows, dtype=torch.uint8), "amp_write": poisoned(rows, dtype=torch.uint8),
            "scale_read": poisoned(D), "scale_write": poisoned(D), "mass_read": poisoned(D), "mass_write": poisoned(D),
            "read_mass": poisoned(), "g_write": poisoned(), "v": poisoned(d_v, dtype=torch.float16), "v_scale": poisoned()}
     jobs, shapes, per_head = _job_tensor(plan, "cuda:0")
@@ -161,10 +160,9 @@ def test_the_solve_matches_the_fp64_reference_on_the_kernels_logits(name, B, T):
 
 
 #: the bundle's per-slot bounds against the fp64 composition. A u8 digit is a level within the solve's bound of the
-#: reference's, rounded: the same digit or its neighbour. An f16 unit value: one f16 unit in the last place at 1. A
-#: scale is a row's max (the write side's over its mass, about 1): twice the solve's bound. The read mass and the write
+#: reference's, rounded: the same digit or its neighbour. A scale is a row's max (the write side's over its mass, about
+#: 1): twice the solve's bound. The read mass and the write
 #: gain: measured at most 4.8e-5 and 2.7e-6 relative over these cells.
-_UNIT_F16 = 2.0 ** -10
 _MASS_RTOL = 2.0 ** -12
 
 
@@ -184,12 +182,8 @@ def test_the_bundle_matches_the_fp64_composition(name, B, T, bias, gain):
         for side, rows, scales in (("read", routes.amp_read, routes.scale_read),
                                    ("write", routes.amp_write, routes.scale_write)):
             got = out[f"amp_{side}"][..., offsets[level]:offsets[level] + width]
-            if got.dtype == torch.uint8:
-                digit = int((got.int() - rows[level].int()).abs().max())
-                assert digit <= 1, f"{name}: level {level} {side} digits off by {digit}"
-            else:
-                unit = float((got.float() - rows[level].float()).abs().max())
-                assert unit <= _UNIT_F16, f"{name}: level {level} {side} f16 units off by {unit:.3g}"
+            digit = int((got.int() - rows[level].int()).abs().max())
+            assert digit <= 1, f"{name}: level {level} {side} digits off by {digit}"
             scale = float((out[f"scale_{side}"][..., level].double() - scales[level].double()).abs().max())
             assert scale <= (width + 16) * 2.0 ** -22, f"{name}: level {level} {side} scale off by {scale:.3g}"
     read_mass = routes.read_mass if routes.read_mass is not None else torch.ones_like(routes.g_write)

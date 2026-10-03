@@ -22,18 +22,16 @@ using Clock = PhaseClock<kFactsPhases>;
 
 //: A WORD'S DIGITS, one a token: the warp's lanes one contiguous run of a row's digits, the word's 32 tokens walked,
 //: a token past `L` unread.
-template <typename Digit>
-__device__ __forceinline__ void load_word(Digit (&digit)[kTokBits], const Digit* at, int64_t st,
+__device__ __forceinline__ void load_word(uint8_t (&digit)[kTokBits], const uint8_t* at, int64_t st,
                                           int live, bool reads) {
 #pragma unroll
   for (int i = 0; i < kTokBits; ++i) {
-    digit[i] = reads && i < live ? __ldg(at) : Digit(0);
+    digit[i] = reads && i < live ? __ldg(at) : uint8_t{0};
     at += st;
   }
 }
 
-template <typename Digit>
-__device__ __forceinline__ uint32_t word_bits(const Digit (&digit)[kTokBits]) {
+__device__ __forceinline__ uint32_t word_bits(const uint8_t (&digit)[kTokBits]) {
   uint32_t bits = 0;
 #pragma unroll
   for (int i = 0; i < kTokBits; ++i) bits |= digit_live(digit[i]) ? 1u << i : 0u;
@@ -43,7 +41,6 @@ __device__ __forceinline__ uint32_t word_bits(const Digit (&digit)[kTokBits]) {
 //: A WARP'S PART OF A UNIT, a (side, level, 32-digit group): its `kPartWords` of the window's words, each lane its
 //: digit's bits into its tile row -- a sparse level's voted from the rows, a dense level's the width mask over the live
 //: tokens -- and each 64-token tile's union, the ballot of its words. -- see docs/internals/facts/facts.md#vote
-template <typename Digit>
 __device__ void vote_part(const FactsParams& p, int code, int bh, int word0, int lane,
                           uint32_t* row) {
   const int side = code >> 5, level = (code >> 3) & 3, group = code & 7;
@@ -53,8 +50,8 @@ __device__ void vote_part(const FactsParams& p, int code, int bh, int word0, int
   const bool dense = level_is_dense(p.dense[side], level);
   const int b = bh / p.H, h = bh - b * p.H;
   const RowView view = p.rows[side][level];
-  const Digit* const column =
-      static_cast<const Digit*>(view.base) + b * view.sb + h * view.sh + digit;
+  const uint8_t* const column =
+      static_cast<const uint8_t*>(view.base) + b * view.sb + h * view.sh + digit;
   uint32_t* const unions =
       p.unions
       + ((static_cast<int64_t>(bh) * kSides + side) * p.groups + p.group_base[level] + group)
@@ -69,7 +66,7 @@ __device__ void vote_part(const FactsParams& p, int code, int bh, int word0, int
     if (dense) {
       bits = in_mask ? (live == kTokBits ? ~0u : (1u << live) - 1u) : 0u;
     } else {
-      Digit digits[kTokBits];
+      uint8_t digits[kTokBits];
       load_word(digits, column + t0 * view.st, view.st, live, in_mask);
       bits = word_bits(digits);
     }
@@ -176,11 +173,7 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
       if (unit < p.units) {
         const int word0 = window * kWindowWords + part * kPartWords;
         uint32_t* const row = tile + lane * kTileStride + part * kPartWords;
-        if (p.digit_bytes == 1) {
-          vote_part<uint8_t>(p, p.unit[unit], bh, word0, lane, row);
-        } else {
-          vote_part<uint16_t>(p, p.unit[unit], bh, word0, lane, row);
-        }
+        vote_part(p, p.unit[unit], bh, word0, lane, row);
       }
       clock.lap(kPhaseVote);
       __syncthreads();
@@ -192,10 +185,10 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
   clock.publish(p.ledger, 0, kFactsWarps, warp);
 }
 
-//: A level's rows as the kernel reads them: `[B, T, H, width]`, digits contiguous.
-RowView row_view(const Tensor& t, int64_t B, int64_t T, int64_t H, Dtype dtype, const char* name) {
-  STD_TORCH_CHECK(t.is_cuda() && t.scalar_type() == dtype, name, " is a CUDA ", dtype,
-                  " tensor like the bundle's first row, got ", t.scalar_type());
+//: A level's rows as the kernel reads them: `[B, T, H, width]` u8, digits contiguous.
+RowView row_view(const Tensor& t, int64_t B, int64_t T, int64_t H, const char* name) {
+  STD_TORCH_CHECK(t.is_cuda() && t.scalar_type() == Dtype::Byte, name, " is a CUDA u8 tensor, got ",
+                  t.scalar_type());
   STD_TORCH_CHECK(t.dim() == 4 && t.size(0) == B && t.size(1) == T && t.size(2) == H, name,
                   " is [B, T, H, width] = [", B, ", ", T, ", H, width], got ", shape(t.sizes()));
   STD_TORCH_CHECK(t.stride(3) == 1 || t.size(3) == 1, name, "'s digits are contiguous");
@@ -244,9 +237,6 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   STD_TORCH_CHECK(window == kWindowTokens, "the facts pass's window is the carry's ", kWindowTokens,
                   " tokens, got ", window);
   const Tensor& first = read[0];
-  const Dtype dtype = first.scalar_type();
-  STD_TORCH_CHECK(dtype == Dtype::Byte || dtype == Dtype::Half,
-                  "the bundle's rows are u8 or f16, got ", dtype);
   STD_TORCH_CHECK(first.dim() == 4, "a level's rows are [B, T, H, width], got ",
                   shape(first.sizes()));
   const int64_t B = first.size(0), T = first.size(1), H = first.size(2);
@@ -258,7 +248,6 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.L = static_cast<int>(T);
   p.token_words = token_words(p.L);
   p.windows = (p.token_words + kWindowWords - 1) / kWindowWords;
-  p.digit_bytes = dtype == Dtype::Byte ? 1 : 2;
   const std::vector<Tensor>* sides[kSides] = {&read, &write};
   const int64_t dense[kSides] = {dense_read, dense_write};
   const std::vector<int64_t>* masks[kSides] = {&mask_read, &mask_write};
@@ -279,7 +268,7 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     for (int w = 0; w < need; ++w) p.mask[side][w] = static_cast<uint32_t>((*masks[side])[w]);
     for (int level = 0; level < D; ++level) {
       const Tensor& rows = (*sides[side])[level];
-      p.rows[side][level] = detail::row_view(rows, B, T, H, dtype, side ? "write[l]" : "read[l]");
+      p.rows[side][level] = detail::row_view(rows, B, T, H, side ? "write[l]" : "read[l]");
       //: a digit the mask names is read, so it lies inside the level's row
       const int64_t row_width = rows.size(3);
       for (int digit = 0; digit < p.B[level]; ++digit) {

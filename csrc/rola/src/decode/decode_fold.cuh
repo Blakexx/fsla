@@ -18,24 +18,8 @@ __device__ __forceinline__ float widen(float x) { return x; }
 
 __device__ __forceinline__ float widen(const __nv_bfloat16& x) { return __bfloat162float(x); }
 
-//: A stored coefficient digit's raw value: u8 as its integer, f16 widened. -- see docs/internals/decode/decode_fold.md#raw
-__device__ __forceinline__ float raw(uint8_t x) { return static_cast<float>(x); }
-
-__device__ __forceinline__ float raw(const __half& x) { return __half2float(x); }
-
-//: The raw value of a row's max: the digit's full scale.
-template <typename T>
-__device__ __forceinline__ float full_scale();
-
-template <>
-__device__ __forceinline__ float full_scale<uint8_t>() {
-  return 255.0f;
-}
-
-template <>
-__device__ __forceinline__ float full_scale<__half>() {
-  return 1.0f;
-}
+//: A row's max digit: a u8 digit times its row's scale over this is the amplitude. -- see docs/internals/decode/decode_fold.md#raw
+constexpr float kRowMaxDigit = 255.0f;
 
 template <typename T>
 __device__ __forceinline__ const T* row_of(const Span& s, int b, int h) {
@@ -47,7 +31,7 @@ __device__ __forceinline__ float scale_of(const Span& s, int b, int h) {
 }
 
 //: THE DIGIT PASS: every digit of both sides, a thread's slots' loads issued before any is used, staged and -- see docs/internals/decode/decode_fold.md#fold-digits
-template <int D, typename T>
+template <int D>
 __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h, float* sa_r,
                                             float* sa_w, uint32_t* mask_r, uint32_t* mask_w) {
   //: a side is at most `kMaxLevels` levels of `kDecodeMaxLevelWidth` digits, so a thread holds at most this many slots.
@@ -69,7 +53,7 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
     const int digit = ((word - p.mask_off[l]) << 5) + lane;
     const bool valid = s < 2 * slots && digit < p.level_width[l];
     const Span& rows = write_side ? p.write[l] : p.read[l];
-    x[j] = valid ? raw(row_of<T>(rows, b, h)[digit * rows.sw]) : 0.0f;
+    x[j] = valid ? static_cast<float>(row_of<uint8_t>(rows, b, h)[digit * rows.sw]) : 0.0f;
     scale[j] = valid ? scale_of(write_side ? p.write_scale[l] : p.read_scale[l], b, h) : 0.0f;
   }
 
@@ -90,7 +74,7 @@ __device__ __forceinline__ void fold_digits(const DecodeParams& p, int b, int h,
     if (digit < p.level_width[l]) {
       //: a level the fold normalizes stays RAW until its sum is known (`normalize_rows`).
       const bool normalized = !write_side && p.normalize[l] != 0;
-      const float unit = normalized ? 1.0f : scale[j] / full_scale<T>();
+      const float unit = normalized ? 1.0f : scale[j] / kRowMaxDigit;
       (write_side ? sa_w : sa_r)[p.level_amp_offset[l] + digit] = x[j] * unit;
     }
   }

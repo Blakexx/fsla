@@ -234,8 +234,8 @@ WEIGHT_LEVELS = {1: 255.0, 2: 65535.0}
 
 
 def unit_rows(rows) -> tuple[torch.Tensor, ...]:
-    """A bundle side's rows as fp64 unit values: a u8 digit over 255, an f16 unit as it is."""
-    return tuple(r.double() / 255.0 if r.dtype is torch.uint8 else r.double() for r in rows)
+    """A bundle side's rows as fp64 unit values: a u8 digit over 255."""
+    return tuple(r.double() / 255.0 for r in rows)
 
 
 def value_units(values) -> torch.Tensor:

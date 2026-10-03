@@ -75,7 +75,7 @@ def fresh_plane(spec, bh: int = 1):
 
 
 def bundle(drawn, spec):
-    """The cell's draw in the format the kernels read: u8 rows (f16 deeper), two value digits."""
+    """The cell's draw in the format the kernels read: u8 rows, f16 values."""
     topology = Topology(levels=tuple(OpaqueRouting(width=w) for w in spec.widths))
     return (RouteFactors.from_levels(topology, drawn.read, drawn.write, drawn.gain.float()),
             Values.from_projection(drawn.v))

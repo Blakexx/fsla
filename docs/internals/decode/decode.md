@@ -1696,10 +1696,10 @@ lever there is the page's layout, not the walk.
 <a id="coefficient-rows"></a>
 ### The coefficient rows, as the bundle holds them
 
-The step reads the bundle's rows as they are (ruled 2026-09-29): u8 unit-max digits up to
-depth two, f16 at any depth, ONE type a call, each row beside its fp32 max; the write gain
-fp32 or bf16; the value in f16 against its largest channel, and the fp32 token scale. The host entry refuses any other type, a u8 row at depth three or more, and levels
-that disagree on the type -- the bundle refuses the same at construction, so a refusal here
+The step reads the bundle's rows as they are (ruled 2026-10-03): u8 unit-max digits at every
+depth, each row beside its fp32 max; the write gain fp32 or bf16; the value in f16 against its
+largest channel, and the fp32 token scale. The host entry refuses any other type -- the bundle
+refuses the same at construction, so a refusal here
 names a direct caller of the ABI. How the fold turns each into a staged amplitude:
 [`decode_fold.md#raw`](decode_fold.md#raw).
 

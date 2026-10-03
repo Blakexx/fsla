@@ -127,30 +127,21 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
         RouteFactors(**fields)
 
 
-def test_rows_are_u8_to_depth_two_and_f16_at_any_depth():
-    """RULED 2026-09-29: the producer writes u8 rows up to depth two and f16 rows deeper; every consumer takes
-    either. An f16 bundle is legal at depth two, a u8 bundle is refused deeper, and both dequantize to the rows'
-    values against their scales."""
-    producer = _routes()
-    f = _factors(producer)
-    assert all(row.dtype is torch.uint8 for row in f.amp_read + f.amp_write)
-    read, write = f.dequantized()
-    halves = RouteFactors(topology=f.topology, amp_read=[level.to(torch.float16) for level in f.amp_read],
-                          amp_write=[level.to(torch.float16) / 255 for level in f.amp_write],
-                          scale_read=[s / 255 for s in f.scale_read], scale_write=f.scale_write,
-                          g_write=f.g_write)
-    half_read, half_write = halves.dequantized()
-    for exact, half in zip(read + write, half_read + half_write):
-        torch.testing.assert_close(half, exact, rtol=2 ** -10, atol=0)
+def test_rows_are_u8_at_every_depth():
+    """RULED 2026-10-03: the producer writes u8 rows at every depth, each against its own max; a row of any other
+    type is refused, and a deep bundle dequantizes to its levels within half a digit a row."""
     from rola.routing.types import OpaqueRouting, Topology
 
     deep = Topology(levels=tuple(OpaqueRouting(width=4) for _ in range(3)))
-    level = torch.full((1, 2, 1, 4), 0.25)
+    level = torch.rand(1, 2, 1, 4, dtype=torch.float64) + 0.1
     bundle = RouteFactors.from_levels(deep, (level,) * 3, (level,) * 3, torch.ones(1, 2, 1))
-    assert all(row.dtype is torch.float16 for row in bundle.amp_read + bundle.amp_write)
-    with pytest.raises(ValueError, match="u8 rows serve depth <= 2"):
-        RouteFactors(topology=deep, amp_read=[r.to(torch.uint8) for r in bundle.amp_read],
-                     amp_write=[r.to(torch.uint8) for r in bundle.amp_write], scale_read=bundle.scale_read,
+    assert all(row.dtype is torch.uint8 for row in bundle.amp_read + bundle.amp_write)
+    for got in bundle.dequantized()[0]:
+        top = level.amax(-1, keepdim=True)
+        assert ((got.double() - level).abs() <= top / 510 * (1 + 2 ** -20)).all()
+    with pytest.raises(TypeError, match="stored as torch.uint8"):
+        RouteFactors(topology=deep, amp_read=[r.to(torch.float16) for r in bundle.amp_read],
+                     amp_write=[r.to(torch.float16) for r in bundle.amp_write], scale_read=bundle.scale_read,
                      scale_write=bundle.scale_write, g_write=bundle.g_write)
 
 

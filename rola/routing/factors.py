@@ -25,12 +25,9 @@ import torch
 from rola.routing import quant
 from rola.routing.types import Topology
 
-__all__ = ["U8_MAX_DEPTH", "RouteFactors"]
+__all__ = ["RouteFactors"]
 
 SIDES = ("read", "write")
-
-#: u8 coefficient rows serve depth <= 2; a deeper topology's rows are f16 (ruled 2026-09-29).
-U8_MAX_DEPTH = 2
 
 
 def _requires_grad(levels) -> bool:
@@ -42,8 +39,7 @@ class RouteFactors:
     """The feature-mapped routing sides in THE INTERNAL FORMAT, and their side gain. Tensors, and nothing else.
 
     ``amp_read``/``amp_write``: one ``[B, T, H, width_l]`` row set per level, each row UNIT-MAX -- u8 with its
-    largest digit at 255 (depth <= 2), or f16 with its largest entry at 1 (any depth); one dtype for the whole
-    bundle. An all-zero row is a dead token at that level. ``sparse``: ``(read, write)``, a bool a level -- the
+    largest digit at 255, at every depth. An all-zero row is a dead token at that level. ``sparse``: ``(read, write)``, a bool a level -- the
     levels whose support the facts pass words (they may hold exact zeros worth skipping); set at production, read
     by every consumer, never derived from the activations. All dense by default. ``scale_read``/``scale_write``: the rows' maxima,
     fp32 ``[B, T, H]`` per level -- a read level's scale carries the read mass, a write level's the normalized
@@ -81,10 +77,8 @@ class RouteFactors:
             raise ValueError(f"RouteFactors.sparse is (read, write), a bool a level (D={D}); got {self.sparse!r}")
         object.__setattr__(self, "sparse", flags)
         prefix, first = self._check_rows()
-        if first.dtype not in quant.ROW_DTYPES:
-            raise TypeError(f"RouteFactors rows are stored as one of {quant.ROW_DTYPES}, got {first.dtype}")
-        if first.dtype is torch.uint8 and D > U8_MAX_DEPTH:
-            raise ValueError(f"u8 rows serve depth <= {U8_MAX_DEPTH}; a depth-{D} topology's rows are f16")
+        if first.dtype is not quant.ROW_DTYPE:
+            raise TypeError(f"RouteFactors rows are stored as {quant.ROW_DTYPE}, got {first.dtype}")
         for name in ("scale_read", "scale_write"):
             scales = getattr(self, name)
             if len(scales) != D:
@@ -137,12 +131,11 @@ class RouteFactors:
 
     @classmethod
     def from_levels(cls, topology: Topology, read, write, g_write, read_mass=None, *, sparse=None) -> RouteFactors:
-        """THE FRAMEWORK'S EPILOGUE as a function: floating levels in, the format out -- u8 digits at depth <= 2 and
-        f16 deeper, each row against its own max (`rola.routing.quant`), and the ``sparse`` flags (:meth:`from_rows`)."""
-        dtype = torch.uint8 if topology.D <= U8_MAX_DEPTH else torch.float16
+        """THE FRAMEWORK'S EPILOGUE as a function: floating levels in, the format out -- u8 digits, each row
+        against its own max (`rola.routing.quant`), and the ``sparse`` flags (:meth:`from_rows`)."""
         read, write = tuple(read), tuple(write)
-        amp_read, scale_read = zip(*(quant.quantize_unit_max_rows(level, dtype) for level in read))
-        amp_write, scale_write = zip(*(quant.quantize_unit_max_rows(level, dtype) for level in write))
+        amp_read, scale_read = zip(*(quant.quantize_unit_max_rows(level) for level in read))
+        amp_write, scale_write = zip(*(quant.quantize_unit_max_rows(level) for level in write))
         source = (read, write) if _requires_grad(read + write) else None
         return cls.from_rows(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=read_mass,
                              source=source, sparse=sparse)
@@ -150,7 +143,7 @@ class RouteFactors:
     @classmethod
     def from_rows(cls, topology: Topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=None,
                   source=None, *, sparse=None) -> RouteFactors:
-        """The bundle over rows already in the format (unit-max u8 or f16, ``[B, T, H, width_l]`` a level a side).
+        """The bundle over rows already in the format (unit-max u8, ``[B, T, H, width_l]`` a level a side).
         ``sparse`` is ``(read, write)``, a bool a level; by default the production's own rule, a side whose
         activation has exact zeros (an opaque level, which may have zeros, included)."""
         if sparse is None:

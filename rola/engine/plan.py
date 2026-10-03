@@ -68,7 +68,7 @@ class DecodePlan:
 
     config: DecodeGeometry
     heads: int
-    #: The bundle's own `[B, 1, H, width_l]` unit-max coefficient rows (u8 or f16) and their fp32 `[B, 1, H]`
+    #: The bundle's own `[B, 1, H, width_l]` unit-max coefficient rows (u8) and their fp32 `[B, 1, H]`
     #: maxima, per side. The step kernel folds them itself, so no `[BH, width_l]` plane stands between the two
     #: (docs/internals/decode/decode_fold.md).
     read: tuple[torch.Tensor, ...]

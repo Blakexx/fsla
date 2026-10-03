@@ -52,7 +52,7 @@ struct FactsParams {
   uint32_t* unions;
   float* zeta;
   long long* ledger;
-  int D, H, L, token_words, windows, items, digit_bytes, rows_total, units, groups, tiles;
+  int D, H, L, token_words, windows, items, rows_total, units, groups, tiles;
   int B[kMaxLevels];
   int row_base[kMaxLevels];
   int group_base[kMaxLevels];

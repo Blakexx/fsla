@@ -39,9 +39,6 @@ SIDES = 2
 #: same 32 bits signed, exactly as the union table already did.
 WORD_DTYPE = torch.int32
 
-#: f16 MAGNITUDE, sign excluded: the kernel's nonzero test on an f16 row's bits, so -0 is DEAD, like +0.
-F16_MAGNITUDE_MASK = 0x7FFF
-
 #: The page granule, in leaves.
 ATOM_LEAVES = 16
 
@@ -194,7 +191,7 @@ def side_statics(layout: LivenessLayout, dense_levels, logical_widths) -> SideSt
 
 def _live_rows(levels, layout: LivenessLayout) -> torch.Tensor:
     """`[BH, rows, L]` bool: each level's per-digit nonzero test, its ``[B, T, H, w_l]`` rows in any dtype (a u8
-    digit, an f16 unit, a drawn float); a digit at or past ``w_l`` is dead."""
+    digit or a drawn float); a digit at or past ``w_l`` is dead."""
     if len(levels) != layout.D:
         raise ValueError(f"a side holds {layout.D} levels' rows, got {len(levels)}")
     B, T, H = levels[0].shape[:3]

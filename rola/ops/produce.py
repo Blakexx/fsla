@@ -25,7 +25,7 @@ from einops import rearrange
 
 from rola.engine.facts.operands import requires_backward
 from rola.routing.entmax.production import production_routing_factor_levels
-from rola.routing.factors import U8_MAX_DEPTH, RouteFactors
+from rola.routing.factors import RouteFactors
 from rola.routing.producer import Routing
 from rola.routing.projection import _packed_router_logits
 from rola.routing.side_gain import WRITE_GAIN, softplus_side_gain
@@ -195,12 +195,11 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
     H, D = plan.num_heads, plan.routing.topology.D
     rows = plan.routing.resolved.packed_logit_width
     device = x.device
-    row_dtype = torch.uint8 if D <= U8_MAX_DEPTH else torch.float16
 
     def empty(*shape, dtype=torch.float32):
         return torch.empty(B, H, T, *shape, dtype=dtype, device=device)
 
-    out = {"amp_read": empty(rows, dtype=row_dtype), "amp_write": empty(rows, dtype=row_dtype),
+    out = {"amp_read": empty(rows, dtype=torch.uint8), "amp_write": empty(rows, dtype=torch.uint8),
            "scale_read": empty(D), "scale_write": empty(D), "mass_read": empty(D), "mass_write": empty(D),
            "read_mass": empty(), "g_write": empty(), "v": empty(plan.d_v, dtype=torch.float16),
            "v_scale": empty()}

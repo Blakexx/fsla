@@ -135,7 +135,7 @@ INTRA_CELLS = ["flat-small-alt-k4", "one-box-short", "deep3-alt-k4"]
 
 
 def _bundle(name):
-    """The cell's draw in the bundle's format: u8 rows at depth <= 2, f16 deeper; f16 values."""
+    """The cell's draw in the bundle's format: u8 rows, f16 values."""
     from rola.routing.factors import RouteFactors
     from rola.routing.types import OpaqueRouting, Topology
     from rola.values import Values

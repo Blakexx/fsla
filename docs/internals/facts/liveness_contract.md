@@ -60,10 +60,10 @@ warp's 32 tokens are one word.
 **A token past the end votes dead.** The tail word's high bits are zero by
 construction, so a fold may OR whole words without masking.
 
-**The nonzero test is on the digit's bits** (`digit_live`): a u8 digit is live when it
-is nonzero, an f16 unit when its MAGNITUDE (`0x7fff`) is, so `-0` is dead exactly like
-`+0`. The model applies `!= 0` to whatever rows it is given, which is the same test on
-both formats and lets a drawn call state its support from its floating levels.
+**The nonzero test is on the digit** (`digit_live`): a u8 digit is live when it is
+nonzero. The model applies `!= 0` to whatever rows it is given, which is the same test on
+u8 digits and lets a drawn call state its support from its floating levels (`-0` dead like
+`+0`).
 
 <a id="statics"></a>
 

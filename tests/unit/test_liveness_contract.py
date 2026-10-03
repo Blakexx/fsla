@@ -124,7 +124,6 @@ def test_header_constants_mirror_the_python_reader():
     assert int(constants["kTileTokens"]) == lv.TILE_TOKENS
     assert int(constants["kGroupDigits"]) == lv.GROUP_DIGITS
     assert int(constants["kMaxLevels"]) == 4
-    assert int(constants["kF16MagnitudeMask"], 16) == lv.F16_MAGNITUDE_MASK
     assert re.search(r"kRead = 0, kWrite = 1, kSides = 2", text)
     assert (lv.READ, lv.WRITE, lv.SIDES) == (0, 1, 2)
 
@@ -144,8 +143,7 @@ def test_header_compiles_as_a_standalone_translation_unit(tmp_path):
                       "static_assert(kL.token_bit(33) == 2u);\n"
                       "static_assert(kL.groups() == 2 && kL.group_base(1) == 1 && kL.tiles() == 1);\n"
                       "static_assert(kL.union_index(1, 1, 1, 0) == 3 * 2 + 1);\n"
-                      "static_assert(!rola::facts::digit_live(uint16_t{0x8000}));\n"
-                      "static_assert(rola::facts::digit_live(uint16_t{0x0001}));\n"
+                      "static_assert(rola::facts::digit_live(uint8_t{1}));\n"
                       "static_assert(!rola::facts::digit_live(uint8_t{0}));\n"
                       "static_assert(rola::facts::mask_bit(0x4u, 34));\n"
                       "int main() { return 0; }\n")
@@ -230,7 +228,7 @@ def test_a_tile_union_is_its_groups_digits_live_anywhere_in_its_64_tokens(widths
 def test_negative_zero_is_dead_like_positive_zero():
     layout = lv.LivenessLayout.of(_format((16, 16)), 32)
     statics = _statics(layout)
-    rows = tuple(torch.full((1, layout.L, 1, width), -0.0, dtype=torch.float16) for width in layout.B)
+    rows = tuple(torch.full((1, layout.L, 1, width), -0.0) for width in layout.B)
     rows[0][0, 0, 0, 5] = -1.0
     bits = lv.unpack(lv.liveness_words(rows, rows, layout, statics, statics), layout)
     assert bits[:, lv.READ].sum() == 1

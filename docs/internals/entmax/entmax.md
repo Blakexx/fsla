@@ -415,7 +415,7 @@ ordering is the reason the read side needs no saved tensor.
 (`union_write<LW, IPT, kFast>` in the header). A max-subtracted `exp` / sum over the support, with `has_mass` and
 `has_weight` guards so an empty support produces exact zeros rather than `0/0`. `kFast` is the fused producer's policy
 (`docs/internals/produce/produce.md#solve`): the logarithms, exponentials and quotient on the special-function unit,
-since its fp32 levels only feed u8 or f16 digits; this family keeps the libm forms.
+since its fp32 levels only feed u8 digits; this family keeps the libm forms.
 
 ## <a id="bf16-support-boundary"></a>10. HAZARD — support is defined at the native bf16 storage boundary
 

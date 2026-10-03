@@ -145,11 +145,8 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   STD_TORCH_CHECK(weight_digits == 1 || weight_digits == 2,
                   "the value product's weights are one or two u8 digits, got ", weight_digits);
   STD_TORCH_CHECK(read[0].dim() == 4, "a level's rows are [B, T, H, width]");
-  const Dtype dtype = read[0].scalar_type();
-  STD_TORCH_CHECK(dtype == Dtype::Byte,
-                  "the f16 rows' intra arms (depth above two) are not built yet; the bundle's rows "
-                  "are ",
-                  dtype);
+  STD_TORCH_CHECK(read[0].scalar_type() == Dtype::Byte, "the bundle's rows are u8, got ",
+                  read[0].scalar_type());
   const int64_t B = read[0].size(0), T = read[0].size(1), H = read[0].size(2);
   STD_TORCH_CHECK(T % kWindow == 0, "the call is a whole number of ", kWindow,
                   "-token windows, got ", T);
@@ -165,8 +162,8 @@ void rola_intra_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   facts::LivenessLayout layout{D, {}, static_cast<int>(T)};
   for (int l = 0; l < D; ++l) layout.B[l] = static_cast<int>(widths[l]);
   for (int l = 0; l < D; ++l) {
-    p.read[l] = detail::row_view(read[l], B, T, H, row_widths[l], dtype, "read[l]");
-    p.write[l] = detail::row_view(write[l], B, T, H, row_widths[l], dtype, "write[l]");
+    p.read[l] = detail::row_view(read[l], B, T, H, row_widths[l], Dtype::Byte, "read[l]");
+    p.write[l] = detail::row_view(write[l], B, T, H, row_widths[l], Dtype::Byte, "write[l]");
     p.scale_write[l] = detail::column_view(scale_write[l], B, T, H, "scale_write[l]");
     p.width[l] = static_cast<int>(row_widths[l]);
     p.slab0[l] = g.slab0[l];

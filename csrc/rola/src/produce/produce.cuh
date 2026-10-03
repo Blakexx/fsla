@@ -51,8 +51,6 @@ constexpr int kMaxJobs = 1024;
 //: THE SOLVES a route job runs on its row: the closed registry's kerneled activations.
 enum SolveKind : int { kSoftmax = 0, kEntmax15 = 1, kEntmax20 = 2, kUnion15 = 3, kUnion20 = 4 };
 
-enum RowForm : int { kRowsU8 = 0, kRowsF16 = 1 };
-
 //: THE PHASE LEDGER's phases, a warp's cycles each, booked by job over the tiles. -- see docs/internals/produce/produce.md#phase-ledger
 enum ProducePhase : int {
   kPhaseJob,
@@ -67,8 +65,7 @@ enum ProducePhase : int {
   kProducePhases
 };
 
-//: `kind`, `solve`, `rows` (a solve row's elements a lane, as a power of two's exponent), `reads`/`writes` (the sides
-//: a route job writes) and `fold_read`/`fold_write` (whose fold applies) are the shape word's.
+//: A JOB, its table row and its shape word decoded. -- see docs/internals/produce/produce.md#jobs
 struct Job {
   int kind, solve, rows, reads, writes, head, heads, width, in0, in1, out_read, out_write, level,
       fold_read, fold_write;
@@ -85,7 +82,7 @@ struct ProduceParams {
   int64_t v_row;
   const int32_t* jobs;  // [n_jobs, kJobFields]
 
-  uint8_t* amp_read;  // [B, H, T, rows], u8 or f16: every output head-major (produce.md#bundle)
+  uint8_t* amp_read;  // [B, H, T, rows], u8: every output head-major (produce.md#bundle)
   uint8_t* amp_write;
   float* scale_read;  // [B, H, T, D]
   float* scale_write;
@@ -101,7 +98,7 @@ struct ProduceParams {
   long long* ledger;   // [jobs, warps, phases] or null
   int16_t shapes[kMaxJobs];  // a job's shape word (produce.md#jobs), by block index
 
-  int BT, T, hidden, H, C, G, rows, D, d_v, row_form, route_jobs_per_head;
+  int BT, T, hidden, H, C, G, rows, D, d_v, route_jobs_per_head;
 };
 
 }  // namespace produce

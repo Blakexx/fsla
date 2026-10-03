@@ -46,8 +46,7 @@ with the level and the stage's place in it known at compile time -- the level's 
 starts the accumulator, its last folds it, and a stage knows which copy follows it -- and
 branches once a level on whether the level has a second stage; what stays a runtime value is a
 stage's slot (its `index`), its slab mask, and the copies' row pointers and zero-fill. That
-structure is measured, [below](#runtime-widths). The rows at depth above two are f16
-(`produce/produce.md#bundle`); their arms — the Gram as f16 HMMA on the narrow levels — are not
+structure is measured, [below](#runtime-widths). The arms at depth above two are not
 built, and the seam refuses them by name.
 
 <a id="the-grid"></a>

@@ -18,7 +18,7 @@ row; **window** = the carry's 512 tokens, 16 words; **unit** = one (side, level,
 ## What it reads, and what it does not
 
 The bundle as the producer wrote it (`docs/api.md` §2.1): each level's rows
-`[B, T, H, b_l]`, u8 digits at depth ≤ 2 or f16 units deeper, read where they lie — a
+`[B, T, H, b_l]`, u8 digits at every depth, read where they lie — a
 view of the producer's packed plane or a tensor of its own, by its strides. There is no
 alignment law: a level may start at any byte and be any width. The pass also reads the
 write levels' scales, the write gain and the value scale for zeta — a few words a token.
@@ -95,7 +95,7 @@ L1 to recover the rest of each sector; the old pass measured that leaning fail a
 
 `vote_part` walks a warp's half of the window a word at a time: a word's 32 loads
 (`load_word`, unrolled so all are in flight), then 32 nonzero tests (`digit_live`: a u8
-digit, or an f16 unit's magnitude, so `-0` is dead) OR-ed into the lane's word at the
+digit) OR-ed into the lane's word at the
 token's bit, into the lane's row of the unit's tile. A token past `L` is not loaded and
 votes dead. A lane whose digit the mask does not name (a pad digit, or one past `B_l`)
 loads nothing and votes zero; a dense level's words are the mask over the live tokens.
@@ -187,6 +187,6 @@ The liveness pass it replaces (`csrc/rola/src/facts/liveness.{cu,cuh}`, deleted
 2026-09-30 with its Python op) read the bf16 planes the prefill packed from
 the levels, a lane a token, a warp ballot a digit; its layout, its dense-level mask and
 its past-the-end dead vote are kept unchanged. What is new is the input — the bundle's
-own u8/f16 rows, half the bytes of the bf16 planes, with no packing pass before it —
+own u8 rows, half the bytes of the bf16 planes, with no packing pass before it —
 the digit-lane orientation that input's lack of an alignment law asks for, the tile
 that keeps the stores whole, and zeta.
