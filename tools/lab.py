@@ -11,13 +11,16 @@ spread, and writes a record keyed by the architecture.
     python tools/lab.py list
     python tools/lab.py sass tensor_tax [KERNEL_REGEX] [--full]
     python tools/lab.py run tensor_tax [--reps 7] [--record] [--force]
+    python tools/lab.py ncu pool_layout --metric lts__t_sectors_srcunit_tex_op_read.sum [--record]
 
-`--record` writes `measure/lab/results/<name>/<sm_XX>.json`, the file a KERNEL_STANDARDS rule cites; without it the
-record goes to the scratch space.
+`--record` writes `measure/lab/results/<name>/<sm_XX>.json` (or `<sm_XX>.counters.json` for `ncu`), the file a
+KERNEL_STANDARDS rule cites; without it the record goes to the scratch space. `ncu` reads hardware counters per kernel
+(the median over its launches) where a question is about traffic rather than time.
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime
 import json
 import re
@@ -231,6 +234,40 @@ def run(name: str, reps: int, record: bool, force: bool) -> int:
     return 0
 
 
+def ncu_counters(binary: Path, metrics: list[str]) -> dict[str, dict[str, float]]:
+    """Per kernel (ncu's name), each metric's median over the kernel's launches in one repetition of the experiment."""
+    out = subprocess.run([dev_config.get("toolchain.ncu"), "--metrics", ",".join(metrics), "--csv", str(binary),
+                          "--reps", "1"], capture_output=True, text=True, check=True).stdout
+    lines = out.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith('"ID"'))
+    seen: dict[str, dict[str, list[float]]] = {}
+    for row in csv.DictReader(lines[start:]):
+        value = float(row["Metric Value"].replace(",", ""))
+        seen.setdefault(row["Kernel Name"], {}).setdefault(row["Metric Name"], []).append(value)
+    return {k: {m: statistics.median(v) for m, v in ms.items()} for k, ms in seen.items()}
+
+
+def counters(name: str, metrics: list[str], record: bool) -> int:
+    arch = device_arch()
+    binary = build(experiments()[name], arch)
+    failures = check(binary, kernels(binary))
+    if failures:
+        print(f"lab: {name} REFUSED -- its SASS is not what it measures:", *failures, sep="\n  ")
+        return 1
+    found = ncu_counters(binary, metrics)
+    width = max(len(k) for k in found)
+    for k, ms in found.items():
+        print(f"  {k:<{width}}  " + "  ".join(f"{m} {v:,.0f}" for m, v in ms.items()))
+    body = {"experiment": name, "question": question(experiments()[name]), "arch": arch, "git": git_state(),
+            "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "metrics": metrics,
+            "kernels": found}
+    target = (RESULTS / name if record else dev_config.scratch("lab") / "results" / name) / f"{arch}.counters.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(body, indent=1) + "\n")
+    print(f"lab: recorded {target.relative_to(ROOT) if record else target}")
+    return 0
+
+
 def show_sass(name: str, pattern: str | None, full: bool) -> int:
     path = experiments()[name]
     binary = build(path, device_arch())
@@ -259,6 +296,10 @@ def main() -> int:
     r.add_argument("--reps", type=int, default=7)
     r.add_argument("--record", action="store_true", help="write the record into measure/lab/results")
     r.add_argument("--force", action="store_true", help="measure on a busy GPU")
+    n = sub.add_parser("ncu")
+    n.add_argument("experiment")
+    n.add_argument("--metric", action="append", required=True, help="an ncu metric; repeat for several")
+    n.add_argument("--record", action="store_true", help="write the counters into measure/lab/results")
     args = ap.parse_args()
     if args.cmd == "list":
         for name, path in experiments().items():
@@ -269,6 +310,8 @@ def main() -> int:
         return 1
     if args.cmd == "sass":
         return show_sass(args.experiment, args.kernel, args.full)
+    if args.cmd == "ncu":
+        return counters(args.experiment, args.metric, args.record)
     return run(args.experiment, args.reps, args.record, args.force)
 
 
