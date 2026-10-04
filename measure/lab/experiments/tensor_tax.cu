@@ -13,19 +13,25 @@
 namespace tensor_tax {
 
 constexpr int kKinds = 4;
-const char* kKindName[kKinds] = {"hmma f16->f32", "hmma f16->f16", "hmma bf16->f32", "imma u8.s8 k32"};
-const char* kKindOp[kKinds] = {"HMMA.16816.F32", "HMMA.16816.F16", "HMMA.16816.F32.BF16", "IMMA.16832"};
+const char* kKindName[kKinds] = {"hmma f16->f32", "hmma f16->f16", "hmma bf16->f32",
+                                 "imma u8.s8 k32"};
+const char* kKindOp[kKinds] = {"HMMA.16816.F32", "HMMA.16816.F16", "HMMA.16816.F32.BF16",
+                               "IMMA.16832"};
 
 constexpr int kOps = 17;
-const char* kOpName[kOps + 1] = {"none", "fmul", "ffma", "fadd", "hmul2", "hfma2", "hadd2", "bf16 fma2", "hmax2",
-                                 "add + xor (iadd3 or imad.iadd, lop3)", "imad", "lop3", "prmt", "fmnmx", "lds", "f32->f16x2", "u32->f32",
-                                 "f16->f32"};
-const char* kOpcode[kOps + 1] = {"", "FMUL", "FFMA", "FADD", "HMUL2", "HFMA2", "HADD2", "HFMA2.BF16", "HMNMX2",
-                                 "IADD3|IMAD.IADD", "IMAD", "LOP3", "PRMT", "FMNMX", "LDS", "F2FP", "I2F", "HADD2.F32"};
+const char* kOpName[kOps + 1] = {
+    "none",       "fmul",     "ffma",      "fadd",  "hmul2",
+    "hfma2",      "hadd2",    "bf16 fma2", "hmax2", "add + xor (iadd3 or imad.iadd, lop3)",
+    "imad",       "lop3",     "prmt",      "fmnmx", "lds",
+    "f32->f16x2", "u32->f32", "f16->f32"};
+const char* kOpcode[kOps + 1] = {"",      "FMUL",  "FFMA",       "FADD",   "HMUL2",
+                                 "HFMA2", "HADD2", "HFMA2.BF16", "HMNMX2", "IADD3|IMAD.IADD",
+                                 "IMAD",  "LOP3",  "PRMT",       "FMNMX",  "LDS",
+                                 "F2FP",  "I2F",   "HADD2.F32"};
 
 template <int KIND>
-__device__ __forceinline__ void mma(float (&d)[4], uint32_t (&h)[2], int (&s)[4], const uint32_t (&a)[4],
-                                    uint32_t b0, uint32_t b1) {
+__device__ __forceinline__ void mma(float (&d)[4], uint32_t (&h)[2], int (&s)[4],
+                                    const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
   if constexpr (KIND == 0) lab::mma_f16_f32(d, a, b0, b1);
   if constexpr (KIND == 1) lab::mma_f16_f16(h, a, b0, b1);
   if constexpr (KIND == 2) lab::mma_bf16_f32(d, a, b0, b1);
@@ -49,7 +55,8 @@ __device__ __forceinline__ void op(uint32_t& x, uint32_t k, uint32_t k2, uint32_
   if constexpr (OP == 11) asm volatile("lop3.b32 %0, %0, %1, %1, 0x96;" : "+r"(x) : "r"(k));
   if constexpr (OP == 12) asm volatile("prmt.b32 %0, %0, %1, 0x5410;" : "+r"(x) : "r"(k));
   if constexpr (OP == 13) asm volatile("min.f32 %0, %0, %1;" : "+r"(x) : "r"(k));
-  if constexpr (OP == 14) asm volatile("ld.shared.u32 %0, [%1];" : "=r"(x) : "r"(smem + ((x & 63u) << 2)));
+  if constexpr (OP == 14)
+    asm volatile("ld.shared.u32 %0, [%1];" : "=r"(x) : "r"(smem + ((x & 63u) << 2)));
   if constexpr (OP == 15) asm volatile("cvt.rn.f16x2.f32 %0, %0, %1;" : "+r"(x) : "r"(k));
   if constexpr (OP == 16) asm volatile("cvt.rn.f32.u32 %0, %0;" : "+r"(x));
   if constexpr (OP == 17) {
@@ -115,7 +122,8 @@ void one(const lab::Bench& b, double alone) {
   lab::Samples taxed;
   for (double c : with.v) taxed.v.push_back((c - alone) / (32.0 * x_iters));
   b.record(std::string(kKindName[KIND]) + " / " + kOpName[OP], "cycles an instruction", taxed);
-  if (KIND == 0) b.record(std::string("alone / ") + kOpName[OP], "cycles an instruction", {{rate / 32.0}});
+  if (KIND == 0)
+    b.record(std::string("alone / ") + kOpName[OP], "cycles an instruction", {{rate / 32.0}});
 }
 
 template <int KIND, int... OPS>

@@ -30,6 +30,7 @@ from pathlib import Path
 
 import dev_config
 import sass
+import sass_gate
 
 ROOT = Path(__file__).resolve().parents[1]
 LAB = ROOT / "measure" / "lab"
@@ -40,8 +41,6 @@ RESULTS = LAB / "results"
 SPREAD = 1.05
 #: GPU utilization above this percent before a run means another consumer shares the card
 QUIET_PERCENT = 5
-#: the instructions that mean local memory
-LOCAL = ("LDL", "STL")
 
 
 def experiments() -> dict[str, Path]:
@@ -109,9 +108,20 @@ def count(ops: dict[str, int], prefixes: str) -> int:
     return sum(n for op, n in ops.items() if any(op.startswith(p) for p in prefixes.split("|")))
 
 
+def signatures(binary: Path) -> dict[str, dict]:
+    """Per kernel (demangled): the SASS gate's signature (`tools/sass_gate.py`) -- local memory, and the calls into a
+    convergence subroutine a converged warp executes (not ptxas's loop-exit `CALL.REL.NOINC`, nor a guarded fallback)."""
+    found: dict[str, dict] = {}
+    for cubin in sass.cubins(binary):
+        sass_gate.gate(cubin, None, None)
+        found |= sass_gate.STATS
+    names = demangle(list(found))
+    return {names[k]: v for k, v in found.items()}
+
+
 def check(binary: Path, table: dict[str, dict]) -> list[str]:
-    """Every expectation the experiment declares, no local memory and no undeclared CALL anywhere: the failures, empty
-    when it may run."""
+    """Every expectation the experiment declares, no local memory and no undeclared convergence call anywhere: the
+    failures, empty when it may run."""
     lines = subprocess.run([str(binary), "--expect"], capture_output=True, text=True, check=True).stdout
     expected = [json.loads(line) for line in lines.splitlines()]
     failures = []
@@ -125,12 +135,11 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             if not ok:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
     declared_calls = {k for e in expected for k in table if re.search(e["kernel"], k) and "CALL" in e["op"]}
-    for k, info in table.items():
-        local = sum(count(info["ops"], op) for op in LOCAL)
-        if local or info.get("local"):
-            failures.append(f"{k}: local memory ({local} LDL/STL, {info.get('local', 0)} bytes)")
-        if count(info["ops"], "CALL") and k not in declared_calls:
-            failures.append(f"{k}: {count(info['ops'], 'CALL')} CALLs nobody declared (a collective under "
+    for k, sig in signatures(binary).items():
+        if sig["ldl"] or sig["stack"]:
+            failures.append(f"{k}: local memory ({sig['ldl']} LDL/STL, a {sig['stack']}-byte stack frame)")
+        if sig["calls"] and k not in declared_calls:
+            failures.append(f"{k}: {sig['calls']} convergence calls nobody declared (a collective under "
                             "role-dependent control flow becomes a call into a convergence subroutine)")
     return failures
 
