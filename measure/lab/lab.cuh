@@ -134,10 +134,33 @@ __device__ __forceinline__ uint32_t smem(const void* p) {
   return static_cast<uint32_t>(__cvta_generic_to_shared(p));
 }
 
+//: THE ASYNCHRONOUS COPIES (`cp.async`, sm_80+) as `ops.cuh` spells them: 16 bytes bypassing L1, or 4 through it; a
+//: group committed and waited, or an mbarrier arrival when all of the thread's prior copies land.
+__device__ __forceinline__ void cp_async16(uint32_t dst, const void* src) {
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(dst), "l"(src));
+}
+
+__device__ __forceinline__ void cp_async4(uint32_t dst, const void* src) {
+  asm volatile("cp.async.ca.shared.global [%0], [%1], 4;" ::"r"(dst), "l"(src));
+}
+
+__device__ __forceinline__ void cp_commit() { asm volatile("cp.async.commit_group;"); }
+
+template <int N>
+__device__ __forceinline__ void cp_wait() {
+  asm volatile("cp.async.wait_group %0;" ::"n"(N));
+}
+
+__device__ __forceinline__ void cp_wait_all() { asm volatile("cp.async.wait_all;" ::: "memory"); }
+
 //: THE SHARED-MEMORY BARRIER (`mbarrier`, sm_80+), as `ops.cuh` spells it: `count` arrivals complete a phase, a phase's
 //: parity flips at each completion, a wait polls until the phase of `parity` has completed.
 __device__ __forceinline__ void mbar_init(uint32_t a, uint32_t count) {
   asm volatile("mbarrier.init.shared.b64 [%0], %1;" ::"r"(a), "r"(count) : "memory");
+}
+
+__device__ __forceinline__ void mbar_arrive_when_landed(uint32_t a) {
+  asm volatile("cp.async.mbarrier.arrive.noinc.shared.b64 [%0];" ::"r"(a) : "memory");
 }
 
 __device__ __forceinline__ void mbar_arrive(uint32_t a) {
