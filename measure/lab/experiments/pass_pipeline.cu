@@ -1,12 +1,13 @@
 // measure/lab/experiments/pass_pipeline.cu -- QUESTION: the fold's pass is a fill (its 128 token rows, scattered in
 // global memory, copied by cp.async into a pool), a restage (pool rows to the f16 tiles the steps read) and 8 steps of
-// MMAs. Built serially between CTA barriers it pays the copy's latency, the restage and the barriers' realignment; does
-// a two-stage pipeline (fill two passes ahead, restage one ahead, mbarriers for landed / staged / drained) hide the
-// fill and the restage under the steps, and does the restage belong in a burst at the pass's start or as one warp's
-// share after each step? METHOD: the owner part's fill pattern (a quad a token: the 64-byte run and the values' 64-byte
-// run in 16-byte copies, four 4-byte factors from four planes, a 16-byte dense chunk), its restage (two threads a row)
-// and `fold_step`'s step at the arm's registers, over a 33 MB source (under the WSL translation reach); the block's
-// span a pass over the steps' floor. see docs/internals/tools/lab.md#pass-pipeline
+// MMAs, and the fp16 arm joins its partials every two passes. Serial between CTA barriers it pays the copy's latency,
+// the restage and the realignment; where should each piece go in a two-stage pipeline (fill two passes ahead, restage
+// one ahead, mbarriers for landed / staged / drained) -- the restage in a burst at the pass's start, a warp a step or
+// mid-pass; the join in a burst, a list a step, or staggered between a scheduler's two warps? METHOD: the owner part's
+// fill pattern (a quad a token: the 64-byte run and the values' 64-byte run in 16-byte copies, four 4-byte factors from
+// four planes, a 16-byte dense chunk), its restage (two threads a row) and `fold_step`'s step at the arm's registers,
+// over a 33 MB source (under the WSL translation reach); the block's span a pass over the steps' floor.
+// see docs/internals/tools/lab.md#pass-pipeline
 #include "lab.cuh"
 
 namespace pass_pipeline {
