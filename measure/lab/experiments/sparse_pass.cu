@@ -24,21 +24,31 @@ constexpr int kArmFloat = 0, kArmHalf = 1;
 //: values in place, two pool slots, derived; 3 the same with three pool slots; 4 three pool slots, listed; 5 and 6 as
 //: 3 and 4 with LOAD-AHEAD: a warp takes up to three steps' operands into registers at a time, the pass's restage share
 //: after the loads of the chunk holding its mid-pass step, and signals its slots drained after its last loads, before
-//: those steps' MMAs
-constexpr int kForms = 7;
-const char* kFormName[kForms] = {"serial, value tile, listed",
-                                 "pipelined, value tile, derived",
-                                 "pipelined, in place, 2 pool slots, derived",
-                                 "pipelined, in place, 3 pool slots, derived",
-                                 "pipelined, in place, 3 pool slots, listed",
-                                 "load-ahead, in place, 3 pool slots, derived",
-                                 "load-ahead, in place, 3 pool slots, listed"};
+//: those steps' MMAs; 7 as 5 with the factor products precomputed (an 8-byte plane, read in place; the restage converts
+//: the digits alone); 8 as 7 with the dense digits precomputed as f16 too, read in place by `ldmatrix` -- no restage, no
+//: tile, no staged signal. 7 and 8 use 192-byte pool rows, chunk `c ^ ((r >> 1) & 3)`
+//: 9 as 8 with the pass's rows built once at the pass's start (word-parallel over its four words into the warp's
+//: rows buffer), the steps reading them as listed entries
+constexpr int kForms = 10;
+const char* kFormName[kForms] = {
+    "serial, value tile, listed",
+    "pipelined, value tile, derived",
+    "pipelined, in place, 2 pool slots, derived",
+    "pipelined, in place, 3 pool slots, derived",
+    "pipelined, in place, 3 pool slots, listed",
+    "load-ahead, in place, 3 pool slots, derived",
+    "load-ahead, in place, 3 pool slots, listed",
+    "load-ahead, derived, factor products precomputed",
+    "load-ahead, derived, products and f16 dense precomputed (no restage)",
+    "no restage, rows built a pass at its start"};
 
 template <int FORM>
 struct Form {
   static constexpr bool kTile = FORM <= 1, kListed = FORM == 0 || FORM == 4 || FORM == 6;
   static constexpr bool kAhead = FORM >= 5;
   static constexpr int kPools = FORM == 0 ? 1 : FORM >= 3 ? 3 : 2;
+  static constexpr bool kFmPlane = FORM >= 7, kDense16 = FORM >= 8, kPassRows = FORM == 9;
+  static constexpr int kRow = FORM >= 7 ? 192 : 160;
 };
 
 //: DENSITY: a warp's tokens live 1 in DENSITY
@@ -48,7 +58,11 @@ constexpr int kDensityOf[kDensities] = {1, 4, 16};
 //: THE LAYOUTS, swizzled (lab `pool_layout`): a pool row 160 bytes, a row with bit 2 set swapping the 16-byte halves
 //: of each 32-byte pair; the dense tile 32 bytes a row, the same swap; the value and run tiles 64 bytes a row, chunk
 //: `c ^ ((r >> 1) & 3)`
-__device__ __forceinline__ int pool_at(int r, int c) { return r * 160 + 16 * (c ^ ((r >> 2) & 1)); }
+template <int FORM>
+__device__ __forceinline__ int pool_at(int r, int c) {
+  if constexpr (Form<FORM>::kRow == 192) return r * 192 + 16 * (c ^ ((r >> 1) & 3));
+  return r * 160 + 16 * (c ^ ((r >> 2) & 1));
+}
 
 __device__ __forceinline__ int dense_at(int r, int c) { return r * 32 + 16 * (c ^ ((r >> 2) & 1)); }
 
@@ -67,11 +81,11 @@ constexpr int kListsHead =
 template <int FORM>
 struct alignas(128) Shared {
   using F = Form<FORM>;
-  uint8_t pool[F::kPools][kRows * 160];
+  uint8_t pool[F::kPools][kRows * F::kRow];
 
-  struct Tile {
-    uint8_t dense[kRows * 32];
-    float2 fm[kRows];
+  struct alignas(16) Tile {
+    uint8_t dense[F::kDense16 ? 16 : kRows * 32];
+    float2 fm[F::kFmPlane ? 1 : kRows];
     uint8_t vals[F::kTile ? kRows * 64 : 16];
     uint8_t run[F::kTile ? kRows * 64 : 16];
   } tile[2];
@@ -83,13 +97,14 @@ struct alignas(128) Shared {
   } lists[2];
 
   uint16_t scratch[kWarps][32];
+  uint16_t pass_rows[kWarps][F::kPassRows ? kRows : 1];
   uint32_t uni[kWords];
   uint16_t base[kWords];
   uint64_t landed[3], staged[2], drained[2], lists_landed[2];
 };
 
 struct Source {
-  const uint8_t *run, *values, *factor, *dense;
+  const uint8_t *run, *values, *factor, *dense, *fm, *dense16;
   const GLists* lists;
 };
 
@@ -113,6 +128,10 @@ __device__ __forceinline__ uint32_t hmax2(uint32_t a, uint32_t b) {
 
 __device__ __forceinline__ uint32_t parity(int x) { return static_cast<uint32_t>(x >> 1) & 1u; }
 
+__device__ __forceinline__ void cp_async8(uint32_t dst, const void* src) {
+  asm volatile("cp.async.ca.shared.global [%0], [%1], 8;" ::"r"(dst), "l"(src));
+}
+
 __device__ __forceinline__ int window_of(int x) {
   return (static_cast<int>(blockIdx.x) * 7 + x / kPassesPerWindow) % kWindows;
 }
@@ -126,11 +145,22 @@ __device__ __forceinline__ void fill(uint8_t* pool, const Source& src, int x, in
 #pragma unroll 1
   for (int r = tid >> 2; r < kRows; r += kThreads / 4) {
     const int64_t tg = win + (((kRows * lp + r) * 37) & (kWindow - 1));
-    lab::cp_async16(base + pool_at(r, q), src.run + tg * 64 + 16 * q);
-    lab::cp_async16(base + pool_at(r, 4 + q), src.values + tg * 64 + 16 * q);
-    lab::cp_async4(base + pool_at(r, 8) + 4 * q,
-                   src.factor + (q * static_cast<int64_t>(kTokens) + tg) * 4);
-    if (q == 0) lab::cp_async16(base + pool_at(r, 9), src.dense + tg * 16);
+    lab::cp_async16(base + pool_at<FORM>(r, q), src.run + tg * 64 + 16 * q);
+    lab::cp_async16(base + pool_at<FORM>(r, 4 + q), src.values + tg * 64 + 16 * q);
+    if constexpr (Form<FORM>::kFmPlane) {
+      if (q == 0) cp_async8(base + pool_at<FORM>(r, 10), src.fm + tg * 8);
+      if constexpr (Form<FORM>::kDense16) {
+        if (q >= 2)
+          lab::cp_async16(base + pool_at<FORM>(r, 8 + (q - 2)),
+                          src.dense16 + tg * 32 + 16 * (q - 2));
+      } else {
+        if (q == 1) lab::cp_async16(base + pool_at<FORM>(r, 8), src.dense + tg * 16);
+      }
+    } else {
+      lab::cp_async4(base + pool_at<FORM>(r, 8) + 4 * q,
+                     src.factor + (q * static_cast<int64_t>(kTokens) + tg) * 4);
+      if (q == 0) lab::cp_async16(base + pool_at<FORM>(r, 9), src.dense + tg * 16);
+    }
   }
 }
 
@@ -151,7 +181,9 @@ template <int FORM>
 __device__ __forceinline__ void restage_item(typename Shared<FORM>::Tile& t, const uint8_t* pool,
                                              int i) {
   const int r = i >> 1, half = i & 1;
-  const uint32_t* const d = reinterpret_cast<const uint32_t*>(pool + pool_at(r, 9)) + 2 * half;
+  const uint32_t* const d =
+      reinterpret_cast<const uint32_t*>(pool + pool_at<FORM>(r, Form<FORM>::kFmPlane ? 8 : 9))
+      + 2 * half;
   uint32_t h[4];
 #pragma unroll
   for (int j = 0; j < 2; ++j) {
@@ -161,17 +193,18 @@ __device__ __forceinline__ void restage_item(typename Shared<FORM>::Tile& t, con
         hmax2(hfma2(prmt(d[j], 0x64006400u, 0x4342u), 0x3c003c00u, 0xe400e400u), 0x07f807f8u);
   }
   *reinterpret_cast<uint4*>(t.dense + dense_at(r, half)) = make_uint4(h[0], h[1], h[2], h[3]);
-  if (half == 0) {
-    const float* const f = reinterpret_cast<const float*>(pool + pool_at(r, 8));
+  if (Form<FORM>::kFmPlane) {
+  } else if (half == 0) {
+    const float* const f = reinterpret_cast<const float*>(pool + pool_at<FORM>(r, 8));
     const float m = __fmul_rn(__fmul_rn(f[0], f[2]), f[3]);
     t.fm[r] = make_float2(__fmul_rn(m, f[1]), m);
   } else if constexpr (Form<FORM>::kTile) {
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
       *reinterpret_cast<uint4*>(t.vals + tile_at(r, j)) =
-          *reinterpret_cast<const uint4*>(pool + pool_at(r, 4 + j));
+          *reinterpret_cast<const uint4*>(pool + pool_at<FORM>(r, 4 + j));
       *reinterpret_cast<uint4*>(t.run + tile_at(r, j)) =
-          *reinterpret_cast<const uint4*>(pool + pool_at(r, j));
+          *reinterpret_cast<const uint4*>(pool + pool_at<FORM>(r, j));
     }
   }
 }
@@ -197,6 +230,26 @@ __device__ __forceinline__ Rows listed_rows(const uint16_t* entries, int e0, int
 #pragma unroll
   for (int k = 0; k < 4; ++k) w.c[k] = row(e0 + 2 * tq + (k & 1) + 8 * (k >> 1), w.in[k]);
   return w;
+}
+
+//: A PASS'S ROWS BUILT AT ITS START: for each of the pass's four words, each lane its bit, ranked by `popc`, its slot
+//: `base + popc(union below)` less the pass's first into the warp's buffer; the count
+__device__ __forceinline__ int pass_rows(const uint32_t* words, const uint32_t* uni,
+                                         const uint16_t* base, uint16_t* out, int lp, int first,
+                                         int lane) {
+  const uint32_t below = (1u << lane) - 1u;
+  int at = 0;
+#pragma unroll
+  for (int k = 0; k < 4; ++k) {
+    const int word = 4 * lp + k;
+    const uint32_t m = words[word];
+    if ((m >> lane) & 1u)
+      out[at + __popc(m & below)] =
+          static_cast<uint16_t>(base[word] + __popc(uni[word] & below) - first);
+    at += __popc(m);
+  }
+  __syncwarp();
+  return at;
 }
 
 //: THE DERIVED FORM'S ROWS (option 2): the warp union's next 16 set bits from token `cursor`, before `end`, gathered a
@@ -242,31 +295,35 @@ struct Operands {
   uint32_t a[4], b[4][2], cv[2], cm[2];
 };
 
-template <int FORM>
+template <int FORM, class Lap>
 __device__ __forceinline__ void operands(Operands& o, const typename Shared<FORM>::Tile& t,
                                          const uint8_t* pool, const Rows& w, int lane, float pu,
-                                         float pv) {
+                                         float pv, Lap&& lap) {
   const int q = lane >> 3, byte = lab::warp_id() * kLists + (lane >> 2);
-  lab::ldsm_t(o.a, lab::smem(t.dense + dense_at(w.a, q & 1)));
+  lab::ldsm_t(o.a, Form<FORM>::kDense16 ? lab::smem(pool + pool_at<FORM>(w.a, 8 + (q & 1)))
+                                        : lab::smem(t.dense + dense_at(w.a, q & 1)));
 #pragma unroll
   for (int h = 0; h < 2; ++h) {
     uint32_t x[4];
     const int c = 2 * h + (q >> 1);
     lab::ldsm_t(x, Form<FORM>::kTile ? lab::smem(t.vals + tile_at(w.b, c))
-                                     : lab::smem(pool + pool_at(w.b, 4 + c)));
+                                     : lab::smem(pool + pool_at<FORM>(w.b, 4 + c)));
     o.b[2 * h][0] = x[0];
     o.b[2 * h][1] = x[1];
     o.b[2 * h + 1][0] = x[2];
     o.b[2 * h + 1][1] = x[3];
   }
+  lap(2);
   float v[4], m[4];
 #pragma unroll
   for (int k = 0; k < 4; ++k) {
     const int row = w.c[k];
     const uint8_t b8 = Form<FORM>::kTile ? t.run[tile_at(row, byte >> 4) + (byte & 15)]
-                                         : pool[pool_at(row, byte >> 4) + (byte & 15)];
+                                         : pool[pool_at<FORM>(row, byte >> 4) + (byte & 15)];
     const float b = fmaxf(static_cast<float>(b8), 2.0f);
-    const float2 f = t.fm[row];
+    const float2 f = Form<FORM>::kFmPlane
+                         ? *reinterpret_cast<const float2*>(pool + pool_at<FORM>(row, 10))
+                         : t.fm[row];
     v[k] = w.in[k] ? __fmul_rn(__fmul_rn(b, f.x), pu) : 0.0f;
     m[k] = w.in[k] ? __fmul_rn(__fmul_rn(b, f.y), pv) : 0.0f;
   }
@@ -274,6 +331,7 @@ __device__ __forceinline__ void operands(Operands& o, const typename Shared<FORM
   o.cv[1] = lab::pack_half2(v[2], v[3]);
   o.cm[0] = lab::pack_half2(m[0], m[1]);
   o.cm[1] = lab::pack_half2(m[2], m[3]);
+  lap(3);
 }
 
 template <int ARM>
@@ -323,9 +381,20 @@ __device__ __forceinline__ void join(Acc<ARM>& st) {
   }
 }
 
-template <int ARM, int FORM>
-__global__ void __launch_bounds__(kThreads, 1) pass(int passes, Source src, long long* t,
-                                                    int* out) {
+//: THE PHASE LEDGER (LEDGER 1, the load-ahead forms): a warp's cycles a pass in its start-of-pass waits, its rows and
+//: loads, its mid-pass work (the slot waits, the fill, the restage), its MMAs' issue, and its pass end
+constexpr int kPhases = 7;
+const char* kPhaseName[kPhases] = {"start waits",
+                                   "rows",
+                                   "operand ldmatrix",
+                                   "coefficient (loads, math)",
+                                   "mid-pass (slot waits, fill, restage)",
+                                   "MMA issue",
+                                   "pass end (join, sums)"};
+
+template <int ARM, int FORM, int LEDGER>
+__global__ void __launch_bounds__(kThreads, 1) pass(int passes, Source src, long long* t, int* out,
+                                                    long long* led) {
   using F = Form<FORM>;
   extern __shared__ __align__(128) unsigned char raw[];
   Shared<FORM>& sh = *reinterpret_cast<Shared<FORM>*>(raw);
@@ -356,12 +425,22 @@ __global__ void __launch_bounds__(kThreads, 1) pass(int passes, Source src, long
       fill<FORM>(sh.pool[1], src, 1, tid);
       lab::mbar_arrive_when_landed(lab::smem(&sh.landed[1]));
     }
-    lab::mbar_wait(lab::smem(&sh.landed[0]), 0);
-    restage_item<FORM>(sh.tile[0], sh.pool[0], tid);
-    lab::mbar_arrive(lab::smem(&sh.staged[0]));
+    if constexpr (!F::kDense16) {
+      lab::mbar_wait(lab::smem(&sh.landed[0]), 0);
+      restage_item<FORM>(sh.tile[0], sh.pool[0], tid);
+      lab::mbar_arrive(lab::smem(&sh.staged[0]));
+    }
   }
   lab::WarpSpan clock;
   clock.start();
+  long long ledger[kPhases] = {}, last = clock64();
+  auto lap = [&](int ph) {
+    if constexpr (LEDGER != 0) {
+      const long long now = clock64();
+      ledger[ph] += now - last;
+      last = now;
+    }
+  };
 #pragma unroll 1
   for (int x = 0; x < passes; ++x) {
     const int lp = x % kPassesPerWindow, wi = x / kPassesPerWindow, lb = wi & 1, first = kRows * lp;
@@ -379,17 +458,23 @@ __global__ void __launch_bounds__(kThreads, 1) pass(int passes, Source src, long
       restage_item<FORM>(sh.tile[0], sh.pool[0], tid);
       __syncthreads();
     } else {
-      lab::mbar_wait(lab::smem(&sh.staged[k]), parity(x));
+      if constexpr (F::kDense16)
+        lab::mbar_wait(lab::smem(&sh.landed[x % 3]), static_cast<uint32_t>(x / 3) & 1u);
+      else
+        lab::mbar_wait(lab::smem(&sh.staged[k]), parity(x));
       if constexpr (FORM == 1) {
         fill<FORM>(sh.pool[k], src, x + 2, tid);
         lab::mbar_arrive_when_landed(lab::smem(&sh.landed[k]));
       }
     }
+    lap(0);
     const typename Shared<FORM>::Lists& L = sh.lists[lb];
     //: the warp's steps this pass and its cursor
     int count;
     if constexpr (F::kListed) {
       count = L.counts[warp][lp];
+    } else if constexpr (F::kPassRows) {
+      count = pass_rows(L.words[warp], sh.uni, sh.base, sh.pass_rows[warp], lp, first, lane);
     } else {
       const int c = lane < 4 ? __popc(L.words[warp][4 * lp + lane]) : 0;
       count = __reduce_add_sync(0xffffffffu, c);
@@ -412,7 +497,11 @@ __global__ void __launch_bounds__(kThreads, 1) pass(int passes, Source src, long
         fill<FORM>(sh.pool[kn], src, x + 1, tid);
         lab::mbar_arrive_when_landed(lab::smem(&sh.landed[kn]));
       }
-      if constexpr (FORM >= 3) {
+      if constexpr (F::kDense16) {
+        if (x >= 1) lab::mbar_wait(lab::smem(&sh.drained[kn]), parity(x - 1));
+        fill<FORM>(sh.pool[(x + 2) % 3], src, x + 2, tid);
+        lab::mbar_arrive_when_landed(lab::smem(&sh.landed[(x + 2) % 3]));
+      } else if constexpr (FORM >= 3) {
         if (x >= 1) lab::mbar_wait(lab::smem(&sh.drained[kn]), parity(x - 1));
         fill<FORM>(sh.pool[(x + 2) % 3], src, x + 2, tid);
         lab::mbar_arrive_when_landed(lab::smem(&sh.landed[(x + 2) % 3]));
@@ -427,10 +516,13 @@ __global__ void __launch_bounds__(kThreads, 1) pass(int passes, Source src, long
       Rows w;
       if constexpr (F::kListed)
         w = listed_rows(L.entries[warp], e0 + kStep * s, e0 + count, first, lane);
+      else if constexpr (F::kPassRows)
+        w = listed_rows(sh.pass_rows[warp], kStep * s, count, 0, lane);
       else
         w = derived_rows(L.words[warp], sh.uni, sh.base, sh.scratch[warp], cursor, first + kRows,
                          first, lane);
-      operands<FORM>(o, T, P, w, lane, pu, pv);
+      lap(1);
+      operands<FORM>(o, T, P, w, lane, pu, pv, lap);
     };
     if constexpr (F::kAhead) {
       //: chunks of three steps: the chunk's operands, the slots drained after the pass's last loads, the restage share
@@ -443,9 +535,11 @@ __global__ void __launch_bounds__(kThreads, 1) pass(int passes, Source src, long
         if (s0 + 2 < n) load(o2, s0 + 2);
         if (s0 + 3 >= n) lab::mbar_arrive(lab::smem(&sh.drained[k]));
         if (s0 <= max(mid, 0) && max(mid, 0) < s0 + 3) middle();
+        lap(4);
         if (s0 < n) step<ARM>(st, m, o0, lane);
         if (s0 + 1 < n) step<ARM>(st, m, o1, lane);
         if (s0 + 2 < n) step<ARM>(st, m, o2, lane);
+        lap(5);
       }
     } else {
       if (FORM != 0 && mid < 0) middle();
@@ -476,8 +570,14 @@ __global__ void __launch_bounds__(kThreads, 1) pass(int passes, Source src, long
     if ((x + (warp >> 2)) & 1) join(st);
     mass += m[0] + m[1] + m[2] + m[3];
     m[0] = m[1] = m[2] = m[3] = 0.0f;
+    lap(6);
   }
   clock.stop(t);
+  if constexpr (LEDGER != 0) {
+    if (lane == 0)
+      for (int ph = 0; ph < kPhases; ++ph)
+        led[(blockIdx.x * kWarps + warp) * kPhases + ph] = ledger[ph];
+  }
   lab::cp_wait_all();
   uint32_t fold = lab::bits(mass);
   for (int j = 0; j < kLists; ++j)
@@ -534,7 +634,7 @@ std::vector<GLists> make_lists(int density, int sms, double& steps_floor) {
 
 template <int ARM, int DENSITY, int FORM>
 void variant(const lab::Bench& b, Source src, const GLists* lists, double steps_floor) {
-  const std::string name = lab::kernel("pass", {ARM, FORM});
+  const std::string name = lab::kernel("pass", {ARM, FORM, 0});
   b.expect(name, ARM == kArmHalf ? "HMMA.16816.F16" : "HMMA.16816.F32", ">=", 32);
   b.expect(name, "LDGSTS", ">=", 4);
   if (FORM == 0) b.expect(name, "BAR", ">=", 3);
@@ -542,9 +642,11 @@ void variant(const lab::Bench& b, Source src, const GLists* lists, double steps_
   src.lists = lists;
   const int bytes = static_cast<int>(sizeof(Shared<FORM>));
   LAB_CHECK(
-      cudaFuncSetAttribute(pass<ARM, FORM>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
+      cudaFuncSetAttribute(pass<ARM, FORM, 0>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
   const lab::Samples s = b.variant(
-      [&] { pass<ARM, FORM><<<b.sms, kThreads, bytes>>>(kPasses, src, b.times, b.sinks); },
+      [&] {
+        pass<ARM, FORM, 0><<<b.sms, kThreads, bytes>>>(kPasses, src, b.times, b.sinks, nullptr);
+      },
       [&] { return b.span(8) / kPasses; });
   const std::string label = std::string(kArmName[ARM]) + " / 1 in "
                             + std::to_string(kDensityOf[DENSITY]) + " / " + kFormName[FORM];
@@ -552,6 +654,40 @@ void variant(const lab::Bench& b, Source src, const GLists* lists, double steps_
   lab::Samples over;
   for (double c : s.v) over.v.push_back(c / (steps_floor * kWarpStep[ARM]));
   b.record(label + " / floor", "x", over);
+}
+
+//: a load-ahead form's phase ledger: each phase's mean cycles a warp a pass
+template <int ARM, int DENSITY, int FORM>
+void ledger(const lab::Bench& b, Source src, const GLists* lists) {
+  const std::string name = lab::kernel("pass", {ARM, FORM, 1});
+  b.expect(name, "HMMA.16816.F32", ">=", 32);
+  if (b.expect_only) return;
+  src.lists = lists;
+  const int bytes = static_cast<int>(sizeof(Shared<FORM>));
+  long long* led = nullptr;
+  const size_t n = static_cast<size_t>(b.sms) * kWarps * kPhases;
+  LAB_CHECK(cudaMalloc(&led, n * sizeof(long long)));
+  LAB_CHECK(
+      cudaFuncSetAttribute(pass<ARM, FORM, 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
+  std::vector<lab::Samples> per(kPhases);
+  b.variant(
+      [&] { pass<ARM, FORM, 1><<<b.sms, kThreads, bytes>>>(kPasses, src, b.times, b.sinks, led); },
+      [&] {
+        std::vector<long long> h(n);
+        LAB_CHECK(cudaMemcpy(h.data(), led, n * sizeof(long long), cudaMemcpyDeviceToHost));
+        for (int ph = 0; ph < kPhases; ++ph) {
+          double sum = 0;
+          for (size_t i = ph; i < n; i += kPhases) sum += double(h[i]);
+          per[ph].v.push_back(sum / (double(b.sms) * kWarps * kPasses));
+        }
+        return 0.0;
+      });
+  for (int ph = 0; ph < kPhases; ++ph)
+    b.record(std::string("ledger / ") + kArmName[ARM] + " / 1 in "
+                 + std::to_string(kDensityOf[DENSITY]) + " / " + kFormName[FORM] + " / "
+                 + kPhaseName[ph],
+             "cycles a warp a pass", per[ph]);
+  LAB_CHECK(cudaFree(led));
 }
 
 template <int ARM, int DENSITY>
@@ -575,6 +711,13 @@ void density(const lab::Bench& b, const Source& src) {
   if constexpr (ARM == kArmFloat) {
     variant<ARM, DENSITY, 5>(b, src, lists, steps_floor);
     variant<ARM, DENSITY, 6>(b, src, lists, steps_floor);
+    variant<ARM, DENSITY, 7>(b, src, lists, steps_floor);
+    variant<ARM, DENSITY, 8>(b, src, lists, steps_floor);
+    variant<ARM, DENSITY, 9>(b, src, lists, steps_floor);
+    ledger<ARM, DENSITY, 5>(b, src, lists);
+    ledger<ARM, DENSITY, 9>(b, src, lists);
+    ledger<ARM, DENSITY, 6>(b, src, lists);
+    ledger<ARM, DENSITY, 8>(b, src, lists);
   }
   if (lists) LAB_CHECK(cudaFree(lists));
 }
@@ -594,13 +737,15 @@ int main(int argc, char** argv) {
   Source src{};
   if (!b.expect_only) {
     uint8_t* buf = nullptr;
-    const size_t bytes = static_cast<size_t>(kTokens) * 160;
+    const size_t bytes = static_cast<size_t>(kTokens) * 200;
     LAB_CHECK(cudaMalloc(&buf, bytes));
     LAB_CHECK(cudaMemset(buf, 0x3c, bytes));
     src.run = buf;
     src.values = buf + static_cast<size_t>(kTokens) * 64;
     src.factor = buf + static_cast<size_t>(kTokens) * 128;
     src.dense = buf + static_cast<size_t>(kTokens) * 144;
+    src.fm = buf + static_cast<size_t>(kTokens) * 160;
+    src.dense16 = buf + static_cast<size_t>(kTokens) * 168;
   }
   arm<kArmHalf>(b, src);
   arm<kArmFloat>(b, src);
