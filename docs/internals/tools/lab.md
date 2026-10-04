@@ -234,7 +234,7 @@ The per-warp phase ledger (`LEDGER` 1, a lap clock at each phase) says where a s
 Rows derived a step at a time are the largest non-MMA piece (a word loop, warp syncs and scratch round trips each
 step: ~650-940 cycles a step in sparse passes); built once a pass they cost about half, 1 in 4 1.25x -> 1.20x. The
 precomputed forms take the restage out of the mid-pass work (-0.1 to -0.3K a warp-pass; 1 in 4 1.30x -> 1.25x, 1 in 16
-2.07x -> 1.92x, dense unchanged). At 1 in 16 a warp has about one step a pass, and its fixed work a pass (rows ~0.75K,
+2.06x -> 1.94x, dense unchanged). At 1 in 16 a warp has about one step a pass, and its fixed work a pass (rows ~0.75K,
 mid-pass ~0.8K, waits ~0.5K) still outweighs that step: the 128-row pass is too small a unit there. The fp16 arm reads 1.95-2.09x dense: every pipelined form sits at 251-254 registers, and the bookkeeping
 (rows, cursor, lists, waits) leaves its steps no room -- the pipeline needs register headroom on that arm; its rows
 also move between runs (1 in 4, three slots derived: 4.42x in an earlier 3-repetition run, 2.69x here). Record:
