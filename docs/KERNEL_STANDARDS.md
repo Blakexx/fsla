@@ -790,3 +790,8 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       (64 KB stored, 64 KB pulled a window) takes ~1.5K cycles, bank conflicts on its 32-bit stores or not; after a
       barrier it is all exposed, behind an mbarrier with independent work between a warp's stores and its pull about
       half hides (~1% of a dense window, ~4% of a sparse one).
+   n. BUILD A PASS'S ROWS ONCE, NOT A STEP AT A TIME (`sparse_pass`, its phase ledger): a step's rows derived from the
+      union words each step (a word loop, warp syncs, scratch round trips) cost ~650-940 cycles a step a warp in sparse
+      passes, the largest piece of a sparse pass after the MMAs; built once at the pass's start, word-parallel over its
+      words, they cost about half (1 in 4: 1.25x -> 1.20x). Take a pipeline's phases apart with a per-warp lap ledger
+      before choosing its levers.
