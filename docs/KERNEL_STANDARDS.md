@@ -786,3 +786,7 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       run ahead of the slowest warp's MMAs, so warps with uneven work drift instead of waiting: sparse passes 1 in 4
       1.27-1.30x against 1.55-1.60x, 1 in 16 1.87-2.07x against 2.05-2.26x, ~3% dense. Shared slots hide load latency;
       register depth hides the warps' divergence.
+   m. A CROSS-WARP PUBLISH COSTS ITS SHARED-MEMORY BYTES (`state_publish`): the fold state's transpose to the readout
+      (64 KB stored, 64 KB pulled a window) takes ~1.5K cycles, bank conflicts on its 32-bit stores or not; after a
+      barrier it is all exposed, behind an mbarrier with independent work between a warp's stores and its pull about
+      half hides (~1% of a dense window, ~4% of a sparse one).

@@ -1218,6 +1218,7 @@
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "cff04e499c09", "reviewed": true, "sha256": "", "target": "measure/lab/results/pass_pipeline/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "84dd6b052bad", "reviewed": true, "sha256": "", "target": "measure/lab/results/pool_layout/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "84dd6b052bad", "reviewed": true, "sha256": "", "target": "measure/lab/results/sparse_pass/sm_86.json"},
+  {"doc": "docs/internals/tools/lab.md", "pinned_at": "ac09a1d42a63", "reviewed": true, "sha256": "", "target": "measure/lab/results/state_publish/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "56e6db164873", "reviewed": true, "sha256": "", "target": "measure/lab/results/tensor_tax/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "56e6db164873", "reviewed": true, "sha256": "", "target": "tools/lab.py"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "84dd6b052bad", "reviewed": true, "sha256": "74e9911746d59cff", "target": "tools/lab.py::main"},
