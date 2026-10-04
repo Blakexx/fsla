@@ -10,15 +10,17 @@ static operands off its `sparse` flags and topology, and `facts` packs them into
 
 ## `rola_facts_forward`
 
-    rola_facts_forward(read[], write[], scale_write[], g_write, v_scale, words!, unions!, zeta!,
-                       widths, dense_read, mask_read, dense_write, mask_write, window) -> ()
+    rola_facts_forward(read[], write[], scale_write[], g_write, v_scale, words!, unions!, list_exp!,
+                       widths, dense_read, mask_read, dense_write, mask_write, list_level, window) -> ()
 
 Each side's rows a level (`[B, T, H, b_l]` u8), the
 write levels' scales, the write gain and the value scale (`[B, T, H]` fp32, any
 strides), and the three outputs the caller allocates: `words` the contiguous int32
 `[B·H, 2, rows, ceil(T/32)]`, `unions` the contiguous int32 `[B·H, 2, groups,
-ceil(T/64)]` ([`liveness_contract.md`](liveness_contract.md#tile-unions)) and `zeta` the
-contiguous fp32 `[B·H, windows, 2]`. The pass writes every element of all three. `widths` are the layout's PADDED widths; `dense_*`
+ceil(T/64)]` ([`liveness_contract.md`](liveness_contract.md#tile-unions)) and `list_exp` the
+contiguous int16 `[B·H, windows, B_list, 2]` ([`facts.md`](facts.md#lists)), `B_list` the list level's padded
+width — any tensor when `list_level` is -1 (no carry lists past depth two; `rola.ops.facts.list_level`). The pass
+writes every element of all three. `widths` are the layout's PADDED widths; `dense_*`
 is a bitmask over levels and `mask_*` one bit a row, packed by
 `rola.engine.facts.liveness.side_statics` — the only place `b_l` appears.
 
@@ -26,8 +28,9 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
 
 * the depth is one to four levels, each side holds a row set a level and the write side
   a scale a level; a level is 1 to 256 digits wide;
-* `window` is the carry's 512 tokens — zeta's grain is the carry's window, and a caller
+* `window` is the carry's 512 tokens — the lists' grain is the carry's window, and a caller
   that means another has no fold to hand it to;
+* `list_level` is a level of the depth, or -1;
 * the rows are u8, `[B, T, H, width]` with the first level's `B, T, H`, digits
   contiguous;
 * each side's dense bitmask names only levels inside the depth, and its digit mask is

@@ -202,7 +202,7 @@ def carry_intra(fx) -> Launch:
     """THE TWO KERNELS AS ONE OPERATOR: `rola.ops.prefill` over the cell's bundle -- the carry, the intra, and the
     carry leg's own dequantize-and-pack of the bundle, over facts the caller built.
 
-    A KERNEL-LEVEL SUBJECT, not the op (Blake, 2026-09-15). The liveness words, zeta and activity bits are the facts
+    A KERNEL-LEVEL SUBJECT, not the op (Blake, 2026-09-15). The liveness words, list exponents and activity bits are the facts
     pass's, so they are built once here, outside the timed call, exactly as `rola.ops.prefill`'s contract says they are
     the caller's. What an OP-level number would add -- producing the bundle and its facts, planning and committing the
     pages -- is not timed here and has no live path to time until the prefill arm is rebuilt
@@ -256,7 +256,7 @@ def carry_intra(fx) -> Launch:
 
 
 def facts_pass(fx) -> Launch:
-    """Both sides' class-1 words and the fold's window scales, from the cell's draw in the bundle's format: the pass the
+    """Both sides' class-1 words and the write lists' exponents, from the cell's draw in the bundle's format: the pass the
     prefill's facts node launches, a side dense where the cell declares it so (its rows unread)."""
     from measure.cells import realize
     from rola.ops import facts as facts_ops

@@ -147,8 +147,8 @@ STABLE_TORCH_LIBRARY(rola, m) {
   // ---- the facts pass: the bundle's rows to the class-1 words and zeta ------
   m.def(
       "rola_facts_forward(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v_scale, "
-      "Tensor(a!) words, Tensor(b!) unions, Tensor(c!) zeta, int[] widths, int dense_read, int[] mask_read, int dense_write, "
-      "int[] mask_write, int window) -> ()");
+      "Tensor(a!) words, Tensor(b!) unions, Tensor(c!) list_exp, int[] widths, int dense_read, int[] mask_read, "
+      "int dense_write, int[] mask_write, int list_level, int window) -> ()");
   m.def("rola_facts_ledger_bind(Tensor? ledger) -> ()");
 
   // ---- the producer: one launch from the tokens to the bundle -------------

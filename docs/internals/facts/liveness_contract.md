@@ -33,8 +33,8 @@ LIVENESS PASS") admits exactly two classes of fact.
 
 The int8 rebuild's ruling of 2026-09-28 widened what the facts kernel owns to anything
 determinable from the raw produced values, so two per-grain aggregates now sit beside
-the classes and are written by the same pass: zeta, per window ([`facts.md`](facts.md#zeta)),
-and the [tile unions](#tile-unions), per 64 tokens. Neither is a class-2 fact — neither is
+the classes and are written by the same pass: the list exponents, per (window, list digit)
+([`facts.md`](facts.md#lists)), and the [tile unions](#tile-unions), per 64 tokens. Neither is a class-2 fact — neither is
 over the whole call nor `O(N)` — and neither is derived by a consumer: each is the OR or
 the maximum of what the pass already holds when it holds it.
 

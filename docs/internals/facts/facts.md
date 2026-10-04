@@ -1,12 +1,12 @@
 # `csrc/rola/src/facts/facts.cuh` / `facts.cu` — the facts pass
 
 Mirror doc for the one pass that reads a call's bundle before the carry and the intra
-do: both sides' class-1 liveness words, their tile unions and the fold's per-window
-scales, zeta, in one launch. What the words ARE — their layout, the folds over them and why each is the
+do: both sides' class-1 liveness words, their tile unions and the fp16 fold's per-(window,
+list) exponents, in one launch. What the words ARE — their layout, the folds over them and why each is the
 grain it is — is [`liveness_contract.md`](liveness_contract.md), which this kernel does
 not restate and must not contradict; its host seam is [`facts_api.md`](facts_api.md).
 `rola.engine.facts.liveness.liveness_words` is the pure-torch MODEL the words are graded
-against bit for bit, `fold_zeta` in `tests/oracle/int_reference.py` is zeta's
+against bit for bit, `list_exponents` in `tests/oracle/fold_reference.py` is the exponents'
 definition, and `tests/integration/test_facts_pass.py` holds the kernel to both.
 
 Vocabulary, defined here and used unqualified below: `D` = routing depth; `B_l` =
@@ -21,7 +21,7 @@ The bundle as the producer wrote it (`docs/api.md` §2.1): each level's rows
 `[B, T, H, b_l]`, u8 digits at every depth, read where they lie — a
 view of the producer's packed plane or a tensor of its own, by its strides. There is no
 alignment law: a level may start at any byte and be any width. The pass also reads the
-write levels' scales, the write gain and the value scale for zeta — a few words a token.
+write levels' scales, the write gain and the value scale for the list exponents — a few words a token.
 
 A DENSE level (the bundle's `sparse` flag unset, set at production for an activation with
 no exact zeros; `rola.ops.facts.call_statics`) is not read: its words are the width mask over the live
@@ -33,9 +33,9 @@ costs the same on a sparse and a dense draw of a sparse level.
 
 ## The grid: two blocks an SM, walking items
 
-The work is items: per (batch-head, window) its units four at a time, then its zeta.
-The window is the carry's — `kWindowWords` is 16 words, and the host entry refuses any
-other — because it is zeta's grain. `kFactsBlocksPerSm` = 2 blocks of eight warps an SM
+The work is items: per (batch-head, window) its units four at a time, the list level's
+first. The window is the carry's — `kWindowWords` is 16 words, and the host entry refuses
+any other — because it is the lists' grain. `kFactsBlocksPerSm` = 2 blocks of eight warps an SM
 walk the items (the grid is `min(items, 2 × SMs)`), the windows of one batch-head
 consecutive, so the blocks at work together read one head's neighbouring windows. An
 item's eight warps take its four units two ways each: warp `w` votes unit `w mod 4`'s
@@ -116,32 +116,42 @@ warp stores its 16 rows two an instruction: lanes 0–15 one row's 16 words and 
 `L` is a whole number of windows, which the prefill requires. Every word is written
 once.
 
-<a id="zeta"></a>
+<a id="lists"></a>
 
-## Zeta: the fold's window scales
+## The list exponents: the fp16 fold's scales
 
-    m(t)       = g_write(t) × Π_l scale_write_l(t)      (the gain first, then the levels in order)
-    zeta[0]    = max over the window's tokens of m(t)
-    zeta[1]    = max over the window's tokens of m(t) × s(t)      (s = the value scale)
+    m(t)          = g_write(t) × Π_l scale_write_l(t)      (the gain first, then the levels in order)
+    K[w, r, 0]    = ceil(log2(max over the window's tokens of b(t, r) × m(t)))
+    K[w, r, 1]    = ceil(log2(max over the window's tokens of b(t, r) × m(t) × s(t)))     (s = the value scale)
 
-stored `[BH, windows, 2]` fp32 and floored at the smallest normal fp32 — a zeta is a
-divisor (the carry's int8 fold: `P_m(t) = rint(2^23 col_m(t) / (255 zeta_m))`, the window's largest
-column at full scale), and a window of dead tokens keeps the floor. `m` is the product
-`int_reference.fold_zeta` calls `g m_ws m_wd`: every write level's row maximum, sparse
-or dense. A zeta item's 256 threads take two tokens each, every column load issued before the
-first product, reduce by warp shuffles and a shared row of eight, and two threads store. The product ORDER is part of the contract
-with the fold that divides by it: a consumer that recomputes `m(t)` in the same order
-gets its own maximum token at exactly `zeta`.
+per window `w` and digit `r` of the LIST LEVEL — the carry's level R, whose write digits are its write lists
+(`rola.ops.facts.list_level`; none past depth two) — `b` the token's write byte, a dense level's zero at the floor
+([`liveness_contract.md`](liveness_contract.md#floor)), floored at -126 (the smallest normal's exponent: a list no
+token writes). Stored int16 `[BH, windows, B_list, 2]`, a lane's pair one word. The fp16 fold puts each list's largest
+coefficient at a fixed power of two by them, so one scale a list keeps every coefficient in fp16's range (ruled
+2026-10-03); it replaced zeta, the int fold's per-window maximum, which nothing read once that fold was gone.
+
+A list unit reads its rows even on a dense level (the vote's words stay the width mask): its lanes' digits, each token
+`b × m` and `b × m × s` maxed into the lane's pair, from the window's columns that an item holding a list unit stages
+in shared memory first (`stage_columns`: two tokens a thread, `m` in level order, and the window's largest column). A
+dense level's floor is not applied a digit at a time: `max_t max(b, f) c = max(max_t b c, f max_t c)`, so the
+window's largest column times the floor's digit bounds every digit in the mask once. The unit's two parts meet in
+shared memory after the item's barrier, and its first part's warp stores a lane's `(K_m, K_v)` pair, the unit's 32 one
+128-byte run.
+
+THE GRID'S BLOCK COUNT is coprime to a window's items when the blocks walk the items: a list item is ~2.5× a vote
+item's instructions, and a grid stride that shared a factor with the items a window (160 blocks, 8 items) dealt each
+block the same item position every time, so a quarter of the blocks did all the list work (measured: 118 µs against
+78 at `nl64k-alt-k4`, CUDA events).
 
 <a id="phase-ledger"></a>
 
 ## The phase ledger
 
-`rola_facts_ledger_bind` binds a `[8][3]` int64 buffer (warp × `vote`, `store`, `zeta`)
+`rola_facts_ledger_bind` binds a `[8][3]` int64 buffer (warp × `columns`, `vote`, `store`)
 that every block's warps add their cycles into; `rola.ops.facts.ledger_bind` is the
 Python side. A bound ledger moves no output (`tests/integration/test_facts_pass.py`). At
-`L = 64K`, 16 batch-heads, all sparse: vote 92%, store 2.5%, zeta 6% of the warps'
-cycles — the pass waits on its rows.
+`L = 64K`, one batch-head, `nl64k-alt-k4`: columns 9%, vote 82%, store 9% of the warps' cycles.
 
 <a id="factsparams"></a>
 
@@ -159,7 +169,7 @@ reads beyond them.
 ## The budget line and the floor
 
 The int8 rebuild's facts line (ruled 2026-09-30): per head at `(256, 256)`, `L = 64K`, the rows 2 × 512 B a
-token (67 MB, ~84 µs at 800 GB/s), the words 8 MB (~10 µs), zeta ~1 µs: a DRAM floor
+token (67 MB, ~84 µs at 800 GB/s), the words 8 MB (~10 µs), the old zeta ~1 µs: a DRAM floor
 of ~95 µs, budget 1.3× (~125 µs), every cell priced as if both sides were read whole.
 Measured (ncu, kernel time): at 16 batch-heads all-sparse 98 µs a head (DRAM at 88% of
 peak), alt 59, all-dense 19 — a dense level unread; the carry cells (one sequence):
@@ -176,6 +186,18 @@ pays most because its vote loads nothing and the per-tile ballot is then most of
 loop; a dense level's union is its width mask on every live tile, one ballot a unit
 rather than a tile.
 
+THE LIST EXPONENTS (2026-10-03) MISSED THEIR LINE. The line, stated before the code: `nl64k-alt-k4` <= 78 µs (its
+list rows already read, ~6 added instructions a (digit, token) on 8 of its 16 reading units, the zeta item gone),
+`nl64k-dense` <= 40 µs (the list level's write rows a new 16.8 MB read: a DRAM floor ~31 µs), `flagship-cohort-k16`
+<= 14 µs. Measured (ncu kernel time, one batch-head, from 71 / 25 / 12.8 with zeta): 88 / 58 / 19.6 µs, 18.5M
+instructions at alt with the scheduler issuing on 58% of its cycles — the pass is issue-bound as much as it waits on
+its rows: a vote (digit, token) costs ~8 instructions (a byte load's 64-bit address and predicate, its test), a list
+one ~10 more (its conversion, two products, two maxima, the column load). Variants measured worse: two units a list
+item at four warps each (alt 98, cohort 14.6), 32-bit load offsets in either form (alt 107-115, 20-25M instructions).
+THE LEVER is the load structure, not the arithmetic: the rows staged by `cp.async` 16-byte copies (two a lane a word in
+place of 32 byte loads, several words in flight without registers) and read from shared memory — the sm_90 TMA form
+below, on sm_80/86. Carded for the rebuild plan's fixed parts; the pass is ~1-2% of the prefill.
+
 The sm_80 form is this one, re-measured for its residency point (HBM's page behaviour
 is not GDDR6X's). On sm_90 the rows move by TMA: a unit's `[tokens × 32 digits]` box
 lands in shared memory in one instruction, the vote reads it from there, and the
@@ -189,4 +211,4 @@ the levels, a lane a token, a warp ballot a digit; its layout, its dense-level m
 its past-the-end dead vote are kept unchanged. What is new is the input — the bundle's
 own u8 rows, half the bytes of the bf16 planes, with no packing pass before it —
 the digit-lane orientation that input's lack of an alignment law asks for, the tile
-that keeps the stores whole, and zeta.
+that keeps the stores whole, and the fold's scales (zeta then; the list exponents now).

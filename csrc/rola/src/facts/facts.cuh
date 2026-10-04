@@ -1,5 +1,5 @@
 // csrc/rola/src/facts/facts.cuh -- THE FACTS PASS's constants and operand block: both sides' class-1 words
-// (`liveness_contract.cuh`) and zeta from the bundle's rows. see docs/internals/facts/facts.md
+// (`liveness_contract.cuh`) and the write lists' exponents from the bundle's rows. see docs/internals/facts/facts.md
 #pragma once
 
 #include <cstdint>
@@ -16,7 +16,7 @@ constexpr int kFactsBlocksPerSm = 2;
 constexpr int kItemUnits = 4;
 constexpr int kParts = kFactsWarps / kItemUnits;
 
-//: THE WINDOW, the carry's 512 tokens and zeta's grain, and a warp's part: its words and its rows' store pairs.
+//: THE WINDOW, the carry's 512 tokens and the lists' grain, and a warp's part: its words and its rows' store pairs.
 constexpr int kWindowWords = 16;
 constexpr int kWindowTokens = kWindowWords * kTokBits;
 constexpr int kPartWords = kWindowWords / kParts;
@@ -27,10 +27,11 @@ constexpr int kMaxWidth = 256;
 constexpr int kMaxMaskWords = kMaxLevels * kMaxWidth / 32;
 constexpr int kMaxUnits = kSides * kMaxLevels * kMaxWidth / 32;
 
-//: THE SMALLEST NORMAL FP32: a stored zeta is a divisor. -- see docs/internals/facts/facts.md#zeta
-constexpr float kZetaFloor = 1.17549435e-38f;
+//: THE LIST EXPONENTS' FLOOR, the smallest normal fp32: a dead list's exponent is -126.
+//: -- see docs/internals/facts/facts.md#lists
+constexpr float kListFloor = 1.17549435e-38f;
 
-enum FactsPhase : int { kPhaseVote, kPhaseStore, kPhaseZeta, kFactsPhases };
+enum FactsPhase : int { kPhaseColumns, kPhaseVote, kPhaseStore, kFactsPhases };
 
 //: A level's rows (digits contiguous) or an fp32 column, by its batch, token and head strides.
 struct RowView {
@@ -50,9 +51,10 @@ struct FactsParams {
   ColumnView g_write, v_scale;
   uint32_t* words;
   uint32_t* unions;
-  float* zeta;
+  uint32_t* list_exp;  // [BH, windows, B_list], a digit's (K_m, K_v) int16 pair
   long long* ledger;
-  int D, H, L, token_words, windows, items, rows_total, units, groups, tiles;
+  int D, H, L, token_words, windows, items, rows_total, units, groups, tiles, list_level,
+      list_items, window_items;
   int B[kMaxLevels];
   int row_base[kMaxLevels];
   int group_base[kMaxLevels];
@@ -62,5 +64,9 @@ struct FactsParams {
 };
 
 constexpr int unit_code(int side, int level, int group) { return side << 5 | level << 3 | group; }
+
+constexpr bool is_list_unit(const FactsParams& p, int code) {
+  return (code >> 5) == kWrite && ((code >> 3) & 3) == p.list_level;
+}
 
 }  // namespace rola::facts

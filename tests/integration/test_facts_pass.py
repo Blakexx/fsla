@@ -1,20 +1,18 @@
-"""Gate for the FACTS PASS (csrc/rola/src/facts/): its words ARE the model's, bit for bit, and its zeta is the int8
-reference's, per slot.
+"""Gate for the FACTS PASS (csrc/rola/src/facts/): its words ARE the model's, bit for bit, and its list exponents are
+the fp16 fold reference's, per slot.
 
 `tests/unit/test_liveness_contract.py` gates the words' contract and the pure-torch model without a device; this file
 holds the one pass to that model on the bundle's own rows -- u8 and f16, separate tensors and views of one packed plane
 -- which makes every property the model proves (sparse rows are the digits' support, a dense level's rows are the
-static width mask and cost no read, pad digits are dead, a token past `L` votes dead) a property of the kernel. Zeta is
-held to `int_reference.fold_zeta` per window and batch-head within the fp32 rounding of its products
-(docs/internals/facts/facts.md#zeta). The class-2 folds the words feed are gated here too: the exact per-page byte
+static width mask and cost no read, pad digits are dead, a token past `L` votes dead) a property of the kernel. The
+list exponents are held to `fold_reference.list_exponents` per window, digit and batch-head, exactly except where a
+maximum sits within fp32 rounding of a power of two (docs/internals/facts/facts.md#lists). The class-2 folds the words feed are gated here too: the exact per-page byte
 against the general box fold at the atom box set and against the leaf-level truth.
 
 Symbols: ``D`` routing depth; ``B_l`` the PADDED per-level width; ``b_l`` the LOGICAL one (the rows' own width);
 ``L`` tokens; ``BH`` = batch x heads; atom = 16 canonical leaves = the page granule.
 """
 from __future__ import annotations
-
-from math import prod
 
 import pytest
 import torch
@@ -26,7 +24,7 @@ from rola.routing.factors import RouteFactors
 from rola.routing.topology import padded_level_width
 from rola.routing.types import OpaqueRouting, Topology
 from rola.values import Values
-from tests.oracle.int_reference import fold_zeta
+from tests.oracle.fold_reference import exponent_bounds, list_exponents
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the pass is a CUDA kernel")
 
@@ -37,10 +35,8 @@ _SHAPES = (((32,), 32), ((16, 16), 64), ((32, 16), 40), ((16, 16, 16), 96), ((64
 #: Which levels each side declares DENSE: the pass reads neither side's dense levels.
 _MODES = ((), (0,), "all")
 
-#: zeta's per-slot bound, relative: the kernel's fp32 product of at most six factors, a rounding each.
-_ZETA_RTOL = 2.0 ** -20
-
-_FLT_MIN = torch.finfo(torch.float32).tiny
+#: the list maxima's bound, relative: the kernel's fp32 product of at most seven factors, a rounding each.
+_LIST_RTOL = 2.0 ** -20
 
 
 def _statics(layout, dense, logical):
@@ -164,35 +160,57 @@ def test_a_token_past_the_end_votes_dead():
     assert torch.equal(got[:, :, :, 1], torch.ones_like(got[:, :, :, 1]))
 
 
-# --------------------------------------------------------------- zeta is the reference's
+# --------------------------------------------------------------- the list exponents are the reference's
 
 
-@pytest.mark.parametrize(("widths", "L"), _SHAPES)
-def test_zeta_is_the_reference_per_window(widths, L):
+def _list_exp(routes, values, layout, read_statics, write_statics):
+    """``(got, lo, hi)`` as ``[BH, windows, B_list, 2]`` int64: the pass's exponents and the reference's bounds."""
+    got = facts_ops.facts(routes, values, layout, read_statics, write_statics).list_exp.long()
+    level = facts_ops.list_level(read_statics)
+    lo, hi = exponent_bounds(routes, values, level, facts_ops.WINDOW, layout.B[level], _LIST_RTOL)
+    return got, lo.reshape(got.shape), hi.reshape(got.shape)
+
+
+@pytest.mark.parametrize(("widths", "L"), [shape for shape in _SHAPES if len(shape[0]) <= 2])
+@pytest.mark.parametrize("dense", _MODES)
+def test_the_list_exponents_are_the_reference_per_window(widths, L, dense):
+    """Per window and digit of the list level, the smallest K with every token's ``b m`` (and ``b m s``) at most
+    2^K -- a dense list level read for it, its zeros at the floor -- within the fp32 rounding of the products."""
     layout = _layout(widths, L)
-    statics = _statics(layout, (), widths)
+    statics = _statics(layout, dense, widths)
     routes, values = _bundle(widths, L, (statics, statics), B=2)
-    got = facts_ops.facts(routes, values, layout, statics, statics).zeta.double()
-    m_w = prod(scale.double() for scale in routes.scale_write)
-    want = fold_zeta(routes.g_write, values.scale, m_w, facts_ops.WINDOW)
-    want = want.reshape(got.shape).clamp_min(_FLT_MIN)
-    assert ((got - want).abs() <= _ZETA_RTOL * want).all(), (got - want).abs().div(want).max()
+    got, lo, hi = _list_exp(routes, values, layout, statics, statics)
+    assert ((got >= lo) & (got <= hi)).all(), (got - lo).abs().max()
+    level = facts_ops.list_level(statics)
+    want = list_exponents(routes, values, level, facts_ops.WINDOW, layout.B[level]).reshape(got.shape)
+    away = lo == hi
+    assert torch.equal(got[away], want[away]), "an exponent off a power of two's rounding band differs"
+    assert (got > -126).any(), "every list dead: the cell is vacuous"
 
 
 def test_a_dead_window_keeps_the_floor():
-    """A window whose every token carries a zero gain stores the smallest normal, a divisor the carry's fold can take."""
+    """A window whose every token carries a zero gain writes nothing: every list's exponent is the floor, -126."""
     widths, L = (16, 16), 64
     layout = _layout(widths, L)
     statics = _statics(layout, (), widths)
     routes, values = _bundle(widths, L, (statics, statics))
     routes.g_write.zero_()
-    zeta = facts_ops.facts(routes, values, layout, statics, statics).zeta
-    assert torch.equal(zeta, torch.full_like(zeta, _FLT_MIN))
+    list_exp = facts_ops.facts(routes, values, layout, statics, statics).list_exp
+    assert torch.equal(list_exp, torch.full_like(list_exp, -126))
+
+
+def test_deeper_calls_carry_no_list_level():
+    """Past depth two the carry is not built: the pass writes the words and no list exponents."""
+    widths, L = (16, 16, 16), 96
+    layout = _layout(widths, L)
+    statics = _statics(layout, (), widths)
+    routes, values = _bundle(widths, L, (statics, statics))
+    assert facts_ops.facts(routes, values, layout, statics, statics).list_exp.shape[2] == 0
 
 
 def test_a_bound_ledger_books_every_phase_and_changes_nothing():
-    """The phase ledger (docs/internals/facts/facts.md#phase-ledger): every warp books its units' vote and store and
-    the window's zeta, and a bound ledger moves no output."""
+    """The phase ledger (docs/internals/facts/facts.md#phase-ledger): every warp books the list items' column staging
+    and its units' vote and store, and a bound ledger moves no output."""
     widths, L = (256, 256), 1100
     layout = _layout(widths, L)
     statics = _statics(layout, (), widths)
@@ -204,7 +222,7 @@ def test_a_bound_ledger_books_every_phase_and_changes_nothing():
         booked = facts_ops.facts(routes, values, layout, statics, statics)
     finally:
         facts_ops.ledger_bind(None)
-    assert torch.equal(plain.words, booked.words) and torch.equal(plain.zeta, booked.zeta)
+    assert torch.equal(plain.words, booked.words) and torch.equal(plain.list_exp, booked.list_exp)
     assert (ledger > 0).all(), ledger
 
 
@@ -221,8 +239,8 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
         facts_ops.extension().rola_facts_forward(
             wide, wide, list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
-            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 2), device="cuda"), list(layout.B), 0, [statics.mask_word(0)], 0,
-            [statics.mask_word(0)], facts_ops.WINDOW)
+            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), list(layout.B), 0,
+            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1, facts_ops.WINDOW)
 
 
 def test_the_seam_refuses_a_mask_past_the_rows():
@@ -244,8 +262,8 @@ def test_the_seam_refuses_another_window():
         facts_ops.extension().rola_facts_forward(
             list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
-            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 2), device="cuda"), list(layout.B), 0, [statics.mask_word(0)], 0,
-            [statics.mask_word(0)], 256)
+            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), list(layout.B), 0,
+            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1, 256)
 
 
 # --------------------------------------------------------------- the producer's bundle, end to end

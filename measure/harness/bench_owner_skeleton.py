@@ -50,8 +50,8 @@ def cell_bundle(name: str, heads: int = 1):
     #: the floating draw is gone; at many heads its cached blocks would push the bundle out of device memory
     torch.cuda.empty_cache()
     declared = spec.declared_sparsity()
-    level_s = 1 if declared[1][0] or not declared[0][0] else 0
-    level_r = 1 - level_s
+    level_r = facts_ops.list_level(statics[0])
+    level_s = 1 - level_r
     return spec, routes, values, words, level_s, int(declared[level_r][1]), int(declared[level_s][0])
 
 
