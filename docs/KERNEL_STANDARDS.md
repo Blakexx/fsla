@@ -739,7 +739,7 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
    and the architectures it holds on. An architecture not measured is stated as unmeasured; a new card or toolkit
    re-runs the experiments its rules cite.
 2. AN EXPERIMENT'S NUMBER COUNTS ONLY AFTER ITS SASS GATE: the declared instructions present, no local memory, no
-   undeclared CALL. The driver refuses to time otherwise.
+   undeclared convergence call. The driver refuses to time otherwise.
 3. THE RULES MEASURED SO FAR (sm_86, CUDA 13.0):
    a. BESIDE THE TENSOR PIPE (`tensor_tax`): an instruction another warp issues on the same scheduler delays an MMA
       chain, cycles an instruction with two register operands, beside an fp16-accumulate HMMA or int8 IMMA / an
@@ -749,9 +749,20 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       (packed half with a constant operand measured ~4x cheaper).
    b. COLLECTIVES (`collective_branch`): a warp collective under control flow that depends on the thread — a branch on
       the warp id, or a trip count the warp's role sets — compiles into a CALL into a convergence subroutine (~1.65x
-      the inline shuffle's cycles). A collective's enclosing control flow derives from kernel arguments, the block
-      index or constants.
+      the inline shuffle's cycles); under a branch on the block index or a kernel argument it stays inline. A
+      collective's enclosing control flow derives from kernel arguments, the block index or constants.
    c. PAIRS (`mma_pairing`): two warps a scheduler running HMMA streams sit on the tensor floor in most launches and
       phase-lock up to 22% slow in some, so one launch's cycles are not a measurement; read the median of repetitions.
    d. INTEGER ADDS (`tensor_tax`'s SASS): ptxas folds repeated adds, rewrites add recurrences, merges two-input adds into
       `IADD3` and issues adds as `IMAD.IADD` on the FMA pipe on its own; the source does not choose the integer pipe.
+   e. THE OPERAND CHAIN UNDER MMAs (`mma_overlap`): two or more free-running warps a scheduler hide each other's operand
+      chains (loads, coefficient math, shuffles, packed products) at 1.02-1.07x the tensor floor for every MMA kind,
+      and a register stage adds nothing; one warp a scheduler cannot hide its own (inline 1.23-1.48x), and a stage (the
+      next step's operands formed under this step's MMAs) gets it to 1.14-1.17x.
+   f. A CTA BARRIER REALIGNS THE WARPS (`mma_overlap`, `fold_step`): a barrier every pass of 8 steps puts the warps of
+      a scheduler in lockstep, so their operand chains coincide: +3-6% on the synthetic step, +10% on the fp16 fold's
+      own (1.07x -> 1.17x). A two-stage mbarrier (arrive at a pass's end, wait for the pass before) keeps them
+      free-running and recovers it. Inside a pass loop, warps synchronize by two-stage mbarriers, not CTA barriers.
+   g. A POLLED WAIT TAKES ISSUE SLOTS (`mma_overlap`): at three or four warps a scheduler the two-stage mbarrier's
+      polling loop costs as much as the barrier it replaces; a 64-ns sleep between polls restores the free-running
+      cost. At two warps polling is the cheaper.
