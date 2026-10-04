@@ -42,7 +42,9 @@ counts pick ([`owner_lists.md`](owner_lists.md#step-cost)). A measurement forces
 The facts pass's words (`words`, contiguous `[BH, 2, rows, L / 32]` int32, with a side's and a row's word counts), which
 level is S and which R, each level's first row in the layout and its width, whether level R's write side and level S's
 read side are sparse (a dense side's words are not read: its union is every token and its form merged), `H`, `L`, the
-window count, a forced step form, the lists' dump for the harness's model check, and the phase ledger.
+window count, a forced step form, the lists' dump for the harness's model check, and the phase ledger; for the fold,
+the facts pass's list exponents (`list_exp`, a `(K_m, K_v)` word a window and level-R digit, `list_width` digits a
+window) and whether level S's write side is dense (`floor_s`, its digits' floor).
 
 <a id="skeleton"></a>
 
@@ -61,6 +63,9 @@ pricing table are on the rebuild's plan card, in its skeleton block. Built so fa
 * `drain_part` — the lists, then each window's read passes' panels drained ([`owner_drain.md`](owner_drain.md)).
 * `readout_part` — the read passes, then the readout ([`owner_readout.md`](owner_readout.md)) in a forced or chosen
   form, a checksum so nothing is dead.
+* `fold_part` — the lists and units, then each window's write passes filled, restaged and folded
+  ([`owner_fold.md`](owner_fold.md)) on either arm; it writes the final state, mass and units, which `--check fold`
+  holds per slot against `fold_reference.fold_state`; `--ledger fold|fold-h` books its phases.
 
 Parts are priced per head at <= 256K token-heads (64K x 4 or 16K x 16): above that this box's GPU address translation
 slows every scattered read 10-30x, the kernel unchanged.

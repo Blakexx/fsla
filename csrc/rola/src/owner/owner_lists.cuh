@@ -1,6 +1,6 @@
 // csrc/rola/src/owner/owner_lists.cuh -- THE WINDOW'S WORDS AND LISTS: the CTA's write and read rows of the facts
-// pass's words staged a window ahead, their unions and ranks (a live token's pool slot), each row's live count, each
-// warp's step form chosen from those exact counts, and the warp's list entries for that form.
+// pass's words staged a window ahead, their unions and ranks (a live token's pool slot), each row's live count, the
+// read side's step form chosen from those exact counts (the fold side's is merged), and each warp's entries.
 // see docs/internals/owner/owner_lists.md
 #pragma once
 
@@ -226,7 +226,7 @@ __device__ void window_lists(ListTenants<C>& sm, const OwnerParams& p, int buf, 
   const bool sparse_w = p.sparse_write != 0, sparse_r = p.sparse_read != 0;
   const SideLanes<C, 0> fold(sm, buf, warp, lane);
   const SideLanes<C, 1> read(sm, buf, warp, lane);
-  const int fold_form = side_form(fold, p.step), read_form = side_form(read, p.step);
+  const int read_form = side_form(read, p.step);
   side_counts(sm, fold, sparse_w, warp, lane);
   side_counts(sm, read, sparse_r, warp, lane);
   __syncthreads();
@@ -259,7 +259,7 @@ __device__ void window_lists(ListTenants<C>& sm, const OwnerParams& p, int buf, 
       sm.token_of[side][sm.base[side][k] + __popc(word & ((1u << lane) - 1u))] =
           static_cast<uint16_t>(32 * k + lane);
   }
-  side_entries(sm, fold, fold_form, sparse_w, warp, lane);
+  side_entries(sm, fold, kStepMerged, sparse_w, warp, lane);
   side_entries(sm, read, read_form, sparse_r, warp, lane);
   __syncthreads();
 }

@@ -26,7 +26,8 @@ A side's rows sit in the warp's lanes, a lane `kWords` consecutive words of one 
 at `(16, 64)`'s fold side, 2 rows of 1 at its read side; 4 of 2 either side at `(32, 32)`). A few shuffles then give
 every lane its row's live count, the row's live tokens before its words, the row's first entry (the rows before it), the
 warp union of its word group, the union's tokens before them, the lists' total and their k-steps. From those the warp
-picks its form ([below](#step-cost)), writes its rows' counts and its union's words, and waits.
+picks its read side's form ([below](#step-cost)) — the fold side's is merged ([`owner_fold.md`](owner_fold.md#forms))
+— writes its rows' counts and its union's words, and waits.
 
 One warp then ORs the eight warps' unions into the CTA's write and read unions (and the write side's sector unions,
 four warps' rows a sector at `(16, 64)`, all eight at `(32, 32)`) and takes their ranks, `base[k]` = the live tokens
@@ -51,7 +52,7 @@ selection outweighed the iterations it saved).
 
 ## The step cost
 
-Both forms are priced in issue slots by one model: a k-step of 32 tokens costs its coefficient operand
+The read side's two forms are priced in issue slots by one model: a k-step of 32 tokens costs its coefficient operand
 (`kCostOperandA`), its token operand (`kCostOperandB`) and its IMMAs (`kCostImmas`, eight at 16 cycles), and an entry
 `kCostEntry`. Per list: `steps × (A + B + IMMAs) + entries`, `steps` = each list's ceil(count / 32) summed. Merged:
 `ceil(union / 32) × (B + lists × (A + IMMAs)) + union entries` — more IMMAs (every list steps over the whole union) for

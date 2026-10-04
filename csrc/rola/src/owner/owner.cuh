@@ -50,10 +50,11 @@ struct OwnerParams {
   RowView read[2], write[2], v;
   ColumnView factor[4];
   const uint32_t* words;
+  const uint32_t* list_exp;
   int64_t side_words, row_words;
   int level_s, level_r;
-  int row_base[2], width[2];
-  int sparse_write, sparse_read;
+  int row_base[2], width[2], list_width;
+  int sparse_write, sparse_read, floor_s;
   int H, L, windows, step;
   uint32_t* dump;
   long long* ledger;

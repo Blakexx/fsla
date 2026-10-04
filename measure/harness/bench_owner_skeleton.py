@@ -24,7 +24,7 @@ WARPS = 8
 LIST_CAPACITY = WINDOW
 CARVES = ((16, 64), (32, 32))
 STEP_CHOSEN, STEP_PER_LIST, STEP_MERGED = 0, 1, 2
-#: the lists' cost model, `owner_lists.cuh`'s
+#: the read side's cost model, `owner_lists.cuh`'s (the fold side is merged)
 COST_A, COST_B, COST_IMMAS, COST_ENTRY = 4, 12, 8 * 16, 6
 
 
@@ -53,6 +53,95 @@ def cell_bundle(name: str, heads: int = 1):
     level_r = facts_ops.list_level(statics[0])
     level_s = 1 - level_r
     return spec, routes, values, words, level_s, int(declared[level_r][1]), int(declared[level_s][0])
+
+
+def fold_bundle(name: str, heads: int = 1):
+    """``(spec, routes, values, facts, level_s, sparse_write, sparse_read, floor_s)``: `cell_bundle`'s, with the facts
+    pass's whole output (the list exponents beside the words) and whether level S's write side is dense (its floor)."""
+    from measure.cells import by_name, realize
+    from measure.subjects import bundle_of
+    from rola.ops import facts as facts_ops
+
+    spec = by_name(name)
+    routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
+    out = facts_ops.facts(routes, values, layout, *statics)
+    torch.cuda.empty_cache()
+    declared = spec.declared_sparsity()
+    level_r = facts_ops.list_level(statics[0])
+    level_s = 1 - level_r
+    return (spec, routes, values, out, level_s, int(declared[level_r][1]), int(declared[level_s][0]),
+            not declared[level_s][1])
+
+
+def _fold(routes, values, facts, level_s, sw, sr, floor_s, arm, ledger=None):
+    return ops().fold_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write,
+                           values.v, values.scale, facts.words, facts.list_exp, level_s, sw, sr, int(floor_s),
+                           16, 64, STEP_CHOSEN, arm, ledger)
+
+
+#: the fold part's ledger phases, `owner_skeleton.cu`'s `FoldPartPhase`
+FOLD_PHASES = ("lists", "fill", "stage", "steps", "sync")
+
+
+def ledger_fold(name: str, part: str, heads: int) -> None:
+    """The fold part's phase ledger on the cell's call: each phase's cycles a warp a CTA-window and its share."""
+    spec, routes, values, facts, level_s, sw, sr, floor_s = fold_bundle(name, heads)
+    arm = int(part == "fold-h")
+    _fold(routes, values, facts, level_s, sw, sr, floor_s, arm)
+    ledger = torch.zeros(WARPS, len(FOLD_PHASES), dtype=torch.int64, device="cuda")
+    _fold(routes, values, facts, level_s, sw, sr, floor_s, arm, ledger)
+    torch.cuda.synchronize()
+    widths = tuple(spec.widths)
+    ctas = facts.words.shape[0] * 2 * (widths[level_s] // 16) * (widths[1 - level_s] // 64)
+    per = ledger.sum(0).double() / (WARPS * ctas * (spec.tokens // WINDOW))
+    total = float(per.sum())
+    print(f"ledger {part} {name}: cycles a warp a CTA-window " + ", ".join(
+        f"{ph} {float(c):.0f} ({float(c) / total:.0%})" for ph, c in zip(FOLD_PHASES, per)))
+
+
+#: THE FOLD GATE'S BOUNDS, per slot against the declared arithmetic's envelope: fp32 accumulate (an HMMA a 16-token
+#: step, a few dozen a slot), fp16 pass partials (eight a pass, each rounding to 2^-11 of the partial)
+FOLD_RTOL = {0: 2.0 ** -14, 1: 2.0 ** -8}
+
+
+def check_fold(name: str) -> bool:
+    """The fold part on the cell, both arms, per slot against `fold_reference.fold_state`; its
+    units exactly; then the floor's exposures."""
+    from tests.oracle.fold_reference import COEF_TOP, UNIT_SCALE, fold_state, fold_statistics
+
+    spec, routes, values, facts, level_s, sw, sr, floor_s = fold_bundle(name)
+    widths = tuple(spec.widths)
+    w_s, w_r = widths[level_s], widths[1 - level_s]
+    sblocks, rblocks = w_s // 16, w_r // 64
+    BH = facts.words.shape[0]
+    state, env, mass, units = fold_state(routes, values, facts.list_exp, level_s, floor_s, not sw, WINDOW)
+    want_units = torch.tensor(units).view(BH, rblocks, 1, 64, 2)
+    ok = True
+    for arm, rtol in FOLD_RTOL.items():
+        st, ms, un = _fold(routes, values, facts, level_s, sw, sr, floor_s, arm)
+        torch.cuda.synchronize()
+        un = un.view(BH, 2, rblocks, sblocks, 64, 2).cpu()
+        units_ok = bool((un == want_units[:, None]).all())
+        scale = torch.exp2(un.double() - COEF_TOP) * UNIT_SCALE
+        got = (st.view(BH, 2, rblocks, sblocks, 16, 64, 32).double().cpu() * scale[..., 0][:, :, :, :, None, :, None])
+        got = got.permute(0, 3, 4, 2, 5, 1, 6).reshape(BH, w_s, w_r, 64)
+        diff, e = (got - state.cpu()).abs(), env.cpu()
+        ratio = (diff / e.clamp_min(1e-300))[e > 0]
+        state_ok = bool((diff <= rtol * e).all())
+        gm = ms.view(BH, 2, rblocks, sblocks, 16, 64).double().cpu() * scale[..., 1][:, :, :, :, None, :]
+        gm = gm.permute(0, 1, 3, 4, 2, 5).reshape(BH, 2, w_s, w_r)
+        mdiff, mw = (gm - mass.cpu()[:, None]).abs(), mass.cpu()[:, None].expand_as(gm)
+        mratio = (mdiff / mw.clamp_min(1e-300))[mw > 0]
+        mass_ok = bool((mdiff <= rtol * mw).all())
+        print(f"fold {name} arm {'f32' if arm == 0 else 'f16'}: units {'ok' if units_ok else 'DIFFER'}, "
+              f"state |d|/env median {ratio.median():.1e} max {ratio.max():.1e} "
+              f"{'ok' if state_ok else 'OVER'} (<= {rtol:.0e}), mass median {mratio.median():.1e} "
+              f"max {mratio.max():.1e} {'ok' if mass_ok else 'OVER'}")
+        ok &= units_ok and state_ok and mass_ok
+    stats = fold_statistics(routes, values, level_s, floor_s, not sw, WINDOW)
+    print(f"fold {name} floor exposures: risky leaves {stats['risky_share']:.2%} of {stats['written']} written, "
+          f"mass inflation median {stats['inflation_median']:.1e} max {stats['inflation_max']:.1e}")
+    return ok
 
 
 def cell_words(name: str):
@@ -118,7 +207,7 @@ def lists_model(w, widths, level_s, sparse_write, sparse_read, rs, rd, step, bh,
             per_list = steps * (COST_A + COST_B + COST_IMMAS) + listed * COST_ENTRY
             merged = msteps * (COST_B + lists * (COST_A + COST_IMMAS)) + merged_n * COST_ENTRY
             form = step if step != STEP_CHOSEN else (STEP_PER_LIST if per_list <= merged else STEP_MERGED)
-            if listed > LIST_CAPACITY:
+            if listed > LIST_CAPACITY or side == 0:
                 form = STEP_MERGED
             forms[side][wp] = form
             if form == STEP_MERGED:
@@ -254,6 +343,13 @@ RUN_REPS = 3
 def run_part(name: str, part: str, heads: int) -> None:
     """The part on the cell's whole call at ``heads`` heads, no dump, each carve `RUN_REPS` times: the launches an
     ncu run reads."""
+    if part in ("fold", "fold-h"):
+        spec, routes, values, facts, level_s, sw, sr, floor_s = fold_bundle(name, heads)
+        for _ in range(RUN_REPS):
+            _fold(routes, values, facts, level_s, sw, sr, floor_s, int(part == "fold-h"))
+        torch.cuda.synchronize()
+        print(f"ran {part} on {name}: carve (16, 64), {RUN_REPS} times, BH {facts.words.shape[0]}, L {spec.tokens}")
+        return
     spec, routes, values, words, level_s, sw, sr = cell_bundle(name, heads)
     for rs, rd in CARVES:
         for _ in range(RUN_REPS):
@@ -309,17 +405,23 @@ def _all_bits(words):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--check", choices=("lists", "fill", "drain"))
-    ap.add_argument("--run", choices=("lists", "fill", "drain", "readout", "readout-list", "readout-merged"),
+    ap.add_argument("--check", choices=("lists", "fill", "drain", "fold"))
+    ap.add_argument("--run", choices=("lists", "fill", "drain", "readout", "readout-list", "readout-merged", "fold",
+                                      "fold-h"),
                     help="the part's launches alone, for ncu")
+    ap.add_argument("--ledger", choices=("fold", "fold-h"), help="the fold part's phase ledger")
     ap.add_argument("--cell", action="append", required=True)
     ap.add_argument("--heads", type=int, default=1, help="heads under --run: enough to fill the machine")
     args = ap.parse_args()
+    if args.ledger:
+        for cell in args.cell:
+            ledger_fold(cell, args.ledger, args.heads)
+        return 0
     if args.run:
         for cell in args.cell:
             run_part(cell, args.run, args.heads)
         return 0
-    check = {"lists": check_lists, "fill": check_fill, "drain": check_drain}[args.check]
+    check = {"lists": check_lists, "fill": check_fill, "drain": check_drain, "fold": check_fold}[args.check]
     ok = all(check(cell) for cell in args.cell)
     return 0 if ok else 1
 

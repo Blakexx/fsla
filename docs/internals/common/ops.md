@@ -416,6 +416,15 @@ register-source family is shaped differently (Hopper's `_RS` atoms are
 the family, and the constraints that keeps -- M a multiple of 64, A K-major
 -- are properties of the family rather than of a hand-picked instruction.
 
+<a id="hmma"></a>
+### `hmma`, `hmma_fresh`, `hmma_half`, `hmul2`, `hfma2`, `pack_half2`, `unpack_half2`
+
+THE fp16 FAMILY'S ELEMENTS (the rebuild's fold): `m16n8k16` with f16 operands into fp32 (`hmma`; `hmma_fresh` into a
+fresh fragment, C = 0) or into f16 pairs (`hmma_half`, rows g and g + 8 a register — the consumer cards' double-rate
+path); two f16 products or fused products,
+each rounded once to nearest; two fp32 to an f16 pair rounded to nearest (`cvt.rn.f16x2.f32`, `lo` in the low half)
+and back. Every rounding is explicit so `tests/oracle/fold_reference.py` can mirror it.
+
 <a id="hi-bf16"></a>
 ### `hi_bf16`
 

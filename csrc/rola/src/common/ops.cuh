@@ -6,6 +6,7 @@
 // See docs/internals/common/ops.md
 
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
@@ -430,6 +431,62 @@ __device__ __forceinline__ uint32_t pack_sat_u16(int32_t hi, int32_t lo) {
 __device__ __forceinline__ uint32_t pack_byte4(uint32_t v0, uint32_t v1, uint32_t v2, uint32_t v3,
                                                uint32_t pair_sel) {
   return prmt(prmt(v0, v1, pair_sel), prmt(v2, v3, pair_sel), 0x5410u);
+}
+
+//: THE fp16 ATOM, fp32 ACCUMULATE: acc += A(16x16) . B(16x8), f16 operands. -- see docs/internals/common/ops.md#hmma
+__device__ __forceinline__ void hmma(float (&d)[4], const uint32_t (&a)[4], uint32_t b0,
+                                     uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+//: THE SAME INTO A FRESH fp32 FRAGMENT (C = 0). -- see docs/internals/common/ops.md#hmma
+__device__ __forceinline__ void hmma_fresh(float (&d)[4], const uint32_t (&a)[4], uint32_t b0,
+                                           uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%10,%10,%10};\n"
+      : "=f"(d[0]), "=f"(d[1]), "=f"(d[2]), "=f"(d[3])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "f"(0.0f));
+}
+
+//: THE fp16 ATOM, fp16 ACCUMULATE: two f16 pairs, rows g and g + 8. -- see docs/internals/common/ops.md#hmma
+__device__ __forceinline__ void hmma_half(uint32_t (&d)[2], const uint32_t (&a)[4], uint32_t b0,
+                                          uint32_t b1) {
+  asm volatile(
+      "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
+      "{%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%0,%1};\n"
+      : "+r"(d[0]), "+r"(d[1])
+      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+//: TWO f16 PRODUCTS, each rounded once to nearest (`HMUL2`).
+__device__ __forceinline__ uint32_t hmul2(uint32_t a, uint32_t b) {
+  uint32_t d;
+  asm("mul.rn.f16x2 %0, %1, %2;" : "=r"(d) : "r"(a), "r"(b));
+  return d;
+}
+
+//: TWO f16 `a b + c`, each rounded once to nearest (`HFMA2`).
+__device__ __forceinline__ uint32_t hfma2(uint32_t a, uint32_t b, uint32_t c) {
+  uint32_t d;
+  asm("fma.rn.f16x2 %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
+  return d;
+}
+
+//: TWO fp32 TO AN f16 PAIR, each rounded to nearest, `lo` in the low half (`F2FP`).
+__device__ __forceinline__ uint32_t pack_half2(float lo, float hi) {
+  uint32_t d;
+  asm("cvt.rn.f16x2.f32 %0, %1, %2;" : "=r"(d) : "f"(hi), "f"(lo));
+  return d;
+}
+
+//: AN f16 PAIR TO TWO fp32, the low half first.
+__device__ __forceinline__ float2 unpack_half2(uint32_t h) {
+  return __half22float2(*reinterpret_cast<const __half2*>(&h));
 }
 
 //: THE SAME ATOM INTO A FRESH ACCUMULATOR (C = 0): the readout's per-box partial.
