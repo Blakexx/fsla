@@ -775,3 +775,9 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       of slack each way (fp32 arm 1.05x its floor against 1.20x serial and 1.03x for the steps alone; fp16 arm with a
       staggered join 1.25x against 1.55x and 1.16x). A restage at the pass's start couples every warp to the slowest at
       the boundary (1.11x / 1.36x).
+   j. A SWIZZLE MAY SWAP THE 16-BYTE HALVES INSIDE AN ALIGNED 32-BYTE PAIR (`pool_layout`, counters): cp.async's lane
+      pair stays one L2 sector request (7 sectors a token, plain or swapped); a 16-byte shift off the sector's phase
+      costs 29% more sectors and 35% on an L2-resident fill. Rows a multiple of 32 bytes apart read by `ldmatrix` need
+      such a swap on half the rows, or 8 rows of one column share 4 bank groups (192 against 119 cycles a step).
+   k. VALUES READ IN PLACE FROM A POOL NEED A THIRD SLOT (`sparse_pass`): with two, the next fill waits for the slot's
+      pass to drain and the warps couple at the pass boundary (1.33x dense fp32, against 1.09x with three).

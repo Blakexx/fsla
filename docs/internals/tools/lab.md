@@ -22,7 +22,9 @@ re-runs the experiments its rules cite (`docs/KERNEL_STANDARDS.md` §26).
    architectures it holds on.
 
 `python tools/lab.py list` names the experiments by their QUESTION; `python tools/lab.py sass <name> [REGEX] [--full]`
-shows each kernel's registers and leading opcodes (or the whole disassembly).
+shows each kernel's registers and leading opcodes (or the whole disassembly). `python tools/lab.py ncu <name> --metric M [--metric ...]
+[--record]` reads hardware counters per kernel (the median over its launches) into `<sm_XX>.counters.json`, for a
+question about traffic rather than time.
 
 ## The kit (`measure/lab/lab.cuh`)
 
@@ -163,3 +165,45 @@ slowest one's previous pass -- a barrier by another name. The join in a burst co
 warps of a scheduler leave the tensor pipe at once and the pair falls into lockstep; staggered it costs ~3; spread a
 list a step it costs more (the switch, and FP32 adds beside every step's MMAs). Record:
 `measure/lab/results/pass_pipeline/sm_86.json`.
+
+<a id="pool-layout"></a>
+
+## `pool_layout`
+
+The owner part's fill into 160-byte pool rows plain, with the 16-byte halves of each 32-byte pair swapped on rows with
+bit 2 set, or 176 bytes apart; and the steps' in-place reads of a row (two `ldmatrix.x4.trans` over the values, four
+coefficient bytes a lane). sm_86: L2 sectors (`ncu`) 7 a token plain and swapped, 9 at 176 bytes (odd rows 16 bytes
+off phase); the fill a pass from DRAM ~3.6K cycles in every layout, from L2 1.70K / 1.71K / 2.28K; the reads 192 cycles
+a step plain (2-way bank conflicts: 160 bytes puts every row's chunk on the same parity of 16-byte bank group), 119
+swapped, 118 at 176 bytes. Swapping halves inside an aligned 32-byte pair keeps cp.async's sector requests and removes
+the conflict. Records: `measure/lab/results/pool_layout/sm_86.json`, `sm_86.counters.json`.
+
+<a id="sparse-pass"></a>
+
+## `sparse_pass`
+
+The pass with each warp's live tokens drawn at a density (the CTA union every token, four passes a window): the
+owner part's fill through a token permutation, the restage, the fold step at the arm's registers, the fp16 join
+staggered, the window's lists two passes ahead. Forms: serial (today's owner part); a value tile with two pool slots;
+values in place from swizzled pool rows with two or three pool slots; the fold side's rows listed (entries built ahead,
+free here) or derived in the step from the warp's union words. The block's span a pass over the busiest scheduler's
+paired steps at tensor time (busiest-scheduler steps a pass: 16.0 / 5.6 / 2.0):
+
+| pass (fp32 arm / fp16 arm) | all live | 1 in 4 | 1 in 16 |
+|---|---|---|---|
+| serial, value tile, listed | 1.26 / 1.67 | 1.60 / 2.39 | 2.52 / 4.26 |
+| pipelined, value tile, derived | 1.13 / 2.06 | 1.63 / 2.78 | 2.48 / 4.47 |
+| pipelined, in place, 2 pool slots, derived | 1.33 / 2.05 | 1.84 / 3.02 | 2.86 / 5.05 |
+| pipelined, in place, 3 pool slots, derived | 1.09 / 2.09 | 1.60 / 2.69 | 2.26 / 4.13 |
+| pipelined, in place, 3 pool slots, listed | 1.13 / 1.95 | 1.58 / 2.33 | 2.06 / 3.49 |
+
+Three pool slots are what in-place reads need: with two, a slot refills only after its pass drains, so the fill and
+the restage land on the pass boundary and the warps couple (1.33x dense fp32). Dense, three slots derived is the best
+form (fp32 1.09x). Sparse, no pipeline beats serial at 1 in 4 (all 1.58-1.84x), and at 1 in 16 three slots listed is
+best (2.06x against 2.53x): a warp's few steps leave the mid-pass point near its pass's end, so the half-pass slack
+shrinks to nothing, and a warp alone on its scheduler cannot hide its own chain. Derived rows against listed: +3.5%
+dense, -10% at 1 in 16 (a step scans up to four sparse words); the listed rows' build is free here and is not in the
+owner part. The fp16 arm reads 1.95-2.09x dense: every pipelined form sits at 251-254 registers, and the bookkeeping
+(rows, cursor, lists, waits) leaves its steps no room -- the pipeline needs register headroom on that arm; its rows
+also move between runs (1 in 4, three slots derived: 4.42x in an earlier 3-repetition run, 2.69x here). Record:
+`measure/lab/results/sparse_pass/sm_86.json`.
