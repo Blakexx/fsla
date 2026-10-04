@@ -21,16 +21,23 @@ constexpr int kWindow = 512, kPassesPerWindow = kWindow / kRows, kWindows = 400,
 constexpr int kArmFloat = 0, kArmHalf = 1;
 
 //: FORM 0 serial, value tile, listed (the owner part); 1 pipelined, value tile, two pool slots, derived; 2 pipelined,
-//: values in place, two pool slots, derived; 3 the same with three pool slots; 4 three pool slots, listed
-constexpr int kForms = 5;
-const char* kFormName[kForms] = {"serial, value tile, listed", "pipelined, value tile, derived",
+//: values in place, two pool slots, derived; 3 the same with three pool slots; 4 three pool slots, listed; 5 and 6 as
+//: 3 and 4 with LOAD-AHEAD: a warp takes up to three steps' operands into registers at a time, the pass's restage share
+//: after the loads of the chunk holding its mid-pass step, and signals its slots drained after its last loads, before
+//: those steps' MMAs
+constexpr int kForms = 7;
+const char* kFormName[kForms] = {"serial, value tile, listed",
+                                 "pipelined, value tile, derived",
                                  "pipelined, in place, 2 pool slots, derived",
                                  "pipelined, in place, 3 pool slots, derived",
-                                 "pipelined, in place, 3 pool slots, listed"};
+                                 "pipelined, in place, 3 pool slots, listed",
+                                 "load-ahead, in place, 3 pool slots, derived",
+                                 "load-ahead, in place, 3 pool slots, listed"};
 
 template <int FORM>
 struct Form {
-  static constexpr bool kTile = FORM <= 1, kListed = FORM == 0 || FORM == 4;
+  static constexpr bool kTile = FORM <= 1, kListed = FORM == 0 || FORM == 4 || FORM == 6;
+  static constexpr bool kAhead = FORM >= 5;
   static constexpr int kPools = FORM == 0 ? 1 : FORM >= 3 ? 3 : 2;
 };
 
@@ -416,19 +423,39 @@ __global__ void __launch_bounds__(kThreads, 1) pass(int passes, Source src, long
     };
     const typename Shared<FORM>::Tile& T = sh.tile[FORM == 0 ? 0 : k];
     const uint8_t* const P = sh.pool[slot];
-    if (FORM != 0 && mid < 0) middle();
-#pragma unroll 1
-    for (int s = 0; s < n; ++s) {
+    auto load = [&](Operands& o, int s) {
       Rows w;
       if constexpr (F::kListed)
         w = listed_rows(L.entries[warp], e0 + kStep * s, e0 + count, first, lane);
       else
         w = derived_rows(L.words[warp], sh.uni, sh.base, sh.scratch[warp], cursor, first + kRows,
                          first, lane);
-      Operands o;
       operands<FORM>(o, T, P, w, lane, pu, pv);
-      step<ARM>(st, m, o, lane);
-      if (FORM != 0 && s == mid) middle();
+    };
+    if constexpr (F::kAhead) {
+      //: chunks of three steps: the chunk's operands, the slots drained after the pass's last loads, the restage share
+      //: after the loads of the chunk holding the mid-pass step, then the chunk's MMAs
+#pragma unroll 1
+      for (int s0 = 0; s0 == 0 || s0 < n; s0 += 3) {
+        Operands o0, o1, o2;
+        if (s0 < n) load(o0, s0);
+        if (s0 + 1 < n) load(o1, s0 + 1);
+        if (s0 + 2 < n) load(o2, s0 + 2);
+        if (s0 + 3 >= n) lab::mbar_arrive(lab::smem(&sh.drained[k]));
+        if (s0 <= max(mid, 0) && max(mid, 0) < s0 + 3) middle();
+        if (s0 < n) step<ARM>(st, m, o0, lane);
+        if (s0 + 1 < n) step<ARM>(st, m, o1, lane);
+        if (s0 + 2 < n) step<ARM>(st, m, o2, lane);
+      }
+    } else {
+      if (FORM != 0 && mid < 0) middle();
+#pragma unroll 1
+      for (int s = 0; s < n; ++s) {
+        Operands o;
+        load(o, s);
+        step<ARM>(st, m, o, lane);
+        if (FORM != 0 && s == mid) middle();
+      }
     }
     if constexpr (FORM == 0) {
       __syncthreads();
@@ -438,7 +465,7 @@ __global__ void __launch_bounds__(kThreads, 1) pass(int passes, Source src, long
         restage_item<FORM>(sh.tile[kn], sh.pool[kn], tid);
         lab::mbar_arrive(lab::smem(&sh.staged[kn]));
       }
-      lab::mbar_arrive(lab::smem(&sh.drained[k]));
+      if constexpr (!F::kAhead) lab::mbar_arrive(lab::smem(&sh.drained[k]));
     }
     if constexpr (FORM == 0) {
       if (lp == kPassesPerWindow - 1) {
@@ -544,6 +571,11 @@ void density(const lab::Bench& b, const Source& src) {
   variant<ARM, DENSITY, 2>(b, src, lists, steps_floor);
   variant<ARM, DENSITY, 3>(b, src, lists, steps_floor);
   variant<ARM, DENSITY, 4>(b, src, lists, steps_floor);
+  //: the load-ahead forms need the registers only the fp32 arm has
+  if constexpr (ARM == kArmFloat) {
+    variant<ARM, DENSITY, 5>(b, src, lists, steps_floor);
+    variant<ARM, DENSITY, 6>(b, src, lists, steps_floor);
+  }
   if (lists) LAB_CHECK(cudaFree(lists));
 }
 
