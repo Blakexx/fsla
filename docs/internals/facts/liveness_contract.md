@@ -47,6 +47,17 @@ Every level's row is stored unit-max: u8 digits with the row's largest at 255 (`
 it as an fp32 scale. A digit `b` is the amplitude `b / 255 × scale`. An all-zero row, its scale 0, is a dead token at
 that level.
 
+## <a id="alignment"></a>The row alignment law
+
+Every level's rows start on 32 bytes and step batch, token and head by multiples of 32 bytes (a dimension of length one
+is free), in `RouteFactors`' check, the facts seam's and the owner fill's; `quant.ROW_ALIGN` and the facts header's
+`kRowAlign` state it. The producer and `RouteFactors.from_levels` pack each side's levels in 32-byte slots
+(`rola.routing.quant.row_slot`: a level's width rounded up), the slot's tail zero — at power-of-two widths of 32 and up
+the slots are the widths, so the law costs nothing there. It is what lets a kernel move a token's run as 16-byte
+asynchronous quanta whose source is 16-byte aligned and whose 32-byte run is one sector: the facts pass's ring
+([`facts.md`](facts.md#load)) and the owner carry's fill. A level whose width is not a multiple of 16 is copied whole
+up to its last digit and no further (a partial quantum zero-fills the rest).
+
 ## <a id="floor"></a>The dense floor
 
 A DENSE level is one whose activation has no exact zeros (the bundle's `sparse` flag unset: softmax, not entmax).

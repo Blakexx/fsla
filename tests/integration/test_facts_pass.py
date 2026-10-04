@@ -20,6 +20,7 @@ import torch
 from rola.engine.facts import liveness as lv
 from rola.engine.facts.planes import ATOM_READ, ATOM_WRITTEN
 from rola.ops import facts as facts_ops
+from rola.routing import quant
 from rola.routing.factors import RouteFactors
 from rola.routing.topology import padded_level_width
 from rola.routing.types import OpaqueRouting, Topology
@@ -61,11 +62,15 @@ def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False):
             digits = digits * keep
             levels.append(digits.to(torch.uint8))
         if packed:
-            plane = torch.cat(levels, -1).cuda()
-            offsets = [sum(widths[:level]) for level in range(len(widths))]
+            slots = [quant.row_slot(w) for w in widths]
+            plane = torch.zeros((B, L, H, sum(slots)), dtype=torch.uint8)
+            offsets = [sum(slots[:level]) for level in range(len(widths))]
+            for o, w, level in zip(offsets, widths, levels):
+                plane[..., o:o + w] = level
+            plane = plane.cuda()
             rows.append(tuple(plane[..., o:o + w] for o, w in zip(offsets, widths)))
         else:
-            rows.append(tuple(level.cuda() for level in levels))
+            rows.append(tuple(quant.aligned_rows(B, L, H, w, "cuda").copy_(level) for w, level in zip(widths, levels)))
 
     def column():
         return (torch.rand((B, L, H), generator=gen) + 0.1).cuda()
@@ -240,7 +245,8 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
             wide, wide, list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), list(layout.B), 0,
-            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1, facts_ops.WINDOW)
+            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1,
+            torch.zeros(2, dtype=torch.int32, device="cuda"), facts_ops.WINDOW)
 
 
 def test_the_seam_refuses_a_mask_past_the_rows():
@@ -263,7 +269,8 @@ def test_the_seam_refuses_another_window():
             list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), list(layout.B), 0,
-            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1, 256)
+            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1,
+            torch.zeros(2, dtype=torch.int32, device="cuda"), 256)
 
 
 # --------------------------------------------------------------- the producer's bundle, end to end

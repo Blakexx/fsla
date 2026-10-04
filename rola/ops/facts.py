@@ -66,6 +66,17 @@ def list_level(read_statics: SideStatics) -> int:
     return -1
 
 
+#: the pass's item counters, zero between calls (the kernel's last block resets them), one buffer a device
+_COUNTERS: dict[str, torch.Tensor] = {}
+
+
+def _counters(device: torch.device) -> torch.Tensor:
+    key = str(device)
+    if key not in _COUNTERS:
+        _COUNTERS[key] = torch.zeros(2, dtype=torch.int32, device=device)
+    return _COUNTERS[key]
+
+
 def _dense_bits(statics: SideStatics) -> int:
     """One side's dense levels as the bitmask the kernel skips reads on."""
     return sum(1 << level for level, dense in enumerate(statics.dense_levels) if dense)
@@ -92,7 +103,8 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
         words, unions, list_exp, list(layout.B),
         _dense_bits(read_statics), [read_statics.mask_word(i) for i in range(count)],
-        _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], level, WINDOW)
+        _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], level,
+        _counters(routes.device), WINDOW)
     return Facts(words=words, unions=unions, list_exp=list_exp)
 
 

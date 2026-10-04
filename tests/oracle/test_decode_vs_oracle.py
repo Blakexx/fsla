@@ -57,6 +57,7 @@ import torch
 from rola.ops.decode import _decode_step, derive_decode_geometry
 from rola.ops.lattice import permutation, to_canonical, to_lattice
 from rola.ops.paging import bytes_equal
+from rola.routing import quant
 from rola.routing.factors import RouteFactors
 from rola.routing.types import LeafMassDecay
 from rola.values import Values
@@ -164,7 +165,7 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     ones = torch.ones(B, 1, H, **f32)
     rows = routes.read_rows if side == "read" else routes.write_rows
     flags = routes.sparse[0] if side == "read" else routes.sparse[1]
-    routes = RouteFactors.from_rows(topology, tuple(torch.zeros_like(r) for r in rows), rows, (ones,) * len(widths),
+    routes = RouteFactors.from_rows(topology, tuple(quant.aligned_rows(*r.shape, r.device) for r in rows), rows, (ones,) * len(widths),
                                     (ones,) * len(widths), ones, sparse=((True,) * len(widths), flags))
     values = Values.from_projection(torch.ones(B, 1, H, d_v, **f32))
     state = state_pages(torch.zeros(B, H, N, config.cols, **f32))

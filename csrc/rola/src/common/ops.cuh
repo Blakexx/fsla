@@ -90,6 +90,11 @@ __device__ __forceinline__ void stage_tile_if(SmemAddr dst, const void* src, boo
                "r"(live ? kStageBytes : 0));
 }
 
+//: THE SAME COPY OF A RUN'S FIRST `bytes` (0 to 16), the rest zero-filled. -- see docs/internals/common/ops.md#stage-tile-n
+__device__ __forceinline__ void stage_tile_n(SmemAddr dst, const void* src, uint32_t bytes) {
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(dst), "l"(src), "r"(bytes));
+}
+
 //: THE SAME COPY AT A NARROWER QUANTUM. -- see docs/internals/common/ops.md#stage-run
 template <int Bytes>
 __device__ __forceinline__ void stage_run(SmemAddr dst, const void* src) {

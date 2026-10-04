@@ -30,6 +30,15 @@ __all__ = ["RouteFactors"]
 SIDES = ("read", "write")
 
 
+def _aligned(rows: torch.Tensor) -> bool:
+    """THE ROW ALIGNMENT LAW on one level's ``[B, T, H, width]`` rows: the first row on the grain, and every stride of a
+    dimension longer than one a multiple of it, in bytes."""
+    grain = quant.ROW_ALIGN
+    size = rows.element_size()
+    return rows.data_ptr() % grain == 0 and all(
+        rows.stride(d) * size % grain == 0 for d in range(3) if rows.shape[d] > 1)
+
+
 def _requires_grad(levels) -> bool:
     return torch.is_grad_enabled() and any(level.requires_grad for level in levels)
 
@@ -127,6 +136,11 @@ class RouteFactors:
                 if tensor.dtype != first.dtype:
                     raise ValueError(f"every routing level shares one row dtype; {name}[{level}] is {tensor.dtype} "
                                      f"against {first.dtype}")
+                if tensor.dtype is quant.ROW_DTYPE and not _aligned(tensor):
+                    raise ValueError(f"RouteFactors.{name}[{level}] breaks the row alignment law: its rows start on "
+                                     f"and step by multiples of {quant.ROW_ALIGN} bytes (strides "
+                                     f"{tuple(tensor.stride())}, address {tensor.data_ptr() % quant.ROW_ALIGN} past the "
+                                     f"grain; docs/internals/facts/liveness_contract.md#alignment)")
         return prefix, first
 
     @classmethod

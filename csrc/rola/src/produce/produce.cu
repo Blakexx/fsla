@@ -403,12 +403,15 @@ __device__ __forceinline__ void write_side(const float (&level)[IPT], int width,
     sum = warp_all(sum, [](float a, float b) { return a + b; });
   }
   const float unit = fmaxf(m, 1e-30f);
+  //: the level's slot runs to its width rounded up to the row alignment law's 32 bytes, the tail zeros
+  const int slot = (width + 31) & ~31;
 #pragma unroll
   for (int i = 0; i < IPT; ++i) {
     const int col = lane + 32 * i;
-    if (live && col < width) {
+    if (live && col < slot) {
       plane[first + col] =
-          static_cast<uint8_t>(__float2uint_rn(__fdividef(level[i], unit) * 255.0f));
+          col < width ? static_cast<uint8_t>(__float2uint_rn(__fdividef(level[i], unit) * 255.0f))
+                      : uint8_t{0};
     }
   }
   if (live && lane == 0) {

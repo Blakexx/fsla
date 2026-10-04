@@ -8,35 +8,48 @@
 
 namespace rola::facts {
 
-//: THE GRID: two blocks of eight warps an SM walk items of `kItemUnits` units, `kParts` warps a unit.
-//: -- see docs/internals/facts/facts.md#the-grid
+//: THE GRID: two blocks of eight warps an SM take vote, list and mask items. -- see docs/internals/facts/facts.md#the-grid
 constexpr int kFactsWarps = 8;
 constexpr int kFactsThreads = kFactsWarps * 32;
 constexpr int kFactsBlocksPerSm = 2;
 constexpr int kItemUnits = 4;
 constexpr int kParts = kFactsWarps / kItemUnits;
+constexpr int kListItemUnits = 2;
+constexpr int kListParts = kFactsWarps / kListItemUnits;
+
+//: THE ROW ALIGNMENT LAW's grain (`rola.routing.quant.ROW_ALIGN`). -- see docs/internals/facts/liveness_contract.md#alignment
+constexpr int kRowAlign = 32;
+
+//: A WARP'S RING: `kStages` words of 32 tokens x 32 bytes, `kAhead` in flight. -- see docs/internals/facts/facts.md#load
+constexpr int kStages = 4;
+constexpr int kAhead = kStages - 1;
+constexpr int kWordBytes = 32 * 32;
+constexpr int kRingBytes = kFactsWarps * kStages * kWordBytes;
 
 //: THE WINDOW, the carry's 512 tokens and the lists' grain, and a warp's part: its words and its rows' store pairs.
 constexpr int kWindowWords = 16;
 constexpr int kWindowTokens = kWindowWords * kTokBits;
 constexpr int kPartWords = kWindowWords / kParts;
-constexpr int kPartRowPairs = 32 / kParts / 2;
+constexpr int kListPartWords = kWindowWords / kListParts;
 constexpr int kTileStride = kWindowWords + 1;
+
+//: THE STAGED WINDOW'S COLUMN SLOTS: its tokens with a pad after every 8, and past them the window's largest.
+constexpr int kColumnSlots = kWindowTokens + kWindowTokens / 8;
 
 constexpr int kMaxWidth = 256;
 constexpr int kMaxMaskWords = kMaxLevels * kMaxWidth / 32;
 constexpr int kMaxUnits = kSides * kMaxLevels * kMaxWidth / 32;
 
-//: THE LIST EXPONENTS' FLOOR, the smallest normal fp32: a dead list's exponent is -126.
-//: -- see docs/internals/facts/facts.md#lists
+//: THE LIST EXPONENTS' FLOOR, the smallest normal fp32. -- see docs/internals/facts/facts.md#lists
 constexpr float kListFloor = 1.17549435e-38f;
 
 enum FactsPhase : int { kPhaseColumns, kPhaseVote, kPhaseStore, kFactsPhases };
 
-//: A level's rows (digits contiguous) or an fp32 column, by its batch, token and head strides.
+//: A level's rows (under the row alignment law, with their width) or an fp32 column, by batch, token, head strides.
 struct RowView {
   const void* base;
   int64_t sb, st, sh;
+  int width;
 };
 
 struct ColumnView {
@@ -52,9 +65,10 @@ struct FactsParams {
   uint32_t* words;
   uint32_t* unions;
   uint32_t* list_exp;  // [BH, windows, B_list], a digit's (K_m, K_v) int16 pair
+  int* counters;       // [2]: the next item, the blocks finished; zero between calls
   long long* ledger;
   int D, H, L, token_words, windows, items, rows_total, units, groups, tiles, list_level,
-      list_items, window_items;
+      list_units, vote_units, list_items, vote_items, window_items;
   int B[kMaxLevels];
   int row_base[kMaxLevels];
   int group_base[kMaxLevels];

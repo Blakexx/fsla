@@ -17,104 +17,99 @@ row; **window** = the carry's 512 tokens, 16 words; **unit** = one (side, level,
 
 ## What it reads, and what it does not
 
-The bundle as the producer wrote it (`docs/api.md` §2.1): each level's rows
-`[B, T, H, b_l]`, u8 digits at every depth, read where they lie — a
-view of the producer's packed plane or a tensor of its own, by its strides. There is no
-alignment law: a level may start at any byte and be any width. The pass also reads the
-write levels' scales, the write gain and the value scale for the list exponents — a few words a token.
+The bundle as the producer wrote it (`docs/api.md` §2.1): each level's rows `[B, T, H, b_l]`, u8 digits at every
+depth, read where they lie — a view of the producer's packed plane or a tensor of its own, by its strides, under the
+ROW ALIGNMENT LAW ([`liveness_contract.md`](liveness_contract.md#alignment)): every level's rows start on 32 bytes
+and step batch, token and head by multiples of 32. The pass also reads the write levels' scales, the write gain and
+the value scale for the list exponents — a few words a token.
 
-A DENSE level (the bundle's `sparse` flag unset, set at production for an activation with
-no exact zeros; `rola.ops.facts.call_statics`) is not read: its words are the width mask over the live
-tokens ([`liveness_contract.md`](liveness_contract.md#statics)). Every other level's rows
-are read once, whole, whatever their support: the read is density-blind, so the pass
-costs the same on a sparse and a dense draw of a sparse level.
+A DENSE level (the bundle's `sparse` flag unset, set at production for an activation with no exact zeros;
+`rola.ops.facts.call_statics`) is not read: its words are the width mask over the live tokens
+([`liveness_contract.md`](liveness_contract.md#statics)) — except the LIST level's write rows, which are read for
+their maxima whatever the side declares. Every other level's rows are read once, whole, whatever their support: the
+read is density-blind, so the pass costs the same on a sparse and a dense draw of a sparse level.
 
 <a id="the-grid"></a>
 
-## The grid: two blocks an SM, walking items
+## The grid: two blocks an SM, taking items in order
 
-The work is items: per (batch-head, window) its units four at a time, the list level's
-first. The window is the carry's — `kWindowWords` is 16 words, and the host entry refuses
-any other — because it is the lists' grain. `kFactsBlocksPerSm` = 2 blocks of eight warps an SM
-walk the items (the grid is `min(items, 2 × SMs)`), the windows of one batch-head
-consecutive, so the blocks at work together read one head's neighbouring windows. An
-item's eight warps take its four units two ways each: warp `w` votes unit `w mod 4`'s
-half `w / 4` of the window's words into that unit's shared tile, the block meets at a
-barrier, and each warp stores its half of its unit's rows; a barrier closes the item.
-A warp's half of a window is four 64-token tiles, so it writes those tiles' unions itself
-([the vote](#vote)).
+The work is items, per (batch-head, window) — the window is the carry's, `kWindowWords` = 16 words, and the host entry
+refuses any other, because it is the lists' grain. A window's units (each a (side, level, 32-digit group)) are ordered
+the list level's first, then the other sparse levels', then the dense ones', and dealt into three kinds of item:
 
-Why this shape, measured at `(256, 256)` on sm_86 (ncu kernel time; `L = 64K` over 16
-batch-heads, a head's share, and `L = 1K` over one):
+* a LIST item: two list units, four warps each (four words a warp) — a list unit's word costs ~3× a vote unit's, so
+  its item is half as wide; the item first stages the window's columns ([the lists](#lists));
+* a VOTE item: four sparse units, two warps each (eight words a warp);
+* a MASK item: eight dense units, one warp each, written straight out ([dense units](#dense-units)).
 
-* **Residency is a design point, not "as many as fit".** More resident warps than 16 an
-  SM made the rows' stream slower, not faster — the DRAM serves fewer bytes a page visit
-  when more streams interleave: with a block a window as the item, 4 blocks an SM ran 164
-  µs a head, 3 ran 147, 2 ran 113.
-* **Rows are read head-major.** The producer writes the bundle `[B, H, T, …]`
-  (`docs/internals/produce/produce.md#bundle`); on token-major rows at 16 heads (an 8 KB
-  token stride) the same pass ran 212 µs a head against 113.
-* **The warps of a block read the same tokens.** A block's warps each on a different
-  column of the same token rows keeps a DRAM page's bytes together in time; a block's
-  warps on different tokens of one column (one unit an item, its window split eight ways)
-  ran 129 µs a head, and independent warp-sized items (drifting apart) 172.
-* **A unit is split among warps, because a warp's loads are a chain.** A lane holds one
-  word's 32 loads in flight (byte loads into 32 registers; two words in flight spill at
-  the 128-register bound), so a warp that votes a whole window's 16 words walks 16 round
-  trips — 21.8 µs at `L = 1K`, where a call has two windows. The sweep over units an
-  item (`kItemUnits`, the warps splitting each unit's window `8 / kItemUnits` ways):
+`kFactsBlocksPerSm` = 2 blocks of eight warps an SM take the items IN ORDER from the call's counter (`counters[0]`, an
+atomic a block; the last block out resets both counters, so they are zero between calls). Thread 0 decomposes an
+item once — its place in its window, the window, the batch-head, its batch and head — into shared memory, and no warp
+divides. Taken in order, a window's items run side by side, so the blocks at work together read one head's
+neighbouring rows (a DRAM page's bytes together in time); taken dynamically, a block's load is the items it actually
+draws rather than a static deal of a few heavy-tailed ones. MEASURED at `nl64k-alt-k4` (one batch-head): a static
+stride of 160 blocks over 8 items a window dealt a quarter of the blocks all the list items (118 µs); coprime striding
+88; the ordered counter, with list items half as wide, 63.
 
-  | units an item | 64K all-sparse | 64K alt | 64K all-dense | 1K all-sparse |
-  |---|---|---|---|---|
-  | 8 | 110 µs | 105 µs | 17.0 µs | 21.8 µs |
-  | **4** | **98** | **59** | **19.4** | **12.9** |
-  | 2 | 104 | 64 | 26.1 | 8.6 |
-  | 1 | 121 | 76 | 36.8 | 6.4 |
+Why two blocks of eight warps, measured on the previous form at `(256, 256)` on sm_86: more resident warps than 16
+an SM made the rows' stream slower, not faster — the DRAM serves fewer bytes a page visit when more streams
+interleave (4 blocks an SM 164 µs a head, 3 147, 2 113); rows read head-major (the producer writes `[B, H, T, …]`) ran
+113 against 212 token-major at 16 heads.
 
-  Four is the best at scale and gives up the small call: a warp's eight words are eight
-  round trips at `L = 1K`. The lever that would remove the chain rather than trade it is
-  wider loads — four digits a lane — which needs every level's rows to start and stride
-  on four digits (the padded widths would give it); it is recorded on the card, not taken.
+<a id="load"></a>
 
-<a id="unit"></a>
+## The load: a ring of words a warp
 
-## A unit: a warp's lanes over 32 digits, its tokens walked
+A warp reads its part of a unit through a RING of `kStages` = 4 word slots in dynamic shared memory: a word is 32
+tokens × the unit's 32-byte run, 1 KB. Each lane issues two 16-byte `cp.async` quanta a word (`LaneCopies`: lanes
+`2i` and `2i + 1` one token's halves; a pointer set once a part and stepped a word at a time), zero-filled past `L` and
+past the rows' width (`ops::stage_tile_n`: a partial quantum's first bytes, nothing past them read), so the ring holds
+three words in flight ahead of the one being read with no registers held. Before the ring, a lane issued 32 byte loads a
+word, each with a 64-bit address and a predicate: ~5.5 instructions a byte, and one word's loads at a time.
 
-A unit's lane `i` owns digit `32g + i` of level `l` on one side — the warp's lanes are
-32 consecutive digits of one row, and the unit walks the window's tokens. That
-orientation is the one that makes every load a single contiguous run across the warp:
-for token `t` the lanes read `rows_l[b, t, h, 32g .. 32g + 31]`, one 32-byte (u8) or
-64-byte (f16) run whatever the level's offset or width. The alternative — a lane per
-token, the warp walking digits — reads 32 rows 1 byte each per instruction and leans on
-L1 to recover the rest of each sector; the old pass measured that leaning fail at 2.5–
-3.8× the unique bytes.
+A token's 32-byte row lands at row `4 (t % 8) + t / 8` of its slot (`ring_row`): the four token blocks a lane group
+reads together sit in four consecutive rows, so a warp's 4-byte reads meet 32 banks. A whole row moves, so each copy
+keeps its global run's 32-byte phase — the condition for a 16-byte lane pair to be one L2 sector request
+(docs/internals/common/ops.md#stage-tile-n). The alignment law is what makes the quanta legal: a 16-byte copy needs a
+16-byte source, and a level slot on 32 bytes keeps a token's run in one sector.
+
+The word loop's trip count is a constant (a word past the call's end is zero-filled and stores nothing), so its
+collectives sit at the top level of a constant loop (KERNEL_STANDARDS §20).
 
 <a id="vote"></a>
 
-### The vote
+## The vote: a lane a (token block, digit quad)
 
-`vote_part` walks a warp's half of the window a word at a time: a word's 32 loads
-(`load_word`, unrolled so all are in flight), then 32 nonzero tests (`digit_live`: a u8
-digit) OR-ed into the lane's word at the
-token's bit, into the lane's row of the unit's tile. A token past `L` is not loaded and
-votes dead. A lane whose digit the mask does not name (a pad digit, or one past `B_l`)
-loads nothing and votes zero; a dense level's words are the mask over the live tokens.
-At each tile's second word — or the call's last word, closing a one-word tile — the warp
-ballots its lanes' OR of the tile's words, and lane 0 stores the word: the tile union
-([`liveness_contract.md`](liveness_contract.md#tile-unions)), four a warp's part, one
-ballot and one store each.
+Lane `(tk, dq)` = `(lane / 8, lane % 8)` reads token `8 tk + i`'s digits `4 dq .. 4 dq + 3` as one word, `i` 0..7. The
+same reads feed both the vote and the lists (`word_lanes`). THE VOTE: `((x & 0x7f7f7f7f) + 0x7f7f7f7f) | x` sets bit 7 of
+each byte iff the byte is nonzero (three operations for four digits); shifted right by `7 - i` it lands at bit `i` of
+its byte, so after the 8 tokens byte `k` of the lane's register holds digit `4 dq + k`'s 8 token bits. A 4 × 4 byte
+transpose across the four token blocks — two exchanges (`shfl_xor` 16 then 8), a byte permute each — leaves lane
+`(tk, dq)` digit `4 dq + tk`'s 32 token bits: the class-1 word, masked by the digit's width-mask bit. ~60 instructions a
+word against ~260 for byte loads and a test a byte, and against ~100 for a token-lane form (two 16-byte reads, a
+multiply-gathered nonzero mask, a five-round bit transpose).
+
+Each 64-token tile's union is one `__reduce_or_sync` of the lanes' `bit d` where their two words are nonzero. A dense
+list unit (its words the width mask) runs the same loop with the vote compiled out.
 
 <a id="transpose"></a>
 
 ### The store: a unit's tile, a row's window one run
 
-The layout wants a row's words contiguous (`[BH][side][row][word]`), and a lane's votes
-are its row's. So the unit's two warps vote into one shared tile (32 rows × 17 words;
-the odd stride makes the lanes' row writes conflict-free), and after the barrier each
-warp stores its 16 rows two an instruction: lanes 0–15 one row's 16 words and lanes
-16–31 the next's, each a contiguous 64-byte run — whole sectors, 64-byte aligned when
-`L` is a whole number of windows, which the prefill requires. Every word is written
-once.
+The layout wants a row's words contiguous (`[BH][side][row][word]`). The unit's warps write their words into one shared
+tile (32 rows × 17 words; the odd stride makes the row writes conflict-free), and after the barrier each warp stores its
+share of the rows two an instruction: lanes 0–15 one row's 16 words and lanes 16–31 the next's, each a contiguous 64-byte
+run — whole sectors, 64-byte aligned when `L` is a whole number of windows, which the prefill requires.
+
+<a id="dense-units"></a>
+
+### Dense units: the mask, written straight out
+
+A dense unit the pass does not read is a function of its digits' width-mask bits and `L` alone: `mask_unit` ballots
+the 32 digits' mask bits once, and writes each row's window of words — all ones, the call's last word its live tokens,
+or zero for a digit outside the mask — two rows a store, then each live tile's union (the mask). No tile, no word loop,
+no barrier: eight units a MASK item, one warp each. Through the tile and the word loop they cost ~3M instructions at
+`nl64k-dense`, where 24 of its 32 units are dense; written straight out, ~0.3M.
 
 <a id="lists"></a>
 
@@ -131,18 +126,16 @@ token writes). Stored int16 `[BH, windows, B_list, 2]`, a lane's pair one word. 
 coefficient at a fixed power of two by them, so one scale a list keeps every coefficient in fp16's range (ruled
 2026-10-03); it replaced zeta, the int fold's per-window maximum, which nothing read once that fold was gone.
 
-A list unit reads its rows even on a dense level (the vote's words stay the width mask): its lanes' digits, each token
-`b × m` and `b × m × s` maxed into the lane's pair, from the window's columns that an item holding a list unit stages
-in shared memory first (`stage_columns`: two tokens a thread, `m` in level order, and the window's largest column). A
-dense level's floor is not applied a digit at a time: `max_t max(b, f) c = max(max_t b c, f max_t c)`, so the
-window's largest column times the floor's digit bounds every digit in the mask once. The unit's two parts meet in
-shared memory after the item's barrier, and its first part's warp stores a lane's `(K_m, K_v)` pair, the unit's 32 one
-128-byte run.
-
-THE GRID'S BLOCK COUNT is coprime to a window's items when the blocks walk the items: a list item is ~2.5× a vote
-item's instructions, and a grid stride that shared a factor with the items a window (160 blocks, 8 items) dealt each
-block the same item position every time, so a quarter of the blocks did all the list work (measured: 118 µs against
-78 at `nl64k-alt-k4`, CUDA events).
+A LIST item first starts its warps' rings (`start_part`), then stages the window's columns in shared memory
+(`stage_columns`: two tokens a thread, `m` in level order from each column's (batch, head) base, a pad slot after
+every 8 tokens so the four token blocks a lane group reads together meet distinct banks, and past them the window's
+largest of each), so the two loads overlap behind one barrier. In the word loop, lane `(tk, dq)` converts each of its
+four bytes to fp32 through the mantissa (a byte permute with an immediate selector, `0x4b0000bb`, minus 2^23) and maxes
+`b × m` and `b × m × s` into its four digits' pairs — six operations an element, ~210 a word. At the part's end the four
+token blocks' maxima join across lanes, the unit's parts join in shared memory after the barrier, and its first part's
+warp stores a lane's `(K_m, K_v)` pair, the unit's 32 one 128-byte run. A dense level's floor is not applied a digit
+at a time: `max_t max(b, f) c = max(max_t b c, f max_t c)`, so the window's largest column times the floor's digit
+bounds every digit in the mask once.
 
 <a id="phase-ledger"></a>
 
@@ -150,17 +143,19 @@ block the same item position every time, so a quarter of the blocks did all the 
 
 `rola_facts_ledger_bind` binds a `[8][3]` int64 buffer (warp × `columns`, `vote`, `store`)
 that every block's warps add their cycles into; `rola.ops.facts.ledger_bind` is the
-Python side. A bound ledger moves no output (`tests/integration/test_facts_pass.py`). At
-`L = 64K`, one batch-head, `nl64k-alt-k4`: columns 9%, vote 82%, store 9% of the warps' cycles.
+Python side. A bound ledger moves no output (`tests/integration/test_facts_pass.py`). The `columns` phase books from
+an item's start — the wait for the item's barrier included — to its word loop, so it carries a block's waiting on its
+slowest warp as well as the list items' staging (`nl64k-alt-k4`, one batch-head: columns 49%, vote 44%, store 7%).
 
 <a id="factsparams"></a>
 
 ## `FactsParams` — the operand block, by value
 
-Per side and level a `RowView` (base, and the batch, token and head strides in digits),
-per write level and for the gain and value scale a `ColumnView`, the outputs, the
-depth, the padded widths and row bases, per side the dense bitmask and the digit mask's
-words, and the unit table (`unit_code(side, level, group)`, at most 64). It is a kernel
+Per side and level a `RowView` (base, the batch, token and head strides in digits, and the rows' width), per write
+level and for the gain and value scale a `ColumnView`, the outputs, the item counters, the depth, the padded widths and
+row bases, per side the dense bitmask and the digit mask's words, the unit table (`unit_code(side, level, group)`, at
+most 64, the list level's units first) and the item shape (`list_units`, `vote_units`, `list_items`, `vote_items`,
+`window_items`). It is a kernel
 parameter of under a kilobyte, so the pass takes no allocation to learn its shape. No
 logical width is in it: `b_l` reaches the mask at the seam and bounds nothing else — the
 host entry refuses a mask that names a digit past a level's rows, so the kernel never
@@ -196,12 +191,29 @@ one ~10 more (its conversion, two products, two maxima, the column load). Varian
 item at four warps each (alt 98, cohort 14.6), 32-bit load offsets in either form (alt 107-115, 20-25M instructions).
 THE LEVER is the load structure, not the arithmetic: the rows staged by `cp.async` 16-byte copies (two a lane a word in
 place of 32 byte loads, several words in flight without registers) and read from shared memory — the sm_90 TMA form
-below, on sm_80/86. Carded for the rebuild plan's fixed parts; the pass is ~1-2% of the prefill.
+below, on sm_80/86. Taken the same day: the rebuilt pass below.
+
+THE REBUILT PASS (2026-10-03, Blake: "a first class optimized kernel"). The line, stated before the code: alt <= 65
+µs (DRAM floor ~52: 33.5 MB rows + 8.4 MB words), dense <= 41 µs (floor ~31), cohort-k16 <= 10 µs (an empty launch is
+5.3). Measured (ncu kernel time; one batch-head, then four, a head's share):
+
+| cell | zeta form | list exponents, byte loads | rebuilt | at 4 heads (DRAM % of peak) |
+|---|---|---|---|---|
+| `nl64k-alt-k4` | 71 µs | 88 µs | 62.5 µs, 10.6M instr | 63 µs (83%) |
+| `nl64k-dense` | 25 µs | 58 µs | 45.6 µs, 8.1M instr | 40 µs (83%) |
+| `flagship-cohort-k16` | 12.8 µs | 19.6 µs | 11.6 µs | — |
+
+At four heads both cells are DRAM-bound at 83% of peak: the pass is first class where prefill runs. One batch-head is
+latency-bound: dense's list items (4 a window) each wait one DRAM latency on their columns before their words, and too
+few items are in flight to hide it (11% over the line); cohort-k16 is two windows, its critical path one list item after
+the launch (16% over). Two levers are recorded, not taken: a dense level's words are its width mask, which a consumer
+can synthesize — not writing them would cut a dense call's writes by 8.4 MB a head (~30% of its traffic); and the
+columns could reach the list warps through the ring (4-byte copies a word) in place of a staging barrier, which a
+3-stage ring with two blocks an SM measured no better.
 
 The sm_80 form is this one, re-measured for its residency point (HBM's page behaviour
-is not GDDR6X's). On sm_90 the rows move by TMA: a unit's `[tokens × 32 digits]` box
-lands in shared memory in one instruction, the vote reads it from there, and the
-register-bound load chain that shapes the item split here goes away.
+is not GDDR6X's). On sm_90 the ring's slots fill by TMA: a word's `[32 tokens × 32 digits]` box
+in one instruction in place of 64 `cp.async` quanta; the rest is unchanged.
 
 ## Where the mechanism came from
 
@@ -210,5 +222,6 @@ The liveness pass it replaces (`csrc/rola/src/facts/liveness.{cu,cuh}`, deleted
 the levels, a lane a token, a warp ballot a digit; its layout, its dense-level mask and
 its past-the-end dead vote are kept unchanged. What is new is the input — the bundle's
 own u8 rows, half the bytes of the bf16 planes, with no packing pass before it —
-the digit-lane orientation that input's lack of an alignment law asks for, the tile
-that keeps the stores whole, and the fold's scales (zeta then; the list exponents now).
+the tile that keeps the stores whole, and the fold's scales (zeta then; the list exponents now). The rebuilt load
+(2026-10-03) replaced the digit-lane byte loads the old input's lack of an alignment law asked for: the alignment law,
+the ring, the shared (token block, digit quad) lanes.

@@ -188,7 +188,8 @@ kernels convert the digits to f16 in registers); a sparse level's zero digit is 
 2^-13 of its row's max (the dense floor, ruled 2026-10-03: inside the digit's own rounding interval;
 `docs/internals/facts/liveness_contract.md#floor`), an all-zero row a dead token at that level -- with the row's maximum
 carried beside them as its fp32 scale (`amp_read`/`scale_read`, `amp_write`/`scale_write`, one
-`[B, T, H, width]` tensor per level). Every level is stored as rows, once (ruled 2026-10-01: the
+`[B, T, H, width]` tensor per level, starting on and stepping by 32 bytes: the row alignment law,
+`docs/internals/facts/liveness_contract.md#alignment`). Every level is stored as rows, once (ruled 2026-10-01: the
 intra and decode read rows, and the carry reads rows through the facts pass's words). `sparse` is
 `(read, write)`, a bool a level: the levels whose support the facts pass words because they may hold
 exact zeros worth skipping. It is set at production -- the producer flags a side whose activation

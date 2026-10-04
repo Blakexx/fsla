@@ -11,7 +11,8 @@ static operands off its `sparse` flags and topology, and `facts` packs them into
 ## `rola_facts_forward`
 
     rola_facts_forward(read[], write[], scale_write[], g_write, v_scale, words!, unions!, list_exp!,
-                       widths, dense_read, mask_read, dense_write, mask_write, list_level, window) -> ()
+                       widths, dense_read, mask_read, dense_write, mask_write, list_level, counters!,
+                       window) -> ()
 
 Each side's rows a level (`[B, T, H, b_l]` u8), the
 write levels' scales, the write gain and the value scale (`[B, T, H]` fp32, any
@@ -32,7 +33,9 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
   that means another has no fold to hand it to;
 * `list_level` is a level of the depth, or -1;
 * the rows are u8, `[B, T, H, width]` with the first level's `B, T, H`, digits
-  contiguous;
+  contiguous, under the row alignment law ([`liveness_contract.md`](liveness_contract.md#alignment));
+* `counters` is a contiguous int32 `[2]`, zero between calls (the pass's last block resets it; `rola.ops.facts` keeps
+  one a device);
 * each side's dense bitmask names only levels inside the depth, and its digit mask is
   exactly `mask_words(rows)` words;
 * **a mask bit names a digit inside its level's rows.** The kernel reads a digit iff

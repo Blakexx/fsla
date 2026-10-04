@@ -17,12 +17,15 @@ import torch
 __all__ = [
     "AMP_LEVELS",
     "DENSE_FLOOR",
+    "ROW_ALIGN",
     "ROW_DTYPE",
     "VALUE_DTYPE",
+    "aligned_rows",
     "dequantize_rows",
     "dequantize_values",
     "quantize_unit_max_rows",
     "quantize_values",
+    "row_slot",
     "straight_through",
 ]
 
@@ -32,17 +35,34 @@ AMP_LEVELS = 255.0
 ROW_DTYPE = torch.uint8
 #: a dense level's zero digit, in a live row, as a fraction of the row max: inside the digit's own [0, 1/510).
 DENSE_FLOOR = 2.0 ** -13
+#: THE ROW ALIGNMENT LAW: every level's rows start on, and step batch, token and head by, multiples of this many bytes
+#: (docs/internals/facts/liveness_contract.md#alignment).
+ROW_ALIGN = 32
 #: the stored value form: f16 against the token's largest channel.
 VALUE_DTYPE = torch.float16
 _TINY = 1e-30
 
 
+def row_slot(width: int) -> int:
+    """A level's bytes in a packed row: its width rounded up to the alignment law's grain."""
+    return -(-width // ROW_ALIGN) * ROW_ALIGN
+
+
+def aligned_rows(B: int, T: int, H: int, width: int, device) -> torch.Tensor:
+    """``[B, T, H, width]`` u8 zeros under the alignment law: a view of ``[B, T, H, row_slot(width)]`` storage."""
+    return torch.zeros((B, T, H, row_slot(width)), dtype=ROW_DTYPE, device=device)[..., :width]
+
+
 def quantize_unit_max_rows(level: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """``(rows u8 [..., w], scale fp32 [...])``: each row against its own max; an all-zero row stays zero."""
+    """``(rows u8 [..., w], scale fp32 [...])``: each row against its own max, in storage under the alignment law; an
+    all-zero row stays zero."""
     exact = level.detach().float()
     scale = exact.abs().amax(dim=-1)
     unit = exact / scale.clamp_min(_TINY).unsqueeze(-1)
-    return torch.round(unit * AMP_LEVELS).to(ROW_DTYPE), scale
+    B, T, H, width = exact.shape
+    rows = aligned_rows(B, T, H, width, exact.device)
+    rows.copy_(torch.round(unit * AMP_LEVELS).to(ROW_DTYPE))
+    return rows, scale
 
 
 def dequantize_rows(rows: torch.Tensor, scale: torch.Tensor, dense: bool) -> torch.Tensor:

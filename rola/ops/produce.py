@@ -24,6 +24,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from rola.engine.facts.operands import requires_backward
+from rola.routing import quant
 from rola.routing.entmax.production import production_routing_factor_levels
 from rola.routing.factors import RouteFactors
 from rola.routing.producer import Routing
@@ -33,7 +34,7 @@ from rola.routing.types import IndependentRouting, TiedRouting, UnionRouting
 from rola.values import Values
 
 __all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "ProducerPlan", "ProducerWeights", "hidden_contiguous", "job_table",
-           "ledger_bind", "produce", "projection_dtype", "route_logits", "run_kernel"]
+           "ledger_bind", "produce", "projection_dtype", "route_logits", "row_layout", "run_kernel"]
 
 
 @dataclass(frozen=True)
@@ -104,12 +105,22 @@ def _solve(activation) -> int:
     return _SOLVES[activation.tag]
 
 
+def row_layout(plan: ProducerPlan) -> tuple[tuple[int, ...], int]:
+    """``(offsets, width)``: each level's slot in one side's packed row plane and the plane's width -- the levels in
+    order, each at its width rounded up to the row alignment law's grain (`rola.routing.quant.row_slot`)."""
+    offsets = [0]
+    for width in plan.routing.resolved.branches:
+        offsets.append(offsets[-1] + quant.row_slot(width))
+    return tuple(offsets[:-1]), offsets[-1]
+
+
 def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
     """``(jobs, route jobs a head)``: the plan compiled into the kernel's job table (docs/internals/produce/produce.md
     #jobs). A route job is one head's one solve -- a union level's two logit rows, a tied level's one row filling both
     planes, or one side of an independent level; a value job is the heads whose channels fit one job."""
     resolved = plan.routing.resolved
-    slots, read_slot, out = resolved.packed_slot_offsets, resolved.packed_read_slot_lookup, resolved.level_offsets
+    slots, read_slot = resolved.packed_slot_offsets, resolved.packed_read_slot_lookup
+    out, _width = row_layout(plan)
     per_head: list[tuple[int, ...]] = []
     for level, spec in enumerate(resolved.levels):
         width = resolved.branches[level]
@@ -193,7 +204,7 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
         raise ValueError(f"the producer kernel reads hidden runs in 16-byte chunks: the hidden size must be a multiple "
                          f"of 8, got {hidden}")
     H, D = plan.num_heads, plan.routing.topology.D
-    rows = plan.routing.resolved.packed_logit_width
+    _offsets, rows = row_layout(plan)
     device = x.device
 
     def empty(*shape, dtype=torch.float32):
@@ -231,7 +242,7 @@ def _kernel_bundle(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights
     writes (the ops read them by address), and the read mass only where a read level folds."""
     out = run_kernel(x, plan, weights)
     resolved, D = plan.routing.resolved, plan.routing.topology.D
-    spans = tuple(zip(resolved.level_offsets[:D], resolved.branches, strict=True))
+    spans = tuple(zip(row_layout(plan)[0], resolved.branches, strict=True))
 
     def rows(plane: torch.Tensor) -> tuple[torch.Tensor, ...]:
         return tuple(plane[..., offset:offset + width] for offset, width in spans)

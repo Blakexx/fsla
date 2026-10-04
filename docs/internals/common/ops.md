@@ -336,6 +336,14 @@ one ZERO-FILLS its destination and reads nothing. That is what lets a partial ti
 last segment of a window shorter than the window — be the same code as a full one instead of
 a tail case, and what keeps it from reading past an operand's end to get there.
 
+<a id="stage-tile-n"></a>
+## `stage_tile_n` — the first bytes of a quantum
+
+The same copy with its source size a runtime count from 0 to 16: the run's first `bytes` land and the rest of the
+sixteen ZERO-FILL, nothing past them read. A row that ends inside a quantum — a routing level whose width is not a
+multiple of sixteen — is copied whole up to its last digit and no further, so a level's last quantum never reads the
+next level's digits or past its tensor's end (the facts pass's rows, `docs/internals/facts/facts.md#load`).
+
 <a id="rendezvous-group"></a>
 ### `rendezvous_group`
 

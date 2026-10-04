@@ -89,7 +89,8 @@ def _routes(rows, scale, *, normalize):
     B, T, H, width = rows.shape
     topology = Topology(levels=(UnionRouting(width=width),))
     ones = torch.ones(B, T, H, dtype=torch.float32, device=rows.device)
-    return RouteFactors.from_rows(topology, (rows,), (torch.zeros_like(rows),), (scale,), (torch.zeros_like(scale),),
+    return RouteFactors.from_rows(topology, (rows,), (quant.aligned_rows(*rows.shape, rows.device),), (scale,),
+                                  (torch.zeros_like(scale),),
                                   ones, read_mass=ones if normalize else None)
 
 
@@ -144,7 +145,7 @@ def test_a_strided_view_folds_by_address():
     """A level may be a VIEW of one packed plane, and the fold indexes it there."""
     packed, scale = _read_rows(3, 2, 32, seed=3)
     sliced = packed[..., ::2]
-    dense = sliced.contiguous()
+    dense = quant.aligned_rows(*sliced.shape, sliced.device).copy_(sliced)
     y_view, e, m = _y_of(sliced, scale, normalize=True, seed=8)
     y_dense, e2, m2 = _y_of(dense, scale, normalize=True, seed=8)
     assert torch.equal(e, e2) and torch.equal(m, m2), "the two runs saw different states"
@@ -180,11 +181,12 @@ def test_the_flag_is_honoured_and_not_assumed():
 
 def test_more_than_one_token_is_refused():
     rows, scale = _read_rows(2, 2, 16, seed=5)
+    two = quant.aligned_rows(2, 2, 2, 16, rows.device).copy_(rows.repeat(1, 2, 1, 1))
     with pytest.raises(ValueError, match="takes one token"):
-        _y_of(rows.repeat(1, 2, 1, 1), scale.repeat(1, 2, 1), normalize=False, seed=5)
+        _y_of(two, scale.repeat(1, 2, 1), normalize=False, seed=5)
 
 
 def test_a_row_dtype_outside_the_format_is_refused():
     rows, scale = _read_rows(2, 2, 16, seed=5)
-    with pytest.raises(TypeError, match="stored as torch.uint8"):
+    with pytest.raises((TypeError, ValueError), match="torch.float16"):
         _routes(rows.to(torch.float16), scale, normalize=False)

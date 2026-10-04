@@ -15,7 +15,16 @@ import pytest
 import torch
 
 import rola
-from rola.ops.produce import _TOKEN_TILE, ProducerPlan, ProducerWeights, _job_tensor, hidden_contiguous, job_table, produce
+from rola.ops.produce import (
+    _TOKEN_TILE,
+    ProducerPlan,
+    ProducerWeights,
+    _job_tensor,
+    hidden_contiguous,
+    job_table,
+    produce,
+    row_layout,
+)
 from rola.routing.entmax.production import _torch_activation, _torch_union_split
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the producer is a CUDA kernel")
@@ -55,7 +64,7 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
 
     B, T, hidden = x.shape
     H, D, d_v = plan.num_heads, plan.routing.topology.D, plan.d_v
-    rows = plan.routing.resolved.packed_logit_width
+    rows = row_layout(plan)[1]
 
     def poisoned(*shape, dtype=torch.float32):
         out = torch.empty(B, H, T, *shape, dtype=dtype, device="cuda")
@@ -177,7 +186,7 @@ def test_the_bundle_matches_the_fp64_composition(name, B, T, bias, gain):
     reference = ProducerWeights(route_W=route_W.double(), gain_bias=gain_bias.double(), v_W=v_W.double(),
                                 route_bias=None if route_bias is None else route_bias.double())
     routes, _ = produce(x.double(), plan, reference)
-    offsets = plan.routing.resolved.level_offsets
+    offsets = row_layout(plan)[0]
     for level, width in enumerate(plan.routing.resolved.branches):
         for side, rows, scales in (("read", routes.amp_read, routes.scale_read),
                                    ("write", routes.amp_write, routes.scale_write)):
