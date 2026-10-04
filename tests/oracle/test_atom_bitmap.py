@@ -111,7 +111,7 @@ def _kernel_bitmap(routes, values):
     layout = facts_ops.call_layout(routes)
     statics = lv.side_statics(layout, (False,) * layout.D, routes.topology.widths)
     words = facts_ops.facts(routes, values, layout, statics, statics).words
-    return planes.written_atoms(lv.page_bits(words, layout))
+    return planes.written_atoms(lv.page_bits(words, layout, statics, statics))
 
 
 def _oracle_bitmap(write, widths):
@@ -192,7 +192,8 @@ def test_stats_through_the_host_seam():
         routes, values = layer._produce(x)
     _, write = routes.dequantized()
     layout = facts_ops.call_layout(routes)
-    words = facts_ops.facts(routes, values, layout, *facts_ops.call_statics(routes, layout)).words
-    bits = lv.page_bits(words, layout)
+    statics = facts_ops.call_statics(routes, layout)
+    words = facts_ops.facts(routes, values, layout, *statics).words
+    bits = lv.page_bits(words, layout, *statics)
     assert bits.dtype == torch.uint8 and bits.device.type == "cuda"
     assert torch.equal(planes.written_atoms(bits), _oracle_bitmap(write, (16, 16)))

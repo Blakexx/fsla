@@ -8,7 +8,7 @@
 
 namespace rola::facts {
 
-//: THE GRID: two blocks of eight warps an SM take vote, list and mask items. -- see docs/internals/facts/facts.md#the-grid
+//: THE GRID: two blocks of eight warps an SM take list and vote items. -- see docs/internals/facts/facts.md#the-grid
 constexpr int kFactsWarps = 8;
 constexpr int kFactsThreads = kFactsWarps * 32;
 constexpr int kFactsBlocksPerSm = 2;
@@ -68,7 +68,7 @@ struct FactsParams {
   int* counters;       // [2]: the next item, the blocks finished; zero between calls
   long long* ledger;
   int D, H, L, token_words, windows, items, rows_total, units, groups, tiles, list_level,
-      list_units, vote_units, list_items, vote_items, window_items;
+      list_units, vote_units, list_item_units, list_items, vote_items, window_items;
   int B[kMaxLevels];
   int row_base[kMaxLevels];
   int group_base[kMaxLevels];

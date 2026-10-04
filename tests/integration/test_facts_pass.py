@@ -3,8 +3,9 @@ the fp16 fold reference's, per slot.
 
 `tests/unit/test_liveness_contract.py` gates the words' contract and the pure-torch model without a device; this file
 holds the one pass to that model on the bundle's own rows -- u8 and f16, separate tensors and views of one packed plane
--- which makes every property the model proves (sparse rows are the digits' support, a dense level's rows are the
-static width mask and cost no read, pad digits are dead, a token past `L` votes dead) a property of the kernel. The
+-- at every SPARSE level, which makes every property the model proves (sparse rows are the digits' support, pad digits
+are dead, a token past `L` votes dead) a property of the kernel; a dense level's rows and groups are the static width
+mask, which the folds take from the statics, so the pass neither reads nor writes them. The
 list exponents are held to `fold_reference.list_exponents` per window, digit and batch-head, exactly except where a
 maximum sits within fp32 rounding of a power of two (docs/internals/facts/facts.md#lists). The class-2 folds the words feed are gated here too: the exact per-page byte
 against the general box fold at the atom box set and against the leaf-level truth.
@@ -33,7 +34,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the pass 
 #: than a 32-digit group, and a many-window call with a tail window and a tail word.
 _SHAPES = (((32,), 32), ((16, 16), 64), ((32, 16), 40), ((16, 16, 16), 96), ((64, 16), 33), ((256, 256), 1100))
 
-#: Which levels each side declares DENSE: the pass reads neither side's dense levels.
+#: Which levels each side declares DENSE: the pass neither reads nor writes either side's dense levels.
 _MODES = ((), (0,), "all")
 
 #: the list maxima's bound, relative: the kernel's fp32 product of at most seven factors, a rounding each.
@@ -92,6 +93,19 @@ def _model(routes, layout, read_statics, write_statics):
                              layout, read_statics, write_statics)
 
 
+def _assert_written(got, want, layout, read_statics, write_statics):
+    """The pass's words and unions are the model's at every sparse level of each side."""
+    unions = lv.tile_unions(want, layout)
+    for side, statics in enumerate((read_statics, write_statics)):
+        for level, dense in enumerate(statics.dense_levels):
+            if dense:
+                continue
+            rows = slice(layout.row_base(level), layout.row_base(level) + layout.B[level])
+            groups = slice(layout.group_base(level), layout.group_base(level + 1))
+            assert torch.equal(got.words[:, side, rows].cpu(), want[:, side, rows]), (side, level)
+            assert torch.equal(got.unions[:, side, groups].cpu(), unions[:, side, groups]), (side, level)
+
+
 # --------------------------------------------------------------- the words are the model
 
 
@@ -104,20 +118,17 @@ def test_the_words_are_the_model_bit_for_bit(widths, L, dense, packed):
     routes, values = _bundle(widths, L, (statics, statics), packed=packed)
     got = facts_ops.facts(routes, values, layout, statics, statics)
     assert got.words.shape == (routes.batch * routes.heads, lv.SIDES, layout.rows, layout.words)
-    want = _model(routes, layout, statics, statics)
-    assert torch.equal(got.words.cpu(), want)
-    assert torch.equal(got.unions.cpu(), lv.tile_unions(want, layout))
+    _assert_written(got, _model(routes, layout, statics, statics), layout, statics, statics)
 
 
 @pytest.mark.parametrize(("widths", "L"), _SHAPES)
 def test_the_two_sides_are_voted_independently(widths, L):
-    """One launch, two sides, each with its own statics: the write side's rows are not the read side's."""
+    """One launch, two sides, each with its own statics and rows: each side's sparse levels are its own rows' votes."""
     layout = _layout(widths, L)
     read_statics, write_statics = _statics(layout, (), widths), _statics(layout, (0,), widths)
     routes, values = _bundle(widths, L, (read_statics, write_statics))
-    got = facts_ops.facts(routes, values, layout, read_statics, write_statics).words
-    assert torch.equal(got.cpu(), _model(routes, layout, read_statics, write_statics))
-    assert not torch.equal(got[:, lv.READ], got[:, lv.WRITE])
+    got = facts_ops.facts(routes, values, layout, read_statics, write_statics)
+    _assert_written(got, _model(routes, layout, read_statics, write_statics), layout, read_statics, write_statics)
 
 
 @pytest.mark.parametrize(("widths", "L"), _SHAPES[:5])
@@ -128,28 +139,39 @@ def test_a_padded_topology_is_the_model_and_its_pad_digits_are_dead(widths, L, d
     layout = _layout(widths, L)
     statics = _statics(layout, dense, logical)
     routes, values = _bundle(logical, L, (statics, statics))
-    got = facts_ops.facts(routes, values, layout, statics, statics).words.cpu()
-    assert torch.equal(got, _model(routes, layout, statics, statics))
-    bits = lv.unpack(got, layout)
+    got = facts_ops.facts(routes, values, layout, statics, statics)
+    _assert_written(got, _model(routes, layout, statics, statics), layout, statics, statics)
+    bits = lv.unpack(got.words.cpu(), layout)
     for level in range(layout.D):
         base = layout.row_base(level)
-        assert not bits[:, :, base + logical[level]:base + layout.B[level], :].any(), level
+        if not statics.dense_levels[level]:
+            assert not bits[:, :, base + logical[level]:base + layout.B[level], :].any(), level
 
 
-def test_a_dense_level_is_never_read():
-    """BLIND the dense level's rows: a pass that read them would report it dead."""
+def test_a_dense_level_is_neither_read_nor_written():
+    """BLIND the dense level's rows and POISON the outputs: a pass that read the level would vote it dead and one that
+    wrote it would clear the poison, while the sparse level is the model's all the same. The dense level is the write
+    lists' level, so its list unit runs and writes only its exponents."""
     widths, L = (32, 16), 64
     layout = _layout(widths, L)
     statics = _statics(layout, (0,), (20, 16))
     routes, values = _bundle((20, 16), L, (statics, statics))
-    seen = facts_ops.facts(routes, values, layout, statics, statics).words
+    want = _model(routes, layout, statics, statics)
     for side in (routes.amp_read, routes.amp_write):
         side[0].zero_()
-    blinded = facts_ops.facts(routes, values, layout, statics, statics).words
-    assert torch.equal(seen, blinded)
-    mask = torch.tensor(statics.digit_mask[:32], dtype=torch.bool)
-    dense_rows = lv.unpack(blinded.cpu(), layout)[:, lv.READ, :32]
-    assert torch.equal(dense_rows, mask[None, :, None].expand(dense_rows.shape))
+    BH, poison, level = routes.batch * routes.heads, 0x5A5A5A5A, facts_ops.list_level(statics)
+    assert level == 0
+    words = torch.full((BH, lv.SIDES, layout.rows, layout.words), poison, dtype=torch.int32, device="cuda")
+    unions = torch.full((BH, lv.SIDES, layout.groups, layout.tiles), poison, dtype=torch.int32, device="cuda")
+    list_exp = torch.full((BH, 1, layout.B[level], 2), 0x5A5A, dtype=torch.int16, device="cuda")
+    masks = [statics.mask_word(i) for i in range(lv.mask_words(layout.rows))]
+    facts_ops.extension().rola_facts_forward(
+        list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
+        words, unions, list_exp, list(layout.B), 1, masks, 1, masks, level,
+        torch.zeros(2, dtype=torch.int32, device="cuda"), facts_ops.WINDOW)
+    _assert_written(facts_ops.Facts(words, unions, list_exp), want, layout, statics, statics)
+    assert (words[:, :, :layout.B[0]] == poison).all() and (unions[:, :, :layout.group_base(1)] == poison).all()
+    assert (list_exp != 0x5A5A).all()
 
 
 def test_a_token_past_the_end_votes_dead():
@@ -289,9 +311,7 @@ def test_the_producers_bundle_through_its_topologys_statics():
     read_statics, write_statics = facts_ops.call_statics(routes, layout)
     assert read_statics.dense_levels == (True, False) and write_statics.dense_levels == (False, False)
     got = facts_ops.facts(routes, values, layout, read_statics, write_statics)
-    want = _model(routes, layout, read_statics, write_statics)
-    assert torch.equal(got.words.cpu(), want)
-    assert torch.equal(got.unions.cpu(), lv.tile_unions(want, layout))
+    _assert_written(got, _model(routes, layout, read_statics, write_statics), layout, read_statics, write_statics)
 
 
 # --------------------------------------------------------------- the folds it feeds
@@ -306,9 +326,9 @@ def test_the_page_byte_is_the_general_fold_at_the_atom_box_set(widths, L):
     words = facts_ops.facts(routes, values, layout, statics, statics).words.cpu()
     boxes = lv.atom_boxes(layout)
     assert len(boxes) == layout.atoms
-    want = lv.page_activity(layout, boxes, lv.box_activity(words, layout, boxes, lv.READ),
-                            boxes, lv.box_activity(words, layout, boxes, lv.WRITE))
-    assert torch.equal(lv.page_bits(words, layout), want)
+    want = lv.page_activity(layout, boxes, lv.box_activity(words, layout, boxes, lv.READ, statics),
+                            boxes, lv.box_activity(words, layout, boxes, lv.WRITE, statics))
+    assert torch.equal(lv.page_bits(words, layout, statics, statics), want)
 
 
 @pytest.mark.parametrize(("widths", "L"), _SHAPES[:5])
@@ -319,7 +339,7 @@ def test_the_page_byte_is_the_leaf_level_truth_exactly(widths, L):
     statics = _statics(layout, (), widths)
     routes, values = _bundle(widths, L, (statics, statics))
     words = facts_ops.facts(routes, values, layout, statics, statics).words.cpu()
-    got = lv.page_bits(words, layout)
+    got = lv.page_bits(words, layout, statics, statics)
     bits = lv.unpack(words, layout)
     strides = layout.radix_strides
     for side, flag in ((lv.READ, ATOM_READ), (lv.WRITE, ATOM_WRITTEN)):

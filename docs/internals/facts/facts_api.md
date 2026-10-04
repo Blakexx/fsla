@@ -21,7 +21,9 @@ strides), and the three outputs the caller allocates: `words` the contiguous int
 ceil(T/64)]` ([`liveness_contract.md`](liveness_contract.md#tile-unions)) and `list_exp` the
 contiguous int16 `[B·H, windows, B_list, 2]` ([`facts.md`](facts.md#lists)), `B_list` the list level's padded
 width — any tensor when `list_level` is -1 (no carry lists past depth two; `rola.ops.facts.list_level`). The pass
-writes every element of all three. `widths` are the layout's PADDED widths; `dense_*`
+writes every element of `list_exp` and, of `words` and `unions`, every sparse level's rows and groups; a dense
+level's are left as allocated (its words are the width mask, which a reader takes from the statics,
+[`liveness_contract.md`](liveness_contract.md#statics)). `widths` are the layout's PADDED widths; `dense_*`
 is a bitmask over levels and `mask_*` one bit a row, packed by
 `rola.engine.facts.liveness.side_statics` — the only place `b_l` appears.
 

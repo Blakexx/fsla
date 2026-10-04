@@ -111,12 +111,16 @@ __device__ __forceinline__ uint32_t word_lanes(const uint8_t* slot, const float2
   return flags;
 }
 
-//: THE WINDOW'S COLUMNS, staged for its list units: a token's `m = g x the write scales` (the gain first, then the
-//: levels in order) and `m x s`, a dead or past-the-end token zeros, and past them the window's largest of each.
-//: -- see docs/internals/facts/facts.md#lists
-__device__ void stage_columns(const FactsParams& p, int b, int h, int window, int warp, int lane,
-                              float2* cols, float2* warp_top) {
-  constexpr int kPerThread = kWindowTokens / kFactsThreads;
+//: A THREAD'S COLUMN LOADS for the window's tokens `threadIdx.x + i kFactsThreads`: the gain, the value scale and the
+//: write scales, issued before the ring's copies so they lead the item's loads.
+struct ColumnLoads {
+  static constexpr int kPerThread = kWindowTokens / kFactsThreads;
+  float m[kPerThread], s[kPerThread], f[kPerThread][kMaxLevels];
+};
+
+__device__ __forceinline__ ColumnLoads load_columns(const FactsParams& p, int b, int h,
+                                                    int window) {
+  constexpr int kPerThread = ColumnLoads::kPerThread;
   //: each column's (batch, head) base once; a token is then one multiply-add from it
   const float* const gain = p.g_write.base + b * p.g_write.sb + h * p.g_write.sh;
   const float* const vs = p.v_scale.base + b * p.v_scale.sb + h * p.v_scale.sh;
@@ -125,21 +129,33 @@ __device__ void stage_columns(const FactsParams& p, int b, int h, int window, in
   for (int l = 0; l < kMaxLevels; ++l)
     sw[l] = l < p.D ? p.scale_write[l].base + b * p.scale_write[l].sb + h * p.scale_write[l].sh
                     : nullptr;
+  ColumnLoads c;
+#pragma unroll
+  for (int i = 0; i < kPerThread; ++i) {
+    const int t = window * kWindowTokens + i * kFactsThreads + static_cast<int>(threadIdx.x);
+    const bool in = t < p.L;
+    c.m[i] = in ? __ldg(gain + t * p.g_write.st) : 0.0f;
+    c.s[i] = in ? __ldg(vs + t * p.v_scale.st) : 0.0f;
+#pragma unroll
+    for (int l = 0; l < kMaxLevels; ++l)
+      c.f[i][l] = in && l < p.D ? __ldg(sw[l] + t * p.scale_write[l].st) : 1.0f;
+  }
+  return c;
+}
+
+//: THE WINDOW'S COLUMNS, staged for its list units: a token's `m = g x the write scales` (the gain first, then the
+//: levels in order) and `m x s`, a dead or past-the-end token zeros, and past them the window's largest of each.
+//: -- see docs/internals/facts/facts.md#lists
+__device__ void stage_columns(ColumnLoads c, int warp, int lane, float2* cols, float2* warp_top) {
+  constexpr int kPerThread = ColumnLoads::kPerThread;
   float2 top = make_float2(0.0f, 0.0f);
 #pragma unroll
   for (int i = 0; i < kPerThread; ++i) {
-    const int k = i * kFactsThreads + static_cast<int>(threadIdx.x);
-    const int t = window * kWindowTokens + k;
-    float m = 0.0f, s = 0.0f;
-    if (t < p.L) {
-      m = __ldg(gain + t * p.g_write.st);
-      s = __ldg(vs + t * p.v_scale.st);
 #pragma unroll
-      for (int l = 0; l < kMaxLevels; ++l)
-        if (l < p.D) m *= __ldg(sw[l] + t * p.scale_write[l].st);
-    }
-    cols[column_slot(k)] = make_float2(m, m * s);
-    top = make_float2(fmaxf(top.x, m), fmaxf(top.y, m * s));
+    for (int l = 0; l < kMaxLevels; ++l) c.m[i] *= c.f[i][l];
+    cols[column_slot(i * kFactsThreads + static_cast<int>(threadIdx.x))] =
+        make_float2(c.m[i], c.m[i] * c.s[i]);
+    top = make_float2(fmaxf(top.x, c.m[i]), fmaxf(top.y, c.m[i] * c.s[i]));
   }
 #pragma unroll
   for (int offset = 16; offset > 0; offset >>= 1) {
@@ -157,12 +173,11 @@ __device__ void stage_columns(const FactsParams& p, int b, int h, int window, in
   }
 }
 
-//: A READ PART'S COPIES STARTED: the lane's copies set up and the ring's first `kStages - 1` words issued, before a
-//: list item's column staging so the two loads overlap.
-template <bool kList>
+//: A READ PART'S COPIES STARTED, `kWords` words of the window: the lane's copies set up and the ring's first
+//: `kStages - 1` words issued, before a list item's column staging so the two loads overlap.
+template <int kWords>
 __device__ __forceinline__ LaneCopies start_part(const FactsParams& p, int code, int b, int h,
                                                  int window, int part, int lane, uint8_t* ring) {
-  constexpr int kWords = kList ? kListPartWords : kPartWords;
   const int side = code >> 5, level = (code >> 3) & 3, group = code & 7;
   const RowView view = p.rows[side][level];
   const uint8_t* const rows = static_cast<const uint8_t*>(view.base) + b * view.sb + h * view.sh;
@@ -176,10 +191,10 @@ __device__ __forceinline__ LaneCopies start_part(const FactsParams& p, int code,
   return copies;
 }
 
-//: A WARP'S PART OF A UNIT through its ring, tile by tile: lane `(tk, dq)` digit `4 dq + tk`'s bits into its tile row (a
-//: sparse level's voted, a dense list level's its width mask) and each tile's union, one reduction; a LIST unit also
-//: each digit's largest `b` x column. -- see docs/internals/facts/facts.md#vote
-template <bool kVote, bool kList>
+//: A WARP'S PART OF A UNIT through its ring, tile by tile: a VOTE unit lane `(tk, dq)` digit `4 dq + tk`'s voted bits
+//: into its tile row and each tile's union, one reduction; a LIST unit each digit's largest `b` x column, a dense list
+//: level's unit nothing else. -- see docs/internals/facts/facts.md#vote
+template <bool kVote, bool kList, int kWords>
 __device__ void read_part(const FactsParams& p, int code, int bh, int window, int part, int lane,
                           uint32_t* tile, uint8_t* ring, const float2* cols, float2* top,
                           LaneCopies& copies) {
@@ -192,10 +207,9 @@ __device__ void read_part(const FactsParams& p, int code, int bh, int window, in
       p.unions
       + ((static_cast<int64_t>(bh) * kSides + side) * p.groups + p.group_base[level] + group)
             * p.tiles;
-  constexpr int kWords = kList ? kListPartWords : kPartWords;
   const int word0 = window * kWindowWords + part * kWords;
   const int words = max(0, min(kWords, p.token_words - word0));
-  uint32_t* const row = tile + d * kTileStride + part * kWords;
+  uint32_t* const row = kVote ? tile + d * kTileStride + part * kWords : nullptr;
 
   float2 best[4];
 #pragma unroll
@@ -215,16 +229,16 @@ __device__ void read_part(const FactsParams& p, int code, int bh, int window, in
           ring + (jj % kStages) * kWordBytes, cols + column_slot((part * kWords + jj) * kTokBits),
           tk, dq, best);
       __syncwarp();
-      const int t0 = (word0 + jj) * kTokBits;
-      const int live = max(0, min(kTokBits, p.L - t0));
-      const uint32_t bits = !in_mask ? 0u
-                            : kVote  ? voted
-                                     : (live == kTokBits ? ~0u : (1u << live) - 1u);
-      if (jj < words) row[jj] = bits;
-      pair |= bits;
+      if constexpr (kVote) {
+        const uint32_t bits = in_mask ? voted : 0u;
+        if (jj < words) row[jj] = bits;
+        pair |= bits;
+      }
     }
-    const uint32_t u = __reduce_or_sync(0xffffffffu, pair != 0u ? 1u << d : 0u);
-    if (j < words && lane == 0) unions[(word0 + j) >> 1] = u;
+    if constexpr (kVote) {
+      const uint32_t u = __reduce_or_sync(0xffffffffu, pair != 0u ? 1u << d : 0u);
+      if (j < words && lane == 0) unions[(word0 + j) >> 1] = u;
+    }
   }
 
   if constexpr (kList) {
@@ -257,40 +271,6 @@ __device__ void read_part(const FactsParams& p, int code, int bh, int window, in
   }
 }
 
-//: A DENSE UNIT THE PASS DOES NOT READ, one warp: each digit row's window of words its width mask over the live tokens,
-//: written straight out two rows a store (a row's window one 64-byte run), and each tile's union the mask's.
-//: -- see docs/internals/facts/facts.md#dense-units
-__device__ void mask_unit(const FactsParams& p, int code, int bh, int window, int lane) {
-  const int side = code >> 5, level = (code >> 3) & 3, group = code & 7;
-  const int width = p.B[level], base = p.row_base[level];
-  const int digit = group * 32 + lane;
-  const uint32_t in_mask = __ballot_sync(
-      0xffffffffu, digit < width && mask_bit(p.mask[side][(base + digit) >> 5], base + digit));
-  const int word0 = window * kWindowWords;
-  const int words = min(kWindowWords, p.token_words - word0);
-  const int j = lane & (kWindowWords - 1);
-  const int live = max(0, min(kTokBits, p.L - (word0 + j) * kTokBits));
-  const uint32_t word = live == kTokBits ? ~0u : (1u << live) - 1u;
-  const int rows = min(32, width - group * 32);
-  uint32_t* out = p.words
-                  + ((static_cast<int64_t>(bh) * kSides + side) * p.rows_total + base + group * 32
-                     + (lane >> 4))
-                        * p.token_words
-                  + word0 + j;
-  const int64_t pair_step = 2 * static_cast<int64_t>(p.token_words);
-#pragma unroll
-  for (int pair = 0; pair < 16; ++pair) {
-    const int r = 2 * pair + (lane >> 4);
-    if (r < rows && j < words) *out = (in_mask >> r & 1u) ? word : 0u;
-    out += pair_step;
-  }
-  uint32_t* const unions =
-      p.unions
-      + ((static_cast<int64_t>(bh) * kSides + side) * p.groups + p.group_base[level] + group)
-            * p.tiles;
-  if (lane < kWindowWords / 2 && 2 * lane < words) unions[(word0 >> 1) + lane] = in_mask;
-}
-
 //: A WARP'S PART OF A UNIT'S TILE OUT: its share of the 32 rows, a row's window of words one 64-byte run, two rows a
 //: store.
 template <int kPartsT>
@@ -320,16 +300,17 @@ __device__ __forceinline__ uint32_t ceil_exponent(float x) {
   return static_cast<uint16_t>(static_cast<int>(bits >> 23) - 127 + ((bits & 0x7fffffu) != 0u));
 }
 
-//: A LIST UNIT'S EXPONENTS OUT, by its first part's warp: each digit's parts joined (part `q` the warp
-//: `unit_slot + q kListItemUnits`), a lane a digit's `(K_m, K_v)` pair, the unit's 32 one 128-byte run.
+//: A LIST UNIT'S EXPONENTS OUT, by its first part's warp: each digit's `kPartsT` parts joined (part `q` the warp
+//: `unit_slot + q kFactsWarps / kPartsT`), a lane a digit's `(K_m, K_v)` pair, the unit's 32 one 128-byte run.
 //: -- see docs/internals/facts/facts.md#lists
+template <int kPartsT>
 __device__ __forceinline__ void store_lists(const FactsParams& p, int code, int bh, int window,
                                             int lane, const float2 (*top)[32], int unit_slot) {
   const int digit = (code & 7) * 32 + lane;
   float2 m = top[unit_slot][lane];
 #pragma unroll
-  for (int part = 1; part < kListParts; ++part) {
-    const float2 o = top[unit_slot + part * kListItemUnits][lane];
+  for (int part = 1; part < kPartsT; ++part) {
+    const float2 o = top[unit_slot + part * (kFactsWarps / kPartsT)][lane];
     m = make_float2(fmaxf(m.x, o.x), fmaxf(m.y, o.y));
   }
   const uint32_t pair = ceil_exponent(m.x) | ceil_exponent(m.y) << 16;
@@ -337,10 +318,10 @@ __device__ __forceinline__ void store_lists(const FactsParams& p, int code, int 
     p.list_exp[(static_cast<int64_t>(bh) * p.windows + window) * p.B[p.list_level] + digit] = pair;
 }
 
-//: THE GRID: `kFactsBlocksPerSm` blocks an SM walk the items -- per (batch-head, window), its units `kItemUnits` at a
-//: time, the list units first. An item's warps split each unit's window `kParts` ways, each part through its warp's
-//: ring of `kStages` words into the unit's tile, then store it, meeting at a barrier between the two and between
-//: items; an item holding a list unit stages the window's columns first. -- see docs/internals/facts/facts.md#the-grid
+//: THE GRID: `kFactsBlocksPerSm` blocks an SM walk the items -- per (batch, window, head), heads innermost, the list
+//: units first. An item's warps split its units' windows into parts, each through its warp's ring of `kStages` words
+//: (a voted unit's into its tile, then stored), meeting at a barrier between the two and between items; a list item
+//: stages the window's columns first. -- see docs/internals/facts/facts.md#the-grid
 __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
     const FactsParams p) {
   extern __shared__ __align__(128) uint8_t s_ring[];
@@ -363,70 +344,69 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
     if (threadIdx.x == 0) {
       const int taken = atomicAdd(p.counters, 1);
       const int slot = taken / p.window_items;
-      const int batch_head = slot / p.windows;
+      const int batch_window = slot / p.H;
+      const int head = slot - batch_window * p.H;
+      const int batch = batch_window / p.windows;
       s_work[0] = taken;
       s_work[1] = taken - slot * p.window_items;
-      s_work[2] = slot - batch_head * p.windows;
-      s_work[3] = batch_head;
-      s_work[4] = batch_head / p.H;
-      s_work[5] = batch_head - s_work[4] * p.H;
+      s_work[2] = batch_window - batch * p.windows;
+      s_work[3] = batch * p.H + head;
+      s_work[4] = batch;
+      s_work[5] = head;
     }
     __syncthreads();
     const int item = s_work[0];
     if (item >= p.items) break;
     const int k = s_work[1], window = s_work[2], bh = s_work[3], b = s_work[4], h = s_work[5];
     const bool list = k < p.list_items;
-    //: A MASK ITEM, `kFactsWarps` dense units a warp each, written straight out: no tile, no barrier
-    if (k >= p.list_items + p.vote_items) {
-      const int unit =
-          p.list_units + p.vote_units + (k - p.list_items - p.vote_items) * kFactsWarps + warp;
-      clock.lap(kPhaseColumns);
-      if (unit < p.units) mask_unit(p, p.unit[unit], bh, window, lane);
-      clock.lap(kPhaseVote);
-      clock.lap(kPhaseStore);
-      __syncthreads();  // every thread has read this item before the next is taken
-      continue;
-    }
-
-    const int item_units = list ? kListItemUnits : kItemUnits;
+    const int item_units = list ? p.list_item_units : kItemUnits;
     const int slot_unit = warp % item_units, part = warp / item_units;
-    const int unit = list ? k * kListItemUnits + slot_unit
+    const int unit = list ? k * item_units + slot_unit
                           : p.list_units + (k - p.list_items) * kItemUnits + slot_unit;
     const bool live = unit < (list ? p.list_units : p.list_units + p.vote_units);
     const int code = live ? p.unit[unit] : 0;
-    uint32_t* const tile = s_tile[slot_unit];
+    const bool voted = live && !level_is_dense(p.dense[code >> 5], (code >> 3) & 3);
+    uint32_t* const tile = voted ? s_tile[slot_unit] : nullptr;
     if (list) {
+      const ColumnLoads loads = load_columns(p, b, h, window);
       LaneCopies copies;
-      if (live) copies = start_part<true>(p, code, b, h, window, part, lane, ring);
-      stage_columns(p, b, h, window, warp, lane, s_cols, s_warp_top);
+      if (live)
+        copies = voted ? start_part<kListPartWords>(p, code, b, h, window, part, lane, ring)
+                       : start_part<kWindowWords>(p, code, b, h, window, part, lane, ring);
+      stage_columns(loads, warp, lane, s_cols, s_warp_top);
       __syncthreads();
       clock.lap(kPhaseColumns);
       if (live) {
-        if (level_is_dense(p.dense[code >> 5], (code >> 3) & 3))
-          read_part<false, true>(p, code, bh, window, part, lane, tile, ring, s_cols, s_top[warp],
-                                 copies);
+        if (voted)
+          read_part<true, true, kListPartWords>(p, code, bh, window, part, lane, tile, ring, s_cols,
+                                                s_top[warp], copies);
         else
-          read_part<true, true>(p, code, bh, window, part, lane, tile, ring, s_cols, s_top[warp],
-                                copies);
+          read_part<false, true, kWindowWords>(p, code, bh, window, part, lane, tile, ring, s_cols,
+                                               s_top[warp], copies);
       }
     } else {
       clock.lap(kPhaseColumns);
       if (live) {
-        LaneCopies copies = start_part<false>(p, code, b, h, window, part, lane, ring);
-        read_part<true, false>(p, code, bh, window, part, lane, tile, ring, s_cols, s_top[warp],
-                               copies);
+        LaneCopies copies = start_part<kPartWords>(p, code, b, h, window, part, lane, ring);
+        read_part<true, false, kPartWords>(p, code, bh, window, part, lane, tile, ring, s_cols,
+                                           s_top[warp], copies);
       }
     }
     clock.lap(kPhaseVote);
     __syncthreads();
 
-    if (live) {
+    if (voted) {
       if (list)
-        store_part<kListParts>(p, p.unit[unit], bh, window, part, lane, tile);
+        store_part<kListParts>(p, code, bh, window, part, lane, tile);
       else
-        store_part<kParts>(p, p.unit[unit], bh, window, part, lane, tile);
+        store_part<kParts>(p, code, bh, window, part, lane, tile);
     }
-    if (live && list && part == 0) store_lists(p, p.unit[unit], bh, window, lane, s_top, slot_unit);
+    if (live && list && part == 0) {
+      if (voted)
+        store_lists<kListParts>(p, code, bh, window, lane, s_top, slot_unit);
+      else
+        store_lists<1>(p, code, bh, window, lane, s_top, slot_unit);
+    }
     clock.lap(kPhaseStore);
     __syncthreads();
   }
@@ -544,29 +524,31 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
       }
     }
   }
-  //: THE UNITS, the list level's first (their items stage the window's columns), then the other sparse levels', then
-  //: the dense levels' (their mask words, nothing read)
+  //: THE UNITS, the list level's first (their items stage the window's columns), then the other sparse levels'; a
+  //: dense level's rows are its static mask and are never written
   STD_TORCH_CHECK(list_level >= -1 && list_level < D, "the list level is a level of the depth ", D,
                   " or -1 for none, got ", list_level);
   p.list_level = static_cast<int>(list_level);
-  for (int pass = 0; pass < 3; ++pass) {
+  for (int pass = 0; pass < 2; ++pass) {
     for (int side = 0; side < kSides; ++side) {
       for (int level = 0; level < D; ++level) {
         const bool list = side == kWrite && level == p.list_level;
-        const bool dense = level_is_dense(p.dense[side], level);
-        if ((pass == 0) != list || (pass == 1 && dense) || (pass == 2 && !dense)) continue;
+        if ((pass == 0) != list || (pass == 1 && level_is_dense(p.dense[side], level))) continue;
         for (int group = 0; group * 32 < p.B[level]; ++group) {
           p.unit[p.units++] = static_cast<uint8_t>(unit_code(side, level, group));
-          p.vote_units += pass == 1 ? 1 : 0;
+          p.vote_units += pass;
         }
       }
     }
   }
-  p.list_units = p.list_level < 0 ? 0 : (p.B[p.list_level] + 31) / 32;
-  p.list_items = (p.list_units + kListItemUnits - 1) / kListItemUnits;
+  p.list_units = p.units - p.vote_units;
+  //: a dense list level's units are a warp each over the whole window (nothing voted, no tile); a voted one's
+  //: `kListItemUnits` an item, their windows split
+  const bool dense_list = p.list_level >= 0 && level_is_dense(p.dense[kWrite], p.list_level);
+  p.list_item_units = dense_list ? kFactsWarps : kListItemUnits;
+  p.list_items = (p.list_units + p.list_item_units - 1) / p.list_item_units;
   p.vote_items = (p.vote_units + kItemUnits - 1) / kItemUnits;
-  p.window_items = p.list_items + p.vote_items
-                   + (p.units - p.list_units - p.vote_units + kFactsWarps - 1) / kFactsWarps;
+  p.window_items = p.list_items + p.vote_items;
   for (int level = 0; level < D; ++level)
     p.scale_write[level] = detail::column_view(scale_write[level], B, T, H, "scale_write[l]");
   p.g_write = detail::column_view(g_write, B, T, H, "g_write");
@@ -609,6 +591,7 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                       && counters.is_contiguous() && counters.numel() == 2,
                   "counters is the pass's contiguous int32 [2], zero between calls");
   p.counters = counters.mutable_data_ptr<int32_t>();
+  if (items == 0) return;
   const int blocks = static_cast<int>(std::min<int64_t>(items, int64_t{kFactsBlocksPerSm} * sms));
   //: ONCE: the ring is dynamic shared memory, and two blocks an SM want the shared carveout's whole
   static bool configured = false;

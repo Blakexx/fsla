@@ -33,7 +33,9 @@ class Facts(NamedTuple):
     ``[BH, windows, B_list, 2]`` int16 list exponents -- per window and digit of the list level (:func:`list_level`)
     the smallest ``K`` with every token's ``b m <= 2^K`` (column 0) and ``b m s <= 2^K`` (column 1), ``b`` its write
     byte (a dense level's zero at the floor), ``m`` the write gain times the write levels' scales and ``s`` the value
-    scale; ``-126`` for a list no token writes. ``B_list`` is 0 when the call has no list level."""
+    scale; ``-126`` for a list no token writes. ``B_list`` is 0 when the call has no list level. A DENSE level's rows
+    and groups are left unwritten: they are its width mask over the live tokens, which a reader takes from the side's
+    statics."""
 
     words: torch.Tensor
     unions: torch.Tensor
@@ -48,7 +50,7 @@ def call_layout(routes) -> LivenessLayout:
 
 def call_statics(routes, layout: LivenessLayout) -> tuple[SideStatics, SideStatics]:
     """``(read, write)``: each side's static operands as the bundle declares them -- a level not flagged ``sparse`` is
-    DENSE (not read; its words are the width mask), and the rows' own widths are the logical ones."""
+    DENSE (neither read nor written: its words are the width mask), and the rows' own widths are the logical ones."""
     return tuple(side_statics(layout, tuple(not flag for flag in flags), routes.topology.widths)
                  for flags in routes.sparse)
 
@@ -86,8 +88,8 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     """THE PASS: both sides' words, their tile unions and the list exponents from the bundle (``routes``,
     ``values``) in ONE launch.
 
-    Same words, bit for bit, as :func:`rola.engine.facts.liveness.liveness_words` over the bundle's rows, and their
-    unions as :func:`rola.engine.facts.liveness.tile_unions`; the list exponents those of ``list_exponents`` within
+    Same words at every sparse level, bit for bit, as :func:`rola.engine.facts.liveness.liveness_words` over the
+    bundle's rows, and their unions as :func:`rola.engine.facts.liveness.tile_unions`; the list exponents those of ``list_exponents`` within
     fp32 rounding (``tests/integration/test_facts_pass.py``). The rows are read where the
     bundle holds them, any width, offset or dtype of the format, each level's ``[B, T, H, w_l]`` view by its strides.
     """

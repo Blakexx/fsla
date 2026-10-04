@@ -431,7 +431,8 @@ been proven is discarded. *(Ruled.)*
 One pass over the bundle's rows emits everything the downstream launches need in
 place of an amplitude scan: per side, per token, per level, ONE BIT PER DIGIT in
 canonical order — a sparse level's bits voted from that side's own digits, a dense
-level's bits its static width mask — plus the per-level width plan and the activity
+level's bits its static width mask, which a reader takes from the statics and the pass
+never writes — plus the per-level width plan and the activity
 bits of §3.4, folded from the same words on the host, and the fold's per-(window, list)
 exponents (`docs/internals/facts/facts.md#lists`). The emitted size per
 side is `L × Σ_l B_l / 8` bytes: a function of the sequence and the address space's

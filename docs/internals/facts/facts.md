@@ -6,7 +6,7 @@ list) exponents, in one launch. What the words ARE — their layout, the folds o
 grain it is — is [`liveness_contract.md`](liveness_contract.md), which this kernel does
 not restate and must not contradict; its host seam is [`facts_api.md`](facts_api.md).
 `rola.engine.facts.liveness.liveness_words` is the pure-torch MODEL the words are graded
-against bit for bit, `list_exponents` in `tests/oracle/fold_reference.py` is the exponents'
+against bit for bit at every sparse level, `list_exponents` in `tests/oracle/fold_reference.py` is the exponents'
 definition, and `tests/integration/test_facts_pass.py` holds the kernel to both.
 
 Vocabulary, defined here and used unqualified below: `D` = routing depth; `B_l` =
@@ -24,32 +24,37 @@ and step batch, token and head by multiples of 32. The pass also reads the write
 the value scale for the list exponents — a few words a token.
 
 A DENSE level (the bundle's `sparse` flag unset, set at production for an activation with no exact zeros;
-`rola.ops.facts.call_statics`) is not read: its words are the width mask over the live tokens
-([`liveness_contract.md`](liveness_contract.md#statics)) — except the LIST level's write rows, which are read for
-their maxima whatever the side declares. Every other level's rows are read once, whole, whatever their support: the
-read is density-blind, so the pass costs the same on a sparse and a dense draw of a sparse level.
+`rola.ops.facts.call_statics`) is neither read nor written: its words are the width mask over the live tokens, which
+every reader takes from the side's statics ([`liveness_contract.md`](liveness_contract.md#statics)), so its rows and
+groups of `words` and `unions` are left as allocated. The one exception is the LIST level's write rows, read for their
+maxima whatever the side declares. Every sparse level's rows are read once, whole, whatever their support: the read
+is density-blind, so the pass costs the same on a sparse and a dense draw of a sparse level.
 
 <a id="the-grid"></a>
 
 ## The grid: two blocks an SM, taking items in order
 
-The work is items, per (batch-head, window) — the window is the carry's, `kWindowWords` = 16 words, and the host entry
-refuses any other, because it is the lists' grain. A window's units (each a (side, level, 32-digit group)) are ordered
-the list level's first, then the other sparse levels', then the dense ones', and dealt into three kinds of item:
+The work is items, per (batch, window, head) — the window is the carry's, `kWindowWords` = 16 words, and the host
+entry refuses any other, because it is the lists' grain. A window's units (each a (side, level, 32-digit group)) are
+the list level's write units first, then the other sparse levels', dealt into two kinds of item:
 
-* a LIST item: two list units, four warps each (four words a warp) — a list unit's word costs ~3× a vote unit's, so
-  its item is half as wide; the item first stages the window's columns ([the lists](#lists));
-* a VOTE item: four sparse units, two warps each (eight words a warp);
-* a MASK item: eight dense units, one warp each, written straight out ([dense units](#dense-units)).
+* a LIST item, which first stages the window's columns ([the lists](#lists)): on a voted list level two units, four
+  warps each (four words a warp) — a list unit's word costs ~3× a vote unit's, so its item is half as wide; on a dense
+  list level, whose units vote and store nothing, every warp one unit over its whole window (`list_item_units`, set
+  by the host from the declared structure), so the columns are staged once a window and each warp's ring streams 16
+  words between the item's two barriers;
+* a VOTE item: four sparse units, two warps each (eight words a warp).
 
 `kFactsBlocksPerSm` = 2 blocks of eight warps an SM take the items IN ORDER from the call's counter (`counters[0]`, an
 atomic a block; the last block out resets both counters, so they are zero between calls). Thread 0 decomposes an
 item once — its place in its window, the window, the batch-head, its batch and head — into shared memory, and no warp
-divides. Taken in order, a window's items run side by side, so the blocks at work together read one head's
-neighbouring rows (a DRAM page's bytes together in time); taken dynamically, a block's load is the items it actually
-draws rather than a static deal of a few heavy-tailed ones. MEASURED at `nl64k-alt-k4` (one batch-head): a static
-stride of 160 blocks over 8 items a window dealt a quarter of the blocks all the list items (118 µs); coprime striding
-88; the ordered counter, with list items half as wide, 63.
+divides. Taken in order, heads innermost, the blocks at work together read one window of every head: the rows
+`[B, T, H, b_l]` hold a token's heads side by side (a DRAM page's bytes together in time), and the columns `[B, T, H]`
+a token's heads in one 32-byte sector, which a head-major order fetched from DRAM once a head (84 MB read against 67
+MB of rows at `nl64k-dense`, four heads; heads innermost 75 MB, and `nl64k-alt-k4` 61 → 51 µs a head). Taken
+dynamically, a block's load is the items it actually draws rather than a static deal of a few heavy-tailed ones.
+MEASURED at `nl64k-alt-k4` (one batch-head): a static stride of 160 blocks over 8 items a window dealt a quarter of
+the blocks all the list items (118 µs); coprime striding 88; the ordered counter, with list items half as wide, 63.
 
 Why two blocks of eight warps, measured on the previous form at `(256, 256)` on sm_86: more resident warps than 16
 an SM made the rows' stream slower, not faster — the DRAM serves fewer bytes a page visit when more streams
@@ -90,7 +95,7 @@ word against ~260 for byte loads and a test a byte, and against ~100 for a token
 multiply-gathered nonzero mask, a five-round bit transpose).
 
 Each 64-token tile's union is one `__reduce_or_sync` of the lanes' `bit d` where their two words are nonzero. A dense
-list unit (its words the width mask) runs the same loop with the vote compiled out.
+list unit runs the same loop over its whole window with the vote, its tile rows and the unions compiled out.
 
 <a id="transpose"></a>
 
@@ -100,16 +105,6 @@ The layout wants a row's words contiguous (`[BH][side][row][word]`). The unit's 
 tile (32 rows × 17 words; the odd stride makes the row writes conflict-free), and after the barrier each warp stores its
 share of the rows two an instruction: lanes 0–15 one row's 16 words and lanes 16–31 the next's, each a contiguous 64-byte
 run — whole sectors, 64-byte aligned when `L` is a whole number of windows, which the prefill requires.
-
-<a id="dense-units"></a>
-
-### Dense units: the mask, written straight out
-
-A dense unit the pass does not read is a function of its digits' width-mask bits and `L` alone: `mask_unit` ballots
-the 32 digits' mask bits once, and writes each row's window of words — all ones, the call's last word its live tokens,
-or zero for a digit outside the mask — two rows a store, then each live tile's union (the mask). No tile, no word loop,
-no barrier: eight units a MASK item, one warp each. Through the tile and the word loop they cost ~3M instructions at
-`nl64k-dense`, where 24 of its 32 units are dense; written straight out, ~0.3M.
 
 <a id="lists"></a>
 
@@ -126,10 +121,11 @@ token writes). Stored int16 `[BH, windows, B_list, 2]`, a lane's pair one word. 
 coefficient at a fixed power of two by them, so one scale a list keeps every coefficient in fp16's range (ruled
 2026-10-03); it replaced zeta, the int fold's per-window maximum, which nothing read once that fold was gone.
 
-A LIST item first starts its warps' rings (`start_part`), then stages the window's columns in shared memory
-(`stage_columns`: two tokens a thread, `m` in level order from each column's (batch, head) base, a pad slot after
-every 8 tokens so the four token blocks a lane group reads together meet distinct banks, and past them the window's
-largest of each), so the two loads overlap behind one barrier. In the word loop, lane `(tk, dq)` converts each of its
+A LIST item first issues its threads' column loads (`load_columns`: two tokens a thread, every load before any
+use), then starts its warps' rings (`start_part`), then stages the columns in shared memory (`stage_columns`: `m` in
+level order, a pad slot after every 8 tokens so the four token blocks a lane group reads together meet distinct banks,
+and past them the window's largest of each), so the two loads overlap behind one barrier with the columns at the head
+of the item's requests — issued behind the ring's 24 KB they waited on it (`nl64k-dense`, four heads: 126 → 118 µs). In the word loop, lane `(tk, dq)` converts each of its
 four bytes to fp32 through the mantissa (a byte permute with an immediate selector, `0x4b0000bb`, minus 2^23) and maxes
 `b × m` and `b × m × s` into its four digits' pairs — six operations an element, ~210 a word. At the part's end the four
 token blocks' maxima join across lanes, the unit's parts join in shared memory after the barrier, and its first part's
@@ -154,8 +150,8 @@ slowest warp as well as the list items' staging (`nl64k-alt-k4`, one batch-head:
 Per side and level a `RowView` (base, the batch, token and head strides in digits, and the rows' width), per write
 level and for the gain and value scale a `ColumnView`, the outputs, the item counters, the depth, the padded widths and
 row bases, per side the dense bitmask and the digit mask's words, the unit table (`unit_code(side, level, group)`, at
-most 64, the list level's units first) and the item shape (`list_units`, `vote_units`, `list_items`, `vote_items`,
-`window_items`). It is a kernel
+most 64, the list level's units first) and the item shape (`list_units`, `vote_units`, `list_item_units`,
+`list_items`, `vote_items`, `window_items`). It is a kernel
 parameter of under a kilobyte, so the pass takes no allocation to learn its shape. No
 logical width is in it: `b_l` reaches the mask at the seam and bounds nothing else — the
 host entry refuses a mask that names a digit past a level's rows, so the kernel never
@@ -206,10 +202,27 @@ THE REBUILT PASS (2026-10-03, Blake: "a first class optimized kernel"). The line
 At four heads both cells are DRAM-bound at 83% of peak: the pass is first class where prefill runs. One batch-head is
 latency-bound: dense's list items (4 a window) each wait one DRAM latency on their columns before their words, and too
 few items are in flight to hide it (11% over the line); cohort-k16 is two windows, its critical path one list item after
-the launch (16% over). Two levers are recorded, not taken: a dense level's words are its width mask, which a consumer
-can synthesize — not writing them would cut a dense call's writes by 8.4 MB a head (~30% of its traffic); and the
-columns could reach the list warps through the ring (4-byte copies a word) in place of a staging barrier, which a
-3-stage ring with two blocks an SM measured no better.
+the launch (16% over). The columns could reach the list warps through the ring (4-byte copies a word) in place of a
+staging barrier, which a 3-stage ring with two blocks an SM measured no better.
+
+DENSE LEVELS UNWRITTEN (2026-10-03, Blake: "We don't need to write the dense levels' words"). A dense level's words
+are its width mask over the live tokens; every fold takes them from the statics, so the pass writes none: no mask
+items, and a dense list level's units only their exponents. The line, stated before the code: `nl64k-dense` loses its
+8.4 MB of writes a head, leaving its 16.8 MB of list rows (floor ~21 µs a head), line <= 27 at four heads;
+`nl64k-alt-k4` loses half (floor ~47), line <= 61; cohort-k16 no regression. Measured (ncu kernel time, a head's
+share at four heads / one batch-head), each step on the last:
+
+| step | `nl64k-dense` | `nl64k-alt-k4` | `flagship-cohort-k16` |
+|---|---|---|---|
+| before (the rebuilt pass above) | 40 / 45.6 µs | 63 / 62.5 µs | 11.6 µs |
+| dense words unwritten | 34.7 / 38.3 (DRAM 71%) | 61.0 / 59.2 | 11.5 |
+| items heads innermost ([the grid](#the-grid)) | 31.5 | 50.9 (DRAM 86%) | — |
+| column loads ahead of the ring ([the lists](#lists)) | 29.4 | 51.0 | — |
+| a dense list level's item a warp a unit | 27.4–28.4 / 31.4–32.2 (DRAM 72–74%) | 49.6–50.3 / 57.2 | 10.6–11.3 |
+
+Dense meets its line within the ±2% run-to-run spread; alt and cohort are under theirs. Measured and not taken:
+four units a list item on every list level (dense 33 at four heads, but alt 87 and cohort 14.2: the voted list items
+lose their balance); the next item's counter taken during the current one (no change outside the spread).
 
 The sm_80 form is this one, re-measured for its residency point (HBM's page behaviour
 is not GDDR6X's). On sm_90 the ring's slots fill by TMA: a word's `[32 tokens × 32 digits]` box

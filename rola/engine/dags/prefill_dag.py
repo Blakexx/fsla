@@ -73,11 +73,11 @@ def facts(f):
     return carry_ops.LivenessWords(words=out.words), out.unions, out.list_exp, layout, statics
 
 
-@node(gives=("atom_bits",), needs=("liveness", "layout"), stream="main")
+@node(gives=("atom_bits",), needs=("liveness", "layout", "statics"), stream="main")
 def activity(f):
     """The per-atom ACTIVITY byte, ``WRITTEN | READ``, folded from the words: residency's write set and the carry's
     sweep gate are ONE fact (`rola.engine.facts.liveness.page_bits`)."""
-    return liveness.page_bits(f["liveness"].words, f["layout"])
+    return liveness.page_bits(f["liveness"].words, f["layout"], *f["statics"])
 
 
 @node(gives=("bc",), needs=("d_v",))

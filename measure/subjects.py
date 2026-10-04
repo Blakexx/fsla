@@ -232,7 +232,7 @@ def carry_intra(fx) -> Launch:
         routes, values, layout, statics = bundle_of(spec, drawn, slice(c * step, (c + 1) * step))
         out = facts_ops.facts(routes, values, layout, *statics)
         parts.append((routes, values, layout, statics, carry_ops.LivenessWords(words=out.words), out.unions,
-                      lv.page_bits(out.words, layout)))
+                      lv.page_bits(out.words, layout, *statics)))
     if calls == 1:
         chain = None
         state_in, state_out, page_table = _binding(fx, drawn, descriptor)
@@ -333,9 +333,9 @@ def decode_step(fx) -> Launch:
     layer = fx["layer"]
     routes = fx["routes"]
     layout = facts_ops.call_layout(routes)
-    words = facts_ops.facts(routes, rola.Values.from_projection(fx["v_prefill"]), layout,
-                            *facts_ops.call_statics(routes, layout)).words
-    bits = lv.page_bits(words, layout)
+    statics = facts_ops.call_statics(routes, layout)
+    words = facts_ops.facts(routes, rola.Values.from_projection(fx["v_prefill"]), layout, *statics).words
+    bits = lv.page_bits(words, layout, *statics)
     seeded: dict = {}
 
     def reset():

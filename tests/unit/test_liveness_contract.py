@@ -261,7 +261,7 @@ def test_box_bits_are_the_or_over_tokens_of_the_and_over_levels(widths, L, spans
     bits = lv.unpack(words, layout)[:, lv.READ]
     step = [width if spans == "whole" else max(1, width // 2) for width in widths]
     boxes = _boxes(layout, step)
-    got = lv.box_activity(words, layout, boxes, lv.READ)
+    got = lv.box_activity(words, layout, boxes, lv.READ, statics)
     for index, box in enumerate(boxes):
         clause = torch.ones((bits.shape[0], layout.L), dtype=torch.bool)
         for level in range(layout.D):
@@ -276,7 +276,7 @@ def test_a_fully_pad_box_is_dead_and_a_straddling_one_is_not():
     rows = _draw(layout, statics)
     words = lv.liveness_words(rows, rows, layout, statics, statics)
     boxes = _boxes(layout, [8, 16])
-    live = lv.box_activity(words, layout, boxes, lv.WRITE)
+    live = lv.box_activity(words, layout, boxes, lv.WRITE, statics)
     for index, box in enumerate(boxes):
         if box.start[0] >= 20:
             assert not live[:, index].any(), "a box of nothing but pad digits must die"
@@ -308,8 +308,8 @@ def test_page_bits_are_the_or_of_the_box_bits_over_the_box_to_page_map(widths, L
     words = lv.liveness_words(rows, rows, layout, statics, statics)
     read_boxes = _boxes(layout, [max(1, width // 2) for width in widths])
     write_boxes = _boxes(layout, list(widths))
-    read_bits = lv.box_activity(words, layout, read_boxes, lv.READ)
-    write_bits = lv.box_activity(words, layout, write_boxes, lv.WRITE)
+    read_bits = lv.box_activity(words, layout, read_boxes, lv.READ, statics)
+    write_bits = lv.box_activity(words, layout, write_boxes, lv.WRITE, statics)
     pages = lv.page_activity(layout, read_boxes, read_bits, write_boxes, write_bits)
     assert pages.shape == (read_bits.shape[0], layout.atoms)
     want = torch.zeros_like(pages)
@@ -330,7 +330,7 @@ def test_page_bits_cover_every_leaf_the_routing_actually_touches(widths, L):
     rows = _draw(layout, statics)
     words = lv.liveness_words(rows, rows, layout, statics, statics)
     boxes = _boxes(layout, [max(1, width // 2) for width in widths])
-    live = lv.box_activity(words, layout, boxes, lv.WRITE)
+    live = lv.box_activity(words, layout, boxes, lv.WRITE, statics)
     pages = lv.page_activity(layout, boxes, live, boxes, live)
     bits = lv.unpack(words, layout)[:, lv.WRITE]
     strides = layout.radix_strides

@@ -208,12 +208,11 @@ def _live_rows(levels, layout: LivenessLayout) -> torch.Tensor:
 
 
 def _pack(bits: torch.Tensor, layout: LivenessLayout) -> torch.Tensor:
-    """`[BH, rows, L]` bool -> `[BH, rows, words]` words, token `t` at bit `t % 32`."""
-    BH = bits.shape[0]
+    """`[..., L]` bool -> `[..., words]` words, token `t` at bit `t % 32`."""
     pad = layout.words * TOK_BITS - layout.L
     if pad:
-        bits = torch.cat([bits, bits.new_zeros((BH, layout.rows, pad))], dim=-1)
-    lanes = bits.reshape(BH, layout.rows, layout.words, TOK_BITS).to(torch.int64)
+        bits = torch.cat([bits, bits.new_zeros((*bits.shape[:-1], pad))], dim=-1)
+    lanes = bits.reshape(*bits.shape[:-1], layout.words, TOK_BITS).to(torch.int64)
     weights = (1 << torch.arange(TOK_BITS, device=bits.device, dtype=torch.int64))
     words = (lanes * weights).sum(dim=-1)
     return (words - (words >= 1 << 31).to(torch.int64) * (1 << 32)).to(WORD_DTYPE)
@@ -306,23 +305,35 @@ class Box:
         return torch.unique(self.leaves(layout) // ATOM_LEAVES)
 
 
-def box_activity(words: torch.Tensor, layout: LivenessLayout, boxes, side: int) -> torch.Tensor:
+def _live_token_words(layout: LivenessLayout, device) -> torch.Tensor:
+    """`[words]` int32: every live token's bit, the tail word's high bits zero -- a dense level's row in the table."""
+    return _pack(torch.ones(layout.L, dtype=torch.bool, device=device), layout)
+
+
+def box_activity(words: torch.Tensor, layout: LivenessLayout, boxes, side: int, statics: SideStatics) -> torch.Tensor:
     """CLASS 2, THE PRIMARY BITS: `[BH, len(boxes)]` bool, per box over the WHOLE CALL.
 
     A box is live for a token when EVERY level has a live digit inside that level's
     run -- a token's live leaf set is the product of its per-level live digit sets, so
     the AND over levels is exact and never a relaxation -- and the call-level bit is
     the OR of that over the call's tokens. Nothing is kept per window: a window with
-    nothing live for a box is a schedule fact, read off these rows while walking.
+    nothing live for a box is a schedule fact, read off these rows while walking. A
+    DENSE level's rows are its width mask over the live tokens, taken from the side's
+    ``statics`` and never read from ``words`` (the facts pass does not write them).
     """
     table = words[:, side]
+    live = _live_token_words(layout, words.device)
     out = []
     for box in boxes:
         box.check(layout)
         clause = None
         for level in range(layout.D):
             base = layout.row_base(level) + box.start[level]
-            run = _or_rows(table, base, box.span[level])
+            if statics.dense_levels[level]:
+                named = any(statics.digit_mask[base:base + box.span[level]])
+                run = (live if named else torch.zeros_like(live)).expand(table.shape[0], -1)
+            else:
+                run = _or_rows(table, base, box.span[level])
             clause = run if clause is None else clause & run
         out.append((clause != 0).any(dim=-1))
     if not out:
@@ -396,27 +407,33 @@ def atom_boxes(layout: LivenessLayout) -> list[Box]:
     return [Box(start=tuple(row), span=spans) for row in grid]
 
 
-def atom_activity(words: torch.Tensor, layout: LivenessLayout, side: int) -> torch.Tensor:
+def atom_activity(words: torch.Tensor, layout: LivenessLayout, side: int, statics: SideStatics) -> torch.Tensor:
     """`[BH, N/16]` bool: :func:`box_activity` at the ATOM box set, every box at once.
 
     The same law -- the OR over tokens of the AND over levels of the OR over the box's
     digit run -- folded as one outer product over the levels, which the atom set admits
     because it is the whole aligned partition and its canonical order is exactly the
-    order that product builds.
+    order that product builds. A dense level is its width mask from ``statics``.
     """
     spans = atom_spans(layout)
     bits = unpack(words, layout)[:, side]
     BH = bits.shape[0]
+    mask = torch.tensor(statics.digit_mask, dtype=torch.bool, device=bits.device)
     clause = None
     for level in range(layout.D):
         base, width, span = layout.row_base(level), layout.B[level], spans[level]
-        run = bits[:, base:base + width, :].reshape(BH, width // span, span, layout.L).any(dim=2)
+        if statics.dense_levels[level]:
+            named = mask[base:base + width].reshape(width // span, span).any(dim=1)
+            run = named[None, :, None].expand(BH, -1, layout.L)
+        else:
+            run = bits[:, base:base + width, :].reshape(BH, width // span, span, layout.L).any(dim=2)
         clause = run if clause is None else (
             clause[:, :, None, :] & run[:, None, :, :]).reshape(BH, -1, layout.L)
     return clause.any(dim=-1)
 
 
-def page_bits(words: torch.Tensor, layout: LivenessLayout) -> torch.Tensor:
+def page_bits(words: torch.Tensor, layout: LivenessLayout, read_statics: SideStatics,
+              write_statics: SideStatics) -> torch.Tensor:
     """`[BH, N/16]` uint8: the EXACT activity byte, `ATOM_READ | ATOM_WRITTEN`.
 
     :func:`page_activity` is this fold at an arbitrary carve, where a box straddling a
@@ -424,6 +441,6 @@ def page_bits(words: torch.Tensor, layout: LivenessLayout) -> torch.Tensor:
     bijection and the byte is exact, which is what `plan_exact` allocates on and what a
     residency check reads.
     """
-    read = atom_activity(words, layout, READ).to(torch.uint8) * ATOM_READ
-    write = atom_activity(words, layout, WRITE).to(torch.uint8) * ATOM_WRITTEN
+    read = atom_activity(words, layout, READ, read_statics).to(torch.uint8) * ATOM_READ
+    write = atom_activity(words, layout, WRITE, write_statics).to(torch.uint8) * ATOM_WRITTEN
     return read | write

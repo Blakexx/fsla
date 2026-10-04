@@ -98,7 +98,8 @@ def _activity(call):
     """
     words = call["liveness"].words
     layout = lv.LivenessLayout.of(call["descriptor"], call["v"].shape[1])
-    return lv.page_bits(words, layout)
+    voted = lv.side_statics(layout, (False,) * layout.D, layout.B)
+    return lv.page_bits(words, layout, voted, voted)
 
 
 def _bind(spec, bh=1):

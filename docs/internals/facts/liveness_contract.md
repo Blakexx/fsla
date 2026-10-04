@@ -109,8 +109,11 @@ u8 digits and lets a drawn call state its support from its floating levels (`-0`
 ## Dense levels: the static width mask, and no logical width in the signature
 
 A dense level — an activation with no exact zeros (softmax), as the topology declares
-it — is NOT read by the pass. Its rows are the STATIC WIDTH MASK: ones for digits below
-`b_l`, zeros for the pad. That is exact up to a sound over-report: only a pad digit's
+it — is NOT read by the pass, and its rows are NOT WRITTEN: they are the STATIC WIDTH MASK,
+ones for digits below `b_l` over the live tokens, zeros for the pad, which every reader of
+the words — the folds (`box_activity`, `atom_activity`, `page_bits`, given the side's
+statics) and the kernels — takes from the statics, never from the table. The model
+(`liveness_words`) states those rows all the same, as the definition the folds reproduce. That is exact up to a sound over-report: only a pad digit's
 logit is `-inf`, and a digit whose probability rounded to a zero digit in the bundle's
 format is reported live — work a consumer spends, never a contribution it misses.
 "Absent means full" would have marked a fully-pad box live and allocated pages of
