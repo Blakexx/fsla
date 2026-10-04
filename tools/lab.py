@@ -146,8 +146,10 @@ def quiet() -> int:
 
 def git_state() -> dict:
     sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    dirty = subprocess.run(["git", "status", "--porcelain", "--", "measure/lab", "tools/lab.py"], cwd=ROOT,
-                           capture_output=True, text=True).stdout.strip()
+    #: the sources a record depends on; the records themselves are outputs
+    sources = ["measure/lab/lab.cuh", "measure/lab/experiments", "tools/lab.py"]
+    dirty = subprocess.run(["git", "status", "--porcelain", "--", *sources], cwd=ROOT, capture_output=True,
+                           text=True).stdout.strip()
     return {"sha": sha, "dirty": bool(dirty)}
 
 
