@@ -355,27 +355,38 @@ __device__ __forceinline__ void join_partials(FoldAcc<C, kArm>& st) {
 //: A WARP'S FOLD OF ONE PASS (rows `[first, first + n)` of the window's write union), merged: every list over every
 //: row (a dense side) or over the warp union's entries in the pass, the cursor carrying the union's next entry across
 //: the window's passes, the mass's sums added to the warp's columns at the end; `join` closes a 256-token partial.
+//: `lap(k)` books the pass's head (0), first step (1), other steps (2) and tail (3) on a part's ledger.
 //: -- see docs/internals/owner/owner_fold.md#forms
-template <class C, int kArm>
+template <class C, int kArm, class Lap>
 __device__ void fold_pass(FoldAcc<C, kArm>& st, FoldTenants<C>& ft, const WritePool<C>& pools,
                           const ListTenants<C>& sm, const OwnerParams& p, const ListUnits& lu,
-                          int& cursor, int first, int n, bool join, int warp, int lane) {
+                          int& cursor, int first, int n, bool join, int warp, int lane, Lap&& lap) {
   const int limit = first + n;
   float m[4] = {};
   if (p.sparse_write == 0) {
+    lap(0);
+    merged_step<C, kArm, false>(st, m, ft, pools, sm, lu, warp, lane, first, limit, first);
+    lap(1);
 #pragma unroll 1
-    for (int e = first; e < limit; e += 16)
+    for (int e = first + 16; e < limit; e += 16)
       merged_step<C, kArm, false>(st, m, ft, pools, sm, lu, warp, lane, e, limit, first);
   } else {
     const int at0 = cursor;
     const int end = pass_end(sm, warp, at0, sm.total[0][warp], limit, lane);
+    lap(0);
 #pragma unroll 1
-    for (int e = at0; e < end; e += 16)
+    for (int t = ops::once(at0 < end); t > 0; --t)
+      merged_step<C, kArm, true>(st, m, ft, pools, sm, lu, warp, lane, at0, end, first);
+    lap(1);
+#pragma unroll 1
+    for (int e = at0 + 16; e < end; e += 16)
       merged_step<C, kArm, true>(st, m, ft, pools, sm, lu, warp, lane, e, end, first);
     cursor = end;
   }
+  lap(2);
   add_mass(ft, m, warp, lane);
   if (join) join_partials(st);
+  lap(3);
 }
 
 }  // namespace rola::owner::detail

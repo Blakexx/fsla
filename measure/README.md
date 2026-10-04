@@ -23,6 +23,11 @@ timing entry on the central cells it takes, and its clock reader. `executors.py`
 checkout's venv. `python -m rola_devtools.build run declare.py:all` measures this checkout by itself; rola-bench's root
 loads the same `declare.py` from every checkout it measures.
 
+**`measure/lab/` — THE LAB.** Small CUDA experiments on the machine itself (what a pipe costs beside the tensor pipe,
+what ptxas does to a pattern), each a `experiments/<name>.cu` on the kit `lab.cuh`, compiled, SASS-gated, timed and
+recorded by `tools/lab.py` into `results/<name>/<sm_XX>.json`; a KERNEL_STANDARDS rule about the machine cites one
+(docs/internals/tools/lab.md).
+
 **`measure/` — the library.** `subjects.py` is the roster: one lean callable per
 kernel this line carries, each taking a registry cell and returning the launch to time,
 with everything the launch does not pay for built outside the timed callable. The roster

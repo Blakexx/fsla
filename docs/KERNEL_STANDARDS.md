@@ -729,3 +729,29 @@ phase-ledger tool and declared arm set named the carry alone. Nothing had decide
    Any device file may mark a region `//: @barrier-free <reason>` ... `//: @barrier-free-end`; a CTA or grid barrier
    inside one fails the standards lint, and so does a region that never closes. The decode step's walk is one; the
    work queue's visit folds and switches heads behind barriers after it.
+
+## §26 — A RULE ABOUT THE MACHINE CITES A LAB EXPERIMENT (law, 2026-10-04, from Blake's "create a system where we can experiment with different cuda structures and get information we can eventually record as rules")
+Two days of fold work rested on a per-instruction cost table that a later experiment overturned, and two rows of the
+probe that replaced it measured instructions ptxas had folded or turned into calls. So:
+1. A CLAIM ABOUT THE HARDWARE OR THE COMPILER — a rate, an overlap, a cost beside the tensor pipe, what ptxas does to a
+   pattern — is a rule only when a lab experiment measured it (`measure/lab/experiments/`, run by `tools/lab.py`;
+   docs/internals/tools/lab.md), and the rule names the experiment, its record (`measure/lab/results/<name>/<sm_XX>.json`)
+   and the architectures it holds on. An architecture not measured is stated as unmeasured; a new card or toolkit
+   re-runs the experiments its rules cite.
+2. AN EXPERIMENT'S NUMBER COUNTS ONLY AFTER ITS SASS GATE: the declared instructions present, no local memory, no
+   undeclared CALL. The driver refuses to time otherwise.
+3. THE RULES MEASURED SO FAR (sm_86, CUDA 13.0):
+   a. BESIDE THE TENSOR PIPE (`tensor_tax`): an instruction another warp issues on the same scheduler delays an MMA
+      chain, cycles an instruction with two register operands, beside an fp16-accumulate HMMA or int8 IMMA / an
+      fp32-accumulate HMMA: FP32 arithmetic ~1.0 / 0.5; packed f16 or bf16 ~0.48 / 0.21; `IMAD` ~0.19 / 0.10;
+      `LOP3`, `PRMT`, `FMNMX`, conversions ~0.13-0.22 / 0.05-0.08; `LDS` with its address ~0.85 / 0.53. Elementwise work
+      beside MMAs is integer or byte work first, packed half second, FP32 last; every register operand it reads counts
+      (packed half with a constant operand measured ~4x cheaper).
+   b. COLLECTIVES (`collective_branch`): a warp collective under control flow that depends on the thread — a branch on
+      the warp id, or a trip count the warp's role sets — compiles into a CALL into a convergence subroutine (~1.65x
+      the inline shuffle's cycles). A collective's enclosing control flow derives from kernel arguments, the block
+      index or constants.
+   c. PAIRS (`mma_pairing`): two warps a scheduler running HMMA streams sit on the tensor floor in most launches and
+      phase-lock up to 22% slow in some, so one launch's cycles are not a measurement; read the median of repetitions.
+   d. INTEGER ADDS (`tensor_tax`'s SASS): ptxas folds repeated adds, rewrites add recurrences, merges two-input adds into
+      `IADD3` and issues adds as `IMAD.IADD` on the FMA pipe on its own; the source does not choose the integer pipe.

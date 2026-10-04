@@ -80,7 +80,7 @@ def _fold(routes, values, facts, level_s, sw, sr, floor_s, arm, ledger=None):
 
 
 #: the fold part's ledger phases, `owner_skeleton.cu`'s `FoldPartPhase`
-FOLD_PHASES = ("lists", "fill", "stage", "steps", "sync")
+FOLD_PHASES = ("lists", "fill", "stage", "head", "first", "steps", "tail", "sync")
 
 
 def ledger_fold(name: str, part: str, heads: int) -> None:

@@ -148,8 +148,18 @@ struct FoldPartTenants {
 };
 
 //: THE FOLD PART'S PHASES on its ledger (`kClock`): the window's lists, units and cursors; a pass's fill; its restage;
-//: its steps (the fold); the barrier after them.
-enum FoldPartPhase : int { kPartLists, kPartFill, kPartStage, kPartSteps, kPartSync, kPartPhases };
+//: the fold's pass head, first step, other steps and tail (mass add, join); the barrier after them.
+enum FoldPartPhase : int {
+  kPartLists,
+  kPartFill,
+  kPartStage,
+  kPartHead,
+  kPartFirst,
+  kPartSteps,
+  kPartTail,
+  kPartSync,
+  kPartPhases
+};
 
 template <class C, int kArm, bool kClock>
 __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__ OwnerParams p,
@@ -205,8 +215,8 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
       __syncthreads();
       lap(kPartStage);
       const bool join = ((first / kWritePass) & 1) != 0 || first + n >= live;
-      detail::fold_pass(st, sm.fold, sm.write, sm.lists, p, lu, cursor, first, n, join, warp, lane);
-      lap(kPartSteps);
+      detail::fold_pass(st, sm.fold, sm.write, sm.lists, p, lu, cursor, first, n, join, warp, lane,
+                        [&](int k) { lap(kPartHead + k); });
       __syncthreads();
       lap(kPartSync);
     }
@@ -559,7 +569,7 @@ std::vector<Tensor> fold_part_op(std::vector<Tensor> read, std::vector<Tensor> w
   if (ledger.has_value()) {
     STD_TORCH_CHECK(ledger->is_cuda() && ledger->scalar_type() == Dtype::Long
                         && ledger->is_contiguous() && ledger->numel() == kWarps * kPartPhases,
-                    "the fold part's ledger is a contiguous CUDA int64 [8, 5]");
+                    "the fold part's ledger is a contiguous CUDA int64 [8, 8]");
     p.ledger = reinterpret_cast<long long*>(ledger->mutable_data_ptr<int64_t>());
   }
   const int64_t bh = read[0].size(0) * read[0].size(2);
