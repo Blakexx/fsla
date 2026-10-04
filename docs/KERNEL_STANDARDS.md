@@ -781,3 +781,8 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       such a swap on half the rows, or 8 rows of one column share 4 bank groups (192 against 119 cycles a step).
    k. VALUES READ IN PLACE FROM A POOL NEED A THIRD SLOT (`sparse_pass`): with two, the next fill waits for the slot's
       pass to drain and the warps couple at the pass boundary (1.33x dense fp32, against 1.09x with three).
+   l. A WARP RELEASES A SHARED SLOT AT ITS LAST LOAD, NOT ITS LAST MMA (`sparse_pass`): holding up to three steps'
+      operands in registers (~16 a step) and signalling drained after the pass's last loads lets the fill and restage
+      run ahead of the slowest warp's MMAs, so warps with uneven work drift instead of waiting: sparse passes 1 in 4
+      1.27-1.30x against 1.55-1.60x, 1 in 16 1.87-2.07x against 2.05-2.26x, ~3% dense. Shared slots hide load latency;
+      register depth hides the warps' divergence.

@@ -186,24 +186,30 @@ The pass with each warp's live tokens drawn at a density (the CTA union every to
 owner part's fill through a token permutation, the restage, the fold step at the arm's registers, the fp16 join
 staggered, the window's lists two passes ahead. Forms: serial (today's owner part); a value tile with two pool slots;
 values in place from swizzled pool rows with two or three pool slots; the fold side's rows listed (entries built ahead,
-free here) or derived in the step from the warp's union words. The block's span a pass over the busiest scheduler's
+free here) or derived in the step from the warp's union words; and LOAD-AHEAD (fp32 arm only, 232-236 registers): a
+warp takes up to three steps' operands into registers at a time and signals its slots drained after its last loads,
+not its last MMA, its restage share after the loads of the chunk holding its mid-pass step. The block's span a pass over the busiest scheduler's
 paired steps at tensor time (busiest-scheduler steps a pass: 16.0 / 5.6 / 2.0):
 
 | pass (fp32 arm / fp16 arm) | all live | 1 in 4 | 1 in 16 |
 |---|---|---|---|
-| serial, value tile, listed | 1.26 / 1.67 | 1.60 / 2.39 | 2.52 / 4.26 |
+| serial, value tile, listed | 1.26 / 1.65 | 1.60 / 2.39 | 2.53 / 4.27 |
 | pipelined, value tile, derived | 1.13 / 2.06 | 1.63 / 2.78 | 2.48 / 4.47 |
-| pipelined, in place, 2 pool slots, derived | 1.33 / 2.05 | 1.84 / 3.02 | 2.86 / 5.05 |
+| pipelined, in place, 2 pool slots, derived | 1.33 / 2.05 | 1.83 / 3.02 | 2.87 / 5.08 |
 | pipelined, in place, 3 pool slots, derived | 1.09 / 2.09 | 1.60 / 2.69 | 2.26 / 4.13 |
-| pipelined, in place, 3 pool slots, listed | 1.13 / 1.95 | 1.58 / 2.33 | 2.06 / 3.49 |
+| pipelined, in place, 3 pool slots, listed | 1.21 / 1.97 | 1.55 / 2.35 | 2.05 / 3.53 |
+| load-ahead, in place, 3 pool slots, derived | 1.13 / - | 1.30 / - | 2.07 / - |
+| load-ahead, in place, 3 pool slots, listed | 1.14 / - | 1.26 / - | 1.88 / - |
 
 Three pool slots are what in-place reads need: with two, a slot refills only after its pass drains, so the fill and
 the restage land on the pass boundary and the warps couple (1.33x dense fp32). Dense, three slots derived is the best
 form (fp32 1.09x). Sparse, no pipeline beats serial at 1 in 4 (all 1.58-1.84x), and at 1 in 16 three slots listed is
 best (2.06x against 2.53x): a warp's few steps leave the mid-pass point near its pass's end, so the half-pass slack
-shrinks to nothing, and a warp alone on its scheduler cannot hide its own chain. Derived rows against listed: +3.5%
-dense, -10% at 1 in 16 (a step scans up to four sparse words); the listed rows' build is free here and is not in the
-owner part. The fp16 arm reads 1.95-2.09x dense: every pipelined form sits at 251-254 registers, and the bookkeeping
+shrinks to nothing, and a warp alone on its scheduler cannot hide its own chain. Load-ahead is what sparse needed: a slot frees when every warp
+has loaded from it, so the fill and the restage stop waiting on the slowest warp's MMAs and the warps drift -- 1 in 4
+1.27-1.30x against 1.55-1.60x, 1 in 16 1.87-2.07x against 2.05-2.26x, at ~3% dense (its chunked loads; 1.13x against
+1.09x). Derived rows against listed: better dense, 3-10% worse sparse (a step scans up to four sparse words); the
+listed rows' build is free here and is not in the owner part. The fp16 arm reads 1.95-2.09x dense: every pipelined form sits at 251-254 registers, and the bookkeeping
 (rows, cursor, lists, waits) leaves its steps no room -- the pipeline needs register headroom on that arm; its rows
 also move between runs (1 in 4, three slots derived: 4.42x in an earlier 3-repetition run, 2.69x here). Record:
 `measure/lab/results/sparse_pass/sm_86.json`.
