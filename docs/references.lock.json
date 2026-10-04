@@ -1215,6 +1215,7 @@
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "b8309b3ccfc8", "reviewed": true, "sha256": "", "target": "measure/lab/results/fold_step/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "b8309b3ccfc8", "reviewed": true, "sha256": "", "target": "measure/lab/results/mma_overlap/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "56e6db164873", "reviewed": true, "sha256": "", "target": "measure/lab/results/mma_pairing/sm_86.json"},
+  {"doc": "docs/internals/tools/lab.md", "pinned_at": "cff04e499c09", "reviewed": true, "sha256": "", "target": "measure/lab/results/pass_pipeline/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "56e6db164873", "reviewed": true, "sha256": "", "target": "measure/lab/results/tensor_tax/sm_86.json"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "56e6db164873", "reviewed": true, "sha256": "", "target": "tools/lab.py"},
   {"doc": "docs/internals/tools/lab.md", "pinned_at": "b8309b3ccfc8", "reviewed": true, "sha256": "b96d99922e2d7a98", "target": "tools/lab.py::main"},

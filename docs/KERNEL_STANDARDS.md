@@ -766,3 +766,12 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
    g. A POLLED WAIT TAKES ISSUE SLOTS (`mma_overlap`): at three or four warps a scheduler the two-stage mbarrier's
       polling loop costs as much as the barrier it replaces; a 64-ns sleep between polls restores the free-running
       cost. At two warps polling is the cheaper.
+   h. A LONG NON-MMA PHASE IS STAGGERED BETWEEN A SCHEDULER'S WARPS (`pass_pipeline`): a phase both warps of a scheduler
+      run at once leaves the tensor pipe idle and lets the pair fall into lockstep, like a barrier -- the fp16 arm's
+      partial join (256 instructions every two passes) costs 12 points in a burst, ~3 staggered (warps 4-7 on the
+      other passes; warp w shares a scheduler with warp w + 4).
+   i. A TWO-STAGE PASS PIPELINE PLACES ITS RESTAGE MID-PASS (`pass_pipeline`): with two tile slots the restage of pass
+      p + 1 waits for the slot's readers of p - 1 and pass p + 1's steps wait for the restage; mid-pass leaves half a pass
+      of slack each way (fp32 arm 1.05x its floor against 1.20x serial and 1.03x for the steps alone; fp16 arm with a
+      staggered join 1.25x against 1.55x and 1.16x). A restage at the pass's start couples every warp to the slowest at
+      the boundary (1.11x / 1.36x).

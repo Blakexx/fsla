@@ -110,8 +110,10 @@ a step a warp over the floor (1056 fp16 arm, 2112 fp32 arm): as built 1.074 / 1.
 coefficient 1.055 / 1.016; no operand loads 1.067 / 1.026; a CTA barrier every pass of 8 steps 1.171 / 1.026. A class
 replaced by a `LOP3` reads slower than the class (shuffles 1.117, HMUL2 1.090): the replacement is not free, so those
 two rows bound nothing. Staged forms on the fp32 arm (all, loads alone, coefficients alone) 1.024-1.027, no gain; on
-the fp16 arm every staged form spills (12-36 LDL/STL) and is not run. The step alone is near its floor; the barrier's
-realignment is the fp16 arm's loss in the owner part. Record: `measure/lab/results/fold_step/sm_86.json`.
+the fp16 arm every staged form spills (12-36 LDL/STL) and is not run. The step alone is near its floor and the barrier
+realigns the warps. The timed region holds the steps only: the fp16 arm's partial join (every 256 tokens) falls between
+regions, and with it the arm runs 1.25x free-running (`pass_pipeline`). Record:
+`measure/lab/results/fold_step/sm_86.json`.
 
 <a id="mma-overlap"></a>
 
@@ -133,3 +135,31 @@ One warp a scheduler cannot hide its own chain; a stage recovers most of it. Two
 other's, and a stage adds nothing. A barrier a pass costs 3-6%; the two-stage mbarrier recovers it, polled at two warps
 a scheduler, sleeping at three or four (a polling warp takes issue slots from the working ones). Record:
 `measure/lab/results/mma_overlap/sm_86.json`.
+
+<a id="pass-pipeline"></a>
+
+## `pass_pipeline`
+
+A whole pass: the owner part's fill (a quad a token, cp.async from a 33 MB source), its restage (two threads a row, the
+coefficient run included, since the pool slot refills two passes ahead) and the fold's step at the arm's registers, two
+warps a scheduler. Serial = fill, barrier, restage, barrier, steps, barrier (the owner part). Pipelined = two stages
+under mbarriers: fill two passes ahead, restage one ahead -- in a burst at the pass's start, by warp w after its step w,
+or by every warp after its step 3 (mid-pass) -- each restage waiting for its tile slot's readers just before it. The
+fp16 arm's partial join every two passes: a burst, one list a step (a switch on the step: unrolling the step loop
+spills the arm), or the burst staggered (a scheduler's two warps on alternate passes). sm_86, the block's span a pass
+over the steps' floor (2112 / 1056 a step):
+
+| pass | fp32 arm | fp16, join burst | fp16, join a list a step | fp16, join staggered |
+|---|---|---|---|---|
+| serial | 1.20 | 1.54 | 1.65 | 1.55 |
+| pipelined, restage burst | 1.11 | 1.34 | 1.48 | 1.36 |
+| pipelined, restage a warp a step | 1.11 | 1.35 | 1.45 | 1.35 |
+| pipelined, restage mid-pass | 1.05 | 1.27 | 1.32 | 1.25 |
+| steps alone | 1.03 | 1.25 | 1.32 | 1.16 |
+
+Mid-pass is the pipeline's best: half a pass of slack each way between the restage's wait (the slot's last readers)
+and the next pass's wait (the restage). A burst at the pass's start makes every warp wait at the boundary for the
+slowest one's previous pass -- a barrier by another name. The join in a burst costs the fp16 arm 12 points, because both
+warps of a scheduler leave the tensor pipe at once and the pair falls into lockstep; staggered it costs ~3; spread a
+list a step it costs more (the switch, and FP32 adds beside every step's MMAs). Record:
+`measure/lab/results/pass_pipeline/sm_86.json`.
