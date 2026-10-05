@@ -136,8 +136,8 @@ __global__ __launch_bounds__(kThreads, 1) void fill_part(const __grid_constant__
   }
 }
 
-//: THE FOLD PART: each window's lists and units, then its write passes, each filled, restaged and folded by every warp
-//: on the arm; the final state, mass and units written (`[cta][leaf][list][channel]` fp32 in the list's
+//: THE FOLD PART: each window's lists and units, then its write passes, each filled, restaged and folded by every
+//: warp; the final state, mass and units written (`[cta][leaf][list][channel]` fp32 in the list's
 //: unit, `[cta][leaf][list]`, `[cta][list][2]`).
 template <class C>
 struct FoldPartTenants {
@@ -161,7 +161,7 @@ enum FoldPartPhase : int {
   kPartPhases
 };
 
-template <class C, int kArm, bool kClock>
+template <class C, bool kClock>
 __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__ OwnerParams p,
                                                          float* state, float* mass, int* units) {
   extern __shared__ __align__(128) unsigned char raw[];
@@ -179,7 +179,7 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
   }
   const int64_t cta =
       (static_cast<int64_t>(blockIdx.z) * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
-  detail::FoldAcc<C, kArm> st{};
+  detail::FoldAcc<C> st{};
   detail::ListUnits lu;
   if (lane < C::kFoldLists) sm.fold.units[warp][lane] = detail::UnitBook{};
 #pragma unroll 1
@@ -198,7 +198,6 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
     detail::window_lists(sm.lists, p, buf, tid);
     detail::fold_window(st, lu, sm.fold, p, bh, r0, win, warp, lane);
     int cursor = 0;
-    detail::clear_partials(st);
     const int live = sm.lists.base[0][kWindowWords - 1] + __popc(sm.lists.uni[0][kWindowWords - 1]);
     lap(kPartLists);
 #pragma unroll 1
@@ -214,8 +213,7 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
       detail::stage_pass(sm.fold, sm.write, p, n, tid);
       __syncthreads();
       lap(kPartStage);
-      const bool join = ((first / kWritePass) & 1) != 0 || first + n >= live;
-      detail::fold_pass(st, sm.fold, sm.write, sm.lists, p, lu, cursor, first, n, join, warp, lane,
+      detail::fold_pass(st, sm.fold, sm.write, sm.lists, p, lu, cursor, first, n, warp, lane,
                         [&](int k) { lap(kPartHead + k); });
       __syncthreads();
       lap(kPartSync);
@@ -244,7 +242,7 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
   }
 }
 
-template <class C, int kArm, bool kClock>
+template <class C, bool kClock>
 std::vector<Tensor> run_fold(const OwnerParams& p, int64_t bh) {
   const int64_t sb = p.width[p.level_s] / C::RS, rb = p.width[p.level_r] / C::RD;
   const int64_t ctas = sb * rb * bh * kChannelGroups;
@@ -252,11 +250,11 @@ std::vector<Tensor> run_fold(const OwnerParams& p, int64_t bh) {
   Tensor mass = empty_cuda({ctas * C::RS * C::RD}, Dtype::Float);
   Tensor units = empty_cuda({ctas * C::RD * 2}, Dtype::Int);
   constexpr int kSmem = static_cast<int>(sizeof(FoldPartTenants<C>));
-  ROLA_CUDA_CHECK(cudaFuncSetAttribute(fold_part<C, kArm, kClock>,
+  ROLA_CUDA_CHECK(cudaFuncSetAttribute(fold_part<C, kClock>,
                                        cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
   const dim3 grid(static_cast<unsigned>(sb), static_cast<unsigned>(rb),
                   static_cast<unsigned>(bh * kChannelGroups));
-  fold_part<C, kArm, kClock><<<grid, kThreads, kSmem, current_stream()>>>(
+  fold_part<C, kClock><<<grid, kThreads, kSmem, current_stream()>>>(
       p, state.mutable_data_ptr<float>(), mass.mutable_data_ptr<float>(),
       units.mutable_data_ptr<int32_t>());
   ROLA_CUDA_LAUNCH_CHECK();
@@ -554,7 +552,7 @@ std::vector<Tensor> fold_part_op(std::vector<Tensor> read, std::vector<Tensor> w
                                  std::vector<Tensor> scale_write, Tensor g_write, Tensor v,
                                  Tensor v_scale, Tensor words, Tensor list_exp, int64_t level_s,
                                  int64_t sparse_write, int64_t sparse_read, int64_t floor_s,
-                                 int64_t rs, int64_t rd, int64_t step, int64_t arm,
+                                 int64_t rs, int64_t rd, int64_t step,
                                  std::optional<Tensor> ledger) {
   OwnerParams p = bundle_params(read, write, scale_write, g_write, v, v_scale, words, level_s,
                                 sparse_write, sparse_read, step);
@@ -575,14 +573,8 @@ std::vector<Tensor> fold_part_op(std::vector<Tensor> read, std::vector<Tensor> w
   const int64_t bh = read[0].size(0) * read[0].size(2);
   const DeviceGuard guard(words.get_device_index());
   STD_TORCH_CHECK(rs == 16 && rd == 64, "the fold is built for the ruled 16 x 64 carve");
-  STD_TORCH_CHECK(arm == detail::kArmFloat || arm == detail::kArmHalf,
-                  "the arms are fp32 (0) and fp16 (1) accumulate");
   using C = Carve<16, 64>;
-  if (arm == detail::kArmFloat)
-    return p.ledger ? run_fold<C, detail::kArmFloat, true>(p, bh)
-                    : run_fold<C, detail::kArmFloat, false>(p, bh);
-  return p.ledger ? run_fold<C, detail::kArmHalf, true>(p, bh)
-                  : run_fold<C, detail::kArmHalf, false>(p, bh);
+  return p.ledger ? run_fold<C, true>(p, bh) : run_fold<C, false>(p, bh);
 }
 
 //: -- see docs/internals/owner/owner.md#skeleton
@@ -631,7 +623,7 @@ STABLE_TORCH_LIBRARY(rola_owner, m) {
   m.def(
       "fold_part(Tensor[] read, Tensor[] write, Tensor[] scale_write, Tensor g_write, Tensor v, "
       "Tensor v_scale, Tensor words, Tensor list_exp, int level_s, int sparse_write, int sparse_read, "
-      "int floor_s, int rs, int rd, int step, int arm, Tensor(a!)? ledger) -> Tensor[]");
+      "int floor_s, int rs, int rd, int step, Tensor(a!)? ledger) -> Tensor[]");
   m.def(
       "drain_part(Tensor words, int[] widths, int level_s, int sparse_write, int sparse_read, int heads, int rs, "
       "int rd, Tensor(a!) num, Tensor(b!) den) -> ()");

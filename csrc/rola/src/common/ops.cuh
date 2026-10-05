@@ -453,16 +453,6 @@ __device__ __forceinline__ void hmma_fresh(float (&d)[4], const uint32_t (&a)[4]
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "f"(0.0f));
 }
 
-//: THE fp16 ATOM, fp16 ACCUMULATE: two f16 pairs, rows g and g + 8. -- see docs/internals/common/ops.md#hmma
-__device__ __forceinline__ void hmma_half(uint32_t (&d)[2], const uint32_t (&a)[4], uint32_t b0,
-                                          uint32_t b1) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 "
-      "{%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%0,%1};\n"
-      : "+r"(d[0]), "+r"(d[1])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
-}
-
 //: TWO f16 PRODUCTS, each rounded once to nearest (`HMUL2`).
 __device__ __forceinline__ uint32_t hmul2(uint32_t a, uint32_t b) {
   uint32_t d;
@@ -482,11 +472,6 @@ __device__ __forceinline__ uint32_t pack_half2(float lo, float hi) {
   uint32_t d;
   asm("cvt.rn.f16x2.f32 %0, %1, %2;" : "=r"(d) : "f"(hi), "f"(lo));
   return d;
-}
-
-//: AN f16 PAIR TO TWO fp32, the low half first.
-__device__ __forceinline__ float2 unpack_half2(uint32_t h) {
-  return __half22float2(*reinterpret_cast<const __half2*>(&h));
 }
 
 //: THE SAME ATOM INTO A FRESH ACCUMULATOR (C = 0): the readout's per-box partial.

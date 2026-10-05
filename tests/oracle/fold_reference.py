@@ -152,36 +152,3 @@ def fold_state(routes, values, list_exp, level_s: int, floor_s: bool, floor_r: b
     return (state.reshape(B * H, w_s, w_r, C), env.reshape(B * H, w_s, w_r, C), mass.reshape(B * H, w_s, w_r),
             units.reshape(B * H, w_r, 2))
 
-
-def fold_statistics(routes, values, level_s: int, floor_s: bool, floor_r: bool, window: int) -> dict:
-    """THE FLOOR'S EXPOSURES on a call: the share of written (window, leaf) pairs whose strongest writer sits more than
-    10 octaves below its list's top, and the floor's inflation of each leaf's mass (fp64, exact products)."""
-    level_r = 1 - level_s
-    m = (routes.g_write.double() * routes.scale_write[0].double() * routes.scale_write[1].double())
-    b_r = routes.amp_write[level_r].double()
-    if floor_r:
-        b_r = b_r.clamp_min(float(BYTE_FLOOR))
-    raw = routes.amp_write[level_s].double() / 255
-    x = raw.clamp_min(quant.DENSE_FLOOR) if floor_s else raw
-    y = b_r * (m * values.scale.double())[..., None]                                      # [B, T, H, w_r]
-    B, T, H, _ = y.shape
-    risky = written = 0
-    mass_floor = mass_raw = 0
-    for w in range(T // window):
-        sl = slice(w * window, (w + 1) * window)
-        for b in range(B):
-            for h in range(H):
-                xs, ys = x[b, sl, h], y[b, sl, h]                                         # [Tw, w_s], [Tw, w_r]
-                strongest = (xs[:, :, None] * ys[:, None, :]).amax(0)                    # [w_s, w_r]
-                top = ys.amax(0)[None, :]
-                live = strongest > 0
-                written += int(live.sum())
-                risky += int((live & (strongest < top * 2.0 ** -10)).sum())
-        cm = (b_r[:, sl] * m[:, sl, :, None])
-        mass_floor = mass_floor + torch.einsum("bthd,bths->bhds", x[:, sl], cm)
-        mass_raw = mass_raw + torch.einsum("bthd,bths->bhds", raw[:, sl], cm)
-    held = mass_floor > 0
-    inflation = ((mass_floor - mass_raw) / mass_floor.clamp_min(1e-300))[held]
-    return {"risky_share": risky / max(written, 1), "written": written,
-            "inflation_median": float(inflation.median()) if inflation.numel() else 0.0,
-            "inflation_max": float(inflation.max()) if inflation.numel() else 0.0}

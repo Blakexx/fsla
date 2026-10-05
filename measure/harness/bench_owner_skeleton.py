@@ -73,10 +73,10 @@ def fold_bundle(name: str, heads: int = 1):
             not declared[level_s][1])
 
 
-def _fold(routes, values, facts, level_s, sw, sr, floor_s, arm, ledger=None):
+def _fold(routes, values, facts, level_s, sw, sr, floor_s, ledger=None):
     return ops().fold_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write,
                            values.v, values.scale, facts.words, facts.list_exp, level_s, sw, sr, int(floor_s),
-                           16, 64, STEP_CHOSEN, arm, ledger)
+                           16, 64, STEP_CHOSEN, ledger)
 
 
 #: the fold part's ledger phases, `owner_skeleton.cu`'s `FoldPartPhase`
@@ -86,10 +86,9 @@ FOLD_PHASES = ("lists", "fill", "stage", "head", "first", "steps", "tail", "sync
 def ledger_fold(name: str, part: str, heads: int) -> None:
     """The fold part's phase ledger on the cell's call: each phase's cycles a warp a CTA-window and its share."""
     spec, routes, values, facts, level_s, sw, sr, floor_s = fold_bundle(name, heads)
-    arm = int(part == "fold-h")
-    _fold(routes, values, facts, level_s, sw, sr, floor_s, arm)
+    _fold(routes, values, facts, level_s, sw, sr, floor_s)
     ledger = torch.zeros(WARPS, len(FOLD_PHASES), dtype=torch.int64, device="cuda")
-    _fold(routes, values, facts, level_s, sw, sr, floor_s, arm, ledger)
+    _fold(routes, values, facts, level_s, sw, sr, floor_s, ledger)
     torch.cuda.synchronize()
     widths = tuple(spec.widths)
     ctas = facts.words.shape[0] * 2 * (widths[level_s] // 16) * (widths[1 - level_s] // 64)
@@ -99,15 +98,14 @@ def ledger_fold(name: str, part: str, heads: int) -> None:
         f"{ph} {float(c):.0f} ({float(c) / total:.0%})" for ph, c in zip(FOLD_PHASES, per)))
 
 
-#: THE FOLD GATE'S BOUNDS, per slot against the declared arithmetic's envelope: fp32 accumulate (an HMMA a 16-token
-#: step, a few dozen a slot), fp16 pass partials (eight a pass, each rounding to 2^-11 of the partial)
-FOLD_RTOL = {0: 2.0 ** -14, 1: 2.0 ** -8}
+#: THE FOLD GATE'S BOUND, per slot against the declared arithmetic's envelope: fp32 accumulate, an HMMA a 16-token
+#: step, a few dozen a slot
+FOLD_RTOL = 2.0 ** -14
 
 
 def check_fold(name: str) -> bool:
-    """The fold part on the cell, both arms, per slot against `fold_reference.fold_state`; its
-    units exactly; then the floor's exposures."""
-    from tests.oracle.fold_reference import COEF_TOP, UNIT_SCALE, fold_state, fold_statistics
+    """The fold part on the cell, per slot against `fold_reference.fold_state`; its units exactly."""
+    from tests.oracle.fold_reference import COEF_TOP, UNIT_SCALE, fold_state
 
     spec, routes, values, facts, level_s, sw, sr, floor_s = fold_bundle(name)
     widths = tuple(spec.widths)
@@ -116,32 +114,26 @@ def check_fold(name: str) -> bool:
     BH = facts.words.shape[0]
     state, env, mass, units = fold_state(routes, values, facts.list_exp, level_s, floor_s, not sw, WINDOW)
     want_units = torch.tensor(units).view(BH, rblocks, 1, 64, 2)
-    ok = True
-    for arm, rtol in FOLD_RTOL.items():
-        st, ms, un = _fold(routes, values, facts, level_s, sw, sr, floor_s, arm)
-        torch.cuda.synchronize()
-        un = un.view(BH, 2, rblocks, sblocks, 64, 2).cpu()
-        units_ok = bool((un == want_units[:, None]).all())
-        scale = torch.exp2(un.double() - COEF_TOP) * UNIT_SCALE
-        got = (st.view(BH, 2, rblocks, sblocks, 16, 64, 32).double().cpu() * scale[..., 0][:, :, :, :, None, :, None])
-        got = got.permute(0, 3, 4, 2, 5, 1, 6).reshape(BH, w_s, w_r, 64)
-        diff, e = (got - state.cpu()).abs(), env.cpu()
-        ratio = (diff / e.clamp_min(1e-300))[e > 0]
-        state_ok = bool((diff <= rtol * e).all())
-        gm = ms.view(BH, 2, rblocks, sblocks, 16, 64).double().cpu() * scale[..., 1][:, :, :, :, None, :]
-        gm = gm.permute(0, 1, 3, 4, 2, 5).reshape(BH, 2, w_s, w_r)
-        mdiff, mw = (gm - mass.cpu()[:, None]).abs(), mass.cpu()[:, None].expand_as(gm)
-        mratio = (mdiff / mw.clamp_min(1e-300))[mw > 0]
-        mass_ok = bool((mdiff <= rtol * mw).all())
-        print(f"fold {name} arm {'f32' if arm == 0 else 'f16'}: units {'ok' if units_ok else 'DIFFER'}, "
-              f"state |d|/env median {ratio.median():.1e} max {ratio.max():.1e} "
-              f"{'ok' if state_ok else 'OVER'} (<= {rtol:.0e}), mass median {mratio.median():.1e} "
-              f"max {mratio.max():.1e} {'ok' if mass_ok else 'OVER'}")
-        ok &= units_ok and state_ok and mass_ok
-    stats = fold_statistics(routes, values, level_s, floor_s, not sw, WINDOW)
-    print(f"fold {name} floor exposures: risky leaves {stats['risky_share']:.2%} of {stats['written']} written, "
-          f"mass inflation median {stats['inflation_median']:.1e} max {stats['inflation_max']:.1e}")
-    return ok
+    st, ms, un = _fold(routes, values, facts, level_s, sw, sr, floor_s)
+    torch.cuda.synchronize()
+    un = un.view(BH, 2, rblocks, sblocks, 64, 2).cpu()
+    units_ok = bool((un == want_units[:, None]).all())
+    scale = torch.exp2(un.double() - COEF_TOP) * UNIT_SCALE
+    got = (st.view(BH, 2, rblocks, sblocks, 16, 64, 32).double().cpu() * scale[..., 0][:, :, :, :, None, :, None])
+    got = got.permute(0, 3, 4, 2, 5, 1, 6).reshape(BH, w_s, w_r, 64)
+    diff, e = (got - state.cpu()).abs(), env.cpu()
+    ratio = (diff / e.clamp_min(1e-300))[e > 0]
+    state_ok = bool((diff <= FOLD_RTOL * e).all())
+    gm = ms.view(BH, 2, rblocks, sblocks, 16, 64).double().cpu() * scale[..., 1][:, :, :, :, None, :]
+    gm = gm.permute(0, 1, 3, 4, 2, 5).reshape(BH, 2, w_s, w_r)
+    mdiff, mw = (gm - mass.cpu()[:, None]).abs(), mass.cpu()[:, None].expand_as(gm)
+    mratio = (mdiff / mw.clamp_min(1e-300))[mw > 0]
+    mass_ok = bool((mdiff <= FOLD_RTOL * mw).all())
+    print(f"fold {name}: units {'ok' if units_ok else 'DIFFER'}, "
+          f"state |d|/env median {ratio.median():.1e} max {ratio.max():.1e} "
+          f"{'ok' if state_ok else 'OVER'} (<= {FOLD_RTOL:.0e}), mass median {mratio.median():.1e} "
+          f"max {mratio.max():.1e} {'ok' if mass_ok else 'OVER'}")
+    return units_ok and state_ok and mass_ok
 
 
 def cell_words(name: str):
@@ -343,10 +335,10 @@ RUN_REPS = 3
 def run_part(name: str, part: str, heads: int) -> None:
     """The part on the cell's whole call at ``heads`` heads, no dump, each carve `RUN_REPS` times: the launches an
     ncu run reads."""
-    if part in ("fold", "fold-h"):
+    if part == "fold":
         spec, routes, values, facts, level_s, sw, sr, floor_s = fold_bundle(name, heads)
         for _ in range(RUN_REPS):
-            _fold(routes, values, facts, level_s, sw, sr, floor_s, int(part == "fold-h"))
+            _fold(routes, values, facts, level_s, sw, sr, floor_s)
         torch.cuda.synchronize()
         print(f"ran {part} on {name}: carve (16, 64), {RUN_REPS} times, BH {facts.words.shape[0]}, L {spec.tokens}")
         return
@@ -406,10 +398,9 @@ def _all_bits(words):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--check", choices=("lists", "fill", "drain", "fold"))
-    ap.add_argument("--run", choices=("lists", "fill", "drain", "readout", "readout-list", "readout-merged", "fold",
-                                      "fold-h"),
+    ap.add_argument("--run", choices=("lists", "fill", "drain", "readout", "readout-list", "readout-merged", "fold"),
                     help="the part's launches alone, for ncu")
-    ap.add_argument("--ledger", choices=("fold", "fold-h"), help="the fold part's phase ledger")
+    ap.add_argument("--ledger", choices=("fold",), help="the fold part's phase ledger")
     ap.add_argument("--cell", action="append", required=True)
     ap.add_argument("--heads", type=int, default=1, help="heads under --run: enough to fill the machine")
     args = ap.parse_args()

@@ -1,7 +1,7 @@
 // csrc/rola/src/owner/owner_fold.cuh -- THE FOLD: a warp's write lists over a pass of the write pool into the resident
 // state and mass, in the declared fp16 arithmetic -- a token's list factor c = b F at its list's window unit, the dense
-// digit times it once in f16, one HMMA a (16 tokens, 8 channels) -- fp32 accumulate straight into the state, or fp16
-// partials a pass joined into it. see docs/internals/owner/owner_fold.md
+// digit times it once in f16, one HMMA a (16 tokens, 8 channels) -- fp32 accumulate straight into the state.
+// see docs/internals/owner/owner_fold.md
 #pragma once
 
 #include <cstdint>
@@ -14,9 +14,6 @@
 #include "owner/owner_lists.cuh"
 
 namespace rola::owner::detail {
-
-//: THE ACCUMULATE ARM, an arch class's compile-time choice: fp32 into the state, or fp16 partials a pass joined into it.
-enum FoldArm : int { kArmFloat = 0, kArmHalf = 1 };
 
 //: THE UNITS' CONSTANTS: c's top 2^4, a state held under 2^100 of its unit, the lowest unit (a normal prescale), a list
 //: never live, a window's largest add in units, the facts pass's dead exponent. -- see docs/internals/owner/owner_fold.md#units
@@ -32,13 +29,12 @@ constexpr int kExpDead = -126;
 constexpr uint32_t kHalfMagic = 0x64646464u, kHalfScale = 0x1c001c00u, kHalfBias = 0xc400c400u;
 constexpr uint32_t kHalfFloor = 0x07f807f8u;
 
-//: A WARP'S ACCUMULATORS: per list the 16 leaves by the channel group, fp32 in the list's unit, and on the fp16 arm
-//: their partials. The mass lives in shared memory (`FoldTenants::mass`). -- see docs/internals/owner/owner_fold.md#state
-template <class C, int kArm>
+//: A WARP'S ACCUMULATORS: per list the 16 leaves by the channel group, fp32 in the list's unit. The mass lives in
+//: shared memory (`FoldTenants::mass`). -- see docs/internals/owner/owner_fold.md#state
+template <class C>
 struct FoldAcc {
   static_assert(C::RS == 16 && C::kFoldLists == 8, "the fold is built for the ruled 16 x 64 carve");
   float acc[C::kFoldLists][4][4];
-  uint32_t part[kArm == kArmHalf ? C::kFoldLists : 1][4][2];
 };
 
 //: A LIST'S WINDOW PRESCALES `2^(4 - unit)` (state, mass), held by its four lanes (list `lane >> 2`).
@@ -92,8 +88,8 @@ __device__ __forceinline__ float next_unit(int k, int& unit, float& bound, float
 
 //: A WINDOW'S UNITS, before its passes: each list's `(K_m, K_v)` from the facts pass moves its book's units (lane
 //: `4 j` writes list j's back), the state and mass are rescaled to them, and the lanes take the window's prescales.
-template <class C, int kArm>
-__device__ __forceinline__ void fold_window(FoldAcc<C, kArm>& st, ListUnits& lu, FoldTenants<C>& ft,
+template <class C>
+__device__ __forceinline__ void fold_window(FoldAcc<C>& st, ListUnits& lu, FoldTenants<C>& ft,
                                             const OwnerParams& p, int bh, int r0, int win, int warp,
                                             int lane) {
   const uint32_t pair =
@@ -254,15 +250,6 @@ __device__ __forceinline__ void list_coef(const WritePool<C>& pools, const FoldT
   c[1] = ops::pack_half2(v[2], v[3]);
 }
 
-//: ONE ATOM on the arm's accumulator: fp32 (four floats) or fp16 (two pairs).
-template <int kArm, class D>
-__device__ __forceinline__ void atom(D& d, const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
-  if constexpr (kArm == kArmFloat)
-    ops::hmma(d, a, b0, b1);
-  else
-    ops::hmma_half(d, a, b0, b1);
-}
-
 //: A LIST'S A: the dense digits times its c, two f16 products a register.
 __device__ __forceinline__ void list_a(const uint32_t (&a)[4], uint32_t c01, uint32_t c89,
                                        uint32_t (&aj)[4]) {
@@ -272,25 +259,15 @@ __device__ __forceinline__ void list_a(const uint32_t (&a)[4], uint32_t c01, uin
   aj[3] = ops::hmul2(a[3], c89);
 }
 
-//: AN fp16 PARTIAL JOINED into its fp32 accumulator and cleared.
-__device__ __forceinline__ void join(float (&acc)[4], uint32_t (&part)[2]) {
-  const float2 lo = ops::unpack_half2(part[0]), hi = ops::unpack_half2(part[1]);
-  acc[0] += lo.x;
-  acc[1] += lo.y;
-  acc[2] += hi.x;
-  acc[3] += hi.y;
-  part[0] = part[1] = 0u;
-}
-
 //: A MERGED STEP, every list of the warp over the step's 16 tokens: the operands once, lane (g, tq) forms list g's c,
 //: two shuffles a list carry it to the A layout; the mass by one more atom (A the dense digits, B the lists' `c_m`, lane
 //: (g, tq)'s own pair for list g) into a fresh fp32 fragment added by FADD into the pass's sums `m` -- no accumulation
 //: chain, so the all-positive terms keep fp32's rounding. -- see docs/internals/owner/owner_fold.md#forms
-template <class C, int kArm, bool kListed>
-__device__ __forceinline__ void merged_step(FoldAcc<C, kArm>& st, float (&m)[4],
-                                            const FoldTenants<C>& ft, const WritePool<C>& pools,
-                                            const ListTenants<C>& sm, const ListUnits& lu, int warp,
-                                            int lane, int e0, int end, int first) {
+template <class C, bool kListed>
+__device__ __forceinline__ void merged_step(FoldAcc<C>& st, float (&m)[4], const FoldTenants<C>& ft,
+                                            const WritePool<C>& pools, const ListTenants<C>& sm,
+                                            const ListUnits& lu, int warp, int lane, int e0,
+                                            int end, int first) {
   const int tq = lane & 3, byte = warp * C::kFoldLists + (lane >> 2);
   const StepRows<C, kListed> rows(sm, warp, lane, e0, end, first);
   uint32_t a[4], b[4][2], cv[2], cm[2];
@@ -307,12 +284,7 @@ __device__ __forceinline__ void merged_step(FoldAcc<C, kArm>& st, float (&m)[4],
     list_a(a, __shfl_sync(0xffffffffu, cv[0], 4 * j + tq),
            __shfl_sync(0xffffffffu, cv[1], 4 * j + tq), aj);
 #pragma unroll
-    for (int n = 0; n < 4; ++n) {
-      if constexpr (kArm == kArmFloat)
-        atom<kArm>(st.acc[j][n], aj, b[n][0], b[n][1]);
-      else
-        atom<kArm>(st.part[j][n], aj, b[n][0], b[n][1]);
-    }
+    for (int n = 0; n < 4; ++n) ops::hmma(st.acc[j][n], aj, b[n][0], b[n][1]);
   });
 }
 
@@ -327,65 +299,39 @@ __device__ __forceinline__ void add_mass(FoldTenants<C>& ft, const float (&m)[4]
   ft.mass[g + 8][list + 1] += m[3];
 }
 
-//: A WINDOW'S PARTIALS CLEARED before its passes: zero already (the window before joined them at its last pass), so
-//: the clear only ends their live range across the window's lists, which need the registers.
-template <class C, int kArm>
-__device__ __forceinline__ void clear_partials(FoldAcc<C, kArm>& st) {
-  if constexpr (kArm == kArmHalf) {
-    constexpr int kLists = C::kFoldLists;
-#pragma unroll
-    for (int j = 0; j < kLists; ++j)
-#pragma unroll
-      for (int k = 0; k < 4; ++k) st.part[j][k][0] = st.part[j][k][1] = 0u;
-  }
-}
-
-//: THE fp16 ARM'S PARTIALS JOINED every 256 tokens (two passes).
-template <class C, int kArm>
-__device__ __forceinline__ void join_partials(FoldAcc<C, kArm>& st) {
-  if constexpr (kArm == kArmHalf) {
-    constexpr int kLists = C::kFoldLists;
-#pragma unroll
-    for (int j = 0; j < kLists; ++j)
-#pragma unroll
-      for (int k = 0; k < 4; ++k) join(st.acc[j][k], st.part[j][k]);
-  }
-}
-
 //: A WARP'S FOLD OF ONE PASS (rows `[first, first + n)` of the window's write union), merged: every list over every
 //: row (a dense side) or over the warp union's entries in the pass, the cursor carrying the union's next entry across
-//: the window's passes, the mass's sums added to the warp's columns at the end; `join` closes a 256-token partial.
+//: the window's passes, the mass's sums added to the warp's columns at the end.
 //: `lap(k)` books the pass's head (0), first step (1), other steps (2) and tail (3) on a part's ledger.
 //: -- see docs/internals/owner/owner_fold.md#forms
-template <class C, int kArm, class Lap>
-__device__ void fold_pass(FoldAcc<C, kArm>& st, FoldTenants<C>& ft, const WritePool<C>& pools,
+template <class C, class Lap>
+__device__ void fold_pass(FoldAcc<C>& st, FoldTenants<C>& ft, const WritePool<C>& pools,
                           const ListTenants<C>& sm, const OwnerParams& p, const ListUnits& lu,
-                          int& cursor, int first, int n, bool join, int warp, int lane, Lap&& lap) {
+                          int& cursor, int first, int n, int warp, int lane, Lap&& lap) {
   const int limit = first + n;
   float m[4] = {};
   if (p.sparse_write == 0) {
     lap(0);
-    merged_step<C, kArm, false>(st, m, ft, pools, sm, lu, warp, lane, first, limit, first);
+    merged_step<C, false>(st, m, ft, pools, sm, lu, warp, lane, first, limit, first);
     lap(1);
 #pragma unroll 1
     for (int e = first + 16; e < limit; e += 16)
-      merged_step<C, kArm, false>(st, m, ft, pools, sm, lu, warp, lane, e, limit, first);
+      merged_step<C, false>(st, m, ft, pools, sm, lu, warp, lane, e, limit, first);
   } else {
     const int at0 = cursor;
     const int end = pass_end(sm, warp, at0, sm.total[0][warp], limit, lane);
     lap(0);
 #pragma unroll 1
     for (int t = ops::once(at0 < end); t > 0; --t)
-      merged_step<C, kArm, true>(st, m, ft, pools, sm, lu, warp, lane, at0, end, first);
+      merged_step<C, true>(st, m, ft, pools, sm, lu, warp, lane, at0, end, first);
     lap(1);
 #pragma unroll 1
     for (int e = at0 + 16; e < end; e += 16)
-      merged_step<C, kArm, true>(st, m, ft, pools, sm, lu, warp, lane, e, end, first);
+      merged_step<C, true>(st, m, ft, pools, sm, lu, warp, lane, e, end, first);
     cursor = end;
   }
   lap(2);
   add_mass(ft, m, warp, lane);
-  if (join) join_partials(st);
   lap(3);
 }
 

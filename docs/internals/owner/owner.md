@@ -64,8 +64,8 @@ pricing table are on the rebuild's plan card, in its skeleton block. Built so fa
 * `readout_part` — the read passes, then the readout ([`owner_readout.md`](owner_readout.md)) in a forced or chosen
   form, a checksum so nothing is dead.
 * `fold_part` — the lists and units, then each window's write passes filled, restaged and folded
-  ([`owner_fold.md`](owner_fold.md)) on either arm; it writes the final state, mass and units, which `--check fold`
-  holds per slot against `fold_reference.fold_state`; `--ledger fold|fold-h` books its phases.
+  ([`owner_fold.md`](owner_fold.md)); it writes the final state, mass and units, which `--check fold` holds per slot
+  against `fold_reference.fold_state`; `--ledger fold` books its phases.
 
 Parts are priced per head at <= 256K token-heads (64K x 4 or 16K x 16): above that this box's GPU address translation
 slows every scattered read 10-30x, the kernel unchanged.
