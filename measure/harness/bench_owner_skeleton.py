@@ -38,26 +38,8 @@ def ops():
 
 
 def cell_bundle(name: str, heads: int = 1):
-    """``(spec, routes, values, words, level_s, sparse_write, sparse_read)``: the cell's bundle at ``heads`` heads, its
-    facts words and its carve's sides."""
-    from measure.cells import by_name, realize
-    from measure.subjects import bundle_of
-    from rola.ops import facts as facts_ops
-
-    spec = by_name(name)
-    routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
-    words = facts_ops.facts(routes, values, layout, *statics).words
-    #: the floating draw is gone; at many heads its cached blocks would push the bundle out of device memory
-    torch.cuda.empty_cache()
-    declared = spec.declared_sparsity()
-    level_r = facts_ops.list_level(statics[0])
-    level_s = 1 - level_r
-    return spec, routes, values, words, level_s, int(declared[level_r][1]), int(declared[level_s][0])
-
-
-def fold_bundle(name: str, heads: int = 1):
-    """``(spec, routes, values, facts, level_s, sparse_write, sparse_read, floor_s)``: `cell_bundle`'s, with the facts
-    pass's whole output (the list exponents beside the words) and whether level S's write side is dense (its floor)."""
+    """``(spec, routes, values, facts, level_s, sparse_write, sparse_read)``: the cell's bundle at ``heads`` heads, the
+    facts pass's output (words, list exponents, factor products) and its carve's sides."""
     from measure.cells import by_name, realize
     from measure.subjects import bundle_of
     from rola.ops import facts as facts_ops
@@ -65,18 +47,17 @@ def fold_bundle(name: str, heads: int = 1):
     spec = by_name(name)
     routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
     out = facts_ops.facts(routes, values, layout, *statics)
+    #: the floating draw is gone; at many heads its cached blocks would push the bundle out of device memory
     torch.cuda.empty_cache()
     declared = spec.declared_sparsity()
     level_r = facts_ops.list_level(statics[0])
     level_s = 1 - level_r
-    return (spec, routes, values, out, level_s, int(declared[level_r][1]), int(declared[level_s][0]),
-            not declared[level_s][1])
+    return spec, routes, values, out, level_s, int(declared[level_r][1]), int(declared[level_s][0])
 
 
-def _fold(routes, values, facts, level_s, sw, sr, floor_s, ledger=None):
-    return ops().fold_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write,
-                           values.v, values.scale, facts.words, facts.list_exp, level_s, sw, sr, int(floor_s),
-                           16, 64, STEP_CHOSEN, ledger)
+def _fold(routes, values, facts, level_s, sw, sr, ledger=None):
+    return ops().fold_part(list(routes.amp_read), list(routes.amp_write), values.v, facts.fm, facts.words,
+                           facts.list_exp, level_s, sw, sr, 16, 64, STEP_CHOSEN, ledger)
 
 
 #: the fold part's ledger phases, `owner_skeleton.cu`'s `FoldPartPhase`
@@ -85,10 +66,10 @@ FOLD_PHASES = ("lists", "fill", "stage", "head", "first", "steps", "tail", "sync
 
 def ledger_fold(name: str, part: str, heads: int) -> None:
     """The fold part's phase ledger on the cell's call: each phase's cycles a warp a CTA-window and its share."""
-    spec, routes, values, facts, level_s, sw, sr, floor_s = fold_bundle(name, heads)
-    _fold(routes, values, facts, level_s, sw, sr, floor_s)
+    spec, routes, values, facts, level_s, sw, sr = cell_bundle(name, heads)
+    _fold(routes, values, facts, level_s, sw, sr)
     ledger = torch.zeros(WARPS, len(FOLD_PHASES), dtype=torch.int64, device="cuda")
-    _fold(routes, values, facts, level_s, sw, sr, floor_s, ledger)
+    _fold(routes, values, facts, level_s, sw, sr, ledger)
     torch.cuda.synchronize()
     widths = tuple(spec.widths)
     ctas = facts.words.shape[0] * 2 * (widths[level_s] // 16) * (widths[1 - level_s] // 64)
@@ -105,20 +86,20 @@ FOLD_RTOL = 2.0 ** -14
 
 def check_fold(name: str) -> bool:
     """The fold part on the cell, per slot against `fold_reference.fold_state`; its units exactly."""
-    from tests.oracle.fold_reference import COEF_TOP, UNIT_SCALE, fold_state
+    from tests.oracle.fold_reference import COEF_TOP, fold_state, unit_scale
 
-    spec, routes, values, facts, level_s, sw, sr, floor_s = fold_bundle(name)
+    spec, routes, values, facts, level_s, sw, sr = cell_bundle(name)
     widths = tuple(spec.widths)
     w_s, w_r = widths[level_s], widths[1 - level_s]
     sblocks, rblocks = w_s // 16, w_r // 64
     BH = facts.words.shape[0]
-    state, env, mass, units = fold_state(routes, values, facts.list_exp, level_s, floor_s, not sw, WINDOW)
+    state, env, mass, units = fold_state(routes, values, facts.list_exp, level_s, WINDOW)
     want_units = torch.tensor(units).view(BH, rblocks, 1, 64, 2)
-    st, ms, un = _fold(routes, values, facts, level_s, sw, sr, floor_s)
+    st, ms, un = _fold(routes, values, facts, level_s, sw, sr)
     torch.cuda.synchronize()
     un = un.view(BH, 2, rblocks, sblocks, 64, 2).cpu()
     units_ok = bool((un == want_units[:, None]).all())
-    scale = torch.exp2(un.double() - COEF_TOP) * UNIT_SCALE
+    scale = torch.exp2(un.double() - COEF_TOP) * unit_scale(routes, level_s)
     got = (st.view(BH, 2, rblocks, sblocks, 16, 64, 32).double().cpu() * scale[..., 0][:, :, :, :, None, :, None])
     got = got.permute(0, 3, 4, 2, 5, 1, 6).reshape(BH, w_s, w_r, 64)
     diff, e = (got - state.cpu()).abs(), env.cpu()
@@ -138,8 +119,8 @@ def check_fold(name: str) -> bool:
 
 def cell_words(name: str):
     """``(spec, words, level_s, sparse_write, sparse_read)``."""
-    spec, _routes, _values, words, level_s, sw, sr = cell_bundle(name)
-    return spec, words, level_s, sw, sr
+    spec, _routes, _values, facts, level_s, sw, sr = cell_bundle(name)
+    return spec, facts.words, level_s, sw, sr
 
 
 def _popc(x: int) -> int:
@@ -250,8 +231,10 @@ def _bits(words_row) -> np.ndarray:
     return ((w[:, None] >> np.arange(32, dtype=np.uint32)) & 1).astype(bool).reshape(-1)
 
 
-def fill_model(routes, values, w, level_s, sw, sr, rs, rd, bh, cg, sb, rb, win):
-    """One CTA-window's write and read pool rows, in slot order, `owner_fill.cuh`'s layout."""
+def fill_model(routes, values, facts, w, level_s, sw, sr, rs, rd, bh, cg, sb, rb, win):
+    """One CTA-window's write and read pool rows, in slot order, `owner_fill.cuh`'s layout: a write row is level R's
+    run, the values, level S's slice and ``(F, m)`` at 16 x 64, level S's run, level R's, the values and ``(F, m)`` at
+    32 x 32 (each level's digits in its stored type)."""
     level_r = 1 - level_s
     H = routes.heads
     b, h = divmod(bh, H)
@@ -273,41 +256,47 @@ def fill_model(routes, values, w, level_s, sw, sr, rs, rd, bh, cg, sb, rb, win):
         return x[b, t0 + tokens, h, lo:hi].contiguous().view(torch.uint8).cpu().numpy()
 
     wt = np.nonzero(wrows.any(0))[0]
-    dense = take(routes.amp_write[level_s], wt, s0, s0 + rs)
-    sparse = take(routes.amp_write[level_r], wt, r0, r0 + rd).copy()
+    s_run = take(routes.amp_write[level_s], wt, s0, s0 + rs)
+    r_run = take(routes.amp_write[level_r], wt, r0, r0 + rd).copy()
+    width = r_run.shape[1] // rd
     for c in range(rd // 32):
         live = wrows[32 * c:32 * c + 32][:, wt].any(0)
-        sparse[~live, 32 * c:32 * c + 32] = 0
+        r_run[~live, width * 32 * c:width * 32 * (c + 1)] = 0
     v = take(values.v, wt, cg * 32, cg * 32 + 32)
-    cols4 = [routes.g_write, values.scale, routes.scale_write[0], routes.scale_write[1]]
-    factors = np.stack([c[b, t0 + wt, h].float().cpu().numpy() for c in cols4], 1).astype(np.float32).view(np.uint8)
-    run = sparse if rs == 16 else np.concatenate([dense, sparse], 1)
-    tail = np.concatenate([dense, factors], 1) if rs == 16 else factors
-    out.append(np.concatenate([run, v, tail], 1))
+    fm = facts.fm[bh, t0 + wt].contiguous().view(torch.uint8).cpu().numpy()
+    parts = (r_run, v, s_run, fm) if rs == 16 else (s_run, r_run, v, fm)
+    out.append(np.concatenate(parts, 1))
     rt = np.nonzero(rrows.any(0))[0]
     out.append(np.concatenate([take(routes.amp_read[level_r], rt, r0, r0 + rd),
                                take(routes.amp_read[level_s], rt, s0, s0 + rs)], 1))
     return out
 
 
-def pool_rows(rs):
-    """``(write row bytes, read row bytes)``, `owner_fill.cuh`'s pitches."""
-    return 160, (96 if rs == 16 else 64)
+def write_row(routes, level_s, rs, rd):
+    """`owner_fill.cuh`'s `WriteRows::kRow` for the bundle's write types: level S's and R's digits, the values and
+    ``(F, m)``, to whole 32 bytes."""
+    size = [routes.amp_write[lv].element_size() for lv in (level_s, 1 - level_s)]
+    return (rs * size[0] + rd * size[1] + 64 + 8 + 31) // 32 * 32
+
+
+def read_row(rs):
+    """`owner_fill.cuh`'s `ReadRows::kRow`."""
+    return 96 if rs == 16 else 64
 
 
 def check_fill(name: str) -> bool:
-    spec, routes, values, words, level_s, sw, sr = cell_bundle(name)
+    spec, routes, values, facts, level_s, sw, sr = cell_bundle(name)
+    words = facts.words
     w = words.cpu().numpy().view(np.uint32)
     widths = tuple(spec.widths)
     ok = True
     BH, windows = words.shape[0], spec.tokens // WINDOW
     for rs, rd in CARVES:
         sblocks, rblocks = widths[level_s] // rs, widths[1 - level_s] // rd
-        wd, rdump = ops().fill_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
-                                    routes.g_write, values.v, values.scale, words, level_s, sw, sr,
-                                    rs, rd, 1)
+        wd, rdump = ops().fill_part(list(routes.amp_read), list(routes.amp_write), values.v, facts.fm, words,
+                                    level_s, sw, sr, rs, rd, 1)
         torch.cuda.synchronize()
-        wrow, rrow = pool_rows(rs)
+        wrow, rrow = write_row(routes, level_s, rs, rd), read_row(rs)
         wd = wd.cpu().numpy().reshape(-1, WINDOW, wrow)
         rdump = rdump.cpu().numpy().reshape(-1, WINDOW, rrow)
         bad = total = 0
@@ -317,7 +306,8 @@ def check_fill(name: str) -> bool:
                 for sb in range(sblocks):
                     cta = (z * rblocks + rb) * sblocks + sb
                     for win in range(windows):
-                        want_w, want_r = fill_model(routes, values, w, level_s, sw, sr, rs, rd, bh, cg, sb, rb, win)
+                        want_w, want_r = fill_model(routes, values, facts, w, level_s, sw, sr, rs, rd, bh, cg, sb,
+                                                    rb, win)
                         i = cta * windows + win
                         total += 1
                         if not (np.array_equal(wd[i, :len(want_w), :want_w.shape[1]], want_w)
@@ -335,31 +325,29 @@ RUN_REPS = 3
 def run_part(name: str, part: str, heads: int) -> None:
     """The part on the cell's whole call at ``heads`` heads, no dump, each carve `RUN_REPS` times: the launches an
     ncu run reads."""
+    spec, routes, values, facts, level_s, sw, sr = cell_bundle(name, heads)
+    words = facts.words
     if part == "fold":
-        spec, routes, values, facts, level_s, sw, sr, floor_s = fold_bundle(name, heads)
         for _ in range(RUN_REPS):
-            _fold(routes, values, facts, level_s, sw, sr, floor_s)
+            _fold(routes, values, facts, level_s, sw, sr)
         torch.cuda.synchronize()
-        print(f"ran {part} on {name}: carve (16, 64), {RUN_REPS} times, BH {facts.words.shape[0]}, L {spec.tokens}")
+        print(f"ran {part} on {name}: carve (16, 64), {RUN_REPS} times, BH {words.shape[0]}, L {spec.tokens}")
         return
-    spec, routes, values, words, level_s, sw, sr = cell_bundle(name, heads)
     for rs, rd in CARVES:
         for _ in range(RUN_REPS):
             if part == "lists":
                 ops().lists_part(words, list(spec.widths), level_s, sw, sr, rs, rd, STEP_CHOSEN, 0)
             elif part.startswith("readout"):
                 step = {"readout": STEP_CHOSEN, "readout-list": STEP_PER_LIST, "readout-merged": STEP_MERGED}[part]
-                ops().readout_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
-                                   routes.g_write, values.v, values.scale, words, level_s, sw, sr,
+                ops().readout_part(list(routes.amp_read), list(routes.amp_write), values.v, words, level_s, sw, sr,
                                    rs, rd, step)
             elif part == "drain":
                 num = torch.zeros(words.shape[0], spec.tokens, 64, device="cuda")
                 den = torch.zeros(words.shape[0], spec.tokens, device="cuda")
                 ops().drain_part(words, list(spec.widths), level_s, sw, sr, heads, rs, rd, num, den)
             else:
-                ops().fill_part(list(routes.amp_read), list(routes.amp_write), list(routes.scale_write),
-                                routes.g_write, values.v, values.scale, words, level_s, sw, sr,
-                                rs, rd, 0)
+                ops().fill_part(list(routes.amp_read), list(routes.amp_write), values.v, facts.fm, words, level_s,
+                                sw, sr, rs, rd, 0)
     torch.cuda.synchronize()
     print(f"ran {part} on {name}: carves {CARVES}, {RUN_REPS} each, BH {words.shape[0]}, L {spec.tokens}")
 

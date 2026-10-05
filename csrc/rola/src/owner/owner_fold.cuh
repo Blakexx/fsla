@@ -24,10 +24,9 @@ constexpr int kUnitNone = -1000;
 constexpr float kWindowAdd = kWindow * 16.0f;
 constexpr int kExpDead = -126;
 
-//: A DENSE DIGIT AS f16: `(1024 + b) 2^-8 - 4 = b / 256` from the byte under a 0x64 high byte, and the floor
-//: `255 x 2^-21` (a write-dense level's zero at 2^-13 of the row max). -- see docs/internals/owner/owner_fold.md#stage
+//: A SPARSE LEVEL S's DIGIT AS f16: `(1024 + b) 2^-8 - 4 = b / 256` from the byte under a 0x64 high byte.
+//: -- see docs/internals/owner/owner_fold.md#stage
 constexpr uint32_t kHalfMagic = 0x64646464u, kHalfScale = 0x1c001c00u, kHalfBias = 0xc400c400u;
-constexpr uint32_t kHalfFloor = 0x07f807f8u;
 
 //: A WARP'S ACCUMULATORS: per list the 16 leaves by the channel group, fp32 in the list's unit. The mass lives in
 //: shared memory (`FoldTenants::mass`). -- see docs/internals/owner/owner_fold.md#state
@@ -117,14 +116,13 @@ __device__ __forceinline__ void fold_window(FoldAcc<C>& st, ListUnits& lu, FoldT
   ft.mass[g + 8][list + 1] *= f1;
 }
 
-//: A PASS'S ROWS RESTAGED, two threads a row: the dense digits to f16 (the floor taken on a write-dense level S) with
-//: `F = ((g sw_0) sw_1) vs` and `m = (g sw_0) sw_1` -- the facts pass's products -- or the values copied; the rows past
-//: the pass to a whole step zeroed, so a dense side's last step reads nothing but zeros there.
-template <class C>
-__device__ void stage_pass(FoldTenants<C>& ft, const WritePool<C>& pools, const OwnerParams& p,
-                           int n, int tid) {
-  using P = Rows<C>;
-  const uint32_t floor = p.floor_s != 0 ? kHalfFloor : 0u;
+//: A PASS'S ROWS RESTAGED, two threads a row: level S's digits as f16 (a dense level's copied, a sparse level's bytes
+//: converted to `b / 256`) with the token's `(F, m)`, or the values copied; the rows past the pass to a whole step
+//: zeroed, so a dense side's last step reads nothing but zeros there.
+template <class W>
+__device__ void stage_pass(FoldTenants<typename W::C>& ft, const WritePool<W>& pools, int n,
+                           int tid) {
+  const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
   const int rows = (n + 15) & ~15;
 #pragma unroll 1
   for (int i = tid; i < 2 * rows; i += kThreads) {
@@ -132,30 +130,30 @@ __device__ void stage_pass(FoldTenants<C>& ft, const WritePool<C>& pools, const 
     const bool live = r < n;
     const uint8_t* const row = pools.write[r];
     if (i & 1) {
-      const uint4* const src = reinterpret_cast<const uint4*>(row + P::kValues);
+      const uint4* const src = reinterpret_cast<const uint4*>(row + W::kValues);
       uint4* const dst = reinterpret_cast<uint4*>(&ft.vals[r][0]);
 #pragma unroll
-      for (int k = 0; k < 4; ++k) dst[k] = live ? src[k] : make_uint4(0u, 0u, 0u, 0u);
+      for (int k = 0; k < 4; ++k) dst[k] = live ? src[k] : zero;
       continue;
     }
-    const float* const f = reinterpret_cast<const float*>(row + P::kFactors);
-    const float m = live ? __fmul_rn(__fmul_rn(f[0], f[2]), f[3]) : 0.0f;
-    ft.fm[r] = make_float2(live ? __fmul_rn(m, f[1]) : 0.0f, m);
-    const uint4 d =
-        live ? *reinterpret_cast<const uint4*>(row + P::kTail) : make_uint4(0u, 0u, 0u, 0u);
-    const uint32_t w[4] = {d.x, d.y, d.z, d.w};
-    const uint32_t keep = live ? floor : 0u;
-    uint32_t h[8];
-#pragma unroll
-    for (int k = 0; k < 4; ++k) {
-      h[2 * k] = ops::hfma2(ops::prmt(w[k], kHalfMagic, 0x4140u), kHalfScale, kHalfBias);
-      h[2 * k + 1] = ops::hfma2(ops::prmt(w[k], kHalfMagic, 0x4342u), kHalfScale, kHalfBias);
-    }
-#pragma unroll
-    for (int k = 0; k < 8; ++k) h[k] = ops::hmax2(h[k], keep);
+    ft.fm[r] = live ? *reinterpret_cast<const float2*>(row + W::kFm) : make_float2(0.0f, 0.0f);
+    const uint4* const src = reinterpret_cast<const uint4*>(row + W::kS);
     uint4* const dst = reinterpret_cast<uint4*>(&ft.dense[r][0]);
-    dst[0] = make_uint4(h[0], h[1], h[2], h[3]);
-    dst[1] = make_uint4(h[4], h[5], h[6], h[7]);
+    if constexpr (W::kHalfS) {
+      dst[0] = live ? src[0] : zero;
+      dst[1] = live ? src[1] : zero;
+    } else {
+      const uint4 d = live ? src[0] : zero;
+      const uint32_t w[4] = {d.x, d.y, d.z, d.w};
+      uint32_t h[8];
+#pragma unroll
+      for (int k = 0; k < 4; ++k) {
+        h[2 * k] = ops::hfma2(ops::prmt(w[k], kHalfMagic, 0x4140u), kHalfScale, kHalfBias);
+        h[2 * k + 1] = ops::hfma2(ops::prmt(w[k], kHalfMagic, 0x4342u), kHalfScale, kHalfBias);
+      }
+      dst[0] = make_uint4(h[0], h[1], h[2], h[3]);
+      dst[1] = make_uint4(h[4], h[5], h[6], h[7]);
+    }
   }
 }
 
@@ -183,8 +181,8 @@ __device__ __forceinline__ int pass_end(const ListTenants<C>& sm, int warp, int 
 }
 
 //: A STEP'S ROWS: those of the lane's A and B `ldmatrix` tokens (`8 (q >> 1) + r`, `8 (q & 1) + r`) and of its four c
-//: tokens (2 tq, 2 tq + 1, 2 tq + 8, 2 tq + 9), each c token's run membership. A dense side's are the step's own (the
-//: pass zero-padded); a listed side's its entries. -- see docs/internals/owner/owner_fold.md#operands
+//: tokens (2 tq, 2 tq + 1, 2 tq + 8, 2 tq + 9), each c token's membership: in its run (a listed side's entries) or in
+//: the pass (a dense side's, the step's own rows, the pass zero-padded). -- see docs/internals/owner/owner_fold.md#operands
 template <class C, bool kListed>
 struct StepRows {
   int a, b, c[4];
@@ -207,7 +205,7 @@ struct StepRows {
 #pragma unroll
       for (int k = 0; k < 4; ++k) {
         c[k] = base + 2 * tq + (k & 1) + 8 * (k >> 1);
-        in[k] = true;
+        in[k] = c[k] < end - first;
       }
     }
   }
@@ -232,17 +230,20 @@ __device__ __forceinline__ void step_operands(const FoldTenants<C>& ft, int ra, 
 }
 
 //: A LIST'S c AT A LANE'S FOUR TOKENS to f16 pairs: `fp32(b F) x 2^(4 - unit)` for the values, or `fp32(b m)` at the
-//: mass's unit (`kMass`), `b` the list byte (at the floor on a write-dense level R, `kFloor`).
-//: -- see docs/internals/owner/owner_fold.md#coefficient
-template <class C, bool kFloor, bool kMass, bool kListed>
-__device__ __forceinline__ void list_coef(const WritePool<C>& pools, const FoldTenants<C>& ft,
-                                          const StepRows<C, kListed>& rows, int byte, float pre,
-                                          uint32_t (&c)[2]) {
+//: mass's unit (`kMass`), `b` the list's write coefficient on the byte scale (a sparse level R's byte, a dense one's
+//: f16 times 255, exact). -- see docs/internals/owner/owner_fold.md#coefficient
+template <class W, bool kMass, bool kListed>
+__device__ __forceinline__ void list_coef(const WritePool<W>& pools,
+                                          const FoldTenants<typename W::C>& ft,
+                                          const StepRows<typename W::C, kListed>& rows, int digit,
+                                          float pre, uint32_t (&c)[2]) {
   float v[4];
 #pragma unroll
   for (int k = 0; k < 4; ++k) {
-    float b = static_cast<float>(pools.write[rows.c[k]][byte]);
-    if constexpr (kFloor) b = fmaxf(b, facts::kDenseFloorDigit);
+    const uint8_t* const run = pools.write[rows.c[k]] + W::kR;
+    const float b =
+        W::kHalfR ? facts::kRowMaxDigit * __half2float(reinterpret_cast<const __half*>(run)[digit])
+                  : static_cast<float>(run[digit]);
     const float2 f = ft.fm[rows.c[k]];
     v[k] = rows.in[k] ? __fmul_rn(__fmul_rn(b, kMass ? f.y : f.x), pre) : 0.0f;
   }
@@ -263,17 +264,20 @@ __device__ __forceinline__ void list_a(const uint32_t (&a)[4], uint32_t c01, uin
 //: two shuffles a list carry it to the A layout; the mass by one more atom (A the dense digits, B the lists' `c_m`, lane
 //: (g, tq)'s own pair for list g) into a fresh fp32 fragment added by FADD into the pass's sums `m` -- no accumulation
 //: chain, so the all-positive terms keep fp32's rounding. -- see docs/internals/owner/owner_fold.md#forms
-template <class C, bool kListed>
-__device__ __forceinline__ void merged_step(FoldAcc<C>& st, float (&m)[4], const FoldTenants<C>& ft,
-                                            const WritePool<C>& pools, const ListTenants<C>& sm,
+template <class W, bool kListed>
+__device__ __forceinline__ void merged_step(FoldAcc<typename W::C>& st, float (&m)[4],
+                                            const FoldTenants<typename W::C>& ft,
+                                            const WritePool<W>& pools,
+                                            const ListTenants<typename W::C>& sm,
                                             const ListUnits& lu, int warp, int lane, int e0,
                                             int end, int first) {
-  const int tq = lane & 3, byte = warp * C::kFoldLists + (lane >> 2);
+  using C = typename W::C;
+  const int tq = lane & 3, digit = warp * C::kFoldLists + (lane >> 2);
   const StepRows<C, kListed> rows(sm, warp, lane, e0, end, first);
   uint32_t a[4], b[4][2], cv[2], cm[2];
   step_operands(ft, rows.a, rows.b, lane, a, b);
-  list_coef<C, !kListed, false>(pools, ft, rows, byte, lu.pu, cv);
-  list_coef<C, !kListed, true>(pools, ft, rows, byte, lu.pv, cm);
+  list_coef<W, false>(pools, ft, rows, digit, lu.pu, cv);
+  list_coef<W, true>(pools, ft, rows, digit, lu.pv, cm);
   float d[4];
   ops::hmma_fresh(d, a, cm[0], cm[1]);
 #pragma unroll
@@ -300,34 +304,35 @@ __device__ __forceinline__ void add_mass(FoldTenants<C>& ft, const float (&m)[4]
 }
 
 //: A WARP'S FOLD OF ONE PASS (rows `[first, first + n)` of the window's write union), merged: every list over every
-//: row (a dense side) or over the warp union's entries in the pass, the cursor carrying the union's next entry across
+//: row (a dense level R, its f16 rows) or over the warp union's entries in the pass, the cursor carrying the union's next entry across
 //: the window's passes, the mass's sums added to the warp's columns at the end.
 //: `lap(k)` books the pass's head (0), first step (1), other steps (2) and tail (3) on a part's ledger.
 //: -- see docs/internals/owner/owner_fold.md#forms
-template <class C, class Lap>
-__device__ void fold_pass(FoldAcc<C>& st, FoldTenants<C>& ft, const WritePool<C>& pools,
-                          const ListTenants<C>& sm, const OwnerParams& p, const ListUnits& lu,
-                          int& cursor, int first, int n, int warp, int lane, Lap&& lap) {
+template <class W, class Lap>
+__device__ void fold_pass(FoldAcc<typename W::C>& st, FoldTenants<typename W::C>& ft,
+                          const WritePool<W>& pools, const ListTenants<typename W::C>& sm,
+                          const ListUnits& lu, int& cursor, int first, int n, int warp, int lane,
+                          Lap&& lap) {
   const int limit = first + n;
   float m[4] = {};
-  if (p.sparse_write == 0) {
+  if constexpr (W::kHalfR) {
     lap(0);
-    merged_step<C, false>(st, m, ft, pools, sm, lu, warp, lane, first, limit, first);
+    merged_step<W, false>(st, m, ft, pools, sm, lu, warp, lane, first, limit, first);
     lap(1);
 #pragma unroll 1
     for (int e = first + 16; e < limit; e += 16)
-      merged_step<C, false>(st, m, ft, pools, sm, lu, warp, lane, e, limit, first);
+      merged_step<W, false>(st, m, ft, pools, sm, lu, warp, lane, e, limit, first);
   } else {
     const int at0 = cursor;
     const int end = pass_end(sm, warp, at0, sm.total[0][warp], limit, lane);
     lap(0);
 #pragma unroll 1
     for (int t = ops::once(at0 < end); t > 0; --t)
-      merged_step<C, true>(st, m, ft, pools, sm, lu, warp, lane, at0, end, first);
+      merged_step<W, true>(st, m, ft, pools, sm, lu, warp, lane, at0, end, first);
     lap(1);
 #pragma unroll 1
     for (int e = at0 + 16; e < end; e += 16)
-      merged_step<C, true>(st, m, ft, pools, sm, lu, warp, lane, e, end, first);
+      merged_step<W, true>(st, m, ft, pools, sm, lu, warp, lane, e, end, first);
     cursor = end;
   }
   lap(2);

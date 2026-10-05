@@ -6,7 +6,8 @@ reads the box's state out to the window's readers. It is being built as a SKELET
 `csrc/rola/src/carry/` in place.
 
 Vocabulary, defined here and used unqualified in this directory's docs: **level S** = the read-sparse level, **level
-R** = the read-dense level (in the split routing the cells declare, level R is write-sparse and level S write-dense);
+R** = the read-dense level (in the alt and cohort cells level R is write-sparse and level S write-dense, in the both
+cells the reverse);
 **box** = a CTA's leaves, `RS` digits of level S by `RD` digits of level R, for one channel group of 32; **window** =
 512 tokens; **write list** = the tokens live at one of the box's level-R write digits in a window (the fold's unit);
 **read digit** = one of the box's level-S read digits (the readout's unit); **pool slot** = a live token's rank among
@@ -42,9 +43,11 @@ counts pick ([`owner_lists.md`](owner_lists.md#step-cost)). A measurement forces
 The facts pass's words (`words`, contiguous `[BH, 2, rows, L / 32]` int32, with a side's and a row's word counts), which
 level is S and which R, each level's first row in the layout and its width, whether level R's write side and level S's
 read side are sparse (a dense side's words are not read: its union is every token and its form merged), `H`, `L`, the
-window count, a forced step form, the lists' dump for the harness's model check, and the phase ledger; for the fold,
-the facts pass's list exponents (`list_exp`, a `(K_m, K_v)` word a window and level-R digit, `list_width` digits a
-window) and whether level S's write side is dense (`floor_s`, its digits' floor).
+window count, a forced step form, the lists' dump for the harness's model check, and the phase ledger; each level's
+read and write rows and the values (`RowView`, byte strides: a dense write level's rows are f16, the rest u8); for the
+fill and the fold, the facts pass's `(F, m)` plane (`fm`, `[BH, L]` float2) and its list exponents (`list_exp`, a
+`(K_m, K_v)` word a window and level-R digit, `list_width` digits a window). The write rows' types are not in it: they
+are the write format a kernel is instantiated for ([`owner_fill.md`](owner_fill.md#pools)).
 
 <a id="skeleton"></a>
 

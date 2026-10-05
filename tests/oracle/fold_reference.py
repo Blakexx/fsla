@@ -33,9 +33,7 @@ def list_columns(routes, values) -> torch.Tensor:
 def list_maxima(routes, values, level: int, window: int) -> torch.Tensor:
     """``[B, H, windows, B_level, 2]`` fp64: per window and digit of ``level``, the largest ``b x col`` over its
     tokens, ``b`` the write coefficient on the byte scale (a dense level's f16 times 255), zero past the rows' width."""
-    rows = routes.amp_write[level].double()
-    if not routes.sparse[1][level]:
-        rows = rows * quant.AMP_LEVELS
+    rows = write_bytes(routes, level).double()
     B, T, H, width = rows.shape
     cols = list_columns(routes, values)
     windows = -(-T // window)
@@ -76,12 +74,24 @@ UNIT_MIN = COEF_TOP - 127
 UNIT_NONE = -1000
 WINDOW_ADD = np.float32(512 * 16)
 
-#: THE STATE'S ABSOLUTE UNIT: x carries b_S / 256 and c the raw b_R, so S = st x 2^(unit - 4) x 256 / 255^2
-UNIT_SCALE = 256.0 / 255.0 ** 2
 
-#: a write-dense level's zero: the list byte at 255 x 2^-13, the dense digit at that over 256
-BYTE_FLOOR = np.float32(quant.AMP_LEVELS * quant.DENSE_FLOOR)
-HALF_FLOOR = BYTE_FLOOR / 256
+def unit_scale(routes, level_s: int) -> float:
+    """THE STATE'S ABSOLUTE UNIT: ``c`` carries ``b_R`` on the byte scale and ``x`` level S's coefficient -- a dense
+    level's stored f16 itself, a sparse level's byte over 256 -- so the state is ``st x 2^(unit - 4)`` times ``1/255``
+    or ``256/255^2``."""
+    return (1.0 if is_half(routes, level_s) else 256.0 / quant.AMP_LEVELS) / quant.AMP_LEVELS
+
+
+def is_half(routes, level: int) -> bool:
+    """Whether ``level``'s write rows are f16: a dense level's (docs/internals/facts/liveness_contract.md#floor)."""
+    return routes.amp_write[level].dtype == torch.float16
+
+
+def write_bytes(routes, level: int) -> torch.Tensor:
+    """``level``'s write coefficients on the byte scale, fp32: a sparse level's u8, a dense level's f16 times 255
+    (exact)."""
+    rows = routes.amp_write[level].float()
+    return rows * quant.AMP_LEVELS if is_half(routes, level) else rows
 
 
 def _ceil_exp(x: np.ndarray) -> np.ndarray:
@@ -100,25 +110,22 @@ def next_units(k: np.ndarray, unit: np.ndarray, bound: np.ndarray):
     return nxt, (bound * f + WINDOW_ADD).astype(np.float32), f
 
 
-def fold_state(routes, values, list_exp, level_s: int, floor_s: bool, floor_r: bool, window: int):
+def fold_state(routes, values, list_exp, level_s: int, window: int):
     """THE FOLD'S DECLARED ARITHMETIC over a call (one batch-head at a time): ``(state, env, mass, units)`` -- the
     absolute state ``[BH, B_S, B_R, C]`` and its envelope (``sum |A| |v|``, absolute), the absolute mass ``[BH, B_S,
     B_R]`` and the final units ``[BH, B_R, 2]`` (values', mass's), from the facts pass's ``list_exp``.
 
-    ``F = ((g sw_0) sw_1) vs`` and ``m = (g sw_0) sw_1`` in fp32; ``c = f16(fp32(b_R F) 2^(4 - u))``; ``x = max(b_S,
-    floor) / 256`` in f16 (exact); ``A = f16(x c)``; the state gains ``sum_t A v`` in its list's unit (exact here), the
-    mass ``sum_t x c_m``; each window first rescales both to the units `next_units` gives."""
+    ``F = ((g sw_0) sw_1) vs`` and ``m = (g sw_0) sw_1`` in fp32; ``c = f16(fp32(b_R F) 2^(4 - u))``, ``b_R`` on the
+    byte scale (:func:`write_bytes`); ``x`` level S's stored f16 (a dense level) or its byte over 256 (exact); ``A =
+    f16(x c)``; the state gains ``sum_t A v`` in its list's unit (exact here), the mass ``sum_t x c_m``; each window
+    first rescales both to the units `next_units` gives. A dense level's floor is in its stored rows."""
     level_r = 1 - level_s
     m = routes.g_write.float() * routes.scale_write[0].float() * routes.scale_write[1].float()
     F = m * values.scale.float()
-    b_r = routes.amp_write[level_r].float()
-    if floor_r:
-        b_r = b_r.clamp_min(float(BYTE_FLOOR))
-    x = routes.amp_write[level_s].float() / 256
-    if floor_s:
-        x = x.clamp_min(float(HALF_FLOOR))
-    x = x.half()
+    b_r = write_bytes(routes, level_r)
+    x = routes.amp_write[level_s] if is_half(routes, level_s) else (routes.amp_write[level_s].float() / 256).half()
     v = values.v.double()
+    scale = unit_scale(routes, level_s)
     B, T, H, w_r = b_r.shape
     w_s, C = x.shape[-1], v.shape[-1]
     windows = T // window
@@ -139,15 +146,15 @@ def fold_state(routes, values, list_exp, level_s: int, floor_s: bool, floor_r: b
         cv = ((b_r[:, sl] * F[:, sl, :, None]) * pu[:, None]).half()                    # [B, Tw, H, w_r]
         cm = ((b_r[:, sl] * m[:, sl, :, None]) * pv[:, None]).half()
         a = (x[:, sl, :, :, None].float() * cv[:, :, :, None, :].float()).half().double()  # [B, Tw, H, w_s, w_r]
-        unit_abs = torch.tensor(np.exp2(u - COEF_TOP) * UNIT_SCALE, device=dev)          # [B, H, w_r]
+        unit_abs = torch.tensor(np.exp2(u - COEF_TOP) * scale, device=dev)               # [B, H, w_r]
         state = state * torch.tensor(fu, device=dev).double()[:, :, None, :, None] \
             + torch.einsum("bthds,bthc->bhdsc", a, v[:, sl])
         env += torch.einsum("bthds,bthc->bhdsc", a.abs(), v[:, sl].abs()) * unit_abs[:, :, None, :, None]
         mass = mass * torch.tensor(fv, device=dev).double()[:, :, None, :] \
             + torch.einsum("bthd,bths->bhds", x[:, sl].double(), cm.double())
         del a
-    state = state * torch.tensor(np.exp2(u - COEF_TOP) * UNIT_SCALE, device=dev)[:, :, None, :, None]
-    mass = mass * torch.tensor(np.exp2(v_unit - COEF_TOP) * UNIT_SCALE, device=dev)[:, :, None, :]
+    state = state * torch.tensor(np.exp2(u - COEF_TOP) * scale, device=dev)[:, :, None, :, None]
+    mass = mass * torch.tensor(np.exp2(v_unit - COEF_TOP) * scale, device=dev)[:, :, None, :]
     units = np.stack((u, v_unit), -1)
     return (state.reshape(B * H, w_s, w_r, C), env.reshape(B * H, w_s, w_r, C), mass.reshape(B * H, w_s, w_r),
             units.reshape(B * H, w_r, 2))

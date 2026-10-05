@@ -33,28 +33,22 @@ struct Carve {
 //: A STEP FORM. -- see docs/internals/owner/owner.md#step
 enum Step : int { kStepChosen = 0, kStepPerList = 1, kStepMerged = 2 };
 
-//: A LEVEL'S ROWS OR THE VALUE PLANE, where the bundle holds them, strides in bytes; and a per-token column, strides
-//: in elements.
+//: A LEVEL'S ROWS OR THE VALUE PLANE, where the bundle holds them, strides in bytes.
 struct RowView {
   const void* base;
-  int64_t sb, st, sh;
-};
-
-struct ColumnView {
-  const float* base;
   int64_t sb, st, sh;
 };
 
 //: THE OPERAND BLOCK, a grid constant. -- see docs/internals/owner/owner.md#params
 struct OwnerParams {
   RowView read[2], write[2], v;
-  ColumnView factor[4];
+  const float2* fm;
   const uint32_t* words;
   const uint32_t* list_exp;
   int64_t side_words, row_words;
   int level_s, level_r;
   int row_base[2], width[2], list_width;
-  int sparse_write, sparse_read, floor_s;
+  int sparse_write, sparse_read;
   int H, L, windows, step;
   uint32_t* dump;
   long long* ledger;

@@ -113,7 +113,7 @@ template <class C>
 __device__ void readout_pass(ReadPanel& panel, const ReadPool<C>& pools, const ListTenants<C>& sm,
                              const OwnerParams& p, const ReadState<C>& rs,
                              int (&cursor)[C::kReadDigits], int first, int n, int warp, int lane) {
-  constexpr int kFactorAt = C::RS == 16 ? Rows<C>::kRun : C::RD;
+  constexpr int kFactorAt = C::RS == 16 ? ReadRows<C>::kRun : C::RD;
   const int row0 = C::RD + warp * C::kReadDigits;
   const int limit = first + n;
   const int factor_byte = kFactorAt + warp * C::kReadDigits;
