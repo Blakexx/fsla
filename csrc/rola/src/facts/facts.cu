@@ -173,17 +173,20 @@ __device__ __forceinline__ ColumnLoads load_columns(const FactsParams& p, int b,
 }
 
 //: THE WINDOW'S COLUMNS, staged for its list units: a token's `m = g x the write scales` (the gain first, then the
-//: levels in order) and `m x s`, a dead or past-the-end token zeros, and past them the window's largest of each.
+//: levels in order) and `m x s`, a dead or past-the-end token zeros, and past them the window's largest of each; with
+//: `fm` (the window's first list item) each live token's `(F, m) = (m s, m)` stored, the fold's factor products.
 //: -- see docs/internals/facts/facts.md#lists
-__device__ void stage_columns(ColumnLoads c, int warp, int lane, float2* cols, float2* warp_top) {
+__device__ void stage_columns(ColumnLoads c, int warp, int lane, float2* cols, float2* warp_top,
+                              float2* fm, int t0, int L) {
   constexpr int kPerThread = ColumnLoads::kPerThread;
   float2 top = make_float2(0.0f, 0.0f);
 #pragma unroll
   for (int i = 0; i < kPerThread; ++i) {
 #pragma unroll
     for (int l = 0; l < kMaxLevels; ++l) c.m[i] *= c.f[i][l];
-    cols[column_slot(i * kFactsThreads + static_cast<int>(threadIdx.x))] =
-        make_float2(c.m[i], c.m[i] * c.s[i]);
+    const int t = i * kFactsThreads + static_cast<int>(threadIdx.x);
+    cols[column_slot(t)] = make_float2(c.m[i], c.m[i] * c.s[i]);
+    if (fm != nullptr && t0 + t < L) fm[t0 + t] = make_float2(c.m[i] * c.s[i], c.m[i]);
     top = make_float2(fmaxf(top.x, c.m[i]), fmaxf(top.y, c.m[i] * c.s[i]));
   }
 #pragma unroll
@@ -402,7 +405,9 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
         vote_copies = start_part<kListPartWords, false>(p, code, b, h, window, part, lane, ring);
       else if (live)
         dense_copies = start_part<kWindowWords, true>(p, code, b, h, window, part, lane, ring);
-      stage_columns(loads, warp, lane, s_cols, s_warp_top);
+      stage_columns(loads, warp, lane, s_cols, s_warp_top,
+                    k == 0 ? p.fm + static_cast<int64_t>(bh) * p.L : nullptr,
+                    window * kWindowTokens, p.L);
       __syncthreads();
       clock.lap(kPhaseColumns);
       if (live && voted)
@@ -500,8 +505,9 @@ void rola_facts_ledger_bind(std::optional<Tensor> ledger) {
 //: -- see docs/internals/facts/facts_api.md#rola-facts-forward
 void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                         std::vector<Tensor> scale_write, Tensor g_write, Tensor v_scale,
-                        Tensor words, Tensor unions, Tensor list_exp, std::vector<int64_t> widths,
-                        int64_t dense_read, std::vector<int64_t> mask_read, int64_t dense_write,
+                        Tensor words, Tensor unions, Tensor list_exp, Tensor fm,
+                        std::vector<int64_t> widths, int64_t dense_read,
+                        std::vector<int64_t> mask_read, int64_t dense_write,
                         std::vector<int64_t> mask_write, int64_t list_level, Tensor counters,
                         int64_t window) {
   check_arch_table();
@@ -609,6 +615,10 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                     "list_exp is the contiguous int16 [", B * H, ", ", p.windows, ", ",
                     p.B[p.list_level], ", 2] list exponents");
     p.list_exp = reinterpret_cast<uint32_t*>(list_exp.mutable_data_ptr<int16_t>());
+    STD_TORCH_CHECK(fm.is_cuda() && fm.scalar_type() == Dtype::Float && fm.is_contiguous()
+                        && fm.numel() == B * H * p.L * 2,
+                    "fm is the contiguous fp32 [", B * H, ", ", p.L, ", 2] factor products");
+    p.fm = reinterpret_cast<float2*>(fm.mutable_data_ptr<float>());
   }
   p.ledger = detail::g_ledger;
 

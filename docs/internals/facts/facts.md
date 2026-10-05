@@ -135,9 +135,20 @@ of the item's requests — issued behind the ring's 24 KB they waited on it (`nl
 four bytes to fp32 through the mantissa (a byte permute with an immediate selector, `0x4b0000bb`, minus 2^23) and maxes
 `b × m` and `b × m × s` into its four digits' pairs — six operations an element, ~210 a word. At the part's end the four
 token blocks' maxima join across lanes, the unit's parts join in shared memory after the barrier, and its first part's
-warp stores a lane's `(K_m, K_v)` pair, the unit's 32 one 128-byte run. A dense level's floor is not applied a digit
-at a time: `max_t max(b, f) c = max(max_t b c, f max_t c)`, so the window's largest column times the floor's digit
-bounds every digit in the mask once.
+warp stores a lane's `(K_m, K_v)` pair, the unit's 32 one 128-byte run. A dense level's floor is in its stored rows,
+so the maxima take it as read.
+
+<a id="factor-products"></a>
+
+## The factor products: the fold's `(F, m)`
+
+    m(t) = ((g_write(t) × scale_write_0(t)) × scale_write_1(t))      F(t) = m(t) × s(t)
+
+multiplied in fp32 in that order: the products `stage_columns` already forms for the lists. A window's first list
+item (`k == 0`) stores each token's `(F, m)` as one float2 to the `[BH, L, 2]` plane `fm`, so the fold reads a token's
+two products in one 8-byte load where it read four factor planes and multiplied (ruled 2026-10-04: precompute what the
+fold's restage would multiply). A past-the-end token stores nothing; a call without a list level leaves the plane
+unwritten. At 8 bytes a token-head it adds no `O(L·N)` term.
 
 <a id="phase-ledger"></a>
 

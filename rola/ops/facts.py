@@ -34,13 +34,15 @@ class Facts(NamedTuple):
     ``[BH, windows, B_list, 2]`` int16 list exponents -- per window and digit of the list level (:func:`list_level`)
     the smallest ``K`` with every token's ``b m <= 2^K`` (column 0) and ``b m s <= 2^K`` (column 1), ``b`` its write
     byte (a dense level's zero at the floor), ``m`` the write gain times the write levels' scales and ``s`` the value
-    scale; ``-126`` for a list no token writes. ``B_list`` is 0 when the call has no list level. A DENSE level's rows
-    and groups are left unwritten: they are its width mask over the live tokens, which a reader takes from the side's
-    statics."""
+    scale; ``-126`` for a list no token writes. ``B_list`` is 0 when the call has no list level. ``fm`` the ``[BH, L,
+    2]`` fp32 factor products, each token's ``(F, m)`` = ``(m s, m)`` in that order (the fold's; written where the call
+    has a list level). A DENSE level's rows and groups are left unwritten: they are its width mask over the live tokens,
+    which a reader takes from the side's statics."""
 
     words: torch.Tensor
     unions: torch.Tensor
     list_exp: torch.Tensor
+    fm: torch.Tensor
 
 
 def call_layout(routes) -> LivenessLayout:
@@ -99,14 +101,15 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
     level = list_level(read_statics)
     width = layout.B[level] if level >= 0 else 0
     list_exp = torch.empty((BH, -(-layout.words // window_words), width, 2), dtype=torch.int16, device=routes.device)
+    fm = torch.empty((BH, layout.L, 2), dtype=torch.float32, device=routes.device)
     count = mask_words(layout.rows)
     extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
-        words, unions, list_exp, list(layout.B),
+        words, unions, list_exp, fm, list(layout.B),
         _dense_bits(read_statics), [read_statics.mask_word(i) for i in range(count)],
         _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], level,
         _counters(routes.device), WINDOW)
-    return Facts(words=words, unions=unions, list_exp=list_exp)
+    return Facts(words=words, unions=unions, list_exp=list_exp, fm=fm)
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/facts/facts.md#phase-ledger)

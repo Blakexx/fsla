@@ -71,7 +71,8 @@ struct FactsParams {
   uint32_t* words;
   uint32_t* unions;
   uint32_t* list_exp;  // [BH, windows, B_list], a digit's (K_m, K_v) int16 pair
-  int* counters;       // [2]: the next item, the blocks finished; zero between calls
+  float2* fm;  // [BH, L], a token's (F, m): the fold's factor products (facts.md#factor-products)
+  int* counters;  // [2]: the next item, the blocks finished; zero between calls
   long long* ledger;
   int D, H, L, token_words, windows, items, rows_total, units, groups, tiles, list_level,
       list_units, vote_units, list_item_units, list_items, vote_items, window_items;

@@ -179,12 +179,13 @@ def test_a_dense_level_is_neither_read_nor_written():
     words = torch.full((BH, lv.SIDES, layout.rows, layout.words), poison, dtype=torch.int32, device="cuda")
     unions = torch.full((BH, lv.SIDES, layout.groups, layout.tiles), poison, dtype=torch.int32, device="cuda")
     list_exp = torch.full((BH, 1, layout.B[level], 2), 0x5A5A, dtype=torch.int16, device="cuda")
+    fm = torch.zeros((BH, layout.L, 2), dtype=torch.float32, device="cuda")
     masks = [statics.mask_word(i) for i in range(lv.mask_words(layout.rows))]
     facts_ops.extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
-        words, unions, list_exp, list(layout.B), 1, masks, 1, masks, level,
+        words, unions, list_exp, fm, list(layout.B), 1, masks, 1, masks, level,
         torch.zeros(2, dtype=torch.int32, device="cuda"), facts_ops.WINDOW)
-    _assert_written(facts_ops.Facts(words, unions, list_exp), want, layout, statics, statics)
+    _assert_written(facts_ops.Facts(words, unions, list_exp, fm), want, layout, statics, statics)
     assert (words[:, :, :layout.B[0]] == poison).all() and (unions[:, :, :layout.group_base(1)] == poison).all()
     assert (list_exp != 0x5A5A).all()
 
@@ -200,6 +201,25 @@ def test_a_token_past_the_end_votes_dead():
     got = facts_ops.facts(routes, values, layout, statics, statics).words.cpu()
     assert layout.words == 2
     assert torch.equal(got[:, :, :, 1], torch.ones_like(got[:, :, :, 1]))
+
+
+# --------------------------------------------------------------- the factor products are the declared ones
+
+
+@pytest.mark.parametrize(("widths", "L"), [((32, 64), 600), ((16,), 1100)])
+def test_the_factor_products_are_the_declared_fp32_ones(widths, L):
+    """``fm`` holds each token's ``(F, m)`` = ``(((g sw_0) sw_1) vs, (g sw_0) sw_1)``, multiplied in fp32 in that order,
+    bit for bit, at every token of every window (docs/internals/facts/facts.md#factor-products)."""
+    layout = _layout(widths, L)
+    statics = _statics(layout, (), widths)
+    routes, values = _bundle(widths, L, (statics, statics))
+    got = facts_ops.facts(routes, values, layout, statics, statics).fm
+    m = routes.g_write.float()
+    for scale in routes.scale_write:
+        m = m * scale.float()
+    F = m * values.scale.float()
+    want = torch.stack((F, m), -1).permute(0, 2, 1, 3).reshape(routes.batch * routes.heads, L, 2)
+    assert torch.equal(got, want)
 
 
 # --------------------------------------------------------------- the list exponents are the reference's
@@ -281,7 +301,8 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
         facts_ops.extension().rola_facts_forward(
             wide, wide, list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
-            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), list(layout.B), 0,
+            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"),
+            torch.empty((2, L, 2), dtype=torch.float32, device="cuda"), list(layout.B), 0,
             [statics.mask_word(0)], 0, [statics.mask_word(0)], 1,
             torch.zeros(2, dtype=torch.int32, device="cuda"), facts_ops.WINDOW)
 
@@ -305,7 +326,8 @@ def test_the_seam_refuses_another_window():
         facts_ops.extension().rola_facts_forward(
             list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
-            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"), list(layout.B), 0,
+            torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"),
+            torch.empty((2, L, 2), dtype=torch.float32, device="cuda"), list(layout.B), 0,
             [statics.mask_word(0)], 0, [statics.mask_word(0)], 1,
             torch.zeros(2, dtype=torch.int32, device="cuda"), 256)
 
