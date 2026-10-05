@@ -98,15 +98,19 @@ __device__ __forceinline__ float next_unit(int k, int& unit, float& bound, float
   return f;
 }
 
-//: A WINDOW'S UNITS, before its passes: each list's `(K_m, K_v)` from the facts pass moves its book's units (lane
-//: `4 j` writes list j's back), the state and mass are rescaled to them, and the lanes take the window's prescales.
+//: A LANE'S LIST EXPONENTS for window `win`: its list's `(K_m, K_v)` word, loaded a window ahead of its use.
+template <class C>
+__device__ __forceinline__ uint32_t list_pair(const OwnerParams& p, int bh, int r0, int win,
+                                              int warp, int lane) {
+  return __ldg(p.list_exp + (static_cast<int64_t>(bh) * p.windows + win) * p.list_width + r0
+               + warp * C::kFoldLists + (lane >> 2));
+}
+
+//: A WINDOW'S UNITS, before the warp's passes: each list's `(K_m, K_v)` moves its book's units (lane `4 j` writes list
+//: j's back), the warp's state and mass columns are rescaled to them, and the lanes take the window's prescales.
 template <class C>
 __device__ __forceinline__ void fold_window(FoldAcc<C>& st, ListUnits& lu, FoldTenants<C>& ft,
-                                            const OwnerParams& p, int bh, int r0, int win, int warp,
-                                            int lane) {
-  const uint32_t pair =
-      __ldg(p.list_exp + (static_cast<int64_t>(bh) * p.windows + win) * p.list_width + r0
-            + warp * C::kFoldLists + (lane >> 2));
+                                            uint32_t pair, int warp, int lane) {
   UnitBook book = ft.units[warp][lane >> 2];
   const float fu = next_unit(static_cast<int16_t>(pair >> 16), book.u, book.bu, lu.pu);
   const float fv = next_unit(static_cast<int16_t>(pair & 0xffffu), book.v, book.bv, lu.pv);
@@ -132,8 +136,8 @@ __device__ __forceinline__ void fold_window(FoldAcc<C>& st, ListUnits& lu, FoldT
 //: A WARP'S ROWS FOR A PASS (union slots `[first, first + n)`): those whose token is in its union, ranked by a ballot,
 //: and their count; a dense level R's are the pass's own. -- see docs/internals/owner/owner_fold.md#rows
 template <class W>
-__device__ __forceinline__ int pass_rows(const ListTenants<typename W::C>& sm, uint16_t* rows,
-                                         int warp, int lane, int first, int n) {
+__device__ __forceinline__ int pass_rows(const WriteView& lists, uint16_t* rows, int warp, int lane,
+                                         int first, int n) {
   if constexpr (W::kHalfR) {
     return n;
   } else {
@@ -146,8 +150,8 @@ __device__ __forceinline__ int pass_rows(const ListTenants<typename W::C>& sm, u
       const int i = 32 * k + lane;
       bool mine = false;
       if (i < n) {
-        const int t = sm.token_of[0][first + i];
-        mine = ((sm.partial[0][warp][t >> 5] >> (t & 31)) & 1u) != 0u;
+        const int t = lists.token_of[first + i];
+        mine = ((lists.partial[warp * kWindowWords + (t >> 5)] >> (t & 31)) & 1u) != 0u;
       }
       const uint32_t ballot = __ballot_sync(0xffffffffu, mine);
       if (mine) rows[at + __popc(ballot & below)] = static_cast<uint16_t>(i);
@@ -291,15 +295,14 @@ __device__ __forceinline__ void add_mass(FoldTenants<typename W::C>& ft, const f
 //: MMAs, middle, tail. -- see docs/internals/owner/owner_fold.md#pipeline
 template <class W, class Middle, class Lap>
 __device__ void fold_pass(FoldAcc<typename W::C>& st, FoldTenants<typename W::C>& ft,
-                          FoldPool<W>& pool, const ListTenants<typename W::C>& sm,
-                          const ListUnits& lu, int g, int first, int n, int warp, int lane,
-                          Middle&& middle, Lap&& lap) {
+                          FoldPool<W>& pool, const WriteView& lists, const ListUnits& lu, int g,
+                          int first, int n, int warp, int lane, Middle&& middle, Lap&& lap) {
   using C = typename W::C;
   const int s = g % kWriteSlots;
   ops::mbar_wait(ops::smem_addr(&pool.landed[s]), static_cast<uint32_t>(g / kWriteSlots) & 1u);
   lap(0);
   const uint16_t* const rows = pool.rows[warp];
-  const int count = pass_rows<W>(sm, pool.rows[warp], warp, lane, first, n);
+  const int count = pass_rows<W>(lists, pool.rows[warp], warp, lane, first, n);
   const int steps = (count + 15) >> 4, mid = max(min(3, steps - 1), 0);
   const int at = W::kR + (W::kHalfR ? 2 : 1) * (warp * C::kFoldLists + (lane >> 2));
   const WriteSlot<W>& slot = pool.slot[s];

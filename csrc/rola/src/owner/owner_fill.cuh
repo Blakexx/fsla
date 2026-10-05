@@ -126,20 +126,20 @@ struct ReadLanes {
 //: reading nothing), the f16 values' 64 bytes, level S's slice at 16 x 64, and the token's `(F, m)`; the copies left
 //: for the caller to commit or to signal. -- see docs/internals/owner/owner_fill.md#write-pass
 template <class W>
-__device__ void fill_write(WriteSlot<W>& slot, const ListTenants<typename W::C>& sm,
-                           const WriteLanes<W>& lanes, int win, int first, int n, int tid) {
+__device__ void fill_write(WriteSlot<W>& slot, const WriteView& lists, const WriteLanes<W>& lanes,
+                           int win, int first, int n, int tid) {
   constexpr int kRunSlots = WriteLanes<W>::kRunSlots, kRunQuanta = WriteLanes<W>::kRunQuanta;
   const int q = lanes.q;
 #pragma unroll 1
   for (int r = tid >> 2; r < n; r += kThreads / 4) {
-    const int t = sm.token_of[0][first + r];
+    const int t = lists.token_of[first + r];
     const int tg = win * kWindow + t;
     uint8_t* const rows = slot.rows;
 #pragma unroll
     for (int j = 0; j < kRunSlots; ++j) {
       const ops::SmemAddr dst = ops::smem_addr(rows + W::at(r, q + 4 * j));
       if constexpr (W::kSplit && !W::kHalfR) {
-        const bool live = (sm.sector_uni[q >> 1][t >> 5] >> (t & 31)) & 1u;
+        const bool live = (lists.sector_uni[(q >> 1) * kWindowWords + (t >> 5)] >> (t & 31)) & 1u;
         ops::stage_tile_if(dst, token_row(lanes.run[j], tg), live);
       } else if (4 * (j + 1) <= kRunQuanta) {
         ops::stage_tile(dst, token_row(lanes.run[j], tg));

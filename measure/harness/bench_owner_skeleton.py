@@ -37,15 +37,26 @@ def ops():
     return torch.ops.rola_owner
 
 
-def cell_bundle(name: str, heads: int = 1):
+def cell_bundle(name: str, heads: int = 1, thin: bool = False):
     """``(spec, routes, values, facts, level_s, sparse_write, sparse_read)``: the cell's bundle at ``heads`` heads, the
-    facts pass's output (words, list exponents, factor products) and its carve's sides."""
+    facts pass's output (words, list exponents, factor products) and its carve's sides. ``thin`` (a sparse level R)
+    zeroes level R's write rows in every third window and all but every eighth token in the next, so the box windows
+    hold no pass and one pass -- what no cell declares."""
     from measure.cells import by_name, realize
     from measure.subjects import bundle_of
     from rola.ops import facts as facts_ops
 
     spec = by_name(name)
     routes, values, layout, statics = bundle_of(spec, realize(spec, H=heads))
+    if thin:
+        rows = routes.amp_write[1 - facts_ops.list_level(statics[0])]
+        for win in range(rows.shape[1] // WINDOW):
+            span = rows[:, win * WINDOW:(win + 1) * WINDOW]
+            if win % 3 == 1:
+                span.zero_()
+            elif win % 3 == 2:
+                keep = torch.arange(WINDOW, device=rows.device) % 8 == 0
+                span[:, ~keep] = 0
     out = facts_ops.facts(routes, values, layout, *statics)
     #: the floating draw is gone; at many heads its cached blocks would push the bundle out of device memory
     torch.cuda.empty_cache()
@@ -85,10 +96,18 @@ FOLD_RTOL = 2.0 ** -14
 
 
 def check_fold(name: str) -> bool:
-    """The fold part on the cell, per slot against `fold_reference.fold_state`; its units exactly."""
+    """The fold part on the cell, per slot against `fold_reference.fold_state`, its units exactly; on a sparse level R
+    the cell thinned too (`cell_bundle`'s ``thin``)."""
+    ok = _check_fold(name, thin=False)
+    if cell_bundle(name)[5]:
+        ok &= _check_fold(name, thin=True)
+    return ok
+
+
+def _check_fold(name: str, thin: bool) -> bool:
     from tests.oracle.fold_reference import COEF_TOP, fold_state, unit_scale
 
-    spec, routes, values, facts, level_s, sw, sr = cell_bundle(name)
+    spec, routes, values, facts, level_s, sw, sr = cell_bundle(name, thin=thin)
     widths = tuple(spec.widths)
     w_s, w_r = widths[level_s], widths[1 - level_s]
     sblocks, rblocks = w_s // 16, w_r // 64
@@ -110,7 +129,7 @@ def check_fold(name: str) -> bool:
     mdiff, mw = (gm - mass.cpu()[:, None]).abs(), mass.cpu()[:, None].expand_as(gm)
     mratio = (mdiff / mw.clamp_min(1e-300))[mw > 0]
     mass_ok = bool((mdiff <= FOLD_RTOL * mw).all())
-    print(f"fold {name}: units {'ok' if units_ok else 'DIFFER'}, "
+    print(f"fold {name}{' thinned' if thin else ''}: units {'ok' if units_ok else 'DIFFER'}, "
           f"state |d|/env median {ratio.median():.1e} max {ratio.max():.1e} "
           f"{'ok' if state_ok else 'OVER'} (<= {FOLD_RTOL:.0e}), mass median {mratio.median():.1e} "
           f"max {mratio.max():.1e} {'ok' if mass_ok else 'OVER'}")

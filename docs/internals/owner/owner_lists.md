@@ -42,6 +42,28 @@ digits hold more than 512 entries between them takes the merged form. The fold w
 rows from the slot-to-token table and its warp's union words ([`owner_fold.md`](owner_fold.md#rows)), which leaves 8 KB
 of shared memory to the write slots.
 
+<a id="write-lists"></a>
+
+## The fold's write lists, a window ahead
+
+The fold part keeps its own write-side lists (`WriteLists`), built a window ahead with no CTA barrier, so its passes run
+across windows ([`owner_fold.md`](owner_fold.md#windows)); the read side's lists are the readout's. Every stage is an
+mbarrier every thread arrives on, and every buffer is a window's (three for the words, two by parity for the rest):
+
+1. `stage_write_words`: the box's 64 write rows of window W + 2, a 16-byte chunk a thread, at window W's start
+   (`words_landed`).
+2. `write_partial`: at window W's start each warp ORs its eight rows of window W + 1, a lane a word of four rows and one
+   shuffle (`partials`).
+3. `write_table`: in its first pass's middle (or at W's end when W has no pass), once every warp is past its last reads
+   of the buffer, each warp forms the CTA union, its ranks and the sector unions in registers from the eight warps'
+   words (a lane a word), warp 0 stores them and the live count, and each warp stores its two words' share of the
+   slot-to-token table (`table`); a fill or a pass of W + 1 waits it.
+
+A dense write side has none of it: its table is the identity and its live count the window, set once. The words' and
+union words' reuse needs no wait of its own: a warp at window W has waited window W - 1's table, which every warp wrote
+after its last reads of what W's staging overwrites. The table's does: it is written after the drain of the last pass
+before, so no warp still reads the buffer. Shared memory: 15.9 KB at `(16, 64)` (12 KB of it the words).
+
 <a id="measured"></a>
 
 Measured (`flagship-alt-k4-L16384`, 4 heads): 5.4K warp-instructions a CTA-window at `(16, 64)`, 5.1K at `(32, 32)`,

@@ -122,7 +122,8 @@ __global__ __launch_bounds__(kThreads, 1) void fill_part(const __grid_constant__
       for (int first = 0; first < live; first += cap) {
         const int n = min(cap, live - first);
         if (side == 0) {
-          detail::fill_write(sm.write, sm.lists, write_lanes, win, first, n, tid);
+          detail::fill_write(sm.write, detail::write_view(sm.lists), write_lanes, win, first, n,
+                             tid);
           ops::stage_commit();
         } else {
           detail::fill_read(sm.read, sm.lists, read_lanes, win, first, n, tid);
@@ -151,19 +152,20 @@ __global__ __launch_bounds__(kThreads, 1) void fill_part(const __grid_constant__
   }
 }
 
-//: THE FOLD PART: each window's lists and units, its first two passes filled, then its passes pipelined through the
-//: three write slots and folded by every warp; the final state, mass and units written (`[cta][leaf][list][channel]`
-//: fp32 in the list's unit, `[cta][leaf][list]`, `[cta][list][2]`).
+//: THE FOLD PART: the windows' passes pipelined through the three write slots across windows and folded by every
+//: warp, the write lists a window ahead, no CTA barrier after the first; the final state, mass and units written
+//: (`[cta][leaf][list][channel]` fp32 in the list's unit, `[cta][leaf][list]`, `[cta][list][2]`).
 template <class W>
 struct FoldPartTenants {
-  ListTenants<typename W::C> lists;
+  detail::WriteLists<typename W::C> lists;
   detail::FoldPool<W> pool;
   detail::FoldTenants<typename W::C> fold;
   int b, h;
 };
 
-//: THE FOLD PART'S PHASES on its ledger (`kClock`): the window's lists and units (its barriers' waits included); its
-//: first two passes' fills; then a pass's slot wait, rows, operand loads, MMAs, mid-pass fill and tail (the mass added).
+//: THE FOLD PART'S PHASES on its ledger (`kClock`): a window's start (the next windows' words and union words, its
+//: table's wait, its units); its first passes' fills not issued before; then a pass's slot wait, rows, operand loads,
+//: MMAs, mid-pass work (the next window's table, the fill two passes ahead) and tail (the mass added).
 enum FoldPartPhase : int {
   kPartLists,
   kPartPrologue,
@@ -185,7 +187,7 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
   __shared__ long long s_clock[kWarps][Clock::kRow];
   FoldPartTenants<W>& sm = *reinterpret_cast<FoldPartTenants<W>*>(raw);
   const int tid = static_cast<int>(threadIdx.x), warp = tid >> 5, lane = tid & 31;
-  const int s0 = static_cast<int>(blockIdx.x) * C::RS, r0 = static_cast<int>(blockIdx.y) * C::RD;
+  const int r0 = static_cast<int>(blockIdx.y) * C::RD;
   const int bh = static_cast<int>(blockIdx.z) / kChannelGroups;
   //: the batch and head a pass's fill reads, kept in shared memory: no register spans the window loop for them
   if (tid == 0) {
@@ -195,60 +197,103 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
   detail::FoldAcc<C> st{};
   detail::ListUnits lu;
   if (lane < C::kFoldLists) sm.fold.units[warp][lane] = detail::UnitBook{};
+  detail::WriteLists<C>& wl = sm.lists;
   if (tid < kWriteSlots) {
     ops::mbar_init(ops::smem_addr(&sm.pool.landed[tid]), kThreads);
     ops::mbar_init(ops::smem_addr(&sm.pool.drained[tid]), kThreads);
+    ops::mbar_init(ops::smem_addr(&wl.words_landed[tid]), kThreads);
+  }
+  if (tid < 2) {
+    ops::mbar_init(ops::smem_addr(&wl.partials[tid]), kThreads);
+    ops::mbar_init(ops::smem_addr(&wl.table[tid]), kThreads);
   }
 #pragma unroll 1
   for (int i = tid; i < C::RS * C::RD; i += kThreads) (&sm.fold.mass[0][0])[i] = 0.0f;
+  if constexpr (W::kHalfR) detail::dense_write_lists(wl, tid);
+  __syncthreads();
   Clock clock(&s_clock[warp][0], lane, kClock);
   const auto lap = [&](int ph) {
     if constexpr (kClock) clock.lap(ph);
   };
-  detail::stage_words(sm.lists, p, bh, s0, r0, 0, 0, tid);
-  int done = 0;
+  if constexpr (!W::kHalfR) {
+    detail::stage_write_words(wl, p, bh, r0, 0, tid);
+    if (p.windows > 1) detail::stage_write_words(wl, p, bh, r0, 1, tid);
+    detail::write_partial(wl, 0, warp, lane);
+    detail::write_table(wl, 0, warp, lane);
+  }
+  uint32_t pair = detail::list_pair<C>(p, bh, r0, 0, warp, lane);
+  const auto passes_of = [&](int win) {
+    return (wl.live[win & 1] + W::kPassRows - 1) / W::kPassRows;
+  };
+  //: THE FILL CURSOR: the next pass to fill -- its window, its index there, its global index -- which every warp keeps
+  //: alike; a fill waits its slot's drain by the pass three before, and every thread arrives on its landing
+  int fw = 0, fx = 0, fg = 0, done = 0;
+  const auto fill_next = [&]() {
+    const int slot = fg % kWriteSlots, first = fx * W::kPassRows;
+    if (fg >= kWriteSlots)
+      ops::mbar_wait(ops::smem_addr(&sm.pool.drained[slot]),
+                     detail::stage_parity(fg - kWriteSlots, kWriteSlots));
+    const detail::WriteLanes<W> lanes(p, sm.b, sm.h, static_cast<int>(blockIdx.z) % kChannelGroups,
+                                      static_cast<int>(blockIdx.x) * C::RS, r0, tid);
+    detail::fill_write(sm.pool.slot[slot], wl.view(fw), lanes, fw, first,
+                       min(W::kPassRows, wl.live[fw & 1] - first), tid);
+    ops::mbar_arrive_when_landed(ops::smem_addr(&sm.pool.landed[slot]));
+    ++fg;
+    if (++fx == passes_of(fw)) {
+      ++fw;
+      fx = 0;
+    }
+  };
+  const auto wait_table = [&](int win) {
+    if constexpr (!W::kHalfR)
+      ops::mbar_wait(ops::smem_addr(&wl.table[win & 1]), detail::stage_parity(win, 2));
+  };
 #pragma unroll 1
   for (int win = 0; win < p.windows; ++win) {
-    const int buf = win & 1;
-    ops::stage_wait<0>();
-    __syncthreads();
-    if (win + 1 < p.windows) detail::stage_words(sm.lists, p, bh, s0, r0, win + 1, buf ^ 1, tid);
-    detail::window_lists(sm.lists, p, buf, tid);
-    detail::fold_window(st, lu, sm.fold, p, bh, r0, win, warp, lane);
-    const int live = sm.lists.base[0][kWindowWords - 1] + __popc(sm.lists.uni[0][kWindowWords - 1]);
-    const int passes = (live + W::kPassRows - 1) / W::kPassRows;
-    lap(kPartLists);
-    //: pass `x` of the window into slot `(done + x) % 3`, every thread's copies arriving on its landing; the box's
-    //: coordinates re-read, so no register spans the passes for them
-    const auto fill = [&](int x) {
-      const int first = x * W::kPassRows, slot = (done + x) % kWriteSlots;
-      const detail::WriteLanes<W> lanes(
-          p, sm.b, sm.h, static_cast<int>(blockIdx.z) % kChannelGroups,
-          static_cast<int>(blockIdx.x) * C::RS, static_cast<int>(blockIdx.y) * C::RD, tid);
-      detail::fill_write(sm.pool.slot[slot], sm.lists, lanes, win, first,
-                         min(W::kPassRows, live - first), tid);
-      ops::mbar_arrive_when_landed(ops::smem_addr(&sm.pool.landed[slot]));
+    if constexpr (!W::kHalfR) {
+      if (win + 2 < p.windows) detail::stage_write_words(wl, p, bh, r0, win + 2, tid);
+      if (win + 1 < p.windows) detail::write_partial(wl, win + 1, warp, lane);
+    }
+    wait_table(win);
+    const int live = wl.live[win & 1], passes = passes_of(win);
+    detail::fold_window(st, lu, sm.fold, pair, warp, lane);
+    if (win + 1 < p.windows) pair = detail::list_pair<C>(p, bh, r0, win + 1, warp, lane);
+    bool tabled = W::kHalfR || win + 1 >= p.windows;
+    //: the next window's table, once every warp is past this window's last reads of its buffer
+    const auto table_next = [&](int last) {
+      if (last >= 0)
+        ops::mbar_wait(ops::smem_addr(&sm.pool.drained[last % kWriteSlots]),
+                       detail::stage_parity(last, kWriteSlots));
+      detail::write_table(wl, win + 1, warp, lane);
+      tabled = true;
     };
+    lap(kPartLists);
+    if (fw == win && passes == 0) ++fw;
 #pragma unroll 1
-    for (int x = 0; x < min(2, passes); ++x) fill(x);
+    while (fw == win && fx < min(2, passes)) fill_next();
     lap(kPartPrologue);
 #pragma unroll 1
     for (int x = 0; x < passes; ++x) {
-      const int first = x * W::kPassRows;
+      const int g = done + x, first = x * W::kPassRows;
       detail::fold_pass(
-          st, sm.fold, sm.pool, sm.lists, lu, done + x, first, min(W::kPassRows, live - first),
-          warp, lane,
+          st, sm.fold, sm.pool, wl.view(win), lu, g, first, min(W::kPassRows, live - first), warp,
+          lane,
           [&]() {
-            if (x + 2 >= passes) return;
-            if (x >= 1) {
-              const int before = done + x - 1;
-              ops::mbar_wait(ops::smem_addr(&sm.pool.drained[before % kWriteSlots]),
-                             static_cast<uint32_t>(before / kWriteSlots) & 1u);
+            if (!tabled) table_next(g - 1);
+#pragma unroll 1
+            while (fg <= g + 2 && fw < p.windows) {
+              if (fw == win + 1) {
+                wait_table(win + 1);
+                if (fx >= min(2, passes_of(win + 1))) break;
+              } else if (fw != win) {
+                break;
+              }
+              fill_next();
             }
-            fill(x + 2);
           },
           [&](int k) { lap(kPartWait + k); });
     }
+    if (!tabled) table_next(done + passes - 1);
     done += passes;
   }
   if constexpr (kClock) clock.publish(p.ledger, 0, kWarps, warp);

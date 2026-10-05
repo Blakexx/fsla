@@ -68,12 +68,26 @@ copies arrive as they land, `cp.async.mbarrier.arrive.noinc`) and `drained` (eve
 LOADS, before those steps' MMAs). A warp's pass: wait its slot's landing; build its rows; then chunks of two steps --
 the chunk's operands into registers, the slot signalled drained after the pass's last chunk's loads, the chunk's MMAs --
 and after the MMAs of the chunk holding step `min(3, steps - 1)` its share of the fill of the pass two ahead, into the
-slot the pass before drained (its drain waited first). The fill runs two passes ahead within a window; a window's first
-two passes are filled after its lists (the step 8b component moves them under the window before). Measured in the lab
+slot the pass before drained (its drain waited first). Measured in the lab
 (`sparse_pass`, KERNEL_STANDARDS 26 i-l): in-place operands need the third slot, and releasing a slot at its last load
 frees the fill from the slowest warp's MMAs. Measured here: a chunk of two steps against three, dense 52.8 against 55.2
 ms (4 heads), sparse the same; a one-step register stage 55.4. Placing the fill after the chunk's MMAs leaves no operand
 live across it.
+
+<a id="windows"></a>
+
+## Across windows
+
+The passes run across windows with no CTA barrier after the kernel's first: a FILL CURSOR (the next pass to fill, its
+window, its index there and its global index), which every warp keeps alike from the windows' live counts, fills in
+each pass's middle every pass up to two ahead whose window is this one or the next -- the next once its table is in
+([`owner_lists.md`](owner_lists.md#write-lists)) -- so a window's first two passes are normally filled under the window
+before; a window whose first passes the cursor did not reach (the one before had fewer than two passes) fills them at
+its start. A fill waits its slot's drain by the pass three before. At a window's start each warp stages and ORs the
+lists ahead, waits the window's table, and moves its own lists' units (`fold_window`, the list exponents loaded a window
+ahead: warp-local, so no warp waits for another there). `--check fold` runs a sparse cell thinned too -- level R's rows
+zeroed in every third window and all but every eighth token in the next -- so windows with no pass and with one pass
+are gated.
 
 <a id="rows"></a>
 
@@ -140,15 +154,15 @@ Per head, sm_86 under ncu (1.36 GHz), 4 heads (16 at L 1024), the part's lists a
 cycles a warp a CTA-window against the steps' tensor floor (the busiest scheduler's paired steps x 1056, from the
 cells' words):
 
-| cell | time | ledger total / floor | first fold (barriers, restage) |
-|---|---|---|---|
-| `nl64k-dense` | 13.2 ms | 81.3K / 67.6K (1.20x): steps 57.9K, loads 10.0K, lists 5.4K, fill 4.1K | 14.4 ms, 93K |
-| `nl64k-alt-k4` | 3.83 ms | 24.8K / 12.5K: steps 10.0K, lists 5.8K, loads 2.7K, rows 2.3K, first fills 1.8K | 4.77 ms, 32.5K |
-| `flagship-cohort-k16` | 0.138 ms | 53.1K / 45.9K: steps 22.2K, lists 12.4K, loads 5.8K, fill 4.7K | 0.22 ms, 83K |
-| `flagship-both-k4` | 0.217 ms | | 0.24 ms |
-| `flagship-alt-k4` | 0.080 ms | | 0.107 ms |
+| cell | time | ledger total / floor | passes in a window (8a) | first fold (barriers, restage) |
+|---|---|---|---|---|
+| `nl64k-dense` | 12.7 ms | 79.7K / 67.6K (1.18x): steps 59.0K, loads 9.1K, middle 8.7K | 13.2 ms, 81.3K | 14.4 ms, 93K |
+| `nl64k-alt-k4` | 2.98 ms | 20.6K / 12.5K: steps 8.6K, middle 4.8K, rows 2.9K, loads 2.2K | 3.83 ms, 24.8K | 4.77 ms, 32.5K |
+| `flagship-cohort-k16` | 0.120 ms | 46.9K / 45.9K: steps 22.3K, middle 9.3K, loads 5.6K | 0.138 ms, 53.1K | 0.22 ms, 83K |
+| `flagship-both-k4` | 0.199 ms | | 0.217 ms | 0.24 ms |
+| `flagship-alt-k4` | 0.0625 ms | | 0.080 ms | 0.107 ms |
 
-Against step 8a's line (the rebuild plan card): dense 81.3K against <= 80K, alt-k4 24.8K against <= 24.5K, cohort 53.1K
-against <= 72K -- cohort's barrier waits (27.8K, its imbalance) gone with the pass barriers. What is left: the lists
-(a window's barriers and its first two fills exposed; step 8b), and at dense the operand loads (320 cycles a step),
-which the scheduler's other warp hides only in part.
+The window boundary is gone (its lists 0.7-1.8K, from 5.4-12.4K); what it held moved in part into the middles' waits
+-- a fill waits every warp's loads of the pass before, so a warp leads the slowest by at most a pass, and cohort's
+imbalance (its busiest scheduler 1.7x the mean) is now its floor. Against step 8b's line (the rebuild plan card): dense
+12.7 against ~12.0 ms, alt-k4 2.98 against ~2.8, cohort 0.120 against ~0.105.
