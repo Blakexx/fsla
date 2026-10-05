@@ -2,7 +2,8 @@
 
 Mirror doc for the owner carry's first two components: one stages the box's rows of the facts pass's words a window
 ahead, and the other turns them into what every later component reads — the unions, a live token's pool slot, each row's
-live count, each warp's step form and its list entries. Vocabulary: [`owner.md`](owner.md).
+live count, each warp's union words, and on the read side each warp's step form and its list entries. Vocabulary:
+[`owner.md`](owner.md).
 
 <a id="words"></a>
 
@@ -34,10 +35,12 @@ four warps' rows a sector at `(16, 64)`, all eight at `(32, 32)`) and takes thei
 before word `k`. A token's POOL SLOT is `base[k] + popc(union[k] & below(b))` for bit `b` of word `k`: its rank among
 the window's live tokens of its side.
 
-Last, every warp fills its share of the slot-to-token table (four union words, a lane a bit) and writes its entries for
-its chosen form — pool slots in token order, per list each row's tokens from its offset, merged the union's once —
-into its 512-entry buffer, a lane walking the set bits of each of its words. A per-list form whose lists hold more than
-512 entries between them takes the merged form.
+Last, every warp fills its share of the slot-to-token table (four union words, a lane a bit) and writes its READ
+entries for its chosen form — pool slots in token order, per digit each row's tokens from its offset, merged the
+union's once — into its 512-entry buffer, a lane walking the set bits of each of its words. A per-digit form whose
+digits hold more than 512 entries between them takes the merged form. The fold writes no entries: it builds each pass's
+rows from the slot-to-token table and its warp's union words ([`owner_fold.md`](owner_fold.md#rows)), which leaves 8 KB
+of shared memory to the write slots.
 
 <a id="measured"></a>
 

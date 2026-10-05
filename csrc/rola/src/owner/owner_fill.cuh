@@ -1,4 +1,4 @@
-// csrc/rola/src/owner/owner_fill.cuh -- THE FILL: a pass of the window's live tokens into the write pool (a token's
+// csrc/rola/src/owner/owner_fill.cuh -- THE FILL: a pass of the window's live tokens into a write slot (a token's
 // write digits at both levels, f16 on a dense level and u8 on a sparse one by its live sectors, its f16 values for the
 // CTA's channels and its factor products) or the read pool (its read-dense slice and its read-sparse slice), from the
 // bundle where it lies.
@@ -14,9 +14,11 @@
 namespace rola::owner::detail {
 
 //: A WRITE ROW for a write format (`kHalfS`, `kHalfR`: level S's and level R's write digits f16, a dense level's, or
-//: u8), every copied run at its global sector's 32-byte phase: at 16 x 64 level R's run, the f16 values, level S's
-//: slice and the token's `(F, m)`; at 32 x 32 level S's run then level R's, the values and `(F, m)`.
-//: -- see docs/internals/owner/owner_fill.md#pools
+//: u8), every copied run at its global sector's 32-byte phase: at 16 x 64 level R's run, the f16 values and level S's
+//: slice; at 32 x 32 level S's run then level R's and the values. The pitch is an odd multiple of 32 bytes, so the
+//: 16-byte chunk `c` of row `r` lies at `at(r, c)`, the halves of each 32-byte pair swapped on rows with bit 2 set:
+//: eight consecutive rows' chunk meets eight bank groups, and a copy keeps its sector. A pass is the rows a write slot's
+//: budget holds, with their `(F, m)`. -- see docs/internals/owner/owner_fill.md#pools
 template <class C_, bool kHalfS_, bool kHalfR_>
 struct WriteRows {
   using C = C_;
@@ -25,10 +27,14 @@ struct WriteRows {
   static constexpr int kRun = kSplit ? kRBytes : kSBytes + kRBytes;
   static constexpr int kR = kSplit ? 0 : kSBytes, kValues = kRun,
                        kS = kSplit ? kValues + 2 * kChannels : 0;
-  static constexpr int kFm = kSBytes + kRBytes + 2 * kChannels;
-  static constexpr int kRow = (kFm + 8 + 31) & ~31;
-  static_assert(kValues % 32 == 0 && kS % 32 == 0 && kFm % 8 == 0,
-                "every run at its sector's phase");
+  static constexpr int kRunsBytes = kSBytes + kRBytes + 2 * kChannels;
+  static constexpr int kRow = 32 * (((kRunsBytes + 31) / 32) | 1);
+  static constexpr int kPassRows = (kWriteSlotBytes / (kRow + 8)) & ~15;
+  static_assert(kValues % 32 == 0 && kS % 32 == 0, "every run at its sector's phase");
+
+  static __device__ __forceinline__ int at(int r, int c) {
+    return r * kRow + 16 * (c ^ ((r >> 2) & 1));
+  }
 };
 
 //: A READ ROW: a 64-byte run (the read-dense slice, or at 32 x 32 both slices) and at 16 x 64 the read-sparse chunk.
@@ -39,10 +45,11 @@ struct ReadRows {
   static_assert(C::RD + (C::RS == 32 ? C::RS : 0) == kRun, "the run is the read slices");
 };
 
-//: THE WRITE POOL, the fold's: a pass's rows.
+//: A WRITE SLOT: a pass's rows, swizzled, and each row's `(F, m)`.
 template <class W>
-struct alignas(128) WritePool {
-  uint8_t write[kWritePool][W::kRow];
+struct alignas(128) WriteSlot {
+  uint8_t rows[W::kPassRows * W::kRow];
+  float2 fm[W::kPassRows];
 };
 
 //: THE READ POOL, the readout's.
@@ -114,12 +121,12 @@ struct ReadLanes {
   }
 };
 
-//: A WRITE PASS: slots `[first, first + n)` of the window's write union, a quad a token: the row's run (a sparse level
-//: R's 64 bytes at 16 x 64 by its live sectors, a sector the token is not live in landing as zeros and reading
-//: nothing), the f16 values' 64 bytes, level S's slice at 16 x 64, and the token's `(F, m)`.
-//: -- see docs/internals/owner/owner_fill.md#write-pass
+//: A WRITE PASS: union slots `[first, first + n)` of the window into a write slot, a quad a token: the row's run (a
+//: sparse level R's 64 bytes at 16 x 64 by its live sectors, a sector the token is not live in landing as zeros and
+//: reading nothing), the f16 values' 64 bytes, level S's slice at 16 x 64, and the token's `(F, m)`; the copies left
+//: for the caller to commit or to signal. -- see docs/internals/owner/owner_fill.md#write-pass
 template <class W>
-__device__ void fill_write(WritePool<W>& pools, const ListTenants<typename W::C>& sm,
+__device__ void fill_write(WriteSlot<W>& slot, const ListTenants<typename W::C>& sm,
                            const WriteLanes<W>& lanes, int win, int first, int n, int tid) {
   constexpr int kRunSlots = WriteLanes<W>::kRunSlots, kRunQuanta = WriteLanes<W>::kRunQuanta;
   const int q = lanes.q;
@@ -127,10 +134,10 @@ __device__ void fill_write(WritePool<W>& pools, const ListTenants<typename W::C>
   for (int r = tid >> 2; r < n; r += kThreads / 4) {
     const int t = sm.token_of[0][first + r];
     const int tg = win * kWindow + t;
-    uint8_t* const row = pools.write[r];
+    uint8_t* const rows = slot.rows;
 #pragma unroll
     for (int j = 0; j < kRunSlots; ++j) {
-      const ops::SmemAddr dst = ops::smem_addr(row + 16 * (q + 4 * j));
+      const ops::SmemAddr dst = ops::smem_addr(rows + W::at(r, q + 4 * j));
       if constexpr (W::kSplit && !W::kHalfR) {
         const bool live = (sm.sector_uni[q >> 1][t >> 5] >> (t & 31)) & 1u;
         ops::stage_tile_if(dst, token_row(lanes.run[j], tg), live);
@@ -140,13 +147,13 @@ __device__ void fill_write(WritePool<W>& pools, const ListTenants<typename W::C>
         ops::stage_run_lanes<16>(dst, token_row(lanes.run[j], tg), q + 4 * j < kRunQuanta);
       }
     }
-    ops::stage_tile(ops::smem_addr(row + W::kValues + 16 * q), token_row(lanes.values, tg));
+    ops::stage_tile(ops::smem_addr(rows + W::at(r, W::kValues / 16 + q)),
+                    token_row(lanes.values, tg));
     if constexpr (W::kSplit)
-      ops::stage_run_lanes<16>(ops::smem_addr(row + W::kS + 16 * q), token_row(lanes.slice, tg),
-                               q < W::kSBytes / 16);
-    ops::stage_run_lanes<8>(ops::smem_addr(row + W::kFm), token_row(lanes.fm, tg), q == 3);
+      ops::stage_run_lanes<16>(ops::smem_addr(rows + W::at(r, W::kS / 16 + q)),
+                               token_row(lanes.slice, tg), q < W::kSBytes / 16);
+    ops::stage_run_lanes<8>(ops::smem_addr(&slot.fm[r]), token_row(lanes.fm, tg), q == 3);
   }
-  ops::stage_commit();
 }
 
 //: A READ PASS: slots `[first, first + n)` of the window's read union, a quad a token: the read-dense slice's 64-byte

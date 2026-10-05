@@ -23,13 +23,13 @@ namespace rola::owner::skeleton {
 namespace ops = denseref::ops;
 using detail::ListTenants;
 
-//: A CTA-WINDOW'S DUMP: the unions, the row counts, the forms and totals, each warp's entries a side.
+//: A CTA-WINDOW'S DUMP: the unions, the row counts, the read forms and totals, each warp's read entries.
 template <class C>
 struct Dump {
   static constexpr int kUnions = 2 * kWindowWords;
   static constexpr int kCounts = C::kWordRows;
-  static constexpr int kForms = 4 * kWarps;
-  static constexpr int kEntries = 2 * kWarps * kListCapacity;
+  static constexpr int kForms = 2 * kWarps;
+  static constexpr int kEntries = kWarps * kListCapacity;
   static constexpr int kWords = kUnions + kCounts + kForms + kEntries;
 };
 
@@ -38,17 +38,16 @@ __device__ void dump_lists(const ListTenants<C>& sm, const OwnerParams& p, uint3
   using Dp = Dump<C>;
   if (tid < Dp::kUnions) out[tid] = sm.uni[tid / kWindowWords][tid % kWindowWords];
   if (tid < Dp::kCounts) out[Dp::kUnions + tid] = sm.count[tid];
-  if (tid < 2 * kWarps) {
-    out[Dp::kUnions + Dp::kCounts + tid] = sm.form[tid / kWarps][tid % kWarps];
-    out[Dp::kUnions + Dp::kCounts + 2 * kWarps + tid] = sm.total[tid / kWarps][tid % kWarps];
+  if (tid < kWarps) {
+    out[Dp::kUnions + Dp::kCounts + tid] = sm.read_form[tid];
+    out[Dp::kUnions + Dp::kCounts + kWarps + tid] = sm.read_total[tid];
   }
   uint32_t* entries = out + Dp::kUnions + Dp::kCounts + Dp::kForms;
 #pragma unroll 1
   for (int i = tid; i < Dp::kEntries; i += kThreads) {
-    const int side = i / (kWarps * kListCapacity), rest = i % (kWarps * kListCapacity);
-    const int warp = rest / kListCapacity, e = rest % kListCapacity;
-    const bool sparse = (side == 0 ? p.sparse_write : p.sparse_read) != 0;
-    entries[i] = sparse && e < sm.total[side][warp] ? sm.entries[side][warp][e] : 0xffffffffu;
+    const int warp = i / kListCapacity, e = i % kListCapacity;
+    entries[i] =
+        p.sparse_read != 0 && e < sm.read_total[warp] ? sm.read_entries[warp][e] : 0xffffffffu;
   }
 }
 
@@ -82,9 +81,13 @@ __global__ __launch_bounds__(kThreads, 1) void lists_part(const __grid_constant_
 template <class W>
 struct FillTenants {
   ListTenants<typename W::C> lists;
-  detail::WritePool<W> write;
+  detail::WriteSlot<W> write;
   detail::ReadPool<typename W::C> read;
 };
+
+//: A WRITE ROW AS DUMPED: its runs in order, the swizzle undone, then its `(F, m)`.
+template <class W>
+constexpr int kDumpRow = W::kRunsBytes + static_cast<int>(sizeof(float2));
 
 template <class W>
 __global__ __launch_bounds__(kThreads, 1) void fill_part(const __grid_constant__ OwnerParams p,
@@ -114,22 +117,33 @@ __global__ __launch_bounds__(kThreads, 1) void fill_part(const __grid_constant__
     for (int side = 0; side < 2; ++side) {
       const int live =
           sm.lists.base[side][kWindowWords - 1] + __popc(sm.lists.uni[side][kWindowWords - 1]);
-      const int cap = side == 0 ? kWritePass : kReadPass;
+      const int cap = side == 0 ? W::kPassRows : kReadPass;
 #pragma unroll 1
       for (int first = 0; first < live; first += cap) {
         const int n = min(cap, live - first);
-        if (side == 0)
+        if (side == 0) {
           detail::fill_write(sm.write, sm.lists, write_lanes, win, first, n, tid);
-        else
+          ops::stage_commit();
+        } else {
           detail::fill_read(sm.read, sm.lists, read_lanes, win, first, n, tid);
+        }
         ops::stage_wait<0>();
         __syncthreads();
-        if (write_dump != nullptr) {
-          const int row_bytes = side == 0 ? W::kRow : detail::ReadRows<C>::kRow;
-          const uint8_t* src = side == 0 ? &sm.write.write[0][0] : &sm.read.read[0][0];
-          uint8_t* dst = (side == 0 ? write_dump : read_dump) + (at + first) * row_bytes;
+        if (write_dump != nullptr && side == 0) {
+          constexpr int kPitch = kDumpRow<W>;
+          const uint8_t* const fm = reinterpret_cast<const uint8_t*>(sm.write.fm);
+          uint8_t* const dst = write_dump + (at + first) * kPitch;
 #pragma unroll 1
-          for (int i = tid; i < n * row_bytes; i += kThreads) dst[i] = src[i];
+          for (int i = tid; i < n * kPitch; i += kThreads) {
+            const int r = i / kPitch, c = i - r * kPitch;
+            dst[i] = c < W::kRunsBytes ? sm.write.rows[W::at(r, c >> 4) + (c & 15)]
+                                       : fm[8 * r + c - W::kRunsBytes];
+          }
+        } else if (write_dump != nullptr) {
+          constexpr int kPitch = detail::ReadRows<C>::kRow;
+          uint8_t* const dst = read_dump + (at + first) * kPitch;
+#pragma unroll 1
+          for (int i = tid; i < n * kPitch; i += kThreads) dst[i] = (&sm.read.read[0][0])[i];
         }
         __syncthreads();
       }
@@ -137,28 +151,28 @@ __global__ __launch_bounds__(kThreads, 1) void fill_part(const __grid_constant__
   }
 }
 
-//: THE FOLD PART: each window's lists and units, then its write passes, each filled, restaged and folded by every
-//: warp; the final state, mass and units written (`[cta][leaf][list][channel]` fp32 in the list's
-//: unit, `[cta][leaf][list]`, `[cta][list][2]`).
+//: THE FOLD PART: each window's lists and units, its first two passes filled, then its passes pipelined through the
+//: three write slots and folded by every warp; the final state, mass and units written (`[cta][leaf][list][channel]`
+//: fp32 in the list's unit, `[cta][leaf][list]`, `[cta][list][2]`).
 template <class W>
 struct FoldPartTenants {
   ListTenants<typename W::C> lists;
-  detail::WritePool<W> write;
+  detail::FoldPool<W> pool;
   detail::FoldTenants<typename W::C> fold;
   int b, h;
 };
 
-//: THE FOLD PART'S PHASES on its ledger (`kClock`): the window's lists, units and cursors; a pass's fill; its restage;
-//: the fold's pass head, first step, other steps and tail (the mass added); the barrier after them.
+//: THE FOLD PART'S PHASES on its ledger (`kClock`): the window's lists and units (its barriers' waits included); its
+//: first two passes' fills; then a pass's slot wait, rows, operand loads, MMAs, mid-pass fill and tail (the mass added).
 enum FoldPartPhase : int {
   kPartLists,
-  kPartFill,
-  kPartStage,
-  kPartHead,
-  kPartFirst,
+  kPartPrologue,
+  kPartWait,
+  kPartRows,
+  kPartLoads,
   kPartSteps,
+  kPartMiddle,
   kPartTail,
-  kPartSync,
   kPartPhases
 };
 
@@ -172,18 +186,19 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
   FoldPartTenants<W>& sm = *reinterpret_cast<FoldPartTenants<W>*>(raw);
   const int tid = static_cast<int>(threadIdx.x), warp = tid >> 5, lane = tid & 31;
   const int s0 = static_cast<int>(blockIdx.x) * C::RS, r0 = static_cast<int>(blockIdx.y) * C::RD;
-  const int bh = static_cast<int>(blockIdx.z) / kChannelGroups,
-            cg = static_cast<int>(blockIdx.z) % kChannelGroups;
+  const int bh = static_cast<int>(blockIdx.z) / kChannelGroups;
   //: the batch and head a pass's fill reads, kept in shared memory: no register spans the window loop for them
   if (tid == 0) {
     sm.b = bh / p.H;
     sm.h = bh - sm.b * p.H;
   }
-  const int64_t cta =
-      (static_cast<int64_t>(blockIdx.z) * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
   detail::FoldAcc<C> st{};
   detail::ListUnits lu;
   if (lane < C::kFoldLists) sm.fold.units[warp][lane] = detail::UnitBook{};
+  if (tid < kWriteSlots) {
+    ops::mbar_init(ops::smem_addr(&sm.pool.landed[tid]), kThreads);
+    ops::mbar_init(ops::smem_addr(&sm.pool.drained[tid]), kThreads);
+  }
 #pragma unroll 1
   for (int i = tid; i < C::RS * C::RD; i += kThreads) (&sm.fold.mass[0][0])[i] = 0.0f;
   Clock clock(&s_clock[warp][0], lane, kClock);
@@ -191,6 +206,7 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
     if constexpr (kClock) clock.lap(ph);
   };
   detail::stage_words(sm.lists, p, bh, s0, r0, 0, 0, tid);
+  int done = 0;
 #pragma unroll 1
   for (int win = 0; win < p.windows; ++win) {
     const int buf = win & 1;
@@ -199,29 +215,45 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
     if (win + 1 < p.windows) detail::stage_words(sm.lists, p, bh, s0, r0, win + 1, buf ^ 1, tid);
     detail::window_lists(sm.lists, p, buf, tid);
     detail::fold_window(st, lu, sm.fold, p, bh, r0, win, warp, lane);
-    int cursor = 0;
     const int live = sm.lists.base[0][kWindowWords - 1] + __popc(sm.lists.uni[0][kWindowWords - 1]);
+    const int passes = (live + W::kPassRows - 1) / W::kPassRows;
     lap(kPartLists);
+    //: pass `x` of the window into slot `(done + x) % 3`, every thread's copies arriving on its landing; the box's
+    //: coordinates re-read, so no register spans the passes for them
+    const auto fill = [&](int x) {
+      const int first = x * W::kPassRows, slot = (done + x) % kWriteSlots;
+      const detail::WriteLanes<W> lanes(
+          p, sm.b, sm.h, static_cast<int>(blockIdx.z) % kChannelGroups,
+          static_cast<int>(blockIdx.x) * C::RS, static_cast<int>(blockIdx.y) * C::RD, tid);
+      detail::fill_write(sm.pool.slot[slot], sm.lists, lanes, win, first,
+                         min(W::kPassRows, live - first), tid);
+      ops::mbar_arrive_when_landed(ops::smem_addr(&sm.pool.landed[slot]));
+    };
 #pragma unroll 1
-    for (int first = 0; first < live; first += kWritePass) {
-      const int n = min(kWritePass, live - first);
-      {
-        const detail::WriteLanes<W> lanes(p, sm.b, sm.h, cg, s0, r0, tid);
-        detail::fill_write(sm.write, sm.lists, lanes, win, first, n, tid);
-      }
-      ops::stage_wait<0>();
-      __syncthreads();
-      lap(kPartFill);
-      detail::stage_pass(sm.fold, sm.write, n, tid);
-      __syncthreads();
-      lap(kPartStage);
-      detail::fold_pass(st, sm.fold, sm.write, sm.lists, lu, cursor, first, n, warp, lane,
-                        [&](int k) { lap(kPartHead + k); });
-      __syncthreads();
-      lap(kPartSync);
+    for (int x = 0; x < min(2, passes); ++x) fill(x);
+    lap(kPartPrologue);
+#pragma unroll 1
+    for (int x = 0; x < passes; ++x) {
+      const int first = x * W::kPassRows;
+      detail::fold_pass(
+          st, sm.fold, sm.pool, sm.lists, lu, done + x, first, min(W::kPassRows, live - first),
+          warp, lane,
+          [&]() {
+            if (x + 2 >= passes) return;
+            if (x >= 1) {
+              const int before = done + x - 1;
+              ops::mbar_wait(ops::smem_addr(&sm.pool.drained[before % kWriteSlots]),
+                             static_cast<uint32_t>(before / kWriteSlots) & 1u);
+            }
+            fill(x + 2);
+          },
+          [&](int k) { lap(kPartWait + k); });
     }
+    done += passes;
   }
   if constexpr (kClock) clock.publish(p.ledger, 0, kWarps, warp);
+  const int64_t cta =
+      (static_cast<int64_t>(blockIdx.z) * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
   const int g = lane >> 2, tq = lane & 3;
 #pragma unroll
   for (int j = 0; j < C::kFoldLists; ++j)
@@ -229,7 +261,7 @@ __global__ __launch_bounds__(kThreads, 1) void fold_part(const __grid_constant__
     for (int n = 0; n < 4; ++n)
 #pragma unroll
       for (int i = 0; i < 4; ++i) {
-        const int leaf = g + 8 * (i >> 1), list = warp * C::kFoldLists + j;
+        const int leaf = detail::acc_leaf<W>(g, i >> 1), list = warp * C::kFoldLists + j;
         state[((cta * C::RS + leaf) * C::RD + list) * kChannels + 8 * n + 2 * tq + (i & 1)] =
             st.acc[j][n][i];
       }
@@ -358,7 +390,7 @@ __global__ __launch_bounds__(kThreads, 1) void readout_part(const __grid_constan
       int off = 0;
 #pragma unroll
       for (int i = 0; i < C::kReadDigits; ++i) {
-        cursor[i] = sm.lists.form[1][warp] == kStepPerList ? off : 0;
+        cursor[i] = sm.lists.read_form[warp] == kStepPerList ? off : 0;
         off += sm.lists.count[C::RD + warp * C::kReadDigits + i];
       }
     }
@@ -481,7 +513,7 @@ std::vector<Tensor> run_fill(OwnerParams p, int64_t bh, bool dump) {
   using C = typename W::C;
   const int64_t sb = p.width[p.level_s] / C::RS, rb = p.width[p.level_r] / C::RD;
   const int64_t slots = sb * rb * bh * kChannelGroups * p.windows * kWindow;
-  Tensor w = dump ? zeros_cuda({slots * W::kRow}, Dtype::Byte) : empty_cuda({1}, Dtype::Byte);
+  Tensor w = dump ? zeros_cuda({slots * kDumpRow<W>}, Dtype::Byte) : empty_cuda({1}, Dtype::Byte);
   Tensor r = dump ? zeros_cuda({slots * detail::ReadRows<C>::kRow}, Dtype::Byte)
                   : empty_cuda({1}, Dtype::Byte);
   constexpr int kSmem = static_cast<int>(sizeof(FillTenants<W>));

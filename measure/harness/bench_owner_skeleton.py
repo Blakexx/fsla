@@ -61,7 +61,7 @@ def _fold(routes, values, facts, level_s, sw, sr, ledger=None):
 
 
 #: the fold part's ledger phases, `owner_skeleton.cu`'s `FoldPartPhase`
-FOLD_PHASES = ("lists", "fill", "stage", "head", "first", "steps", "tail", "sync")
+FOLD_PHASES = ("lists", "prologue", "wait", "rows", "loads", "steps", "middle", "tail")
 
 
 def ledger_fold(name: str, part: str, heads: int) -> None:
@@ -152,48 +152,46 @@ def lists_model(w, widths, level_s, sparse_write, sparse_read, rs, rd, step, bh,
             acc += _popc(x)
         bases.append(b)
     counts = [sum(_popc(x) for x in r) if r is not None else WINDOW for r in rows]
-    forms, totals, entries = [[0] * WARPS, [0] * WARPS], [[0] * WARPS, [0] * WARPS], [[], []]
+    forms, totals, entries = [0] * WARPS, [0] * WARPS, []
 
-    def slots(side, word_list):
+    def slots(word_list):
         out = []
         for k, bits in enumerate(word_list):
             for b in range(32):
                 if bits >> b & 1:
-                    out.append(bases[side][k] + _popc(unions[side][k] & ((1 << b) - 1)))
+                    out.append(bases[1][k] + _popc(unions[1][k] & ((1 << b) - 1)))
         return out
 
-    for side, lists, row0f in ((0, rd // WARPS, lambda wp: wp * (rd // WARPS)),
-                               (1, rs // WARPS, lambda wp: rd + wp * (rs // WARPS))):
-        for wp in range(WARPS):
-            if not sparse[side]:
-                forms[side][wp], totals[side][wp] = STEP_MERGED, WINDOW
-                entries[side].append([])
-                continue
-            mine = [rows[row0f(wp) + j] for j in range(lists)]
-            u = [0] * WINDOW_WORDS
-            for r in mine:
-                u = [a | b for a, b in zip(u, r, strict=True)]
-            merged_n = sum(_popc(x) for x in u)
-            ns = [counts[row0f(wp) + j] for j in range(lists)]
-            listed, steps = sum(ns), sum((n + 31) >> 5 for n in ns)
-            msteps = (merged_n + 31) >> 5
-            per_list = steps * (COST_A + COST_B + COST_IMMAS) + listed * COST_ENTRY
-            merged = msteps * (COST_B + lists * (COST_A + COST_IMMAS)) + merged_n * COST_ENTRY
-            form = step if step != STEP_CHOSEN else (STEP_PER_LIST if per_list <= merged else STEP_MERGED)
-            if listed > LIST_CAPACITY or side == 0:
-                form = STEP_MERGED
-            forms[side][wp] = form
-            if form == STEP_MERGED:
-                totals[side][wp] = merged_n
-                entries[side].append(slots(side, u))
-            else:
-                totals[side][wp] = listed
-                entries[side].append([s for r in mine for s in slots(side, r)])
-    dump = [x for u in unions for x in u] + counts + forms[0] + forms[1] + totals[0] + totals[1]
-    for side in (0, 1):
-        for wp in range(WARPS):
-            e = entries[side][wp]
-            dump += e + [full] * (LIST_CAPACITY - len(e))
+    lists = rs // WARPS
+    for wp in range(WARPS):
+        row0 = rd + wp * lists
+        if not sparse_read:
+            forms[wp], totals[wp] = STEP_MERGED, WINDOW
+            entries.append([])
+            continue
+        mine = [rows[row0 + j] for j in range(lists)]
+        u = [0] * WINDOW_WORDS
+        for r in mine:
+            u = [a | b for a, b in zip(u, r, strict=True)]
+        merged_n = sum(_popc(x) for x in u)
+        ns = [counts[row0 + j] for j in range(lists)]
+        listed, steps = sum(ns), sum((n + 31) >> 5 for n in ns)
+        msteps = (merged_n + 31) >> 5
+        per_list = steps * (COST_A + COST_B + COST_IMMAS) + listed * COST_ENTRY
+        merged = msteps * (COST_B + lists * (COST_A + COST_IMMAS)) + merged_n * COST_ENTRY
+        form = step if step != STEP_CHOSEN else (STEP_PER_LIST if per_list <= merged else STEP_MERGED)
+        if listed > LIST_CAPACITY:
+            form = STEP_MERGED
+        forms[wp] = form
+        if form == STEP_MERGED:
+            totals[wp] = merged_n
+            entries.append(slots(u))
+        else:
+            totals[wp] = listed
+            entries.append([s for r in mine for s in slots(r)])
+    dump = [x for u in unions for x in u] + counts + forms + totals
+    for e in entries:
+        dump += e + [full] * (LIST_CAPACITY - len(e))
     return np.array(dump, dtype=np.uint64)
 
 
@@ -273,10 +271,10 @@ def fill_model(routes, values, facts, w, level_s, sw, sr, rs, rd, bh, cg, sb, rb
 
 
 def write_row(routes, level_s, rs, rd):
-    """`owner_fill.cuh`'s `WriteRows::kRow` for the bundle's write types: level S's and R's digits, the values and
-    ``(F, m)``, to whole 32 bytes."""
+    """A write row as `owner_skeleton.cu` dumps it (`kDumpRow`): level S's and R's digits in the bundle's write types,
+    the values, then ``(F, m)``."""
     size = [routes.amp_write[lv].element_size() for lv in (level_s, 1 - level_s)]
-    return (rs * size[0] + rd * size[1] + 64 + 8 + 31) // 32 * 32
+    return rs * size[0] + rd * size[1] + 64 + 8
 
 
 def read_row(rs):

@@ -19,7 +19,8 @@ the window's live tokens of a side.
 
 `kWindow` 512 tokens, the intra's and the facts pass's, so a row of the facts pass's words is `kWindowWords` = 16 words
 a window. `kWarps` = 8 warps a CTA, `kChannels` = 32 a channel group, `kChannelGroups` = 2 at `d_v` 64.
-`kListCapacity` = 512 entries: a warp's list buffer a side, one window's tokens.
+`kListCapacity` = 512 entries: a warp's read list buffer, one window's tokens. `kWriteSlots` = 3 write slots of
+`kWriteSlotBytes` = 22 KB, the fold's pass pipeline ([`owner_fold.md`](owner_fold.md#pipeline)).
 
 <a id="carve"></a>
 
@@ -58,15 +59,16 @@ are the write format a kernel is instantiated for ([`owner_fill.md`](owner_fill.
 pricing table are on the rebuild's plan card, in its skeleton block. Built so far:
 
 * `lists_part` — the words and the lists ([`owner_lists.md`](owner_lists.md)) over every window of every box, the next window's
-  words staged before this window's lists; with a dump it writes each CTA-window's unions, row counts, forms, totals
-  and entries, which `--check lists` holds bit for bit against the model at both carves and every step setting.
+  words staged before this window's lists; with a dump it writes each CTA-window's unions, row counts and read forms,
+  totals and entries, which `--check lists` holds bit for bit against the model at both carves and every step setting.
   Checked: `flagship-alt-k4`, `flagship-dense`, `flagship-cohort-k16`, `flagship-alt-k4-L4096`.
 * `fill_part` — the lists, then each window's write and read passes ([`owner_fill.md`](owner_fill.md)); with a dump
-  it writes every pool row to its slot, which `--check fill` holds byte for byte against the model.
+  it writes every pool row to its slot (a write row unswizzled, its `(F, m)` after it), which `--check fill` holds
+  byte for byte against the model.
 * `drain_part` — the lists, then each window's read passes' panels drained ([`owner_drain.md`](owner_drain.md)).
 * `readout_part` — the read passes, then the readout ([`owner_readout.md`](owner_readout.md)) in a forced or chosen
   form, a checksum so nothing is dead.
-* `fold_part` — the lists and units, then each window's write passes filled, restaged and folded
+* `fold_part` — the lists and units, then each window's write passes pipelined through three write slots and folded
   ([`owner_fold.md`](owner_fold.md)); it writes the final state, mass and units, which `--check fold` holds per slot
   against `fold_reference.fold_state`; `--ledger fold` books its phases.
 

@@ -1,6 +1,7 @@
 // csrc/rola/src/owner/owner_lists.cuh -- THE WINDOW'S WORDS AND LISTS: the CTA's write and read rows of the facts
-// pass's words staged a window ahead, their unions and ranks (a live token's pool slot), each row's live count, the
-// read side's step form chosen from those exact counts (the fold side's is merged), and each warp's entries.
+// pass's words staged a window ahead, their unions and ranks (a live token's pool slot), each row's live count, each
+// warp's union words, and the read side's step form chosen from those exact counts with each warp's read entries (the
+// fold builds its rows a pass from the union words).
 // see docs/internals/owner/owner_lists.md
 #pragma once
 
@@ -21,8 +22,8 @@ constexpr int kCostOperandB = 12;
 constexpr int kCostImmas = 8 * 16;
 constexpr int kCostEntry = 6;
 
-//: THE TENANTS THE LISTS USE: the staged rows (write rows first, then read rows) in two buffers, the unions, their ranks,
-//: each row's live count, each warp's forms and entries (pool slots, one buffer a side a warp).
+//: THE TENANTS THE LISTS USE: the staged rows (write rows first, then read rows) in two buffers, the warps' and the
+//: CTA's unions, their ranks, each row's live count, and each warp's read form, entries (pool slots) and their total.
 template <class C>
 struct ListTenants {
   uint32_t words[2][C::kWordRows][kWindowWords];
@@ -32,9 +33,9 @@ struct ListTenants {
   uint16_t base[2][kWindowWords];
   uint16_t token_of[2][kWindow];
   uint16_t count[C::kWordRows];
-  uint16_t entries[2][kWarps][kListCapacity];
-  uint16_t total[2][kWarps];
-  uint8_t form[2][kWarps];
+  uint16_t read_entries[kWarps][kListCapacity];
+  uint16_t read_total[kWarps];
+  uint8_t read_form[kWarps];
 };
 
 //: A ROW'S PLACE: write rows `[0, RD)` are level `level_r`'s write digits, read rows `[RD, RD + RS)` level `level_s`'s
@@ -175,32 +176,32 @@ __device__ __forceinline__ void side_counts(ListTenants<C>& sm, const SideLanes<
   (void)lane;
 }
 
-//: A WORD'S ENTRIES: each set bit of `bits` (word `k`) as its union slot, written from `at` in bit order
+//: A WORD'S READ ENTRIES: each set bit of `bits` (word `k`) as its read union slot, written from `at` in bit order
 template <class C>
-__device__ __forceinline__ void word_entries(ListTenants<C>& sm, int side, int warp, int k,
-                                             uint32_t bits, int at) {
-  const uint32_t uni = sm.uni[side][k];
-  const int base = sm.base[side][k];
+__device__ __forceinline__ void word_entries(ListTenants<C>& sm, int warp, int k, uint32_t bits,
+                                             int at) {
+  const uint32_t uni = sm.uni[1][k];
+  const int base = sm.base[1][k];
 #pragma unroll 1
   for (int i = 0; bits != 0u; ++i) {
     const int b = __ffs(bits) - 1;
     bits &= bits - 1u;
-    sm.entries[side][warp][at + i] = static_cast<uint16_t>(base + __popc(uni & ((1u << b) - 1u)));
+    sm.read_entries[warp][at + i] = static_cast<uint16_t>(base + __popc(uni & ((1u << b) - 1u)));
   }
 }
 
-//: A WARP'S SIDE, SECOND HALF: the chosen form's entries -- per list, each row's tokens from its offset; merged, the
-//: union's from 0 -- and the form and entry total. A dense side writes no entries.
-template <class C, int kSide>
-__device__ __forceinline__ void side_entries(ListTenants<C>& sm, const SideLanes<C, kSide>& sl,
+//: A WARP'S READ SIDE, SECOND HALF: the chosen form's entries -- per digit, each row's tokens from its offset; merged,
+//: the union's from 0 -- and the form and entry total. A dense side writes no entries.
+template <class C>
+__device__ __forceinline__ void read_entries(ListTenants<C>& sm, const SideLanes<C, 1>& sl,
                                              int form, bool sparse, int warp, int lane) {
-  using S = SideLanes<C, kSide>;
+  using S = SideLanes<C, 1>;
   constexpr int kWords = S::kWords;
   if (lane == 0) {
-    sm.form[kSide][warp] = static_cast<uint8_t>(sparse ? form : kStepMerged);
-    sm.total[kSide][warp] = static_cast<uint16_t>(!sparse               ? kWindow
-                                                  : form == kStepMerged ? sl.union_count
-                                                                        : sl.listed);
+    sm.read_form[warp] = static_cast<uint8_t>(sparse ? form : kStepMerged);
+    sm.read_total[warp] = static_cast<uint16_t>(!sparse               ? kWindow
+                                                : form == kStepMerged ? sl.union_count
+                                                                      : sl.listed);
   }
   if (!sparse) return;
   const bool merged = form == kStepMerged;
@@ -209,13 +210,13 @@ __device__ __forceinline__ void side_entries(ListTenants<C>& sm, const SideLanes
 #pragma unroll
   for (int i = 0; i < kWords; ++i) {
     const uint32_t bits = merged ? sl.u[i] : sl.w[i];
-    word_entries(sm, kSide, warp, S::kWords * sl.group + i, bits, at);
+    word_entries(sm, warp, S::kWords * sl.group + i, bits, at);
     at += __popc(bits);
   }
 }
 
-//: THE LISTS: each warp its own rows (counts, offsets, its union, its forms), the CTA's unions, sector unions and ranks
-//: from the warps' unions, then every warp's share of the slot-to-token table and its entries.
+//: THE LISTS: each warp its own rows (counts, offsets, its unions, its read form), the CTA's unions, sector unions and
+//: ranks from the warps' unions, then every warp's share of the slot-to-token table and its read entries.
 //: -- see docs/internals/owner/owner_lists.md#lists
 template <class C>
 __device__ void window_lists(ListTenants<C>& sm, const OwnerParams& p, int buf, int tid) {
@@ -259,8 +260,7 @@ __device__ void window_lists(ListTenants<C>& sm, const OwnerParams& p, int buf, 
       sm.token_of[side][sm.base[side][k] + __popc(word & ((1u << lane) - 1u))] =
           static_cast<uint16_t>(32 * k + lane);
   }
-  side_entries(sm, fold, kStepMerged, sparse_w, warp, lane);
-  side_entries(sm, read, read_form, sparse_r, warp, lane);
+  read_entries(sm, read, read_form, sparse_r, warp, lane);
   __syncthreads();
 }
 

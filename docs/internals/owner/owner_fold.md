@@ -1,10 +1,10 @@
 # `csrc/rola/src/owner/owner_fold.cuh` — the fold, fp16
 
-Mirror doc for the owner carry's fold: a warp's write lists over a pass of the write pool into the resident state and
+Mirror doc for the owner carry's fold: a warp's write lists over the window's passes into the resident state and
 mass, in the declared fp16 arithmetic of the rebuild plan card (step 3). Its reference is
 `tests/oracle/fold_reference.py` (`fold_state`), which mirrors every rounding; `measure/harness/bench_owner_skeleton.py
 --check fold` holds the part to it per slot. Vocabulary: [`owner.md`](owner.md); the
-pool rows: [`owner_fill.md`](owner_fill.md); the forms and entries: [`owner_lists.md`](owner_lists.md).
+slot rows: [`owner_fill.md`](owner_fill.md); the unions and pool slots: [`owner_lists.md`](owner_lists.md).
 
 <a id="arithmetic"></a>
 
@@ -58,31 +58,51 @@ columns at the pass's end. Every mass term is positive, so any accumulation chai
 (`flagship-dense`, median error over the mass) a call-long HMMA chain 7.2e-6, fp16 partials 2.2e-4, fp32 HMMA partials
 a 256 tokens 9e-7, fresh fragments 3.6e-8.
 
-<a id="stage"></a>
+<a id="pipeline"></a>
 
-## The restage
+## The pass pipeline
 
-After a pass's fill lands, two threads a row restage it for the operands: level S's digits as f16 at a 48-byte pitch
-— a dense level's copied, a sparse level's byte under a 0x64 high byte read as `1024 + b` and one HFMA2 to `b / 256` —
-the values copied to an 80-byte pitch (both conflict-free for an 8-row `ldmatrix`; the pool's rows are not), and each
-row's `(F, m)`. Rows past the pass, to a whole 16-token step, are zeroed, so a dense side's last step reads only zeros
-there.
+A window's union is folded in passes of a write slot's rows ([`owner_fill.md`](owner_fill.md#pools)), through THREE
+slots (`FoldPool`) under mbarriers, with no CTA barrier between passes: each slot has `landed` (every thread's fill
+copies arrive as they land, `cp.async.mbarrier.arrive.noinc`) and `drained` (every thread arrives after its pass's LAST
+LOADS, before those steps' MMAs). A warp's pass: wait its slot's landing; build its rows; then chunks of two steps --
+the chunk's operands into registers, the slot signalled drained after the pass's last chunk's loads, the chunk's MMAs --
+and after the MMAs of the chunk holding step `min(3, steps - 1)` its share of the fill of the pass two ahead, into the
+slot the pass before drained (its drain waited first). The fill runs two passes ahead within a window; a window's first
+two passes are filled after its lists (the step 8b component moves them under the window before). Measured in the lab
+(`sparse_pass`, KERNEL_STANDARDS 26 i-l): in-place operands need the third slot, and releasing a slot at its last load
+frees the fill from the slowest warp's MMAs. Measured here: a chunk of two steps against three, dense 52.8 against 55.2
+ms (4 heads), sparse the same; a one-step register stage 55.4. Placing the fill after the chunk's MMAs leaves no operand
+live across it.
+
+<a id="rows"></a>
+
+## The rows
+
+A warp's rows for a pass are built at its start (`pass_rows`): each lane takes a slot of each 32 of the pass, reads its
+token and the token's bit in the warp's union, and a ballot ranks the warp's tokens into its row buffer, in order -- a
+dense level R's rows are the pass's own. `StepRows` maps a step's 16 entries to rows; an entry past the warp's count
+reads row 0 (always filled) with `c = 0`, so no stale or never-written row is read. Building the rows word by word from
+the union's ranks instead cost 3.65K cycles a warp a CTA-window at `nl64k-alt-k4` against 2.26K.
 
 <a id="operands"></a>
 
 ## The operands
 
-A step is 16 tokens. `ldmatrix.x4.trans` gives A = the dense digits (leaves g and g + 8, tokens 2 tq.., 2 tq + 8..) and
-two more give B = the values (four n-tiles of 8 channels). `StepRows` maps the step's tokens to pass rows: on a dense
-side they are the step's own (`e0 - first + t`), a row past the pass taking `c = 0` (its f16 coefficients are a
-stale row's, or never written); on a listed side the entries, a token past its run reading row 0 with `c = 0`.
+A step is 16 tokens, read in place from the slot. A dense level S's f16 digits give A by `ldmatrix.x4.trans` (leaves g
+and g + 8, tokens 2 tq.., 2 tq + 8..); a sparse level S's bytes by `ldmatrix.x2.trans` over the tokens' 16-byte rows
+-- lane (g, tq) then holds leaves 2g and 2g + 1 of tokens 2 tq and 2 tq + 1 -- and a PRMT and an HFMA2 a register to
+`b / 256` (the byte under a 0x64 high byte read as `1024 + b`), so the accumulator's rows are leaves 2g and 2g + 1
+(`acc_leaf`). Two more `ldmatrix.x4.trans` give B = the values (four n-tiles of 8 channels). The restage the first
+fold ran (level S and the values copied to padded tiles behind a barrier) is gone.
 
 <a id="coefficient"></a>
 
 ## The coefficient
 
-Lane (g, tq) forms list g's `c` at its four tokens (2 tq, 2 tq + 1, 2 tq + 8, 2 tq + 9) — on a dense level R one more
-product for the byte scale, two fp32 products and one F2FP a pair — and two shuffles a list carry it to the A layout. The mass's `c_m` is formed beside it, and the mass's
+Lane (g, tq) forms list g's `c` at its four tokens (2 tq, 2 tq + 1, 2 tq + 8, 2 tq + 9) from the slot's run and
+`(F, m)` — on a dense level R one more product for the byte scale, two fp32 products and one F2FP a pair — and two
+shuffles a list carry it to the A layout. The mass's `c_m` is formed beside it, and the mass's
 B is exactly lane (g, tq)'s own pair for list g, so it takes no shuffle.
 
 <a id="forms"></a>
@@ -90,12 +110,12 @@ B is exactly lane (g, tq)'s own pair for list g, so it takes no shuffle.
 ## The form
 
 MERGED, the fold's one form: every list over the step's tokens — every row of a dense level R (its f16 rows), or the
-warp union's entries — the operands once, `A_j = x c_j` and four atoms a list, one mass atom a step. A token outside a list carries
+warp's rows of its union — the operands once, `A_j = x c_j` and four atoms a list, one mass atom a step. A token outside a list carries
 a zero byte and so a zero `c`. A per-list form (each list over its own entries) was built and measured slower on every
 sparse cell — its steps a warp a CTA-window, fp16 arm, forced: `nl64k-alt-k4` 17.8K against merged 9.8K,
 `flagship-cohort-k16` 40.5K against 18.0K — because a list holds a step or two a 128-row pass and its chain is
 latency-bound, while interleaving the lists to overlap them needed the fp16 arm's last registers (it spilled). It was
-removed (`docs/internals/DELETIONS.md`); one pool a window (the plan's step 8) is what would change the comparison.
+removed (`docs/internals/DELETIONS.md`).
 
 <a id="measured"></a>
 
@@ -116,17 +136,19 @@ host from the write rows' types:
 
 The units exact on all. No cell declares both write levels sparse: the u8-u8 format is built and gated by no cell.
 
-Per head, sm_86 under ncu (1.36 GHz), 4 heads (16 at L 1024), the part's lists and fill included:
+Per head, sm_86 under ncu (1.36 GHz), 4 heads (16 at L 1024), the part's lists and fill included; the ledger in
+cycles a warp a CTA-window against the steps' tensor floor (the busiest scheduler's paired steps x 1056, from the
+cells' words):
 
-| cell | time | the steps a warp a CTA-window against their tensor floor (ledger) |
-|---|---|---|
-| `nl64k-dense` | 14.4 ms | 73.7K / 67.6K (1.09x); fill 8.3K, restage 5.6K |
-| `nl64k-alt-k4` | 4.8 ms | 13.7K: ~2 steps a 128-row pass, 3 passes a window |
-| `flagship-cohort-k16` | 0.22 ms | |
-| `flagship-both-k4` | 0.24 ms | |
+| cell | time | ledger total / floor | first fold (barriers, restage) |
+|---|---|---|---|
+| `nl64k-dense` | 13.2 ms | 81.3K / 67.6K (1.20x): steps 57.9K, loads 10.0K, lists 5.4K, fill 4.1K | 14.4 ms, 93K |
+| `nl64k-alt-k4` | 3.83 ms | 24.8K / 12.5K: steps 10.0K, lists 5.8K, loads 2.7K, rows 2.3K, first fills 1.8K | 4.77 ms, 32.5K |
+| `flagship-cohort-k16` | 0.138 ms | 53.1K / 45.9K: steps 22.2K, lists 12.4K, loads 5.8K, fill 4.7K | 0.22 ms, 83K |
+| `flagship-both-k4` | 0.217 ms | | 0.24 ms |
+| `flagship-alt-k4` | 0.080 ms | | 0.107 ms |
 
-Against the factor-column format (14.0, 4.8, 0.22 ms) the dense cell pays 3% for its f16 level R: twice the run's bytes
-in the fill and the byte-scale product in `c`.
-
-The sparse cases' steps are a pass's few dependent steps, and the fixed parts are 40-55% of the
-part (lists ~22%, fill ~20%); one pool a window and the next pass's fill under this pass's steps are the plan's step 8.
+Against step 8a's line (the rebuild plan card): dense 81.3K against <= 80K, alt-k4 24.8K against <= 24.5K, cohort 53.1K
+against <= 72K -- cohort's barrier waits (27.8K, its imbalance) gone with the pass barriers. What is left: the lists
+(a window's barriers and its first two fills exposed; step 8b), and at dense the operand loads (320 cycles a step),
+which the scheduler's other warp hides only in part.

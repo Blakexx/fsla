@@ -122,7 +122,7 @@ __device__ void readout_pass(ReadPanel& panel, const ReadPool<C>& pools, const L
   int den, den_total;
 
   const auto entry_at = [&](int e, int end, bool listed) -> int {
-    return e < end ? (listed ? static_cast<int>(sm.entries[1][warp][e]) : e) - first : -1;
+    return e < end ? (listed ? static_cast<int>(sm.read_entries[warp][e]) : e) - first : -1;
   };
   const auto tile = [&](int at, int end, bool listed, int(&slot)[2],
                         uint32_t(&factors)[2]) -> const uint8_t* {
@@ -149,7 +149,7 @@ __device__ void readout_pass(ReadPanel& panel, const ReadPool<C>& pools, const L
 #pragma unroll 1
     while (true) {
       const int e = end + lane;
-      const bool in = e < count && sm.entries[1][warp][e] < limit;
+      const bool in = e < count && sm.read_entries[warp][e] < limit;
       const uint32_t mask = __ballot_sync(0xffffffffu, in);
       end += __popc(mask);
       if (mask != 0xffffffffu) return end;
@@ -163,7 +163,7 @@ __device__ void readout_pass(ReadPanel& panel, const ReadPool<C>& pools, const L
     den_total = 0;
   };
 
-  if (p.sparse_read != 0 && sm.form[1][warp] == kStepPerList) {
+  if (p.sparse_read != 0 && sm.read_form[warp] == kStepPerList) {
     int off = 0;
     rola::static_for<C::kReadDigits>([&](auto I) {
       constexpr int kI = decltype(I)::value;
@@ -187,7 +187,7 @@ __device__ void readout_pass(ReadPanel& panel, const ReadPool<C>& pools, const L
 
   const bool listed = p.sparse_read != 0;
   const int at0 = listed ? cursor[0] : first;
-  const int end = listed ? run_end(at0, sm.total[1][warp]) : limit;
+  const int end = listed ? run_end(at0, sm.read_total[warp]) : limit;
 #pragma unroll 1
   for (int at = at0; at < end; at += 8) {
     int slot[2];
