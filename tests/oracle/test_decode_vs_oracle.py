@@ -165,6 +165,10 @@ def _kernel_realized_support(routes, side, widths, B, H, device, d_v=64):
     ones = torch.ones(B, 1, H, **f32)
     rows = routes.read_rows if side == "read" else routes.write_rows
     flags = routes.sparse[0] if side == "read" else routes.sparse[1]
+    #: on the write side a dense level is f16 at the floor: a dense read level's u8 digits moved there in that form
+    rows = tuple(quant.aligned_rows(*r.shape, r.device, quant.DENSE_DTYPE).copy_(
+                     (r.float() / quant.AMP_LEVELS).clamp_min(quant.DENSE_FLOOR))
+                 if not sparse and r.dtype is not quant.DENSE_DTYPE else r for r, sparse in zip(rows, flags))
     routes = RouteFactors.from_rows(topology, tuple(quant.aligned_rows(*r.shape, r.device) for r in rows), rows, (ones,) * len(widths),
                                     (ones,) * len(widths), ones, sparse=((True,) * len(widths), flags))
     values = Values.from_projection(torch.ones(B, 1, H, d_v, **f32))

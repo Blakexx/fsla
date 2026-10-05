@@ -271,7 +271,8 @@ def test_the_combined_operator_refuses_what_it_has_no_kernel_for():
         narrow = RouteFactors(topology=Topology(levels=(OpaqueRouting(width=width),) * 2),
                               amp_read=tuple(r[..., :width] for r in routes.amp_read),
                               amp_write=tuple(r[..., :width] for r in routes.amp_write),
-                              scale_read=routes.scale_read, scale_write=routes.scale_write, g_write=routes.g_write)
+                              scale_read=routes.scale_read, scale_write=routes.scale_write, g_write=routes.g_write,
+                              sparse=routes.sparse)
         with pytest.raises(ValueError, match="the intra does not read level widths"):
             prefill(narrow, values, modes=modes_of(spec), liveness=words, unions=out.unions, layout=layout, read_statics=statics[0],
                     write_statics=statics[1])

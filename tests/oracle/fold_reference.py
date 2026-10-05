@@ -4,7 +4,8 @@
 
 THE LIST EXPONENTS (the facts pass writes them; docs/internals/facts/facts.md#lists): per window ``w`` and digit ``r``
 of the list level, ``K[w, r, col] = ceil(log2(max over t in w of b(t, r) x col(t)))``, floored at -126 -- ``b`` the
-token's write byte at ``r`` (a dense level's zero, in a live row, at ``255 x DENSE_FLOOR``), ``col`` either ``m(t)``
+token's write coefficient at ``r`` on the byte scale (a sparse level's u8 digit, a dense level's f16 times 255, its
+floor stored), ``col`` either ``m(t)``
 (the write gain times every write level's scale, column 0) or ``m(t) s(t)`` (times the value scale, column 1). The fold
 puts each list's largest coefficient at a fixed power of two by them.
 
@@ -31,11 +32,10 @@ def list_columns(routes, values) -> torch.Tensor:
 
 def list_maxima(routes, values, level: int, window: int) -> torch.Tensor:
     """``[B, H, windows, B_level, 2]`` fp64: per window and digit of ``level``, the largest ``b x col`` over its
-    tokens, ``b`` the write byte (a dense level's zero in a live row at the floor), zero past the rows' width."""
+    tokens, ``b`` the write coefficient on the byte scale (a dense level's f16 times 255), zero past the rows' width."""
     rows = routes.amp_write[level].double()
     if not routes.sparse[1][level]:
-        live = (routes.scale_write[level] > 0).unsqueeze(-1)
-        rows = torch.where(live, rows.clamp_min(quant.AMP_LEVELS * quant.DENSE_FLOOR), rows)
+        rows = rows * quant.AMP_LEVELS
     B, T, H, width = rows.shape
     cols = list_columns(routes, values)
     windows = -(-T // window)

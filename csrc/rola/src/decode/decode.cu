@@ -969,15 +969,17 @@ Tensor rola_decode_forward(std::vector<Tensor> read, std::vector<Tensor> write,
   p.D = D;
   const int total_rows = detail::fill_levels(p, write, level_widths, B, H, N);
   detail::fill_lattice(p, lattice_k, lattice_m, N);
-  //: THE COEFFICIENT ROWS: u8 at every depth. -- see docs/internals/decode/decode.md#coefficient-rows
+  //: THE COEFFICIENT ROWS: u8, a dense write level's f16 (the floor stored). -- see docs/internals/decode/decode.md#coefficient-rows
   STD_TORCH_CHECK(
       read_scale.size() == static_cast<size_t>(D) && write_scale.size() == static_cast<size_t>(D),
       "one row scale a level a side");
   for (int l = 0; l < D; ++l) {
     p.read[l] = detail::span_of(read[l], B, H, p.level_width[l], "read[l]");
-    STD_TORCH_CHECK(read[l].scalar_type() == Dtype::Byte && write[l].scalar_type() == Dtype::Byte,
-                    "the coefficient rows are u8; level ", l, " is ", read[l].scalar_type(),
-                    " and ", write[l].scalar_type());
+    const bool half = ((floor_write >> l) & 1) != 0;
+    STD_TORCH_CHECK(read[l].scalar_type() == Dtype::Byte
+                        && write[l].scalar_type() == (half ? Dtype::Half : Dtype::Byte),
+                    "the coefficient rows are u8, a dense write level's f16; level ", l, " is ",
+                    read[l].scalar_type(), " and ", write[l].scalar_type());
     detail::check_f32_span(read_scale[l], "read_scale[l]");
     detail::check_f32_span(write_scale[l], "write_scale[l]");
     p.read_scale[l] = detail::scalar_span_of(read_scale[l], B, H, "read_scale[l]");

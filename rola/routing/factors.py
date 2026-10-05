@@ -25,9 +25,18 @@ import torch
 from rola.routing import quant
 from rola.routing.types import Topology
 
-__all__ = ["RouteFactors"]
+__all__ = ["RouteFactors", "carry_level_s"]
 
 SIDES = ("read", "write")
+
+
+def carry_level_s(read_sparse) -> int:
+    """THE CARRY'S LEVEL S, from the read side's sparse flags: at depth two the read-sparse level (level 1 when it is
+    read-sparse or level 0 is not, else level 0) -- its write rows are the fold's dense-slice operand; ``-1`` at depth
+    one (the list level alone) and deeper (the carry is not built). docs/internals/owner/owner.md#carve"""
+    if len(read_sparse) != 2:
+        return -1
+    return 1 if read_sparse[1] or not read_sparse[0] else 0
 
 
 def _aligned(rows: torch.Tensor) -> bool:
@@ -48,7 +57,8 @@ class RouteFactors:
     """The feature-mapped routing sides in THE INTERNAL FORMAT, and their side gain. Tensors, and nothing else.
 
     ``amp_read``/``amp_write``: one ``[B, T, H, width_l]`` row set per level, each row UNIT-MAX -- u8 with its
-    largest digit at 255, at every depth. An all-zero row is a dead token at that level. ``sparse``: ``(read, write)``, a bool a level -- the
+    largest digit at 255, except a DENSE WRITE level's rows, f16 at 1 with the floor taken (a dense level is never
+    zero). An all-zero row is a dead token at that level. ``sparse``: ``(read, write)``, a bool a level -- the
     levels whose support the facts pass words (they may hold exact zeros worth skipping); set at production, read
     by every consumer, never derived from the activations. All dense by default. ``scale_read``/``scale_write``: the rows' maxima,
     fp32 ``[B, T, H]`` per level -- a read level's scale carries the read mass, a write level's the normalized
@@ -86,8 +96,6 @@ class RouteFactors:
             raise ValueError(f"RouteFactors.sparse is (read, write), a bool a level (D={D}); got {self.sparse!r}")
         object.__setattr__(self, "sparse", flags)
         prefix, first = self._check_rows()
-        if first.dtype is not quant.ROW_DTYPE:
-            raise TypeError(f"RouteFactors rows are stored as {quant.ROW_DTYPE}, got {first.dtype}")
         for name in ("scale_read", "scale_write"):
             scales = getattr(self, name)
             if len(scales) != D:
@@ -133,10 +141,10 @@ class RouteFactors:
                 if tensor.device != first.device:
                     raise ValueError(f"every routing level lives on one device; {name}[{level}] is on "
                                      f"{tensor.device} against {first.device}")
-                if tensor.dtype != first.dtype:
-                    raise ValueError(f"every routing level shares one row dtype; {name}[{level}] is {tensor.dtype} "
-                                     f"against {first.dtype}")
-                if tensor.dtype is quant.ROW_DTYPE and not _aligned(tensor):
+                want = self.row_dtype(level, name[4:])
+                if tensor.dtype is not want:
+                    raise TypeError(f"RouteFactors.{name}[{level}] is stored as {want}, got {tensor.dtype}")
+                if not _aligned(tensor):
                     raise ValueError(f"RouteFactors.{name}[{level}] breaks the row alignment law: its rows start on "
                                      f"and step by multiples of {quant.ROW_ALIGN} bytes (strides "
                                      f"{tuple(tensor.stride())}, address {tensor.data_ptr() % quant.ROW_ALIGN} past the "
@@ -145,11 +153,15 @@ class RouteFactors:
 
     @classmethod
     def from_levels(cls, topology: Topology, read, write, g_write, read_mass=None, *, sparse=None) -> RouteFactors:
-        """THE FRAMEWORK'S EPILOGUE as a function: floating levels in, the format out -- u8 digits, each row
-        against its own max (`rola.routing.quant`), and the ``sparse`` flags (:meth:`from_rows`)."""
+        """THE FRAMEWORK'S EPILOGUE as a function: floating levels in, the format out -- each row against its own
+        max (`rola.routing.quant`): u8 digits, a dense write level's rows f16 -- and the ``sparse`` flags
+        (:meth:`from_rows`)."""
         read, write = tuple(read), tuple(write)
+        sparse = _default_sparse(topology) if sparse is None else tuple(tuple(map(bool, f)) for f in sparse)
         amp_read, scale_read = zip(*(quant.quantize_unit_max_rows(level) for level in read))
-        amp_write, scale_write = zip(*(quant.quantize_unit_max_rows(level) for level in write))
+        amp_write, scale_write = zip(*(quant.quantize_unit_max_rows(level) if sparse[1][i]
+                                       else quant.quantize_unit_max_rows(level, quant.DENSE_DTYPE, True)
+                                       for i, level in enumerate(write)))
         source = (read, write) if _requires_grad(read + write) else None
         return cls.from_rows(topology, amp_read, amp_write, scale_read, scale_write, g_write, read_mass=read_mass,
                              source=source, sparse=sparse)
@@ -161,10 +173,18 @@ class RouteFactors:
         ``sparse`` is ``(read, write)``, a bool a level; by default the production's own rule, a side whose
         activation has exact zeros (an opaque level, which may have zeros, included)."""
         if sparse is None:
-            sparse = tuple(tuple(topology.activation_properties(level, side).exact_zeros
-                                 for level in range(topology.D)) for side in SIDES)
+            sparse = _default_sparse(topology)
         return cls(topology=topology, amp_read=amp_read, amp_write=amp_write, scale_read=scale_read,
                    scale_write=scale_write, g_write=g_write, read_mass=read_mass, source=source, sparse=sparse)
+
+    @property
+    def level_s(self) -> int:
+        """The carry's level S (:func:`carry_level_s`), ``-1`` where there is none."""
+        return carry_level_s(self.sparse[0])
+
+    def row_dtype(self, level: int, side: str) -> torch.dtype:
+        """The stored type of ``level``'s rows on ``side``: f16 for a dense write level, u8 otherwise."""
+        return quant.DENSE_DTYPE if side == "write" and not self.sparse[1][level] else quant.ROW_DTYPE
 
     @property
     def batch(self) -> int:
@@ -255,3 +275,9 @@ class RouteFactors:
         mass = () if self.read_mass is None else (self.read_mass,)
         source = () if self.source is None else (*self.source[0], *self.source[1])
         return (*self.amp_read, *self.amp_write, *self.scale_read, *self.scale_write, self.g_write, *mass, *source)
+
+
+def _default_sparse(topology: Topology) -> tuple[tuple[bool, ...], tuple[bool, ...]]:
+    """The production's own sparse rule: a side's level whose activation has exact zeros (an opaque level included)."""
+    return tuple(tuple(topology.activation_properties(level, side).exact_zeros for level in range(topology.D))
+                 for side in SIDES)

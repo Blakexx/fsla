@@ -20,11 +20,13 @@ from rola.ops.produce import (
     ProducerPlan,
     ProducerWeights,
     _job_tensor,
+    dense_write_levels,
     hidden_contiguous,
     job_table,
     produce,
     row_layout,
 )
+from rola.routing import quant
 from rola.routing.entmax.production import _torch_activation, _torch_union_split
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the producer is a CUDA kernel")
@@ -64,14 +66,16 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
 
     B, T, hidden = x.shape
     H, D, d_v = plan.num_heads, plan.routing.topology.D, plan.d_v
-    rows = row_layout(plan)[1]
+    dense = dense_write_levels(plan)
 
     def poisoned(*shape, dtype=torch.float32):
         out = torch.empty(B, H, T, *shape, dtype=dtype, device="cuda")
         out.view(torch.uint8).fill_(fill)
         return out
 
-    out = {"amp_read": poisoned(rows, dtype=torch.uint8), "amp_write": poisoned(rows, dtype=torch.uint8),
+    out = {"amp_read": poisoned(row_layout(plan, "read")[1], dtype=torch.uint8),
+           "amp_write": poisoned(row_layout(plan, "write")[1], dtype=torch.uint8),
+           "dense_write": poisoned(row_layout(plan, "write", dense=True)[1], dtype=quant.DENSE_DTYPE) if dense else None,
            "scale_read": poisoned(D), "scale_write": poisoned(D), "mass_read": poisoned(D), "mass_write": poisoned(D),
            "read_mass": poisoned(), "g_write": poisoned(), "v": poisoned(d_v, dtype=torch.float16), "v_scale": poisoned()}
     jobs, shapes, per_head = _job_tensor(plan, "cuda:0")
@@ -80,7 +84,7 @@ def _launch(plan, x, route_W, route_bias, gain_bias, v_W, fill: int, probe: bool
               for _ in range(2)]
     extension().rola_produce_forward(
         x.reshape(B * T, hidden).contiguous(), route_W, route_bias, gain_bias, v_W, jobs,
-        *out.values(), arrivals, *probes, shapes, D, per_head)
+        *out.values(), arrivals, *probes, shapes, D, per_head, sum(1 << level for level in dense))
     torch.cuda.synchronize()
     return {key: None if t is None else t.transpose(1, 2) for key, t in out.items()}, arrivals, probes
 
@@ -186,13 +190,24 @@ def test_the_bundle_matches_the_fp64_composition(name, B, T, bias, gain):
     reference = ProducerWeights(route_W=route_W.double(), gain_bias=gain_bias.double(), v_W=v_W.double(),
                                 route_bias=None if route_bias is None else route_bias.double())
     routes, _ = produce(x.double(), plan, reference)
-    offsets = row_layout(plan)[0]
     for level, width in enumerate(plan.routing.resolved.branches):
         for side, rows, scales in (("read", routes.amp_read, routes.scale_read),
                                    ("write", routes.amp_write, routes.scale_write)):
-            got = out[f"amp_{side}"][..., offsets[level]:offsets[level] + width]
-            digit = int((got.int() - rows[level].int()).abs().max())
-            assert digit <= 1, f"{name}: level {level} {side} digits off by {digit}"
+            offset = row_layout(plan, side)[0][level]
+            if side == "write" and not routes.sparse[1][level]:
+                #: a dense write level's f16 rows: one u8 digit's worth (the solves' fp32 against fp64), the floor exact
+                start = row_layout(plan, "write", dense=True)[0][level]
+                got = out["dense_write"][..., start:start + width]
+                assert got.dtype is quant.DENSE_DTYPE and rows[level].dtype is quant.DENSE_DTYPE
+                off = float((got.double() - rows[level].double()).abs().max())
+                assert off <= 1 / quant.AMP_LEVELS, f"{name}: level {level} f16 rows off by {off:.3g}"
+                live = (out["scale_write"][..., level] > 0).unsqueeze(-1)
+                assert bool((got.float()[live.expand_as(got)] >= quant.DENSE_FLOOR).all()), (
+                    f"{name}: a dense write coefficient under the floor")
+            else:
+                got = out[f"amp_{side}"][..., offset:offset + width]
+                digit = int((got.int() - rows[level].int()).abs().max())
+                assert digit <= 1, f"{name}: level {level} {side} digits off by {digit}"
             scale = float((out[f"scale_{side}"][..., level].double() - scales[level].double()).abs().max())
             assert scale <= (width + 16) * 2.0 ** -22, f"{name}: level {level} {side} scale off by {scale:.3g}"
     read_mass = routes.read_mass if routes.read_mass is not None else torch.ones_like(routes.g_write)

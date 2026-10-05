@@ -47,13 +47,14 @@ def _statics(layout, dense, logical):
 
 
 def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False):
-    """A bundle at logical widths ``widths``: a sparse level's rows a random support (at least one live digit a token),
-    a dense level's mostly nonzero with some zero digits -- a value that rounded to zero, which the width mask reports
-    live all the same. ``packed`` gives each side's levels as views of one ``[B, L, H, sum b_l]`` plane, the producer's
-    layout; otherwise each level is its own tensor."""
+    """A bundle at logical widths ``widths`` in the format: a sparse level's rows a random support (at least one live
+    digit a token) as u8; a dense read level's mostly nonzero u8 with some zero digits -- a value that rounded to zero,
+    which the width mask reports live all the same; a dense write level's the same values as f16 at the floor
+    (`rola.routing.quant`). ``packed`` gives each side's levels as views of the producer's planes -- one u8 plane, and
+    on the write side an f16 plane of its dense levels -- otherwise each level is its own tensor."""
     gen = torch.Generator().manual_seed(seed)
     rows = []
-    for side in statics:
+    for index, side in enumerate(statics):
         levels = []
         for level, width in enumerate(widths):
             digits = torch.randint(1, 256, (B, L, H, width), generator=gen)
@@ -61,17 +62,30 @@ def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False):
             if not side.dense_levels[level]:
                 keep[..., 0] |= ~keep.any(-1)
             digits = digits * keep
-            levels.append(digits.to(torch.uint8))
+            if index == 1 and side.dense_levels[level]:
+                levels.append((digits / quant.AMP_LEVELS).clamp_min(quant.DENSE_FLOOR).to(quant.DENSE_DTYPE))
+            else:
+                levels.append(digits.to(torch.uint8))
         if packed:
-            slots = [quant.row_slot(w) for w in widths]
-            plane = torch.zeros((B, L, H, sum(slots)), dtype=torch.uint8)
-            offsets = [sum(slots[:level]) for level in range(len(widths))]
-            for o, w, level in zip(offsets, widths, levels):
-                plane[..., o:o + w] = level
-            plane = plane.cuda()
-            rows.append(tuple(plane[..., o:o + w] for o, w in zip(offsets, widths)))
+            out = [None] * len(widths)
+            for dtype in {level.dtype for level in levels}:
+                size = torch.empty((), dtype=dtype).element_size()
+                members = [i for i, level in enumerate(levels) if level.dtype is dtype]
+                slots = {i: quant.row_slot(widths[i] * size) // size for i in members}
+                plane = torch.zeros((B, L, H, sum(slots.values())), dtype=dtype)
+                offset = 0
+                for i in members:
+                    plane[..., offset:offset + widths[i]] = levels[i]
+                    out[i] = (offset, widths[i])
+                    offset += slots[i]
+                plane = plane.cuda()
+                for i in members:
+                    o, w = out[i]
+                    out[i] = plane[..., o:o + w]
+            rows.append(tuple(out))
         else:
-            rows.append(tuple(quant.aligned_rows(B, L, H, w, "cuda").copy_(level) for w, level in zip(widths, levels)))
+            rows.append(tuple(quant.aligned_rows(B, L, H, w, "cuda", level.dtype).copy_(level)
+                              for w, level in zip(widths, levels)))
 
     def column():
         return (torch.rand((B, L, H), generator=gen) + 0.1).cuda()
@@ -79,7 +93,8 @@ def _bundle(widths, L, statics, *, B=1, H=2, seed=0, packed=False):
     D = len(widths)
     routes = RouteFactors(topology=Topology(levels=tuple(OpaqueRouting(width=w) for w in widths)),
                           amp_read=rows[0], amp_write=rows[1], scale_read=tuple(column() for _ in range(D)),
-                          scale_write=tuple(column() for _ in range(D)), g_write=column())
+                          scale_write=tuple(column() for _ in range(D)), g_write=column(),
+                          sparse=tuple(tuple(not dense for dense in side.dense_levels) for side in statics))
     values = Values(v=torch.zeros((B, L, H, 8), dtype=torch.float16, device="cuda"), scale=column())
     return routes, values
 

@@ -94,7 +94,7 @@ def test_a_well_formed_hand_built_bundle_is_legal():
     ("width", "wide but the topology"),
     ("levels", "one tensor per routing level"),
     ("prefix", r"one \[B, T, H\] prefix"),
-    ("dtype", "one row dtype"),
+    ("dtype", "is stored as"),
     ("gain_shape", r"g_write must be a \[B, T, H\]"),
 ])
 def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, message):
@@ -120,7 +120,9 @@ def test_a_malformed_hand_built_bundle_is_refused_by_its_structure(break_it, mes
     elif break_it == "prefix":
         fields["amp_write"][1] = fields["amp_write"][1][:1]
     elif break_it == "dtype":
-        fields["amp_write"][0] = fields["amp_write"][0].to(torch.float16)
+        #: each level's rows have one stored type (f16 for a dense write level, u8 otherwise): plant the other
+        rows = fields["amp_write"][0]
+        fields["amp_write"][0] = rows.to(torch.uint8 if rows.dtype is torch.float16 else torch.float16)
     elif break_it == "gain_shape":
         fields["g_write"] = fields["g_write"][..., :1]
     with pytest.raises((ValueError, TypeError), match=message):

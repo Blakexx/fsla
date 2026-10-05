@@ -31,15 +31,19 @@ __device__ __forceinline__ int column_slot(int t) { return t + (t >> 3); }
 //: row moves, so a copy keeps its run's 32-byte phase. -- see docs/internals/facts/facts.md#load
 __device__ __forceinline__ int ring_row(int t) { return 4 * (t & 7) + (t >> 3); }
 
-//: A LANE'S COPIES FOR ITS PART: two 16-byte quanta a word (lanes `2i`, `2i + 1` one token's halves), its source a
+//: A LANE'S COPIES FOR ITS PART: lanes `2i`, `2i + 1` one token's halves of a unit's 32 digits, a word's two token
+//: blocks -- one 16-byte quantum a half of u8 digits, or two of a dense list level's f16 (`kDense`) -- its source a
 //: pointer set once and stepped a word at a time, a quantum's bytes past the rows' width or a token past `L`
 //: zero-filled and unread. -- see docs/internals/facts/facts.md#load
+template <bool kDense>
 struct LaneCopies {
+  static constexpr int kDigitBytes = kDense ? 2 : 1, kRow = 32 * kDigitBytes, kQuanta = kDigitBytes;
+  static constexpr int kSlot = kDense ? kDenseWordBytes : kWordBytes;
   const uint8_t* src;             // token `t0 + lane / 2` of the next word, at the lane's half
   int64_t step;                   // a word's 32 tokens
   int64_t second;                 // the word's second 16 tokens
   int token, last;                // the lane's next token, and the call's tokens
-  uint32_t run;                   // the lane's bytes of a token, 0 to 16
+  uint32_t run[kQuanta];          // the lane's bytes of a token, each quantum 0 to 16
   ops::SmemAddr dst, dst_second;  // the lane's places in slot 0
 
   LaneCopies() = default;
@@ -50,17 +54,23 @@ struct LaneCopies {
     const int digit = first_digit + 16 * (lane & 1);
     token = t0 + (lane >> 1);
     last = p.L;
-    run = static_cast<uint32_t>(max(0, min(16, view.width - digit)));
+#pragma unroll
+    for (int q = 0; q < kQuanta; ++q)
+      run[q] = static_cast<uint32_t>(max(0, min(16, (view.width - digit) * kDigitBytes - 16 * q)));
     step = 32 * view.st;
     second = 16 * view.st;
-    src = rows + token * view.st + digit;
-    dst = ring + ring_row(lane >> 1) * 32 + 16 * (lane & 1);
-    dst_second = ring + ring_row(16 + (lane >> 1)) * 32 + 16 * (lane & 1);
+    src = rows + token * view.st + digit * kDigitBytes;
+    dst = ring + ring_row(lane >> 1) * kRow + 16 * kQuanta * (lane & 1);
+    dst_second = ring + ring_row(16 + (lane >> 1)) * kRow + 16 * kQuanta * (lane & 1);
   }
 
   __device__ __forceinline__ void issue(int stage) {
-    ops::stage_tile_n(dst + stage * kWordBytes, src, token < last ? run : 0u);
-    ops::stage_tile_n(dst_second + stage * kWordBytes, src + second, token + 16 < last ? run : 0u);
+#pragma unroll
+    for (int q = 0; q < kQuanta; ++q) {
+      ops::stage_tile_n(dst + stage * kSlot + 16 * q, src + 16 * q, token < last ? run[q] : 0u);
+      ops::stage_tile_n(dst_second + stage * kSlot + 16 * q, src + second + 16 * q,
+                        token + 16 < last ? run[q] : 0u);
+    }
     src += step;
     token += 32;
   }
@@ -109,6 +119,25 @@ __device__ __forceinline__ uint32_t word_lanes(const uint8_t* slot, const float2
   y = __shfl_xor_sync(0xffffffffu, flags, 8);
   flags = (tk & 1) ? prmt_imm<0x3715u>(flags, y) : prmt_imm<0x6240u>(flags, y);
   return flags;
+}
+
+//: A DENSE LIST LEVEL'S WORD: lane `(tk, dq)` reads token `8 tk + i`'s f16 digits `4 dq .. 4 dq + 3` as one 8-byte
+//: load (`i` 0..7), each to the byte scale (x 255, exact), `b m` and `b m s` maxed into its four digits' pairs.
+//: -- see docs/internals/facts/facts.md#lists
+__device__ __forceinline__ void dense_list_lanes(const uint8_t* slot, const float2* cols, int tk,
+                                                 int dq, float2 (&best)[4]) {
+#pragma unroll
+  for (int i = 0; i < 8; ++i) {
+    const uint2 x = *reinterpret_cast<const uint2*>(slot + (4 * i + tk) * 64 + 8 * dq);
+    const float2 lo = __half22float2(*reinterpret_cast<const __half2*>(&x.x));
+    const float2 hi = __half22float2(*reinterpret_cast<const __half2*>(&x.y));
+    const float b[4] = {kRowMaxDigit * lo.x, kRowMaxDigit * lo.y, kRowMaxDigit * hi.x,
+                        kRowMaxDigit * hi.y};
+    const float2 c = cols[column_slot(8 * tk + i)];
+#pragma unroll
+    for (int k = 0; k < 4; ++k)
+      best[k] = make_float2(fmaxf(best[k].x, b[k] * c.x), fmaxf(best[k].y, b[k] * c.y));
+  }
 }
 
 //: A THREAD'S COLUMN LOADS for the window's tokens `threadIdx.x + i kFactsThreads`: the gain, the value scale and the
@@ -173,18 +202,21 @@ __device__ void stage_columns(ColumnLoads c, int warp, int lane, float2* cols, f
   }
 }
 
-//: A READ PART'S COPIES STARTED, `kWords` words of the window: the lane's copies set up and the ring's first
-//: `kStages - 1` words issued, before a list item's column staging so the two loads overlap.
-template <int kWords>
-__device__ __forceinline__ LaneCopies start_part(const FactsParams& p, int code, int b, int h,
-                                                 int window, int part, int lane, uint8_t* ring) {
+//: A READ PART'S COPIES STARTED, `kWords` words of the window: the lane's copies set up and the ring's first stages
+//: less one issued, before a list item's column staging so the two loads overlap.
+template <int kWords, bool kDense>
+__device__ __forceinline__ LaneCopies<kDense> start_part(const FactsParams& p, int code, int b,
+                                                         int h, int window, int part, int lane,
+                                                         uint8_t* ring) {
+  constexpr int kAh = (kDense ? kDenseStages : kStages) - 1;
   const int side = code >> 5, level = (code >> 3) & 3, group = code & 7;
   const RowView view = p.rows[side][level];
   const uint8_t* const rows = static_cast<const uint8_t*>(view.base) + b * view.sb + h * view.sh;
-  LaneCopies copies(p, view, rows, group * 32, (window * kWindowWords + part * kWords) * kTokBits,
-                    lane, ops::smem_addr(ring));
+  LaneCopies<kDense> copies(p, view, rows, group * 32,
+                            (window * kWindowWords + part * kWords) * kTokBits, lane,
+                            ops::smem_addr(ring));
 #pragma unroll
-  for (int s = 0; s < kAhead; ++s) {
+  for (int s = 0; s < kAh; ++s) {
     copies.issue(s);
     ops::stage_commit();
   }
@@ -193,11 +225,13 @@ __device__ __forceinline__ LaneCopies start_part(const FactsParams& p, int code,
 
 //: A WARP'S PART OF A UNIT through its ring, tile by tile: a VOTE unit lane `(tk, dq)` digit `4 dq + tk`'s voted bits
 //: into its tile row and each tile's union, one reduction; a LIST unit each digit's largest `b` x column, a dense list
-//: level's unit nothing else. -- see docs/internals/facts/facts.md#vote
-template <bool kVote, bool kList, int kWords>
+//: level's unit (its rows f16, `kDense`) nothing else. -- see docs/internals/facts/facts.md#vote
+template <bool kVote, bool kList, int kWords, bool kDense>
 __device__ void read_part(const FactsParams& p, int code, int bh, int window, int part, int lane,
                           uint32_t* tile, uint8_t* ring, const float2* cols, float2* top,
-                          LaneCopies& copies) {
+                          LaneCopies<kDense>& copies) {
+  static_assert(!kDense || (kList && !kVote), "a dense level's rows are read for its lists alone");
+  constexpr int kSt = kDense ? kDenseStages : kStages, kAh = kSt - 1;
   const int side = code >> 5, level = (code >> 3) & 3, group = code & 7;
   const int tk = lane >> 3, dq = lane & 7, d = 4 * dq + tk;
   const int width = p.B[level], base = p.row_base[level];
@@ -221,13 +255,17 @@ __device__ void read_part(const FactsParams& p, int code, int bh, int window, in
 #pragma unroll
     for (int w = 0; w < 2; ++w) {
       const int jj = j + w;
-      if (jj + kAhead < kWords) copies.issue((jj + kAhead) % kStages);
+      if (jj + kAh < kWords) copies.issue((jj + kAh) % kSt);
       ops::stage_commit();
-      ops::stage_wait<kAhead>();
+      ops::stage_wait<kAh>();
       __syncwarp();
-      const uint32_t voted = word_lanes<kVote, kList>(
-          ring + (jj % kStages) * kWordBytes, cols + column_slot((part * kWords + jj) * kTokBits),
-          tk, dq, best);
+      const uint8_t* const slot = ring + (jj % kSt) * LaneCopies<kDense>::kSlot;
+      const float2* const word_cols = cols + column_slot((part * kWords + jj) * kTokBits);
+      uint32_t voted = 0u;
+      if constexpr (kDense)
+        dense_list_lanes(slot, word_cols, tk, dq, best);
+      else
+        voted = word_lanes<kVote, kList>(slot, word_cols, tk, dq, best);
       __syncwarp();
       if constexpr (kVote) {
         const uint32_t bits = in_mask ? voted : 0u;
@@ -256,18 +294,6 @@ __device__ void read_part(const FactsParams& p, int code, int bh, int window, in
       for (int k = 0; k < 4; ++k) top[4 * lane + k] = best[k];
     }
     __syncwarp();
-    //: a dense level's zero digit at the floor: the window's largest column times it bounds every digit in the mask
-    const int floor_digit = group * 32 + lane;
-    const bool floor_live =
-        level_is_dense(p.dense[side], level) && floor_digit < width
-        && mask_bit(p.mask[side][(base + floor_digit) >> 5], base + floor_digit);
-    if (floor_live) {
-      const float2 window_top = cols[kColumnSlots];
-      float2 t = top[lane];
-      t = make_float2(fmaxf(t.x, kDenseFloorDigit * window_top.x),
-                      fmaxf(t.y, kDenseFloorDigit * window_top.y));
-      top[lane] = t;
-    }
   }
 }
 
@@ -368,28 +394,30 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
     const bool voted = live && !level_is_dense(p.dense[code >> 5], (code >> 3) & 3);
     uint32_t* const tile = voted ? s_tile[slot_unit] : nullptr;
     if (list) {
+      //: a voted list level's rows are u8; a dense one's are f16 (`rola.routing.quant.DENSE_DTYPE`)
       const ColumnLoads loads = load_columns(p, b, h, window);
-      LaneCopies copies;
-      if (live)
-        copies = voted ? start_part<kListPartWords>(p, code, b, h, window, part, lane, ring)
-                       : start_part<kWindowWords>(p, code, b, h, window, part, lane, ring);
+      LaneCopies<false> vote_copies;
+      LaneCopies<true> dense_copies;
+      if (live && voted)
+        vote_copies = start_part<kListPartWords, false>(p, code, b, h, window, part, lane, ring);
+      else if (live)
+        dense_copies = start_part<kWindowWords, true>(p, code, b, h, window, part, lane, ring);
       stage_columns(loads, warp, lane, s_cols, s_warp_top);
       __syncthreads();
       clock.lap(kPhaseColumns);
-      if (live) {
-        if (voted)
-          read_part<true, true, kListPartWords>(p, code, bh, window, part, lane, tile, ring, s_cols,
-                                                s_top[warp], copies);
-        else
-          read_part<false, true, kWindowWords>(p, code, bh, window, part, lane, tile, ring, s_cols,
-                                               s_top[warp], copies);
-      }
+      if (live && voted)
+        read_part<true, true, kListPartWords, false>(p, code, bh, window, part, lane, tile, ring,
+                                                     s_cols, s_top[warp], vote_copies);
+      else if (live)
+        read_part<false, true, kWindowWords, true>(p, code, bh, window, part, lane, tile, ring,
+                                                   s_cols, s_top[warp], dense_copies);
     } else {
       clock.lap(kPhaseColumns);
       if (live) {
-        LaneCopies copies = start_part<kPartWords>(p, code, b, h, window, part, lane, ring);
-        read_part<true, false, kPartWords>(p, code, bh, window, part, lane, tile, ring, s_cols,
-                                           s_top[warp], copies);
+        LaneCopies<false> copies =
+            start_part<kPartWords, false>(p, code, b, h, window, part, lane, ring);
+        read_part<true, false, kPartWords, false>(p, code, bh, window, part, lane, tile, ring,
+                                                  s_cols, s_top[warp], copies);
       }
     }
     clock.lap(kPhaseVote);
@@ -420,22 +448,25 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
   }
 }
 
-//: A level's rows as the kernel reads them: `[B, T, H, width]` u8, digits contiguous.
-RowView row_view(const Tensor& t, int64_t B, int64_t T, int64_t H, const char* name) {
-  STD_TORCH_CHECK(t.is_cuda() && t.scalar_type() == Dtype::Byte, name, " is a CUDA u8 tensor, got ",
+//: A level's rows as the kernel reads them: `[B, T, H, width]`, digits contiguous -- u8, or f16 for a dense write
+//: level (`half`); the view's strides in bytes.
+RowView row_view(const Tensor& t, int64_t B, int64_t T, int64_t H, bool half, const char* name) {
+  STD_TORCH_CHECK(t.is_cuda() && t.scalar_type() == (half ? Dtype::Half : Dtype::Byte), name,
+                  " is a CUDA ", half ? "f16 (a dense write level)" : "u8", " tensor, got ",
                   t.scalar_type());
+  const int64_t size = t.element_size();
   STD_TORCH_CHECK(t.dim() == 4 && t.size(0) == B && t.size(1) == T && t.size(2) == H, name,
                   " is [B, T, H, width] = [", B, ", ", T, ", H, width], got ", shape(t.sizes()));
   STD_TORCH_CHECK(t.stride(3) == 1 || t.size(3) == 1, name, "'s digits are contiguous");
   //: THE ROW ALIGNMENT LAW: the first row and every stride of a dimension longer than one on 32 bytes
   const bool aligned = reinterpret_cast<uintptr_t>(t.const_data_ptr()) % kRowAlign == 0
-                       && (t.size(0) == 1 || t.stride(0) % kRowAlign == 0)
-                       && (t.size(1) == 1 || t.stride(1) % kRowAlign == 0)
-                       && (t.size(2) == 1 || t.stride(2) % kRowAlign == 0);
+                       && (t.size(0) == 1 || t.stride(0) * size % kRowAlign == 0)
+                       && (t.size(1) == 1 || t.stride(1) * size % kRowAlign == 0)
+                       && (t.size(2) == 1 || t.stride(2) * size % kRowAlign == 0);
   STD_TORCH_CHECK(aligned, name,
                   " breaks the row alignment law: its rows start on and step by multiples of ",
                   kRowAlign, " bytes");
-  return RowView{t.const_data_ptr(), t.stride(0), t.stride(1), t.stride(2),
+  return RowView{t.const_data_ptr(), t.stride(0) * size, t.stride(1) * size, t.stride(2) * size,
                  static_cast<int>(t.size(3))};
 }
 
@@ -513,7 +544,8 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
     for (int w = 0; w < need; ++w) p.mask[side][w] = static_cast<uint32_t>((*masks[side])[w]);
     for (int level = 0; level < D; ++level) {
       const Tensor& rows = (*sides[side])[level];
-      p.rows[side][level] = detail::row_view(rows, B, T, H, side ? "write[l]" : "read[l]");
+      const bool half = side == kWrite && level_is_dense(p.dense[side], level);
+      p.rows[side][level] = detail::row_view(rows, B, T, H, half, side ? "write[l]" : "read[l]");
       //: a digit the mask names is read, so it lies inside the level's row
       const int64_t row_width = rows.size(3);
       for (int digit = 0; digit < p.B[level]; ++digit) {

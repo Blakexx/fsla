@@ -73,7 +73,11 @@ three words in flight ahead of the one being read with no registers held. Before
 word, each with a 64-bit address and a predicate: ~5.5 instructions a byte, and one word's loads at a time.
 
 A token's 32-byte row lands at row `4 (t % 8) + t / 8` of its slot (`ring_row`): the four token blocks a lane group
-reads together sit in four consecutive rows, so a warp's 4-byte reads meet 32 banks. A whole row moves, so each copy
+reads together sit in four consecutive rows, so a warp's 4-byte reads meet 32 banks. A DENSE list level's rows are f16
+(the dense write levels are; [`liveness_contract.md`](liveness_contract.md#floor)), a unit's 32 digits 64 bytes a token:
+its ring is `kDenseStages` = 2 word slots of 32 tokens × 64 bytes in the same bytes, a lane copying two quanta a
+token half, the same rows by `ring_row` so a lane group's 8-byte reads stay on distinct banks; a dense level is only
+ever read for its lists, so the vote keeps the u8 ring. A whole row moves, so each copy
 keeps its global run's 32-byte phase — the condition for a 16-byte lane pair to be one L2 sector request
 (docs/internals/common/ops.md#stage-tile-n). The alignment law is what makes the quanta legal: a 16-byte copy needs a
 16-byte source, and a level slot on 32 bytes keeps a token's run in one sector.
@@ -115,8 +119,10 @@ run — whole sectors, 64-byte aligned when `L` is a whole number of windows, wh
     K[w, r, 1]    = ceil(log2(max over the window's tokens of b(t, r) × m(t) × s(t)))     (s = the value scale)
 
 per window `w` and digit `r` of the LIST LEVEL — the carry's level R, whose write digits are its write lists
-(`rola.ops.facts.list_level`; none past depth two) — `b` the token's write byte, a dense level's zero at the floor
-([`liveness_contract.md`](liveness_contract.md#floor)), floored at -126 (the smallest normal's exponent: a list no
+(`rola.ops.facts.list_level`; none past depth two) — `b` the token's write coefficient on the byte scale: a sparse
+level's u8 digit, a dense level's f16 times 255 (exact; its floor stored,
+[`liveness_contract.md`](liveness_contract.md#floor)), read four halves a lane by one 8-byte load
+(`dense_list_lanes`), floored at -126 (the smallest normal's exponent: a list no
 token writes). Stored int16 `[BH, windows, B_list, 2]`, a lane's pair one word. The fp16 fold puts each list's largest
 coefficient at a fixed power of two by them, so one scale a list keeps every coefficient in fp16's range (ruled
 2026-10-03); it replaced zeta, the int fold's per-window maximum, which nothing read once that fold was gone.

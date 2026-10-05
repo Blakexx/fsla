@@ -18,6 +18,7 @@ import torch
 from rola.engine.facts.liveness import LivenessLayout, SideStatics, mask_words, side_statics
 from rola.ops._ext import extension
 from rola.ops.carry import WINDOW
+from rola.routing.factors import carry_level_s
 
 __all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "Facts", "call_layout", "call_statics", "facts", "ledger_bind",
            "list_level"]
@@ -62,10 +63,8 @@ def list_level(read_statics: SideStatics) -> int:
     dense = read_statics.dense_levels
     if len(dense) == 1:
         return 0
-    if len(dense) == 2:
-        level_s = 1 if not dense[1] or dense[0] else 0
-        return 1 - level_s
-    return -1
+    level_s = carry_level_s(tuple(not d for d in dense))
+    return 1 - level_s if level_s >= 0 else -1
 
 
 #: the pass's item counters, zero between calls (the kernel's last block resets them), one buffer a device

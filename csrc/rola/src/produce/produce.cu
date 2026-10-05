@@ -14,6 +14,7 @@
 #include "common/static_for.cuh"
 #include "common/structure_switch.cuh"
 #include "entmax/entmax.cuh"
+#include "facts/liveness_contract.cuh"
 #include "produce/produce.cuh"
 #include "produce/produce_api.cuh"
 
@@ -379,16 +380,31 @@ __device__ __forceinline__ void solve_row(const Job& job, float* row, bool live,
   clock.lap(kPhaseLevels);
 }
 
-//: ONE SIDE OF A ROW IN THE BUNDLE'S FORM: its digits against its max, the max as its scale, and the level's mass
-//: for the finisher where the fold applies (1 elsewhere). The write side's fold is APPLIED -- its scale is over its
-//: mass, the stored level on the simplex -- and the read side's is carried. A side reduces only what the solve did not
-//: already give: its max when `top` is not it (a union's sides), its mass where the fold applies.
+//: A COEFFICIENT IN ITS STORED FORM against the row's max `unit`: a u8 digit at 255, or a dense write level's f16 at 1
+//: with `floor` taken (0 for a dead row), by an IEEE divide so it matches the torch quantizer.
+__device__ __forceinline__ void store_coef(uint8_t* at, float level, float unit, float) {
+  *at = static_cast<uint8_t>(__float2uint_rn(__fdividef(level, unit) * 255.0f));
+}
+
+__device__ __forceinline__ void store_coef(__half* at, float level, float unit, float floor) {
+  *at = __float2half_rn(fmaxf(__fdiv_rn(level, unit), floor));
+}
+
+__device__ __forceinline__ void store_zero(uint8_t* at) { *at = uint8_t{0}; }
+
+__device__ __forceinline__ void store_zero(__half* at) { *at = __float2half_rn(0.0f); }
+
+//: ONE SIDE OF A ROW IN THE BUNDLE'S FORM: its coefficients against its max (`Out`: u8, or f16 for a dense write
+//: level, the floor taken in a live row), the max as its scale, and the level's mass for the finisher where
+//: the fold applies (1 elsewhere). The write side's fold is APPLIED -- its scale is over its mass, the stored level on
+//: the simplex -- and the read side's is carried. A side reduces only what the solve did not already give: its max
+//: when `top` is not it (a union's sides), its mass where the fold applies.
 //: -- see docs/internals/produce/produce.md#bundle
-template <int IPT>
+template <int IPT, class Out>
 __device__ __forceinline__ void write_side(const float (&level)[IPT], int width, bool live,
-                                           int lane, uint8_t* plane, int64_t first, float* scale,
+                                           int lane, Out* plane, int64_t first, float* scale,
                                            float* mass, int64_t at, bool reduce_max, float top,
-                                           bool fold, bool applied) {
+                                           bool fold, bool applied, bool floored) {
   float m = top, sum = 1.0f;
   if (reduce_max) {
     m = 0.0f;
@@ -403,15 +419,18 @@ __device__ __forceinline__ void write_side(const float (&level)[IPT], int width,
     sum = warp_all(sum, [](float a, float b) { return a + b; });
   }
   const float unit = fmaxf(m, 1e-30f);
-  //: the level's slot runs to its width rounded up to the row alignment law's 32 bytes, the tail zeros
-  const int slot = (width + 31) & ~31;
+  const float floor = floored && m > 0.0f ? facts::kDenseFloor : 0.0f;
+  //: the level's slot runs to its bytes rounded up to the row alignment law's 32, the tail zeros
+  constexpr int kGrain = 32 / static_cast<int>(sizeof(Out));
+  const int slot = (width + kGrain - 1) / kGrain * kGrain;
 #pragma unroll
   for (int i = 0; i < IPT; ++i) {
     const int col = lane + 32 * i;
     if (live && col < slot) {
-      plane[first + col] =
-          col < width ? static_cast<uint8_t>(__float2uint_rn(__fdividef(level[i], unit) * 255.0f))
-                      : uint8_t{0};
+      if (col < width)
+        store_coef(plane + first + col, level[i], unit, floor);
+      else
+        store_zero(plane + first + col);
     }
   }
   if (live && lane == 0) {
@@ -440,15 +459,20 @@ __device__ void route_row(const ProduceParams& p, const Job& job, int job_index,
     }
   }
   const int64_t slot = slot_of(p, token, job.head);
-  const int64_t first = slot * p.rows;
   const int64_t at = slot * p.D + job.level;
   if (job.reads) {
-    write_side<IPT>(read, job.width, live, lane, p.amp_read, first + job.out_read, p.scale_read,
-                    p.mass_read, at, reduce_max, top, job.fold_read != 0, false);
+    write_side<IPT>(read, job.width, live, lane, p.amp_read, slot * p.rows_read + job.out_read,
+                    p.scale_read, p.mass_read, at, reduce_max, top, job.fold_read != 0, false,
+                    false);
   }
-  if (job.writes) {
-    write_side<IPT>(write, job.width, live, lane, p.amp_write, first + job.out_write, p.scale_write,
-                    p.mass_write, at, reduce_max, top, job.fold_write != 0, true);
+  if (job.writes && ((p.dense_mask >> job.level) & 1)) {
+    write_side<IPT>(write, job.width, live, lane, p.dense_write,
+                    slot * p.dense_rows + job.out_write, p.scale_write, p.mass_write, at,
+                    reduce_max, top, job.fold_write != 0, true, true);
+  } else if (job.writes) {
+    write_side<IPT>(write, job.width, live, lane, p.amp_write, slot * p.rows_write + job.out_write,
+                    p.scale_write, p.mass_write, at, reduce_max, top, job.fold_write != 0, true,
+                    false);
   }
 }
 
@@ -616,11 +640,12 @@ void rola_produce_ledger_bind(std::optional<Tensor> ledger) {
 //: -- see docs/internals/produce/produce_api.md#rola-produce-forward
 void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_bias,
                           Tensor gain_bias, Tensor v_W, Tensor jobs, Tensor amp_read,
-                          Tensor amp_write, Tensor scale_read, Tensor scale_write, Tensor mass_read,
-                          Tensor mass_write, Tensor read_mass, Tensor g_write, Tensor v,
-                          Tensor v_scale, Tensor arrivals, std::optional<Tensor> logit_probe,
-                          std::optional<Tensor> level_probe, Tensor shapes, int64_t levels,
-                          int64_t route_jobs_per_head) {
+                          Tensor amp_write, std::optional<Tensor> dense_write, Tensor scale_read,
+                          Tensor scale_write, Tensor mass_read, Tensor mass_write, Tensor read_mass,
+                          Tensor g_write, Tensor v, Tensor v_scale, Tensor arrivals,
+                          std::optional<Tensor> logit_probe, std::optional<Tensor> level_probe,
+                          Tensor shapes, int64_t levels, int64_t route_jobs_per_head,
+                          int64_t dense_mask) {
   check_arch_table();
   detail::check_bf16(x, "x");
   detail::check_bf16(route_W, "route_W");
@@ -657,15 +682,21 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
                   "jobs is the plan's [n, ", kJobFields, "] int32 job table on the device");
   STD_TORCH_CHECK(levels >= 1 && levels <= 4, "the routing depth is one to four levels, got ",
                   levels);
-  STD_TORCH_CHECK(amp_read.scalar_type() == Dtype::Byte && amp_write.scalar_type() == Dtype::Byte
-                      && amp_read.is_contiguous() && amp_write.is_contiguous()
-                      && amp_read.dim() == 4 && amp_read.size(1) == H
-                      && amp_read.size(0) * amp_read.size(2) == BT
-                      && amp_read.sizes() == amp_write.sizes(),
-                  "the rows are head-major [B, H, T, rows] u8, contiguous, both sides alike");
-  const int64_t rows = amp_read.size(3);
-  STD_TORCH_CHECK(amp_read.numel() == BT * H * rows, "the rows hold ", amp_read.numel(),
-                  " digits; ", BT, " tokens of ", H, " heads of ", rows, " need ", BT * H * rows);
+  for (auto [t, name] : {std::pair{&amp_read, "amp_read"}, {&amp_write, "amp_write"}}) {
+    STD_TORCH_CHECK(t->scalar_type() == Dtype::Byte && t->is_contiguous() && t->dim() == 4
+                        && t->size(1) == H && t->size(0) * t->size(2) == BT,
+                    name, " is head-major [B, H, T, rows] u8, contiguous");
+  }
+  STD_TORCH_CHECK(amp_read.size(2) == amp_write.size(2), "both sides' rows hold the same tokens");
+  STD_TORCH_CHECK(dense_mask >= 0 && dense_mask < (int64_t{1} << levels)
+                      && dense_write.has_value() == (dense_mask != 0),
+                  "the dense write levels' f16 rows come with their mask (", dense_mask, ")");
+  if (dense_write.has_value()) {
+    STD_TORCH_CHECK(dense_write->scalar_type() == Dtype::Half && dense_write->is_contiguous()
+                        && dense_write->dim() == 4
+                        && dense_write->sizes().slice(0, 3) == amp_read.sizes().slice(0, 3),
+                    "dense_write is head-major [B, H, T, rows] f16, contiguous, the rows' tokens");
+  }
   for (auto [t, name] : {std::pair{&scale_read, "scale_read"},
                          {&scale_write, "scale_write"},
                          {&mass_read, "mass_read"},
@@ -702,6 +733,9 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.jobs = jobs.const_data_ptr<int32_t>();
   p.amp_read = reinterpret_cast<uint8_t*>(amp_read.mutable_data_ptr());
   p.amp_write = reinterpret_cast<uint8_t*>(amp_write.mutable_data_ptr());
+  p.dense_write = dense_write.has_value()
+                      ? reinterpret_cast<__half*>(dense_write->mutable_data_ptr())
+                      : nullptr;
   p.scale_read = scale_read.mutable_data_ptr<float>();
   p.scale_write = scale_write.mutable_data_ptr<float>();
   p.mass_read = mass_read.mutable_data_ptr<float>();
@@ -725,7 +759,10 @@ void rola_produce_forward(Tensor x, Tensor route_W, std::optional<Tensor> route_
   p.H = static_cast<int>(H);
   p.C = static_cast<int>(C);
   p.G = static_cast<int>(gain_bias.numel() / H);
-  p.rows = static_cast<int>(rows);
+  p.rows_read = static_cast<int>(amp_read.size(3));
+  p.rows_write = static_cast<int>(amp_write.size(3));
+  p.dense_rows = dense_write.has_value() ? static_cast<int>(dense_write->size(3)) : 0;
+  p.dense_mask = static_cast<int>(dense_mask);
   p.D = static_cast<int>(levels);
   p.d_v = static_cast<int>(d_v);
   p.route_jobs_per_head = static_cast<int>(route_jobs_per_head);

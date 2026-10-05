@@ -20,11 +20,16 @@ constexpr int kListParts = kFactsWarps / kListItemUnits;
 //: THE ROW ALIGNMENT LAW's grain (`rola.routing.quant.ROW_ALIGN`). -- see docs/internals/facts/liveness_contract.md#alignment
 constexpr int kRowAlign = 32;
 
-//: A WARP'S RING: `kStages` words of 32 tokens x 32 bytes, `kAhead` in flight. -- see docs/internals/facts/facts.md#load
+//: A WARP'S RING: `kStages` words of 32 tokens x 32 bytes, `kAhead` in flight -- or, for a dense list level's f16 rows,
+//: `kDenseStages` words of 32 tokens x 64 bytes in the same bytes. -- see docs/internals/facts/facts.md#load
 constexpr int kStages = 4;
 constexpr int kAhead = kStages - 1;
 constexpr int kWordBytes = 32 * 32;
+constexpr int kDenseStages = 2;
+constexpr int kDenseWordBytes = 32 * 64;
 constexpr int kRingBytes = kFactsWarps * kStages * kWordBytes;
+static_assert(kDenseStages * kDenseWordBytes == kStages * kWordBytes,
+              "both rings fill a warp's bytes");
 
 //: THE WINDOW, the carry's 512 tokens and the lists' grain, and a warp's part: its words and its rows' store pairs.
 constexpr int kWindowWords = 16;
@@ -45,7 +50,8 @@ constexpr float kListFloor = 1.17549435e-38f;
 
 enum FactsPhase : int { kPhaseColumns, kPhaseVote, kPhaseStore, kFactsPhases };
 
-//: A level's rows (under the row alignment law, with their width) or an fp32 column, by batch, token, head strides.
+//: A level's rows (under the row alignment law, with their width in digits) by batch, token, head strides in BYTES --
+//: u8 digits, or a dense write level's f16 -- or an fp32 column by its strides in elements.
 struct RowView {
   const void* base;
   int64_t sb, st, sh;

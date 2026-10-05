@@ -105,13 +105,24 @@ def _solve(activation) -> int:
     return _SOLVES[activation.tag]
 
 
-def row_layout(plan: ProducerPlan) -> tuple[tuple[int, ...], int]:
-    """``(offsets, width)``: each level's slot in one side's packed row plane and the plane's width -- the levels in
-    order, each at its width rounded up to the row alignment law's grain (`rola.routing.quant.row_slot`)."""
-    offsets = [0]
-    for width in plan.routing.resolved.branches:
-        offsets.append(offsets[-1] + quant.row_slot(width))
-    return tuple(offsets[:-1]), offsets[-1]
+def row_layout(plan: ProducerPlan, side: str = "read", dense: bool = False) -> tuple[tuple[int, ...], int]:
+    """``(offsets, width)``: each level's slot in one of a side's packed row planes and the plane's width, in elements --
+    the plane's levels in order, each at its bytes rounded up to the row alignment law's grain
+    (`rola.routing.quant.row_slot`). The read side is one u8 plane; the write side a u8 plane of its sparse levels and
+    (``dense``) an f16 plane of its dense ones. A level outside the plane takes no slot (offset 0)."""
+    members = dense_write_levels(plan) if dense else (
+        frozenset(range(plan.routing.topology.D)) - (dense_write_levels(plan) if side == "write" else frozenset()))
+    size = 2 if dense else 1
+    offsets, end = [], 0
+    for level, width in enumerate(plan.routing.resolved.branches):
+        offsets.append(end if level in members else 0)
+        end += quant.row_slot(size * width) // size if level in members else 0
+    return tuple(offsets), end
+
+
+def dense_write_levels(plan: ProducerPlan) -> frozenset[int]:
+    """The plan's dense write levels: their rows are f16 (`rola.routing.quant.DENSE_DTYPE`)."""
+    return frozenset(level for level, sparse in enumerate(_sparse_flags(plan)[1]) if not sparse)
 
 
 def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
@@ -120,7 +131,10 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
     planes, or one side of an independent level; a value job is the heads whose channels fit one job."""
     resolved = plan.routing.resolved
     slots, read_slot = resolved.packed_slot_offsets, resolved.packed_read_slot_lookup
-    out, _width = row_layout(plan)
+    out, _width = row_layout(plan, "read")
+    dense = dense_write_levels(plan)
+    sparse_w, dense_w = row_layout(plan, "write")[0], row_layout(plan, "write", dense=True)[0]
+    out_w = tuple(dense_w[level] if level in dense else sparse_w[level] for level in range(len(out)))
     per_head: list[tuple[int, ...]] = []
     for level, spec in enumerate(resolved.levels):
         width = resolved.branches[level]
@@ -130,14 +144,14 @@ def job_table(plan: ProducerPlan) -> tuple[list[tuple[int, ...]], int]:
         fold_read, fold_write = int(not plan.read_skip[level]), int(not plan.write_skip[level])
         if isinstance(spec, UnionRouting):
             per_head.append((_ROUTE, 0, 1, _SOLVES[("union", spec.alpha)], width, read_col, write_col, out[level],
-                             out[level], level, fold_read, fold_write))
+                             out_w[level], level, fold_read, fold_write))
         elif isinstance(spec, TiedRouting):
-            per_head.append((_ROUTE, 0, 1, _solve(spec.op), width, write_col, -1, out[level], out[level], level,
+            per_head.append((_ROUTE, 0, 1, _solve(spec.op), width, write_col, -1, out[level], out_w[level], level,
                              fold_read, fold_write))
         elif isinstance(spec, IndependentRouting):
             per_head.append((_ROUTE, 0, 1, _solve(spec.read), width, read_col, -1, out[level], -1, level,
                              fold_read, 0))
-            per_head.append((_ROUTE, 0, 1, _solve(spec.write), width, write_col, -1, -1, out[level], level,
+            per_head.append((_ROUTE, 0, 1, _solve(spec.write), width, write_col, -1, -1, out_w[level], level,
                              0, fold_write))
     jobs = [(job[0], head, *job[2:]) for head in range(plan.num_heads) for job in per_head]
     if plan.d_v > _MAX_COLUMNS:
@@ -204,13 +218,16 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
         raise ValueError(f"the producer kernel reads hidden runs in 16-byte chunks: the hidden size must be a multiple "
                          f"of 8, got {hidden}")
     H, D = plan.num_heads, plan.routing.topology.D
-    _offsets, rows = row_layout(plan)
+    rows_read, rows_write = row_layout(plan, "read")[1], row_layout(plan, "write")[1]
+    dense = dense_write_levels(plan)
+    rows_dense = row_layout(plan, "write", dense=True)[1]
     device = x.device
 
     def empty(*shape, dtype=torch.float32):
         return torch.empty(B, H, T, *shape, dtype=dtype, device=device)
 
-    out = {"amp_read": empty(rows, dtype=torch.uint8), "amp_write": empty(rows, dtype=torch.uint8),
+    out = {"amp_read": empty(rows_read, dtype=torch.uint8), "amp_write": empty(rows_write, dtype=torch.uint8),
+           "dense_write": empty(rows_dense, dtype=quant.DENSE_DTYPE) if dense else None,
            "scale_read": empty(D), "scale_write": empty(D), "mass_read": empty(D), "mass_write": empty(D),
            "read_mass": empty(), "g_write": empty(), "v": empty(plan.d_v, dtype=torch.float16),
            "v_scale": empty()}
@@ -220,9 +237,9 @@ def run_kernel(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights) ->
     extension().rola_produce_forward(
         x.reshape(B * T, hidden).to(torch.bfloat16).contiguous(), weights.route_W, route_bias,
         weights.gain_bias.float().contiguous(), weights.v_W, jobs,
-        *(out[name] for name in ("amp_read", "amp_write", "scale_read", "scale_write", "mass_read", "mass_write",
-                                 "read_mass", "g_write", "v", "v_scale")),
-        _arrivals(device, tiles * H), None, None, shapes, D, per_head)
+        *(out[name] for name in ("amp_read", "amp_write", "dense_write", "scale_read", "scale_write", "mass_read",
+                                 "mass_write", "read_mass", "g_write", "v", "v_scale")),
+        _arrivals(device, tiles * H), None, None, shapes, D, per_head, sum(1 << level for level in dense))
     return {name: None if t is None else t.transpose(1, 2) for name, t in out.items()}
 
 
@@ -241,17 +258,20 @@ def _kernel_bundle(x: torch.Tensor, plan: ProducerPlan, weights: ProducerWeights
     """The kernel's outputs as the bundle: each level's rows and scale a view of the packed planes the kernel
     writes (the ops read them by address), and the read mass only where a read level folds."""
     out = run_kernel(x, plan, weights)
-    resolved, D = plan.routing.resolved, plan.routing.topology.D
-    spans = tuple(zip(row_layout(plan)[0], resolved.branches, strict=True))
+    resolved, D, dense = plan.routing.resolved, plan.routing.topology.D, dense_write_levels(plan)
+    dense_offsets = row_layout(plan, "write", dense=True)[0]
 
-    def rows(plane: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        return tuple(plane[..., offset:offset + width] for offset, width in spans)
+    def rows(plane: torch.Tensor, side: str) -> tuple[torch.Tensor, ...]:
+        spans = zip(row_layout(plan, side)[0], resolved.branches, strict=True)
+        return tuple(out["dense_write"][..., dense_offsets[level]:dense_offsets[level] + width]
+                     if side == "write" and level in dense else plane[..., offset:offset + width]
+                     for level, (offset, width) in enumerate(spans))
 
     def scales(plane: torch.Tensor) -> tuple[torch.Tensor, ...]:
         return tuple(plane[..., level] for level in range(D))
 
-    routes = RouteFactors(topology=plan.routing.topology, amp_read=rows(out["amp_read"]),
-                          amp_write=rows(out["amp_write"]), scale_read=scales(out["scale_read"]),
+    routes = RouteFactors(topology=plan.routing.topology, amp_read=rows(out["amp_read"], "read"),
+                          amp_write=rows(out["amp_write"], "write"), scale_read=scales(out["scale_read"]),
                           scale_write=scales(out["scale_write"]), g_write=out["g_write"],
                           read_mass=None if all(plan.read_skip) else out["read_mass"], sparse=_sparse_flags(plan))
     return routes, Values(v=out["v"], scale=out["v_scale"])

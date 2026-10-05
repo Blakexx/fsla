@@ -80,8 +80,9 @@ tile's rows (a count of its live tokens, uniform), a row past them solving and r
 no collective sits under a branch ptxas cannot prove warp-uniform.
 
 <a id="bundle"></a>THE BUNDLE'S FORM (`write_side`), for each side the job writes (a shape bit each): the row against
-its max as u8 digits (round to nearest even of `unit x 255`), the max clamped at
-`1e-30` as `quantize_unit_max_rows` clamps it; the max as the side's scale; and the level's mass for the finisher
+its max as u8 digits (round to nearest even of `unit x 255`) -- or, for a dense write level, f16 at 1 with the floor
+taken in a live row (`max(level / max, 2^-13)`, an IEEE divide rounded to nearest, the torch quantizer's own
+rounding) -- the max clamped at `1e-30` as `quantize_unit_max_rows` clamps it; the max as the side's scale; and the level's mass for the finisher
 where the fold applies (1 elsewhere, so the finisher multiplies every level without the plan's flags). A side reduces
 only what the solve did not give: a one-activation row's max is its top element's own value (`top`: `(-tau/2)^2`,
 `-tau` or `1 / sum`, the same expressions the elements are), so only a union's sides reduce their max, and only a
@@ -90,7 +91,13 @@ is applied -- its scale is the max over the mass, the stored level on the simple
 its scale stays the max and its mass rides `read_mass`, as the composition's `_fold` does. Gate: every row's digits
 (within one), f16 units (within one unit in the last place at 1), scales (within twice the solve's bound), the read
 mass and the write gain (within 2^-12 relative, measured 4.8e-5 and 2.7e-6) against the fp64 composition on the same
-bf16 operands, with and without a gain column or a routing bias.
+bf16 operands, with and without a gain column or a routing bias; a dense write level's f16 rows within one digit's
+worth (1/255) of it, every live coefficient at or above the floor.
+
+<a id="dense"></a>THE WRITE SIDE'S TWO PLANES: the sparse write levels in a u8 plane (`amp_write`) and the dense write
+levels in an f16 plane (`dense_write`, `[B, H, T, rows]`), each level's slot its bytes rounded up to the row alignment
+law's 32 (`rola.ops.produce.row_layout`); a route job writes to the plane its level's bit in the plan's dense-write
+mask names, at its offset there. The read side is one u8 plane.
 
 EVERY OUTPUT IS STORED HEAD-MAJOR, `[B, H, T, ...]` (`slot_of`: the flat token split into its batch and step), and the
 bundle's `[B, T, H, ...]` tensors are views of it. At one token the two orders are the same bytes; over a prefill a

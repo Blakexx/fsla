@@ -60,11 +60,14 @@ up to its last digit and no further (a partial quantum zero-fills the rest).
 
 ## <a id="floor"></a>The dense floor
 
-A DENSE level is one whose activation has no exact zeros (the bundle's `sparse` flag unset: softmax, not entmax).
-Its stored zero digit therefore means a true weight below half a digit, in `[0, 1/510)` of the row max, and it reads
-as `kDenseFloor` = 2^-13 of the row max instead of 0 — inside that interval, so it is as faithful a reading of the
-stored digit as 0 is (ruled 2026-10-03). It applies only in a live row (scale > 0): a dead row stays zero everywhere,
-including where a consumer normalizes the row by its own sum. A sparse level's zero is exact and stays 0.
+A DENSE level is one whose activation has no exact zeros (the bundle's `sparse` flag unset: softmax, not entmax),
+and it is never zero (ruled 2026-10-04): no coefficient of a live row is below `kDenseFloor` = 2^-13 of the row max,
+the numerically safe minimum (f16's least normal is 2^-14). A dense WRITE level's rows are stored f16 at the row max
+with the floor already taken — the producer writes `max(w / max, 2^-13)` — so its consumers read them as they are. A
+dense READ level's rows stay u8, where a zero digit means a true weight in `[0, 1/510)` of the row max and reads as
+the floor instead of 0 — inside that interval, as faithful a reading of the digit as 0 (ruled 2026-10-03). Either way
+the floor applies only in a live row (scale > 0): a dead row stays zero everywhere, including where a consumer
+normalizes the row by its own sum. A sparse level's zero is exact and stays 0, and its rows are u8 on both sides.
 
 What it buys: the fp16 fold scales each write list by one power of two, and the readout publishes each 64-leaf block
 at one; both keep 11 bits a term but only a bounded range below their largest. With the floor, the list's strongest
@@ -73,8 +76,8 @@ block within 2^13 of each other, so what fp16 loses below its range is a small f
 whatever the gain spread. The cost to the model: a peaked row's mass grows by at most 255 × 2^-13 ≈ 3% of its max,
 inside the uncertainty its own zero digits already carry.
 
-Every consumer reads it the same way: `dequantize_rows`, the decode fold, the fp16 fold and readout, the intra and the
-oracle's references. Numerical safety asks for one dense level a side (the alternating split, or fully dense);
+Every consumer reads it the same way: the write side's f16 rows as stored, the read side's u8 with the floor at
+conversion — `dequantize_rows`, the decode fold, the fold and readout, the intra and the oracle's references. Numerical safety asks for one dense level a side (the alternating split, or fully dense);
 sparse-sparse routing has no floor to lean on and is declared at the caller's risk.
 
 <a id="layout"></a>
