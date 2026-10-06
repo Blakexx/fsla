@@ -369,30 +369,28 @@ The carry's window-aligned den as a pass beside the carry (den depends only on r
 the write mass of the windows before -- `tests/oracle/reference.py`), so the readout could add at a common unit known
 beforehand. A CTA owns 64 level-S rows x all 256 level-R digits (4 a head), lanes on each half's dense level and loops
 on its sparse level. Writes (dense level S, sparse level R, fp32 accumulate): a warp owns 32 level-R digits, a lane 2
-level-S rows, the mass in registers; DIGIT-MAJOR walks the warp's lists (each digit's padded to 4 entries) 128 entries
-at a time through a warp's shared slots, a digit's entries four at a time, an entry one contiguous read of the token's
-staged f16 level-S coefficients; TOKEN-MAJOR walks the tokens 32 at a time, each lane holding a token's entries, and
-dispatches each entry to its digit by a switch. The den (sparse level S, dense level R, fp16 like the readout): a warp
-owns 8 level-S rows, a lane 8 level-R digits; the mass transposed once a window through shared memory (f16, swizzled)
-into registers, each row scaled by the power of two that keeps four u8 x mass products under f16 overflow; a token's
-read row against a row is 4 HFMA2s; digit-major walks each row's read-live tokens, token-major the tokens read-live on
-any of the warp's rows, in batches of 4 loaded two ahead and reduced across lanes together. One head's 4 CTAs over a
-32-window pool streamed from DRAM, as a few pass CTAs would run beside a compute-bound carry; every den within 1% of a
-double reference before timing. sm_86 at base clock, cycles a CTA-window (instructions a warp-window by ncu):
+level-S rows, the mass in registers; the warp walks its lists (each digit's padded to 4 entries) 128 entries at a time
+through shared slots holding the token's coefficient byte offset and gain x value, the first 128 loading through the
+den; each digit a fill overlaps steps its entries eight at a time, an entry a 4-byte read of the token's staged f16
+coefficients a lane and two FFMAs. The den (sparse level S, dense level R, fp16 like the readout): a warp owns 8
+level-S rows, a half-warp a token, a lane 16 level-R digits; the mass transposed once a window through shared memory
+(f16, swizzled) into registers, each row scaled by the power of two that keeps eight u8 x mass products under f16
+overflow; the rows' read lists (read-row offset | u8 value, each row's padded to 4) staged a window ahead as a facts
+pass would emit them, the next window's read rows prefetched to L2; each row (unrolled) steps four entries at a time,
+two slots of two loaded a step ahead, 8 HFMA2s a lane in two chains, both slots reduced over the half-warp together.
+One head's 4 CTAs over a 32-window pool streamed from DRAM, as a few pass CTAs would run beside a compute-bound carry;
+every den within 1% of a double reference before timing. sm_86 at base clock, cycles a CTA-window (instructions a
+warp-window by ncu):
 
-| order, write k, read k | full | den alone | writes alone | skeleton |
+| write k, read k | full | den alone | writes alone | skeleton |
 |---|---|---|---|---|
-| digit-major, 4, 4 | 52.2K (10.2K) | 30.1K (6.0K) | 22.2K (4.2K) | 3.16K (355) |
-| digit-major, 16, 16 | 149K (31.3K) | | | |
-| token-major, 4, 4 | 155K (21.7K) | 44.7K (8.3K) | 104K (13.0K) | |
-| token-major, 16, 16 | 508K (72.0K) | | | |
+| 4, 4 | 34.5K (7.4K) | 17.8K (3.5K) | 20.0K (4.2K) | 3.31K (389) |
+| 16, 16 | 95.4K (21.4K) | 48.9K (10.0K) | 51.1K (11.8K) | |
 
-Token-major loses 3x: a token carries about one live entry a warp's block, so its per-token work (the coefficients,
-finding its entries in the block) buys one entry, and nvcc compiles the 32-way switch to a five-deep compare tree, not a
-jump table. Digit-major is 2.5x the carry's ~20K window: both halves issue at ~40% with two warps a scheduler, and
-ncu's per-instruction counts put the den's arithmetic (4 PRMT, 4 HSUB2, 4 HFMA2 a token-lane) at ~1.4K of its 6.0K
-instructions a warp-window -- the rest is a batch's loads (15 instructions a token of addressing, pad checks and
-selects), the reduction (39 a batch), copying the prefetched batches (24 moves a batch), building the token lists from
-words (~570) and the rows' scaling (~400); a write group of 4 entries is 37 instructions for 16 multiply-adds (token
-unpacking, addressing, an unfused sum). Record: `measure/lab/results/den_sweep/sm_86.json`, counters
+The halves add: the den and the writes each run 3.5-4.2K instructions a warp-window at ~5 cycles each with two warps a
+scheduler, against a ~20K carry window. The den's arithmetic is now most of its instructions (per step of four
+entries, 68 of ~114: the u8-to-f16 pairs and HFMA2s); the writes' are per entry (~9 instructions for two multiply-adds
+a lane, a lane holding two of the 64 rows). The previous revision of this lab (commit 673c2375) measured a token-major
+order, a token's entries dispatched to their digits: 3x slower, a token carrying about one entry a warp's block and
+nvcc compiling the dispatch switch to a compare tree. Record: `measure/lab/results/den_sweep/sm_86.json`, counters
 `sm_86.counters.json`.
