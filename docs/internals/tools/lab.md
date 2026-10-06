@@ -396,5 +396,5 @@ The residue order cut the writes' bank conflicts from 4.4K to 1.6K a CTA-window 
 5.8K). The integer den spends no instructions forming A and runs 72 integer MMAs a warp-window at 8 cycles; what is
 left waits on its read rows (256 bytes an entry from L2). The f16 den of the previous revision (fp32-accumulate MMAs, A
 made f16 by PRMT + HSUB2 a register) ran 15.0K alone at 64 x 256 and the full pass 26.4K (commit ece3d4d6); the FFMA
-forms 34.5K (digit-major, 0db7bf1e) and 155K (token-major, 673c2375). Record: `measure/lab/results/den_sweep/sm_86.json`,
-counters `sm_86.counters.json`.
+forms 34.5K (digit-major, 0db7bf1e) and 155K (token-major, 673c2375). Record:
+`measure/lab/results/den_sweep/sm_86.json`, counters `sm_86.counters.json`.
