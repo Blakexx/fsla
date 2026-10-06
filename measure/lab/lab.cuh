@@ -110,7 +110,14 @@ __device__ __forceinline__ void mma_u8s8(int (&d)[4], const uint32_t (&a)[4], ui
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
-//: THE OPERAND PIECES the kernels use: `ldmatrix.x4.trans`, a packed f16 product, two fp32 to an f16 pair.
+//: THE OPERAND PIECES the kernels use: `ldmatrix.x4` and its `.trans`, a packed f16 product, two fp32 to an f16 pair.
+__device__ __forceinline__ void ldsm(uint32_t (&r)[4], uint32_t a) {
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
+               : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
+               : "r"(a)
+               : "memory");
+}
+
 __device__ __forceinline__ void ldsm_t(uint32_t (&r)[4], uint32_t a) {
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
                : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])

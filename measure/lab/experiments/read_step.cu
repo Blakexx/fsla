@@ -76,13 +76,6 @@ __device__ __forceinline__ uint32_t hfma2(uint32_t a, uint32_t b, uint32_t c) {
   return d;
 }
 
-__device__ __forceinline__ void ldsm(uint32_t (&r)[4], uint32_t a) {
-  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
-               : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
-               : "r"(a)
-               : "memory");
-}
-
 __device__ __forceinline__ void red_shared(uint32_t a, uint32_t v) {
   asm volatile("red.shared.add.u32 [%0], %1;" ::"r"(a), "r"(v) : "memory");
 }
@@ -108,7 +101,7 @@ struct State {
 __device__ __forceinline__ void step_a(uint32_t (&a)[2][4], const Shared& sh, int ra, int khalf,
                                        int rg, int rg8, int digit, bool in_g, bool in_g8) {
   uint32_t x[4];
-  ldsm(x, lab::smem(sh.rows + at(ra, khalf)));
+  lab::ldsm(x, lab::smem(sh.rows + at(ra, khalf)));
   const float sg = in_g ? (1.0f + sh.rows[at(rg, 2) + digit]) * (1.0f / 65536.0f) : 0.0f;
   const float s8 = in_g8 ? (1.0f + sh.rows[at(rg8, 2) + digit]) * (1.0f / 65536.0f) : 0.0f;
   const uint32_t scale_g = lab::pack_half2(sg, sg), scale_g8 = lab::pack_half2(s8, s8);

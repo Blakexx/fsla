@@ -31,8 +31,8 @@ question about traffic rather than time.
 * `lab::WarpClock` — a warp's cycles over a region, lane 0's `clock64`, stored at `(block, warp)`.
 * `lab::WarpSpan` — a warp's start and end `clock64`; `Bench::span(warps)` is the mean block's span (last end less
   first start), the throughput when warps finish apart.
-* The operand pieces the kernels use: `ldsm_t` (`ldmatrix.x4.trans`), `hmul2`, `pack_half2`, `smem`; the mbarrier as
-  `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_test` (once).
+* The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
+  the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
 * The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8s8`.
 * `lab::Bench` — the host runner: `expect(kernel, op, cmp, count)` declares SASS (printed under `--expect`, run by the
@@ -360,3 +360,38 @@ step) and readout tiles (32 fp16-accumulate MMAs a tile), the block's span a win
 
 Rounds double-buffered cost 0.4-0.6K a window over the whole publish, single-buffered 1.0-1.1K: the rounds'
 handshakes, not their bytes. Record: `measure/lab/results/publish_rounds/sm_86.json`.
+
+<a id="den-sweep"></a>
+
+## `den_sweep`
+
+The carry's window-aligned den as a pass of its own (den depends only on routing: the read leaf product against the
+write mass of the windows before -- `tests/oracle/reference.py`), so the readout could add at a common unit known
+beforehand. A CTA owns 16 level-S rows x all 256 level-R digits of a head's mass, a thread a digit's 16 values in fp32
+registers. Each window the mass is published f16 at logical columns (the R order that makes a lane's operand bytes one
+contiguous run); the den is MMAs over the window's tokens read-live on any of the CTA's rows (A = the token's u8
+level-R read row from global, PRMT to f16; B = the published mass by `ldmatrix`; N = the 16 rows), each row times the
+token's level-S read coefficient, summed, one `red.global.add.f32` a token; the writes, each thread over its digit's
+list (digit-major; token and u8 value) against the f16 level-S write coefficients and the gains, 16 FFMAs an entry with
+three entries in flight. Half the warps write first. Each warp finds its tiles' tokens from the union of the rows'
+facts words by binary search (no shared list); lists, coefficients and gains staged a window ahead by `cp.async`, the
+words two, a window's first tile's read rows during the window before. A routing pool per head (five heads, 22 MB,
+streamed from DRAM); every den within 1% of a double reference before timing. sm_86 at base clock, cycles a
+CTA-window (16 CTAs a head; a head at 64K tokens is 16 x cycles x 128 windows over 80 SMs at 1.36 GHz):
+
+| write k, read k | full | den alone | writes alone | skeleton | DRAM a CTA-window | a head |
+|---|---|---|---|---|---|---|
+| 4, 4 | 9.83K | 6.98K | 5.78K | 2.72K | 35.9 KB | 0.185 ms |
+| 16, 16 | 25.1K | | | | 33.9 KB | 0.47 ms |
+| 4, 256 | 19.6K | | | | 33.7 KB | 0.37 ms |
+
+The skeleton (the staging, the publish, the barriers) runs at 89% of DRAM peak (793 GB/s): re-reading the routing is
+the pass's floor, 36 KB a CTA-window or ~4.9K cycles at alt-k4, and the full pass is 2.0x it. The den's MMAs compute
+all 16 rows for each read-live token, and at read k 4 a token reads about one of them: its 249 MMAs a CTA-window (2K
+cycles a scheduler) are mostly waste, so a sparse read level wants a per-pair FFMA form (8 lanes a pair over the 256
+digits); a dense read level keeps the MMAs (1024 a CTA-window, 8K cycles a scheduler, 19.6K with the writes). The
+writes are divergent (a warp runs its longest digit, about twice the mean at k 4) and their coefficient load waits on
+the entry's token, hence the token two entries ahead; f16 coefficient rows are 32 bytes, so random tokens spread over
+four bank groups (eight with the swap on bit 2), where fp32 rows' two quadrupled the conflicts. A dense write level
+would take the carry fold's MMA form at one channel (1024 MMAs a CTA-window); not built here. Record:
+`measure/lab/results/den_sweep/sm_86.json`, counters `sm_86.counters.json`.
