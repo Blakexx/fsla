@@ -15,13 +15,17 @@ spread, and writes a record keyed by the architecture.
 
 `--record` writes `measure/lab/results/<name>/<sm_XX>.json` (or `<sm_XX>.counters.json` for `ncu`), the file a
 KERNEL_STANDARDS rule cites; without it the record goes to the scratch space. `ncu` reads hardware counters per kernel
-(the median over its launches) where a question is about traffic rather than time.
+(the median over its launches) where a question is about traffic rather than time. An experiment that reads data (a
+cell's routing, say) has a `<name>.inputs.py` beside it whose `write(directory)` writes the files; the driver runs it
+first, passes `--inputs <directory>`, and records each file's digest.
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import datetime
+import hashlib
+import importlib.util
 import json
 import re
 import statistics
@@ -171,9 +175,26 @@ def summarize(samples: list[float]) -> dict:
             "unstable": len(samples) > 1 and lo > 0 and hi / lo > SPREAD}
 
 
-def execute(binary: Path, reps: int) -> tuple[dict, list[dict]]:
+def inputs(name: str) -> tuple[list[str], dict[str, str]]:
+    """The experiment's inputs: `<name>.inputs.py`, if it has one, writes them into the scratch space; the binary's
+    extra arguments and each file's digest."""
+    script = EXPERIMENTS / f"{name}.inputs.py"
+    if not script.exists():
+        return [], {}
+    directory = dev_config.scratch("lab") / "inputs" / name
+    directory.mkdir(parents=True, exist_ok=True)
+    spec = importlib.util.spec_from_file_location(f"{name}_inputs", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    files = module.write(directory)
+    digests = {f: hashlib.sha256((directory / f).read_bytes()).hexdigest()[:16] for f in files}
+    return ["--inputs", str(directory)], digests
+
+
+def execute(binary: Path, reps: int, extra: list[str]) -> tuple[dict, list[dict]]:
     """The experiment's device line and its results, each with its samples summarized."""
-    out = subprocess.run([str(binary), "--reps", str(reps)], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run([str(binary), "--reps", str(reps), *extra], capture_output=True, text=True,
+                         check=True).stdout
     device, results = {}, []
     for line in out.splitlines():
         if not line.startswith('{"lab"'):
@@ -195,7 +216,7 @@ def report(name: str, arch: str, device: dict, results: list[dict], reps: int) -
 
 
 def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, reps: int, utilization: int,
-         record: bool) -> Path:
+         record: bool, digests: dict[str, str]) -> Path:
     """The run's record: into `measure/lab/results` under `--record`, else the scratch space."""
     driver, = smi("driver_version")
     toolkit = subprocess.run([dev_config.cuda_bin("nvcc"), "--version"], capture_output=True,
@@ -203,7 +224,7 @@ def keep(name: str, arch: str, device: dict, results: list[dict], table: dict, r
     body = {"experiment": name, "question": question(experiments()[name]), "arch": arch, "device": device.get("name"),
             "driver": driver, "toolkit": toolkit, "git": git_state(), "reps": reps,
             "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
-            "utilization_before": utilization, "results": results,
+            "utilization_before": utilization, "inputs": digests, "results": results,
             "kernels": {k: {"regs": v.get("regs"), "ops": dict(Counter(v["ops"]).most_common(12))}
                         for k, v in table.items()}}
     target = (RESULTS / name if record else dev_config.scratch("lab") / "results" / name) / f"{arch}.json"
@@ -221,23 +242,24 @@ def run(name: str, reps: int, record: bool, force: bool) -> int:
         print(f"lab: {name} REFUSED -- its SASS is not what it measures:", *failures, sep="\n  ")
         return 1
 
+    extra, digests = inputs(name)
     utilization = quiet()
     if utilization > QUIET_PERCENT and not force:
         print(f"lab: the GPU is {utilization}% busy before the run; another consumer would inflate every cycle "
               "(--force to measure anyway)")
         return 1
 
-    device, results = execute(binary, reps)
+    device, results = execute(binary, reps, extra)
     report(name, arch, device, results, reps)
-    target = keep(name, arch, device, results, table, reps, utilization, record)
+    target = keep(name, arch, device, results, table, reps, utilization, record, digests)
     print(f"lab: recorded {target.relative_to(ROOT) if record else target}")
     return 0
 
 
-def ncu_counters(binary: Path, metrics: list[str]) -> dict[str, dict[str, float]]:
+def ncu_counters(binary: Path, metrics: list[str], extra: list[str]) -> dict[str, dict[str, float]]:
     """Per kernel (ncu's name), each metric's median over the kernel's launches in one repetition of the experiment."""
     out = subprocess.run([dev_config.get("toolchain.ncu"), "--metrics", ",".join(metrics), "--csv", str(binary),
-                          "--reps", "1"], capture_output=True, text=True, check=True).stdout
+                          "--reps", "1", *extra], capture_output=True, text=True, check=True).stdout
     lines = out.splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith('"ID"'))
     seen: dict[str, dict[str, list[float]]] = {}
@@ -254,13 +276,14 @@ def counters(name: str, metrics: list[str], record: bool) -> int:
     if failures:
         print(f"lab: {name} REFUSED -- its SASS is not what it measures:", *failures, sep="\n  ")
         return 1
-    found = ncu_counters(binary, metrics)
+    extra, digests = inputs(name)
+    found = ncu_counters(binary, metrics, extra)
     width = max(len(k) for k in found)
     for k, ms in found.items():
         print(f"  {k:<{width}}  " + "  ".join(f"{m} {v:,.0f}" for m, v in ms.items()))
     body = {"experiment": name, "question": question(experiments()[name]), "arch": arch, "git": git_state(),
             "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "metrics": metrics,
-            "kernels": found}
+            "inputs": digests, "kernels": found}
     target = (RESULTS / name if record else dev_config.scratch("lab") / "results" / name) / f"{arch}.counters.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(body, indent=1) + "\n")
