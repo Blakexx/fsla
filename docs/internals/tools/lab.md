@@ -278,3 +278,85 @@ bases no better; the restage 294 cycles a pass, 224 with the products precompute
 16 -- a serial loop over set bits 2.10K / 1.28K, word-parallel by popc 2.65K / 2.62K (sixteen word iterations whatever
 the density). Inside the load-ahead pipeline the fill and restage instructions are ~4-7% of a sparse pass; what costs
 there is in `sparse_pass`'s ledger. Record: `measure/lab/results/pass_fixed/sm_86.json`.
+
+<a id="list-fold"></a>
+
+## `list_fold`
+
+The fold's step forms for the carve re-price, 8 warps (two a scheduler), fp32 accumulate, the kernel's 128 accumulator
+registers live, 256 rows resident (160 bytes: level S's 32 f16 digits, 32 f16 values, level R's 32 u8 digits; the
+halves of each 32-byte pair swapped on rows with bit 2 set). PER LIST: a warp steps each list over its own tokens'
+rows (gathered by hash, or the pass's own contiguous 16), a row past the list's live count reading row 0 with c = 0;
+MERGED: a warp steps the union, every list's MMAs on every token, the operands loaded once. Two steps' operands loaded
+ahead of their MMAs; the block's span a pass against its tensor floor (the busiest scheduler's two warps' MMAs at 32
+cycles). sm_86:
+
+| form (a warp's lists x level-S digits x channels) | steps | live | rows | x floor |
+|---|---|---|---|---|
+| merged, 8 x 16 x 32 | 8 | 16 | contiguous | 1.055 |
+| merged, 4 x 32 x 32 | 8 | 16 | contiguous | 1.081 |
+| per list, 4 x 32 x 32 (each list reloading the same rows) | 8 a list | 16 | contiguous | 1.262 |
+| the same, staged (step s + 1's loads before step s's MMAs) | 8 a list | 16 | contiguous | 1.349 |
+| per list, 8 x 16 x 32 | 8 a list | 16 | contiguous | 1.977 |
+| per list, 4 x 32 x 32 | 2 a list | 16 | gathered | 1.424 |
+| per list, 4 x 32 x 32 | 2 a list | 8 | gathered | 1.167 |
+| per list, 4 x 32 x 32 | 1 a list | 8 | gathered | 1.166 |
+| per list, 8 x 16 x 32 | 2 a list | 16 | gathered | 2.160 |
+| per list, 8 x 16 x 32 | 1 a list | 8 | gathered | 1.706 |
+
+At dense, per list (all four lists reloading the same rows) is 25.8K cycles a pass against the merged form's 18.8K at
+the same tile: 1.37x, from four times the operand loads and a mass atom a list step. Per list at today's 16 x 32 tile
+is operand-bound (1.7-2.2x); at 32 x 32 a half-full step (alt-k4's ~8 tokens a list a window) runs 1.17x its floor
+even with gathered rows, a full gathered step 1.42x (16 random rows share bank groups where 8 pads on row 0
+broadcast). The staged form does not interleave: ptxas keeps the next step's loads in a block ahead of the MMAs, each
+entry's pad check a branch that fences the scheduler (its SASS), and it is slower. Record:
+`measure/lab/results/list_fold/sm_86.json`.
+
+<a id="read-step"></a>
+
+## `read_step`
+
+The readout's step on the even carve: a warp owns 4 level-S read digits x 32 level-R digits x 32 channels, its slice
+as f16 B fragments (K = level R, permuted so a lane's four k rows are one token's four consecutive digits) beside the
+fold's 128 fp32 accumulators (registers 240-254); a step's A = 16 tokens' level-R bytes by one `ldmatrix.x4` (96-byte
+read rows) and a PRMT + HFMA2 a register at the token's level-S coefficient; 8 fp16-accumulate MMAs and 2 for den; the
+outputs to s16 pairs (two channels a word) added by `red.shared.add` (ATOMS) into a 128-slot panel of 17-word rows; the
+drain two slots a warp request by `red.global.add.u32`, each word cleared. PER DIGIT steps each digit over its own
+gathered tokens and adds after each; MERGED sums the warp's 4 digits over the union in registers and adds once. The
+block's span a pass against its tensor floor (the busiest scheduler's MMAs at 16 cycles). sm_86, cycles a pass:
+
+| form | steps | steps alone | + panel adds | + drain burst | + drain spread | + burst, aligned | + spread, aligned |
+|---|---|---|---|---|---|---|---|
+| merged | 8, 16 live | 12.5K | 11.8K | 13.7K | 14.7K | 13.0K | 13.9K |
+| per digit | 8 a digit, 16 live | 17.4K | 32.0K | 33.5K | 35.6K | 32.6K | 35.8K |
+| per digit | 2 a digit, 16 live | 4.46K | 8.28K | 9.91K | 10.7K | 9.31K | 9.84K |
+| per digit | 1 a digit, 8 live | 1.66K | 3.32K | 5.58K | 5.79K | 4.31K | 4.72K |
+
+"Aligned" drains the channel words alone to 64-byte target rows (den carried elsewhere); the other drains write 17-word
+rows (channels and den) to a 17-word pitch, den a request of its own: ncu counts 316 L2 reduction requests a CTA a pass
+for their 128 RED instructions -- a two-token request spans three or four lines, den two. The panel adds cost about as
+much as a per-digit step itself (~5 cycles a warp's ATOMS across the SM); merged adds once a token for its four
+digits. The drain costs ~1.0K cycles a 128-slot pass aligned (2.3K misaligned with den), and spreading it through the
+next pass's steps under a double panel and mbarriers costs 0.4-1K more than the burst, not less: the drain's
+instructions and waits land in the steps. Record: `measure/lab/results/read_step/sm_86.json`.
+
+<a id="publish-rounds"></a>
+
+## `publish_rounds`
+
+The even carve's publish: the fold's warps own 4 level-R digits x 32 level-S x 32 channels (fp32), the readout's 4
+level-S x 32 level-R x 32 channels (f16 B fragments), a transpose of 32K values a window through `[S][R][channel]` (an
+S block 16 bytes past 2 KB, channel chunks swizzled by `(R >> 1) & 3`), whole (64 KB) or in four rounds of 16 KB (a
+level-S quarter, two readout warps' slices each) under mbarriers. In windows of fold steps (32 fp32-accumulate MMAs a
+step) and readout tiles (32 fp16-accumulate MMAs a tile), the block's span a window, sm_86:
+
+| publish | dense window | sparse window |
+|---|---|---|
+| none | 96.6K | 24.4K |
+| whole, barriers (64 KB) | 99.5K | 25.8K |
+| whole, mbarrier (64 KB) | 99.5K | 26.0K |
+| four rounds, one 16 KB buffer | 100.6K | 26.8K |
+| four rounds, two buffers (32 KB) | 100.0K | 26.3K |
+
+Rounds double-buffered cost 0.4-0.6K a window over the whole publish, single-buffered 1.0-1.1K: the rounds'
+handshakes, not their bytes. Record: `measure/lab/results/publish_rounds/sm_86.json`.

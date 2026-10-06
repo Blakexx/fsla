@@ -795,3 +795,16 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       passes, the largest piece of a sparse pass after the MMAs; built once at the pass's start, word-parallel over its
       words, they cost about half (1 in 4: 1.25x -> 1.20x). Take a pipeline's phases apart with a per-warp lap ledger
       before choosing its levers.
+   o. A PER-LIST STEP NEEDS A LIST TILE OF 32 x 32 OR MORE (`list_fold`): stepping each list over its own gathered
+      rows runs 1.17x its floor half full at 4 lists x 32 level-S digits x 32 channels a warp, 1.42x full (gathered
+      rows conflict), and 1.7-2.2x at 16 x 32, where the operand loads bind. Where lists share their tokens (dense),
+      load each token's operands once for all lists: per-list reloads cost 1.37x the shared load at the same tile.
+   p. A READOUT'S SHARED OUTPUT ADDS COST ABOUT AS MUCH AS ITS STEP (`read_step`): a per-digit step's adds into the
+      panel (`red.shared`, ~5 cycles a warp's ATOMS across the SM) double its cost at alt-k4-like density; summing a
+      warp's digits in registers first (merged) adds once a token.
+   q. A DRAIN'S COST IS ITS L2 REQUESTS, AND SPREADING IT DOES NOT HIDE IT (`read_step`): a global reduction request
+      costs per line it touches, so a token's row is drained aligned to its lines with den carried in it, not as its
+      own request (2.3K -> 1.0K cycles a 128-slot pass); spread through the next pass's steps under a double panel the
+      drain cost 0.4-1K more than a burst at the pass's end.
+   r. A PUBLISH IN ROUNDS COSTS ITS HANDSHAKES (`publish_rounds`): four 16 KB rounds of the even carve's 64 KB
+      transpose cost 0.4-0.6K cycles a window over publishing it whole when double buffered, 1.0-1.1K single.
