@@ -3,10 +3,10 @@
 """THE DEN SWEEP'S INPUTS: each cell's routing as the facts pass hands it to the carry, one file a cell, for
 `den_sweep.cu` (docs/internals/tools/lab.md#den-sweep).
 
-A file is a header of six int32 -- the magic word 0x314E4544, tokens, the level-S index, whether level R's write side is sparse,
-whether level S's read side is sparse, the window -- then level S's write plane and level R's write plane as f16 (a u8
-plane's values exact), level S's read plane and level R's read plane as u8, and the write gain (`fm`'s m) as fp32, each
-`[tokens][256]` but the gain. Level R is the list level of `rola.ops.facts`, level S the other.
+A file is a header of six int32 -- the magic word 0x314E4544, tokens, the level-S index, whether level R's write side
+is sparse, whether level S's read side is sparse, the window -- then level S's write plane and level R's write plane as
+f16 (a u8 plane's values exact), level S's read plane and level R's read plane as u8, and the write gain (`fm`'s m) as
+fp32, each `[tokens][256]` but the gain. Level R is the list level of `rola.ops.facts`, level S the other.
 """
 from __future__ import annotations
 
