@@ -75,16 +75,23 @@ def test_a_guarded_convergence_fallback_and_a_slow_path_call_are_not_red(cubin):
 
 
 #: a convergence subroutine and a call into it, as a disassembly lists them: `(address, opcode, operands)`
-_SUBROUTINE = [(0x100, "WARPSYNC", "0xffffffff"), (0x110, "SHFL.BFLY", "PT, R0, R1, 0x1, 0x1f"),
-               (0x120, "RET.REL.NODEC", "R2 0x0")]
+_SUBROUTINE = [(0x100, "WARPSYNC", "0xffffffff", ""), (0x110, "SHFL.BFLY", "PT, R0, R1, 0x1, 0x1f", ""),
+               (0x120, "RET.REL.NODEC", "R2 0x0", "")]
 
 
 def test_the_classifier_reds_an_unguarded_call_and_counts_a_guarded_one():
     """This toolchain's ptxas guards every call it emits (the probe above), so the red is proven on the lines."""
-    hot = [(0x0, "CALL.REL.NOINC", "0x100"), (0x10, "EXIT", "")] + _SUBROUTINE
-    via_div = [(0x0, "BRA.DIV", "~URZ, 0x40"), (0x10, "SHFL.BFLY", "PT, R0, R1, 0x1, 0x1f"), (0x20, "EXIT", ""),
-               (0x40, "CALL.REL.NOINC", "0x100"), (0x50, "BRA", "0x20")] + _SUBROUTINE
-    past_conv = [(0x0, "BRA.CONV", "~URZ, 0x20"), (0x10, "CALL.REL.NOINC", "0x100"), (0x20, "EXIT", "")] + _SUBROUTINE
+    hot = [(0x0, "CALL.REL.NOINC", "0x100", ""), (0x10, "EXIT", "", "")] + _SUBROUTINE
+    via_div = [(0x0, "BRA.DIV", "~URZ, 0x40", ""), (0x10, "SHFL.BFLY", "PT, R0, R1, 0x1, 0x1f", ""),
+               (0x20, "EXIT", "", ""), (0x40, "CALL.REL.NOINC", "0x100", ""), (0x50, "BRA", "0x20", "")] + _SUBROUTINE
+    past_conv = [(0x0, "BRA.CONV", "~URZ, 0x20", ""), (0x10, "CALL.REL.NOINC", "0x100", ""),
+                 (0x20, "EXIT", "", "")] + _SUBROUTINE
     assert sass_gate.convergence_calls(hot, {}) == (1, 0)
     assert sass_gate.convergence_calls(via_div, {}) == (0, 1)
     assert sass_gate.convergence_calls(past_conv, {}) == (0, 1)
+    never = [(0x0, "BRA", "0x20", "@!PT"), (0x10, "BRA", "0x30", ""), (0x20, "CALL.REL.NOINC", "0x100", ""),
+             (0x30, "EXIT", "", "")] + _SUBROUTINE
+    assert sass_gate.convergence_calls(never, {}) == (0, 1)
+    reached = [(0x0, "BRA", "0x20", "@!PT"), (0x10, "MOV", "R0, R1", ""), (0x20, "CALL.REL.NOINC", "0x100", ""),
+               (0x30, "EXIT", "", "")] + _SUBROUTINE
+    assert sass_gate.convergence_calls(reached, {}) == (1, 0)

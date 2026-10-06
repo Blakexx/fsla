@@ -267,12 +267,13 @@ class Bench {
     return h;
   }
 
-  //: the mean over blocks of the block's span (`WarpSpan`), `warps` a block
-  double span(int warps) const {
-    std::vector<long long> h(static_cast<size_t>(sms) * warps * 2);
+  //: the mean over blocks of the block's span (`WarpSpan`), `warps` a block, `blocks` launched (one an SM if omitted)
+  double span(int warps, int blocks = 0) const {
+    const int n = blocks > 0 ? blocks : sms;
+    std::vector<long long> h(static_cast<size_t>(n) * warps * 2);
     LAB_CHECK(cudaMemcpy(h.data(), times, h.size() * sizeof(long long), cudaMemcpyDeviceToHost));
     double s = 0;
-    for (int b = 0; b < sms; ++b) {
+    for (int b = 0; b < n; ++b) {
       long long lo = h[2 * b * warps], hi = h[2 * b * warps + 1];
       for (int w = 1; w < warps; ++w) {
         lo = std::min(lo, h[2 * (b * warps + w)]);
@@ -280,7 +281,7 @@ class Bench {
       }
       s += double(hi - lo);
     }
-    return s / sms;
+    return s / n;
   }
 
   //: the mean over blocks of warps `[first, first + count)`'s cycles

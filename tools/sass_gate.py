@@ -39,6 +39,11 @@ INSTR = sass.INSTRUCTION
 #: the same line whole: address, predicate, opcode, operands
 WHOLE = re.compile(r"^\s*/\*([0-9a-f]+)\*/\s+(@!?U?P\w+\s+)?([A-Z0-9_.$]+)\s*([^;]*);")
 _COLLECTIVE = re.compile(r"^(SHFL|VOTE|MATCH|REDUX|BAR)")
+
+#: the always-false predicate: ptxas keeps a branch under it that it never takes
+_NEVER = "@!PT"
+#: an unconditional transfer: nothing falls through it
+_TERMINATOR = re.compile(r"^(BRA|EXIT|RET|JMP|BRX|JMX)$|^(EXIT|RET)\.")
 #: a convergence subroutine's length at most: its operand moves, `WARPSYNC`, the collective (`RET` not counted)
 _SUBROUTINE = 8
 
@@ -61,12 +66,13 @@ def stacks(cubin: Path) -> dict[str, int]:
 STATS: dict[str, dict] = {}
 
 
-def convergence_calls(lines: list[tuple[int, str, str]], labels: dict[str, int]) -> tuple[int, int]:
-    """``(hot, guarded)``: the calls into a convergence subroutine a converged warp executes, and those only a
-    diverged one reaches (in a block a `BRA.DIV` enters, or past a `BRA.CONV` in the call's block). ``lines`` are
-    ``(address, opcode, operands)``, the function's own; ``labels`` ``{name: line index}``. A target is an address
+def convergence_calls(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> tuple[int, int]:
+    """``(hot, guarded)``: the calls into a convergence subroutine a converged warp executes, and those it never does
+    (in a block a `BRA.DIV` enters, past a `BRA.CONV` in the call's block, or in a dead block: one only a branch under
+    the always-false predicate `@!PT` enters, right after an unconditional transfer). ``lines`` are ``(address,
+    opcode, operands, predicate)``, the function's own; ``labels`` ``{name: line index}``. A target is an address
     (`cuobjdump`) or a label (`nvdisasm`: `` `($__internal_1_$__cuda_sm70_shflsync_bfly_p) ``)."""
-    at = {addr: k for k, (addr, _, _) in enumerate(lines)}
+    at = {addr: k for k, (addr, _, _, _) in enumerate(lines)}
 
     def resolve(operands: str) -> int | None:
         address = re.match(r"(?:~URZ,\s*)?(0x[0-9a-f]+)", operands)
@@ -75,24 +81,32 @@ def convergence_calls(lines: list[tuple[int, str, str]], labels: dict[str, int])
 
     def subroutine(start: int) -> bool:
         block = []
-        for _, op, _ in lines[start:start + _SUBROUTINE + 1]:
+        for _, op, _, _ in lines[start:start + _SUBROUTINE + 1]:
             if op.startswith("RET"):
                 return "WARPSYNC" in block and any(_COLLECTIVE.match(o) for o in block)
             block.append(op)
         return False
 
-    starts = {0, *labels.values()} | {k for k in (resolve(o) for _, op, o in lines if op.startswith("BRA"))
-                                       if k is not None}
-    fallback = {k for k in (resolve(o) for _, op, o in lines if op.startswith("BRA.DIV")) if k is not None}
+    def targets(prefix: str, live: bool) -> set[int]:
+        found = (resolve(o) for _, op, o, p in lines if op.startswith(prefix) and (p != _NEVER) == live)
+        return {k for k in found if k is not None}
+
+    taken = targets("BRA", True)
+    starts = {0, *labels.values()} | taken | targets("BRA", False)
+    fallback = targets("BRA.DIV", True)
+    dead = {k for k in starts - taken
+            if k > 0 and lines[k - 1][3] == "" and _TERMINATOR.match(lines[k - 1][1])}
     hot = guarded = 0
     block, conv = 0, False
-    for k, (_, opcode, operands) in enumerate(lines):
+    for k, (_, opcode, operands, predicate) in enumerate(lines):
         if k in starts:
             block, conv = k, False
+        if predicate == _NEVER:
+            continue
         conv = conv or opcode.startswith("BRA.CONV")
         target = resolve(operands) if opcode.startswith("CALL.REL") else None
         if target is not None and subroutine(target):
-            if block in fallback or conv:
+            if block in fallback or block in dead or conv:
                 guarded += 1
             else:
                 hot += 1
@@ -118,10 +132,12 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
             continue
         m = INSTR.match(line)
         if m and cur is not None:
-            funcs[cur].append((m.group(2) or "").strip() + " " + m.group(3))
+            predicate = (m.group(2) or "").strip()
+            if predicate != _NEVER:
+                funcs[cur].append(predicate + " " + m.group(3))
             w = WHOLE.match(line)
-            whole[cur].append((int(w.group(1), 16), w.group(3), w.group(4).strip()) if w else
-                              (int(m.group(1), 16), m.group(3), ""))
+            whole[cur].append((int(w.group(1), 16), w.group(3), w.group(4).strip(), predicate) if w else
+                              (int(m.group(1), 16), m.group(3), "", predicate))
 
     ok = True
     report = []
