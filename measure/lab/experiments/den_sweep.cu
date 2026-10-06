@@ -3,17 +3,20 @@
 // pass running beside the carry could hand its readout a common unit. On the tensor cores, what does a CTA of 64
 // level-S rows x SPAN level-R digits (256: 4 a head; 128: 8 a head) cost a window, against the carry's ~20K? METHOD:
 // the den is one channel, so each half's MMA takes N from its sparse level, an entry live in one of N's 8 columns.
-// Writes (dense level S, sparse level R, fp32 accumulate): a warp owns SPAN / 8 digits, an 8-digit tile an MMA's N, the
-// tile's list entries (padded to 4 a digit) its K, the 64 rows its M, the mass the accumulators; each 64 entries fill a
-// warp's slots (token; gain x value as f16 with the digit's column), A = the tokens' staged f16 coefficients by
-// `ldmatrix.trans` (a token's 16-byte chunks XORed with token & 7), B = each entry's coefficient in its column. The den
-// (sparse level S, dense level R): a warp owns 8 level-S rows, N; its rows' read-list entries (token, digit, u8 value,
-// each row's padded to 4, staged a window ahead as a facts pass would emit them) are M, 16 a tile; K = the CTA's
-// digits, A = each entry's u8 read row (a lane's contiguous quarter, PRMT + HSUB2 to exact f16), B = the published f16
-// mass by `ldmatrix`, fp32 accumulate; an entry's result is its row's column, times its value, added by the lane
-// holding it. The mass crosses lanes once a window through shared memory, the next window's read rows prefetch to L2.
-// One head's CTAs over a 32-window pool streamed from DRAM, as a few pass CTAs would run beside a compute-bound carry;
-// checked against a host reference first. The block's span a window; PART isolates the halves.
+// Writes (dense level S, sparse level R, f16 x f16 -> fp32): a warp owns SPAN / 8 digits, an 8-digit tile an MMA's N,
+// the tile's list entries its K, the 64 rows its M, the mass the accumulators; the tile's entries arranged so each
+// aligned 8 holds distinct token & 7 (as a facts pass could emit them); each 64 fill a warp's slots (token; gain x
+// value as f16 with the digit's column), A = the tokens' staged f16 coefficients by `ldmatrix.trans` (a token's 16-byte
+// chunks XORed with token & 7, so a distinct-residue 8 reads conflict-free), B = each entry's coefficient in its
+// column. The den (sparse level S, dense level R, u8 x u8 -> s32): a warp owns 8 level-S rows, N; its rows' read-list
+// entries (token, digit, u8 value, staged a window ahead as a facts pass would emit them) are M, 16 a tile; K = the
+// CTA's digits; A = each entry's u8 read row as loaded (a lane's contiguous quarter, the K order the published mass
+// follows); B = the mass as 16-bit fixed point (each row scaled by the power of two that puts its largest value in
+// [2^14, 2^15)), its high and low bytes two planes, two integer MMAs a 32 digits; an entry's result is its row's column
+// (high x 256 + low) x 2^-e x its value, added by the lane holding it. The mass crosses lanes once a window through
+// shared memory (f16), the next window's read rows prefetch to L2. One head's CTAs over a 32-window pool streamed from
+// DRAM, as a few pass CTAs would run beside a compute-bound carry; checked against a host reference first. The block's
+// span a window; PART isolates the halves.
 // see docs/internals/tools/lab.md#den-sweep
 #include "lab.cuh"
 
@@ -35,10 +38,10 @@ struct alignas(16) Shared {
   alignas(16) uint32_t slot_cd[kWarps][kChunk + 16];
 };
 
-//: THE POOL, a window each: level S's read lists digit-major (offsets; entries `token << 8 | digit | value << 24`, a
-//: digit's padded to 4 with value 0), level R's write lists digit-major (offsets, `token | (digit & 7) << 9`, u8
-//: values, a digit's padded to 4 with value 0), per token level S's f16 write coefficients and level R's u8 read row,
-//: the gain
+//: THE POOL, a window each: level S's read lists digit-major (offsets; entries `token << 8 | digit | value << 24`),
+//: level R's write lists by 8-digit tile (offsets at the tiles; `token | (digit & 7) << 9` and u8 values, each aligned
+//: 8 of distinct token & 7 where the residues allow), per token level S's f16 write coefficients and level R's u8 read
+//: row, the gain
 struct Pool {
   const uint32_t* read_at;  // [pool][264]
   const uint32_t* reads;    // [pool][512 READ_K + 1024]
@@ -54,20 +57,23 @@ __device__ __forceinline__ void red_f32(float* p, float v) {
   asm volatile("red.global.add.f32 [%0], %1;" ::"l"(p), "f"(v) : "memory");
 }
 
-//: two u8 of a word (`sel` 0x4140 the low pair, 0x4342 the high) as an exact f16 pair: 1024 + b by PRMT, less 1024
-__device__ __forceinline__ uint32_t u8_pair(uint32_t w, uint32_t sel) {
-  uint32_t x, d;
-  asm("prmt.b32 %0, %1, %2, %3;" : "=r"(x) : "r"(w), "r"(0x64646464u), "r"(sel));
-  asm("sub.rn.f16x2 %0, %1, %2;" : "=r"(d) : "r"(x), "r"(0x64006400u));
+__device__ __forceinline__ uint32_t hmax2(uint32_t a, uint32_t b) {
+  uint32_t d;
+  asm("max.f16x2 %0, %1, %2;" : "=r"(d) : "r"(a), "r"(b));
   return d;
 }
 
-//: a level-R digit's column in the published mass (relative to the CTA's first): digit `(SPAN / 4) tq + 4 kk + e` sits
-//: where the den's K index puts lane tq's bytes `4 kk + e` of a read row (`2 tq + {0, 1, 8, 9}` of k-step kk)
+__device__ __forceinline__ float2 h2f(uint32_t h) {
+  return __half22float2(*reinterpret_cast<const __half2*>(&h));
+}
+
+//: a level-R digit's column in the published mass (relative to the CTA's first): digit `(SPAN / 4) tq + 8 kk + e` sits
+//: where the den's integer K index puts lane tq's bytes `8 kk + e` of a read row (`4 tq + e` of k-step kk for e < 4,
+//: `16 + 4 tq + e - 4` after)
 template <int SPAN>
 __device__ __forceinline__ int logical(int d) {
-  const int tq = d / (SPAN / 4), kk = (d % (SPAN / 4)) >> 2, e = d & 3;
-  return 16 * kk + 2 * tq + (e < 2 ? e : e + 6);
+  const int tq = d / (SPAN / 4), r = d % (SPAN / 4), kk = r >> 3, e = r & 7;
+  return 32 * kk + (e < 4 ? 4 * tq + e : 12 + 4 * tq + e);
 }
 
 template <int SPAN>
@@ -137,7 +143,7 @@ __global__ void __launch_bounds__(kThreads, 1) sweep(int windows, Pool g, float*
   Shared& sh = *reinterpret_cast<Shared*>(raw);
   constexpr bool kDen = PART == 0 || PART == 1, kWrites = PART == 0 || PART == 2;
   constexpr int kWriteList = kWindow * WRITE_K + kListPad * kDigits, kTiles = SPAN / 64,
-                kSteps = SPAN / 16;
+                kSteps = SPAN / 32;
   const int tid = static_cast<int>(threadIdx.x), lane = lab::lane_id(), warp = lab::warp_id();
   const int g8 = lane >> 2, tq = lane & 3;
   const int s0 = static_cast<int>(blockIdx.x) % (kDigits / kRows) * kRows;
@@ -167,19 +173,41 @@ __global__ void __launch_bounds__(kThreads, 1) sweep(int windows, Pool g, float*
     const int bound_l = lane <= kTiles ? g.offsets[pw * kOffsets + d0 + 8 * lane] : 0;
     publish<SPAN>(sh, acc, warp, lane);
     __syncthreads();
-    //: the den's B: the warp's 8 rows over the CTA's logical digits, k-steps in pairs
-    uint32_t bf[kSteps][2];
+    //: the den's B: the lane's row (g) over its k positions, as 16-bit fixed point at the row's power of two, high and
+    //: low bytes apart; the lane's two columns' rows' 2^-e
+    uint32_t bh[kSteps][2], bl[kSteps][2];
+    float inv_even = 1.0f, inv_odd = 1.0f;
     if constexpr (kDen) {
+      const uint8_t* const rowp = sh.region + (kBand * warp + g8) * pitch<SPAN>();
+      uint2 h[kSteps][2];
+      uint32_t m2 = 0u;
 #pragma unroll
-      for (int kp = 0; kp < kSteps / 2; ++kp) {
-        uint32_t x[4];
-        lab::ldsm(x, lab::smem(sh.region + (kBand * warp + (lane & 7)) * pitch<SPAN>()
-                               + 2 * (32 * kp + 8 * (lane >> 3))));
-        bf[2 * kp][0] = x[0];
-        bf[2 * kp][1] = x[1];
-        bf[2 * kp + 1][0] = x[2];
-        bf[2 * kp + 1][1] = x[3];
-      }
+      for (int kk = 0; kk < kSteps; ++kk)
+#pragma unroll
+        for (int j = 0; j < 2; ++j) {
+          h[kk][j] = *reinterpret_cast<const uint2*>(rowp + 2 * (32 * kk + 16 * j + 4 * tq));
+          m2 = hmax2(m2, hmax2(h[kk][j].x, h[kk][j].y));
+        }
+      uint32_t top = max(m2 & 0xffffu, m2 >> 16);
+      top = max(top, __shfl_xor_sync(0xffffffffu, top, 1));
+      top = max(top, __shfl_xor_sync(0xffffffffu, top, 2));
+      const int e = top == 0u ? 0 : 29 - static_cast<int>(top >> 10);
+      const float sc = __int_as_float((127 + e) << 23), inv = __int_as_float((127 - e) << 23);
+#pragma unroll
+      for (int kk = 0; kk < kSteps; ++kk)
+#pragma unroll
+        for (int j = 0; j < 2; ++j) {
+          const float2 v01 = h2f(h[kk][j].x), v23 = h2f(h[kk][j].y);
+          const uint32_t u0 = __float_as_uint(fmaf(v01.x, sc, 8388608.0f));
+          const uint32_t u1 = __float_as_uint(fmaf(v01.y, sc, 8388608.0f));
+          const uint32_t u2 = __float_as_uint(fmaf(v23.x, sc, 8388608.0f));
+          const uint32_t u3 = __float_as_uint(fmaf(v23.y, sc, 8388608.0f));
+          const uint32_t t01 = __byte_perm(u0, u1, 0x5410), t23 = __byte_perm(u2, u3, 0x5410);
+          bl[kk][j] = __byte_perm(t01, t23, 0x6420);
+          bh[kk][j] = __byte_perm(t01, t23, 0x7531);
+        }
+      inv_even = __shfl_sync(0xffffffffu, inv, 8 * tq);
+      inv_odd = __shfl_sync(0xffffffffu, inv, 8 * tq + 4);
     }
     __syncthreads();
     //: the region free: the window's coefficients and gains
@@ -205,24 +233,33 @@ __global__ void __launch_bounds__(kThreads, 1) sweep(int windows, Pool g, float*
           x.b[j] = pb[j];
         }
       };
-      //: a tile's MMAs, then each entry's row column times its value, added by the lane holding that column
+      //: a tile's integer MMAs (the loaded words are A), then each entry's row column (high x 256 + low) x 2^-e x its
+      //: value, added by the lane holding that column
       const auto run = [&](const Tile<SPAN>& x) {
-        float c[4] = {};
+        int ch[4] = {}, cl[4] = {};
 #pragma unroll
         for (int kk = 0; kk < kSteps; ++kk) {
-          const uint32_t wa = word_of<SPAN>(x.a, kk), wb = word_of<SPAN>(x.b, kk);
-          const uint32_t a[4] = {u8_pair(wa, 0x4140u), u8_pair(wb, 0x4140u), u8_pair(wa, 0x4342u),
-                                 u8_pair(wb, 0x4342u)};
-          lab::mma_f16_f32(c, a, bf[kk][0], bf[kk][1]);
+          const uint32_t a[4] = {word_of<SPAN>(x.a, 2 * kk), word_of<SPAN>(x.b, 2 * kk),
+                                 word_of<SPAN>(x.a, 2 * kk + 1), word_of<SPAN>(x.b, 2 * kk + 1)};
+          lab::mma_u8u8(ch, a, bh[kk][0], bh[kk][1]);
+          lab::mma_u8u8(cl, a, bl[kk][0], bl[kk][1]);
         }
         const int ra = static_cast<int>(x.ea & 0xffu) - s0 - kBand * warp;
         const int rb = static_cast<int>(x.eb & 0xffu) - s0 - kBand * warp;
-        if ((x.ea >> 24) != 0u && (ra >> 1) == tq)
+        if ((x.ea >> 24) != 0u && (ra >> 1) == tq) {
+          const bool odd = ra & 1;
+          const float v = static_cast<float>(odd ? ch[1] : ch[0]) * 256.0f
+                          + static_cast<float>(odd ? cl[1] : cl[0]);
           red_f32(dw + ((x.ea >> 8) & 0x1ffu),
-                  (ra & 1 ? c[1] : c[0]) * static_cast<float>(x.ea >> 24));
-        if ((x.eb >> 24) != 0u && (rb >> 1) == tq)
+                  v * (odd ? inv_odd : inv_even) * static_cast<float>(x.ea >> 24));
+        }
+        if ((x.eb >> 24) != 0u && (rb >> 1) == tq) {
+          const bool odd = rb & 1;
+          const float v = static_cast<float>(odd ? ch[3] : ch[2]) * 256.0f
+                          + static_cast<float>(odd ? cl[3] : cl[2]);
           red_f32(dw + ((x.eb >> 8) & 0x1ffu),
-                  (rb & 1 ? c[3] : c[2]) * static_cast<float>(x.eb >> 24));
+                  v * (odd ? inv_odd : inv_even) * static_cast<float>(x.eb >> 24));
+        }
       };
       //: two tiles in flight, each reloaded two ahead
       Tile<SPAN> ta, tb;
@@ -360,28 +397,54 @@ Host make_host(int write_k, int read_k) {
     }
     h.m[t] = 1e-4f * (1 + (t & 7));
   }
-  //: both levels' lists digit-major, tokens in order within a digit, each digit's padded to 4 entries (value 0); the
-  //: kernel's capacity: a CTA's rows' read lists fit its 2560 entries
+  //: level S's read lists digit-major, tokens in order; level R's write lists by 8-digit tile, the tile's entries
+  //: (token order within a digit) taken one from each of the largest residue buckets (token & 7) an aligned 8, the
+  //: largest again once the residues run out. The kernel's capacity: a CTA's rows' read lists fit its 2560 entries
   for (size_t win = 0; win < static_cast<size_t>(kPool); ++win) {
     size_t at = 0, rat = 0;
     for (int d = 0; d < kDigits; ++d) {
-      h.offsets[win * kOffsets + d] = static_cast<uint16_t>(at);
       h.read_at[win * kOffsets + d] = static_cast<uint32_t>(win * rlist + rat);
-      for (int tt = 0; tt < kWindow; ++tt) {
-        const size_t t = win * kWindow + tt;
-        if (const uint8_t v = h.wr[t * kDigits + d]) {
-          h.tokens[win * wlist + at] = static_cast<uint16_t>(tt | (d & 7) << 9);
-          h.values[win * wlist + at++] = v;
-        }
-        if (const uint8_t v = h.rs[t * kDigits + d])
+      for (int tt = 0; tt < kWindow; ++tt)
+        if (const uint8_t v = h.rs[(win * kWindow + tt) * kDigits + d])
           h.reads[win * rlist + rat++] = static_cast<uint32_t>(tt) << 8 | static_cast<uint32_t>(d)
                                          | static_cast<uint32_t>(v) << 24;
+    }
+    h.read_at[win * kOffsets + kDigits] = static_cast<uint32_t>(win * rlist + rat);
+    for (int tile = 0; tile < kDigits / 8; ++tile) {
+      std::vector<std::pair<uint16_t, uint8_t>> bucket[8];
+      size_t left = 0;
+      for (int d = 8 * tile; d < 8 * tile + 8; ++d) {
+        h.offsets[win * kOffsets + d] = static_cast<uint16_t>(at);
+        for (int tt = 0; tt < kWindow; ++tt)
+          if (const uint8_t v = h.wr[(win * kWindow + tt) * kDigits + d]) {
+            bucket[tt & 7].push_back({static_cast<uint16_t>(tt | (d & 7) << 9), v});
+            ++left;
+          }
       }
-      for (; at % kListPad; ++at) h.tokens[win * wlist + at] = static_cast<uint16_t>((d & 7) << 9);
-      for (; rat % kListPad; ++rat) h.reads[win * rlist + rat] = static_cast<uint32_t>(d);
+      const auto emit = [&](int r) {
+        h.tokens[win * wlist + at] = bucket[r].back().first;
+        h.values[win * wlist + at++] = bucket[r].back().second;
+        bucket[r].pop_back();
+        --left;
+      };
+      while (left > 0) {
+        int order[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+        std::sort(order, order + 8,
+                  [&](int x, int y) { return bucket[x].size() > bucket[y].size(); });
+        int taken = 0;
+        for (int i = 0; i < 8; ++i)
+          if (!bucket[order[i]].empty()) {
+            emit(order[i]);
+            ++taken;
+          }
+        for (; taken < 8 && left > 0; ++taken)
+          emit(static_cast<int>(
+              std::max_element(bucket, bucket + 8,
+                               [](const auto& x, const auto& y) { return x.size() < y.size(); })
+              - bucket));
+      }
     }
     h.offsets[win * kOffsets + kDigits] = static_cast<uint16_t>(at);
-    h.read_at[win * kOffsets + kDigits] = static_cast<uint32_t>(win * rlist + rat);
     for (int s = 0; s < kDigits; s += kRows)
       if (h.read_at[win * kOffsets + s + kRows] - h.read_at[win * kOffsets + s] > kReadCap)
         std::exit(3);
@@ -454,7 +517,8 @@ template <int SPAN, int WRITE_K, int READ_K, int PART = 0>
 void variant(const lab::Bench& b, float* den) {
   const std::string name = lab::kernel("sweep", {SPAN, WRITE_K, READ_K, PART});
   if (PART <= 1) b.expect(name, "RED", ">=", 2);
-  if (PART <= 1) b.expect(name, "HMMA.16816.F32", ">=", SPAN / 16);
+  if (PART <= 1) b.expect(name, "IMMA.16832.U8.U8", ">=", SPAN / 16);
+  if (PART == 0 || PART == 2) b.expect(name, "HMMA.16816.F32", ">=", 4);
   if (PART == 0 || PART == 2) b.expect(name, "LDSM", ">=", 4);
   if (b.expect_only) return;
   const Host h = make_host(WRITE_K, READ_K);

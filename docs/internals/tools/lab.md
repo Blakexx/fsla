@@ -34,7 +34,8 @@ question about traffic rather than time.
 * The operand pieces the kernels use: `ldsm` and `ldsm_t` (`ldmatrix.x4`, `.trans`), `hmul2`, `pack_half2`, `smem`;
   the mbarrier as `ops.cuh` spells it: `mbar_init`, `mbar_arrive`, `mbar_wait` (polled), `mbar_test` (once).
 * `lab::sink(out, v)` — a fold of everything a thread computed, stored unconditionally.
-* The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8s8`.
+* The atoms as one PTX instruction each: `mma_f16_f32` (and `_fresh`), `mma_f16_f16`, `mma_bf16_f32`, `mma_u8u8`,
+  `mma_u8s8`.
 * `lab::Bench` — the host runner: `expect(kernel, op, cmp, count)` declares SASS (printed under `--expect`, run by the
   driver before anything is timed), `variant(launch, measure)` warms up and repeats a launch, `record(name, unit,
   samples)` prints a result, `cycles(warps)` and `mean(...)` read the warps' clocks.
@@ -370,27 +371,30 @@ the write mass of the windows before -- `tests/oracle/reference.py`), so the rea
 beforehand, on the tensor cores. The den is one channel, so each half's MMA takes its N from the half's sparse level:
 an entry is live in one of N's 8 columns, an MMA 1/8 useful, against the per-entry instructions an FFMA form spends on
 two multiply-adds a lane. A CTA owns 64 level-S rows x SPAN level-R digits (256: 4 a head; 128: 8 a head). Writes
-(dense level S, sparse level R, fp32 accumulate): an 8-digit tile is N, the tile's list entries (padded to 4 a digit)
-K, the 64 rows M, the mass the accumulators; each 64 entries fill a warp's slots (the token; gain x value as f16 with
-the digit's column); A = the tokens' staged f16 coefficients by `ldmatrix.trans` (a token's 16-byte chunks XORed with
-token & 7), B = an entry's coefficient in its column. The den (sparse level S, dense level R): a warp's 8 rows are N,
-its rows' read-list entries (token, digit, u8 value, a row's padded to 4, staged a window ahead as a facts pass would
-emit them) M, the CTA's digits K; A = an entry's u8 read row (a lane's contiguous quarter, PRMT + HSUB2 to exact f16),
-B = the published f16 mass by `ldmatrix`, fp32 accumulate; an entry's result is its row's column times its value,
-added by the lane holding it. One head's CTAs over a 32-window pool streamed from DRAM, as a few pass CTAs would run
-beside a compute-bound carry; every den within 1% of a double reference before timing. sm_86 at base clock, cycles a
-CTA-window (by ncu: instructions and MMAs a warp-window, shared wavefronts a CTA-window):
+(dense level S, sparse level R, f16 x f16 -> fp32): an 8-digit tile is N, the tile's list entries K, the 64 rows M, the
+mass the accumulators; the tile's entries arranged so each aligned 8 holds distinct token & 7 (as a facts pass could
+emit them); each 64 fill a warp's slots (the token; gain x value as f16 with the digit's column); A = the tokens'
+staged f16 coefficients by `ldmatrix.trans` (a token's 16-byte chunks XORed with token & 7, so a distinct-residue 8
+reads conflict-free), B = an entry's coefficient in its column. The den (sparse level S, dense level R, u8 x u8 ->
+s32): a warp's 8 rows are N, its rows' read-list entries (token, digit, u8 value, staged a window ahead as a facts
+pass would emit them) M, the CTA's digits K; A = an entry's u8 read row as loaded (a lane's contiguous quarter, the K
+order the published mass follows); B = the mass as 16-bit fixed point (a row scaled by the power of two putting its
+largest value in [2^14, 2^15)) in high and low byte planes, two integer MMAs a 32 digits; an entry's result is its
+row's column (high x 256 + low) x 2^-e x its value, added by the lane holding it. One head's CTAs over a 32-window
+pool streamed from DRAM, as a few pass CTAs would run beside a compute-bound carry; every den within 1% of a double
+reference before timing. sm_86 at base clock, cycles a CTA-window (by ncu: instructions and MMAs a warp-window, shared
+wavefronts a CTA-window):
 
 | carve, write k, read k | full | den alone | writes alone | skeleton |
 |---|---|---|---|---|
-| 64 x 256 (4 a head), 4, 4 | 26.4K | 15.0K (1738; 82 MMAs) | 16.4K (2035; 82 MMAs; 9.2K wavefronts) | 4.16K |
-| 64 x 256, 16, 16 | 69.5K | | | |
-| 64 x 128 (8 a head), 4, 4 | 15.8K | 9.6K (1330; 41) | 10.3K (1260; 41; 4.9K) | |
-| 64 x 128, 16, 16 | 40.5K | | | |
+| 64 x 256 (4 a head), 4, 4 | 21.6K | 12.4K (1517; 72 MMAs) | 13.5K (1798; 71 MMAs; 5.8K wavefronts) | 3.66K |
+| 64 x 256, 16, 16 | 60.2K | | | |
+| 64 x 128 (8 a head), 4, 4 | 13.0K | 8.1K (1208; 36) | 8.8K (1136; 36; 3.2K) | |
+| 64 x 128, 16, 16 | 33.6K | | | |
 
-The tensor pipe is ~17% busy. The writes are bound by their gathers: an entry's A row is 128 bytes of shared memory,
-and 16 random tokens' rows XORed on token & 7 still collide ~2.4x on bank groups (4.4K of the 9.2K wavefronts are
-conflicts at 64 x 256). The den stalls on its read rows from L2 and the load queue (each entry 256 bytes, two tiles in
-flight). The narrower carve halves both and runs a window in 15.8K at alt-k4. Earlier revisions measured FFMA forms:
-lanes on the dense level, digit-major (34.5K at 64 x 256, commit 0db7bf1e) and token-major (155K, commit 673c2375).
-Record: `measure/lab/results/den_sweep/sm_86.json`, counters `sm_86.counters.json`.
+The residue order cut the writes' bank conflicts from 4.4K to 1.6K a CTA-window at 64 x 256 (wavefronts 9.2K to
+5.8K). The integer den spends no instructions forming A and runs 72 integer MMAs a warp-window at 8 cycles; what is
+left waits on its read rows (256 bytes an entry from L2). The f16 den of the previous revision (fp32-accumulate MMAs, A
+made f16 by PRMT + HSUB2 a register) ran 15.0K alone at 64 x 256 and the full pass 26.4K (commit ece3d4d6); the FFMA
+forms 34.5K (digit-major, 0db7bf1e) and 155K (token-major, 673c2375). Record: `measure/lab/results/den_sweep/sm_86.json`,
+counters `sm_86.counters.json`.
