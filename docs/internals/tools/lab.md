@@ -367,30 +367,30 @@ handshakes, not their bytes. Record: `measure/lab/results/publish_rounds/sm_86.j
 
 The carry's window-aligned den as a pass beside the carry (den depends only on routing: the read leaf product against
 the write mass of the windows before -- `tests/oracle/reference.py`), so the readout could add at a common unit known
-beforehand. A CTA owns 64 level-S rows x all 256 level-R digits (4 a head), lanes on each half's dense level and loops
-on its sparse level. Writes (dense level S, sparse level R, fp32 accumulate): a warp owns 32 level-R digits, a lane 2
-level-S rows, the mass in registers; the warp walks its lists (each digit's padded to 4 entries) 128 entries at a time
-through shared slots holding the token's coefficient byte offset and gain x value, the first 128 loading through the
-den; each digit a fill overlaps steps its entries eight at a time, an entry a 4-byte read of the token's staged f16
-coefficients a lane and two FFMAs. The den (sparse level S, dense level R, fp16 like the readout): a warp owns 8
-level-S rows, a half-warp a token, a lane 16 level-R digits; the mass transposed once a window through shared memory
-(f16, swizzled) into registers, each row scaled by the power of two that keeps eight u8 x mass products under f16
-overflow; the rows' read lists (read-row offset | u8 value, each row's padded to 4) staged a window ahead as a facts
-pass would emit them, the next window's read rows prefetched to L2; each row (unrolled) steps four entries at a time,
-two slots of two loaded a step ahead, 8 HFMA2s a lane in two chains, both slots reduced over the half-warp together.
-One head's 4 CTAs over a 32-window pool streamed from DRAM, as a few pass CTAs would run beside a compute-bound carry;
-every den within 1% of a double reference before timing. sm_86 at base clock, cycles a CTA-window (instructions a
-warp-window by ncu):
+beforehand, on the tensor cores. The den is one channel, so each half's MMA takes its N from the half's sparse level:
+an entry is live in one of N's 8 columns, an MMA 1/8 useful, against the per-entry instructions an FFMA form spends on
+two multiply-adds a lane. A CTA owns 64 level-S rows x SPAN level-R digits (256: 4 a head; 128: 8 a head). Writes
+(dense level S, sparse level R, fp32 accumulate): an 8-digit tile is N, the tile's list entries (padded to 4 a digit)
+K, the 64 rows M, the mass the accumulators; each 64 entries fill a warp's slots (the token; gain x value as f16 with
+the digit's column); A = the tokens' staged f16 coefficients by `ldmatrix.trans` (a token's 16-byte chunks XORed with
+token & 7), B = an entry's coefficient in its column. The den (sparse level S, dense level R): a warp's 8 rows are N,
+its rows' read-list entries (token, digit, u8 value, a row's padded to 4, staged a window ahead as a facts pass would
+emit them) M, the CTA's digits K; A = an entry's u8 read row (a lane's contiguous quarter, PRMT + HSUB2 to exact f16),
+B = the published f16 mass by `ldmatrix`, fp32 accumulate; an entry's result is its row's column times its value,
+added by the lane holding it. One head's CTAs over a 32-window pool streamed from DRAM, as a few pass CTAs would run
+beside a compute-bound carry; every den within 1% of a double reference before timing. sm_86 at base clock, cycles a
+CTA-window (by ncu: instructions and MMAs a warp-window, shared wavefronts a CTA-window):
 
-| write k, read k | full | den alone | writes alone | skeleton |
+| carve, write k, read k | full | den alone | writes alone | skeleton |
 |---|---|---|---|---|
-| 4, 4 | 34.5K (7.4K) | 17.8K (3.5K) | 20.0K (4.2K) | 3.31K (389) |
-| 16, 16 | 95.4K (21.4K) | 48.9K (10.0K) | 51.1K (11.8K) | |
+| 64 x 256 (4 a head), 4, 4 | 26.4K | 15.0K (1738; 82 MMAs) | 16.4K (2035; 82 MMAs; 9.2K wavefronts) | 4.16K |
+| 64 x 256, 16, 16 | 69.5K | | | |
+| 64 x 128 (8 a head), 4, 4 | 15.8K | 9.6K (1330; 41) | 10.3K (1260; 41; 4.9K) | |
+| 64 x 128, 16, 16 | 40.5K | | | |
 
-The halves add: the den and the writes each run 3.5-4.2K instructions a warp-window at ~5 cycles each with two warps a
-scheduler, against a ~20K carry window. The den's arithmetic is now most of its instructions (per step of four
-entries, 68 of ~114: the u8-to-f16 pairs and HFMA2s); the writes' are per entry (~9 instructions for two multiply-adds
-a lane, a lane holding two of the 64 rows). The previous revision of this lab (commit 673c2375) measured a token-major
-order, a token's entries dispatched to their digits: 3x slower, a token carrying about one entry a warp's block and
-nvcc compiling the dispatch switch to a compare tree. Record: `measure/lab/results/den_sweep/sm_86.json`, counters
-`sm_86.counters.json`.
+The tensor pipe is ~17% busy. The writes are bound by their gathers: an entry's A row is 128 bytes of shared memory,
+and 16 random tokens' rows XORed on token & 7 still collide ~2.4x on bank groups (4.4K of the 9.2K wavefronts are
+conflicts at 64 x 256). The den stalls on its read rows from L2 and the load queue (each entry 256 bytes, two tiles in
+flight). The narrower carve halves both and runs a window in 15.8K at alt-k4. Earlier revisions measured FFMA forms:
+lanes on the dense level, digit-major (34.5K at 64 x 256, commit 0db7bf1e) and token-major (155K, commit 673c2375).
+Record: `measure/lab/results/den_sweep/sm_86.json`, counters `sm_86.counters.json`.
