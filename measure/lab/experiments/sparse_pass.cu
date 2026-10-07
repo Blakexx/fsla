@@ -638,6 +638,7 @@ void variant(const lab::Bench& b, Source src, const GLists* lists, double steps_
   b.expect(name, ARM == kArmHalf ? "HMMA.16816.F16" : "HMMA.16816.F32", ">=", 32);
   b.expect(name, "LDGSTS", ">=", 4);
   if (FORM == 0) b.expect(name, "BAR", ">=", 3);
+  if (ARM == 0 && (FORM == 6 || FORM == 9)) b.expect(name, "BSSY", ">=", 1);
   if (b.expect_only) return;
   src.lists = lists;
   const int bytes = static_cast<int>(sizeof(Shared<FORM>));
@@ -661,6 +662,7 @@ template <int ARM, int DENSITY, int FORM>
 void ledger(const lab::Bench& b, Source src, const GLists* lists) {
   const std::string name = lab::kernel("pass", {ARM, FORM, 1});
   b.expect(name, "HMMA.16816.F32", ">=", 32);
+  if (ARM == 0 && (FORM == 6 || FORM == 9)) b.expect(name, "BSSY", ">=", 1);
   if (b.expect_only) return;
   src.lists = lists;
   const int bytes = static_cast<int>(sizeof(Shared<FORM>));

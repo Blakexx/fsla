@@ -345,6 +345,7 @@ void variant(const lab::Bench& b, const Source& src) {
   b.expect(name, ARM == kArmHalf ? "HMMA.16816.F16" : "HMMA.16816.F32", ">=", 32);
   b.expect(name, "LDGSTS", MODE == 3 ? "==" : ">=", MODE == 3 ? 0 : 4);
   if (MODE == 0) b.expect(name, "BAR", ">=", 3);
+  if (ARM == kArmHalf && JOIN == 1 && MODE != 2 && MODE != 4) b.expect(name, "BSSY", ">=", 1);
   if (b.expect_only) return;
   const int bytes = static_cast<int>(sizeof(Shared));
   LAB_CHECK(cudaFuncSetAttribute(pass<ARM, MODE, JOIN>, cudaFuncAttributeMaxDynamicSharedMemorySize,

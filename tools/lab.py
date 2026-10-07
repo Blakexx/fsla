@@ -142,9 +142,13 @@ def check(binary: Path, table: dict[str, dict]) -> list[str]:
             if not ok:
                 failures.append(f"{k}: {e['op']} {n}, expected {e['cmp']} {e['count']}")
     declared_calls = {k for e in expected for k in table if re.search(e["kernel"], k) and "CALL" in e["op"]}
+    declared_branches = {k for e in expected for k in table if re.search(e["kernel"], k) and e["op"] == "BSSY"}
     for k, sig in signatures(binary).items():
         if sig["ldl"] or sig["stack"]:
             failures.append(f"{k}: local memory ({sig['ldl']} LDL/STL, a {sig['stack']}-byte stack frame)")
+        if sig["mma_loop_branches"] and k not in declared_branches:
+            failures.append(f"{k}: {sig['mma_loop_branches']} branches inside an MMA step nobody declared "
+                            "(KERNEL_STANDARDS 27: a step body is one basic block; a form that keeps them declares BSSY)")
         if sig["calls"] and k not in declared_calls:
             failures.append(f"{k}: {sig['calls']} convergence calls nobody declared (a collective under "
                             "role-dependent control flow becomes a call into a convergence subroutine)")

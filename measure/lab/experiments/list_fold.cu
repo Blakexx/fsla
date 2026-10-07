@@ -298,6 +298,7 @@ void variant(const lab::Bench& b) {
   b.expect(name, "HMMA.16816.F32", ">=", lists_of(FORM) * mtiles_of(FORM) * 4);
   b.expect(name, "LDSM", ">=", mtiles_of(FORM) + 2);
   b.expect(name, "HMUL2", ">=", lists_of(FORM) * mtiles_of(FORM) * 4);
+  b.expect(name, "BSSY", ">=", 1);
   if (b.expect_only) return;
   const std::vector<uint16_t> h = make_entries(LIVE, GATHER != 0);
   uint16_t* d = nullptr;

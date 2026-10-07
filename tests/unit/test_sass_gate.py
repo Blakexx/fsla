@@ -95,3 +95,23 @@ def test_the_classifier_reds_an_unguarded_call_and_counts_a_guarded_one():
     reached = [(0x0, "BRA", "0x20", "@!PT"), (0x10, "MOV", "R0, R1", ""), (0x20, "CALL.REL.NOINC", "0x100", ""),
                (0x30, "EXIT", "", "")] + _SUBROUTINE
     assert sass_gate.convergence_calls(reached, {}) == (1, 0)
+
+
+def test_a_branch_inside_an_mma_step_is_counted_and_one_outside_it_is_not():
+    """KERNEL_STANDARDS 27 on the lines: a loop (a backward branch) holding an HMMA counts its convergence barriers and
+    forward conditional branches; an outer loop's branches around an inner MMA loop do not count, nor a loop with no
+    MMA."""
+    step = [(0x0, "LDS", "R4, [R2]", ""), (0x10, "HMMA.16816.F16", "R8, R4, R6, R8", ""),
+            (0x20, "BSSY", "0x50", ""), (0x30, "BRA", "0x50", "@!P0"), (0x40, "ATOMS.ADD", "RZ, [R3], R8", ""),
+            (0x50, "BSYNC", "", ""), (0x60, "BRA", "0x0", "@P1"), (0x70, "EXIT", "", "")]
+    assert sass_gate.mma_loop_branches(step, {}) == 2
+    clean = [(0x0, "LDS", "R4, [R2]", ""), (0x10, "HMMA.16816.F16", "R8, R4, R6, R8", ""),
+             (0x20, "ATOMS.ADD", "RZ, [R3], R8", ""), (0x30, "BRA", "0x0", "@P1"), (0x40, "EXIT", "", "")]
+    assert sass_gate.mma_loop_branches(clean, {}) == 0
+    nested = [(0x0, "BRA", "0x40", "@P2"), (0x10, "HMMA.16816.F16", "R8, R4, R6, R8", ""),
+              (0x20, "BRA", "0x10", "@P1"), (0x30, "BAR.SYNC", "0x0", ""), (0x40, "BRA", "0x0", "@P3"),
+              (0x50, "EXIT", "", "")]
+    assert sass_gate.mma_loop_branches(nested, {}) == 0
+    no_mma = [(0x0, "BSSY", "0x30", ""), (0x10, "BRA", "0x30", "@!P0"), (0x20, "LDS", "R4, [R2]", ""),
+              (0x30, "BRA", "0x0", "@P1"), (0x40, "EXIT", "", "")]
+    assert sass_gate.mma_loop_branches(no_mma, {}) == 0

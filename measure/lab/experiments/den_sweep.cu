@@ -829,6 +829,7 @@ template <int PART>
 void dense_variant(const lab::Bench& b, float* den, const Cell* c) {
   const std::string name = lab::kernel("sweep_dense", {PART});
   if (PART <= 1) b.expect(name, "IMMA.16832.U8.U8", ">=", 16);
+  if (PART <= 1) b.expect(name, "BSSY", ">=", 1);
   if (PART == 0 || PART == 2) b.expect(name, "HMMA.16816.F32", ">=", 16);
   if (PART == 0 || PART == 2) b.expect(name, "LDSM", ">=", 5);
   if (b.expect_only) return;
@@ -854,6 +855,7 @@ template <int PART>
 void variant(const lab::Bench& b, float* den, const Cell* c, const Host* h) {
   const std::string name = lab::kernel("sweep", {PART});
   if (PART <= 1) b.expect(name, "IMMA.16832.U8.U8", ">=", kDenK / 16);
+  if (PART <= 1) b.expect(name, "BSSY", ">=", 1);
   if (PART == 0 || PART == 2) b.expect(name, "HMMA.16816.F32", ">=", 8);
   if (PART == 0 || PART == 2) b.expect(name, "LDSM", ">=", 8);
   if (b.expect_only) return;

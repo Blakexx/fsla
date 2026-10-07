@@ -500,6 +500,10 @@ carries; each was re-learned by trial this week and costs a rebuild when missed.
 - BSSY/BSYNC per item in an unrolled loop where every item is live: the PREDICATED-CHAIN form; use a
   straight-line block when all items are live (ptxas schedules across items) and a jump table (BRX)
   when one is. Both, selected by a uniform test, never one for all.
+- A convergence barrier or a forward conditional branch inside the innermost loop that issues MMAs: A BRANCH
+  INSIDE A STEP (`mma_loop_branches`, red since 2026-10-06; §27). The gate names the kernels built before the
+  rule (`_STEP_BRANCH_DEBT`, each with what replaces it); a lab form that keeps its branches declares them (an
+  expectation on BSSY), or its number is refused.
 - A warp's copy tasks mapped so its lanes touch different rows: one L2 request per copy. Rule: tasks
   CONTIGUOUS in memory across a warp's lanes; coalescing is checked by `l1tex__t_requests` per
   sector, not assumed.
@@ -800,11 +804,47 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       rows conflict), and 1.7-2.2x at 16 x 32, where the operand loads bind. Where lists share their tokens (dense),
       load each token's operands once for all lists: per-list reloads cost 1.37x the shared load at the same tile.
    p. A READOUT'S SHARED OUTPUT ADDS COST ABOUT AS MUCH AS ITS STEP (`read_step`): a per-digit step's adds into the
-      panel (`red.shared`, ~5 cycles a warp's ATOMS across the SM) double its cost at alt-k4-like density; summing a
-      warp's digits in registers first (merged) adds once a token.
+      panel double its cost at alt-k4-like density when each is a branch on its token and follows its own MMAs (the
+      atomics alone are ~2 cycles an instruction: rule t; the rest is the branches and the exposed chain, rule s);
+      summing a warp's digits in registers first (merged) adds once a token.
    q. A DRAIN'S COST IS ITS L2 REQUESTS, AND SPREADING IT DOES NOT HIDE IT (`read_step`): a global reduction request
       costs per line it touches, so a token's row is drained aligned to its lines with den carried in it, not as its
       own request (2.3K -> 1.0K cycles a 128-slot pass); spread through the next pass's steps under a double panel the
       drain cost 0.4-1K more than a burst at the pass's end.
    r. A PUBLISH IN ROUNDS COSTS ITS HANDSHAKES (`publish_rounds`): four 16 KB rounds of the even carve's 64 KB
       transpose cost 0.4-0.6K cycles a window over publishing it whole when double buffered, 1.0-1.1K single.
+   s. A STEP'S BODY IS ONE BASIC BLOCK (`read_step` modes 6-8, its ncu counters): ptxas schedules within a block and
+      does not speculate a memory operation, so `in ? load : 0`, `if (lane) atomic` and a predicated atomic in inline
+      asm each compile to a branch with a convergence barrier, and a runtime `switch` selecting register-resident
+      state or an `if` around a prefetch splits the block between the next step's loads and this step's MMAs. The
+      per-digit readout step with its adds a step behind runs 3.2x / 3.3x / 2.5x its MMA floor at 8 / 2 / 1 steps a
+      digit with them; with the loads unconditional (a pad's slot a real row, its value masked) and the adds of a value
+      masked to zero, 2.1x / 2.2x / 2.3x; with the whole sequence unrolled so its operand and output rings (two slots)
+      and token slots (three) sit at fixed registers, 1.56x / 1.67x / 1.99x. Rotating a ring by copies in a rolled
+      loop costs ~20 moves a step.
+   t. A SHARED ATOMIC IS THE LARGER OF 2 CYCLES AN INSTRUCTION AND 1 A WAVEFRONT (`smem_rates`): `red.shared.add` with
+      1, 2 or 4 wavefronts a warp costs 2, 2, 4 cycles an instruction on the SM; loads (`ld.shared.v4`, `ldmatrix.x4`)
+      a wavefront a cycle, the documented bank rate.
+
+## §27 — A STEP IS ONE BLOCK, INTERLEAVED BY CONSTRUCTION (law, 2026-10-06, from Blake's "we should have lints and sass checks that enforce we properly interleave loops by default, and only override if justified")
+The per-list readout ran 3.2x its MMA floor and the cause was the shape of its code, not the hardware: branches the
+source never meant as branches, a block split between a prefetch and the MMAs it should hide under, and a ring
+rotated by copies. The 2026-10-05 `list_fold` finding had said it ("each entry's pad check a branch that fences the
+scheduler") and was not applied. So the step's shape is a rule, the default, enforced, with every exception named.
+1. A STEP BODY IS ONE BASIC BLOCK: no branch between a stage's prefetch and its MMAs, nor around its adds. A padded
+   entry is made safe -- its slot a real row, its value masked to zero -- never skipped by a branch.
+2. A LANE-CONDITIONAL SIDE EFFECT IS A MASKED VALUE: never an `if` around a load, store or atomic, and never a
+   predicated memory operation (ptxas turns those into branches too).
+3. REGISTER-RESIDENT STATE IS INDEXED ONLY AT COMPILE TIME: the loop over the indexing dimension is unrolled; never a
+   runtime `switch` to select registers.
+4. A REGISTER RING OF DEPTH D LIVES AT FIXED REGISTERS: its stages are unrolled by D (or the whole sequence, when its
+   length is compile-time); never rotated by copies in a rolled loop.
+5. THE OUTER DYNAMIC LOOP IS `#pragma unroll 1` AND ITS BODY IS THE UNROLLED STAGES: a remainder is padded to the
+   ring period with a masked step, or peeled outside the steady-state block.
+ENFORCED: `tools/sass_gate.py` reds a convergence barrier or a forward conditional branch in the innermost loop that
+issues MMAs (§20), on every function of every build; the kernels built before the rule are its named debts, each
+with what replaces it, and the list only shrinks. `tools/lab.py` refuses a lab number whose step branches unless
+the experiment declares them (an expectation on BSSY: a comparison baseline kept on purpose). The burst tier's lint
+(§24) holds the source side: no data-dependent `if` inside a burst function, `@burst-exempt <reason>` the only way
+out. Register moves per MMA in a step (the copy-rotation signature) are reported, and gate once a lab fixes the bound.
+Measured: §26.3 s.

@@ -332,29 +332,39 @@ block's span a pass against its tensor floor (the busiest scheduler's MMAs at 16
 
 | form | steps | steps alone | + panel adds | + drain burst | + drain spread | + burst, aligned | + spread, aligned |
 |---|---|---|---|---|---|---|---|
-| merged | 8, 16 live | 12.5K | 11.8K | 13.7K | 14.7K | 13.0K | 13.9K |
-| per digit | 8 a digit, 16 live | 17.1K | 31.7K | 33.1K | 35.3K | 32.3K | 36.0K |
-| per digit | 2 a digit, 16 live | 4.39K | 8.17K | 9.66K | 10.6K | 9.18K | 9.74K |
-| per digit | 1 a digit, 8 live | 1.66K | 3.30K | 5.67K | 5.78K | 4.29K | 4.71K |
+| merged | 8, 16 live | 12.0K | 11.8K | 13.6K | 14.6K | 13.0K | 13.8K |
+| per digit | 8 a digit, 16 live | 14.6K | 31.2K | 32.0K | 36.5K | 31.3K | 35.9K |
+| per digit | 2 a digit, 16 live | 3.75K | 8.11K | 9.54K | 10.6K | 8.93K | 9.92K |
+| per digit | 1 a digit, 8 live | 1.54K | 3.27K | 5.61K | 5.77K | 4.23K | 4.68K |
 
 "Aligned" drains the channel words alone to 64-byte target rows (den carried elsewhere); the other drains write 17-word
 rows (channels and den) to a 17-word pitch, den a request of its own: ncu counts 316 L2 reduction requests a CTA a pass
-for their 128 RED instructions -- a two-token request spans three or four lines, den two. The panel adds cost about as
-much as a per-digit step itself (~5 cycles a warp's ATOMS across the SM); merged adds once a token for its four
-digits. The drain costs ~1.0K cycles a 128-slot pass aligned (2.3K misaligned with den), and spreading it through the
-next pass's steps under a double panel and mbarriers costs 0.4-1K more than the burst, not less: the drain's
-instructions and waits land in the steps.
+for their 128 RED instructions -- a two-token request spans three or four lines, den two. The panel adds above are each
+a branch on its token (`if (in) red.shared`), issued right after their own step's MMAs; merged adds once a token for
+its four digits. The drain costs ~1.0K cycles a 128-slot pass aligned (2.3K misaligned with den), and spreading it
+through the next pass's steps under a double panel and mbarriers costs 0.4-1K more than the burst, not less: the
+drain's instructions and waits land in the steps. The coefficient loads are unconditional (a pad's slot is a real row,
+its value masked), which took the steps alone from 17.1K / 4.39K / 1.66K.
 
-WITHOUT DEN (the den pass carries it, so a step is 8 MMAs) and each step's adds issued after the next step's MMAs:
-per digit 26.3K / 6.79K / 2.56K (8, 2 and 1 steps a digit) against floors of 8.19K / 2.05K / 1.02K, 3.2x / 3.3x /
-2.5x; merged 11.6K, 1.41x. The aligned burst drain adds ~1K a pass. Loading each step's operands before the step ahead's
-MMAs as well (one sequence across digits, the MMAs by a switch on the digit) is slower -- 34.9K / 8.92K / 3.79K at 251
-registers, ptxas keeping the loads in a block. ncu on the 8-step per-digit form: issue 40%, the tensor pipe 31%, 163
-instructions a digit-step; the stalls are fixed-latency waits, short-scoreboard waits (shared loads, the atomics, the
-conversions) and branch resolution: the per-digit step is latency-bound, a chain from its entries through its gathered
-rows, conversion and MMAs to its adds with two warps a scheduler to hide it. A per-digit step's gathered slots are
-distinct (a list never holds a token twice); the first record hashed them with replacement, which moved nothing.
-Records: `measure/lab/results/read_step/sm_86.json`, `sm_86.counters.json`.
+THE DEN PASS'S STEP (8 MMAs, den out), its adds issued after the next step's MMAs:
+
+| per digit | 8 a digit | 2 a digit | 1 a digit, 8 live |
+|---|---|---|---|
+| MMA floor | 8.19K | 2.05K | 1.02K |
+| adds a step behind, each a branch | 26.4K (3.2x) | 6.75K (3.3x) | 2.60K (2.5x) |
+| + operands a step ahead, a switch on the digit and a guarded prefetch | 34.9K | 8.92K | 3.79K |
+| + no branch: loads unconditional, adds a value masked to zero | 16.9K (2.1x) | 4.60K (2.2x) | 2.32K (2.3x) |
+| + the sequence unrolled: rings at fixed registers | 12.8K (1.56x) | 3.42K (1.67x) | 2.03K (1.99x) |
+
+Merged, adds a step behind: 10.5K (1.28x). The aligned burst drain adds ~1K a pass. The last form converts on the FMA
+pipe (each half to fp32, x 64 + 1.5 x 2^23, the low halves packed: round-to-nearest, exhaustively checked over every
+in-range half) in place of `F2I.S16.F16` on the quarter-rate conversion unit; it moved nothing at 8 steps a digit
+(16.9K either way) -- issue binds, not that unit. ncu, the first branchy form: issue 40%, tensor 31%, 163 instructions
+a digit-step, stalls on fixed-latency and short-scoreboard waits and branch resolution; the unrolled form issues 132
+a digit-step, against 128 cycles of MMAs a warp-step: two warps a scheduler leave it at the edge of issue-bound. A
+per-digit step's gathered slots are distinct (a list never holds a token twice). The gate: `read_step`'s branchy forms
+declare their branches (KERNEL_STANDARDS 27). Records: `measure/lab/results/read_step/sm_86.json`,
+`sm_86.counters.json`.
 
 <a id="publish-rounds"></a>
 

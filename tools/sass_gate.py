@@ -113,6 +113,49 @@ def convergence_calls(lines: list[tuple[int, str, str, str]], labels: dict[str, 
     return hot, guarded
 
 
+_MMA = re.compile(r"^(HMMA|IMMA)")
+#: KERNEL_STANDARDS 27's debts: the kernels built before the rule whose steps still branch, each with what replaces it
+_STEP_BRANCH_DEBT = {
+    "intra_kernel": "the intra's port onto the fp16 family rebuilds its step",
+    "readout_part": "the readout component's rebuild replaces the skeleton's",
+    "calib_kernel": "a calibration probe, not a production step",
+}
+
+
+def mma_loop_branches(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> int:
+    """KERNEL_STANDARDS 27: the branches inside a step -- the innermost loops that issue MMAs (a loop a backward branch,
+    its body the lines from its target to it, innermost when no other backward branch lies inside); a branch a
+    convergence barrier (BSSY) or a forward conditional BRA in such a body (the BRA.DIV / BRA.CONV guards of a
+    collective's cold fallback not counted). Each one ends ptxas's scheduling block inside the step. Targets resolve as
+    `convergence_calls`' do."""
+    at = {addr: k for k, (addr, _, _, _) in enumerate(lines)}
+
+    def resolve(operands: str) -> int | None:
+        address = re.match(r"(0x[0-9a-f]+)", operands)
+        label = re.search(r"\(([^)]+)\)", operands)
+        return at.get(int(address.group(1), 16)) if address else labels.get(label.group(1)) if label else None
+
+    back = []
+    for k, (_, opcode, operands, predicate) in enumerate(lines):
+        target = resolve(operands) if opcode == "BRA" and predicate != _NEVER else None
+        if target is not None and target <= k:
+            back.append((target, k))
+    found = set()
+    for target, k in back:
+        if any(target <= t and kk < k for t, kk in back if (t, kk) != (target, k)):
+            continue
+        if not any(_MMA.match(x[1]) for x in lines[target:k + 1]):
+            continue
+        for j in range(target, k):
+            _, op, ops, pred = lines[j]
+            if pred == _NEVER:
+                continue
+            forward = resolve(ops) if op == "BRA" and pred else None
+            if op == "BSSY" or (forward is not None and forward > j):
+                found.add(j)
+    return len(found)
+
+
 def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[bool, str]:
     funcs: dict[str, list[str]] = {}
     whole: dict[str, list[tuple[int, str, str]]] = {}
@@ -150,6 +193,7 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
         stack = frame.get(name, 0)
         ldl = sum(1 for i in ins if re.search(r"\b(LDL|STL)\b", i))
         calls, guarded = convergence_calls(whole[name], labels[name])
+        branches = mma_loop_branches(whole[name], labels[name])
         phmma = sum(1 for i in ins if re.match(r"@!?P\d+ HMMA", i))
         hmma = sum(1 for i in ins if " HMMA" in i or i.startswith("HMMA"))
         per = (n / hmma) if hmma else float("nan")
@@ -162,14 +206,18 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
             reds.append(f"convergence subroutines a converged warp executes ({calls})")
         if phmma:
             reds.append(f"predicated HMMA ({phmma})")
+        if branches and not any(debt in name for debt in _STEP_BRANCH_DEBT):
+            reds.append(f"branches inside an MMA step ({branches})")
         if max_per_hmma is not None and hmma and per > max_per_hmma:
             reds.append(f"static instructions per HMMA {per:.1f} > {max_per_hmma}")
         ok &= not reds
         STATS[name] = {"instr": n, "hmma": hmma, "per_hmma": None if not hmma else round(per, 2), "ldl": ldl,
-                       "stack": stack, "calls": calls, "guarded": guarded, "pred_hmma": phmma, "reds": reds}
+                       "stack": stack, "calls": calls, "guarded": guarded, "pred_hmma": phmma,
+                       "mma_loop_branches": branches, "reds": reds}
         short = name[:70]
         report.append(f"{'RED ' if reds else 'ok  '} {short}: instr {n} hmma {hmma} per-hmma {per:.1f} "
-                      f"ldl {ldl} stack {stack} calls {calls} guarded {guarded} predHMMA {phmma}"
+                      f"ldl {ldl} stack {stack} calls {calls} guarded {guarded} predHMMA {phmma} "
+                      f"mma-loop-branches {branches}"
                       + (" :: " + "; ".join(reds) if reds else ""))
     return ok, "\n".join(report)
 

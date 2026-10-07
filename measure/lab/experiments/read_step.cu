@@ -96,6 +96,14 @@ __device__ __forceinline__ uint32_t to_s16x2(uint32_t h) {
   return (static_cast<uint32_t>(lo) & 0xffffu) | (static_cast<uint32_t>(hi) << 16);
 }
 
+//: the same on the FMA pipe, not the quarter-rate conversion unit: each half to fp32, x 64 + 1.5 x 2^23 (the low 16
+//: bits then the rounded integer, two's complement), the two low halves packed
+__device__ __forceinline__ uint32_t to_s16x2_fma(uint32_t h) {
+  const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&h));
+  return __byte_perm(__float_as_uint(fmaf(f.x, 64.0f, 12582912.0f)),
+                     __float_as_uint(fmaf(f.y, 64.0f, 12582912.0f)), 0x5410);
+}
+
 struct State {
   uint32_t b[kDigits][2][4][2];
   uint32_t mass[kDigits][2][2];
@@ -107,8 +115,9 @@ __device__ __forceinline__ void step_a(uint32_t (&a)[2][4], const Shared& sh, in
                                        int rg, int rg8, int digit, bool in_g, bool in_g8) {
   uint32_t x[4];
   lab::ldsm(x, lab::smem(sh.rows + at(ra, khalf)));
-  const float sg = in_g ? (1.0f + sh.rows[at(rg, 2) + digit]) * (1.0f / 65536.0f) : 0.0f;
-  const float s8 = in_g8 ? (1.0f + sh.rows[at(rg8, 2) + digit]) * (1.0f / 65536.0f) : 0.0f;
+  //: loaded whatever the token (a pad's slot is 0, a real row), the value masked: no branch around the load
+  const float sg = (1.0f + sh.rows[at(rg, 2) + digit]) * (in_g ? 1.0f / 65536.0f : 0.0f);
+  const float s8 = (1.0f + sh.rows[at(rg8, 2) + digit]) * (in_g8 ? 1.0f / 65536.0f : 0.0f);
   const uint32_t scale_g = lab::pack_half2(sg, sg), scale_g8 = lab::pack_half2(s8, s8);
   const uint32_t bias_g = lab::pack_half2(-1024.0f * sg, -1024.0f * sg);
   const uint32_t bias_g8 = lab::pack_half2(-1024.0f * s8, -1024.0f * s8);
@@ -160,6 +169,22 @@ __device__ __forceinline__ void panel_add(Shared& sh, int p, const uint32_t (&ou
   if (kDen && tq == 0) {
     if (in_g) red_shared(base + 4 * (slot_g * kPanelPitch + 16), to_s16x2(den[0]));
     if (in_g8) red_shared(base + 4 * (slot_g8 * kPanelPitch + 16), to_s16x2(den[1]));
+  }
+}
+
+//: THE STEP'S OUTPUTS into panel `p` without den, every lane adding: a pad token's value masked to zero at slot 0
+//: (no branch)
+__device__ __forceinline__ void panel_add_masked(Shared& sh, int p, const uint32_t (&out)[4][2],
+                                                 int slot_g, int slot_g8, bool in_g, bool in_g8,
+                                                 int lane) {
+  const int tq = lane & 3;
+  const uint32_t base = lab::smem(sh.panel[p]);
+#pragma unroll
+  for (int n = 0; n < 4; ++n) {
+    red_shared(base + 4 * (slot_g * kPanelPitch + 4 * n + tq),
+               to_s16x2_fma(out[n][0]) & (0u - in_g));
+    red_shared(base + 4 * (slot_g8 * kPanelPitch + 4 * n + tq),
+               to_s16x2_fma(out[n][1]) & (0u - in_g8));
   }
 }
 
@@ -289,58 +314,35 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
       spread();
     };
     if constexpr (MODE == 8) {
-      //: the warp's digit steps as one sequence: the next step's operands loaded before this step's MMAs
-      const auto load = [&](int item, uint32_t(&a)[2][4], int& rg, int& rg8, bool& ig, bool& ig8) {
-        const int dd = item / STEPS, ss = item % STEPS;
+      //: the warp's digit steps as one compile-time sequence, unrolled: rings of operands and outputs (two slots) and of
+      //: token slots (three: the next step's are loaded while the last step's still add) at fixed registers -- no
+      //: copies, no branches; the next step's operands, this step's MMAs, the last step's adds
+      const auto load = [&](int dd, int ss, uint32_t(&an)[2][4], int& rg, int& rg8, bool& ig,
+                            bool& ig8) {
         bool ia;
         const int ra = slot_of(sh, w, dd, ss, 8 * (q & 1) + r, ia);
         rg = slot_of(sh, w, dd, ss, g, ig);
         rg8 = slot_of(sh, w, dd, ss, g + 8, ig8);
-        step_a(a, sh, ra, q >> 1, rg, rg8, dd, ig, ig8);
+        step_a(an, sh, ra, q >> 1, rg, rg8, dd, ig, ig8);
       };
-      uint32_t a[2][4], an[2][4];
-      int rg = 0, rg8 = 0, rgn = 0, rg8n = 0;
-      bool ig = false, ig8 = false, ign = false, ig8n = false;
-      load(0, a, rg, rg8, ig, ig8);
-#pragma unroll 1
-      for (int item = 0; item < kDigits * STEPS; ++item) {
-        if (item + 1 < kDigits * STEPS) load(item + 1, an, rgn, rg8n, ign, ig8n);
-        uint32_t o[4][2] = {}, den[2] = {};
-        switch (item / STEPS) {
-          case 0:
-            mmas<0, 1, false>(o, den, st, a);
-            break;
-          case 1:
-            mmas<1, 1, false>(o, den, st, a);
-            break;
-          case 2:
-            mmas<2, 1, false>(o, den, st, a);
-            break;
-          default:
-            mmas<3, 1, false>(o, den, st, a);
-            break;
+      constexpr int kItems = kDigits * STEPS;
+      uint32_t a[2][2][4], o[2][4][2];
+      int rg[3] = {}, rg8[3] = {};
+      bool ig[3] = {}, ig8[3] = {};
+      load(0, 0, a[0], rg[0], rg8[0], ig[0], ig8[0]);  // item i's slots in ring position i mod 3
+      static_for<kItems + 1>([&](auto I) {
+        constexpr int i = decltype(I)::value, c = i & 1, n = c ^ 1, mn = (i + 1) % 3,
+                      mp = (i + 2) % 3;
+        if constexpr (i + 1 < kItems)
+          load((i + 1) / STEPS, (i + 1) % STEPS, a[n], rg[mn], rg8[mn], ig[mn], ig8[mn]);
+        if constexpr (i < kItems) {
+          uint32_t den[2] = {};
+#pragma unroll
+          for (int x4 = 0; x4 < 4; ++x4) o[c][x4][0] = o[c][x4][1] = 0u;
+          mmas<i / STEPS, 1, false>(o[c], den, st, a[c]);
         }
-        if (holding)
-          panel_add<false>(sh, p, held, den, held_g, held_g8, held_in_g, held_in_g8, lane);
-#pragma unroll
-        for (int n = 0; n < 4; ++n) {
-          held[n][0] = o[n][0];
-          held[n][1] = o[n][1];
-        }
-        held_g = rg;
-        held_g8 = rg8;
-        held_in_g = ig;
-        held_in_g8 = ig8;
-        holding = true;
-#pragma unroll
-        for (int kk = 0; kk < 2; ++kk)
-#pragma unroll
-          for (int i = 0; i < 4; ++i) a[kk][i] = an[kk][i];
-        rg = rgn;
-        rg8 = rg8n;
-        ig = ign;
-        ig8 = ig8n;
-      }
+        if constexpr (i > 0) panel_add_masked(sh, p, o[n], rg[mp], rg8[mp], ig[mp], ig8[mp], lane);
+      });
     } else if constexpr (FORM == 0) {
       static_for<kDigits>([&](auto D) {
 #pragma unroll 1
@@ -413,6 +415,7 @@ void variant(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   b.expect(name, "LDSM", ">=", 1);
   if (MODE != 0) b.expect(name, "ATOMS", ">=", 8);
   if (MODE >= 2 && MODE != 6 && MODE != 8) b.expect(name, "RED", ">=", 1);
+  if (MODE >= 1 && MODE <= 7) b.expect(name, "BSSY", ">=", 1);
   if (b.expect_only) return;
   const std::vector<uint16_t> h = make_entries(FORM, LIVE);
   uint16_t* d = nullptr;
