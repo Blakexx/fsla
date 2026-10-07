@@ -42,8 +42,9 @@ constexpr int kShare = kSlots / kWarps / 2;
 //: pitch, den a request of its own; 4 and 5 are 2 and 3 with the channel words alone to 64-byte rows (den carried
 //: elsewhere), so a request is a token's half line each; 6 no den (the den pass carries it), each step's adds issued
 //: after the next step's MMAs; 7 is 6 with the aligned burst drain; 8 (per digit) is 6 with each step's operands loaded
-//: before the step ahead's MMAs, across digits
-constexpr int kModes = 9;
+//: before the step ahead's MMAs, across digits; 9 is 8 with the token's level-S coefficient applied after the MMAs, in
+//: the conversion (A the raw level-R bytes)
+constexpr int kModes = 10;
 const char* kModeName[kModes] = {"steps alone",
                                  "+ panel adds",
                                  "+ drain, burst at the pass end",
@@ -52,7 +53,8 @@ const char* kModeName[kModes] = {"steps alone",
                                  "+ drain, spread, aligned rows, no den",
                                  "no den, adds a step behind",
                                  "no den, adds a step behind, + aligned burst drain",
-                                 "no den, operands a step ahead, adds a step behind"};
+                                 "no den, operands a step ahead, adds a step behind",
+                                 "no den, operands ahead, adds behind, coefficient after the MMAs"};
 
 //: FORM 0 per digit (a step = one digit's 16 tokens, its outputs added); 1 merged (a step = 16 union tokens, every
 //: digit's MMAs into one accumulator, one add)
@@ -78,6 +80,12 @@ __device__ __forceinline__ uint32_t prmt(uint32_t a, uint32_t b, uint32_t sel) {
 __device__ __forceinline__ uint32_t hfma2(uint32_t a, uint32_t b, uint32_t c) {
   uint32_t d;
   asm("fma.rn.f16x2 %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
+  return d;
+}
+
+__device__ __forceinline__ uint32_t hadd2(uint32_t a, uint32_t b) {
+  uint32_t d;
+  asm("add.rn.f16x2 %0, %1, %2;" : "=r"(d) : "r"(a), "r"(b));
   return d;
 }
 
@@ -128,6 +136,25 @@ __device__ __forceinline__ void step_a(uint32_t (&a)[2][4], const Shared& sh, in
     a[kk][2] = hfma2(prmt(x[2 * kk], kHalfMagic, 0x4342u), scale_g, bias_g);
     a[kk][3] = hfma2(prmt(x[2 * kk + 1], kHalfMagic, 0x4342u), scale_g8, bias_g8);
   }
+}
+
+//: A STEP'S A AS THE RAW LEVEL-R BYTES (each byte b as f16 1024 + b by PRMT, less 1024), and the lane's two tokens'
+//: level-S coefficients times the panel's unit as the conversion's scales, a pad's scale zero
+__device__ __forceinline__ void step_a_raw(uint32_t (&a)[2][4], float& sg, float& s8,
+                                           const Shared& sh, int ra, int khalf, int rg, int rg8,
+                                           int digit, bool in_g, bool in_g8) {
+  uint32_t x[4];
+  lab::ldsm(x, lab::smem(sh.rows + at(ra, khalf)));
+  const uint32_t less = lab::pack_half2(-1024.0f, -1024.0f);
+#pragma unroll
+  for (int kk = 0; kk < 2; ++kk) {
+    a[kk][0] = hadd2(prmt(x[2 * kk], kHalfMagic, 0x4140u), less);
+    a[kk][1] = hadd2(prmt(x[2 * kk + 1], kHalfMagic, 0x4140u), less);
+    a[kk][2] = hadd2(prmt(x[2 * kk], kHalfMagic, 0x4342u), less);
+    a[kk][3] = hadd2(prmt(x[2 * kk + 1], kHalfMagic, 0x4342u), less);
+  }
+  sg = (1.0f + sh.rows[at(rg, 2) + digit]) * (in_g ? 64.0f / 65536.0f : 0.0f);
+  s8 = (1.0f + sh.rows[at(rg8, 2) + digit]) * (in_g8 ? 64.0f / 65536.0f : 0.0f);
 }
 
 //: the step's rows: the lane's ldmatrix row (`8 (q & 1) + r` of the step's 16, k half `q >> 1`) and its two output tokens
@@ -185,6 +212,25 @@ __device__ __forceinline__ void panel_add_masked(Shared& sh, int p, const uint32
                to_s16x2_fma(out[n][0]) & (0u - in_g));
     red_shared(base + 4 * (slot_g8 * kPanelPitch + 4 * n + tq),
                to_s16x2_fma(out[n][1]) & (0u - in_g8));
+  }
+}
+
+//: THE STEP'S OUTPUTS into panel `p` at each token's scale (its coefficient times the unit; zero for a pad, so its
+//: adds are of zero): each half to fp32, x scale + 1.5 x 2^23, the low halves packed
+__device__ __forceinline__ void panel_add_scaled(Shared& sh, int p, const uint32_t (&out)[4][2],
+                                                 int slot_g, int slot_g8, float sg, float s8,
+                                                 int lane) {
+  const int tq = lane & 3;
+  const uint32_t base = lab::smem(sh.panel[p]);
+  const auto cvt = [](uint32_t h, float sc) {
+    const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&h));
+    return __byte_perm(__float_as_uint(fmaf(f.x, sc, 12582912.0f)),
+                       __float_as_uint(fmaf(f.y, sc, 12582912.0f)), 0x5410);
+  };
+#pragma unroll
+  for (int n = 0; n < 4; ++n) {
+    red_shared(base + 4 * (slot_g * kPanelPitch + 4 * n + tq), cvt(out[n][0], sg));
+    red_shared(base + 4 * (slot_g8 * kPanelPitch + 4 * n + tq), cvt(out[n][1], s8));
   }
 }
 
@@ -313,7 +359,35 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
       }
       spread();
     };
-    if constexpr (MODE == 8) {
+    if constexpr (MODE == 9) {
+      //: mode 8's sequence with A the raw bytes and each token's coefficient applied in the conversion
+      const auto load = [&](int dd, int ss, uint32_t(&an)[2][4], int& rg, int& rg8, float& sg,
+                            float& s8) {
+        bool ia, ig, ig8;
+        const int ra = slot_of(sh, w, dd, ss, 8 * (q & 1) + r, ia);
+        rg = slot_of(sh, w, dd, ss, g, ig);
+        rg8 = slot_of(sh, w, dd, ss, g + 8, ig8);
+        step_a_raw(an, sg, s8, sh, ra, q >> 1, rg, rg8, dd, ig, ig8);
+      };
+      constexpr int kItems = kDigits * STEPS;
+      uint32_t a[2][2][4], o[2][4][2];
+      int rg[3] = {}, rg8[3] = {};
+      float sg[3] = {}, s8[3] = {};
+      load(0, 0, a[0], rg[0], rg8[0], sg[0], s8[0]);
+      static_for<kItems + 1>([&](auto I) {
+        constexpr int i = decltype(I)::value, c = i & 1, n = c ^ 1, mn = (i + 1) % 3,
+                      mp = (i + 2) % 3;
+        if constexpr (i + 1 < kItems)
+          load((i + 1) / STEPS, (i + 1) % STEPS, a[n], rg[mn], rg8[mn], sg[mn], s8[mn]);
+        if constexpr (i < kItems) {
+          uint32_t den[2] = {};
+#pragma unroll
+          for (int x4 = 0; x4 < 4; ++x4) o[c][x4][0] = o[c][x4][1] = 0u;
+          mmas<i / STEPS, 1, false>(o[c], den, st, a[c]);
+        }
+        if constexpr (i > 0) panel_add_scaled(sh, p, o[n], rg[mp], rg8[mp], sg[mp], s8[mp], lane);
+      });
+    } else if constexpr (MODE == 8) {
       //: the warp's digit steps as one compile-time sequence, unrolled: rings of operands and outputs (two slots) and of
       //: token slots (three: the next step's are loaded while the last step's still add) at fixed registers -- no
       //: copies, no branches; the next step's operands, this step's MMAs, the last step's adds
@@ -414,7 +488,7 @@ void variant(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   b.expect(name, "HMMA.16816.F16", ">=", MODE >= 6 ? 8 : 10);
   b.expect(name, "LDSM", ">=", 1);
   if (MODE != 0) b.expect(name, "ATOMS", ">=", 8);
-  if (MODE >= 2 && MODE != 6 && MODE != 8) b.expect(name, "RED", ">=", 1);
+  if (MODE >= 2 && MODE != 6 && MODE < 8) b.expect(name, "RED", ">=", 1);
   if (MODE >= 1 && MODE <= 7) b.expect(name, "BSSY", ">=", 1);
   if (b.expect_only) return;
   const std::vector<uint16_t> h = make_entries(FORM, LIVE);
@@ -456,6 +530,7 @@ void modes(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   variant<6, FORM, STEPS, LIVE>(b, target, init);
   variant<7, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<8, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<9, FORM, STEPS, LIVE>(b, target, init);
 }
 
 }  // namespace read_step

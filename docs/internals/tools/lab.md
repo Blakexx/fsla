@@ -355,13 +355,20 @@ THE DEN PASS'S STEP (8 MMAs, den out), its adds issued after the next step's MMA
 | + operands a step ahead, a switch on the digit and a guarded prefetch | 34.9K | 8.92K | 3.79K |
 | + no branch: loads unconditional, adds a value masked to zero | 16.9K (2.1x) | 4.60K (2.2x) | 2.32K (2.3x) |
 | + the sequence unrolled: rings at fixed registers | 12.8K (1.56x) | 3.42K (1.67x) | 2.03K (1.99x) |
+| + the coefficient after the MMAs, in the conversion | 12.2K (1.49x) | 3.31K (1.62x) | 2.11K (2.06x) |
 
 Merged, adds a step behind: 10.5K (1.28x). The aligned burst drain adds ~1K a pass. The last form converts on the FMA
 pipe (each half to fp32, x 64 + 1.5 x 2^23, the low halves packed: round-to-nearest, exhaustively checked over every
 in-range half) in place of `F2I.S16.F16` on the quarter-rate conversion unit; it moved nothing at 8 steps a digit
 (16.9K either way) -- issue binds, not that unit. ncu, the first branchy form: issue 40%, tensor 31%, 163 instructions
 a digit-step, stalls on fixed-latency and short-scoreboard waits and branch resolution; the unrolled form issues 132
-a digit-step, against 128 cycles of MMAs a warp-step: two warps a scheduler leave it at the edge of issue-bound. A
+a digit-step, against 128 cycles of MMAs a warp-step: two warps a scheduler leave it at the edge of issue-bound.
+Applying each token's level-S coefficient after the MMAs (it factors out of the sum over level-R digits: A is then
+the raw bytes, unpacked by PRMT less 1024, and the coefficient times the unit rides in the conversion's FFMA, a pad's
+scale zero, so nothing is masked) issues 118 a digit-step; the rest is the conversion (40: each half to fp32, the
+FFMA, the pack, for 16 values a step), the unpack (16), the MMAs and adds (16) and addresses. A shared f16x2 atomic
+(`red.shared.add.noftz.f16x2`) compiles on sm_86 to a compare-and-swap loop (`ATOMS.CAST.SPIN`), not an add, so an
+f16 panel is no way around the conversion here. A
 per-digit step's gathered slots are distinct (a list never holds a token twice). The gate: `read_step`'s branchy forms
 declare their branches (KERNEL_STANDARDS 27). Records: `measure/lab/results/read_step/sm_86.json`,
 `sm_86.counters.json`.
