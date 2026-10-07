@@ -1,87 +1,15 @@
 #pragma once
 
-// LAYER 1 -- THE ARCHITECTURE CAPABILITY FACTS: the only file that knows an
-// architecture exists. Entry kinds (REQUIRED/SELECTING/RESIDENCY/FACT) and the
+// LAYER 1 -- THE ARCHITECTURE CAPABILITY FACTS: the rows `common/hardware.cuh` generates from
+// common/hardware.json, and what is derived from them. Entry kinds (REQUIRED/SELECTING/RESIDENCY/FACT) and the
 // no-fallback-chain rule: see docs/internals/common/arch_caps.md
 
 #include <cuda_runtime.h>
 
+#include "common/hardware.cuh"
+
 namespace denseref {
 namespace arch {
-
-struct Caps {
-  int cc;  // compute capability x10, e.g. 860
-
-  // REQUIRED (a clause of the baseline structure; see arch_caps.md)
-  bool async_copy;       // global->shared staging whose completion is a signal
-  bool tile_load;        // 8x8 b16 quads landed directly in MMA register order
-  bool mma_bf16_f32;     // tensor MAC, bf16 operands, fp32 accumulator
-  bool bf16_cvt_packed;  // two fp32 -> one b32 of two bf16, one instruction
-  bool
-      reg_transpose_b16;  // an 8x8 b16 tile spread across the MMA unit's own registers is transposed IN PLACE. see docs/internals/common/arch_caps.md#reg-transpose-b16
-
-  // RESIDENCY (where an accumulator lives / an operand sources from; design.cuh reads these)
-  bool
-      mma_a_from_regs;  // the A operand may be supplied from the issuing unit's OWN registers. see docs/internals/common/arch_caps.md#mma-a-from-regs
-  bool
-      mma_b_from_regs;  // the same for B. A warpgroup MMA sources B ONLY from a shared-memory descriptor. see docs/internals/common/arch_caps.md#mma-b-from-regs
-  bool
-      accum_in_tmem;  // the MMA's accumulator lives in a dedicated tensor memory rather than in the unit's register ... see docs/internals/common/arch_caps.md#accum-in-tmem
-  bool
-      mma_a_from_tmem;  // the A operand may be sourced from that same tensor memory, which is what lets the invariant ... see docs/internals/common/arch_caps.md#mma-a-from-tmem
-
-  // SELECTING (implements a baseline op more efficiently; not required)
-  bool
-      bf16_simd_arith;  // elementwise bf16 arithmetic on a packed pair (`mul.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-arith
-  bool
-      bf16_simd_fma;  // FUSED elementwise bf16 arithmetic on a packed pair (`fma.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-fma
-  bool
-      async_bulk_copy;  // TMA. Would implement `stage_tile`'s contract with one descriptor issue instead of one per ... see docs/internals/common/arch_caps.md#async-bulk-copy
-  bool
-      warpgroup_mma;  // `wgmma`. Present on sm_90 and the reason `mma_b_from_regs` is false there. see docs/internals/common/arch_caps.md#warpgroup-mma
-  bool
-      dyn_reg_realloc;  // `setmaxnreg`: a warpgroup may GIVE UP or CLAIM registers at run time, so two groups of the ... see docs/internals/common/arch_caps.md#dyn-reg-realloc
-
-  // FACT (a device number, no judgment)
-  int mma_unit_threads;  // threads that jointly issue one MMA and jointly own its accumulator. 32 (warp) or 128 ... see docs/internals/common/arch_caps.md#mma-unit-threads
-  int smem_per_sm;       // `cudaDevAttrMaxSharedMemoryPerMultiprocessor`
-  int smem_per_cta_max;  // opt-in dynamic maximum, one CTA
-  int smem_granularity;  // shared-memory allocation quantum, bytes
-  int regs_per_sm;
-  int regs_per_lane_max;
-  int reg_alloc_unit;  // registers allocated per warp, in units of this
-  int max_threads_per_sm;
-  int max_ctas_per_sm;
-  int driver_smem_reserve;  // per-CTA reserve the driver takes off the top; the residency condition is on smem_per_cta + ... see docs/internals/common/arch_caps.md#driver-smem-reserve
-};
-
-//: The RATIFIED SET.  A compute capability that is not a row here fails the -- see docs/internals/common/arch_caps.md#tabulated
-constexpr bool tabulated(int cc) {
-  return cc == 800 || cc == 860 || cc == 870 || cc == 890 || cc == 900;
-}
-
-// Field order matches the struct's REQUIRED|RESIDENCY|SELECTING|FACT layout above.
-// See docs/internals/common/arch_caps.md#note-l125
-constexpr Caps caps_of(int cc) {
-  return cc == 800   ? Caps{800,   true,  true, true,  true,  true,  true, true,   false,
-                          false, false, true, false, false, false, 32,   167936, 166912,
-                          128,   65536, 255,  256,   2048,  32,    1024}
-         : cc == 870 ? Caps{870,   true,  true, true,  true,  true,  true, true,   false,
-                            false, false, true, false, false, false, 32,   167936, 166912,
-                            128,   65536, 255,  256,   1536,  16,    1024}
-         : cc == 890 ? Caps{890,   true,  true, true,  true,  true,  true, true,   false,
-                            false, false, true, false, false, false, 32,   102400, 101376,
-                            128,   65536, 255,  256,   1536,  24,    1024}
-         : cc == 900
-             // sm_90 TABULATED, NOT BUILT; see docs/internals/common/arch_caps.md#caps-of-note-l147
-             ? Caps{900,   true,  true, true, true, true, true, false,  false,
-                    false, true,  true, true, true, true, 128,  233472, 232448,
-                    128,   65536, 255,  256,  2048, 32,   1024}
-             : Caps{
-                   860,   true,  true, true,  true,  true,  true, true,   false,  // sm_86: local dev (GA102)
-                   false, false, true, false, false, false, 32,   102400, 101376, 128,
-                   65536, 255,   256,  1536,  16,    1024};
-}
 
 constexpr bool supported(const Caps& c) {  // conjunction of REQUIRED; see arch_caps.md#note-l163
   return c.async_copy && c.tile_load && c.mma_bf16_f32 && c.bf16_cvt_packed && c.reg_transpose_b16;

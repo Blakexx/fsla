@@ -1043,14 +1043,15 @@ def _repo_build_config() -> dict | None:
     return module.BUILD_CONFIG
 
 
-def check_arch_rates() -> list[str]:
-    """`measure/arch_rates.py --check`: every built architecture has a row in `common/arch_rates.cuh`, and every rate a
-    source that holds -- a measured one matches the lab record it names. Files only (the module imports no `rola`)."""
+def check_hardware() -> list[str]:
+    """`measure/hardware.py --check`: `common/hardware.cuh` is what `common/hardware.json` generates, every built
+    architecture has a row that can price a choice, and every rate a source that holds -- a measured one matches the lab
+    record it names, on the product it names. Files only (the module imports no `rola`)."""
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    from measure import arch_rates
+    from measure import hardware
 
-    return arch_rates.check()
+    return hardware.check()
 
 
 def check_shard_partition() -> list[str]:
@@ -1428,7 +1429,7 @@ def main() -> int:
     gating_findings += check_docs_mirror()
     gating_findings += check_no_bare_flock_on_gpu_lock()
     gating_findings += check_supported_table()
-    gating_findings += check_arch_rates()
+    gating_findings += check_hardware()
     gating_findings += check_shard_partition()
     gating_findings += check_arch_coverage()
     gating_findings += check_vendored_pin()

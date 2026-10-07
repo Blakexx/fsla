@@ -62,7 +62,7 @@ from ratify import cuda_bin  # noqa: E402
 
 OPS_INCLUDE_DIR = REPO_ROOT / "csrc" / "rola" / "src"
 
-#: BUILT ARCHES -- the non-900 rows `arch_caps.cuh`'s `caps_of()` tabulates
+#: BUILT ARCHES -- the non-900 rows `hardware.cuh`'s `caps_of()` tabulates (generated from `hardware.json`)
 #: (800, 860, 870, 890; see that file's `tabulated()`). This is a COMPILE-only
 #: gate (no GPU, no ratified manifest needed): `nvcc`/`ptxas` accept any of
 #: these as a `-arch=sm_XX` target on this toolchain regardless of which ones
@@ -72,7 +72,7 @@ OPS_INCLUDE_DIR = REPO_ROOT / "csrc" / "rola" / "src"
 #: config, so it compiles every tabulated-and-built row.
 BUILT_ARCHES: list[str] = ["80", "86", "87", "89"]
 
-#: sm_90 is TABULATED (arch_caps.cuh's `caps_of`) but NOT BUILT (no 128-thread
+#: sm_90 is TABULATED (hardware.cuh's `caps_of`) but NOT BUILT (no 128-thread
 #: warpgroup `mma`/`load_frag` -- ops.cuh's own consistency `static_assert`
 #: refuses it at `kMmaUnitThreads`). Documented skip, never silently dropped.
 TABULATED_NOT_BUILT = ["90"]

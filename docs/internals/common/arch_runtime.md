@@ -15,7 +15,8 @@ disagree with the row a compiled derivation was closed over.
 ## `check_arch_table()`
 
 Keyed on `denseref::arch::tabulated(cc)` and `denseref::arch::caps_of(cc)`, the same
-table `arch_caps.cuh` declares — there is no second table to drift from the first.
+rows `common/hardware.cuh` generates from `common/hardware.json` — there is no second table to drift from
+the first.
 The check runs once per device per process: a `std::mutex`-guarded `std::set<int>`
 of admitted device ordinals turns every call after the first into a lock and a
 set lookup, so the entries that call it on every invocation do not pay a device

@@ -10,25 +10,20 @@ to open a pull request.
 
 ## 1. Tabulate the architecture's resources
 
-`csrc/rola/src/common/arch_caps.cuh` carries, per compute capability, one `Caps` row: the
+`csrc/rola/src/common/hardware.json` carries, per architecture, one `caps` row -- the
 REQUIRED/RESIDENCY/SELECTING capability flags plus the FACT fields the launch-bound formula
-needs —
-
-```cpp
-struct Caps {
-  int cc;
-  // ...
-  int mma_unit_threads, smem_per_sm, smem_per_cta_max, smem_granularity, regs_per_sm,
-      regs_per_lane_max, reg_alloc_unit, max_threads_per_sm, max_ctas_per_sm,
-      driver_smem_reserve;
-};
-```
+needs (`mma_unit_threads`, `smem_per_sm`, `smem_per_cta_max`, `smem_granularity`, `regs_per_sm`,
+`regs_per_lane_max`, `reg_alloc_unit`, `max_threads_per_sm`, `max_ctas_per_sm`,
+`driver_smem_reserve`) -- and its rates; `python -m measure.hardware --write` generates
+`common/hardware.cuh`'s `Caps`, `tabulated(cc)` and `caps_of(cc)` from it
+([`hardware.md`](internals/common/hardware.md)).
 
 Take the FACT fields (`smem_per_sm` from `cudaDevAttrMaxSharedMemoryPerMultiprocessor`,
 `max_threads_per_sm` from `cudaDeviceProp::maxThreadsPerMultiProcessor`, `regs_per_sm` from
 `cudaDeviceProp::regsPerMultiprocessor`, and the rest) from the CUDA C Programming Guide's
-*Compute Capabilities* table and add the compute capability to `tabulated(cc)`'s disjunction
-and a new row to `caps_of(cc)`. **Do not guess**: an overstated resource makes `ptxas`
+*Compute Capabilities* table, add an `arch` block to `hardware.json` (its rates too: the documented
+ones with their document, the undocumented ones measured by `tensor_tax` and `smem_rates` on the
+card), and regenerate the header. **Do not guess**: an overstated resource makes `ptxas`
 silently discard the launch bound, which is a silent occupancy loss on the architecture
 nobody checked. `check_arch_table()` (`csrc/rola/src/common/arch_runtime.cu`, called from
 every family's launching entry, carry included) checks every row against the driver at run

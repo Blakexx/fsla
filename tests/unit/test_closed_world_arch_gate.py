@@ -42,6 +42,7 @@ import torch
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SRC = REPO / "csrc" / "rola" / "src"
 ARCH_CAPS = SRC / "common" / "arch_caps.cuh"
+HARDWARE = SRC / "common" / "hardware.cuh"
 
 #: THE ENTRY LIST IS THE REGISTRATION TRANSLATION UNIT'S OWN. Every operator the extension
 #: offers is an ``m.impl`` here and nowhere else, so a family cannot join the library
@@ -106,7 +107,8 @@ def test_the_entry_surfaces_are_declared_where_this_gate_looks():
 def test_the_compile_time_half_is_a_table_and_a_static_assert():
     """``tabulated()`` gates the compiling target, and nothing softens it."""
     text = ARCH_CAPS.read_text()
-    assert "constexpr bool tabulated(int cc)" in text
+    assert "constexpr bool tabulated(int cc)" in HARDWARE.read_text()
+    assert '#include "common/hardware.cuh"' in text
     assert re.search(r"static_assert\(\s*tabulated\(kArch\)", text), (
         "arch_caps.cuh no longer fails the BUILD on an untabulated compile target; "
         "that is half of the closed-world arch rule and it is not optional")
@@ -182,7 +184,7 @@ def test_this_device_is_tabulated_and_the_gate_admits_it():
     major, minor = torch.cuda.get_device_capability()
     cc = major * 100 + minor * 10
     rows = re.search(r"constexpr bool tabulated\(int cc\) \{\s*return ([^;]+);",
-                     ARCH_CAPS.read_text(), re.S).group(1)
+                     HARDWARE.read_text(), re.S).group(1)
     assert f"cc == {cc}" in rows, (
         f"this device is compute capability {major}.{minor}, which the capability table "
         "does not carry -- the refusal is then the correct behaviour, and this row is "

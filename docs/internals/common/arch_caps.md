@@ -1,7 +1,8 @@
 # `csrc/rola/src/common/arch_caps.cuh` — the capability rows
 
-The ladder's per-architecture capability table, imported with
-the chunk family: one `Caps` row per SM generation (async copy, tile loads,
+The ladder's per-architecture capability table. Its rows are data in
+[`hardware.json`](hardware.md), generated into `common/hardware.cuh` (`Caps`, `tabulated`, `caps_of`), which
+this file includes and derives from: one `Caps` row per SM generation (async copy, tile loads,
 MMA operand sourcing, TMEM, SMEM/register budgets), consumed by `design.cuh`'s
 derivations. The sm_90 row builds and announces capabilities the 32-thread
 consumer does not yet use (wgmma-class residency, TMA staging) — an
@@ -210,19 +211,14 @@ per-CTA reserve the driver takes off the top; the
 residency condition is on smem_per_cta + this
 
 <a id="note-l125"></a>
-### near line 125
+### the rows
 
-Field order, for every row below:
-  cc |  REQUIRED: async_copy, tile_load, mma_bf16_f32, bf16_cvt_packed,
-                  reg_transpose_b16
-     | RESIDENCY: mma_a_from_regs, mma_b_from_regs, accum_in_tmem,
-                  mma_a_from_tmem
-     | SELECTING: bf16_simd_arith, bf16_simd_fma, async_bulk_copy,
-                  warpgroup_mma, dyn_reg_realloc
-     |      FACT: mma_unit_threads, smem_per_sm, smem_per_cta_max,
-                  smem_granularity, regs_per_sm, regs_per_lane_max,
-                  reg_alloc_unit, max_threads_per_sm, max_ctas_per_sm,
-                  driver_smem_reserve
+The struct's fields, in order: REQUIRED async_copy, tile_load, mma_bf16_f32, bf16_cvt_packed,
+reg_transpose_b16; RESIDENCY mma_a_from_regs, mma_b_from_regs, accum_in_tmem, mma_a_from_tmem;
+SELECTING bf16_simd_arith, bf16_simd_fma, async_bulk_copy, warpgroup_mma, dyn_reg_realloc; FACT
+mma_unit_threads, smem_per_sm, smem_per_cta_max, smem_granularity, regs_per_sm, regs_per_lane_max,
+reg_alloc_unit, max_threads_per_sm, max_ctas_per_sm, driver_smem_reserve. The generated rows initialize
+them by name, and an untabulated compute capability gets an empty row (`tabulated` refuses it first).
 
 <a id="caps-of-note-l147"></a>
 ### in `caps_of`, near line 147

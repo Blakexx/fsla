@@ -16,14 +16,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from measure import arch_rates
+from measure import hardware
 
-#: the rates of the card the budget lines are written for (sm_86), from `common/arch_rates.cuh`
-_RATES = arch_rates.table()[0][860]
+#: the rates of the card the budget lines are written for, from `common/hardware.json`
+_RATES = hardware.resolve(product="rtx3080ti")
 TILE = 16
 WARPS = 8
 SCHEDULERS = int(_RATES["schedulers"].cycles)
-HMMA_CYCLES = _RATES["mma[kHmmaBf16F32]"].cycles  #: bf16 m16n8k16 with fp32 accumulate, one scheduler
+HMMA_CYCLES = _RATES["mma.hmma_bf16_f32"].cycles  #: bf16 m16n8k16 with fp32 accumulate, one scheduler
 
 
 @dataclass

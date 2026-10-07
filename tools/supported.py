@@ -4,7 +4,7 @@ A hand-maintained support table says what someone hoped was true when
 they last edited it; this one is derived from the two artifacts that decide the
 answer, and CI fails on drift:
 
-* ``csrc/rola/src/common/arch_caps.cuh`` -- the architectures the KERNEL knows how to
+* ``csrc/rola/src/common/hardware.cuh`` (generated from ``hardware.json``) -- the architectures the KERNEL knows how to
   size itself for. ``sm_arch_tabulated()`` is a ``static_assert`` at compile time
   and the chunk dispatch's first-launch check a refusal at run time, so an arch
   missing from it cannot execute whatever the table says.
@@ -34,7 +34,7 @@ from pathlib import Path
 import toolchains
 
 ROOT = Path(__file__).resolve().parents[1]
-ARCH_TABLE = ROOT / "csrc" / "rola" / "src" / "common" / "arch_caps.cuh"
+ARCH_TABLE = ROOT / "csrc" / "rola" / "src" / "common" / "hardware.cuh"
 README = ROOT / "README.md"
 
 #: The README's generated regions: `marker -> producer`. TWO of them, because two
@@ -75,7 +75,7 @@ def tabulated_archs() -> list[str]:
     match = _TABULATED.search(body)
     if match is None:
         raise SystemExit(
-            "cannot read `tabulated()` from common/arch_caps.cuh. The supported "
+            "cannot read `tabulated()` from common/hardware.cuh. The supported "
             "table is GENERATED from that function; if its shape changed, this "
             "parser must change with it rather than the table being hand-written.")
     codes = [int(n) for n in re.findall(r"\d+", match.group(1))]

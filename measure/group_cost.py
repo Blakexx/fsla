@@ -6,10 +6,10 @@ list, g = 4 merged), as the MAX of its components -- tensor cycles and issue a s
 for the even carve's readout (fp16 accumulate, den out of the readout) and fold (fp32 accumulate, the mass out of the
 fold). The counts a step (issue, shared wavefronts) come from the `read_step` and `list_fold` lab records' ncu counters
 (docs/internals/tools/lab.md#read-step, #list-fold), the rates (an MMA, a load wavefront, a shared atomic) from
-`common/arch_rates.cuh` for `--arch` (sm_86 by default). Then the probe cells' own lists priced under fixed g, the best
+`common/hardware.json` for `--product` (this device's by default) or `--arch` (its defaults). Then the probe cells' own lists priced under fixed g, the best
 of {1, 4} a warp (today's readout choice), the best of {1, 2, 4} a warp, and the best combination over a CTA's warps.
 
-    python -m measure.group_cost [--arch 800]
+    python -m measure.group_cost [--product rtx3080ti | --arch sm_80]
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from measure import arch_rates
+from measure import hardware
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS = ROOT / "measure" / "lab" / "results"
@@ -59,11 +59,10 @@ def _per_warp_pass(counters: dict, kernel: str, metric: str, sms: int) -> float:
 INST, WAVES = "smsp__inst_executed.sum", "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum"
 
 
-def calibrate(sms: int, cc: int = 860) -> tuple[Phase, Phase, list[tuple[str, float, float]]]:
-    """The two phases' constants at architecture `cc`'s rates and the labs' rows as (row, measured, max-of-components
-    model) cycles a pass."""
-    rates = arch_rates.table()[0][cc]
-    f16_acc, f32_acc = rates["mma[kHmmaF16F16]"].cycles, rates["mma[kHmmaF16F32]"].cycles
+def calibrate(sms: int, rates: dict[str, hardware.Rate]) -> tuple[Phase, Phase, list[tuple[str, float, float]]]:
+    """The two phases' constants at `rates` (`hardware.resolve`) and the labs' rows as (row, measured,
+    max-of-components model) cycles a pass."""
+    f16_acc, f32_acc = rates["mma.hmma_f16_f16"].cycles, rates["mma.hmma_f16_f32"].cycles
 
     def shared(loads: float, atomics: float, atomic_waves: float) -> float:
         return (loads * rates["wavefront"].cycles
@@ -201,11 +200,15 @@ def main() -> None:
 
     import torch
 
-    cc = int(sys.argv[sys.argv.index("--arch") + 1]) if "--arch" in sys.argv else 860
-    sms = torch.cuda.get_device_properties(0).multi_processor_count
-    readout, fold_phase, rows = calibrate(sms, cc)
-    print(f"constants (sm_{cc // 10}'s rates, sm_86's counts): issue a group step = step + digit x g; shared-memory "
-          "cycles a group step")
+    device = torch.cuda.get_device_properties(0)
+    arch = sys.argv[sys.argv.index("--arch") + 1] if "--arch" in sys.argv else None
+    product = (sys.argv[sys.argv.index("--product") + 1] if "--product" in sys.argv
+               else None if arch else hardware.product_of(device.name))
+    if arch is None and product is None:
+        raise SystemExit(f"{device.name} has no product row in common/hardware.json; name --product or --arch")
+    readout, fold_phase, rows = calibrate(device.multi_processor_count, hardware.resolve(arch, product))
+    print(f"constants ({product or arch}'s rates, the RTX 3080 Ti's counts): issue a group step = step + digit x g; "
+          "shared-memory cycles a group step")
     for p in (readout, fold_phase):
         print(f"  {p.name:8s} step {p.step:6.1f}  digit {p.digit:5.1f}  smem {p.smem:6.1f}  MMA {p.mma} cycles")
     print("\nthe labs: measured against the max of components (cycles a pass)")

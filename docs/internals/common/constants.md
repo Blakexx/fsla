@@ -89,8 +89,8 @@ row follows sm_90's `(1, 8)` by the same register law, and this table's own
 `arch_caps.cuh::tabulated`) fail loudly until that row is added here too.
 
 `launch_row(cc)` REFUSES an untabulated `cc` rather than approximating it from a
-neighbor — the same "never guess" discipline `arch_caps.cuh::caps_of` follows for its
-own table.
+neighbor — the same "never guess" discipline `hardware.cuh::caps_of` follows for its
+own table (an untabulated compute capability gets an empty row).
 
 <a id="segment"></a>
 ## `kSegmentTokens` = 16 — the stream's buffering grain

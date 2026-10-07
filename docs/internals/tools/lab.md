@@ -370,7 +370,7 @@ handshakes, not their bytes. Record: `measure/lab/results/publish_rounds/sm_86.j
 
 ## `smem_rates`
 
-What an SM's shared-memory pipe sustains, for `common/arch_rates.cuh`: one CTA an SM, 8 or 16 warps, each issuing
+What an SM's shared-memory pipe sustains, for the hardware configuration (`common/hardware.json`): one CTA an SM, 8 or 16 warps, each issuing
 independent operations at addresses that change every iteration (volatile asm; an address that repeats each iteration
 lets ptxas hoist a plain `ld.shared` out of the loop -- the first build did, and timed a loop without its loads). The
 block's span over the wavefronts the SM issued, the wavefronts confirmed by ncu

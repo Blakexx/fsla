@@ -1,0 +1,151 @@
+{
+  "schema": {
+    "mma": ["hmma_f16_f32", "hmma_f16_f16", "hmma_bf16_f32", "imma_u8_s8_k32"],
+    "taxed": ["fp32", "half2", "hmax2", "add_xor", "imad", "lop3", "prmt", "fmnmx", "lds", "cvt_f32_f16x2", "cvt_u32_f32", "cvt_f16_f32"],
+    "caps": [
+      {"name": "cc", "type": "int", "kind": "IDENTITY", "doc": "compute capability x10, e.g. 860"},
+      {"name": "async_copy", "type": "bool", "kind": "REQUIRED", "doc": "global->shared staging whose completion is a signal"},
+      {"name": "tile_load", "type": "bool", "kind": "REQUIRED", "doc": "8x8 b16 quads landed directly in MMA register order"},
+      {"name": "mma_bf16_f32", "type": "bool", "kind": "REQUIRED", "doc": "tensor MAC, bf16 operands, fp32 accumulator"},
+      {"name": "bf16_cvt_packed", "type": "bool", "kind": "REQUIRED", "doc": "two fp32 -> one b32 of two bf16, one instruction"},
+      {"name": "reg_transpose_b16", "type": "bool", "kind": "REQUIRED", "doc": "an 8x8 b16 tile spread across the MMA unit's own registers is transposed IN PLACE. see docs/internals/common/arch_caps.md#reg-transpose-b16"},
+      {"name": "mma_a_from_regs", "type": "bool", "kind": "RESIDENCY", "doc": "the A operand may be supplied from the issuing unit's OWN registers. see docs/internals/common/arch_caps.md#mma-a-from-regs"},
+      {"name": "mma_b_from_regs", "type": "bool", "kind": "RESIDENCY", "doc": "the same for B. A warpgroup MMA sources B ONLY from a shared-memory descriptor. see docs/internals/common/arch_caps.md#mma-b-from-regs"},
+      {"name": "accum_in_tmem", "type": "bool", "kind": "RESIDENCY", "doc": "the MMA's accumulator lives in a dedicated tensor memory rather than in the unit's register ... see docs/internals/common/arch_caps.md#accum-in-tmem"},
+      {"name": "mma_a_from_tmem", "type": "bool", "kind": "RESIDENCY", "doc": "the A operand may be sourced from that same tensor memory, which is what lets the invariant ... see docs/internals/common/arch_caps.md#mma-a-from-tmem"},
+      {"name": "bf16_simd_arith", "type": "bool", "kind": "SELECTING", "doc": "elementwise bf16 arithmetic on a packed pair (`mul.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-arith"},
+      {"name": "bf16_simd_fma", "type": "bool", "kind": "SELECTING", "doc": "FUSED elementwise bf16 arithmetic on a packed pair (`fma.rn.bf16x2`). see docs/internals/common/arch_caps.md#bf16-simd-fma"},
+      {"name": "async_bulk_copy", "type": "bool", "kind": "SELECTING", "doc": "TMA. Would implement `stage_tile`'s contract with one descriptor issue instead of one per ... see docs/internals/common/arch_caps.md#async-bulk-copy"},
+      {"name": "warpgroup_mma", "type": "bool", "kind": "SELECTING", "doc": "`wgmma`. Present on sm_90 and the reason `mma_b_from_regs` is false there. see docs/internals/common/arch_caps.md#warpgroup-mma"},
+      {"name": "dyn_reg_realloc", "type": "bool", "kind": "SELECTING", "doc": "`setmaxnreg`: a warpgroup may GIVE UP or CLAIM registers at run time, so two groups of the ... see docs/internals/common/arch_caps.md#dyn-reg-realloc"},
+      {"name": "mma_unit_threads", "type": "int", "kind": "FACT", "doc": "threads that jointly issue one MMA and jointly own its accumulator. 32 (warp) or 128 ... see docs/internals/common/arch_caps.md#mma-unit-threads"},
+      {"name": "smem_per_sm", "type": "int", "kind": "FACT", "doc": "`cudaDevAttrMaxSharedMemoryPerMultiprocessor`"},
+      {"name": "smem_per_cta_max", "type": "int", "kind": "FACT", "doc": "opt-in dynamic maximum, one CTA"},
+      {"name": "smem_granularity", "type": "int", "kind": "FACT", "doc": "shared-memory allocation quantum, bytes"},
+      {"name": "regs_per_sm", "type": "int", "kind": "FACT", "doc": ""},
+      {"name": "regs_per_lane_max", "type": "int", "kind": "FACT", "doc": ""},
+      {"name": "reg_alloc_unit", "type": "int", "kind": "FACT", "doc": "registers allocated per warp, in units of this"},
+      {"name": "max_threads_per_sm", "type": "int", "kind": "FACT", "doc": ""},
+      {"name": "max_ctas_per_sm", "type": "int", "kind": "FACT", "doc": ""},
+      {"name": "driver_smem_reserve", "type": "int", "kind": "FACT", "doc": "per-CTA reserve the driver takes off the top; the residency condition is on smem_per_cta + ... see docs/internals/common/arch_caps.md#driver-smem-reserve"}
+    ]
+  },
+  "arch": {
+    "sm_80": {
+      "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 2048, "max_ctas_per_sm": 32, "driver_smem_reserve": 1024},
+      "rates": {
+        "schedulers": {"cycles": 4, "documented": "CUDA C++ Programming Guide, compute capability 8.x: four warp schedulers an SM"},
+        "issue": {"cycles": 1, "documented": "CUDA C++ Programming Guide, compute capability 8.x: a scheduler issues one instruction a clock"},
+        "wavefront": {"cycles": 1, "documented": "CUDA C++ Programming Guide, shared memory: 32 banks of 32 bits a clock"},
+        "atomic": {"cycles": 2.003, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
+        "atomic_wavefront": {"cycles": 1.0, "announced": "the RTX 3080 Ti's (sm_86) measured value; unmeasured on sm_80"},
+        "mma": {
+          "hmma_f16_f32": {"cycles": 8, "documented": "A100 whitepaper: 312 dense FP16/BF16 tensor TFLOPS at either accumulate, 624 dense INT8 TOPS, 108 SMs at 1410 MHz"},
+          "hmma_f16_f16": {"cycles": 8, "documented": "A100 whitepaper: 312 dense FP16/BF16 tensor TFLOPS at either accumulate, 624 dense INT8 TOPS, 108 SMs at 1410 MHz"},
+          "hmma_bf16_f32": {"cycles": 8, "documented": "A100 whitepaper: 312 dense FP16/BF16 tensor TFLOPS at either accumulate, 624 dense INT8 TOPS, 108 SMs at 1410 MHz"},
+          "imma_u8_s8_k32": {"cycles": 8, "documented": "A100 whitepaper: 312 dense FP16/BF16 tensor TFLOPS at either accumulate, 624 dense INT8 TOPS, 108 SMs at 1410 MHz"}
+        }
+      }
+    },
+    "sm_86": {
+      "note": "local dev (GA102)",
+      "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 16, "driver_smem_reserve": 1024},
+      "rates": {
+        "schedulers": {"cycles": 4, "documented": "CUDA C++ Programming Guide, compute capability 8.x: four warp schedulers an SM"},
+        "issue": {"cycles": 1, "documented": "CUDA C++ Programming Guide, compute capability 8.x: a scheduler issues one instruction a clock"},
+        "wavefront": {"cycles": 1.001, "measured": "smem_rates", "row": "ldmatrix.x4, 4 wavefronts a warp / 8 warps", "on": "rtx3080ti"},
+        "atomic": {"cycles": 2.003, "measured": "smem_rates", "row": "red.shared.add, a lane a bank, 1 wavefront a warp / 8 warps", "on": "rtx3080ti"},
+        "atomic_wavefront": {"cycles": 1.0, "measured": "smem_rates", "row": "red.shared.add, four lanes a bank, 4 wavefronts a warp / 8 warps", "on": "rtx3080ti"},
+        "mma": {
+          "hmma_f16_f32": {"cycles": 16, "documented": "GA102 whitepaper Table 3: RTX A6000, 84 SMs at 1800 MHz, 154.8 dense FP16 tensor TFLOPS with FP32 accumulate"},
+          "hmma_f16_f16": {"cycles": 16, "documented": "GA102 whitepaper Table 3: RTX A6000, 84 SMs at 1800 MHz, 154.8 dense FP16 tensor TFLOPS with FP16 accumulate"},
+          "hmma_bf16_f32": {"cycles": 16, "documented": "GA102 whitepaper Table 3: RTX A6000, 84 SMs at 1800 MHz, 154.8 dense BF16 tensor TFLOPS with FP32 accumulate"},
+          "imma_u8_s8_k32": {"cycles": 16, "documented": "GA102 whitepaper Table 3: RTX A6000, 84 SMs at 1800 MHz, 309.7 dense INT8 tensor TOPS"}
+        }
+      }
+    },
+    "sm_87": {
+      "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 167936, "smem_per_cta_max": 166912, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 16, "driver_smem_reserve": 1024}
+    },
+    "sm_89": {
+      "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": true, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": false, "bf16_simd_fma": true, "async_bulk_copy": false, "warpgroup_mma": false, "dyn_reg_realloc": false, "mma_unit_threads": 32, "smem_per_sm": 102400, "smem_per_cta_max": 101376, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 1536, "max_ctas_per_sm": 24, "driver_smem_reserve": 1024}
+    },
+    "sm_90": {
+      "note": "TABULATED, NOT BUILT; see docs/internals/common/arch_caps.md#caps-of-note-l147",
+      "caps": {"async_copy": true, "tile_load": true, "mma_bf16_f32": true, "bf16_cvt_packed": true, "reg_transpose_b16": true, "mma_a_from_regs": true, "mma_b_from_regs": false, "accum_in_tmem": false, "mma_a_from_tmem": false, "bf16_simd_arith": true, "bf16_simd_fma": true, "async_bulk_copy": true, "warpgroup_mma": true, "dyn_reg_realloc": true, "mma_unit_threads": 128, "smem_per_sm": 233472, "smem_per_cta_max": 232448, "smem_granularity": 128, "regs_per_sm": 65536, "regs_per_lane_max": 255, "reg_alloc_unit": 256, "max_threads_per_sm": 2048, "max_ctas_per_sm": 32, "driver_smem_reserve": 1024}
+    }
+  },
+  "product": {
+    "rtx3080ti": {
+      "arch": "sm_86",
+      "device": "NVIDIA GeForce RTX 3080 Ti",
+      "note": "GeForce runs fp32-accumulate tensor math at half the fp16-accumulate rate (GA102 whitepaper Table 9: the RTX 3090 at 71 against 142 dense TFLOPS)",
+      "rates": {
+        "mma": {
+          "hmma_f16_f32": {"cycles": 32.132, "measured": "tensor_tax", "row": "hmma f16->f32 / alone"},
+          "hmma_f16_f16": {"cycles": 16.131, "measured": "tensor_tax", "row": "hmma f16->f16 / alone"},
+          "hmma_bf16_f32": {"cycles": 32.132, "measured": "tensor_tax", "row": "hmma bf16->f32 / alone"},
+          "imma_u8_s8_k32": {"cycles": 16.134, "measured": "tensor_tax", "row": "imma u8.s8 k32 / alone"}
+        },
+        "tax": {
+          "hmma_f16_f32": {
+            "fp32": {"cycles": 0.506, "measured": "tensor_tax", "row": "hmma f16->f32 / ffma"},
+            "half2": {"cycles": 0.213, "measured": "tensor_tax", "row": "hmma f16->f32 / hfma2"},
+            "hmax2": {"cycles": 0.161, "measured": "tensor_tax", "row": "hmma f16->f32 / hmax2"},
+            "add_xor": {"cycles": 0.715, "measured": "tensor_tax", "row": "hmma f16->f32 / add + xor (iadd3 or imad.iadd, lop3)"},
+            "imad": {"cycles": 0.103, "measured": "tensor_tax", "row": "hmma f16->f32 / imad"},
+            "lop3": {"cycles": 0.056, "measured": "tensor_tax", "row": "hmma f16->f32 / lop3"},
+            "prmt": {"cycles": 0.052, "measured": "tensor_tax", "row": "hmma f16->f32 / prmt"},
+            "fmnmx": {"cycles": 0.058, "measured": "tensor_tax", "row": "hmma f16->f32 / fmnmx"},
+            "lds": {"cycles": 0.535, "measured": "tensor_tax", "row": "hmma f16->f32 / lds"},
+            "cvt_f32_f16x2": {"cycles": 0.057, "measured": "tensor_tax", "row": "hmma f16->f32 / f32->f16x2"},
+            "cvt_u32_f32": {"cycles": 0.046, "measured": "tensor_tax", "row": "hmma f16->f32 / u32->f32"},
+            "cvt_f16_f32": {"cycles": 0.077, "measured": "tensor_tax", "row": "hmma f16->f32 / f16->f32"}
+          },
+          "hmma_f16_f16": {
+            "fp32": {"cycles": 1.008, "measured": "tensor_tax", "row": "hmma f16->f16 / ffma"},
+            "half2": {"cycles": 0.482, "measured": "tensor_tax", "row": "hmma f16->f16 / hfma2"},
+            "hmax2": {"cycles": 0.437, "measured": "tensor_tax", "row": "hmma f16->f16 / hmax2"},
+            "add_xor": {"cycles": 1.203, "measured": "tensor_tax", "row": "hmma f16->f16 / add + xor (iadd3 or imad.iadd, lop3)"},
+            "imad": {"cycles": 0.188, "measured": "tensor_tax", "row": "hmma f16->f16 / imad"},
+            "lop3": {"cycles": 0.219, "measured": "tensor_tax", "row": "hmma f16->f16 / lop3"},
+            "prmt": {"cycles": 0.219, "measured": "tensor_tax", "row": "hmma f16->f16 / prmt"},
+            "fmnmx": {"cycles": 0.219, "measured": "tensor_tax", "row": "hmma f16->f16 / fmnmx"},
+            "lds": {"cycles": 0.845, "measured": "tensor_tax", "row": "hmma f16->f16 / lds"},
+            "cvt_f32_f16x2": {"cycles": 0.219, "measured": "tensor_tax", "row": "hmma f16->f16 / f32->f16x2"},
+            "cvt_u32_f32": {"cycles": 0.168, "measured": "tensor_tax", "row": "hmma f16->f16 / u32->f32"},
+            "cvt_f16_f32": {"cycles": 0.127, "measured": "tensor_tax", "row": "hmma f16->f16 / f16->f32"}
+          },
+          "hmma_bf16_f32": {
+            "fp32": {"cycles": 0.506, "measured": "tensor_tax", "row": "hmma bf16->f32 / ffma"},
+            "half2": {"cycles": 0.218, "measured": "tensor_tax", "row": "hmma bf16->f32 / hfma2"},
+            "hmax2": {"cycles": 0.161, "measured": "tensor_tax", "row": "hmma bf16->f32 / hmax2"},
+            "add_xor": {"cycles": 0.713, "measured": "tensor_tax", "row": "hmma bf16->f32 / add + xor (iadd3 or imad.iadd, lop3)"},
+            "imad": {"cycles": 0.103, "measured": "tensor_tax", "row": "hmma bf16->f32 / imad"},
+            "lop3": {"cycles": 0.056, "measured": "tensor_tax", "row": "hmma bf16->f32 / lop3"},
+            "prmt": {"cycles": 0.052, "measured": "tensor_tax", "row": "hmma bf16->f32 / prmt"},
+            "fmnmx": {"cycles": 0.058, "measured": "tensor_tax", "row": "hmma bf16->f32 / fmnmx"},
+            "lds": {"cycles": 0.534, "measured": "tensor_tax", "row": "hmma bf16->f32 / lds"},
+            "cvt_f32_f16x2": {"cycles": 0.057, "measured": "tensor_tax", "row": "hmma bf16->f32 / f32->f16x2"},
+            "cvt_u32_f32": {"cycles": 0.046, "measured": "tensor_tax", "row": "hmma bf16->f32 / u32->f32"},
+            "cvt_f16_f32": {"cycles": 0.079, "measured": "tensor_tax", "row": "hmma bf16->f32 / f16->f32"}
+          },
+          "imma_u8_s8_k32": {
+            "fp32": {"cycles": 0.976, "measured": "tensor_tax", "row": "imma u8.s8 k32 / ffma"},
+            "half2": {"cycles": 0.411, "measured": "tensor_tax", "row": "imma u8.s8 k32 / hfma2"},
+            "hmax2": {"cycles": 0.381, "measured": "tensor_tax", "row": "imma u8.s8 k32 / hmax2"},
+            "add_xor": {"cycles": 1.593, "measured": "tensor_tax", "row": "imma u8.s8 k32 / add + xor (iadd3 or imad.iadd, lop3)"},
+            "imad": {"cycles": 0.123, "measured": "tensor_tax", "row": "imma u8.s8 k32 / imad"},
+            "lop3": {"cycles": 0.15, "measured": "tensor_tax", "row": "imma u8.s8 k32 / lop3"},
+            "prmt": {"cycles": 0.15, "measured": "tensor_tax", "row": "imma u8.s8 k32 / prmt"},
+            "fmnmx": {"cycles": 0.15, "measured": "tensor_tax", "row": "imma u8.s8 k32 / fmnmx"},
+            "lds": {"cycles": 0.967, "measured": "tensor_tax", "row": "imma u8.s8 k32 / lds"},
+            "cvt_f32_f16x2": {"cycles": 0.15, "measured": "tensor_tax", "row": "imma u8.s8 k32 / f32->f16x2"},
+            "cvt_u32_f32": {"cycles": 0.168, "measured": "tensor_tax", "row": "imma u8.s8 k32 / u32->f32"},
+            "cvt_f16_f32": {"cycles": 0.104, "measured": "tensor_tax", "row": "imma u8.s8 k32 / f16->f32"}
+          }
+        }
+      }
+    }
+  }
+}
