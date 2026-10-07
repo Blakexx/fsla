@@ -838,6 +838,11 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       (MMA j reads output word j - 1 masked by a run-time zero) cuts the longest MMA-free run 208 -> 83 instructions
       and those losses to 3.8%, for 1.52x -> 1.49x; tied both ways (each word also reads an MMA's output) the MMA
       latency lands on the chain (1.55x).
+   w. THE TENSOR PIPE HAS NO QUEUE (`mma_queue`): a warp's K back-to-back independent MMAs take one MMA's pipe time
+      each to issue from the second on (16.0 cycles fp16-accumulate, 32.1 fp32-accumulate on the RTX 3080 Ti), so a
+      warp cannot issue a burst ahead of the pipe and go on to other work: it is held at the burst, and every MMA needs
+      an issue slot the cycle the pipe frees. Turn-taking between a scheduler's warps (FA3's ping-pong, built on
+      sm_90's asynchronous `wgmma`) has no queue to fill here.
 
 ## §27 — A STEP IS ONE BLOCK, INTERLEAVED BY CONSTRUCTION (law, 2026-10-06, from Blake's "we should have lints and sass checks that enforce we properly interleave loops by default, and only override if justified")
 The per-list readout ran 3.2x its MMA floor and the cause was the shape of its code, not the hardware: branches the
