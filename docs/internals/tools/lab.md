@@ -361,6 +361,10 @@ THE DEN PASS'S STEP (8 MMAs, den out), its adds issued after the next step's MMA
 | + the conflict-free panel (20-word rows, pads to their own rows) | 12.4K (1.52x) | 3.26K (1.59x) | 1.67K (1.64x) |
 | isolation: without the conversion (values wrong) | 9.60K (1.17x) | 2.79K (1.36x) | 1.46K (1.43x) |
 | isolation: without the adds (values wrong) | 8.89K (1.09x) | 2.34K (1.14x) | 1.22K (1.19x) |
+| isolation: the conversion independent of the outputs | 11.7K (1.43x) | 3.14K (1.54x) | 1.89K (1.85x) |
+| isolation: half the values converted | 11.4K (1.39x) | 2.96K (1.44x) | 1.54K (1.51x) |
+| isolation: the conversion replaced by as many dependent LOP3/PRMT | 13.6K (1.66x) | 3.78K (1.85x) | 1.76K (1.72x) |
+| isolation: those integer operations independent of the outputs | 14.4K (1.76x) | 3.69K (1.80x) | 1.95K (1.90x) |
 
 Merged, adds a step behind: 10.5K (1.28x). The aligned burst drain adds ~1K a pass. The last form converts on the FMA
 pipe (each half to fp32, x 64 + 1.5 x 2^23, the low halves packed: round-to-nearest, exhaustively checked over every
@@ -388,11 +392,24 @@ each to slot 0 serialized on one word, so they add to 8 dummy rows: 0 atomic ban
 -14% at 8 live tokens, nothing at full steps -- shared memory was not what bound them. Removing the conversion (the
 words added raw) or the adds as well isolates the rest: at 8 steps a digit the operands and MMAs run 1.09x, the adds
 take it to 1.17x and the conversion to 1.52x -- 34 of the 52 points; at 2 steps a digit 14 / 22 / 23, at 1 step 19 / 24
-/ 21. The conversion's 40 instructions (16 each to fp32, 16 FFMAs, 8 packs) cost ~44 cycles a warp-step, twice their
-tax: with them a step issues 105 instructions a warp, 82% of the tensor time at two warps a scheduler, and the MMAs
-wait for issue slots as well as paying the tax. A
-per-digit step's gathered slots are distinct (a list never holds a token twice). The gate: `read_step`'s branchy forms
-declare their branches (KERNEL_STANDARDS 27). Records: `measure/lab/results/read_step/sm_86.json`,
+/ 21.
+
+THE CONVERSION TAKEN APART (8 steps a digit; a scheduler's floor is two warps' 8 MMAs, 257 cycles a step). Its 40
+instructions a warp-step (16 `HADD2.F32` to fp32, 16 `FFMA`, 8 `PRMT`) cost 0.345 of the floor over the raw adds.
+Computed on values independent of the MMA outputs (each word XORed with it, so the same instructions issue, none on
+the output-to-atomic chain), they cost 0.261; half of them on the chain 0.215. So: the chain's latency 0.08, the
+instructions 0.26, linear in their count (0.08 + 0.13 at half). The tensor_tax rates beside fp16-accumulate MMAs
+price the instructions at 16 x 1.0 + 16 x 0.13 + 8 x 0.22 = 20 cycles a warp-step, 0.155 at two warps; the other
+~0.1 is issue pressure -- the off-chain form issues 94% of the floor's issue capacity (ncu: issue 65.5% at 1.43x;
+`not_selected` 0.46 an issue against 0.30 without the conversion). The tax itself is not issue: in `tensor_tax` one
+filler warp beside one MMA warp a scheduler leaves 15 free slots an MMA, where collisions would cost ~1/16 cycle an
+instruction, and classes of one issue cost tax 1.0 (FP32), 0.48 (packed half), 0.13-0.22 (conversions, LOP3, PRMT).
+The integer class is no escape on sm_86: LOP3 and PRMT run at half rate (16 lanes), so 40 of them a step load the ALU
+pipe past the floor (ncu: 67.7% of its peak at 1.76x, 119% of the floor's time) -- in the chain 1.66x, off it 1.76x.
+At 2 steps a digit the same split: chain 0.055, instructions 0.17.
+
+A per-digit step's gathered slots are distinct (a list never holds a token twice). The gate: `read_step`'s branchy
+forms declare their branches (KERNEL_STANDARDS 27). Records: `measure/lab/results/read_step/sm_86.json`,
 `sm_86.counters.json`.
 
 <a id="publish-rounds"></a>
