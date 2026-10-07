@@ -333,9 +333,9 @@ block's span a pass against its tensor floor (the busiest scheduler's MMAs at 16
 | form | steps | steps alone | + panel adds | + drain burst | + drain spread | + burst, aligned | + spread, aligned |
 |---|---|---|---|---|---|---|---|
 | merged | 8, 16 live | 12.5K | 11.8K | 13.7K | 14.7K | 13.0K | 13.9K |
-| per digit | 8 a digit, 16 live | 17.4K | 32.0K | 33.5K | 35.6K | 32.6K | 35.8K |
-| per digit | 2 a digit, 16 live | 4.46K | 8.28K | 9.91K | 10.7K | 9.31K | 9.84K |
-| per digit | 1 a digit, 8 live | 1.66K | 3.32K | 5.58K | 5.79K | 4.31K | 4.72K |
+| per digit | 8 a digit, 16 live | 17.1K | 31.7K | 33.1K | 35.3K | 32.3K | 36.0K |
+| per digit | 2 a digit, 16 live | 4.39K | 8.17K | 9.66K | 10.6K | 9.18K | 9.74K |
+| per digit | 1 a digit, 8 live | 1.66K | 3.30K | 5.67K | 5.78K | 4.29K | 4.71K |
 
 "Aligned" drains the channel words alone to 64-byte target rows (den carried elsewhere); the other drains write 17-word
 rows (channels and den) to a 17-word pitch, den a request of its own: ncu counts 316 L2 reduction requests a CTA a pass
@@ -343,7 +343,18 @@ for their 128 RED instructions -- a two-token request spans three or four lines,
 much as a per-digit step itself (~5 cycles a warp's ATOMS across the SM); merged adds once a token for its four
 digits. The drain costs ~1.0K cycles a 128-slot pass aligned (2.3K misaligned with den), and spreading it through the
 next pass's steps under a double panel and mbarriers costs 0.4-1K more than the burst, not less: the drain's
-instructions and waits land in the steps. Record: `measure/lab/results/read_step/sm_86.json`.
+instructions and waits land in the steps.
+
+WITHOUT DEN (the den pass carries it, so a step is 8 MMAs) and each step's adds issued after the next step's MMAs:
+per digit 26.3K / 6.79K / 2.56K (8, 2 and 1 steps a digit) against floors of 8.19K / 2.05K / 1.02K, 3.2x / 3.3x /
+2.5x; merged 11.6K, 1.41x. The aligned burst drain adds ~1K a pass. Loading each step's operands before the step ahead's
+MMAs as well (one sequence across digits, the MMAs by a switch on the digit) is slower -- 34.9K / 8.92K / 3.79K at 251
+registers, ptxas keeping the loads in a block. ncu on the 8-step per-digit form: issue 40%, the tensor pipe 31%, 163
+instructions a digit-step; the stalls are fixed-latency waits, short-scoreboard waits (shared loads, the atomics, the
+conversions) and branch resolution: the per-digit step is latency-bound, a chain from its entries through its gathered
+rows, conversion and MMAs to its adds with two warps a scheduler to hide it. A per-digit step's gathered slots are
+distinct (a list never holds a token twice); the first record hashed them with replacement, which moved nothing.
+Records: `measure/lab/results/read_step/sm_86.json`, `sm_86.counters.json`.
 
 <a id="publish-rounds"></a>
 

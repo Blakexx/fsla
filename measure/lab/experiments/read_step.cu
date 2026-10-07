@@ -40,14 +40,19 @@ constexpr int kShare = kSlots / kWarps / 2;
 //: pass's panel a request after each step, under mbarriers (`complete` when every warp's adds are in, `drained` when
 //: every warp's share is out). Modes 2 and 3 drain 17-word rows (a slot's 16 channel words and den) to a 17-word target
 //: pitch, den a request of its own; 4 and 5 are 2 and 3 with the channel words alone to 64-byte rows (den carried
-//: elsewhere), so a request is a token's half line each
-constexpr int kModes = 6;
+//: elsewhere), so a request is a token's half line each; 6 no den (the den pass carries it), each step's adds issued
+//: after the next step's MMAs; 7 is 6 with the aligned burst drain; 8 (per digit) is 6 with each step's operands loaded
+//: before the step ahead's MMAs, across digits
+constexpr int kModes = 9;
 const char* kModeName[kModes] = {"steps alone",
                                  "+ panel adds",
                                  "+ drain, burst at the pass end",
                                  "+ drain, double panel, spread",
                                  "+ drain, burst, aligned rows, no den",
-                                 "+ drain, spread, aligned rows, no den"};
+                                 "+ drain, spread, aligned rows, no den",
+                                 "no den, adds a step behind",
+                                 "no den, adds a step behind, + aligned burst drain",
+                                 "no den, operands a step ahead, adds a step behind"};
 
 //: FORM 0 per digit (a step = one digit's 16 tokens, its outputs added); 1 merged (a step = 16 union tokens, every
 //: digit's MMAs into one accumulator, one add)
@@ -123,7 +128,7 @@ __device__ __forceinline__ int slot_of(const Shared& sh, int w, int d, int s, in
   return in ? x : 0;
 }
 
-template <int D0, int DIGITS>
+template <int D0, int DIGITS, bool kDen>
 __device__ __forceinline__ void mmas(uint32_t (&out)[4][2], uint32_t (&den)[2], const State& st,
                                      const uint32_t (&a)[2][4]) {
   constexpr int d0 = D0;
@@ -134,12 +139,14 @@ __device__ __forceinline__ void mmas(uint32_t (&out)[4][2], uint32_t (&den)[2], 
 #pragma unroll
       for (int n = 0; n < 4; ++n)
         lab::mma_f16_f16(out[n], a[kk], st.b[d0 + dd][kk][n][0], st.b[d0 + dd][kk][n][1]);
-      lab::mma_f16_f16(den, a[kk], st.mass[d0 + dd][kk][0], st.mass[d0 + dd][kk][1]);
+      if constexpr (kDen)
+        lab::mma_f16_f16(den, a[kk], st.mass[d0 + dd][kk][0], st.mass[d0 + dd][kk][1]);
     }
 }
 
 //: THE STEP'S OUTPUTS into panel `p`: lane (g, tq) holds tokens g and g + 8, channels 8 n + 2 tq, + 1 -- a word each;
 //: den by the tq = 0 lanes
+template <bool kDen>
 __device__ __forceinline__ void panel_add(Shared& sh, int p, const uint32_t (&out)[4][2],
                                           const uint32_t (&den)[2], int slot_g, int slot_g8,
                                           bool in_g, bool in_g8, int lane) {
@@ -150,7 +157,7 @@ __device__ __forceinline__ void panel_add(Shared& sh, int p, const uint32_t (&ou
     if (in_g) red_shared(base + 4 * (slot_g * kPanelPitch + 4 * n + tq), to_s16x2(out[n][0]));
     if (in_g8) red_shared(base + 4 * (slot_g8 * kPanelPitch + 4 * n + tq), to_s16x2(out[n][1]));
   }
-  if (tq == 0) {
+  if (kDen && tq == 0) {
     if (in_g) red_shared(base + 4 * (slot_g * kPanelPitch + 16), to_s16x2(den[0]));
     if (in_g8) red_shared(base + 4 * (slot_g8 * kPanelPitch + 16), to_s16x2(den[1]));
   }
@@ -227,14 +234,17 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
   clock.start();
 #pragma unroll 1
   for (int x = 0; x < passes; ++x) {
-    constexpr bool kSpread = MODE == 3 || MODE == 5, kBurst = MODE == 2 || MODE == 4,
-                   kAligned = MODE >= 4;
+    constexpr bool kSpread = MODE == 3 || MODE == 5, kBurst = MODE == 2 || MODE == 4 || MODE == 7,
+                   kAligned = MODE >= 4, kDen = MODE < 6, kBehind = MODE >= 6;
     const int p = kSpread ? (x & 1) : 0, other = p ^ 1;
     if constexpr (kSpread) {
       if (x >= 2)
         lab::mbar_wait(lab::smem(&sh.drained[p]), static_cast<uint32_t>((x - 2) >> 1) & 1u);
     }
     int drained_requests = 0;
+    [[maybe_unused]] uint32_t held[4][2] = {};
+    [[maybe_unused]] int held_g = 0, held_g8 = 0;
+    [[maybe_unused]] bool held_in_g = false, held_in_g8 = false, holding = false;
     const auto spread = [&]() {
       if constexpr (kSpread) {
         if (x >= 1 && drained_requests < kShare) {
@@ -254,17 +264,84 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
       uint32_t a[2][4];
       step_a(a, sh, ra, q >> 1, rg, rg8, d0, in_g, in_g8);
       uint32_t o[4][2] = {}, den[2] = {};
-      mmas<d0, kDigitsHere>(o, den, st, a);
+      mmas<d0, kDigitsHere, kDen>(o, den, st, a);
       if constexpr (MODE == 0) {
 #pragma unroll
         for (int n = 0; n < 4; ++n) fold_out += o[n][0] ^ o[n][1];
         fold_out += den[0] ^ den[1];
+      } else if constexpr (kBehind) {
+        //: the last step's adds after this step's MMAs, this step's held for the next
+        if (holding)
+          panel_add<false>(sh, p, held, den, held_g, held_g8, held_in_g, held_in_g8, lane);
+#pragma unroll
+        for (int n = 0; n < 4; ++n) {
+          held[n][0] = o[n][0];
+          held[n][1] = o[n][1];
+        }
+        held_g = rg;
+        held_g8 = rg8;
+        held_in_g = in_g;
+        held_in_g8 = in_g8;
+        holding = true;
       } else {
-        panel_add(sh, p, o, den, rg, rg8, in_g, in_g8, lane);
+        panel_add<kDen>(sh, p, o, den, rg, rg8, in_g, in_g8, lane);
       }
       spread();
     };
-    if constexpr (FORM == 0) {
+    if constexpr (MODE == 8) {
+      //: the warp's digit steps as one sequence: the next step's operands loaded before this step's MMAs
+      const auto load = [&](int item, uint32_t(&a)[2][4], int& rg, int& rg8, bool& ig, bool& ig8) {
+        const int dd = item / STEPS, ss = item % STEPS;
+        bool ia;
+        const int ra = slot_of(sh, w, dd, ss, 8 * (q & 1) + r, ia);
+        rg = slot_of(sh, w, dd, ss, g, ig);
+        rg8 = slot_of(sh, w, dd, ss, g + 8, ig8);
+        step_a(a, sh, ra, q >> 1, rg, rg8, dd, ig, ig8);
+      };
+      uint32_t a[2][4], an[2][4];
+      int rg = 0, rg8 = 0, rgn = 0, rg8n = 0;
+      bool ig = false, ig8 = false, ign = false, ig8n = false;
+      load(0, a, rg, rg8, ig, ig8);
+#pragma unroll 1
+      for (int item = 0; item < kDigits * STEPS; ++item) {
+        if (item + 1 < kDigits * STEPS) load(item + 1, an, rgn, rg8n, ign, ig8n);
+        uint32_t o[4][2] = {}, den[2] = {};
+        switch (item / STEPS) {
+          case 0:
+            mmas<0, 1, false>(o, den, st, a);
+            break;
+          case 1:
+            mmas<1, 1, false>(o, den, st, a);
+            break;
+          case 2:
+            mmas<2, 1, false>(o, den, st, a);
+            break;
+          default:
+            mmas<3, 1, false>(o, den, st, a);
+            break;
+        }
+        if (holding)
+          panel_add<false>(sh, p, held, den, held_g, held_g8, held_in_g, held_in_g8, lane);
+#pragma unroll
+        for (int n = 0; n < 4; ++n) {
+          held[n][0] = o[n][0];
+          held[n][1] = o[n][1];
+        }
+        held_g = rg;
+        held_g8 = rg8;
+        held_in_g = ig;
+        held_in_g8 = ig8;
+        holding = true;
+#pragma unroll
+        for (int kk = 0; kk < 2; ++kk)
+#pragma unroll
+          for (int i = 0; i < 4; ++i) a[kk][i] = an[kk][i];
+        rg = rgn;
+        rg8 = rg8n;
+        ig = ign;
+        ig8 = ig8n;
+      }
+    } else if constexpr (FORM == 0) {
       static_for<kDigits>([&](auto D) {
 #pragma unroll 1
         for (int s = 0; s < STEPS; ++s) one_step(D, s, std::integral_constant<int, 1>{});
@@ -273,6 +350,11 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
 #pragma unroll 1
       for (int s = 0; s < STEPS; ++s)
         one_step(std::integral_constant<int, 0>{}, s, std::integral_constant<int, kDigits>{});
+    }
+    if constexpr (kBehind) {
+      const uint32_t none[2] = {};
+      if (holding)
+        panel_add<false>(sh, p, held, none, held_g, held_g8, held_in_g, held_in_g8, lane);
     }
     if constexpr (kSpread) {
 #pragma unroll 1
@@ -302,7 +384,8 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
   lab::sink(out, f);
 }
 
-//: THE ENTRIES: per warp, digit and step, `LIVE` slots then pads -- per digit gathered slots hashed over the 128; merged
+//: THE ENTRIES: per warp, digit and step, `LIVE` slots then pads -- per digit distinct gathered slots (a hashed start,
+//: then 37 apart over the 128: a list never holds a token twice); merged
 //: the step's own 16 (digit 0's entries, the union)
 std::vector<uint16_t> make_entries(int form, int live) {
   std::vector<uint16_t> e(kWarps * kDigits * kMaxSteps * kStep);
@@ -314,7 +397,7 @@ std::vector<uint16_t> make_entries(int form, int live) {
           if (i >= live)
             e[at] = kPad;
           else if (form == 0)
-            e[at] = static_cast<uint16_t>(hash3(w, d * kMaxSteps + s, i) % kSlots);
+            e[at] = static_cast<uint16_t>((hash3(w, d * kMaxSteps + s, 0) + 37u * i) % kSlots);
           else
             e[at] = static_cast<uint16_t>((s * kStep + i) % kSlots);
         }
@@ -326,10 +409,10 @@ constexpr int kPasses = 400;
 template <int MODE, int FORM, int STEPS, int LIVE>
 void variant(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   const std::string name = lab::kernel("read", {MODE, FORM, STEPS, LIVE});
-  b.expect(name, "HMMA.16816.F16", ">=", 10);
+  b.expect(name, "HMMA.16816.F16", ">=", MODE >= 6 ? 8 : 10);
   b.expect(name, "LDSM", ">=", 1);
   if (MODE != 0) b.expect(name, "ATOMS", ">=", 8);
-  if (MODE >= 2) b.expect(name, "RED", ">=", 1);
+  if (MODE >= 2 && MODE != 6 && MODE != 8) b.expect(name, "RED", ">=", 1);
   if (b.expect_only) return;
   const std::vector<uint16_t> h = make_entries(FORM, LIVE);
   uint16_t* d = nullptr;
@@ -344,8 +427,10 @@ void variant(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
             <<<b.sms, kThreads, bytes>>>(kPasses, d, target, init, b.times, b.sinks);
       },
       [&] { return b.span(kWarps) / kPasses; });
-  //: a warp's MMAs a pass at 16 cycles, two warps a scheduler: per digit 4 digits x STEPS steps x 10; merged STEPS x 40
-  const double mmas = FORM == 0 ? kDigits * STEPS * 10.0 : STEPS * 40.0;
+  //: a warp's MMAs a pass at 16 cycles, two warps a scheduler: per digit 4 digits x STEPS steps x 10 (8 without den);
+  //: merged STEPS x 40 (32)
+  const double per = MODE >= 6 ? 8.0 : 10.0;
+  const double mmas = FORM == 0 ? kDigits * STEPS * per : STEPS * 4 * per;
   const double floor = 2.0 * mmas * 16;
   const std::string label = std::string(kFormName[FORM]) + " / " + std::to_string(STEPS)
                             + (FORM == 0 ? " steps a digit" : " steps") + " / "
@@ -365,6 +450,9 @@ void modes(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   variant<3, FORM, STEPS, LIVE>(b, target, init);
   variant<4, FORM, STEPS, LIVE>(b, target, init);
   variant<5, FORM, STEPS, LIVE>(b, target, init);
+  variant<6, FORM, STEPS, LIVE>(b, target, init);
+  variant<7, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<8, FORM, STEPS, LIVE>(b, target, init);
 }
 
 }  // namespace read_step
