@@ -29,6 +29,9 @@ __device__ __forceinline__ void static_for(F&& f) {
 }
 
 constexpr int kThreads = 256, kWarps = 8, kSlots = 128, kRowBytes = 96, kPanelPitch = 17;
+//: the conflict-free panel (mode 12): 20 words a row, so slots of distinct residue mod 8 land on disjoint 4-bank groups,
+//: and 8 dummy rows past the slots for the pads' adds of zero
+constexpr int kFreePitch = 20, kPanelWords = (kSlots + 8) * kFreePitch;
 constexpr int kDigits = 4, kMaxSteps = 8, kStep = 16, kTargets = 1 << 18;
 constexpr uint16_t kPad = 0xffffu;
 constexpr uint32_t kHalfMagic = 0x64646464u;
@@ -45,8 +48,10 @@ constexpr int kShare = kSlots / kWarps / 2;
 //: before the step ahead's MMAs, across digits; 9 is 8 with the token's level-S coefficient applied after the MMAs, in
 //: the conversion (A the raw level-R bytes); 10 is 9 converting on the conversion unit (an f16 multiply by the token's
 //: scale, then F2I) in place of the FMA pipe; 11 is 9 with each entry carrying its byte offsets (its row with the
-//: swizzle folded in, its panel row, a pad bit), as the facts pass could emit them
-constexpr int kModes = 12;
+//: swizzle folded in, its panel row, a pad bit), as the facts pass could emit them; 12 is 11 into the conflict-free
+//: panel (20-word rows, each step's tokens of distinct slot residue mod 8, pads to their own dummy rows); 13 and 14 are
+//: cost isolations of 12, their values wrong: 13 adds the f16 words unconverted, 14 adds nothing (the outputs folded)
+constexpr int kModes = 15;
 const char* kModeName[kModes] = {"steps alone",
                                  "+ panel adds",
                                  "+ drain, burst at the pass end",
@@ -58,7 +63,10 @@ const char* kModeName[kModes] = {"steps alone",
                                  "no den, operands a step ahead, adds a step behind",
                                  "no den, operands ahead, adds behind, coefficient after the MMAs",
                                  "the same, converted by F2I",
-                                 "the same as 9, entries as byte offsets"};
+                                 "the same as 9, entries as byte offsets",
+                                 "the same as 11, conflict-free panel",
+                                 "isolation: 12 without the conversion",
+                                 "isolation: 12 without the adds"};
 
 //: FORM 0 per digit (a step = one digit's 16 tokens, its outputs added); 1 merged (a step = 16 union tokens, every
 //: digit's MMAs into one accumulator, one add)
@@ -66,9 +74,10 @@ const char* kFormName[2] = {"per digit", "merged"};
 
 struct alignas(16) Shared {
   uint8_t rows[kSlots * kRowBytes];
-  uint32_t panel[2][kSlots * kPanelPitch];
+  uint32_t panel[2][kPanelWords];
   uint16_t entries[kWarps][kDigits][kMaxSteps][kStep];
   uint32_t offsets[kWarps][kDigits][kMaxSteps][kStep];
+  uint32_t offsets_free[kWarps][kDigits][kMaxSteps][kStep];
   uint64_t complete[2], drained[2];
 };
 
@@ -267,12 +276,15 @@ __device__ __forceinline__ void panel_add_scaled(Shared& sh, int p, const uint32
 }
 
 //: THE STEP'S OUTPUTS into panel `p` at the tokens' panel rows from their entries' offsets, converted as mode 9's
+//: kRaw adds the f16 words unconverted -- a cost isolation, the values wrong
+template <bool kRaw>
 __device__ __forceinline__ void panel_add_offsets(Shared& sh, int p, const uint32_t (&out)[4][2],
                                                   uint32_t eg, uint32_t e8, float sg, float s8,
                                                   int lane) {
   const uint32_t tq4 = 4u * static_cast<uint32_t>(lane & 3), base = lab::smem(sh.panel[p]) + tq4;
   const uint32_t rg = base + ((eg >> 16) & 0x7fffu), r8 = base + ((e8 >> 16) & 0x7fffu);
   const auto cvt = [](uint32_t h, float sc) {
+    if constexpr (kRaw) return h ^ __float_as_uint(sc);
     const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&h));
     return __byte_perm(__float_as_uint(fmaf(f.x, sc, 12582912.0f)),
                        __float_as_uint(fmaf(f.y, sc, 12582912.0f)), 0x5410);
@@ -322,7 +334,7 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
   for (int i = tid; i < kSlots * kRowBytes / 4; i += kThreads)
     reinterpret_cast<uint32_t*>(sh.rows)[i] = 0x01010101u * static_cast<uint32_t>(1 + (i & 63));
 #pragma unroll 1
-  for (int i = tid; i < 2 * kSlots * kPanelPitch; i += kThreads) (&sh.panel[0][0])[i] = 0u;
+  for (int i = tid; i < 2 * kPanelWords; i += kThreads) (&sh.panel[0][0])[i] = 0u;
 #pragma unroll 1
   for (int i = tid; i < kWarps * kDigits * kMaxSteps * kStep; i += kThreads) {
     (&sh.entries[0][0][0][0])[i] = entries[i];
@@ -331,6 +343,11 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
     (&sh.offsets[0][0][0][0])[i] = static_cast<uint32_t>(at(static_cast<int>(slot), 0))
                                    | (slot * kPanelPitch * 4u) << 16
                                    | (entries[i] == kPad ? 1u << 31 : 0u);
+    //: the conflict-free panel's: a pad's adds go to dummy row 128 + its position mod 8
+    const uint32_t row = entries[i] == kPad ? kSlots + (i % kStep & 7) : slot;
+    (&sh.offsets_free[0][0][0][0])[i] = static_cast<uint32_t>(at(static_cast<int>(slot), 0))
+                                        | (row * kFreePitch * 4u) << 16
+                                        | (entries[i] == kPad ? 1u << 31 : 0u);
   }
   if (tid < 2) {
     lab::mbar_init(lab::smem(&sh.complete[tid]), kThreads);
@@ -415,10 +432,11 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
       }
       spread();
     };
-    if constexpr (MODE == 11) {
+    if constexpr (MODE >= 11) {
       //: mode 9's sequence from the entries' offsets
       constexpr int kItems = kDigits * STEPS;
-      const uint32_t* const off = &sh.offsets[w][0][0][0];
+      const uint32_t* const off =
+          MODE >= 12 ? &sh.offsets_free[w][0][0][0] : &sh.offsets[w][0][0][0];
       const auto entry = [&](int item, int e) {
         return off[((item / STEPS) * kMaxSteps + item % STEPS) * kStep + e];
       };
@@ -442,7 +460,12 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
           for (int x4 = 0; x4 < 4; ++x4) o[c][x4][0] = o[c][x4][1] = 0u;
           mmas<i / STEPS, 1, false>(o[c], den, st, a[c]);
         }
-        if constexpr (i > 0) panel_add_offsets(sh, p, o[n], eg[mp], e8[mp], sg[mp], s8[mp], lane);
+        if constexpr (i > 0 && MODE == 14) {
+#pragma unroll
+          for (int x4 = 0; x4 < 4; ++x4) fold_out += o[n][x4][0] ^ o[n][x4][1];
+        } else if constexpr (i > 0) {
+          panel_add_offsets<MODE == 13>(sh, p, o[n], eg[mp], e8[mp], sg[mp], s8[mp], lane);
+        }
       });
     } else if constexpr (MODE == 9 || MODE == 10) {
       //: mode 8's sequence with A the raw bytes and each token's coefficient applied in the conversion
@@ -573,7 +596,7 @@ void variant(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   const std::string name = lab::kernel("read", {MODE, FORM, STEPS, LIVE});
   b.expect(name, "HMMA.16816.F16", ">=", MODE >= 6 ? 8 : 10);
   b.expect(name, "LDSM", ">=", 1);
-  if (MODE != 0) b.expect(name, "ATOMS", ">=", 8);
+  if (MODE != 0 && MODE != 14) b.expect(name, "ATOMS", ">=", 8);
   if (MODE >= 2 && MODE != 6 && MODE < 8) b.expect(name, "RED", ">=", 1);
   if (MODE >= 1 && MODE <= 7) b.expect(name, "BSSY", ">=", 1);
   if (b.expect_only) return;
@@ -619,6 +642,9 @@ void modes(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   if constexpr (FORM == 0) variant<9, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<10, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<11, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<12, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<13, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<14, FORM, STEPS, LIVE>(b, target, init);
 }
 
 }  // namespace read_step

@@ -358,6 +358,9 @@ THE DEN PASS'S STEP (8 MMAs, den out), its adds issued after the next step's MMA
 | + the coefficient after the MMAs, in the conversion | 12.2K (1.49x) | 3.31K (1.62x) | 2.11K (2.06x) |
 | the same, converted by F2I (an f16 multiply, then the conversion unit) | 12.7K | 3.49K | 2.47K |
 | the coefficient after the MMAs, entries as byte offsets | 12.4K (1.52x) | 3.25K (1.59x) | 1.94K (1.89x) |
+| + the conflict-free panel (20-word rows, pads to their own rows) | 12.4K (1.52x) | 3.26K (1.59x) | 1.67K (1.64x) |
+| isolation: without the conversion (values wrong) | 9.60K (1.17x) | 2.79K (1.36x) | 1.46K (1.43x) |
+| isolation: without the adds (values wrong) | 8.89K (1.09x) | 2.34K (1.14x) | 1.22K (1.19x) |
 
 Merged, adds a step behind: 10.5K (1.28x). The aligned burst drain adds ~1K a pass. The last form converts on the FMA
 pipe (each half to fp32, x 64 + 1.5 x 2^23, the low halves packed: round-to-nearest, exhaustively checked over every
@@ -376,7 +379,18 @@ its panel row and a pad bit, as the facts pass could emit them) bring the step t
 issue fits under the MMAs (two warps 210 against 256 cycles). What remains is the measured tax (KERNEL_STANDARDS 26.3
 a): beside fp16-accumulate MMAs an FP32 instruction costs ~1.0 cycle of the chain, so the conversion's 16 FFMAs and
 the unpack's packed adds and permutes add ~30 cycles to a 128-cycle step -- a tax-inclusive floor of ~1.23x against
-the 1.5x measured at 8 steps a digit. A
+the 1.5x measured at 8 steps a digit.
+
+THE GAP TAKEN APART. The panel's 17-word rows put the 8 tokens of an atomic add on overlapping banks (~3 wavefronts an
+add, 33 a step against 9 without adds); 20-word rows land slots of distinct residue mod 8 on disjoint 4-bank groups (the
+tokens of each step's aligned 8 already hold distinct residues -- the facts pass's residue order), and pads adding zero
+each to slot 0 serialized on one word, so they add to 8 dummy rows: 0 atomic bank conflicts, 17 wavefronts a step,
+-14% at 8 live tokens, nothing at full steps -- shared memory was not what bound them. Removing the conversion (the
+words added raw) or the adds as well isolates the rest: at 8 steps a digit the operands and MMAs run 1.09x, the adds
+take it to 1.17x and the conversion to 1.52x -- 34 of the 52 points; at 2 steps a digit 14 / 22 / 23, at 1 step 19 / 24
+/ 21. The conversion's 40 instructions (16 each to fp32, 16 FFMAs, 8 packs) cost ~44 cycles a warp-step, twice their
+tax: with them a step issues 105 instructions a warp, 82% of the tensor time at two warps a scheduler, and the MMAs
+wait for issue slots as well as paying the tax. A
 per-digit step's gathered slots are distinct (a list never holds a token twice). The gate: `read_step`'s branchy forms
 declare their branches (KERNEL_STANDARDS 27). Records: `measure/lab/results/read_step/sm_86.json`,
 `sm_86.counters.json`.
