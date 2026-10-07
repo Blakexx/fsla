@@ -43,8 +43,9 @@ constexpr int kShare = kSlots / kWarps / 2;
 //: elsewhere), so a request is a token's half line each; 6 no den (the den pass carries it), each step's adds issued
 //: after the next step's MMAs; 7 is 6 with the aligned burst drain; 8 (per digit) is 6 with each step's operands loaded
 //: before the step ahead's MMAs, across digits; 9 is 8 with the token's level-S coefficient applied after the MMAs, in
-//: the conversion (A the raw level-R bytes)
-constexpr int kModes = 10;
+//: the conversion (A the raw level-R bytes); 10 is 9 converting on the conversion unit (an f16 multiply by the token's
+//: scale, then F2I) in place of the FMA pipe
+constexpr int kModes = 11;
 const char* kModeName[kModes] = {"steps alone",
                                  "+ panel adds",
                                  "+ drain, burst at the pass end",
@@ -54,7 +55,8 @@ const char* kModeName[kModes] = {"steps alone",
                                  "no den, adds a step behind",
                                  "no den, adds a step behind, + aligned burst drain",
                                  "no den, operands a step ahead, adds a step behind",
-                                 "no den, operands ahead, adds behind, coefficient after the MMAs"};
+                                 "no den, operands ahead, adds behind, coefficient after the MMAs",
+                                 "the same, converted by F2I"};
 
 //: FORM 0 per digit (a step = one digit's 16 tokens, its outputs added); 1 merged (a step = 16 union tokens, every
 //: digit's MMAs into one accumulator, one add)
@@ -217,15 +219,22 @@ __device__ __forceinline__ void panel_add_masked(Shared& sh, int p, const uint32
 
 //: THE STEP'S OUTPUTS into panel `p` at each token's scale (its coefficient times the unit; zero for a pad, so its
 //: adds are of zero): each half to fp32, x scale + 1.5 x 2^23, the low halves packed
+template <bool kF2i>
 __device__ __forceinline__ void panel_add_scaled(Shared& sh, int p, const uint32_t (&out)[4][2],
                                                  int slot_g, int slot_g8, float sg, float s8,
                                                  int lane) {
   const int tq = lane & 3;
   const uint32_t base = lab::smem(sh.panel[p]);
   const auto cvt = [](uint32_t h, float sc) {
-    const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&h));
-    return __byte_perm(__float_as_uint(fmaf(f.x, sc, 12582912.0f)),
-                       __float_as_uint(fmaf(f.y, sc, 12582912.0f)), 0x5410);
+    if constexpr (kF2i) {
+      const __half2 x = __hmul2(*reinterpret_cast<const __half2*>(&h), __float2half2_rn(sc));
+      const int lo = __half2short_rn(__low2half(x)), hi = __half2short_rn(__high2half(x));
+      return (static_cast<uint32_t>(lo) & 0xffffu) | (static_cast<uint32_t>(hi) << 16);
+    } else {
+      const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&h));
+      return __byte_perm(__float_as_uint(fmaf(f.x, sc, 12582912.0f)),
+                         __float_as_uint(fmaf(f.y, sc, 12582912.0f)), 0x5410);
+    }
   };
 #pragma unroll
   for (int n = 0; n < 4; ++n) {
@@ -359,7 +368,7 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
       }
       spread();
     };
-    if constexpr (MODE == 9) {
+    if constexpr (MODE == 9 || MODE == 10) {
       //: mode 8's sequence with A the raw bytes and each token's coefficient applied in the conversion
       const auto load = [&](int dd, int ss, uint32_t(&an)[2][4], int& rg, int& rg8, float& sg,
                             float& s8) {
@@ -385,7 +394,8 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
           for (int x4 = 0; x4 < 4; ++x4) o[c][x4][0] = o[c][x4][1] = 0u;
           mmas<i / STEPS, 1, false>(o[c], den, st, a[c]);
         }
-        if constexpr (i > 0) panel_add_scaled(sh, p, o[n], rg[mp], rg8[mp], sg[mp], s8[mp], lane);
+        if constexpr (i > 0)
+          panel_add_scaled<MODE == 10>(sh, p, o[n], rg[mp], rg8[mp], sg[mp], s8[mp], lane);
       });
     } else if constexpr (MODE == 8) {
       //: the warp's digit steps as one compile-time sequence, unrolled: rings of operands and outputs (two slots) and of
@@ -531,6 +541,7 @@ void modes(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   variant<7, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<8, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<9, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<10, FORM, STEPS, LIVE>(b, target, init);
 }
 
 }  // namespace read_step

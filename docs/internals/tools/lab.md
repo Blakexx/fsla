@@ -356,6 +356,7 @@ THE DEN PASS'S STEP (8 MMAs, den out), its adds issued after the next step's MMA
 | + no branch: loads unconditional, adds a value masked to zero | 16.9K (2.1x) | 4.60K (2.2x) | 2.32K (2.3x) |
 | + the sequence unrolled: rings at fixed registers | 12.8K (1.56x) | 3.42K (1.67x) | 2.03K (1.99x) |
 | + the coefficient after the MMAs, in the conversion | 12.2K (1.49x) | 3.31K (1.62x) | 2.11K (2.06x) |
+| the same, converted by F2I (an f16 multiply, then the conversion unit) | 12.7K | 3.49K | 2.47K |
 
 Merged, adds a step behind: 10.5K (1.28x). The aligned burst drain adds ~1K a pass. The last form converts on the FMA
 pipe (each half to fp32, x 64 + 1.5 x 2^23, the low halves packed: round-to-nearest, exhaustively checked over every
@@ -368,7 +369,8 @@ the raw bytes, unpacked by PRMT less 1024, and the coefficient times the unit ri
 scale zero, so nothing is masked) issues 118 a digit-step; the rest is the conversion (40: each half to fp32, the
 FFMA, the pack, for 16 values a step), the unpack (16), the MMAs and adds (16) and addresses. A shared f16x2 atomic
 (`red.shared.add.noftz.f16x2`) compiles on sm_86 to a compare-and-swap loop (`ATOMS.CAST.SPIN`), not an add, so an
-f16 panel is no way around the conversion here. A
+f16 panel is no way around the conversion here. Converting by F2I instead (24 instructions a step against the FMA path's 40) is slower at every
+density: the quarter-rate conversion unit binds before issue does. A
 per-digit step's gathered slots are distinct (a list never holds a token twice). The gate: `read_step`'s branchy forms
 declare their branches (KERNEL_STANDARDS 27). Records: `measure/lab/results/read_step/sm_86.json`,
 `sm_86.counters.json`.
