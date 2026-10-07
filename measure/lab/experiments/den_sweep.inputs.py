@@ -5,8 +5,9 @@
 
 A file is a header of six int32 -- the magic word 0x314E4544, tokens, the level-S index, whether level R's write side
 is sparse, whether level S's read side is sparse, the window -- then level S's write plane and level R's write plane as
-f16 (a u8 plane's values exact), level S's read plane and level R's read plane as u8, and the write gain (`fm`'s m) as
-fp32, each `[tokens][256]` but the gain. Level R is the list level of `rola.ops.facts`, level S the other.
+f16 (a u8 plane's values exact), level S's read plane and level R's read plane as u8, then `fm`'s write gain m and its
+F = m x the token's value scale (its largest value channel's magnitude) as fp32, each `[tokens][256]` but the gains.
+Level R is the list level of `rola.ops.facts`, level S the other.
 """
 from __future__ import annotations
 
@@ -38,7 +39,8 @@ def write(directory: Path) -> list[str]:
         header = struct.pack("<6i", 0x314E4544, spec.tokens, level_s, sparse_write, sparse_read, WINDOW)
         body = [plane(routes.amp_write[level_s], torch.float16), plane(routes.amp_write[level_r], torch.float16),
                 plane(routes.amp_read[level_s], torch.uint8), plane(routes.amp_read[level_r], torch.uint8),
-                facts.fm[0, :, 1].float().contiguous().cpu().numpy().astype(np.float32)]
+                facts.fm[0, :, 1].float().contiguous().cpu().numpy().astype(np.float32),
+                facts.fm[0, :, 0].float().contiguous().cpu().numpy().astype(np.float32)]
         (directory / f"{name}.den").write_bytes(header + b"".join(a.tobytes() for a in body))
         files.append(f"{name}.den")
         torch.cuda.empty_cache()
