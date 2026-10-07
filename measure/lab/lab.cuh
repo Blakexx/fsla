@@ -191,6 +191,16 @@ __device__ __forceinline__ void mbar_wait(uint32_t a, uint32_t parity) {
       : "memory");
 }
 
+//: A NAMED BARRIER (ids 1-15; 0 is `__syncthreads`'s): `count` threads, a multiple of 32, complete it; `bar_sync`
+//: arrives and waits, `bar_arrive` arrives and goes on
+__device__ __forceinline__ void bar_sync(int id, int count) {
+  asm volatile("bar.sync %0, %1;" ::"r"(id), "r"(count) : "memory");
+}
+
+__device__ __forceinline__ void bar_arrive(int id, int count) {
+  asm volatile("bar.arrive %0, %1;" ::"r"(id), "r"(count) : "memory");
+}
+
 //: the same, asked once: has the phase of parity `parity` completed?
 __device__ __forceinline__ bool mbar_test(uint32_t a, uint32_t parity) {
   uint32_t ok;

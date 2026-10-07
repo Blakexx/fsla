@@ -825,6 +825,19 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
    t. A SHARED ATOMIC IS THE LARGER OF 2 CYCLES AN INSTRUCTION AND 1 A WAVEFRONT (`smem_rates`): `red.shared.add` with
       1, 2 or 4 wavefronts a warp costs 2, 2, 4 cycles an instruction on the SM; loads (`ld.shared.v4`, `ldmatrix.x4`)
       a wavefront a cycle, the documented bank rate.
+   u. THE TAX HOLDS IN A KERNEL, AND THE INTEGER CLASS IS HALF RATE (`read_step` modes 12-18, counters): the per-list
+      readout's fp16 -> s16 conversion (16 `HADD2.F32`, 16 `FFMA`, 8 `PRMT` a warp-step) costs 0.345 of the step's
+      MMA floor -- 0.08 the output-to-atomic chain's latency, 0.26 the instructions, linear in their count, of which
+      the tensor_tax rates price 0.155 and issue pressure the rest. `LOP3`/`PRMT` run at half rate on sm_86 (16 lanes):
+      as many of them load the ALU pipe past the floor (1.66x / 1.76x against 1.52x).
+   v. PTXAS PLACES THE MMAs, AND THE SCHEDULER DOES NOT FAVOR A READY ONE (`read_step` modes 19-21, ncu source
+      counters): ptxas bursts a step's independent MMAs (the readout: 24 back to back, then ~200 instructions without
+      one) whatever the source order, and named barriers fence memory only -- a turn-taking pair (`bar.sync`, the MMAs,
+      `bar.arrive`) compiles with the MMAs outside it (1.73x). Per-instruction samples: a ready MMA loses the issue slot
+      to the other warp 6.7% of warp time (~13% of a scheduler's cycles, the pipe free). A zero-valued dependency
+      (MMA j reads output word j - 1 masked by a run-time zero) cuts the longest MMA-free run 208 -> 83 instructions
+      and those losses to 3.8%, for 1.52x -> 1.49x; tied both ways (each word also reads an MMA's output) the MMA
+      latency lands on the chain (1.55x).
 
 ## §27 — A STEP IS ONE BLOCK, INTERLEAVED BY CONSTRUCTION (law, 2026-10-06, from Blake's "we should have lints and sass checks that enforce we properly interleave loops by default, and only override if justified")
 The per-list readout ran 3.2x its MMA floor and the cause was the shape of its code, not the hardware: branches the
@@ -841,10 +854,12 @@ scheduler") and was not applied. So the step's shape is a rule, the default, enf
    length is compile-time); never rotated by copies in a rolled loop.
 5. THE OUTER DYNAMIC LOOP IS `#pragma unroll 1` AND ITS BODY IS THE UNROLLED STAGES: a remainder is padded to the
    ring period with a masked step, or peeled outside the steady-state block.
+6. AN INTERLEAVE IS A PROPERTY OF THE SASS: read it there, never from the source. ptxas places register-only
+   instructions; a data dependency is the only lever that places an MMA, and a zero-valued one costs an instruction.
 ENFORCED: `tools/sass_gate.py` reds a convergence barrier or a forward conditional branch in the innermost loop that
 issues MMAs (§20), on every function of every build; the kernels built before the rule are its named debts, each
 with what replaces it, and the list only shrinks. `tools/lab.py` refuses a lab number whose step branches unless
 the experiment declares them (an expectation on BSSY: a comparison baseline kept on purpose). The burst tier's lint
 (§24) holds the source side: no data-dependent `if` inside a burst function, `@burst-exempt <reason>` the only way
-out. Register moves per MMA in a step (the copy-rotation signature) are reported, and gate once a lab fixes the bound.
-Measured: §26.3 s.
+out. Register moves per MMA in a step (the copy-rotation signature) and the MMA gap (the longest MMA-free run in the
+step loop's body, and around it) are reported, and gate once a lab fixes the bound. Measured: §26.3 s, u, v.

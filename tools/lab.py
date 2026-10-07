@@ -299,11 +299,14 @@ def show_sass(name: str, pattern: str | None, full: bool) -> int:
     path = experiments()[name]
     binary = build(path, device_arch())
     table = kernels(binary)
+    sigs = signatures(binary)
     for k, info in table.items():
         if pattern and not re.search(pattern, k):
             continue
         top = ", ".join(f"{op} {n}" for op, n in Counter(info["ops"]).most_common(10))
-        print(f"{k}\n  {info.get('regs')} registers; {top}")
+        sig = sigs.get(k, {})
+        gap = f", MMA gap {sig['mma_gap']} (around the loop {sig['mma_gap_around']})" if sig.get("mma_gap_around") else ""
+        print(f"{k}\n  {info.get('regs')} registers{gap}; {top}")
     if full:
         print(subprocess.run([dev_config.cuda_bin("cuobjdump"), "-sass", str(binary)], capture_output=True,
                              text=True, check=True).stdout)

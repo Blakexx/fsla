@@ -365,6 +365,9 @@ THE DEN PASS'S STEP (8 MMAs, den out), its adds issued after the next step's MMA
 | isolation: half the values converted | 11.4K (1.39x) | 2.96K (1.44x) | 1.54K (1.51x) |
 | isolation: the conversion replaced by as many dependent LOP3/PRMT | 13.6K (1.66x) | 3.78K (1.85x) | 1.76K (1.72x) |
 | isolation: those integer operations independent of the outputs | 14.4K (1.76x) | 3.69K (1.80x) | 1.95K (1.90x) |
+| 12, MMA j reading output word j - 1 masked to zero | 12.2K (1.49x) | 3.15K (1.54x) | 1.75K (1.71x) |
+| the same, each word also reading an MMA's output | 12.7K (1.55x) | 3.24K (1.58x) | 1.77K (1.73x) |
+| 12, a scheduler's two warps taking turns at the MMAs (named barriers) | 14.2K (1.73x) | 3.60K (1.76x) | 1.89K (1.85x) |
 
 Merged, adds a step behind: 10.5K (1.28x). The aligned burst drain adds ~1K a pass. The last form converts on the FMA
 pipe (each half to fp32, x 64 + 1.5 x 2^23, the low halves packed: round-to-nearest, exhaustively checked over every
@@ -408,9 +411,22 @@ The integer class is no escape on sm_86: LOP3 and PRMT run at half rate (16 lane
 pipe past the floor (ncu: 67.7% of its peak at 1.76x, 119% of the floor's time) -- in the chain 1.66x, off it 1.76x.
 At 2 steps a digit the same split: chain 0.055, instructions 0.17.
 
+THE INTERLEAVE IS PTXAS'S. Mode 12's SASS bursts 24 MMAs (about 4 instructions apart), then runs ~200 instructions
+without one. Written MMA by MMA in the source (each MMA, then one of the last step's output words), the SASS came out
+identical to 12's. Per-instruction samples (ncu source counters) put a warp at an MMA 49% of the time -- 28% waiting
+on the busy tensor pipe, 7% ready but not selected while the other warp issued (~13% of a scheduler's cycles with
+the pipe free) -- and the conversion mostly issuing: no instruction class favors a ready MMA. A zero-valued
+dependency places the MMAs (MMA j's accumulator takes output word j - 1 ANDed with a run-time zero, `passes >> 31`):
+the longest MMA-free run in the step falls from 208 to 83 instructions, not-selected MMAs to 3.8%, and the step to
+1.49x. Tied both ways (each word also reads an MMA's output) it falls to 54, but the MMA latency joins the chain:
+1.55x. Turn-taking -- the two warps of a scheduler alternating at a step's MMAs under named barriers (`bar.sync`,
+MMAs, `bar.arrive`), each converting while the other's MMAs run -- does not survive ptxas: the barriers fence memory
+only, the MMAs move outside them, and the barriers cost 1.73x. `tools/sass_gate.py` reports the MMA gap (the longest
+run in a step loop's body, and around it) and `lab.py sass` prints it.
+
 A per-digit step's gathered slots are distinct (a list never holds a token twice). The gate: `read_step`'s branchy
 forms declare their branches (KERNEL_STANDARDS 27). Records: `measure/lab/results/read_step/sm_86.json`,
-`sm_86.counters.json`.
+`sm_86.counters.json`, `sm_86.source.json` (the per-instruction samples, by class and stall reason).
 
 <a id="publish-rounds"></a>
 

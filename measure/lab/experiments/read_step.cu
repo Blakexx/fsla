@@ -52,27 +52,34 @@ constexpr int kShare = kSlots / kWarps / 2;
 //: panel (20-word rows, each step's tokens of distinct slot residue mod 8, pads to their own dummy rows); 13 and 14 are
 //: cost isolations of 12, their values wrong: 13 adds the f16 words unconverted, 14 adds nothing (the outputs folded);
 //: 15 converts by as many dependent integer operations, 16 issues the conversion on values independent of the outputs
-//: and adds the words raw, 17 converts half the values, 18 is 16 with 15's integer operations
-constexpr int kModes = 19;
-const char* kModeName[kModes] = {"steps alone",
-                                 "+ panel adds",
-                                 "+ drain, burst at the pass end",
-                                 "+ drain, double panel, spread",
-                                 "+ drain, burst, aligned rows, no den",
-                                 "+ drain, spread, aligned rows, no den",
-                                 "no den, adds a step behind",
-                                 "no den, adds a step behind, + aligned burst drain",
-                                 "no den, operands a step ahead, adds a step behind",
-                                 "no den, operands ahead, adds behind, coefficient after the MMAs",
-                                 "the same, converted by F2I",
-                                 "the same as 9, entries as byte offsets",
-                                 "the same as 11, conflict-free panel",
-                                 "isolation: 12 without the conversion",
-                                 "isolation: 12 without the adds",
-                                 "isolation: 12 converting by as many dependent LOP3/PRMT",
-                                 "isolation: 12 with the conversion independent of the outputs",
-                                 "isolation: 12 converting half the values",
-                                 "isolation: 16 with the integer operations of 15"};
+//: and adds the words raw, 17 converts half the values, 18 is 16 with 15's integer operations; 19 is 12 with each MMA
+//: followed by one of the last step's output words, held in that order by a dependency (written in the source order
+//: alone, ptxas compiled it to 12's SASS); 20 holds it both ways; 21 is 12 with the two warps of a scheduler taking
+//: turns at their steps' MMAs (named barriers), each converting and adding while the other's MMAs run
+constexpr int kModes = 22;
+const char* kModeName[kModes] = {
+    "steps alone",
+    "+ panel adds",
+    "+ drain, burst at the pass end",
+    "+ drain, double panel, spread",
+    "+ drain, burst, aligned rows, no den",
+    "+ drain, spread, aligned rows, no den",
+    "no den, adds a step behind",
+    "no den, adds a step behind, + aligned burst drain",
+    "no den, operands a step ahead, adds a step behind",
+    "no den, operands ahead, adds behind, coefficient after the MMAs",
+    "the same, converted by F2I",
+    "the same as 9, entries as byte offsets",
+    "the same as 11, conflict-free panel",
+    "isolation: 12 without the conversion",
+    "isolation: 12 without the adds",
+    "isolation: 12 converting by as many dependent LOP3/PRMT",
+    "isolation: 12 with the conversion independent of the outputs",
+    "isolation: 12 converting half the values",
+    "isolation: 16 with the integer operations of 15",
+    "the same as 12, an MMA then an output word, held by a dependency",
+    "the same, held both ways",
+    "the same as 12, the scheduler's two warps taking turns at the MMAs"};
 
 //: FORM 0 per digit (a step = one digit's 16 tokens, its outputs added); 1 merged (a step = 16 union tokens, every
 //: digit's MMAs into one accumulator, one add)
@@ -281,8 +288,6 @@ __device__ __forceinline__ void panel_add_scaled(Shared& sh, int p, const uint32
   }
 }
 
-//: THE STEP'S OUTPUTS into panel `p` at the tokens' panel rows from their entries' offsets, converted as mode 9's
-//: kRaw adds the f16 words unconverted -- a cost isolation, the values wrong
 __device__ __forceinline__ uint32_t lop3v(uint32_t a, uint32_t b, uint32_t c) {
   uint32_t d;
   asm volatile("lop3.b32 %0, %1, %2, %3, 0x96;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
@@ -295,41 +300,48 @@ __device__ __forceinline__ uint32_t prmtv(uint32_t a, uint32_t b) {
   return d;
 }
 
-//: VAR 0 converts on the FMA pipe; the cost isolations (values wrong): 1 adds the f16 words raw; 2 replaces each pair's
-//: conversion by as many dependent integer operations (LOP3, PRMT: the cheapest beside an MMA chain); 3 adds the words
-//: each word XORed with its pair's conversion computed on values independent of the outputs; 4 converts the first two
-//: n-tiles and adds the rest raw; 5 is 3 with 2's integer operations
+//: a token's row in panel `p` from its entry's offset, at the lane's channel pair
+__device__ __forceinline__ uint32_t panel_row(Shared& sh, int p, uint32_t e, int lane) {
+  return lab::smem(sh.panel[p]) + 4u * static_cast<uint32_t>(lane & 3) + ((e >> 16) & 0x7fffu);
+}
+
+//: AN OUTPUT WORD (an f16 pair, n-tile `n`) AS ITS S16 PAIR at scale `sc`: VAR 0 on the FMA pipe; the cost isolations
+//: (values wrong): 1 the word raw; 2 as many dependent integer operations (LOP3, PRMT: the cheapest beside an MMA
+//: chain); 3 the word XORed with the conversion computed on values independent of the outputs; 4 n-tiles 0-1
+//: converted, 2-3 raw; 5 is 3 with 2's integer operations
+template <int VAR>
+__device__ __forceinline__ uint32_t convert(uint32_t h, float sc, int n) {
+  const auto fma_cvt = [](uint32_t x, float s) {
+    const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&x));
+    return __byte_perm(__float_as_uint(fmaf(f.x, s, 12582912.0f)),
+                       __float_as_uint(fmaf(f.y, s, 12582912.0f)), 0x5410);
+  };
+  const auto int_cvt = [](uint32_t x, uint32_t b) {
+    uint32_t t = lop3v(x, b, 0x55555555u);
+    t = prmtv(t, x);
+    t = lop3v(t, b, 0x0f0f0f0fu);
+    t = lop3v(t, x, 0x33333333u);
+    return prmtv(t, b);
+  };
+  const uint32_t b = __float_as_uint(sc), off = b ^ (0x3c003c00u + 0x00010001u * n);
+  if constexpr (VAR == 0) return fma_cvt(h, sc);
+  if constexpr (VAR == 1) return h ^ b;
+  if constexpr (VAR == 2) return int_cvt(h, b);
+  if constexpr (VAR == 3) return h ^ fma_cvt(off, sc);
+  if constexpr (VAR == 5) return h ^ int_cvt(off, b);
+  return n < 2 ? fma_cvt(h, sc) : h ^ b;
+}
+
+//: THE STEP'S OUTPUTS into panel `p` at the tokens' panel rows from their entries' offsets
 template <int VAR>
 __device__ __forceinline__ void panel_add_offsets(Shared& sh, int p, const uint32_t (&out)[4][2],
                                                   uint32_t eg, uint32_t e8, float sg, float s8,
                                                   int lane) {
-  const uint32_t tq4 = 4u * static_cast<uint32_t>(lane & 3), base = lab::smem(sh.panel[p]) + tq4;
-  const uint32_t rg = base + ((eg >> 16) & 0x7fffu), r8 = base + ((e8 >> 16) & 0x7fffu);
-  const auto fma_cvt = [](uint32_t h, float sc) {
-    const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&h));
-    return __byte_perm(__float_as_uint(fmaf(f.x, sc, 12582912.0f)),
-                       __float_as_uint(fmaf(f.y, sc, 12582912.0f)), 0x5410);
-  };
-  const auto int_cvt = [](uint32_t h, uint32_t b) {
-    uint32_t t = lop3v(h, b, 0x55555555u);
-    t = prmtv(t, h);
-    t = lop3v(t, b, 0x0f0f0f0fu);
-    t = lop3v(t, h, 0x33333333u);
-    return prmtv(t, b);
-  };
-  const auto cvt = [&](uint32_t h, float sc, int n) {
-    const uint32_t b = __float_as_uint(sc), off = b ^ (0x3c003c00u + 0x00010001u * n);
-    if constexpr (VAR == 0) return fma_cvt(h, sc);
-    if constexpr (VAR == 1) return h ^ b;
-    if constexpr (VAR == 2) return int_cvt(h, b);
-    if constexpr (VAR == 3) return h ^ fma_cvt(off, sc);
-    if constexpr (VAR == 5) return h ^ int_cvt(off, b);
-    return n < 2 ? fma_cvt(h, sc) : h ^ b;
-  };
+  const uint32_t rg = panel_row(sh, p, eg, lane), r8 = panel_row(sh, p, e8, lane);
 #pragma unroll
   for (int n = 0; n < 4; ++n) {
-    red_shared(rg + 16 * n, cvt(out[n][0], sg, n));
-    red_shared(r8 + 16 * n, cvt(out[n][1], s8, n));
+    red_shared(rg + 16 * n, convert<VAR>(out[n][0], sg, n));
+    red_shared(r8 + 16 * n, convert<VAR>(out[n][1], s8, n));
   }
 }
 
@@ -411,6 +423,10 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
       st.mass[d][kk][1] = mine[192 + (d * 2 + kk) * 2 + 1];
     }
   uint32_t fold_out = 0u;
+  //: mode 21's turns: warps w and w + 4 share a scheduler and take turns issuing a step's MMAs, w first
+  [[maybe_unused]] const int turn = 1 + 2 * (w & 3) + (w >> 2),
+                             yield = 1 + 2 * (w & 3) + 1 - (w >> 2);
+  if (MODE == 21 && w >= 4) lab::bar_arrive(yield, 64);
   lab::WarpSpan clock;
   clock.start();
 #pragma unroll 1
@@ -479,6 +495,9 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
       };
       uint32_t a[2][2][4], o[2][4][2], eg[3] = {}, e8[3] = {};
       float sg[3] = {}, s8[3] = {};
+      //: mode 19's order words, zero at run time (`passes` > 0) but not to ptxas
+      [[maybe_unused]] uint32_t order[8] = {};
+      [[maybe_unused]] const uint32_t zero = static_cast<uint32_t>(passes) >> 31;
       eg[0] = entry(0, g);
       e8[0] = entry(0, g + 8);
       step_a_offsets<0>(a[0], sg[0], s8[0], sh, entry(0, 8 * (q & 1) + r), eg[0], e8[0], q >> 1);
@@ -491,16 +510,44 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
           step_a_offsets<(i + 1) / STEPS>(a[n], sg[mn], s8[mn], sh, entry(i + 1, 8 * (q & 1) + r),
                                           eg[mn], e8[mn], q >> 1);
         }
-        if constexpr (i < kItems) {
-          uint32_t den[2] = {};
+        if constexpr (MODE == 19 || MODE == 20) {
+          //: MMA j, then the last step's output word j; MMA j reads word j - 1 masked to zero, which keeps it there, and
+          //: in 20 word j reads MMA j - 2's output so masked as well
+          static_for<8>([&](auto J) {
+            constexpr int j = decltype(J)::value;
+            [[maybe_unused]] constexpr int kk = j >> 2, t = j & 3;
+            if constexpr (i < kItems) {
+              const uint32_t d = order[(j + 7) & 7];
+              if constexpr (kk == 0) {
+                o[c][t][0] = d;
+                o[c][t][1] = 0u;
+              } else {
+                o[c][t][0] ^= d;
+              }
+              lab::mma_f16_f16(o[c][t], a[c][kk], st.b[i / STEPS][kk][t][0],
+                               st.b[i / STEPS][kk][t][1]);
+            }
+            if constexpr (i > 0) {
+              uint32_t h = o[n][j >> 1][j & 1];
+              if constexpr (MODE == 20 && i < kItems && j >= 2) h ^= o[c][(j - 2) & 3][0] & zero;
+              if constexpr (MODE == 20 && i < kItems && j < 2) h ^= o[n][(j + 6) & 3][1] & zero;
+              const uint32_t word = convert<0>(h, (j & 1) ? s8[mp] : sg[mp], j >> 1);
+              red_shared(panel_row(sh, p, (j & 1) ? e8[mp] : eg[mp], lane) + 16 * (j >> 1), word);
+              order[j] = word & zero;
+            }
+          });
+        } else if constexpr (i < kItems) {
 #pragma unroll
           for (int x4 = 0; x4 < 4; ++x4) o[c][x4][0] = o[c][x4][1] = 0u;
+          uint32_t den[2] = {};
+          if constexpr (MODE == 21) lab::bar_sync(turn, 64);
           mmas<i / STEPS, 1, false>(o[c], den, st, a[c]);
+          if constexpr (MODE == 21) lab::bar_arrive(yield, 64);
         }
         if constexpr (i > 0 && MODE == 14) {
 #pragma unroll
           for (int x4 = 0; x4 < 4; ++x4) fold_out += o[n][x4][0] ^ o[n][x4][1];
-        } else if constexpr (i > 0) {
+        } else if constexpr (i > 0 && MODE != 19 && MODE != 20) {
           constexpr int kVar = MODE == 13   ? 1
                                : MODE == 15 ? 2
                                : MODE == 16 ? 3
@@ -605,6 +652,8 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
     for (int i = 0; i < kShare; ++i)
       drain_request<MODE >= 4>(sh, (passes - 1) & 1, target, passes - 1, i, lane);
   }
+  //: the second warp's last turn back, so every named barrier ends complete
+  if (MODE == 21 && w < 4) lab::bar_sync(turn, 64);
   clock.stop(t);
   uint32_t f = fold_out;
 #pragma unroll
@@ -692,6 +741,9 @@ void modes(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   if constexpr (FORM == 0) variant<16, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<17, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<18, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<19, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<20, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<21, FORM, STEPS, LIVE>(b, target, init);
 }
 
 }  // namespace read_step

@@ -122,12 +122,7 @@ _STEP_BRANCH_DEBT = {
 }
 
 
-def mma_loop_branches(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> int:
-    """KERNEL_STANDARDS 27: the branches inside a step -- the innermost loops that issue MMAs (a loop a backward branch,
-    its body the lines from its target to it, innermost when no other backward branch lies inside); a branch a
-    convergence barrier (BSSY) or a forward conditional BRA in such a body (the BRA.DIV / BRA.CONV guards of a
-    collective's cold fallback not counted). Each one ends ptxas's scheduling block inside the step. Targets resolve as
-    `convergence_calls`' do."""
+def _resolver(lines: list[tuple[int, str, str, str]], labels: dict[str, int]):
     at = {addr: k for k, (addr, _, _, _) in enumerate(lines)}
 
     def resolve(operands: str) -> int | None:
@@ -135,17 +130,44 @@ def mma_loop_branches(lines: list[tuple[int, str, str, str]], labels: dict[str, 
         label = re.search(r"\(([^)]+)\)", operands)
         return at.get(int(address.group(1), 16)) if address else labels.get(label.group(1)) if label else None
 
+    return resolve
+
+
+def mma_loops(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> list[tuple[int, int]]:
+    """The innermost loops that issue MMAs, as (first line, backward branch): a loop a backward branch, its body the
+    lines from its target to it, innermost when no other backward branch lies inside. Targets resolve as
+    `convergence_calls`' do."""
+    resolve = _resolver(lines, labels)
     back = []
     for k, (_, opcode, operands, predicate) in enumerate(lines):
         target = resolve(operands) if opcode == "BRA" and predicate != _NEVER else None
         if target is not None and target <= k:
             back.append((target, k))
+    return [(target, k) for target, k in back
+            if not any(target <= t and kk < k for t, kk in back if (t, kk) != (target, k))
+            and any(_MMA.match(x[1]) for x in lines[target:k + 1])]
+
+
+def mma_gap(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> tuple[int, int]:
+    """KERNEL_STANDARDS 27's interleave as ptxas emitted it: the longest run of instructions without an MMA in an
+    innermost MMA loop's body, and the run around the loop (its tail into its head -- a rolled step loop's own gap, an
+    unrolled one's fill and drain). In-order issue makes a run the time a warp leaves the tensor pipe to the
+    scheduler's other warps."""
+    inside = around = 0
+    for target, k in mma_loops(lines, labels):
+        at = [j for j in range(target, k + 1) if _MMA.match(lines[j][1])]
+        inside = max(inside, *(b - a - 1 for a, b in zip(at, at[1:])), 0)
+        around = max(around, k - target - (at[-1] - at[0]))
+    return inside, around
+
+
+def mma_loop_branches(lines: list[tuple[int, str, str, str]], labels: dict[str, int]) -> int:
+    """KERNEL_STANDARDS 27: the branches inside a step -- a convergence barrier (BSSY) or a forward conditional BRA in an
+    innermost MMA loop (`mma_loops`; the BRA.DIV / BRA.CONV guards of a collective's cold fallback not counted). Each
+    one ends ptxas's scheduling block inside the step."""
+    resolve = _resolver(lines, labels)
     found = set()
-    for target, k in back:
-        if any(target <= t and kk < k for t, kk in back if (t, kk) != (target, k)):
-            continue
-        if not any(_MMA.match(x[1]) for x in lines[target:k + 1]):
-            continue
+    for target, k in mma_loops(lines, labels):
         for j in range(target, k):
             _, op, ops, pred = lines[j]
             if pred == _NEVER:
@@ -194,6 +216,7 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
         ldl = sum(1 for i in ins if re.search(r"\b(LDL|STL)\b", i))
         calls, guarded = convergence_calls(whole[name], labels[name])
         branches = mma_loop_branches(whole[name], labels[name])
+        gap, around = mma_gap(whole[name], labels[name])
         phmma = sum(1 for i in ins if re.match(r"@!?P\d+ HMMA", i))
         hmma = sum(1 for i in ins if " HMMA" in i or i.startswith("HMMA"))
         per = (n / hmma) if hmma else float("nan")
@@ -213,11 +236,11 @@ def gate(cubin: Path, kernel: str | None, max_per_hmma: float | None) -> tuple[b
         ok &= not reds
         STATS[name] = {"instr": n, "hmma": hmma, "per_hmma": None if not hmma else round(per, 2), "ldl": ldl,
                        "stack": stack, "calls": calls, "guarded": guarded, "pred_hmma": phmma,
-                       "mma_loop_branches": branches, "reds": reds}
+                       "mma_loop_branches": branches, "mma_gap": gap, "mma_gap_around": around, "reds": reds}
         short = name[:70]
         report.append(f"{'RED ' if reds else 'ok  '} {short}: instr {n} hmma {hmma} per-hmma {per:.1f} "
                       f"ldl {ldl} stack {stack} calls {calls} guarded {guarded} predHMMA {phmma} "
-                      f"mma-loop-branches {branches}"
+                      f"mma-loop-branches {branches} mma-gap {gap} around {around}"
                       + (" :: " + "; ".join(reds) if reds else ""))
     return ok, "\n".join(report)
 
