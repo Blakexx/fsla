@@ -209,16 +209,6 @@ The carve is expressed in THESE units, not warps.
 per-CTA reserve the driver takes off the top; the
 residency condition is on smem_per_cta + this
 
-<a id="tensor-f32-accum-pct"></a>
-### `tensor_f32_accum_pct`
-
-fp32-accumulate tensor rate as a percentage of
-the fp16-accumulate rate.  50 on consumer
-Ampere/Ada, 100 on GA100.  Not a branch: it is
-why a tensor-bound baseline (FA) is flattered by
-a consumer part and ratios must be quoted from
-the target.
-
 <a id="note-l125"></a>
 ### near line 125
 
@@ -232,7 +222,7 @@ Field order, for every row below:
      |      FACT: mma_unit_threads, smem_per_sm, smem_per_cta_max,
                   smem_granularity, regs_per_sm, regs_per_lane_max,
                   reg_alloc_unit, max_threads_per_sm, max_ctas_per_sm,
-                  driver_smem_reserve, tensor_f32_accum_pct
+                  driver_smem_reserve
 
 <a id="caps-of-note-l147"></a>
 ### in `caps_of`, near line 147

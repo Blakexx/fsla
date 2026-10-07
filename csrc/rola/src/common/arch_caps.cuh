@@ -53,7 +53,6 @@ struct Caps {
   int max_threads_per_sm;
   int max_ctas_per_sm;
   int driver_smem_reserve;  // per-CTA reserve the driver takes off the top; the residency condition is on smem_per_cta + ... see docs/internals/common/arch_caps.md#driver-smem-reserve
-  int tensor_f32_accum_pct;  // fp32-accumulate tensor rate as a percentage of the fp16-accumulate rate. 50 on consumer ... see docs/internals/common/arch_caps.md#tensor-f32-accum-pct
 };
 
 //: The RATIFIED SET.  A compute capability that is not a row here fails the -- see docs/internals/common/arch_caps.md#tabulated
@@ -66,22 +65,22 @@ constexpr bool tabulated(int cc) {
 constexpr Caps caps_of(int cc) {
   return cc == 800   ? Caps{800,   true,  true, true,  true,  true,  true, true,   false,
                           false, false, true, false, false, false, 32,   167936, 166912,
-                          128,   65536, 255,  256,   2048,  32,    1024, 100}
+                          128,   65536, 255,  256,   2048,  32,    1024}
          : cc == 870 ? Caps{870,   true,  true, true,  true,  true,  true, true,   false,
                             false, false, true, false, false, false, 32,   167936, 166912,
-                            128,   65536, 255,  256,   1536,  16,    1024, 50}
+                            128,   65536, 255,  256,   1536,  16,    1024}
          : cc == 890 ? Caps{890,   true,  true, true,  true,  true,  true, true,   false,
                             false, false, true, false, false, false, 32,   102400, 101376,
-                            128,   65536, 255,  256,   1536,  24,    1024, 50}
+                            128,   65536, 255,  256,   1536,  24,    1024}
          : cc == 900
              // sm_90 TABULATED, NOT BUILT; see docs/internals/common/arch_caps.md#caps-of-note-l147
              ? Caps{900,   true,  true, true, true, true, true, false,  false,
                     false, true,  true, true, true, true, 128,  233472, 232448,
-                    128,   65536, 255,  256,  2048, 32,   1024, 100}
+                    128,   65536, 255,  256,  2048, 32,   1024}
              : Caps{
                    860,   true,  true, true,  true,  true,  true, true,   false,  // sm_86: local dev (GA102)
                    false, false, true, false, false, false, 32,   102400, 101376, 128,
-                   65536, 255,   256,  1536,  16,    1024,  50};
+                   65536, 255,   256,  1536,  16,    1024};
 }
 
 constexpr bool supported(const Caps& c) {  // conjunction of REQUIRED; see arch_caps.md#note-l163

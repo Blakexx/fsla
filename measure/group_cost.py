@@ -4,12 +4,12 @@
 aligned groups of g (a group's tokens the union of its digits' lists, every digit's MMAs over that union; g = 1 per
 list, g = 4 merged), as the MAX of its components -- tensor cycles and issue a scheduler, shared-memory cycles the SM --
 for the even carve's readout (fp16 accumulate, den out of the readout) and fold (fp32 accumulate, the mass out of the
-fold). The constants come from the `read_step` and `list_fold` lab records (docs/internals/tools/lab.md#read-step,
-#list-fold): issue and shared wavefronts a step from their ncu counters, an atomic wavefront's cycles from the timing of
-the adds. Then the probe cells' own lists priced under fixed g, the best of {1, 4} a warp (today's readout choice), the
-best of {1, 2, 4} a warp, and the best combination over a CTA's warps.
+fold). The counts a step (issue, shared wavefronts) come from the `read_step` and `list_fold` lab records' ncu counters
+(docs/internals/tools/lab.md#read-step, #list-fold), the rates (an MMA, a load wavefront, a shared atomic) from
+`common/arch_rates.cuh` for `--arch` (sm_86 by default). Then the probe cells' own lists priced under fixed g, the best
+of {1, 4} a warp (today's readout choice), the best of {1, 2, 4} a warp, and the best combination over a CTA's warps.
 
-    python -m measure.group_cost
+    python -m measure.group_cost [--arch 800]
 """
 from __future__ import annotations
 
@@ -20,16 +20,18 @@ from pathlib import Path
 
 import numpy as np
 
+from measure import arch_rates
+
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS = ROOT / "measure" / "lab" / "results"
 WARPS, SCHEDULERS, DIGITS, STEP, WINDOW, SLICE = 8, 4, 4, 16, 512, 32
 #: the labs' launch: a CTA an SM, 400 passes
 PASSES = 400
-#: sm_86's MMA rates a scheduler (docs/internals/tools/lab.md: f16 x f16 with fp16 accumulate 16 cycles, fp32 32)
-F16_ACC, F32_ACC = 16, 32
 #: MMAs a digit a step on the even carve (32 x 32 of a digit: two 16-row or two k16 halves x four 8-channel n-tiles)
 MMAS = 8
 GROUPS = (1, 2, 4)
+#: a panel add's atomic instructions: 16 tokens x 32 channels as s16 pairs over 32 lanes
+ATOMICS_AN_ADD = 8
 
 
 @dataclass(frozen=True)
@@ -57,8 +59,16 @@ def _per_warp_pass(counters: dict, kernel: str, metric: str, sms: int) -> float:
 INST, WAVES = "smsp__inst_executed.sum", "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum"
 
 
-def calibrate(sms: int) -> tuple[Phase, Phase, list[tuple[str, float, float]]]:
-    """The two phases' constants and the labs' rows as (row, measured, max-of-components model) cycles a pass."""
+def calibrate(sms: int, cc: int = 860) -> tuple[Phase, Phase, list[tuple[str, float, float]]]:
+    """The two phases' constants at architecture `cc`'s rates and the labs' rows as (row, measured, max-of-components
+    model) cycles a pass."""
+    rates = arch_rates.table()[0][cc]
+    f16_acc, f32_acc = rates["mma[kHmmaF16F16]"].cycles, rates["mma[kHmmaF16F32]"].cycles
+
+    def shared(loads: float, atomics: float, atomic_waves: float) -> float:
+        return (loads * rates["wavefront"].cycles
+                + max(atomics * rates["atomic"].cycles, atomic_waves * rates["atomic_wavefront"].cycles))
+
     rc, rt = _records("read_step")
     fc, ft = _records("list_fold")
 
@@ -75,18 +85,16 @@ def calibrate(sms: int) -> tuple[Phase, Phase, list[tuple[str, float, float]]]:
     adds = (read(INST, 1, 0, 8, 16) - read(INST, 0, 0, 8, 16)) / 32
     ld = (read(WAVES, 0, 0, 8, 16) - read(WAVES, 0, 0, 2, 16)) / 24
     atom = (read(WAVES, 1, 0, 8, 16) - read(WAVES, 0, 0, 8, 16)) / 32
-    #: an atomic wavefront's cycles: the per-digit adds' time over their wavefronts (eight warps)
-    atom_cycles = (rt["per digit / 8 steps a digit / 16 live / + panel adds"]
-                   - rt["per digit / 8 steps a digit / 16 live / steps alone"]) / (WARPS * 32 * atom)
-    #: den's two MMAs a digit leave the readout
-    readout = Phase("readout", per_digit - digit + adds, digit - 2, ld + atom_cycles * atom, F16_ACC)
+    #: an add's atomic instructions with their wavefronts; den's two MMAs a digit leave the readout
+    readout = Phase("readout", per_digit - digit + adds, digit - 2, shared(ld, ATOMICS_AN_ADD, atom), f16_acc)
 
     #: the fold: per list a gathered list step (8 live, 2 steps less 1, 4 lists); merged a 4-list step; the mass's two
     #: MMAs a step leave the fold
     per_list = (fold(INST, 1, 2, 8, 1) - fold(INST, 1, 1, 8, 1)) / 4
     merged_f = fold(INST, 2, 8, 16, 0) / 8
     digit_f = (merged_f - per_list) / 3
-    fold_phase = Phase("fold", per_list - digit_f - 2, digit_f, fold(WAVES, 1, 2, 16, 1) / 8, F32_ACC)
+    fold_phase = Phase("fold", per_list - digit_f - 2, digit_f,
+                       fold(WAVES, 1, 2, 16, 1) / 8 * rates["wavefront"].cycles, f32_acc)
 
     rows = []
     for form, steps, live, label in ((1, 8, 16, "merged / 8 steps / 16 live"),
@@ -94,10 +102,11 @@ def calibrate(sms: int) -> tuple[Phase, Phase, list[tuple[str, float, float]]]:
                                      (0, 2, 16, "per digit / 2 steps a digit / 16 live"),
                                      (0, 1, 8, "per digit / 1 steps a digit / 8 live")):
         mmas = (8 if form else 4 * steps) * (40 if form else 10)
+        adds = 8 if form else 4 * steps
         for mode, tail in ((0, "steps alone"), (1, "+ panel adds")):
             atoms = read(WAVES, mode, form, steps, live) - read(WAVES, 0, form, steps, live)
-            smem = WARPS * (read(WAVES, 0, form, steps, live) + atom_cycles * atoms)
-            model = max(2 * mmas * F16_ACC, 2 * read(INST, mode, form, steps, live), smem)
+            smem = WARPS * shared(read(WAVES, 0, form, steps, live), mode * adds * ATOMICS_AN_ADD, atoms)
+            model = max(2 * mmas * f16_acc, 2 * read(INST, mode, form, steps, live), smem)
             rows.append((f"read_step {label} / {tail}", rt[f"{label} / {tail}"], model))
     names = ("merged, 8 lists x 16 x 32", "per list, 4 lists x 32 x 32", "merged, 4 lists x 32 x 32",
              "per list, 8 lists x 16 x 32")
@@ -107,8 +116,8 @@ def calibrate(sms: int) -> tuple[Phase, Phase, list[tuple[str, float, float]]]:
         mmas = steps * (lists * mtiles * 4 + mtiles) if form in (0, 2) else lists * steps * (mtiles * 5)
         label = (f"{names[form]} / {steps} steps{'' if form in (0, 2) else ' a list'} / {live} live / "
                  f"{'gathered' if gather else 'contiguous'}")
-        model = max(2 * mmas * F32_ACC, 2 * fold(INST, form, steps, live, gather),
-                    WARPS * fold(WAVES, form, steps, live, gather))
+        model = max(2 * mmas * f32_acc, 2 * fold(INST, form, steps, live, gather),
+                    WARPS * fold(WAVES, form, steps, live, gather) * rates["wavefront"].cycles)
         rows.append((f"list_fold {label}", ft[label], model))
     return readout, fold_phase, rows
 
@@ -188,11 +197,15 @@ def price(phase: Phase, live: np.ndarray) -> dict[str, tuple[float, dict[int, fl
 
 
 def main() -> None:
+    import sys
+
     import torch
 
+    cc = int(sys.argv[sys.argv.index("--arch") + 1]) if "--arch" in sys.argv else 860
     sms = torch.cuda.get_device_properties(0).multi_processor_count
-    readout, fold_phase, rows = calibrate(sms)
-    print("constants (sm_86): issue a group step = step + digit x g; shared-memory cycles a group step")
+    readout, fold_phase, rows = calibrate(sms, cc)
+    print(f"constants (sm_{cc // 10}'s rates, sm_86's counts): issue a group step = step + digit x g; shared-memory "
+          "cycles a group step")
     for p in (readout, fold_phase):
         print(f"  {p.name:8s} step {p.step:6.1f}  digit {p.digit:5.1f}  smem {p.smem:6.1f}  MMA {p.mma} cycles")
     print("\nthe labs: measured against the max of components (cycles a pass)")

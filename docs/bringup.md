@@ -20,7 +20,7 @@ struct Caps {
   // ...
   int mma_unit_threads, smem_per_sm, smem_per_cta_max, smem_granularity, regs_per_sm,
       regs_per_lane_max, reg_alloc_unit, max_threads_per_sm, max_ctas_per_sm,
-      driver_smem_reserve, tensor_f32_accum_pct;
+      driver_smem_reserve;
 };
 ```
 
