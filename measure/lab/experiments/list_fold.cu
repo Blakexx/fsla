@@ -9,7 +9,10 @@
 // its entries (gathered: hashed rows; contiguous: the pass's own), an entry past the list's live count reading row 0
 // with c = 0; the step's operands by `ldmatrix.trans`, its c from the row's digit and (F, m), two steps' operands
 // loaded ahead of their MMAs; the block's span a pass against the pass's tensor floor (the busiest scheduler's two
-// warps' MMAs at 32 cycles). see docs/internals/tools/lab.md#list-fold
+// warps' MMAs at 32 cycles). Form 5 is the per-list step in KERNEL_STANDARDS 27's shape: a pass one block (unrolled,
+// its operands in a two-slot ring at fixed registers), entries as byte offsets, pads masked (row 0, c = 0), each
+// token's c precomputed as f16 (the facts pass's), the mass accumulated in place; gathered rows can be residue-ordered
+// (each 8 of a step distinct mod 8, so `ldmatrix` reads them conflict-free). see docs/internals/tools/lab.md#list-fold
 #include "lab.cuh"
 
 #include <utility>
@@ -33,19 +36,21 @@ constexpr uint16_t kPad = 0xffffu;
 //: FORM 0 merged at today's tile (8 lists x 16 x 32: one A, 32 + 1 MMAs a step); 1 per list at the even tile (4 lists
 //: x 32 x 32: two A, 8 + 2 MMAs a list step); 2 merged at the even tile (4 lists, one load a step for all: 32 + 2); 3
 //: per list at today's tile (4 + 1 a list step); 4 as 1 with the loads interleaved among the previous chunk's MMAs
-//: (each step's operands loaded under the MMAs of the step before)
-constexpr int kForms = 5;
-const char* kFormName[kForms] = {"merged, 8 lists x 16 x 32", "per list, 4 lists x 32 x 32",
-                                 "merged, 4 lists x 32 x 32", "per list, 8 lists x 16 x 32",
-                                 "per list, 4 lists x 32 x 32, staged"};
+//: (each step's operands loaded under the MMAs of the step before); 5 as 1 in KERNEL_STANDARDS 27's shape, its c
+//: precomputed (see the header)
+constexpr int kForms = 6;
+const char* kFormName[kForms] = {
+    "merged, 8 lists x 16 x 32",           "per list, 4 lists x 32 x 32",
+    "merged, 4 lists x 32 x 32",           "per list, 8 lists x 16 x 32",
+    "per list, 4 lists x 32 x 32, staged", "per list, 4 lists x 32 x 32, one block, c precomputed"};
 
-__host__ __device__ constexpr int lists_of(int form) {
-  return form == 1 || form == 2 || form == 4 ? 4 : 8;
+__host__ __device__ constexpr bool even_tile(int form) {
+  return form == 1 || form == 2 || form == 4 || form == 5;
 }
 
-__host__ __device__ constexpr int mtiles_of(int form) {
-  return form == 1 || form == 2 || form == 4 ? 2 : 1;
-}
+__host__ __device__ constexpr int lists_of(int form) { return even_tile(form) ? 4 : 8; }
+
+__host__ __device__ constexpr int mtiles_of(int form) { return even_tile(form) ? 2 : 1; }
 
 __host__ __device__ constexpr bool merged(int form) { return form == 0 || form == 2; }
 
@@ -62,6 +67,10 @@ struct alignas(16) Shared {
   float2 fm[kRows];
   uint16_t entries[kWarps][8][kMaxSteps][kStep];
   float mass[kWarps][2][4][32];
+  //: form 5's entries: a row's byte offset at chunk 0 (its swizzle bit folded in), and each token pair's c as f16
+  //: pairs {c_v, c_m} -- what the facts pass would emit
+  uint16_t row_at[kWarps][4][kMaxSteps][kStep];
+  uint2 coef[kWarps][4][kMaxSteps][kStep / 2];
 };
 
 template <int FORM>
@@ -225,6 +234,67 @@ __device__ __forceinline__ void merged_pass(Acc<FORM>& st, Shared& sh, int w, in
   add_mass<FORM>(sh, m, w, lane);
 }
 
+//: FORM 5'S OPERANDS, at fixed registers: A (two m-tiles), B (four n-tiles), c = {c_v 01, c_m 01, c_v 89, c_m 89}
+struct Flat {
+  uint32_t a[2][4], b[4][2], c[4];
+};
+
+//: a step's operands from its entries' offsets: the lane's ldmatrix rows, its chunk bit (lane-fixed) an XOR
+__device__ __forceinline__ void load_flat(Flat& o, const Shared& sh, const uint16_t* rows_at,
+                                          const uint2* coef, int lane) {
+  const int r = lane & 7, q = lane >> 3, tq = lane & 3;
+  const uint32_t base = lab::smem(sh.rows);
+  const uint32_t ea = base + (rows_at[8 * (q >> 1) + r] ^ (16u * static_cast<uint32_t>(q & 1)));
+  const uint32_t eb =
+      base + 64u + (rows_at[8 * (q & 1) + r] ^ (16u * static_cast<uint32_t>(q >> 1)));
+  lab::ldsm_t(o.a[0], ea);
+  lab::ldsm_t(o.a[1], ea + 32u);
+#pragma unroll
+  for (int h = 0; h < 2; ++h) {
+    uint32_t x[4];
+    lab::ldsm_t(x, eb + 32u * h);
+    o.b[2 * h][0] = x[0];
+    o.b[2 * h][1] = x[1];
+    o.b[2 * h + 1][0] = x[2];
+    o.b[2 * h + 1][1] = x[3];
+  }
+  const uint2 c01 = coef[tq], c89 = coef[tq + 4];
+  o.c[0] = c01.x;
+  o.c[1] = c01.y;
+  o.c[2] = c89.x;
+  o.c[3] = c89.y;
+}
+
+//: FORM 5'S PASS: every list's steps unrolled, step i + 1's operands loaded before step i's MMAs, the list's mass
+//: added to the warp's sums after its last step
+template <int STEPS>
+__device__ __forceinline__ void flat_pass(Acc<5>& st, Shared& sh, int w, int lane) {
+  constexpr int kItems = 4 * STEPS;
+  const uint16_t* const rows_at = &sh.row_at[w][0][0][0];
+  const uint2* const coef = &sh.coef[w][0][0][0];
+  const auto at_item = [](int i) { return (i / STEPS) * kMaxSteps + i % STEPS; };
+  Flat o[2];
+  float m[2][4] = {};
+  load_flat(o[0], sh, rows_at, coef, lane);
+  static_for<kItems>([&](auto I) {
+    constexpr int i = decltype(I)::value, c = i & 1, j = i / STEPS;
+    if constexpr (i + 1 < kItems)
+      load_flat(o[c ^ 1], sh, rows_at + at_item(i + 1) * kStep, coef + at_item(i + 1) * (kStep / 2),
+                lane);
+#pragma unroll
+    for (int mt = 0; mt < 2; ++mt) {
+      lab::mma_f16_f32(m[mt], o[c].a[mt], o[c].c[1], o[c].c[3]);
+      const uint32_t aj[4] = {
+          lab::hmul2(o[c].a[mt][0], o[c].c[0]), lab::hmul2(o[c].a[mt][1], o[c].c[0]),
+          lab::hmul2(o[c].a[mt][2], o[c].c[2]), lab::hmul2(o[c].a[mt][3], o[c].c[2])};
+#pragma unroll
+      for (int n = 0; n < 4; ++n)
+        lab::mma_f16_f32(st.acc[j][mt][n], aj, o[c].b[n][0], o[c].b[n][1]);
+    }
+    if constexpr (i % STEPS == STEPS - 1) add_mass<5>(sh, m, w, lane);
+  });
+}
+
 uint32_t hash3(uint32_t a, uint32_t b, uint32_t c) {
   uint32_t h = a * 0x9E3779B1u ^ (b + 0x7F4A7C15u) * 0x85EBCA77u ^ (c + 0x165667B1u) * 0xC2B2AE3Du;
   h ^= h >> 15;
@@ -250,6 +320,29 @@ __global__ void __launch_bounds__(kThreads, 1) fold(int passes, const uint16_t* 
 #pragma unroll 1
   for (int i = tid; i < kWarps * 2 * 4 * 32; i += kThreads) (&sh.mass[0][0][0][0])[i] = 0.0f;
   __syncthreads();
+  //: form 5's entries, built before the clock as the facts pass would: offsets, and c at the list's digit, a pad's 0
+#pragma unroll 1
+  for (int i = tid; i < kWarps * 4 * kMaxSteps * kStep; i += kThreads) {
+    const int e = i % kStep, step = (i / kStep) % kMaxSteps, j = (i / (kStep * kMaxSteps)) % 4,
+              ww = i / (kStep * kMaxSteps * 4);
+    bool in;
+    const int row = entry_row(sh, ww, j, step, e, in);
+    (&sh.row_at[0][0][0][0])[i] = static_cast<uint16_t>(at(row, 0));
+    if (e % 2 == 0) {
+      float v[2], m[2];
+      for (int k = 0; k < 2; ++k) {
+        bool ink;
+        const int rk = entry_row(sh, ww, j, step, e + k, ink);
+        const int digit = (4 * ww + j) & 31;
+        const float b = static_cast<float>(sh.rows[at(rk, 8 + (digit >> 4)) + (digit & 15)]);
+        v[k] = ink ? b * sh.fm[rk].x * 0.5f : 0.0f;
+        m[k] = ink ? b * sh.fm[rk].y * 0.25f : 0.0f;
+      }
+      (&sh.coef[0][0][0][0])[i / 2] =
+          make_uint2(lab::pack_half2(v[0], v[1]), lab::pack_half2(m[0], m[1]));
+    }
+  }
+  __syncthreads();
   const float pu = 0.5f + 1e-3f * lane, pv = 0.25f + 1e-3f * lane;
   Acc<FORM> st = {};
   lab::WarpSpan clock;
@@ -258,6 +351,8 @@ __global__ void __launch_bounds__(kThreads, 1) fold(int passes, const uint16_t* 
   for (int x = 0; x < passes; ++x) {
     if constexpr (merged(FORM))
       merged_pass<FORM, STEPS>(st, sh, w, lane, pu, pv);
+    else if constexpr (FORM == 5)
+      flat_pass<STEPS>(st, sh, w, lane);
     else
       list_pass<FORM, STEPS>(st, sh, w, lane, pu, pv);
   }
@@ -270,9 +365,10 @@ __global__ void __launch_bounds__(kThreads, 1) fold(int passes, const uint16_t* 
   lab::sink(out, fold);
 }
 
-//: THE ENTRIES: per warp, list and step, `LIVE` rows then pads -- gathered rows hashed over the 256, or the step's own
+//: THE ENTRIES: per warp, list and step, `LIVE` rows then pads -- gathered rows hashed over the 256 (`gather` 1), the
+//: same residue-ordered (2: a hashed start, then 37 apart, so each 8 of a step are distinct mod 8), or the step's own
 //: contiguous 16 (merged forms always contiguous: the union's rows)
-std::vector<uint16_t> make_entries(int live, bool gather) {
+std::vector<uint16_t> make_entries(int live, int gather) {
   std::vector<uint16_t> e(kWarps * 8 * kMaxSteps * kStep);
   for (int w = 0; w < kWarps; ++w)
     for (int j = 0; j < 8; ++j)
@@ -281,8 +377,10 @@ std::vector<uint16_t> make_entries(int live, bool gather) {
           const size_t at = ((static_cast<size_t>(w) * 8 + j) * kMaxSteps + s) * kStep + i;
           if (i >= live) {
             e[at] = kPad;
-          } else if (gather) {
+          } else if (gather == 1) {
             e[at] = static_cast<uint16_t>(hash3(w, j * kMaxSteps + s, i) % kRows);
+          } else if (gather == 2) {
+            e[at] = static_cast<uint16_t>((hash3(w, j * kMaxSteps + s, 0) + 37u * i) % kRows);
           } else {
             e[at] = static_cast<uint16_t>((s * kStep + i) % kRows);
           }
@@ -298,9 +396,9 @@ void variant(const lab::Bench& b) {
   b.expect(name, "HMMA.16816.F32", ">=", lists_of(FORM) * mtiles_of(FORM) * 4);
   b.expect(name, "LDSM", ">=", mtiles_of(FORM) + 2);
   b.expect(name, "HMUL2", ">=", lists_of(FORM) * mtiles_of(FORM) * 4);
-  b.expect(name, "BSSY", ">=", 1);
+  if (FORM != 5) b.expect(name, "BSSY", ">=", 1);
   if (b.expect_only) return;
-  const std::vector<uint16_t> h = make_entries(LIVE, GATHER != 0);
+  const std::vector<uint16_t> h = make_entries(LIVE, GATHER);
   uint16_t* d = nullptr;
   LAB_CHECK(cudaMalloc(&d, h.size() * sizeof(uint16_t)));
   LAB_CHECK(cudaMemcpy(d, h.data(), h.size() * sizeof(uint16_t), cudaMemcpyHostToDevice));
@@ -317,7 +415,9 @@ void variant(const lab::Bench& b) {
   const std::string label = std::string(kFormName[FORM]) + " / " + std::to_string(STEPS)
                             + (merged(FORM) ? " steps" : " steps a list") + " / "
                             + std::to_string(LIVE) + " live"
-                            + (GATHER ? " / gathered" : " / contiguous");
+                            + (GATHER == 2 ? " / gathered, residue-ordered"
+                               : GATHER    ? " / gathered"
+                                           : " / contiguous");
   b.record(label, "cycles a pass", s);
   lab::Samples over;
   for (double c : s.v) over.v.push_back(c / floor);
@@ -343,4 +443,11 @@ int main(int argc, char** argv) {
   variant<1, 1, 8, 1>(b);
   variant<3, 2, 16, 1>(b);
   variant<3, 1, 8, 1>(b);
+  //: the per-list step in one block with c precomputed, dense and sparse, against form 1 on the same residue-ordered rows
+  variant<5, 8, 16, 0>(b);
+  variant<1, 2, 16, 2>(b);
+  variant<5, 2, 16, 2>(b);
+  variant<1, 2, 8, 2>(b);
+  variant<5, 2, 8, 2>(b);
+  variant<5, 1, 8, 2>(b);
 }

@@ -848,6 +848,11 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       12.2 and runs 1.31x its floor against 1.52x -- more than the unpack's tax, since near issue saturation every
       instruction also costs contention; with fp32 accumulation, 7.6. A step's instructions an MMA are priced against
       the smallest shadow it must fit: sm_80's 8-cycle MMA leaves 7 issue slots.
+   y. THE PER-LIST FOLD STEP IN §27'S SHAPE IS AT ITS FLOOR (`list_fold` form 5): a pass one block, entries as byte
+      offsets, pads masked, each token's c precomputed as f16 (the facts pass's), the mass accumulated in place, and
+      gathered rows residue-ordered (each 8 of a step distinct mod 8) -- 2.5 / 3.4 / 4.7 non-MMA instructions an MMA at
+      8 / 2 / 1 steps a list (13-17 before) and 1.015-1.030x its floor at every density on sm_86 (1.13-1.42x before).
+      Residue order alone removes the gathered rows' bank conflicts (58M -> 0.06M; 1.37x -> 1.26x).
 
 ## §27 — A STEP IS ONE BLOCK, INTERLEAVED BY CONSTRUCTION (law, 2026-10-06, from Blake's "we should have lints and sass checks that enforce we properly interleave loops by default, and only override if justified")
 The per-list readout ran 3.2x its MMA floor and the cause was the shape of its code, not the hardware: branches the
