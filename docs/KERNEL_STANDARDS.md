@@ -843,6 +843,11 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       warp cannot issue a burst ahead of the pipe and go on to other work: it is held at the burst, and every MMA needs
       an issue slot the cycle the pipe frees. Turn-taking between a scheduler's warps (FA3's ping-pong, built on
       sm_90's asynchronous `wgmma`) has no queue to fill here.
+   x. INSTRUCTIONS AN MMA, NOT THEIR ORDER (`read_step` modes 22-23, `lab.py sass --arch`): the per-list readout's
+      step with its level-R operand native f16 (no PRMT/HADD2 unpack) issues 9.6 non-MMA instructions an MMA against
+      12.2 and runs 1.31x its floor against 1.52x -- more than the unpack's tax, since near issue saturation every
+      instruction also costs contention; with fp32 accumulation, 7.6. A step's instructions an MMA are priced against
+      the smallest shadow it must fit: sm_80's 8-cycle MMA leaves 7 issue slots.
 
 ## §27 — A STEP IS ONE BLOCK, INTERLEAVED BY CONSTRUCTION (law, 2026-10-06, from Blake's "we should have lints and sass checks that enforce we properly interleave loops by default, and only override if justified")
 The per-list readout ran 3.2x its MMA floor and the cause was the shape of its code, not the hardware: branches the

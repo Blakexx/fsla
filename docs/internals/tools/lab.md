@@ -390,6 +390,8 @@ THE DEN PASS'S STEP (8 MMAs, den out), its adds issued after the next step's MMA
 | 12, MMA j reading output word j - 1 masked to zero | 12.2K (1.49x) | 3.15K (1.54x) | 1.75K (1.71x) |
 | the same, each word also reading an MMA's output | 12.7K (1.55x) | 3.24K (1.58x) | 1.77K (1.73x) |
 | 12, a scheduler's two warps taking turns at the MMAs (named barriers) | 14.2K (1.73x) | 3.60K (1.76x) | 1.89K (1.85x) |
+| 12 with the level-R side native f16 (A loaded as it is, no unpack) | 10.7K (1.31x) | 2.89K (1.41x) | 1.57K (1.53x) |
+| the same, accumulating in fp32 (half rate on this card) | 17.6K (2.15x) | 4.48K (2.19x) | 2.31K (2.25x) |
 
 Merged, adds a step behind: 10.5K (1.28x). The aligned burst drain adds ~1K a pass. The last form converts on the FMA
 pipe (each half to fp32, x 64 + 1.5 x 2^23, the low halves packed: round-to-nearest, exhaustively checked over every
@@ -445,6 +447,16 @@ the longest MMA-free run in the step falls from 208 to 83 instructions, not-sele
 MMAs, `bar.arrive`), each converting while the other's MMAs run -- does not survive ptxas: the barriers fence memory
 only, the MMAs move outside them, and the barriers cost 1.73x. `tools/sass_gate.py` reports the MMA gap (the longest
 run in a step loop's body, and around it) and `lab.py sass` prints it.
+
+INSTRUCTIONS AN MMA, NOT THEIR ORDER. The step loop's non-MMA instructions an MMA, the same compiled for sm_80 and
+sm_86 (`lab.py sass read_step --arch sm_80`): 12.2 for mode 12; 9.6 with the level-R side native f16 (rows of 32
+halves, 64 bytes, chunks swizzled by `(slot >> 1) & 3`; two `ldmatrix` a step and no PRMT/HADD2 unpack); 7.6 with
+that and fp32 accumulation (no `HADD2.F32`; outputs converted by the FFMA and packed). Removing the unpack's ~21
+instructions a step took the step from 1.52x to 1.31x at 8 steps a digit (ncu: 693M instructions against 864M,
+tensor 75% against 65%) -- more than the tax rates price the unpack at (~0.05), since near issue saturation each
+instruction also costs contention. The fp32-accumulate form runs at half rate here (32-cycle MMAs, 2.15x the fp16
+floor, 1.07x its own); a full-rate card (A100, A6000) is where it would run, and its time there is unmeasured. sm_80's
+shadow is 8 cycles an MMA, 7 issue slots: 7.6 is the first form near it.
 
 A per-digit step's gathered slots are distinct (a list never holds a token twice). The gate: `read_step`'s branchy
 forms declare their branches (KERNEL_STANDARDS 27). Records: `measure/lab/results/read_step/sm_86.json`,

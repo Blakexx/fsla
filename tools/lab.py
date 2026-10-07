@@ -295,9 +295,9 @@ def counters(name: str, metrics: list[str], record: bool) -> int:
     return 0
 
 
-def show_sass(name: str, pattern: str | None, full: bool) -> int:
+def show_sass(name: str, pattern: str | None, full: bool, arch: str | None) -> int:
     path = experiments()[name]
-    binary = build(path, device_arch())
+    binary = build(path, arch or device_arch())
     table = kernels(binary)
     sigs = signatures(binary)
     for k, info in table.items():
@@ -321,6 +321,7 @@ def main() -> int:
     s.add_argument("experiment")
     s.add_argument("kernel", nargs="?")
     s.add_argument("--full", action="store_true")
+    s.add_argument("--arch", help="compile for this architecture (sm_80, ...) in place of the device's: SASS only")
     r = sub.add_parser("run")
     r.add_argument("experiment")
     r.add_argument("--reps", type=int, default=7)
@@ -339,7 +340,7 @@ def main() -> int:
         print(f"lab: no experiment {args.experiment!r}; `list` names them")
         return 1
     if args.cmd == "sass":
-        return show_sass(args.experiment, args.kernel, args.full)
+        return show_sass(args.experiment, args.kernel, args.full, args.arch)
     if args.cmd == "ncu":
         return counters(args.experiment, args.metric, args.record)
     return run(args.experiment, args.reps, args.record, args.force)

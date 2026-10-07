@@ -32,6 +32,9 @@ constexpr int kThreads = 256, kWarps = 8, kSlots = 128, kRowBytes = 96, kPanelPi
 //: the conflict-free panel (mode 12): 20 words a row, so slots of distinct residue mod 8 land on disjoint 4-bank groups,
 //: and 8 dummy rows past the slots for the pads' adds of zero
 constexpr int kFreePitch = 20, kPanelWords = (kSlots + 8) * kFreePitch;
+//: modes 22-23's f16 rows: a slot's 32 level-R halves, 64 bytes, the 16-byte chunks swizzled by (slot >> 1) & 3 so 8
+//: slots of distinct residue mod 8 read by ldmatrix fall on 8 distinct bank groups
+constexpr int kHalfRowBytes = 64;
 constexpr int kDigits = 4, kMaxSteps = 8, kStep = 16, kTargets = 1 << 18;
 constexpr uint16_t kPad = 0xffffu;
 constexpr uint32_t kHalfMagic = 0x64646464u;
@@ -55,8 +58,10 @@ constexpr int kShare = kSlots / kWarps / 2;
 //: and adds the words raw, 17 converts half the values, 18 is 16 with 15's integer operations; 19 is 12 with each MMA
 //: followed by one of the last step's output words, held in that order by a dependency (written in the source order
 //: alone, ptxas compiled it to 12's SASS); 20 holds it both ways; 21 is 12 with the two warps of a scheduler taking
-//: turns at their steps' MMAs (named barriers), each converting and adding while the other's MMAs run
-constexpr int kModes = 22;
+//: turns at their steps' MMAs (named barriers), each converting and adding while the other's MMAs run; 22 is 12 with
+//: the level-R side native f16 (A loaded as it is, no unpack); 23 is 22 accumulating in fp32 (no conversion to fp32;
+//: half rate on GeForce, so its time here is not the full-rate cards')
+constexpr int kModes = 24;
 const char* kModeName[kModes] = {
     "steps alone",
     "+ panel adds",
@@ -79,18 +84,22 @@ const char* kModeName[kModes] = {
     "isolation: 16 with the integer operations of 15",
     "the same as 12, an MMA then an output word, held by a dependency",
     "the same, held both ways",
-    "the same as 12, the scheduler's two warps taking turns at the MMAs"};
+    "the same as 12, the scheduler's two warps taking turns at the MMAs",
+    "the same as 12, the level-R side f16 (no unpack)",
+    "the same as 22, accumulating in fp32 (half rate here)"};
 
 //: FORM 0 per digit (a step = one digit's 16 tokens, its outputs added); 1 merged (a step = 16 union tokens, every
 //: digit's MMAs into one accumulator, one add)
 const char* kFormName[2] = {"per digit", "merged"};
 
-struct alignas(16) Shared {
+struct alignas(128) Shared {
   uint8_t rows[kSlots * kRowBytes];
   uint32_t panel[2][kPanelWords];
   uint16_t entries[kWarps][kDigits][kMaxSteps][kStep];
   uint32_t offsets[kWarps][kDigits][kMaxSteps][kStep];
   uint32_t offsets_free[kWarps][kDigits][kMaxSteps][kStep];
+  alignas(128) uint8_t rows_f16[kSlots * kHalfRowBytes];
+  uint16_t offsets_f16[kWarps][kDigits][kMaxSteps][kStep];
   uint64_t complete[2], drained[2];
 };
 
@@ -200,6 +209,20 @@ __device__ __forceinline__ void step_a_offsets(uint32_t (&a)[2][4], float& sg, f
     a[kk][2] = hadd2(prmt(x[2 * kk], kHalfMagic, 0x4342u), less);
     a[kk][3] = hadd2(prmt(x[2 * kk + 1], kHalfMagic, 0x4342u), less);
   }
+  sg = (1.0f + sh.rows[(eg & 0xffffu) + 32 + DIGIT]) * ((eg >> 31) ? 0.0f : 64.0f / 65536.0f);
+  s8 = (1.0f + sh.rows[(e8 & 0xffffu) + 32 + DIGIT]) * ((e8 >> 31) ? 0.0f : 64.0f / 65536.0f);
+}
+
+//: A STEP'S A FROM THE F16 ROWS (`ea` the lane's row with its swizzle key, from `offsets_f16`; two ldmatrix, no
+//: unpack) and its scales as `step_a_offsets`'s
+template <int DIGIT>
+__device__ __forceinline__ void step_a_f16(uint32_t (&a)[2][4], float& sg, float& s8,
+                                           const Shared& sh, uint32_t ea, uint32_t eg, uint32_t e8,
+                                           int khalf) {
+  const uint32_t row = lab::smem(sh.rows_f16) + ea;
+#pragma unroll
+  for (int kk = 0; kk < 2; ++kk)
+    lab::ldsm(a[kk], row ^ (16u * static_cast<uint32_t>(2 * kk + khalf)));
   sg = (1.0f + sh.rows[(eg & 0xffffu) + 32 + DIGIT]) * ((eg >> 31) ? 0.0f : 64.0f / 65536.0f);
   s8 = (1.0f + sh.rows[(e8 & 0xffffu) + 32 + DIGIT]) * ((e8 >> 31) ? 0.0f : 64.0f / 65536.0f);
 }
@@ -345,6 +368,22 @@ __device__ __forceinline__ void panel_add_offsets(Shared& sh, int p, const uint3
   }
 }
 
+//: THE STEP'S FP32 OUTPUTS into panel `p` (mode 23): lane (g, tq) holds tokens g (c0, c1) and g + 8 (c2, c3)
+__device__ __forceinline__ void panel_add_f32(Shared& sh, int p, const float (&out)[4][4],
+                                              uint32_t eg, uint32_t e8, float sg, float s8,
+                                              int lane) {
+  const uint32_t rg = panel_row(sh, p, eg, lane), r8 = panel_row(sh, p, e8, lane);
+  const auto pack = [](float x, float y, float sc) {
+    return __byte_perm(__float_as_uint(fmaf(x, sc, 12582912.0f)),
+                       __float_as_uint(fmaf(y, sc, 12582912.0f)), 0x5410);
+  };
+#pragma unroll
+  for (int n = 0; n < 4; ++n) {
+    red_shared(rg + 16 * n, pack(out[n][0], out[n][1], sg));
+    red_shared(r8 + 16 * n, pack(out[n][2], out[n][3], s8));
+  }
+}
+
 //: ONE DRAIN REQUEST: slots `2 i` and `2 i + 1` of the warp's share of panel `p`, a lane a word (lanes 0-15 the first,
 //: 16-31 the second; den by lanes 0 and 16 after), to the slots' scattered targets, each word cleared
 template <bool kAligned>
@@ -397,7 +436,12 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
     (&sh.offsets_free[0][0][0][0])[i] = static_cast<uint32_t>(at(static_cast<int>(slot), 0))
                                         | (row * kFreePitch * 4u) << 16
                                         | (entries[i] == kPad ? 1u << 31 : 0u);
+    (&sh.offsets_f16[0][0][0][0])[i] =
+        static_cast<uint16_t>(slot * kHalfRowBytes | 16u * ((slot >> 1) & 3u));
   }
+#pragma unroll 1
+  for (int i = tid; i < kSlots * kHalfRowBytes / 2; i += kThreads)
+    reinterpret_cast<__half*>(sh.rows_f16)[i] = __float2half(static_cast<float>(1 + (i & 63)));
   if (tid < 2) {
     lab::mbar_init(lab::smem(&sh.complete[tid]), kThreads);
     lab::mbar_init(lab::smem(&sh.drained[tid]), kThreads);
@@ -494,22 +538,33 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
         return off[((item / STEPS) * kMaxSteps + item % STEPS) * kStep + e];
       };
       uint32_t a[2][2][4], o[2][4][2], eg[3] = {}, e8[3] = {};
+      [[maybe_unused]] float o32[2][4][4];
       float sg[3] = {}, s8[3] = {};
+      constexpr bool kHalfRows = MODE == 22 || MODE == 23;
+      //: the step's A and scales, from the u8 rows or (22, 23) the f16 rows
+      const auto load = [&](auto item, uint32_t(&an)[2][4], auto slot) {
+        constexpr int it = decltype(item)::value, m = decltype(slot)::value;
+        eg[m] = entry(it, g);
+        e8[m] = entry(it, g + 8);
+        if constexpr (kHalfRows)
+          step_a_f16<it / STEPS>(
+              an, sg[m], s8[m], sh,
+              (&sh.offsets_f16[w][0][0][0])[((it / STEPS) * kMaxSteps + it % STEPS) * kStep
+                                            + 8 * (q & 1) + r],
+              eg[m], e8[m], q >> 1);
+        else
+          step_a_offsets<it / STEPS>(an, sg[m], s8[m], sh, entry(it, 8 * (q & 1) + r), eg[m], e8[m],
+                                     q >> 1);
+      };
       //: mode 19's order words, zero at run time (`passes` > 0) but not to ptxas
       [[maybe_unused]] uint32_t order[8] = {};
       [[maybe_unused]] const uint32_t zero = static_cast<uint32_t>(passes) >> 31;
-      eg[0] = entry(0, g);
-      e8[0] = entry(0, g + 8);
-      step_a_offsets<0>(a[0], sg[0], s8[0], sh, entry(0, 8 * (q & 1) + r), eg[0], e8[0], q >> 1);
+      load(std::integral_constant<int, 0>{}, a[0], std::integral_constant<int, 0>{});
       static_for<kItems + 1>([&](auto I) {
         constexpr int i = decltype(I)::value, c = i & 1, n = c ^ 1, mn = (i + 1) % 3,
                       mp = (i + 2) % 3;
-        if constexpr (i + 1 < kItems) {
-          eg[mn] = entry(i + 1, g);
-          e8[mn] = entry(i + 1, g + 8);
-          step_a_offsets<(i + 1) / STEPS>(a[n], sg[mn], s8[mn], sh, entry(i + 1, 8 * (q & 1) + r),
-                                          eg[mn], e8[mn], q >> 1);
-        }
+        if constexpr (i + 1 < kItems)
+          load(std::integral_constant<int, i + 1>{}, a[n], std::integral_constant<int, mn>{});
         if constexpr (MODE == 19 || MODE == 20) {
           //: MMA j, then the last step's output word j; MMA j reads word j - 1 masked to zero, which keeps it there, and
           //: in 20 word j reads MMA j - 2's output so masked as well
@@ -536,6 +591,16 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
               order[j] = word & zero;
             }
           });
+        } else if constexpr (MODE == 23 && i < kItems) {
+#pragma unroll
+          for (int t = 0; t < 4; ++t)
+            o32[c][t][0] = o32[c][t][1] = o32[c][t][2] = o32[c][t][3] = 0.0f;
+#pragma unroll
+          for (int kk = 0; kk < 2; ++kk)
+#pragma unroll
+            for (int t = 0; t < 4; ++t)
+              lab::mma_f16_f32(o32[c][t], a[c][kk], st.b[i / STEPS][kk][t][0],
+                               st.b[i / STEPS][kk][t][1]);
         } else if constexpr (i < kItems) {
 #pragma unroll
           for (int x4 = 0; x4 < 4; ++x4) o[c][x4][0] = o[c][x4][1] = 0u;
@@ -547,6 +612,8 @@ __global__ void __launch_bounds__(kThreads, 1) read(int passes, const uint16_t* 
         if constexpr (i > 0 && MODE == 14) {
 #pragma unroll
           for (int x4 = 0; x4 < 4; ++x4) fold_out += o[n][x4][0] ^ o[n][x4][1];
+        } else if constexpr (i > 0 && MODE == 23) {
+          panel_add_f32(sh, p, o32[n], eg[mp], e8[mp], sg[mp], s8[mp], lane);
         } else if constexpr (i > 0 && MODE != 19 && MODE != 20) {
           constexpr int kVar = MODE == 13   ? 1
                                : MODE == 15 ? 2
@@ -686,7 +753,8 @@ constexpr int kPasses = 400;
 template <int MODE, int FORM, int STEPS, int LIVE>
 void variant(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   const std::string name = lab::kernel("read", {MODE, FORM, STEPS, LIVE});
-  b.expect(name, "HMMA.16816.F16", ">=", MODE >= 6 ? 8 : 10);
+  b.expect(name, MODE == 23 ? "HMMA.16816.F32" : "HMMA.16816.F16", ">=", MODE >= 6 ? 8 : 10);
+  if (MODE == 23) b.expect(name, "HADD2.F32", "==", 0);
   b.expect(name, "LDSM", ">=", 1);
   if (MODE != 0 && MODE != 14) b.expect(name, "ATOMS", ">=", 8);
   if (MODE >= 2 && MODE != 6 && MODE < 8) b.expect(name, "RED", ">=", 1);
@@ -744,6 +812,8 @@ void modes(const lab::Bench& b, uint32_t* target, const uint32_t* init) {
   if constexpr (FORM == 0) variant<19, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<20, FORM, STEPS, LIVE>(b, target, init);
   if constexpr (FORM == 0) variant<21, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<22, FORM, STEPS, LIVE>(b, target, init);
+  if constexpr (FORM == 0) variant<23, FORM, STEPS, LIVE>(b, target, init);
 }
 
 }  // namespace read_step
