@@ -355,6 +355,24 @@ adds) -- with gathered rows residue-ordered (each 8 of a step distinct mod 8: th
 issue slots an 8-cycle MMA at every density. Timed, 1.015-1.030x. Residue order alone takes form 1's full gathered
 step from 1.374x to 1.263x (ncu: 58M bank conflicts in 145M wavefronts hashed, 0.06M ordered); the shape and the
 precomputed c take the rest. Tensor active 49% of the fp16 peak, the fp32-accumulate pipe's whole rate on this card.
+
+THE COEFFICIENT FORMED IN THE FOLD (forms 6 and 7, 2026-10-07): what the fold pays when the facts pass emits 2-byte
+entries and the warp forms each token's c itself -- the list digit's byte from the token's pool row (f16 through the
+mantissa: `0x6400 | b`, less 1024), times the token's `(F, m)` f16 pair, two HMUL2s a token pair. The row now holds
+level R's 28 digits and that pair unswizzled after the swizzled level-S and value chunks (form 5 unchanged: 1.015 /
+1.018 / 1.030). Form 6's entries are slots (the row's offset and the gains' index computed from each); form 7's are
+the rows' offsets, the gains read from the row. Against form 5 at 8 / 2 / 1 steps a list:
+
+| form | sm_86 x floor | non-MMA instructions an MMA (sm_80 = sm_86 SASS) |
+|---|---|---|
+| 5, c in the entry | 1.015 / 1.018 / 1.030 | 2.46 / 3.44 / 4.70 |
+| 6, slot entries | 1.039 / 1.048 / 1.062 | 6.11 / 7.05 / 8.30 |
+| 7, offset entries, gains in the row | 1.032 / 1.042 / 1.051 | 5.31 / 6.25 / 7.50 |
+
+Forming c costs ~2.9 instructions an MMA at best (the loads, the byte's conversion, the pairs' PRMTs and HMUL2s);
+slots add ~0.8 of address arithmetic. sm_86's fp32-accumulate MMA (32 cycles) hides it, +1.6-2.4%; sm_80's 8-cycle MMA
+leaves 7 issue slots, which form 7 fills at two steps a list and overruns at one. The numerics differ too: c from
+f16 gains at the window's scale, not fp32 gains at the list's own, so a list of light tokens loses its scaling.
 Records: `measure/lab/results/list_fold/sm_86.json`, `sm_86.counters.json`.
 
 <a id="read-step"></a>
@@ -605,3 +623,53 @@ warps a CTA lifted issue from ~26% to ~38% (commit 5b26266f); the integer den an
 den (ece3d4d6); FFMA forms, digit-major (0db7bf1e) and token-major (673c2375). Record:
 `measure/lab/results/den_sweep/sm_86.json` (the inputs' digests in it), counters `sm_86.counters.json` (a kernel's
 median over the cells it ran).
+
+<a id="row-span"></a>
+
+## `row_span`
+
+How fast the facts pass's row stream reads DRAM when a work item owns a wider span of a level's digits. A level's
+rows are `[T, H, 256]` u8 (a token's head's row contiguous, heads side by side); the facts pass's units own 32 digits,
+one 32-byte piece of each token's row. The facts pass's ring (four 1 KB stages a warp, three ahead, two quanta a lane
+a stage, eight lanes reading one token's run), items taken in order with the span innermost (as the pass deals its
+units), every item 64 KB; read only. sm_86 (RTX 3080 Ti), bytes a chip cycle against a flat stream of the same bytes:
+
+| span | 2 x 8 warps an SM | 1 x 16 | 1 x 8 |
+|---|---|---|---|
+| flat stream | 541.7 (1.00) | 539.8 (1.00) | 525.0 (1.00) |
+| 32 digits (32 B a token) | 268.0 (0.50) | 243.0 (0.45) | |
+| 64 digits | 436.3 (0.81) | 438.0 (0.81) | |
+| 128 digits | 528.0 (0.98) | 524.3 (0.97) | 533.2 (1.02) |
+| 256 digits (the whole row) | 538.9 (0.99) | 537.3 (1.00) | 524.7 (1.00) |
+
+The flat stream is the card's DRAM peak (~900 GB/s). A 32-byte piece of a row is half a DRAM burst: the stream reads
+at half rate unless the row's neighbouring piece is read by the same warp at the same time -- the facts pass's vote
+items (four consecutive units of a level, their warps reading together) recover it, its 64-digit list items do not.
+From 128 digits on the stream is at the peak at any block shape: neither the second block an SM nor sixteen warps are
+needed to stream. Record: `measure/lab/results/row_span/sm_86.json`.
+
+<a id="vote-stash"></a>
+
+## `vote_stash`
+
+What the facts pass's first stage pays to keep each digit's live bytes (a STASH, one byte an entry, which a second
+stage reads to form the lists' coefficients), beside the vote. Rows `[level-side, T, H, 256]`, each token's head live in
+k random digits; one block of eight warps an SM, each warp taking (window, level-side, head, 128-digit span) items in
+order and streaming each as 16 blocks of 32 tokens x 128 bytes through a ring of three 4 KB stages (two ahead, issued
+on into the next item, eight lanes a token's run); each block's four 32-digit sub-words voted as the facts pass votes a
+word and stored word-major. A STASH A DIGIT: each lane's digit's live bytes stored at the digit's own region (512 bytes
+a (window, digit)) at its running count. PACKED: a sub-word's live bytes appended to the item's one stash, lane by
+lane after a scan of the lanes' counts, each lane's in token order. Bytes a chip cycle (the flat stream 541):
+
+| k of 256 | vote | + stash a digit | + stash packed |
+|---|---|---|---|
+| 4 | 454.4 | 190.2 | 440.6 (-3.0%) |
+| 16 | 454.7 | 111.9 | 419.7 (-7.7%) |
+| 64 | 455.2 | 80.9 | 272.4 (-40%) |
+
+A stash a digit amplifies its writes: at k 16, 93 MB of DRAM writes for 17 MB of stash, each byte store dirtying a
+sector of one of 128 regions that leaves L2 before its neighbours are written. Packed, the writes are the stash's
+bytes. What remains is the lanes' serial walk, ~2.4 warp instructions an entry at k 16: a warp walks as long as its
+busiest lane, so at 25% density the stage halves; a lane-parallel extraction is owed for dense list levels. The vote's
+own 84% of the flat stream is this lab's one block of eight warps (issue 10%, DRAM 93% at k 16 under ncu). Record:
+`measure/lab/results/vote_stash/sm_86.json`.

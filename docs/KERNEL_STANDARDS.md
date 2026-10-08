@@ -853,6 +853,19 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       gathered rows residue-ordered (each 8 of a step distinct mod 8) -- 2.5 / 3.4 / 4.7 non-MMA instructions an MMA at
       8 / 2 / 1 steps a list (13-17 before) and 1.015-1.030x its floor at every density on sm_86 (1.13-1.42x before).
       Residue order alone removes the gathered rows' bank conflicts (58M -> 0.06M; 1.37x -> 1.26x).
+   z. A COEFFICIENT FORMED IN THE FOLD COSTS ~2.9 INSTRUCTIONS AN MMA (`list_fold` forms 6-7): the list digit's byte
+      from the token's row times its `(F, m)` f16 pair, against c read precomputed from the entry -- 5.3 / 6.25 / 7.5
+      non-MMA instructions an MMA at 8 / 2 / 1 steps a list (form 5: 2.5 / 3.4 / 4.7), +1.6-2.4% on sm_86, over sm_80's
+      7 issue slots at one step a list; slot entries add ~0.8 of address arithmetic. So a per-entry value the producer
+      can form once stays in the entry.
+   aa. A STREAM READS 128 OR MORE CONTIGUOUS BYTES OF A ROW (`row_span`): a work item owning a 32-byte piece of each
+      row streams at half the DRAM peak (half a burst), 64 bytes at 0.81, 128 and up at the peak, at any block shape
+      (2 x 8, 1 x 16 or 1 x 8 warps an SM). A level's work item spans 128 digits or more of its rows.
+   bb. BYTES KEPT FOR A LATER STAGE ARE APPENDED TO ONE PACKED STREAM, NEVER SCATTERED TO PER-KEY REGIONS
+      (`vote_stash`): each byte stored at its key's own region dirtied a sector that left L2 half written -- 93 MB of
+      DRAM writes for a 17 MB stash, the stage at 0.25x; appended lane by lane after a scan of the lanes' counts, the
+      writes are the bytes and the stage costs 3% (k 4 of 256) to 8% (k 16). A lane's serial walk over its entries is
+      bounded by the warp's busiest lane (0.6x at 25% density): dense key sets want a lane-parallel extraction.
 
 ## §27 — A STEP IS ONE BLOCK, INTERLEAVED BY CONSTRUCTION (law, 2026-10-06, from Blake's "we should have lints and sass checks that enforce we properly interleave loops by default, and only override if justified")
 The per-list readout ran 3.2x its MMA floor and the cause was the shape of its code, not the hardware: branches the
