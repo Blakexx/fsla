@@ -4,17 +4,21 @@
 // token's head live in k random digits (bytes 1..255, the rest zero); one block of eight warps an SM, each warp taking
 // items in order from a counter -- (window of 512 tokens, level-side, head, 128-digit span), the span innermost --
 // and streaming an item as 16 blocks of 32 tokens x 128 bytes (4 KB; a ring of three, two in flight ahead of the one
-// read and running on into the next item; each lane one token's 128-byte run). A block's four 32-digit sub-words are voted as the facts pass votes a word (lane `(tk, dq)` four
-// tokens' four digits a load, a 4 x 4 byte transpose, then digit `4 dq + tk`'s 32 tokens as one word) and stored
-// word-major; EXTRACT 1 also walks each lane's digit's live tokens, reads each one's byte from the stage and stores
-// it to the digit's stash at the digit's running count; EXTRACT 2 appends them to the item's one packed stash instead
-// (a sub-word's live bytes lane by lane after a scan of the lanes' counts, each lane's in token order). Against vote alone, at k 4, 16 and 64: the stream's bytes a cycle,
-// and from the profiler each variant's instructions. see docs/internals/tools/lab.md#vote-stash
+// read and running on into the next item; each lane one token's 128-byte run). A block's four 32-digit sub-words are
+// voted as the facts pass votes a word (lane `(tk, dq)` four tokens' four digits a load, a 4 x 4 byte transpose, then
+// digit `4 dq + tk`'s 32 tokens as one word) and stored word-major; EXTRACT 1 also walks each lane's digit's live
+// tokens, reads each one's byte from the stage and stores it to the digit's stash at the digit's running count;
+// EXTRACT 2 appends them to the item's one packed stash instead (a sub-word's live bytes lane by lane after a scan of
+// the lanes' counts, each lane's in token order). Against vote alone, at k 4, 16 and 64: the stream's bytes a cycle,
+// and from the profiler each variant's instructions. TILED: each warp keeps its item's bits in a shared tile (its
+// span's digits x the window's 16 words, 8 KB) and stores the tile's rows at the item's end, 64 contiguous bytes a
+// row (the footprint the lists' second stage needs on chip), at fewer warps an SM.
+// see docs/internals/tools/lab.md#vote-stash
 #include "lab.cuh"
 
 namespace vote_stash {
 
-constexpr int kWarps = 8, kThreads = kWarps * 32, kStages = 3, kSpan = 128, kSubWords = kSpan / 32;
+constexpr int kSpan = 128, kSubWords = kSpan / 32, kTileStride = 17, kTileBytes = kSpan * kTileStride * 4;
 constexpr int kBlockBytes = 32 * kSpan, kWindow = 512, kBlocks = kWindow / 32;
 constexpr int kTokens = 65536, kHeads = 4, kWidth = 256, kLevelSides = 4;
 constexpr long long kLevelBytes = static_cast<long long>(kTokens) * kHeads * kWidth;
@@ -67,12 +71,14 @@ __device__ __forceinline__ void issue(const uint8_t* block, uint32_t stage, int 
   }
 }
 
-template <int EXTRACT>
-__global__ void __launch_bounds__(kThreads, 1) stage1(const uint8_t* rows, uint32_t* bits_out, uint8_t* stash,
-                                                       int* counter, long long* t) {
+template <int EXTRACT, int WARPS, int STAGES, int TILED>
+__global__ void __launch_bounds__(WARPS * 32, 1) stage1(const uint8_t* rows, uint32_t* bits_out, uint8_t* stash,
+                                                         int* counter, long long* t) {
+  constexpr int kStages = STAGES;
   extern __shared__ __align__(128) uint8_t smem[];
   const int lane = lab::lane_id(), warp = lab::warp_id(), tk = lane >> 3, dq = lane & 7;
-  uint8_t* const ring = smem + warp * kStages * kBlockBytes;
+  uint8_t* const ring = smem + warp * (kStages * kBlockBytes + TILED * kTileBytes);
+  uint32_t* const tile = reinterpret_cast<uint32_t*>(ring + kStages * kBlockBytes);
   const uint32_t ring_at = lab::smem(ring);
   lab::WarpSpan clock;
   clock.start();
@@ -125,7 +131,10 @@ __global__ void __launch_bounds__(kThreads, 1) stage1(const uint8_t* rows, uint3
         y = __shfl_xor_sync(0xffffffffu, flags, 8);
         flags = (tk & 1) ? prmt<0x3715u>(flags, y) : prmt<0x6240u>(flags, y);
         const int digit = 4 * dq + tk;
-        bits_out[(static_cast<long long>(item) * kBlocks + b) * kSpan + 32 * s + digit] = flags;
+        if constexpr (TILED)
+          tile[(32 * s + digit) * kTileStride + b] = flags;
+        else
+          bits_out[(static_cast<long long>(item) * kBlocks + b) * kSpan + 32 * s + digit] = flags;
         if constexpr (EXTRACT == 2) {
           //: PACKED: the sub-word's live bytes appended to the item's stash, lane by lane (a scan of their counts),
           //: each lane its digit's in token order
@@ -160,29 +169,47 @@ __global__ void __launch_bounds__(kThreads, 1) stage1(const uint8_t* rows, uint3
       }
       __syncwarp();
     }
+    if constexpr (TILED) {
+      //: the tile's rows out: row r of the span the item's (level-side, head) row, its window's 16 words one run
+      const int span = item % kSpans, head = (item / kSpans) % kHeads, ls = (item / kSpans / kHeads) % kLevelSides;
+      const int window = item / kSpans / kHeads / kLevelSides;
+#pragma unroll 4
+      for (int i = lane; i < kSpan * 4; i += 32) {
+        const int r = i >> 2, q = i & 3;
+        const uint32_t* const at = tile + r * kTileStride + 4 * q;
+        const long long row = (static_cast<long long>(ls) * kHeads + head) * kWidth + span * kSpan + r;
+        *reinterpret_cast<uint4*>(bits_out + row * (kTokens / 32) + window * kBlocks + 4 * q) =
+            make_uint4(at[0], at[1], at[2], at[3]);
+      }
+      __syncwarp();
+    }
   }
   clock.stop(t);
 }
 
-template <int EXTRACT, int K>
+template <int EXTRACT, int K, int WARPS = 8, int STAGES = 3, int TILED = 0>
 void variant(const lab::Bench& b, uint8_t* rows, uint32_t* bits, uint8_t* stash, int* counter) {
-  const std::string name = lab::kernel("stage1", {EXTRACT});
+  const std::string name = lab::kernel("stage1", {EXTRACT, WARPS, STAGES, TILED});
   b.expect(name, "LDGSTS", ">=", 8);
   if (b.expect_only) return;
   LAB_CHECK(cudaMemset(rows, 0, kBytes));
   const long long heads = static_cast<long long>(kLevelSides) * kTokens * kHeads;
   fill<<<static_cast<int>((heads + 255) / 256), 256>>>(rows, K);
   LAB_CHECK(cudaDeviceSynchronize());
-  const int bytes = kWarps * kStages * kBlockBytes;
-  LAB_CHECK(cudaFuncSetAttribute(stage1<EXTRACT>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
+  const int bytes = WARPS * (STAGES * kBlockBytes + TILED * kTileBytes);
+  LAB_CHECK(cudaFuncSetAttribute(stage1<EXTRACT, WARPS, STAGES, TILED>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 bytes));
   const lab::Samples s = b.variant(
       [&] {
         LAB_CHECK(cudaMemset(counter, 0, sizeof(int)));
-        stage1<EXTRACT><<<b.sms, kThreads, bytes>>>(rows, bits, stash, counter, b.times);
+        stage1<EXTRACT, WARPS, STAGES, TILED><<<b.sms, WARPS * 32, bytes>>>(rows, bits, stash, counter, b.times);
       },
-      [&] { return static_cast<double>(kBytes) / b.span(kWarps); });
+      [&] { return static_cast<double>(kBytes) / b.span(WARPS); });
   const char* kind[3] = {"vote", "vote + stash a digit", "vote + stash packed"};
-  b.record(std::string(kind[EXTRACT]) + " / k " + std::to_string(K), "bytes a cycle", s);
+  std::string label = std::string(kind[EXTRACT]) + " / k " + std::to_string(K);
+  if (TILED || WARPS != 8 || STAGES != 3)
+    label += " / " + std::to_string(WARPS) + " warps, " + std::to_string(STAGES) + " stages" + (TILED ? ", tiled" : "");
+  b.record(label, "bytes a cycle", s);
 }
 
 }  // namespace vote_stash
@@ -208,4 +235,10 @@ int main(int argc, char** argv) {
   variant<0, 64>(b, rows, bits, stash, counter);
   variant<1, 64>(b, rows, bits, stash, counter);
   variant<2, 64>(b, rows, bits, stash, counter);
+  //: the bits kept on chip for the second stage: 6 warps of two stages, 4 of three, against 8 of two untiled
+  variant<2, 4, 8, 2, 0>(b, rows, bits, stash, counter);
+  variant<2, 4, 6, 2, 1>(b, rows, bits, stash, counter);
+  variant<2, 4, 4, 3, 1>(b, rows, bits, stash, counter);
+  variant<2, 16, 6, 2, 1>(b, rows, bits, stash, counter);
+  variant<2, 16, 4, 3, 1>(b, rows, bits, stash, counter);
 }

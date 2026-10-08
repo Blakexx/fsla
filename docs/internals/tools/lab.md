@@ -646,7 +646,10 @@ The flat stream is the card's DRAM peak (~900 GB/s). A 32-byte piece of a row is
 at half rate unless the row's neighbouring piece is read by the same warp at the same time -- the facts pass's vote
 items (four consecutive units of a level, their warps reading together) recover it, its 64-digit list items do not.
 From 128 digits on the stream is at the peak at any block shape: neither the second block an SM nor sixteen warps are
-needed to stream. Record: `measure/lab/results/row_span/sm_86.json`.
+needed to stream. SPANS APART (the span outermost in the item order, so a row's other spans are read a whole sweep
+later, as a facts pass whose blocks drift apart reads them): 128 digits 527.8 (0.98), the same as innermost; 64 digits
+319.8 (0.59) against 0.81 innermost -- a 64-byte run is a whole burst only when its row's neighbour is read about the
+same time, a 128-byte run always. Record: `measure/lab/results/row_span/sm_86.json`.
 
 <a id="vote-stash"></a>
 
@@ -671,5 +674,71 @@ A stash a digit amplifies its writes: at k 16, 93 MB of DRAM writes for 17 MB of
 sector of one of 128 regions that leaves L2 before its neighbours are written. Packed, the writes are the stash's
 bytes. What remains is the lanes' serial walk, ~2.4 warp instructions an entry at k 16: a warp walks as long as its
 busiest lane, so at 25% density the stage halves; a lane-parallel extraction is owed for dense list levels. The vote's
-own 84% of the flat stream is this lab's one block of eight warps (issue 10%, DRAM 93% at k 16 under ncu). Record:
-`measure/lab/results/vote_stash/sm_86.json`.
+own 84% of the flat stream is this lab's one block of eight warps (issue 10%, DRAM 93% at k 16 under ncu). TILED (each
+warp's item bits in an 8 KB shared tile, its rows out as 64-byte runs at the item's end: the on-chip footprint a
+second stage needs), packed stash: 6 warps an SM 424.0 (k 4) / 398.1 (k 16), 4 warps with three stages 407.8 / 297.5,
+against 8 warps untiled 441.6 at k 4 -- the tile's footprint costs warps, and four warps cannot hide the walk at k 16.
+Record: `measure/lab/results/vote_stash/sm_86.json`.
+
+<a id="facts-pipeline"></a>
+
+## `facts_pipeline`
+
+The two-stage facts pass end to end in a warp: a warp streams an item (the vote; on the write list level also the
+lists' exponents and the packed stash), keeps its bits in registers, issues its next item's first block, then builds
+its four 32-digit groups' lists from them (the walk build: each digit's entries dealt evenly, a walk totalling each
+(digit, pass) by residue, a segmented scan of ranks, a walk placing each entry; a write entry's byte from the stash).
+Seven warps an SM (a 2 x 4 KB ring and ~4.8 KB of build scratch each). Bytes a chip cycle:
+
+| k of 256 | voted only | stage 1 alone | two stages |
+|---|---|---|---|
+| 4 | 430.1 | 352.4 | 182.1 |
+| 16 | 429.9 | 335.3 | 148.0 |
+
+The build in the stream's warps serializes them: a warp builds instead of streaming, and seven warps an SM cannot keep
+the stream's bytes in flight around it; the build's re-read of its bits from global (instead of registers held across
+the item) also misses L2 at this footprint. The form the facts pass takes instead: `facts_block`. Record:
+`measure/lab/results/facts_pipeline/sm_86.json`.
+
+<a id="facts-block"></a>
+
+## `facts_block`
+
+What shape lets the facts pass's list build hide under its row stream, at or under 1.15x its DRAM floor
+(KERNEL_STANDARDS §28). Rows `[level-side, T, H, 256]` u8, each token's head live in k random digits; level-side 0
+the write list level (8-byte records whose coefficient needs the byte, the token's `(F, m)` pair and the window's
+maxima of b x gains), 1 the read list level (2-byte slot lists from its bits), 2-3 voted only. One block of sixteen
+warps an SM, warp w the window's w-th 32 tokens; the build is the facts pass's walk build (four warps a 32-digit
+group). Time against the DRAM floor -- the rows, the gains, the bits and union words, the lists and their pass starts
+-- at a flat read's rate measured in the same run (539 bytes a chip cycle); each build's lists checked against the
+live count and, by checksum, bit for bit against the first form's (they agree). sm_86, x the DRAM floor:
+
+| form | vote only | k 4 | k 16 | resident k 4 / k 16 |
+|---|---|---|---|---|
+| BULK: 64-digit items over two whole-window buffers, three barriers an item, bit words stored from the vote | 1.18 | 1.29 | 1.60 | 1.11 / 1.40 |
+| TILED: the same, bits through a shared tile as 64-byte runs, the maxima in the build's first walk | 1.10 | 1.28 | 1.27 | 0.72 / 1.08 |
+| SPLIT: the write level two 64-digit halves in one held window, the others 128-digit items through a per-warp ring of 8-token stages, one barrier an item | 1.07 | 1.16 | 1.20 | 0.54 / 0.88 |
+
+What each step found (each measured in this lab on the way; the dropped forms are in its history):
+- THE VOTE'S BIT STORES WERE ITS WHOLE COST: each warp storing one 4-byte word to each of 32 rows took ~4K cycles an
+  item; through a tile and out as 64-byte runs after the barrier the vote runs at 4x the floor's rate (resident 0.23x).
+- THE MAXIMA OVER LIVE ENTRIES: the write level's per-digit maxima of b x gains over every byte (64 f16 products a lane
+  a group in the vote) move to the build's first walk, which visits only the live entries.
+- RESIDENT IS NOT ENOUGH: TILED's build computes at 0.72x the floor at k 4 yet streams at 1.28x -- its two buffers hold
+  the write level's window through the build, so nothing is in flight under it. A third 32 KB buffer does not fit beside
+  the tiles and tables in sm_86's 99 KB. Only the write level needs its bytes after the vote, so SPLIT holds that level
+  alone (64 digits, 32 KB) and streams the rest as 128-byte runs through a small ring, each stage free once voted.
+- AN sm_86 MBARRIER WAIT IS A POLLED SHARED WORD: in SPLIT the eight warps waiting on the write level's eight builders
+  spun 30.7M of 116.5M warp instructions (26%); polls with `__nanosleep(64)` between them return the slots (resident
+  0.56 -> 0.54 at k 4, 0.90 -> 0.88 at k 16).
+- FORMS THAT LOST: popcount counts a (digit, word) with independent per-entry ranks (73M warp instructions at k 4
+  against the walk build's 28M: per-cell work is paid at every density); one barrier a quad of level-sides on two
+  slots (resident 0.55 / 0.84 but streaming 1.50 / 1.45, converted from bytes a cycle by the same cells' bytes moved:
+  the held window leaves one slot to stream through); the read level built on
+  eight warps beside the others' votes (k 16 1.20 -> 1.31: its latency doubles); a lane's walk batched four entries with
+  predicated effects (resident k 16 0.88 -> 0.99: more instructions and registers than the overlap returns).
+- OPEN: k 16 is 1.20x with its compute at 0.88x the floor; the build's ~156 instructions a live entry (both walks) and
+  its latency at eight to sixteen warps are what is left to cut. The vote-only 1.07x is this geometry's floor on sm_86:
+  one level-side in four reads 64-byte runs.
+
+Record: `measure/lab/results/facts_block/sm_86.json`.

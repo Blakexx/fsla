@@ -27,8 +27,9 @@ __device__ __forceinline__ void wait() {
 }
 
 //: STAGE `k` OF A WARP'S ITEM: its two quanta a lane. SPAN 0 is the flat stream (the stage 1 KB contiguous); else an
-//: S-digit span: quantum q token q / (S / 16) of the stage's tokens, at its row's span bytes
-template <int SPAN, int WARPS>
+//: S-digit span: quantum q token q / (S / 16) of the stage's tokens, at its row's span bytes. APART: the span
+//: outermost in the item order (a row's spans read a whole sweep apart), else innermost
+template <int SPAN, int WARPS, bool APART = false>
 __device__ __forceinline__ void issue(const uint8_t* rows, uint32_t ring, int item, int warp, int k, int lane) {
 #pragma unroll
   for (int h = 0; h < 2; ++h) {
@@ -41,8 +42,9 @@ __device__ __forceinline__ void issue(const uint8_t* rows, uint32_t ring, int it
       constexpr int kQuanta = SPAN / 16, kStageTokens = kStageBytes / SPAN, kSpans = kWidth / SPAN;
       constexpr int kItemTokens = WARPS * kItemStages * kStageTokens;
       //: item -> (token range, head, level-side, span), the span innermost
-      const int span = item % kSpans, ls = (item / kSpans) % kLevelSides, head = (item / kSpans / kLevelSides) % kHeads;
-      const int range = item / kSpans / kLevelSides / kHeads;
+      constexpr int kRest = kItems<WARPS> / kSpans;
+      const int span = APART ? item / kRest : item % kSpans, rest = APART ? item % kRest : item / kSpans;
+      const int ls = rest % kLevelSides, head = rest / kLevelSides % kHeads, range = rest / kLevelSides / kHeads;
       const int t = range * kItemTokens + (warp * kItemStages + k) * kStageTokens + q / kQuanta;
       src = rows + ls * kLevelBytes + (static_cast<long long>(t) * kHeads + head) * kWidth + span * SPAN
             + 16 * (q % kQuanta);
@@ -52,7 +54,7 @@ __device__ __forceinline__ void issue(const uint8_t* rows, uint32_t ring, int it
   }
 }
 
-template <int SPAN, int WARPS, int BLOCKS>
+template <int SPAN, int WARPS, int BLOCKS, bool APART = false>
 __global__ void __launch_bounds__(WARPS * 32, BLOCKS) stream(const uint8_t* rows, long long* t, int* out) {
   extern __shared__ __align__(128) uint8_t smem[];
   const int lane = lab::lane_id(), warp = lab::warp_id();
@@ -64,12 +66,12 @@ __global__ void __launch_bounds__(WARPS * 32, BLOCKS) stream(const uint8_t* rows
   for (int item = static_cast<int>(blockIdx.x); item < kItems<WARPS>; item += static_cast<int>(gridDim.x)) {
 #pragma unroll
     for (int k = 0; k < kStages - 1; ++k) {
-      issue<SPAN, WARPS>(rows, ring, item, warp, k, lane);
+      issue<SPAN, WARPS, APART>(rows, ring, item, warp, k, lane);
       commit();
     }
 #pragma unroll
     for (int k = 0; k < kItemStages; ++k) {
-      if (k + kStages - 1 < kItemStages) issue<SPAN, WARPS>(rows, ring, item, warp, k + kStages - 1, lane);
+      if (k + kStages - 1 < kItemStages) issue<SPAN, WARPS, APART>(rows, ring, item, warp, k + kStages - 1, lane);
       commit();
       wait<kStages - 1>();
       __syncwarp();
@@ -85,18 +87,21 @@ __global__ void __launch_bounds__(WARPS * 32, BLOCKS) stream(const uint8_t* rows
   lab::sink(out, sink);
 }
 
-template <int SPAN, int WARPS, int BLOCKS>
+template <int SPAN, int WARPS, int BLOCKS, bool APART = false>
 void variant(const lab::Bench& b, const uint8_t* rows, double& flat) {
-  const std::string name = lab::kernel("stream", {SPAN, WARPS, BLOCKS});
+  std::string name = lab::kernel("stream", {SPAN, WARPS, BLOCKS});
+  name = name.substr(0, name.size() - 3) + ", \\(bool\\)" + (APART ? "1" : "0") + ">\\(";
   b.expect(name, "LDGSTS", ">=", 2);
   if (b.expect_only) return;
   const int blocks = BLOCKS * b.sms, bytes = WARPS * kStages * kStageBytes;
-  LAB_CHECK(cudaFuncSetAttribute(stream<SPAN, WARPS, BLOCKS>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
+  LAB_CHECK(cudaFuncSetAttribute(stream<SPAN, WARPS, BLOCKS, APART>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 bytes));
   const lab::Samples s = b.variant(
-      [&] { stream<SPAN, WARPS, BLOCKS><<<blocks, WARPS * 32, bytes>>>(rows, b.times, b.sinks); },
+      [&] { stream<SPAN, WARPS, BLOCKS, APART><<<blocks, WARPS * 32, bytes>>>(rows, b.times, b.sinks); },
       [&] { return static_cast<double>(kBytes) / b.span(WARPS, blocks); });
   const std::string label = (SPAN == 0 ? std::string("flat stream") : std::to_string(SPAN) + "-digit span")
-                            + " / " + std::to_string(BLOCKS) + " x " + std::to_string(WARPS) + " warps an SM";
+                            + " / " + std::to_string(BLOCKS) + " x " + std::to_string(WARPS) + " warps an SM"
+                            + (APART ? " / spans apart" : "");
   b.record(label, "bytes a cycle", s);
   if (SPAN == 0) flat = s.median();
   lab::Samples over;
@@ -124,6 +129,8 @@ int main(int argc, char** argv) {
   variant<32, 16, 1>(b, rows, flat);
   variant<64, 16, 1>(b, rows, flat);
   variant<128, 16, 1>(b, rows, flat);
+  variant<128, 16, 1, true>(b, rows, flat);
+  variant<64, 16, 1, true>(b, rows, flat);
   variant<256, 16, 1>(b, rows, flat);
   variant<0, 8, 1>(b, rows, flat);
   variant<128, 8, 1>(b, rows, flat);

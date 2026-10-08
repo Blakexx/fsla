@@ -866,6 +866,23 @@ probe that replaced it measured instructions ptxas had folded or turned into cal
       DRAM writes for a 17 MB stash, the stage at 0.25x; appended lane by lane after a scan of the lanes' counts, the
       writes are the bytes and the stage costs 3% (k 4 of 256) to 8% (k 16). A lane's serial walk over its entries is
       bounded by the warp's busiest lane (0.6x at 25% density): dense key sets want a lane-parallel extraction.
+   cc. A WARP'S BIT WORDS LEAVE THROUGH A TILE AS 64-BYTE RUNS (`facts_block`): a warp storing one 4-byte word to each
+      of 32 rows took ~4K cycles an item -- the facts pass's vote's whole cost; written to a shared tile and stored as
+      each row's 64 contiguous bytes after the item's barrier, the vote runs at 4x its DRAM floor's rate. The 128-byte
+      rule holds even for a run a row the next item re-reads: 128-byte runs read a whole sweep apart still stream at
+      0.98 of the peak, 64-byte ones fall to 0.59 (`row_span`, spans apart).
+   dd. AN sm_86 MBARRIER WAIT POLLS, SO A WAITING WARP SLEEPS BETWEEN POLLS (`facts_block`): eight warps waiting on
+      eight builders spun 26% of the kernel's warp instructions (30.7M of 116.5M) in their LDS/LOP3/branch poll, taking
+      the builders' issue slots; `__nanosleep(64)` between polls returns them. A wait whose producer is busy computing
+      sleeps; only a wait sure to be short spins.
+   ee. A STREAMING PASS'S FLOOR COUNTS ITS WRITES (`facts_block`): the facts pass writes its bitlists (an eighth of
+      what it reads), union words and lists; against the read bytes alone its rate looked 0.81 of the peak, against
+      the bytes it moves 0.92. Every streaming lab and gate prices the floor on read plus write bytes at a flat
+      stream's rate measured in the same run.
+   ff. HOLD ONLY WHAT A LATER PHASE READS, STREAM THE REST (`facts_block`): a pass whose build needs one level's bytes
+      after the vote cannot double-buffer every level's whole window in 99 KB -- holding the write level through its
+      build left nothing in flight (TILED computes at 0.72x its floor at k 4 and streams at 1.28x); holding that level
+      alone and streaming the others through a ring of small stages freed as voted takes it to 1.16x (resident 0.54x).
 
 ## §27 — A STEP IS ONE BLOCK, INTERLEAVED BY CONSTRUCTION (law, 2026-10-06, from Blake's "we should have lints and sass checks that enforce we properly interleave loops by default, and only override if justified")
 The per-list readout ran 3.2x its MMA floor and the cause was the shape of its code, not the hardware: branches the
