@@ -50,12 +50,19 @@ struct alignas(16) CarryShared {
   uint16_t buf[kWarps][2][3][kWarpCap];
 };
 
-struct alignas(16) SideShared {
-  uint8_t bytes[2][kWindow][kGroup];
-  float2 fm[2][kWindow];
+//: A SIDECAR TEAM'S STAGE (two warps an item, four teams a sidecar): the item's lists, each entry's token and digit
+//: (`token | digit << 9`, a pad 0xffff), warp 0's union popcount, both warps' packed residue counts
+constexpr int kTeams = 4, kTeamThreads = 64;
+
+struct alignas(16) Team {
   uint16_t lists[3][kGroupCap];
-  uint32_t pcount[kWarps];
-  uint32_t count[kWarps][kGroup][2];
+  uint16_t tok[kGroupCap];
+  uint32_t total0;
+  uint32_t count[2][kGroup][2];
+};
+
+struct alignas(16) SideShared {
+  Team team[kTeams];
 };
 
 constexpr size_t kShared = sizeof(CarryShared) > sizeof(SideShared) ? sizeof(CarryShared)
@@ -239,25 +246,6 @@ __device__ void carry_role(CarryShared& sh, int windows, int side, int depth, co
   lab::sink(out, fold);
 }
 
-//: AN ITEM'S INPUTS, one item ahead: the lane's digit's two words of the warp's pair (registers), the group's level-R
-//: bytes and the window's (F, m) into stage `buf` (cp.async)
-__device__ __forceinline__ uint2 side_load(SideShared& sh, int buf, int item, const uint32_t* words,
-                                           const uint8_t* bytes, const float2* fm) {
-  const int win = item / kGroups, g = item % kGroups, tid = static_cast<int>(threadIdx.x);
-  for (int i = tid; i < 2 * kWindow; i += kThreads) {
-    const int token = i >> 1, half = i & 1;
-    lab::cp_async16(
-        lab::smem(&sh.bytes[buf][token][16 * half]),
-        bytes + (static_cast<size_t>(win) * kWindow + token) * kDigits + kGroup * g + 16 * half);
-  }
-  for (int i = tid; i < kWindow / 2; i += kThreads)
-    lab::cp_async16(lab::smem(&sh.fm[buf][2 * i]), fm + static_cast<size_t>(win) * kWindow + 2 * i);
-  lab::cp_commit();
-  return *reinterpret_cast<const uint2*>(
-      words + (static_cast<size_t>(win) * kDigits + kGroup * g + lab::lane_id()) * kWords
-      + 2 * lab::warp_id());
-}
-
 //: per residue (packed 8 bits a residue, residues 0-3 in `lo`, 4-7 in `hi`), the entries of one word in slot order
 __device__ __forceinline__ void count_word(uint32_t& lo, uint32_t& hi, uint32_t bits, uint32_t u,
                                            uint32_t base) {
@@ -274,41 +262,52 @@ __device__ __forceinline__ uint32_t packed(uint32_t lo, uint32_t hi, uint32_t r)
   return ((r < 4 ? lo : hi) >> (8u * (r & 3u))) & 255u;
 }
 
-//: A SIDECAR'S ITEM: one (window, group)'s 32 lists from its bitlists. Thread (warp w, lane d) holds digit d's words
-//: 2w, 2w + 1: the group's union a warp-wide OR, a word's base the warps' popcounts before it, a digit's per-residue
-//: counts the warps' packed counts, each entry's place round-robin by slot & 7; the lists assembled in shared memory
-//: and copied out whole runs, after the slot frees (mode 0)
+//: A SIDECAR TEAM'S ITEM: one (window, group)'s 32 lists from its bitlists, two warps synchronized by their own named
+//: barrier. Thread (warp h, lane d) holds digit d's words 8 h .. 8 h + 7: the union a warp-wide OR a word, a word's
+//: base the running popcount (warp 1 after warp 0's total), a digit's per-residue counts both warps' packed counts;
+//: each entry placed round-robin by slot & 7 (its pool row offset, its token and digit), then the coefficients
+//: gathered four entries a thread at a time, the lists copied out whole runs after the slot frees (mode 0)
 template <int MODE>
-__device__ void side_build(SideShared& sh, int buf, uint2 wv, Lists* dst, int* ready, int item,
-                           const int* done, int done_at, int target) {
-  const int w = lab::warp_id(), d = lab::lane_id(), tid = static_cast<int>(threadIdx.x);
-  const uint32_t u0 = __reduce_or_sync(0xffffffffu, wv.x), u1 = __reduce_or_sync(0xffffffffu, wv.y);
-  if (d == 0) sh.pcount[w] = __popc(u0) + __popc(u1);
-  __syncthreads();
-  uint32_t base = 0;
+__device__ void team_build(Team& tm, int bar, int item, const uint32_t* words, const uint8_t* bytes,
+                           const float2* fm, Lists* dst, int* ready, const int* done, int done_at,
+                           int target) {
+  const int h = lab::warp_id() & 1, d = lab::lane_id(), tt = 32 * h + d;
+  const int win = item / kGroups, g = item % kGroups;
+  const uint4* wp = reinterpret_cast<const uint4*>(
+      words + (static_cast<size_t>(win) * kDigits + kGroup * g + d) * kWords + 8 * h);
+  const uint4 wa = wp[0], wb = wp[1];
+  const uint32_t wv[8] = {wa.x, wa.y, wa.z, wa.w, wb.x, wb.y, wb.z, wb.w};
+  uint32_t un[8], pc = 0;
 #pragma unroll
-  for (int ww = 0; ww < kWarps; ++ww) base += ww < w ? sh.pcount[ww] : 0u;
-  const uint32_t b0 = base, b1 = base + __popc(u0);
-  uint32_t lo = 0, hi = 0;
-  count_word(lo, hi, wv.x, u0, b0);
-  count_word(lo, hi, wv.y, u1, b1);
-  sh.count[w][d][0] = lo;
-  sh.count[w][d][1] = hi;
-  __syncthreads();
-  int size[8] = {}, before[8] = {};
-#pragma unroll
-  for (int ww = 0; ww < kWarps; ++ww) {
-    const uint32_t l = sh.count[ww][d][0], h = sh.count[ww][d][1];
-#pragma unroll
-    for (int rr = 0; rr < 8; ++rr) {
-      const int c = static_cast<int>(packed(l, h, static_cast<uint32_t>(rr)));
-      size[rr] += c;
-      before[rr] += ww < w ? c : 0;
-    }
+  for (int i = 0; i < 8; ++i) {
+    un[i] = __reduce_or_sync(0xffffffffu, wv[i]);
+    pc += __popc(un[i]);
   }
-  int n = 0;
+  if (tt == 0) tm.total0 = pc;
+  lab::bar_sync(bar, kTeamThreads);
+  uint32_t base[8], b = h ? tm.total0 : 0u;
 #pragma unroll
-  for (int rr = 0; rr < 8; ++rr) n += size[rr];
+  for (int i = 0; i < 8; ++i) {
+    base[i] = b;
+    b += __popc(un[i]);
+  }
+  uint32_t lo = 0, hi = 0;
+#pragma unroll
+  for (int i = 0; i < 8; ++i) count_word(lo, hi, wv[i], un[i], base[i]);
+  tm.count[h][d][0] = lo;
+  tm.count[h][d][1] = hi;
+  lab::bar_sync(bar, kTeamThreads);
+  int size[8], before[8], n = 0;
+#pragma unroll
+  for (int rr = 0; rr < 8; ++rr) {
+    const int c0 =
+        static_cast<int>(packed(tm.count[0][d][0], tm.count[0][d][1], static_cast<uint32_t>(rr)));
+    const int c1 =
+        static_cast<int>(packed(tm.count[1][d][0], tm.count[1][d][1], static_cast<uint32_t>(rr)));
+    size[rr] = c0 + c1;
+    before[rr] = h ? c0 : 0;
+    n += size[rr];
+  }
   const int padded = (n + 15) & ~15;
   int start = padded;
 #pragma unroll
@@ -319,47 +318,75 @@ __device__ void side_build(SideShared& sh, int buf, uint2 wv, Lists* dst, int* r
   const int total = __shfl_sync(0xffffffffu, start, 31);
   start -= padded;
   uint32_t slo = 0, shi = 0;
-  const auto place = [&](uint32_t bits, uint32_t u, uint32_t b, int word) {
+#pragma unroll
+  for (int i = 0; i < 8; ++i) {
+    uint32_t bits = wv[i];
     while (bits) {
       const int t = __ffs(bits) - 1;
-      const uint32_t slot = b + __popc(u & ((1u << t) - 1u)), r = slot & 7u;
+      const uint32_t slot = base[i] + __popc(un[i] & ((1u << t) - 1u)), r = slot & 7u;
       int j = static_cast<int>(packed(slo, shi, r)), pos = 0;
 #pragma unroll
       for (int rr = 0; rr < 8; ++rr) j += rr == static_cast<int>(r) ? before[rr] : 0;
 #pragma unroll
       for (int rr = 0; rr < 8; ++rr)
         pos += min(size[rr], j) + (rr < static_cast<int>(r) && size[rr] > j);
-      const int e = start + pos, token = 32 * word + t;
-      const float c = static_cast<float>(sh.bytes[buf][token][d]) * (1.0f / 256.0f);
-      sh.lists[0][e] = static_cast<uint16_t>(row_at(slot & (kRows - 1)));
-      sh.lists[1][e] = __half_as_ushort(__float2half(c * sh.fm[buf][token].x));
-      sh.lists[2][e] = __half_as_ushort(__float2half(c * sh.fm[buf][token].y));
+      const int e = start + pos;
+      tm.lists[0][e] = static_cast<uint16_t>(row_at(slot & (kRows - 1)));
+      tm.tok[e] = static_cast<uint16_t>((32 * (8 * h + i) + t) | d << 9);
       const uint32_t inc = 1u << (8u * (r & 3u));
       slo += r < 4 ? inc : 0u;
       shi += r < 4 ? 0u : inc;
       bits &= bits - 1u;
     }
-  };
-  place(wv.x, u0, b0, 2 * w);
-  place(wv.y, u1, b1, 2 * w + 1);
-  if (w == 0)
-    for (int p = n; p < padded; ++p)
-      sh.lists[0][start + p] = sh.lists[1][start + p] = sh.lists[2][start + p] = 0;
-  __syncthreads();
-  if constexpr (MODE == 0) {
-    if (tid == 0 && done_at >= 0) wait_at_least(done + done_at, target);
-    __syncthreads();
   }
-  if (w == 0) dst->at[d] = static_cast<uint16_t>(start);
-  if (tid == 0) dst->at[kGroup] = static_cast<uint16_t>(total);
+  if (h == 0)
+    for (int p = n; p < padded; ++p) {
+      tm.lists[0][start + p] = 0;
+      tm.tok[start + p] = 0xffffu;
+    }
+  lab::bar_sync(bar, kTeamThreads);
+  const size_t row0 = static_cast<size_t>(win) * kWindow;
+  for (int e0 = tt; e0 < total; e0 += 4 * kTeamThreads) {
+    uint32_t x[4];
+    uint8_t by[4];
+    float2 f[4];
+#pragma unroll
+    for (int u = 0; u < 4; ++u) {
+      const int e = e0 + u * kTeamThreads;
+      x[u] = e < total ? tm.tok[e] : 0xffffu;
+    }
+#pragma unroll
+    for (int u = 0; u < 4; ++u) {
+      const uint32_t token = x[u] == 0xffffu ? 0u : x[u] & 511u,
+                     digit = x[u] == 0xffffu ? 0u : x[u] >> 9;
+      by[u] = bytes[(row0 + token) * kDigits + kGroup * g + digit];
+      f[u] = fm[row0 + token];
+    }
+#pragma unroll
+    for (int u = 0; u < 4; ++u) {
+      const int e = e0 + u * kTeamThreads;
+      const float c = x[u] == 0xffffu ? 0.0f : static_cast<float>(by[u]) * (1.0f / 256.0f);
+      if (e < total) {
+        tm.lists[1][e] = __half_as_ushort(__float2half(c * f[u].x));
+        tm.lists[2][e] = __half_as_ushort(__float2half(c * f[u].y));
+      }
+    }
+  }
+  lab::bar_sync(bar, kTeamThreads);
+  if constexpr (MODE == 0) {
+    if (tt == 0 && done_at >= 0) wait_at_least(done + done_at, target);
+    lab::bar_sync(bar, kTeamThreads);
+  }
+  if (h == 0) dst->at[d] = static_cast<uint16_t>(start);
+  if (tt == 0) dst->at[kGroup] = static_cast<uint16_t>(total);
   const int chunks = total / 8;
-  for (int i = tid; i < 3 * chunks; i += kThreads) {
+  for (int i = tt; i < 3 * chunks; i += kTeamThreads) {
     const int a = i / chunks, k = i - a * chunks;
     uint16_t* out = a == 0 ? dst->off : a == 1 ? dst->cv : dst->cm;
-    *reinterpret_cast<uint4*>(out + 8 * k) = *reinterpret_cast<const uint4*>(&sh.lists[a][8 * k]);
+    *reinterpret_cast<uint4*>(out + 8 * k) = *reinterpret_cast<const uint4*>(&tm.lists[a][8 * k]);
   }
-  __syncthreads();
-  if (tid == 0) {
+  lab::bar_sync(bar, kTeamThreads);
+  if (tt == 0) {
     __threadfence();
     atomicExch(ready + item, 1);
   }
@@ -382,22 +409,15 @@ __global__ void __launch_bounds__(kThreads, 1) gang(int windows, int side, int d
   }
   if constexpr (MODE == 1) return;
   SideShared& sh = *reinterpret_cast<SideShared*>(raw);
+  const int team = lab::warp_id() >> 1, workers = side * kTeams;
   lab::WarpSpan clock;
   clock.start();
-  int item = static_cast<int>(blockIdx.x), buf = 0;
-  uint2 wv = side_load(sh, 0, item, words, bytes, fm);
 #pragma unroll 1
-  for (; item < items; item += side, buf ^= 1) {
-    lab::cp_wait_all();
-    __syncthreads();
-    const int next = item + side;
-    const uint2 wn =
-        next < items ? side_load(sh, buf ^ 1, next, words, bytes, fm) : make_uint2(0u, 0u);
+  for (int item = static_cast<int>(blockIdx.x) * kTeams + team; item < items; item += workers) {
     const int win = item / kGroups, g = item % kGroups;
-    side_build<MODE>(sh, buf, wv,
+    team_build<MODE>(sh.team[team], 1 + team, item, words, bytes, fm,
                      MODE == 0 ? ring + static_cast<size_t>(win % depth) * kGroups + g : all + item,
-                     ready, item, done, win - depth, carries * kWarps);
-    wv = wn;
+                     ready, done, win - depth, carries * kWarps);
   }
   clock.stop(t);
 }
