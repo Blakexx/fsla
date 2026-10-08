@@ -36,6 +36,7 @@ import kernels  # noqa: E402 -- path insert must precede this import
 
 DECLARATION = ROOT / "tools" / "coverage.json"
 SANITIZER = ROOT / "tools" / "sanitize_oracle.py"
+OVERLAP = ROOT / "tools" / "overlap_gate.py"
 REL = DECLARATION.relative_to(ROOT)
 
 
@@ -50,6 +51,17 @@ def sanitizer_rows(path: Path = SANITIZER) -> dict[str, tuple[str, bool]]:
                 rows[ast.literal_eval(key)] = (kw["test"], kw["present"])
             return rows
     raise SystemExit(f"coverage: {path.relative_to(ROOT)} has no `_FAMILIES` table to read")
+
+
+def overlap_rows(path: Path = OVERLAP) -> dict[str, str]:
+    """`{row: kernel}` off the overlap gate's `ROWS`, read by AST so the lint imports nothing of the tool's."""
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign | ast.Assign) and any(
+                getattr(t, "id", "") == "ROWS" for t in ([node.target] if isinstance(node, ast.AnnAssign) else node.targets)):
+            return {ast.literal_eval(key): next(ast.literal_eval(k.value) for k in call.keywords if k.arg == "kernel")
+                    for key, call in zip(node.value.keys, node.value.values)}
+    raise SystemExit(f"coverage: {path.relative_to(ROOT)} has no `ROWS` table to read")
 
 
 def test_node_exists(node: str) -> bool:
@@ -77,7 +89,7 @@ def findings() -> list[str]:
     out = [f"{k.where()}: `{name}` ({k.family}) is not declared in {REL} -- declare how it meets {sorted(obligations)}"
            for name, k in sorted(source.items()) if name not in declared]
 
-    rows = sanitizer_rows()
+    rows = {"sanitizer": sanitizer_rows(), "overlap": overlap_rows()}
     for name, entry in sorted(declared.items()):
         at = f"{REL}:{line_of(text, name)}"
         if name not in source:
@@ -105,8 +117,12 @@ def _check(name: str, obligation: str, value, at: str, kernel, rows) -> list[str
             return [f"{at}: `{name}`'s `ratified` is {value!r}; it is \"manifest\" or owed"]
         return [f"{kernel.where()}: `{name}` ({kernel.family}) is declared ratified but no sm_{arch} manifest "
                 f"records it" for arch in manifest_arches() if name not in recorded(arch)]
+    if obligation == "overlap":
+        if rows["overlap"].get(value) != name:
+            return [f"{at}: `{name}`'s overlap row `{value}` is not a row of tools/overlap_gate.py gating `{name}`"]
+        return []
     if obligation == "sanitizer":
-        row = rows.get(value)
+        row = rows["sanitizer"].get(value)
         if row is None:
             return [f"{at}: `{name}`'s sanitizer row `{value}` is not in tools/sanitize_oracle.py"]
         if not row[1] or not test_node_exists(row[0]):

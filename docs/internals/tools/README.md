@@ -42,6 +42,7 @@ run of `pipe_timeline` writes the plateau it reads back as every later run's sca
 |---|---|---|---|
 | [`phase_ledger.py`](phase_ledger.md) | one carry launch with the kernel's phase clock bound | the `phases` target | `--json` |
 | [`pipe_counters.py`](pipe_counters.md) | the profiler's pipe and resource counters for one launch | the `counters` target | `--json` |
+| [`overlap_gate.py`](overlap_gate.md) | each kernel's perf rows against the largest of their floors (§28) | -- | exit 1 when red |
 | [`stall_census.py`](stall_census.md) | every warp-stall sample of one launch, by source line | the `census` target | `--json` |
 | [`pipe_timeline.py`](pipe_timeline.md) | the pipes' activity over one launch, measured on silicon | the `timeline` target | `--json`; a `pipe_timeline.scale` record under `--calibrate`, which it reads back as later runs' scale |
 | [`warp_timeline.py`](warp_timeline.md) | one CTA's warps window by window: the stamps' real cycles with the warp trace's instructions per activity, and the page | the `warp-timeline` target; a person, reading a build | `--json`; `--html` the page |

@@ -878,3 +878,25 @@ the experiment declares them (an expectation on BSSY: a comparison baseline kept
 (§24) holds the source side: no data-dependent `if` inside a burst function, `@burst-exempt <reason>` the only way
 out. Register moves per MMA in a step (the copy-rotation signature) and the MMA gap (the longest MMA-free run in the
 step loop's body, and around it) are reported, and gate once a lab fixes the bound. Measured: §26.3 s, u, v.
+
+## §28 — NO PHASE IDLES THE BINDING STREAM (law, 2026-10-07, from Blake's "any kernel we write should be going for maximal pipelining, ilp, etc. we shouldn't be compromising our standards, and if linters are letting us we should be making our linters more powerful and standards more clear")
+The facts pass's list build was priced by instruction count (about 10 an entry, "inside the ~40% issue headroom")
+and built as its own phase after the vote's barrier: no rows streamed while it ran, about 25% issue with one eligible
+warp a scheduler, and the pass landed at 1.48x its DRAM floor -- near the SUM of its floors, not their max. The
+coordinator then proposed lowering the line. No gate would have flagged the design: §19 asks for floors and a
+latency chain, but nothing checked that one phase runs under another's stream.
+1. A KERNEL IS PRICED AT THE LARGEST OF ITS FLOORS (issue, tensor, shared, DRAM), and its budget line names the
+   overlap that makes it so: which stream binds, and how every other phase runs under it -- the next stage's loads
+   issued before it, a second item in flight, steps interleaved. Never instructions alone, and never "fits in the
+   headroom" without the structure that puts it there.
+2. A PHASE BETWEEN BARRIERS THAT IDLES THE BINDING STREAM IS A DESIGN DEFECT: the design overlaps it, or the budget
+   line proves no overlapped form exists within the resources (shared memory, registers) and prices it serial.
+3. A LINE IS NEVER LOWERED TO ADMIT A SERIAL PHASE: a time above the line is red, and the design changes.
+4. THE SAME DEFECT AT THE WARP LEVEL: a phase whose warps stall on one dependent chain (low issue, about one eligible
+   warp a scheduler) interleaves independent work into it -- the next entry, the next item's loads.
+ENFORCED: `tools/overlap_gate.py` times each kernel's perf rows and reds elapsed / max(floors) above 1.15; every
+kernel names its row, or why it has none, in `tools/coverage.json`'s `overlap` obligation (the §25 ratchet). The
+instrument, checked against a probe row: a pure 512 MB read stream (a torch reduction) reaches 96% of the profiler's
+sustained DRAM peak on the RTX 3080 Ti (1.04x), so the DRAM floor is reachable; the tensor floor takes the product's
+calibrated MMA rate (§22), its probe row owed with the first MMA kernel's row. OWED: per-phase issue and eligible
+warps in the phase ledger, so item 4 gates per phase rather than per kernel.

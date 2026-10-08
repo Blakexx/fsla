@@ -5,7 +5,8 @@
   "sanitizer": "a row of tools/sanitize_oracle.py's family table whose cell launches the kernel",
   "budget": "a budget line under tools/budgets/ (KERNEL_STANDARDS §19)",
   "phases": "a phase ledger the kernel books and a test or tool that reads it (KERNEL_STANDARDS §22)",
-  "ratified": "recorded by the committed manifests (\"manifest\", checked per arch), or owed until the next milestone ratify (KERNEL_STANDARDS §16)"
+  "ratified": "recorded by the committed manifests (\"manifest\", checked per arch), or owed until the next milestone ratify (KERNEL_STANDARDS §16)",
+  "overlap": "a row of tools/overlap_gate.py timing the kernel on a perf cell against the largest of its floors (KERNEL_STANDARDS §28)"
  },
  "kernels": {
   "carry_kernel": {
@@ -13,7 +14,10 @@
    "sanitizer": "carry",
    "budget": "tools/budgets/carry.json",
    "phases": "tools/phase_ledger.py",
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+   }
   },
   "carry_stamp_kernel": {
    "oracle": {
@@ -30,6 +34,9 @@
    },
    "ratified": {
     "owed": "not in the committed manifests; the next milestone ratify records it"
+   },
+   "overlap": {
+    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to overlap"
    }
   },
   "csrc_stamp_kernel": {
@@ -43,7 +50,10 @@
    "phases": {
     "exempt": "a freshness stamp, not a workload"
    },
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to overlap"
+   }
   },
   "decode_stamp_kernel": {
    "oracle": "tests/unit/test_decode_capacity.py",
@@ -56,7 +66,10 @@
    "phases": {
     "exempt": "a footprint stamp, not a workload"
    },
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to overlap"
+   }
   },
   "decode_step_kernel": {
    "oracle": "tests/oracle/test_decode_vs_oracle.py",
@@ -65,7 +78,10 @@
     "owed": "no tools/budgets/decode.json: the decode step's budget lines are written on its plan card, not as a gated file"
    },
    "phases": "tests/integration/test_decode_phase_ledger.py",
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+   }
   },
   "factor_backward_kernel": {
    "oracle": "tests/unit/test_entmax_production.py::test_production_factor_mask_ties_support_values_and_vjp",
@@ -78,7 +94,10 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+   }
   },
   "factor_forward_kernel": {
    "oracle": "tests/unit/test_entmax_production.py::test_production_factor_mask_ties_support_values_and_vjp",
@@ -91,7 +110,10 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+   }
   },
   "facts_pass": {
    "oracle": "tests/integration/test_facts_pass.py::test_the_words_are_the_model_bit_for_bit",
@@ -102,7 +124,8 @@
    "phases": "tests/integration/test_facts_pass.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
    "ratified": {
     "owed": "a new kernel: the next milestone ratify records it"
-   }
+   },
+   "overlap": "facts-alt-k4"
   },
   "intra_kernel": {
    "oracle": "tests/integration/test_intra_kernel.py::test_the_intra_is_the_declared_arithmetic_per_slot",
@@ -111,6 +134,9 @@
    "phases": "tests/integration/test_intra_kernel.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
    "ratified": {
     "owed": "a new kernel: the next milestone ratify records it"
+   },
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
    }
   },
   "produce_kernel": {
@@ -122,6 +148,9 @@
    "phases": "tests/integration/test_produce_kernel.py::test_a_bound_ledger_books_every_phase_and_changes_nothing",
    "ratified": {
     "owed": "a new kernel: the next milestone ratify records it"
+   },
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
    }
   },
   "sm_clock_kernel": {
@@ -139,6 +168,9 @@
    },
    "ratified": {
     "owed": "not in the committed manifests; the next milestone ratify records it"
+   },
+   "overlap": {
+    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to overlap"
    }
   },
   "softmax_backward_kernel": {
@@ -154,7 +186,10 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+   }
   },
   "softmax_forward_kernel": {
    "oracle": {
@@ -169,7 +204,10 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+   }
   },
   "stamp_kernel": {
    "oracle": "tests/integration/test_intra_kernel.py::test_the_loaded_binary_states_the_footprint_it_carries",
@@ -182,7 +220,10 @@
    "phases": {
     "exempt": "a footprint stamp, not a workload"
    },
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "exempt": "a constant-size stamp or clock read: one tiny launch, no stream to overlap"
+   }
   },
   "union_backward_kernel": {
    "oracle": {
@@ -197,7 +238,10 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+   }
   },
   "union_forward_kernel": {
    "oracle": "tests/oracle/test_entmax_cuda_gates.py",
@@ -208,7 +252,10 @@
    "phases": {
     "owed": "books no phase ledger"
    },
-   "ratified": "manifest"
+   "ratified": "manifest",
+   "overlap": {
+    "owed": "no perf-cell row yet: add one to tools/overlap_gate.py's ROWS (a launch and its cell)"
+   }
   }
  }
 }
