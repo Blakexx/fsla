@@ -347,6 +347,198 @@ __device__ __forceinline__ void store_lists(const FactsParams& p, int code, int 
     p.list_exp[(static_cast<int64_t>(bh) * p.windows + window) * p.B[p.list_level] + digit] = pair;
 }
 
+//: THE LIST EXPONENT, signed: the smallest `K` with `x <= 2^K`, an `x` below the smallest normal at its exponent.
+__device__ __forceinline__ int ceil_exponent_signed(float x) {
+  const uint32_t bits = __float_as_uint(fmaxf(x, kListFloor));
+  return static_cast<int>(bits >> 23) - 127 + ((bits & 0x7fffffu) != 0u);
+}
+
+//: 2^e as fp32, `e` in [-126, 127]
+__device__ __forceinline__ float pow2(int e) { return __uint_as_float(static_cast<uint32_t>(127 + e) << 23); }
+
+//: THE ROUND-ROBIN PLACE of the `j`-th entry of residue `r` in a pass whose residues hold the byte counts `lo` (residues
+//: 0-3) and `hi` (4-7): the entries of the rounds before `j`, then round `j`'s residues below `r`.
+//: -- see docs/internals/facts/facts.md#lists-out
+__device__ __forceinline__ int round_robin(uint32_t lo, uint32_t hi, int j, int r) {
+  const uint32_t jj = 0x01010101u * static_cast<uint32_t>(j);
+  const int before = static_cast<int>(__dp4a(__vminu4(lo, jj), 0x01010101u, __dp4a(__vminu4(hi, jj), 0x01010101u, 0u)));
+  const uint32_t gl = __vcmpgtu4(lo, jj) & 0x01010101u, gh = __vcmpgtu4(hi, jj) & 0x01010101u;
+  const uint32_t below_lo = r >= 4 ? 0xffffffffu : (1u << (8 * r)) - 1u;
+  const uint32_t below_hi = r >= 4 ? (1u << (8 * (r - 4))) - 1u : 0u;
+  return before + __popc(gl & below_lo) + __popc(gh & below_hi);
+}
+
+__device__ __forceinline__ uint32_t byte_of(uint32_t lo, uint32_t hi, int r) {
+  return ((r < 4 ? lo : hi) >> (8 * (r & 3))) & 255u;
+}
+
+//: A LISTED UNIT'S LISTS, by all its parts' warps: part `part` of `P` takes `32 / P` of the group's digits, `P` lanes a
+//: digit, lane `q` of a digit walking the words of part `q` (its bytes in that part's ring). Every warp ORs the group's
+//: union a word (part 0 stores its tokens); a lane counts its entries by pass and residue, the digit's lanes join the
+//: totals and each lane's offset by shuffles, then each entry is placed round-robin within its pass and the passes
+//: padded to steps; on the write side (`kCoef`) each entry's coefficient pair from its byte and the token's columns.
+//: -- see docs/internals/facts/facts.md#lists-out
+template <bool kCoef, int P>
+__device__ void build_lists(const FactsParams& p, int code, int bh, int window, int part, int lane,
+                            const uint32_t* tile, const uint8_t* rings, int unit_slot, int item_units,
+                            const float2* cols, const float2 (*top)[32]) {
+  constexpr int kWords = kWindowWords / P, kDigitsPerWarp = 32 / P;
+  const int side = code >> 5, level = (code >> 3) & 3, group = code & 7;
+  const int q = lane % P, dl = lane / P, d = part * kDigitsPerWarp + dl;
+  const int width = p.B[level], groups = (width + 31) / 32, digit = group * 32 + d;
+  const int nw = max(0, min(kWindowWords, p.token_words - window * kWindowWords));
+  const ListsOut out = p.lists[side];
+  const int64_t win_index = static_cast<int64_t>(bh) * p.windows + window;
+  uint32_t u[kWords], b[kWords], words[kWords];
+  {
+    uint32_t un[kWindowWords], base[kWindowWords], total = 0u;
+    uint16_t* const tokens = out.union_tok + (win_index * groups + group) * kWindowTokens;
+#pragma unroll
+    for (int j = 0; j < kWindowWords; ++j) {
+      un[j] = __reduce_or_sync(0xffffffffu, j < nw ? tile[lane * kTileStride + j] : 0u);
+      if (part == 0 && ((un[j] >> lane) & 1u))
+        tokens[total + __popc(un[j] & ((1u << lane) - 1u))] = static_cast<uint16_t>(32 * j + lane);
+      base[j] = total;
+      total += __popc(un[j]);
+    }
+    if (part == 0 && lane == 0) out.union_count[win_index * groups + group] = static_cast<uint16_t>(total);
+#pragma unroll
+    for (int k = 0; k < kWords; ++k) {
+      u[k] = un[k];
+      b[k] = base[k];
+#pragma unroll
+      for (int qq = 1; qq < P; ++qq) {
+        u[k] = q == qq ? un[qq * kWords + k] : u[k];
+        b[k] = q == qq ? base[qq * kWords + k] : b[k];
+      }
+    }
+  }
+#pragma unroll
+  for (int k = 0; k < kWords; ++k) words[k] = q * kWords + k < nw ? tile[d * kTileStride + q * kWords + k] : 0u;
+  //: the lane's entries in slot order, word by word
+  const auto walk = [&](auto&& visit) {
+#pragma unroll
+    for (int k = 0; k < kWords; ++k) {
+      uint32_t bits = words[k];
+      while (bits) {
+        const int t = __ffs(bits) - 1;
+        bits &= bits - 1u;
+        visit(q * kWords + k, t, b[k] + __popc(u[k] & ((1u << t) - 1u)));
+      }
+    }
+  };
+  uint32_t lo[kMaxPasses] = {}, hi[kMaxPasses] = {};
+  walk([&](int, int, uint32_t slot) {
+    const int pass = static_cast<int>(slot) / kPassSlots, r = static_cast<int>(slot & 7u);
+    const uint32_t inc = 1u << (8 * (r & 3));
+#pragma unroll
+    for (int pq = 0; pq < kMaxPasses; ++pq) {
+      lo[pq] += pq == pass && r < 4 ? inc : 0u;
+      hi[pq] += pq == pass && r >= 4 ? inc : 0u;
+    }
+  });
+  //: the digit's totals and the lane's offset (the counts of its digit's lanes before it), byte counts within 16
+  uint32_t blo[kMaxPasses], bhi[kMaxPasses];
+#pragma unroll
+  for (int pq = 0; pq < kMaxPasses; ++pq) {
+    uint32_t sl = lo[pq], sh = hi[pq];
+#pragma unroll
+    for (int off = 1; off < P; off <<= 1) {
+      const uint32_t xl = __shfl_up_sync(0xffffffffu, sl, off), xh = __shfl_up_sync(0xffffffffu, sh, off);
+      sl += q >= off ? xl : 0u;
+      sh += q >= off ? xh : 0u;
+    }
+    blo[pq] = sl - lo[pq];
+    bhi[pq] = sh - hi[pq];
+    lo[pq] = __shfl_sync(0xffffffffu, sl, dl * P + P - 1);
+    hi[pq] = __shfl_sync(0xffffffffu, sh, dl * P + P - 1);
+  }
+  int start[kMaxPasses + 1];
+  start[0] = 0;
+#pragma unroll
+  for (int pq = 0; pq < kMaxPasses; ++pq)
+    start[pq + 1] = start[pq] + static_cast<int>(__dp4a(lo[pq], 0x01010101u, __dp4a(hi[pq], 0x01010101u, 0u)));
+  if (digit >= width) return;
+  const int64_t list = win_index * width + digit;
+  if (q == 0) {
+    uint16_t at[kListAt];
+#pragma unroll
+    for (int k = 0; k < kListAt; ++k) at[k] = static_cast<uint16_t>(start[min(k, kMaxPasses)]);
+    *reinterpret_cast<uint4*>(out.at + list * kListAt) = *reinterpret_cast<const uint4*>(at);
+  }
+  float scale_m = 0.0f, scale_v = 0.0f;
+  if constexpr (kCoef) {
+    float2 m = top[unit_slot][d];
+#pragma unroll
+    for (int pp = 1; pp < P; ++pp) {
+      const float2 o = top[unit_slot + pp * item_units][d];
+      m = make_float2(fmaxf(m.x, o.x), fmaxf(m.y, o.y));
+    }
+    scale_m = pow2(kCoefTop - max(ceil_exponent_signed(m.x), kUnitMin));
+    scale_v = pow2(kCoefTop - max(ceil_exponent_signed(m.y), kUnitMin));
+  }
+  const uint8_t* const ring = rings + (unit_slot + q * item_units) * (kStages * kWordBytes);
+  //: the current pass's sizes, the lane's offset into it and its start, reselected only where the pass changes (a
+  //: lane's entries cross at most `kMaxPasses - 1` boundaries)
+  int cur_pass = -1, base = 0;
+  uint32_t sl = 0u, sh = 0u, seen_lo = 0u, seen_hi = 0u;
+  walk([&](int j, int t, uint32_t slot) {
+    const int pass = static_cast<int>(slot) / kPassSlots, r = static_cast<int>(slot & 7u);
+    if (pass != cur_pass) {
+      cur_pass = pass;
+#pragma unroll
+      for (int pq = 0; pq < kMaxPasses; ++pq) {
+        sl = pq == pass ? lo[pq] : sl;
+        sh = pq == pass ? hi[pq] : sh;
+        seen_lo = pq == pass ? blo[pq] : seen_lo;
+        seen_hi = pq == pass ? bhi[pq] : seen_hi;
+        base = pq == pass ? start[pq] : base;
+      }
+    }
+    const int ordinal = static_cast<int>(byte_of(seen_lo, seen_hi, r));
+    const int e = base + round_robin(sl, sh, ordinal, r);
+    if constexpr (kCoef) {
+      const float byte = static_cast<float>(ring[(j - q * kWords) * kWordBytes + ring_row(t) * 32 + d]);
+      const float2 c = cols[column_slot(32 * j + t)];
+      const float xm = byte * c.x, xv = byte * c.y;
+      out.record[list * kListCap + e] =
+          make_uint2(slot, __half_as_ushort(__float2half_rn(xv * scale_v))
+                               | static_cast<uint32_t>(__half_as_ushort(__float2half_rn(xm * scale_m))) << 16);
+    } else {
+      out.slot[list * kListCap + e] = static_cast<uint16_t>(slot);
+    }
+    const uint32_t inc = 1u << (8 * (r & 3));
+    seen_lo += r < 4 ? inc : 0u;
+    seen_hi += r < 4 ? 0u : inc;
+  });
+}
+
+//: THE WINDOW'S GAINS as f16 pairs (the den pass's operand), by every thread after the columns: each live token's
+//: `(m, F)` at its window's powers of two, the largest of each in [2^-4, 2^-3) (a zero largest scaled by 1).
+//: -- see docs/internals/facts/facts.md#gains
+__device__ __forceinline__ int gains_shift(float top) {
+  if (!(top > 0.0f)) return 0;
+  return max(-126, min(127, -(static_cast<int>(__float_as_uint(top) >> 23) - 127) - 4));
+}
+
+__device__ void store_gains(const FactsParams& p, int bh, int window, const float2* cols) {
+  const float2 top = cols[kColumnSlots];
+  const int sm = gains_shift(top.x), sf = gains_shift(top.y);
+  const float km = pow2(sm), kf = pow2(sf);
+  for (int i = static_cast<int>(threadIdx.x); i < kWindowTokens; i += kFactsThreads) {
+    const int t = window * kWindowTokens + i;
+    if (t >= p.L) break;
+    const float2 c = cols[column_slot(i)];
+    p.gains16[static_cast<int64_t>(bh) * p.L + t] =
+        static_cast<uint32_t>(__half_as_ushort(__float2half_rn(c.x * km)))
+        | static_cast<uint32_t>(__half_as_ushort(__float2half_rn(c.y * kf))) << 16;
+  }
+  if (threadIdx.x == 0) {
+    p.gains_exp[(static_cast<int64_t>(bh) * p.windows + window) * 2] = static_cast<int16_t>(sm);
+    p.gains_exp[(static_cast<int64_t>(bh) * p.windows + window) * 2 + 1] = static_cast<int16_t>(sf);
+  }
+}
+
 //: THE GRID: `kFactsBlocksPerSm` blocks an SM walk the items -- per (batch, window, head), heads innermost, the list
 //: units first. An item's warps split its units' windows into parts, each through its warp's ring of `kStages` words
 //: (a voted unit's into its tile, then stored), meeting at a barrier between the two and between items; a list item
@@ -409,6 +601,7 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
                     k == 0 ? p.fm + static_cast<int64_t>(bh) * p.L : nullptr,
                     window * kWindowTokens, p.L);
       __syncthreads();
+      if (k == 0) store_gains(p, bh, window, s_cols);
       clock.lap(kPhaseColumns);
       if (live && voted)
         read_part<true, true, kListPartWords, false>(p, code, bh, window, part, lane, tile, ring,
@@ -428,6 +621,15 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
     clock.lap(kPhaseVote);
     __syncthreads();
 
+    if (voted && ((code >> 3) & 3) == listed_level(p, code >> 5)) {
+      if (list)
+        build_lists<true, kListParts>(p, code, bh, window, part, lane, tile, s_ring, slot_unit, item_units,
+                                      s_cols, s_top);
+      else
+        build_lists<false, kParts>(p, code, bh, window, part, lane, tile, s_ring, slot_unit, item_units, s_cols,
+                                   s_top);
+    }
+    clock.lap(kPhaseLists);
     if (voted) {
       if (list)
         store_part<kListParts>(p, code, bh, window, part, lane, tile);
@@ -506,10 +708,10 @@ void rola_facts_ledger_bind(std::optional<Tensor> ledger) {
 void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                         std::vector<Tensor> scale_write, Tensor g_write, Tensor v_scale,
                         Tensor words, Tensor unions, Tensor list_exp, Tensor fm,
-                        std::vector<int64_t> widths, int64_t dense_read,
+                        std::vector<Tensor> lists, std::vector<int64_t> widths, int64_t dense_read,
                         std::vector<int64_t> mask_read, int64_t dense_write,
-                        std::vector<int64_t> mask_write, int64_t list_level, Tensor counters,
-                        int64_t window) {
+                        std::vector<int64_t> mask_write, int64_t list_level, int64_t read_list_level,
+                        Tensor counters, int64_t window) {
   check_arch_table();
   const int D = static_cast<int>(widths.size());
   STD_TORCH_CHECK(D >= 1 && D <= kMaxLevels, "the routing depth is one to four levels, got ", D);
@@ -619,6 +821,44 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                         && fm.numel() == B * H * p.L * 2,
                     "fm is the contiguous fp32 [", B * H, ", ", p.L, ", 2] factor products");
     p.fm = reinterpret_cast<float2*>(fm.mutable_data_ptr<float>());
+  }
+  //: THE LISTS OUT, a side's at its listed level when that level is voted: [entries, at, union, count] the write side's
+  //: then the read side's, then the gains' f16 pairs and their exponents (docs/internals/facts/facts_api.md)
+  STD_TORCH_CHECK(read_list_level >= -1 && read_list_level < D, "the read list level is a level of the depth ", D,
+                  " or -1 for none, got ", read_list_level);
+  p.read_list_level = static_cast<int>(read_list_level);
+  STD_TORCH_CHECK(lists.size() == 10, "lists holds 10 tensors (facts_api.md), got ", lists.size());
+  const auto u16_view = [&](const Tensor& t, std::initializer_list<int64_t> want, const char* name) {
+    std::vector<int64_t> dims(want);
+    STD_TORCH_CHECK(t.is_cuda() && (t.scalar_type() == Dtype::Short || t.scalar_type() == Dtype::Half)
+                        && t.is_contiguous() && t.dim() == static_cast<int64_t>(dims.size()),
+                    name, " is a contiguous CUDA 16-bit tensor of ", dims.size(), " dimensions");
+    for (size_t i = 0; i < dims.size(); ++i)
+      STD_TORCH_CHECK(t.size(static_cast<int64_t>(i)) == dims[i], name, " dimension ", i, " is ", dims[i], ", got ",
+                      t.size(static_cast<int64_t>(i)));
+    return reinterpret_cast<uint16_t*>(t.mutable_data_ptr());
+  };
+  for (int side = 0; side < kSides; ++side) {
+    const int level = side == kWrite ? p.list_level : p.read_list_level;
+    if (level < 0 || level_is_dense(p.dense[side], level)) continue;
+    const int64_t width = p.B[level], groups = (width + 31) / 32;
+    const int at = side == kWrite ? 0 : 4;
+    ListsOut& o = p.lists[side];
+    if (side == kWrite)
+      o.record = reinterpret_cast<uint2*>(
+          u16_view(lists[at], {B * H, p.windows, width, kListCap, 4}, "a write list's records"));
+    else
+      o.slot = u16_view(lists[at], {B * H, p.windows, width, kListCap}, "a read list's slots");
+    o.at = u16_view(lists[at + 1], {B * H, p.windows, width, kListAt}, "a list's starts");
+    o.union_tok = u16_view(lists[at + 2], {B * H, p.windows, groups, kWindowTokens}, "a union's tokens");
+    o.union_count = u16_view(lists[at + 3], {B * H, p.windows, groups}, "a union's counts");
+  }
+  if (p.list_level >= 0) {
+    p.gains16 = reinterpret_cast<uint32_t*>(u16_view(lists[8], {B * H, p.L, 2}, "the gains' f16 pairs"));
+    STD_TORCH_CHECK(lists[9].is_cuda() && lists[9].scalar_type() == Dtype::Short && lists[9].is_contiguous()
+                        && lists[9].numel() == B * H * p.windows * 2,
+                    "the gains' exponents are a contiguous CUDA int16 [", B * H, ", ", p.windows, ", 2]");
+    p.gains_exp = lists[9].mutable_data_ptr<int16_t>();
   }
   p.ledger = detail::g_ledger;
 

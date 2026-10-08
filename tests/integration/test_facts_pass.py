@@ -19,6 +19,7 @@ import pytest
 import torch
 
 from rola.engine.facts import liveness as lv
+from rola.engine.facts import lists as list_model
 from rola.engine.facts.planes import ATOM_READ, ATOM_WRITTEN
 from rola.ops import facts as facts_ops
 from rola.routing import quant
@@ -103,6 +104,13 @@ def _layout(widths, L):
     return lv.LivenessLayout(D=len(widths), B=tuple(padded_level_width(w) for w in widths), L=L)
 
 
+def _outputs(BH, L, windows=1):
+    """The list outputs of a call that lists nothing: empty lists, and the gains planes a list level writes."""
+    empty = [torch.empty(0, dtype=torch.int16, device="cuda") for _ in range(8)]
+    return empty + [torch.empty((BH, L, 2), dtype=torch.float16, device="cuda"),
+                    torch.empty((BH, windows, 2), dtype=torch.int16, device="cuda")]
+
+
 def _model(routes, layout, read_statics, write_statics):
     return lv.liveness_words(tuple(r.cpu() for r in routes.amp_read), tuple(r.cpu() for r in routes.amp_write),
                              layout, read_statics, write_statics)
@@ -183,9 +191,9 @@ def test_a_dense_level_is_neither_read_nor_written():
     masks = [statics.mask_word(i) for i in range(lv.mask_words(layout.rows))]
     facts_ops.extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
-        words, unions, list_exp, fm, list(layout.B), 1, masks, 1, masks, level,
+        words, unions, list_exp, fm, _outputs(BH, L), list(layout.B), 1, masks, 1, masks, level, -1,
         torch.zeros(2, dtype=torch.int32, device="cuda"), facts_ops.WINDOW)
-    _assert_written(facts_ops.Facts(words, unions, list_exp, fm), want, layout, statics, statics)
+    _assert_written(facts_ops.Facts(words, unions, list_exp, fm, *([None] * 4)), want, layout, statics, statics)
     assert (words[:, :, :layout.B[0]] == poison).all() and (unions[:, :, :layout.group_base(1)] == poison).all()
     assert (list_exp != 0x5A5A).all()
 
@@ -220,6 +228,82 @@ def test_the_factor_products_are_the_declared_fp32_ones(widths, L):
     F = m * values.scale.float()
     want = torch.stack((F, m), -1).permute(0, 2, 1, 3).reshape(routes.batch * routes.heads, L, 2)
     assert torch.equal(got, want)
+
+
+# --------------------------------------------------------------- the lists and gains are the model
+
+
+def _lists_want(routes, values, layout, read_statics, write_statics, got):
+    """``(write, read)``: each side's lists from the model at its listed level, ``None`` where the level is dense or
+    absent; the write side's coefficient pairs from the pass's own exponents (gated against the reference above)."""
+    bits = lv.unpack(_model(routes, layout, read_statics, write_statics), layout)
+    wl, rl = facts_ops.list_level(read_statics), facts_ops.read_list_level(read_statics)
+    write = read = None
+    if wl >= 0 and not write_statics.dense_levels[wl]:
+        write = list_model.side_lists(bits[:, lv.WRITE], layout, wl, rows=routes.amp_write[wl],
+                                      cols=list_model.columns(routes, values), list_exp=got.list_exp.cpu())
+    if rl >= 0 and not read_statics.dense_levels[rl]:
+        read = list_model.side_lists(bits[:, lv.READ], layout, rl)
+    return write, read
+
+
+def _assert_lists(got: list_model.ListSet, want: list_model.ListSet):
+    """Every defined slot of the pass's lists is the model's: the unions to their counts, the starts, each list to its
+    end, and on the write side the coefficient pairs' bits."""
+    count = got.count.cpu().long()
+    assert torch.equal(count, want.count)
+    upto = torch.arange(list_model.WINDOW) < count[..., None]
+    assert torch.equal((got.union.cpu().long() & 0xFFFF)[upto], want.union[upto])
+    at = got.at.cpu().long() & 0xFFFF
+    assert torch.equal(at, want.at)
+    end = torch.arange(list_model.LIST_CAP) < at[..., -1:]
+    assert torch.equal((got.slot.cpu().long() & 0xFFFF)[end], want.slot[end])
+    if want.cv is not None:
+        assert torch.equal(got.cv.cpu().view(torch.int16)[end], want.cv.view(torch.int16)[end])
+        assert torch.equal(got.cm.cpu().view(torch.int16)[end], want.cm.view(torch.int16)[end])
+
+
+@pytest.mark.parametrize(("widths", "L"), [shape for shape in _SHAPES if len(shape[0]) <= 2])
+@pytest.mark.parametrize("dense", _MODES)
+def test_the_lists_are_the_model_bit_for_bit(widths, L, dense):
+    """Each side's lists at its listed level (docs/internals/facts/facts.md#lists-out): the unions ranked into slots,
+    each digit's entries round-robin by slot residue within its passes, the starts, and the write entries' coefficient
+    pairs -- bit for bit, at every window."""
+    layout = _layout(widths, L)
+    statics = _statics(layout, dense, widths)
+    routes, values = _bundle(widths, L, (statics, statics))
+    got = facts_ops.facts(routes, values, layout, statics, statics)
+    write, read = _lists_want(routes, values, layout, statics, statics, got)
+    for side, want in ((got.write, write), (got.read, read)):
+        if want is None:
+            assert side.slot.shape[2] == 0
+        else:
+            _assert_lists(side, want)
+
+
+def test_the_lists_cover_many_passes():
+    """A window whose groups' unions span every pass: the passes split, each its own round robin."""
+    widths, L = (64, 64), 1024
+    layout = _layout(widths, L)
+    statics = _statics(layout, (), widths)
+    routes, values = _bundle(widths, L, (statics, statics))
+    got = facts_ops.facts(routes, values, layout, statics, statics)
+    write, read = _lists_want(routes, values, layout, statics, statics, got)
+    assert (write.count > 3 * list_model.PASS_SLOTS).any(), "no union spans four passes: the cell is vacuous"
+    _assert_lists(got.write, write)
+    _assert_lists(got.read, read)
+
+
+@pytest.mark.parametrize(("widths", "L"), [((32, 64), 600), ((16,), 1100)])
+def test_the_gains_are_the_model_bit_for_bit(widths, L):
+    """Each token's ``(m, m s)`` as f16 at its window's powers of two, and those powers (facts.md#gains)."""
+    layout = _layout(widths, L)
+    statics = _statics(layout, (), widths)
+    routes, values = _bundle(widths, L, (statics, statics))
+    got = facts_ops.facts(routes, values, layout, statics, statics)
+    want16, want_exp = list_model.gains(routes, values, L)
+    assert torch.equal(got.gains_exp.cpu().long(), want_exp.long())
+    assert torch.equal(got.gains16.cpu().view(torch.int16), want16.view(torch.int16))
 
 
 # --------------------------------------------------------------- the list exponents are the reference's
@@ -302,8 +386,8 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
             wide, wide, list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"),
-            torch.empty((2, L, 2), dtype=torch.float32, device="cuda"), list(layout.B), 0,
-            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1,
+            torch.empty((2, L, 2), dtype=torch.float32, device="cuda"), _outputs(2, L), list(layout.B), 0,
+            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1, -1,
             torch.zeros(2, dtype=torch.int32, device="cuda"), facts_ops.WINDOW)
 
 
@@ -327,8 +411,8 @@ def test_the_seam_refuses_another_window():
             list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"),
-            torch.empty((2, L, 2), dtype=torch.float32, device="cuda"), list(layout.B), 0,
-            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1,
+            torch.empty((2, L, 2), dtype=torch.float32, device="cuda"), _outputs(2, L), list(layout.B), 0,
+            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1, -1,
             torch.zeros(2, dtype=torch.int32, device="cuda"), 256)
 
 

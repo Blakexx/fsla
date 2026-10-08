@@ -48,7 +48,30 @@ constexpr int kMaxUnits = kSides * kMaxLevels * kMaxWidth / 32;
 //: THE LIST EXPONENTS' FLOOR, the smallest normal fp32. -- see docs/internals/facts/facts.md#lists
 constexpr float kListFloor = 1.17549435e-38f;
 
-enum FactsPhase : int { kPhaseColumns, kPhaseVote, kPhaseStore, kFactsPhases };
+//: THE LISTS OUT: a group's union ranked into slots, a pass `kPassSlots` of them; a (window, digit) list its passes'
+//: entries in order, each pass round-robin by slot & 7, compact (a step past its pass's end is the reader's to mask),
+//: at most `kListCap`, its pass starts and end `kListAt` a list; a write entry one 8-byte record (slot, 0, c_v, c_m),
+//: its coefficient pair at 2^(kCoefTop - E), E its list's exponent floored at the fold's smallest unit.
+//: -- see docs/internals/facts/facts.md#lists-out
+constexpr int kPassSlots = 128;
+constexpr int kMaxPasses = kWindowTokens / kPassSlots;
+constexpr int kListCap = kWindowTokens;
+constexpr int kListAt = 8;
+constexpr int kCoefTop = 4;
+constexpr int kUnitMin = kCoefTop - 127;
+static_assert(kMaxPasses + 1 <= kListAt, "a list's pass starts and its end fit its starts");
+
+enum FactsPhase : int { kPhaseColumns, kPhaseVote, kPhaseLists, kPhaseStore, kFactsPhases };
+
+//: A SIDE'S LISTS OUT, its level's: entries and starts `[BH, windows, B, kListCap | kListAt]` -- a read entry its slot,
+//: a write entry its record -- and the union's tokens and counts `[BH, windows, groups, kWindowTokens | 1]`
+struct ListsOut {
+  uint16_t* slot;
+  uint2* record;
+  uint16_t* at;
+  uint16_t* union_tok;
+  uint16_t* union_count;
+};
 
 //: A level's rows (under the row alignment law, with their width in digits) by batch, token, head strides in BYTES --
 //: u8 digits, or a dense write level's f16 -- or an fp32 column by its strides in elements.
@@ -72,9 +95,12 @@ struct FactsParams {
   uint32_t* unions;
   uint32_t* list_exp;  // [BH, windows, B_list], a digit's (K_m, K_v) int16 pair
   float2* fm;  // [BH, L], a token's (F, m): the fold's factor products (facts.md#factor-products)
+  ListsOut lists[kSides];  // a side's lists, its listed level's (facts.md#lists-out)
+  uint32_t* gains16;       // [BH, L], a token's (m, F) as an f16 pair at its window's scales (facts.md#gains)
+  int16_t* gains_exp;      // [BH, windows, 2], those scales' exponents
   int* counters;  // [2]: the next item, the blocks finished; zero between calls
   long long* ledger;
-  int D, H, L, token_words, windows, items, rows_total, units, groups, tiles, list_level,
+  int D, H, L, token_words, windows, items, rows_total, units, groups, tiles, list_level, read_list_level,
       list_units, vote_units, list_item_units, list_items, vote_items, window_items;
   int B[kMaxLevels];
   int row_base[kMaxLevels];
@@ -88,6 +114,11 @@ constexpr int unit_code(int side, int level, int group) { return side << 5 | lev
 
 constexpr bool is_list_unit(const FactsParams& p, int code) {
   return (code >> 5) == kWrite && ((code >> 3) & 3) == p.list_level;
+}
+
+//: a side's listed level: the write side's list level, the read side's read list level (-1 for none)
+constexpr int listed_level(const FactsParams& p, int side) {
+  return side == kWrite ? p.list_level : p.read_list_level;
 }
 
 }  // namespace rola::facts
