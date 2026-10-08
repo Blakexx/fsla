@@ -60,6 +60,11 @@ constexpr int kListAt = 8;
 constexpr int kCoefTop = 4;
 constexpr int kUnitMin = kCoefTop - 127;
 static_assert(kMaxPasses + 1 <= kListAt, "a list's pass starts and its end fit its starts");
+//: a listing warp's entry table, 16 bytes a (digit, pass): a list item's in its spare tiles, a vote item's in its ring
+constexpr int kListTableKeys = 32 / kListParts * kMaxPasses;
+static_assert(kFactsWarps * kListTableKeys * 16 <= (kItemUnits - kListItemUnits) * 32 * kTileStride * 4,
+              "a list item's tables fit its spare tiles");
+static_assert(32 / kParts * kMaxPasses * 16 <= kStages * kWordBytes, "a vote item's table fits its warp's ring");
 
 enum FactsPhase : int { kPhaseColumns, kPhaseVote, kPhaseLists, kPhaseStore, kFactsPhases };
 

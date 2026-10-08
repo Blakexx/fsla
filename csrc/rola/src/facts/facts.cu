@@ -232,7 +232,7 @@ __device__ __forceinline__ LaneCopies<kDense> start_part(const FactsParams& p, i
 template <bool kVote, bool kList, int kWords, bool kDense>
 __device__ void read_part(const FactsParams& p, int code, int bh, int window, int part, int lane,
                           uint32_t* tile, uint8_t* ring, const float2* cols, float2* top,
-                          LaneCopies<kDense>& copies) {
+                          LaneCopies<kDense>& copies, uint32_t* live) {
   static_assert(!kDense || (kList && !kVote), "a dense level's rows are read for its lists alone");
   constexpr int kSt = kDense ? kDenseStages : kStages, kAh = kSt - 1;
   const int side = code >> 5, level = (code >> 3) & 3, group = code & 7;
@@ -274,6 +274,10 @@ __device__ void read_part(const FactsParams& p, int code, int bh, int window, in
         const uint32_t bits = in_mask ? voted : 0u;
         if (jj < words) row[jj] = bits;
         pair |= bits;
+        if (live != nullptr) {
+          const uint32_t any = __reduce_or_sync(0xffffffffu, bits);
+          if (lane == 0) live[part * kWords + jj] = any;
+        }
       }
     }
     if constexpr (kVote) {
@@ -368,148 +372,262 @@ __device__ __forceinline__ int round_robin(uint32_t lo, uint32_t hi, int j, int 
   return before + __popc(gl & below_lo) + __popc(gh & below_hi);
 }
 
-__device__ __forceinline__ uint32_t byte_of(uint32_t lo, uint32_t hi, int r) {
-  return ((r < 4 ? lo : hi) >> (8 * (r & 3))) & 255u;
+//: THE M-TH SET BIT of `w` (from 0), `w` holding more than `m`: a halving search on the low half's count.
+__device__ __forceinline__ int nth_bit(uint32_t w, int m) {
+  int pos = 0;
+#pragma unroll
+  for (int s = 16; s > 0; s >>= 1) {
+    const int c = __popc(w & ((1u << s) - 1u));
+    const bool up = m >= c;
+    m = up ? m - c : m;
+    pos = up ? pos + s : pos;
+    w = up ? w >> s : w;
+  }
+  return pos;
 }
 
-//: A LISTED UNIT'S LISTS, by all its parts' warps: part `part` of `P` takes `32 / P` of the group's digits, `P` lanes a
-//: digit, lane `q` of a digit walking the words of part `q` (its bytes in that part's ring). Every warp ORs the group's
-//: union a word (part 0 stores its tokens); a lane counts its entries by pass and residue, the digit's lanes join the
-//: totals and each lane's offset by shuffles, then each entry is placed round-robin within its pass and the passes
-//: padded to steps; on the write side (`kCoef`) each entry's coefficient pair from its byte and the token's columns.
+//: A LISTED UNIT'S LISTS, by all its parts' warps: part `part` of `P` takes `32 / P` of the group's digits, lane
+//: `(dl, q)` holding digit `dl`'s words of part `q` -- the warp's CELLS, cell `16 dl + j` word `j` of digit `dl`. The
+//: warp's entries, cell by cell, are dealt evenly: lane `L` walks entries `L total / 32` on, found from the lanes'
+//: counts (the owner lane by a search, the word by its counts' running sums, the bit by its rank), then each next set
+//: bit and nonempty cell. A first walk totals each digit's pass by residue in the warp's TABLE and leaves the counts of
+//: the lane's last run of one (digit, pass); a segmented scan of those gives each lane the counts before its first;
+//: the second walk ranks each entry among its residue, places it round-robin within its pass and writes it -- on the
+//: write side (`kCoef`) with its coefficient pair from its byte and the token's columns.
 //: -- see docs/internals/facts/facts.md#lists-out
 template <bool kCoef, int P>
 __device__ void build_lists(const FactsParams& p, int code, int bh, int window, int part, int lane,
-                            const uint32_t* tile, const uint8_t* rings, int unit_slot, int item_units,
-                            const float2* cols, const float2 (*top)[32]) {
-  constexpr int kWords = kWindowWords / P, kDigitsPerWarp = 32 / P;
+                            const uint32_t* tile, const uint32_t* live, const uint8_t* rings, uint4* table,
+                            uint16_t* marks, int unit_slot, int item_units, const float2* cols,
+                            const float2 (*top)[32]) {
+  constexpr int kWords = kWindowWords / P, kDigits = 32 / P, kGroups = kWords / 4;
+  constexpr int kKeys = kDigits * kMaxPasses, kOwned = kKeys / 32, kLanesAWord = 32 / kWords;
+  static_assert(kWords % 4 == 0 && kKeys % 32 == 0 && (kOwned == 1 || !kCoef), "a lane's words go 4 a byte group");
+  static_assert(kListAt == 2 * kMaxPasses, "a list's starts are its passes' and as many ends");
   const int side = code >> 5, level = (code >> 3) & 3, group = code & 7;
-  const int q = lane % P, dl = lane / P, d = part * kDigitsPerWarp + dl;
-  const int width = p.B[level], groups = (width + 31) / 32, digit = group * 32 + d;
+  const int width = p.B[level], groups = (width + 31) / 32;
   const int nw = max(0, min(kWindowWords, p.token_words - window * kWindowWords));
   const ListsOut out = p.lists[side];
   const int64_t win_index = static_cast<int64_t>(bh) * p.windows + window;
-  uint32_t u[kWords], b[kWords], words[kWords];
-  {
-    uint32_t un[kWindowWords], base[kWindowWords], total = 0u;
-    uint16_t* const tokens = out.union_tok + (win_index * groups + group) * kWindowTokens;
+  const uint32_t below = (1u << lane) - 1u;
+  uint32_t* const cell_mask = reinterpret_cast<uint32_t*>(marks);
+  uint16_t* const bases = marks + 2 * kWindowWords;
+
+  //: the union, lane `j` holding its word `un` and base `ub`; part `part` stores its words' tokens
+  const uint32_t un = lane < kWindowWords ? live[lane] : 0u;
+  uint32_t ub = __popc(un);
 #pragma unroll
-    for (int j = 0; j < kWindowWords; ++j) {
-      un[j] = __reduce_or_sync(0xffffffffu, j < nw ? tile[lane * kTileStride + j] : 0u);
-      if (part == 0 && ((un[j] >> lane) & 1u))
-        tokens[total + __popc(un[j] & ((1u << lane) - 1u))] = static_cast<uint16_t>(32 * j + lane);
-      base[j] = total;
-      total += __popc(un[j]);
-    }
-    if (part == 0 && lane == 0) out.union_count[win_index * groups + group] = static_cast<uint16_t>(total);
+  for (int off = 1; off < kWindowWords; off <<= 1) {
+    const uint32_t x = __shfl_up_sync(0xffffffffu, ub, off);
+    ub += lane >= off ? x : 0u;
+  }
+  const uint32_t union_count = __shfl_sync(0xffffffffu, ub, kWindowWords - 1);
+  ub -= __popc(un);
+  if (lane < kWindowWords) bases[lane] = static_cast<uint16_t>(ub);
+  uint16_t* const tokens = out.union_tok + (win_index * groups + group) * kWindowTokens;
 #pragma unroll
-    for (int k = 0; k < kWords; ++k) {
-      u[k] = un[k];
-      b[k] = base[k];
+  for (int k = 0; k < kWords; ++k) {
+    const int j = part * kWords + k;
+    const uint32_t u = __shfl_sync(0xffffffffu, un, j), b = __shfl_sync(0xffffffffu, ub, j);
+    if ((u >> lane) & 1u) tokens[b + __popc(u & below)] = static_cast<uint16_t>(32 * j + lane);
+  }
+  if (part == 0 && lane == 0) out.union_count[win_index * groups + group] = static_cast<uint16_t>(union_count);
+
+  //: the lane's cells: their counts' running sums a byte each within groups of 4 (`pre`), the groups' starts, which
+  //: are nonempty (into the warp's cell mask)
+  const int q = lane % P, dl = lane / P;
+  uint32_t pre[kGroups], nonempty = 0u;
+  int gstart[kGroups], n = 0;
 #pragma unroll
-      for (int qq = 1; qq < P; ++qq) {
-        u[k] = q == qq ? un[qq * kWords + k] : u[k];
-        b[k] = q == qq ? base[qq * kWords + k] : b[k];
-      }
+  for (int g = 0; g < kGroups; ++g) {
+    gstart[g] = n;
+    pre[g] = 0u;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+      const int j = q * kWords + 4 * g + i;
+      pre[g] |= static_cast<uint32_t>(n - gstart[g]) << (8 * i);
+      const int c = j < nw ? __popc(tile[(part * kDigits + dl) * kTileStride + j]) : 0;
+      n += c;
+      nonempty |= c != 0 ? 1u << (4 * g + i) : 0u;
     }
   }
 #pragma unroll
-  for (int k = 0; k < kWords; ++k) words[k] = q * kWords + k < nw ? tile[d * kTileStride + q * kWords + k] : 0u;
-  //: the lane's entries in slot order, word by word
-  const auto walk = [&](auto&& visit) {
+  for (int x = 0; x < kWords; ++x) {
+    const uint32_t v = __reduce_or_sync(0xffffffffu, lane / kLanesAWord == x ? nonempty << (lane % kLanesAWord * kWords)
+                                                                           : 0u);
+    if (lane == 0) cell_mask[x] = v;
+  }
+  int first = n;
 #pragma unroll
-    for (int k = 0; k < kWords; ++k) {
-      uint32_t bits = words[k];
-      while (bits) {
-        const int t = __ffs(bits) - 1;
-        bits &= bits - 1u;
-        visit(q * kWords + k, t, b[k] + __popc(u[k] & ((1u << t) - 1u)));
+  for (int off = 1; off < 32; off <<= 1) {
+    const int x = __shfl_up_sync(0xffffffffu, first, off);
+    first += lane >= off ? x : 0;
+  }
+  const int total = __shfl_sync(0xffffffffu, first, 31);
+  first -= n;
+
+  //: THE TABLE, a warp's: a digit's pass (`kMaxPasses dl + pass`) its residues' totals, a byte each, its start, its
+  //: digit's coefficient scales' exponents
+  for (int i = lane; i < kKeys; i += 32) table[i] = make_uint4(0u, 0u, 0u, 0u);
+  __syncwarp();
+
+  //: the lane's share and the cell and bit it starts at
+  const int share = lane * total >> 5, count = ((lane + 1) * total >> 5) - share;
+  int c0 = 0, t0 = 0;
+  uint32_t bits0 = 0u, slot0 = 0u;
+  if (total > 0) {
+    const int g = min(share, total - 1);
+    int o = 0;
+#pragma unroll
+    for (int s = 16; s > 0; s >>= 1) {
+      const int x = __shfl_sync(0xffffffffu, first, o + s);
+      o = x <= g ? o + s : o;
+    }
+    int m = g - __shfl_sync(0xffffffffu, first, o), k = 0, at = 0;
+    uint32_t sums = __shfl_sync(0xffffffffu, pre[0], o);
+#pragma unroll
+    for (int gg = 1; gg < kGroups; ++gg) {
+      const int gs = __shfl_sync(0xffffffffu, gstart[gg], o);
+      const uint32_t ps = __shfl_sync(0xffffffffu, pre[gg], o);
+      sums = m >= gs ? ps : sums;
+      k = m >= gs ? 4 * gg : k;
+      at = m >= gs ? gs : at;
+    }
+    m -= at;
+    const int w = __popc((((static_cast<uint32_t>(m) * 0x01010101u) | 0x80808080u) - sums) & 0x80808080u) - 1;
+    m -= static_cast<int>((sums >> (8 * w)) & 0xffu);
+    c0 = o * kWords + k + w;
+    const uint32_t word = tile[(part * kDigits + (c0 >> 4)) * kTileStride + (c0 & 15)];
+    t0 = nth_bit(word, m);
+    bits0 = word & (0xffffffffu << t0);
+    slot0 = bases[c0 & 15] + __popc(live[c0 & 15] & ((1u << t0) - 1u));
+  }
+  __syncwarp();
+  const int key0 = (c0 >> 4) * kMaxPasses + static_cast<int>(slot0) / kPassSlots;
+  //: the lane's `count` entries from its start, each `(cell, bit, slot)`
+  const auto walk = [&](auto&& visit) {
+    int c = c0;
+    uint32_t bits = bits0, u = live[c0 & 15], b = bases[c0 & 15];
+#pragma unroll 1
+    for (int e = 0; e < count; ++e) {
+      if (bits == 0u) {
+        int x = c + 1;
+        uint32_t mw = cell_mask[x >> 5] & (0xffffffffu << (x & 31));
+        while (mw == 0u) {
+          x = (x | 31) + 1;
+          mw = cell_mask[x >> 5];
+        }
+        c = (x & ~31) + __ffs(mw) - 1;
+        bits = tile[(part * kDigits + (c >> 4)) * kTileStride + (c & 15)];
+        u = live[c & 15];
+        b = bases[c & 15];
       }
+      const int t = __ffs(bits) - 1;
+      bits &= bits - 1u;
+      visit(c, t, b + __popc(u & ((1u << t) - 1u)));
     }
   };
-  uint32_t lo[kMaxPasses] = {}, hi[kMaxPasses] = {};
-  walk([&](int, int, uint32_t slot) {
-    const int pass = static_cast<int>(slot) / kPassSlots, r = static_cast<int>(slot & 7u);
+
+  //: the first walk: each entry counted into the table, the lane's last (digit, pass) run's counts left in `run`
+  int cur = key0;
+  bool many = false;
+  uint32_t run_lo = 0u, run_hi = 0u;
+  walk([&](int c, int, uint32_t slot) {
+    const int key = (c >> 4) * kMaxPasses + static_cast<int>(slot) / kPassSlots, r = static_cast<int>(slot & 7u);
     const uint32_t inc = 1u << (8 * (r & 3));
-#pragma unroll
-    for (int pq = 0; pq < kMaxPasses; ++pq) {
-      lo[pq] += pq == pass && r < 4 ? inc : 0u;
-      hi[pq] += pq == pass && r >= 4 ? inc : 0u;
-    }
+    atomicAdd(reinterpret_cast<uint32_t*>(table + key) + (r >> 2), inc);
+    const bool same = key == cur;
+    many |= !same;
+    cur = key;
+    run_lo = (same ? run_lo : 0u) + (r < 4 ? inc : 0u);
+    run_hi = (same ? run_hi : 0u) + (r < 4 ? 0u : inc);
   });
-  //: the digit's totals and the lane's offset (the counts of its digit's lanes before it), byte counts within 16
-  uint32_t blo[kMaxPasses], bhi[kMaxPasses];
+  //: the counts before each lane's first run: a scan of the last runs' counts, segmented where the run changes
+  const int cur_before = __shfl_up_sync(0xffffffffu, cur, 1);
+  uint32_t v_lo = run_lo, v_hi = run_hi;
+  int head = many || lane == 0 || cur_before != cur;
 #pragma unroll
-  for (int pq = 0; pq < kMaxPasses; ++pq) {
-    uint32_t sl = lo[pq], sh = hi[pq];
-#pragma unroll
-    for (int off = 1; off < P; off <<= 1) {
-      const uint32_t xl = __shfl_up_sync(0xffffffffu, sl, off), xh = __shfl_up_sync(0xffffffffu, sh, off);
-      sl += q >= off ? xl : 0u;
-      sh += q >= off ? xh : 0u;
+  for (int off = 1; off < 32; off <<= 1) {
+    const uint32_t xl = __shfl_up_sync(0xffffffffu, v_lo, off), xh = __shfl_up_sync(0xffffffffu, v_hi, off);
+    const int xf = __shfl_up_sync(0xffffffffu, head, off);
+    if (lane >= off) {
+      v_lo += head ? 0u : xl;
+      v_hi += head ? 0u : xh;
+      head |= xf;
     }
-    blo[pq] = sl - lo[pq];
-    bhi[pq] = sh - hi[pq];
-    lo[pq] = __shfl_sync(0xffffffffu, sl, dl * P + P - 1);
-    hi[pq] = __shfl_sync(0xffffffffu, sh, dl * P + P - 1);
   }
-  int start[kMaxPasses + 1];
-  start[0] = 0;
+  const bool carried = lane > 0 && cur_before == key0;
+  const uint32_t before_lo = __shfl_up_sync(0xffffffffu, v_lo, 1), before_hi = __shfl_up_sync(0xffffffffu, v_hi, 1);
+  __syncwarp();
+
+  //: a lane a digit's pass: its start from the digit's totals, the list's starts and end out
 #pragma unroll
-  for (int pq = 0; pq < kMaxPasses; ++pq)
-    start[pq + 1] = start[pq] + static_cast<int>(__dp4a(lo[pq], 0x01010101u, __dp4a(hi[pq], 0x01010101u, 0u)));
-  if (digit >= width) return;
-  const int64_t list = win_index * width + digit;
-  if (q == 0) {
-    uint16_t at[kListAt];
+  for (int h = 0; h < kOwned; ++h) {
+    const int key = 32 * h + lane, pass = key % kMaxPasses;
+    const uint4 c = table[key];
+    const int s = static_cast<int>(__dp4a(c.x, 0x01010101u, __dp4a(c.y, 0x01010101u, 0u)));
+    int incl = s;
 #pragma unroll
-    for (int k = 0; k < kListAt; ++k) at[k] = static_cast<uint16_t>(start[min(k, kMaxPasses)]);
-    *reinterpret_cast<uint4*>(out.at + list * kListAt) = *reinterpret_cast<const uint4*>(at);
-  }
-  float scale_m = 0.0f, scale_v = 0.0f;
-  if constexpr (kCoef) {
-    float2 m = top[unit_slot][d];
-#pragma unroll
-    for (int pp = 1; pp < P; ++pp) {
-      const float2 o = top[unit_slot + pp * item_units][d];
-      m = make_float2(fmaxf(m.x, o.x), fmaxf(m.y, o.y));
+    for (int off = 1; off < kMaxPasses; off <<= 1) {
+      const int x = __shfl_up_sync(0xffffffffu, incl, off);
+      incl += pass >= off ? x : 0;
     }
-    scale_m = pow2(kCoefTop - max(ceil_exponent_signed(m.x), kUnitMin));
-    scale_v = pow2(kCoefTop - max(ceil_exponent_signed(m.y), kUnitMin));
-  }
-  const uint8_t* const ring = rings + (unit_slot + q * item_units) * (kStages * kWordBytes);
-  //: the current pass's sizes, the lane's offset into it and its start, reselected only where the pass changes (a
-  //: lane's entries cross at most `kMaxPasses - 1` boundaries)
-  int cur_pass = -1, base = 0;
-  uint32_t sl = 0u, sh = 0u, seen_lo = 0u, seen_hi = 0u;
-  walk([&](int j, int t, uint32_t slot) {
-    const int pass = static_cast<int>(slot) / kPassSlots, r = static_cast<int>(slot & 7u);
-    if (pass != cur_pass) {
-      cur_pass = pass;
-#pragma unroll
-      for (int pq = 0; pq < kMaxPasses; ++pq) {
-        sl = pq == pass ? lo[pq] : sl;
-        sh = pq == pass ? hi[pq] : sh;
-        seen_lo = pq == pass ? blo[pq] : seen_lo;
-        seen_hi = pq == pass ? bhi[pq] : seen_hi;
-        base = pq == pass ? start[pq] : base;
-      }
+    const int start = incl - s;
+    const int end = __shfl_sync(0xffffffffu, incl, lane | (kMaxPasses - 1));
+    const int digit = group * 32 + part * kDigits + key / kMaxPasses;
+    if (digit < width) {
+      uint16_t* const at = out.at + (win_index * width + digit) * kListAt;
+      at[pass] = static_cast<uint16_t>(start);
+      at[kMaxPasses + pass] = static_cast<uint16_t>(end);
     }
-    const int ordinal = static_cast<int>(byte_of(seen_lo, seen_hi, r));
-    const int e = base + round_robin(sl, sh, ordinal, r);
+    uint32_t scales = 0u;
     if constexpr (kCoef) {
-      const float byte = static_cast<float>(ring[(j - q * kWords) * kWordBytes + ring_row(t) * 32 + d]);
-      const float2 c = cols[column_slot(32 * j + t)];
-      const float xm = byte * c.x, xv = byte * c.y;
-      out.record[list * kListCap + e] =
-          make_uint2(slot, __half_as_ushort(__float2half_rn(xv * scale_v))
-                               | static_cast<uint32_t>(__half_as_ushort(__float2half_rn(xm * scale_m))) << 16);
-    } else {
-      out.slot[list * kListCap + e] = static_cast<uint16_t>(slot);
+      const int d = part * kDigits + key / kMaxPasses;
+      float2 m = top[unit_slot][d];
+#pragma unroll
+      for (int pp = 1; pp < P; ++pp) {
+        const float2 o = top[unit_slot + pp * item_units][d];
+        m = make_float2(fmaxf(m.x, o.x), fmaxf(m.y, o.y));
+      }
+      const int em = kCoefTop - max(ceil_exponent_signed(m.x), kUnitMin);
+      const int ev = kCoefTop - max(ceil_exponent_signed(m.y), kUnitMin);
+      scales = static_cast<uint32_t>(em + 128) | static_cast<uint32_t>(ev + 128) << 8;
     }
+    table[key].z = static_cast<uint32_t>(start);
+    table[key].w = scales;
+  }
+  __syncwarp();
+
+  //: the second walk: each entry's rank among its residue from the run's counts so far, its place, its record
+  cur = key0;
+  run_lo = carried ? before_lo : 0u;
+  run_hi = carried ? before_hi : 0u;
+  walk([&](int c, int t, uint32_t slot) {
+    const int key = (c >> 4) * kMaxPasses + static_cast<int>(slot) / kPassSlots, r = static_cast<int>(slot & 7u);
+    const uint4 tc = table[key];
+    const bool same = key == cur;
+    cur = key;
+    run_lo = same ? run_lo : 0u;
+    run_hi = same ? run_hi : 0u;
+    const int rank = static_cast<int>(((r < 4 ? run_lo : run_hi) >> (8 * (r & 3))) & 0xffu);
     const uint32_t inc = 1u << (8 * (r & 3));
-    seen_lo += r < 4 ? inc : 0u;
-    seen_hi += r < 4 ? 0u : inc;
+    run_lo += r < 4 ? inc : 0u;
+    run_hi += r < 4 ? 0u : inc;
+    const int d = part * kDigits + (c >> 4), j = c & 15;
+    const int64_t slot_at =
+        (win_index * width + group * 32 + d) * kListCap + static_cast<int>(tc.z) + round_robin(tc.x, tc.y, rank, r);
+    if constexpr (kCoef) {
+      const uint8_t* const ring = rings + (unit_slot + j / kWords * item_units) * (kStages * kWordBytes);
+      const float byte = static_cast<float>(ring[j % kWords * kWordBytes + ring_row(t) * 32 + d]);
+      const float2 col = cols[column_slot(32 * j + t)];
+      const float xm = byte * col.x, xv = byte * col.y;
+      const float sm = pow2(static_cast<int>(tc.w & 0xffu) - 128), sv = pow2(static_cast<int>(tc.w >> 8) - 128);
+      out.record[slot_at] = make_uint2(slot, __half_as_ushort(__float2half_rn(xv * sv))
+                                                 | static_cast<uint32_t>(__half_as_ushort(__float2half_rn(xm * sm)))
+                                                       << 16);
+    } else {
+      out.slot[slot_at] = static_cast<uint16_t>(slot);
+    }
   });
 }
 
@@ -546,7 +664,9 @@ __device__ void store_gains(const FactsParams& p, int bh, int window, const floa
 __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
     const FactsParams p) {
   extern __shared__ __align__(128) uint8_t s_ring[];
-  __shared__ uint32_t s_tile[kItemUnits][32 * kTileStride];
+  __shared__ __align__(16) uint32_t s_tile[kItemUnits][32 * kTileStride];
+  __shared__ uint32_t s_live[kItemUnits][kWindowWords];
+  __shared__ uint16_t s_marks[kFactsWarps][64];
   __shared__ float2 s_cols[kColumnSlots + 1];
   __shared__ float2 s_warp_top[kFactsWarps];
   __shared__ float2 s_top[kFactsWarps][32];
@@ -588,6 +708,8 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
     const int code = live ? p.unit[unit] : 0;
     const bool voted = live && !level_is_dense(p.dense[code >> 5], (code >> 3) & 3);
     uint32_t* const tile = voted ? s_tile[slot_unit] : nullptr;
+    const bool listed = voted && ((code >> 3) & 3) == listed_level(p, code >> 5);
+    uint32_t* const live_words = listed ? s_live[slot_unit] : nullptr;
     if (list) {
       //: a voted list level's rows are u8; a dense one's are f16 (`rola.routing.quant.DENSE_DTYPE`)
       const ColumnLoads loads = load_columns(p, b, h, window);
@@ -605,28 +727,31 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
       clock.lap(kPhaseColumns);
       if (live && voted)
         read_part<true, true, kListPartWords, false>(p, code, bh, window, part, lane, tile, ring,
-                                                     s_cols, s_top[warp], vote_copies);
+                                                     s_cols, s_top[warp], vote_copies, live_words);
       else if (live)
         read_part<false, true, kWindowWords, true>(p, code, bh, window, part, lane, tile, ring,
-                                                   s_cols, s_top[warp], dense_copies);
+                                                   s_cols, s_top[warp], dense_copies, nullptr);
     } else {
       clock.lap(kPhaseColumns);
       if (live) {
         LaneCopies<false> copies =
             start_part<kPartWords, false>(p, code, b, h, window, part, lane, ring);
         read_part<true, false, kPartWords, false>(p, code, bh, window, part, lane, tile, ring,
-                                                  s_cols, s_top[warp], copies);
+                                                  s_cols, s_top[warp], copies, live_words);
       }
     }
     clock.lap(kPhaseVote);
     __syncthreads();
 
-    if (voted && ((code >> 3) & 3) == listed_level(p, code >> 5)) {
+    if (listed) {
+      //: the warp's entry table in what its item leaves idle: a list item's spare tiles, a vote item's ring
       if (list)
-        build_lists<true, kListParts>(p, code, bh, window, part, lane, tile, s_ring, slot_unit, item_units,
-                                      s_cols, s_top);
+        build_lists<true, kListParts>(p, code, bh, window, part, lane, tile, s_live[slot_unit], s_ring,
+                                      reinterpret_cast<uint4*>(s_tile[kListItemUnits]) + warp * kListTableKeys,
+                                      s_marks[warp], slot_unit, item_units, s_cols, s_top);
       else
-        build_lists<false, kParts>(p, code, bh, window, part, lane, tile, s_ring, slot_unit, item_units, s_cols,
+        build_lists<false, kParts>(p, code, bh, window, part, lane, tile, s_live[slot_unit], s_ring,
+                                   reinterpret_cast<uint4*>(ring), s_marks[warp], slot_unit, item_units, s_cols,
                                    s_top);
     }
     clock.lap(kPhaseLists);
