@@ -26,7 +26,7 @@ __all__ = ["LEDGER_PHASES", "LEDGER_WARPS", "WINDOW", "Facts", "call_layout", "c
 
 #: THE PHASE LEDGER'S SHAPE: ``[warps][phases]``, the kernel's own `FactsPhase` order, booked over every block.
 LEDGER_PHASES = ("columns", "vote", "lists", "store")
-LEDGER_WARPS = 8
+LEDGER_WARPS = 16
 
 
 class Facts(NamedTuple):
@@ -86,17 +86,6 @@ def read_list_level(read_statics: SideStatics) -> int:
     return carry_level_s(tuple(not d for d in dense))
 
 
-#: the pass's item counters, zero between calls (the kernel's last block resets them), one buffer a device
-_COUNTERS: dict[str, torch.Tensor] = {}
-
-
-def _counters(device: torch.device) -> torch.Tensor:
-    key = str(device)
-    if key not in _COUNTERS:
-        _COUNTERS[key] = torch.zeros(2, dtype=torch.int32, device=device)
-    return _COUNTERS[key]
-
-
 def _dense_bits(statics: SideStatics) -> int:
     """One side's dense levels as the bitmask the kernel skips reads on."""
     return sum(1 << level for level, dense in enumerate(statics.dense_levels) if dense)
@@ -147,12 +136,12 @@ def facts(routes, values, layout: LivenessLayout, read_statics: SideStatics, wri
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
         words, unions, list_exp, fm, outs, list(layout.B),
         _dense_bits(read_statics), [read_statics.mask_word(i) for i in range(count)],
-        _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], level, read_level,
-        _counters(routes.device), WINDOW)
+        _dense_bits(write_statics), [write_statics.mask_word(i) for i in range(count)], level, read_level, WINDOW)
     return Facts(words=words, unions=unions, list_exp=list_exp, fm=fm, write=w, read=r, gains16=gains16,
                  gains_exp=gains_exp)
 
 
 def ledger_bind(ledger: torch.Tensor | None) -> None:  #: reserved: the measurement instrument (docs/internals/facts/facts.md#phase-ledger)
-    """Bind the phase ledger the next launches book into, ``[8, 3]`` int64 cycles (``LEDGER_PHASES``), or ``None``."""
+    """Bind the phase ledger the next launches book into, ``[LEDGER_WARPS, 4]`` int64 cycles (``LEDGER_PHASES``), or
+    ``None``."""
     extension().rola_facts_ledger_bind(ledger)

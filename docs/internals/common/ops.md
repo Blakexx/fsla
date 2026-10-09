@@ -758,7 +758,8 @@ returns the answer, for a stream that does other work when its copies have not l
 carry's interleaved loop; the answer is voted over the warp before it steers a branch, so
 the compiler sees a uniform predicate). The carry's pool uses a full/empty pair a slot
 (`carry_kernel.md#pool`) so that warps drift freely by a chunk, where a CTA barrier would
-hold every warp to the slowest.
+hold every warp to the slowest. `mbar_wait_sleep` is `mbar_test` in a loop with a 64 ns `__nanosleep` between polls: on
+sm_80/86 a wait is a polled shared word, and a tight poll takes the issue slots of the warps doing the work it waits on.
 
 <a id="atom-shared-add"></a>
 ## `atom_shared_add_u32` — a shared counter's take

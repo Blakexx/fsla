@@ -10,8 +10,8 @@ static operands off its `sparse` flags and topology, and `facts` packs them into
 
 ## `rola_facts_forward`
 
-    rola_facts_forward(read[], write[], scale_write[], g_write, v_scale, words!, unions!, list_exp!, fm!,
-                       widths, dense_read, mask_read, dense_write, mask_write, list_level, counters!,
+    rola_facts_forward(read[], write[], scale_write[], g_write, v_scale, words!, unions!, list_exp!, fm!, lists![10],
+                       widths, dense_read, mask_read, dense_write, mask_write, list_level, read_list_level,
                        window) -> ()
 
 Each side's rows a level (`[B, T, H, b_l]`, u8 but a dense write level's f16), the
@@ -37,8 +37,9 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
 * `list_level` is a level of the depth, or -1;
 * the rows are u8, a dense write level's f16, `[B, T, H, width]` with the first level's `B, T, H`, digits
   contiguous, under the row alignment law ([`liveness_contract.md`](liveness_contract.md#alignment));
-* `counters` is a contiguous int32 `[2]`, zero between calls (the pass's last block resets it; `rola.ops.facts` keeps
-  one a device);
+* `lists` holds 10 tensors: the write side's records, starts, union tokens and counts, the read side's slots, starts, union
+  tokens and counts, then the gains' f16 pairs `[B·H, T, 2]` and their int16 exponents `[B·H, windows, 2]`
+  ([`facts.md`](facts.md#lists-out)); a side's four are touched only at its sparse listed level;
 * each side's dense bitmask names only levels inside the depth, and its digit mask is
   exactly `mask_words(rows)` words;
 * **a mask bit names a digit inside its level's rows.** The kernel reads a digit iff
@@ -50,5 +51,5 @@ The refusals (KERNEL_STANDARDS §18: a seam refuses rather than guesses):
 
 ## `rola_facts_ledger_bind`
 
-Binds the `[8][3]` int64 phase ledger the next launches book into, or unbinds it with
+Binds the `[16][4]` int64 phase ledger the next launches book into, or unbinds it with
 `None` ([`facts.md`](facts.md#phase-ledger)); it issues no launch.

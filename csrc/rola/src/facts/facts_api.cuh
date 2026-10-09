@@ -17,7 +17,8 @@ void rola_facts_forward(std::vector<Tensor> read, std::vector<Tensor> write,
                         Tensor words, Tensor unions, Tensor list_exp, Tensor fm,
                         std::vector<Tensor> lists, std::vector<int64_t> widths, int64_t dense_read,
                         std::vector<int64_t> mask_read, int64_t dense_write,
-                        std::vector<int64_t> mask_write, int64_t list_level, int64_t read_list_level,
-                        Tensor counters, int64_t window);  // facts_api.md#rola-facts-forward
+                        std::vector<int64_t> mask_write, int64_t list_level,
+                        int64_t read_list_level,
+                        int64_t window);  // facts_api.md#rola-facts-forward
 
 }  // namespace rola::facts

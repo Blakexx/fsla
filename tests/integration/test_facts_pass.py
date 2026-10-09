@@ -18,8 +18,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rola.engine.facts import liveness as lv
 from rola.engine.facts import lists as list_model
+from rola.engine.facts import liveness as lv
 from rola.engine.facts.planes import ATOM_READ, ATOM_WRITTEN
 from rola.ops import facts as facts_ops
 from rola.routing import quant
@@ -191,8 +191,7 @@ def test_a_dense_level_is_neither_read_nor_written():
     masks = [statics.mask_word(i) for i in range(lv.mask_words(layout.rows))]
     facts_ops.extension().rola_facts_forward(
         list(routes.amp_read), list(routes.amp_write), list(routes.scale_write), routes.g_write, values.scale,
-        words, unions, list_exp, fm, _outputs(BH, L), list(layout.B), 1, masks, 1, masks, level, -1,
-        torch.zeros(2, dtype=torch.int32, device="cuda"), facts_ops.WINDOW)
+        words, unions, list_exp, fm, _outputs(BH, L), list(layout.B), 1, masks, 1, masks, level, -1, facts_ops.WINDOW)
     _assert_written(facts_ops.Facts(words, unions, list_exp, fm, *([None] * 4)), want, layout, statics, statics)
     assert (words[:, :, :layout.B[0]] == poison).all() and (unions[:, :, :layout.group_base(1)] == poison).all()
     assert (list_exp != 0x5A5A).all()
@@ -243,7 +242,7 @@ def _lists_want(routes, values, layout, read_statics, write_statics, got):
         write = list_model.side_lists(bits[:, lv.WRITE], layout, wl, rows=routes.amp_write[wl],
                                       cols=list_model.columns(routes, values), list_exp=got.list_exp.cpu())
     if rl >= 0 and not read_statics.dense_levels[rl]:
-        read = list_model.side_lists(bits[:, lv.READ], layout, rl)
+        read = list_model.side_lists(bits[:, lv.READ], layout, rl, rows=None, cols=None, list_exp=None)
     return write, read
 
 
@@ -387,8 +386,7 @@ def test_the_seam_refuses_rows_that_are_not_the_format():
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"),
             torch.empty((2, L, 2), dtype=torch.float32, device="cuda"), _outputs(2, L), list(layout.B), 0,
-            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1, -1,
-            torch.zeros(2, dtype=torch.int32, device="cuda"), facts_ops.WINDOW)
+            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1, -1, facts_ops.WINDOW)
 
 
 def test_the_seam_refuses_a_mask_past_the_rows():
@@ -412,8 +410,7 @@ def test_the_seam_refuses_another_window():
             torch.empty((2, 2, 32, 1), dtype=torch.int32, device="cuda"),
             torch.empty((2, 2, 1, 1), dtype=torch.int32, device="cuda"), torch.empty((2, 1, 16, 2), dtype=torch.int16, device="cuda"),
             torch.empty((2, L, 2), dtype=torch.float32, device="cuda"), _outputs(2, L), list(layout.B), 0,
-            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1, -1,
-            torch.zeros(2, dtype=torch.int32, device="cuda"), 256)
+            [statics.mask_word(0)], 0, [statics.mask_word(0)], 1, -1, 256)
 
 
 # --------------------------------------------------------------- the producer's bundle, end to end

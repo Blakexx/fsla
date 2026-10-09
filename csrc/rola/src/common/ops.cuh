@@ -183,6 +183,12 @@ __device__ __forceinline__ bool mbar_test(SmemAddr a, uint32_t parity) {
   return ok != 0u;
 }
 
+//: THE WAIT, SLEEPING BETWEEN POLLS: on sm_80/86 a wait is a polled shared word, and a tight poll takes the issue slots
+//: of the warps doing the work it waits on (KERNEL_STANDARDS 26.3 dd). -- see docs/internals/common/ops.md#mbarrier
+__device__ __forceinline__ void mbar_wait_sleep(SmemAddr a, uint32_t parity) {
+  while (!mbar_test(a, parity)) __nanosleep(64);
+}
+
 //: A SHARED COUNTER'S TAKE: the old value, the counter advanced by `v`; explicitly shared
 //: so ptxas emits no address-space probe. -- see docs/internals/common/ops.md#atom-shared-add
 __device__ __forceinline__ uint32_t atom_shared_add_u32(SmemAddr a, uint32_t v) {
@@ -250,7 +256,7 @@ __device__ __forceinline__ void warp_sync() {
 
 //: `rendezvous_group(id, n)` -- a barrier over `n` threads that arrive at the -- see docs/internals/common/ops.md#rendezvous-group
 __device__ __forceinline__ void rendezvous_group(int id, int n) {
-  asm volatile("bar.sync %0, %1;\n" ::"r"(id), "r"(n));
+  asm volatile("bar.sync %0, %1;\n" ::"r"(id), "r"(n) : "memory");
 }
 
 //: THE LOCKSTEP UNIT'S WIDTH, and it is deliberately not `kMmaUnitThreads`. -- see docs/internals/common/ops.md#kballotlanes

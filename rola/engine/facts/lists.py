@@ -63,25 +63,28 @@ def _round_robin(slots: list[int]) -> list[int]:
     return out
 
 
-def side_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, rows=None, cols=None,
-               list_exp=None) -> ListSet:
+def side_lists(bits: torch.Tensor, layout: lv.LivenessLayout, level: int, *, rows, cols,
+               list_exp) -> ListSet:
     """One side's lists at ``level`` from its unpacked words ``bits`` ``[BH, rows, L]`` (:func:`lv.unpack`'s side
     slice); the write side's coefficient pairs from its level rows ``rows`` ``[B, T, H, width]`` u8, ``cols`` (the
-    :func:`columns`) and the pass's ``list_exp`` ``[BH, windows, B, 2]``."""
+    :func:`columns`) and the pass's ``list_exp`` ``[BH, windows, B, 2]``, all three ``None`` on the read side."""
     BH, L, B = bits.shape[0], layout.L, layout.B[level]
     windows, groups = -(-L // WINDOW), -(-B // lv.GROUP_DIGITS)
     base = layout.row_base(level)
     coef = rows is not None
+
     slot = torch.zeros((BH, windows, B, LIST_CAP), dtype=torch.int64)
     cv = torch.zeros((BH, windows, B, LIST_CAP), dtype=torch.float16) if coef else None
     cm = torch.zeros_like(cv) if coef else None
     at = torch.zeros((BH, windows, B, LIST_AT), dtype=torch.int64)
     union = torch.zeros((BH, windows, groups, WINDOW), dtype=torch.int64)
     count = torch.zeros((BH, windows, groups), dtype=torch.int64)
+
     if coef:
         H = rows.shape[2]
         m, ms = (c.cpu() for c in cols)
         rows = rows.cpu()
+
     for bh in range(BH):
         for w in range(windows):
             t0, t1 = w * WINDOW, min(L, (w + 1) * WINDOW)
