@@ -21,7 +21,7 @@ namespace facts {
 namespace detail {
 
 namespace ops = ::denseref::ops;
-using Clock = PhaseClock<kFactsPhases>;
+using Clock = PhaseClock<kFactsPhases, true>;
 
 //: A HELD WINDOW'S TOKEN ROW: token `t` of a warp's 32 at row `4 (t % 8) + t / 8` of its 32-digit group's 1 KB, so
 //: the four token blocks a lane group reads together sit in four consecutive rows.
@@ -86,17 +86,16 @@ __device__ __forceinline__ int nth_bit(uint32_t w, int m) {
   return pos;
 }
 
-//: A UNIT'S PLACE: the span outermost, then the batch, the window and the head innermost (a token's heads lie side by
+//: A UNIT'S PLACE: the span innermost, then the head, the window and the batch (a token's heads and spans lie side by
 //: side in its rows, a DRAM page's bytes together in time). -- see docs/internals/facts/facts.md#the-grid
 struct Unit {
   int span, b, h, bh, window;
 };
 
 __device__ __forceinline__ Unit unit_of(const FactsParams& p, int u) {
-  const int per = p.units / p.spans;
   Unit x;
-  x.span = u / per;
-  int r = u - x.span * per;
+  x.span = u % p.spans;
+  int r = u / p.spans;
   x.h = r % p.H;
   r /= p.H;
   x.window = r % p.windows;
@@ -232,7 +231,7 @@ __device__ __forceinline__ void seek(const FactsParams& p, Stream& c, int team, 
   c.stage = 0;
 #pragma unroll 1
   while (c.valid) {
-    const int span = c.u / (p.units / p.spans);
+    const int span = c.u % p.spans;
 #pragma unroll 1
     for (const int items = p.plan_items[span]; c.entry < items; ++c.entry) {
       c.code = p.plan[span][c.entry];
@@ -618,7 +617,7 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
       (team == 0 ? held : smem + FactsSmem::kRing) + tw * kRingDepth * kStageBytes;
   uint4* const table = reinterpret_cast<uint4*>(smem + FactsSmem::kTables) + warp * kListTableKeys;
   uint32_t* const marks = reinterpret_cast<uint32_t*>(smem + FactsSmem::kMarks) + warp * 12;
-  Clock clock(&s_clock[warp][0], lane);
+  Clock clock(&s_clock[warp][0], lane, p.ledger != nullptr);
   const auto team_sync = [&] { ops::rendezvous_group(1 + team, kTeamThreads); };
   if (lane == 0) {
 #pragma unroll
@@ -690,7 +689,8 @@ __global__ __launch_bounds__(kFactsThreads, kFactsBlocksPerSm) void facts_pass(
     if (columns) {
 #pragma unroll
       for (int k = 0; k < kColumnPasses; ++k) {
-        const int i = tthread + kTeamThreads * k, t = x.window * kWindowTokens + i;
+        const int i = kTokBits * kBlocks * tw + kTokBits * k + lane,
+                  t = x.window * kWindowTokens + i;
         const float2 c = load_column(p, x, i);
         cols[i] = c;
         if (x.span == 0 && t < p.L)

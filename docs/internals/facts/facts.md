@@ -39,10 +39,11 @@ nothing but the SM and run each its own pipeline; the teams sync on their own na
 The work is UNITS, one per (span of `kSpanDigits` = 128 digits, batch, window, head), the window the carry's
 `kWindowWords` = 16 words (the host entry refuses any other: it is the lists' grain). A unit's place is the span
 outermost, then batch, window and head innermost, so the blocks at work together read one window of every head: the
-rows `[B, T, H, b_l]` hold a token's heads side by side (a DRAM page's bytes together in time), and the columns
-`[B, T, H]` a token's heads in one 32-byte sector, which a head-major order fetched once a head (84 MB read against
-67 MB of rows at `nl64k-dense`, four heads; heads innermost 75 MB). Block `b` takes units `b`, `b + grid`, ... : a
-static deal, the grid `min(units, SMs)`.
+rows `[B, T, H, b_l]` hold a token's heads, and a head's spans, side by side (a DRAM page's bytes together in time),
+and the columns `[B, T, H]` a token's heads in one 32-byte sector, which a head-major order fetched once a head (84 MB
+read against 67 MB of rows at `nl64k-dense`, four heads; heads innermost 75 MB). The unit index runs span innermost,
+then head, window, batch (`nl64k-alt-k4`: 363 against 350 µs with the span outermost). Block `b` takes units `b`, `b +
+grid`, ... : a static deal, the grid `min(units, SMs)`.
 
 A unit is the span's ITEMS ([the plan](#the-plan)). Team 0 takes the write list level: a sparse one as `kHalfDigits`
 = 64-digit HALVES held whole in the held window ([the load](#load)), a dense one as a ring item whose maxima it
@@ -130,7 +131,7 @@ windows, which the prefill requires.
     m(t) = g_write(t) × Π_l scale_write_l(t)      (the gain first, then the levels in order)      F(t) = m(t) × s(t)
 
 Team 0 loads a unit's 512 tokens' `(m, F)` pairs into shared memory (`load_column`; `s` the value scale, a token past
-`L` zero) before its first item: the build reads them for the coefficients, the gains' pass for the window's largest.
+`L` zero), a warp its own 64 tokens (so a dense list level's stage loop reads only what its warp wrote), before its first item: the build reads them for the coefficients, the gains' pass for the window's largest.
 The load is exposed at a unit's start (~20% of team 0's time at `nl64k-alt-k4`). The span-0 unit also stores each
 token's `(F, m)` as one float2 to the `[BH, L, 2]` plane `fm` (the factor products), so the fold reads a token's two
 products in one 8-byte load where it read four planes (ruled 2026-10-04: precompute what the fold's restage would
@@ -188,8 +189,8 @@ columns. A build is ~1,000-1,400 instructions a warp for ~64 entries at `facts-a
 ## The phase ledger
 
 `rola_facts_ledger_bind` binds a `[16][4]` int64 buffer (warp × columns, vote, lists, store; warps 0-7 team 0,
-8-15 team 1) that every block's warps add their cycles into; `rola.ops.facts.ledger_bind` is the Python side. A bound
-ledger moves no output (`tests/integration/test_facts_pass.py`). Instrumenting a build with `clock64` and global
+8-15 team 1) that every block's warps add their cycles into; `rola.ops.facts.ledger_bind` is the Python side. An unbound
+ledger issues no lap at all (the clock is gated); a bound ledger moves no output (`tests/integration/test_facts_pass.py`). Instrumenting a build with `clock64` and global
 atomics inflates its cycles by 25-35%, so the ledger books only phase boundaries.
 
 <a id="factsparams"></a>
