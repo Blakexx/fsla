@@ -930,3 +930,22 @@ instrument, checked against a probe row: a pure 512 MB read stream (a torch redu
 sustained DRAM peak on the RTX 3080 Ti (1.04x), so the DRAM floor is reachable; the tensor floor takes the product's
 calibrated MMA rate (§22), its probe row owed with the first MMA kernel's row. OWED: per-phase issue and eligible
 warps in the phase ledger, so item 4 gates per phase rather than per kernel.
+
+## CONSTITUTION addendum (Blake, 2026-10-10): R22 — DEGRADE SMOOTHLY, SCALE, PARTITION INTO INDEPENDENT UNITS
+
+Blake: "my concern is any kernel design that 'spills' at some threshold rather than just cleanly degrading. How things
+scale is important too, instead of just designing for one specific point. Kernels should ideally partition atomic,
+independent work across ctas that join back together in clean ways. At least, normally unless there is some strong
+reason not to. Everything is about tradeoffs"; "It's also ok to join via atomics, I still don't care too much about
+determinism".
+1. NO THRESHOLD CLIFFS. A kernel's cost rises along a curve with density, width, depth and N. A design that changes
+   path or falls off a cliff when the data crosses a capacity (a shared-memory buffer sized for the sparse case, a held
+   window that only fits narrow levels) needs a stated strong reason in its design block. A capacity the PLAN fixes
+   (a box, a stage, a token block) is structure, not a threshold; a capacity the DATA can overrun is a threshold.
+2. DESIGN FOR THE SCALING, NOT A POINT. Every mechanism states how its cost grows with N, D, density and the
+   architecture; a cache that may or may not hold a working set is priced as if it does not, so the cache is upside,
+   never a cliff in the model or the gate.
+3. INDEPENDENT UNITS, CLEAN JOINS. Work is partitioned into atomic, independent units across CTAs that join by
+   disjoint writes, reductions or atomics (run-to-run bitwise determinism is not required: R0 of 2026-09-30), or a
+   stage boundary between kernels. A CTA waiting on another CTA's progress needs a strong reason.
+4. EVERYTHING IS A TRADE: a faster form that breaks 1-3 is chosen only with the reason and its numbers written down.
