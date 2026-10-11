@@ -820,8 +820,26 @@ Measured (sm_86, against each form's tensor floor: 2074 cycles a CTA-window at a
 Tokens on N lose everywhere: an 8-token tile carries a 16-token step's fixed work for half its MMAs. The ring gains
 nothing (two warps a scheduler hide the image's loads). Shared-memory wavefronts an MMA at alt-k4 (ncu): 4.8 the MMAs
 alone, 7.0 with the panel's adds, 8.7 with the drain (0.8 / 1.8 / 2.6 of them bank conflicts: a step's tokens
-collide on residues); dense 2.6. At alt-k4 a read digit is one step a window, so the readout pays each step's fixed
-work and each window's edges at about half its MMAs.
+collide on residues); dense 2.6.
+
+Then, tokens on M with first steps straight-line, on lists dealt round-robin by residue within the 256-slot pass
+(`ordered.bin`), outputs converted on the FMA pipe (one FFMA a value adds 1.5 x 2^23 with the coefficient and unit
+folded in, a PRMT a pair) in place of F2I, half steps (a digit's last 8 tokens or fewer: 8 read rows and their adds
+only, a declared warp-uniform branch choosing the form) and no barrier at the pass's end:
+
+| alt-k4, tokens on M | + panel adds | + the drain | instructions an MMA (with adds) |
+|---|---|---|---|
+| F2I | 1.85x | 2.44x | 21.7 (2.0 on the conversion unit) |
+| ordered lists | 1.85x | | 21.7 |
+| ordered, half steps | 1.99x | 2.50x | 21.9 |
+| ordered, FMA conversion | 1.65x | 2.17x | 18.7 (none) |
+| ordered, FMA conversion, no pass barrier | 1.48x | | 18.8 |
+| dense, FMA conversion | | 1.12x | 12.1 |
+
+Ordering moves conflicts 1.76 -> 1.65 an MMA only: a digit's ~8 tokens collide on residues with no ninth to deal.
+Half steps save ~0.8 wavefronts an MMA but their branch costs sm_86 more. What remains at alt-k4 is the output path
+(the box's 32 lists make each MMA 64 output values, each a conversion and half an add, half of them padding rows'
+at alt-k4) and each window's chain with ~4 steps a warp (tensor pipe idle ~38% with the MMAs alone).
 
 Record: `measure/lab/results/read_image/sm_86.json`.
 

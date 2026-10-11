@@ -8,6 +8,7 @@
 // `red.shared` into the token's panel row; the drain each pass's end (`red.global.add` two rows a request, each word
 // cleared). The image holds 16 planes (digit d on plane d % 16: a plane's access pattern is all that matters). Modes:
 // form 0 tokens on M, 1 tokens on N; out 0 the MMAs alone (outputs summed into a sink), 1 + panel adds, 2 + the drain;
+// outputs converted by F2I or on the FMA pipe (one FFMA a value, the coefficient and unit folded in, a PRMT a pair);
 // the state a digit at a time, or a ring of two digits (the next one's fragments loading under this one's steps); a
 // warp's heads (its digits' pass starts and first 16 slots) staged a window ahead by `cp.async`, as the fill would.
 // see docs/internals/tools/lab.md#read-image
@@ -61,6 +62,16 @@ __device__ __forceinline__ uint32_t entry(const Lists& ls, const uint16_t* head,
 
 __device__ __forceinline__ float coef(uint32_t packed) { return __uint_as_float(packed & 0xffff0000u) * kUnit; }
 
+//: CONV 1: two outputs times (coefficient x unit) to an s16 pair on the FMA pipe -- one FFMA each adds 1.5 x 2^23, so
+//: the rounded integer lands in the low 16 bits (|x| < 2^15), and one PRMT packs the pair
+__device__ __forceinline__ uint32_t s16_fma(float lo, float hi, float cu) {
+  const float magic = 12582912.0f;
+  uint32_t d;
+  asm("prmt.b32 %0, %1, %2, 0x5410;" : "=r"(d) : "r"(__float_as_uint(fmaf(lo, cu, magic))),
+      "r"(__float_as_uint(fmaf(hi, cu, magic))));
+  return d;
+}
+
 __device__ __forceinline__ uint32_t s16_pair(float lo, float hi) {
   int a, b;
   asm("cvt.rni.sat.s16.f32 %0, %1;" : "=r"(a) : "f"(lo));
@@ -98,8 +109,37 @@ __device__ __forceinline__ void state_in(uint32_t (&f)[16], uint32_t plane, int 
     }
 }
 
+//: FORM 0's HALF STEP, a digit's last 8 tokens or fewer: their 8 read rows by one `ldmatrix.x4` (tokens 8-15 zero
+//: in A), the same 8 MMAs (M is 16 tokens), outputs and adds for tokens 0-7 only -- no padding row loaded or added
+template <int OUT, int DENSE, int CONV>
+__device__ __forceinline__ void half_m(uint32_t sm, const Lists& ls, const uint16_t* head, int64_t row, int begin,
+                                       int n, const uint32_t (&f)[16], int lane, float& sink, int s) {
+  const int r = lane & 7, q = lane >> 3, g = lane >> 2, t = lane & 3;
+  const uint32_t mine = entry<DENSE>(ls, s < 1 ? head : nullptr, row, begin, n, 16 * s + (lane & 7));
+  const uint32_t ea = __shfl_sync(0xffffffffu, mine, r), eg = __shfl_sync(0xffffffffu, mine, g);
+  uint32_t x[4];
+  lab::ldsm(x, chunk(sm + kPool, ea & 0xffu, q));
+  float acc[4][4] = {};
+#pragma unroll
+  for (int kb = 0; kb < 2; ++kb) {
+    const uint32_t a[4] = {x[2 * kb], 0u, x[2 * kb + 1], 0u};
+#pragma unroll
+    for (int nt = 0; nt < 4; ++nt) lab::mma_bf16_f32(acc[nt], a, f[(kb * 4 + nt) * 2], f[(kb * 4 + nt) * 2 + 1]);
+  }
+#pragma unroll
+  for (int nt = 0; nt < 4; ++nt) {
+    if constexpr (OUT == 0) {
+      sink += acc[nt][0] + acc[nt][1];
+    } else {
+      const float cg = coef(eg);
+      panel_add(sm, eg, 4 * nt + t,
+                CONV ? s16_fma(acc[nt][0], acc[nt][1], cg) : s16_pair(acc[nt][0] * cg, acc[nt][1] * cg), lane);
+    }
+  }
+}
+
 //: FORM 0, TOKENS ON M: the digit's state as B, a 16-token step's read rows as A
-template <int OUT, int DENSE>
+template <int OUT, int DENSE, int CONV = 0>
 __device__ __forceinline__ void step_m(uint32_t sm, const Lists& ls, const uint16_t* head, int64_t row, int begin,
                                        int n, const uint32_t (&f)[16], int lane, float& sink, int s) {
   const int r = lane & 7, q = lane >> 3, g = lane >> 2, t = lane & 3;
@@ -121,8 +161,10 @@ __device__ __forceinline__ void step_m(uint32_t sm, const Lists& ls, const uint1
         sink += acc[nt][0] + acc[nt][1] + acc[nt][2] + acc[nt][3];
       } else {
         const float cg = coef(eg), cg8 = coef(eg8);
-        panel_add(sm, eg, 4 * nt + t, s16_pair(acc[nt][0] * cg, acc[nt][1] * cg), lane);
-        panel_add(sm, eg8, 4 * nt + t, s16_pair(acc[nt][2] * cg8, acc[nt][3] * cg8), lane);
+        panel_add(sm, eg, 4 * nt + t,
+                  CONV ? s16_fma(acc[nt][0], acc[nt][1], cg) : s16_pair(acc[nt][0] * cg, acc[nt][1] * cg), lane);
+        panel_add(sm, eg8, 4 * nt + t,
+                  CONV ? s16_fma(acc[nt][2], acc[nt][3], cg8) : s16_pair(acc[nt][2] * cg8, acc[nt][3] * cg8), lane);
       }
     }
   }
@@ -169,7 +211,7 @@ __device__ __forceinline__ void digit_n(uint32_t sm, const Lists& ls, const uint
   }
 }
 
-template <int FORM, int OUT, int DENSE, int RING>
+template <int FORM, int OUT, int DENSE, int RING, int NOPAD, int BAR, int CONV>
 __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, int* sinks) {
   extern __shared__ __align__(128) uint8_t smem[];
   const int warp = lab::warp_id(), lane = lab::lane_id();
@@ -233,7 +275,13 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
           int begin, n;
           args(i, row, head, begin, n);
           state_in<FORM>(f[i], plane(i), lane);
-          step_m<OUT, DENSE>(sm, ls, head, row, begin, n, f[i], lane, sink, 0);
+          if constexpr (NOPAD == 1) {
+            for (int k = n > 8 ? 1 : 0; k > 0; --k) step_m<OUT, DENSE, CONV>(sm, ls, head, row, begin, n, f[i], lane, sink, 0);
+            for (int k = n > 0 && n <= 8 ? 1 : 0; k > 0; --k)
+              half_m<OUT, DENSE, CONV>(sm, ls, head, row, begin, n, f[i], lane, sink, 0);
+          } else {
+            step_m<OUT, DENSE, CONV>(sm, ls, head, row, begin, n, f[i], lane, sink, 0);
+          }
         }
 #pragma unroll
         for (int i = 0; i < 4; ++i) {
@@ -241,8 +289,11 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
           const uint16_t* head;
           int begin, n;
           args(i, row, head, begin, n);
+          const int full = NOPAD ? (n + 7) / 16 : (n + 15) / 16;
 #pragma unroll 1
-          for (int s = 1; s < (n + 15) / 16; ++s) step_m<OUT, DENSE>(sm, ls, head, row, begin, n, f[i], lane, sink, s);
+          for (int s = 1; s < full; ++s) step_m<OUT, DENSE, CONV>(sm, ls, head, row, begin, n, f[i], lane, sink, s);
+          for (int k = NOPAD && full > 0 && n - 16 * full > 0 ? 1 : 0; k > 0; --k)
+            half_m<OUT, DENSE, CONV>(sm, ls, head, row, begin, n, f[i], lane, sink, full);
         }
       } else if constexpr (RING == 1) {
         uint32_t f0[16], f1[16];
@@ -262,7 +313,7 @@ __global__ __launch_bounds__(kThreads, 1) void read(Lists ls, long long* times, 
           digit(i, f);
         }
       }
-      __syncthreads();
+      if constexpr (BAR == 1) __syncthreads();
       if constexpr (OUT == 2) {
         const int rows = min(kSlots, count - kSlots * p);
 #pragma unroll 1
@@ -331,18 +382,23 @@ double floor_of(const HostLists& h, int form, bool dense) {
   return total / (static_cast<double>(h.windows) * boxes);
 }
 
-template <int FORM, int OUT, int DENSE, int RING>
-void variant(const lab::Bench& b, const Lists& ls, double floor, double floor_m) {
-  const std::string name = lab::kernel("read_image::read", {FORM, OUT, DENSE, RING});
+template <int FORM, int OUT, int DENSE, int RING, int NOPAD = 0, int BAR = 1, int CONV = 0>
+void variant(const lab::Bench& b, const Lists& ls, double floor, double floor_m, const char* lists = "") {
+  static_assert(BAR == 1 || OUT < 2, "the drain needs the pass's barrier");
+  const std::string name = lab::kernel("read_image::read", {FORM, OUT, DENSE, RING, NOPAD, BAR, CONV});
   b.expect(name, "HMMA.16816.F32.BF16", ">=", FORM == 0 ? 8 : 4);
+  //: a half-step form chooses a digit's full or half step by its count, a warp-uniform branch among the first steps
+  if (NOPAD) b.expect(name, "BSSY", ">=", 0);
   if (b.expect_only) return;
-  LAB_CHECK(cudaFuncSetAttribute(read<FORM, OUT, DENSE, RING>, cudaFuncAttributeMaxDynamicSharedMemorySize, kBytes));
-  const lab::Samples s = b.variant([&] { read<FORM, OUT, DENSE, RING><<<b.sms, kThreads, kBytes>>>(ls, b.times, b.sinks); },
+  LAB_CHECK(cudaFuncSetAttribute(read<FORM, OUT, DENSE, RING, NOPAD, BAR, CONV>, cudaFuncAttributeMaxDynamicSharedMemorySize, kBytes));
+  const lab::Samples s = b.variant([&] { read<FORM, OUT, DENSE, RING, NOPAD, BAR, CONV><<<b.sms, kThreads, kBytes>>>(ls, b.times, b.sinks); },
                                    [&] { return lab::Bench::mean(b.cycles(kWarps), kWarps, 0, kWarps) / ls.windows; });
   const char* forms[2] = {"tokens on M", "tokens on N"};
   const char* outs[3] = {"the MMAs alone", "+ panel adds", "+ panel adds + drain"};
   const std::string label = std::string(DENSE ? "dense / " : "alt-k4 / ") + forms[FORM] + " / " + outs[OUT]
-                            + (RING == 2 ? " / first steps straight-line" : RING ? " / state ring" : " / state a digit at a time");
+                            + (RING == 2 ? " / first steps straight-line" : RING ? " / state ring" : " / state a digit at a time")
+                            + lists + (NOPAD ? " / half steps" : "") + (BAR ? "" : " / no pass barrier")
+                            + (CONV ? " / FMA conversion" : "");
   b.record(label, "cycles a CTA-window", s);
   lab::Samples own, m;
   for (double v : s.v) {
@@ -361,7 +417,7 @@ int main(int argc, char** argv) {
   std::string dir;
   for (int i = 1; i + 1 < argc; ++i)
     if (!std::strcmp(argv[i], "--inputs")) dir = argv[i + 1];
-  Lists ls{};
+  Lists ls{}, lo{};
   double fm = 1, fn = 1, dm = 1, dn = 1;
   if (!b.expect_only) {
     if (dir.empty()) {
@@ -380,6 +436,12 @@ int main(int argc, char** argv) {
     LAB_CHECK(cudaMemcpy(at, h.at.data(), h.at.size() * 2, cudaMemcpyHostToDevice));
     LAB_CHECK(cudaMemcpy(count, h.count.data(), h.count.size() * 2, cudaMemcpyHostToDevice));
     ls = Lists{reinterpret_cast<const uint16_t*>(records), at, count, h.windows, h.width, h.groups, out};
+    const HostLists o = read_lists(dir + "/ordered.bin");
+    uint8_t* ordered = nullptr;
+    LAB_CHECK(cudaMalloc(&ordered, o.records.size()));
+    LAB_CHECK(cudaMemcpy(ordered, o.records.data(), o.records.size(), cudaMemcpyHostToDevice));
+    lo = ls;
+    lo.slots = reinterpret_cast<const uint16_t*>(ordered);
     fm = floor_of(h, 0, false);
     fn = floor_of(h, 1, false);
     dm = floor_of(h, 0, true);
@@ -398,6 +460,20 @@ int main(int argc, char** argv) {
   variant<0, 0, 0, 2>(b, ls, fm, fm);
   variant<0, 1, 0, 2>(b, ls, fm, fm);
   variant<0, 2, 0, 2>(b, ls, fm, fm);
+  variant<0, 0, 0, 2>(b, lo, fm, fm, " / ordered");
+  variant<0, 1, 0, 2>(b, lo, fm, fm, " / ordered");
+  variant<0, 0, 0, 2, 1>(b, lo, fm, fm, " / ordered");
+  variant<0, 1, 0, 2, 1>(b, lo, fm, fm, " / ordered");
+  variant<0, 2, 0, 2, 1>(b, lo, fm, fm, " / ordered");
+  variant<0, 0, 0, 2, 1, 0>(b, lo, fm, fm, " / ordered");
+  variant<0, 1, 0, 2, 1, 0>(b, lo, fm, fm, " / ordered");
+  variant<0, 1, 0, 2, 0, 1, 1>(b, lo, fm, fm, " / ordered");
+  variant<0, 2, 0, 2, 0, 1, 1>(b, lo, fm, fm, " / ordered");
+  variant<0, 1, 0, 2, 1, 1, 1>(b, lo, fm, fm, " / ordered");
+  variant<0, 2, 0, 2, 1, 1, 1>(b, lo, fm, fm, " / ordered");
+  variant<0, 1, 0, 2, 0, 0, 1>(b, lo, fm, fm, " / ordered");
+  variant<0, 2, 1, 2, 0, 1, 1>(b, ls, dm, dm);
+  variant<0, 2, 1, 2, 1>(b, ls, dm, dm);
   variant<0, 2, 1, 1>(b, ls, dm, dm);
   variant<1, 2, 1, 1>(b, ls, dn, dm);
 }
