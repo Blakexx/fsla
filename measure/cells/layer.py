@@ -51,6 +51,19 @@ CONSTRUCTIONS = {c.name: c for c in (
 )}
 
 
+def _levels(construction: Construction):
+    """The construction's levels. Every side has a dense level (docs/api.md section 2.1), so an entmax construction is
+    the ALTERNATING split: entmax on the write duty at the even levels (read-dense) and on the read duty at the odd
+    (write-dense). A softmax construction, and any depth-one one, is dense on both sides."""
+    from rola import dense_routing, split_routing
+
+    widths = construction.widths
+    if construction.alpha is None or len(widths) == 1:
+        return [dense_routing(w) for w in widths]
+    return [split_routing(w, construction.alpha, sparse_duty="write" if level % 2 == 0 else "read")
+            for level, w in enumerate(widths)]
+
+
 def build(cell, construction: Construction) -> dict:
     """The fixture: the layer built by `construction` in the cell's dtype, parameters seeded from the cell's seed, and
     the cell's inputs and the routes the layer produces for its prefill.
@@ -61,13 +74,12 @@ def build(cell, construction: Construction) -> dict:
     import torch
     from rola_devtools.cells.layer import realize
 
-    from rola import RoLA, Routing, dense_routing, union_routing
+    from rola import RoLA, Routing
 
     if cell.name not in construction.cells:
         raise ValueError(f"{construction.name} is declared for {list(construction.cells)}, not {cell.name}")
     torch.manual_seed(cell.seed)
-    template = union_routing(1, construction.alpha) if construction.alpha is not None else dense_routing(1)
-    routing = Routing([template.at(w) for w in construction.widths])
+    routing = Routing(_levels(construction))
     layer = RoLA(routing, hidden_size=cell.hidden_size, num_heads=cell.H, d_v=cell.dv, decay=None,
                  layer_idx=0).to("cuda", cell.torch_dtype).eval()
     if construction.logit_gain != 1.0:

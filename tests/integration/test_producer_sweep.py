@@ -19,7 +19,8 @@ pytestmark = [pytest.mark.cuda,
 
 
 def _write_density(routes) -> float:
-    rows = [routes.rows(level, "write") for level in range(routes.topology.D)]
+    #: only the SPARSE write levels: a dense level is never zero (docs/api.md section 2.1)
+    rows = [routes.rows(level, "write") for level in range(routes.topology.D) if routes.sparse[1][level]]
     return sum(int((r != 0).sum()) for r in rows) / sum(r.numel() for r in rows)
 
 
