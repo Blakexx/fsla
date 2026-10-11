@@ -27,6 +27,7 @@ set, and none could be exercised without a device.
 | `run_table` | the three state ARGUMENTS' presence | the `uint32` skip table (in no DAG: kept for the carry port) |
 | `paging_preference` | the expert overrides | dense or paged backing |
 | `admission` | the allocator's cursor, capacity, extent, count | the run's first slot |
+| `carve` | the rows' shipped widths, each level's two sparse flags, `d_v`, the expert overrides | the carry's box and each side's operation plan |
 
 ## <a id="the-marker"></a>2. The marker is the inventory
 
@@ -113,6 +114,46 @@ FACT explicitly — and that named fact goes through the fact-node review, as a 
 launch, a new mask and a new byte cost, separately. There is no third path in which a
 decision quietly grows a pass. This is the anti-creep clause and it is the reason the
 two layers are separated at all.
+
+## <a id="carve"></a>The carve: the carry's box and operation plans, one descriptor
+
+The carry's CTA owns a BOX of leaves -- an extent a level, and a channel extent -- and runs
+two operations on it: the fold over the write side's lists and the readout over the read
+side's. The box and both sides' operation plans are one value, `Carve` (`types.py`), and
+every kernel that depends on the geometry takes it: the facts pass groups its unions and
+lists by the box's list levels, the den pass and the carry address by it. A kernel
+validates the carve it is handed and refuses one it was not built for; it never decides
+a carve. So the planner can change -- a cost model in place of fixed rules -- and every
+kernel keeps working for whatever it returns.
+
+`carve` is the rule: the expert's pinned carve (`PlanOverrides.carve`) after the same
+check the planner's own passes, else the planner's (`rola/engine/carve.py`,
+[`carve.md`](carve.md)). It reads the rows' last dimension and the bundle's flags, never
+their contents.
+
+**A side's sparse levels are its lists; its dense levels are its operand.** A level's tag
+is its two flags, read then write: `SD`, `DS`, `DD`, `SS`. The fold's lists are the
+write-sparse levels and its operand rows the write-dense ones (formed in level order, the
+canonical product); the readout's lists are the read-sparse levels and its operand the
+read-dense ones. Every side has a dense level, so every side has an operand.
+
+**Producer v1's rules,** each from a priced trade:
+
+* `DD` levels take as much of the box as fits, spread evenly: their rows' bytes ADD while
+  their extent MULTIPLIES, so a token's row feeds the most dense leaves per byte.
+* `SD` and `DS` levels share what is left by turns: each is one side's lists and the other
+  side's operand, so they trade against each other (an alternating `[SD, DS]` declaration is
+  the even 32 x 32 box). Within its tag the extent goes to the widest level, whole, so a
+  token's live digits there arrive in one copy.
+* `SS` levels take only what nothing else can.
+* No level takes more than the cap, 32 -- the square root of the box's 1,024 leaves. When the
+  box cannot be filled under it, the box halves its leaves and doubles its channels (the
+  same state) before the cap lifts to the widths.
+
+**A warp's tile** is a side's lists x its operand rows, `box leaves / 8` leaves a warp: the
+rows whole while they fit, else split across warps (the readout then joins its partial
+sums). **The publish is in registers** when both sides' warps own the same leaves, and
+through shared memory otherwise.
 
 ## <a id="run-table"></a>The run table: the skip predicate is a host decision
 

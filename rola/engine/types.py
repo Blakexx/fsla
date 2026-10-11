@@ -1,8 +1,8 @@
 # Copyright 2026 Blake Bottum
 # SPDX-License-Identifier: Apache-2.0
 """The facts engine's value types: the call class, the mask it selects, the arm, the
-pins a caller may set over axes the op decides, and the refusal every no-backward
-clause raises.
+carry's carve, the pins a caller may set over axes the op decides, and the refusal every
+no-backward clause raises.
 
 Every fact is an immutable value. Tensor-valued facts are held by REFERENCE and
 nothing here allocates (docs/internals/engine/engine.md).
@@ -68,6 +68,50 @@ class CallClass:
 
 
 @dataclass(frozen=True, slots=True)
+class SidePlan:
+    """One side's operation plan in the carry's box: the side's SPARSE levels index its lists and
+    its DENSE levels its operand rows (formed in level order, the canonical product), and a warp
+    owns ``tile_lists`` lists x ``tile_rows`` rows of the box (docs/internals/engine/rules.md#carve).
+    """
+
+    lists: tuple[int, ...]
+    operand: tuple[int, ...]
+    tile_lists: int
+    tile_rows: int
+
+
+@dataclass(frozen=True, slots=True)
+class Carve:
+    """The carry's carve: a CTA's box (an extent a level of the shipped ``widths``, and a channel
+    extent) and each side's operation plan -- the fold the write side's, the readout the read
+    side's -- with ``publish_in_registers`` when both sides' warps own the same leaves. Every
+    kernel that depends on the geometry takes this one descriptor (docs/internals/engine/rules.md#carve).
+    """
+
+    widths: tuple[int, ...]
+    extents: tuple[int, ...]
+    channels: int
+    fold: SidePlan
+    readout: SidePlan
+    publish_in_registers: bool
+
+    @property
+    def leaves(self) -> int:
+        """The box's leaves."""
+        n = 1
+        for e in self.extents:
+            n *= e
+        return n
+
+    def ctas(self, d_v: int) -> int:
+        """The CTAs a head: one a box position, a channel group."""
+        n = d_v // self.channels
+        for w, e in zip(self.widths, self.extents):
+            n *= w // e
+        return n
+
+
+@dataclass(frozen=True, slots=True)
 class PlanOverrides:
     """Pins over axes the op would otherwise decide.
 
@@ -79,15 +123,21 @@ class PlanOverrides:
     what the bit-identity gate compares against; ``True`` is REFUSED, because a knob
     whose only value is the default is a knob that lies about being a decision.
 
+    ``carve``: the carry's box and operation plans, pinned; the rule checks it against the
+    declaration exactly as it checks its own (docs/internals/engine/rules.md#carve).
+
     A pin is engine vocabulary and lives here with the facts it folds into.
     :mod:`rola.expert` is its public address (docs/api.md §6), which is a re-export.
     """
 
     paging: bool | None = None
+    carve: Carve | None = None
 
     def __post_init__(self) -> None:
         if self.paging is not None and type(self.paging) is not bool:
             raise TypeError(f"paging must be None or a bool, got {self.paging!r}")
+        if self.carve is not None and type(self.carve) is not Carve:
+            raise TypeError(f"carve must be None or a Carve, got {type(self.carve).__name__}")
         if self.paging is True:
             raise ValueError(
                 "paging is ON by default for every stateful call, so there is nothing "

@@ -31,8 +31,10 @@ from rola.engine.types import (
     SUPPLIABLE,
     BackwardNotImplemented,
     CallClass,
+    Carve,
     Mask,
     PlanOverrides,
+    SidePlan,
 )
 
 __all__ = [
@@ -40,11 +42,13 @@ __all__ = [
     "SUPPLIABLE",
     "BackwardNotImplemented",
     "CallClass",
+    "Carve",
     "DecodeGeometry",
     "DecodePlan",
     "Mask",
     "Node",
     "PlanOverrides",
+    "SidePlan",
     "node",
     "rule",
     "run",

@@ -45,7 +45,8 @@ it at all:
 * `rola/engine/` (the ROOT) — the SHARED CORE, which belongs to no domain: the DAG
   framework (`runner.py` — `Node`, `node`, `rule`, `run`, `validate_dag`,
   `validate_capturable`), the value types, the pins a caller may set over axes the op
-  decides — `PlanOverrides` — and the refusal every no-backward clause raises —
+  decides — `PlanOverrides` — the carry's carve — `Carve`, `SidePlan` — and the
+  refusal every no-backward clause raises —
   `BackwardNotImplemented` — (`types.py`), and the per-family plans (`plan.py`).
 * `rola/engine/facts/` — band 1, BODIES INCLUDED. The packing and the write-atom
   bitmap (`planes.py`), the build's arm censuses (`manifest.py`), the operand list
